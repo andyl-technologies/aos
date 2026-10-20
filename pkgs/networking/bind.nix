@@ -1,8 +1,9 @@
 ##! bind — Authoritative DNS server, recursive resolver, and DNS utilities
 {
-  mkDerivation,
-  fetchurl,
   lib,
+  mkDerivation,
+  aos-runtime-checks,
+  fetchurl,
   stdenv,
   gnumake,
   perl,
@@ -27,12 +28,80 @@
   readline,
   tzdata,
   buildPackages,
+  service-management,
+  nftables,
 }: let
   version = "9.20.27";
 in
   mkDerivation {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
     pname = "bind";
-    inherit version;
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "BIND accepts the zone and its serial and record relationships.";
+        "files" = {
+          "example.zone" = "$ORIGIN example.test.\n@ 3600 IN SOA ns.example.test. hostmaster.example.test. (\n  1 3600 600 86400 60\n)\n@   IN NS ns.example.test.\nns  IN A  192.0.2.53\nwww IN A  192.0.2.42\n";
+        };
+        "input" = "A complete authoritative DNS zone with SOA, NS, and address records.";
+        "operation" = "Load and validate the zone with named-checkzone.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/named-checkzone"
+              "example.test"
+              "example.zone"
+            ];
+            "exit_code" = 0;
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "BIND rejects the invalid address with status 1.";
+        "files" = {
+          "invalid.zone" = "$ORIGIN example.test.\n@ 3600 IN SOA ns.example.test. hostmaster.example.test. (1 3600 600 86400 60)\n@  IN NS ns.example.test.\nns IN A 999.0.2.53\n";
+        };
+        "input" = "A DNS zone containing an IPv4 octet outside the valid range.";
+        "operation" = "Load the malformed zone with named-checkzone.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/named-checkzone"
+              "example.test"
+              "invalid.zone"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
+    # ISC preserves compatibility within the 9.20 stable branch.
+    # https://kb.isc.org/docs/aa-00896
+    version = "~${version}";
     outputs = ["out" "dnsutils"];
 
     src = fetchurl {
@@ -44,26 +113,31 @@ in
 
     # dnstap generates C sources with protoc-c on the build machine.
     buildDeps = [gnumake perl pkg-config cmocka tzdata buildPackages.protobuf-c];
-    runtimeDeps = [
-      libcap
-      libidn2
-      libmaxminddb
-      libtool
-      libxml2
-      openssl
-      liburcu
-      libuv
-      nghttp2
-      jemalloc
-      krb5
-      fstrm
-      protobuf-c
-      lmdb
-      json-c
-      zlib
-      readline
-    ];
+    # Linux capabilities have no Darwin equivalent in BIND's privilege code.
+    runtimeDeps =
+      lib.optional (!stdenv.hostPlatform.isDarwin) libcap
+      ++ [
+        libidn2
+        libmaxminddb
+        libtool
+        libxml2
+        openssl
+        liburcu
+        libuv
+        nghttp2
+        jemalloc
+        krb5
+        fstrm
+        protobuf-c
+        lmdb
+        json-c
+        zlib
+        readline
+      ];
     propagatedDeps = [];
+
+    module = ./_bind;
+    moduleDeps = [aos-runtime-checks service-management nftables];
 
     phases = [
       {
@@ -96,6 +170,11 @@ in
             done
             export LDFLAGS
           ''
+          + lib.optionalString stdenv.hostPlatform.isDarwin ''
+            # Darwin jemalloc exports its extension API with je_ names. BIND
+            # calls the same five functions by their unprefixed names.
+            export CPPFLAGS="''${CPPFLAGS:+$CPPFLAGS }-Dmallocx=je_mallocx -Drallocx=je_rallocx -Dsallocx=je_sallocx -Dsdallocx=je_sdallocx -Dmallctl=je_mallctl"
+          ''
           + ''
             ./configure \
               $configureFlags \
@@ -120,6 +199,12 @@ in
               --with-libidn2=${libidn2} \
               --with-cmocka=detect \
               --with-jemalloc=detect
+          ''
+          + lib.optionalString stdenv.hostPlatform.isDarwin ''
+            # BIND adds -flat_namespace to every Darwin link. Its uninstalled
+            # shared libraries have final install names, which ld64.lld cannot
+            # resolve transitively under that mode during the build.
+            find . -name Makefile -type f -exec sed -i 's/-Wl,-flat_namespace//g' {} +
           '';
       }
       {
@@ -128,7 +213,8 @@ in
       }
       {
         name = "check";
-        script = ''
+        # Darwin unit binaries require a native executor for later qualification.
+        script = lib.optionalString (!stdenv.hostPlatform.isDarwin) ''
           # BIND defaults each test binary to one loop worker per detected CPU.
           # Large builders can then expose an upstream netmgr teardown race in
           # qpdb_test, while two workers still exercise its concurrent paths.
@@ -172,18 +258,23 @@ in
     checks = {
       testing,
       self,
+      pkgs,
       ...
-    }: {
+    }: let
+      nativeTests = import ./_bind/native-tests.nix {inherit lib self pkgs;};
+      contractHolds = builtins.all (value: value) (builtins.attrValues nativeTests);
+    in {
       link = testing.mkLinkCheck {
         pname = "lib-bind-dns";
         library = self;
         libs = ["-ldns" "-lisc"];
+        extraDeps = [liburcu libuv];
         testSource = ''
-          #include <dns/version.h>
-          #include <isc/version.h>
+          #include <dns/name.h>
+          #include <isc/result.h>
 
           int main(void) {
-              return dns_version == NULL || isc_version == NULL;
+              return dns_rootname == NULL || isc_result_totext(ISC_R_SUCCESS) == NULL;
           }
         '';
       };
@@ -197,6 +288,14 @@ in
         tool = self.dnsutils;
         command = "dig -v && nslookup -version";
       };
+      native-module-contract =
+        if contractHolds
+        then
+          pkgs.runCommand "bind-native-module-contract" {} ''
+            mkdir -p "$out"
+            printf '%s\n' PASS > "$out/result"
+          ''
+        else throw "the BIND native ability contract check failed";
     };
 
     meta = {

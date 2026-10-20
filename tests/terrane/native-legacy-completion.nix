@@ -10,12 +10,12 @@
 in
   sourceGate "native-legacy-completion" ''
     cd crates
-    cargo test --frozen --offline -p terrane --no-default-features \
+    cargo test --frozen --offline -p terrane-sdk --no-default-features \
       --features tokio,surface-sdk --lib -- --list > "$TMPDIR/legacy-completion-tests.txt"
     python3 ../tests/terrane/check_native_gate.py inventory \
       "$TMPDIR/legacy-completion-tests.txt" '${builtins.toJSON selectors}'
     for test_name in ${builtins.concatStringsSep " " selectors}; do
-      if ! cargo test --frozen --offline -p terrane --no-default-features \
+      if ! cargo test --frozen --offline -p terrane-sdk --no-default-features \
         --features tokio,surface-sdk --lib "$test_name" -- --exact \
         > "$TMPDIR/legacy-completion-test.log" 2>&1; then
         cat "$TMPDIR/legacy-completion-test.log"

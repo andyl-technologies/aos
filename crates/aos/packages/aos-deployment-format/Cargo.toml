@@ -1,0 +1,16 @@
+[package]
+name = "aos-deployment-format"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description = "Portable AOS deployment envelopes, resolution locks, and admission documents"
+
+[dependencies]
+aos-core.workspace = true
+aos-module-format.workspace = true
+aos-module-docs.workspace = true
+aos-registry-format.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+semver.workspace = true

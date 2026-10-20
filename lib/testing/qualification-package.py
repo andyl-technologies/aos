@@ -12,6 +12,7 @@ from __future__ import annotations
 import base64
 import datetime
 import hashlib
+import importlib.util
 import json
 import os
 import pathlib
@@ -19,12 +20,10 @@ import re
 import stat
 import struct
 import subprocess
+import sys
 import urllib.parse
 from dataclasses import dataclass
 from typing import Any, BinaryIO
-
-from qualification_k3s_bindings import bind_k3s_fleet, configuration_output_names
-
 
 ROOT = pathlib.Path.cwd()
 REQUEST = ROOT / "request.json"
@@ -33,6 +32,7 @@ DOWNLOADS = ROOT / "downloads.json"
 REPORT = ROOT / "scenario-report.json"
 
 PLATFORM = os.environ["AOS_QUALIFICATION_PLATFORM"]
+EXPECTED_CHECKS = json.loads(os.environ["AOS_QUALIFICATION_CHECKS"])
 PROBES = pathlib.Path(os.environ["AOS_QUALIFICATION_PROBES"])
 TRUST_KEYS = json.loads(os.environ["AOS_QUALIFICATION_TRUST_KEYS"])
 STAGING_HUB_URL = os.environ["AOS_QUALIFICATION_STAGING_HUB_URL"]
@@ -41,15 +41,11 @@ NIX_STORE = os.environ["AOS_QUALIFICATION_NIX_STORE"]
 ZSTD = os.environ["AOS_QUALIFICATION_ZSTD"]
 UNAME = os.environ["AOS_QUALIFICATION_UNAME"]
 BOUND_IMAGE_VARIANT = os.environ.get("AOS_QUALIFICATION_BOUND_IMAGE_VARIANT")
-BOUND_K3S_TOPOLOGY = os.environ.get("AOS_QUALIFICATION_BOUND_K3S_TOPOLOGY")
+BOUND_SUBJECT_BINDER = os.environ.get("AOS_QUALIFICATION_SUBJECT_BINDER")
+BOUND_SUBJECT_BINDER_ARGUMENTS = json.loads(
+    os.environ.get("AOS_QUALIFICATION_SUBJECT_BINDER_ARGUMENTS", "{}")
+)
 
-EXPECTED_CHECKS = {
-    "anonymous-download",
-    "closure-verification",
-    "functional-behavior",
-    "dependency-obligations",
-    "permissions-and-confinement",
-}
 PACKAGE_CASE = re.compile(
     r"^package-function/(?P<package>[A-Za-z0-9_.+@-]+)/"
     r"(?P<platform>x86_64-linux|aarch64-linux|x86_64-darwin|aarch64-darwin)$"
@@ -63,6 +59,21 @@ PROBE_REGISTRY_SCHEMA = "aos.release.package-probes/v1"
 MANIFEST_OBJECT = "control/release-manifest-envelope"
 MAX_PROBE_RESULT_BYTES = 1024 * 1024
 MAX_I_JSON_INTEGER = (1 << 53) - 1
+
+
+def load_subject_binder(path: str):
+    """Loads the package-specific subject binder named by the scenario."""
+
+    spec = importlib.util.spec_from_file_location(
+        "aos_qualification_subject_binder", path
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"could not load package subject binder {path}")
+
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 def canonical(value: Any) -> bytes:
@@ -404,7 +415,7 @@ class PackageScenario:
             or self.case["platform"] != PLATFORM
             or self.case.get("target") is not None
             or self.case.get("claim") is not None
-            or set(self.case["checks"]) != EXPECTED_CHECKS
+            or self.case["checks"] != EXPECTED_CHECKS
         ):
             raise RuntimeError("package case differs from the implemented program")
         if self.case.get("package_role") not in {
@@ -443,11 +454,19 @@ class PackageScenario:
         artifact_ids = decision["artifact"]["artifact_ids"]
         self.package_artifact_ids = list(artifact_ids)
         expected_subjects = list(artifact_ids)
-        if BOUND_K3S_TOPOLOGY is not None:
-            bindings = bind_k3s_fleet(
-                payload, PLATFORM, self.package, BOUND_IMAGE_VARIANT, BOUND_K3S_TOPOLOGY
+        if BOUND_SUBJECT_BINDER is not None:
+            binder = load_subject_binder(BOUND_SUBJECT_BINDER)
+            expected_subjects = binder.bind_subjects(
+                payload,
+                PLATFORM,
+                self.package,
+                BOUND_IMAGE_VARIANT,
+                BOUND_SUBJECT_BINDER_ARGUMENTS,
             )
-            expected_subjects = bindings.subjects
+            if not isinstance(expected_subjects, list) or not all(
+                isinstance(subject, str) for subject in expected_subjects
+            ):
+                raise RuntimeError("package subject binder returned invalid subjects")
         elif BOUND_IMAGE_VARIANT is not None:
             image = one(
                 [
@@ -469,9 +488,6 @@ class PackageScenario:
         if expected_subjects != self.case["subjects"]:
             raise RuntimeError("package cell artifacts differ from the exact case subjects")
 
-        companion_names = configuration_output_names(
-            decision["artifact"].get("configuration"), artifact_ids, self.artifacts
-        )
         for artifact_id in artifact_ids:
             artifact = self.artifacts.get(artifact_id)
             if (
@@ -482,7 +498,7 @@ class PackageScenario:
                 or artifact.get("output") is None
             ):
                 raise RuntimeError("package subject lacks its exact Nix output identity")
-            output_name = companion_names.get(artifact_id, artifact["output"])
+            output_name = artifact_id.rsplit("/", 1)[-1]
             if output_name in self.outputs:
                 raise RuntimeError("package case repeats a named Nix output")
             self.outputs[output_name] = artifact["store_path"]
@@ -836,6 +852,29 @@ class PackageScenario:
             for directory in ("bin", "sbin")
             if (pathlib.Path(store_path) / directory).is_dir()
         )
+        site_packages = (
+            f"lib/python{sys.version_info.major}.{sys.version_info.minor}/site-packages"
+        )
+        closure_python_path = ":".join(
+            str(pathlib.Path(store_path) / site_packages)
+            for store_path in sorted(self.closure)
+            if (pathlib.Path(store_path) / site_packages).is_dir()
+        )
+        closure_perl_path = ":".join(
+            str(pathlib.Path(store_path) / "lib/perl5")
+            for store_path in sorted(self.closure)
+            if (pathlib.Path(store_path) / "lib/perl5").is_dir()
+        )
+        closure_data_path = ":".join(
+            str(pathlib.Path(store_path) / "share")
+            for store_path in sorted(self.closure)
+            if (pathlib.Path(store_path) / "share").is_dir()
+        )
+        closure_include_path = ":".join(
+            str(pathlib.Path(store_path) / "include")
+            for store_path in sorted(self.closure)
+            if (pathlib.Path(store_path) / "include").is_dir()
+        )
         environment = {
             "HOME": str(work / "home"),
             "USER": os.environ["USER"],
@@ -851,12 +890,23 @@ class PackageScenario:
             "AOS_QUALIFICATION_PACKAGE_PROFILE": str(self._profile_current()),
             "AOS_QUALIFICATION_PROBE_REPORT": str(report),
             "AOS_QUALIFICATION_PROBE_WORK": str(work),
-            "AOS_QUALIFICATION_BASH": os.environ["AOS_QUALIFICATION_BASH"],
-            "AOS_QUALIFICATION_CC": os.environ["AOS_QUALIFICATION_CC"],
-            "AOS_QUALIFICATION_CXX": os.environ["AOS_QUALIFICATION_CXX"],
             "AOS_QUALIFICATION_PYTHON": os.environ["AOS_QUALIFICATION_PYTHON"],
             "AOS_QUALIFICATION_NIX_STORE": os.environ["AOS_QUALIFICATION_NIX_STORE"],
         }
+        for name in ("BASH", "CC", "CXX", "PERL", "RUSTC"):
+            variable = f"AOS_QUALIFICATION_{name}"
+            executable = os.environ.get(variable)
+            if executable:
+                environment[variable] = executable
+        if closure_python_path:
+            environment["PYTHONPATH"] = closure_python_path
+        if closure_perl_path:
+            environment["PERL5LIB"] = closure_perl_path
+        if closure_data_path:
+            environment["XDG_DATA_DIRS"] = closure_data_path
+        if closure_include_path:
+            environment["C_INCLUDE_PATH"] = closure_include_path
+            environment["CPLUS_INCLUDE_PATH"] = closure_include_path
         pathlib.Path(environment["HOME"]).mkdir()
         pathlib.Path(environment["TMPDIR"]).mkdir()
         run([self.probe], environment=environment, cwd=work)
@@ -954,6 +1004,8 @@ class PackageScenario:
                 ),
             },
         }
+        if list(checks) != EXPECTED_CHECKS:
+            raise RuntimeError("package evidence differs from the evaluated check contract")
         operations = {
             "anonymous_objects": len(self.objects),
             "imported_nars": len(self.closure),

@@ -3,7 +3,7 @@
 Status: planning
 Audience: anyone working on `modules/roles/`,
 `lib/build/`, `pkgs/system/systemd.nix`, `modules/services/ignition.nix`, and the
-`apm`/registry surface in `crates/aos-package/`.
+`apm`/registry surface in `crates/aos/packages/aos-package-manager/`.
 
 This doc records how a **package** is materialized as a systemd-managed unit
 with sandbox directives generated from a signed `[permissions]` manifest — see
@@ -210,7 +210,7 @@ implemented builder is
   closure (no host tools, sandbox-safe).
 - The FHS skeleton (`/usr/{bin,lib,sbin}` real, `/bin`/`/sbin`/`/lib`
   symlinks, empty `/etc`, `/proc`, `/sys`, `/dev`, `/run`) is staged.
-- Store closures are copied in; `/aos-registration` carries the closure-info
+- Store closures are copied in; `/usr/lib/aos/nix-registration` carries the closure-info
   stream so the embedded store is coherent.
 - `fakeroot -- mkfs.ext4 -d rootfs … root.img` produces the image — **no
   losetup, no mount**, every file owned by uid/gid 0. This is the same
@@ -435,7 +435,7 @@ A package's `expose` block may declare `requires = ["b"]`
 ([authoring.md](authoring.md)); apm resolves it like any dependency and the
 expose phase materializes `After=`/`Wants=` edges between the **targets**
 (`aos-pkg-a.target` → `aos-pkg-b.target`). Current resolution
-(`crates/aos-package/src/resolve.rs`) pulls both `expose.requires` package
+(`crates/aos/packages/aos-package-manager/src/resolve.rs`) pulls both `expose.requires` package
 names and provider packages referenced by typed `expose.uses` routes; the
 profile switch still lands the resulting set atomically. Keeping ordering edges
 is deliberate: snapd offers *no* cross-snap ordering and its users hand-roll

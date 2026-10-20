@@ -16,7 +16,7 @@
   # no production authority.
   caCertificate = builtins.readFile ../fixtures/release-fleet-ca.crt;
   styleHash = builtins.convertHash {
-    hash = builtins.hashFile "sha256" ../../crates/aos-hub-core/src/web/static_assets/style.css;
+    hash = builtins.hashFile "sha256" ../../crates/hub/aos-hub-service/src/web/static_assets/style.css;
     hashAlgo = "sha256";
     toHashFormat = "sri";
   };
@@ -161,7 +161,7 @@
   packageDerivationRecord = derivationRecord "maintain-fixture-package-derivation-record" mountedPackageDerivation;
   sourceDerivationRecord = derivationRecord "maintain-fixture-source-derivation-record" mountedSourceDerivation;
 
-  mountedClosure = import ../../lib/build/closure-info.nix {inherit lib pkgs;} {
+  mountedClosure = lib.build.closureInfo {inherit pkgs;} {
     rootPaths = [
       fixtureRepository
       maintainerToolBundle

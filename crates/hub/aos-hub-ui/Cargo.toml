@@ -1,0 +1,20 @@
+[package]
+name = "aos-hub-ui"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+description = "Shared Hub navigation, routes, and presentation values"
+
+# Contract tests inspect the implementation and stylesheet they constrain.
+[package.metadata.aos]
+test_source_inputs = [
+    "crates/hub/aos-hub-console/src",
+    "crates/hub/aos-hub-service/src/web/static_assets/style.css",
+    "docs/rfcs/0012-hub-surface-topology",
+]
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+serde_json = { workspace = true }

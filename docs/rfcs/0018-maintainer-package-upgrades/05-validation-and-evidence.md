@@ -23,8 +23,9 @@ rebase, or relevant policy change invalidates affected results.
 The pure planner selects gates from evaluated facts:
 
 - campaign units, component target vectors, members, and source/artifact graph;
-- supported targets from
-  [`pkgs/_platform-support.nix`](../../../pkgs/_platform-support.nix);
+- supported targets from package-owned `platformSupport` declarations evaluated
+  by [`pkgs/_target-policy.nix`](../../../pkgs/_target-policy.nix) for the
+  plan-selected target set;
 - direct/transitive dependencies and reverse dependencies;
 - package-authored checks;
 - system, image, VM, and fleet consumers reached by the changed closure;
@@ -84,7 +85,7 @@ that exact commit. `ready-for-pr` requires:
 9. repeat clean builds where exceptional policy requires comparison.
 
 The five repository layers are implemented in
-[`crates/aos/src/commands/test.rs`](../../../crates/aos/src/commands/test.rs).
+[`crates/aos/cli/aos-cli/src/commands/test.rs`](../../../crates/aos/cli/aos-cli/src/commands/test.rs).
 The maintainer tool invokes them through the documented AOS/Nix environment,
 not `cargo run`, host tools, or nixpkgs.
 

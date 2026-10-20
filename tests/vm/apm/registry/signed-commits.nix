@@ -109,7 +109,7 @@
       release_signed_tool() {
         version="$1"
         store="$2"
-        key="$3"
+        key_id="$3"
         label="$4"
         shift 4
         $APR release "$version" \
@@ -119,7 +119,7 @@
           --description "Signed commit trust workflow tool" \
           --license MIT \
           --maintainer signed-commit@example.invalid \
-          --key "$key" \
+          --key-id "$key_id" \
           --cache-key /tmp/signed-cache.sec \
           --cache-url http://127.0.0.1:18106 \
           --cache-priority 52 \
@@ -247,6 +247,7 @@
       echo "==> Maintainer: release signed-tool 1.0.0 with trusted commit key"
       $APR create signed-reg --trust-key "$TRUST_KEY" --trust-key-id initial \
         --key "$GOOD_KEY"
+      register_publish_key signed-reg initial "$GOOD_KEY"
       REG_DIR="$REG_STORAGE/signed-reg"
       DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
       assert_file_contains "$REG_DIR/keys.toml" 'id = "initial"' \
@@ -264,7 +265,7 @@
       nix --extra-experimental-features nix-command key generate-secret \
         --key-name signed-cache > /tmp/signed-cache.sec
 
-      release_signed_tool 1.0.0 "$TOOL_V1_STORE" "$GOOD_KEY" v1
+      release_signed_tool 1.0.0 "$TOOL_V1_STORE" initial v1
       assert_file_exists "/tmp/signed-cache/$TOOL_V1_HASH.narinfo" \
         "static cache has signed-tool v1 narinfo"
       assert_file_exists "/tmp/signed-cache/$TOOL_V1_DEP_HASH.narinfo" \
@@ -350,7 +351,7 @@
       # Seal v2's TUF with the trusted key, then re-sign only the commit with an
       # untrusted key: the tree (and TUF metadata) stay valid, isolating the
       # rejection to the commit signature.
-      release_signed_tool 2.0.0 "$TOOL_V2_STORE" "$GOOD_KEY" v2-bad --previous 1.0.0
+      release_signed_tool 2.0.0 "$TOOL_V2_STORE" initial v2-bad --previous 1.0.0
       assert_file_exists "/tmp/signed-cache/$TOOL_V2_HASH.narinfo" \
         "static cache has signed-tool v2 narinfo"
       assert_file_exists "/tmp/signed-cache/$TOOL_V2_DEP_HASH.narinfo" \
@@ -389,7 +390,7 @@
       export HOME=/tmp
       export USER=root
       APM_CONFIG="$HOME/.config/apm"
-      release_signed_tool 3.0.0 "$TOOL_V3_STORE" "$GOOD_KEY" v3-good --previous 2.0.0
+      release_signed_tool 3.0.0 "$TOOL_V3_STORE" initial v3-good --previous 2.0.0
       assert_file_exists "/tmp/signed-cache/$TOOL_V3_HASH.narinfo" \
         "static cache has signed-tool v3 narinfo"
       assert_file_exists "/tmp/signed-cache/$TOOL_V3_DEP_HASH.narinfo" \
@@ -449,7 +450,7 @@
         "registry records next commit signing key id"
       assert_file_contains "$REG_DIR/keys.toml" "$NEXT_TRUST_KEY" \
         "registry records next commit signing key value"
-      release_signed_tool 4.0.0 "$TOOL_V4_STORE" "$GOOD_KEY" v4 --previous 3.0.0
+      release_signed_tool 4.0.0 "$TOOL_V4_STORE" initial v4 --previous 3.0.0
       assert_file_exists "/tmp/signed-cache/$TOOL_V4_HASH.narinfo" \
         "static cache has signed-tool v4 narinfo"
       push_branch
@@ -491,7 +492,7 @@
       APM_CONFIG="$HOME/.config/apm"
       # Seal v5 with the trusted initial key, then re-sign the commit with the
       # rotated next key (now an active roster member): the consumer accepts it.
-      release_signed_tool 5.0.0 "$TOOL_V5_STORE" "$GOOD_KEY" v5 --previous 4.0.0
+      release_signed_tool 5.0.0 "$TOOL_V5_STORE" initial v5 --previous 4.0.0
       assert_file_exists "/tmp/signed-cache/$TOOL_V5_HASH.narinfo" \
         "static cache has signed-tool v5 narinfo"
       amend_commit "$NEXT_KEY" v5

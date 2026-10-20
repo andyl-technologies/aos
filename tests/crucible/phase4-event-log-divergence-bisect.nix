@@ -9,9 +9,9 @@
 
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   trigger = import ./_crucible-trigger-source.nix {inherit lib;};
-  libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
-  determinismTest = builtins.readFile ../../crates/crucible/tests/event_log_determinism.rs;
-  reproductionTest = builtins.readFile ../../crates/crucible/tests/assertion_violation_reproduction.rs;
+  libSource = builtins.readFile ../../crates/crucible/engine/crucible-engine/src/lib.rs;
+  determinismTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/event_log_determinism.rs;
+  reproductionTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/assertion_violation_reproduction.rs;
   observabilityDoc = builtins.readFile ../../docs/rfcs/0010-crucible/19-observability-event-log.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -26,10 +26,10 @@
       }
       {
         label = "first causal entry completion note";
-        needle = "node/icount, source, and kind directly from the log";
+        needle = "node/logical tick, source, and kind directly from the log";
       }
     ]
-    ++ failuresFor "crates/crucible/src/scheduler.rs" scheduler [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/scheduler.rs" scheduler [
       {
         label = "causal divergence point type";
         needle = "pub struct EventLogCausalDivergencePoint";
@@ -40,7 +40,7 @@
       }
       {
         label = "divergence point icount stamp";
-        needle = "pub at: EventLogIcountStamp";
+        needle = "pub at: EventLogTickStamp";
       }
       {
         label = "divergence point source";
@@ -64,7 +64,7 @@
       }
       {
         label = "localization builds from event-log time";
-        needle = "at: entry.entry.time().icount.clone()";
+        needle = "at: entry.entry.time().stamp.clone()";
       }
       {
         label = "localization builds from source";
@@ -75,13 +75,13 @@
         needle = "kind: entry.entry.event_payload().kind().to_owned()";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" libSource [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" libSource [
       {
         label = "causal divergence point export";
         needle = "EventLogCausalDivergencePoint";
       }
     ]
-    ++ failuresFor "crates/crucible/src/trigger.rs" trigger [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/trigger.rs" trigger [
       {
         label = "bisection request localization field";
         needle = "pub first_different_causal_entry: Option<EventLogCausalDivergencePoint>";
@@ -108,25 +108,25 @@
       }
       {
         label = "first icount comes from causal entry";
-        needle = ".map(|entry| entry.at.icount)";
+        needle = ".and_then(|entry| entry.at.retired)";
       }
       {
         label = "bisection request carries causal entry";
         needle = "first_different_causal_entry: first_different_causal_entry.clone()";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/event_log_determinism.rs" determinismTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/event_log_determinism.rs" determinismTest [
       {
         label = "node-local causal localization test";
         needle = "causal_mismatch_reports_first_differing_entry_coordinate";
       }
       {
         label = "test asserts node";
-        needle = "expected_location.at.node.as_ref()";
+        needle = "expected_location.at.node, None";
       }
       {
         label = "test asserts icount";
-        needle = "expected_location.at.icount";
+        needle = "expected_location.at.tick";
       }
       {
         label = "test asserts source";
@@ -137,7 +137,7 @@
         needle = "expected_location.kind.as_str()";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/assertion_violation_reproduction.rs" reproductionTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/assertion_violation_reproduction.rs" reproductionTest [
       {
         label = "replay bisection localization test";
         needle = "violation_reproduction_bisection_reports_first_differing_causal_entry";
@@ -155,8 +155,8 @@
         needle = "assert_eq!(divergence.first_different_prefix_len, 1)";
       }
       {
-        label = "replay path asserts event icount";
-        needle = "assert_eq!(divergence.first_different_icount, Some(icount(0)))";
+        label = "replay path does not invent a raw retirement witness";
+        needle = "assert_eq!(divergence.first_different_icount, None)";
       }
       {
         label = "replay path rejects smoothing";
@@ -177,7 +177,7 @@
         needle = "taskIds = [\"T-OBS-8\"]";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/event_log_determinism.rs" determinismTest [
+    ++ forbiddenFor "crates/crucible/engine/crucible-engine/tests/event_log_determinism.rs" determinismTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -191,7 +191,7 @@
         needle = "unimplemented!";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/assertion_violation_reproduction.rs" reproductionTest [
+    ++ forbiddenFor "crates/crucible/engine/crucible-engine/tests/assertion_violation_reproduction.rs" reproductionTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -213,10 +213,12 @@ in
       pname = "crucible-phase4-event-log-divergence-bisect";
       version = "0";
       src = crucibleSrc;
+      runtimeDeps = [pkgs.sqlite];
 
       buildDeps = [
         pkgs.coreutils
         pkgs.rust
+        pkgs.sqlite
         pkgs.sed
       ];
 
@@ -258,7 +260,7 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-event-log-divergence-bisect-target" \
-              -p crucible \
+              -p crucible-engine \
               --test event_log_determinism \
               --test assertion_violation_reproduction \
               -- --test-threads=1

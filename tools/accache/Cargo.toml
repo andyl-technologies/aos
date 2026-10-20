@@ -1,0 +1,28 @@
+[package]
+name = "accache"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Daemonless compiler action cache for declared Nix build environments"
+
+# Keep the compiler wrapper independently buildable: building the cache must
+# not vendor or compile the AOS CLI/server workspace to get started.
+[workspace]
+
+[dependencies]
+accache-frontend = { path = "frontend" }
+anyhow = "1"
+hex = "0.4"
+prost = "0.13"
+rustix = { version = "1", features = ["fs"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tempfile = "3"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+
+[profile.release]
+strip = true

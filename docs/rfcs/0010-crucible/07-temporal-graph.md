@@ -70,8 +70,9 @@ part of identity (05 [EXEC-1], [EXEC-2]); they are a cache keyed by it.
   *Spec:* §1, §2.
 
 - **[TEMP-3]** The genesis node of the temporal graph MUST be the baked genesis
-  checkpoint (05 §6 `bake`): a `loadvm`-able snapshot of each VM at its ready
-  point, content-addressed and shared across every `ScenarioDef` and every fork
+  checkpoint (05 §6 `bake`): an authenticated version-nine device and RAM
+  descriptor set for each VM at its ready point, content-addressed and shared
+  across every `ScenarioDef` and every fork
   with the same `World` (05 [EXEC-18]). The temporal graph MUST NOT contain a
   cold-boot node other than the one produced inside `bake` (05 [EXEC-16]).
   *Gate:* `gate:content-address`, `gate:replay-oracle`. *Spec:* §1; cross-ref
@@ -199,7 +200,7 @@ references it, it does not redefine it), and the event log is specified in 19.
 /// Every field is a content-addressed reference or a CoW delta over the
 /// parent's `MaterializedState`, so a fat checkpoint stores only what changed
 /// since its nearest fat ancestor (§5). Restoring it (05 §5 `instantiate`,
-/// the `loadvm` branch) stacks the parent's pieces under these deltas.
+/// the version-nine descriptor branch) stacks the parent's pieces under these deltas.
 #[derive(Clone)]
 pub struct MaterializedState {
     /// Per-VM architectural snapshot: a reference to the VM-state blob plus
@@ -268,7 +269,7 @@ delta:
   log at which this node sits, plus a content reference to the shared log prefix.
 
 - **[TEMP-7]** A `MaterializedState` MUST be sufficient for `instantiate`'s
-  `loadvm` branch (05 §5) to bring up a runtime at exactly this configuration
+  version-nine descriptor-restore branch (05 §5) to bring up a runtime at exactly this configuration
   without replaying from an ancestor. It MUST capture, at minimum: per-VM
   snapshot reference + icount (13, 15); per-device CoW overlay delta + device
   RNG (15); scheduler state — per-node horizons, pending shared-memory frame
@@ -310,7 +311,7 @@ is present, never by identity:
   form: the schedule delta is the thing that cannot be recomputed and therefore
   must be stored (05 [EXEC-8]).
 - A **fat checkpoint** additionally carries a `MaterializedState` (§3). It is
-  **fast to realize** — `instantiate` `loadvm`s it directly (05 §5, exact-snapshot
+  **fast to realize** — `instantiate` restores its version-nine descriptors directly (05 §5, exact-checkpoint
   branch) — but **must be validated**, because a materialized snapshot is a
   *cache* of `reduce`, and a cache can be wrong (an incomplete snapshot, a
   missing field). Its validation is the replay oracle (§6): a fat checkpoint
@@ -318,12 +319,13 @@ is present, never by identity:
 
 The thin form is always correct; the fat form is an optimization that must earn
 its trust. This asymmetry is what lets Crucible **hedge the snapshot-completeness
-risk** (the spike in [`30-risks-spikes.md`](30-risks-spikes.md): QEMU's `savevm`
-may not capture every bit of device state). If snapshotting turns out to be
+risk** (the historical spike in
+[`30-risks-spikes.md`](30-risks-spikes.md): a checkpoint capture may omit
+device state). If snapshotting turns out to be
 incomplete for some device, the affected checkpoints simply stay thin: they are
 slower but still bit-correct, because replay-from-ancestor never depends on
-`savevm` completeness — it depends only on Contract A/B determinism (04) and the
-schedule delta. The system degrades to "slower," never to "wrong."
+checkpoint completeness — it depends only on Contract A/B determinism (04) and
+the schedule delta. The system degrades to "slower," never to "wrong."
 
 The search policy follows directly: keep **most checkpoints thin** (cheap; the
 frontier of an exploration is enormous and almost all of it is never resumed),
@@ -337,14 +339,15 @@ correctness decision; eviction (turning a fat checkpoint thin) is always safe
   thin   = (parent, schedule_delta), state = None
            always correct · cheap to store · slow to realize (replay)
   fat    = thin + MaterializedState (§3)
-           fast to realize (loadvm) · must pass the replay oracle (§6)
+           fast to realize (v9 descriptor restore) · must pass the replay oracle (§6)
 
   policy: most nodes thin; materialize hot nodes (fork hubs, shared replay
           paths, interactive targets). materialize = cache decision (perf),
           NOT a correctness decision. evict (fat→thin) is always safe.
 
-  rule:   an exact-snapshot request is atomic and fails closed if any VMState,
-          host-device, scheduler, or artifact component is incomplete.
+  rule:   an exact-checkpoint request is atomic and fails closed if any RAM
+          descriptor, device-state, host-device, scheduler, or artifact
+          component is incomplete.
           Explicit replay remains a separate realization operation, never an
           automatic fallback from failed exact capture or restore.
 ```
@@ -353,8 +356,8 @@ correctness decision; eviction (turning a fat checkpoint thin) is always safe
   schedule_delta)` with `state = None` — and the thin form MUST be the
   canonical source of truth: the schedule delta is the non-recomputable datum
   that MUST be stored (05 [EXEC-8]). A thin checkpoint MUST be realizable by
-  `instantiate`'s ancestor-replay branch (05 §5) with no dependence on any
-  `savevm`/`loadvm` snapshot. *Gate:* `gate:replay-oracle`. *Spec:* §4;
+  `instantiate`'s ancestor-replay branch (05 §5) with no dependence on a
+  monolithic VMState snapshot. *Gate:* `gate:replay-oracle`. *Spec:* §4;
   cross-ref 05 §5.
 
 - **[TEMP-12]** A **fat** checkpoint MUST carry a `MaterializedState` (§3) and
@@ -366,7 +369,7 @@ correctness decision; eviction (turning a fat checkpoint thin) is always safe
   decision (05 [EXEC-17]). *Gate:* `gate:replay-oracle`. *Spec:* §4, §6.
 
 - **[TEMP-13]** Crucible MUST be able to keep a checkpoint thin when its
-  materialized snapshot would be unreliable (e.g. a device whose `savevm` is
+  materialized snapshot would be unreliable (e.g. a device whose checkpoint capture is
   incomplete; see [`30-risks-spikes.md`](30-risks-spikes.md)). Leaving a node
   thin MUST degrade performance only, never correctness: replay-from-ancestor
   depends only on Contract A/B determinism (04) and the schedule delta, never
@@ -457,7 +460,7 @@ obtained by re-deriving it thin — replaying from any fat ancestor along the sa
 schedule — compared by content hash.
 
 ```text
-  hash( loadvm(fat_checkpoint.state) )                            (the cache)
+  hash( restore_v9(fat_checkpoint.state) )                        (the cache)
     ==
   hash( instantiate(nearest_fat_ancestor) then replay(suffix) )  (the truth)
 
@@ -480,7 +483,7 @@ checkpoint that omitted a piece of `MaterializedState` (§3) fails the oracle,
 which is exactly how snapshot incompleteness is *detected* rather than silently
 producing a wrong resume.
 
-- **[TEMP-18]** For every fat checkpoint, `hash(loadvm(state))` MUST equal
+- **[TEMP-18]** For every fat checkpoint, `hash(restore_v9(state))` MUST equal
   `hash(replay-from-nearest-fat-ancestor)` (INV-2; 05 [EXEC-23]). This equality
   MUST be enforced as the CI gate `gate:replay-oracle`, not left to convention.
   A fat checkpoint that fails it MUST reject exact realization without mutating
@@ -572,7 +575,7 @@ RFC-0007 (`ratchet`) could be merged (README "Relationship to RFC-0007"; 26
 
 ## 8. Garbage collection of the DAG
 
-Search and interactive forking create checkpoints faster than they are kept:
+Search and campaign forking create checkpoints faster than they are kept:
 abandoned branches, evicted fat snapshots, and dead-end explorations accumulate.
 The store therefore needs garbage collection, and because everything is
 content-addressed and reference-counted, GC is standard and safe.
@@ -703,7 +706,7 @@ algebra; 22 owns the search algorithm).
               keyed by config.id() (§2), CoW-shared with its parent (§5),
               put into the DagStore (§7). Thin form (parent, delta) is the
               source of truth (§4); fat form is validated by the oracle (§6).
-  resume      instantiate the TIP checkpoint: loadvm its fat snapshot, or
+  resume      instantiate the TIP checkpoint: restore its v9 descriptors, or
               replay from the nearest fat ancestor if it is thin (05 §5, §4).
   fork        instantiate a NON-TIP checkpoint (a prefix node, §6), then step
               (05 §3) with DIFFERENT decisions to grow a new branch (§5 CoW).
@@ -747,7 +750,7 @@ command.
   and identity-irrelevant `metadata`; property-test that id equals the
   recorded `Configuration::id()` and is independent of `state`/fingerprint/
   metadata. — satisfies [TEMP-1], [TEMP-2], [TEMP-4], [TEMP-5]; spec §1, §2.
-  - Completed by `crucible::Checkpoint` and
+  - Completed by `crucible_engine::Checkpoint` and
     `checks.crucible.phase1.gates.contentAddress`: the model now records
     `scenario_ref`, `parent`, `schedule_delta`, `virtual_time`, per-node
     `node_icounts`, optional `MaterializedState`, `coverage_fingerprint`, and
@@ -762,7 +765,7 @@ command.
   dedup of configurations reached by different paths; test the `parent`-chain ⇒
   schedule-prefix identity. — satisfies [TEMP-1], [TEMP-3], [TEMP-6]; spec §1,
   §2.
-  - Completed by `crucible::TemporalGraph` and
+  - Completed by `crucible_engine::TemporalGraph` and
     `checks.crucible.phase1.gates.contentAddress`: the graph stores
     content-addressed checkpoint nodes rooted at the baked genesis snapshot,
     records `step` children as thin checkpoint nodes via `record_step`, dedups
@@ -776,21 +779,21 @@ command.
   icount (13, 15), per-device CoW overlay delta + device RNG (15), scheduler
   state (horizons, pending frame queues + delivery icounts, timer registry,
   active faults — 08, 17), decision-RNG positions (04), and event-log offset
-  (19); test it is sufficient for the `loadvm` branch. — satisfies [TEMP-7],
+  (19); test it is sufficient for the version-nine descriptor branch. — satisfies [TEMP-7],
   [TEMP-8], [TEMP-9], [TEMP-10]; spec §3.
-  - Completed by `crucible::MaterializedState`,
+  - Completed by `crucible_engine::MaterializedState`,
     `checks.crucible.phase1.gates.contentAddress`, and
     `checks.crucible.phase1.gates.replayOracle`: fat checkpoints now carry
     structured VM snapshot refs with icounts, device overlay deltas with device
     RNG state, scheduler state, decision-RNG cursors, and event-log offsets.
     The content-address gate checks the component hash shape and icount
-    sensitivity; the replay-oracle gate loads baked genesis through the `loadvm`
-    branch and rejects incomplete fat checkpoint state.
+    sensitivity; the replay-oracle gate restores baked genesis through the
+    version-nine descriptor branch and rejects incomplete fat checkpoint state.
 - [x] **T-TEMP-4** Implement thin checkpoints (`state = None`, realized by
   ancestor-replay) and fat checkpoints (`MaterializedState`, realized by
-  `loadvm`), the thin-is-source-of-truth rule, and the materialize-hot-nodes /
+  version-nine descriptor restore), the thin-is-source-of-truth rule, and the materialize-hot-nodes /
   evict-fat→thin policy. — satisfies [TEMP-11], [TEMP-12], [TEMP-14]; spec §4.
-  - Completed by `crucible::TemporalGraph`, `crucible::MaterializationPolicy`,
+  - Completed by `crucible_engine::TemporalGraph`, `crucible_engine::MaterializationPolicy`,
     and `checks.crucible.phase1.gates.replayOracle`: descendant checkpoint DAG
     nodes remain thin (`state = None`) while exact fat snapshots live in the
     separate cache, `materialize_checkpoint` validates a fat cache against the
@@ -801,8 +804,8 @@ command.
 - [x] **T-TEMP-5** Require exact materialized checkpoints and reject incomplete
   device snapshots; thin checkpoints remain an explicit cache policy, not a
   runtime fallback. — satisfies [TEMP-13], [TEMP-20]; spec §4, §6; cross-ref 30.
-  - Completed by `crucible::MaterializationPolicy`,
-    `crucible_qemu::QemuVmSnapshot`, and
+  - Completed by `crucible_engine::MaterializationPolicy`,
+    `crucible_qemu_host::QemuVmSnapshot`, and
     `checks.crucible.phase2.qemuExactSnapshotRestore`: a fat checkpoint contains
     one identity-bound pair of QEMU VMState and Apache-side host-I/O continuation,
     capture deletes partial QEMU artifacts on failure, restore validates the pair
@@ -813,7 +816,7 @@ command.
   segment; unchanged pieces resolve by reference; all deltas BLAKE3-keyed and
   deduped; assert marginal fork cost ∝ delta size. — satisfies [TEMP-15],
   [TEMP-16], [TEMP-17]; spec §5.
-  - Completed by `crucible::CowDeltaRef`, `crucible::CowSharingStats`, and
+  - Completed by `crucible_engine::CowDeltaRef`, `crucible_engine::CowSharingStats`, and
     `checks.crucible.phase1.gates.contentAddress`: checkpoints now enumerate
     typed CoW delta refs for dirty VM memory, dirty device overlays,
     `schedule_delta`, and explicit appended event-log segments while preserving
@@ -823,7 +826,7 @@ command.
     fork with identical VM, overlay, and log deltas only adds its new schedule
     delta instead of copying full state.
 - [x] **T-TEMP-7** Implement the replay oracle as a structural invariant and
-  CI gate: `hash(loadvm(fat)) == hash(replay-from-fat-ancestor)`, reject
+  CI gate: `hash(restore_v9(fat)) == hash(replay-from-fat-ancestor)`, reject
   failing fat checkpoints to thin, localize failures via divergence bisection,
   and use it as the snapshot-completeness check. — satisfies [TEMP-18],
   [TEMP-19], [TEMP-20]; spec §6; cross-ref 24.
@@ -845,10 +848,10 @@ command.
   layout) with a backend-agnostic trait for future remote backends and
   store-key reproduction artifacts. — satisfies [TEMP-21], [TEMP-22],
   [TEMP-23]; spec §7.
-  - Completed by `crucible::DagStore`, `crucible::MemoryDagStore`,
-    `crucible::LocalDagStore`, `crucible::TemporalGraphStoreKeys`,
+  - Completed by `crucible_engine::DagStore`, `crucible_engine::MemoryDagStore`,
+    `crucible_engine::LocalDagStore`, `crucible_engine::TemporalGraphStoreKeys`,
     `TemporalGraph::persist_checkpoint_closure`,
-    `crucible::DagStoreReproductionArtifact`, and
+    `crucible_engine::DagStoreReproductionArtifact`, and
     `checks.crucible.phase1.gates.contentAddress`: raw object bytes now produce
     portable BLAKE3-backed `ContentHash` keys via `ContentHash::from_bytes`;
     `put`/`get`/`exists` are backend-agnostic and idempotently dedup equal
@@ -863,14 +866,14 @@ command.
   rooted at live tips / pinned checkpoints / genesis, and the cache-not-identity
   / pinned-stays-realizable rules. — satisfies [TEMP-24], [TEMP-25], [TEMP-26];
   spec §8.
-  - Completed by `crucible::TemporalGraphGcRoots`,
-    `crucible::TemporalGraphReferenceCounts`,
-    `crucible::TemporalGraphGcReport`,
+  - Completed by `crucible_engine::TemporalGraphGcRoots`,
+    `crucible_engine::TemporalGraphReferenceCounts`,
+    `crucible_engine::TemporalGraphGcReport`,
     `TemporalGraph::reference_counts`, `TemporalGraph::garbage_collect`,
     `TemporalGraph::garbage_collect_store`,
     `TemporalGraph::collect_cached_snapshot`,
     `TemporalGraph::collect_cached_snapshot_store`,
-    `crucible::DagStore::delete`, `checks.crucible.phase1.gates.contentAddress`, and
+    `crucible_engine::DagStore::delete`, `checks.crucible.phase1.gates.contentAddress`, and
     `checks.crucible.phase1.gates.replayOracle`: live session tips, pinned
     checkpoints, and baked genesis snapshots form the mark roots; root
     multiplicity is reflected in checkpoint reference counts; sweep removes only
@@ -886,14 +889,13 @@ command.
   DAG (canonical-relabeling fingerprint; conservative decision independence),
   explicitly not a formal-methods engine. — satisfies [TEMP-27], [TEMP-28],
   [TEMP-29]; spec §9; cross-ref 22.
-  - Completed by `crucible::FrontierReductionPolicy`,
-    `crucible::FrontierReductionReport`,
-    `crucible::SymmetryReductionClasses`,
-    `crucible::SymmetryReductionKey`,
-    `crucible::PartialOrderReductionPolicy`,
-    `crucible::PartialOrderReductionKey`,
-    `Decision::touched_nodes`, `Decision::is_independent_from`,
-    `Decision::reduction_order_key`,
+  - Completed by `crucible_engine::FrontierReductionPolicy`,
+    `crucible_engine::FrontierReductionReport`,
+    `crucible_engine::SymmetryReductionClasses`,
+    `crucible_engine::SymmetryReductionKey`,
+    `crucible_engine::PartialOrderReductionPolicy`,
+    `crucible_engine::PartialOrderReductionKey`,
+    `Decision::is_independent_from`, `Decision::reduction_order_key`,
     `Checkpoint::symmetry_reduction_key`,
     `TemporalGraph::symmetry_reduction_key`,
     `TemporalGraph::enumerate_frontier_reduced`, and
@@ -913,8 +915,8 @@ command.
   05 §9, 22.
   - Completed by `TemporalGraph::save`, `TemporalGraph::resume`,
     `TemporalGraph::fork`, `TemporalGraph::replay`, `TemporalGraph::search`,
-    `crucible::TemporalGraphSave`, `crucible::TemporalGraphRuntime`,
-    `crucible::TemporalGraphFork`, `crucible::TemporalGraphSearch`,
+    `crucible_engine::TemporalGraphSave`, `crucible_engine::TemporalGraphRuntime`,
+    `crucible_engine::TemporalGraphFork`, `crucible_engine::TemporalGraphSearch`,
     `checks.crucible.phase1.gates.contentAddress`, and
     `checks.crucible.phase1.gates.replayOracle`: save materializes a
     replay-oracle-checked fat checkpoint and persists the same graph closure to

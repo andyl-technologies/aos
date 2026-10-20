@@ -8,13 +8,13 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  launchLib = builtins.readFile ../../crates/crucible-qemu/src/launch.rs;
+  launchLib = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-host/src/launch.rs;
   validationLib =
-    builtins.readFile ../../crates/crucible-qemu/src/launch/validation.rs
-    + builtins.readFile ../../crates/crucible-qemu/src/launch/validation/values.rs;
+    builtins.readFile ../../crates/crucible/qemu/crucible-qemu-host/src/launch/validation.rs
+    + builtins.readFile ../../crates/crucible/qemu/crucible-qemu-host/src/launch/validation/values.rs;
   launchTest =
-    builtins.readFile ../../crates/crucible-qemu/tests/deterministic_launch.rs
-    + builtins.readFile ../../crates/crucible-qemu/tests/deterministic_launch/launch_artifacts.rs;
+    builtins.readFile ../../crates/crucible/qemu/crucible-qemu-host/tests/deterministic_launch.rs
+    + builtins.readFile ../../crates/crucible/qemu/crucible-qemu-host/tests/deterministic_launch/launch_artifacts.rs;
   determinismSpec = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;
   spatialSpec = builtins.readFile ../../docs/rfcs/0010-crucible/06-spatial-graph.md;
   qemuSpec = builtins.readFile ../../docs/rfcs/0010-crucible/10-qemu-integration.md;
@@ -66,8 +66,8 @@
         needle = "pre-spawn validator rejects MTTCG";
       }
       {
-        label = "T-QEMU-15 completion note names RFC alias";
-        needle = "`crucible-rr-quantum-icount`";
+        label = "T-QEMU-15 completion note names canonical RR option";
+        needle = "`rr_switch_quantum`";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/06-spatial-graph.md" spatialSpec [
@@ -88,7 +88,7 @@
         needle = "never MTTCG";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/src/launch.rs" launchLib [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/src/launch.rs" launchLib [
       {
         label = "deterministic profile stores vCPU count";
         needle = "smp_vcpus: u16,";
@@ -115,7 +115,7 @@
       }
       {
         label = "canonical args pin RR quantum";
-        needle = "\"shift={},sleep=off,align=off,rr_switch_quantum={}\",";
+        needle = "\"shift={ICOUNT_SHIFT},sleep=off,align=off,rr_switch_quantum={}\",";
       }
       {
         label = "scenario material hashes selected vCPU count";
@@ -135,7 +135,7 @@
       }
       {
         label = "scenario material records RR units";
-        needle = "\"rr_switch_quantum_units=node-icount\".to_owned(),";
+        needle = "\"rr_switch_quantum_units=retired-instructions\".to_owned(),";
       }
       {
         label = "scenario material records ascending vCPU rotation";
@@ -147,7 +147,7 @@
       }
       {
         label = "scenario material records per-vCPU TSC source";
-        needle = "\"per_vcpu_tsc_source=node-icount\".to_owned(),";
+        needle = "\"per_vcpu_tsc_source=logical-picoseconds-div-250\".to_owned(),";
       }
       {
         label = "scenario material records per-vCPU RNG source";
@@ -155,7 +155,7 @@
       }
       {
         label = "scenario material records per-vCPU RNG timing axis";
-        needle = "\"per_vcpu_rng_timing_axis=node-icount\".to_owned(),";
+        needle = "\"per_vcpu_rng_timing_axis=raw-retirement-rr-order\".to_owned(),";
       }
       {
         label = "scenario material records deterministic secondary vCPU bringup";
@@ -166,7 +166,7 @@
         needle = "pub fn smp_vcpus(&self) -> u16";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/src/launch/validation.rs" validationLib [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/src/launch/validation.rs" validationLib [
       {
         label = "MTTCG validator rejection";
         needle = "QemuPreSpawnLaunchValidationError::MultiThreadTcg";
@@ -176,12 +176,8 @@
         needle = "QemuPreSpawnLaunchValidationError::SingleThreadSimNotPinned";
       }
       {
-        label = "RR quantum validator supports current patch option and RFC alias";
-        needle = "&[\"rr_switch_quantum\", \"crucible-rr-quantum-icount\"],";
-      }
-      {
-        label = "RR quantum duplicate label covers alias/current ambiguity";
-        needle = "\"rr_switch_quantum\",";
+        label = "RR quantum validator accepts only the canonical option";
+        needle = "unique_comma_value(icount, \"-icount\", \"rr_switch_quantum\")";
       }
       {
         label = "duplicate deterministic sub-options rejected";
@@ -190,10 +186,6 @@
       {
         label = "unique accelerator thread parser";
         needle = "unique_comma_value(&lower, \"-accel\", \"thread\")?";
-      }
-      {
-        label = "unique RR quantum parser across alias/current key";
-        needle = "unique_comma_value_any(";
       }
       {
         label = "unpinned RR quantum rejected";
@@ -224,7 +216,7 @@
         needle = "QemuPreSpawnLaunchValidationError::SmpZero";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/tests/deterministic_launch.rs" launchTest [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/tests/deterministic_launch.rs" launchTest [
       {
         label = "multi-vCPU RR test";
         needle = "multi_vcpu_round_robin_launch_is_pinned_validated_and_hashed";
@@ -263,7 +255,7 @@
       }
       {
         label = "multi-vCPU per-vCPU TSC assertion";
-        needle = "material.contains(\"per_vcpu_tsc_source=node-icount\")";
+        needle = "material.contains(\"per_vcpu_tsc_source=logical-picoseconds-div-250\")";
       }
       {
         label = "multi-vCPU per-vCPU RNG assertion";
@@ -271,7 +263,7 @@
       }
       {
         label = "multi-vCPU per-vCPU RNG timing assertion";
-        needle = "material.contains(\"per_vcpu_rng_timing_axis=node-icount\")";
+        needle = "material.contains(\"per_vcpu_rng_timing_axis=raw-retirement-rr-order\")";
       }
       {
         label = "multi-vCPU deterministic secondary bringup assertion";
@@ -296,10 +288,6 @@
       {
         label = "duplicate RR quantum assertion";
         needle = "rr_switch_quantum=4096,rr_switch_quantum=8192";
-      }
-      {
-        label = "mixed current and RFC alias assertion";
-        needle = "rr_switch_quantum=4096,crucible-rr-quantum-icount=4096";
       }
       {
         label = "sleep realtime switching assertion";
@@ -332,7 +320,9 @@ in
       buildDeps = [
         pkgs.rust
         pkgs.sed
+        pkgs.sqlite
       ];
+      runtimeDeps = [pkgs.sqlite];
 
       phases = [
         {
@@ -372,7 +362,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-qemu-multi-vcpu-launch-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible-qemu \
+              -p crucible-qemu-host \
               --test deterministic_launch \
               multi_vcpu_round_robin_launch_is_pinned_validated_and_hashed \
               -- --test-threads=1
@@ -399,14 +389,13 @@ in
             smp_vcpus=N>=1
             smp_default=1
             smp_multi_vcpu_test=4
-            rr_switch_quantum=content-addressed-node-icount
+            rr_switch_quantum=content-addressed-retired-instructions
             rr_switch_quantum_current_qemu_option=rr_switch_quantum
-            rr_switch_quantum_rfc_alias=crucible-rr-quantum-icount
             rr_vcpu_rotation=ascending-vcpu-id
             cpu_model_scope=uniform-all-vcpus
-            per_vcpu_tsc_source=node-icount
+            per_vcpu_tsc_source=logical-picoseconds-div-250
             per_vcpu_rng_source=scenario-seed-and-run-seed
-            per_vcpu_rng_timing_axis=node-icount
+            per_vcpu_rng_timing_axis=raw-retirement-rr-order
             vcpu_topology=fixed-at-genesis
             runtime_cpu_hotplug=false
             secondary_vcpu_bringup=rr-sim-tcg-icount-deterministic
@@ -415,7 +404,7 @@ in
             rejects_adaptive_rr_quantum=true
             rejects_realtime_switching=true
             scenario_hash_folds=smp_vcpus,rr_switch_quantum,rr_vcpu_rotation,cpu_model,per_vcpu_entropy,vcpu_topology
-            rust_test=crucible-qemu::deterministic_launch::multi_vcpu_round_robin_launch_is_pinned_validated_and_hashed
+            rust_test=crucible_qemu_host::deterministic_launch::multi_vcpu_round_robin_launch_is_pinned_validated_and_hashed
             RESULT
           '';
         }

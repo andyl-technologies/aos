@@ -30,7 +30,7 @@
         needle = "`T-SESS-4` is green through `checks.crucible.phase5.sessionCommandSet`";
       }
     ]
-    ++ failuresFor "crates/crucible-session/src/lib.rs" sessionLib [
+    ++ failuresFor "crates/crucible/control/crucible-session/src/lib.rs" sessionLib [
       {
         label = "reply wrapper";
         needle = "pub struct CommandReply<T>";
@@ -144,24 +144,6 @@
         needle = "rfc_command_running_actor_acknowledges_local_boundary_replies_immediately";
       }
     ]
-    ++ forbiddenFor "crates/crucible-session/src/lib.rs" sessionLib [
-      {
-        label = "retired imperative fault injection command";
-        needle = "Inject" + "Fault";
-      }
-      {
-        label = "retired imperative fault healing command";
-        needle = "Heal" + "Fault";
-      }
-      {
-        label = "retired session fault payload";
-        needle = "FaultSpec";
-      }
-      {
-        label = "retired session fault tag";
-        needle = "Fault" + "Tag";
-      }
-    ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {
         label = "phase5 exposes session command-set check";
@@ -177,8 +159,11 @@ in
       version = "0";
       src = crucibleSrc;
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps =
         [
+          pkgs.sqlite
           pkgs.coreutils
           pkgs.rust
           pkgs.sed

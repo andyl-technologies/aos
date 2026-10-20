@@ -1,5 +1,6 @@
 ##! moreutils — Additional Unix command-line tools
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -11,13 +12,85 @@
   perl-ipc-run,
   perl-timedate,
   perl-time-duration,
+  stdenv,
 }: let
   version = "0.70";
   modules = [perl-ipc-run perl-timedate perl-time-duration];
   modulePath = builtins.concatStringsSep " " (map (module: "${module}/lib/perl5") modules);
 in
   mkDerivation {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
     pname = "moreutils";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [
+          {
+            "path" = "answer.txt";
+            "text" = "answer=42\n";
+          }
+        ];
+        "expected" = "sponge writes the exact input after reaching end of stream.";
+        "files" = {};
+        "input" = "A fixed byte stream and an output pathname.";
+        "operation" = "Consume the stream into the file through sponge.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/sponge"
+              "answer.txt"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdin" = "answer=42\n";
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "sponge rejects the inaccessible destination with a non-success status.";
+        "files" = {};
+        "input" = "An output pathname beneath a directory that does not exist.";
+        "operation" = "Attempt to write the stream through sponge.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/sponge"
+              "missing-directory/answer.txt"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+            "stdin" = "answer=42\n";
+          }
+        ];
+      };
+    };
+
     inherit version;
     src = fetchurl {
       urls = ["https://deb.debian.org/debian/pool/main/m/moreutils/moreutils_${version}.orig.tar.xz"];
@@ -64,18 +137,29 @@ in
       }
       {
         name = "check";
-        script = ''make check'';
+        # The upstream check runs the target isutf8 executable.
+        script =
+          if stdenv.isCross
+          then ""
+          else ''make check'';
       }
       {
         name = "install";
-        script = ''
-          make install \
-            PREFIX="$out" \
-            INSTALL_BIN="install -m 0755"
-          printf 'input\n' | "$out/bin/sponge" /tmp/moreutils-sponge
-          grep -qx input /tmp/moreutils-sponge
-          printf 'test\n' | "$out/bin/ts" -s | grep -q test
-        '';
+        script =
+          ''
+            make install \
+              PREFIX="$out" \
+              INSTALL_BIN="install -m 0755"
+          ''
+          + (
+            if stdenv.isCross
+            then ""
+            else ''
+              printf 'input\n' | "$out/bin/sponge" /tmp/moreutils-sponge
+              grep -qx input /tmp/moreutils-sponge
+              printf 'test\n' | "$out/bin/ts" -s | grep -q test
+            ''
+          );
       }
     ];
     checks = {

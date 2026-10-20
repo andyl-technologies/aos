@@ -173,8 +173,102 @@ in
       dontPatchELF = true;
     }
     // {
+      platformSupport = {
+        build = [
+          {
+            abi = ["gnu"];
+            os = ["linux"];
+          }
+        ];
+        host = [
+          {
+            abi = ["gnu"];
+            cpu = ["x86_64"];
+            os = ["linux"];
+          }
+          {
+            abi = ["darwin"];
+            cpu = ["x86_64"];
+            os = ["darwin"];
+          }
+        ];
+        target = [
+          {
+            abi = ["gnu"];
+            cpu = ["x86_64"];
+            os = ["linux"];
+          }
+          {
+            abi = ["darwin"];
+            cpu = ["x86_64"];
+            os = ["darwin"];
+          }
+        ];
+        role = "public-package";
+      };
       pname = "openjdk-7";
-      version = icedteaVersion;
+      qualification.packageProbe = lib.qualification.commandProbe {
+        "primary" = {
+          "artifacts" = [];
+          "expected" = "The packaged toolchain produces runnable bytecode that prints 42.";
+          "files" = {
+            "Answer.java" = "public final class Answer {\n    public static void main(String[] arguments) {\n        System.out.println(19 + 23);\n    }\n}\n";
+          };
+          "input" = "A Java class that prints the sum of 19 and 23.";
+          "operation" = "Compile the class with javac and execute it with java.";
+          "steps" = [
+            {
+              "argv" = [
+                "@out@/bin/javac"
+                "Answer.java"
+              ];
+              "exit_code" = 0;
+              "stderr" = {
+                "exact" = "";
+              };
+              "stdout" = {
+                "exact" = "";
+              };
+            }
+            {
+              "argv" = [
+                "@out@/bin/java"
+                "-cp"
+                "."
+                "Answer"
+              ];
+              "exit_code" = 0;
+              "stderr" = {
+                "exact" = "";
+              };
+              "stdout" = {
+                "exact" = "42\n";
+              };
+            }
+          ];
+        };
+        "badInput" = {
+          "artifacts" = [];
+          "expected" = "javac rejects the source with its compilation-failure status.";
+          "files" = {
+            "Invalid.java" = "public final class Invalid {\n    public static int answer() { return; }\n}\n";
+          };
+          "input" = "A Java class whose return statement has no expression.";
+          "operation" = "Compile the malformed class with javac.";
+          "steps" = [
+            {
+              "argv" = [
+                "@out@/bin/javac"
+                "Invalid.java"
+              ];
+              "exit_code" = 1;
+              "observes_rejection" = true;
+            }
+          ];
+        };
+      };
+
+      version = "=${icedteaVersion}";
 
       src = icedteaSrc;
 
@@ -225,6 +319,10 @@ in
           cups
         ];
       propagatedDeps = [];
+
+      # Darwin's cross-build phases exceed Linux's per-argument size limit.
+      # Keep the complete script as a Nix input and execute it from the store.
+      passBuildScriptAsFile = isDarwinCross;
 
       phases = [
         {
@@ -2414,10 +2512,11 @@ in
                 -delete_rpath ${java-native-foundation}/lib \
                 -add_rpath @loader_path/../../../amd64/server \
                 "$bundledJnf"
-              ${buildTools.llvm}/bin/llvm-otool -l "$bundledJnf" \
-                | grep -q '@loader_path/../../../amd64/server'
-              ! ${buildTools.llvm}/bin/llvm-otool -l "$bundledJnf" \
-                | grep -Fq '${java-native-foundation}/lib'
+              # Early grep exits can abort LLVM and make the absence check pass.
+              ${buildTools.llvm}/bin/llvm-otool -l "$bundledJnf" > jnf-load-commands.txt
+
+              grep -Fq '@loader_path/../../../amd64/server' jnf-load-commands.txt
+              ! grep -Fq '${java-native-foundation}/lib' jnf-load-commands.txt
             ''
             else ''
               mkdir -p $out

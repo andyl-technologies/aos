@@ -7,7 +7,7 @@ The repository-wide [license map](../../legal/licensing.md) is authoritative.
 
 Requirement IDs in this file use the prefix `BOUND`. Every requirement is
 guarded by `gate:license-boundary`, an **Always** gate owned by
-`crucible-harness`; ABI-shape requirements are additionally guarded by
+`crucible-test-support`; ABI-shape requirements are additionally guarded by
 `gate:abi-conformance`.
 
 ## 37.1 Component and license map
@@ -26,8 +26,8 @@ Apache-2.0 host process                 QEMU process (applicable GPL scope)
 ```
 
 - **[BOUND-1]** Original host-side Crucible code MUST remain Apache-2.0 unless a
-  file carries a more specific license. `crucible-protocol` and
-  `crucible-shmem`, the reusable boundary components, MUST be licensed
+  file carries a more specific license. `crucible-qemu-protocol` and
+  `crucible-qemu-shmem`, the reusable boundary components, MUST be licensed
   `MIT OR Apache-2.0`. *Gate:* `gate:license-boundary`. *Spec:* §37.1.
 
 - **[BOUND-2]** `crucible-qemu-plugin`, every patch or new implementation loaded
@@ -84,7 +84,7 @@ existing race-free protocol exposes a reliable waiter state.
   `gate:license-boundary`, `gate:abi-conformance`. *Spec:* §37.2.
 
 - **[BOUND-7]** The normative field semantics, byte layout, ordering rules, and
-  compatibility policy MUST be public. Rust definitions may remain the
+  versioning policy MUST be public. Rust definitions may remain the
   mechanically checked source used to generate the C view, but no semantic
   contract may exist only in Rust or QEMU implementation internals. An
   independent peer built from the specification and golden vectors MUST be able
@@ -95,8 +95,8 @@ existing race-free protocol exposes a reliable waiter state.
 
 - **[BOUND-8]** Every incompatible control frame, shared-memory field, layout,
   atomic-ordering, or semantic change MUST bump the applicable ABI major version
-  and fail closed against the old peer. Compatible additions require an explicit
-  minor version or feature bit. The change MUST regenerate both language views
+  and fail closed against every noncurrent peer. Any addition requires an
+  explicit version or feature bit. The change MUST regenerate both language views
   and golden vectors. *Gate:* `gate:license-boundary`,
   `gate:abi-conformance`. *Spec:* §37.3.
 

@@ -8,7 +8,7 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   cliMain = import ./_cli-source.nix {inherit lib;};
-  cliManifest = builtins.readFile ../../crates/crucible-cli/Cargo.toml;
+  cliManifest = builtins.readFile ../../crates/crucible/control/crucible-cli/Cargo.toml;
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -21,13 +21,13 @@
         needle = "Completed by `checks.crucible.phase5.cliSkeleton`";
       }
     ]
-    ++ failuresFor "crates/crucible-cli/Cargo.toml" cliManifest [
+    ++ failuresFor "crates/crucible/control/crucible-cli/Cargo.toml" cliManifest [
       {
         label = "clap dependency";
         needle = "clap = { workspace = true }";
       }
     ]
-    ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
+    ++ failuresFor "crates/crucible/control/crucible-cli/src/main.rs" cliMain [
       {
         label = "derive parser";
         needle = "#[derive(Parser";
@@ -77,10 +77,6 @@
         needle = "Resume(ResumeArgs)";
       }
       {
-        label = "closed fork subcommand";
-        needle = "Fork(ForkArgs)";
-      }
-      {
         label = "closed replay subcommand";
         needle = "Replay(ReplayArgs)";
       }
@@ -94,7 +90,7 @@
       }
       {
         label = "closed triage subcommand";
-        needle = "Triage(TriageArgs)";
+        needle = "Triage(CampaignTriageRouteArgs)";
       }
       {
         label = "closed debug subcommand";
@@ -134,12 +130,17 @@ in
     pkgs.mkDerivation {
       pname = "crucible-phase5-cli-skeleton";
       version = "0";
+      LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
+      runtimeDeps = [pkgs.sqlite];
       src = crucibleSrc;
 
       buildDeps = [
         pkgs.coreutils
         pkgs.rust
         pkgs.sed
+
+        pkgs.pkg-config
+        pkgs.sqlite
       ];
 
       phases = [
@@ -196,7 +197,7 @@ in
             tasks=${builtins.concatStringsSep "," taskIds}
             component=crucible-cli
             parser=clap-derive
-            subcommands=run,verify,selftest,save,resume,fork,replay,search,fuzz,triage,debug,serve,completions
+            subcommands=run,verify,selftest,save,resume,replay,search,fuzz,triage,debug,serve,campaign,store,completions
             globals=seed,backend,daemon,qemu,plugin,store,format,trace,artifact-dir,verbose,quiet
             RESULT
           '';

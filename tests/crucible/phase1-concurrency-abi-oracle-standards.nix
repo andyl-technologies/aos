@@ -2,9 +2,10 @@
   pkgs,
   lib,
 }: let
+  inherit (import ./_workspace-packages.nix {inherit lib;}) packageDir packageNames cruciblePackages;
   cratesDir = ../../crates;
-  standardsRust = builtins.readFile ../../crates/crucible-harness/tests/concurrency_abi_oracle_standards.rs;
-  standardsSupport = builtins.readFile ../../crates/crucible-harness/tests/support/concurrency_abi_oracle_standards.rs;
+  standardsRust = builtins.readFile ../../crates/crucible/testing/crucible-test-support/tests/concurrency_abi_oracle_standards.rs;
+  standardsSupport = builtins.readFile ../../crates/crucible/testing/crucible-test-support/tests/support/concurrency_abi_oracle_standards.rs;
   standardsCode = standardsRust + "\n" + standardsSupport;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix;
@@ -15,274 +16,50 @@
   # string forced after every chunk. A whole-file per-character fold builds a
   # haystack-deep chain of unforced `+` thunks and overflows the evaluator
   # stack on large sources.
-  scrubCommentsAndStrings = content: let
-    scrubChunk = chunkState: chunk: let
-      length = builtins.stringLength chunk;
-      charAt = index: builtins.substring index 1 chunk;
-      indexes = builtins.genList (index: index) length;
-      folded = builtins.foldl' step chunkState indexes;
-      step = state: index:
-        if state.skip
-        then
-          state
-          // {
-            skip = false;
-          }
-        else let
-          ch = charAt index;
-          next =
-            if (index + 1) < length
-            then charAt (index + 1)
-            else "";
-        in
-          if state.mode == "code"
-          then
-            if ch == "/" && next == "/"
-            then
-              state
-              // {
-                out = state.out + "  ";
-                mode = "line";
-                skip = true;
-              }
-            else if ch == "/" && next == "*"
-            then
-              state
-              // {
-                out = state.out + "  ";
-                mode = "block";
-                depth = 1;
-                skip = true;
-              }
-            else if ch == "\""
-            then
-              state
-              // {
-                out = state.out + " ";
-                mode = "string";
-              }
-            else
-              state
-              // {
-                out = state.out + ch;
-              }
-          else if state.mode == "line"
-          then
-            if ch == "\n"
-            then
-              state
-              // {
-                out = state.out + "\n";
-                mode = "code";
-              }
-            else
-              state
-              // {
-                out = state.out + " ";
-              }
-          else if state.mode == "block"
-          then
-            if ch == "/" && next == "*"
-            then
-              state
-              // {
-                out = state.out + "  ";
-                depth = state.depth + 1;
-                skip = true;
-              }
-            else if ch == "*" && next == "/"
-            then
-              state
-              // {
-                out = state.out + "  ";
-                mode =
-                  if state.depth == 1
-                  then "code"
-                  else "block";
-                depth =
-                  if state.depth == 1
-                  then 0
-                  else state.depth - 1;
-                skip = true;
-              }
-            else
-              state
-              // {
-                out =
-                  state.out
-                  + (
-                    if ch == "\n"
-                    then "\n"
-                    else " "
-                  );
-              }
-          else if ch == "\\" && next != ""
-          then
-            state
-            // {
-              out =
-                state.out
-                + " "
-                + (
-                  if next == "\n"
-                  then "\n"
-                  else " "
-                );
-              skip = true;
-            }
-          else if ch == "\""
-          then
-            state
-            // {
-              out = state.out + " ";
-              mode = "code";
-            }
-          else
-            state
-            // {
-              out =
-                state.out
-                + (
-                  if ch == "\n"
-                  then "\n"
-                  else " "
-                );
-            };
-    in
-      # Force the accumulated output flat before the next chunk so thunk
-      # depth stays bounded by the longest line, not the whole file.
-      builtins.seq (builtins.stringLength folded.out) folded;
-    lines = lib.splitString "\n" content;
-    lineCount = builtins.length lines;
-    chunkAt = index:
-      builtins.elemAt lines index
-      + (
-        if index + 1 < lineCount
-        then "\n"
-        else ""
-      );
-    result =
-      builtins.foldl'
-      (state: index: scrubChunk state (chunkAt index))
-      {
-        out = "";
-        mode = "code";
-        depth = 0;
-        skip = false;
-      }
-      (builtins.genList (index: index) lineCount);
-  in
-    result.out;
-
-  lowerAscii = value:
-    builtins.replaceStrings
-    [
-      "A"
-      "B"
-      "C"
-      "D"
-      "E"
-      "F"
-      "G"
-      "H"
-      "I"
-      "J"
-      "K"
-      "L"
-      "M"
-      "N"
-      "O"
-      "P"
-      "Q"
-      "R"
-      "S"
-      "T"
-      "U"
-      "V"
-      "W"
-      "X"
-      "Y"
-      "Z"
-    ]
-    [
-      "a"
-      "b"
-      "c"
-      "d"
-      "e"
-      "f"
-      "g"
-      "h"
-      "i"
-      "j"
-      "k"
-      "l"
-      "m"
-      "n"
-      "o"
-      "p"
-      "q"
-      "r"
-      "s"
-      "t"
-      "u"
-      "v"
-      "w"
-      "x"
-      "y"
-      "z"
-    ]
-    value;
+  scrubCommentsAndStrings = import ./_rust-scrub.nix {inherit lib;};
 
   targets = [
     {
       gate = "gate:abi-conformance";
-      package = "crucible-harness";
+      package = "crucible-test-support";
       testTarget = "gate_abi_conformance";
       requiredFeatures = [];
-      placeholder = true;
     }
     {
       gate = "gate:abi-conformance";
-      package = "crucible-shmem";
+      package = "crucible-qemu-shmem";
       testTarget = "gate_abi_conformance";
       requiredFeatures = [];
-      placeholder = true;
     }
     {
       gate = "gate:layer1-injection";
-      package = "crucible-shmem";
+      package = "crucible-qemu-shmem";
       testTarget = "gate_layer1_injection";
       requiredFeatures = [];
-      placeholder = false;
     }
     {
       gate = "gate:abi-conformance";
-      package = "crucible-protocol";
+      package = "crucible-qemu-protocol";
       testTarget = "gate_abi_conformance";
       requiredFeatures = [];
-      placeholder = true;
     }
     {
       gate = "gate:abi-conformance";
-      package = "crucible-api";
+      package = "crucible-control-api";
       testTarget = "gate_abi_conformance";
       requiredFeatures = [];
-      placeholder = true;
     }
     {
       gate = "gate:layer1-injection";
       package = "crucible-device";
       testTarget = "gate_layer1_injection";
       requiredFeatures = [];
-      placeholder = false;
     }
     {
       gate = "gate:replay-oracle";
-      package = "crucible";
+      package = "crucible-engine";
       testTarget = "gate_replay_oracle";
       requiredFeatures = ["test-double"];
-      placeholder = false;
     }
   ];
 
@@ -294,42 +71,6 @@
     "FifoOrder"
     "FullEmpty"
     "Wraparound"
-  ];
-
-  concurrentSourceContextMarkers = [
-    "spsc"
-    "ring"
-    "queue"
-    "lockfree"
-    "lock-free"
-    "atomic"
-  ];
-
-  atomicPrimitiveMarkers = [
-    "Atomic"
-    "core::sync::atomic"
-    "std::sync::atomic"
-    "compare_exchange"
-    "fetch_add"
-    "fetch_sub"
-    "fetch_or"
-    "fetch_and"
-    "fetch_xor"
-    "fetch_update"
-  ];
-
-  contextualAtomicMarkers = [
-    "Ordering::"
-    ".load("
-    ".store("
-    ".swap("
-  ];
-
-  unsafePrimitiveMarkers = [
-    "unsafe {"
-    "unsafe fn"
-    "unsafe impl"
-    "unsafe extern"
   ];
 
   abiMarkers = [
@@ -386,7 +127,7 @@
     {
       id = "all-boundary-abi-conformance";
       gate = "gate:abi-conformance";
-      package = "crucible-harness";
+      package = "crucible-test-support";
       testTarget = "gate_abi_conformance";
       requiredFeatures = [];
       kind = "boundary-abi";
@@ -395,7 +136,7 @@
     {
       id = "spsc-ring-concurrency";
       gate = "gate:layer1-injection";
-      package = "crucible-shmem";
+      package = "crucible-qemu-shmem";
       testTarget = "gate_layer1_injection";
       requiredFeatures = [];
       kind = "spsc-concurrency";
@@ -404,7 +145,7 @@
     {
       id = "shmem-layout-abi";
       gate = "gate:abi-conformance";
-      package = "crucible-shmem";
+      package = "crucible-qemu-shmem";
       testTarget = "gate_abi_conformance";
       requiredFeatures = [];
       kind = "boundary-abi";
@@ -413,7 +154,7 @@
     {
       id = "guest-host-protocol-abi";
       gate = "gate:abi-conformance";
-      package = "crucible-protocol";
+      package = "crucible-qemu-protocol";
       testTarget = "gate_abi_conformance";
       requiredFeatures = [];
       kind = "boundary-abi";
@@ -422,7 +163,7 @@
     {
       id = "control-plane-rpc-abi";
       gate = "gate:abi-conformance";
-      package = "crucible-api";
+      package = "crucible-control-api";
       testTarget = "gate_abi_conformance";
       requiredFeatures = [];
       kind = "boundary-abi";
@@ -431,7 +172,7 @@
     {
       id = "protocol-codec-fuzzing";
       gate = "gate:abi-conformance";
-      package = "crucible-protocol";
+      package = "crucible-qemu-protocol";
       testTarget = "gate_abi_conformance";
       requiredFeatures = [];
       kind = "wire-fuzzing";
@@ -449,7 +190,7 @@
     {
       id = "replay-oracle-fixed-corpus";
       gate = "gate:replay-oracle";
-      package = "crucible";
+      package = "crucible-engine";
       testTarget = "gate_replay_oracle";
       requiredFeatures = ["test-double"];
       kind = "replay-oracle";
@@ -468,12 +209,30 @@
     then null
     else builtins.head matches;
 
-  sourceFor = target: let
-    path = cratesDir + "/${target.package}/tests/${target.testTarget}.rs";
+  rustSourcePaths = dir: let
+    entries =
+      if builtins.pathExists dir
+      then builtins.readDir dir
+      else {};
   in
-    if builtins.pathExists path
-    then builtins.readFile path
-    else "";
+    lib.concatMap (
+      name: let
+        path = dir + "/${name}";
+        kind = entries.${name};
+      in
+        if kind == "directory"
+        then rustSourcePaths path
+        else if kind == "regular" && lib.hasSuffix ".rs" name
+        then [path]
+        else []
+    ) (lib.sort builtins.lessThan (builtins.attrNames entries));
+
+  sourceFor = target: let
+    path = packageDir target.package + "/tests/${target.testTarget}.rs";
+    moduleDir = packageDir target.package + "/tests/${target.testTarget}";
+    paths = lib.optionals (builtins.pathExists path) [path] ++ rustSourcePaths moduleDir;
+  in
+    builtins.concatStringsSep "\n" (map builtins.readFile paths);
 
   targetStandardFailures = standard: target:
     lib.optionals (target.gate != standard.gate) [
@@ -486,69 +245,13 @@
   bodyMarkerFailures = standard: target: content: let
     code = scrubCommentsAndStrings content;
   in
-    lib.optionals (!target.placeholder) (
-      lib.concatMap (
-        marker:
-          lib.optionals (!(hasInfix marker code)) [
-            "${target.package}:${target.testTarget} must check ${marker} for ${standard.id}"
-          ]
-      )
-      standard.requiredMarkers
-    );
-
-  rustSources = dir: displayPrefix: let
-    entries =
-      if builtins.pathExists dir
-      then builtins.readDir dir
-      else {};
-  in
     lib.concatMap (
-      name: let
-        path = dir + "/${name}";
-        display = "${displayPrefix}/${name}";
-        kind = entries.${name};
-      in
-        if kind == "directory"
-        then rustSources path display
-        else if kind == "regular" && lib.hasSuffix ".rs" name
-        then [
-          {
-            inherit path display;
-            fileName = name;
-          }
+      marker:
+        lib.optionals (!(hasInfix marker code)) [
+          "${target.package}:${target.testTarget} must check ${marker} for ${standard.id}"
         ]
-        else []
-    ) (lib.sort builtins.lessThan (builtins.attrNames entries));
-
-  concurrentPrimitiveBeforeModelFailures = sourceLabel: fileName: content: placeholder: let
-    code = scrubCommentsAndStrings content;
-    lowerName = lowerAscii fileName;
-    lowerCode = lowerAscii code;
-    hasContext =
-      builtins.any (
-        marker: hasInfix marker lowerName || hasInfix marker lowerCode
-      )
-      concurrentSourceContextMarkers;
-    hasAtomic = builtins.any (marker: hasInfix marker code) atomicPrimitiveMarkers;
-    hasContextualAtomic = builtins.any (marker: hasInfix marker code) contextualAtomicMarkers;
-    hasUnsafe = builtins.any (marker: hasInfix marker code) unsafePrimitiveMarkers;
-  in
-    lib.optionals (placeholder && (hasAtomic || (hasContext && (hasContextualAtomic || hasUnsafe)))) [
-      "${sourceLabel}: concurrent shmem primitive cannot land before the exhaustive-ordering gate body"
-    ];
-
-  spscTarget = targetFor {
-    package = "crucible-shmem";
-    testTarget = "gate_layer1_injection";
-  };
-  spscPlaceholder =
-    if spscTarget == null
-    then false
-    else spscTarget.placeholder;
-  shmemConcurrentPrimitiveFailures = lib.concatMap (
-    source:
-      concurrentPrimitiveBeforeModelFailures "crates/crucible-shmem/src/${source.display}" source.fileName (builtins.readFile source.path) spscPlaceholder
-  ) (rustSources (cratesDir + "/crucible-shmem/src") "src");
+    )
+    standard.requiredMarkers;
 
   standardFailures =
     lib.concatMap (
@@ -567,8 +270,8 @@
 
   abiOwners =
     lib.sort builtins.lessThan (map (target: target.package) (builtins.filter (target: target.gate == "gate:abi-conformance") targets));
-  expectedAbiOwners = ["crucible-api" "crucible-harness" "crucible-protocol" "crucible-shmem"];
-  abiOwnerFailures = lib.optionals (abiOwners != expectedAbiOwners) [
+  expectedAbiOwners = ["crucible-control-api" "crucible-test-support" "crucible-qemu-protocol" "crucible-qemu-shmem"];
+  abiOwnerFailures = lib.optionals (abiOwners != lib.sort builtins.lessThan expectedAbiOwners) [
     "gate:abi-conformance owner package mismatch: expected [${builtins.concatStringsSep ", " expectedAbiOwners}], found [${builtins.concatStringsSep ", " abiOwners}]"
   ];
 
@@ -586,14 +289,10 @@
     "SPSC_RING_MARKERS"
     "ABI_MARKERS"
     "HARNESS_ABI_MARKERS"
-    "CONCURRENT_SOURCE_CONTEXT_MARKERS"
-    "ATOMIC_PRIMITIVE_MARKERS"
-    "concurrent_primitive_before_model_failures"
     "PROTOCOL_CODEC_FUZZ_MARKERS"
     "DEVICE_INJECTION_MARKERS"
     "REPLAY_ORACLE_MARKERS"
     "advanced_standard_regression_failures"
-    "spsc_ring_unsafe_without_model_failures"
     "assert_spsc_ring_exhaustive_ordering_model("
     "assert_spsc_ring_exhaustive_trace_properties("
     "assert_frozen_golden_vectors("
@@ -606,7 +305,7 @@
     lib.concatMap (
       required:
         lib.optionals (!(hasInfix required standardsCode)) [
-          "crates/crucible-harness/tests/concurrency_abi_oracle_standards.rs: missing advanced-standard wiring `${required}`"
+          "crates/crucible/testing/crucible-test-support/tests/concurrency_abi_oracle_standards.rs: missing advanced-standard wiring `${required}`"
         ]
     )
     requiredRustText;
@@ -614,10 +313,9 @@
   regressionFailures = let
     badTarget = {
       gate = "gate:abi-conformance";
-      package = "crucible-shmem";
+      package = "crucible-qemu-shmem";
       testTarget = "gate_abi_conformance";
       requiredFeatures = [];
-      placeholder = false;
     };
     spscStandard = builtins.elemAt standards 1;
     replayStandard = builtins.elemAt standards 7;
@@ -630,19 +328,10 @@
       ''
       ++ targetStandardFailures replayStandard {
         gate = "gate:replay-oracle";
-        package = "crucible";
+        package = "crucible-engine";
         testTarget = "gate_replay_oracle";
         requiredFeatures = [];
-        placeholder = true;
-      }
-      ++ concurrentPrimitiveBeforeModelFailures "crates/crucible-shmem/src/ring.rs" "ring.rs" ''
-        use core::sync::atomic::{AtomicUsize, Ordering};
-
-        fn publish(head: &AtomicUsize) {
-          head.store(1, Ordering::Release);
-        }
-      ''
-      true;
+      };
     hasFinding = needle: builtins.any (finding: hasInfix needle finding) findings;
   in
     lib.optionals (!(hasFinding "must check assert_spsc_ring_exhaustive_ordering_model(")) [
@@ -650,16 +339,12 @@
     ]
     ++ lib.optionals (!(hasFinding "features [test-double]")) [
       "advanced-test regression failed to reject missing replay-oracle feature"
-    ]
-    ++ lib.optionals (!(hasFinding "concurrent shmem primitive")) [
-      "advanced-test regression failed to reject atomics before SPSC model coverage"
     ];
 
   failures =
     standardFailures
     ++ abiOwnerFailures
     ++ boundaryAbiFailures
-    ++ shmemConcurrentPrimitiveFailures
     ++ rustHarnessFailures
     ++ regressionFailures;
 in

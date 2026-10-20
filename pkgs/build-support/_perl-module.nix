@@ -1,9 +1,11 @@
 ##! Shared builder for pure-Perl CPAN modules.
 {
   mkDerivation,
+  buildPackages,
   perl,
 }: {
   pname,
+  platformSupport,
   version,
   src,
   sourceRoot,
@@ -13,15 +15,27 @@
   description,
   homepage,
   license,
+  qualification ? null,
 }: let
+  mkQualifiedDerivation = attrs:
+    mkDerivation (attrs
+      // (
+        if qualification == null
+        then {}
+        else {inherit qualification;}
+      ));
   runtimeClosure = [perl] ++ dependencies;
-  dependencyPath = builtins.concatStringsSep ":" (map (dependency: "${dependency}/lib/perl5") dependencies);
+  # The Linux builder cannot execute target Perl or load target XS extensions.
+  # Validate against native counterparts while retaining target dependencies.
+  buildPerl = buildPackages.perl;
+  validationDependencies = map (dependency: buildPackages.${dependency.pname}) dependencies;
+  validationPath = builtins.concatStringsSep ":" (map (dependency: "${dependency}/lib/perl5") validationDependencies);
   runtimeClosureManifest = builtins.concatStringsSep "\n" (map builtins.toString runtimeClosure);
 in
-  mkDerivation {
-    inherit pname version src;
+  mkQualifiedDerivation {
+    inherit pname version src platformSupport;
 
-    buildDeps = [perl];
+    buildDeps = [buildPerl] ++ validationDependencies;
     runtimeDeps = runtimeClosure;
     propagatedDeps = dependencies;
 
@@ -47,8 +61,8 @@ in
           ${runtimeClosureManifest}
           EOF
 
-          PERL5LIB="$out/lib/perl5:${dependencyPath}" \
-            ${perl}/bin/perl -M${module} -e 1
+          PERL5LIB="$out/lib/perl5:${validationPath}" \
+            ${buildPerl}/bin/perl -M${module} -e 1
         '';
       }
     ];

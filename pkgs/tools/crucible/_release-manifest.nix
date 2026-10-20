@@ -13,10 +13,17 @@
 }: let
   packages = import ./_packages.nix;
   crateRoot = ../../../crates;
-  shmemLib = builtins.readFile (crateRoot + "/crucible-shmem/src/lib.rs");
-  protocolLib = builtins.readFile (crateRoot + "/crucible-protocol/src/lib.rs");
-  doorbellAbi = builtins.readFile (crateRoot + "/crucible-protocol/src/doorbell_abi.rs");
-  apiRpcAbi = builtins.readFile (crateRoot + "/crucible-api/src/rpc_abi.rs");
+  workspaceMembers = (builtins.fromTOML (builtins.readFile (crateRoot + "/Cargo.toml"))).workspace.members;
+  packageManifests = builtins.listToAttrs (map (member: let
+      manifest = builtins.fromTOML (builtins.readFile (crateRoot + "/${member}/Cargo.toml"));
+    in {
+      name = manifest.package.name;
+      value = manifest;
+    })
+    workspaceMembers);
+  shmemLib = builtins.readFile (crateRoot + "/crucible/protocol/crucible-qemu-shmem/src/lib.rs");
+  doorbellAbi = builtins.readFile (crateRoot + "/crucible/protocol/crucible-qemu-protocol/src/doorbell_abi.rs");
+  apiRpcAbi = builtins.readFile (crateRoot + "/crucible/control/crucible-control-api/src/rpc_abi.rs");
   firstLineWith = label: prefix: content: let
     matches = builtins.filter (line: lib.hasPrefix prefix line) (lib.splitString "\n" content);
   in
@@ -32,11 +39,7 @@
   tomlStringConst = label: prefix: content:
     lib.removeSuffix "\""
     (lib.removePrefix prefix (firstLineWith label prefix content));
-  packageVersion = package:
-    tomlStringConst
-    "crate ${package} version"
-    "version = \""
-    (builtins.readFile (crateRoot + "/${package}/Cargo.toml"));
+  packageVersion = package: packageManifests.${package}.package.version;
   packageVersions =
     builtins.listToAttrs
     (map (package: {
@@ -52,13 +55,9 @@
     else if builtins.isAttrs package && !(package ? outPath)
     then "metadata-probe"
     else toString package;
-  qemuSeries = qemuPassthru.series;
+  atomicPatch = qemuPassthru.atomicPatch;
   shmemAbiVersion = sourceConst "shmem ABI version" "pub const ABI_VERSION: u32 = " shmemLib;
-  guestHostProtocolVersion =
-    sourceConst
-    "guest-host protocol version"
-    "pub const CONTROL_PROTOCOL_VERSION: u32 = "
-    protocolLib;
+  guestHostProtocolVersion = import ./_control-protocol-version.nix {};
   doorbellInstructionAbiVersion =
     sourceConst
     "doorbell instruction ABI version"
@@ -79,7 +78,7 @@
     "qemu_source_hash"
     "qemu_nix_hash"
     "qemu_configure_flags_hash"
-    "qemu_patch_series_hash"
+    "qemu_atomic_patch_hash"
     "qemu_patch_branch_bundle_hash"
     "qemu_patch_branch_material_hash"
     "qemu_shmem_abi_version"
@@ -93,28 +92,29 @@
       workspacePackageVersions = packageVersions;
       cargoDeps = {
         kind = "fetchCargoVendor";
-        sourceRoot = "source/crates";
+        sourceRoot = "source";
         hash = cargoDepsHash;
         vendored = true;
       };
       source = {
         rootName = "crucible-workspace-src";
         inherit sourceStoreName sourceStoreHash;
-        excludedPathBasenames = [".git" "target" "result"];
+        excludedPathBasenames = [".git" "target"];
+        excludedRootPaths = ["result"];
       };
     };
     qemu = {
       package = "qemu-crucible";
-      version = qemuSeries.qemuVersion;
-      sourceUrl = qemuSeries.qemuSourceUrl;
-      sourceHash = qemuSeries.qemuSourceHash;
-      patchBranchRef = qemuSeries.patchBranchRef;
-      patchSeriesHash = qemuPassthru.patchSeriesHash;
+      version = atomicPatch.qemuVersion;
+      sourceUrl = atomicPatch.qemuSourceUrl;
+      sourceHash = atomicPatch.qemuSourceHash;
+      patchBranchRef = atomicPatch.branchRef;
+      atomicPatchHash = qemuPassthru.atomicPatchHash;
       patchBranchBundleHash = qemuPassthru.patchBranchBundleHash;
       patchBranchMaterialHash = qemuPassthru.patchBranchMaterialHash;
       buildId = qemuPassthru.qemuBuildIdentity;
-      deterministicBaseDate = qemuSeries.deterministicBaseDate;
-      deterministicPatchDate = qemuSeries.deterministicPatchDate;
+      deterministicBaseDate = atomicPatch.deterministicBaseDate;
+      deterministicPatchDate = atomicPatch.deterministicPatchDate;
     };
     components = {
       controller = {
@@ -160,7 +160,7 @@
         boundary = "operator-guest-bridge-client";
       };
       boundaryCrates = {
-        packages = ["crucible-protocol" "crucible-shmem"];
+        packages = ["crucible-qemu-protocol" "crucible-qemu-shmem"];
         license = "MIT";
         selection = "gpl-plugin-consumption";
       };
@@ -214,7 +214,7 @@
         "crucible.cargoDeps.hash"
         "crucible.source.sourceStoreHash"
         "qemu.sourceHash"
-        "qemu.patchSeriesHash"
+        "qemu.atomicPatchHash"
         "qemu.patchBranchBundleHash"
         "qemu.patchBranchMaterialHash"
         "abi.shmem.generatedHeaderHash"
@@ -227,7 +227,7 @@
     crucible_version=${version}
     crucible_workspace_packages=${builtins.concatStringsSep "," packages}
     cargo_deps=fetchCargoVendor
-    cargo_deps_source_root=source/crates
+    cargo_deps_source_root=source
     cargo_deps_hash=${cargoDepsHash}
     cargo_deps_vendored=true
     crucible_source_store_name=${sourceStoreName}
@@ -237,7 +237,7 @@
     qemu_source_url=${manifest.qemu.sourceUrl}
     qemu_source_hash=${manifest.qemu.sourceHash}
     qemu_patch_branch_ref=${manifest.qemu.patchBranchRef}
-    qemu_patch_series_hash=${manifest.qemu.patchSeriesHash}
+    qemu_atomic_patch_hash=${manifest.qemu.atomicPatchHash}
     qemu_patch_branch_bundle_hash=${manifest.qemu.patchBranchBundleHash}
     qemu_patch_branch_material_hash=${manifest.qemu.patchBranchMaterialHash}
     qemu_build_id=${manifest.qemu.buildId}
@@ -267,7 +267,7 @@
     ssh_path=${manifest.components.ssh.path}
     ssh_license=BSD-2-Clause
     ssh_boundary=operator-guest-bridge-client
-    boundary_crates=crucible-protocol,crucible-shmem
+    boundary_crates=crucible-qemu-protocol,crucible-qemu-shmem
     boundary_crates_license=MIT
     qemu_corresponding_source_package=qemu-crucible-source
     qemu_corresponding_source_path=${manifest.components.correspondingSource.path}

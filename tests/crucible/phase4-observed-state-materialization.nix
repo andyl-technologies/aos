@@ -9,9 +9,12 @@
 
   trigger = import ./_crucible-trigger-source.nix {inherit lib;};
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
-  crateRoot = builtins.readFile ../../crates/crucible/src/lib.rs;
-  observedStateTest = builtins.readFile ../../crates/crucible/tests/observed_state_materialization.rs;
-  deterministicConditionTest = builtins.readFile ../../crates/crucible/tests/deterministic_condition_evaluation.rs;
+  crateRoot = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/engine/crucible-engine/src/lib.rs;
+  };
+  observedStateTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/observed_state_materialization.rs;
+  deterministicConditionTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/deterministic_condition_evaluation.rs;
   assertionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/18-assertions-properties.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -23,164 +26,7 @@
   # string forced after every chunk. A whole-file per-character fold builds a
   # haystack-deep chain of unforced `+` thunks and overflows the evaluator
   # stack on large sources.
-  scrubCommentsAndStrings = content: let
-    scrubChunk = chunkState: chunk: let
-      length = builtins.stringLength chunk;
-      charAt = index: builtins.substring index 1 chunk;
-      indexes = builtins.genList (index: index) length;
-      folded = builtins.foldl' step chunkState indexes;
-      step = state: index:
-        if state.skip
-        then
-          state
-          // {
-            skip = false;
-          }
-        else let
-          ch = charAt index;
-          next =
-            if (index + 1) < length
-            then charAt (index + 1)
-            else "";
-        in
-          if state.mode == "code"
-          then
-            if ch == "/" && next == "/"
-            then
-              state
-              // {
-                out = state.out + "  ";
-                mode = "line";
-                skip = true;
-              }
-            else if ch == "/" && next == "*"
-            then
-              state
-              // {
-                out = state.out + "  ";
-                mode = "block";
-                depth = 1;
-                skip = true;
-              }
-            else if ch == "\""
-            then
-              state
-              // {
-                out = state.out + " ";
-                mode = "string";
-              }
-            else
-              state
-              // {
-                out = state.out + ch;
-              }
-          else if state.mode == "line"
-          then
-            if ch == "\n"
-            then
-              state
-              // {
-                out = state.out + "\n";
-                mode = "code";
-              }
-            else
-              state
-              // {
-                out = state.out + " ";
-              }
-          else if state.mode == "block"
-          then
-            if ch == "/" && next == "*"
-            then
-              state
-              // {
-                out = state.out + "  ";
-                depth = state.depth + 1;
-                skip = true;
-              }
-            else if ch == "*" && next == "/"
-            then
-              state
-              // {
-                out = state.out + "  ";
-                mode =
-                  if state.depth == 1
-                  then "code"
-                  else "block";
-                depth =
-                  if state.depth == 1
-                  then 0
-                  else state.depth - 1;
-                skip = true;
-              }
-            else
-              state
-              // {
-                out =
-                  state.out
-                  + (
-                    if ch == "\n"
-                    then "\n"
-                    else " "
-                  );
-              }
-          else if ch == "\\" && next != ""
-          then
-            state
-            // {
-              out =
-                state.out
-                + " "
-                + (
-                  if next == "\n"
-                  then "\n"
-                  else " "
-                );
-              skip = true;
-            }
-          else if ch == "\""
-          then
-            state
-            // {
-              out = state.out + " ";
-              mode = "code";
-            }
-          else
-            state
-            // {
-              out =
-                state.out
-                + (
-                  if ch == "\n"
-                  then "\n"
-                  else " "
-                );
-            };
-    in
-      # Force the accumulated output flat before the next chunk so thunk
-      # depth stays bounded by the longest line, not the whole file.
-      builtins.seq (builtins.stringLength folded.out) folded;
-    lines = lib.splitString "\n" content;
-    lineCount = builtins.length lines;
-    chunkAt = index:
-      builtins.elemAt lines index
-      + (
-        if index + 1 < lineCount
-        then "\n"
-        else ""
-      );
-    result =
-      builtins.foldl'
-      (state: index: scrubChunk state (chunkAt index))
-      {
-        out = "";
-        mode = "code";
-        depth = 0;
-        skip = false;
-      }
-      (builtins.genList (index: index) lineCount);
-  in
-    result.out;
+  scrubCommentsAndStrings = import ./_rust-scrub.nix {inherit lib;};
 
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
@@ -190,7 +36,7 @@
         needle = "Completed by `checks.crucible.phase4.observedStateMaterialization`";
       }
     ]
-    ++ failuresFor "crates/crucible/src/trigger.rs" trigger [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/trigger.rs" trigger [
       {
         label = "observed state view";
         needle = "pub struct ObservedState<'log>";
@@ -208,16 +54,16 @@
         needle = "pub fn ordering_facts(self) -> &'log [ObservedOrderingFact]";
       }
       {
-        label = "fault facts view";
-        needle = "pub fn fault_facts(self) -> &'log [ObservedFaultFact]";
+        label = "typed fault evidence folded separately";
+        needle = "SchedulerEventLogPayload::FaultObservation(_)";
       }
       {
         label = "ordering fact enum";
         needle = "pub enum ObservedOrderingFact";
       }
       {
-        label = "fault fact enum";
-        needle = "pub enum ObservedFaultFact";
+        label = "private observed-state storage";
+        needle = "pub(super) observable_events:";
       }
       {
         label = "checked prefix constructor";
@@ -264,21 +110,17 @@
         needle = "Decision::Preemption(_)";
       }
       {
-        label = "ignored app-random decision";
-        needle = "Decision::AppRandom(_)";
-      }
-      {
         label = "evaluation pass exposes observed state";
         needle = "pub fn observed_state(&self) -> ObservedState<'_>";
       }
     ]
-    ++ failuresFor "crates/crucible/src/scheduler.rs" scheduler [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/scheduler.rs" scheduler [
       {
         label = "test-only typed event-log constructor";
         needle = "pub(crate) fn with_payload_for_test";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" crateRoot [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" crateRoot [
       {
         label = "observed state export";
         needle = "ObservedState";
@@ -288,15 +130,19 @@
         needle = "ObservedOrderingFact";
       }
       {
-        label = "observed fault fact export";
-        needle = "ObservedFaultFact";
+        label = "checked prefix export";
+        needle = "ConditionEventLogPrefix";
       }
       {
         label = "test typed payload constructor";
         needle = "condition_payload_entry_for_test";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/observed_state_materialization.rs" observedStateTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/observed_state_materialization.rs" observedStateTest [
+      {
+        label = "internal fault evidence does not enter assertion state";
+        needle = "fault_evidence_does_not_expose_internal_state_to_assertion_predicates";
+      }
       {
         label = "checked prefix materialization test";
         needle = "observed_state_materializes_only_checked_event_log_prefix";
@@ -322,15 +168,11 @@
         needle = "Decision::Preemption";
       }
       {
-        label = "app random ignored by observed state";
-        needle = "Decision::AppRandom";
-      }
-      {
         label = "checked future rejection";
         needle = "ConditionEvaluationError::FutureEventLogEntry";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/deterministic_condition_evaluation.rs" deterministicConditionTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/deterministic_condition_evaluation.rs" deterministicConditionTest [
       {
         label = "existing prefix-event-only regression";
         needle = "condition_evaluation_uses_checked_prefix_events_only";
@@ -346,7 +188,7 @@
         needle = "attrPath = \"checks.crucible.phase4.observedStateMaterialization\"";
       }
     ]
-    ++ forbiddenFor "crates/crucible/src/trigger.rs" (scrubCommentsAndStrings trigger) [
+    ++ forbiddenFor "crates/crucible/engine/crucible-engine/src/trigger.rs" (scrubCommentsAndStrings trigger) [
       {
         label = "host wall-clock dependency";
         needle = "SystemTime";
@@ -368,7 +210,7 @@
         needle = "HashSet";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/observed_state_materialization.rs" observedStateTest [
+    ++ forbiddenFor "crates/crucible/engine/crucible-engine/tests/observed_state_materialization.rs" observedStateTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -391,7 +233,10 @@ in
       version = "0";
       src = crucibleSrc;
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.rust
         pkgs.sed
@@ -435,7 +280,7 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-observed-state-materialization-target" \
-              -p crucible \
+              -p crucible-engine \
               --test observed_state_materialization \
               --test deterministic_condition_evaluation \
               --test observable_condition_leaves \

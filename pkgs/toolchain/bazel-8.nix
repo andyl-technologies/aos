@@ -2,6 +2,7 @@
 {
   mkDerivation,
   mkManualUpstream,
+  callPackage,
   fetchurl,
   lib,
   stdenv,
@@ -26,7 +27,7 @@
   xz,
   file,
   patchelf,
-  bazel-bootstrap,
+  qemu-img,
   bootstrapTools,
   gcc-libs,
   llvm,
@@ -41,6 +42,16 @@
     reason = "Bazel source and repository dependencies form one curated artifact graph that requires maintainer review.";
     successorUnit = "bazel-9";
   };
+  # The bootstrap runs on the Linux build machine even for Darwin outputs.
+  bootstrapArguments =
+    builtins.intersectAttrs
+    (builtins.functionArgs (import ./bazel-bootstrap.nix))
+    buildPackages;
+  bazelBootstrap8 = callPackage ./bazel-bootstrap.nix (bootstrapArguments
+    // {
+      inherit buildPackages;
+      bootstrapVersion = "8.6.0";
+    });
   mkBazel = import ./_bazel.nix {
     inherit
       mkDerivation
@@ -68,15 +79,101 @@
       xz
       file
       patchelf
-      bazel-bootstrap
+      qemu-img
       bootstrapTools
       gcc-libs
       llvm
       ;
+    bazel-bootstrap = bazelBootstrap8;
+    nativeBazelBootstrap = bazelBootstrap8;
   };
 in
   mkBazel {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
+      target = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
+      role = "public-package";
+    };
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Bazel returns success and reports its release version.";
+        "files" = {};
+        "input" = "The packaged Bazel launcher and embedded release identity.";
+        "operation" = "Request the launcher version without loading a workspace.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess\nresult = subprocess.run([\"@out@/bin/bazel\", \"--version\"], capture_output=True, text=True)\nassert result.returncode == 0 and \"bazel\" in (result.stdout + result.stderr).lower(), (result.returncode, result.stdout, result.stderr)\nprint(\"bazel-8 operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "bazel-8 operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Bazel rejects the unsupported startup option.";
+        "files" = {};
+        "input" = "A Bazel startup request containing an unknown option.";
+        "operation" = "Parse the invalid startup option before loading a workspace.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess, sys\nresult = subprocess.run([\"@out@/bin/bazel\", \"--aos-invalid-startup-option\"], capture_output=True, text=True)\nassert result.returncode != 0, (result.returncode, result.stdout, result.stderr)\nsys.stderr.write(\"bazel-8 rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "bazel-8 rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit (upstream) version update;
+    source = bazelBootstrap8.passthru.offlineSource8Prepared;
     srcHash = "sha256-E6hFhkKbYISxO9UEDXje2ljVIwEhUecefUvgxj3YMfk=";
-    vendorDepsHash = "sha256-aBtrp8ZOj4W/VtTDKQhtNNonJE6ywbbvtyyB8s3X6sY=";
+    vendorDepsHash = "sha256-dQ80bgW+bLADowhNA5IDSxkBnRC2rqbaUhqoFs2LwO0=";
   }

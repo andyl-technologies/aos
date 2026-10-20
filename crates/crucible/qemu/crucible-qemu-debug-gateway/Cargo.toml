@@ -1,0 +1,21 @@
+[package]
+name = "crucible-qemu-debug-gateway"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-2.0-only"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+crucible-qemu-protocol = { path = "../../protocol/crucible-qemu-protocol" }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+crucible-control-server = { path = "../../control/crucible-control-server" }
+tempfile = { workspace = true }
+
+[[bin]]
+name = "crucible-debug-gateway"
+path = "src/main.rs"

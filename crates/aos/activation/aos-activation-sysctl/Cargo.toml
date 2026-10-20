@@ -1,0 +1,19 @@
+[package]
+name = "aos-activation-sysctl"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[dependencies]
+aos-core.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+# Keep the installed command stable when its Cargo package is renamed.
+[[bin]]
+name = "aos-kernel-tunable-provider"
+path = "src/main.rs"

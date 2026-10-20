@@ -17,7 +17,7 @@
   ];
 
   runTest = name: ''
-    if ! cargo test --frozen --offline -p terrane-core --lib derivation::evaluation_tests::${name} -- --exact \
+    if ! cargo test --frozen --offline -p terrane-format --lib derivation::evaluation_tests::${name} -- --exact \
       > "$TMPDIR/memo-evaluation-test.log" 2>&1; then
       cat "$TMPDIR/memo-evaluation-test.log"
       exit 1
@@ -28,6 +28,6 @@ in
   sourceGate "memo-evaluation" ''
     cd crates
     ${builtins.concatStringsSep "\n" (map runTest tests)}
-    cargo clippy --frozen --offline -p terrane-core --all-targets -- -D warnings
+    cargo clippy --frozen --offline -p terrane-format --all-targets -- -D warnings
     printf 'PASS: common T1 recipe replay, advisory memo behavior and complete rebuild outputs\n' > "$out/result"
   ''

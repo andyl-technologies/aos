@@ -4,9 +4,9 @@
   qemuPackage ? pkgs.qemu-crucible,
 }: let
   qemuNix = builtins.readFile ../../pkgs/emulation/qemu.nix;
-  patchName = "0001-crucible-sim-accel.patch";
   patchDir = ../../pkgs/emulation/qemu-patches;
-  patchSource = builtins.readFile (patchDir + "/${patchName}");
+  atomicPatch = import (patchDir + "/_atomic-patch.nix");
+  patchSource = builtins.readFile (patchDir + "/${atomicPatch.file}");
   pluginSource = builtins.readFile ./phase1-sim-accel-plugin.c;
   qemuPackageResultLines =
     if qemuPackage == null
@@ -78,7 +78,7 @@
         > "$out/no-icount.stdout" 2> "$out/no-icount.stderr"; then
         fail "-accel sim without icount unexpectedly succeeded"
       fi
-      grep -F -q -- '-accel sim requires -icount shift=N' "$out/no-icount.stderr"
+      grep -F -q -- '-accel sim requires -icount shift=0,align=off,sleep=off' "$out/no-icount.stderr"
 
       qmp_cmd() {
         socket="$1"
@@ -222,7 +222,7 @@
   qemuNixRequirements = [
     {
       label = "sim accel patch wiring";
-      needle = "builtins.concatStringsSep \"\" (map patchCommand series.patchFiles)";
+      needle = "< \${atomicPatchPath}";
     }
   ];
 
@@ -237,7 +237,7 @@
     }
     {
       label = "sim requires icount";
-      needle = "-accel sim requires -icount shift=N";
+      needle = "-accel sim requires -icount shift=0,align=off,sleep=off";
     }
     {
       label = "sim disables MTTCG";
@@ -271,7 +271,7 @@
 
   failures =
     failuresFor "pkgs/emulation/qemu.nix" qemuNix qemuNixRequirements
-    ++ failuresFor "pkgs/emulation/qemu-patches/${patchName}" patchSource patchRequirements;
+    ++ failuresFor "pkgs/emulation/qemu-patches/${atomicPatch.file}" patchSource patchRequirements;
 in
   if failures != []
   then throw "crucible phase1 sim-accel check failed:\n${builtins.concatStringsSep "\n" failures}"
@@ -325,12 +325,12 @@ in
               test -f accel/tcg/tcg-accel-ops-sim.c
               grep -F -q 'TYPE_SIM_ACCEL' accel/tcg/tcg-all.c
               grep -F -q 'ACCEL_OPS_NAME("sim")' accel/tcg/tcg-accel-ops-sim.c
-              grep -F -q 'g_str_equal(ac->name, "sim")' accel/accel-target.c
-              grep -F -q 'ACCEL_CLASS_NAME("tcg")' accel/accel-target.c
+              grep -F -q 'g_str_equal(ac->name, "sim")' accel/accel-common.c
+              grep -F -q 'ACCEL_CLASS_NAME("tcg")' accel/accel-common.c
               grep -F -q 's->mttcg_enabled = false' accel/tcg/tcg-all.c
               grep -F -q '.instance_init = tcg_accel_instance_init' accel/tcg/tcg-all.c
               grep -F -q '.instance_size = sizeof(TCGState)' accel/tcg/tcg-all.c
-              grep -F -q -- '-accel sim requires -icount shift=N' accel/tcg/tcg-all.c
+              grep -F -q -- '-accel sim requires -icount shift=0,align=off,sleep=off' accel/tcg/tcg-all.c
             )
 
             ${qemuRuntimeScript}
@@ -341,7 +341,7 @@ in
             gate=gate:layer0-determinism
             gate=gate:patch-microtests
             tasks=T-PATCH-4
-            patch=0001-crucible-sim-accel.patch
+            atomic_patch=${atomicPatch.file}
             patched_fixture_exercised=true
             stock_negative_control=true
             ${qemuPackageResultLines}

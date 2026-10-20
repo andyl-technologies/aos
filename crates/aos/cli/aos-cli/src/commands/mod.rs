@@ -1,0 +1,38 @@
+//! Implementations of the `aos` subcommands.
+//!
+//! Each module exposes a `run` entry point (some async) that `main.rs`
+//! dispatches to after parsing the CLI defined in the `cli` module. Most
+//! take an `aos_nix::NixRunner` for evaluating/building Nix
+//! attributes and an `aos_cli_ui::output::Printer` for human/JSON output;
+//! the non-Nix commands (`serve`, `token`, `package`, `cache`,
+//! `completions`) take only what they need.
+
+pub mod ability;
+pub mod build;
+pub mod cache;
+pub mod completions;
+pub mod container;
+pub mod describe;
+pub mod fmt;
+pub mod gc;
+pub mod graph;
+pub mod hub;
+pub(crate) mod hub_auth;
+pub(crate) mod hub_container;
+pub mod hub_cutover_verify;
+pub mod image;
+pub(crate) mod input;
+pub mod lint;
+pub mod maintain;
+pub mod prefetch;
+pub mod profile;
+pub mod release;
+pub mod repl;
+pub mod runtime_docs;
+pub mod serve;
+pub mod show;
+pub mod system;
+pub mod test;
+pub mod token;
+pub mod vm;
+pub mod why_depends;

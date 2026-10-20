@@ -3,7 +3,25 @@
   lib,
   attrPath ? "checks.crucible.phase0.gates.harnessLint",
   dependencies ? [],
+  campaignComposition ? null,
 }: let
+  inherit (import ./_workspace-packages.nix {inherit lib;}) packageDir;
+  campaignMode =
+    if campaignComposition == null
+    then null
+    else campaignComposition.mode;
+  campaignSystem =
+    if campaignComposition == null
+    then null
+    else campaignComposition.system;
+  campaignToplevel =
+    if campaignSystem == null
+    then null
+    else campaignSystem.config.system.build.toplevel;
+  campaignRuntimeIdentity =
+    if campaignSystem == null
+    then null
+    else campaignSystem.config.aos.services.crucibleCampaign._runtimeIdentity;
   allPackages = import ../../pkgs/tools/crucible/_packages.nix;
   workspaceManifest = builtins.readFile ../../crates/Cargo.toml;
   clippyConfig = builtins.readFile ../../crates/clippy.toml;
@@ -13,22 +31,23 @@
   harnessLintBaseline = builtins.readFile ./harness-lint-baseline.txt;
   defaultChecks = builtins.readFile ./default.nix;
   crucibleModel = import ./_crucible-model-source.nix {inherit lib;};
-  predicateDsl = builtins.readFile ../../crates/crucible/tests/predicate_dsl.rs;
-  harnessLintMainRust = builtins.readFile ../../crates/crucible-harness/tests/harness_lint.rs;
-  harnessLintScanRust = builtins.readFile ../../crates/crucible-harness/tests/support/harness_lint/scan.rs;
+  predicateDsl = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/predicate_dsl.rs;
+  harnessLintMainRust = builtins.readFile ../../crates/crucible/testing/crucible-test-support/tests/harness_lint.rs;
+  harnessLintScanRust = builtins.readFile ../../crates/crucible/testing/crucible-test-support/tests/support/harness_lint/scan.rs;
   harnessLintRust = builtins.concatStringsSep "\n" (
     [
       harnessLintMainRust
     ]
     ++ (map builtins.readFile [
-      ../../crates/crucible-harness/tests/harness_lint_annotations.rs
-      ../../crates/crucible-harness/tests/support/harness_lint/allow.rs
-      ../../crates/crucible-harness/tests/support/harness_lint/clippy.rs
-      ../../crates/crucible-harness/tests/support/harness_lint/common.rs
-      ../../crates/crucible-harness/tests/support/harness_lint/confinement.rs
-      ../../crates/crucible-harness/tests/support/harness_lint/error_logging.rs
-      ../../crates/crucible-harness/tests/support/harness_lint/lex.rs
-      ../../crates/crucible-harness/tests/support/harness_lint/reference_integrity.rs
+      ../../crates/crucible/testing/crucible-test-support/tests/harness_lint_annotations.rs
+      ../../crates/crucible/testing/crucible-test-support/tests/support/harness_lint/allow.rs
+      ../../crates/crucible/testing/crucible-test-support/tests/support/harness_lint/clippy.rs
+      ../../crates/crucible/testing/crucible-test-support/tests/support/harness_lint/common.rs
+      ../../crates/crucible/testing/crucible-test-support/tests/support/harness_lint/confinement.rs
+      ../../crates/crucible/testing/crucible-test-support/tests/support/harness_lint/error_logging.rs
+      ../../crates/crucible/testing/crucible-test-support/tests/support/harness_lint/lex.rs
+      ../../crates/crucible/testing/crucible-test-support/tests/support/harness_lint/reference_integrity.rs
+      ../../crates/crucible/testing/crucible-test-support/tests/support/source_sections.rs
     ])
     ++ [
       harnessLintScanRust
@@ -165,14 +184,13 @@
     final.out;
 
   reductionPackages = [
-    "crucible-sim"
-    "crucible-assert"
-    "crucible"
-    "crucible-protocol"
+    "crucible-determinism"
+    "crucible-engine"
+    "crucible-qemu-protocol"
     "crucible-device"
     "crucible-session"
   ];
-  nondeterministicBoundaryPackages = ["crucible-daemon" "crucible-cli" "crucible-qemu"];
+  nondeterministicBoundaryPackages = ["crucible-daemon" "crucible-cli" "crucible-qemu-host"];
   binaryPackages = ["crucible-cli"];
   libraryPackages = builtins.filter (package: !(builtins.elem package binaryPackages)) allPackages;
   stateInfluencePatterns = [
@@ -338,6 +356,11 @@
     }
     {
       pattern = "SystemTime::now";
+      reason = "host wall-clock";
+      rule = "host-wall-clock";
+    }
+    {
+      pattern = "UNIX_EPOCH";
       reason = "host wall-clock";
       rule = "host-wall-clock";
     }
@@ -697,7 +720,7 @@
 
   isBinaryBoundarySource = package: path:
     (package == "crucible-cli" && lib.hasPrefix (toString (../../crates + "/crucible-cli/src/")) (toString path))
-    || (builtins.elem package ["crucible-debug-gateway" "crucible-guest"] && lib.hasSuffix "/src/main.rs" (toString path))
+    || (builtins.elem package ["crucible-qemu-debug-gateway" "crucible-guest"] && lib.hasSuffix "/src/main.rs" (toString path))
     || hasInfix "/src/bin/" (toString path);
 
   sourceDeclaresTypedError = content: let
@@ -734,14 +757,14 @@
     ];
 
   manifestErrorPolicyFailures = package: let
-    sourceContents = map builtins.readFile (listRustFiles (../../crates + "/${package}/src"));
+    sourceContents = map builtins.readFile (listRustFiles (packageDir package + "/src"));
   in
     scanManifestErrorPolicyContent
     "${package}/Cargo.toml"
-    (builtins.readFile (../../crates + "/${package}/Cargo.toml"))
+    (builtins.readFile (packageDir package + "/Cargo.toml"))
     sourceContents;
 
-  readManifest = package: builtins.fromTOML (builtins.readFile (../../crates + "/${package}/Cargo.toml"));
+  readManifest = package: builtins.fromTOML (builtins.readFile (packageDir package + "/Cargo.toml"));
 
   workspaceManifestToml = builtins.fromTOML workspaceManifest;
   workspaceDependencies =
@@ -786,12 +809,12 @@
     direct ++ target;
 
   boundaryManifestFailuresFor = workspaceDeps: package: manifest:
-    if builtins.elem package ["crucible-cli" "crucible-qemu"]
+    if builtins.elem package ["crucible-cli" "crucible-daemon" "crucible-qemu-host"]
     then []
     else
       lib.concatMap (
         dependency:
-          lib.optionals (dependency.package == "crucible") [
+          lib.optionals (dependency.package == "crucible-engine") [
             "${package}: dependency `${dependency.name}` in ${dependency.scope} may route host nondeterminism directly into engine State"
           ]
       )
@@ -802,7 +825,7 @@
   strictDeterministicPackages = builtins.filter (package: !(builtins.elem package nondeterministicBoundaryPackages)) allPackages;
 
   relativeSourcePath = package: path: let
-    prefix = toString (../../crates + "/${package}/");
+    prefix = toString (packageDir package + "/");
     full = toString path;
   in
     builtins.substring (builtins.stringLength prefix) (builtins.stringLength full - builtins.stringLength prefix) full;
@@ -814,7 +837,7 @@
       label = toString path;
       content = builtins.readFile path;
     })
-    (listRustFiles (../../crates + "/${package}/src"));
+    (listRustFiles (packageDir package + "/src"));
 
   relativeIsUnder = relative: prefix:
     relative == "${prefix}.rs" || lib.hasPrefix "${prefix}/" relative;
@@ -825,6 +848,7 @@
       relative
       == "src/main.rs"
       || relativeIsUnder relative "src/diagnostics"
+      || relativeIsUnder relative "src/host_boundary"
       || relativeIsUnder relative "src/output"
       || relativeIsUnder relative "src/progress"
     else if package == "crucible-daemon"
@@ -832,7 +856,7 @@
       relativeIsUnder relative "src/diagnostics"
       || relativeIsUnder relative "src/supervision"
       || relativeIsUnder relative "src/transport"
-    else if package == "crucible-qemu"
+    else if package == "crucible-qemu-host"
     then
       relativeIsUnder relative "src/diagnostics"
       || relativeIsUnder relative "src/process"
@@ -845,7 +869,6 @@
 
   boundaryPackageSourceFailures = package: sources: let
     nondeterministicSources = builtins.filter (source: scanContent source.label source.content != []) sources;
-    hasNondeterminism = nondeterministicSources != [];
     pathFailures =
       lib.concatMap (
         source:
@@ -861,19 +884,17 @@
       )
       nondeterministicSources;
     routeFailures =
-      lib.optionals hasNondeterminism
-      (lib.concatMap (
-          source:
-            scanBoundaryRouteContent source.label source.content
-        )
-        sources);
+      lib.concatMap (
+        source:
+          scanBoundaryRouteContent source.label source.content
+      )
+      nondeterministicSources;
     stateFailures =
-      lib.optionals hasNondeterminism
-      (lib.concatMap (
-          source:
-            scanStateInfluenceContent source.label source.content
-        )
-        sources);
+      lib.concatMap (
+        source:
+          scanStateInfluenceContent source.label source.content
+      )
+      nondeterministicSources;
   in
     pathFailures ++ exportFailures ++ routeFailures ++ stateFailures;
 
@@ -927,7 +948,7 @@
     manifestFailures =
       lib.concatMap (
         package: let
-          normalizedManifest = normalize (builtins.readFile (../../crates + "/${package}/Cargo.toml"));
+          normalizedManifest = normalize (builtins.readFile (packageDir package + "/Cargo.toml"));
         in
           lib.optionals (!(hasInfix "[lints]workspace=true" normalizedManifest)) [
             "${package}/Cargo.toml: missing workspace lint inheritance"
@@ -1040,7 +1061,7 @@
       lib.concatMap (
         required:
           lib.optionals (!(hasInfix required harnessLintRust)) [
-            "crates/crucible-harness/tests/harness_lint.rs: missing custom static-analysis tier wiring `${required}`"
+            "crates/crucible/testing/crucible-test-support/tests/harness_lint.rs: missing custom static-analysis tier wiring `${required}`"
           ]
       )
       requiredRustTierText;
@@ -1059,6 +1080,7 @@
     findings = scanContent "regression.rs" ''
       fn bad() {
         let _ = std::time::SystemTime::now();
+        let _ = std::time::UNIX_EPOCH.elapsed();
         let _ = rand::thread_rng();
         let _ = std::collections::HashMap::<u8, u8>::new();
         let _ = std::collections::hash_map::DefaultHasher::new();
@@ -1067,6 +1089,7 @@
     '';
     missing = missingFindingNeedles findings [
       "host wall-clock"
+      "UNIX_EPOCH"
       "thread/global RNG"
       "unordered map/set"
       "default/random hasher"
@@ -1265,7 +1288,7 @@
     };
     sameFileFindings = boundaryPackageSourceFailures "crucible-cli" [
       (source "crucible-cli" "src/main.rs" ''
-        use crucible::State;
+        use crucible_engine::State;
 
         fn bad() {
           let stamp = std::time::SystemTime::now();
@@ -1283,29 +1306,29 @@
       '')
       (source "crucible-cli" "src/session.rs" ''
         use crucible_session::SessionDriver;
-        use crucible_api::ControlClient;
+        use crucible_control_client::ControlClient;
 
         fn route(client: ControlClient, driver: SessionDriver<()>) {
           submit(client, driver);
         }
       '')
     ];
-    apiFindings = nonBoundarySourceFailures (source "crucible-api" "src/lib.rs" ''
+    apiFindings = nonBoundarySourceFailures (source "crucible-control-api" "src/lib.rs" ''
       fn bad() {
         let stamp = std::time::SystemTime::now();
         consume(stamp);
       }
     '');
-    qemuBackendFindings = boundaryPackageSourceFailures "crucible-qemu" [
-      (source "crucible-qemu" "src/backend.rs" ''
+    qemuBackendFindings = boundaryPackageSourceFailures "crucible-qemu-host" [
+      (source "crucible-qemu-host" "src/backend.rs" ''
         fn bad() {
           let stamp = std::time::SystemTime::now();
           consume(stamp);
         }
       '')
     ];
-    qemuSupervisionFindings = boundaryPackageSourceFailures "crucible-qemu" [
-      (source "crucible-qemu" "src/supervision/process.rs" ''
+    qemuSupervisionFindings = boundaryPackageSourceFailures "crucible-qemu-host" [
+      (source "crucible-qemu-host" "src/supervision/process.rs" ''
         fn diagnostic_timestamp() {
           let stamp = std::time::SystemTime::now();
           eprintln!("{stamp:?}");
@@ -1320,17 +1343,17 @@
         }
       '')
     ];
-    directManifestFindings = boundaryManifestFailuresFor {} "crucible-daemon" {
+    directManifestFindings = boundaryManifestFailuresFor {} "crucible-qemu-debug-gateway" {
       dependencies.engine = {
-        package = "crucible";
+        package = "crucible-engine";
       };
     };
     workspaceManifestFindings =
       boundaryManifestFailuresFor {
         engine = {
-          package = "crucible";
+          package = "crucible-engine";
         };
-      } "crucible-daemon" {
+      } "crucible-qemu-debug-gateway" {
         dependencies.engine = {
           workspace = true;
         };
@@ -1339,8 +1362,8 @@
     lib.optionals (sameFileFindings == []) [
       "harness-lint confinement regression failed to reject same-file State ingress"
     ]
-    ++ lib.optionals (splitModuleFindings == []) [
-      "harness-lint confinement regression failed to reject split-module State ingress"
+    ++ lib.optionals (splitModuleFindings != []) [
+      "harness-lint confinement regression inferred cross-module data flow from unrelated identifiers"
     ]
     ++ lib.optionals (apiFindings == []) [
       "harness-lint confinement regression failed to reject nondeterminism outside boundary crates"
@@ -1427,7 +1450,7 @@
       lib.concatMap (
         required:
           lib.optionals (!(hasInfix (normalize required) harnessLintMainCode || hasInfix (normalize required) harnessLintScanCode)) [
-            "crates/crucible-harness/tests/harness_lint.rs: missing T-DET-17 harness-lint evidence `${required}`"
+            "crates/crucible/testing/crucible-test-support/tests/harness_lint.rs: missing T-DET-17 harness-lint evidence `${required}`"
           ]
       )
       requiredHarnessCode;
@@ -1451,7 +1474,7 @@
       }
       {
         label = "baseline count field";
-        needle = "crates/crucible-api/src/server.rs\tstringly error\tResult<_, String>\t\t32";
+        needle = "crates/crucible/control/crucible-control-server/src/server.rs\tstringly error\tResult<_, String>\t\t32";
       }
     ];
     phaseWiringFailures =
@@ -1466,7 +1489,7 @@
     harnessFailures ++ denyCoverageFailures ++ docFailures ++ baselineFailures ++ phaseWiringFailures;
 
   tAsrt17CompletionFailures =
-    failuresFor "crates/crucible/tests/predicate_dsl.rs" predicateDsl [
+    failuresFor "crates/crucible/engine/crucible-engine/tests/predicate_dsl.rs" predicateDsl [
       {
         label = "T-ASRT-17 regression module";
         needle = "Checks T-ASRT-17 predicate DSL desugaring.";
@@ -1492,7 +1515,7 @@
         needle = "Plan::from_event_graph_for_world";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" crucibleModel [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" crucibleModel [
       {
         label = "TOML string DSL parsing";
         needle = "PredicateToml::Dsl(name)";
@@ -1522,33 +1545,75 @@ in
       pname = "crucible-phase1-harness-lint";
       version = "0";
       src = null;
+      # Use Nix's realized graph because the sandbox has no store database.
+      outputChecks =
+        if campaignComposition == null
+        then null
+        else {out = {};};
+      exportReferencesGraph =
+        if campaignComposition == null
+        then []
+        else {campaign = [campaignToplevel];};
 
-      buildDeps = [pkgs.coreutils pkgs.crucible] ++ dependencies;
+      buildDeps =
+        [pkgs.coreutils pkgs.crucible]
+        ++ dependencies
+        ++ lib.optionals (campaignComposition != null) [pkgs.jq campaignToplevel];
 
-      phases = [
-        {
-          name = "write-result";
+      phases =
+        [
+          {
+            name = "write-result";
+            script = ''
+              set -eu
+              mkdir -p "$out"
+              cat > "$out/result" <<'RESULT'
+              PASS
+              check=${attrPath}
+              gate=gate:harness-lint
+              tasks=T-ASRT-17,T-DET-17,T-HARN-2,T-HARN-27,T-HARN-28,T-CRATE-7,T-CRATE-8,T-STD-3,T-STD-4,T-STD-5,T-STD-6,T-DCE-7
+              rust_test=crucible_test_support::harness_lint
+              reduction_path=crucible-sim,crucible-assert,crucible,crucible-protocol,crucible-device,crucible-session
+              nondeterminism_confinement=crucible-daemon,crucible-cli,crucible-qemu:no-state-leak
+              error_logging=typed-errors,no-production-unwrap,main-boundary-anyhow,no-library-stdout
+              clippy_tier=checked-in-disallowed-list,workspace-deny-set,all-targets,hermetic-cargo-clippy
+              custom_static_tier=rust-harness-lint-all-crucible-src,hash-iteration,default-random-hasher,unordered-select,immediate-safety-comments,distribution-metadata-flow
+              reference_integrity=source-labels,checklist-state-needles,task-metadata-state
+              nix_eval_source_scans=synthetic-regressions-and-wiring-only
+              distribution_metadata_guardrail=reduce-decision-content-key-artifact-ban
+              exception_policy=crucible-lint-allow-rationale,annotated-rust-allow,versioned-lint-surface
+              predicate_dsl_host_closures=additive-unknown-named-predicates
+              RESULT
+            '';
+          }
+        ]
+        ++ lib.optional (campaignComposition != null) {
+          name = "bind-campaign-composition";
           script = ''
             set -eu
-            mkdir -p "$out"
-            cat > "$out/result" <<'RESULT'
-            PASS
-            check=${attrPath}
-            gate=gate:harness-lint
-            tasks=T-ASRT-17,T-DET-17,T-HARN-2,T-HARN-27,T-HARN-28,T-CRATE-7,T-CRATE-8,T-STD-3,T-STD-4,T-STD-5,T-STD-6,T-DCE-7
-            rust_test=crucible-harness::harness_lint
-            reduction_path=crucible-sim,crucible-assert,crucible,crucible-protocol,crucible-device,crucible-session
-            nondeterminism_confinement=crucible-daemon,crucible-cli,crucible-qemu:no-state-leak
-            error_logging=typed-errors,no-production-unwrap,main-boundary-anyhow,no-library-stdout
-            clippy_tier=checked-in-disallowed-list,workspace-deny-set,all-targets,hermetic-cargo-clippy
-            custom_static_tier=rust-harness-lint-all-crucible-src,hash-iteration,default-random-hasher,unordered-select,immediate-safety-comments,distribution-metadata-flow
-            reference_integrity=source-labels,checklist-state-needles,task-metadata-state
-            nix_eval_source_scans=synthetic-regressions-and-wiring-only
-            distribution_metadata_guardrail=reduce-decision-content-key-artifact-ban
-            exception_policy=crucible-lint-allow-rationale,annotated-rust-allow,versioned-lint-surface
-            predicate_dsl_host_closures=additive-unknown-named-predicates
+            test ${lib.escapeShellArg campaignMode} = enabled \
+              -o ${lib.escapeShellArg campaignMode} = disabled
+            jq -e -r '.campaign[].path' "$NIX_ATTRS_JSON_FILE" \
+              > "$out/campaign-system-closure"
+            sort -u "$out/campaign-system-closure" \
+              -o "$out/campaign-system-closure"
+            grep -Fxq ${lib.escapeShellArg (toString campaignToplevel)} \
+              "$out/campaign-system-closure"
+            if test ${lib.escapeShellArg campaignMode} = enabled; then
+              grep -Fxq ${lib.escapeShellArg (toString pkgs.crucible)} \
+                "$out/campaign-system-closure"
+            elif grep -Fxq ${lib.escapeShellArg (toString pkgs.crucible)} \
+                "$out/campaign-system-closure"; then
+              echo "campaign-disabled system closure contains the Crucible suite" >&2
+              exit 1
+            fi
+            cat >> "$out/result" <<RESULT
+            campaign_mode=${campaignMode}
+            campaign_configuration_identity=${campaignRuntimeIdentity}
+            campaign_toplevel=${campaignToplevel}
+            executor_derivation=$out
+            campaign_closure_authenticated=true
             RESULT
           '';
-        }
-      ];
+        };
     }

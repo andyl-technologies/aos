@@ -25,13 +25,13 @@ mod models;
 #[path = "retirement_models/wire.rs"]
 mod wire;
 
-use terrane_core::bucket::{BucketCapabilities, GenerationManifest, Tombstone};
-use terrane_core::gc::retirement::*;
+use terrane_format::bucket::{BucketCapabilities, GenerationManifest, Tombstone};
+use terrane_format::gc::retirement::*;
 use wire::Value::{Array, UInt};
 
 const REFERENCE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../tests/terrane/retirement-reference.md"
+    "/../../../../tests/terrane/retirement-reference.md"
 ));
 
 fn reference(name: &str) -> Vec<u8> {
@@ -125,12 +125,12 @@ fn reference_retirement_authorization_models_preserve_alternative_fields() {
     );
     check_tombstone(&sweep.tombstone);
     let (header, records) =
-        terrane_core::pack_format::decode_detached_index(&sweep.witness).unwrap();
+        terrane_format::pack_format::decode_detached_index(&sweep.witness).unwrap();
     assert_eq!(
         header,
-        terrane_core::pack_format::Header::new([0x12; 16], false, false)
+        terrane_format::pack_format::Header::new([0x12; 16], false, false)
     );
-    assert_eq!(records, Vec::<terrane_core::pack_format::Record>::new());
+    assert_eq!(records, Vec::<terrane_format::pack_format::Record>::new());
     assert_eq!(
         PermanentDeleteAuthorization::decode(&reference("retirement-sweep")).unwrap(),
         PermanentDeleteAuthorization::Sweep(models::sweep())
@@ -384,7 +384,7 @@ fn reference_negative_retirement_wires_require_structural_rejection() {
         "retirement-owner-long-pack",
         long_owner,
         PermanentBurnOwner,
-        RetirementError::Cbor(terrane_core::cbor::Error::Limit)
+        RetirementError::Cbor(terrane_format::cbor::Error::Limit)
     );
     negative!(
         "retirement-pass-reversed-coverage",
@@ -406,7 +406,7 @@ fn reference_negative_retirement_wires_require_structural_rejection() {
         ($record:ty) => {
             assert_eq!(
                 <$record>::decode(&oversized),
-                Err(RetirementError::Cbor(terrane_core::cbor::Error::Limit)),
+                Err(RetirementError::Cbor(terrane_format::cbor::Error::Limit)),
                 "record byte cap: {}",
                 stringify!($record)
             );

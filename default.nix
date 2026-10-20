@@ -10,8 +10,10 @@
 #   nix-build -A systems.server.build.toplevel       Build the server system
 #   nix-build -A systems.server.checks.boot-basics   Run a module check
 #   nix-build -A systems.server.checks.system-boot   Run a system-level check
-#   nix-build -A checks                              Run all tests
-#   nix-build -A checks.eval                         Run evaluation checks only
+#   nix-build -A allChecks                           Run all tests
+#   nix-build -A checks.eval-core                    Run fast core evaluation checks
+#   nix-build -A checks.eval                         Run all native evaluation suites
+#   nix-build -A checks.eval-suites.<suite>          Run one deeper evaluation suite
 #
 # Architecture:
 #   Check derivations are produced inside the module system via
@@ -29,18 +31,23 @@
 {
   system ? builtins.currentSystem,
   crossSystem ? null,
+  releasePlatforms ? null,
   containerPublicationInputsOverride ? null,
   sharedGoCacheDir ? null,
   sharedBazelCacheDir ? null,
   sharedRustTargetDir ? null,
   sharedRustIncremental ? false,
-}: let
+  sharedAccacheDir ? null,
+  sharedAccacheStateDir ? null,
+}:
+assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
   anySharedCache =
     sharedGoCacheDir
     != null
     || sharedBazelCacheDir != null
     || sharedRustTargetDir != null
-    || sharedRustIncremental;
+    || sharedRustIncremental
+    || sharedAccacheDir != null;
   lib = import ./lib {
     inherit system;
     # Every Nix builder executes on buildPlatform, including during a cross
@@ -52,6 +59,17 @@
     if crossSystem != null
     then lib.mkPlatform crossSystem
     else buildPlatform;
+  selectedReleasePlatforms =
+    if releasePlatforms == null
+    then [hostPlatform]
+    else releasePlatforms;
+  requireReleasePlatforms = value:
+    if releasePlatforms == null
+    then throw "release evaluation requires an explicit releasePlatforms selection"
+    else value;
+  # An explicit target equal to the builder is still a native build. Release
+  # commands name every platform, including the one executing their tools.
+  isCrossBuild = hostPlatform.system != buildPlatform.system;
 
   # The native stdenv and package set provide tools that execute on the build
   # machine. A cross stdenv uses those tools while producing hostPlatform
@@ -70,13 +88,13 @@
     stdenv = buildStdenv;
   };
   buildPackages =
-    if crossSystem == null
+    if !isCrossBuild
     then pkgs
     else ordinaryBuildPackages;
   ordinaryToolchainPackages =
     if !anySharedCache
     then null
-    else if crossSystem == null
+    else if !isCrossBuild
     then ordinaryBuildPackages
     else
       (import ./. {
@@ -84,7 +102,7 @@
       }).pkgs;
 
   stdenv =
-    if crossSystem == null
+    if !isCrossBuild
     then buildStdenv
     else if hostPlatform.isDarwin
     then
@@ -147,6 +165,8 @@
           sharedBazelCacheDir
           sharedRustTargetDir
           sharedRustIncremental
+          sharedAccacheDir
+          sharedAccacheStateDir
           ;
         ordinaryToolchainPackages = ordinaryFirmwareToolchainPackages;
         stdenv = firmwareStdenv;
@@ -166,8 +186,11 @@
       sharedBazelCacheDir
       sharedRustTargetDir
       sharedRustIncremental
+      sharedAccacheDir
+      sharedAccacheStateDir
       ordinaryToolchainPackages
       ;
+    releasePlatforms = selectedReleasePlatforms;
   };
 
   allPackages = pkgs.mkDerivation {
@@ -189,20 +212,18 @@
   # Auto-discovered module list.
   modules = import ./modules;
 
-  # Assemble the in-image, eval-only base library for every
-  # system. See `lib/build/base-lib.nix`.
-  mkBaseLib = import ./lib/build/base-lib.nix {
-    inherit lib pkgs;
-    system = hostPlatform.system;
-  };
-
   # Build a system from a system definition module (or list of modules).
   #
   # Accepts three calling conventions:
   #   mkSystem ./path.nix                              — single module path
   #   mkSystem [ ./a.nix ./b.nix ]                     — list of modules
   #   mkSystem { modules = [...]; specialArgs = {}; }   — full attrset
-  mkSystem = args: let
+  #
+  # Inline modules support evaluation-only callers. Exported image outputs
+  # require source-backed module paths because the in-image evaluator must
+  # replay the exact same module graph. The private fixture constructor below
+  # admits ephemeral test overlays that never become deployable config input.
+  mkSystemState = {allowInlineModules ? false}: args: let
     moduleList =
       if builtins.isList args
       then args
@@ -213,6 +234,9 @@
       if builtins.isAttrs args && args ? specialArgs
       then args.specialArgs
       else {};
+    # A caller-provided package set binds the exact retained artifacts used by
+    # both image construction and the native deployment descriptors.
+    effectivePkgs = specialArgs.pkgs or pkgs;
     systemName =
       if builtins.isAttrs args && args ? systemName
       then args.systemName
@@ -237,51 +261,166 @@
       if builtins.isAttrs args && args ? packageModules
       then args.packageModules
       else [];
-    systemModules = builtins.filter builtins.isPath moduleList;
-    # Determine the resolved image ABI from the complete caller module list.
-    # The base library bundles only source-backed system modules, so without
-    # carrying this value explicitly an inline image override would leave the
-    # runtime image and its evaluator library on different ABIs.
-    moduleAbi =
-      (lib.evalModules {
-        modules =
-          modules
-          ++ moduleList
-          ++ [
-            {
-              aos.config.evalAtBoot = {
-                baseLib = "/nix/store/00000000000000000000000000000000-aos-base-lib-probe";
-                baseLibAbiHash = "sha256:${builtins.concatStringsSep "" (builtins.genList (_: "0") 64)}";
-              };
-            }
-          ];
-        inherit pkgs lib operatorModules runtimeModules packageModules;
-        specialArgs = moduleSpecialArgs;
-      })
-      .config
-      .aos
-      .system
-      .moduleAbi;
-    baseLib = mkBaseLib {
-      baseModules = modules;
-      inherit systemModules systemName moduleAbi;
-    };
-  in
-    lib.evalModules {
+    inlineSystemModules = builtins.filter (module: !builtins.isPath module) moduleList;
+    systemModules =
+      if inlineSystemModules == []
+      then moduleList
+      else if allowInlineModules
+      then builtins.filter builtins.isPath moduleList
+      else
+        throw
+        "mkSystem: image assembly requires every system module to be a source path; received ${toString (builtins.length inlineSystemModules)} inline module(s)";
+    # Resolve the static package selection before admitting package modules.
+    # This pass chooses the module set only; the final evaluation below remains
+    # the sole authoritative configuration fixed point.
+    selectionEvaluation = lib.evalModules {
       modules =
         modules
-        ++ moduleList
+        ++ builtins.seq systemModules moduleList
         ++ [
           {
-            aos.config.evalAtBoot = {
-              inherit baseLib;
-              baseLibAbiHash = baseLib.passthru.abiHash;
-            };
+            aos.activation.stages.initrd.configurationBuilders = [
+              (stage: {
+                # Early provisioning projects storage policy from the original
+                # host sources. Host payload admission belongs to host activation.
+                packages =
+                  lib.optional (builtins.any (record: record.name == "aos-storage-provisioning-provider") (lib.packageModules.closure stage.packages))
+                  (import ./pkgs/boot/_aos-host-evaluation-input/build.nix {
+                    pkgs = effectivePkgs;
+                    evaluationInput = hostProjectionInput;
+                  });
+                configuration = [];
+              })
+            ];
           }
         ];
       inherit pkgs lib operatorModules runtimeModules packageModules;
       specialArgs = moduleSpecialArgs;
     };
+    hostProjectionInput = lib.build.evaluationInput (
+      abilityEvaluation.hostStageSpecialArgs.evaluationInput.nativeEvaluationInputs
+      // {
+        inherit lib;
+        pkgs = effectivePkgs;
+        system = effectivePkgs.stdenv.hostPlatform.system;
+        retainPayloads = false;
+      }
+    );
+    evaluationInputFor = stage: {
+      evaluationInput = lib.build.evaluationInput {
+        inherit lib;
+        pkgs = effectivePkgs;
+        system = effectivePkgs.stdenv.hostPlatform.system;
+        inherit (stage) packages packageArtifacts scope configuration runtimeConfiguration supplementalInputs osRelease;
+      };
+    };
+    abilityEvaluation = import ./lib/build/evaluate-stages.nix {
+      stageSpecialArgsFor = evaluationInputFor;
+      inherit
+        lib
+        pkgs
+        modules
+        moduleList
+        selectionEvaluation
+        packageModules
+        operatorModules
+        runtimeModules
+        moduleSpecialArgs
+        systemName
+        ;
+    };
+    inherit
+      (abilityEvaluation)
+      hostPackages
+      hostPackageArtifacts
+      hostStageSpecialArgs
+      initrdStageSpecialArgs
+      initrdPackages
+      initrdPackageArtifacts
+      finalPackageModules
+      hostAbilityEvaluation
+      hostConfigurationSources
+      initrdConfigurationSources
+      hostScope
+      initrdPackageModules
+      initrdScope
+      initrdAbilityEvaluation
+      ;
+  in let
+    finalHostEvaluation = lib.evalModules {
+      modules =
+        modules
+        ++ moduleList
+        ++ [
+          {
+            aos.activation.scope = hostScope;
+          }
+        ];
+      inherit pkgs lib runtimeModules;
+      operatorModules = operatorModules ++ hostConfigurationSources;
+      packageModules = finalPackageModules;
+      specialArgs =
+        moduleSpecialArgs
+        // hostStageSpecialArgs
+        // {
+          initrdEvaluationInput = initrdStageSpecialArgs.evaluationInput;
+          packageModulesAvailable = true;
+          inherit hostConfigurationSources initrdConfigurationSources;
+          inherit hostPackages hostPackageArtifacts initrdPackages initrdPackageArtifacts initrdPackageModules initrdAbilityEvaluation;
+          hostPackageModules = finalPackageModules;
+        };
+    };
+  in {
+    qualificationProjection = abilityEvaluation.qualificationProjection;
+    system =
+      finalHostEvaluation
+      // {
+        qualificationProjection = abilityEvaluation.qualificationProjection;
+        # Extensions are ephemeral evaluation overlays. Rebuild every
+        # resolver stage while allowing the caller's inline module values.
+        extendModules = extension: let
+          extraModules = extension.modules or [];
+        in
+          (mkSystemState {allowInlineModules = true;} (
+            {
+              modules = moduleList ++ extraModules;
+              inherit
+                specialArgs
+                operatorModules
+                runtimeModules
+                packageModules
+                systemName
+                ;
+            }
+            // builtins.removeAttrs extension ["modules"]
+          ))
+            .system;
+      };
+  };
+  mkSystem = args: (mkSystemState {} args).system;
+  # Repository fixtures may layer ephemeral values that are never accepted as
+  # deployable configuration sources. Replay tests use source-backed modules.
+  mkFixtureSystem = args:
+    (mkSystemState {allowInlineModules = true;} args).system;
+  # Package integration checks inspect provider-neutral declarations through
+  # the current manager provider. Supply the common build's kernel package and
+  # the explicit manager selection without pulling in a complete image payload.
+  mkPackageFixtureSystem = args:
+    mkFixtureSystem (
+      args
+      // {
+        modules =
+          [
+            ./systems/_ability-providers.nix
+            ./systems/_artifact-backend.nix
+            ./systems/_kernel.nix
+            ./systems/_system-manager.nix
+          ]
+          ++ (args.modules or []);
+      }
+    );
+  mkAbilityQualificationProjection = args:
+    (mkSystemState {} args).qualificationProjection;
 
   # Auto-discover system definitions from ./systems/*.nix
   discoverSystems = let
@@ -299,17 +438,21 @@
         name = lib.removeSuffix ".nix" name;
         value = let
           variant = ./systems + "/${name}";
-          evaluated = mkSystem {
-            modules = [variant];
-            systemName = lib.removeSuffix ".nix" name;
-          };
+          evaluated =
+            if name == "server"
+            then serverSystem
+            else
+              mkSystem {
+                modules = [variant];
+                systemName = lib.removeSuffix ".nix" name;
+              };
         in {
           config = evaluated.config;
           options = evaluated.options;
           # Re-expose `extendModules` so callers holding a discovered system
           # (e.g. the fleet harness, which bakes per-VM identity via
           # `environment.etc`) can overlay a fragment without rebuilding the
-          # module list. Inherits this variant's baseLib wiring.
+          # module list. Retains this variant's native stage sources.
           inherit (evaluated) extendModules;
           build = {
             toplevel = evaluated.config.system.build.toplevel;
@@ -335,22 +478,24 @@
   # ---------------------------------------------------------------------------
 
   # The default system used for eval/build checks and package integration tests.
-  serverSystem = mkSystem {
+  serverSystemState = mkSystemState {} {
     modules = [./systems/server.nix];
     systemName = "server";
   };
+  serverSystem = serverSystemState.system;
+  renderedEvalSuites = import ./lib/testing/eval.nix {
+    inherit pkgs lib;
+    mkDeployableSystem = mkSystem;
+    mkSystem = mkFixtureSystem;
+    system = serverSystem;
+  };
+  configProvenanceChecks = import ./lib/testing/config-provenance.nix {inherit pkgs;};
   # Single-VM checks use a writable ext4 test disk assembled by
   # lib/testing/vm.nix. Evaluate their system with the matching root contract;
   # the production server system remains EROFS + dm-verity and is exercised by
   # the image and fleet checks that construct its authenticated partition set.
   serverVmSystem = mkSystem {
-    modules = [
-      ./systems/server.nix
-      {
-        aos.filesystems.rootFsType = lib.mkForce "ext4";
-        aos.security.verity.enable = lib.mkForce false;
-      }
-    ];
+    modules = [./systems/_server-vm.nix];
     systemName = "server-vm";
   };
   containerImages = discoverSystems.server.build.containers;
@@ -358,9 +503,6 @@
 
   # Testing harness (headless mode for package integration tests)
   testing = import ./lib/testing {inherit pkgs lib;};
-  qualificationPackageProbes = import ./qualification/package-probes {
-    inherit testing;
-  };
   qualificationPackageNamesByPlatform = builtins.listToAttrs (
     map (platform: {
       name = platform;
@@ -369,55 +511,73 @@
         platform
         pkgs.allPackageNames;
     })
-    pkgs.platformSupport.canonicalSystems
+    pkgs.platformSupport.platforms
   );
   qualificationPackageNames =
     pkgs.platformSupport.publicationEligibleNamesAny pkgs.allPackageNames;
-  unknownQualificationPackageProbes =
-    builtins.filter (
-      name: !(builtins.elem name pkgs.allPackageNames)
-    )
-    (builtins.attrNames qualificationPackageProbes);
-  qualificationPackageProbesFor = packageNames:
-    lib.filterAttrs (name: _: builtins.elem name packageNames) qualificationPackageProbes;
+  # Native probes belong to package artifacts, so coverage follows the same
+  # documents consumed by the package executor instead of a second registry.
+  hasNativeQualificationProbe = name: let
+    package = pkgs.${name};
+    document = package.qualificationDocument or null;
+  in
+    document
+    != null
+    && package ? qualificationArtifact
+    && document.schema == "aos.package.qualification"
+    && document ? probe;
   qualificationPackageCoverageFor = packageNames: let
-    implementedPackages =
-      builtins.filter (
-        name: builtins.hasAttr name qualificationPackageProbes
-      )
-      packageNames;
-    missingPackages =
-      builtins.filter (
-        name: !(builtins.hasAttr name qualificationPackageProbes)
-      )
-      packageNames;
+    implementedPackages = builtins.filter hasNativeQualificationProbe packageNames;
+    missingPackages = builtins.filter (name: !(builtins.elem name implementedPackages)) packageNames;
   in {
     complete = missingPackages == [];
     implemented = builtins.length implementedPackages;
     total = builtins.length packageNames;
     inherit implementedPackages missingPackages;
   };
-  qualificationPackageCoverage = qualificationPackageCoverageFor qualificationPackageNames;
-  qualificationPackageCoverageByPlatform =
-    lib.mapAttrs (
-      _: names: qualificationPackageCoverageFor names
-    )
-    qualificationPackageNamesByPlatform;
-  neverPublicationEligiblePackageNames =
-    builtins.filter (
-      name: !(builtins.elem name qualificationPackageNames)
-    )
-    pkgs.allPackageNames;
-  qualificationPackageCoverageReport = assert unknownQualificationPackageProbes == [];
-    qualificationPackageCoverage
+  qualificationPackageCoverageReport =
+    qualificationPackageCoverageFor qualificationPackageNames
     // {
       schema_version = "aos.release.package-probe-coverage/v1";
-      platforms = qualificationPackageCoverageByPlatform;
-      neverPublicationEligiblePackages = neverPublicationEligiblePackageNames;
+      platforms = lib.mapAttrs (_: names: qualificationPackageCoverageFor names) qualificationPackageNamesByPlatform;
+      neverPublicationEligiblePackages =
+        builtins.filter (
+          name: !(builtins.elem name qualificationPackageNames)
+        )
+        pkgs.allPackageNames;
     };
-  releaseQualification = import ./qualification {
+  qualificationCoveragePartitionMatches = names: coverage:
+    coverage.total
+    == builtins.length names
+    && coverage.implemented == builtins.length coverage.implementedPackages
+    && coverage.total == coverage.implemented + builtins.length coverage.missingPackages
+    && builtins.sort builtins.lessThan (coverage.implementedPackages ++ coverage.missingPackages) == names;
+  qualificationPackageCoverageCheck = assert qualificationCoveragePartitionMatches qualificationPackageNames qualificationPackageCoverageReport;
+  assert builtins.all (platform:
+    qualificationCoveragePartitionMatches qualificationPackageNamesByPlatform.${platform} qualificationPackageCoverageReport.platforms.${platform})
+  pkgs.platformSupport.platforms;
+  assert builtins.all (name: !(builtins.elem name qualificationPackageNames)) qualificationPackageCoverageReport.neverPublicationEligiblePackages;
+    pkgs.writeTextFile {
+      name = "aos-qualification-package-probe-coverage";
+      destination = "/package-probe-coverage.json";
+      text = builtins.toJSON qualificationPackageCoverageReport;
+    };
+  nativeAdapterMatrix = import ./qualification/modules/_native-adapter-matrix.nix {
     inherit lib;
-    packageNames = qualificationPackageNames;
+    projection = serverSystemState.qualificationProjection;
+    regressions = [
+      "checks.fleet.runtime-module-composition"
+      "checks.fleet.k3s-control-plane-worker"
+      "checks.fleet.ability-native-power-loss"
+      "checks.fleet.system-image-rollback"
+    ];
+  };
+  releaseQualification = import ./qualification {
+    inherit lib nativeAdapterMatrix nativeOperationSpec;
+    # Classification covers the whole inventory, including inapplicable roots.
+    packageNames = pkgs.allPackageNames;
+    # The package inventory blocks exactly these platforms' cells.
+    inherit (pkgs.platformSupport) deferredPlatforms;
   };
   qualificationExecutorIdentity = "aos-${hostPlatform.system}-qualification-v1";
   qualificationReportScenario = testing.mkQualificationReportScenario {
@@ -425,24 +585,12 @@
     identity = qualificationExecutorIdentity;
     reportRoot = "/run/aos-release/qualification-reports/${hostPlatform.system}";
   };
-  operatorRecoveryScenario = testing.mkQualificationReportScenario {
-    name = "aos-qualification-operator-recovery";
-    identity = qualificationExecutorIdentity;
-    reportPath = "/run/aos-release/qualification-reports/operator-recovery.json";
-  };
-  productionRecoveryScenario = testing.mkQualificationReportScenario {
-    name = "aos-qualification-production-recovery";
-    identity = qualificationExecutorIdentity;
-    reportPath = "/run/aos-release/qualification-reports/production-recovery.json";
-  };
   qualificationPackageScenario = testing.mkQualificationPackageScenario {
     name = "aos-qualification-${hostPlatform.system}-package-function";
     identity = qualificationExecutorIdentity;
     packageNames = qualificationPackageNamesByPlatform.${hostPlatform.system};
-    probes = qualificationPackageProbesFor (
-      qualificationPackageNamesByPlatform.${hostPlatform.system}
-    );
-    trustKeys = discoverSystems."aos-testing".config.aos.release.trustKeys;
+    checks = qualificationRequirementChecks "package-function";
+    trustKeys = discoverSystems."aos-experimental".config.aos.release.trustKeys;
   };
   containerLifecycleScenario =
     if hostPlatform.isLinux
@@ -458,27 +606,185 @@
       testing.mkQualificationImageScenario {
         name = "aos-qualification-${hostPlatform.system}-image-lifecycle";
         identity = qualificationExecutorIdentity;
+        checks = qualificationClaimChecks "disk-${hostPlatform.system}-functional";
+        packageChecks = qualificationRequirementChecks "package-function";
       }
     else null;
+  nativeAbilityScenarioIds = [
+    "ability-crucible-baseline"
+    "ability-native-adapter-matrix"
+    "ability-native-recovery"
+  ];
+  qualificationRequirementChecks = scenarioId:
+    (builtins.head (
+      builtins.filter (
+        requirement: requirement.id == scenarioId
+      )
+      releaseQualification.requirements
+    ))
+    .checks;
+  qualificationClaimChecks = claimId: let
+    claim = builtins.head (
+      builtins.filter (
+        candidate: candidate.id == claimId
+      )
+      releaseQualification.claims
+    );
+  in
+    lib.concatMap qualificationRequirementChecks claim.requirements;
+  mkNativeAbilityScenario = {
+    scenarioId,
+    source,
+    cohorts ? null,
+  }: let
+    spec = import source {
+      inherit lib pkgs;
+      mkSystem = mkFixtureSystem;
+      qualificationImage = true;
+    };
+  in
+    testing.mkQualificationAbilityScenario ({
+        name = "aos-qualification-${scenarioId}";
+        identity = qualificationExecutorIdentity;
+        inherit scenarioId;
+        checks = qualificationRequirementChecks scenarioId;
+        testScript = spec.qualification.testScript or spec.testScript;
+        stagingHubUrl = spec.qualification.stagingHubUrl or null;
+        inherit (spec.qualification) candidateRuntimeCompanions extraClosures setupBody selectedEvaluation adoptionEvaluation;
+      }
+      // lib.optionalAttrs (cohorts != null) {inherit cohorts;});
+  nativeServiceCohort = import ./tests/fleet/ability-native-cancellation-systemd.nix {
+    inherit lib pkgs;
+    mkSystem = mkFixtureSystem;
+    qualificationImage = true;
+  };
+  nativeFilesystemCohort = import ./tests/fleet/native-filesystem-operation-cohort.nix {
+    inherit lib pkgs;
+    mkSystem = mkFixtureSystem;
+    qualificationImage = true;
+  };
+  nativeKubernetesCohort = import ./tests/fleet/native-kubernetes-operation-cohort.nix {
+    inherit lib pkgs;
+    mkSystem = mkFixtureSystem;
+    qualificationImage = true;
+  };
+  nativeImageCohort = import ./tests/fleet/_native-image-rollout-cohorts.nix {
+    inherit lib pkgs;
+    mkSystem = mkFixtureSystem;
+    systems = discoverSystems;
+    qualificationImage = true;
+  };
+  nativeOperationRegistration = import ./qualification/modules/_native-operation-cohorts.nix {
+    inherit lib;
+    # This is the required semantic coverage, independent of any one image's
+    # enabled graph. Each cohort supplies its own exact retained evaluation.
+    requiredOperations = [
+      {
+        ability = "serviceManagement";
+        name = "realize";
+      }
+      {
+        ability = "identity";
+        name = "group";
+      }
+      {
+        ability = "identity";
+        name = "principal";
+      }
+      {
+        ability = "identity";
+        name = "membership";
+      }
+      {
+        ability = "filesystem";
+        name = "directory";
+      }
+      {
+        ability = "filesystem";
+        name = "allocate";
+      }
+      {
+        ability = "filesystem";
+        name = "persistentAllocate";
+      }
+      {
+        ability = "filesystem";
+        name = "entry";
+      }
+      {
+        ability = "configuration";
+        name = "file";
+      }
+      {
+        ability = "networkPolicy";
+        name = "ruleset";
+      }
+      {
+        ability = "kubernetes";
+        name = "ensure";
+      }
+      {
+        ability = "k3sConfiguration";
+        name = "ensure";
+      }
+      {
+        ability = "imageRollout";
+        name = "ensure";
+      }
+      {
+        ability = "imageSelection";
+        name = "ensure";
+      }
+      {
+        ability = "imageRetirement";
+        name = "ensure";
+      }
+    ];
+    cohorts = [nativeServiceCohort nativeFilesystemCohort nativeKubernetesCohort] ++ nativeImageCohort.cohorts;
+  };
+  nativeOperationSpec = nativeOperationRegistration.nativeOperationSpec;
+
+  nativeAbilityScenarios = lib.optionalAttrs (hostPlatform.system == "x86_64-linux") {
+    ability-crucible-baseline = mkNativeAbilityScenario {
+      scenarioId = "ability-crucible-baseline";
+      source = ./tests/fleet/ability-crucible-baseline.nix;
+    };
+    ability-native-adapter-matrix = testing.mkQualificationAbilityScenario {
+      name = "aos-qualification-ability-native-adapter-matrix";
+      identity = qualificationExecutorIdentity;
+      scenarioId = "ability-native-adapter-matrix";
+      checks = qualificationRequirementChecks "ability-native-adapter-matrix";
+      inherit nativeOperationSpec;
+      nativeOperationCohorts = nativeOperationRegistration.cohorts;
+      stagingHubUrl = "https://aos.staging.andyl.org";
+    };
+    ability-native-recovery = mkNativeAbilityScenario {
+      scenarioId = "ability-native-recovery";
+      source = ./tests/fleet/runtime-module-composition.nix;
+    };
+  };
   recoveryPackageRule = builtins.head (
     builtins.filter (rule: rule.name == "aos-recovery") releaseQualification.package_rules
   );
+  mkQualificationRecoveryPackageScenario = import ./qualification/providers/recovery/qualification-recovery-package.nix {inherit pkgs;};
   recoveryPackageScenario =
     if hostPlatform.isLinux
     then
-      testing.mkQualificationRecoveryPackageScenario {
+      mkQualificationRecoveryPackageScenario {
         name = "aos-qualification-${hostPlatform.system}-aos-recovery";
         packageExecutable = "${qualificationPackageScenario}/bin/aos-qualification-${hostPlatform.system}-package-function";
         imageExecutable = "${imageLifecycleScenario}/bin/aos-qualification-${hostPlatform.system}-image-lifecycle";
         systemVariant = recoveryPackageRule.execution.system_variant;
       }
     else null;
+  mkQualificationK3sPackageScenario = import ./qualification/providers/k3s/qualification-k3s-package.nix {inherit pkgs lib;};
   k3sPackageScenarios = lib.optionalAttrs hostPlatform.isLinux (
     builtins.listToAttrs (map (rule: let
         name = "aos-qualification-${hostPlatform.system}-${rule.name}-fleet";
-        scenario = testing.mkQualificationK3sPackageScenario {
+        scenario = mkQualificationK3sPackageScenario {
           inherit name;
           identity = qualificationExecutorIdentity;
+          packageChecks = qualificationRequirementChecks "package-function";
           packageExecutable = "${qualificationPackageScenario}/bin/aos-qualification-${hostPlatform.system}-package-function";
           systemVariant = rule.execution.system_variant;
           topology = rule.execution.topology;
@@ -515,7 +821,13 @@
       name = scenarioId;
       value = "${qualificationReportScenario}/bin/aos-qualification-${hostPlatform.system}-report";
     })
-    (builtins.filter (scenarioId: scenarioId != "package-function") qualificationScenarioIds));
+    (builtins.filter (
+        scenarioId:
+          scenarioId
+          != "package-function"
+          && !(builtins.elem scenarioId nativeAbilityScenarioIds)
+      )
+      qualificationScenarioIds));
   qualificationAutomatedScenarios =
     {
       # Package cases must execute the staged-byte lifecycle and reviewed
@@ -525,29 +837,65 @@
     // lib.optionalAttrs hostPlatform.isLinux {
       "claim-disk-${hostPlatform.system}-functional" = "${imageLifecycleScenario}/bin/aos-qualification-${hostPlatform.system}-image-lifecycle";
     }
+    // lib.mapAttrs (
+      scenarioId: scenario: "${scenario}/bin/aos-qualification-${scenarioId}"
+    )
+    nativeAbilityScenarios
     // lib.optionalAttrs (hostPlatform.system == "x86_64-linux") {
       # ARM64 container qualification imports a report with the outer x86 host,
       # TCG guest and container layers; the local runner observes only two.
       "claim-container-${hostPlatform.system}-functional" = "${containerLifecycleScenario}/bin/aos-qualification-${hostPlatform.system}-container-lifecycle";
     };
+  # Keep the scenario catalog available to policy checks without forcing the
+  # executor derivation and every VM scenario during pure evaluation.
+  releaseQualificationScenarios =
+    qualificationReportScenarios
+    // qualificationAutomatedScenarios;
+  releaseQualificationCaseScenarios =
+    k3sPackageScenarios
+    // lib.optionalAttrs hostPlatform.isLinux {
+      "package-function/aos-recovery/${hostPlatform.system}" = "${recoveryPackageScenario}/bin/aos-qualification-${hostPlatform.system}-aos-recovery";
+    };
   releaseQualificationExecutor = testing.mkQualificationExecutor {
     name = "aos-qualification-${hostPlatform.system}";
     platform = hostPlatform.system;
     identity = qualificationExecutorIdentity;
-    scenarios =
-      qualificationReportScenarios
-      // qualificationAutomatedScenarios
-      // lib.optionalAttrs (hostPlatform.system == "x86_64-linux") {
-        operator-recovery = "${operatorRecoveryScenario}/bin/aos-qualification-operator-recovery";
-        production-recovery = "${productionRecoveryScenario}/bin/aos-qualification-production-recovery";
-      };
-    caseScenarios =
-      k3sPackageScenarios
-      // lib.optionalAttrs hostPlatform.isLinux {
-        "package-function/aos-recovery/${hostPlatform.system}" = "${recoveryPackageScenario}/bin/aos-qualification-${hostPlatform.system}-aos-recovery";
-      };
+    scenarios = releaseQualificationScenarios;
+    caseScenarios = releaseQualificationCaseScenarios;
+    scenarioFixtures = builtins.listToAttrs (lib.mapAttrsToList (scenarioId: scenario: {
+        # Attribute names are lookup keys; the scenario and fixture values
+        # retain the executable and archive roots in the executor closure.
+        name = builtins.unsafeDiscardStringContext "${scenario}/bin/aos-qualification-${scenarioId}";
+        value = scenario.passthru.qualification.fixtureArchiveRoot;
+      })
+      nativeAbilityScenarios);
     workRoot = "/var/lib/aos-release/qualification/${hostPlatform.system}";
     timeoutSeconds = 21600;
+  };
+  # The closure a maintainer machine installs: the CLI, the file-backed
+  # release signer, and the executor for the platform it can qualify natively.
+  # `aos maintain release` discovers its own closure, signer, and executors
+  # from this layout, so none appears in the maintainer configuration.
+  #
+  # An x86_64 Linux maintainer host also installs the hosted aarch64-linux
+  # executor: the contract qualifies aarch64 images and containers inside a
+  # QEMU TCG `virt` guest on an x86_64 host, so that executor runs natively
+  # here while its scenarios target aarch64 (the same cross evaluation the
+  # flake exposes as `qualification-executor-aarch64-linux`).
+  hostedExecutors = lib.optionalAttrs (crossSystem == null && hostPlatform.system == "x86_64-linux") {
+    aarch64-linux =
+      (import ./. {
+        inherit system;
+        crossSystem = "aarch64-linux";
+      })
+        .releaseQualificationExecutor;
+  };
+  releaseTooling = import ./pkgs/tools/aos/_release-tooling.nix {
+    inherit lib;
+    inherit (pkgs) runCommand runtimeShell;
+    aos = pkgs.aos;
+    releaseSigner = pkgs.aos-release-signer;
+    executors = {${hostPlatform.system} = releaseQualificationExecutor;} // hostedExecutors;
   };
 
   prefixAttrs = prefix: attrs:
@@ -582,32 +930,28 @@
         // prefixAttrs name (
           pkg.checks (builtins.intersectAttrs (builtins.functionArgs pkg.checks) {
             inherit testing pkgs;
+            mkSystem = mkPackageFixtureSystem;
             self = pkg;
           })
         )
       else acc
   ) {} (builtins.attrNames pkgs);
 
-  packagesWithExpose =
-    lib.filterAttrs (_: p: builtins.isAttrs p && p ? expose) pkgs;
-
-  packageExposeLifecycleCheck = import ./lib/testing/package-expose-lifecycle.nix {
-    inherit pkgs lib mkSystem testing;
-  };
-  packageFirewallReloadCheck = import ./lib/testing/package-firewall-reload.nix {
-    inherit pkgs mkSystem testing;
-  };
-  packagePresetCheck = import ./lib/testing/package-preset.nix {
-    inherit pkgs mkSystem testing;
-  };
-  packageTestHttpServerCheck = import ./lib/testing/package-test-http-server.nix {
-    inherit pkgs lib mkSystem testing;
+  packagePresetCheck = import ./tests/packages/preset.nix {
+    inherit pkgs testing;
+    mkSystem = mkFixtureSystem;
   };
   apmInstallAtBootCheck = import ./lib/testing/apm-install-at-boot.nix {
-    inherit pkgs mkSystem testing;
+    inherit pkgs testing;
+    mkSystem = mkFixtureSystem;
   };
   selinuxBaseCheck = import ./lib/testing/selinux-base.nix {
-    inherit pkgs mkSystem testing;
+    inherit pkgs lib testing;
+    mkSystem = mkFixtureSystem;
+  };
+  homesEnabledCheck = import ./lib/testing/homes.nix {
+    inherit lib pkgs testing;
+    mkSystem = mkFixtureSystem;
   };
 
   # Stdenv cross-cutting integration check
@@ -666,7 +1010,8 @@
     loadSpec = filename: let
       specModule = import (./tests/fleet + "/${filename}");
       availableArgs = {
-        inherit lib pkgs mkSystem;
+        inherit lib pkgs mkAbilityQualificationProjection;
+        mkSystem = mkFixtureSystem;
         inherit (testing) dataUrl mkDarlingFleetSpec mkDarlingFleetSuite;
         systems = discoverSystems;
         # Fleet checks consume the exact local-platform production subject and
@@ -697,101 +1042,26 @@
       fleetFiles
     );
 
-  crucibleChecksBase = import ./tests/crucible {inherit pkgs lib;};
+  crucibleChecksBase = import ./tests/crucible {
+    inherit pkgs lib mkSystem testing;
+  };
 
   # T-PKG-15: the shared Crucible VM/fleet check substrate. It assembles the
   # whole Crucible closure (patched QEMU + plugin + CLI + kernel + fixtures) as
   # hermetic inputs and runs the built CLI under TCG with NO `kvm` system
-  # feature ([PKG-29], [PKG-30], spec §26.8). Both the e2e-determinism fleet
-  # check and the real-VM performance checks ride this same runner.
+  # feature ([PKG-29], [PKG-30], spec §26.8). The canonical Phase 4 gate and
+  # the real-VM performance checks ride this same runner.
   crucibleFleetRunner = import ./tests/crucible/_fleet-runner.nix {inherit pkgs lib;};
 
   crucibleFleetChecks = {
-    # gate:e2e-determinism as a real AOS VM/fleet check ([PKG-29], [PKG-30]).
-    # It builds the entire Crucible closure hermetically and EXECUTES the built
-    # `crucible` CLI end to end over the built-in adversarial multi-node,
-    # fault-injected example corpus (happy-path, partition-recovery,
-    # crash-restart, and the fault-campaign family) under the hostile
-    # host-condition matrix (`--adversarial`), bisecting the first divergence
-    # (`--bisect`) and asserting bit-identical reductions — the representative
-    # multi-VM, fault-injected + reproduce scenario of §26.8. The phase7 e2e
-    # gate (in-process determinism proof of the same scenario) is consumed as a
-    # precondition so this fleet check advances only behind a green harness.
-    #
-    # Each independent reduction launches the closure-owned patched QEMU and
-    # production plugin under TCG before the session-level comparison.
-    crucible-e2e-determinism = let
-      e2eGate = crucibleChecks.phase7.gates.e2eDeterminism.rawGate;
-    in
-      crucibleFleetRunner.mkCrucibleFleetCheck {
-        name = "crucible-e2e-determinism";
-        gateResults = [e2eGate];
-        runPhaseScript = ''
-          # The phase7 e2e gate must be green before the fleet scenario runs.
-          grep -q '^PASS$' "${e2eGate}/result"
-          grep -q '^gate=gate:e2e-determinism$' "${e2eGate}/result"
-          grep -q '^fleet_check_surface=checks.fleet.crucible-e2e-determinism$' "${e2eGate}/result"
+    # Release and CI must build the live aggregate, including its required
+    # claims and packaged-QEMU evidence, before claiming campaign acceptance.
+    crucible-campaign-release-acceptance = crucibleChecks.phase9.gates.campaignReleaseAcceptance;
+    # Preserve the established fleet check name as the same derivation as the
+    # canonical Phase 4 gate. One execution therefore supplies both check-tree
+    # surfaces and one retained evidence bundle.
+    crucible-e2e-determinism = crucibleChecks.phase4.gates.e2eDeterminism.rawGate;
 
-          crucible_bin="$CRUCIBLE/bin/crucible"
-
-          # Run the representative multi-VM, fault-injected scenario end to end
-          # over each built-in adversarial example, under the hostile
-          # host-condition matrix, bisecting the first divergence. The JSONL
-          # stream emits one `independent_reduction` event per (run x hostile
-          # profile) and a `final_outcome` with `status=passed`; a non-passing
-          # reduction exits the CLI non-zero and fails the check.
-          for scenario in \
-            happy-path.scn \
-            partition-recovery.scn \
-            crash-restart.scn \
-            fault-campaign.fam
-          do
-            verify_out="$FLEET_WORKDIR/verify-$scenario.out"
-            "$crucible_bin" \
-              --backend qemu \
-              --seed 31 \
-              --store "$FLEET_STORE" \
-              --artifact-dir "$FLEET_ARTIFACTS" \
-              verify "$scenario" \
-              --runs 2 \
-              --adversarial \
-              --bisect \
-              > "$verify_out"
-
-            # The scenario passed end to end under the adversarial matrix.
-            grep -q '"kind":"final_outcome".*subcommand=verify status=passed' "$verify_out"
-
-            # It actually ran under the hostile host-condition matrix (more than
-            # one adversarial profile) and every independent reduction is
-            # bit-identical — the same canonical_log across all profiles. A
-            # single distinct canonical_log among the reductions proves the
-            # scenario reproduced bit-identically across adversarial hosts.
-            reductions="$(grep -c '"kind":"independent_reduction"' "$verify_out")"
-            test "$reductions" -ge 2
-            distinct_logs="$(
-              grep '"kind":"independent_reduction"' "$verify_out" \
-                | grep -o 'canonical_log=[^ ]*' \
-                | sort -u \
-                | wc -l
-            )"
-            test "$distinct_logs" -eq 1
-          done
-        '';
-        resultLines = [
-          "gate=gate:e2e-determinism"
-          "source_check=checks.crucible.phase7.gates.e2eDeterminism"
-          "e2e_gate_result=${e2eGate}/result"
-          "fleet_surface=true"
-          "scenario=adversarial-multi-node-fault-injected-corpus"
-          "scenario_corpus=happy-path.scn,partition-recovery.scn,crash-restart.scn,fault-campaign.fam"
-          "adversarial_matrix=hostile-host-condition-profiles"
-          "reproduce=verify-reduction-bisection"
-          "cli_backend=qemu-tcg-live-probe-plus-deterministic-session"
-          "live_qemu_per_reduction=true"
-          "lib_testing_runner=tests/crucible/_fleet-runner.nix"
-          "tcg_only_vm_runner=crucible-cli-verify-adversarial-bisect"
-        ];
-      };
     # The real-process performance discharge for RFC-0010 §25 ([PERF-3],
     # [PERF-12], [PERF-13], [PERF-14], [PERF-27]): the deterministic
     # `gate:perf-bench` asserts the cost-model structure and host-independent
@@ -801,17 +1071,27 @@
     # against the AOS-built kernel/root fixture before its session workload.
     crucible-perf = let
       perfGate = crucibleChecks.phase7.gates.perfBench.rawGate;
-      savevmLoadvmGate = crucibleChecks.phase0.s3SavevmLoadvm;
+      checkpointDeltaFlight = crucibleChecks.phase2.qemuCheckpointDeltaFlight;
     in
       crucibleFleetRunner.mkCrucibleFleetCheck {
         name = "crucible-perf";
-        gateResults = [perfGate savevmLoadvmGate];
+        gateResults = [perfGate checkpointDeltaFlight];
         runPhaseScript = ''
           # The modeled perf-bench gate must be green before the fleet numbers
           # are captured: the ratchet compares fleet numbers against baselines
           # the modeled gate already holds structurally.
           grep -q '^PASS$' "${perfGate}/result"
           grep -q '^gate=gate:perf-bench$' "${perfGate}/result"
+          restore_result="${checkpointDeltaFlight}/result"
+          grep -q '^PASS$' "$restore_result"
+          grep -q '^restore_latency_measurement=descriptor-restore-through-cont-ack$' \
+            "$restore_result"
+          direct_restore_us="$(sed -n 's/^direct_restore_to_runnable_us=//p' "$restore_result")"
+          delta_restore_us="$(sed -n 's/^delta_restore_to_runnable_us=//p' "$restore_result")"
+          test -n "$direct_restore_us"
+          test -n "$delta_restore_us"
+          restore_ms=$(( (delta_restore_us + 999) / 1000 ))
+          restore_source=exact-descriptor-delta-restore-through-cont-ack
 
           crucible_bin="$CRUCIBLE/bin/crucible"
           scenario="happy-path.scn"
@@ -934,50 +1214,6 @@
             } >> "$fleet_sweep"
           done
 
-          # --- Restore latency ([PERF-12]): the Phase-0 live QEMU corpus
-          # measures snapshot-load through the runnable `cont` acknowledgement.
-          # The production thin-checkpoint fallback is measured here by
-          # replaying an artifact whose prefix was produced by a live QEMU run.
-          loadvm_boot_ms=
-          loadvm_cpu_timer_ms=
-          loadvm_mid_io_ms=
-          while IFS='=' read -r key value; do
-            case "$key" in
-              boot_window_restore_to_runnable_ms) loadvm_boot_ms="$value" ;;
-              cpu_timer_restore_to_runnable_ms) loadvm_cpu_timer_ms="$value" ;;
-              mid_io_restore_to_runnable_ms) loadvm_mid_io_ms="$value" ;;
-            esac
-          done < "${savevmLoadvmGate}/result"
-          test -n "$loadvm_boot_ms"
-          test -n "$loadvm_cpu_timer_ms"
-          test -n "$loadvm_mid_io_ms"
-
-          set +e
-          "$crucible_bin" \
-            --backend qemu --seed 31 \
-            --store "$FLEET_STORE" --artifact-dir "$FLEET_ARTIFACTS" \
-            run "$scenario" --max-quanta 1 \
-            > "$FLEET_WORKDIR/replay-source.out" 2>&1
-          replay_source_status=$?
-          set -e
-          test "$replay_source_status" -eq 2
-          grep -q '"kind":"final_outcome".*status=timeout' \
-            "$FLEET_WORKDIR/replay-source.out"
-          set -- "$FLEET_ARTIFACTS"/repro-timeout-*.crucible
-          test "$#" -eq 1
-          test -s "$1"
-          replay_source="$1"
-          r_start=$(now_ns)
-          "$crucible_bin" \
-            --backend qemu --seed 31 \
-            --store "$FLEET_STORE" --artifact-dir "$FLEET_ARTIFACTS" \
-            replay "$replay_source" \
-            > "$FLEET_WORKDIR/replay.out" 2>&1
-          r_end=$(now_ns)
-          grep -q '"kind":"final_outcome".*status=passed' "$FLEET_WORKDIR/replay.out"
-          restore_ms=$(( (r_end - r_start) / 1000000 ))
-          restore_source=thin-replay-from-live-qemu-artifact
-
           # --- Idle compression ([PERF-2], real): the same scenario at the
           # QEMU-backed workflow runs in bounded wall-clock; record it. ---
           idle_ms=$seq_ms
@@ -992,9 +1228,6 @@
             echo "realized_speedup_x100=$speedup_x100"
             echo "restore_latency_ms=$restore_ms"
             echo "restore_source=$restore_source"
-            echo "loadvm_boot_window_restore_ms=$loadvm_boot_ms"
-            echo "loadvm_cpu_timer_restore_ms=$loadvm_cpu_timer_ms"
-            echo "loadvm_mid_io_restore_ms=$loadvm_mid_io_ms"
             echo "idle_batch_ms=$idle_ms"
             echo "batch_size=$batch"
           } > "$FLEET_WORKDIR/perf-numbers.txt"
@@ -1019,15 +1252,14 @@
           "realized_speedup_x100=$speedup_x100"
           "restore_latency_ms=$restore_ms"
           "restore_source=$restore_source"
-          "loadvm_boot_window_restore_ms=$loadvm_boot_ms"
-          "loadvm_cpu_timer_restore_ms=$loadvm_cpu_timer_ms"
-          "loadvm_mid_io_restore_ms=$loadvm_mid_io_ms"
+          "direct_restore_to_runnable_us=$direct_restore_us"
+          "delta_restore_to_runnable_us=$delta_restore_us"
           "idle_batch_ms=$idle_ms"
           "batch_size=$batch"
           "$(cat \"$fleet_sweep\")"
           "metric_throughput=real-process-wall-clock-batch [PERF-13]"
           "metric_parallelism=real-process-concurrent-speedup [PERF-3]"
-          "metric_restore_latency=live-qmp-loadvm-plus-thin-replay-fallback [PERF-12]"
+          "metric_restore_latency=exact-descriptor-restore-through-runnable-cont [PERF-12]"
           "metric_coverage_ips=checks.crucible.phase0.coverageOverhead [PERF-14]"
           "metric_fleet_sweep=logical-host-concurrency-on-reference-runner [PERF-27]"
           "modeled_gate=checks.crucible.phase7.gates.perfBench"
@@ -1037,7 +1269,7 @@
     crucible-distributed-continuous-exploration = let
       fleetStore = pkgs.crucible-fleet-store;
       explorer = pkgs.crucible;
-      e2eGate = crucibleChecks.phase7.gates.e2eDeterminism.rawGate;
+      e2eNativeSlice = crucibleFleetChecks."crucible-e2e-determinism";
       fleetStoreGate = crucibleChecks.phase7.crucibleFleetStore;
       sharedDagStoreGate = crucibleChecks.phase7.crucibleSharedDagStore;
       frontierLeaseGate = crucibleChecks.phase7.crucibleFrontierLeases;
@@ -1060,7 +1292,7 @@
           pkgs.grep
           fleetStore
           explorer
-          e2eGate
+          e2eNativeSlice
           fleetStoreGate
           sharedDagStoreGate
           frontierLeaseGate
@@ -1080,9 +1312,10 @@
             script = ''
               set -eu
 
-              result="${e2eGate}/result"
+              result="${e2eNativeSlice}/result"
               grep -q '^PASS$' "$result"
-              grep -q '^gate=gate:e2e-determinism$' "$result"
+              grep -q '^component=gate:e2e-determinism/native-qemu-acceptance$' "$result"
+              grep -q '^canonical_gate_status=satisfied$' "$result"
 
               fleet_store_result="${fleetStoreGate}/result"
               grep -q '^PASS$' "$fleet_store_result"
@@ -1255,10 +1488,14 @@
               cat > "$out/result" <<'RESULT'
               PASS
               check=checks.fleet.crucible-distributed-continuous-exploration
-              gate=gate:fleet-equivalence
+              component=distributed-continuous-exploration-surface
+              component_status=passed
+              canonical_gate=gate:fleet-equivalence
+              canonical_gate_status=unmet
+              e2e_determinism_gate_status=satisfied
               source_check=checks.crucible.phase7.crucibleSharedDagStore
               package_check=checks.crucible.phase7.crucibleFleetStore
-              e2e_gate_result=${e2eGate}/result
+              e2e_native_slice_result=${e2eNativeSlice}/result
               fleet_store_gate_result=${fleetStoreGate}/result
               shared_dag_store_gate_result=${sharedDagStoreGate}/result
               frontier_lease_gate_result=${frontierLeaseGate}/result
@@ -1370,27 +1607,39 @@
     // {
       referenceIntegrity = crucibleReferenceIntegrity;
     };
-in {
-  inherit lib pkgs stdenv buildStdenv buildPackages modules mkSystem packagesWithExpose containerImages containerDefinitions releaseQualificationExecutor allPackages;
+in rec {
+  inherit lib pkgs stdenv buildStdenv buildPackages modules mkSystem mkAbilityQualificationProjection containerImages containerDefinitions releaseQualificationExecutor releaseTooling allPackages;
+  # nix-build does not descend through arbitrary nested check attrsets. An
+  # explicit list reaches every gate while stopping at derivations, whose
+  # passthru attributes are metadata rather than additional checks.
+  allChecks = lib.uniqueBy (check: check.drvPath) (
+    lib.collect (value: builtins.isAttrs value && lib.isDerivation value) {
+      repository = checks;
+      systems = lib.mapAttrs (_: system: system.checks) discoverSystems;
+    }
+  );
   packageQualificationCoverage = qualificationPackageCoverageReport;
 
   # Pure, fail-closed release eligibility data. The release coordinator reads
   # this value with strict JSON evaluation before resolving any derivation.
-  releasePackageInventory = pkgs.platformSupport.releaseInventory pkgs.allPackageNames;
+  releasePackageInventory = requireReleasePlatforms (
+    pkgs.platformSupport.releaseInventory pkgs.allPackageNames
+  );
   inherit releaseQualification;
-  releasePackageDerivations = pkgs.platformSupport.releaseDerivations {
-    system = hostPlatform.system;
-    packages = pkgs;
-    names = pkgs.allPackageNames;
-    configurationBaseLib = discoverSystems.server.config.aos.config.evalAtBoot.baseLib;
-    configurationSources = [./lib ./modules ./systems/server.nix];
-  };
-  releasePackageDerivationRoots = pkgs.platformSupport.releaseDerivationRoots {
-    system = hostPlatform.system;
-    packages = pkgs;
-    names = pkgs.allPackageNames;
-    configurationBaseLib = discoverSystems.server.config.aos.config.evalAtBoot.baseLib;
-  };
+  releasePackageDerivations = requireReleasePlatforms (
+    pkgs.platformSupport.releaseDerivations {
+      system = hostPlatform.system;
+      packages = pkgs;
+      names = pkgs.allPackageNames;
+    }
+  );
+  releasePackageDerivationRoots = requireReleasePlatforms (
+    pkgs.platformSupport.releaseDerivationRoots {
+      system = hostPlatform.system;
+      packages = pkgs;
+      names = pkgs.allPackageNames;
+    }
+  );
 
   # Pure package-maintenance content. Git and local-clone identities are added
   # only by the local controller after strict canonical evaluation.
@@ -1404,44 +1653,113 @@ in {
   # stays at the top level.
   checks = rec {
     terrane = import ./tests/terrane {inherit pkgs lib mkSystem;};
+    bootstrap.kotlin-java = import ./pkgs/toolchain/_kotlin-bootstrap-2011.nix {
+      inherit (buildPackages) mkDerivation;
+      inherit (lib) fetchgit fetchurl;
+      inherit buildPackages;
+    };
+    bootstrap.kotlin-november = import ./pkgs/toolchain/_kotlin-bootstrap-november-2013.nix {
+      inherit (buildPackages) mkDerivation;
+      inherit (lib) fetchgit fetchurl;
+      inherit buildPackages;
+    };
+    bootstrap.kotlin-stdlib-december = import ./pkgs/toolchain/_kotlin-stdlib-december-2013.nix {
+      inherit (buildPackages) mkDerivation;
+      inherit (lib) fetchgit fetchurl;
+      inherit buildPackages;
+    };
+    bootstrap.kotlin-december = import ./pkgs/toolchain/_kotlin-bootstrap-december-2013.nix {
+      inherit (buildPackages) mkDerivation;
+      inherit (lib) fetchgit fetchurl;
+      inherit buildPackages;
+    };
+    bootstrap.kotlin-stdlib-january = import ./pkgs/toolchain/_kotlin-stdlib-january-2014.nix {
+      inherit (buildPackages) mkDerivation;
+      inherit (lib) fetchgit fetchurl;
+      inherit buildPackages;
+    };
+    bootstrap.kotlin-february = import ./pkgs/toolchain/_kotlin-bootstrap-february-2014.nix {
+      inherit (buildPackages) mkDerivation;
+      inherit (lib) fetchgit fetchurl;
+      inherit buildPackages;
+    };
+    bootstrap.kotlin-stdlib-february = import ./pkgs/toolchain/_kotlin-stdlib-february-2014.nix {
+      inherit (buildPackages) mkDerivation;
+      inherit (lib) fetchgit fetchurl;
+      inherit buildPackages;
+    };
     image-matrix = testing.mkImageMatrix {
       systems = discoverSystems;
-      sourceIdentity = toString pkgs.aos.src;
+      sourceIdentity = toString pkgs.aos.passthru.integrationSource;
+      evalCheck = image-cross-platform;
     };
-    qualification = import ./tests/qualification {
-      inherit pkgs lib build fleet container;
-      packageCoverage = qualificationPackageCoverageReport;
-      releaseExecutor = releaseQualificationExecutor;
+    image-cross-platform = pkgs.mkDerivation {
+      pname = "aos-image-cross-platform-check";
+      version = "0";
+      src = null;
+      phases = [
+        {
+          name = "check";
+          script = ''
+            : ${builtins.toString (import ./lib/testing/image-platform.nix)}
+            mkdir -p "$out"
+            echo PASS > "$out/result"
+          '';
+        }
+      ];
     };
+    image-assertions = import ./lib/testing/image-assertions.nix {inherit pkgs lib;};
+    qualification = let
+      nativeChecks = import ./tests/qualification {
+        inherit pkgs lib build fleet container nativeAdapterMatrix nativeOperationSpec;
+        inherit releaseQualificationScenarios releaseQualificationCaseScenarios;
+      };
+    in
+      nativeChecks
+      // {
+        package-probe-coverage = qualificationPackageCoverageCheck;
+        all = nativeChecks.all.overrideAttrs (previous: {
+          buildDeps = previous.buildDeps ++ [qualificationPackageCoverageCheck];
+        });
+      };
     rust = {
       cargo-artifacts = import ./tests/cargo-artifacts {inherit pkgs;};
-      aos = pkgs.aos;
+      aos = pkgs.aos.passthru.tests;
       aos-test-targets = pkgs.aos.passthru.testTargets;
+      systemd-native-unit-parser = import ./tests/abilities/systemd-native-unit-parser.nix {inherit pkgs;};
       crucible-controller = pkgs.crucible-controller;
       crucible-qemu-plugin = pkgs.crucible-qemu-plugin;
       crucible-guest = pkgs.crucible-guest;
     };
-    eval-standalone = import ./lib/testing/eval.nix {
-      inherit pkgs lib mkSystem packagesWithExpose;
-      system = serverSystem;
+    # Pure ability suites evaluate focused module fixed points. Full image
+    # construction belongs to the build and qualification checks.
+    ability-suites = import ./tests/abilities {inherit pkgs lib;};
+    effects = import ./tests/effects {inherit pkgs;};
+    abilities = pkgs.mkDerivation {
+      pname = "aos-ability-checks";
+      version = "0";
+      src = null;
+      buildDeps = builtins.attrValues ability-suites;
+      phases = [
+        {
+          name = "check";
+          script = ''
+            mkdir -p "$out"
+            echo PASS > "$out/result"
+          '';
+        }
+      ];
     };
-    package-maintenance = import ./lib/testing/package-maintenance.nix {inherit pkgs lib;};
-    # Pure evaluation and focused all-variant output contracts are one gate.
-    # Rendered store paths remain contextual Nix references rather than
-    # duplicated source snapshots.
-    eval = pkgs.mkDerivation {
-      pname = "aos-eval-and-system-structure-checks";
+    package-maintenance = import ./tests/packages/maintenance.nix {inherit pkgs lib;};
+    # The core remains a quick authoring gate. The public eval aggregate below
+    # also reaches native policy, provider, stage and provenance coverage.
+    eval-core = pkgs.mkDerivation {
+      pname = "aos-eval-core-checks";
       version = "0";
       src = null;
       buildDeps = [
-        eval-standalone
-        system-structure
-        config-eval
-        config-manifest
-        config-provenance
-        config-materialize
-        config-parity
-        darling-harness
+        ability-suites.authoring
+        image-assertions
         package-maintenance
       ];
       phases = [
@@ -1450,6 +1768,37 @@ in {
           script = ''
             mkdir -p $out
             echo PASS > $out/result
+          '';
+        }
+      ];
+    };
+    eval-suites = {
+      core = eval-core;
+      abilities-package-services = ability-suites.package-services;
+      abilities-provider-realization = ability-suites.provider-realization;
+      abilities-native-resources = ability-suites.native-resources;
+      abilities-system-selection = ability-suites.system-selection;
+      abilities-system-packages = ability-suites.system-packages;
+      effects = effects;
+      baseline-policy = import ./tests/abilities/baseline-policy.nix {inherit pkgs lib;};
+      config-provenance = configProvenanceChecks.suites;
+      rendered-evaluation = builtins.removeAttrs renderedEvalSuites ["rendered-system"];
+    };
+    eval = pkgs.mkDerivation {
+      pname = "aos-native-evaluation-checks";
+      version = "0";
+      src = null;
+      # Collect leaf suites, stopping at derivations; aliases cannot introduce
+      # recursion or schedule the same check more than once.
+      buildDeps = lib.uniqueBy (check: check.drvPath) (
+        lib.collect (value: builtins.isAttrs value && lib.isDerivation value) eval-suites
+      );
+      phases = [
+        {
+          name = "check";
+          script = ''
+            mkdir -p "$out"
+            echo PASS > "$out/result"
           '';
         }
       ];
@@ -1469,12 +1818,21 @@ in {
         pkgs = buildPackages;
       };
       aos-dev-cli = import ./tests/build/aos-dev-cli.nix {inherit pkgs;};
+      aos-cloud-vm = import ./tests/build/aos-cloud-vm.nix {inherit pkgs;};
+      accache = import ./tests/build/accache.nix {
+        inherit lib;
+        pkgs = buildPackages;
+      };
       aos-dev-cache-identity = import ./tests/build/aos-dev-cache-identity.nix {
         inherit pkgs system crossSystem;
       };
       bootstrap-seed =
         if buildPlatform.isLinux && buildPlatform.isx86_64
         then import ./tests/build/bootstrap-seed.nix {pkgs = buildPackages;}
+        else null;
+      artifact-consumption =
+        if hostPlatform.isLinux && hostPlatform.is64bit
+        then import ./tests/build/artifact-consumption.nix {inherit pkgs lib;}
         else null;
       critical-pkgs = import ./tests/build/critical-pkgs.nix {inherit pkgs lib;};
       cross-platform-foundation = import ./tests/build/cross-platform-foundation.nix {
@@ -1495,6 +1853,8 @@ in {
       gcc-config-shell = import ./tests/build/mk-gcc-config-shell.nix {inherit pkgs lib;};
       hardening-probe = import ./tests/build/hardening-probe.nix {inherit pkgs lib;};
       kernel-config = import ./tests/build/kernel-config.nix {inherit pkgs lib;};
+      rootfs-kernel-modules = import ./tests/build/rootfs-kernel-modules.nix {inherit pkgs lib;};
+      python-bytecode = import ./tests/build/python-bytecode.nix {pkgs = buildPackages;};
       linux-cross-smoke = import ./tests/build/linux-cross-smoke.nix {
         pkgs = buildPackages;
       };
@@ -1521,36 +1881,109 @@ in {
       package-platform-support = import ./tests/build/package-platform-support.nix {
         pkgs = buildPackages;
       };
+      package-platform-declarations = import ./tests/build/package-platform-declarations.nix {
+        pkgs = buildPackages;
+      };
+      release-inventory-boundary = import ./tests/build/release-inventory-boundary.nix {
+        inherit pkgs;
+        platform = pkgs.stdenv.hostPlatform.system;
+        releasePackageInventory = pkgs.platformSupport.releaseInventory pkgs.allPackageNames;
+      };
       runtime-python-outputs = import ./tests/build/runtime-python-outputs.nix {
+        pkgs = buildPackages;
+      };
+      propagated-dependency-closure = import ./tests/build/propagated-dependency-closure.nix {
         pkgs = buildPackages;
       };
       structured-attrs-export = import ./tests/build/structured-attrs-export.nix {
         pkgs = buildPackages;
       };
       external-image-assembly = import ./tests/build/external-image-assembly.nix {
-        inherit pkgs lib mkSystem;
+        inherit pkgs lib;
+        mkSystem = mkFixtureSystem;
       };
-      package-root-image = import ./lib/testing/package-root-image.nix {inherit pkgs lib;};
-      systemd-verity = import ./lib/testing/systemd-verity.nix {inherit pkgs lib;};
-      # Externally finalized variants have no final image or image-budget
-      # check. Their unsigned assembly is covered by its own build checks.
-      golden-image-budgets = builtins.listToAttrs (builtins.concatMap (
-        name: let
-          system = discoverSystems.${name};
-        in
-          if system.checks ? image-budget
-          then [
-            {
-              inherit name;
-              value = system.checks.image-budget;
-            }
-          ]
-          else []
-      ) (builtins.attrNames discoverSystems));
+      initrd-module-hardlinks = import ./tests/build/initrd-module-hardlinks.nix {inherit pkgs lib;};
+      esp-population = import ./tests/build/esp-population.nix {inherit pkgs;};
+      initrd-stage-contract = import ./tests/build/initrd-stage-contract.nix {
+        inherit pkgs lib;
+        mkSystem = mkFixtureSystem;
+      };
+      native-stage-replay = let
+        checks = import ./tests/build/native-stage-replay.nix {
+          inherit lib;
+          config = serverSystem.config;
+        };
+      in
+        assert builtins.all (value: value) (builtins.attrValues checks);
+          pkgs.writeTextFile {
+            name = "aos-native-stage-replay";
+            destination = "/result.json";
+            text = builtins.toJSON checks;
+          };
+      native-profile-replay = let
+        checks = import ./tests/build/native-profile-replay.nix {
+          inherit lib;
+          system = serverSystem;
+        };
+        checkAll = value:
+          if builtins.isAttrs value
+          then builtins.all checkAll (builtins.attrValues value)
+          else value == true;
+      in
+        assert checkAll checks;
+          pkgs.writeTextFile {
+            name = "aos-native-profile-replay";
+            destination = "/result.json";
+            text = builtins.toJSON checks;
+          };
+      initrd-native-inputs = serverSystem.config.system.build.initrdDeploymentBundle;
+      host-native-inputs = serverSystem.config.system.build.hostDeploymentBundle;
+      native-module-roots = import ./tests/build/native-module-roots.nix {
+        inherit pkgs;
+        system = serverSystem;
+      };
+      systemd-verity = import ./tests/abilities/systemd-verity.nix {inherit pkgs lib;};
+      # Experimental variants leave signing to the release finalizer, so Nix has no
+      # final image for the signed-artifact budget check. Keep the exemption
+      # explicit: any other missing check must stop whole-check evaluation.
+      imageBudgetExemptSystemNames = [
+        "aos-experimental"
+        "aos-experimental-staging"
+      ];
+      systemsMissingImageBudgets = builtins.filter (
+        name: !(discoverSystems.${name}.checks ? image-budget)
+      ) (builtins.attrNames discoverSystems);
+      invalidImageBudgetExemptions =
+        builtins.filter (
+          name:
+            !discoverSystems.${name}.config.aos.boot.secureBoot.externalFinalization.enable
+            || discoverSystems.${name}.build.unsignedImageAssembly == null
+        )
+        imageBudgetExemptSystemNames;
+      imageBudgetSystems =
+        if systemsMissingImageBudgets != imageBudgetExemptSystemNames
+        then
+          throw ''
+            golden image budget inventory mismatch: expected exemptions ${builtins.toJSON imageBudgetExemptSystemNames}, found ${builtins.toJSON systemsMissingImageBudgets}
+          ''
+        else if invalidImageBudgetExemptions != []
+        then
+          throw ''
+            golden image budget exemptions must produce an external-finalization assembly: ${builtins.toJSON invalidImageBudgetExemptions}
+          ''
+        else builtins.removeAttrs discoverSystems imageBudgetExemptSystemNames;
+      golden-image-budgets = lib.mapAttrs (_: system: system.checks.image-budget) imageBudgetSystems;
     in
       {
-        inherit toolchain-boundaries native-sandbox-boundary aos-dev-cli aos-dev-cache-identity;
-        inherit critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix external-image-assembly gcc-config-shell hardening-probe kernel-config linux-cross-smoke linux-hosted-toolchain linux-hosted-llvm linux-hosted-rust linux-workerd package-platform-support package-root-image runtime-python-outputs structured-attrs-export systemd-verity golden-image-budgets;
+        inherit toolchain-boundaries native-sandbox-boundary aos-dev-cli aos-cloud-vm aos-dev-cache-identity accache python-bytecode;
+        inherit artifact-consumption native-module-roots critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix external-image-assembly gcc-config-shell esp-population hardening-probe host-native-inputs initrd-native-inputs initrd-module-hardlinks initrd-stage-contract native-stage-replay native-profile-replay kernel-config rootfs-kernel-modules linux-cross-smoke linux-hosted-toolchain linux-hosted-llvm linux-hosted-rust linux-workerd package-platform-declarations package-platform-support propagated-dependency-closure release-inventory-boundary runtime-python-outputs structured-attrs-export systemd-verity golden-image-budgets;
+        # These checks inspect realized closures, so keep them out of the pure evaluation layer.
+        inherit config-eval config-materialize boot-configuration native-projection-input image-metadata darling-harness;
+        config-manifest = config-manifest;
+        config-provenance = configProvenanceChecks.suites;
+        rendered-evaluation = builtins.removeAttrs renderedEvalSuites ["rendered-system"];
+        rendered-system = renderedEvalSuites.rendered-system;
+        system-structure = system-structure-variants;
         # Single target that pulls in the whole build-check group.
         all = pkgs.mkDerivation {
           pname = "aos-build-checks-all";
@@ -1562,11 +1995,14 @@ in {
               then [bootstrap-seed]
               else []
             )
-            ++ [toolchain-boundaries.all native-sandbox-boundary aos-dev-cli aos-dev-cache-identity critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix.all external-image-assembly gcc-config-shell kernel-config linux-hosted-toolchain linux-workerd package-platform-support package-root-image runtime-python-outputs structured-attrs-export systemd-verity]
+            ++ lib.optional (artifact-consumption != null) artifact-consumption
+            ++ [toolchain-boundaries.all native-sandbox-boundary aos-dev-cli aos-cloud-vm aos-dev-cache-identity accache python-bytecode native-module-roots critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix.all external-image-assembly gcc-config-shell esp-population initrd-module-hardlinks initrd-stage-contract native-stage-replay native-profile-replay kernel-config rootfs-kernel-modules linux-hosted-toolchain linux-workerd package-platform-declarations package-platform-support propagated-dependency-closure release-inventory-boundary runtime-python-outputs structured-attrs-export systemd-verity config-eval config-materialize boot-configuration native-projection-input image-metadata darling-harness config-manifest configProvenanceChecks.all renderedEvalSuites.rendered-system]
+            ++ builtins.attrValues (builtins.removeAttrs renderedEvalSuites ["rendered-system"])
             ++ builtins.attrValues hardening-probe
             ++ builtins.attrValues linux-hosted-llvm
             ++ builtins.attrValues linux-hosted-rust
-            ++ builtins.attrValues golden-image-budgets;
+            ++ builtins.attrValues golden-image-budgets
+            ++ builtins.attrValues system-structure-variants;
           phases = [
             {
               name = "check";
@@ -1586,43 +2022,48 @@ in {
     trivial-builders = import ./lib/testing/trivial-builders.nix {inherit pkgs lib;};
     module-args = import ./lib/testing/module-args.nix {inherit pkgs lib;};
     module-enforcement = import ./lib/testing/module-enforcement.nix {inherit pkgs lib;};
-    package-documentation = import ./lib/testing/package-documentation.nix {
+    package-documentation = import ./tests/packages/documentation.nix {
       inherit pkgs lib;
       system = serverSystem;
     };
-    # Off-host config-eval preflight and flat-to-module parity gates.
-    # (operability.md). Pure eval-time, next to checks.eval, cheap on every PR.
-    config-eval = import ./lib/testing/config-eval.nix {inherit pkgs lib;};
+    # Real isolated-store evaluation and first-host adoption exercise the
+    # public APIs against source-built fixtures without requiring a VM.
+    native-projection-input = import ./tests/build/native-projection-input.nix {inherit pkgs lib;};
+    image-metadata = import ./tests/effects/image-metadata.nix {inherit pkgs;};
+    boot-configuration = import ./lib/testing/boot-configuration.nix {
+      inherit pkgs lib;
+      mkSystem = mkFixtureSystem;
+    };
+    config-eval = import ./lib/testing/config-eval.nix {
+      inherit pkgs lib;
+      mkSystem = mkFixtureSystem;
+    };
     config-manifest = import ./lib/testing/config-manifest.nix {
       inherit pkgs lib;
       system = discoverSystems.server;
     };
-    config-provenance = import ./lib/testing/config-provenance.nix {
-      inherit pkgs mkSystem;
-      serverModule = ./systems/server.nix;
-    };
-    nginx-config = import ./lib/testing/nginx-config.nix {
-      inherit pkgs lib mkSystem;
-      serverModule = ./systems/server.nix;
-    };
-    registry-hub = import ./lib/testing/registry-hub.nix {
-      inherit pkgs lib mkSystem;
-      serverModule = ./systems/server.nix;
-    };
-    aos-registry-server-config = import ./lib/testing/aos-registry-server-config.nix {
+    config-provenance = configProvenanceChecks.all;
+    nginx-config = import ./tests/packages/nginx-config.nix {
       inherit pkgs lib;
+      mkSystem = mkFixtureSystem;
+      serverModule = ./systems/server.nix;
     };
-    k3s-config = import ./lib/testing/k3s-config.nix {inherit pkgs lib;};
+    registry-hub = import ./tests/packages/registry-hub.nix {
+      inherit pkgs lib;
+      mkSystem = mkFixtureSystem;
+      serverModule = ./systems/server.nix;
+    };
     config-source-gc = import ./lib/testing/config-source-gc.nix {inherit pkgs lib;};
     container = rec {
       phase0 = import ./tests/containers/phase0.nix {
         inherit pkgs lib;
-        goldenRoots = discoverSystems.server.config.aos.containers.definitions.aos.packageRoots;
+        bakedRoots = discoverSystems.server.config.aos.containers.definitions.aos.packageRoots;
       };
       eval = import ./tests/containers/eval.nix {
-        inherit pkgs lib mkSystem;
+        inherit pkgs lib;
+        mkSystem = mkFixtureSystem;
         serverModule = ./systems/server.nix;
-        testingModule = ./systems/aos-testing.nix;
+        experimentalModule = ./systems/aos-experimental.nix;
         aosSystem = hostPlatform.system;
       };
       oci-builders = import ./tests/containers/oci-builders.nix {inherit pkgs lib;};
@@ -1636,7 +2077,7 @@ in {
         inherit pkgs lib;
         containerImage = containerImages.aos;
         aosSystem = hostPlatform.system;
-        goldenRoots = discoverSystems.server.config.aos.containers.definitions.aos.packageRoots;
+        bakedRoots = discoverSystems.server.config.aos.containers.definitions.aos.packageRoots;
         # These are negative exact-path assertions, not test dependencies. Drop
         # string context so proving their absence does not build or retain the
         # bootable system artifacts the container deliberately excludes.
@@ -1659,6 +2100,7 @@ in {
         };
       };
       aos-runtime-closure = containerImages.aos.checks.runtimeAudit;
+      shell = import ./tests/containers/shell.nix {inherit pkgs lib;};
       production-reproducibility = containerImages.aos.checks.reproducibility;
       all = import ./tests/containers/default.nix {
         inherit pkgs;
@@ -1669,13 +2111,16 @@ in {
           evidence-platforms
           evidence
           runtime
+          shell
           aos-runtime-closure
           production-reproducibility
         ];
       };
     };
-    config-materialize = import ./lib/testing/config-materialize.nix {inherit pkgs lib;};
-    config-parity = import ./lib/testing/config-parity.nix {inherit pkgs lib;};
+    config-materialize = import ./lib/testing/config-materialize.nix {
+      inherit pkgs lib;
+      mkSystem = mkFixtureSystem;
+    };
     # Complete non-KVM on-host configuration gate. The image lifecycle and
     # degraded-network contracts are exercised by the fleet aggregate below.
     runtime-config-all = pkgs.mkDerivation {
@@ -1686,30 +2131,26 @@ in {
         [
           pkgs.aos
           config-eval
+          boot-configuration
           config-manifest
           config-materialize
-          config-parity
           eval
           module-args
           module-enforcement
           package-documentation
-          package-expose
-          aos-registry-server-config
           registry-hub
           nginx-config
-          k3s-config
-          integration.envoy-config-module-contract
+          integration.envoy-ability-module-contract
           integration.cloudcore-config
           integration.conntrack-tools-config
           integration.containerd-config-module-contract
           integration.edgecore-config
-          integration.etcd-config-module-contract
+          integration.etcd-ability-module-contract
           integration.garage-config-module-contract
           integration.krb5-config
           integration.mariadb-config-module-contract
           integration.openldap-config
-          integration.postgresql-expose-contract
-          integration.postgresql-module-contract
+          integration.postgresql-ability-module-contract
           integration.rsync-config
           config-source-gc
           config-provenance
@@ -1732,67 +2173,55 @@ in {
     };
     darling-harness = import ./lib/testing/darling-check.nix {inherit pkgs lib;};
     fleet-spec = import ./lib/testing/fleet-spec-check.nix {inherit pkgs lib;};
-    systemd-lib = import ./lib/testing/systemd-lib.nix {inherit pkgs lib;};
-    systemd-generate = import ./lib/testing/systemd-generate.nix {inherit pkgs lib;};
+    systemd-lib = import ./tests/abilities/systemd-lib.nix {inherit pkgs lib;};
+    systemd-generate = import ./tests/abilities/systemd-generate.nix {inherit pkgs lib;};
     crucible = crucibleChecks;
-    system-structure = let
-      variants = lib.mapAttrs (variant: system:
-        import ./lib/testing/system-structure.nix {
-          inherit pkgs lib variant system;
-        })
-      discoverSystems;
-      check = pkgs.mkDerivation {
-        pname = "aos-system-structure-all";
-        version = "0";
-        src = null;
-        buildDeps = builtins.attrValues variants;
-        phases = [
-          {
-            name = "check";
-            script = ''
-              mkdir -p $out
-              echo PASS > $out/result
-            '';
-          }
-        ];
-      };
-    in
-      check
-      // {
-        inherit variants;
-      };
-    systemd-credentials = import ./lib/testing/systemd-credentials.nix {inherit pkgs lib;};
-    systemd-verity = build.systemd-verity;
-    package-expose = import ./lib/testing/package-expose.nix {
-      inherit pkgs lib mkSystem packagesWithExpose;
+    system-structure-variants = lib.mapAttrs (variant: system:
+      import ./lib/testing/system-structure.nix {
+        inherit pkgs lib variant system;
+      })
+    discoverSystems;
+    system-structure = pkgs.mkDerivation {
+      pname = "aos-system-structure-all";
+      version = "0";
+      src = null;
+      buildDeps = builtins.attrValues system-structure-variants;
+      phases = [
+        {
+          name = "check";
+          script = ''
+            mkdir -p $out
+            echo PASS > $out/result
+          '';
+        }
+      ];
     };
-    package-firewall-reload = packageFirewallReloadCheck;
-    package-expose-lifecycle = packageExposeLifecycleCheck;
+    systemd-credentials = import ./tests/abilities/systemd-credentials.nix {inherit pkgs lib;};
+    systemd-verity = build.systemd-verity;
     package-preset = packagePresetCheck;
-    package-test-http-server = packageTestHttpServerCheck;
     selinux-base = selinuxBaseCheck;
     apm-install-at-boot = apmInstallAtBootCheck;
-    lint = import ./lib/testing/package-lint.nix {inherit pkgs lib;};
+    lint = import ./tests/packages/lint.nix {inherit pkgs lib;};
     # Module-level VM checks (from server system, for backwards compat)
     vm =
       serverVmSystem.config.system.build.checks
       // {
         apm = apmTests;
         hub-native-operations = hubNativeOperationsTest;
+        native-configuration-lower = import ./tests/vm/configuration-lower.nix {inherit pkgs testing;};
         hub-settings = hubSettingsTest;
         apm-install-at-boot = apmInstallAtBootCheck;
-        package-expose-lifecycle = packageExposeLifecycleCheck;
+        homes-enabled = homesEnabledCheck;
         package-preset = packagePresetCheck;
-        package-test-http-server = packageTestHttpServerCheck;
         selinux-base = selinuxBaseCheck;
       };
     integration = packageChecks // stdenvChecks;
     fleet = let
       base = discoverFleetTests // crucibleFleetChecks;
       runtimeConfigNames = [
+        "ability-native-power-loss"
         "apm-desired-sequencing"
         "apm-sysroot-lock"
-        "apm-system-activation-fail"
         "apm-system-upgrade"
         "config-degraded-boot"
         "config-generation-gc-roots"

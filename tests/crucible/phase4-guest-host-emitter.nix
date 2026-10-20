@@ -7,12 +7,13 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  guestCargo = builtins.readFile ../../crates/crucible-guest/Cargo.toml;
-  guestLib = builtins.readFile ../../crates/crucible-guest/src/lib.rs;
-  guestMain = builtins.readFile ../../crates/crucible-guest/src/main.rs;
-  guestGate = builtins.readFile ../../crates/crucible-guest/tests/gate_abi_conformance.rs;
+  guestCargo = builtins.readFile ../../crates/crucible/guest/crucible-guest/Cargo.toml;
+  guestLib = builtins.readFile ../../crates/crucible/guest/crucible-guest/src/lib.rs;
+  guestMain = builtins.readFile ../../crates/crucible/guest/crucible-guest/src/main.rs;
+  guestGate = builtins.readFile ../../crates/crucible/guest/crucible-guest/tests/gate_abi_conformance.rs;
+  protocolDoorbellAbi = builtins.readFile ../../crates/crucible/protocol/crucible-qemu-protocol/src/doorbell_abi.rs;
   guestPackage = builtins.readFile ../../pkgs/tools/crucible-guest.nix;
-  gateTargets = builtins.readFile ../../crates/crucible-harness/src/gate_targets.rs;
+  gateTargets = builtins.readFile ../../crates/crucible/testing/crucible-test-support/src/gate_targets.rs;
   guestHostDoc = builtins.readFile ../../docs/rfcs/0010-crucible/16-guest-host-channel.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   phaseGate = builtins.readFile ./phase4-guest-host-emitter.nix;
@@ -29,7 +30,7 @@
       }
       {
         label = "guest emitter implementation note";
-        needle = "`crucible-guest::GuestCommand`";
+        needle = "`crucible_guest::GuestCommand`";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
@@ -38,7 +39,7 @@
         needle = "Guest↔host channel + optional agent";
       }
     ]
-    ++ failuresFor "crates/crucible-guest/Cargo.toml" guestCargo [
+    ++ failuresFor "crates/crucible/guest/crucible-guest/Cargo.toml" guestCargo [
       {
         label = "guest binary name";
         needle = "name = \"crucible-guest\"";
@@ -49,16 +50,16 @@
       }
       {
         label = "guest protocol dependency";
-        needle = "crucible-protocol = { path = \"../crucible-protocol\" }";
+        needle = "crucible-qemu-protocol = { path = \"../../protocol/crucible-qemu-protocol\" }";
       }
     ]
-    ++ forbiddenFor "crates/crucible-guest/Cargo.toml" guestCargo [
+    ++ forbiddenFor "crates/crucible/guest/crucible-guest/Cargo.toml" guestCargo [
       {
         label = "CLI parser dependency";
         needle = "clap";
       }
     ]
-    ++ failuresFor "crates/crucible-guest/src/lib.rs" guestLib [
+    ++ failuresFor "crates/crucible/guest/crucible-guest/src/lib.rs" guestLib [
       {
         label = "guest command type";
         needle = "pub struct GuestCommand";
@@ -112,7 +113,7 @@
         needle = "frame[..width].to_vec()";
       }
     ]
-    ++ failuresFor "crates/crucible-guest/src/main.rs" guestMain [
+    ++ failuresFor "crates/crucible/guest/crucible-guest/src/main.rs" guestMain [
       {
         label = "main uses native transport";
         needle = "InstructionDoorbellTransport::native()";
@@ -130,7 +131,7 @@
         needle = "hex_lower(&reply)";
       }
     ]
-    ++ failuresFor "crates/crucible-guest/tests/gate_abi_conformance.rs" guestGate [
+    ++ failuresFor "crates/crucible/guest/crucible-guest/tests/gate_abi_conformance.rs" guestGate [
       {
         label = "CLI marker verb coverage";
         needle = "guest_cli_verbs_encode_shared_marker_payloads";
@@ -175,19 +176,33 @@
       }
       {
         label = "packaged guest system";
-        needle = "packaged_guest_system=" + "$" + "{lib.system}";
+        needle = "packaged_guest_system=" + "$" + "{stdenv.hostPlatform.system}";
       }
       {
         label = "instruction ABI architectures";
         needle = "instruction_abi_architectures=x86_64,aarch64";
       }
       {
-        label = "instruction ABI version";
-        needle = "doorbell_instruction_abi_version=4";
+        label = "instruction ABI version extraction";
+        needle = "doorbell_instruction_abi_version=" + "$" + "(sed -n";
+      }
+      {
+        label = "instruction ABI version source";
+        needle = "WHITEBOX_DOORBELL_INSTRUCTION_ABI_VERSION";
+      }
+      {
+        label = "instruction ABI version build information";
+        needle = "doorbell_instruction_abi_version=" + "$" + "doorbell_instruction_abi_version";
       }
       {
         label = "single-source ABI source";
         needle = "abi_source=crucible-protocol::doorbell_abi::WHITEBOX_DOORBELL_ABIS";
+      }
+    ]
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-protocol/src/doorbell_abi.rs" protocolDoorbellAbi [
+      {
+        label = "instruction ABI version 4";
+        needle = "pub const WHITEBOX_DOORBELL_INSTRUCTION_ABI_VERSION: u16 = 4;";
       }
     ]
     ++ failuresFor "tests/crucible/phase4-guest-host-emitter.nix" phaseGate [
@@ -200,7 +215,7 @@
         needle = "\${pkgs.crucible-guest}/nix-support/crucible-guest-build-info";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/src/gate_targets.rs" gateTargets [
+    ++ failuresFor "crates/crucible/testing/crucible-test-support/src/gate_targets.rs" gateTargets [
       {
         label = "guest ABI conformance target";
         needle = "package: \"crucible-guest\"";
@@ -236,7 +251,9 @@ in
       pname = "crucible-phase4-guest-host-emitter";
       version = "0";
       src = crucibleSrc;
-      buildDeps = [pkgs.coreutils pkgs.rust pkgs.sed pkgs.patchelf pkgs.crucible-guest];
+      runtimeDeps = [pkgs.sqlite];
+
+      buildDeps = [pkgs.sqlite pkgs.coreutils pkgs.rust pkgs.sed pkgs.patchelf pkgs.crucible-guest];
       phases = [
         {
           name = "unpack";
@@ -290,6 +307,10 @@ in
             build_info="${pkgs.crucible-guest}/nix-support/crucible-guest-build-info"
             test -f "$build_info"
             build_info_content="$(cat "$build_info")"
+            doorbell_instruction_abi_version=$(sed -n \
+              's/^pub const WHITEBOX_DOORBELL_INSTRUCTION_ABI_VERSION: u16 = \([0-9][0-9]*\);$/\1/p' \
+              crates/crucible/protocol/crucible-qemu-protocol/src/doorbell_abi.rs)
+            test -n "$doorbell_instruction_abi_version"
             case "$build_info_content" in
               *"rustflags=-C target-feature=+crt-static"*) ;;
               *) echo "crucible-guest package missing static Rust flags" >&2; exit 1 ;;
@@ -299,7 +320,7 @@ in
               *) echo "crucible-guest package missing ABI source proof" >&2; exit 1 ;;
             esac
             case "$build_info_content" in
-              *"doorbell_instruction_abi_version=4"*) ;;
+              *"doorbell_instruction_abi_version=$doorbell_instruction_abi_version"*) ;;
               *) echo "crucible-guest package missing instruction ABI version" >&2; exit 1 ;;
             esac
             if patchelf --print-interpreter "${pkgs.crucible-guest}/bin/crucible-guest" \
@@ -323,10 +344,10 @@ in
             package=crucible-guest
             binary=crucible-guest
             static_contract=target-feature=+crt-static
-            packaged_guest_system=${lib.system}
+            packaged_guest_system=${pkgs.stdenv.hostPlatform.system}
             instruction_abi_architectures=x86_64,aarch64
             abi_source=crucible-protocol::doorbell_abi::WHITEBOX_DOORBELL_ABIS
-            marker_source=crucible-protocol::doorbell_marker
+            marker_source=crucible_qemu_protocol::doorbell_marker
             RESULT
           '';
         }

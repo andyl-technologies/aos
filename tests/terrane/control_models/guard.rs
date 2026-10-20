@@ -9,7 +9,7 @@ use super::{
     original,
     wire::{self, Value, a, b, m, s, u},
 };
-use terrane_core::{gc::publication::evidence::*, refs::Locality};
+use terrane_format::{gc::publication::evidence::*, refs::Locality};
 
 const BEHAVIOR: &str = "acl baseline chunk classify compaction_threshold compression dedup degraded domain durability encryption gap_merge_bytes hashes home index merge on-release passthrough prefetch quota reassembly redundancy reflog_retain replicate retain span_max_bytes store strict-attrs trust warm whole_pack_threshold wipe writers";
 

@@ -3,7 +3,7 @@
 Status: planning
 Audience: anyone planning the package model, the package execution substrate,
 apm/registry integration, or the boot-time activation path
-(`modules/roles/`, `crates/aos-package/`, `modules/services/ignition.nix`,
+(`modules/roles/`, `crates/aos/packages/aos-package-manager/`, `modules/services/ignition.nix`,
 `lib/testing/`, `pkgs/system/systemd.nix`).
 
 This is the "what we must decide" doc for the packages direction: every unit of
@@ -38,7 +38,7 @@ Each decision is tagged with a rough disposition:
 - **DEFER** — can ship a placeholder and revisit; must be explicitly tracked.
 
 Owners are roles, not people: *packages-core* (the module synthesis),
-*apm* (`crates/aos-package/`), *boot* (`modules/services/ignition.nix`),
+*apm* (`crates/aos/packages/aos-package-manager/`), *boot* (`modules/services/ignition.nix`),
 *test-infra* (`lib/testing/`), *pkgs* (`pkgs/system/systemd.nix`,
 package-root builders).
 
@@ -263,7 +263,7 @@ reuses the rootfs pattern (`mkfs.ext4 -d`, `fakeroot`, closure discovery via
 There is still **no OCI format** in the pipeline.
 
 **Why it matters.** This is build surface and a registry artifact. The registry
-ships package closures as NARs (`crates/aos-package/`); a package root is an
+ships package closures as NARs (`crates/aos/packages/aos-package-manager/`); a package root is an
 additional artifact that must be fetched, verified, and rooted in the package
 generation. It is consumed either as a signed `RootImage=` or as the immutable
 lower layer of a volatile overlay `RootDirectory=`. The resolved
@@ -494,14 +494,14 @@ security-communication failure, not just a doc nit.
 
 **Options.**
 - Surface the boundary directly from the signed `[permissions]` manifest
-  (Decision 1, [permissions.md](permissions.md)) in `apm info <pkg>
+  (Decision 1, [permissions.md](permissions.md)) in `apm show <pkg>
   --permissions` / `apm show`, so isolation level is queryable before
   install/enable.
 - Default to `--private-users=no` + seccomp only where the manifest declares it;
   revisit user-namespacing later.
 
 **Resolution.** The permission manifest is the first-class, introspectable
-source of truth for isolation level. `apm info --permissions` exposes the
+source of truth for isolation level. `apm show --permissions` exposes the
 declared grants and computed confinement label before install/enable.
 
 ---
@@ -554,14 +554,14 @@ permissions/config surface.
 > carries what introspection and policy need **before download**:
 > `expose.target`, `expose.requires`, `expose.config`,
 > `expose.provides`/`expose.uses`, and the full `[permissions]` manifest — so
-> `apm info --permissions` and the host policy check work without fetching the
+> `apm show --permissions` and the host policy check work without fetching the
 > closure. The rendered unit files (+ a manifest copy) ride the closure as the
 > `pkg.expose` store path ([authoring.md](authoring.md)), covered by the NAR
 > hash. Gated on Decision 19's capability-gate field landing first.
 
 **Current implementation.** Phase 0 extends `PackageMeta`
-(`crates/aos-package/src/types.rs`) and the per-platform registry TOML parser
-(`crates/aos-package/src/registry/parse.rs`) with `expose`, the signed
+(`crates/aos/packages/aos-package-manager/src/types.rs`) and the per-platform registry TOML parser
+(`crates/aos/registry/aos-registry-client/src/registry/parse.rs`) with `expose`, the signed
 `permissions` manifest, `expose_artifact`, `min-format`, and
 `requires-features`. Phase 1 renders the package-owned `pkg.expose` artifact
 and copies the manifest into that eval-free output.
@@ -822,7 +822,7 @@ declared by package **name** in the `expose` block
 ([authoring.md](authoring.md)) and materialize as `After=`/`Wants=` edges
 between package targets ([container-model.md](container-model.md)
 §Composition). Phase 0 adds the name-level resolver surface in
-`crates/aos-package/src/resolve.rs`; the Phase 5 expose phase emits the
+`crates/aos/packages/aos-package-manager/src/resolve.rs`; the Phase 5 expose phase emits the
 corresponding target edges.
 
 **Why it matters.** This was new resolver surface (name-level resolution +

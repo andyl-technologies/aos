@@ -1,0 +1,97 @@
+#!@bash@
+set -euo pipefail
+
+PATH=@coreutils@/bin:@util_linux@/bin:@util_linux@/sbin
+export PATH
+
+target=$1
+shift
+
+configured_device() {
+  local candidate=$1 device
+  shift
+  [ -b "$candidate" ] || return 1
+  for device in "$@"; do
+    [ -b "$device" ] || continue
+    if [ "$(readlink -f "$candidate")" = "$(readlink -f "$device")" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+ensure_roots_mount() {
+  local roots="$target/aos/initrd-stage-journal/roots" filesystem options protection
+  install -d -m 0700 "$target/aos/initrd-stage-journal"
+  if [ -L "$roots" ] || { [ -e "$roots" ] && ! [ -d "$roots" ]; }; then
+    echo "aos-boot-transaction-storage: retention roots path is not a real directory" >&2
+    return 1
+  fi
+  if ! mountpoint -q "$roots"; then
+    if ! (
+      shopt -s nullglob dotglob
+      set -- "$roots"/*
+      [ "$#" -eq 0 ]
+    ); then
+      echo "aos-boot-transaction-storage: refusing to hide existing retention roots" >&2
+      return 1
+    fi
+    install -d -m 0700 "$roots"
+    # FAT keeps the journal durable but cannot hold Nix GC-root symlinks.
+    mount -t tmpfs -o mode=0700,nodev,nosuid,noexec tmpfs "$roots"
+  fi
+  filesystem=$(findmnt -rn --mountpoint "$roots" -o FSTYPE)
+  options=$(findmnt -rn --mountpoint "$roots" -o OPTIONS)
+  if [ "$filesystem" != tmpfs ] || [ "$(stat -c '%u:%g:%a' "$roots")" != 0:0:700 ]; then
+    echo "aos-boot-transaction-storage: retention roots mount is not private tmpfs" >&2
+    return 1
+  fi
+  for protection in rw nodev nosuid noexec; do
+    case ",$options," in
+      *,"$protection",*) ;;
+      *)
+        echo "aos-boot-transaction-storage: retention roots mount lacks $protection" >&2
+        return 1
+        ;;
+    esac
+  done
+}
+
+if mountpoint -q "$target"; then
+  filesystem=$(findmnt -rn --mountpoint "$target" -o FSTYPE)
+  source=$(findmnt -rn --mountpoint "$target" -o SOURCE)
+  if [ "$filesystem" != vfat ] || ! configured_device "$source" "$@"; then
+    echo "aos-boot-transaction-storage: existing mount is not a configured ESP" >&2
+    exit 1
+  fi
+  ensure_roots_mount
+  exit 0
+fi
+mkdir -p "$target"
+
+candidates=()
+loader_var=/sys/firmware/efi/efivars/LoaderDevicePartUUID-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f
+if [ -r "$loader_var" ]; then
+  loader_uuid=$(dd if="$loader_var" bs=1 skip=4 status=none | tr -d '\000' | tr 'A-F' 'a-f')
+  case "$loader_uuid" in
+    ????????-????-????-????-????????????) candidates+=("/dev/disk/by-partuuid/$loader_uuid") ;;
+  esac
+fi
+if [ "$#" -eq 1 ]; then
+  candidates+=("$1")
+elif [ "${#candidates[@]}" -eq 0 ]; then
+  echo "aos-boot-transaction-storage: firmware did not identify the booted ESP" >&2
+  exit 1
+fi
+
+for candidate in "${candidates[@]}"; do
+  [ -b "$candidate" ] || continue
+  configured_device "$candidate" "$@" || continue
+  if mount -t vfat -o rw,noatime,fmask=0077,dmask=0077 "$candidate" "$target"; then
+    ensure_roots_mount
+    exit 0
+  fi
+done
+
+echo "aos-boot-transaction-storage: no configured EFI System Partition could be mounted" >&2
+exit 1

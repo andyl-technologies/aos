@@ -8,7 +8,7 @@
   ];
 
   runTest = name: ''
-    if ! cargo test --frozen --offline -p terrane-core --lib indexing::completion::tests::${name} -- --exact \
+    if ! cargo test --frozen --offline -p terrane-format --lib indexing::completion::tests::${name} -- --exact \
       > "$TMPDIR/index-completion-test.log" 2>&1; then
       cat "$TMPDIR/index-completion-test.log"
       exit 1
@@ -19,6 +19,6 @@ in
   sourceGate "index-completion" ''
     cd crates
     ${builtins.concatStringsSep "\n" (map runTest tests)}
-    cargo clippy --frozen --offline -p terrane-core --all-targets -- -D warnings
+    cargo clippy --frozen --offline -p terrane-format --all-targets -- -D warnings
     printf 'PASS: immutable owner bindings precede detached index recipes and optional common Memo records\n' > "$out/result"
   ''

@@ -4,18 +4,17 @@
 }: let
   root = ../..;
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  claude = builtins.readFile ../../CLAUDE.md;
   agents = builtins.readFile ../../AGENTS.md;
   standards = builtins.readFile ../../docs/rfcs/0010-crucible/28-engineering-standards.md;
   documentationHygieneRust =
-    builtins.readFile ../../crates/crucible-harness/tests/documentation_hygiene.rs;
+    builtins.readFile ../../crates/crucible/testing/crucible-test-support/tests/documentation_hygiene.rs;
   rfcConsistencyRust =
-    builtins.readFile ../../crates/crucible-harness/tests/rfc_consistency.rs;
+    builtins.readFile ../../crates/crucible/testing/crucible-test-support/tests/rfc_consistency.rs;
   rfcConsistencyTasks =
-    builtins.readFile ../../crates/crucible-harness/tests/support/rfc_consistency_tasks.rs;
+    builtins.readFile ../../crates/crucible/testing/crucible-test-support/tests/support/rfc_consistency_tasks.rs;
   rfcConsistencyMisc =
-    builtins.readFile ../../crates/crucible-harness/tests/support/rfc_consistency_misc.rs;
-  gateCatalogRust = builtins.readFile ../../crates/crucible-harness/tests/gate_catalog.rs;
+    builtins.readFile ../../crates/crucible/testing/crucible-test-support/tests/support/rfc_consistency_misc.rs;
+  gateCatalogRust = builtins.readFile ../../crates/crucible/testing/crucible-test-support/tests/gate_catalog.rs;
   crucibleSourceNix = builtins.readFile ../../pkgs/tools/crucible/_source.nix;
   defaultNix = builtins.readFile ./default.nix;
   rfcConsistencyNix = builtins.readFile ./phase1-rfc-consistency.nix;
@@ -122,8 +121,7 @@
     rfcConsistencyTasks;
 
   failures =
-    missingTerms "CLAUDE.md" claude commentsOnlyTerms
-    ++ missingTerms "AGENTS.md" agents commentsOnlyTerms
+    missingTerms "AGENTS.md" agents commentsOnlyTerms
     ++ missingTerms "28-engineering-standards.md STD-30" standards std30Terms
     ++ missingTerms "28-engineering-standards.md STD-31" standards std31Terms
     ++ missingTerms "documentation_hygiene.rs" documentationHygieneRust [
@@ -159,7 +157,6 @@
       "tasks=T-PLAN-1,T-PLAN-2,T-STD-12"
     ]
     ++ missingTerms "pkgs/tools/crucible/_source.nix" crucibleSourceNix [
-      ''pathString == "''${repoRootString}/CLAUDE.md"''
       ''pathString == "''${repoRootString}/AGENTS.md"''
     ]
     ++ missingTerms "phase1-phase-gate-wiring.nix" phaseGateWiringNix [
@@ -203,18 +200,17 @@ in
           name = "write-result";
           script = ''
             set -eu
-            test -f ${crucibleSrc}/CLAUDE.md
             test -f ${crucibleSrc}/AGENTS.md
             test -f ${crucibleSrc}/docs/rfcs/0010-crucible/28-engineering-standards.md
-            test -f ${crucibleSrc}/crates/crucible-harness/tests/documentation_hygiene.rs
+            test -f ${crucibleSrc}/crates/crucible/testing/crucible-test-support/tests/documentation_hygiene.rs
             test -f ${crucibleSrc}/tests/crucible/phase1-documentation-hygiene.nix
             mkdir -p "$out"
             cat > "$out/result" <<'RESULT'
             PASS
             check=checks.crucible.phase1.documentationHygiene
             tasks=T-STD-12
-            comments_only_policy=CLAUDE.md,AGENTS.md,28-engineering-standards.md
-            source_filter=CLAUDE.md,AGENTS.md,documentation_hygiene.rs,phase1-documentation-hygiene.nix
+            comments_only_policy=AGENTS.md,28-engineering-standards.md
+            source_filter=AGENTS.md,documentation_hygiene.rs,phase1-documentation-hygiene.nix
             rfc_consistency_check=checks.crucible.phase1.rfcConsistency
             phase_gate_wiring_check=checks.crucible.phase1.phaseGateWiring
             RESULT

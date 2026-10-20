@@ -10,8 +10,11 @@
 
   advancedDoc = builtins.readFile ../../docs/rfcs/0010-crucible/22-advanced-features.md;
   temporalGraph = import ./_crucible-model-source.nix {inherit lib;};
-  libRs = builtins.readFile ../../crates/crucible/src/lib.rs;
-  unifyingTest = builtins.readFile ../../crates/crucible/tests/gate_unifying_view.rs;
+  libRs = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/engine/crucible-engine/src/lib.rs;
+  };
+  unifyingTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/gate_unifying_view.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -42,7 +45,7 @@
         needle = "There\n  MUST be no abstract specification engine";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" temporalGraph [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" temporalGraph [
       {
         label = "unified operation enum";
         needle = "pub enum UnifiedGraphOperationKind";
@@ -108,7 +111,7 @@
         needle = "ExecutionFingerprint { hash: runtime.id }";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" libRs [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" libRs [
       {
         label = "unified operation evidence export";
         needle = "UnifiedGraphOperationEvidence";
@@ -122,7 +125,7 @@
         needle = "UnifiedGraphOperationReport";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/gate_unifying_view.rs" unifyingTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/gate_unifying_view.rs" unifyingTest [
       {
         label = "unifying view gate";
         needle = "gate_unifying_view_validates_every_advanced_operation_on_one_graph";
@@ -254,7 +257,7 @@
         needle = "phase4.gates.replayOracle.rawGate";
       }
     ]
-    ++ forbiddenFailuresFor "crates/crucible/tests/gate_unifying_view.rs" unifyingTest [
+    ++ forbiddenFailuresFor "crates/crucible/engine/crucible-engine/tests/gate_unifying_view.rs" unifyingTest [
       {
         label = "ignored red placeholder";
         needle = "#[ignore";
@@ -281,7 +284,10 @@ in
       version = "0";
       src = crucibleSrc;
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.rust
         pkgs.sed
@@ -329,7 +335,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-unifying-view-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible \
+              -p crucible-engine \
               --test gate_unifying_view \
               -- --test-threads=1
           '';

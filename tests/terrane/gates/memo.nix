@@ -44,7 +44,7 @@
   ];
 
   runRetainedTest = name: ''
-    if ! cargo test --frozen --offline -p terrane --no-default-features \
+    if ! cargo test --frozen --offline -p terrane-sdk --no-default-features \
       --features tokio,surface-sdk --lib ${name} -- --exact \
       > "$out/retained-${name}.log" 2>&1; then
       cat "$out/retained-${name}.log"
@@ -66,7 +66,7 @@
 in {
   derivation-memo = sourceGate "derivation-memo" ''
     cd crates
-    if ! cargo test --frozen --offline -p terrane-core --lib -- --list \
+    if ! cargo test --frozen --offline -p terrane-format --lib -- --list \
       > "$out/core-inventory.log" 2>&1; then
       cat "$out/core-inventory.log"
       exit 1
@@ -74,7 +74,7 @@ in {
     python3 ../tests/terrane/check_native_gate.py inventory \
       "$out/core-inventory.log" '${builtins.toJSON coreTests}'
 
-    if ! cargo test --frozen --offline -p terrane --lib -- --list \
+    if ! cargo test --frozen --offline -p terrane-sdk --lib -- --list \
       > "$out/native-inventory.log" 2>&1; then
       cat "$out/native-inventory.log"
       exit 1
@@ -82,7 +82,7 @@ in {
     python3 ../tests/terrane/check_native_gate.py inventory \
       "$out/native-inventory.log" '${builtins.toJSON nativeTests}'
 
-    if ! cargo test --frozen --offline -p terrane --no-default-features \
+    if ! cargo test --frozen --offline -p terrane-sdk --no-default-features \
       --features tokio,surface-sdk --lib -- --list \
       > "$out/retained-inventory.log" 2>&1; then
       cat "$out/retained-inventory.log"
@@ -91,8 +91,8 @@ in {
     python3 ../tests/terrane/check_native_gate.py inventory \
       "$out/retained-inventory.log" '${builtins.toJSON retainedTests}'
 
-    ${builtins.concatStringsSep "\n" (map (runTest "terrane-core") coreTests)}
-    ${builtins.concatStringsSep "\n" (map (runTest "terrane") nativeTests)}
+    ${builtins.concatStringsSep "\n" (map (runTest "terrane-format") coreTests)}
+    ${builtins.concatStringsSep "\n" (map (runTest "terrane-sdk") nativeTests)}
     ${builtins.concatStringsSep "\n" (map runRetainedTest retainedTests)}
     printf 'PASS: 34 named common Memo replay, native persistence and conditional retention cases\n' > "$out/result"
   '';

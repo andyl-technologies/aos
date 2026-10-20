@@ -11,7 +11,7 @@ cat /etc/os-release
 readlink /var/lib/profiles/system/current
 cat /var/lib/profiles/image/state.json
 cat /var/lib/profiles/system/state.json
-apm rollback --system --list
+apm config rollback --list
 
 systemctl is-system-running
 systemctl --failed
@@ -25,23 +25,18 @@ previous boot and `journalctl -b -u UNIT` for one unit.
 ## The machine does not finish first boot
 
 First boot must authorize and evaluate storage intent before it changes the
-disk. Inspect the serial or physical console and these units:
+disk. The initrd controller executes the checked stage plan; metadata and
+storage steps are package-owned provider operations rather than separate
+systemd services. Inspect the serial or physical console and the controller:
 
 ```sh
-systemctl status \
-  aos-metadata-detect.service \
-  aos-metadata-fetch.service \
-  aos-metadata-authorize.service \
-  aos-provisioning-eval.service \
-  aos-repart.service
-
-journalctl -b \
-  -u aos-metadata-detect.service \
-  -u aos-metadata-fetch.service \
-  -u aos-metadata-authorize.service \
-  -u aos-provisioning-eval.service \
-  -u aos-repart.service
+systemctl status aos-ability-initrd-controller.service
+journalctl -b -u aos-ability-initrd-controller.service
 ```
+
+The controller journal names the failing checked operation and selected
+provider. Use that identity with the package's generated `apm docs` or Hub
+documentation to inspect its consumed and exposed abilities.
 
 Common causes are:
 
@@ -57,14 +52,10 @@ Common causes are:
 Check the current transient state when a recovery shell is available:
 
 ```sh
-cat /run/aos-metadata/platform.env
-cat /run/aos-metadata/provisioning-plan.json
-
-if test -r /run/aos-metadata/storage-coherence; then
-  cat /run/aos-metadata/storage-coherence
-else
-  echo "storage coherence was not evaluated this boot"
-fi
+systemctl status aos-ability-initrd-controller.service
+journalctl -b -u aos-ability-initrd-controller.service
+cat /run/aos/storage-provisioning/provisioning-plan.json
+find /run/aos/storage-provisioning/repart.d -maxdepth 3 -type f -print
 ```
 
 `divergent` means the host already committed a different storage plan. Reimage
@@ -88,16 +79,17 @@ readlink /var/lib/profiles/system/current
 ```
 
 The manifest is an intermediate result. A complete transaction must also
-compile the package graph, fetch and render authenticated projections, resolve
-credential references, materialize a numbered EROFS lower, switch `/etc`,
-and publish a matching activation record. The journal's
+authenticate and preflight the checked activation plan, fetch and render its
+authenticated projections, resolve credential references, materialize a
+numbered EROFS lower, switch `/etc`, and publish a matching activation record.
+The journal's
 `config-eval.class=...` tag distinguishes assertion, undefined-option,
 conflict, provider, ABI, fetch, resource-limit, and convergence failures.
 
 If the activation record is `degraded`, inspect its dropped packages and
-failed units. Re-running the same transaction retries it; the graph compiler
-does not treat degraded or stale evidence as complete. If no new current
-pointer was committed, the previous configuration remains live.
+failed units. Re-running the same transaction retries it; checked activation
+does not treat degraded or stale evidence as complete. If no new current pointer
+was committed, the previous configuration remains live.
 
 Storage is the exception: it is projected and committed in the initrd before
 the full manifest exists. See the [`host.nix` guide](host-nix.md) for the exact
@@ -195,8 +187,8 @@ Capture the current boot journal before rollback:
 
 ```sh
 journalctl -b > /var/tmp/aos-upgrade-failure.log
-apm rollback --system --list
-apm rollback --system --generation N --dry-run
+apm config rollback --list
+apm config rollback --generation N --dry-run
 ```
 
 ## `/var` is filling up
@@ -212,7 +204,7 @@ Relevant persistent trees include:
 
 ```text
 /var/lib/profiles/system
-/var/lib/profiles/system-packages
+/var/lib/profiles/system
 /var/lib/profiles/per-user
 /var/lib/apm
 /var/lib/aos-provisioning
@@ -223,7 +215,7 @@ Do not delete profile generations or provisioning state by hand.
 `apm clean --generations --keep N` prunes the invoking user's package profile.
 `apm clean --system --generations --keep N` prunes machine-wide package and
 configuration generations, always preserving each current generation; follow
-it with `apm gc` to reclaim unreachable store paths. There is no supported A/B
+it with `apm gc --system` to reclaim unreachable store paths. There is no supported A/B
 image-generation prune command, so preserve image rollback capacity and expand
 or reimage the host if the image profile is the material consumer.
 

@@ -1,8 +1,8 @@
 ##! Envoy proxy — high-performance L7 proxy built from source
 ##!
 ##! Uses mkBazelPackage (two-phase FOD build adapted from nixpkgs):
-##! (1) fetchBazelDeps fetches all Bazel external deps via `bazel build --nobuild`
-##! (2) bazelPhases patchelfs downloaded ELFs and builds offline
+##! (1) fetchBazelDeps fetches Bazel external deps, then removes opaque artifacts
+##! (2) bazelPhases builds offline with source-built execution tools
 {
   mkBazelPackage,
   fetchBazelDeps,
@@ -24,6 +24,7 @@
   binutils,
   llvm,
   rust,
+  go-1_24,
   cmake,
   ninja,
   grep,
@@ -44,6 +45,7 @@
   m4,
   patchelf,
   bootstrapTools,
+  service-management,
 }: let
   version = "1.37.0";
   isCross = stdenv.isCross;
@@ -108,6 +110,16 @@
     if isCross
     then rust.passthru.buildTool
     else rust;
+  buildGo =
+    if isCross
+    then buildPackages.go-1_24
+    else go-1_24;
+  buildAntlr4Tool = import ./envoy-patches/_antlr4-tool.nix {
+    mkDerivation = buildPackages.mkDerivation;
+    fetchurl = buildPackages.fetchurl;
+    inherit buildJdk buildPython;
+    icu4j = buildPackages.icu4j;
+  };
   nativeRust =
     if isCross
     then buildPackages.rust
@@ -227,14 +239,6 @@
     then "ARM aarch64"
     else "x86-64";
   llvmMajor = builtins.head (lib.splitString "." buildLlvm.version);
-
-  envoyCredentialNames = [
-    "tls-certificate"
-    "tls-private-key"
-    "validation-ca"
-  ];
-
-  envoyCredentialSource = name: "/run/credstore/envoy/${name}";
 
   tools = [
     buildBash
@@ -356,9 +360,8 @@
   # Mach-O helper is ever executed by the builder.
   darwinToolchainSetup = lib.optionalString isDarwinCross ''
     mkdir -p aos-darwin-toolchain
-    ${buildUnzip}/bin/unzip -jo "${buildBazel.src}" \
-      tools/cpp/unix_cc_toolchain_config.bzl \
-      -d aos-darwin-toolchain
+    cp "${buildBazel.src}/tools/cpp/unix_cc_toolchain_config.bzl" \
+      aos-darwin-toolchain/
     mkdir -p aos-darwin-toolchain/include
     ${buildTar}/bin/tar -xOf ${darwinMdnsResponderSrc} \
       --wildcards '*/mDNSShared/dns_sd.h' \
@@ -515,9 +518,8 @@
 
   linuxToolchainSetup = lib.optionalString isLinuxCross ''
     mkdir -p aos-linux-cross-toolchain
-    ${buildUnzip}/bin/unzip -jo "${buildBazel.src}" \
-      tools/cpp/unix_cc_toolchain_config.bzl \
-      -d aos-linux-cross-toolchain
+    cp "${buildBazel.src}/tools/cpp/unix_cc_toolchain_config.bzl" \
+      aos-linux-cross-toolchain/
 
     mkdir -p aos-linux-host-toolchain
     cp aos-linux-cross-toolchain/unix_cc_toolchain_config.bzl \
@@ -1076,129 +1078,98 @@
     '';
 in
   mkBazelPackage {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
+      target = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
+      role = "public-package";
+    };
     pname = "envoy";
-    inherit version src;
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Envoy accepts the complete offline configuration.";
+        "files" = {
+          "envoy.yaml" = "static_resources:\n  listeners: []\n  clusters: []\n";
+        };
+        "input" = "An Envoy bootstrap configuration with empty static listener and cluster sets.";
+        "operation" = "Validate the bootstrap configuration without starting the proxy.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/envoy"
+              "--mode"
+              "validate"
+              "--config-path"
+              "envoy.yaml"
+            ];
+            "exit_code" = 0;
+            "timeout_seconds" = 120;
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Envoy rejects the unknown field with status 1.";
+        "files" = {
+          "invalid.yaml" = "aos_unknown_field: 42\n";
+        };
+        "input" = "An Envoy bootstrap with an unknown top-level field.";
+        "operation" = "Validate the malformed bootstrap configuration.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/envoy"
+              "--mode"
+              "validate"
+              "--config-path"
+              "invalid.yaml"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+            "timeout_seconds" = 120;
+          }
+        ];
+      };
+    };
+
+    inherit src;
+    # Deprecated configuration can become fatal without a major release.
+    # https://www.envoyproxy.io/docs/envoy/latest/faq/configuration/deprecation
+    version = "=${version}";
+    passthru.evidenceSources = buildAntlr4Tool.passthru.evidenceSources;
 
     bazel = buildBazel;
     jdk = buildJdk;
-    configModule = {
-      src = ./_envoy-config;
-      moduleAbiCompat = {
-        min = 1;
-        max = 2;
-      };
-      declares = [
-        "envoy.admin"
-        "envoy.clusters"
-        "envoy.dynamicResources"
-        "envoy.enable"
-        "envoy.listeners"
-        "envoy.node"
-        "envoy.renderedBootstrap"
-        "envoy.runtimeLayers"
-        "envoy.telemetry"
-      ];
-      ownsRoots = [
-        {
-          root = "envoy";
-          interfaceAbi = 1;
-          contributable = [
-            "clusters"
-            "listeners"
-            "runtimeLayers"
-          ];
-        }
-      ];
-      documentation = {
-        summary = "Envoy proxy — high-performance L7 proxy and communication bus";
-        sections = {
-          quickstart = lib.aosDoc.section "Quick start" [
-            (lib.aosDoc.paragraph "Install Envoy, enable envoy.enable, and declare listeners and clusters. Every rendered bootstrap is checked with Envoy validation before the service starts.")
-            (lib.aosDoc.code "nix" ''
-              {
-                aos.apm.desiredPackages = ["envoy"];
-                envoy.enable = true;
-                envoy.listeners.http.port = 10000;
-              }
-            '')
-          ];
-          lifecycle = lib.aosDoc.section "Runtime lifecycle" [
-            (lib.aosDoc.paragraph "Systemd owns restarts, so hot restart is disabled. The administration endpoint remains loopback-only and its access log uses the managed package log directory.")
-          ];
-          credentials = lib.aosDoc.section "TLS and xDS credentials" [
-            (lib.aosDoc.paragraph "Static TLS handles use opaque system-credential references and are bound only when selected. SDS names xDS resources rather than embedding secret material.")
-          ];
-        };
-      };
-    };
-
-    expose = {
-      units."envoy.service" = {
-        description = "Envoy proxy";
-        after = ["network-online.target"];
-        wants = ["network-online.target"];
-        serviceConfig = {
-          Type = "simple";
-          EnvironmentFile = "/etc/aos/packages/envoy/service.env";
-          ExecCondition = "${bash}/bin/bash -c 'test \"$ENVOY_ENABLED\" = 1'";
-          ExecStartPre = "/bin/envoy --mode validate --config-path /etc/aos/packages/envoy/bootstrap.json";
-          ExecStart = "/bin/envoy --disable-hot-restart --config-path /etc/aos/packages/envoy/bootstrap.json";
-          Restart = "on-failure";
-          RestartSec = "2s";
-          StateDirectory = "aos-pkg-envoy";
-          LogsDirectory = "aos-pkg-envoy";
-          LogsDirectoryMode = "0750";
-          LimitNOFILE = "1048576";
-        };
-      };
-
-      config = {
-        artifacts = [
-          {
-            name = "service";
-            path = "/etc/aos/packages/envoy/service.env";
-            format = "env";
-            required = ["ENVOY_ENABLED"];
-            optional = [];
-            units = ["envoy.service"];
-            reload = "restart";
-          }
-          {
-            name = "bootstrap";
-            path = "/etc/aos/packages/envoy/bootstrap.json";
-            format = "json";
-            required = ["node" "static_resources"];
-            optional = [
-              "admin"
-              "dynamic_resources"
-              "layered_runtime"
-              "stats_config"
-              "stats_sinks"
-            ];
-            units = ["envoy.service"];
-            reload = "restart";
-          }
-        ];
-        credentials =
-          builtins.map (name: {
-            inherit name;
-            source = envoyCredentialSource name;
-            units = ["envoy.service"];
-            encrypted = false;
-            optional = true;
-          })
-          envoyCredentialNames;
-      };
-
-      permissions = {
-        network = "host";
-        capabilities = ["CAP_NET_BIND_SERVICE"];
-        host-paths = [];
-        devices = [];
-        syscalls = "restricted";
-        security-label = "aos-pkg-envoy";
-      };
-    };
+    module = ./_envoy;
+    moduleDeps = [service-management];
 
     inherit tools;
     caCertificates = buildCaCertificates;
@@ -1246,10 +1217,8 @@ in
     # --- Fetch-specific ---
     depsHash =
       if isDarwinCross
-      then "sha256-OFSJQxEQ+LWGa8ZnTBZ6R16IauY5EL7Kh80T+m17emU="
-      else if isLinuxCross
-      then "sha256-NpOZJqaq2eKswg/ZMIsvxAPMD2r61qfqgpYsam4fR/Y="
-      else "sha256-NpOZJqaq2eKswg/ZMIsvxAPMD2r61qfqgpYsam4fR/Y=";
+      then "sha256-6/knJlyWgf0AmnzKg/zGECjfQ3zbK5anDIUVJVUHVs0="
+      else "sha256-uydyo4JuyqE1e55HOtM6LidYy9XnAMnFku+1IuEhWag=";
     fetchPostPatch = "";
     bazelFetchFlags = [
       "--extra_toolchains=//bazel/nix:${
@@ -1258,7 +1227,7 @@ in
         else "rust_nix_x86_64"
       }"
     ];
-    fetchEnv = lib.optionalAttrs isCross {
+    fetchEnv = {
       CARGO_BAZEL_REPIN = "true";
     };
     postFetch = ''
@@ -1298,6 +1267,13 @@ in
       # Remove Go caches
       rm -rf "$bazelOut/external/bazel_gazelle_go_repository_cache/gocache" 2>/dev/null || true
       rm -rf "$bazelOut/external/bazel_gazelle_go_repository_cache/pkg" 2>/dev/null || true
+
+      # Downloaded executables and Java archives are never build inputs.
+      # Repository overrides retain source; source-built tools are supplied
+      # separately during the offline build.
+      chmod -R u+w "$bazelOut/external"
+      ${buildPython}/bin/python3 ${./envoy-patches/source-only-bazel-deps.py} \
+        "$bazelOut/external"
     '';
 
     # --- Build-specific ---
@@ -1375,9 +1351,33 @@ in
                 test "$(grep -Fc 'if(SIZEOF_SSIZE_T STREQUAL "")' "$nghttp2_cmake")" = 1
                 sed -i 's/if(SIZEOF_SSIZE_T STREQUAL "")/if(WIN32 AND SIZEOF_SSIZE_T STREQUAL "")/' "$nghttp2_cmake"
 
+                # Protobuf 33.2 provides a source target for its compiler.
+                # Select it instead of the downloaded protoc archives.
+                protobuf_build="$TMPDIR/repo-overrides/com_google_protobuf/BUILD.bazel"
+                test "$(grep -Ec '@com_google_protobuf_protoc_[^"]+//:protoc' "$protobuf_build")" = 6
+                sed -i -E \
+                  's|"@com_google_protobuf_protoc_[^"]+//:protoc"|":compiled_protoc"|g' \
+                  "$protobuf_build"
+
+                # CEL's parser generator uses an AOS-built ANTLR JAR directly.
+                # A shell target avoids Bazel's separate prebuilt JavaBuilder.
+                cel_repo="$TMPDIR/repo-overrides/com_google_cel_cpp"
+                ${buildPatch}/bin/patch -d "$cel_repo" -p1 \
+                  < ${./envoy-patches/cel-source-antlr-tool.patch}
+
                 # Bootstrap a linker that flushes mapped outputs, including
                 # intermediates created during external Go linking.
                 go_sdk="$TMPDIR/repo-overrides/go_sdk"
+                rm -rf "$go_sdk/bin" "$go_sdk/pkg" "$go_sdk/src"
+                cp -a ${buildGo}/bin ${buildGo}/pkg ${buildGo}/src "$go_sdk/"
+                chmod -R u+w "$go_sdk"
+                find "$go_sdk/src" -type d -name testdata -prune -exec rm -rf {} +
+                find "$go_sdk/src" -type f -name '*.syso' -delete
+                printf '%s\n' '${buildGo.version}' > "$go_sdk/VERSION"
+                test "$(grep -Fc 'version = "1.24.6"' "$go_sdk/BUILD.bazel")" = 1
+                sed -i 's/version = "1.24.6"/version = "${buildGo.version}"/' \
+                  "$go_sdk/BUILD.bazel"
+
                 go_linker="$go_sdk/pkg/tool/linux_amd64/link"
                 test -x "$go_linker"
                 mv "$go_linker" "$go_linker.real"
@@ -1388,6 +1388,7 @@ in
                 (
                   cd "$go_sdk/src"
                   export HOME="$TMPDIR/go-link-bootstrap-home"
+                  export GOROOT="$go_sdk"
                   export GOTOOLCHAIN=local GO111MODULE=off GOTELEMETRY=off GOENV=off
                   mkdir -p "$HOME"
                   "$go_sdk/bin/go" build -trimpath -ldflags=-buildid= \
@@ -1458,7 +1459,15 @@ in
                 find "$TMPDIR/repo-overrides" -type f \( -name '*.sh' -o -name 'configure' \) 2>/dev/null | \
                   while read f; do
                     sed -i "1s|^#!/bin/sh|#!${buildBash}/bin/bash|" "$f" 2>/dev/null || true
-                  done${lib.optionalString (!isDarwinCross) ''
+                  done
+
+                # Create this wrapper after the broad shebang rewrite so its
+                # already absolute AOS Bash path is not rewritten twice.
+                printf '%s\n' \
+                  '#!${buildBash}/bin/bash' \
+                  'exec ${buildJdk}/bin/java -cp ${buildAntlr4Tool}/share/java/envoy-antlr4-tool.jar org.antlr.v4.Tool "$@"' \
+                  > "$cel_repo/bazel/antlr4-tool.sh"
+                chmod +x "$cel_repo/bazel/antlr4-tool.sh"${lib.optionalString (!isDarwinCross) ''
 
                 # LuaJIT runs minilua during its build. Keep that helper native
                 # and omit target linker flags from its host link command.
@@ -1851,7 +1860,7 @@ in
         }
       '';
 
-    buildDeps = [buildPatchelf];
+    buildDeps = [buildPatchelf buildAntlr4Tool];
     # The Linux cross-toolchain embeds the target glibc interpreter in Envoy.
     # Retain that loader through reference scrubbing and in the runtime closure.
     runtimeDeps = lib.optional isLinuxCross glibc;
@@ -1868,51 +1877,27 @@ in
       self,
       pkgs,
     }: let
-      evalConfig = envoyConfig:
-        lib.evalModules {
-          modules = [
-            ({lib, ...}: {
-              options = {
-                assertions = lib.mkOption {
-                  type = lib.types.listOf lib.types.attrs;
-                  default = [];
-                };
-                envoy.config = lib.mkOption {
-                  type = lib.types.attrsOf (lib.types.attrsOf lib.types.anything);
-                  default = {};
-                };
-                envoy.credentials = lib.mkOption {
-                  type = lib.types.attrsOf lib.types.attrs;
-                  default = {};
-                };
-              };
-            })
-            (import ./_envoy-config/module.nix)
-            {envoy = envoyConfig;}
-          ];
-          inherit lib;
+      credential = name: name;
+      evalConfig = settings:
+        lib.evalPackageModules {
+          scope = ["test" "envoy"];
+          packages = [self];
+          operatorModules = [{aos.envoy = settings;}];
         };
-      assertionsHoldFor = result:
-        builtins.all (assertion: assertion.assertion) result.config.assertions;
-      signedExpose = builtins.fromJSON self.expose.manifest;
-      signedCredentials = signedExpose.expose.config.credentials;
-      credentialDeclarationsHold =
-        builtins.length signedCredentials
-        == builtins.length envoyCredentialNames
-        && builtins.all (
-          credential:
-            builtins.elem credential.name envoyCredentialNames
-            && credential.source == envoyCredentialSource credential.name
-            && !credential.encrypted
-            && credential.optional
-            && credential.units == ["envoy.service"]
-        )
-        signedCredentials;
+      assertionsHoldFor = result: builtins.all (value: value.assertion) result.assertions;
+      bootstrapSourceFor = result: result.config.aos.abilities.configuration.operations.file.effects.envoy.input.value;
+      disabledConfig = evalConfig {};
       evaluatedConfig = evalConfig {
         enable = true;
+        admin.accessLog = "disabled";
         node = {
           id = "envoy-check";
           cluster = "aos-checks";
+          metadata = {
+            enabled = true;
+            attempts = 3;
+            region = "test-west";
+          };
         };
         listeners.http = {
           address = "127.0.0.1";
@@ -1939,19 +1924,25 @@ in
             }
           ];
         };
-        runtimeLayers.aos.values."envoy.reloadable_features.check" = true;
+        runtimeLayers.aos.values = {
+          "envoy.reloadable_features.check" = true;
+          "envoy.reloadable_features.count" = 2;
+          "envoy.reloadable_features.label" = "native";
+        };
         telemetry.statsd = {
           address = "127.0.0.1";
           port = 8125;
         };
       };
       invalidRoute = evalConfig {
+        enable = true;
         listeners.http = {
           port = 10000;
           filterChains.http.virtualHosts.local.routes.root = {};
         };
       };
       invalidTls = evalConfig {
+        enable = true;
         clusters.backend = {
           endpoints = [
             {
@@ -1962,16 +1953,18 @@ in
           tls.certificateCredential = "tls-certificate";
         };
       };
-      invalidAdmin = evalConfig {admin.address = "0.0.0.0";};
+      invalidAdmin = evalConfig {
+        enable = true;
+        admin.address = "0.0.0.0";
+      };
       invalidAdminLog = builtins.tryEval (builtins.deepSeq
-        ((evalConfig {
-            admin.accessLogPath = "/dev/stderr";
-          })
-          .config
-          .envoy
-          .renderedBootstrap)
+        (evalConfig {
+          enable = true;
+          admin.accessLog = "stderr";
+        }).config.aos.envoy
         true);
       validSds = evalConfig {
+        enable = true;
         dynamicResources = {
           enableAds = true;
           adsCluster = "xds-control-plane";
@@ -1995,9 +1988,10 @@ in
         };
       };
       validCredentialTls = evalConfig {
+        enable = true;
         credentials = {
-          tls-certificate.ref = "system-credential";
-          tls-private-key.ref = "system-credential";
+          tls-certificate.name = credential "tls-certificate";
+          tls-private-key.name = credential "tls-private-key";
         };
         listeners.https = {
           port = 10443;
@@ -2010,19 +2004,17 @@ in
           };
         };
       };
-      contractHolds =
-        assertionsHoldFor evaluatedConfig
-        && assertionsHoldFor validSds
-        && assertionsHoldFor validCredentialTls
-        && credentialDeclarationsHold
-        && !assertionsHoldFor invalidRoute
-        && !assertionsHoldFor invalidTls
-        && !assertionsHoldFor invalidAdmin
-        && !invalidAdminLog.success;
+      nativeTests = import ./_envoy/native-tests.nix {
+        inherit lib evaluatedConfig disabledConfig validSds validCredentialTls invalidRoute invalidTls invalidAdmin invalidAdminLog;
+      };
+      contractHolds = builtins.all (value: value) (builtins.attrValues nativeTests);
       renderedBootstrap =
         if assertionsHoldFor evaluatedConfig
-        then builtins.toFile "envoy-config-module-check.json" (builtins.toJSON evaluatedConfig.config.envoy.renderedBootstrap)
-        else throw "the Envoy config-module fixture has a failing assertion";
+        then
+          builtins.toFile "envoy-native-check.json" (
+            builtins.toJSON (bootstrapSourceFor evaluatedConfig)
+          )
+        else throw "the Envoy native fixture has a failing assertion";
     in {
       version = testing.mkVMTest {
         name = "networking-envoy-version";
@@ -2092,39 +2084,26 @@ in
         '';
       };
 
-      config-module = testing.mkVMTest {
-        name = "networking-envoy-config-module";
-        rootfsDeps = [self];
+      native-config = testing.mkVMTest {
+        name = "networking-envoy-native-config";
+        rootfsDeps = [self renderedBootstrap pkgs.grep];
         testScript = ''
+          # Systemd creates the service log directory in a fully booted system.
+          mkdir -p /var/log/aos-pkg-envoy
           envoy --mode validate --config-path ${renderedBootstrap}
           ${pkgs.grep}/bin/grep -q 'envoy-check' ${renderedBootstrap}
           ${pkgs.grep}/bin/grep -q 'envoy.reloadable_features.check' ${renderedBootstrap}
-          echo "==> envoy config-module: PASS"
+          echo "==> envoy native config: PASS"
         '';
       };
 
-      config-module-contract =
+      native-module-contract =
         if contractHolds
         then
-          pkgs.runCommand "networking-envoy-config-module-contract" {} ''
-            if ${pkgs.grep}/bin/grep -E 'LoadCredential(Encrypted)?=.*(tls-certificate|tls-private-key|validation-ca)' ${self.expose}/units/envoy.service; then
-              echo "optional Envoy credentials must not create unconditional static unit bindings" >&2
-              exit 1
-            fi
-            ${pkgs.grep}/bin/grep -F -- '-- /bin/envoy --mode validate' ${self.expose}/units/envoy.service
-            ${pkgs.grep}/bin/grep -F -- '-- /bin/envoy --disable-hot-restart --config-path' ${self.expose}/units/envoy.service
-            if ${pkgs.grep}/bin/grep -Fq -- '--log-format-prefix-with-location' ${self.expose}/units/envoy.service; then
-              echo "Envoy service uses an unsupported log-format flag" >&2
-              exit 1
-            fi
-            ${pkgs.grep}/bin/grep -qx 'LogsDirectory=aos-pkg-envoy' ${self.expose}/units/envoy.service
-            ${pkgs.grep}/bin/grep -qx 'LogsDirectoryMode=0750' ${self.expose}/units/envoy.service
-            ${pkgs.grep}/bin/grep -Fq -- '--fs-rw /var/log/aos-pkg-envoy' ${self.expose}/units/envoy.service
-            ${pkgs.grep}/bin/grep -Fq '"/var/log/aos-pkg-envoy"' ${self.expose}/network-policy.json
-            ${pkgs.grep}/bin/grep -Fq '"access_log_path":"/var/log/aos-pkg-envoy/admin-access.log"' ${renderedBootstrap}
+          pkgs.runCommand "networking-envoy-native-module-contract" {} ''
             mkdir -p "$out"
             printf '%s\n' PASS > "$out/result"
           ''
-        else throw "the Envoy config-module contract checks failed";
+        else throw "the Envoy native ability checks failed: ${builtins.toJSON (builtins.attrNames nativeTests)}";
     };
   }

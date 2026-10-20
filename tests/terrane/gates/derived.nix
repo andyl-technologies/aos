@@ -1,9 +1,9 @@
 {sourceGate, ...}: {
   derived-attr-record = sourceGate "derived-attr-record" ''
     cd crates
-    cargo test --frozen --offline -p terrane-core --lib derived:: > "$TMPDIR/core.log"
-    cargo test --frozen --offline -p terrane --lib --features tokio derived:: > "$TMPDIR/native.log"
-    cargo test --frozen --offline -p terrane --test attrs_sdk --features tokio > "$TMPDIR/sdk.log"
+    cargo test --frozen --offline -p terrane-format --lib derived:: > "$TMPDIR/core.log"
+    cargo test --frozen --offline -p terrane-sdk --lib --features tokio derived:: > "$TMPDIR/native.log"
+    cargo test --frozen --offline -p terrane-sdk --test attrs_sdk --features tokio > "$TMPDIR/sdk.log"
     python3 - "$TMPDIR/core.log" "$TMPDIR/native.log" "$TMPDIR/sdk.log" <<'PY'
     import pathlib, re, sys
     required = [

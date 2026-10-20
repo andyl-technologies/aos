@@ -1,7 +1,7 @@
 ##! python3-dbus — Python bindings for the reference D-Bus implementation
 {
-  mkDerivation,
   lib,
+  mkDerivation,
   stdenv,
   fetchurl,
   meson,
@@ -16,10 +16,103 @@
 }: let
   version = "1.3.2";
   sitePackages = "lib/python3.14/site-packages";
+
+  # Cross-built Linux tests run their target programs under user-mode
+  # emulation; the check phase explains the resulting test policy.
+  mesonTestFlags =
+    if stdenv.isCross && stdenv.hostPlatform.isLinux
+    then "--timeout-multiplier=20 --exclude import-repeatedly"
+    else "--timeout-multiplier=10";
 in
   mkDerivation {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
+      target = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
+      role = "public-package";
+    };
     pname = "python3-dbus";
-    inherit version;
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The signature contains one complete array type and round-trips unchanged.";
+        "files" = {
+          "probe.py" = "import glob\nimport sys\n\nlocations = glob.glob(\"@out@/lib/python*/site-packages\")\nif len(locations) != 1:\n    raise RuntimeError(\"package does not expose one site-packages directory\")\nsys.path.insert(0, locations[0])\n\nimport dbus\nsignature = dbus.Signature(\"a{sv}\")\nassert str(signature) == \"a{sv}\"\nassert len(list(signature)) == 1\n\nprint(\"python3-dbus primary passed\")\n";
+        };
+        "input" = "The D-Bus signature a{sv} for a string-to-variant dictionary.";
+        "operation" = "Parse and iterate the signature through dbus.Signature.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "probe.py"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "python3-dbus primary passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "dbus-python raises ValueError.";
+        "files" = {
+          "probe.py" = "import glob\nimport sys\n\nlocations = glob.glob(\"@out@/lib/python*/site-packages\")\nif len(locations) != 1:\n    raise RuntimeError(\"package does not expose one site-packages directory\")\nsys.path.insert(0, locations[0])\n\nimport dbus\ntry:\n    dbus.Signature(\"a\")\nexcept ValueError:\n    pass\nelse:\n    raise RuntimeError(\"dbus-python accepted an incomplete signature\")\n\nprint(\"python3-dbus rejected invalid input\", file=sys.stderr)\nraise SystemExit(7)\n";
+        };
+        "input" = "A D-Bus array signature with no element type.";
+        "operation" = "Parse the incomplete signature through dbus.Signature.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "probe.py"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "python3-dbus rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
+    # Keep the exact release until a broader upstream compatibility policy is verified.
+    version = "=${version}";
 
     src = fetchurl {
       urls = ["https://dbus.freedesktop.org/releases/dbus-python/dbus-python-${version}.tar.gz"];
@@ -81,11 +174,20 @@ in
       }
       {
         name = "check";
-        # Reinitializing Python 100 times takes about seven minutes under
-        # emulation; preserve the full repeated-import regression test.
+        # Reinitializing Python 100 times can exceed Meson's 30-second
+        # default on a loaded native builder, such as a release repeat build
+        # that rebuilds the package set in parallel, so native builds keep the
+        # full repeated-import regression test and scale its timeout.
+        #
+        # Under user-mode emulation the same test takes about seven minutes on
+        # an idle builder and exceeded a 20x (ten-minute) timeout on a loaded
+        # one, so no fixed timeout separates a regression from contention. It
+        # checks architecture-independent extension state across interpreter
+        # restarts, which the native build already covers; emulated cross
+        # builds run every other test.
         script = ''
           PYTHONPATH=${buildPackages.meson}/lib/python3/site-packages \
-            meson test -C build --print-errorlogs${lib.optionalString (stdenv.isCross && stdenv.hostPlatform.isLinux) " --timeout-multiplier=20"}
+            meson test -C build --print-errorlogs ${mesonTestFlags}
         '';
       }
       {

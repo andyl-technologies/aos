@@ -1,6 +1,6 @@
 # tests/fleet/apm-system-upgrade.nix - Refuse incomplete A/B system upgrades.
 #
-# Live, single-axis sysroot activation is retired. `apm upgrade --system`
+# Live, single-axis sysroot activation is retired. `apm image upgrade`
 # now accepts only an authenticated raw OTA payload and stages it into the
 # inactive A/B slot; host configuration changes use the evaluator/activation
 # transaction instead. This test preserves the old pre-staged-toplevel fixture
@@ -19,12 +19,12 @@
 #
 # ── Why the upgrade needs no network ───────────────────────────────────
 # `extraClosures` pre-stages the entire server-2 closure onto the target's
-# disk, so `apm upgrade --system` finds every store path present and downloads
+# disk, so `apm image upgrade` finds every store path present and downloads
 # nothing. Two details are handled here:
-#   1. The full image ships `/aos-registration`, and aos-nix-db.service loads it
+#   1. The full image ships `/usr/lib/aos/nix-registration`, and aos-nix-db.service loads it
 #      at boot. That makes the pre-staged server-2 closure visible to
 #      `nix-store --check-validity` without manual test seeding.
-#   2. `apm upgrade --system` reads SYSTEM-scope registries
+#   2. `apm image upgrade` reads SYSTEM-scope registries
 #      (/etc/apm/registries.d for config, /var/lib/apm/remote for the synced
 #      packages — types.rs), NOT the user scope that `apm registry add` /
 #      `apm update` write. So we stage the registry directly in system scope
@@ -150,7 +150,7 @@ in {
     # Python global `target`.
     target = {
       system = server1;
-      # Pre-stage gen-2's full closure so `apm upgrade --system` fetches
+      # Pre-stage gen-2's full closure so `apm image upgrade` fetches
       # nothing over the network (see the header note).
       extraClosures = [server2Top];
     };
@@ -162,11 +162,33 @@ in {
       import base64
       import json
       import pathlib
+      import shlex
+
+      def service_units(machine, pattern):
+          command = (
+              "systemctl list-unit-files --type=service --no-legend --no-pager "
+              + shlex.quote(pattern)
+              + " | awk '{print $1}'"
+          )
+          return [unit for unit in machine.succeed(command).splitlines() if unit]
+
+      def service_unit_for(machine, executable):
+          command = (
+              "for unit in $(systemctl list-unit-files --type=service "
+              "--no-legend --no-pager 'aos-*.service' | awk '{print $1}'); do "
+              "systemctl cat \"$unit\" | grep -Fq -- "
+              + shlex.quote(executable)
+              + " && printf '%s\\n' \"$unit\"; done"
+          )
+          units = [unit for unit in machine.succeed(command).splitlines() if unit]
+          assert len(units) == 1, (executable, units)
+          return units[0]
 
       # -- Initial two-axis state and running-system baseline -----------------
       target.wait_until_succeeds("test -S /run/dbus/system_bus_socket", timeout=120)
-      target.wait_until_succeeds(
-          "systemctl is-active test-http-server.service", timeout=120
+      target.wait_until_succeeds("curl -sf http://127.0.0.1:8000/", timeout=120)
+      http_unit = service_unit_for(
+          target, "${pkgs.test-http-server}/bin/test-http-server"
       )
       image_before = json.loads(
           target.succeed("cat /var/lib/profiles/image/state.json")
@@ -187,21 +209,18 @@ in {
       assert config_before["generations"][0]["image_gen_parent"] == 1, config_before
       target.succeed("test -e /var/lib/profiles/system/current")
 
-      # Fixture baseline. gen-1 opens port 8000 in the base nftables ruleset
-      # but does not yet add tcp_keepalive_time to the kernel sysctl drop-in.
+      # The initial typed policy omits the generation-2 endpoint and tunable.
       nftd_before = target.succeed(
-          "cat /etc/nftables.conf"
+          "nft list ruleset"
       )
       assert "8443" not in nftd_before, "gen-1 should not yet open port 8443"
-      sysctld_before = target.succeed("cat /etc/sysctl.d/10-aos-kernel.conf")
-      assert "tcp_keepalive_time" not in sysctld_before, sysctld_before
 
       # gen-2-only surfaces are absent on gen-1.
       target.fail("test -e /etc/aos/upgrade-test/marker.conf")
-      target.fail("test -e /etc/systemd/system/aos-upgrade-test-marker.service")
-      target.wait_until_succeeds(
-          "systemctl is-active aos-upgrade-removed.service", timeout=120
-      )
+      assert service_units(target, "aos-aos-upgrade-test-marker-*.service") == []
+      removed_units = service_units(target, "aos-aos-upgrade-removed-*.service")
+      assert len(removed_units) == 1, removed_units
+      target.succeed(f"systemctl is-active {shlex.quote(removed_units[0])}")
       target.fail("test -e /run/removed-stop-ran")
 
       # gen-1 has no tcp_keepalive_time drop-in → the kernel default (7200).
@@ -213,7 +232,7 @@ in {
       )
 
       http_pid_before = int(target.succeed(
-          "systemctl show -p MainPID --value test-http-server.service"
+          f"systemctl show -p MainPID --value {shlex.quote(http_unit)}"
       ).strip())
       dbus_pid_before = int(target.succeed(
           "systemctl show -p MainPID --value dbus.service"
@@ -266,7 +285,7 @@ in {
       # available: aos 0.1.0 -> test-2"; both version strings are the
       # unambiguous signal the test-2 entry was recognised.
       out = target.succeed(
-          "HOME=/tmp ${pkgs.aos.apm}/bin/apm upgrade --system --dry-run 2>&1",
+          "HOME=/tmp ${pkgs.aos.apm}/bin/apm image upgrade --dry-run 2>&1",
           timeout=120,
       )
       assert "test-2" in out, f"dry-run did not surface the test-2 target: {out!r}"
@@ -274,12 +293,12 @@ in {
 
       # -- Real operation refuses the incomplete image before mutation --------
       target.succeed(
-          "if HOME=/tmp ${pkgs.aos.apm}/bin/apm upgrade --system --yes "
+          "if HOME=/tmp ${pkgs.aos.apm}/bin/apm image upgrade --yes "
           "> /tmp/apm-system-upgrade.out 2>&1; then exit 1; fi",
           timeout=300,
       )
       out = target.succeed("cat /tmp/apm-system-upgrade.out")
-      print("=== rejected apm upgrade --system output ===\n" + out)
+      print("=== rejected apm image upgrade output ===\n" + out)
       assert "no authenticated raw OTA image" in out, out
 
       image_after = json.loads(
@@ -294,16 +313,15 @@ in {
 
       # No live configuration surface or daemon changed as a side effect.
       target.fail("test -e /etc/aos/upgrade-test/marker.conf")
-      target.fail("test -e /etc/systemd/system/aos-upgrade-test-marker.service")
-      target.succeed("systemctl is-active aos-upgrade-removed.service")
+      assert service_units(target, "aos-aos-upgrade-test-marker-*.service") == []
+      target.succeed(f"systemctl is-active {shlex.quote(removed_units[0])}")
       target.fail("test -e /run/removed-stop-ran")
-      assert target.succeed("cat /etc/nftables.conf") == nftd_before
-      assert target.succeed("cat /etc/sysctl.d/10-aos-kernel.conf") == sysctld_before
+      assert target.succeed("nft list ruleset") == nftd_before
       assert target.succeed(
           "cat /proc/sys/net/ipv4/tcp_keepalive_time"
       ).strip() == baseline_keepalive
       assert int(target.succeed(
-          "systemctl show -p MainPID --value test-http-server.service"
+          f"systemctl show -p MainPID --value {shlex.quote(http_unit)}"
       ).strip()) == http_pid_before
       assert int(target.succeed(
           "systemctl show -p MainPID --value dbus.service"

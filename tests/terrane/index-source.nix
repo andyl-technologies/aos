@@ -7,7 +7,7 @@
   ];
 
   runTest = name: ''
-    if ! cargo test --frozen --offline -p terrane --lib indexing::tests::${name} -- --exact \
+    if ! cargo test --frozen --offline -p terrane-sdk --lib indexing::tests::${name} -- --exact \
       > "$TMPDIR/index-source-test.log" 2>&1; then
       cat "$TMPDIR/index-source-test.log"
       exit 1

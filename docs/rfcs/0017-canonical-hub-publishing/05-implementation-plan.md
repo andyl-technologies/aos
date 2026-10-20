@@ -119,8 +119,9 @@ Acceptance:
   as the release manifest;
 - multi-artifact plans produce one registry commit and one complete release
   manifest, while any failed member leaves the public catalog unchanged; and
-- target eligibility is derived from a fail-closed four-platform inventory,
-  with no implicit missing cell or platform-specific stable channel.
+- target eligibility is derived by applying the release policy's selected
+  target set to fail-closed package-owned `platformSupport` declarations, with
+  no implicit missing cell or platform-specific stable channel.
 
 ## Phase 2: Signer protocol
 
@@ -264,7 +265,7 @@ The pipeline is production-ready only when:
   state transitions from public keys;
 - a clean AOS client can install packages and every advertised image from the
   production Hub route;
-- exact staged bytes, exact promoted bytes, and manifest bytes agree;
+- exact staging bytes, exact production bytes, and manifest bytes agree;
 - a compromised online Hub, upload, timestamp, or channel credential cannot
   authorize new release content or bootable code;
 - recovery from loss of the maintainer host, a Hub deployment, object storage,

@@ -1,0 +1,52 @@
+[package]
+name = "aos-boot-runtime"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description = "Retained boot preparation, image staging, boot selection, and initrd store operations"
+
+[features]
+default = ["boot-tools"]
+# The preparation handler also runs before the complete image tooling is present.
+boot-tools = ["dep:aos-boot-identity", "dep:aos-nix", "dep:aos-release-format", "dep:hex", "dep:sha2", "dep:rustix", "dep:tempfile", "dep:zstd"]
+
+[dependencies]
+anyhow.workspace = true
+aos-activation.workspace = true
+aos-boot-identity = { workspace = true, optional = true }
+aos-core.workspace = true
+aos-nix = { workspace = true, optional = true }
+aos-release-format = { workspace = true, optional = true }
+hex = { workspace = true, optional = true }
+serde.workspace = true
+serde_json.workspace = true
+sha2 = { workspace = true, optional = true }
+rustix = { workspace = true, features = ["fs"], optional = true }
+tempfile = { workspace = true, optional = true }
+zstd = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "aos-systemd-boot-platform"
+path = "src/bin/aos-systemd-boot-platform.rs"
+required-features = ["boot-tools"]
+
+[[bin]]
+name = "aos-systemd-image-stage"
+path = "src/bin/aos-systemd-image-stage.rs"
+required-features = ["boot-tools"]
+
+[[bin]]
+name = "aos-systemd-image-evidence"
+path = "src/bin/aos-systemd-image-evidence.rs"
+required-features = ["boot-tools"]
+
+[[bin]]
+name = "aos-systemd-initrd-store"
+path = "src/bin/aos-systemd-initrd-store.rs"
+required-features = ["boot-tools"]

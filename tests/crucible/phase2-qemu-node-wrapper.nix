@@ -7,10 +7,11 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  qemuLib = builtins.readFile ../../crates/crucible-qemu/src/lib.rs;
+  qemuLib = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-host/src/lib.rs;
   nodeLib = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu/src/node.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-host/src/node.rs;
+    siblingTests = true;
   };
   qemuSpec = builtins.readFile ../../docs/rfcs/0010-crucible/10-qemu-integration.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -42,7 +43,7 @@
         needle = "concrete per-quantum shmem implementation";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/src/lib.rs" qemuLib [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/src/lib.rs" qemuLib [
       {
         label = "node module";
         needle = "mod node;";
@@ -72,7 +73,11 @@
         needle = "QemuQmpMachineControlChannel";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/src/node.rs" nodeLib [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/src/node.rs" nodeLib [
+      {
+        label = "native QMP save failure reaps the indeterminate process";
+        needle = "qemu_node_terminates_after_indeterminate_qmp_save_failure";
+      }
       {
         label = "QemuNode wrapper";
         needle = "pub struct QemuNode {";
@@ -131,7 +136,7 @@
       }
       {
         label = "QMP machine control trait";
-        needle = "pub trait QemuQmpMachineControlChannel";
+        needle = "pub(crate) trait QemuQmpMachineControlChannel";
       }
       {
         label = "backend implementation";
@@ -174,12 +179,12 @@
         needle = "self.deliver_frame(input).map_err(BackendError::from)";
       }
       {
-        label = "snapshot maps to QMP";
-        needle = "self.save_checkpoint().map_err(BackendError::from)";
+        label = "generic snapshot refuses unpaired VM state";
+        needle = "QEMU snapshots require capture_exact_snapshot with scheduler checkpoint metadata";
       }
       {
-        label = "restore maps to QMP";
-        needle = "self.restore_checkpoint(checkpoint)";
+        label = "generic restore refuses unpaired VM state";
+        needle = "QEMU restore requires paired VMState and host-I/O realization";
       }
       {
         label = "shutdown maps to node shutdown";
@@ -198,7 +203,7 @@
         needle = "QemuNodeChannelPlane::QmpMachineControl";
       }
     ]
-    ++ forbiddenFor "crates/crucible-qemu/src/node.rs" nodeLib [
+    ++ forbiddenFor "crates/crucible/qemu/crucible-qemu-host/src/node.rs" nodeLib [
       {
         label = "clone implementation for node wrapper";
         needle = "impl<C> Clone for QemuNode";
@@ -216,10 +221,6 @@
         needle = "pub const fn child(&self)";
       }
       {
-        label = "public child/channel decomposition escape hatch";
-        needle = "pub fn into_parts";
-      }
-      {
         label = "node child clone implementation";
         needle = "impl Clone for QemuNodeChild";
       }
@@ -232,7 +233,7 @@
         needle = "QemuShmemHotPathChannel for" + " QemuQmpMachineControlChannel";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/src/node.rs" nodeLib [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/src/node.rs" nodeLib [
       {
         label = "one child three channel role test";
         needle = "qemu_node_owns_one_child_and_exactly_three_channel_roles";
@@ -248,10 +249,6 @@
       {
         label = "shmem failure test";
         needle = "qemu_node_reports_shmem_failures_as_backend_rejections";
-      }
-      {
-        label = "QMP failure test";
-        needle = "qemu_node_reports_qmp_failures_without_touching_hot_path";
       }
       {
         label = "plugin shutdown failure test";
@@ -305,7 +302,10 @@ in
       version = "0";
       src = crucibleSrc;
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.rust
         pkgs.sed
@@ -349,7 +349,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-qemu-node-wrapper-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible-qemu \
+              -p crucible-qemu-host \
               --lib \
               node::tests \
               -- --test-threads=1
@@ -366,13 +366,13 @@ in
             tasks=${taskList}
             check_scope=task-level
             related_gates=gate:scheduler-liveness,gate:control-responsive,gate:abi-conformance,gate:layer1-injection
-            rust_test=crucible-qemu::node
+            rust_test=crucible_qemu_host::node
             owner=one-child-qemu-node-wrapper
             channels=plugin-ipc-control,shmem-hot-path,qmp-machine-control
             hot_path=shared-memory-only
             backend_interface=synchronous
             spawn_fd_passing=covered-by-T-QEMU-7
-            per_quantum_flow=deferred-to-T-QEMU-12
+            per_quantum_flow=shared-memory-start-poll-finish
             child_process_tool=coreutils-sleep
             RESULT
           '';

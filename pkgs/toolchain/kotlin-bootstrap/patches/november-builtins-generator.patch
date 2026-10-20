@@ -1,0 +1,102 @@
+diff --git a/generators/src/org/jetbrains/jet/generators/builtins/BuiltInsSerializer.java b/generators/src/org/jetbrains/jet/generators/builtins/BuiltInsSerializer.java
+index 8984a2440de..81068558951 100644
+--- a/generators/src/org/jetbrains/jet/generators/builtins/BuiltInsSerializer.java
++++ b/generators/src/org/jetbrains/jet/generators/builtins/BuiltInsSerializer.java
+@@ -18,34 +18,43 @@ package org.jetbrains.jet.generators.builtins;
+ 
+ import com.google.common.collect.ImmutableSet;
+ import com.intellij.openapi.Disposable;
++import com.intellij.openapi.project.Project;
+ import com.intellij.openapi.util.Disposer;
+ import com.intellij.openapi.util.io.FileUtil;
+ import org.jetbrains.annotations.NotNull;
+ import org.jetbrains.annotations.Nullable;
+-import org.jetbrains.jet.JetTestUtils;
++import org.jetbrains.jet.cli.jvm.compiler.CliLightClassGenerationSupport;
+ import org.jetbrains.jet.cli.jvm.compiler.JetCoreEnvironment;
+ import org.jetbrains.jet.config.CompilerConfiguration;
+ import org.jetbrains.jet.descriptors.serialization.*;
++import org.jetbrains.jet.lang.ModuleConfiguration;
++import org.jetbrains.jet.lang.PlatformToKotlinClassMap;
+ import org.jetbrains.jet.lang.descriptors.ClassDescriptor;
+ import org.jetbrains.jet.lang.descriptors.DeclarationDescriptor;
+ import org.jetbrains.jet.lang.descriptors.ModuleDescriptor;
++import org.jetbrains.jet.lang.descriptors.ModuleDescriptorImpl;
+ import org.jetbrains.jet.lang.descriptors.NamespaceDescriptor;
+ import org.jetbrains.jet.lang.psi.JetFile;
++import org.jetbrains.jet.lang.psi.JetPsiFactory;
++import org.jetbrains.jet.lang.resolve.BindingTrace;
+ import org.jetbrains.jet.lang.resolve.DescriptorUtils;
+-import org.jetbrains.jet.lang.resolve.lazy.LazyResolveTestUtil;
++import org.jetbrains.jet.lang.resolve.ImportPath;
++import org.jetbrains.jet.lang.resolve.lazy.ResolveSession;
++import org.jetbrains.jet.lang.resolve.lazy.declarations.FileBasedDeclarationProviderFactory;
++import org.jetbrains.jet.lang.resolve.lazy.storage.LockBasedLazyResolveStorageManager;
+ import org.jetbrains.jet.lang.resolve.name.Name;
+ import org.jetbrains.jet.lang.types.lang.BuiltInsSerializationUtil;
+ import org.jetbrains.jet.lang.types.lang.KotlinBuiltIns;
+-import org.jetbrains.jet.test.util.DescriptorValidator;
+ 
+ import java.io.*;
+ import java.util.ArrayList;
++import java.util.Collections;
+ import java.util.List;
+ import java.util.regex.Pattern;
+ 
+ public class BuiltInsSerializer {
+-    private static final String BUILT_INS_SRC_DIR = "idea/builtinsSrc";
+-    public static final String DEST_DIR = "compiler/frontend/builtins";
++    private static final String BUILT_INS_SRC_DIR = "kotlin/idea/builtinsSrc";
++    public static final String DEST_DIR = "classes/generated-builtins";
+ 
+     private static int totalSize = 0;
+     private static int totalFiles = 0;
+@@ -64,15 +73,13 @@ public class BuiltInsSerializer {
+             List<File> sourceFiles = FileUtil.findFilesByMask(Pattern.compile(".*\\.kt"), new File(BUILT_INS_SRC_DIR));
+             CompilerConfiguration configuration = new CompilerConfiguration();
+             JetCoreEnvironment environment = JetCoreEnvironment.createForTests(rootDisposable, configuration);
+-            List<JetFile> files = JetTestUtils.loadToJetFiles(environment, sourceFiles);
++            List<JetFile> files = loadToJetFiles(environment, sourceFiles);
+ 
+-            ModuleDescriptor module = LazyResolveTestUtil.resolveLazily(files, environment, false);
++            ModuleDescriptor module = resolveLazily(files, environment);
+ 
+             NamespaceDescriptor namespace = module.getNamespace(KotlinBuiltIns.BUILT_INS_PACKAGE_FQ_NAME);
+             assert namespace != null : "No built-ins namespace: " + KotlinBuiltIns.BUILT_INS_PACKAGE_FQ_NAME;
+ 
+-            DescriptorValidator.validate(namespace);
+-
+             if (!FileUtil.delete(destDir)) {
+                 System.err.println("Could not delete: " + destDir);
+             }
+@@ -167,4 +174,30 @@ public class BuiltInsSerializer {
+     private static String getFileName(@NotNull ClassDescriptor classDescriptor) {
+         return BuiltInsSerializationUtil.getClassMetadataPath(ClassSerializationUtil.getClassId(classDescriptor));
+     }
++    private static List<JetFile> loadToJetFiles(JetCoreEnvironment environment, List<File> files) throws IOException {
++        List<JetFile> result = new ArrayList<JetFile>();
++        for (File file : files) {
++            result.add(JetPsiFactory.createPhysicalFile(
++                    environment.getProject(), file.getName(), FileUtil.loadFile(file)));
++        }
++        return result;
++    }
++
++    private static ModuleDescriptor resolveLazily(List<JetFile> files, JetCoreEnvironment environment) {
++        Project project = environment.getProject();
++        CliLightClassGenerationSupport support = CliLightClassGenerationSupport.getInstanceForCli(project);
++        support.newBindingTrace();
++        BindingTrace trace = support.getTrace();
++        LockBasedLazyResolveStorageManager storageManager = new LockBasedLazyResolveStorageManager();
++        ModuleDescriptorImpl module = new ModuleDescriptorImpl(
++                Name.special("<builtins>"),
++                Collections.<ImportPath>emptyList(),
++                PlatformToKotlinClassMap.EMPTY);
++        module.setModuleConfiguration(ModuleConfiguration.EMPTY);
++        FileBasedDeclarationProviderFactory providers =
++                new FileBasedDeclarationProviderFactory(storageManager, files);
++
++        return new ResolveSession(
++                project, storageManager, module, providers, trace).getRootModuleDescriptor();
++    }
+ }

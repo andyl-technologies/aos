@@ -8694,6 +8694,69 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
 
 ### T2 — Host tier
 
+Upstream integration (2026-10-19): merge `origin/master` at `68851a3bf1`
+into the existing RFC branch and apply its explicit PR #420 package mapping.
+Current packages are `terrane-format`, `terrane-sdk`, `terrane-linux`,
+`terrane-cli`, and `aos-terrane-integration`, under the Terrane ownership
+subdirectories in `crates/terrane/`. D-127 and AD-14 reconcile names only;
+stable requirements, gates, persisted bytes and T1 freezes remain intact.
+Earlier qualification records below identify their original sources and names.
+The unfinished dictionary dependency fixture is checkpointed separately before
+the merge. No T2 task is accepted by importing upstream changes.
+
+Upstream source-retention follow-up: recover the exact pre-migration 833-line
+executor result-operations module from `origin/master^`. The checkout ignored
+all directories named `result`, and the immutable Cargo source filter excluded
+them as well. Scope both rules to checkout-root build outputs. An actual filtered
+source observation changes from absent to present, and repository-wide Rust
+format checking then passes. The restored module's SHA-256 is
+`a0760df5a700326ca7771fae0b9fda42508d10cc6d5f2162e67826f897ac9a3b`;
+its executable logic is unchanged. Compilation across all current daemon targets
+passes. Repository-wide Rust and Nix format checks pass after a separate mechanical
+Nix baseline commit: all 413 formatted files have identical normalized parsed
+expressions before and after formatting. The independent namespace reference-model
+gate passes; all 15 copied witness input/module paths are audited against their
+nested installation locations. On guarded `7a98b7978f`, the prefix reference-model
+gate passes in 94.73 seconds and the control reference-model gate in 59.97 seconds.
+A subsequent documentation-only correction preserves PKG-4's original rejected
+program name while applying the crate rename. Full trunk qualification remains
+pending. No T2 task is accepted by these workspace corrections.
+
+Integration checks: Cargo metadata, all five renamed packages' all-target
+compilation, crate graph, the reviewed native unsafe-binding audit, the Nix
+registry-complete gate and complete gate listing pass. All 638 external upstream
+dependency versions and checksums remain unchanged. The combined lockfile's
+measured shared vendor hash is updated to
+`sha256-GoGnyiyY6gp+gaIlunRCPeTvo58B2D/m7o7mUp/skDA=`. On the initial
+integration source, the required workspace Rust formatter encountered upstream's
+declared but absent
+`crucible-daemon/src/executor_worker/result/operations.rs`; that declaration
+and absence are both present in `origin/master`. Its all-format check also
+reported 414 Nix files needing formatting. Those original failures are retained;
+the follow-up above resolves the missing source and formatting without claiming
+the initial check succeeded. On guarded pushed source `0e8801389f`, the required
+`checks.rust.aos-test-targets` compilation passes in 2,549.46 seconds: 181 declared
+test targets across 59 application packages, independently matched against the
+current workspace metadata and actual Cargo artifacts. This is compilation
+coverage; it does not claim test execution. The current-trunk aggregate is still
+running its 1,933 Terrane tests on that unchanged source. The earlier
+`bf3c74517e` surface feature-matrix run finished with 1,157 passed and two
+publication-timing failures; its aggregate successor did not run.
+
+Native cache component checkpoint `99447f30cd` passes the complete local native
+witness in 671.10 seconds, including 356.69 guest seconds within the unchanged
+390-second limit. Independent review verifies 5,086 source inputs, four original
+Cargo executables, all 55 actual selected unit cases under UID/GID 842 with empty
+capabilities, and 48 runtime selectors. A genuine dictionary and its distinct
+admitted dependent retain their original inodes through producer handoff, real
+release grace and an actual dictionary-retirement refusal; measured Q is
+339,968 bytes and the sole bootstrap H is 262,144 bytes. The corrected fixture
+uses a dictionary below the inline size ceiling so the refusal reaches the
+physical dependency guard. Earlier invalid-fixture failures remain retained.
+This is component evidence on the preserved task branch. Encoded consumer grants,
+encoded eviction, shared-chunk re-extraction, full recovery/readiness and complete
+T2 task acceptance remain unqualified.
+
 Status: in progress, resumed without sub-agents (2026-10-17). T1's 22 tasks and
 89 current gates are complete; its identity, encoding, bucket-key and Store-trait
 freeze applies. Preserved worktrees cover the five T2 tasks, including dedicated
@@ -9453,8 +9516,9 @@ Resumed qualification:
   records and the native inode. The full filesystem run passes all 122
   nonignored cases; independent review verifies all 3,485 source inputs, the
   archive and the same six privileged exclusions. Required application target
-  compilation is running. This qualifies the tested consumer lifecycle
-  component; producer handoff, eviction, complete retirement, NativeReady and
+  compilation also passes, producing 128 test artifacts across 29 packages;
+  this supplies no application test execution claim. This qualifies the tested
+  consumer lifecycle component; producer handoff, eviction, complete retirement, NativeReady and
   full task acceptance remain pending.
 - Publication-completion candidate `11eecdde2d` settles future copy capacity
   after actual physical completion. Its private receipt comes only from the
@@ -9474,11 +9538,283 @@ Resumed qualification:
   independent review verifies the archive, all 3,486 inputs and the same six
   privileged exclusions. Execution wrappers lost during the session transition
   leave their partial logs preserved; completed image evidence is retained and
-  unfinished checks resume on unchanged committed source. Standalone Cargo checks
-  are queued behind another worktree's live shared-target build; required
-  application target compilation is running. No new strict-lint or complete task
-  result is claimed. Full producer pin release, eviction, retirement and
+  unfinished checks resume on unchanged committed source. Both standalone Cargo
+  builds, all 21 focused cases and the formatter pair subsequently pass. Strict
+  Clippy retains exactly the nineteen earlier findings; the separate all-target
+  diagnostic passes without weakening source lint policy. Required application
+  target compilation also passes, producing 128 test artifacts across 29 packages
+  without claiming application test execution. Full producer pin release, eviction, retirement and
   NativeReady remain pending.
+- Publisher ownership candidate `b4dba755cf` implements the ARCH-8
+  `publisher-sole-writer` gate by composing real publication ordering, native
+  descriptor handoff, distinct-identity directory controls and the production
+  publisher's confinement. The extended VM fixture requires seven measured
+  capability-free identities and exact permission refusals for six non-publisher
+  actors. Actual returned backing descriptors must reject writes and writable
+  reopening. The owning check independently binds complete image inputs and
+  original Cargo ELF bytes; it does not claim the broader PROTO-57 gate or full
+  host readiness. Both direct builds, all 32 focused cases and the formatter pair
+  pass. Strict Clippy retains the same nineteen findings. The actual native
+  prerequisites subsequently pass: publication ordering, seven role identities,
+  six non-publisher mutation controls, authenticated transport and read-only
+  native handoffs. The aggregate fails at its independent verifier's incorrect
+  requirement that the copied-library list be nonempty. This image legitimately
+  resolves all dynamic dependencies directly from immutable AOS store inputs.
+  Correction `af4e1dd17a` checks exact copied-library inventory, including an empty
+  list, and resolves every actual transitive ELF dependency with AOS binutils.
+  It passes against the original bound images as a diagnostic. The failed
+  aggregate remains recorded; its queued application build does not start.
+- Source-finalization candidate `feef59ea75` combines that verifier correction
+  with actual Running completion of original standalone-source retirement.
+  Only the original registered publication, native inode observation, current
+  durable funding and physical executor can submit final removal. Correlated
+  acknowledgements remain with the actual source job, including after a waiter
+  disappears. Repeated calls use those acknowledgements; unavailable exchanges
+  require real recovery. Fresh charge is measured independently of removed
+  names, retaining original source descriptions, pins and holds. The native
+  controls cover early grace, foreign ownership, cancellation, repeated manifest
+  sources and live reads with policy held; a separate privileged helper observes
+  charge before and after actual unlinked descriptors close. Both frozen direct
+  build profiles, all 32 focused cases and the formatter pair pass. Native
+  qualification fails after the cancelled waiter, before final accounting;
+  application compilation and the full filesystem run do not start. Strict
+  Clippy retains nineteen earlier findings, and its separate diagnostic catches
+  a direct wall-clock call in the fixture. Correction `30dcca6427` uses the
+  existing clock adapter and exposes actual physical-owner refusals and final
+  actor output, retaining the real grace, deadlines and assertions. Its fresh
+  local checks and narrow native component run are underway. These controls are
+  not yet qualified; producer pin release, eviction, NativeReady and complete
+  host tasks remain open. The diagnostic subsequently reaches actual source
+  removal, unchanged retained bytes and live reads, then fails because the
+  fixture loads policy from the cache root instead of `state/cache`. Independent
+  root observations confirm the authoritative policy remains present, both
+  sealed outputs remain and pending names are gone. Correction `f8c7f4b7f2`
+  uses the actual policy directory without changing the accounting assertions.
+  Combined candidate `1c0b104f98` also removes unused private client methods
+  while retaining every original ownership edge and compiles private recovery
+  helpers with their actual Tokio owner. Both direct builds, all 32 focused
+  cases, formatting and strict fixture/native-only Clippy profiles pass. The
+  separate deployed Tokio profile exposes two further unused private paths;
+  correction `f0ce679062` keeps the stale-observation helper with its isolated
+  fixture and retains sealed response resources explicitly. Both direct builds,
+  all 32 focused cases, formatting and strict Clippy with `-D warnings` pass
+  on that frozen successor in native-only, deployed Tokio and native-fixture
+  profiles, without lint allowances. The actual native cache component on
+  `1c0b104f98` subsequently passes all 51 selected filesystem cases and the new
+  source-cleanup controls. Independent review verifies all 3,495 image inputs,
+  four original Cargo ELFs and both installed supervisor helpers. The helper
+  measures 991,232 charged bytes while 286,720 bytes of retired source allocation
+  remain open, separately from 2,899,870 bytes of future holds, and confirms
+  reclamation only after the actual descriptions close. Cancellation, repeated
+  acknowledgements, immutable bytes, unchanged policy and reads with policy held
+  all pass. The owning `publisher-sole-writer` aggregate subsequently passes
+  in 918.216 seconds, including actual role-permission and descriptor-transport
+  guests. Independent reinspection matches its original source/runtime report:
+  3,493 transport inputs, 3,495 cache inputs, five transport ELFs and nineteen
+  portable cases. This qualifies ARCH-8 on the tested source. Required
+  application compilation subsequently passes in 2,502.317 seconds; all 128
+  actual test artifacts exactly match the 29 declared Linux application packages,
+  including their library, binary and integration targets. This is compilation,
+  not application execution. The full filesystem suite also passes all 122
+  nonignored cases in the ext4 guest; independent review verifies the exact
+  cases, all 3,489 archive inputs, actual archive digest and unchanged six
+  privileged exclusions. The broader host requirements and task acceptance
+  remain open.
+- Source-descriptor candidate `a509523e04` closes the original registered
+  admission and inspection handles only after their real correlated native
+  final-removal acknowledgements. Exact zero-link inode, project, ownership,
+  access-mode and byte checks precede either close. The completed reassembly plan
+  closes only after every original transfer completes; actual acknowledgements,
+  reconstruction metadata, pins and future holds remain retained. Its extended
+  native control keeps the original owner and consumers Running while closing
+  the final independent observers and synchronizing the filesystem. The real
+  helper measures charged usage falling from 991,232 to 704,512 bytes, exactly
+  the observed 286,720 source bytes, with 2,899,870 future-hold bytes unchanged.
+  Fresh resident and consumer reads pass with policy held; repeated cleanup,
+  policy bytes and immutable outputs remain valid. The complete native component
+  passes in 424.796 seconds, including all 51 selected filesystem cases. Review
+  verifies all 3,495 image inputs, four original Cargo ELFs and both installed
+  supervisor helpers. Both direct builds, 32 focused cases, the formatter pair
+  and all three strict Clippy profiles pass on unchanged source, with no lint
+  allowances.
+  Its owning `publisher-sole-writer` aggregate subsequently passes in 479.547
+  seconds; independent source and runtime reinspection matches the original
+  report. Required application compilation subsequently passes in 2,310.039
+  seconds. Independent review matches all 128 declared test targets across 29
+  packages, including the mixed library target kinds; this proves compilation,
+  not application execution. The complete filesystem suite subsequently passes
+  all 122 nonignored cases in the ext4 guest. Independent review verifies every
+  expected case, the archive digest, all 3,489 source inputs and the unchanged
+  six privileged exclusions. Producer pin release,
+  cached-object ownership, eviction, NativeReady and full task acceptance remain
+  pending; this qualifies source-description closure only.
+- Resident-view candidate `a8fb695c3f` adds permanent closure before producer
+  handoff. Started operations retain actual backing, and completion is reported
+  only after those references drop. Reads use a short private slot lock outside
+  native I/O and never lock embedded state. Closing one view changes no durable
+  pin, lease, reservation or quota observation. Its native control checks that
+  independent sources and consumer leases remain readable with policy stalled.
+  Functional parent `53f53095e9` passes both builds, all 34 selected cases,
+  including two concurrency regressions, and all three strict Clippy profiles.
+  The successor only formats the new fixture message; its formatter pair and
+  native component pass. All 53 selected filesystem cases execute in the ext4
+  guest with none ignored. Independent review verifies all 3,496 image inputs,
+  four original Cargo ELFs, installed helpers and the actual closure control.
+  Independent consumer and fresh-source reads remain live with policy stalled;
+  durable protection remains unchanged. Original failed lint and formatting
+  attempts remain recorded. This does not accept a host task.
+- Producer-custody candidate `39ad6d2ea4` bounds externally issued resident views
+  in a weak registry on the original physical worker. Current publication and
+  synchronized funding checks precede revocation; later external producer reads
+  are refused. Consumer grants use separately prepared genuine sources. The
+  storage envelope includes external and consumer headers, active preparation
+  and registry growth. Both builds, all 34 selected cases, all three strict
+  Clippy profiles and the formatter pair pass on unchanged source. The native
+  control now exercises actual registry exhaustion, slot reuse, foreign-owner
+  refusal and consumer reads after revocation. Native qualification passes in
+  441.657 seconds, including all 53 selected filesystem cases. Independent review
+  verifies all 3,498 image inputs, four original Cargo ELFs, installed helpers
+  and the exact capacity/revocation controls. Durable protection and independent
+  consumer reads remain intact. The owning publisher gate subsequently passes
+  in 495.530 seconds; independent reinspection matches its original artifact
+  report. Required application compilation passes in 2,721.018 seconds; all
+  128 actual test artifacts exactly match the 29 declared application packages.
+  The complete filesystem suite also passes all 124 nonignored cases in the
+  ext4 guest. Independent review verifies every expected case, the archive
+  digest, all 3,492 source inputs and the unchanged six privileged exclusions.
+  No host task is accepted.
+- Cache-handoff candidate `d59ca86443` transfers actual completed publication
+  custody through a synchronized funding decrement. Original final-removal
+  acknowledgments and closed descriptors precede source-admission release;
+  reconstruction metadata and independent consumer grants remain owned.
+  Producer promises, including reused backing dependencies, become durable
+  release grace handled by the periodic expiry sweep. Fresh consumers resolve
+  genuine cached backing after producer funding retires. Both builds, all 34
+  selected cases, all three strict Clippy profiles and formatting pass.
+  Native qualification stops at an old range-reuse pin-count assertion, before
+  reaching handoff. Successor `4036350ffc` preserves the original publication
+  receipt on queue refusal and adds a real queue-full/retry control. It requires
+  the exact reused backing dependency pin and waits for the configured
+  30-second release grace. Its local checks all pass. Native execution passes
+  both ordinary and bad-whole-hash reuse controls, then stops at the analogous
+  recovered-source pin-count assertion. The failed runs remain recorded;
+  neither supplies native handoff qualification. Follow-up `68aab2b064` requires
+  exact recovered dependency protection in both actor and independent supervisor;
+  it preserves all original inode, funding, residence and refusal checks.
+  Both builds, all 34 selected cases, all three strict Clippy profiles and
+  formatting pass on this committed source. Native qualification passes in
+  472.129 seconds, including all 53 selected filesystem cases. Independent
+  review verifies all 3,501 image inputs, four original Cargo ELFs and the exact
+  queue-refusal, retry and handoff controls. Actual producer and closed-source
+  future holds decrease by 1,588,749 bytes; a fresh independent consumer adds
+  its own 262,144-byte hold. Final future holds are 1,573,265 bytes and measured
+  project usage is 700,416 bytes. Reconstruction metadata and both consumers
+  remain live after the actual release grace. The owning publisher gate passes
+  in 544.631 seconds; independent artifact reinspection matches its report.
+  This qualifies handoff, not full cache eviction or host-task acceptance.
+- Native-eviction candidate `e367ac9d26` connects the original completed
+  publication receipts to S3-FIFO selection and authenticated publisher
+  retirement, restoration and final removal. Successful reads record activity
+  outside embedded-state locks. Native quota observations include pending
+  inodes; final removal releases policy funding and closes all actual original
+  publication descriptors before querying freed charge. The worker drains a
+  bounded cut of accepted requests before finalizing due retirements, allowing
+  an already queued pin to restore its original inode even if policy stalls
+  across the retirement deadline. Both direct builds, all 36 selected cases and
+  formatting pass; hermetic strict-profile and policy tests are running.
+  Native execution stops at a genuine permission error: restoration succeeds,
+  but the cache identity cannot reopen the publisher-owned file for reading
+  to check its canonical inode. No consumer pin is acknowledged. The original
+  body, reconstruction metadata and durable protection remain retained.
+  Successor `386f94080c` observes that pathname with `O_PATH` and restores
+  pending objects before duplicate inline or manifest publication. Its added
+  native control requires the same original inode, one charge for both genuine
+  publication receipts, another real producer-grace window and final descriptor
+  closure before physical charge release. Both builds, all 36 selected cases,
+  three strict filesystem profiles and formatting pass. Native execution still
+  fails before the new consumer grant: `O_PATH` cannot traverse the publisher's
+  private `0700` sealed directory. A separate strict Core all-target check also
+  fails on SDK-only helper gating and intentional cache-test panic assertions.
+  Both failures remain recorded; no native eviction success is claimed.
+  Candidate `ffd370be6f` verifies the actual restored canonical inode inside
+  publisher custody after the synchronized rename and before its authenticated
+  acknowledgment. The cache correlates that response with its original verified
+  descriptor and checks that the inode is linked, preserving private directory
+  permissions and the existing wire format. It incorporates the previously
+  reviewed SDK helper gating and scopes intentional panic assertions to the
+  three cache test modules. Both builds and all 36 selected cases pass.
+  Native qualification passes in 627.568 seconds, including all 55 selected
+  filesystem cases. Independent review verifies all 3,512 image inputs, four
+  original Cargo ELFs, installed helpers and the ordered retirement controls.
+  An already queued pin restores the original inode after policy stalls across
+  its retirement deadline. A duplicate publication also restores that inode;
+  both genuine publication receipts share one final native retirement. The
+  independent observer verifies charge release only after the last original
+  descriptor closes. Final measured project usage is 696,320 bytes, with future
+  holds unchanged at 1,573,265 bytes and unrelated consumers still readable.
+  Strict Core checks pass in 174.714 seconds for the `std` library and native
+  and SDK all-target profiles. The owning publisher gate passes in 523.646
+  seconds. Required application compilation passes in 2,613.228 seconds;
+  independent review matches all 128 test artifacts across the 29 declared
+  packages, including mixed library kinds. The complete filesystem suite also
+  passes all 126 nonignored cases in the ext4 guest. Independent review verifies
+  every expected case, the archive digest, all 3,506 source inputs and the same
+  six privileged exclusions. These component results do not accept a host task.
+  The ten-stage local qualification also finishes successfully on unchanged
+  source: both direct builds, all 36 selected cases, all three strict filesystem
+  profiles, all three strict Core profiles and the formatter pair pass.
+  Independent review checks every receipt, command, retained log and the current
+  clean source against all 6,542 tracked input hashes.
+  The older hermetic policy check finishes with 12 passes and one fixture
+  failure: an expiry of `u64::MAX` exceeds TOML's signed-integer encoding range,
+  so the generous-bound positive control cannot reach its byte-size assertion.
+  All three new external-quota and queue-starvation regressions pass; the whole
+  policy check remains failed. Test-only successor `5313ee703a` uses a valid
+  expiry while preserving exact-size success, full-snapshot refusal and the
+  generous positive control. All 13 policy cases pass on this corrected source;
+  independent review matches the complete declared case inventory.
+  Its native and SDK all-target strict Clippy profiles and formatter pair also
+  finish successfully on unchanged source, with independent receipt review.
+  Encoded-admission candidate `29a093589d` retains original completed chunk and
+  metadata-pair jobs while synchronizing producer-funding release, finite release
+  grace and actual one-hop dictionary dependencies. Queue refusal returns the
+  original admission; accepted commands keep physical custody after waiter
+  cancellation. The new native control observes unchanged original inodes,
+  dictionary-backed reconstruction after actual grace, genuine pending-source
+  retirement and exact funding release. Its independent supervisor is included
+  in the immutable image input and helper inventories. A provisional fixture
+  build finds missing public receipt re-exports; those are corrected before
+  committing this candidate. Both builds and all 36 selected cases pass, but
+  strict Clippy refuses its large unsubmitted-error variant. Successor
+  `60338331f1` boxes the original retry receipt and passes that strict check.
+  Native qualification of `29a093589d` fails after 480.356 seconds. It reaches
+  genuine cache ownership, the real release-grace sweep and dictionary-backed
+  sealed reconstruction, then loses the actor's final error at the observer's
+  source-cleanup handshake. At the completed admission handoff, measured project
+  usage is 368,640 bytes and future holds are 262,144 bytes. This partial
+  evidence does not qualify native cleanup. Review also finds that the fixture
+  incorrectly expects only bootstrap funding after publication, although the
+  retained reconstruction metadata requires its own future hold. Candidate
+  `0ebdcaf571` captures and preserves the exact original bootstrap and metadata
+  reservations and metadata pins, retains native failure output and removes a
+  duplicate actor-log print. Production behavior is unchanged from the boxed
+  receipt successor. Both builds, all 36 selected cases, all three strict
+  filesystem profiles, all three strict Core profiles and formatting pass on
+  unchanged source. Native qualification passes in 636.980 seconds, including
+  all 55 selected filesystem cases and the existing eviction controls.
+  Independent review verifies all 3,516 image inputs, four original Cargo ELFs,
+  three installed supervisor helpers and each exact handoff event. Two original
+  source retirements complete; final project usage is 950,272 bytes and future
+  holds are 524,288 bytes for the original bootstrap and reconstruction metadata.
+  The owning publisher gate, required application compilation and full
+  filesystem requalification remain pending on this source. The retained-original
+  diagnostic reproduces the final fixture funding assertion with its original
+  executable and deadlines; independent review verifies all 3,516 inputs and
+  four original ELFs. An initial diagnostic wrapper import-path failure is
+  preserved separately. This prerequisite supplies no encoded eviction or
+  shared-chunk extraction qualification.
+  Shared-chunk extraction, standalone and pack cache ownership, admission
+  integration, complete recovery and NativeReady remain pending.
 - Surface candidate `f8da5b4293`: the complete task source review, formatter pair
   and all seven strict Clippy/documentation profiles pass. The interface,
   commit-path, status and schema gates pass on unchanged final source, including
@@ -9506,11 +9842,38 @@ Resumed qualification:
   continuity controls pass in 320.771 seconds on the failed profile; the
   original fault case is included, with no retry or skipped expiry assertion.
   The formatter pair and all seven strict Clippy/documentation profiles also
-  pass on this revision. Its owning collector gates are running before surface,
-  application, SDK, feature-matrix and full current-trunk requalification.
+  pass on this revision. Both owning collector gates and the four surface gates
+  subsequently pass on unchanged source. Required application compilation passes
+  with all 118 targets exactly matching the 29 declared Linux application
+  packages; this is compilation, not application test execution. The configured
+  SDK image, eleven actual SDK cases and four separate-process native controls
+  also pass. Independent review verifies all 3,338 crate inputs, final installed
+  image and every selected case log. The feature matrix is running before full
+  current-trunk requalification.
   The original failure remains retained; no matrix or aggregate success is
   claimed. The superseded `6cb1fcf235` aggregate was stopped after the policy
   fix and supplies no aggregate success.
+- Packaging candidate `c2ddbe5db3` incorporates the current accepted trunk into
+  the preserved module branch. Review covers all five changed files against
+  PKG-8 and PKG-10: declarative feature organization, role unit rendering and one
+  structured TOML configuration. These requirements do not require implementing
+  every role runtime in this task; broader deployment remains separately
+  unqualified. All 88 owning module checks and the formatter pair pass on
+  unchanged source. The complete current-trunk aggregate fails after
+  19,199.763 seconds. Its package suite executes all 1,933 cases: 1,931 pass,
+  one fails and one times out, with none skipped. The checked-mutation
+  directory-sync case fails its five-second rendezvous; the signed-overlay
+  ancestry collection/reopen case reaches its 180-second process limit.
+  Original logs and bounded diagnostics are retained. These failures require
+  diagnosis and a passing full aggregate before a task merge; module evaluation
+  success does not qualify the failed aggregate.
+  Both exact retained cases pass in an isolated diagnostic run using the original
+  executable and assertions: directory-sync in 7.154 seconds and traced overlay
+  collection/reopen in 150.613 seconds. Private disk-backed user, mount and
+  network namespaces use AOS tools and are removed afterward. These focused
+  observations do not qualify the aggregate or establish its failure cause.
+  There are no Rust, dependency,
+  specification or frozen-interface changes relative to the accepted trunk.
 
 All five T2 task checkboxes remain open. The transport and cache results above
 accept components only. Complete manifest reuse and retirement, full host

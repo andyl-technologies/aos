@@ -99,10 +99,10 @@
         "idemp-wrapper has a real Nix reference to idempkg"
 
       echo "==> Maintainer: publish idempkg, wrapper, and static cache"
-      $APR create idemp-reg
+      create_publish_registry idemp-reg
       REG_DIR="$REG_STORAGE/idemp-reg"
       DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
-      $APR publish "$IDEMP_STORE" \
+      publish_vm_package "$IDEMP_STORE" \
         --name idempkg \
         --version 1.0.0 \
         --description "Executable idempotent install fixture" \
@@ -112,7 +112,7 @@
         --no-commit
       assert_file_contains "$REG_DIR/packages/i/idempkg.toml" \
         "$IDEMP_HASH" "published idempkg metadata records store hash"
-      $APR publish "$WRAPPER_STORE" \
+      publish_vm_package "$WRAPPER_STORE" \
         --name idemp-wrapper \
         --version 1.0.0 \
         --description "Executable idempotent wrapper fixture" \

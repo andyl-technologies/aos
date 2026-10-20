@@ -2,52 +2,49 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuPluginFailLoud",
-  taskIds ? ["T-PLUG-22"],
-  openTaskIds ? [],
-  liveNetworkIo ? import ./phase2-qemu-live-network-io.nix {inherit pkgs lib;},
-  liveBlockIo ? import ./phase2-qemu-live-block-io.nix {inherit pkgs lib;},
-  liveNinePIo ? import ./phase2-qemu-live-9p-io.nix {inherit pkgs lib;},
+  taskIds ? [],
+  openTaskIds ? ["T-PLUG-22"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   pluginAbi = builtins.concatStringsSep "\n" [
-    (builtins.readFile ../../crates/crucible-qemu-plugin/src/abi.rs)
-    (builtins.readFile ../../crates/crucible-qemu-plugin/src/abi/tests.rs)
-    (builtins.readFile ../../crates/crucible-qemu-plugin/src/abi/tests/capabilities.rs)
+    (builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/abi.rs)
+    (builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/abi/tests.rs)
+    (builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/abi/tests/capabilities.rs)
   ];
   pluginSetup = import ./_qemu-plugin-setup-source.nix {inherit lib;};
-  pluginHandshake = builtins.readFile ../../crates/crucible-qemu-plugin/src/handshake.rs;
+  pluginHandshake = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/handshake.rs;
   pluginRegistration = import ./_qemu-plugin-registration-source.nix {inherit lib;};
-  pluginDeadline = builtins.readFile ../../crates/crucible-qemu-plugin/src/deadline.rs;
+  pluginDeadline = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/deadline.rs;
   pluginTimeControl = import ./_qemu-plugin-time-control-source.nix {inherit lib;};
   pluginInbound = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu-plugin/src/inbound.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/inbound.rs;
   };
   pluginIdleLoop = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu-plugin/src/idle_loop.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/idle_loop.rs;
   };
-  pluginNetworkTx = builtins.readFile ../../crates/crucible-qemu-plugin/src/network_tx.rs;
+  pluginNetworkTx = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/network_tx.rs;
   pluginNetworkRx = builtins.concatStringsSep "\n" [
-    (builtins.readFile ../../crates/crucible-qemu-plugin/src/network_rx.rs)
-    (builtins.readFile ../../crates/crucible-qemu-plugin/src/network_rx/qemu_symbols.rs)
+    (builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/network_rx.rs)
+    (builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/network_rx/qemu_symbols.rs)
   ];
   pluginBlockIo = builtins.concatStringsSep "\n" [
-    (builtins.readFile ../../crates/crucible-qemu-plugin/src/block_io.rs)
-    (builtins.readFile ../../crates/crucible-qemu-plugin/src/block_io_tests.rs)
+    (builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/block_io.rs)
+    (builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/block_io_tests.rs)
   ];
-  pluginNinePIo = builtins.readFile ../../crates/crucible-qemu-plugin/src/ninep_io.rs;
+  pluginNinePIo = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/ninep_io.rs;
   pluginWhitebox = builtins.concatStringsSep "\n" [
-    (builtins.readFile ../../crates/crucible-qemu-plugin/src/whitebox_doorbell.rs)
-    (builtins.readFile ../../crates/crucible-qemu-plugin/src/whitebox_doorbell/tests.rs)
+    (builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/whitebox_doorbell.rs)
+    (builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/whitebox_doorbell/tests.rs)
   ];
   pluginCoverage = builtins.concatStringsSep "\n" [
-    (builtins.readFile ../../crates/crucible-qemu-plugin/src/coverage.rs)
+    (builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/coverage.rs)
     (import ./_rust-module-source.nix {
       inherit lib;
-      entry = ../../crates/crucible-qemu-plugin/src/coverage/tests.rs;
+      entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/coverage/tests.rs;
     })
   ];
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
@@ -75,59 +72,59 @@
 
   failLoudSources = [
     {
-      label = "crates/crucible-qemu-plugin/src/abi.rs";
+      label = "crates/crucible/qemu/crucible-qemu-plugin/src/abi.rs";
       content = pluginAbi;
     }
     {
-      label = "crates/crucible-qemu-plugin/src/setup.rs";
+      label = "crates/crucible/qemu/crucible-qemu-plugin/src/setup.rs";
       content = pluginSetup;
     }
     {
-      label = "crates/crucible-qemu-plugin/src/handshake.rs";
+      label = "crates/crucible/qemu/crucible-qemu-plugin/src/handshake.rs";
       content = pluginHandshake;
     }
     {
-      label = "crates/crucible-qemu-plugin/src/registration.rs";
+      label = "crates/crucible/qemu/crucible-qemu-plugin/src/registration.rs";
       content = pluginRegistration;
     }
     {
-      label = "crates/crucible-qemu-plugin/src/deadline.rs";
+      label = "crates/crucible/qemu/crucible-qemu-plugin/src/deadline.rs";
       content = pluginDeadline;
     }
     {
-      label = "crates/crucible-qemu-plugin/src/time_control.rs";
+      label = "crates/crucible/qemu/crucible-qemu-plugin/src/time_control.rs";
       content = pluginTimeControl;
     }
     {
-      label = "crates/crucible-qemu-plugin/src/idle_loop module";
+      label = "crates/crucible/qemu/crucible-qemu-plugin/src/idle_loop module";
       content = pluginIdleLoop;
     }
     {
-      label = "crates/crucible-qemu-plugin/src/inbound.rs";
+      label = "crates/crucible/qemu/crucible-qemu-plugin/src/inbound.rs";
       content = pluginInbound;
     }
     {
-      label = "crates/crucible-qemu-plugin/src/network_rx.rs";
+      label = "crates/crucible/qemu/crucible-qemu-plugin/src/network_rx.rs";
       content = pluginNetworkRx;
     }
     {
-      label = "crates/crucible-qemu-plugin/src/network_tx.rs";
+      label = "crates/crucible/qemu/crucible-qemu-plugin/src/network_tx.rs";
       content = pluginNetworkTx;
     }
     {
-      label = "crates/crucible-qemu-plugin/src/block_io.rs";
+      label = "crates/crucible/qemu/crucible-qemu-plugin/src/block_io.rs";
       content = pluginBlockIo;
     }
     {
-      label = "crates/crucible-qemu-plugin/src/ninep_io.rs";
+      label = "crates/crucible/qemu/crucible-qemu-plugin/src/ninep_io.rs";
       content = pluginNinePIo;
     }
     {
-      label = "crates/crucible-qemu-plugin/src/whitebox_doorbell.rs";
+      label = "crates/crucible/qemu/crucible-qemu-plugin/src/whitebox_doorbell.rs";
       content = pluginWhitebox;
     }
     {
-      label = "crates/crucible-qemu-plugin/src/coverage.rs";
+      label = "crates/crucible/qemu/crucible-qemu-plugin/src/coverage.rs";
       content = pluginCoverage;
     }
   ];
@@ -160,7 +157,7 @@
         needle = "wall-clock-dependent fallback";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/abi.rs" pluginAbi [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/abi.rs" pluginAbi [
       {
         label = "negative argc diagnostic";
         needle = "NegativeArgc";
@@ -187,14 +184,14 @@
       }
       {
         label = "ABI missing-capability entrypoint test";
-        needle = "abi_install_entrypoint_fails_closed_without_exact_deadline_or_queued_advance_symbols";
+        needle = "abi_install_entrypoint_fails_closed_without_required_runtime_symbols";
       }
       {
         label = "ABI unsupported model test";
-        needle = "abi_qemu_install_path_validates_execution_model_before_success";
+        needle = "abi_execution_model_validation_accepts_supported_qemu_info";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/handshake.rs" pluginHandshake [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/handshake.rs" pluginHandshake [
       {
         label = "protocol IPC failure wrapper";
         needle = "PluginHandshakeError::Protocol";
@@ -212,7 +209,7 @@
         needle = "plugin_handshake_preserves_protocol_failures";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/setup.rs" pluginSetup [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/setup.rs" pluginSetup [
       {
         label = "setup receive failure";
         needle = "PluginSetupError::ReceiveSetup";
@@ -238,7 +235,7 @@
         needle = "prepare_setup_sends_nonzero_ack_when_region_validation_fails";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/registration.rs" pluginRegistration [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/registration.rs" pluginRegistration [
       {
         label = "step-scoped failure record";
         needle = "pub struct PluginRegistrationFailure";
@@ -296,25 +293,17 @@
         needle = "registration_coverage_on_requires_basic_block_callback_capability";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/deadline.rs" pluginDeadline [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/deadline.rs" pluginDeadline [
       {
         label = "exact deadline missing capability";
         needle = "CapabilityUnavailable";
       }
       {
-        label = "overshoot fallback rejected";
-        needle = "OvershootFallbackForbidden";
-      }
-      {
         label = "exact deadline capability test";
-        needle = "exact_deadline_fails_when_capability_is_missing";
-      }
-      {
-        label = "overshoot fallback test";
-        needle = "exact_deadline_rejects_overshoot_and_correct_fallback";
+        needle = "exact_deadline_reader_requires_qemu_clock_deadline_symbol";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/time_control.rs" pluginTimeControl [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/time_control.rs" pluginTimeControl [
       {
         label = "queued advance capability error";
         needle = "QueuedIdleAdvanceError::CapabilityUnavailable";
@@ -332,7 +321,7 @@
         needle = "queued_idle_advance_rejects_targets_outside_qemu_signed_range";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/inbound.rs" pluginInbound [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/inbound.rs" pluginInbound [
       {
         label = "inbound late delivery diagnostic";
         needle = "DeliveryAlreadyPassed";
@@ -350,7 +339,7 @@
         needle = "inbound_frame_select_rejects_late_candidate_frame";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/idle_loop module" pluginIdleLoop [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/idle_loop module" pluginIdleLoop [
       {
         label = "idle exact deadline failure";
         needle = "IdleHotLoopError::ReadExactDeadline";
@@ -376,7 +365,7 @@
         needle = "idle_loop_rejects_late_inbound_ring_before_direct_advance";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/network_rx.rs" pluginNetworkRx [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/network_rx.rs" pluginNetworkRx [
       {
         label = "network RX missing capability";
         needle = "NetworkRxError::CapabilityUnavailable";
@@ -406,7 +395,7 @@
         needle = "qemu_plugin_net_inject";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/network_tx.rs" pluginNetworkTx [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/network_tx.rs" pluginNetworkTx [
       {
         label = "network TX enqueue failure";
         needle = "RingOperation";
@@ -420,7 +409,7 @@
         needle = "SpscRingError::QueueFull";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/block_io.rs" pluginBlockIo [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/block_io.rs" pluginBlockIo [
       {
         label = "block enqueue failure";
         needle = "RingEnqueueFailed";
@@ -442,7 +431,7 @@
         needle = "block_poll_guest_completion_failure_still_releases_freeze_token";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/ninep_io.rs" pluginNinePIo [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/ninep_io.rs" pluginNinePIo [
       {
         label = "9p enqueue failure";
         needle = "RingEnqueueFailed";
@@ -464,7 +453,7 @@
         needle = "ninep_poll_guest_completion_failure_still_releases_request_token";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/whitebox_doorbell.rs" pluginWhitebox [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/whitebox_doorbell.rs" pluginWhitebox [
       {
         label = "whitebox missing capability";
         needle = "WhiteboxDoorbellError::CapabilityUnavailable";
@@ -486,7 +475,7 @@
         needle = "whitebox_guest_input_requires_qemu_guest_memory_write_capability";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/coverage.rs" pluginCoverage [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/coverage.rs" pluginCoverage [
       {
         label = "coverage missing capability";
         needle = "CoverageError::CapabilityUnavailable";
@@ -512,7 +501,10 @@ in
       version = "0";
       src = crucibleSrc;
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.rust
         pkgs.sed
       ];
@@ -553,8 +545,8 @@ in
 
             target_dir="$TMPDIR/crucible-plugin-fail-loud-target"
             for filter in \
-              abi_install_entrypoint_fails_closed_without_exact_deadline_or_queued_advance_symbols \
-              abi_qemu_install_path_validates_execution_model_before_success \
+              abi_install_entrypoint_fails_closed_without_required_runtime_symbols \
+              abi_execution_model_validation_accepts_supported_qemu_info \
               plugin_handshake_preserves_protocol_failures \
               receive_setup_sends_nonzero_ack_when_descriptor_count_is_wrong \
               prepare_setup_sends_nonzero_ack_when_region_validation_fails \
@@ -562,8 +554,8 @@ in
               registration_order_fails_loud_when_exact_deadline_capability_missing \
               registration_order_fails_loud_when_queued_idle_advance_missing \
               registration_coverage_on_requires_basic_block_callback_capability \
-              exact_deadline_fails_when_capability_is_missing \
-              exact_deadline_rejects_overshoot_and_correct_fallback \
+              exact_deadline_reader_requires_qemu_clock_deadline_symbol \
+              exact_deadline_reader_reads_virtual_deadline_without_fallback \
               queued_idle_advance_requires_qemu_enqueue_symbol \
               queued_idle_advance_rejects_targets_outside_qemu_signed_range \
               inbound_frame_drain_rejects_late_head_without_consuming \
@@ -606,13 +598,6 @@ in
                 "$filter" \
                 -- --test-threads=1
             done
-            grep -Fxq PASS ${liveNetworkIo}/result
-            grep -Fxq 'gate=gate:live-network-io' ${liveNetworkIo}/result
-            grep -Fxq 'network_ring=SLOT_NET_ROUTER' ${liveNetworkIo}/result
-            grep -Fxq PASS ${liveBlockIo}/result
-            grep -Fxq 'plugin_loaded=rust-control-cdylib' ${liveBlockIo}/result
-            grep -Fxq PASS ${liveNinePIo}/result
-            grep -Fxq 'plugin_loaded=rust-control-cdylib' ${liveNinePIo}/result
           '';
         }
         {
@@ -625,14 +610,14 @@ in
             check=${attrPath}
             tasks=${taskList}
             open_tasks=${openTaskList}
-            status=complete
+            status=partial
+            evidence_scope=source-and-unit
             broken_ipc=step-scoped-diagnostic
             missing_capability=distinct-errors
             abi_mismatch=unsupported-api-diagnostic
             full_ring=queuefull-preserved
             passed_delivery_icount=fail-loud-no-consume
             wall_clock_fallback=forbidden
-            live_callback_surfaces=network,block,9p
             RESULT
           '';
         }

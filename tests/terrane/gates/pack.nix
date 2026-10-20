@@ -1,6 +1,6 @@
 {sourceGate, ...}: let
   runTests = filter: ''
-    cargo test --frozen --offline -p terrane --lib ${filter} > "$TMPDIR/test.log"
+    cargo test --frozen --offline -p terrane-sdk --lib ${filter} > "$TMPDIR/test.log"
     python3 -c 'import pathlib, re, sys; output = pathlib.Path(sys.argv[1]).read_text(); print(output); sys.exit(not re.search(r"test result: ok\. [1-9][0-9]* passed; 0 failed", output))' "$TMPDIR/test.log"
   '';
 
@@ -14,7 +14,7 @@ in {
   pack-header = sourceGate "pack-header" ''
     cd crates
     ${runTests "pack::tests::pack_header_"}
-    cargo test --frozen --offline -p terrane-core --lib pack_format::tests > "$TMPDIR/core-test.log"
+    cargo test --frozen --offline -p terrane-format --lib pack_format::tests > "$TMPDIR/core-test.log"
     python3 -c 'import pathlib, re, sys; output = pathlib.Path(sys.argv[1]).read_text(); print(output); sys.exit(not re.search(r"test result: ok\. [1-9][0-9]* passed; 0 failed", output))' "$TMPDIR/core-test.log"
     printf 'PASS: native headers and portable complete pack/shard/bundle formats\n' > "$out/result"
   '';

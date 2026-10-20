@@ -2,25 +2,10 @@
   pkgs,
   lib,
 }: let
+  inherit (import ./_workspace-packages.nix {inherit lib;}) packageDir packageNames cruciblePackages;
   cratesDir = ../../crates;
 
-  packages = [
-    "crucible-cas"
-    "crucible-sim"
-    "crucible-assert"
-    "crucible-shmem"
-    "crucible-protocol"
-    "crucible-device"
-    "crucible-qemu"
-    "crucible-qemu-plugin"
-    "crucible-guest"
-    "crucible"
-    "crucible-session"
-    "crucible-api"
-    "crucible-daemon"
-    "crucible-cli"
-    "crucible-harness"
-  ];
+  packages = cruciblePackages;
 
   forbiddenPrefixes = ["ratchet-" "aos-nix-"];
   forbiddenExactNames = ["ratchet" "aos-nix"];
@@ -28,7 +13,7 @@
     builtins.elem name forbiddenExactNames
     || builtins.any (prefix: lib.hasPrefix prefix name) forbiddenPrefixes;
 
-  readManifest = package: builtins.fromTOML (builtins.readFile (cratesDir + "/${package}/Cargo.toml"));
+  readManifest = package: builtins.fromTOML (builtins.readFile (packageDir package + "/Cargo.toml"));
 
   workspaceManifest = builtins.fromTOML (builtins.readFile (cratesDir + "/Cargo.toml"));
   workspaceDependencies =
@@ -101,18 +86,6 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix;
 
-  simSource = builtins.readFile (cratesDir + "/crucible-sim/src/lib.rs");
-  seamFailures =
-    lib.optionals (!(hasInfix "FUTURE_RATCHET_INTEGRATION_SEAM" simSource)) [
-      "crucible-sim: missing FUTURE_RATCHET_INTEGRATION_SEAM marker"
-    ]
-    ++ lib.optionals (!(hasInfix "crucible-sim::content-addressing" simSource)) [
-      "crucible-sim: missing content-addressing seam value"
-    ]
-    ++ lib.optionals (!(hasInfix "no Crucible crate may depend on `ratchet-*` or `aos-nix-*`" simSource)) [
-      "crucible-sim: missing standalone dependency rule documentation near seam marker"
-    ];
-
   regressionFailures = let
     directFindings = findingsFor workspaceDependencies {
       crucible-sim = {
@@ -155,7 +128,6 @@
 
   failures =
     findingsFor workspaceDependencies realManifests
-    ++ seamFailures
     ++ regressionFailures;
 in
   if failures != []
@@ -180,7 +152,7 @@ in
             gate=gate:harness-lint
             tasks=T-CRATE-15
             forbidden_prefixes=ratchet-,aos-nix-
-            seam=crucible-sim::content-addressing
+            seam=crucible_determinism::content-addressing
             RESULT
           '';
         }

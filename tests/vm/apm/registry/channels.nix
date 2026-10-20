@@ -64,6 +64,7 @@
       $APR create chan-reg --trust-key "$CHANNEL_TRUST_KEY" \
         --key /tmp/channel-release-key
       REG_DIR="$REG_STORAGE/chan-reg"
+      register_publish_key chan-reg initial /tmp/channel-release-key
       assert_file_contains "$REG_DIR/keys.toml" "chan-reg:Ed25519" \
         "registry records initial channel trust key"
       {
@@ -82,7 +83,7 @@
         --description "Channel workflow tool" \
         --license MIT \
         --maintainer channel@example.invalid \
-        --key /tmp/channel-release-key \
+        --key-id initial \
         --cache-url http://127.0.0.1:18091 \
         --upload-url file:///tmp/channel-cache \
         --channel stable \
@@ -118,7 +119,7 @@
         --description "Channel workflow tool" \
         --license MIT \
         --maintainer channel@example.invalid \
-        --key /tmp/channel-release-key \
+        --key-id initial \
         --cache-url http://127.0.0.1:18091 \
         --upload-url file:///tmp/channel-cache \
         --channel stable \
@@ -265,7 +266,7 @@
         --license MIT \
         --maintainer channel@example.invalid \
         --previous 1.0.0 \
-        --key /tmp/channel-release-key \
+        --key-id initial \
         --cache-url http://127.0.0.1:18091 \
         --upload-url file:///tmp/channel-cache \
         --channel stable \
@@ -359,7 +360,7 @@
         --license MIT \
         --maintainer channel@example.invalid \
         --previous 2.0.0 \
-        --key /tmp/channel-release-key \
+        --key-id initial \
         --cache-url http://127.0.0.1:18091 \
         --upload-url file:///tmp/channel-cache \
         > /tmp/channel-release-v3.out 2>&1 || {
@@ -377,7 +378,7 @@
 
       if $APR channel advance stable 3.0.0 \
         --registry chan-reg \
-        --key /tmp/channel-release-key \
+        --key-id initial \
         --count 1 \
         --partitions "$BUCKET" \
         > /tmp/channel-advance-conflict.out 2>&1; then
@@ -393,7 +394,7 @@
 
       $APR channel advance stable 3.0.0 \
         --registry chan-reg \
-        --key /tmp/channel-release-key \
+        --key-id initial \
         --partitions "$BUCKET" \
         > /tmp/channel-advance-v3.out 2>&1 || {
         cat /tmp/channel-advance-v3.out

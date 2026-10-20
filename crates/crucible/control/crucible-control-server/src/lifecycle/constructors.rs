@@ -1,0 +1,67 @@
+//! Lifecycle control-plane constructors and production loop-factory admission.
+
+use super::*;
+
+impl<L> LifecycleControlPlane<L, LifecycleLoopFactory<L>>
+where
+    L: QuantumLoop + Send + 'static,
+{
+    /// Builds a lifecycle control plane from a scenario catalog and loop factory.
+    #[must_use]
+    pub fn new<F>(
+        server_name: impl Into<String>,
+        scenarios: Vec<ScenarioCatalogEntry>,
+        loop_factory: F,
+    ) -> Self
+    where
+        F: Fn(&ScenarioDef, Seed) -> L + Send + Sync + 'static,
+    {
+        Self::new_with_fallible_source_factory(
+            server_name,
+            scenarios,
+            move |scenario, _source, seed| Ok(loop_factory(scenario, seed)),
+        )
+    }
+
+    /// Builds a lifecycle control plane from a fallible source-aware loop factory.
+    ///
+    /// This is the production backend seam: process launch, artifact
+    /// realization, or backend admission failures are returned through
+    /// [`LifecycleApiError::LoopFactory`] instead of being replaced by a test
+    /// double or converted into a panic.
+    #[must_use]
+    pub fn new_with_fallible_source_factory<F>(
+        server_name: impl Into<String>,
+        scenarios: Vec<ScenarioCatalogEntry>,
+        loop_factory: F,
+    ) -> Self
+    where
+        F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> Result<L, LifecycleApiError>
+            + Send
+            + Sync
+            + 'static,
+    {
+        let scenarios = scenarios
+            .into_iter()
+            .map(|entry| (entry.name.clone(), entry))
+            .collect();
+        Self {
+            server_name: server_name.into(),
+            scenarios,
+            sessions: BTreeMap::new(),
+            next_session_id: 1,
+            next_epoch: 1,
+            loop_factory: Box::new(loop_factory),
+            resume_replay_closure_validator: None,
+            resume_observation_loop_factory: None,
+            resume_observation_preparation_timeout: RESUME_OBSERVATION_PREPARATION_TIMEOUT,
+            resume_observation_preparation_capacity: RESUME_OBSERVATION_PREPARATION_CAPACITY,
+            active_resume_observation_preparations: Arc::new(AtomicU64::new(0)),
+            mailbox_capacity: LIFECYCLE_SESSION_MAILBOX_CAPACITY,
+            startup_max_actor_yields: LIFECYCLE_SESSION_STARTUP_MAX_ACTOR_YIELDS,
+            max_sessions: None,
+            retain_stopped_sessions: false,
+            _loop: PhantomData,
+        }
+    }
+}

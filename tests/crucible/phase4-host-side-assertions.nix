@@ -8,8 +8,8 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   trigger = import ./_crucible-trigger-source.nix {inherit lib;};
-  crateRoot = builtins.readFile ../../crates/crucible/src/lib.rs;
-  hostSideAssertionsTest = builtins.readFile ../../crates/crucible/tests/host_side_assertions.rs;
+  crateRoot = builtins.readFile ../../crates/crucible/engine/crucible-engine/src/lib.rs;
+  hostSideAssertionsTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/host_side_assertions.rs;
   assertionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/18-assertions-properties.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -21,164 +21,7 @@
   # string forced after every chunk. A whole-file per-character fold builds a
   # haystack-deep chain of unforced `+` thunks and overflows the evaluator
   # stack on large sources.
-  scrubCommentsAndStrings = content: let
-    scrubChunk = chunkState: chunk: let
-      length = builtins.stringLength chunk;
-      charAt = index: builtins.substring index 1 chunk;
-      indexes = builtins.genList (index: index) length;
-      folded = builtins.foldl' step chunkState indexes;
-      step = state: index:
-        if state.skip
-        then
-          state
-          // {
-            skip = false;
-          }
-        else let
-          ch = charAt index;
-          next =
-            if (index + 1) < length
-            then charAt (index + 1)
-            else "";
-        in
-          if state.mode == "code"
-          then
-            if ch == "/" && next == "/"
-            then
-              state
-              // {
-                out = state.out + "  ";
-                mode = "line";
-                skip = true;
-              }
-            else if ch == "/" && next == "*"
-            then
-              state
-              // {
-                out = state.out + "  ";
-                mode = "block";
-                depth = 1;
-                skip = true;
-              }
-            else if ch == "\""
-            then
-              state
-              // {
-                out = state.out + " ";
-                mode = "string";
-              }
-            else
-              state
-              // {
-                out = state.out + ch;
-              }
-          else if state.mode == "line"
-          then
-            if ch == "\n"
-            then
-              state
-              // {
-                out = state.out + "\n";
-                mode = "code";
-              }
-            else
-              state
-              // {
-                out = state.out + " ";
-              }
-          else if state.mode == "block"
-          then
-            if ch == "/" && next == "*"
-            then
-              state
-              // {
-                out = state.out + "  ";
-                depth = state.depth + 1;
-                skip = true;
-              }
-            else if ch == "*" && next == "/"
-            then
-              state
-              // {
-                out = state.out + "  ";
-                mode =
-                  if state.depth == 1
-                  then "code"
-                  else "block";
-                depth =
-                  if state.depth == 1
-                  then 0
-                  else state.depth - 1;
-                skip = true;
-              }
-            else
-              state
-              // {
-                out =
-                  state.out
-                  + (
-                    if ch == "\n"
-                    then "\n"
-                    else " "
-                  );
-              }
-          else if ch == "\\" && next != ""
-          then
-            state
-            // {
-              out =
-                state.out
-                + " "
-                + (
-                  if next == "\n"
-                  then "\n"
-                  else " "
-                );
-              skip = true;
-            }
-          else if ch == "\""
-          then
-            state
-            // {
-              out = state.out + " ";
-              mode = "code";
-            }
-          else
-            state
-            // {
-              out =
-                state.out
-                + (
-                  if ch == "\n"
-                  then "\n"
-                  else " "
-                );
-            };
-    in
-      # Force the accumulated output flat before the next chunk so thunk
-      # depth stays bounded by the longest line, not the whole file.
-      builtins.seq (builtins.stringLength folded.out) folded;
-    lines = lib.splitString "\n" content;
-    lineCount = builtins.length lines;
-    chunkAt = index:
-      builtins.elemAt lines index
-      + (
-        if index + 1 < lineCount
-        then "\n"
-        else ""
-      );
-    result =
-      builtins.foldl'
-      (state: index: scrubChunk state (chunkAt index))
-      {
-        out = "";
-        mode = "code";
-        depth = 0;
-        skip = false;
-      }
-      (builtins.genList (index: index) lineCount);
-  in
-    result.out;
+  scrubCommentsAndStrings = import ./_rust-scrub.nix {inherit lib;};
 
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
@@ -188,7 +31,7 @@
         needle = "Completed by `checks.crucible.phase4.hostSideAssertions`";
       }
     ]
-    ++ failuresFor "crates/crucible/src/trigger.rs" trigger [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/trigger.rs" trigger [
       {
         label = "host assertion oracle trait";
         needle = "pub trait HostAssertionOracle";
@@ -262,7 +105,7 @@
         needle = "AssertionRunVerdict::failed";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" crateRoot [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" crateRoot [
       {
         label = "black-box oracle export";
         needle = "BlackBoxHostOracle";
@@ -288,7 +131,7 @@
         needle = "HostAssertionReport";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/host_side_assertions.rs" hostSideAssertionsTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/host_side_assertions.rs" hostSideAssertionsTest [
       {
         label = "black-box all quantifiers test";
         needle = "host_side_assertions_grade_all_five_quantifiers_in_black_box_mode";
@@ -348,7 +191,7 @@
         needle = "attrPath = \"checks.crucible.phase4.hostSideAssertions\"";
       }
     ]
-    ++ forbiddenFor "crates/crucible/src/trigger.rs" (scrubCommentsAndStrings trigger) [
+    ++ forbiddenFor "crates/crucible/engine/crucible-engine/src/trigger.rs" (scrubCommentsAndStrings trigger) [
       {
         label = "host wall-clock dependency";
         needle = "SystemTime";
@@ -378,7 +221,7 @@
         needle = "rand::";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/host_side_assertions.rs" hostSideAssertionsTest [
+    ++ forbiddenFor "crates/crucible/engine/crucible-engine/tests/host_side_assertions.rs" hostSideAssertionsTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -401,7 +244,10 @@ in
       version = "0";
       src = crucibleSrc;
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.rust
         pkgs.sed
@@ -445,7 +291,7 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-host-side-assertions-target" \
-              -p crucible \
+              -p crucible-engine \
               --test host_side_assertions \
               --test observed_state_materialization \
               --test observable_condition_leaves \

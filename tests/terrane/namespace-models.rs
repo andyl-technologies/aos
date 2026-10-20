@@ -14,12 +14,12 @@
     reason = "independent format fixtures must match complete ordinary models"
 )]
 
-use terrane_core::cbor::{self, Decoder};
-use terrane_core::identity::{IdentityKind, TERRANE_V1};
-use terrane_core::properties::{
+use terrane_format::cbor::{self, Decoder};
+use terrane_format::identity::{IdentityKind, TERRANE_V1};
+use terrane_format::properties::{
     PropertyName, validate_graft_overrides, validate_preserved_map, validate_property,
 };
-use terrane_core::tree_format::{
+use terrane_format::tree_format::{
     Attribute, ContentRef, Entry, EntryKind, ExtendedAttribute, LeafItem, Node, NodeItems,
     Property, TreeUse, decode_entry_bytes, decode_node_for, encode_entry, encode_node_for,
     validate_tree_entries,
@@ -27,7 +27,7 @@ use terrane_core::tree_format::{
 
 const REFERENCE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../tests/terrane/namespace-reference.md"
+    "/../../../../tests/terrane/namespace-reference.md"
 ));
 const MIN_CHUNK: u64 = 262_144;
 const CONTENT: [u8; 32] = [0x11; 32];
@@ -686,7 +686,7 @@ fn reference_root_property_models_preserve_nested_values_and_identity() {
     };
     // Registered auxiliary syntax does not authorize namespace placement.
     validate_property(&gap_property).unwrap();
-    assert!(terrane_core::properties::validate_map(&[gap_property]).is_err());
+    assert!(terrane_format::properties::validate_map(&[gap_property]).is_err());
     assert!(validate_graft_overrides(&[gap_property], &[]).is_err());
 
     for value in [

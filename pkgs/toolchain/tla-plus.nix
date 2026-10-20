@@ -1,5 +1,6 @@
 ##! tla-plus — TLA+ tools: TLC model checker, SANY parser, PlusCal translator
 {
+  lib,
   mkDerivation,
   fetchgit,
   fetchurl,
@@ -43,11 +44,98 @@
   };
 in
   mkDerivation {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
+      target = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
+      role = "public-package";
+    };
     pname = "tla-plus";
-    inherit version;
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "SANY completes parsing and semantic processing without errors.";
+        "files" = {
+          "Qualified.tla" = "---- MODULE Qualified ----\nEXTENDS Naturals\nAnswer == 40 + 2\n====\n";
+        };
+        "input" = "A syntactically valid TLA+ module defining a constant expression.";
+        "operation" = "Parse and semantically analyze the module with the packaged SANY launcher.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess\nresult = subprocess.run([\"@out@/bin/sany\", \"Qualified.tla\"], capture_output=True, text=True)\nassert result.returncode == 0 and \"Semantic processing of module Qualified\" in result.stdout\nprint(\"tla-plus operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "tla-plus operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "SANY reports a parse error and returns failure.";
+        "files" = {
+          "Invalid.tla" = "---- MODULE Invalid ----\nBroken == (1 +\n====\n";
+        };
+        "input" = "A TLA+ module with an unterminated expression.";
+        "operation" = "Parse the malformed module with SANY.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import sys\nimport subprocess\nresult = subprocess.run([\"@out@/bin/sany\", \"Invalid.tla\"], capture_output=True, text=True)\nassert result.returncode != 0 and \"Parse Error\" in result.stdout\n\nsys.stderr.write(\"tla-plus rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "tla-plus rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
+    version = "=${version}";
     src = tlaSource;
 
-    buildDeps = [buildJdk];
+    buildDeps = [buildJdk buildPackages.python3];
     runtimeDeps = [jdk bash];
 
     phases = [
@@ -57,6 +145,32 @@ in
           cp -R ${tlaSource}/tlatools/org.lamport.tlatools/src tla-src
           tar xf ${mailSource}
           tar xf ${activationSource}
+
+          # The upstream release bundle contains compiled third-party Java.
+          # Fail if a pinned source input starts carrying executable payloads.
+          python3 - tla-src mail-api-1.6.3 jaf-api-1.2.1 <<'PY'
+          from pathlib import Path
+          import sys
+
+          compiled_suffixes = {
+              ".class", ".jar", ".so", ".dylib", ".dll", ".a", ".o",
+              ".wasm", ".exe", ".bin", ".zip", ".tar", ".gz", ".xz",
+          }
+          compiled_signatures = tuple(bytes.fromhex(value) for value in (
+              "cafebabe", "7f454c46", "0061736d", "213c617263683e0a",
+              "feedface", "cefaedfe", "feedfacf", "cffaedfe",
+              "4d5a", "504b0304", "504b0506",
+          ))
+
+          for argument in sys.argv[1:]:
+              for path in Path(argument).rglob("*"):
+                  if not path.is_file():
+                      continue
+                  with path.open("rb") as source:
+                      header = source.read(8)
+                  if path.suffix.lower() in compiled_suffixes or header.startswith(compiled_signatures):
+                      raise SystemExit(f"Compiled payload in TLA+ source input: {path}")
+          PY
         '';
       }
       {

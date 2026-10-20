@@ -6,7 +6,7 @@
   ];
 
   runTest = name: ''
-    if ! cargo test --frozen --offline -p terrane-core --lib indexing::lookup::tests::${name} -- --exact \
+    if ! cargo test --frozen --offline -p terrane-format --lib indexing::lookup::tests::${name} -- --exact \
       > "$TMPDIR/index-query-test.log" 2>&1; then
       cat "$TMPDIR/index-query-test.log"
       exit 1
@@ -17,6 +17,6 @@ in
   sourceGate "index-query" ''
     cd crates
     ${builtins.concatStringsSep "\n" (map runTest tests)}
-    cargo clippy --frozen --offline -p terrane-core --all-targets -- -D warnings
+    cargo clippy --frozen --offline -p terrane-format --all-targets -- -D warnings
     printf 'PASS: immutable index candidates and local routes with measured discovery work\n' > "$out/result"
   ''

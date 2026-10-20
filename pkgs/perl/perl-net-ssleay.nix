@@ -1,17 +1,97 @@
 ##! perl-net-ssleay — OpenSSL bindings for Perl
 {
+  lib,
   mkDerivation,
   fetchurl,
+  buildPackages,
   gnumake,
   perl,
   openssl,
+  stdenv,
   zlib,
 }: let
   version = "1.96";
+  xsCross = import ../build-support/_perl-xs-cross-config.nix {
+    inherit buildPackages lib perl stdenv;
+  };
   runtimeClosureManifest = builtins.concatStringsSep "\n" (map builtins.toString [perl openssl zlib]);
 in
   mkDerivation {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
     pname = "perl-net-ssleay";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The binding returns a nonempty OpenSSL version string.";
+        "files" = {
+          "probe.pl" = "use strict; use warnings; use Net::SSLeay;\nmy $version = Net::SSLeay::SSLeay_version(0);\ndie \"TLS version unavailable\" unless defined($version) && $version =~ /OpenSSL/;\n";
+        };
+        "input" = "A request for the linked TLS library version.";
+        "operation" = "Query OpenSSL through Net::SSLeay's public version API.";
+        "steps" = [
+          {
+            "argv" = [
+              "@perl@"
+              "probe.pl"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The decoder returns no certificate object and records an OpenSSL error.";
+        "files" = {
+          "probe.pl" = "use strict; use warnings; use Net::SSLeay;\nmy $bio = Net::SSLeay::BIO_new(Net::SSLeay::BIO_s_mem());\nNet::SSLeay::BIO_write($bio, \"not a certificate\");\nmy $certificate = Net::SSLeay::PEM_read_bio_X509($bio);\nNet::SSLeay::BIO_free($bio);\ndie \"malformed certificate accepted\" if $certificate;\ndie \"rejection lacked TLS error\" unless Net::SSLeay::ERR_get_error();\n";
+        };
+        "input" = "Text without a PEM certificate boundary.";
+        "operation" = "Decode the malformed text through Net::SSLeay's X.509 BIO API.";
+        "steps" = [
+          {
+            "argv" = [
+              "@perl@"
+              "probe.pl"
+            ];
+            "exit_code" = 0;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {
@@ -19,7 +99,7 @@ in
       hash = "sha256-qyE2kWhfsqV2xmnLyNkmb4FloxVjrRW3xAMLlK38B1M=";
     };
 
-    buildDeps = [gnumake perl];
+    buildDeps = [gnumake xsCross.buildPerl] ++ lib.optionals stdenv.isCross [buildPackages.openssl];
     runtimeDeps = [perl openssl zlib];
     propagatedDeps = [openssl zlib];
 
@@ -34,13 +114,21 @@ in
       {
         name = "patch";
         # Backport upstream's OpenSSL 4 support through merge a55abab.
-        script = ''patch -p1 < ${./net-ssleay-openssl-4.patch}'';
+        script = ''
+          patch -p1 < ${./net-ssleay-openssl-4.patch}
+          ${lib.optionalString stdenv.isCross ''
+            # The target OpenSSL CLI cannot run during configure on Linux.
+            grep -Fq 'my $exec   = find_openssl_exec($prefix);' Makefile.PL
+            sed -i 's|my $exec   = find_openssl_exec($prefix);|my $exec   = "${buildPackages.openssl}/bin/openssl";|' Makefile.PL
+          ''}
+        '';
       }
       {
         name = "configure";
         script = ''
+          ${xsCross.setup}
           export OPENSSL_PREFIX=${openssl}
-          ${perl}/bin/perl Makefile.PL \
+          ${xsCross.buildPerl}/bin/perl Makefile.PL \
             INSTALL_BASE="$out" \
             CC="$CC" \
             LD="$CC"
@@ -54,7 +142,7 @@ in
         name = "install";
         script = ''
           make install
-          cp -a "$out"/lib/perl5/*-thread-multi/. "$out/lib/perl5/"
+          cp -a "$out"/lib/perl5/*-thread-multi*/. "$out/lib/perl5/"
           rm -f "$out"/lib/perl5/*/*/perllocal.pod "$out"/lib/perl5/*/*/.packlist
 
           # Retain the interpreter and libraries required to load the XS module.
@@ -63,7 +151,9 @@ in
           ${runtimeClosureManifest}
           EOF
 
-          PERL5LIB="$out/lib/perl5" ${perl}/bin/perl -MNet::SSLeay -e 1
+          ${lib.optionalString (!stdenv.isCross) ''
+            PERL5LIB="$out/lib/perl5" ${xsCross.buildPerl}/bin/perl -MNet::SSLeay -e 1
+          ''}
         '';
       }
     ];

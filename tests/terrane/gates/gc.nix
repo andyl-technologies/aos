@@ -79,13 +79,13 @@
   # An exact filter with no matching test succeeds in Cargo. Validate the whole
   # required inventory before running each actual case in its own process.
   focusedTests = features: tests: ''
-    cargo test --frozen --offline -p terrane --no-default-features \
+    cargo test --frozen --offline -p terrane-sdk --no-default-features \
       --features ${features} --lib -- --list > "$TMPDIR/gc-tests.txt"
     python3 ../tests/terrane/check_native_gate.py inventory \
       "$TMPDIR/gc-tests.txt" '${builtins.toJSON tests}'
 
     for test_name in ${builtins.concatStringsSep " " tests}; do
-      if ! cargo test --frozen --offline -p terrane --no-default-features \
+      if ! cargo test --frozen --offline -p terrane-sdk --no-default-features \
         --features ${features} --lib "$test_name" -- --exact \
         > "$TMPDIR/gc-test.log" 2>&1; then
         cat "$TMPDIR/gc-test.log"

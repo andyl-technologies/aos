@@ -38,7 +38,6 @@ in {
       invalidated_by = ["subject" "policy" "executor" "environment"];
       method = "automated";
       phase = "staging";
-      production_only = false;
       regressions = ["checks.fleet.install-from-image" "checks.fleet.provisioning-boot"];
       scope = "images";
     };
@@ -55,7 +54,6 @@ in {
       invalidated_by = ["subject" "policy" "executor" "environment"];
       method = "automated";
       phase = "staging";
-      production_only = false;
       regressions = ["checks.fleet.runtime-config-all" "checks.fleet.qualification-workload"];
       scope = "images";
     };
@@ -77,7 +75,6 @@ in {
       invalidated_by = ["subject" "policy" "executor" "environment"];
       method = "automated";
       phase = "staging";
-      production_only = false;
       regressions = [
         "checks.fleet.system-image-rollback"
         "checks.fleet.boot-identity-fail-closed"

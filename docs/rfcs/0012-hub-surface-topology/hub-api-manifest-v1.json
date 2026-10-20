@@ -332,6 +332,27 @@
          "service" : "ContainerService"
       },
       {
+         "method" : "GetContainerNamespace",
+         "path" : "aos.hub.v1.ContainerService/GetContainerNamespace",
+         "request" : "GetContainerNamespaceRequest",
+         "response" : "ContainerNamespaceResponse",
+         "service" : "ContainerService"
+      },
+      {
+         "method" : "PlanSetContainerNamespace",
+         "path" : "aos.hub.v1.ContainerService/PlanSetContainerNamespace",
+         "request" : "PlanSetContainerNamespaceRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "ContainerService"
+      },
+      {
+         "method" : "SetContainerNamespace",
+         "path" : "aos.hub.v1.ContainerService/SetContainerNamespace",
+         "request" : "ApplyTopologyPlanRequest",
+         "response" : "ContainerNamespaceResponse",
+         "service" : "ContainerService"
+      },
+      {
          "method" : "PlanRunContainerGc",
          "path" : "aos.hub.v1.ContainerService/PlanRunContainerGc",
          "request" : "PlanRunContainerGcRequest",
@@ -343,6 +364,13 @@
          "path" : "aos.hub.v1.ContainerService/RunContainerGc",
          "request" : "ApplyContainerMutationRequest",
          "response" : "OperationResponse",
+         "service" : "ContainerService"
+      },
+      {
+         "method" : "CancelContainerGcRun",
+         "path" : "aos.hub.v1.ContainerService/CancelContainerGcRun",
+         "request" : "CancelContainerGcRunRequest",
+         "response" : "ContainerGcRunResponse",
          "service" : "ContainerService"
       },
       {
@@ -496,14 +524,14 @@
          "method" : "PlanDeleteRegistry",
          "path" : "aos.hub.v1.RegistryService/PlanDeleteRegistry",
          "request" : "PlanDeleteTopologyResourceRequest",
-         "response" : "TopologyPlanResponse",
+         "response" : "RegistryDeletePlanResponse",
          "service" : "RegistryService"
       },
       {
          "method" : "DeleteRegistry",
          "path" : "aos.hub.v1.RegistryService/DeleteRegistry",
          "request" : "ApplyDeleteTopologyResourceRequest",
-         "response" : "DeleteTopologyResourceResponse",
+         "response" : "OperationResponse",
          "service" : "RegistryService"
       },
       {
@@ -1837,6 +1865,83 @@
          "service" : "InstanceService"
       },
       {
+         "method" : "TriggerInstanceMaintenance",
+         "path" : "aos.hub.v1.InstanceService/TriggerInstanceMaintenance",
+         "request" : "TriggerInstanceMaintenanceRequest",
+         "response" : "InstanceMaintenanceTriggerResponse",
+         "service" : "InstanceService"
+      },
+      {
+         "method" : "ListInstanceOciRoutes",
+         "path" : "aos.hub.v1.InstanceService/ListInstanceOciRoutes",
+         "request" : "ListInstanceOciRoutesRequest",
+         "response" : "ListInstanceOciRoutesResponse",
+         "service" : "InstanceService"
+      },
+      {
+         "method" : "GetInstanceOciRoute",
+         "path" : "aos.hub.v1.InstanceService/GetInstanceOciRoute",
+         "request" : "GetTopologyResourceRequest",
+         "response" : "InstanceOciRouteResponse",
+         "service" : "InstanceService"
+      },
+      {
+         "method" : "PlanCreateInstanceOciRoute",
+         "path" : "aos.hub.v1.InstanceService/PlanCreateInstanceOciRoute",
+         "request" : "PlanInstanceOciRouteMutationRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "InstanceService"
+      },
+      {
+         "method" : "CreateInstanceOciRoute",
+         "path" : "aos.hub.v1.InstanceService/CreateInstanceOciRoute",
+         "request" : "ApplyTopologyPlanRequest",
+         "response" : "InstanceOciRouteResponse",
+         "service" : "InstanceService"
+      },
+      {
+         "method" : "PlanUpdateInstanceOciRoute",
+         "path" : "aos.hub.v1.InstanceService/PlanUpdateInstanceOciRoute",
+         "request" : "PlanInstanceOciRouteMutationRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "InstanceService"
+      },
+      {
+         "method" : "UpdateInstanceOciRoute",
+         "path" : "aos.hub.v1.InstanceService/UpdateInstanceOciRoute",
+         "request" : "ApplyTopologyPlanRequest",
+         "response" : "InstanceOciRouteResponse",
+         "service" : "InstanceService"
+      },
+      {
+         "method" : "PlanDeleteInstanceOciRoute",
+         "path" : "aos.hub.v1.InstanceService/PlanDeleteInstanceOciRoute",
+         "request" : "PlanDeleteTopologyResourceRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "InstanceService"
+      },
+      {
+         "method" : "DeleteInstanceOciRoute",
+         "path" : "aos.hub.v1.InstanceService/DeleteInstanceOciRoute",
+         "request" : "ApplyDeleteTopologyResourceRequest",
+         "response" : "DeleteTopologyResourceResponse",
+         "service" : "InstanceService"
+      },
+      {
+         "method" : "PlanConvertRouteToInstanceOciRoute",
+         "path" : "aos.hub.v1.InstanceService/PlanConvertRouteToInstanceOciRoute",
+         "request" : "PlanConvertRouteToInstanceOciRouteRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "InstanceService"
+      },
+      {
+         "method" : "ConvertRouteToInstanceOciRoute",
+         "path" : "aos.hub.v1.InstanceService/ConvertRouteToInstanceOciRoute",
+         "request" : "ApplyTopologyPlanRequest",
+         "response" : "InstanceOciRouteResponse",
+         "service" : "InstanceService"
+      },
+      {
          "method" : "ListChangesets",
          "path" : "aos.hub.v1.RegistryConfigurationService/ListChangesets",
          "request" : "ListChangesetsRequest",
@@ -1869,6 +1974,20 @@
          "path" : "aos.hub.v1.DocumentationService/GetPackageDocumentation",
          "request" : "GetPackageDocumentationRequest",
          "response" : "GetPackageDocumentationResponse",
+         "service" : "DocumentationService"
+      },
+      {
+         "method" : "GetPackageAbilityReference",
+         "path" : "aos.hub.v1.DocumentationService/GetPackageAbilityReference",
+         "request" : "GetPackageAbilityReferenceRequest",
+         "response" : "GetPackageAbilityReferenceResponse",
+         "service" : "DocumentationService"
+      },
+      {
+         "method" : "GetReleaseAbilityGraph",
+         "path" : "aos.hub.v1.DocumentationService/GetReleaseAbilityGraph",
+         "request" : "GetReleaseAbilityGraphRequest",
+         "response" : "GetReleaseAbilityGraphResponse",
          "service" : "DocumentationService"
       },
       {
@@ -1914,6 +2033,34 @@
          "service" : "DocumentationService"
       },
       {
+         "method" : "PlanConfigureReporter",
+         "path" : "aos.hub.v1.AbilityDeploymentService/PlanConfigureReporter",
+         "request" : "PlanConfigureAbilityDeploymentReporterRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "AbilityDeploymentService"
+      },
+      {
+         "method" : "ConfigureReporter",
+         "path" : "aos.hub.v1.AbilityDeploymentService/ConfigureReporter",
+         "request" : "ApplyTopologyPlanRequest",
+         "response" : "AbilityDeploymentReporter",
+         "service" : "AbilityDeploymentService"
+      },
+      {
+         "method" : "ReportPackageOverlay",
+         "path" : "aos.hub.v1.AbilityDeploymentService/ReportPackageOverlay",
+         "request" : "ReportPackageAbilityDeploymentRequest",
+         "response" : "PackageAbilityDeploymentResponse",
+         "service" : "AbilityDeploymentService"
+      },
+      {
+         "method" : "GetPackageOverlay",
+         "path" : "aos.hub.v1.AbilityDeploymentService/GetPackageOverlay",
+         "request" : "GetPackageAbilityDeploymentRequest",
+         "response" : "PackageAbilityDeploymentResponse",
+         "service" : "AbilityDeploymentService"
+      },
+      {
          "method" : "ListChannels",
          "path" : "aos.hub.v1.ChannelService/ListChannels",
          "request" : "ListChannelsRequest",
@@ -1926,6 +2073,41 @@
          "request" : "GetChannelRequest",
          "response" : "GetChannelResponse",
          "service" : "ChannelService"
+      },
+      {
+         "method" : "UpsertStagedRelease",
+         "path" : "aos.hub.v1.PublishService/UpsertStagedRelease",
+         "request" : "UpsertStagedReleaseRequest",
+         "response" : "StagedRelease",
+         "service" : "PublishService"
+      },
+      {
+         "method" : "GetStagedRelease",
+         "path" : "aos.hub.v1.PublishService/GetStagedRelease",
+         "request" : "GetStagedReleaseRequest",
+         "response" : "StagedRelease",
+         "service" : "PublishService"
+      },
+      {
+         "method" : "ListStagedReleases",
+         "path" : "aos.hub.v1.PublishService/ListStagedReleases",
+         "request" : "ListStagedReleasesRequest",
+         "response" : "ListStagedReleasesResponse",
+         "service" : "PublishService"
+      },
+      {
+         "method" : "FinalizeStagedRelease",
+         "path" : "aos.hub.v1.PublishService/FinalizeStagedRelease",
+         "request" : "FinalizeStagedReleaseRequest",
+         "response" : "StagedRelease",
+         "service" : "PublishService"
+      },
+      {
+         "method" : "DiscardStagedRelease",
+         "path" : "aos.hub.v1.PublishService/DiscardStagedRelease",
+         "request" : "DiscardStagedReleaseRequest",
+         "response" : "StagedRelease",
+         "service" : "PublishService"
       },
       {
          "method" : "BeginRegistryPublication",
@@ -2977,8 +3159,8 @@
       "response_field" : "next_page_token"
    },
    "protobuf_package" : "aos.hub.v1",
-   "protobuf_source" : "crates/aos-proto/src/proto/aos/hub/v1/hub.proto",
-   "rpc_count" : 334,
+   "protobuf_source" : "crates/aos/packages/aos-build-api/src/proto/aos/hub/v1/hub.proto",
+   "rpc_count" : 339,
    "services" : [
       "RegistryService",
       "OrganizationService",
@@ -2996,6 +3178,7 @@
       "RegistryConfigurationService",
       "PackageService",
       "DocumentationService",
+      "AbilityDeploymentService",
       "ChannelService",
       "ImageService",
       "ContainerService",

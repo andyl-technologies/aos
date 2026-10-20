@@ -9,6 +9,8 @@
 
   model = import ./_crucible-model-source.nix {inherit lib;};
   crateRoot = import ./_crucible-tests-source.nix {inherit lib;};
+  propertiesTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/property_fingerprint_neutrality.rs;
+  coverageTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/coverage_condition_leaf.rs;
   defaultChecks = builtins.readFile ./default.nix;
   spatialGraph = builtins.readFile ../../docs/rfcs/0010-crucible/06-spatial-graph.md;
 
@@ -29,7 +31,7 @@
         needle = "`checks.crucible.phase1.spatialPropertiesComponent`";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" model [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" model [
       {
         label = "properties type";
         needle = "pub struct Properties";
@@ -109,40 +111,34 @@
         pub id: ContentHash,
       ''
       model) [
-      "crates/crucible/src/model.rs: properties identity field must not be public"
+      "crates/crucible/engine/crucible-engine/src/model.rs: properties identity field must not be public"
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" crateRoot [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/property_fingerprint_neutrality.rs" propertiesTest [
       {
         label = "properties content-address test";
-        needle = "properties_content_address_is_orthogonal_and_validated";
+        needle = "fn property_changes_move_scenario_identity_without_moving_run_material()";
       }
       {
-        label = "test checks authoring order";
-        needle = "let authored_order = vec![";
-      }
-      {
-        label = "test checks canonical assertions";
-        needle = "assert_eq!(properties.assertions(), same_properties.assertions());";
-      }
-      {
-        label = "test checks properties reuse across compatible worlds";
-        needle = "same_properties_changed_world.content_hash()";
+        label = "test checks properties identity changes";
+        needle = "removed.properties().content_hash(),";
       }
       {
         label = "test checks scenario properties sensitivity";
-        needle = "properties should affect scenario identity";
+        needle = "property declaration must move the scenario hash";
       }
       {
-        label = "test rejects incompatible world";
-        needle = "incompatible_world.scenario_def_with_plan_and_properties";
+        label = "test checks properties do not move run components";
+        needle = "assert_same_run_components(&removed, &declared);";
       }
       {
-        label = "test rejects incompatible plan in combined path";
-        needle = "no_link_world.scenario_def_with_plan_and_properties";
+        label = "test checks properties ref in scenario material";
+        needle = "assert_scenario_material_points_at_properties(&amended);";
       }
+    ]
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/coverage_condition_leaf.rs" coverageTest [
       {
-        label = "test rejects undeclared predicate node";
-        needle = "PropertyPredicateUnknownNode";
+        label = "test rejects undeclared property predicate node";
+        needle = "Err(EngineError::PropertyPredicateUnknownNode";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -160,7 +156,10 @@ in
       version = "0";
       src = crucibleSrc;
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.rust
         pkgs.sed
@@ -204,9 +203,19 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-spatial-properties-component-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible \
-              --lib \
-              properties_content_address \
+              -p crucible-engine \
+              --features test-double \
+              --test property_fingerprint_neutrality \
+              property_changes_move_scenario_identity_without_moving_run_material \
+              -- --test-threads=1
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-spatial-properties-component-target" \
+              --manifest-path crates/Cargo.toml \
+              -p crucible-engine \
+              --test coverage_condition_leaf \
+              coverage_point_properties_validate_referenced_nodes \
               -- --test-threads=1
           '';
         }

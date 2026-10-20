@@ -17,7 +17,7 @@
     reason = "independent reference fixture failures intentionally panic"
 )]
 
-use terrane_core::{
+use terrane_format::{
     codec::{Codec, EncodedChunk, encode_envelope, parse_envelope, validate_envelope_size},
     identity::{IdentityKind, TERRANE_V1},
     pack_format::{MergedRecord, Record, decode_shard, encode_shard},
@@ -25,7 +25,7 @@ use terrane_core::{
 
 const REFERENCE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../tests/terrane/container-reference.md"
+    "/../../../../tests/terrane/container-reference.md"
 ));
 const PLAINTEXT: &[u8] = b"inert\n";
 const DICTIONARY: &[u8] = b"terrane inert dictionary\n";

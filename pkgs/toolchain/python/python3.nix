@@ -1,5 +1,6 @@
 ##! python3 — Python 3.14 interpreter
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -19,7 +20,17 @@
   buildPackages,
 }: let
   version = "3.14.3";
+  pythonVersion = "3.14";
+  pythonAbi = "314";
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
+
+  extensionPlatformBySystem = {
+    "aarch64-linux" = "aarch64-linux-gnu";
+    "x86_64-linux" = "x86_64-linux-gnu";
+  };
+  extensionPlatform =
+    extensionPlatformBySystem.${stdenv.hostPlatform.system} or null;
+  sqliteExtensionFor = platform: "/lib/python${pythonVersion}/lib-dynload/_sqlite3.cpython-${pythonAbi}-${platform}.so";
 
   markupsafeSrc = fetchurl {
     urls = [
@@ -36,8 +47,90 @@
   };
 in
   mkDerivation {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
+      target = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
+      role = "public-package";
+    };
     pname = "python3";
-    inherit version;
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The interpreter prints the exact integer result 42.";
+        "files" = {
+          "answer.py" = "print(19 + 23)\n";
+        };
+        "input" = "A Python program that computes the sum of 19 and 23.";
+        "operation" = "Compile and execute the program with the packaged interpreter.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/python3"
+              "answer.py"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "42\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The interpreter exits with its syntax-error status.";
+        "files" = {
+          "invalid.py" = "def incomplete(\n";
+        };
+        "input" = "A Python source file with an incomplete function definition.";
+        "operation" = "Compile the malformed source with the packaged interpreter.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/python3"
+              "-m"
+              "py_compile"
+              "invalid.py"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
+    # Ordinary extension ABI compatibility is confined to this minor series.
+    version = "~${version}";
 
     src = fetchurl {
       urls = [
@@ -191,29 +284,7 @@ in
       {
         name = "install";
         script = ''
-          ${
-            if isDarwinCross
-            then ''
-              make install
-              # CPython records its configure directory in target sysconfig
-              # metadata. Downstream extension builds need the flags, not the
-              # ephemeral sandbox path from the Linux builder.
-              sed -i "s|$PWD|.|g" \
-                "$out/lib/python3.14/_sysconfig_vars__darwin_darwin.json" \
-                "$out/lib/python3.14/_sysconfigdata__darwin_darwin.py" \
-                "$out/lib/python3.14/config-3.14-darwin/Makefile"
-              find "$out/lib/python3.14/__pycache__" \
-                -name '_sysconfigdata__darwin_darwin.*.pyc' -delete
-            ''
-            else "make install"
-          }
-          # Ensure 'python' symlink exists alongside 'python3'
-          if [ ! -e $out/bin/python ]; then
-            ln -sf python3 $out/bin/python
-          fi
-
-          # Install jinja2 + markupsafe (needed by systemd's meson build)
-          # Manual install: copy pure-Python packages to site-packages
+          # Stage bundled packages before CPython's site-packages compilation.
           SITE=$out/lib/python3.14/site-packages
           mkdir -p $SITE
 
@@ -221,9 +292,35 @@ in
           tar xf ${markupsafeSrc}
           cp -r MarkupSafe-2.1.5/src/markupsafe $SITE/
 
-          # Jinja2 — pure Python
           tar xf ${jinja2Src}
           cp -r jinja2-3.1.4/src/jinja2 $SITE/
+
+          # Nix manages these immutable bytes and normalizes source mtimes.
+          # Upstream compiles every optimization level with PYTHON_FOR_BUILD.
+          make install COMPILEALL_OPTS="-j$NIX_BUILD_CORES --invalidation-mode=unchecked-hash"
+
+          ${
+            if isDarwinCross
+            then ''
+              # CPython records its configure directory in target sysconfig
+              # metadata. Downstream extension builds need the flags, not the
+              # ephemeral sandbox path from the Linux builder.
+              sed -i "s|$PWD|.|g" \
+                "$out/lib/python3.14/_sysconfig_vars__darwin_darwin.json" \
+                "$out/lib/python3.14/_sysconfigdata__darwin_darwin.py" \
+                "$out/lib/python3.14/config-3.14-darwin/Makefile"
+              # Compile the rewritten source with the matching build interpreter;
+              # compiling target metadata does not import or execute its module.
+              ${buildPackages.python3}/bin/python3 -m compileall \
+                --invalidation-mode=unchecked-hash -o 0 -o 1 -o 2 -f \
+                "$out/lib/python3.14/_sysconfigdata__darwin_darwin.py"
+            ''
+            else ""
+          }
+          # Ensure 'python' symlink exists alongside 'python3'
+          if [ ! -e $out/bin/python ]; then
+            ln -sf python3 $out/bin/python
+          fi
         '';
       }
     ];
@@ -231,7 +328,36 @@ in
     checks = {
       testing,
       self,
+      pkgs,
     }: {
+      ${
+        if extensionPlatform != null
+        then "sqlite-extension-consumption"
+        else null
+      } = let
+        sqliteExtension = sqliteExtensionFor extensionPlatform;
+      in
+        lib.mkArtifactConsumptionAudit {
+          inherit pkgs;
+          name = "python-sqlite-runtime-plugin";
+          consumer = self;
+          consumerPath = "/bin/python3";
+          provider = self;
+          providerPath = sqliteExtension;
+          targetPlatform = {
+            system = stdenv.hostPlatform.constraints.os;
+            architecture = stdenv.hostPlatform.constraints.cpu;
+          };
+          mechanism = "runtime-plugin-load";
+          arguments = [
+            "-c"
+            ''import importlib.util, sys; specification = importlib.util.spec_from_file_location("_sqlite3", sys.argv[1]); module = importlib.util.module_from_spec(specification); specification.loader.exec_module(module); print(module.sqlite_version)''
+            "${self}${sqliteExtension}"
+          ];
+          expectedOutputSha256 = "sha256:${builtins.hashString "sha256" "${sqlite.version}\n"}";
+          inspector = pkgs.buildPackages.aos;
+        };
+
       import = testing.mkVMTest {
         name = "cross-cutting-python-import";
         rootfsDeps = [self];

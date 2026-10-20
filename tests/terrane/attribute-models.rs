@@ -15,7 +15,7 @@
     reason = "independent reference fixture failures intentionally panic"
 )]
 
-use terrane_core::{
+use terrane_format::{
     cbor,
     derived::{AttrRecord, AttributeName, AttributeValue, ElfValue, Function, Magic, ShebangValue},
     identity::{IdentityKind, TERRANE_V1},
@@ -23,7 +23,7 @@ use terrane_core::{
 
 const REFERENCE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../tests/terrane/attribute-reference.md"
+    "/../../../../tests/terrane/attribute-reference.md"
 ));
 const OBJECT: [u8; 32] = [17; 32];
 const PRODUCER: [u8; 32] = [34; 32];

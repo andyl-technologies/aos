@@ -11,7 +11,7 @@
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   cliMain = import ./_cli-source.nix {inherit lib;};
-  portableArtifacts = builtins.readFile ../../crates/crucible-cli/src/portable_artifact_constants.rs;
+  portableArtifacts = builtins.readFile ../../crates/crucible/control/crucible-cli/src/portable_artifact_constants.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
@@ -33,7 +33,7 @@
         needle = "`T-CLI-17` is complete under `checks.crucible.phase5.cliTriageWorkflow`";
       }
     ]
-    ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
+    ++ failuresFor "crates/crucible/control/crucible-cli/src/main.rs" cliMain [
       {
         label = "triage arguments";
         needle = "struct TriageArgs";
@@ -56,7 +56,7 @@
       }
       {
         label = "signed findings parser";
-        needle = "fn parse_failure_findings_ledger_v2_bytes";
+        needle = "fn parse_reproduction_findings_ledger_bytes";
       }
       {
         label = "triage minimization";
@@ -79,14 +79,6 @@
         needle = "fn proves_t_tri_7";
       }
       {
-        label = "CLI sidecar signature blocker";
-        needle = "engine-owned discovery artifacts";
-      }
-      {
-        label = "artifact-only ledger blocker";
-        needle = "discovery-time signature evidence is not available";
-      }
-      {
         label = "triage help test";
         needle = "cli_triage_help_surface_lists_required_flags_and_exit_code_contract";
       }
@@ -95,12 +87,8 @@
         needle = "cli_triage_surface_parses_full_t_tri_7_flags_and_pipeline";
       }
       {
-        label = "triage sidecar blocker test";
-        needle = "cli_triage_rejects_cli_sidecar_signature_evidence";
-      }
-      {
-        label = "triage artifact-only blocker test";
-        needle = "cli_triage_rejects_artifact_only_findings_without_engine_evidence";
+        label = "triage directory blocker test";
+        needle = "cli_triage_rejects_directory_inputs";
       }
       {
         label = "triage signature mismatch test";
@@ -111,10 +99,10 @@
         needle = "cli_triage_is_offline_and_uses_uniform_failure_exit_code";
       }
     ]
-    ++ failuresFor "crates/crucible-cli/src/portable_artifact_constants.rs" portableArtifacts [
+    ++ failuresFor "crates/crucible/control/crucible-cli/src/portable_artifact_constants.rs" portableArtifacts [
       {
         label = "signed findings schema";
-        needle = "crucible.failure-triage.findings-ledger.v2";
+        needle = "crucible.failure-triage.findings-ledger.v4";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -130,12 +118,17 @@ in
     pkgs.mkDerivation {
       pname = "crucible-phase5-cli-triage-workflow";
       version = "0";
+      LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
+      runtimeDeps = [pkgs.sqlite];
       src = crucibleSrc;
 
       buildDeps = [
         pkgs.coreutils
         pkgs.rust
         pkgs.sed
+
+        pkgs.pkg-config
+        pkgs.sqlite
       ];
 
       ATTR_PATH = attrPath;
