@@ -13,8 +13,8 @@ pub(super) mod handoff;
 mod io;
 mod memory;
 mod metadata;
-mod reconcile;
 pub(in crate::host_cache::owner) mod reads;
+mod reconcile;
 mod state;
 mod transfer;
 
