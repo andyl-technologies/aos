@@ -1,7 +1,7 @@
-//! Retains a genuine dictionary whose plaintext identity equals its dependent.
+//! Retains a genuine dictionary while its actual admitted dependent survives.
 //!
-//! Different canonical codec bodies remain distinct actual admitted jobs. An
-//! identity comparison cannot replace their native dependency relationship.
+//! The two canonical bodies have distinct identities and original native jobs.
+//! Their actual dependency relationship survives producer handoff and grace.
 
 use super::{
     config::{HOLD, Inputs, STATE},
@@ -12,10 +12,7 @@ use std::{
     io::{self, BufRead, Write},
     os::unix::fs::MetadataExt,
 };
-use terrane_format::{
-    chunking::ChunkProfile,
-    identity::{Descriptor, IdentityKind, TERRANE_V1},
-};
+use terrane_format::identity::{Descriptor, IdentityKind, TERRANE_V1};
 use terrane_linux::host_cache::{NativeChunkAdmissionError, NativeMetadataOwner};
 use terrane_sdk::{
     host::cache::CacheState,
@@ -44,34 +41,49 @@ pub(super) fn run(
         .block_on(owner.resume_recovered(completed))
         .map_err(io::Error::other)?;
 
-    let bytes = manifest_publication::nonfinal_fixture_chunk()?;
+    let data = manifest_publication::data(false, true)?;
+    let dictionary_bytes = data
+        .dictionary
+        .as_ref()
+        .ok_or_else(|| invalid("dictionary custody fixture lacks its actual dictionary"))?;
     let identity = TERRANE_V1
-        .calculate(IdentityKind::Chunk, &bytes)
+        .calculate(IdentityKind::Chunk, dictionary_bytes)
         .map_err(io::Error::other)?;
-    let descriptor =
-        Descriptor::from_identity(&TERRANE_V1, &identity, &bytes).map_err(io::Error::other)?;
-    let raw = [vec![0], bytes.clone()].concat();
-    let encoded = terrane_sdk::codec::encode_chunk(
-        &bytes,
-        ChunkProfile::cdc_1m([0; 32]).maximum(),
-        3,
-        Some(&bytes),
-    )
-    .map_err(io::Error::other)?;
-    if encoded.first() != Some(&2) || encoded.get(1..33) != Some(identity.digest()) {
+    let dictionary_descriptor = Descriptor::from_identity(&TERRANE_V1, &identity, dictionary_bytes)
+        .map_err(io::Error::other)?;
+    let dependent_identity = TERRANE_V1
+        .calculate(IdentityKind::Chunk, &data.first)
+        .map_err(io::Error::other)?;
+    let dependent_descriptor =
+        Descriptor::from_identity(&TERRANE_V1, &dependent_identity, &data.first)
+            .map_err(io::Error::other)?;
+    let raw = [vec![0], dictionary_bytes.to_vec()].concat();
+    let encoded = data.encoded_first;
+    if encoded.first() != Some(&2)
+        || encoded.get(1..33) != Some(identity.digest())
+        || dependent_identity == identity
+    {
         return Err(invalid(
-            "fixture lacks a genuine same-identity dictionary encoding",
+            "fixture lacks a genuine distinct dictionary-dependent encoding",
         ));
     }
 
     let dictionary = runtime
-        .block_on(owner.admit_chunk(descriptor.clone(), ChunkPosition::Final, raw.clone()))
+        .block_on(owner.admit_chunk(
+            dictionary_descriptor.clone(),
+            ChunkPosition::Final,
+            raw.clone(),
+        ))
         .map_err(io::Error::other)?;
     runtime
         .block_on(dictionary.into_cache(owner))
         .map_err(io::Error::other)?;
     let dependent = runtime
-        .block_on(owner.admit_chunk(descriptor.clone(), ChunkPosition::NonFinal, encoded.clone()))
+        .block_on(owner.admit_chunk(
+            dependent_descriptor,
+            ChunkPosition::NonFinal,
+            encoded.clone(),
+        ))
         .map_err(io::Error::other)?;
     let report = runtime
         .block_on(dependent.into_cache(owner))
@@ -82,9 +94,18 @@ pub(super) fn run(
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect();
+    let dependent_hash: String = dependent_identity
+        .digest()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
     let directory = inputs.root.join("chunks").join(&hash[..2]);
     let dictionary_path = directory.join(format!("{hash}.0"));
-    let dependent_path = directory.join(format!("{hash}.2"));
+    let dependent_path = inputs
+        .root
+        .join("chunks")
+        .join(&dependent_hash[..2])
+        .join(format!("{dependent_hash}.2"));
     let original_dictionary = File::open(&dictionary_path)?.metadata()?;
     let original_dependent = File::open(&dependent_path)?.metadata()?;
     if original_dictionary.ino() == original_dependent.ino()
@@ -99,12 +120,12 @@ pub(super) fn run(
     let state = load(runtime, inputs)?;
     check(&state, &hash, 2)?;
     if report.future_hold_bytes != HOLD {
-        return Err(invalid("same-identity handoff retained producer funding"));
+        return Err(invalid("handoff retained producer funding"));
     }
 
     let before = fs::read(inputs.root.join("state/cache/records.toml"))?;
     let error = runtime
-        .block_on(owner.publish_inline(descriptor, raw.clone()))
+        .block_on(owner.publish_inline(dictionary_descriptor, raw.clone()))
         .err()
         .ok_or_else(|| invalid("live dictionary was retired for inline publication"))?;
     let NativeChunkAdmissionError::Accepted(error) = error else {
@@ -131,10 +152,12 @@ pub(super) fn run(
         .max()
         .ok_or_else(|| invalid("dictionary grace absent"))?;
     emit(&format!(
-        "DICTIONARY_CUSTODY_GRACE expires={expires} hash={hash} charged_reserved_bytes={} future_hold_bytes={}",
+        "DICTIONARY_CUSTODY_GRACE expires={expires} hash={hash} dependent_hash={dependent_hash} charged_reserved_bytes={} future_hold_bytes={}",
         report.charged_reserved_bytes, report.future_hold_bytes
     ))?;
-    emit("READY same-identity dictionary retains its actual dependent after producer handoff")?;
+    emit(
+        "READY genuine dictionary remains protected by its actual admitted dependent after producer handoff",
+    )?;
 
     control("after-grace")?;
     check(&load(runtime, inputs)?, &hash, 0)?;
@@ -144,14 +167,14 @@ pub(super) fn run(
         || fs::read(&dependent_path)? != encoded
     {
         return Err(invalid(
-            "same-identity dictionary lost original bytes through release grace",
+            "dictionary lost original bytes through release grace",
         ));
     }
 
-    emit("READY same-identity dictionary remains protected after actual producer grace")?;
+    emit("READY actual dictionary remains protected after producer grace")?;
     control("finish")?;
     emit(
-        "PASS actual distinct codec inodes retain same-identity dictionary dependency and refuse retirement while its admitted dependent survives; no Ready",
+        "PASS actual original dictionary and admitted dependent retain dependency protection and refuse dictionary retirement through actual grace; no Ready",
     )
 }
 
@@ -186,9 +209,7 @@ fn check(state: &CacheState, hash: &str, grace: usize) -> io::Result<()> {
             .iter()
             .any(|lease| lease.owner.starts_with("admission:"))
     {
-        return Err(invalid(
-            "same-identity dictionary lost its genuine dependency promise",
-        ));
+        return Err(invalid("dictionary lost its genuine dependency promise"));
     }
     Ok(())
 }

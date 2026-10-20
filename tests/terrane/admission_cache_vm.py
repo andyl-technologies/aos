@@ -166,7 +166,7 @@ def run(driver, uuid):
 
 
 def run_dictionary_custody(driver, uuid):
-    """Checks actual same-identity codec inodes through genuine release grace."""
+    """Checks original dictionary and dependent inodes through release grace."""
     case = "dictionary-custody"
     process = driver.controlled_actor(case, "dictionary-custody", uuid)
     lines = driver.Lines(process)
@@ -184,25 +184,25 @@ def run_dictionary_custody(driver, uuid):
         return [row for row in policy.get(group, []) if row["owner"].startswith(prefix)]
 
     try:
-        lines.until("READY same-identity dictionary retains its actual dependent after producer handoff",
+        lines.until("READY genuine dictionary remains protected by its actual admitted dependent after producer handoff",
                     timeout=30)
         policy = state()
         canonical = files(root / "chunks")
         measurements = re.findall(
-            r"^DICTIONARY_CUSTODY_GRACE expires=(\d+) hash=([0-9a-f]{64}) charged_reserved_bytes=(\d+) future_hold_bytes=(\d+)$",
+            r"^DICTIONARY_CUSTODY_GRACE expires=(\d+) hash=([0-9a-f]{64}) dependent_hash=([0-9a-f]{64}) charged_reserved_bytes=(\d+) future_hold_bytes=(\d+)$",
             lines.bytes.decode(), re.M)
         driver.require(len(measurements) == 1, "missing unique actual dictionary custody report")
-        expiry, digest, charged, future = measurements[0]
+        expiry, digest, dependent_digest, charged, future = measurements[0]
         expiry, charged, future = int(expiry), int(charged), int(future)
         graces = owned(policy, "leases", "admission-grace:")
         dependency_pins = owned(policy, "pins", "cache-dependency:")
         dependency_leases = owned(policy, "leases", "cache-dependency:")
         holds = policy["reservations"]
-        driver.require(len(canonical) == 2
+        driver.require(len(canonical) == 2 and digest != dependent_digest
                        and {path.rsplit("/", 1)[-1] for path in canonical}
-                       == {digest + ".0", digest + ".2"}
+                       == {digest + ".0", dependent_digest + ".2"}
                        and len({value[:2] for value in canonical.values()}) == 2,
-                       "same-identity dictionary lacks distinct original canonical codec inodes")
+                       "dictionary lacks distinct original canonical codec inodes")
         driver.require(len(holds) == 1 and holds[0]["bytes"] == future == 262144
                        and len(graces) == 2 and max(row["expires"] for row in graces) == expiry
                        and len(dependency_pins) == len(dependency_leases) == 1
@@ -225,14 +225,14 @@ def run_dictionary_custody(driver, uuid):
                        and owned(expired, "pins", "cache-dependency:") == dependency_pins
                        and owned(expired, "leases", "cache-dependency:") == dependency_leases
                        and not files(root / "sealed") and not files(root / "pending-delete"),
-                       "actual grace expiration lost the same-identity dictionary dependency")
-        print("PASS independent observer verifies distinct original same-identity codec inodes and genuine dictionary dependency through actual grace and retirement refusal",
+                       "actual grace expiration lost the dictionary dependency")
+        print("PASS independent observer verifies original distinct dictionary/dependent inodes and actual dependency protection through grace and retirement refusal",
               flush=True)
         control("after-grace")
-        lines.until("READY same-identity dictionary remains protected after actual producer grace",
+        lines.until("READY actual dictionary remains protected after producer grace",
                     timeout=15)
         control("finish")
-        lines.until("PASS actual distinct codec inodes retain same-identity dictionary dependency and refuse retirement while its admitted dependent survives; no Ready",
+        lines.until("PASS actual original dictionary and admitted dependent retain dependency protection and refuse dictionary retirement through actual grace; no Ready",
                     timeout=15)
         output, error = process.communicate(timeout=10)
         driver.require(process.returncode == 0 and not output and not error,
