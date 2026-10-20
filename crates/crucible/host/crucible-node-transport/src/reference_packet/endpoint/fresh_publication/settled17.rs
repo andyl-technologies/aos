@@ -165,9 +165,10 @@ impl HistoricalType for HistoricalFreshReply17 {
                 .filter(|count| *count <= capacity)
                 .ok_or_else(invalid)?;
             let mut pair = Fields::array(raw)?;
-            let reference = ledger.read::<ContentRef>(pair.next_value()?.ok_or_else(invalid)?, build)?;
-            let bytes =
-                ledger.read::<HistoricalByteBank17>(pair.next_value()?.ok_or_else(invalid)?, build)?;
+            let reference =
+                ledger.read::<ContentRef>(pair.next_value()?.ok_or_else(invalid)?, build)?;
+            let bytes = ledger
+                .read::<HistoricalByteBank17>(pair.next_value()?.ok_or_else(invalid)?, build)?;
             pair.finish()?;
             if build {
                 evidence.push((reference.ok_or_else(invalid)?, bytes.ok_or_else(invalid)?.0));

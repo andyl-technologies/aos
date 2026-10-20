@@ -39,10 +39,14 @@ impl HistoricalType for CurrentStartupBanks17 {
         build: bool,
     ) -> Result<Option<Self>, ProviderError> {
         let mut fields = Fields::array(input)?;
-        let first = ledger
-            .read::<ProtocolSnapshotAllocationFacts>(fields.next_value()?.ok_or_else(invalid)?, build)?;
-        let second = ledger
-            .read::<ProtocolSnapshotAllocationFacts>(fields.next_value()?.ok_or_else(invalid)?, build)?;
+        let first = ledger.read::<ProtocolSnapshotAllocationFacts>(
+            fields.next_value()?.ok_or_else(invalid)?,
+            build,
+        )?;
+        let second = ledger.read::<ProtocolSnapshotAllocationFacts>(
+            fields.next_value()?.ok_or_else(invalid)?,
+            build,
+        )?;
         fields.finish()?;
         if !build {
             return Ok(None);

@@ -228,7 +228,11 @@ fn raw_value_matches_data(input: &[u8], actual: &Value, depth: usize) -> Result<
         Value::Array(actual) => {
             let mut fields = Fields::array(input)?;
             for value in actual {
-                raw_value_matches_data(fields.next_value()?.ok_or_else(refused)?, value, depth + 1)?;
+                raw_value_matches_data(
+                    fields.next_value()?.ok_or_else(refused)?,
+                    value,
+                    depth + 1,
+                )?;
             }
             fields.finish()
         }

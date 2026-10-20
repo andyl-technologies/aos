@@ -425,8 +425,9 @@ fn row(input: &[u8]) -> Result<(MetadataSharedKind, usize), ProviderError> {
         "archived-mapping" => MetadataSharedKind::ArchivedMapping,
         _ => return Err(invalid()),
     };
-    let group =
-        crate::protocol_snapshot::owned11::typed::unsigned(fields.next_value()?.ok_or_else(invalid)?)?;
+    let group = crate::protocol_snapshot::owned11::typed::unsigned(
+        fields.next_value()?.ok_or_else(invalid)?,
+    )?;
     fields.finish()?;
     Ok((kind, usize::try_from(group).map_err(|_| invalid())?))
 }

@@ -154,8 +154,10 @@ impl HistoricalType for HistoricalInputBank17 {
         build: bool,
     ) -> Result<Option<Self>, ProviderError> {
         let mut fields = Fields::array(input)?;
-        let bytes = ledger
-            .read::<HistoricalReversedByteBank17>(fields.next_value()?.ok_or_else(invalid)?, build)?;
+        let bytes = ledger.read::<HistoricalReversedByteBank17>(
+            fields.next_value()?.ok_or_else(invalid)?,
+            build,
+        )?;
         let mut transfer_fields = Fields::array(fields.next_value()?.ok_or_else(invalid)?)?;
         let mut transfer = [0; 128];
         for byte in &mut transfer {

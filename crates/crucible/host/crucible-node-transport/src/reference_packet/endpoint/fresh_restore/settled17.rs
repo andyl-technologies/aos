@@ -225,8 +225,8 @@ impl HistoricalType for HistoricalFreshCommitments17 {
         let mut fields = Fields::array(input)?;
         let mut values = [[0; 32]; 5];
         for value in &mut values {
-            let digest =
-                ledger.read::<HistoricalDigest17>(fields.next_value()?.ok_or_else(invalid)?, build)?;
+            let digest = ledger
+                .read::<HistoricalDigest17>(fields.next_value()?.ok_or_else(invalid)?, build)?;
             if build {
                 *value = digest.ok_or_else(invalid)?.0;
             }
