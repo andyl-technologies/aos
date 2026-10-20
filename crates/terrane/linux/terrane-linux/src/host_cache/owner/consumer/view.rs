@@ -3,8 +3,8 @@
 //! Revocation closes the view's backing slot. Already-started reads keep their
 //! actual source until completion, and signal quiescence only after dropping it.
 
-use super::{NativeConsumerLease, clock::Deadline};
-use crate::host_cache::{NativeLeaseAccounting, NativeResidentChunkSource};
+use super::{NativeConsumerLease, clock::Deadline, source::ConsumerSource};
+use crate::host_cache::NativeLeaseAccounting;
 use std::{
     io,
     sync::{
@@ -59,7 +59,7 @@ pub(in crate::host_cache::owner) struct ReadView {
     pub(super) identity: Identity,
     /// Original durable lease owner label, never serving authority alone.
     pub(super) owner: String,
-    source: Mutex<Option<Arc<NativeResidentChunkSource>>>,
+    source: Mutex<Option<Arc<ConsumerSource>>>,
     budget: Arc<ReadBudget>,
     active_reads: AtomicUsize,
     epoch: AtomicU64,
@@ -71,7 +71,7 @@ pub(in crate::host_cache::owner) struct ReadView {
 impl ReadView {
     /// Retains an actual registered source without granting a pending reader access.
     pub(super) fn pending(
-        source: Arc<NativeResidentChunkSource>,
+        source: Arc<ConsumerSource>,
         owner: String,
         budget: Arc<ReadBudget>,
     ) -> Self {
@@ -145,7 +145,9 @@ impl ReadView {
             Ok(source) => source,
             Err(poisoned) => poisoned.into_inner(),
         };
-        source.take();
+        let removed = source.take();
+        drop(source);
+        drop(removed);
     }
 
     /// Recognizes the actual shared owner-wide read budget for routing only.
@@ -219,7 +221,7 @@ impl ReadView {
 
 /// Keeps actual backing and both finite read counters through the real operation.
 struct ActiveRead<'a> {
-    source: Option<Arc<NativeResidentChunkSource>>,
+    source: Option<Arc<ConsumerSource>>,
     active: &'a AtomicUsize,
     _permit: ReadPermit<'a>,
 }

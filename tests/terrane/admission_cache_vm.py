@@ -198,13 +198,33 @@ def run_dictionary_custody(driver, uuid):
         dependency_pins = owned(policy, "pins", "cache-dependency:")
         dependency_leases = owned(policy, "leases", "cache-dependency:")
         holds = policy["reservations"]
+        consumers = owned(policy, "leases", "consumer-grace:")
+        consumer_pins = owned(policy, "pins", "consumer-grace:")
+        reports = re.findall(
+            r"^ENCODED_CONSUMER_GRACE owner=(consumer-grace:[0-9a-f]{32}) expires=(\d+) backing_inode_bytes=(\d+) charged_reserved_bytes=(\d+) future_hold_bytes=(\d+)$",
+            lines.bytes.decode(), re.M)
+        driver.require(len(reports) == len(consumers) == 1 and len(consumer_pins) == 2,
+                       "encoded consumer lacks original durable release records")
+        consumer_owner, consumer_end, allocated, consumer_charge, consumer_future = reports[0]
+        actual_allocation = sum(path.stat().st_blocks * 512 for path in (root / "chunks").rglob("*") if path.is_file())
+        driver.require(consumers[0]["owner"] == consumer_owner
+                       and consumers[0]["expires"] == int(consumer_end)
+                       and all(row["owner"] == consumer_owner and row["expires"] == int(consumer_end) for row in consumer_pins)
+                       and {row["hash"] for row in consumer_pins} == {digest, dependent_digest}
+                       and int(allocated) == actual_allocation
+                       and int(consumer_charge) == charged and int(consumer_future) == future
+                       and lines.bytes.decode().splitlines().count(
+                           "PASS genuine encoded consumer reads and renews original body and dictionary concurrently under stalled policy, then revokes with distinct durable release protection") == 1,
+                       "encoded consumer lost independent body/dictionary protection or actual allocation")
+        retained_holds = [row for row in holds if row["id"] != consumer_owner.split(":", 1)[1]]
         driver.require(len(canonical) == 2 and digest != dependent_digest
                        and {path.rsplit("/", 1)[-1] for path in canonical}
                        == {digest + ".0", dependent_digest + ".2"}
                        and len({value[:2] for value in canonical.values()}) == 2,
                        "dictionary lacks distinct original canonical codec inodes")
-        driver.require(len(holds) == 1 and holds[0]["bytes"] == future == 262144
-                       and len(graces) == 2 and max(row["expires"] for row in graces) == expiry
+        driver.require(len(holds) == 2 and all(row["bytes"] == 262144 for row in holds)
+                       and future == 524288 and len(retained_holds) == 1
+                       and len(graces) == 2 and max(row["expires"] for row in graces + consumers) == expiry
                        and len(dependency_pins) == len(dependency_leases) == 1
                        and dependency_pins[0]["hash"] == digest
                        and dependency_pins[0]["owner"] == dependency_leases[0]["owner"]
@@ -220,12 +240,15 @@ def run_dictionary_custody(driver, uuid):
             time.sleep(wait)
         expired = state()
         driver.require(process.poll() is None and files(root / "chunks") == canonical
-                       and expired["reservations"] == holds
+                       and expired["reservations"] == retained_holds
+                       and not owned(expired, "leases", "consumer")
+                       and not owned(expired, "pins", "consumer")
                        and not owned(expired, "leases", "admission-grace:")
                        and owned(expired, "pins", "cache-dependency:") == dependency_pins
                        and owned(expired, "leases", "cache-dependency:") == dependency_leases
                        and not files(root / "sealed") and not files(root / "pending-delete"),
                        "actual grace expiration lost the dictionary dependency")
+        print("PASS independent observer verifies actual encoded consumer body/dictionary release, distinct backing allocation and original inode custody through real grace", flush=True)
         print("PASS independent observer verifies original distinct dictionary/dependent inodes and actual dependency protection through grace and retirement refusal",
               flush=True)
         control("after-grace")

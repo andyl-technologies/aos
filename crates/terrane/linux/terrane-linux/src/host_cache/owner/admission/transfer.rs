@@ -329,6 +329,18 @@ impl TransferSource {
     ) -> io::Result<()> {
         executor.check_physical_worker()?;
         self.check_current(owner)?;
+        for consumer in executor.consumer_jobs() {
+            if consumer
+                .lock()
+                .map_err(|_| invalid("consumer transfer custody poisoned"))?
+                .retains_admission(&self.job)
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    "standalone body remains retained by an actual consumer",
+                ));
+            }
+        }
         for dependent in executor.admission_jobs() {
             if Arc::ptr_eq(dependent, &self.job) {
                 continue;

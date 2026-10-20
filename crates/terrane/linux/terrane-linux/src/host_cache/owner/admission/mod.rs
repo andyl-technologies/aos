@@ -14,6 +14,7 @@ mod io;
 mod memory;
 mod metadata;
 mod reconcile;
+pub(in crate::host_cache::owner) mod reads;
 mod state;
 mod transfer;
 

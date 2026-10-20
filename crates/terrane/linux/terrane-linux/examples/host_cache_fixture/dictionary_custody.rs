@@ -3,6 +3,9 @@
 //! The two canonical bodies have distinct identities and original native jobs.
 //! Their actual dependency relationship survives producer handoff and grace.
 
+#[path = "dictionary_custody/consumer.rs"]
+mod encoded_consumer;
+
 use super::{
     config::{HOLD, Inputs, STATE},
     manifest_publication,
@@ -157,17 +160,30 @@ pub(super) fn run(
         ));
     }
 
+    let (consumer, accounting) = encoded_consumer::run(
+        owner,
+        runtime,
+        inputs,
+        dependent_identity,
+        &data.first,
+        &dictionary_path,
+        &dependent_path,
+    )?;
     runtime.block_on(owner.sweep_consumer_leases())?;
-    let expires = state
+    let protected = load(runtime, inputs)?;
+    let expires = protected
         .leases
         .iter()
-        .filter(|lease| lease.owner.starts_with("admission-grace:"))
+        .filter(|lease| {
+            lease.owner.starts_with("admission-grace:")
+                || lease.owner.starts_with("consumer-grace:")
+        })
         .map(|lease| lease.expires)
         .max()
         .ok_or_else(|| invalid("dictionary grace absent"))?;
     emit(&format!(
         "DICTIONARY_CUSTODY_GRACE expires={expires} hash={hash} dependent_hash={dependent_hash} charged_reserved_bytes={} future_hold_bytes={}",
-        report.charged_reserved_bytes, report.future_hold_bytes
+        accounting.charged_reserved_bytes, accounting.future_hold_bytes
     ))?;
     emit(
         "READY genuine dictionary remains protected by its actual admitted dependent after producer handoff",
@@ -175,6 +191,21 @@ pub(super) fn run(
 
     control("after-grace")?;
     check(&load(runtime, inputs)?, &hash, 0)?;
+    if consumer.read_verified().is_ok() {
+        return Err(invalid("expired encoded consumer returned plaintext"));
+    }
+    let after = load(runtime, inputs)?;
+    if after
+        .pins
+        .iter()
+        .any(|pin| pin.owner.starts_with("consumer"))
+        || after
+            .leases
+            .iter()
+            .any(|lease| lease.owner.starts_with("consumer"))
+    {
+        return Err(invalid("actual encoded consumer protection did not expire"));
+    }
     if fs::metadata(&dictionary_path)?.ino() != original_dictionary.ino()
         || fs::metadata(&dependent_path)?.ino() != original_dependent.ino()
         || fs::read(&dictionary_path)? != raw

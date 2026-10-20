@@ -7,6 +7,7 @@
 
 pub(in crate::host_cache::owner) mod clock;
 mod lifecycle;
+pub(in crate::host_cache::owner) mod source;
 pub(in crate::host_cache::owner) mod state;
 mod sweep;
 mod view;
@@ -16,9 +17,7 @@ pub(in crate::host_cache::owner) use sweep::{background as sweep_background, run
 pub(in crate::host_cache::owner) use view::{ReadBudget, ReadView};
 
 use super::retention::{Command, Custody, NativeMetadataOwner};
-use crate::{
-    host_cache::NativeResidentChunkSource, publisher_local::client::PublisherRunningContext,
-};
+use crate::publisher_local::client::PublisherRunningContext;
 use clock::Deadline;
 use std::{
     io,
@@ -32,6 +31,8 @@ use tokio::sync::oneshot;
 pub struct NativeLeaseAccounting {
     /// Synchronized allocated blocks of the original sealed inode alone.
     pub synchronized_sealed_inode_bytes: u64,
+    /// Synchronized allocation of distinct original backing inodes, including dictionaries.
+    pub synchronized_backing_inode_bytes: u64,
     /// Fresh charged-and-reserved kernel quota usage for the complete owner.
     pub charged_reserved_bytes: u64,
     /// Distinct future-capacity policy holds, never measured physical allocation.
@@ -65,7 +66,7 @@ enum Phase {
 pub(in crate::host_cache::owner) struct ConsumerJob {
     custody: Arc<Mutex<Custody>>,
     running: Arc<PublisherRunningContext>,
-    source: Arc<NativeResidentChunkSource>,
+    source: Arc<source::ConsumerSource>,
     view: Arc<ReadView>,
     token: String,
     hold: u64,
@@ -76,6 +77,14 @@ pub(in crate::host_cache::owner) struct ConsumerJob {
 }
 
 impl ConsumerJob {
+    /// Keeps actual admitted body and dictionary jobs through final consumer quiescence.
+    pub(in crate::host_cache::owner) fn retains_admission(
+        &self,
+        resource: &Arc<Mutex<super::admission::AdmissionJob>>,
+    ) -> bool {
+        self.source.retains(resource)
+    }
+
     /// Recognizes absence of attempted durable mutations for rejection cleanup only.
     pub(in crate::host_cache::owner) fn is_effect_free(&self) -> bool {
         !self.started
@@ -159,7 +168,8 @@ impl NativeMetadataOwner {
     /// Synchronizes a new consumer pin over this owner's verified resident chunk.
     ///
     /// The absolute Unix expiry must remain live through acknowledgment. Source
-    /// lookup uses original native publication or completed recovery custody.
+    /// lookup uses original publication, completed recovery or admitted cache
+    /// custody, including the actual one-hop dictionary.
     /// A dropped waiter never cancels accepted physical pin work.
     ///
     /// # Errors

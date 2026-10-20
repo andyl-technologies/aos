@@ -100,7 +100,22 @@ impl Registry {
         limit: usize,
     ) -> io::Result<Arc<ReadActivity>> {
         let metadata = body.handle().metadata()?;
-        let key = (metadata.dev(), metadata.ino());
+        self.for_inode((metadata.dev(), metadata.ino()), limit)
+    }
+
+    /// Shares activity only through a genuinely bound admitted body.
+    ///
+    /// # Errors
+    /// Refuses absent original custody or exhausted finite registry storage.
+    pub(in crate::host_cache::owner) fn for_admission(
+        &mut self,
+        source: &crate::host_cache::owner::admission::reads::AdmittedRead,
+        limit: usize,
+    ) -> io::Result<Arc<ReadActivity>> {
+        self.for_inode(source.original_inode()?, limit)
+    }
+
+    fn for_inode(&mut self, key: (u64, u64), limit: usize) -> io::Result<Arc<ReadActivity>> {
         if let Some(activity) = self.bodies.get(&key) {
             return Ok(Arc::clone(activity));
         }

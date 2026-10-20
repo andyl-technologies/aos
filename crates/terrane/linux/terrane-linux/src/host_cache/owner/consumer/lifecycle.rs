@@ -6,7 +6,9 @@
 use super::{
     ConsumerJob, NativeConsumerLease, NativeLeaseAccounting, Phase,
     clock::{self, Deadline},
-    invalid, state,
+    invalid,
+    source::{Allocation, ConsumerSource},
+    state,
     view::ReadView,
 };
 use crate::host_cache::owner::{publication, retention::NativeOwnerExecutor, snapshot};
@@ -30,7 +32,7 @@ pub(in crate::host_cache::owner) async fn acquire(
     publication::eviction::restore_for(executor, &identity).await?;
     let running = executor.admission_context()?;
     running.check_current().map_err(io::Error::other)?;
-    let source = Arc::new(publication::residence::prepare(executor, identity).await?);
+    let source = Arc::new(ConsumerSource::prepare(executor, identity).await?);
     let custody = Arc::clone(executor.custody());
     let (token, hold) = {
         let owner = custody
@@ -110,11 +112,13 @@ async fn pin(
             owner: owner_name.clone(),
             expires: deadline.expires,
         });
-        next.pins.push(PinRecord {
-            owner: owner_name.clone(),
-            hash: state::hex(source.protected_object_digest()),
-            expires: deadline.expires,
-        });
+        for hash in source.protected_hashes() {
+            next.pins.push(PinRecord {
+                owner: owner_name.clone(),
+                hash: hash.clone(),
+                expires: deadline.expires,
+            });
+        }
         let hold = job.hold;
         let write = state::begin(
             executor,
@@ -348,11 +352,12 @@ async fn release_at(
 
 /// Combines measured sealed allocation with distinct full-owner policy observations.
 pub(super) fn accounting(
-    allocated: u64,
+    allocated: Allocation,
     observation: state::PolicyObservation,
 ) -> NativeLeaseAccounting {
     NativeLeaseAccounting {
-        synchronized_sealed_inode_bytes: allocated,
+        synchronized_sealed_inode_bytes: allocated.sealed,
+        synchronized_backing_inode_bytes: allocated.backing,
         charged_reserved_bytes: observation.charged,
         future_hold_bytes: observation.future,
     }

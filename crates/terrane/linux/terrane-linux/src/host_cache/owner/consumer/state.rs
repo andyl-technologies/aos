@@ -173,17 +173,26 @@ pub(super) fn check_job(
 ) -> io::Result<()> {
     job.source.check_consumer_backing(owner)?;
     check_bootstrap(owner, &job.running)?;
-    let hash = hex(job.source.protected_object_digest());
+    let hashes = job.source.protected_hashes();
     if !owner
         .state
         .leases
         .iter()
         .any(|row| row.owner == lease && row.expires == expiry)
-        || !owner
+        || owner
             .state
             .pins
             .iter()
-            .any(|row| row.owner == lease && row.hash == hash && row.expires == expiry)
+            .filter(|row| row.owner == lease)
+            .count()
+            != hashes.len()
+        || hashes.iter().any(|hash| {
+            !owner
+                .state
+                .pins
+                .iter()
+                .any(|row| row.owner == lease && &row.hash == hash && row.expires == expiry)
+        })
         || !owner.state.reservations.iter().any(|row| {
             row.id == job.token
                 && row.owner == owner.preparation.config.quota_owner
