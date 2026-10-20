@@ -52,27 +52,36 @@ participant custody, controller standing-owner consumption, complete RAM cleanup
 and the whole-Source Root adapter remain incomplete or unqualified. Smaller
 initial and steady physical peaks and CPU/elapsed-time parity remain unproved.
 
-The latest validation below covers host commit `58e0383d92` and native source
-`d55cfbd8f71af6eee1666335640030e4f8de7a16`. Local Cargo uses the AOS toolchain
+The latest Rust validation below covers host commit `58e0383d92` and its
+documentation-only successor `321921959d`. Native cleanup
+component validation covers source `64e15551afefa730e3919aa4c63dd3d1139637e4`;
+the full native build result still describes its predecessor `d55cfbd8f71a`
+until that gate is rerun. Local Cargo uses the AOS toolchain
 with remote builders disabled; a packaged Rust application build is not a
 prerequisite for development validation.
 
 | Surface | Latest local evidence | Remaining qualification |
 | --- | --- | --- |
+| Workspace | All 520 test targets compile. The 510 non-daemon targets complete with 12,085 passes, 88 failures and 75 ignored tests. Targeted reruns resolve 26 tool/configuration failures and ten watcher failures without assertion or deadline changes. | Remaining fixture, integration, source-policy and behavioral failures require triage; this is not a passing workspace run. |
 | Daemon | All targets and features: 1,890 passes, 47 existing ignored tests; six doctests pass. The library accounts for 1,874 passes and 43 ignored tests. | Ignored integration flights and genuine native execution remain required. |
 | Source policy | 60 passes; the broad integration gate still fails on the same 15 unclassified paths. | Complete the owning caller cutovers and their source contracts. |
 | Boundary and hygiene | All 27 unsafe/ABI/license controls pass; engineering hygiene passes. | Recheck affected boundaries after further changes. |
-| Native build | Signed source reconstruction, all 3,863 C compile/link actions and six selected native suites pass. | Standalone fixtures have 16 passes and nine failures: eight dependency closures and the mandatory launched capture lifecycle. |
-| Native Source unit | 132 passes, including all 13 metadata-admission controls, precede the existing required-role fixture refusal. | Genuine role/module funding, provider enrollment, activation and physical return remain unqualified. |
+| Native build | Predecessor `d55cfbd8f71a`: signed source reconstruction, all 3,863 C compile/link actions and six selected native suites pass. | Rerun the complete gate for the cleanup change. Predecessor standalone fixtures have 16 passes and nine failures: eight dependency closures and the mandatory launched capture lifecycle. |
+| Native cleanup | All four changed production C units pass syntax checks; the actual generated fixture compiles and links. Ten new controls, the replacement capacity control and four separately compiled causal mutations pass their exact checks. | Positive RCU grace, launched capture and resource/performance qualification remain required. |
+| Native Source unit | All 182 scenarios were attempted: 166 pass and 16 fail. Each failure reproduces the identical assertion and signal in the predecessor binary. | Genuine role/module funding, provider enrollment, activation and physical return remain unqualified. |
 
 Native metadata admission now publishes each actual receipt before its
 independent postcheck, retains allocation custody in Source until transfer, and
 authenticates native creator and BQL ownership before mutation. Five separately
 compiled omission controls fail at their exact intended assertions while their
-named baselines pass. This repairs admission custody; all four native retirement
-sites still need canonical receipts that outlive physical frees and settlement
-refusal. Their coherent replacement is being implemented, without completed-debt
-aggregation or a fixed bound on outstanding dirty-header generations.
+named baselines pass. All four native retirement sites now retain canonical
+receipts across physical frees and settlement refusal. Cleanup records consumed
+projections, physical return and debt settlement independently; retries never
+repeat a started free or MR unref. The same two inventory rows and paid intrusive
+dirty-header owners retain unresolved work, without completed-debt aggregation
+or a fixed bound on outstanding dirty-header generations. The component controls
+exercise real frees and QOM finalizers against disclosed modeled retained state;
+they do not establish Source activation or positive RCU callback execution.
 
 Exact resume now preserves phase, shutdown and factory-retirement failures
 together before classification. It retains the original typed history inline,

@@ -81,8 +81,8 @@ trade a faster family for a slower one, raise caps, or disguise failed attempts
 as completed throughput. gem5/KVM profiles require their own comparable
 operating-mode baseline; they cannot replace the current QEMU regression gate.
 
-The current native integration compiles and links all 3,863 build actions, and
-all six selected native unit binaries pass, including seven bounded-thread and
+The predecessor native integration `d55cfbd8f71a` compiles and links all 3,863
+build actions. All six selected native unit binaries pass, including seven bounded-thread and
 two CPU-instance subtests. The standalone fixture run remains failing: 16 of 25
 fixtures pass, eight have incomplete emitted callback dependency closure, and the
 mandatory launched capture lifecycle still fails. These results do not qualify
@@ -92,15 +92,31 @@ providers; an ordinary monitor reference-count model cannot stand in for CPU
 custody. Preserve the lifecycle failure until the launched path is implemented
 and tested.
 
-The native Source unit separately passes 132 controls, including all 13 new
-metadata-admission controls, before its existing required-role fixture refuses.
+The cleanup successor `64e15551afefa730e3919aa4c63dd3d1139637e4` passes syntax
+checks for all four changed production C units and compiles and links its actual
+generated fixture. Ten new cleanup controls and the replacement capacity control
+pass. Four independently rebuilt mutations each fail at their exact intended
+semantic assertion while their named baselines pass. Across all 182 Source
+scenarios, 166 pass and 16 fail; each failure reproduces the identical assertion
+and signal in the predecessor binary. A complete native build rerun is pending.
+
+The existing required-role fixture still refuses.
 That fixture lacks real RUN/teardown rows and a matched worker module; its
 remaining budget cannot fund the required workers. Appending role labels or
 raising fixture limits would not qualify the production constructor. All four
-native metadata retirement paths still require the canonical ownership and
-checked continuation cutover before their frees can settle safely on refusal.
+native metadata retirement paths now use canonical ownership and checked
+continuations, preserving consumed projections, physical return and settlement
+debt independently. The new controls use disclosed modeled retained inputs;
+genuine Source activation, positive RCU grace and launched cleanup remain required.
 
-The latest normal Cargo daemon run covers all targets/features: 1,890 tests
+Normal Cargo compiles all 520 workspace test targets. The 510 non-daemon targets
+complete with 12,085 passes, 88 failures and 75 ignored tests. Twenty-six
+tool/configuration failures and ten watcher failures pass targeted reruns with
+the actual native tools, isolated Git fixtures and controlled test concurrency;
+no assertion or deadline changes are needed. Remaining fixture, integration,
+source-policy and behavioral failures are unresolved.
+
+The separate normal Cargo daemon run covers all targets/features: 1,890 tests
 pass with 47 existing ignored tests, and six doctests pass. Engineering hygiene
 and all 27 boundary checks pass. Source-policy controls have 60 passes and one
 failing broad integration gate for the same 15 unclassified paths. These local
