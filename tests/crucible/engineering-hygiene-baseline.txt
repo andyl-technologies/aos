@@ -181,6 +181,7 @@ shape-review|crates/crucible/tests/backend_node_routing.rs|sha256:fd1ef94cffe16e
 shape-review|crates/crucible/tests/gate_campaign_replay.rs|sha256:2a9dc6b873f923faffa5e3017ea68b076c959a3215ebf754ce6d49a88da7a452|tests|1243|Campaign replay admission, authenticated history, exact retention, and offline evidence regressions.|threshold-not-reached
 shape-review|crates/crucible/tests/gate_content_address.rs|sha256:c77400b9659197a552a847074296d625d9cd987e8cc7d7674d9cf66da35ecbf6|tests|1945|Content-address identities, local DAG storage, checkpoint artifacts, and garbage collection regressions.|Identity, storage, current artifact reachability, and collection cases share one content-addressed graph and store contract.
 shape-review|crates/crucible/tests/gate_replay_oracle.rs|sha256:5cb6d5223c05f96fc9707acf49f0cabc4a6fc1d6737bd4f14ff6482b188b9e37|tests|1627|Replay-oracle integration tests for materialization sampling, mismatch localization, and reproduction artifacts.|Materialization, sampling, corruption, bisection, and artifact round trips share one temporal-graph replay-oracle fixture.
+shape-review|crates/crucible/tests/scheduler_frequency_independence.rs|sha256:a00425cf3c6b0cefde887ae729e490b1a46fa2487411d36e16ce1e83eb978763|tests|1247|SCHED-12 and SCHED-39 regressions: costed retirement-grid nodes driven by the real scheduler under varied ceiling schedules and a fault-timed link partition.|threshold-not-reached
 shape-line|crates/aos-cache/src/backend/http.rs|1007
 shape-line|crates/aos-cache/src/push.rs|749
 shape-line|crates/aos-core/src/nar/cache.rs|635
