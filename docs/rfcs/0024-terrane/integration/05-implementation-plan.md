@@ -9027,9 +9027,19 @@ source funding. The complete candidate classifier and manifest closure are
 restored byte for byte to their original strict implementations; a fresh complete
 inventory remains mandatory before adoption or Resume. The publisher ownership
 verifier additionally binds both added recovery helpers. Local all-target strict
-Clippy and formatting pass; fresh isolated strict profiles, native runtime,
-complete filesystem, owning publisher gates and required application compilation
-are running. This is recovery work in progress; no task checkbox advances.
+Clippy and formatting pass, as do all three isolated Linux Clippy profiles,
+private documentation, native quota confinement and the rebuilt cache image.
+The actual ext4 component passes in 436.123 seconds. Independent review verifies
+all 5,102 source inputs, four original Cargo executables, five installed helpers,
+67 selected native unit cases and all 56 actual selectors. The missing-index
+case rebuilds exact bytes from the original verified pack, restores only its
+own repair funding, completes fresh inventory and reads after actual Resume;
+disabled, bounded and mismatching-index controls preserve original bytes and
+funded faulted custody without adoption. The complete ext4 filesystem suite
+also passes all 126 nonignored cases, with the original six privileged ignores
+unchanged and all 5,093 crate inputs verified. Owning publisher gates and fresh
+required application compilation continue. This is recovery work in progress;
+no task checkbox advances.
 
 All five T2 task checkboxes remain open. Encoded eviction, shared-chunk
 re-extraction, complete recovery/readiness and the stopped
