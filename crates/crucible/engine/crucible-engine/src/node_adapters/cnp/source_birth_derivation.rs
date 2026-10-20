@@ -27,3 +27,6 @@ pub mod deployment;
 
 /// Retains one original supervised occurrence through same-Source acceptance.
 pub mod job;
+
+/// Retains the immutable original launch occurrence through fresh job retirement.
+pub mod original_launch;

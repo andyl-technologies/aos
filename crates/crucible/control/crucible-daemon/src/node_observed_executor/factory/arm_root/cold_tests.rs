@@ -31,6 +31,8 @@ use super::{
 };
 use crate::node_observed_executor::StoredWorldActivationPublisher;
 
+mod post_ack;
+
 #[test]
 #[ignore = "requires the actual installed Root model, opaque native audit and three supervised peers"]
 fn actual_root_clock_original_permission_survives_restored_recapture_and_namespace_death() {

@@ -11,14 +11,8 @@ use crate::reference_packet::service::{
     capture_allocation::PacketNative5CaptureAllocationSelection,
 };
 
-/// Retains the complete original scalar quote beside its returning phase bound.
-///
-/// No deserializer or public constructor exists. The caller still authenticates
-/// the real selected Source/native claim, exact live builder and same originals.
-pub(crate) struct OriginalNativeObservePreparationStorageData {
-    original: OriginalPacketPrefixStorageData,
-    maximum_frame_work: usize,
-}
+pub(crate) use crucible_source_birth_data::profile::reference_packet::service::native_startup::packet_prefix::preparation::OriginalNativeObservePreparationStorageData;
+use crucible_source_birth_data::profile::reference_packet::service::native_startup::packet_prefix::preparation;
 
 type ProjectionAndPreparation = (
     OriginalPacketPrefixProjectionStorageData,
@@ -29,27 +23,6 @@ type PreparationResult = Result<OriginalNativeObservePreparationStorageData, Pro
 type ContentIterator<'a> = std::iter::Flatten<std::slice::Iter<'a, Option<ContentExtent>>>;
 type BodyPair<'a> = [(Method, ProjectedBody<'a>); 2];
 type BodyIterator<'a> = std::array::IntoIter<(Method, ProjectedBody<'a>), 2>;
-
-impl OriginalNativeObservePreparationStorageData {
-    /// Checks every original component before lending its one-frame work bound.
-    ///
-    /// This does not replace the original complete quote or its actual-owner
-    /// reconciliation. Only a selected lifetime caller can use the returned
-    /// phase together with the unchanged sum of all persistent prefix owners.
-    ///
-    /// # Errors
-    /// Refuses a changed original quote, overflow or an insufficient phase cap.
-    pub(crate) fn maximum_simultaneous_transient_bytes_data(
-        &self,
-        prefix: &OriginalPacketPrefixStorageData,
-        maximum: usize,
-    ) -> Result<usize, ProviderError> {
-        if prefix != &self.original || self.maximum_frame_work > maximum {
-            return Err(credit());
-        }
-        Ok(self.maximum_frame_work)
-    }
-}
 
 /// Quotes the actual selected OriginalObserve12 producer without changing wire.
 ///
@@ -143,141 +116,20 @@ impl<S: ProviderStream> Connection<S> {
     }
 }
 
-// The same unchanged charge_frame implementation supplies each old summed
-// preparation increment. This primitive scratch row owns no Envelope, Value,
-// canonical bank or transport permit and is never passed to a real builder.
-fn empty_counter() -> OriginalPacketPrefixStorageData {
-    OriginalPacketPrefixStorageData {
-        native_retained_backing_bytes: None,
-        frames: 0,
-        requests: 0,
-        evidence_payload_bytes: 0,
-        outgoing_framed_bytes: 0,
-        incoming_framed_bytes: 0,
-        new_transport_credit_bytes: 0,
-        original_plan_requested_bytes: 0,
-        acknowledgement_index_requested_bytes: 0,
-        canonical_requested_bytes: 0,
-        record_slots_requested_bytes: 0,
-        outgoing_guard_requested_bytes: 0,
-        response_iterator_requested_bytes: 0,
-        successful_ack_cache_requested_bytes: 0,
-        one_open_ack_requested_bytes: 0,
-        containment_requested_bytes: 0,
-        construction_transient_requested_bytes: 0,
-        preparation_transient_requested_bytes: 0,
-        declared_quote_scratch_bytes: 0,
-        original_literal_required_bytes: 0,
-        original_slots_required: 0,
-    }
-}
-
-fn copy_quote(value: &OriginalPacketPrefixStorageData) -> OriginalPacketPrefixStorageData {
-    OriginalPacketPrefixStorageData {
-        native_retained_backing_bytes: value.native_retained_backing_bytes,
-        frames: value.frames,
-        requests: value.requests,
-        evidence_payload_bytes: value.evidence_payload_bytes,
-        outgoing_framed_bytes: value.outgoing_framed_bytes,
-        incoming_framed_bytes: value.incoming_framed_bytes,
-        new_transport_credit_bytes: value.new_transport_credit_bytes,
-        original_plan_requested_bytes: value.original_plan_requested_bytes,
-        acknowledgement_index_requested_bytes: value.acknowledgement_index_requested_bytes,
-        canonical_requested_bytes: value.canonical_requested_bytes,
-        record_slots_requested_bytes: value.record_slots_requested_bytes,
-        outgoing_guard_requested_bytes: value.outgoing_guard_requested_bytes,
-        response_iterator_requested_bytes: value.response_iterator_requested_bytes,
-        successful_ack_cache_requested_bytes: value.successful_ack_cache_requested_bytes,
-        one_open_ack_requested_bytes: value.one_open_ack_requested_bytes,
-        containment_requested_bytes: value.containment_requested_bytes,
-        construction_transient_requested_bytes: value.construction_transient_requested_bytes,
-        preparation_transient_requested_bytes: value.preparation_transient_requested_bytes,
-        declared_quote_scratch_bytes: value.declared_quote_scratch_bytes,
-        original_literal_required_bytes: value.original_literal_required_bytes,
-        original_slots_required: value.original_slots_required,
-    }
-}
-
-struct FrameWork {
-    count: usize,
-    summed: usize,
-    maximum: usize,
-}
-
-impl FrameWork {
-    fn charge(
-        &mut self,
-        frame: OriginalSerializationStorageData,
-        request: bool,
-    ) -> Result<(), ProviderError> {
-        let mut counter = empty_counter();
-        charge_frame(&mut counter, frame, request, 65_536)?;
-        let work = counter.preparation_transient_requested_bytes;
-        self.count = add(self.count, 1)?;
-        self.summed = add(self.summed, work)?;
-        self.maximum = self.maximum.max(work);
-        Ok(())
-    }
-}
-
 fn project_frames(
     projection: &OriginalPacketPrefixProjectionStorageData,
     session: &Id,
     incarnation: &Id,
     chunk: usize,
 ) -> Result<OriginalNativeObservePreparationStorageData, ProviderError> {
-    if chunk == 0 {
-        return Err(credit());
-    }
-    let mut work = FrameWork {
-        count: 0,
-        summed: 0,
-        maximum: 0,
-    };
-    work.charge(copy_storage(&projection.terminal), false)?;
-    let transfer = add("packet-transfer-".len(), 20)?;
-    for object in projection.objects.iter().flatten() {
-        for (method, body) in [
-            (Method::BlobBegin, ProjectedBody::Begin(transfer, object)),
-            (Method::BlobFinish, ProjectedBody::Finish(transfer)),
-        ] {
-            work.charge(
-                continuation::projected_packet_startup_frame(
-                    session,
-                    incarnation,
-                    method,
-                    body,
-                    projection.maximum_requested_bytes,
-                )?,
-                true,
-            )?;
-        }
-        let mut remaining = object.payload;
-        while remaining > 0 {
-            let bytes = remaining.min(chunk);
-            let encoded = mul(bytes.div_ceil(3), 4)?;
-            work.charge(
-                continuation::projected_packet_startup_frame(
-                    session,
-                    incarnation,
-                    Method::BlobChunk,
-                    ProjectedBody::Chunk(transfer, encoded),
-                    projection.maximum_requested_bytes,
-                )?,
-                true,
-            )?;
-            remaining -= bytes;
-        }
-    }
-    if work.count != projection.exchange.frames
-        || work.summed != projection.exchange.preparation_transient_requested_bytes
-    {
-        return Err(refused());
-    }
-    Ok(OriginalNativeObservePreparationStorageData {
-        original: copy_quote(&projection.exchange),
-        maximum_frame_work: work.maximum,
-    })
+    preparation::project_frames(
+        projection,
+        session,
+        incarnation,
+        chunk,
+        size_of::<ResponseBody>().max(size_of::<RequestBody>()),
+        &acknowledgements::ACK_FIXED_LAYOUT,
+    )
 }
 
 /// Names every new fixed row, full result and borrowed iteration view.
@@ -305,7 +157,7 @@ pub(crate) fn original_native_observe_preparation_counter_scratch_data() -> usiz
         + size_of::<OriginalPacketPrefixProjectionStorageData>()
         + size_of::<Result<OriginalPacketPrefixProjectionStorageData, ProviderError>>()
         + 2 * size_of::<OriginalPacketPrefixStorageData>()
-        + size_of::<FrameWork>()
+        + preparation::FRAME_WORK_BYTES
         + size_of::<OriginalSerializationStorageData>()
         + size_of::<Result<OriginalSerializationStorageData, ProviderError>>()
         + size_of::<&OriginalPacketPrefixProjectionStorageData>()
@@ -314,7 +166,7 @@ pub(crate) fn original_native_observe_preparation_counter_scratch_data() -> usiz
         + size_of::<&PacketNative5SourceLaunch>()
         + size_of::<&crucible_node_format::NodeBinding>()
         + size_of::<&ContentExtent>()
-        + size_of::<&mut FrameWork>()
+        + preparation::FRAME_WORK_MUT_BORROW_BYTES
         + size_of::<std::slice::Iter<'static, Option<ContentExtent>>>()
         + 2 * size_of::<&Id>()
         + size_of::<ContentIterator<'static>>()
@@ -325,6 +177,18 @@ pub(crate) fn original_native_observe_preparation_counter_scratch_data() -> usiz
         + size_of::<(usize, usize, usize, usize, usize)>()
         + size_of::<Result<usize, ProviderError>>()
         + size_of::<Result<(), ProviderError>>()
+        // The existing loop rows above remain intact. These are the added
+        // upper forwarding call's actual borrowed inputs and returned result.
+        + size_of::<&OriginalPacketPrefixProjectionStorageData>()
+        + 2 * size_of::<&Id>()
+        + size_of::<usize>() // copied chunk argument
+        + size_of::<PreparationResult>()
+        // The formed ACK loan and the upper/lower/FrameWork parameter views
+        // coexist across the nested call; no private layout is mirrored.
+        + 4 * size_of::<&crucible_source_birth_data::profile::reference_packet::service::native_startup::report_ack::AckFixedLayoutData>()
+        // Two compiled max operands and its result, followed by the lower
+        // loop and FrameWork charge's distinct owned scalar parameters.
+        + 5 * size_of::<usize>()
 }
 
 // Tests use a real current fixture only to inspect this DATA projection. This

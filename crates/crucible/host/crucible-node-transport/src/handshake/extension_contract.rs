@@ -16,8 +16,8 @@ use crate::ProviderError;
 /// Bounds the complete encoded offer or selected roster before decoding copies.
 pub const MAXIMUM_EXTENSION_NEGOTIATION_BYTES: usize = 1_048_576;
 
-/// Bounds each peer's complete exact definition roster.
-pub const MAXIMUM_NEGOTIATED_EXTENSIONS: usize = 256;
+/// Bounds the same complete original negotiated definition roster.
+pub use crucible_source_birth_data::profile::reference_packet::service::native_startup::hello_shapes::MAXIMUM_NEGOTIATED_EXTENSIONS;
 
 /// Offers exact required and optional extension definitions to one peer.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

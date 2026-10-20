@@ -12,6 +12,7 @@ use crate::blob::{
     capture17_upload_counter_scratch_data,
 };
 use crate::client::DeadlineStream;
+use crate::connection::OriginalPacketPrefixProjectionStorageDataExt;
 use crate::connection::{
     OriginalPacketPrefixProjectionInput, OriginalPacketPrefixProjectionStorageData,
 };

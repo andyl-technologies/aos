@@ -180,7 +180,9 @@ mod storage;
 pub use storage::{
     PacketNativeBirthRetainedOverlapData, PacketNativeBirthStartupInputs,
     PacketNativeBirthStartupStorageData, original_native_birth_startup_counter_scratch_data,
-    original_native_birth_startup_storage_data, original_native_invocation_ingress_storage_data,
+    original_native_birth_startup_storage_data,
+    original_native_hello_fixed_layout_counter_scratch_data,
+    original_native_hello_fixed_layout_data, original_native_invocation_ingress_storage_data,
     original_native_preflight_birth_startup_storage_data,
     original_native_private_boot_fields_storage_data,
 };
@@ -210,20 +212,13 @@ pub(crate) fn original_native_private_bootstrap_floor_data() -> Result<usize, Pr
 
 pub(crate) mod data_equality;
 
+mod private_backing;
+
 pub(crate) fn original_native_private_bank_shared_layout_data() -> Result<usize, ProviderError> {
-    use crate::transport::original_frames::OriginalFrameReservation;
-    use std::{
-        cell::RefCell,
-        mem::{align_of, size_of},
-    };
-    size_of::<RefCell<OriginalFrameReservation>>()
-        .checked_add(
-            crate::retained_metadata::requested_storage::shared_header_storage_data(
-                1,
-                align_of::<RefCell<OriginalFrameReservation>>(),
-            )?,
-        )
-        .ok_or_else(invalid)
+    private_backing::shared::shared_bank_layout_data(
+        private_backing::LAYOUT_DATA.frame_reservation_bytes,
+        private_backing::LAYOUT_DATA.frame_reservation_alignment,
+    )
 }
 
 // Selected Linux/std source: ArgsOs owns the three invocation strings and its
@@ -231,16 +226,7 @@ pub(crate) fn original_native_private_bank_shared_layout_data() -> Result<usize,
 // fixes argv to executable/socket/flag with both path extents at most 4096.
 // These are requested Rust backings, not kernel or physical process memory.
 pub(crate) fn original_native_private_invocation_backing_data() -> Result<usize, ProviderError> {
-    if !cfg!(all(target_os = "linux", target_pointer_width = "64")) {
-        return Err(invalid());
-    }
-    let slots = 4usize
-        .checked_mul(std::mem::size_of::<std::ffi::OsString>())
-        .ok_or_else(invalid)?;
-    8192usize
-        .checked_add(2 * 4096 + "--original-native-startup14".len())
-        .and_then(|bytes| bytes.checked_add(slots))
-        .ok_or_else(invalid)
+    private_backing::shared::invocation_backing_data(private_backing::LAYOUT_DATA.os_string_bytes)
 }
 
 pub(crate) use storage::{

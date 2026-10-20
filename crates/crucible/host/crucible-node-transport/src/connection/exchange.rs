@@ -25,10 +25,11 @@ mod storage;
 pub(crate) use storage::{
     OriginalContinuationContentExtent, OriginalContinuationPrefixKind,
     OriginalContinuationPrefixStorageData, OriginalContinuationPrefixStorageInput,
-    OriginalNativeObservePreparationStorageData, OriginalPacketPrefixProjectionInput,
-    OriginalPacketPrefixProjectionStorageData, OriginalPacketPrefixStorageData,
-    OriginalReportQueryReceiveStorageData, authenticate_original_report_query_header_data,
-    original_host_initial_raw_receive_storage_data,
+    OriginalNativeObservePreparationStorageData, OriginalPacketPrefixLifetimeDataExt,
+    OriginalPacketPrefixProjectionInput, OriginalPacketPrefixProjectionStorageData,
+    OriginalPacketPrefixProjectionStorageDataExt, OriginalPacketPrefixStorageData,
+    OriginalPacketPrefixStorageDataExt, OriginalReportQueryReceiveStorageData,
+    authenticate_original_report_query_header_data, original_host_initial_raw_receive_storage_data,
     original_native_observe_preparation_counter_scratch_data,
     original_packet_prefix_startup_counter_scratch_data,
     original_report_query_receive_counter_scratch_data, original_report_query_receive_storage_data,
@@ -752,3 +753,8 @@ pub(crate) use observation17_owner::counter_scratch_data as original_observation
 
 // Both closed17 families consume the same bounded literal correspondence scan.
 pub(crate) use observation17_owner::counter_scratch_data as original_native17_publication_literal_counter_scratch_data;
+
+pub use storage::{
+    original_packet_prefix_fixed_layout_counter_scratch_data,
+    original_packet_prefix_fixed_layout_data,
+};

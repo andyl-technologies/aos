@@ -76,3 +76,16 @@ fn workspace_geometry_precedes_allocation_and_empty_budget_cannot_traverse_array
         ExportWorkspace::requested_bytes(0).unwrap()
     );
 }
+
+#[test]
+fn cancelled_semantic_retirement_fences_late_result_and_original_remeasurement() {
+    // This checks the real guards used by Job, not a fabricated Completion.
+    // Physical identity/wait/empty-group proof remains separately mandatory.
+    for phase in [Phase::Failed, Phase::Cancelled] {
+        assert!(!phase.accepts_result());
+        assert!(!phase.permits_original_observation());
+    }
+    assert!(Phase::Completed.accepts_result());
+    assert!(Phase::Completed.permits_original_observation());
+    assert!(!Phase::Running.accepts_result());
+}

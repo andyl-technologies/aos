@@ -14,6 +14,7 @@ use crate::retained_metadata::{
     },
 };
 use crate::{ProviderError, protocol_snapshot::ProtocolSnapshotReservation};
+use crucible_source_birth_data::profile::reference_packet::service::native_startup::hello_shapes::HelloFixedLayoutData;
 use std::mem::{align_of, size_of};
 
 mod admit;
@@ -25,6 +26,7 @@ mod initial;
 mod launch_decode;
 mod launch_validation;
 mod private_bootstrap;
+use private_bootstrap::PrivateBootstrapStorageExt;
 mod retained_overlap;
 pub use retained_overlap::PacketNativeBirthRetainedOverlapData;
 mod schemas;
@@ -145,6 +147,8 @@ pub fn original_native_birth_startup_counter_scratch_data() -> usize {
         + fixed_layout::counter_scratch_data()
         + initial::original_initial_literal_shape_counter_scratch_data()
         + private_bootstrap::literal_shape_counter_scratch_data()
+        + super::private_backing::ADAPTER_COUNTER_SCRATCH_DATA
+        + crucible_source_birth_data::profile::reference_packet::service::native_startup::hello_shapes::additional_counter_scratch_data()
         + launch_validation_counter_scratch_data()
         + super::super::Native5Policy::CONSTRUCTION_ADAPTER_SCRATCH_DATA
         // Exact lower restore-input aggregate initializer and owned callee input.
@@ -895,3 +899,26 @@ pub(super) fn private_frame_work_data(
 pub use launch_validation::PacketNative5LaunchValidationStorage;
 
 pub use coordinator_decode::PacketNative5CoordinatorConstructionStorage;
+
+/// Measures genuine compiled Hello headers and its two original fixed getters.
+///
+/// This is an explicit operational export query, separate from the legacy
+/// Hello arithmetic's unchanged end-only calls. Numeric facts authenticate no
+/// Source/Job/native owner and require same-code/original input remeasurement.
+pub fn original_native_hello_fixed_layout_data() -> HelloFixedLayoutData {
+    HelloFixedLayoutData {
+        headers: hello::HEADER_LAYOUT,
+        hello_selection_counter_scratch_bytes:
+            super::super::server::complete::hello_selection::counter_scratch_data(),
+        hello_reuse_counter_scratch_bytes:
+            crate::handshake::Handshake::original_native_hello_reuse_counter_scratch_data(),
+    }
+}
+
+/// Names the actual new fixed header family required by the export getter.
+///
+/// The original Source/Job holder must admit this separate operational query
+/// window before exporting layout facts; it creates no construction authority.
+pub const fn original_native_hello_fixed_layout_counter_scratch_data() -> usize {
+    crucible_source_birth_data::profile::reference_packet::service::native_startup::hello_shapes::fixed_layout_export_counter_scratch_data()
+}

@@ -20,54 +20,52 @@ pub(crate) use startup::{
     quote_original_restored_observation17_prefix_startup_storage_data,
 };
 
-// The class is private to the defining closed constructors. An array size or
-// matching scalar quote cannot select another request family.
-#[derive(Clone, Copy, Eq, PartialEq)]
-enum PrefixClass {
-    Observe,
-    RestoredInput17,
-    RestoredObserve17,
-    CaptureUpload17(Method),
+pub(crate) use crucible_source_birth_data::profile::reference_packet::service::native_startup::packet_prefix::{OriginalPacketPrefixProjectionInput, OriginalPacketPrefixProjectionStorageData};
+use crucible_source_birth_data::profile::reference_packet::service::native_startup::packet_prefix::PrefixClass;
+
+/// Keeps actual completed-record, current-input and native row checks upper.
+pub(crate) trait OriginalPacketPrefixProjectionStorageDataExt<const OBJECTS: usize = 3> {
+    fn completed_record_encoding_data<S: ProviderStream>(
+        &self,
+        connection: &Connection<S>,
+    ) -> Result<super::super::OriginalPacketCompletedRecordEncodingData, ProviderError>;
+
+    fn observation17_transport_storage_data(
+        &self,
+    ) -> Result<
+        crate::reference_packet::service::native_startup::PacketNativeStartupAllocationRow,
+        ProviderError,
+    >;
+
+    fn capture17_upload_transport_storage_data(
+        &self,
+    ) -> Result<
+        crate::reference_packet::service::native_startup::PacketNativeStartupAllocationRow,
+        ProviderError,
+    >;
+
+    fn native_transport_storage_data(
+        &self,
+    ) -> Result<
+        crate::reference_packet::service::native_startup::PacketNativeStartupAllocationRow,
+        ProviderError,
+    >;
+
+    fn authenticate_actual_inputs<S: ProviderStream>(
+        &self,
+        connection: &Connection<S>,
+        first: u64,
+        request: &Envelope,
+        body: &Map<String, Value>,
+        evidence: &Vec<(ContentRef, Vec<u8>)>,
+    ) -> Result<OriginalPacketPrefixStorageData, ProviderError>;
 }
 
-impl PrefixClass {
-    const fn method_data(self) -> Method {
-        match self {
-            Self::Observe | Self::RestoredObserve17 => Method::Observe,
-            Self::RestoredInput17 => Method::Input,
-            Self::CaptureUpload17(method) => method,
-        }
-    }
-
-    const fn is_capture17_upload_data(self) -> bool {
-        matches!(self, Self::CaptureUpload17(_))
-    }
-}
-
-pub(crate) struct OriginalPacketPrefixProjectionInput<'a> {
-    pub(crate) terminal: &'a OriginalSerializationStorageData,
-    pub(crate) original: &'a OriginalSerializationStorageData,
-    pub(crate) objects: &'a [OriginalContinuationContentExtent<'a>],
-    pub(crate) maximum_requested_bytes: usize,
-}
-
-/// Contains prospective storage bounds, without allocation or transport rights.
-pub(crate) struct OriginalPacketPrefixProjectionStorageData<const OBJECTS: usize = 3> {
-    pub(crate) exchange: OriginalPacketPrefixStorageData,
-    pub(crate) source_owner_requested_bytes: usize,
-    /// Is present only for the closed native initial lifecycle grammar.
-    pub(crate) native_source_backing_bytes: Option<usize>,
-    pub(crate) declared_counter_scratch_bytes: usize,
-    terminal: OriginalSerializationStorageData,
-    original: OriginalSerializationStorageData,
-    objects: [Option<ContentExtent>; OBJECTS],
-    class: PrefixClass,
-    maximum_requested_bytes: usize,
-}
-
-impl<const OBJECTS: usize> OriginalPacketPrefixProjectionStorageData<OBJECTS> {
+impl<const OBJECTS: usize> OriginalPacketPrefixProjectionStorageDataExt<OBJECTS>
+    for OriginalPacketPrefixProjectionStorageData<OBJECTS>
+{
     /// Counts the completed record using this same closed outgoing grammar.
-    pub(crate) fn completed_record_encoding_data<S: ProviderStream>(
+    fn completed_record_encoding_data<S: ProviderStream>(
         &self,
         connection: &Connection<S>,
     ) -> Result<super::super::OriginalPacketCompletedRecordEncodingData, ProviderError> {
@@ -123,14 +121,6 @@ impl<const OBJECTS: usize> OriginalPacketPrefixProjectionStorageData<OBJECTS> {
         )
     }
 
-    pub(crate) fn requested_bytes(&self) -> Result<usize, ProviderError> {
-        sum(&[
-            self.exchange.requested_bytes()?,
-            self.source_owner_requested_bytes,
-            self.declared_counter_scratch_bytes,
-        ])
-    }
-
     /// Separates the new Observe17 transport owners from its existing producer.
     ///
     /// The producer independently owns the borrowed body/evidence. This row
@@ -142,9 +132,9 @@ impl<const OBJECTS: usize> OriginalPacketPrefixProjectionStorageData<OBJECTS> {
     /// This closed DATA method cannot grant a native action or select a class.
     ///
     /// # Errors
-    /// Refuses every other private prefix class, absent backing census, checked
+    /// Refuses every other prefix shape class, absent backing census, checked
     /// overflow or an independently short complete requested-storage ceiling.
-    pub(crate) fn observation17_transport_storage_data(
+    fn observation17_transport_storage_data(
         &self,
     ) -> Result<
         crate::reference_packet::service::native_startup::PacketNativeStartupAllocationRow,
@@ -164,7 +154,7 @@ impl<const OBJECTS: usize> OriginalPacketPrefixProjectionStorageData<OBJECTS> {
     ///
     /// # Errors
     /// Refuses another class, missing backing census or a short finite ceiling.
-    pub(crate) fn capture17_upload_transport_storage_data(
+    fn capture17_upload_transport_storage_data(
         &self,
     ) -> Result<
         crate::reference_packet::service::native_startup::PacketNativeStartupAllocationRow,
@@ -212,7 +202,7 @@ impl<const OBJECTS: usize> OriginalPacketPrefixProjectionStorageData<OBJECTS> {
     }
 
     /// Recounts current owners before any actual frame/canonical plan is built.
-    pub(crate) fn authenticate_actual_inputs<S: ProviderStream>(
+    fn authenticate_actual_inputs<S: ProviderStream>(
         &self,
         connection: &Connection<S>,
         first: u64,
@@ -828,3 +818,8 @@ pub(crate) use native_observe_prepare::{
 };
 #[cfg(test)]
 pub(super) use startup::native_observe_projection_for_test;
+
+pub use startup::{
+    original_packet_prefix_fixed_layout_counter_scratch_data,
+    original_packet_prefix_fixed_layout_data,
+};

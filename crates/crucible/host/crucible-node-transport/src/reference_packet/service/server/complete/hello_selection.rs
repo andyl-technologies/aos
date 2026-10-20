@@ -78,20 +78,8 @@ fn envelope_feature(key: &str) -> &str {
     }
 }
 
-/// Bounds the old compiled subset and the invocation's actual declaration.
-///
-/// # Errors
-/// Refuses overflow while adding the two independently required core features.
-pub(in crate::reference_packet::service) fn feature_count_bound(
-    provider: &ProviderManifest,
-) -> Result<usize, ProviderError> {
-    provider
-        .extensions_supported
-        .len()
-        .checked_add(2)
-        .map(|count| count.max(19))
-        .ok_or_else(refused)
-}
+/// Bounds the same original finite feature roster as portable DATA.
+pub(in crate::reference_packet::service) use crucible_source_birth_data::profile::reference_packet::service::native_startup::hello_shapes::feature_count_bound;
 
 /// Counts fixed selection and borrowed private-birth validation headers.
 pub(in crate::reference_packet::service) fn counter_scratch_data() -> usize {

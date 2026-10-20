@@ -86,94 +86,20 @@ fn quote_startup_parts_for<const OBJECTS: usize>(
     allow_empty_baseline: bool,
     class: PrefixClass,
 ) -> Result<OriginalPacketPrefixProjectionStorageData<OBJECTS>, ProviderError> {
-    let (session, incarnation) = scope;
-    if (!allow_empty_baseline && !class.is_capture17_upload_data() && input.objects.is_empty())
-        || input.objects.len() > OBJECTS
-    {
-        return Err(refused());
-    }
-    let maximum_frame = allowance(limits.frame_bytes.get())?;
-    let chunk = allowance(limits.blob_chunk_bytes.get())?.min(4096);
-    if maximum_frame == 0 || chunk == 0 {
-        return Err(credit());
-    }
-    let mut objects = [None; OBJECTS];
-    let mut payload = 0usize;
-    let mut frames = 1usize;
-    for (index, object) in input.objects.iter().enumerate() {
-        if object.maximum_payload_bytes > 65_536
-            || object.media_type.is_empty()
-            || object.media_type.len() > 128
-            || !object
-                .media_type
-                .bytes()
-                .all(|byte| (0x20..=0x7e).contains(&byte))
-        {
-            return Err(credit());
-        }
-        payload = add(payload, object.maximum_payload_bytes)?;
-        frames = add(
-            frames,
-            add(2, object.maximum_payload_bytes.div_ceil(chunk))?,
-        )?;
-        objects[index] = Some(ContentExtent {
-            payload: object.maximum_payload_bytes,
-            media: object.media_type.len(),
-        });
-    }
-    if payload > 4 * 1024 * 1024 {
-        return Err(credit());
-    }
-    let requests = frames.checked_sub(1).ok_or_else(credit)?;
-    let mut data = OriginalPacketPrefixStorageData {
-        native_retained_backing_bytes: None,
-        frames,
-        requests,
-        evidence_payload_bytes: payload,
-        outgoing_framed_bytes: 0,
-        incoming_framed_bytes: mul(requests, add(maximum_frame, 4)?)?,
-        new_transport_credit_bytes: 0,
-        original_plan_requested_bytes: mul(frames, size_of::<Envelope>())?,
-        acknowledgement_index_requested_bytes:
-            crate::connection::restore_input_quote::tree_storage(
-                1,
-                input.objects.len(),
-                size_of::<Id>() + size_of::<ContentRef>(),
-                align_of::<Id>().max(align_of::<ContentRef>()),
-            )?,
-        canonical_requested_bytes: 0,
-        record_slots_requested_bytes: sum(&[
-            mul(frames, size_of::<Vec<u8>>())?,
-            mul(frames, size_of::<Option<usize>>())?,
-            mul(requests, size_of::<ReceivedFrame>())?,
-            size_of::<ExchangeRecord>(),
-        ])?,
-        outgoing_guard_requested_bytes: crate::connection::restore_input_quote::tree_storage(
-            2,
-            frames,
-            size_of::<Id>() + size_of::<Envelope>(),
-            align_of::<Id>().max(align_of::<Envelope>()),
-        )?,
-        response_iterator_requested_bytes: mul(
-            add(requests, 1)?,
-            size_of::<std::collections::btree_map::Values<'static, Id, Envelope>>(),
-        )?,
-        successful_ack_cache_requested_bytes: 0,
-        one_open_ack_requested_bytes: if requests == 0 {
-            0 // No provider proof request exists, so no ACK reader runs.
-        } else {
-            acknowledgements::open_ack_storage(maximum_frame)?
-        },
-        containment_requested_bytes: add(
-            startup_containment(maximum_extensions, input.original)?,
-            mul(add(mul(2, requests)?, 8)?, size_of::<Envelope>())?,
-        )?,
-        construction_transient_requested_bytes: input.original.requested_total()?,
-        preparation_transient_requested_bytes: 0,
-        declared_quote_scratch_bytes: Connection::<crate::client::DeadlineStream>::original_packet_prefix_quote_scratch_bytes_data(),
-        original_literal_required_bytes: mul(requests, add(maximum_frame, 4)?)?,
-        original_slots_required: add(frames, requests)?,
-    };
+    crucible_source_birth_data::original_packet_prefix_startup_body!(
+        scope = scope, limits = limits, maximum_extensions = maximum_extensions,
+        input = input, allow_empty_baseline = allow_empty_baseline, class = class,
+        objects = OBJECTS, data = data,
+        envelope_bytes = size_of::<Envelope>(), envelope_alignment = align_of::<Envelope>(),
+        received_frame_bytes = size_of::<ReceivedFrame>(), exchange_record_bytes = size_of::<ExchangeRecord>(),
+        response_iterator_bytes = size_of::<std::collections::btree_map::Values<'static, Id, Envelope>>(),
+        reply_bytes = size_of::<crate::reference_packet::control::PacketControlReply>(),
+        incident_bytes = size_of::<ConnectionIncident>(),
+        body_header_bytes = size_of::<ResponseBody>().max(size_of::<RequestBody>()),
+        ack = &acknowledgements::ACK_FIXED_LAYOUT,
+        quote_scratch = Connection::<crate::client::DeadlineStream>::original_packet_prefix_quote_scratch_bytes_data(),
+        startup_scratch = startup_counter_additional_scratch_data_for::<OBJECTS>(),
+        adjustments = {
     if class == PrefixClass::RestoredInput17 {
         data.declared_quote_scratch_bytes = add(
             data.declared_quote_scratch_bytes,
@@ -200,161 +126,8 @@ fn quote_startup_parts_for<const OBJECTS: usize>(
             super::super::capture17_upload::counter_scratch_data(),
         )?;
     }
-    if allow_empty_baseline
-        || class == PrefixClass::RestoredObserve17
-        || class.is_capture17_upload_data()
-    {
-        // The legacy containment projection mixes the original DOM and
-        // canonical work. Replace that one named component by backing only;
-        // all other actual guard/authority/map/root banks remain unchanged.
-        let containment_backing = data
-            .containment_requested_bytes
-            .checked_sub(input.original.dom_and_canonical_scratch_bytes)
-            .and_then(|bytes| bytes.checked_add(input.original.retained_value_backing_bytes))
-            .ok_or_else(credit)?;
-        data.native_retained_backing_bytes = Some(sum(&[
-            data.original_plan_requested_bytes,
-            data.acknowledgement_index_requested_bytes,
-            data.record_slots_requested_bytes,
-            data.outgoing_guard_requested_bytes,
-            data.response_iterator_requested_bytes,
-            containment_backing,
-        ])?);
-    }
-    let mut native_source_backing = sum(&[
-        input.terminal.retained_value_backing_bytes,
-        payload,
-        mul(
-            add(mul(2, input.objects.len())?, 4)?,
-            size_of::<(ContentRef, Vec<u8>)>(),
-        )?,
-        size_of::<crate::reference_packet::control::PacketControlReply>(),
-    ])?;
-    let mut source_owner = sum(&[
-        input.terminal.dom_and_canonical_scratch_bytes,
-        payload,
-        mul(
-            add(mul(2, input.objects.len())?, 4)?,
-            size_of::<(ContentRef, Vec<u8>)>(),
-        )?,
-        size_of::<crate::reference_packet::control::PacketControlReply>(),
-    ])?;
-    // Ordinary preparation retains its frame loop's complete work sum. Do
-    // not substitute the continuation planner's sequential phase maximum.
-    charge_frame(&mut data, copy_storage(input.terminal), false, 65_536)?;
-    let transfer = add("packet-transfer-".len(), 20)?;
-    for object in objects.iter().flatten() {
-        let reference = continuation::reference_projection(object, input.maximum_requested_bytes)?;
-        source_owner = add(source_owner, reference.dom_and_canonical_scratch_bytes)?;
-        native_source_backing = add(
-            native_source_backing,
-            reference.retained_value_backing_bytes,
-        )?;
-        if let Some(retained) = data.native_retained_backing_bytes.as_mut() {
-            *retained = add(
-                *retained,
-                add(reference.retained_value_backing_bytes, growth(transfer)?)?,
-            )?;
-        }
-
-        data.acknowledgement_index_requested_bytes = add(
-            data.acknowledgement_index_requested_bytes,
-            add(reference.dom_and_canonical_scratch_bytes, growth(transfer)?)?,
-        )?;
-        for (method, body) in [
-            (Method::BlobBegin, ProjectedBody::Begin(transfer, object)),
-            (Method::BlobFinish, ProjectedBody::Finish(transfer)),
-        ] {
-            charge_frame(
-                &mut data,
-                continuation::projected_packet_startup_frame(
-                    session,
-                    incarnation,
-                    method,
-                    body,
-                    input.maximum_requested_bytes,
-                )?,
-                true,
-                65_536,
-            )?;
-        }
-        let mut remaining = object.payload;
-        while remaining > 0 {
-            let bytes = remaining.min(chunk);
-            let encoded = mul(bytes.div_ceil(3), 4)?;
-            data.construction_transient_requested_bytes = add(
-                data.construction_transient_requested_bytes,
-                sum(&[bytes, encoded, growth(transfer)?])?,
-            )?;
-            charge_frame(
-                &mut data,
-                continuation::projected_packet_startup_frame(
-                    session,
-                    incarnation,
-                    Method::BlobChunk,
-                    ProjectedBody::Chunk(transfer, encoded),
-                    input.maximum_requested_bytes,
-                )?,
-                true,
-                65_536,
-            )?;
-            remaining -= bytes;
-        }
-    }
-    let outgoing_bodies = data
-        .outgoing_framed_bytes
-        .checked_sub(mul(frames, 4)?)
-        .ok_or_else(credit)?;
-    data.new_transport_credit_bytes = add(
-        mul(outgoing_bodies, 3)?,
-        mul(mul(requests, maximum_frame)?, 2)?,
-    )?;
-    let result = OriginalPacketPrefixProjectionStorageData {
-        exchange: data,
-        source_owner_requested_bytes: source_owner,
-        native_source_backing_bytes: (allow_empty_baseline
-            || class == PrefixClass::RestoredObserve17
-            || class.is_capture17_upload_data())
-        .then_some(native_source_backing),
-        declared_counter_scratch_bytes: startup_counter_additional_scratch_data_for::<OBJECTS>(),
-        terminal: copy_storage(input.terminal),
-        original: copy_storage(input.original),
-        objects,
-        class,
-        maximum_requested_bytes: input.maximum_requested_bytes,
-    };
-    if result.requested_bytes()? > input.maximum_requested_bytes {
-        return Err(credit());
-    }
-    Ok(result)
-}
-
-/// Bounds containment with the normative sole incoming report query.
-fn startup_containment(
-    extensions: usize,
-    original: &OriginalSerializationStorageData,
-) -> Result<usize, ProviderError> {
-    // Fresh13 maps its Query and PrepareBinding keys to one selected feature.
-    // The closed installed mapping has at most two keys per advertised feature;
-    // charge both Id-bounded names even when that feature is not selected.
-    // The independent confirmation key retains its own additional entry.
-    let mapped_keys = mul(2, extensions)?;
-    let tree = crate::connection::restore_input_quote::tree_storage(
-        4,
-        add(mapped_keys, 1)?,
-        size_of::<Id>() + size_of::<Envelope>(),
-        align_of::<Id>().max(align_of::<Envelope>()),
-    )?;
-    sum(&[
-        original.dom_and_canonical_scratch_bytes,
-        // Guard and authority retain independently cloned session/incarnation
-        // IDs plus connection ID; the incoming map independently clones its key.
-        mul(6, 128)?,
-        mul(mapped_keys, 128)?,
-        tree,
-        mul(10, size_of::<Envelope>())?,
-        size_of::<ConnectionIncident>(),
-    ])
+        },
+    )
 }
 
 /// Names fixed counter/header scratch before any prospective quote is built.
@@ -381,6 +154,22 @@ const fn startup_counter_additional_scratch_data_for<const OBJECTS: usize>() -> 
         + size_of::<MetadataObserver<'static>>()
         + size_of::<RetainedProtocolMetadataFacts>()
         + 3 * size_of::<OriginalSerializationStorageData>()
+        + 3 * size_of::<usize>()
+}
+
+// Preserves the original test-only shorthand using the production containment walk.
+#[cfg(test)]
+fn startup_containment(
+    maximum_extensions: usize,
+    original: &OriginalSerializationStorageData,
+) -> Result<usize, ProviderError> {
+    crucible_source_birth_data::profile::reference_packet::service::native_startup::packet_prefix::startup_containment(
+        maximum_extensions,
+        original,
+        size_of::<Envelope>(),
+        align_of::<Envelope>(),
+        size_of::<ConnectionIncident>(),
+    )
 }
 
 #[cfg(test)]
@@ -504,3 +293,33 @@ pub(crate) fn quote_original_capture17_upload_prefix_startup_storage_data(
         PrefixClass::CaptureUpload17(method),
     )
 }
+
+/// Reports actual private headers and fixed getters for the original prefix.
+///
+/// These are compiled layout measurements, not requested final rows, live
+/// owner observations, allocation grants or native provenance.
+pub fn original_packet_prefix_fixed_layout_data() -> crucible_source_birth_data::profile::reference_packet::service::native_startup::packet_prefix::startup::PacketPrefixFixedLayoutData{
+    use crucible_source_birth_data::profile::reference_packet::service::native_startup::packet_prefix::startup::PacketPrefixFixedLayoutData;
+    PacketPrefixFixedLayoutData {
+        envelope_bytes: size_of::<Envelope>(),
+        envelope_alignment: align_of::<Envelope>(),
+        received_frame_bytes: size_of::<ReceivedFrame>(),
+        exchange_record_bytes: size_of::<ExchangeRecord>(),
+        response_iterator_bytes: size_of::<std::collections::btree_map::Values<'static, Id, Envelope>>(),
+        reply_bytes: size_of::<crate::reference_packet::control::PacketControlReply>(),
+        incident_bytes: size_of::<ConnectionIncident>(),
+        body_header_bytes: size_of::<ResponseBody>().max(size_of::<RequestBody>()),
+        quote_counter_scratch_bytes: Connection::<crate::client::DeadlineStream>::original_packet_prefix_quote_scratch_bytes_data(),
+        startup_counter_scratch_bytes: startup_counter_additional_scratch_data(),
+    }
+}
+
+/// Names the actual fixed result/control family of the compiled layout getter.
+pub const fn original_packet_prefix_fixed_layout_counter_scratch_data() -> usize {
+    2 * size_of::<crucible_source_birth_data::profile::reference_packet::service::native_startup::packet_prefix::startup::PacketPrefixFixedLayoutData>()
+        + 2 * size_of::<usize>()
+}
+
+#[cfg(test)]
+#[path = "exchange_packet_startup_original.rs"]
+mod original;

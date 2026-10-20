@@ -104,42 +104,7 @@ impl PacketNative5CoordinatorConstructionStorage for PacketNative5CoordinatorIns
 
 // These are the actual nested portable DTO/Vec element classes of this closed
 // coordinator. Extensions are String/Value maps, not Control grant caches.
-pub(super) fn typed_slot() -> usize {
-    [
-        size_of::<PacketControlSelection>(),
-        size_of::<ProviderManifest>(),
-        size_of::<NodeManifest>(),
-        size_of::<ImplementationIdentity>(),
-        size_of::<ArtifactIdentity>(),
-        size_of::<RealizationManifest>(),
-        size_of::<NodeDescriptor>(),
-        size_of::<PortDescriptor>(),
-        size_of::<LaneDescriptor>(),
-        size_of::<NodeBinding>(),
-        size_of::<BindingCompatibility>(),
-        size_of::<LiveAuthority>(),
-        size_of::<OwnerRef>(),
-        size_of::<OwnerBinding>(),
-        size_of::<NodeBindingRef>(),
-        size_of::<OperatingContract>(),
-        size_of::<FacetSelection>(),
-        size_of::<crate::bodies::RealizeRequest>(),
-        size_of::<ResourceLimits>(),
-        size_of::<SchemaRef>(),
-        size_of::<ContentRef>(),
-        size_of::<HashRef>(),
-        size_of::<Id>(),
-        size_of::<String>(),
-        size_of::<serde_json::Value>(),
-        size_of::<WorldBinding>(),
-        size_of::<ConnectionDescriptor>(),
-        size_of::<Endpoint>(),
-        size_of::<GuaranteeProfile>(),
-    ]
-    .into_iter()
-    .max()
-    .unwrap_or(0)
-}
+pub(super) use crucible_source_birth_data::profile::reference_packet::service::native_startup::launch_decode::typed_slot;
 
 /// Prices only the real permanent DTO; the old complete validator quote is
 /// separately retained as work, never multiplied as persistent DTO backing.

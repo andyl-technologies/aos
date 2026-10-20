@@ -3,6 +3,7 @@
 use super::*;
 use crate::retained_metadata::serialization_storage::OriginalSerializationStorageData;
 use crucible_node_format::{Bytes, U64};
+use crucible_source_birth_data::profile::reference_packet::service::native_startup::original_report::AGGREGATION_COUNTER_SCRATCH_DATA;
 use serde_json::json;
 
 #[path = "original.rs"]
@@ -217,8 +218,13 @@ fn report_shape_adapter_counter_adds_only_actual_headers_and_its_real_sum_slot()
         + 2 * size_of::<&report_shapes::raw::StoppedInventoryRowLimitsData>()
         + size_of::<Result<(), ProviderError>>();
     assert_eq!(counter_scratch_data(), headers);
+    // Independent aggregation adds its defining family and its own real sum slot.
     assert_eq!(
         original_report_startup_counter_scratch_data(),
-        original::counter_scratch_data() + headers + size_of::<usize>()
+        original::counter_scratch_data()
+            + headers
+            + size_of::<usize>()
+            + AGGREGATION_COUNTER_SCRATCH_DATA
+            + size_of::<usize>()
     );
 }

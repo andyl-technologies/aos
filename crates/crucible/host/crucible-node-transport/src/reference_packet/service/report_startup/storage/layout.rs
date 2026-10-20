@@ -5,6 +5,8 @@
 //! stays at the original result initializer; neither is hoisted into project.
 
 use super::*;
+use crucible_node_format::{ContentRef, Id};
+use crucible_source_birth_data::profile::reference_packet::service::native_startup::original_report::ReportCacheTreeLayoutData;
 use crucible_source_birth_data::profile::reference_packet::service::native_startup::report_layout::OriginalReportFixedLayoutData;
 
 pub(super) fn project() -> OriginalReportFixedLayoutData {
@@ -43,3 +45,20 @@ mod original;
 #[cfg(test)]
 #[path = "layout/tests.rs"]
 mod tests;
+
+/// Reads the genuine private cache key/value layouts at the original tree slot.
+pub(super) fn cache_tree_layout_data() -> ReportCacheTreeLayoutData {
+    use std::mem::align_of;
+
+    type CacheValue = (
+        crucible_node_format::HashRef,
+        crate::reference_packet::control::PacketControlReply,
+    );
+
+    ReportCacheTreeLayoutData {
+        key_bytes: size_of::<Id>(),
+        value_bytes: size_of::<CacheValue>(),
+        key_alignment: align_of::<Id>(),
+        value_alignment: align_of::<CacheValue>(),
+    }
+}

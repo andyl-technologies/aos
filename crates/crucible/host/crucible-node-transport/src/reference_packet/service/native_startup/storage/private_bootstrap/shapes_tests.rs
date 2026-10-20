@@ -99,3 +99,6 @@ fn new_lower_maximum_input_has_its_own_header() {
         Some(size_of::<usize>())
     );
 }
+
+#[path = "fold_tests.rs"]
+mod fold_tests;

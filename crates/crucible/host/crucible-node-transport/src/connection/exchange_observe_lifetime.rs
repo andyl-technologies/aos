@@ -7,36 +7,60 @@
 
 use super::*;
 
-/// Keeps all persistent or uncertain prefix owners separate from returning work.
-pub(crate) struct NativeObservePrefixLifetimeStorageData {
-    /// Includes every plan, guard, canonical bank, cache and containment owner.
-    /// The complete terminating open-ACK allowance stays here: a refused reply
-    /// can remain in the original record, including arbitrary Error details.
-    pub(crate) retained_requested_bytes: usize,
-    /// Covers all construction/preparation/iterator work conservatively summed.
-    pub(crate) maximum_simultaneous_transient_bytes: usize,
-    /// Keeps the original quoted prefix counter window independently named.
-    pub(crate) declared_counter_scratch_bytes: usize,
+use crucible_source_birth_data::profile::reference_packet::service::native_startup::packet_prefix::lifetime as shared;
+pub(crate) use shared::{
+    NativeObservePrefixLifetimeStorageData, NativeOriginalObservePrefixLifetimeStorageData,
+};
+
+// These are the additional lower inputs and wrapper returns, independently
+// of every original counter term. The base and returned-query calls execute
+// sequentially; the numeric records do not contain native or Source owners.
+const OBSERVE_LIFETIME_ADAPTER_COUNTER_SCRATCH_DATA: usize = size_of::<&OriginalPacketPrefixStorageData>() // new lower prefix input
+        + size_of::<usize>() // new lower maximum input
+        + size_of::<Result<NativeObservePrefixLifetimeStorageData, ProviderError>>()
+        + size_of::<&OriginalReportQueryReceiveStorageData>() // new lower query input
+        + size_of::<Result<usize, ProviderError>>(); // additional query wrapper return
+
+// The original raw-ACK partition has its own nested input family. Its real
+// const facts loan is infallible; the ACK calculation stays at the old branch.
+const ORIGINAL_OBSERVE_LIFETIME_ADAPTER_COUNTER_SCRATCH_DATA: usize =
+    size_of::<&OriginalPacketPrefixStorageData>()
+        + 2 * size_of::<usize>() // new lower frame-cap and maximum inputs
+        + 2 * size_of::<&crucible_source_birth_data::profile::reference_packet::service::native_startup::report_ack::AckFixedLayoutData>() // formed const loan and lower input
+        + size_of::<Result<NativeOriginalObservePrefixLifetimeStorageData, ProviderError>>();
+
+/// Retains the original upper Observe lifetime and compiled counter producers.
+pub(crate) trait OriginalPacketPrefixLifetimeDataExt {
+    fn native_observe_lifetime_storage_data(
+        &self,
+        maximum: usize,
+    ) -> Result<NativeObservePrefixLifetimeStorageData, ProviderError>;
+
+    fn native_observe_returned_query_storage_data(
+        receive: &OriginalReportQueryReceiveStorageData,
+    ) -> Result<usize, ProviderError>;
+
+    fn native_observe_lifetime_counter_scratch_data() -> usize;
+
+    fn native_original_observe_lifetime_storage_data(
+        &self,
+        maximum_frame: usize,
+        maximum: usize,
+    ) -> Result<NativeOriginalObservePrefixLifetimeStorageData, ProviderError>;
+
+    fn native_original_observe_lifetime_counter_scratch_data() -> usize;
+
+    fn native_original_observe_prepared_lifetime_storage_data(
+        &self,
+        preparation: &OriginalNativeObservePreparationStorageData,
+        maximum_frame: usize,
+        maximum: usize,
+    ) -> Result<NativeOriginalObservePrefixLifetimeStorageData, ProviderError>;
+
+    fn native_original_observe_prepared_lifetime_counter_scratch_data() -> usize;
 }
 
-impl NativeObservePrefixLifetimeStorageData {
-    /// Includes the original prefix counter window in the full returning phase.
-    ///
-    /// # Errors
-    /// Refuses checked storage arithmetic overflow.
-    pub(crate) fn work_requested_bytes(&self) -> Result<usize, ProviderError> {
-        add(
-            self.maximum_simultaneous_transient_bytes,
-            self.declared_counter_scratch_bytes,
-        )
-    }
-
-    fn peak(&self) -> Result<usize, ProviderError> {
-        add(self.retained_requested_bytes, self.work_requested_bytes()?)
-    }
-}
-
-impl OriginalPacketPrefixStorageData {
+impl OriginalPacketPrefixLifetimeDataExt for OriginalPacketPrefixStorageData {
     /// Partitions the same full prefix quote for the closed native Observe path.
     ///
     /// No component is subtracted from the whole peak. Source-owned input and
@@ -55,36 +79,11 @@ impl OriginalPacketPrefixStorageData {
     /// # Errors
     /// Refuses overflow, a partition differing from the original full quote,
     /// or a full peak exceeding the caller's already admitted maximum.
-    pub(crate) fn native_observe_lifetime_storage_data(
+    fn native_observe_lifetime_storage_data(
         &self,
         maximum: usize,
     ) -> Result<NativeObservePrefixLifetimeStorageData, ProviderError> {
-        let retained_requested_bytes = sum(&[
-            self.original_plan_requested_bytes,
-            self.acknowledgement_index_requested_bytes,
-            self.canonical_requested_bytes,
-            self.record_slots_requested_bytes,
-            self.outgoing_guard_requested_bytes,
-            self.successful_ack_cache_requested_bytes,
-            self.one_open_ack_requested_bytes,
-            self.containment_requested_bytes,
-        ])?;
-        let data = NativeObservePrefixLifetimeStorageData {
-            retained_requested_bytes,
-            maximum_simultaneous_transient_bytes: sum(&[
-                self.construction_transient_requested_bytes,
-                self.preparation_transient_requested_bytes,
-                self.response_iterator_requested_bytes,
-            ])?,
-            declared_counter_scratch_bytes: self.declared_quote_scratch_bytes,
-        };
-        // This is an exact partition of the OLD full quote, not a smaller
-        // allocation ceiling or a replacement for actual owning reconciliation.
-        let peak = data.peak()?;
-        if peak != self.requested_bytes()? || peak > maximum {
-            return Err(credit());
-        }
-        Ok(data)
+        shared::native_observe_lifetime_storage_data(self, maximum)
     }
 
     /// Covers the restricted returned Observe under the unchanged SDK metric.
@@ -97,21 +96,15 @@ impl OriginalPacketPrefixStorageData {
     ///
     /// # Errors
     /// Refuses checked layout/arithmetic overflow.
-    pub(crate) fn native_observe_returned_query_storage_data(
+    fn native_observe_returned_query_storage_data(
         receive: &OriginalReportQueryReceiveStorageData,
     ) -> Result<usize, ProviderError> {
-        let empty_extensions_root = crate::retained_metadata::requested_storage::tree_storage_data(
-            1,
-            0,
-            size_of::<(String, Value)>(),
-            align_of::<(String, Value)>(),
-        )?;
-        add(receive.typed_query_requested_bytes, empty_extensions_root)
+        shared::native_observe_returned_query_storage_data(receive)
     }
 
     /// Names actual nested result/copy, sum-bank and scalar counter headers.
     /// Compiler/recursive frames and allocator overhead remain separate.
-    pub(crate) const fn native_observe_lifetime_counter_scratch_data() -> usize {
+    fn native_observe_lifetime_counter_scratch_data() -> usize {
         3 * size_of::<NativeObservePrefixLifetimeStorageData>()
             + size_of::<[usize; 8]>()
             + size_of::<[usize; 3]>()
@@ -124,31 +117,9 @@ impl OriginalPacketPrefixStorageData {
             + size_of::<[usize; 5]>()
             + size_of::<&[usize]>()
             + size_of::<std::slice::Iter<'static, usize>>()
-    }
-}
-
-/// Keeps a selected original Observe's independent encoding and ACK phases.
-///
-/// The original full quote/builder remains authoritative. Both new axes still
-/// include every persistent owner from a terminating Error or malformed ACK.
-pub(crate) struct NativeOriginalObservePrefixLifetimeStorageData {
-    pub(crate) retained_requested_bytes: usize,
-    encoding: usize,
-    acknowledgement: usize,
-    scratch: usize,
-}
-
-impl NativeOriginalObservePrefixLifetimeStorageData {
-    pub(crate) fn encoding_work_requested_bytes(&self) -> Result<usize, ProviderError> {
-        add(self.encoding, self.scratch)
+            + OBSERVE_LIFETIME_ADAPTER_COUNTER_SCRATCH_DATA
     }
 
-    pub(crate) fn acknowledgement_work_requested_bytes(&self) -> Result<usize, ProviderError> {
-        add(self.acknowledgement, self.scratch)
-    }
-}
-
-impl OriginalPacketPrefixStorageData {
     /// Splits the actual original Observe's terminating ACK validation lifetime.
     ///
     /// The defining native publisher finishes dispatch/transform/prepare before
@@ -160,45 +131,20 @@ impl OriginalPacketPrefixStorageData {
     /// # Errors
     /// Refuses overflow, a cap not matching the original complete ACK quote or
     /// an original full quote above the compiled projection maximum.
-    pub(crate) fn native_original_observe_lifetime_storage_data(
+    fn native_original_observe_lifetime_storage_data(
         &self,
         maximum_frame: usize,
         maximum: usize,
     ) -> Result<NativeOriginalObservePrefixLifetimeStorageData, ProviderError> {
-        let old = self.native_observe_lifetime_storage_data(maximum)?;
-        let (retained_ack, returning_ack) = if self.requests == 0 {
-            if self.one_open_ack_requested_bytes != 0 {
-                return Err(credit());
-            }
-            (0, 0)
-        } else {
-            let ack = acknowledgements::open_ack_lifetime_storage_data(maximum_frame)?;
-            if add(ack.retained, ack.returning)? != self.one_open_ack_requested_bytes {
-                return Err(credit());
-            }
-            (ack.retained, ack.returning)
-        };
-        let retained = old
-            .retained_requested_bytes
-            .checked_sub(self.one_open_ack_requested_bytes)
-            .and_then(|n| n.checked_add(retained_ack))
-            .ok_or_else(credit)?;
-        let result = NativeOriginalObservePrefixLifetimeStorageData {
-            retained_requested_bytes: retained,
-            encoding: old.maximum_simultaneous_transient_bytes,
-            acknowledgement: returning_ack,
-            scratch: old.declared_counter_scratch_bytes,
-        };
-        let phase = result
-            .encoding_work_requested_bytes()?
-            .max(result.acknowledgement_work_requested_bytes()?);
-        if add(result.retained_requested_bytes, phase)? > self.requested_bytes()? {
-            return Err(credit());
-        }
-        Ok(result)
+        shared::native_original_observe_lifetime_storage_data(
+            self,
+            maximum_frame,
+            maximum,
+            &acknowledgements::ACK_FIXED_LAYOUT,
+        )
     }
 
-    pub(crate) const fn native_original_observe_lifetime_counter_scratch_data() -> usize {
+    fn native_original_observe_lifetime_counter_scratch_data() -> usize {
         Self::native_observe_lifetime_counter_scratch_data()
             + acknowledgements::open_ack_lifetime_counter_scratch_data()
             + size_of::<Result<NativeObservePrefixLifetimeStorageData, ProviderError>>()
@@ -210,10 +156,9 @@ impl OriginalPacketPrefixStorageData {
             + size_of::<&OriginalPacketPrefixStorageData>()
             + size_of::<&NativeOriginalObservePrefixLifetimeStorageData>()
             + 6 * size_of::<usize>()
+            + ORIGINAL_OBSERVE_LIFETIME_ADAPTER_COUNTER_SCRATCH_DATA
     }
-}
 
-impl OriginalPacketPrefixStorageData {
     /// Separates the selected preparation loop without releasing retained owners.
     ///
     /// The opaque preparation row must match every field of this complete
@@ -225,7 +170,7 @@ impl OriginalPacketPrefixStorageData {
     /// # Errors
     /// Refuses another complete quote, an insufficient limit, overflow or a
     /// preparation phase exceeding the original conservative summed allowance.
-    pub(crate) fn native_original_observe_prepared_lifetime_storage_data(
+    fn native_original_observe_prepared_lifetime_storage_data(
         &self,
         preparation: &OriginalNativeObservePreparationStorageData,
         maximum_frame: usize,
@@ -254,7 +199,7 @@ impl OriginalPacketPrefixStorageData {
     }
 
     /// Names the complete selected producer and nested lifetime return views.
-    pub(crate) fn native_original_observe_prepared_lifetime_counter_scratch_data() -> usize {
+    fn native_original_observe_prepared_lifetime_counter_scratch_data() -> usize {
         Self::native_original_observe_lifetime_counter_scratch_data()
             + crate::connection::original_native_observe_preparation_counter_scratch_data()
             + acknowledgements::native_original_open_ack_counter_scratch_data()
@@ -269,3 +214,11 @@ impl OriginalPacketPrefixStorageData {
             + size_of::<bool>()
     }
 }
+
+#[cfg(test)]
+#[path = "exchange_observe_lifetime/original.rs"]
+mod original;
+
+#[cfg(test)]
+#[path = "exchange_observe_lifetime/shared_tests.rs"]
+mod shared_tests;

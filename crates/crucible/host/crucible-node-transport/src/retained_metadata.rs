@@ -863,3 +863,6 @@ pub use native_oracle_geometry::{
 // profile. Ordinary observers retain their original64 activation limit.
 mod native_import18_json_profile;
 pub(crate) use native_import18_json_profile::NativeImport18JsonMetadataProfileData;
+
+mod original_launch;
+pub use original_launch::OriginalLaunchMetadataObservation;

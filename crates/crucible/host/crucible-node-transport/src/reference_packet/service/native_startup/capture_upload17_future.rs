@@ -8,6 +8,7 @@
 use super::{PacketNativeStartupAllocationRow, PacketRestoredSettledNativeStorageData};
 use crate::ProviderError;
 use crate::blob::BlobReceiver;
+use crate::connection::OriginalPacketPrefixProjectionStorageDataExt;
 use crate::connection::{
     ExchangeRecord, OriginalPacketPrefixProjectionInput,
     quote_original_capture17_upload_prefix_startup_storage_data,

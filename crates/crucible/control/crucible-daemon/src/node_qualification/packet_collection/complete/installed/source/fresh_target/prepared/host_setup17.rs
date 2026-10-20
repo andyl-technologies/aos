@@ -23,7 +23,7 @@ struct PreparedSetupRemainder<'a> {
     import18_selection: &'a Option<import18_templates::Import18Selection>,
     measurements: &'a [PacketFixtureMeasurements; 3],
     content: &'a Rc<BTreeMap<ContentRef, Vec<u8>>>,
-    launches: &'a [PacketNative5SourceLaunch; 3],
+    launches: &'a PreparedLaunches,
     directories: &'a [PathBuf; 3],
     paths: &'a [PathBuf; 3],
     receiver_group: &'a Rc<PacketCompleteEffectReceiverGroup>,
@@ -90,7 +90,10 @@ impl PreparedSetupRemainder<'_> {
         if counter.rc(content).map_err(limit)? {
             counter.charge(content.as_ref()).map_err(limit)?;
         }
-        for launch in launches {
+        counter
+            .add(launches.retained_allocation_data()?)
+            .map_err(limit)?;
+        for launch in launches.originals()? {
             let facts =
                 observe_retained_native_launch(launch).map_err(|_| RuntimeError::ResourceLimit)?;
             counter.metadata(&facts).map_err(limit)?;
@@ -205,7 +208,7 @@ const fn prepared_field_references_data() -> usize {
         + size_of::<&Option<import18_templates::Import18Selection>>()
         + size_of::<&[PacketFixtureMeasurements; 3]>()
         + size_of::<&Rc<BTreeMap<ContentRef, Vec<u8>>>>()
-        + size_of::<&[PacketNative5SourceLaunch; 3]>()
+        + size_of::<&PreparedLaunches>()
         + size_of::<&[PathBuf; 3]>()
         + size_of::<&[PathBuf; 3]>()
         + size_of::<&Rc<PacketCompleteEffectReceiverGroup>>()
@@ -228,7 +231,7 @@ const fn prepared_field_references_data() -> usize {
 const fn prepared_suffix_references_data() -> usize {
     size_of::<&[PacketFixtureMeasurements; 3]>()
         + size_of::<&Rc<BTreeMap<ContentRef, Vec<u8>>>>()
-        + size_of::<&[PacketNative5SourceLaunch; 3]>()
+        + size_of::<&PreparedLaunches>()
         + size_of::<&[PathBuf; 3]>()
         + size_of::<&[PathBuf; 3]>()
         + size_of::<&Rc<PacketCompleteEffectReceiverGroup>>()
@@ -455,7 +458,10 @@ impl PreparedCompleteRestoration {
         if counter.rc(content).map_err(limit)? {
             counter.charge(content.as_ref()).map_err(limit)?;
         }
-        for launch in launches {
+        counter
+            .add(launches.retained_allocation_data()?)
+            .map_err(limit)?;
+        for launch in launches.originals()? {
             let facts =
                 observe_retained_native_launch(launch).map_err(|_| RuntimeError::ResourceLimit)?;
             counter.metadata(&facts).map_err(limit)?;
@@ -628,7 +634,7 @@ pub(super) fn assert_actual_setup_census_data(owner: &mut PreparedCompleteRestor
     );
     assert!(owner.restored_prebirth_source.is_none());
     assert_projected_setup_matches_original_data(owner);
-    import18_templates::assert_projection_members_data(&owner.launches);
+    import18_templates::assert_projection_members_data(owner.launches.originals().unwrap());
     let loan = HostSource17SetupBorrow::prepared_data(owner);
     loan.authenticate_target_data(&owner.selected.host, &owner.selected.resources)
         .unwrap();

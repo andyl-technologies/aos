@@ -9,6 +9,10 @@
 #[path = "prepared/host_setup17.rs"]
 mod host_setup17;
 
+#[path = "prepared/launches.rs"]
+mod launches;
+use launches::PreparedLaunches;
+
 #[path = "prepared/deployment.rs"]
 mod deployment;
 #[path = "prepared/import18_templates.rs"]
@@ -56,7 +60,7 @@ pub struct PreparedCompleteRestoration {
     import18_templates: import18_templates::Templates,
     measurements: [PacketFixtureMeasurements; 3],
     content: Rc<BTreeMap<ContentRef, Vec<u8>>>,
-    launches: [PacketNative5SourceLaunch; 3],
+    launches: PreparedLaunches,
     directories: [PathBuf; 3],
     paths: [PathBuf; 3],
     receiver_group: Rc<PacketCompleteEffectReceiverGroup>,
@@ -275,7 +279,7 @@ impl PreparedCompleteRestoration {
             import18_templates: import18_templates::Templates::with_deployment(deployment),
             measurements,
             content,
-            launches,
+            launches: PreparedLaunches::inline(launches),
             directories,
             paths,
             receiver_group,
@@ -606,7 +610,7 @@ impl PreparedCompleteRestoration {
         };
         let sources = ready_sources(
             sources,
-            &self.launches,
+            self.launches.originals().map_err(|_| refused())?,
             &self.receiver_group,
             &self.paths,
             self.selected.maximum_initial_bytes,
@@ -617,7 +621,7 @@ impl PreparedCompleteRestoration {
             sources,
             host,
             &self.content,
-            duplicate_launch_data(&self.launches)?,
+            duplicate_launch_data(self.launches.originals().map_err(|_| refused())?)?,
             self.directories.clone(),
         )?;
         authenticate_plan_correspondence(
@@ -793,10 +797,11 @@ mod tests {
         );
         assert!(wrong_edition.is_none());
         assert!(!parent.path().join("wrong-import18").exists());
-        let [mut first, second, third] = duplicate_launch_data(&owner.launches).unwrap();
+        let [mut first, second, third] =
+            duplicate_launch_data(owner.launches.originals().unwrap()).unwrap();
         assert_eq!(
             encoded(&[&first, &second, &third]).unwrap(),
-            encoded(&owner.launches).unwrap(),
+            encoded(owner.launches.originals().unwrap()).unwrap(),
         );
         first.schema_version = 6;
         assert!(duplicate_launch_data(&[first, second, third]).is_err());
@@ -874,16 +879,18 @@ mod tests {
             )
             .is_err()
         );
-        let original_token = owner.launches[0].admission_token.clone();
+        let original_token = owner.launches.originals().unwrap()[0]
+            .admission_token
+            .clone();
         let mut changed_token = original_token.as_slice().to_vec();
         changed_token[0] ^= 1;
-        owner.launches[0].admission_token = Bytes::new(changed_token);
+        owner.launches.inline_mut().unwrap()[0].admission_token = Bytes::new(changed_token);
         assert!(
             owner
                 .target_authority(Rc::clone(owner.code_authority.host_source()),)
                 .is_err()
         );
-        owner.launches[0].admission_token = original_token;
+        owner.launches.inline_mut().unwrap()[0].admission_token = original_token;
 
         let occupied = parent.path().join("occupied");
         assert!(

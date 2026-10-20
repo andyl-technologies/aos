@@ -3,6 +3,8 @@
 //! The expected host reference is the original input operand, independently
 //! measured by the parent. Its private commitment prevents later rebinding; it
 //! never approves a replacement executable identity or produces native credit.
+//! Fresh derivations also retain the same immutable launch in both the Source
+//! association and its original Job; those owners outlive every seed loan.
 
 use super::super::birth::OriginalImport18PrivateSeed;
 use super::*;

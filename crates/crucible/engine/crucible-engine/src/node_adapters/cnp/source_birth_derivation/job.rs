@@ -4,6 +4,7 @@
 //! starts from the sealed installed mechanism and retains its original L2 attempt
 //! through failed export, wait, empty-group cleanup and same-Source acceptance.
 
+use super::original_launch::{OriginalSourceBirthLaunch, OriginalSourceBirthLaunches};
 use super::{
     installation::VerifiedSourceBirthMechanism,
     request_wire::{self, ExportError, ExportWorkspace, JobContext, RequestInput, RequestReceipt},
@@ -16,6 +17,7 @@ use crucible_host_resources::{
     LinuxPureWorkerError, LinuxPureWorkerOutcome, LinuxPureWorkerProgramIdentity,
 };
 use crucible_node_format::Id;
+use crucible_node_transport::retained_metadata::OriginalLaunchMetadataObservation;
 use std::{fmt, rc::Rc, thread::ThreadId};
 
 #[path = "job/storage.rs"]
@@ -32,6 +34,16 @@ enum Phase {
     Completed,
     Failed,
     Cancelled,
+}
+
+impl Phase {
+    fn accepts_result(self) -> bool {
+        self == Self::Completed
+    }
+
+    fn permits_original_observation(self) -> bool {
+        !matches!(self, Self::Failed | Self::Cancelled)
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -61,6 +73,8 @@ pub enum SourceBirthJobFailure {
     Worker(super::result_wire::ResultHeader),
     /// Retains the actual operational literal-workspace constructor refusal.
     Workspace(super::literal_value::StreamError),
+    /// Retains the first actual original-capacity observation failure.
+    OriginalMetadata(crucible_node_transport::ProviderError),
 }
 
 impl fmt::Display for SourceBirthJobFailure {
@@ -72,6 +86,7 @@ impl fmt::Display for SourceBirthJobFailure {
             Self::Result(_) => "SourceBirth original result refused",
             Self::Worker(_) => "SourceBirth original worker derivation failed",
             Self::Workspace(_) => "SourceBirth original export workspace failed",
+            Self::OriginalMetadata(_) => "SourceBirth original metadata observation failed",
         })
     }
 }
@@ -85,6 +100,7 @@ impl std::error::Error for SourceBirthJobFailure {
             Self::Result(error) => Some(error),
             Self::Worker(_) => None,
             Self::Workspace(error) => Some(error),
+            Self::OriginalMetadata(error) => Some(error),
         }
     }
 }
@@ -104,6 +120,8 @@ pub struct SourceBirthDerivationJob {
     binding: Option<SourceBinding>,
     context: Option<JobContext>,
     receipt: Option<RequestReceipt>,
+    original_launch: Option<OriginalSourceBirthLaunch>,
+    original_metadata: Option<OriginalLaunchMetadataObservation>,
     completion: Option<LinuxPureWorkerCompletion>,
     failed_outcome: Option<LinuxPureWorkerOutcome>,
     failure: Option<SourceBirthJobFailure>,
@@ -126,6 +144,14 @@ impl SourceBirthDerivationJob {
         mechanism: Rc<VerifiedSourceBirthMechanism>,
         output: &mut Option<Self>,
     ) -> Result<(), RuntimeError> {
+        Self::reserve_original_into(mechanism, None, output)
+    }
+
+    fn reserve_original_into(
+        mechanism: Rc<VerifiedSourceBirthMechanism>,
+        original: Option<OriginalSourceBirthLaunch>,
+        output: &mut Option<Self>,
+    ) -> Result<(), RuntimeError> {
         if output.is_some() {
             return Err(RuntimeError::DuplicateOperation);
         }
@@ -137,6 +163,8 @@ impl SourceBirthDerivationJob {
             binding: None,
             context: None,
             receipt: None,
+            original_launch: original,
+            original_metadata: None,
             completion: None,
             failed_outcome: None,
             failure: None,
@@ -162,6 +190,28 @@ impl SourceBirthDerivationJob {
             }
             Err(error) => job.fail(SourceBirthJobFailure::Linux(error)),
         }
+    }
+
+    /// Reserves a fresh job while retaining the same selected original on failure.
+    ///
+    /// The parent admits this holder/loan family before the call. Its original
+    /// remains strongly held even while a real Linux reservation is in flight;
+    /// the installed job retains it before the first result can escape.
+    ///
+    /// # Errors
+    /// Preserves the original reservation errors and refuses occupied output.
+    pub fn reserve_fresh_into(
+        mechanism: Rc<VerifiedSourceBirthMechanism>,
+        original: OriginalSourceBirthLaunch,
+        output: &mut Option<Self>,
+    ) -> Result<(), RuntimeError> {
+        if output.is_some() {
+            return Err(RuntimeError::DuplicateOperation);
+        }
+        original.authenticate()?;
+        // The pending Job owns the original before mechanism authentication,
+        // reservation or any other fallible started prefix in the shared body.
+        Self::reserve_original_into(mechanism, Some(original), output)
     }
 
     /// Prepares the original quota-owned input before any Source export loan.
@@ -326,6 +376,154 @@ impl SourceBirthDerivationJob {
         registration: &'a crate::node_adapters::cnp::PacketCompleteAckHostRegistrationPlan,
         workspace: ExportWorkspace<'a>,
     ) -> Result<RequestReceipt, RuntimeError> {
+        // The unchanged legacy entry cannot export a caller-selected replacement
+        // through the distinct fresh owner's private custody.
+        if self.original_launch.is_some() {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        self.export_input(private_launch, launch, expected, registration, workspace)
+    }
+
+    pub(in crate::node_adapters::cnp) fn export_fresh_original(
+        &mut self,
+        private_launch: &Id,
+        original: &OriginalSourceBirthLaunch,
+        expected: super::derive::ExpectedCoordinator<'_>,
+        registration: &crate::node_adapters::cnp::PacketCompleteAckHostRegistrationPlan,
+        workspace: ExportWorkspace<'_>,
+    ) -> Result<RequestReceipt, RuntimeError> {
+        self.require(Phase::Prepared)?;
+        self.authenticate()?;
+        if self.binding.is_none()
+            || self.context.is_some()
+            || self.receipt.is_some()
+            || !self.workspace_reserved
+        {
+            return Err(RuntimeError::DuplicateOperation);
+        }
+        if self.workspace_observed != Some(workspace.retained_bytes()) {
+            return self.fail(SourceBirthJobFailure::Runtime(RuntimeError::ResourceLimit));
+        }
+        if !self.same_original(original) || self.original_metadata.is_some() {
+            return self.fail(SourceBirthJobFailure::Runtime(
+                RuntimeError::ForeignAuthority,
+            ));
+        }
+        // Install the partial record before the first fallible typed walk.
+        self.original_metadata = Some(OriginalLaunchMetadataObservation::empty());
+        let observed = self
+            .original_metadata
+            .as_mut()
+            .ok_or(RuntimeError::OwnerUnavailable)?
+            .observe_into(original.original());
+        if let Err(error) = observed {
+            return self.fail(SourceBirthJobFailure::OriginalMetadata(error));
+        }
+        self.authenticate()?;
+        let projection = crucible_node_transport::reference_packet::service::PacketNative5LaunchValidationProjection::from_launch_data(original.original());
+        self.export_input(
+            private_launch,
+            &projection,
+            expected,
+            registration,
+            workspace,
+        )
+    }
+
+    pub(in crate::node_adapters::cnp) fn same_original(
+        &self,
+        original: &OriginalSourceBirthLaunch,
+    ) -> bool {
+        self.original_launch
+            .as_ref()
+            .is_some_and(|held| held.same_original(original))
+    }
+
+    pub(in crate::node_adapters::cnp) fn matches_original(
+        &self,
+        expected: Option<&OriginalSourceBirthLaunch>,
+    ) -> bool {
+        match (&self.original_launch, expected) {
+            (None, None) => true,
+            (Some(held), Some(expected)) => held.same_original(expected),
+            _ => false,
+        }
+    }
+
+    pub(in crate::node_adapters::cnp) fn remeasure_original_metadata(
+        &mut self,
+    ) -> Result<(), RuntimeError> {
+        if self.failure.is_some() || !self.phase.permits_original_observation() {
+            return Err(RuntimeError::OwnerUnavailable);
+        }
+        let Some(original) = &self.original_launch else {
+            return Ok(());
+        };
+        original.authenticate()?;
+        let observed = {
+            let (launch, snapshot) = self.fresh_original_data()?;
+            snapshot.remeasure_data(launch)
+        };
+        if let Err(error) = observed {
+            return self.fail(SourceBirthJobFailure::OriginalMetadata(error));
+        }
+        self.authenticate()
+    }
+
+    // The following loans are crate-private operands for the next closed fresh
+    // codec. No caller can replace the launch or mutate the retained snapshots.
+    pub(in crate::node_adapters::cnp) fn fresh_original_data(
+        &self,
+    ) -> Result<
+        (
+            &crucible_node_transport::reference_packet::service::PacketNative5SourceLaunch,
+            &OriginalLaunchMetadataObservation,
+        ),
+        RuntimeError,
+    > {
+        if self.failure.is_some() || !self.phase.permits_original_observation() {
+            return Err(RuntimeError::OwnerUnavailable);
+        }
+        let original = self
+            .original_launch
+            .as_ref()
+            .ok_or(RuntimeError::OwnerUnavailable)?;
+        original.authenticate()?;
+        self.mechanism.authenticate_current()?;
+        let snapshot = self
+            .original_metadata
+            .as_ref()
+            .filter(|snapshot| snapshot.is_complete_data())
+            .ok_or(RuntimeError::OwnerUnavailable)?;
+        Ok((original.original(), snapshot))
+    }
+
+    /// Names the actual fresh holder, observation and direct export-loan windows.
+    pub fn fresh_export_counter_scratch_data() -> usize {
+        OriginalSourceBirthLaunches::counter_scratch_data()
+            + OriginalLaunchMetadataObservation::counter_scratch_data()
+            + std::mem::size_of::<&OriginalSourceBirthLaunch>() * 2
+            + std::mem::size_of::<Option<OriginalSourceBirthLaunch>>()
+            + std::mem::size_of::<&mut Self>()
+            + std::mem::size_of::<&Id>()
+            + std::mem::size_of::<&crucible_node_transport::reference_packet::service::PacketNative5LaunchValidationProjection<'static>>()
+            + std::mem::size_of::<crucible_node_transport::reference_packet::service::PacketNative5LaunchValidationProjection<'static>>()
+            + std::mem::size_of::<super::derive::ExpectedCoordinator<'static>>()
+            + std::mem::size_of::<&crate::node_adapters::cnp::PacketCompleteAckHostRegistrationPlan>()
+            + std::mem::size_of::<ExportWorkspace<'static>>()
+            + std::mem::size_of::<Rc<VerifiedSourceBirthMechanism>>()
+            + std::mem::size_of::<&mut Option<Self>>()
+            + std::mem::size_of::<Result<RequestReceipt, RuntimeError>>()
+    }
+
+    fn export_input<'a>(
+        &mut self,
+        private_launch: &Id,
+        launch: &'a crucible_node_transport::reference_packet::service::PacketNative5LaunchValidationProjection<'a>,
+        expected: super::derive::ExpectedCoordinator<'a>,
+        registration: &'a crate::node_adapters::cnp::PacketCompleteAckHostRegistrationPlan,
+        workspace: ExportWorkspace<'a>,
+    ) -> Result<RequestReceipt, RuntimeError> {
         self.require(Phase::Prepared)?;
         if self.binding.is_none()
             || self.context.is_some()
@@ -437,7 +635,7 @@ impl SourceBirthDerivationJob {
         mechanism: &Rc<VerifiedSourceBirthMechanism>,
     ) -> Result<(), RuntimeError> {
         if self.binding != Some(SourceBinding::of(source))
-            || self.phase != Phase::Completed
+            || !self.phase.accepts_result()
             || self.failure.is_some()
             || self.attempt_identity.as_ref() != Some(expected_attempt)
             || !Rc::ptr_eq(mechanism, &self.mechanism)
@@ -512,7 +710,9 @@ impl SourceBirthDerivationJob {
 impl Drop for SourceBirthDerivationJob {
     fn drop(&mut self) {
         // L2 Drop only cancels before physical release. This outer original also
-        // revokes an already-completed result's future acceptance.
+        // revokes an already-completed result's future acceptance. This executes
+        // before launch fields are dropped. Detached L2 Arc owners independently
+        // retain kill/reap/empty-group cleanup; they never remeasure this launch.
         self.cancel();
     }
 }

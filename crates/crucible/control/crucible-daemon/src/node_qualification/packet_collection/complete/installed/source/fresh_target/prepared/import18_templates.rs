@@ -369,6 +369,7 @@ impl Templates {
 
     pub(super) fn retained_counter_scratch_data() -> usize {
         TEMPLATE_PROJECTION_CONTROLS
+            + PreparedLaunches::counter_scratch_data()
             + OriginalNativeSourceTemplate18Attempt::retained_counter_scratch_data()
             + registration_plan::Attempt::counter_scratch_data()
             + SourceBirthDerivationJob::deployment_storage_counter_scratch_data()
@@ -411,7 +412,10 @@ impl PreparedCompleteRestoration {
     }
 
     /// Observes all actual old and new owners before the next stage effects.
-    fn observe_import18_templates_data(&self, demand: [usize; 3]) -> Result<(), RuntimeError> {
+    pub(super) fn observe_import18_templates_data(
+        &self,
+        demand: [usize; 3],
+    ) -> Result<(), RuntimeError> {
         if self.import18_templates.deployment.is_some() {
             return self.observe_funded_templates_data(demand);
         }
@@ -445,6 +449,9 @@ impl PreparedCompleteRestoration {
         let maximum = usize::try_from(self.selected.resources.memory_bytes.get())
             .map_err(|_| RuntimeError::ResourceLimit)?;
 
+        if self.import18_templates.deployment.is_some() {
+            self.retain_fresh_original_launches_data()?;
+        }
         for selected in 0..3 {
             self.prepare_import18_member_data(selected, maximum)?;
         }
@@ -475,13 +482,14 @@ impl PreparedCompleteRestoration {
             .registration
             .begin_data()?;
         self.observe_import18_templates_data([0; 3])?;
-        let row = registration_plan::Quote::for_launch_data(&self.launches[selected], selected)?;
+        let row =
+            registration_plan::Quote::for_launch_data(self.launches.get(selected)?, selected)?;
         self.import18_templates.members[selected].registration_row = Some(row);
         self.observe_import18_templates_data(row.requested_storage_data())?;
         let result = self.import18_templates.members[selected]
             .registration
             .retain_into_data(
-                &self.launches[selected],
+                self.launches.get(selected)?,
                 selected,
                 &row,
                 row.requested_storage_data(),
@@ -553,7 +561,7 @@ impl PreparedCompleteRestoration {
         let result = self.import18_templates.members[selected]
             .output
             .completed_unique_data()?
-            .bind_native_import18_declaration_data(selection, &self.launches[selected]);
+            .bind_native_import18_declaration_data(selection, self.launches.get(selected)?);
         let observed = self.observe_import18_templates_data([0; 3]);
         result.and(observed)?;
 
@@ -599,7 +607,7 @@ impl PreparedCompleteRestoration {
         let row = self.import18_templates.members[selected]
             .output
             .completed_data()?
-            .native_import18_birth_initialize_quote_data(&self.launches[selected], maximum)?;
+            .native_import18_birth_initialize_quote_data(self.launches.get(selected)?, maximum)?;
         let demand = row.requested_storage_data();
         self.import18_templates.members[selected].birth_row = Some(row);
         self.observe_import18_templates_data(demand)?;
@@ -623,7 +631,7 @@ impl PreparedCompleteRestoration {
         let source = member.output.completed_unique_data()?;
         member.registration.retain_source_initialize_into_data(
             source,
-            &self.launches[selected],
+            self.launches.get(selected)?,
             row,
         )
     }
@@ -701,7 +709,7 @@ impl PreparedCompleteRestoration {
 /// Uses the actual admitted fixture, never a fabricated graph/plan/native owner.
 #[cfg(test)]
 pub(super) fn assert_actual_code_custody_data(owner: &PreparedCompleteRestoration) {
-    registration_plan::assert_actual_launch_data(&owner.launches[0]);
+    registration_plan::assert_actual_launch_data(&owner.launches.originals().unwrap()[0]);
     let graph = owner.code_graph.as_ref().unwrap();
     owner
         .code_factory

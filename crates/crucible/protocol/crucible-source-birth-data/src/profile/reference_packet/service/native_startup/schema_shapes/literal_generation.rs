@@ -172,16 +172,4 @@ fn exhausted() -> ProviderError {
 // The original observer is freshly unprofiled, unrecorded and unaliased here.
 // Preserve its checked record increment and ordinary work ceiling; active native
 // capsule/record-bank handling remains solely in the actual upper observer.
-fn literal_record(population: &mut RetainedProtocolMetadataFacts) -> Result<(), ProviderError> {
-    use crate::profile::metadata_population::{MAXIMUM_ORDINARY_METADATA_ROWS, add, overflow};
-    add(&mut population.capacity_records, 1)?;
-    if population
-        .capacity_records
-        .checked_sub(0)
-        .ok_or_else(overflow)?
-        > MAXIMUM_ORDINARY_METADATA_ROWS
-    {
-        return Err(overflow());
-    }
-    Ok(())
-}
+use crate::profile::metadata_population::record_unprofiled_data as literal_record;

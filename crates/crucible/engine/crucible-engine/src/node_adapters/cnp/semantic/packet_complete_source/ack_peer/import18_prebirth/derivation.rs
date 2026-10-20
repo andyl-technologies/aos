@@ -6,6 +6,7 @@
 //! This owner issues neither Birth nor Initial, Recipe or native permission.
 
 use super::*;
+use crate::node_adapters::cnp::source_birth_derivation::original_launch::OriginalSourceBirthLaunch;
 use crate::node_adapters::cnp::source_birth_derivation::{
     job::SourceBirthDerivationJob,
     request_wire::{ExportWorkspace, RequestReceipt},
@@ -31,6 +32,7 @@ pub(in crate::node_adapters::cnp::semantic) struct NativeImport18DerivationState
     thread: ThreadId,
     attempt: Option<LinuxPureWorkerAttemptIdentity>,
     private_launch: Option<Id>,
+    original_launch: Option<OriginalSourceBirthLaunch>,
     registration: Option<PacketCompleteAckHostRegistrationPlan>,
     receipt: Option<RequestReceipt>,
     host_reference: Option<[u8; 32]>,
@@ -60,6 +62,46 @@ impl PacketCompleteSemanticSource {
         job: &mut SourceBirthDerivationJob,
         workspace: ExportWorkspace<'a>,
     ) -> Result<(), RuntimeError> {
+        self.export_derivation_into(launch, None, private_launch, registration, job, workspace)
+    }
+
+    /// Exports through the same original retained by Prepared and this fresh job.
+    ///
+    /// The parent admits actual observation/holder windows before this Source
+    /// loan. No independently supplied launch, hash or capacity can replace it.
+    ///
+    /// # Errors
+    /// Preserves original Source/export errors and refuses a different holder.
+    pub fn export_fresh_native_import18_derivation_into<'a>(
+        &'a mut self,
+        original: &'a OriginalSourceBirthLaunch,
+        private_launch: &mut Option<Id>,
+        registration: &mut Option<PacketCompleteAckHostRegistrationPlan>,
+        job: &mut SourceBirthDerivationJob,
+        workspace: ExportWorkspace<'a>,
+    ) -> Result<(), RuntimeError> {
+        if !job.same_original(original) {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        self.export_derivation_into(
+            original.original(),
+            Some(original),
+            private_launch,
+            registration,
+            job,
+            workspace,
+        )
+    }
+
+    fn export_derivation_into<'a>(
+        &'a mut self,
+        launch: &'a PacketNative5SourceLaunch,
+        original: Option<&'a OriginalSourceBirthLaunch>,
+        private_launch: &mut Option<Id>,
+        registration: &mut Option<PacketCompleteAckHostRegistrationPlan>,
+        job: &mut SourceBirthDerivationJob,
+        workspace: ExportWorkspace<'a>,
+    ) -> Result<(), RuntimeError> {
         self.storage_origin_with_error::<RuntimeError>()?;
         let mechanism = self
             .native_import18_derivation_mechanism
@@ -82,6 +124,7 @@ impl PacketCompleteSemanticSource {
             thread: self.thread,
             attempt: None,
             private_launch: None,
+            original_launch: original.cloned(),
             registration: None,
             receipt: None,
             host_reference: None,
@@ -115,14 +158,26 @@ impl PacketCompleteSemanticSource {
             CompletePacketOriginal::Producer(source) => source.isolated_expected_coordinator_data(),
             CompletePacketOriginal::Reactive(source) => source.isolated_expected_coordinator_data(),
         };
-        let projection = crucible_node_transport::reference_packet::service::PacketNative5LaunchValidationProjection::from_launch_data(launch);
-        match job.export(
-            private_launch,
-            &projection,
-            expected,
-            registration,
-            workspace,
-        ) {
+        let exported = match original {
+            Some(original) => job.export_fresh_original(
+                private_launch,
+                original,
+                expected,
+                registration,
+                workspace,
+            ),
+            None => {
+                let projection = crucible_node_transport::reference_packet::service::PacketNative5LaunchValidationProjection::from_launch_data(launch);
+                job.export(
+                    private_launch,
+                    &projection,
+                    expected,
+                    registration,
+                    workspace,
+                )
+            }
+        };
+        match exported {
             Ok(receipt) => {
                 state.receipt = Some(receipt);
                 state.host_reference =
@@ -219,6 +274,18 @@ impl PacketCompleteSemanticSource {
         {
             return Err(RuntimeError::ForeignAuthority);
         }
+        // Actual physical/currentness and input-receipt checks above precede
+        // the fresh same-original walk. Failure stays in this consumed Job.
+        self.native_import18_derivation
+            .as_mut()
+            .and_then(|state| state.job.as_mut())
+            .ok_or(RuntimeError::OwnerUnavailable)?
+            .remeasure_original_metadata()?;
+        let job = self
+            .native_import18_derivation
+            .as_ref()
+            .and_then(|state| state.job.as_ref())
+            .ok_or(RuntimeError::OwnerUnavailable)?;
         let result = result_wire::verify_stdout(
             job.stdout()?,
             ResultIdentity {
@@ -328,6 +395,7 @@ impl PacketCompleteSemanticSource {
             + std::mem::size_of::<usize>() * 2
             + std::mem::size_of::<Result<usize, RuntimeError>>()
             + SourceBirthDerivationJob::deployment_storage_counter_scratch_data()
+            + SourceBirthDerivationJob::fresh_export_counter_scratch_data()
             + Self::native_import18_private_seed_counter_scratch_data()
     }
 
@@ -348,6 +416,9 @@ impl PacketCompleteSemanticSource {
             return Err(RuntimeError::ForeignAuthority);
         }
         if let Some(job) = &state.job {
+            if !job.matches_original(state.original_launch.as_ref()) {
+                return Err(RuntimeError::ForeignAuthority);
+            }
             if !job.owns_source_binding(
                 self,
                 state
@@ -377,6 +448,9 @@ impl PacketCompleteSemanticSource {
             .private_launch
             .as_ref()
             .map_or(0, Id::allocated_capacity);
+        if let Some(original) = &state.original_launch {
+            bytes = storage::sum(&[bytes, original.known_backing_data()?])?;
+        }
         if let Some(plan) = &state.registration {
             bytes = storage::sum(&[bytes, storage::registration_storage(plan)?])?;
         }

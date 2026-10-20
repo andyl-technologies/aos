@@ -59,3 +59,21 @@ pub mod schema_shapes;
 
 /// Counts original five-bank normalization around the real later launch checks.
 pub mod admit_normalization;
+
+/// Shares original Hello arithmetic and genuine compiled layout operands.
+pub mod hello_shapes;
+
+/// Counts original packet prefix components and actual frame preparation work.
+pub mod packet_prefix;
+
+/// Shares the original launch recognizer and actual portable typed-layout roster.
+pub mod launch_decode;
+
+/// Aggregates original report publication DATA without native authority.
+pub mod original_report;
+
+/// Shares original private-bootstrap storage calculations without native authority.
+pub mod private_bootstrap;
+
+/// Counts private bootstrap backing from actual upper compiled primitive facts.
+pub mod private_backing;

@@ -90,6 +90,8 @@ fn actual_original_report_layout_consumer_keeps_full_dynamic_quote_and_new_count
         // and one usize slot; all original counter operands remain independent.
         let expected_counter = sum(&[
             original::counter_scratch_data(),
+            crucible_source_birth_data::profile::reference_packet::service::native_startup::original_report::AGGREGATION_COUNTER_SCRATCH_DATA,
+            size_of::<usize>(),
             counter_scratch_data(),
             size_of::<usize>(),
             observe::counter_scratch_data(),

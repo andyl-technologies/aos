@@ -59,10 +59,11 @@ mod exchange;
 pub(crate) use exchange::{
     OriginalContinuationContentExtent, OriginalContinuationPrefixKind,
     OriginalContinuationPrefixStorageData, OriginalContinuationPrefixStorageInput,
-    OriginalNativeObservePreparationStorageData, OriginalPacketPrefixProjectionInput,
-    OriginalPacketPrefixProjectionStorageData, OriginalPacketPrefixStorageData,
-    OriginalReportQueryReceiveStorageData, PreparedOriginalRestoreHeldProof,
-    authenticate_original_report_query_header_data,
+    OriginalNativeObservePreparationStorageData, OriginalPacketPrefixLifetimeDataExt,
+    OriginalPacketPrefixProjectionInput, OriginalPacketPrefixProjectionStorageData,
+    OriginalPacketPrefixProjectionStorageDataExt, OriginalPacketPrefixStorageData,
+    OriginalPacketPrefixStorageDataExt, OriginalReportQueryReceiveStorageData,
+    PreparedOriginalRestoreHeldProof, authenticate_original_report_query_header_data,
     original_native_observe_preparation_counter_scratch_data,
     original_packet_prefix_startup_counter_scratch_data,
     original_report_query_receive_counter_scratch_data, original_report_query_receive_storage_data,
@@ -1177,3 +1178,8 @@ pub(crate) mod native_import18;
 #[path = "connection/native_import18_provider.rs"]
 mod native_import18_provider;
 pub(crate) use native_import18_provider::NativeImport18ConnectionIdentity;
+
+pub use exchange::{
+    original_packet_prefix_fixed_layout_counter_scratch_data,
+    original_packet_prefix_fixed_layout_data,
+};

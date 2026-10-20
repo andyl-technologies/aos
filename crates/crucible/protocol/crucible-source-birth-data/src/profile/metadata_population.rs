@@ -5,6 +5,7 @@
 //! input/return windows rather than adding a new observer call layer.
 
 use crate::ProviderError;
+use crate::profile::serialization_storage::RetainedProtocolMetadataFacts;
 
 /// Bounds the unchanged ordinary, unprofiled metadata traversal population.
 ///
@@ -35,17 +36,21 @@ macro_rules! source_birth_metadata_vector_population {
 #[macro_export]
 macro_rules! source_birth_metadata_tree_population {
     ($facts:expr, $entries:ident, $key:ty, $value:ty) => {{
+        $crate::source_birth_metadata_tree_population!(@layout $facts, $entries,
+            size_of::<$key>(), size_of::<$value>(), align_of::<$key>(), align_of::<$value>())
+    }};
+    (@layout $facts:expr, $entries:ident, $key_bytes:expr, $value_bytes:expr, $key_alignment:expr, $value_alignment:expr) => {{
         $facts.maximum_tree_entry_alignment = $facts
             .maximum_tree_entry_alignment
-            .max(align_of::<$key>().max(align_of::<$value>()));
+            .max($key_alignment.max($value_alignment));
         $crate::profile::metadata_population::add(&mut $facts.tree_containers, 1)?;
         $crate::profile::metadata_population::add(&mut $facts.tree_entries, $entries)?;
         $facts.maximum_tree_key_value_bytes = $facts.maximum_tree_key_value_bytes.max(
-            size_of::<$key>()
-                .checked_add(size_of::<$value>())
+            ($key_bytes)
+                .checked_add($value_bytes)
                 .ok_or($crate::profile::metadata_population::overflow())?,
         );
-        Ok(())
+        Ok::<(), $crate::ProviderError>(())
     }};
 }
 
@@ -61,6 +66,30 @@ pub fn add(total: &mut usize, value: usize) -> Result<(), ProviderError> {
 /// Constructs the unchanged metadata extent overflow diagnostic.
 pub fn overflow() -> ProviderError {
     ProviderError::ResourceExhausted("retained metadata extent overflow")
+}
+
+/// Applies the original fresh, unprofiled capacity-record prefix.
+///
+/// This is only the default charged=0, no-active-scope arithmetic. It neither
+/// records an owner nor gathers capacities, validates origin or enters a native
+/// capsule/alias/profile. Live observer guards remain independently upper.
+///
+/// # Errors
+/// Preserves checked record overflow and the ordinary metadata record ceiling.
+pub fn record_unprofiled_data(
+    population: &mut RetainedProtocolMetadataFacts,
+) -> Result<(), ProviderError> {
+    use crate::profile::metadata_population::{MAXIMUM_ORDINARY_METADATA_ROWS, add, overflow};
+    add(&mut population.capacity_records, 1)?;
+    if population
+        .capacity_records
+        .checked_sub(0)
+        .ok_or_else(overflow)?
+        > MAXIMUM_ORDINARY_METADATA_ROWS
+    {
+        return Err(overflow());
+    }
+    Ok(())
 }
 
 #[cfg(test)]

@@ -267,3 +267,129 @@ fn selected_output_projection_keeps_retained_owners_and_full_quote_guards() -> T
     assert!(connection.reader.stream_ref().output.is_empty());
     Ok(())
 }
+
+#[path = "exchange_native_observe_prepare_tests/original.rs"]
+mod original_preparation;
+
+#[test]
+fn shared_multiframe_preparation_matches_the_complete_original_replay() -> TestResult {
+    let (_handshake, connection, request) = fixture()?;
+    let terminal = response(&request)?;
+    let projection = projection(&connection, &request, &terminal, MAXIMUM)?;
+    let chunk = allowance(connection.authority.limits().blob_chunk_bytes.get())?.min(4096);
+
+    let original = original_preparation::project_frames(
+        &projection,
+        connection.authority.session_id(),
+        connection.authority.incarnation_id(),
+        chunk,
+    )?;
+    let shared = super::super::packet_projection::native_observe_preparation_for_test(
+        &projection,
+        &connection.authority,
+    )?;
+
+    assert_eq!(projection.exchange.frames, 6);
+    let maximum =
+        original.maximum_simultaneous_transient_bytes_data(&projection.exchange, MAXIMUM)?;
+    assert_eq!(
+        shared.maximum_simultaneous_transient_bytes_data(&projection.exchange, MAXIMUM)?,
+        maximum
+    );
+    assert_eq!(
+        shared.maximum_simultaneous_transient_bytes_data(&projection.exchange, maximum)?,
+        maximum
+    );
+    assert!(
+        original
+            .maximum_simultaneous_transient_bytes_data(&projection.exchange, maximum - 1)
+            .is_err()
+    );
+    assert!(
+        shared
+            .maximum_simultaneous_transient_bytes_data(&projection.exchange, maximum - 1)
+            .is_err()
+    );
+    Ok(())
+}
+
+#[test]
+fn shared_preparation_keeps_original_changed_prefix_and_population_refusals() -> TestResult {
+    let (_handshake, connection, request) = fixture()?;
+    let terminal = response(&request)?;
+    let mut projection = projection(&connection, &request, &terminal, MAXIMUM)?;
+    let shared = super::super::packet_projection::native_observe_preparation_for_test(
+        &projection,
+        &connection.authority,
+    )?;
+    let chunk = allowance(connection.authority.limits().blob_chunk_bytes.get())?.min(4096);
+    let original = original_preparation::project_frames(
+        &projection,
+        connection.authority.session_id(),
+        connection.authority.incarnation_id(),
+        chunk,
+    )?;
+
+    projection.exchange.canonical_requested_bytes += 1;
+    assert!(
+        original
+            .maximum_simultaneous_transient_bytes_data(&projection.exchange, MAXIMUM)
+            .is_err()
+    );
+    assert!(
+        shared
+            .maximum_simultaneous_transient_bytes_data(&projection.exchange, MAXIMUM)
+            .is_err()
+    );
+    projection.exchange.canonical_requested_bytes -= 1;
+    projection.exchange.frames += 1;
+
+    let old_error = original_preparation::project_frames(
+        &projection,
+        connection.authority.session_id(),
+        connection.authority.incarnation_id(),
+        chunk,
+    )
+    .err()
+    .ok_or("original replay accepted a changed population")?;
+    let new_error = super::super::packet_projection::native_observe_preparation_for_test(
+        &projection,
+        &connection.authority,
+    )
+    .err()
+    .ok_or("shared replay accepted a changed population")?;
+    assert_eq!(old_error.to_string(), new_error.to_string());
+    Ok(())
+}
+
+#[test]
+fn shared_preparation_preserves_first_oversized_frame_refusal() -> TestResult {
+    let (_handshake, connection, request) = fixture()?;
+    let terminal = response(&request)?;
+    let mut projection = projection(&connection, &request, &terminal, MAXIMUM)?;
+    projection.terminal.maximum_encoded_bytes = 65_537;
+    projection.exchange.frames += 1;
+    let chunk = allowance(connection.authority.limits().blob_chunk_bytes.get())?.min(4096);
+
+    let old_error = original_preparation::project_frames(
+        &projection,
+        connection.authority.session_id(),
+        connection.authority.incarnation_id(),
+        chunk,
+    )
+    .err()
+    .ok_or("original replay accepted an oversized first frame")?;
+    let new_error = super::super::packet_projection::native_observe_preparation_for_test(
+        &projection,
+        &connection.authority,
+    )
+    .err()
+    .ok_or("shared replay accepted an oversized first frame")?;
+
+    assert!(matches!(
+        &old_error,
+        ProviderError::ResourceExhausted("original packet prefix requested storage")
+    ));
+    assert_eq!(old_error.to_string(), new_error.to_string());
+    Ok(())
+}

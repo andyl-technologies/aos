@@ -224,10 +224,12 @@ impl Attempt {
     ///
     /// The real workspace and input are reserved before this synchronous loan;
     /// all remaining names stay here or in that Source's failed association.
-    pub(super) fn retain_source_derivation_into<'a>(
+    // Fresh transfer takes the retained owning occurrence, never a new loan
+    // chosen from equal launch DATA. The original planned operands move once.
+    pub(super) fn retain_fresh_source_derivation_into<'a>(
         &mut self,
         source: &'a mut PacketCompleteSemanticSource,
-        launch: &'a PacketNative5SourceLaunch,
+        original: &'a crucible_engine::node_adapters::cnp::source_birth_derivation::original_launch::OriginalSourceBirthLaunch,
         job: &mut crucible_engine::node_adapters::cnp::source_birth_derivation::job::SourceBirthDerivationJob,
         workspace: crucible_engine::node_adapters::cnp::source_birth_derivation::request_wire::ExportWorkspace<'a>,
     ) -> Result<(), RuntimeError> {
@@ -244,8 +246,8 @@ impl Attempt {
         if !ready {
             return Err(RuntimeError::OwnerUnavailable);
         }
-        let result = source.export_native_import18_derivation_into(
-            launch,
+        let result = source.export_fresh_native_import18_derivation_into(
+            original,
             &mut self.private_launch,
             &mut self.registration,
             job,

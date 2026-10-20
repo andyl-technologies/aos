@@ -144,13 +144,29 @@ impl PreparedCompleteRestoration {
             .into_iter()
             .try_fold(0usize, |sum, bytes| {
                 sum.checked_add(bytes).ok_or(RuntimeError::ResourceLimit)
-            })?;
+            })?
+            .checked_add(SourceBirthDerivationJob::fresh_export_counter_scratch_data())
+            .ok_or(RuntimeError::ResourceLimit)?;
         // This disclosed operational workspace budget is admitted before its
         // allocation and before a Source loan. It is not input-depth demand.
-        self.observe_import18_templates_data([requested[0], requested[1], fixed])?;
+        // Fund the real metadata walk before obtaining a new owning handle.
+        self.observe_import18_templates_data([0, 0, fixed])?;
+        let original_views = self
+            .launches
+            .retained_requested_storage_data()?
+            .checked_mul(2)
+            .ok_or(RuntimeError::ResourceLimit)?;
+        let retained = requested[0]
+            .checked_add(original_views)
+            .ok_or(RuntimeError::ResourceLimit)?;
+        // Job and Source association each conservatively report this same
+        // actual tuple view. Admit both census increments before either clone.
+        self.observe_import18_templates_data([retained, requested[1], fixed])?;
         self.import18_templates.members[selected].stage = Stage::DerivationExporting;
-        SourceBirthDerivationJob::reserve_into(
+        let original = self.launches.selected(selected)?;
+        SourceBirthDerivationJob::reserve_fresh_into(
             mechanism,
+            original,
             &mut self.import18_templates.members[selected].job,
         )?;
         self.observe_import18_templates_data([0; 3])?;
@@ -168,9 +184,9 @@ impl PreparedCompleteRestoration {
             let member = &mut self.import18_templates.members[selected];
             let source = member.output.completed_unique_data()?;
             let job = member.job.as_mut().ok_or(RuntimeError::OwnerUnavailable)?;
-            member.registration.retain_source_derivation_into(
+            member.registration.retain_fresh_source_derivation_into(
                 source,
-                &self.launches[selected],
+                &self.launches.selected(selected)?,
                 job,
                 workspace,
             )

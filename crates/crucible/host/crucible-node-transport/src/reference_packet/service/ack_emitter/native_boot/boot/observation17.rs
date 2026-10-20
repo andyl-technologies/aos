@@ -6,6 +6,7 @@
 //! unfinished scope poisons both actual retained owners without refunding them.
 
 use super::NativeAckBoot;
+use crate::connection::OriginalPacketPrefixProjectionStorageDataExt;
 use crate::connection::{
     Connection, ExchangeRecord, OriginalContinuationContentExtent,
     OriginalPacketPrefixProjectionInput, OriginalPacketPrefixProjectionStorageData, ProviderStream,

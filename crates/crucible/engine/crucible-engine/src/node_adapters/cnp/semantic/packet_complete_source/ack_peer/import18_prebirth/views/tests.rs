@@ -357,3 +357,6 @@ fn actual_view_binding_refusals_keep_original_operand_precedence() {
 
 #[path = "tests/derivation.rs"]
 mod derivation;
+
+#[path = "original_launch_custody.rs"]
+mod original_launch_custody;

@@ -154,13 +154,16 @@ fn actual_schema_transient_has_exact_and_one_short_control()
 
 #[test]
 fn actual_schema_adapter_is_added_to_original_defining_counter() {
-    // The saved whole counter predates both adapters. Admit was composed after
-    // Schema and has its own defining row; keep the Schema-only check below.
+    // The saved whole counter predates Schema, Admit, Hello and private backing.
+    // Each adapter contributes its genuine defining row; keep the Schema-only
+    // header assertion below independent of this composition.
     assert_eq!(
         original_native_birth_startup_counter_scratch_data(),
         original_birth_counter_scratch_data()
             + counter_scratch_data()
             + admit::adapter_counter_scratch_data()
+            + super::super::super::private_backing::ADAPTER_COUNTER_SCRATCH_DATA
+            + crucible_source_birth_data::profile::reference_packet::service::native_startup::hello_shapes::additional_counter_scratch_data()
     );
     assert_eq!(
         counter_scratch_data(),

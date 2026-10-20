@@ -399,3 +399,6 @@ fn signed_observe17_two_object_class_prices_its_own_validation_axes() -> TestRes
     assert!(quote(exact - 1, PrefixClass::RestoredObserve17).is_err());
     Ok(())
 }
+
+#[path = "exchange_packet_startup_shared_tests.rs"]
+mod shared;
