@@ -1,6 +1,6 @@
 //! Composes confined, configured SDK snapshots over an existing local repository.
 //!
-//! [`preflight`] rejects the entire unsupported configuration before any native
+//! [`preflight()`] rejects the entire unsupported configuration before any native
 //! effects. [`run`] then installs the irreversible kernel boundary before Tokio,
 //! credential reads, repository reopening or filesystem presentation. It prepares
 //! every exposure before starting any endpoint, using only each exposure's file
