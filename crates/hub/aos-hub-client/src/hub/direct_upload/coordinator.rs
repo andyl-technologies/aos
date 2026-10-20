@@ -516,28 +516,57 @@ async fn execute_retry(
     control: &impl DirectUploadControl,
     request: &DirectUploadRequest,
 ) -> Result<DirectUploadResponse, DirectClientError> {
-    let mut result = Err(DirectClientError::ControlUnavailable);
-    for _ in 0..3 {
-        result = control.execute(request).await;
-        if result != Err(DirectClientError::ControlUnavailable) {
-            break;
-        }
-    }
-    let response = result?;
-    response
-        .validate()
-        .map_err(|_| DirectClientError::Invalid)?;
     let DirectUploadRequest::CompleteBatch(batch) = request else {
         return Err(DirectClientError::Invalid);
     };
-    if response.operation_id != batch.operation_id {
+    for attempt in 0..3 {
+        let response = match control.execute(request).await {
+            Err(DirectClientError::ControlUnavailable) if attempt < 2 => continue,
+            result => result?,
+        };
+        response
+            .validate()
+            .map_err(|_| DirectClientError::Invalid)?;
+        if response.operation_id != batch.operation_id {
+            return Err(DirectClientError::Invalid);
+        }
+        // An HTTP success can still report a temporarily unavailable control.
+        // Replay only this same retained Complete; any non-retryable item ends
+        // the batch without dispatching another attempt or provider operation.
+        if response.errors.is_empty() {
+            return Ok(response);
+        }
+        if response
+            .errors
+            .iter()
+            .all(|error| error.code == DirectItemErrorCode::Unavailable)
+        {
+            if attempt < 2 {
+                continue;
+            }
+            return Err(DirectClientError::ControlUnavailable);
+        }
+        if response
+            .errors
+            .iter()
+            .any(|error| error.code == DirectItemErrorCode::BlockedUnknown)
+        {
+            return Err(DirectClientError::Blocked);
+        }
+        if response
+            .errors
+            .iter()
+            .any(|error| error.code == DirectItemErrorCode::Denied)
+        {
+            return Err(DirectClientError::Denied);
+        }
         return Err(DirectClientError::Invalid);
     }
-    if !response.errors.is_empty() {
-        return Err(DirectClientError::Blocked);
-    }
-    Ok(response)
+    Err(DirectClientError::ControlUnavailable)
 }
+
+#[cfg(test)]
+mod retry_tests;
 
 async fn before_deadline<T>(
     deadline: tokio::time::Instant,
