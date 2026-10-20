@@ -4,12 +4,20 @@
 //! eviction request supplies pressure: only the incoming verified admission
 //! may select victims. Original open descriptors keep their actual quota charge.
 
+#[path = "lower_fetch.rs"]
+mod lower_fetch;
+
 use super::{
     HOLD, Inputs, NativeChunkAdmissionError, NativeMetadataOwner, Observed, admit, control,
     descriptor, emit, hex, identity, invalid, now, raw_envelope,
 };
-use std::{fs, io};
-use terrane_sdk::store::ChunkPosition;
+use std::{fs, fs::File, io, time::Duration};
+use terrane_linux::host_cache::NativeChunkFetchRequest;
+use terrane_sdk::{
+    host::cache::CircuitBreaker,
+    repository::MetadataValidator,
+    store::{ChunkPosition, StoreErrorKind, TokioClock},
+};
 
 const MEMBERS: usize = 19;
 const PROTECTED: usize = 3;
@@ -101,11 +109,76 @@ pub(super) fn run(
     }
     emit("READY invalid incoming chunk refused before automatic eviction or funding")?;
     control("pressure-admit")?;
-    let attempt = runtime.block_on(owner.admit_chunk(
-        descriptor(&incoming)?,
-        ChunkPosition::Final,
+    let descriptor = descriptor(&incoming)?;
+    let sources = [lower_fetch::LowerChunk::new(
+        identity(&incoming)?,
         encoded.clone(),
+    )];
+    let mut circuits = [CircuitBreaker::new(1, Duration::from_secs(5)).map_err(io::Error::other)?];
+    let validator = MetadataValidator::new(inputs.owner_config()?.location.chunk_profile().clone());
+    let stalled = runtime.block_on(owner.stall_policy_for_fixture())?;
+    let mut corrupt = encoded.clone();
+    *corrupt
+        .last_mut()
+        .ok_or_else(|| invalid("missing lower chunk body"))? ^= 1;
+    let corrupt_sources = [lower_fetch::LowerChunk::new(identity(&incoming)?, corrupt)];
+    let mut corrupt_circuits =
+        [CircuitBreaker::new(1, Duration::from_secs(5)).map_err(io::Error::other)?];
+    let refused = runtime.block_on(owner.fetch_chunk(
+        &corrupt_sources,
+        &mut corrupt_circuits,
+        &TokioClock,
+        NativeChunkFetchRequest {
+            descriptor: &descriptor,
+            position: ChunkPosition::Final,
+            dictionary: None,
+            budget: Duration::from_secs(5),
+        },
+        &validator,
     ));
+    if !matches!(refused, Err(ref error) if matches!(error.kind(), StoreErrorKind::Corrupt(_)))
+        || corrupt_sources[0].calls() != 1
+    {
+        return Err(invalid(
+            "corrupt lower bytes escaped verification or did not reach the actual provider",
+        ));
+    }
+    emit(
+        "PASS corrupt lower bytes return no serving body or admission ticket while actual policy is stalled",
+    )?;
+
+    let fetched = runtime
+        .block_on(owner.fetch_chunk(
+            &sources,
+            &mut circuits,
+            &TokioClock,
+            NativeChunkFetchRequest {
+                descriptor: &descriptor,
+                position: ChunkPosition::Final,
+                dictionary: None,
+                budget: Duration::from_secs(5),
+            },
+            &validator,
+        ))
+        .map_err(io::Error::other)?;
+    if fetched.encoded_bytes() != encoded || sources[0].calls() != 1 {
+        return Err(invalid(
+            "lower fetch did not return the exact verified original body",
+        ));
+    }
+    let (served, admission) = fetched.into_parts();
+    let ticket = admission.map_err(io::Error::other)?;
+    emit(
+        "READY verified lower bytes returned while native admission remains queued behind actual stalled policy",
+    )?;
+    control("pressure-release-fetch")?;
+    if fs::read(inputs.root.join("state/cache/records.toml"))? != policy {
+        return Err(invalid(
+            "lower fetch changed policy while the physical worker was stalled",
+        ));
+    }
+    drop(stalled);
+    let attempt = runtime.block_on(ticket.finish());
     if !matches!(attempt, Err(NativeChunkAdmissionError::Accepted(ref error))
         if error.kind() == io::ErrorKind::StorageFull)
     {
@@ -113,6 +186,12 @@ pub(super) fn run(
             "automatic pressure did not retain actual pending charge",
         ));
     }
+    if served != encoded {
+        return Err(invalid(
+            "native capacity refusal changed independently served lower bytes",
+        ));
+    }
+    emit("PASS verified lower bytes survive the genuine queued native admission capacity refusal")?;
     let mut removed = Vec::new();
     for (index, hash) in hashes.iter().enumerate() {
         let path = inputs
@@ -160,14 +239,43 @@ pub(super) fn run(
         "READY original pressure observer closure releases measured quota without changing funding",
     )?;
     control("pressure-retry")?;
-    let (admitted, _) = admit(
-        owner,
-        runtime,
-        inputs,
-        &incoming,
-        ChunkPosition::Final,
-        encoded,
-    )?;
+    let fetched = runtime
+        .block_on(owner.fetch_chunk(
+            &sources,
+            &mut circuits,
+            &TokioClock,
+            NativeChunkFetchRequest {
+                descriptor: &descriptor,
+                position: ChunkPosition::Final,
+                dictionary: None,
+                budget: Duration::from_secs(5),
+            },
+            &validator,
+        ))
+        .map_err(io::Error::other)?;
+    let (retry_bytes, ticket) = fetched.into_parts();
+    if retry_bytes != served || sources[0].calls() != 2 {
+        return Err(invalid(
+            "lower retry did not fetch and verify the same original body",
+        ));
+    }
+    let admission = runtime
+        .block_on(ticket.map_err(io::Error::other)?.finish())
+        .map_err(io::Error::other)?;
+    let path = inputs
+        .root
+        .join("chunks")
+        .join(&incoming_hash[..2])
+        .join(format!("{incoming_hash}.0"));
+    let admitted = Observed::new(File::open(path)?, retry_bytes)?;
+    let handoff = runtime
+        .block_on(admission.into_cache(owner))
+        .map_err(io::Error::other)?;
+    if handoff.synchronized_member_bytes != admitted.allocated {
+        return Err(invalid(
+            "lower retry handoff misreported actual incoming allocation",
+        ));
+    }
     admitted.check(1)?;
     read_protected(owner, runtime, &originals, &consumers)?;
     let final_report = measure(owner, runtime, "admitted")?;
@@ -177,6 +285,9 @@ pub(super) fn run(
         ));
     }
     emit("READY same incoming admission succeeds after actual last-description quota release")?;
+    emit(
+        "PASS same verified lower body admits through its actual completion ticket after original quota release",
+    )?;
     control("pressure-done")?;
     emit(
         "PASS genuine verified admission requests bounded native eviction, retains pending charge and live consumers, then retries after original descriptor closure; no Ready",

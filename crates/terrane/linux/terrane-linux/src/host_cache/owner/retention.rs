@@ -62,6 +62,8 @@ pub(crate) use recovery_manifest::{
 pub struct NativeMetadataOwner {
     /// Immutable validated request bounds copied before the worker starts.
     pub(super) admission_bounds: super::admission::AdmissionBounds,
+    /// Copies the validated immutable profile for independent lower-tier verification.
+    pub(super) chunk_profile: terrane_format::chunking::ChunkProfile,
     /// Bounded admission to physical work retained independently of reply waiters.
     pub(super) commands: Option<mpsc::SyncSender<Command>>,
     /// Shares the actual finite read budget with this worker's original views.
@@ -260,6 +262,7 @@ impl NativeMetadataOwner {
     /// unsafe/malformed state custody, another state writer and cold scratch.
     pub fn start(preparation: NativeCachePreparation) -> io::Result<Self> {
         let admission_bounds = super::admission::AdmissionBounds::new(&preparation.config)?;
+        let chunk_profile = preparation.config.location.chunk_profile().clone();
         let consumer_reads = Arc::new(super::consumer::ReadBudget::new(
             preparation.config.queued_commands,
         ));
@@ -490,6 +493,7 @@ impl NativeMetadataOwner {
         }
         Ok(Self {
             admission_bounds,
+            chunk_profile,
             commands: Some(commands),
             consumer_reads,
             worker: Some(worker),

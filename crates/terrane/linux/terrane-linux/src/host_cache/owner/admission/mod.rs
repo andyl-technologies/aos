@@ -19,6 +19,7 @@ mod pressure;
 pub(in crate::host_cache::owner) mod reads;
 mod reconcile;
 mod state;
+mod ticket;
 mod transfer;
 
 pub(in crate::host_cache::owner) use backing::AdmissionJob;
@@ -26,6 +27,7 @@ pub use backing::{NativeChunkAdmission, NativeMetadataAdmission};
 pub use cache_error::NativeAdmissionHandoffError;
 pub use error::{NativeChunkAdmissionError, NativeMetadataAdmissionError};
 pub use handoff::NativeAdmissionHandoffReport;
+pub use ticket::NativeChunkAdmissionTicket;
 pub(in crate::host_cache::owner) use transfer::{TransferSource, TransferredFunding};
 
 use super::{
@@ -114,6 +116,22 @@ impl NativeMetadataOwner {
         position: ChunkPosition,
         encoded: Vec<u8>,
     ) -> Result<NativeChunkAdmission, NativeChunkAdmissionError> {
+        self.submit_chunk(descriptor, position, encoded)?
+            .finish()
+            .await
+    }
+
+    /// Queues an original owned input without awaiting the worker's completion.
+    ///
+    /// # Errors
+    /// Returns the untouched input if bounds, owner availability or queue
+    /// capacity prevent submission. A ticket exists only after actual acceptance.
+    pub(in crate::host_cache::owner) fn submit_chunk(
+        &self,
+        descriptor: Descriptor,
+        position: ChunkPosition,
+        encoded: Vec<u8>,
+    ) -> Result<NativeChunkAdmissionTicket, NativeChunkAdmissionError> {
         let (response, receive) = oneshot::channel();
         let refusal = self
             .admission_bounds
@@ -151,14 +169,7 @@ impl NativeMetadataOwner {
                 encoded,
             });
         }
-        receive
-            .await
-            .map_err(|_| {
-                NativeChunkAdmissionError::Accepted(std_io::Error::other(
-                    "admission worker terminated before reply",
-                ))
-            })?
-            .map_err(NativeChunkAdmissionError::Accepted)
+        Ok(NativeChunkAdmissionTicket::new(receive))
     }
 
     /// Submits one bounded untrusted metadata pack and exact detached index.

@@ -11,8 +11,9 @@ use tokio::sync::oneshot;
 ///
 /// The worker acknowledges only after locking its real policy custody. Dropping
 /// this control closes the release channel, allowing that same worker to unlock.
-/// Fixtures must release it before dropping the owner or submitting another
-/// queued command. Reading an already-retained source needs neither operation.
+/// Fixtures must release it before dropping the owner or awaiting another
+/// queued command's completion. Retained reads and nonblocking command
+/// submission do not require the worker to resume.
 pub struct NativePolicyStall {
     _release: mpsc::SyncSender<()>,
 }

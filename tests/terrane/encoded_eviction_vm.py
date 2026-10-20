@@ -202,7 +202,19 @@ def run(driver, uuid):
                        "invalid input did not exercise real pressure without policy effects")
         scene(canonical, set())
         control("pressure-admit")
+        lines.until("READY verified lower bytes returned while native admission remains queued behind actual stalled policy", timeout=30)
+        driver.require(lines.bytes.decode().splitlines().count(
+            "PASS corrupt lower bytes return no serving body or admission ticket while actual policy is stalled") == 1,
+            "corrupt lower bytes were not refused before serving or native submission")
+        scene(canonical, set())
+        driver.require(snapshot.read_bytes() == original_policy and not incoming_path.exists(),
+                       "verified lower fetch waited on physical admission or changed stalled native policy")
+        print("PASS independent observer verifies lower bytes return with unchanged original native backing and policy while actual admission is queued behind stalled custody", flush=True)
+        control("pressure-release-fetch")
         lines.until("READY verified incoming admission retires original FIFO units but refuses pending quota charge", timeout=30)
+        driver.require(lines.bytes.decode().splitlines().count(
+            "PASS verified lower bytes survive the genuine queued native admission capacity refusal") == 1,
+            "verified lower serving did not survive the actual local capacity refusal")
         pending_files = files(root / "pending-delete")
         pending = {label for label in labels if originals[label].key in pending_files.values()}
         count = int(one(r"^ADMISSION_PRESSURE_PENDING members=(\d+)$",
@@ -237,6 +249,7 @@ def run(driver, uuid):
                        "automatic pressure released quota before actual final closure or changed original funding")
         control("pressure-retry")
         lines.until("READY same incoming admission succeeds after actual last-description quota release", timeout=30)
+        lines.until("PASS same verified lower body admits through its actual completion ticket after original quota release", timeout=30)
         originals["pressure:incoming"] = Original(driver, case, incoming_path, 840)
         driver.require(originals["pressure:incoming"].binding[5] == 16384
                        and os.pread(originals["pressure:incoming"].fd, 16384, 0) == b"\x00" + bytes([221]) * 16383,

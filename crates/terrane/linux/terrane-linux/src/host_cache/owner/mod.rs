@@ -8,6 +8,7 @@
 mod admission;
 mod config;
 mod consumer;
+mod fetch;
 mod index_io;
 #[cfg(feature = "native-test-fixtures")]
 mod policy_stall_fixture;
@@ -42,10 +43,12 @@ pub(super) use index_io::open_regular_at;
 pub(crate) use admission::eviction::turn::PublisherEncodedCacheTurn;
 pub use admission::{
     NativeAdmissionHandoffError, NativeAdmissionHandoffReport, NativeChunkAdmission,
-    NativeChunkAdmissionError, NativeMetadataAdmission, NativeMetadataAdmissionError,
+    NativeChunkAdmissionError, NativeChunkAdmissionTicket, NativeMetadataAdmission,
+    NativeMetadataAdmissionError,
 };
 pub use config::{IndexRepairPolicy, NativeCacheOwnerConfig};
 pub use consumer::{NativeConsumerLease, NativeLeaseAccounting};
+pub use fetch::{NativeChunkFetchRequest, NativeFetchedChunk};
 #[cfg(feature = "native-test-fixtures")]
 pub use policy_stall_fixture::NativePolicyStall;
 pub use preparation::NativeCachePreparation;
