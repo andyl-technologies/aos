@@ -17,7 +17,7 @@ use thiserror::Error;
 use crate::{
     QemuAsyncDriverPolicy, QemuCrashDetector, QemuHostIoRuntime, QemuHostPluginSetup,
     QemuMappedQuantumShmemHotPath, QemuMappedQuantumShmemHotPathError, QemuNode,
-    QemuNodeChannelError, QemuNodeChannels, QemuNodeChild, QemuQmpMachineControlChannel,
+    QemuNodeChannelError, QemuNodeChannels, QemuQmpMachineControlChannel,
     QemuQmpVmStateControlChannel, QemuQuantumShmemConfig, QemuShmemHotPathChannel,
     QemuShutdownPolicy, QmpTimeoutStream,
 };
@@ -746,6 +746,12 @@ where
 /// Errors returned while assembling a completed QEMU node.
 #[derive(Debug, Error)]
 pub enum QemuNodeFactoryError {
+    /// The actual guarded child or Node is unavailable in its expected phase.
+    #[error("QEMU launch custody is unavailable: {source}")]
+    LaunchCustody {
+        /// Independent retained-body access or phase refusal.
+        source: crate::QemuNodeError,
+    },
     /// The completed setup memfd could not be mapped.
     #[error("completed QEMU setup region mapping failed")]
     SetupRegionMap {
@@ -840,9 +846,7 @@ pub enum QemuNodeFactoryError {
         /// Primary realization failure.
         primary: Box<QemuNodeFactoryError>,
         /// Independent force-kill/reap failure.
-        cleanup: crate::QemuShutdownTargetError,
-        /// Nonduplicable direct-child handle retained after failed reap.
-        unreaped_child: Option<Box<QemuNodeChild>>,
+        cleanup: crate::QemuNodeError,
     },
     /// Scheduler-facing Apache node continuation could not be restored.
     #[error("QEMU node continuation restore failed: {message}")]
@@ -850,18 +854,6 @@ pub enum QemuNodeFactoryError {
         /// Deterministic validation or restoration detail.
         message: String,
     },
-}
-
-impl QemuNodeFactoryError {
-    /// Extracts a direct child whose mandatory synchronous reap failed.
-    pub(crate) fn take_unreaped_child(&mut self) -> Option<QemuNodeChild> {
-        match self {
-            Self::FailedRestoreCleanup { unreaped_child, .. } => {
-                unreaped_child.take().map(|child| *child)
-            }
-            _ => None,
-        }
-    }
 }
 
 struct PreparedQemuNodeSetup {
@@ -933,11 +925,11 @@ impl<A, R> QemuNodeFactoryRuntime<A, R> {
 /// the shared-memory hot-path config, when the setup memfd cannot be mapped, or
 /// when the mapped hot-path adapter rejects the completed region.
 pub(crate) fn build_qemu_node_from_completed_setup<S, A, R>(
-    child: QemuNodeChild,
+    owner: &mut crate::node::IssuedLaunchOwner,
     setup: QemuHostPluginSetup,
     qmp: QemuQmpVmStateControlChannel<S>,
     runtime: QemuNodeFactoryRuntime<A, R>,
-) -> Result<QemuNode, QemuNodeFactoryError>
+) -> Result<(), QemuNodeFactoryError>
 where
     S: QmpTimeoutStream + 'static,
     A: SchedulerSendAuthorizer + 'static,
@@ -953,9 +945,12 @@ where
         #[cfg(target_os = "linux")]
         original_native_binding,
     } = runtime;
-    let prepared_setup = prepare_qemu_node_setup(setup, shmem_config, send_authorizer)?;
-    Ok(build_qemu_node_from_prepared_setup(
-        child,
+    let prepared_setup = match prepare_qemu_node_setup(setup, shmem_config, send_authorizer) {
+        Ok(prepared) => prepared,
+        Err(first) => return Err(reap_failed_restore_child(owner, first)),
+    };
+    build_qemu_node_from_prepared_setup(
+        owner,
         prepared_setup,
         qmp,
         PreparedNodeRuntime {
@@ -966,7 +961,7 @@ where
             #[cfg(target_os = "linux")]
             original_native_binding,
         },
-    ))
+    )
 }
 
 /// Restores an authenticated lazy RAM checkpoint into a scheduler-facing node.
@@ -985,18 +980,18 @@ where
 /// when the setup memfd cannot be mapped, or when the mapped hot-path
 /// adapter rejects the completed region.
 pub(crate) fn build_qemu_node_from_restored_checkpoint<S, A, R>(
-    child: QemuNodeChild,
+    owner: &mut crate::node::IssuedLaunchOwner,
     setup: QemuHostPluginSetup,
     qmp: QemuQmpVmStateControlChannel<S>,
     restore: QemuNodeRestorePlan<'_>,
     runtime: QemuNodeFactoryRuntime<A, R>,
-) -> Result<QemuNode, QemuNodeFactoryError>
+) -> Result<(), QemuNodeFactoryError>
 where
     S: QmpTimeoutStream + 'static,
     A: SchedulerSendAuthorizer + 'static,
     R: QemuHostIoRuntime + 'static,
 {
-    build_qemu_node_from_restored_checkpoint_inner(child, setup, qmp, restore, runtime, true)
+    build_qemu_node_from_restored_checkpoint_inner(owner, setup, qmp, restore, runtime, true)
 }
 
 /// Restores an authenticated lazy RAM checkpoint into a node that remains paused.
@@ -1011,18 +1006,18 @@ where
 /// Returns [`QemuNodeFactoryError`] under the same conditions as
 /// [`build_qemu_node_from_restored_checkpoint`].
 pub(crate) fn build_qemu_node_from_restored_checkpoint_paused<S, A, R>(
-    child: QemuNodeChild,
+    owner: &mut crate::node::IssuedLaunchOwner,
     setup: QemuHostPluginSetup,
     qmp: QemuQmpVmStateControlChannel<S>,
     restore: QemuNodeRestorePlan<'_>,
     runtime: QemuNodeFactoryRuntime<A, R>,
-) -> Result<QemuNode, QemuNodeFactoryError>
+) -> Result<(), QemuNodeFactoryError>
 where
     S: QmpTimeoutStream + 'static,
     A: SchedulerSendAuthorizer + 'static,
     R: QemuHostIoRuntime + 'static,
 {
-    build_qemu_node_from_restored_checkpoint_inner(child, setup, qmp, restore, runtime, false)
+    build_qemu_node_from_restored_checkpoint_inner(owner, setup, qmp, restore, runtime, false)
 }
 
 const RESTORE_BOUNDARY_POLL_INTERVAL: Duration = Duration::from_millis(1);
@@ -1035,13 +1030,13 @@ fn bounded_restore_boundary_polls(timeout: Duration) -> u64 {
 }
 
 fn build_qemu_node_from_restored_checkpoint_inner<S, A, R>(
-    child: QemuNodeChild,
+    owner: &mut crate::node::IssuedLaunchOwner,
     setup: QemuHostPluginSetup,
     mut qmp: QemuQmpVmStateControlChannel<S>,
     restore: QemuNodeRestorePlan<'_>,
     runtime: QemuNodeFactoryRuntime<A, R>,
     resume_guest: bool,
-) -> Result<QemuNode, QemuNodeFactoryError>
+) -> Result<(), QemuNodeFactoryError>
 where
     S: QmpTimeoutStream + 'static,
     A: SchedulerSendAuthorizer + 'static,
@@ -1049,7 +1044,7 @@ where
 {
     if let Err(source) = restore.validate_immutable_descriptors() {
         return Err(reap_failed_restore_child(
-            child,
+            owner,
             QemuNodeFactoryError::VmStateRestore {
                 source: QemuNodeChannelError::new(
                     "validate exact checkpoint descriptors",
@@ -1079,7 +1074,7 @@ where
     } = restore;
     if exact_checkpoint.request.identity().checkpoint() != checkpoint.id {
         return Err(reap_failed_restore_child(
-            child,
+            owner,
             QemuNodeFactoryError::VmStateRestore {
                 source: QemuNodeChannelError::new(
                     "restore exact QEMU checkpoint",
@@ -1090,7 +1085,7 @@ where
     }
     if node_continuation.execution_binding() != checkpoint.id {
         return Err(reap_failed_restore_child(
-            child,
+            owner,
             QemuNodeFactoryError::NodeContinuationRestore {
                 message: String::from("node continuation belongs to another VMState checkpoint"),
             },
@@ -1098,7 +1093,7 @@ where
     }
     if node_continuation.next_fault_command_sequence() < 2 {
         return Err(reap_failed_restore_child(
-            child,
+            owner,
             QemuNodeFactoryError::NodeContinuationRestore {
                 message: String::from(
                     "restored fault-command sequence precedes setup capability admission",
@@ -1109,7 +1104,7 @@ where
     let calibration = node_continuation.logical_time_calibration();
     if calibration.logical_icount != node_continuation.last_observed_time().ticks {
         return Err(reap_failed_restore_child(
-            child,
+            owner,
             QemuNodeFactoryError::NodeContinuationRestore {
                 message: String::from(
                     "logical-time calibration does not match the scheduler continuation boundary",
@@ -1119,7 +1114,7 @@ where
     }
     if let Err(source) = calibration.offset() {
         return Err(reap_failed_restore_child(
-            child,
+            owner,
             QemuNodeFactoryError::NodeContinuationRestore {
                 message: source.to_string(),
             },
@@ -1127,11 +1122,13 @@ where
     }
     let mut prepared_setup = match prepare_qemu_node_setup(setup, shmem_config, send_authorizer) {
         Ok(prepared_setup) => prepared_setup,
-        Err(error) => return Err(reap_failed_restore_child(child, error)),
+        Err(error) => {
+            return Err(reap_failed_restore_child(owner, error));
+        }
     };
     if let Err(source) = host_io_runtime.quiesce_for_checkpoint(async_policy.qmp_command_timeout) {
         return Err(reap_failed_restore_child(
-            child,
+            owner,
             QemuNodeFactoryError::CheckpointPause { source },
         ));
     }
@@ -1145,7 +1142,7 @@ where
         host_io_runtime.validate_host_io_checkpoint(checkpoint.id, host_io_checkpoint)
     {
         return Err(reap_failed_restore_child(
-            child,
+            owner,
             QemuNodeFactoryError::HostIoCheckpointValidation { source },
         ));
     }
@@ -1157,11 +1154,11 @@ where
                 release: Box::new(release),
             },
         };
-        return Err(reap_failed_restore_child(child, primary));
+        return Err(reap_failed_restore_child(owner, primary));
     }
     if let Err(release) = host_io_runtime.clear_checkpoint_pause_while_stopped() {
         return Err(reap_failed_restore_child(
-            child,
+            owner,
             QemuNodeFactoryError::CheckpointPauseRelease { source: release },
         ));
     }
@@ -1212,7 +1209,7 @@ where
         // A post-load error may not return until the fresh child is killed and
         // synchronously reaped; destructor cleanup has a bounded fallback and
         // is deliberately insufficient for this realization transaction.
-        return Err(reap_failed_restore_child(child, error));
+        return Err(reap_failed_restore_child(owner, error));
     }
 
     let restored_calibration = node_continuation.logical_time_calibration();
@@ -1226,11 +1223,13 @@ where
         });
     let restore_boundary = match restore_boundary {
         Ok(boundary) => boundary,
-        Err(error) => return Err(reap_failed_restore_child(child, error)),
+        Err(error) => {
+            return Err(reap_failed_restore_child(owner, error));
+        }
     };
     if let Err(source) = prepared_setup.plugin_control.signal_plugin_wake() {
         return Err(reap_failed_restore_child(
-            child,
+            owner,
             QemuNodeFactoryError::LogicalTimeRestoreBoundary {
                 stage: "signal stopped control wake",
                 message: source.to_string(),
@@ -1249,7 +1248,9 @@ where
             });
         let boundary_acknowledged = match boundary_acknowledged {
             Ok(acknowledged) => acknowledged,
-            Err(error) => return Err(reap_failed_restore_child(child, error)),
+            Err(error) => {
+                return Err(reap_failed_restore_child(owner, error));
+            }
         };
         if boundary_acknowledged {
             acknowledged = true;
@@ -1258,7 +1259,7 @@ where
         if attempt + 1 < polls {
             if let Err(source) = prepared_setup.plugin_control.signal_plugin_wake() {
                 return Err(reap_failed_restore_child(
-                    child,
+                    owner,
                     QemuNodeFactoryError::LogicalTimeRestoreBoundary {
                         stage: "wake plugin",
                         message: source.to_string(),
@@ -1270,7 +1271,7 @@ where
     }
     if !acknowledged {
         return Err(reap_failed_restore_child(
-            child,
+            owner,
             QemuNodeFactoryError::LogicalTimeRestoreBoundary {
                 stage: "await acknowledgement",
                 message: format!(
@@ -1283,7 +1284,7 @@ where
     }
     if let Err(source) = qmp.confirm_restore_boundary_pause() {
         return Err(reap_failed_restore_child(
-            child,
+            owner,
             QemuNodeFactoryError::LogicalTimeRestoreBoundary {
                 stage: "confirm native stop",
                 message: source.to_string(),
@@ -1295,7 +1296,7 @@ where
         .commit_coverage_restore_generation(restore_boundary.logical_generation())
     {
         return Err(reap_failed_restore_child(
-            child,
+            owner,
             QemuNodeFactoryError::LogicalTimeRestoreBoundary {
                 stage: "commit coverage generation reset",
                 message: source.to_string(),
@@ -1306,8 +1307,8 @@ where
         .shmem_hot_path
         .clear_logical_time_restore_pause();
 
-    let mut node = build_qemu_node_from_prepared_setup(
-        child,
+    build_qemu_node_from_prepared_setup(
+        owner,
         prepared_setup,
         qmp,
         PreparedNodeRuntime {
@@ -1318,20 +1319,23 @@ where
             #[cfg(target_os = "linux")]
             original_native_binding,
         },
-    );
+    )?;
+    let node = owner
+        .node_mut()
+        .map_err(|source| QemuNodeFactoryError::LaunchCustody { source })?;
     if let Err(source) = node.restore_node_continuation(node_continuation) {
         let primary = QemuNodeFactoryError::NodeContinuationRestore {
             message: source.to_string(),
         };
-        return Err(reap_failed_restored_node(node, primary));
+        return Err(reap_failed_restore_child(owner, primary));
     }
     if resume_guest && let Err(source) = node.resume_after_restore() {
         let primary = QemuNodeFactoryError::CheckpointResume {
             source: QemuNodeChannelError::new("resume restored QEMU", source.to_string()),
         };
-        return Err(reap_failed_restored_node(node, primary));
+        return Err(reap_failed_restore_child(owner, primary));
     }
-    Ok(node)
+    Ok(())
 }
 
 fn prepare_qemu_node_setup<A>(
@@ -1380,11 +1384,11 @@ struct PreparedNodeRuntime<R> {
 }
 
 fn build_qemu_node_from_prepared_setup<S, R>(
-    child: QemuNodeChild,
+    owner: &mut crate::node::IssuedLaunchOwner,
     prepared_setup: PreparedQemuNodeSetup,
     qmp: QemuQmpVmStateControlChannel<S>,
     runtime: PreparedNodeRuntime<R>,
-) -> QemuNode
+) -> Result<(), QemuNodeFactoryError>
 where
     S: QmpTimeoutStream + 'static,
     R: QemuHostIoRuntime + 'static,
@@ -1406,18 +1410,23 @@ where
         original_native_binding,
     );
 
-    QemuNode::new(
-        child,
-        channels,
-        shutdown_policy,
-        async_policy,
-        crash_detector,
-        host_io_runtime,
-        prepared_setup.next_fault_command_sequence,
-    )
-    .with_fault_capabilities(prepared_setup.fault_capabilities)
-    .with_ready_markers(prepared_setup.ready_markers)
-    .with_exact_fault_manifests(prepared_setup.exact_fault_manifests)
+    let host_io_runtime: Box<dyn QemuHostIoRuntime> = Box::new(host_io_runtime);
+    owner
+        .assemble_node(|child| {
+            QemuNode::new_with_boxed_runtime(
+                child,
+                channels,
+                shutdown_policy,
+                async_policy,
+                crash_detector,
+                host_io_runtime,
+                prepared_setup.next_fault_command_sequence,
+            )
+            .with_fault_capabilities(prepared_setup.fault_capabilities)
+            .with_ready_markers(prepared_setup.ready_markers)
+            .with_exact_fault_manifests(prepared_setup.exact_fault_manifests)
+        })
+        .map_err(|source| QemuNodeFactoryError::LaunchCustody { source })
 }
 
 mod validation;

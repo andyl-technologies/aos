@@ -44,7 +44,7 @@ impl QemuAsyncNodeStepTarget for QemuNodeAsyncStepTarget<'_> {
         #[cfg(target_os = "linux")]
         if let Some(source) = self
             .ram_continuation
-            .and_then(|continuation| continuation.source.as_deref())
+            .and_then(|continuation| continuation.source.as_ref())
         {
             source
                 .check_health()

@@ -214,6 +214,8 @@ pub(in super::super::super) const NODE_PUBLISHER: Companion = Companion {
                 launch_in_flight: false,
                 launch_abandoned: false,
                 launch_refusal: None,
+                source_controller: None,
+                source_cleanup_assigned: false,
                 control: None,
                 cleanup: None,
                 unsettled: None,

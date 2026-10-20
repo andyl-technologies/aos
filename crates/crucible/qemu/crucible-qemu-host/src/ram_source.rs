@@ -6,12 +6,18 @@
 //! supervision guards belong to each source separately. Cancellation closes
 //! admission and transport; it never supplies substitute page bytes.
 
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+use crucible_host_resources::host_services::native_join::{
+    NativeJoinError, NativeJoinObservation, NativeJoinOwner,
+};
 use std::io::{self, Read, Write};
 use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
+use std::sync::Arc;
+#[cfg(test)]
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
-use std::thread::{self, JoinHandle};
+use std::thread;
 use std::time::Duration;
 
 use crucible_host_resources::host_supervision::{
@@ -26,7 +32,9 @@ use crucible_ram::{RootRecord, Scope};
 use thiserror::Error;
 
 mod worker_failure;
+mod worker_outcome;
 pub use worker_failure::QemuRamWorkerFailure;
+pub use worker_outcome::QemuRamWorkerPanic;
 
 const SOURCE_STACK_BYTES: usize = 256 * 1024;
 
@@ -198,6 +206,9 @@ pub enum QemuRamSourceError {
     /// The original completed worker failure remains shared by every observer.
     #[error("RAM source worker failed: {0}")]
     WorkerFailed(#[source] QemuRamWorkerFailure),
+    /// This target lacks the audited unique nonblocking native-join boundary.
+    #[error("RAM source requires GNU/Linux native thread return")]
+    NativeJoinUnsupported,
     /// Explicit host service task or descriptor admission failed.
     #[error(transparent)]
     Services(#[from] crucible_host_resources::host_services::HostServiceError),
@@ -206,15 +217,57 @@ pub enum QemuRamSourceError {
 /// Linear source service retained through process termination or quarantine.
 #[must_use = "retain the source and its backing authority through process disposition"]
 pub struct QemuRamSourceService {
+    stop: stop::StopState,
     binding: RamPageBinding,
     backing: Arc<dyn QemuRamBacking>,
     cancellation: Arc<AtomicBool>,
     wake: UnixStream,
-    worker: Option<JoinHandle<Result<(), QemuRamWorkerFailure>>>,
+    worker: Option<SourceWorker>,
+    startup: Option<UnixStream>,
+    spawn_attempted: bool,
+    spawn_returned: bool,
+    worker_started: bool,
+    birth_before: Option<HostSupervisionError>,
+    birth_after: Option<HostSupervisionError>,
     supervisor: HostOperationSupervisor,
-    failure: Arc<Mutex<Option<QemuRamWorkerFailure>>>,
+    failure: worker_outcome::WorkerOutcome,
     service_lease: crucible_host_resources::host_services::HostServiceLease,
     launch_join: Option<crate::launch_cleanup::LaunchSourceJoin>,
+}
+
+/// Retains the actual socket and immutable input before Service construction.
+pub(crate) struct SourceInput {
+    socket: UnixStream,
+    backing: Arc<dyn QemuRamBacking>,
+    binding: RamPageBinding,
+}
+
+impl std::fmt::Debug for SourceInput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SourceInput")
+            .field("binding", &self.binding)
+            .finish_non_exhaustive()
+    }
+}
+
+impl SourceInput {
+    pub(crate) fn new(
+        socket: UnixStream,
+        backing: Arc<dyn QemuRamBacking>,
+        binding: RamPageBinding,
+    ) -> Self {
+        Self {
+            socket,
+            backing,
+            binding,
+        }
+    }
+}
+
+// The actual native task and its result/loan cannot move independently.
+struct SourceWorker {
+    native: NativeJoinOwner,
+    outcome: worker_outcome::WorkerOutcome,
 }
 
 impl std::fmt::Debug for QemuRamSourceService {
@@ -229,27 +282,12 @@ impl std::fmt::Debug for QemuRamSourceService {
 }
 
 impl QemuRamSourceService {
-    /// Starts an independently supervised source on an already owned socket.
-    ///
-    /// The caller binds the same complete root and namespace in QEMU before
-    /// restoration or guest release. This method retains the lease before the
-    /// worker can accept a request, including during thread creation failure.
+    /// Starts a component-owned source without asserting a Main or Source role.
     ///
     /// # Errors
-    ///
-    /// Returns an error for an empty or mismatched binding, an incomplete scope,
-    /// transport setup failure, or worker creation failure.
-    pub fn start(
-        socket: UnixStream,
-        backing: Arc<dyn QemuRamBacking>,
-        binding: RamPageBinding,
-        supervisor: HostOperationSupervisor,
-        services: crucible_host_resources::host_services::HostServiceAllocator,
-    ) -> Result<Self, QemuRamSourceError> {
-        Self::start_with_cleanup(socket, backing, binding, supervisor, services, None)
-    }
-
-    pub(crate) fn start_with_cleanup(
+    /// Refuses invalid source material, unavailable resources, or actual birth.
+    #[cfg(test)]
+    pub(crate) fn start_component(
         socket: UnixStream,
         backing: Arc<dyn QemuRamBacking>,
         binding: RamPageBinding,
@@ -257,80 +295,185 @@ impl QemuRamSourceService {
         services: crucible_host_resources::host_services::HostServiceAllocator,
         cleanup: Option<crate::launch_cleanup::LaunchCleanup>,
     ) -> Result<Self, QemuRamSourceError> {
-        binding.validate()?;
-        if binding.root_digest != *backing.root_record().digest().as_bytes()
-            || !matches!(
-                backing.root_record().scope(),
-                Scope::Exact | Scope::Lifecycle
-            )
+        let mut input = Some(SourceInput::new(socket, backing, binding));
+        let mut service = Self::prepare(&mut input, supervisor, services)?;
+        service.spawn_attempted = true;
+        service.spawn_retained(cleanup)?;
+        Ok(service)
+    }
+
+    /// Creates the paid source body without creating any worker.
+    pub(crate) fn prepare(
+        input: &mut Option<SourceInput>,
+        supervisor: HostOperationSupervisor,
+        services: crucible_host_resources::host_services::HostServiceAllocator,
+    ) -> Result<Self, QemuRamSourceError> {
+        #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
         {
+            let _ = (input, supervisor, services);
+            return Err(QemuRamSourceError::NativeJoinUnsupported);
+        }
+        #[cfg(all(target_os = "linux", target_env = "gnu"))]
+        {
+            let pending = input.as_ref().ok_or(QemuRamSourceError::Ownership)?;
+            let binding = pending.binding;
+            let backing = &pending.backing;
+            binding.validate()?;
+            if binding.root_digest != *backing.root_record().digest().as_bytes()
+                || !matches!(
+                    backing.root_record().scope(),
+                    Scope::Exact | Scope::Lifecycle
+                )
+            {
+                return Err(QemuRamSourceError::Ownership);
+            }
+            // One worker, its wake descriptor, and one sequential backing read.
+            // Three response envelopes cover the page, decoded/encoded proof and
+            // transport overlap. The backing's predecode credit owns its retained
+            // root; bounded CAS traversal scratch has a separate node entitlement.
+            let worker_metadata_bytes = QemuRamWorkerFailure::startup_metadata_bytes()?;
+            let service_lease = services.reserve_resources(
+                1,
+                2,
+                SOURCE_STACK_BYTES as u64
+                    + 3 * crucible_qemu_protocol::ram_page::RAM_PAGE_MAX_RESPONSE_BYTES as u64
+                    + worker_metadata_bytes,
+            )?;
+
+            let wake = pending.socket.try_clone()?;
+            let cancellation = Arc::new(AtomicBool::new(false));
+            let failure = worker_outcome::WorkerOutcome::new(service_lease.clone());
+            // All fallible work leaves the caller's SAME input untouched.
+            // The final transfer into its retained Service is a pure move.
+            let SourceInput {
+                socket,
+                backing,
+                binding,
+            } = input.take().ok_or(QemuRamSourceError::Ownership)?;
+            Ok(Self {
+                stop: stop::StopState::new(),
+                binding,
+                backing,
+                cancellation,
+                wake,
+                worker: None,
+                startup: Some(socket),
+                spawn_attempted: false,
+                spawn_returned: false,
+                worker_started: false,
+                birth_before: None,
+                birth_after: None,
+                supervisor,
+                failure,
+                service_lease,
+                launch_join: None,
+            })
+        }
+    }
+
+    /// Publishes only a body already stored in its actual containing owner.
+    pub(crate) fn publish_retained(
+        &mut self,
+        original: &crucible_host_resources::host_supervision::HostOperationGuard,
+        cleanup: Option<crate::launch_cleanup::LaunchCleanup>,
+    ) -> Result<(), QemuRamSourceError> {
+        if self.spawn_attempted || self.stop.join_returned() {
             return Err(QemuRamSourceError::Ownership);
         }
-        // One worker, its wake descriptor, and one sequential backing read.
-        // Three response envelopes cover the page, decoded/encoded proof and
-        // transport overlap. The backing's predecode credit owns its retained
-        // root; bounded CAS traversal scratch has a separate node entitlement.
-        let worker_metadata_bytes = QemuRamWorkerFailure::startup_metadata_bytes()?;
-        let service_lease = services.reserve_resources(
-            1,
-            2,
-            SOURCE_STACK_BYTES as u64
-                + 3 * crucible_qemu_protocol::ram_page::RAM_PAGE_MAX_RESPONSE_BYTES as u64
-                + worker_metadata_bytes,
-        )?;
-        let worker_service_lease = service_lease.clone();
-        let wake = socket.try_clone()?;
-        let cancellation = Arc::new(AtomicBool::new(false));
-        let worker_backing = Arc::clone(&backing);
-        let worker_cancellation = Arc::clone(&cancellation);
-        let worker_supervisor = supervisor.clone();
-        let failure = Arc::new(Mutex::new(None));
-        let worker_failure = Arc::clone(&failure);
-        let mut launch_join = cleanup
+        self.spawn_attempted = true;
+        self.birth_before = original.wait_slice().err();
+        let result = if self.birth_before.is_none() {
+            self.spawn_retained(cleanup)
+        } else {
+            self.failure.no_birth(None);
+            self.spawn_returned = true;
+            Ok(())
+        };
+        let result = match result {
+            Err(first) if !self.spawn_returned => {
+                // An error before Builder returned has no born task. Retain
+                // its actual typed cause in the same paid result allocation.
+                self.spawn_returned = true;
+                let first = QemuRamWorkerFailure::new(first, self.service_lease.clone());
+                self.failure.no_birth(Some(first.clone()));
+                Err(QemuRamSourceError::WorkerFailed(first))
+            }
+            result => result,
+        };
+        // The body retains its actual native owner and result before this post.
+        self.birth_after = original.wait_slice().err();
+        if let Some(first) = self.birth_before {
+            return Err(first.into());
+        }
+        result?;
+        if let Some(post) = self.birth_after {
+            return Err(post.into());
+        }
+        Ok(())
+    }
+
+    #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+    fn spawn_retained(
+        &mut self,
+        cleanup: Option<crate::launch_cleanup::LaunchCleanup>,
+    ) -> Result<(), QemuRamSourceError> {
+        let _ = cleanup;
+        Err(QemuRamSourceError::NativeJoinUnsupported)
+    }
+
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    fn spawn_retained(
+        &mut self,
+        cleanup: Option<crate::launch_cleanup::LaunchCleanup>,
+    ) -> Result<(), QemuRamSourceError> {
+        self.launch_join = cleanup
             .as_ref()
             .map(crate::launch_cleanup::LaunchCleanup::source_join)
             .transpose()
             .map_err(|_| QemuRamSourceError::Ownership)?;
-        let worker_scope =
-            worker_failure::WorkerScope::new(worker_failure, worker_service_lease, cleanup);
+        let socket = self.startup.take().ok_or(QemuRamSourceError::Ownership)?;
+        let worker_backing = Arc::clone(&self.backing);
+        let worker_cancellation = Arc::clone(&self.cancellation);
+        let worker_supervisor = self.supervisor.clone();
+        let binding = self.binding;
+        let worker_outcome = self.failure.clone();
+        let worker_scope = worker_failure::WorkerScope::new(self.service_lease.clone(), cleanup);
         let worker = thread::Builder::new()
             .name("crucible-ram-source".to_owned())
             .stack_size(SOURCE_STACK_BYTES)
             .spawn(move || {
-                // The backing, cancellation and supervision arguments close
-                // before this stack owner, including on unwind. Its inventory
-                // control closes before its loan; cleanup remains last.
-                let result = serve_pages(
-                    socket,
-                    worker_backing,
-                    binding,
-                    worker_cancellation,
-                    worker_supervisor,
-                );
-                worker_scope.finish(result)
+                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+                    let result = serve_pages(
+                        socket,
+                        worker_backing,
+                        binding,
+                        worker_cancellation,
+                        worker_supervisor,
+                    );
+                    worker_scope.finish(result)
+                }));
+                worker_outcome.deliver(outcome);
             });
-        let worker = match worker {
-            Ok(worker) => worker,
-            Err(error) => {
-                // No thread exists after a failed spawn; all closure captures
-                // were destroyed before the builder returned this failure.
-                if let Some(join) = &mut launch_join {
+        match worker {
+            Ok(worker) => {
+                self.worker = Some(SourceWorker {
+                    native: NativeJoinOwner::from_worker(worker),
+                    outcome: self.failure.clone(),
+                });
+                self.worker_started = true;
+                self.spawn_returned = true;
+                Ok(())
+            }
+            Err(first) => {
+                if let Some(join) = &mut self.launch_join {
                     join.joined();
                 }
-                return Err(error.into());
+                self.spawn_returned = true;
+                let first = QemuRamWorkerFailure::new(first.into(), self.service_lease.clone());
+                self.failure.no_birth(Some(first.clone()));
+                Err(QemuRamSourceError::WorkerFailed(first))
             }
-        };
-        Ok(Self {
-            binding,
-            backing,
-            cancellation,
-            wake,
-            worker: Some(worker),
-            supervisor,
-            failure,
-            service_lease,
-            launch_join,
-        })
+        }
     }
 
     /// Returns the exact independently owned endpoint namespace.
@@ -347,20 +490,20 @@ impl QemuRamSourceService {
     /// inventory, or an unexpected terminal worker. Callers contain the process
     /// before retiring this source; its failure is never guest behavior.
     pub fn check_health(&self) -> Result<(), QemuRamSourceError> {
-        let failure = self.failure.lock().map_err(|_| {
-            QemuRamSourceError::Backing("source failure inventory unavailable".to_owned())
-        })?;
-        if let Some(error) = &*failure {
-            return Err(QemuRamSourceError::WorkerFailed(error.clone()));
+        let outcome = self.failure.snapshot();
+        if let Some(error) = outcome.failure {
+            return Err(QemuRamSourceError::WorkerFailed(error));
+        }
+        if outcome.panic.is_some() {
+            return Err(QemuRamSourceError::WorkerPanicked);
+        }
+        if outcome.uncertain {
+            return Err(QemuRamSourceError::Ownership);
         }
         if self.cancellation.load(Ordering::Acquire) {
             return Err(QemuRamSourceError::Canceled);
         }
-        if self
-            .worker
-            .as_ref()
-            .is_none_or(|worker| worker.is_finished())
-        {
+        if self.worker.is_none() || outcome.delivered {
             return Err(QemuRamSourceError::Backing(
                 "source worker ended unexpectedly".to_owned(),
             ));
@@ -390,100 +533,22 @@ impl QemuRamSourceService {
 
     /// Closes request admission while preserving the owned backing claim.
     pub fn cancel(&self) {
-        self.cancellation.store(true, Ordering::Release);
-        let _ = self.wake.shutdown(Shutdown::Both);
-    }
-
-    /// Joins the canceled worker under the target execution's cleanup budget.
-    ///
-    /// # Errors
-    ///
-    /// Returns an owned error retaining this source and lease if cleanup cannot
-    /// establish terminal worker disposition. Callers transfer it to quarantine.
-    pub fn stop(mut self) -> Result<(), QemuRamSourceStopError> {
-        self.cancel();
-        let cleanup = match self.supervisor.begin(HostOperationClass::Cleanup) {
-            Ok(guard) => guard,
-            Err(error) => {
-                return Err(QemuRamSourceStopError {
-                    service: Box::new(self),
-                    source: error.into(),
-                });
-            }
-        };
-        while self
+        if self
             .worker
             .as_ref()
-            .is_some_and(|worker| !worker.is_finished())
+            .is_some_and(|worker| !worker.native.belongs_to_current_process())
         {
-            match cleanup.wait_slice() {
-                Ok(slice) => thread::sleep(slice.min(Duration::from_millis(20))),
-                Err(error) => {
-                    return Err(QemuRamSourceStopError {
-                        service: Box::new(self),
-                        source: error.into(),
-                    });
-                }
-            }
+            return;
         }
-        if let Some(worker) = self.worker.take() {
-            let result = worker.join();
-            if let Some(join) = &mut self.launch_join {
-                join.joined();
-            }
-            match result {
-                Ok(Ok(())) => {}
-                Ok(Err(source)) => {
-                    return Err(QemuRamSourceStopError {
-                        service: Box::new(self),
-                        source: QemuRamSourceError::WorkerFailed(source),
-                    });
-                }
-                Err(_) => {
-                    return Err(QemuRamSourceStopError {
-                        service: Box::new(self),
-                        source: QemuRamSourceError::WorkerPanicked,
-                    });
-                }
-            }
-        }
-        match cleanup.complete() {
-            Ok(_) => Ok(()),
-            Err(error) => Err(QemuRamSourceStopError {
-                service: Box::new(self),
-                source: error.into(),
-            }),
-        }
+        self.cancellation.store(true, Ordering::Release);
+        let _ = self.wake.shutdown(Shutdown::Both);
     }
 }
 
 impl Drop for QemuRamSourceService {
     fn drop(&mut self) {
         self.cancel();
-        if self
-            .worker
-            .as_ref()
-            .is_some_and(|worker| worker.is_finished())
-            && let Some(worker) = self.worker.take()
-        {
-            let _ = worker.join();
-            if let Some(join) = &mut self.launch_join {
-                join.joined();
-            }
-        }
-        // A blocked storage operation still owns its independent backing Arc.
-        // Detaching this handle cannot release that worker's descendant lease.
     }
-}
-
-/// Failed cleanup retaining its linear source and descendant storage authority.
-#[derive(Debug, Error)]
-#[error("RAM source cleanup failed: {source}")]
-pub struct QemuRamSourceStopError {
-    /// Source authority that must remain owned until cleanup succeeds.
-    pub service: Box<QemuRamSourceService>,
-    /// Exact operational cleanup failure.
-    pub source: QemuRamSourceError,
 }
 
 fn serve_pages(
@@ -744,3 +809,6 @@ mod tests;
 
 #[cfg(test)]
 mod scoped_response_tests;
+
+mod stop;
+pub use stop::QemuRamSourceStopHistory;

@@ -295,35 +295,31 @@ impl QemuPreparedRunDirectory {
         let root_bytes = match (self.launch_resources.has_root_overlay(), root_image) {
             (true, Some(root_image)) => {
                 let bytes = std::fs::metadata(root_image)
-                    .map_err(|source| super::QemuGuardedImagePreparationError {
-                        source: QemuSpawnError::Io {
+                    .map_err(|source| {
+                        super::QemuGuardedImagePreparationError::local(QemuSpawnError::Io {
                             operation: "inspect fresh root image",
                             source,
-                        },
-                        child: None,
+                        })
                     })?
                     .len();
                 if bytes == 0 {
-                    return Err(super::QemuGuardedImagePreparationError {
-                        source: QemuSpawnError::FreshRootImageEmpty {
+                    return Err(super::QemuGuardedImagePreparationError::local(
+                        QemuSpawnError::FreshRootImageEmpty {
                             path: root_image.to_owned(),
                         },
-                        child: None,
-                    });
+                    ));
                 }
                 Some(bytes)
             }
             (true, None) => {
-                return Err(super::QemuGuardedImagePreparationError {
-                    source: QemuSpawnError::FreshRootImageMissing,
-                    child: None,
-                });
+                return Err(super::QemuGuardedImagePreparationError::local(
+                    QemuSpawnError::FreshRootImageMissing,
+                ));
             }
             (false, Some(_)) => {
-                return Err(super::QemuGuardedImagePreparationError {
-                    source: QemuSpawnError::FreshRootImageUnexpected,
-                    child: None,
-                });
+                return Err(super::QemuGuardedImagePreparationError::local(
+                    QemuSpawnError::FreshRootImageUnexpected,
+                ));
             }
             (false, None) => None,
         };
@@ -331,10 +327,9 @@ impl QemuPreparedRunDirectory {
 
         let image_tool = qemu_executable.with_file_name("qemu-img");
         if !image_tool.is_absolute() {
-            return Err(super::QemuGuardedImagePreparationError {
-                source: QemuSpawnError::FreshImageToolPath { path: image_tool },
-                child: None,
-            });
+            return Err(super::QemuGuardedImagePreparationError::local(
+                QemuSpawnError::FreshImageToolPath { path: image_tool },
+            ));
         }
 
         if let Some(root_bytes) = root_bytes {
@@ -356,10 +351,7 @@ impl QemuPreparedRunDirectory {
         }
 
         self.seal_fresh_artifacts()
-            .map_err(|source| super::QemuGuardedImagePreparationError {
-                source,
-                child: None,
-            })
+            .map_err(|source| super::QemuGuardedImagePreparationError::local(source))
     }
 
     /// Initializes the pinned VMState destination before fresh or exact launch.
@@ -378,10 +370,9 @@ impl QemuPreparedRunDirectory {
     ) -> Result<(), super::QemuGuardedImagePreparationError> {
         let image_tool = qemu_executable.with_file_name("qemu-img");
         if !image_tool.is_absolute() {
-            return Err(super::QemuGuardedImagePreparationError {
-                source: QemuSpawnError::FreshImageToolPath { path: image_tool },
-                child: None,
-            });
+            return Err(super::QemuGuardedImagePreparationError::local(
+                QemuSpawnError::FreshImageToolPath { path: image_tool },
+            ));
         }
         let device_state_bytes = self.launch_resources.minimum_writable_bytes();
         let device_state_args = [
@@ -420,10 +411,7 @@ impl QemuPreparedRunDirectory {
                 })?;
                 Ok(())
             });
-        vmstate.map_err(|source| super::QemuGuardedImagePreparationError {
-            source,
-            child: None,
-        })
+        vmstate.map_err(|source| super::QemuGuardedImagePreparationError::local(source))
     }
 
     /// Begins one sealed exact device-state input for descriptor restore.

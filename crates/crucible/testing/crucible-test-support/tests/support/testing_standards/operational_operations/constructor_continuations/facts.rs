@@ -39,7 +39,14 @@ pub(super) const TARGET_LOAN: Companion = Companion {
         {
             return Err(OriginalActorAccountError::Unavailable.into());
         }
-        slot.fork_target.cleanup().map_err(Into::into)
+        let cleanup = slot
+            .fork_target
+            .cleanup
+            .as_ref()
+            .map(Arc::clone)
+            .ok_or(OriginalActorAccountError::Unavailable)?;
+        drop(state);
+        cleanup.guard().map_err(Into::into)
     }"#,
         1,
     )],

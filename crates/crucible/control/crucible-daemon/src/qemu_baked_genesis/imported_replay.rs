@@ -152,6 +152,9 @@ impl ImportedProductionCheckpointReplay {
 
     /// Returns the same actual Loop and observes complete typed terminal history.
     ///
+    /// Terminal extraction closes this facade even when its returned history
+    /// is negative; the owning error retains that history until disposal.
+    ///
     /// # Errors
     /// Keeps the actual body or its owning return failure when publication
     /// refuses. Pending native cleanup retains its Main role and original first
@@ -195,12 +198,12 @@ impl ImportedProductionCheckpointReplay {
             return Err(ImportedProductionReplayError::Unavailable);
         };
         match retirement.finish() {
-            Ok(terminal) if terminal.first_failure().is_some() => {
-                Err(ImportedProductionReplayError::Terminal(terminal))
-            }
             Ok(terminal) => {
-                drop(terminal);
                 self.closed = true;
+                if terminal.first_failure().is_some() {
+                    return Err(ImportedProductionReplayError::Terminal(terminal));
+                }
+                drop(terminal);
                 Ok(())
             }
             Err(retirement) => {
@@ -688,3 +691,6 @@ pub enum ImportedProductionReplayError {
     #[error("imported replay native launch: {0}")]
     Launch(#[source] Box<crate::QemuAttemptProductionVmLifecycleError>),
 }
+
+#[cfg(test)]
+mod tests;

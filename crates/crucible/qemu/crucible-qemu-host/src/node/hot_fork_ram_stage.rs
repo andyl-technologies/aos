@@ -11,7 +11,9 @@ use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 
 use crucible_host_resources::host_services::HostServiceLease;
-use crucible_host_resources::host_supervision::{HostOperationClass, HostOperationSupervisor};
+use crucible_host_resources::host_supervision::{
+    HostOperationClass, HostOperationGuard, HostOperationSupervisor, HostSupervisionError,
+};
 use crucible_qemu_protocol::ram_control::{RamControlFrame, RamControlMessage, RamControlRequest};
 use crucible_qemu_protocol::ram_fork::{RamForkPlan, RamForkSource};
 use crucible_qemu_protocol::ram_page::RamPageBinding;
@@ -30,13 +32,29 @@ pub(super) struct QemuHotForkRamStage {
     control_host: Option<UnixStream>,
     control_child: UnixStream,
     source_child: Option<UnixStream>,
-    source_service: Option<Box<QemuRamSourceService>>,
+    source_service: Option<QemuRamSourceService>,
+    source_start: Option<crate::ram_source::SourceInput>,
+    source_start_attempted: bool,
+    source_start_failure: Option<crucible_engine::BackendOperationalCause>,
+    preparation_reported: bool,
+    preparation: Option<HostOperationGuard>,
+    preparation_before: Option<HostSupervisionError>,
+    preparation_after: Option<HostSupervisionError>,
+    preparation_completion: Option<HostSupervisionError>,
+    preparation_completed: bool,
+    cleanup_original: Option<crate::linux_attempt_host::TargetCleanupOriginal>,
+    return_history: Option<super::ram_cleanup::RamCleanup>,
+    lender_failure: Option<crucible_engine::BackendOperationalCause>,
     source_record: Option<RamForkSource>,
     spill: OwnedFd,
     session: [u8; 32],
     registration: RamControlRegistration,
     supervisor: HostOperationSupervisor,
     state: Option<QmpHotForkChildRamState>,
+    close_entered: bool,
+    close_returned: bool,
+    close_reported: bool,
+    close_failure: Option<QemuNodeChannelError>,
     imported: Option<LaunchDescriptorImport>,
     service_lease: HostServiceLease,
     parent_cleanup: Option<LaunchCleanup>,
@@ -76,6 +94,17 @@ impl QemuHotForkRamStage {
         let scratch_bytes = root_bytes
             .checked_mul(4)
             .and_then(|bytes| bytes.checked_add(2 * fixed_plan_bytes + rustix::param::page_size()))
+            .and_then(|bytes| bytes.checked_add(std::alloc::Layout::new::<Self>().size()))
+            .and_then(|bytes| {
+                bytes.checked_add(std::alloc::Layout::new::<QemuHotForkRamContinuation>().size())
+            })
+            .and_then(|bytes| {
+                bytes.checked_add(
+                    usize::try_from(HostServiceLease::metadata_bytes())
+                        .ok()?
+                        .checked_sub(std::mem::size_of::<HostServiceLease>())?,
+                )
+            })
             .ok_or_else(|| failure("child plan scratch admission overflow"))?;
         let service_lease = registration
             .host_services
@@ -99,25 +128,16 @@ impl QemuHotForkRamStage {
         let spill = directory
             .create_hot_fork_ram_spill(registration.spill_quota_bytes)
             .map_err(failure)?;
-        let (source_child, source_service, source_record) = match source {
+        let (source_child, source_start, source_record) = match source {
             Some((backing, binding)) => {
                 let root_record = backing.root_record().try_encode().map_err(failure)?;
                 if root_record.len() > crucible_qemu_protocol::ram_fork::RAM_FORK_ROOT_MAX_BYTES {
                     return Err(failure("source metadata exceeds child plan bound"));
                 }
                 let (host, child) = UnixStream::pair().map_err(failure)?;
-                let service = QemuRamSourceService::start_with_cleanup(
-                    host,
-                    backing,
-                    binding,
-                    supervisor.clone(),
-                    registration.host_services.clone(),
-                    Some(cleanup.clone()),
-                )
-                .map_err(failure)?;
                 (
                     Some(child),
-                    Some(Box::new(service)),
+                    Some(crate::ram_source::SourceInput::new(host, backing, binding)),
                     Some(RamForkSource {
                         binding,
                         root_record,
@@ -132,20 +152,189 @@ impl QemuHotForkRamStage {
             control_host: Some(control_host),
             control_child,
             source_child,
-            source_service,
+            source_service: None,
+            source_start,
+            source_start_attempted: false,
+            source_start_failure: None,
+            preparation_reported: false,
+            preparation: Some(guard),
+            preparation_before: None,
+            preparation_after: None,
+            preparation_completion: None,
+            preparation_completed: false,
+            cleanup_original: None,
+            return_history: Some(super::ram_cleanup::RamCleanup::new()),
+            lender_failure: None,
             source_record,
             spill,
             session,
             registration,
             supervisor,
             state: None,
+            close_entered: false,
+            close_returned: false,
+            close_reported: false,
+            close_failure: None,
             imported: None,
             service_lease,
             parent_cleanup: None,
             cleanup,
         };
-        guard.complete().map_err(failure)?;
         Ok(stage)
+    }
+
+    fn publish_source(&mut self) -> Result<(), QemuNodeChannelError> {
+        if self.source_start_attempted {
+            return self.preparation_status();
+        }
+        self.source_start_attempted = true;
+        self.preparation_before = self
+            .preparation
+            .as_ref()
+            .ok_or(HostSupervisionError::Unavailable)
+            .and_then(|original| original.wait_slice())
+            .err();
+        if self.preparation_before.is_none() {
+            if self.source_start.is_some() {
+                match QemuRamSourceService::prepare(
+                    &mut self.source_start,
+                    self.supervisor.clone(),
+                    self.registration.host_services.clone(),
+                ) {
+                    Ok(service) => {
+                        self.source_service = Some(service);
+                        if let (Some(service), Some(original)) =
+                            (self.source_service.as_mut(), self.preparation.as_ref())
+                        {
+                            if let Err(first) =
+                                service.publish_retained(original, Some(self.cleanup.clone()))
+                            {
+                                self.source_start_failure =
+                                    Some(crucible_engine::BackendOperationalCause::new(first));
+                            }
+                        }
+                    }
+                    Err(first) => {
+                        self.source_start_failure =
+                            Some(crucible_engine::BackendOperationalCause::new(first))
+                    }
+                }
+            }
+        }
+        // The containing node already owns any born service before this post.
+        // Refused entry still receives the independent same-original check.
+        self.preparation_after = self
+            .preparation
+            .as_ref()
+            .ok_or(HostSupervisionError::Unavailable)
+            .and_then(|original| original.wait_slice())
+            .err();
+        if self.preparation_before.is_none() && self.source_start_failure.is_none() {
+            if let Some(original) = &self.preparation {
+                let (completed, post) = original.complete_observed();
+                self.preparation_completed = completed;
+                self.preparation_completion = post.err();
+            }
+        }
+        if self.preparation_completed && self.preparation_completion.is_none() {
+            self.preparation = None;
+        }
+        self.preparation_status()
+    }
+
+    fn preparation_status(&self) -> Result<(), QemuNodeChannelError> {
+        if let Some(first) = self.preparation_before {
+            return Err(failure(first));
+        }
+        if let Some(first) = &self.source_start_failure {
+            return Err(failure(first));
+        }
+        if let Some(post) = self.preparation_after.or(self.preparation_completion) {
+            return Err(failure(post));
+        }
+        if self.preparation_completed {
+            Ok(())
+        } else {
+            Err(failure("source publication has no known disposition"))
+        }
+    }
+
+    pub(super) fn finish_source(&mut self) -> Result<(), QemuNodeError> {
+        if self.source_start_attempted
+            && !self.preparation_reported
+            && (self.source_start_failure.is_some()
+                || self.preparation_before.is_some()
+                || self.preparation_after.is_some()
+                || self.preparation_completion.is_some()
+                || !self.preparation_completed)
+        {
+            self.preparation_reported = true;
+            return Err(QemuNodeError::RamStagePreparation {
+                first: self.source_start_failure.clone(),
+                observations: [
+                    self.preparation_before,
+                    self.preparation_after,
+                    self.preparation_completion,
+                ],
+                completed: self.preparation_completed,
+            });
+        }
+        if self
+            .parent_cleanup
+            .as_ref()
+            .is_some_and(LaunchCleanup::process_reaped)
+        {
+            if let Some(mut imported) = self.imported.take() {
+                imported.closed();
+            }
+            self.close_returned = true;
+            self.state = None;
+        }
+        if !self.close_reported
+            && let Some(first) = self.close_failure.as_ref()
+        {
+            self.close_reported = true;
+            return Err(QemuNodeError::RamStageClose {
+                source: first.clone(),
+            });
+        }
+        if !self.cleanup.process_returned_or_unstarted() {
+            return Err(QemuNodeError::RamCleanupPending);
+        }
+        if self.source_service.is_none() {
+            // No worker was born; its input stays here until the actual child's
+            // received descriptors have returned or no child ever started.
+            drop(self.source_start.take());
+            return Ok(());
+        }
+        retain_target_original(
+            &self.cleanup,
+            &mut self.cleanup_original,
+            &mut self.lender_failure,
+        )?;
+        let history = self
+            .return_history
+            .as_mut()
+            .ok_or(QemuNodeError::RamCleanupPending)?;
+        if history.source(
+            0,
+            &mut self.source_service,
+            self.cleanup_original
+                .as_ref()
+                .map(crate::ram_control::RamCleanupOriginal::target),
+        ) {
+            // No child-body borrower stays in an empty Source stage. This is
+            // an alias return, never completion of the outer Target guard.
+            self.cleanup_original = None;
+            Ok(())
+        } else {
+            Err(stage_failure(
+                &self.lender_failure,
+                history
+                    .failure()
+                    .unwrap_or(QemuNodeError::RamCleanupPending),
+            ))
+        }
     }
 
     fn seal(&mut self, template: u64, contract: u64) -> Result<(), QemuNodeChannelError> {
@@ -204,6 +393,9 @@ impl QemuHotForkRamStage {
         Ok(QemuHotForkRamContinuation {
             control: Some(control),
             source: self.source_service.take(),
+            cleanup_original: self.cleanup_original.take(),
+            return_history: self.return_history.take(),
+            lender_failure: self.lender_failure.take(),
             session: self.session,
             registration: self.registration.clone(),
             supervisor: self.supervisor.clone(),
@@ -223,29 +415,41 @@ impl Drop for QemuHotForkRamStage {
         {
             imported.closed();
         }
-        // Closing our unused peer precedes the bounded source join. Unknown
-        // monitor/native duplicates keep their independent import ticket open.
-        self.source_child.take();
-        if let Some(source) = self.source_service.take()
-            && let Err(error) = source.stop()
-        {
-            self.source_service = Some(error.service);
+        // Explicit settlement must retain this whole stage on refusal. Raw
+        // destruction cannot stand in for its child's join or return proof.
+        if !self.cleanup.cleanup_proven() {
+            self.cleanup.quarantine();
         }
     }
 }
 
 pub(super) struct QemuHotForkRamContinuation {
     control: Option<UnixStream>,
-    pub(super) source: Option<Box<QemuRamSourceService>>,
+    pub(super) source: Option<QemuRamSourceService>,
+    cleanup_original: Option<crate::linux_attempt_host::TargetCleanupOriginal>,
+    return_history: Option<super::ram_cleanup::RamCleanup>,
+    lender_failure: Option<crucible_engine::BackendOperationalCause>,
     session: [u8; 32],
     registration: RamControlRegistration,
-    supervisor: HostOperationSupervisor,
+    pub(super) supervisor: HostOperationSupervisor,
     service_lease: HostServiceLease,
     pub(super) cleanup: LaunchCleanup,
 }
 
 impl QemuHotForkRamContinuation {
+    pub(super) fn allocation_lease(&self) -> HostServiceLease {
+        self.service_lease.clone()
+    }
+
     pub(super) fn activate(&mut self) -> Result<(), QemuNodeChannelError> {
+        if self.cleanup_original.is_some()
+            || self
+                .return_history
+                .as_ref()
+                .is_none_or(|history| history.entered())
+        {
+            return Err(failure("RAM continuation already entered retirement"));
+        }
         let stream = self
             .control
             .take()
@@ -284,30 +488,97 @@ impl QemuHotForkRamContinuation {
         self.cleanup.published().map_err(failure)
     }
 
-    pub(super) fn finish(&mut self) -> Result<(), QemuNodeError> {
-        super::host_policy::finish_ram_source_cleanup(
-            &mut self.source,
-            "join hot-fork RAM source",
-        )?;
-        if self.cleanup.is_published() {
-            self.registration
-                .registrar
-                .prepare_retirement_after_cleanup(self.registration.target)
-                .map_err(|source| QemuNodeError::Channel {
-                    plane: QemuNodeChannelPlane::PluginIpcControl,
-                    operation: "join hot-fork RAM source",
-                    message: failure(source).to_string(),
-                })?;
+    pub(super) fn take_shutdown(
+        &mut self,
+    ) -> Result<super::shutdown_continuation::ChildShutdown, QemuNodeChannelError> {
+        let history = self
+            .return_history
+            .take()
+            .ok_or_else(|| failure("RAM cleanup journal already moved"))?;
+        Ok(super::shutdown_continuation::ChildShutdown::from_ram(
+            history,
+            self.cleanup_original.take(),
+        ))
+    }
+
+    pub(super) fn finish_owned(&mut self) -> Result<(), QemuNodeError> {
+        if !self.cleanup.process_returned_or_unstarted() {
+            return Err(QemuNodeError::RamCleanupPending);
         }
-        Ok(())
+        retain_target_original(
+            &self.cleanup,
+            &mut self.cleanup_original,
+            &mut self.lender_failure,
+        )?;
+        let history = self
+            .return_history
+            .as_mut()
+            .ok_or(QemuNodeError::RamCleanupPending)?;
+        let mut returned = history.source(
+            2,
+            &mut self.source,
+            self.cleanup_original
+                .as_ref()
+                .map(crate::ram_control::RamCleanupOriginal::target),
+        );
+        if returned {
+            let (closed, status) = match self.cleanup.publication() {
+                Ok(false) => (true, Ok(())),
+                Ok(true) => history.retirement[1].return_controller(
+                    &self.registration,
+                    self.cleanup_original
+                        .as_ref()
+                        .map(crate::ram_control::RamCleanupOriginal::target),
+                ),
+                Err(first) => history.retirement[1].refuse_publication(first),
+            };
+            history.controller(1, status);
+            returned &= closed;
+        }
+        if history.take_unreported() {
+            if let Some(first) = history.failure() {
+                return Err(stage_failure(&self.lender_failure, first));
+            }
+        }
+        if returned {
+            self.cleanup_original = None;
+            Ok(())
+        } else {
+            Err(stage_failure(
+                &self.lender_failure,
+                history
+                    .failure()
+                    .unwrap_or(QemuNodeError::RamCleanupPending),
+            ))
+        }
+    }
+
+    pub(super) fn finish(
+        &mut self,
+        original: Option<crate::ram_control::RamCleanupOriginal<'_>>,
+        history: &mut super::ram_cleanup::RamCleanup,
+    ) -> bool {
+        if !self.cleanup.process_returned_or_unstarted() {
+            return false;
+        }
+        if !history.source(2, &mut self.source, original) {
+            return false;
+        }
+        let (returned, status) = match self.cleanup.publication() {
+            Ok(false) => (true, Ok(())),
+            Ok(true) => history.retirement[1].return_controller(&self.registration, original),
+            Err(first) => history.retirement[1].refuse_publication(first),
+        };
+        history.controller(1, status);
+        returned
     }
 }
 
 impl Drop for QemuHotForkRamContinuation {
     fn drop(&mut self) {
-        if self.cleanup.cleanup_proven() {
-            let _ = self.finish();
-        } else {
+        // The owning caller settles this same value before taking its slot.
+        // A raw destructor has no authority to renew or conceal that refusal.
+        if !self.cleanup.cleanup_proven() {
             self.cleanup.quarantine();
         }
     }
@@ -331,11 +602,11 @@ impl QemuNode {
             return Err(failure("RAM child stage already retained"));
         }
         let parent_source = match &self.child {
-            QemuNodeProcessControl::Direct(child) => child.ram_source.as_deref(),
+            QemuNodeProcessControl::Direct(child) => child.ram_source.as_ref(),
             QemuNodeProcessControl::External(_) => self
                 .hot_fork_ram_continuation
                 .as_ref()
-                .and_then(|ram| ram.source.as_deref()),
+                .and_then(|ram| ram.source.as_ref()),
         };
         let source = parent_source
             .map(|source| {
@@ -351,17 +622,21 @@ impl QemuNode {
                 ))
             })
             .transpose()?;
-        self.hot_fork_ram_stage = Some(Box::new(QemuHotForkRamStage::prepare(
-            registration,
-            supervisor,
-            directory,
-            source,
-            cleanup,
-        )?));
+        let stage =
+            QemuHotForkRamStage::prepare(registration, supervisor, directory, source, cleanup)?;
+        let allocation = stage.service_lease.clone();
+        self.hot_fork_ram_stage = Some(RamAllocation::new(stage, allocation));
         if let Some(stage) = &mut self.hot_fork_ram_stage {
             stage.parent_cleanup = self._launch_cleanup.clone();
         }
         Ok(())
+    }
+
+    pub(crate) fn publish_hot_fork_child_ram(&mut self) -> Result<(), QemuNodeChannelError> {
+        let Some(stage) = &mut self.hot_fork_ram_stage else {
+            return Err(failure("RAM child stage is absent"));
+        };
+        stage.publish_source()
     }
 
     pub(super) fn validate_hot_fork_ram_stage(
@@ -400,7 +675,9 @@ impl QemuNode {
         let Some(stage) = &mut self.hot_fork_ram_stage else {
             return Ok(());
         };
+        stage.preparation_status()?;
         stage.seal(template, contract)?;
+        let stage = &mut **stage;
         let plan = stage
             .plan
             .as_ref()
@@ -431,19 +708,71 @@ impl QemuNode {
         let Some(stage) = &mut self.hot_fork_ram_stage else {
             return Ok(());
         };
+        if stage.close_entered && !stage.close_returned {
+            return Err(stage
+                .close_failure
+                .clone()
+                .unwrap_or_else(|| failure("RAM monitor close has unknown disposition")));
+        }
         if let Some(state) = stage.state {
-            self.channels
+            stage.close_entered = true;
+            let result = self
+                .channels
                 .qmp_machine_control
-                .close_hot_fork_child_ram(&stage.names, state.generation)?;
-            if let Some(imported) = &mut stage.imported {
-                imported.closed();
+                .close_hot_fork_child_ram(&stage.names, state.generation);
+            match result {
+                Ok(()) => {
+                    stage.close_returned = true;
+                    stage.state = None;
+                    if let Some(mut imported) = stage.imported.take() {
+                        imported.closed();
+                    }
+                }
+                Err(first) => {
+                    stage.close_failure = Some(first.clone());
+                    return Err(first);
+                }
             }
         } else if stage.imported.is_some() {
             return Err(failure("RAM monitor ownership is uncertain"));
         }
+        stage.finish_source().map_err(failure)?;
         self.hot_fork_ram_stage = None;
         Ok(())
     }
+}
+
+fn stage_failure(
+    first: &Option<crucible_engine::BackendOperationalCause>,
+    later: QemuNodeError,
+) -> QemuNodeError {
+    match first {
+        Some(first) => QemuNodeError::RamStageCleanup {
+            first: first.clone(),
+            later: Box::new(later),
+        },
+        None => later,
+    }
+}
+
+fn retain_target_original(
+    cleanup: &LaunchCleanup,
+    retained: &mut Option<crate::linux_attempt_host::TargetCleanupOriginal>,
+    first: &mut Option<crucible_engine::BackendOperationalCause>,
+) -> Result<(), QemuNodeError> {
+    if retained.is_none() {
+        match cleanup.retained_target_cleanup() {
+            Ok(original) => *retained = Some(original),
+            Err(source) => {
+                let source = crucible_engine::BackendOperationalCause::new(source);
+                let first = first.get_or_insert(source);
+                return Err(QemuNodeError::RamCleanupLender {
+                    source: first.clone(),
+                });
+            }
+        }
+    }
+    Ok(())
 }
 
 fn failure(error: impl std::fmt::Display) -> QemuNodeChannelError {
@@ -481,3 +810,32 @@ fn sealed_plan(bytes: &[u8]) -> Result<OwnedFd, QemuNodeChannelError> {
 #[cfg(test)]
 #[path = "hot_fork_ram_stage/tests.rs"]
 mod tests;
+
+/// Keeps the same prepaid box loan until after its actual allocation is freed.
+pub(super) struct RamAllocation<T> {
+    body: Box<T>,
+    _allocation: HostServiceLease,
+}
+
+impl<T> RamAllocation<T> {
+    pub(super) fn new(body: T, allocation: HostServiceLease) -> Self {
+        Self {
+            body: Box::new(body),
+            _allocation: allocation,
+        }
+    }
+}
+
+impl<T> std::ops::Deref for RamAllocation<T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        &self.body
+    }
+}
+
+impl<T> std::ops::DerefMut for RamAllocation<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        &mut self.body
+    }
+}

@@ -110,12 +110,11 @@ fn factory_assembles_node_with_exact_snapshot_qmp_control() -> Result<(), Box<dy
         r#"{"return":{}}"#,
     ]))?;
 
-    let mut node = build_qemu_node_from_completed_setup(
-        QemuNodeChild::new(child),
-        setup,
-        qmp,
-        node_factory_runtime(),
-    )?;
+    let mut owner = crate::node::IssuedLaunchOwner::component(QemuNodeChild::new(child), None);
+    build_qemu_node_from_completed_setup(&mut owner, setup, qmp, node_factory_runtime())?;
+    let mut node = owner
+        .into_node()
+        .map_err(|_| "factory did not assemble its retained Node")?;
 
     assert_eq!(
         node.channel_roles(),
@@ -229,8 +228,9 @@ fn exact_ram_restore_rejects_a_foreign_host_checkpoint_before_qmp_stop()
         &source,
     );
 
+    let mut owner = crate::node::IssuedLaunchOwner::component(QemuNodeChild::new(child), None);
     let result = build_qemu_node_from_restored_checkpoint(
-        QemuNodeChild::new(child),
+        &mut owner,
         setup,
         qmp,
         restore,
@@ -277,8 +277,9 @@ fn factory_rejects_setup_slot_mismatch_before_binding_hot_path() -> Result<(), B
         r#"{"return":{}}"#,
     ]))?;
 
+    let mut owner = crate::node::IssuedLaunchOwner::component(QemuNodeChild::new(child), None);
     let error = build_qemu_node_from_completed_setup(
-        QemuNodeChild::new(child),
+        &mut owner,
         setup,
         qmp,
         node_factory_runtime_for_slot(1),

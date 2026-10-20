@@ -4,7 +4,7 @@
 //! Compile-time projections keep each consumer on the same complete contract.
 
 /// Binds the actual saved owner, once-only entry and final physical return cuts.
-pub(super) const OBLIGATIONS: [&str; 16] = [
+pub(super) const OBLIGATIONS: [&str; 17] = [
     r#"cleanup: Option<Arc<TargetCleanup>>,"#,
     r#"pub(super) struct TargetCleanup {
     preparation: Arc<HostOperationGuard>,
@@ -20,13 +20,26 @@ pub(super) const OBLIGATIONS: [&str; 16] = [
     Self { preparation, completed: false, entered: std::sync::OnceLock::new(), }
 }"#,
     r#"pub(super) fn guard(&self) -> Result<Arc<HostOperationGuard>, OriginalActorAccountError> {
+    let guard = self.retained_guard()?;
+    guard.wait_slice()?;
+    Ok(guard)
+}
+fn retained_guard(&self) -> Result<Arc<HostOperationGuard>, OriginalActorAccountError> {
     let entered = self.entered.get_or_init(|| {
         self.preparation.begin_original_cleanup_control().map(Arc::new)
     });
-    let guard = entered.as_ref()
-        .map_err(|source| OriginalActorAccountError::from(*source))?;
-    guard.wait_slice()?;
-    Ok(Arc::clone(guard))
+    entered.as_ref().map(Arc::clone).map_err(|source| (*source).into())
+}"#,
+    r#"pub(crate) fn checked_original(
+    &self,
+) -> Result<&HostOperationGuard, crucible_host_resources::host_supervision::HostSupervisionError>
+{
+    let saved = self.lender.0.entered.get().and_then(|entry| entry.as_ref().ok());
+    if saved.is_some_and(|saved| Arc::ptr_eq(saved, &self.original)) {
+        Ok(&self.original)
+    } else {
+        Err(crucible_host_resources::host_supervision::HostSupervisionError::Unavailable)
+    }
 }"#,
     r#"let (layout, _) = std::alloc::Layout::new::<(usize, usize)>()
     .extend(std::alloc::Layout::new::<TargetCleanup>()).ok()?;

@@ -1572,6 +1572,13 @@ fn prepare_paused_live_node<'a>(
         (None, None, None) => None,
         _ => return Err(QemuLiveNodeStepGateError::DeviceDigestWorkspaceUnavailable),
     };
+    let mut child_return = launch_cleanup
+        .as_ref()
+        .ok_or(QemuLiveNodeStepGateError::OriginalNativeAccount {
+            source: crate::OriginalActorAccountError::Unavailable,
+        })?
+        .reserve_source_child_owner(operation_supervisor.clone())
+        .map_err(|source| QemuLiveNodeStepGateError::OriginalNativeAccount { source })?;
     let spawned = spawn_prepared_qemu_child_with_preexec(
         &command,
         run_directory,
@@ -1583,12 +1590,19 @@ fn prepare_paused_live_node<'a>(
             .map(|registration| &registration.host_services),
         launch_cleanup.clone(),
         preexec,
+        Some(&mut child_return),
     )
     .map_err(|source| QemuLiveNodeStepGateError::Spawn { source })?;
-    let (mut child, mut resources) = spawned.into_parts();
+    let (child, mut resources) = spawned.into_parts();
+    let mut child = child_return.born(child);
     // Publish successful birth before any later host cut can refuse.
     if let Some(startup) = original_plugin_startup.take() {
-        child.retain_original_plugin_startup(startup);
+        child
+            .child_mut()
+            .map_err(|first| {
+                QemuLiveNodeStepGateError::node_op("retain issued child startup", first)
+            })?
+            .retain_original_plugin_startup(startup);
     }
     let launch_service_lease = resources.host_service_lease().cloned();
     let ram_control_endpoint = resources.take_ram_control_socket();
@@ -1600,10 +1614,12 @@ fn prepare_paused_live_node<'a>(
         });
         let socket = match socket {
             Ok(socket) => socket,
-            Err(error) => return Err(reap_failed_live_node_child(child, error)),
+            Err(error) => {
+                return Err(reap_failed_live_node_child(child, error));
+            }
         };
         let source = restore.ram_source();
-        match crate::ram_source::QemuRamSourceService::start_with_cleanup(
+        match child.publish_ram_source(
             socket,
             source.backing(),
             source.binding(),
@@ -1616,9 +1632,8 @@ fn prepare_paused_live_node<'a>(
                 })?
                 .host_services
                 .clone(),
-            launch_cleanup.clone(),
         ) {
-            Ok(service) => child.retain_ram_source(service),
+            Ok(()) => {}
             Err(error) => {
                 return Err(reap_failed_live_node_child(
                     child,
@@ -1632,7 +1647,11 @@ fn prepare_paused_live_node<'a>(
 
     let mut admitted_registration = config.ram_control_registration.clone();
     #[cfg(target_os = "linux")]
-    match child.device_digest_workspace_setup_view() {
+    match child
+        .child_mut()
+        .map_err(|first| QemuLiveNodeStepGateError::node_op("borrow issued child startup", first))?
+        .device_digest_workspace_setup_view()
+    {
         Ok(Some(body)) => resources.retain_device_digest_workspace(body),
         Ok(None) => {}
         Err(source) => {
@@ -1642,7 +1661,7 @@ fn prepare_paused_live_node<'a>(
             ));
         }
     }
-    let (child, setup) = complete_host_setup_or_reap(child, || {
+    let (mut child, setup) = complete_host_setup_or_reap(child, || {
         complete_qemu_host_plugin_setup_with_plugin_setup_plan(
             resources.into_setup_resources(),
             region_config,
@@ -1709,8 +1728,15 @@ fn prepare_paused_live_node<'a>(
     #[cfg(target_os = "linux")]
     let runtime = match launch_try!(
         child
-            .standing_source_supervision()
-            .map_err(QemuLiveNodeStepGateError::PluginStartup)
+            .child_mut()
+            .map_err(|source| {
+                QemuLiveNodeStepGateError::node_op("borrow issued child Source", source)
+            })
+            .and_then(|child| {
+                child
+                    .standing_source_supervision()
+                    .map_err(QemuLiveNodeStepGateError::PluginStartup)
+            })
     ) {
         Some(source) => launch_try!(runtime.with_source_supervision(source).map_err(|error| {
             QemuLiveNodeStepGateError::prime(
@@ -1857,7 +1883,9 @@ fn prepare_paused_live_node<'a>(
             });
         match client {
             Ok(client) => client,
-            Err(error) => return Err(reap_failed_live_node_child(child, error)),
+            Err(error) => {
+                return Err(reap_failed_live_node_child(child, error));
+            }
         }
     } else {
         None
@@ -1934,7 +1962,9 @@ fn prepare_paused_live_node<'a>(
                 registration.resources = resources;
                 registration.spill_quota_bytes = spill_quota_bytes;
             }
-            Err(error) => return Err(reap_failed_live_node_child(child, error)),
+            Err(error) => {
+                return Err(reap_failed_live_node_child(child, error));
+            }
         }
     }
 
@@ -2052,48 +2082,51 @@ fn require_same_checkpoint_cancellation(
 }
 
 fn reap_failed_live_node_child(
-    mut child: crate::QemuNodeChild,
+    mut child: crate::node::IssuedLaunchOwner,
     primary: QemuLiveNodeStepGateError,
 ) -> QemuLiveNodeStepGateError {
-    match child.force_kill_and_reap_failed_realization() {
+    match child.retry_cleanup() {
         Ok(()) => primary,
         Err(cleanup) => QemuLiveNodeStepGateError::FailedCleanup {
             primary: Box::new(primary),
             cleanup,
-            unreaped_child: Some(Box::new(child)),
+            retained_owner: None,
         },
     }
 }
 
-fn reap_failed_host_setup_child(
-    child: crate::QemuNodeChild,
-    source: QemuHostPluginSetupError,
+fn finish_failed_live_owner(
+    mut owner: crate::QemuFailedLaunchOwner,
+    primary: QemuLiveNodeStepGateError,
 ) -> QemuLiveNodeStepGateError {
-    reap_failed_live_node_child(child, QemuLiveNodeStepGateError::HostSetup { source })
+    match owner.retry_cleanup() {
+        Ok(()) => primary,
+        Err(cleanup) => QemuLiveNodeStepGateError::FailedCleanup {
+            primary: Box::new(primary),
+            cleanup,
+            retained_owner: Some(owner),
+        },
+    }
 }
 
 fn complete_host_setup_or_reap<T>(
-    child: crate::QemuNodeChild,
+    child: crate::node::IssuedLaunchOwner,
     complete: impl FnOnce() -> Result<T, QemuHostPluginSetupError>,
-) -> Result<(crate::QemuNodeChild, T), QemuLiveNodeStepGateError> {
+) -> Result<(crate::node::IssuedLaunchOwner, T), QemuLiveNodeStepGateError> {
     match complete() {
         Ok(setup) => Ok((child, setup)),
-        Err(source) => Err(reap_failed_host_setup_child(child, source)),
+        Err(source) => Err(reap_failed_live_node_child(
+            child,
+            QemuLiveNodeStepGateError::HostSetup { source },
+        )),
     }
 }
 
 fn reap_failed_live_node(
-    mut node: QemuNode,
+    node: QemuNode,
     primary: QemuLiveNodeStepGateError,
 ) -> QemuLiveNodeStepGateError {
-    match node.reap_failed_realization() {
-        Ok(()) => primary,
-        Err(cleanup) => QemuLiveNodeStepGateError::FailedCleanup {
-            primary: Box::new(primary),
-            cleanup,
-            unreaped_child: node.into_direct_child_for_quarantine().map(Box::new),
-        },
-    }
+    finish_failed_live_owner(crate::QemuFailedLaunchOwner::node(node), primary)
 }
 
 pub(crate) fn resume_restored_exact_node(

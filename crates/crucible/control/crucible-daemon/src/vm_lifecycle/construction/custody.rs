@@ -85,7 +85,8 @@ pub(in crate::vm_lifecycle) struct Partial {
         BTreeMap<ContentHash, ProductionExactRamPublishedParent>,
     pub(in crate::vm_lifecycle) inner:
         Option<BackendQuantumLoop<SingleScheduler, QemuNodeSet, ProductionFaultNetworkInterceptor>>,
-    pub(in crate::vm_lifecycle) input_decode_custody: Option<crucible_engine::owned_decode::DecodeCustody>,
+    pub(in crate::vm_lifecycle) input_decode_custody:
+        Option<crucible_engine::owned_decode::DecodeCustody>,
     pending_reaped: Option<ReapedLease>,
     cleanup_complete: bool,
 }
@@ -887,6 +888,9 @@ fn retire_complete(
             "construction contains a live external debugger owner",
         ));
     }
+    lifecycle
+        .retire_terminal_replacement_transaction()
+        .map_err(ProductionVmConstructionCleanupError::Scheduler)?;
     lifecycle
         .inner
         .backend_mut()

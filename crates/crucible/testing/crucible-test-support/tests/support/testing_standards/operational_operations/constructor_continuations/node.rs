@@ -72,10 +72,16 @@ pub(super) const CONTRACT: Contract = Contract {
         (
             r#"#[cfg(test)]
 #[allow(clippy::disallowed_methods)]
-pub(crate) fn launch_measured(&mut self, source: QemuNodeSetPreparedHotForkSource<'_>) {
+pub(crate) fn launch_measured(
+    &mut self,
+    source: QemuNodeSetPreparedHotForkSource<'_>,
+    publish_source: impl FnOnce(
+        &mut QemuNodeSetPreparedHotForkSource<'_>,
+    ) -> Result<(), QemuNodeChannelError>,
+) {
     if self.attempted { return; }
     let started = std::time::Instant::now();
-    self.launch(source);
+    self.launch(source, publish_source);
     if self.attempted {
         self.launch_nanoseconds = Some(u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX));
     }

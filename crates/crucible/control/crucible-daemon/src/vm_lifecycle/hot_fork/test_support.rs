@@ -492,6 +492,9 @@ fn lifecycle_without_backends(
         node_leases: BTreeMap::new(),
         node_lease_cleanup_failed: false,
         retained_cleanup_failure: None,
+        terminal_replacements: Vec::new(),
+        terminal_replacement_values: Vec::new(),
+        terminal_replacement_leases: BTreeMap::new(),
         node_service_states: BTreeMap::new(),
         lifecycle_journal: ProductionLifecycleJournal {
             version: 1,

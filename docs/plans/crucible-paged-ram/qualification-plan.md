@@ -145,6 +145,64 @@ unref edge; a separate unoptimized object audit retains the genuine `object_unre
 relocation. Neither result qualifies selected CPU-pin return. The complete native
 build and owning runner produce the eighteen passing fixtures recorded above.
 
+The whole-node RAM cutover compiles all 520 workspace targets and passes all
+workspace doctests (41 passes, 26 ignored cases). Its latest complete affected
+host/daemon/test-support run has 3,611 passes, eleven failures and 51 ignored tests
+across 68 targets. The daemon library passes all 1,881 active tests, including
+physical quota collection; the host library has 1,210 passes and eight helper
+failures. All 22 new cleanup controls, both registry controls and all eight
+whole-set teardown controls pass in that run. Earlier totals above are historical.
+
+Three source-policy failures in that run include two stale whole-set shutdown
+companions. Their subsequent repair passes all 66 specific controls, including
+23 additional causal mutations, while the broad gate still reports fourteen
+daemon and seven host paths. The prior fifteen-path count described the daemon
+subset. The obsolete baseline for the relocated RAM wait was removed without a
+replacement waiver; the actual wait still needs its owning contract. All 65
+ABI/license/unsafe controls, five hygiene controls, 36 harness controls and both
+Rust documentation controls pass against the current cleanup implementation.
+Source review records retain their original shape limits. The actual node-field
+destructor-panic control proves an empty reentry cannot manufacture physical
+return or release generation leases after uncertain destruction.
+
+Native source `8024030523d0e7ee6512e8fecbbcd342c779e26a` again completes signed
+reconstruction, 3,863 compile/link actions and six selected suites. Standalone
+fixtures remain 18 passing and eight failing. Deferred-control extraction now
+compiles but has unresolved genuine `object_unref` linkage; six other callback
+closures and launched capture lifecycle remain failing. The next signed source,
+`bc75333383c5d64014b2d91044e370b45aaf2d95`, only retains the actual component
+object before its existing final link. Its complete normal native check repeats
+the same build, selected-suite and 18/8 fixture results. The actual object has
+125 defined global symbols and 28 provider references. Its genuine QOM closure
+required component symbol isolation. Signed source
+`a6bd0cc8571ad77bc4a08a7d684b84536a879878` applies that isolation and completes the
+normal 3,863-action build with six passing suites and 19 passing fixtures; seven
+fixtures remain failing. The owning runner uses actual configured QOM objects and
+link dependencies, verifies all 125 component definitions and 28 provider references,
+and passes both deferred-control mutations at their exact native assertions. All
+60 ABI/license controls also pass against that integration. No generated support
+body was inspected to infer provider semantics or activation. These component
+results do not qualify Source activation, physical CPU-pin return or performance.
+
+Signed source `c1c525a232b485acf878439c1d3049d6224086b3` passes the same complete
+build and six selected suites. Its two shared-body callers now forward the actual
+validated source mapping. Template control drain passes, giving twenty passing
+fixtures and six failing fixtures. Stopped control rearm reaches a real QOM
+`object_unref` declaration dependency instead of the former Python argument error.
+The remaining RAM-worker helper closure still requires genuine bounded-thread
+storage, incoming source-pin closure and provider/runtime qualification.
+
 Current status: QEMU-SIM implementation qualification and final performance
 parity are in progress. All gem5/KVM live evidence above is unavailable; these
 are specified future profiles and remain disabled.
+
+The configured Main/Source and native Root producer bodies are present in source,
+but the plugin installer still refuses callback activation. Group registration
+leaves members inactive, native registry binding returns unavailable, and current
+command-receive custody proves neither a publisher/action parent nor peer return.
+Activation/ingress support editions must remain zero until real issuance and
+teardown are implemented. The existing normal-service native-flight adapter is
+the appropriate later positive consumer; its current presence does not bypass
+this production refusal. Source-unit runtime geometry must also match the genuine
+plugin module, allocator, stack and task claims. Supplying two missing rows or
+changing a roster-only expected total cannot establish that qualification.

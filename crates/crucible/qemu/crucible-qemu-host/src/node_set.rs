@@ -60,6 +60,8 @@ mod fault_channels;
 mod fault_events;
 #[path = "node_set/lifecycle.rs"]
 mod lifecycle;
+#[path = "node_set/whole_shutdown.rs"]
+mod whole_shutdown;
 #[cfg(target_os = "linux")]
 #[path = "node_set/receiving_transfer.rs"]
 mod receiving_transfer;
@@ -173,7 +175,7 @@ pub(crate) mod parent_park_drain;
 
 #[cfg(target_os = "linux")]
 impl QemuNodeSetPreparedHotForkSource<'_> {
-    /// Retains fresh independently admitted RAM resources before child creation.
+    /// Retains fresh RAM descriptors without publishing a source worker.
     ///
     /// The supplied owner and original-start supervisor belong to the target
     /// attempt. Immutable source pages retain their real backing lease, while
@@ -194,6 +196,23 @@ impl QemuNodeSetPreparedHotForkSource<'_> {
         })?;
         self.source
             .prepare_hot_fork_child_ram(registration, supervisor, directory, custody)
+    }
+
+    /// Publishes the already retained child RAM source from its containing transaction.
+    ///
+    /// The caller keeps this source NodeSet and its selected child row in the
+    /// same restoring transaction until every scoped worker has joined. This
+    /// operation retains every born output in the previously installed stage
+    /// before interpreting its independent original postcheck.
+    ///
+    /// # Errors
+    /// Refuses a stale source, an absent stage, or failed source publication.
+    /// Descriptor preparation alone does not permit native stage installation.
+    pub fn publish_child_ram(&mut self) -> Result<(), crate::QemuNodeChannelError> {
+        self.validate_prepared().map_err(|error| {
+            crate::QemuNodeChannelError::new("publish child RAM", error.to_string())
+        })?;
+        self.source.publish_hot_fork_child_ram()
     }
 
     /// Returns the exact source process incarnation bound during preparation.
@@ -590,6 +609,7 @@ fn stagnant_pause_boundary(
 /// A deterministic node-addressed collection of live QEMU backends.
 pub struct QemuNodeSet {
     nodes: BTreeMap<NodeId, QemuNode>,
+    whole_shutdown: whole_shutdown::WholeShutdown,
     permanently_closed: Vec<NodeId>,
     fault_event_staging_budget: Option<QemuFaultEventStagingBudget>,
     pending_selectable_requests: BTreeMap<NodeId, SelectablePlanPendingRequest>,
@@ -783,6 +803,7 @@ impl QemuNodeSet {
     ///
     /// Returns the prior node when `node` was already present.
     pub fn insert(&mut self, node: NodeId, backend: QemuNode) -> Option<QemuNode> {
+        self.invalidate_whole_shutdown();
         self.permanently_closed.retain(|closed| closed != &node);
         self.parked_campaign_markers.remove(&node);
         self.nodes.insert(node, backend)
@@ -793,6 +814,7 @@ impl QemuNodeSet {
     /// This is used only when a replay lifecycle transfers an oracle-validated
     /// node into the authoritative lifecycle at the same configuration.
     pub fn take(&mut self, node: &NodeId) -> Option<QemuNode> {
+        self.invalidate_whole_shutdown();
         self.parked_campaign_markers.remove(node);
         self.nodes.remove(node)
     }
@@ -1246,6 +1268,7 @@ impl QemuNodeSet {
         }
 
         let mut owned = Vec::with_capacity(operations.len());
+        self.invalidate_whole_shutdown();
         for (node, data) in operations {
             let backend = self
                 .nodes
@@ -1352,8 +1375,9 @@ impl QemuNodeSet {
     /// # Errors
     ///
     /// Returns [`BackendError`] without releasing any node when a process has
-    /// not reached terminal reap.
+    /// not reached terminal reap, or its same-invocation RAM return refuses.
     pub fn release_reaped_nodes(&mut self) -> Result<(), BackendError> {
+        self.check_whole_shutdown_entry()?;
         if let Some((node, _backend)) = self
             .nodes
             .iter()
@@ -1367,7 +1391,21 @@ impl QemuNodeSet {
             });
         }
 
-        self.nodes.clear();
+        // Reuse each exact node's saved invocation. Already-reaped children
+        // cause no signal or polite command, and completed leaf returns are
+        // observations. Refusal keeps every containing map slot intact.
+        let mut first = None;
+        for backend in self.nodes.values_mut() {
+            if let Err(error) = SimulationBackend::shutdown(backend)
+                && first.is_none()
+            {
+                first = Some(error);
+            }
+        }
+        if let Some(first) = first {
+            return Err(first);
+        }
+        self.clear_nodes_after_shutdown()?;
         Ok(())
     }
 
@@ -2183,6 +2221,7 @@ impl SimulationBackend for QemuNodeSet {
     }
 
     fn shutdown(&mut self) -> Result<(), BackendError> {
+        self.check_whole_shutdown_entry()?;
         let mut first_error = None;
         for (id, node) in &mut self.nodes {
             if self.permanently_closed.contains(id) {
@@ -2201,7 +2240,7 @@ impl SimulationBackend for QemuNodeSet {
         // Reaping children is not enough to release unlinked attempt files:
         // node-owned channels and host-I/O descriptors must close before the
         // launch authority attests zero project-quota usage.
-        self.nodes.clear();
+        self.clear_nodes_after_shutdown()?;
         Ok(())
     }
 }

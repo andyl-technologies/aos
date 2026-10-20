@@ -15,9 +15,7 @@ use crate::QemuChildProcessContract;
 use crate::artifact_identity::InstallerControlIdentity;
 use crate::spawn::{ConfiguredProcessEnvelope, ProcessEnvelopeRefinementError};
 
-use super::{
-    NativeAccountAttempt, NativeRoster, OriginalActorAccountError, OriginalNativeNodeBinding,
-};
+use super::{NativeAccountAttempt, NativeRoster, OriginalActorAccountError, OriginalNativeNodeBinding};
 
 mod family;
 use family::InstalledProcessFamily;
@@ -33,6 +31,9 @@ pub(crate) use source_admission::{InstalledSourceAdmission, InstalledSourceSubje
 
 mod record;
 mod target;
+
+mod source_cleanup;
+pub(crate) use source_cleanup::{SourceCleanupLender, SourceCleanupOriginal};
 
 pub(super) use record::IssuedInstalledProcessRecord;
 pub(super) use target::verify_subdivision_preparation;
@@ -81,6 +82,10 @@ impl InstalledProcessState {
             + self.pending_workspace_bytes
             + self.journal.pending_startup_bytes
             + self.journal.assigned_startup_bytes
+    }
+
+    pub(super) fn pending_cleanup_is(&self, extent: u64) -> bool {
+        self.pending_cleanup_bytes == extent
     }
 
     pub(super) fn consume_cleanup(&mut self, extent: u64) -> bool {
@@ -483,6 +488,9 @@ impl NativeAccountAttempt {
         )?);
         purpose.ready = true;
         drop(state);
+        contract
+            .bind_helper_receiver(self.helper_cleanup_lender())
+            .map_err(|_| InstalledProcessPurposeError::Identity)?;
         self.require_original()?;
         Ok(())
     }
@@ -824,6 +832,52 @@ impl InstalledProcessPurposeLoan {
 }
 
 impl OriginalNativeNodeBinding {
+    /// Borrows only this first-bound Target's saved physical cleanup origin.
+    ///
+    /// # Errors
+    /// Refuses foreign, retired or unavailable Target incarnation custody.
+    pub(crate) fn target_cleanup_lender(
+        &self,
+    ) -> Result<super::TargetCleanupLoan, OriginalActorAccountError> {
+        let loan = self
+            .installed_process
+            .as_ref()
+            .ok_or(OriginalActorAccountError::Unavailable)?;
+        if loan.subdivision_index != 1
+            || loan.index != self.index
+            || loan.generation != self.generation
+            || !Weak::ptr_eq(&loan.roster, &self.roster)
+        {
+            return Err(OriginalActorAccountError::Unavailable);
+        }
+        let roster = self
+            .roster
+            .upgrade()
+            .ok_or(OriginalActorAccountError::Unavailable)?;
+        let state = roster
+            .try_lock()
+            .map_err(|_| OriginalActorAccountError::Unavailable)?;
+        let slot = state
+            .slots
+            .get(self.index)
+            .filter(|slot| slot.active == Some(self.generation))
+            .ok_or(OriginalActorAccountError::Unavailable)?;
+        let purpose = slot
+            .installed_process
+            .as_ref()
+            .filter(|purpose| purpose.ready && purpose.sound)
+            .ok_or(OriginalActorAccountError::Unavailable)?;
+        purpose.journal.incarnations[1]
+            .as_ref()
+            .filter(|allocation| {
+                allocation.process_generation == loan.process_generation
+                    && !allocation.physical_retired
+            })
+            .ok_or(OriginalActorAccountError::Unavailable)?;
+        slot.fork_target
+            .cleanup_for_process_generation(loan.process_generation)
+    }
+
     /// Binds final physical retirement before any launch resource is created.
     pub(crate) fn retain_launch_cleanup(
         &self,
@@ -966,10 +1020,6 @@ impl OriginalNativeNodeBinding {
         let bytes = record.with_ram_endpoint(ram_endpoint, &corroboration);
         Ok(borrow(&bytes))
     }
-
-    pub(crate) fn installed_process_purpose(&self) -> Option<&InstalledProcessPurposeLoan> {
-        self.installed_process.as_ref()
-    }
 }
 
 impl Drop for InstalledProcessPurposeLoan {
@@ -1034,13 +1084,19 @@ pub(super) fn fresh_launch_control_extent() -> Result<u64, OriginalActorAccountE
         crate::linux_attempt_host::original_node::OriginalNativeFreshLaunchError,
     >())
     .map_err(|_| OriginalActorAccountError::Unavailable)?;
+    let helper_error_bytes =
+        crucible_engine::SharedOperationalCause::<crate::QemuSpawnError>::allocation_bytes()
+            .map_err(|_| OriginalActorAccountError::Unavailable)?;
     let bytes = error_layout
         .pad_to_align()
         .size()
-        .checked_add(
-            usize::from(super::MAX_ORIGINAL_NATIVE_NODE_GENERATIONS)
-                * std::mem::size_of::<Option<OriginalNativeNodeBinding>>(),
-        )
+        .checked_add(helper_error_bytes)
+        .and_then(|bytes| {
+            bytes.checked_add(
+                usize::from(super::MAX_ORIGINAL_NATIVE_NODE_GENERATIONS)
+                    * std::mem::size_of::<Option<OriginalNativeNodeBinding>>(),
+            )
+        })
         .and_then(|bytes| {
             bytes.checked_add(std::mem::size_of::<
                 crate::linux_attempt_host::original_node::OriginalNativeFreshPreparation,
@@ -1091,7 +1147,8 @@ mod lifecycle_tests {
     #[test]
     fn retained_source_reuses_two_concurrent_shares_for_three_successors()
     -> Result<(), InstalledProcessPurposeError> {
-        let mapping = SetupMappingRequest::for_config(crucible_qemu_shmem::RegionConfig::new(1, 64))?;
+        let mapping =
+            SetupMappingRequest::for_config(crucible_qemu_shmem::RegionConfig::new(1, 64))?;
         let mut journal = IncarnationJournal::new(18);
         let source = journal.issue(1, 8, 9, mapping)?;
         assert_eq!(source, 0);
@@ -1154,7 +1211,8 @@ mod lifecycle_tests {
     #[test]
     fn failed_retirement_accounting_keeps_the_entire_assigned_share()
     -> Result<(), InstalledProcessPurposeError> {
-        let mapping = SetupMappingRequest::for_config(crucible_qemu_shmem::RegionConfig::new(1, 64))?;
+        let mapping =
+            SetupMappingRequest::for_config(crucible_qemu_shmem::RegionConfig::new(1, 64))?;
         let mut journal = IncarnationJournal::new(18);
         let index = journal.issue(7, 8, 9, mapping)?;
         let allocation = journal.incarnations[index].as_mut().unwrap();

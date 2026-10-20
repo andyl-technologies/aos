@@ -157,6 +157,66 @@ pub enum QemuNodeError {
         #[source]
         source: crate::QemuAsyncDriverHealthError,
     },
+    /// The nominal Target binding could not lend its actual cleanup origin.
+    #[error("retain Target RAM cleanup: {source}")]
+    RamCleanupLender {
+        /// Actual canonical binding/roster refusal without diagnostic erasure.
+        #[source]
+        source: BackendOperationalCause,
+    },
+    /// A saved lender refusal precedes this same stage's independent cleanup.
+    #[error("{first}; later staged RAM cleanup: {later}")]
+    RamStageCleanup {
+        /// First actual nominal-lender failure, retained without another issuer.
+        first: BackendOperationalCause,
+        /// Later actual physical cleanup or saved-original history.
+        #[source]
+        later: Box<QemuNodeError>,
+    },
+    /// Staged source publication retained its actual first and independent posts.
+    #[error(
+        "staged RAM source preparation refused: first={first:?}; observations={observations:?}; completed={completed}"
+    )]
+    RamStagePreparation {
+        /// Actual source creation failure retained before diagnostic formatting.
+        #[source]
+        first: Option<BackendOperationalCause>,
+        /// Saved Preparation entry, independent post, and completion result.
+        observations: [Option<HostSupervisionError>; 3],
+        /// Actual completion effect, which does not erase a negative post.
+        completed: bool,
+    },
+    /// The actual monitor close returned a refusal or ambiguous result.
+    #[error("staged RAM monitor close: {source}")]
+    RamStageClose {
+        /// Complete first channel failure before any later factual return.
+        #[source]
+        source: QemuNodeChannelError,
+    },
+    /// Actual RAM returns remain incomplete in this same node.
+    #[error("node RAM cleanup remains physically pending")]
+    RamCleanupPending,
+    /// Complete raw RAM leaf histories retained after their independent posts.
+    #[error("node RAM cleanup refused: sources={sources:?}; controllers={controllers:?}")]
+    RamCleanup {
+        /// Actual staged target cleanup under its distinct saved lender.
+        #[source]
+        stage: Option<Box<QemuNodeError>>,
+        /// Latest independently observed stage failure; the first stays above.
+        stage_latest: Option<Box<QemuNodeError>>,
+        /// Source histories for staged, direct and installed-fork bodies.
+        sources: [Option<crate::ram_source::QemuRamSourceStopHistory>; 3],
+        /// Direct and fork controller-return histories.
+        controllers: [Option<crate::ram_control::RamControlRetirementHistory>; 2],
+    },
+    /// An initiating process failure and independent RAM return both refused.
+    #[error("{first}; independent RAM return: {ram}")]
+    ShutdownAndRam {
+        /// Actual initiating process or Original failure.
+        first: Box<QemuNodeError>,
+        /// Independent actual RAM cleanup history.
+        ram: Box<QemuNodeError>,
+    },
     /// A timed-out channel failed before its independent physical shutdown.
     #[error("{first}; crash status={status:?}; shutdown refusal: {shutdown}")]
     ShutdownAfterChannelFailure {
@@ -313,6 +373,49 @@ pub enum QemuNodeError {
 }
 
 impl QemuNodeError {
+    fn shutdown_original_failure(&self) -> Option<HostSupervisionError> {
+        match self {
+            Self::ShutdownOriginal {
+                begin,
+                observations,
+                completion,
+                ..
+            } => begin
+                .or_else(|| observations.iter().find_map(|(pre, post)| pre.or(*post)))
+                .or(*completion),
+            Self::ShutdownAndRam { first, .. } => first.shutdown_original_failure(),
+            Self::RamStagePreparation { observations, .. } => {
+                observations.iter().copied().flatten().next()
+            }
+            Self::RamCleanup {
+                stage,
+                sources,
+                controllers,
+                ..
+            } => {
+                if let Some(stage) = stage {
+                    return stage.shutdown_original_failure();
+                }
+                sources
+                    .iter()
+                    .flatten()
+                    .find_map(|history| {
+                        history
+                            .observations
+                            .iter()
+                            .find_map(|(pre, post)| pre.or(*post))
+                    })
+                    .or_else(|| {
+                        controllers
+                            .iter()
+                            .flatten()
+                            .find_map(|history| history.before.or(history.after))
+                    })
+            }
+            _ => None,
+        }
+    }
+
     /// Attaches a node channel role to a channel-local error.
     #[must_use]
     pub fn from_channel(plane: QemuNodeChannelPlane, source: QemuNodeChannelError) -> Self {
@@ -324,7 +427,7 @@ impl QemuNodeError {
     }
 
     /// Retains a source cleanup cause without replacing its worker allocation.
-    #[cfg(target_os = "linux")]
+    #[cfg(all(test, target_os = "linux"))]
     pub(crate) fn from_ram_source_cleanup(
         operation: &'static str,
         source: crate::ram_source::QemuRamSourceError,
@@ -420,10 +523,108 @@ impl From<QemuNodeError> for BackendError {
                 }
                 error
             }
-            error @ (QemuNodeError::Shutdown { .. }
-            | QemuNodeError::ShutdownAfterChannelFailure { .. }) => {
+            QemuNodeError::RamCleanup {
+                stage,
+                stage_latest,
+                mut sources,
+                controllers,
+            } => {
+                // A sole worker cause already owns its original allocation and
+                // lease. Reuse it instead of allocating another report owner.
+                let sole_worker = stage.is_none()
+                    && stage_latest.is_none()
+                    && controllers.iter().all(Option::is_none)
+                    && sources.iter().flatten().count() == 1
+                    && sources.iter().flatten().all(|history| {
+                        history.worker.is_some()
+                            && history.cancellation.is_none()
+                            && history.panic.is_none()
+                            && history.native.is_none()
+                            && !history.uncertain
+                            && history
+                                .observations
+                                .iter()
+                                .all(|(pre, post)| pre.is_none() && post.is_none())
+                    });
+                if sole_worker {
+                    for history in sources.iter_mut().flatten() {
+                        if let Some(worker) = history.worker.take() {
+                            let source = crate::QemuAsyncDriverHealthError::ram_source(
+                                crate::ram_source::QemuRamSourceError::WorkerFailed(worker),
+                            );
+                            return Self::RetainedOperationalFailure {
+                                kind: source.operational_kind(),
+                                source: source.into_backend_cause(),
+                            };
+                        }
+                    }
+                }
+                let kind = stage
+                    .as_ref()
+                    .map(|first| {
+                        first.shutdown_original_failure().map_or(
+                            BackendOperationalFailureKind::Unavailable,
+                            operational_failure_kind,
+                        )
+                    })
+                    .unwrap_or_else(|| {
+                        sources
+                            .iter()
+                            .flatten()
+                            .find_map(|history| {
+                                history
+                                    .observations
+                                    .iter()
+                                    .find_map(|(pre, post)| pre.or(*post))
+                            })
+                            .or_else(|| {
+                                controllers
+                                    .iter()
+                                    .flatten()
+                                    .find_map(|history| history.before.or(history.after))
+                            })
+                            .map_or(
+                                BackendOperationalFailureKind::Unavailable,
+                                operational_failure_kind,
+                            )
+                    });
                 return Self::RetainedOperationalFailure {
-                    kind: BackendOperationalFailureKind::Unavailable,
+                    kind,
+                    source: BackendOperationalCause::new(QemuNodeError::RamCleanup {
+                        stage,
+                        stage_latest,
+                        sources,
+                        controllers,
+                    }),
+                };
+            }
+            error @ QemuNodeError::ShutdownAndRam { .. } => {
+                let kind = match &error {
+                    QemuNodeError::ShutdownAndRam { first, .. } => {
+                        first.shutdown_original_failure().map_or(
+                            BackendOperationalFailureKind::Unavailable,
+                            operational_failure_kind,
+                        )
+                    }
+                    _ => BackendOperationalFailureKind::Unavailable,
+                };
+                return Self::RetainedOperationalFailure {
+                    kind,
+                    source: BackendOperationalCause::new(error),
+                };
+            }
+            error @ (QemuNodeError::Shutdown { .. }
+            | QemuNodeError::ShutdownAfterChannelFailure { .. }
+            | QemuNodeError::RamCleanupLender { .. }
+            | QemuNodeError::RamStageCleanup { .. }
+            | QemuNodeError::RamStageClose { .. }
+            | QemuNodeError::RamStagePreparation { .. }
+            | QemuNodeError::RamCleanupPending) => {
+                return Self::RetainedOperationalFailure {
+                    kind: error.shutdown_original_failure().map_or(
+                        BackendOperationalFailureKind::Unavailable,
+                        operational_failure_kind,
+                    ),
                     source: BackendOperationalCause::new(error),
                 };
             }

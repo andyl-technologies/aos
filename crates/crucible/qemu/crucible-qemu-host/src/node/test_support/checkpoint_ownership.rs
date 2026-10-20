@@ -45,7 +45,8 @@ struct Observations {
 }
 
 struct Registrar {
-    client: Mutex<RamControlClient>,
+    target: HostRamTarget,
+    client: Mutex<Option<RamControlClient>>,
     observations: Arc<Mutex<Observations>>,
 }
 
@@ -56,7 +57,11 @@ impl RamControlRegistrar for Registrar {
     ) -> Result<crate::ram_control::CheckpointArmReceipt, CheckpointOriginalError> {
         self.observations.lock().unwrap().original_id =
             Some(loan.original().guard().status().unwrap().operation_id);
-        self.client.lock().unwrap().checkpoint_arm(loan)
+        let mut client = self.client.lock().unwrap();
+        let client = client.as_mut().ok_or_else(|| {
+            CheckpointOriginalError::before(crate::CheckpointOriginalCause::MissingOwner)
+        })?;
+        client.checkpoint_arm(loan)
     }
 
     fn register(
@@ -68,6 +73,26 @@ impl RamControlRegistrar for Registrar {
         _: Option<RamControlClient>,
     ) -> Result<(), RamControlError> {
         Err(RamControlError::AuthorityMismatch)
+    }
+
+    fn prepare_retirement_after_cleanup(
+        &self,
+        target: HostRamTarget,
+    ) -> crate::ram_control::RamControlRetirementOutcome {
+        crate::ram_control::RamControlRetirementOutcome::from_known((|| {
+            if target != self.target {
+                return Err(RamControlError::AuthorityMismatch);
+            }
+            let mut client = self
+                .client
+                .try_lock()
+                .map_err(|_| RamControlError::AuthorityMismatch)?;
+            let client = client.take().ok_or(RamControlError::AuthorityMismatch)?;
+            // This returns only the actual component controller borrower. The
+            // wire peer, cancellation aliases and final join remain owned.
+            drop(client);
+            Ok(())
+        })())
     }
 }
 
@@ -157,7 +182,8 @@ impl Ownership {
             spill_quota_bytes: 0,
             host_services: account,
             registrar: Arc::new(Registrar {
-                client: Mutex::new(client),
+                target,
+                client: Mutex::new(Some(client)),
                 observations: observations.clone(),
             }),
         };
@@ -274,8 +300,15 @@ impl Drop for Ownership {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
         let _ = self.wake.shutdown(Shutdown::Both);
-        if let Some(peer) = self.peer.take() {
-            let result = peer.join();
+        let joined = self.peer.take().map(JoinHandle::join);
+        {
+            // Controller EOF does not return the QMP borrow. The actual
+            // received aliases stay here until this final owner is destroyed.
+            let mut observed = self.observations.lock().unwrap();
+            observed.aliases.clear();
+            observed.alias_closed = true;
+        }
+        if let Some(result) = joined {
             if !std::thread::panicking() {
                 assert!(
                     matches!(result, Ok(Ok(()))),
@@ -288,18 +321,6 @@ impl Drop for Ownership {
 
 fn channel(operation: &'static str, error: impl std::fmt::Display) -> QemuNodeChannelError {
     QemuNodeChannelError::new(operation, error.to_string())
-}
-
-struct Aliases {
-    observations: Arc<Mutex<Observations>>,
-}
-
-impl Drop for Aliases {
-    fn drop(&mut self) {
-        let mut observed = self.observations.lock().unwrap();
-        observed.aliases.clear();
-        observed.alias_closed = true;
-    }
 }
 
 fn serve_ram(
@@ -376,9 +397,6 @@ fn serve_ram_loop(
         RamControlMessage::Request(RamControlRequest::Hello)
     ));
     write_ram_control(&mut stream, &hello_reply(hello)?).map_err(io::Error::other)?;
-    let _aliases = Aliases {
-        observations: observations.clone(),
-    };
     while !stop.load(Ordering::Acquire) {
         let mut first = [0];
         let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(1))];
@@ -534,6 +552,237 @@ impl QmpTimeoutStream for Wire {
         Ok(())
     }
     fn set_qmp_write_timeout(&mut self, _: Duration) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod retirement_tests {
+    use super::*;
+    use crate::ram_control::{
+        RamCleanupOriginal, RamControlRetirementDisposition, RamControlRetirementProgress,
+    };
+
+    struct ClientFixture {
+        registrar: Registrar,
+        peer: Option<JoinHandle<io::Result<()>>>,
+    }
+
+    #[derive(Debug, thiserror::Error)]
+    #[error("{first}; actual peer join: {peer:?}")]
+    struct ConnectionFailure {
+        #[source]
+        first: RamControlError,
+        peer: Option<std::thread::Result<io::Result<()>>>,
+    }
+
+    impl ClientFixture {
+        fn new() -> Result<Self, Box<dyn Error>> {
+            Self::with_handshake_refusal(false)
+        }
+
+        fn with_handshake_refusal(refuse: bool) -> Result<Self, Box<dyn Error>> {
+            let supervisor = HostOperationSupervisor::new(fixture_budgets(), None)?;
+            let target = HostRamTarget {
+                daemon_epoch: [1; 32],
+                owner_id: [2; 32],
+                node_id: [3; 32],
+                owner_generation: 1,
+                arena_generation: 1,
+                retained_template: false,
+            };
+            let (host, mut remote) = UnixStream::pair()?;
+            remote.set_read_timeout(Some(Duration::from_secs(2)))?;
+            let mut fixture = Self {
+                registrar: Registrar {
+                    target,
+                    client: Mutex::new(None),
+                    observations: Arc::new(Mutex::new(Observations::default())),
+                },
+                peer: None,
+            };
+            fixture.peer = Some(std::thread::spawn(move || {
+                let hello = read_ram_control(&mut remote)
+                    .map_err(io::Error::other)?
+                    .ok_or_else(|| io::Error::other("missing component Hello"))?;
+                let mut reply = hello_reply(hello)?;
+                if refuse {
+                    reply.session[0] ^= 1;
+                }
+                write_ram_control(&mut remote, &reply).map_err(io::Error::other)?;
+                let mut byte = [0];
+                assert_eq!(remote.read(&mut byte)?, 0, "actual client must close");
+                Ok(())
+            }));
+            let client =
+                match RamControlClient::connect_supervised(host, [4; 32], target, supervisor) {
+                    Ok(client) => client,
+                    Err(first) => {
+                        // The consumed failed client closes the sole host stream.
+                        // EOF wakes the same peer; retain both actual outcomes.
+                        let peer = fixture.peer.take().map(JoinHandle::join);
+                        return Err(Box::new(ConnectionFailure { first, peer }));
+                    }
+                };
+            *fixture.registrar.client.get_mut().unwrap() = Some(client);
+            Ok(fixture)
+        }
+    }
+
+    impl Drop for ClientFixture {
+        fn drop(&mut self) {
+            // Exclusive fixture destruction closes the retained real client
+            // even when the negative control intentionally poisoned its lock.
+            let client = self
+                .registrar
+                .client
+                .get_mut()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            drop(client.take());
+            if let Some(peer) = self.peer.take() {
+                let result = peer.join();
+                if !std::thread::panicking() {
+                    assert!(matches!(result, Ok(Ok(()))), "wire close: {result:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn refused_actual_handshake_closes_and_joins_the_same_peer() {
+        let error = match ClientFixture::with_handshake_refusal(true) {
+            Ok(_) => panic!("foreign-session Hello must refuse construction"),
+            Err(error) => error,
+        };
+        let failure = error.downcast_ref::<ConnectionFailure>().unwrap();
+        assert!(matches!(failure.first, RamControlError::AuthorityMismatch));
+        assert!(matches!(failure.peer, Some(Ok(Ok(())))));
+    }
+
+    #[test]
+    fn component_return_authenticates_target_and_takes_the_actual_client_once()
+    -> Result<(), Box<dyn Error>> {
+        let fixture = ClientFixture::new()?;
+        let registrar = &fixture.registrar;
+        let mut foreign = registrar.target;
+        foreign.owner_generation += 1;
+
+        let refused = registrar.prepare_retirement_after_cleanup(foreign);
+        assert_eq!(
+            refused.disposition,
+            RamControlRetirementDisposition::NotReturned
+        );
+        assert!(matches!(
+            refused.failure,
+            Some(RamControlError::AuthorityMismatch)
+        ));
+        assert!(registrar.client.try_lock().unwrap().is_some());
+        {
+            let held = registrar.client.lock().unwrap();
+            let refused = registrar.prepare_retirement_after_cleanup(registrar.target);
+            assert_eq!(
+                refused.disposition,
+                RamControlRetirementDisposition::NotReturned
+            );
+            assert!(matches!(
+                refused.failure,
+                Some(RamControlError::AuthorityMismatch)
+            ));
+            assert!(held.is_some());
+        }
+
+        let returned = registrar.prepare_retirement_after_cleanup(registrar.target);
+        assert_eq!(
+            returned.disposition,
+            RamControlRetirementDisposition::Returned
+        );
+        assert!(returned.failure.is_none());
+        assert!(registrar.client.try_lock().unwrap().is_none());
+        let absent = registrar.prepare_retirement_after_cleanup(registrar.target);
+        assert_eq!(
+            absent.disposition,
+            RamControlRetirementDisposition::NotReturned
+        );
+        assert!(matches!(
+            absent.failure,
+            Some(RamControlError::AuthorityMismatch)
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn poisoned_component_client_refuses_without_taking_its_body() -> Result<(), Box<dyn Error>> {
+        let fixture = ClientFixture::new()?;
+        let registrar = &fixture.registrar;
+        let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let held = registrar.client.lock().unwrap();
+            assert!(held.is_some());
+            panic!("component client observation becomes unavailable");
+        }));
+        assert!(poisoned.is_err());
+
+        let refused = registrar.prepare_retirement_after_cleanup(registrar.target);
+        assert_eq!(
+            refused.disposition,
+            RamControlRetirementDisposition::NotReturned
+        );
+        assert!(matches!(
+            refused.failure,
+            Some(RamControlError::AuthorityMismatch)
+        ));
+        let Err(std::sync::TryLockError::Poisoned(poisoned)) = registrar.client.try_lock() else {
+            panic!("the actual client mutex must remain poisoned");
+        };
+        assert!(poisoned.get_ref().is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn actual_client_return_keeps_both_saved_original_refusals_without_replay()
+    -> Result<(), Box<dyn Error>> {
+        let owner = Ownership::new(false)?;
+        let original = owner.supervisor.begin(HostOperationClass::Cleanup)?;
+        let identity = original.status()?.operation_id;
+        let (revision, mut budgets) = owner.supervisor.budgets()?;
+        budgets.classes[HostOperationClass::Cleanup as usize] =
+            HostOperationBudget::finite(Duration::from_nanos(1));
+        owner.supervisor.update_budgets(revision, budgets)?;
+        assert!(original.wait_slice().is_err());
+        let mut progress = RamControlRetirementProgress::new();
+        let same_original = Some(RamCleanupOriginal::direct(&original, &owner.supervisor));
+
+        let (returned, status) = progress.return_controller(&owner.registration, same_original);
+        assert!(returned);
+        let first = status.unwrap_err();
+        assert!(first.first.is_none());
+        assert!(matches!(first.before,
+            Some(crucible_host_resources::host_supervision::HostSupervisionError::DeadlineExpired {
+                operation_id, ..
+            }) if operation_id == identity));
+        assert!(matches!(first.after,
+            Some(crucible_host_resources::host_supervision::HostSupervisionError::DeadlineExpired {
+                operation_id, ..
+            }) if operation_id == identity));
+        assert!(
+            owner.peer.is_some(),
+            "the actual peer/join owner remains held"
+        );
+
+        let (returned, repeated) = progress.return_controller(&owner.registration, same_original);
+        assert!(returned);
+        repeated?;
+        let absent = owner
+            .registration
+            .registrar
+            .prepare_retirement_after_cleanup(owner.registration.target);
+        assert_eq!(
+            absent.disposition,
+            RamControlRetirementDisposition::NotReturned
+        );
+        assert!(matches!(
+            absent.failure,
+            Some(RamControlError::AuthorityMismatch)
+        ));
         Ok(())
     }
 }

@@ -84,9 +84,6 @@ fn run() -> Result<(), Box<dyn Error>> {
         if let Err(mut error) =
             directory.prepare_fresh_artifacts_guarded(qemu, None, owner.process_contract()?)
         {
-            if let Some(child) = error.take_unreaped_child() {
-                owner.retain_failed_child(child);
-            }
             return Err(error.into());
         }
         let launch_config = config.clone().with_run_directory(directory.path());
@@ -101,9 +98,6 @@ fn run() -> Result<(), Box<dyn Error>> {
         ) {
             Ok(node) => node,
             Err(mut error) => {
-                if let Some(child) = error.take_unreaped_child() {
-                    owner.retain_failed_child(child);
-                }
                 return Err(error.into());
             }
         };

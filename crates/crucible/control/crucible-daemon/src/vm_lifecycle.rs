@@ -110,10 +110,6 @@ pub use fault_implementation::{
 #[cfg(target_os = "linux")]
 mod hot_fork;
 #[cfg(target_os = "linux")]
-pub use hot_fork::{
-    ProductionVmHotForkSourcePreparationError, ProductionVmHotForkSourcePreparationHistory,
-};
-#[cfg(target_os = "linux")]
 pub(crate) use hot_fork::TargetSourceBackends;
 #[cfg(target_os = "linux")]
 pub(crate) use hot_fork::{
@@ -128,6 +124,10 @@ pub use hot_fork::{
     ProductionVmHotForkNodeServiceState, ProductionVmHotForkSourceWorld,
     ProductionVmHotForkSourceWorldPreparationFailure, ProductionVmHotForkSourceWorldResourceUsage,
     ProductionVmHotForkWorldContinuation,
+};
+#[cfg(target_os = "linux")]
+pub use hot_fork::{
+    ProductionVmHotForkSourcePreparationError, ProductionVmHotForkSourcePreparationHistory,
 };
 #[cfg(all(target_os = "linux", any(test, feature = "test-support")))]
 pub use hot_fork::{
@@ -1150,6 +1150,9 @@ pub struct ProductionVmLifecycleLoop {
     node_leases: BTreeMap<NodeId, Box<dyn ProductionVmNodeLease>>,
     node_lease_cleanup_failed: bool,
     retained_cleanup_failure: Option<ProductionVmConstructionCleanupError>,
+    terminal_replacements: Vec<quantum_loop::PreparedTerminalReplacement>,
+    terminal_replacement_values: Vec<Option<QemuNode>>,
+    terminal_replacement_leases: BTreeMap<NodeId, Box<dyn ProductionVmNodeLease>>,
     node_service_states: BTreeMap<NodeId, ProductionNodeServiceState>,
     lifecycle_journal: ProductionLifecycleJournal,
     lifecycle_persistence: LifecycleStatePersistence,
@@ -1981,7 +1984,7 @@ impl ProductionVmNodeLaunch {
         (self.node, self.lease)
     }
 
-    fn quarantine_and_finish(mut self) -> Result<(), SchedulerError> {
+    fn quarantine_and_finish(&mut self) -> Result<(), SchedulerError> {
         self.node.force_quarantine_and_reap().map_err(|error| {
             SchedulerError::BoundaryViolation {
                 message: format!("reap launched QEMU generation: {error}"),
@@ -2965,3 +2968,17 @@ pub use hot_fork::{
     ProductionVmHotForkSourceRetirementHistory, SourceRearmHistory, SourceRetirementCause,
     SourceRetirementRefusal,
 };
+
+/// Prices the existing terminal transaction buffers in their Source World.
+pub(crate) fn terminal_replacement_control_bytes(
+    selected: usize,
+) -> Result<u64, LifecycleApiError> {
+    let rows = std::alloc::Layout::array::<quantum_loop::PreparedTerminalReplacement>(selected)
+        .map_err(|_| loop_factory_error("terminal replacement row extent overflows"))?;
+    let values = std::alloc::Layout::array::<Option<QemuNode>>(selected)
+        .map_err(|_| loop_factory_error("terminal replacement value extent overflows"))?;
+    rows.size()
+        .checked_add(values.size())
+        .and_then(|bytes| u64::try_from(bytes).ok())
+        .ok_or_else(|| loop_factory_error("terminal replacement transaction extent overflows"))
+}

@@ -431,6 +431,9 @@ pub(super) const CONTRACT: Contract = Contract {
         ));
     }
     lifecycle
+        .retire_terminal_replacement_transaction()
+        .map_err(ProductionVmConstructionCleanupError::Scheduler)?;
+    lifecycle
         .inner
         .backend_mut()
         .shutdown()

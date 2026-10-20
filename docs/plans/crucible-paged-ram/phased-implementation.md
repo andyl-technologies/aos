@@ -46,32 +46,50 @@ Source lifetime. Only actual child wait/reap and proven physical cleanup permit
 retirement; kill, copied process identifiers and local uniqueness do not.
 
 Execution still reserves full guest RAM and evicts at paused boundaries. The
-host receiver refuses before execution until the matching native constructor,
-role lender and installed-artifact proof are joined. Native kernel and
-participant custody, controller standing-owner consumption, complete RAM cleanup,
-and the whole-Source Root adapter remain incomplete or unqualified. Smaller
-initial and steady physical peaks and CPU/elapsed-time parity remain unproved.
+configured Main/Source ownership path and native Root observation bodies exist,
+but plugin registration still ends at explicit callback-activation refusal.
+Native groups remain inactive, registry binding refuses and command-receive
+custody supplies neither a live publisher/action parent nor genuine peer return.
+The support declaration retains activation and ingress edition zero. Actual
+activation and CPU-use issuance, complete diagnostic payload funding and native
+physical-return qualification remain open. Smaller initial and steady physical
+peaks and CPU/elapsed-time parity remain unproved.
 
-The full workspace runtime totals below cover host commit `58e0383d92` and its
-documentation-only successor `321921959d`. Focused validation additionally covers
-the native worker, diagnostic and schema-owner cutovers described below. Native cleanup
-component validation covers source `64e15551afefa730e3919aa4c63dd3d1139637e4`;
-the complete build additionally covers its one-test-file successor
-`7754cef75d9333b943b731c4634226d025e1cce6`. Local Cargo uses the AOS toolchain
-with remote builders disabled; a packaged Rust application build is not a
-prerequisite for development validation.
+The evidence below distinguishes the last complete workspace run from the
+current whole-node RAM cleanup changes. Local Cargo uses the AOS toolchain with
+remote builders disabled; a packaged Rust application build is not a prerequisite.
+Passing historical results do not qualify the later ownership changes.
 
 | Surface | Latest local evidence | Remaining qualification |
 | --- | --- | --- |
-| Workspace | All 520 current test targets compile; workspace doctests have 41 passes and 26 existing ignored cases. The 510 non-daemon targets complete with 12,085 passes, 88 failures and 75 ignored tests. Targeted reruns resolve 26 tool/configuration failures and ten watcher failures without assertion or deadline changes. | Remaining fixture, integration, source-policy and behavioral failures require triage; this is not a passing workspace run. |
-| Daemon | All targets and features: 1,890 passes, 47 existing ignored tests; six doctests pass. The library accounts for 1,874 passes and 43 ignored tests. | Ignored integration flights and genuine native execution remain required. |
-| Source policy | 64 passes; the broad integration gate still fails on the same 15 unclassified paths. The current worker and owned-process mutation controls pass. | Complete the owning caller cutovers and their source contracts. |
-| Boundary and hygiene | All 27 unsafe/ABI/license controls and all five engineering hygiene controls pass. | Recheck affected boundaries after further changes. |
-| Native build | Source `7754cef75d93`: signed source reconstruction, all 3,863 C compile/link actions and six selected native suites pass. | Standalone fixtures have 18 passes and eight failures: seven dependency closures and the mandatory launched capture lifecycle. |
-| Native cleanup | All four changed production C units pass syntax checks; the actual generated fixture compiles and links. Ten new controls, the replacement capacity control and four separately compiled causal mutations pass their exact checks. | Positive RCU grace, launched capture and resource/performance qualification remain required. |
-| Native Source unit | All 182 scenarios were attempted: 166 pass and 16 fail. Each failure reproduces the identical assertion and signal in the predecessor binary. | Genuine role/module funding, provider enrollment, activation and physical return remain unqualified. |
-| Worker and diagnostic cutovers | Host resources, QEMU host and plugin: 2,716 passes across 43 targets, with five existing ignored tests. Campaign: 448 passes. All twelve diagnostic controls pass across the standalone and composed CLI targets. | Whole-VM execution and complete Source/RAM teardown remain unqualified. |
-| Native settlement fixture | Source `7754cef75d93`: all 112 publication cases, 16 intentional waits and the control boundary pass with genuine QOM/support linkage. Exact guard deletion produces SIGABRT at its blocked-count assertion. | The complete native gate preserves the eight other fixture failures; component success does not qualify Source or CPU activation. |
+| Workspace | All 520 test targets compile after the whole-node RAM cleanup cutover. Workspace doctests also pass after that cutover: 41 passes and 26 ignored cases. Before the cutover, the 510 non-daemon targets completed with 12,085 passes, 88 failures and 75 ignored tests. | Rerun the complete workspace after the affected integration failures are fixed. Earlier targeted tool/configuration and watcher reruns do not establish a passing workspace. |
+| Affected host, daemon and test support | All 68 all-target, all-feature targets complete: 3,611 passes, eleven failures and 51 ignored tests. The daemon library passes all 1,881 active tests, including the physical 512 MiB quota case. The host library has 1,210 passes, eight guarded-helper failures and four ignored tests. | The three source-policy failures include two stale shutdown companions, subsequently repaired and rerun below. The eight helper paths still need genuine receiving and funding integration. |
+| New RAM cleanup controls | All 22 cleanup controls, both registry controls and all eight whole-set teardown controls pass in the affected runtime run. The latter include actual descriptor destruction and a panicking node-field destructor that permanently refuses return. | Component success does not qualify complete native provider return, failure payload funding or lower physical peaks. |
+| Source policy | All 66 specific controls pass, including the imported replay terminal route. The broad gate reports 21 paths: fourteen daemon and seven host paths, one fewer than the preceding whole-node run. An obsolete baseline entry for the relocated RAM wait was removed without a replacement waiver. | Complete the owning caller cutovers. Scanner bounds, classification and assertions remain unchanged. |
+| Boundary and hygiene | All 65 unsafe/ABI/license controls pass against the current cleanup implementation. All five hygiene controls, 36 harness controls and both Rust documentation controls pass. Eight content-bound review records were refreshed after source review using the unchanged counter. | Keep original shape limits and recheck subsequent functional changes. |
+| Native build | Signed source `c1c525a232b4` completes all 3,863 C compile/link actions and six selected suites. Standalone fixtures now have 20 passes and six failures; template control drain passes after its validated-source caller repair. | Resolve the remaining callback dependency closures and mandatory launched capture lifecycle failures. |
+| Deferred control | The retained object has 124 private component definitions plus `main` and 28 genuine provider references. The owning runner resolves QOM support from the configured Meson build. All positive scenarios and both exact native assertion mutations pass. | Component linkage and runtime checks supply no Source activation or physical CPU-pin return evidence. |
+| Native cleanup | All four changed production C units pass syntax checks; the actual generated fixture compiles and links. Ten new controls, the replacement capacity control and four independently rebuilt causal mutations pass their exact checks. | Positive RCU grace, launched capture and resource/performance qualification remain required. |
+| Native Source unit | The earlier 182-scenario attempt has 166 passes and sixteen failures, matching predecessor assertions and signals. A cleanup fixture still supplies a three-row request where runtime reservation now requires actual RUN and teardown control rows. | Rows alone cannot supply genuine matched-module layouts, funding, constructors or worker return. Positive lifecycle qualification belongs in a paired normal-service flight, without introducing a QEMU/plugin package dependency cycle. |
+| Earlier worker and diagnostic cutovers | Before whole-node RAM changes: 2,716 passes across 43 host-resource, QEMU-host and plugin targets; campaign 448 passes; twelve owned-process diagnostic controls pass in both CLI targets. | Later host/daemon integration failures supersede the historical host-runtime pass claim. |
+| Native settlement fixture | All 112 publication cases, 16 intentional waits and the control boundary pass with genuine QOM/support linkage. Exact guard deletion aborts at its blocked-count assertion. | Component success does not qualify Source or CPU activation. |
+
+Whole-node shutdown now keeps one continuation through process reap, RAM service
+return and controller retirement. Physical closure, initiating failure and
+independent boundary checks remain separate facts. Failed construction retains
+the same issued child or completed node and its saved lender; terminal generation
+replacement returns the old node before releasing its lease. Main joins the same
+worker handles before restoring their borrowed Source entries, including unwind.
+The controls include a real held TLS destructor, retained failure, unavailable
+borrowers and restoration ordering. They do not prove that libc has released its
+cached stack storage or that every native provider is joined.
+
+Helper failure history still needs complete allocation funding and a receiving
+Main lifetime independent of Native roster ownership. Current quarantine retains
+funding rather than claiming cleanup completion. Neither detaching a Weak lender
+nor relaxing the quarantine establishes a valid handoff. General lower initial
+or steady resident peaks, native activation and zero-regression CPU/wall evidence
+remain outstanding.
 
 The native worker owner consumes the real Rust handle before polling, retains
 EBUSY and unexpected status, and latches actual task/TLS return before the

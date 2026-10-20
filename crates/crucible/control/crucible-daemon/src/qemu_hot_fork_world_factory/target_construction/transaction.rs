@@ -118,9 +118,6 @@ where
         if !self.exchange_preborn_rows() {
             return false;
         }
-        // Metadata contention may defer this original header return until the
-        // exact terminal parent projection. It never grants native work.
-        self.try_return_scratch_rows();
         // The assembly, its continuation and all later admitted children now
         // remain fields of the same Main owner before any native operation.
         self.assembly = Some(QemuHotForkWorldAssembly::new(continuation));
@@ -165,36 +162,21 @@ where
         if !self.take_source_backends() {
             return false;
         }
-        let worked = match (
-            self.source_backends.as_mut(),
-            self.nodes.as_mut(),
-            self.worker_geometry,
-        ) {
-            (Some(backends), Some(rows), Some(geometry)) => {
-                backends.nodes.with_prepared_hot_fork_sources_concurrent(
-                    &backends.prepared,
-                    rows,
-                    geometry,
-                    |row| &row.node,
-                    |source, row| {
-                        #[cfg(test)]
-                        row.launch_measured(source);
-                        #[cfg(not(test))]
-                        row.launch(source);
-                    },
-                    TargetNodeConstruction::record_worker_panic,
-                )
-            }
-            _ => return false,
+        let Some(worked) = ({
+            let mut source = RetainedSourceRows { pending: self };
+            source.launch()
+        }) else {
+            return self.refuse_setup("retained Source worker rows are absent");
         };
         if let Err(first) = worked {
             self.first_setup = Some(TargetSetupFailure::Workers(first));
         }
         // All started workers have joined. Restore only metadata before any
         // Source-parent reconciliation callback can observe the child.
-        if !self.restore_source_backends() || self.first_failure().is_some() {
+        if self.source_backends.is_some() || self.first_failure().is_some() {
             return false;
         }
+        self.try_return_scratch_rows();
         self.admit_selected_children(shutdown, async_policy)
             && self.publish_selected_world()
             && self.prepare_scheduler_adoptions()
@@ -535,5 +517,64 @@ where
             drop(row.supervisor.take());
         }
         true
+    }
+}
+
+/// Borrows the actual installed Pending through the complete scoped worker cut.
+///
+/// Both backend Nodes and child rows stay in that same body. Unwind joins the
+/// scoped workers before this guard restores the map; a refused restoration
+/// leaves it in Pending rather than dropping or exporting any RAM owner.
+struct RetainedSourceRows<'a, F>
+where
+    F: QemuAttemptResourceGuardFactory + Send + 'static,
+    F::Guard: QemuAttemptProcessResourceGuard + Send + 'static,
+{
+    pending: &'a mut PendingTargetConstruction<F>,
+}
+
+impl<F> RetainedSourceRows<'_, F>
+where
+    F: QemuAttemptResourceGuardFactory + Send + 'static,
+    F::Guard: QemuAttemptProcessResourceGuard
+        + QemuHotForkChildProcessOwner<Authority = LinuxQemuHotForkChildProcessAuthority>
+        + Send
+        + 'static,
+{
+    fn launch(&mut self) -> Option<Result<(), crucible_qemu_host::QemuHotForkWorkerFailure>> {
+        let (Some(backends), Some(rows), Some(panic_rows), Some(geometry)) = (
+            self.pending.source_backends.as_mut(),
+            self.pending.nodes.as_mut(),
+            self.pending.spare_rows.as_mut(),
+            self.pending.worker_geometry,
+        ) else {
+            return None;
+        };
+        Some(backends.nodes.with_prepared_hot_fork_sources_concurrent(
+            &backends.prepared,
+            rows,
+            panic_rows,
+            geometry,
+            |row| &row.node,
+            |source, row| {
+                #[cfg(test)]
+                row.launch_measured(source, |source| source.publish_child_ram());
+                #[cfg(not(test))]
+                row.launch(source, |source| source.publish_child_ram());
+            },
+            TargetNodeConstruction::record_worker_panic,
+            TargetNodeConstruction::take_worker_panic,
+            TargetNodeConstruction::is_vacant,
+        ))
+    }
+}
+
+impl<F> Drop for RetainedSourceRows<'_, F>
+where
+    F: QemuAttemptResourceGuardFactory + Send + 'static,
+    F::Guard: QemuAttemptProcessResourceGuard + Send + 'static,
+{
+    fn drop(&mut self) {
+        self.pending.restore_source_backends();
     }
 }

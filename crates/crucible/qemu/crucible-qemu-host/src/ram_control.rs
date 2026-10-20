@@ -212,8 +212,8 @@ pub trait RamControlRegistrar: Send + Sync {
     fn prepare_retirement_after_cleanup(
         &self,
         _target: HostRamTarget,
-    ) -> Result<(), RamControlError> {
-        Err(RamControlError::AuthorityMismatch)
+    ) -> RamControlRetirementOutcome {
+        RamControlRetirementOutcome::from_known(Err(RamControlError::AuthorityMismatch))
     }
 
     /// Retires an exact unpublished admission after all physical borrowers close.
@@ -246,6 +246,42 @@ pub trait RamControlRegistrar: Send + Sync {
         _resources: HostResourceVector,
     ) -> Result<(), RamControlError> {
         Err(RamControlError::AuthorityMismatch)
+    }
+}
+
+/// Records physical controller return independently of its failure status.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RamControlRetirementDisposition {
+    /// The exact controller field was physically returned.
+    Returned,
+    /// The provider proved that no return effect occurred.
+    NotReturned,
+    /// An entered return has no known disposition and must not be replayed.
+    Unknown,
+}
+
+/// Retains the actual controller-return disposition and typed failure.
+#[derive(Debug)]
+pub struct RamControlRetirementOutcome {
+    /// Physical fact saved before any caller's independent postcheck.
+    pub disposition: RamControlRetirementDisposition,
+    /// Exact provider failure, which never substitutes for physical disposition.
+    pub failure: Option<RamControlError>,
+}
+
+impl RamControlRetirementOutcome {
+    /// Reports a provider whose errors are proved to precede its return effects.
+    pub fn from_known(result: Result<(), RamControlError>) -> Self {
+        match result {
+            Ok(()) => Self {
+                disposition: RamControlRetirementDisposition::Returned,
+                failure: None,
+            },
+            Err(first) => Self {
+                disposition: RamControlRetirementDisposition::NotReturned,
+                failure: Some(first),
+            },
+        }
     }
 }
 
@@ -582,8 +618,9 @@ impl RamControlClient {
                 | RamControlRequest::SyncOuterCap { .. }
                 | RamControlRequest::Status
                 | RamControlRequest::Performance {
-                    action: crucible_qemu_protocol::ram_control::RamControlPerformanceAction::Observe
-                        | crucible_qemu_protocol::ram_control::RamControlPerformanceAction::Stop
+                    action:
+                        crucible_qemu_protocol::ram_control::RamControlPerformanceAction::Observe
+                            | crucible_qemu_protocol::ram_control::RamControlPerformanceAction::Stop
                 }
         ) {
             HostOperationClass::Cleanup
@@ -912,3 +949,9 @@ impl std::io::Write for DeadlineStream<'_> {
 mod tests;
 #[cfg(test)]
 pub(crate) use tests::response as checkpoint_test_response;
+
+mod retirement;
+pub use retirement::{RamControlRetirementHistory, RamControlRetirementProgress};
+
+mod cleanup_original;
+pub use cleanup_original::RamCleanupOriginal;

@@ -1,0 +1,207 @@
+//! Lends the actual Source cleanup through its first-bound incarnation.
+//!
+//! This weak identity never owns a construction/return loan or a new operation.
+//! The Source controller may itself hold a failed Node, so the proof must never
+//! strongly retain that controller and create an owner cycle.
+
+use super::*;
+
+#[derive(Clone)]
+pub(crate) struct SourceCleanupLender {
+    roster: Weak<std::sync::Mutex<NativeRoster>>,
+    index: usize,
+    generation: u64,
+    process_generation: Option<u64>,
+}
+
+/// Retains only a borrowed step identity for an already-issued Source Cleanup.
+pub(crate) struct SourceCleanupOriginal {
+    lender: SourceCleanupLender,
+    controller: Weak<crate::linux_attempt_host::original_node::OriginalNativeFreshLaunchError>,
+    original: Arc<HostOperationGuard>,
+}
+
+impl std::fmt::Debug for SourceCleanupOriginal {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SourceCleanupOriginal")
+            .field("generation", &self.lender.generation)
+            .field("process_generation", &self.lender.process_generation)
+            .finish_non_exhaustive()
+    }
+}
+
+impl InstalledIncarnationRetirement {
+    pub(crate) fn source_cleanup_lender(
+        &self,
+    ) -> Result<SourceCleanupLender, OriginalActorAccountError> {
+        if self.subdivision_index != 0 {
+            return Err(OriginalActorAccountError::Unavailable);
+        }
+        Ok(SourceCleanupLender {
+            roster: Weak::clone(&self.roster),
+            index: self.index,
+            generation: self.generation,
+            process_generation: Some(self.process_generation),
+        })
+    }
+}
+
+impl SourceCleanupLender {
+    pub(crate) fn controller(
+        &self,
+    ) -> Result<
+        Arc<crate::linux_attempt_host::original_node::OriginalNativeFreshLaunchError>,
+        OriginalActorAccountError,
+    > {
+        let roster = self
+            .roster
+            .upgrade()
+            .ok_or(OriginalActorAccountError::Unavailable)?;
+        let state = roster
+            .try_lock()
+            .map_err(|_| OriginalActorAccountError::Unavailable)?;
+        let slot = state
+            .slots
+            .get(self.index)
+            .filter(|slot| slot.active == Some(self.generation))
+            .ok_or(OriginalActorAccountError::Unavailable)?;
+        let purpose = slot
+            .installed_process
+            .as_ref()
+            .filter(|purpose| purpose.ready && purpose.sound)
+            .ok_or(OriginalActorAccountError::Unavailable)?;
+        if let Some(expected) = self.process_generation {
+            let allocation = purpose.journal.incarnations[0]
+                .as_ref()
+                .ok_or(OriginalActorAccountError::Unavailable)?;
+            if allocation.process_generation != expected || allocation.physical_retired {
+                return Err(OriginalActorAccountError::Unavailable);
+            }
+        }
+        slot.source_controller
+            .as_ref()
+            .map(Arc::clone)
+            .ok_or(OriginalActorAccountError::Unavailable)
+    }
+
+    pub(crate) fn retained_original(
+        self,
+    ) -> Result<SourceCleanupOriginal, OriginalActorAccountError> {
+        // First validate the bound incarnation, then release its metadata lock
+        // before the once-cached entry can touch the Original operation table.
+        let controller = self.controller()?;
+        let attempt = NativeAccountAttempt {
+            roster: Weak::clone(&self.roster),
+            index: self.index,
+            generation: self.generation,
+        };
+        let original = attempt.cleanup_entry()?;
+        let current = self.controller()?;
+        if !Arc::ptr_eq(&controller, &current) || !controller.cleanup_matches(&original) {
+            return Err(OriginalActorAccountError::Unavailable);
+        }
+        Ok(SourceCleanupOriginal {
+            lender: self,
+            controller: Arc::downgrade(&controller),
+            original,
+        })
+    }
+}
+
+impl SourceCleanupOriginal {
+    pub(crate) fn original(&self) -> &HostOperationGuard {
+        &self.original
+    }
+
+    pub(crate) fn checked_original(
+        &self,
+    ) -> Result<&HostOperationGuard, crucible_host_resources::host_supervision::HostSupervisionError>
+    {
+        let unavailable =
+            || crucible_host_resources::host_supervision::HostSupervisionError::Unavailable;
+        let controller = self.controller.upgrade().ok_or_else(unavailable)?;
+        let current = self.lender.controller().map_err(|_| unavailable())?;
+        if Arc::ptr_eq(&controller, &current) && controller.cleanup_matches(&self.original) {
+            Ok(&self.original)
+        } else {
+            Err(unavailable())
+        }
+    }
+}
+
+impl NativeAccountAttempt {
+    /// Borrows the actual Source incarnation without entering a new operation.
+    ///
+    /// A late launch refusal retains this identity in its same returned owner;
+    /// the controller itself must not keep a permanent weak roster alias.
+    ///
+    /// # Errors
+    /// Refuses unavailable or mismatched controller, generation or Source custody.
+    pub(in crate::linux_attempt_host) fn bound_source_cleanup_lender(
+        &self,
+        expected: &crate::linux_attempt_host::original_node::OriginalNativeFreshLaunchError,
+    ) -> Result<SourceCleanupLender, OriginalActorAccountError> {
+        let roster = self
+            .roster
+            .upgrade()
+            .ok_or(OriginalActorAccountError::Unavailable)?;
+        let state = roster
+            .try_lock()
+            .map_err(|_| OriginalActorAccountError::Unavailable)?;
+        let slot = state
+            .slots
+            .get(self.index)
+            .filter(|slot| slot.active == Some(self.generation))
+            .ok_or(OriginalActorAccountError::Unavailable)?;
+        if !slot
+            .source_controller
+            .as_ref()
+            .is_some_and(|controller| std::ptr::eq(controller.as_ref(), expected))
+        {
+            return Err(OriginalActorAccountError::Unavailable);
+        }
+        let purpose = slot
+            .installed_process
+            .as_ref()
+            .filter(|purpose| purpose.ready && purpose.sound)
+            .ok_or(OriginalActorAccountError::Unavailable)?;
+        let allocation = purpose.journal.incarnations[0]
+            .as_ref()
+            .filter(|allocation| !allocation.physical_retired)
+            .ok_or(OriginalActorAccountError::Unavailable)?;
+        Ok(SourceCleanupLender {
+            roster: Weak::clone(&self.roster),
+            index: self.index,
+            generation: self.generation,
+            process_generation: Some(allocation.process_generation),
+        })
+    }
+
+    pub(in crate::linux_attempt_host) fn helper_cleanup_lender(&self) -> SourceCleanupLender {
+        SourceCleanupLender {
+            roster: Weak::clone(&self.roster),
+            index: self.index,
+            generation: self.generation,
+            process_generation: None,
+        }
+    }
+}
+
+impl std::fmt::Debug for SourceCleanupLender {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SourceCleanupLender")
+            .field("generation", &self.generation)
+            .field("process_generation", &self.process_generation)
+            .finish_non_exhaustive()
+    }
+}
+
+impl SourceCleanupLender {
+    pub(crate) fn same_identity(&self, other: &Self) -> bool {
+        Weak::ptr_eq(&self.roster, &other.roster)
+            && self.index == other.index
+            && self.generation == other.generation
+            && self.process_generation == other.process_generation
+    }
+}

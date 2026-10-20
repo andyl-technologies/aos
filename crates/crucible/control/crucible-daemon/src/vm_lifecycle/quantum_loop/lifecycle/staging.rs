@@ -4,7 +4,7 @@ use super::*;
 use std::ffi::OsString;
 use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
 
-pub(in crate::vm_lifecycle::quantum_loop) struct PreparedTerminalReplacement {
+pub(in crate::vm_lifecycle) struct PreparedTerminalReplacement {
     pub(in crate::vm_lifecycle::quantum_loop) decision: QemuNodeLifecycleDecision,
     pub(in crate::vm_lifecycle::quantum_loop) snapshot: ExactSnapshotHandle,
     pub(in crate::vm_lifecycle::quantum_loop) terminal_fingerprint: Option<FingerprintSample>,
@@ -42,13 +42,10 @@ pub(in crate::vm_lifecycle::quantum_loop) struct PreparedLifecyclePrecommit {
     pub(in crate::vm_lifecycle::quantum_loop) process_owners:
         Vec<Option<PreparedLifecycleProcessOwner>>,
     pub(in crate::vm_lifecycle::quantum_loop) terminal_decisions: Vec<PreparedLifecycleTerminal>,
-    pub(in crate::vm_lifecycle::quantum_loop) prepared_replacements:
-        Vec<PreparedTerminalReplacement>,
     pub(in crate::vm_lifecycle::quantum_loop) observed_exit_codes: Vec<(NodeId, i32)>,
     pub(in crate::vm_lifecycle::quantum_loop) block_handles:
         Vec<(ContentHash, QemuSharedBlockDevice)>,
     pub(in crate::vm_lifecycle::quantum_loop) replacement_nodes: Vec<NodeId>,
-    pub(in crate::vm_lifecycle::quantum_loop) replacement_values: Vec<Option<QemuNode>>,
     pub(in crate::vm_lifecycle::quantum_loop) reserved_event_records: u64,
     pub(in crate::vm_lifecycle::quantum_loop) reserved_event_log_bytes: u64,
 }
@@ -201,5 +198,196 @@ mod tests {
         assert!(!lifecycle_intent_may_require_successor_generation(
             NodeLifecycleTransition::PermanentFailure
         ));
+    }
+}
+
+/// Borrows the existing Loop transaction and restores every owner on unwind.
+///
+/// The vectors are empty before reuse and their selected-row extents are paid
+/// by the Source World before the containing Loop is constructed. A refused
+/// cleanup leaves the same node and generation lease in this transaction.
+pub(in crate::vm_lifecycle::quantum_loop) struct TerminalReplacementLoan<'a> {
+    pub(in crate::vm_lifecycle::quantum_loop) lifecycle: &'a mut ProductionVmLifecycleLoop,
+    pub(in crate::vm_lifecycle::quantum_loop) prepared: Vec<PreparedTerminalReplacement>,
+    pub(in crate::vm_lifecycle::quantum_loop) values: Vec<Option<QemuNode>>,
+    pub(in crate::vm_lifecycle::quantum_loop) leases:
+        BTreeMap<NodeId, Box<dyn ProductionVmNodeLease>>,
+}
+
+impl<'a> TerminalReplacementLoan<'a> {
+    pub(in crate::vm_lifecycle::quantum_loop) fn borrow(
+        lifecycle: &'a mut ProductionVmLifecycleLoop,
+        requested: usize,
+    ) -> Result<Self, SchedulerError> {
+        let selected = lifecycle.launch_configs.len();
+        if requested > selected
+            || !lifecycle.terminal_replacements.is_empty()
+            || !lifecycle.terminal_replacement_values.is_empty()
+            || !lifecycle.terminal_replacement_leases.is_empty()
+        {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from("prior terminal replacement transaction remains retained"),
+            });
+        }
+        if requested != 0 {
+            // RawVec reserves len + additional: reuse is admitted only while empty.
+            lifecycle
+                .terminal_replacements
+                .try_reserve_exact(selected)
+                .map_err(|first| SchedulerError::BoundaryViolation {
+                    message: format!("reserve paid terminal replacement rows: {first}"),
+                })?;
+            lifecycle
+                .terminal_replacement_values
+                .try_reserve_exact(selected)
+                .map_err(|first| SchedulerError::BoundaryViolation {
+                    message: format!("reserve paid terminal replacement values: {first}"),
+                })?;
+        }
+        Ok(Self {
+            prepared: std::mem::take(&mut lifecycle.terminal_replacements),
+            values: std::mem::take(&mut lifecycle.terminal_replacement_values),
+            leases: std::mem::take(&mut lifecycle.terminal_replacement_leases),
+            lifecycle,
+        })
+    }
+}
+
+impl Drop for TerminalReplacementLoan<'_> {
+    fn drop(&mut self) {
+        // The exclusive Loop borrow prevents another transaction from replacing
+        // these vacant fields. Restoration precedes release of that borrow.
+        std::mem::swap(
+            &mut self.lifecycle.terminal_replacements,
+            &mut self.prepared,
+        );
+        std::mem::swap(
+            &mut self.lifecycle.terminal_replacement_values,
+            &mut self.values,
+        );
+        std::mem::swap(
+            &mut self.lifecycle.terminal_replacement_leases,
+            &mut self.leases,
+        );
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod transaction_tests {
+    use super::*;
+    use std::fs::File;
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::MetadataExt;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct RetainedFileLease {
+        identity: ProductionVmNodeGeneration,
+        file: Option<File>,
+        drops: Arc<AtomicUsize>,
+    }
+
+    impl Drop for RetainedFileLease {
+        fn drop(&mut self) {
+            drop(self.file.take());
+            self.drops.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    impl ProductionVmNodeLease for RetainedFileLease {
+        fn identity(&self) -> &ProductionVmNodeGeneration {
+            &self.identity
+        }
+
+        fn open_checkpoint_root_overlay(&self) -> Result<File, LifecycleApiError> {
+            Err(loop_factory_error(
+                "transaction component owns no checkpoint grant",
+            ))
+        }
+
+        fn finish(&mut self) -> Result<(), LifecycleApiError> {
+            Err(loop_factory_error(
+                "transaction component retains its actual file",
+            ))
+        }
+    }
+
+    #[test]
+    fn transaction_unwind_restores_same_owning_file_and_blocks_replacement()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let _scope = crucible_engine::test_support::fixture_decode_scope(256 * 1024 * 1024)?;
+        let (_, mut lifecycle) =
+            crate::vm_lifecycle::hot_fork::production_permanently_failed_loop_for_test()?;
+        let file = tempfile::tempfile()?;
+        let descriptor = file.as_raw_fd();
+        let metadata = file.metadata()?;
+        let drops = Arc::new(AtomicUsize::new(0));
+        let node = NodeId {
+            name: String::from("retained-component"),
+        };
+        let lease = RetainedFileLease {
+            identity: ProductionVmNodeGeneration::new(node.clone(), 1)?,
+            file: Some(file),
+            drops: Arc::clone(&drops),
+        };
+
+        // This exercises only the restoring field loan with an actual owned
+        // file. It issues no Source, Main, process or generation authority.
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut transaction = TerminalReplacementLoan::borrow(&mut lifecycle, 0).unwrap();
+            transaction.leases.insert(node.clone(), Box::new(lease));
+            panic!("component failure after owning transfer and before commit");
+        }));
+
+        assert!(unwound.is_err());
+        assert_eq!(drops.load(Ordering::SeqCst), 0);
+        let retained = lifecycle.terminal_replacement_leases.get(&node).unwrap();
+        assert_eq!(retained.identity().node(), &node);
+        assert_eq!(retained.identity().generation(), 1);
+        let current = std::fs::metadata(format!("/proc/self/fd/{descriptor}"))?;
+        assert_eq!(
+            (current.dev(), current.ino()),
+            (metadata.dev(), metadata.ino())
+        );
+        assert!(TerminalReplacementLoan::borrow(&mut lifecycle, 0).is_err());
+        assert!(lifecycle.retire_terminal_replacement_transaction().is_err());
+        assert_eq!(drops.load(Ordering::SeqCst), 0);
+        assert!(lifecycle.terminal_replacement_leases.contains_key(&node));
+
+        // The explicit component owner, not a fabricated native return, ends
+        // this process-free fixture's retained file lifetime.
+        drop(lifecycle.terminal_replacement_leases.remove(&node));
+        assert_eq!(drops.load(Ordering::SeqCst), 1);
+        assert!(
+            std::fs::metadata(format!("/proc/self/fd/{descriptor}")).map_or(true, |current| {
+                (current.dev(), current.ino()) != (metadata.dev(), metadata.ino())
+            })
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn no_terminal_rows_does_not_allocate_selected_transaction_buffers()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let _scope = crucible_engine::test_support::fixture_decode_scope(256 * 1024 * 1024)?;
+        let (_, mut lifecycle) =
+            crate::vm_lifecycle::hot_fork::production_permanently_failed_loop_for_test()?;
+        let capacities = (
+            lifecycle.terminal_replacements.capacity(),
+            lifecycle.terminal_replacement_values.capacity(),
+        );
+        {
+            let transaction = TerminalReplacementLoan::borrow(&mut lifecycle, 0)?;
+            assert!(transaction.prepared.is_empty());
+            assert!(transaction.values.is_empty());
+            assert!(transaction.leases.is_empty());
+        }
+        assert_eq!(
+            (
+                lifecycle.terminal_replacements.capacity(),
+                lifecycle.terminal_replacement_values.capacity()
+            ),
+            capacities
+        );
+        Ok(())
     }
 }

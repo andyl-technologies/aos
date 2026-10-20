@@ -7,6 +7,8 @@
 #[cfg(feature = "private-measurement-domain")]
 use std::io;
 
+mod helper_receiver;
+pub use helper_receiver::QemuIssuedHelperHistory;
 mod issuer;
 pub use issuer::InstalledNodeLaunchIssuer;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -52,40 +54,184 @@ enum FreshLaunchCause {
 /// it cannot release the external native credit or authorize slot reuse.
 #[must_use = "retain uncertain fresh launch custody through physical containment"]
 pub struct OriginalNativeFreshLaunchError {
+    origin: Arc<HostOperationGuard>,
+    cleanup: OnceLock<Result<Arc<HostOperationGuard>, HostSupervisionError>>,
     primary: OnceLock<FreshLaunchCause>,
     original_after: OnceLock<HostSupervisionError>,
-    node: Mutex<Option<QemuNode>>,
+    node: Mutex<RetainedLaunch>,
+    child_borrowed: std::sync::atomic::AtomicBool,
+    helper: Mutex<helper_receiver::HelperDebt>,
+    helper_first: OnceLock<crucible_engine::SharedOperationalCause<crate::QemuSpawnError>>,
     exact_launch: Mutex<Option<crate::QemuProductionExactRestoreLaunch>>,
     workspace: Mutex<Option<crate::spawn::OriginalDeviceDigestWorkspace>>,
 }
 
+#[derive(Default)]
+struct RetainedLaunch {
+    owner: Option<crate::QemuFailedLaunchOwner>,
+    first_cleanup: Option<crate::QemuNodeError>,
+    latest_cleanup: Option<crate::QemuNodeError>,
+}
+
 impl OriginalNativeFreshLaunchError {
-    fn prepare() -> Arc<Self> {
+    pub(super) fn prepare(origin: &Arc<HostOperationGuard>) -> Arc<Self> {
         Arc::new(Self {
+            origin: Arc::clone(origin),
+            cleanup: OnceLock::new(),
             primary: OnceLock::new(),
             original_after: OnceLock::new(),
-            node: Mutex::new(None),
+            node: Mutex::new(RetainedLaunch::default()),
+            child_borrowed: std::sync::atomic::AtomicBool::new(false),
+            helper: Mutex::new(helper_receiver::HelperDebt::default()),
+            helper_first: OnceLock::new(),
             exact_launch: Mutex::new(None),
             workspace: Mutex::new(None),
         })
     }
 
-    fn record(
+    pub(crate) fn reserve_child_owner(
+        self: &Arc<Self>,
+        lender: super::SourceCleanupLender,
+        supervisor: crucible_host_resources::host_supervision::HostOperationSupervisor,
+    ) -> Result<crate::node::SourceLaunchReservation, OriginalActorAccountError> {
+        let current = lender.controller()?;
+        if !Arc::ptr_eq(self, &current) || self.primary.get().is_some() {
+            return Err(OriginalActorAccountError::Unavailable);
+        }
+        let retained = self
+            .node
+            .try_lock()
+            .map_err(|_| OriginalActorAccountError::Unavailable)?;
+        if retained.owner.is_some()
+            || self
+                .child_borrowed
+                .compare_exchange(
+                    false,
+                    true,
+                    std::sync::atomic::Ordering::AcqRel,
+                    std::sync::atomic::Ordering::Acquire,
+                )
+                .is_err()
+        {
+            return Err(OriginalActorAccountError::Unavailable);
+        }
+        drop(retained);
+        Ok(crate::node::SourceLaunchReservation::new(
+            Arc::clone(self),
+            lender,
+            supervisor,
+        ))
+    }
+
+    pub(crate) fn launch_original(&self) -> Arc<HostOperationGuard> {
+        Arc::clone(&self.origin)
+    }
+
+    pub(crate) fn finish_child_borrow(&self) {
+        self.child_borrowed
+            .store(false, std::sync::atomic::Ordering::Release);
+    }
+
+    pub(crate) fn return_issued_owner(&self, owner: crate::QemuFailedLaunchOwner) {
+        // The unique prebirth reservation excludes any other owner publisher.
+        // Only this pure move runs under the short recipient metadata lock.
+        let mut retained = match self.node.lock() {
+            Ok(retained) => retained,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        retained.owner = Some(owner);
+        self.finish_child_borrow();
+    }
+
+    pub(super) fn retained_cleanup(
         &self,
-        primary: FreshLaunchCause,
-        original_after: Option<HostSupervisionError>,
-        node: Option<QemuNode>,
-    ) {
-        // This one precharged control is private until the initiating cut has
-        // completed. Publication never allocates another failure owner.
+    ) -> Result<Arc<HostOperationGuard>, OriginalActorAccountError> {
+        self.cleanup
+            .get_or_init(|| self.origin.begin_original_cleanup_control().map(Arc::new))
+            .as_ref()
+            .map(Arc::clone)
+            .map_err(|first| (*first).into())
+    }
+
+    pub(super) fn cleanup_matches(&self, original: &Arc<HostOperationGuard>) -> bool {
+        self.cleanup
+            .get()
+            .and_then(|saved| saved.as_ref().ok())
+            .is_some_and(|saved| Arc::ptr_eq(saved, original))
+    }
+
+    fn record(&self, primary: FreshLaunchCause, original_after: Option<HostSupervisionError>) {
+        // Save the actual body before shared diagnostics expose the refusal.
+        let mut primary = primary;
+        let owner = match &mut primary {
+            FreshLaunchCause::Launch(first) => first.take_retained_owner(),
+            _ => None,
+        };
+        if let Some(owner) = owner {
+            self.return_issued_owner(owner);
+        }
         let _ = self.primary.set(primary);
         if let Some(after) = original_after {
             let _ = self.original_after.set(after);
         }
-        *self
-            .node
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = node;
+    }
+
+    /// Continues the same held launch without replacing its saved Cleanup.
+    ///
+    /// Physical return is separate from this error's permanent primary/post
+    /// health. Contention and poison keep the actual owner in its same field.
+    #[must_use]
+    pub fn retry_physical_cleanup(&self) -> bool {
+        if !self.retry_retained_helper() {
+            return false;
+        }
+        if self
+            .child_borrowed
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return false;
+        }
+        let Ok(mut retained) = self.node.try_lock() else {
+            return false;
+        };
+        let Some(owner) = retained.owner.as_mut() else {
+            return true;
+        };
+        match owner.retry_cleanup() {
+            Ok(()) => {
+                let returned = retained.owner.take();
+                drop(retained);
+                drop(returned);
+                true
+            }
+            Err(first) => {
+                if retained.first_cleanup.is_none() {
+                    retained.first_cleanup = Some(first);
+                } else if retained.latest_cleanup.as_ref() != Some(&first) {
+                    retained.latest_cleanup = Some(first);
+                }
+                false
+            }
+        }
+    }
+
+    pub(super) fn physical_owners_returned(&self) -> bool {
+        if self
+            .child_borrowed
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return false;
+        }
+        let Ok(helper) = self.helper.try_lock() else {
+            return false;
+        };
+        if helper.child.is_some() {
+            return false;
+        }
+        let Ok(retained) = self.node.try_lock() else {
+            return false;
+        };
+        retained.owner.is_none()
     }
 
     /// Retains the exact node, its directory and root relation on a late refusal.
@@ -116,10 +262,14 @@ impl std::fmt::Debug for OriginalNativeFreshLaunchError {
         formatter
             .debug_struct("OriginalNativeFreshLaunchError")
             .field("primary", &self.primary)
+            .field("helper_first", &self.helper_first)
             .field("original_after", &self.original_after)
             .field(
                 "retains_node",
-                &self.node.try_lock().map_or(true, |node| node.is_some()),
+                &self
+                    .node
+                    .try_lock()
+                    .map_or(true, |node| node.owner.is_some()),
             )
             .finish()
     }
@@ -132,14 +282,42 @@ impl std::fmt::Display for OriginalNativeFreshLaunchError {
             "{:?}; original: {:?}",
             self.primary.get(),
             self.original_after.get()
-        )
+        )?;
+        if let Some(first) = self.helper_first.get() {
+            write!(formatter, "; helper first: {}", first.source_ref())?;
+        }
+        match self.helper.try_lock() {
+            Ok(held) => write!(
+                formatter,
+                "; helper before: {:?}; helper after: {:?}; helper cleanup first: {:?}; helper cleanup latest: {:?}",
+                held.history().before,
+                held.history().after,
+                held.history().first_cleanup,
+                held.history().latest_cleanup
+            )?,
+            Err(_) => formatter.write_str("; helper history retained behind unavailable access")?,
+        }
+        match self.node.try_lock() {
+            Ok(held) => write!(
+                formatter,
+                "; cleanup first: {:?}; cleanup latest: {:?}",
+                held.first_cleanup, held.latest_cleanup
+            ),
+            Err(_) => formatter.write_str("; cleanup history retained behind unavailable access"),
+        }
     }
 }
 
 impl std::error::Error for OriginalNativeFreshLaunchError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        let primary = self.primary.get()?;
-        Some(primary)
+        if let Some(primary) = self.primary.get() {
+            return Some(primary);
+        }
+
+        match self.helper_first.get() {
+            Some(first) => Some(first.source_ref()),
+            None => None,
+        }
     }
 }
 
@@ -149,7 +327,7 @@ impl Drop for OriginalNativeFreshLaunchError {
             .node
             .get_mut()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(node) = node.take() {
+        if let Some(node) = node.owner.take() {
             // This is terminal containment, not resumable cleanup. The host's
             // physical owner remains responsible for the child; the outstanding
             // witness deliberately prevents vector/control credit reuse.
@@ -177,9 +355,10 @@ impl OriginalNativeFreshPreparation {
     pub(super) fn retain(
         original: &Arc<HostOperationGuard>,
         attempt: super::NativeAccountAttempt,
+        controller: Arc<OriginalNativeFreshLaunchError>,
     ) -> Self {
         Self {
-            failure: OriginalNativeFreshLaunchError::prepare(),
+            failure: controller,
             original: Arc::clone(original),
             lease: FreshLaunchLease {
                 attempt,
@@ -205,7 +384,7 @@ impl OriginalNativeFreshPreparation {
         after: HostSupervisionError,
     ) -> Arc<OriginalNativeFreshLaunchError> {
         self.failure
-            .record(FreshLaunchCause::Binding(source), Some(after), None);
+            .record(FreshLaunchCause::Binding(source), Some(after));
         Arc::clone(&self.failure)
     }
 
@@ -331,10 +510,12 @@ impl LinuxQemuAttemptHostOwner {
             admission,
             crate::supervision::launch_qemu_original_fresh_node,
             |node, failure, after| {
+                let mut owner = crate::QemuFailedLaunchOwner::node(node);
+                owner.require_source_cleanup(attempt.bound_source_cleanup_lender(failure));
+                failure.return_issued_owner(owner);
                 failure.record(
                     FreshLaunchCause::Binding(OriginalActorAccountError::Supervision(after)),
                     None,
-                    Some(node),
                 );
             },
         ) {
@@ -377,13 +558,11 @@ impl LinuxQemuAttemptHostOwner {
             admission,
             crate::supervision::prepare_qemu_original_fresh_node,
             |stage, failure, after| {
-                let primary = stage.reap_refused(
-                    QemuLiveNodeStepGateError::OriginalNativeAccount {
+                let primary =
+                    stage.reap_refused(QemuLiveNodeStepGateError::OriginalNativeAccount {
                         source: OriginalActorAccountError::Supervision(after),
-                    },
-                    attempt.cleanup(),
-                );
-                failure.record(FreshLaunchCause::Launch(primary), Some(after), None);
+                    });
+                failure.record(FreshLaunchCause::Launch(primary), Some(after));
             },
         ) {
             Ok(stage) => Ok(stage),
@@ -436,7 +615,6 @@ impl LinuxQemuAttemptHostOwner {
                 failure.record(
                     FreshLaunchCause::Launch(source),
                     original.wait_slice().err(),
-                    None,
                 );
                 return Err(failure);
             }
@@ -447,7 +625,6 @@ impl LinuxQemuAttemptHostOwner {
                 failure.record(
                     FreshLaunchCause::Contract(source),
                     original.wait_slice().err(),
-                    None,
                 );
                 return Err(failure);
             }

@@ -44,7 +44,43 @@ impl OriginalNativeAccountRoster {
     /// Refuses remaining strong or weak bindings, poisoned bookkeeping, live
     /// native slots or controls, and the retained original before pair release.
     pub fn try_close(&mut self) -> Result<(), OriginalActorAccountError> {
+        self.retry_failed_launch_bodies()?;
         self.retire_with_post_free(|| {})
+    }
+
+    pub(super) fn retry_failed_launch_bodies(&self) -> Result<(), OriginalActorAccountError> {
+        let Some(held) = self.held.as_ref() else {
+            return Ok(());
+        };
+        let count = held
+            .try_lock()
+            .map_err(|_| OriginalActorAccountError::Unavailable)?
+            .slots
+            .len();
+        let mut returned = true;
+        for index in 0..count {
+            let retained = {
+                let state = held
+                    .try_lock()
+                    .map_err(|_| OriginalActorAccountError::Unavailable)?;
+                state
+                    .slots
+                    .get(index)
+                    .and_then(|slot| slot.source_controller.as_ref())
+                    .map(Arc::clone)
+            };
+            // No roster lock crosses process/RAM work or destroys its aliases.
+            if let Some(retained) = retained {
+                returned &= retained.retry_physical_cleanup();
+            }
+        }
+        // Body return alone does not free the shared failure report or attest
+        // Source account closure. Existing exact alias/control checks follow.
+        if returned {
+            Ok(())
+        } else {
+            Err(OriginalActorAccountError::Unavailable)
+        }
     }
 
     fn retire_with_post_free(

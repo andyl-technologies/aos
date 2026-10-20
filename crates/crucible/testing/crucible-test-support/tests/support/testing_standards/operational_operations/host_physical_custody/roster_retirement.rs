@@ -115,13 +115,32 @@ const RETIRED_BODY: &str = r#"fn retire_with_post_free(
     Ok(())
 }"#;
 
-const RECONCILE_BODY: &str = r#"pub fn retry_unsettled(&mut self) -> Result<(), QemuVmRealizationError> {
+pub(in super::super::super) const RECONCILE_BODY: &str = r#"pub fn retry_unsettled(&mut self) -> Result<(), QemuVmRealizationError> {
+    let launch_return = self.retry_failed_launch_bodies();
     let held = self
         .held
         .as_ref()
         .ok_or_else(|| original_error(OriginalActorAccountError::Unavailable))?;
     // Contention must not wait beyond the caller's saved Cleanup.
     // Refusal leaves the same roster and every physical owner untouched.
+    let width = held
+        .try_lock()
+        .map_err(|_| original_error(OriginalActorAccountError::Unavailable))?
+        .width;
+    for index in 0..width {
+        let generation = {
+            let state = held
+                .try_lock()
+                .map_err(|_| original_error(OriginalActorAccountError::Unavailable))?;
+            let slot = &state.slots[index];
+            slot.active.filter(|_| slot.unsettled.is_some() && !slot.fork_target.is_owned())
+        };
+        if let Some(generation) = generation {
+            NativeAccountAttempt {
+                roster: Arc::downgrade(held), index, generation,
+            }.cleanup().map_err(original_error)?;
+        }
+    }
     let mut state = held
         .try_lock()
         .map_err(|_| original_error(OriginalActorAccountError::Unavailable))?;
@@ -130,7 +149,8 @@ const RECONCILE_BODY: &str = r#"pub fn retry_unsettled(&mut self) -> Result<(), 
         if slot.fork_target.is_owned() || slot.unsettled.is_none() {
             continue;
         }
-        let cleanup = retain_cleanup(slot).map_err(original_error)?;
+        let cleanup = slot.cleanup.as_ref().map(Arc::clone)
+            .ok_or_else(|| original_error(OriginalActorAccountError::Unavailable))?;
         slot.unsettled
             .as_mut()
             .ok_or_else(|| original_error(OriginalActorAccountError::Unavailable))?
@@ -138,8 +158,41 @@ const RECONCILE_BODY: &str = r#"pub fn retry_unsettled(&mut self) -> Result<(), 
         close_slot(slot).map_err(original_error)?;
         slot.unsettled = None;
     }
-    Ok(())
+    launch_return.map_err(original_error)
 }"#;
+
+pub(in super::super::super) const FAILED_BODIES: &str = r#"pub(super) fn retry_failed_launch_bodies(&self) -> Result<(), OriginalActorAccountError> {
+    let Some(held) = self.held.as_ref() else { return Ok(()); };
+    let count = held.try_lock().map_err(|_| OriginalActorAccountError::Unavailable)?.slots.len();
+    let mut returned = true;
+    for index in 0..count {
+        let retained = {
+            let state = held.try_lock().map_err(|_| OriginalActorAccountError::Unavailable)?;
+            state.slots.get(index).and_then(|slot| slot.source_controller.as_ref()).map(Arc::clone)
+        };
+        if let Some(retained) = retained {
+            returned &= retained.retry_physical_cleanup();
+        }
+    }
+    if returned { Ok(()) } else { Err(OriginalActorAccountError::Unavailable) }
+}"#;
+
+// Keep all consumers on the same Source assignment, Original and return facts.
+pub(in super::super) const SOURCE_CLEANUP: Companion = Companion {
+    path: CONTRACT.companions[0].path,
+    required: &[
+        CONTRACT.companions[0].required[1],
+        CONTRACT.companions[0].required[2],
+        CONTRACT.companions[0].required[3],
+        CONTRACT.companions[0].required[4],
+        CONTRACT.companions[0].required[5],
+    ],
+};
+
+pub(in super::super) const SOURCE_ORIGINAL: Companion = Companion {
+    path: CONTRACT.companions[3].path,
+    required: CONTRACT.companions[3].required,
+};
 
 pub(super) const CONTRACT: Contract = Contract {
     package: "crucible-qemu-host",
@@ -169,10 +222,12 @@ pub(super) const CONTRACT: Contract = Contract {
         ),
         (
             r#"pub fn try_close(&mut self) -> Result<(), OriginalActorAccountError> {
+    self.retry_failed_launch_bodies()?;
     self.retire_with_post_free(|| {})
 }"#,
             1,
         ),
+        (FAILED_BODIES, 1),
         (RETIRED_BODY, 1),
         (
             r#"fn verify_closed_slot(slot: &NativeSlot) -> Result<(), OriginalActorAccountError> {
@@ -197,47 +252,87 @@ pub(super) const CONTRACT: Contract = Contract {
             1,
         ),
     ],
-    expressions: &[(HELD_TEST, 1)],
-    identifiers: &[],
+    expressions: &[
+        (HELD_TEST, 1),
+        ("self.retry_failed_launch_bodies()?", 1),
+        ("retained.retry_physical_cleanup()", 1),
+    ],
+    identifiers: &[("retry_failed_launch_bodies", 2)],
     companions: &[
         Companion {
             path: "crates/crucible/qemu/crucible-qemu-host/src/linux_attempt_host/original_roster.rs",
             required: &[
                 (RECONCILE_BODY, 1),
                 (
-                    r#"fn retain_cleanup(
-    slot: &mut NativeSlot,
-) -> Result<Arc<HostOperationGuard>, OriginalActorAccountError> {
-    if slot.cleanup.is_none() {
-        let credit = slot
-            .credit
-            .as_ref()
-            .ok_or(OriginalActorAccountError::Unavailable)?;
-        // The guard Arc is within the already admitted TOTAL metadata. The
-        // finite supervisor BTree was charged once as initial actor structure.
-        let extent = cleanup_control_extent()?;
-        if let Some(purpose) = slot.installed_process.as_mut()
-            && !purpose.consume_cleanup(extent)
-        {
-            return Err(OriginalActorAccountError::Unavailable);
-        }
-        slot.require_metadata_assignment(extent)?;
-        // Returned guard aliases may outlive a closed generation. Keep each
-        // assigned body charged until whole-roster retirement, rather than
-        // treating completion or dropping this slot's alias as physical free.
-        slot.cleanup_controls_bytes = slot
-            .cleanup_controls_bytes
-            .checked_add(extent)
-            .ok_or(OriginalActorAccountError::Unavailable)?;
-        slot.cleanup = Some(Arc::new(credit.begin_cleanup()?));
+                    r#"fn assign_source_cleanup(slot: &mut NativeSlot) -> Result<(), OriginalActorAccountError> {
+    if slot.source_cleanup_assigned { return Ok(()); }
+    if slot.source_controller.is_none() {
+        return Err(OriginalActorAccountError::Unavailable);
     }
-    let cleanup = slot
-        .cleanup
-        .as_ref()
+    let extent = cleanup_control_extent()?;
+    let next = slot.cleanup_controls_bytes.checked_add(extent)
         .ok_or(OriginalActorAccountError::Unavailable)?;
-    cleanup.wait_slice()?;
-    Ok(Arc::clone(cleanup))
+    let pending = match slot.installed_process.as_ref() {
+        Some(purpose) if purpose.pending_cleanup_is(extent) => extent,
+        Some(_) => return Err(OriginalActorAccountError::Unavailable),
+        None => 0,
+    };
+    slot.require_metadata_assignment_replacing_pending(extent, pending)?;
+    if let Some(purpose) = slot.installed_process.as_mut()
+        && !purpose.consume_cleanup(extent)
+    { return Err(OriginalActorAccountError::Unavailable); }
+    slot.cleanup_controls_bytes = next;
+    slot.source_cleanup_assigned = true;
+    Ok(())
 }"#,
+                    1,
+                ),
+                (
+                    r#"fn cleanup_entry(&self) -> Result<Arc<HostOperationGuard>, OriginalActorAccountError> {
+    let roster = self.roster.upgrade().ok_or(OriginalActorAccountError::Unavailable)?;
+    let controller = {
+        let mut state = roster.try_lock().map_err(|_| OriginalActorAccountError::Unavailable)?;
+        let slot = state.slots.get_mut(self.index)
+            .filter(|slot| slot.active == Some(self.generation))
+            .ok_or(OriginalActorAccountError::Unavailable)?;
+        assign_source_cleanup(slot)?;
+        slot.source_controller.as_ref().map(Arc::clone)
+            .ok_or(OriginalActorAccountError::Unavailable)?
+    };
+    let original = controller.retained_cleanup()?;
+    let mut state = roster.try_lock().map_err(|_| OriginalActorAccountError::Unavailable)?;
+    let slot = state.slots.get_mut(self.index).filter(|slot| {
+        slot.active == Some(self.generation)
+            && slot.source_controller.as_ref().is_some_and(|saved| Arc::ptr_eq(saved, &controller))
+    }).ok_or(OriginalActorAccountError::Unavailable)?;
+    if slot.cleanup.is_none() { slot.cleanup = Some(Arc::clone(&original)); }
+    if !slot.cleanup.as_ref().is_some_and(|saved| Arc::ptr_eq(saved, &original)) {
+        return Err(OriginalActorAccountError::Unavailable);
+    }
+    Ok(original)
+}"#,
+                    1,
+                ),
+                (
+                    r#"pub(super) fn cleanup(&self) -> Result<Arc<HostOperationGuard>, OriginalActorAccountError> {
+    let original = self.cleanup_entry()?;
+    original.wait_slice()?;
+    Ok(original)
+}"#,
+                    1,
+                ),
+                (
+                    r#"fn close_control(slot: &mut NativeSlot) -> Result<(), OriginalActorAccountError> {
+    if slot.source_controller.as_ref().is_some_and(|controller| !controller.physical_owners_returned()) {
+        return Err(OriginalActorAccountError::Unavailable);
+    }"#,
+                    1,
+                ),
+                (
+                    r#"cleanup.complete()?;
+slot.cleanup = None;
+slot.source_controller = None;
+slot.source_cleanup_assigned = false;"#,
                     1,
                 ),
                 (
@@ -385,6 +480,27 @@ pub(super) const CONTRACT: Contract = Contract {
             path: "crates/crucible/qemu/crucible-qemu-host/src/linux_attempt_host/original_roster/fork_target.rs",
             required: super::super::TARGET_CLEANUP_REQUIRED,
         },
+        Companion {
+            path: "crates/crucible/qemu/crucible-qemu-host/src/linux_attempt_host/original_node.rs",
+            required: &[
+                (
+                    r#"pub(super) fn retained_cleanup(
+    &self,
+) -> Result<Arc<HostOperationGuard>, OriginalActorAccountError> {
+    self.cleanup.get_or_init(|| self.origin.begin_original_cleanup_control().map(Arc::new))
+        .as_ref().map(Arc::clone).map_err(|first| (*first).into())
+}"#,
+                    1,
+                ),
+                (
+                    r#"pub(super) fn cleanup_matches(&self, original: &Arc<HostOperationGuard>) -> bool {
+    self.cleanup.get().and_then(|saved| saved.as_ref().ok())
+        .is_some_and(|saved| Arc::ptr_eq(saved, original))
+}"#,
+                    1,
+                ),
+            ],
+        },
     ],
 };
 
@@ -472,5 +588,12 @@ fn held_roster_regression_requires_contention_identity_and_physical_credit_retur
     );
     assert_ne!(changed[0], helper);
     rejects(&code, &changed);
+    for (needle, replacement) in [
+        ("returned &= retained.retry_physical_cleanup();", "returned = true;"),
+        (".try_lock()", ".lock()"),
+        ("slot.source_controller.as_ref()", "slot.foreign_controller.as_ref()"),
+    ] {
+        rejects(&mutate_body(FAILED_BODIES, needle, replacement), &companions);
+    }
     Ok(())
 }

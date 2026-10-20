@@ -802,59 +802,30 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
         ))
     }
 
-    fn retire_host_ram_after_cleanup(&mut self) -> Result<(), QemuAsyncDriverRuntimeError> {
-        if self
-            .launch_cleanup
-            .as_ref()
-            .is_some_and(|cleanup| !cleanup.is_published())
-        {
-            return Ok(());
+    fn retire_host_ram_after_cleanup(
+        &mut self,
+        original: Option<crate::ram_control::RamCleanupOriginal<'_>>,
+        progress: &mut crate::ram_control::RamControlRetirementProgress,
+    ) -> (
+        bool,
+        Result<(), crate::ram_control::RamControlRetirementHistory>,
+    ) {
+        if let Some(cleanup) = &self.launch_cleanup {
+            match cleanup.publication() {
+                Ok(false) => return (true, Ok(())),
+                Ok(true) => {}
+                Err(first) => return progress.refuse_publication(first),
+            }
         }
         let Some(registration) = &self.ram_control_registration else {
-            return Ok(());
+            return (true, Ok(()));
         };
-        let supervisor = self.host_operation_supervisor.as_ref().ok_or_else(|| {
-            QemuAsyncDriverRuntimeError::new(
-                "retire host RAM resources",
-                "registered RAM owner has no live cleanup supervisor",
-            )
-        })?;
-        let cleanup = supervisor
-            .begin(crucible_host_resources::host_supervision::HostOperationClass::Cleanup)
-            .map_err(|error| {
-                QemuAsyncDriverRuntimeError::operational_supervision(
-                    "retire host RAM resources",
-                    error,
-                )
-            })?;
-        loop {
-            cleanup.wait_slice().map_err(|error| {
-                QemuAsyncDriverRuntimeError::operational_supervision(
-                    "retire host RAM resources",
-                    error,
-                )
-            })?;
-            if registration
-                .registrar
-                .prepare_retirement_after_cleanup(registration.target)
-                .is_ok()
-            {
-                cleanup.complete().map_err(|error| {
-                    QemuAsyncDriverRuntimeError::operational_supervision(
-                        "retire host RAM resources",
-                        error,
-                    )
-                })?;
-                self.ram_control_registration = None;
-                return Ok(());
-            }
-            cleanup.wait_for_change().map_err(|error| {
-                QemuAsyncDriverRuntimeError::operational_supervision(
-                    "retire host RAM resources",
-                    error,
-                )
-            })?;
+        let (returned, status) = progress.return_controller(registration, original);
+        if returned {
+            // Actual controller return precedes independent failure reporting.
+            self.ram_control_registration = None;
         }
+        (returned, status)
     }
 
     fn set_host_operation_supervisor(

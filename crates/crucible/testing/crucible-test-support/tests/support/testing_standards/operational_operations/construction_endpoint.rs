@@ -9,6 +9,8 @@ use super::{Companion, Contract};
 mod facts;
 #[path = "construction_endpoint/controls.rs"]
 mod controls;
+#[path = "construction_endpoint/whole_shutdown.rs"]
+mod whole_shutdown;
 
 /// Shares the actual unavailable reservation body without copying its proof.
 pub(super) const UNAVAILABLE_RESERVATION: &str = facts::NEGATIVE_TOKENS.required[0].0;
@@ -45,6 +47,16 @@ const COMPANIONS: &[Companion] = &[
     super::hot_fork_retirement::CONSTRUCTOR_WORLD_RETURN,
     super::hot_fork_retirement::CONSTRUCTOR_WORLD_POOL,
     super::hot_fork_retirement::CONSTRUCTOR_WORLD_LEDGER,
+    whole_shutdown::DAEMON,
+    whole_shutdown::HOST,
+    whole_shutdown::HOST_CALLERS,
+    whole_shutdown::HOST_LIFECYCLE,
+    whole_shutdown::HOST_CONCURRENT,
+    whole_shutdown::HOST_INITIALIZATION,
+    whole_shutdown::DAEMON_COMMIT,
+    whole_shutdown::LEASE_RETURN,
+    whole_shutdown::NODE_RETURN,
+    whole_shutdown::NODE_COMPLETION,
 ];
 
 pub(super) const CONTRACTS: &[Contract] = &[

@@ -62,6 +62,10 @@ fn failed_stop_retains_original_credit_through_reap_and_transport_borrow()
         },
         std::iter::empty(),
     )?;
+    assert!(std::ptr::eq(
+        node.host_io_runtime.host_operation_supervisor().unwrap(),
+        &ownership.supervisor,
+    ));
     node.synchronize_observed_time()?;
 
     let first = node.pause_at_exact_checkpoint_boundary().unwrap_err();
@@ -70,13 +74,21 @@ fn failed_stop_retains_original_credit_through_reap_and_transport_borrow()
     assert!(account.reserve_resources(0, 8, 1024 * 1024).is_err());
     node.shutdown_child()?;
     assert!(node.child_reaped());
+    assert!(node.cleanup_physically_returned());
+    assert!(node.host_io_runtime.ram_control_registration().is_none());
     assert!(
         account.reserve_resources(0, 8, 1024 * 1024).is_err(),
         "QMP transport still borrows the original after actual process reap"
     );
     assert!(!peer_closed());
 
+    node.shutdown_child()?;
+    assert!(node.cleanup_physically_returned());
+    assert!(!peer_closed());
+    assert_eq!(ownership.counts(), (1, 1));
+
     drop(node);
+    assert!(!peer_closed(), "the actual caller still owns the transport");
     drop(ownership);
     assert!(peer_closed());
     assert!(account.reserve_resources(0, 8, 1024 * 1024).is_ok());

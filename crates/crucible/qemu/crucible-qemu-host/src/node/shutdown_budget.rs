@@ -6,7 +6,7 @@ use crucible_host_resources::host_supervision::HostOperationClass;
 
 use super::*;
 
-impl QemuNodeShutdownTarget<'_> {
+impl QemuNodeShutdownTarget<'_, '_, '_> {
     // Host time bounds physical cleanup only; it never orders guest events.
     // crucible-lint: allow host-nondeterminism-state -- cleanup retains process ownership until authenticated reap.
     // crucible-lint: allow clippy-disallowed-method -- monotonic host time bounds physical cleanup phases without changing modeled state.
@@ -20,12 +20,12 @@ impl QemuNodeShutdownTarget<'_> {
         })?;
         let started = Instant::now();
         loop {
-            guard.wait_slice().map_err(|source| {
-                QemuShutdownTargetError::new("wait for cleanup", source.to_string())
-            })?;
             if self.child.reaped() || self.child.try_wait_natural_exit()?.is_some() {
                 return Ok(QemuChildWait::Exited);
             }
+            guard.wait_slice().map_err(|source| {
+                QemuShutdownTargetError::new("wait for cleanup", source.to_string())
+            })?;
 
             // Each phase gets a fifth of the current finite class allowance.
             // Recompute after updates without restarting this phase or the

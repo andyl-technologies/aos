@@ -15,7 +15,9 @@ use std::thread;
 use std::time::Duration;
 
 use crate::ram_source::{QemuRamBacking, QemuRamSourceService};
-use crucible_host_resources::host_supervision::{HostOperationBudgets, HostOperationSupervisor};
+use crucible_host_resources::host_supervision::{
+    HostOperationBudgets, HostOperationClass, HostOperationGuard, HostOperationSupervisor,
+};
 use crucible_qemu_protocol::ram_page::{
     RamPageBinding, RamPageRequest, RamPageResponse, RamPageStatus, read_ram_page_response,
 };
@@ -36,7 +38,15 @@ fn binding(backing: &dyn QemuRamBacking, owner: u8) -> RamPageBinding {
 fn source(
     backing: Arc<ImmutableBacking>,
     owner: u8,
-) -> Result<(QemuRamSourceService, UnixStream), Box<dyn Error>> {
+) -> Result<
+    (
+        QemuRamSourceService,
+        UnixStream,
+        HostOperationGuard,
+        HostOperationSupervisor,
+    ),
+    Box<dyn Error>,
+> {
     let (server, client) = UnixStream::pair()?;
     client.set_read_timeout(Some(Duration::from_secs(2)))?;
     client.set_write_timeout(Some(Duration::from_secs(2)))?;
@@ -45,14 +55,16 @@ fn source(
         HostOperationBudgets::default(),
         Some(Duration::from_secs(10)),
     )?;
-    let service = QemuRamSourceService::start(
+    let service = QemuRamSourceService::start_component(
         server,
         backing,
         namespace,
-        supervisor,
+        supervisor.clone(),
         crucible_host_resources::host_services::HostServiceAllocator::new(1, 4, 8 * 1024 * 1024)?,
+        None,
     )?;
-    Ok((service, client))
+    let cleanup = supervisor.begin(HostOperationClass::Cleanup)?;
+    Ok((service, client, cleanup, supervisor))
 }
 
 fn request(
@@ -77,7 +89,7 @@ fn request(
 fn paged_source_serves_complete_partial_pages_with_authenticated_proofs()
 -> Result<(), Box<dyn Error>> {
     let backing = Arc::new(ImmutableBacking::new(2)?);
-    let (service, mut client) = source(Arc::clone(&backing), 1)?;
+    let (mut service, mut client, cleanup, supervisor) = source(Arc::clone(&backing), 1)?;
     for (sequence, page_index, expected) in [
         (1, 0, vec![1; 4096]),
         (2, 1, vec![2; 4096]),
@@ -97,14 +109,19 @@ fn paged_source_serves_complete_partial_pages_with_authenticated_proofs()
         )?;
     }
     service.check_health()?;
-    service.stop()?;
+    service
+        .stop(Some(crate::ram_control::RamCleanupOriginal::direct(
+            &cleanup,
+            &supervisor,
+        )))
+        .1?;
     Ok(())
 }
 
 #[test]
 fn paged_source_preserves_partial_frame_across_polling() -> Result<(), Box<dyn Error>> {
     let backing = Arc::new(ImmutableBacking::new(2)?);
-    let (service, mut client) = source(Arc::clone(&backing), 17)?;
+    let (mut service, mut client, cleanup, supervisor) = source(Arc::clone(&backing), 17)?;
     let first = RamPageRequest {
         binding: service.binding(),
         sequence: 1,
@@ -131,7 +148,12 @@ fn paged_source_preserves_partial_frame_across_polling() -> Result<(), Box<dyn E
 
     let next = request(&mut client, service.binding(), 2, 0)?;
     assert_eq!(RamPageResponse::decode(&next)?.page, vec![1; 4096]);
-    service.stop()?;
+    service
+        .stop(Some(crate::ram_control::RamCleanupOriginal::direct(
+            &cleanup,
+            &supervisor,
+        )))
+        .1?;
     Ok(())
 }
 
@@ -141,8 +163,9 @@ fn independently_owned_sources_preserve_predecessor_and_changed_images()
     let parent = Arc::new(ImmutableBacking::new(2)?);
     let child = Arc::new(ImmutableBacking::new(0x7f)?);
     assert_ne!(parent.root_record().digest(), child.root_record().digest());
-    let (parent_service, mut parent_client) = source(parent, 3)?;
-    let (child_service, mut child_client) = source(child, 5)?;
+    let (mut parent_service, mut parent_client, parent_cleanup, parent_supervisor) =
+        source(parent, 3)?;
+    let (mut child_service, mut child_client, child_cleanup, child_supervisor) = source(child, 5)?;
     let parent_bytes = request(&mut parent_client, parent_service.binding(), 1, 1)?;
     let child_bytes = request(&mut child_client, child_service.binding(), 1, 1)?;
     assert_eq!(RamPageResponse::decode(&parent_bytes)?.page, vec![2; 4096]);
@@ -150,24 +173,43 @@ fn independently_owned_sources_preserve_predecessor_and_changed_images()
         RamPageResponse::decode(&child_bytes)?.page,
         vec![0x7f; 4096]
     );
-    parent_service.stop()?;
-    child_service.stop()?;
+    parent_service
+        .stop(Some(crate::ram_control::RamCleanupOriginal::direct(
+            &parent_cleanup,
+            &parent_supervisor,
+        )))
+        .1?;
+    child_service
+        .stop(Some(crate::ram_control::RamCleanupOriginal::direct(
+            &child_cleanup,
+            &child_supervisor,
+        )))
+        .1?;
     Ok(())
 }
 
 #[test]
 fn paged_source_rejects_corrupt_bytes_before_response_publication() -> Result<(), Box<dyn Error>> {
     let backing = Arc::new(ImmutableBacking::new(2)?);
-    let (service, mut client) = source(Arc::clone(&backing), 7)?;
+    let (mut service, mut client, cleanup, supervisor) = source(Arc::clone(&backing), 7)?;
     let original = request(&mut client, service.binding(), 1, 1)?;
     assert_eq!(RamPageResponse::decode(&original)?.page, vec![2; 4096]);
     backing.corrupt_reads.store(true, Ordering::Release);
     assert!(request(&mut client, service.binding(), 2, 1).is_err());
     let failure = service
-        .stop()
+        .stop(Some(crate::ram_control::RamCleanupOriginal::direct(
+            &cleanup,
+            &supervisor,
+        )))
+        .1
         .err()
         .ok_or("corrupt backing source stopped successfully")?;
-    assert!(failure.source.to_string().contains("proof validation"));
+    assert!(
+        failure
+            .worker
+            .as_ref()
+            .is_some_and(|first| first.to_string().contains("proof validation"))
+    );
     assert!(Arc::strong_count(&backing) >= 2);
     drop(failure);
     Ok(())
@@ -176,7 +218,8 @@ fn paged_source_rejects_corrupt_bytes_before_response_publication() -> Result<()
 #[test]
 fn paged_source_rejects_stale_owner_and_repeated_sequences() -> Result<(), Box<dyn Error>> {
     for stale_owner in [true, false] {
-        let (service, mut client) = source(Arc::new(ImmutableBacking::new(2)?), 9)?;
+        let (mut service, mut client, cleanup, supervisor) =
+            source(Arc::new(ImmutableBacking::new(2)?), 9)?;
         request(&mut client, service.binding(), 1, 0)?;
         let mut namespace = service.binding();
         if stale_owner {
@@ -187,7 +230,15 @@ fn paged_source_rejects_stale_owner_and_repeated_sequences() -> Result<(), Box<d
         assert_eq!(refused.status, RamPageStatus::Rejected);
         assert_eq!(refused.binding, service.binding());
         assert!(refused.page.is_empty());
-        assert!(service.stop().is_err());
+        assert!(
+            service
+                .stop(Some(crate::ram_control::RamCleanupOriginal::direct(
+                    &cleanup,
+                    &supervisor
+                )))
+                .1
+                .is_err()
+        );
     }
     Ok(())
 }
@@ -197,7 +248,7 @@ fn paged_source_child_requires_private_namespace_and_retains_backing() -> Result
 {
     let backing = Arc::new(ImmutableBacking::new(2)?);
     let weak = Arc::downgrade(&backing);
-    let (service, _client) = source(Arc::clone(&backing), 11)?;
+    let (mut service, _client, cleanup, supervisor) = source(Arc::clone(&backing), 11)?;
     let fresh = binding(backing.as_ref(), 13);
     assert!(service.child_backing(service.binding()).is_err());
     let mut same_owner = fresh;
@@ -211,7 +262,13 @@ fn paged_source_child_requires_private_namespace_and_retains_backing() -> Result
     assert!(service.child_backing(wrong_root).is_err());
     let retained = service.child_backing(fresh)?;
     drop(backing);
-    service.stop()?;
+    service
+        .stop(Some(crate::ram_control::RamCleanupOriginal::direct(
+            &cleanup,
+            &supervisor,
+        )))
+        .1?;
+    drop(service);
     assert!(weak.upgrade().is_some());
     drop(retained);
     assert!(weak.upgrade().is_none());
@@ -223,11 +280,17 @@ fn paged_source_cancellation_closes_admission_and_releases_after_join() -> Resul
 {
     let backing = Arc::new(ImmutableBacking::new(2)?);
     let weak = Arc::downgrade(&backing);
-    let (service, mut client) = source(backing, 15)?;
+    let (mut service, mut client, cleanup, supervisor) = source(backing, 15)?;
     service.cancel();
     assert!(request(&mut client, service.binding(), 1, 0).is_err());
     assert!(weak.upgrade().is_some());
-    service.stop()?;
+    service
+        .stop(Some(crate::ram_control::RamCleanupOriginal::direct(
+            &cleanup,
+            &supervisor,
+        )))
+        .1?;
+    drop(service);
     assert!(weak.upgrade().is_none());
     Ok(())
 }

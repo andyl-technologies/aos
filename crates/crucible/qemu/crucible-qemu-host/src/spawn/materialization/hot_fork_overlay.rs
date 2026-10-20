@@ -184,10 +184,7 @@ impl QemuPreparedRunDirectory {
         graph_generation: u64,
         virtual_size: u64,
     ) -> Result<(File, std::path::PathBuf), crate::spawn::QemuGuardedImagePreparationError> {
-        let fail = |source| crate::spawn::QemuGuardedImagePreparationError {
-            source,
-            child: None,
-        };
+        let fail = |source| crate::spawn::QemuGuardedImagePreparationError::local(source);
         if !self.launch_resources.has_root_overlay() || graph_generation == 0 || virtual_size == 0 {
             return Err(fail(QemuSpawnError::Io {
                 operation: "admit detached hot-fork root overlay",

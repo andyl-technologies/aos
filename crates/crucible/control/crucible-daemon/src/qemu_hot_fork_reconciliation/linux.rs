@@ -8,6 +8,9 @@ mod reconciliation;
 /// Production backend failure while retaining source and target authorities.
 #[derive(Debug, Error)]
 pub enum LinuxQemuHotForkReconciliationError {
+    /// The actual child is retained until its RAM bodies and controllers return.
+    #[error(transparent)]
+    NodeCleanup(#[from] crucible_qemu_host::QemuNodeError),
     /// Source-QEMU channel or resource-stage reconciliation failed.
     #[error(transparent)]
     Source(#[from] QemuNodeChannelError),

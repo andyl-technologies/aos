@@ -81,11 +81,13 @@ impl InstalledNodeLaunchIssuer {
                 )
             },
             |node, refusal, after| {
+                let mut owner = crate::QemuFailedLaunchOwner::node(node);
+                owner.require_source_cleanup(self.attempt.bound_source_cleanup_lender(refusal));
+                refusal.return_issued_owner(owner);
                 refusal.record(
                     FreshLaunchCause::Binding(OriginalActorAccountError::Supervision(after)),
                     None,
-                    Some(node),
-                )
+                );
             },
         )
     }
@@ -252,7 +254,7 @@ impl InstalledNodeLaunchIssuer {
                 Err(failure)
             }
             (Err(primary), original_after) => {
-                failure.record(primary, original_after, None);
+                failure.record(primary, original_after);
                 Err(failure)
             }
         }

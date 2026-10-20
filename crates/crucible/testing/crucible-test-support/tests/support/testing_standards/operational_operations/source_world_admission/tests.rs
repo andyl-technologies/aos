@@ -20,7 +20,11 @@ impl Fixture {
         .join(format!("{}.rs", contract.target));
         let code = crate::scrub_comments_and_strings(&std::fs::read_to_string(path)?);
         let companions = read_companions(contract)?;
-        assert_ne!(mask_contract(contract, &code, &companions), code);
+        assert!(
+            mask_contract(contract, &code, &companions) != code,
+            "reviewed World admission changed: {}",
+            contract.target,
+        );
         assert!(
             crate::flaky_escape_failures(
                 "unreviewed",

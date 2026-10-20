@@ -12,8 +12,10 @@ use crate::vm_lifecycle::ProductionVmLifecycleConfig;
 use crucible_control_api::host_operational::{HostRamBackend, HostRamQualification};
 use crucible_host_resources::host_supervision::HostOperationSupervisor;
 use crucible_host_resources::ram_policy::{HostRamPolicy, HostRamTarget, HostResourceVector};
+use crucible_qemu_host::ram_control::{
+    RamControlClient, RamControlRegistrar, RamInventoryAdmission,
+};
 use crucible_qemu_protocol::ram_control::RamControlError;
-use crucible_qemu_host::ram_control::{RamControlClient, RamControlRegistrar, RamInventoryAdmission};
 use serde::Deserialize;
 
 use crate::HostOperationalRegistry;
@@ -289,8 +291,10 @@ impl RamControlRegistrar for ScopedRegistrar {
     fn fault_actor_status(
         &self,
         target: HostRamTarget,
-    ) -> Result<Option<crucible_qemu_protocol::ram_control::RamControlFaultActorReport>, RamControlError>
-    {
+    ) -> Result<
+        Option<crucible_qemu_protocol::ram_control::RamControlFaultActorReport>,
+        RamControlError,
+    > {
         self.registry.fault_actor_status(target)
     }
 
@@ -310,8 +314,10 @@ impl RamControlRegistrar for ScopedRegistrar {
     fn retirement_authority(
         &self,
         target: HostRamTarget,
-    ) -> Result<Arc<dyn crucible_qemu_host::ram_control::RamControlRetirementAuthority>, RamControlError>
-    {
+    ) -> Result<
+        Arc<dyn crucible_qemu_host::ram_control::RamControlRetirementAuthority>,
+        RamControlError,
+    > {
         self.registry.retirement_authority(target)
     }
 
@@ -391,7 +397,7 @@ impl RamControlRegistrar for ScopedRegistrar {
     fn prepare_retirement_after_cleanup(
         &self,
         target: HostRamTarget,
-    ) -> Result<(), RamControlError> {
+    ) -> crucible_qemu_host::ram_control::RamControlRetirementOutcome {
         self.registry.prepare_retirement_after_cleanup(target)
     }
 

@@ -113,9 +113,9 @@ impl QemuHostIoRuntime for SourceRuntime {
                 .source
                 .lock()
                 .unwrap_or_else(|_| panic!("source inventory poisoned"))
-                .worker
-                .as_ref()
-                .is_some_and(|worker| worker.is_finished())
+                .failure
+                .snapshot()
+                .delivered
             {
                 break;
             }
@@ -166,12 +166,13 @@ fn pending_failure(cancel_pending: bool, await_failure: bool) -> Result<(), Box<
     )?;
     let original = supervisor.outer_cap_binding()?;
     let (server, socket) = UnixStream::pair()?;
-    let service = QemuRamSourceService::start(
+    let service = QemuRamSourceService::start_component(
         server,
         backing,
         binding,
         supervisor.clone(),
         crucible_host_resources::host_services::HostServiceAllocator::new(1, 4, 8 * 1024 * 1024)?,
+        None,
     )?;
     let source = Arc::new(Mutex::new(service));
     let mut target = PendingTarget {
@@ -223,24 +224,31 @@ fn pending_failure(cancel_pending: bool, await_failure: bool) -> Result<(), Box<
 
     drop(target);
     drop(runtime);
-    let service = Arc::try_unwrap(source)
+    let mut service = Arc::try_unwrap(source)
         .map_err(|_| io::Error::other("source borrower retained"))?
         .into_inner()
         .map_err(|_| io::Error::other("source inventory poisoned"))?;
+    let cleanup = supervisor.begin(HostOperationClass::Cleanup)?;
+    let (joined, status) = service.stop(Some(crate::ram_control::RamCleanupOriginal::direct(
+        &cleanup,
+        &supervisor,
+    )));
+    assert!(joined);
     if cancel_pending {
-        // Stopping an intentionally canceled idle source remains ordinary
-        // cleanup. The pending quantum already observed its cancellation.
-        service.stop()?;
+        // The same caller's Cleanup returns the intentionally canceled worker.
+        status?;
         return Ok(());
     }
-    let terminal = service
-        .stop()
+    let terminal = status
         .err()
         .ok_or_else(|| io::Error::other("original worker failure disappeared"))?;
-    assert!(
-        matches!(terminal.source, QemuRamSourceError::WorkerFailed(ref source)
-        if matches!(source.as_ref(), QemuRamSourceError::Ownership))
-    );
-    terminal.service.stop()?;
+    assert!(matches!(terminal.worker.as_ref(), Some(source)
+        if matches!(source.as_ref(), QemuRamSourceError::Ownership)));
+    let (joined, status) = service.stop(Some(crate::ram_control::RamCleanupOriginal::direct(
+        &cleanup,
+        &supervisor,
+    )));
+    assert!(joined);
+    status?;
     Ok(())
 }

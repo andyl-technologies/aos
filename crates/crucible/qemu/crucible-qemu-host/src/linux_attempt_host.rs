@@ -60,7 +60,9 @@ pub use original_host::OriginalNativePhysicalRetirement;
 pub use original_node::OriginalBackingObservationError;
 #[cfg(feature = "private-measurement-domain")]
 pub use original_node::OriginalBoundBackingObservation;
-pub use original_node::{InstalledNodeLaunchIssuer, OriginalNativeFreshLaunchError};
+pub use original_node::{
+    InstalledNodeLaunchIssuer, OriginalNativeFreshLaunchError, QemuIssuedHelperHistory,
+};
 #[cfg(feature = "private-measurement-domain")]
 pub use original_roster::OriginalParentParkCleanup;
 pub(crate) use original_roster::TargetWatcherOriginal;
@@ -1151,3 +1153,7 @@ impl LinuxQemuAttemptHostOwner {
             .map_err(original_roster::original_error)
     }
 }
+
+pub(crate) use original_roster::TargetCleanupOriginal;
+
+pub(crate) use original_roster::{SourceCleanupLender, SourceCleanupOriginal};

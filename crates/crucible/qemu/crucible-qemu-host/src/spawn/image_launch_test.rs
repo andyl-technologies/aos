@@ -135,7 +135,7 @@ fn retained_source_helper_preserves_original_attempt_and_ready_file_authority()
         fresh,
         Err(QemuGuardedImagePreparationError {
             source: QemuSpawnError::PreparedLaunchAdmissionChanged,
-            child: None,
+            ..
         })
     ));
     run_guarded_image_tool_for_purpose(

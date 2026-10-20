@@ -25,6 +25,9 @@ mod trigger_deadlines;
 #[path = "tests/held_stop.rs"]
 mod held_stop;
 
+#[path = "tests/whole_shutdown.rs"]
+mod whole_shutdown;
+
 fn hash(domain: &str) -> ContentHash {
     ContentHash::from_canonical_material("debug-runtime-evidence-test", domain)
 }
@@ -33,6 +36,27 @@ fn node() -> NodeId {
     NodeId {
         name: String::from("vm-a"),
     }
+}
+
+fn install_reaped_component_node(lifecycle: &mut ProductionVmLifecycleLoop, node: &NodeId) {
+    let mut backend = crucible_qemu_host::scripted_hot_fork_source_for_test(
+        crucible_qemu_host::QemuTestHotForkOutcome::Forked,
+    )
+    .unwrap_or_else(|error| panic!("component node should start: {error}"));
+    assert!(backend.shutdown_child().unwrap().reaped);
+    assert!(backend.cleanup_physically_returned());
+    assert!(
+        lifecycle
+            .inner
+            .backend_mut()
+            .insert(node.clone(), backend)
+            .is_none()
+    );
+    lifecycle
+        .inner
+        .backend_mut()
+        .validate_terminal_exits_reaped(std::slice::from_ref(node))
+        .unwrap_or_else(|error| panic!("component node must be reaped: {error}"));
 }
 
 #[test]
@@ -571,10 +595,70 @@ fn checkpoint_readiness_limits_cold_catalog_to_initial_execution_boundary() {
 }
 
 #[test]
+fn missing_or_unreaped_node_cannot_finish_its_matching_generation_lease() {
+    let source = initially_violated_scenario();
+    let mut lifecycle = production_loop_without_backends(&source);
+    let node = node();
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    lifecycle.node_generations.insert(node.clone(), 3);
+    lifecycle.node_leases.insert(
+        node.clone(),
+        Box::new(RecordingNodeLease {
+            identity: ProductionVmNodeGeneration::new(node.clone(), 3).unwrap(),
+            finish_calls: Arc::clone(&calls),
+            finish_order: None,
+            fail: false,
+        }),
+    );
+
+    let missing = lifecycle
+        .finish_reaped_node_leases(std::slice::from_ref(&node))
+        .unwrap_err();
+    assert!(missing.to_string().contains("no authoritative node"));
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert!(lifecycle.node_leases.contains_key(&node));
+
+    let backend = crucible_qemu_host::scripted_hot_fork_source_for_test(
+        crucible_qemu_host::QemuTestHotForkOutcome::Forked,
+    )
+    .unwrap();
+    assert!(!backend.child_reaped());
+    assert!(
+        lifecycle
+            .inner
+            .backend_mut()
+            .insert(node.clone(), backend)
+            .is_none()
+    );
+    let live = lifecycle
+        .finish_reaped_node_leases(std::slice::from_ref(&node))
+        .unwrap_err();
+    assert!(live.to_string().contains("preceded child reap"));
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert!(lifecycle.node_leases.contains_key(&node));
+
+    lifecycle
+        .inner
+        .backend_mut()
+        .settle_terminal_exits_for_return(std::slice::from_ref(&node))
+        .unwrap_err();
+    // Close this selected actual owner without clearing its authoritative map.
+    let mut backend = lifecycle.inner.backend_mut().take(&node).unwrap();
+    assert!(backend.shutdown_child().unwrap().reaped);
+    assert!(lifecycle.inner.backend_mut().insert(node.clone(), backend).is_none());
+    lifecycle
+        .finish_reaped_node_leases(std::slice::from_ref(&node))
+        .unwrap();
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert!(!lifecycle.node_leases.contains_key(&node));
+}
+
+#[test]
 fn reaped_generation_finishes_only_its_exact_linear_lease() {
     let source = initially_violated_scenario();
     let mut lifecycle = production_loop_without_backends(&source);
     let node = node();
+    install_reaped_component_node(&mut lifecycle, &node);
     let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     lifecycle.node_generations.insert(node.clone(), 3);
     lifecycle.node_leases.insert(
@@ -601,6 +685,7 @@ fn mismatched_generation_lease_fails_closed_without_release() {
     let source = initially_violated_scenario();
     let mut lifecycle = production_loop_without_backends(&source);
     let node = node();
+    install_reaped_component_node(&mut lifecycle, &node);
     let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     lifecycle.node_generations.insert(node.clone(), 4);
     lifecycle.node_leases.insert(
@@ -642,6 +727,8 @@ fn generation_lease_cleanup_continues_after_an_earlier_mismatch() {
     let second = NodeId {
         name: String::from("node-second"),
     };
+    install_reaped_component_node(&mut lifecycle, &first);
+    install_reaped_component_node(&mut lifecycle, &second);
     let first_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let second_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     lifecycle.node_generations.insert(first.clone(), 2);
@@ -1137,6 +1224,9 @@ pub(in crate::vm_lifecycle) fn production_loop_without_backends(
         node_leases: BTreeMap::new(),
         node_lease_cleanup_failed: false,
         retained_cleanup_failure: None,
+        terminal_replacements: Vec::new(),
+        terminal_replacement_values: Vec::new(),
+        terminal_replacement_leases: BTreeMap::new(),
         node_service_states: BTreeMap::new(),
         lifecycle_journal: ProductionLifecycleJournal {
             version: 1,
@@ -1986,6 +2076,7 @@ fn lifecycle_retains_aggregate_launcher_after_generation_lease_failure() {
             label: "disk-resource",
         }));
     let node = node();
+    install_reaped_component_node(&mut lifecycle, &node);
     lifecycle.node_generations.insert(node.clone(), 9);
     lifecycle.node_leases.insert(
         node.clone(),
@@ -2064,6 +2155,7 @@ fn lifecycle_releases_retained_resources_after_lease_before_aggregate_launcher()
             label: "disk-resource",
         }));
     let node = node();
+    install_reaped_component_node(&mut lifecycle, &node);
     lifecycle.node_generations.insert(node.clone(), 11);
     lifecycle.node_leases.insert(
         node.clone(),

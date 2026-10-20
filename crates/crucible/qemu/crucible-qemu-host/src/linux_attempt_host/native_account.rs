@@ -310,6 +310,7 @@ impl OriginalNativeAccountCredit {
     pub(super) fn prepare_fresh_launch(
         &self,
         attempt: super::NativeAccountAttempt,
+        controller: Arc<super::original_node::OriginalNativeFreshLaunchError>,
     ) -> Result<super::original_node::OriginalNativeFreshPreparation, OriginalActorAccountError>
     {
         self.require_original()?;
@@ -321,8 +322,20 @@ impl OriginalNativeAccountCredit {
             super::original_node::OriginalNativeFreshPreparation::retain(
                 &retained.preparation,
                 attempt,
+                controller,
             ),
         )
+    }
+
+    pub(super) fn prepare_launch_controller(
+        &self,
+    ) -> Result<Arc<super::original_node::OriginalNativeFreshLaunchError>, OriginalActorAccountError>
+    {
+        let origin = self
+            .original
+            .as_ref()
+            .ok_or(OriginalActorAccountError::Unavailable)?;
+        Ok(super::original_node::OriginalNativeFreshLaunchError::prepare(&origin.preparation))
     }
 
     pub(super) fn enter_normal_preparation(&mut self) -> Result<(), OriginalActorAccountError> {

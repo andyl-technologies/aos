@@ -49,7 +49,7 @@ const IMPORT_ACK: &str = r#"pub fn retry_parent_return(&mut self) -> bool {
 
 // Share the existing physical/Original proofs instead of copying their bodies.
 const WORLD: &Contract = super::host_physical_custody::NORMAL_WORLD;
-const _: () = assert!(WORLD.companions.len() == 16);
+const _: () = assert!(WORLD.companions.len() == 17);
 pub(super) const WORLD_COMPANIONS: &[Companion] = &[
     Companion {
         path: "crates/crucible/qemu/crucible-qemu-host/src/linux_attempt_host/normal_pool.rs",
@@ -107,6 +107,7 @@ pub(super) const WORLD_COMPANIONS: &[Companion] = &[
     super::source_world_admission::ORIGIN_RUNNERS,
     super::source_world_admission::ORIGIN_FINDING,
     super::source_world_admission::ORIGIN_OWNER,
+    super::host_physical_custody::SOURCE_ORIGINAL,
 ];
 
 pub(super) const IMPORTED_RETURN: &Contract = &CONTRACTS[2];

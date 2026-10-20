@@ -118,7 +118,7 @@ pub struct QemuHotForkHostContinuation {
     pub(super) console_spool: Option<QemuConsoleObservationSpool>,
     pub(super) node_state: QemuHotForkNodeStateContinuation,
     pub(super) checkpoint_cancellation: OwnedFd,
-    pub(super) ram: Option<Box<QemuHotForkRamContinuation>>,
+    pub(super) ram: Option<super::hot_fork_ram_stage::RamAllocation<QemuHotForkRamContinuation>>,
 }
 
 impl std::fmt::Debug for QemuHotForkHostContinuation {
@@ -134,6 +134,22 @@ impl std::fmt::Debug for QemuHotForkHostContinuation {
 }
 
 impl QemuHotForkHostContinuation {
+    /// Settles this continuation's retained RAM body after actual child return.
+    ///
+    /// The canonical RAM custody verifies its own process disposition before
+    /// canceling the source. Refusal keeps this same continuation and journal.
+    /// This operation neither completes the outer Target loan nor admits work.
+    ///
+    /// # Errors
+    /// Preserves the saved Cleanup, source join, controller, or unknown-return
+    /// history without extracting the retained owner.
+    pub fn settle_ram_after_process_return(&mut self) -> Result<(), QemuNodeError> {
+        if let Some(ram) = &mut self.ram {
+            ram.finish_owned()?;
+        }
+        Ok(())
+    }
+
     /// Retains physical RAM custody in the outer child reconciliation owner.
     ///
     /// This clone grants no native process or release authority. The outer

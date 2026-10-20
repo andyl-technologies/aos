@@ -9,6 +9,7 @@ use std::error::Error;
 use std::fmt;
 use std::ops::Deref;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
+#[cfg(test)]
 use std::sync::{Arc, Mutex};
 
 use crucible_engine::{BackendOperationalCause, SharedOperationalCause};
@@ -18,19 +19,16 @@ use super::QemuRamSourceError;
 
 /// Keeps the original loan until the worker's remaining shared controls close.
 pub(super) struct WorkerScope {
-    failure: Arc<Mutex<Option<QemuRamWorkerFailure>>>,
     service_lease: HostServiceLease,
     _cleanup: Option<crate::launch_cleanup::LaunchCleanup>,
 }
 
 impl WorkerScope {
     pub(super) fn new(
-        failure: Arc<Mutex<Option<QemuRamWorkerFailure>>>,
         service_lease: HostServiceLease,
         cleanup: Option<crate::launch_cleanup::LaunchCleanup>,
     ) -> Self {
         Self {
-            failure,
             service_lease,
             _cleanup: cleanup,
         }
@@ -44,9 +42,6 @@ impl WorkerScope {
             return Ok(());
         };
         let error = QemuRamWorkerFailure::new(error, self.service_lease);
-        if let Ok(mut failure) = self.failure.lock() {
-            *failure = Some(error.clone());
-        }
         Err(error)
     }
 }
@@ -96,7 +91,7 @@ impl QemuRamWorkerFailure {
             .checked_add(lease_control)
             .and_then(|bytes| bytes.checked_add(shared_allocation_bytes::<AtomicBool>().ok()?))
             .and_then(|bytes| {
-                bytes.checked_add(shared_allocation_bytes::<Mutex<Option<Self>>>().ok()?)
+                bytes.checked_add(super::worker_outcome::WorkerOutcome::allocation_bytes().ok()?)
             })
             .ok_or(QemuRamSourceError::Ownership)
     }

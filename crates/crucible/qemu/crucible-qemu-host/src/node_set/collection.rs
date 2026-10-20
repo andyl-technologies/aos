@@ -10,6 +10,7 @@ impl QemuNodeSet {
     pub const fn new() -> Self {
         Self {
             nodes: BTreeMap::new(),
+            whole_shutdown: super::whole_shutdown::WholeShutdown::Unarmed,
             permanently_closed: Vec::new(),
             fault_event_staging_budget: None,
             pending_selectable_requests: BTreeMap::new(),

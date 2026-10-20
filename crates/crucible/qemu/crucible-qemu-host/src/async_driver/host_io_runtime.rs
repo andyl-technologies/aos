@@ -35,8 +35,24 @@ pub trait QemuHostIoRuntime: Send {
     ///
     /// # Errors
     /// Returns an error while ownership or retained release remains uncertain.
-    fn retire_host_ram_after_cleanup(&mut self) -> Result<(), QemuAsyncDriverRuntimeError> {
-        Ok(())
+    fn retire_host_ram_after_cleanup(
+        &mut self,
+        _original: Option<crate::ram_control::RamCleanupOriginal<'_>>,
+        _progress: &mut crate::ram_control::RamControlRetirementProgress,
+    ) -> (
+        bool,
+        Result<(), crate::ram_control::RamControlRetirementHistory>,
+    ) {
+        if self.ram_control_registration().is_none() {
+            (true, Ok(()))
+        } else {
+            (false, Err(crate::ram_control::RamControlRetirementHistory {
+                first: None,
+                before: Some(crucible_host_resources::host_supervision::HostSupervisionError::Unavailable),
+                after: None,
+                uncertain: false,
+            }))
+        }
     }
 
     /// Attaches an independently admitted live operation owner before execution.

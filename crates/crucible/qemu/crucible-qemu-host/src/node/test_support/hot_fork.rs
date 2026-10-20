@@ -773,6 +773,24 @@ impl QemuHostIoRuntime for ScriptedHostIoRuntime {
         self.checkpoint.as_ref().map(|owner| &owner.registration)
     }
 
+    fn retire_host_ram_after_cleanup(
+        &mut self,
+        original: Option<crate::ram_control::RamCleanupOriginal<'_>>,
+        progress: &mut crate::ram_control::RamControlRetirementProgress,
+    ) -> (
+        bool,
+        Result<(), crate::ram_control::RamControlRetirementHistory>,
+    ) {
+        let Some(owner) = self.checkpoint.as_ref() else {
+            return (true, Ok(()));
+        };
+        let (returned, status) = progress.return_controller(&owner.registration, original);
+        if returned {
+            self.checkpoint = None;
+        }
+        (returned, status)
+    }
+
     fn quiesce_for_checkpoint_under_original(
         &mut self,
         original: &crucible_host_resources::host_supervision::HostOperationGuard,
@@ -1730,3 +1748,55 @@ fn exact_hot_fork_request() -> crate::QmpHotForkRequest {
 
 #[cfg(test)]
 mod io_inventory_tests;
+
+#[cfg(test)]
+mod retirement_tests {
+    use super::*;
+    use crate::ram_control::{
+        RamCleanupOriginal, RamControlRetirementDisposition, RamControlRetirementProgress,
+    };
+    use crucible_host_resources::host_supervision::HostOperationClass;
+    use crucible_qemu_protocol::ram_control::RamControlError;
+
+    #[test]
+    fn scripted_runtime_returns_actual_controller_before_clearing_its_borrower()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let owner = Ownership::new(false)?;
+        let original = owner.supervisor.begin(HostOperationClass::Cleanup)?;
+        let identity = original.status()?.operation_id;
+        let mut runtime = ScriptedHostIoRuntime {
+            checkpoint: Some(owner.clone()),
+            supervisor: Some(owner.supervisor.clone()),
+            ..ScriptedHostIoRuntime::default()
+        };
+        let mut progress = RamControlRetirementProgress::new();
+
+        let (returned, status) = runtime.retire_host_ram_after_cleanup(
+            Some(RamCleanupOriginal::direct(&original, &owner.supervisor)),
+            &mut progress,
+        );
+        assert!(returned);
+        status?;
+        assert!(runtime.ram_control_registration().is_none());
+        let status = original.status()?;
+        assert_eq!(status.operation_id, identity);
+        assert_eq!(status.completed_work_units, 0);
+
+        let absent = owner
+            .registration
+            .registrar
+            .prepare_retirement_after_cleanup(owner.registration.target);
+        assert_eq!(
+            absent.disposition,
+            RamControlRetirementDisposition::NotReturned
+        );
+        assert!(matches!(
+            absent.failure,
+            Some(RamControlError::AuthorityMismatch)
+        ));
+        let (returned, repeated) = runtime.retire_host_ram_after_cleanup(None, &mut progress);
+        assert!(returned);
+        repeated?;
+        Ok(())
+    }
+}

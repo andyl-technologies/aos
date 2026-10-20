@@ -1695,7 +1695,9 @@ fn prepare_construction(
     let mut assertion_evaluator = HostAssertionEvaluator::new(source.properties())
         .and_then(|evaluator| evaluator.with_world_white_box_policies(source.world()))
         .map_err(|error| LifecycleApiError::BackendConstruction {
-            source: crucible_control_api::LifecycleBackendConstructionError::from_shared(Arc::new(error)),
+            source: crucible_control_api::LifecycleBackendConstructionError::from_shared(Arc::new(
+                error,
+            )),
         })?;
     if let Some(checkpoint) = &phase.restore_checkpoint {
         let inner = phase.inner.as_ref().ok_or_else(|| {
@@ -1782,6 +1784,9 @@ fn prepare_construction(
             node_leases,
             node_lease_cleanup_failed: false,
             retained_cleanup_failure: None,
+            terminal_replacements: Vec::new(),
+            terminal_replacement_values: Vec::new(),
+            terminal_replacement_leases: BTreeMap::new(),
             node_service_states,
             lifecycle_journal,
             lifecycle_persistence,

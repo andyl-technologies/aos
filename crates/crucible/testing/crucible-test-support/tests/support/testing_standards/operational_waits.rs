@@ -96,9 +96,14 @@ fn mask_after_operations(package: &str, target: &str, code: &str) -> String {
         ("crucible-qemu-host", "src/ram_source/pending_health_tests") => (
             &[
                 "fnawait_child(",
-                ".is_some_and(|worker|worker.is_finished())",
+                ".failure.snapshot().delivered",
                 "letslice=boundary.wait_slice().map_err(|error|map(&error))?;",
                 "boundary.complete().map_err(|error|map(&error))?;",
+                "assert!(!target.finished);",
+                "assert!(!target.reaped);",
+                "letcleanup=supervisor.begin(HostOperationClass::Cleanup)?;",
+                "service.stop(Some(crate::ram_control::RamCleanupOriginal::direct(&cleanup,&supervisor,)))",
+                "assert!(joined);",
             ],
             &[("thread::sleep(slice.min(Duration::from_millis(1)));", 1)],
         ),

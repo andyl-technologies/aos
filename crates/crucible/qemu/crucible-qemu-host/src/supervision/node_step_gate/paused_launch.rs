@@ -14,7 +14,7 @@ use super::*;
 /// or copied resource values cannot create this owner.
 pub struct PausedLiveNodeLaunch<'a> {
     // The child closes before its setup, channels and final cleanup alias.
-    pub(super) child: crate::QemuNodeChild,
+    pub(super) child: crate::node::IssuedLaunchOwner,
     pub(super) setup: crate::QemuHostPluginSetup,
     pub(super) qmp: crate::QemuQmpVmStateControlChannel<std::os::unix::net::UnixStream>,
     pub(super) runtime: QemuLiveHostIoRuntime,
@@ -62,133 +62,19 @@ impl PausedLiveNodeLaunch<'_> {
         &mut self.qmp
     }
 
-    /// Reaps the actual child under its same original Cleanup.
-    ///
-    /// # Errors
-    /// Refuses a different operation owner/class, cancellation or expiry, and
-    /// retains an unreaped child and cleanup authority on physical refusal.
-    #[cfg(feature = "private-measurement-domain")]
-    pub fn shutdown(
-        self,
-        cleanup: &crucible_host_resources::host_supervision::HostOperationGuard,
-    ) -> Result<(), QemuLiveNodeStepGateError> {
-        let mut child = self.child;
-        let result = (|| {
-            cleanup.verify_operation_class(
-                crucible_host_resources::host_supervision::HostOperationClass::Cleanup,
-            )?;
-            if !cleanup.shares_outer_cap(&self.operation_supervisor) {
-                return Err(QemuLiveNodeStepGateError::HostSupervision(
-                    crucible_host_resources::host_supervision::HostSupervisionError::Unavailable,
-                ));
-            }
-            loop {
-                cleanup.wait_slice()?;
-                let observed = child.kill_and_poll_reap();
-                let original_after = cleanup.wait_slice().err();
-                match observed {
-                    Ok(true) => {
-                        if let Some(after) = original_after {
-                            return Err(QemuLiveNodeStepGateError::HostSupervision(after));
-                        }
-                        return Ok(());
-                    }
-                    Ok(false) => {
-                        if let Some(after) = original_after {
-                            return Err(QemuLiveNodeStepGateError::HostSupervision(after));
-                        }
-                        cleanup.wait_for_change()?;
-                    }
-                    Err(physical) => {
-                        return Err(QemuLiveNodeStepGateError::FailedCleanup {
-                            primary: Box::new(match original_after {
-                                Some(after) => QemuLiveNodeStepGateError::HostSupervision(after),
-                                None => QemuLiveNodeStepGateError::ExactSnapshotInvariant {
-                                    reason: String::from("reap stopped live launch"),
-                                },
-                            }),
-                            cleanup: physical,
-                            unreaped_child: None,
-                        });
-                    }
-                }
-            }
-        })();
-        result.map_err(|error| {
-            if let QemuLiveNodeStepGateError::FailedCleanup {
-                primary, cleanup, ..
-            } = error
-            {
-                QemuLiveNodeStepGateError::FailedCleanup {
-                    primary,
-                    cleanup,
-                    unreaped_child: Some(Box::new(child)),
-                }
-            } else {
-                QemuLiveNodeStepGateError::FailedCleanup {
-                    primary: Box::new(error),
-                    cleanup: crate::QemuShutdownTargetError::new(
-                        "retain stopped live launch",
-                        "same original Cleanup could not attest child closure",
-                    ),
-                    unreaped_child: Some(Box::new(child)),
-                }
-            }
-        })
-    }
-
-    /// Contains a late refusal using only the same generation's saved Cleanup.
+    /// Retains a late refusal in the same issued Source receiver.
     #[cfg(feature = "private-measurement-domain")]
     pub(crate) fn reap_refused(
         self,
         primary: QemuLiveNodeStepGateError,
-        cleanup: Result<
-            std::sync::Arc<crucible_host_resources::host_supervision::HostOperationGuard>,
-            crate::OriginalActorAccountError,
-        >,
     ) -> QemuLiveNodeStepGateError {
-        let cleanup = match cleanup {
-            Ok(cleanup) => cleanup,
-            Err(source) => {
-                return QemuLiveNodeStepGateError::FailedCleanup {
-                    primary: Box::new(primary),
-                    cleanup: crate::QemuShutdownTargetError::new(
-                        "retain stopped live launch",
-                        source.to_string(),
-                    ),
-                    unreaped_child: Some(Box::new(self.child)),
-                };
-            }
-        };
-        match self.shutdown(&cleanup) {
-            Ok(()) => primary,
-            Err(QemuLiveNodeStepGateError::FailedCleanup {
-                primary: cleanup_refusal,
-                cleanup,
-                unreaped_child,
-            }) => QemuLiveNodeStepGateError::FailedCleanup {
-                primary: Box::new(primary),
-                cleanup: crate::QemuShutdownTargetError::new(
-                    "contain stopped live launch",
-                    format!("{cleanup_refusal}; physical cleanup: {cleanup}"),
-                ),
-                unreaped_child,
-            },
-            Err(refusal) => QemuLiveNodeStepGateError::FailedCleanup {
-                primary: Box::new(primary),
-                cleanup: crate::QemuShutdownTargetError::new(
-                    "contain stopped live launch",
-                    refusal.to_string(),
-                ),
-                unreaped_child: None,
-            },
-        }
+        reap_failed_live_node_child(self.child, primary)
     }
 
     /// Starts the admitted guest and completes the existing node bring-up.
     pub(super) fn prime_and_build(self) -> Result<QemuNode, QemuLiveNodeStepGateError> {
         let Self {
-            child,
+            mut child,
             setup,
             mut qmp,
             mut runtime,
@@ -240,6 +126,11 @@ impl PausedLiveNodeLaunch<'_> {
         // readiness. The matched native consumer must use this exported basis.
         launch_try!(
             child
+                .child_mut()
+                .map_err(|first| QemuLiveNodeStepGateError::node_op(
+                    "borrow issued startup completion",
+                    first
+                ))?
                 .complete_original_plugin_startup()
                 .map_err(QemuLiveNodeStepGateError::HostSupervision)
         );
@@ -314,39 +205,42 @@ impl PausedLiveNodeLaunch<'_> {
             Some(binding) => factory_runtime.with_original_binding(binding),
             None => factory_runtime,
         };
-        let mut node = match restore {
+        match restore {
             Some(restore) if resume_restored => build_qemu_node_from_restored_checkpoint(
-                child,
+                &mut child,
                 setup,
                 qmp,
                 restore,
                 factory_runtime,
             ),
             Some(restore) => build_qemu_node_from_restored_checkpoint_paused(
-                child,
+                &mut child,
                 setup,
                 qmp,
                 restore,
                 factory_runtime,
             ),
-            None => build_qemu_node_from_completed_setup(child, setup, qmp, factory_runtime),
+            None => build_qemu_node_from_completed_setup(&mut child, setup, qmp, factory_runtime),
         }
         .map_err(|source| QemuLiveNodeStepGateError::NodeFactory { source })?;
+        let node = child.node_mut().map_err(|first| {
+            QemuLiveNodeStepGateError::node_op("borrow assembled issued Node", first)
+        })?;
 
         macro_rules! node_try {
             ($result:expr) => {
                 match $result {
                     Ok(value) => value,
-                    Err(primary) => return Err(reap_failed_live_node(node, primary)),
+                    Err(primary) => return Err(reap_failed_live_node_child(child, primary)),
                 }
             };
         }
 
         if let Some(gdbstub) = &config.gdbstub {
-            node = node.with_gdbstub(gdbstub.clone());
+            node.set_gdbstub(gdbstub.clone());
         }
         if let Some(console_spool) = console_spool {
-            node = node.with_console_observation(node_id(identity.node), console_spool);
+            node.set_console_observation(node_id(identity.node), console_spool);
         }
         if !restoring_checkpoint {
             node_try!(
@@ -373,7 +267,7 @@ impl PausedLiveNodeLaunch<'_> {
             QemuLiveNodeStepGateError::node_op("synchronize primed icount", source)
         }));
         if !restoring_checkpoint {
-            node = node.with_priming_observable_events(priming.observable_events, ready_boundary);
+            node.set_priming_observable_events(priming.observable_events, ready_boundary);
         }
         if let Some(registration) = &admitted_registration {
             node_try!(
@@ -398,6 +292,10 @@ impl PausedLiveNodeLaunch<'_> {
                 }));
             }
         }
-        Ok(node)
+        child.into_node().map_err(
+            |_retained| QemuLiveNodeStepGateError::ExactSnapshotInvariant {
+                reason: String::from("issued Node was not assembled before handoff"),
+            },
+        )
     }
 }

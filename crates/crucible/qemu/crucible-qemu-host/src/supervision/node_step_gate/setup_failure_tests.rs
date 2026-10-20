@@ -27,14 +27,17 @@ fn invalid_region_setup_reaps_real_child_before_scheduler_admission() -> Result<
     prepare_test_preexec_setup(&mut resources, config)?;
     let (child, process_id) = sleeping_test_child()?;
 
-    let error = complete_host_setup_or_reap(child, || {
-        complete_qemu_host_plugin_setup(
-            resources.into_setup_resources(),
-            config,
-            0,
-            &QemuFaultCapabilityRequirement::abi_boundary_v1(),
-        )
-    })
+    let error = complete_host_setup_or_reap(
+        crate::node::IssuedLaunchOwner::component(child, None),
+        || {
+            complete_qemu_host_plugin_setup(
+                resources.into_setup_resources(),
+                config,
+                0,
+                &QemuFaultCapabilityRequirement::abi_boundary_v1(),
+            )
+        },
+    )
     .err()
     .ok_or("invalid region length unexpectedly completed setup")?;
 
@@ -63,14 +66,17 @@ fn nonready_ack_after_descriptor_handoff_reaps_real_child_before_scheduler_admis
     let plugin_peer = thread::spawn(move || plugin_peer_reject_setup(plugin_socket, false));
     let (child, process_id) = sleeping_test_child()?;
 
-    let error = complete_host_setup_or_reap(child, || {
-        complete_qemu_host_plugin_setup(
-            resources.into_setup_resources(),
-            config,
-            0,
-            &QemuFaultCapabilityRequirement::abi_boundary_v1(),
-        )
-    })
+    let error = complete_host_setup_or_reap(
+        crate::node::IssuedLaunchOwner::component(child, None),
+        || {
+            complete_qemu_host_plugin_setup(
+                resources.into_setup_resources(),
+                config,
+                0,
+                &QemuFaultCapabilityRequirement::abi_boundary_v1(),
+            )
+        },
+    )
     .err()
     .ok_or("non-ready setup acknowledgement unexpectedly reached scheduler admission")?;
 
@@ -106,7 +112,10 @@ fn ram_admission_failure_preserves_original_cause_after_real_child_reap()
         )),
     };
 
-    let error = reap_failed_live_node_child(child, primary);
+    let error = reap_failed_live_node_child(
+        crate::node::IssuedLaunchOwner::component(child, None),
+        primary,
+    );
 
     let source = error
         .source()
@@ -204,7 +213,7 @@ fn original_setup_deadline_reaps_blocked_inventory_peer() -> Result<(), Box<dyn 
     // No child response, BQL callback, QMP connection or native worker join is
     // required to reach the retained direct-process cleanup path.
     let error = reap_failed_live_node_child(
-        child,
+        crate::node::IssuedLaunchOwner::component(child, Some(&supervisor)),
         QemuLiveNodeStepGateError::RamAdmission {
             operation: "authenticate blocked native inventory",
             source,

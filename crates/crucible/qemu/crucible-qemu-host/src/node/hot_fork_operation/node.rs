@@ -632,7 +632,10 @@ impl QemuNode {
                         source,
                     }
                 })?
-                .map(Box::new),
+                .map(|ram| {
+                    let allocation = ram.allocation_lease();
+                    super::super::hot_fork_ram_stage::RamAllocation::new(ram, allocation)
+                }),
             request,
             endpoint: host_endpoint,
             ring_descriptor,

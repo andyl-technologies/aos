@@ -132,7 +132,7 @@ pub struct QemuHotForkSchedulerNodeContinuation {
     endpoint_stage: QemuHotForkPluginEndpointStageProof,
     host_io_binding: crucible_engine::model::ContentHash,
     checkpoint_cancellation: OwnedFd,
-    ram: Option<Box<QemuHotForkRamContinuation>>,
+    ram: Option<super::hot_fork_ram_stage::RamAllocation<QemuHotForkRamContinuation>>,
 }
 
 impl std::fmt::Debug for QemuHotForkSchedulerNodeContinuation {
@@ -148,6 +148,22 @@ impl std::fmt::Debug for QemuHotForkSchedulerNodeContinuation {
 }
 
 impl QemuHotForkSchedulerNodeContinuation {
+    /// Settles this continuation's retained RAM body after actual child return.
+    ///
+    /// The canonical RAM custody verifies its own process disposition before
+    /// canceling the source. Refusal keeps this same continuation and journal.
+    /// This operation neither completes the outer Target loan nor admits work.
+    ///
+    /// # Errors
+    /// Preserves the saved Cleanup, source join, controller, or unknown-return
+    /// history without extracting the retained owner.
+    pub fn settle_ram_after_process_return(&mut self) -> Result<(), QemuNodeError> {
+        if let Some(ram) = &mut self.ram {
+            ram.finish_owned()?;
+        }
+        Ok(())
+    }
+
     pub(super) fn from_host_continuation(
         continuation: QemuHotForkHostContinuation,
         child_qmp: QemuQmpVmStateControlChannel<UnixStream>,
@@ -285,6 +301,18 @@ impl QemuHotForkSchedulerNodeContinuation {
             ));
         }
 
+        let child_shutdown = match self.ram.as_mut() {
+            Some(ram) => match ram.take_shutdown() {
+                Ok(shutdown) => shutdown,
+                Err(first) => {
+                    return Err(QemuHotForkSchedulerNodeInstallError::new(
+                        self, process, first,
+                    ));
+                }
+            },
+            None => super::shutdown_continuation::ChildShutdown::new(),
+        };
+
         let launch_cleanup = self.ram.as_ref().map(|ram| ram.cleanup.clone());
         let process = match &launch_cleanup {
             Some(cleanup) => {
@@ -333,7 +361,7 @@ impl QemuHotForkSchedulerNodeContinuation {
             _hot_fork_scheduler_authority: Some(authority),
             lifecycle_state: QemuNodeLifecycleState::Running,
             shutdown_policy,
-            child_shutdown: shutdown_continuation::ChildShutdown::new(),
+            child_shutdown,
             async_policy,
             crash_detector,
             host_io_runtime,

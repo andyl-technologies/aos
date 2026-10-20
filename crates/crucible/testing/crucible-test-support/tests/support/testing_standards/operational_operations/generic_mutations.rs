@@ -192,6 +192,11 @@ fn continuation_waits_require_original_posts_and_physical_custody()
                 changed_expression
             };
             let changed_expression = if changed_expression == expression {
+                super::imported_replay::altered_expression(expression)
+            } else {
+                changed_expression
+            };
+            let changed_expression = if changed_expression == expression {
                 retained_continuations::altered_expression(expression)
             } else {
                 changed_expression

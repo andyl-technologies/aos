@@ -22,6 +22,7 @@ mod fork_target;
 pub(super) mod process_purpose;
 mod target_dispatcher;
 pub(in crate::linux_attempt_host) use fork_target::ForkTargetReservation;
+pub(crate) use fork_target::{TargetCleanupLoan, TargetCleanupOriginal};
 pub use fork_target::{QemuForkTargetConstructionError, QemuForkTargetConstructionLoan};
 pub(crate) use target_dispatcher::TargetWatcherOriginal;
 mod retirement;
@@ -31,7 +32,8 @@ use process_purpose::{cleanup_control_extent, fresh_launch_control_extent};
 pub(crate) use device_digest::OriginalDeviceDigestWorkspacePurpose;
 pub(crate) use process_purpose::{
     InstalledIncarnationRetirement, InstalledProcessPurposeError, InstalledProcessPurposeLoan,
-    InstalledSourceAdmission, InstalledSourceSubject, SetupMappingRequest,
+    InstalledSourceAdmission, InstalledSourceSubject, SetupMappingRequest, SourceCleanupLender,
+    SourceCleanupOriginal,
 };
 
 const MAX_NATIVE_WORKERS: usize = 4;
@@ -949,6 +951,8 @@ struct NativeSlot {
     launch_in_flight: bool,
     launch_abandoned: bool,
     launch_refusal: Option<Arc<super::original_node::OriginalNativeFreshLaunchError>>,
+    source_controller: Option<Arc<super::original_node::OriginalNativeFreshLaunchError>>,
+    source_cleanup_assigned: bool,
     control: Option<OriginalNativeControlRetirement>,
     cleanup: Option<Arc<HostOperationGuard>>,
     unsettled: Option<RetainedNativeHost>,
@@ -988,6 +992,14 @@ impl NativeSlot {
     }
 
     fn require_metadata_assignment(&self, bytes: u64) -> Result<(), OriginalActorAccountError> {
+        self.require_metadata_assignment_replacing_pending(bytes, 0)
+    }
+
+    fn require_metadata_assignment_replacing_pending(
+        &self,
+        bytes: u64,
+        pending: u64,
+    ) -> Result<(), OriginalActorAccountError> {
         let credit = self
             .credit
             .as_ref()
@@ -1000,6 +1012,9 @@ impl NativeSlot {
             0,
             process_purpose::InstalledProcessState::reserved_metadata_bytes,
         );
+        let process_bytes = process_bytes
+            .checked_sub(pending)
+            .ok_or(OriginalActorAccountError::Unavailable)?;
         if total
             .checked_add(process_bytes)
             .is_none_or(|total| total > credit.total_metadata_bytes())
@@ -1150,6 +1165,8 @@ impl OriginalNativeAccountRoster {
                 launch_in_flight: false,
                 launch_abandoned: false,
                 launch_refusal: None,
+                source_controller: None,
+                source_cleanup_assigned: false,
                 control: None,
                 cleanup: None,
                 unsettled: None,
@@ -1208,12 +1225,38 @@ impl OriginalNativeAccountRoster {
     /// Preserves the first physical refusal and its independent original cut,
     /// or refuses consumed custody, original expiry and surviving aliases.
     pub fn retry_unsettled(&mut self) -> Result<(), QemuVmRealizationError> {
+        // Actual failed Source bodies are driven before the pure quiescence
+        // gate. The short roster clone lock is gone before any body work.
+        let launch_return = self.retry_failed_launch_bodies();
         let held = self
             .held
             .as_ref()
             .ok_or_else(|| original_error(OriginalActorAccountError::Unavailable))?;
         // Contention must not wait beyond the caller's saved Cleanup.
         // Refusal leaves the same roster and every physical owner untouched.
+        let width = held
+            .try_lock()
+            .map_err(|_| original_error(OriginalActorAccountError::Unavailable))?
+            .width;
+        for index in 0..width {
+            let generation = {
+                let state = held
+                    .try_lock()
+                    .map_err(|_| original_error(OriginalActorAccountError::Unavailable))?;
+                let slot = &state.slots[index];
+                slot.active
+                    .filter(|_| slot.unsettled.is_some() && !slot.fork_target.is_owned())
+            };
+            if let Some(generation) = generation {
+                NativeAccountAttempt {
+                    roster: Arc::downgrade(held),
+                    index,
+                    generation,
+                }
+                .cleanup()
+                .map_err(original_error)?;
+            }
+        }
         let mut state = held
             .try_lock()
             .map_err(|_| original_error(OriginalActorAccountError::Unavailable))?;
@@ -1222,7 +1265,11 @@ impl OriginalNativeAccountRoster {
             if slot.fork_target.is_owned() || slot.unsettled.is_none() {
                 continue;
             }
-            let cleanup = retain_cleanup(slot).map_err(original_error)?;
+            let cleanup = slot
+                .cleanup
+                .as_ref()
+                .map(Arc::clone)
+                .ok_or_else(|| original_error(OriginalActorAccountError::Unavailable))?;
             slot.unsettled
                 .as_mut()
                 .ok_or_else(|| original_error(OriginalActorAccountError::Unavailable))?
@@ -1230,7 +1277,7 @@ impl OriginalNativeAccountRoster {
             close_slot(slot).map_err(original_error)?;
             slot.unsettled = None;
         }
-        Ok(())
+        launch_return.map_err(original_error)
     }
 }
 
@@ -1349,6 +1396,13 @@ impl OriginalNativeAccountFactoryBinding {
             slot.launch_abandoned = true;
             return Err(error);
         }
+        let controller = slot
+            .credit
+            .as_ref()
+            .ok_or(OriginalActorAccountError::Unavailable)?
+            .prepare_launch_controller()?;
+        slot.source_controller = Some(controller);
+        slot.source_cleanup_assigned = false;
         state.next_generation = next_generation;
         state.slots[index].active = Some(generation);
         Ok(NativeAccountAttempt {
@@ -1422,19 +1476,59 @@ impl NativeAccountAttempt {
     }
 
     pub(super) fn cleanup(&self) -> Result<Arc<HostOperationGuard>, OriginalActorAccountError> {
+        let original = self.cleanup_entry()?;
+        original.wait_slice()?;
+        Ok(original)
+    }
+
+    fn cleanup_entry(&self) -> Result<Arc<HostOperationGuard>, OriginalActorAccountError> {
         let roster = self
             .roster
             .upgrade()
             .ok_or(OriginalActorAccountError::Unavailable)?;
+        let controller = {
+            let mut state = roster
+                .try_lock()
+                .map_err(|_| OriginalActorAccountError::Unavailable)?;
+            let slot = state
+                .slots
+                .get_mut(self.index)
+                .filter(|slot| slot.active == Some(self.generation))
+                .ok_or(OriginalActorAccountError::Unavailable)?;
+            assign_source_cleanup(slot)?;
+            slot.source_controller
+                .as_ref()
+                .map(Arc::clone)
+                .ok_or(OriginalActorAccountError::Unavailable)?
+        };
+        // The real preborn controller owns the cache across unwind/refusal.
+        // No roster lock is held while beginning or observing its Original.
+        let original = controller.retained_cleanup()?;
         let mut state = roster
-            .lock()
+            .try_lock()
             .map_err(|_| OriginalActorAccountError::Unavailable)?;
         let slot = state
             .slots
             .get_mut(self.index)
-            .filter(|slot| slot.active == Some(self.generation) && slot.unsettled.is_none())
+            .filter(|slot| {
+                slot.active == Some(self.generation)
+                    && slot
+                        .source_controller
+                        .as_ref()
+                        .is_some_and(|saved| Arc::ptr_eq(saved, &controller))
+            })
             .ok_or(OriginalActorAccountError::Unavailable)?;
-        retain_cleanup(slot)
+        if slot.cleanup.is_none() {
+            slot.cleanup = Some(Arc::clone(&original));
+        }
+        if !slot
+            .cleanup
+            .as_ref()
+            .is_some_and(|saved| Arc::ptr_eq(saved, &original))
+        {
+            return Err(OriginalActorAccountError::Unavailable);
+        }
+        Ok(original)
     }
 
     pub(super) fn retain_unsettled(
@@ -1513,11 +1607,19 @@ impl NativeAccountAttempt {
         if slot.launch_controls_bytes == 0 {
             return Err(OriginalActorAccountError::Unavailable);
         }
-        let preparation = credit.prepare_fresh_launch(NativeAccountAttempt {
-            roster: Weak::clone(&self.roster),
-            index: self.index,
-            generation: self.generation,
-        })?;
+        let controller = slot
+            .source_controller
+            .as_ref()
+            .map(Arc::clone)
+            .ok_or(OriginalActorAccountError::Unavailable)?;
+        let preparation = credit.prepare_fresh_launch(
+            NativeAccountAttempt {
+                roster: Weak::clone(&self.roster),
+                index: self.index,
+                generation: self.generation,
+            },
+            controller,
+        )?;
         slot.launch_in_flight = true;
         Ok(preparation)
     }
@@ -1784,41 +1886,44 @@ impl NativeAccountAttempt {
     }
 }
 
-fn retain_cleanup(
-    slot: &mut NativeSlot,
-) -> Result<Arc<HostOperationGuard>, OriginalActorAccountError> {
-    if slot.cleanup.is_none() {
-        let credit = slot
-            .credit
-            .as_ref()
-            .ok_or(OriginalActorAccountError::Unavailable)?;
-        // The guard Arc is within the already admitted TOTAL metadata. The
-        // finite supervisor BTree was charged once as initial actor structure.
-        let extent = cleanup_control_extent()?;
-        if let Some(purpose) = slot.installed_process.as_mut()
-            && !purpose.consume_cleanup(extent)
-        {
-            return Err(OriginalActorAccountError::Unavailable);
-        }
-        slot.require_metadata_assignment(extent)?;
-        // Returned guard aliases may outlive a closed generation. Keep each
-        // assigned body charged until whole-roster retirement, rather than
-        // treating completion or dropping this slot's alias as physical free.
-        slot.cleanup_controls_bytes = slot
-            .cleanup_controls_bytes
-            .checked_add(extent)
-            .ok_or(OriginalActorAccountError::Unavailable)?;
-        slot.cleanup = Some(Arc::new(credit.begin_cleanup()?));
+fn assign_source_cleanup(slot: &mut NativeSlot) -> Result<(), OriginalActorAccountError> {
+    if slot.source_cleanup_assigned {
+        return Ok(());
     }
-    let cleanup = slot
-        .cleanup
-        .as_ref()
+    if slot.source_controller.is_none() {
+        return Err(OriginalActorAccountError::Unavailable);
+    }
+    let extent = cleanup_control_extent()?;
+    let next = slot
+        .cleanup_controls_bytes
+        .checked_add(extent)
         .ok_or(OriginalActorAccountError::Unavailable)?;
-    cleanup.wait_slice()?;
-    Ok(Arc::clone(cleanup))
+    let pending = match slot.installed_process.as_ref() {
+        Some(purpose) if purpose.pending_cleanup_is(extent) => extent,
+        Some(_) => return Err(OriginalActorAccountError::Unavailable),
+        None => 0,
+    };
+    // The guard moves this exact existing floor into assigned history. It
+    // does not add another simultaneous copy of the same reserved extent.
+    slot.require_metadata_assignment_replacing_pending(extent, pending)?;
+    if let Some(purpose) = slot.installed_process.as_mut()
+        && !purpose.consume_cleanup(extent)
+    {
+        return Err(OriginalActorAccountError::Unavailable);
+    }
+    slot.cleanup_controls_bytes = next;
+    slot.source_cleanup_assigned = true;
+    Ok(())
 }
 
 fn close_control(slot: &mut NativeSlot) -> Result<(), OriginalActorAccountError> {
+    if slot
+        .source_controller
+        .as_ref()
+        .is_some_and(|controller| !controller.physical_owners_returned())
+    {
+        return Err(OriginalActorAccountError::Unavailable);
+    }
     if slot.node_bindings_live != 0
         || slot
             .digest_purposes
@@ -1874,6 +1979,8 @@ fn close_slot(slot: &mut NativeSlot) -> Result<(), OriginalActorAccountError> {
         .ok_or(OriginalActorAccountError::Unavailable)?;
     cleanup.complete()?;
     slot.cleanup = None;
+    slot.source_controller = None;
+    slot.source_cleanup_assigned = false;
     // The host calls this only after actual process/descendant and storage
     // containment. Drop the family witness before allowing another generation.
     slot.installed_process = None;

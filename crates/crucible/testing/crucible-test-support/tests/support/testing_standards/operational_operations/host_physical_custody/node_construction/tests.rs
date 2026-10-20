@@ -19,7 +19,7 @@ impl Fixture {
         let code = crate::scrub_comments_and_strings(&std::fs::read_to_string(path)?);
         let companions = read_companions(contract)?;
         let masked = mask_contract(contract, &code, &companions);
-        assert_ne!(masked, code);
+        assert!(masked != code, "reviewed node owner changed: {}", contract.target);
         assert!(crate::flaky_escape_failures("unreviewed", "unreviewed", &masked).is_empty());
         Ok(Self {
             contract,
@@ -401,6 +401,16 @@ fn node_construction_contracts_preserve_stages_physical_return_and_independent_p
             &NODE_CREDIT_RETURN,
             r#"if normal.is_physically_returned()"#,
             r#"if true"#,
+        ),
+        (
+            &super::super::SOURCE_ORIGINAL,
+            r#"self.cleanup.get_or_init("#,
+            r#"self.cleanup.get_or_try_init("#,
+        ),
+        (
+            &super::super::SOURCE_ORIGINAL,
+            r#"Arc::ptr_eq(saved, original)"#,
+            r#"true"#,
         ),
     ];
     for contract in [

@@ -446,18 +446,6 @@ pub enum QemuWhiteboxSetupError {
     },
 }
 
-impl QemuWhiteboxSetupError {
-    /// Extracts a contained probe whose bounded cleanup could not reap it.
-    #[must_use]
-    pub(crate) fn take_unreaped_child(&mut self) -> Option<crate::QemuNodeChild> {
-        match self {
-            #[cfg(target_os = "linux")]
-            Self::GuardedProbe { source } => source.take_unreaped_child(),
-            _ => None,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

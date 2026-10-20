@@ -81,22 +81,20 @@ where
                 process_contract,
             )
         };
-        if let Err(mut error) = preparation {
-            let message = launch_error_chain(&error);
-            if let Some(child) = error.take_unreaped_child() {
-                self.owner
-                    .retain_failed_launch_child_for_node(node_id, child);
+        if let Err(error) = preparation {
+            if let Some(source) = error.retained_receiver() {
+                self.owner.quarantine_original_launch();
                 drop(lease);
-                self.owner.quarantine();
-                return Err(launcher_message(format!(
-                    "prepare fresh QEMU node `{}` failed and transferred an unreaped image-tool child to quarantine: {message}",
-                    node_id.name,
-                )));
+                return Err(LifecycleApiError::BackendConstruction {
+                    source: crucible_control_api::LifecycleBackendConstructionError::from_shared(
+                        source,
+                    ),
+                });
             }
             return Err(abort_unspawned_generation(
                 lease,
                 launcher_message(format!(
-                    "prepare fresh QEMU node `{}` failed after synchronous helper cleanup: {message}",
+                    "prepare fresh QEMU node `{}` failed before issued helper birth: {error}",
                     node_id.name,
                 )),
             ));
@@ -142,8 +140,9 @@ where
             Ok(node) => node,
             Err(mut error) => {
                 #[cfg(feature = "private-measurement-domain")]
-                if let crucible_qemu_host::QemuLiveNodeStepGateError::OriginalNativeLaunch { source } =
-                    error
+                if let crucible_qemu_host::QemuLiveNodeStepGateError::OriginalNativeLaunch {
+                    source,
+                } = error
                 {
                     // The original slot already owns this exact prepaid Arc,
                     // including any node created before the independent postcut.
@@ -152,21 +151,19 @@ where
                     self.owner.quarantine_original_launch();
                     drop(lease);
                     return Err(LifecycleApiError::BackendConstruction {
-                        source: crucible_control_api::LifecycleBackendConstructionError::from_shared(
-                            source,
-                        ),
+                        source:
+                            crucible_control_api::LifecycleBackendConstructionError::from_shared(
+                                source,
+                            ),
                     });
                 }
                 let message = launch_error_chain(&error);
-                if let Some(child) = error.take_unreaped_child() {
-                    self.owner
-                        .retain_failed_launch_child_for_node(node_id, child);
-                    drop(lease);
-                    self.owner.quarantine();
-                    return Err(launcher_message(format!(
-                        "launch guarded fresh QEMU node `{}` failed and transferred an unreaped child to quarantine: {message}",
-                        node_id.name,
-                    )));
+                if error.has_retained_owner() {
+                    // Non-issued paths must have refused before birth. Keep an
+                    // unexpected owning failure inside its actual typed error.
+                    return Err(LifecycleApiError::BackendConstruction {
+                        source: crucible_control_api::LifecycleBackendConstructionError::new(error),
+                    });
                 }
                 return Err(abort_unspawned_generation(
                     lease,

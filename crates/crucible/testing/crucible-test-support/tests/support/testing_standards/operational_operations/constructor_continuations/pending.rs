@@ -93,5 +93,6 @@ pub(super) const CONTRACT: Contract = Contract {
         super::super::source_world_admission::ORIGIN_RUNNERS,
         super::super::source_world_admission::ORIGIN_FINDING,
         super::super::source_world_admission::ORIGIN_OWNER,
+        super::super::host_physical_custody::SOURCE_ORIGINAL,
     ],
 };

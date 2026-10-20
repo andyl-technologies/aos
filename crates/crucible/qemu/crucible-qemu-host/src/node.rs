@@ -6,7 +6,7 @@
 //! keeping per-quantum timing and frame traffic on the shared-memory channel.
 
 mod backend;
-use backend::{scheduler_preemption_command, virtual_time_from_advance_outcome};
+use backend::virtual_time_from_advance_outcome;
 
 use std::any::Any;
 use std::process::Child;
@@ -328,7 +328,9 @@ pub struct QemuNodeChild {
     child: source_child::OwnedNodeChild,
     reaped: bool,
     #[cfg(target_os = "linux")]
-    ram_source: Option<Box<crate::ram_source::QemuRamSourceService>>,
+    ram_source: Option<crate::ram_source::QemuRamSourceService>,
+    #[cfg(target_os = "linux")]
+    ram_source_start: Option<crate::ram_source::SourceInput>,
     #[cfg(target_os = "linux")]
     launch_cleanup: Option<crate::launch_cleanup::LaunchCleanup>,
     #[cfg(target_os = "linux")]
@@ -360,6 +362,8 @@ impl QemuNodeChild {
             #[cfg(target_os = "linux")]
             ram_source: None,
             #[cfg(target_os = "linux")]
+            ram_source_start: None,
+            #[cfg(target_os = "linux")]
             launch_cleanup: None,
             #[cfg(target_os = "linux")]
             original_plugin_startup: None,
@@ -378,6 +382,8 @@ impl QemuNodeChild {
             child: source_child::OwnedNodeChild::Source(child),
             reaped: false,
             ram_source: None,
+            #[cfg(target_os = "linux")]
+            ram_source_start: None,
             launch_cleanup: None,
             original_plugin_startup: None,
             preexec_setup: None,
@@ -385,9 +391,36 @@ impl QemuNodeChild {
         }
     }
 
-    #[cfg(target_os = "linux")]
-    pub(crate) fn retain_ram_source(&mut self, source: crate::ram_source::QemuRamSourceService) {
-        self.ram_source = Some(Box::new(source));
+    pub(crate) fn take_guarded_probe_pipes(
+        &mut self,
+    ) -> Result<
+        (
+            std::process::ChildStdin,
+            std::process::ChildStdout,
+            std::process::ChildStderr,
+        ),
+        crate::QemuSpawnError,
+    > {
+        let source_child::OwnedNodeChild::Ordinary(child) = &mut self.child else {
+            return Err(crate::spawn::helper_receiver::helper_custody_refusal());
+        };
+        let missing = |operation| crate::QemuSpawnError::Io {
+            operation,
+            source: std::io::Error::other("configured pipe was unavailable"),
+        };
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| missing("open guarded QEMU probe stdin"))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| missing("open guarded QEMU probe stdout"))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| missing("open guarded QEMU probe stderr"))?;
+        Ok((stdin, stdout, stderr))
     }
 
     #[cfg(target_os = "linux")]
@@ -553,14 +586,13 @@ impl QemuNodeChild {
 
     /// Performs one actual SIGKILL and nonblocking reap observation.
     ///
-    /// The stopped-launch caller checks its same Cleanup before and after this
-    /// cut, then uses the supervised change wait between observations. This
-    /// operation supplies no replacement clock or independent wait deadline.
+    /// The component test retains the actual child until reap. This method
+    /// creates no operation or independent wait deadline.
     ///
     /// # Errors
     /// Returns an actual signal or nonblocking wait failure; exit alone never
     /// substitutes for the successful reap observation.
-    #[cfg(feature = "private-measurement-domain")]
+    #[cfg(all(test, feature = "private-measurement-domain"))]
     pub(crate) fn kill_and_poll_reap(&mut self) -> Result<bool, QemuShutdownTargetError> {
         if self.reaped {
             return Ok(true);
@@ -665,13 +697,7 @@ impl Drop for QemuNodeChild {
             }
         }
         #[cfg(target_os = "linux")]
-        if self.reaped {
-            if let Some(source) = self.ram_source.take() {
-                // The source's original outer cap still bounds this join. An
-                // incomplete join leaves the shared cleanup proof unresolved.
-                let _ = source.stop();
-            }
-        } else {
+        if !self.reaped {
             if let Some(cleanup) = &self.launch_cleanup {
                 cleanup.quarantine();
             }
@@ -780,9 +806,10 @@ pub struct QemuNode {
     #[cfg(target_os = "linux")]
     hot_fork_plugin_endpoint_stage: Option<QemuHotForkPluginEndpointStage>,
     #[cfg(target_os = "linux")]
-    hot_fork_ram_stage: Option<Box<QemuHotForkRamStage>>,
+    hot_fork_ram_stage: Option<hot_fork_ram_stage::RamAllocation<QemuHotForkRamStage>>,
     #[cfg(target_os = "linux")]
-    hot_fork_ram_continuation: Option<Box<QemuHotForkRamContinuation>>,
+    hot_fork_ram_continuation:
+        Option<hot_fork_ram_stage::RamAllocation<QemuHotForkRamContinuation>>,
     #[cfg(any(test, feature = "test-support"))]
     block_completion_observer: Option<std::sync::Arc<dyn crate::QemuTestBlockCompletionObserver>>,
     #[cfg(target_os = "linux")]
@@ -932,6 +959,26 @@ impl QemuNode {
         host_io_runtime: impl QemuHostIoRuntime + 'static,
         initial_fault_command_sequence: u64,
     ) -> Self {
+        Self::new_with_boxed_runtime(
+            child,
+            channels,
+            shutdown_policy,
+            async_policy,
+            crash_detector,
+            Box::new(host_io_runtime),
+            initial_fault_command_sequence,
+        )
+    }
+
+    pub(crate) fn new_with_boxed_runtime(
+        child: QemuNodeChild,
+        channels: QemuNodeChannels,
+        shutdown_policy: QemuShutdownPolicy,
+        async_policy: QemuAsyncDriverPolicy,
+        crash_detector: QemuCrashDetector,
+        host_io_runtime: Box<dyn QemuHostIoRuntime>,
+        initial_fault_command_sequence: u64,
+    ) -> Self {
         #[cfg(target_os = "linux")]
         let launch_cleanup = child.launch_cleanup.clone();
         #[cfg(target_os = "linux")]
@@ -972,7 +1019,7 @@ impl QemuNode {
             child_shutdown: shutdown_continuation::ChildShutdown::new(),
             async_policy,
             crash_detector,
-            host_io_runtime: Box::new(host_io_runtime),
+            host_io_runtime,
             last_observed_time: VirtualTime::default(),
             last_step_ceiling: None,
             last_step_final_state: None,
@@ -1387,22 +1434,38 @@ impl QemuNode {
         node: NodeId,
         spool: QemuConsoleObservationSpool,
     ) -> Self {
-        self.console_observation = Some(QemuConsoleObservation { node, spool });
+        self.set_console_observation(node, spool);
         self
+    }
+
+    pub(crate) fn set_console_observation(
+        &mut self,
+        node: NodeId,
+        spool: QemuConsoleObservationSpool,
+    ) {
+        self.console_observation = Some(QemuConsoleObservation { node, spool });
     }
 
     /// Retains setup-time observations for the first authoritative scheduler drain.
     #[must_use]
     pub(crate) fn with_priming_observable_events(
         mut self,
-        mut events: Vec<ObservableEvent>,
+        events: Vec<ObservableEvent>,
         ready_boundary: VirtualTime,
     ) -> Self {
+        self.set_priming_observable_events(events, ready_boundary);
+        self
+    }
+
+    pub(crate) fn set_priming_observable_events(
+        &mut self,
+        mut events: Vec<ObservableEvent>,
+        ready_boundary: VirtualTime,
+    ) {
         for event in &mut events {
             event.set_observation_time(ready_boundary);
         }
         self.pending_priming_observations = events;
-        self
     }
 
     fn drain_scheduler_observable_events(&mut self) -> Result<Vec<ObservableEvent>, QemuNodeError> {
@@ -1421,8 +1484,12 @@ impl QemuNode {
     /// Attaches a configured mediated gdbstub channel to this node wrapper.
     #[must_use]
     pub fn with_gdbstub(mut self, gdbstub: QemuGdbstubChannelConfig) -> Self {
-        self.gdbstub = Some(gdbstub);
+        self.set_gdbstub(gdbstub);
         self
+    }
+
+    pub(crate) fn set_gdbstub(&mut self, gdbstub: QemuGdbstubChannelConfig) {
+        self.gdbstub = Some(gdbstub);
     }
 
     /// Returns the configured gdbstub channel, when this node supports one.
@@ -1441,16 +1508,6 @@ impl QemuNode {
     #[must_use]
     pub fn child_reaped(&self) -> bool {
         self.child.reaped()
-    }
-
-    /// Consumes this failed node and transfers its direct-child wait authority.
-    ///
-    /// This crate-internal handoff deliberately drops every modeled channel and
-    /// live-backend capability. The returned child must be authenticated and
-    /// transferred to the attempt's cgroup reaper before any resource guard is
-    /// released.
-    pub(crate) fn into_direct_child_for_quarantine(self) -> Option<QemuNodeChild> {
-        self.child.into_direct_child()
     }
 
     /// Returns the operating-system process identifier of this QEMU generation.
@@ -2615,11 +2672,6 @@ impl QemuNode {
         Ok(())
     }
 
-    /// Prevents a partially assembled restored node from leaking its child.
-    pub(crate) fn reap_failed_realization(&mut self) -> Result<(), QemuShutdownTargetError> {
-        self.child.force_kill_and_reap_failed_realization()
-    }
-
     /// Deletes the VMState artifact owned by a previously captured snapshot.
     ///
     /// Callers use this when committing the Apache-side checkpoint to durable
@@ -2669,26 +2721,15 @@ impl QemuNode {
     /// unreaped after the bounded wait.
     #[cfg(target_os = "linux")]
     pub fn force_quarantine_and_reap(&mut self) -> Result<(), QemuNodeError> {
-        if self.child_reaped() {
-            return Ok(());
-        }
-        self.child.send_sigkill().map_err(|error| {
-            QemuNodeError::checkpoint(format!("force quarantine kill: {error}"))
-        })?;
-        match self
-            .child
-            .reap(self.shutdown_policy.reap_wait)
-            .map_err(|error| {
-                QemuNodeError::checkpoint(format!("reap quarantined child: {error}"))
-            })? {
-            QemuReap::Reaped => {
-                self.lifecycle_state = QemuNodeLifecycleState::ShutdownRequested;
-                Ok(())
-            }
-            QemuReap::StillAlive => Err(QemuNodeError::checkpoint(
-                "force-killed quarantined process remained alive past the reap deadline",
-            )),
-        }
+        self.retain_target_shutdown_original()?;
+        let process = self.child_shutdown.contain(
+            &mut self.child,
+            &mut self.channels,
+            &mut self.lifecycle_state,
+            self.shutdown_policy,
+            self.host_io_runtime.host_operation_supervisor(),
+        );
+        self.finish_shutdown(process).map(|_| ())
     }
 
     /// Runs shutdown escalation for the owned child through the node's channels.
@@ -2739,15 +2780,54 @@ impl QemuNode {
     }
 
     fn shutdown_child_after_coverage_drain(&mut self) -> Result<QemuShutdownReport, QemuNodeError> {
-        let report = self.child_shutdown.close(
+        self.retain_target_shutdown_original()?;
+        let process = self.child_shutdown.close(
             &mut self.child,
             &mut self.channels,
             &mut self.lifecycle_state,
             self.shutdown_policy,
             self.host_io_runtime.host_operation_supervisor(),
-        )?;
-        self.finish_host_ram_cleanup()?;
-        Ok(report)
+        );
+        self.finish_shutdown(process)
+    }
+
+    fn retain_target_shutdown_original(&mut self) -> Result<(), QemuNodeError> {
+        if self.child_shutdown.entered() {
+            return Ok(());
+        }
+        #[cfg(target_os = "linux")]
+        if let Some(ram) = self.hot_fork_ram_continuation.as_ref() {
+            let original = match ram.cleanup.retained_target_cleanup() {
+                Ok(original) => original,
+                Err(source) => {
+                    let first = QemuNodeError::RamCleanupLender {
+                        source: crucible_engine::BackendOperationalCause::new(source),
+                    };
+                    self.child_shutdown.retain_ram_refusal(first.clone());
+                    return Err(first);
+                }
+            };
+            self.child_shutdown.retain_target_original(original);
+        }
+        Ok(())
+    }
+
+    fn finish_shutdown(
+        &mut self,
+        process: Result<QemuShutdownReport, QemuNodeError>,
+    ) -> Result<QemuShutdownReport, QemuNodeError> {
+        if !self.child.reaped() {
+            return process;
+        }
+        let ram = self.finish_host_ram_cleanup();
+        match (process, ram) {
+            (Ok(report), Ok(())) => Ok(report),
+            (Err(first), Ok(())) | (Ok(_), Err(first)) => Err(first),
+            (Err(first), Err(ram)) => Err(QemuNodeError::ShutdownAndRam {
+                first: Box::new(first),
+                ram: Box::new(ram),
+            }),
+        }
     }
 
     fn handle_qmp_channel_error<T>(
@@ -2784,10 +2864,10 @@ mod block_completion_observation;
 
 use async_step::*;
 
-struct QemuNodeShutdownTarget<'a> {
+struct QemuNodeShutdownTarget<'a, 'plugin, 'qmp> {
     child: &'a mut QemuNodeProcessControl,
-    plugin_control: &'a mut dyn QemuPluginIpcControlChannel,
-    qmp_machine_control: &'a mut dyn QemuQmpMachineControlChannel,
+    plugin_control: Option<&'a mut (dyn QemuPluginIpcControlChannel + 'plugin)>,
+    qmp_machine_control: Option<&'a mut (dyn QemuQmpMachineControlChannel + 'qmp)>,
     supervisor: Option<&'a crucible_host_resources::host_supervision::HostOperationSupervisor>,
     guard: Option<&'a crucible_host_resources::host_supervision::HostOperationGuard>,
     observations: &'a mut [(
@@ -2795,19 +2875,31 @@ struct QemuNodeShutdownTarget<'a> {
         Option<crucible_host_resources::host_supervision::HostSupervisionError>,
     ); 5],
     // Entry, ladder, completion, observation and ten rung refusals: <=14.
-    history_version: &'a mut u8,
+    history_pending: &'a mut bool,
 }
 
 pub(crate) mod operational_health;
+mod ram_cleanup;
 mod shutdown_budget;
 mod shutdown_continuation;
 
 /// Measures only the new inline shutdown control in its existing node body.
 pub(crate) fn child_shutdown_control_extent() -> Option<u64> {
-    u64::try_from(std::mem::size_of::<shutdown_continuation::ChildShutdown>()).ok()
+    let fixed = std::mem::size_of::<shutdown_continuation::ChildShutdown>();
+    #[cfg(target_os = "linux")]
+    let fixed = fixed
+        .checked_add(
+            std::mem::size_of::<hot_fork_ram_stage::RamAllocation<QemuHotForkRamStage>>()
+                .checked_sub(std::mem::size_of::<Box<QemuHotForkRamStage>>())?,
+        )?
+        .checked_add(
+            std::mem::size_of::<hot_fork_ram_stage::RamAllocation<QemuHotForkRamContinuation>>()
+                .checked_sub(std::mem::size_of::<Box<QemuHotForkRamContinuation>>())?,
+        )?;
+    u64::try_from(fixed).ok()
 }
 
-impl QemuShutdownTarget for QemuNodeShutdownTarget<'_> {
+impl QemuShutdownTarget for QemuNodeShutdownTarget<'_, '_, '_> {
     fn child_reaped(&self) -> bool {
         self.child.reaped()
     }
@@ -2817,11 +2909,19 @@ impl QemuShutdownTarget for QemuNodeShutdownTarget<'_> {
             if let Some(guard) = target.guard {
                 return target
                     .plugin_control
+                    .as_deref_mut()
+                    .ok_or_else(|| {
+                        QemuShutdownTargetError::new("child cleanup", "plugin channel absent")
+                    })?
                     .send_quit_supervised(guard)
                     .map_err(channel_error_to_shutdown_error);
             }
             target
                 .plugin_control
+                .as_deref_mut()
+                .ok_or_else(|| {
+                    QemuShutdownTargetError::new("child cleanup", "plugin channel absent")
+                })?
                 .send_quit()
                 .map_err(channel_error_to_shutdown_error)
         })
@@ -2829,9 +2929,12 @@ impl QemuShutdownTarget for QemuNodeShutdownTarget<'_> {
 
     fn send_qmp_quit(&mut self) -> Result<(), QemuShutdownTargetError> {
         self.under_original(QemuShutdownRung::QmpQuit, |target| {
+            let channel = target.qmp_machine_control.as_deref_mut().ok_or_else(|| {
+                QemuShutdownTargetError::new("child cleanup", "QMP channel absent")
+            })?;
             match target.guard {
-                Some(original) => target.qmp_machine_control.quit_under_original(original),
-                None => target.qmp_machine_control.quit(),
+                Some(original) => channel.quit_under_original(original),
+                None => channel.quit(),
             }
             .map_err(channel_error_to_shutdown_error)
         })
@@ -2908,3 +3011,11 @@ pub(crate) mod tests;
 #[cfg(all(test, feature = "private-measurement-domain"))]
 #[path = "node/stopped_launch_tests.rs"]
 mod stopped_launch_tests;
+
+#[path = "node/failed_launch.rs"]
+mod failed_launch;
+pub use failed_launch::QemuFailedLaunchOwner;
+#[cfg(target_os = "linux")]
+pub(crate) use failed_launch::{IssuedLaunchOwner, SourceLaunchReservation};
+
+pub(crate) use failed_launch::RetainedChild;

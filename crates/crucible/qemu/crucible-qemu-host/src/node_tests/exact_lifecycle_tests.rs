@@ -86,7 +86,11 @@ fn permanent_failure_retires_and_removes_the_authoritative_generation() -> Resul
     assert!(nodes.insert(identity.clone(), node).is_none());
 
     let plan = nodes.prepare_terminal_replacements(vec![identity.clone()])?;
-    let retired = nodes.commit_terminal_replacements(plan, vec![None]);
+    let mut replacements = vec![None];
+    let capacity = replacements.capacity();
+    let retired = nodes.commit_terminal_replacements(plan, &mut replacements)?;
+    assert!(replacements.is_empty());
+    assert_eq!(replacements.capacity(), capacity);
 
     assert!(nodes.is_empty());
     assert_eq!(retired.len(), 1);
@@ -107,7 +111,11 @@ fn restored_replacement_requires_explicit_release_after_install() -> Result<(), 
     assert!(nodes.insert(identity.clone(), current).is_none());
 
     let plan = nodes.prepare_terminal_replacements(vec![identity.clone()])?;
-    let retired = nodes.commit_terminal_replacements(plan, vec![Some(replacement)]);
+    let mut replacements = vec![Some(replacement)];
+    let capacity = replacements.capacity();
+    let retired = nodes.commit_terminal_replacements(plan, &mut replacements)?;
+    assert!(replacements.is_empty());
+    assert_eq!(replacements.capacity(), capacity);
     assert_eq!(retired.len(), 1);
     assert!(!recorded(&replacement_log).contains(&ChannelCall::QmpContinue));
 
@@ -441,5 +449,38 @@ fn qemu_node_satisfies_simulation_backend_trait() -> Result<(), Box<dyn Error>> 
         ]
     );
 
+    Ok(())
+}
+
+#[test]
+fn terminal_commit_wrong_value_count_preserves_actual_node_and_buffer() -> Result<(), Box<dyn Error>>
+{
+    let identity = node_id("vm-a");
+    let mut current = scripted_node(shared_log(), false, false, false)?;
+    current.force_quarantine_and_reap()?;
+    let replacement = scripted_node(shared_log(), false, false, false)?;
+    let replacement_pid = replacement.process_id();
+    let mut nodes = QemuNodeSet::new();
+    assert!(nodes.insert(identity.clone(), current).is_none());
+    let plan = nodes.prepare_terminal_replacements(vec![identity.clone()])?;
+    let mut replacements = vec![Some(replacement), None];
+    let capacity = replacements.capacity();
+
+    assert!(
+        nodes
+            .commit_terminal_replacements(plan, &mut replacements)
+            .is_err()
+    );
+    assert_eq!(replacements.len(), 2);
+    assert_eq!(replacements.capacity(), capacity);
+    assert_eq!(
+        replacements[0].as_ref().unwrap().process_id(),
+        replacement_pid
+    );
+    replacements[0]
+        .as_mut()
+        .unwrap()
+        .force_quarantine_and_reap()?;
+    nodes.shutdown()?;
     Ok(())
 }

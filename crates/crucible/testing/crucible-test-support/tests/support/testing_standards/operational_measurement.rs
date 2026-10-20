@@ -1,6 +1,7 @@
 //! Exact original-operation custody for physical native retirement waits.
 
 use super::super::operational_target_cleanup;
+use super::super::operational_operations::{FAILED_BODIES, RECONCILE_BODY};
 use super::{Companion, Contract};
 
 const TARGET_RETIREMENT_OBLIGATIONS: &[&str] = &operational_target_cleanup::OBLIGATIONS;
@@ -11,18 +12,13 @@ pub(super) const CONTRACTS: &[Contract] = &[
         package: "crucible-qemu-host",
         target: "src/linux_attempt_host/original_roster",
         required: &[
-            "pub fn retry_unsettled(&mut self) -> Result<(), QemuVmRealizationError>",
-            "for slot in &mut state.slots",
-            "fork_target::retry_unsettled_target(slot)?; if slot.fork_target.is_owned() || slot.unsettled.is_none() { continue; }",
-            "let cleanup = retain_cleanup(slot).map_err(original_error)?;",
-            ".finish(&cleanup)?;",
-            "close_slot(slot).map_err(original_error)?;",
-            "slot.unsettled = None;",
+            RECONCILE_BODY,
             "assert!(roster.retry_unsettled().is_err());",
             "assert!(state.slots[0].unsettled.as_ref().unwrap().storage.is_some());",
         ],
         expressions: &[
             ("retry_unsettled", 3),
+            ("self.retry_failed_launch_bodies()", 1),
             (
                 "assert!(state.slots[0].unsettled.as_ref().unwrap().storage.is_some());",
                 2,
@@ -36,6 +32,10 @@ pub(super) const CONTRACTS: &[Contract] = &[
             path: "crates/crucible/qemu/crucible-qemu-host/src/linux_attempt_host/original_roster/fork_target.rs",
             required: TARGET_RETIREMENT_OBLIGATIONS,
             counts: TARGET_RETIREMENT_COUNTS,
+        }, Companion {
+            path: "crates/crucible/qemu/crucible-qemu-host/src/linux_attempt_host/original_roster/retirement.rs",
+            required: &[FAILED_BODIES],
+            counts: &[],
         }],
     },
     Contract {

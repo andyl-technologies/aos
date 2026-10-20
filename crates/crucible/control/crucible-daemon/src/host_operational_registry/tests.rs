@@ -137,16 +137,18 @@ fn placement_projection_keeps_old_applied_cut_while_new_policy_is_pending() {
     let mut requested = status.requested_policy;
     requested.mode = HostRamMode::ResidentRequired;
     let mut reply = placement_reply(&status);
-    reply.placement_receipt = Some(crucible_qemu_protocol::ram_control::RamControlPlacementReceipt {
-        mode: crucible_qemu_protocol::ram_control::RamControlMode::DiskOriented,
-        policy_revision: 1,
-        topology_generation: 7,
-        placement_epoch: 9,
-        locked_bytes: 0,
-        disk_preserved_logical_pages: 1,
-        disk_preserved_logical_bytes: 4096,
-        ram_write_generation_at_cut: 11,
-    });
+    reply.placement_receipt = Some(
+        crucible_qemu_protocol::ram_control::RamControlPlacementReceipt {
+            mode: crucible_qemu_protocol::ram_control::RamControlMode::DiskOriented,
+            policy_revision: 1,
+            topology_generation: 7,
+            placement_epoch: 9,
+            locked_bytes: 0,
+            disk_preserved_logical_pages: 1,
+            disk_preserved_logical_bytes: 4096,
+            ram_write_generation_at_cut: 11,
+        },
+    );
 
     mutation::observe_reply(&mut status, reply, requested, 2).unwrap();
 
@@ -188,7 +190,9 @@ fn placement_projection_refuses_inconsistent_receipts_before_status_changes() {
             0 => reply.applied_policy_revision = 0,
             1 => reply.applied_policy_revision = 3,
             2 => receipt.policy_revision = 2,
-            3 => receipt.mode = crucible_qemu_protocol::ram_control::RamControlMode::ResidentRequired,
+            3 => {
+                receipt.mode = crucible_qemu_protocol::ram_control::RamControlMode::ResidentRequired
+            }
             4 => receipt.topology_generation = 0,
             _ => unreachable!(),
         }
@@ -716,10 +720,12 @@ fn independent_final_receipt_outlives_registrar_and_releases_original_node_ledge
             .is_some()
     );
 
-    fixture
-        .registry
-        .prepare_retirement_after_cleanup(target)
-        .unwrap();
+    let outcome = fixture.registry.prepare_retirement_after_cleanup(target);
+    assert!(outcome.failure.is_none(), "{outcome:?}");
+    assert_eq!(
+        outcome.disposition,
+        crucible_qemu_host::ram_control::RamControlRetirementDisposition::Returned
+    );
     assert!(
         fixture
             .registry
@@ -768,11 +774,16 @@ fn refused_retirement_prepare_keeps_lookup_and_original_charge() {
     let owner = fixture.registry.node(fixture.target).unwrap();
     let _busy = owner.mutation.lock().unwrap();
 
-    assert!(
-        fixture
-            .registry
-            .prepare_retirement_after_cleanup(fixture.target)
-            .is_err()
+    let outcome = fixture
+        .registry
+        .prepare_retirement_after_cleanup(fixture.target);
+    assert!(matches!(
+        outcome.failure,
+        Some(RamControlError::AuthorityMismatch)
+    ));
+    assert_eq!(
+        outcome.disposition,
+        crucible_qemu_host::ram_control::RamControlRetirementDisposition::NotReturned
     );
     assert!(fixture.registry.node(fixture.target).is_ok());
     assert!(receipt.retire_after_cleanup().is_err());

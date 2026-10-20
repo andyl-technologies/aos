@@ -228,8 +228,7 @@ impl AdmittedFlightOwner {
                 guard: Rc::clone(&self.guard),
             }),
             Err(mut error) => {
-                if let Some(child) = error.take_unreaped_child() {
-                    self.guard.borrow_mut().retain_failed_launch_child(child);
+                if error.has_retained_owner() {
                     self.guard.borrow_mut().quarantine();
                     self.terminal = true;
                 }

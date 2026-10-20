@@ -269,6 +269,13 @@ fn project_history<F>(
             }
         }
     }
+    if let Some(rows) = &pending.spare_rows {
+        for row in rows {
+            if row.has_history() {
+                apply("Target worker join", row.history());
+            }
+        }
+    }
 }
 
 /// Preserves an actual setup refusal beside the still-canonical owners.
@@ -701,6 +708,13 @@ where
                     return false;
                 }
             }
+            if let Some(rows) = self.spare_rows.as_mut()
+                && !rows
+                    .iter_mut()
+                    .all(TargetNodeConstruction::dispose_spare_worker_history)
+            {
+                return false;
+            }
             // Aggregate and constructor reports stay in this SAME terminal
             // Main body through actual Source restoration and owner disposal.
             // Only the observed, now-returned row payload must be reset before
@@ -808,6 +822,10 @@ where
                 .nodes
                 .as_ref()
                 .is_some_and(|rows| rows.iter().any(TargetNodeConstruction::has_history))
+            || self
+                .spare_rows
+                .as_ref()
+                .is_some_and(|rows| rows.iter().any(TargetNodeConstruction::has_history))
     }
 
     /// Borrows actual history retained in this Main-paid constructor body.
@@ -902,6 +920,13 @@ where
                 "launch_history",
                 &self
                     .nodes
+                    .as_ref()
+                    .map(|rows| TargetLaunchHistory(rows.as_slice())),
+            )
+            .field(
+                "worker_join_history",
+                &self
+                    .spare_rows
                     .as_ref()
                     .map(|rows| TargetLaunchHistory(rows.as_slice())),
             )
@@ -1005,7 +1030,9 @@ where
             } else {
                 let body = match self.construction.as_mut() {
                     Some(custody) => {
-                        crucible_control_api::ProductionVmCleanupOwner::take_post_body(custody.as_mut())?
+                        crucible_control_api::ProductionVmCleanupOwner::take_post_body(
+                            custody.as_mut(),
+                        )?
                     }
                     None => None,
                 };

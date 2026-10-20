@@ -158,6 +158,31 @@ impl<G: crate::QemuAttemptResourceGuard> TargetNodeConstruction<G> {
         self.worker_panic = Some(payload);
     }
 
+    /// Moves the first actual unexpected join payload only after all joins.
+    pub(crate) fn take_worker_panic(&mut self) -> Option<Box<dyn std::any::Any + Send>> {
+        self.worker_panic.take()
+    }
+
+    /// Disposes a spare row's panic only after the containing role's body return.
+    pub(crate) fn dispose_spare_worker_history(&mut self) -> bool {
+        if self.attempted
+            || self.target.is_some()
+            || self.run_directory.is_some()
+            || self.supervisor.is_some()
+            || self.assembly.is_some()
+            || self.launch_source.is_some()
+            || self.launch.is_some()
+            || self.detached.is_some()
+            || self.child.is_some()
+            || self.first.is_some()
+            || self.first_rollback.is_some()
+        {
+            return false;
+        }
+        drop(self.worker_panic.take());
+        self.reset_returned()
+    }
+
     pub(crate) fn worker_panic(&self) -> Option<&(dyn std::any::Any + Send)> {
         self.worker_panic.as_deref()
     }
@@ -418,12 +443,18 @@ where
     #[cfg(test)]
     // crucible-lint: allow clippy-disallowed-method -- qualification-only host timing cannot enter modeled state.
     #[allow(clippy::disallowed_methods)]
-    pub(crate) fn launch_measured(&mut self, source: QemuNodeSetPreparedHotForkSource<'_>) {
+    pub(crate) fn launch_measured(
+        &mut self,
+        source: QemuNodeSetPreparedHotForkSource<'_>,
+        publish_source: impl FnOnce(
+            &mut QemuNodeSetPreparedHotForkSource<'_>,
+        ) -> Result<(), QemuNodeChannelError>,
+    ) {
         if self.attempted {
             return;
         }
         let started = std::time::Instant::now();
-        self.launch(source);
+        self.launch(source, publish_source);
         if self.attempted {
             self.launch_nanoseconds =
                 Some(u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX));
@@ -435,7 +466,13 @@ where
     /// No target or private directory moves to a fallible stack-only carrier.
     /// Actual QEMU refusal remains typed here; callers inspect it after all
     /// scoped workers finish and the original Source NodeSet is restored.
-    pub(crate) fn launch(&mut self, mut source: QemuNodeSetPreparedHotForkSource<'_>) {
+    pub(crate) fn launch(
+        &mut self,
+        mut source: QemuNodeSetPreparedHotForkSource<'_>,
+        publish_source: impl FnOnce(
+            &mut QemuNodeSetPreparedHotForkSource<'_>,
+        ) -> Result<(), QemuNodeChannelError>,
+    ) {
         if self.attempted || self.first.is_some() || self.child.is_some() {
             return;
         }
@@ -486,7 +523,8 @@ where
                         supervisor.clone(),
                         directory,
                         custody.clone(),
-                    )
+                    )?;
+                    publish_source(&mut source)
                 }),
             (None, None, None) => Ok(()),
             _ => Err(QemuNodeChannelError::new(

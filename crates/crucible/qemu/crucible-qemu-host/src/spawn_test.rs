@@ -953,9 +953,9 @@ fn guarded_image_helper_observes_sticky_cancellation_before_exec() -> Result<(),
             Err(error) => error,
             Ok(()) => panic!("sticky cancellation must reject every helper before exec"),
         };
-        assert!(error.child.is_none());
+        assert!(error.retained_helper_process()?.is_none());
         assert!(matches!(
-            error.source,
+            error.first_cause(),
             QemuSpawnError::Io { source, .. }
                 if source.raw_os_error() == Some(libc::ECANCELED)
         ));
@@ -976,10 +976,10 @@ fn guarded_probe_times_out_and_reaps_a_live_child() -> Result<(), Box<dyn Error>
     let error = fixture.run(1024, Duration::from_millis(100))?;
 
     assert!(matches!(
-        error.source,
+        error.first_cause(),
         QemuSpawnError::GuardedQemuProbeTimeout
     ));
-    assert!(error.child.is_none());
+    assert!(error.retained_helper_process()?.is_none());
     Ok(())
 }
 
@@ -993,7 +993,7 @@ fn guarded_probe_bounds_a_flooding_output_stream() -> Result<(), Box<dyn Error>>
 
     assert!(
         matches!(
-            &error.source,
+            error.first_cause(),
             QemuSpawnError::GuardedQemuProbeOutputLimit {
                 maximum_bytes: 1024
             }
@@ -1001,7 +1001,7 @@ fn guarded_probe_bounds_a_flooding_output_stream() -> Result<(), Box<dyn Error>>
         "guarded flooding probe returned a different error: {error:?}"
     );
     assert!(
-        error.child.is_none(),
+        error.retained_helper_process()?.is_none(),
         "flooding helper was not reaped: {error:?}"
     );
     Ok(())
@@ -1036,10 +1036,10 @@ fn guarded_probe_deadline_survives_descendant_held_output_pipes() -> Result<(), 
     let descendant = AdoptedDescendant::new(descendant_pid);
 
     assert!(matches!(
-        error.source,
+        error.first_cause(),
         QemuSpawnError::GuardedQemuProbeTimeout
     ));
-    assert!(error.child.is_none());
+    assert!(error.retained_helper_process()?.is_none());
     descendant.terminate_and_reap()?;
     Ok(())
 }
@@ -1741,6 +1741,41 @@ fn guarded_spawn_rejects_another_attempt_with_identical_limits() -> Result<(), B
         ),
         Err(QemuSpawnError::PreparedLaunchAdmissionChanged)
     ));
+    Ok(())
+}
+
+#[test]
+fn guarded_spawn_without_return_owner_refuses_before_path_revalidation()
+-> Result<(), Box<dyn Error>> {
+    let command = guarded_resource_test_command()?;
+    let contract = wide_test_process_contract()?;
+    let directory = tempfile::tempdir()?;
+    let vmstate_path = directory.path().join(crate::DEFAULT_VMSTATE_FILE_NAME);
+    std::fs::File::create(&vmstate_path)?;
+    let prepared = QemuPreparedRunDirectory::open_for_test_requirements(
+        command.resource_requirements(),
+        directory.path(),
+        &contract,
+    )?;
+    std::fs::remove_file(&vmstate_path)?;
+
+    let result = spawn_prepared_qemu_child_with_fds_in_directory_guarded(
+        &command,
+        &prepared,
+        4096,
+        &contract,
+        None,
+        None,
+    );
+
+    assert!(matches!(
+        result,
+        Err(QemuSpawnError::Io {
+            operation: "retain guarded helper",
+            source,
+        }) if source.kind() == io::ErrorKind::InvalidInput
+    ));
+    assert!(!vmstate_path.exists());
     Ok(())
 }
 

@@ -8,6 +8,51 @@
 
 use super::*;
 
+// Every slot borrows a distinct, vacant row in the existing second preborn
+// buffer. Unexpected join failures remain there through an outer unwind.
+struct ScopedWorker<'scope, 'row, D> {
+    handle: Option<std::thread::ScopedJoinHandle<'scope, ()>>,
+    panic_row: &'row mut D,
+}
+
+struct ScopedWorkers<'scope, 'row, D> {
+    handles: Vec<ScopedWorker<'scope, 'row, D>>,
+    record_panic: fn(&mut D, Box<dyn std::any::Any + Send>),
+    take_panic: fn(&mut D) -> Option<Box<dyn std::any::Any + Send>>,
+}
+
+impl<D> ScopedWorkers<'_, '_, D> {
+    fn join_all(&mut self) {
+        for slot in &mut self.handles {
+            if let Some(handle) = slot.handle.take()
+                && let Err(payload) = handle.join()
+            {
+                // Each sink was vacant before birth and receives at most one
+                // result. The actual callback is an infallible Option move.
+                (self.record_panic)(slot.panic_row, payload);
+            }
+        }
+    }
+
+    fn finish(&mut self) -> Option<Box<dyn std::any::Any + Send>> {
+        self.join_all();
+        for slot in &mut self.handles {
+            if let Some(payload) = (self.take_panic)(slot.panic_row) {
+                return Some(payload);
+            }
+        }
+        None
+    }
+}
+
+impl<D> Drop for ScopedWorkers<'_, '_, D> {
+    fn drop(&mut self) {
+        // Parent-side unwind also physically joins every remaining helper.
+        // It neither propagates nor destroys any secondary panic payload.
+        self.join_all();
+    }
+}
+
 /// Captures the exact explicit request used by every selected fork worker.
 #[derive(Clone, Copy, Debug)]
 pub struct QemuHotForkWorkerGeometry {
@@ -64,9 +109,8 @@ impl QemuHotForkWorkerGeometry {
         if nodes == 0 {
             return Err(refused("fork worker selection is empty"));
         }
-        let handles =
-            std::alloc::Layout::array::<std::thread::ScopedJoinHandle<'static, ()>>(nodes)
-                .map_err(|_| refused("fork worker handle extent overflows"))?;
+        let handles = std::alloc::Layout::array::<ScopedWorker<'static, 'static, ()>>(nodes)
+            .map_err(|_| refused("fork worker handle extent overflows"))?;
         self.rounded_request_bytes
             .checked_mul(nodes)
             .and_then(|bytes| bytes.checked_add(handles.size()))
@@ -99,21 +143,30 @@ impl QemuNodeSet {
     ///
     /// # Errors
     /// Preserves the first validation/allocation/spawn refusal. Every started
-    /// worker is joined before return; all rows and nodes remain in the caller's
+    /// worker is explicitly joined before return or panic propagation; all rows
+    /// and nodes remain in the caller's
     /// actual Target Pending on either outcome.
     pub fn with_prepared_hot_fork_sources_concurrent<D>(
         &mut self,
         prepared: &[QemuNodeSetPreparedHotForkTemplate],
         rows: &mut [D],
+        panic_rows: &mut [D],
         geometry: QemuHotForkWorkerGeometry,
         node_for: fn(&D) -> &NodeId,
         operation: for<'a> fn(QemuNodeSetPreparedHotForkSource<'a>, &mut D),
         record_panic: fn(&mut D, Box<dyn std::any::Any + Send>),
+        take_panic: fn(&mut D) -> Option<Box<dyn std::any::Any + Send>>,
+        panic_is_vacant: fn(&D) -> bool,
     ) -> Result<(), QemuHotForkWorkerFailure>
     where
         D: Send,
     {
         if prepared.is_empty()
+            || rows.len() != panic_rows.len()
+            || !rows
+                .iter()
+                .zip(panic_rows.iter())
+                .all(|(row, sink)| node_for(row) == node_for(sink) && panic_is_vacant(sink))
             || !rows
                 .windows(2)
                 .all(|pair| node_for(&pair[0]) < node_for(&pair[1]))
@@ -132,11 +185,15 @@ impl QemuNodeSet {
             self.validate_retained_hot_fork_template(token)?;
         }
         let mut first = None;
-        thread::scope(|scope| {
-            let mut handles = Vec::new();
-            if let Err(error) = handles.try_reserve_exact(prepared.len()) {
+        let unexpected_panic = thread::scope(|scope| {
+            let mut workers = ScopedWorkers {
+                handles: Vec::new(),
+                record_panic,
+                take_panic,
+            };
+            if let Err(error) = workers.handles.try_reserve_exact(prepared.len()) {
                 first = Some(QemuHotForkWorkerFailure::Handles(error));
-                return;
+                return None;
             }
             let nodes = self.nodes.iter_mut().filter(|(node, _)| {
                 prepared
@@ -148,7 +205,16 @@ impl QemuNodeSet {
                     .binary_search_by(|token| token.node().cmp(node_for(row)))
                     .is_ok()
             });
-            for (((node, backend), token), row) in nodes.zip(prepared).zip(selected_rows) {
+            let selected_panic_rows = panic_rows.iter_mut().filter(|row| {
+                prepared
+                    .binary_search_by(|token| token.node().cmp(node_for(row)))
+                    .is_ok()
+            });
+            for ((((node, backend), token), row), panic_row) in nodes
+                .zip(prepared)
+                .zip(selected_rows)
+                .zip(selected_panic_rows)
+            {
                 // Prior validation and immutable map keys make this exact pairing
                 // stable. Nodes are never removed or reconstructed in the map.
                 if node != token.node() {
@@ -172,7 +238,10 @@ impl QemuNodeSet {
                         }
                     });
                 match worker {
-                    Ok(worker) => handles.push(worker),
+                    Ok(worker) => workers.handles.push(ScopedWorker {
+                        handle: Some(worker),
+                        panic_row,
+                    }),
                     Err(error) => {
                         first = Some(QemuHotForkWorkerFailure::Spawn(error));
                         break;
@@ -181,12 +250,13 @@ impl QemuNodeSet {
             }
             // The only authored worker-panic callback is an infallible field
             // move. Joining does not dispose any node, target or private file.
-            for worker in handles {
-                if let Err(payload) = worker.join() {
-                    std::panic::resume_unwind(payload);
-                }
-            }
+            workers.finish()
         });
+        if let Some(payload) = unexpected_panic {
+            // Every helper has physically joined. The first actual payload is
+            // propagated; all independent secondary outcomes remain in Main.
+            std::panic::resume_unwind(payload);
+        }
         match first {
             Some(first) => Err(first),
             None => Ok(()),
@@ -240,5 +310,116 @@ mod tests {
         assert!(QemuHotForkWorkerGeometry::with_request(1, 3).is_err());
         assert!(exact.requested_control_bytes(0).is_err());
         assert!(exact.requested_control_bytes(usize::MAX).is_err());
+    }
+}
+
+#[cfg(test)]
+mod join_tests {
+    use super::*;
+    use std::cell::RefCell;
+    use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+
+    struct BlockingTls {
+        entered: Sender<()>,
+        release: Receiver<()>,
+    }
+    impl Drop for BlockingTls {
+        fn drop(&mut self) {
+            let _ = self.entered.send(());
+            let _ = self.release.recv();
+        }
+    }
+    thread_local! {
+        static BLOCKED_TLS: RefCell<Option<BlockingTls>> = const { RefCell::new(None) };
+    }
+    type PanicSlot = Option<Box<dyn std::any::Any + Send>>;
+    fn record(slot: &mut PanicSlot, payload: Box<dyn std::any::Any + Send>) {
+        *slot = Some(payload);
+    }
+    fn take(slot: &mut PanicSlot) -> PanicSlot {
+        slot.take()
+    }
+
+    fn blocked_tls_join(parent_unwinds: bool) {
+        let (entered, tls_entered) = mpsc::channel();
+        let (release_tls, release) = mpsc::channel();
+        let (finished, completion) = mpsc::channel();
+        let runner = std::thread::spawn(move || {
+            let mut first_slot = None;
+            let mut second_slot = None;
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                std::thread::scope(|scope| {
+                    let mut workers = ScopedWorkers {
+                        handles: Vec::with_capacity(2),
+                        record_panic: record,
+                        take_panic: take,
+                    };
+                    let first = scope.spawn(|| std::panic::panic_any("first worker panic"));
+                    workers.handles.push(ScopedWorker {
+                        handle: Some(first),
+                        panic_row: &mut first_slot,
+                    });
+                    let second = scope.spawn(move || {
+                        BLOCKED_TLS.with(|slot| {
+                            *slot.borrow_mut() = Some(BlockingTls { entered, release });
+                        });
+                    });
+                    workers.handles.push(ScopedWorker {
+                        handle: Some(second),
+                        panic_row: &mut second_slot,
+                    });
+                    if parent_unwinds {
+                        std::panic::panic_any("parent before join");
+                    }
+                    if let Some(payload) = workers.finish() {
+                        std::panic::resume_unwind(payload);
+                    }
+                });
+            }));
+            let first = result.unwrap_err();
+            assert_eq!(
+                first.downcast_ref::<&str>(),
+                Some(&if parent_unwinds {
+                    "parent before join"
+                } else {
+                    "first worker panic"
+                })
+            );
+            assert_eq!(first_slot.is_some(), parent_unwinds);
+            if parent_unwinds {
+                assert_eq!(
+                    first_slot
+                        .as_ref()
+                        .and_then(|payload| payload.downcast_ref::<&str>()),
+                    Some(&"first worker panic")
+                );
+            }
+            assert!(second_slot.is_none());
+            let _ = finished.send(());
+        });
+        tls_entered
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        // Keep the actual TLS destructor blocked while observing that neither
+        // normal join nor parent unwind can publish physical completion.
+        assert!(matches!(
+            completion.recv_timeout(std::time::Duration::from_millis(100)),
+            Err(RecvTimeoutError::Timeout)
+        ));
+        release_tls.send(()).unwrap();
+        completion
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        runner.join().unwrap();
+    }
+
+    #[test]
+    fn first_join_panic_waits_for_other_native_tls() {
+        blocked_tls_join(false);
+    }
+
+    #[test]
+    fn parent_unwind_joins_all_helpers_and_retains_secondary_panic() {
+        blocked_tls_join(true);
     }
 }

@@ -17,6 +17,9 @@ mod roster_retirement;
 #[path = "host_physical_custody/target_dispatcher.rs"]
 mod target_dispatcher;
 
+pub(in super::super) use roster_retirement::{FAILED_BODIES, RECONCILE_BODY};
+pub(super) use roster_retirement::{SOURCE_CLEANUP, SOURCE_ORIGINAL};
+
 pub(super) use node_construction::{
     NODE_OWNER, NODE_BIRTH, NODE_ISSUE, NODE_CONVERSION, NODE_SUBDIVISION, NODE_LEDGER,
     NODE_RETURN_HISTORY, NODE_CREDIT_BIRTH, NODE_PUBLISHER, NODE_LAYOUT, NODE_ROSTER_RETURN,
@@ -26,6 +29,10 @@ pub(super) use node_construction::{
 // Reuse the exact lower World facts for same-owner daemon forwarders.
 pub(super) const NORMAL_WORLD: &Contract = &normal_world::CONTRACT;
 pub(super) const TARGET_WORLD: &Contract = &fork_target::CONTRACT;
+pub(super) const NATIVE_JOIN: Companion = Companion {
+    path: target_dispatcher::CONTRACT.companions[1].path,
+    required: target_dispatcher::CONTRACT.companions[1].required,
+};
 
 pub(super) const CONTRACTS: &[Contract] = &[
     normal_world::CONTRACT,
@@ -99,10 +106,15 @@ fn host_continuations_reject_foreign_owners_and_premature_return()
 // concrete no-argument call's foreign-argument recipe.
 #[cfg(test)]
 pub(super) fn altered_expression(expression: &str) -> String {
-    if expression == "node.retry_cleanup()" {
-        "node.retry_cleanup(foreign_owner)".to_owned()
-    } else {
-        expression.to_owned()
+    match expression {
+        "node.retry_cleanup()" => "node.retry_cleanup(foreign_owner)".to_owned(),
+        "self.retry_failed_launch_bodies()?" =>
+            "self.retry_failed_launch_bodies(foreign_source)?".to_owned(),
+        "self.retry_failed_launch_bodies()" =>
+            "self.retry_failed_launch_bodies(foreign_source)".to_owned(),
+        "retained.retry_physical_cleanup()" =>
+            "retained.retry_physical_cleanup(foreign_source)".to_owned(),
+        _ => expression.to_owned(),
     }
 }
 

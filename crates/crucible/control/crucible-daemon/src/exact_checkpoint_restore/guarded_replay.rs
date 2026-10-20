@@ -291,9 +291,8 @@ where
     ) -> Result<T, QemuVmRealizationError> {
         if result.is_err() {
             self.realization_failed = true;
-            if let Some(child) = self.executor.take_failed_launch_child_for_quarantine() {
-                self.guard.retain_failed_launch_child(child);
-            }
+            // The installed issuer's original slot retains failed launch bodies.
+            // This guard never receives a child extracted from that whole owner.
         }
         let boundary = self.check_operational_boundary();
         observed_realization(result, boundary)

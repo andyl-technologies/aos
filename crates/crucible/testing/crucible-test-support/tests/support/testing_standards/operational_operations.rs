@@ -22,6 +22,8 @@ mod constructor_continuations;
 mod generic_mutations;
 #[path = "operational_operations/hot_fork_retirement.rs"]
 mod hot_fork_retirement;
+#[path = "operational_operations/imported_replay.rs"]
+mod imported_replay;
 #[path = "operational_operations/host_physical_custody.rs"]
 mod host_physical_custody;
 #[path = "operational_operations/lifecycle_retirement.rs"]
@@ -34,6 +36,8 @@ mod owned_process_controls;
 mod pager_placement;
 #[path = "operational_operations/production_publication.rs"]
 mod production_publication;
+#[path = "operational_operations/ram_source_cleanup.rs"]
+mod ram_source_cleanup;
 #[path = "operational_operations/refused_publication.rs"]
 mod refused_publication;
 #[path = "operational_operations/retained_continuations.rs"]
@@ -44,6 +48,8 @@ mod service_continuations;
 mod source_world_admission;
 #[path = "operational_operations/worker_custody.rs"]
 mod worker_custody;
+
+pub(super) use host_physical_custody::{FAILED_BODIES, RECONCILE_BODY};
 
 struct Companion {
     path: &'static str,
@@ -142,75 +148,7 @@ const CONTRACTS: &[Contract] = &[
             },
         ],
     },
-    Contract {
-        package: "crucible-qemu-host",
-        target: "src/node/host_policy",
-        required: &[
-            (
-                r#"if let Some(service) = retained.take() && let Err(error) = service.stop() { *retained = Some(error.service);"#,
-                1,
-            ),
-            (
-                r#"let observation = self.supervisor.begin(HostOperationClass::Preparation)?; loop { match self.retained.as_ref().unwrap().check_health()"#,
-                1,
-            ),
-            (
-                r#"Err(QemuRamSourceError::WorkerFailed(_)) => break, Err(source) => return Err(source.into()),"#,
-                1,
-            ),
-            (r#"observation.complete()?;"#, 1),
-            (r#"assert!(fixture.task_is_retained());"#, 4),
-            (r#"assert_eq!(source, &original);"#, 1),
-            (
-                r#"drop(worker); assert!(fixture.task_is_retained()); drop(scheduler); assert!(fixture.services.reserve_resources(1, 0, 0).is_ok());"#,
-                1,
-            ),
-            (
-                r#"Err(HostSupervisionError::CapacityExhausted) => break,"#,
-                1,
-            ),
-            (
-                r#"if matches!(source.source_failure(), QemuRamSourceError::Supervision(HostSupervisionError::CapacityExhausted))"#,
-                1,
-            ),
-            (r#"assert!(fixture.retained.is_some());"#, 1),
-            (
-                r#"drop(guards); finish_ram_source_cleanup(&mut fixture.retained, "join retained RAM source")?; assert!(fixture.retained.is_none());"#,
-                1,
-            ),
-        ],
-        expressions: &[(
-            r#"std::thread::sleep(observation.wait_slice()?.min(Duration::from_millis(1)))"#,
-            1,
-        )],
-        identifiers: &[(
-            r#"cleanup_admission_refusal_retains_service_and_credit_until_retry"#,
-            1,
-        )],
-        companions: &[Companion {
-            path: "crates/crucible/qemu/crucible-qemu-host/src/ram_source.rs",
-            required: &[
-                (
-                    r#"pub fn stop(mut self) -> Result<(), QemuRamSourceStopError> { self.cancel(); let cleanup = match self.supervisor.begin(HostOperationClass::Cleanup)"#,
-                    1,
-                ),
-                (
-                    r#"while self.worker.as_ref().is_some_and(|worker| !worker.is_finished()) { match cleanup.wait_slice()"#,
-                    1,
-                ),
-                (r#"service: Box::new(self), source: error.into(),"#, 3),
-                (
-                    r#"if let Some(worker) = self.worker.take() { let result = worker.join();"#,
-                    1,
-                ),
-                (r#"source: QemuRamSourceError::WorkerFailed(source),"#, 1),
-                (
-                    r#"match cleanup.complete() { Ok(_) => Ok(()), Err(error) => Err(QemuRamSourceStopError { service: Box::new(self), source: error.into(), }), }"#,
-                    1,
-                ),
-            ],
-        }],
-    },
+    ram_source_cleanup::CONTRACT,
     Contract {
         package: "crucible-qemu-plugin",
         target: "src/paged_ram/engine/ordinary_capture",
@@ -510,20 +448,24 @@ const CONTRACTS: &[Contract] = &[
         package: "crucible-qemu-host",
         target: "src/linux_attempt_host/original_roster",
         required: &[
+            (RECONCILE_BODY, 1),
             (
                 r#"for slot in &mut state.slots { fork_target::retry_unsettled_target(slot)?; if slot.fork_target.is_owned() || slot.unsettled.is_none() { continue; }"#,
                 1,
             ),
             (
-                r#"let cleanup = retain_cleanup(slot).map_err(original_error)?; slot.unsettled.as_mut().ok_or_else(|| original_error(OriginalActorAccountError::Unavailable))?.finish(&cleanup)?; close_slot(slot).map_err(original_error)?; slot.unsettled = None;"#,
+                r#"let cleanup = slot.cleanup.as_ref().map(Arc::clone).ok_or_else(|| original_error(OriginalActorAccountError::Unavailable))?; slot.unsettled.as_mut().ok_or_else(|| original_error(OriginalActorAccountError::Unavailable))?.finish(&cleanup)?; close_slot(slot).map_err(original_error)?; slot.unsettled = None;"#,
                 1,
             ),
             (r#"if slot.cleanup.is_none()"#, 1),
             (
-                r#"slot.cleanup = Some(Arc::new(credit.begin_cleanup()?));"#,
+                r#"slot.cleanup = Some(Arc::clone(&original));"#,
                 1,
             ),
-            (r#"cleanup.wait_slice()?; Ok(Arc::clone(cleanup))"#, 1),
+            host_physical_custody::SOURCE_CLEANUP.required[0],
+            host_physical_custody::SOURCE_CLEANUP.required[1],
+            host_physical_custody::SOURCE_CLEANUP.required[2],
+            host_physical_custody::SOURCE_CLEANUP.required[3],
             (r#"process.finish_under_original(cleanup)?;"#, 1),
             (r#"group.remove_under_original(cleanup)?;"#, 1),
             (
@@ -535,6 +477,7 @@ const CONTRACTS: &[Contract] = &[
                 1,
             ),
             (r#"cleanup.complete()?; slot.cleanup = None;"#, 1),
+            host_physical_custody::SOURCE_CLEANUP.required[4],
             (
                 r#"slot.installed_process = None; slot.source_control_payer = None; slot.active = None;"#,
                 1,
@@ -564,6 +507,7 @@ const CONTRACTS: &[Contract] = &[
         expressions: &[
             (r#"roster.retry_unsettled()"#, 2),
             (r#"fork_target::retry_unsettled_target(slot)?;"#, 1),
+            (r#"self.retry_failed_launch_bodies()"#, 1),
         ],
         identifiers: &[
             (r#"retry_unsettled"#, 3),
@@ -572,10 +516,17 @@ const CONTRACTS: &[Contract] = &[
                 1,
             ),
         ],
-        companions: &[Companion {
-            path: "crates/crucible/qemu/crucible-qemu-host/src/linux_attempt_host/original_roster/fork_target.rs",
-            required: TARGET_CLEANUP_REQUIRED,
-        }],
+        companions: &[
+            Companion {
+                path: "crates/crucible/qemu/crucible-qemu-host/src/linux_attempt_host/original_roster/fork_target.rs",
+                required: TARGET_CLEANUP_REQUIRED,
+            },
+            Companion {
+                path: "crates/crucible/qemu/crucible-qemu-host/src/linux_attempt_host/original_roster/retirement.rs",
+                required: &[(FAILED_BODIES, 1)],
+            },
+            host_physical_custody::SOURCE_ORIGINAL,
+        ],
     },
     Contract {
         package: "crucible-daemon",
@@ -711,6 +662,7 @@ fn contracts() -> impl Iterator<Item = &'static Contract> {
         .chain(lifecycle_retirement::CONTRACTS)
         .chain(host_physical_custody::CONTRACTS)
         .chain(hot_fork_retirement::CONTRACTS)
+        .chain(imported_replay::CONTRACTS)
         .chain(pager_placement::CONTRACTS)
         .chain(native_registration::CONTRACTS)
         .chain(native_registration::REQUIRED_WORKER_CONTRACTS)

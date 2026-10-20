@@ -391,7 +391,8 @@ where
         self.guard.launch_exact_node_for_node(node, request)
     }
 
-    /// Keeps an unreaped child with the same selected physical member.
+    /// Keeps a component test's child with the same selected physical member.
+    #[cfg(test)]
     pub(crate) fn retain_failed_launch_child_for_node(
         &mut self,
         node: &NodeId,
@@ -608,11 +609,6 @@ where
             );
         }
         self.guard.launch_exact_node(request)
-    }
-
-    /// Retains an unreaped child from a failed generation launch.
-    pub fn retain_failed_launch_child(&mut self, child: QemuNodeChild) {
-        self.guard.retain_failed_launch_child(child);
     }
 
     /// Charges one scheduler quantum before generation guest progress.

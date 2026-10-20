@@ -9,8 +9,10 @@ mod debug_policy;
 mod diagnostics;
 mod host_concurrent;
 mod lifecycle;
+pub(super) use lifecycle::PreparedTerminalReplacement;
 mod live_network_preselection;
 mod signal_fault_campaign;
+mod whole_shutdown;
 use attempt_boundary::{attempt_boundary_scheduler_error, combine_attempt_quantum_boundary};
 pub(super) use checkpoint_capture::ExactCheckpointPublicationState;
 use checkpoint_capture::{
@@ -46,7 +48,7 @@ pub(super) use lifecycle::{
 #[cfg(test)]
 pub(super) use lifecycle::{HARD_RUN_STATE_JSON_BYTES, validate_recovered_lifecycle_journal};
 use lifecycle::{
-    PreparedLifecyclePrecommit, PreparedLifecycleTerminal, PreparedTerminalReplacement,
+    PreparedLifecyclePrecommit, PreparedLifecycleTerminal,
     release_restored_generation_after_scheduler_publication, select_preowned_terminal_generation,
 };
 
@@ -1081,15 +1083,22 @@ impl ProductionVmLifecycleLoop {
         });
         let construction_shutdown = self.retry_retained_debug_construction();
         let prior_node_lease_cleanup_failure = self.node_lease_cleanup_failed;
+        let lease_binding = self.prepare_whole_node_shutdown();
+        let staged_shutdown = self.retire_terminal_replacement_transaction();
         let shutdown = self.inner.shutdown();
-        let lease_shutdown = if shutdown.is_ok() {
-            self.finish_all_reaped_node_leases()
-        } else {
-            Ok(())
+        // The backend may have physically returned before an independent
+        // scheduler/evidence error. Consult its retained actual disposition,
+        // never the outer Result or absence of a node in the cleared map.
+        let lease_shutdown = match lease_binding {
+            Ok(binding) => self.finish_whole_node_leases(binding),
+            Err(first) => Err(first),
         };
         let launcher_shutdown = if shutdown.is_ok()
             && lease_shutdown.is_ok()
             && construction_shutdown.is_ok()
+            && staged_shutdown.is_ok()
+            && self.terminal_replacement_values.is_empty()
+            && self.terminal_replacement_leases.is_empty()
             && !self.node_lease_cleanup_failed
         {
             // Reaped processes no longer need their pinned backing files.
@@ -1106,6 +1115,16 @@ impl ProductionVmLifecycleLoop {
         };
 
         let mut failures = Vec::new();
+        if let Err(error) = staged_shutdown {
+            failures.push(error);
+        }
+        if !self.terminal_replacement_values.is_empty()
+            || !self.terminal_replacement_leases.is_empty()
+        {
+            failures.push(SchedulerError::BoundaryViolation {
+                message: String::from("terminal replacement commit retains physical owners"),
+            });
+        }
         if let Err(error) = construction_shutdown {
             failures.push(self.retain_cleanup_failure(error));
         }
@@ -1231,13 +1250,14 @@ impl ProductionVmLifecycleLoop {
         &mut self,
         decisions: &[QemuNodeLifecycleDecision],
         lifecycle_precommit: Option<&mut PreparedLifecyclePrecommit>,
-    ) -> Result<Vec<PreparedTerminalReplacement>, SchedulerError> {
+        prepared: &mut Vec<PreparedTerminalReplacement>,
+    ) -> Result<(), SchedulerError> {
         let terminal_count = decisions
             .iter()
             .filter(|decision| decision.expected_exit_code.is_some())
             .count();
         if terminal_count == 0 {
-            return Ok(Vec::new());
+            return Ok(());
         }
         let lifecycle_precommit =
             lifecycle_precommit.ok_or_else(|| SchedulerError::BoundaryViolation {
@@ -1407,7 +1427,6 @@ impl ProductionVmLifecycleLoop {
                 });
             }
         }
-        let mut prepared = std::mem::take(&mut lifecycle_precommit.prepared_replacements);
         debug_assert!(prepared.capacity() >= terminal.len());
         for terminal in terminal {
             let decision = terminal.decision;
@@ -1588,7 +1607,7 @@ impl ProductionVmLifecycleLoop {
                 match launch {
                     Ok(launch) => prepared[index].replacement = Some(launch),
                     Err(error) => {
-                        let cleanup = Self::abort_staged_terminal_replacements(&mut prepared);
+                        let cleanup = Self::abort_staged_terminal_replacements(prepared);
                         return Err(match cleanup {
                             Ok(()) => error,
                             Err(cleanup) => SchedulerError::BoundaryViolation {
@@ -1601,7 +1620,121 @@ impl ProductionVmLifecycleLoop {
                 }
             }
         }
-        Ok(prepared)
+        Ok(())
+    }
+
+    /// Settles every restored transaction owner before its containing Loop returns.
+    ///
+    /// The same row keeps a refused node and lease; partially transferred values
+    /// remain in the prepriced commit buffer. A lease already moved beside the
+    /// backend cannot finish until that actual backend has returned its bodies.
+    pub(in crate::vm_lifecycle) fn retire_terminal_replacement_transaction(
+        &mut self,
+    ) -> Result<(), SchedulerError> {
+        let mut first =
+            Self::abort_staged_terminal_replacements(&mut self.terminal_replacements).err();
+        for index in 0..self.terminal_replacement_values.len() {
+            let Some(node) = self.terminal_replacement_values[index].as_mut() else {
+                continue;
+            };
+            let Some(row) = self.terminal_replacements.get(index) else {
+                first.get_or_insert_with(|| SchedulerError::BoundaryViolation {
+                    message: String::from(
+                        "retained replacement value has no exact transaction row",
+                    ),
+                });
+                continue;
+            };
+            if let Err(cause) = node.force_quarantine_and_reap() {
+                first.get_or_insert_with(|| SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "return staged commit node `{}`: {cause}",
+                        row.decision.node.name
+                    ),
+                });
+                continue;
+            }
+            let Some(lease) = self.terminal_replacement_leases.get_mut(&row.decision.node) else {
+                first.get_or_insert_with(|| SchedulerError::BoundaryViolation {
+                    message: String::from("retained replacement value lost its generation lease"),
+                });
+                continue;
+            };
+            if lease.identity().node() != &row.decision.node
+                || lease.identity().generation() != row.generation
+            {
+                first.get_or_insert_with(|| SchedulerError::BoundaryViolation {
+                    message: String::from(
+                        "retained replacement lease belongs to another generation",
+                    ),
+                });
+                continue;
+            }
+            if let Err(cause) = lease.finish() {
+                first.get_or_insert_with(|| SchedulerError::BoundaryViolation {
+                    message: format!(
+                        "return staged commit lease `{}`: {cause}",
+                        row.decision.node.name
+                    ),
+                });
+                continue;
+            }
+            drop(self.terminal_replacement_values[index].take());
+            self.terminal_replacement_leases.remove(&row.decision.node);
+        }
+        if self.terminal_replacement_values.iter().all(Option::is_none) {
+            self.terminal_replacement_values.clear();
+        }
+        if self.terminal_replacement_values.is_empty()
+            && !self.terminal_replacement_leases.is_empty()
+        {
+            // A commit may already have installed these nodes while their exact
+            // leases remain in the transaction. Retire that actual backend first.
+            match self.inner.backend_mut().shutdown() {
+                Ok(()) => {
+                    let rows = &self.terminal_replacements;
+                    self.terminal_replacement_leases.retain(|node, lease| {
+                        let exact = rows.iter().any(|row| {
+                            &row.decision.node == node
+                                && lease.identity().node() == node
+                                && lease.identity().generation() == row.generation
+                        });
+                        if !exact {
+                            first.get_or_insert_with(|| SchedulerError::BoundaryViolation {
+                                message: String::from(
+                                    "retained commit lease has no matching issued row",
+                                ),
+                            });
+                            return true;
+                        }
+                        match lease.finish() {
+                            Ok(()) => false,
+                            Err(cause) => {
+                                first.get_or_insert_with(|| SchedulerError::BoundaryViolation {
+                                    message: format!(
+                                        "return installed commit lease `{}`: {cause}",
+                                        node.name
+                                    ),
+                                });
+                                true
+                            }
+                        }
+                    });
+                }
+                Err(cause) => {
+                    first.get_or_insert_with(|| SchedulerError::BoundaryViolation {
+                        message: format!("return installed terminal transaction: {cause}"),
+                    });
+                }
+            }
+        }
+        if first.is_none()
+            && self.terminal_replacement_values.is_empty()
+            && self.terminal_replacement_leases.is_empty()
+        {
+            self.terminal_replacements.clear();
+        }
+        first.map_or(Ok(()), Err)
     }
 
     fn abort_staged_terminal_replacements(
@@ -1609,14 +1742,19 @@ impl ProductionVmLifecycleLoop {
     ) -> Result<(), SchedulerError> {
         let mut first_error = None;
         for item in prepared {
-            if let Some(replacement) = item.replacement.take()
-                && let Err(error) = replacement.quarantine_and_finish()
-                && first_error.is_none()
-            {
-                first_error = Some(format!(
-                    "reap staged replacement for `{}`: {error}",
-                    item.decision.node.name
-                ));
+            if let Some(replacement) = item.replacement.as_mut() {
+                match replacement.quarantine_and_finish() {
+                    Ok(()) => {
+                        item.replacement = None;
+                    }
+                    Err(error) if first_error.is_none() => {
+                        first_error = Some(format!(
+                            "reap staged replacement for `{}`: {error}",
+                            item.decision.node.name
+                        ));
+                    }
+                    Err(_) => {}
+                }
             }
         }
         first_error.map_or(Ok(()), |message| {
@@ -1628,6 +1766,9 @@ impl ProductionVmLifecycleLoop {
         &mut self,
         nodes: &[NodeId],
     ) -> Result<(), SchedulerError> {
+        self.inner
+            .backend_mut()
+            .settle_terminal_exits_for_return(nodes)?;
         let result =
             finish_reaped_node_lease_map(&self.node_generations, &mut self.node_leases, nodes);
         if result.is_err() {
@@ -1649,15 +1790,12 @@ impl ProductionVmLifecycleLoop {
         }
     }
 
-    fn finish_all_reaped_node_leases(&mut self) -> Result<(), SchedulerError> {
-        let nodes = self.node_leases.keys().cloned().collect::<Vec<_>>();
-        self.finish_reaped_node_leases(&nodes)
-    }
-
     fn commit_terminal_replacements(
         &mut self,
         prepared: &mut [PreparedTerminalReplacement],
         lifecycle_precommit: &mut PreparedLifecyclePrecommit,
+        replacement_values: &mut Vec<Option<QemuNode>>,
+        replacement_leases: &mut BTreeMap<NodeId, Box<dyn ProductionVmNodeLease>>,
     ) -> Result<(), SchedulerError> {
         if prepared.is_empty() {
             return Ok(());
@@ -1799,8 +1937,6 @@ impl ProductionVmLifecycleLoop {
                 .loop_impl_mut()
                 .set_vm_node_activity(&item.decision.node, activity)?;
         }
-        let mut replacement_leases = BTreeMap::new();
-        let mut replacement_values = std::mem::take(&mut lifecycle_precommit.replacement_values);
         debug_assert!(replacement_values.capacity() >= prepared.len());
         for item in prepared.iter_mut() {
             let replacement = item.replacement.take().map(|replacement| {
@@ -1813,17 +1949,24 @@ impl ProductionVmLifecycleLoop {
         let retired = self
             .inner
             .backend_mut()
-            .commit_terminal_replacements(plan, replacement_values);
+            .commit_terminal_replacements(plan, replacement_values)?;
         self.failed_host_io = committed_failed_host_io;
         // Backend ownership changes atomically, but the exact generation
         // leases still have to move into the active map. Keep aggregate
         // authority quarantined if any invariant fails during that handoff.
         self.node_lease_cleanup_failed = true;
-        for (node, lease) in replacement_leases {
+        // This is the constructed Loop's only production lease expansion.
+        // The successful backend commit above has already invalidated any
+        // whole-shutdown phase before a new lease can enter this map.
+        while let Some((node, lease)) = replacement_leases.pop_first() {
             let previous = self.node_leases.insert(node, lease);
             debug_assert!(previous.is_none());
         }
-        debug_assert!(retired.iter().all(|(_, node)| node.child_reaped()));
+        debug_assert!(
+            retired
+                .iter()
+                .all(|(_, node)| node.cleanup_physically_returned())
+        );
         for (device, handle) in block_handles {
             let slot = block_devices.get_mut(&device).ok_or_else(|| {
                 SchedulerError::BoundaryViolation {
@@ -2268,6 +2411,11 @@ impl ProductionVmLifecycleLoop {
         boot_requests: &[NodeId],
         mut lifecycle_precommit: Option<&mut PreparedLifecyclePrecommit>,
     ) -> Result<(), SchedulerError> {
+        let requested = decisions
+            .iter()
+            .filter(|decision| decision.expected_exit_code.is_some())
+            .count();
+        let mut transaction = lifecycle::TerminalReplacementLoan::borrow(self, requested)?;
         let has_lifecycle = !decisions.is_empty();
         let needs_terminal_exact_capture = decisions.iter().any(|decision| {
             matches!(
@@ -2280,46 +2428,57 @@ impl ProductionVmLifecycleLoop {
         // state recorded in its precommit checkpoint. Other batches retain
         // the existing Boot-before-prepare order.
         if !needs_terminal_exact_capture
-            && let Err(error) = self.commit_node_boot_requests(boot_requests)
+            && let Err(error) = transaction
+                .lifecycle
+                .commit_node_boot_requests(boot_requests)
         {
-            return Err(self.quarantine_terminal_lifecycle_transaction(
-                decisions,
-                boot_requests,
-                error,
-            ));
+            return Err(transaction
+                .lifecycle
+                .quarantine_terminal_lifecycle_transaction(decisions, boot_requests, error));
         }
-        let mut prepared = match self
-            .prepare_terminal_replacements(decisions, lifecycle_precommit.as_deref_mut())
-        {
-            Ok(prepared) => prepared,
-            Err(capture_error) => {
-                return Err(self.quarantine_terminal_lifecycle_transaction(
+        if let Err(capture_error) = transaction.lifecycle.prepare_terminal_replacements(
+            decisions,
+            lifecycle_precommit.as_deref_mut(),
+            &mut transaction.prepared,
+        ) {
+            return Err(transaction
+                .lifecycle
+                .quarantine_terminal_lifecycle_transaction_with_staged(
                     decisions,
                     boot_requests,
+                    &mut transaction.prepared,
                     capture_error,
                 ));
-            }
-        };
+        }
         if needs_terminal_exact_capture
-            && let Err(error) = self.commit_node_boot_requests(boot_requests)
+            && let Err(error) = transaction
+                .lifecycle
+                .commit_node_boot_requests(boot_requests)
         {
-            return Err(self.quarantine_terminal_lifecycle_transaction_with_staged(
-                decisions,
-                boot_requests,
-                &mut prepared,
-                error,
-            ));
+            return Err(transaction
+                .lifecycle
+                .quarantine_terminal_lifecycle_transaction_with_staged(
+                    decisions,
+                    boot_requests,
+                    &mut transaction.prepared,
+                    error,
+                ));
         }
-        if has_lifecycle && let Err(error) = self.record_prepared_lifecycle_processes(&mut prepared)
+        if has_lifecycle
+            && let Err(error) = transaction
+                .lifecycle
+                .record_prepared_lifecycle_processes(&mut transaction.prepared)
         {
-            return Err(self.quarantine_terminal_lifecycle_transaction_with_staged(
-                decisions,
-                boot_requests,
-                &mut prepared,
-                error,
-            ));
+            return Err(transaction
+                .lifecycle
+                .quarantine_terminal_lifecycle_transaction_with_staged(
+                    decisions,
+                    boot_requests,
+                    &mut transaction.prepared,
+                    error,
+                ));
         }
-        if !prepared.is_empty() {
+        if !transaction.prepared.is_empty() {
             let precommit = lifecycle_precommit.as_deref_mut().ok_or_else(|| {
                 SchedulerError::BoundaryViolation {
                     message: String::from(
@@ -2327,89 +2486,107 @@ impl ProductionVmLifecycleLoop {
                     ),
                 }
             })?;
-            if let Err(error) = self.supervise_terminal_lifecycle_exits(
-                &mut prepared,
+            if let Err(error) = transaction.lifecycle.supervise_terminal_lifecycle_exits(
+                &mut transaction.prepared,
                 &mut precommit.observed_exit_codes,
             ) {
-                return Err(self.quarantine_terminal_lifecycle_transaction_with_staged(
-                    decisions,
-                    boot_requests,
-                    &mut prepared,
-                    error,
-                ));
+                return Err(transaction
+                    .lifecycle
+                    .quarantine_terminal_lifecycle_transaction_with_staged(
+                        decisions,
+                        boot_requests,
+                        &mut transaction.prepared,
+                        error,
+                    ));
             }
         }
-        for replacement in &prepared {
-            if let Err(error) = self
+        for replacement in &transaction.prepared {
+            if let Err(error) = transaction
+                .lifecycle
                 .inner
                 .backend()
                 .validate_terminal_exits_reaped(std::slice::from_ref(&replacement.decision.node))
             {
-                return Err(self.quarantine_terminal_lifecycle_transaction_with_staged(
-                    decisions,
-                    boot_requests,
-                    &mut prepared,
-                    error,
-                ));
+                return Err(transaction
+                    .lifecycle
+                    .quarantine_terminal_lifecycle_transaction_with_staged(
+                        decisions,
+                        boot_requests,
+                        &mut transaction.prepared,
+                        error,
+                    ));
             }
         }
         if has_lifecycle
-            && let Err(error) =
-                self.advance_lifecycle_journal(ProductionLifecycleJournalPhase::ExitsReaped)
+            && let Err(error) = transaction
+                .lifecycle
+                .advance_lifecycle_journal(ProductionLifecycleJournalPhase::ExitsReaped)
         {
-            return Err(self.quarantine_terminal_lifecycle_transaction_with_staged(
-                decisions,
-                boot_requests,
-                &mut prepared,
-                error,
-            ));
-        }
-        for replacement in &prepared {
-            if let Err(error) =
-                self.finish_reaped_node_leases(std::slice::from_ref(&replacement.decision.node))
-            {
-                return Err(self.quarantine_terminal_lifecycle_transaction_with_staged(
+            return Err(transaction
+                .lifecycle
+                .quarantine_terminal_lifecycle_transaction_with_staged(
                     decisions,
                     boot_requests,
-                    &mut prepared,
+                    &mut transaction.prepared,
                     error,
                 ));
+        }
+        for replacement in &transaction.prepared {
+            if let Err(error) = transaction
+                .lifecycle
+                .finish_reaped_node_leases(std::slice::from_ref(&replacement.decision.node))
+            {
+                return Err(transaction
+                    .lifecycle
+                    .quarantine_terminal_lifecycle_transaction_with_staged(
+                        decisions,
+                        boot_requests,
+                        &mut transaction.prepared,
+                        error,
+                    ));
             }
         }
-        if !prepared.is_empty() {
+        if !transaction.prepared.is_empty() {
             let precommit = lifecycle_precommit.as_deref_mut().ok_or_else(|| {
                 SchedulerError::BoundaryViolation {
                     message: String::from("terminal lifecycle commit lost its precommit storage"),
                 }
             })?;
-            if let Err(error) = self.commit_terminal_replacements(&mut prepared, precommit) {
-                return Err(self.quarantine_terminal_lifecycle_transaction_with_staged(
-                    decisions,
-                    boot_requests,
-                    &mut prepared,
-                    error,
-                ));
+            if let Err(error) = transaction.lifecycle.commit_terminal_replacements(
+                &mut transaction.prepared,
+                precommit,
+                &mut transaction.values,
+                &mut transaction.leases,
+            ) {
+                return Err(transaction
+                    .lifecycle
+                    .quarantine_terminal_lifecycle_transaction_with_staged(
+                        decisions,
+                        boot_requests,
+                        &mut transaction.prepared,
+                        error,
+                    ));
             }
         }
         if has_lifecycle
-            && let Err(error) = self.retain_completed_lifecycle_exits(
+            && let Err(error) = transaction.lifecycle.retain_completed_lifecycle_exits(
                 decisions,
                 lifecycle_precommit
                     .as_deref()
                     .map_or(&[], |precommit| precommit.observed_exit_codes.as_slice()),
             )
         {
-            return Err(self.quarantine_terminal_lifecycle_transaction(
-                decisions,
-                boot_requests,
-                error,
-            ));
+            return Err(transaction
+                .lifecycle
+                .quarantine_terminal_lifecycle_transaction(decisions, boot_requests, error));
         }
-        if !has_lifecycle && !self.lifecycle_journal.nodes.is_empty() {
-            self.lifecycle_journal.nodes.clear();
-            self.lifecycle_journal.phase = ProductionLifecycleJournalPhase::Committed;
-            self.persist_lifecycle_state()?;
+        if !has_lifecycle && !transaction.lifecycle.lifecycle_journal.nodes.is_empty() {
+            transaction.lifecycle.lifecycle_journal.nodes.clear();
+            transaction.lifecycle.lifecycle_journal.phase =
+                ProductionLifecycleJournalPhase::Committed;
+            transaction.lifecycle.persist_lifecycle_state()?;
         }
+        transaction.prepared.clear();
         Ok(())
     }
 }

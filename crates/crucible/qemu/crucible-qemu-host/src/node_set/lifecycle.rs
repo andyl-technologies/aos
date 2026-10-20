@@ -28,6 +28,18 @@ impl QemuNodeSet {
                     ),
                 });
             }
+            if !self
+                .nodes
+                .get(node)
+                .is_some_and(QemuNode::cleanup_physically_returned)
+            {
+                return Err(BackendError::Rejected {
+                    message: format!(
+                        "terminal replacement for `{}` still owns RAM or controller custody",
+                        node.name
+                    ),
+                });
+            }
             if replacements[..index].contains(node) {
                 return Err(BackendError::Rejected {
                     message: format!("terminal replacement repeats node `{}`", node.name),
@@ -74,6 +86,42 @@ impl QemuNodeSet {
         Ok(())
     }
 
+    /// Settles each already-reaped generation's actual RAM leaves in place.
+    ///
+    /// The same node, saved Cleanup and generation remain in their map slot on
+    /// every refusal. Known process reap permits observation, never new work.
+    ///
+    /// # Errors
+    /// Refuses missing or unreaped nodes and preserves typed RAM/Original errors.
+    #[cfg(target_os = "linux")]
+    pub fn settle_terminal_exits_for_return(
+        &mut self,
+        nodes: &[NodeId],
+    ) -> Result<(), BackendError> {
+        let mut first = None;
+        for node in nodes {
+            let Some(backend) = self.nodes.get_mut(node) else {
+                return Err(BackendError::Rejected {
+                    message: format!("terminal exit has no authoritative node `{}`", node.name),
+                });
+            };
+            if !backend.child_reaped() {
+                return Err(BackendError::Rejected {
+                    message: format!(
+                        "terminal RAM return preceded child reap for `{}`",
+                        node.name
+                    ),
+                });
+            }
+            if let Err(error) = backend.force_quarantine_and_reap() {
+                if first.is_none() {
+                    first = Some(error);
+                }
+            }
+        }
+        first.map_or(Ok(()), |first| Err(BackendError::from(first)))
+    }
+
     /// Releases one installed restored generation from its native QEMU pause.
     ///
     /// # Errors
@@ -96,32 +144,35 @@ impl QemuNodeSet {
     /// # Errors
     ///
     /// Returns [`BackendError`] when any present process cannot be killed and
-    /// reaped. All named nodes are removed even when one cleanup reports an
-    /// error.
+    /// reaped or its RAM leaves remain retained. Every named node is attempted;
+    /// a refused owner stays in its exact map slot with its raw cleanup history.
     #[cfg(target_os = "linux")]
     pub fn quarantine_terminal_lifecycle_work(
         &mut self,
         decisions: &[QemuNodeLifecycleDecision],
         boot_requests: &[NodeId],
     ) -> Result<(), BackendError> {
+        self.invalidate_whole_shutdown();
         let mut first_error = None;
         for node in decisions
             .iter()
             .map(|decision| &decision.node)
             .chain(boot_requests)
         {
-            if let Some(mut backend) = self.nodes.remove(node)
-                && let Err(error) = backend.force_quarantine_and_reap()
-                && first_error.is_none()
-            {
-                first_error = Some(error.to_string());
+            if let Some(backend) = self.nodes.get_mut(node) {
+                match backend.force_quarantine_and_reap() {
+                    Ok(()) => {
+                        self.nodes.remove(node);
+                    }
+                    Err(error) => {
+                        if first_error.is_none() {
+                            first_error = Some(error);
+                        }
+                    }
+                }
             }
         }
-        first_error.map_or(Ok(()), |message| {
-            Err(BackendError::Rejected {
-                message: format!("terminal lifecycle quarantine failed: {message}"),
-            })
-        })
+        first_error.map_or(Ok(()), |first| Err(BackendError::from(first)))
     }
 
     /// Contains every node named by one precommit lifecycle intent batch.
@@ -129,45 +180,65 @@ impl QemuNodeSet {
     /// # Errors
     ///
     /// Returns [`BackendError`] when any present process cannot be killed and
-    /// reaped. Every named node is attempted even after one cleanup failure.
+    /// reaped or its RAM leaves remain retained. Every named node is attempted;
+    /// a refused owner stays in its exact map slot.
     #[cfg(target_os = "linux")]
     pub fn quarantine_terminal_lifecycle_intents(
         &mut self,
         intents: &[QemuNodeLifecycleIntent],
     ) -> Result<(), BackendError> {
+        self.invalidate_whole_shutdown();
         let mut first_error = None;
         for intent in intents {
-            if let Some(mut backend) = self.nodes.remove(&intent.node)
-                && let Err(error) = backend.force_quarantine_and_reap()
-                && first_error.is_none()
-            {
-                first_error = Some(error.to_string());
+            if let Some(backend) = self.nodes.get_mut(&intent.node) {
+                match backend.force_quarantine_and_reap() {
+                    Ok(()) => {
+                        self.nodes.remove(&intent.node);
+                    }
+                    Err(error) => {
+                        if first_error.is_none() {
+                            first_error = Some(error);
+                        }
+                    }
+                }
             }
         }
-        first_error.map_or(Ok(()), |message| {
-            Err(BackendError::Rejected {
-                message: format!("precommit lifecycle quarantine failed: {message}"),
-            })
-        })
+        first_error.map_or(Ok(()), |first| Err(BackendError::from(first)))
     }
 
     /// Commits a previously validated terminal generation update.
     ///
-    /// This operation has no fallible step. It returns the retired generations
-    /// so the caller can verify that terminal-exit supervision reaped them.
+    /// Validation precedes any move or drain. The caller keeps the SAME value
+    /// buffer and its allocation; only its entries move into the backend.
+    /// Returned old generations already have factual whole-leaf closure.
+    ///
+    /// # Errors
+    /// Refuses a different value count, missing node, or incomplete old-node
+    /// return before draining any replacement or changing the authoritative map.
     ///
     /// # Panics
-    ///
-    /// In debug builds, panics when `replacements` does not name exactly the
-    /// nodes validated by `plan`.
-    #[must_use]
+    /// Debug builds panic if an internally validated node disappears while the
+    /// exclusive backend borrow is held.
     pub fn commit_terminal_replacements(
         &mut self,
         mut plan: QemuNodeTerminalReplacementPlan,
-        replacements: Vec<Option<QemuNode>>,
-    ) -> Vec<(NodeId, QemuNode)> {
-        debug_assert_eq!(plan.nodes.len(), replacements.len());
-        for (node, replacement) in plan.nodes.into_iter().zip(replacements) {
+        replacements: &mut Vec<Option<QemuNode>>,
+    ) -> Result<Vec<(NodeId, QemuNode)>, BackendError> {
+        if plan.nodes.len() != replacements.len()
+            || !plan.nodes.iter().all(|node| {
+                self.nodes
+                    .get(node)
+                    .is_some_and(QemuNode::cleanup_physically_returned)
+            })
+        {
+            return Err(BackendError::Rejected {
+                message: String::from(
+                    "terminal commit differs from the validated whole-node return",
+                ),
+            });
+        }
+        self.invalidate_whole_shutdown();
+        for (node, replacement) in plan.nodes.into_iter().zip(replacements.drain(..)) {
             match replacement {
                 Some(replacement) => {
                     let current = self
@@ -190,7 +261,7 @@ impl QemuNodeSet {
                 }
             }
         }
-        plan.retired
+        Ok(plan.retired)
     }
 
     /// Captures one guarded exact candidate with sticky attempt cancellation.

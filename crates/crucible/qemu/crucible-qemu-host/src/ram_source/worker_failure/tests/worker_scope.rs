@@ -1,4 +1,4 @@
-//! Detached real-worker success and unwind retain prepaid inventory controls.
+//! Actual native-worker success and unwind retain prepaid inventory controls.
 
 use std::num::NonZeroUsize;
 use std::sync::Barrier;
@@ -83,20 +83,28 @@ fn detached_close(panic_after_close: bool) {
     )
     .unwrap();
     let (socket, _peer) = UnixStream::pair().unwrap();
-    let mut source =
-        QemuRamSourceService::start(socket, backing, binding, supervisor, account.clone()).unwrap();
+    let mut source = QemuRamSourceService::start_component(
+        socket,
+        backing,
+        binding,
+        supervisor,
+        account.clone(),
+        None,
+    )
+    .unwrap();
 
     // This is the actual startup inventory Arc; the checked header offset
     // locates its allocation without reading control storage or creating aliases.
-    let (_, offset) = Layout::new::<[AtomicUsize; 2]>()
-        .extend(Layout::new::<Mutex<Option<QemuRamWorkerFailure>>>())
-        .unwrap();
-    let target = (Arc::as_ptr(&source.failure) as usize)
+    let offset = crate::ram_source::worker_outcome::WorkerOutcome::allocation_header_offset();
+    let target = source
+        .failure
+        .allocation_address()
+        .unwrap()
         .checked_sub(offset)
         .and_then(NonZeroUsize::new)
         .unwrap();
     let target = AllocationIdentity::from_address(target);
-    let worker = source.worker.take().unwrap();
+    let mut worker = source.worker.take().unwrap();
 
     // Retain only the real join handle, without cloning any loan. Source Drop
     // does not join; the watch owns the same original account until actual join,
@@ -108,8 +116,22 @@ fn detached_close(panic_after_close: bool) {
             let gated_probe = account.reserve_resources(0, 0, 1);
             gate.released.wait();
 
-            let joined = worker.join();
-            (gated_probe, joined)
+            let until = std::time::Instant::now() + Duration::from_secs(5);
+            while worker.native.poll().unwrap()
+                != crate::ram_source::NativeJoinObservation::Returned
+            {
+                assert!(std::time::Instant::now() < until);
+                std::thread::yield_now();
+            }
+            let snapshot = worker.outcome.snapshot();
+            assert!(snapshot.delivered && !snapshot.uncertain);
+            let joined = snapshot.panic.map_or(Ok(()), Err);
+            let panicked = joined.is_err();
+            // Both actual outcome aliases close before the observed control
+            // allocation can free and return its original loan.
+            drop(joined);
+            drop(worker);
+            (gated_probe, panicked)
         })
         .unwrap();
 
@@ -117,7 +139,7 @@ fn detached_close(panic_after_close: bool) {
         gated_probe,
         Err(HostServiceError::CapacityExhausted)
     ));
-    assert_eq!(joined.is_err(), panic_after_close);
+    assert_eq!(joined, panic_after_close);
     verify_original_refusal(report);
     verify_closed(&account);
 }

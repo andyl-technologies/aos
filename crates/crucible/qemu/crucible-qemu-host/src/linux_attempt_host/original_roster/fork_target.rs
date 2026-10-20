@@ -109,7 +109,14 @@ impl QemuForkTargetConstructionLoan {
         {
             return Err(OriginalActorAccountError::Unavailable.into());
         }
-        slot.fork_target.cleanup().map_err(Into::into)
+        let cleanup = slot
+            .fork_target
+            .cleanup
+            .as_ref()
+            .map(Arc::clone)
+            .ok_or(OriginalActorAccountError::Unavailable)?;
+        drop(state);
+        cleanup.guard().map_err(Into::into)
     }
 
     /// Retries only this Target's canonical partial owners and saved Cleanup.
@@ -163,6 +170,62 @@ pub(super) struct TargetCleanup {
     >,
 }
 
+/// Keeps only this issued Target's actual cleanup object across short metadata locks.
+pub(crate) struct TargetCleanupLoan(Arc<TargetCleanup>);
+
+/// Retains a nonissuing borrow of one exact Target's cached Cleanup entry.
+///
+/// The canonical construction loan alone owns try_finish and its return journal.
+/// Both aliases here must close before that issuer requires unique completion.
+#[derive(Debug)]
+pub(crate) struct TargetCleanupOriginal {
+    original: Arc<HostOperationGuard>,
+    lender: TargetCleanupLoan,
+}
+
+impl TargetCleanupOriginal {
+    pub(crate) fn checked_original(
+        &self,
+    ) -> Result<&HostOperationGuard, crucible_host_resources::host_supervision::HostSupervisionError>
+    {
+        let saved = self
+            .lender
+            .0
+            .entered
+            .get()
+            .and_then(|entry| entry.as_ref().ok());
+        if saved.is_some_and(|saved| Arc::ptr_eq(saved, &self.original)) {
+            Ok(&self.original)
+        } else {
+            Err(crucible_host_resources::host_supervision::HostSupervisionError::Unavailable)
+        }
+    }
+
+    pub(crate) fn original(&self) -> &HostOperationGuard {
+        &self.original
+    }
+}
+
+impl std::fmt::Debug for TargetCleanupLoan {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("TargetCleanupLoan")
+            .finish_non_exhaustive()
+    }
+}
+
+impl TargetCleanupLoan {
+    pub(crate) fn retained_original(
+        self,
+    ) -> Result<TargetCleanupOriginal, OriginalActorAccountError> {
+        let original = self.0.retained_guard()?;
+        Ok(TargetCleanupOriginal {
+            original,
+            lender: self,
+        })
+    }
+}
+
 impl TargetCleanup {
     fn new(preparation: Arc<HostOperationGuard>) -> Self {
         Self {
@@ -205,20 +268,23 @@ impl TargetCleanup {
     }
 
     pub(super) fn guard(&self) -> Result<Arc<HostOperationGuard>, OriginalActorAccountError> {
-        // The initializer has no user callback or roster borrow. All actual
-        // Target consumers share this one admission and its first refusal.
-        // Eligible terminal Preparation remains the origin of Cleanup; it is
-        // not renewed or checked as live work authority before this cut.
+        let guard = self.retained_guard()?;
+        guard.wait_slice()?;
+        Ok(guard)
+    }
+
+    // Physical owners can retain their already-entered guard after expiry.
+    // This observer grants no waiting/effect allowance and never reenters it.
+    fn retained_guard(&self) -> Result<Arc<HostOperationGuard>, OriginalActorAccountError> {
         let entered = self.entered.get_or_init(|| {
             self.preparation
                 .begin_original_cleanup_control()
                 .map(Arc::new)
         });
-        let guard = entered
+        entered
             .as_ref()
-            .map_err(|source| OriginalActorAccountError::from(*source))?;
-        guard.wait_slice()?;
-        Ok(Arc::clone(guard))
+            .map(Arc::clone)
+            .map_err(|source| (*source).into())
     }
 }
 
@@ -266,6 +332,29 @@ impl ForkTargetSlot {
         self.is_owned()
             .then_some(self.preparation.as_ref())
             .flatten()
+    }
+
+    /// Projects the existing Cleanup only for this reservation's exact incarnation.
+    ///
+    /// The caller validates its actual installed Target loan under the same
+    /// roster lock. The monotonically burned generation binds the occupied epoch;
+    /// this borrow creates no construction or return loan and enters no Original.
+    pub(super) fn cleanup_for_process_generation(
+        &self,
+        generation: u64,
+    ) -> Result<TargetCleanupLoan, OriginalActorAccountError> {
+        if !self.is_owned()
+            || self.reserved_process_generation != Some(generation)
+            || self
+                .process_generation
+                .is_some_and(|current| current != generation)
+        {
+            return Err(OriginalActorAccountError::Unavailable);
+        }
+        self.cleanup
+            .as_ref()
+            .map(|cleanup| TargetCleanupLoan(Arc::clone(cleanup)))
+            .ok_or(OriginalActorAccountError::Unavailable)
     }
 
     pub(super) fn watcher_cleanup(&self) -> Result<&Arc<TargetCleanup>, OriginalActorAccountError> {
@@ -767,10 +856,23 @@ impl ForkTargetReservation {
         result
     }
 
+    pub(in crate::linux_attempt_host) fn cleanup_lender(
+        &self,
+    ) -> Result<TargetCleanupLoan, OriginalActorAccountError> {
+        self.with_slot(|slot| {
+            slot.fork_target
+                .cleanup
+                .as_ref()
+                .map(|cleanup| TargetCleanupLoan(Arc::clone(cleanup)))
+                .ok_or(OriginalActorAccountError::Unavailable)
+        })
+    }
+
     pub(in crate::linux_attempt_host) fn cleanup(
         &self,
     ) -> Result<Arc<HostOperationGuard>, OriginalActorAccountError> {
-        self.with_slot(|slot| slot.fork_target.cleanup())
+        let lender = self.cleanup_lender()?;
+        lender.0.guard()
     }
 
     pub(in crate::linux_attempt_host) fn mark_physical_closed(

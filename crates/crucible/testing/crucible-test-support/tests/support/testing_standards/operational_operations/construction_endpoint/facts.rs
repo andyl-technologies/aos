@@ -688,15 +688,19 @@ pub(super) const SHUTDOWN: Companion = Companion {
     required: &[(
         r#"let construction_shutdown = self.retry_retained_debug_construction();
         let prior_node_lease_cleanup_failure = self.node_lease_cleanup_failed;
+        let lease_binding = self.prepare_whole_node_shutdown();
+        let staged_shutdown = self.retire_terminal_replacement_transaction();
         let shutdown = self.inner.shutdown();
-        let lease_shutdown = if shutdown.is_ok() {
-            self.finish_all_reaped_node_leases()
-        } else {
-            Ok(())
+        let lease_shutdown = match lease_binding {
+            Ok(binding) => self.finish_whole_node_leases(binding),
+            Err(first) => Err(first),
         };
         let launcher_shutdown = if shutdown.is_ok()
             && lease_shutdown.is_ok()
             && construction_shutdown.is_ok()
+            && staged_shutdown.is_ok()
+            && self.terminal_replacement_values.is_empty()
+            && self.terminal_replacement_leases.is_empty()
             && !self.node_lease_cleanup_failed"#,
         1,
     )],

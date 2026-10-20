@@ -364,12 +364,57 @@ impl LaunchCleanup {
         Ok(borrow(binding))
     }
 
+    #[cfg(target_os = "linux")]
+    pub(crate) fn reserve_source_child_owner(
+        &self,
+        supervisor: crucible_host_resources::host_supervision::HostOperationSupervisor,
+    ) -> Result<crate::node::SourceLaunchReservation, crate::OriginalActorAccountError> {
+        let lender = {
+            let held = self
+                .inner
+                .installed_incarnation
+                .try_lock()
+                .map_err(|_| crate::OriginalActorAccountError::Unavailable)?;
+            held.as_ref()
+                .ok_or(crate::OriginalActorAccountError::Unavailable)?
+                .source_cleanup_lender()?
+        };
+        let controller = lender.controller()?;
+        controller.reserve_child_owner(lender, supervisor)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn retained_target_cleanup(
+        &self,
+    ) -> Result<crate::linux_attempt_host::TargetCleanupOriginal, crate::OriginalActorAccountError>
+    {
+        let lender = {
+            let held = self
+                .inner
+                .target_binding
+                .try_lock()
+                .map_err(|_| crate::OriginalActorAccountError::Unavailable)?;
+            held.as_ref()
+                .ok_or(crate::OriginalActorAccountError::Unavailable)?
+                .target_cleanup_lender()?
+        };
+        // Both binding and roster locks end before lazy entry or Original checks.
+        lender.retained_original()
+    }
+
     pub(crate) fn child_started(&self) {
         self.inner.child_started.store(true, Ordering::Release);
     }
 
     pub(crate) fn child_reaped(&self) {
         self.inner.child_reaped.store(true, Ordering::Release);
+    }
+
+    // A never-created child has no process borrower; a created child must have
+    // its own physical receipt. A source parent's reap is not this receipt.
+    pub(crate) fn process_returned_or_unstarted(&self) -> bool {
+        !self.inner.child_started.load(Ordering::Acquire)
+            || self.inner.child_reaped.load(Ordering::Acquire)
     }
 
     pub(crate) fn process_reaped(&self) -> bool {
@@ -443,6 +488,18 @@ impl LaunchCleanup {
             cleanup: self.clone(),
             joined: false,
         })
+    }
+
+    /// Observes publication without treating unavailable custody as absence.
+    ///
+    /// # Errors
+    /// Refuses contended or poisoned authority access while retaining the controller.
+    pub(crate) fn publication(&self) -> Result<bool, RamControlError> {
+        self.inner
+            .authority
+            .try_lock()
+            .map(|authority| authority.published)
+            .map_err(|_| RamControlError::AuthorityMismatch)
     }
 
     pub(crate) fn is_published(&self) -> bool {

@@ -68,9 +68,14 @@ impl RamControlRegistrar for Registrar {
         Ok(())
     }
 
-    fn prepare_retirement_after_cleanup(&self, _: HostRamTarget) -> Result<(), RamControlError> {
-        self.prepared.store(true, Ordering::Release);
-        Ok(())
+    fn prepare_retirement_after_cleanup(
+        &self,
+        _: HostRamTarget,
+    ) -> crate::ram_control::RamControlRetirementOutcome {
+        crate::ram_control::RamControlRetirementOutcome::from_known((|| {
+            self.prepared.store(true, Ordering::Release);
+            Ok(())
+        })())
     }
 
     fn retire_after_cleanup(&self, _: HostRamTarget) -> Result<(), RamControlError> {
@@ -394,9 +399,15 @@ fn published_retirement_waits_for_final_descriptor_close_after_actual_reap() {
         .force_kill_and_reap_failed_realization()
         .unwrap_or_else(|error| panic!("cleanup fixture failed: {error:?}"));
     assert!(cleanup.cleanup_proven());
-    registrar
-        .prepare_retirement_after_cleanup(registration.target)
-        .unwrap_or_else(|error| panic!("cleanup fixture failed: {error:?}"));
+    let outcome = registrar.prepare_retirement_after_cleanup(registration.target);
+    assert!(
+        outcome.failure.is_none(),
+        "cleanup fixture failed: {outcome:?}"
+    );
+    assert_eq!(
+        outcome.disposition,
+        crate::ram_control::RamControlRetirementDisposition::Returned
+    );
     drop(child);
     drop(cleanup);
     let retired = registrar.normal_retired.clone();
@@ -434,9 +445,15 @@ fn retained_manifest_metadata_outlives_reap_and_releases_before_outer_retirement
     child
         .force_kill_and_reap_failed_realization()
         .unwrap_or_else(|error| panic!("reap failed: {error:?}"));
-    registrar
-        .prepare_retirement_after_cleanup(registration.target)
-        .unwrap_or_else(|error| panic!("retirement preparation failed: {error:?}"));
+    let outcome = registrar.prepare_retirement_after_cleanup(registration.target);
+    assert!(
+        outcome.failure.is_none(),
+        "retirement preparation failed: {outcome:?}"
+    );
+    assert_eq!(
+        outcome.disposition,
+        crate::ram_control::RamControlRetirementDisposition::Returned
+    );
     drop(child);
     drop(cleanup);
     drop(metadata);
@@ -569,12 +586,16 @@ fn actual_source_join_closes_worker_descriptors_and_leases_before_discharge() {
         source_generation: 1,
         root_digest: *backing.record.digest().as_bytes(),
     };
-    let source = QemuRamSourceService::start_with_cleanup(
+    let supervisor = HostOperationSupervisor::new(HostOperationBudgets::default(), None)
+        .unwrap_or_else(|error| panic!("cleanup fixture failed: {error:?}"));
+    let original = supervisor
+        .begin(crucible_host_resources::host_supervision::HostOperationClass::Cleanup)
+        .unwrap_or_else(|error| panic!("cleanup fixture failed: {error:?}"));
+    let mut source = QemuRamSourceService::start_component(
         socket,
         backing,
         binding,
-        HostOperationSupervisor::new(HostOperationBudgets::default(), None)
-            .unwrap_or_else(|error| panic!("cleanup fixture failed: {error:?}")),
+        supervisor.clone(),
         registration.host_services.clone(),
         Some(cleanup.clone()),
     )
@@ -583,9 +604,14 @@ fn actual_source_join_closes_worker_descriptors_and_leases_before_discharge() {
     assert_eq!(registrar.retired.load(Ordering::Acquire), 0);
 
     source
-        .stop()
+        .stop(Some(crate::ram_control::RamCleanupOriginal::direct(
+            &original,
+            &supervisor,
+        )))
+        .1
         .unwrap_or_else(|error| panic!("cleanup fixture failed: {error:?}"));
 
+    drop(source);
     assert_eq!(registrar.retired.load(Ordering::Acquire), 1);
     assert_eq!(registrar.quarantined.load(Ordering::Acquire), 0);
 }
@@ -614,7 +640,7 @@ fn detached_blocked_source_keeps_capacity_then_quarantines_without_a_join_proof(
     };
     let (socket, mut peer) =
         UnixStream::pair().unwrap_or_else(|error| panic!("cleanup fixture failed: {error:?}"));
-    let source = QemuRamSourceService::start_with_cleanup(
+    let source = QemuRamSourceService::start_component(
         socket,
         backing,
         binding,
@@ -764,5 +790,46 @@ fn uncertain_final_cleanup_retains_actual_unhanded_target_workspace_descriptor()
             );
         }
     }
+    Ok(())
+}
+
+#[test]
+fn poisoned_publication_keeps_actual_runtime_registration_and_refuses_return()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::{QemuHostIoRuntime, QemuLiveHostIoRuntime};
+    use std::os::fd::AsFd;
+    let (registration, registrar) = registration(false, None);
+    let cleanup = LaunchCleanup::new(&registration);
+    cleanup.published()?;
+    let allocation = crucible_qemu_shmem::RegionAllocation::new_model(
+        crucible_qemu_shmem::RegionConfig::new(1, 2),
+    )?;
+    let layout = allocation.layout();
+    let mut shmem = std::fs::File::from(crate::spawn::memfd_region(layout.region_size)?);
+    shmem.write_all(&allocation.setup_region_bytes()?)?;
+    let (wake, _peer) = UnixStream::pair()?;
+    let mut runtime =
+        QemuLiveHostIoRuntime::from_shmem_fd(shmem.as_fd(), wake.as_fd(), layout.region_size, 0)?
+            .with_ram_control_registration(registration)
+            .with_launch_cleanup(Some(cleanup.clone()));
+    let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _held = cleanup.inner.authority.lock().unwrap();
+        panic!("component publication access becomes uncertain");
+    }));
+    assert!(poisoned.is_err());
+    assert!(cleanup.publication().is_err());
+    let mut progress = crate::ram_control::RamControlRetirementProgress::new();
+
+    let (returned, first) = runtime.retire_host_ram_after_cleanup(None, &mut progress);
+    assert!(!returned);
+    let first = first.unwrap_err();
+    assert!(first.first.is_some() && first.uncertain);
+    assert!(runtime.ram_control_registration().is_some());
+    let (returned, repeated) = runtime.retire_host_ram_after_cleanup(None, &mut progress);
+    assert!(!returned);
+    assert_eq!(repeated.unwrap_err(), first);
+    assert!(runtime.ram_control_registration().is_some());
+    assert!(!registrar.prepared.load(Ordering::Acquire));
+    assert_eq!(registrar.normal_retired.load(Ordering::Acquire), 0);
     Ok(())
 }

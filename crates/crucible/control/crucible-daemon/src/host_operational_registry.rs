@@ -15,10 +15,10 @@ use crucible_host_resources::host_supervision::{
     HostOperationState, HostOperationSupervisor, HostSupervisionError,
 };
 use crucible_host_resources::ram_policy::HostResourceTransition;
-use crucible_qemu_protocol::ram_control::{RamControlError, RamControlReply};
 use crucible_qemu_host::ram_control::{
     RamControlClient, RamControlRegistrar, RamControlRetirementAuthority, RamInventoryAdmission,
 };
+use crucible_qemu_protocol::ram_control::{RamControlError, RamControlReply};
 
 mod cancellation;
 #[cfg(target_os = "linux")]
@@ -967,7 +967,8 @@ impl HostOperationalControl for HostOperationalRegistry {
         &self,
         principal: &str,
         request: HostOperationalRequest,
-    ) -> Result<crucible_control_api::AdmittedOutput<HostOperationalResponse>, HostOperationalError> {
+    ) -> Result<crucible_control_api::AdmittedOutput<HostOperationalResponse>, HostOperationalError>
+    {
         let budget = HostOperationalControl::metadata_budget(self, principal)?;
         let _scope = budget.enter();
         HostOperationalResponse::admit(|| self.execute_fields(principal, request))
@@ -1064,7 +1065,8 @@ impl RamControlRegistrar for HostOperationalRegistry {
         };
         self.with_native_fault_client(target, class, |client, guard| {
             let reply = client.performance_under(action, guard)?;
-            if reply.disposition != crucible_qemu_protocol::ram_control::RamControlDisposition::Accepted
+            if reply.disposition
+                != crucible_qemu_protocol::ram_control::RamControlDisposition::Accepted
             {
                 return Err(RamControlError::AuthorityMismatch);
             }
@@ -1075,8 +1077,10 @@ impl RamControlRegistrar for HostOperationalRegistry {
     fn fault_actor_status(
         &self,
         target: HostRamTarget,
-    ) -> Result<Option<crucible_qemu_protocol::ram_control::RamControlFaultActorReport>, RamControlError>
-    {
+    ) -> Result<
+        Option<crucible_qemu_protocol::ram_control::RamControlFaultActorReport>,
+        RamControlError,
+    > {
         self.native_paging_health(target).map(|(actor, _)| actor)
     }
 
@@ -1272,58 +1276,60 @@ impl RamControlRegistrar for HostOperationalRegistry {
     fn prepare_retirement_after_cleanup(
         &self,
         target: HostRamTarget,
-    ) -> Result<(), RamControlError> {
-        let _transaction = self
-            .shared
-            .mutation
-            .try_lock()
-            .map_err(|_| RamControlError::AuthorityMismatch)?;
-        let owner = self
-            .shared
-            .state
-            .lock()
-            .map_err(|_| RamControlError::AuthorityMismatch)?
-            .nodes
-            .get(&target)
-            .cloned()
-            .ok_or(RamControlError::AuthorityMismatch)?;
-        let _owner_transaction = owner
-            .mutation
-            .try_lock()
-            .map_err(|_| RamControlError::AuthorityMismatch)?;
-        let mut client = owner
-            .client
-            .try_lock()
-            .map_err(|_| RamControlError::AuthorityMismatch)?;
-        let retirement = owner
-            .retirement
-            .lock()
-            .map_err(|_| RamControlError::AuthorityMismatch)?
-            .as_ref()
-            .and_then(Weak::upgrade);
-        // Resolve and retain the original actor before changing registry
-        // ownership. A failed arm leaves the existing Owner/client intact.
-        let mut state = self
-            .shared
-            .state
-            .lock()
-            .map_err(|_| RamControlError::AuthorityMismatch)?;
-        if let Some(retirement) = &retirement {
-            retirement.arm(
-                self.admission()
-                    .map_err(|_| RamControlError::AuthorityMismatch)?,
-            )?;
-        }
-        state.retired.insert(target);
-        // Closing this registry borrower allows the private final-close record
-        // to run after the node's remaining descriptors and service leases.
-        // The actor reservation remains intact until that record supplies proof.
-        if retirement.is_some() {
-            state.nodes.remove(&target);
-        }
-        drop(state);
-        *client = None;
-        Ok(())
+    ) -> crucible_qemu_host::ram_control::RamControlRetirementOutcome {
+        crucible_qemu_host::ram_control::RamControlRetirementOutcome::from_known((|| {
+            let _transaction = self
+                .shared
+                .mutation
+                .try_lock()
+                .map_err(|_| RamControlError::AuthorityMismatch)?;
+            let owner = self
+                .shared
+                .state
+                .lock()
+                .map_err(|_| RamControlError::AuthorityMismatch)?
+                .nodes
+                .get(&target)
+                .cloned()
+                .ok_or(RamControlError::AuthorityMismatch)?;
+            let _owner_transaction = owner
+                .mutation
+                .try_lock()
+                .map_err(|_| RamControlError::AuthorityMismatch)?;
+            let mut client = owner
+                .client
+                .try_lock()
+                .map_err(|_| RamControlError::AuthorityMismatch)?;
+            let retirement = owner
+                .retirement
+                .lock()
+                .map_err(|_| RamControlError::AuthorityMismatch)?
+                .as_ref()
+                .and_then(Weak::upgrade);
+            // Resolve and retain the original actor before changing registry
+            // ownership. A failed arm leaves the existing Owner/client intact.
+            let mut state = self
+                .shared
+                .state
+                .lock()
+                .map_err(|_| RamControlError::AuthorityMismatch)?;
+            if let Some(retirement) = &retirement {
+                retirement.arm(
+                    self.admission()
+                        .map_err(|_| RamControlError::AuthorityMismatch)?,
+                )?;
+            }
+            state.retired.insert(target);
+            // Closing this registry borrower allows the private final-close record
+            // to run after the node's remaining descriptors and service leases.
+            // The actor reservation remains intact until that record supplies proof.
+            if retirement.is_some() {
+                state.nodes.remove(&target);
+            }
+            drop(state);
+            *client = None;
+            Ok(())
+        })())
     }
 
     fn register(

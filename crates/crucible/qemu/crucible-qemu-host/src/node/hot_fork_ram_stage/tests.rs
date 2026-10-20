@@ -3,6 +3,7 @@
 use super::*;
 use std::error::Error;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 
 use crate::ram_control::{RamControlClient, RamControlRegistrar};
 use crucible_host_resources::host_services::HostServiceAllocator;
@@ -16,6 +17,7 @@ use crucible_qemu_protocol::ram_control::RamControlError;
 struct Registrar {
     retired: AtomicUsize,
     quarantined: AtomicUsize,
+    quarantined_reservation: Mutex<Option<(HostRamTarget, HostResourceVector)>>,
 }
 
 impl RamControlRegistrar for Registrar {
@@ -39,9 +41,18 @@ impl RamControlRegistrar for Registrar {
     }
     fn quarantine_unpublished(
         &self,
-        _: HostRamTarget,
-        _: HostResourceVector,
+        target: HostRamTarget,
+        resources: HostResourceVector,
     ) -> Result<(), RamControlError> {
+        let mut retained = self.quarantined_reservation.lock().unwrap();
+        if let Some(existing) = *retained {
+            return if existing == (target, resources) {
+                Ok(())
+            } else {
+                Err(RamControlError::AuthorityMismatch)
+            };
+        }
+        *retained = Some((target, resources));
         self.quarantined.fetch_add(1, Ordering::AcqRel);
         Ok(())
     }
@@ -232,6 +243,32 @@ fn ambiguous_monitor_custody_keeps_reservation_after_local_descriptors_close()
     let _all_local_capacity = services.reserve_resources(2, 32, 32 << 20)?;
     assert_eq!(owner.retired.load(Ordering::Acquire), 0);
     assert_eq!(owner.quarantined.load(Ordering::Acquire), 1);
+    assert_eq!(
+        *owner.quarantined_reservation.lock().unwrap(),
+        Some((registration.target, registration.resources))
+    );
+
+    // Stage and final cleanup destruction notify the same retained entry.
+    // Neither repeated notification nor a foreign request creates capacity.
+    owner.quarantine_unpublished(registration.target, registration.resources)?;
+    let foreign_target = HostRamTarget {
+        owner_generation: registration.target.owner_generation + 1,
+        ..registration.target
+    };
+    assert!(matches!(
+        owner.quarantine_unpublished(foreign_target, registration.resources),
+        Err(RamControlError::AuthorityMismatch)
+    ));
+    let foreign_resources = HostResourceVector {
+        file_descriptors: registration.resources.file_descriptors + 1,
+        ..registration.resources
+    };
+    assert!(matches!(
+        owner.quarantine_unpublished(registration.target, foreign_resources),
+        Err(RamControlError::AuthorityMismatch)
+    ));
+    assert_eq!(owner.retired.load(Ordering::Acquire), 0);
+    assert_eq!(owner.quarantined.load(Ordering::Acquire), 1);
     Ok(())
 }
 
@@ -305,13 +342,20 @@ fn fresh_source_keeps_backing_until_join_and_refuses_another_namespace()
         root_digest: *backing.record.digest().as_bytes(),
     };
     let lifetime = Arc::downgrade(&backing);
-    let stage = QemuHotForkRamStage::prepare(
+    let mut stage = QemuHotForkRamStage::prepare(
         registration,
         supervisor()?,
         &directory,
         Some((backing, binding)),
         cleanup,
     )?;
+    assert!(stage.source_service.is_none());
+    assert!(stage.source_start.is_some());
+    assert!(!stage.source_start_attempted);
+    stage.publish_source()?;
+    assert!(stage.preparation_completed);
+    assert!(stage.source_service.is_some());
+    assert!(stage.source_start.is_none());
     let mut peer = stage
         .source_child
         .as_ref()
@@ -358,6 +402,37 @@ fn fresh_source_keeps_backing_until_join_and_refuses_another_namespace()
     assert!(response.page.is_empty());
     assert!(response.proof.is_empty());
     drop(peer);
+    assert!(lifetime.upgrade().is_some());
+
+    // This component has no Target lender. Its actual worker still requires
+    // physical native join under the same supervisor's explicit Cleanup.
+    let original = stage.supervisor.begin(HostOperationClass::Cleanup)?;
+    {
+        let history = stage.return_history.as_mut().ok_or("history absent")?;
+        let same_original = Some(crate::ram_control::RamCleanupOriginal::direct(
+            &original,
+            &stage.supervisor,
+        ));
+        assert!(!history.source(0, &mut stage.source_service, same_original));
+        assert!(stage.source_service.is_some());
+        let first = history.failure().ok_or("namespace refusal history absent")?;
+        assert!(matches!(
+            &first,
+            QemuNodeError::RamCleanup { sources, .. }
+                if sources[0].as_ref().and_then(|status| status.worker.as_ref())
+                    .is_some_and(|worker| matches!(
+                        worker.as_ref(),
+                        crate::ram_source::QemuRamSourceError::Ownership,
+                    ))
+        ));
+
+        assert!(history.source(0, &mut stage.source_service, same_original));
+        assert_eq!(history.failure(), Some(first));
+    }
+    assert!(stage.source_service.is_none());
+    assert!(lifetime.upgrade().is_none());
+    assert!(stage.cleanup.cleanup_proven());
+    original.complete()?;
     drop(stage);
     assert!(lifetime.upgrade().is_none());
     assert_eq!(owner.retired.load(Ordering::Acquire), 1);
@@ -391,5 +466,34 @@ fn pinned_directory_keeps_no_child_admission_until_final_close_and_refuses_rebin
 
     drop(directory);
     assert_eq!(owner.retired.load(Ordering::Acquire), 1);
+    Ok(())
+}
+
+#[test]
+fn descriptor_preparation_does_not_publish_or_complete_source_work() -> Result<(), Box<dyn Error>> {
+    let (_root, directory) = directory()?;
+    let (registration, _) = registration()?;
+    let mut stage = QemuHotForkRamStage::prepare(
+        registration.clone(),
+        supervisor()?,
+        &directory,
+        None,
+        LaunchCleanup::new(&registration),
+    )?;
+
+    let spill = rustix::fs::fstat(&stage.spill)?;
+    assert!(!stage.source_start_attempted);
+    assert!(!stage.preparation_completed);
+    assert!(stage.source_service.is_none());
+    assert!(stage.preparation_status().is_err());
+
+    // This component has no source body: the same preparation can complete
+    // descriptor publication without creating or admitting a worker.
+    stage.publish_source()?;
+    assert!(stage.source_start_attempted);
+    assert!(stage.preparation_completed);
+    assert!(stage.source_service.is_none());
+    assert!(stage.preparation_status().is_ok());
+    assert_eq!(rustix::fs::fstat(&stage.spill)?.st_ino, spill.st_ino);
     Ok(())
 }

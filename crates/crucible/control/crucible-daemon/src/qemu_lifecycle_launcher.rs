@@ -34,12 +34,12 @@ mod pending_construction;
 mod prepared_source;
 pub(crate) use prepared_source::PreparedSourceHandle;
 mod target_construction;
+pub use pending_construction::CanonicalContextError;
 pub use target_construction::TargetConstructionStorage;
 #[cfg(target_os = "linux")]
 pub(crate) use target_construction::TargetMemberAdmission;
 #[cfg(target_os = "linux")]
 pub use target_construction::TargetPreparationFailure;
-pub use pending_construction::CanonicalContextError;
 mod fresh_generation;
 mod retained_node;
 use retained_node::RetainedNodeLaunch;
@@ -186,6 +186,8 @@ where
             .requested_control_bytes(nodes.clone().count())
             .map_err(|first| launcher_message(first.to_string()))?;
         let targets = TargetConstructionStorage::control_bytes(nodes.clone())?;
+        let selected = nodes.clone().count();
+        let terminal_rows = crate::vm_lifecycle::terminal_replacement_control_bytes(selected)?;
         let target_nodes =
             crate::qemu_hot_fork_reconciliation::TargetNodeConstruction::<F::Guard>::control_bytes(
                 nodes,
@@ -213,6 +215,7 @@ where
             .checked_add(directories)
             .and_then(|bytes| bytes.checked_add(helpers))
             .and_then(|bytes| bytes.checked_add(source_loop))
+            .and_then(|bytes| bytes.checked_add(terminal_rows))
             .and_then(|bytes| bytes.checked_add(shared_source))
             .ok_or_else(|| launcher_message("retained Source launcher extent overflow"))?;
         // Main already pays the preborn Pending and construction carrier.
@@ -406,15 +409,10 @@ where
             Ok(launched) => launched,
             Err(mut error) => {
                 let message = launch_error_chain(&error);
-                if let Some(child) = error.take_unreaped_child() {
-                    self.owner
-                        .retain_failed_launch_child_for_node(request.node(), child);
-                    drop(lease);
-                    self.owner.quarantine();
-                    return Err(launcher_message(format!(
-                        "atomic exact restore for `{}` failed and transferred an unreaped child to quarantine: {message}",
-                        request.node_name(),
-                    )));
+                if error.has_retained_owner() {
+                    return Err(LifecycleApiError::BackendConstruction {
+                        source: crucible_control_api::LifecycleBackendConstructionError::new(error),
+                    });
                 }
                 return Err(abort_unspawned_generation(
                     lease,
@@ -501,10 +499,22 @@ where
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         debt.closed = true;
 
-        for (generation, child) in std::mem::take(&mut debt.children) {
-            self.owner
-                .retain_failed_launch_child_for_node(generation.node(), child);
-            debt.transferred.insert(generation);
+        #[cfg(test)]
+        {
+            let mut returned = BTreeMap::new();
+            for (generation, recipient) in std::mem::take(&mut debt.children) {
+                match recipient {
+                    ImageHelperRecipient::Component(child) => {
+                        self.owner
+                            .retain_failed_launch_child_for_node(generation.node(), child);
+                        debt.transferred.insert(generation);
+                    }
+                    issued => {
+                        returned.insert(generation, issued);
+                    }
+                }
+            }
+            debt.children = returned;
         }
     }
 }
@@ -527,7 +537,8 @@ where
     }
 }
 
-impl<G, F> crucible_control_api::ProductionVmCleanupOwner for QemuAttemptProductionVmNodeLauncher<G, F>
+impl<G, F> crucible_control_api::ProductionVmCleanupOwner
+    for QemuAttemptProductionVmNodeLauncher<G, F>
 where
     G: QemuAttemptProcessResourceGuard + Send,
     F: Send,
@@ -711,7 +722,8 @@ where
         &mut self,
         source: &mut crucible_qemu_host::QemuNodeSetPreparedHotForkSource<'_>,
         request: crate::ProductionVmParentParkDrainRequest<'_>,
-    ) -> Result<crucible_qemu_host::QmpParentParkResult, crate::ProductionVmParentParkDrainRefusal> {
+    ) -> Result<crucible_qemu_host::QmpParentParkResult, crate::ProductionVmParentParkDrainRefusal>
+    {
         self.invoke_parent_park_drain(source, request)
     }
 
@@ -920,10 +932,49 @@ struct PreparedFreshGeneration {
 #[derive(Default)]
 struct ImageHelperCleanupDebt {
     closed: bool,
-    children: BTreeMap<ProductionVmNodeGeneration, crucible_qemu_host::QemuNodeChild>,
+    children: BTreeMap<ProductionVmNodeGeneration, ImageHelperRecipient>,
     // Aggregate quarantine owns the wait handle after transfer. An empty local
     // map must not let a retained lease claim that its helper was reaped.
     transferred: BTreeSet<ProductionVmNodeGeneration>,
+}
+
+enum ImageHelperRecipient {
+    Issued(std::sync::Weak<crucible_qemu_host::OriginalNativeFreshLaunchError>),
+    #[cfg(test)]
+    Component(crucible_qemu_host::QemuNodeChild),
+}
+
+impl ImageHelperRecipient {
+    fn retry(&mut self) -> Result<(), LifecycleApiError> {
+        match self {
+            Self::Issued(receiver) => {
+                let receiver = receiver.upgrade().ok_or_else(|| {
+                    launcher_message("issued image-helper recipient is unavailable")
+                })?;
+                if receiver.retry_retained_helper() {
+                    Ok(())
+                } else {
+                    Err(launcher_message(
+                        "issued image-helper physical return remains pending",
+                    ))
+                }
+            }
+            #[cfg(test)]
+            Self::Component(child) => child
+                .force_kill_and_reap_failed_helper(std::time::Duration::from_secs(5))
+                .map_err(|error| {
+                    launcher_message(format!("retry component helper cleanup: {error}"))
+                }),
+        }
+    }
+
+    #[cfg(test)]
+    fn process_id(&self) -> Option<u32> {
+        match self {
+            Self::Component(child) => Some(child.process_id()),
+            Self::Issued(_) => None,
+        }
+    }
 }
 
 impl ImageHelperCleanupDebt {
@@ -936,12 +987,8 @@ impl ImageHelperCleanupDebt {
                 "hot-fork image helper cleanup belongs to aggregate quarantine",
             ));
         }
-        if let Some(child) = self.children.get_mut(generation) {
-            child
-                .force_kill_and_reap_failed_helper(std::time::Duration::from_secs(5))
-                .map_err(|error| {
-                    launcher_message(format!("retry hot-fork image helper cleanup: {error}"))
-                })?;
+        if let Some(recipient) = self.children.get_mut(generation) {
+            recipient.retry()?;
             self.children.remove(generation);
         }
         Ok(())
@@ -1021,18 +1068,15 @@ impl ProductionVmNodeLease for QemuLifecycleGenerationLease {
             virtual_size,
         ) {
             Ok(overlay) => Ok(overlay),
-            Err(mut error) => {
-                let message = error.to_string();
-                if let Some(child) = error.take_unreaped_child() {
-                    // An unreaped helper is retained with the source generation.
-                    // Its lease must reap it before finishing; abandonment
-                    // transfers the original handle to aggregate quarantine.
-                    helper_debt
-                        .children
-                        .insert(self.inner.identity().clone(), child);
+            Err(error) => {
+                if let Some(receiver) = error.retained_receiver() {
+                    helper_debt.children.insert(
+                        self.inner.identity().clone(),
+                        ImageHelperRecipient::Issued(Arc::downgrade(&receiver)),
+                    );
                 }
                 Err(launcher_message(format!(
-                    "prepare guarded hot-fork detached overlay: {message}"
+                    "prepare guarded hot-fork detached overlay: {error}"
                 )))
             }
         }
@@ -1296,7 +1340,7 @@ mod tests {
             .lock()
             .expect("helper registry")
             .children
-            .insert(generation.clone(), child);
+            .insert(generation.clone(), ImageHelperRecipient::Component(child));
 
         drop(lease);
         drop(launcher);
@@ -1334,9 +1378,10 @@ mod tests {
         let child = crucible_qemu_host::QemuNodeChild::from_test_process(process);
         let process_id = child.process_id();
         let mut debt = ImageHelperCleanupDebt::default();
-        debt.children.insert(generation.clone(), child);
+        debt.children
+            .insert(generation.clone(), ImageHelperRecipient::Component(child));
 
-        assert_eq!(debt.children[&generation].process_id(), process_id);
+        assert_eq!(debt.children[&generation].process_id(), Some(process_id));
         debt.retry_generation(&generation)?;
 
         assert!(debt.children.is_empty());

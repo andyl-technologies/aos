@@ -65,7 +65,7 @@ pub struct QemuReplayValidationExactAdmission {
     request: Option<QemuProductionExactRestoreRequest>,
     #[cfg(target_os = "linux")]
     target: Option<crucible_engine::exact_checkpoint::ExactCheckpointVerifiedNode>,
-    failed_child: Option<crate::QemuNodeChild>,
+    launch_refusal: Option<Arc<crate::linux_attempt_host::OriginalNativeFreshLaunchError>>,
     registration_preparation: Option<Arc<dyn QemuReplayValidationRegistrationPreparation>>,
 }
 
@@ -77,7 +77,7 @@ pub struct QemuReplayValidationThinAdmission {
     snapshot: ContentHash,
     modeled_node: NodeId,
     identity: OwnedLiveNodeIdentity,
-    failed_child: Option<crate::QemuNodeChild>,
+    launch_refusal: Option<Arc<crate::linux_attempt_host::OriginalNativeFreshLaunchError>>,
     registration_preparation: Option<Arc<dyn QemuReplayValidationRegistrationPreparation>>,
 }
 
@@ -126,7 +126,7 @@ impl QemuReplayValidationExactAdmission {
             modeled_node: node,
             request: Some(request),
             target: None,
-            failed_child: None,
+            launch_refusal: None,
             registration_preparation: None,
         })
     }
@@ -147,7 +147,7 @@ impl QemuReplayValidationExactAdmission {
         snapshot: &QemuVmSnapshot,
         checkpoint: &Checkpoint,
     ) -> Result<QemuNode, QemuVmRealizationError> {
-        require_no_failed_launch_child(&self.failed_child)?;
+        require_no_issued_launch_refusal(&self.launch_refusal)?;
         if snapshot.id() != self.snapshot || checkpoint.id != self.checkpoint {
             return Err(QemuVmRealizationError::InvalidCheckpoint {
                 role: "guarded exact-profile checkpoint restore",
@@ -180,7 +180,7 @@ impl QemuReplayValidationExactAdmission {
             self.target = Some(target);
             node
         });
-        retain_profile_restore_result(result, &mut self.failed_child, config)
+        retain_profile_restore_result(result, &mut self.launch_refusal, config)
     }
 }
 
@@ -216,7 +216,7 @@ impl QemuReplayValidationThinAdmission {
                 router: String::from("crucible-router"),
                 crash_detector: crash_detector.into(),
             },
-            failed_child: None,
+            launch_refusal: None,
             registration_preparation: None,
         })
     }
@@ -237,7 +237,7 @@ impl QemuReplayValidationThinAdmission {
         restore: QemuNodeCheckpointAssertion<'_>,
         process_contract: &QemuChildProcessContract,
     ) -> Result<QemuNode, QemuVmRealizationError> {
-        require_no_failed_launch_child(&self.failed_child)?;
+        require_no_issued_launch_refusal(&self.launch_refusal)?;
         if restore.checkpoint().id != self.checkpoint {
             return Err(QemuVmRealizationError::InvalidCheckpoint {
                 role: "guarded thin-profile checkpoint restore",
@@ -267,7 +267,7 @@ impl QemuReplayValidationThinAdmission {
                 })?
                 .launch_fresh_node(&launch_config, launch)
         });
-        retain_profile_restore_result(result, &mut self.failed_child, config)
+        retain_profile_restore_result(result, &mut self.launch_refusal, config)
     }
 }
 
@@ -309,26 +309,6 @@ impl QemuReplayValidationNodeLauncher {
             exact_observation_generation: None,
             thin_observation_generation: None,
         }
-    }
-}
-
-impl QemuFailedLaunchChildSource for QemuReplayValidationExactAdmission {
-    fn take_failed_launch_child(&mut self) -> Option<crate::QemuNodeChild> {
-        self.failed_child.take()
-    }
-}
-
-impl QemuFailedLaunchChildSource for QemuReplayValidationThinAdmission {
-    fn take_failed_launch_child(&mut self) -> Option<crate::QemuNodeChild> {
-        self.failed_child.take()
-    }
-}
-
-impl QemuFailedLaunchChildSource for QemuReplayValidationNodeLauncher {
-    fn take_failed_launch_child(&mut self) -> Option<crate::QemuNodeChild> {
-        self.exact
-            .take_failed_launch_child()
-            .or_else(|| self.thin.take_failed_launch_child())
     }
 }
 

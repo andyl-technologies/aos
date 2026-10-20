@@ -344,47 +344,8 @@ pub(super) const CONTRACT: Contract = Contract {
                 ),
             ],
         },
-        Companion {
-            path: "crates/crucible/qemu/crucible-qemu-host/src/linux_attempt_host/original_roster.rs",
-            required: &[
-                (
-                    r#"fn retain_cleanup(
-    slot: &mut NativeSlot,
-) -> Result<Arc<HostOperationGuard>, OriginalActorAccountError> {
-    if slot.cleanup.is_none() {
-        let credit = slot
-            .credit
-            .as_ref()
-            .ok_or(OriginalActorAccountError::Unavailable)?;
-        // The guard Arc is within the already admitted TOTAL metadata. The
-        // finite supervisor BTree was charged once as initial actor structure.
-        let extent = cleanup_control_extent()?;
-        if let Some(purpose) = slot.installed_process.as_mut()
-            && !purpose.consume_cleanup(extent)
-        {
-            return Err(OriginalActorAccountError::Unavailable);
-        }
-        slot.require_metadata_assignment(extent)?;
-        // Returned guard aliases may outlive a closed generation. Keep each
-        // assigned body charged until whole-roster retirement, rather than
-        // treating completion or dropping this slot's alias as physical free.
-        slot.cleanup_controls_bytes = slot
-            .cleanup_controls_bytes
-            .checked_add(extent)
-            .ok_or(OriginalActorAccountError::Unavailable)?;
-        slot.cleanup = Some(Arc::new(credit.begin_cleanup()?));
-    }
-    let cleanup = slot
-        .cleanup
-        .as_ref()
-        .ok_or(OriginalActorAccountError::Unavailable)?;
-    cleanup.wait_slice()?;
-    Ok(Arc::clone(cleanup))
-}"#,
-                    1,
-                ),
-            ],
-        },
+        super::super::host_physical_custody::SOURCE_CLEANUP,
+        super::super::host_physical_custody::SOURCE_ORIGINAL,
         Companion {
             path: "crates/crucible/qemu/crucible-qemu-host/src/node/parent_park_drain.rs",
             required: &[

@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex};
 struct ControlledChild {
     closed: Arc<AtomicBool>,
     signals: Arc<Mutex<Vec<QemuShutdownRung>>>,
+    initial_observation: bool,
     expire_and_refuse_term: Option<HostOperationSupervisor>,
     reap_and_expire_on_poll: Option<HostOperationSupervisor>,
 }
@@ -31,6 +32,12 @@ impl QemuNodeExternalProcessControl for ControlledChild {
         &mut self,
     ) -> Result<Option<std::process::ExitStatus>, QemuShutdownTargetError> {
         if self.reaped() {
+            return Ok(None);
+        }
+        if self.initial_observation {
+            // The factual entry poll observes a live child. The later poll is
+            // inside the actual rung's independent Original pre/post bracket.
+            self.initial_observation = false;
             return Ok(None);
         }
         if let Some(supervisor) = &self.reap_and_expire_on_poll {
@@ -132,6 +139,7 @@ fn fixture_with_poll_expiry(
     node.child = QemuNodeProcessControl::external(Box::new(ControlledChild {
         closed: Arc::clone(&closed),
         signals: Arc::clone(&signals),
+        initial_observation: true,
         expire_and_refuse_term: expire.then(|| supervisor.clone()),
         reap_and_expire_on_poll: expire_poll.then(|| supervisor.clone()),
     }));
@@ -143,13 +151,14 @@ fn close(
     node: &mut QemuNode,
     supervisor: &HostOperationSupervisor,
 ) -> Result<QemuShutdownReport, QemuNodeError> {
-    node.child_shutdown.close(
+    let process = node.child_shutdown.close(
         &mut node.child,
         &mut node.channels,
         &mut node.lifecycle_state,
         node.shutdown_policy,
         Some(supervisor),
-    )
+    );
+    node.finish_shutdown(process)
 }
 
 #[test]
@@ -311,12 +320,27 @@ fn actual_wait_exit_survives_post_refusal_and_stops_every_later_effect()
 -> Result<(), Box<dyn Error>> {
     let (mut node, supervisor, _, signals) = fixture_with_poll_expiry(false, true)?;
     let failure = close(&mut node, &supervisor).unwrap_err();
+    let QemuNodeError::ShutdownAndRam { first, ram } = failure else {
+        panic!("process post and whole-body completion must both be returned");
+    };
+    let QemuNodeError::ShutdownOriginal {
+        observations: process_observations,
+        completion: process_completion,
+        report: process_report,
+        ..
+    } = *first
+    else {
+        panic!("the actual wait post must survive whole-body completion");
+    };
+    assert!(process_report.reaped);
+    assert!(process_observations[0].1.is_some());
+    assert!(process_completion.is_none());
     let QemuNodeError::ShutdownOriginal {
         observations,
         completion,
         report,
         ..
-    } = failure
+    } = *ram
     else {
         panic!("actual wait output and independent Original refusal must survive")
     };

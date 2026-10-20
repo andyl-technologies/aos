@@ -4,21 +4,46 @@ use super::*;
 
 impl QemuNode {
     pub(super) fn finish_host_ram_cleanup(&mut self) -> Result<(), QemuNodeError> {
+        let child = &mut self.child;
+        let runtime = &mut self.host_io_runtime;
         #[cfg(target_os = "linux")]
-        if let Some(ram) = &mut self.hot_fork_ram_continuation {
-            ram.finish()?;
-        }
+        let stage = &mut self.hot_fork_ram_stage;
         #[cfg(target_os = "linux")]
-        if let QemuNodeProcessControl::Direct(child) = &mut self.child {
-            finish_ram_source_cleanup(&mut child.ram_source, "join retained RAM source")?;
-        }
-        self.host_io_runtime
-            .retire_host_ram_after_cleanup()
-            .map_err(|error| QemuNodeError::Channel {
-                plane: QemuNodeChannelPlane::PluginIpcControl,
-                operation: "retire host RAM resources",
-                message: error.to_string(),
-            })
+        let continuation = &mut self.hot_fork_ram_continuation;
+        self.child_shutdown.finish_ram(|original, history| {
+            let mut returned = true;
+            #[cfg(target_os = "linux")]
+            {
+                if let Some(stage) = stage {
+                    if let Err(first) = stage.finish_source() {
+                        history.retain_stage(first);
+                        returned = false;
+                    }
+                }
+                if let QemuNodeProcessControl::Direct(child) = child {
+                    drop(child.ram_source_start.take());
+                    returned &= history.source(1, &mut child.ram_source, original);
+                }
+                if let Some(ram) = continuation {
+                    returned &= ram.finish(original, history);
+                }
+            }
+            if returned {
+                let (closed, status) =
+                    runtime.retire_host_ram_after_cleanup(original, &mut history.retirement[0]);
+                history.controller(0, status);
+                returned &= closed;
+            }
+            returned
+        })
+    }
+
+    /// Observes whole-leaf closure separately from permanent cleanup history.
+    ///
+    /// This factual observation grants neither a new operation nor a generation.
+    #[must_use]
+    pub fn cleanup_physically_returned(&self) -> bool {
+        self.child.reaped() && self.child_shutdown.physically_returned()
     }
 
     /// Attaches one operational owner before a reconstructed node is released.
@@ -44,29 +69,6 @@ impl QemuNode {
     }
 }
 
-/// Keeps failed cleanup custody in its original slot before returning the cause.
-///
-/// # Errors
-/// Returns the typed source refusal after restoring the same service slot.
-#[cfg(target_os = "linux")]
-pub(super) fn finish_ram_source_cleanup(
-    retained: &mut Option<Box<crate::ram_source::QemuRamSourceService>>,
-    operation: &'static str,
-) -> Result<(), QemuNodeError> {
-    if let Some(service) = retained.take()
-        && let Err(error) = service.stop()
-    {
-        *retained = Some(error.service);
-
-        return Err(QemuNodeError::from_ram_source_cleanup(
-            operation,
-            error.source,
-        ));
-    }
-
-    Ok(())
-}
-
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
@@ -87,12 +89,14 @@ mod tests {
 
     // Real socket/worker cleanup, without a QEMU process or native RAM authority.
     struct SourceFixture {
-        retained: Option<Box<QemuRamSourceService>>,
+        retained: Option<QemuRamSourceService>,
         peer: UnixStream,
         backing: Arc<ImmutableBacking>,
         binding: RamPageBinding,
         services: HostServiceAllocator,
         supervisor: HostOperationSupervisor,
+        cleanup: crucible_host_resources::host_supervision::HostOperationGuard,
+        history: super::super::ram_cleanup::RamCleanup,
     }
 
     impl SourceFixture {
@@ -112,21 +116,25 @@ mod tests {
             let services = HostServiceAllocator::new(1, 4, 8 * 1024 * 1024)?;
 
             let (server, peer) = UnixStream::pair()?;
-            let service = QemuRamSourceService::start(
+            let service = QemuRamSourceService::start_component(
                 server,
                 backing.clone(),
                 binding,
                 supervisor.clone(),
                 services.clone(),
+                None,
             )?;
 
+            let cleanup = supervisor.begin(HostOperationClass::Cleanup)?;
             Ok(Self {
-                retained: Some(Box::new(service)),
+                retained: Some(service),
                 peer,
                 backing,
                 binding,
                 services,
                 supervisor,
+                cleanup,
+                history: super::super::ram_cleanup::RamCleanup::new(),
             })
         }
 
@@ -157,6 +165,17 @@ mod tests {
             Ok(())
         }
 
+        fn close(&mut self) -> bool {
+            self.history.source(
+                1,
+                &mut self.retained,
+                Some(crate::ram_control::RamCleanupOriginal::direct(
+                    &self.cleanup,
+                    &self.supervisor,
+                )),
+            )
+        }
+
         fn task_is_retained(&self) -> bool {
             matches!(
                 self.services.reserve_resources(1, 0, 0),
@@ -166,53 +185,50 @@ mod tests {
     }
 
     #[test]
-    fn shared_cleanup_helper_keeps_same_cause_and_service_for_both_boundary_labels()
+    fn same_cleanup_keeps_worker_cause_and_service_until_physical_return_is_reported()
     -> Result<(), Box<dyn Error>> {
-        for operation in ["join retained RAM source", "join hot-fork RAM source"] {
-            let mut fixture = SourceFixture::new()?;
-            fixture.refuse_an_authenticated_page()?;
-            let error = finish_ram_source_cleanup(&mut fixture.retained, operation).unwrap_err();
-            let observed = fixture
-                .retained
+        let mut fixture = SourceFixture::new()?;
+        fixture.refuse_an_authenticated_page()?;
+        assert!(!fixture.close());
+        let error = fixture
+            .history
+            .failure()
+            .ok_or("raw worker cause missing")?;
+        let observed = fixture
+            .retained
+            .as_ref()
+            .unwrap()
+            .check_health()
+            .unwrap_err();
+        let QemuRamSourceError::WorkerFailed(worker) = observed else {
+            panic!("the retained service must expose its original worker failure");
+        };
+        assert!(matches!(worker.as_ref(), QemuRamSourceError::Proof(_)));
+        let QemuNodeError::RamCleanup { sources, .. } = &error else {
+            panic!("cleanup must preserve the typed source failure");
+        };
+        assert_eq!(
+            sources[1]
                 .as_ref()
-                .unwrap()
-                .check_health()
-                .unwrap_err();
-            let QemuRamSourceError::WorkerFailed(worker) = observed else {
-                panic!("the retained service must expose its original worker failure");
-            };
-            assert!(matches!(worker.as_ref(), QemuRamSourceError::Proof(_)));
-            let QemuNodeError::RamSourceCleanup {
-                operation: found,
-                source,
-            } = &error
-            else {
-                panic!("cleanup must preserve the typed source failure");
-            };
-            assert_eq!(*found, operation);
-            {
-                let original = crate::QemuAsyncDriverHealthError::ram_source(
-                    QemuRamSourceError::WorkerFailed(worker.clone()),
-                );
-                assert_eq!(source, &original);
-            }
-            assert!(fixture.task_is_retained());
+                .and_then(|history| history.worker.as_ref()),
+            Some(&worker)
+        );
+        assert!(fixture.task_is_retained());
 
-            // The worker was joined, but its first failure and original lease
-            // remain observable. A second cleanup closes the retained service;
-            // the scheduler observer still keeps that same failure allocation.
-            finish_ram_source_cleanup(&mut fixture.retained, operation)?;
-            assert!(fixture.retained.is_none());
-            let scheduler = SchedulerError::from(BackendError::from(error));
-            assert_eq!(
-                scheduler.operational_failure_class(),
-                Some(SchedulerOperationalFailureClass::Terminal)
-            );
-            drop(worker);
-            assert!(fixture.task_is_retained());
-            drop(scheduler);
-            assert!(fixture.services.reserve_resources(1, 0, 0).is_ok());
-        }
+        // The actual joined body leaves its slot only after the same journal
+        // delivered failure. The scheduler still owns that worker's same cause.
+        assert!(fixture.close());
+        assert!(fixture.retained.is_none());
+        let scheduler = SchedulerError::from(BackendError::from(error));
+        assert_eq!(
+            scheduler.operational_failure_class(),
+            Some(SchedulerOperationalFailureClass::Terminal)
+        );
+        drop(worker);
+        assert!(fixture.task_is_retained());
+        drop(scheduler);
+        drop(fixture.history);
+        assert!(fixture.services.reserve_resources(1, 0, 0).is_ok());
         Ok(())
     }
 
@@ -222,8 +238,8 @@ mod tests {
         let mut fixture = SourceFixture::new()?;
         assert!(fixture.task_is_retained());
 
-        finish_ram_source_cleanup(&mut fixture.retained, "join retained RAM source")?;
-        finish_ram_source_cleanup(&mut fixture.retained, "join retained RAM source")?;
+        assert!(fixture.close());
+        assert!(fixture.close());
 
         assert!(fixture.retained.is_none());
         assert!(fixture.services.reserve_resources(1, 0, 0).is_ok());
@@ -231,9 +247,10 @@ mod tests {
     }
 
     #[test]
-    fn cleanup_admission_refusal_retains_service_and_credit_until_retry()
+    fn source_cleanup_uses_same_saved_guard_when_new_cleanup_admission_is_full()
     -> Result<(), Box<dyn Error>> {
         let mut fixture = SourceFixture::new()?;
+        let original_id = fixture.cleanup.status()?.operation_id;
         let mut guards = Vec::new();
         loop {
             match fixture.supervisor.begin(HostOperationClass::Cleanup) {
@@ -242,20 +259,18 @@ mod tests {
                 Err(source) => return Err(source.into()),
             }
         }
-        let error = finish_ram_source_cleanup(&mut fixture.retained, "join retained RAM source")
-            .unwrap_err();
-
-        assert!(
-            matches!(error, QemuNodeError::RamSourceCleanup { ref source, .. }
-            if matches!(source.source_failure(), QemuRamSourceError::Supervision(HostSupervisionError::CapacityExhausted)))
-        );
-        assert!(fixture.retained.is_some());
         assert!(fixture.task_is_retained());
+        assert!(matches!(
+            fixture.supervisor.begin(HostOperationClass::Cleanup),
+            Err(HostSupervisionError::CapacityExhausted)
+        ));
 
-        drop(guards);
-        finish_ram_source_cleanup(&mut fixture.retained, "join retained RAM source")?;
+        assert!(fixture.close());
+
+        assert_eq!(fixture.cleanup.status()?.operation_id, original_id);
         assert!(fixture.retained.is_none());
         assert!(fixture.services.reserve_resources(1, 0, 0).is_ok());
+        drop(guards);
         Ok(())
     }
 }

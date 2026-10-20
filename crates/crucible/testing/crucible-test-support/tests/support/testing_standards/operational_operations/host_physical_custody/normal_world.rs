@@ -150,68 +150,12 @@ pub(super) const CONTRACT: Contract = Contract {
         Companion {
             path: "crates/crucible/qemu/crucible-qemu-host/src/linux_attempt_host/original_roster.rs",
             required: &[
-                (
-                    r#"pub fn retry_unsettled(&mut self) -> Result<(), QemuVmRealizationError> {
-    let held = self
-        .held
-        .as_ref()
-        .ok_or_else(|| original_error(OriginalActorAccountError::Unavailable))?;
-    let mut state = held
-        .try_lock()
-        .map_err(|_| original_error(OriginalActorAccountError::Unavailable))?;
-    for slot in &mut state.slots {
-        fork_target::retry_unsettled_target(slot)?;
-        if slot.fork_target.is_owned() || slot.unsettled.is_none() {
-            continue;
-        }
-        let cleanup = retain_cleanup(slot).map_err(original_error)?;
-        slot.unsettled
-            .as_mut()
-            .ok_or_else(|| original_error(OriginalActorAccountError::Unavailable))?
-            .finish(&cleanup)?;
-        close_slot(slot).map_err(original_error)?;
-        slot.unsettled = None;
-    }
-    Ok(())
-}"#,
-                    1,
-                ),
-                (
-                    r#"fn retain_cleanup(
-    slot: &mut NativeSlot,
-) -> Result<Arc<HostOperationGuard>, OriginalActorAccountError> {
-    if slot.cleanup.is_none() {
-        let credit = slot
-            .credit
-            .as_ref()
-            .ok_or(OriginalActorAccountError::Unavailable)?;
-        // The guard Arc is within the already admitted TOTAL metadata. The
-        // finite supervisor BTree was charged once as initial actor structure.
-        let extent = cleanup_control_extent()?;
-        if let Some(purpose) = slot.installed_process.as_mut()
-            && !purpose.consume_cleanup(extent)
-        {
-            return Err(OriginalActorAccountError::Unavailable);
-        }
-        slot.require_metadata_assignment(extent)?;
-        // Returned guard aliases may outlive a closed generation. Keep each
-        // assigned body charged until whole-roster retirement, rather than
-        // treating completion or dropping this slot's alias as physical free.
-        slot.cleanup_controls_bytes = slot
-            .cleanup_controls_bytes
-            .checked_add(extent)
-            .ok_or(OriginalActorAccountError::Unavailable)?;
-        slot.cleanup = Some(Arc::new(credit.begin_cleanup()?));
-    }
-    let cleanup = slot
-        .cleanup
-        .as_ref()
-        .ok_or(OriginalActorAccountError::Unavailable)?;
-    cleanup.wait_slice()?;
-    Ok(Arc::clone(cleanup))
-}"#,
-                    1,
-                ),
+                (super::roster_retirement::RECONCILE_BODY, 1),
+                super::roster_retirement::SOURCE_CLEANUP.required[0],
+                super::roster_retirement::SOURCE_CLEANUP.required[1],
+                super::roster_retirement::SOURCE_CLEANUP.required[2],
+                super::roster_retirement::SOURCE_CLEANUP.required[3],
+                super::roster_retirement::SOURCE_CLEANUP.required[4],
                 (
                     r#"fn finish(&mut self, cleanup: &HostOperationGuard) -> Result<(), QemuVmRealizationError> {
     cleanup
@@ -291,5 +235,6 @@ pub(super) const CONTRACT: Contract = Contract {
         super::node_construction::NODE_LAYOUT,
         super::node_construction::NODE_ROSTER_RETURN,
         super::node_construction::NODE_CREDIT_RETURN,
+        super::roster_retirement::SOURCE_ORIGINAL,
     ],
 };

@@ -211,9 +211,10 @@ pub use linux_attempt_host::{
     LinuxQemuNativeWorldConstructor, LinuxQemuNativeWorldPreparation,
     LinuxQemuNativeWorldPreparationOrigin, OriginalActorAccountError,
     OriginalNativeAccountFactoryBinding, OriginalNativeAccountRoster,
-    OriginalNativeControlRetirement, OriginalNativePhysicalRetirement,
-    QemuForkTargetConstructionError, QemuForkTargetConstructionLoan,
-    QemuForkTargetLogicalReservation, QemuForkTargetPreparation, QemuForkTargetRamAdmission,
+    OriginalNativeFreshLaunchError, OriginalNativeControlRetirement,
+    OriginalNativePhysicalRetirement, QemuForkTargetConstructionError,
+    QemuForkTargetConstructionLoan, QemuForkTargetLogicalReservation, QemuForkTargetPreparation,
+    QemuForkTargetRamAdmission, QemuIssuedHelperHistory,
 };
 #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
 #[doc(hidden)]
@@ -275,8 +276,8 @@ pub use node::{
     QemuHotForkSchedulerNodeInstallError, QemuHotForkSourceRearmError,
 };
 pub use node::{
-    QemuBoundedSchedulerPreemptionTargetError, QemuLogicalTimeCalibration, QemuNode,
-    QemuNodeChannelError, QemuNodeChannelPlane, QemuNodeChannels, QemuNodeChild,
+    QemuBoundedSchedulerPreemptionTargetError, QemuFailedLaunchOwner, QemuLogicalTimeCalibration,
+    QemuNode, QemuNodeChannelError, QemuNodeChannelPlane, QemuNodeChannels, QemuNodeChild,
     QemuNodeEmittedFrame, QemuNodeError, QemuNodeExternalProcessControl, QemuNodeIdleState,
     QemuNodeLifecycleState, QemuNodePendingQuantum, QemuPluginIpcControlChannel,
     QemuShmemHotPathChannel,

@@ -17,12 +17,12 @@ use crate::{
     ProductionBakedSnapshotSet, ProductionVmLifecycleConfig, ProductionVmNodeReplayLaunchProfile,
     ProductionVmReplayExactNodeRestoreAdmission,
 };
+use crucible_campaign::{AttemptResourceLimits, AttemptStartMode};
+use crucible_control_api::LifecycleApiError;
 use crucible_engine::{
     Configuration, ContentHash, NodeId, ScenarioDef, ScenarioDefForm,
     SchedulerOperationalFailureClass, World,
 };
-use crucible_control_api::LifecycleApiError;
-use crucible_campaign::{AttemptResourceLimits, AttemptStartMode};
 use crucible_qemu_host::{
     QemuBakedGenesisSnapshot, QemuLiveNodeStepGateConfig, QemuReplayValidationExecutor,
     QemuReplayValidationThinAdmission, QemuVmRealizationError,
@@ -836,14 +836,6 @@ where
     );
     if let Err(mut error) = preparation {
         let message = error.to_string();
-        if let Some(child) = error.take_unreaped_child() {
-            guard.retain_failed_launch_child_for_node(exact.node(), child);
-            guard.quarantine();
-            return Err(QemuVmRealizationError::ReapQuarantined {
-                operation: "prepare fresh thin replay artifacts",
-                message,
-            });
-        }
         return Err(QemuVmRealizationError::Executor {
             operation: "prepare fresh thin replay artifacts",
             message,

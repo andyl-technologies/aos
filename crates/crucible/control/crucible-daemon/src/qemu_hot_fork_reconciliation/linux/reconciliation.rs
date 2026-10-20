@@ -69,6 +69,18 @@ where
         loop {
             match self.source_release {
                 LinuxSourceReleasePhase::CloseChildChannel => {
+                    // Each containing slot stays intact until its own source
+                    // joins and controller returns are known. Process return
+                    // alone cannot release these independent physical leaves.
+                    if let Some(node) = &mut self.installed_node {
+                        node.force_quarantine_and_reap()?;
+                    }
+                    if let Some(continuation) = &mut self.scheduler_node {
+                        continuation.settle_ram_after_process_return()?;
+                    }
+                    if let Some(continuation) = &mut self.host_continuation {
+                        continuation.settle_ram_after_process_return()?;
+                    }
                     self.pending_child_qmp = None;
                     self.scheduler_node = None;
                     self.installed_node = None;

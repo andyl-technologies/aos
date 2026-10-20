@@ -727,20 +727,26 @@ pub(super) fn launch_guarded_source_placed(
     let mut source_owner = factory
         .begin(1, attempt_memory_bytes(config), attempt_disk_bytes(config))
         .map_err(|source| realization("create source attempt owner", source))?;
+    source_owner
+        .process_contract()
+        .map_err(|source| realization("obtain source process contract", source))?
+        .require_issued_helper_receiver()
+        .map_err(|source| {
+            invariant(&format!(
+                "guarded source requires its issued receiver: {source}"
+            ))
+        })?;
     let mut source_directory = source_owner
         .prepare_generation_run_directory(config.resource_requirements())
         .map_err(|source| realization("prepare source run directory", source))?;
     let source_contract = source_owner
         .process_contract()
         .map_err(|source| realization("obtain source process contract", source))?;
-    if let Err(mut error) = source_directory.prepare_fresh_artifacts_guarded(
+    if let Err(error) = source_directory.prepare_fresh_artifacts_guarded(
         &config.qemu_executable,
         None,
         source_contract,
     ) {
-        if let Some(child) = error.take_unreaped_child() {
-            source_owner.retain_failed_child(child);
-        }
         return Err(invariant(&format!(
             "guarded source artifact preparation failed: {error}"
         )));
@@ -761,8 +767,12 @@ pub(super) fn launch_guarded_source_placed(
     ) {
         Ok(node) => node,
         Err(mut error) => {
-            if let Some(child) = error.take_unreaped_child() {
-                source_owner.retain_failed_child(child);
+            if let Some(owner) = error.take_retained_owner() {
+                return Err(QemuLiveNodeStepGateError::FailedCleanup {
+                    primary: Box::new(error),
+                    cleanup: crate::QemuNodeError::RamCleanupPending,
+                    retained_owner: Some(owner),
+                });
             }
             return Err(error);
         }

@@ -112,6 +112,20 @@ impl QemuShutdownProgress {
     }
 
     /// Saves each attempted effect and returned output before interpretation.
+    /// Continues the same ladder without introducing polite guest commands.
+    ///
+    /// Existing entered/failed/reaped phases retain their exact disposition.
+    pub(crate) fn advance_containment<T: QemuShutdownTarget>(
+        &mut self,
+        target: &mut T,
+        policy: QemuShutdownPolicy,
+    ) {
+        if self.entered.is_none() && !self.failed() {
+            self.next = self.next.max(3);
+        }
+        self.advance(target, policy);
+    }
+
     pub(crate) fn advance<T: QemuShutdownTarget>(
         &mut self,
         target: &mut T,

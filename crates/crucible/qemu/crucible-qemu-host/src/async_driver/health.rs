@@ -75,9 +75,9 @@ fn source_kind(source: &QemuRamSourceError) -> BackendOperationalFailureKind {
         QemuRamSourceError::Io(_) | QemuRamSourceError::Backing(_) => {
             BackendOperationalFailureKind::Unavailable
         }
-        QemuRamSourceError::Protocol(crucible_qemu_protocol::ram_page::RamPageProtocolError::Io(_)) => {
-            BackendOperationalFailureKind::Unavailable
-        }
+        QemuRamSourceError::Protocol(
+            crucible_qemu_protocol::ram_page::RamPageProtocolError::Io(_),
+        ) => BackendOperationalFailureKind::Unavailable,
         QemuRamSourceError::Services(_) => BackendOperationalFailureKind::CapacityExhausted,
         QemuRamSourceError::Supervision(
             HostSupervisionError::DeadlineExpired { .. }
@@ -92,6 +92,7 @@ fn source_kind(source: &QemuRamSourceError) -> BackendOperationalFailureKind {
             BackendOperationalFailureKind::CapacityExhausted
         }
         QemuRamSourceError::Ownership
+        | QemuRamSourceError::NativeJoinUnsupported
         | QemuRamSourceError::Proof(_)
         | QemuRamSourceError::WorkerPanicked
         | QemuRamSourceError::Protocol(_)

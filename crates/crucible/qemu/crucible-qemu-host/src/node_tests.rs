@@ -921,6 +921,25 @@ impl QemuHostIoRuntime for ScriptedHostIoRuntime {
         self.checkpoint.as_ref().map(|owner| &owner.registration)
     }
 
+    #[cfg(target_os = "linux")]
+    fn retire_host_ram_after_cleanup(
+        &mut self,
+        original: Option<crate::ram_control::RamCleanupOriginal<'_>>,
+        progress: &mut crate::ram_control::RamControlRetirementProgress,
+    ) -> (
+        bool,
+        Result<(), crate::ram_control::RamControlRetirementHistory>,
+    ) {
+        let Some(owner) = self.checkpoint.as_ref() else {
+            return (true, Ok(()));
+        };
+        let (returned, status) = progress.return_controller(&owner.registration, original);
+        if returned {
+            self.checkpoint = None;
+        }
+        (returned, status)
+    }
+
     fn host_operation_supervisor(
         &self,
     ) -> Option<&crucible_host_resources::host_supervision::HostOperationSupervisor> {
@@ -1771,18 +1790,17 @@ fn unvalidated_hot_fork_process_contract() -> Result<crate::QemuChildProcessCont
 }
 
 #[test]
-fn failed_node_surrenders_its_direct_child_wait_authority() -> Result<(), Box<dyn Error>> {
+fn failed_node_keeps_its_complete_owner_through_actual_reap() -> Result<(), Box<dyn Error>> {
     let node = scripted_node(shared_log(), false, false, false)?;
     let process_id = node.child.process_id();
 
-    let mut child = node
-        .into_direct_child_for_quarantine()
-        .expect("fixture node owns a direct child");
+    let mut owner = crate::QemuFailedLaunchOwner::node(node);
 
-    assert_eq!(child.process_id(), process_id);
-    assert!(!child.reaped());
-    child.force_kill_and_reap_failed_realization()?;
-    assert!(child.reaped());
+    assert_eq!(owner.process_id(), Some(process_id));
+    assert!(!owner.child_reaped());
+    owner.retry_cleanup()?;
+    assert!(owner.child_reaped());
+    assert_eq!(owner.process_id(), Some(process_id));
     Ok(())
 }
 

@@ -229,25 +229,6 @@ impl QemuNodeProcessControl {
             }
         }
     }
-
-    pub(super) fn force_kill_and_reap_failed_realization(
-        &mut self,
-    ) -> Result<(), QemuShutdownTargetError> {
-        match self {
-            Self::Direct(child) => child.force_kill_and_reap_failed_realization(),
-            Self::External(_) => Err(QemuShutdownTargetError::new(
-                "reap failed QEMU realization",
-                "externally parented QEMU must be reconciled by its retained outer lifecycle",
-            )),
-        }
-    }
-
-    pub(super) fn into_direct_child(self) -> Option<QemuNodeChild> {
-        match self {
-            Self::Direct(child) => Some(child),
-            Self::External(_control) => None,
-        }
-    }
 }
 
 #[cfg(target_os = "linux")]

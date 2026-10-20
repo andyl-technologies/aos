@@ -49,9 +49,8 @@ impl RetainedNodeLaunch {
 
     pub(super) fn finish(&mut self) -> Result<(), crate::ProductionVmConstructionCleanupError> {
         if let Some(node) = self.node.as_mut() {
-            node.force_quarantine_and_reap().map_err(|error| {
-                launcher_message(format!("reap retained QEMU node pairing: {error}"))
-            })?;
+            node.force_quarantine_and_reap()
+                .map_err(crate::ProductionVmConstructionCleanupError::Node)?;
             // An unwind leaves closure unknown and retains this exact lease.
             drop(self.node.take());
             self.channels_closed = true;

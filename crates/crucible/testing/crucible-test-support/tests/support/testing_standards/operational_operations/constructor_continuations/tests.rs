@@ -331,6 +331,18 @@ fn constructor_continuations_reject_foreign_native_loans_and_missing_postcuts()
             r#"self.entered.get_or_try_init("#,
         ),
         (
+            0,
+            r#"original_roster/fork_target.rs"#,
+            r#"saved.is_some_and(|saved| Arc::ptr_eq(saved, &self.original))"#,
+            r#"true"#,
+        ),
+        (
+            0,
+            r#"original_roster/fork_target.rs"#,
+            r#"drop(state); cleanup.guard().map_err(Into::into)"#,
+            r#"cleanup.guard().map_err(Into::into)"#,
+        ),
+        (
             1,
             r#"lifecycle_cleanup/reservation.rs"#,
             r#"cell.epoch != self.epoch || cell.owner.is_some() || cell.controls.is_some()"#,
@@ -365,6 +377,48 @@ fn constructor_continuations_reject_foreign_native_loans_and_missing_postcuts()
             r#"pending_construction/prepared.rs"#,
             r#"fn entered_world(&mut self) { drop(self.not_started.take()); }"#,
             r#"fn entered_world(&mut self) {}"#,
+        ),
+        (
+            4,
+            r#"original_roster.rs"#,
+            r#"controller.retained_cleanup()?"#,
+            r#"foreign_controller.retained_cleanup()?"#,
+        ),
+        (
+            4,
+            r#"original_roster.rs"#,
+            r#"slot.require_metadata_assignment_replacing_pending(extent, pending)?;"#,
+            r#"discard_pending_metadata();"#,
+        ),
+        (
+            4,
+            r#"original_roster.rs"#,
+            r#"slot.active == Some(self.generation) && slot.source_controller.as_ref().is_some_and(|saved| Arc::ptr_eq(saved, &controller))"#,
+            r#"slot.active == Some(self.generation)"#,
+        ),
+        (
+            4,
+            r#"original_roster.rs"#,
+            r#"let original = self.cleanup_entry()?; original.wait_slice()?; Ok(original)"#,
+            r#"let original = self.cleanup_entry()?; Ok(original)"#,
+        ),
+        (
+            4,
+            r#"original_node.rs"#,
+            r#"self.cleanup.get_or_init("#,
+            r#"self.cleanup.get_or_try_init("#,
+        ),
+        (
+            4,
+            r#"original_roster.rs"#,
+            r#"!controller.physical_owners_returned()"#,
+            r#"false"#,
+        ),
+        (
+            4,
+            r#"original_roster.rs"#,
+            r#"cleanup.complete()?; slot.cleanup = None; slot.source_controller = None; slot.source_cleanup_assigned = false;"#,
+            r#"slot.source_controller = None; slot.source_cleanup_assigned = false; cleanup.complete()?; slot.cleanup = None;"#,
         ),
         (
             4,

@@ -4,10 +4,10 @@
 //! Only initial validation is specialized; no live capability is advertised.
 
 use super::*;
-use crucible_qemu_protocol::ram_control::{RamControlError, RamControlFaultActorReport};
 use crucible_qemu_host::ram_control::{
     RamControlClient, RamControlRegistrar, RamControlRetirementAuthority, RamInventoryAdmission,
 };
+use crucible_qemu_protocol::ram_control::{RamControlError, RamControlFaultActorReport};
 
 pub(super) struct NativeInitialRegistrar {
     registry: HostOperationalRegistry,
@@ -93,7 +93,7 @@ impl RamControlRegistrar for NativeInitialRegistrar {
     fn prepare_retirement_after_cleanup(
         &self,
         target: HostRamTarget,
-    ) -> Result<(), RamControlError> {
+    ) -> crucible_qemu_host::ram_control::RamControlRetirementOutcome {
         self.registry.prepare_retirement_after_cleanup(target)
     }
 
