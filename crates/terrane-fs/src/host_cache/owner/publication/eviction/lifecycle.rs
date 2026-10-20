@@ -303,6 +303,32 @@ async fn restore(executor: &mut NativeOwnerExecutor, key: &str) -> io::Result<()
     Ok(())
 }
 
+/// Restores the exact original object before duplicate publication can create a copy.
+///
+/// # Errors
+/// Refuses changed original cached custody or an uncertain restoration exchange.
+pub(in crate::host_cache::owner) async fn restore_publication(
+    executor: &mut NativeOwnerExecutor,
+    descriptor: &terrane_core::identity::Descriptor,
+) -> io::Result<()> {
+    let keys: Vec<_> = executor
+        .cache
+        .pending
+        .iter()
+        .filter_map(|(key, pending)| {
+            pending
+                .unit
+                .as_ref()
+                .filter(|unit| unit.body.claim().descriptor() == descriptor)
+                .map(|_| key.clone())
+        })
+        .collect();
+    for key in keys {
+        restore(executor, &key).await?;
+    }
+    Ok(())
+}
+
 /// Captures original receipts already due before the accepted queue is drained.
 ///
 /// # Errors

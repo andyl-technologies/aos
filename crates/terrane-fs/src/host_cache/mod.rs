@@ -192,7 +192,7 @@ impl<L: HostReadLocation> NativeHostLayout<L> {
         Ok((metadata.st_dev, metadata.st_ino))
     }
 
-    /// Opens a raw readonly canonical candidate under the retained sealed root.
+    /// Observes a canonical path under the retained sealed root without reading bytes.
     ///
     /// This grants no verification, pin, publication or serving authority. A
     /// lifecycle caller must compare it with the original verified native inode.
@@ -200,7 +200,7 @@ impl<L: HostReadLocation> NativeHostLayout<L> {
     /// # Errors
     /// Refuses replaced roots, invalid digest width, symlinks and native open errors.
     #[cfg(feature = "tokio")]
-    pub(crate) fn open_sealed_canonical(
+    pub(crate) fn observe_sealed_canonical(
         &self,
         descriptor: &terrane_core::identity::Descriptor,
     ) -> io::Result<File> {
@@ -222,7 +222,7 @@ impl<L: HostReadLocation> NativeHostLayout<L> {
         let file = File::from(openat2(
             sealed,
             path.as_str(),
-            OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+            OFlags::PATH | OFlags::CLOEXEC | OFlags::NOFOLLOW,
             Mode::empty(),
             ResolveFlags::BENEATH | ResolveFlags::NO_SYMLINKS | ResolveFlags::NO_MAGICLINKS,
         )?);

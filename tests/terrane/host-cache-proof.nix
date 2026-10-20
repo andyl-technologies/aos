@@ -35,7 +35,7 @@
     memory = 1024;
     # Additional real release-grace and cache-retirement windows extend the
     # guest workload. Existing per-control deadlines and assertions stay fixed.
-    timeout = 240;
+    timeout = 300;
     rootfsDeps = [image pkgs.coreutils pkgs.util-linux pkgs.e2fsprogs pkgs.python3];
     testScript = ''
       set -eu

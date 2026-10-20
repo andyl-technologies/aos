@@ -7,7 +7,7 @@ use std::{
     task::{Context, Poll, Waker},
 };
 use terrane::{host::cache::CacheState, store::TokioLocalFs};
-use terrane_core::identity::{IdentityKind, TERRANE_V1};
+use terrane_core::identity::{Descriptor, IdentityKind, TERRANE_V1};
 use terrane_fs::host_cache::{NativeCacheEvictionReport, NativeConsumerLease, NativeMetadataOwner};
 
 /// Keeps the original Running owner and independent consumers through eviction.
@@ -129,6 +129,44 @@ pub(super) fn run(
         retired.charged_reserved_bytes, retired.future_hold_bytes
     ))?;
     emit("READY actual cached inline pending final removal after release grace")?;
+
+    control("duplicate")?;
+    let descriptor = Descriptor::from_identity(&TERRANE_V1, &identity, super::INLINE)
+        .map_err(io::Error::other)?;
+    let duplicate = runtime
+        .block_on(owner.publish_inline(descriptor, [vec![0], super::INLINE.to_vec()].concat()))
+        .map_err(io::Error::other)?;
+    use std::os::unix::fs::MetadataExt;
+    let inode = duplicate.handle().metadata()?.ino();
+    if runtime
+        .block_on(duplicate.finish_retired_sources(owner))?
+        .completed_sources
+        != 0
+    {
+        return Err(invalid(
+            "duplicate inline publication invented a standalone transfer",
+        ));
+    }
+    let cached = runtime
+        .block_on(duplicate.into_cache(owner))
+        .map_err(io::Error::other)?;
+    emit(&format!(
+        "CACHE_EVICTION_DUPLICATE inode={inode} grace_expires={}",
+        cached.release_grace_ends_at
+    ))?;
+    emit("READY duplicate publication restores original pending inode without replacement")?;
+    control("retire-duplicate-after-grace")?;
+    let duplicate_retirement = pressure(owner, runtime, inputs)?;
+    if duplicate_retirement.retired_allocations != 1 || duplicate_retirement.target_met {
+        return Err(invalid(
+            "cached publication aliases were charged as separate allocations",
+        ));
+    }
+    emit(&format!(
+        "CACHE_EVICTION_PENDING phase=duplicate-final charged_reserved_bytes={} future_hold_bytes={}",
+        duplicate_retirement.charged_reserved_bytes, duplicate_retirement.future_hold_bytes
+    ))?;
+    emit("READY actual duplicate publication aliases share one final native retirement")?;
 
     control("after-delete")?;
     let completed = runtime.block_on(owner.evict_cached(0))?;

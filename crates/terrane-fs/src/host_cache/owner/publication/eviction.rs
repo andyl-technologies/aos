@@ -19,7 +19,7 @@ use std::{collections::BTreeMap, sync::Mutex};
 
 pub use lifecycle::NativeCacheEvictionReport;
 pub(in crate::host_cache::owner) use lifecycle::{
-    DueRetirements, due_retirements, finish_due, restore_for, run,
+    DueRetirements, due_retirements, finish_due, restore_for, restore_publication, run,
 };
 
 /// Retains bounded reconstructible cache bookkeeping on the physical executor.

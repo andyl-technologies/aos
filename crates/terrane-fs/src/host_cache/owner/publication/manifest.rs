@@ -459,6 +459,7 @@ pub(in crate::host_cache::owner) async fn run(
     let context = executor.admission_context()?;
     context.check_current().map_err(io::Error::other)?;
     let retained = executor.retain_metadata(identity).await?;
+    super::eviction::restore_publication(executor, retained.claim().descriptor()).await?;
     let (layout, limit) = {
         let owner = executor
             .custody()

@@ -170,7 +170,7 @@ impl CacheBodyCompletion {
         body.layout().recheck()?;
         let canonical = body
             .layout()
-            .open_sealed_canonical(body.claim().descriptor())?;
+            .observe_sealed_canonical(body.claim().descriptor())?;
         let observed = rustix::fs::fstat(&canonical)?;
         let original = rustix::fs::fstat(body.handle())?;
         if observed.st_dev != original.st_dev

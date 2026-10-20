@@ -451,6 +451,7 @@ pub(super) async fn run(
     context.check_current().map_err(std_io::Error::other)?;
     let custody = Arc::clone(executor.custody());
     let prepared = prepare(executor, &custody, descriptor, encoded)?;
+    eviction::restore_publication(executor, prepared.claim.descriptor()).await?;
     let job = executor.register_publication(prepared)?;
     let outcome = execute(executor, &job, &context).await;
     if outcome.is_err() {

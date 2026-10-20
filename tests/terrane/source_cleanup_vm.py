@@ -310,6 +310,27 @@ def run_eviction(driver, case, process, lines, snapshot):
         pending_measurement("final")
         driver.require(not canonical.exists() and pending.stat().st_ino == original.st_ino,
                        "post-grace retirement did not retain its original pending inode")
+        prior_residences = tomllib.loads(snapshot.read_text())["residences"]
+        control("duplicate")
+        lines.until("READY duplicate publication restores original pending inode without replacement", timeout=15)
+        duplicates = re.findall(r"^CACHE_EVICTION_DUPLICATE inode=(\d+) grace_expires=(\d+)$", lines.bytes.decode(), re.M)
+        driver.require(len(duplicates) == 1 and int(duplicates[0][0]) == original.st_ino
+                       and canonical.stat().st_ino == original.st_ino and not pending.exists()
+                       and files(root / "sealed") == all_sealed
+                       and tomllib.loads(snapshot.read_text())["residences"] == prior_residences,
+                       "duplicate publication created another inode or moved original residences")
+        duplicate_expiry = int(duplicates[0][1])
+        wait = duplicate_expiry - time.time() + 3
+        driver.require(wait <= 34, "duplicate producer grace exceeds configured native bound")
+        if wait > 0:
+            time.sleep(wait)
+        driver.require(not any(row["hash"] == digest for row in tomllib.loads(snapshot.read_text())["pins"]),
+                       "duplicate publication retained expired producer protection")
+        control("retire-duplicate-after-grace")
+        lines.until("READY actual duplicate publication aliases share one final native retirement", timeout=15)
+        pending_measurement("duplicate-final")
+        driver.require(not canonical.exists() and pending.stat().st_ino == original.st_ino,
+                       "duplicate aliases did not retire their single original inode")
         retirement_wait(original)
         driver.require(not canonical.exists() and not pending.exists()
                        and not any(row["chunk"] == digest for row in tomllib.loads(snapshot.read_text())["residences"]),
