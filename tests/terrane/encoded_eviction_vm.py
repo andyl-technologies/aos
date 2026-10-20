@@ -182,10 +182,16 @@ def run(driver, uuid):
         scene(canonical, {"raw"})
         control("repin")
         lines.until("READY original encoded allocation restores before a fresh policy-held consumer read", timeout=30)
+        unread = one(r"^ENCODED_EVICTION_UNREAD hash=([0-9a-f]{64})$", "missing actual unread companion identity")
+        originals["unread"] = Original(driver, case, root / "chunks" / unread[:2] / (unread + ".1"), 840)
+        driver.require(originals["unread"].allocated > 65536
+                       and os.pread(originals["unread"].fd, 1, 0) == b"\x01",
+                       "unread companion does not exercise actual compressed probation allocation")
         canonical.add("raw")
+        canonical.add("unread")
         scene(canonical, set())
-        driver.require(len(owned(state(), "leases", "consumer:")) == 2,
-                       "restored encoded read lacks actual independent consumer promises")
+        driver.require(len(owned(state(), "leases", "consumer:")) == 3,
+                       "restored encoded reads or unread companion lack independent consumer promises")
         print("PASS independent observer verifies original mixed FIFO order and same-inode encoded restoration before consumer grants", flush=True)
         control("second")
         lines.until("READY next sealed allocation retires in original mixed FIFO order", timeout=30)
@@ -257,6 +263,20 @@ def run(driver, uuid):
         lines.until("READY removed dependent description closes after its actual dictionary promise releases", timeout=30)
         close_group("dependent", {"dependent"}, "after-dependent-observer",
                     "ENCODED_EVICTION_MEASUREMENT kind=dependent-closed")
+        control("release-unread")
+        lines.until("READY actual unread consumer grace protects original encoded allocation", timeout=30)
+        expiry = one(r"^ENCODED_EVICTION_GRACE kind=unread expires=(\d+)$", "missing unread companion grace")
+        wait_grace(expiry)
+        control("retire-unread")
+        lines.until("READY unread Zstd companion retires before the older dictionary actually consumed by verified reads", timeout=30)
+        canonical.remove("unread")
+        wait_removed(canonical, {"unread"})
+        control("drop-unread")
+        lines.until("READY removed unread companion description closes while its independent observer retains charge", timeout=30)
+        close_group("unread", {"unread"}, "after-unread-observer",
+                    "READY promoted original dictionary remains canonical after unread companion closure")
+        scene(canonical, set())
+        print("PASS independent observer verifies dictionary read promotion ahead of a newer unread Zstd allocation and actual last-description charge release", flush=True)
         control("retire-dictionary")
         lines.until("READY original dictionary retires only after acknowledged dependent removal", timeout=30)
         canonical.remove("dictionary")

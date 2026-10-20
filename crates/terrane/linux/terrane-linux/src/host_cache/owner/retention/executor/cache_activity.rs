@@ -2,7 +2,10 @@
 
 use super::NativeOwnerExecutor;
 use crate::{
-    host_cache::owner::{publication::eviction::ReadActivity, retention::Custody},
+    host_cache::owner::{
+        publication::eviction::{ReadActivities, ReadActivity},
+        retention::{Custody, RetainedManifest},
+    },
     publisher_local::client::PeerPublishedObject,
 };
 use std::{io, sync::Arc};
@@ -38,7 +41,7 @@ impl NativeOwnerExecutor {
     pub(in crate::host_cache::owner) fn admission_read_activity(
         &self,
         source: &crate::host_cache::owner::admission::reads::AdmittedRead,
-    ) -> io::Result<Arc<ReadActivity>> {
+    ) -> io::Result<ReadActivities> {
         self.check_physical_worker()?;
         let owner = self
             .custody()
@@ -50,5 +53,47 @@ impl NativeOwnerExecutor {
             .lock()
             .map_err(|_| io::Error::other("read activity registry poisoned"))?
             .for_admission(source, owner.preparation.config.state.records)
+    }
+
+    /// Shares activity for a completed metadata source's original owned admission.
+    ///
+    /// # Errors
+    /// Refuses another physical worker/root, changed retention, exhausted finite
+    /// activity storage or native metadata errors.
+    pub(in crate::host_cache::owner) fn manifest_read_activity(
+        &self,
+        retained: &RetainedManifest,
+    ) -> io::Result<Option<Arc<ReadActivity>>> {
+        self.check_physical_worker()?;
+        let owner = self
+            .custody()
+            .lock()
+            .map_err(|_| io::Error::other("metadata activity custody poisoned"))?;
+        if !Arc::ptr_eq(&retained.custody, self.custody())
+            || !Arc::ptr_eq(retained.source.layout(), owner.preparation.layout())
+        {
+            return Err(io::Error::other(
+                "metadata activity belongs to another root",
+            ));
+        }
+        retained.check_registration(&owner)?;
+        let Some(order) = crate::host_cache::owner::admission::reads::metadata_activity_order(
+            self,
+            &owner,
+            &retained.source,
+        )?
+        else {
+            return Ok(None);
+        };
+        self.cache
+            .activities
+            .lock()
+            .map_err(|_| io::Error::other("read activity registry poisoned"))?
+            .for_manifest(
+                &retained.source,
+                order,
+                owner.preparation.config.state.records,
+            )
+            .map(Some)
     }
 }

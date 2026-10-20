@@ -34,6 +34,7 @@ pub(in crate::host_cache::owner) struct AdmittedRead {
 
 struct Member {
     job: Arc<Mutex<AdmissionJob>>,
+    order: u64,
     identity: Identity,
     length: usize,
     inode: (u64, u64, u64),
@@ -192,16 +193,13 @@ impl AdmittedRead {
         self.members.iter().map(|member| member.identity.digest())
     }
 
-    /// Borrows the original body's actual allocation identity for read activity.
-    ///
-    /// # Errors
-    /// Refuses an absent original body member.
-    pub(in crate::host_cache::owner) fn original_inode(&self) -> io::Result<(u64, u64)> {
-        let first = self
-            .members
-            .first()
-            .ok_or_else(|| invalid("admitted body member absent"))?;
-        Ok((first.inode.0, first.inode.1))
+    /// Iterates original body/dictionary inodes and their physical admission order.
+    pub(in crate::host_cache::owner) fn original_allocations(
+        &self,
+    ) -> impl Iterator<Item = ((u64, u64), u64)> {
+        self.members
+            .iter()
+            .map(|member| ((member.inode.0, member.inode.1), member.order))
     }
 
     /// Synchronizes and measures distinct original body and dictionary allocations.
@@ -318,6 +316,7 @@ fn member(
     let metadata = file.metadata()?;
     Ok(Member {
         job: Arc::clone(resource),
+        order: job.order,
         identity: TERRANE_V1
             .from_digest(IdentityKind::Chunk, descriptor.digest())
             .map_err(io::Error::other)?,
@@ -327,6 +326,60 @@ fn member(
         uid: owner.preparation.config.content_uid,
         gid: owner.preparation.config.content_gid,
     })
+}
+
+/// Finds the original owned admission behind a verified metadata source.
+///
+/// Read-only recovery or lower-tier sources outside this admission registry
+/// have no managed allocation to promote. They acquire scheduling state only
+/// after actual physical adoption, never merely from an opened filename.
+///
+/// # Errors
+/// Refuses another worker/root, changed actual admission custody or native bytes,
+/// poisoned jobs and descriptors differing from the original pack/index pair.
+pub(in crate::host_cache::owner) fn metadata_activity_order(
+    executor: &NativeOwnerExecutor,
+    owner: &Custody,
+    source: &crate::host_cache::NativeManifestSource,
+) -> io::Result<Option<u64>> {
+    executor.check_physical_worker()?;
+    if !Arc::ptr_eq(source.layout(), owner.preparation.layout()) {
+        return Err(invalid("metadata activity has another native root"));
+    }
+    source.recheck()?;
+    for resource in executor.admission_jobs() {
+        let job = super::backing::lock(resource)?;
+        let Input::Metadata { expected_id, .. } = &job.input else {
+            continue;
+        };
+        if !job.complete || *expected_id != source.pack_id() {
+            continue;
+        }
+        if !Arc::ptr_eq(&job.custody, executor.custody()) {
+            return Err(invalid(
+                "metadata activity changed original admission custody",
+            ));
+        }
+        super::reconcile::verify(owner, &job)?;
+        for (file, original) in [source.files().1, source.files().0]
+            .into_iter()
+            .zip(&job.files)
+        {
+            let actual = file.metadata()?;
+            let original = original
+                .readonly
+                .as_ref()
+                .ok_or_else(|| invalid("metadata activity original descriptor absent"))?
+                .metadata()?;
+            if (actual.dev(), actual.ino()) != (original.dev(), original.ino()) {
+                return Err(invalid(
+                    "metadata activity changed its original native pair",
+                ));
+            }
+        }
+        return Ok(Some(job.order));
+    }
+    Ok(None)
 }
 
 fn invalid(message: &'static str) -> io::Error {

@@ -226,6 +226,47 @@ pub(super) fn run(
     }
     drop(stalled);
     raw.check(1)?;
+
+    // Keep a newer, genuinely unread probationary allocation protected until
+    // the dependent finishes. Its actual compressed blocks exceed probation's
+    // target so later selection distinguishes dictionary promotion from age.
+    let mut noise = vec![0; 96 * 1024];
+    File::open("/dev/urandom")?.read_exact(&mut noise)?;
+    let unread_plaintext = [noise.as_slice(), noise.as_slice()].concat();
+    let encoded = terrane_sdk::codec::encode_chunk(
+        &unread_plaintext,
+        inputs.owner_config()?.location.chunk_profile().maximum(),
+        3,
+        None,
+    )
+    .map_err(io::Error::other)?;
+    if encoded.first() != Some(&1) {
+        return Err(invalid(
+            "unread companion did not exercise genuine Zstd admission",
+        ));
+    }
+    let unread_identity = identity(&unread_plaintext)?;
+    let (unread, _) = admit(
+        owner,
+        runtime,
+        inputs,
+        &unread_plaintext,
+        ChunkPosition::Final,
+        encoded,
+    )?;
+    drop(unread_plaintext);
+    drop(noise);
+    if unread.allocated <= inputs.owner_config()?.policy.probation_bytes {
+        return Err(invalid(
+            "unread companion cannot distinguish the actual probation target",
+        ));
+    }
+    let unread_lease =
+        runtime.block_on(owner.pin_resident_chunk(unread_identity.clone(), deadline))?;
+    emit(&format!(
+        "ENCODED_EVICTION_UNREAD hash={}",
+        hex(unread_identity.digest())
+    ))?;
     emit("READY original encoded allocation restores before a fresh policy-held consumer read")?;
 
     control("second")?;
@@ -359,6 +400,39 @@ pub(super) fn run(
     )?;
     control("after-dependent-observer")?;
     observe(owner, runtime, "dependent-closed")?;
+
+    control("release-unread")?;
+    runtime.block_on(owner.release_consumer_lease(&unread_lease))?;
+    if unread_lease
+        .read_verified()
+        .err()
+        .is_none_or(|error| error.kind() != io::ErrorKind::PermissionDenied)
+    {
+        return Err(invalid(
+            "released unread companion retained consumer access",
+        ));
+    }
+    drop(unread_lease);
+    // The dictionary is now eligible, so observing this grace must not request
+    // an eviction before the companion's own durable protection has expired.
+    report_grace(runtime, inputs, &unread_identity, "unread")?;
+    control("retire-unread")?;
+    retired(owner, runtime, inputs, unread.allocated, "unread")?;
+    dictionary.check(1)?;
+    emit(
+        "READY unread Zstd companion retires before the older dictionary actually consumed by verified reads",
+    )?;
+    control("drop-unread")?;
+    unread.check(0)?;
+    drop(unread);
+    observe(owner, runtime, "unread-held")?;
+    emit(
+        "READY removed unread companion description closes while its independent observer retains charge",
+    )?;
+    control("after-unread-observer")?;
+    observe(owner, runtime, "unread-closed")?;
+    emit("READY promoted original dictionary remains canonical after unread companion closure")?;
+
     control("retire-dictionary")?;
     retired(owner, runtime, inputs, dictionary.allocated, "dictionary")?;
     emit("READY original dictionary retires only after acknowledged dependent removal")?;
@@ -491,6 +565,15 @@ fn grace(
             "native FIFO evicted actual consumer grace or dictionary protection",
         ));
     }
+    report_grace(runtime, inputs, identity, kind)
+}
+
+fn report_grace(
+    runtime: &tokio::runtime::Runtime,
+    inputs: &Inputs,
+    identity: &Identity,
+    kind: &str,
+) -> io::Result<()> {
     let state = runtime
         .block_on(CacheState::load(
             &TokioLocalFs,

@@ -11,8 +11,8 @@ mod permit;
 mod queue;
 pub(in crate::host_cache::owner) use permit::CachePermit;
 
-pub(in crate::host_cache::owner) use activity::ReadActivity;
 use activity::Registry;
+pub(in crate::host_cache::owner) use activity::{ReadActivities, ReadActivity, ReadOrigin};
 use lifecycle::Pending;
 use queue::Queue;
 use std::{collections::BTreeMap, sync::Mutex};
@@ -38,6 +38,8 @@ pub(in crate::host_cache::owner) struct Runtime {
 /// Bounds one actual body's activity, shared clock and tree-node bookkeeping.
 pub(in crate::host_cache::owner) fn activity_storage_bytes() -> usize {
     std::mem::size_of::<ReadActivity>()
+        // Every bounded snapshot also retains its original registration tag.
+        + std::mem::size_of::<ReadOrigin>()
         + std::mem::size_of::<Mutex<u64>>()
         + std::mem::size_of::<(u64, u64)>()
         + 10 * std::mem::size_of::<usize>()
@@ -51,5 +53,7 @@ pub(in crate::host_cache::owner) fn entry_storage_bytes() -> usize {
         + std::mem::size_of::<terrane_sdk::host::cache::CacheEntry>()
         + std::mem::size_of::<crate::publisher_local::client::PendingCacheBody>()
         + std::mem::size_of::<crate::publisher_local::client::CacheBodyCompletion>()
+        // The queue entry and census row each retain the physical registration.
+        + 2 * std::mem::size_of::<ReadOrigin>()
         + 1024 // Allocation keys, metadata purposes, member Arcs and map-node growth.
 }

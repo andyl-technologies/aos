@@ -1,6 +1,10 @@
 //! Applies actual read order and durable protection to reconstructible S3-FIFO.
 
-use super::{super::invalid, activity::Registry, graph::Unit};
+use super::{
+    super::invalid,
+    activity::{ReadOrigin, Registry},
+    graph::Unit,
+};
 use crate::host_cache::owner::admission::eviction::EncodedAllocation;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -10,6 +14,7 @@ use std::{
 use terrane_sdk::host::cache::{CacheEntry, CachePolicy, PolicyConfig};
 
 struct Entry {
+    origin: ReadOrigin,
     allocated: u64,
     pinned: bool,
     promoted: bool,
@@ -58,21 +63,26 @@ impl Queue {
                     unit.key.as_str(),
                     unit.allocated,
                     unit.protected || !unit.shared_chunks.is_empty(),
+                    ReadOrigin::Sealed(*unit.body.incarnation()),
                 )
             })
-            .chain(
-                encoded
-                    .iter()
-                    .map(|unit| (unit.order(), unit.key(), unit.allocated(), unit.protected())),
-            )
+            .chain(encoded.iter().map(|unit| {
+                (
+                    unit.order(),
+                    unit.key(),
+                    unit.allocated(),
+                    unit.protected(),
+                    ReadOrigin::Admission(unit.order()),
+                )
+            }))
             .collect::<Vec<_>>();
-        allocations.sort_unstable_by_key(|(order, _, _, _)| *order);
+        allocations.sort_unstable_by_key(|(order, _, _, _, _)| *order);
 
         // A successful complete native census has already refused unknown
         // missing names. Source transfers leave this scheduling inventory, but
         // actual cache retirements must retain their original queue entries
         // through restoration or final acknowledgment. Neither case changes Q.
-        let current: BTreeSet<_> = allocations.iter().map(|(_, key, _, _)| *key).collect();
+        let current: BTreeSet<_> = allocations.iter().map(|(_, key, _, _, _)| *key).collect();
         self.entries.retain(|key, _| {
             if current.contains(key.as_str()) || pending.contains(key) {
                 return true;
@@ -81,7 +91,17 @@ impl Queue {
             false
         });
 
-        for (_, key, allocated, protected) in allocations {
+        for (_, key, allocated, protected, origin) in allocations {
+            if self
+                .entries
+                .get(key)
+                .is_some_and(|entry| entry.origin != origin)
+            {
+                // A reused inode starts in probation with its new admission;
+                // clearing a scheduler row neither frees Q nor releases a pin.
+                self.policy.forget_allocation(key);
+                self.entries.remove(key);
+            }
             if !self.entries.contains_key(key) {
                 self.policy
                     .reserve(key.to_owned(), self.owner.clone(), allocated)
@@ -95,6 +115,7 @@ impl Queue {
                 self.entries.insert(
                     key.to_owned(),
                     Entry {
+                        origin,
                         allocated,
                         pinned: false,
                         promoted: false,
@@ -132,6 +153,10 @@ impl Queue {
                 activities.remove(read.inode);
                 continue;
             };
+            if entry.origin != read.origin {
+                activities.remove(read.inode);
+                continue;
+            }
             if read.first == 0 {
                 continue;
             }

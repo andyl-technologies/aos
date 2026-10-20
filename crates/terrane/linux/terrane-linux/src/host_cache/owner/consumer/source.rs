@@ -8,7 +8,10 @@ use crate::host_cache::{
     NativeChunkSpan, NativeResidentChunkSource,
     owner::{
         admission::{AdmissionJob, reads::AdmittedRead},
-        publication::{self, eviction::ReadActivity},
+        publication::{
+            self,
+            eviction::{ReadActivities, ReadActivity},
+        },
         retention::{Custody, NativeOwnerExecutor},
     },
 };
@@ -35,7 +38,7 @@ enum Backing {
     Sealed(NativeResidentChunkSource),
     Encoded {
         source: Box<AdmittedRead>,
-        activity: Arc<ReadActivity>,
+        activity: ReadActivities,
     },
 }
 
@@ -204,6 +207,8 @@ pub(in crate::host_cache::owner) fn storage_bytes(
     let per_job = std::mem::size_of::<ConsumerSource>()
         .checked_add(AdmittedRead::storage_bytes(domain)?)
         .and_then(|bytes| bytes.checked_add(std::mem::size_of::<super::view::ReadView>()))
+        // A verified encoded read records both actual body and dictionary units.
+        .and_then(|bytes| bytes.checked_add(2 * std::mem::size_of::<Arc<ReadActivity>>()))
         // The consumer view owns one additional verified identity clone.
         .and_then(|bytes| bytes.checked_add(TERRANE_V1.name().len() + TERRANE_V1.digest_len()))
         // The sorted protection set owns two hash strings and their Vec slots.

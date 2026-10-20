@@ -310,17 +310,38 @@ async fn retain_with_authority(
     // The policy hold remains durable for the dependent metadata's entire
     // lifetime. Only actual retirement/recovery can release it; waiter or receipt
     // destruction never does. Allocation and kernel charge remain separate.
-    if !matches!(&authority, Authority::Recovery(_)) {
-        owner.faulted = false;
-    }
     let cache_incarnation = *owner.preparation.publisher().cache_incarnation();
     let session = owner.preparation.publisher_session();
-    Ok(RetainedManifest {
+    let retained = RetainedManifest {
         source,
         custody: Arc::clone(&custody),
         retention_id,
         cache_incarnation,
         session,
         synchronized_source_bytes,
-    })
+    };
+    drop(owner);
+    if let Authority::Running { executor, .. } = &authority
+        && let Some(activity) = executor.manifest_read_activity(&retained)?
+    {
+        activity.record()?;
+    }
+    authority.check_context()?;
+    if !matches!(&authority, Authority::Recovery(_)) {
+        let mut owner = custody
+            .lock()
+            .map_err(|_| io::Error::other("metadata completion custody poisoned"))?;
+        authority.check_registered(
+            &owner,
+            &retained.source,
+            &retention_id,
+            registered_generation,
+        )?;
+        owner.check_current()?;
+        retained.source.recheck()?;
+        // New fallible activity/registration checks belong to this original
+        // operation. A failure must retain its active phase and durable pins.
+        owner.faulted = false;
+    }
+    Ok(retained)
 }
