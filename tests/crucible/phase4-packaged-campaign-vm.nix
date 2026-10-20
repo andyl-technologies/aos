@@ -1067,6 +1067,13 @@ assert !interruptedTransfer
         then ''
           export CRUCIBLE_INITRD=${networkChoiceInitramfs}/initrd.img
           export CRUCIBLE_PHASE4_CLOCK_TRACE=1
+          # Keep the exact fingerprint preimages near the post-restart
+          # checkpoint so a replay-oracle mismatch names its differing pages
+          # and device sections. QEMU children write as their own users.
+          export CRUCIBLE_FINGERPRINT_MATERIAL_DUMP_DIR=/var/tmp/crucible-fingerprint-material
+          export CRUCIBLE_FINGERPRINT_MATERIAL_DUMP_MIN_ICOUNT=550000000000
+          export CRUCIBLE_FINGERPRINT_MATERIAL_DUMP_MAX_ICOUNT=575000000000
+          ${pkgs.coreutils}/bin/mkdir -p -m 1777 "$CRUCIBLE_FINGERPRINT_MATERIAL_DUMP_DIR"
           if ! ${flight}/bin/campaign-store-process-flight --ignored --list \
             > /tmp/guest-choice-flight-list.log 2>&1; then
             cat /tmp/guest-choice-flight-list.log

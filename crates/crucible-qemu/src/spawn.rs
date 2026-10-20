@@ -1243,6 +1243,7 @@ pub(crate) fn guarded_qemu_process_command(
     if std::env::var("CRUCIBLE_TIME_OWNERSHIP_WITNESS").as_deref() == Ok("1") {
         command.env("CRUCIBLE_TIME_OWNERSHIP_WITNESS", "1");
     }
+    forward_fingerprint_material_dump(&mut command);
     // The Linux fixture's exact opt-in reaches its bounded idle observer;
     // aggregate diagnostics alone retain the original native I/O behavior.
     // crucible-lint: allow host-nondeterminism-state -- a default-off observation flag cannot change control decisions.
@@ -1275,6 +1276,46 @@ pub(crate) fn guarded_qemu_process_command(
         }
     }
     command
+}
+
+/// Forwards the plugin's opt-in fingerprint preimage dump settings.
+///
+/// The plugin copies finished samples only when all three values are valid,
+/// so a partial or malformed selection forwards nothing. The copy runs after
+/// both digests are final and cannot change the published sample.
+fn forward_fingerprint_material_dump(command: &mut Command) {
+    const DIRECTORY: &str = "CRUCIBLE_FINGERPRINT_MATERIAL_DUMP_DIR";
+    const WINDOW: [&str; 2] = [
+        "CRUCIBLE_FINGERPRINT_MATERIAL_DUMP_MIN_ICOUNT",
+        "CRUCIBLE_FINGERPRINT_MATERIAL_DUMP_MAX_ICOUNT",
+    ];
+
+    // crucible-lint: allow host-nondeterminism-state -- a default-off diagnostic destination cannot change control decisions.
+    let Some(directory) = std::env::var_os(DIRECTORY) else {
+        return;
+    };
+    if !std::path::Path::new(&directory).is_absolute() {
+        return;
+    }
+    let mut window = Vec::with_capacity(WINDOW.len());
+    for key in WINDOW {
+        // crucible-lint: allow host-nondeterminism-state -- the diagnostic window only selects finished samples to copy.
+        let Ok(value) = std::env::var(key) else {
+            return;
+        };
+        if !value
+            .parse::<u64>()
+            .is_ok_and(|parsed| parsed.to_string() == value)
+        {
+            return;
+        }
+        window.push((key, value));
+    }
+
+    command.env(DIRECTORY, directory);
+    for (key, value) in window {
+        command.env(key, value);
+    }
 }
 
 /// Runs the stopped QEMU setup probe through an admitted attempt contract.

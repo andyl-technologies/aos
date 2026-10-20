@@ -41,6 +41,8 @@ const EXACT_RESUME_PROGRESS_PREFIX: &str = "CRUCIBLE-EXACT-RESUME-PROGRESS-V1 ";
 
 #[path = "guest_choice/diagnostics.rs"]
 mod diagnostics;
+#[path = "guest_choice/fingerprint_material.rs"]
+mod fingerprint_material;
 #[path = "guest_choice/interrupted_transfer.rs"]
 mod interrupted_transfer;
 #[path = "guest_choice/lifecycle.rs"]
@@ -1955,9 +1957,10 @@ fn capture_checkpoint_after_progress_with_store(
                     service.stderr_lines_with_prefix("CRUCIBLE-PHASE4-CLOCK-TRACE ", 65536, 4096);
                 match records {
                     Ok(records) => {
-                        for record in records {
+                        for record in &records {
                             println!("{record}");
                         }
+                        fingerprint_material::report_replay_oracle_material(&records);
                     }
                     Err(trace_error) => eprintln!("phase4 clock trace unavailable: {trace_error}"),
                 }
