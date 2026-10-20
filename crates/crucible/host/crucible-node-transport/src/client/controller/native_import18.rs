@@ -520,7 +520,7 @@ fn seal<T>(
     Ok(())
 }
 
-pub(super) fn decode_prepare_receipt(
+fn decode_prepare_receipt(
     controller: &mut CnpController,
     binding: &PacketNativeImport18Binding,
     p: &mut AssignedPhase<PacketCompleteRestorePrepareRequest>,
