@@ -167,7 +167,7 @@ pub(super) fn fields(encoded: &[u8]) -> Value {
 pub(super) fn reference(name: &str) -> Vec<u8> {
     const REFERENCE: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../tests/terrane/evidence-reference.md"
+        "/../../../../tests/terrane/evidence-reference.md"
     ));
     let heading = format!("### {name}\n");
     assert_eq!(REFERENCE.matches(&heading).count(), 1, "{name}");

@@ -23,7 +23,7 @@ use terrane_format::{
 
 const REFERENCE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../tests/terrane/attribute-reference.md"
+    "/../../../../tests/terrane/attribute-reference.md"
 ));
 const OBJECT: [u8; 32] = [17; 32];
 const PRODUCER: [u8; 32] = [34; 32];

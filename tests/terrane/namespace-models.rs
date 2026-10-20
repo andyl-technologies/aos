@@ -27,7 +27,7 @@ use terrane_format::tree_format::{
 
 const REFERENCE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../tests/terrane/namespace-reference.md"
+    "/../../../../tests/terrane/namespace-reference.md"
 ));
 const MIN_CHUNK: u64 = 262_144;
 const CONTENT: [u8; 32] = [0x11; 32];

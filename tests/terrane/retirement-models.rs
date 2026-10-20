@@ -31,7 +31,7 @@ use wire::Value::{Array, UInt};
 
 const REFERENCE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../tests/terrane/retirement-reference.md"
+    "/../../../../tests/terrane/retirement-reference.md"
 ));
 
 fn reference(name: &str) -> Vec<u8> {

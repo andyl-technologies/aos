@@ -134,7 +134,7 @@ pub(super) fn present<T>(value: Option<T>, reason: &str) -> T {
 pub(super) fn published(name: &str, field: &str) -> Vec<u8> {
     const REFERENCE: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../tests/terrane/recipe-context-reference.md"
+        "/../../../../tests/terrane/recipe-context-reference.md"
     ));
     let marker = alloc::format!("### {name}\n");
     assert_eq!(

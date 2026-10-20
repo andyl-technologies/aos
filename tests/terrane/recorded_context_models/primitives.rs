@@ -757,7 +757,7 @@ pub(super) fn present<T>(value: Option<T>, reason: &str) -> T {
 pub(super) fn published(name: &str, field: &str) -> Vec<u8> {
     const REFERENCE: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../tests/terrane/recorded-context-reference.md"
+        "/../../../../tests/terrane/recorded-context-reference.md"
     ));
     const HEADING: &str = "## Recorded property trust context field witnesses\n";
     assert_eq!(REFERENCE.matches(HEADING).count(), 1);
