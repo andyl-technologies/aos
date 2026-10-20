@@ -92,6 +92,21 @@ providers; an ordinary monitor reference-count model cannot stand in for CPU
 custody. Preserve the lifecycle failure until the launched path is implemented
 and tested.
 
+The native Source unit separately passes 132 controls, including all 13 new
+metadata-admission controls, before its existing required-role fixture refuses.
+That fixture lacks real RUN/teardown rows and a matched worker module; its
+remaining budget cannot fund the required workers. Appending role labels or
+raising fixture limits would not qualify the production constructor. All four
+native metadata retirement paths still require the canonical ownership and
+checked continuation cutover before their frees can settle safely on refusal.
+
+The latest normal Cargo daemon run covers all targets/features: 1,890 tests
+pass with 47 existing ignored tests, and six doctests pass. Engineering hygiene
+and all 27 boundary checks pass. Source-policy controls have 60 passes and one
+failing broad integration gate for the same 15 unclassified paths. These local
+results cover the metadata-admission and resume-error retention changes; they
+do not establish native activation, reduced residency or performance parity.
+
 Current status: QEMU-SIM implementation qualification and final performance
 parity are in progress. All gem5/KVM live evidence above is unavailable; these
 are specified future profiles and remain disabled.

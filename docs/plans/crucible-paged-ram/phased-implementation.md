@@ -45,28 +45,48 @@ terminal cancellation. Completing Setup retains these physical owners for the
 Source lifetime. Only actual child wait/reap and proven physical cleanup permit
 retirement; kill, copied process identifiers and local uniqueness do not.
 
-These are guarded host source contracts, not an enabled runtime combination.
-The host receiver refuses before execution until the authentic matching native
-constructor, role lender and installed-artifact proof are joined. Native kernel
-and participant custody, the controller's standing-owner consumption and the
-whole-Source Root adapter remain incomplete or unqualified. Source review and
-local evaluation do not establish Rust integration compilation, live native or
-VM behavior, physical resource floors, or CPU/elapsed-time parity. Local normal
-Cargo compilation covers all 496 default workspace targets, and the daemon's
-production code checks with the private measurement feature. The matching native
-integration compiles and links; 25 of its 26 configured fixtures pass. The
-remaining dirty-iterator fixture still assumes capture ownership that must come
-from the real Root, Source and writer lifecycle. These build results do not
-enable native receiver activation or qualify physical resource return. The
-package exit criteria and coordinated release gates below remain required.
+Execution still reserves full guest RAM and evicts at paused boundaries. The
+host receiver refuses before execution until the matching native constructor,
+role lender and installed-artifact proof are joined. Native kernel and
+participant custody, controller standing-owner consumption, complete RAM cleanup,
+and the whole-Source Root adapter remain incomplete or unqualified. Smaller
+initial and steady physical peaks and CPU/elapsed-time parity remain unproved.
+
+The latest validation below covers host commit `58e0383d92` and native source
+`d55cfbd8f71af6eee1666335640030e4f8de7a16`. Local Cargo uses the AOS toolchain
+with remote builders disabled; a packaged Rust application build is not a
+prerequisite for development validation.
+
+| Surface | Latest local evidence | Remaining qualification |
+| --- | --- | --- |
+| Daemon | All targets and features: 1,890 passes, 47 existing ignored tests; six doctests pass. The library accounts for 1,874 passes and 43 ignored tests. | Ignored integration flights and genuine native execution remain required. |
+| Source policy | 60 passes; the broad integration gate still fails on the same 15 unclassified paths. | Complete the owning caller cutovers and their source contracts. |
+| Boundary and hygiene | All 27 unsafe/ABI/license controls pass; engineering hygiene passes. | Recheck affected boundaries after further changes. |
+| Native build | Signed source reconstruction, all 3,863 C compile/link actions and six selected native suites pass. | Standalone fixtures have 16 passes and nine failures: eight dependency closures and the mandatory launched capture lifecycle. |
+| Native Source unit | 132 passes, including all 13 metadata-admission controls, precede the existing required-role fixture refusal. | Genuine role/module funding, provider enrollment, activation and physical return remain unqualified. |
+
+Native metadata admission now publishes each actual receipt before its
+independent postcheck, retains allocation custody in Source until transfer, and
+authenticates native creator and BQL ownership before mutation. Five separately
+compiled omission controls fail at their exact intended assertions while their
+named baselines pass. This repairs admission custody; all four native retirement
+sites still need canonical receipts that outlive physical frees and settlement
+refusal. Their coherent replacement is being implemented, without completed-debt
+aggregation or a fixed bound on outstanding dirty-header generations.
+
+Exact resume now preserves phase, shutdown and factory-retirement failures
+together before classification. It retains the original typed history inline,
+removes the recursive boxed cleanup variant, and seals only after all outcomes
+succeed. All eight outcome combinations and drive-only classifications are
+covered. Those controls establish owning error transport, not a funded native
+terminal receipt or completion of whole-RAM cleanup.
 
 Native Park disposition now follows capture completion and physical return of
 the request-owned block, async and RCU census. The same Source loan and writer
 gate remain held; failed capture or physical return retains containment. This
 does not yet place the actual fork and thread-registry transaction inside the
-Park lifetime. Full QEMU compilation and signed source reconstruction pass;
-the registered Source fixture passes 144 controls, without qualifying positive
-Native Park disposition or worker rearm.
+Park lifetime. Positive Native Park disposition and worker rearm remain
+unqualified by the build and component results above.
 
 The dirty-iterator fixture requires an ownership cutover, not successful stubs
 for missing dependencies. Bare capture completion no longer acknowledges dirty
@@ -79,6 +99,13 @@ mandatory lifecycle flight outside the QEMU package dependency chain. Neither
 component selection nor the registered Source fixture replaces this native
 qualification; the full package gate remains failing until its stale fixture
 is repaired, and lifecycle qualification remains outstanding until executed.
+
+### Historical integration notes
+
+The following notes retain earlier source-specific results and investigation
+findings. Their counts and intermediate defects are historical; the current
+summary above supersedes their status claims. They do not qualify later source
+changes or the complete runtime profile.
 
 The private-feature QEMU test targets also compile independently of the
 test-support feature. The complete private-feature QEMU library run now passes
