@@ -9286,9 +9286,18 @@ in its own protected namespace; selected SDK cases must each pass exactly
 once. Nix evaluation confirms all 286 original invocations, including 283 SDK
 cases and three Format cases, keep their names, order and umasks. All Rust,
 manifest, lock and dependency bytes remain unchanged. Formatting, registry,
-graph and unsafe checks pass; both image variants and runtime cases are under
-qualification. Existing guarded sources and native qualification order remain
-preserved, and no task checkbox advances.
+graph and unsafe checks pass. Both source-bound images build successfully;
+independent review verifies all 5,105 crate inputs, exact Cargo features and
+test profiles, installed executable hashes and actual ELF dependencies.
+All eighteen owning gates pass their 286 original invocations in 517.441
+seconds after the shared image build. The separate original-mode executable
+also passes all thirteen exact cold-fork regression cases. Both qualification
+controllers actually terminate successfully, and independent review matches
+each case's passing log to its unchanged source and ordered invocation list.
+Image discovery inventories are not counted as runtime passes. The full
+current-trunk aggregate remains required before merging this component.
+Existing guarded sources and native qualification order remain preserved,
+and no task checkbox advances.
 
 The older shared-directory aggregate at `86fb63e127` actually terminates with
 failure after 18,940.237 seconds. Nextest reports 2,149 run, 2,141 passed,
