@@ -15,7 +15,7 @@ in
   sourceGate "native-active-view-completion" ''
     cd crates
     mkdir -p "$out/logs"
-    cargo test --frozen --offline -p terrane --no-default-features \
+    cargo test --frozen --offline -p terrane-sdk --no-default-features \
       --features tokio,surface-sdk --lib -- --list > "$out/native-tests.txt"
     python3 ../tests/terrane/check_native_gate.py inventory \
       "$out/native-tests.txt" '${builtins.toJSON selectors}'
@@ -24,7 +24,7 @@ in
     for test_name in ${builtins.concatStringsSep " " selectors}; do
       case_index=$((case_index + 1))
       report="$out/logs/case-$case_index.log"
-      if ! cargo test --frozen --offline -p terrane --no-default-features \
+      if ! cargo test --frozen --offline -p terrane-sdk --no-default-features \
         --features tokio,surface-sdk --lib "$test_name" -- --exact \
         > "$report" 2>&1; then
         cat "$report"

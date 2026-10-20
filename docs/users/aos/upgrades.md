@@ -44,9 +44,9 @@ Before changing a host:
 
 ```sh
 apm update --system
-apm rollback --system --image --list
-apm rollback --system --list
-apm upgrade --system --dry-run
+apm image list
+apm config rollback --list
+apm image upgrade --dry-run
 ```
 
 The dry run resolves the selected candidate and reports the plan without
@@ -59,7 +59,7 @@ provider-resolution changes.
 ## Stage an A/B image upgrade
 
 ```sh
-apm upgrade --system
+apm image upgrade
 ```
 
 APM verifies the registry graph and Secure Boot policy, imports the
@@ -83,10 +83,53 @@ Activation modes are:
 | Mode | Behavior |
 | --- | --- |
 | no mode flag | Stage the inactive slot and print a reboot advisory |
-| `--live` | Stage only; like the default, defer the image transition until reboot |
 | `--reboot` | Stage, then request a full reboot |
-| `--kexec` | Rejected for A/B images because kexec cannot change the root slot |
 | `--drain` | Drain workloads before a requested `--reboot` |
+
+Every A/B selection authenticates the running generation record against its
+immutable toplevel metadata, then compares that identity with the candidate.
+Both images must declare the same nonempty `stateVersion` and a canonical
+image-owned native executor store path. AOS currently has no state migration
+runner for an image transition, so a different `stateVersion` is rejected.
+
+Changing the native executor is supported only with the combined
+`--drain --reboot` mode. Before draining or selecting the image, APM scans all
+retained configuration generations and rejects the transition if any native
+ability transaction lacks terminal evidence under the running executor.
+Advisory staging and `--reboot` without `--drain` cannot cross an executor
+boundary.
+
+An A/B installation made before toplevels recorded these two fields has one
+authenticated migration path. The first transition must use `--drain
+--reboot`. APM requires both new immutable fields to be absent, requires the
+legacy image record to name no native executor, and first authenticates that it
+is the image that actually booted from the baked toplevel pointer, root slot,
+and verity hash. It then re-authenticates the record against the immutable
+toplevel, base library, UKI identity, and `os-release`. APM takes the legacy
+state version only from the authenticated `AOS_STATE_VERSION` in that
+`os-release`, requires the candidate to preserve it, checks every retained
+configuration generation for unfinished native transactions, and then records
+that state version durably before staging. It does not invent an executor
+identity for the legacy image. A partial new identity or any disagreement among
+the legacy record, boot identity, immutable metadata, and `os-release` is
+rejected.
+
+For a qualified drained reboot, image `state.json` exposes the durable
+`active_rollout` record with schema `aos.image-rollout/v1`. It binds the exact
+candidate, prior image, and `stateVersion`; its status advances from `staged`
+to `candidate_booted` after early boot authenticates the selected image. Boot
+blessing then requires a strict successful configuration activation. If the
+manifest includes native ability activation, its committed activation proof
+must also name a nonempty native ability transaction.
+
+A healthy candidate moves that same record to `last_rollout` with status
+`succeeded` and clears `active_rollout`. A strict health failure marks the
+active record `health_failed` and requests the next counted reboot. That status
+survives every remaining candidate attempt. After boot counting falls back,
+the prior image must authenticate, re-evaluate, and become authoritative before
+AOS moves the record to `last_rollout` as `health_failed` and clears the active
+transition. Operators can therefore distinguish a qualified success from an
+automatic fallback without treating an intermediate reboot as a final result.
 
 The candidate UKI carries an sd-boot boot-counting suffix. Each unsuccessful
 attempt decrements its counter; exhaustion demotes the candidate and falls back
@@ -138,14 +181,19 @@ addition to systemd state.
 List configuration generations and preview a target:
 
 ```sh
-apm rollback --system --list
-apm rollback --system --generation N --dry-run
+apm config rollback --list
+apm config rollback --generation N --dry-run
 ```
+
+Both `--list` and `--dry-run` authenticate retained manifests, current policy,
+provider routes, credential references, artifacts, and the running module ABI.
+The JSON form emits `aos.retained-activatability/v1` reports with stable reason
+codes. A blocked dry run exits without activating or repairing state.
 
 Apply it:
 
 ```sh
-apm rollback --system --generation N
+apm config rollback --generation N
 ```
 
 Without `--generation`, APM chooses the most recent earlier configuration.
@@ -161,16 +209,22 @@ round trip because each generation retains its `cfgsrc` inputs.
 List and preview the image axis separately:
 
 ```sh
-apm rollback --system --image --list
-apm rollback --system --image --generation N --dry-run
+apm image list
+apm image rollback --generation N --dry-run
 ```
+
+Image reports additionally authenticate the installed UKI, immutable running
+identity, state-format and native-executor boundary, and unfinished rollout
+ownership. The read-only probe does not perform the one-time legacy image-state
+migration; an accepted real rollback performs that migration later while it
+still holds the switch lock.
 
 Select the older image as the durable next boot, optionally rebooting in the
 same operation:
 
 ```sh
-apm rollback --system --image --generation N
-apm rollback --system --image --generation N --reboot
+apm image rollback --generation N
+apm image rollback --generation N --reboot
 ```
 
 The running kernel does not change until reboot. On the selected image's first
@@ -182,9 +236,9 @@ successful default.
 
 ## Interpret configuration activation results
 
-The activation script publishes a transaction-bound record after the pointer
-and `/etc` swap. Its `activation_exit` field has this meaning; the outer `apm`
-command can still report a generic failure from graph orchestration:
+Checked activation publishes a transaction-bound record after the pointer and
+`/etc` swap. Its `activation_exit` field has this meaning; the outer `apm`
+command can still report a generic failure from provider orchestration:
 
 | `activation_exit` | State after the command | Operator action |
 | --- | --- | --- |
@@ -203,20 +257,20 @@ and activation work rather than silently skipping it.
 For controlled staging, select the registry and sysroot package explicitly:
 
 ```sh
-apm install aos --system --registry acme --dry-run
-apm install aos --system --registry acme --yes
+apm image install aos --registry acme --dry-run
+apm image install aos --registry acme --yes
 ```
 
 This accepts exactly one package marked `sysroot = true` and stages its A/B
-image. Ordinary machine-wide packages use a desired file as documented in
-[Manage packages](packages.md#manage-machine-wide-packages).
+image. For ordinary machine-wide packages, use `apm install --system PACKAGE`.
+See [Manage packages](packages.md#install-packages).
 
 ## Keep scopes separate
 
 ```text
 /var/lib/profiles/image             A/B image generations
 /var/lib/profiles/system            configuration generations
-/var/lib/profiles/system-packages   ordinary machine-wide package generations
+/var/lib/profiles/system   ordinary machine-wide package generations
 /var/lib/profiles/per-user/$USER    user package generations
 ```
 
@@ -228,6 +282,6 @@ package rollback does not replace the running kernel or root slot.
 Add `--system` to prune both ordinary machine-wide package generations and
 configuration generations, keeping the latest `N` of each plus each profile's
 current generation. Configuration pruning is serialized with activation and
-releases its `cfg/` and `cfgsrc/` roots; a later `apm gc` can reclaim the now
+releases its `cfg/` and `cfgsrc/` roots; a later `apm gc --system` can reclaim the now
 unreachable store paths. A/B image-generation pruning remains unavailable.
 `aos gc --list-generations` refers to an unrelated Nix profile.

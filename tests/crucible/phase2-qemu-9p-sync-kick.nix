@@ -4,35 +4,23 @@
   qemuPackage ? pkgs.qemu-crucible,
 }: let
   patchDir = ../../pkgs/emulation/qemu-patches;
-  patchName = "0040-crucible-9p-sync-kick.patch";
-  series = import (patchDir + "/_series.nix");
-  prefixPatchFiles =
-    builtins.genList
-    (index: builtins.elemAt series.patchFiles index)
-    39;
-  patchSource = builtins.readFile (patchDir + "/${patchName}");
+  atomicPatch = import (patchDir + "/_atomic-patch.nix");
+  patchSource = builtins.readFile (patchDir + "/${atomicPatch.file}");
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix;
 
   failures =
     lib.optionals (!(hasInfix "diff --git a/hw/virtio/virtio.c" patchSource)) [
-      "${patchName}: generic virtio queue-notify patch surface is absent"
+      "${atomicPatch.file}: generic virtio queue-notify patch surface is absent"
     ]
     ++ lib.optionals (!(hasInfix "vdev->device_id == VIRTIO_ID_9P" patchSource)) [
-      "${patchName}: virtio-9p device selection is absent"
+      "${atomicPatch.file}: virtio-9p device selection is absent"
     ]
     ++ lib.optionals (!(hasInfix "vq->host_notifier_enabled &&" patchSource)) [
-      "${patchName}: host-notifier bypass is absent"
+      "${atomicPatch.file}: host-notifier bypass is absent"
     ]
-    ++ lib.optionals (!(hasInfix "non-sim launch retains its existing notifier behavior" patchSource)) [
-      "${patchName}: non-9p preservation rationale is absent"
-    ]
-    ++ lib.optionals (
-      builtins.length series.patchFiles
-      <= 39
-      || builtins.elemAt series.patchFiles 39 != patchName
-    ) [
-      "${patchName}: 9p synchronous-kick patch is not patch-series entry 40"
+    ++ lib.optionals (!(hasInfix "Every non-sim launch retains its existing notifier" patchSource)) [
+      "${atomicPatch.file}: non-9p preservation rationale is absent"
     ];
 in
   if failures != []
@@ -68,10 +56,6 @@ in
             tar -xf ${qemuPackage.src} -C qemu-source
             cd qemu-source/qemu-${qemuPackage.version}
 
-            for patch in ${builtins.concatStringsSep " " prefixPatchFiles}; do
-              patch --batch --fuzz=0 -p1 < "${patchDir}/$patch"
-            done
-
             extract_notify_function() {
               source="$1"
               destination="$2"
@@ -96,7 +80,7 @@ in
             write_fixture() {
               function_source="$1"
               fixture_source="$2"
-              cat > "$fixture_source.prefix" <<'FIXTURE_PREFIX'
+              cat > "$fixture_source.head" <<'FIXTURE_HEAD'
             #include <stdbool.h>
             #include <stdint.h>
             #include <stdio.h>
@@ -172,7 +156,7 @@ in
                 (void)vdev;
                 (void)started;
             }
-            FIXTURE_PREFIX
+            FIXTURE_HEAD
 
               cat > "$fixture_source.suffix" <<'FIXTURE_SUFFIX'
             int main(int argc, char **argv)
@@ -226,54 +210,54 @@ in
             }
             FIXTURE_SUFFIX
 
-              cat "$fixture_source.prefix" "$function_source" \
+              cat "$fixture_source.head" "$function_source" \
                 "$fixture_source.suffix" > "$fixture_source"
               cc -std=c11 -O2 -Wall -Wextra -Werror -Wno-unused-function \
                 "$fixture_source" -o "$fixture_source.bin"
             }
 
             extract_notify_function hw/virtio/virtio.c \
-              "$TMPDIR/notify-prefix.function.c"
-            write_fixture "$TMPDIR/notify-prefix.function.c" \
-              "$TMPDIR/notify-prefix.c"
+              "$TMPDIR/notify-stock.function.c"
+            write_fixture "$TMPDIR/notify-stock.function.c" \
+              "$TMPDIR/notify-stock.c"
 
-            patch --batch --fuzz=0 -p1 < "${patchDir}/${patchName}"
+            patch --batch --fuzz=0 -p1 < "${patchDir}/${atomicPatch.file}"
             grep -F -q 'vdev->device_id == VIRTIO_ID_9P' hw/virtio/virtio.c
             extract_notify_function hw/virtio/virtio.c \
               "$TMPDIR/notify-patched.function.c"
             write_fixture "$TMPDIR/notify-patched.function.c" \
               "$TMPDIR/notify-patched.c"
 
-            "$TMPDIR/notify-prefix.c.bin" sim 1 9p 1 0 > "$out/prefix-sim-9p.txt"
+            "$TMPDIR/notify-stock.c.bin" sim 1 9p 1 0 > "$out/stock-sim-9p.txt"
             "$TMPDIR/notify-patched.c.bin" sim 1 9p 0 1 > "$out/patched-sim-9p.txt"
-            "$TMPDIR/notify-prefix.c.bin" sim 1 rng 1 0 > "$out/prefix-sim-rng.txt"
+            "$TMPDIR/notify-stock.c.bin" sim 1 rng 1 0 > "$out/stock-sim-rng.txt"
             "$TMPDIR/notify-patched.c.bin" sim 1 rng 1 0 > "$out/patched-sim-rng.txt"
-            "$TMPDIR/notify-prefix.c.bin" sim 1 block 1 0 > "$out/prefix-sim-block.txt"
+            "$TMPDIR/notify-stock.c.bin" sim 1 block 1 0 > "$out/stock-sim-block.txt"
             "$TMPDIR/notify-patched.c.bin" sim 1 block 0 1 > "$out/patched-sim-block.txt"
-            "$TMPDIR/notify-prefix.c.bin" tcg 1 9p 1 0 > "$out/prefix-tcg-9p.txt"
+            "$TMPDIR/notify-stock.c.bin" tcg 1 9p 1 0 > "$out/stock-tcg-9p.txt"
             "$TMPDIR/notify-patched.c.bin" tcg 1 9p 1 0 > "$out/patched-tcg-9p.txt"
-            "$TMPDIR/notify-prefix.c.bin" sim 0 9p 1 0 > "$out/prefix-sim-no-icount-9p.txt"
+            "$TMPDIR/notify-stock.c.bin" sim 0 9p 1 0 > "$out/stock-sim-no-icount-9p.txt"
             "$TMPDIR/notify-patched.c.bin" sim 0 9p 1 0 > "$out/patched-sim-no-icount-9p.txt"
 
-            cmp -s "$out/prefix-sim-9p.txt" "$out/patched-sim-9p.txt" \
-              && fail "patched sim 9p dispatch did not differ from its prefix"
-            cmp -s "$out/prefix-sim-block.txt" "$out/patched-sim-block.txt" \
-              && fail "patched sim block dispatch did not differ from its prefix"
-            diff -u "$out/prefix-sim-rng.txt" "$out/patched-sim-rng.txt"
-            diff -u "$out/prefix-tcg-9p.txt" "$out/patched-tcg-9p.txt"
-            diff -u "$out/prefix-sim-no-icount-9p.txt" "$out/patched-sim-no-icount-9p.txt"
-            grep -Fxq 'notifier_calls=1 handler_calls=0' "$out/prefix-sim-9p.txt"
+            cmp -s "$out/stock-sim-9p.txt" "$out/patched-sim-9p.txt" \
+              && fail "patched sim 9p dispatch did not differ from stock QEMU"
+            cmp -s "$out/stock-sim-block.txt" "$out/patched-sim-block.txt" \
+              && fail "patched sim block dispatch did not differ from stock QEMU"
+            diff -u "$out/stock-sim-rng.txt" "$out/patched-sim-rng.txt"
+            diff -u "$out/stock-tcg-9p.txt" "$out/patched-tcg-9p.txt"
+            diff -u "$out/stock-sim-no-icount-9p.txt" "$out/patched-sim-no-icount-9p.txt"
+            grep -Fxq 'notifier_calls=1 handler_calls=0' "$out/stock-sim-9p.txt"
             grep -Fxq 'notifier_calls=0 handler_calls=1' "$out/patched-sim-9p.txt"
-            grep -Fxq 'notifier_calls=1 handler_calls=0' "$out/prefix-sim-block.txt"
+            grep -Fxq 'notifier_calls=1 handler_calls=0' "$out/stock-sim-block.txt"
             grep -Fxq 'notifier_calls=0 handler_calls=1' "$out/patched-sim-block.txt"
 
             cat > "$out/result" <<'RESULT'
             PASS
             gate=gate:patch-microtests
-            patch=0040-crucible-9p-sync-kick.patch
+            atomic_patch=${atomicPatch.file}
             patched_fixture_exercised=true
             stock_negative_control=true
-            prefix_negative_control=true
+            stock_source_negative_control=true
             patched_exact_source_fixture=true
             sim_icount_9p_kick_synchronous=true
             rng_dispatch_preserved=true

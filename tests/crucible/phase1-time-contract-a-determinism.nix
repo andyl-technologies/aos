@@ -2,21 +2,21 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.timeContractADeterminism",
-  taskIds ? ["T-TIME-8"],
+  taskIds ? [],
   openTaskIds ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  contractA = builtins.readFile ../../crates/crucible-sim/src/contract_a.rs;
-  contractATests = builtins.readFile ../../crates/crucible-sim/tests/contract_a.rs;
-  simGate = builtins.readFile ../../crates/crucible-sim/tests/gate_layer0_determinism.rs;
+  contractA = builtins.readFile ../../crates/crucible/engine/crucible-determinism/src/contract_a.rs;
+  contractATests = builtins.readFile ../../crates/crucible/engine/crucible-determinism/tests/contract_a.rs;
+  simGate = builtins.readFile ../../crates/crucible/engine/crucible-determinism/tests/gate_layer0_determinism.rs;
   model = import ./_crucible-model-source.nix {inherit lib;};
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   shmemLib = import ./_crucible-shmem-source.nix {inherit lib;};
-  pluginDeadline = builtins.readFile ../../crates/crucible-qemu-plugin/src/deadline.rs;
+  pluginDeadline = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/deadline.rs;
   pluginTimeControl = import ./_qemu-plugin-time-control-source.nix {inherit lib;};
-  qemuLaunch = builtins.readFile ../../crates/crucible-qemu/src/launch.rs;
+  qemuLaunch = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-host/src/launch.rs;
   harnessLint = builtins.readFile ./phase1-harness-lint.nix;
   clippyConfig = builtins.readFile ../../crates/clippy.toml;
   timeSpec = builtins.readFile ../../docs/rfcs/0010-crucible/09-virtual-time-icount.md;
@@ -61,56 +61,63 @@
         forbiddenFor source.label source.content hostTimeReadBan
     ) [
       {
-        label = "crates/crucible-sim/src/contract_a.rs";
+        label = "crates/crucible/engine/crucible-determinism/src/contract_a.rs";
         content = contractA;
       }
       {
-        label = "crates/crucible/src/model.rs";
+        label = "crates/crucible/engine/crucible-engine/src/model.rs";
         content = model;
       }
       {
-        label = "crates/crucible/src/scheduler.rs";
+        label = "crates/crucible/engine/crucible-engine/src/scheduler.rs";
         content = scheduler;
       }
       {
-        label = "crates/crucible-shmem/src/lib.rs";
+        label = "crates/crucible/protocol/crucible-qemu-shmem/src/lib.rs";
         content = shmemLib;
       }
       {
-        label = "crates/crucible-qemu-plugin/src/deadline.rs";
+        label = "crates/crucible/qemu/crucible-qemu-plugin/src/deadline.rs";
         content = pluginDeadline;
       }
       {
-        label = "crates/crucible-qemu-plugin/src/time_control.rs";
+        label = "crates/crucible/qemu/crucible-qemu-plugin/src/time_control.rs";
         content = pluginTimeControl;
       }
       {
-        label = "crates/crucible-qemu/src/launch.rs";
+        label = "crates/crucible/qemu/crucible-qemu-host/src/launch.rs";
         content = qemuLaunch;
       }
     ];
 
+  contractALegacyFailures = forbiddenFor "crates/crucible/engine/crucible-determinism/src/contract_a.rs" contractA [
+    {
+      label = "configurable icount shift constructor";
+      needle = "new_with_icount_shift";
+    }
+    {
+      label = "configurable icount shift field";
+      needle = "icount_shift";
+    }
+    {
+      label = "left-shift time projection";
+      needle = "checked_shl";
+    }
+  ];
+
   failures =
-    failuresFor "crates/crucible-sim/src/contract_a.rs" contractA [
+    failuresFor "crates/crucible/engine/crucible-determinism/src/contract_a.rs" contractA [
       {
-        label = "default fixed icount shift";
-        needle = "pub const DEFAULT_CONTRACT_A_ICOUNT_SHIFT";
-      }
-      {
-        label = "maximum shift guard";
-        needle = "pub const MAX_CONTRACT_A_ICOUNT_SHIFT";
-      }
-      {
-        label = "explicit shift constructor";
-        needle = "pub fn new_with_icount_shift";
-      }
-      {
-        label = "config shift getter";
-        needle = "pub fn icount_shift(&self) -> u8";
+        label = "fixed exact tick scale";
+        needle = "pub const CONTRACT_A_TICKS_PER_NS: u64 = 8;";
       }
       {
         label = "time trajectory sample";
         needle = "pub struct TimeTrajectorySample";
+      }
+      {
+        label = "time trajectory retains exact ticks";
+        needle = "pub virtual_time_ticks: u64";
       }
       {
         label = "time fingerprint fields";
@@ -125,8 +132,8 @@
         needle = "pub time_fingerprint: ContractATimeFingerprint";
       }
       {
-        label = "icount-derived projection helper";
-        needle = "fn virtual_time_for_icount";
+        label = "guest nanoseconds are a floor projection";
+        needle = "virtual_time_ticks / CONTRACT_A_TICKS_PER_NS";
       }
       {
         label = "time-only fingerprint helper";
@@ -137,14 +144,18 @@
         needle = "time_fingerprint.write_hash_material(&mut hasher);";
       }
       {
-        label = "overflow rejection";
-        needle = "VirtualTimeOverflow";
+        label = "time fingerprint includes fixed scale";
+        needle = "pub ticks_per_ns: u64";
+      }
+      {
+        label = "time fingerprint includes final exact tick";
+        needle = "pub final_virtual_time_ticks: u64";
       }
     ]
-    ++ failuresFor "crates/crucible-sim/tests/contract_a.rs" contractATests [
+    ++ failuresFor "crates/crucible/engine/crucible-determinism/tests/contract_a.rs" contractATests [
       {
-        label = "pure shift trajectory test";
-        needle = "contract_a_time_trajectory_is_pure_icount_shift_function";
+        label = "exact tick and guest nanosecond trajectory test";
+        needle = "contract_a_time_trajectory_preserves_exact_ticks_and_guest_nanoseconds";
       }
       {
         label = "adversarial host condition test";
@@ -159,11 +170,11 @@
         needle = "contract_a_time_fingerprint_ignores_payload_when_icount_horizon_is_fixed";
       }
       {
-        label = "virtual time overflow test";
-        needle = "contract_a_driver_rejects_unrepresentable_virtual_time";
+        label = "fixed scale fingerprint assertion";
+        needle = "run.time_fingerprint.ticks_per_ns, CONTRACT_A_TICKS_PER_NS";
       }
     ]
-    ++ failuresFor "crates/crucible-sim/tests/gate_layer0_determinism.rs" simGate [
+    ++ failuresFor "crates/crucible/engine/crucible-determinism/tests/gate_layer0_determinism.rs" simGate [
       {
         label = "layer0 gate asserts time trajectory";
         needle = "first.time_trajectory.len()";
@@ -171,6 +182,10 @@
       {
         label = "layer0 gate asserts time fingerprint";
         needle = "first.time_fingerprint.final_virtual_time_ns";
+      }
+      {
+        label = "layer0 gate asserts exact tick fingerprint";
+        needle = "first.time_fingerprint.final_virtual_time_ticks";
       }
     ]
     ++ failuresFor "tests/crucible/phase1-harness-lint.nix" harnessLint [
@@ -209,7 +224,8 @@
         needle = "timeContractADeterminism = import ./phase1-time-contract-a-determinism.nix";
       }
     ]
-    ++ timePathHostTimeFailures;
+    ++ timePathHostTimeFailures
+    ++ contractALegacyFailures;
 in
   if failures != []
   then throw "crucible phase1 Contract A time determinism check failed:\n${builtins.concatStringsSep "\n" failures}"
@@ -263,14 +279,14 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-time-contract-a-determinism-target" \
-              -p crucible-sim \
+              -p crucible-determinism \
               --test contract_a \
               -- --test-threads=1
             cargo test \
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-time-contract-a-determinism-target" \
-              -p crucible-sim \
+              -p crucible-determinism \
               --test gate_layer0_determinism \
               gate_layer0_determinism_reduces_fixed_contract_a_twice \
               -- --test-threads=1
@@ -290,8 +306,8 @@ in
             gate=gate:layer0-determinism
             gate=gate:single-vm-fingerprint
             contract_a_single_node=true
-            time_trajectory=icount_shift_pure_function
-            time_fingerprint_fields=final_icount,final_virtual_time_ns,trajectory_digest,time_derived_fields_digest
+            time_trajectory=exact_ticks_with_guest_ns_floor
+            time_fingerprint_fields=ticks_per_ns,final_icount,final_virtual_time_ticks,final_virtual_time_ns,trajectory_digest,time_derived_fields_digest
             host_adversary=speed-load-scheduling-cores-excluded
             recorded_input_trajectory=boot-network-timer
             host_time_reads_on_time_path=false

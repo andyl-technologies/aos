@@ -12,13 +12,13 @@
   temporalGraph = import ./_crucible-model-source.nix {inherit lib;};
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   bindingRuntime = builtins.concatStringsSep "\n" (map builtins.readFile [
-    ../../crates/crucible/src/model/fault_signal/binding_runtime.rs
-    ../../crates/crucible/src/model/fault_signal/binding_runtime/runtime_api.rs
-    ../../crates/crucible/src/model/fault_signal/binding_runtime/search_helpers.rs
+    ../../crates/crucible/engine/crucible-engine/src/model/fault_signal/binding_runtime.rs
+    ../../crates/crucible/engine/crucible-engine/src/model/fault_signal/binding_runtime/runtime_api.rs
+    ../../crates/crucible/engine/crucible-engine/src/model/fault_signal/binding_runtime/search_helpers.rs
   ]);
-  bindingRuntimeTest = builtins.readFile ../../crates/crucible/src/model/fault_signal/binding_runtime_test.rs;
-  modelCanonical = builtins.readFile ../../crates/crucible/src/model/canonical.rs;
-  stateSpaceGateTest = builtins.readFile ../../crates/crucible/tests/gate_state_space_search.rs;
+  bindingRuntimeTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/src/model/fault_signal/binding_runtime_test.rs;
+  modelCanonical = builtins.readFile ../../crates/crucible/engine/crucible-engine/src/model/canonical.rs;
+  stateSpaceGateTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/gate_state_space_search.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -63,6 +63,12 @@
     "    stateSpaceSearch = greenBeforeAdvance {"
     "    gates = {";
 
+  searchFrontierChoicesBlock =
+    sliceFromUntil
+    temporalGraph
+    "impl SearchFrontierChoices {"
+    "/// One search choice and the causal decision sequence that realizes it.";
+
   forbiddenFailuresFor = fileLabel: content: forbidden:
     lib.concatMap (
       requirement:
@@ -79,7 +85,7 @@
         needle = "Completed by `checks.crucible.phase6.stateSpaceSearch`";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" temporalGraph [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" temporalGraph [
       {
         label = "search API";
         needle = "pub fn search(";
@@ -101,12 +107,16 @@
         needle = "fn is_genuine_search_frontier_decision(decision: &Decision) -> bool";
       }
       {
-        label = "delivery order excluded from search";
-        needle = "Decision::DeliveryOrder(_) => false";
+        label = "typed campaign selection frontier taxonomy";
+        needle = "matches!(decision, Decision::Selection(selection) if selection.is_campaign_branch())";
       }
       {
-        label = "non-search decisions excluded";
-        needle = "Decision::Preemption(_) | Decision::AppRandom(_) => false";
+        label = "typed campaign selection causal sequence";
+        needle = "[decision @ Decision::Selection(selection), causal @ ..]";
+      }
+      {
+        label = "typed campaign selection causal decision taxonomy";
+        needle = "Decision::RngDraw(_) | Decision::Override(_) | Decision::Preemption(_)";
       }
       {
         label = "search result reports realized frontier";
@@ -141,17 +151,13 @@
         needle = "pub const fn with_budget";
       }
     ]
-    ++ failuresFor "crates/crucible/src/scheduler.rs" scheduler [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/scheduler.rs" scheduler [
       {
         label = "materialized scheduler pending frames";
         needle = "state.pending_frames = pending_frames_from_scheduled_events(&self.pending_events);";
       }
-      {
-        label = "retired scheduler fault frontier is empty";
-        needle = "state.search_frontier = SearchFrontierChoices::empty();";
-      }
     ]
-    ++ failuresFor "crates/crucible/src/model/fault_signal/binding_runtime.rs" bindingRuntime [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model/fault_signal/binding_runtime.rs" bindingRuntime [
       {
         label = "typed binding policy dispatch";
         needle = "fn apply_search_policy(";
@@ -181,13 +187,13 @@
         needle = "pub fn verify_search_overrides_consumed";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model/fault_signal/binding_runtime_test.rs" bindingRuntimeTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model/fault_signal/binding_runtime_test.rs" bindingRuntimeTest [
       {
         label = "typed finite choice replay test";
         needle = "finite_binding_search_choices_replay_once_and_reject_unused_overrides";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model/canonical.rs" modelCanonical [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model/canonical.rs" modelCanonical [
       {
         label = "canonical scheduler search frontier count";
         needle = "hasher.write_u64(state.search_frontier.choices().len() as u64);";
@@ -197,7 +203,7 @@
         needle = "for choice in state.search_frontier.choices()";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/gate_state_space_search.rs" stateSpaceGateTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/gate_state_space_search.rs" stateSpaceGateTest [
       {
         label = "frontier dedup gate";
         needle = "gate_state_space_search_expands_genuine_decisions_and_dedups_by_content_address";
@@ -220,7 +226,7 @@
       }
       {
         label = "scheduler-captured choices";
-        needle = "SearchFrontierChoices::from_decisions";
+        needle = "SearchFrontierChoices::from_decision_sequences";
       }
       {
         label = "non-genuine delivery candidate";
@@ -235,8 +241,12 @@
         needle = "Decision::RngDraw";
       }
       {
-        label = "override frontier decision";
-        needle = "Decision::Override";
+        label = "typed campaign branch selection";
+        needle = "Selection::new_campaign_branch";
+      }
+      {
+        label = "typed selection frontier decision";
+        needle = "Decision::Selection(SelectionDecision::new(&selection))";
       }
       {
         label = "duplicate child input";
@@ -291,13 +301,23 @@
         needle = "child.already_recorded";
       }
     ]
-    ++ forbiddenFailuresFor "crates/crucible/src/model.rs" temporalGraph [
+    ++ forbiddenFailuresFor "crates/crucible/engine/crucible-engine/src/model.rs" temporalGraph [
       {
         label = "pending frames as search branches";
         needle = "fn delivery_tie_decisions_from_pending_frames";
       }
     ]
-    ++ forbiddenFailuresFor "crates/crucible/tests/gate_state_space_search.rs" stateSpaceGateTest [
+    ++ forbiddenFailuresFor "crates/crucible/engine/crucible-engine/src/model.rs SearchFrontierChoices impl" searchFrontierChoicesBlock [
+      {
+        label = "removed raw-decision frontier constructor";
+        needle = "pub fn from_decisions";
+      }
+    ]
+    ++ forbiddenFailuresFor "crates/crucible/engine/crucible-engine/tests/gate_state_space_search.rs" stateSpaceGateTest [
+      {
+        label = "removed raw-decision frontier constructor use";
+        needle = "SearchFrontierChoices::from_decisions";
+      }
       {
         label = "ignored red placeholder";
         needle = "#[ignore";
@@ -373,12 +393,16 @@ in
       pname = "crucible-phase6-state-space-search";
       version = "0";
       src = crucibleSrc;
+      LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
 
       buildDeps = [
         pkgs.coreutils
+        pkgs.pkg-config
         pkgs.rust
         pkgs.sed
+        pkgs.sqlite
       ];
+      runtimeDeps = [pkgs.sqlite];
 
       DEPENDENCIES = builtins.concatStringsSep ":" dependencies;
 
@@ -422,7 +446,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-state-space-search-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible \
+              -p crucible-engine \
               --test gate_state_space_search \
               -- --test-threads=1
             cargo test \
@@ -430,7 +454,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-state-space-search-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible \
+              -p crucible-engine \
               --lib finite_binding_search_choices_replay_once_and_reject_unused_overrides \
               -- --test-threads=1
           '';
@@ -446,7 +470,7 @@ in
             tasks=${taskList}
             gate=gate:state-space-search
             search=frontier-realized,content-address-dedup,budget-materialized
-            rust_test=crucible::gate_state_space_search
+            rust_test=crucible_engine::gate_state_space_search
             RESULT
           '';
         }

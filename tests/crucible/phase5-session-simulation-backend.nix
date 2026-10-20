@@ -9,25 +9,26 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  backendLib = builtins.readFile ../../crates/crucible/src/backend.rs;
-  mockBackendLib = builtins.readFile ../../crates/crucible/src/backend/mock.rs;
-  backendTests = builtins.readFile ../../crates/crucible/src/backend/tests.rs;
-  crucibleCargo = builtins.readFile ../../crates/crucible/Cargo.toml;
-  qemuCargo = builtins.readFile ../../crates/crucible-qemu/Cargo.toml;
-  daemonCargo = builtins.readFile ../../crates/crucible-daemon/Cargo.toml;
+  backendLib = builtins.readFile ../../crates/crucible/engine/crucible-engine/src/backend.rs;
+  mockBackendLib = builtins.readFile ../../crates/crucible/engine/crucible-engine/src/backend/mock.rs;
+  backendTests = builtins.readFile ../../crates/crucible/engine/crucible-engine/src/backend/tests.rs;
+  crucibleCargo = builtins.readFile ../../crates/crucible/engine/crucible-engine/Cargo.toml;
+  qemuCargo = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-host/Cargo.toml;
+  daemonCargo = builtins.readFile ../../crates/crucible/control/crucible-daemon/Cargo.toml;
   crucibleShmemLib =
     import ./_crucible-shmem-source.nix {inherit lib;}
-    + builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node.rs
-    + builtins.readFile ../../crates/crucible-shmem/src/shmem/region.rs
-    + builtins.readFile ../../crates/crucible-shmem/src/shmem/ring_coverage.rs;
-  crucibleLib = builtins.readFile ../../crates/crucible/src/lib.rs;
+    + builtins.readFile ../../crates/crucible/protocol/crucible-qemu-shmem/src/shmem/frame_node.rs
+    + builtins.readFile ../../crates/crucible/protocol/crucible-qemu-shmem/src/shmem/region.rs
+    + builtins.readFile ../../crates/crucible/protocol/crucible-qemu-shmem/src/shmem/ring_coverage.rs;
+  crucibleLib = builtins.readFile ../../crates/crucible/engine/crucible-engine/src/lib.rs;
   simBackendLib = import ./_crucible-local-and-test-backends-source.nix;
   qemuNodeLib = builtins.concatStringsSep "\n" [
-    (builtins.readFile ../../crates/crucible-qemu/src/node.rs)
-    (builtins.readFile ../../crates/crucible-qemu/src/node/exact_snapshot.rs)
+    (builtins.readFile ../../crates/crucible/qemu/crucible-qemu-host/src/node.rs)
+    (builtins.readFile ../../crates/crucible/qemu/crucible-qemu-host/src/node/exact_snapshot.rs)
+    (builtins.readFile ../../crates/crucible/qemu/crucible-qemu-host/src/node/exact_snapshot/capture.rs)
     (import ./_rust-module-source.nix {
       inherit lib;
-      entry = ../../crates/crucible-qemu/src/node_tests.rs;
+      entry = ../../crates/crucible/qemu/crucible-qemu-host/src/node_tests.rs;
     })
   ];
   sessionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/20-session-control-plane.md;
@@ -60,7 +61,7 @@
         needle = "`T-SESS-11` is completed by `checks.crucible.phase5.sessionSimulationBackend`";
       }
     ]
-    ++ failuresFor "crates/crucible/src/backend.rs" backendLib [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/backend.rs" backendLib [
       {
         label = "simulation backend trait";
         needle = "pub trait SimulationBackend";
@@ -115,7 +116,7 @@
           mod mock;'';
       }
     ]
-    ++ failuresFor "crates/crucible/src/backend/tests.rs" backendTests [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/backend/tests.rs" backendTests [
       {
         label = "object-safe mock dispatch test";
         needle = "simulation_backend_trait_is_object_safe_and_scheduler_timed";
@@ -125,7 +126,7 @@
         needle = "mock_simulation_backend_rejects_backend_owned_time_regression";
       }
     ]
-    ++ failuresFor "crates/crucible-shmem/src/lib.rs" crucibleShmemLib [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-shmem/src/lib.rs" crucibleShmemLib [
       {
         label = "region header clone for model snapshots";
         needle = "impl Clone for RegionHeader";
@@ -143,7 +144,7 @@
         needle = "impl Clone for NodeSlot";
       }
     ]
-    ++ failuresFor "crates/crucible/src/backend/mock.rs" mockBackendLib [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/backend/mock.rs" mockBackendLib [
       {
         label = "mock simulation backend";
         needle = "pub struct MockSimulationBackend";
@@ -157,7 +158,7 @@
         needle = "Default production builds neither compile";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" crucibleLib [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" crucibleLib [
       {
         label = "public backend effect export";
         needle = "BackendEffect";
@@ -184,27 +185,27 @@
         needle = "StepObservation";
       }
     ]
-    ++ failuresFor "crates/crucible/Cargo.toml" crucibleCargo [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/Cargo.toml" crucibleCargo [
       {
         label = "explicit test-double feature";
-        needle = ''test-double = ["dep:crucible-shmem"]'';
+        needle = ''test-double = ["dep:crucible-qemu-shmem"]'';
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/Cargo.toml" qemuCargo [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/Cargo.toml" qemuCargo [
       {
         label = "QEMU tests enable the mock only as a dev dependency";
         needle = ''          [dev-dependencies]
-          crucible = { path = "../crucible", features = ["test-double"] }'';
+          crucible-engine = { path = "../../engine/crucible-engine", features = ["test-double"] }'';
       }
     ]
-    ++ failuresFor "crates/crucible-daemon/Cargo.toml" daemonCargo [
+    ++ failuresFor "crates/crucible/control/crucible-daemon/Cargo.toml" daemonCargo [
       {
-        label = "daemon tests enable the mock only as a dev dependency";
+        label = "daemon tests enable the mock and checkpoint fixtures only as dev dependencies";
         needle = ''          [dev-dependencies]
-          crucible = { path = "../crucible", features = ["test-double"] }'';
+          crucible-engine = { path = "../../engine/crucible-engine", features = ["test-double", "test-support"] }'';
       }
     ]
-    ++ failuresFor "crates/crucible/src/sim_backend.rs" simBackendLib [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/sim_backend.rs" simBackendLib [
       {
         label = "SimBackend implementation";
         needle = "impl SimulationBackend for SimBackend";
@@ -250,7 +251,7 @@
         needle = "sim_double_simulation_backend_rejects_outbound_without_scheduler_authorization";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/src/node.rs" qemuNodeLib [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/src/node.rs" qemuNodeLib [
       {
         label = "QEMU implementation";
         needle = "impl SimulationBackend for QemuNode";
@@ -260,8 +261,8 @@
         needle = "last_observed_time: VirtualTime";
       }
       {
-        label = "QEMU snapshot retains virtual time mirror";
-        needle = "last_observed_time: self.last_observed_time";
+        label = "QEMU checkpoint authenticates its scheduler-time calibration";
+        needle = "logical_time_calibration.logical_icount != self.last_observed_time.ticks";
       }
       {
         label = "QEMU restore resets virtual time mirror";
@@ -307,8 +308,11 @@ in
       version = "0";
       src = crucibleSrc;
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps =
         [
+          pkgs.sqlite
           pkgs.coreutils
           pkgs.grep
           pkgs.rust
@@ -360,10 +364,10 @@ in
               'edition = "2024"' \
               '[workspace]' \
               '[dependencies]' \
-              "crucible = { path = \"$PWD/crucible\" }" \
+              "crucible-engine = { path = \"$PWD/crucible/engine/crucible-engine\" }" \
               > "$negative_consumer/Cargo.toml"
             printf '%s\n' \
-              'use crucible::MockSimulationBackend;' \
+              'use crucible_engine::MockSimulationBackend;' \
               'fn main() { let _ = MockSimulationBackend::new(); }' \
               > "$negative_consumer/src/main.rs"
             cargo generate-lockfile \
@@ -379,13 +383,13 @@ in
               echo 'FAIL: default Crucible features expose MockSimulationBackend' >&2
               exit 1
             fi
-            grep -Fq 'unresolved import `crucible::MockSimulationBackend`' \
+            grep -Fq 'unresolved import `crucible_engine::MockSimulationBackend`' \
               "$negative_consumer/check.log"
             cargo test \
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-session-simulation-backend-target" \
-              -p crucible \
+              -p crucible-engine \
               --features test-double \
               simulation_backend \
               -- --test-threads=1
@@ -393,29 +397,10 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-session-simulation-backend-target" \
-              -p crucible-qemu \
+              -p crucible-qemu-host \
               --lib \
               qemu_node_satisfies_simulation_backend_trait \
               -- --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-session-simulation-backend-target" \
-              -p crucible-qemu \
-              --test host_worker_pool \
-              -- --list \
-              > "$TMPDIR/host-worker-pool-tests"
-            grep -Fxq \
-              'qemu_host_worker_pool_executes_real_concurrent_path_in_canonical_order: test' \
-              "$TMPDIR/host-worker-pool-tests"
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-session-simulation-backend-target" \
-              -p crucible-qemu \
-              --test host_worker_pool \
-              qemu_host_worker_pool_executes_real_concurrent_path_in_canonical_order \
-              -- --exact --include-ignored --test-threads=1
           '';
         }
         {

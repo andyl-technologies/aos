@@ -8,15 +8,15 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
-  pluginVcpu = builtins.readFile ../../crates/crucible-qemu-plugin/src/vcpu_introspection.rs;
-  pluginRoundRobin = builtins.readFile ../../crates/crucible-qemu-plugin/src/round_robin.rs;
-  pluginAbi = builtins.readFile ../../crates/crucible-qemu-plugin/src/abi.rs;
+  pluginLib = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/lib.rs;
+  pluginVcpu = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/vcpu_introspection.rs;
+  pluginRoundRobin = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/round_robin.rs;
+  pluginAbi = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/abi.rs;
   pluginAbiTests = builtins.concatStringsSep "\n" [
-    (builtins.readFile ../../crates/crucible-qemu-plugin/src/abi/tests.rs)
-    (builtins.readFile ../../crates/crucible-qemu-plugin/src/abi/tests/capabilities.rs)
+    (builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/abi/tests.rs)
+    (builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/abi/tests/capabilities.rs)
   ];
-  pluginInertness = builtins.readFile ../../crates/crucible-qemu-plugin/src/inertness.rs;
+  pluginInertness = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/inertness.rs;
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
   patchSpec = builtins.readFile ../../docs/rfcs/0010-crucible/11-qemu-patches.md;
   qemuSpec = builtins.readFile ../../docs/rfcs/0010-crucible/10-qemu-integration.md;
@@ -70,7 +70,7 @@
         needle = "reading only `first_cpu` is a defect";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/lib.rs" pluginLib [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/lib.rs" pluginLib [
       {
         label = "vCPU introspection module exported";
         needle = "pub mod vcpu_introspection;";
@@ -84,7 +84,7 @@
         needle = "`vcpu_introspection` owns side-effect-free per-vCPU register and RR cursor";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/vcpu_introspection.rs" pluginVcpu [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/vcpu_introspection.rs" pluginVcpu [
       {
         label = "register symbol";
         needle = "QEMU_PLUGIN_READ_VCPU_REGS_SYMBOL";
@@ -92,10 +92,6 @@
       {
         label = "cursor symbol";
         needle = "QEMU_PLUGIN_RR_CURSOR_SYMBOL";
-      }
-      {
-        label = "compat register-list symbol";
-        needle = "QEMU_PLUGIN_CRUCIBLE_GET_VCPU_REGISTERS_SYMBOL";
       }
       {
         label = "register read function type";
@@ -154,7 +150,7 @@
         needle = "vcpu_introspection_register_digest_is_stable_and_vcpu_qualified";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/round_robin.rs" pluginRoundRobin [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/round_robin.rs" pluginRoundRobin [
       {
         label = "RR switch quantum accessor";
         needle = "pub const fn rr_switch_quantum";
@@ -164,14 +160,14 @@
         needle = "pub const fn cursor_position";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/abi.rs" pluginAbi [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/abi.rs" pluginAbi [
       {
-        label = "vCPU introspection install scaffold";
-        needle = "pub fn install_required_vcpu_introspection_scaffold";
+        label = "vCPU introspection admission";
+        needle = "PluginVcpuIntrospector::require";
       }
       {
-        label = "vCPU introspection install from qemu info";
-        needle = "pub fn install_required_vcpu_introspection_scaffold_from_qemu_info";
+        label = "vCPU introspection runtime symbols";
+        needle = "read_vcpu_regs: Option<QemuReadVcpuRegsFn>";
       }
       {
         label = "register resolver";
@@ -186,13 +182,21 @@
         needle = "VcpuIntrospectionCapability";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/abi/tests.rs" pluginAbiTests [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/abi/tests.rs" pluginAbiTests [
       {
         label = "ABI vCPU introspection test";
-        needle = "abi_install_requires_vcpu_introspection_symbols";
+        needle = "runtime_install_rejects_each_missing_capability_family";
+      }
+      {
+        label = "ABI missing register reader rejection";
+        needle = "symbols.read_vcpu_regs = None;";
+      }
+      {
+        label = "ABI missing round-robin cursor rejection";
+        needle = "symbols.read_rr_cursor = None;";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/inertness.rs" pluginInertness [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/inertness.rs" pluginInertness [
       {
         label = "register-read inertness count";
         needle = "vcpu_register_reads";
@@ -217,7 +221,10 @@ in
       version = "0";
       src = crucibleSrc;
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.rust
         pkgs.sed
       ];
@@ -330,7 +337,7 @@ in
             rr_cursor=current-vcpu-position-and-quantum
             side_effects=S-and-T-neutral-reads
             fingerprint_input=N-vCPU-registers-plus-RR-cursor
-            protocol_snapshot=crucible-protocol::PluginNvcpuFingerprintSnapshot
+            protocol_snapshot=crucible_qemu_protocol::PluginNvcpuFingerprintSnapshot
             RESULT
           '';
         }

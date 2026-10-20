@@ -1,9 +1,9 @@
 ##! fish — User-friendly interactive shell
 {
+  lib,
   mkDerivation,
   fetchurl,
   fetchCargoDeps,
-  lib,
   stdenv,
   buildPackages,
   rust,
@@ -23,13 +23,15 @@
 }: let
   version = "4.9.2";
 
+  isLinux = stdenv.hostPlatform.isLinux;
+  isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
   isLinuxCross = stdenv.isCross && stdenv.hostPlatform.isLinux;
   nativeCargoTarget = lib.toUpper (builtins.replaceStrings ["-"] ["_"] stdenv.buildPlatform.config);
   rustForBuild =
-    if isLinuxCross
+    if stdenv.isCross
     then rust.passthru.buildTool
     else rust;
-  crossRustCmakeFlags = lib.optionalString isLinuxCross (
+  crossRustCmakeFlags = lib.optionalString stdenv.isCross (
     lib.concatMapStrings (flag: " " + flag) [
       "-DRust_COMPILER=${rustForBuild}/bin/rustc"
       "-DRust_CARGO=${rustForBuild}/bin/cargo"
@@ -47,25 +49,94 @@
   };
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "fish";
-    inherit version src;
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Fish prints the selected field.";
+        "files" = {};
+        "input" = "A Fish program splitting a colon-delimited string.";
+        "operation" = "Evaluate the program and select the second field.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/fish"
+              "-c"
+              "string split : alpha:beta:gamma | string match beta"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "beta\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Fish rejects the syntax error with status 127.";
+        "files" = {};
+        "input" = "A Fish program with an unterminated command substitution.";
+        "operation" = "Parse the malformed Fish program without executing it.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/fish"
+              "-n"
+              "-c"
+              "echo (string upper broken"
+            ];
+            "exit_code" = 127;
+            "observes_rejection" = true;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
+    # Fish removes deprecated interfaces within a major release series.
+    # https://fishshell.com/docs/current/relnotes.html
+    version = "=${version}";
+    inherit src;
 
     buildDeps =
-      [rust cmake ninja gettext pkg-config python3]
+      [
+        (
+          if isDarwinCross
+          then rustForBuild
+          else rust
+        )
+        cmake
+        ninja
+        gettext
+        pkg-config
+        python3
+      ]
       ++ lib.optionals isLinuxCross [rustForBuild];
-    runtimeDeps = [
-      pcre2
-      ncurses
-      coreutils
-      grep
-      sed
-      gawk
-      gettext
-      procps-ng
-      getent
-    ];
+    runtimeDeps =
+      [
+        pcre2
+        ncurses
+        coreutils
+        grep
+        sed
+        gawk
+        gettext
+        getent
+      ]
+      ++ lib.optionals isLinux [procps-ng];
     propagatedDeps = [];
-    disallowedReferences = [cargoDeps rust];
+    disallowedReferences = [cargoDeps] ++ lib.optionals (!isDarwinCross) [rust];
 
     phases = [
       {
@@ -80,7 +151,9 @@ in
         script = ''
           sed -i "s|/usr/bin/e|${coreutils}/bin/e|" src/highlight/highlight.rs
           sed -i "s|/usr/bin|${coreutils}/bin|" tests/checks/vars_as_commands.fish
-          sed -i "s|ps -o|${procps-ng}/bin/ps -o|" tests/checks/jobs.fish
+          ${lib.optionalString isLinux ''
+            sed -i "s|ps -o|${procps-ng}/bin/ps -o|" tests/checks/jobs.fish
+          ''}
 
           sed -i "s|command grep|command ${grep}/bin/grep|g" share/functions/grep.fish
           for file in share/functions/*.fish share/completions/*.fish; do
@@ -93,6 +166,17 @@ in
 
           sed -i "1s|^#!.*|#!$CONFIG_SHELL|" build_tools/git_version_gen.sh
           sed -i "1s|^#!.*|#!${python3}/bin/python3|" tests/test_driver.py
+
+          # Installed binaries cannot reuse a sandbox source or build tree.
+          # Keep runtime detection outside the installed layout without
+          # changing the paths used by Cargo's compile-time asset embedding.
+          sed -i \
+            's|env!("FISH_RESOLVED_BUILD_DIR")|concat!(env!("PREFIX"), "/share/fish/.build-tree")|' \
+            src/common.rs
+          sed -i \
+            -e '/^use fish_build_helper::workspace_root;$/d' \
+            -e 's|let workspace_root = workspace_root();|let packaged_source_root = Path::new(PREFIX).join("share/fish/.source-tree");\n        let workspace_root = packaged_source_root.as_path();|' \
+            src/env/config_paths.rs
         '';
       }
       {
@@ -127,7 +211,7 @@ in
           offline = true
           EOF
 
-          ${lib.optionalString isLinuxCross ''
+          ${lib.optionalString stdenv.isCross ''
             # Cargo runs build scripts on the builder. Their linker must not
             # inherit the target compiler's headers, libraries, or hardening.
             mkdir -p .aos-build-tools

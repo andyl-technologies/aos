@@ -42,7 +42,7 @@ DNS, trust anchors, store). Two candidate mechanisms are rejected:
 **Recommendation:** the graph compiler **writes unit files to
 `/run/systemd/system/`, calls `daemon-reload`, then starts `aos-config.target`**
 — exactly the capability set the `aos-systemd` client already exposes
-(`crates/aos-systemd/src/client.rs`: `start_unit`/`reload`(=daemon-reload)/
+(`crates/shared/aos-systemd-client/src/client.rs`: `start_unit`/`reload`(=daemon-reload)/
 `reset_failed_unit`/`list_units_by_patterns`). `/run/systemd/system` outranks
 `/etc` and `/usr`, is tmpfs (wiped every boot, re-derived from gen-0 + the
 manifest), and is **not** part of the composefs `/etc` overlay — so orchestration
@@ -80,9 +80,9 @@ sandboxing, slices) is image-baked and measured.
 failure-isolated); `┄▶` = `After=` only.
 
 ```text
-[initrd]  aos-metadata-detect ═▶ aos-metadata-fetch ═▶ aos-metadata-authorize
-          ═▶ aos-storage-plan-render ═▶ systemd-repart ═▶ aos-var-crypt/mount-var
-          ═▶ nix-overlay-setup ═▶ aos-seed-profiles (gen-0) ═▶ etc-overlay-setup ═▶ switch_root
+[initrd]  aos-ability-initrd-controller executes the checked resolved stage:
+          metadata detection/acquisition/authorization ═▶ storage-plan evaluation
+          ═▶ storage effects ═▶ persistent-substrate preparation ═▶ switch_root
 
 [stage 2] networkd/resolved (gen-0 /etc) ┄▶ network-online.target
    │
@@ -118,6 +118,10 @@ failure-isolated); `┄▶` = `After=` only.
    ▼   with After=firewall.service rendered from the manifest)
  multi-user.target
 ```
+
+The initrd steps are typed operations dispatched to the selected package-owned
+providers. They are not separately authored service units; the resolved stage
+is the single source for their interfaces, bindings, order, and outputs.
 
 The pipeline has three zones: a **failure-isolated, retryable pre-commit wing**
 (parallel fetch + per-package render), the **single atomic commit**
@@ -162,8 +166,8 @@ of the degraded one.)
 genuine substrate loss — never a single package — can pull the system out of
 multi-user:
 
-- authenticated `host.nix` provisioning projection invalid, or substrate broken in initrd
-  (repart/cryptsetup/mount-var, hard edges) → cannot
+- complete authenticated initrd configuration invalid, or substrate broken in
+  initrd (repart/cryptsetup/mount-var, hard edges) → cannot
   reach `initrd-fs.target` → **`emergency.target`**;
 - stage-2 structural failure (`/etc` swap indeterminate, `EX_SWAP=4`) →
   **`rescue.target`**.
@@ -249,7 +253,7 @@ re-eval for same-ABI rollback.
   `aos-install-packages.service` (`:385-406`) with `aos-eval.service`
   (best-effort, hardened scope) + `aos-graph-compile.service` + `aos-activate.service`;
   keep `aos-preset.service` `After=aos-activate.service`.
-- **`crates/aos-package/`** — the graph compiler: a new module (sibling to
+- **`crates/aos/packages/aos-package-manager/`** — the graph compiler: a new module (sibling to
   `exposed_units.rs`/`config_artifact.rs`) that consumes `manifest.json` +
   `graph.json`, writes `/run/systemd/system/` instance dropins + `.wants`, and
   drives the chain via the existing `aos-systemd` client. New `apm` subverbs

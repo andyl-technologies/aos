@@ -12,32 +12,34 @@
 ##!
 ##! Auto-registers as `systems.server-secureboot`.
 {
+  config,
   lib,
   pkgs,
+  packageModulesAvailable ? false,
   ...
 }: {
-  imports = [./server.nix];
-
-  # This is a test fixture, not the universal production image.
-  aos.roles.server.enable = true;
+  imports = [./server.nix] ++ lib.optionals (!packageModulesAvailable) [./_native-policy/secure-boot.nix];
+  aos.activation.stages.host.configuration = [
+    (builtins.path {
+      path = ./_native-policy/secure-boot.nix;
+      name = "aos-secure-boot-policy.nix";
+    })
+  ];
+  aos.activation.stages.initrd.configuration = [
+    (builtins.path {
+      path = ./_native-policy/secure-boot.nix;
+      name = "aos-secure-boot-policy.nix";
+    })
+  ];
 
   # Signed normal and A/B recovery UKIs must coexist with the inactive-copy
-  # publication transaction have required up to 528 MiB. Earlier complete
-  # compressed fixtures reached 787 MiB; keep both allowances local to this test.
+  # publication transaction. Keep this test fixture's larger firmware storage
+  # contract scoped away from the production server image.
   aos.image.budgets = {
-    # AArch64 uses 184 MiB normal and 117 MiB recovery UKIs; retaining both
-    # recovery copies through an update requires up to 750 MiB on the ESP.
-    maxEspMiB =
+    maxFirmwarePartitionMiB =
       if pkgs.stdenv.hostPlatform.constraints.cpu == "aarch64"
       then 768
       else 544;
-    maxDownloadMiB = 800;
-    # Converted VHDs reach 885 MiB on x86_64 and 1029 MiB on AArch64,
-    # including the lockdown fixture's signed recovery payload.
-    maxConvertedDownloadMiB =
-      if pkgs.stdenv.hostPlatform.constraints.cpu == "aarch64"
-      then 1056
-      else 896;
   };
   aos.image.allowTestArtifacts = true;
 
@@ -46,10 +48,9 @@
   # system, so re-bundle the guest agent: the fleet harness activates it on
   # image-boot machines, which requires the payload to be present in the image
   # (lib/testing/fleet.nix).
-  aos.packages.aos-test-agent.bundle = true;
+  aos.packages.aos-test-agent.bundle = lib.mkIf ((config.aos.boot.stage or "host") == "host") true;
 
   aos.boot.secureBoot = {
-    enable = true;
     # TEST keys only — see pkgs/boot/secure-boot-test-keys.nix. db.key
     # signs the UKI + sd-boot; the .auth blobs are enrolled guest-side.
     # (For a test fixture it is acceptable that the keygen closure — incl.

@@ -1,0 +1,15 @@
+[package]
+name = "aos-linux-project-quota"
+description = "Pinned ext4 project-quota installation, verification, and release"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+libc = { workspace = true }
+rustix = { workspace = true }
+thiserror = { workspace = true }

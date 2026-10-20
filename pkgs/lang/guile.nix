@@ -1,5 +1,6 @@
 ##! guile — GNU extension language implementation
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -15,15 +16,70 @@
   libxcrypt,
   readline,
   ncurses,
-  lib,
   stdenv,
   buildPackages,
 }: let
   version = "3.0.11";
+  isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      role = "public-package";
+    };
     pname = "guile";
-    inherit version;
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Guile prints the computed value.";
+        "files" = {};
+        "input" = "A Scheme expression mapping and summing a list.";
+        "operation" = "Evaluate the expression with Guile.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/guile"
+              "-c"
+              "(display (apply + (map (lambda (x) (* x x)) '(1 2 3 4)))) (newline)"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "30\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Guile rejects the syntax error with status 1.";
+        "files" = {};
+        "input" = "A Scheme expression with an unterminated list.";
+        "operation" = "Parse the malformed expression.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/guile"
+              "-c"
+              "(display (+ 1 2)"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
+    # Guile preserves API/ABI within its major.minor effective-version series.
+    # https://www.gnu.org/s/guile/manual/guile.html#Parallel-Installations
+    version = "~${version}";
 
     src = fetchurl {
       urls = ["https://ftp.gnu.org/gnu/guile/guile-${version}.tar.xz"];
@@ -33,7 +89,7 @@ in
     # Cross builds use the matching native Guile to compile Scheme sources.
     buildDeps =
       [gnumake pkg-config gawk patch buildPackages.glibc-locales]
-      ++ lib.optionals (stdenv.isCross && stdenv.hostPlatform.isLinux) [buildPackages.guile];
+      ++ lib.optional stdenv.isCross buildPackages.guile;
     # Linux cross GC exposes libatomic_ops in its link interface. Guile
     # links it directly, so retain its runtime path through reference scrubbing.
     runtimeDeps =
@@ -99,50 +155,53 @@ in
       {
         name = "check";
         script =
-          lib.optionalString (stdenv.isCross && stdenv.hostPlatform.isLinux) ''
-            # Build helpers select native Guile while cross-compiling. Runtime
-            # checks must instead load the new target interpreter and bytecode.
-            for helper in meta/guile meta/uninstalled-env meta/build-env; do
-              cp "$helper" "$helper.for-build"
-              sed -i 's/if test "yes" = "no"/if test "no" = "no"/g' "$helper"
-            done
-          ''
-          + lib.optionalString (stdenv.isCross && stdenv.hostPlatform.system == "aarch64-linux") ''
-            # QEMU user mode deliberately ignores memory resource limits.
-            # The resource-limits package check runs these unchanged under a
-            # target kernel; running them here allocates without bound. Its
-            # forked signal-delivery check also requires target-kernel signal
-            # semantics that user-mode emulation does not preserve.
-            printf '\nTESTS := $(filter-out test-out-of-memory test-stack-overflow test-sigaction-fork,$(TESTS))\n' \
-              >> test-suite/standalone/Makefile
+          # Darwin target binaries cannot run on the Linux cross builder.
+          lib.optionalString (!isDarwinCross) (
+            lib.optionalString (stdenv.isCross && stdenv.hostPlatform.isLinux) ''
+              # Build helpers select native Guile while cross-compiling. Runtime
+              # checks must instead load the new target interpreter and bytecode.
+              for helper in meta/guile meta/uninstalled-env meta/build-env; do
+                cp "$helper" "$helper.for-build"
+                sed -i 's/if test "yes" = "no"/if test "no" = "no"/g' "$helper"
+              done
+            ''
+            + lib.optionalString (stdenv.isCross && stdenv.hostPlatform.system == "aarch64-linux") ''
+              # QEMU user mode deliberately ignores memory resource limits.
+              # The resource-limits package check runs these unchanged under a
+              # target kernel; running them here allocates without bound. Its
+              # forked signal-delivery check also requires target-kernel signal
+              # semantics that user-mode emulation does not preserve.
+              printf '\nTESTS := $(filter-out test-out-of-memory test-stack-overflow test-sigaction-fork,$(TESTS))\n' \
+                >> test-suite/standalone/Makefile
 
-            # User-mode vfork becomes fork, losing glibc's shared spawn errno;
-            # spawned native tools also report the build machine architecture.
-            # QEMU's plugin state also cannot survive the REPL server's fork.
-            # Run both suites in the same target-kernel check.
-            printf '\nTESTS := $(filter-out tests/posix.test tests/00-repl-server.test,$(TESTS))\n' \
-              >> test-suite/Makefile
-          ''
-          + ''
-            export LOCPATH=${buildPackages.glibc-locales}/lib/locale
-            export LC_ALL=C.UTF-8
+              # User-mode vfork becomes fork, losing glibc's shared spawn errno;
+              # spawned native tools also report the build machine architecture.
+              # QEMU's plugin state also cannot survive the REPL server's fork.
+              # Run both suites in the same target-kernel check.
+              printf '\nTESTS := $(filter-out tests/posix.test tests/00-repl-server.test,$(TESTS))\n' \
+                >> test-suite/Makefile
+            ''
+            + ''
+              export LOCPATH=${buildPackages.glibc-locales}/lib/locale
+              export LC_ALL=C.UTF-8
 
-            # Thread wakeup pipes need two descriptors each. Let the suite use
-            # the available descriptor budget without restricting its CPU set.
-            ulimit -S -n "$(ulimit -H -n)"
+              # Thread wakeup pipes need two descriptors each. Let the suite use
+              # the available descriptor budget without restricting its CPU set.
+              ulimit -S -n "$(ulimit -H -n)"
 
-            $CONFIG_SHELL ./libtool --mode=link "$CC" -I. \
-              ${./guile-tests/high-wakeup-fd.c} libguile/libguile-3.0.la \
-              -o high-wakeup-fd
-            $CONFIG_SHELL ./meta/uninstalled-env ./high-wakeup-fd
+              $CONFIG_SHELL ./libtool --mode=link "$CC" -I. \
+                ${./guile-tests/high-wakeup-fd.c} libguile/libguile-3.0.la \
+                -o high-wakeup-fd
+              $CONFIG_SHELL ./meta/uninstalled-env ./high-wakeup-fd
 
-            make -j"$NIX_BUILD_CORES" check
-          ''
-          + lib.optionalString (stdenv.isCross && stdenv.hostPlatform.isLinux) ''
-            for helper in meta/guile meta/uninstalled-env meta/build-env; do
-              mv "$helper.for-build" "$helper"
-            done
-          '';
+              make -j"$NIX_BUILD_CORES" check
+            ''
+            + lib.optionalString (stdenv.isCross && stdenv.hostPlatform.isLinux) ''
+              for helper in meta/guile meta/uninstalled-env meta/build-env; do
+                mv "$helper.for-build" "$helper"
+              done
+            ''
+          );
       }
       {
         name = "install";
@@ -168,6 +227,8 @@ in
           pname = "lib-guile";
           library = self;
           libs = ["-lguile-3.0"];
+          includes = ["${self}/include/guile/3.0"];
+          extraDeps = [gc gmp];
           testSource = ''
             #include <libguile.h>
 

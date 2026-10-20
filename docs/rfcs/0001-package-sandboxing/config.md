@@ -238,7 +238,7 @@ Instance overrides arrive as Ignition-written JSON (e.g.
   *before* the workload starts.
 - **Introspection:** `apm show <pkg> --schema`; `cat /etc/aos/<pkg>/config.*`;
   potentially `apm status <pkg>`.
-- **Maturity:** AOS-specific; no ecosystem. New code in `crates/aos-package`
+- **Maturity:** AOS-specific; no ecosystem. New code in `crates/aos/packages/aos-package-manager`
   (a schema/validation module) plus an Ignition→apm bridge.
 
 ### Option 4 — kernel cmdline / SMBIOS / fw_cfg

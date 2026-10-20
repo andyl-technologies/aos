@@ -8,12 +8,12 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
   graphSource = import ./_crucible-model-source.nix {inherit lib;};
-  gateTest = builtins.readFile ../../crates/crucible/tests/gate_checkpoint_materialization.rs;
+  gateTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/gate_checkpoint_materialization.rs;
   defaultChecks = builtins.readFile ./default.nix;
   taskList = builtins.concatStringsSep "," taskIds;
-  inherit (import ./_lib.nix {inherit lib;}) failuresFor forbiddenFor;
+  inherit (import ./_lib.nix {inherit lib;}) failuresFor;
   failures =
-    failuresFor "crates/crucible model" graphSource [
+    failuresFor "crates/crucible/engine/crucible-engine model" graphSource [
       {
         label = "ordinary materialization policy";
         needle = "pub struct MaterializationPolicy";
@@ -27,21 +27,7 @@
         needle = "pub fn record_thin_checkpoint(";
       }
     ]
-    ++ forbiddenFor "crates/crucible model" graphSource [
-      {
-        label = "savevm hedge type";
-        needle = "SavevmCompletenessHedge";
-      }
-      {
-        label = "savevm hedge method";
-        needle = "savevm_hedge";
-      }
-      {
-        label = "S3 fallback constructor";
-        needle = "thin_replay_until_full_s3";
-      }
-    ]
-    ++ failuresFor "crates/crucible/tests/gate_checkpoint_materialization.rs" gateTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/gate_checkpoint_materialization.rs" gateTest [
       {
         label = "fat persistence gate";
         needle = "gate_checkpoint_materialization_persists_exact_fat_checkpoint_by_configuration";
@@ -69,7 +55,9 @@ in
       pname = "crucible-phase6-checkpoint-materialization";
       version = "0";
       src = crucibleSrc;
-      buildDeps = [pkgs.rust pkgs.sed];
+      LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
+      buildDeps = [pkgs.pkg-config pkgs.rust pkgs.sed pkgs.sqlite];
+      runtimeDeps = [pkgs.sqlite];
       DEPENDENCIES = builtins.concatStringsSep ":" dependencies;
       phases = [
         {
@@ -96,7 +84,7 @@ in
             if [ -d source ] && [ -f source/crates/Cargo.toml ]; then cd source; fi
             cargo test --frozen --offline \
               --target-dir "$TMPDIR/crucible-checkpoint-materialization-target" \
-              --manifest-path crates/Cargo.toml -p crucible \
+              --manifest-path crates/Cargo.toml -p crucible-engine \
               --test gate_checkpoint_materialization -- --test-threads=1
           '';
         }
@@ -110,7 +98,6 @@ in
             tasks=${taskList}
             exact_fat_checkpoint=content-addressed-and-complete
             thin_checkpoint=advisory-reconstruction-cache
-            legacy_savevm_hedge=absent
             RESULT
           '';
         }

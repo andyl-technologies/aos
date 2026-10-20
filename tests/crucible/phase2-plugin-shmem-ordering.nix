@@ -9,44 +9,44 @@
 
   pluginLib = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu-plugin/src/lib.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/lib.rs;
   };
   pluginShmemOrdering = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu-plugin/src/shmem_ordering.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/shmem_ordering.rs;
   };
   pluginBootBarrier = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu-plugin/src/boot_barrier.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/boot_barrier.rs;
   };
   pluginDeviceIo = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu-plugin/src/device_io.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/device_io.rs;
   };
   pluginIdleLoop = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu-plugin/src/idle_loop.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/idle_loop.rs;
   };
   pluginInbound = builtins.concatStringsSep "\n" [
-    (builtins.readFile ../../crates/crucible-qemu-plugin/src/inbound.rs)
-    (builtins.readFile ../../crates/crucible-qemu-plugin/src/inbound/commit.rs)
+    (builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/inbound.rs)
+    (builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/inbound/commit.rs)
   ];
   pluginNetworkTx = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu-plugin/src/network_tx.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/network_tx.rs;
   };
   pluginBlockIo = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu-plugin/src/block_io.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/block_io.rs;
   };
   pluginNinePIo = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu-plugin/src/ninep_io.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/ninep_io.rs;
   };
   pluginSetup = import ./_qemu-plugin-setup-source.nix {inherit lib;};
   pluginTeardown = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu-plugin/src/teardown.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/teardown.rs;
   };
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
   shmemLib = import ./_crucible-shmem-source.nix {inherit lib;};
@@ -56,34 +56,13 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-  occurrences = needle: haystack: let
-    needleLen = builtins.stringLength needle;
-    haystackLen = builtins.stringLength haystack;
-    maxStart = haystackLen - needleLen;
-    indexes =
-      if needleLen == 0 || maxStart < 0
-      then []
-      else builtins.genList (index: index) (maxStart + 1);
-  in
-    builtins.length (builtins.filter (index:
-      builtins.substring index needleLen haystack == needle)
-    indexes);
-
+  # Native string splitting avoids allocating one Nix value per source byte.
   firstIndexOf = needle: haystack: let
-    needleLen = builtins.stringLength needle;
-    haystackLen = builtins.stringLength haystack;
-    maxStart = haystackLen - needleLen;
-    indexes =
-      if needleLen == 0 || maxStart < 0
-      then []
-      else builtins.genList (index: index) (maxStart + 1);
-    matches = builtins.filter (index:
-      builtins.substring index needleLen haystack == needle)
-    indexes;
+    parts = lib.splitString needle haystack;
   in
-    if matches == []
+    if needle == "" || builtins.length parts < 2
     then null
-    else builtins.head matches;
+    else builtins.stringLength (builtins.head parts);
 
   productionRust = content: let
     testIndex = firstIndexOf "mod tests {" content;
@@ -94,42 +73,45 @@
 
   rawShmemSources = [
     {
-      label = "crates/crucible-qemu-plugin/src/boot_barrier.rs";
+      label = "crates/crucible/qemu/crucible-qemu-plugin/src/boot_barrier.rs";
       content = productionRust pluginBootBarrier;
     }
     {
-      label = "crates/crucible-qemu-plugin/src/device_io.rs";
-      content = productionRust pluginDeviceIo;
+      label = "crates/crucible/qemu/crucible-qemu-plugin/src/device_io.rs";
+      content = productionRust (builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/device_io.rs);
     }
     {
-      label = "crates/crucible-qemu-plugin/src/idle_loop production module";
+      label = "crates/crucible/qemu/crucible-qemu-plugin/src/idle_loop production module";
       content = builtins.concatStringsSep "\n" [
-        (builtins.readFile ../../crates/crucible-qemu-plugin/src/idle_loop.rs)
-        (builtins.readFile ../../crates/crucible-qemu-plugin/src/idle_loop/planning.rs)
+        (builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/idle_loop.rs)
+        (builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/idle_loop/planning.rs)
       ];
     }
     {
-      label = "crates/crucible-qemu-plugin/src/inbound.rs";
+      label = "crates/crucible/qemu/crucible-qemu-plugin/src/inbound.rs";
       content = productionRust pluginInbound;
     }
     {
-      label = "crates/crucible-qemu-plugin/src/network_tx.rs";
-      content = productionRust (builtins.readFile ../../crates/crucible-qemu-plugin/src/network_tx.rs);
+      label = "crates/crucible/qemu/crucible-qemu-plugin/src/network_tx.rs";
+      content = productionRust (builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/network_tx.rs);
     }
     {
-      label = "crates/crucible-qemu-plugin/src/block_io.rs";
-      content = productionRust pluginBlockIo;
+      label = "crates/crucible/qemu/crucible-qemu-plugin/src/block_io.rs";
+      content = builtins.concatStringsSep "\n" (map (file: productionRust (builtins.readFile file)) [
+        ../../crates/crucible/qemu/crucible-qemu-plugin/src/block_io.rs
+        ../../crates/crucible/qemu/crucible-qemu-plugin/src/block_io/history.rs
+      ]);
     }
     {
-      label = "crates/crucible-qemu-plugin/src/ninep_io.rs";
+      label = "crates/crucible/qemu/crucible-qemu-plugin/src/ninep_io.rs";
       content = productionRust pluginNinePIo;
     }
     {
-      label = "crates/crucible-qemu-plugin/src/setup.rs";
-      content = productionRust (builtins.readFile ../../crates/crucible-qemu-plugin/src/setup.rs);
+      label = "crates/crucible/qemu/crucible-qemu-plugin/src/setup.rs";
+      content = productionRust (builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/setup.rs);
     }
     {
-      label = "crates/crucible-qemu-plugin/src/teardown.rs";
+      label = "crates/crucible/qemu/crucible-qemu-plugin/src/teardown.rs";
       content = productionRust pluginTeardown;
     }
   ];
@@ -137,7 +119,7 @@
   forbiddenRawShmemCalls = [
     ".control_action()"
     ".shutdown_requested()"
-    ".load_node_ceiling()"
+    ".load_scheduler_advance()"
     ".publish_reached_icount("
     ".publish_idle("
     ".prepare_futex_wait()"
@@ -153,7 +135,7 @@
     ".snapshot()"
     ".header_snapshot()"
     ".validate_header()"
-    ".publish_scheduler_ceiling("
+    ".publish_scheduler_advance("
     ".futex_wait_still_valid("
     ".peek_delivery_icount("
     ".dequeue("
@@ -172,40 +154,79 @@
     )
     rawShmemSources;
 
+  blockIoOrderingProduction = builtins.concatStringsSep "\n" (map (file: productionRust (builtins.readFile file)) [
+    ../../crates/crucible/qemu/crucible-qemu-plugin/src/block_io.rs
+    ../../crates/crucible/qemu/crucible-qemu-plugin/src/block_io/history.rs
+  ]);
+
+  # This closed, process-local owner counter never publishes shared-memory state.
+  # Any other atomic declaration or operation remains subject to the facade ban.
+  blockOwnerAtomicImport = "use std::sync::atomic::{AtomicU64, Ordering};";
+  blockOwnerAtomicCounter = ''
+    static NEXT_BLOCK_OWNER_ID: AtomicU64 = AtomicU64::new(1);
+
+    fn next_block_owner_id() -> u64 {
+        // Epochs and request IDs can repeat in distinct callback owners.
+        match NEXT_BLOCK_OWNER_ID.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            current.checked_add(1)
+        }) {
+            Ok(owner_id) => owner_id,
+            Err(_) => std::process::abort(),
+        }
+    }
+  '';
+  blockIoOrderingOutsideOwner = builtins.replaceStrings [blockOwnerAtomicImport blockOwnerAtomicCounter] ["" ""] blockIoOrderingProduction;
+  blockOwnerAtomicFailures =
+    lib.concatMap (
+      needle: let
+        stripped = builtins.replaceStrings [needle] [""] blockIoOrderingProduction;
+        removedLength = builtins.stringLength blockIoOrderingProduction - builtins.stringLength stripped;
+      in
+        lib.optionals (removedLength != builtins.stringLength needle) [
+          "crates/crucible/qemu/crucible-qemu-plugin/src/block_io.rs: expected exactly one closed process-local owner atomic declaration"
+        ]
+    ) [blockOwnerAtomicImport blockOwnerAtomicCounter]
+    ++ lib.concatMap (
+      needle:
+        lib.optionals (hasInfix needle blockIoOrderingOutsideOwner) [
+          "crates/crucible/qemu/crucible-qemu-plugin/src/block_io.rs: atomic outside the closed process-local owner: `${needle}`"
+        ]
+    ) ["AtomicU64" "Ordering::Relaxed"];
+
   forbiddenRawOrderingSources = [
     {
-      label = "crates/crucible-qemu-plugin/src/boot_barrier.rs";
+      label = "crates/crucible/qemu/crucible-qemu-plugin/src/boot_barrier.rs";
       content = productionRust pluginBootBarrier;
     }
     {
-      label = "crates/crucible-qemu-plugin/src/idle_loop production module";
+      label = "crates/crucible/qemu/crucible-qemu-plugin/src/idle_loop production module";
       content = builtins.concatStringsSep "\n" [
-        (builtins.readFile ../../crates/crucible-qemu-plugin/src/idle_loop.rs)
-        (builtins.readFile ../../crates/crucible-qemu-plugin/src/idle_loop/planning.rs)
+        (builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/idle_loop.rs)
+        (builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/idle_loop/planning.rs)
       ];
     }
     {
-      label = "crates/crucible-qemu-plugin/src/inbound.rs";
+      label = "crates/crucible/qemu/crucible-qemu-plugin/src/inbound.rs";
       content = productionRust pluginInbound;
     }
     {
-      label = "crates/crucible-qemu-plugin/src/network_tx.rs";
-      content = productionRust (builtins.readFile ../../crates/crucible-qemu-plugin/src/network_tx.rs);
+      label = "crates/crucible/qemu/crucible-qemu-plugin/src/network_tx.rs";
+      content = productionRust (builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/network_tx.rs);
     }
     {
-      label = "crates/crucible-qemu-plugin/src/block_io.rs";
-      content = productionRust pluginBlockIo;
+      label = "crates/crucible/qemu/crucible-qemu-plugin/src/block_io.rs";
+      content = blockIoOrderingOutsideOwner;
     }
     {
-      label = "crates/crucible-qemu-plugin/src/ninep_io.rs";
+      label = "crates/crucible/qemu/crucible-qemu-plugin/src/ninep_io.rs";
       content = productionRust pluginNinePIo;
     }
     {
-      label = "crates/crucible-qemu-plugin/src/setup.rs";
-      content = productionRust (builtins.readFile ../../crates/crucible-qemu-plugin/src/setup.rs);
+      label = "crates/crucible/qemu/crucible-qemu-plugin/src/setup.rs";
+      content = productionRust (builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/setup.rs);
     }
     {
-      label = "crates/crucible-qemu-plugin/src/teardown.rs";
+      label = "crates/crucible/qemu/crucible-qemu-plugin/src/teardown.rs";
       content = productionRust pluginTeardown;
     }
   ];
@@ -233,12 +254,12 @@
     forbiddenRawOrderingSources;
 
   deviceIoProduction = productionRust pluginDeviceIo;
-  deviceIoRelaxedCount = occurrences "Ordering::Relaxed" deviceIoProduction;
+  deviceIoRelaxedCount = builtins.length (lib.splitString "Ordering::Relaxed" deviceIoProduction) - 1;
   deviceIoOrderingFailures =
     lib.concatMap (
       needle:
         lib.optionals (hasInfix needle deviceIoProduction) [
-          "crates/crucible-qemu-plugin/src/device_io.rs: forbidden shared-memory atomic ordering in production device-I/O code: `${needle}`"
+          "crates/crucible/qemu/crucible-qemu-plugin/src/device_io.rs: forbidden shared-memory atomic ordering in production device-I/O code: `${needle}`"
         ]
     )
     [
@@ -249,7 +270,7 @@
       "std::sync::atomic"
     ]
     ++ lib.optionals (deviceIoRelaxedCount != 1) [
-      "crates/crucible-qemu-plugin/src/device_io.rs: expected exactly one plugin-local `Ordering::Relaxed`, found ${toString deviceIoRelaxedCount}"
+      "crates/crucible/qemu/crucible-qemu-plugin/src/device_io.rs: expected exactly one plugin-local `Ordering::Relaxed`, found ${toString deviceIoRelaxedCount}"
     ];
 
   failures =
@@ -263,7 +284,7 @@
         needle = "self-owned counters outside shmem";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/lib.rs" pluginLib [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/lib.rs" pluginLib [
       {
         label = "shmem ordering module exported";
         needle = "pub mod shmem_ordering;";
@@ -277,7 +298,7 @@
         needle = "`shmem_ordering` owns the plugin-side shared-memory access";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/shmem_ordering.rs" pluginShmemOrdering [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/shmem_ordering.rs" pluginShmemOrdering [
       {
         label = "facade type";
         needle = "pub struct PluginShmemOrdering;";
@@ -304,7 +325,7 @@
       }
       {
         label = "ceiling acquire helper";
-        needle = "pub fn load_scheduler_ceiling";
+        needle = "pub fn load_scheduler_advance";
       }
       {
         label = "reached publish helper";
@@ -375,7 +396,7 @@
         needle = "shmem_ordering_facade_observes_shutdown_requested";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/boot_barrier.rs" pluginBootBarrier [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/boot_barrier.rs" pluginBootBarrier [
       {
         label = "boot barrier uses ordering facade";
         needle = "PluginShmemOrdering::publish_idle_wait";
@@ -385,7 +406,7 @@
         needle = "PluginShmemOrdering::wait_on_wake_signal";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/device_io.rs" pluginDeviceIo [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/device_io.rs" pluginDeviceIo [
       {
         label = "device I/O uses ordering facade";
         needle = "use crate::shmem_ordering::PluginShmemOrdering;";
@@ -407,14 +428,14 @@
         needle = "PluginShmemOrdering::clear_device_io_active";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/idle_loop.rs" pluginIdleLoop [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/idle_loop.rs" pluginIdleLoop [
       {
         label = "idle loop observes control through facade";
         needle = "PluginShmemOrdering::observe_control_action";
       }
       {
         label = "idle loop loads ceiling through facade";
-        needle = "PluginShmemOrdering::load_scheduler_ceiling";
+        needle = "PluginShmemOrdering::load_scheduler_advance";
       }
       {
         label = "idle loop publishes reached through facade";
@@ -429,7 +450,7 @@
         needle = "PluginShmemOrdering::mark_done_after_shutdown";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/inbound.rs" pluginInbound [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/inbound.rs" pluginInbound [
       {
         label = "inbound peeks through facade";
         needle = "PluginShmemOrdering::peek_inbound_delivery_icount";
@@ -443,13 +464,13 @@
         needle = "PluginShmemOrdering::producer_write_index";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/network_tx.rs" pluginNetworkTx [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/network_tx.rs" pluginNetworkTx [
       {
         label = "network TX enqueues through facade";
         needle = "PluginShmemOrdering::enqueue_outbound_frame";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/block_io.rs" pluginBlockIo [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/block_io.rs" pluginBlockIo [
       {
         label = "block outbound enqueue through facade";
         needle = "PluginShmemOrdering::enqueue_outbound_frame";
@@ -463,7 +484,7 @@
         needle = "PluginShmemOrdering::peek_inbound_delivery_icount";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/ninep_io.rs" pluginNinePIo [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/ninep_io.rs" pluginNinePIo [
       {
         label = "9p outbound enqueue through facade";
         needle = "PluginShmemOrdering::enqueue_outbound_frame";
@@ -477,7 +498,7 @@
         needle = "PluginShmemOrdering::peek_inbound_delivery_icount";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/setup.rs" pluginSetup [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/setup.rs" pluginSetup [
       {
         label = "setup snapshots header through facade";
         needle = "PluginShmemOrdering::setup_header_snapshot";
@@ -487,7 +508,7 @@
         needle = "PluginShmemOrdering::validate_setup_header";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/teardown.rs" pluginTeardown [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/teardown.rs" pluginTeardown [
       {
         label = "teardown observes shutdown through facade";
         needle = "PluginShmemOrdering::observe_shutdown_requested";
@@ -497,7 +518,7 @@
         needle = "PluginShmemOrdering::mark_done_after_shutdown";
       }
     ]
-    ++ failuresFor "crates/crucible-shmem/src/lib.rs" shmemLib [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-shmem/src/lib.rs" shmemLib [
       {
         label = "producer own index relaxed";
         needle = "let tail = self.write_idx.load(Ordering::Relaxed);";
@@ -520,7 +541,7 @@
       }
       {
         label = "node ceiling acquire load";
-        needle = "self.max_advance_icount.load(Ordering::Acquire)";
+        needle = "self.load_scheduler_advance()";
       }
       {
         label = "node current icount release publish";
@@ -539,6 +560,7 @@
     ]
     ++ forbiddenRawShmemFailures
     ++ forbiddenRawOrderingFailures
+    ++ blockOwnerAtomicFailures
     ++ deviceIoOrderingFailures;
 in
   if failures != []
@@ -549,7 +571,10 @@ in
       version = "0";
       src = crucibleSrc;
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.rust
         pkgs.sed
       ];

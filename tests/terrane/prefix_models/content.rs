@@ -14,7 +14,7 @@
 use super::support::{
     self, REFERENCE, Value, blocks, changed, hexadecimal, section, table, unquote,
 };
-use terrane_core::{
+use terrane_format::{
     identity::{Descriptor, Digest, IdentityKind, TERRANE_V1},
     tree_format::{
         ContentRef, Entry, EntryKind, LeafItem, Node, NodeItems, decode_entry_bytes, decode_node,

@@ -168,7 +168,7 @@ readlink /var/lib/profiles/system/current
 cat /var/lib/profiles/image/state.json
 cat /var/lib/profiles/system/state.json
 cat /run/aos/activation.json
-apm rollback --system --list
+apm config rollback --list
 cat /var/lib/aos-provisioning/audit.json
 ```
 
@@ -178,21 +178,12 @@ service failure.
 
 ## Recover from a failed first boot
 
-Inspect the provisioning chain:
+Inspect the checked initrd stage controller. Its journal records the exact
+package-owned operation and selected provider that failed:
 
 ```sh
-systemctl status \
-  aos-metadata-detect.service \
-  aos-metadata-fetch.service \
-  aos-metadata-authorize.service \
-  aos-provisioning-eval.service \
-  aos-repart.service
-journalctl -b \
-  -u aos-metadata-detect.service \
-  -u aos-metadata-fetch.service \
-  -u aos-metadata-authorize.service \
-  -u aos-provisioning-eval.service \
-  -u aos-repart.service
+systemctl status aos-ability-initrd-controller.service
+journalctl -b -u aos-ability-initrd-controller.service
 ```
 
 Verify the metadata label and payload, trust mode, detached signature, target
@@ -207,13 +198,13 @@ to make it agree with an unintended layout.
 ## Recover a failed configuration activation
 
 An error can occur during evaluation, package fetch/render, secret resolution,
-EROFS materialization, `/etc` replacement, or unit reconciliation. First
+EROFS materialization, `/etc` replacement, or provider convergence. First
 determine the active pointer and transaction-bound activation result:
 
 ```sh
 readlink /var/lib/profiles/system/current
 cat /etc/os-release
-apm rollback --system --list
+apm config rollback --list
 systemctl --failed
 journalctl -b \
   -u aos-eval.service \
@@ -224,9 +215,14 @@ journalctl -b \
 Preview rollback, then switch to the intended generation:
 
 ```sh
-apm rollback --system --dry-run
-apm rollback --system
+apm config rollback --dry-run
+apm config rollback
 ```
+
+The preview is an authenticated read-only activatability check. Resolve every
+structured blocked reason before applying rollback; historical authorization
+and a retained profile entry do not make revoked credentials or unavailable
+providers current again.
 
 Configuration rollback under the same module ABI reactivates the retained
 generation directly. Across an ABI boundary, APM re-evaluates its retained
@@ -236,9 +232,9 @@ It does not switch the kernel or root slot.
 To select a known-good image for the next boot, use the image axis explicitly:
 
 ```sh
-apm rollback --system --image --list
-apm rollback --system --image --generation N --dry-run
-apm rollback --system --image --generation N --reboot
+apm image list
+apm image rollback --generation N --dry-run
+apm image rollback --generation N --reboot
 ```
 
 The candidate is accepted only after its boot-time configuration transaction
@@ -251,24 +247,41 @@ image or generation according to a procedure tested for that release.
 
 ## Recover an application package
 
-Inspect installed package generations and the package target. This example
+Inspect installed package generations and the selected service unit. This example
 uses the `acme-agent` package from the [configuration guide](configuration.md);
 replace it with the affected package and unit:
 
 ```sh
 apm list --installed --system
-systemctl status aos-pkg-acme-agent.target
 systemctl status acme-agent.service
 journalctl -u acme-agent.service -b
 ```
 
-The current CLI has no supported rollback command for the machine-wide runtime
-package profile: `apm rollback --system` rolls back configuration, while
-`--system --image` selects an A/B image. Restore a known-good image or follow a
-release-specific recovery procedure that has been tested before the incident.
+List the machine-wide package generations, preview a known-good package set,
+then restore it:
+
+```sh
+apm rollback --system --list
+apm rollback --system --generation N --dry-run
+apm rollback --system --generation N
+```
+
+Package rollback restores the package set without rolling back application
+data, host configuration, or the OS image. Verify the service and its data
+afterward.
+
 Do not move a registry channel backward; registry
 consumers enforce a monotonic release floor. Stop the rollout and publish a
 higher corrected release.
+
+## Hosts with a mirrored `/var`
+
+The recovery console authenticates and mounts the root-disk `var` partition.
+When `host.nix` places `/var` on an MD array, that partition carries only an
+MD superblock and the console refuses it rather than treating a member as the
+volume. Recover such a host from a separate maintenance environment that can
+assemble the array (`mdadm --assemble --scan`) and, on a measured-boot image,
+open `/dev/md/var` with the escrowed recovery key.
 
 ## Recover from a full `/var`
 
@@ -291,7 +304,7 @@ Use application-specific cleanup for application state and AOS Hub storage.
 `apm clean --generations --keep N` cleans the invoking user's package profile;
 `apm clean --system --generations --keep N` safely prunes both machine-wide
 package and configuration generations while retaining each current generation.
-Run `apm gc` afterward to collect store paths released by pruned configuration
+Run `apm gc --system` afterward to collect store paths released by pruned configuration
 roots. A/B image generations are not pruned by this command. Do not remove
 profile directories or current links by hand.
 
@@ -331,4 +344,6 @@ Reimage when:
 
 An immutable system makes replacement a normal recovery tool. The critical
 precondition is that application state, trust material, and deployment inputs
-are recoverable independently of the machine.
+are recoverable independently of the machine. Home directories are host state
+too: `/root` and, when `aos.homes` is enabled, `/home` live on `/var`, so any
+recovery that recreates `/var` discards them.

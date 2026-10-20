@@ -164,7 +164,7 @@ asymmetry:
 
 | Capability | Consumer | Producer |
 |---|---|---|
-| Parse package TOML tree (`PackageToml`) | present (`crates/aos-package/src/registry/parse.rs:15`) | writes via `build_package_toml` (`registry_ops.rs:595`) |
+| Parse package TOML tree (`PackageToml`) | present (`crates/aos/registry/aos-registry-client/src/registry/parse.rs:15`) | writes via `build_package_toml` (`registry_ops.rs:595`) |
 | Verify commit signature (`git verify-commit`) | present (`security.rs:199`, `registry/git.rs:384`) | signs via `apr sign` (`git commit -S`) |
 | TOFU + `trusted-keys.d/<registry>.pub` | present (`types.rs:507`, `security.rs:22`) | n/a |
 | Calendar `creation_token` ordering | present (`registry/state.rs:131` `version_to_token`) | **TARGET drops this** (→ semver + git ancestry) |

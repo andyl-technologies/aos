@@ -200,19 +200,19 @@
   groups = [
     {
       name = "core";
-      package = "terrane-core";
+      package = "terrane-format";
       features = "";
       selectors = coreTests;
     }
     {
       name = "native-std";
-      package = "terrane";
+      package = "terrane-sdk";
       features = "--no-default-features --features std";
       selectors = nativeStdTests;
     }
     {
       name = "native-tokio";
-      package = "terrane";
+      package = "terrane-sdk";
       features = "--no-default-features --features tokio,surface-sdk";
       selectors = nativeTokioTests;
     }

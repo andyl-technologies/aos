@@ -56,7 +56,7 @@ in {
       sandbox = false
       NIXCONF
       nix-store --init || true
-      nix-store --load-db < /aos-registration
+      nix-store --load-db < /usr/lib/aos/nix-registration
 
       echo "==> Test: baked /etc/apm trust anchor verifies first contact"
 
@@ -73,6 +73,7 @@ in {
 
       $APR create anchor-reg --trust-key "$TRUST_KEY" --key "$KEY_PATH"
       REG_DIR="$REG_STORAGE/anchor-reg"
+      register_publish_key anchor-reg initial "$KEY_PATH"
       assert_file_contains "$REG_DIR/keys.toml" "$TRUST_KEY" \
         "registry roster records the anchor key"
 
@@ -92,7 +93,7 @@ in {
         --description "Trust anchor fixture tool" \
         --license MIT \
         --maintainer anchor@example.invalid \
-        --key "$KEY_PATH" \
+        --key-id initial \
         --cache-url http://127.0.0.1:18095 \
         --upload-url file:///tmp/anchor-cache \
         > /tmp/anchor-release.out 2>&1 || {

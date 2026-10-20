@@ -11,12 +11,19 @@
 
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
-  apiLib = builtins.readFile ../../crates/crucible-api/src/lib.rs;
-  apiServer = import ./_rust-module-source.nix {
+  apiLib = import ./_crucible-control-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-api/src/server.rs;
+    component = "exports";
+  };
+  apiServer = import ./_crucible-control-source.nix {
+    inherit lib;
+    component = "server";
   };
   cliMain = import ./_cli-source.nix {inherit lib;};
+  cliVerifyServe = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/control/crucible-cli/src/cli/verify_serve.rs;
+  };
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
@@ -34,7 +41,7 @@
         needle = "`T-CLI-14` is completed under `checks.crucible.phase5.cliServeReadOnly`";
       }
     ]
-    ++ failuresFor "crates/crucible-api/src/lib.rs" apiLib [
+    ++ failuresFor "crates/crucible/control/crucible-control-api/src/lib.rs" apiLib [
       {
         label = "server mode exported";
         needle = "LifecycleServerMode";
@@ -44,7 +51,7 @@
         needle = "serve_lifecycle_http2_with_mode";
       }
     ]
-    ++ failuresFor "crates/crucible-api/src/server.rs" apiServer [
+    ++ failuresFor "crates/crucible/control/crucible-control-server/src/server.rs" apiServer [
       {
         label = "server read-only mode";
         needle = "pub struct LifecycleServerMode";
@@ -78,14 +85,10 @@
         needle = "server_read_write_mode_keeps_default_mutating_routes";
       }
     ]
-    ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
+    ++ failuresFor "crates/crucible/control/crucible-cli/src/main.rs" cliMain [
       {
         label = "serve read-only flag";
         needle = "read_only: bool";
-      }
-      {
-        label = "serve uses mode-aware daemon";
-        needle = "serve_lifecycle_http2_mtls_with_mode_until_shutdown(";
       }
       {
         label = "serve help advertises read-only";
@@ -94,6 +97,12 @@
       {
         label = "serve help advertises max-sessions";
         needle = "--max-sessions <n>";
+      }
+    ]
+    ++ failuresFor "crates/crucible/control/crucible-cli/src/cli/verify_serve.rs" cliVerifyServe [
+      {
+        label = "serve uses shared mode-aware daemon";
+        needle = "serve_shared_lifecycle_http2_mtls_with_mode_until_shutdown(";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -109,12 +118,17 @@ in
     pkgs.mkDerivation {
       pname = "crucible-phase5-cli-serve-read-only";
       version = "0";
+      LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
+      runtimeDeps = [pkgs.sqlite];
       src = crucibleSrc;
 
       buildDeps = [
         pkgs.coreutils
         pkgs.rust
         pkgs.sed
+
+        pkgs.pkg-config
+        pkgs.sqlite
       ];
 
       ATTR_PATH = attrPath;
@@ -161,7 +175,7 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-cli-serve-read-only-target" \
-              -p crucible-api \
+              -p crucible-control-api \
               server_ \
               -- --test-threads=1
             cargo test \

@@ -836,9 +836,9 @@ def verify_image():
                 and helper_hash == identity["input_sha256"]["tests/terrane/" + helper_name]
                 and helper_installed.read_bytes() == helper_source.read_bytes(),
                 "installed supervisor helper differs from immutable source")
-    expected = {"host_cache_fixture": ("terrane-fs", "example", ["native-test-fixtures", "tokio"]),
-                "terrane": ("terrane-cli", "bin", []), "aos-terrane-host": ("aos-terrane", "bin", []),
-                "terrane-fs-unit": ("terrane-fs", "lib", ["native-test-fixtures", "tokio"])}
+    expected = {"host_cache_fixture": ("terrane-linux", "example", ["native-test-fixtures", "tokio"]),
+                "terrane": ("terrane-cli", "bin", []), "aos-terrane-host": ("aos-terrane-integration", "bin", []),
+                "terrane-fs-unit": ("terrane-linux", "lib", ["native-test-fixtures", "tokio"])}
     require(set(identity["artifacts"]) == set(expected), "incomplete native image executable set")
     packages = json.loads((IMAGE / "share/host-cache-packages.json").read_text())["packages"]
     profile = {"opt_level": "0", "debuginfo": 2, "debug_assertions": True,
@@ -849,11 +849,11 @@ def verify_image():
         artifact = record["cargo_artifact"]
         original = [json.loads(line) for line in (IMAGE / f"share/host-cache-{name}.jsonl").read_text().splitlines()]
         selected = [item for item in original if item.get("reason") == "compiler-artifact"
-                    and item.get("executable") and item.get("target", {}).get("name") == ("terrane_fs" if kind == "lib" else name)]
+                    and item.get("executable") and item.get("target", {}).get("name") == ("terrane_linux" if kind == "lib" else name)]
         metadata_packages = [item for item in packages if item["name"] == package]
         require(len(metadata_packages) == len(selected) == 1 and selected[0] == artifact,
                 "retained original Cargo event mismatch: " + name)
-        targets = [item for item in metadata_packages[0]["targets"] if item["name"] == ("terrane_fs" if kind == "lib" else name) and item["kind"] == [kind]]
+        targets = [item for item in metadata_packages[0]["targets"] if item["name"] == ("terrane_linux" if kind == "lib" else name) and item["kind"] == [kind]]
         require(len(targets) == 1 and artifact["target"] == targets[0]
                 and artifact["package_id"] == metadata_packages[0]["id"]
                 and artifact["profile"] == (source_contract["UNIT_PROFILE"] if kind == "lib" else profile)
@@ -949,7 +949,7 @@ def filesystem_unit_cases():
             and unit["prefixes"] == list(contract["UNIT_PREFIXES"])
             and unit["profile"] == contract["UNIT_PROFILE"]
             and unit["guest_uid"] == unit["guest_gid"] == 842
-            and unit["working_directory"] == "crates/terrane-fs", "FS unit source contract changed")
+            and unit["working_directory"] == "crates/terrane/linux/terrane-linux", "FS unit source contract changed")
     require(subprocess.check_output(["findmnt", "--noheadings", "--output", "FSTYPE", "--target", str(MOUNT)],
                                     text=True, timeout=5).strip() == "ext4", "unit TMPDIR is not actual ext4")
     temporary_root = MOUNT / "unit-tests"

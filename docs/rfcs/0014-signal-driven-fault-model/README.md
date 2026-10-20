@@ -7,7 +7,7 @@
   [`07-implementation-plan.md`](07-implementation-plan.md).
 - **Date:** 2026-08-04
 - **PR:** [#187](https://github.com/andyl-technologies/aos/pull/187)
-- **Audience:** anyone working on `crates/crucible-*`, the AOS QEMU patch and
+- **Audience:** anyone working on `crates/crucible/`, the AOS QEMU patch and
   plugin boundary, deterministic device models, scenario authoring, trace
   ingestion, search, replay, or fault-injection documentation.
 
@@ -189,22 +189,22 @@ The system has four separate concepts:
 
 The implementation uses one deterministic spine:
 
-- [`FaultSignalPlan`](../../../crates/crucible/src/model/fault_signal/plan.rs)
+- [`FaultSignalPlan`](../../../crates/crucible/engine/crucible-engine/src/model/fault_signal/plan.rs)
   is the sole admitted fault-program representation. It owns validated signal
   programs, bindings, resource limits, and their canonical identity.
-- [`TransactionalFaultAdapters`](../../../crates/crucible/src/model/fault_signal/adapter_runtime.rs)
+- [`TransactionalFaultAdapters`](../../../crates/crucible/engine/crucible-engine/src/model/fault_signal/adapter_runtime.rs)
   owns deterministic composition and transactional commit for the network,
   storage, and node domains.
-- [`ResolvedBindingAction`](../../../crates/crucible/src/model/fault_signal/binding_runtime.rs)
+- [`ResolvedBindingAction`](../../../crates/crucible/engine/crucible-engine/src/model/fault_signal/binding_runtime.rs)
   is the typed application contract between evaluated bindings and those
   adapters.
 - The former fault-plan authoring and runtime hierarchy is removed completely;
   it creates no compatibility obligation for the replacement schema.
-- [`LinkFaults`](../../../crates/crucible-device/src/netlink/fault.rs) and
-  [`NetLink`](../../../crates/crucible-device/src/netlink/link.rs) already apply
+- [`LinkFaults`](../../../crates/crucible/engine/crucible-device/src/netlink/fault.rs) and
+  [`NetLink`](../../../crates/crucible/engine/crucible-device/src/netlink/link.rs) already apply
   deterministic per-frame timing, capacity, loss, duplication, reordering, and
   corruption transforms.
-- [`SchedulerState`](../../../crates/crucible/src/model/materialized.rs) captures
+- [`SchedulerState`](../../../crates/crucible/engine/crucible-engine/src/model/materialized.rs) captures
   deterministic device cursors, pending work, and finite search frontiers in
   checkpoint state; fault-runtime state is authenticated alongside it.
 - The unified event log and schedule record raw decisions and resolved fault
@@ -230,12 +230,12 @@ prefixes:
 | `TAX` | Cross-domain taxonomy and extension rules | 04 |
 | `REP` | Recording, replay, observability, checkpoints, and calibration | 05 |
 | `FX` | Closed executable effect registry and taxonomy ledger | 08 |
-| `SCHEMA` | Normative v2 scenario schema and canonical encoding | 09 |
+| `SCHEMA` | Normative v7 scenario schema and canonical encoding | 09 |
 | `NTECH` | Network technology and transition contracts | 10 |
 | `STORE` | Storage durability, media, controller, array, and 9p semantics | 11 |
 | `SENSOR` | Complete future sensor-adapter specification | 12 |
 | `LIMIT` | Admission ceilings and performance gates | 13 |
-| `QFP` | QEMU patch-series boundary, licensing, and aggregate gates | 14 |
+| `QFP` | Atomic QEMU integration boundary, licensing, and aggregate gates | 14 |
 
 All fenced blocks are tagged `text` or `toml`. Blocks in §9 are normative schema
 fragments; §6 explicitly labels its focused authoring excerpts and any
@@ -268,7 +268,7 @@ requirements win if explanatory excerpts omit surrounding context.
    closes the effect registry and maps every executable taxonomy row to typed
    target, opportunity, composition, state, evidence, and capability semantics.
 9. [`09-normative-schema.md`](09-normative-schema.md) defines the exhaustive,
-   strict v2 schema, defaults, validation, limits, and canonical material.
+   strict v7 schema, defaults, validation, limits, and canonical material.
 10. [`10-network-technology-contracts.md`](10-network-technology-contracts.md)
     specifies every executable wired, shared-medium, routed, radio, mobile, and
     satellite technology model.
@@ -280,9 +280,9 @@ requirements win if explanatory excerpts omit surrounding context.
     code.
 13. [`13-resource-and-performance-bounds.md`](13-resource-and-performance-bounds.md)
     fixes hard admission ceilings, required algorithms, and performance gates.
-14. [`14-qemu-fault-patches/`](14-qemu-fault-patches/) specifies each required
-    QEMU mutation as a separate ordered, licensed patch with live acceptance
-    tests.
+14. [`14-qemu-fault-patches/`](14-qemu-fault-patches/) specifies the numbered
+    QEMU capability tasks carried by the single atomic patch, with live
+    acceptance tests.
 
 ## Locked architectural decisions
 
@@ -296,7 +296,7 @@ requirements win if explanatory excerpts omit surrounding context.
 | Trace ingestion | Raw artifact plus normalized canonical artifact. | Retains provenance while making replay parser-independent. |
 | Replay | Both recomputed-cause and locked-effect modes. | Supports determinism proofs and faithful incident reproduction. |
 | Dynamic networking | Directed segment/path profiles sampled at canonical boundaries. | Covers wired, wireless, routed, mobile, and contact networks uniformly. |
-| Migration | The old fault schema and runtime are removed in the implementation PR. | Prevents two semantic paths and makes incomplete migration impossible to ship. |
+| Schema cutover | The signal/binding schema and runtime are the sole implementation. | Prevents multiple semantic paths from shipping. |
 | Backend support | Explicit capability negotiation and fail-closed validation. | Prevents silent low-fidelity substitution. |
 | Delivery | One atomic implementation PR and one complete merge gate. | Prevents MVP, feature-flagged, stubbed, or partially accepted states. |
 
@@ -331,11 +331,11 @@ The RFC resolves the formerly merge-blocking design gaps before implementation:
 | Contract | Normative resolution |
 | --- | --- |
 | Closed effect ledger | [§8](08-executable-effect-contracts.md) maps every `Core`, `Next`, and `Advanced` network, storage/9p, and node row to registered executable semantics and evidence. |
-| Exhaustive schema | [§9](09-normative-schema.md) fixes the strict v2 grammar, values, defaults, validation, canonicalization, and rejection behavior. |
-| QEMU ABI and mutations | [§14](14-qemu-fault-patches/) separates thirteen required patches and fixes their commands, phases, state, architecture behavior, live tests, and GPL/DCO obligations. |
+| Exhaustive schema | [§9](09-normative-schema.md) fixes the strict v7 grammar, values, defaults, validation, canonicalization, and rejection behavior. |
+| QEMU ABI and mutations | [§14](14-qemu-fault-patches/) defines the numbered capability tasks within the atomic patch and fixes their commands, phases, state, architecture behavior, live tests, and GPL/DCO obligations. |
 | Storage state machines | [§11](11-storage-durability-and-media.md) fixes cache, persistence, atomicity, reset, power loss, media, wear, retry, controller, array, and 9p behavior. |
 | Network technology models | [§10](10-network-technology-contracts.md) fixes wired, shared-medium, routed, overlay, radio, mobile, and satellite state machines and in-flight policies. |
-| Future sensor adapter | [§12](12-sensor-adapter-specification.md) is complete design vocabulary but creates no accepted v2 schema or implementation path. |
+| Future sensor adapter | [§12](12-sensor-adapter-specification.md) is complete design vocabulary but does not extend the accepted v7 schema or add an implementation path. |
 | Enforceable bounds | [§13](13-resource-and-performance-bounds.md) fixes admission ceilings, algorithms, event/checkpoint/search limits, and performance gates. |
 
 These documents are part of this RFC, not optional follow-up work. Any new

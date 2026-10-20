@@ -7,13 +7,20 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  blockIo = builtins.readFile ../../crates/crucible-qemu-plugin/src/block_io.rs;
-  ioWireFuzz = builtins.readFile ../../crates/crucible-qemu-plugin/src/io_wire_fuzz.rs;
-  pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
+  blockIo = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/block_io.rs;
+    siblingTests = true;
+  };
+  ioWireFuzz = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/io_wire_fuzz.rs;
+  pluginLib = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/lib.rs;
   shmem =
     import ./_crucible-shmem-source.nix {inherit lib;}
-    + builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node.rs
-    + builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node/frame_entry.rs;
+    + import ./_rust-module-source.nix {
+      inherit lib;
+      entry = ../../crates/crucible/protocol/crucible-qemu-shmem/src/shmem/frame_node.rs;
+    }
+    + builtins.readFile ../../crates/crucible/protocol/crucible-qemu-shmem/src/shmem/frame_node/frame_entry.rs;
   ioDoc = builtins.readFile ../../docs/rfcs/0010-crucible/15-io-subnodes.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -43,18 +50,18 @@
         needle = "`FrameEntry.delivery_icount` is the computed completion icount";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/block_io.rs" blockIo [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/block_io.rs" blockIo [
       {
         label = "wire version";
-        needle = "const BLOCK_WIRE_VERSION: u8 = 3";
+        needle = "const BLOCK_WIRE_VERSION: u8 = 4";
       }
       {
         label = "request header length";
-        needle = "const BLOCK_REQUEST_HEADER_LEN: usize = 20";
+        needle = "const BLOCK_REQUEST_HEADER_LEN: usize = 28";
       }
       {
         label = "response header length";
-        needle = "const BLOCK_RESPONSE_HEADER_LEN: usize = 12";
+        needle = "const BLOCK_RESPONSE_HEADER_LEN: usize = 20";
       }
       {
         label = "operation wire values";
@@ -66,7 +73,7 @@
       }
       {
         label = "request decode";
-        needle = "pub fn decode(payload: &[u8]) -> Result<(u32, Self), BlockWireError>";
+        needle = "pub fn decode(payload: &[u8]) -> Result<(BlockRequestIdentity, Self), BlockWireError>";
       }
       {
         label = "response decode";
@@ -145,7 +152,7 @@
         needle = "block_response_frames_are_stamped_by_reserved_block_slot_and_delivery_icount";
       }
     ]
-    ++ forbiddenFor "crates/crucible-qemu-plugin/src/block_io.rs" blockIo [
+    ++ forbiddenFor "crates/crucible/qemu/crucible-qemu-plugin/src/block_io.rs" blockIo [
       {
         label = "wall-clock dependency";
         needle = "SystemTime";
@@ -163,7 +170,7 @@
         needle = "std::fs::Metadata";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/io_wire_fuzz.rs" ioWireFuzz [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/io_wire_fuzz.rs" ioWireFuzz [
       {
         label = "block request corpus";
         needle = "IoWireFuzzChannel::BlockRequest";
@@ -197,7 +204,7 @@
         needle = "io_wire_fuzz_target_never_panics_on_regression_corpus";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/lib.rs" pluginLib [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/lib.rs" pluginLib [
       {
         label = "block API exported";
         needle = "BlockRequest";
@@ -211,7 +218,7 @@
         needle = "BlockWireError";
       }
     ]
-    ++ failuresFor "crates/crucible-shmem/src/lib.rs" shmem [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-shmem/src/lib.rs" shmem [
       {
         label = "max frame data";
         needle = "pub const MAX_FRAME_DATA: usize = 4608";
@@ -248,7 +255,10 @@ in
       version = "0";
       src = crucibleSrc;
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.rust
         pkgs.sed

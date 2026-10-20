@@ -11,18 +11,19 @@ authentication, and the boundary between the golden image and host policy.
 
 ## Invariants
 
-1. **One configuration source.** The metadata agent accepts literal `host.nix`
-   bytes. It never accepts a JSON storage plan, Ignition document, Butane
-   document, cloud-init configuration, or raw `repart.d`.
+1. **One configuration source.** The selected metadata provider accepts
+   literal `host.nix` bytes. It never accepts a JSON storage plan, Ignition
+   document, Butane document, cloud-init configuration, or raw `repart.d`.
 2. **Transport is not configuration.** A provider-size escape hatch may carry
    only `{ url, sha256, signature_url }`. It locates and authenticates the
    exact `host.nix` bytes; it cannot express host state.
 3. **Authenticate before interpretation.** The selected `platform` or `signed`
    policy authorizes the exact `host.nix` bytes before the initrd evaluates
    `aos.provisioning` or mutates a disk.
-4. **Closed early projection.** The initrd evaluates only the declared
-   `aos.provisioning` subtree. Undeclared stage-2 configuration is neither
-   merged into the result nor forced.
+4. **One complete fixed point.** The initrd evaluates its ordinary base,
+   system, authenticated package, and selected provider modules with exact
+   source-composed bindings. The storage plan is projected from that result;
+   no reduced provisioning evaluator or parallel option tree exists.
 5. **Validate twice.** Nix option types validate the operator-facing language.
    A versioned Rust data contract independently validates the evaluated plan
    before rendering `repart.d`.
@@ -45,17 +46,14 @@ authentication, and the boundary between the golden image and host policy.
    GPT state is the sole storage-mutation gate; an image provisioned
    out-of-band must carry a committed provenance marker.
 
-## Why a restricted initrd evaluation exists
+## Why a complete initrd evaluation exists
 
-`/var` must exist before switch-root, but the full configuration evaluator runs
-after switch-root because package configuration modules may need registry
-resolution and networking. Deferring all of `host.nix` therefore makes
-first-boot storage configuration impossible.
-
-The storage projection is closed: it uses only the base module library,
-`host.nix`, and image-provided provisioning defaults. It has no package roots,
-registry fixpoint, network access, or `system.build` output. Stock Nix runs in
-the measured initrd with:
+`/var` must exist before switch-root, so first-boot storage policy must be
+evaluated in initrd. The initrd does not use a reduced evaluator: it freezes the
+authenticated base library, selected package/provider modules, and ordinary
+ability composition into `initrdEvaluationInputs`, then calls the common
+`evalCompleteConfig` entry point. The storage plan is a projection of that one
+complete fixed point. Stock Nix runs in the measured initrd with:
 
 ```text
 nix-instantiate --store dummy:// --eval --strict --json
@@ -67,12 +65,9 @@ nix-instantiate --store dummy:// --eval --strict --json
   <eval-root>/entry.nix
 ```
 
-The AOS module engine is intentionally non-strict for this projection:
-
-- no evaluation-global `_module.strict = true`;
-- no evaluation-global `_module.freeformType`;
-- no read of `config.system.build.*`;
-- only `config.aos.provisioning` is forced.
+The common module engine applies the same option typing, assertions, selected
+package modules, and ability composition checks used by other stages. The
+provider then forces only the plan value it owns from the completed result.
 
 These are compatibility invariants, not incidental implementation details.
 A regression check evaluates a `host.nix` containing an undeclared,
@@ -111,18 +106,43 @@ namespaces and are reconciled by full stage-2 evaluation.
 The v1 partition contract contains:
 
 ```text
-device     null or a stable absolute /dev/disk/by-id path
-label      validated GPT label, defaulting to the logical attribute name
-type       linux-generic, swap, or a non-protected canonical raw GPT GUID
-sizeMin    systemd size string
-sizeMax    optional systemd size string
-weight     positive integer
-format     null, ext4, vfat, or swap
-uuid       optional operator-declared partition UUID; otherwise AOS-generated
-grow       whether this partition consumes remaining free space
-growFs     whether repart may grow an existing filesystem
-priority   deterministic placement priority
+device      null or a stable absolute /dev/disk/by-id path
+label       validated GPT label, defaulting to the logical attribute name
+type        linux-generic, linux-raid, swap, or a non-protected canonical raw GPT GUID
+sizeMin     systemd size string
+sizeMax     optional systemd size string
+weight      positive integer
+format      null, ext4, xfs, vfat, or swap
+encryption  null (image policy), none, or tpm2
+uuid        optional operator-declared partition UUID; otherwise AOS-generated
+grow        whether this partition consumes remaining free space
+growFs      whether repart may grow an existing filesystem
+priority    deterministic placement priority
 ```
+
+Above the partition layer, `aos.provisioning.storage.arrays` binds declared
+partitions into Linux MD arrays:
+
+```text
+level       raid0, raid1, raid10, raid5, or raid6
+members     logical partition names; each member becomes a raw linux-raid partition
+format      null, ext4, or xfs; the filesystem the assembled array carries
+encryption  null (image policy), none, or tpm2
+```
+
+A partition or array that carries a filesystem is a *volume*. Its filesystem
+label is the partition's GPT label or the array's name, and that label is the
+mount identity (`/dev/disk/by-label/<label>`) for every consumer; the validator
+bounds it by the filesystem's label capacity (16 bytes for ext4, 12 for xfs).
+The system-state volume is ext4 only; data volumes may be ext4 or xfs. The
+system-state volume is the `var` array when one is declared, otherwise the
+root-disk `var` partition; a `var` array must include that partition as a
+member. `encryption = "tpm2"` wraps the filesystem in a LUKS2 container sealed
+by the measured-boot unit and is admitted only on a measured-boot image, where
+the system-state volume may not be plaintext. Arrays are created with metadata
+1.2 and homehost `aos`, are named `/dev/md/<name>`, and are assembled by the
+initrd on every later boot; a `var` array is inferred from the member type of
+the `var` partition when no plan is available.
 
 The root-disk default (`device = null`) is resolved from the parent of the
 booted `root-a` partition. Explicit devices must be stable paths. The renderer
@@ -147,7 +167,12 @@ The validator rejects:
 - incompatible type/format pairs;
 - non-stable or relative device paths;
 - formats whose tools are absent from the initrd;
-- raw INI, arbitrary commands, and caller-chosen output paths.
+- raw INI, arbitrary commands, and caller-chosen output paths;
+- array members that are undeclared, formatted, encrypted, or shared between
+  arrays; levels with too few members; array names longer than an ext4 label
+  or equal to a partition label; a `var` array without the root-disk member;
+- `tpm2` encryption without measured boot, `none` on the system-state volume
+  with it, and encryption of anything but an ext4 or xfs volume.
 
 These rules deliberately tighten two earlier schema sketches: device paths are
 limited to `/dev/disk/by-id/...`, rather than any absolute `/dev` path, and GPT
@@ -157,9 +182,13 @@ stricter contract prevents a transient kernel name or an ambiguous
 that need repeated human-facing names use distinct GPT labels and mount by
 their explicit UUIDs.
 
-`/var` remains fixed substrate in v1. Measured images leave it raw so
-`aos-var-crypt` can create LUKS2 and enroll the TPM token. Unmeasured images
-format it as ext4. General filesystem mounts remain stage-2 configuration.
+`/var` keeps a fixed root-disk footing in v1: the root-disk `var` partition always
+exists, either as the volume itself or as a member of the `var` array. The
+renderer omits `Format=` for a TPM-sealed volume so `aos-var-crypt` can create
+LUKS2 and enroll the TPM token; plain volumes are formatted by repart
+(partitions) or by `aos-storage-topology` (arrays). Data-volume mounts remain
+stage-2 configuration, declared through `aos.filesystems.volumes` against the
+same logical names.
 
 The frozen image partitions occupy their own type space: root-a (and future
 root-b) use the target architecture's DPS root GUID, and a verity hash uses the
@@ -185,38 +214,22 @@ persisted definition directory under
 
 ## Metadata and trust
 
-The native metadata agent performs:
+The initrd ability graph performs:
 
 ```text
-aos metadata detect     # platform/config-drive discovery
-aos metadata fetch      # exact user-data + detached signature + facts
-aos metadata authorize  # platform/signed policy -> accepted host.nix
-aos metadata eval-provisioning
-                        # restricted eval -> typed plan JSON
+detect platform         # -> DetectedPlatform
+acquire metadata        # -> AcquiredMetadata + network bootstrap
+authorize input         # -> AuthorizedProvisioningInput
+observe plan            # -> CanonicalProvisioningPlan
 ```
 
-The stash under `/run/aos-metadata` contains:
-
-```text
-platform.env
-user-data
-user-data.sig                 # optional detached SSHSIG
-host.nix                      # policy-accepted exact bytes
-facts.json
-.metadata-result.json
-.provisioning-result.json     # trust evidence and host.nix hash
-provisioning-plan.json        # evaluated, normalized data
-repart-targets                # target to definition-directory index
-repart.d/                     # generated per-device definitions
-```
-
-`/run` is moved across switch-root. Stage 2 verifies the recorded hash before
-evaluating the same bytes. Metadata acquisition and full evaluation run again
-on every boot so runtime policy can change independently of the one-time
-storage commit. If fresh acquisition or authorization fails after provisioning,
-stage 2 restores the last fully evaluated, hash-checked input from
-`/var/lib/aos-provisioning/current`; it never promotes a partially fetched or
-unevaluated input.
+These are checked operation results, not files in a provider-neutral stash.
+Retention across stages uses the content-object ability and preserves the
+authenticated value identity. Metadata acquisition and full evaluation run
+again on every boot so runtime policy can change independently of the one-time
+storage commit. A retained input is addressed and authenticated through the
+content-object ability; a partially fetched or unevaluated value is never
+promoted.
 
 ### Platform policy
 
@@ -251,8 +264,8 @@ INITRD
     |          -> report coherent/divergent/unavailable; never mutate
     |
     `-- no committed marker:
-          host.nix present -> restricted aos.provisioning eval
-          host.nix absent  -> restricted default provisioning eval
+          host.nix present -> complete initrd fixed point
+          host.nix absent  -> complete fixed point with image defaults
                     |
                     v
               Rust validation
@@ -267,13 +280,16 @@ INITRD
          create/reserve pending provenance marker
                     |
                     v
-         apply every device; verify resulting topology
+         apply every device; verify resulting partition layout
+                    |
+                    v
+         create declared arrays on blank members; format plain array volumes
                     |
                     v
          relabel pending marker as operator-v1 or fallback-v1
                     |
                     v
-         /var encryption/format -> mount -> switch-root
+         volume sealing/unlock -> mount /var -> switch-root
 
 STAGE 2
   persist first-boot audit evidence and generated per-device definitions
@@ -293,16 +309,21 @@ aos-provenance-fallback-v1
 
 Only a committed provenance label means provisioning completed. Creating the
 partition as `pending` before the mutating passes reserves space ahead of a
-grow-to-fill partition without falsely recording success. A crash or device
-failure leaves `pending`; the next boot refuses an automatic replay so recovery
-can inspect which devices committed before choosing resume or factory reset.
+grow-to-fill partition without falsely recording success. The relabel happens
+in `aos-storage-topology.service`, after every declared array exists, so the
+transaction covers the array layer as well as the partition layer. A crash or
+device failure leaves `pending`; the next boot refuses an automatic replay so
+recovery can inspect which devices committed before choosing resume or factory
+reset. Array creation refuses a member that already carries any signature.
+Because the relabel rescans the partition table, the dm-verity root units
+order after `aos-storage-topology.service` on verity images.
 
 On the provisioning boot, authorization, evaluation, validation, preflight, or
 mutation failure blocks switch-root and emits a console diagnostic. The
 mutating `systemd-repart` exit status is always propagated.
 
 On later boots the committed GPT marker is a storage-mutation gate, not a
-configuration gate. Acquisition, authorization, the restricted projection,
+configuration gate. Acquisition, authorization, the complete initrd projection,
 and full stage-2 evaluation run again. A valid current storage projection is
 compared with the live disks using `systemd-repart --dry-run`; pending work is
 reported as divergence and requires factory reset. Missing or invalid current

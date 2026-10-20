@@ -57,6 +57,14 @@ in
 
           {
             printf '%s\n' '#!${buildBash}/bin/bash'
+            # Bazel's C++ toolchain uses its compiler path for both languages.
+            # Route C++ through its driver so libc++ selection remains active
+            # even when generator targets enable warnings as errors.
+            printf '%s\n' 'for argument in "$@"; do'
+            printf '%s\n' '  case "$argument" in'
+            printf '%s\n' "    *.cc|*.cpp|*.cxx|*.c++|*.C|*.mm|c++|-xc++) exec $out/bin/clang++ \"\$@\" ;;"
+            printf '%s\n' '  esac'
+            printf '%s\n' 'done'
             printf '%s\n' 'case " $* " in'
             printf '%s\n' '  *" -c "*|*" -E "*|*" -S "*|*" -fsyntax-only "*)'
             # Bazel can route generated C exec tools through the C wrapper while its

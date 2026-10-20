@@ -49,7 +49,7 @@ in
             case "$1" in
               *-vendor-*|*-cargo-artifacts-*|*-cargo-deps-*|*-cargo-dummy-source*|*.bpf.c|\
               rust-[0-9]*|cargo-[0-9]*|gcc-[0-9]*|binutils-[0-9]*|cmake-*|meson-*|ninja-*|\
-              pkg-config-*|gnumake-*|autoconf-*|automake-*|bison-*|flex-*|gperf-*|python3-*)
+              pkg-config-*|gnumake-*|autoconf-*|automake-*|bison-*|flex-*|gperf-*)
                 return 0
                 ;;
             esac
@@ -66,7 +66,12 @@ in
           # pattern edit cannot silently turn the audit into a no-op.
           is_forbidden_runtime_name aos-vendor-0.1.0
           is_forbidden_runtime_name aos-ebpf-net-policy.bpf.c
-          is_forbidden_runtime_name python3-3.13.1
+          # Interpreters can be declared runtime dependencies, including the
+          # selected service and network handlers. Their bytes still count.
+          if is_forbidden_runtime_name python3-3.13.1; then
+            echo "runtime classifier rejected a runtime interpreter" >&2
+            exit 1
+          fi
           if is_forbidden_runtime_name gcc-libs-14.2.0; then
             echo "runtime classifier rejected the valid gcc-libs package" >&2
             exit 1

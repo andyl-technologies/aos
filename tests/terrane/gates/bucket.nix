@@ -133,7 +133,7 @@
   focusedTests = ''
     run_bucket_test() {
       test_name=$1
-      cargo test --frozen --offline -p terrane --features tokio --lib -- --list > "$TMPDIR/bucket-tests.txt"
+      cargo test --frozen --offline -p terrane-sdk --features tokio --lib -- --list > "$TMPDIR/bucket-tests.txt"
       python3 - "$TMPDIR/bucket-tests.txt" "$test_name" <<'PYTEST'
     import sys
 
@@ -143,12 +143,12 @@
     if f"{sys.argv[2]}: test" not in names:
         raise SystemExit(f"required bucket test is missing: {sys.argv[2]}")
     PYTEST
-      cargo test --frozen --offline -p terrane --features tokio --lib "$test_name" -- --exact
+      cargo test --frozen --offline -p terrane-sdk --features tokio --lib "$test_name" -- --exact
     }
 
     run_core_bucket_test() {
       test_name=$1
-      cargo test --frozen --offline -p terrane-core --lib -- --list > "$TMPDIR/core-bucket-tests.txt"
+      cargo test --frozen --offline -p terrane-format --lib -- --list > "$TMPDIR/core-bucket-tests.txt"
       python3 - "$TMPDIR/core-bucket-tests.txt" "$test_name" <<'PYTEST'
     import sys
 
@@ -158,7 +158,7 @@
     if f"{sys.argv[2]}: test" not in names:
         raise SystemExit(f"required core bucket test is missing: {sys.argv[2]}")
     PYTEST
-      cargo test --frozen --offline -p terrane-core --lib "$test_name" -- --exact
+      cargo test --frozen --offline -p terrane-format --lib "$test_name" -- --exact
     }
   '';
 

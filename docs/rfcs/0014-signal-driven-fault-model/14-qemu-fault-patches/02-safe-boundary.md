@@ -1,4 +1,4 @@
-# Patch 0048 — `crucible-fault-safe-boundary`
+# Capability task 0048 — `crucible-fault-safe-boundary`
 
 ## Purpose
 
@@ -10,9 +10,10 @@ scheduler.
 ## Capability and dependencies
 
 - Provides `qemu.fault-safe-boundary.v1`.
-- Depends on 0047, existing sim observer, forced vCPU exit, RR cursor,
-  preemption injection, and time-advance commit barrier patches.
-- Required by 0049–0070.
+- Requires the capability specified by capability task 0047, the existing sim
+  observer, forced vCPU exit, RR cursor,
+  preemption injection, and time-advance commit barrier capabilities.
+- Required by capability tasks 0049–0070.
 
 ## Boundary phases
 
@@ -84,7 +85,8 @@ handler state are committed.
 
 ## VMState
 
-Patch 0067 serializes armed/reached states, command bytes, order keys, boundary
+The VMState capability specified by capability task 0067 serializes
+armed/reached states, command bytes, order keys, boundary
 generation, and partially published result state. Snapshot is forbidden while a
 handler is in `applying`; QEMU first completes or rolls back before acknowledging
 the save barrier.
@@ -102,14 +104,14 @@ the save barrier.
 5. Consume a preparation result through the GPL-side completion callback,
    submit its authorized commit, and prove both results carry the same icount
    and byte-for-byte identical handler evidence.
-6. Save before armed, after armed, and after applied states; patch 0070's later
-   aggregate test must resume identically.
-7. Revert this patch and prove exact-boundary probe gate fails.
+6. Save before armed, after armed, and after applied states; the aggregate
+   capability test specified by capability task 0070 must resume identically.
+7. Run the exact-boundary probe against pristine QEMU and prove it fails closed.
 8. Prove non-sim QEMU matches the unpatched corpus.
 
 ## Licensing checklist
 
-This determinism-critical patch touches shared TCG/scheduler paths only behind
+This determinism-critical capability touches shared TCG/scheduler paths only behind
 the sim-fault predicate. Upstream file licenses/notices remain. New files update
 the license inventory. The DCO-signed commit includes focused microtests and
 corresponding-source metadata.

@@ -6,7 +6,7 @@
   ];
 
   runTest = name: ''
-    if ! cargo test --frozen --offline -p terrane-core --test foundation_vectors ${name} -- --exact \
+    if ! cargo test --frozen --offline -p terrane-format --test foundation_vectors ${name} -- --exact \
       > "$TMPDIR/foundation-model-test.log" 2>&1; then
       cat "$TMPDIR/foundation-model-test.log"
       exit 1
@@ -16,13 +16,13 @@
 in
   sourceGate "foundation-format-vectors" ''
     cd crates
-    cargo build --frozen --offline -p terrane-core --example reference_blake3
+    cargo build --frozen --offline -p terrane-format --example reference_blake3
     reference_binary="$CARGO_TARGET_DIR/debug/examples/reference_blake3"
     python3 ../tests/terrane/foundation_vectors.py --check \
       ../docs/rfcs/0024-terrane/spec/reference/golden-vectors.md \
       --blake3-bin "$reference_binary" > "$out/reference-result"
     cargo fmt --all -- --check
     ${builtins.concatStringsSep "\n" (map runTest tests)}
-    cargo clippy --frozen --offline -p terrane-core --test foundation_vectors -- -D warnings
+    cargo clippy --frozen --offline -p terrane-format --test foundation_vectors -- -D warnings
     printf 'PASS: fifteen independent models and three exact public-model tests\n' > "$out/result"
   ''

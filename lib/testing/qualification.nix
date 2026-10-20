@@ -5,29 +5,45 @@
   identity,
   scenarios,
   caseScenarios ? {},
+  scenarioFixtures ? {},
   workRoot,
   timeoutSeconds ? 1800,
 }: let
-  registry = pkgs.writeTextFile {
-    name = "${name}-scenarios";
-    destination = "/scenarios.json";
-    text = builtins.toJSON ({
-        schema_version =
-          if caseScenarios == {}
-          then "aos.release.qualification-scenarios/v1"
-          else "aos.release.qualification-scenarios/v2";
+  registryInputs = pkgs.writeTextFile {
+    name = "${name}-scenario-inputs";
+    destination = "/inputs.json";
+    text = builtins.toJSON {
+      registry = {
+        schema_version = "aos.release.qualification-scenarios/v1";
         inherit platform scenarios;
-      }
-      // (
-        if caseScenarios == {}
-        then {}
-        else {case_scenarios = caseScenarios;}
-      ));
+      } // (if caseScenarios == {} then {} else {case_scenarios = caseScenarios;});
+      fixtures = builtins.mapAttrs (_: fixture: builtins.toString fixture) scenarioFixtures;
+    };
+  };
+  registry = pkgs.mkDerivation {
+    pname = "${name}-scenarios";
+    version = "1";
+    src = null;
+    buildDeps = [pkgs.python3];
+    dontStrip = true;
+    dontNukeRefs = true;
+    phases = [{
+      name = "bind-fixtures";
+      script = ''
+        PYTHONDONTWRITEBYTECODE=1 ${pkgs.python3}/bin/python3 \
+          ${./qualification-fixture-commitments-self-test.py} \
+          ${./qualification-fixture-commitments.py}
+        mkdir -p "$out"
+        PYTHONDONTWRITEBYTECODE=1 ${pkgs.python3}/bin/python3 \
+          ${./qualification-fixture-commitments.py} \
+          ${registryInputs}/inputs.json "$out/scenarios.json"
+      '';
+    }];
   };
   quote = value: "'" + builtins.replaceStrings ["'"] ["'\\''"] value + "'";
   registryPath = "${registry}/scenarios.json";
   executor = pkgs.writeShellScriptBin name ''
-    exec ${pkgs.aos}/bin/aos release qualification execute \
+    exec ${pkgs.aos}/bin/aos maintain release step qualification execute \
       --scenarios ${registryPath} \
       --identity ${quote identity} \
       --work-root ${quote workRoot} \
@@ -43,7 +59,8 @@ in
         (executor.passthru or {})
         // {
           qualification = {
-            inherit identity platform registryPath scenarios caseScenarios;
+            inherit identity platform registryPath scenarios caseScenarios scenarioFixtures;
+            registryArtifact = registry;
           };
         };
     }

@@ -3,7 +3,7 @@
 ## Format choice
 
 The initial wire format is canonical UTF-8 JSON with the media/schema identifier
-`aos.package-documentation/v1+json`. JSON is selected over CBOR and Protobuf
+`aos.package-reference/v1+json`. JSON is selected over CBOR and Protobuf
 because it is directly constructible from restricted Nix values, supported by
 Serde and browsers, inspectable with ordinary AOS tools, and usable as an offline
 interchange format without generated bindings.
@@ -44,14 +44,15 @@ retention edges. The signed platform metadata and API view resource carry exact
 store paths; the document may repeat non-reference NAR/content digests for
 cross-checking.
 
-The first implementation should cap the uncompressed NAR and document at 4 MiB,
+The first implementation caps the uncompressed NAR and package reference at 12 MiB,
 with tighter per-field and per-collection limits. Raising the cap is a format
 policy change, not an operator-tunable way to bypass Worker resource limits.
 
 ## Top-level model
 
-The following example is illustrative; the implementation phase supplies a
-closed checked schema and canonical fixture corpus.
+The following example is illustrative. The machine-readable schema is generated
+from the authoritative Rust model; it is not maintained as a second checked-in
+catalog.
 
 ```json
 {
@@ -67,49 +68,25 @@ closed checked schema and canonical fixture corpus.
   "identity": {
     "semantic_schema_sha256": "sha256:...",
     "runtime_nar_hash": "sha256:...",
-    "config_module_nar_hash": "sha256:...",
-    "system_module_nar_hash": null,
-    "expose_artifact_nar_hash": "sha256:...",
     "source_nar_hash": "sha256:..."
-  },
-  "sections": [
-    {
-      "id": "overview",
-      "title": "Overview",
-      "blocks": [
-        { "kind": "paragraph", "text": "Configure virtual hosts and upstreams." }
-      ]
-    }
-  ],
-  "options": [
-    {
-      "path": ["nginx", "virtualHosts", "<name>", "listenPort"],
-      "display_path": "nginx.virtualHosts.<name>.listenPort",
-      "type": { "kind": "port" },
-      "type_signature": "unsigned 16-bit TCP port",
-      "description": [
-        { "kind": "paragraph", "text": "Port on which this virtual host listens." }
-      ],
-      "default": { "kind": "literal", "value": 80 },
-      "example": { "kind": "literal", "value": 8080 },
-      "visibility": "public",
-      "owner": { "package": "nginx", "root": "nginx", "interface_abi": 1 },
-      "contributable": true,
-      "activation": { "kind": "reload", "units": ["nginx.service"] },
-      "source": { "path": "pkgs/networking/_nginx-config/module.nix" }
-    }
-  ],
-  "runtime": {
-    "units": [],
-    "listeners": [],
-    "managed_paths": [],
-    "config_artifacts": [],
-    "credentials": [],
-    "capabilities": [],
-    "confinement": null
   }
 }
 ```
+
+The package metadata remains a nested value inside the one signed package
+reference. The checked package fixed point supplies its ability reference:
+
+```json
+{
+  "schema": "aos.package-reference/v1",
+  "document": { "schema": "aos.package-documentation/v1" },
+  "ability_reference": { "schema": "aos.package-ability-reference/v1" }
+}
+```
+
+The complete values occupy the abbreviated fields above. The validator checks
+their package/version agreement. Readers derive option and method rows from
+`ability_reference`; the signed object has no copied schema-row collection.
 
 ## Structured prose
 
@@ -140,39 +117,39 @@ an explicit path-segment variant in the schema; the human `display_path` is
 derived and checked, never parsed as authority. This prevents ambiguity around
 dots, quotes, and generated attribute names.
 
-The type algebra is recursive and closed:
+The shared option type algebra is recursive and closed. It covers booleans,
+integers, strings, enums, paths, packages, and typed artifact/resource/provider
+references; optional values; lists and maps with explicit bounds and ordering;
+fixed `record` values whose keys are package-local identifiers; and
+`documentRecord` values whose bounded exact field names may include
+configuration-format names such as `@type`. `taggedUnion` carries an explicit
+tag, while `disjointUnion` preserves raw values only when each variant has a
+distinct top-level JSON kind. Standard Nix-only forms remain representable for
+ordinary module options, but a public portable ability option cannot use an
+opaque type.
 
-- `bool`, signed/unsigned `integer`, `string`, `port`, `path`, `duration`,
-  `cidr`, and `opaque-reference` scalars;
-- `enum` with documented values;
-- `list`, `set`, and `attrs-of` containers;
-- fixed-field `submodule` records with open or closed additional attributes;
-- `nullable` and bounded `one-of` unions;
-- constraints such as integer range, string pattern/length, collection size,
-  and uniqueness.
-
-Every option also carries the stable legacy `type_signature` already used by
-the resolver's declaration schema. Publication verifies that the rich type
-projects to that signature and that option paths exactly match the signed
-`declares` inventory. The rich document cannot widen the configuration
-authority granted by `ConfigModuleMeta`.
+Every option also carries the module engine's stable `type_signature`.
+Publication validates the path, rich type, signature, value examples,
+visibility, and source provenance as one signed `PackageOptionDeclaration`.
+There is no second `declares` inventory or documentation type mirror.
 
 ## Option fields
 
-Each option records:
+Each option row mechanically derived from the signed package reference records:
 
 - exact path segments and derived display path;
 - structured type and stable type signature;
-- structured description;
+- authored description;
 - safe literal default, `default_text`, or explicit absence;
 - safe example, when one is useful;
 - public, internal, or hidden visibility;
 - read-only and deprecation state, with replacement option when applicable;
-- package/root owner, root interface ABI, and contribution boundary;
-- package version, platform, image/module ABI, or feature availability;
-- expected activation effect: none, re-evaluate, reload, restart, recreate,
-  reboot, or package-specific operation, including affected units;
+- contribution boundary;
 - source-relative declaration path and optional line/attribute locator.
+
+Static option documentation does not predict activation effects. Deployment
+tools derive concrete effects from the checked desired, binding, and effect
+plans for the selected environment.
 
 `default_text` describes computed or environment-dependent behavior without
 serializing a value. A literal default/example is admitted only when it is
@@ -182,55 +159,40 @@ never forced merely to improve documentation.
 
 ## Ownership and contribution
 
-The document explains authenticated configuration authority without becoming
-that authority. It records:
+The signed package reference explains authenticated configuration authority without
+becoming that authority. Each option belongs to the package whose authenticated
+module declares it and retains the exact evaluated declaration's contribution
+flag and source provenance.
 
-- private package roots;
-- exclusive shared-root owners and interface ABI;
-- exact contributable wildcard subpaths;
-- package contributions and their required owner ABI;
-- artifacts, units, users, groups, and capabilities the module may create.
+Publication derives these fields from the signed package fixed-point projection
+and rejects any disagreement. A contributor cannot claim documentation
+ownership or mark a forbidden path extensible through prose.
 
-Image-owned services use the same document model without pretending that their
-package owns a runtime config module. A canonical service catalog in the exact
-image base library maps the implementing package to reviewed option prefixes
-and units. Publication evaluates that immutable base library, records its NAR
-identity in both the signed package selection and canonical document, and
-extracts only the selected public declarations. The Hub independently requires
-those two identities to agree before indexing. This gives packages such as
-`aos-hub`, `chrony`, `openssh`, and `systemd` complete package pages while the
-image module remains their sole configuration authority.
+## Abilities and deployment observations
 
-Publication derives these fields from signed `ConfigModuleMeta` and rejects any
-disagreement. A contributor cannot claim documentation ownership or mark a
-forbidden path contributable through prose.
+`PackageAbilityReference` carries package-owned interfaces, implementations,
+requirements, and guarantees from the checked package contract. The package
+reference retains that exact projection; readers derive one method row for each
+exported interface method, including its exact `InterfaceKey` and complete
+provider-neutral `MethodDescriptor`. Implementations and requirements carry
+their own authored descriptions. Guarantee documentation carries the authored
+name, version, semantics, and description; executable identity derives from
+name, version, and semantics only.
 
-## Runtime surface
-
-The runtime section is derived from signed expose metadata and config artifacts,
-then enriched by package-authored descriptions. It records:
-
-- services, sockets, timers, paths, mounts, targets, and their relationships;
-- listeners, protocols, ports, and declared network mode;
-- state, cache, logs, runtime, and configuration paths;
-- configuration artifacts and validation/reload behavior;
-- credential **names**, purpose, destination, accepted opaque-reference kinds,
-  required/optional feature gate, mode, and restart/reload effect;
-- capability provides/uses, kernel/module/sysctl/firewall requirements, and
-  confinement summary;
-- package lifecycle effects for enable, disable, upgrade, rollback, and remove.
-
-Credential values and resolved source locations are never present. The Web
-composer and LSP may suggest the shape
-`system-credential:<name>` but cannot read or preview the credential.
+Concrete services and other realized resources belong to a deployment view.
+That view renders only checked resource revisions and provider-produced
+observations from the shared inspection graph, including their controller and
+provenance. Package reference generation never infers a unit, listener, path,
+or activation action from package names, option prefixes, expose metadata, or a
+documentation-only inventory. When no checked plan or observation is present,
+the deployment view omits the missing realization details.
 
 ## Package sections and source identity
 
-Packages without a config module still publish package metadata, commands,
-runtime/dependency summaries, integrity identity, and optional structured
-sections. Configurable packages may add overview, examples, migration notes,
-operational cautions, and troubleshooting sections as Nix data beside their
-module.
+Packages without public options still publish package metadata and integrity
+identity. Their checked ability reference remains separate, and their tooling
+response may contain empty derived option and method lists. Any explanatory
+package prose is authored once through the ordinary package module fixed point.
 
 Source locators are repository-relative paths plus optional stable attribute
 locations. Absolute authoring-worktree paths are forbidden. Hub may link them to
@@ -245,15 +207,14 @@ Publication fails when:
 - a signed public declaration has no public description;
 - a documented option is not in the signed declaration schema;
 - paths or type signatures disagree;
-- ownership, contribution, credential, artifact, or runtime statements disagree
-  with signed metadata;
+- ownership or contribution statements disagree with signed metadata;
+- package-owned interface, method, output, implementation, requirement, or
+  guarantee documentation is incomplete or names an absent declaration;
 - a public enum value or submodule field is undocumented;
 - a literal default/example is unsafe or contains store context;
 - the document exceeds limits or is not canonical;
 - a public package opts into the required documentation feature but omits the
   object.
 
-The gate may initially permit legacy packages with summary-only generated
-documents. Once a package publishes `requires-features =
-["package-documentation-v1"]`, consumers that cannot validate the format reject
-it rather than showing stale or partial reference material.
+Consumers that cannot validate the advertised format reject it rather than
+showing stale or partial reference material.

@@ -70,6 +70,7 @@
 
   targetSystem = mkSystem [
     ../../systems/server-verity.nix
+    ../../systems/_server-test-packages.nix
     {
       aos.kernel.modules = ["9pnet_virtio" "9p"];
       environment.systemPackages = [
@@ -78,7 +79,7 @@
       ];
     }
   ];
-  fixtureClosureInfo = import ../../lib/build/closure-info.nix {inherit lib pkgs;} {
+  fixtureClosureInfo = lib.build.closureInfo {inherit pkgs;} {
     rootPaths = [
       pkgs.aos.apm
       pkgs.aos.apr
@@ -178,7 +179,7 @@ in {
           {GIT} config --global user.name 'Platform Publisher'
           {GIT} config --global user.email platform@example.test
           image_state=/var/lib/profiles/image/state.json
-          running_top=$(readlink -f /aos-toplevel)
+          running_top=$(readlink -f /usr/lib/aos/toplevel)
           package=$({JQ} -er \
             '. as $state | .generations[] | select(.number == $state.running) | .package_name' \
             "$image_state")
@@ -298,7 +299,7 @@ in {
       assert "sysroot-locked" in listed, listed
       target.succeed(apm("remove lock-app --yes"))
 
-      target.succeed("test -L /aos-toplevel")
+      target.succeed("test -L /usr/lib/aos/toplevel")
       target.succeed("test -s /var/lib/profiles/image/state.json")
     '';
 }

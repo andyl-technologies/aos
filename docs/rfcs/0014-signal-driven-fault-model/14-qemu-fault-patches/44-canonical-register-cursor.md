@@ -1,8 +1,8 @@
-# 0093 - Canonical after-instruction register cursor
+# Capability task 0093 — Canonical after-instruction register cursor
 
 ## Purpose
 
-Patch `0093` makes register mutation evidence use the same canonical RR
+Capability task `0093` makes register mutation evidence use the same canonical RR
 coordinate as durable scheduler state. QEMU plugin callbacks observe the
 retired prefix before the current callback instruction. Evidence for the
 after-instruction phase therefore advances that prefix by the current
@@ -27,7 +27,7 @@ vCPU at position zero.
 
 ## Files and license scope
 
-The patch modifies GPL-side `plugins/crucible-fault-register.c` and its QEMU
+The atomic patch modifies GPL-side `plugins/crucible-fault-register.c` and its QEMU
 live plugin test. It changes no shared-memory or control wire format and adds
 no QEMU file.
 
@@ -36,8 +36,8 @@ no QEMU file.
 1. The complete live register mutation matrix must pass both mutation phases,
    including its exact terminal case.
 2. The terminal case must reject the legacy position-equal-quantum evidence.
-3. Patch-prefix provenance, attribution, regeneration, drop-one, ABI, and
-   license-boundary gates must pass.
+3. Atomic-patch source attribution, regeneration, pristine-QEMU negative, ABI,
+   and license-boundary gates must pass.
 
 - **[QFP-REG-CURSOR-1]** After-instruction register evidence MUST identify the
   semantic coordinate after the current instruction.

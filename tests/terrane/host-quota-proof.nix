@@ -14,15 +14,15 @@
       nukeRefsKeep = [pkgs.terrane.src];
     } "host-quota-proof-image" ''
       cd crates
-      cargo test --frozen --offline -p terrane-fs --lib \
+      cargo test --frozen --offline -p terrane-linux --lib \
         --test host_quota_protocol --test host_quota_native \
         --no-run --message-format=json > "$TMPDIR/host-quota-build.jsonl"
-      cargo test --frozen --offline -p aos-terrane --lib --test host_quota_config \
+      cargo test --frozen --offline -p aos-terrane-integration --lib --test host_quota_config \
         --no-run --message-format=json >> "$TMPDIR/host-quota-build.jsonl"
       cargo metadata --frozen --offline --no-deps --format-version=1 \
         > "$TMPDIR/host-quota-packages.json"
       rustc --print target-libdir > "$TMPDIR/host-quota-rust-libdir"
-      python3 ${../../crates/aos-terrane/src/host/proof_image.py} ${./.}
+      python3 ${../../crates/terrane/integration/aos-terrane-integration/src/host/proof_image.py} ${./.}
     '';
   native = testing.mkVMTest {
     name = "terrane-host-quota-helper-ext4";
@@ -54,10 +54,10 @@
         ${image}/bin/host_quota_config --exact host_quota_admin_ledger_preserves_domain_and_project_vm --ignored --nocapture
       setpriv --bounding-set=-all,+sys_admin,+dac_read_search,+fowner,+chown,+fsetid \
         --clear-groups --inh-caps=-all --ambient-caps=-all \
-        ${image}/bin/aos_terrane --exact host::claims::tests::host_global_claims_preserve_crash_custody_vm --ignored --nocapture
+        ${image}/bin/aos_terrane_integration --exact host::claims::tests::host_global_claims_preserve_crash_custody_vm --ignored --nocapture
       setpriv --bounding-set=-all,+sys_admin,+dac_read_search,+fowner,+chown,+fsetid \
         --clear-groups --inh-caps=-all --ambient-caps=-all \
-        ${image}/bin/aos_terrane --exact host::claims::provision_tests::host_global_provision_kill_restart_and_broker_vm --ignored --nocapture
+        ${image}/bin/aos_terrane_integration --exact host::claims::provision_tests::host_global_provision_kill_restart_and_broker_vm --ignored --nocapture
     '';
   };
 in {

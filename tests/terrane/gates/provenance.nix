@@ -1,13 +1,13 @@
 {sourceGate, ...}: let
   runCase = path: ''
-    cargo test --frozen --offline -p terrane-core --lib ${path} -- --exact > "$TMPDIR/test.log"
+    cargo test --frozen --offline -p terrane-format --lib ${path} -- --exact > "$TMPDIR/test.log"
     python3 -c 'import pathlib, sys; output = pathlib.Path(sys.argv[1]).read_text(); print(output); sys.exit("test result: ok. 1 passed; 0 failed" not in output or "test " + sys.argv[2] + " ... ok" not in output)' "$TMPDIR/test.log" "${path}"
   '';
   runTest = name: runCase "provenance::tests::${name}";
   runNativeCase = path: ''
-    cargo test --frozen --offline -p terrane --no-default-features --features tokio,surface-sdk --lib ${path} -- --exact --list > "$TMPDIR/inventory.log"
+    cargo test --frozen --offline -p terrane-sdk --no-default-features --features tokio,surface-sdk --lib ${path} -- --exact --list > "$TMPDIR/inventory.log"
     python3 ../tests/terrane/check_native_gate.py inventory "$TMPDIR/inventory.log" '["${path}"]'
-    if cargo test --frozen --offline -p terrane --no-default-features --features tokio,surface-sdk --lib ${path} -- --exact --test-threads=1 > "$TMPDIR/native.log"; then
+    if cargo test --frozen --offline -p terrane-sdk --no-default-features --features tokio,surface-sdk --lib ${path} -- --exact --test-threads=1 > "$TMPDIR/native.log"; then
       python3 ../tests/terrane/check_native_gate.py execution "$TMPDIR/native.log" '["${path}"]'
     else
       native_test_status=$?
@@ -18,7 +18,7 @@
 in {
   prov-commit-signature = sourceGate "prov-commit-signature" ''
     cd crates
-    cargo build --frozen --offline --no-default-features -p terrane-core --lib
+    cargo build --frozen --offline --no-default-features -p terrane-format --lib
     ${runTest "prov_commit_signature_binds_exact_preimage_and_signed_identity"}
     ${runTest "prov_commit_verify_rejects_tampering_missing_token_and_wrong_context"}
     ${runTest "prov_commit_signature_uses_last_attenuation_key"}

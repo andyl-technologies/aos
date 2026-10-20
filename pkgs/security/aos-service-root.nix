@@ -1,12 +1,69 @@
 ##! aos-service-root — Prepare trusted per-unit overlay roots
 {
+  lib,
   mkDerivation,
   bash,
   coreutils,
   util-linux,
 }:
 mkDerivation {
+  platformSupport = {
+    build = [{abi = ["gnu"]; os = ["linux"];}];
+    host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+    target = [];
+    role = "public-package";
+  };
   pname = "aos-service-root";
+  qualification.packageProbe = lib.qualification.commandProbe {
+    "primary" = {
+      "artifacts" = [];
+      "expected" = "The helper accepts the tokens and reports successful no-op cleanup.";
+      "files" = {};
+      "input" = "A cleanup request for a unique package with a canonical immutable payload.";
+      "operation" = "Run the idempotent cleanup path when no overlay root exists.";
+      "steps" = [
+        {
+          "argv" = [
+            "@python@"
+            "-c"
+            "import subprocess\nresult = subprocess.run([\"@out@/bin/aos-service-root\", \"cleanup\", \"qualification-seventh\", \"@out@\", \"probe.service\"], capture_output=True)\nassert result.returncode == 0, result.stderr\nprint(\"aos-service-root operation passed\")\n"
+          ];
+          "exit_code" = 0;
+          "stderr" = {
+            "exact" = "";
+          };
+          "stdout" = {
+            "exact" = "aos-service-root operation passed\n";
+          };
+        }
+      ];
+    };
+    "badInput" = {
+      "artifacts" = [];
+      "expected" = "The helper rejects the token before accessing overlay state.";
+      "files" = {};
+      "input" = "A cleanup request containing a package token with a slash.";
+      "operation" = "Validate the unsafe package token.";
+      "steps" = [
+        {
+          "argv" = [
+            "@python@"
+            "-c"
+            "import subprocess, sys\nresult = subprocess.run([\"@out@/bin/aos-service-root\", \"cleanup\", \"bad/package\", \"@out@\", \"probe.service\"], capture_output=True, text=True)\nassert result.returncode == 1 and \"invalid package token\" in result.stderr, (result.returncode, result.stdout, result.stderr)\nsys.stderr.write(\"aos-service-root rejected invalid input\\n\")\nraise SystemExit(7)\n"
+          ];
+          "exit_code" = 7;
+          "observes_rejection" = true;
+          "stderr" = {
+            "exact" = "aos-service-root rejected invalid input\n";
+          };
+          "stdout" = {
+            "exact" = "";
+          };
+        }
+      ];
+    };
+  };
+
   version = "0";
   src = null;
 

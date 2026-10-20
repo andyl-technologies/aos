@@ -93,10 +93,10 @@
       assert_store_valid "$TOOL_STORE" "readd-tool"
 
       echo "==> Maintainer: publish readd-tool and static cache"
-      $APR create readd-reg
+      create_publish_registry readd-reg
       REG_DIR="$REG_STORAGE/readd-reg"
       DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
-      $APR publish "$TOOL_STORE" \
+      publish_vm_package "$TOOL_STORE" \
         --name readd-tool \
         --version 1.0.0 \
         --description "Registry re-add recovery fixture" \

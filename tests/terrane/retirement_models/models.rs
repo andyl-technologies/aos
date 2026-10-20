@@ -4,12 +4,12 @@
 //! also decoded into complete independently constructed nested public models.
 
 use super::wire;
-use terrane_core::bucket::{
+use terrane_format::bucket::{
     BucketCapabilities, GenerationManifest, PackExclusion, StoreProfile, Tombstone,
 };
-use terrane_core::gc::GcLease;
-use terrane_core::gc::publication::{BackendBinding, PublicationState, RemoteProvider};
-use terrane_core::gc::retirement::*;
+use terrane_format::gc::GcLease;
+use terrane_format::gc::publication::{BackendBinding, PublicationState, RemoteProvider};
+use terrane_format::gc::retirement::*;
 
 const PACK: [u8; 16] = [0x12; 16];
 const NONCE: [u8; 32] = [0x34; 32];

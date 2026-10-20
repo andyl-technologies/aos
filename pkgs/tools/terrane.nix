@@ -3,24 +3,45 @@
   lib,
   stdenv,
   mkCargoPackage,
-  fetchCargoVendor,
+  aosWorkspaceVendor,
   util-linux,
 }: let
   version = "0.1.0";
-  src = import ./aos/_workspace-source.nix {inherit lib;};
-  cargoDeps = fetchCargoVendor {
-    inherit src;
-    name = "terrane-vendor-${version}";
-    sourceRoot = "source/crates";
-    hash = "sha256-p4vKrpc6I87TzR6UECtmwuIez6bJGyGJ5upunZjxpGY=";
+  # Gates bind the full integration inputs; Cargo providers share upstream's
+  # lockfile-only vendor instead of retaining an independent dependency pin.
+  src = import ./aos/_workspace-source.nix {
+    inherit lib;
+    includeIntegrationInputs = true;
   };
+  cargoDeps = aosWorkspaceVendor;
   # Linux realizers are target-specific; the portable SDK and CLI are tested
   # on every supported native target (PKG-3).
   testPackages =
-    ["terrane-core" "terrane" "terrane-cli" "aos-terrane"]
-    ++ lib.optionals stdenv.hostPlatform.isLinux ["terrane-fs"];
+    ["terrane-format" "terrane-sdk" "terrane-cli" "aos-terrane-integration"]
+    ++ lib.optionals stdenv.hostPlatform.isLinux ["terrane-linux"];
 in
   mkCargoPackage {
+    platformSupport = {
+      build = [
+        {
+          os = ["linux" "darwin"];
+          cpu = ["x86_64" "aarch64"];
+        }
+      ];
+      host = [
+        {
+          os = ["linux" "darwin"];
+          cpu = ["x86_64" "aarch64"];
+        }
+      ];
+      target = [
+        {
+          os = ["linux" "darwin"];
+          cpu = ["x86_64" "aarch64"];
+        }
+      ];
+      role = "public-package";
+    };
     pname = "terrane";
     inherit version src cargoDeps;
     cargoRoot = "crates";

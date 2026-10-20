@@ -1,6 +1,6 @@
 //! Compares the original published prefix with independent pure field models.
 //!
-//! The sandbox installs this template as `terrane-core/tests/prefix_vectors.rs`.
+//! The sandbox installs this template as `terrane/sdk/terrane-format/tests/prefix_vectors.rs`.
 //! Chunking and unsigned token projections use separate private test templates.
 //! No fixture authenticates a principal, a token, or an operation.
 

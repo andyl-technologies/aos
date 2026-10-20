@@ -1,5 +1,6 @@
 ##! Tcl — Tool Command Language runtime and development library
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -11,7 +12,56 @@
   version = "9.0.2";
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "tcl";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Tcl prints the exact integer result 42.";
+        "files" = {
+          "answer.tcl" = "puts [expr {19 + 23}]\n";
+        };
+        "input" = "A Tcl program that adds two integers.";
+        "operation" = "Evaluate the arithmetic expression with tclsh.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/tclsh9.0"
+              "answer.tcl"
+            ];
+            "exit_code" = 0;
+            "stdout" = {
+              "exact" = "42\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Tcl reports an expression parse failure and exits unsuccessfully.";
+        "files" = {
+          "invalid.tcl" = "expr {19 +}\n";
+        };
+        "input" = "A Tcl arithmetic expression ending in an operator.";
+        "operation" = "Evaluate the malformed expression with tclsh.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/tclsh9.0"
+              "invalid.tcl"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {
@@ -144,6 +194,9 @@ in
             make -j$NIX_BUILD_CORES
           ''
           else ''
+            # Tcl's Linux linker command omits a SONAME. Give each shared
+            # library its basename so consumers record a stable loader name.
+            sed -i '/^SHLIB_LD[[:space:]]*=/ s|$| -Wl,-soname,$@|' Makefile
             make -j$NIX_BUILD_CORES
           '';
       }

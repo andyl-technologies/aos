@@ -211,7 +211,20 @@
       "audience": "end-user",
       "cli_families": ["instance"],
       "web_workflows": ["instance-settings"],
-      "methods": ["GetInstanceSettings", "PlanSetInstanceSettings", "SetInstanceSettings"]
+      "web_method_exceptions": [
+        {"method": "TriggerInstanceMaintenance", "reason": "Immediate maintenance scheduling is an explicit operator command used during registry retirement and incident response; the browser observes maintenance results but does not schedule work."},
+        {"method": "ListInstanceOciRoutes", "reason": "Instance OCI root routes are deployment-wide delivery topology administered through the reviewed CLI workflow; the first console release observes registry container catalogs but does not manage instance routes."},
+        {"method": "GetInstanceOciRoute", "reason": "Instance OCI root routes are deployment-wide delivery topology administered through the reviewed CLI workflow; the first console release observes registry container catalogs but does not manage instance routes."},
+        {"method": "PlanCreateInstanceOciRoute", "reason": "Instance OCI root routes are deployment-wide delivery topology administered through the reviewed CLI workflow; the first console release observes registry container catalogs but does not manage instance routes."},
+        {"method": "CreateInstanceOciRoute", "reason": "Instance OCI root routes are deployment-wide delivery topology administered through the reviewed CLI workflow; the first console release observes registry container catalogs but does not manage instance routes."},
+        {"method": "PlanUpdateInstanceOciRoute", "reason": "Instance OCI root routes are deployment-wide delivery topology administered through the reviewed CLI workflow; the first console release observes registry container catalogs but does not manage instance routes."},
+        {"method": "UpdateInstanceOciRoute", "reason": "Instance OCI root routes are deployment-wide delivery topology administered through the reviewed CLI workflow; the first console release observes registry container catalogs but does not manage instance routes."},
+        {"method": "PlanDeleteInstanceOciRoute", "reason": "Instance OCI root routes are deployment-wide delivery topology administered through the reviewed CLI workflow; the first console release observes registry container catalogs but does not manage instance routes."},
+        {"method": "DeleteInstanceOciRoute", "reason": "Instance OCI root routes are deployment-wide delivery topology administered through the reviewed CLI workflow; the first console release observes registry container catalogs but does not manage instance routes."},
+        {"method": "PlanConvertRouteToInstanceOciRoute", "reason": "In-place conversion of a registry-bound OCI route is a one-time migration step run by instance administrators from the CLI."},
+        {"method": "ConvertRouteToInstanceOciRoute", "reason": "In-place conversion of a registry-bound OCI route is a one-time migration step run by instance administrators from the CLI."}
+      ],
+      "methods": ["GetInstanceSettings", "PlanSetInstanceSettings", "SetInstanceSettings", "TriggerInstanceMaintenance", "ListInstanceOciRoutes", "GetInstanceOciRoute", "PlanCreateInstanceOciRoute", "CreateInstanceOciRoute", "PlanUpdateInstanceOciRoute", "UpdateInstanceOciRoute", "PlanDeleteInstanceOciRoute", "DeleteInstanceOciRoute", "PlanConvertRouteToInstanceOciRoute", "ConvertRouteToInstanceOciRoute"]
     },
     {
       "service": "RegistryConfigurationService",
@@ -242,11 +255,19 @@
       "audience": "public",
       "cli_families": ["registry docs", "package docs"],
       "web_workflows": ["public-package-documentation"],
-      "methods": ["GetPackageDocumentation", "SearchPackageDocumentation", "ListPackageOptions", "GetPackageOption", "ComparePackageDocumentation", "GetDocumentationArtifact", "GetPackageDocumentationSchema"],
+      "methods": ["GetPackageDocumentation", "GetPackageAbilityReference", "GetReleaseAbilityGraph", "SearchPackageDocumentation", "ListPackageOptions", "GetPackageOption", "ComparePackageDocumentation", "GetDocumentationArtifact", "GetPackageDocumentationSchema"],
       "web_method_exceptions": [
         {
           "method": "GetPackageDocumentation",
           "reason": "The public version/platform documentation page and /-/api/v1/packages/{package}/docs provide the canonical reference."
+        },
+        {
+          "method": "GetPackageAbilityReference",
+          "reason": "The public /-/api/v1/packages/{package}/abilities endpoint provides the signed release-derived ability reference."
+        },
+        {
+          "method": "GetReleaseAbilityGraph",
+          "reason": "The public release-pinned Abilities page and /-/api/v1/abilities endpoint expose provider and consumer relationships derived from signed package references."
         },
         {
           "method": "SearchPackageDocumentation",
@@ -273,6 +294,14 @@
           "reason": "The public documentation schema endpoint provides the canonical schema."
         }
       ]
+    },
+    {
+      "service": "AbilityDeploymentService",
+      "audience": "operator",
+      "cli_families": [],
+      "web_workflows": [],
+      "exclusion": "Private reviewed reporter enrollment, bounded authenticated reports, and audit reads remain explicit typed API operations; authorized package pages render a bounded read projection.",
+      "methods": ["PlanConfigureReporter", "ConfigureReporter", "ReportPackageOverlay", "GetPackageOverlay"]
     },
     {
       "service": "ChannelService",
@@ -326,23 +355,25 @@
         {"method": "GetContainerPlatform", "reason": "ListContainerPlatforms returns the complete platform records rendered by the browser workflow."},
         {"method": "GetContainerLayer", "reason": "ListContainerLayers returns the complete root-specific layer records rendered by the browser workflow."},
         {"method": "RequeueContainerGcPlacementAction", "reason": "Failed-action requeue is an explicit operator maintenance command; the browser renders exact action evidence but does not mutate provider work."},
+        {"method": "GetContainerNamespace", "reason": "Registry OCI namespace exposure is a reviewed CLI administration setting tied to instance OCI routes; the browser renders the resulting image references but does not change exposure."},
+        {"method": "PlanSetContainerNamespace", "reason": "Registry OCI namespace exposure is a reviewed CLI administration setting tied to instance OCI routes; the browser renders the resulting image references but does not change exposure."},
+        {"method": "SetContainerNamespace", "reason": "Registry OCI namespace exposure is a reviewed CLI administration setting tied to instance OCI routes; the browser renders the resulting image references but does not change exposure."},
         {"method": "BeginContainerPublication", "reason": "Verified container publication is currently initiated by the CLI; the browser workflow does not yet admit a signed release declaration."},
         {"method": "GetContainerPublication", "reason": "Verified container publication state is currently resumed by the CLI; the browser workflow is not yet implemented."},
         {"method": "CommitContainerPublication", "reason": "Verified container publication is currently committed by the CLI; the browser workflow does not yet expose the confirmation step."},
         {"method": "AbortContainerPublication", "reason": "Verified container publication is currently aborted by the CLI; the browser workflow does not yet expose publication recovery controls."}
       ],
-      "methods": ["ListContainerRepositories", "GetContainerRepository", "PlanCreateContainerRepository", "CreateContainerRepository", "PlanUpdateContainerRepository", "UpdateContainerRepository", "PlanDeleteContainerRepository", "DeleteContainerRepository", "ListContainerTags", "GetContainerTag", "ResolveContainerTag", "ListContainerTagHistory", "PlanSetContainerTag", "SetContainerTag", "PlanUnsetContainerTag", "UnsetContainerTag", "GetContainerManifest", "ListContainerPlatforms", "GetContainerPlatform", "ListContainerLayers", "GetContainerLayer", "ListContainerReferrers", "ListContainerPublications", "GetContainerProvenance", "GetContainerRetentionPolicy", "PlanSetContainerRetentionPolicy", "SetContainerRetentionPolicy", "PlanRunContainerGc", "RunContainerGc", "GetContainerGcRun", "ListContainerGcRuns", "ListContainerGcCandidates", "ListContainerGcBlockers", "ListContainerGcPlacementActions", "RequeueContainerGcPlacementAction", "ListContainerUntrackedInventory", "PlanRepairContainerUntrackedObject", "RepairContainerUntrackedObject", "GetContainerUntrackedRepair", "PlanContainerRegistryPurgeFence", "ApplyContainerRegistryPurgeFence", "GetContainerRegistryPurgeFence", "BeginContainerPublication", "GetContainerPublication", "CommitContainerPublication", "AbortContainerPublication"]
+      "methods": ["ListContainerRepositories", "GetContainerRepository", "PlanCreateContainerRepository", "CreateContainerRepository", "PlanUpdateContainerRepository", "UpdateContainerRepository", "PlanDeleteContainerRepository", "DeleteContainerRepository", "ListContainerTags", "GetContainerTag", "ResolveContainerTag", "ListContainerTagHistory", "PlanSetContainerTag", "SetContainerTag", "PlanUnsetContainerTag", "UnsetContainerTag", "GetContainerManifest", "ListContainerPlatforms", "GetContainerPlatform", "ListContainerLayers", "GetContainerLayer", "ListContainerReferrers", "ListContainerPublications", "GetContainerProvenance", "GetContainerRetentionPolicy", "PlanSetContainerRetentionPolicy", "SetContainerRetentionPolicy", "PlanRunContainerGc", "RunContainerGc", "CancelContainerGcRun", "GetContainerGcRun", "ListContainerGcRuns", "ListContainerGcCandidates", "ListContainerGcBlockers", "ListContainerGcPlacementActions", "RequeueContainerGcPlacementAction", "ListContainerUntrackedInventory", "PlanRepairContainerUntrackedObject", "RepairContainerUntrackedObject", "GetContainerUntrackedRepair", "PlanContainerRegistryPurgeFence", "ApplyContainerRegistryPurgeFence", "GetContainerRegistryPurgeFence", "BeginContainerPublication", "GetContainerPublication", "CommitContainerPublication", "AbortContainerPublication", "GetContainerNamespace", "PlanSetContainerNamespace", "SetContainerNamespace"]
     },
     {
       "service": "PublishService",
       "audience": "end-user",
       "cli_families": ["registry publish"],
-      "web_workflows": ["registry-publication"],
+      "web_workflows": ["registry-publication", "registry-staging"],
       "web_method_exceptions": [
         {"method": "BeginRegistryPublicationManifest", "reason": "The browser observes publication state; the CLI alone admits large local manifests through resumable bounded pages."},
         {"method": "AppendRegistryPublicationManifest", "reason": "The browser observes publication state; the CLI alone admits large local manifests through resumable bounded pages."},
         {"method": "SealRegistryPublicationManifest", "reason": "The browser observes publication state; the CLI alone seals a completely admitted local manifest."},
-        {"method": "GetRegistryPublication", "reason": "ListRegistryPublications returns the complete publication state rendered by the browser workflow."},
         {"method": "BeginRegistryPublicationMultipartUpload", "reason": "The browser observes publication state; the CLI alone streams local release artifacts into bounded multipart transactions."},
         {"method": "CompleteRegistryPublicationMultipartUpload", "reason": "The browser observes publication state; the CLI alone completes multipart transactions for local release artifacts."},
         {"method": "AbortRegistryPublicationMultipartUpload", "reason": "The browser observes publication state; the CLI alone cleans up failed multipart transactions for local release artifacts."},
@@ -354,7 +385,7 @@
         {"method": "PublishReleaseTimestamp", "reason": "Online timestamp renewal is a restricted maintainer operation."},
         {"method": "AdvanceReleaseChannel", "reason": "Partitioned release rollout is a restricted maintainer operation."}
       ],
-      "methods": ["BeginRegistryPublication", "BeginRegistryPublicationManifest", "AppendRegistryPublicationManifest", "SealRegistryPublicationManifest", "BeginRegistryPublicationMultipartUpload", "CompleteRegistryPublicationMultipartUpload", "AbortRegistryPublicationMultipartUpload", "ListRegistryPublications", "GetRegistryPublication", "CommitRegistryPublication", "AbortRegistryPublication", "BeginReleasePublication", "CommitReleasePublication", "RecordReleaseQualification", "PromoteReleasePublication", "GetReleaseReceipt", "PublishReleaseTimestamp", "AdvanceReleaseChannel"]
+      "methods": ["UpsertStagedRelease", "GetStagedRelease", "ListStagedReleases", "FinalizeStagedRelease", "DiscardStagedRelease", "BeginRegistryPublication", "BeginRegistryPublicationManifest", "AppendRegistryPublicationManifest", "SealRegistryPublicationManifest", "BeginRegistryPublicationMultipartUpload", "CompleteRegistryPublicationMultipartUpload", "AbortRegistryPublicationMultipartUpload", "ListRegistryPublications", "GetRegistryPublication", "CommitRegistryPublication", "AbortRegistryPublication", "BeginReleasePublication", "CommitReleasePublication", "RecordReleaseQualification", "PromoteReleasePublication", "GetReleaseReceipt", "PublishReleaseTimestamp", "AdvanceReleaseChannel"]
     },
     {
       "service": "GitService",
@@ -402,7 +433,6 @@
       "cli_families": ["operation"],
       "web_workflows": ["operations"],
       "web_method_exceptions": [
-        {"method": "GetOperation", "reason": "ListOperations returns complete operation records for the selected scope."},
         {"method": "WatchOperation", "reason": "The browser polls ListOperations so it can recover across navigation and Worker request boundaries."}
       ],
       "methods": ["GetOperation", "ListOperations", "WatchOperation", "CancelOperation", "RetryOperation"]

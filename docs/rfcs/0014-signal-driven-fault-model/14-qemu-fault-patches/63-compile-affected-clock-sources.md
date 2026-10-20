@@ -1,6 +1,6 @@
-# Patch 0112: compile only affected clock sources
+# Capability task 0112: compile only affected clock sources
 
-Patch `0112-crucible-compile-affected-clock-sources.patch` binds post-commit
+The atomic patch `crucible-qemu-11.1.1.patch` binds post-commit
 clock compilation to the exact rule changed by the node-fault transaction.
 
 ## Problem
@@ -21,8 +21,8 @@ The selected source retains the existing all-or-terminal compilation path. The
 production live hardware gate proves one degraded local-APIC source transition
 and its timer rearm while unrelated sources remain registered.
 
-## Compatibility
+## State identity
 
-The patch changes no shared-memory field, VMState payload, QEMU plugin API, or
+The atomic patch changes no shared-memory field, VMState payload, QEMU plugin API, or
 capability identity. It narrows internal work to the source owned by the
 authenticated transaction.

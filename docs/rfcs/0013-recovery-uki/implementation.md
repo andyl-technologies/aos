@@ -373,7 +373,7 @@ read-write and must restore it read-only before rebooting.
 
 ### 4.3 UKI builder
 
-Extend `pkgs/boot/aos-uki.nix` or add a typed wrapper for recovery UKIs. Recovery
+Extend `pkgs/system/_systemd-abilities/platform/_uki-builder.nix` or add a typed wrapper for recovery UKIs. Recovery
 uses the normal Secure Boot key/certificate but omits `pcrPrivateKey` and
 `pcrPublicKey`, yielding no signed normal PCR-11 authorization.
 

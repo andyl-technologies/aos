@@ -48,11 +48,10 @@ exist, but the immutable root is not constructed with the complete production
 labeling required for an enforcing baseline. Therefore `standard` and
 `hardened` do not currently provide system-wide SELinux enforcement.
 
-Package expose artifacts may carry generated MAC policy material, but an
-operator must not infer that the host is enforcing SELinux without checking the
-running kernel and policy state. Adding SELinux to a production image requires
-labeled-root construction, enforcing boot tests, upgrade compatibility, and a
-recovery plan.
+A package declaration does not establish system-wide MAC enforcement. An
+operator must check the running kernel and loaded policy. Adding SELinux to a
+production image requires labeled-root construction, enforcing boot tests,
+upgrade compatibility, and a recovery plan.
 
 ## Keep diagnostic interfaces intentional
 
@@ -81,10 +80,10 @@ Treat a hardening exception as a privilege grant. Record:
 - the test proving the workload works with only that exception; and
 - the condition for removing it.
 
-For package services, express the grant in the signed `expose` permission
-manifest so APM can compute an honest confinement label. See [Understand the
-package sandbox](package-sandbox.md). For image services, keep the exception in
-the owning module rather than weakening a global preset.
+For package services, express the resource in the owning typed ability module
+and review the selected native provider. See [Understand native package runtime
+policy](package-sandbox.md). For image services, keep the exception in the
+owning module rather than weakening a global preset.
 
 ## Verify the deployed baseline
 
@@ -109,7 +108,7 @@ Then run the checks owned by the relevant guides:
 - [Audit an AOS host](auditing.md) for audit state and loaded rules;
 - [Use Secure Boot and verify package trust](secure-boot.md) for verified boot;
 - [Configure package registries](registries.md) for effective trust policy; and
-- [Understand the package sandbox](package-sandbox.md) for workload privileges.
+- [Understand native package runtime policy](package-sandbox.md) for workload resources.
 
 A passing systemd state is necessary but not sufficient. Add application
 health, remote-access, registry, storage, attestation, and recovery checks for

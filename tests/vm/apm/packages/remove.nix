@@ -90,10 +90,10 @@
       assert_store_valid "$REMOVE_STORE" "remove-basic-tool"
 
       echo "==> Maintainer: publish remove-basic-tool and static cache"
-      $APR create remove-basic-reg
+      create_publish_registry remove-basic-reg
       REG_DIR="$REG_STORAGE/remove-basic-reg"
       DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
-      $APR publish "$REMOVE_STORE" \
+      publish_vm_package "$REMOVE_STORE" \
         --name remove-basic-tool \
         --version 1.0.0 \
         --description "Executable remove basic fixture" \
@@ -397,10 +397,10 @@
         "remove-right has a real Nix reference to idempkg"
 
       echo "==> Maintainer: publish shared dependency and two wrappers"
-      $APR create remove-reg
+      create_publish_registry remove-reg
       REG_DIR="$REG_STORAGE/remove-reg"
       DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
-      $APR publish "$DEP_STORE" \
+      publish_vm_package "$DEP_STORE" \
         --name idempkg \
         --version 1.0.0 \
         --description "Shared dependency for remove workflow" \
@@ -408,7 +408,7 @@
         --maintainer remove-workflow@example.invalid \
         --registry remove-reg \
         --no-commit
-      $APR publish "$LEFT_STORE" \
+      publish_vm_package "$LEFT_STORE" \
         --name remove-left \
         --version 1.0.0 \
         --description "First explicit package sharing idempkg" \
@@ -416,7 +416,7 @@
         --maintainer remove-workflow@example.invalid \
         --registry remove-reg \
         --no-commit
-      $APR publish "$RIGHT_STORE" \
+      publish_vm_package "$RIGHT_STORE" \
         --name remove-right \
         --version 1.0.0 \
         --description "Second explicit package sharing idempkg" \

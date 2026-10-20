@@ -16,9 +16,9 @@ sys.path.insert(0, sys.argv[1])
 import native_sdk_test_image as shared
 
 TARGETS = {
-    "host_cache_fixture": ("terrane-fs", "example", "examples/host_cache_fixture.rs", ["native-test-fixtures", "tokio"]),
+    "host_cache_fixture": ("terrane-linux", "example", "examples/host_cache_fixture.rs", ["native-test-fixtures", "tokio"]),
     "terrane": ("terrane-cli", "bin", "src/main.rs", []),
-    "aos-terrane-host": ("aos-terrane", "bin", "src/bin/aos-terrane-host.rs", []),
+    "aos-terrane-host": ("aos-terrane-integration", "bin", "src/bin/aos-terrane-host.rs", []),
 }
 PROFILE = {"opt_level": "0", "debuginfo": 2, "debug_assertions": True,
            "overflow_checks": True, "test": False}
@@ -87,6 +87,9 @@ UNIT_TESTS = (
 )
 
 
+PACKAGE_PATHS = {'terrane-format': 'terrane/sdk/terrane-format', 'terrane-sdk': 'terrane/sdk/terrane-sdk', 'terrane-linux': 'terrane/linux/terrane-linux', 'terrane-cli': 'terrane/cli/terrane-cli', 'aos-terrane-integration': 'terrane/integration/aos-terrane-integration'}
+
+
 def unit_inventory(output):
     """Parses the complete real libtest inventory, rejecting unknown line types."""
     lines = [line for line in output.splitlines() if line]
@@ -104,9 +107,9 @@ def unit_inventory(output):
 
 def source_unit_inventory(workspace):
     """Checks the retained selection against all test declarations in its scope."""
-    source_roots = [workspace / "terrane-fs/src/host_cache/owner",
-                    workspace / "terrane-fs/src/host_cache/recovery_inspection",
-                    workspace / "terrane-fs/src/publisher_local/client/recovery_manifest.rs"]
+    source_roots = [workspace / "terrane/linux/terrane-linux/src/host_cache/owner",
+                    workspace / "terrane/linux/terrane-linux/src/host_cache/recovery_inspection",
+                    workspace / "terrane/linux/terrane-linux/src/publisher_local/client/recovery_manifest.rs"]
     declared = []
     for root in source_roots:
         for path in sorted(root.rglob("*.rs")) if root.is_dir() else [root]:
@@ -121,17 +124,17 @@ def unit_artifact(workspace, temporary, target, packages):
     profile = tomllib.loads((workspace / "Cargo.toml").read_text()).get("profile", {}).get("test")
     shared.require(profile == {"debug": 0, "opt-level": "s"}, "unreviewed FS test profile")
     records = [json.loads(line) for line in (temporary / f"host-cache-{UNIT_NAME}.jsonl").read_text().splitlines()]
-    package = [item for item in packages if pathlib.Path(item["manifest_path"]) == workspace / "terrane-fs/Cargo.toml"]
+    package = [item for item in packages if pathlib.Path(item["manifest_path"]) == workspace / "terrane/linux/terrane-linux/Cargo.toml"]
     candidates = [item for item in records if item.get("reason") == "compiler-artifact"
-                  and item.get("target", {}).get("name") == "terrane_fs" and item.get("executable")]
+                  and item.get("target", {}).get("name") == "terrane_linux" and item.get("executable")]
     shared.require(len(package) == len(candidates) == 1, "ambiguous FS libtest artifact")
     artifact = candidates[0]
-    targets = [item for item in package[0]["targets"] if item["name"] == "terrane_fs" and item["kind"] == ["lib"]]
+    targets = [item for item in package[0]["targets"] if item["name"] == "terrane_linux" and item["kind"] == ["lib"]]
     executable = pathlib.Path(artifact["executable"])
     shared.require(len(targets) == 1 and artifact["target"] == targets[0]
-                   and artifact["package_id"] == package[0]["id"] and package[0]["name"] == "terrane-fs"
+                   and artifact["package_id"] == package[0]["id"] and package[0]["name"] == "terrane-linux"
                    and artifact["target"]["crate_types"] == ["lib"]
-                   and pathlib.Path(artifact["target"]["src_path"]) == workspace / "terrane-fs/src/lib.rs"
+                   and pathlib.Path(artifact["target"]["src_path"]) == workspace / "terrane/linux/terrane-linux/src/lib.rs"
                    and artifact["profile"] == UNIT_PROFILE
                    and sorted(artifact["features"]) == ["native-test-fixtures", "tokio"]
                    and str(executable) in artifact["filenames"]
@@ -164,7 +167,7 @@ def selected_artifacts(workspace, temporary, target):
     result = {}
     for name, (crate, kind, source, features) in TARGETS.items():
         records = [json.loads(line) for line in (temporary / f"host-cache-{name}.jsonl").read_text().splitlines()]
-        package = [item for item in packages if pathlib.Path(item["manifest_path"]) == workspace / crate / "Cargo.toml"]
+        package = [item for item in packages if pathlib.Path(item["manifest_path"]) == workspace / PACKAGE_PATHS[crate] / "Cargo.toml"]
         candidates = [item for item in records if item.get("reason") == "compiler-artifact"
                       and item.get("target", {}).get("name") == name and item.get("executable")]
         shared.require(len(package) == len(candidates) == 1, f"ambiguous cache proof artifact: {name}")
@@ -174,7 +177,7 @@ def selected_artifacts(workspace, temporary, target):
         shared.require(len(targets) == 1 and artifact["target"] == targets[0]
                        and artifact["package_id"] == package[0]["id"] and package[0]["name"] == crate
                        and artifact["target"]["crate_types"] == ["bin"]
-                       and pathlib.Path(artifact["target"]["src_path"]) == workspace / crate / source
+                       and pathlib.Path(artifact["target"]["src_path"]) == workspace / PACKAGE_PATHS[crate] / source
                        and artifact["profile"] == PROFILE and sorted(artifact["features"]) == features
                        and str(executable) in artifact["filenames"]
                        and executable.is_file() and os.access(executable, os.X_OK)
@@ -206,14 +209,14 @@ def cargo_directories(name, executable, temporary, target, workspace):
     triple = target_lib.parent.name.upper().replace("-", "_")
     environment[f"CARGO_TARGET_{triple}_RUNNER"] = str(runner)
     with (temporary / f"host-cache-{name}-discovery.log").open("w") as log:
-        command = (["cargo", "test", "--frozen", "--offline", "-p", "terrane-fs",
+        command = (["cargo", "test", "--frozen", "--offline", "-p", "terrane-linux",
                     "--features", "native-test-fixtures", "--lib", "--", "--list"] if is_unit
                    else ["cargo", "run", *flags(name), "--", "--discover"])
         subprocess.run(command, env=environment,
                        stdout=log, stderr=subprocess.STDOUT, check=True)
     text = capture.read_text()
     shared.require(text.endswith("\n") and text.count("\n") == 1 and text.strip(), "missing Cargo launch environment")
-    expected_cwd = workspace / "terrane-fs" if is_unit else workspace
+    expected_cwd = workspace / "terrane/linux/terrane-linux" if is_unit else workspace
     shared.require(working.read_text() == str(expected_cwd) + "\n", "Cargo launch working-directory mismatch")
     directories = [shared.allowed_directory(value, target) for value in text[:-1].split(":")]
     shared.require(all(path.is_dir() for path in directories), "missing Cargo runtime library directory")
@@ -320,11 +323,11 @@ def main():
     unit_hash = digest(unit_elf)
     full_units = unit_inventory(subprocess.run([str(unit_elf), "--list"],
                                env=dict(os.environ, LD_LIBRARY_PATH=library_path),
-                               cwd=workspace / "terrane-fs", check=True, text=True,
+                               cwd=workspace / "terrane/linux/terrane-linux", check=True, text=True,
                                capture_output=True).stdout)
     shared.require(digest(unit_elf) == unit_hash, "unit discovery changed installed FS ELF")
     unit_identity = {"full_inventory": full_units, "selected_inventory": sorted(UNIT_TESTS),
-                     "prefixes": list(UNIT_PREFIXES), "working_directory": "crates/terrane-fs",
+                     "prefixes": list(UNIT_PREFIXES), "working_directory": "crates/terrane/linux/terrane-linux",
                      "profile": UNIT_PROFILE, "guest_uid": 842, "guest_gid": 842}
     identity = {"schema_version": 1, "source": str(source), "artifacts": identities,
                 "input_sha256": source_hashes, "selectors": listed, "supervisor": supervisor_identity,

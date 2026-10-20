@@ -1,5 +1,6 @@
 ##! rpcsvc-proto — RPC service protocol definitions and rpcgen
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -11,8 +12,81 @@
   version = "1.4.4";
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "rpcsvc-proto";
-    inherit version;
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The header declares the answer structure and its XDR function.";
+        "files" = {
+          "answer.x" = "struct answer {\n    int value;\n};\n";
+          "verify.py" = "content = open(\"answer.h\", encoding=\"utf-8\").read()\nrequired = [\"struct answer\",\"xdr_answer\"]\nassert all(fragment in content for fragment in required)\nprint(\"rpcgen output passed\")\n";
+        };
+        "input" = "An RPC language definition containing one structure and XDR procedure.";
+        "operation" = "Generate its public C declarations with rpcgen and inspect the emitted interface.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/rpcgen"
+              "-h"
+              "-o"
+              "answer.h"
+              "answer.x"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@python@"
+              "verify.py"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "rpcgen output passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "rpcgen rejects the syntax error without producing a usable header.";
+        "files" = {
+          "invalid.x" = "struct answer { int value };\n";
+        };
+        "input" = "An RPC structure whose field declaration lacks a semicolon.";
+        "operation" = "Parse the malformed RPC definition.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/rpcgen"
+              "-h"
+              "-o"
+              "invalid.h"
+              "invalid.x"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
+    # Keep module compatibility at this release until a broader policy is reviewed.
+    version = "=${version}";
 
     src = fetchurl {
       urls = [
@@ -113,6 +187,7 @@ in
     checks = {
       testing,
       self,
+      pkgs,
       ...
     }: {
       rpcgen = testing.mkToolCheck {
@@ -123,10 +198,13 @@ in
 
       catalogs = testing.mkVMTest {
         name = "lib-rpcsvc-proto-nls";
-        rootfsDeps = [self];
+        rootfsDeps = [self pkgs.binutils];
         testScript = ''
-          test -d ${self}/share/locale
-          find ${self}/share/locale -type f -name '*.mo' | grep .
+          # This release has no upstream .po files to install. Verify that
+          # rpcgen retains its gettext calls rather than requiring catalogs
+          # that do not exist in the source archive.
+          ${pkgs.binutils}/bin/readelf --dyn-syms --wide ${self}/bin/rpcgen \
+            | grep -E ' (gettext|dcgettext)(@|$)'
         '';
       };
     };

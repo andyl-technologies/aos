@@ -8,7 +8,7 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
-  effectiveHorizonTest = builtins.readFile ../../crates/crucible/tests/scheduler_effective_horizon.rs;
+  effectiveHorizonTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/scheduler_effective_horizon.rs;
   schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -30,7 +30,7 @@
         needle = "DONE/Halted → +∞";
       }
     ]
-    ++ failuresFor "crates/crucible/src/scheduler.rs" scheduler [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/scheduler.rs" scheduler [
       {
         label = "halted scheduler state";
         needle = "SchedulerNodeActivity::Halted";
@@ -80,7 +80,7 @@
         needle = "projected_target > dependency.virtual_time";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/scheduler_effective_horizon.rs" effectiveHorizonTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/scheduler_effective_horizon.rs" effectiveHorizonTest [
       {
         label = "mixed projection test";
         needle = "effective_horizon_pick_uses_running_idle_halted_done_projection";
@@ -120,7 +120,7 @@
         needle = "schedulerEffectiveHorizon = import ./phase3-scheduler-effective-horizon.nix";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/scheduler_effective_horizon.rs" effectiveHorizonTest [
+    ++ forbiddenFor "crates/crucible/engine/crucible-engine/tests/scheduler_effective_horizon.rs" effectiveHorizonTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -139,7 +139,10 @@ in
       version = "0";
       src = crucibleSrc;
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.rust
         pkgs.sed
@@ -183,14 +186,14 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-scheduler-effective-horizon-target" \
-              -p crucible \
+              -p crucible-engine \
               --test scheduler_effective_horizon \
               -- --test-threads=1
             cargo test \
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-scheduler-effective-horizon-target" \
-              -p crucible \
+              -p crucible-engine \
               --features test-double \
               --test gate_scheduler_liveness \
               -- --test-threads=1

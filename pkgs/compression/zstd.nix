@@ -1,5 +1,6 @@
 ##! Zstandard — Fast real-time compression algorithm
 {
+  lib,
   mkDerivation,
   mkGithubUpstream,
   gnumake,
@@ -56,7 +57,79 @@
   inherit (upstream) version;
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "zstd";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The decoded bytes exactly reproduce the original payload.";
+        "files" = {
+          "payload.txt" = "AOS qualification payload\n";
+        };
+        "input" = "A fixed text payload.";
+        "operation" = "Compress the payload, then decode the resulting zstd stream.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/zstd"
+              "-q"
+              "payload.txt"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@out@/bin/zstd"
+              "-q"
+              "-d"
+              "-c"
+              "payload.txt.zst"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "AOS qualification payload\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The decoder rejects bytes outside the zstd format.";
+        "files" = {
+          "invalid.zst" = "not a compressed stream\n";
+        };
+        "input" = "A plain-text file carrying a zstd filename suffix.";
+        "operation" = "Attempt to decode the malformed compressed stream.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/zstd"
+              "-q"
+              "-d"
+              "-c"
+              "invalid.zst"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = upstream.components.main.sources.source;

@@ -35,7 +35,7 @@ PROTOCOL_CASES = {
     "header_direction_domain_version_and_budget_are_checked",
 }
 TRANSPORT_TARGETS = {
-    "terrane_fs": SOCKET_CASES | NATIVE_SOCKET_CASES,
+    "terrane_linux": SOCKET_CASES | NATIVE_SOCKET_CASES,
     "publisher_local_protocol": PROTOCOL_CASES,
     "publisher_local_vm": {"publisher_local_multuid_vm", "publisher_local_vm_role"},
     "publisher_local_native": {"publisher_local_native_role", "publisher_local_native_lifecycle_vm"},
@@ -83,10 +83,10 @@ def check_transport(image, source):
         is_test = name != "publication_fixture"
         profile = artifact.get("profile", {})
         target = artifact.get("target", {})
-        kind = ["lib"] if name == "terrane_fs" else ["test"] if is_test else ["example"]
+        kind = ["lib"] if name == "terrane_linux" else ["test"] if is_test else ["example"]
         require(artifact.get("features") == ["native-test-fixtures", "tokio"]
                 and target.get("name") == name and target.get("kind") == kind
-                and target.get("crate_types") == (["lib"] if name == "terrane_fs" else ["bin"])
+                and target.get("crate_types") == (["lib"] if name == "terrane_linux" else ["bin"])
                 and profile.get("test") is is_test
                 and profile.get("opt_level") == ("s" if is_test else "0")
                 and profile.get("debuginfo") == (0 if is_test else 2)
@@ -131,11 +131,11 @@ def check_transport(image, source):
         require(group.get("inventory") == sorted(inventory),
                 "publisher transport selected tests changed: " + name)
         executed = group.get("executed", [])
-        cases = SOCKET_CASES if name == "terrane_fs" else PROTOCOL_CASES if name == "publisher_local_protocol" else set()
+        cases = SOCKET_CASES if name == "terrane_linux" else PROTOCOL_CASES if name == "publisher_local_protocol" else set()
         require([record.get("case") for record in executed] == sorted(cases),
                 "publisher transport omitted or duplicated a portable case: " + name)
         for record in executed:
-            prefix = "publisher_local::socket::tests::" if name == "terrane_fs" else ""
+            prefix = "publisher_local::socket::tests::" if name == "terrane_linux" else ""
             require(len(re.findall(r"(?m)^test result: ok\. 1 passed; 0 failed; 0 ignored;.*$",
                                    record["stdout"])) == 1
                     and f"test {prefix}{record['case']} ... ok" in record["stdout"],

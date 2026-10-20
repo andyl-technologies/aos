@@ -22,7 +22,7 @@ NATIVE_SOCKET_CASES = {
     "socket_chmod_rejects_wrong_type_and_owner_before_mutation",
 }
 EXPECTED = {
-    "terrane_fs": {
+    "terrane_linux": {
         "kernel_peer_credentials_cannot_be_claimed_in_packet",
         "configured_domain_selection_has_no_fallback",
         "real_seqpacket_roundtrip_requires_response_correlation",
@@ -72,8 +72,8 @@ def select_artifacts(workspace, temporary, target):
     """Selects only exact package targets with reviewed test/dev profiles."""
     packages = json.loads((temporary / "publisher-local-packages.json").read_text())["packages"]
     package = [item for item in packages if pathlib.Path(item["manifest_path"])
-               == workspace / "terrane-fs/Cargo.toml"]
-    require(len(package) == 1 and package[0]["name"] == "terrane-fs", "ambiguous transport package")
+               == workspace / "terrane/linux/terrane-linux/Cargo.toml"]
+    require(len(package) == 1 and package[0]["name"] == "terrane-linux", "ambiguous transport package")
     manifest = tomllib.loads((workspace / "Cargo.toml").read_text())
     require(manifest.get("profile", {}).get("dev", {}) == {}, "unreviewed development profile")
     require(manifest.get("profile", {}).get("test", {}) == {"debug": 0, "opt-level": "s"},
@@ -88,8 +88,8 @@ def select_artifacts(workspace, temporary, target):
                       and record.get("profile", {}).get("test") is is_test]
         require(len(candidates) == 1, f"ambiguous transport executable: {name}")
         artifact = candidates[0]
-        kind = ["lib"] if name == "terrane_fs" else ["test"] if is_test else ["example"]
-        source = "src/lib.rs" if name == "terrane_fs" else (
+        kind = ["lib"] if name == "terrane_linux" else ["test"] if is_test else ["example"]
+        source = "src/lib.rs" if name == "terrane_linux" else (
             f"tests/{name}.rs" if is_test else "examples/publication_fixture.rs")
         targets = [item for item in package[0]["targets"] if item["name"] == name
                    and item["kind"] == kind]
@@ -99,8 +99,8 @@ def select_artifacts(workspace, temporary, target):
         require(artifact["package_id"] == package[0]["id"]
                 and artifact["target"] == targets[0]
                 and artifact["target"]["kind"] == kind
-                and artifact["target"]["crate_types"] == (["lib"] if name == "terrane_fs" else ["bin"])
-                and pathlib.Path(artifact["target"]["src_path"]) == workspace / "terrane-fs" / source
+                and artifact["target"]["crate_types"] == (["lib"] if name == "terrane_linux" else ["bin"])
+                and pathlib.Path(artifact["target"]["src_path"]) == workspace / "terrane/linux/terrane-linux" / source
                 and sorted(artifact["features"]) == FEATURES
                 and profile["opt_level"] == ("s" if is_test else "0")
                 and profile["debug_assertions"] is True
@@ -133,7 +133,7 @@ def launch_directories(executable, workspace, temporary, target):
     discovery_log = temporary / "publisher-local-cargo-discovery.log"
     with discovery_log.open("w") as log:
         discovery = subprocess.run(
-            ["cargo", "run", "--frozen", "--offline", "-p", "terrane-fs",
+            ["cargo", "run", "--frozen", "--offline", "-p", "terrane-linux",
              "--features", "native-test-fixtures", "--example", "publication_fixture",
              "--", "--discover"], env=environment, stdout=log, stderr=subprocess.STDOUT)
     if discovery.returncode != 0:
@@ -203,7 +203,7 @@ def install_and_execute():
     evidence = {"fresh-process-fixture": {"inventory": selectors, "executed": []}}
     for name, expected in EXPECTED.items():
         executable = output / "bin" / name
-        prefix = "publisher_local::socket::tests::" if name == "terrane_fs" else ""
+        prefix = "publisher_local::socket::tests::" if name == "terrane_linux" else ""
         listed = run_captured([str(executable), "--list", "--format", "terse"], environment).stdout
         actual = [line.removesuffix(": test").removeprefix(prefix) for line in listed.splitlines()
                   if line.endswith(": test") and line.startswith(prefix)]
@@ -213,7 +213,7 @@ def install_and_execute():
         if name in {"publisher_local_vm", "publisher_local_native"}:
             continue
         for case in sorted(actual):
-            if name == "terrane_fs" and case in NATIVE_SOCKET_CASES:
+            if name == "terrane_linux" and case in NATIVE_SOCKET_CASES:
                 continue
             result = run_captured([str(executable), "--exact", prefix + case, "--nocapture"],
                                   environment)
@@ -223,7 +223,7 @@ def install_and_execute():
     require(source_hashes(workspace, source) == {key: value for key, value in hashes.items()
                                                if not key.startswith("tests/")},
             "source changed during transport discovery/execution")
-    require(len(NATIVE_SOCKET_CASES) == 3 and NATIVE_SOCKET_CASES <= EXPECTED["terrane_fs"],
+    require(len(NATIVE_SOCKET_CASES) == 3 and NATIVE_SOCKET_CASES <= EXPECTED["terrane_linux"],
             "native socket inventory must retain its three original source cases")
     native_cases = ["publisher_local::socket::tests::" + case
                     for case in sorted(NATIVE_SOCKET_CASES)]

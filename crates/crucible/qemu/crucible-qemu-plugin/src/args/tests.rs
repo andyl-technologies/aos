@@ -1,0 +1,268 @@
+//! Unit tests for the complete plugin argument grammar.
+
+use super::*;
+
+#[test]
+fn plugin_args_parse_required_simfd_and_slot() {
+    let args = PluginArgs::parse("simfd=3,slot=2,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=7,network_tx_next_seq=23,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576")
+        .unwrap_or_else(|error| panic!("minimal args should parse: {error}"));
+
+    assert_eq!(args.sim_fd(), 3);
+    assert_eq!(args.slot(), 2);
+    assert_eq!(args.process_generation(), 7);
+    assert_eq!(args.network_tx_next_seq(), 23);
+    assert_eq!(
+        args.storage_history_limits(),
+        PluginStorageHistoryLimits::compiled_maximum()
+    );
+    assert_eq!(args.inherited_fds(), None);
+    assert_eq!(args.whitebox(), PluginSwitch::Off);
+    assert_eq!(args.whitebox_setup(), None);
+    assert_eq!(args.campaign_marker_parking(), PluginSwitch::Off);
+    assert_eq!(args.app_random(), None);
+    assert_eq!(args.coverage(), PluginSwitch::Off);
+    assert_eq!(args.fingerprint(), PluginSwitch::Off);
+    assert_eq!(args.validate_slot_index(3), Ok(()));
+}
+
+#[test]
+fn campaign_marker_parking_requires_explicit_whitebox_launch_opt_in() {
+    let base = "simfd=3,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576";
+    assert_eq!(
+        PluginArgs::parse(&format!("{base},campaign_marker_parking=on")),
+        Err(PluginArgsParseError::CampaignMarkerParkingRequiresWhitebox)
+    );
+
+    let enabled = PluginArgs::parse(&format!(
+        "{base},whitebox=on,whitebox_setup=x86-port-00e7-unclaimed-v1,campaign_marker_parking=on"
+    ))
+    .unwrap_or_else(|error| panic!("explicit campaign marker parking should parse: {error}"));
+    assert_eq!(enabled.campaign_marker_parking(), PluginSwitch::On);
+}
+
+#[test]
+fn plugin_args_require_and_validate_authored_storage_history_limits() {
+    let prefix = "simfd=3,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0";
+    assert_eq!(
+        PluginArgs::parse(prefix),
+        Err(PluginArgsParseError::MissingRequiredKey {
+            key: PLUGIN_ARG_STORAGE_COMPLETED_HISTORY_EPOCHS,
+        })
+    );
+    assert_eq!(
+        PluginArgs::parse(&format!(
+            "{prefix},storage_completed_history_epochs=0,storage_completed_history_gaps=1"
+        )),
+        Err(PluginArgsParseError::InvalidResourceLimit {
+            key: PLUGIN_ARG_STORAGE_COMPLETED_HISTORY_EPOCHS,
+            value: String::from("0"),
+            hard: HARD_STORAGE_COMPLETED_HISTORY_EPOCHS,
+        })
+    );
+    assert_eq!(
+        PluginArgs::parse(&format!(
+            "{prefix},storage_completed_history_epochs=1,storage_completed_history_gaps=1048577"
+        )),
+        Err(PluginArgsParseError::InvalidResourceLimit {
+            key: PLUGIN_ARG_STORAGE_COMPLETED_HISTORY_GAPS,
+            value: String::from("1048577"),
+            hard: HARD_STORAGE_COMPLETED_HISTORY_GAPS,
+        })
+    );
+}
+
+#[test]
+fn plugin_args_parse_optional_fds_and_switches() {
+    let args = PluginArgs::parse(
+        "simfd=4,slot=1,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=8,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576,shmemfd=5,wakefd=6,whitebox=on,whitebox_setup=x86-port-00e7-unclaimed-v1,coverage=off,fingerprint=on",
+    )
+    .unwrap_or_else(|error| panic!("complete args should parse: {error}"));
+
+    assert_eq!(args.sim_fd(), 4);
+    assert_eq!(args.slot(), 1);
+    assert_eq!(
+        args.inherited_fds(),
+        Some(PluginInheritedFds {
+            shmem_fd: 5,
+            wake_fd: 6,
+        })
+    );
+    assert!(args.whitebox().is_on());
+    assert_eq!(
+        args.whitebox_setup(),
+        Some(WhiteboxSetupAttestation::X86Port00e7UnclaimedV1)
+    );
+    assert!(!args.coverage().is_on());
+    assert!(args.fingerprint().is_on());
+}
+
+#[test]
+fn plugin_args_reject_missing_required_keys() {
+    assert_eq!(
+        PluginArgs::parse(
+            "slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576"
+        ),
+        Err(PluginArgsParseError::MissingRequiredKey { key: "simfd" })
+    );
+    assert_eq!(
+        PluginArgs::parse("simfd=3"),
+        Err(PluginArgsParseError::MissingRequiredKey { key: "slot" })
+    );
+    assert_eq!(
+        PluginArgs::parse(
+            "simfd=3,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111"
+        ),
+        Err(PluginArgsParseError::MissingRequiredKey {
+            key: PLUGIN_ARG_PROCESS_GENERATION,
+        })
+    );
+    assert_eq!(
+        PluginArgs::parse(
+            "simfd=3,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1"
+        ),
+        Err(PluginArgsParseError::MissingRequiredKey {
+            key: PLUGIN_ARG_NETWORK_TX_NEXT_SEQ,
+        })
+    );
+    assert_eq!(
+        PluginArgs::parse(
+            "simfd=3,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=0,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576"
+        ),
+        Err(PluginArgsParseError::InvalidProcessGeneration {
+            value: String::from("0"),
+        })
+    );
+}
+
+#[test]
+fn plugin_args_reject_malformed_unknown_and_duplicate_keys() {
+    assert_eq!(
+        PluginArgs::parse("simfd=3,slot"),
+        Err(PluginArgsParseError::MalformedArgument {
+            argument: String::from("slot"),
+        })
+    );
+    assert_eq!(
+        PluginArgs::parse(
+            "simfd=3,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576,mode=on"
+        ),
+        Err(PluginArgsParseError::UnknownKey {
+            key: String::from("mode"),
+        })
+    );
+    assert_eq!(
+        PluginArgs::parse(
+            "simfd=3,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576,slot=1"
+        ),
+        Err(PluginArgsParseError::DuplicateKey {
+            key: String::from("slot"),
+        })
+    );
+}
+
+#[test]
+fn plugin_args_reject_bad_fd_slot_and_switch_values() {
+    assert_eq!(
+        PluginArgs::parse(
+            "simfd=-1,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576"
+        ),
+        Err(PluginArgsParseError::InvalidFd {
+            key: "simfd",
+            value: String::from("-1"),
+        })
+    );
+    assert_eq!(
+        PluginArgs::parse(
+            "simfd=control,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576"
+        ),
+        Err(PluginArgsParseError::InvalidFd {
+            key: "simfd",
+            value: String::from("control"),
+        })
+    );
+    assert_eq!(
+        PluginArgs::parse(
+            "simfd=3,slot=guest,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576"
+        ),
+        Err(PluginArgsParseError::InvalidSlot {
+            key: "slot",
+            value: String::from("guest"),
+        })
+    );
+    assert_eq!(
+        PluginArgs::parse(
+            "simfd=3,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576,coverage=true"
+        ),
+        Err(PluginArgsParseError::InvalidSwitch {
+            key: "coverage",
+            value: String::from("true"),
+        })
+    );
+}
+
+#[test]
+fn plugin_args_require_whitebox_setup_attestation_exactly_when_enabled() {
+    assert_eq!(
+        PluginArgs::parse(
+            "simfd=3,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576,whitebox=on"
+        ),
+        Err(PluginArgsParseError::MissingWhiteboxSetup {
+            key: PLUGIN_ARG_WHITEBOX_SETUP,
+        })
+    );
+    assert_eq!(
+        PluginArgs::parse(
+            "simfd=3,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576,whitebox=on,whitebox_setup=x86-port-00e8-unclaimed-v1"
+        ),
+        Err(PluginArgsParseError::InvalidWhiteboxSetup {
+            key: PLUGIN_ARG_WHITEBOX_SETUP,
+            value: String::from("x86-port-00e8-unclaimed-v1"),
+        })
+    );
+    assert_eq!(
+        PluginArgs::parse(
+            "simfd=3,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576,whitebox=off,whitebox_setup=x86-port-00e7-unclaimed-v1"
+        ),
+        Err(PluginArgsParseError::WhiteboxSetupWhileDisabled {
+            key: PLUGIN_ARG_WHITEBOX_SETUP,
+        })
+    );
+}
+
+#[test]
+fn plugin_args_reject_partial_inherited_descriptor_pair() {
+    assert_eq!(
+        PluginArgs::parse(
+            "simfd=3,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576,shmemfd=4"
+        ),
+        Err(PluginArgsParseError::IncompleteInheritedDescriptors)
+    );
+    assert_eq!(
+        PluginArgs::parse(
+            "simfd=3,slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576,wakefd=5"
+        ),
+        Err(PluginArgsParseError::IncompleteInheritedDescriptors)
+    );
+}
+
+#[test]
+fn plugin_args_validate_slot_against_node_count() {
+    let args = PluginArgs::parse("simfd=3,slot=2,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576")
+        .unwrap_or_else(|error| panic!("args should parse: {error}"));
+
+    assert_eq!(args.validate_slot_index(3), Ok(()));
+    assert_eq!(
+        args.validate_slot_index(2),
+        Err(PluginArgsParseError::SlotOutOfRange {
+            slot: 2,
+            node_count: 2,
+        })
+    );
+    assert_eq!(
+        args.validate_slot_index(0),
+        Err(PluginArgsParseError::SlotOutOfRange {
+            slot: 2,
+            node_count: 0,
+        })
+    );
+}

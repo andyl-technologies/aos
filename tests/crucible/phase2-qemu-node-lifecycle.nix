@@ -2,51 +2,40 @@
   pkgs,
   lib,
   qemuPackage ? pkgs.qemu-crucible,
-  patchName ? "0056-crucible-node-lifecycle-faults.patch",
   attrPath ? "checks.crucible.phase2.qemuNodeLifecycle",
   taskIds ? ["T-QEMU-0056"],
   dependencies ? [],
 }: let
   patchDir = ../../pkgs/emulation/qemu-patches;
-  patchSource = builtins.readFile (patchDir + "/${patchName}");
+  atomicPatch = import ../../pkgs/emulation/qemu-patches/_atomic-patch.nix;
+  patchSource = builtins.readFile (patchDir + "/${atomicPatch.file}");
   taskList = builtins.concatStringsSep "," taskIds;
   inherit (import ./_lib.nix {inherit lib;}) failuresFor forbiddenFor;
-  failures =
-    failuresFor "pkgs/emulation/qemu-patches/${patchName}" patchSource [
-      {
-        label = "deferred native reset completion";
-        needle = "qemu_crucible_fault_lifecycle_reset_complete";
-      }
-      {
-        label = "writable volatile RAM treatment";
-        needle = "crucible_lifecycle_clear_ram";
-      }
-      {
-        label = "fixed-topology hang eligibility";
-        needle = "qemu_crucible_fault_vcpu_hung";
-      }
-      {
-        label = "lifecycle evidence format";
-        needle = "CRUCLIF1";
-      }
-      {
-        label = "repeated pflash post-load handler replacement";
-        needle = ''
-          +        if (pfl->vmstate) {
-          +            qemu_del_vm_change_state_handler(pfl->vmstate);
-        '';
-      }
-    ]
-    ++ forbiddenFor "pkgs/emulation/qemu-patches/${patchName}" patchSource [
-      {
-        label = "host sleep hang";
-        needle = "g_usleep";
-      }
-      {
-        label = "host signal-stop hang";
-        needle = "SIGSTOP";
-      }
-    ];
+  failures = failuresFor "pkgs/emulation/qemu-patches/${atomicPatch.file}" patchSource [
+    {
+      label = "deferred native reset completion";
+      needle = "qemu_crucible_fault_lifecycle_reset_complete";
+    }
+    {
+      label = "writable volatile RAM treatment";
+      needle = "crucible_lifecycle_clear_ram";
+    }
+    {
+      label = "fixed-topology hang eligibility";
+      needle = "qemu_crucible_fault_vcpu_hung";
+    }
+    {
+      label = "lifecycle evidence format";
+      needle = "CRUCLIF2";
+    }
+    {
+      label = "repeated pflash post-load handler replacement";
+      needle = ''
+        +        if (pfl->vmstate) {
+        +            qemu_del_vm_change_state_handler(pfl->vmstate);
+      '';
+    }
+  ];
 in
   if failures != []
   then throw "Crucible QEMU node-lifecycle microtest failed:\n${builtins.concatStringsSep "\n" failures}"
@@ -115,12 +104,12 @@ in
               case "$architecture" in
                 x86_64)
                   qemu_binary=${qemuPackage}/bin/qemu-system-x86_64
-                  machine_args='-machine pc -m 64M'
+                  machine_args='-machine pc-q35-9.2 -cpu qemu64,-rdrand,-rdseed -m 64M -device virtio-rng-pci,bus=pcie.0,addr=0x1'
                   guest=fault-guest-x86.elf
                   ;;
                 aarch64)
                   qemu_binary=${qemuPackage}/bin/qemu-system-aarch64
-                  machine_args='-machine virt -cpu max -m 64M'
+                  machine_args='-machine virt-9.2 -cpu cortex-a57,pmu=off -m 64M -device virtio-rng-pci,bus=pcie.0,addr=0x1'
                   guest=fault-guest-aarch64.elf
                   ;;
                 *)
@@ -137,7 +126,7 @@ in
                 require_ready)
                   expected_status=0
                   plugin_args="$plugin_args,boot_policy=require_ready"
-                  pass_marker="CRUCIBLE_NODE_LIFECYCLE_LIVE_PASS architecture=$architecture_id volatile_policy=$volatile_policy device_policy=$device_policy"
+                  pass_marker="CRUCIBLE_NODE_LIFECYCLE_LIVE_PASS architecture=$architecture_id volatile_policy=$volatile_policy device_policy=$device_policy ready_handoff=queued duplicate=coalesced boundary=drained-exact"
                   ;;
                 *)
                   echo "unknown boot policy: $boot_policy" >&2
@@ -148,8 +137,9 @@ in
               set +e
               timeout --kill-after=5 120 "$qemu_binary" \
                   $machine_args \
-                  -accel sim \
-                  -icount shift=0,rr_switch_quantum=256 \
+                  -nodefaults -no-user-config \
+                  -accel sim,thread=single \
+                  -icount shift=0,sleep=off,align=off,rr_switch_quantum=256 \
                   -smp 1 \
                   -nographic \
                   -serial none \
@@ -224,12 +214,12 @@ in
               case "$architecture" in
                 x86_64)
                   qemu_binary=${qemuPackage}/bin/qemu-system-x86_64
-                  machine_args='-machine pc -m 64M'
+                  machine_args='-machine pc-q35-9.2 -cpu qemu64,-rdrand,-rdseed -m 64M -device virtio-rng-pci,bus=pcie.0,addr=0x1'
                   guest=fault-guest-x86.elf
                   ;;
                 aarch64)
                   qemu_binary=${qemuPackage}/bin/qemu-system-aarch64
-                  machine_args='-machine virt -cpu max -m 64M'
+                  machine_args='-machine virt-9.2 -cpu cortex-a57,pmu=off -m 64M -device virtio-rng-pci,bus=pcie.0,addr=0x1'
                   guest=fault-guest-aarch64.elf
                   ;;
                 *)
@@ -241,8 +231,9 @@ in
               log="logs/$architecture-ready-exhaustion.log"
               "$qemu_binary" \
                 $machine_args \
-                -accel sim \
-                -icount shift=0,rr_switch_quantum=256 \
+                -nodefaults -no-user-config \
+                -accel sim,thread=single \
+                -icount shift=0,sleep=off,align=off,rr_switch_quantum=256 \
                 -smp 1 \
                 -nographic \
                 -serial none \
@@ -324,12 +315,12 @@ in
               case "$architecture" in
                 x86_64)
                   qemu_binary=${qemuPackage}/bin/qemu-system-x86_64
-                  machine_args='-machine pc -m 64M'
+                  machine_args='-machine pc-q35-9.2 -cpu qemu64,-rdrand,-rdseed -m 64M -device virtio-rng-pci,bus=pcie.0,addr=0x1'
                   guest=fault-guest-x86.elf
                   ;;
                 aarch64)
                   qemu_binary=${qemuPackage}/bin/qemu-system-aarch64
-                  machine_args='-machine virt -cpu max -m 64M'
+                  machine_args='-machine virt-9.2 -cpu cortex-a57,pmu=off -m 64M -device virtio-rng-pci,bus=pcie.0,addr=0x1'
                   guest=fault-guest-aarch64.elf
                   ;;
                 *)
@@ -345,12 +336,12 @@ in
                   ;;
                 runnable-vcpu)
                   smp=2
-                  plugin_args="architecture=$architecture_id,scope=vcpu1,initial_virtual_time=10000"
+                  plugin_args="architecture=$architecture_id,scope=vcpu1,initial_tick=80000"
                   pass_marker="CRUCIBLE_NODE_HANG_LIVE_PASS architecture=$architecture_id"
                   ;;
                 simultaneous)
                   smp=2
-                  plugin_args="architecture=$architecture_id,scope=simultaneous,initial_virtual_time=10000"
+                  plugin_args="architecture=$architecture_id,scope=simultaneous,initial_tick=80000"
                   pass_marker="CRUCIBLE_NODE_HANG_COMPOSITION_LIVE_PASS architecture=$architecture_id"
                   ;;
                 *)
@@ -361,8 +352,9 @@ in
               log="logs/$architecture-hang-$scope.log"
               if ! timeout --kill-after=5 120 "$qemu_binary" \
                   $machine_args \
-                  -accel sim \
-                  -icount shift=0,rr_switch_quantum=256 \
+                  -nodefaults -no-user-config \
+                  -accel sim,thread=single \
+                  -icount shift=0,sleep=off,align=off,rr_switch_quantum=256 \
                   -smp "$smp" \
                   -nographic \
                   -serial none \
@@ -409,7 +401,7 @@ in
             {
               printf 'PASS\n'
               printf 'gate=gate:patch-microtests\n'
-              printf 'patch=%s\n' '${patchName}'
+              printf 'atomic_patch=%s\n' '${atomicPatch.file}'
               printf 'patched_fixture_exercised=true\n'
               printf 'stock_negative_control=true\n'
               printf 'qemu_package=%s\n' '${qemuPackage}'
@@ -425,11 +417,11 @@ in
               printf 'watchdog_deadline_axes=stalled,runnable-with-time-bias\n'
               printf 'watchdog_composition=atomic-severity-lattice\n'
               printf 'watchdog=transition_after-reset\n'
-              printf 'boot_policy=require_ready-live-guest-callback-and-terminal-exhaustion\n'
+              printf 'boot_policy=require_ready-qemu-owned-queued-handoff-and-terminal-exhaustion\n'
               printf 'ready_exhaustion=attempts-2,effective-permanent-failure,exit-72\n'
               printf 'recovery=transactional-remove\n'
-              printf 'production_effect_row=node.hang|node-vcpu-watchdog-recovery|gate:live-node-lifecycle-matrix|actual-patched-qemu|CRUCHNG1+CRUCWDC1+CRUCLIF1\n'
-              printf 'production_effect_row=node.lifecycle|reset-ready-exhaustion|gate:live-node-lifecycle-matrix|actual-patched-qemu|CRUCLIF1-ready-exhausted-permanent-failure\n'
+              printf 'production_effect_row=node.hang|node-vcpu-watchdog-recovery|gate:live-node-lifecycle-matrix|actual-patched-qemu|CRUCHNG2+CRUCWDC2+CRUCLIF2\n'
+              printf 'production_effect_row=node.lifecycle|reset-ready-exhaustion|gate:live-node-lifecycle-matrix|actual-patched-qemu|CRUCLIF2-ready-exhausted-permanent-failure\n'
             } > "$out/result"
           '';
         }

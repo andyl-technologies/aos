@@ -15,13 +15,13 @@ in
   # still requires the existing complete history and original-scope verifier.
   sourceGate "mixed-view-interpretation" ''
     cd crates
-    cargo test --frozen --offline -p terrane-core --lib -- --list \
+    cargo test --frozen --offline -p terrane-format --lib -- --list \
       > "$TMPDIR/mixed-view-tests.txt"
     python3 ../tests/terrane/check_native_gate.py inventory \
       "$TMPDIR/mixed-view-tests.txt" '${builtins.toJSON selectors}'
 
     for test_name in ${builtins.concatStringsSep " " selectors}; do
-      if ! cargo test --frozen --offline -p terrane-core --lib "$test_name" -- --exact \
+      if ! cargo test --frozen --offline -p terrane-format --lib "$test_name" -- --exact \
         > "$TMPDIR/mixed-view-test.log" 2>&1; then
         cat "$TMPDIR/mixed-view-test.log"
         exit 1
@@ -29,10 +29,10 @@ in
       python3 ../tests/terrane/check_native_gate.py execution \
         "$TMPDIR/mixed-view-test.log" "[\"$test_name\"]"
     done
-    cargo build --frozen --offline -p terrane-core --no-default-features --lib
-    cargo clippy --frozen --offline -p terrane-core --all-targets -- -D warnings
+    cargo build --frozen --offline -p terrane-format --no-default-features --lib
+    cargo clippy --frozen --offline -p terrane-format --all-targets -- -D warnings
     RUSTDOCFLAGS='-D warnings -D missing_docs' cargo doc --frozen --offline \
-      -p terrane-core --no-deps --document-private-items
+      -p terrane-format --no-deps --document-private-items
     printf 'PASS: eight exact per-view interpretation cases and strict portable Core checks\n' \
       > "$out/result"
   ''

@@ -21,32 +21,42 @@ async function main() {
     database.close();
   }
 
+  // The older npm wrapper retains its package version while using the current
+  // source-built runtime shared with Wrangler.
   const trees = [
-    { directory: 'lib/node_modules', version: '1.20240909.0', date: '2024-09-09' },
-    { directory: 'lib/node_modules/wrangler/node_modules', version: '1.20260801.1', date: '2026-08-01' },
+    {
+      directory: 'lib/node_modules',
+      packageVersion: '1.20240909.0',
+      runtimeDate: '2026-08-01',
+    },
+    {
+      directory: 'lib/node_modules/wrangler/node_modules',
+      packageVersion: '1.20260801.1',
+      runtimeDate: '2026-08-01',
+    },
   ];
 
   for (const tree of trees) {
     const load = createRequire(path.join(root, tree.directory, 'runtime-check.cjs'));
     const runtime = load('workerd');
-    assert.equal(runtime.version, tree.version);
+    assert.equal(runtime.version, tree.packageVersion);
     const binary = realpathSync(runtime.default);
     assert.match(binary, /^\/nix\/store\/[^/]+-workerd(?:-modern)?-source-[^/]+\/bin\/workerd$/);
-    assert.ok(execFileSync(binary, ['--version'], { encoding: 'utf8' }).includes(tree.date));
+    assert.ok(execFileSync(binary, ['--version'], { encoding: 'utf8' }).includes(tree.runtimeDate));
 
     const { Miniflare } = load('miniflare');
     const instance = new Miniflare({
       modules: true,
       // Request metadata is irrelevant here; avoid fetching and caching it.
       cf: false,
-      compatibilityDate: tree.date,
+      compatibilityDate: tree.runtimeDate,
       script: 'export default { fetch(request) { return Response.json({ answer: 42, pathname: new URL(request.url).pathname }); } };',
     });
     try {
       const response = await instance.dispatchFetch('http://example.test/source-runtime');
       assert.equal(response.status, 200);
       assert.deepEqual(await response.json(), { answer: 42, pathname: '/source-runtime' });
-      console.log(`PASS: Miniflare request using source Workerd ${tree.version}`);
+      console.log(`PASS: Miniflare request using source Workerd ${tree.runtimeDate}`);
     } finally {
       await instance.dispose();
     }

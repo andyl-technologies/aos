@@ -17,10 +17,10 @@
       extraBuildDeps = [pkgs.binutils];
     } "configured-sdk-image" ''
       cd crates
-      cargo test --frozen --offline -p terrane-fs \
+      cargo test --frozen --offline -p terrane-linux \
         --features tokio,terrane/surface-sdk --lib --no-run --message-format=json \
         > "$TMPDIR/configured-sdk-unit.jsonl"
-      cargo build --frozen --offline -p terrane-fs \
+      cargo build --frozen --offline -p terrane-linux \
         --features tokio,terrane/surface-sdk --example configured_sdk_fixture \
         --message-format=json > "$TMPDIR/configured-sdk-example.jsonl"
       cargo metadata --frozen --offline --no-deps --format-version=1 \

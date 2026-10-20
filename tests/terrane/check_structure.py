@@ -1,5 +1,6 @@
 """Checks T0 crate dependency direction and unsafe policy from Cargo metadata."""
 
+import hashlib
 import json
 import pathlib
 import re
@@ -17,16 +18,16 @@ def main():
     repository = pathlib.Path(repository)
     metadata = json.loads(pathlib.Path(metadata_path).read_text())
     packages = {package["name"]: package for package in metadata["packages"]}
-    standalone = ["terrane-core", "terrane", "terrane-fs", "terrane-cli"]
+    standalone = ["terrane-format", "terrane-sdk", "terrane-linux", "terrane-cli"]
     expected = {
-        "terrane-core": set(),
-        "terrane": {"terrane-core"},
-        "terrane-fs": {"terrane", "terrane-core"},
-        "terrane-cli": {"terrane", "terrane-fs"},
-        "aos-terrane": {"terrane", "terrane-core", "terrane-fs"},
+        "terrane-format": set(),
+        "terrane-sdk": {"terrane-format"},
+        "terrane-linux": {"terrane-sdk", "terrane-format"},
+        "terrane-cli": {"terrane-sdk", "terrane-linux"},
+        "aos-terrane-integration": {"terrane-sdk", "terrane-format", "terrane-linux"},
     }
 
-    for name in [*standalone, "aos-terrane"]:
+    for name in [*standalone, "aos-terrane-integration"]:
         check(name in packages, f"missing workspace crate: {name}")
         package = packages[name]
         check(package["id"] in metadata["workspace_members"], f"not a workspace member: {name}")
@@ -42,11 +43,11 @@ def main():
 
         if gate == "crate-graph":
             dependencies = {dependency["name"] for dependency in package["dependencies"]}
-            internal = {dependency for dependency in dependencies if dependency.startswith("terrane")}
+            internal = {dependency for dependency in dependencies if dependency.startswith("terrane-")}
             check(internal == expected[name], f"invalid dependency direction: {name}: {internal}")
             if name in standalone:
                 check(not any(dep.startswith(("aos-", "crucible-")) for dep in dependencies), f"host dependency in {name}")
-            if name == "terrane-core":
+            if name == "terrane-format":
                 # The isolated core-no-std compilation is the semantic check.
                 # New portable dependencies can land without changing this gate,
                 # but enabling default or std features requires deliberate review.
@@ -61,15 +62,26 @@ def main():
         elif gate == "unsafe-audit":
             root_path = manifest_path.parent / "src" / ("main.rs" if name == "terrane-cli" else "lib.rs")
             root = root_path.read_text()
-            if name == "terrane-fs":
+            if name == "terrane-linux":
                 check("#![deny(unsafe_op_in_unsafe_fn)]" in root, "fs must deny unchecked unsafe operations")
                 check('cfg(not(target_os = "linux"))' in root and "compile_error!" in root, "fs must reject non-Linux builds")
             else:
                 check("#![forbid(unsafe_code)]" in root, f"unsafe code not forbidden: {name}")
-            # No kernel bindings exist at T0. Any future unsafe binding needs a
-            # deliberate audit replacing this stricter foundation assertion.
+            # Native bindings added after T0 require a deliberate source audit.
+            # This exact reviewed module has four SAFETY-documented nsfs calls;
+            # any additional unsafe source or edit requires another review.
+            audited_bindings = {
+                "host_quota/namespace.rs": "288636e7b7c86422d0533ad6ddce4929dd1ff83d9285c442d9161185036a7a2b",
+            }
             for source in sources:
-                check(not re.search(r"\bunsafe\s*(?:\{|fn|impl|trait)", source.read_text()), f"unsafe implementation needs audit: {source}")
+                text = source.read_text()
+                if not re.search(r"\bunsafe\s*(?:\{|fn|impl|trait)", text):
+                    continue
+
+                relative = source.relative_to(manifest_path.parent / "src").as_posix()
+                check(name == "terrane-linux", f"unsafe outside Linux bindings: {source}")
+                check(hashlib.sha256(source.read_bytes()).hexdigest() == audited_bindings.get(relative),
+                      f"unsafe implementation needs audit: {source}")
         else:
             raise AssertionError(f"unknown foundation gate: {gate}")
 

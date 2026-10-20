@@ -72,7 +72,7 @@ committing a network change.
 
 ## Use platform network facts
 
-The native AWS, GCP, Azure, DigitalOcean, and OpenStack metadata agents
+The native AWS, GCP, Azure, DigitalOcean, and OpenStack metadata providers
 normalize instance identity, interfaces, and supported static-network data.
 Those values enter pure evaluation under `host.facts`; the provider response is
 never imported as executable Nix. The initrd can seed a DHCP-less network path
@@ -182,9 +182,9 @@ systemctl status nftables.service
 journalctl -u nftables.service -b
 ```
 
-Keep routing, listener ownership, package namespace policy, and firewall rules
-as separate checks. See [Understand the package sandbox](package-sandbox.md)
-for package TCP grants and host-networking implications.
+Keep routing, listener ownership, selected network-policy resources, and
+firewall rules as separate checks. See [Understand native package runtime
+policy](package-sandbox.md) for package-owned resource declarations.
 
 ## Diagnose a running host
 

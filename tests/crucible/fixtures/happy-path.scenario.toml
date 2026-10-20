@@ -1,12 +1,16 @@
-schema = "crucible.scenario.v5"
+schema = "crucible.scenario.v9"
 
 [scenario]
-id = "blake3:771e8a9e097f321be3ada6dcf138e3b2dcd18b15cfd1534d8c175fd66e8ebad9"
+id = "blake3:8d1aa4263532d8bfb1b51d80f854fd2a4bd98b40e5ea81efa2f763c1d016d944"
 seed = "0x2a00000000000000000000000000000000000000000000000000000000000000"
 app_random_draw_cap = 10
+selectable_declarations_per_node = 4096
+selectable_declarations_per_world = 65536
+selectable_requests_per_selectable = 1000000
+selectable_requests_per_node = 1000000
 
 [world]
-id = "blake3:8408f8cb2aa137f12d4abcbdae02a5e902cc657730e2bf1a13961237dccb6831"
+id = "blake3:47cad13f2dcf8cefe071433a343c478180a2ec53e35dbaac31110bbfb1b8be63"
 
 [[world.node]]
 id = "client"
@@ -14,7 +18,6 @@ arch = "x86_64"
 memory_mib = 256
 cmdline = "console=ttyS0 quiet crucible.workload=httpget target=server:8080 count=100"
 smp_vcpus = 1
-icount_shift = 7
 kernel = "blake3:fe37bad9b18652cadbc50fae4c118fa5e741731c4cf55176d48826ecad85d104"
 root_image = "blake3:1a0a45c8a824f9e4358d5430617567384ae4c499ad5ce81e42508aa945a9236d"
 white_box = "disabled"
@@ -29,7 +32,6 @@ arch = "x86_64"
 memory_mib = 256
 cmdline = "console=ttyS0 quiet port=8080 crucible.workload=httpd"
 smp_vcpus = 1
-icount_shift = 7
 kernel = "blake3:fe37bad9b18652cadbc50fae4c118fa5e741731c4cf55176d48826ecad85d104"
 root_image = "blake3:a79a50550e049da4dd17be2420f33b296e15a9ba83947f4293568e9561e082f0"
 white_box = "disabled"
@@ -46,7 +48,7 @@ jitter_nanos = 1000000
 loss_millionths = 0
 
 [plan]
-id = "blake3:0e2a7af775fc643dc04d4592460ee88fe853184e4b9f6c2c8cc90579efdeac2e"
+id = "blake3:5eb4dc45c0e8000c187ecb483b8df894b3173a13e46eb7f908a5d91e8dfba09f"
 fault_model = "signal_bindings_v2"
 fault_signal_semantic_version = 2
 
@@ -164,7 +166,7 @@ kind = "quiescent"
 kind = "pass"
 
 [properties]
-id = "blake3:fcff536dd7fc5fa9d761c8376f2ea18b1981bc0ce6a01560e27efd51218de58d"
+id = "blake3:7982a620d7e9488ab7c32f426a00909b6db549ea169e5e2e802e14eb89cc2ab7"
 
 [[properties.assertion]]
 id = "all-requests-succeed"
@@ -172,7 +174,7 @@ message = "client observes 100 successful HTTP responses"
 
 [properties.assertion.property]
 kind = "eventually"
-deadline_ticks = 60000000000
+deadline_ticks = 7500000000000
 
 [properties.assertion.property.trigger]
 kind = "once"

@@ -6,10 +6,13 @@ their own machines.
 
 AOS is an early preview. The public golden image is not published yet.
 First-boot storage provisioning, runtime `host.nix` activation, package
-profiles, durable A/B image and configuration generations, and a guarded
-encrypted-ZFS bare-metal installer are present in the tree. They remain
-early-preview interfaces that must be qualified on the exact image and
-platform. The checked-in verified-boot variants still use public test keys;
+profiles, and durable A/B image and configuration generations are present in
+the tree. They remain early-preview interfaces that must be qualified on the
+exact image and platform. Persistent state is ext4 by default, on partitions
+or on MD RAID arrays declared from `host.nix`, and sealed to the TPM on
+measured-boot images. xfs data volumes and the encrypted-ZFS bare-metal
+installer are opt-in at lower stability tiers (see
+[filesystem support tiers](support-status.md#filesystem-support-tiers)). The checked-in verified-boot variants still use public test keys;
 production deployments must supply their own trust material.
 
 ## The operating model
@@ -20,8 +23,8 @@ production deployments must supply their own trust material.
 | First-boot storage | Literal `host.nix` supplied through metadata | Committed once; later changes are drift |
 | Host configuration | Pure `host.nix` evaluation and authenticated package configuration | Numbered configuration generations under `/var/lib/profiles/system` |
 | User packages | `apm install`, `upgrade`, `remove`, and `rollback` after account storage is provisioned | Per-user profile generations under `/var/lib/profiles/per-user` |
-| Runtime system packages | `apm install --system --from DESIRED.toml` | Machine-wide package generations under `/var/lib/profiles/system-packages` |
-| OS image | `apm upgrade --system` and `apm rollback --system --image` | A/B image generations under `/var/lib/profiles/image` |
+| Runtime system packages | `apm install --system PACKAGE`, `upgrade --system`, and `remove --system` | Machine-wide package generations under `/var/lib/profiles/system` |
+| OS image | `apm image install`, `upgrade`, and `rollback` | A/B image generations under `/var/lib/profiles/image` |
 
 Three command names cover different jobs in the AOS toolchain:
 
@@ -55,17 +58,21 @@ consumption, and on-host activation as distinct installed capabilities.
 
 ## Operate the host
 
-- [Manage packages](packages.md) covers user packages, declarative machine-wide
-  packages, profiles, and package rollback.
+- [Manage packages](packages.md) covers installing, upgrading, removing, and
+  rolling back machine-wide and personal packages, plus optional package sets
+  from a file.
 - [Configure package registries](registries.md) covers the built-in registry,
   other public and internal registries, priorities, credentials, and trust.
-- [Understand the package sandbox](package-sandbox.md) explains the runtime
-  boundary for exposed services and how to inspect its effective policy.
+- [Understand native package runtime policy](package-sandbox.md) explains how
+  typed package requests become concrete host resources.
 - [Operate an AOS host](operations.md) covers services, logs, storage,
   packages, monitoring, and maintenance.
-- [Run ZFS storage](storage-zfs.md) covers the memory budget, dataset
-  declarations, pool lifecycle, and the metrics that move before a host runs
-  into trouble.
+- [Configure redundant and encrypted storage](host-nix.md#mirror-the-system-state)
+  covers MD mirrors for `/var` and data volumes, TPM-sealed data volumes, and
+  their mount units.
+- [Run ZFS storage](storage-zfs.md) covers the opt-in ZFS path: the memory
+  budget, dataset declarations, pool lifecycle, and the metrics that move
+  before a host runs into trouble.
 - [Upgrade and roll back a host](upgrades.md) covers the independent image and
   configuration generation axes, A/B boot counting, and failure semantics.
 - [Use Secure Boot and verify package trust](secure-boot.md) follows the chain
@@ -91,6 +98,9 @@ consumption, and on-host activation as distinct installed capabilities.
 
 - [Package an application for AOS](package-authoring.md) follows a service from
   its derivation through image inclusion, registry publication, and upgrade.
+- [Inspect ability plans and retained execution](ability-inspection.md) covers
+  offline checked graphs, private operator views, retained diagnostics, and
+  realized artifact-consumption evidence.
 - Package and service configuration is generated from each package's Nix
   interface and signed runtime contract. Use `apm docs`, `apm options`, the
   offline `apm docs serve` browser, or the package documentation workspace in
@@ -107,3 +117,10 @@ consumption, and on-host activation as distinct installed capabilities.
 Registry producers should continue with
 [Operate an AOS package registry](../registry/). Hub operators should use the
 [AOS Hub guide](../aos-hub/).
+
+## Runtime abilities
+
+[Runtime abilities](runtime-abilities.md) explains native package modules,
+mergeable operation contracts, composed handlers, and the build-to-runtime path.
+Use `aos docs runtime` to inspect generated references and deferred transactions.
+The guide marks the remaining consumer migration explicitly.

@@ -10,9 +10,9 @@
 
 use std::collections::BTreeMap;
 
-use terrane_core::cbor::Error as CborError;
-use terrane_core::gc::publication::PublicationError;
-use terrane_core::gc::publication::reconciliation::LocalGcReconciliation;
+use terrane_format::cbor::Error as CborError;
+use terrane_format::gc::publication::PublicationError;
+use terrane_format::gc::publication::reconciliation::LocalGcReconciliation;
 
 const MAX_UINT: u64 = u64::MAX;
 const HEADING: &str = "## Local reconciliation record field witnesses";

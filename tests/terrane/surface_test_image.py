@@ -19,7 +19,7 @@ TARGETS = ["local_sdk", "surface_contract", "surface_runtime", "surface_lifecycl
            "configured_local_repository"]
 FEATURES = ["send", "std", "surface-sdk", "tokio"]
 CARGO_FLAGS = [
-    "--frozen", "--offline", "-p", "terrane", "--no-default-features",
+    "--frozen", "--offline", "-p", "terrane-sdk", "--no-default-features",
     "--features", "tokio,surface-sdk",
 ]
 
@@ -45,8 +45,8 @@ def selected_artifacts(workspace, target_dir, temporary):
                (temporary / "surface-build.jsonl").read_text().splitlines()]
     packages = json.loads((temporary / "surface-packages.json").read_text())["packages"]
     selected = [package for package in packages
-                if pathlib.Path(package["manifest_path"]) == workspace / "terrane/Cargo.toml"]
-    require(len(selected) == 1 and selected[0]["name"] == "terrane",
+                if pathlib.Path(package["manifest_path"]) == workspace / "terrane/sdk/terrane-sdk/Cargo.toml"]
+    require(len(selected) == 1 and selected[0]["name"] == "terrane-sdk",
             "surface test package does not belong to the selected source")
     manifest = tomllib.loads((workspace / "Cargo.toml").read_text())
     require(manifest.get("profile", {}).get("test", {}) == {"debug": 0, "opt-level": "s"},
@@ -64,7 +64,7 @@ def selected_artifacts(workspace, target_dir, temporary):
         require(artifact["package_id"] == selected[0]["id"]
                 and artifact["target"]["kind"] == ["test"]
                 and pathlib.Path(artifact["target"]["src_path"])
-                == workspace / "terrane/tests" / f"{name}.rs"
+                == workspace / "terrane/sdk/terrane-sdk/tests" / f"{name}.rs"
                 and sorted(artifact.get("features", [])) == FEATURES
                 and profile.get("opt_level") == "s" and profile.get("debuginfo") == 0
                 and executable.is_file() and os.access(executable, os.X_OK)
@@ -95,11 +95,11 @@ def verify_image(image, workspace, source, native):
                 and profile.get("test") is True and profile.get("opt_level") == "s"
                 and profile.get("debuginfo") == 0
                 and target.get("input_sha256") == hashes
-                and target.get("working_directory") == "terrane"
+                and target.get("working_directory") == "terrane/sdk/terrane-sdk"
                 and binary.is_file() and os.access(binary, os.X_OK)
                 and artifact.get("package_id") == target.get("package_id")
                 and artifact.get("target_kind") == ["test"]
-                and artifact.get("source") == f"terrane/tests/{name}.rs"
+                and artifact.get("source") == f"terrane/sdk/terrane-sdk/tests/{name}.rs"
                 and artifact.get("features") == FEATURES
                 and artifact.get("profile") == profile
                 and artifact.get("binary_sha256") == hashlib.sha256(binary.read_bytes()).hexdigest(),

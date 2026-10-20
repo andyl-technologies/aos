@@ -10,7 +10,7 @@ use super::{
     bindings,
     wire::{self, Value, a, b, bytes, s, u},
 };
-use terrane_core::gc::publication::evidence::*;
+use terrane_format::gc::publication::evidence::*;
 
 /// Constructs every registered local original field as inert data.
 pub(super) fn local() -> LocalOriginalRegistration {

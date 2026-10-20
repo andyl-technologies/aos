@@ -138,7 +138,7 @@
       publish_rollback_tool() {
         version="$1"
         store="$2"
-        $APR publish "$store" \
+        publish_vm_package "$store" \
           --name rollback-tool \
           --version "$version" \
           --description "Executable rollback workflow fixture" \
@@ -170,7 +170,7 @@
       assert_store_valid "$ROLLBACK_V3_STORE" "rollback-tool-v3"
 
       echo "==> Maintainer: publish rollback-tool 1.0.0 and static cache"
-      $APR create rollback-reg
+      create_publish_registry rollback-reg
       REG_DIR="$REG_STORAGE/rollback-reg"
       DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
       publish_rollback_tool 1.0.0 "$ROLLBACK_V1_STORE"

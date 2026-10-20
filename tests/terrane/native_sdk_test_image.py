@@ -20,7 +20,7 @@ import tomllib
 
 FEATURES = ["send", "std", "surface-sdk", "tokio"]
 CARGO_FLAGS = [
-    "--frozen", "--offline", "-p", "terrane", "--no-default-features",
+    "--frozen", "--offline", "-p", "terrane-sdk", "--no-default-features",
     "--features", "tokio,surface-sdk", "--lib",
 ]
 
@@ -37,13 +37,13 @@ def selected_artifact(workspace, target_dir, temporary):
                (temporary / "native-sdk-build.jsonl").read_text().splitlines()]
     candidates = [record for record in records
                   if record.get("reason") == "compiler-artifact"
-                  and record.get("target", {}).get("name") == "terrane"
+                  and record.get("target", {}).get("name") == "terrane_sdk"
                   and record.get("profile", {}).get("test") is True]
     require(len(candidates) == 1, "expected exactly one terrane library-test artifact")
     artifact = candidates[0]
     packages = json.loads((temporary / "native-sdk-packages.json").read_text())["packages"]
     selected = [item for item in packages
-                if pathlib.Path(item["manifest_path"]) == workspace / "terrane/Cargo.toml"]
+                if pathlib.Path(item["manifest_path"]) == workspace / "terrane/sdk/terrane-sdk/Cargo.toml"]
     require(len(selected) == 1 and artifact["package_id"] == selected[0]["id"],
             "native SDK artifact does not belong to the selected source package")
 
@@ -51,11 +51,11 @@ def selected_artifact(workspace, target_dir, temporary):
     executable = pathlib.Path(artifact.get("executable") or "")
     manifest = tomllib.loads((workspace / "Cargo.toml").read_text())
     require(artifact["target"]["kind"] == ["lib"]
-            and pathlib.Path(artifact["target"]["src_path"]) == workspace / "terrane/src/lib.rs"
+            and pathlib.Path(artifact["target"]["src_path"]) == workspace / "terrane/sdk/terrane-sdk/src/lib.rs"
             and sorted(artifact.get("features", [])) == FEATURES
             and profile.get("opt_level") == "s" and profile.get("debuginfo") == 0
             and manifest.get("profile", {}).get("test", {}) == {"debug": 0, "opt-level": "s"}
-            and selected[0]["name"] == "terrane"
+            and selected[0]["name"] == "terrane-sdk"
             and executable.is_file() and os.access(executable, os.X_OK)
             and executable.resolve().is_relative_to(target_dir.resolve()),
             "native SDK source, feature, profile, or executable identity mismatch")
@@ -126,8 +126,8 @@ def cargo_discovery(executable, target_dir, temporary, target_libraries, workspa
             "malformed Cargo discovery working directory")
     working_directory = pathlib.Path(captured_cwd[:-1])
     require(working_directory.is_absolute()
-            and working_directory == workspace / "terrane"
-            and working_directory.resolve() == (workspace / "terrane").resolve(),
+            and working_directory == workspace / "terrane/sdk/terrane-sdk"
+            and working_directory.resolve() == (workspace / "terrane/sdk/terrane-sdk").resolve(),
             "Cargo discovery did not run in the selected source package")
     return directories, working_directory.relative_to(workspace).as_posix()
 

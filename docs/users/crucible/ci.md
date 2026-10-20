@@ -9,13 +9,22 @@ Build once at the start of the job and run the packaged gates before executing
 project scenarios:
 
 ```sh
-nix build .#pkg-crucible
+aos-dev --release build package crucible
 ./result/bin/crucible --quiet selftest
 ```
 
 Production builds run the QEMU-backed gates by default. A failure here means
 the runner is not qualified; do not continue with scenario results from that
 job.
+
+Run these commands from the repository root in `nix develop` or its direnv
+environment. `--release` selects ordinary derivations and requests no shared
+compiler-cache mounts. Daemon-wide static mounts can remain visible; use a
+separate builder if qualification requires a cache-free sandbox.
+Provision the [guarded host resources](campaigns.md#start-the-single-host-owner)
+before scenario execution, and set `CRUCIBLE_CAMPAIGN_DEPLOYMENT` to the
+owner-only deployment file and `CRUCIBLE_RUN_STATE_ROOT` to a durable writable
+directory. The deployment must admit the example's 100,000 execution quanta.
 
 ## Run a scenario
 
@@ -36,9 +45,8 @@ set +e
   --quiet \
   run scenarios/checkout.scn \
   --until virtual-time \
-  --max-virtual-time 30s \
-  --max-quanta 100000 \
-  --save-on fail
+  --max-virtual-time 1s \
+  --max-quanta 100000
 status=$?
 set -e
 
@@ -46,9 +54,10 @@ exit "$status"
 ```
 
 The explicit `--format` makes the output independent of whether the CI runner
-allocates a terminal. `--save-on fail` retains a resumable execution only when
-the run fails. The quantum and virtual-time limits keep a stuck workload from
-occupying a runner indefinitely.
+allocates a terminal. Failure artifacts are distinct from savepoint handles;
+unattended local QEMU runs use the default `--save-on never`. Virtual-time and
+quantum limits bound modeled execution; host completion also has its own
+operational deadlines. See [timeout semantics](running.md#terminal-conditions-and-budgets).
 
 Archive these paths on failure:
 
@@ -56,8 +65,9 @@ Archive these paths on failure:
 - `.ci/crucible/artifacts/`; and
 - `.ci/crucible/store/`, unless the job uses a durable content-addressed store.
 
-The artifact alone describes the reproduction, but it may refer to objects in
-the store. Preserve them together.
+Reproduction artifacts carry their authenticated closure, subject to the
+recorded backend/build requirements. Savepoint handles and canonical scenario
+inputs can still reference the store. Preserve it when retaining those inputs.
 
 ## Interpret exit status
 

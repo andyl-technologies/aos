@@ -6,7 +6,7 @@
   mkCargoPackage,
   mkCargoArtifacts,
   mkCargoDummySource,
-  fetchCargoVendor,
+  aosWorkspaceVendor,
   rust,
   openssl,
   pkg-config,
@@ -21,12 +21,30 @@
   sed,
   util-linux,
   qemu-crucible-source,
+  sqlite,
   gdb,
   openssh,
   buildPackages,
   controllerOnly ? false,
 }: let
   version = "0.1.0";
+  platformSupport = {
+    build = [
+      {
+        abi = ["gnu"];
+        os = ["linux"];
+      }
+    ];
+    host = [
+      {
+        abi = ["gnu"];
+        cpu = ["x86_64" "aarch64"];
+        os = ["linux"];
+      }
+    ];
+    target = [];
+    role = "public-package";
+  };
   buildRustDev =
     if stdenv.isCross
     then buildPackages.rust.dev
@@ -53,23 +71,21 @@
     if stdenv.hostPlatform.system == "x86_64-linux"
     then "x86_64"
     else "aarch64";
-  cargoDepsHash = import ./_cargo-deps-hash.nix;
+  cargoDepsHash = import ./_cargo-deps-hash.nix {cargoDeps = aosWorkspaceVendor;};
   liveDebuggerMatrixScript = ./live-debugger-matrix.sh;
   src = import ./_source.nix {inherit lib;};
-  cargoDeps = fetchCargoVendor {
-    inherit src;
-    name = "crucible-vendor-${version}";
-    sourceRoot = "source/crates";
-    hash = cargoDepsHash;
+  cargoDependencySource = mkCargoDummySource {
+    srcRoot = ../../../crates;
+    name = "crucible-apache-host-dummy-source";
+    cargoRoot = "crates";
   };
+  # One monorepo lockfile owns the pinned third-party dependency set.
+  cargoDeps = aosWorkspaceVendor;
+  cargoWorkspaceMembers = import ./_workspace.nix {inherit lib;};
   packages = import ./_packages.nix;
-  workspacePackages = (builtins.fromTOML (builtins.readFile ../../../crates/Cargo.toml)).workspace.members;
-  nonCrucibleWorkspacePackages = builtins.filter (package: !(builtins.elem package packages)) workspacePackages;
-  gplSidePackages = ["crucible-qemu-plugin" "crucible-debug-gateway"];
+  gplSidePackages = ["crucible-qemu-plugin" "crucible-qemu-debug-gateway"];
   controllerPackages = builtins.filter (package: !(builtins.elem package gplSidePackages)) packages;
-  workspaceCargoFlags = builtins.concatStringsSep " " (
-    ["--workspace"] ++ map (package: "--exclude ${package}") (nonCrucibleWorkspacePackages ++ gplSidePackages)
-  );
+  workspaceCargoFlags = builtins.concatStringsSep " " (map (package: "-p ${package}") controllerPackages);
   packageFlags = builtins.concatStringsSep " " (map (package: "-p ${package}") controllerPackages);
   docPackages = builtins.filter (package: package != "crucible-cli") controllerPackages;
   docPackageFlags = builtins.concatStringsSep " " (map (package: "-p ${package}") docPackages);
@@ -93,10 +109,9 @@
     map
     (package: builtins.unsafeDiscardStringContext (toString package))
     ([debugGateway] ++ forbiddenControllerRuntimePackages);
-  shmemLib = builtins.readFile ../../../crates/crucible-shmem/src/lib.rs;
-  protocolLib = builtins.readFile ../../../crates/crucible-protocol/src/lib.rs;
-  doorbellAbi = builtins.readFile ../../../crates/crucible-protocol/src/doorbell_abi.rs;
-  apiRpcAbi = builtins.readFile ../../../crates/crucible-api/src/rpc_abi.rs;
+  shmemLib = builtins.readFile ../../../crates/crucible/protocol/crucible-qemu-shmem/src/lib.rs;
+  doorbellAbi = builtins.readFile ../../../crates/crucible/protocol/crucible-qemu-protocol/src/doorbell_abi.rs;
+  apiRpcAbi = builtins.readFile ../../../crates/crucible/control/crucible-control-api/src/rpc_abi.rs;
   firstLineWith = label: prefix: content: let
     matches = builtins.filter (line: lib.hasPrefix prefix line) (lib.splitString "\n" content);
   in
@@ -110,7 +125,7 @@
     lib.removeSuffix "\";"
     (lib.removePrefix prefix (firstLineWith label prefix content));
   shmemAbiVersion = sourceConst "shmem ABI version" "pub const ABI_VERSION: u32 = " shmemLib;
-  guestHostProtocolVersion = sourceConst "guest-host protocol version" "pub const CONTROL_PROTOCOL_VERSION: u32 = " protocolLib;
+  guestHostProtocolVersion = import ./_control-protocol-version.nix {};
   doorbellInstructionAbiVersion = sourceConst "doorbell instruction ABI version" "pub const WHITEBOX_DOORBELL_INSTRUCTION_ABI_VERSION: u16 = " doorbellAbi;
   rpcProtocolMajor = sourceConst "RPC ABI major version" "pub const RPC_PROTOCOL_MAJOR: u16 = " apiRpcAbi;
   rpcProtocolMinor = sourceConst "RPC ABI minor version" "pub const RPC_PROTOCOL_MINOR: u16 = " apiRpcAbi;
@@ -122,23 +137,20 @@
     OPENSSL_INCLUDE_DIR = "${openssl}/include";
     OPENSSL_NO_VENDOR = "1";
     OPENSSL_STATIC = "0";
+    LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
     PROTOC = "${buildProtobuf}/bin/protoc";
   };
   controllerArtifactContract = {
     family = "crucible-apache-host-release-and-test";
-    nativeInputs = map toString [buildRustDev buildPkgConfig openssl buildProtobuf];
+    nativeInputs = map toString [buildRustDev buildPkgConfig openssl sqlite buildProtobuf];
     licenseScope = "Apache-2.0";
   };
   controllerArtifacts = mkCargoArtifacts {
     pname = "crucible-apache-host-artifacts";
-    inherit version cargoDeps;
+    inherit version cargoDeps cargoWorkspaceMembers;
     cargoEnv = controllerCargoEnv;
     cargoArtifactContract = controllerArtifactContract;
-    src = mkCargoDummySource {
-      srcRoot = ../../../crates;
-      name = "crucible-apache-host-dummy-source";
-      cargoRoot = "crates";
-    };
+    src = cargoDependencySource;
     cargoRoot = "crates";
     cargoBuildCommands = [
       "build --release --frozen --offline -j$NIX_BUILD_CORES ${workspaceCargoFlags}"
@@ -146,19 +158,21 @@
       "test --no-run --frozen --offline -j$NIX_BUILD_CORES ${workspaceCargoFlags} --features crucible-cli/test-double"
     ];
     buildDeps =
-      [buildRustDev buildPkgConfig openssl buildProtobuf]
+      [buildRustDev buildPkgConfig openssl sqlite buildProtobuf]
       ++ lib.optionals stdenv.isCross [buildPackages.crucible-controller];
-    runtimeDeps = [openssl];
+    runtimeDeps = [openssl sqlite];
   };
   debugGatewayArtifactContract = {
     family = "crucible-gpl-debug-gateway-release-and-test";
-    nativeInputs = map toString [buildRustDev];
+    nativeInputs = map toString [buildRustDev buildPkgConfig sqlite];
     licenseScope = "GPL-2.0-only";
   };
+  debugGatewayCargoEnv = {LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";};
   debugGatewayArtifacts = mkCargoArtifacts {
     pname = "crucible-debug-gateway-artifacts";
-    inherit version cargoDeps;
+    inherit version cargoDeps cargoWorkspaceMembers;
     cargoArtifactContract = debugGatewayArtifactContract;
+    cargoEnv = debugGatewayCargoEnv;
     src = mkCargoDummySource {
       srcRoot = ../../../crates;
       name = "crucible-debug-gateway-dummy-source";
@@ -166,26 +180,85 @@
     };
     cargoRoot = "crates";
     cargoBuildCommands = [
-      "build --release --frozen --offline -j$NIX_BUILD_CORES -p crucible-debug-gateway"
-      "test --release --no-run --frozen --offline -j$NIX_BUILD_CORES -p crucible-debug-gateway"
+      "build --release --frozen --offline -j$NIX_BUILD_CORES -p crucible-qemu-debug-gateway"
+      "test --release --no-run --frozen --offline -j$NIX_BUILD_CORES -p crucible-qemu-debug-gateway"
     ];
-    buildDeps = [buildRustDev];
+    buildDeps = [buildRustDev buildPkgConfig sqlite];
+    runtimeDeps = [sqlite];
   };
   controller = mkCargoPackage {
+    inherit platformSupport;
     pname = "crucible-controller";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The command returns success and documents Usage.";
+        "files" = {};
+        "input" = "The packaged crucible-controller command-line interface.";
+        "operation" = "Request its offline help text.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess\nresult = subprocess.run([\"@out@/bin/crucible\",\"--help\"], capture_output=True, text=True)\nassert result.returncode == 0 and \"Usage\" in (result.stdout + result.stderr), (result.returncode, result.stdout, result.stderr)\nprint(\"crucible-controller operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "crucible-controller operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The command rejects the unsupported option before performing its main operation.";
+        "files" = {};
+        "input" = "A crucible-controller invocation containing an unsupported command-line option.";
+        "operation" = "Parse the unknown option without starting a service or contacting a remote endpoint.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess, sys\nresult = subprocess.run([\"@out@/bin/crucible\",\"--aos-invalid-option\"], capture_output=True, text=True)\nassert result.returncode != 0, (result.returncode, result.stdout, result.stderr)\nsys.stderr.write(\"crucible-controller rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "crucible-controller rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version src;
 
-    inherit cargoDeps;
+    inherit cargoDeps cargoWorkspaceMembers;
     cargoArtifacts = controllerArtifacts;
     cargoArtifactContract = controllerArtifactContract;
     cargoEnv = controllerCargoEnv;
     cargoRoot = "crates";
     cargoNextest = true;
+    # Keep runtime tests within a bounded share of the allocated build cores.
+    # Several controller suites run real subprocesses with production-sized
+    # deadlines and must retain scheduler time under large host allocations.
+    cargoNextestMaxTestThreads = 16;
     # Nextest lists hundreds of controller test binaries concurrently. The
     # sandbox's default 1,024-descriptor soft limit is below that bounded
     # inventory, so raise only the soft descriptor ceiling. This does not
-    # change Cargo, Nextest, Nix, or Ninja parallelism.
+    # change Cargo, Nix, or Ninja parallelism.
     cargoNextestOpenFilesLimit = 4096;
+    # The shared Cargo check phase disables interactive progress. Leave the
+    # failed test and its captured output at the end of the controller log.
+    nextestFlags = "--color=never --status-level=fail --final-status-level=fail --failure-output=final";
     passthru = {
       cargoArtifacts = controllerArtifacts;
       cargoDeps = cargoDeps;
@@ -194,8 +267,8 @@
     cargoFlags = packageFlags;
     cargoTestFlags = "${packageFlags} --features crucible-cli/test-double";
     doCheck = true;
-    buildDeps = [buildRustDev buildPkgConfig openssl buildProtobuf];
-    runtimeDeps = [openssl];
+    buildDeps = [buildRustDev buildPkgConfig openssl sqlite buildProtobuf];
+    runtimeDeps = [openssl sqlite];
     # The controller is the Apache side of a process boundary. Fail the build
     # if any QEMU-side implementation, guest kernel, or fixture enters either
     # its direct references or its runtime closure.
@@ -206,6 +279,7 @@
     OPENSSL_INCLUDE_DIR = "${openssl}/include";
     OPENSSL_NO_VENDOR = "1";
     OPENSSL_STATIC = "0";
+    LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
 
     # The source root includes root guidance, docs/, pkgs/tools/crucible/, and
     # tests/crucible/ so harness lints can read RFC-0010 and AOS check wiring,
@@ -231,7 +305,7 @@
             --frozen \
             --offline \
             -j$NIX_BUILD_CORES \
-            -p crucible-harness \
+            -p crucible-test-support \
             --test gate_license_boundary
           cargo clippy \
             --all-targets \
@@ -277,8 +351,8 @@
       }
     '';
 
-    # The check phase enables the test-only backend and writes a feature-enabled
-    # binary to target/release. Rebuild the installed CLI without test features.
+    # The check phase enables the test-only backend. Rebuild the installed CLI
+    # without test features and record the example artifacts' exact paths.
     preInstall = ''
       cargo build \
         --release \
@@ -292,18 +366,45 @@
         --frozen \
         --offline \
         -j$NIX_BUILD_CORES \
-        -p crucible \
-        --example crucible-debugger-live-fixture
+        -p crucible-engine \
+        --example crucible-debugger-live-fixture \
+        --message-format=json-render-diagnostics \
+        > "$NIX_BUILD_TOP/crucible-debugger-example.jsonl"
+      jq -r '.message.rendered // empty' \
+        "$NIX_BUILD_TOP/crucible-debugger-example.jsonl" >&2
+      cargo build \
+        --release \
+        --frozen \
+        --offline \
+        -j$NIX_BUILD_CORES \
+        -p crucible-daemon \
+        --example crucible-e2e-determinism-scenario \
+        --message-format=json-render-diagnostics \
+        > "$NIX_BUILD_TOP/crucible-scenario-example.jsonl"
+      jq -r '.message.rendered // empty' \
+        "$NIX_BUILD_TOP/crucible-scenario-example.jsonl" >&2
     '';
 
     postInstall = ''
       test -x "$out/bin/crucible"
-      cp ${
-        if stdenv.isCross
-        then ''"target/$CARGO_BUILD_TARGET/release/examples/crucible-debugger-live-fixture"''
-        else "target/release/examples/crucible-debugger-live-fixture"
-      } \
-        "$out/bin/crucible-debugger-live-fixture"
+      install_example() {
+        name="$1"
+        messages="$2"
+        executable=$(jq -rs --arg name "$name" '
+          [.[] | select(.reason == "compiler-artifact" and
+            .target.name == $name and .target.kind == ["example"] and
+            .executable != null) | .executable] | unique |
+          if length == 1 then .[0]
+          else error("expected exactly one executable for " + $name)
+          end
+        ' "$messages")
+        test -x "$executable"
+        cp "$executable" "$out/bin/$name"
+      }
+      install_example crucible-debugger-live-fixture \
+        "$NIX_BUILD_TOP/crucible-debugger-example.jsonl"
+      install_example crucible-e2e-determinism-scenario \
+        "$NIX_BUILD_TOP/crucible-scenario-example.jsonl"
       ${
         if stdenv.isCross
         then ''
@@ -337,7 +438,7 @@
       cargo_nextest_open_files_limit=4096
       cargo_doc=warning-free
       cargo_doctest=hermetic
-      gate_license_boundary=crucible-harness/gate_license_boundary
+      gate_license_boundary=crucible-test-support/gate_license_boundary
       rustdocflags=-D warnings -D missing_docs
       qemu_package=none
       plugin_package=none
@@ -363,17 +464,18 @@
     pname = "crucible-debug-gateway";
     inherit version src;
 
-    inherit cargoDeps;
+    inherit cargoDeps cargoWorkspaceMembers;
     cargoArtifacts = debugGatewayArtifacts;
     cargoArtifactContract = debugGatewayArtifactContract;
+    cargoEnv = debugGatewayCargoEnv;
     cargoRoot = "crates";
     cargoNextest = true;
 
-    cargoFlags = "-p crucible-debug-gateway";
-    cargoTestFlags = "-p crucible-debug-gateway";
+    cargoFlags = "-p crucible-qemu-debug-gateway";
+    cargoTestFlags = "-p crucible-qemu-debug-gateway";
     doCheck = true;
-    buildDeps = [buildRustDev];
-    runtimeDeps = [];
+    buildDeps = [buildRustDev buildPkgConfig sqlite];
+    runtimeDeps = [sqlite];
 
     postInstall = ''
       mkdir -p "$out/share/licenses/crucible-debug-gateway"
@@ -384,7 +486,7 @@
       cat > "$out/share/licenses/crucible-debug-gateway/COMPONENT" <<'LICENSE_SCOPE'
       crucible-debug-gateway is a standalone QEMU RSP mediation process.
       SPDX-License-Identifier: GPL-2.0-only
-      crucible-protocol is used under its MIT option.
+      crucible-qemu-protocol is used under its MIT option.
       LICENSE_SCOPE
     '';
 
@@ -406,15 +508,64 @@
     qemuSourcePackage = qemu-crucible-source;
   };
   suite = mkDerivation {
+    inherit platformSupport;
     pname = "crucible";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The command returns success and documents its invocation contract.";
+        "files" = {};
+        "input" = "The packaged crucible command-line interface.";
+        "operation" = "Request its offline help text.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess\nresult = subprocess.run([\"@out@/bin/crucible\", \"--help\"], capture_output=True, text=True)\nassert result.returncode == 0 and \"usage\" in (result.stdout + result.stderr).lower(), (result.returncode, result.stdout, result.stderr)\nprint(\"crucible operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "crucible operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The command rejects the unsupported option before runtime initialization.";
+        "files" = {};
+        "input" = "A crucible invocation containing an unsupported option.";
+        "operation" = "Parse the invalid option without starting the service.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess, sys\nresult = subprocess.run([\"@out@/bin/crucible\", \"--aos-invalid-option\"], capture_output=True, text=True)\nassert result.returncode != 0, (result.returncode, result.stdout, result.stderr)\nsys.stderr.write(\"crucible rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "crucible rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
     src = null;
     buildDeps = [bash];
-    runtimeDeps =
-      [controller debugGateway qemu-crucible crucible-qemu-plugin qemu-crucible-source linux-crucible crucible-fixtures gdb openssh coreutils grep sed util-linux]
-      # The wrapper shebang names target Bash. A cross build dependency only
-      # retains the native shell used to assemble the suite.
-      ++ lib.optionals (stdenv.isCross && stdenv.hostPlatform.isLinux) [bash];
+    # Both suite launchers use target Bash at runtime. Keep their interpreter
+    # references through the final build-reference scrub on native and cross builds.
+    runtimeDeps = [controller debugGateway qemu-crucible crucible-qemu-plugin qemu-crucible-source linux-crucible crucible-fixtures gdb openssh coreutils grep sed util-linux bash];
     propagatedDeps = [];
     phases = [
       {
@@ -459,6 +610,8 @@
           ln -s ${openssh}/bin/ssh "$out/bin/ssh"
           ln -s ${controller}/bin/crucible-debugger-live-fixture \
             "$out/bin/crucible-debugger-live-fixture"
+          ln -s ${controller}/bin/crucible-e2e-determinism-scenario \
+            "$out/bin/crucible-e2e-determinism-scenario"
           cp ${liveDebuggerMatrixScript} "$out/share/aos/crucible/debugger-live-matrix.sh"
           cat > "$out/bin/crucible-debugger-live-matrix" <<EOF
           #!${bash}/bin/bash
@@ -466,9 +619,7 @@
             CRUCIBLE_NATIVE_GUEST_ARCHITECTURE CRUCIBLE_KERNEL CRUCIBLE_ROOT_IMAGE \
             CRUCIBLE_KERNEL_CMDLINE CRUCIBLE_KERNEL_X86_64 CRUCIBLE_ROOT_IMAGE_X86_64 \
             CRUCIBLE_KERNEL_CMDLINE_X86_64 CRUCIBLE_KERNEL_AARCH64 \
-            CRUCIBLE_ROOT_IMAGE_AARCH64 CRUCIBLE_KERNEL_CMDLINE_AARCH64 \
-            CRUCIBLE_VALIDATE_GUEST_ASSET_REFERENCES
-          export CRUCIBLE_VALIDATE_GUEST_ASSET_REFERENCES=1
+            CRUCIBLE_ROOT_IMAGE_AARCH64 CRUCIBLE_KERNEL_CMDLINE_AARCH64
           export CRUCIBLE_MATRIX_CRUCIBLE="$out/bin/crucible"
           export CRUCIBLE_MATRIX_GDB="$out/bin/gdb"
           export CRUCIBLE_MATRIX_SSH="$out/bin/ssh"
@@ -508,7 +659,7 @@
           package=crucible
           component=suite
           component_licenses=Apache-2.0,MIT,GPL-2.0-only,GPL-2.0-or-later,GPL-3.0-or-later,BSD-2-Clause,BSD-3-Clause
-          boundary_crates=crucible-protocol,crucible-shmem
+          boundary_crates=crucible-qemu-protocol,crucible-qemu-shmem
           boundary_crates_license=MIT
           controller_package=crucible-controller
           controller_path=${controller}

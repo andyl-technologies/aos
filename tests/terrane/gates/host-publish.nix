@@ -40,11 +40,11 @@
   };
   portable = sourceGate "host-publication-ordering" ''
     cd crates
-    cargo test --frozen --offline -p terrane --test host_publication \
+    cargo test --frozen --offline -p terrane-sdk --test host_publication \
       -- --list > "$TMPDIR/publication-tests.txt"
     python3 ../tests/terrane/check_native_gate.py inventory \
       "$TMPDIR/publication-tests.txt" '${builtins.toJSON portableNames}'
-    cargo test --frozen --offline -p terrane --test host_publication \
+    cargo test --frozen --offline -p terrane-sdk --test host_publication \
       -- --test-threads=1 > "$out/ordering.log" 2>&1
     python3 ../tests/terrane/check_native_gate.py execution \
       "$out/ordering.log" '${builtins.toJSON portableNames}'
@@ -59,7 +59,7 @@
       preserveArtifactBytes = true;
     } "host-publication-kernel-image" ''
       cd crates
-      cargo build --frozen --offline -p terrane-fs --features native-test-fixtures \
+      cargo build --frozen --offline -p terrane-linux --features native-test-fixtures \
         --example publication_fixture --message-format=json > "$TMPDIR/publication-build.jsonl"
       rustc --print target-libdir > "$TMPDIR/publication-rust-libdir"
       cargo metadata --frozen --offline --no-deps --format-version=1 > "$TMPDIR/publication-packages.json"

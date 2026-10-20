@@ -134,7 +134,7 @@
       }
 
       publish_surface_package() {
-        $APR publish "$SURFACE_STORE" \
+        publish_vm_package "$SURFACE_STORE" \
           --name surfacepkg \
           --version 1.0.0 \
           --description "Surface command fixture" \
@@ -151,7 +151,7 @@
       }
 
       publish_leaf_package() {
-        $APR publish "$LEAF_STORE" \
+        publish_vm_package "$LEAF_STORE" \
           --name surface-leaf \
           --version 1.0.0 \
           --description "Surface dependency fixture" \
@@ -170,7 +170,7 @@
         version="$1"
         store="$2"
         label="$3"
-        $APR publish "$store" \
+        publish_vm_package "$store" \
           --name upgradeface \
           --version "$version" \
           --description "Upgradable command fixture" \
@@ -190,7 +190,7 @@
         store="$2"
         source_store="$3"
         label="$4"
-        $APR publish "$store" \
+        publish_vm_package "$store" \
           --name sourceful \
           --version "$version" \
           --description "Source derivation command fixture" \
@@ -209,7 +209,7 @@
       }
 
       publish_sourceclosure() {
-        $APR publish "$SOURCE_CLOSURE_STORE" \
+        publish_vm_package "$SOURCE_CLOSURE_STORE" \
           --name sourceclosure \
           --version 1.0.0 \
           --description "Source closure command fixture" \
@@ -292,7 +292,7 @@
         "surfacepkg has a real Nix reference to surface-leaf"
 
       echo "==> Maintainer: publish initial command-surface packages"
-      $APR create surface-reg
+      create_publish_registry surface-reg
       REG_DIR="$REG_STORAGE/surface-reg"
       DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
       publish_leaf_package
@@ -452,11 +452,11 @@
         "sourceful metadata is explicit"
 
       run_ok search-desc "$APM" search Surface
-      assert_file_contains /tmp/surface-search-desc.out "surfacepkg" "apm search finds descriptions"
+      assert_file_contains /tmp/surface-search-desc.out "^surfacepkg 1.0.0 \[registry: surface-reg\] - Surface command fixture$" "apm search labels the registry separately"
       run_ok search-names "$APM" search surface --names-only
       assert_file_contains /tmp/surface-search-names.out "surfacepkg" "apm search --names-only finds package names"
       run_ok search-installed "$APM" search surface --installed
-      assert_file_contains /tmp/surface-search-installed.out "surfacepkg" "apm search --installed filters through profile metadata"
+      assert_file_contains /tmp/surface-search-installed.out "^surfacepkg 1.0.0 \[registry: surface-reg\] - Surface command fixture$" "apm search --installed labels the source registry"
       run_ok search-installed-json "$APM" --json search surface --installed
       "$JQ" -e \
         'map(select(.name == "surfacepkg" and .registry == "surface-reg" and .version == "1.0.0")) | length == 1' \
@@ -475,16 +475,9 @@
           and .store_path == $store
           and (.dependencies | index("surface-leaf"))' \
         /tmp/surface-show-json.out >/dev/null
-      run_ok info "$APM" info surfacepkg
-      assert_file_contains /tmp/surface-info.out "Surface command fixture" \
-        "apm info prints real package metadata"
-      run_ok info-permissions "$APM" info surfacepkg --permissions
-      assert_file_contains /tmp/surface-info-permissions.out "surfacepkg" \
-        "apm info --permissions resolves the real package"
-      run_ok info-json "$APM" --json info surfacepkg
-      "$JQ" -e --arg store "$SURFACE_STORE" \
-        '.name == "surfacepkg" and .version == "1.0.0" and .store_path == $store' \
-        /tmp/surface-info-json.out >/dev/null
+      run_ok show-permissions "$APM" show surfacepkg --permissions
+      assert_file_contains /tmp/surface-show-permissions.out "surfacepkg" \
+        "apm show --permissions resolves the real package"
       run_ok list "$APM" list
       assert_file_contains /tmp/surface-list.out "surfacepkg/surface-reg" "apm list includes registry package"
       run_ok list-installed "$APM" list --installed

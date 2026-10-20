@@ -1,0 +1,67 @@
+//! Event-graph control-flow spine.
+//!
+//! RFC-0010 file 17a defines scenario control flow as a graph of events. This
+//! module owns the first, condition-agnostic layer of that model: an [`Event`]
+//! binds an optional [`Condition`] to an [`Action`] and a [`FirePolicy`], while
+//! [`EventGraphState`] is the only local producer of fired actions. The
+//! code-first builder and graph-native plan serialization keep that control flow
+//! as a content-addressed scenario component instead of a separate scenario poke
+//! path.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::error::Error;
+use std::fmt;
+use std::ops::Deref;
+
+use crate::model::{
+    AssertionDef, AssertionId, AssertionPhase, CodePoint, ContentHash, Decision, DeviceId,
+    EngineError, EventId, EventKey, EventLogOffset, FramePredicate, Icount, IoEventKind, LinkDef,
+    LinkId, MarkerId, MemPlace, MemoryCmp, NodeId, NodeLifecycle, Plan, Predicate, PreemptionKind,
+    Properties, Property, ReachabilityExpectation, ReachableDisposition, ReadyPoint, RegexProgram,
+    ReproductionArtifact, ReproductionReplay, RngStreamId, Schedule, SchedulerNodeId,
+    SchedulingNodeKind, SimDuration, TimeConversionError, TimerId, VirtualTime, WhiteBoxPolicy,
+    World, WorldDeviceKind, WorldStaticTopology,
+};
+use crate::scheduler::{
+    AssertionRunVerdict, AssertionVerdictFailure, ControlOperationKind, EventAttributeValue,
+    EventLevel, EventLogCausalDivergencePoint, EventLogTickStamp, ScheduledEvent,
+    ScheduledEventKey, ScheduledEventPayload, ScheduledEventResolveClass,
+    SchedulerEvaluationBoundaryKind, SchedulerEventLogClass, SchedulerEventLogEntry,
+    SchedulerEventLogPayload, SchedulerQuiescence, TriggerActionApplication,
+    compare_event_log_determinism, scheduled_event_resolve_class, scheduler_event_log_empty_prefix,
+    scheduler_event_log_segment_bytes,
+};
+
+/// Shared predicate vocabulary used by both assertions and event triggers.
+///
+/// This is a public alias rather than a second enum: a predicate usable by the
+/// assertion [`crate::model::Property`] layer is the same value accepted by an
+/// event trigger.
+pub type Condition = Predicate;
+
+mod assertions;
+mod conditions;
+mod deadlines;
+mod evaluation;
+mod event_graph;
+mod evidence;
+mod guest_assertion_declarations;
+mod guest_assertion_observation;
+mod observability;
+mod observation_time;
+
+pub use assertions::*;
+pub(crate) use conditions::guest_assertion_marker_from_whitebox_body;
+pub use conditions::*;
+pub use evaluation::*;
+pub use event_graph::*;
+use evidence::*;
+use guest_assertion_declarations::*;
+use guest_assertion_observation::*;
+pub use observability::*;
+
+#[cfg(test)]
+// crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
+#[allow(clippy::expect_used)]
+#[path = "trigger/tests.rs"]
+mod tests;

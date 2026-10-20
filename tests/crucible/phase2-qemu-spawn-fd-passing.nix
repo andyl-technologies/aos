@@ -9,19 +9,20 @@
 
   qemuLib = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu/src/lib.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-host/src/lib.rs;
   };
   launchLib = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu/src/launch.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-host/src/launch.rs;
   };
   nodeLib = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu/src/node.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-host/src/node.rs;
   };
   spawnLib = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu/src/spawn.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-host/src/spawn.rs;
+    siblingTests = true;
   };
   qemuSpec = builtins.readFile ../../docs/rfcs/0010-crucible/10-qemu-integration.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -49,7 +50,7 @@
         needle = "setup-completion tasks";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/src/lib.rs" qemuLib [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/src/lib.rs" qemuLib [
       {
         label = "linux spawn module";
         needle = "#[cfg(target_os = \"linux\")]\nmod spawn;";
@@ -59,12 +60,8 @@
         needle = "pub use spawn::{";
       }
       {
-        label = "spawn function export";
-        needle = "spawn_qemu_child_with_fds";
-      }
-      {
-        label = "spawn run-directory function export";
-        needle = "spawn_qemu_child_with_fds_in_directory";
+        label = "guarded spawn function export";
+        needle = "spawn_prepared_qemu_child_with_fds_in_directory_guarded";
       }
       {
         label = "spawn resources export";
@@ -79,7 +76,7 @@
         needle = "QEMU_PLUGIN_CONTROL_FD";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/src/launch.rs" launchLib [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/src/launch.rs" launchLib [
       {
         label = "public control fd constant";
         needle = "pub const QEMU_PLUGIN_CONTROL_FD: i32 = FIXED_PLUGIN_SIM_FD;";
@@ -97,7 +94,7 @@
         needle = "pub const QEMU_PLUGIN_CONTROL_FD: i32 = FIXED_PLUGIN_SIM_FD;";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/src/node.rs" nodeLib [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/src/node.rs" nodeLib [
       {
         label = "node child drop implementation";
         needle = "impl Drop for QemuNodeChild";
@@ -111,7 +108,7 @@
         needle = "wait_child(&mut self.child, DROP_REAP_DEADLINE)";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/src/spawn.rs" spawnLib [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/src/spawn.rs" spawnLib [
       {
         label = "spawn module docs";
         needle = "Linux QEMU process spawning with fixed inherited descriptors";
@@ -129,16 +126,12 @@
         needle = "pub enum QemuSpawnError";
       }
       {
-        label = "public spawn API";
-        needle = "pub fn spawn_qemu_child_with_fds";
+        label = "contained guarded run-directory spawn primitive";
+        needle = "pub(crate) fn spawn_prepared_qemu_child_with_fds_in_directory_guarded";
       }
       {
-        label = "run-directory spawn API";
-        needle = "pub fn spawn_qemu_child_with_fds_in_directory";
-      }
-      {
-        label = "child current directory binding";
-        needle = "command.current_dir(run_directory);";
+        label = "child run-directory descriptor installation";
+        needle = "install_prepared_run_directory";
       }
       {
         label = "validated launch command input";
@@ -245,10 +238,6 @@
         needle = "qemu_spawn_resources_create_socket_memfd_eventfd_and_host_copies";
       }
       {
-        label = "spawn run-directory cwd test";
-        needle = "qemu_spawn_run_directory_sets_child_cwd";
-      }
-      {
         label = "spawn cwd probe";
         needle = "child_probe_cwd";
       }
@@ -265,7 +254,7 @@
         needle = "qemu_spawn_rejects_empty_region";
       }
     ]
-    ++ forbiddenFor "crates/crucible-qemu/src/spawn.rs" spawnLib [
+    ++ forbiddenFor "crates/crucible/qemu/crucible-qemu-host/src/spawn.rs" spawnLib [
       {
         label = "shell invocation in spawn tests";
         needle = "sh -c";
@@ -298,7 +287,10 @@ in
       version = "0";
       src = crucibleSrc;
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.rust
         pkgs.sed
       ];
@@ -341,7 +333,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-qemu-spawn-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible-qemu \
+              -p crucible-qemu-host \
               --lib \
               spawn::tests \
               -- --test-threads=1
@@ -358,7 +350,7 @@ in
             tasks=${taskList}
             check_scope=task-level
             related_gates=gate:abi-conformance,gate:control-responsive
-            rust_test=crucible-qemu::spawn::tests
+            rust_test=crucible_qemu_host::spawn::tests
             target=linux
             control_fd=3
             shmem_fd=4

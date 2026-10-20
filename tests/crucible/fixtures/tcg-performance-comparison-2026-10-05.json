@@ -1,0 +1,2876 @@
+{
+  "schema": "crucible.tcg-performance-retained-evidence.v1",
+  "date": "2026-10-05",
+  "baseline_reference": "origin/master",
+  "baseline_revision": "6df2fe66e61e932ed9f44350084da4939b620800",
+  "execution": "All measurements and builds ran on the current machine; Nix remote builders disabled",
+  "interpretation": {
+    "stage_microbenchmarks": "Each isolated callback benchmark measures its own fixture; its percentage is not added to another benchmark percentage",
+    "qemu_stages": "Initial inactive-fault work and incremental owner-cache gains are measured on the same three-way VM workloads",
+    "production_cumulative": "Cumulative performance is the direct matched original-versus-final production-plugin/QEMU comparison, using arithmetic means of seven pairs",
+    "limits": "Single-vCPU busy ROM workloads with observations disabled; these measurements do not qualify all campaign or guest workloads",
+    "load_note": "Raw ranges retain occasional machine-load outliers; no timing samples were discarded"
+  },
+  "retained_input_identities": {
+    "qemu_vm_comparison": {
+      "basename": "comparison-reviewed.json",
+      "sha256": "b80f336d0e65b4f781b04d34f76f833273211bca0687e729d406809af6717e3b"
+    },
+    "production_plugin_comparison": {
+      "basename": "results.json",
+      "sha256": "7bd8bf30bf661318aff3208b3c8831be1d2918a16b12b9f9ce231de61a760ece"
+    },
+    "callback_admission_microbenchmark": {
+      "basename": "results.json",
+      "sha256": "b18b61ccb1bcc9cb2c09dcdff6c440242ab5761590f80077467a6e7d6cd9665c"
+    },
+    "empty_preemption_microbenchmark": {
+      "basename": "revalidated-results.json",
+      "sha256": "0b637ebb2e1f61dedd38b2340e790c4824d11c653deaf975a4fa262fc4ffcf0a"
+    }
+  },
+  "artifact_identities": [
+    {
+      "basename": "qemu-system-x86_64",
+      "sha256": "517d2751e0fa2cc0c8dbeeb36c3bcb21ae6eb96e799a1e57353a9008bad74991"
+    },
+    {
+      "basename": "plugin.so",
+      "sha256": "8e1131759fdd982a4abc9ea6ff94b01ca75a4bcd798aac4fe3f9c005a1db3c77"
+    },
+    {
+      "basename": "qemu-system-x86_64",
+      "sha256": "3d71c293c5c509e125e5f197d6e4f8c8cbc6ee80e384f5a0bd47bd309b1ec93b"
+    },
+    {
+      "basename": "plugin.so",
+      "sha256": "1688e607ea5375e3fe106fa9f477dee0e6815a4069ab82f85f5537597efd4f44"
+    },
+    {
+      "basename": "bios.bin",
+      "sha256": "5a66ab10f26796805341c56ac1ff8ae147bf406d34a1451202d34de21bcb1993"
+    },
+    {
+      "basename": "crucible-production-performance",
+      "sha256": "89fbacc76aebacb035bf69457e96e51054466d44135099a4cb103b565a251216"
+    },
+    {
+      "basename": "io-bios.bin",
+      "sha256": "7e08cc34b6bdc3038d2c824e91bb9ebe9cd0b3e53f2df253379f8c22ca3be5aa"
+    }
+  ],
+  "qemu_vm_comparison": {
+    "schema": "crucible.tcg-performance-comparison.v1",
+    "baseline_qemu_source_commit": "6df2fe66e61e932ed9f44350084da4939b620800",
+    "baseline_qemu_sources_unchanged_from_acquired_binary": true,
+    "date": "2026-10-05",
+    "repetitions_per_variant_mode_workload": 7,
+    "timing_start": "Immediately before QMP cont after paused cold launch or completed incoming VMState",
+    "timing_end": "First observed paused exact control boundary",
+    "cpu_accounting": "/proc/<pid>/stat user and system ticks",
+    "oracle": "Independent pure Python 32-bit ROM arithmetic and 50-ps tick conversion",
+    "workloads": {
+      "register_ram": {
+        "schema": "crucible.tcg-performance.v1",
+        "bios_sha256": "5a66ab10f26796805341c56ac1ff8ae147bf406d34a1451202d34de21bcb1993",
+        "cpu_affinity": [
+          0
+        ],
+        "stop": 240000000,
+        "checkpoint": 120000000,
+        "loop_instructions": 7,
+        "ticks_per_instruction": 50,
+        "binary_sha256": {
+          "baseline": "517d2751e0fa2cc0c8dbeeb36c3bcb21ae6eb96e799a1e57353a9008bad74991",
+          "initial": "76d37ea9c377c64124afca8b46b00719d72d0fe7e814b1387412e265f76c74fb",
+          "final": "3d71c293c5c509e125e5f197d6e4f8c8cbc6ee80e384f5a0bd47bd309b1ec93b"
+        },
+        "fixture_sha256": {
+          "bios.bin": "5a66ab10f26796805341c56ac1ff8ae147bf406d34a1451202d34de21bcb1993",
+          "plugin.so": "aab597df070d0674cf11c01fec2fbd44d1d76364120bb65a5e7f2f2a4aacdb84"
+        },
+        "deterministic": true,
+        "bios_name": "bios.bin",
+        "witness": {
+          "raw_icount": 240000000,
+          "logical_tick": 12000000000,
+          "registers": "CPU#0\r\nEAX=f559c2cc EBX=00000000 ECX=020b2891 EDX=00060fb1\r\nESI=00000000 EDI=00000000 EBP=00000000 ESP=00000000\r\nEIP=0000001e EFL=00000086 [--S--P-] CPL=0 II=0 A20=1 SMM=0 HLT=0\r\nES =0000 00000000 0000ffff 00009300\r\nCS =f000 000f0000 0000ffff 00009b00\r\nSS =0000 00000000 0000ffff 00009300\r\nDS =0000 00000000 0000ffff 00009300\r\nFS =0000 00000000 0000ffff 00009300\r\nGS =0000 00000000 0000ffff 00009300\r\nLDT=0000 00000000 0000ffff 00008200\r\nTR =0000 00000000 0000ffff 00008b00\r\nGDT=     00000000 0000ffff\r\nIDT=     00000000 0000ffff\r\nCR0=60000010 CR2=00000000 CR3=00000000 CR4=00000000\r\nDR0=0000000000000000 DR1=0000000000000000 DR2=0000000000000000 DR3=0000000000000000 \r\nDR6=00000000ffff0ff0 DR7=0000000000000400\r\nEFER=0000000000000000\r\nFCW=037f FSW=0000 [ST=0] FTW=00 MXCSR=00001f80\r\nFPR0=0000000000000000 0000 FPR1=0000000000000000 0000\r\nFPR2=0000000000000000 0000 FPR3=0000000000000000 0000\r\nFPR4=0000000000000000 0000 FPR5=0000000000000000 0000\r\nFPR6=0000000000000000 0000 FPR7=0000000000000000 0000\r\nXMM00=0000000000000000 0000000000000000 XMM01=0000000000000000 0000000000000000\r\nXMM02=0000000000000000 0000000000000000 XMM03=0000000000000000 0000000000000000\r\nXMM04=0000000000000000 0000000000000000 XMM05=0000000000000000 0000000000000000\r\nXMM06=0000000000000000 0000000000000000 XMM07=0000000000000000 0000000000000000",
+          "ram_sha256": "5f146652326fa4a639d81d4626c09aa974582cc005ed0a7619d575aaceefc62b",
+          "ram_prefix_hex": "c9b0708b91280b02"
+        },
+        "witness_sha256": "f76751928af17421b376de482d938c72e6a23451656105ff432cfcbf4e02ad7a",
+        "samples": [
+          {
+            "label": "baseline",
+            "trial": 0,
+            "mode": "cold",
+            "seconds": 0.42618346598464996,
+            "user_seconds": 0.33,
+            "system_seconds": 0.08,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "f76751928af17421b376de482d938c72e6a23451656105ff432cfcbf4e02ad7a"
+          },
+          {
+            "label": "baseline",
+            "trial": 0,
+            "mode": "restored",
+            "seconds": 2.73063386103604,
+            "user_seconds": 2.56,
+            "system_seconds": 0.07,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "f76751928af17421b376de482d938c72e6a23451656105ff432cfcbf4e02ad7a"
+          },
+          {
+            "label": "initial",
+            "trial": 0,
+            "mode": "cold",
+            "seconds": 0.41626895498484373,
+            "user_seconds": 0.33,
+            "system_seconds": 0.08,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "f76751928af17421b376de482d938c72e6a23451656105ff432cfcbf4e02ad7a"
+          },
+          {
+            "label": "initial",
+            "trial": 0,
+            "mode": "restored",
+            "seconds": 1.5159512700047344,
+            "user_seconds": 1.35,
+            "system_seconds": 0.06,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "f76751928af17421b376de482d938c72e6a23451656105ff432cfcbf4e02ad7a"
+          },
+          {
+            "label": "final",
+            "trial": 0,
+            "mode": "cold",
+            "seconds": 0.299207272939384,
+            "user_seconds": 0.27999999999999997,
+            "system_seconds": 0.0,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "f76751928af17421b376de482d938c72e6a23451656105ff432cfcbf4e02ad7a"
+          },
+          {
+            "label": "final",
+            "trial": 0,
+            "mode": "restored",
+            "seconds": 1.4035499839810655,
+            "user_seconds": 1.33,
+            "system_seconds": 0.02,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "f76751928af17421b376de482d938c72e6a23451656105ff432cfcbf4e02ad7a"
+          },
+          {
+            "label": "final",
+            "trial": 1,
+            "mode": "cold",
+            "seconds": 0.30974116595461965,
+            "user_seconds": 0.27,
+            "system_seconds": 0.01,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "f76751928af17421b376de482d938c72e6a23451656105ff432cfcbf4e02ad7a"
+          },
+          {
+            "label": "final",
+            "trial": 1,
+            "mode": "restored",
+            "seconds": 1.5317313789855689,
+            "user_seconds": 1.36,
+            "system_seconds": 0.02,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "f76751928af17421b376de482d938c72e6a23451656105ff432cfcbf4e02ad7a"
+          },
+          {
+            "label": "initial",
+            "trial": 1,
+            "mode": "cold",
+            "seconds": 0.43028135097119957,
+            "user_seconds": 0.32,
+            "system_seconds": 0.08,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "f76751928af17421b376de482d938c72e6a23451656105ff432cfcbf4e02ad7a"
+          },
+          {
+            "label": "initial",
+            "trial": 1,
+            "mode": "restored",
+            "seconds": 1.472329771029763,
+            "user_seconds": 1.3699999999999999,
+            "system_seconds": 0.04,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "f76751928af17421b376de482d938c72e6a23451656105ff432cfcbf4e02ad7a"
+          },
+          {
+            "label": "baseline",
+            "trial": 1,
+            "mode": "cold",
+            "seconds": 0.4290090670110658,
+            "user_seconds": 0.33,
+            "system_seconds": 0.08,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "f76751928af17421b376de482d938c72e6a23451656105ff432cfcbf4e02ad7a"
+          },
+          {
+            "label": "baseline",
+            "trial": 1,
+            "mode": "restored",
+            "seconds": 2.871578266029246,
+            "user_seconds": 2.6,
+            "system_seconds": 0.06,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "f76751928af17421b376de482d938c72e6a23451656105ff432cfcbf4e02ad7a"
+          },
+          {
+            "label": "baseline",
+            "trial": 2,
+            "mode": "cold",
+            "seconds": 0.4293249730253592,
+            "user_seconds": 0.33,
+            "system_seconds": 0.08,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "f76751928af17421b376de482d938c72e6a23451656105ff432cfcbf4e02ad7a"
+          },
+          {
+            "label": "baseline",
+            "trial": 2,
+            "mode": "restored",
+            "seconds": 2.773745566024445,
+            "user_seconds": 2.5500000000000003,
+            "system_seconds": 0.09,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "f76751928af17421b376de482d938c72e6a23451656105ff432cfcbf4e02ad7a"
+          },
+          {
+            "label": "initial",
+            "trial": 2,
+            "mode": "cold",
+            "seconds": 0.4160690199350938,
+            "user_seconds": 0.33,
+            "system_seconds": 0.08,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "f76751928af17421b376de482d938c72e6a23451656105ff432cfcbf4e02ad7a"
+          },
+          {
+            "label": "initial",
+            "trial": 2,
+            "mode": "restored",
+            "seconds": 1.8820766360731795,
+            "user_seconds": 1.34,
+            "system_seconds": 0.05,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "f76751928af17421b376de482d938c72e6a23451656105ff432cfcbf4e02ad7a"
+          },
+          {
+            "label": "final",
+            "trial": 2,
+            "mode": "cold",
+            "seconds": 0.3562305860687047,
+            "user_seconds": 0.29,
+            "system_seconds": 0.0,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "f76751928af17421b376de482d938c72e6a23451656105ff432cfcbf4e02ad7a"
+          },
+          {
+            "label": "final",
+            "trial": 2,
+            "mode": "restored",
+            "seconds": 1.503895316971466,
+            "user_seconds": 1.32,
+            "system_seconds": 0.01,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "f76751928af17421b376de482d938c72e6a23451656105ff432cfcbf4e02ad7a"
+          },
+          {
+            "label": "final",
+            "trial": 3,
+            "mode": "cold",
+            "seconds": 0.2969076510053128,
+            "user_seconds": 0.28,
+            "system_seconds": 0.01,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "f76751928af17421b376de482d938c72e6a23451656105ff432cfcbf4e02ad7a"
+          },
+          {
+            "label": "final",
+            "trial": 3,
+            "mode": "restored",
+            "seconds": 1.3976301840739325,
+            "user_seconds": 1.33,
+            "system_seconds": 0.03,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "f76751928af17421b376de482d938c72e6a23451656105ff432cfcbf4e02ad7a"
+          },
+          {
+            "label": "initial",
+            "trial": 3,
+            "mode": "cold",
+            "seconds": 0.4154026680625975,
+            "user_seconds": 0.33,
+            "system_seconds": 0.06,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "f76751928af17421b376de482d938c72e6a23451656105ff432cfcbf4e02ad7a"
+          },
+          {
+            "label": "initial",
+            "trial": 3,
+            "mode": "restored",
+            "seconds": 1.4953172999667004,
+            "user_seconds": 1.35,
+            "system_seconds": 0.039999999999999994,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "f76751928af17421b376de482d938c72e6a23451656105ff432cfcbf4e02ad7a"
+          },
+          {
+            "label": "baseline",
+            "trial": 3,
+            "mode": "cold",
+            "seconds": 0.42444736405741423,
+            "user_seconds": 0.33,
+            "system_seconds": 0.07,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "f76751928af17421b376de482d938c72e6a23451656105ff432cfcbf4e02ad7a"
+          },
+          {
+            "label": "baseline",
+            "trial": 3,
+            "mode": "restored",
+            "seconds": 2.840302970027551,
+            "user_seconds": 2.6,
+            "system_seconds": 0.07,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "f76751928af17421b376de482d938c72e6a23451656105ff432cfcbf4e02ad7a"
+          },
+          {
+            "label": "baseline",
+            "trial": 4,
+            "mode": "cold",
+            "seconds": 0.42676076595671475,
+            "user_seconds": 0.32,
+            "system_seconds": 0.09,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "f76751928af17421b376de482d938c72e6a23451656105ff432cfcbf4e02ad7a"
+          },
+          {
+            "label": "baseline",
+            "trial": 4,
+            "mode": "restored",
+            "seconds": 2.9092640299350023,
+            "user_seconds": 2.5500000000000003,
+            "system_seconds": 0.06,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "f76751928af17421b376de482d938c72e6a23451656105ff432cfcbf4e02ad7a"
+          },
+          {
+            "label": "initial",
+            "trial": 4,
+            "mode": "cold",
+            "seconds": 0.43547711393330246,
+            "user_seconds": 0.33,
+            "system_seconds": 0.07,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "f76751928af17421b376de482d938c72e6a23451656105ff432cfcbf4e02ad7a"
+          },
+          {
+            "label": "initial",
+            "trial": 4,
+            "mode": "restored",
+            "seconds": 1.4836216849507764,
+            "user_seconds": 1.36,
+            "system_seconds": 0.05,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "f76751928af17421b376de482d938c72e6a23451656105ff432cfcbf4e02ad7a"
+          },
+          {
+            "label": "final",
+            "trial": 4,
+            "mode": "cold",
+            "seconds": 0.3447467649821192,
+            "user_seconds": 0.27,
+            "system_seconds": 0.0,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "f76751928af17421b376de482d938c72e6a23451656105ff432cfcbf4e02ad7a"
+          },
+          {
+            "label": "final",
+            "trial": 4,
+            "mode": "restored",
+            "seconds": 1.4090441709849983,
+            "user_seconds": 1.32,
+            "system_seconds": 0.02,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "f76751928af17421b376de482d938c72e6a23451656105ff432cfcbf4e02ad7a"
+          },
+          {
+            "label": "final",
+            "trial": 5,
+            "mode": "cold",
+            "seconds": 0.29554021498188376,
+            "user_seconds": 0.28,
+            "system_seconds": 0.01,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "f76751928af17421b376de482d938c72e6a23451656105ff432cfcbf4e02ad7a"
+          },
+          {
+            "label": "final",
+            "trial": 5,
+            "mode": "restored",
+            "seconds": 1.4233273019781336,
+            "user_seconds": 1.34,
+            "system_seconds": 0.02,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "f76751928af17421b376de482d938c72e6a23451656105ff432cfcbf4e02ad7a"
+          },
+          {
+            "label": "initial",
+            "trial": 5,
+            "mode": "cold",
+            "seconds": 0.42129965499043465,
+            "user_seconds": 0.34,
+            "system_seconds": 0.08,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "f76751928af17421b376de482d938c72e6a23451656105ff432cfcbf4e02ad7a"
+          },
+          {
+            "label": "initial",
+            "trial": 5,
+            "mode": "restored",
+            "seconds": 1.4916747020324692,
+            "user_seconds": 1.38,
+            "system_seconds": 0.060000000000000005,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "f76751928af17421b376de482d938c72e6a23451656105ff432cfcbf4e02ad7a"
+          },
+          {
+            "label": "baseline",
+            "trial": 5,
+            "mode": "cold",
+            "seconds": 0.4314947910606861,
+            "user_seconds": 0.33,
+            "system_seconds": 0.08,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "f76751928af17421b376de482d938c72e6a23451656105ff432cfcbf4e02ad7a"
+          },
+          {
+            "label": "baseline",
+            "trial": 5,
+            "mode": "restored",
+            "seconds": 3.0232918129768223,
+            "user_seconds": 2.58,
+            "system_seconds": 0.07,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "f76751928af17421b376de482d938c72e6a23451656105ff432cfcbf4e02ad7a"
+          },
+          {
+            "label": "baseline",
+            "trial": 6,
+            "mode": "cold",
+            "seconds": 0.5924158039269969,
+            "user_seconds": 0.32,
+            "system_seconds": 0.08,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "f76751928af17421b376de482d938c72e6a23451656105ff432cfcbf4e02ad7a"
+          },
+          {
+            "label": "baseline",
+            "trial": 6,
+            "mode": "restored",
+            "seconds": 3.494259965023957,
+            "user_seconds": 2.6,
+            "system_seconds": 0.060000000000000005,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "f76751928af17421b376de482d938c72e6a23451656105ff432cfcbf4e02ad7a"
+          },
+          {
+            "label": "initial",
+            "trial": 6,
+            "mode": "cold",
+            "seconds": 0.49843368504662067,
+            "user_seconds": 0.32,
+            "system_seconds": 0.08,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "f76751928af17421b376de482d938c72e6a23451656105ff432cfcbf4e02ad7a"
+          },
+          {
+            "label": "initial",
+            "trial": 6,
+            "mode": "restored",
+            "seconds": 1.7670819859486073,
+            "user_seconds": 1.36,
+            "system_seconds": 0.04,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "f76751928af17421b376de482d938c72e6a23451656105ff432cfcbf4e02ad7a"
+          },
+          {
+            "label": "final",
+            "trial": 6,
+            "mode": "cold",
+            "seconds": 0.33781754795927554,
+            "user_seconds": 0.27999999999999997,
+            "system_seconds": 0.0,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "f76751928af17421b376de482d938c72e6a23451656105ff432cfcbf4e02ad7a"
+          },
+          {
+            "label": "final",
+            "trial": 6,
+            "mode": "restored",
+            "seconds": 1.7745212420122698,
+            "user_seconds": 1.36,
+            "system_seconds": 0.01,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "f76751928af17421b376de482d938c72e6a23451656105ff432cfcbf4e02ad7a"
+          }
+        ]
+      },
+      "post_io": {
+        "schema": "crucible.tcg-performance.v1",
+        "bios_sha256": "7e08cc34b6bdc3038d2c824e91bb9ebe9cd0b3e53f2df253379f8c22ca3be5aa",
+        "cpu_affinity": [
+          0
+        ],
+        "stop": 48000000,
+        "checkpoint": 24000000,
+        "loop_instructions": 8,
+        "ticks_per_instruction": 50,
+        "binary_sha256": {
+          "baseline": "517d2751e0fa2cc0c8dbeeb36c3bcb21ae6eb96e799a1e57353a9008bad74991",
+          "initial": "76d37ea9c377c64124afca8b46b00719d72d0fe7e814b1387412e265f76c74fb",
+          "final": "3d71c293c5c509e125e5f197d6e4f8c8cbc6ee80e384f5a0bd47bd309b1ec93b"
+        },
+        "fixture_sha256": {
+          "bios.bin": "5a66ab10f26796805341c56ac1ff8ae147bf406d34a1451202d34de21bcb1993",
+          "plugin.so": "aab597df070d0674cf11c01fec2fbd44d1d76364120bb65a5e7f2f2a4aacdb84"
+        },
+        "deterministic": true,
+        "bios_name": "io-bios.bin",
+        "witness": {
+          "raw_icount": 48000000,
+          "logical_tick": 2400000000,
+          "registers": "CPU#0\r\nEAX=535e11e3 EBX=00000000 ECX=005b8d7f EDX=00060fb1\r\nESI=00000000 EDI=00000000 EBP=00000000 ESP=00000000\r\nEIP=00000018 EFL=00000002 [-------] CPL=0 II=0 A20=1 SMM=0 HLT=0\r\nES =0000 00000000 0000ffff 00009300\r\nCS =f000 000f0000 0000ffff 00009b00\r\nSS =0000 00000000 0000ffff 00009300\r\nDS =0000 00000000 0000ffff 00009300\r\nFS =0000 00000000 0000ffff 00009300\r\nGS =0000 00000000 0000ffff 00009300\r\nLDT=0000 00000000 0000ffff 00008200\r\nTR =0000 00000000 0000ffff 00008b00\r\nGDT=     00000000 0000ffff\r\nIDT=     00000000 0000ffff\r\nCR0=60000010 CR2=00000000 CR3=00000000 CR4=00000000\r\nDR0=0000000000000000 DR1=0000000000000000 DR2=0000000000000000 DR3=0000000000000000 \r\nDR6=00000000ffff0ff0 DR7=0000000000000400\r\nEFER=0000000000000000\r\nFCW=037f FSW=0000 [ST=0] FTW=00 MXCSR=00001f80\r\nFPR0=0000000000000000 0000 FPR1=0000000000000000 0000\r\nFPR2=0000000000000000 0000 FPR3=0000000000000000 0000\r\nFPR4=0000000000000000 0000 FPR5=0000000000000000 0000\r\nFPR6=0000000000000000 0000 FPR7=0000000000000000 0000\r\nXMM00=0000000000000000 0000000000000000 XMM01=0000000000000000 0000000000000000\r\nXMM02=0000000000000000 0000000000000000 XMM03=0000000000000000 0000000000000000\r\nXMM04=0000000000000000 0000000000000000 XMM05=0000000000000000 0000000000000000\r\nXMM06=0000000000000000 0000000000000000 XMM07=0000000000000000 0000000000000000",
+          "ram_sha256": "b4772668e3cb28ccf71fd5469f8ae5002023b619b922632f8f26cf2cc7259232",
+          "ram_prefix_hex": "4b6bd6427f8d5b00"
+        },
+        "witness_sha256": "ba356e50f64ef7b4dbf87369fe77f82c1c22046dee153c0fbe0dc7762a80925c",
+        "samples": [
+          {
+            "label": "baseline",
+            "trial": 0,
+            "mode": "cold",
+            "seconds": 1.4549956099363044,
+            "user_seconds": 0.91,
+            "system_seconds": 0.39999999999999997,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "ba356e50f64ef7b4dbf87369fe77f82c1c22046dee153c0fbe0dc7762a80925c"
+          },
+          {
+            "label": "baseline",
+            "trial": 0,
+            "mode": "restored",
+            "seconds": 1.6150003750808537,
+            "user_seconds": 1.3,
+            "system_seconds": 0.21,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "ba356e50f64ef7b4dbf87369fe77f82c1c22046dee153c0fbe0dc7762a80925c"
+          },
+          {
+            "label": "initial",
+            "trial": 0,
+            "mode": "cold",
+            "seconds": 1.3451466920087114,
+            "user_seconds": 0.85,
+            "system_seconds": 0.43,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "ba356e50f64ef7b4dbf87369fe77f82c1c22046dee153c0fbe0dc7762a80925c"
+          },
+          {
+            "label": "initial",
+            "trial": 0,
+            "mode": "restored",
+            "seconds": 1.1483969950350001,
+            "user_seconds": 0.9,
+            "system_seconds": 0.2,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "ba356e50f64ef7b4dbf87369fe77f82c1c22046dee153c0fbe0dc7762a80925c"
+          },
+          {
+            "label": "final",
+            "trial": 0,
+            "mode": "cold",
+            "seconds": 0.69737767893821,
+            "user_seconds": 0.64,
+            "system_seconds": 0.01,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "ba356e50f64ef7b4dbf87369fe77f82c1c22046dee153c0fbe0dc7762a80925c"
+          },
+          {
+            "label": "final",
+            "trial": 0,
+            "mode": "restored",
+            "seconds": 0.842977901105769,
+            "user_seconds": 0.76,
+            "system_seconds": 0.01,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "ba356e50f64ef7b4dbf87369fe77f82c1c22046dee153c0fbe0dc7762a80925c"
+          },
+          {
+            "label": "final",
+            "trial": 1,
+            "mode": "cold",
+            "seconds": 0.6733621699968353,
+            "user_seconds": 0.63,
+            "system_seconds": 0.02,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "ba356e50f64ef7b4dbf87369fe77f82c1c22046dee153c0fbe0dc7762a80925c"
+          },
+          {
+            "label": "final",
+            "trial": 1,
+            "mode": "restored",
+            "seconds": 0.7899867229862139,
+            "user_seconds": 0.76,
+            "system_seconds": 0.01,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "ba356e50f64ef7b4dbf87369fe77f82c1c22046dee153c0fbe0dc7762a80925c"
+          },
+          {
+            "label": "initial",
+            "trial": 1,
+            "mode": "cold",
+            "seconds": 1.3377019449835643,
+            "user_seconds": 0.89,
+            "system_seconds": 0.41,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "ba356e50f64ef7b4dbf87369fe77f82c1c22046dee153c0fbe0dc7762a80925c"
+          },
+          {
+            "label": "initial",
+            "trial": 1,
+            "mode": "restored",
+            "seconds": 1.1595303980866447,
+            "user_seconds": 0.91,
+            "system_seconds": 0.21,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "ba356e50f64ef7b4dbf87369fe77f82c1c22046dee153c0fbe0dc7762a80925c"
+          },
+          {
+            "label": "baseline",
+            "trial": 1,
+            "mode": "cold",
+            "seconds": 1.4578331309603527,
+            "user_seconds": 0.89,
+            "system_seconds": 0.41,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "ba356e50f64ef7b4dbf87369fe77f82c1c22046dee153c0fbe0dc7762a80925c"
+          },
+          {
+            "label": "baseline",
+            "trial": 1,
+            "mode": "restored",
+            "seconds": 1.6239703180035576,
+            "user_seconds": 1.3,
+            "system_seconds": 0.2,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "ba356e50f64ef7b4dbf87369fe77f82c1c22046dee153c0fbe0dc7762a80925c"
+          },
+          {
+            "label": "baseline",
+            "trial": 2,
+            "mode": "cold",
+            "seconds": 1.347521823947318,
+            "user_seconds": 0.9,
+            "system_seconds": 0.39,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "ba356e50f64ef7b4dbf87369fe77f82c1c22046dee153c0fbe0dc7762a80925c"
+          },
+          {
+            "label": "baseline",
+            "trial": 2,
+            "mode": "restored",
+            "seconds": 1.6258563619339839,
+            "user_seconds": 1.3,
+            "system_seconds": 0.22,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "ba356e50f64ef7b4dbf87369fe77f82c1c22046dee153c0fbe0dc7762a80925c"
+          },
+          {
+            "label": "initial",
+            "trial": 2,
+            "mode": "cold",
+            "seconds": 1.337269686977379,
+            "user_seconds": 0.91,
+            "system_seconds": 0.37,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "ba356e50f64ef7b4dbf87369fe77f82c1c22046dee153c0fbe0dc7762a80925c"
+          },
+          {
+            "label": "initial",
+            "trial": 2,
+            "mode": "restored",
+            "seconds": 1.165980884921737,
+            "user_seconds": 0.88,
+            "system_seconds": 0.23,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "ba356e50f64ef7b4dbf87369fe77f82c1c22046dee153c0fbe0dc7762a80925c"
+          },
+          {
+            "label": "final",
+            "trial": 2,
+            "mode": "cold",
+            "seconds": 0.7202672270359471,
+            "user_seconds": 0.64,
+            "system_seconds": 0.01,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "ba356e50f64ef7b4dbf87369fe77f82c1c22046dee153c0fbe0dc7762a80925c"
+          },
+          {
+            "label": "final",
+            "trial": 2,
+            "mode": "restored",
+            "seconds": 0.7924120660172775,
+            "user_seconds": 0.75,
+            "system_seconds": 0.01,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "ba356e50f64ef7b4dbf87369fe77f82c1c22046dee153c0fbe0dc7762a80925c"
+          },
+          {
+            "label": "final",
+            "trial": 3,
+            "mode": "cold",
+            "seconds": 0.6704635160276666,
+            "user_seconds": 0.64,
+            "system_seconds": 0.01,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "ba356e50f64ef7b4dbf87369fe77f82c1c22046dee153c0fbe0dc7762a80925c"
+          },
+          {
+            "label": "final",
+            "trial": 3,
+            "mode": "restored",
+            "seconds": 0.7918151749763638,
+            "user_seconds": 0.75,
+            "system_seconds": 0.01,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "ba356e50f64ef7b4dbf87369fe77f82c1c22046dee153c0fbe0dc7762a80925c"
+          },
+          {
+            "label": "initial",
+            "trial": 3,
+            "mode": "cold",
+            "seconds": 1.3723507369868457,
+            "user_seconds": 0.92,
+            "system_seconds": 0.38,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "ba356e50f64ef7b4dbf87369fe77f82c1c22046dee153c0fbe0dc7762a80925c"
+          },
+          {
+            "label": "initial",
+            "trial": 3,
+            "mode": "restored",
+            "seconds": 1.1171852729748935,
+            "user_seconds": 0.89,
+            "system_seconds": 0.19,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "ba356e50f64ef7b4dbf87369fe77f82c1c22046dee153c0fbe0dc7762a80925c"
+          },
+          {
+            "label": "baseline",
+            "trial": 3,
+            "mode": "cold",
+            "seconds": 1.3359025199897587,
+            "user_seconds": 0.91,
+            "system_seconds": 0.37,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "ba356e50f64ef7b4dbf87369fe77f82c1c22046dee153c0fbe0dc7762a80925c"
+          },
+          {
+            "label": "baseline",
+            "trial": 3,
+            "mode": "restored",
+            "seconds": 1.6374135119840503,
+            "user_seconds": 1.36,
+            "system_seconds": 0.21,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "ba356e50f64ef7b4dbf87369fe77f82c1c22046dee153c0fbe0dc7762a80925c"
+          },
+          {
+            "label": "baseline",
+            "trial": 4,
+            "mode": "cold",
+            "seconds": 1.3533087980467826,
+            "user_seconds": 0.91,
+            "system_seconds": 0.38,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "ba356e50f64ef7b4dbf87369fe77f82c1c22046dee153c0fbe0dc7762a80925c"
+          },
+          {
+            "label": "baseline",
+            "trial": 4,
+            "mode": "restored",
+            "seconds": 1.560767570976168,
+            "user_seconds": 1.3,
+            "system_seconds": 0.21,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "ba356e50f64ef7b4dbf87369fe77f82c1c22046dee153c0fbe0dc7762a80925c"
+          },
+          {
+            "label": "initial",
+            "trial": 4,
+            "mode": "cold",
+            "seconds": 1.364906319999136,
+            "user_seconds": 0.89,
+            "system_seconds": 0.42,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "ba356e50f64ef7b4dbf87369fe77f82c1c22046dee153c0fbe0dc7762a80925c"
+          },
+          {
+            "label": "initial",
+            "trial": 4,
+            "mode": "restored",
+            "seconds": 1.1325288220541552,
+            "user_seconds": 0.88,
+            "system_seconds": 0.22,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "ba356e50f64ef7b4dbf87369fe77f82c1c22046dee153c0fbe0dc7762a80925c"
+          },
+          {
+            "label": "final",
+            "trial": 4,
+            "mode": "cold",
+            "seconds": 0.6951703979866579,
+            "user_seconds": 0.64,
+            "system_seconds": 0.01,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "ba356e50f64ef7b4dbf87369fe77f82c1c22046dee153c0fbe0dc7762a80925c"
+          },
+          {
+            "label": "final",
+            "trial": 4,
+            "mode": "restored",
+            "seconds": 0.7873231419362128,
+            "user_seconds": 0.74,
+            "system_seconds": 0.01,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "ba356e50f64ef7b4dbf87369fe77f82c1c22046dee153c0fbe0dc7762a80925c"
+          },
+          {
+            "label": "final",
+            "trial": 5,
+            "mode": "cold",
+            "seconds": 0.6794438200304285,
+            "user_seconds": 0.65,
+            "system_seconds": 0.01,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "ba356e50f64ef7b4dbf87369fe77f82c1c22046dee153c0fbe0dc7762a80925c"
+          },
+          {
+            "label": "final",
+            "trial": 5,
+            "mode": "restored",
+            "seconds": 0.8073427469935268,
+            "user_seconds": 0.75,
+            "system_seconds": 0.01,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "ba356e50f64ef7b4dbf87369fe77f82c1c22046dee153c0fbe0dc7762a80925c"
+          },
+          {
+            "label": "initial",
+            "trial": 5,
+            "mode": "cold",
+            "seconds": 1.3720179590163752,
+            "user_seconds": 0.91,
+            "system_seconds": 0.39,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "ba356e50f64ef7b4dbf87369fe77f82c1c22046dee153c0fbe0dc7762a80925c"
+          },
+          {
+            "label": "initial",
+            "trial": 5,
+            "mode": "restored",
+            "seconds": 1.1773423299891874,
+            "user_seconds": 0.88,
+            "system_seconds": 0.22,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "ba356e50f64ef7b4dbf87369fe77f82c1c22046dee153c0fbe0dc7762a80925c"
+          },
+          {
+            "label": "baseline",
+            "trial": 5,
+            "mode": "cold",
+            "seconds": 1.340168506023474,
+            "user_seconds": 0.9,
+            "system_seconds": 0.4,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "ba356e50f64ef7b4dbf87369fe77f82c1c22046dee153c0fbe0dc7762a80925c"
+          },
+          {
+            "label": "baseline",
+            "trial": 5,
+            "mode": "restored",
+            "seconds": 1.7390665180282667,
+            "user_seconds": 1.32,
+            "system_seconds": 0.19,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "ba356e50f64ef7b4dbf87369fe77f82c1c22046dee153c0fbe0dc7762a80925c"
+          },
+          {
+            "label": "baseline",
+            "trial": 6,
+            "mode": "cold",
+            "seconds": 1.3559019040549174,
+            "user_seconds": 0.88,
+            "system_seconds": 0.41,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "ba356e50f64ef7b4dbf87369fe77f82c1c22046dee153c0fbe0dc7762a80925c"
+          },
+          {
+            "label": "baseline",
+            "trial": 6,
+            "mode": "restored",
+            "seconds": 1.6112526409560814,
+            "user_seconds": 1.29,
+            "system_seconds": 0.23,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "ba356e50f64ef7b4dbf87369fe77f82c1c22046dee153c0fbe0dc7762a80925c"
+          },
+          {
+            "label": "initial",
+            "trial": 6,
+            "mode": "cold",
+            "seconds": 1.3682334290351719,
+            "user_seconds": 0.89,
+            "system_seconds": 0.42,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "ba356e50f64ef7b4dbf87369fe77f82c1c22046dee153c0fbe0dc7762a80925c"
+          },
+          {
+            "label": "initial",
+            "trial": 6,
+            "mode": "restored",
+            "seconds": 1.155148133984767,
+            "user_seconds": 0.9,
+            "system_seconds": 0.21,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "ba356e50f64ef7b4dbf87369fe77f82c1c22046dee153c0fbe0dc7762a80925c"
+          },
+          {
+            "label": "final",
+            "trial": 6,
+            "mode": "cold",
+            "seconds": 0.687512717093341,
+            "user_seconds": 0.64,
+            "system_seconds": 0.01,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "ba356e50f64ef7b4dbf87369fe77f82c1c22046dee153c0fbe0dc7762a80925c"
+          },
+          {
+            "label": "final",
+            "trial": 6,
+            "mode": "restored",
+            "seconds": 0.8259652659762651,
+            "user_seconds": 0.76,
+            "system_seconds": 0.01,
+            "binary_name": "qemu-system-x86_64",
+            "witness_sha256": "ba356e50f64ef7b4dbf87369fe77f82c1c22046dee153c0fbe0dc7762a80925c"
+          }
+        ]
+      }
+    },
+    "syscall_profile": {
+      "schema": "crucible.tcg-syscall-profile.v1",
+      "raw_stop": 80000,
+      "loop_instructions": 8,
+      "cpu_affinity": [
+        0
+      ],
+      "timings_are_not_performance_measurements": true,
+      "samples": [
+        {
+          "label": "baseline",
+          "binary_sha256": "517d2751e0fa2cc0c8dbeeb36c3bcb21ae6eb96e799a1e57353a9008bad74991",
+          "witness": {
+            "raw_icount": 80000,
+            "logical_tick": 4000000,
+            "registers": "CPU#0\r\nEAX=657b32f5 EBX=00000000 ECX=0000270f EDX=00060fb1\r\nESI=00000000 EDI=00000000 EBP=00000000 ESP=00000000\r\nEIP=00000018 EFL=00000006 [-----P-] CPL=0 II=0 A20=1 SMM=0 HLT=0\r\nES =0000 00000000 0000ffff 00009300\r\nCS =f000 000f0000 0000ffff 00009b00\r\nSS =0000 00000000 0000ffff 00009300\r\nDS =0000 00000000 0000ffff 00009300\r\nFS =0000 00000000 0000ffff 00009300\r\nGS =0000 00000000 0000ffff 00009300\r\nLDT=0000 00000000 0000ffff 00008200\r\nTR =0000 00000000 0000ffff 00008b00\r\nGDT=     00000000 0000ffff\r\nIDT=     00000000 0000ffff\r\nCR0=60000010 CR2=00000000 CR3=00000000 CR4=00000000\r\nDR0=0000000000000000 DR1=0000000000000000 DR2=0000000000000000 DR3=0000000000000000 \r\nDR6=00000000ffff0ff0 DR7=0000000000000400\r\nEFER=0000000000000000\r\nFCW=037f FSW=0000 [ST=0] FTW=00 MXCSR=00001f80\r\nFPR0=0000000000000000 0000 FPR1=0000000000000000 0000\r\nFPR2=0000000000000000 0000 FPR3=0000000000000000 0000\r\nFPR4=0000000000000000 0000 FPR5=0000000000000000 0000\r\nFPR6=0000000000000000 0000 FPR7=0000000000000000 0000\r\nXMM00=0000000000000000 0000000000000000 XMM01=0000000000000000 0000000000000000\r\nXMM02=0000000000000000 0000000000000000 XMM03=0000000000000000 0000000000000000\r\nXMM04=0000000000000000 0000000000000000 XMM05=0000000000000000 0000000000000000\r\nXMM06=0000000000000000 0000000000000000 XMM07=0000000000000000 0000000000000000",
+            "ram_sha256": "a68a12f1d5268d9f7faa868852f878d67bb768133da7ed8a64de838131784a30",
+            "ram_prefix_hex": "62da675a0f270000"
+          },
+          "counts": "% time     seconds  usecs/call     calls    errors syscall\n------ ----------- ----------- --------- --------- ----------------\n 49.70    0.086059          19      4477       674 futex\n 32.37    0.056043          94       591           ppoll\n 13.25    0.022943           0     24812           gettid\n  1.17    0.002021          10       195       160 openat\n  0.85    0.001472           1      1128           write\n  0.58    0.000996           1       605           read\n  0.42    0.000734           1       513           recvmsg\n  0.33    0.000574           3       158           mmap\n  0.28    0.000492           6        77        64 newfstatat\n  0.25    0.000431           3       127           madvise\n  0.20    0.000347          34        10         7 access\n  0.18    0.000310           2       109           brk\n  0.11    0.000185          61         3           clone3\n  0.06    0.000102           2        38           mprotect\n  0.05    0.000089           2        42           close\n  0.04    0.000070           4        17           sendmsg\n  0.03    0.000058           4        14           munmap\n  0.03    0.000052           1        34           fstat\n  0.02    0.000033           1        20           rt_sigprocmask\n  0.01    0.000019          19         1           readlink\n  0.01    0.000016           3         5           prctl\n  0.01    0.000014           2         5           fcntl\n  0.01    0.000014           7         2         2 statfs\n  0.01    0.000011           2         4           set_robust_list\n  0.01    0.000011           2         4           rseq\n  0.01    0.000010           1         6           eventfd2\n  0.01    0.000010           5         2           memfd_create\n  0.00    0.000008           1         6           rt_sigaction\n  0.00    0.000007           7         1           accept4\n  0.00    0.000005           1         4           prlimit64\n  0.00    0.000004           4         1           signalfd4\n  0.00    0.000003           3         1           lseek\n  0.00    0.000003           1         2           pread64\n  0.00    0.000003           1         3           epoll_create1\n  0.00    0.000002           2         1           arch_prctl\n  0.00    0.000002           1         2           getrandom\n  0.00    0.000001           1         1           getpid\n  0.00    0.000001           0         3           getsockname\n  0.00    0.000001           1         1           set_tid_address\n  0.00    0.000000           0         1           socket\n  0.00    0.000000           0         1           bind\n  0.00    0.000000           0         1           listen\n  0.00    0.000000           0         1         1 getpeername\n  0.00    0.000000           0         1           execve\n  0.00    0.000000           0         2         1 unlink\n  0.00    0.000000           0         1           sysinfo\n------ ----------- ----------- --------- --------- ----------------\n100.00    0.173156           5     33033       909 total\n"
+        },
+        {
+          "label": "final",
+          "binary_sha256": "3d71c293c5c509e125e5f197d6e4f8c8cbc6ee80e384f5a0bd47bd309b1ec93b",
+          "witness": {
+            "raw_icount": 80000,
+            "logical_tick": 4000000,
+            "registers": "CPU#0\r\nEAX=657b32f5 EBX=00000000 ECX=0000270f EDX=00060fb1\r\nESI=00000000 EDI=00000000 EBP=00000000 ESP=00000000\r\nEIP=00000018 EFL=00000006 [-----P-] CPL=0 II=0 A20=1 SMM=0 HLT=0\r\nES =0000 00000000 0000ffff 00009300\r\nCS =f000 000f0000 0000ffff 00009b00\r\nSS =0000 00000000 0000ffff 00009300\r\nDS =0000 00000000 0000ffff 00009300\r\nFS =0000 00000000 0000ffff 00009300\r\nGS =0000 00000000 0000ffff 00009300\r\nLDT=0000 00000000 0000ffff 00008200\r\nTR =0000 00000000 0000ffff 00008b00\r\nGDT=     00000000 0000ffff\r\nIDT=     00000000 0000ffff\r\nCR0=60000010 CR2=00000000 CR3=00000000 CR4=00000000\r\nDR0=0000000000000000 DR1=0000000000000000 DR2=0000000000000000 DR3=0000000000000000 \r\nDR6=00000000ffff0ff0 DR7=0000000000000400\r\nEFER=0000000000000000\r\nFCW=037f FSW=0000 [ST=0] FTW=00 MXCSR=00001f80\r\nFPR0=0000000000000000 0000 FPR1=0000000000000000 0000\r\nFPR2=0000000000000000 0000 FPR3=0000000000000000 0000\r\nFPR4=0000000000000000 0000 FPR5=0000000000000000 0000\r\nFPR6=0000000000000000 0000 FPR7=0000000000000000 0000\r\nXMM00=0000000000000000 0000000000000000 XMM01=0000000000000000 0000000000000000\r\nXMM02=0000000000000000 0000000000000000 XMM03=0000000000000000 0000000000000000\r\nXMM04=0000000000000000 0000000000000000 XMM05=0000000000000000 0000000000000000\r\nXMM06=0000000000000000 0000000000000000 XMM07=0000000000000000 0000000000000000",
+            "ram_sha256": "a68a12f1d5268d9f7faa868852f878d67bb768133da7ed8a64de838131784a30",
+            "ram_prefix_hex": "62da675a0f270000"
+          },
+          "counts": "% time     seconds  usecs/call     calls    errors syscall\n------ ----------- ----------- --------- --------- ----------------\n 51.06    0.015673         142       110        13 futex\n 24.05    0.007384          21       347           ppoll\n  6.63    0.002036          10       195       160 openat\n  3.32    0.001020           1       673           write\n  2.53    0.000777           2       373           read\n  2.31    0.000710           5       127           madvise\n  1.92    0.000588           3       158           mmap\n  1.74    0.000535           6        77        64 newfstatat\n  1.63    0.000501           1       305           recvmsg\n  0.82    0.000251          25        10         7 access\n  0.80    0.000247           2       109           brk\n  0.65    0.000200         200         1           execve\n  0.32    0.000097           2        42           close\n  0.30    0.000091          91         1           bind\n  0.27    0.000084           2        38           mprotect\n  0.26    0.000079           1        53           gettid\n  0.25    0.000077          25         3           clone3\n  0.21    0.000063           6        10           sendmsg\n  0.15    0.000047           1        34           fstat\n  0.15    0.000047          23         2         1 unlink\n  0.12    0.000037           1        20           rt_sigprocmask\n  0.11    0.000035           2        17           munmap\n  0.05    0.000016           8         2         2 statfs\n  0.05    0.000014           2         6           eventfd2\n  0.04    0.000011           2         5           prctl\n  0.03    0.000008           2         3           epoll_create1\n  0.02    0.000007           1         6           rt_sigaction\n  0.02    0.000007           7         1           getpid\n  0.02    0.000007           7         1           sysinfo\n  0.02    0.000006           1         5           fcntl\n  0.02    0.000006           6         1           accept4\n  0.02    0.000005           1         3           getsockname\n  0.02    0.000005           1         4           set_robust_list\n  0.01    0.000004           4         1           socket\n  0.01    0.000004           4         1           signalfd4\n  0.01    0.000004           1         4           rseq\n  0.01    0.000003           1         2           pread64\n  0.01    0.000003           3         1           listen\n  0.01    0.000002           2         1           lseek\n  0.01    0.000002           1         2           getrandom\n  0.00    0.000001           1         1         1 getpeername\n  0.00    0.000001           1         1           arch_prctl\n  0.00    0.000001           1         1           set_tid_address\n  0.00    0.000001           0         4           prlimit64\n  0.00    0.000000           0         1           readlink\n  0.00    0.000000           0         2           memfd_create\n------ ----------- ----------- --------- --------- ----------------\n100.00    0.030697          11      2764       248 total\n"
+        }
+      ]
+    },
+    "reproduction": {
+      "fixture_builder": "tests/crucible/tcg-performance-fixtures.nix",
+      "determinism_check": "tests/crucible/tcg-performance.nix",
+      "runner": "tests/crucible/tcg-performance.py",
+      "fixture_command": "bash tools/dev/aos-dev --release build check crucible.phase2.tcgPerformanceFixtures --no-out-link --option builders ''",
+      "determinism_check_command": "bash tools/dev/aos-dev --release build check crucible.phase2.tcgPerformanceDeterminism --no-out-link --option builders ''",
+      "ram_runner_arguments": "--qemu baseline=$BASELINE_QEMU --qemu initial=$INITIAL_QEMU --qemu final=$FINAL_QEMU --fixtures $FIXTURES --output $PERF_WORKDIR/ram --repetitions 7 --stop 240000000 --checkpoint 120000000 --cpu 0",
+      "io_runner_arguments": "--qemu baseline=$BASELINE_QEMU --qemu initial=$INITIAL_QEMU --qemu final=$FINAL_QEMU --fixtures $FIXTURES --bios $FIXTURES/io-bios.bin --loop-instructions 8 --output $PERF_WORKDIR/io --repetitions 7 --stop 48000000 --checkpoint 24000000 --cpu 0",
+      "python": "AOS-built Python 3.14.3"
+    },
+    "configuration": {
+      "machine": "pc",
+      "memory": "64M",
+      "vcpus": 1,
+      "accelerator": "sim,thread=single",
+      "icount": "shift=0,align=off,sleep=off,rr_switch_quantum=4096",
+      "cpu": "qemu64,-rdrand,-rdseed",
+      "rtc": "base=2026-01-01T00:00:00,clock=vm",
+      "seed": "0x0010c004",
+      "startup": "paused (-S)",
+      "plugin": "Frozen exact-observer fixture plugin; production plugin is measured separately",
+      "order": "baseline/initial/final on even trials, reverse order on odd trials",
+      "restored_interval": "checkpoint to final horizon; incoming VMState and process startup excluded"
+    },
+    "stages": {
+      "baseline": {
+        "aos_revision": "6df2fe66e61e932ed9f44350084da4939b620800"
+      },
+      "initial": {
+        "aos_revision": "aa8be2893487bdd0f0441bd506557b39edfd0710",
+        "changes_measured_together": [
+          "Empty pending-fault queue fast paths",
+          "Lazy observed-icount calculation for inactive instruction completion"
+        ]
+      },
+      "final": {
+        "aos_revision": "d78e94e8b5ffd5e7f5572314a9c8da69feef8673",
+        "incremental_change": "Fork-aware Linux mutex-owner thread-ID cache"
+      }
+    },
+    "stage_summary": {
+      "register_ram": {
+        "cold": {
+          "statistic": "median of seven measurements",
+          "variants": {
+            "baseline": {
+              "wall_seconds": {
+                "minimum": 0.42444736405741423,
+                "median": 0.4290090670110658,
+                "maximum": 0.5924158039269969
+              },
+              "median_process_cpu_seconds": 0.41000000000000003
+            },
+            "initial": {
+              "wall_seconds": {
+                "minimum": 0.4154026680625975,
+                "median": 0.42129965499043465,
+                "maximum": 0.49843368504662067
+              },
+              "median_process_cpu_seconds": 0.4
+            },
+            "final": {
+              "wall_seconds": {
+                "minimum": 0.29554021498188376,
+                "median": 0.30974116595461965,
+                "maximum": 0.3562305860687047
+              },
+              "median_process_cpu_seconds": 0.28
+            }
+          },
+          "initial_time_reduction_percent": 1.7970277584907768,
+          "incremental_owner_cache_time_reduction_percent": 26.479606074765925,
+          "final_vs_baseline_time_reduction_percent": 27.800787961754136
+        },
+        "restored": {
+          "statistic": "median of seven measurements",
+          "variants": {
+            "baseline": {
+              "wall_seconds": {
+                "minimum": 2.73063386103604,
+                "median": 2.871578266029246,
+                "maximum": 3.494259965023957
+              },
+              "median_process_cpu_seconds": 2.65
+            },
+            "initial": {
+              "wall_seconds": {
+                "minimum": 1.472329771029763,
+                "median": 1.4953172999667004,
+                "maximum": 1.8820766360731795
+              },
+              "median_process_cpu_seconds": 1.41
+            },
+            "final": {
+              "wall_seconds": {
+                "minimum": 1.3976301840739325,
+                "median": 1.4233273019781336,
+                "maximum": 1.7745212420122698
+              },
+              "median_process_cpu_seconds": 1.36
+            }
+          },
+          "initial_time_reduction_percent": 47.926987829087054,
+          "incremental_owner_cache_time_reduction_percent": 4.8143626767489405,
+          "final_vs_baseline_time_reduction_percent": 50.43397149170241
+        }
+      },
+      "post_io": {
+        "cold": {
+          "statistic": "median of seven measurements",
+          "variants": {
+            "baseline": {
+              "wall_seconds": {
+                "minimum": 1.3359025199897587,
+                "median": 1.3533087980467826,
+                "maximum": 1.4578331309603527
+              },
+              "median_process_cpu_seconds": 1.29
+            },
+            "initial": {
+              "wall_seconds": {
+                "minimum": 1.337269686977379,
+                "median": 1.364906319999136,
+                "maximum": 1.3723507369868457
+              },
+              "median_process_cpu_seconds": 1.3
+            },
+            "final": {
+              "wall_seconds": {
+                "minimum": 0.6704635160276666,
+                "median": 0.687512717093341,
+                "maximum": 0.7202672270359471
+              },
+              "median_process_cpu_seconds": 0.65
+            }
+          },
+          "initial_time_reduction_percent": -0.8569752867262803,
+          "incremental_owner_cache_time_reduction_percent": 49.62931103624927,
+          "final_vs_baseline_time_reduction_percent": 49.197646680076154
+        },
+        "restored": {
+          "statistic": "median of seven measurements",
+          "variants": {
+            "baseline": {
+              "wall_seconds": {
+                "minimum": 1.560767570976168,
+                "median": 1.6239703180035576,
+                "maximum": 1.7390665180282667
+              },
+              "median_process_cpu_seconds": 1.51
+            },
+            "initial": {
+              "wall_seconds": {
+                "minimum": 1.1171852729748935,
+                "median": 1.155148133984767,
+                "maximum": 1.1773423299891874
+              },
+              "median_process_cpu_seconds": 1.1
+            },
+            "final": {
+              "wall_seconds": {
+                "minimum": 0.7873231419362128,
+                "median": 0.7924120660172775,
+                "maximum": 0.842977901105769
+              },
+              "median_process_cpu_seconds": 0.76
+            }
+          },
+          "initial_time_reduction_percent": 28.868888724218888,
+          "incremental_owner_cache_time_reduction_percent": 31.40169276092799,
+          "final_vs_baseline_time_reduction_percent": 51.20526174447348
+        }
+      }
+    }
+  },
+  "production_plugin_comparison": {
+    "scope": "Real production plugin; one public shared-memory grant; cold BIOS arithmetic/RAM and arithmetic/RAM/POST-port workloads; observations disabled.",
+    "cpu": 96,
+    "host_cpu": 97,
+    "repetitions": 7,
+    "artifacts": {
+      "baseline": {
+        "qemu": "qemu-system-x86_64",
+        "plugin": "plugin.so",
+        "plugin_sha256": "8e1131759fdd982a4abc9ea6ff94b01ca75a4bcd798aac4fe3f9c005a1db3c77",
+        "qemu_build_identity": "qemu_package=qemu-crucible\nqemu_version=11.1.1\nqemu_source_hash=sha256-B5/7/4pxEbvIkCIQfLq/O7/WFNX8nXzGdZkRlqyhJII=\nqemu_nix_hash=062d9426bbea48aa11c775564951c72ca37ef7105ad2dc07c4486bcff129ae55\nqemu_configure_flags_hash=85313e491e87d9d1553d973bdd3bc71baa3110b1d012b2d083f61b815395f939\nqemu_configure_target_list=x86_64-softmmu,aarch64-softmmu\nqemu_atomic_patch_hash=1ea54879a67b84c5b2e63e9ce919ffa09f397867b42c6929340317d3599df631\nqemu_patch_branch_ref=dplecki/native-stop-transfer-canonical-198\nqemu_patch_branch_model=single-atomic-final-state-integration-commit\nqemu_patch_branch_bundle_hash=04fc0bbbb0b1b5c7c9dd374ced37ed3bd3ca9492bfe8c686b30520fc9e7c1d25\nqemu_patch_branch_base_commit=1ed046750938db278a12dc55c6a7934d5fc68c14\nqemu_patch_branch_base_tree=c08cc386be14139bc835ab077baa0e72ef7ba7ef\nqemu_patch_branch_head_commit=39a0e603dd25905ada9f87276485375f9836b70c\nqemu_patch_branch_material_hash=79781ddecb3a56a510d65cf2819e4a9a541730e0554f7a6d8b5d0b999878e90d\nqemu_plugins_enabled=true\nqemu_crucible_atomic_patch_applied=true\nqemu_sim_capability=qemu-crucible\nqemu_shmem_abi_version=30\nqemu_shmem_abi=crucible-shmem-abi-v30\nqemu_shmem_header=include/aos/crucible/crucible_shmem_abi.h\nqemu_shmem_header_hash=1dc465a755a9d9e8195a7e3cd22ecadcc1496fff89a2e19bcf7ffb7b9c9b8dcd\nqemu_combined_work_license=GPL-2.0-only\nqemu_unmarked_source_default_license=GPL-2.0-or-later\nqemu_plugin_header_license=GPL-2.0-or-later\nqemu_shmem_header_license_option=MIT\nqemu_build_id=2e608155a4e543011758783fbb3e4cc580a2a4f515f7668d72070d79d743dd1b\n",
+        "qemu_sha256": "517d2751e0fa2cc0c8dbeeb36c3bcb21ae6eb96e799a1e57353a9008bad74991"
+      },
+      "final": {
+        "qemu": "qemu-system-x86_64",
+        "plugin": "plugin.so",
+        "plugin_sha256": "1688e607ea5375e3fe106fa9f477dee0e6815a4069ab82f85f5537597efd4f44",
+        "qemu_build_identity": "qemu_package=qemu-crucible\nqemu_version=11.1.1\nqemu_source_hash=sha256-B5/7/4pxEbvIkCIQfLq/O7/WFNX8nXzGdZkRlqyhJII=\nqemu_nix_hash=4e930fa54840e23567f3ea7039082a264a182f9cfaedef622cd5056243662608\nqemu_configure_flags_hash=85313e491e87d9d1553d973bdd3bc71baa3110b1d012b2d083f61b815395f939\nqemu_configure_target_list=x86_64-softmmu,aarch64-softmmu\nqemu_atomic_patch_hash=88ed53c84ac6b4b93fe89d40cf037643277d8cea85830a891f9e60866305fc5e\nqemu_patch_branch_ref=dplecki/tcg-fast-paths-owner-cache\nqemu_patch_branch_model=single-atomic-final-state-integration-commit\nqemu_patch_branch_bundle_hash=c8a71288db7cece125c40a52bafd81aa149863c2fd311818a6433e50229a5acb\nqemu_patch_branch_base_commit=1ed046750938db278a12dc55c6a7934d5fc68c14\nqemu_patch_branch_base_tree=c08cc386be14139bc835ab077baa0e72ef7ba7ef\nqemu_patch_branch_head_commit=47fed0800537a32bf5a0c786ac91c993981166eb\nqemu_patch_branch_material_hash=3a969c1b84061b134bc92c7269aa63f71cf16aaabf762c7ca09a958d8766175c\nqemu_plugins_enabled=true\nqemu_crucible_atomic_patch_applied=true\nqemu_sim_capability=qemu-crucible\nqemu_shmem_abi_version=30\nqemu_shmem_abi=crucible-shmem-abi-v30\nqemu_shmem_header=include/aos/crucible/crucible_shmem_abi.h\nqemu_shmem_header_hash=1dc465a755a9d9e8195a7e3cd22ecadcc1496fff89a2e19bcf7ffb7b9c9b8dcd\nqemu_combined_work_license=GPL-2.0-only\nqemu_unmarked_source_default_license=GPL-2.0-or-later\nqemu_plugin_header_license=GPL-2.0-or-later\nqemu_shmem_header_license_option=MIT\nqemu_build_id=ae82f1ef3ab33c03282c10370fcf0f241378082d4f21dd28b15f7c13667754a8\n",
+        "qemu_sha256": "3d71c293c5c509e125e5f197d6e4f8c8cbc6ee80e384f5a0bd47bd309b1ec93b"
+      }
+    },
+    "workloads": {
+      "ram": {
+        "bios": "bios.bin",
+        "bios_sha256": "5a66ab10f26796805341c56ac1ff8ae147bf406d34a1451202d34de21bcb1993",
+        "horizon": 500000000,
+        "samples": [
+          {
+            "bios": "bios.bin",
+            "cpu": 96,
+            "logical_tick": 25000000000,
+            "plugin": "plugin.so",
+            "qemu": "qemu-system-x86_64",
+            "ram_prefix_hex": "15e1a507dae94104",
+            "ram_sha256": "37322540d8febd730ecb82c42fa5aa7498ebc35c032b53f8d1a15ca783d94ff2",
+            "raw_icount": 500000000,
+            "registers": "\r\nCPU#0\r\nEAX=07a5e115 EBX=00000000 ECX=0441e9da EDX=00060fb1\r\nESI=00000000 EDI=00000000 EBP=00000000 ESP=00000000\r\nEIP=00000022 EFL=00000003 [------C] CPL=0 II=0 A20=1 SMM=0 HLT=0\r\nES =0000 00000000 0000ffff 00009300\r\nCS =f000 000f0000 0000ffff 00009b00\r\nSS =0000 00000000 0000ffff 00009300\r\nDS =0000 00000000 0000ffff 00009300\r\nFS =0000 00000000 0000ffff 00009300\r\nGS =0000 00000000 0000ffff 00009300\r\nLDT=0000 00000000 0000ffff 00008200\r\nTR =0000 00000000 0000ffff 00008b00\r\nGDT=     00000000 0000ffff\r\nIDT=     00000000 0000ffff\r\nCR0=60000010 CR2=00000000 CR3=00000000 CR4=00000000\r\nDR0=0000000000000000 DR1=0000000000000000 DR2=0000000000000000 DR3=0000000000000000 \r\nDR6=00000000ffff0ff0 DR7=0000000000000400\r\nEFER=0000000000000000\r\nFCW=037f FSW=0000 [ST=0] FTW=00 MXCSR=00001f80\r\nFPR0=0000000000000000 0000 FPR1=0000000000000000 0000\r\nFPR2=0000000000000000 0000 FPR3=0000000000000000 0000\r\nFPR4=0000000000000000 0000 FPR5=0000000000000000 0000\r\nFPR6=0000000000000000 0000 FPR7=0000000000000000 0000\r\nXMM00=0000000000000000 0000000000000000 XMM01=0000000000000000 0000000000000000\r\nXMM02=0000000000000000 0000000000000000 XMM03=0000000000000000 0000000000000000\r\nXMM04=0000000000000000 0000000000000000 XMM05=0000000000000000 0000000000000000\r\nXMM06=0000000000000000 0000000000000000 XMM07=0000000000000000 0000000000000000\r\n",
+            "seconds": 0.899849988,
+            "status": {
+              "running": false,
+              "status": "paused"
+            },
+            "system_seconds": 0.13,
+            "user_seconds": 0.76,
+            "label": "baseline",
+            "repeat": 0,
+            "command": [
+              "crucible-production-performance",
+              "qemu-system-x86_64",
+              "plugin.so",
+              "bios.bin",
+              "500000000",
+              "ram-0-baseline",
+              "96"
+            ]
+          },
+          {
+            "bios": "bios.bin",
+            "cpu": 96,
+            "logical_tick": 25000000000,
+            "plugin": "plugin.so",
+            "qemu": "qemu-system-x86_64",
+            "ram_prefix_hex": "15e1a507dae94104",
+            "ram_sha256": "37322540d8febd730ecb82c42fa5aa7498ebc35c032b53f8d1a15ca783d94ff2",
+            "raw_icount": 500000000,
+            "registers": "\r\nCPU#0\r\nEAX=07a5e115 EBX=00000000 ECX=0441e9da EDX=00060fb1\r\nESI=00000000 EDI=00000000 EBP=00000000 ESP=00000000\r\nEIP=00000022 EFL=00000003 [------C] CPL=0 II=0 A20=1 SMM=0 HLT=0\r\nES =0000 00000000 0000ffff 00009300\r\nCS =f000 000f0000 0000ffff 00009b00\r\nSS =0000 00000000 0000ffff 00009300\r\nDS =0000 00000000 0000ffff 00009300\r\nFS =0000 00000000 0000ffff 00009300\r\nGS =0000 00000000 0000ffff 00009300\r\nLDT=0000 00000000 0000ffff 00008200\r\nTR =0000 00000000 0000ffff 00008b00\r\nGDT=     00000000 0000ffff\r\nIDT=     00000000 0000ffff\r\nCR0=60000010 CR2=00000000 CR3=00000000 CR4=00000000\r\nDR0=0000000000000000 DR1=0000000000000000 DR2=0000000000000000 DR3=0000000000000000 \r\nDR6=00000000ffff0ff0 DR7=0000000000000400\r\nEFER=0000000000000000\r\nFCW=037f FSW=0000 [ST=0] FTW=00 MXCSR=00001f80\r\nFPR0=0000000000000000 0000 FPR1=0000000000000000 0000\r\nFPR2=0000000000000000 0000 FPR3=0000000000000000 0000\r\nFPR4=0000000000000000 0000 FPR5=0000000000000000 0000\r\nFPR6=0000000000000000 0000 FPR7=0000000000000000 0000\r\nXMM00=0000000000000000 0000000000000000 XMM01=0000000000000000 0000000000000000\r\nXMM02=0000000000000000 0000000000000000 XMM03=0000000000000000 0000000000000000\r\nXMM04=0000000000000000 0000000000000000 XMM05=0000000000000000 0000000000000000\r\nXMM06=0000000000000000 0000000000000000 XMM07=0000000000000000 0000000000000000\r\n",
+            "seconds": 0.64212122,
+            "status": {
+              "running": false,
+              "status": "paused"
+            },
+            "system_seconds": 0.0,
+            "user_seconds": 0.64,
+            "label": "final",
+            "repeat": 0,
+            "command": [
+              "crucible-production-performance",
+              "qemu-system-x86_64",
+              "plugin.so",
+              "bios.bin",
+              "500000000",
+              "ram-0-final",
+              "96"
+            ]
+          },
+          {
+            "bios": "bios.bin",
+            "cpu": 96,
+            "logical_tick": 25000000000,
+            "plugin": "plugin.so",
+            "qemu": "qemu-system-x86_64",
+            "ram_prefix_hex": "15e1a507dae94104",
+            "ram_sha256": "37322540d8febd730ecb82c42fa5aa7498ebc35c032b53f8d1a15ca783d94ff2",
+            "raw_icount": 500000000,
+            "registers": "\r\nCPU#0\r\nEAX=07a5e115 EBX=00000000 ECX=0441e9da EDX=00060fb1\r\nESI=00000000 EDI=00000000 EBP=00000000 ESP=00000000\r\nEIP=00000022 EFL=00000003 [------C] CPL=0 II=0 A20=1 SMM=0 HLT=0\r\nES =0000 00000000 0000ffff 00009300\r\nCS =f000 000f0000 0000ffff 00009b00\r\nSS =0000 00000000 0000ffff 00009300\r\nDS =0000 00000000 0000ffff 00009300\r\nFS =0000 00000000 0000ffff 00009300\r\nGS =0000 00000000 0000ffff 00009300\r\nLDT=0000 00000000 0000ffff 00008200\r\nTR =0000 00000000 0000ffff 00008b00\r\nGDT=     00000000 0000ffff\r\nIDT=     00000000 0000ffff\r\nCR0=60000010 CR2=00000000 CR3=00000000 CR4=00000000\r\nDR0=0000000000000000 DR1=0000000000000000 DR2=0000000000000000 DR3=0000000000000000 \r\nDR6=00000000ffff0ff0 DR7=0000000000000400\r\nEFER=0000000000000000\r\nFCW=037f FSW=0000 [ST=0] FTW=00 MXCSR=00001f80\r\nFPR0=0000000000000000 0000 FPR1=0000000000000000 0000\r\nFPR2=0000000000000000 0000 FPR3=0000000000000000 0000\r\nFPR4=0000000000000000 0000 FPR5=0000000000000000 0000\r\nFPR6=0000000000000000 0000 FPR7=0000000000000000 0000\r\nXMM00=0000000000000000 0000000000000000 XMM01=0000000000000000 0000000000000000\r\nXMM02=0000000000000000 0000000000000000 XMM03=0000000000000000 0000000000000000\r\nXMM04=0000000000000000 0000000000000000 XMM05=0000000000000000 0000000000000000\r\nXMM06=0000000000000000 0000000000000000 XMM07=0000000000000000 0000000000000000\r\n",
+            "seconds": 0.642811313,
+            "status": {
+              "running": false,
+              "status": "paused"
+            },
+            "system_seconds": 0.0,
+            "user_seconds": 0.64,
+            "label": "final",
+            "repeat": 1,
+            "command": [
+              "crucible-production-performance",
+              "qemu-system-x86_64",
+              "plugin.so",
+              "bios.bin",
+              "500000000",
+              "ram-1-final",
+              "96"
+            ]
+          },
+          {
+            "bios": "bios.bin",
+            "cpu": 96,
+            "logical_tick": 25000000000,
+            "plugin": "plugin.so",
+            "qemu": "qemu-system-x86_64",
+            "ram_prefix_hex": "15e1a507dae94104",
+            "ram_sha256": "37322540d8febd730ecb82c42fa5aa7498ebc35c032b53f8d1a15ca783d94ff2",
+            "raw_icount": 500000000,
+            "registers": "\r\nCPU#0\r\nEAX=07a5e115 EBX=00000000 ECX=0441e9da EDX=00060fb1\r\nESI=00000000 EDI=00000000 EBP=00000000 ESP=00000000\r\nEIP=00000022 EFL=00000003 [------C] CPL=0 II=0 A20=1 SMM=0 HLT=0\r\nES =0000 00000000 0000ffff 00009300\r\nCS =f000 000f0000 0000ffff 00009b00\r\nSS =0000 00000000 0000ffff 00009300\r\nDS =0000 00000000 0000ffff 00009300\r\nFS =0000 00000000 0000ffff 00009300\r\nGS =0000 00000000 0000ffff 00009300\r\nLDT=0000 00000000 0000ffff 00008200\r\nTR =0000 00000000 0000ffff 00008b00\r\nGDT=     00000000 0000ffff\r\nIDT=     00000000 0000ffff\r\nCR0=60000010 CR2=00000000 CR3=00000000 CR4=00000000\r\nDR0=0000000000000000 DR1=0000000000000000 DR2=0000000000000000 DR3=0000000000000000 \r\nDR6=00000000ffff0ff0 DR7=0000000000000400\r\nEFER=0000000000000000\r\nFCW=037f FSW=0000 [ST=0] FTW=00 MXCSR=00001f80\r\nFPR0=0000000000000000 0000 FPR1=0000000000000000 0000\r\nFPR2=0000000000000000 0000 FPR3=0000000000000000 0000\r\nFPR4=0000000000000000 0000 FPR5=0000000000000000 0000\r\nFPR6=0000000000000000 0000 FPR7=0000000000000000 0000\r\nXMM00=0000000000000000 0000000000000000 XMM01=0000000000000000 0000000000000000\r\nXMM02=0000000000000000 0000000000000000 XMM03=0000000000000000 0000000000000000\r\nXMM04=0000000000000000 0000000000000000 XMM05=0000000000000000 0000000000000000\r\nXMM06=0000000000000000 0000000000000000 XMM07=0000000000000000 0000000000000000\r\n",
+            "seconds": 0.89940654,
+            "status": {
+              "running": false,
+              "status": "paused"
+            },
+            "system_seconds": 0.15,
+            "user_seconds": 0.75,
+            "label": "baseline",
+            "repeat": 1,
+            "command": [
+              "crucible-production-performance",
+              "qemu-system-x86_64",
+              "plugin.so",
+              "bios.bin",
+              "500000000",
+              "ram-1-baseline",
+              "96"
+            ]
+          },
+          {
+            "bios": "bios.bin",
+            "cpu": 96,
+            "logical_tick": 25000000000,
+            "plugin": "plugin.so",
+            "qemu": "qemu-system-x86_64",
+            "ram_prefix_hex": "15e1a507dae94104",
+            "ram_sha256": "37322540d8febd730ecb82c42fa5aa7498ebc35c032b53f8d1a15ca783d94ff2",
+            "raw_icount": 500000000,
+            "registers": "\r\nCPU#0\r\nEAX=07a5e115 EBX=00000000 ECX=0441e9da EDX=00060fb1\r\nESI=00000000 EDI=00000000 EBP=00000000 ESP=00000000\r\nEIP=00000022 EFL=00000003 [------C] CPL=0 II=0 A20=1 SMM=0 HLT=0\r\nES =0000 00000000 0000ffff 00009300\r\nCS =f000 000f0000 0000ffff 00009b00\r\nSS =0000 00000000 0000ffff 00009300\r\nDS =0000 00000000 0000ffff 00009300\r\nFS =0000 00000000 0000ffff 00009300\r\nGS =0000 00000000 0000ffff 00009300\r\nLDT=0000 00000000 0000ffff 00008200\r\nTR =0000 00000000 0000ffff 00008b00\r\nGDT=     00000000 0000ffff\r\nIDT=     00000000 0000ffff\r\nCR0=60000010 CR2=00000000 CR3=00000000 CR4=00000000\r\nDR0=0000000000000000 DR1=0000000000000000 DR2=0000000000000000 DR3=0000000000000000 \r\nDR6=00000000ffff0ff0 DR7=0000000000000400\r\nEFER=0000000000000000\r\nFCW=037f FSW=0000 [ST=0] FTW=00 MXCSR=00001f80\r\nFPR0=0000000000000000 0000 FPR1=0000000000000000 0000\r\nFPR2=0000000000000000 0000 FPR3=0000000000000000 0000\r\nFPR4=0000000000000000 0000 FPR5=0000000000000000 0000\r\nFPR6=0000000000000000 0000 FPR7=0000000000000000 0000\r\nXMM00=0000000000000000 0000000000000000 XMM01=0000000000000000 0000000000000000\r\nXMM02=0000000000000000 0000000000000000 XMM03=0000000000000000 0000000000000000\r\nXMM04=0000000000000000 0000000000000000 XMM05=0000000000000000 0000000000000000\r\nXMM06=0000000000000000 0000000000000000 XMM07=0000000000000000 0000000000000000\r\n",
+            "seconds": 0.900873457,
+            "status": {
+              "running": false,
+              "status": "paused"
+            },
+            "system_seconds": 0.13999999999999999,
+            "user_seconds": 0.76,
+            "label": "baseline",
+            "repeat": 2,
+            "command": [
+              "crucible-production-performance",
+              "qemu-system-x86_64",
+              "plugin.so",
+              "bios.bin",
+              "500000000",
+              "ram-2-baseline",
+              "96"
+            ]
+          },
+          {
+            "bios": "bios.bin",
+            "cpu": 96,
+            "logical_tick": 25000000000,
+            "plugin": "plugin.so",
+            "qemu": "qemu-system-x86_64",
+            "ram_prefix_hex": "15e1a507dae94104",
+            "ram_sha256": "37322540d8febd730ecb82c42fa5aa7498ebc35c032b53f8d1a15ca783d94ff2",
+            "raw_icount": 500000000,
+            "registers": "\r\nCPU#0\r\nEAX=07a5e115 EBX=00000000 ECX=0441e9da EDX=00060fb1\r\nESI=00000000 EDI=00000000 EBP=00000000 ESP=00000000\r\nEIP=00000022 EFL=00000003 [------C] CPL=0 II=0 A20=1 SMM=0 HLT=0\r\nES =0000 00000000 0000ffff 00009300\r\nCS =f000 000f0000 0000ffff 00009b00\r\nSS =0000 00000000 0000ffff 00009300\r\nDS =0000 00000000 0000ffff 00009300\r\nFS =0000 00000000 0000ffff 00009300\r\nGS =0000 00000000 0000ffff 00009300\r\nLDT=0000 00000000 0000ffff 00008200\r\nTR =0000 00000000 0000ffff 00008b00\r\nGDT=     00000000 0000ffff\r\nIDT=     00000000 0000ffff\r\nCR0=60000010 CR2=00000000 CR3=00000000 CR4=00000000\r\nDR0=0000000000000000 DR1=0000000000000000 DR2=0000000000000000 DR3=0000000000000000 \r\nDR6=00000000ffff0ff0 DR7=0000000000000400\r\nEFER=0000000000000000\r\nFCW=037f FSW=0000 [ST=0] FTW=00 MXCSR=00001f80\r\nFPR0=0000000000000000 0000 FPR1=0000000000000000 0000\r\nFPR2=0000000000000000 0000 FPR3=0000000000000000 0000\r\nFPR4=0000000000000000 0000 FPR5=0000000000000000 0000\r\nFPR6=0000000000000000 0000 FPR7=0000000000000000 0000\r\nXMM00=0000000000000000 0000000000000000 XMM01=0000000000000000 0000000000000000\r\nXMM02=0000000000000000 0000000000000000 XMM03=0000000000000000 0000000000000000\r\nXMM04=0000000000000000 0000000000000000 XMM05=0000000000000000 0000000000000000\r\nXMM06=0000000000000000 0000000000000000 XMM07=0000000000000000 0000000000000000\r\n",
+            "seconds": 0.640795356,
+            "status": {
+              "running": false,
+              "status": "paused"
+            },
+            "system_seconds": 0.0,
+            "user_seconds": 0.64,
+            "label": "final",
+            "repeat": 2,
+            "command": [
+              "crucible-production-performance",
+              "qemu-system-x86_64",
+              "plugin.so",
+              "bios.bin",
+              "500000000",
+              "ram-2-final",
+              "96"
+            ]
+          },
+          {
+            "bios": "bios.bin",
+            "cpu": 96,
+            "logical_tick": 25000000000,
+            "plugin": "plugin.so",
+            "qemu": "qemu-system-x86_64",
+            "ram_prefix_hex": "15e1a507dae94104",
+            "ram_sha256": "37322540d8febd730ecb82c42fa5aa7498ebc35c032b53f8d1a15ca783d94ff2",
+            "raw_icount": 500000000,
+            "registers": "\r\nCPU#0\r\nEAX=07a5e115 EBX=00000000 ECX=0441e9da EDX=00060fb1\r\nESI=00000000 EDI=00000000 EBP=00000000 ESP=00000000\r\nEIP=00000022 EFL=00000003 [------C] CPL=0 II=0 A20=1 SMM=0 HLT=0\r\nES =0000 00000000 0000ffff 00009300\r\nCS =f000 000f0000 0000ffff 00009b00\r\nSS =0000 00000000 0000ffff 00009300\r\nDS =0000 00000000 0000ffff 00009300\r\nFS =0000 00000000 0000ffff 00009300\r\nGS =0000 00000000 0000ffff 00009300\r\nLDT=0000 00000000 0000ffff 00008200\r\nTR =0000 00000000 0000ffff 00008b00\r\nGDT=     00000000 0000ffff\r\nIDT=     00000000 0000ffff\r\nCR0=60000010 CR2=00000000 CR3=00000000 CR4=00000000\r\nDR0=0000000000000000 DR1=0000000000000000 DR2=0000000000000000 DR3=0000000000000000 \r\nDR6=00000000ffff0ff0 DR7=0000000000000400\r\nEFER=0000000000000000\r\nFCW=037f FSW=0000 [ST=0] FTW=00 MXCSR=00001f80\r\nFPR0=0000000000000000 0000 FPR1=0000000000000000 0000\r\nFPR2=0000000000000000 0000 FPR3=0000000000000000 0000\r\nFPR4=0000000000000000 0000 FPR5=0000000000000000 0000\r\nFPR6=0000000000000000 0000 FPR7=0000000000000000 0000\r\nXMM00=0000000000000000 0000000000000000 XMM01=0000000000000000 0000000000000000\r\nXMM02=0000000000000000 0000000000000000 XMM03=0000000000000000 0000000000000000\r\nXMM04=0000000000000000 0000000000000000 XMM05=0000000000000000 0000000000000000\r\nXMM06=0000000000000000 0000000000000000 XMM07=0000000000000000 0000000000000000\r\n",
+            "seconds": 0.638589035,
+            "status": {
+              "running": false,
+              "status": "paused"
+            },
+            "system_seconds": 0.0,
+            "user_seconds": 0.64,
+            "label": "final",
+            "repeat": 3,
+            "command": [
+              "crucible-production-performance",
+              "qemu-system-x86_64",
+              "plugin.so",
+              "bios.bin",
+              "500000000",
+              "ram-3-final",
+              "96"
+            ]
+          },
+          {
+            "bios": "bios.bin",
+            "cpu": 96,
+            "logical_tick": 25000000000,
+            "plugin": "plugin.so",
+            "qemu": "qemu-system-x86_64",
+            "ram_prefix_hex": "15e1a507dae94104",
+            "ram_sha256": "37322540d8febd730ecb82c42fa5aa7498ebc35c032b53f8d1a15ca783d94ff2",
+            "raw_icount": 500000000,
+            "registers": "\r\nCPU#0\r\nEAX=07a5e115 EBX=00000000 ECX=0441e9da EDX=00060fb1\r\nESI=00000000 EDI=00000000 EBP=00000000 ESP=00000000\r\nEIP=00000022 EFL=00000003 [------C] CPL=0 II=0 A20=1 SMM=0 HLT=0\r\nES =0000 00000000 0000ffff 00009300\r\nCS =f000 000f0000 0000ffff 00009b00\r\nSS =0000 00000000 0000ffff 00009300\r\nDS =0000 00000000 0000ffff 00009300\r\nFS =0000 00000000 0000ffff 00009300\r\nGS =0000 00000000 0000ffff 00009300\r\nLDT=0000 00000000 0000ffff 00008200\r\nTR =0000 00000000 0000ffff 00008b00\r\nGDT=     00000000 0000ffff\r\nIDT=     00000000 0000ffff\r\nCR0=60000010 CR2=00000000 CR3=00000000 CR4=00000000\r\nDR0=0000000000000000 DR1=0000000000000000 DR2=0000000000000000 DR3=0000000000000000 \r\nDR6=00000000ffff0ff0 DR7=0000000000000400\r\nEFER=0000000000000000\r\nFCW=037f FSW=0000 [ST=0] FTW=00 MXCSR=00001f80\r\nFPR0=0000000000000000 0000 FPR1=0000000000000000 0000\r\nFPR2=0000000000000000 0000 FPR3=0000000000000000 0000\r\nFPR4=0000000000000000 0000 FPR5=0000000000000000 0000\r\nFPR6=0000000000000000 0000 FPR7=0000000000000000 0000\r\nXMM00=0000000000000000 0000000000000000 XMM01=0000000000000000 0000000000000000\r\nXMM02=0000000000000000 0000000000000000 XMM03=0000000000000000 0000000000000000\r\nXMM04=0000000000000000 0000000000000000 XMM05=0000000000000000 0000000000000000\r\nXMM06=0000000000000000 0000000000000000 XMM07=0000000000000000 0000000000000000\r\n",
+            "seconds": 0.898098116,
+            "status": {
+              "running": false,
+              "status": "paused"
+            },
+            "system_seconds": 0.13,
+            "user_seconds": 0.76,
+            "label": "baseline",
+            "repeat": 3,
+            "command": [
+              "crucible-production-performance",
+              "qemu-system-x86_64",
+              "plugin.so",
+              "bios.bin",
+              "500000000",
+              "ram-3-baseline",
+              "96"
+            ]
+          },
+          {
+            "bios": "bios.bin",
+            "cpu": 96,
+            "logical_tick": 25000000000,
+            "plugin": "plugin.so",
+            "qemu": "qemu-system-x86_64",
+            "ram_prefix_hex": "15e1a507dae94104",
+            "ram_sha256": "37322540d8febd730ecb82c42fa5aa7498ebc35c032b53f8d1a15ca783d94ff2",
+            "raw_icount": 500000000,
+            "registers": "\r\nCPU#0\r\nEAX=07a5e115 EBX=00000000 ECX=0441e9da EDX=00060fb1\r\nESI=00000000 EDI=00000000 EBP=00000000 ESP=00000000\r\nEIP=00000022 EFL=00000003 [------C] CPL=0 II=0 A20=1 SMM=0 HLT=0\r\nES =0000 00000000 0000ffff 00009300\r\nCS =f000 000f0000 0000ffff 00009b00\r\nSS =0000 00000000 0000ffff 00009300\r\nDS =0000 00000000 0000ffff 00009300\r\nFS =0000 00000000 0000ffff 00009300\r\nGS =0000 00000000 0000ffff 00009300\r\nLDT=0000 00000000 0000ffff 00008200\r\nTR =0000 00000000 0000ffff 00008b00\r\nGDT=     00000000 0000ffff\r\nIDT=     00000000 0000ffff\r\nCR0=60000010 CR2=00000000 CR3=00000000 CR4=00000000\r\nDR0=0000000000000000 DR1=0000000000000000 DR2=0000000000000000 DR3=0000000000000000 \r\nDR6=00000000ffff0ff0 DR7=0000000000000400\r\nEFER=0000000000000000\r\nFCW=037f FSW=0000 [ST=0] FTW=00 MXCSR=00001f80\r\nFPR0=0000000000000000 0000 FPR1=0000000000000000 0000\r\nFPR2=0000000000000000 0000 FPR3=0000000000000000 0000\r\nFPR4=0000000000000000 0000 FPR5=0000000000000000 0000\r\nFPR6=0000000000000000 0000 FPR7=0000000000000000 0000\r\nXMM00=0000000000000000 0000000000000000 XMM01=0000000000000000 0000000000000000\r\nXMM02=0000000000000000 0000000000000000 XMM03=0000000000000000 0000000000000000\r\nXMM04=0000000000000000 0000000000000000 XMM05=0000000000000000 0000000000000000\r\nXMM06=0000000000000000 0000000000000000 XMM07=0000000000000000 0000000000000000\r\n",
+            "seconds": 0.899887458,
+            "status": {
+              "running": false,
+              "status": "paused"
+            },
+            "system_seconds": 0.13,
+            "user_seconds": 0.77,
+            "label": "baseline",
+            "repeat": 4,
+            "command": [
+              "crucible-production-performance",
+              "qemu-system-x86_64",
+              "plugin.so",
+              "bios.bin",
+              "500000000",
+              "ram-4-baseline",
+              "96"
+            ]
+          },
+          {
+            "bios": "bios.bin",
+            "cpu": 96,
+            "logical_tick": 25000000000,
+            "plugin": "plugin.so",
+            "qemu": "qemu-system-x86_64",
+            "ram_prefix_hex": "15e1a507dae94104",
+            "ram_sha256": "37322540d8febd730ecb82c42fa5aa7498ebc35c032b53f8d1a15ca783d94ff2",
+            "raw_icount": 500000000,
+            "registers": "\r\nCPU#0\r\nEAX=07a5e115 EBX=00000000 ECX=0441e9da EDX=00060fb1\r\nESI=00000000 EDI=00000000 EBP=00000000 ESP=00000000\r\nEIP=00000022 EFL=00000003 [------C] CPL=0 II=0 A20=1 SMM=0 HLT=0\r\nES =0000 00000000 0000ffff 00009300\r\nCS =f000 000f0000 0000ffff 00009b00\r\nSS =0000 00000000 0000ffff 00009300\r\nDS =0000 00000000 0000ffff 00009300\r\nFS =0000 00000000 0000ffff 00009300\r\nGS =0000 00000000 0000ffff 00009300\r\nLDT=0000 00000000 0000ffff 00008200\r\nTR =0000 00000000 0000ffff 00008b00\r\nGDT=     00000000 0000ffff\r\nIDT=     00000000 0000ffff\r\nCR0=60000010 CR2=00000000 CR3=00000000 CR4=00000000\r\nDR0=0000000000000000 DR1=0000000000000000 DR2=0000000000000000 DR3=0000000000000000 \r\nDR6=00000000ffff0ff0 DR7=0000000000000400\r\nEFER=0000000000000000\r\nFCW=037f FSW=0000 [ST=0] FTW=00 MXCSR=00001f80\r\nFPR0=0000000000000000 0000 FPR1=0000000000000000 0000\r\nFPR2=0000000000000000 0000 FPR3=0000000000000000 0000\r\nFPR4=0000000000000000 0000 FPR5=0000000000000000 0000\r\nFPR6=0000000000000000 0000 FPR7=0000000000000000 0000\r\nXMM00=0000000000000000 0000000000000000 XMM01=0000000000000000 0000000000000000\r\nXMM02=0000000000000000 0000000000000000 XMM03=0000000000000000 0000000000000000\r\nXMM04=0000000000000000 0000000000000000 XMM05=0000000000000000 0000000000000000\r\nXMM06=0000000000000000 0000000000000000 XMM07=0000000000000000 0000000000000000\r\n",
+            "seconds": 0.637936454,
+            "status": {
+              "running": false,
+              "status": "paused"
+            },
+            "system_seconds": 0.0,
+            "user_seconds": 0.64,
+            "label": "final",
+            "repeat": 4,
+            "command": [
+              "crucible-production-performance",
+              "qemu-system-x86_64",
+              "plugin.so",
+              "bios.bin",
+              "500000000",
+              "ram-4-final",
+              "96"
+            ]
+          },
+          {
+            "bios": "bios.bin",
+            "cpu": 96,
+            "logical_tick": 25000000000,
+            "plugin": "plugin.so",
+            "qemu": "qemu-system-x86_64",
+            "ram_prefix_hex": "15e1a507dae94104",
+            "ram_sha256": "37322540d8febd730ecb82c42fa5aa7498ebc35c032b53f8d1a15ca783d94ff2",
+            "raw_icount": 500000000,
+            "registers": "\r\nCPU#0\r\nEAX=07a5e115 EBX=00000000 ECX=0441e9da EDX=00060fb1\r\nESI=00000000 EDI=00000000 EBP=00000000 ESP=00000000\r\nEIP=00000022 EFL=00000003 [------C] CPL=0 II=0 A20=1 SMM=0 HLT=0\r\nES =0000 00000000 0000ffff 00009300\r\nCS =f000 000f0000 0000ffff 00009b00\r\nSS =0000 00000000 0000ffff 00009300\r\nDS =0000 00000000 0000ffff 00009300\r\nFS =0000 00000000 0000ffff 00009300\r\nGS =0000 00000000 0000ffff 00009300\r\nLDT=0000 00000000 0000ffff 00008200\r\nTR =0000 00000000 0000ffff 00008b00\r\nGDT=     00000000 0000ffff\r\nIDT=     00000000 0000ffff\r\nCR0=60000010 CR2=00000000 CR3=00000000 CR4=00000000\r\nDR0=0000000000000000 DR1=0000000000000000 DR2=0000000000000000 DR3=0000000000000000 \r\nDR6=00000000ffff0ff0 DR7=0000000000000400\r\nEFER=0000000000000000\r\nFCW=037f FSW=0000 [ST=0] FTW=00 MXCSR=00001f80\r\nFPR0=0000000000000000 0000 FPR1=0000000000000000 0000\r\nFPR2=0000000000000000 0000 FPR3=0000000000000000 0000\r\nFPR4=0000000000000000 0000 FPR5=0000000000000000 0000\r\nFPR6=0000000000000000 0000 FPR7=0000000000000000 0000\r\nXMM00=0000000000000000 0000000000000000 XMM01=0000000000000000 0000000000000000\r\nXMM02=0000000000000000 0000000000000000 XMM03=0000000000000000 0000000000000000\r\nXMM04=0000000000000000 0000000000000000 XMM05=0000000000000000 0000000000000000\r\nXMM06=0000000000000000 0000000000000000 XMM07=0000000000000000 0000000000000000\r\n",
+            "seconds": 0.642872314,
+            "status": {
+              "running": false,
+              "status": "paused"
+            },
+            "system_seconds": 0.0,
+            "user_seconds": 0.64,
+            "label": "final",
+            "repeat": 5,
+            "command": [
+              "crucible-production-performance",
+              "qemu-system-x86_64",
+              "plugin.so",
+              "bios.bin",
+              "500000000",
+              "ram-5-final",
+              "96"
+            ]
+          },
+          {
+            "bios": "bios.bin",
+            "cpu": 96,
+            "logical_tick": 25000000000,
+            "plugin": "plugin.so",
+            "qemu": "qemu-system-x86_64",
+            "ram_prefix_hex": "15e1a507dae94104",
+            "ram_sha256": "37322540d8febd730ecb82c42fa5aa7498ebc35c032b53f8d1a15ca783d94ff2",
+            "raw_icount": 500000000,
+            "registers": "\r\nCPU#0\r\nEAX=07a5e115 EBX=00000000 ECX=0441e9da EDX=00060fb1\r\nESI=00000000 EDI=00000000 EBP=00000000 ESP=00000000\r\nEIP=00000022 EFL=00000003 [------C] CPL=0 II=0 A20=1 SMM=0 HLT=0\r\nES =0000 00000000 0000ffff 00009300\r\nCS =f000 000f0000 0000ffff 00009b00\r\nSS =0000 00000000 0000ffff 00009300\r\nDS =0000 00000000 0000ffff 00009300\r\nFS =0000 00000000 0000ffff 00009300\r\nGS =0000 00000000 0000ffff 00009300\r\nLDT=0000 00000000 0000ffff 00008200\r\nTR =0000 00000000 0000ffff 00008b00\r\nGDT=     00000000 0000ffff\r\nIDT=     00000000 0000ffff\r\nCR0=60000010 CR2=00000000 CR3=00000000 CR4=00000000\r\nDR0=0000000000000000 DR1=0000000000000000 DR2=0000000000000000 DR3=0000000000000000 \r\nDR6=00000000ffff0ff0 DR7=0000000000000400\r\nEFER=0000000000000000\r\nFCW=037f FSW=0000 [ST=0] FTW=00 MXCSR=00001f80\r\nFPR0=0000000000000000 0000 FPR1=0000000000000000 0000\r\nFPR2=0000000000000000 0000 FPR3=0000000000000000 0000\r\nFPR4=0000000000000000 0000 FPR5=0000000000000000 0000\r\nFPR6=0000000000000000 0000 FPR7=0000000000000000 0000\r\nXMM00=0000000000000000 0000000000000000 XMM01=0000000000000000 0000000000000000\r\nXMM02=0000000000000000 0000000000000000 XMM03=0000000000000000 0000000000000000\r\nXMM04=0000000000000000 0000000000000000 XMM05=0000000000000000 0000000000000000\r\nXMM06=0000000000000000 0000000000000000 XMM07=0000000000000000 0000000000000000\r\n",
+            "seconds": 0.908562587,
+            "status": {
+              "running": false,
+              "status": "paused"
+            },
+            "system_seconds": 0.13,
+            "user_seconds": 0.77,
+            "label": "baseline",
+            "repeat": 5,
+            "command": [
+              "crucible-production-performance",
+              "qemu-system-x86_64",
+              "plugin.so",
+              "bios.bin",
+              "500000000",
+              "ram-5-baseline",
+              "96"
+            ]
+          },
+          {
+            "bios": "bios.bin",
+            "cpu": 96,
+            "logical_tick": 25000000000,
+            "plugin": "plugin.so",
+            "qemu": "qemu-system-x86_64",
+            "ram_prefix_hex": "15e1a507dae94104",
+            "ram_sha256": "37322540d8febd730ecb82c42fa5aa7498ebc35c032b53f8d1a15ca783d94ff2",
+            "raw_icount": 500000000,
+            "registers": "\r\nCPU#0\r\nEAX=07a5e115 EBX=00000000 ECX=0441e9da EDX=00060fb1\r\nESI=00000000 EDI=00000000 EBP=00000000 ESP=00000000\r\nEIP=00000022 EFL=00000003 [------C] CPL=0 II=0 A20=1 SMM=0 HLT=0\r\nES =0000 00000000 0000ffff 00009300\r\nCS =f000 000f0000 0000ffff 00009b00\r\nSS =0000 00000000 0000ffff 00009300\r\nDS =0000 00000000 0000ffff 00009300\r\nFS =0000 00000000 0000ffff 00009300\r\nGS =0000 00000000 0000ffff 00009300\r\nLDT=0000 00000000 0000ffff 00008200\r\nTR =0000 00000000 0000ffff 00008b00\r\nGDT=     00000000 0000ffff\r\nIDT=     00000000 0000ffff\r\nCR0=60000010 CR2=00000000 CR3=00000000 CR4=00000000\r\nDR0=0000000000000000 DR1=0000000000000000 DR2=0000000000000000 DR3=0000000000000000 \r\nDR6=00000000ffff0ff0 DR7=0000000000000400\r\nEFER=0000000000000000\r\nFCW=037f FSW=0000 [ST=0] FTW=00 MXCSR=00001f80\r\nFPR0=0000000000000000 0000 FPR1=0000000000000000 0000\r\nFPR2=0000000000000000 0000 FPR3=0000000000000000 0000\r\nFPR4=0000000000000000 0000 FPR5=0000000000000000 0000\r\nFPR6=0000000000000000 0000 FPR7=0000000000000000 0000\r\nXMM00=0000000000000000 0000000000000000 XMM01=0000000000000000 0000000000000000\r\nXMM02=0000000000000000 0000000000000000 XMM03=0000000000000000 0000000000000000\r\nXMM04=0000000000000000 0000000000000000 XMM05=0000000000000000 0000000000000000\r\nXMM06=0000000000000000 0000000000000000 XMM07=0000000000000000 0000000000000000\r\n",
+            "seconds": 0.903690748,
+            "status": {
+              "running": false,
+              "status": "paused"
+            },
+            "system_seconds": 0.16,
+            "user_seconds": 0.74,
+            "label": "baseline",
+            "repeat": 6,
+            "command": [
+              "crucible-production-performance",
+              "qemu-system-x86_64",
+              "plugin.so",
+              "bios.bin",
+              "500000000",
+              "ram-6-baseline",
+              "96"
+            ]
+          },
+          {
+            "bios": "bios.bin",
+            "cpu": 96,
+            "logical_tick": 25000000000,
+            "plugin": "plugin.so",
+            "qemu": "qemu-system-x86_64",
+            "ram_prefix_hex": "15e1a507dae94104",
+            "ram_sha256": "37322540d8febd730ecb82c42fa5aa7498ebc35c032b53f8d1a15ca783d94ff2",
+            "raw_icount": 500000000,
+            "registers": "\r\nCPU#0\r\nEAX=07a5e115 EBX=00000000 ECX=0441e9da EDX=00060fb1\r\nESI=00000000 EDI=00000000 EBP=00000000 ESP=00000000\r\nEIP=00000022 EFL=00000003 [------C] CPL=0 II=0 A20=1 SMM=0 HLT=0\r\nES =0000 00000000 0000ffff 00009300\r\nCS =f000 000f0000 0000ffff 00009b00\r\nSS =0000 00000000 0000ffff 00009300\r\nDS =0000 00000000 0000ffff 00009300\r\nFS =0000 00000000 0000ffff 00009300\r\nGS =0000 00000000 0000ffff 00009300\r\nLDT=0000 00000000 0000ffff 00008200\r\nTR =0000 00000000 0000ffff 00008b00\r\nGDT=     00000000 0000ffff\r\nIDT=     00000000 0000ffff\r\nCR0=60000010 CR2=00000000 CR3=00000000 CR4=00000000\r\nDR0=0000000000000000 DR1=0000000000000000 DR2=0000000000000000 DR3=0000000000000000 \r\nDR6=00000000ffff0ff0 DR7=0000000000000400\r\nEFER=0000000000000000\r\nFCW=037f FSW=0000 [ST=0] FTW=00 MXCSR=00001f80\r\nFPR0=0000000000000000 0000 FPR1=0000000000000000 0000\r\nFPR2=0000000000000000 0000 FPR3=0000000000000000 0000\r\nFPR4=0000000000000000 0000 FPR5=0000000000000000 0000\r\nFPR6=0000000000000000 0000 FPR7=0000000000000000 0000\r\nXMM00=0000000000000000 0000000000000000 XMM01=0000000000000000 0000000000000000\r\nXMM02=0000000000000000 0000000000000000 XMM03=0000000000000000 0000000000000000\r\nXMM04=0000000000000000 0000000000000000 XMM05=0000000000000000 0000000000000000\r\nXMM06=0000000000000000 0000000000000000 XMM07=0000000000000000 0000000000000000\r\n",
+            "seconds": 0.64101852,
+            "status": {
+              "running": false,
+              "status": "paused"
+            },
+            "system_seconds": 0.0,
+            "user_seconds": 0.63,
+            "label": "final",
+            "repeat": 6,
+            "command": [
+              "crucible-production-performance",
+              "qemu-system-x86_64",
+              "plugin.so",
+              "bios.bin",
+              "500000000",
+              "ram-6-final",
+              "96"
+            ]
+          }
+        ],
+        "mean_seconds": {
+          "baseline": 0.9014812705714286,
+          "final": 0.6408777445714285
+        },
+        "time_reduction_percent": 28.90836831638325,
+        "speedup": 1.4066353188380294,
+        "witness": {
+          "raw_icount": 500000000,
+          "logical_tick": 25000000000,
+          "registers": "\r\nCPU#0\r\nEAX=07a5e115 EBX=00000000 ECX=0441e9da EDX=00060fb1\r\nESI=00000000 EDI=00000000 EBP=00000000 ESP=00000000\r\nEIP=00000022 EFL=00000003 [------C] CPL=0 II=0 A20=1 SMM=0 HLT=0\r\nES =0000 00000000 0000ffff 00009300\r\nCS =f000 000f0000 0000ffff 00009b00\r\nSS =0000 00000000 0000ffff 00009300\r\nDS =0000 00000000 0000ffff 00009300\r\nFS =0000 00000000 0000ffff 00009300\r\nGS =0000 00000000 0000ffff 00009300\r\nLDT=0000 00000000 0000ffff 00008200\r\nTR =0000 00000000 0000ffff 00008b00\r\nGDT=     00000000 0000ffff\r\nIDT=     00000000 0000ffff\r\nCR0=60000010 CR2=00000000 CR3=00000000 CR4=00000000\r\nDR0=0000000000000000 DR1=0000000000000000 DR2=0000000000000000 DR3=0000000000000000 \r\nDR6=00000000ffff0ff0 DR7=0000000000000400\r\nEFER=0000000000000000\r\nFCW=037f FSW=0000 [ST=0] FTW=00 MXCSR=00001f80\r\nFPR0=0000000000000000 0000 FPR1=0000000000000000 0000\r\nFPR2=0000000000000000 0000 FPR3=0000000000000000 0000\r\nFPR4=0000000000000000 0000 FPR5=0000000000000000 0000\r\nFPR6=0000000000000000 0000 FPR7=0000000000000000 0000\r\nXMM00=0000000000000000 0000000000000000 XMM01=0000000000000000 0000000000000000\r\nXMM02=0000000000000000 0000000000000000 XMM03=0000000000000000 0000000000000000\r\nXMM04=0000000000000000 0000000000000000 XMM05=0000000000000000 0000000000000000\r\nXMM06=0000000000000000 0000000000000000 XMM07=0000000000000000 0000000000000000\r\n",
+          "ram_sha256": "37322540d8febd730ecb82c42fa5aa7498ebc35c032b53f8d1a15ca783d94ff2",
+          "ram_prefix_hex": "15e1a507dae94104",
+          "status": {
+            "running": false,
+            "status": "paused"
+          }
+        },
+        "independent_arithmetic_oracle": true,
+        "loop_instructions": 7,
+        "witnesses_match_across_all_samples": true
+      },
+      "io": {
+        "bios": "io-bios.bin",
+        "bios_sha256": "7e08cc34b6bdc3038d2c824e91bb9ebe9cd0b3e53f2df253379f8c22ca3be5aa",
+        "horizon": 50000000,
+        "samples": [
+          {
+            "bios": "io-bios.bin",
+            "cpu": 96,
+            "logical_tick": 2500000000,
+            "plugin": "plugin.so",
+            "qemu": "qemu-system-x86_64",
+            "ram_prefix_hex": "60ac5cb50f5e5f00",
+            "ram_sha256": "b1086f019a0162d4895c2c6a869fec6fdfc3e44b924611dd82ba929aa9e9ca4f",
+            "raw_icount": 50000000,
+            "registers": "\r\nCPU#0\r\nEAX=0bbb6f12 EBX=00000000 ECX=005f5e0f EDX=00060fb1\r\nESI=00000000 EDI=00000000 EBP=00000000 ESP=00000000\r\nEIP=00000018 EFL=00000006 [-----P-] CPL=0 II=0 A20=1 SMM=0 HLT=0\r\nES =0000 00000000 0000ffff 00009300\r\nCS =f000 000f0000 0000ffff 00009b00\r\nSS =0000 00000000 0000ffff 00009300\r\nDS =0000 00000000 0000ffff 00009300\r\nFS =0000 00000000 0000ffff 00009300\r\nGS =0000 00000000 0000ffff 00009300\r\nLDT=0000 00000000 0000ffff 00008200\r\nTR =0000 00000000 0000ffff 00008b00\r\nGDT=     00000000 0000ffff\r\nIDT=     00000000 0000ffff\r\nCR0=60000010 CR2=00000000 CR3=00000000 CR4=00000000\r\nDR0=0000000000000000 DR1=0000000000000000 DR2=0000000000000000 DR3=0000000000000000 \r\nDR6=00000000ffff0ff0 DR7=0000000000000400\r\nEFER=0000000000000000\r\nFCW=037f FSW=0000 [ST=0] FTW=00 MXCSR=00001f80\r\nFPR0=0000000000000000 0000 FPR1=0000000000000000 0000\r\nFPR2=0000000000000000 0000 FPR3=0000000000000000 0000\r\nFPR4=0000000000000000 0000 FPR5=0000000000000000 0000\r\nFPR6=0000000000000000 0000 FPR7=0000000000000000 0000\r\nXMM00=0000000000000000 0000000000000000 XMM01=0000000000000000 0000000000000000\r\nXMM02=0000000000000000 0000000000000000 XMM03=0000000000000000 0000000000000000\r\nXMM04=0000000000000000 0000000000000000 XMM05=0000000000000000 0000000000000000\r\nXMM06=0000000000000000 0000000000000000 XMM07=0000000000000000 0000000000000000\r\n",
+            "seconds": 1.310756484,
+            "status": {
+              "running": false,
+              "status": "paused"
+            },
+            "system_seconds": 0.4,
+            "user_seconds": 0.9,
+            "label": "baseline",
+            "repeat": 0,
+            "command": [
+              "crucible-production-performance",
+              "qemu-system-x86_64",
+              "plugin.so",
+              "io-bios.bin",
+              "50000000",
+              "io-0-baseline",
+              "96"
+            ]
+          },
+          {
+            "bios": "io-bios.bin",
+            "cpu": 96,
+            "logical_tick": 2500000000,
+            "plugin": "plugin.so",
+            "qemu": "qemu-system-x86_64",
+            "ram_prefix_hex": "60ac5cb50f5e5f00",
+            "ram_sha256": "b1086f019a0162d4895c2c6a869fec6fdfc3e44b924611dd82ba929aa9e9ca4f",
+            "raw_icount": 50000000,
+            "registers": "\r\nCPU#0\r\nEAX=0bbb6f12 EBX=00000000 ECX=005f5e0f EDX=00060fb1\r\nESI=00000000 EDI=00000000 EBP=00000000 ESP=00000000\r\nEIP=00000018 EFL=00000006 [-----P-] CPL=0 II=0 A20=1 SMM=0 HLT=0\r\nES =0000 00000000 0000ffff 00009300\r\nCS =f000 000f0000 0000ffff 00009b00\r\nSS =0000 00000000 0000ffff 00009300\r\nDS =0000 00000000 0000ffff 00009300\r\nFS =0000 00000000 0000ffff 00009300\r\nGS =0000 00000000 0000ffff 00009300\r\nLDT=0000 00000000 0000ffff 00008200\r\nTR =0000 00000000 0000ffff 00008b00\r\nGDT=     00000000 0000ffff\r\nIDT=     00000000 0000ffff\r\nCR0=60000010 CR2=00000000 CR3=00000000 CR4=00000000\r\nDR0=0000000000000000 DR1=0000000000000000 DR2=0000000000000000 DR3=0000000000000000 \r\nDR6=00000000ffff0ff0 DR7=0000000000000400\r\nEFER=0000000000000000\r\nFCW=037f FSW=0000 [ST=0] FTW=00 MXCSR=00001f80\r\nFPR0=0000000000000000 0000 FPR1=0000000000000000 0000\r\nFPR2=0000000000000000 0000 FPR3=0000000000000000 0000\r\nFPR4=0000000000000000 0000 FPR5=0000000000000000 0000\r\nFPR6=0000000000000000 0000 FPR7=0000000000000000 0000\r\nXMM00=0000000000000000 0000000000000000 XMM01=0000000000000000 0000000000000000\r\nXMM02=0000000000000000 0000000000000000 XMM03=0000000000000000 0000000000000000\r\nXMM04=0000000000000000 0000000000000000 XMM05=0000000000000000 0000000000000000\r\nXMM06=0000000000000000 0000000000000000 XMM07=0000000000000000 0000000000000000\r\n",
+            "seconds": 0.660928023,
+            "status": {
+              "running": false,
+              "status": "paused"
+            },
+            "system_seconds": 0.0,
+            "user_seconds": 0.66,
+            "label": "final",
+            "repeat": 0,
+            "command": [
+              "crucible-production-performance",
+              "qemu-system-x86_64",
+              "plugin.so",
+              "io-bios.bin",
+              "50000000",
+              "io-0-final",
+              "96"
+            ]
+          },
+          {
+            "bios": "io-bios.bin",
+            "cpu": 96,
+            "logical_tick": 2500000000,
+            "plugin": "plugin.so",
+            "qemu": "qemu-system-x86_64",
+            "ram_prefix_hex": "60ac5cb50f5e5f00",
+            "ram_sha256": "b1086f019a0162d4895c2c6a869fec6fdfc3e44b924611dd82ba929aa9e9ca4f",
+            "raw_icount": 50000000,
+            "registers": "\r\nCPU#0\r\nEAX=0bbb6f12 EBX=00000000 ECX=005f5e0f EDX=00060fb1\r\nESI=00000000 EDI=00000000 EBP=00000000 ESP=00000000\r\nEIP=00000018 EFL=00000006 [-----P-] CPL=0 II=0 A20=1 SMM=0 HLT=0\r\nES =0000 00000000 0000ffff 00009300\r\nCS =f000 000f0000 0000ffff 00009b00\r\nSS =0000 00000000 0000ffff 00009300\r\nDS =0000 00000000 0000ffff 00009300\r\nFS =0000 00000000 0000ffff 00009300\r\nGS =0000 00000000 0000ffff 00009300\r\nLDT=0000 00000000 0000ffff 00008200\r\nTR =0000 00000000 0000ffff 00008b00\r\nGDT=     00000000 0000ffff\r\nIDT=     00000000 0000ffff\r\nCR0=60000010 CR2=00000000 CR3=00000000 CR4=00000000\r\nDR0=0000000000000000 DR1=0000000000000000 DR2=0000000000000000 DR3=0000000000000000 \r\nDR6=00000000ffff0ff0 DR7=0000000000000400\r\nEFER=0000000000000000\r\nFCW=037f FSW=0000 [ST=0] FTW=00 MXCSR=00001f80\r\nFPR0=0000000000000000 0000 FPR1=0000000000000000 0000\r\nFPR2=0000000000000000 0000 FPR3=0000000000000000 0000\r\nFPR4=0000000000000000 0000 FPR5=0000000000000000 0000\r\nFPR6=0000000000000000 0000 FPR7=0000000000000000 0000\r\nXMM00=0000000000000000 0000000000000000 XMM01=0000000000000000 0000000000000000\r\nXMM02=0000000000000000 0000000000000000 XMM03=0000000000000000 0000000000000000\r\nXMM04=0000000000000000 0000000000000000 XMM05=0000000000000000 0000000000000000\r\nXMM06=0000000000000000 0000000000000000 XMM07=0000000000000000 0000000000000000\r\n",
+            "seconds": 0.660805421,
+            "status": {
+              "running": false,
+              "status": "paused"
+            },
+            "system_seconds": 0.0,
+            "user_seconds": 0.66,
+            "label": "final",
+            "repeat": 1,
+            "command": [
+              "crucible-production-performance",
+              "qemu-system-x86_64",
+              "plugin.so",
+              "io-bios.bin",
+              "50000000",
+              "io-1-final",
+              "96"
+            ]
+          },
+          {
+            "bios": "io-bios.bin",
+            "cpu": 96,
+            "logical_tick": 2500000000,
+            "plugin": "plugin.so",
+            "qemu": "qemu-system-x86_64",
+            "ram_prefix_hex": "60ac5cb50f5e5f00",
+            "ram_sha256": "b1086f019a0162d4895c2c6a869fec6fdfc3e44b924611dd82ba929aa9e9ca4f",
+            "raw_icount": 50000000,
+            "registers": "\r\nCPU#0\r\nEAX=0bbb6f12 EBX=00000000 ECX=005f5e0f EDX=00060fb1\r\nESI=00000000 EDI=00000000 EBP=00000000 ESP=00000000\r\nEIP=00000018 EFL=00000006 [-----P-] CPL=0 II=0 A20=1 SMM=0 HLT=0\r\nES =0000 00000000 0000ffff 00009300\r\nCS =f000 000f0000 0000ffff 00009b00\r\nSS =0000 00000000 0000ffff 00009300\r\nDS =0000 00000000 0000ffff 00009300\r\nFS =0000 00000000 0000ffff 00009300\r\nGS =0000 00000000 0000ffff 00009300\r\nLDT=0000 00000000 0000ffff 00008200\r\nTR =0000 00000000 0000ffff 00008b00\r\nGDT=     00000000 0000ffff\r\nIDT=     00000000 0000ffff\r\nCR0=60000010 CR2=00000000 CR3=00000000 CR4=00000000\r\nDR0=0000000000000000 DR1=0000000000000000 DR2=0000000000000000 DR3=0000000000000000 \r\nDR6=00000000ffff0ff0 DR7=0000000000000400\r\nEFER=0000000000000000\r\nFCW=037f FSW=0000 [ST=0] FTW=00 MXCSR=00001f80\r\nFPR0=0000000000000000 0000 FPR1=0000000000000000 0000\r\nFPR2=0000000000000000 0000 FPR3=0000000000000000 0000\r\nFPR4=0000000000000000 0000 FPR5=0000000000000000 0000\r\nFPR6=0000000000000000 0000 FPR7=0000000000000000 0000\r\nXMM00=0000000000000000 0000000000000000 XMM01=0000000000000000 0000000000000000\r\nXMM02=0000000000000000 0000000000000000 XMM03=0000000000000000 0000000000000000\r\nXMM04=0000000000000000 0000000000000000 XMM05=0000000000000000 0000000000000000\r\nXMM06=0000000000000000 0000000000000000 XMM07=0000000000000000 0000000000000000\r\n",
+            "seconds": 1.309023472,
+            "status": {
+              "running": false,
+              "status": "paused"
+            },
+            "system_seconds": 0.4,
+            "user_seconds": 0.9,
+            "label": "baseline",
+            "repeat": 1,
+            "command": [
+              "crucible-production-performance",
+              "qemu-system-x86_64",
+              "plugin.so",
+              "io-bios.bin",
+              "50000000",
+              "io-1-baseline",
+              "96"
+            ]
+          },
+          {
+            "bios": "io-bios.bin",
+            "cpu": 96,
+            "logical_tick": 2500000000,
+            "plugin": "plugin.so",
+            "qemu": "qemu-system-x86_64",
+            "ram_prefix_hex": "60ac5cb50f5e5f00",
+            "ram_sha256": "b1086f019a0162d4895c2c6a869fec6fdfc3e44b924611dd82ba929aa9e9ca4f",
+            "raw_icount": 50000000,
+            "registers": "\r\nCPU#0\r\nEAX=0bbb6f12 EBX=00000000 ECX=005f5e0f EDX=00060fb1\r\nESI=00000000 EDI=00000000 EBP=00000000 ESP=00000000\r\nEIP=00000018 EFL=00000006 [-----P-] CPL=0 II=0 A20=1 SMM=0 HLT=0\r\nES =0000 00000000 0000ffff 00009300\r\nCS =f000 000f0000 0000ffff 00009b00\r\nSS =0000 00000000 0000ffff 00009300\r\nDS =0000 00000000 0000ffff 00009300\r\nFS =0000 00000000 0000ffff 00009300\r\nGS =0000 00000000 0000ffff 00009300\r\nLDT=0000 00000000 0000ffff 00008200\r\nTR =0000 00000000 0000ffff 00008b00\r\nGDT=     00000000 0000ffff\r\nIDT=     00000000 0000ffff\r\nCR0=60000010 CR2=00000000 CR3=00000000 CR4=00000000\r\nDR0=0000000000000000 DR1=0000000000000000 DR2=0000000000000000 DR3=0000000000000000 \r\nDR6=00000000ffff0ff0 DR7=0000000000000400\r\nEFER=0000000000000000\r\nFCW=037f FSW=0000 [ST=0] FTW=00 MXCSR=00001f80\r\nFPR0=0000000000000000 0000 FPR1=0000000000000000 0000\r\nFPR2=0000000000000000 0000 FPR3=0000000000000000 0000\r\nFPR4=0000000000000000 0000 FPR5=0000000000000000 0000\r\nFPR6=0000000000000000 0000 FPR7=0000000000000000 0000\r\nXMM00=0000000000000000 0000000000000000 XMM01=0000000000000000 0000000000000000\r\nXMM02=0000000000000000 0000000000000000 XMM03=0000000000000000 0000000000000000\r\nXMM04=0000000000000000 0000000000000000 XMM05=0000000000000000 0000000000000000\r\nXMM06=0000000000000000 0000000000000000 XMM07=0000000000000000 0000000000000000\r\n",
+            "seconds": 1.313087496,
+            "status": {
+              "running": false,
+              "status": "paused"
+            },
+            "system_seconds": 0.38,
+            "user_seconds": 0.93,
+            "label": "baseline",
+            "repeat": 2,
+            "command": [
+              "crucible-production-performance",
+              "qemu-system-x86_64",
+              "plugin.so",
+              "io-bios.bin",
+              "50000000",
+              "io-2-baseline",
+              "96"
+            ]
+          },
+          {
+            "bios": "io-bios.bin",
+            "cpu": 96,
+            "logical_tick": 2500000000,
+            "plugin": "plugin.so",
+            "qemu": "qemu-system-x86_64",
+            "ram_prefix_hex": "60ac5cb50f5e5f00",
+            "ram_sha256": "b1086f019a0162d4895c2c6a869fec6fdfc3e44b924611dd82ba929aa9e9ca4f",
+            "raw_icount": 50000000,
+            "registers": "\r\nCPU#0\r\nEAX=0bbb6f12 EBX=00000000 ECX=005f5e0f EDX=00060fb1\r\nESI=00000000 EDI=00000000 EBP=00000000 ESP=00000000\r\nEIP=00000018 EFL=00000006 [-----P-] CPL=0 II=0 A20=1 SMM=0 HLT=0\r\nES =0000 00000000 0000ffff 00009300\r\nCS =f000 000f0000 0000ffff 00009b00\r\nSS =0000 00000000 0000ffff 00009300\r\nDS =0000 00000000 0000ffff 00009300\r\nFS =0000 00000000 0000ffff 00009300\r\nGS =0000 00000000 0000ffff 00009300\r\nLDT=0000 00000000 0000ffff 00008200\r\nTR =0000 00000000 0000ffff 00008b00\r\nGDT=     00000000 0000ffff\r\nIDT=     00000000 0000ffff\r\nCR0=60000010 CR2=00000000 CR3=00000000 CR4=00000000\r\nDR0=0000000000000000 DR1=0000000000000000 DR2=0000000000000000 DR3=0000000000000000 \r\nDR6=00000000ffff0ff0 DR7=0000000000000400\r\nEFER=0000000000000000\r\nFCW=037f FSW=0000 [ST=0] FTW=00 MXCSR=00001f80\r\nFPR0=0000000000000000 0000 FPR1=0000000000000000 0000\r\nFPR2=0000000000000000 0000 FPR3=0000000000000000 0000\r\nFPR4=0000000000000000 0000 FPR5=0000000000000000 0000\r\nFPR6=0000000000000000 0000 FPR7=0000000000000000 0000\r\nXMM00=0000000000000000 0000000000000000 XMM01=0000000000000000 0000000000000000\r\nXMM02=0000000000000000 0000000000000000 XMM03=0000000000000000 0000000000000000\r\nXMM04=0000000000000000 0000000000000000 XMM05=0000000000000000 0000000000000000\r\nXMM06=0000000000000000 0000000000000000 XMM07=0000000000000000 0000000000000000\r\n",
+            "seconds": 0.662334879,
+            "status": {
+              "running": false,
+              "status": "paused"
+            },
+            "system_seconds": 0.0,
+            "user_seconds": 0.66,
+            "label": "final",
+            "repeat": 2,
+            "command": [
+              "crucible-production-performance",
+              "qemu-system-x86_64",
+              "plugin.so",
+              "io-bios.bin",
+              "50000000",
+              "io-2-final",
+              "96"
+            ]
+          },
+          {
+            "bios": "io-bios.bin",
+            "cpu": 96,
+            "logical_tick": 2500000000,
+            "plugin": "plugin.so",
+            "qemu": "qemu-system-x86_64",
+            "ram_prefix_hex": "60ac5cb50f5e5f00",
+            "ram_sha256": "b1086f019a0162d4895c2c6a869fec6fdfc3e44b924611dd82ba929aa9e9ca4f",
+            "raw_icount": 50000000,
+            "registers": "\r\nCPU#0\r\nEAX=0bbb6f12 EBX=00000000 ECX=005f5e0f EDX=00060fb1\r\nESI=00000000 EDI=00000000 EBP=00000000 ESP=00000000\r\nEIP=00000018 EFL=00000006 [-----P-] CPL=0 II=0 A20=1 SMM=0 HLT=0\r\nES =0000 00000000 0000ffff 00009300\r\nCS =f000 000f0000 0000ffff 00009b00\r\nSS =0000 00000000 0000ffff 00009300\r\nDS =0000 00000000 0000ffff 00009300\r\nFS =0000 00000000 0000ffff 00009300\r\nGS =0000 00000000 0000ffff 00009300\r\nLDT=0000 00000000 0000ffff 00008200\r\nTR =0000 00000000 0000ffff 00008b00\r\nGDT=     00000000 0000ffff\r\nIDT=     00000000 0000ffff\r\nCR0=60000010 CR2=00000000 CR3=00000000 CR4=00000000\r\nDR0=0000000000000000 DR1=0000000000000000 DR2=0000000000000000 DR3=0000000000000000 \r\nDR6=00000000ffff0ff0 DR7=0000000000000400\r\nEFER=0000000000000000\r\nFCW=037f FSW=0000 [ST=0] FTW=00 MXCSR=00001f80\r\nFPR0=0000000000000000 0000 FPR1=0000000000000000 0000\r\nFPR2=0000000000000000 0000 FPR3=0000000000000000 0000\r\nFPR4=0000000000000000 0000 FPR5=0000000000000000 0000\r\nFPR6=0000000000000000 0000 FPR7=0000000000000000 0000\r\nXMM00=0000000000000000 0000000000000000 XMM01=0000000000000000 0000000000000000\r\nXMM02=0000000000000000 0000000000000000 XMM03=0000000000000000 0000000000000000\r\nXMM04=0000000000000000 0000000000000000 XMM05=0000000000000000 0000000000000000\r\nXMM06=0000000000000000 0000000000000000 XMM07=0000000000000000 0000000000000000\r\n",
+            "seconds": 0.6634787,
+            "status": {
+              "running": false,
+              "status": "paused"
+            },
+            "system_seconds": 0.0,
+            "user_seconds": 0.66,
+            "label": "final",
+            "repeat": 3,
+            "command": [
+              "crucible-production-performance",
+              "qemu-system-x86_64",
+              "plugin.so",
+              "io-bios.bin",
+              "50000000",
+              "io-3-final",
+              "96"
+            ]
+          },
+          {
+            "bios": "io-bios.bin",
+            "cpu": 96,
+            "logical_tick": 2500000000,
+            "plugin": "plugin.so",
+            "qemu": "qemu-system-x86_64",
+            "ram_prefix_hex": "60ac5cb50f5e5f00",
+            "ram_sha256": "b1086f019a0162d4895c2c6a869fec6fdfc3e44b924611dd82ba929aa9e9ca4f",
+            "raw_icount": 50000000,
+            "registers": "\r\nCPU#0\r\nEAX=0bbb6f12 EBX=00000000 ECX=005f5e0f EDX=00060fb1\r\nESI=00000000 EDI=00000000 EBP=00000000 ESP=00000000\r\nEIP=00000018 EFL=00000006 [-----P-] CPL=0 II=0 A20=1 SMM=0 HLT=0\r\nES =0000 00000000 0000ffff 00009300\r\nCS =f000 000f0000 0000ffff 00009b00\r\nSS =0000 00000000 0000ffff 00009300\r\nDS =0000 00000000 0000ffff 00009300\r\nFS =0000 00000000 0000ffff 00009300\r\nGS =0000 00000000 0000ffff 00009300\r\nLDT=0000 00000000 0000ffff 00008200\r\nTR =0000 00000000 0000ffff 00008b00\r\nGDT=     00000000 0000ffff\r\nIDT=     00000000 0000ffff\r\nCR0=60000010 CR2=00000000 CR3=00000000 CR4=00000000\r\nDR0=0000000000000000 DR1=0000000000000000 DR2=0000000000000000 DR3=0000000000000000 \r\nDR6=00000000ffff0ff0 DR7=0000000000000400\r\nEFER=0000000000000000\r\nFCW=037f FSW=0000 [ST=0] FTW=00 MXCSR=00001f80\r\nFPR0=0000000000000000 0000 FPR1=0000000000000000 0000\r\nFPR2=0000000000000000 0000 FPR3=0000000000000000 0000\r\nFPR4=0000000000000000 0000 FPR5=0000000000000000 0000\r\nFPR6=0000000000000000 0000 FPR7=0000000000000000 0000\r\nXMM00=0000000000000000 0000000000000000 XMM01=0000000000000000 0000000000000000\r\nXMM02=0000000000000000 0000000000000000 XMM03=0000000000000000 0000000000000000\r\nXMM04=0000000000000000 0000000000000000 XMM05=0000000000000000 0000000000000000\r\nXMM06=0000000000000000 0000000000000000 XMM07=0000000000000000 0000000000000000\r\n",
+            "seconds": 1.314137715,
+            "status": {
+              "running": false,
+              "status": "paused"
+            },
+            "system_seconds": 0.41,
+            "user_seconds": 0.91,
+            "label": "baseline",
+            "repeat": 3,
+            "command": [
+              "crucible-production-performance",
+              "qemu-system-x86_64",
+              "plugin.so",
+              "io-bios.bin",
+              "50000000",
+              "io-3-baseline",
+              "96"
+            ]
+          },
+          {
+            "bios": "io-bios.bin",
+            "cpu": 96,
+            "logical_tick": 2500000000,
+            "plugin": "plugin.so",
+            "qemu": "qemu-system-x86_64",
+            "ram_prefix_hex": "60ac5cb50f5e5f00",
+            "ram_sha256": "b1086f019a0162d4895c2c6a869fec6fdfc3e44b924611dd82ba929aa9e9ca4f",
+            "raw_icount": 50000000,
+            "registers": "\r\nCPU#0\r\nEAX=0bbb6f12 EBX=00000000 ECX=005f5e0f EDX=00060fb1\r\nESI=00000000 EDI=00000000 EBP=00000000 ESP=00000000\r\nEIP=00000018 EFL=00000006 [-----P-] CPL=0 II=0 A20=1 SMM=0 HLT=0\r\nES =0000 00000000 0000ffff 00009300\r\nCS =f000 000f0000 0000ffff 00009b00\r\nSS =0000 00000000 0000ffff 00009300\r\nDS =0000 00000000 0000ffff 00009300\r\nFS =0000 00000000 0000ffff 00009300\r\nGS =0000 00000000 0000ffff 00009300\r\nLDT=0000 00000000 0000ffff 00008200\r\nTR =0000 00000000 0000ffff 00008b00\r\nGDT=     00000000 0000ffff\r\nIDT=     00000000 0000ffff\r\nCR0=60000010 CR2=00000000 CR3=00000000 CR4=00000000\r\nDR0=0000000000000000 DR1=0000000000000000 DR2=0000000000000000 DR3=0000000000000000 \r\nDR6=00000000ffff0ff0 DR7=0000000000000400\r\nEFER=0000000000000000\r\nFCW=037f FSW=0000 [ST=0] FTW=00 MXCSR=00001f80\r\nFPR0=0000000000000000 0000 FPR1=0000000000000000 0000\r\nFPR2=0000000000000000 0000 FPR3=0000000000000000 0000\r\nFPR4=0000000000000000 0000 FPR5=0000000000000000 0000\r\nFPR6=0000000000000000 0000 FPR7=0000000000000000 0000\r\nXMM00=0000000000000000 0000000000000000 XMM01=0000000000000000 0000000000000000\r\nXMM02=0000000000000000 0000000000000000 XMM03=0000000000000000 0000000000000000\r\nXMM04=0000000000000000 0000000000000000 XMM05=0000000000000000 0000000000000000\r\nXMM06=0000000000000000 0000000000000000 XMM07=0000000000000000 0000000000000000\r\n",
+            "seconds": 1.314562643,
+            "status": {
+              "running": false,
+              "status": "paused"
+            },
+            "system_seconds": 0.42,
+            "user_seconds": 0.89,
+            "label": "baseline",
+            "repeat": 4,
+            "command": [
+              "crucible-production-performance",
+              "qemu-system-x86_64",
+              "plugin.so",
+              "io-bios.bin",
+              "50000000",
+              "io-4-baseline",
+              "96"
+            ]
+          },
+          {
+            "bios": "io-bios.bin",
+            "cpu": 96,
+            "logical_tick": 2500000000,
+            "plugin": "plugin.so",
+            "qemu": "qemu-system-x86_64",
+            "ram_prefix_hex": "60ac5cb50f5e5f00",
+            "ram_sha256": "b1086f019a0162d4895c2c6a869fec6fdfc3e44b924611dd82ba929aa9e9ca4f",
+            "raw_icount": 50000000,
+            "registers": "\r\nCPU#0\r\nEAX=0bbb6f12 EBX=00000000 ECX=005f5e0f EDX=00060fb1\r\nESI=00000000 EDI=00000000 EBP=00000000 ESP=00000000\r\nEIP=00000018 EFL=00000006 [-----P-] CPL=0 II=0 A20=1 SMM=0 HLT=0\r\nES =0000 00000000 0000ffff 00009300\r\nCS =f000 000f0000 0000ffff 00009b00\r\nSS =0000 00000000 0000ffff 00009300\r\nDS =0000 00000000 0000ffff 00009300\r\nFS =0000 00000000 0000ffff 00009300\r\nGS =0000 00000000 0000ffff 00009300\r\nLDT=0000 00000000 0000ffff 00008200\r\nTR =0000 00000000 0000ffff 00008b00\r\nGDT=     00000000 0000ffff\r\nIDT=     00000000 0000ffff\r\nCR0=60000010 CR2=00000000 CR3=00000000 CR4=00000000\r\nDR0=0000000000000000 DR1=0000000000000000 DR2=0000000000000000 DR3=0000000000000000 \r\nDR6=00000000ffff0ff0 DR7=0000000000000400\r\nEFER=0000000000000000\r\nFCW=037f FSW=0000 [ST=0] FTW=00 MXCSR=00001f80\r\nFPR0=0000000000000000 0000 FPR1=0000000000000000 0000\r\nFPR2=0000000000000000 0000 FPR3=0000000000000000 0000\r\nFPR4=0000000000000000 0000 FPR5=0000000000000000 0000\r\nFPR6=0000000000000000 0000 FPR7=0000000000000000 0000\r\nXMM00=0000000000000000 0000000000000000 XMM01=0000000000000000 0000000000000000\r\nXMM02=0000000000000000 0000000000000000 XMM03=0000000000000000 0000000000000000\r\nXMM04=0000000000000000 0000000000000000 XMM05=0000000000000000 0000000000000000\r\nXMM06=0000000000000000 0000000000000000 XMM07=0000000000000000 0000000000000000\r\n",
+            "seconds": 0.665508546,
+            "status": {
+              "running": false,
+              "status": "paused"
+            },
+            "system_seconds": 0.0,
+            "user_seconds": 0.66,
+            "label": "final",
+            "repeat": 4,
+            "command": [
+              "crucible-production-performance",
+              "qemu-system-x86_64",
+              "plugin.so",
+              "io-bios.bin",
+              "50000000",
+              "io-4-final",
+              "96"
+            ]
+          },
+          {
+            "bios": "io-bios.bin",
+            "cpu": 96,
+            "logical_tick": 2500000000,
+            "plugin": "plugin.so",
+            "qemu": "qemu-system-x86_64",
+            "ram_prefix_hex": "60ac5cb50f5e5f00",
+            "ram_sha256": "b1086f019a0162d4895c2c6a869fec6fdfc3e44b924611dd82ba929aa9e9ca4f",
+            "raw_icount": 50000000,
+            "registers": "\r\nCPU#0\r\nEAX=0bbb6f12 EBX=00000000 ECX=005f5e0f EDX=00060fb1\r\nESI=00000000 EDI=00000000 EBP=00000000 ESP=00000000\r\nEIP=00000018 EFL=00000006 [-----P-] CPL=0 II=0 A20=1 SMM=0 HLT=0\r\nES =0000 00000000 0000ffff 00009300\r\nCS =f000 000f0000 0000ffff 00009b00\r\nSS =0000 00000000 0000ffff 00009300\r\nDS =0000 00000000 0000ffff 00009300\r\nFS =0000 00000000 0000ffff 00009300\r\nGS =0000 00000000 0000ffff 00009300\r\nLDT=0000 00000000 0000ffff 00008200\r\nTR =0000 00000000 0000ffff 00008b00\r\nGDT=     00000000 0000ffff\r\nIDT=     00000000 0000ffff\r\nCR0=60000010 CR2=00000000 CR3=00000000 CR4=00000000\r\nDR0=0000000000000000 DR1=0000000000000000 DR2=0000000000000000 DR3=0000000000000000 \r\nDR6=00000000ffff0ff0 DR7=0000000000000400\r\nEFER=0000000000000000\r\nFCW=037f FSW=0000 [ST=0] FTW=00 MXCSR=00001f80\r\nFPR0=0000000000000000 0000 FPR1=0000000000000000 0000\r\nFPR2=0000000000000000 0000 FPR3=0000000000000000 0000\r\nFPR4=0000000000000000 0000 FPR5=0000000000000000 0000\r\nFPR6=0000000000000000 0000 FPR7=0000000000000000 0000\r\nXMM00=0000000000000000 0000000000000000 XMM01=0000000000000000 0000000000000000\r\nXMM02=0000000000000000 0000000000000000 XMM03=0000000000000000 0000000000000000\r\nXMM04=0000000000000000 0000000000000000 XMM05=0000000000000000 0000000000000000\r\nXMM06=0000000000000000 0000000000000000 XMM07=0000000000000000 0000000000000000\r\n",
+            "seconds": 0.668383959,
+            "status": {
+              "running": false,
+              "status": "paused"
+            },
+            "system_seconds": 0.0,
+            "user_seconds": 0.66,
+            "label": "final",
+            "repeat": 5,
+            "command": [
+              "crucible-production-performance",
+              "qemu-system-x86_64",
+              "plugin.so",
+              "io-bios.bin",
+              "50000000",
+              "io-5-final",
+              "96"
+            ]
+          },
+          {
+            "bios": "io-bios.bin",
+            "cpu": 96,
+            "logical_tick": 2500000000,
+            "plugin": "plugin.so",
+            "qemu": "qemu-system-x86_64",
+            "ram_prefix_hex": "60ac5cb50f5e5f00",
+            "ram_sha256": "b1086f019a0162d4895c2c6a869fec6fdfc3e44b924611dd82ba929aa9e9ca4f",
+            "raw_icount": 50000000,
+            "registers": "\r\nCPU#0\r\nEAX=0bbb6f12 EBX=00000000 ECX=005f5e0f EDX=00060fb1\r\nESI=00000000 EDI=00000000 EBP=00000000 ESP=00000000\r\nEIP=00000018 EFL=00000006 [-----P-] CPL=0 II=0 A20=1 SMM=0 HLT=0\r\nES =0000 00000000 0000ffff 00009300\r\nCS =f000 000f0000 0000ffff 00009b00\r\nSS =0000 00000000 0000ffff 00009300\r\nDS =0000 00000000 0000ffff 00009300\r\nFS =0000 00000000 0000ffff 00009300\r\nGS =0000 00000000 0000ffff 00009300\r\nLDT=0000 00000000 0000ffff 00008200\r\nTR =0000 00000000 0000ffff 00008b00\r\nGDT=     00000000 0000ffff\r\nIDT=     00000000 0000ffff\r\nCR0=60000010 CR2=00000000 CR3=00000000 CR4=00000000\r\nDR0=0000000000000000 DR1=0000000000000000 DR2=0000000000000000 DR3=0000000000000000 \r\nDR6=00000000ffff0ff0 DR7=0000000000000400\r\nEFER=0000000000000000\r\nFCW=037f FSW=0000 [ST=0] FTW=00 MXCSR=00001f80\r\nFPR0=0000000000000000 0000 FPR1=0000000000000000 0000\r\nFPR2=0000000000000000 0000 FPR3=0000000000000000 0000\r\nFPR4=0000000000000000 0000 FPR5=0000000000000000 0000\r\nFPR6=0000000000000000 0000 FPR7=0000000000000000 0000\r\nXMM00=0000000000000000 0000000000000000 XMM01=0000000000000000 0000000000000000\r\nXMM02=0000000000000000 0000000000000000 XMM03=0000000000000000 0000000000000000\r\nXMM04=0000000000000000 0000000000000000 XMM05=0000000000000000 0000000000000000\r\nXMM06=0000000000000000 0000000000000000 XMM07=0000000000000000 0000000000000000\r\n",
+            "seconds": 1.347140108,
+            "status": {
+              "running": false,
+              "status": "paused"
+            },
+            "system_seconds": 0.44,
+            "user_seconds": 0.91,
+            "label": "baseline",
+            "repeat": 5,
+            "command": [
+              "crucible-production-performance",
+              "qemu-system-x86_64",
+              "plugin.so",
+              "io-bios.bin",
+              "50000000",
+              "io-5-baseline",
+              "96"
+            ]
+          },
+          {
+            "bios": "io-bios.bin",
+            "cpu": 96,
+            "logical_tick": 2500000000,
+            "plugin": "plugin.so",
+            "qemu": "qemu-system-x86_64",
+            "ram_prefix_hex": "60ac5cb50f5e5f00",
+            "ram_sha256": "b1086f019a0162d4895c2c6a869fec6fdfc3e44b924611dd82ba929aa9e9ca4f",
+            "raw_icount": 50000000,
+            "registers": "\r\nCPU#0\r\nEAX=0bbb6f12 EBX=00000000 ECX=005f5e0f EDX=00060fb1\r\nESI=00000000 EDI=00000000 EBP=00000000 ESP=00000000\r\nEIP=00000018 EFL=00000006 [-----P-] CPL=0 II=0 A20=1 SMM=0 HLT=0\r\nES =0000 00000000 0000ffff 00009300\r\nCS =f000 000f0000 0000ffff 00009b00\r\nSS =0000 00000000 0000ffff 00009300\r\nDS =0000 00000000 0000ffff 00009300\r\nFS =0000 00000000 0000ffff 00009300\r\nGS =0000 00000000 0000ffff 00009300\r\nLDT=0000 00000000 0000ffff 00008200\r\nTR =0000 00000000 0000ffff 00008b00\r\nGDT=     00000000 0000ffff\r\nIDT=     00000000 0000ffff\r\nCR0=60000010 CR2=00000000 CR3=00000000 CR4=00000000\r\nDR0=0000000000000000 DR1=0000000000000000 DR2=0000000000000000 DR3=0000000000000000 \r\nDR6=00000000ffff0ff0 DR7=0000000000000400\r\nEFER=0000000000000000\r\nFCW=037f FSW=0000 [ST=0] FTW=00 MXCSR=00001f80\r\nFPR0=0000000000000000 0000 FPR1=0000000000000000 0000\r\nFPR2=0000000000000000 0000 FPR3=0000000000000000 0000\r\nFPR4=0000000000000000 0000 FPR5=0000000000000000 0000\r\nFPR6=0000000000000000 0000 FPR7=0000000000000000 0000\r\nXMM00=0000000000000000 0000000000000000 XMM01=0000000000000000 0000000000000000\r\nXMM02=0000000000000000 0000000000000000 XMM03=0000000000000000 0000000000000000\r\nXMM04=0000000000000000 0000000000000000 XMM05=0000000000000000 0000000000000000\r\nXMM06=0000000000000000 0000000000000000 XMM07=0000000000000000 0000000000000000\r\n",
+            "seconds": 1.515281069,
+            "status": {
+              "running": false,
+              "status": "paused"
+            },
+            "system_seconds": 0.44,
+            "user_seconds": 1.07,
+            "label": "baseline",
+            "repeat": 6,
+            "command": [
+              "crucible-production-performance",
+              "qemu-system-x86_64",
+              "plugin.so",
+              "io-bios.bin",
+              "50000000",
+              "io-6-baseline",
+              "96"
+            ]
+          },
+          {
+            "bios": "io-bios.bin",
+            "cpu": 96,
+            "logical_tick": 2500000000,
+            "plugin": "plugin.so",
+            "qemu": "qemu-system-x86_64",
+            "ram_prefix_hex": "60ac5cb50f5e5f00",
+            "ram_sha256": "b1086f019a0162d4895c2c6a869fec6fdfc3e44b924611dd82ba929aa9e9ca4f",
+            "raw_icount": 50000000,
+            "registers": "\r\nCPU#0\r\nEAX=0bbb6f12 EBX=00000000 ECX=005f5e0f EDX=00060fb1\r\nESI=00000000 EDI=00000000 EBP=00000000 ESP=00000000\r\nEIP=00000018 EFL=00000006 [-----P-] CPL=0 II=0 A20=1 SMM=0 HLT=0\r\nES =0000 00000000 0000ffff 00009300\r\nCS =f000 000f0000 0000ffff 00009b00\r\nSS =0000 00000000 0000ffff 00009300\r\nDS =0000 00000000 0000ffff 00009300\r\nFS =0000 00000000 0000ffff 00009300\r\nGS =0000 00000000 0000ffff 00009300\r\nLDT=0000 00000000 0000ffff 00008200\r\nTR =0000 00000000 0000ffff 00008b00\r\nGDT=     00000000 0000ffff\r\nIDT=     00000000 0000ffff\r\nCR0=60000010 CR2=00000000 CR3=00000000 CR4=00000000\r\nDR0=0000000000000000 DR1=0000000000000000 DR2=0000000000000000 DR3=0000000000000000 \r\nDR6=00000000ffff0ff0 DR7=0000000000000400\r\nEFER=0000000000000000\r\nFCW=037f FSW=0000 [ST=0] FTW=00 MXCSR=00001f80\r\nFPR0=0000000000000000 0000 FPR1=0000000000000000 0000\r\nFPR2=0000000000000000 0000 FPR3=0000000000000000 0000\r\nFPR4=0000000000000000 0000 FPR5=0000000000000000 0000\r\nFPR6=0000000000000000 0000 FPR7=0000000000000000 0000\r\nXMM00=0000000000000000 0000000000000000 XMM01=0000000000000000 0000000000000000\r\nXMM02=0000000000000000 0000000000000000 XMM03=0000000000000000 0000000000000000\r\nXMM04=0000000000000000 0000000000000000 XMM05=0000000000000000 0000000000000000\r\nXMM06=0000000000000000 0000000000000000 XMM07=0000000000000000 0000000000000000\r\n",
+            "seconds": 0.688105519,
+            "status": {
+              "running": false,
+              "status": "paused"
+            },
+            "system_seconds": 0.0,
+            "user_seconds": 0.69,
+            "label": "final",
+            "repeat": 6,
+            "command": [
+              "crucible-production-performance",
+              "qemu-system-x86_64",
+              "plugin.so",
+              "io-bios.bin",
+              "50000000",
+              "io-6-final",
+              "96"
+            ]
+          }
+        ],
+        "mean_seconds": {
+          "baseline": 1.346284141,
+          "final": 0.6670778638571428
+        },
+        "time_reduction_percent": 50.45044032371597,
+        "speedup": 2.0181814057141487,
+        "witness": {
+          "raw_icount": 50000000,
+          "logical_tick": 2500000000,
+          "registers": "\r\nCPU#0\r\nEAX=0bbb6f12 EBX=00000000 ECX=005f5e0f EDX=00060fb1\r\nESI=00000000 EDI=00000000 EBP=00000000 ESP=00000000\r\nEIP=00000018 EFL=00000006 [-----P-] CPL=0 II=0 A20=1 SMM=0 HLT=0\r\nES =0000 00000000 0000ffff 00009300\r\nCS =f000 000f0000 0000ffff 00009b00\r\nSS =0000 00000000 0000ffff 00009300\r\nDS =0000 00000000 0000ffff 00009300\r\nFS =0000 00000000 0000ffff 00009300\r\nGS =0000 00000000 0000ffff 00009300\r\nLDT=0000 00000000 0000ffff 00008200\r\nTR =0000 00000000 0000ffff 00008b00\r\nGDT=     00000000 0000ffff\r\nIDT=     00000000 0000ffff\r\nCR0=60000010 CR2=00000000 CR3=00000000 CR4=00000000\r\nDR0=0000000000000000 DR1=0000000000000000 DR2=0000000000000000 DR3=0000000000000000 \r\nDR6=00000000ffff0ff0 DR7=0000000000000400\r\nEFER=0000000000000000\r\nFCW=037f FSW=0000 [ST=0] FTW=00 MXCSR=00001f80\r\nFPR0=0000000000000000 0000 FPR1=0000000000000000 0000\r\nFPR2=0000000000000000 0000 FPR3=0000000000000000 0000\r\nFPR4=0000000000000000 0000 FPR5=0000000000000000 0000\r\nFPR6=0000000000000000 0000 FPR7=0000000000000000 0000\r\nXMM00=0000000000000000 0000000000000000 XMM01=0000000000000000 0000000000000000\r\nXMM02=0000000000000000 0000000000000000 XMM03=0000000000000000 0000000000000000\r\nXMM04=0000000000000000 0000000000000000 XMM05=0000000000000000 0000000000000000\r\nXMM06=0000000000000000 0000000000000000 XMM07=0000000000000000 0000000000000000\r\n",
+          "ram_sha256": "b1086f019a0162d4895c2c6a869fec6fdfc3e44b924611dd82ba929aa9e9ca4f",
+          "ram_prefix_hex": "60ac5cb50f5e5f00",
+          "status": {
+            "running": false,
+            "status": "paused"
+          }
+        },
+        "independent_arithmetic_oracle": true,
+        "loop_instructions": 8,
+        "witnesses_match_across_all_samples": true
+      }
+    },
+    "compiler": {
+      "rustc": "rustc 1.98.1 (48a229cea 2026-09-01) (built from a source tarball)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: x86_64-unknown-linux-gnu\nrelease: 1.98.1\nLLVM version: 22.1.0\n",
+      "flags": {
+        "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS": "-C link-arg=-Wl,-rpath,openssl-4.0.2/lib -C link-arg=-Wl,-rpath,sqlite-3.53.4/lib"
+      },
+      "dev_shell": "aos-dev-env.drv",
+      "profile": "release",
+      "default_opt_level": 3,
+      "cpu_target": "No explicit target-cpu",
+      "debug": 0,
+      "lto": "No explicit LTO setting"
+    },
+    "baseline_revision": "6df2fe66e61e932ed9f44350084da4939b620800",
+    "final_plugin_source_revision": "e71fd653fceb4934d2f9c22d628e99ad4b4d6ff8",
+    "final_qemu_source_revision": "d78e94e8b5ffd5e7f5572314a9c8da69feef8673",
+    "final_plugin_sources_unchanged_through_driver_commit": "bdc50dd25f638cbec6ebdb41f4484e0b882da6df",
+    "timing_method": {
+      "start": "Immediately before QMP cont after public Hello/SCM_RIGHTS handshake, setup acknowledgement, mapping allocation, and grant publication",
+      "end": "Public node slot publishes the granted logical tick",
+      "excluded": [
+        "process startup",
+        "protocol setup",
+        "QMP setup",
+        "QMP stop",
+        "register and RAM capture"
+      ],
+      "wall_clock": "Rust std::time::Instant",
+      "cpu_accounting": "Process user/system accounting from proc stat around the measured interval",
+      "poll_interval_microseconds": 100,
+      "order": "baseline/final on even repetitions; final/baseline on odd repetitions",
+      "summary_statistic": "arithmetic mean of seven measurements",
+      "scope": "One busy, single-vCPU public shared-memory grant; cold execution; observations disabled"
+    },
+    "configuration": {
+      "machine": "pc",
+      "memory": "64M",
+      "vcpus": 1,
+      "accelerator": "sim,thread=single",
+      "icount": "shift=0,align=off,sleep=off,rr_switch_quantum=4096",
+      "cpu": "qemu64,-rdrand,-rdseed",
+      "rtc": "base=2026-01-01T00:00:00,clock=vm",
+      "seed": "0x0010c004",
+      "startup": "paused (-S)",
+      "plugin": "Matched real production plugin for each QEMU build identity",
+      "order": "baseline/final on even repetitions; final/baseline on odd repetitions",
+      "observations": {
+        "coverage": false,
+        "fingerprint": false,
+        "whitebox": false
+      }
+    },
+    "reproduction": {
+      "driver_builder": "tests/crucible/tcg-production-performance-driver.nix",
+      "driver_source": "tests/crucible/tcg-production-performance.rs",
+      "runner": "tests/crucible/tcg-production-performance.py",
+      "fixture_builder": "tests/crucible/tcg-performance-fixtures.nix",
+      "driver_command": "bash tools/dev/aos-dev --release build check crucible.phase2.tcgProductionPerformanceDriver --no-out-link --option builders ''",
+      "shell": "Run archive, copy, and cargo commands in the source-built AOS dev shell: nix develop --accept-flake-config --option builders ''",
+      "baseline_archive": "mkdir -p \"$PERF_WORKDIR/baseline-source\"; git archive 6df2fe66e61e932ed9f44350084da4939b620800 crates | tar -x -C \"$PERF_WORKDIR/baseline-source\"",
+      "identity_file": "$MATCHING_QEMU/share/aos/crucible/qemu-build-identity.env",
+      "identity_environment": {
+        "CRUCIBLE_QEMU_BUILD_ID": "qemu_build_id",
+        "CRUCIBLE_QEMU_ATOMIC_PATCH_HASH": "qemu_atomic_patch_hash",
+        "CRUCIBLE_SHMEM_HEADER_HASH": "qemu_shmem_header_hash"
+      },
+      "baseline_plugin_command": "cargo build --release -p crucible-qemu-plugin --offline --manifest-path \"$PERF_WORKDIR/baseline-source/crates/Cargo.toml\"",
+      "baseline_plugin_retention": "Copy libcrucible_qemu_plugin.so to a separate baseline artifact before reusing the target directory",
+      "final_plugin_command": "CARGO_TARGET_DIR=\"$PERF_WORKDIR/baseline-source/crates/target\" cargo build --release -p crucible-qemu-plugin --offline --manifest-path crates/Cargo.toml",
+      "paired_build_requirement": "Read the identity fields from the matching baseline or final QEMU for each plugin build; use identical dev-shell flags, compiler and release profile",
+      "runner_arguments": "--driver $DRIVER --qemu baseline=$BASELINE_QEMU --plugin baseline=$BASELINE_PLUGIN --qemu final=$FINAL_QEMU --plugin final=$FINAL_PLUGIN --fixtures $FIXTURES --output $PERF_WORKDIR/production --repetitions 7 --cpu 96 --host-cpu 97 --ram-horizon 500000000 --io-horizon 50000000"
+    }
+  },
+  "callback_admission_microbenchmark": {
+    "baseline_revision": "6df2fe66e61e932ed9f44350084da4939b620800",
+    "baseline_source_sha256": "92de9221e3eedac340b1adf07293d9a91107072e7179ecfda16d625763b00ece",
+    "optimized_commit": "d026f865847549c5f17b5e39368deaec45bfd5b7",
+    "compiler": "rustc 1.98.1 from the AOS development shell",
+    "compiler_flags": "--edition 2021 -O --emit asm,link",
+    "workload": "10000000 sequential callback admissions and RAII exits; no guest execution",
+    "order": "baseline optimized repeated five times",
+    "baseline_nanoseconds": [
+      206095185,
+      206727357,
+      206342490,
+      207014691,
+      206615154
+    ],
+    "optimized_nanoseconds": [
+      104601525,
+      104629607,
+      104355161,
+      104357081,
+      105276648
+    ],
+    "baseline_mean_nanoseconds": 206558975.4,
+    "optimized_mean_nanoseconds": 104644004.4,
+    "hot_path_locked_operations_before": 4,
+    "hot_path_locked_operations_after": 2,
+    "remaining_operations": "SeqCst gate compare_exchange and fetch_sub",
+    "removed_operations": "Arc reference-count increment and decrement",
+    "artifact_directory": "crucible-quiescence-profile",
+    "unit_tests": {
+      "passed": 561,
+      "failed": 0
+    },
+    "scope": "isolated guard throughput; does not establish end-to-end VM throughput",
+    "original_recorded_commit_before_rebase": "53a2ea23f7993f9d9b7eae488764ea06f22941ce",
+    "rebased_sources_verified_identical": [
+      "crates/crucible-qemu-plugin/src/runtime/callback_quiescence.rs",
+      "crates/crucible-qemu-plugin/src/runtime/live_callbacks.rs",
+      "crates/crucible-qemu-plugin/src/coverage/live.rs"
+    ],
+    "optimized_source_sha256": "8795b09cf023f4378897f6dafefc9496753d2b681bf092b01679633c3415f5ca",
+    "affinity": "Not explicitly pinned",
+    "mean_time_reduction_percent": 49.339405756947805,
+    "timing_method": "Rust std::time::Instant elapsed nanoseconds around the loop; Arc/state setup outside the timed interval",
+    "reproduction": {
+      "source_module": "crates/crucible-qemu-plugin/src/runtime/callback_quiescence.rs",
+      "harness_source": "#[cfg(baseline)]\n#[path = \"baseline.rs\"]\nmod callback_quiescence;\n\n#[cfg(optimized)]\n#[path = \"optimized.rs\"]\nmod callback_quiescence;\n\nuse callback_quiescence::LiveCallbackQuiescence;\nuse std::hint::black_box;\nuse std::sync::Arc;\nuse std::time::Instant;\n\n#[inline(never)]\nfn callback(quiescence: &Arc<LiveCallbackQuiescence>) {\n    if let Some(guard) = black_box(quiescence).enter() {\n        black_box(&guard);\n    }\n}\n\nfn main() {\n    let quiescence = Arc::new(LiveCallbackQuiescence::new());\n    let started = Instant::now();\n\n    for _ in 0..10_000_000 {\n        callback(&quiescence);\n    }\n\n    println!(\"nanoseconds={}\", started.elapsed().as_nanos());\n    black_box(quiescence);\n}\n",
+      "source_extraction": "Write baseline.rs from git show 6df2fe66e61e932ed9f44350084da4939b620800:crates/crucible-qemu-plugin/src/runtime/callback_quiescence.rs; write optimized.rs from git show d026f865847549c5f17b5e39368deaec45bfd5b7:crates/crucible-qemu-plugin/src/runtime/callback_quiescence.rs",
+      "compile": "nix develop --accept-flake-config --option builders '' -c rustc --edition 2021 -O --emit asm,link --cfg baseline harness.rs -o baseline; repeat with --cfg optimized -o optimized",
+      "run": "Run the baseline and optimized binaries directly in five alternating pairs; retain every printed nanoseconds value"
+    }
+  },
+  "empty_preemption_microbenchmark": {
+    "baseline_nanoseconds": [
+      232124127,
+      225858030,
+      228866387,
+      226078204,
+      241577022
+    ],
+    "optimized_nanoseconds": [
+      210044607,
+      197335952,
+      200982259,
+      204582136,
+      203106689
+    ],
+    "baseline_mean_nanoseconds": 230900754,
+    "optimized_mean_nanoseconds": 203210328.6,
+    "reduction_percent": 11.992349492284472,
+    "unit_tests_passed": 564,
+    "integration_tests_passed": 4,
+    "measurement": "5000000 actual max_advance_icount calls with same opt-level=s fixture; revalidation under guard enabled; empty path remains fast",
+    "baseline_revision": "6df2fe66e61e932ed9f44350084da4939b620800",
+    "baseline_module_revision": "d026f865847549c5f17b5e39368deaec45bfd5b7",
+    "baseline_module_identical_to_origin_master": true,
+    "optimized_revision": "fd219eae1f05fc3d6424be44cde7c41bdbc2c931",
+    "optimization_commit": "f4f164de580b511de11bd175bea46d4150b33309",
+    "admission_revalidation_commit": "fd219eae1f05fc3d6424be44cde7c41bdbc2c931",
+    "baseline_module_sha256": "4c02519805e30d812c5296a8ebdd96f513f5be016d268446eb5ee37b3ccf7ed1",
+    "optimized_module_sha256": "681bbf806738b2d85ce49001fae43630e3a532715061ea3fbf6fdbdc56cab8f4",
+    "compiler": "Source-built AOS rustc 1.98.1; LLVM 22.1.0; test profile opt-level=s; debug=0",
+    "affinity": "Not explicitly pinned",
+    "order": "Five consecutive alternating baseline/optimized pairs",
+    "scope": "Isolated real max_advance_icount callback with test clock/fault adapters and no guest execution; same other production source in both variants",
+    "timing_method": "Rust std::time::Instant elapsed nanoseconds around five million calls; state setup outside the timed interval",
+    "configuration": {
+      "logical_tick_grant": 5000,
+      "test_icount_raw": 0,
+      "state": "test_live_state(1, 1, 0, &slot)",
+      "black_box": "black_box(black_box(&state).max_advance_icount()).unwrap()"
+    },
+    "reproduction": {
+      "common_fixture_revision": "fd219eae1f05fc3d6424be44cde7c41bdbc2c931",
+      "production_module": "crates/crucible-qemu-plugin/src/runtime/live_callbacks/preemption.rs",
+      "test_module": "crates/crucible-qemu-plugin/src/runtime/live_callbacks/tests/preemption.rs",
+      "benchmark_test_source": "#[test]\n#[ignore = \"local dispatch throughput measurement\"]\nfn measure_empty_preemption_dispatch() {\n    use std::hint::black_box;\n    use std::time::Instant;\n\n    super::TEST_ICOUNT_RAW.set(0);\n    let slot = NodeSlot::new(KIND_VM);\n    let ceiling = authorize_advance_ceiling(0, 5000, None).unwrap();\n    slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)\n        .unwrap();\n    let state = super::test_live_state(1, 1, 0, &slot).unwrap();\n    let started = Instant::now();\n\n    for _ in 0..5_000_000 {\n        black_box(black_box(&state).max_advance_icount()).unwrap();\n    }\n\n    println!(\"dispatches=5000000 nanoseconds={}\", started.elapsed().as_nanos());\n}",
+      "steps": [
+        "Archive crates at common_fixture_revision into PERF_WORKDIR; use the same cached AOS dev shell for both variants",
+        "Replace the test module with the d026f86584 version for both variants, then append benchmark_test_source",
+        "Use the d026f86584 production preemption module for baseline and fd219eae1f for optimized; keep all other files identical",
+        "Compile each variant with the same test-profile settings and retain a separate copy of each unit-test binary",
+        "Execute those binaries directly with the ignored-test filter in five alternating pairs; retain all printed nanoseconds values"
+      ],
+      "compile": "cargo test --manifest-path \"$PERF_WORKDIR/fixture/crates/Cargo.toml\" -p crucible-qemu-plugin --lib measure_empty_preemption_dispatch -- --ignored --nocapture --test-threads=1",
+      "direct_binary_arguments": "measure_empty_preemption_dispatch --ignored --nocapture --test-threads=1",
+      "rpath_flags": "Same AOS dev-shell target RPATH settings recorded in production_plugin_comparison.compiler.flags"
+    }
+  },
+  "verification": {
+    "plugin_unit_tests": {
+      "status": "PASS",
+      "passed": 564
+    },
+    "plugin_integration_tests": {
+      "status": "PASS",
+      "passed": 4
+    },
+    "rust_aos_test_targets": {
+      "status": "PASS",
+      "check": "checks.rust.aos-test-targets"
+    },
+    "qemu_production_body_proofs": {
+      "status": "PASS"
+    },
+    "qemu_causal_negative_controls": {
+      "status": "PASS",
+      "rejected_expected_negatives": 6
+    },
+    "patch_regeneration": {
+      "status": "PASS",
+      "inventory_ledger_rows": 128
+    },
+    "sim_accel": {
+      "status": "PASS",
+      "check": "checks.crucible.phase1.simAccel"
+    },
+    "exact_preemption_live": {
+      "status": "PASS",
+      "check": "checks.crucible.phase2.qemuExactPreemptionLive"
+    },
+    "pause_ipi_live": {
+      "status": "PASS",
+      "check": "checks.crucible.phase2.qemuPauseIpiLive"
+    },
+    "tcg_performance_determinism": {
+      "status": "PASS",
+      "check": "checks.crucible.phase2.tcgPerformanceDeterminism"
+    },
+    "register_mutation": {
+      "status": "PASS",
+      "cases": 67
+    },
+    "three_way_vm_witnesses": {
+      "status": "PASS",
+      "samples": 84
+    },
+    "production_vm_witnesses": {
+      "status": "PASS",
+      "samples": 28
+    },
+    "final_abi_conformance": {
+      "status": "PASS",
+      "check": "checks.crucible.phase2.abiConformance",
+      "artifact_basename": "470w1fzaafdrjs13r6fnflrw9zqvmqv0-crucible-phase2-abi-conformance-0"
+    },
+    "final_license_boundary": {
+      "status": "PASS",
+      "gate": "gate:license-boundary",
+      "boundary_tests_passed": 18,
+      "tasks": [
+        "BOUND-1",
+        "BOUND-2",
+        "BOUND-3",
+        "BOUND-4",
+        "BOUND-5",
+        "BOUND-6",
+        "BOUND-7",
+        "BOUND-8",
+        "BOUND-9",
+        "BOUND-10",
+        "BOUND-11",
+        "BOUND-12"
+      ],
+      "output": "fpdmzmffifnyqgmrcmhm52wjmyl3wv7n-crucible-phase1-license-boundary-0",
+      "result": "PASS\ncheck=checks.crucible.phase1.gates.licenseBoundary\ngate=gate:license-boundary\ntasks=BOUND-1,BOUND-2,BOUND-3,BOUND-4,BOUND-5,BOUND-6,BOUND-7,BOUND-8,BOUND-9,BOUND-10,BOUND-11,BOUND-12\nrust_test=crucible-harness::gate_license_boundary\ncontroller_package=crucible-controller\ncontroller_license=Apache-2.0\nqemu_corresponding_source_package=qemu-crucible-source\nqemu_corresponding_source_build_id=ae82f1ef3ab33c03282c10370fcf0f241378082d4f21dd28b15f7c13667754a8\ncorresponding_source_reconstruction=atomic-patch-applied,archived-plugin-offline-checked\n",
+      "result_sha256": "95915973052c4747f97ec58f3c3c2d856838e2b26e83b1a9b4086e107c11f92f",
+      "log": "crucible-tcg-speed-license-controlled.log",
+      "log_sha256": "8589ae4821215e8bf440ef68fa2796103282d9510d31dcf6e86ba5d7dd10600f",
+      "matching_complete_corresponding_source": true,
+      "qemu_corresponding_source_build_id": "ae82f1ef3ab33c03282c10370fcf0f241378082d4f21dd28b15f7c13667754a8"
+    },
+    "exact_snapshot_restore": {
+      "status": "PASS",
+      "check": "checks.crucible.phase2.qemuExactSnapshotRestore"
+    },
+    "exact_restore_reachability": {
+      "status": "PASS",
+      "check": "checks.crucible.phase2.qemuExactRestoreReachability"
+    },
+    "fwcfg_service_deadline": {
+      "status": "PASS",
+      "check": "checks.crucible.phase2.qemuFwCfgServiceDeadline"
+    },
+    "instruction_faults": {
+      "status": "PASS",
+      "cases": 72,
+      "terminal_replay_events": 4095
+    },
+    "canonical_s11": {
+      "status": "PASS",
+      "check": "checks.crucible.phase0.s11MultiVcpuFingerprint",
+      "origin_master_head_to_head": true,
+      "vcpus": 4,
+      "raw_horizon": 8000000000,
+      "samples_per_run": 81,
+      "rr_handoffs_per_run": 4901861
+    },
+    "engineering_hygiene": {
+      "status": "PASS",
+      "tests": 4,
+      "review_metadata_commit": "c56771fb17",
+      "thresholds_and_responsibilities_unchanged": true
+    },
+    "eval_instantiation": {
+      "status": "PASS",
+      "check": "checks.eval-standalone",
+      "rendered_system_build": "Not run: it builds unrelated complete systems"
+    },
+    "native_atomic_world": {
+      "status": "FAIL_PREEXISTING",
+      "formal_check": "checks.crucible.phase7.qemuHotForkAtomicWorldVm",
+      "matching_original_pair_reproduced": true,
+      "failure_before_any_fork": true,
+      "error": "block transport event source 0 does not match reserved block source 30",
+      "final_case": "qemuHotForkAtomicWorldVm.cores4",
+      "baseline_case": "qemuHotForkAtomicWorldVm.original-pair",
+      "scope": "Only the first source-world case runs; failure prevents the remaining cases and any world-fork equivalence or adoption assertion from executing."
+    },
+    "native_equivalence": {
+      "status": "FAIL_PREEXISTING",
+      "formal_check": "checks.crucible.phase7.qemuHotForkEquivalenceVm",
+      "matching_original_pair_reproduced": true,
+      "failure_before_any_fork": true,
+      "error": "block transport event source 0 does not match reserved block source 30",
+      "final_case": "qemuHotForkEquivalenceVm.cores4",
+      "baseline_case": "qemuHotForkEquivalenceVm.original-pair",
+      "scope": "Only the first source-world case runs; failure prevents the remaining cases and any world-fork equivalence or adoption assertion from executing."
+    },
+    "packaged_crucible_nextest": {
+      "status": "PASS",
+      "tests_passed": 5560,
+      "tests_failed": 0,
+      "tests_skipped": 75,
+      "slow_tests": 3,
+      "wall_seconds": 399.528,
+      "test_workers": 4,
+      "nix_build_cores": 4,
+      "qualification_source_revision": "c56771fb17",
+      "controller_derivation": "2338bjp6m7y9b2wmapf8v9rjjiqp92fk-crucible-controller-0.1.0.drv",
+      "controller_output": "x0098i8nqy85gd5i3i77xb7kg2jsm0lq-crucible-controller-0.1.0",
+      "log": "qemuHotForkAtomicWorldVm.cores4.stderr.log",
+      "summary_line": 1399,
+      "prior_run_note": "A higher-concurrency run passed 5558 tests but failed two unchanged scripted child-process shutdown tests. The four-worker run passed both without modifying source, assertions, or timeouts.",
+      "previously_failed_tests": [
+        "qemu_hot_fork_world_factory::tests::reconciliation::lifecycle::two_factories_keep_independent_live_children_from_one_managed_source",
+        "qemu_hot_fork_world_factory::tests::reconciliation::lifecycle::proven_first_child_rejection_restores_the_exact_source_world_for_retry"
+      ],
+      "log_sha256": "f436cafd93d20114a54650038b94a3a7ce719f41816b351f461028d267bb59f6"
+    },
+    "manual_full_memory_access": {
+      "status": "PREEXISTING_FAILURE",
+      "case": "x86_64-base-7",
+      "reproduced_on_original_initial_final": true,
+      "existing_focused_gate": "PASS",
+      "runtime_and_timeouts_unchanged": true
+    },
+    "native_child_private_vmstate": {
+      "status": "PASS",
+      "formal_phase6_derivation": false,
+      "existing_fixture": "tests/crucible/phase6-qemu-hot-fork-child-vm.nix",
+      "shipped_final_qemu_and_plugin": true,
+      "assertions_and_timeout_unchanged": true,
+      "children_forked": 3,
+      "restored_generations": 2,
+      "source_suffix_icount": 9000001,
+      "source_vmstate_unchanged": true,
+      "source_threads_leaked": 0,
+      "source_descriptors_leaked": 0,
+      "scope": "Temporary harness uses shipped stripped binaries and the audited behavior-equivalent cached x86_64 probe; full metadata records both deviations. Whole-world adoption/equivalence is not asserted."
+    }
+  },
+  "s11_head_to_head": {
+    "status": "PASS",
+    "baseline_revision": "6df2fe66e61e932ed9f44350084da4939b620800",
+    "baseline_qemu_sha256": "517d2751e0fa2cc0c8dbeeb36c3bcb21ae6eb96e799a1e57353a9008bad74991",
+    "final_qemu_sha256": "3d71c293c5c509e125e5f197d6e4f8c8cbc6ee80e384f5a0bd47bd309b1ec93b",
+    "trace_observer_source_sha256": "d53fb536fe1de98d25746739b22059f456c90f596d9f244acc8b993b0c282dc4",
+    "trace_observer_binary_sha256": "31c8dda358480d8fbce58eaa9b43a8bdd622266d1001dafd3c03964a21b0391d",
+    "trace_observer_source_and_binary_equal": true,
+    "coordinates": {
+      "vcpus": "4",
+      "horizon_icount": "8000000000",
+      "require_guest_pass": "1",
+      "sustained_workload_active": "true",
+      "workload_affinity_active": "true",
+      "rr_switch_quantum": "4096",
+      "cadence": "100000000",
+      "host_adversary": "bounded-scheduler-preemption",
+      "exact_horizon_authoritative": "true"
+    },
+    "guest_inputs_equal": [
+      "kernel_digest",
+      "initramfs_digest",
+      "reset_digest",
+      "mp_table_digest",
+      "setup_digest",
+      "kernel_image_digest",
+      "cmdline_digest",
+      "seed_digest"
+    ],
+    "excluded_build_attestation_fields": [
+      "qemu_build_digest",
+      "trace_plugin_build_digest",
+      "launch_definition_digest",
+      "process_argv_digest"
+    ],
+    "traces": {
+      "trace-authoritative-a.jsonl": {
+        "records": 4901941,
+        "normalized_samples": 80
+      },
+      "trace-a.jsonl": {
+        "records": 4901942,
+        "normalized_samples": 81
+      },
+      "rr-switch-trace-a.tsv": {
+        "records": 4901861,
+        "normalized_samples": 0
+      },
+      "per-vcpu-delta-trace-a.tsv": {
+        "records": 4901861,
+        "normalized_samples": 0
+      },
+      "trace-authoritative-b.jsonl": {
+        "records": 4901941,
+        "normalized_samples": 80
+      },
+      "trace-b.jsonl": {
+        "records": 4901942,
+        "normalized_samples": 81
+      },
+      "rr-switch-trace-b.tsv": {
+        "records": 4901861,
+        "normalized_samples": 0
+      },
+      "per-vcpu-delta-trace-b.tsv": {
+        "records": 4901861,
+        "normalized_samples": 0
+      }
+    },
+    "horizon": {
+      "horizon_stream_hash": "b8c60788c3d52f06",
+      "horizon_register_hash": "1a515d5eb308de68838adf1ea59d2542a7f12f931da8a4026cd58b4dec7c79a7",
+      "horizon_ram_hash": "74fc0524cd41ad1b40a0666d28b75c08e19f6b82e9b012f821048c647567b78d",
+      "horizon_rr_cursor": "[2,303,4096]",
+      "final_aggregate_hash": "df45b61270ab011e",
+      "final_per_vcpu_retired": "[2598639481,1786780193,1791382423,1819998313]",
+      "rr_switch_events": "4901861",
+      "samples": "81"
+    },
+    "final_qemu_integration_revision": "47fed0800537a32bf5a0c786ac91c993981166eb",
+    "all_six_results": {
+      "crucible.phase1.simAccel": "PASS",
+      "crucible.phase2.qemuExactPreemptionLive": "PASS",
+      "crucible.phase2.qemuExactSnapshotRestore": "PASS",
+      "crucible.phase2.qemuPauseIpiLive": "PASS",
+      "crucible.phase2.tcgPerformanceDeterminism": "PASS",
+      "crucible.phase0.s11MultiVcpuFingerprint": "PASS"
+    },
+    "additional_results": {
+      "crucible.phase2.qemuExactRestoreReachability": "PASS",
+      "nix_format_2050_files": "PASS"
+    },
+    "inventory_correction_revision": "2fd99374f5",
+    "gate_wall_seconds": {
+      "baseline": 1272.857,
+      "final": 1214,
+      "reduction_percent": 4.624007252974993,
+      "qualification": "Includes live VMs, full JSON validation and Nix output hashing; final trace-plugin build is included. Qualification builds overlapped. Evidence copying is excluded. Corroborative gate timing, not isolated VM throughput."
+    }
+  },
+  "s11_reproduction": {
+    "language": "python3",
+    "runtime": "AOS-built Python 3; stream comparison only, no new VMs or Nix builds",
+    "source_sha256": "c66bf04742cea1240acd5b7bf8b21c6fbb157961ecb67c138cb2766d8102eb1d",
+    "source": "\"\"\"Compares canonical S11 state across two separately attested QEMU builds.\"\"\"\n\nimport argparse\nimport hashlib\nimport itertools\nimport json\nfrom pathlib import Path\n\n\nATTESTATION_FIELDS = (\n    \"qemu_build_digest\",\n    \"trace_plugin_build_digest\",\n    \"launch_definition_digest\",\n    \"process_argv_digest\",\n)\n\n\n\ndef read_result(path):\n    lines = path.read_text().splitlines()\n    if lines[0] != \"PASS\":\n        raise AssertionError(f\"canonical gate did not pass: {path}\")\n\n    return dict(line.split(\"=\", 1) for line in lines[1:] if \"=\" in line)\n\n\ndef compare_trace(left, right, omit_attestation):\n    records = 0\n    samples = 0\n\n    with left.open() as baseline, right.open() as candidate:\n        for records, (original, final) in enumerate(\n            itertools.zip_longest(baseline, candidate), start=1\n        ):\n            if original is None or final is None:\n                raise AssertionError(f\"{left.name}: record count differs at {records}\")\n\n            if original == final:\n                continue\n\n            if not omit_attestation:\n                raise AssertionError(f\"{left.name}: record {records} differs\")\n\n            original_record = json.loads(original)\n            final_record = json.loads(final)\n            for field in ATTESTATION_FIELDS:\n                original_record.pop(field, None)\n                final_record.pop(field, None)\n\n            if original_record != final_record:\n                fields = sorted(\n                    field\n                    for field in original_record.keys() | final_record.keys()\n                    if original_record.get(field) != final_record.get(field)\n                )\n                coordinate = original_record.get(\"observed_icount\", original_record.get(\"retired\"))\n                raise AssertionError(\n                    f\"{left.name}: record {records}, icount={coordinate}, differs in {fields}\"\n                )\n\n            samples += 1\n\n    return {\"records\": records, \"normalized_samples\": samples}\n\n\ndef main():\n    parser = argparse.ArgumentParser(description=__doc__)\n    parser.add_argument(\"--baseline-result\", type=Path, required=True)\n    parser.add_argument(\"--final-result\", type=Path, required=True)\n    parser.add_argument(\"--baseline-qemu\", type=Path, required=True)\n    parser.add_argument(\"--final-qemu\", type=Path, required=True)\n    parser.add_argument(\"--baseline-observer-source\", type=Path, required=True)\n    parser.add_argument(\"--final-observer-source\", type=Path, required=True)\n    parser.add_argument(\"--baseline-revision\", required=True)\n    parser.add_argument(\"--final-integration-revision\", required=True)\n    parser.add_argument(\"--output\", type=Path, required=True)\n    args = parser.parse_args()\n\n    baseline = args.baseline_result\n    final = args.final_result\n    output = args.output\n    baseline_result = read_result(baseline / \"result\")\n    final_result = read_result(final / \"result\")\n\n    for label, result in ((\"baseline\", baseline_result), (\"final\", final_result)):\n        binary = args.baseline_qemu if label == \"baseline\" else args.final_qemu\n        with binary.open(\"rb\") as executable:\n            digest = hashlib.file_digest(executable, \"sha256\").hexdigest()\n        if result[\"qemu_build_digest\"] != digest:\n            raise AssertionError(f\"{label} gate did not exercise the required QEMU artifact\")\n\n    source_paths = (args.baseline_observer_source, args.final_observer_source)\n    source_digests = [hashlib.sha256(path.read_bytes()).hexdigest() for path in source_paths]\n    if source_digests[0] != source_digests[1]:\n        raise AssertionError(\"baseline and final trace-observer source differs\")\n    if baseline_result[\"trace_plugin_build_digest\"] != final_result[\"trace_plugin_build_digest\"]:\n        raise AssertionError(\"baseline and final realized trace-observer binary differs\")\n\n    required = {\n        \"vcpus\": \"4\",\n        \"horizon_icount\": \"8000000000\",\n        \"require_guest_pass\": \"1\",\n        \"sustained_workload_active\": \"true\",\n        \"workload_affinity_active\": \"true\",\n        \"rr_switch_quantum\": \"4096\",\n        \"cadence\": \"100000000\",\n        \"host_adversary\": \"bounded-scheduler-preemption\",\n        \"exact_horizon_authoritative\": \"true\",\n    }\n\n    for name, expected in required.items():\n        if baseline_result[name] != expected or final_result[name] != expected:\n            raise AssertionError(f\"canonical coordinate differs: {name}\")\n\n    artifact_inputs = (\n        \"kernel_digest\", \"initramfs_digest\", \"reset_digest\", \"mp_table_digest\",\n        \"setup_digest\", \"kernel_image_digest\", \"cmdline_digest\", \"seed_digest\",\n    )\n    for name in artifact_inputs:\n        if baseline_result[name] != final_result[name]:\n            raise AssertionError(f\"guest input differs: {name}\")\n\n    evidence = {\n        \"status\": \"PASS\",\n        \"baseline_revision\": args.baseline_revision,\n        \"final_qemu_integration_revision\": args.final_integration_revision,\n        \"baseline_qemu_sha256\": baseline_result[\"qemu_build_digest\"],\n        \"final_qemu_sha256\": final_result[\"qemu_build_digest\"],\n        \"trace_observer_source_sha256\": source_digests[0],\n        \"trace_observer_binary_sha256\": final_result[\"trace_plugin_build_digest\"],\n        \"trace_observer_source_and_binary_equal\": True,\n        \"coordinates\": required,\n        \"guest_inputs_equal\": list(artifact_inputs),\n        \"excluded_build_attestation_fields\": list(ATTESTATION_FIELDS),\n        \"traces\": {},\n    }\n\n    for label in (\"a\", \"b\"):\n        filenames = (\n            (f\"trace-authoritative-{label}.jsonl\", True),\n            (f\"trace-{label}.jsonl\", True),\n            (f\"rr-switch-trace-{label}.tsv\", False),\n            (f\"per-vcpu-delta-trace-{label}.tsv\", False),\n        )\n\n        for filename, omit_attestation in filenames:\n            evidence[\"traces\"][filename] = compare_trace(\n                baseline / filename, final / filename, omit_attestation\n            )\n\n    evidence[\"horizon\"] = {\n        name: final_result[name]\n        for name in (\n            \"horizon_stream_hash\", \"horizon_register_hash\", \"horizon_ram_hash\",\n            \"horizon_rr_cursor\", \"final_aggregate_hash\", \"final_per_vcpu_retired\",\n            \"rr_switch_events\", \"samples\",\n        )\n    }\n\n    output.write_text(json.dumps(evidence, indent=2) + \"\\n\")\n    print(json.dumps(evidence, indent=2))\n\n\nif __name__ == \"__main__\":\n    main()\n",
+    "invocation": "python3 compare-s11-portable.py --baseline-result \"$baseline_result\" --final-result \"$final_result\" --baseline-qemu \"$baseline_qemu\" --final-qemu \"$final_qemu\" --baseline-observer-source \"$baseline_observer_source\" --final-observer-source \"$final_observer_source\" --baseline-revision \"$baseline_revision\" --final-integration-revision \"$final_integration_revision\" --output s11-head-to-head.json",
+    "verified_status": "PASS",
+    "verified_proof_equal_to_retained_result": true
+  },
+  "memory_fetch_preexisting_failure": {
+    "case": "x86_64-base-7",
+    "operation": "instruction fetch immediate byte transformation",
+    "address": "0x109001",
+    "guest_result_address": "0x103400",
+    "expected_result": "a5",
+    "actual_result": "7f",
+    "timeout_seconds": 120,
+    "same_test_sources_for_all_variants": true,
+    "conclusion": "Preexisting failure reproduced on the baseline and both optimized packages.",
+    "comparisons": {
+      "baseline": {
+        "qemu_package": "h2iphd2bjnm1zpv0wrnija8z6fw6xgk2-qemu-crucible-11.1.1",
+        "qemu_binary_sha256": "517d2751e0fa2cc0c8dbeeb36c3bcb21ae6eb96e799a1e57353a9008bad74991",
+        "log": "qemu-tcg-memory-fetch-baseline.log",
+        "log_sha256": "77c8903873eb4fe498f4f9f5d4f4771611ca1d8ca84a91641f14cad93a691792",
+        "state": "state tb=12424447 icount=12425015submitted=1 prepared=1 installed=1 event=0 coverage=00000000 retry=0/0/0 readable=1 result=7f expected=a5",
+        "result": "FAIL: guest-visible result was not observed"
+      },
+      "initial": {
+        "qemu_package": "7qsihh5yagfzv22l5j5lkypz44mvkapb-qemu-crucible-11.1.1",
+        "qemu_binary_sha256": "76d37ea9c377c64124afca8b46b00719d72d0fe7e814b1387412e265f76c74fb",
+        "log": "qemu-tcg-memory-fetch-initial.log",
+        "log_sha256": "8fda656701fcd08705277866b7dfd5f167c33de85ea13db387d1a0f1436f2a85",
+        "state": "state tb=12379618 icount=12380186submitted=1 prepared=1 installed=1 event=0 coverage=00000000 retry=0/0/0 readable=1 result=7f expected=a5",
+        "result": "FAIL: guest-visible result was not observed"
+      },
+      "final": {
+        "qemu_package": "0isfs0l96zvkdb7y2g842jal5x1y1zyn-qemu-crucible-11.1.1",
+        "qemu_binary_sha256": "3d71c293c5c509e125e5f197d6e4f8c8cbc6ee80e384f5a0bd47bd309b1ec93b",
+        "log": "qemu-tcg-memory-fetch-final.log",
+        "log_sha256": "4b332595104cee68d568f2c912c4a6308892af79996bcd351d129891f2084f1d",
+        "state": "state tb=12802195 icount=12802763submitted=1 prepared=1 installed=1 event=0 coverage=00000000 retry=0/0/0 readable=1 result=7f expected=a5",
+        "result": "FAIL: guest-visible result was not observed"
+      }
+    },
+    "source_sha256": {
+      "phase2-qemu-memory-access.nix": "1a0d1bfb1e728a920886921324219469a6f09a7cabe81a1b0124f271f1286bff",
+      "phase2-qemu-memory-access-guest.S": "69edb3525e067a5d57855478ade50e5e95deaa1db5e30fbce1d4e35abda965f2",
+      "phase2-qemu-memory-access-guest.ld": "4950a4118d7d2811888f4dbbc5be3275b64b1f03f7d9323d73cc79a5b06d6f08",
+      "crucible-memory-access.c": "071b543843aea486fae7da7c13ade95ab4d8be77d9fd58920c0827b68382b3fa"
+    },
+    "full_suite_log": "qemu-tcg-memory-final.log",
+    "full_suite_log_sha256": "7d027f459cbdd0dffc129401408152be683544ec15c67e3d7e716538b579cade",
+    "comparison_expression": "qemu-tcg-memory-compare.nix",
+    "comparison_expression_sha256": "812be9b1f465eb012eec763b4901262a686488e99db97719370ebfc50a336ccc"
+  },
+  "origin_master_advance": {
+    "measured_baseline_revision": "6df2fe66e61e932ed9f44350084da4939b620800",
+    "current_origin_master_revision": "9ff2c8e7e86091f65313bca40acbb1f83d08de5d",
+    "changed_paths_since_measured_baseline": [
+      "modules/profiles/experimental-release.nix",
+      "systems/aos-experimental.nix"
+    ],
+    "crucible_plugin_qemu_and_test_sources_identical": true,
+    "note": "The remote-tracking branch advanced during qualification with only experimental image budget and release-version changes. Measured emulator inputs are unchanged."
+  },
+  "final_branch_provenance": {
+    "branch": "dplecki/crucible-tcg-speed",
+    "branch_base_revision": "9ff2c8e7e86091f65313bca40acbb1f83d08de5d",
+    "qualification_revision_before_rebase": "c56771fb171d60f07bc25fe7d2044b4dc4b9aa47",
+    "equivalent_revision_after_rebase": "200eeaeb3abc744f0641cbd20fd468f3c25c7504",
+    "changed_paths_after_qualification": [
+      "modules/profiles/experimental-release.nix",
+      "systems/aos-experimental.nix"
+    ],
+    "all_runtime_protocol_patch_test_and_benchmark_sources_unchanged": true,
+    "commit_rebase_mapping": [
+      {
+        "measured_commit": "d026f865847549c5f17b5e39368deaec45bfd5b7",
+        "rebased_commit": "784059c37bd6db7410772eb6c5a5b54e2cf86969",
+        "subject": "Avoid reference-count operations in plugin callback admission"
+      },
+      {
+        "measured_commit": "f4f164de580b511de11bd175bea46d4150b33309",
+        "rebased_commit": "8fbdc8c607335af5e9aaa82cc8dde7d93b998639",
+        "subject": "Skip preemption enqueue ownership for empty mailboxes"
+      },
+      {
+        "measured_commit": "fd219eae1f05fc3d6424be44cde7c41bdbc2c931",
+        "rebased_commit": "82857c29a7d62aee32836b1bff4a3f0cca870193",
+        "subject": "Revalidate preemption commands after enqueue admission"
+      },
+      {
+        "measured_commit": "7677d6398331230fb4fbae2916fd434a01b7cc21",
+        "rebased_commit": "827802d50dde244b51a00785b5a4855c04c7d204",
+        "subject": "Add deterministic cold and restored TCG performance witnesses"
+      },
+      {
+        "measured_commit": "aa8be2893487bdd0f0441bd506557b39edfd0710",
+        "rebased_commit": "9897b993fbb6ca25665aa935042ebe9133a1ab62",
+        "subject": "Skip inactive fault work during TCG execution"
+      },
+      {
+        "measured_commit": "e71fd653fceb4934d2f9c22d628e99ad4b4d6ff8",
+        "rebased_commit": "d75bc1f6e3320301d20782405fd9758383aaa741",
+        "subject": "Make TCG benchmark startup and trial ordering robust"
+      },
+      {
+        "measured_commit": "d78e94e8b5ffd5e7f5572314a9c8da69feef8673",
+        "rebased_commit": "ee0cb46bf29db90885ba4cefd52b6187695128fb",
+        "subject": "Cache tracked Linux mutex owner IDs across TCG execution"
+      },
+      {
+        "measured_commit": "bdc50dd25f638cbec6ebdb41f4484e0b882da6df",
+        "rebased_commit": "0e4952e70d4d95e8318a9b272d0925a3852fe60d",
+        "subject": "Measure matched production plugins at deterministic TCG grants"
+      },
+      {
+        "measured_commit": "60538da3d3a2f8457e696c72cf756d355cd16690",
+        "rebased_commit": "ce32d899d25f38ba697697a49e7bea5db6b724fc",
+        "subject": "Expose full memory and production TCG performance checks"
+      },
+      {
+        "measured_commit": "2fd99374f53af168e8bc019958cd59e6b4d05688",
+        "rebased_commit": "fe8994dbc27a527963808fd2edaa1d02c3ff108e",
+        "subject": "Account for held-stop launcher in exact restore reachability check"
+      },
+      {
+        "measured_commit": "8a8d92e7931f700c877d45436764df0c93487812",
+        "rebased_commit": "65574defd70ec2642f08e2d1cb1a50beae1fcfed",
+        "subject": "Retain staged and cumulative TCG performance measurements"
+      },
+      {
+        "measured_commit": "565c810dee8f645a369e797265d3697060f7b0a0",
+        "rebased_commit": "def80d6a989ebd9b2e0ea4354b530438c955af9e",
+        "subject": "Restore focused memory-access gate inventory"
+      },
+      {
+        "measured_commit": "c56771fb171d60f07bc25fe7d2044b4dc4b9aa47",
+        "rebased_commit": "200eeaeb3abc744f0641cbd20fd468f3c25c7504",
+        "subject": "Record reviewed callback guard lifetimes in source hygiene"
+      }
+    ],
+    "evidence_update_only": "The final evidence commit changes only this JSON report after qualification. It does not change runtime code, protocol, patch artifacts, test assertions, or benchmark sources."
+  },
+  "native_child_validation": {
+    "status": "pass",
+    "formal_phase6_derivation": false,
+    "fixture": "tests/crucible/phase6-qemu-hot-fork-child-vm.nix",
+    "harness": "native-hot-fork-child-final.nix",
+    "assertions_unchanged": true,
+    "timeout_seconds": 600,
+    "kill_grace_seconds": 5,
+    "source_edits": false,
+    "probe_store_path": "kxx3rjqhkyi4pxg52263a0yd5vy9i1j7-crucible-qemu-live-hot-fork-child-0",
+    "probe_source": "aggpvr9mb96jbax7jdmr3875nml4j203-crucible-workspace-src",
+    "source_identity_comparison": {
+      "checked_local_dependency_source_files": 1407,
+      "workspace_cargo_toml_identical": true,
+      "cargo_lock_identical": true,
+      "probe_example_identical": true,
+      "only_difference": "crucible-qemu/src/spawn/run_directory.rs: current code widens st_nlink via Into<u64>; cached code uses the u64 field directly. On this Linux x86_64 machine both yield the same comparisons and diagnostic field."
+    },
+    "debugger_symbols": "Uses shipped stripped final QEMU/plugin instead of fixture symbol-retention overrides; affects failure stack-symbol diagnostics only.",
+    "binaries": {
+      "qemu": {
+        "path": "0isfs0l96zvkdb7y2g842jal5x1y1zyn-qemu-crucible-11.1.1/bin/qemu-system-x86_64",
+        "sha256": "3d71c293c5c509e125e5f197d6e4f8c8cbc6ee80e384f5a0bd47bd309b1ec93b"
+      },
+      "plugin": {
+        "path": "9br8kqfgn0cn6m0bzd20j8bfnb80kabc-crucible-qemu-plugin-0.1.0/lib/libcrucible_qemu_plugin.so",
+        "sha256": "5bbb08de8503014b03064579c000e6edc888c09ee19481998bebf4ced335d7e6"
+      },
+      "probe": {
+        "path": "kxx3rjqhkyi4pxg52263a0yd5vy9i1j7-crucible-qemu-live-hot-fork-child-0/bin/crucible-qemu-live-hot-fork-child",
+        "sha256": "bc4ad8829cd247a210d2a7dbe84845a44a5276032fb237c3b8b80a093d55e42f"
+      }
+    },
+    "stdout_log": "qemuHotForkChildVm.final-production.stdout.log",
+    "stderr_log": "qemuHotForkChildVm.final-production.stderr.log",
+    "process_exit_code": 0,
+    "derivation": "v3q1iyzxkdx460nsii8lzw904ydd8msr-aos-vm-test-crucible-qemu-hot-fork-child-0.drv",
+    "output": "nw3dfqq5dlil6zxz97xdb35qvwxc1qis-aos-vm-test-crucible-qemu-hot-fork-child-0",
+    "retained_output": "qemuHotForkChildVm.final-production.output",
+    "result": "PASS",
+    "fixture_sha256": "b8322bfdee64feb9cb870a32d91d8a5de978ad16015b8bcd557492f20b19e615",
+    "markers": {
+      "gate": "gate:qemu-hot-fork-child-private-vmstate",
+      "template_generation": "1",
+      "child_files_generation": "3",
+      "child_forked": "true",
+      "child_in_target_cgroup": "true",
+      "child_holds_private_vmstate_inode": "true",
+      "child_released_source_vmstate_inode": "true",
+      "source_vmstate_bytes": "1245184",
+      "private_vmstate_bytes": "1245184",
+      "child_saved_vmstate_bytes": "2031898",
+      "source_vmstate_unchanged": "true",
+      "children_forked": "3",
+      "retained_transactions": "2",
+      "restored_vmstate_saves": "2",
+      "source_suffix_icount": "9000001",
+      "source_threads": "6",
+      "source_descriptors": "25",
+      "source_threads_leaked": "0",
+      "source_descriptors_leaked": "0",
+      "max_fork_ms": "26",
+      "max_ready_ms": "39",
+      "whole_world_child_handoff": "false"
+    },
+    "serial_log_sha256": "bd4447fb7b87ec9449d4fabfb74762cd244598b1c942c71ed18227429eef50af",
+    "stdout_sha256": "667b1af788413c0009c2bd962db7eb1f537fb0852a7d2aef68eaabfb589dba42",
+    "stderr_sha256": "c7091d2f590e45865b2f2613742a44f3276829766172f46973edad2002bbfbe8",
+    "retained_input_identity": {
+      "artifact": "native-child-final-metadata.json",
+      "sha256": "d75214aa7aaa0b55b93dc99aae88ce74d0744194ef3b597b93763ef6ea847471"
+    },
+    "harness_sha256": "dad23a28011d3fbcc674e90ca8bbc353544b02c49a25845927aeaec6d3df1b53"
+  },
+  "native_world_control_comparison": {
+    "final_qemu": {
+      "path": "0isfs0l96zvkdb7y2g842jal5x1y1zyn-qemu-crucible-11.1.1/bin/qemu-system-x86_64",
+      "sha256": "3d71c293c5c509e125e5f197d6e4f8c8cbc6ee80e384f5a0bd47bd309b1ec93b"
+    },
+    "final_plugin": {
+      "path": "9br8kqfgn0cn6m0bzd20j8bfnb80kabc-crucible-qemu-plugin-0.1.0/lib/libcrucible_qemu_plugin.so",
+      "sha256": "5bbb08de8503014b03064579c000e6edc888c09ee19481998bebf4ced335d7e6"
+    },
+    "baseline_qemu": "h2iphd2bjnm1zpv0wrnija8z6fw6xgk2-qemu-crucible-11.1.1/bin/qemu-system-x86_64",
+    "baseline_plugin": {
+      "path": "production-performance/baseline/plugin.so",
+      "sha256": "8e1131759fdd982a4abc9ea6ff94b01ca75a4bcd798aac4fe3f9c005a1db3c77"
+    },
+    "baseline_source_commit": "6df2fe66e6",
+    "controller_output": "x0098i8nqy85gd5i3i77xb7kg2jsm0lq-crucible-controller-0.1.0",
+    "assertions_unchanged": true,
+    "timeouts_unchanged": true,
+    "source_edits": false,
+    "builders_disabled": true,
+    "cores": 4,
+    "error": "block transport event source 0 does not match reserved block source 30",
+    "failure_before_fork": true,
+    "controls": {
+      "qemuHotForkAtomicWorldVm.cores4": {
+        "status": "fail",
+        "process_exit_code": 1,
+        "stderr_log": "qemuHotForkAtomicWorldVm.cores4.stderr.log",
+        "stderr_sha256": "f436cafd93d20114a54650038b94a3a7ce719f41816b351f461028d267bb59f6",
+        "stdout_log": "qemuHotForkAtomicWorldVm.cores4.stdout.log",
+        "test_summary": "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 828 filtered out; finished in 118.67s",
+        "boundary": "drive production source world: Backend(Rejected { message: \"QEMU node crashed during bounded await: Crashed(QemuCrashedNodeStatus { node_id: \\\"lifecycle-curl\\\", cause: UnexpectedChildExit(QemuProcessExit { code: None, signal: Some(6), success: false, display: \\\"signal: 6 (SIGABRT)\\\" }), handling: ReportAndLocalize }); shutdown=QemuShutdownReport { attempts: [], failures: [], reaped: true, leaked: false }\" })",
+        "derivation": "bb1inc1ybvlxs579nhq77p02rrq95z3p-aos-vm-test-crucible-qemu-hot-fork-atomic-world-0.drv",
+        "failed_output": "v866dnzh177hkmk2s7flh4vphpr34xjj-aos-vm-test-crucible-qemu-hot-fork-atomic-world-0"
+      },
+      "qemuHotForkAtomicWorldVm.original-pair": {
+        "status": "fail",
+        "process_exit_code": 1,
+        "stderr_log": "qemuHotForkAtomicWorldVm.original-pair.stderr.log",
+        "stderr_sha256": "3c6d81cf5cc3a2cf3b39f63073da002f68576240ae11e57be4b577dcd1edb2e8",
+        "stdout_log": "qemuHotForkAtomicWorldVm.original-pair.stdout.log",
+        "test_summary": "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 828 filtered out; finished in 165.87s",
+        "boundary": "drive production source world: Backend(Rejected { message: \"QEMU node crashed during bounded await: Crashed(QemuCrashedNodeStatus { node_id: \\\"lifecycle-curl\\\", cause: UnexpectedChildExit(QemuProcessExit { code: None, signal: Some(6), success: false, display: \\\"signal: 6 (SIGABRT)\\\" }), handling: ReportAndLocalize }); shutdown=QemuShutdownReport { attempts: [], failures: [], reaped: true, leaked: false }\" })",
+        "derivation": "9zqylags8nn4vm3m3ryhxd3674b6hfd9-aos-vm-test-crucible-qemu-hot-fork-atomic-world-0.drv",
+        "failed_output": "17f0hygc77bh4bdaambbzabk1lblw8qq-aos-vm-test-crucible-qemu-hot-fork-atomic-world-0"
+      },
+      "qemuHotForkEquivalenceVm.cores4": {
+        "status": "fail",
+        "process_exit_code": 1,
+        "stderr_log": "qemuHotForkEquivalenceVm.cores4.stderr.log",
+        "stderr_sha256": "aba2ef92abdc220530ff612b1afcb9af73c1c3b5942a92710e3a36d7982e6fb2",
+        "stdout_log": "qemuHotForkEquivalenceVm.cores4.stdout.log",
+        "test_summary": "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 828 filtered out; finished in 118.21s",
+        "boundary": "drive fresh equivalence boundary: Backend(Rejected { message: \"QEMU node crashed during bounded await: Crashed(QemuCrashedNodeStatus { node_id: \\\"lifecycle-curl\\\", cause: UnexpectedChildExit(QemuProcessExit { code: None, signal: Some(6), success: false, display: \\\"signal: 6 (SIGABRT)\\\" }), handling: ReportAndLocalize }); shutdown=QemuShutdownReport { attempts: [], failures: [], reaped: true, leaked: false }\" })",
+        "derivation": "i6j1n7l1fl1jil0nlmh096bv1nkxi6ix-aos-vm-test-crucible-qemu-hot-fork-equivalence-0.drv",
+        "failed_output": "pfs2vw26b2n0amxfxb63xqgm81d0mwpm-aos-vm-test-crucible-qemu-hot-fork-equivalence-0"
+      },
+      "qemuHotForkEquivalenceVm.original-pair": {
+        "status": "fail",
+        "process_exit_code": 1,
+        "stderr_log": "qemuHotForkEquivalenceVm.original-pair.stderr.log",
+        "stderr_sha256": "46200052de7a3692528f6d5de68b53537b1a9250fd7843ccf818543888137f7f",
+        "stdout_log": "qemuHotForkEquivalenceVm.original-pair.stdout.log",
+        "test_summary": "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 828 filtered out; finished in 165.92s",
+        "boundary": "drive fresh equivalence boundary: Backend(Rejected { message: \"QEMU node crashed during bounded await: Crashed(QemuCrashedNodeStatus { node_id: \\\"lifecycle-curl\\\", cause: UnexpectedChildExit(QemuProcessExit { code: None, signal: Some(6), success: false, display: \\\"signal: 6 (SIGABRT)\\\" }), handling: ReportAndLocalize }); shutdown=QemuShutdownReport { attempts: [], failures: [], reaped: true, leaked: false }\" })",
+        "derivation": "jj5lpgcaap2hq5i2pr7410v7dd03ihpp-aos-vm-test-crucible-qemu-hot-fork-equivalence-0.drv",
+        "failed_output": "fq9na0g0g57sh7kli9glxk6jz2y7m9ra-aos-vm-test-crucible-qemu-hot-fork-equivalence-0"
+      }
+    },
+    "baseline_qemu_only_control": "Invalid for block-regression attribution: final plugin correctly rejected mismatched original QEMU fault-system identity before execution; superseded by matching full original pair.",
+    "conclusion": "Both initial native-world cases fail identically with the final optimized pair and the matching original pair. These gates do not reach any fork. The separate existing native child fixture passed with the shipped final pair under the recorded temporary harness scope.",
+    "baseline_qemu_sha256": "517d2751e0fa2cc0c8dbeeb36c3bcb21ae6eb96e799a1e57353a9008bad74991",
+    "controlled_controller_suite": {
+      "derivation": "2338bjp6m7y9b2wmapf8v9rjjiqp92fk-crucible-controller-0.1.0.drv",
+      "output": "x0098i8nqy85gd5i3i77xb7kg2jsm0lq-crucible-controller-0.1.0",
+      "summary": "Summary [ 399.528s] 5560 tests run: 5560 passed (3 slow), 75 skipped",
+      "nextest_test_threads": 4,
+      "log": "qemuHotForkAtomicWorldVm.cores4.stderr.log",
+      "summary_line": 1399
+    },
+    "timing_scope": "Failed initial-case timings are diagnostic only; they are excluded from cumulative performance claims.",
+    "retained_input_identity": {
+      "artifact": "native-hot-fork-control-results.json",
+      "sha256": "e04cde33bdc0da291f644a13d0e054ca8f43ed0ad53ab113f77d2dfdae670804"
+    },
+    "original_pair_harness_sha256": "e1c907cb0dbc5a4db96681df9c6501c49ab17d539f3516d69663d7742057b3d2"
+  },
+  "native_world_contract_analysis": {
+    "conclusion": "The World-bound block producer writes its ordinal source_node (0 in this fixture), while plugin BlockIo validates against reserved SLOT_BLK_IO (30). Those assignment and validation paths are unchanged from the measured origin/master baseline.",
+    "relevant_sources_identical_to_baseline": true,
+    "sources": [
+      {
+        "path": "crates/crucible-device/src/subnode/io_core_private.rs",
+        "sha256": "63eac1b4d9a81df37566664c1fd35b9c725bef70be49495699f3524cb50705f4"
+      },
+      {
+        "path": "crates/crucible-device/src/subnode/frame.rs",
+        "sha256": "229a000ae615ae479824648f39871438afaebb0ccd4c63cefa1d0901929a02df"
+      },
+      {
+        "path": "crates/crucible-qemu/src/supervision/block_io_servicer.rs",
+        "sha256": "930a68d507b13f2cc5896eda1ea3e6f20e2abdd8a32a1226058db43a00cc477d"
+      },
+      {
+        "path": "crates/crucible-api/src/vm_lifecycle/construction.rs",
+        "sha256": "8b209f88760ff84c0fed2a7421ce6e4d738270480cce8e9d30570f495dd82c82"
+      },
+      {
+        "path": "crates/crucible-qemu-plugin/src/block_io.rs",
+        "sha256": "bb53d69a28f415d13c1d1345038a92d2cbae6dd739bcfc0918b387168bee8d99"
+      }
+    ],
+    "original_pair_runtime_confirmation": true,
+    "source_or_assertion_changes_for_diagnosis": false
+  },
+  "artifact_path_notation": "Local store-prefix paths are represented by store names and relative members; temporary paths are artifact labels. Raw local logs retain the complete paths."
+}

@@ -9,16 +9,96 @@
   gettext,
 }: let
   version = "1.07";
+  xsCross = import ../build-support/_perl-xs-cross-config.nix {
+    inherit buildPackages lib perl stdenv;
+  };
 in
   mkDerivation {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
     pname = "perl-locale-gettext";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      primary = {
+        input = "A catalog domain with no installed translations and a plural count of two.";
+        operation = "Bind the domain and resolve singular and plural messages.";
+        expected = "The binding returns the untranslated messages when no catalog exists.";
+        artifacts = [];
+        files."probe.pl" = ''
+          use strict;
+          use warnings;
+          use Locale::gettext;
+
+          my $domain = "aos-qualification-absent";
+          my $path = Locale::gettext::bindtextdomain($domain, ".");
+          die "domain binding failed" unless $path eq ".";
+
+          Locale::gettext::textdomain($domain);
+          die "singular fallback failed"
+            unless Locale::gettext::gettext("hello") eq "hello";
+          die "plural fallback failed"
+            unless Locale::gettext::ngettext("one", "many", 2) eq "many";
+        '';
+        steps = [
+          {
+            argv = ["@perl@" "probe.pl"];
+            exit_code = 0;
+            stdout.exact = "";
+            stderr.exact = "";
+          }
+        ];
+      };
+      badInput = {
+        input = "A domain name without the required message identifier.";
+        operation = "Call dgettext with a missing message argument.";
+        expected = "The binding reports its required arguments.";
+        artifacts = [];
+        files."probe.pl" = ''
+          use strict;
+          use warnings;
+          use Locale::gettext;
+
+          eval { Locale::gettext::dgettext("aos-qualification-absent") };
+          die "missing message identifier accepted"
+            unless $@ =~ /^Usage: Locale::gettext::dgettext/;
+        '';
+        steps = [
+          {
+            argv = ["@perl@" "probe.pl"];
+            exit_code = 0;
+            observes_rejection = true;
+            stdout.exact = "";
+            stderr.exact = "";
+          }
+        ];
+      };
+    };
     inherit version;
     src = fetchurl {
       urls = ["https://cpan.metacpan.org/authors/id/P/PV/PVANDRY/Locale-gettext-${version}.tar.gz"];
       hash = "05cwqjxxary11di03gg3fm6j9lbvg1dr2wpr311c1rwp8salg7ch";
     };
 
-    buildDeps = [buildPackages.gnumake buildPackages.perl];
+    buildDeps = [buildPackages.gnumake xsCross.buildPerl];
     runtimeDeps = [perl gettext];
 
     # The XS tests load the compiled module, so they run only on native builds.
@@ -34,7 +114,9 @@ in
         {
           name = "configure";
           script = ''
-            perl Makefile.PL INSTALL_BASE="$out" CC="$CC" LD="$CC"
+            ${xsCross.setup}
+            ${xsCross.buildPerl}/bin/perl Makefile.PL INSTALL_BASE="$out" \
+              CC="$CC" LD="$CC" CCFLAGS="" LDFLAGS=""
           '';
         }
         {
@@ -57,9 +139,18 @@ in
           name = "install";
           script = ''
             make install SHELL="$CONFIG_SHELL"
-            cp -a "$out"/lib/perl5/*-thread-multi/. "$out/lib/perl5/"
+            cp -a "$out"/lib/perl5/*-thread-multi*/. "$out/lib/perl5/"
             # MakeMaker stamps this install log with wall-clock time.
-            rm -f "$out"/lib/perl5/perllocal.pod "$out"/lib/perl5/*-thread-multi/perllocal.pod
+            rm -f "$out"/lib/perl5/perllocal.pod "$out"/lib/perl5/*-thread-multi*/perllocal.pod
+
+            # Keep the target interpreter in the XS module's runtime closure.
+            mkdir -p "$out/nix-support"
+            printf '%s\n' '${perl} ${gettext}' > "$out/nix-support/runtime-closure"
+
+            ${lib.optionalString (!stdenv.isCross) ''
+              PERL5LIB="$out/lib/perl5" ${xsCross.buildPerl}/bin/perl -MLocale::gettext -e 1
+            ''}
+
             mkdir -p "$out/share/licenses/perl-locale-gettext"
             cp README "$out/share/licenses/perl-locale-gettext/"
           '';

@@ -15,7 +15,7 @@
     reason = "independent reference fixture failures intentionally panic"
 )]
 
-use terrane_core::{
+use terrane_format::{
     cbor,
     derived::{AttrRecord, AttributeName, AttributeValue, ElfValue, Function, Magic, ShebangValue},
     identity::{IdentityKind, TERRANE_V1},

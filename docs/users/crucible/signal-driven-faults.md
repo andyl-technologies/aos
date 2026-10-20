@@ -8,9 +8,9 @@ field, a storage failure, and an architectural CPU or memory mutation.
 This guide explains how to design those experiments. The
 [reference](reference.md#plans-signals-bindings-and-faults) is the exhaustive
 field and value catalog. The implementation source of truth is the
-[signal model](../../../crates/crucible/src/model/fault_signal/mod.rs),
-[binding model](../../../crates/crucible/src/model/fault_signal/binding.rs), and
-[effect registry](../../../crates/crucible/src/model/fault_signal/effect_registry.rs).
+[signal model](../../../crates/crucible/engine/crucible-engine/src/model/fault_signal/mod.rs),
+[binding model](../../../crates/crucible/engine/crucible-engine/src/model/fault_signal/binding.rs), and
+[effect registry](../../../crates/crucible/engine/crucible-engine/src/model/fault_signal/effect_registry.rs).
 
 ## The four parts of a fault
 
@@ -97,8 +97,8 @@ needs a typed selector, phase set, observability policy, and effect table.
 Generate the complete canonical TOML with `Plan::to_canonical_toml`
 after constructing the binding; do not invent content hashes. The public
 constructors validate shape, lifetime, target, phase, and capability before a
-guest starts. See [`FaultBinding::new`](../../../crates/crucible/src/model/fault_signal/binding.rs)
-and [`Plan::to_canonical_toml`](../../../crates/crucible/src/model/plan_properties.rs).
+guest starts. See [`FaultBinding::new`](../../../crates/crucible/engine/crucible-engine/src/model/fault_signal/binding.rs)
+and [`Plan::to_canonical_toml`](../../../crates/crucible/engine/crucible-engine/src/model/plan_properties.rs).
 The complete construction sequence is in
 [Authoring fault scenarios](authoring.md); this fragment is intentionally only
 the signal side of that example.
@@ -307,7 +307,7 @@ Inspect a retained run in this order:
 5. application evidence and guest-visible result;
 6. checkpoint dependency closure and final fingerprint.
 
-The [reproduction guide](reproduction.md) explains save, resume, fork, and both
+The [reproduction guide](reproduction.md) explains save, resume, and both
 replay modes. The [exploration guide](exploration.md) explains bounded search
 and finding minimization. Use the [exhaustive reference](reference.md) for every
 accepted source, operator, mapping, target, phase, effect, and nested field.

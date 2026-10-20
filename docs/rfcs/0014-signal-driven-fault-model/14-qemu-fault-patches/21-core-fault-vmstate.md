@@ -1,18 +1,19 @@
-# Patch 0067 — `crucible-core-fault-vmstate`
+# Capability task 0067 — `crucible-core-fault-vmstate`
 
 ## Purpose
 
 Adds the single aggregate QEMU VMState transaction and complete save/restore
-implementations for every fault domain carried through patch 0066. This patch
-does not advertise the final fault-system capability: patches 0068 and 0069 add
-their own required `clock` and `accelerator` sections, and patch 0070 proves the
-closed registry and emits the aggregate marker. A fault-enabled run fails save
+implementations for every fault domain specified through capability task 0066.
+The aggregate marker additionally requires the `clock` and `accelerator`
+sections specified by capability tasks 0068 and 0069 and the closure specified
+by capability task 0070. A fault-enabled run fails save
 admission while any required section is absent; it never writes a checkpoint
 that silently omits state.
 
 ## Scope and dependencies
 
-- Depends on patches 0047 through 0066 and QEMU's live migration framework.
+- Requires the capabilities specified by capability tasks 0047 through 0066
+  and QEMU's live migration framework.
 - Creates `plugins/crucible-fault-vmstate.c` under
   `GPL-2.0-or-later` with an explicit SPDX identifier.
 - Provides versioned big-endian codecs and section registration only inside the
@@ -34,13 +35,11 @@ missing, unknown, out-of-order, oversized, truncated, trailing, wrong-version,
 nonzero-reserved, or digest-mismatched input fails restore before live state is
 changed.
 
-The registry is closed for each installed patch prefix, not only for the final
-series. Patch 0067 requires exactly its eight registered core sections. Patch
-0068 adds and requires `clock`; patch 0069 adds and requires `accelerator`.
-Consequently, applying and testing any prefix never leaves save admission
-waiting for a section that only a later patch can register. Patch identities
-and the aggregate digest reject checkpoints from a different prefix; there is
-no legacy or partial-section restore path.
+The atomic patch installs one closed registry containing the eight core sections
+plus `clock` and `accelerator`. Save admission checks the complete set before it
+writes any checkpoint. The atomic-patch identity and aggregate digest reject a
+checkpoint from a different implementation, and a missing or extra section
+fails closed.
 
 ## Transactional restore
 
@@ -100,20 +99,22 @@ duplicate save handlers.
    reference; restore must reject it transactionally.
 6. Force allocation failure during every prepare stage and verify unchanged
    pre-restore state and no leak; commit stages must have no fallible path.
-7. Remove patch 0067 and prove the core VMState gate and final aggregate marker
-   fail. Remove a domain registration and prove save admission fails closed.
-8. Run the unpatched-versus-patched non-simulation migration corpus and prove
+7. Feed an incomplete registry fixture to the core VMState gate and prove the
+   final aggregate marker and save admission fail closed. Run the capability
+   probe against pristine QEMU and prove the registry is absent.
+8. Run the pristine-QEMU and atomic-patch non-simulation inertness corpus and prove
    identical enumeration, migration bytes, and guest behavior.
 
 ## Licensing and completion
 
-The patch must be a separate DCO-signed QEMU commit, update the patch manifest,
+The single atomic QEMU commit must be DCO-signed and update the integration manifest,
 bundle, new-file license inventory, corresponding-source closure, and live-gate
-catalog, and pass `gate:abi-conformance` and `gate:license-boundary`.
+catalog. It must pass `gate:abi-conformance` and `gate:license-boundary`.
 
 - **[QFP-CORE-STATE-1]** A save MUST include all registered fault state or fail
   before producing a usable checkpoint.
 - **[QFP-CORE-STATE-2]** Restore MUST validate and prepare the complete state
   graph before committing any section.
-- **[QFP-CORE-STATE-3]** The final system marker MUST remain unavailable until
-  patches 0068 through 0070 close the complete registry and all live gates.
+- **[QFP-CORE-STATE-3]** The final system marker MUST remain unavailable unless
+  the capabilities specified by capability tasks 0068 through 0070 close the
+  complete registry and all live gates.

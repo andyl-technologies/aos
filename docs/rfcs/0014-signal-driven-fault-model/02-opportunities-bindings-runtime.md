@@ -378,11 +378,9 @@ the signal/binding language:
 | explicit activation/deactivation | Event-sequence state transition consumed by a binding |
 | per-operation probability | Probability signal sampled by a hazard mapping at a stable opportunity |
 
-These are examples for rewriting scenarios, not an internal lowering table. The
-old `FaultPlanEntry`, `inject_fault`, `heal_fault`, fault-tag activation events,
-and their parser/builder/runtime variants are removed in the implementation PR.
-Old scenario schema versions fail admission with a versioned migration error;
-Crucible does not parse and reinterpret their fault contents.
+These are direct examples of the sole current representation, not an internal
+lowering table. A noncurrent scenario schema version fails admission before
+Crucible parses or interprets its fault contents.
 
 - **[BIND-25]** The implementation MUST expose exactly one authoring schema,
   canonical representation, scheduler path, active-contribution representation,
@@ -390,6 +388,5 @@ Crucible does not parse and reinterpret their fault contents.
   evaluator, or old-schema feature flag may remain.
 - **[BIND-26]** Removal MUST include public builders, CLI options, codecs,
   random generators, examples, tests, event variants, search actions, state
-  fields, and documentation for the old path. Repository-wide guards MUST fail
-  if the retired type or variant names are reintroduced outside a migration
-  guide or historical RFC text.
+  fields, and documentation for superseded paths. Repository-wide guards MUST
+  fail if a removed type or variant is reintroduced.

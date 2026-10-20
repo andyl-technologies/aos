@@ -24,8 +24,8 @@ source = pathlib.Path(os.environ["src"])
 output = pathlib.Path(os.environ["out"])
 packages = json.loads((temporary / "publication-packages.json").read_text())["packages"]
 package = [item for item in packages
-           if pathlib.Path(item["manifest_path"]) == workspace / "terrane-fs/Cargo.toml"]
-require(len(package) == 1 and package[0]["name"] == "terrane-fs",
+           if pathlib.Path(item["manifest_path"]) == workspace / "terrane/linux/terrane-linux/Cargo.toml"]
+require(len(package) == 1 and package[0]["name"] == "terrane-linux",
         "ambiguous publication source package")
 manifest = tomllib.loads((workspace / "Cargo.toml").read_text())
 require(manifest.get("profile", {}).get("dev", {}) == {},
@@ -40,7 +40,7 @@ executable = pathlib.Path(artifact.get("executable") or "")
 require(artifact["package_id"] == package[0]["id"]
         and artifact["target"]["kind"] == ["example"]
         and artifact["target"]["crate_types"] == ["bin"]
-        and pathlib.Path(artifact["target"]["src_path"]) == workspace / "terrane-fs/examples/publication_fixture.rs"
+        and pathlib.Path(artifact["target"]["src_path"]) == workspace / "terrane/linux/terrane-linux/examples/publication_fixture.rs"
         and artifact["profile"]["test"] is False
         and artifact["profile"]["opt_level"] == "0"
         and artifact["profile"]["debug_assertions"] is True
@@ -70,7 +70,7 @@ environment = dict(os.environ)
 triple = target_libraries.parent.name.upper().replace("-", "_")
 environment[f"CARGO_TARGET_{triple}_RUNNER"] = str(runner)
 with (temporary / "publication-cargo-discovery.log").open("w") as log:
-    subprocess.run(["cargo", "run", "--frozen", "--offline", "-p", "terrane-fs",
+    subprocess.run(["cargo", "run", "--frozen", "--offline", "-p", "terrane-linux",
                     "--features", "native-test-fixtures", "--example", "publication_fixture",
                     "--", "--discover"], env=environment,
                    stdout=log, stderr=subprocess.STDOUT, check=True)

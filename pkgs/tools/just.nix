@@ -1,5 +1,6 @@
 ##! just — A handy way to save and run project-specific commands
 {
+  lib,
   mkCargoPackage,
   mkGithubUpstream,
   fetchCargoDeps,
@@ -61,7 +62,61 @@
   };
 in
   mkCargoPackage {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      role = "public-package";
+    };
     pname = "just";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "just emits the exact variable value 42.";
+        "files" = {
+          "justfile" = "answer := \"42\"\n";
+        };
+        "input" = "A justfile defining the variable answer as 42.";
+        "operation" = "Evaluate the named variable through just's recipe parser.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/just"
+              "--evaluate"
+              "answer"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "42";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "just rejects the file with its parse-error status.";
+        "files" = {
+          "justfile" = "answer :=\n";
+        };
+        "input" = "A justfile assignment with no value expression.";
+        "operation" = "Parse and evaluate the malformed justfile.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/just"
+              "--evaluate"
+              "answer"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
     inherit version src;
 
     inherit cargoDeps;

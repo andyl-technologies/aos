@@ -8,7 +8,7 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
-  topologyRendezvousTest = builtins.readFile ../../crates/crucible/tests/scheduler_topology_rendezvous.rs;
+  topologyRendezvousTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/scheduler_topology_rendezvous.rs;
   schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -34,7 +34,7 @@
         needle = "never applies the topology mutation mid-RUN";
       }
     ]
-    ++ failuresFor "crates/crucible/src/scheduler.rs" scheduler [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/scheduler.rs" scheduler [
       {
         label = "change activation time";
         needle = "pub activation_time: Option<SimInstant>";
@@ -60,8 +60,8 @@
         needle = "let topology_cap = self.pending_topology_activation_cap()?;";
       }
       {
-        label = "fixed, activation, and branch caps share the minimum set";
-        needle = "Ok([fixed_cap, topology_cap, self.branch_frontier_cap]";
+        label = "fixed, activation, branch, and attempt-stop caps share the minimum set";
+        needle = "self.attempt_stop_frontier_cap,";
       }
       {
         label = "not ready changes are deferred";
@@ -76,7 +76,7 @@
         needle = "topology_change_activation_time_ns";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/scheduler_topology_rendezvous.rs" topologyRendezvousTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/scheduler_topology_rendezvous.rs" topologyRendezvousTest [
       {
         label = "exact activation cap test";
         needle = "activation_rendezvous_caps_at_fault_time_not_fixed_tick";
@@ -107,7 +107,7 @@
       }
       {
         label = "runtime immediate queue exercised";
-        needle = "scheduler.queue_topology_change";
+        needle = ".schedule_topology_change(SchedulerTopologyChange::heal(";
       }
       {
         label = "activation assertion";
@@ -122,7 +122,7 @@
         needle = "NetworkLookahead::Infinite";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/scheduler_topology_rendezvous.rs" topologyRendezvousTest [
+    ++ forbiddenFor "crates/crucible/engine/crucible-engine/tests/scheduler_topology_rendezvous.rs" topologyRendezvousTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -147,7 +147,10 @@ in
       version = "0";
       src = crucibleSrc;
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.rust
         pkgs.sed
@@ -191,7 +194,7 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-scheduler-topology-rendezvous-target" \
-              -p crucible \
+              -p crucible-engine \
               --test scheduler_topology_rendezvous \
               -- --test-threads=1
           '';

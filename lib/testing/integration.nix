@@ -19,12 +19,13 @@
   lib,
   mkVMTest,
 }: let
-  bootstrapTools = pkgs.bootstrapTools;
+  libc = pkgs.glibc;
+  libcDev = libc.dev or libc;
 
   # Helper: build colon-separated paths for C_INCLUDE_PATH, LIBRARY_PATH,
   # and LD_LIBRARY_PATH from a list of packages.
-  # Automatically includes bootstrap tools' glibc headers and libraries
-  # so that the raw gcc from bootstrap tools can find standard headers.
+  # Automatically includes the split glibc headers and libraries
+  # so that the source-built compiler can find standard headers.
   makeIncludePath = deps:
     builtins.concatStringsSep ":" (
       builtins.concatMap (
@@ -33,7 +34,7 @@
         in ["${base}/include"]
       )
       deps
-      ++ ["${builtins.toString bootstrapTools}/include-glibc"]
+      ++ ["${libcDev}/include"]
     );
 
   makeLibraryPath = deps:
@@ -44,7 +45,7 @@
         in ["${base}/lib"]
       )
       deps
-      ++ ["${builtins.toString bootstrapTools}/lib"]
+      ++ ["${libc}/lib"]
     );
 
   # -------------------------------------------------------------------------
@@ -162,7 +163,7 @@
     testSource,
     flags ? "-std=c++17",
   }: let
-    includePath = makeIncludePath deps;
+    includeFlags = builtins.concatStringsSep " " (builtins.map (dep: "-isystem ${dep}/include") deps);
     libraryPath = makeLibraryPath deps;
   in
     mkVMTest {
@@ -170,8 +171,9 @@
       rootfsDeps = [pkgs.gcc] ++ deps;
       memory = 512;
       testScript = ''
-                export C_INCLUDE_PATH="${includePath}:$C_INCLUDE_PATH"
-                export CPLUS_INCLUDE_PATH="${includePath}:$CPLUS_INCLUDE_PATH"
+                # libc must follow libstdc++ so its include_next directives work.
+                # Environment include paths would move libc ahead of those headers.
+                unset C_INCLUDE_PATH CPLUS_INCLUDE_PATH
                 export LIBRARY_PATH="${libraryPath}:$LIBRARY_PATH"
                 export LD_LIBRARY_PATH="${libraryPath}:$LD_LIBRARY_PATH"
 
@@ -180,7 +182,8 @@
         TESTSRC
 
                 echo "==> Compiling C++ test program"
-                ${pkgs.gcc}/bin/g++ ${flags} -o /tmp/test /tmp/test.cpp
+                ${pkgs.gcc}/bin/g++ ${flags} ${includeFlags} \
+                  -idirafter ${libcDev}/include -o /tmp/test /tmp/test.cpp
                 echo "==> Running test program"
                 /tmp/test
                 echo "==> Test program exited successfully"

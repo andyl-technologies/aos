@@ -1,15 +1,15 @@
-# Patch 0079: stopped-state control progress
+# Capability task 0079 — Stopped-state control progress
 
 ## Responsibility
 
-`0079-crucible-stopped-state-control-progress.patch` closes the last lost-wake
-window in QEMU's serialized round-robin thread while an exact Crucible
+The atomic patch `crucible-qemu-11.1.1.patch` closes the
+last lost-wake window in QEMU's serialized round-robin thread while an exact Crucible
 checkpoint or restore holds the VM in the native paused runstate. Guest
 instructions must remain stopped, but queued host control work must still be
 drained so QEMU can acknowledge `CPUState::stop`, publish the requested exact
 state, and complete the QMP stop or restore transaction.
 
-This patch does not add a polling execution mode. It hardens the existing
+This capability does not add a polling execution mode. It hardens the existing
 native-stop parking loop whose only entry condition is an authenticated exact
 boundary request under precise-icount `-accel sim`.
 
@@ -24,7 +24,7 @@ parks. Two producers can race with the subsequent condition wait:
 
 A condition variable signal is only a latency hint. If either producer signals
 between the drain and the sleep, an unconditional wait can consume no further
-wake and leave QEMU paused forever. The patch makes readiness level-triggered:
+wake and leave QEMU paused forever. The atomic patch makes readiness level-triggered:
 
 - `rr_crucible_sim_stop_or_unplug_pending()` detects pending lifecycle work;
 - `rr_crucible_sim_vcpu_work_pending()` scans every vCPU work list; and
@@ -53,10 +53,9 @@ BQL.
 
 ## Verification
 
-The focused patch microtest requires the stop/unplug recheck, all-vCPU queued-
-work scan, and bounded BQL wait in the isolated patch, while pristine QEMU must
-contain none of them. Reverting only patch 0079 therefore makes its microtest
-red.
+The focused atomic-patch capability test requires the stop/unplug recheck,
+all-vCPU queued-work scan, and bounded BQL wait. The pristine-QEMU source and
+live negatives must contain none of them.
 
 The live exact-snapshot gate supplies the integration proof. It stops a running
 multi-vCPU guest at a nonzero RR position, captures exact state, destroys the
@@ -66,12 +65,12 @@ path exercises the control-boundary callback and native stop handshake that
 would hang if the queued-work wake were lost.
 
 Non-sim and unarmed executions never enter the Crucible VM-stop parking loop;
-their upstream wait behavior is byte-for-byte unchanged by this patch.
+their upstream wait behavior is byte-for-byte unchanged by the atomic patch.
 
 ## Boundary and licensing
 
 The change modifies only QEMU's GPL-side RR scheduler source and introduces no
 file or ABI. No QEMU object, callback, or host condition crosses the process
 boundary. The Apache host observes only the existing authenticated checkpoint
-and restore results. The patch is retained as a separate DCO-signed commit in
-the corresponding-source bundle.
+and restore results. The single atomic QEMU commit is DCO-signed and retained
+in the corresponding-source bundle.

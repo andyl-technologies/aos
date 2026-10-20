@@ -8694,6 +8694,31 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
 
 ### T2 — Host tier
 
+Upstream integration (2026-10-19): merge `origin/master` at `68851a3bf1`
+into the existing RFC branch and apply its explicit PR #420 package mapping.
+Current packages are `terrane-format`, `terrane-sdk`, `terrane-linux`,
+`terrane-cli`, and `aos-terrane-integration`, under the Terrane ownership
+subdirectories in `crates/terrane/`. D-127 and AD-14 reconcile names only;
+stable requirements, gates, persisted bytes and T1 freezes remain intact.
+Earlier qualification records below identify their original sources and names.
+The unfinished dictionary dependency fixture is checkpointed separately before
+the merge. No T2 task is accepted by importing upstream changes.
+
+Integration checks: Cargo metadata, all five renamed packages' all-target
+compilation, crate graph, the reviewed native unsafe-binding audit, the Nix
+registry-complete gate and complete gate listing pass. All 638 external upstream
+dependency versions and checksums remain unchanged. The combined lockfile's
+measured shared vendor hash is updated to
+`sha256-GoGnyiyY6gp+gaIlunRCPeTvo58B2D/m7o7mUp/skDA=`. The required
+workspace Rust formatter encounters upstream's declared but absent
+`crucible-daemon/src/executor_worker/result/operations.rs`; that declaration
+and absence are both present in `origin/master`. The all-format check also
+reports 414 Nix files needing formatting in the integrated tree. These failures
+are retained, not credited as green; source-specific build and gate checks
+continue independently. The earlier `bf3c74517e` surface feature-matrix run
+finished with 1,157 passed and two publication-timing failures; its aggregate
+successor did not run.
+
 Status: in progress, resumed without sub-agents (2026-10-17). T1's 22 tasks and
 89 current gates are complete; its identity, encoding, bucket-key and Store-trait
 freeze applies. Preserved worktrees cover the five T2 tasks, including dedicated
@@ -8959,18 +8984,863 @@ Resumed qualification:
   later schema-invalid body. Earlier failures remain archived. This is component
   evidence, not sealed Running publication, live R, NativeReady, BKT-15 or full
   host-task acceptance.
-- Publisher custody candidate `a4ef3ccd71`: source review and formatting pass
-  for compact owned command payloads, original boxed recovery completion on
-  Resume refusal, and retained verified inventory sources. Compilation and
-  native qualification remain pending. The shared registry now exposes
-  `integration.publisher-local-image`, `integration.publisher-local-multuid`
-  and `integration.native-publisher-local`; each fails explicitly while its
-  implementation file is absent. Registration supplies no conformance credit.
-- Surface candidate `6cb1fcf235`: shared prerequisite `38a1ee21f6` is integrated
-  through a normal merge, preserving the previous frozen candidate and receipts.
-  The full current-trunk gate aggregate and required application test-target
-  compilation are running. Remaining surface checks, strict lint and formatting
-  precede task acceptance.
+- Publisher custody candidate `21a9d3394e`: all six qualification stages pass:
+  four public retirement-parser cases, the formatter pair, image construction,
+  independent completed-image verification, actual ext4 lifecycle and multi-UID
+  transport. The nineteen builder cases, three socket cases, two native parent
+  cases, and multi-UID parent with three child roles all execute successfully.
+  A new native control retains a valid historical retirement record whose stored
+  device hint differs from the actual filesystem device. Inventory exposes no
+  ghost body and preserves the record bytes. Current record inode, project and
+  ownership checks remain mandatory; historical fields grant no deadline, body
+  or pin authority. This checks stale metadata on a real filesystem, not reboot.
+- Combined cache candidate `f3f88f2128`: image, independent completed-image
+  verification and actual ext4 execution pass on unchanged source. All 47
+  selected filesystem unit cases execute individually with none ignored under
+  measured UID/GID 842, no supplementary groups, empty capabilities and
+  no-new-privileges. Genuine empty recovery, Resume, encoded admission,
+  cancellation, the existing refusal controls and kernel EDQUOT remain green.
+  These results belong to this exact source; later publisher and recovery
+  follow-ups still require their own cache qualification.
+- Host recovery candidate `7c8b85b346`: source review, formatter pair, immutable
+  image, independent completed-image verification and actual ext4 guest pass.
+  All 47 filesystem cases execute with none ignored. Six actual manifest cases
+  pass: two reconstruct verified residences and acknowledge genuine Resume;
+  four quarantine the original mismatching, unsealed mode0400, unsealed mode0600
+  or truncated sealed inode while retaining metadata bytes and funded faulted
+  custody. A root write-open control confirms that a valid mode0600 sealed file
+  is protected by the kernel; adoption then installs mode0400 before binding
+  acknowledgement and Resume. Inventory keys remain untrusted; existing binding
+  checks stay strict. Retained ordinary inodes are classified before readable
+  opens, and opening performs no mutation of a rollback replacement. All six
+  publisher regression stages also pass on this source, including nineteen
+  builder cases, three native socket cases, both native parents and all four
+  multi-UID parent/child executions. The earlier administrative seed failure is
+  preserved; its corrected bounded root-only capability set is checked through
+  procfs, while runtime actors retain empty capability sets. These results cover
+  readable owned unbound candidates with actual canonical metadata. Full cold
+  policy recovery, HOST-32, Running publication, NativeReady and BKT-15 remain
+  open; no complete host task is accepted.
+- Publisher process candidate `973e429c1e`: the configured role installs a fixed
+  Unix-only socket policy before opening roots or channels and rejects undeclared
+  inherited descriptors. Its private receipt follows actual kernel installation,
+  descriptor inspection and denied Internet/socketpair plus permitted Unix
+  probes; prepared owners retain that same receipt. Three fresh-process controls
+  use unbound sockets without traffic to check allowed-before/denied-after
+  creation, a preexisting descriptor and a network socket passed as stdin.
+  Source review, the formatter pair, immutable image, independent image
+  verification and actual ext4 guest pass on unchanged source. All three
+  confinement controls, 47 filesystem cases and six manifest cases pass. The
+  six publisher regression stages also pass: nineteen builder cases, four
+  public metadata cases, three native socket cases, both native parents and
+  all four multi-UID parent/child executions. This qualifies the configured
+  publisher's process boundary and the bounded cache/transport components;
+  Running publication, full host recovery and service readiness remain open.
+- Mixed recovery candidate `37ed65d54d`: the physical owner now retains inline
+  adoption alongside manifest recovery, combines independently verified
+  residences and checks both exact content sets before completion and Resume.
+  The existing bootstrap, durable manifest funding, original Drain context,
+  complete metadata-source closure and fresh quota reconciliation remain
+  mandatory. Two native controls add valid mixed recovery and a corrupt
+  manifest beside an independently adopted inline inode; a later failure must
+  retain that inline inode, its binding and the original funded faulted custody.
+  Full source review, the formatter pair, immutable image, independent image
+  verification and actual ext4 guest pass on unchanged source. All 47 selected
+  filesystem cases, eight manifest/mixed cases and three process-confinement
+  controls pass. The supervisor confirms original inodes, unchanged bytes and
+  actual inline binding creation on both mixed paths; success reconstructs the
+  exact additional inline residence before genuine Resume. The guest emits a
+  vda write-error diagnostic after `TEST_RESULT:PASS` during shutdown; it is
+  preserved for review, with no clean-shutdown or root-cause claim. Full cold
+  policy recovery, HOST-32, Running publication, NativeReady and BKT-15 remain
+  open; no complete host task is accepted.
+- Inline publication candidate `ce872b0d9f`: the actual Running owner now accepts
+  bounded encoded inline input, verifies it and synchronizes a reservation before
+  creating an anonymous project-inheriting plaintext source or submitting the
+  publisher copy. The exclusive turn checks the original job, exact claim,
+  source inode, synchronized state and fresh quota. Actual replies remain owned
+  through native verification; successful backing and funding stay registered
+  before later state or accounting work, including after waiter cancellation.
+  Completion synchronizes the inline residence and separately reports sealed
+  inode allocation, full-project charged/reserved usage and logical future
+  holds. Read accessors borrow immutable fields without embedded-state locks.
+  Real guest controls cover pre-Resume refusal, repeated invalid inputs,
+  publication, no-replace and a stopped-publisher cancellation. Full source
+  review, formatter pair, immutable image, independent source/image verification
+  and actual ext4 guest pass on unchanged source: 47 selected filesystem cases,
+  eight manifest/mixed recovery cases, both new publication controls and three
+  process-confinement controls. The supervisor checks the exact existing private
+  publisher staging directory and original inode; no post-result I/O diagnostic
+  appears in this run. Local nextest on identical crate bytes executes 111
+  cases with 110 passing; the non-UTF-8-name fixture fails during setup on
+  the host ZFS filesystem. The unchanged full suite now passes on ext4: all 111
+  nonignored cases execute under UID/GID 842 with empty capabilities and
+  NoNewPrivs. Independent review matches every passing case to the exact archive
+  inventory and verifies all 3,463 source inputs and the archive digest. Earlier
+  extraction-only exits supply no test-execution evidence. Six existing
+  privileged VM cases remain ignored in the ordinary nextest inventory. These
+  111 results apply to this candidate, not later changed sources. Existing standalone
+  residence transfer, manifest Running publication, retirement, consumer leases
+  and bucket readiness remain open. No frozen identity, encoding, bucket key,
+  store trait, dependency or wire format changes.
+- Filesystem quality candidate `a697ea647c`: scopes intentional panic-assertion
+  lints to existing test modules, use the standard no-op waker, clarify aligned
+  validation and hexadecimal pairs, and bind receive-loop monotonic reads at the
+  native clock boundary. Test path suffixes use random bytes rather than wall
+  time. All-target build, four actual focused nextest cases and both formatters
+  pass on unchanged source. Both original real-signal deadline assertions pass.
+  Strict Clippy now reports 23 remaining errors: twenty unused integration or
+  lifetime-retention findings and three large-value layout findings. Required
+  application target compilation passes in 2,591 seconds, producing 128 test
+  artifacts across 29 packages. This compiles unit and integration targets
+  without executing them; no strict-Clippy pass is claimed.
+  Follow-up `49972406ae` carries the original queued completion box through
+  either Resume outcome, boxes large repair/inspection values and counts command
+  pointees in the checked storage envelope. Full diff and syntax review pass.
+  Its unstarted qualification is superseded by the combined transfer candidate
+  below, which includes all of these changes and the original native controls.
+  No component change accepts a complete T2 task or changes frozen formats,
+  traits or dependencies.
+- Inline residence-transfer candidate `b57d351aa4`: the actual funded Running
+  command now selects an original completed admission, requires verified sealed
+  backing, inspects the exact source inode and invokes publisher
+  retirement before synchronizing the sealed residence. The old admission,
+  native reply, source descriptors, pins and holds remain retained. Physical
+  and byte checks occur outside the client RPC mutex. An occupied pending name
+  faults the command without replacing or removing the original canonical inode
+  or releasing the verified sealed outcome. Three fresh guest controls cover
+  success, a stopped publisher with a dropped waiter, and pending-name collision;
+  the supervisor independently checks original pending inodes, bytes and durable
+  publisher retirement leases. Seventeen-file source review, provisional
+  all-target and native-only builds, Rust formatting and Python syntax checks
+  pass. Exact committed-source all-target build, five focused nextest cases,
+  formatter pair, immutable image, independent source/image verification and
+  actual ext4 guest all pass. All 47 selected filesystem cases, eight manifest
+  recovery cases, both original publication controls, all three transfer
+  controls and three process-confinement controls execute successfully; no
+  post-result guest I/O diagnostic appears. Required application target
+  compilation also passes in 2,478 seconds, producing 128 unit/integration test
+  artifacts across 29 packages without executing them. Strict Clippy still fails
+  nineteen unused integration or retention findings, so no clean-Clippy claim
+  is made.
+  Pending deletion completion, manifest Running publication, consumer leases,
+  NativeReady, BKT-15 and complete host task acceptance remain open.
+- Running metadata-retention candidate `1aa1c86f96`: the physical worker now
+  distinguishes its acknowledged Running context from recovery when retaining
+  ordinary manifest metadata. Actual pack/index synchronization, reservation,
+  manifest and pack pins, fresh quota checks and source registration remain
+  mandatory; no old completed-recovery predicate substitutes for Running
+  custody. Both original inodes and independently registered holds must survive
+  subsequent retention and abandoned waiters. All-target build, five focused
+  nextest cases, formatter pair, immutable image and independent source/image
+  verification pass. The actual guest fails at the first new retention actor
+  with publisher-local Unavailable; neither new retention control is accepted.
+  Diagnostics `060b101869` and `4aaf373797` locate the refusal before retention:
+  native preparation's seal probe returns Unavailable while the publisher
+  retains 1,017 descriptors against its inherited 1,024 soft ceiling. The actual
+  guest still has 202,248,192 filesystem bytes available. The combined candidate
+  `a6952e8edb` gives only this expanded fixture's publisher child a finite 4,096
+  descriptor budget; quota, seal, pin, identity and cancellation assertions
+  remain intact. Exact-source all-target build, nine focused nextest cases,
+  formatter pair, immutable image, independent source/image verification and
+  actual ext4 guest now pass. Both Running-retention controls execute, including
+  the abandoned waiter; all 47 selected filesystem cases, eight manifest/mixed
+  recovery cases, five original publication/transfer controls and three process
+  confinement controls also pass. The actual publisher has the finite 4,096
+  descriptor ceiling; no post-result guest I/O diagnostic appears. Manifest
+  Running publication, consumer leases, readiness and complete host tasks remain
+  open; strict Clippy still has nineteen unused integration or retention
+  findings.
+- Streamed-assembly component `7c00759f16`: the native reassembly plan can copy
+  its ordered source stream into caller-owned output through the existing chunk,
+  length and whole-file verifier without collecting the complete object. Errors
+  preserve partial unverified output and the original I/O cause; this operation
+  grants no allocation, pin, quota, seal or publication authority. Four focused
+  tests pass, including malformed input, wrong whole-file hash and partial write
+  failure; the native-only library build and formatter pair pass. Follow-up
+  `b82bb2552a` replaces existing example no-op wakers with the standard waker,
+  gives metadata-pair fields names and scopes intentional assertion lints to
+  integration-test crates. A diagnostic with dead-code checks disabled reaches
+  all targets successfully; it is not a strict-Clippy pass. These changes are
+  included in `a6952e8edb`. Its full filesystem suite now executes on actual
+  ext4: all 115 nonignored cases pass under UID/GID 842, empty capabilities and
+  NoNewPrivs, including the unchanged non-UTF-8-name case and four streaming
+  cases. Independent review matches every actual passing case to the complete
+  source-bound archive inventory and verifies all 3,468 archive inputs and its
+  digest. The six original privileged VM cases remain separately inventoried.
+  Required application target compilation for this source also passes in 2,833
+  seconds: 128 unit/integration test artifacts across 29 packages, without test
+  execution. These results apply to the retention candidate, not later changes.
+- Running manifest-publication candidate `f5981a7a53`: the physical command
+  owner now retains canonical metadata, original admitted chunk/dictionary
+  handles, bounded ordered reads and actual per-source retirement replies in
+  the shared publication registry. Genuine metadata pins and synchronized
+  allocation funding precede anonymous output and publisher submission. The
+  actual Running turn supplies the metadata descriptor and retention identifier;
+  verified sealed backing remains registered before retirement, exact residence
+  snapshots and fresh quota reconciliation. Repeated chunks select their first
+  verified range. Each encoded read allocates only its checked length and uses
+  a stack probe for growth; operator-window failures preserve resource errors.
+  No frozen format, identity, bucket key, store trait or dependency changes.
+  Source review covers all 21 changed files. Committed-source all-target and
+  native-only builds, eleven focused tests and the formatter pair pass. A
+  diagnostic reaching all targets with dead-code checks disabled also passes;
+  strict Clippy still fails nineteen existing integration or retention findings.
+  The first actual guest passes all 47 selected filesystem and three process
+  confinement controls, then provisioning fails with EMFILE before any new
+  manifest control. Follow-up `5c2d01343d` changes only the supervisor: dedicated
+  provisioning and quota-helper children receive the same finite 4,096-descriptor
+  allowance as the publisher, preserving capabilities and project limits. Its
+  immutable image, independent source/image verification and actual ext4 guest
+  all pass. All three new manifest controls execute: repeated-chunk publication,
+  a dropped waiter and rejection of wrong whole-file hashes while the original
+  funded anonymous output remains physically retained. The complete existing
+  native component also passes: 47 selected filesystem cases, eight manifest/mixed
+  recovery cases, both Running-retention controls, five inline publication/transfer
+  controls and three process-confinement controls. No post-result guest I/O
+  diagnostic appears. Independent review verifies all 3,475 image inputs, six
+  installed files, the exact selected unit inventory and actual result markers.
+  A separate full ext4 nextest run passes all 117 nonignored cases on this same
+  source; its original six privileged cases remain separately inventoried.
+  Required application target compilation also passes for this revision in
+  2,472 seconds: 128 unit/integration artifacts across 29 packages, without
+  executing application tests. The finite guest disk is 512 MiB, accommodating all 32 declared
+  8 MiB project ceilings without changing any individual quota. Existing sealed
+  range sources, completed retirement, consumer leases and NativeReady remain
+  required; no complete task is accepted.
+- Dictionary publication follow-up `1d189e2dd9`: actual native admission rejects
+  a dictionary-coded source before its dependency is admitted, preserving the
+  synchronized snapshot. A distinct genuinely admitted dictionary then enables
+  the compressed source and complete Running manifest publication. Independent
+  guest checks compare sealed bytes with the raw publication, require the two
+  manifest sources' original inodes in pending retirement, and keep the unchanged
+  dictionary canonical with both original admission pins and leases. Exact
+  reservation checks include the encoded source and dictionary lengths and their
+  separate future holds. Both focused fixture tests, the formatter pair,
+  immutable image, independent source verification and actual ext4 component
+  pass. All four manifest-publication controls, both Running-retention controls,
+  eight manifest/mixed recovery controls and all 47 selected filesystem cases
+  execute successfully. Review verifies 3,475 image inputs, the actual unit ELF,
+  all 41 exact selectors and empty unit capability sets; no post-result guest
+  I/O diagnostic appears. Production Rust, dependencies and frozen interfaces
+  are unchanged from `5c2d01343d`; the full 117-case result above covers that
+  unchanged production source. No full host task is accepted.
+- Retained-range reader candidate `c2774508ce`: the physical worker now resolves
+  an existing residence only through its original completed Running publication
+  job, latest synchronized policy, original reservation, lease and object pin.
+  Canonical reconstruction metadata derives the exact first range. Bounded
+  positioned plaintext and kernel-seal checks run outside embedded-state locks;
+  canonical inode, native project and current registration are rechecked before
+  returning bytes. Guest controls drop publication receipts before reading both
+  repeated and final chunks, reject missing chunks and manifest identities, and
+  require unchanged durable pins and holds. Source review, all-target build and
+  the formatter pair pass. A diagnostic reaching all targets with dead-code
+  checks disabled passes; strict Clippy still reports the same nineteen existing
+  findings. Its immutable image and independent verification pass, but the
+  actual guest stops with EACCES in the first new reader control, without a
+  retained-range success marker. That implementation attempted to reopen the
+  publisher-owned sealed namespace; role permissions remain unchanged. Review
+  also rejects its queued byte-read design under HOST-30: already-retained
+  sealed reads must not consult embedded state.
+  Follow-up `9b50146322` separates source preparation from actual reading. The
+  queue resolves genuine completed job custody, current pins and canonical
+  metadata before returning an opaque retained source. Its bounded positioned
+  reads verify the original authenticated descriptor, native project and kernel
+  seal without the queue, embedded-policy mutex or publisher namespace opens.
+  The native fixture now holds the actual worker's policy mutex while each
+  retained first/final range is read, releasing it only afterward. This control
+  is compiled only for explicitly enabled native fixtures and supplies no source,
+  pin or readiness authority. Corrected all-target/native-only builds, seven
+  focused regressions, the formatter pair, immutable image, independent image
+  verification and actual ext4 component pass. All six retained first/final
+  reads complete with the real policy mutex held, across normal, cancelled-waiter
+  and dictionary-backed publication. All four manifest-publication controls,
+  both Running-retention controls, eight manifest/mixed recovery controls and
+  all 47 selected filesystem cases pass. Independent review verifies all 3,477
+  image inputs, the actual unit ELF and exact 41-selector inventory; no
+  post-result guest I/O diagnostic appears. The complete ext4 run now passes
+  all 118 nonignored filesystem cases on this revision. Independent review
+  matches every actual result and ordinal to the source-bound inventory,
+  verifies all 3,472 archive inputs and its digest, and preserves the same six
+  original privileged cases separately. Required application target compilation
+  also passes for this revision in 2,786 seconds: 128 unit/integration artifacts
+  across 29 packages, without application test execution.
+  Strict Clippy still reports nineteen existing findings; the diagnostic that
+  reaches all targets with dead-code checks disabled passes without changing
+  source lint policy. Recovered reads, source reuse in another assembly,
+  consumer leases and NativeReady remain required; no complete task is accepted.
+- Resident-reassembly candidate `b97f5614b0`: ordered native source plans now
+  retain genuine completed publication jobs for existing sealed ranges alongside
+  genuinely admitted standalone inputs. Repeated shared chunks keep their
+  original residence; only new standalone chunks enter native retirement.
+  Before copying, the physical worker captures the original synchronized
+  reservation, generation, hold, owner and native root bindings. Actual byte
+  copying, native output synchronization and readonly reopening run without the
+  embedded-state lock, with original funding and pins checked again afterward.
+  A fresh quota observation checks actual charge plus distinct future holds
+  before output allocation. Existing descriptor/protocol formats, identities,
+  store traits, bucket keys and dependencies remain unchanged.
+  Two new native controls build a second real object from the first object's
+  pinned repeated range and a new admitted tail. They check exact original
+  inode, metadata, retirement-record and residence preservation. Wrong whole-file
+  hashes must retain the real anonymous output, leave the new source canonical
+  and keep an already-retained old source readable under the held policy mutex.
+  Checked storage arithmetic includes the new source and output-scope ownership.
+  Source review covers all fourteen changed files. Committed-source all-target
+  and native-only builds, eight focused regressions and the formatter pair pass.
+  Strict Clippy still reports the nineteen existing findings; the diagnostic
+  reaching all targets with dead-code checks disabled passes without changing
+  source lint policy. The immutable image, independent source/image verifier
+  and actual ext4 component now pass. Both new resident-reassembly controls
+  execute successfully, including independent observation of the failed copy's
+  actual anonymous output. All six manifest controls, both Running-retention
+  controls, eight manifest/mixed recovery controls and all 47 selected filesystem
+  cases pass. Review verifies all 3,478 image inputs, the actual unit ELF and
+  all 43 exact selectors; no post-result guest I/O diagnostic appears.
+  Full ext4 filesystem qualification also passes on this revision: all 118
+  nonignored cases, with every actual result and ordinal matched to the archive
+  inventory and all 3,473 archive inputs and its digest independently verified.
+  The same six original privileged cases remain separately inventoried. Required
+  application target compilation also passes in 2,555 seconds: 128 artifacts
+  across 29 packages, independently checked against the immutable build-message
+  inventory. This supplies no application test execution.
+  Each of the two isolated two-object cases has a finite policy ceiling equal to
+  its unchanged 8 MiB project hard limit; existing cases retain their policy.
+  The 512 MiB guest disk still contains the full declared 35-owner hard-limit
+  partition. This accepts the tested Running-source component only. Recovered
+  sources, completed retirement, consumer leases and NativeReady remain required;
+  no full task is accepted.
+- Recovered-manifest reader candidate `f6c2ac7751`: the native owner now resolves
+  residences through the actual independently inspected recovery registry and
+  retains its original sealed descriptor and durable metadata/body pair together
+  with the real acknowledged Running context. A registry entry alone cannot
+  authorize a source: failed or incomplete recovery and absent Resume remain
+  refusals. Preparation checks the current synchronized policy, original
+  bootstrap funding, metadata pins, lease, source incarnation and exact verified
+  chunk range. Immutable byte reads use no command queue, publisher RPC mutex or
+  embedded-state lock, addressing HOST-30 and the verified-backing obligations
+  of HOST-31 to HOST-33 without granting a consumer lease or NativeReady.
+  The initial revision `c58f83ab14` passes three actual held-policy recovered-read
+  controls and eight unchanged-policy refusals without Resume in the ext4 VM,
+  alongside all 47 selected filesystem cases. Review then caught that normal
+  Running writes invalidate the mutable recovery-completion ID. The follow-up
+  obtains original bootstrap custody from the actual retained Running context
+  and adds real durable admissions between recovered reads, preserving the
+  original metadata and backing. Its all-target and native-only builds, eight
+  focused regressions, formatter pair and all-target Clippy diagnostic pass.
+  Strict Clippy retains the same nineteen findings without source lint changes.
+  The first post-admission fixture run stopped because its assertion compared
+  the operation's hold with the owner total. The corrected fixture independently
+  checks both the individual receipt and all three persisted reservations; the
+  failed run is preserved. The corrected ext4 component passes six held-policy
+  recovered-read controls around three real Running admissions, all eight
+  refusals without Resume and all 47 selected filesystem cases. Independent review
+  verifies the actual unit ELF and all 3,479 image inputs. Full ext4 filesystem
+  qualification also passes on this revision: all 118 actual passing cases and
+  ordinals match the exact archive inventory, all 3,474 inputs and the archive
+  digest verify, and the same six privileged cases remain separately inventoried.
+  Application compilation remains pending for the recovered-source changes.
+  Identities, formats, bucket keys, store traits and dependencies remain
+  unchanged. Recovered-range reuse
+  in another actual assembly, inline recovery sources, consumer leases and
+  completed retirement remain required; no complete task is accepted.
+- Recovered-reassembly candidate `41c407d794`: a new native control publishes a
+  second sealed object from a genuine recovered manifest and one newly admitted
+  nonfinal prefix, using the existing production source path. It checks every
+  original pin, lease, reservation and residence plus the exact additional
+  funding and new prefix residence. Retained old and new sources are read under
+  the actual policy mutex. The independent guest supervisor compares the new
+  sealed bytes with the original recovered body and actual retired prefix,
+  including the original prefix inode and synchronized retirement registration.
+  All five changed files are fixtures or supervisor code; production Rust,
+  interfaces, formats and dependencies remain unchanged. Source review, the
+  formatter pair, both direct builds and eight focused regressions pass. Strict
+  Clippy retains the same nineteen findings; the separate all-target diagnostic
+  passes without changing source lint policy. The actual ext4 component passes
+  the new recovered-reassembly control, all six held-policy recovered reads,
+  three intervening Running admissions, eight refusals without Resume and all
+  47 selected filesystem cases. Review verifies all 3,480 image inputs and the
+  actual unit ELF. All 118 filesystem cases also pass on this revision: the
+  exact actual results, 3,475 archive inputs and archive digest verify, with the
+  same six privileged cases separately inventoried. Required application target
+  compilation passes on this exact source in 2,447.859 seconds; immutable Cargo
+  records verify 128 test artifacts across 29 packages, without claiming test
+  execution. This qualifies the tested reuse component only; recovered inline
+  source pins, consumer leases, completed retirement and full task acceptance
+  remain separate obligations.
+- Recovered-inline candidate `53da97bfb3`: native Running custody now retains a
+  bounded source job for an actually recovered inline residence. Preparation
+  persists the original source pin, lease and reservation through real quota
+  checks and filesystem barriers before returning an immutable source. An
+  uncertain or cancelled caller retains its actual job; repeated acquisition
+  reuses the existing completed pin. Admission and publication include these
+  jobs in their common checked memory and count bounds. Reads retain the
+  original sealed body and do not acquire the embedded policy mutex. Existing
+  identities, encodings, bucket keys, store traits and dependencies are unchanged.
+  The native ext4 component passes in 91.868 seconds, including an actual
+  helper stop, dropped source waiter, independently observed durable pin before
+  a second request, reads under the real policy mutex and a second sealed
+  object assembled from the original recovered inline residence. Independent
+  review verifies 3,482 image inputs, all 47 selected filesystem cases, six
+  recovered manifest read controls, three intervening Running admissions,
+  eight refusals without Resume and two inline-before-Resume refusals. All
+  118 filesystem cases also pass; 3,477 archive inputs and the archive digest
+  verify, with the same six privileged cases separately inventoried. Both
+  direct builds, eight focused cases and the formatter pair pass. Strict
+  Clippy retains the same nineteen findings as its parent; the separate
+  all-target diagnostic passes without changing source lint policy. Required
+  application target compilation also passes in 2,601.309 seconds: immutable
+  Cargo records verify 128 test artifacts across 29 packages, with no test
+  execution claim. Consumer leases, complete retirement, NativeReady and full
+  task qualification remain pending.
+- Cold-policy candidate `3c5b0d07bf`: recovery retains the original bounded
+  pins, leases, future holds and residence candidates through its new random
+  bootstrap and actual snapshot synchronization. Completion requires
+  every old pin and range to reconcile with independently adopted sealed bodies
+  or retained verified metadata. Foreign hold ownership, pins without leases
+  and missing native backing remain refused. Original ranges are preferred
+  across duplicate backing only when verification supplies that exact range;
+  a preference alone emits no residence. Additional snapshot and selection
+  storage enters checked memory arithmetic. Two native controls seed old
+  manifest pins/holds and inline residences before either role starts; their
+  independent supervisor requires every original record after real recovery,
+  acknowledged Resume and later Running work. This is the prerequisite for a
+  complete durable consumer lifecycle, not its acceptance. Identities,
+  encodings, bucket keys, store traits and dependencies remain unchanged.
+  Initial revision `6dd0a19e57` passes both direct builds, ten focused cases,
+  formatters and the separate diagnostic; strict Clippy retains nineteen prior
+  findings. Its image stops before native execution because an exact unit-count
+  assertion still expects 47 after the inventory expands to 48. The failed
+  image is retained. Both image and independent guest assertions now require
+  the exact 48-case inventory. Revision `db93de1fea` passes both direct builds,
+  twelve focused cases, formatting and the separate diagnostic; strict Clippy
+  retains the same nineteen findings. Its image and independent verification
+  pass with all 3,483 inputs and six installed files checked. Actual native
+  execution then stops at an old fixture requiring unconditional cold refusal:
+  the second physical owner instead returns recovery completion with its
+  predecessor's cold bootstrap present. That failure is retained; the new cold manifest controls and
+  full filesystem stage have not executed. The revised fixture requires two
+  real physical owners, exact original-hold preservation, a distinct new durable
+  hold and accounting of both; invalid pin, backing and ownership refusals
+  remain. On `3c5b0d07bf`, both direct builds, twelve focused cases, formatting
+  and the separate diagnostic pass; strict Clippy still has nineteen unchanged
+  findings. Actual native ext4 qualification now passes in 83.295 seconds.
+  Independent review verifies all 3,483 image inputs, six installed files, the
+  actual unit ELF and all 48 selected case results under the confined guest
+  identity. Both cold-policy controls and the two-physical-owner bootstrap
+  preservation control pass, alongside six recovered held-policy reads, three
+  intervening Running admissions, eight refusals without Resume, both recovered
+  assemblies and the dropped inline pin waiter. This qualifies the tested cold
+  reconciliation component. The complete filesystem run now passes all 119
+  nonignored cases on actual ext4, with the same six privileged cases excluded
+  from this runner. Independent review verifies the archive, all 3,478 source
+  inputs and exact test identities. Its initial wrapper fails only because its
+  expected summary still names 118; that failure is retained, and the corrected
+  wrapper passes without changing repository source or case assertions.
+  Required application target compilation passes in 2,484.335 seconds;
+  immutable Cargo records verify 128 test artifacts across 29 packages, with no
+  execution claim. Consumer lease implementation is in progress on a separate
+  worktree; no full task acceptance or lifecycle qualification follows.
+- Consumer-lease candidate `206a698eb9` adds independent durable consumer pins
+  and future holds, bounded reads without embedded or job locks, renewal through
+  actual completion, release grace and periodic expiry. Original native backing
+  remains owned through abandoned waiters and started reads. Both direct builds,
+  fifteen focused tests and the formatter pair pass. Strict Clippy retains the
+  same nineteen existing findings; the separate all-target diagnostic passes
+  without changing source lint policy. The image builds, but independent
+  verification stops before native execution at a stale 48-case assertion after
+  three new expiry tests expand the explicit inventory to 51. That failure is
+  retained. Correction `9b2a8b1393` preserves the exact case list and all Rust,
+  Cargo and Nix inputs, removing only the duplicate count assertion. Its image,
+  independent verification of 3,490 inputs and six installed files, and formatter
+  pair pass. Actual ext4 execution passes all 51 selected unit cases and exercises
+  synchronized consumer pinning, reads with the actual policy mutex held,
+  foreign-owner refusal, completion after dropping a renewal waiter, release,
+  immediate re-pin without duplicating backing, and expired-renewal refusal.
+  The final periodic grace-cleanup assertion fails; the complete native run is
+  not qualified. Full filesystem and required application compilation do not
+  execute on this source. Diagnostic candidate `6966726253` preserves the failure
+  assertion and deadlines, exposing actual background sweep errors and bounded
+  policy snapshots to distinguish a refused mutation from a missing timer.
+  Its real run confirms repeated `Broken pipe` at quota preflight, preserving
+  both consumer records and holds: the helper closes idle connections after
+  five seconds while the owner retains its connection through 30-second grace.
+  Candidate `e829fdb0af` authenticates a fresh bounded connection for each actual
+  query. Client-wide request IDs, per-connection sequence validation, epochs,
+  native root bindings and active receive deadlines remain enforced. Failed
+  submissions propagate; protocol bytes, traits and dependencies stay unchanged.
+  Both direct builds, all 21 focused cases, formatting and the separate
+  diagnostic pass. Strict Clippy retains exactly the same nineteen findings.
+  Its source-bound image and independent verification pass, followed by actual
+  native ext4 qualification in 113.948 seconds. All 51 selected cases and every
+  prior recovery control pass. The consumer scenario durably removes exactly
+  its own pins, leases and holds after original grace, preserving producer
+  records and the native inode. The full filesystem run passes all 122
+  nonignored cases; independent review verifies all 3,485 source inputs, the
+  archive and the same six privileged exclusions. Required application target
+  compilation also passes, producing 128 test artifacts across 29 packages;
+  this supplies no application test execution claim. This qualifies the tested
+  consumer lifecycle component; producer handoff, eviction, complete retirement, NativeReady and
+  full task acceptance remain pending.
+- Publication-completion candidate `11eecdde2d` settles future copy capacity
+  after actual physical completion. Its private receipt comes only from the
+  original registered native job, after owned source descriptions close and
+  its original immutable inode and filesystem synchronize outside metadata/job
+  locks. The final durable snapshot reduces only that job's future overlap to
+  its configured metadata allowance, retaining its pin, lease, reconstruction
+  sources and original sealed backing. Kernel charged/reserved usage and inode
+  allocation remain independently measured; no hold is reported as freed
+  physical space. Native stopped-copy and failed-whole-hash controls require
+  full overlap, while completed inline, manifest, recovered and repeated
+  assemblies require exact settled holds. The source-bound image and independent
+  verification pass with all 3,491 inputs and six installed files checked.
+  Actual ext4 qualification passes in 142.412 seconds, including all 51 selected
+  unit cases, the new settlement control and every prior consumer/recovery
+  control. The complete filesystem run passes all 122 nonignored cases;
+  independent review verifies the archive, all 3,486 inputs and the same six
+  privileged exclusions. Execution wrappers lost during the session transition
+  leave their partial logs preserved; completed image evidence is retained and
+  unfinished checks resume on unchanged committed source. Both standalone Cargo
+  builds, all 21 focused cases and the formatter pair subsequently pass. Strict
+  Clippy retains exactly the nineteen earlier findings; the separate all-target
+  diagnostic passes without weakening source lint policy. Required application
+  target compilation also passes, producing 128 test artifacts across 29 packages
+  without claiming application test execution. Full producer pin release, eviction, retirement and
+  NativeReady remain pending.
+- Publisher ownership candidate `b4dba755cf` implements the ARCH-8
+  `publisher-sole-writer` gate by composing real publication ordering, native
+  descriptor handoff, distinct-identity directory controls and the production
+  publisher's confinement. The extended VM fixture requires seven measured
+  capability-free identities and exact permission refusals for six non-publisher
+  actors. Actual returned backing descriptors must reject writes and writable
+  reopening. The owning check independently binds complete image inputs and
+  original Cargo ELF bytes; it does not claim the broader PROTO-57 gate or full
+  host readiness. Both direct builds, all 32 focused cases and the formatter pair
+  pass. Strict Clippy retains the same nineteen findings. The actual native
+  prerequisites subsequently pass: publication ordering, seven role identities,
+  six non-publisher mutation controls, authenticated transport and read-only
+  native handoffs. The aggregate fails at its independent verifier's incorrect
+  requirement that the copied-library list be nonempty. This image legitimately
+  resolves all dynamic dependencies directly from immutable AOS store inputs.
+  Correction `af4e1dd17a` checks exact copied-library inventory, including an empty
+  list, and resolves every actual transitive ELF dependency with AOS binutils.
+  It passes against the original bound images as a diagnostic. The failed
+  aggregate remains recorded; its queued application build does not start.
+- Source-finalization candidate `feef59ea75` combines that verifier correction
+  with actual Running completion of original standalone-source retirement.
+  Only the original registered publication, native inode observation, current
+  durable funding and physical executor can submit final removal. Correlated
+  acknowledgements remain with the actual source job, including after a waiter
+  disappears. Repeated calls use those acknowledgements; unavailable exchanges
+  require real recovery. Fresh charge is measured independently of removed
+  names, retaining original source descriptions, pins and holds. The native
+  controls cover early grace, foreign ownership, cancellation, repeated manifest
+  sources and live reads with policy held; a separate privileged helper observes
+  charge before and after actual unlinked descriptors close. Both frozen direct
+  build profiles, all 32 focused cases and the formatter pair pass. Native
+  qualification fails after the cancelled waiter, before final accounting;
+  application compilation and the full filesystem run do not start. Strict
+  Clippy retains nineteen earlier findings, and its separate diagnostic catches
+  a direct wall-clock call in the fixture. Correction `30dcca6427` uses the
+  existing clock adapter and exposes actual physical-owner refusals and final
+  actor output, retaining the real grace, deadlines and assertions. Its fresh
+  local checks and narrow native component run are underway. These controls are
+  not yet qualified; producer pin release, eviction, NativeReady and complete
+  host tasks remain open. The diagnostic subsequently reaches actual source
+  removal, unchanged retained bytes and live reads, then fails because the
+  fixture loads policy from the cache root instead of `state/cache`. Independent
+  root observations confirm the authoritative policy remains present, both
+  sealed outputs remain and pending names are gone. Correction `f8c7f4b7f2`
+  uses the actual policy directory without changing the accounting assertions.
+  Combined candidate `1c0b104f98` also removes unused private client methods
+  while retaining every original ownership edge and compiles private recovery
+  helpers with their actual Tokio owner. Both direct builds, all 32 focused
+  cases, formatting and strict fixture/native-only Clippy profiles pass. The
+  separate deployed Tokio profile exposes two further unused private paths;
+  correction `f0ce679062` keeps the stale-observation helper with its isolated
+  fixture and retains sealed response resources explicitly. Both direct builds,
+  all 32 focused cases, formatting and strict Clippy with `-D warnings` pass
+  on that frozen successor in native-only, deployed Tokio and native-fixture
+  profiles, without lint allowances. The actual native cache component on
+  `1c0b104f98` subsequently passes all 51 selected filesystem cases and the new
+  source-cleanup controls. Independent review verifies all 3,495 image inputs,
+  four original Cargo ELFs and both installed supervisor helpers. The helper
+  measures 991,232 charged bytes while 286,720 bytes of retired source allocation
+  remain open, separately from 2,899,870 bytes of future holds, and confirms
+  reclamation only after the actual descriptions close. Cancellation, repeated
+  acknowledgements, immutable bytes, unchanged policy and reads with policy held
+  all pass. The owning `publisher-sole-writer` aggregate subsequently passes
+  in 918.216 seconds, including actual role-permission and descriptor-transport
+  guests. Independent reinspection matches its original source/runtime report:
+  3,493 transport inputs, 3,495 cache inputs, five transport ELFs and nineteen
+  portable cases. This qualifies ARCH-8 on the tested source. Required
+  application compilation subsequently passes in 2,502.317 seconds; all 128
+  actual test artifacts exactly match the 29 declared Linux application packages,
+  including their library, binary and integration targets. This is compilation,
+  not application execution. The full filesystem suite also passes all 122
+  nonignored cases in the ext4 guest; independent review verifies the exact
+  cases, all 3,489 archive inputs, actual archive digest and unchanged six
+  privileged exclusions. The broader host requirements and task acceptance
+  remain open.
+- Source-descriptor candidate `a509523e04` closes the original registered
+  admission and inspection handles only after their real correlated native
+  final-removal acknowledgements. Exact zero-link inode, project, ownership,
+  access-mode and byte checks precede either close. The completed reassembly plan
+  closes only after every original transfer completes; actual acknowledgements,
+  reconstruction metadata, pins and future holds remain retained. Its extended
+  native control keeps the original owner and consumers Running while closing
+  the final independent observers and synchronizing the filesystem. The real
+  helper measures charged usage falling from 991,232 to 704,512 bytes, exactly
+  the observed 286,720 source bytes, with 2,899,870 future-hold bytes unchanged.
+  Fresh resident and consumer reads pass with policy held; repeated cleanup,
+  policy bytes and immutable outputs remain valid. The complete native component
+  passes in 424.796 seconds, including all 51 selected filesystem cases. Review
+  verifies all 3,495 image inputs, four original Cargo ELFs and both installed
+  supervisor helpers. Both direct builds, 32 focused cases, the formatter pair
+  and all three strict Clippy profiles pass on unchanged source, with no lint
+  allowances.
+  Its owning `publisher-sole-writer` aggregate subsequently passes in 479.547
+  seconds; independent source and runtime reinspection matches the original
+  report. Required application compilation subsequently passes in 2,310.039
+  seconds. Independent review matches all 128 declared test targets across 29
+  packages, including the mixed library target kinds; this proves compilation,
+  not application execution. The complete filesystem suite subsequently passes
+  all 122 nonignored cases in the ext4 guest. Independent review verifies every
+  expected case, the archive digest, all 3,489 source inputs and the unchanged
+  six privileged exclusions. Producer pin release,
+  cached-object ownership, eviction, NativeReady and full task acceptance remain
+  pending; this qualifies source-description closure only.
+- Resident-view candidate `a8fb695c3f` adds permanent closure before producer
+  handoff. Started operations retain actual backing, and completion is reported
+  only after those references drop. Reads use a short private slot lock outside
+  native I/O and never lock embedded state. Closing one view changes no durable
+  pin, lease, reservation or quota observation. Its native control checks that
+  independent sources and consumer leases remain readable with policy stalled.
+  Functional parent `53f53095e9` passes both builds, all 34 selected cases,
+  including two concurrency regressions, and all three strict Clippy profiles.
+  The successor only formats the new fixture message; its formatter pair and
+  native component pass. All 53 selected filesystem cases execute in the ext4
+  guest with none ignored. Independent review verifies all 3,496 image inputs,
+  four original Cargo ELFs, installed helpers and the actual closure control.
+  Independent consumer and fresh-source reads remain live with policy stalled;
+  durable protection remains unchanged. Original failed lint and formatting
+  attempts remain recorded. This does not accept a host task.
+- Producer-custody candidate `39ad6d2ea4` bounds externally issued resident views
+  in a weak registry on the original physical worker. Current publication and
+  synchronized funding checks precede revocation; later external producer reads
+  are refused. Consumer grants use separately prepared genuine sources. The
+  storage envelope includes external and consumer headers, active preparation
+  and registry growth. Both builds, all 34 selected cases, all three strict
+  Clippy profiles and the formatter pair pass on unchanged source. The native
+  control now exercises actual registry exhaustion, slot reuse, foreign-owner
+  refusal and consumer reads after revocation. Native qualification passes in
+  441.657 seconds, including all 53 selected filesystem cases. Independent review
+  verifies all 3,498 image inputs, four original Cargo ELFs, installed helpers
+  and the exact capacity/revocation controls. Durable protection and independent
+  consumer reads remain intact. The owning publisher gate subsequently passes
+  in 495.530 seconds; independent reinspection matches its original artifact
+  report. Required application compilation passes in 2,721.018 seconds; all
+  128 actual test artifacts exactly match the 29 declared application packages.
+  The complete filesystem suite also passes all 124 nonignored cases in the
+  ext4 guest. Independent review verifies every expected case, the archive
+  digest, all 3,492 source inputs and the unchanged six privileged exclusions.
+  No host task is accepted.
+- Cache-handoff candidate `d59ca86443` transfers actual completed publication
+  custody through a synchronized funding decrement. Original final-removal
+  acknowledgments and closed descriptors precede source-admission release;
+  reconstruction metadata and independent consumer grants remain owned.
+  Producer promises, including reused backing dependencies, become durable
+  release grace handled by the periodic expiry sweep. Fresh consumers resolve
+  genuine cached backing after producer funding retires. Both builds, all 34
+  selected cases, all three strict Clippy profiles and formatting pass.
+  Native qualification stops at an old range-reuse pin-count assertion, before
+  reaching handoff. Successor `4036350ffc` preserves the original publication
+  receipt on queue refusal and adds a real queue-full/retry control. It requires
+  the exact reused backing dependency pin and waits for the configured
+  30-second release grace. Its local checks all pass. Native execution passes
+  both ordinary and bad-whole-hash reuse controls, then stops at the analogous
+  recovered-source pin-count assertion. The failed runs remain recorded;
+  neither supplies native handoff qualification. Follow-up `68aab2b064` requires
+  exact recovered dependency protection in both actor and independent supervisor;
+  it preserves all original inode, funding, residence and refusal checks.
+  Both builds, all 34 selected cases, all three strict Clippy profiles and
+  formatting pass on this committed source. Native qualification passes in
+  472.129 seconds, including all 53 selected filesystem cases. Independent
+  review verifies all 3,501 image inputs, four original Cargo ELFs and the exact
+  queue-refusal, retry and handoff controls. Actual producer and closed-source
+  future holds decrease by 1,588,749 bytes; a fresh independent consumer adds
+  its own 262,144-byte hold. Final future holds are 1,573,265 bytes and measured
+  project usage is 700,416 bytes. Reconstruction metadata and both consumers
+  remain live after the actual release grace. The owning publisher gate passes
+  in 544.631 seconds; independent artifact reinspection matches its report.
+  This qualifies handoff, not full cache eviction or host-task acceptance.
+- Native-eviction candidate `e367ac9d26` connects the original completed
+  publication receipts to S3-FIFO selection and authenticated publisher
+  retirement, restoration and final removal. Successful reads record activity
+  outside embedded-state locks. Native quota observations include pending
+  inodes; final removal releases policy funding and closes all actual original
+  publication descriptors before querying freed charge. The worker drains a
+  bounded cut of accepted requests before finalizing due retirements, allowing
+  an already queued pin to restore its original inode even if policy stalls
+  across the retirement deadline. Both direct builds, all 36 selected cases and
+  formatting pass; hermetic strict-profile and policy tests are running.
+  Native execution stops at a genuine permission error: restoration succeeds,
+  but the cache identity cannot reopen the publisher-owned file for reading
+  to check its canonical inode. No consumer pin is acknowledged. The original
+  body, reconstruction metadata and durable protection remain retained.
+  Successor `386f94080c` observes that pathname with `O_PATH` and restores
+  pending objects before duplicate inline or manifest publication. Its added
+  native control requires the same original inode, one charge for both genuine
+  publication receipts, another real producer-grace window and final descriptor
+  closure before physical charge release. Both builds, all 36 selected cases,
+  three strict filesystem profiles and formatting pass. Native execution still
+  fails before the new consumer grant: `O_PATH` cannot traverse the publisher's
+  private `0700` sealed directory. A separate strict Core all-target check also
+  fails on SDK-only helper gating and intentional cache-test panic assertions.
+  Both failures remain recorded; no native eviction success is claimed.
+  Candidate `ffd370be6f` verifies the actual restored canonical inode inside
+  publisher custody after the synchronized rename and before its authenticated
+  acknowledgment. The cache correlates that response with its original verified
+  descriptor and checks that the inode is linked, preserving private directory
+  permissions and the existing wire format. It incorporates the previously
+  reviewed SDK helper gating and scopes intentional panic assertions to the
+  three cache test modules. Both builds and all 36 selected cases pass.
+  Native qualification passes in 627.568 seconds, including all 55 selected
+  filesystem cases. Independent review verifies all 3,512 image inputs, four
+  original Cargo ELFs, installed helpers and the ordered retirement controls.
+  An already queued pin restores the original inode after policy stalls across
+  its retirement deadline. A duplicate publication also restores that inode;
+  both genuine publication receipts share one final native retirement. The
+  independent observer verifies charge release only after the last original
+  descriptor closes. Final measured project usage is 696,320 bytes, with future
+  holds unchanged at 1,573,265 bytes and unrelated consumers still readable.
+  Strict Core checks pass in 174.714 seconds for the `std` library and native
+  and SDK all-target profiles. The owning publisher gate passes in 523.646
+  seconds. Required application compilation passes in 2,613.228 seconds;
+  independent review matches all 128 test artifacts across the 29 declared
+  packages, including mixed library kinds. The complete filesystem suite also
+  passes all 126 nonignored cases in the ext4 guest. Independent review verifies
+  every expected case, the archive digest, all 3,506 source inputs and the same
+  six privileged exclusions. These component results do not accept a host task.
+  The ten-stage local qualification also finishes successfully on unchanged
+  source: both direct builds, all 36 selected cases, all three strict filesystem
+  profiles, all three strict Core profiles and the formatter pair pass.
+  Independent review checks every receipt, command, retained log and the current
+  clean source against all 6,542 tracked input hashes.
+  The older hermetic policy check finishes with 12 passes and one fixture
+  failure: an expiry of `u64::MAX` exceeds TOML's signed-integer encoding range,
+  so the generous-bound positive control cannot reach its byte-size assertion.
+  All three new external-quota and queue-starvation regressions pass; the whole
+  policy check remains failed. Test-only successor `5313ee703a` uses a valid
+  expiry while preserving exact-size success, full-snapshot refusal and the
+  generous positive control. All 13 policy cases pass on this corrected source;
+  independent review matches the complete declared case inventory.
+  Its native and SDK all-target strict Clippy profiles and formatter pair also
+  finish successfully on unchanged source, with independent receipt review.
+  Encoded-admission candidate `29a093589d` retains original completed chunk and
+  metadata-pair jobs while synchronizing producer-funding release, finite release
+  grace and actual one-hop dictionary dependencies. Queue refusal returns the
+  original admission; accepted commands keep physical custody after waiter
+  cancellation. The new native control observes unchanged original inodes,
+  dictionary-backed reconstruction after actual grace, genuine pending-source
+  retirement and exact funding release. Its independent supervisor is included
+  in the immutable image input and helper inventories. A provisional fixture
+  build finds missing public receipt re-exports; those are corrected before
+  committing this candidate. Both builds and all 36 selected cases pass, but
+  strict Clippy refuses its large unsubmitted-error variant. Successor
+  `60338331f1` boxes the original retry receipt and passes that strict check.
+  Native qualification of `29a093589d` fails after 480.356 seconds. It reaches
+  genuine cache ownership, the real release-grace sweep and dictionary-backed
+  sealed reconstruction, then loses the actor's final error at the observer's
+  source-cleanup handshake. At the completed admission handoff, measured project
+  usage is 368,640 bytes and future holds are 262,144 bytes. This partial
+  evidence does not qualify native cleanup. Review also finds that the fixture
+  incorrectly expects only bootstrap funding after publication, although the
+  retained reconstruction metadata requires its own future hold. Candidate
+  `0ebdcaf571` captures and preserves the exact original bootstrap and metadata
+  reservations and metadata pins, retains native failure output and removes a
+  duplicate actor-log print. Production behavior is unchanged from the boxed
+  receipt successor. Both builds, all 36 selected cases, all three strict
+  filesystem profiles, all three strict Core profiles and formatting pass on
+  unchanged source. Native qualification passes in 636.980 seconds, including
+  all 55 selected filesystem cases and the existing eviction controls.
+  Independent review verifies all 3,516 image inputs, four original Cargo ELFs,
+  three installed supervisor helpers and each exact handoff event. Two original
+  source retirements complete; final project usage is 950,272 bytes and future
+  holds are 524,288 bytes for the original bootstrap and reconstruction metadata.
+  The owning publisher gate, required application compilation and full
+  filesystem requalification remain pending on this source. The retained-original
+  diagnostic reproduces the final fixture funding assertion with its original
+  executable and deadlines; independent review verifies all 3,516 inputs and
+  four original ELFs. An initial diagnostic wrapper import-path failure is
+  preserved separately. This prerequisite supplies no encoded eviction or
+  shared-chunk extraction qualification.
+  Shared-chunk extraction, standalone and pack cache ownership, admission
+  integration, complete recovery and NativeReady remain pending.
+- Surface candidate `f8da5b4293`: the complete task source review, formatter pair
+  and all seven strict Clippy/documentation profiles pass. The interface,
+  commit-path, status and schema gates pass on unchanged final source, including
+  unknown policies refused before credential resolution. Schema finishes in
+  2,035 seconds; required application unit/integration target compilation also
+  passes in 2,172 seconds. Compilation supplies no application test execution.
+  SDK-only test helpers and an existing test module's intentional panic
+  assertions have precisely scoped lint configuration. The configured SDK image,
+  all eleven SDK unit cases and its native ext4 check also pass. Independent
+  review verifies all 3,338 crate inputs, each selected unit's actual passing
+  log, and four separate-process guest controls covering snapshots, late denial
+  and actual CLI success/refusal under UID/GID 840 with empty capabilities.
+  Final-source feature matrix and the full current-trunk aggregate remain
+  required before formal task acceptance. The matrix terminates with failure
+  after 30,565.945 seconds: its Tokio (`send`, `std`, `tokio`) suite records
+  1,056 passes and one failure out of 1,057 cases. The local-deletion
+  unlink/directory/progress-sync fault-prefix case is refused while acquiring
+  the recovery collector lease; the subsequent aggregate never starts. The
+  exact retained failing executable passes that single case in a focused
+  diagnostic run in 144.92 seconds. This supports timing sensitivity and does
+  not qualify the failed matrix. Candidate `bf3c74517e` pauses only quiescent
+  recovery fixture setup on the same injected clock, resuming real progression
+  before deletion; lease durations, full D waits, renewal checks and fault
+  assertions remain unchanged. All six focused fault, expiry and clock
+  continuity controls pass in 320.771 seconds on the failed profile; the
+  original fault case is included, with no retry or skipped expiry assertion.
+  The formatter pair and all seven strict Clippy/documentation profiles also
+  pass on this revision. Both owning collector gates and the four surface gates
+  subsequently pass on unchanged source. Required application compilation passes
+  with all 118 targets exactly matching the 29 declared Linux application
+  packages; this is compilation, not application test execution. The configured
+  SDK image, eleven actual SDK cases and four separate-process native controls
+  also pass. Independent review verifies all 3,338 crate inputs, final installed
+  image and every selected case log. The feature matrix is running before full
+  current-trunk requalification.
+  The original failure remains retained; no matrix or aggregate success is
+  claimed. The superseded `6cb1fcf235` aggregate was stopped after the policy
+  fix and supplies no aggregate success.
+- Packaging candidate `c2ddbe5db3` incorporates the current accepted trunk into
+  the preserved module branch. Review covers all five changed files against
+  PKG-8 and PKG-10: declarative feature organization, role unit rendering and one
+  structured TOML configuration. These requirements do not require implementing
+  every role runtime in this task; broader deployment remains separately
+  unqualified. All 88 owning module checks and the formatter pair pass on
+  unchanged source. The complete current-trunk aggregate fails after
+  19,199.763 seconds. Its package suite executes all 1,933 cases: 1,931 pass,
+  one fails and one times out, with none skipped. The checked-mutation
+  directory-sync case fails its five-second rendezvous; the signed-overlay
+  ancestry collection/reopen case reaches its 180-second process limit.
+  Original logs and bounded diagnostics are retained. These failures require
+  diagnosis and a passing full aggregate before a task merge; module evaluation
+  success does not qualify the failed aggregate.
+  Both exact retained cases pass in an isolated diagnostic run using the original
+  executable and assertions: directory-sync in 7.154 seconds and traced overlay
+  collection/reopen in 150.613 seconds. Private disk-backed user, mount and
+  network namespaces use AOS tools and are removed afterward. These focused
+  observations do not qualify the aggregate or establish its failure cause.
+  There are no Rust, dependency,
+  specification or frozen-interface changes relative to the accepted trunk.
+
+All five T2 task checkboxes remain open. The transport and cache results above
+accept components only. Complete manifest reuse and retirement, full host
+isolation, NativeReady, BKT-15 and actual four-role deployment remain unqualified.
+The zero-wipe requirement conflict remains stopped; T3 and branch work stay deferred.
 
 The shared glue dependency now names
 the existing Core types directly, and the crate-graph audit includes the current

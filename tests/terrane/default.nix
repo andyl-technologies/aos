@@ -197,8 +197,8 @@
     unsafe-audit = structureGate "unsafe-audit";
     core-no-std = sourceGate "core-no-std" ''
       cd crates
-      cargo build --frozen --offline --no-default-features -p terrane-core --lib
-      printf 'PASS: terrane-core builds without default features\n' > "$out/result"
+      cargo build --frozen --offline --no-default-features -p terrane-format --lib
+      printf 'PASS: terrane-format builds without default features\n' > "$out/result"
     '';
     formats-no-std = pkgs.mkDerivation {
       pname = "terrane-gate-formats-no-std";
@@ -221,7 +221,7 @@
     };
     tree-node-distribution = sourceGate "tree-node-distribution" ''
       cd crates
-      cargo build --release --frozen --offline -p terrane-core --example tree_node_distribution
+      cargo build --release --frozen --offline -p terrane-format --example tree_node_distribution
       "$CARGO_TARGET_DIR/release/examples/tree_node_distribution" > "$out/tree-node-distribution.tsv"
     '';
     role-selection = pkgs.mkDerivation {

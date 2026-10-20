@@ -1,4 +1,4 @@
-# Stage and schedule updates
+# Promote and schedule channel updates
 
 A channel divides consumers into 256 stable buckets, `00` through `ff`. Each
 bucket points to a signed registry release. A host chooses and persists its
@@ -33,10 +33,15 @@ apm registry add https://packages.example.com/acme/ \
 The selected bucket and monotonic release floor are durable consumer state.
 Refreshing metadata does not randomly move a host between rollout rings.
 
-## Start a staged release
+## Start a progressive rollout
 
-Advance eight buckets in the same ordered publication that creates the next
-release:
+The release convenience flags can publish a complete release and then expose
+its planned channel pointers. An unpublished release stage never advances
+partitions. For an explicit review boundary, first stage and finalize the
+release as described in [publishing](publishing.md#upload-an-unpublished-candidate),
+then run `apr channel advance` and upload the resulting pointers.
+
+To publish the next complete release and advance eight buckets:
 
 ```sh
 apr release 2026.8.1 \

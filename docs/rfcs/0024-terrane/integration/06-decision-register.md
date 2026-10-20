@@ -261,6 +261,24 @@ the requirement IDs each decision affects.
   - **Affects:** T-SURF-1 and the completing surface tasks listed in the
     implementation plan; CRATE-28, CRATE-29 and D-118 remain unchanged.
 
+- **[AD-14] Apply the workspace ownership migration to Terrane.**
+  - **Status:** Decided (2026-10-19)
+  - **Decision:** Follow the PR #420 mapping in
+    `docs/architecture/unmerged-crates.md`: `terrane-format` and `terrane-sdk`
+    under `crates/terrane/sdk/`, `terrane-linux` under `crates/terrane/linux/`,
+    `terrane-cli` under `crates/terrane/cli/`, and `aos-terrane-integration`
+    under `crates/terrane/integration/`. This supersedes AD-1's crate spellings;
+    its executable naming and standalone dependency direction remain binding.
+    Use the shared AOS workspace vendor for the combined lockfile.
+  - **Rationale:** Integrating master must preserve its package ownership and
+    reusable build infrastructure instead of resurrecting the flat workspace.
+    Spec D-127 reconciles the normative crate names without weakening freezes.
+  - **Compatibility:** Existing content identities, formats, bucket keys, trait
+    contracts, requirement IDs and gate names are unchanged. Earlier qualification
+    records retain their original source paths and package names as evidence;
+    qualification on the integrated source is required separately.
+  - **Affects:** PKG-1/3/7, CRATE-1 through CRATE-21.
+
 ## Open
 
 - **[AD-9] Whether `aos-cache` gains a `terrane://` backend or is replaced**

@@ -50,7 +50,7 @@ The current repository CLI and bootable-image workflow is supported on
 
 System scope fails closed before loading package state. The selected root must
 identify `ID=aos` and provide a numeric `AOS_MODULE_ABI`; live runtime commands
-also require the immutable `/aos-toplevel/os-release` identity.
+also require the immutable `/usr/lib/aos/toplevel/os-release` identity.
 
 ## Work in a repository checkout
 
@@ -67,6 +67,11 @@ inputs are available. Package operations belong to `apm` and registry
 authoring belongs to `apr`; neither requires an AOS source checkout.
 
 ## Build and inspect source
+
+`aos show` includes the native deployment envelope and generated module
+documentation in JSON, with payload, dependency, option, and operation summaries
+in text. These are local evaluated declarations; they do not authenticate a
+release or prove that a handler ran. `aos graph` shows the built payload closure.
 
 Common repository workflows are:
 
@@ -91,7 +96,14 @@ aos doc
 ```
 
 `aos build zlib` builds `pkgs.zlib`; it does not install a package on the
-running host. Use `apm install zlib` for that operation.
+running host. Use `apm install --system zlib` for a machine-wide install.
+
+`aos ability` inspects and compares checked portable plans, previews typed
+reverse-use removal effects, builds bounded private deployment views, and reads
+retained native execution or realized artifact-consumption evidence. It does
+not activate a plan or authenticate a deployment connection.
+See [Inspect ability plans and retained execution](ability-inspection.md) for
+the current commands, provenance limits, and disclosure rules.
 
 The flake output `packages.<system>.all` is the remote-build equivalent of
 `aos build --all`: build it when one submitted derivation must realize every
@@ -170,9 +182,12 @@ aos --json image show --registry andyl/main --release 2026.3.0 \
   --architecture x86_64 --format raw
 ```
 
-`apm install PACKAGE --system --image FORMAT --output FILE` remains available
-for package-oriented installation flows. Prefer `aos image` when choosing by
-end-user target, release channel, or direct disk encoding.
+`apm image download PACKAGE --system --format FORMAT --output FILE` downloads
+an image by its package name from the machine-wide registry configuration.
+Omit `--system` to use your personal registry configuration and cache, including
+on a non-AOS host. Downloading does not stage an image or change boot state.
+Prefer `aos image` when choosing by end-user target, release channel, or direct
+disk encoding.
 
 ## Run a downloaded image locally
 
@@ -308,6 +323,11 @@ apm attest verify --system \
   --rederived-manifest verifier/rederived-manifest.json
 ```
 
+Generation measurement retains the complete canonical record in the AOS CEL
+and submits its SHA-256 digest to the TPM helper. Large records therefore do
+not become command-line arguments. Use the AOS CEL for these events; they are
+not also appended to systemd's supplemental userspace measurement log.
+
 The policy is strict JSON. Version 2 requires an operator-authorized PCR-12
 boot-input value; version 1 is rejected because it cannot express that check.
 PCR and root values come from verifier-controlled policy and catalog data, not
@@ -361,3 +381,23 @@ before automating system upgrades.
 Continue with [Manage packages](packages.md) for `apm`, or
 [Operate an AOS package registry](../registry/) for producer-side `apr`
 workflows.
+
+## Inspect native runtime documentation
+
+`aos docs` is an alias for `aos doc`. Native artifact inspection works without
+Nix, a checkout, or a network connection:
+
+```sh
+aos docs runtime options.json
+aos docs runtime transaction.json --format json
+aos docs runtime transaction.json --format html --output execution.html
+```
+
+The input must be an `aos.module.documentation` reference or an
+`aos.package.transaction`. Output defaults to text; global `--json` selects JSON
+unless `--format` is explicit. `--output` writes a file. Runtime mode does not
+accept installed-package, registry, search, or Hub selectors.
+
+See [runtime abilities](runtime-abilities.md) for artifact generation and example
+execution paths. Existing `doc package`, `doc hub`, and `ability` consumers have
+not yet migrated to these native formats.
