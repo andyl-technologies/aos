@@ -6,20 +6,20 @@
   qemuSourceUrl = "https://download.qemu.org/qemu-11.1.1.tar.xz";
 
   file = "crucible-qemu-11.1.1.patch";
-  sha256 = "3487ba3d8f7f35e5cd4f955d93c39a9400a101c45ce3d4834b0f967e44ce75a4";
-  subject = "crucible: close settle-prepark component linkage";
-  body = "Retain the complete Crucible integration and RAM metadata return custody\non the sole pinned QEMU upstream base. Preserve canonical Source keepers,\nnonreplayable physical-return journals, retained cleanup tickets, finite\ngrace-complete dirty continuation and the paid flexible inventory.\n\nComplete the settle-prepark literal emitter with the real dispatch hint,\nframe identity and CPU-pin return bodies. Validate every consumed source\nbefore output using the owning extractor's five existing pins and three\nexplicit supplemental pins. Keep all production source, ABI, licenses,\nlimits, deadlines and experimental support policy unchanged.\n\nPlace all 49 component-owned external names in a private namespace before\nheaders so genuine linked event, thread, lock, notifier and QOM providers\ncannot interpose with component models. Keep object_unref genuine and\npreserve every publication, wait, boundary and settle-scan assertion.\n\nThe configured component passes all 112 publication cases, 16 intentional\nwaits and its control-boundary check. The unchanged settle-scan mutation\nfails its actual blocked-count assertion. These component results do not\nqualify selected Source or CPU activation, physical pin retirement,\npositive RCU execution, launched capture lifecycle or performance. Retain\nall mandatory lifecycle failures and gates.";
-  commit = "7754cef75d9333b943b731c4634226d025e1cce6";
-  tree = "f8884e5784a0b1bdbdd4aae6c4497d8f31168926";
+  sha256 = "b271a55a6abeb26639e3a2ff04371f375bffa348178e3339a84abcfb02cc61e5";
+  subject = "crucible: retain deferred-control component object";
+  body = "Retain the complete Crucible integration and all existing RAM metadata,\nsettle-prepark and deferred-control behavior on the sole pinned QEMU base.\nChange only the deferred-control emitter's compile/link tail; preserve\nproduction, providers, APIs, ABI, licenses, limits and support policy.\n\nCompile the generated component into a retained control-deferred.o with\nthe same configured compiler prefix, then consume that actual object in\nthe existing utility-source link order. Record both checked command\narrays. Preserve link-only arguments, checked failures and the runtime\ncommand, along with every input pin, assertion and causal mutation.\n\nThe retained final-link input supports object inventory during the next\nnormal native check without another opaque extraction. Actual object_unref\nprovider closure, symbol ownership, genuine QOM linkage and component\nruntime qualification remain pending. No provider is substituted here.\n\nNo selected Source or CPU activation, genuine Main/Original admission,\npositive physical CPU-pin return, RCU, launched lifecycle or performance\nqualification is implied. Preserve their mandatory failures and gates.";
+  commit = "bc75333383c5d64014b2d91044e370b45aaf2d95";
+  tree = "5a7a796f50dc6afa5f348d062d4e44c6bc04b681";
   catalogName = "crucible-deterministic-qemu-integration";
   class = "F";
   enforces = "DET-1,DET-35,HFORK-4,HFORK-22,CPERF-5,PATCH-39,QEMU-43,PKG-9";
   capability = "one atomic, reconstructible QEMU 11.1.1 integration artifact provides the versioned Crucible plugin protocol, deterministic execution, exact checkpoint capture and restore, retained hot fork with asynchronous-worker quiescence, device fingerprints, and their build and test plumbing";
 
-  branchRef = "dplecki/settle-prepark-emitter-v1";
+  branchRef = "dplecki/control-deferred-object-v1";
   branchModel = "single-atomic-final-state-integration-commit";
   bundle = ./crucible-qemu-11.1.1.bundle;
-  bundleSha256 = "8628ffe58632b44a8be6941dd6d0d048441433f5a5ab92855c2afa963bf26aa0";
+  bundleSha256 = "9277672c5fefedefd69b709707e6f7b8a18a2aae3c1be3b11052dcf21ce9fc2f";
   baseCommit = "1ed046750938db278a12dc55c6a7934d5fc68c14";
   baseTree = "c08cc386be14139bc835ab077baa0e72ef7ba7ef";
   deterministicAuthorName = "Dylan Plecki";

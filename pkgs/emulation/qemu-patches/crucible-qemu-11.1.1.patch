@@ -1,30 +1,27 @@
-From 7754cef75d9333b943b731c4634226d025e1cce6 Mon Sep 17 00:00:00 2001
+From bc75333383c5d64014b2d91044e370b45aaf2d95 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:00 +0000
-Subject: [PATCH] crucible: close settle-prepark component linkage
+Subject: [PATCH] crucible: retain deferred-control component object
 
-Retain the complete Crucible integration and RAM metadata return custody
-on the sole pinned QEMU upstream base. Preserve canonical Source keepers,
-nonreplayable physical-return journals, retained cleanup tickets, finite
-grace-complete dirty continuation and the paid flexible inventory.
+Retain the complete Crucible integration and all existing RAM metadata,
+settle-prepark and deferred-control behavior on the sole pinned QEMU base.
+Change only the deferred-control emitter's compile/link tail; preserve
+production, providers, APIs, ABI, licenses, limits and support policy.
 
-Complete the settle-prepark literal emitter with the real dispatch hint,
-frame identity and CPU-pin return bodies. Validate every consumed source
-before output using the owning extractor's five existing pins and three
-explicit supplemental pins. Keep all production source, ABI, licenses,
-limits, deadlines and experimental support policy unchanged.
+Compile the generated component into a retained control-deferred.o with
+the same configured compiler prefix, then consume that actual object in
+the existing utility-source link order. Record both checked command
+arrays. Preserve link-only arguments, checked failures and the runtime
+command, along with every input pin, assertion and causal mutation.
 
-Place all 49 component-owned external names in a private namespace before
-headers so genuine linked event, thread, lock, notifier and QOM providers
-cannot interpose with component models. Keep object_unref genuine and
-preserve every publication, wait, boundary and settle-scan assertion.
+The retained final-link input supports object inventory during the next
+normal native check without another opaque extraction. Actual object_unref
+provider closure, symbol ownership, genuine QOM linkage and component
+runtime qualification remain pending. No provider is substituted here.
 
-The configured component passes all 112 publication cases, 16 intentional
-waits and its control-boundary check. The unchanged settle-scan mutation
-fails its actual blocked-count assertion. These component results do not
-qualify selected Source or CPU activation, physical pin retirement,
-positive RCU execution, launched capture lifecycle or performance. Retain
-all mandatory lifecycle failures and gates.
+No selected Source or CPU activation, genuine Main/Original admission,
+positive physical CPU-pin return, RCU, launched lifecycle or performance
+qualification is implied. Preserve their mandatory failures and gates.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -253036,10 +253033,10 @@ index 0000000000000000000000000000000000000000..962b0dba612e5ea5407517d6188d2189
 +    main()
 diff --git a/tests/unit/test-crucible-control-deferred.py b/tests/unit/test-crucible-control-deferred.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..0463485486c70337da10dfb7966e6d3b3ff0c7c9
+index 0000000000000000000000000000000000000000..f9e0991a7553e9bc2fdd8d991a0a0f5e457c7f2b
 --- /dev/null
 +++ b/tests/unit/test-crucible-control-deferred.py
-@@ -0,0 +1,431 @@
+@@ -0,0 +1,506 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercise control ownership across production TX stop and advance settlement.
 +
@@ -253050,6 +253047,7 @@ index 0000000000000000000000000000000000000000..0463485486c70337da10dfb7966e6d3b
 +"""
 +
 +import argparse
++import hashlib
 +import json
 +import os
 +from pathlib import Path
@@ -253062,6 +253060,42 @@ index 0000000000000000000000000000000000000000..0463485486c70337da10dfb7966e6d3b
 +SUPPORT = runpy.run_path(str(Path(__file__).with_name(
 +    "test-crucible-net-output-stop.py")))
 +definition = SUPPORT["definition"]
++
++# Direct literal-production inputs, bound to the reviewed source cohort. Opaque
++# support declarations and providers remain owned by their existing mechanism.
++SOURCE_HASHES = {
++    "system/cpus.c":
++        "879b690f3c11615c7096688b75e8a94e2430aeeb2ba845747f42c44868105fb1",
++    "net/net.c":
++        "bf9dd4f8750e227b30d5afb2fd69678d895eb55ff7a5066dd9a911597ee041e6",
++    "util/iov.c":
++        "624468d4b28a211c363aa6884f84129eec6417160e063402ff44068af184609c",
++    "accel/tcg/icount-common.c":
++        "580137f73146ba656ab7ca0b1f0c6ed18c88765d6e0115b871a31a1673eb51dd",
++    "accel/tcg/tcg-accel-ops-rr.c":
++        "9138eaed9c3924f7a3508bd3457b2884a0601231184f3b17d7cde1f3d01eab50",
++    "accel/tcg/tcg-accel-ops-rr.h":
++        "93b2e3a3b4b395e98733317e8411420b7ef1331f84d59af6a0ab87ad9c884d98",
++    "monitor/qmp-cmds.c":
++        "0b2c2b17f0a87bdf5d70ebae885e07b1c00d2a6944b58ed105f5ca1e5d2c6649",
++    "plugins/api-system.c":
++        "e11ca8dbafc56856bc47b5c672660b0a92656a785fbd845e5e9d6cffdda47cbd",
++    "plugins/crucible-native-invocation.c":
++        "2191bec24cba9ece1e0cacc6361ce0c69d64dc6730e8bf80bcb29fa5f3863d8f",
++    "plugins/crucible-callback-publication.inc.h":
++        "5f91b39050b0fd482825221f4dd573d7f5f61f677d26afb4d45947b6a200689a",
++}
++
++
++def validated_sources():
++    sources = {}
++    for name, expected in SOURCE_HASHES.items():
++        data = (ROOT / name).read_bytes()
++        if hashlib.sha256(data).hexdigest() != expected:
++            raise ValueError(f"source changed: {name}")
++        sources[name] = data.decode()
++    return sources
++
 +
 +EXTRA = r"""
 +#include <fcntl.h>
@@ -253354,7 +253388,7 @@ index 0000000000000000000000000000000000000000..0463485486c70337da10dfb7966e6d3b
 +"""
 +
 +
-+def production_bodies():
++def production_bodies(sources):
 +    selections = {
 +        "system/cpus.c": ["void cpu_stop_current(void)",
 +            "static int do_vm_stop(RunState state, bool send_stop)",
@@ -253417,10 +253451,38 @@ index 0000000000000000000000000000000000000000..0463485486c70337da10dfb7966e6d3b
 +            "static bool qemu_plugin_quiesced_control_boundary_available(void)\n{",
 +        ],
 +    }
-+    production = "\n\n".join(definition((ROOT / path).read_text(), signature)
-+                                 for path, signatures in selections.items()
-+                                 for signature in signatures)
-+    return SUPPORT["SUPPORT"]["dependencies"](production) + "\n\n" + production
++    production = "\n\n".join(
++        definition(sources[path], signature)
++        for path, signatures in selections.items()
++        for signature in signatures
++    )
++
++    native = sources["plugins/crucible-native-invocation.c"]
++    publication = sources["plugins/crucible-callback-publication.inc.h"]
++    dispatch_hint = definition(
++        native,
++        "static QemuCrucibleNativeInvocationRegistry *native_dispatch_hint(void)",
++    )
++    cpu_pin_return = definition(native, "static void frame_cpu_pin_return(")
++    prototypes = "\n\n".join(
++        body.split("{", 1)[0].rstrip() + ";"
++        for body in (dispatch_hint, cpu_pin_return)
++    )
++    # Existing Native calls need prototypes first; their literal definitions
++    # follow the support's declaration block without inspecting that block.
++    return "\n\n".join([
++        prototypes,
++        SUPPORT["SUPPORT"]["dependencies"](production),
++        definition(
++            publication,
++            "QemuCrucibleNativeInvocationRegistry *\n"
++            "qemu_crucible_startup_source_native_dispatch_hint_v1(void)",
++        ),
++        dispatch_hint,
++        definition(native, "static int frame_identity_locked("),
++        cpu_pin_return,
++        production,
++    ])
 +
 +
 +def main():
@@ -253429,17 +253491,18 @@ index 0000000000000000000000000000000000000000..0463485486c70337da10dfb7966e6d3b
 +    parser.add_argument("--case", choices=["advance", "admitted", "resume"])
 +    parser.add_argument("--negative-control", choices=["settle-rearm", "stop-transfer"])
 +    arguments = parser.parse_args()
++    sources = validated_sources()
 +    arguments.output_dir.mkdir(parents=True, exist_ok=True)
 +
 +    prelude = SUPPORT["fixture_prelude"]()
 +    start = prelude.index("static bool rr_crucible_sim_control_boundary_needs_rearm(")
 +    end = prelude.index("static void rr_crucible_sim_publish_time_advance_wake(", start)
-+    helper = definition((ROOT / "accel/tcg/tcg-accel-ops-rr.h").read_text(),
++    helper = definition(sources["accel/tcg/tcg-accel-ops-rr.h"],
 +                        "static inline bool rr_crucible_sim_control_boundary_needs_rearm(")
 +    prelude = prelude[:start] + helper + "\n" + prelude[end:]
 +    support = SUPPORT["TESTS"].split("int main(void)")[0]
 +    generated = arguments.output_dir / "control-deferred.c"
-+    bodies = production_bodies()
++    bodies = production_bodies(sources)
 +    if arguments.negative_control == "settle-rearm":
 +        body = definition(bodies,
 +                          "void qemu_plugin_time_advance_settle_at_rr_idle(void)")
@@ -253455,15 +253518,24 @@ index 0000000000000000000000000000000000000000..0463485486c70337da10dfb7966e6d3b
 +}"""
 +        bodies = bodies.replace(body, changed)
 +    generated.write_text(prelude + EXTRA + bodies + support + CHECKS)
++    component_object = arguments.output_dir / "control-deferred.o"
 +    binary = arguments.output_dir / "control-deferred"
-+    command = [os.environ.get("CC", "cc"),
-+               *shlex.split(os.environ.get("CFLAGS", "")),
-+               "-Wno-missing-prototypes", "-Wno-unused-function",
-+               "-Wno-unused-variable", str(generated),
++    compiler = [os.environ.get("CC", "cc"),
++                *shlex.split(os.environ.get("CFLAGS", "")),
++                "-Wno-missing-prototypes", "-Wno-unused-function",
++                "-Wno-unused-variable"]
++    # Retain the actual component object even when its genuine provider link
++    # fails; symbol inventory must not require another extraction or compiler.
++    component_command = [*compiler, "-c", str(generated),
++                         "-o", str(component_object)]
++    command = [*compiler, str(component_object),
 +               *SUPPORT["SUPPORT"]["utility_sources"](), "-o", str(binary),
 +               *shlex.split(os.environ.get("LDFLAGS", ""))]
++    (arguments.output_dir / "component-compile-command.json").write_text(
++        json.dumps(component_command, indent=2) + "\n")
 +    (arguments.output_dir / "compile-command.json").write_text(
 +        json.dumps(command, indent=2) + "\n")
++    subprocess.run(component_command, check=True)
 +    subprocess.run(command, check=True)
 +    subprocess.run([str(binary), *([arguments.case] if arguments.case else [])],
 +                   cwd=arguments.output_dir, check=True)
