@@ -70,6 +70,10 @@ pub(super) fn altered_expression(expression: &str) -> String {
             "foreign_receiver.retry_retained_helper()",
         )
         .replace(
+            "receiver.retry_physical_cleanup()",
+            "foreign_receiver.retry_physical_cleanup()",
+        )
+        .replace(
             "retry.abort_without_process()",
             "foreign_lease.abort_without_process()",
         )
