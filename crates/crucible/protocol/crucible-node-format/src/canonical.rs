@@ -34,14 +34,17 @@ pub fn parse_json_with_depth(
     maximum_depth: usize,
 ) -> Result<Value, ContractError> {
     strict_parser::check_limits(bytes, maximum_bytes, maximum_depth)?;
-    let mut parser = Parser {
-        bytes,
+    let mut state = CursorState {
         cursor: 0,
         maximum_depth,
     };
+    let mut parser = Parser {
+        bytes,
+        state: &mut state,
+    };
     let value = parser.value(0)?;
     parser.whitespace();
-    if parser.cursor != bytes.len() {
+    if parser.state.cursor != bytes.len() {
         return Err(parser.error("trailing JSON content"));
     }
     Ok(value)
@@ -63,8 +66,8 @@ pub fn decode<T: DeserializeOwned + Validate>(
 
 #[path = "canonical/strict_parser.rs"]
 mod strict_parser;
-use strict_parser::Parser;
 pub use strict_parser::STRICT_JSON_KEY_LOOKUP_STORAGE_DATA;
+use strict_parser::{CursorState, Parser};
 
 /// Encodes RFC 8785 JSON without changing Unicode string values.
 ///
@@ -257,7 +260,7 @@ pub use json_counter::canonical_json_counter_scratch_bytes_data;
 pub fn json_parse_counter_scratch_bytes_data() -> usize {
     use std::mem::size_of;
 
-    let container = size_of::<&mut Parser<'static>>()
+    let container = size_of::<&mut Parser<'static, 'static>>()
         + size_of::<usize>()
         + size_of::<Vec<Value>>()
         + size_of::<Map<String, Value>>()
@@ -267,7 +270,8 @@ pub fn json_parse_counter_scratch_bytes_data() -> usize {
     let returned_value = size_of::<Value>() + size_of::<Result<Value, ContractError>>();
 
     strict_parser::TRANSITION_COUNTER_SCRATCH_BYTES
-        + size_of::<Parser<'static>>()
+        + size_of::<CursorState>() // actual source-free cursor local
+        + size_of::<Parser<'static, 'static>>()
         + 64 * container
         + 65 * returned_value
         // string() delegates one complete quoted token to this exact serde

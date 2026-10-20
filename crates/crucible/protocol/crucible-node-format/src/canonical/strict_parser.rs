@@ -30,11 +30,20 @@ pub(super) fn check_limits(
     Ok(())
 }
 
-/// Keeps only borrowed bytes and the original numeric cursor/depth controls.
-pub(super) struct Parser<'a> {
-    pub(super) bytes: &'a [u8],
+/// Owns the numeric cursor and nesting restriction independently of input loans.
+pub(super) struct CursorState {
     pub(super) cursor: usize,
     pub(super) maximum_depth: usize,
+}
+
+/// Borrows original bytes and their actual cursor for one grammar scope.
+///
+/// Mutations reach the cursor directly, including before an error or unwind.
+/// The input and cursor have separate lifetimes; neither loan is stored in
+/// the cursor.
+pub(super) struct Parser<'bytes, 'cursor> {
+    pub(super) bytes: &'bytes [u8],
+    pub(super) state: &'cursor mut CursorState,
 }
 
 /// Distinguishes a scalar return from a container whose construction follows.
@@ -50,7 +59,7 @@ pub(super) enum ContainerKind {
     Object,
 }
 
-impl Parser<'_> {
+impl Parser<'_, '_> {
     /// Builds an ordinary value using the same scalar and container decisions.
     ///
     /// # Errors
@@ -72,7 +81,7 @@ impl Parser<'_> {
     /// Returns the original scalar/token error at the current cursor.
     pub(super) fn value_start(&mut self) -> Result<ValueStart, ContractError> {
         self.whitespace();
-        match self.bytes.get(self.cursor).copied() {
+        match self.bytes.get(self.state.cursor).copied() {
             Some(b'"') => self.string().map(Value::String).map(ValueStart::Scalar),
             Some(b'[') => Ok(ValueStart::Array),
             Some(b'{') => Ok(ValueStart::Object),
@@ -124,10 +133,10 @@ impl Parser<'_> {
     /// # Errors
     /// Refuses a container at the original maximum nesting depth.
     pub(super) fn begin_container(&mut self, depth: usize) -> Result<(), ContractError> {
-        if depth >= self.maximum_depth {
+        if depth >= self.state.maximum_depth {
             return Err(self.error("JSON nesting limit exceeded"));
         }
-        self.cursor += 1;
+        self.state.cursor += 1;
         self.whitespace();
         Ok(())
     }
@@ -198,24 +207,24 @@ impl Parser<'_> {
 
     /// Constructs the unchanged strict diagnostic at the current byte cursor.
     pub(super) fn error(&self, reason: &str) -> ContractError {
-        invalid("json", format!("{reason} at byte {}", self.cursor))
+        invalid("json", format!("{reason} at byte {}", self.state.cursor))
     }
 
     /// Advances across the same four JSON whitespace bytes.
     pub(super) fn whitespace(&mut self) {
         while self
             .bytes
-            .get(self.cursor)
+            .get(self.state.cursor)
             .is_some_and(|byte| b" \n\r\t".contains(byte))
         {
-            self.cursor += 1;
+            self.state.cursor += 1;
         }
     }
 
     /// Consumes one exact delimiter only when it is the current byte.
     pub(super) fn take(&mut self, byte: u8) -> bool {
-        if self.bytes.get(self.cursor) == Some(&byte) {
-            self.cursor += 1;
+        if self.bytes.get(self.state.cursor) == Some(&byte) {
+            self.state.cursor += 1;
             true
         } else {
             false
@@ -223,29 +232,33 @@ impl Parser<'_> {
     }
 
     fn literal(&mut self, literal: &[u8], value: Value) -> Result<Value, ContractError> {
-        if !self.bytes[self.cursor..].starts_with(literal) {
+        if !self.bytes[self.state.cursor..].starts_with(literal) {
             return Err(self.error("invalid JSON literal"));
         }
-        self.cursor += literal.len();
+        self.state.cursor += literal.len();
         Ok(value)
     }
 
     fn string(&mut self) -> Result<String, ContractError> {
-        let start = self.cursor;
+        let start = self.state.cursor;
         if !self.take(b'"') {
             return Err(self.error("expected JSON string"));
         }
-        while let Some(byte) = self.bytes.get(self.cursor).copied() {
-            self.cursor += 1;
+        while let Some(byte) = self.bytes.get(self.state.cursor).copied() {
+            self.state.cursor += 1;
             match byte {
-                b'"' => return Ok(serde_json::from_slice(&self.bytes[start..self.cursor])?),
+                b'"' => {
+                    return Ok(serde_json::from_slice(
+                        &self.bytes[start..self.state.cursor],
+                    )?);
+                }
                 b'\\' => {
                     // Skip the escaped byte when finding the closing quote;
                     // serde validates escapes, UTF-8, and surrogate pairing.
-                    if self.cursor == self.bytes.len() {
+                    if self.state.cursor == self.bytes.len() {
                         break;
                     }
-                    self.cursor += 1;
+                    self.state.cursor += 1;
                 }
                 _ => {}
             }
@@ -254,19 +267,23 @@ impl Parser<'_> {
     }
 
     fn digits(&mut self) -> bool {
-        let start = self.cursor;
-        while self.bytes.get(self.cursor).is_some_and(u8::is_ascii_digit) {
-            self.cursor += 1;
+        let start = self.state.cursor;
+        while self
+            .bytes
+            .get(self.state.cursor)
+            .is_some_and(u8::is_ascii_digit)
+        {
+            self.state.cursor += 1;
         }
-        self.cursor != start
+        self.state.cursor != start
     }
 
     fn number(&mut self) -> Result<Value, ContractError> {
-        let start = self.cursor;
+        let start = self.state.cursor;
         let negative = self.take(b'-');
-        match self.bytes.get(self.cursor).copied() {
+        match self.bytes.get(self.state.cursor).copied() {
             Some(b'0') => {
-                self.cursor += 1;
+                self.state.cursor += 1;
             }
             Some(b'1'..=b'9') => {
                 self.digits();
@@ -289,7 +306,7 @@ impl Parser<'_> {
                 return Err(self.error("missing exponent digits"));
             }
         }
-        let token = std::str::from_utf8(&self.bytes[start..self.cursor])
+        let token = std::str::from_utf8(&self.bytes[start..self.state.cursor])
             .map_err(|_| self.error("invalid number encoding"))?;
         if !fractional {
             if negative {

@@ -5,7 +5,7 @@
 //! Result propagation. They supply no String/Vec/Map/error backing, allocator
 //! permission, retained owner, constructor extent or physical stack bound.
 
-use super::{ContainerKind, ContractError, Map, Parser, Value, ValueStart};
+use super::{ContainerKind, ContractError, CursorState, Map, Parser, Value, ValueStart};
 use std::{convert::Infallible, mem::size_of, ops::ControlFlow};
 
 // A const item describes each actual Result ? operation without creating a
@@ -28,6 +28,17 @@ const fn try_controls<Output, Return>() -> usize {
         + size_of::<Result<Return, ContractError>>() // enclosing Err initializer
         + size_of::<Result<Return, ContractError>>() // FromResidual return
 }
+
+// Both literals occur once after check_limits in the ordinary public caller.
+// The owning local headers are separately named in the original declaration;
+// these are their actual initializer and field-operand windows, not a second
+// runtime constructor or a retained-parser admission API.
+const CURSOR_VIEW_CONSTRUCTION: usize = size_of::<CursorState>() // cursor literal initializer
+    + size_of::<usize>() // cursor field's zero operand
+    + size_of::<usize>() // maximum_depth field operand
+    + size_of::<Parser<'static, 'static>>() // short view literal initializer
+    + size_of::<&[u8]>() // view bytes field operand
+    + size_of::<&mut CursorState>(); // actual mutable cursor loan field operand
 
 const PRECHECK: usize = size_of::<&[u8]>() // check_limits bytes argument
     + size_of::<usize>() // maximum_bytes argument
@@ -56,7 +67,7 @@ const SCALAR_MAP: usize = size_of::<Result<Value, ContractError>>() // map input
     + size_of::<Result<ValueStart, ContractError>>() // map return
     + size_of::<()>(); // capture-free Scalar constructor function item
 
-const VALUE_START: usize = size_of::<&mut Parser<'static>>() // added helper receiver
+const VALUE_START: usize = size_of::<&mut Parser<'static, 'static>>() // added helper receiver
     + size_of::<ValueStart>() // direct Array/Object variant initializer
     + size_of::<ValueStart>() // direct Ok constructor owned input
     + size_of::<Result<ValueStart, ContractError>>() // direct Result initializer
@@ -68,25 +79,25 @@ const VALUE_START: usize = size_of::<&mut Parser<'static>>() // added helper rec
     + size_of::<Value>() // scalar arm's Ok constructor owned input
     + size_of::<Result<Value, ContractError>>(); // scalar arm's new Ok initializer
 
-const BEGIN_CONTAINER: usize = size_of::<&mut Parser<'static>>()
+const BEGIN_CONTAINER: usize = size_of::<&mut Parser<'static, 'static>>()
     + size_of::<usize>() // depth argument
     + size_of::<bool>() // depth comparison result
     + size_of::<Result<(), ContractError>>() // helper initializer
     + size_of::<Result<(), ContractError>>() // helper return
     + try_controls::<(), Value>(); // array/object begin ?
 
-const ARRAY_BEFORE_CHILD: usize = size_of::<&Parser<'static>>()
+const ARRAY_BEFORE_CHILD: usize = size_of::<&Parser<'static, 'static>>()
     + size_of::<usize>() // actual initialized length argument
     + size_of::<bool>() // initialized length comparison
     + size_of::<Result<(), ContractError>>() // helper initializer
     + size_of::<Result<(), ContractError>>() // helper return
     + try_controls::<(), Value>(); // array's new ?
 
-const OBJECT_KEY: usize = size_of::<&mut Parser<'static>>()
+const OBJECT_KEY: usize = size_of::<&mut Parser<'static, 'static>>()
     + size_of::<String>() // delegating helper's returned key
     + size_of::<Result<String, ContractError>>(); // extra helper return
 
-const OBJECT_BEFORE_CHILD: usize = size_of::<&mut Parser<'static>>()
+const OBJECT_BEFORE_CHILD: usize = size_of::<&mut Parser<'static, 'static>>()
     + size_of::<&Map<String, Value>>() // helper's same real map argument
     + size_of::<&String>() // helper's same decoded key argument
     + size_of::<bool>() // duplicate membership outcome
@@ -95,7 +106,7 @@ const OBJECT_BEFORE_CHILD: usize = size_of::<&mut Parser<'static>>()
     + size_of::<Result<(), ContractError>>() // helper return
     + try_controls::<(), Value>(); // object's new ?
 
-const AFTER_CHILD: usize = size_of::<&mut Parser<'static>>()
+const AFTER_CHILD: usize = size_of::<&mut Parser<'static, 'static>>()
     + size_of::<ContainerKind>() // actual container argument/match input
     + size_of::<(u8, &str)>() // selected match arm tuple initializer
     + size_of::<(u8, &str)>() // match return/destructure input
@@ -118,6 +129,7 @@ const AFTER_CHILD: usize = size_of::<&mut Parser<'static>>()
 /// outer begin. Loop iterations reuse the same fixed windows. No operation or
 /// backing demand derives from a caller maximum or allocation capacity.
 pub(in super::super) const TRANSITION_COUNTER_SCRATCH_BYTES: usize = PRECHECK
+    + CURSOR_VIEW_CONSTRUCTION
     + 65 * VALUE_START
     + 64 * (BEGIN_CONTAINER + ARRAY_BEFORE_CHILD + OBJECT_KEY + OBJECT_BEFORE_CHILD + AFTER_CHILD)
     + BEGIN_CONTAINER; // terminal entered container, refused before construction

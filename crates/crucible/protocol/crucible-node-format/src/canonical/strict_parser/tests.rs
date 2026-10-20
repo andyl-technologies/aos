@@ -133,28 +133,154 @@ fn cnp_numeric_normalization_and_raw_literal_maps_remain_distinct() {
 
 #[test]
 fn shared_transitions_do_not_open_or_visit_children_early() {
-    let mut parser = Parser {
-        bytes: br#" [0, true]"#,
+    let mut state = CursorState {
         cursor: 0,
         maximum_depth: 64,
     };
+    let mut parser = Parser {
+        bytes: br#" [0, true]"#,
+        state: &mut state,
+    };
 
     assert!(matches!(parser.value_start().unwrap(), ValueStart::Array));
-    assert_eq!(parser.cursor, 1);
+    assert_eq!(parser.state.cursor, 1);
     parser.begin_container(0).unwrap();
-    assert_eq!(parser.cursor, 2);
+    assert_eq!(parser.state.cursor, 2);
     parser.array_before_child(0).unwrap();
     assert!(matches!(
         parser.value_start().unwrap(),
         ValueStart::Scalar(Value::Number(_))
     ));
     assert!(!parser.container_after_child(ContainerKind::Array).unwrap());
-    assert_eq!(parser.cursor, 4);
+    assert_eq!(parser.state.cursor, 4);
     parser.array_before_child(1).unwrap();
     assert!(matches!(
         parser.value_start().unwrap(),
         ValueStart::Scalar(Value::Bool(true))
     ));
     assert!(parser.container_after_child(ContainerKind::Array).unwrap());
-    assert_eq!(parser.cursor, parser.bytes.len());
+    assert_eq!(parser.state.cursor, parser.bytes.len());
+}
+
+#[test]
+fn short_grammar_loans_share_the_actual_cursor_on_success() {
+    let bytes = b" \n[null,true] \t";
+    let mut state = CursorState {
+        cursor: 0,
+        maximum_depth: 64,
+    };
+
+    {
+        let mut parser = Parser {
+            bytes,
+            state: &mut state,
+        };
+        assert!(matches!(parser.value_start().unwrap(), ValueStart::Array));
+        parser.begin_container(0).unwrap();
+        assert!(matches!(
+            parser.value_start().unwrap(),
+            ValueStart::Scalar(Value::Null)
+        ));
+        assert!(!parser.container_after_child(ContainerKind::Array).unwrap());
+    }
+    assert_eq!(state.cursor, 8);
+    assert_eq!(state.maximum_depth, 64);
+
+    {
+        let mut parser = Parser {
+            bytes,
+            state: &mut state,
+        };
+        assert!(matches!(
+            parser.value_start().unwrap(),
+            ValueStart::Scalar(Value::Bool(true))
+        ));
+        assert!(parser.container_after_child(ContainerKind::Array).unwrap());
+        parser.whitespace();
+    }
+    assert_eq!(state.cursor, bytes.len());
+    assert_eq!(
+        parse_json(bytes, bytes.len()).unwrap(),
+        serde_json::json!([null, true])
+    );
+}
+
+#[test]
+fn short_grammar_loan_error_keeps_the_actual_cursor_and_serde_diagnostic() {
+    let bytes = br#""\q""#;
+    let mut state = CursorState {
+        cursor: 0,
+        maximum_depth: 64,
+    };
+
+    let error = {
+        let mut parser = Parser {
+            bytes,
+            state: &mut state,
+        };
+        parser.value(0).unwrap_err()
+    };
+    assert_eq!(state.cursor, bytes.len());
+
+    let ordinary = parse_json(bytes, bytes.len()).unwrap_err();
+    match (error, ordinary) {
+        (ContractError::Json(actual), ContractError::Json(expected)) => {
+            assert_eq!(actual.classify(), expected.classify());
+            assert_eq!(actual.line(), expected.line());
+            assert_eq!(actual.column(), expected.column());
+            assert_eq!(actual.to_string(), expected.to_string());
+        }
+        errors => panic!("both paths must retain the original serde diagnostic: {errors:?}"),
+    }
+}
+
+#[test]
+fn refused_container_keeps_cursor_at_the_same_unconsumed_token() {
+    let bytes = b"  [";
+    let mut state = CursorState {
+        cursor: 0,
+        maximum_depth: 64,
+    };
+
+    let error = {
+        let mut parser = Parser {
+            bytes,
+            state: &mut state,
+        };
+        assert!(matches!(parser.value_start().unwrap(), ValueStart::Array));
+        parser.begin_container(64).unwrap_err()
+    };
+    assert_eq!(state.cursor, 2);
+    match error {
+        ContractError::Invalid { field, reason } => {
+            assert_eq!(field, "json");
+            assert_eq!(reason, "JSON nesting limit exceeded at byte 2");
+        }
+        other => panic!("original depth refusal required: {other:?}"),
+    }
+}
+
+#[test]
+fn unwinding_a_short_grammar_loan_keeps_completed_cursor_mutations() {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+
+    let bytes = b"  [";
+    let mut state = CursorState {
+        cursor: 0,
+        maximum_depth: 64,
+    };
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let mut parser = Parser {
+            bytes,
+            state: &mut state,
+        };
+        assert!(matches!(parser.value_start().unwrap(), ValueStart::Array));
+        parser.begin_container(0).unwrap();
+        panic!("stop after mutating the original cursor");
+    }));
+
+    assert!(result.is_err());
+    assert_eq!(state.cursor, bytes.len());
+    assert_eq!(state.maximum_depth, 64);
 }
