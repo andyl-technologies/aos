@@ -575,6 +575,11 @@ impl NativePublisher {
     }
 
     #[cfg(feature = "tokio")]
+    /// Restores the original pending inode and rechecks its canonical name.
+    ///
+    /// # Errors
+    /// Refuses changed inode custody, occupied canonical names, unsafe opens
+    /// and failed directory synchronization before the caller can acknowledge.
     pub(super) fn restore_pending_sealed(
         &mut self,
         descriptor: &Descriptor,
@@ -597,7 +602,14 @@ impl NativePublisher {
             fs::RenameFlags::NOREPLACE,
         )?;
         self.pending.sync_all()?;
-        shard.sync_all()
+        shard.sync_all()?;
+        let restored = File::from(fs::openat(
+            &shard,
+            name.as_str(),
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+            Mode::empty(),
+        )?);
+        compare_inode(expected, &restored)
     }
 
     #[cfg(feature = "tokio")]

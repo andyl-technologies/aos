@@ -168,15 +168,13 @@ impl CacheBodyCompletion {
             .upgrade()
             .ok_or_else(|| io::Error::other("restored cache body lost original custody"))?;
         body.layout().recheck()?;
-        let canonical = body
-            .layout()
-            .observe_sealed_canonical(body.claim().descriptor())?;
-        let observed = rustix::fs::fstat(&canonical)?;
+        // Only the publisher can traverse its private sealed directory. Its
+        // authenticated Restore checks the token's original inode, restores
+        // without replacement, syncs both parents and rechecks the canonical
+        // inode before acknowledging. Keep that original verified body here;
+        // a scanned name or caller-selected inode cannot create this receipt.
         let original = rustix::fs::fstat(body.handle())?;
-        if observed.st_dev != original.st_dev
-            || observed.st_ino != original.st_ino
-            || observed.st_nlink == 0
-        {
+        if original.st_nlink == 0 {
             return Err(io::Error::other(
                 "cache restore did not restore the original canonical inode",
             ));
