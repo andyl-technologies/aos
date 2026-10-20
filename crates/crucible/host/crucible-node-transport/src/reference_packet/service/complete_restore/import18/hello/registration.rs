@@ -73,7 +73,24 @@ impl PacketNativeImport18ProspectiveHostRegistrationData {
         declaration: &PacketNativeImport18HelloDeclarationData,
         planned: &Value,
     ) -> Result<(), ProviderError> {
-        authenticate_plan(launch, declaration, planned)?;
+        let fields = PacketNative5LaunchValidationFields::from_launch_data(launch);
+        self.authenticate_planned_from_fields_data(&fields, declaration, planned)
+    }
+
+    /// Checks the same planned object using inert borrowed launch fields.
+    ///
+    /// This preserves the ordinary plan checks before comparing the retained
+    /// planned identity. Success grants no registration or Source authority.
+    ///
+    /// # Errors
+    /// Refuses changed planned fields, target, limits, roster or saved identity.
+    pub fn authenticate_planned_from_fields_data(
+        &self,
+        fields: &PacketNative5LaunchValidationFields<'_>,
+        declaration: &PacketNativeImport18HelloDeclarationData,
+        planned: &Value,
+    ) -> Result<(), ProviderError> {
+        authenticate_plan_from_fields(fields, declaration, planned)?;
         if self.planned != planned_identity(planned)? {
             return Err(refused());
         }
@@ -99,7 +116,31 @@ pub fn native_import18_prospective_host_registration_data(
     planned: &Value,
     maximum: usize,
 ) -> Result<PacketNativeImport18ProspectiveHostRegistrationData, ProviderError> {
-    authenticate_plan(launch, declaration, planned)?;
+    let fields = PacketNative5LaunchValidationFields::from_launch_data(launch);
+    native_import18_prospective_host_registration_from_fields_data(
+        &fields,
+        declaration,
+        planned,
+        maximum,
+    )
+}
+
+/// Projects the original prospective registration from nonsecret launch fields.
+///
+/// The same complete plan, target, limits and closed Hello roster are checked in
+/// the ordinary order. This DATA supplies no actual authority, epoch, Source
+/// occurrence or permission to construct a historical registration.
+///
+/// # Errors
+/// Preserves the ordinary plan/target/roster, projection overflow and maximum
+/// refusals, including the empty typed-extension requirement.
+pub fn native_import18_prospective_host_registration_from_fields_data(
+    fields: &PacketNative5LaunchValidationFields<'_>,
+    declaration: &PacketNativeImport18HelloDeclarationData,
+    planned: &Value,
+    maximum: usize,
+) -> Result<PacketNativeImport18ProspectiveHostRegistrationData, ProviderError> {
+    authenticate_plan_from_fields(fields, declaration, planned)?;
     let mut projection = Projection::new(maximum)?;
     projection.add_array_extent(10)?;
     projection.add_string(HISTORICAL_SCHEMA)?;
@@ -107,7 +148,7 @@ pub fn native_import18_prospective_host_registration_data(
         projection.add_value(planned.get(key).ok_or_else(refused)?)?;
     }
     projection.add_unescaped_ascii_extent(20)?;
-    projection.add_value(&launch.limits)?;
+    projection.add_value(fields.limits)?;
     projection.add_value(planned.get("features").ok_or_else(refused)?)?;
     projection.add_value(planned.get("envelope_extensions").ok_or_else(refused)?)?;
     projection.add_array_extent(0)?;
@@ -212,10 +253,19 @@ fn authenticate_plan(
     declaration: &PacketNativeImport18HelloDeclarationData,
     planned: &Value,
 ) -> Result<(), ProviderError> {
-    if *declaration != native_import18_hello_declaration_data(launch)? {
+    let fields = PacketNative5LaunchValidationFields::from_launch_data(launch);
+    authenticate_plan_from_fields(&fields, declaration, planned)
+}
+
+fn authenticate_plan_from_fields(
+    fields: &PacketNative5LaunchValidationFields<'_>,
+    declaration: &PacketNativeImport18HelloDeclarationData,
+    planned: &Value,
+) -> Result<(), ProviderError> {
+    if *declaration != native_import18_hello_declaration_from_fields_data(fields)? {
         return Err(refused());
     }
-    let [binding] = launch.selection.realization.bindings.as_slice() else {
+    let [binding] = fields.selection.realization.bindings.as_slice() else {
         return Err(refused());
     };
     let object = planned.as_object().ok_or_else(refused)?;
@@ -234,11 +284,11 @@ fn authenticate_plan(
         .and_then(Value::as_object)
         .ok_or_else(refused)?;
     let actual = [
-        launch.limits.frame_bytes,
-        launch.limits.nesting,
-        launch.limits.requests,
-        launch.limits.journal_entries,
-        launch.limits.blob_chunk_bytes,
+        fields.limits.frame_bytes,
+        fields.limits.nesting,
+        fields.limits.requests,
+        fields.limits.journal_entries,
+        fields.limits.blob_chunk_bytes,
     ];
     if limits.len() != LIMIT_FIELDS.len() {
         return Err(refused());
@@ -364,9 +414,22 @@ fn include(hash: &mut blake3::Hasher, value: &[u8]) -> Result<(), ProviderError>
     Ok(())
 }
 
+// Fixed headers introduced by the real prospective/authentication wrappers.
+// No old plan, serializer, hash or declaration term pays for this new input.
+const REAL_PLAN_INPUT_HEADERS: usize = size_of::<PacketNative5LaunchValidationFields<'static>>()
+    + size_of::<PacketNative5LaunchValidationFields<'static>>()
+    + size_of::<PacketNative5LaunchValidationFields<'static>>()
+    + size_of::<&'static PacketNative5SourceLaunch>()
+    + size_of::<&'static PacketNative5LaunchValidationFields<'static>>()
+    + size_of::<&'static PacketNative5LaunchValidationFields<'static>>()
+    + size_of::<Result<PacketNativeImport18ProspectiveHostRegistrationData, ProviderError>>()
+    + size_of::<Result<(), ProviderError>>()
+    + size_of::<Result<(), ProviderError>>();
+
 /// Names direct role-normalized registration and prospective view controls.
 pub fn native_import18_registration_counter_scratch_data() -> usize {
-    size_of::<Registration<'static>>()
+    REAL_PLAN_INPUT_HEADERS
+        + size_of::<Registration<'static>>()
         + size_of::<PacketNativeImport18ProspectiveHostRegistrationData>()
         + size_of::<Result<PacketNativeImport18ProspectiveHostRegistrationData, ProviderError>>()
         + size_of::<Projection>()
@@ -499,3 +562,7 @@ const _: fn(&Registration<'static>) = |value| {
         envelope_extensions: _,
     } = value;
 };
+
+#[cfg(test)]
+#[path = "registration/fields_tests.rs"]
+mod fields_tests;

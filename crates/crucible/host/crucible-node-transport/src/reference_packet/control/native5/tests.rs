@@ -845,3 +845,6 @@ fn failed_actual_realize_preparation_keeps_partial_control_and_refuses_birth_sco
             .is_err()
     );
 }
+
+#[path = "launch_validation_projection_tests.rs"]
+mod launch_validation_projection_tests;

@@ -688,7 +688,8 @@ fn launch_validation_work(
 }
 
 fn launch_validation_counter_scratch_data() -> usize {
-    size_of::<MetadataObserver<'static>>()
+    PacketNative5SourceLaunch::VALIDATION_INPUT_COUNTER_SCRATCH_DATA
+        + size_of::<MetadataObserver<'static>>()
         + size_of::<crate::retained_metadata::RetainedProtocolMetadataFacts>()
         + size_of::<
             crate::retained_metadata::serialization_storage::OriginalSerializationStorageProjection,

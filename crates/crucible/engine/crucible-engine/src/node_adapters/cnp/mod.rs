@@ -174,3 +174,6 @@ pub(crate) use semantic::OriginalRestoredSettledNodeHistoryView;
 pub use semantic::OriginalSourceRestoredCaptureConstructionData;
 
 pub(crate) use semantic::original_restored_settled_semantic_history_counter_scratch_data;
+
+/// Pure data algorithms used by the private SourceBirth derivation worker.
+pub mod source_birth_derivation;

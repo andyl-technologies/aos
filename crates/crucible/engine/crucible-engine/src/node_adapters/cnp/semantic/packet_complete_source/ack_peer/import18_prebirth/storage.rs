@@ -291,6 +291,13 @@ pub(super) fn counter_scratch_data() -> usize {
         + size_of::<std::cell::BorrowError>()
         + size_of::<Result<Ref<'static, Option<OriginalAckPeerBirth>>, std::cell::BorrowError>>()
         + size_of::<Result<Ref<'static, Option<OriginalAckPeerAssociation>>, std::cell::BorrowError>>()
+        // The shared source view now owns the actual nonsecret field header.
+        // Existing view/tuple/Result sizeof terms below follow its larger type;
+        // These terms distinguish the initialized projection and its returned
+        // result before it enters that view.
+        + size_of::<PacketNative5LaunchValidationFields<'static>>() // initialized field view
+        + size_of::<PacketNative5LaunchValidationFields<'static>>()
+        + size_of::<&PacketNative5LaunchValidationFields<'static>>()
         + size_of::<views::SourceBirthView<'static>>()
         + size_of::<views::RegistrationView<'static>>()
         + size_of::<(

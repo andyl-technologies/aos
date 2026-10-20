@@ -135,7 +135,8 @@ impl PacketNative5SourceLaunch {
         use crate::reference_packet::coordinator::PacketNative5CoordinatorInstallation;
         use crate::reference_packet::service::Native5Policy;
 
-        crate::retained_metadata::retained_native_launch_counter_scratch_data()
+        Self::VALIDATION_INPUT_COUNTER_SCRATCH_DATA
+            + crate::retained_metadata::retained_native_launch_counter_scratch_data()
             + original_serialization_counter_scratch_data()
             + crate::connection::original_serialized_credit_counter_scratch_data()
             + coordinator_decode::counter_scratch_data()

@@ -13,6 +13,13 @@ use crate::{ProviderError, handshake::Limits, reference_service::InstalledConten
 
 #[path = "native5/credit_failure.rs"]
 mod credit_failure;
+#[path = "native5/validation.rs"]
+mod validation;
+pub use validation::{
+    PacketNative5LaunchValidationFields, PacketNative5LaunchValidationProjection,
+    PacketNative5PathSerializationData,
+};
+
 mod profile;
 pub use profile::PacketNative5CaptureProfile;
 
@@ -171,193 +178,7 @@ impl PacketNative5SourceLaunch {
     /// Refuses another dialect, changed program or coordinator, invalid original
     /// controller identity, missing fixed format or exhausted selected storage.
     pub fn validate(&self) -> Result<(), ProviderError> {
-        crate::connection::serialized_credit(self, 1024 * 1024)?;
-        self.storage.validate(&self.limits)?;
-        self.capture_profile.validate()?;
-        let owned = matches!(
-            self.capture_profile,
-            PacketNative5CaptureProfile::OwnedProtocol11 { .. }
-        );
-        if owned != self.protocol_metadata_limits.is_some() {
-            return Err(ProviderError::Correlation(
-                "native protocol metadata profile differs",
-            ));
-        }
-        if let Some(metadata) = self.protocol_metadata_limits {
-            metadata.validate_data()?;
-        }
-        if self.capture_allocation_selection.is_some()
-            && (!owned
-                || self.protocol_metadata_limits.is_none()
-                || self.native_codec_metadata_extent
-                    != Some(crate::client::CanonicalAckCodecMetadataExtent::CanonicalAck512KiB)
-                || self.ack_emitter_selection
-                    != Some(super::PacketNative5AckEmitterSelection::CanonicalSdkBlob5))
-        {
-            return Err(ProviderError::Correlation(
-                "native Capture allocation birth tuple",
-            ));
-        }
-        if self.fresh_restore_allocation_selection.is_some()
-            && (!owned
-                || self.protocol_metadata_limits.is_none()
-                || self.native_codec_metadata_extent != Some(crate::client::CanonicalAckCodecMetadataExtent::CanonicalAck512KiB)
-                || self.ack_emitter_selection != Some(super::PacketNative5AckEmitterSelection::CanonicalSdkBlob5)
-                || self.complete_restore_selection != Some(super::complete_restore::PacketNative5CompleteRestoreSelection::SourceSignedTransfer12)
-                || self.restore_input_emitter_selection != Some(super::complete_restore::PacketNative5RestoreInputEmitterSelection::CanonicalSdkRestoreInputs12))
-        {
-            return Err(ProviderError::Correlation("native fresh report birth tuple"));
-        }
-        self.controller_executable.validate()?;
-        self.selection.provider.validate()?;
-        self.selection.realization.validate()?;
-        self.selection.realize.validate()?;
-        let schema = super::super::continuation_contracts::complete_packet_ingress_schema()?;
-        if self.schema_version != 5
-            || self.admission_token.as_slice().len() != 32
-            || self.controller_pid.get() == 0
-            || self.controller_pid.get() > i32::MAX as u64
-            || self.controller_uid.get() > u32::MAX as u64
-            || !self
-                .selection
-                .provider
-                .implementation
-                .formats
-                .contains(&schema)
-            || self.limits.requests.get() < 32
-            || self.limits.requests.get() > 256
-            || self.limits.nesting.get() != 64
-            || self.limits.journal_entries.get() > 4096
-        {
-            return Err(ProviderError::Correlation(
-                "native5 complete private launch",
-            ));
-        }
-        self.initial_coordinator
-            .reference
-            .verify(self.initial_coordinator.bytes.as_slice())?;
-        if self.initial_coordinator.reference.media_type != "application/json" {
-            return Err(ProviderError::Correlation("native5 coordinator media"));
-        }
-        super::super::coordinator::PacketNative5CoordinatorInstallation::decode(
-            self.initial_coordinator.bytes.as_slice(),
-            &self.selection,
-        )?;
-        let configuration = match &self.program {
-            PacketConnectedSourceProgram::Producer { program }
-                if program.schema == "source-owned.packet-program.v1"
-                    && program.events.len() == 2 =>
-            {
-                serde_json::to_value(program)
-            }
-            PacketConnectedSourceProgram::Reactive { program }
-                if program.schema == "source-owned.packet-connected-program/4"
-                    && !program.connections.is_empty()
-                    && program.connections.len() <= 4 =>
-            {
-                serde_json::to_value(program)
-            }
-            _ => {
-                return Err(ProviderError::Correlation(
-                    "native5 model configuration edition",
-                ));
-            }
-        }
-        .map_err(ContractError::from)?;
-        self.selection
-            .realize
-            .configuration
-            .verify(&canonical::canonical_json(&configuration)?)?;
-        if self.restore_input_emitter_selection.is_some() && self.complete_restore_selection != Some(super::complete_restore::PacketNative5CompleteRestoreSelection::SourceSignedTransfer12) {
-            return Err(ProviderError::Correlation("native restore input selection lacks transfer12"));
-        }
-        if let Some(restoration) = self.complete_restore_selection {
-            super::super::Native5Policy::from_original_launch_with_complete_restore(
-                self.selection.clone(),
-                self.initial_coordinator.clone(),
-                self.capture_profile.clone(),
-                self.confirmation_selection
-                    .ok_or(ProviderError::Correlation(
-                        "restoring native confirmation absent",
-                    ))?,
-                self.ack_emitter_selection
-                    .ok_or(ProviderError::Correlation("restoring native ACK absent"))?,
-                self.native_codec_metadata_extent
-                    .ok_or(ProviderError::Correlation(
-                        "restoring native codec extent absent",
-                    ))?,
-                self.protocol_metadata_limits
-                    .ok_or(ProviderError::Correlation(
-                        "restoring native metadata absent",
-                    ))?,
-                restoration,
-            )?
-            .with_restore_input_emitter_selection(self.restore_input_emitter_selection)?
-            .with_capture_allocation_selection(self.capture_allocation_selection)?
-            .with_fresh_restore_allocation_selection(self.fresh_restore_allocation_selection)?;
-        } else if let Some(metadata) = self.protocol_metadata_limits {
-            super::super::Native5Policy::from_original_launch_with_protocol_metadata(
-                self.selection.clone(),
-                self.initial_coordinator.clone(),
-                self.capture_profile.clone(),
-                self.confirmation_selection
-                    .ok_or(ProviderError::Correlation(
-                        "owned native confirmation absent",
-                    ))?,
-                self.ack_emitter_selection
-                    .ok_or(ProviderError::Correlation("owned native ACK absent"))?,
-                self.native_codec_metadata_extent
-                    .ok_or(ProviderError::Correlation(
-                        "owned native codec extent absent",
-                    ))?,
-                metadata,
-            )?
-            .with_capture_allocation_selection(self.capture_allocation_selection)?
-            .with_fresh_restore_allocation_selection(self.fresh_restore_allocation_selection)?;
-        } else if let Some(emitter) = self.ack_emitter_selection {
-            let confirmation = self
-                .confirmation_selection
-                .ok_or(ProviderError::Correlation(
-                    "canonical ACK emitter requires selected confirmation",
-                ))?;
-            if let Some(extent) = self.native_codec_metadata_extent {
-                super::super::Native5Policy::from_original_launch_with_ack_emitter_metadata_extent(
-                    self.selection.clone(),
-                    self.initial_coordinator.clone(),
-                    self.capture_profile.clone(),
-                    confirmation,
-                    emitter,
-                    extent,
-                )?;
-            } else {
-                super::super::Native5Policy::from_original_launch_with_ack_emitter(
-                    self.selection.clone(),
-                    self.initial_coordinator.clone(),
-                    self.capture_profile.clone(),
-                    confirmation,
-                    emitter,
-                )?;
-            }
-        } else if self.native_codec_metadata_extent.is_some() {
-            return Err(ProviderError::Correlation(
-                "native codec extent requires canonical ACK selection",
-            ));
-        } else if let Some(confirmation) = self.confirmation_selection {
-            // Additional source grammar is authenticated before any service
-            // allocation or listener effect; selecting it grants no mechanism.
-            super::super::Native5Policy::from_original_launch_with_confirmation(
-                self.selection.clone(),
-                self.initial_coordinator.clone(),
-                self.capture_profile.clone(),
-                confirmation,
-            )?;
-        } else {
-            super::super::Native5Policy::from_original_launch(
-                self.selection.clone(),
-                self.initial_coordinator.clone(),
-            )?;
-        }
-        Ok(())
+        validation::validate_real_launch(self)
     }
 }
 

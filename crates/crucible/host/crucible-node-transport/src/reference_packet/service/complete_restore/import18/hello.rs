@@ -8,14 +8,17 @@
 
 use super::*;
 
+#[path = "hello/launch_fields.rs"]
+mod launch_fields;
 #[path = "hello/materialization.rs"]
 mod materialization;
 mod registration;
+pub use launch_fields::native_import18_hello_declaration_from_fields_data;
 
 use crate::handshake::{ConnectionAuthority, EXTENSION_NEGOTIATION_V1};
 use crate::reference_packet::service::{
-    PacketNative5SourceLaunch, ack_emitter, capture_allocation, confirmation,
-    fresh_restore_allocation,
+    PacketNative5LaunchValidationFields, PacketNative5SourceLaunch, ack_emitter,
+    capture_allocation, confirmation, fresh_restore_allocation,
 };
 use crate::retained_metadata::requested_storage::tree_storage_data;
 use crucible_node_format::{IdSet, MAX_ID_BYTES};
@@ -30,6 +33,7 @@ pub use registration::{
     authenticate_native_import18_current_host_registration_data,
     native_import18_current_registration_wire_data,
     native_import18_prospective_host_registration_data,
+    native_import18_prospective_host_registration_from_fields_data,
     native_import18_registration_counter_scratch_data,
 };
 use std::collections::BTreeMap;
@@ -76,19 +80,8 @@ pub type PacketNativeImport18HelloSelectionData = (IdSet, BTreeMap<String, Id>);
 pub fn native_import18_hello_declaration_data(
     launch: &PacketNative5SourceLaunch,
 ) -> Result<PacketNativeImport18HelloDeclarationData, ProviderError> {
-    if launch.schema_version != 5
-        || launch.ack_emitter_selection.is_none()
-        || launch.confirmation_selection.is_none()
-        || launch.protocol_metadata_limits.is_none()
-        || launch.selection.realization.bindings.len() != 1
-    {
-        return Err(refused());
-    }
-    declaration_for_selections_data(
-        launch.complete_restore_selection,
-        launch.capture_allocation_selection.is_some(),
-        launch.fresh_restore_allocation_selection.is_some(),
-    )
+    let fields = PacketNative5LaunchValidationFields::from_launch_data(launch);
+    native_import18_hello_declaration_from_fields_data(&fields)
 }
 
 // Native5Policy consumes these same actual immutable selectors. This pure DATA
@@ -649,7 +642,8 @@ impl PacketNativeImport18HelloDeclarationData {
     /// This excludes the identity supplier, allowing its own current-policy
     /// counter to compose the real declaration check without recursion.
     pub(crate) fn declaration_counter_scratch_data() -> usize {
-        size_of::<Self>() * 2
+        launch_fields::REAL_INPUT_HEADERS
+            + size_of::<Self>() * 2
             + size_of::<Result<Self, ProviderError>>()
             + size_of::<&Self>()
             + size_of::<&PacketNative5SourceLaunch>()

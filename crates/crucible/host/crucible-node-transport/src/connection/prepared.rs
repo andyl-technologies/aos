@@ -140,6 +140,38 @@ pub(crate) struct SerializedCreditCounter {
     maximum: usize,
 }
 
+impl SerializedCreditCounter {
+    /// Starts a private projected count without serializing placeholder bytes.
+    pub(crate) fn projection_data(maximum: usize) -> Self {
+        Self { used: 0, maximum }
+    }
+
+    /// Returns actual counted JSON bytes after successful projection.
+    pub(crate) fn used_data(&self) -> usize {
+        self.used
+    }
+
+    /// Counts an exact opaque JSON extent at its original field position.
+    ///
+    /// This is not a Write operation or evidence that any bytes were emitted.
+    /// The unchanged real writer below remains the formatter's checked sink.
+    ///
+    /// # Errors
+    /// Returns the original whole-frame resource error on overflow or when the
+    /// declared extent exceeds the remaining maximum.
+    pub(crate) fn advance_projection_data(&mut self, bytes: usize) -> Result<(), ProviderError> {
+        let next = self
+            .used
+            .checked_add(bytes)
+            .filter(|next| *next <= self.maximum)
+            .ok_or(ProviderError::ResourceExhausted(
+                "prepared whole frame bytes",
+            ))?;
+        self.used = next;
+        Ok(())
+    }
+}
+
 impl Write for SerializedCreditCounter {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         let next = self

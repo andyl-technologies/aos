@@ -36,7 +36,9 @@ mod connected;
 mod native5;
 mod native5_policy;
 pub use native5::{
-    PacketNative5CaptureProfile, PacketNative5SourceLaunch, PacketNative5StorageLimits,
+    PacketNative5CaptureProfile, PacketNative5LaunchValidationFields,
+    PacketNative5LaunchValidationProjection, PacketNative5PathSerializationData,
+    PacketNative5SourceLaunch, PacketNative5StorageLimits,
 };
 pub(crate) use native5_policy::Native5Policy;
 mod security;

@@ -10,6 +10,7 @@ use crate::node_contract::{NodeRuntime, RuntimeError};
 use crucible_node_format::{ContentRef, canonical};
 use crucible_node_transport::reference_packet::{
     coordinator::PacketNative5CoordinatorInstallation,
+    service::PacketNative5LaunchValidationFields,
     service::complete_restore::import18::hello::{
         native_import18_hello_declaration_data, native_import18_prospective_host_registration_data,
     },
@@ -865,7 +866,7 @@ impl NativeImport18BirthConstruction {
         };
         Ok((
             views::SourceBirthView {
-                launch,
+                fields: PacketNative5LaunchValidationFields::from_launch_data(launch),
                 coordinator,
             },
             views::RegistrationView {
