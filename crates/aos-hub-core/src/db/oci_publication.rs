@@ -1940,6 +1940,17 @@ impl Database {
         )
         .expecting(1)];
         if matches!(publication.source_kind.as_str(), "release" | "channel") {
+            // The indexer locks this registry before replacing derived roots.
+            // Acquire the same lock first: an UPDATE waiting on a deleted root
+            // cannot see its replacement in PostgreSQL's statement snapshot.
+            statements.insert(
+                0,
+                Statement::new(
+                    "UPDATE registries SET updated_at = updated_at WHERE id = ?1",
+                    vals![publication.registry_id],
+                )
+                .expecting(1),
+            );
             let release_tag = publication
                 .release_tag
                 .as_deref()
@@ -1949,7 +1960,7 @@ impl Database {
                 .as_deref()
                 .context("release publication lost its signed sidecar digest")?;
             statements.insert(
-                0,
+                1,
                 Statement::new(
                     "UPDATE oci_release_roots
                      SET publication_fence = publication_fence + 1

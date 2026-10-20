@@ -34,6 +34,10 @@ mod publication;
 #[path = "oci_upload.rs"]
 mod upload;
 
+#[cfg(all(test, feature = "postgres"))]
+#[path = "oci_publication_postgres_tests.rs"]
+mod publication_postgres_tests;
+
 pub use publication::*;
 pub use upload::*;
 
@@ -2954,7 +2958,10 @@ mod tests {
         }
     }
 
-    fn catalog_fixture(registry_id: i64, placement_id: i64) -> IndexOciRepositoryCatalog {
+    pub(super) fn catalog_fixture(
+        registry_id: i64,
+        placement_id: i64,
+    ) -> IndexOciRepositoryCatalog {
         let layer = descriptor(MediaType::OciLayerGzip, b"fixture-layer");
         let diff_id = Sha256Digest::digest(b"fixture-unpacked-layer");
         let config_json = format!(
@@ -3234,7 +3241,7 @@ mod tests {
         assert_eq!(mutation_epoch, 1, "exact replay must not move the epoch");
     }
 
-    async fn record_catalog_bytes(db: &Database, input: &IndexOciRepositoryCatalog) {
+    pub(super) async fn record_catalog_bytes(db: &Database, input: &IndexOciRepositoryCatalog) {
         for object in &input.objects {
             let surface = db
                 .create_surface_object(&crate::db::SetSurfaceObject {
@@ -3271,7 +3278,7 @@ mod tests {
         }
     }
 
-    async fn freeze_publication_graph(
+    pub(super) async fn freeze_publication_graph(
         db: &Database,
         mut publication: OciPublicationRecord,
         repository_id: i64,
