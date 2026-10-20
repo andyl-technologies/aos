@@ -14,6 +14,10 @@ use async_trait::async_trait;
 
 use super::{super::HubClient, DirectHubControl};
 
+// Hybrid discovery lasts 25 seconds. Preserve five seconds of dispatch margin
+// above the transfer engine's ten-second conservative clock allowance.
+const DISCOVERY_RENEWAL_MARGIN_SECONDS: u64 = 15;
+
 /// Original credential authority for renewal on the already pinned Hub origin.
 #[async_trait]
 pub trait DirectHubAuthentication: Send + Sync + fmt::Debug {
@@ -80,7 +84,8 @@ impl RefreshingControl {
             .as_secs();
         if denied_epoch == Some(state.epoch)
             || state.checked.elapsed() >= Duration::from_secs(60)
-            || state.capabilities.valid_until.get().saturating_sub(now) <= 30
+            || state.capabilities.valid_until.get().saturating_sub(now)
+                <= DISCOVERY_RENEWAL_MARGIN_SECONDS
         {
             let hub = match &self.authentication {
                 Some(provider) => provider.authenticate(&self.base).await?,

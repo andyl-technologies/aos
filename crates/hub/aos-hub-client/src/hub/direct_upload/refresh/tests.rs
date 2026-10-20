@@ -194,6 +194,33 @@ async fn discovery_authorization_refusals_and_malformed_replies_are_not_retried(
 }
 
 #[tokio::test]
+async fn short_lived_discovery_is_reused_before_the_refresh_margin() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let hub = HubClient::connect_with_token(&origin, "owned-private-jwt").unwrap();
+    let original = capabilities(now() + 25);
+    let provider = Arc::new(Authentication(AtomicUsize::new(0)));
+    let control = RefreshingControl::new(
+        &hub,
+        original.clone(),
+        Some(provider.clone()),
+        Arc::default(),
+    )
+    .unwrap();
+
+    // The listener deliberately serves no replies: cached discovery requires
+    // neither another authentication nor an HTTP round trip.
+    for _ in 0..2 {
+        let snapshot = tokio::time::timeout(Duration::from_secs(1), control.snapshot())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(snapshot, original);
+    }
+    assert_eq!(provider.0.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
 async fn elapsed_real_expiry_renews_same_actor_and_profile_from_original_authentication() {
     let original = capabilities(now() + 1);
     let renewed = capabilities(now() + 600);
