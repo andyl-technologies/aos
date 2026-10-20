@@ -3,6 +3,8 @@
 //! Both physical owners require genuine confinement, native preparation, recovery
 //! and acknowledged Resume. Caller metadata and fixture bytes confer no authority.
 
+mod shared;
+
 use super::config::{HARD_LIMIT, HOLD, Inputs, STATE};
 use std::{
     fs,
@@ -63,6 +65,13 @@ pub(super) fn run(
         .ok_or_else(|| invalid("clock overflow"))?;
     let lease = runtime.block_on(owner.pin_resident_chunk(identity.clone(), expires))?;
     check_read(&lease)?;
+    let shared_policy = fs::read(policy_path(inputs))?;
+    let shared = shared::SharedChecks::open(runtime, inputs, &lease)?;
+    if fs::read(policy_path(inputs))? != shared_policy {
+        return Err(invalid(
+            "shared directory construction changed durable policy",
+        ));
+    }
     let pinned = load(runtime, inputs)?;
     check_delta(&baseline, &pinned, &lease, inputs, expires, 1)?;
     let accounting = lease.initial_accounting();
@@ -77,6 +86,7 @@ pub(super) fn run(
     }
     let stalled = runtime.block_on(owner.stall_policy_for_fixture())?;
     check_read(&lease)?;
+    shared.read(runtime, &lease)?;
     drop(stalled);
     foreign_control(&lease, runtime, inputs, confinement)?;
     emit(&format!(
@@ -101,6 +111,7 @@ pub(super) fn run(
         ));
     }
     check_read(&lease)?;
+    shared.read(runtime, &lease)?;
     if lease.expires_at()? != expires {
         return Err(invalid("pending renewal published its new deadline early"));
     }
@@ -124,6 +135,7 @@ pub(super) fn run(
         1,
     )?;
     let released = runtime.block_on(owner.release_consumer_lease(&lease))?;
+    shared.revoked(runtime, &lease)?;
     if lease.read_verified().is_ok() || released.future_hold_bytes != accounting.future_hold_bytes {
         return Err(invalid(
             "release failed revocation or discarded grace funding",
@@ -221,6 +233,9 @@ pub(super) fn run(
             "periodic sweep failed original grace deadline or changed producer custody",
         ));
     }
+    emit(
+        "PASS native shared-directory sealed fallback, original grant, finite inventory, foreign-layout refusal, held-policy read and release revocation",
+    )?;
     emit(
         "PASS actual consumer pin, held-policy read, cancelled renewal, foreign-owner refusal, release, re-pin and periodic expiry; original inode and producer records retained",
     )

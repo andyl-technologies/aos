@@ -274,6 +274,11 @@ pub(super) fn retain_registered(
 }
 
 impl NativeResidentChunkSource {
+    /// Borrows the configured location retained by the original native source.
+    pub(in crate::host_cache) fn location(&self) -> &HostDomainLocation {
+        self.layout.layout()
+    }
+
     /// Borrows the actual retained source's domain binding.
     pub(in crate::host_cache) fn domain(&self) -> &str {
         self.layout.layout().domain()

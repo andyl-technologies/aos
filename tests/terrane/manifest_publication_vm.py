@@ -675,6 +675,9 @@ def run_consumer_leases(driver, helper, uuid):
         result = "PASS actual consumer pin, held-policy read, cancelled renewal, foreign-owner refusal, release, re-pin and periodic expiry; original inode and producer records retained"
         driver.require(process.returncode == 0 and full.splitlines().count(result) == 1,
                        "native consumer lifecycle did not actually complete")
+        shared_result = "PASS native shared-directory sealed fallback, original grant, finite inventory, foreign-layout refusal, held-policy read and release revocation"
+        driver.require(full.splitlines().count(shared_result) == 1,
+                       "native shared-directory controls did not actually complete")
         final = tomllib.loads(policy.read_text())
         driver.require(all(final[group] == rows for group, rows in baseline.items())
                        and body.stat().st_ino == inode and body.read_bytes() == plaintext,

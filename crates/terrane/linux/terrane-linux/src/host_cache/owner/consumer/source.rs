@@ -5,7 +5,7 @@
 
 use super::invalid;
 use crate::host_cache::{
-    NativeResidentChunkSource,
+    NativeChunkSpan, NativeResidentChunkSource,
     owner::{
         admission::{AdmissionJob, reads::AdmittedRead},
         publication::{self, eviction::ReadActivity},
@@ -16,7 +16,14 @@ use std::{
     io,
     sync::{Arc, Mutex},
 };
-use terrane_format::identity::{Identity, TERRANE_V1};
+use terrane_format::{
+    identity::{Identity, TERRANE_V1},
+    properties::Domain,
+};
+use terrane_sdk::{
+    host::cache::DomainHostLayout,
+    store::{StoreErrorKind, StoreFailure},
+};
 
 /// Retains one actual immutable backing and its exact durable protection set.
 pub(super) struct ConsumerSource {
@@ -41,6 +48,31 @@ pub(super) struct Allocation {
 }
 
 impl ConsumerSource {
+    /// Binds a shared residence to its actual sealed source before reading bytes.
+    ///
+    /// # Errors
+    /// Refuses encoded backing, private domains, or a different root or profile.
+    pub(super) fn shared_span(
+        &self,
+        layout: &DomainHostLayout,
+    ) -> Result<NativeChunkSpan, StoreFailure> {
+        let Backing::Sealed(source) = &self.backing else {
+            return Err(StoreFailure::new(StoreErrorKind::Unsupported));
+        };
+        let location = source.location();
+        if matches!(Domain::parse(location.domain()), Ok(Domain::Private(_)))
+            || location.domain() != layout.domain_binding().domain
+            || location.root() != layout.root()
+            || location.chunk_profile() != layout.chunk_profile()
+        {
+            return Err(StoreFailure::new(StoreErrorKind::Denied {
+                verb: "read",
+                pattern: layout.domain_binding().reference.clone(),
+            }));
+        }
+        Ok(source.span())
+    }
+
     /// Selects actual sealed custody or an original admitted cache body.
     ///
     /// Residence rows select a source class only. A present sealed residence

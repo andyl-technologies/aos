@@ -13,6 +13,10 @@ use std::{
     },
 };
 use terrane_format::identity::Identity;
+use terrane_sdk::{
+    host::cache::{DomainHostLayout, ResidenceChunk},
+    store::{StoreErrorKind, StoreFailure},
+};
 
 const CLOSED: u64 = 1 << 63;
 
@@ -235,6 +239,52 @@ impl Drop for ActiveRead<'_> {
 }
 
 impl NativeConsumerLease {
+    /// Checks a live sealed grant against the configured shared directory.
+    ///
+    /// # Errors
+    /// Refuses a closed grant, unavailable read slot or mismatched native source.
+    pub(in crate::host_cache) fn check_shared_layout(
+        &self,
+        layout: &DomainHostLayout,
+    ) -> Result<(), StoreFailure> {
+        let read = self.view.begin_read().map_err(shared_error)?;
+        read.source
+            .as_ref()
+            .ok_or_else(|| shared_error(io::Error::other("shared backing absent")))?
+            .shared_span(layout)?;
+        self.view.live_deadline().map_err(shared_error)?;
+        Ok(())
+    }
+
+    /// Reads one actual sealed residence under the original consumer's grant.
+    ///
+    /// # Errors
+    /// Refuses another layout, expired/revoked grants, insufficient allocation
+    /// bounds, changed native backing or failed verification.
+    pub(in crate::host_cache) fn read_shared_chunk(
+        &self,
+        layout: &DomainHostLayout,
+        max_plaintext_bytes: usize,
+    ) -> Result<ResidenceChunk, StoreFailure> {
+        let read = self.view.begin_read().map_err(shared_error)?;
+        let source = read
+            .source
+            .as_ref()
+            .ok_or_else(|| shared_error(io::Error::other("shared backing absent")))?;
+        let span = source.shared_span(layout)?;
+        // The cap precedes native IO and every plaintext allocation. The same
+        // active-read guard retains original custody through final grant checks.
+        if span.length > max_plaintext_bytes {
+            return Err(StoreFailure::new(StoreErrorKind::Capacity));
+        }
+        let plaintext = source.read_verified().map_err(shared_error)?;
+        self.view.live_deadline().map_err(shared_error)?;
+        Ok(ResidenceChunk {
+            plaintext,
+            final_chunk: span.final_chunk,
+        })
+    }
+
     /// Borrows the original identity selected through verified native custody.
     pub fn identity(&self) -> &Identity {
         &self.view.identity
@@ -277,4 +327,8 @@ impl NativeConsumerLease {
         self.view.live_deadline()?;
         Ok(bytes)
     }
+}
+
+fn shared_error(error: io::Error) -> StoreFailure {
+    StoreFailure::with_source(StoreErrorKind::Unavailable { retry_after: None }, error)
 }

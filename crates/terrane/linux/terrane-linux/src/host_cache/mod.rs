@@ -17,6 +17,8 @@ mod reassembly;
 mod recovery_inspection;
 mod residency;
 mod seal;
+#[cfg(feature = "tokio")]
+mod shared_residences;
 mod source;
 
 #[cfg(feature = "tokio")]
@@ -52,6 +54,8 @@ pub use recovery_inspection::{
 };
 pub use residency::{NativeChunkSpan, NativeResidencePlan};
 pub use seal::NativeSealCapability;
+#[cfg(feature = "tokio")]
+pub use shared_residences::NativeSharedResidences;
 pub use source::NativeChunkSource;
 
 use std::{
