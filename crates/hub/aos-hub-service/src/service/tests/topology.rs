@@ -221,3 +221,193 @@ fn blocker_errors_are_stable_topology_preconditions() {
         "placement has active registry-publication state"
     );
 }
+
+#[tokio::test]
+async fn hybrid_private_registry_grant_disables_shared_caching() {
+    use crate::service::ReadAuthorization;
+    use crate::service::RegistryServeOutcome;
+    use aos_hub_db::hybrid_ingress::HybridDeliveryTarget;
+    use aos_hub_db::hybrid_ingress::HYBRID_DELIVERY_HEADER;
+    use aos_hub_model::delivery_http::DeliveryMethod;
+
+    let bytes = b"registry object bytes".to_vec();
+    let (service, db, _lease, _auth) = injected_service(
+        vec![FetchBehavior::Evidence {
+            bytes: bytes.clone(),
+            strong_etag: "\"registry-version\"".into(),
+        }],
+        vec![],
+    )
+    .await;
+    let service = service.with_hybrid_delivery();
+    let binding = db
+        .ensure_instance_default_binding(
+            "deployment_r2",
+            None,
+            Some(aos_hub_model::binding::DEPLOYMENT_R2_ATTACHMENT),
+        )
+        .await
+        .unwrap();
+    let org_id = db.create_org("hybrid-serve", "Hybrid serve").await.unwrap();
+    let org = db.org_by_id(org_id).await.unwrap().unwrap();
+    db.grant_consumer_scope(
+        aos_hub_db::db::GrantResource::Binding {
+            id: binding.id,
+            stable_id: &binding.stable_id,
+        },
+        &org.stable_id,
+        "explicit",
+        "test",
+        "request:hybrid-serve-binding-grant",
+    )
+    .await
+    .unwrap();
+    let registry_id = db
+        .create_managed_registry(org_id, "", "main", "private", &[], false)
+        .await
+        .unwrap();
+    let placement = db
+        .create_surface_placement(&NewSurfacePlacementSpec {
+            surface: SurfaceTarget::Registry(registry_id),
+            name: "primary".into(),
+            binding_id: binding.id,
+            prefix: "hybrid-serve/main".into(),
+            kind: "complete".into(),
+            desired_state: "active".into(),
+            hash_range: None,
+            desired_read_enabled: true,
+            read_order: 0,
+            requires_conditional_writes: false,
+        })
+        .await
+        .unwrap();
+    db.observe_surface_placement(placement.id, "ready", "complete", 1)
+        .await
+        .unwrap();
+    db.set_registry_mirror(
+        registry_id,
+        "https://example.org/source",
+        "refs/heads/*",
+        "",
+        "pull_through",
+        "allow_unsigned",
+        0,
+        None,
+    )
+    .await
+    .unwrap();
+
+    let registry = db.registry_by_id(registry_id).await.unwrap().unwrap();
+    let path = format!("objects/aa/{}", "0".repeat(62));
+    assert!(service
+        .registry_serve(
+            ReadAuthorization::AuthorizationHeader(None),
+            &registry,
+            &path,
+            image_http_request(DeliveryMethod::Get, None),
+        )
+        .await
+        .is_err());
+    let response = service
+        .registry_serve(
+            ReadAuthorization::PreauthorizedSession,
+            &registry,
+            &path,
+            image_http_request(DeliveryMethod::Get, None),
+        )
+        .await
+        .unwrap();
+    let RegistryServeOutcome::Response(response) = response else {
+        panic!("hybrid registry object should produce a delivery grant");
+    };
+    let encoded = response.headers()[HYBRID_DELIVERY_HEADER].to_str().unwrap();
+    let target: HybridDeliveryTarget = serde_json::from_slice(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(encoded)
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(target.object_key, format!("hybrid-serve/main/{path}"));
+    assert_eq!(target.object_size, bytes.len() as u64);
+    assert_eq!(target.object_etag, "\"registry-version\"");
+    assert_eq!(target.cache_control, "private, no-store");
+    assert!(axum::body::to_bytes(response.into_body(), 1)
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn private_cache_info_disables_shared_caching() {
+    use crate::service::ReadAuthorization;
+
+    let (service, db, _lease, _auth) = injected_service(vec![], vec![]).await;
+    let org_id = db.create_org("private-info", "Private info").await.unwrap();
+    let cache_id = db
+        .create_binary_cache(
+            Some(org_id),
+            "private-info/cache",
+            "Private cache",
+            "private",
+            40,
+            "zstd",
+            true,
+        )
+        .await
+        .unwrap();
+    let cache = db.binary_cache_by_id(cache_id).await.unwrap().unwrap();
+
+    assert!(service
+        .cache_serve(
+            ReadAuthorization::AuthorizationHeader(None),
+            &cache,
+            "nix-cache-info",
+            None,
+        )
+        .await
+        .is_err());
+    let response = service
+        .cache_serve(
+            ReadAuthorization::PreauthorizedSession,
+            &cache,
+            "nix-cache-info",
+            None,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(
+        response.headers()[axum::http::header::CACHE_CONTROL],
+        "private, no-store"
+    );
+    assert_eq!(
+        response.headers()[axum::http::header::VARY],
+        "Authorization, Cookie"
+    );
+}
+
+#[test]
+fn private_surface_response_disables_shared_caching() {
+    let response = RpcService::streamed_surface_response(
+        "nar/example.nar",
+        StreamedRead {
+            body: axum::body::Body::from("data"),
+            total: 4,
+            range: None,
+            strong_etag: None,
+            snapshot_lease_id: None,
+        },
+    )
+    .unwrap();
+    let response = RpcService::private_delivery_response(response);
+
+    assert_eq!(
+        response.headers()[axum::http::header::CACHE_CONTROL],
+        "private, no-store"
+    );
+    assert_eq!(
+        response.headers()[axum::http::header::VARY],
+        "Authorization, Cookie"
+    );
+}

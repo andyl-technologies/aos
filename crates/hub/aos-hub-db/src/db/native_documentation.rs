@@ -249,7 +249,9 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::{IndexSnapshot, ReleaseArtifactSnapshot, ReleaseRow};
+    use crate::db::IndexSnapshot;
+    use crate::db::ReleaseArtifactSnapshot;
+    use crate::db::ReleaseRow;
 
     #[tokio::test]
     async fn native_search_requires_complete_release_and_exact_projection_identity() {

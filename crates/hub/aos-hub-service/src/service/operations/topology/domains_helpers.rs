@@ -20,18 +20,7 @@ impl RpcService {
         &self,
         claims: &Claims,
     ) -> Result<(), RpcError> {
-        let principal = claims_principal(claims)
-            .ok_or_else(|| RpcError::PermissionDenied("active principal required".to_string()))?;
-        if !self
-            .db
-            .principal_is_live(principal.kind.as_str(), principal.id)
-            .await
-            .map_err(RpcError::internal)?
-        {
-            return Err(RpcError::PermissionDenied(
-                "active principal required".to_string(),
-            ));
-        }
+        let principal = self.current_principal(claims).await?;
         let settings = self
             .db
             .instance_settings()

@@ -32,26 +32,18 @@
 //! where traversal is not expressible.
 
 use anyhow::Result;
+use aos_hub_model::storage::FrozenSurfaceAccess;
+use aos_hub_model::storage::MultipartAbortOutcome;
+use aos_hub_model::storage::PartTag;
 use md5::{Digest as _, Md5};
 
+use crate::fetch::SurfaceListedEvidence;
+use crate::fetch::SurfaceObjectEvidence;
 use aos_hub_db::backend::BackendBounds;
-use aos_hub_db::db::{BindingWriteRevisionRecord, SurfacePlacementRecord};
-
-/// One multipart-upload part's identity: its 1-based `part_number` and the
-/// backend's entity tag.
-///
-/// `etag` is the value the backend returns for an uploaded part and requires
-/// back at completion. S3/R2 return their native opaque ETag; local disk
-/// returns a SHA-256 tag and verifies it before assembly. The hub and client
-/// carry the value through the wire protocol and echo the full ordered set
-/// back at [`complete`](SurfaceWrite::complete_multipart).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PartTag {
-    /// 1-based, contiguous part index.
-    pub part_number: u32,
-    /// Backend-returned part identity.
-    pub etag: String,
-}
+use aos_hub_db::db::BindingWriteRevisionRecord;
+use aos_hub_db::db::OciUploadChunkRecord;
+use aos_hub_db::db::SurfacePlacementRecord;
+use aos_hub_db::db::TopologyOperationRecord;
 
 /// Immutable backend identity required by a physical deletion request.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,94 +54,8 @@ pub struct SurfaceDeletePrecondition {
     pub content_hash: Option<String>,
     /// Exact object size, when supplied by inventory.
     pub size: Option<i64>,
-}
-
-/// Immutable physical address and topology fence for one provider operation.
-///
-/// Durable cleanup claims construct this value from their reviewed snapshot;
-/// adapters must use [`Self::placement_prefix`] directly and must never select
-/// a current writer. A binding row may be reopened only when its id and
-/// resource version still match this fence. Plan and Apply validate the current
-/// conditional-delete capability, while the durable claim revalidates this
-/// frozen snapshot and its retained credential hold. The adapter therefore
-/// resolves the exact frozen credential without consulting a capability or
-/// credential head that may legitimately advance after Apply. The frozen
-/// capability identity remains part of durable audit evidence.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FrozenSurfaceAccess {
-    /// Registry whose physical object is being inspected or deleted.
-    pub registry_id: i64,
-    /// Frozen placement database id.
-    pub placement_id: i64,
-    /// Frozen placement display name for bounded diagnostics.
-    pub placement_name: String,
-    /// Frozen binding-relative placement prefix.
-    pub placement_prefix: String,
-    /// Frozen placement optimistic-concurrency version.
-    pub placement_resource_version: i64,
-    /// Frozen placement writer-critical topology version.
-    pub placement_write_spec_version: i64,
-    /// Frozen ready/complete observation version.
-    pub placement_observation_version: i64,
-    /// Frozen storage binding id.
-    pub binding_id: i64,
-    /// Frozen binding optimistic-concurrency version.
-    pub binding_resource_version: i64,
-    /// Frozen immutable binding-write revision.
-    pub binding_write_revision: i64,
-    /// Exact delete credential purpose, absent for credential-free local IO.
-    pub delete_credential_purpose: Option<String>,
-    /// Exact delete credential generation, absent for credential-free local IO.
-    pub delete_credential_generation: Option<i64>,
-    /// Fingerprint of the positively observed conditional-delete capability.
-    pub delete_capability_fingerprint: String,
-    /// Minimum capability observation resource version frozen for audit.
-    pub delete_capability_resource_version: i64,
-}
-
-impl FrozenSurfaceAccess {
-    /// Validates the common frozen-address fence.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for missing identities, invalid versions, an unsafe
-    /// prefix, or a half-populated delete credential pair.
-    pub fn validate(&self) -> Result<()> {
-        if self.registry_id <= 0
-            || self.placement_id <= 0
-            || self.placement_name.is_empty()
-            || self.placement_name.len() > 255
-            || self.placement_resource_version <= 0
-            || self.placement_write_spec_version <= 0
-            || self.placement_observation_version <= 0
-            || self.binding_id <= 0
-            || self.binding_resource_version <= 0
-            || self.binding_write_revision <= 0
-            || self.delete_capability_fingerprint.is_empty()
-            || self.delete_capability_fingerprint.len() > 255
-            || self.delete_capability_resource_version <= 0
-            || self.delete_credential_purpose.is_some()
-                != self.delete_credential_generation.is_some()
-            || self
-                .delete_credential_generation
-                .is_some_and(|generation| generation <= 0)
-        {
-            anyhow::bail!("frozen surface access fence is invalid");
-        }
-        if self.placement_prefix.len() > 512
-            || self.placement_prefix != self.placement_prefix.trim_matches('/')
-            || self.placement_prefix != self.placement_prefix.trim()
-            || self.placement_prefix.contains("//")
-            || self
-                .placement_prefix
-                .split('/')
-                .any(|component| matches!(component, "." | ".."))
-            || self.placement_prefix.chars().any(char::is_control)
-        {
-            anyhow::bail!("frozen surface access prefix is invalid");
-        }
-        Ok(())
-    }
+    /// Upload incarnation frozen by inventory; never substituted from live HEAD.
+    pub expected_provider_version: Option<String>,
 }
 
 /// Verified result of an identity-checked backend deletion.
@@ -182,17 +88,6 @@ pub enum SurfaceDeleteOutcome {
         /// Sanitized backend explanation.
         detail: String,
     },
-}
-
-/// Durable-cleanup significance of a multipart abort attempt.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MultipartAbortOutcome {
-    /// The backend confirmed that the staged upload was aborted.
-    Aborted,
-    /// The backend confirmed that no staged upload exists.
-    Absent,
-    /// The backend cannot distinguish an absent upload from one already completed.
-    PossiblyCompleted,
 }
 
 pub use aos_hub_model::delivery_http::strong_if_match_etag;
@@ -247,6 +142,15 @@ pub fn md5_multipart_etag(parts: &[PartTag]) -> Result<Option<String>> {
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 pub trait SurfaceWrite: BackendBounds {
+    /// Requires an actual provider version for this adapter's conditional deletes.
+    ///
+    /// This constraint grants no capability. Probes must reject unsupported
+    /// provider metadata before dispatch; other adapters retain their existing
+    /// conditional ETag/guard semantics.
+    fn conditional_delete_requires_provider_version(&self) -> bool {
+        false
+    }
+
     /// Reports the exact multipart protocol version implemented by this backend.
     ///
     /// Callers must check this capability before creating a durable ticket or
@@ -330,6 +234,26 @@ pub trait SurfaceWrite: BackendBounds {
     ) -> Result<SurfaceDeleteOutcome> {
         let _ = (path, expected);
         anyhow::bail!("this backend does not support identity-checked deletion")
+    }
+
+    /// Deletes one reviewed object with a durable claim identity for retries.
+    ///
+    /// Providers that enforce the object condition atomically need no extra
+    /// claim state. Hybrid R2 uses the claim to prevent a replay from deleting
+    /// a later object at the same physical key.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error under the same conditions as
+    /// [`delete_if_matches`](Self::delete_if_matches).
+    async fn delete_if_matches_claimed(
+        &self,
+        path: &str,
+        expected: &SurfaceDeletePrecondition,
+        claim_id: &str,
+    ) -> Result<SurfaceDeleteOutcome> {
+        let _ = claim_id;
+        self.delete_if_matches(path, expected).await
     }
 
     /// Begin a multipart upload targeting the logical `path`, returning the
@@ -425,10 +349,260 @@ pub trait SurfaceWrite: BackendBounds {
     }
 }
 
+/// Pins an installed copy profile selected under current controller authority.
+///
+/// This observational policy grants no source read or destination effect.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlacementCopyPolicy {
+    /// Exact authenticated installed profile commitment.
+    pub profile_digest: String,
+    /// Requires trusted catalogue selection and claimed replay for every object.
+    pub catalogue_only: bool,
+}
+
 /// Resolves the [`SurfaceWrite`] for one explicit physical placement.
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 pub trait SurfaceWriteProvider: BackendBounds {
+    /// Observes an installed copy policy under the exact current claim and path.
+    ///
+    /// Local and Managed providers retain their existing policy by default.
+    /// The result grants no provider effect or source-incarnation permission.
+    ///
+    /// # Errors
+    /// Refuses changed current authority or an unauthenticated installed profile.
+    async fn placement_copy_policy(
+        &self,
+        operation: &TopologyOperationRecord,
+        claim_token: &str,
+        source: &SurfacePlacementRecord,
+        destination: &SurfacePlacementRecord,
+        path: &str,
+    ) -> Result<Option<PlacementCopyPolicy>> {
+        let _ = (operation, claim_token, source, destination, path);
+        Ok(None)
+    }
+
+    /// Copies an object while requiring the previously selected installed policy.
+    ///
+    /// Implementations that return a policy must check it before dispatch or
+    /// accepting retained success; the default preserves existing local copies.
+    ///
+    /// # Errors
+    /// Refuses policy drift or any error from the claimed copy implementation.
+    async fn copy_placement_object_with_policy(
+        &self,
+        operation: &TopologyOperationRecord,
+        claim_token: &str,
+        source: &SurfacePlacementRecord,
+        destination: &SurfacePlacementRecord,
+        path: &str,
+        listed_source: Option<&SurfaceListedEvidence>,
+        policy: Option<&PlacementCopyPolicy>,
+    ) -> Result<Option<u64>> {
+        if policy.is_some() {
+            anyhow::ensure!(
+                self.placement_copy_policy(operation, claim_token, source, destination, path)
+                    .await?
+                    .as_ref()
+                    == policy,
+                "installed placement copy policy changed"
+            );
+        }
+        self.copy_placement_object_claimed(
+            operation,
+            claim_token,
+            source,
+            destination,
+            path,
+            listed_source,
+        )
+        .await
+    }
+
+    /// Prepares a real External OCI reservation beside the protected byte executor.
+    ///
+    /// This port returns only an authenticated short-lived Stage original. The
+    /// caller has already checked current OCI IAM and atomically frozen the real
+    /// upload writer. Local/Managed behavior does not use this external port.
+    ///
+    /// # Errors
+    /// Refuses unsupported or unqualified External OCI, changed reservation,
+    /// provider profile drift or a mismatched retained physical original.
+    async fn prepare_external_oci_stage(
+        &self,
+        preparation: &aos_hub_db::storage_authority::external_object::oci::admission::ExternalOciStagePreparation,
+    ) -> Result<
+        aos_hub_db::storage_authority::external_object::oci::admission::ExternalOciStagePermit,
+    > {
+        let _ = preparation;
+        anyhow::bail!("external OCI staging is not qualified by this runtime")
+    }
+
+    /// Reads exact positive external staging facts under a fresh OCI phase grant.
+    ///
+    /// The returned opaque proof authenticates the independently held original,
+    /// whole upload continuation, actual EOF and positive provider completion.
+    /// It supplies no mutation permission and cannot clear an unknown effect.
+    ///
+    /// # Errors
+    /// Refuses unsupported qualification, stale actor/writer or absent proof.
+    async fn external_oci_stage_readback(
+        &self,
+        permit: &aos_hub_db::storage_authority::external_object::oci::admission::ExternalOciStagePermit,
+    ) -> Result<aos_hub_db::storage_authority::external_object::oci::reply::VerifiedExternalOciReply>
+    {
+        let _ = permit;
+        anyhow::bail!("external OCI staging readback is not supported by this runtime")
+    }
+
+    /// Copies one object between placements without returning its body to the caller.
+    ///
+    /// `Some(size)` means the provider completed a storage-local copy. Local
+    /// providers return `None` and use the existing streaming copy path.
+    ///
+    /// # Errors
+    /// Returns an error when the source identity, destination authority, or
+    /// provider copy cannot be verified.
+    async fn copy_placement_object(
+        &self,
+        source: &SurfacePlacementRecord,
+        destination: &SurfacePlacementRecord,
+        path: &str,
+        listed_source: Option<&SurfaceListedEvidence>,
+    ) -> Result<Option<u64>> {
+        let _ = (source, destination, path, listed_source);
+        Ok(None)
+    }
+
+    /// Copies one object under the actual retained controller operation and claim.
+    ///
+    /// Existing local and R2 providers keep their normal copy behavior. External
+    /// Hybrid implementations use the supplied original and claim to authorize
+    /// bounded metadata controls; they must return an error for unsupported
+    /// cases instead of permitting a Native body fallback.
+    ///
+    /// # Errors
+    /// Returns an error for stale controller authority or under the same
+    /// conditions as [`copy_placement_object`](Self::copy_placement_object).
+    async fn copy_placement_object_claimed(
+        &self,
+        operation: &TopologyOperationRecord,
+        claim_token: &str,
+        source: &SurfacePlacementRecord,
+        destination: &SurfacePlacementRecord,
+        path: &str,
+        listed_source: Option<&SurfaceListedEvidence>,
+    ) -> Result<Option<u64>> {
+        let _ = (operation, claim_token);
+        self.copy_placement_object(source, destination, path, listed_source)
+            .await
+    }
+
+    /// Materializes one real External OCI claim under current checked authority.
+    ///
+    /// # Errors
+    /// Refuses unqualified external execution, stale originals or unknown effects.
+    async fn materialize_external_oci(
+        &self,
+        selected: &aos_hub_db::storage_authority::external_object::oci::materialization::ExternalOciMaterialization,
+    ) -> Result<SurfaceObjectEvidence> {
+        let _ = selected;
+        anyhow::bail!("external OCI materialization is unavailable on this runtime")
+    }
+
+    /// Selects independently installed Managed OCI document effect permission.
+    ///
+    /// `expires_at` preserves an existing upload cutoff during exact recovery.
+    /// External providers return `None` and retain their own document original.
+    ///
+    /// # Errors
+    /// Rejects unavailable acceptance or a cutoff outside its original window.
+    async fn oci_document_effect(
+        &self,
+        placement: &SurfacePlacementRecord,
+        expires_at: Option<u64>,
+    ) -> Result<Option<aos_hub_db::hybrid_ingress::OciDocumentEffect>> {
+        let _ = (placement, expires_at);
+        Ok(None)
+    }
+
+    /// Composes a Managed document under its retained effect permission.
+    ///
+    /// # Errors
+    /// Rejects implementations without explicit document effect enforcement.
+    async fn compose_oci_document(
+        &self,
+        destination: &SurfacePlacementRecord,
+        revision: &BindingWriteRevisionRecord,
+        staging: Option<&SurfacePlacementRecord>,
+        path: &str,
+        chunks: &[OciUploadChunkRecord],
+        expected_digest: aos_oci_types::Sha256Digest,
+        expected_size: u64,
+        effect: &aos_hub_db::hybrid_ingress::OciDocumentEffect,
+    ) -> Result<Option<SurfaceObjectEvidence>> {
+        let _ = (
+            destination,
+            revision,
+            staging,
+            path,
+            chunks,
+            expected_digest,
+            expected_size,
+            effect,
+        );
+        anyhow::bail!("Managed OCI document composition is unavailable")
+    }
+
+    /// Composes a claimed OCI upload beside storage and returns physical evidence.
+    ///
+    /// `None` means this runtime uses the ordinary in-process writer path.
+    /// Hybrid implementations must keep staged object bodies off the Native
+    /// process and verify the ordered bytes before returning evidence.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the frozen source or destination is unavailable,
+    /// a staged chunk differs from its SQL digest, or composition fails.
+    async fn compose_oci_blob(
+        &self,
+        destination: &SurfacePlacementRecord,
+        revision: &BindingWriteRevisionRecord,
+        staging: Option<&SurfacePlacementRecord>,
+        path: &str,
+        chunks: &[OciUploadChunkRecord],
+        expected_digest: aos_oci_types::Sha256Digest,
+        expected_size: u64,
+    ) -> Result<Option<SurfaceObjectEvidence>> {
+        let _ = (
+            destination,
+            revision,
+            staging,
+            path,
+            chunks,
+            expected_digest,
+            expected_size,
+        );
+        Ok(None)
+    }
+
+    /// Settles one terminal upload's exact private chunk through retained evidence.
+    ///
+    /// Returns `true` only after an implementation authenticates its positive
+    /// conditional-delete receipt. `false` selects the existing local or Managed
+    /// cleanup path; external adapters must refuse unsupported custody instead.
+    ///
+    /// # Errors
+    /// Refuses stale SQL claims, unavailable Delete authority or unknown effects.
+    async fn cleanup_oci_upload_chunk(
+        &self,
+        claim: &aos_hub_db::db::OciTerminalChunkCleanupClaim,
+    ) -> Result<bool> {
+        let _ = claim;
+        Ok(false)
+    }
+
     /// Builds a writer rooted at one explicit physical placement.
     ///
     /// # Errors
@@ -493,6 +667,25 @@ pub trait SurfaceWriteProvider: BackendBounds {
     ) -> Result<Box<dyn SurfaceWrite>> {
         let _ = access;
         anyhow::bail!("this provider does not support frozen conditional deletion")
+    }
+
+    /// Builds a frozen deleter with its genuine live OCI cleanup claim.
+    ///
+    /// Remote adapters use the opaque claim token for metadata-only retained
+    /// credential custody. Other providers retain their existing frozen path.
+    ///
+    /// # Errors
+    /// Returns an error for changed access/claim scope or unavailable exact IO.
+    async fn claimed_placement_deleter(
+        &self,
+        access: &FrozenSurfaceAccess,
+        claim: &aos_hub_db::db::OciGcPlacementActionClaim,
+    ) -> Result<Box<dyn SurfaceWrite>> {
+        anyhow::ensure!(
+            *access == claim.frozen_access(),
+            "delete access differs from claim"
+        );
+        self.frozen_placement_deleter(access).await
     }
 }
 

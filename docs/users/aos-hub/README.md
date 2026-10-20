@@ -46,6 +46,9 @@ resources.
   identity, recovery, storage retention, monitoring, upgrades, and incidents.
 - [Deploy to Cloudflare](cloudflare.md) covers the packaged installer,
   resources, secrets, updates, domains, email, and observability.
+- [Bootstrap external authority qualification](authority-bootstrap.md) exports
+  reviewed SQL metadata and hydrates current binding credentials through the
+  protected Worker control interface.
 
 ## Native runtime ability documents
 

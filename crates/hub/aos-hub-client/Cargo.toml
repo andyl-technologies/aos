@@ -6,6 +6,12 @@ license.workspace = true
 description = "Typed Hub Connect-JSON client and OAuth login flows"
 
 [dependencies]
+tokio-stream.workspace = true
+aos-transfer = { workspace = true, features = ["direct-upload"] }
+async-trait.workspace = true
+sha2.workspace = true
+hex.workspace = true
+rand.workspace = true
 aos-hub-api = { workspace = true }
 anyhow = { workspace = true }
 http = { workspace = true }

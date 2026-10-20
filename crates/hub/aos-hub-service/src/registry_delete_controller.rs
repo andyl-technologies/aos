@@ -36,15 +36,22 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
 use crate::fetch::SurfaceProvider;
-use crate::oci_inventory_controller::{
-    OciInventoryDispatchBudget, OciPlacementInventoryProgress, OciProviderInventoryController,
-};
-use aos_hub_db::db::{
-    Database, NewTopologyOperation, NewTopologyOperationTarget, NewTopologyOperationTargetRef,
-    PlacementDeletionState, PrepareRegistryDeletion, RegistryDeletionCommit,
-    RegistryDeletionOperationCompletion, RegistryDeletionOutcome, RegistryDeletionPlacement,
-    RegistryDeletionReadiness, TopologyOperationRecord, TopologyPlanRecord,
-};
+use crate::oci_inventory_controller::OciInventoryDispatchBudget;
+use crate::oci_inventory_controller::OciPlacementInventoryProgress;
+use crate::oci_inventory_controller::OciProviderInventoryController;
+use aos_hub_db::db::Database;
+use aos_hub_db::db::NewTopologyOperation;
+use aos_hub_db::db::NewTopologyOperationTarget;
+use aos_hub_db::db::NewTopologyOperationTargetRef;
+use aos_hub_db::db::PlacementDeletionState;
+use aos_hub_db::db::PrepareRegistryDeletion;
+use aos_hub_db::db::RegistryDeletionCommit;
+use aos_hub_db::db::RegistryDeletionOperationCompletion;
+use aos_hub_db::db::RegistryDeletionOutcome;
+use aos_hub_db::db::RegistryDeletionPlacement;
+use aos_hub_db::db::RegistryDeletionReadiness;
+use aos_hub_db::db::TopologyOperationRecord;
+use aos_hub_db::db::TopologyPlanRecord;
 use aos_hub_model::clock;
 use aos_hub_model::domain::Permission;
 

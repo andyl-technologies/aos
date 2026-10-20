@@ -149,16 +149,6 @@ pub(super) struct BindingMutationPlanInput {
     pub(super) baseline_resource_version: Option<i64>,
 }
 
-/// Immutable preconditions for storage-binding deletion.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub(super) struct BindingDeletePlanInput {
-    pub(super) stable_id: String,
-    pub(super) owner_scope_key: String,
-    pub(super) org_id: Option<i64>,
-    pub(super) binding_db_id: i64,
-    pub(super) baseline_resource_version: i64,
-}
-
 /// Immutable preconditions for setting or rotating one credential purpose.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(super) struct BindingCredentialPlanInput {

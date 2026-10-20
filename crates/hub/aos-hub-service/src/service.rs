@@ -31,6 +31,22 @@
 //!   -> 404 { "code": "not_found", "message": "registry not found" }
 //! ```
 
+mod authentication;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod direct_oci_allocation_tests;
+mod direct_target;
+#[cfg(test)]
+mod external_copy_tests;
+mod hybrid_cache_upload;
+mod hybrid_publication_upload;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod identity_continuity_tests;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod live_delivery_tests;
+#[cfg(test)]
+mod registry_accounting_tests;
+mod storage_authority;
+
 mod error;
 mod plan_inputs;
 mod reservation_keys;
@@ -71,23 +87,40 @@ use base64::Engine as _;
 use futures_util::{StreamExt as _, TryStreamExt as _};
 use sha2::{Digest as _, Sha256};
 
-use crate::fetch::{SurfaceFetch, SurfaceProvider};
+use crate::fetch::SurfaceFetch;
+use crate::fetch::SurfaceProvider;
 use crate::jobs::Job;
 use crate::lease::PublishLease;
-use crate::placement_read::{self, PlacementReadOutcome};
-use crate::ratelimit::{RateClass, RateDecision, RateLimiter, MAX_ORGS_PER_OWNER};
+use crate::placement_read;
+use crate::placement_read::PlacementReadOutcome;
+use crate::ratelimit::RateClass;
+use crate::ratelimit::RateDecision;
+use crate::ratelimit::RateLimiter;
+use crate::ratelimit::MAX_ORGS_PER_OWNER;
 use crate::reindex::Reindexer;
-use crate::storage_credential::{DatabaseStorageCredentialResolver, StorageCredentialResolver};
-use crate::surface_write::{PartTag, SurfaceWrite, SurfaceWriteProvider};
+use crate::storage_credential::DatabaseStorageCredentialResolver;
+use crate::storage_credential::StorageCredentialResolver;
+use crate::surface_write::SurfaceWrite;
+use crate::surface_write::SurfaceWriteProvider;
 use crate::topology_probe::TopologyProbeScheduler;
-use aos_hub_db::db::{
-    Database, IndexStatus, PlacementReadRequirement, RegistryRecord, SurfaceTarget,
-};
-use aos_hub_model::auth::jwt::{Claims, JwtKeys};
+use aos_hub_db::db::Database;
+use aos_hub_db::db::IndexStatus;
+use aos_hub_db::db::PlacementReadRequirement;
+use aos_hub_db::db::RegistryRecord;
+use aos_hub_db::db::SurfaceTarget;
+use aos_hub_model::auth::jwt::Claims;
+use aos_hub_model::auth::jwt::JwtKeys;
 use aos_hub_model::clock;
-use aos_hub_model::domain::iam::{self, claims_principal, token_allows};
-use aos_hub_model::domain::{Permission, Principal, PrincipalKind, Role, Scope};
+use aos_hub_model::domain::iam;
+use aos_hub_model::domain::iam::claims_principal;
+use aos_hub_model::domain::iam::token_allows;
+use aos_hub_model::domain::Permission;
+use aos_hub_model::domain::Principal;
+use aos_hub_model::domain::PrincipalKind;
+use aos_hub_model::domain::Role;
+use aos_hub_model::domain::Scope;
 use aos_hub_model::keymap;
+use aos_hub_model::storage::PartTag;
 
 /// Default page size when a list request leaves `page_size` at zero.
 const DEFAULT_PAGE_SIZE: u32 = 500;
@@ -585,7 +618,7 @@ fn render_nix_cache_info(want_mass_query: bool, priority: i64) -> String {
 /// fetcher clamps to the object's last byte. Returns `None` for an absent,
 /// malformed, multi-range, or suffix (`bytes=-N`) header — the caller then
 /// serves the whole object.
-fn parse_byte_range(header: Option<&str>) -> Option<(u64, u64)> {
+pub fn parse_byte_range(header: Option<&str>) -> Option<(u64, u64)> {
     let spec = header?.trim().strip_prefix("bytes=")?;
     if spec.contains(',') {
         return None;
@@ -1248,7 +1281,13 @@ fn multipart_next_part(
     u32::try_from(next).map_err(RpcError::internal)
 }
 
-fn advance_multipart_sha256(
+/// Advances the portable registry multipart digest after one complete part.
+///
+/// # Errors
+///
+/// Returns an error for malformed state, a non-aligned intermediate part, or
+/// overflow while encoding the final bit length.
+pub fn advance_multipart_sha256(
     encoded_state: &str,
     body: &[u8],
     total_size: u64,
@@ -1382,16 +1421,12 @@ fn verify_publication_bytes(
     object: &aos_hub_db::db::RegistryPublicationUploadObjectRecord,
     bytes: &[u8],
 ) -> Result<(), RpcError> {
-    if bytes.len() as i64 != object.expected_size
-        || hex::encode(Sha256::digest(bytes)) != object.expected_hash
-    {
-        return Err(RpcError::invalid(
-            "upload bytes do not match the declared size and SHA-256",
-        ));
-    }
-    verify_loose_publication_bytes(&object.object_key, bytes)?;
-    verify_pack_index_publication_bytes(&object.object_key, bytes)?;
-    Ok(())
+    verify_registry_publication_object_bytes(
+        &object.object_key,
+        object.expected_size,
+        &object.expected_hash,
+        bytes,
+    )
 }
 
 /// Verifies the semantic content address before replaceable loose bytes reach
@@ -1506,6 +1541,8 @@ pub struct RpcService {
     pub jwt_keys: JwtKeys,
     /// Externally reachable base URL, used to build the canonical upload URL.
     pub external_url: String,
+    /// Explicit protected deployment identity; independent of direct readiness.
+    pub deployment_id: Option<String>,
     /// Cache-specific Nix public keys published in each registry's setup instructions.
     pub(crate) registry_cache_public_keys: BTreeMap<String, Vec<String>>,
     /// Public base URL exposing the instance-default storage binding directly.
@@ -1527,6 +1564,10 @@ pub struct RpcService {
     /// binding; the Worker returns an R2-backed fetcher scoped to the
     /// registry's prefix.
     pub surface: Arc<dyn SurfaceProvider>,
+    /// Native hybrid origins authorize exact R2 delivery snapshots here.
+    pub hybrid_delivery: bool,
+    /// Explicit client upload transport; independent of hybrid delivery guards.
+    pub hybrid_upload_mode: aos_hub_db::hybrid_upload::HybridUploadMode,
     /// The placement surface-write port used by typed cache uploads and
     /// placement-aware registry publications.
     ///
@@ -1558,6 +1599,7 @@ pub struct RpcService {
     pub sealer: Option<Arc<dyn aos_hub_model::auth::seal::SecretSealer>>,
     /// Runtime provider for immutable secret-version references.
     pub secret_versions: Option<Arc<dyn aos_hub_model::secret_version::SecretVersionResolver>>,
+    credential_registration_policy: CredentialRegistrationPolicy,
     /// The authenticated-origin proxy-read fetcher
     /// ([`OriginFetch`](crate::fetch::OriginFetch)), used to stream a private
     /// external origin's bytes through the hub instead of `302`-redirecting the
@@ -1658,12 +1700,14 @@ fn session_cache_key(secret: &str) -> String {
 /// The serializable projection of a [`ResolvedSession`](crate::web::session::ResolvedSession)
 /// stored in KV (RFC-0004 ch.14 Phase C).
 ///
-/// Mirrors `SessionAuth`'s integer fields plus the user's email — everything the
-/// resolution carries except the secret (re-attached on read). Kept local to the
-/// service so the `db` types need no serde derives.
+/// Retains the genuine session's account UUID, cookie hash, integer fields and
+/// user's email. The secret is re-attached only after its exact hash is checked.
+/// Old cache shapes reload from SQL rather than inventing missing provenance.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct CachedSession {
     user_id: i64,
+    owner_incarnation: String,
+    session_id_hash: String,
     auth_level: i64,
     last_authenticated_at: i64,
     expires_at: i64,
@@ -1683,6 +1727,8 @@ impl CachedSession {
     fn from_resolved(rs: &crate::web::session::ResolvedSession) -> CachedSession {
         CachedSession {
             user_id: rs.auth.user_id,
+            owner_incarnation: rs.auth.owner_incarnation.clone(),
+            session_id_hash: rs.auth.session_id_hash.clone(),
             auth_level: rs.auth.auth_level,
             last_authenticated_at: rs.auth.last_authenticated_at,
             expires_at: rs.auth.expires_at,
@@ -1696,13 +1742,17 @@ impl CachedSession {
     /// The expiry recheck makes the short cache TTL safe: an entry that expires
     /// mid-window is never served, exactly as `validate_session` would reject it.
     fn into_resolved(self, secret: &str, now: i64) -> Option<crate::web::session::ResolvedSession> {
-        if self.expires_at <= now {
+        if self.expires_at <= now
+            || self.session_id_hash != aos_hub_model::auth::token::sha256_hex(secret)
+        {
             return None;
         }
         Some(crate::web::session::ResolvedSession {
             secret: secret.to_string(),
             auth: aos_hub_db::db::SessionAuth {
                 user_id: self.user_id,
+                owner_incarnation: self.owner_incarnation,
+                session_id_hash: self.session_id_hash,
                 auth_level: self.auth_level,
                 last_authenticated_at: self.last_authenticated_at,
                 expires_at: self.expires_at,
@@ -2054,7 +2104,7 @@ fn validate_registry_trust_keys(keys: &[String]) -> Result<(), RpcError> {
 /// Verifies completion names every confirmed durable part and exactly the declared bytes.
 fn multipart_completion_matches(
     durable: &[aos_hub_db::db::WriteTicketPartRecord],
-    requested: &[crate::surface_write::PartTag],
+    requested: &[aos_hub_model::storage::PartTag],
     declared_size: i64,
 ) -> bool {
     if durable.len() != requested.len()
@@ -2089,14 +2139,15 @@ fn multipart_completion_matches(
 fn cache_multipart_evidence_matches(
     evidence: &crate::fetch::SurfaceObjectEvidence,
     ticket: &aos_hub_db::db::CacheWriteTicketRecord,
-    expected_etag: &str,
+    expected_etag: Option<&str>,
 ) -> bool {
     let observed_etag = evidence
         .strong_etag
         .as_deref()
-        .and_then(|etag| crate::surface_write::strong_if_match_etag(etag).ok());
+        .and_then(|etag| aos_hub_model::delivery_http::strong_if_match_etag(etag).ok());
     evidence.size == ticket.declared_size
-        && observed_etag.as_deref() == Some(expected_etag)
+        && expected_etag.is_none_or(|expected| observed_etag.as_deref() == Some(expected))
+        && (expected_etag.is_some() || ticket.intended_object_hash.is_some())
         && ticket
             .intended_object_hash
             .as_deref()
@@ -2388,3 +2439,40 @@ mod publication_upload_limit_tests {
 pub(crate) mod cache_upload_tests;
 
 mod operations;
+
+/// Immutable preconditions for storage-binding deletion.
+type BindingDeletePlanInput = aos_hub_model::binding::BindingDeletePlanInput;
+
+/// Checks the exact and semantic identity of one declared publication object.
+///
+/// Both Native-only uploads and the hybrid storage Worker call this verifier
+/// before placing bytes. A pack index also needs its companion pack checked at
+/// every destination by the caller.
+///
+/// # Errors
+///
+/// Returns an invalid-argument error for a mismatched size, digest, Git object,
+/// pack, or pack index.
+pub fn verify_registry_publication_object_bytes(
+    path: &str,
+    expected_size: i64,
+    expected_hash: &str,
+    bytes: &[u8],
+) -> Result<(), RpcError> {
+    if bytes.len() as i64 != expected_size || hex::encode(Sha256::digest(bytes)) != expected_hash {
+        return Err(RpcError::invalid(
+            "upload bytes do not match the declared size and SHA-256",
+        ));
+    }
+    verify_loose_publication_bytes(path, bytes)?;
+    verify_pack_index_publication_bytes(path, bytes)?;
+    Ok(())
+}
+
+// Registration does not validate a credential or authorize provider work.
+// Only explicitly configured Hybrid custody can defer byte verification.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CredentialRegistrationPolicy {
+    ResolveProviderMaterial,
+    WorkerCustody,
+}

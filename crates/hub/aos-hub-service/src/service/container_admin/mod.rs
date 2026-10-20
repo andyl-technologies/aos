@@ -13,18 +13,34 @@ use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 
 use super::{Permission, RpcError, RpcService};
-use aos_hub_db::db::{
-    OciAdminLayerRecord, OciAdminManifestRecord, OciAdminPlatformRecord, OciAdminProvenanceRecord,
-    OciAdminPublicationRecord, OciAdminReferrerRecord, OciAdminRepositoryRecord,
-    OciAdminTagHistoryRecord, OciAdminTagRecord, OciGcBlockerRecord, OciGcCandidateRecord,
-    OciGcGenerationRecord, OciGcPlacementActionRecord, OciRegistryPurgeFenceAction,
-    OciRegistryPurgeFenceStatus, OciRetentionPolicyRecord, OciUntrackedInventoryCursor,
-    OciUntrackedInventoryRecord, OciUntrackedRepairOutcome, OciUntrackedRepairPlanRecord,
-    RegistryRecord, SurfaceTarget, OCI_ADMIN_MAX_PAGE_SIZE, OCI_GC_MAX_PAGE_SIZE,
-    OCI_RETENTION_DEFAULT_DELETED_TAG_HISTORY_SECONDS,
-    OCI_RETENTION_DEFAULT_RECENT_MANUAL_TAG_REVISIONS, OCI_RETENTION_DEFAULT_RETAIN_REFERRERS,
-    OCI_RETENTION_DEFAULT_UNTAGGED_GRACE_SECONDS,
-};
+use aos_hub_db::db::OciAdminLayerRecord;
+use aos_hub_db::db::OciAdminManifestRecord;
+use aos_hub_db::db::OciAdminPlatformRecord;
+use aos_hub_db::db::OciAdminProvenanceRecord;
+use aos_hub_db::db::OciAdminPublicationRecord;
+use aos_hub_db::db::OciAdminReferrerRecord;
+use aos_hub_db::db::OciAdminRepositoryRecord;
+use aos_hub_db::db::OciAdminTagHistoryRecord;
+use aos_hub_db::db::OciAdminTagRecord;
+use aos_hub_db::db::OciGcBlockerRecord;
+use aos_hub_db::db::OciGcCandidateRecord;
+use aos_hub_db::db::OciGcGenerationRecord;
+use aos_hub_db::db::OciGcPlacementActionRecord;
+use aos_hub_db::db::OciRegistryPurgeFenceAction;
+use aos_hub_db::db::OciRegistryPurgeFenceStatus;
+use aos_hub_db::db::OciRetentionPolicyRecord;
+use aos_hub_db::db::OciUntrackedInventoryCursor;
+use aos_hub_db::db::OciUntrackedInventoryRecord;
+use aos_hub_db::db::OciUntrackedRepairOutcome;
+use aos_hub_db::db::OciUntrackedRepairPlanRecord;
+use aos_hub_db::db::RegistryRecord;
+use aos_hub_db::db::SurfaceTarget;
+use aos_hub_db::db::OCI_ADMIN_MAX_PAGE_SIZE;
+use aos_hub_db::db::OCI_GC_MAX_PAGE_SIZE;
+use aos_hub_db::db::OCI_RETENTION_DEFAULT_DELETED_TAG_HISTORY_SECONDS;
+use aos_hub_db::db::OCI_RETENTION_DEFAULT_RECENT_MANUAL_TAG_REVISIONS;
+use aos_hub_db::db::OCI_RETENTION_DEFAULT_RETAIN_REFERRERS;
+use aos_hub_db::db::OCI_RETENTION_DEFAULT_UNTAGGED_GRACE_SECONDS;
 
 const DEFAULT_CONTAINER_PAGE_SIZE: u32 = 50;
 
@@ -397,12 +413,18 @@ mod tests {
         registry_purge_fence_message, untracked_inventory_message, untracked_repair_message,
     };
     use crate::service::pb;
-    use aos_hub_db::db::{
-        OciGcGenerationRecord, OciGcPlacementActionRecord, OciRegistryPurgeBlockers,
-        OciRegistryPurgeFenceAction, OciRegistryPurgeFencePlanRecord, OciRegistryPurgeFenceRecord,
-        OciRegistryPurgeFenceStatus, OciUntrackedInventoryCursor, OciUntrackedInventoryRecord,
-        OciUntrackedRepairKind, OciUntrackedRepairOutcome, OciUntrackedRepairPlanRecord,
-    };
+    use aos_hub_db::db::OciGcGenerationRecord;
+    use aos_hub_db::db::OciGcPlacementActionRecord;
+    use aos_hub_db::db::OciRegistryPurgeBlockers;
+    use aos_hub_db::db::OciRegistryPurgeFenceAction;
+    use aos_hub_db::db::OciRegistryPurgeFencePlanRecord;
+    use aos_hub_db::db::OciRegistryPurgeFenceRecord;
+    use aos_hub_db::db::OciRegistryPurgeFenceStatus;
+    use aos_hub_db::db::OciUntrackedInventoryCursor;
+    use aos_hub_db::db::OciUntrackedInventoryRecord;
+    use aos_hub_db::db::OciUntrackedRepairKind;
+    use aos_hub_db::db::OciUntrackedRepairOutcome;
+    use aos_hub_db::db::OciUntrackedRepairPlanRecord;
 
     #[test]
     fn distribution_authority_is_a_copyable_registry_reference_authority() {
@@ -468,6 +490,7 @@ mod tests {
     #[test]
     fn gc_action_projection_exposes_the_complete_frozen_non_secret_identity() {
         let record = OciGcPlacementActionRecord {
+            expected_provider_version: Some("reviewed-upload-v1".into()),
             id: "gc-action".to_string(),
             generation_id: "gc-run".to_string(),
             registry_id: 1,
@@ -510,6 +533,10 @@ mod tests {
         assert_eq!(message.expected_hash, record.expected_hash.to_string());
         assert_eq!(message.expected_byte_size, record.expected_size);
         assert_eq!(message.expected_strong_etag, "\"strong\"");
+        assert_eq!(
+            message.expected_provider_version.as_deref(),
+            Some("reviewed-upload-v1")
+        );
         assert!(message.inventory_entry_present);
         assert_eq!(
             message.inventory_generation_id,
@@ -1090,6 +1117,7 @@ fn gc_placement_action_message(
         expected_hash: record.expected_hash.to_string(),
         expected_byte_size: record.expected_size,
         expected_strong_etag: record.expected_strong_etag.clone().unwrap_or_default(),
+        expected_provider_version: record.expected_provider_version.clone(),
         inventory_entry_present: record.inventory_entry_present,
         inventory_generation_id: record.inventory_generation_id.clone(),
         inventory_digest: record.inventory_digest.to_string(),

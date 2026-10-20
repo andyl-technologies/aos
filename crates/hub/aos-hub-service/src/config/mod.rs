@@ -55,8 +55,12 @@
 use anyhow::{bail, Context, Result};
 use serde_json::Value;
 
-use aos_hub_db::db::{Database, RevisionRow};
-use aos_hub_model::domain::{Principal, PrincipalKind, Role, Scope};
+use aos_hub_db::db::Database;
+use aos_hub_db::db::RevisionRow;
+use aos_hub_model::domain::Principal;
+use aos_hub_model::domain::PrincipalKind;
+use aos_hub_model::domain::Role;
+use aos_hub_model::domain::Scope;
 
 /// A stable change-set identifier (a UUID v4 string).
 ///

@@ -22,7 +22,8 @@
 
 use anyhow::{Context, Result};
 
-use crate::fetch::{SurfaceFetch, SurfaceListingBudget};
+use crate::fetch::SurfaceFetch;
+use crate::fetch::SurfaceListingBudget;
 use crate::surface_write::SurfaceWrite;
 
 /// What a [`copy_surface`] pass moved.

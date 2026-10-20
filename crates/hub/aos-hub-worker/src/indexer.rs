@@ -37,7 +37,8 @@ use std::sync::Arc;
 use anyhow::{Context as _, Result};
 use worker::Bucket;
 
-use aos_hub_db::db::{Database, SurfaceTarget};
+use aos_hub_db::db::Database;
+use aos_hub_db::db::SurfaceTarget;
 use aos_hub_model::secret_version::SecretVersionResolver;
 use aos_hub_service::fetch::SurfaceProvider as _;
 

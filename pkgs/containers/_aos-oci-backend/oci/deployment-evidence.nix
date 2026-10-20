@@ -4,7 +4,10 @@
   packages,
   bundle,
   artifact,
+  knownPackageCatalog ? [],
+  backendConfigurationInputs ? [],
 }: let
+  moduleDependencies = import ../../../../lib/packages/module-dependencies.nix;
   discard = value: builtins.unsafeDiscardStringContext (builtins.toString value);
   backendSource = builtins.path {
     path = ../.;
@@ -25,7 +28,8 @@
       map (package: {
         key = discard package;
         inherit package;
-      }) (entry.package.moduleDeps or []);
+      }) (map moduleDependencies.seed (entry.package.moduleDeps or [])
+        ++ (entry.package.runtimeDeps or []));
   };
   normalizeLicense = value:
     if builtins.isList value
@@ -68,6 +72,26 @@
   in
     lib.optional (source != null) (entry "${name}-module" (package.version or "0") source licenses [source]))
   selected;
+  moduleSources = lib.uniqueBy discard (
+    [bundle.nativeSourceLibrary libraryLicense]
+    ++ map (record: record.package.module) (builtins.filter (record: record.package ? module) selected)
+  );
+  # These documents are generated from the same evaluated package modules.
+  # Preserve their declared attribution rather than treating them as unknown
+  # caller configuration, or assigning a license to arbitrary input files.
+  companionEntries = lib.concatMap (record: let
+    package = record.package;
+    name = package.catalogName or package.pname or package.name;
+    licenses = normalizeLicense (package.moduleLicense or package.meta.moduleLicense or package.meta.license or []);
+  in
+    lib.optional (package ? deploymentArtifact)
+    (entry "${name}-deployment" (package.version or "0") package.deploymentArtifact licenses moduleSources)
+    ++ lib.optional (package ? documentationArtifact)
+    (entry "${name}-documentation" (package.version or "0") package.documentationArtifact licenses moduleSources))
+  selected;
+  backendEntries = lib.imap (index: input:
+    entry "aos-oci-backend-configuration-${toString index}" "1" input ["Apache-2.0"] [backendSource libraryLicense])
+  backendConfigurationInputs;
   libraryEntry = entry "aos-module-library" "1" bundle.nativeSourceLibrary ["Apache-2.0"] [bundle.nativeSourceLibrary libraryLicense];
   sourceInputs =
     [backendSource libraryLicense bundle.nativeSourceLibrary]
@@ -80,12 +104,13 @@
     entry "aos-native-deployment-${toString index}" "1" output ["Apache-2.0"] generatedSources)
   ([artifact bundle] ++ bundle.nativeDeploymentParts);
   unknownInputs = builtins.filter (input:
-    !(builtins.elem (discard input) (map (entry: entry.output.path) (moduleEntries ++ [libraryEntry] ++ generatedEntries))))
+    !(builtins.elem (discard input) (map (entry: entry.output.path)
+        (knownPackageCatalog ++ moduleEntries ++ companionEntries ++ backendEntries ++ [libraryEntry] ++ generatedEntries))))
   bundle.nativeEvaluationInputs;
   # Caller-owned configuration inputs need their own explicit package catalog
   # attribution; generated-output provenance does not assign their license.
   unknownEntries = map (input: entry "native-configuration-input" "1" input [] [input]) unknownInputs;
 in {
-  catalog = moduleEntries ++ [libraryEntry] ++ generatedEntries ++ unknownEntries;
+  catalog = moduleEntries ++ companionEntries ++ backendEntries ++ [libraryEntry] ++ generatedEntries ++ unknownEntries;
   sourcePaths = generatedSources;
 }

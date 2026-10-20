@@ -16,7 +16,7 @@ pub use aos_hub_api as hub_types;
 pub use aos_hub_api::{
     HashRangeV1, Placement, PlacementObservation, PlacementSpec, PlacementStatus,
 };
-pub use hub::{HubClient, HubRpc, HubSurfaceRef, hub_rpc};
+pub use hub::{DirectHubControl, HubClient, HubRpc, HubSurfaceRef, hub_rpc};
 pub use login::{
     DeviceAuthorization, DeviceTokenPoll, TokenGrant, exchange_token, poll_device_token,
     refresh_token, revoke_refresh_token, start_device_authorization,
@@ -48,3 +48,11 @@ mod tests {
         assert_eq!(uri.to_string(), "https://hub.example/prefix/");
     }
 }
+
+#[cfg(unix)]
+pub use hub::{
+    DirectHubAuthentication, DirectProvisioningAuthentication, DirectStageFile, DirectStagePath,
+    DirectUploadCoordinator, DirectUploadOptions, PinnedLegacyBearer, PreparedDirectPublication,
+    PublicationTransferDiscovery, checkpoint_namespace, commit_direct_publication,
+    discover_publication_transport, prepare_direct_publication, publication_inventory_digest,
+};

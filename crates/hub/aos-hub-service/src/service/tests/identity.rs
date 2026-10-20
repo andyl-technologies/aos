@@ -816,12 +816,7 @@ async fn invitation_acceptance_atomically_creates_membership_for_matching_user()
     let token = service
         .jwt_keys
         .mint(
-            &TokenAuth {
-                token_id: "invitee-session".into(),
-                owner: Principal::user(invitee),
-                scope: Scope::root(),
-                permissions: Vec::new(),
-            },
+            &crate::service::authentication::browser_test_auth(&db, invitee, Vec::new()).await,
             3600,
         )
         .unwrap();

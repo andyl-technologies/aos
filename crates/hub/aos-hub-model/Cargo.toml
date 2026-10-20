@@ -10,6 +10,9 @@ default = []
 test-fixtures = []
 
 [dependencies]
+aos-hub-api.workspace = true
+aos-module-docs.workspace = true
+ed25519-dalek.workspace = true
 aos-registry-format = { workspace = true }
 aes-gcm = { workspace = true }
 zeroize = { workspace = true }

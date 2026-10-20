@@ -190,11 +190,23 @@ impl RpcService {
             {
                 continue;
             }
+            // Private NARs use the selected authenticated registry route;
+            // portable public mirrors cannot receive the Hub credential.
+            let private_cache_urls = if !cache_delivery && image.delivery.is_store_backed() {
+                vec![self.registry_consumer_url(&registry).await?]
+            } else {
+                Vec::new()
+            };
+            let image_cache_urls = if private_cache_urls.is_empty() {
+                &cache_urls
+            } else {
+                &private_cache_urls
+            };
             messages.push(self.system_image_message(
                 &download_base,
                 image,
                 (!req.channel.is_empty()).then_some(req.channel.as_str()),
-                &cache_urls,
+                image_cache_urls,
                 cache_delivery,
             )?);
         }

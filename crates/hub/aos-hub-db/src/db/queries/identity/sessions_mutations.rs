@@ -7,7 +7,8 @@ impl Database {
 
     /// Create a session for `user_id`, returning the opaque cookie secret.
     ///
-    /// Only the SHA-256 hash of the secret is stored. `ttl_secs` is the
+    /// The original user UUID is pinned at mint; only the SHA-256 hash of the
+    /// cookie secret is stored. `ttl_secs` is the
     /// session's **absolute** lifetime: `expires_at` is stamped to
     /// `now + ttl_secs` (callers pass
     /// [`ABSOLUTE_LIFETIME_SECS`](aos_hub_model::auth::session::ABSOLUTE_LIFETIME_SECS)).
@@ -19,13 +20,19 @@ impl Database {
     ///
     /// # Errors
     ///
-    /// Returns an error on database failure.
+    /// Returns an error on database failure or an unavailable live canonical owner.
     pub async fn create_session(
         &self,
         user_id: i64,
         ttl_secs: i64,
         auth_level: i64,
     ) -> Result<String> {
+        // This port is reached after fresh authentication. Establish a legacy
+        // user's UUID here, never while accepting an old cookie; the insert
+        // below pins the winning UUID and refuses a changed numeric owner.
+        let owner_incarnation = self
+            .ensure_principal_incarnation(aos_hub_model::domain::Principal::user(user_id))
+            .await?;
         let secret = aos_hub_model::auth::session::new_session_secret();
         let hash = aos_hub_model::auth::token::sha256_hex(&secret);
         let now = unix_now();
@@ -34,10 +41,17 @@ impl Database {
             .execute(
                 "INSERT INTO sessions
              (id_hash, user_id, created_at, last_seen_at, expires_at, auth_level,
-              last_authenticated_at)
-             SELECT ?1, u.id, ?3, ?3, ?4, ?5, ?3 FROM users u
-              WHERE u.id = ?2 AND u.deleted_at IS NULL",
-                &vals![hash, user_id, now, now + ttl_secs, auth_level],
+              last_authenticated_at, owner_incarnation)
+             SELECT ?1, u.id, ?3, ?3, ?4, ?5, ?3, u.principal_incarnation FROM users u
+              WHERE u.id = ?2 AND u.deleted_at IS NULL AND u.principal_incarnation = ?6",
+                &vals![
+                    hash,
+                    user_id,
+                    now,
+                    now + ttl_secs,
+                    auth_level,
+                    owner_incarnation
+                ],
             )
             .await?;
         if affected != 1 {
@@ -72,7 +86,8 @@ impl Database {
     /// `last_seen_at` (the masthead reads this on every page render).
     ///
     /// Returns `None` when the secret is unknown, the session is expired, or
-    /// the user was deleted.
+    /// the user was deleted, or its original canonical owner pin is missing,
+    /// malformed, or differs from the current user.
     ///
     /// # Errors
     ///
@@ -80,16 +95,32 @@ impl Database {
     pub async fn session_email(&self, secret: &str) -> Result<Option<String>> {
         let hash = aos_hub_model::auth::token::sha256_hex(secret);
         let now = unix_now();
-        self.backend
+        let Some(row) = self
+            .backend
             .query_opt(
-                "SELECT u.email FROM sessions s JOIN users u ON u.id = s.user_id
-                 WHERE s.id_hash = ?1 AND s.expires_at > ?2 AND u.deleted_at IS NULL",
+                "SELECT u.email, s.user_id, s.owner_incarnation
+                 FROM sessions s JOIN users u ON u.id = s.user_id
+                 WHERE s.id_hash = ?1 AND s.expires_at > ?2 AND u.deleted_at IS NULL
+                   AND s.owner_incarnation IS NOT NULL
+                   AND s.owner_incarnation = u.principal_incarnation",
                 &vals![hash, now],
             )
             .await
             .context("loading session email")?
-            .map(|row| row.get(0))
-            .transpose()
+        else {
+            return Ok(None);
+        };
+        let user_id: i64 = row.get(1)?;
+        let owner_incarnation: String = row.get(2)?;
+        if direct_identity::validate_actor_incarnation(
+            aos_hub_model::domain::Principal::user(user_id),
+            &owner_incarnation,
+        )
+        .is_err()
+        {
+            return Ok(None);
+        }
+        Ok(Some(row.get(0)?))
     }
 
     /// Revoke a single session by its cookie secret.

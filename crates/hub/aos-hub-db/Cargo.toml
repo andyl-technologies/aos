@@ -6,6 +6,12 @@ license.workspace = true
 description = "Hub migrations, persistence queries, and portable SQL backend abstractions"
 
 [dependencies]
+zeroize.workspace = true
+aes-gcm.workspace = true
+aos-core.workspace = true
+aos-hub-api.workspace = true
+futures-util.workspace = true
+axum = { version = "0.8", default-features = false, features = ["json"] }
 hmac = { workspace = true }
 unicode-normalization = { workspace = true }
 rand = { workspace = true }

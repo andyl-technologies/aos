@@ -68,15 +68,27 @@ use ed25519_dalek::VerifyingKey;
 use futures_util::{future::try_join_all, TryStreamExt as _};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
+use tracing::Instrument as _;
 
 use crate::fetch::SurfaceFetch;
-use aos_hub_db::db::{
-    ChannelSummary, ContainerReleaseClosureMemberSnapshot, ContainerReleaseDescriptorRole,
-    ContainerReleaseEvidenceSnapshot, ContainerReleaseLayerSnapshot, ContainerReleaseRootSnapshot,
-    Database, IndexOciRepositoryCatalog, IndexSnapshot, OciCatalogProjection,
-    OciImageConfigProjection, OciLayerProjection, RegistryRecord, ReleaseArtifactSnapshot,
-    ReleaseImageSnapshot, ReleaseRow, ReleaseSnapshotArtifact, VerifiedContainerReleaseDescriptor,
-};
+use aos_hub_db::db::ChannelSummary;
+use aos_hub_db::db::ContainerReleaseClosureMemberSnapshot;
+use aos_hub_db::db::ContainerReleaseDescriptorRole;
+use aos_hub_db::db::ContainerReleaseEvidenceSnapshot;
+use aos_hub_db::db::ContainerReleaseLayerSnapshot;
+use aos_hub_db::db::ContainerReleaseRootSnapshot;
+use aos_hub_db::db::Database;
+use aos_hub_db::db::IndexOciRepositoryCatalog;
+use aos_hub_db::db::IndexSnapshot;
+use aos_hub_db::db::OciCatalogProjection;
+use aos_hub_db::db::OciImageConfigProjection;
+use aos_hub_db::db::OciLayerProjection;
+use aos_hub_db::db::RegistryRecord;
+use aos_hub_db::db::ReleaseArtifactSnapshot;
+use aos_hub_db::db::ReleaseImageSnapshot;
+use aos_hub_db::db::ReleaseRow;
+use aos_hub_db::db::ReleaseSnapshotArtifact;
+use aos_hub_db::db::VerifiedContainerReleaseDescriptor;
 
 use self::load::{load_registry_tree_with_reader, load_release_tree_with_reader, ObjectReader};
 
@@ -335,6 +347,28 @@ pub async fn reconcile_registry_replica(
 /// roll a channel back below its recorded floor, or — with
 /// `require_signatures` — fails any signature or name-binding check.
 pub async fn index_registry(
+    db: &Database,
+    fetch: &dyn SurfaceFetch,
+    registry: &RegistryRecord,
+    indexed_placement_id: Option<i64>,
+) -> Result<IndexOutcome> {
+    let span = tracing::info_span!(
+        "registry_index",
+        index_run = %uuid::Uuid::new_v4().simple(),
+        registry_id = registry.id,
+        placement_id = ?indexed_placement_id,
+    );
+    async {
+        let outcome = index_registry_with_leases(db, fetch, registry, indexed_placement_id).await;
+        tracing::info!(success = outcome.is_ok(), "registry index run completed");
+        outcome
+    }
+    .instrument(span)
+    .await
+}
+
+// Temporary image verification leases must be released on every terminal walk.
+async fn index_registry_with_leases(
     db: &Database,
     fetch: &dyn SurfaceFetch,
     registry: &RegistryRecord,
@@ -604,6 +638,11 @@ async fn index_registry_inner(
             let advertised_commit = advertised_commit.as_str();
             let refs_digest = refs_digest.as_str();
             let browse_projection_gate = &browse_projection_gate;
+            let span = tracing::info_span!(
+                "registry_release",
+                release = %tag_name,
+                tag_oid = %tag_oid,
+            );
             async move {
                 let reusable = match reusable.filter(|snapshot| {
                     snapshot.release.tag_oid == tag_oid.to_hex()
@@ -647,6 +686,7 @@ async fn index_registry_inner(
                     let mut release = reusable.release;
                     release.pack_present = probe_pack_presence(fetch, tag_name).await?;
                     tracing::debug!(release = %tag_name, "reused verified release snapshot");
+                    tracing::info!(reused = true, "registry release index phase completed");
                     return Ok::<_, anyhow::Error>((
                         release,
                         reusable.artifacts,
@@ -834,6 +874,7 @@ async fn index_registry_inner(
                     tagged_at: signed.tag.tagger_when,
                     pack_present: probe_pack_presence(fetch, &tag_name).await?,
                 };
+                tracing::info!(reused = false, "registry release index phase completed");
                 Ok::<_, anyhow::Error>((
                     release,
                     artifact_snapshot,
@@ -843,6 +884,7 @@ async fn index_registry_inner(
                     image_tag_oid,
                 ))
             }
+            .instrument(span)
         }))
         .await?;
         for (release, artifacts, image, presence, leases, image_tag_oid) in verified {
@@ -1183,9 +1225,9 @@ async fn fetch_exact_oci_range(
     limit: usize,
 ) -> Result<Vec<u8>> {
     let read = fetch
-        .fetch_stream(
+        .inspect_oci_range(
             &aos_hub_db::db::oci_blob_object_key(descriptor.digest),
-            Some(range),
+            range,
         )
         .await?
         .context("legacy OCI layer range is absent")?;
@@ -1624,6 +1666,7 @@ fn container_evidence_kind(role: ContainerReleaseDescriptorRole) -> &'static str
         ContainerReleaseDescriptorRole::Source => "source",
         ContainerReleaseDescriptorRole::License => "license",
         ContainerReleaseDescriptorRole::Provenance => "provenance",
+        ContainerReleaseDescriptorRole::Deployment => "deployment",
         ContainerReleaseDescriptorRole::Signature => "signature",
         ContainerReleaseDescriptorRole::Index
         | ContainerReleaseDescriptorRole::PlatformManifest => "manifest",
@@ -1746,12 +1789,7 @@ fn descriptor_identity_matches(left: &Descriptor, right: &Descriptor) -> bool {
 fn container_evidence_descriptors(
     release: &ContainerRelease,
 ) -> Vec<(&'static str, ContainerReleaseDescriptorRole, &Descriptor)> {
-    vec![
-        (
-            "abilities",
-            ContainerReleaseDescriptorRole::Abilities,
-            &release.evidence.abilities,
-        ),
+    let mut descriptors = vec![
         (
             "Nix closure",
             ContainerReleaseDescriptorRole::NixClosure,
@@ -1782,7 +1820,25 @@ fn container_evidence_descriptors(
             ContainerReleaseDescriptorRole::Signature,
             &release.evidence.signature,
         ),
-    ]
+    ];
+
+    if let Some(abilities) = &release.evidence.abilities {
+        descriptors.push((
+            "abilities",
+            ContainerReleaseDescriptorRole::Abilities,
+            abilities,
+        ));
+    }
+
+    if let Some(deployment) = &release.evidence.deployment {
+        descriptors.push((
+            "deployment",
+            ContainerReleaseDescriptorRole::Deployment,
+            deployment,
+        ));
+    }
+
+    descriptors
 }
 
 fn release_snapshot_artifacts(
@@ -2491,17 +2547,20 @@ struct DocumentationNarInfo {
 fn parse_documentation_narinfo(text: &str) -> Result<DocumentationNarInfo> {
     let mut fields = BTreeMap::<&str, &str>::new();
     let mut references = Vec::new();
+    let mut references_seen = false;
     for line in text.lines() {
         let Some((name, value)) = line.split_once(':') else {
             continue;
         };
         let value = value.trim();
         if name == "References" {
-            anyhow::ensure!(
-                references.is_empty(),
-                "documentation narinfo repeats References"
-            );
-            references = value.split_whitespace().map(str::to_string).collect();
+            anyhow::ensure!(!references_seen, "documentation narinfo repeats References");
+            references_seen = true;
+            // Signed locators retain hashes; narinfo normally adds store names.
+            references = value
+                .split_whitespace()
+                .map(native_documentation::narinfo_reference_hash)
+                .collect::<Result<Vec<_>>>()?;
             continue;
         }
         if matches!(
@@ -2757,8 +2816,8 @@ async fn verify_published_system_image_object(
         .with_context(|| {
             format!("signed image object '{object_key}' backend does not expose a strong version")
         })?;
-    let current_etag = crate::surface_write::strong_if_match_etag(&current_etag)?;
-    let published_etag = crate::surface_write::strong_if_match_etag(&evidence.strong_etag)?;
+    let current_etag = aos_hub_model::delivery_http::strong_if_match_etag(&current_etag)?;
+    let published_etag = aos_hub_model::delivery_http::strong_if_match_etag(&evidence.strong_etag)?;
     anyhow::ensure!(
         current_etag == published_etag,
         "signed image object '{object_key}' changed after publication verification"
@@ -2914,6 +2973,27 @@ async fn verify_system_image_object(
 ) -> Result<aos_hub_db::db::VerifiedRegistryImageObject> {
     let expected_size =
         u64::try_from(byte_size).context("signed image object size cannot be negative")?;
+
+    if fetch.storage_local_sha256() {
+        let evidence = fetch
+            .inventory_evidence_bounded(&object_key, expected_size)
+            .await?
+            .with_context(|| format!("signed image object '{object_key}' is unavailable"))?;
+        let strong_etag = evidence.strong_etag.context(format!(
+            "signed image object '{object_key}' backend does not expose a strong version"
+        ))?;
+        anyhow::ensure!(
+            evidence.size == byte_size && hex::encode(evidence.sha256) == sha256,
+            "signed image object '{object_key}' does not match its catalog identity"
+        );
+        return Ok(aos_hub_db::db::VerifiedRegistryImageObject {
+            object_key,
+            sha256,
+            byte_size,
+            strong_etag,
+        });
+    }
+
     let before_etag = fetch.inventory_strong_etag(&object_key).await?;
     let read = fetch
         .fetch_stream(&object_key, None)
@@ -3163,47 +3243,50 @@ async fn resolve_channels(
         let buckets = (0u16..=255).collect::<Vec<_>>();
         let mut resolved = Vec::with_capacity(buckets.len());
         for batch in buckets.chunks(CHANNEL_FETCH_CONCURRENCY) {
-            let channel_name = channel_name.as_str();
-            let channel_trusted = channel_trusted.as_slice();
-            let image_channel_trusted = image_channel_trusted.as_slice();
-            resolved.extend(
-                try_join_all(batch.iter().copied().map(|bucket| async move {
-                    let path = format!("channels/{channel_name}/{bucket:02x}");
-                    let Some(payload) = fetch.fetch(&path).await? else {
-                        return Ok::<_, anyhow::Error>((bucket, None));
-                    };
-                    let lenient = lenient_tag(&payload, channel_name)?;
-                    let signed = if registry.require_signatures
-                        || require_publication_signatures
-                        || channel_usage
-                        || image_release_tag_oids.contains(&lenient.tag.object)
-                    {
-                        let trusted =
-                            if registry.require_signatures || require_publication_signatures {
-                                channel_trusted
-                            } else {
-                                // Image-bearing channels remain rooted in the configured
-                                // catalog anchors plus their exact typed channel usage.
-                                image_channel_trusted
-                            };
-                        verify_signed_tag(&payload, channel_name, trusted)
-                            .with_context(|| format!("signed image channel partition {path}"))?
-                    } else {
-                        lenient
-                    };
-                    if signed.tag.target_type != TagTarget::Tag {
-                        bail!("partition {path} does not target a tag object");
-                    }
-                    let semver_str = tag_to_semver.get(&signed.tag.object).with_context(|| {
-                        format!(
-                            "partition {path} targets unknown tag object {}",
-                            signed.tag.object
-                        )
-                    })?;
-                    Ok((bucket, Some(semver_str.clone())))
-                }))
-                .await?,
+            let paths = batch
+                .iter()
+                .map(|bucket| format!("channels/{channel_name}/{bucket:02x}"))
+                .collect::<Vec<_>>();
+            let payloads = fetch.fetch_metadata_batch(&paths).await?;
+            anyhow::ensure!(
+                payloads.len() == batch.len(),
+                "channel metadata batch returned an incomplete observation set"
             );
+
+            for ((bucket, path), payload) in batch.iter().copied().zip(paths).zip(payloads) {
+                let Some(payload) = payload else {
+                    resolved.push((bucket, None));
+                    continue;
+                };
+                let lenient = lenient_tag(&payload, channel_name)?;
+                let signed = if registry.require_signatures
+                    || require_publication_signatures
+                    || channel_usage
+                    || image_release_tag_oids.contains(&lenient.tag.object)
+                {
+                    let trusted = if registry.require_signatures || require_publication_signatures {
+                        channel_trusted.as_slice()
+                    } else {
+                        // Image-bearing channels remain rooted in the configured
+                        // catalog anchors plus their exact typed channel usage.
+                        image_channel_trusted.as_slice()
+                    };
+                    verify_signed_tag(&payload, channel_name, trusted)
+                        .with_context(|| format!("signed image channel partition {path}"))?
+                } else {
+                    lenient
+                };
+                if signed.tag.target_type != TagTarget::Tag {
+                    bail!("partition {path} does not target a tag object");
+                }
+                let semver_str = tag_to_semver.get(&signed.tag.object).with_context(|| {
+                    format!(
+                        "partition {path} targets unknown tag object {}",
+                        signed.tag.object
+                    )
+                })?;
+                resolved.push((bucket, Some(semver_str.clone())));
+            }
         }
 
         let mut partitions: Vec<Option<String>> = vec![None; 256];
@@ -3320,7 +3403,9 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::*;
-    use crate::fetch::{StreamedRead, SurfaceFetch};
+    use crate::fetch::StreamedRead;
+    use crate::fetch::SurfaceFetch;
+    use crate::fetch::SurfaceObjectEvidence;
     use aos_hub_db::db::Database;
     use aos_oci_types::{
         to_canonical_json, Annotations, ContainerDsseSignature,
@@ -3392,7 +3477,11 @@ mod tests {
             closure: evidence(MediaType::AosNixClosure, "closure"),
         };
         let release_evidence = ContainerReleaseEvidence {
-            abilities: evidence(MediaType::AosContainerStaticAbilities, "abilities"),
+            deployment: None,
+            abilities: Some(evidence(
+                MediaType::AosContainerStaticAbilities,
+                "abilities",
+            )),
             sbom: evidence(MediaType::SpdxJson, "sbom"),
             source: evidence(MediaType::AosSourceClosure, "source"),
             license: evidence(MediaType::AosLicenseReport, "license"),
@@ -3405,6 +3494,7 @@ mod tests {
             oci: oci.clone(),
             nix: nix.clone(),
             evidence: ContainerSignatureInputEvidence {
+                deployment: release_evidence.deployment.clone(),
                 abilities: release_evidence.abilities.clone(),
                 sbom: release_evidence.sbom.clone(),
                 source: release_evidence.source.clone(),
@@ -3772,6 +3862,49 @@ tools = { store_path = "/nix/store/cccccccccccccccccccccccccccccccc-compiler-too
 
     struct MissingFetch;
 
+    struct IncompleteMetadataBatch;
+
+    #[async_trait::async_trait]
+    impl SurfaceFetch for IncompleteMetadataBatch {
+        async fn fetch(&self, _path: &str) -> Result<Option<Vec<u8>>> {
+            panic!("channel reads must use the metadata batch port");
+        }
+
+        async fn fetch_metadata_batch(&self, _paths: &[String]) -> Result<Vec<Option<Vec<u8>>>> {
+            Ok(Vec::new())
+        }
+
+        fn describe(&self) -> String {
+            "incomplete-metadata-batch".into()
+        }
+    }
+
+    #[tokio::test]
+    async fn channel_refresh_rejects_an_incomplete_metadata_batch() {
+        let db = Database::open_in_memory().await.unwrap();
+        let id = db
+            .register_registry("metadata-batch", &[], false)
+            .await
+            .unwrap();
+        let registry = db.registry_by_id(id).await.unwrap().unwrap();
+
+        let error = resolve_channels(
+            &db,
+            &IncompleteMetadataBatch,
+            &registry,
+            &["stable".into()],
+            &[],
+            false,
+            &BTreeMap::new(),
+            &std::collections::BTreeSet::new(),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("incomplete observation set"));
+        assert!(db.channel_floor(id, "stable").await.unwrap().is_none());
+    }
+
     #[async_trait::async_trait]
     impl SurfaceFetch for MissingFetch {
         async fn fetch(&self, _path: &str) -> Result<Option<Vec<u8>>> {
@@ -4032,6 +4165,77 @@ tools = { store_path = "/nix/store/cccccccccccccccccccccccccccccccc-compiler-too
         fn describe(&self) -> String {
             "malicious-image-object".into()
         }
+    }
+
+    struct StorageLocalImageFetch {
+        evidence: SurfaceObjectEvidence,
+    }
+
+    #[async_trait::async_trait]
+    impl SurfaceFetch for StorageLocalImageFetch {
+        async fn fetch(&self, _path: &str) -> Result<Option<Vec<u8>>> {
+            panic!("storage-local image verification must not fetch image bytes")
+        }
+
+        fn storage_local_sha256(&self) -> bool {
+            true
+        }
+
+        async fn inventory_evidence_bounded(
+            &self,
+            path: &str,
+            maximum_bytes: u64,
+        ) -> Result<Option<SurfaceObjectEvidence>> {
+            assert_eq!(path, "images/raw");
+            assert_eq!(maximum_bytes, 3);
+            Ok(Some(self.evidence.clone()))
+        }
+
+        fn describe(&self) -> String {
+            "storage-local-image-fixture".into()
+        }
+    }
+
+    #[tokio::test]
+    async fn signed_image_verifier_uses_storage_local_digest_evidence() {
+        let bytes = b"raw";
+        let mut leases = Vec::new();
+        let verified = verify_system_image_object(
+            &StorageLocalImageFetch {
+                evidence: SurfaceObjectEvidence {
+                    provider_version: None,
+                    sha256: Sha256::digest(bytes).into(),
+                    size: bytes.len() as i64,
+                    strong_etag: Some("\"fixture-version\"".into()),
+                },
+            },
+            "images/raw".into(),
+            hex::encode(Sha256::digest(bytes)),
+            bytes.len() as i64,
+            &mut leases,
+        )
+        .await
+        .unwrap();
+        assert_eq!(verified.strong_etag, "\"fixture-version\"");
+        assert!(leases.is_empty());
+
+        let corrupted = StorageLocalImageFetch {
+            evidence: SurfaceObjectEvidence {
+                provider_version: None,
+                sha256: Sha256::digest(b"other").into(),
+                size: bytes.len() as i64,
+                strong_etag: Some("\"fixture-version\"".into()),
+            },
+        };
+        assert!(verify_system_image_object(
+            &corrupted,
+            "images/raw".into(),
+            hex::encode(Sha256::digest(bytes)),
+            bytes.len() as i64,
+            &mut leases,
+        )
+        .await
+        .is_err());
     }
 
     #[tokio::test]

@@ -63,7 +63,7 @@ impl RpcService {
         if let Some(event) = req
             .events
             .iter()
-            .find(|event| !crate::webhook::is_supported_event_type(event))
+            .find(|event| !aos_hub_model::webhook::is_supported_event_type(event))
         {
             return Err(RpcError::invalid(format!(
                 "unsupported webhook event type '{event}'"

@@ -67,6 +67,7 @@ pub struct RefreshConfig {
 /// A per-domain credential store.
 ///
 /// Credentials are matched by domain pattern:
+/// - Origin: `"https://cache.aos.dev"` matches that scheme, host, and port only.
 /// - Exact match: `"cache.aos.dev"` matches only `cache.aos.dev`
 /// - Wildcard: `"*.aos.dev"` matches `cache.aos.dev`, `api.aos.dev`, etc.
 /// - Exact matches take priority over wildcard matches.
@@ -91,7 +92,7 @@ impl AuthStore {
         }
     }
 
-    /// Set credentials for a domain pattern.
+    /// Sets credentials for a domain pattern or serialized URL origin.
     ///
     /// Replaces any existing credential registered under the same
     /// pattern.
@@ -125,6 +126,15 @@ impl AuthStore {
     pub fn get(&self, url: &str) -> Option<Credential> {
         let host = extract_host(url)?;
         let creds = self.credentials.read().unwrap();
+
+        // Origin credentials never widen to another scheme or listening port.
+        let origin = reqwest::Url::parse(url)
+            .ok()?
+            .origin()
+            .ascii_serialization();
+        if let Some(credential) = creds.get(&origin) {
+            return Some(credential.clone());
+        }
 
         // 1. Try exact match first.
         if let Some(cred) = creds.get(&host) {
@@ -306,6 +316,24 @@ fn pattern_matches(pattern: &str, host: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn origin_credentials_do_not_cross_scheme_host_or_port() {
+        let store = AuthStore::new();
+        store.set(
+            "https://cache.aos.dev",
+            Credential::Bearer {
+                token: "origin-token".to_string(),
+                refresh: None,
+            },
+        );
+
+        assert!(store.get("https://cache.aos.dev/private.narinfo").is_some());
+        assert!(store.get("https://cache.aos.dev:443/nar/file").is_some());
+        assert!(store.get("http://cache.aos.dev:443/nar/file").is_none());
+        assert!(store.get("https://cache.aos.dev:8443/nar/file").is_none());
+        assert!(store.get("https://other.aos.dev/nar/file").is_none());
+    }
 
     #[test]
     fn test_extract_host() {

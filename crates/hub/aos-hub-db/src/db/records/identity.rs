@@ -161,6 +161,10 @@ pub struct AccessTokenMetadata {
 /// bumps `last_seen_at`.
 #[derive(Debug, Clone)]
 pub struct SessionAuth {
+    /// Original immutable user UUID retained when this session was minted.
+    pub owner_incarnation: String,
+    /// SHA-256 of the validated cookie, never the cookie secret.
+    pub session_id_hash: String,
     /// The authenticated user's id.
     pub user_id: i64,
     /// `1` when the session is sudo-capable (re-authenticated recently).

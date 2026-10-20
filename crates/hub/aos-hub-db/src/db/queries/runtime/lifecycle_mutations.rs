@@ -146,3 +146,11 @@ impl Database {
         Self { backend }
     }
 }
+
+impl Database {
+    /// Reports the current native SQL connection-pool occupancy, when available.
+    #[must_use]
+    pub fn pool_stats(&self) -> Option<crate::backend::PoolStats> {
+        self.backend.pool_stats()
+    }
+}

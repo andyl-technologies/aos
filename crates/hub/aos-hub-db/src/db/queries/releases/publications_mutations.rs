@@ -62,7 +62,7 @@ impl Database {
             "DELETE FROM org_domains
               WHERE domain = ?1 AND org_id = ?2 AND resource_version = ?3
                 AND (incarnation_id = ?4
-                     OR (incarnation_id IS NULL AND ?4 IS NULL))",
+                     OR (incarnation_id IS NULL AND CAST(?4 AS VARCHAR) IS NULL))",
             vals![
                 record.domain,
                 record.org_id,

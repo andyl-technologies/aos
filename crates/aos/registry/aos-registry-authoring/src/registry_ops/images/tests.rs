@@ -211,3 +211,108 @@ fn explicit_provider_document_must_match_the_pinned_artifact_set() {
     );
     assert!(result.is_err());
 }
+
+fn copy_store_info(record: &super::StorePathInfo) -> super::StorePathInfo {
+    super::StorePathInfo {
+        path: record.path.clone(),
+        nar_hash: record.nar_hash.clone(),
+        nar_size: record.nar_size,
+        references: record.references.clone(),
+        closure_size: record.closure_size,
+    }
+}
+
+#[test]
+fn image_encodings_share_one_pinned_artifact_set_and_contract() {
+    let raw_temp = TempDir::new().unwrap();
+    let raw = write_direct_image_output(raw_temp.path(), "raw", serde_json::json!(["bare-metal"]));
+    let qcow_temp = TempDir::new().unwrap();
+    let qcow = write_direct_image_output(
+        qcow_temp.path(),
+        "qcow2",
+        serde_json::json!(["qemu-kvm", "openstack"]),
+    );
+    let (raw_disk, info) =
+        crate::registry_ops::test_support::write_test_image_projections(&raw).unwrap();
+    let (qcow_disk, _) =
+        crate::registry_ops::test_support::write_test_image_projections(&qcow).unwrap();
+    let root = Path::new(&raw.path);
+    fs::copy(
+        root.join("image-delivery.json"),
+        root.join("image-delivery-raw.json"),
+    )
+    .unwrap();
+    fs::copy(
+        Path::new(&qcow.path).join("image-delivery.json"),
+        root.join("image-delivery-qcow2.json"),
+    )
+    .unwrap();
+    fs::copy(
+        Path::new(&qcow.path).join("aos-test.qcow2"),
+        root.join("aos-test.qcow2"),
+    )
+    .unwrap();
+
+    let inspect = |format, disk| {
+        super::inspect_published_image(
+            format,
+            copy_store_info(&raw),
+            disk,
+            copy_store_info(&info),
+            "aos.test-boot-artifacts/v1",
+            "test",
+            "2026.08",
+            "x86_64-linux",
+        )
+    };
+    let raw_image = inspect("raw", raw_disk).unwrap();
+    let qcow_image = inspect("qcow2", qcow_disk).unwrap();
+
+    assert_eq!(
+        raw_image.delivery.artifact_contract,
+        qcow_image.delivery.artifact_contract
+    );
+    assert_eq!(
+        raw_image.delivery.logical_disk_sha256,
+        qcow_image.delivery.logical_disk_sha256
+    );
+    assert_ne!(raw_image.delivery.sha256, qcow_image.delivery.sha256);
+    raw_image.recheck_for_commit().unwrap();
+    qcow_image.recheck_for_commit().unwrap();
+
+    let selected = root.join("image-delivery-qcow2.json");
+    fs::rename(&selected, qcow_temp.path().join("retained-delivery.json")).unwrap();
+    fs::write(selected, b"replacement envelope").unwrap();
+    assert!(qcow_image.recheck_for_commit().is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_present_invalid_format_envelope_cannot_fall_back_to_legacy() {
+    use std::os::unix::fs::symlink;
+
+    let temp = TempDir::new().unwrap();
+    let payload = write_direct_image_output(temp.path(), "raw", serde_json::json!(["bare-metal"]));
+    let (disk, info) =
+        crate::registry_ops::test_support::write_test_image_projections(&payload).unwrap();
+    symlink(
+        "image-delivery.json",
+        Path::new(&payload.path).join("image-delivery-raw.json"),
+    )
+    .unwrap();
+
+    let inspect = |format| {
+        super::inspect_published_image(
+            format,
+            copy_store_info(&payload),
+            copy_store_info(&disk),
+            copy_store_info(&info),
+            "aos.test-boot-artifacts/v1",
+            "test",
+            "2026.08",
+            "x86_64-linux",
+        )
+    };
+    assert!(inspect("raw").is_err());
+    assert!(inspect("../raw").is_err());
+}

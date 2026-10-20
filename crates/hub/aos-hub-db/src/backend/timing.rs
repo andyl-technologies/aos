@@ -30,9 +30,12 @@
 
 use anyhow::Result;
 
-use crate::backend::{Backend, CheckedStatement, Statement};
+use crate::backend::Backend;
+use crate::backend::CheckedStatement;
+use crate::backend::Statement;
 use crate::dialect::Dialect;
-use crate::value::{Row, Value};
+use crate::value::Row;
+use crate::value::Value;
 use aos_hub_model::clock::Instant;
 
 /// A shared handle to the per-request span accumulator.
@@ -179,6 +182,13 @@ impl<B: Backend> Backend for TimingBackend<B> {
         r
     }
 
+    async fn migrate_schema(&self) -> Result<()> {
+        let started = Instant::now();
+        let result = self.inner.migrate_schema().await;
+        self.timings.record("migrate_schema", "", started);
+        result
+    }
+
     async fn execute_insert(&self, sql: &str, params: &[Value]) -> Result<i64> {
         let started = Instant::now();
         let r = self.inner.execute_insert(sql, params).await;
@@ -264,7 +274,8 @@ fn sanitize_desc(desc: &str) -> String {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::{QueryTimings, TimingBackend};
-    use crate::backend::{Backend, SqlxBackend};
+    use crate::backend::Backend;
+    use crate::backend::SqlxBackend;
 
     /// An in-memory sqlite backend wrapped in a `TimingBackend` sharing `timings`.
     async fn fixture() -> (TimingBackend<SqlxBackend>, QueryTimings) {

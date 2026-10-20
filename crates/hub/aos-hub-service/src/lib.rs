@@ -33,7 +33,6 @@ pub mod jobs;
 pub mod kv;
 pub mod lease;
 pub mod migrate;
-pub mod nix_sign;
 pub mod oci;
 pub mod oci_gc_controller;
 pub mod oci_http;
@@ -59,3 +58,5 @@ pub mod webhook;
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod oci_recovery_tests;
+
+pub mod direct_upload;

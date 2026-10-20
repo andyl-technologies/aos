@@ -8,7 +8,8 @@
 use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
 
-use aos_hub_db::value::{Row, Value};
+use aos_hub_db::value::Row;
+use aos_hub_db::value::Value;
 
 /// One serialized SQL operation sent to the database Durable Object.
 #[derive(Debug, Serialize, Deserialize)]

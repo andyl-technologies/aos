@@ -84,7 +84,7 @@ impl RpcService {
                     Ok(narinfo) => narinfo,
                     Err(_) => return SurfaceWriteOutcome::BadPath("narinfo body is not UTF-8"),
                 };
-                if crate::nix_sign::verify_narinfo(
+                if aos_hub_model::nix_sign::verify_narinfo(
                     narinfo,
                     &selected_key.name,
                     &selected_key.public_key,

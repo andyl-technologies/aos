@@ -30,21 +30,35 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 use crate::stack::StackNode;
-use crate::web::console_render::{
-    ago, live_table, page_with_session, table_raw_headers, urlencode, Pager, SessionIndicator,
-    StateLine,
-};
-use crate::web::host_delivery::{HostDelivery, HostRoutes};
+use crate::web::console_render::ago;
+use crate::web::console_render::live_table;
+use crate::web::console_render::page_with_session;
+use crate::web::console_render::table_raw_headers;
+use crate::web::console_render::urlencode;
+use crate::web::console_render::Pager;
+use crate::web::console_render::SessionIndicator;
+use crate::web::console_render::StateLine;
+use crate::web::host_delivery::HostDelivery;
+use crate::web::host_delivery::HostRoutes;
 use crate::web::release_browse::ReleaseContext;
-use crate::web::render::{
-    escape, hash_value, hash_value_link, human_size, key_fingerprint, table, trust_key_value,
-};
-use aos_hub_db::db::{
-    ChannelSummary, IndexStatus, IndexedSystemImage, PackageDetail, PackageRow, RegistryRecord,
-    ReleaseRow,
-};
+use crate::web::render::escape;
+use crate::web::render::hash_value;
+use crate::web::render::hash_value_link;
+use crate::web::render::human_size;
+use crate::web::render::key_fingerprint;
+use crate::web::render::table;
+use crate::web::render::trust_key_value;
+use aos_hub_db::db::ChannelSummary;
+use aos_hub_db::db::IndexStatus;
+use aos_hub_db::db::IndexedSystemImage;
+use aos_hub_db::db::PackageDetail;
+use aos_hub_db::db::PackageRow;
 #[cfg(test)]
-use aos_hub_db::db::{PlatformDetail, VersionDetail};
+use aos_hub_db::db::PlatformDetail;
+use aos_hub_db::db::RegistryRecord;
+use aos_hub_db::db::ReleaseRow;
+#[cfg(test)]
+use aos_hub_db::db::VersionDetail;
 use aos_registry_format::manifest::{ImageCompression, ImageTarget};
 
 /// Glyph palette for the partition grid: one glyph per release, assigned
@@ -1897,7 +1911,9 @@ pub fn channel_page(
     started: Instant,
     session: &SessionIndicator,
 ) -> String {
-    use crate::web::release_pages::{rollout_distribution, rollout_shares, ROLLOUT_PALETTE};
+    use crate::web::release_pages::rollout_distribution;
+    use crate::web::release_pages::rollout_shares;
+    use crate::web::release_pages::ROLLOUT_PALETTE;
     let slug = &registry.slug;
     let release_link = |release: &str| {
         format!(

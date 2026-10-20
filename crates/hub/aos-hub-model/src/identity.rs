@@ -64,6 +64,12 @@ pub struct TokenAuth {
     pub token_id: String,
     /// The principal that owns the token.
     pub owner: crate::domain::Principal,
+    /// Immutable account UUID validated against this exact token or session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_incarnation: Option<String>,
+    /// Hash of a current cookie session; absent for provisioning tokens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser_session_id_hash: Option<String>,
     /// The immutable authorization scope the token is bound to.
     pub scope: crate::domain::Scope,
     /// The permission verbs the token grants.

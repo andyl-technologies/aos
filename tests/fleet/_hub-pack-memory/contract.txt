@@ -1,0 +1,211 @@
+PRIVATE SOURCE-ONLY PACK MEMORY SUCCESSOR003; UNCOMPILED AND UNRUN
+
+Immutable001 and002 remain unchanged. Runtime source remains pristine exact committed
+c33422854f98185bdbbb796e386edf3d41a50c36. Fixture auxiliary source/ELFs are
+separately identified, never relabelled as that pristine ordinary source.
+No shared working file, Git/index, provider, runtime, key or signature was read/
+changed. This packet implements callable code; actual setup/admission is pending.
+
+CORRECTIONS
+builders.rs preserves exact original semantic32/live36/overflow encoded geometry,
+while executable-fixture compression/geometry/missing-selection errors propagate
+Result/ensure/Context. exporter propagates builder Result before emitting files.
+builder-origin.json identifies the unchanged original source/span and adaptation.
+window.py reserves cleanup before the same original <=120s cutoff; operation waits
+use asyncio.wait rather than unbounded cancellation acknowledgement. Source
+retirement/task cancellation are bounded by that original reserve, with pending/
+expired retirement unknown. No five seconds after expiry, no provider drain claim.
+wasm-observer.mjs captures actual WebAssembly.Memory objects before and after and
+requires identity equality for same-instance allocation. Its concrete128-row sink
+is synchronous/body-free; no external asynchronous sink can hold the handler.
+Original Response/body owner and exact error (including undefined) are preserved.
+
+CONCRETE CURRENT NATIVE AND SOURCE OWNER
+native-caller.rs is a new fixture-only child of the existing Native Fleet helper,
+installed only into the auxiliary source named in native-overlay.txt. Its exact
+ignored selector opens actual current PostgreSQL through existing_database,
+loads genuine current Direct profiles through direct_selection, uses the existing
+TLS root and role-separated MirrorFunctional loader, challenges actual current
+Worker binding custody, then calls existing inspect_mirror_pack. That consumer
+builds/signs the actual SQL-bound original, verifies the returned whole pair and
+rechecks registry/source/placement/binding/current accepted profile after reply.
+It never receives encoded pack/index bodies or synthesizes plans/versions.
+
+For metadata it loads two DISTINCT already admitted Managed Mirror UploadParts
+items from actual SQL: each first_part1/maximum_parts1, non-zstd and <=256KiB.
+Actual publisher bytes are independent source fixture files, NOT uploaded via
+Native Hub or any Native API. Existing genuine Managed candidate/profile/policy/
+role inputs select the same currently installed Worker. A cfg(test)-only wrapper
+calls unchanged batch::run: normal preflight, real signed candidate transport,
+progress validator and transactional SQL persistence. The helper admits no new
+original and never calls Begin/Complete/cleanup. Real prior Begin/SQL originals
+must be supplied by normal publisher/controller setup before this window.
+
+This is a separate metadata-producer scope, not Hybrid bulk-upload qualification.
+No accepted Managed candidate/current originals means unavailable overlap; no
+counter dictionary substitute. Pack and metadata work use separately selected
+existing purpose clients, but MUST target the same actual pinned Worker process,
+Wasm, initial configuration and deployment. Candidate headers are observations,
+not authority. An ordinary Worker without those candidate observations keeps
+capacity counters unknown; no normal/Hosted candidate-route bypass is introduced.
+
+native.py launches the exact selected installed auxiliary Native ELF once per
+immutable selection, owns logs/process/cutoff and preserves failures before any
+interpretation. It reuses current process_identity/process_sample from selected
+_hub-direct-invocation-resources.py. Fixed candidate header locators are opened
+only under the independently selected private Worker capture root after real
+response capture; header counts/hashes are measured, not predicted at preparation.
+The logger is exact unchanged Native logging.rs linked into the fixture child.
+
+source-hold.mjs/source-hold-launch.mjs own a fixed TLS source fixture at
+https://aos.fleet.test:4778/fleet-mirror/<run>, reusing the currently admitted exact
+upstream spelling. This is a SOURCE FIXTURE, not a Garage/S3-response fault. It
+opens/verifies immutable publisher files with O_NOFOLLOW/currentUID/0600/nlink1/
+stable inode+fullSHA. Exactly4 source originals are allowed: pack,index,metadata0,
+metadata1. The actual encoded pack is <=8MiB; index<=4MiB; metadata<=256KiB each.
+GETs have exact host/path/range; real strong ETag derives from retained bytes;
+absent provider version staysNULL. Index is streamed normally, pack offers one
+64KiB prefix then retains its original response. Both metadata range responses
+are held until their actual requests arrive, then released exactly once. Pack
+release follows both actual metadata results; no duplicate GET or reissue.
+
+hold.py invokes only the private source.sock under independently selected0700
+local publisher root, with fixed state/release_metadata/release_pack/retire actions.
+The owner starts its own <=120s monotonic cutoff from a selected original clock
+binding before listening. The controller uses a conservative earlier cutoff,
+never translates a supplied ready flag into authority. All listeners/sockets
+close on original cutoff/retirement; socket close is NOT provider consumption
+or physical drain. Same-host separate publisher/Worker/Native process roles are
+required for this concrete Unix control adapter. No guest-path/host-path fiction;
+a multi-VM integration would require Fleet's separately reviewed real guest IPC.
+
+The exported files must be transferred from the exporter/publisher process to
+the selected source fixture host with their actual hash/count/custody intact.
+The small1MiB publication-copy helper cannot be silently widened. Independent
+bounded8MiB transfer and real normal mirror source/registry setup precede arm.
+This TLS source holds actual exported files; it never replaces signed source
+content or fabricates successful provider responses. The current actual accepted
+Mirror/Pack artifact must admit this source, profile, exact8MiB pair and new32/36
+geometry. The auxiliary ELF must be newly observed in that artifact. Missing
+admission is a real refusal/prerequisite, never copied old12MiB approval.
+
+EXISTING STRICT DECODING AND ACTUAL CONSUMPTION
+Current c334 storage-body-codec mirror.rs supports InspectMirrorPack; the earlier
+001 unsupported note was stale. native.py join_pack_codec invokes the ACTUAL
+selected compiled codec on independently captured original/received bodies. It
+uses current validate_storage_work_attempt, joins request SHA/full reply SHA/
+operation/EOF to actual Native consumed chunks and requires32 selected bytes.
+Mirror typed decoding authenticates NO reply MAC. Native typed/current SQL checks
+are independent from codec structure and process/source/capture provenance.
+The caller must provide complete independent capture/headers and current tuple;
+missing/partial/unassigned attempts are refusal/unknown, never aggregatezero.
+The Native fixture cutoff is at most25s from its actual initial clock, earlier
+than any subsequently created existing30s signed plan; Worker acceptance/profile
+cutoffs remain independently checked and never extended. Controller/source
+cutoffs must be no later than that selected conservative original, with actual
+boot/uptime/controller brackets retained. Node checks actual selected bootId.
+Current inspector has no separate emitted final-SQL context event; its actual
+method returns only after its existing SQL recheck. That helper completion is
+retained with exact selection/executable/result refs, not forged MAC/SQL flags.
+Replacement-overflow intentionally fails the Native/Worker read. Its worker
+parser refusal and exact captured pair must be independently correlated; a503
+alone is not proof of the intended remaining-decoded-graph-budget fence.
+
+MEASUREMENT LIMITS
+Wasm allocated bytes are the current linear-memory allocation envelope only,
+including actual Memory.grow; they are NOT live Rust heap. Process VmRSS/VmHWM
+cover process/native/runtime/startup/all isolates and sampled peaks. Neither
+proves whole JS+Wasm+SDK128MiB or platform CPU. wholeIsolateBytes/jsSdkBytes/
+nativeBulkBytes/providerDrain/HostedAdmission/platformCpuMillis remainNULL.
+Bulk1/Metadata2 candidate interval and actual same-source pair32/36 fields are
+scoped functional observations, not extrapolated memory/performance permission.
+A normal Hosted review that requires whole-isolate evidence remains unavailable
+until genuine platform/allocator evidence exists. No review signing occurs here.
+
+FINITE GATE PLAN — ROOT SOURCE REVIEW AND GO REQUIRED
+1. Source-built Node --test wasm-observer.test.mjs: exactly4 controlled tests,
+   actual same Memory/grow and body-owner identity; full/invalid sink preserves
+   error; same-size replacement unknown; undefined rejection preserved.
+   2CPU/180s, one run, preserve first failure/no retry.
+2. Source-built Python -B window_tests.py: exactly4 controlled tests, positive
+   one-release after both metadata; expired no dispatch; cutoff during hold
+   no metadata/release/retirement after cutoff; capacity refusal subcases.
+   2CPU/180s, one run. These8 tests prove adapter behavior only.
+3. Separately capture pristine c334 through capture.py/pinned source-built Git;
+   no dirty overlay/.git. Derive matching ordinary+controlled Worker/Native/
+   codec/tools with unchanged ordinary package gates, plan001 artifacts.nix.
+   Root must approve evaluation/build/CPU/RAM first; no current realization.
+4. Auxiliary exactc334 + only exporter/builders example leaves: AOS realized
+   dev environment cargo build --manifest-path AUX/crates/Cargo.toml
+   -p aos-registry-surface --example pack_memory_fixture --offline --locked -j2.
+   2CPU/600s once. Export once120s, then AOS Git SHA256 verify-pack each3 pairs
+   max120s each. Retain real file/parser outputs and independent Git results.
+5. Auxiliary Native exactc334 + only named fixture overlay: actual AOS dev env,
+   cargo test --manifest-path AUX/crates/Cargo.toml -p aos-hub --features
+   postgres,required-live-dialects --lib --no-run --offline --locked -j2,
+   2CPU/1800s once/private exclusive target. Retain fresh ELF/source/provenance
+   and exact ignored selector --list registration; no old helper reuse.
+6. Actual held integration: Root separately approves source/publisher TLS/
+   same Worker process/current admission/SQL original setup and original cutoff.
+   Run semantic32 then live36, each <=120s including cleanup, one actual Native
+   pack + two real Managed metadata phases; release both held metadata once,
+   join candidate interval headers, then release pack once. Use actual strict
+   codec/Native consumed prefixes/current method result/source hashes/process
+   RSS-HWM/Wasm samples. Finally retain replacement-overflow actual negative
+   once, require exact Worker parser failure or mark intended-fence unknown.
+   4CPU/4GiB lab host budget request, NOT Worker128MiB approval. No provider/
+   VM execution authorized by this packet. Stop first unexpected failure.
+
+Preserve001 and plan001 hashes/gate scope. No test/compile/build/syntax check has
+run for003. Artifact source/recipe/integration proofs and gates remain pending.
+
+INSTALLED AUXILIARY RECIPE AND PROVENANCE
+The selected /nix/store Native executable required by native.py is produced by
+native-helper.nix, adapted from the actual current standard Cargo helper recipe.
+It keeps AOS vendor/toolchain/normal fixup and selects the new ignored registration.
+Pass pkgs from import of the independently captured auxiliary common source with
+exact c334 production preimages plus only native-owned.patch. The ordinary tuple
+continues to use pristine runtime source. Retain BOTH actual source roots/filtered
+source paths and installed hashes/derivation/output; never name the auxiliary root
+as pristine c334. Actual producer verification must support this explicit pairing
+or refuse. No mismatched current common-source observation is supplied. This
+source/producer join is a mandatory Root review prerequisite before build or
+Mirror artifact installation, and may require selecting both actual outputs from
+the same declared c334+fixture common source while verifying production byte equality.
+No source/ELF hash or common-source field is invented to resolve this prerequisite.
+
+NARROW003 OWNED PROCESS / MODULE CUSTODY CORRECTION
+NativeCaller(current_tuple_reference, root, original_cutoff, capture_root) now
+requires the exact retained closed tuple before any dynamic load:
+version1, runtimeParentCommit=c334, runtimeSourceStorePath, resources,
+executeParser, nativeExecutable and codecExecutable. The two module refs must
+match the pinned current-api-references.json paths/SHA/count exactly (resources
+12018B, parser15947B). Modules are reopened O_NOFOLLOW with immutable source-store
+mode and stable inode; only checked bounded bytes are compiled/executed. There
+is no arbitrary module pathname or second path-loader read. Installed Native/
+codec hashes/counts come from the real tuple, each bounded512MiB and checked
+against immutable actual store files before execution. No artifact values are
+filled by this source packet. Tuple/module/Native/log refs are retained in the
+actual receipt; logs are bounded8MiB each and absent/changed logs remainNULL.
+join_pack_codec also requires the same tuple and records parser/codec/log refs.
+
+The source-owner window remains <=120s including its cleanup. Each Native
+process has the explicit subwindow min(original cutoff, launch clock+25s), with
+operation waiting ending2s earlier. Its remaining subwindow reserve is divided:
+TERM + wait for half, then KILL + actual wait/reap for remaining half, both
+inside the original subwindow. No signal or new wait is issued when expired.
+Receipt termInvoked/killInvoked/exit/reaped/reapedWithinOriginal are actual
+observations, not drain. A pending reap remainsNULL; a successful result with
+unknown/late reap cannot return as completed. The existing original exception
+propagates while the bounded actual process outcome is retained.
+
+Only native.py, window_tests.py and this contract differ from002. The Node4
+test source and other builder/hold/Native Rust/recipe posts remain exact002.
+The same four Python cases now include TERM-resistant KILL+actual-reap positive,
+KILL with unresolved reap unknown, expired-no-signal, and wrong module path/
+SHA/count refusal subcases. Those are controlled adapter tests; no actual
+Native process/provider/runtime or whole-isolate qualification is claimed.
+See exact local-gate-plan.json for the two proposed serial commands (Node4 then
+Python4), 2CPU/180s per command, stop first failure, no automatic retry. They
+have not run. No renewed builder/Native compile/integration gate is requested
+by this correction; each still requires its separately approved prerequisites.

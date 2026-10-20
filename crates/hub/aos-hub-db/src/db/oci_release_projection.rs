@@ -25,7 +25,8 @@ use std::collections::BTreeSet;
 use anyhow::{Context, Result};
 
 use super::{ContainerReleaseRootSnapshot, Database, IndexSnapshot, ReleaseArtifactSnapshot};
-use crate::backend::{CheckedStatement, Statement};
+use crate::backend::CheckedStatement;
+use crate::backend::Statement;
 
 /// One stored row of the container-release projection, without timestamps.
 ///

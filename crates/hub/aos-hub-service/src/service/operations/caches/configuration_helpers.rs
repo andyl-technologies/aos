@@ -97,6 +97,10 @@ impl RpcService {
             }
         }
         if cache.visibility == "public" {
+            aos_hub_db::hybrid_ingress::observation::record_existing_check(
+                "cache_public_read_policy",
+                &(cache.id, cache.org_id, &cache.scope_key, &cache.visibility),
+            );
             return Ok(());
         }
         let claims = self.require_claims(auth)?;
@@ -129,6 +133,10 @@ impl RpcService {
                     }
                 }
                 if cache.visibility == "public" {
+                    aos_hub_db::hybrid_ingress::observation::record_existing_check(
+                        "cache_public_read_policy",
+                        &(cache.id, cache.org_id, &cache.scope_key, &cache.visibility),
+                    );
                     return Ok(());
                 }
                 let session = self
@@ -148,6 +156,16 @@ impl RpcService {
                     .map_err(RpcError::internal)?
                     .ok_or_else(|| RpcError::not_found("cache scope"))?;
                 if iam::allow(&grants, Permission::Read, &context) {
+                    aos_hub_db::hybrid_ingress::observation::record_existing_check(
+                        "cache_session_read",
+                        &(
+                            session.auth.user_id,
+                            &session.auth.owner_incarnation,
+                            &session.auth.session_id_hash,
+                            &cache.scope_key,
+                            aos_hub_db::hybrid_ingress::observation::grant_projection(&grants),
+                        ),
+                    );
                     Ok(())
                 } else {
                     Err(RpcError::PermissionDenied(
@@ -416,6 +434,16 @@ impl RpcService {
         {
             return Err(RpcError::invalid(
                 "cache narinfo store hashes must be unique",
+            ));
+        }
+        if narinfos.iter().any(|narinfo| {
+            !aos_hub_db::storage_work::admitted_narinfo_path(&format!(
+                "{}.narinfo",
+                narinfo.store_hash
+            ))
+        }) {
+            return Err(RpcError::invalid(
+                "cache narinfo store hashes must use Nix base32",
             ));
         }
         let now = clock::now_unix_secs();

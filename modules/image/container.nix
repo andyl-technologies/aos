@@ -112,13 +112,18 @@ in {
   config = lib.mkIf enabled {
     # File lists compose with release-profile files at ordinary priority. A
     # default-priority list would disappear as soon as a profile added a file.
-    aos.containers.definitions.aos = lib.mkMerge [
-      (lib.mkDefault (defaultDefinition
-        // {
-          filesystem = builtins.removeAttrs defaultDefinition.filesystem ["files"];
-        }))
-      {filesystem.files = lib.mkBefore defaultDefinition.filesystem.files;}
-    ];
+    aos.containers.definitions =
+      (lib.mapAttrs (_: lib.mkDefault)
+        (backend.companionDefinitions {inherit lib pkgs targetPlatform;}))
+      // {
+        aos = lib.mkMerge [
+          (lib.mkDefault (defaultDefinition
+            // {
+              filesystem = builtins.removeAttrs defaultDefinition.filesystem ["files"];
+            }))
+          {filesystem.files = lib.mkBefore defaultDefinition.filesystem.files;}
+        ];
+      };
 
     assertions = [
       {

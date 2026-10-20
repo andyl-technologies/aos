@@ -3,13 +3,24 @@
 use aos_hub_api as pb;
 
 use super::*;
-use aos_hub_db::db::{
-    AppliedOciAdminMutation, ApplyOciAdminMutation, ApplyOciGc, ApplyOciRegistryPurgeFence,
-    ApplyOciUntrackedRepair, CancelOciGc, OciAdminMutationRecord, OciManualTagMutationOperation,
-    OciRegistryPurgeFenceAction, OciRepositoryMutationOperation, OciUntrackedRepairKind, PlanOciGc,
-    PlanOciManualTagMutation, PlanOciRegistryPurgeFence, PlanOciRepositoryMutation,
-    PlanOciRetentionPolicy, PlanOciUntrackedRepair, RequeueOciGcPlacementAction,
-};
+use aos_hub_db::db::AppliedOciAdminMutation;
+use aos_hub_db::db::ApplyOciAdminMutation;
+use aos_hub_db::db::ApplyOciGc;
+use aos_hub_db::db::ApplyOciRegistryPurgeFence;
+use aos_hub_db::db::ApplyOciUntrackedRepair;
+use aos_hub_db::db::CancelOciGc;
+use aos_hub_db::db::OciAdminMutationRecord;
+use aos_hub_db::db::OciManualTagMutationOperation;
+use aos_hub_db::db::OciRegistryPurgeFenceAction;
+use aos_hub_db::db::OciRepositoryMutationOperation;
+use aos_hub_db::db::OciUntrackedRepairKind;
+use aos_hub_db::db::PlanOciGc;
+use aos_hub_db::db::PlanOciManualTagMutation;
+use aos_hub_db::db::PlanOciRegistryPurgeFence;
+use aos_hub_db::db::PlanOciRepositoryMutation;
+use aos_hub_db::db::PlanOciRetentionPolicy;
+use aos_hub_db::db::PlanOciUntrackedRepair;
+use aos_hub_db::db::RequeueOciGcPlacementAction;
 use aos_hub_model::clock;
 
 impl RpcService {

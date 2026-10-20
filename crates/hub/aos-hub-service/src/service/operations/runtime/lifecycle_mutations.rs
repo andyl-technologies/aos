@@ -20,8 +20,10 @@ impl RpcService {
                     .split_once(':')
                     .context("Nix cache public key requires name:base64")?;
                 anyhow::ensure!(!name.is_empty(), "Nix cache public key name is empty");
-                let canonical =
-                    crate::nix_sign::nix_public_key_from_raw(name, encoded.trim_end_matches('='))?;
+                let canonical = aos_hub_model::nix_sign::nix_public_key_from_raw(
+                    name,
+                    encoded.trim_end_matches('='),
+                )?;
                 anyhow::ensure!(canonical == *key, "Nix cache public key is noncanonical");
             }
         }
@@ -74,12 +76,16 @@ impl RpcService {
             container_rollout: crate::container_rollout::ContainerRollout::default(),
             ratelimit,
             surface,
+            deployment_id: None,
+            hybrid_delivery: false,
+            hybrid_upload_mode: aos_hub_db::hybrid_upload::HybridUploadMode::default(),
             surface_write,
             lease,
             reindexer,
             topology_probes,
             sealer,
             secret_versions: None,
+            credential_registration_policy: CredentialRegistrationPolicy::ResolveProviderMaterial,
             origin_fetch: None,
             kv: None,
             domain_probe_terminator: None,
@@ -168,6 +174,52 @@ impl RpcService {
         provider: Arc<dyn crate::topology_probe::DomainProbeTerminatorProvider>,
     ) -> Self {
         self.domain_probe_terminator = Some(provider);
+        self
+    }
+}
+
+impl RpcService {
+    /// Defers private credential byte verification to configured Worker custody.
+    ///
+    /// The paired Hybrid shell selects this policy explicitly. Registration
+    /// stores only an unvalidated immutable reference and digest; actual queued
+    /// staging and authenticated controller validation remain mandatory before
+    /// adopting a snapshot or authorizing provider work. Missing local resolvers
+    /// never select this policy automatically.
+    #[must_use]
+    pub fn with_worker_credential_registration(mut self) -> Self {
+        self.credential_registration_policy = CredentialRegistrationPolicy::WorkerCustody;
+        self
+    }
+}
+
+impl RpcService {
+    /// Binds an explicitly configured permanent deployment identity.
+    ///
+    /// This namespace scopes public principal commitments. It neither enables
+    /// direct upload nor proves provider, clock, or read-guard readiness.
+    ///
+    /// # Errors
+    /// Returns an error when a configured namespace is empty or noncanonical.
+    pub fn with_deployment_id(mut self, deployment_id: Option<String>) -> Result<Self, RpcError> {
+        if deployment_id
+            .as_deref()
+            .is_some_and(|value| !aos_hub_db::direct_upload::valid_direct_identity(value))
+        {
+            return Err(RpcError::invalid(
+                "configured deployment identity is invalid",
+            ));
+        }
+        self.deployment_id = deployment_id;
+        Ok(self)
+    }
+}
+
+impl RpcService {
+    /// Enables exact R2 delivery grants on the signed hybrid Native origin.
+    #[must_use]
+    pub fn with_hybrid_delivery(mut self) -> Self {
+        self.hybrid_delivery = true;
         self
     }
 }

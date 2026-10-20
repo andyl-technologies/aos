@@ -9,11 +9,17 @@ use std::collections::BTreeMap;
 
 use anyhow::{bail, Result};
 
-use aos_hub_model::delivery_http::{
-    evaluate_verified_representation, ContentMutability, DeliveryMethod, EntityTag,
-    EntityTagCondition, HttpTimestamp, IfRangeCondition, RequestDecision, RequestPreconditions,
-    SingleByteRange, VerifiedRepresentation,
-};
+use aos_hub_model::delivery_http::evaluate_verified_representation;
+use aos_hub_model::delivery_http::ContentMutability;
+use aos_hub_model::delivery_http::DeliveryMethod;
+use aos_hub_model::delivery_http::EntityTag;
+use aos_hub_model::delivery_http::EntityTagCondition;
+use aos_hub_model::delivery_http::HttpTimestamp;
+use aos_hub_model::delivery_http::IfRangeCondition;
+use aos_hub_model::delivery_http::RequestDecision;
+use aos_hub_model::delivery_http::RequestPreconditions;
+use aos_hub_model::delivery_http::SingleByteRange;
+use aos_hub_model::delivery_http::VerifiedRepresentation;
 
 /// Authorization visibility of the resolved repository object.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

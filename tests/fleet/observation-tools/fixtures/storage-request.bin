@@ -1,0 +1,1 @@
+{"version":1,"plan_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","deployment_id":"fixture","issued_at":100,"expires_at":130,"placement_id":4,"placement_resource_version":2,"binding_id":3,"binding_resource_version":1,"binding_kind":"deployment_r2","placement_prefix":"registry/","operation":{"kind":"head","path":"HEAD"}}

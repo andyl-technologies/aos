@@ -1140,6 +1140,21 @@ pub enum UploadConfigField {
 /// Authentication flags for registry static-cache uploads.
 #[derive(Debug, Clone, Args, Default)]
 pub struct CacheUploadAuthArgs {
+    /// Select the exact Hub metadata origin for registry publication uploads
+    #[arg(long, requires = "hub_registry")]
+    pub hub_origin: Option<String>,
+    /// Select the Hub registry owning the frozen Git/image publication
+    #[arg(long, requires = "hub_origin")]
+    pub hub_registry: Option<String>,
+    /// Read an explicit direct-provider origin/CIDR/public-CA policy
+    #[arg(long, value_name = "FILE")]
+    pub direct_provider_policy: Option<std::path::PathBuf>,
+    /// Resume or create this owner-private direct retry journal
+    #[arg(long, value_name = "FILE")]
+    pub direct_upload_journal: Option<std::path::PathBuf>,
+    /// Use a new direct upload run while preserving prior journals
+    #[arg(long)]
+    pub new_direct_upload_run: bool,
     /// AOS provisioning token (AOS_TOKEN env)
     #[arg(long, env = "AOS_TOKEN")]
     pub token: Option<String>,
@@ -1203,6 +1218,22 @@ impl CacheUploadAuthArgs {
                     ..aos_nix_cache::AuthOptions::default()
                 });
 
+        if let Some(origin) = &self.hub_origin {
+            auth.hub_origin = Some(origin.clone());
+        }
+        if let Some(registry) = &self.hub_registry {
+            auth.hub_registry = Some(registry.clone());
+        }
+        #[cfg(unix)]
+        {
+            if let Some(policy) = &self.direct_provider_policy {
+                auth.direct_upload.provider_policy = Some(policy.clone());
+            }
+            if let Some(journal) = &self.direct_upload_journal {
+                auth.direct_upload.journal = Some(journal.clone());
+            }
+            auth.direct_upload.new_run = self.new_direct_upload_run;
+        }
         if let Some(token) = &self.token {
             auth.token = Some(token.clone());
         }
@@ -1246,6 +1277,14 @@ impl CacheUploadAuthArgs {
 /// substituting the `"default"` view when none is configured.
 fn upload_auth_options(config: &RegistryUploadAuthConfig) -> aos_nix_cache::AuthOptions {
     aos_nix_cache::AuthOptions {
+        #[cfg(unix)]
+        direct_upload: aos_hub_client::DirectUploadOptions {
+            journal: config.direct_upload_journal.clone(),
+            provider_policy: config.direct_provider_policy.clone(),
+            ..aos_hub_client::DirectUploadOptions::default()
+        },
+        hub_origin: config.hub_origin.clone(),
+        hub_registry: config.hub_registry.clone(),
         token: config.token.clone(),
         view: config.view.clone().unwrap_or_else(|| "default".to_string()),
         http_user: config.http_user.clone(),

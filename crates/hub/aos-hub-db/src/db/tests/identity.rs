@@ -241,7 +241,8 @@ async fn invitations_create_accept_and_expire() {
 
 #[tokio::test]
 async fn tokens_create_validate_revoke_and_list() {
-    use aos_hub_model::domain::{Permission, Principal};
+    use aos_hub_model::domain::Permission;
+    use aos_hub_model::domain::Principal;
     let db = Database::open_in_memory().await.unwrap();
     let owner_id = db
         .create_user("token-owner@example.test", None)
@@ -298,7 +299,8 @@ async fn tokens_create_validate_revoke_and_list() {
 
 #[tokio::test]
 async fn tokens_expired_is_rejected() {
-    use aos_hub_model::domain::{Permission, Principal};
+    use aos_hub_model::domain::Permission;
+    use aos_hub_model::domain::Principal;
     let db = Database::open_in_memory().await.unwrap();
     let owner_id = db.create_user("expired@example.test", None).await.unwrap();
     db.grant_membership("user", owner_id, "instance", "owner")
@@ -320,7 +322,8 @@ async fn tokens_expired_is_rejected() {
 
 #[tokio::test]
 async fn tokens_rotation_honors_grace_window() {
-    use aos_hub_model::domain::{Permission, Principal};
+    use aos_hub_model::domain::Permission;
+    use aos_hub_model::domain::Principal;
     let db = Database::open_in_memory().await.unwrap();
     let owner_id = db.create_user("rotate@example.test", None).await.unwrap();
     db.grant_membership("user", owner_id, "instance", "owner")
@@ -362,7 +365,8 @@ async fn tokens_rotation_honors_grace_window() {
 
 #[tokio::test]
 async fn revoked_token_is_denied_immediately_without_grace() {
-    use aos_hub_model::domain::{Permission, Principal};
+    use aos_hub_model::domain::Permission;
+    use aos_hub_model::domain::Principal;
     let db = Database::open_in_memory().await.unwrap();
     let owner_id = db.create_user("revoked@example.test", None).await.unwrap();
     db.grant_membership("user", owner_id, "instance", "owner")
@@ -489,7 +493,8 @@ async fn repeated_session_validation_preserves_liveness_without_identical_writes
 
 #[tokio::test]
 async fn session_idle_and_absolute_timeouts_enforced() {
-    use aos_hub_model::auth::session::{ABSOLUTE_LIFETIME_SECS, IDLE_TIMEOUT_SECS};
+    use aos_hub_model::auth::session::ABSOLUTE_LIFETIME_SECS;
+    use aos_hub_model::auth::session::IDLE_TIMEOUT_SECS;
     let db = Database::open_in_memory().await.unwrap();
     let user = db.create_user("dev@acme.com", None).await.unwrap();
     let now = unix_now();
@@ -507,7 +512,7 @@ async fn session_idle_and_absolute_timeouts_enforced() {
     db.backend
         .execute(
             "UPDATE sessions SET last_seen_at = ?2 WHERE id_hash = ?1",
-            &vals![hash, now - IDLE_TIMEOUT_SECS - 1],
+            &vals![hash, now.saturating_sub(IDLE_TIMEOUT_SECS) - 1],
         )
         .await
         .unwrap();
@@ -545,7 +550,7 @@ async fn session_idle_and_absolute_timeouts_enforced() {
     db.backend
         .execute(
             "UPDATE sessions SET last_seen_at = ?2 WHERE id_hash = ?1",
-            &vals![hash3, now - IDLE_TIMEOUT_SECS + 60],
+            &vals![hash3, now.saturating_sub(IDLE_TIMEOUT_SECS) + 60],
         )
         .await
         .unwrap();
@@ -586,7 +591,10 @@ async fn session_is_sudo_window() {
 
 #[tokio::test]
 async fn approve_device_is_idempotent_one_token_per_approval() {
-    use aos_hub_model::domain::{Permission, Principal, Role, Scope};
+    use aos_hub_model::domain::Permission;
+    use aos_hub_model::domain::Principal;
+    use aos_hub_model::domain::Role;
+    use aos_hub_model::domain::Scope;
     let db = Database::open_in_memory().await.unwrap();
     let approver = db.create_user("admin@acme.com", None).await.unwrap();
     let principal = Principal::user(approver);
@@ -727,7 +735,8 @@ async fn delete_user_re_checks_sole_ownership_in_tx() {
 
 #[tokio::test]
 async fn deleted_principal_deadens_unrevoked_credentials_and_grants() {
-    use aos_hub_model::domain::{Permission, Principal};
+    use aos_hub_model::domain::Permission;
+    use aos_hub_model::domain::Principal;
     let db = Database::open_in_memory().await.unwrap();
     let user = db
         .create_user("deleted-token@example.test", None)
@@ -930,7 +939,8 @@ async fn sibling_surface_scopes_are_isolated_and_slug_reuse_gets_new_identity() 
 async fn grant_membership_backstop_rejects_non_canonical_scopes() {
     // CR-2 persistence backstop: only closed, immutable scope identities
     // may reach the live grant table.
-    use aos_hub_model::domain::{Principal, Role};
+    use aos_hub_model::domain::Principal;
+    use aos_hub_model::domain::Role;
     let db = Database::open_in_memory().await.unwrap();
     let org_id = db.create_org("acme", "Acme").await.unwrap();
     let org_scope = db.org_by_id(org_id).await.unwrap().unwrap().stable_id;

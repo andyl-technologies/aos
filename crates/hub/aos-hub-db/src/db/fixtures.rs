@@ -140,6 +140,10 @@ struct CountingBackend {
 
 #[async_trait::async_trait]
 impl Backend for CountingBackend {
+    async fn migrate_schema(&self) -> anyhow::Result<()> {
+        self.inner.migrate_schema().await
+    }
+
     fn dialect(&self) -> Dialect {
         self.inner.dialect()
     }
@@ -229,3 +233,9 @@ pub async fn topology_fixture() -> (Database, SurfaceTarget) {
         .unwrap();
     (db, surface)
 }
+
+/// Canonical retained direct-upload fixture originals.
+pub mod direct_upload;
+
+/// Cache inventory and placement fixture construction.
+pub mod cache_gc;

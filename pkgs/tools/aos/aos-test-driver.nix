@@ -104,8 +104,9 @@ mkDerivation {
   version = "1.0";
   src = null;
 
-  # Retain the shim's interpreter in native builds as well as cross builds;
-  # reference scrubbing otherwise treats it as a disposable build input.
+  # The installed shim uses Bash and re-execs Python; qemu.py also launches
+  # socat for serial drain. Declare all three for native and cross builds so
+  # reference scrubbing preserves the interpreter paths.
   runtimeDeps = [bash python3 socat];
 
   phases = [

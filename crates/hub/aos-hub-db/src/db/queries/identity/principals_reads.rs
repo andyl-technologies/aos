@@ -76,9 +76,9 @@ impl Database {
         }
         self.backend
             .execute(
-                "INSERT INTO users (email, display_name, created_at) VALUES (?1, NULL, ?2)
+                "INSERT INTO users (email, display_name, created_at, principal_incarnation) VALUES (?1, NULL, ?2, ?3)
              ON CONFLICT(email) DO NOTHING",
-                &vals![email, unix_now()],
+                &vals![email, unix_now(), uuid::Uuid::new_v4().to_string()],
             )
             .await?;
         self.backend

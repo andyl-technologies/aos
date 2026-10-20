@@ -18,10 +18,15 @@ use super::browse::Rendered;
 use super::browse_pages::{registry_crumbs, registry_nav_at_release, state_line};
 use super::console_render::{page_with_session, urlencode, SessionIndicator};
 use super::render::escape;
-use aos_hub_db::db::{
-    ChannelSummary, Database, IndexStatus, PackageDetail, PackageRow, PlatformDetail,
-    RegistryRecord, ReleaseRow, VersionDetail,
-};
+use aos_hub_db::db::ChannelSummary;
+use aos_hub_db::db::Database;
+use aos_hub_db::db::IndexStatus;
+use aos_hub_db::db::PackageDetail;
+use aos_hub_db::db::PackageRow;
+use aos_hub_db::db::PlatformDetail;
+use aos_hub_db::db::RegistryRecord;
+use aos_hub_db::db::ReleaseRow;
+use aos_hub_db::db::VersionDetail;
 use aos_registry_format::manifest::PackageToml;
 
 /// Number of newest releases offered directly in the selector.

@@ -201,6 +201,59 @@ pub async fn upload_container_stage_with_options(
     options: &PushOptions,
     mount_sources: &[RepositoryName],
 ) -> Result<ReleaseGraphPushResult> {
+    let reference = container_stage_reference(candidate, origin, namespace)?;
+    let client = RegistryClient::new(&reference, Some(origin), token)?;
+    upload_container_stage_with_client(
+        candidate,
+        object_directory,
+        origin,
+        namespace,
+        &client,
+        options,
+        mount_sources,
+    )
+    .await
+}
+
+/// Uploads retained OCI bytes using the caller's configured Distribution client.
+///
+/// The client retains its provider policy, direct journal, new-run selection,
+/// credentials and observations. The origin and namespace identify the candidate
+/// reference; the client supplies the pinned transport origin and must have the
+/// same authority. Mount sources remain Distribution wire names on that origin.
+///
+/// # Errors
+///
+/// Returns an error for corrupt inventory, invalid origins, a client bound to
+/// another authority, incomplete graphs, authentication, cancellation, or
+/// Distribution transfer failures.
+pub async fn upload_container_stage_with_client(
+    candidate: &StageRevision,
+    object_directory: &Path,
+    origin: &str,
+    namespace: Option<&str>,
+    client: &RegistryClient,
+    options: &PushOptions,
+    mount_sources: &[RepositoryName],
+) -> Result<ReleaseGraphPushResult> {
+    let reference = container_stage_reference(candidate, origin, namespace)?;
+    let graph = candidate
+        .container
+        .as_ref()
+        .context("candidate has no container graph")?;
+    let layout = retained_container_layout(graph, object_directory)?;
+    let mut options = options.clone();
+    options.source = layout.path().to_path_buf();
+    client
+        .push_release_graph(&reference, &options, &graph.release, mount_sources)
+        .await
+}
+
+fn container_stage_reference(
+    candidate: &StageRevision,
+    origin: &str,
+    namespace: Option<&str>,
+) -> Result<RegistryReference> {
     candidate.validate()?;
     let graph = candidate
         .container
@@ -223,17 +276,10 @@ pub async fn upload_container_stage_with_options(
         "OCI candidate origin lacks a registry authority"
     );
     let wire_repository = namespaced_repository(namespace, &graph.repository)?;
-    let reference = RegistryReference::parse(&format!(
+    Ok(RegistryReference::parse(&format!(
         "{}/{}@{}",
         authority, wire_repository, graph.release.oci.index.digest,
-    ))?;
-    let client = RegistryClient::new(&reference, Some(origin.as_str()), token)?;
-    let layout = retained_container_layout(graph, object_directory)?;
-    let mut options = options.clone();
-    options.source = layout.path().to_path_buf();
-    client
-        .push_release_graph(&reference, &options, &graph.release, mount_sources)
-        .await
+    ))?)
 }
 
 /// Verifies the retained bytes form the exact declared closed OCI graph.

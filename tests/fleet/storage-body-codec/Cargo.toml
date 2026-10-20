@@ -1,0 +1,27 @@
+[package]
+name = "aos-storage-body-codec"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[features]
+default = []
+native-bodies = []
+
+[dependencies]
+aos-hub-db = { path = "../../../crates/hub/aos-hub-db" }
+aos-hub-model = { path = "../../../crates/hub/aos-hub-model" }
+aos-module-docs = { path = "../../../crates/aos/modules/aos-module-docs" }
+aos-hub-api = { path = "../../../crates/hub/aos-hub-api" }
+aos-hub-native = { path = "../../../crates/hub/aos-hub-native", features = ["test-support"] }
+aos-hub-service = { path = "../../../crates/hub/aos-hub-service" }
+aos-oci-types = { path = "../../../crates/shared/aos-oci-types" }
+anyhow = "1"
+base64 = "0.22"
+hex = "0.4"
+rustix = { version = "1.1.4", features = ["fs", "process"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"

@@ -7,8 +7,8 @@
 
 use anyhow::{Context as _, Result};
 use aos_hub_db::db::Database;
+use aos_hub_model::storage::FrozenSurfaceAccess;
 use aos_hub_service::storage_credential::StorageCredentialResolver;
-use aos_hub_service::surface_write::FrozenSurfaceAccess;
 
 /// Reopens the exact frozen binding and immutable write revision.
 pub(crate) async fn binding(
@@ -54,10 +54,13 @@ mod tests {
     use std::collections::BTreeMap;
     use std::sync::Arc;
 
-    use aos_hub_db::db::{Database, NewBindingWriteRevision, RecordOciConditionalDeleteCapability};
-    use aos_hub_model::secret_version::{ResolvedSecretVersion, SecretVersionResolver};
+    use aos_hub_db::db::Database;
+    use aos_hub_db::db::NewBindingWriteRevision;
+    use aos_hub_db::db::RecordOciConditionalDeleteCapability;
+    use aos_hub_model::secret_version::ResolvedSecretVersion;
+    use aos_hub_model::secret_version::SecretVersionResolver;
+    use aos_hub_model::storage::FrozenSurfaceAccess;
     use aos_hub_service::storage_credential::DatabaseStorageCredentialResolver;
-    use aos_hub_service::surface_write::FrozenSurfaceAccess;
     use sha2::{Digest as _, Sha256};
 
     use super::{binding, delete_credential};

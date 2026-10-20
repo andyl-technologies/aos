@@ -841,7 +841,8 @@ mod tests {
     use super::*;
     use crate::retained_control::change_request::GitObjectKind;
     use crate::retained_control::primitives::ResourceVersion;
-    use crate::retained_control::signing::{KeyCustody, SigningAlgorithm};
+    use crate::retained_control::signing::KeyCustody;
+    use crate::retained_control::signing::SigningAlgorithm;
 
     fn oid(byte: char) -> GitObjectId {
         GitObjectId::new(format!("sha256:{}", byte.to_string().repeat(64))).unwrap()

@@ -8,9 +8,11 @@ survive verbatim — see comments in start().
 import glob
 import logging
 import os
+import secrets
 import shutil
 import socket
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -19,36 +21,26 @@ from typing import IO, ClassVar, override
 from .agent import Driver
 from .fs import clone_or_copy
 from .machine import Machine
+from .network import configure_multicast_buffers
 
 
 log: logging.Logger = logging.getLogger(__name__)
 
 
 def _mcast_endpoint() -> tuple[str, int]:
-    """Pick a per-driver-process multicast group + port for the fleet L2.
+    """Pick one randomly isolated multicast endpoint for the fleet L2.
 
-    Every machine in one ``aos-test-driver`` invocation joins the same
-    group (so they form one virtual L2 segment); two driver processes on
-    the same host cannot collide because their PIDs are distinct while
-    both are live. Mirrors the per-PID CID derivation in
-    ``firecracker.py`` — the codebase already does not rely on Nix
-    sandbox netns isolation for harness-internal addresses.
+    All machines in one driver invocation share this endpoint. Nix PID
+    namespaces can give concurrent drivers the same PID while their VMs share
+    the host network, so a PID cannot isolate their Ethernet traffic.
 
-    Even when the sandbox netns *does* isolate ``localaddr=127.0.0.1``
-    mcast traffic, this keeps the interactive launcher (which runs
-    outside the sandbox) and any future non-sandboxed call path correct
-    by construction.
-
-    239.0.0.0/8 is the IANA "organization-local scope" range (RFC 2365)
-    — the right pool for an ephemeral, harness-internal multicast group.
-    The last three octets carry 24 bits of PID; Linux's default
-    PID_MAX_LIMIT is 2^22, so within the live PID range the group is
-    unique. The port adds a second axis of separation in case the PID
-    happens to share its low 24 bits with another live driver.
+    Use 24 random group bits in the organization-local 239.0.0.0/8 range
+    and an independently selected port. The endpoint is chosen once on import
+    and retained across machine restarts within the same fleet.
     """
-    pid = os.getpid()
-    group = f"239.{(pid >> 16) & 0xff}.{(pid >> 8) & 0xff}.{pid & 0xff}"
-    port = 10000 + (pid % 50000)
+    group_id = secrets.randbits(24)
+    group = f"239.{(group_id >> 16) & 0xff}.{(group_id >> 8) & 0xff}.{group_id & 0xff}"
+    port = 10000 + secrets.randbelow(50000)
     return group, port
 
 
@@ -335,10 +327,8 @@ class QemuMachine(Machine):
         # (no CAP_NET_ADMIN required). Cross-process delivery between
         # QEMU instances of the same fleet works as designed.
         #
-        # The mcast group + port are derived from the driver PID at
-        # import time (see _mcast_endpoint above), so two concurrent
-        # driver processes — sandboxed or not — get distinct L2 segments
-        # and cannot cross-talk even if a future change shares a netns.
+        # The endpoint is selected once per driver, independently of PID
+        # namespaces, and shared by this fleet's machines and their restarts.
         self._launch()
 
     # ------------------------------------------------------------------
@@ -607,6 +597,21 @@ class QemuMachine(Machine):
                 f"[{self.name}] QEMU exited immediately"
                 f" (code {self.qemu_proc.returncode})"
             )
+
+        if sys.platform == "linux":
+            try:
+                receive, send = configure_multicast_buffers(
+                    self.qemu_proc.pid, (MCAST_GROUP, MCAST_PORT)
+                )
+                log.info(
+                    "[%s] multicast buffers: receive=%d send=%d", self.name, receive, send
+                )
+            except OSError as error:
+                # Restricted hosts can deny pidfd_getfd. Keep ordinary boot
+                # available and expose the untuned transport in the test log.
+                log.warning(
+                    "[%s] multicast buffer setup unavailable (errno=%s)", self.name, error.errno
+                )
 
     def _start_serial_bridge(self) -> None:
         """Starts one bidirectional serial bridge and append-only drain."""

@@ -326,6 +326,7 @@ async fn snapshot_materializes_only_the_exact_signed_container_root() {
         ContainerReleaseDescriptorRole::Source,
         ContainerReleaseDescriptorRole::License,
         ContainerReleaseDescriptorRole::Provenance,
+        ContainerReleaseDescriptorRole::Deployment,
         ContainerReleaseDescriptorRole::Signature,
     ];
     for (ordinal, role) in required_roles.into_iter().enumerate() {
@@ -421,10 +422,12 @@ async fn snapshot_materializes_only_the_exact_signed_container_root() {
     let closure_layer_digest = required_descriptors[1].digest.clone();
     let evidence_kinds = [
         "closure",
+        "abilities",
         "sbom",
         "source",
         "license",
         "provenance",
+        "deployment",
         "signature",
     ];
     let evidence = evidence_kinds
@@ -539,7 +542,7 @@ async fn snapshot_materializes_only_the_exact_signed_container_root() {
         .unwrap();
     assert_eq!(provenance.package, "aos");
     assert_eq!(provenance.closure_members.len(), 1);
-    assert_eq!(provenance.evidence.len(), 6);
+    assert_eq!(provenance.evidence.len(), 8);
     assert!(provenance
         .evidence
         .iter()
@@ -591,7 +594,7 @@ async fn snapshot_materializes_only_the_exact_signed_container_root() {
         vec!["1.0.0", "2.0.0"]
     );
     assert_eq!(all_provenance.items[1].closure_members.len(), 1);
-    assert_eq!(all_provenance.items[1].evidence.len(), 6);
+    assert_eq!(all_provenance.items[1].evidence.len(), 8);
     let epoch_after_shared_root: i64 = db
         .backend
         .query_opt(

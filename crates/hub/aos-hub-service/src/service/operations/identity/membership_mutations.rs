@@ -407,7 +407,7 @@ impl RpcService {
         req: pb::AcceptInvitationRequest,
     ) -> Result<pb::AcceptInvitationResponse, RpcError> {
         let claims = self.require_claims(auth)?;
-        let principal = claims_principal(&claims)
+        let principal = Some(self.current_principal(&claims).await?)
             .filter(|principal| principal.kind == PrincipalKind::User)
             .ok_or_else(|| {
                 RpcError::PermissionDenied("a human user must accept invitations".into())

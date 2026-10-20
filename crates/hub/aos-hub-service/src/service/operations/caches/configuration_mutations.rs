@@ -203,6 +203,8 @@ impl RpcService {
             .map_err(RpcError::internal)?
             .ok_or_else(|| RpcError::not_found("cache"))?;
         self.require_cache_stream_read(auth, &cache).await?;
+        let cacheable = cache.visibility == "public"
+            && matches!(auth, ReadAuthorization::AuthorizationHeader(None));
 
         // `nix-cache-info` is hub-generated — small, never streamed or presigned.
         if path == "nix-cache-info" {
@@ -214,7 +216,19 @@ impl RpcService {
                 ],
                 body,
             ));
-            return Ok(Some(resp));
+            return Ok(Some(if cacheable {
+                resp
+            } else {
+                Self::private_delivery_response(resp)
+            }));
+        }
+
+        if self.hybrid_delivery {
+            let surface = SurfaceTarget::BinaryCache(cache.id);
+            let requirement = placement_read::requirement_for_path(surface, path);
+            return self
+                .hybrid_surface_delivery(surface, path, requirement, cacheable)
+                .await;
         }
 
         let requested = parse_byte_range(range_header);
@@ -229,7 +243,12 @@ impl RpcService {
         .map_err(RpcError::surface_read)?
         {
             PlacementReadOutcome::Found(read) => {
-                return Ok(Some(Self::streamed_surface_response(path, read.value)?));
+                let response = Self::streamed_surface_response(path, read.value)?;
+                return Ok(Some(if cacheable {
+                    response
+                } else {
+                    Self::private_delivery_response(response)
+                }));
             }
             PlacementReadOutcome::NotFound => return Ok(None),
         }
@@ -463,5 +482,123 @@ impl RpcService {
             let ttl = crate::cache::HOT_TTL_SECS * 10;
             let _ = kv.put(&format!("tokrev:{token_id}"), b"1", Some(ttl)).await;
         }
+    }
+}
+
+impl RpcService {
+    pub(in crate::service) async fn hybrid_surface_delivery(
+        &self,
+        surface: SurfaceTarget,
+        path: &str,
+        requirement: PlacementReadRequirement<'_>,
+        cacheable: bool,
+    ) -> Result<Option<axum::response::Response>, RpcError> {
+        use crate::placement_read::classify_read_error;
+        use crate::placement_read::ReadFailureClass;
+        use aos_hub_db::hybrid_ingress::HybridDeliveryTarget;
+        use aos_hub_db::hybrid_ingress::HYBRID_DELIVERY_HEADER;
+
+        let plan = self
+            .db
+            .readable_surface_placements(surface, requirement)
+            .await
+            .map_err(RpcError::surface_read)?;
+        if !plan.has_configured_placements
+            || (plan.candidates.is_empty() && plan.has_policy_only_shards)
+        {
+            return Err(RpcError::FailedPrecondition(
+                "surface has no eligible complete storage placement".into(),
+            ));
+        }
+
+        let mut last_retryable = None;
+        for placement in plan.candidates {
+            let fetch = match self.surface.placement_fetcher(&placement).await {
+                Ok(fetch) => fetch,
+                Err(error) if classify_read_error(&error) == ReadFailureClass::Retryable => {
+                    last_retryable = Some(error);
+                    continue;
+                }
+                Err(error) => return Err(RpcError::surface_read(error)),
+            };
+            let head = match fetch.delivery_head(path).await {
+                Ok(head) => head,
+                Err(error) if classify_read_error(&error) == ReadFailureClass::Retryable => {
+                    last_retryable = Some(error);
+                    continue;
+                }
+                Err(error) => return Err(RpcError::surface_read(error)),
+            };
+            let Some(head) = head else {
+                if let Some(target) = fetch
+                    .live_delivery(path)
+                    .await
+                    .map_err(RpcError::surface_read)?
+                {
+                    target.validate().map_err(RpcError::surface_read)?;
+                    if surface != SurfaceTarget::Registry(target.registry_id)
+                        || target.path != path
+                        || target.placement_id != placement.id
+                        || target.placement_resource_version != placement.resource_version
+                        || target.binding_id != placement.binding_id
+                        || target.placement_prefix != placement.prefix
+                        || target.write_spec_version != placement.write_spec_version
+                    {
+                        return Err(RpcError::FailedPrecondition(
+                            "live source selection changed".into(),
+                        ));
+                    }
+                    let target = serde_json::to_vec(&target).map_err(RpcError::internal)?;
+                    let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(target);
+                    let response = axum::response::Response::builder()
+                        .header(
+                            aos_hub_db::hybrid_ingress::live::HYBRID_LIVE_DELIVERY_HEADER,
+                            encoded,
+                        )
+                        .header(axum::http::header::CACHE_CONTROL, "private, no-store")
+                        .body(axum::body::Body::empty())
+                        .map_err(RpcError::internal)?;
+                    return Ok(Some(response));
+                }
+                continue;
+            };
+            let external_binding =
+                aos_hub_db::hybrid_ingress::delivery_binding(&self.db, placement.binding_id)
+                    .await
+                    .map_err(RpcError::surface_read)?;
+            let target = HybridDeliveryTarget {
+                object_key: keymap::r2_key(&placement.prefix, path),
+                external_binding,
+                object_size: head.size,
+                object_etag: head.strong_etag,
+                content_type: keymap::content_type(path).into(),
+                cache_control: if cacheable {
+                    keymap::cache_control(path)
+                } else {
+                    "private, no-store"
+                }
+                .into(),
+                producer_document: keymap::is_producer_document(path),
+                planned_response: None,
+            };
+            let target = serde_json::to_vec(&target).map_err(RpcError::internal)?;
+            let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(target);
+            let response = axum::response::Response::builder()
+                .header(HYBRID_DELIVERY_HEADER, encoded)
+                .header(axum::http::header::CACHE_CONTROL, "private, no-store")
+                .body(axum::body::Body::empty())
+                .map_err(RpcError::internal)?;
+            return Ok(Some(response));
+        }
+
+        if let Some(error) = last_retryable {
+            return Err(RpcError::surface_read(error));
+        }
+        if plan.miss_is_inconsistent {
+            return Err(RpcError::surface_read(placement_read::terminal_read_error(
+                "surface object is missing from an inventoried placement",
+            )));
+        }
+        Ok(None)
     }
 }

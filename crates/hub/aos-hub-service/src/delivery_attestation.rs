@@ -12,7 +12,8 @@ use hmac::{Hmac, Mac as _};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
-use crate::connect::{DeliveryAccessEvidence, DeliveryTransportEvidence};
+use crate::connect::DeliveryAccessEvidence;
+use crate::connect::DeliveryTransportEvidence;
 
 /// HTTP header carrying the compact signed ingress assertion.
 pub const DELIVERY_ATTESTATION_HEADER: &str = "x-aos-delivery-attestation";

@@ -151,6 +151,8 @@ impl RpcService {
         auth: Option<&str>,
         req: pb::GetRegistryPublicationRequest,
     ) -> Result<pb::RegistryPublication, RpcError> {
+        let observation =
+            aos_hub_db::application_body_observation::sql_projection::dynamic::Started::new();
         let claims = self.require_claims(auth)?;
         let publication = self
             .db
@@ -167,8 +169,13 @@ impl RpcService {
         let scope = self.registry_scope(&registry).await?;
         self.require_permission(&claims, Permission::Publish, &scope)
             .await?;
-        self.registry_publication_response(&publication.publication_id, true)
-            .await
+        let reply = self
+            .registry_publication_response(&publication.publication_id, true)
+            .await?;
+        if let Some(observation) = observation {
+            observation.publication_get(&claims, &publication, &registry, &reply);
+        }
+        Ok(reply)
     }
 
     /// `RegistryService.ListRegistries` — the registries the caller may read.

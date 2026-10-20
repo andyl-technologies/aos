@@ -5,8 +5,10 @@ use aos_oci_types::Sha256Digest;
 use serde::Serialize;
 
 use super::OCI_GC_MAX_INVENTORY_AGE_SECONDS;
-use crate::backend::{CheckedStatement, Statement};
-use crate::db::{validate_key_bytes, Database};
+use crate::backend::CheckedStatement;
+use crate::backend::Statement;
+use crate::db::validate_key_bytes;
+use crate::db::Database;
 
 /// Input for planning one reviewed OCI retention generation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -111,6 +113,8 @@ pub(super) struct FrozenAction {
     pub(super) expected_hash: String,
     pub(super) expected_size: u64,
     pub(super) expected_strong_etag: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) expected_provider_version: Option<String>,
     pub(super) inventory_generation_id: String,
     pub(super) inventory_entry_present: bool,
 }
@@ -249,7 +253,7 @@ pub(super) fn oci_gc_snapshot_guard_statement(
                    AND snapshot.delete_credential_generation IS NULL))
                AND ((snapshot.delete_credential_purpose IS NULL
                      AND snapshot.delete_credential_generation IS NULL
-                     AND binding.kind IN('local_fs', 'deployment_r2'))
+                     AND binding.kind IN ('local_fs', 'deployment_r2'))
                  OR (delete_credential.validation_state = 'valid'
                    AND delete_credential_head.current_generation =
                      snapshot.delete_credential_generation))

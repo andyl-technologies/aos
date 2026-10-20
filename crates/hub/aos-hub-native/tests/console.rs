@@ -12,10 +12,12 @@ use aos_hub_native::auth::jwt::JwtKeys;
 use aos_hub_native::auth::session::COOKIE_NAME;
 use aos_hub_native::db::Database;
 use aos_hub_native::server::{router, AppState};
-use aos_hub_service::web::assets::{
-    console_bootstrap_name, console_css_name, console_js_name, console_wasm_name,
-};
-use aos_hub_service::web::console::{route_manifest, ConsoleRouteMatched};
+use aos_hub_service::web::assets::console_bootstrap_name;
+use aos_hub_service::web::assets::console_css_name;
+use aos_hub_service::web::assets::console_js_name;
+use aos_hub_service::web::assets::console_wasm_name;
+use aos_hub_service::web::console::route_manifest;
+use aos_hub_service::web::console::ConsoleRouteMatched;
 use axum::body::Body;
 use axum::http::{header, Request, StatusCode};
 use tower::ServiceExt as _;

@@ -16,7 +16,7 @@ impl RpcService {
         slug: &str,
         path: &str,
         upload_id: &str,
-        parts: &[crate::surface_write::PartTag],
+        parts: &[aos_hub_model::storage::PartTag],
     ) -> SurfaceWriteOutcome {
         if let Ok(Some(ticket)) = self.db.cache_write_ticket(upload_id).await {
             if ticket.state == "completed" {
@@ -77,10 +77,15 @@ impl RpcService {
                     );
                 }
                 let expected_etag = match writer.expected_multipart_etag(parts) {
-                    Ok(Some(etag)) => match crate::surface_write::strong_if_match_etag(&etag) {
-                        Ok(etag) => etag,
-                        Err(error) => return internal_write(error),
-                    },
+                    Ok(Some(etag)) => {
+                        match aos_hub_model::delivery_http::strong_if_match_etag(&etag) {
+                            Ok(etag) => Some(etag),
+                            Err(error) => return internal_write(error),
+                        }
+                    }
+                    // A declared content hash also permits exact recovery after
+                    // a lost completion response when part tags are opaque.
+                    Ok(None) if ticket.intended_object_hash.is_some() => None,
                     Ok(None) => {
                         return SurfaceWriteOutcome::NotWritable(
                             "cache multipart backend has no deterministic completion identity",
@@ -118,9 +123,11 @@ impl RpcService {
                     Err(error) => return internal_write(error),
                 };
                 let already_complete = match inventory.inventory_evidence(path).await {
-                    Ok(Some(evidence)) => {
-                        cache_multipart_evidence_matches(&evidence, &ticket, &expected_etag)
-                    }
+                    Ok(Some(evidence)) => cache_multipart_evidence_matches(
+                        &evidence,
+                        &ticket,
+                        expected_etag.as_deref(),
+                    ),
                     Ok(None) => false,
                     Err(error) => return internal_write(error),
                 };
@@ -131,11 +138,14 @@ impl RpcService {
                     match provider_result {
                         Ok(etag) => {
                             let completed_etag =
-                                match crate::surface_write::strong_if_match_etag(&etag) {
+                                match aos_hub_model::delivery_http::strong_if_match_etag(&etag) {
                                     Ok(etag) => etag,
                                     Err(error) => return internal_write(error),
                                 };
-                            if completed_etag != expected_etag {
+                            if expected_etag
+                                .as_deref()
+                                .is_some_and(|expected| completed_etag != expected)
+                            {
                                 return SurfaceWriteOutcome::NotWritable(
                                     "cache multipart provider returned an unexpected identity",
                                 );
@@ -146,7 +156,7 @@ impl RpcService {
                                 Ok(Some(evidence)) => cache_multipart_evidence_matches(
                                     &evidence,
                                     &ticket,
-                                    &expected_etag,
+                                    expected_etag.as_deref(),
                                 ),
                                 Ok(None) => false,
                                 Err(observe_error) => return internal_write(observe_error),
@@ -166,7 +176,7 @@ impl RpcService {
                     }
                     Err(error) => return internal_write(error),
                 };
-                if !cache_multipart_evidence_matches(&observed, &ticket, &expected_etag) {
+                if !cache_multipart_evidence_matches(&observed, &ticket, expected_etag.as_deref()) {
                     return SurfaceWriteOutcome::NotWritable(
                         "completed cache upload does not match its admitted identity",
                     );
@@ -254,10 +264,10 @@ impl RpcService {
                 };
                 match writer.abort_multipart(path, backend_upload_id).await {
                     Ok(
-                        crate::surface_write::MultipartAbortOutcome::Aborted
-                        | crate::surface_write::MultipartAbortOutcome::Absent,
+                        aos_hub_model::storage::MultipartAbortOutcome::Aborted
+                        | aos_hub_model::storage::MultipartAbortOutcome::Absent,
                     ) => {}
-                    Ok(crate::surface_write::MultipartAbortOutcome::PossiblyCompleted) => {
+                    Ok(aos_hub_model::storage::MultipartAbortOutcome::PossiblyCompleted) => {
                         return SurfaceWriteOutcome::NotWritable(
                             "multipart abort is uncertain; durable recovery retains the fence",
                         );

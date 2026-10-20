@@ -213,6 +213,8 @@ pub enum ContainerReleaseDescriptorRole {
     License,
     /// In-toto provenance evidence manifest.
     Provenance,
+    /// Native deployment-document evidence manifest.
+    Deployment,
     /// Producer-signature evidence manifest.
     Signature,
 }
@@ -272,6 +274,7 @@ impl ContainerReleaseDescriptorRole {
             Self::Source => "source",
             Self::License => "license",
             Self::Provenance => "provenance",
+            Self::Deployment => "deployment",
             Self::Signature => "signature",
         }
     }

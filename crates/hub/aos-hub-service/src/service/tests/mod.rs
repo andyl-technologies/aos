@@ -13,29 +13,47 @@ use super::{
     validate_signing_key_consumer_compatibility, RpcError, RpcService,
 };
 use crate::coordinator::InMemoryCoordinator;
-use crate::fetch::{StreamedRead, SurfaceFetch, SurfaceObjectEvidence, SurfaceProvider};
+use crate::fetch::SurfaceFetch;
+use crate::fetch::SurfaceObjectEvidence;
+use crate::fetch::SurfaceProvider;
+use crate::fetch::{StreamedRead, SurfaceDeliveryHead};
 use crate::lease::InMemoryLease;
 use crate::ratelimit::CoordinatorRateLimiter;
 use crate::reindex::Reindexer;
-use crate::surface_write::{
-    MultipartAbortOutcome, PartTag, SurfaceDeleteOutcome, SurfaceDeletePrecondition, SurfaceWrite,
-    SurfaceWriteProvider,
-};
+use crate::surface_write::SurfaceDeleteOutcome;
+use crate::surface_write::SurfaceDeletePrecondition;
+use crate::surface_write::SurfaceWrite;
+use crate::surface_write::SurfaceWriteProvider;
 use crate::topology_probe::DatabaseTopologyProbeScheduler;
-use aos_hub_db::db::{
-    ChannelSummary, Database, IndexSnapshot, IndexedSystemImage, NewRegistryPublication,
-    NewSurfacePlacementSpec, RegistryRecord, ReleaseImageSnapshot, ReleaseRow,
-    SetRegistryPublicationObject, SetRegistryPublicationPlacement, SetSurfaceObject,
-    SurfacePlacementBlockers, SurfaceTarget, TokenAuth, VerifiedRegistryImageObject,
-    WriteTicketPartRecord,
-};
+use aos_hub_db::db::ChannelSummary;
+use aos_hub_db::db::Database;
+use aos_hub_db::db::IndexSnapshot;
+use aos_hub_db::db::IndexedSystemImage;
+use aos_hub_db::db::NewRegistryPublication;
+use aos_hub_db::db::NewSurfacePlacementSpec;
+use aos_hub_db::db::RegistryRecord;
+use aos_hub_db::db::ReleaseImageSnapshot;
+use aos_hub_db::db::ReleaseRow;
+use aos_hub_db::db::SetRegistryPublicationObject;
+use aos_hub_db::db::SetRegistryPublicationPlacement;
+use aos_hub_db::db::SetSurfaceObject;
+use aos_hub_db::db::SurfacePlacementBlockers;
+use aos_hub_db::db::SurfaceTarget;
+use aos_hub_db::db::TokenAuth;
+use aos_hub_db::db::VerifiedRegistryImageObject;
+use aos_hub_db::db::WriteTicketPartRecord;
 use aos_hub_model::auth::jwt::JwtKeys;
 use aos_hub_model::auth::seal::SecretSealer;
-use aos_hub_model::domain::{Permission, Principal, Role, Scope};
+use aos_hub_model::domain::Permission;
+use aos_hub_model::domain::Principal;
+use aos_hub_model::domain::Role;
+use aos_hub_model::domain::Scope;
+use aos_hub_model::storage::MultipartAbortOutcome;
+use aos_hub_model::storage::PartTag;
 
 #[allow(dead_code)]
 #[derive(Clone)]
-enum FetchBehavior {
+pub(super) enum FetchBehavior {
     Missing,
     Failure,
     ProviderFailure,
@@ -48,6 +66,20 @@ struct InjectedFetch {
 
 #[async_trait::async_trait]
 impl SurfaceFetch for InjectedFetch {
+    async fn delivery_head(&self, _path: &str) -> Result<Option<SurfaceDeliveryHead>> {
+        match &self.behavior {
+            FetchBehavior::Missing => Ok(None),
+            FetchBehavior::Failure => bail!("injected delivery head failure"),
+            FetchBehavior::ProviderFailure => {
+                bail!("provider failure reached an injected fetcher")
+            }
+            FetchBehavior::Evidence { bytes, strong_etag } => Ok(Some(SurfaceDeliveryHead {
+                size: bytes.len() as u64,
+                strong_etag: strong_etag.clone(),
+            })),
+        }
+    }
+
     async fn fetch(&self, _path: &str) -> Result<Option<Vec<u8>>> {
         match &self.behavior {
             FetchBehavior::Missing => Ok(None),
@@ -67,6 +99,7 @@ impl SurfaceFetch for InjectedFetch {
                 bail!("provider failure reached an injected fetcher")
             }
             FetchBehavior::Evidence { bytes, strong_etag } => Ok(Some(SurfaceObjectEvidence {
+                provider_version: None,
                 sha256: Sha256::digest(bytes).into(),
                 size: i64::try_from(bytes.len()).unwrap(),
                 strong_etag: Some(strong_etag.clone()),
@@ -119,7 +152,7 @@ impl SurfaceProvider for InjectedSurfaceProvider {
 
 #[allow(dead_code)]
 #[derive(Clone, Copy)]
-enum WriteBehavior {
+pub(super) enum WriteBehavior {
     Success,
     PutFailure,
     CreateFailure,
@@ -282,7 +315,7 @@ impl crate::topology_probe::IdentityDomainVerifier for UnavailableIdentityDomain
     }
 }
 
-async fn injected_service(
+pub(super) async fn injected_service(
     fetch_behaviors: Vec<FetchBehavior>,
     write_behaviors: Vec<WriteBehavior>,
 ) -> (RpcService, Arc<Database>, Arc<InMemoryLease>, String) {
@@ -338,23 +371,20 @@ async fn injected_service_with_dependencies(
         .await
         .unwrap()
         .unwrap();
-    let token = jwt_keys
-        .mint(
-            &TokenAuth {
-                token_id: "holder".into(),
-                owner: Principal::user(user_id),
-                scope: Scope::root(),
-                permissions: vec![
-                    Permission::RegistryConfigure,
-                    Permission::Publish,
-                    Permission::TokensManage,
-                    Permission::IamAdmin,
-                    Permission::MembersManage,
-                ],
-            },
-            3600,
-        )
-        .unwrap();
+    let token_authority = crate::service::authentication::provisioned_test_auth(
+        &db,
+        Principal::user(user_id),
+        Scope::root(),
+        &[
+            Permission::RegistryConfigure,
+            Permission::Publish,
+            Permission::TokensManage,
+            Permission::IamAdmin,
+            Permission::MembersManage,
+        ],
+    )
+    .await;
+    let token = jwt_keys.mint(&token_authority, 3600).unwrap();
     let coordinator = Arc::new(InMemoryCoordinator::new());
     let lease = Arc::new(InMemoryLease::new());
     let service = RpcService::new(
@@ -611,3 +641,150 @@ mod releases;
 mod runtime;
 mod tenancy;
 mod topology;
+
+struct PausedReindexer {
+    started: Arc<tokio::sync::Notify>,
+    resume: Arc<tokio::sync::Notify>,
+    completed: Arc<tokio::sync::Notify>,
+}
+
+#[async_trait::async_trait]
+impl Reindexer for PausedReindexer {
+    async fn reindex(&self, _registry: &RegistryRecord) -> Result<Option<String>> {
+        self.started.notify_one();
+        self.resume.notified().await;
+        self.completed.notify_one();
+        Ok(None)
+    }
+}
+
+#[tokio::test]
+async fn hybrid_signed_image_uses_the_verified_placement_without_streaming_to_native() {
+    use crate::service::ReadAuthorization;
+    use crate::service::RegistryServeOutcome;
+    use aos_hub_db::hybrid_ingress::HybridDeliveryTarget;
+    use aos_hub_db::hybrid_ingress::HYBRID_DELIVERY_HEADER;
+    use aos_hub_model::delivery_http::DeliveryMethod;
+
+    let (mut service, registry, path, _calls) = image_metadata_service("public").await;
+    let object = service
+        .db
+        .system_image_object_by_key(registry.id, &path)
+        .await
+        .unwrap()
+        .unwrap();
+    let size = match object {
+        aos_hub_db::db::IndexedSystemImageObject::Disk(image) => image.delivery.byte_size,
+        aos_hub_db::db::IndexedSystemImageObject::ImageInfo(image) => {
+            image.delivery.artifact_contract.document.byte_size
+        }
+    };
+    let placement = service
+        .db
+        .list_surface_placements(SurfaceTarget::Registry(registry.id))
+        .await
+        .unwrap()
+        .remove(0);
+    let indexed_etag = service
+        .db
+        .registry_image_placement_etag(registry.id, placement.id, &path)
+        .await
+        .unwrap()
+        .unwrap();
+    service.surface = Arc::new(InjectedSurfaceProvider {
+        behaviors: Mutex::new(
+            vec![FetchBehavior::Evidence {
+                bytes: vec![0; size as usize],
+                strong_etag: indexed_etag.clone(),
+            }]
+            .into(),
+        ),
+    });
+    let mut service = service.with_hybrid_delivery();
+
+    let response = service
+        .registry_serve(
+            ReadAuthorization::AuthorizationHeader(None),
+            &registry,
+            &path,
+            image_http_request(DeliveryMethod::Get, Some(b"bytes=0-3")),
+        )
+        .await
+        .unwrap();
+    let RegistryServeOutcome::Response(response) = response else {
+        panic!("hybrid image should issue a delivery grant");
+    };
+    let encoded = response.headers()[HYBRID_DELIVERY_HEADER].to_str().unwrap();
+    let target: HybridDeliveryTarget = serde_json::from_slice(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(encoded)
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(target.object_size, size);
+    assert_eq!(target.object_etag, indexed_etag);
+    let image = target.planned_response.unwrap();
+    assert_eq!(image.status, 206);
+    assert_eq!((image.start, image.end), (0, 3));
+    assert_eq!(image.headers["content-range"], format!("bytes 0-3/{size}"));
+    assert_eq!(image.headers["content-length"], "4");
+    assert!(axum::body::to_bytes(response.into_body(), 1)
+        .await
+        .unwrap()
+        .is_empty());
+
+    service.surface = Arc::new(InjectedSurfaceProvider {
+        behaviors: Mutex::new(
+            vec![FetchBehavior::Evidence {
+                bytes: vec![0; size as usize],
+                strong_etag: indexed_etag,
+            }]
+            .into(),
+        ),
+    });
+    let credentialed = service
+        .registry_serve(
+            ReadAuthorization::PreauthorizedSession,
+            &registry,
+            &path,
+            image_http_request(DeliveryMethod::Get, None),
+        )
+        .await
+        .unwrap();
+    let RegistryServeOutcome::Response(credentialed) = credentialed else {
+        panic!("credentialed image should issue a delivery grant");
+    };
+    let encoded = credentialed.headers()[HYBRID_DELIVERY_HEADER]
+        .to_str()
+        .unwrap();
+    let target: HybridDeliveryTarget = serde_json::from_slice(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(encoded)
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(target.cache_control, "private, no-store");
+    assert_eq!(
+        target.planned_response.unwrap().headers["vary"],
+        "Authorization, Cookie"
+    );
+
+    service.surface = Arc::new(InjectedSurfaceProvider {
+        behaviors: Mutex::new(
+            vec![FetchBehavior::Evidence {
+                bytes: vec![0; size as usize],
+                strong_etag: "different-object-version".into(),
+            }]
+            .into(),
+        ),
+    });
+    assert!(service
+        .registry_serve(
+            ReadAuthorization::AuthorizationHeader(None),
+            &registry,
+            &path,
+            image_http_request(DeliveryMethod::Get, None),
+        )
+        .await
+        .is_err());
+}

@@ -38,6 +38,7 @@
   grep,
   jq,
   bash,
+  iproute2,
 }:
 mkDerivation {
   platformSupport = {
@@ -70,8 +71,10 @@ mkDerivation {
 
         work="$(mktemp -d)"
         srv_pid=""
+        legacy_srv_pid=""
         cleanup() {
           [ -n "$srv_pid" ] && kill "$srv_pid" 2>/dev/null || true
+          [ -n "$legacy_srv_pid" ] && kill "$legacy_srv_pid" 2>/dev/null || true
           rm -rf "$work"
         }
         trap cleanup EXIT
@@ -79,7 +82,7 @@ mkDerivation {
         ok=0
         fail=0
         pass() { echo "ok   $1"; ok=$((ok+1)); }
-        die()  { echo "FAIL $1"; fail=$((fail+1)); }
+        die()  { echo "FAIL $1"; exit 1; }
 
         root="$work/hub"
         fixture="$work/producer"
@@ -93,7 +96,7 @@ mkDerivation {
         export HUB_ROUTE_RESERVATION_KEYS_FILE="$route_keys"
         export HUB_DOMAIN_PROBE_SIGNER_MANIFEST_FILE="$probe_signers"
         export HUB_DNS_JSON_ENDPOINT="https://dns.google/resolve"
-        ${aos-system-image-e2e-fixture}/bin/aos-system-image-e2e-fixture "$fixture"
+        ${aos-system-image-e2e-fixture}/bin/aos-system-image-e2e-fixture "$fixture" "$HUB/demo/cdn"
         export AOS_HUB_E2E_IMAGE_FIXTURE="$fixture"
         pass "apr release produced the signed raw + QCOW2 static origin"
 
@@ -107,8 +110,10 @@ mkDerivation {
           sleep 0.2
         done
         [ "$ready" = 1 ] && pass "aos-hub serve is reachable" || die "server never became ready"
-        pass "Hub kept staged bytes hidden until signed pointers and rooted all four image objects"
-        if curl -fsS "$HUB/demo/cdn/-/images" | grep -q 'aos-e2e.qcow2'; then
+        pass "Hub kept staged bytes hidden until signed pointers published both encodings"
+        curl -fsSL "$HUB/demo/cdn/-/images" -o "$work/images.html"
+        if grep -q 'provider contract' "$work/images.html" \
+           && grep -q 'aos.hub-test.image-artifacts/v2' "$work/images.html"; then
           pass "Web Images page renders the apr-produced catalog"
         else die "Web Images page omitted producer output"; fi
         api_list="$(curl -fsS -X POST \
@@ -128,40 +133,70 @@ mkDerivation {
           pass "aos image list discovers signed raw + QCOW2 encodings"
         else die "aos image list omitted a signed image encoding"; fi
 
-        # Signed image delivery uses the shared conditional/range kernel in the
-        # native adapter. HEAD ignores Range, ordinary preconditions retain RFC
-        # precedence, and If-Range either serves the interval or the full file.
         cp "$(cat "$fixture/raw-path")" "$work/expected.raw"
-        raw_url="$(printf '%s' "$image_list" | jq -er \
+        cp "$(cat "$fixture/qcow2-path")" "$work/expected.qcow2"
+
+        # Public catalogs now choose NAR delivery even for legacy metadata.
+        # The private dev seed retains authenticated direct-object delivery,
+        # preserving the HTTP kernel and resume checks alongside real NARs.
+        LEGACY_HUB="http://127.0.0.1:18421"
+        legacy_root="$work/legacy-hub"
+        aos-hub --root "$legacy_root" init >/dev/null
+        ${coreutils}/bin/env -u AOS_HUB_E2E_IMAGE_FIXTURE \
+          aos-hub --root "$legacy_root" serve --seed --listen "127.0.0.1:18421" \
+          > "$work/legacy-serve.log" 2>&1 &
+        legacy_srv_pid=$!
+        ready=0
+        for _ in $(seq 1 300); do
+          if curl -fsS "$LEGACY_HUB/demo/cdn/-/images" >/dev/null 2>&1; then ready=1; break; fi
+          sleep 0.2
+        done
+        [ "$ready" = 1 ] && pass "legacy image delivery is reachable" || die "legacy server never became ready"
+        legacy_provisioning=""
+        while IFS= read -r line; do
+          case "$line" in
+            "  token:     "*) legacy_provisioning="''${line#  token:     }" ;;
+          esac
+        done < "$work/legacy-serve.log"
+        [ -n "$legacy_provisioning" ] || die "legacy seed did not produce a provisioning token"
+        legacy_access="$(aos hub login --hub "$LEGACY_HUB" --provisioning-token "$legacy_provisioning" | tail -n 1)"
+        legacy_curl() { curl -H "Authorization: Bearer $legacy_access" "$@"; }
+        legacy_list="$(aos --json image list --hub "$LEGACY_HUB" --token "$legacy_access" \
+          --registry demo/private-images --channel stable)"
+        raw_url="$(printf '%s' "$legacy_list" | jq -er \
           'map(select(.format == "raw" and .channel == "stable")) | .[0].downloadUrl')"
-        raw_sha="$(printf '%s' "$image_list" | jq -er \
+        raw_sha="$(printf '%s' "$legacy_list" | jq -er \
           'map(select(.format == "raw" and .channel == "stable")) | .[0].sha256')"
+        anonymous_status="$(curl -sS -o /dev/null -w '%{http_code}' "$raw_url")"
+        [ "$anonymous_status" = 401 ] || die "legacy private image bytes were anonymously readable"
+        legacy_curl -fsS "$raw_url" -o "$work/legacy.expected.raw"
+        printf '%s  %s\n' "$raw_sha" "$work/legacy.expected.raw" | sha256sum --check --status
         raw_etag="\"sha256:$raw_sha\""
-        head_status="$(curl -sS -I -D "$work/head.headers" -o /dev/null \
+        head_status="$(legacy_curl -sS -I -D "$work/head.headers" -o /dev/null \
           -H 'Range: bytes=4-11' -w '%{http_code}' "$raw_url")"
         if [ "$head_status" = 200 ] \
            && ! grep -qi '^content-range:' "$work/head.headers"; then
           pass "native image HEAD ignores Range"
         else die "native image HEAD-with-Range semantics differ"; fi
-        not_modified="$(curl -sS -o /dev/null -w '%{http_code}' \
+        not_modified="$(legacy_curl -sS -o /dev/null -w '%{http_code}' \
           -H "If-None-Match: $raw_etag" "$raw_url")"
-        failed_precondition="$(curl -sS -o /dev/null -w '%{http_code}' \
+        failed_precondition="$(legacy_curl -sS -o /dev/null -w '%{http_code}' \
           -H 'If-Match: "different"' "$raw_url")"
         if [ "$not_modified" = 304 ] && [ "$failed_precondition" = 412 ]; then
           pass "native image entity-tag preconditions follow the shared kernel"
         else die "native image conditional status mismatch"; fi
-        range_status="$(curl -sS -D "$work/range.headers" -o "$work/range.bytes" \
+        range_status="$(legacy_curl -sS -D "$work/range.headers" -o "$work/range.bytes" \
           -H 'Range: bytes=4-11' -H "If-Range: $raw_etag" \
           -w '%{http_code}' "$raw_url")"
-        dd if="$work/expected.raw" of="$work/expected.range" bs=1 skip=4 count=8 status=none
-        stale_status="$(curl -sS -o "$work/stale-range.bytes" \
+        dd if="$work/legacy.expected.raw" of="$work/expected.range" bs=1 skip=4 count=8 status=none
+        stale_status="$(legacy_curl -sS -o "$work/stale-range.bytes" \
           -H 'Range: bytes=4-11' -H 'If-Range: "different"' \
           -w '%{http_code}' "$raw_url")"
         if [ "$range_status" = 206 ] \
            && grep -qi '^content-range: bytes 4-11/' "$work/range.headers" \
            && cmp -s "$work/expected.range" "$work/range.bytes" \
            && [ "$stale_status" = 200 ] \
-           && cmp -s "$work/expected.raw" "$work/stale-range.bytes"; then
+           && cmp -s "$work/legacy.expected.raw" "$work/stale-range.bytes"; then
           pass "native image If-Range selects exact partial or full bytes"
         else die "native image If-Range semantics differ"; fi
 
@@ -169,7 +204,7 @@ mkDerivation {
           --channel stable --architecture x86_64 --target qemu-kvm)"
         if printf '%s' "$image_show" | grep -q '"format":"qcow2"' \
            && printf '%s' "$image_show" | grep -q '"releaseVerification":"verified"' \
-           && printf '%s' "$image_show" | grep -q '"bootVerification":"signed-unverified"'; then
+           && printf '%s' "$image_show" | grep -q '"bootVerification":"provider-contract:aos.hub-test.image-artifacts/v2"'; then
           pass "aos image show resolves target to complete integrity metadata"
         else die "aos image show did not resolve qemu-kvm to QCOW2"; fi
 
@@ -179,6 +214,13 @@ mkDerivation {
         if cmp -s "$work/expected.raw" "$raw_out"; then
           pass "aos image download writes exact raw bytes with checksum verification"
         else die "raw image download bytes differ"; fi
+
+        qcow_store_out="$work/store-backed.qcow2"
+        aos image download --hub "$HUB" --registry demo/cdn --channel stable \
+          --format qcow2 --output "$qcow_store_out" >/dev/null
+        if cmp -s "$work/expected.qcow2" "$qcow_store_out"; then
+          pass "aos image download verifies and extracts exact QCOW2 NAR bytes"
+        else die "store-backed QCOW2 download bytes differ"; fi
 
         # Useful signed filenames are used when --output is omitted.
         mkdir -p "$work/default-name"
@@ -196,10 +238,13 @@ mkDerivation {
         # framing and verified the full-file digest before finalization.
         qcow_out="$work/resumed.qcow2"
         printf 'QFI' > "$work/.resumed.qcow2.aos-part"
-        resume_json="$(aos --json image download --hub "$HUB" --registry demo/cdn \
+        legacy_qcow_url="$(printf '%s' "$legacy_list" | jq -er \
+          'map(select(.format == "qcow2" and .channel == "stable")) | .[0].downloadUrl')"
+        legacy_curl -fsS "$legacy_qcow_url" -o "$work/legacy.expected.qcow2"
+        resume_json="$(aos --json image download --hub "$LEGACY_HUB" --token "$legacy_access" \
+          --registry demo/private-images \
           --channel stable --format qcow2 --output "$qcow_out")"
-        cp "$(cat "$fixture/qcow2-path")" "$work/expected.qcow2"
-        if cmp -s "$work/expected.qcow2" "$qcow_out" \
+        if cmp -s "$work/legacy.expected.qcow2" "$qcow_out" \
            && printf '%s' "$resume_json" | grep -q '"resumedFrom":3'; then
           pass "aos image download resumes with Range and verifies exact QCOW2 bytes"
         else die "resumed QCOW2 download or JSON result is incorrect"; fi
@@ -210,9 +255,10 @@ mkDerivation {
         # retries the same signed URL from byte zero.
         corrupt_out="$work/corrupt-resume.qcow2"
         printf 'BAD' > "$work/.corrupt-resume.qcow2.aos-part"
-        corrupt_json="$(aos --json image download --hub "$HUB" --registry demo/cdn \
+        corrupt_json="$(aos --json image download --hub "$LEGACY_HUB" --token "$legacy_access" \
+          --registry demo/private-images \
           --channel stable --format qcow2 --output "$corrupt_out")"
-        if cmp -s "$work/expected.qcow2" "$corrupt_out" \
+        if cmp -s "$work/legacy.expected.qcow2" "$corrupt_out" \
            && printf '%s' "$corrupt_json" | grep -q '"resumedFrom":0'; then
           pass "aos image download recovers from a corrupt resumable prefix"
         else die "corrupt resumable prefix was not recovered in one invocation"; fi
@@ -249,7 +295,7 @@ mkDerivation {
         fi
 
         echo "aos-hub-e2e: $ok ok, $fail fail"
-        [ "$fail" = 0 ] || { echo "--- serve.log ---"; tail -20 "$work/serve.log" || true; exit 1; }
+        [ "$fail" = 0 ] || exit 1
         echo "aos-hub e2e: PASS"
         EOF
         chmod +x "$out/bin/aos-hub-e2e"
@@ -270,10 +316,12 @@ mkDerivation {
   }: {
     live-native-image-topology = testing.mkVMTest {
       name = "aos-hub-e2e-live";
-      rootfsDeps = [self];
+      rootfsDeps = [self iproute2];
       memory = 2048;
       testScript = ''
         ${nix}/bin/nix-store --load-db < /usr/lib/aos/nix-registration
+        export NIX_REMOTE=""
+        ${iproute2}/sbin/ip link set lo up
         ${self}/bin/aos-hub-e2e
       '';
     };

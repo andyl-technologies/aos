@@ -295,3 +295,23 @@ mod tests {
         assert_eq!(rt, RuntimeKind::Native);
     }
 }
+
+/// Immutable private preconditions for deleting one binding lifetime.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BindingDeletePlanInput {
+    /// Immutable identity of the binding being deleted.
+    pub stable_id: String,
+    /// Canonical owner scope frozen when the plan was prepared.
+    pub owner_scope_key: String,
+    /// Owning organization database slot, when organization-owned.
+    pub org_id: Option<i64>,
+    /// Exact database slot of the planned binding.
+    pub binding_db_id: i64,
+    /// Writer version which must still match at application.
+    pub baseline_resource_version: i64,
+    /// Missing only in plans predating permanent binding reservations.
+    #[serde(default)]
+    /// Permanent binding lifetime reservation retained by this plan.
+    pub reservation_id: Option<String>,
+}

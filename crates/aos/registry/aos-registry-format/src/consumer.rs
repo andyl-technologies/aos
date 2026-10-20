@@ -782,6 +782,18 @@ pub struct SigningConfig {
 /// override these defaults.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RegistryUploadAuthConfig {
+    /// Exact Hub metadata origin for selected registry publication destinations.
+    #[serde(default)]
+    pub hub_origin: Option<String>,
+    /// Explicit Hub registry selector; never inferred from a delivery URL.
+    #[serde(default)]
+    pub hub_registry: Option<String>,
+    /// Explicit direct-provider reachability/public-CA policy file.
+    #[serde(default)]
+    pub direct_provider_policy: Option<std::path::PathBuf>,
+    /// Optional exact owner-private direct retry journal file.
+    #[serde(default)]
+    pub direct_upload_journal: Option<std::path::PathBuf>,
     /// Default upload destinations (`file://`, `s3://`, `sftp://`,
     /// `http://`), used by `apr origin upload`, `apr cache generate`, and
     /// `apr release` when no `--upload-url` flag is given.

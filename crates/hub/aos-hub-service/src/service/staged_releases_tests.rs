@@ -1,6 +1,7 @@
 //! Service regressions for private draft progress and signed publication.
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use aos_registry_format::object::{encode_loose, encode_tree, hash_object, ObjectKind, TreeEntry};
@@ -10,20 +11,39 @@ use aos_registry_format::staging::{
 };
 use sha2::{Digest as _, Sha256};
 
-use crate::fetch::{SurfaceFetch, SurfaceProvider};
+use crate::fetch::SurfaceFetch;
+use crate::fetch::SurfaceProvider;
 use crate::reindex::Reindexer;
-use crate::surface_write::{SurfaceWrite, SurfaceWriteProvider};
-use aos_hub_db::db::{
-    BindingWriteRevisionRecord, NewRegistryPublication, NewSurfacePlacementSpec,
-    SetRegistryPublicationObject, SetRegistryPublicationPlacement, SetSurfaceObject,
-    SurfacePlacementRecord, SurfaceTarget, TokenAuth,
-};
-use aos_hub_model::domain::{Permission, Principal, Scope};
+use crate::surface_write::SurfaceWrite;
+use crate::surface_write::SurfaceWriteProvider;
+use aos_hub_db::db::BindingWriteRevisionRecord;
+use aos_hub_db::db::NewRegistryPublication;
+use aos_hub_db::db::NewSurfacePlacementSpec;
+use aos_hub_db::db::RegistryPublicationManifestObject;
+use aos_hub_db::db::SetRegistryPublicationObject;
+use aos_hub_db::db::SetRegistryPublicationPlacement;
+use aos_hub_db::db::SurfacePlacementRecord;
+use aos_hub_db::db::SurfaceTarget;
+use aos_hub_db::db::TokenAuth;
+use aos_hub_model::domain::Permission;
+use aos_hub_model::domain::Principal;
+use aos_hub_model::domain::Scope;
 
 use super::{pb, Database, RpcError, RpcService};
 
 #[derive(Clone, Default)]
-struct MemorySurface(Arc<Mutex<BTreeMap<String, Vec<u8>>>>);
+struct MemorySurface(
+    Arc<Mutex<BTreeMap<String, Vec<u8>>>>,
+    Arc<WriteObservations>,
+);
+
+#[derive(Default)]
+struct WriteObservations {
+    delay_millis: AtomicUsize,
+    active: AtomicUsize,
+    peak: AtomicUsize,
+    completed: Mutex<Vec<String>>,
+}
 
 #[async_trait::async_trait]
 impl SurfaceFetch for MemorySurface {
@@ -49,6 +69,14 @@ impl SurfaceProvider for MemorySurface {
 #[async_trait::async_trait]
 impl SurfaceWrite for MemorySurface {
     async fn write(&self, path: &str, bytes: &[u8]) -> anyhow::Result<()> {
+        let delay = self.1.delay_millis.load(Ordering::SeqCst);
+        if delay != 0 {
+            let active = self.1.active.fetch_add(1, Ordering::SeqCst) + 1;
+            self.1.peak.fetch_max(active, Ordering::SeqCst);
+            tokio::time::sleep(std::time::Duration::from_millis(delay as u64)).await;
+            self.1.active.fetch_sub(1, Ordering::SeqCst);
+            self.1.completed.lock().unwrap().push(path.to_owned());
+        }
         self.0.lock().unwrap().insert(path.into(), bytes.to_vec());
         Ok(())
     }
@@ -314,7 +342,9 @@ async fn fixture() -> Fixture {
     })
     .await
     .unwrap();
-    for (path, bytes, kind) in immutable
+    // Admit fresh placeholders through the publication path that records their
+    // accounting origin; generic catalogue insertion preserves unknown origins.
+    let manifest = immutable
         .iter()
         .map(|(path, bytes)| (path, bytes, "immutable"))
         .chain(
@@ -323,41 +353,32 @@ async fn fixture() -> Fixture {
                 .iter()
                 .map(|pointer| (&pointer.path, &pointer.bytes, "mutable_pointer")),
         )
-    {
-        let hash = hex::encode(Sha256::digest(bytes));
-        let object = db
-            .create_surface_object(&SetSurfaceObject {
-                surface: SurfaceTarget::Registry(registry_id),
-                object_key: path.clone(),
-                content_hash: Some(hash.clone()),
-                size: Some(bytes.len() as i64),
-                object_kind: kind.into(),
-                mutable_publication_id: (kind == "mutable_pointer").then(|| publication_id.clone()),
-            })
-            .await
-            .unwrap();
-        db.set_registry_publication_object(&SetRegistryPublicationObject {
-            publication_id: publication_id.clone(),
-            surface_object_id: object.id,
-            object_kind: kind.into(),
-            expected_hash: hash,
+        .map(|(path, bytes, kind)| RegistryPublicationManifestObject {
+            object_key: path.clone(),
+            expected_hash: hex::encode(Sha256::digest(bytes)),
             expected_size: bytes.len() as i64,
+            object_kind: kind.into(),
         })
+        .collect::<Vec<_>>();
+    db.admit_registry_publication_manifest_objects(registry_id, &publication_id, &manifest)
         .await
         .unwrap();
-    }
 
     let user = db
         .user_by_email("writer@example.test")
         .await
         .unwrap()
         .unwrap();
+    let owner = Principal::user(user);
+    let owner_incarnation = db.principal_incarnation(owner).await.unwrap();
     let read_token = service
         .jwt_keys
         .mint(
             &TokenAuth {
                 token_id: "stage-read-only".into(),
-                owner: Principal::user(user),
+                owner,
+                owner_incarnation,
+                browser_session_id_hash: None,
                 scope: Scope::root(),
                 permissions: vec![Permission::Read],
             },
@@ -497,6 +518,8 @@ async fn staged_releases_private_progress_and_signed_finalize_end_to_end() {
         .unwrap();
     assert_eq!(ready.state, "ready");
     assert_eq!(ready.uploaded_bytes, ready.total_bytes);
+    fixture.storage.1.delay_millis.store(20, Ordering::SeqCst);
+
     let released = fixture
         .service
         .finalize_staged_release(Some(&fixture.auth), fixture.finalize_request())
@@ -504,6 +527,14 @@ async fn staged_releases_private_progress_and_signed_finalize_end_to_end() {
     let released = released.unwrap();
     assert_eq!(released.state, "released");
     assert_eq!(released.released_version, fixture.revision.release_id);
+    let writes = &fixture.storage.1;
+    assert!(writes.peak.load(Ordering::SeqCst) >= 2);
+    assert!(writes.peak.load(Ordering::SeqCst) <= 8);
+    assert_eq!(writes.active.load(Ordering::SeqCst), 0);
+    let completed = writes.completed.lock().unwrap().clone();
+    assert_eq!(completed.len(), fixture.revision.publication.len());
+    assert_eq!(completed.last().map(String::as_str), Some("info/refs"));
+
     assert!(
         String::from_utf8(fixture.storage.fetch("info/refs").await.unwrap().unwrap())
             .unwrap()

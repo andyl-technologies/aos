@@ -443,7 +443,14 @@ impl Database {
         let now = unix_now();
         let id = self.max_id("bindings").await? + 1;
         let default_key = is_instance_default.then_some("singleton");
+        let reservation_id = uuid::Uuid::new_v4().to_string();
         let statements = [
+            Statement::new(
+                "INSERT INTO binding_identity_reservations(stable_id, reservation_id, reserved_at)
+                 VALUES (?1, ?2, ?3)",
+                vals![stable_id, reservation_id, now],
+            )
+            .expecting(1),
             Statement::new(
                 "INSERT INTO bindings
                  (id, org_id, name, kind, is_instance_default, instance_default_key, created_at,
@@ -656,6 +663,30 @@ impl Database {
         id: i64,
         expected_resource_version: i64,
     ) -> Result<bool> {
+        let Some(binding) = self.binding(id).await? else {
+            return Ok(false);
+        };
+        let reservation = self
+            .binding_identity_reservation(&binding.stable_id)
+            .await?
+            .context("binding lacks its permanent identity reservation")?;
+        self.delete_topology_binding_inner(
+            &binding,
+            &reservation.reservation_id,
+            expected_resource_version,
+        )
+        .await
+    }
+}
+
+impl Database {
+    pub(in crate::db) async fn delete_topology_binding_inner(
+        &self,
+        binding: &BindingRecord,
+        reservation_id: &str,
+        expected_resource_version: i64,
+    ) -> Result<bool> {
+        let id = binding.id;
         let exists = self
             .backend
             .query_opt(
@@ -677,9 +708,17 @@ impl Database {
                 Statement::new(
                     "UPDATE bindings SET resource_version = resource_version
                      WHERE id = ?1 AND resource_version = ?2 AND is_instance_default = 0
+                       AND stable_id = ?3
+                       AND EXISTS (SELECT 1 FROM binding_identity_reservations identity
+                         WHERE identity.stable_id = ?3 AND identity.reservation_id = ?4)
                        AND NOT EXISTS (SELECT 1 FROM surface_placements WHERE binding_id = ?1)
                        AND NOT EXISTS (SELECT 1 FROM gateway_revisions WHERE binding_id = ?1)",
-                    vals![id, expected_resource_version],
+                    vals![
+                        id,
+                        expected_resource_version,
+                        &binding.stable_id,
+                        reservation_id
+                    ],
                 )
                 .expecting(1),
                 Statement::new(

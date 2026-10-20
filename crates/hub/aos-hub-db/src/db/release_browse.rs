@@ -399,7 +399,9 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::{IndexSnapshot, ReleaseArtifactSnapshot, ReleaseRow};
+    use crate::db::IndexSnapshot;
+    use crate::db::ReleaseArtifactSnapshot;
+    use crate::db::ReleaseRow;
 
     fn package(description: &str, version: &str) -> PackageToml {
         toml::from_str(&format!("[package]\nname = \"demo\"\ndescription = \"{description}\"\nlicense = \"MIT\"\nmaintainer = \"maintainer\"\n[[versions]]\nversion = \"{version}\"\n")).unwrap()

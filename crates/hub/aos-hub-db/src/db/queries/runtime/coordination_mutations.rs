@@ -85,7 +85,8 @@ impl Database {
     /// Mark a registry as a mirror of `upstream_url` in `mode`.
     ///
     /// Idempotent: re-running for the same registry updates the upstream URL,
-    /// mode, verify flag, and schedule, preserving the last-sync record. `mode`
+    /// mode, verify flag, and schedule, advancing its source generation and
+    /// preserving the last-sync record. `mode`
     /// must be `full` or `pullthrough`. The `upstream_url` is validated as a
     /// safe remote target ([`aos_hub_model::url_guard::is_safe_remote_url`]) so a mirror
     /// can never be pointed at the local filesystem or an internal address.
@@ -116,7 +117,8 @@ impl Database {
                upstream_url = excluded.upstream_url,
                mode = excluded.mode,
                verify = excluded.verify,
-               schedule_secs = excluded.schedule_secs",
+               schedule_secs = excluded.schedule_secs,
+               resource_version = mirror_sources.resource_version + 1",
                 &vals![registry_id, upstream_url, mode, verify, schedule_secs],
             )
             .await?;
@@ -143,20 +145,14 @@ impl Database {
     }
 
     /// Stop mirroring: remove a registry's mirror source. Returns whether a row
-    /// was removed.
+    /// was removed, advancing the registry generation before source retirement.
     ///
     /// # Errors
     ///
-    /// Returns an error on database failure.
+    /// Returns an error while a mirror original is retained, for a concurrent
+    /// configuration change, or on database failure.
     pub async fn delete_mirror_source(&self, registry_id: i64) -> Result<bool> {
-        let n = self
-            .backend
-            .execute(
-                "DELETE FROM mirror_sources WHERE registry_id = ?1",
-                &vals![registry_id],
-            )
-            .await?;
-        Ok(n > 0)
+        self.delete_mirror_configuration(registry_id, None).await
     }
 
     /// Record the outcome of a mirror sync attempt.
@@ -373,7 +369,7 @@ impl Database {
                 "INSERT INTO surface_objects (registry_id, cache_id, object_key,
                 object_kind, partition_key, content_hash, size,
                 mutable_publication_id, created_at, updated_at)
-             SELECT ?1, ?2, ?3, ?4, ?8, ?5, ?6, ?7, ?9, ?9
+             SELECT ?1, ?2, ?3, ?4, ?8, ?5, ?6, CAST(?7 AS VARCHAR), ?9, ?9
              WHERE EXISTS (SELECT 1 FROM registries WHERE id = ?1)
                 AND (?4 = 'immutable' OR EXISTS (
                   SELECT 1 FROM registry_publications pub

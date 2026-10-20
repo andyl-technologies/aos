@@ -4,9 +4,9 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use anyhow::Context as _;
-use aos_hub_model::secret_version::{
-    validate_secret_version_ref, ResolvedSecretVersion, SecretVersionResolver,
-};
+use aos_hub_model::secret_version::validate_secret_version_ref;
+use aos_hub_model::secret_version::ResolvedSecretVersion;
+use aos_hub_model::secret_version::SecretVersionResolver;
 use worker::Env;
 
 const HUB_SECRET_VERSION_MANIFEST: &str = "HUB_SECRET_VERSION_MANIFEST";

@@ -16,8 +16,7 @@ impl RpcService {
         current_role: Option<Role>,
         desired_role: Option<Role>,
     ) -> Result<(), RpcError> {
-        let actor = claims_principal(claims)
-            .ok_or_else(|| RpcError::PermissionDenied("active principal required".into()))?;
+        let actor = self.current_principal(claims).await?;
         let context = self
             .db
             .authorization_context(scope.as_str())

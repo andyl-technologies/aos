@@ -1273,7 +1273,8 @@ mod tests {
     use ed25519_dalek::Signer as _;
 
     use super::*;
-    use crate::retained_control::iam::{MembershipContents, PrincipalKind};
+    use crate::retained_control::iam::MembershipContents;
+    use crate::retained_control::iam::PrincipalKind;
     use crate::retained_control::primitives::ActorKind;
 
     fn oid(byte: char) -> GitObjectId {

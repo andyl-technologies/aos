@@ -421,6 +421,8 @@ pub struct PlacementScanPresence {
     pub observed_size: Option<i64>,
     /// Backend-issued strong entity tag, when available.
     pub etag: Option<String>,
+    /// Provider upload incarnation of the observed physical bytes.
+    pub provider_version: Option<String>,
 }
 
 /// Earlier byte-verified evidence eligible for strong-version scan reuse.
@@ -436,6 +438,8 @@ pub struct ReusablePlacementEvidence {
     pub observed_size: Option<i64>,
     /// Provider-issued strong version identifier.
     pub etag: Option<String>,
+    /// Upload incarnation of the previously byte-verified physical object.
+    pub provider_version: Option<String>,
 }
 
 /// Operator-confirmed equivalence between two exact surface placements.
@@ -734,6 +738,8 @@ pub struct TopologyPlanRecord {
     pub actor_kind: String,
     /// Actor database id, when applicable.
     pub actor_id: Option<i64>,
+    /// Original immutable principal UUID; absent only for legacy/internal plans.
+    pub actor_incarnation: Option<String>,
     /// Human-readable actor label.
     pub actor_label: String,
     /// Authorization scope.
@@ -773,6 +779,8 @@ pub struct NewTopologyPlan {
     pub actor_kind: String,
     /// Actor database id, when applicable.
     pub actor_id: Option<i64>,
+    /// Original immutable principal UUID; absent only for legacy/internal plans.
+    pub actor_incarnation: Option<String>,
     /// Human-readable actor label.
     pub actor_label: String,
     /// Authorization scope.

@@ -1,0 +1,106 @@
+--- a/src/util/config.rs
++++ b/src/util/config.rs
+@@ -184,6 +184,10 @@
+ 	/// Suffix to remove from domain name to find bucket. If None,
+ 	/// vhost-style S3 request are disabled
+ 	pub root_domain: Option<String>,
++	/// Opts the separately built transport fixture into bounded refusal disposal.
++	/// Only NoSuchUpload bodies are drained, with a 64 MiB and 90 second bound.
++	#[serde(default)]
++	pub fixture_no_such_upload_drain: bool,
+ }
+ 
+ /// Configuration for K2V api
+@@ -409,6 +413,23 @@
+ 	use std::io::Write;
+ 
+ 	#[test]
++	fn fixture_refusal_configuration_requires_explicit_opt_in() {
++		let omitted: super::S3ApiConfig = toml::from_str("s3_region = \"fixture\"").unwrap();
++		let disabled: super::S3ApiConfig = toml::from_str(
++			"s3_region = \"fixture\"\nfixture_no_such_upload_drain = false",
++		)
++		.unwrap();
++		let enabled: super::S3ApiConfig = toml::from_str(
++			"s3_region = \"fixture\"\nfixture_no_such_upload_drain = true",
++		)
++		.unwrap();
++
++		assert!(!omitted.fixture_no_such_upload_drain);
++		assert!(!disabled.fixture_no_such_upload_drain);
++		assert!(enabled.fixture_no_such_upload_drain);
++	}
++
++	#[test]
+ 	fn test_rpc_secret() -> Result<(), Error> {
+ 		let path2 = mktemp::Temp::new_file()?;
+ 		let mut file2 = File::create(path2.as_path())?;
+--- a/src/api/common/signature/body.rs
++++ b/src/api/common/signature/body.rs
+@@ -12,6 +12,8 @@
+ 
+ use crate::signature::checksum::*;
+ 
++mod fixture_refusal;
++
+ pub struct ReqBody {
+ 	// why need mutex to be sync??
+ 	pub(crate) stream: Mutex<BoxStream<'static, Result<Frame<Bytes>, Error>>>,
+@@ -23,6 +25,19 @@
+ pub type StreamingChecksumReceiver = task::JoinHandle<Result<Checksums, Error>>;
+ 
+ impl ReqBody {
++	/// Discards a refused fixture body through validated EOF within fixed bounds.
++	///
++	/// This method is supplied only by the separate AOS Garage transport variant.
++	/// It retains no body and aborts its checksum task on cancellation.
++	///
++	/// # Errors
++	///
++	/// Returns an error for transport or checksum failure, arithmetic overflow,
++	/// more than 64 MiB, or an incomplete body or checksum task after 90 seconds.
++	pub async fn drain_fixture_refusal(self) -> Result<(), Error> {
++		fixture_refusal::drain(self).await
++	}
++
+ 	pub fn add_expected_checksums(&mut self, more: ExpectedChecksums) {
+ 		if more.md5.is_some() {
+ 			self.expected_checksums.md5 = more.md5;
+--- a/src/api/s3/multipart.rs
++++ b/src/api/s3/multipart.rs
+@@ -138,14 +138,32 @@
+ 		req_body.add_md5();
+ 	}
+ 
++	// Only the opted-in fixture delays this existing error until the rejected
++	// body reaches validated EOF. No part or version writes precede this branch.
++	let fixture_upload = if garage.config.s3_api.fixture_no_such_upload_drain {
++		Some(match get_upload(&ctx, &key, &upload_id).await {
++			Err(Error::NoSuchUpload) => {
++				req_body.drain_fixture_refusal().await?;
++				return Err(Error::NoSuchUpload);
++			}
++			result => result?,
++		})
++	} else {
++		None
++	};
++
+ 	let (stream, stream_checksums) = req_body.streaming_with_checksums();
+ 	let stream = stream.map_err(Error::from);
+ 
+ 	let mut chunker = StreamChunker::new(stream, garage.config.block_size);
+ 
+-	// Read first chuck, and at the same time try to get object to see if it exists
+-	let ((object, object_version, mut mpu), first_block) =
+-		futures::try_join!(get_upload(&ctx, &key, &upload_id), chunker.next(),)?;
++	let ((object, object_version, mut mpu), first_block) = match fixture_upload {
++		Some(upload) => (upload, chunker.next().await?),
++		None => {
++			// Preserve ordinary concurrent upload discovery and body streaming.
++			futures::try_join!(get_upload(&ctx, &key, &upload_id), chunker.next(),)?
++		}
++	};
+ 
+ 	// Check encryption params
+ 	let oek_params = OekDerivationInfo::for_object(&object, &object_version);

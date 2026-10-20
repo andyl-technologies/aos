@@ -29,6 +29,9 @@ use tokio::sync::Semaphore;
 
 use aos_transfer::{TransferEngine, TransferRequest};
 
+#[cfg(unix)]
+mod direct;
+
 use super::{
     AuthOptions, CacheBackend, IMMUTABLE_CACHE_CONTROL, MUTABLE_CACHE_CONTROL,
     add_static_metadata_headers,
@@ -78,6 +81,13 @@ pub struct HttpBackend {
     multipart_v1: AtomicBool,
     /// Aggregate in-flight multipart body budget for this Hub origin.
     multipart_part_permits: Semaphore,
+    #[cfg(unix)]
+    direct_options: aos_hub_client::DirectUploadOptions,
+    #[cfg(unix)]
+    direct: tokio::sync::OnceCell<Option<Arc<aos_hub_client::DirectUploadCoordinator>>>,
+    #[cfg(unix)]
+    legacy_direct_bearer:
+        tokio::sync::OnceCell<tokio::sync::Mutex<aos_hub_client::PinnedLegacyBearer>>,
 }
 
 /// OAuth2 token-endpoint response, including explicitly negotiated features.
@@ -129,6 +139,14 @@ impl HttpBackend {
         }
 
         let is_aos = auth.token.is_some();
+        #[cfg(unix)]
+        let mut direct_options = auth.direct_upload.clone();
+        #[cfg(unix)]
+        if let Some(secret) = &auth.token {
+            direct_options.authentication = Some(Arc::new(
+                aos_hub_client::DirectProvisioningAuthentication::new(&origin, secret.clone())?,
+            ));
+        }
 
         let mut backend = Self {
             engine,
@@ -139,6 +157,12 @@ impl HttpBackend {
             is_hub: AtomicBool::new(false),
             multipart_v1: AtomicBool::new(false),
             multipart_part_permits: Semaphore::new(HUB_MULTIPART_PART_CONCURRENCY),
+            #[cfg(unix)]
+            direct_options,
+            #[cfg(unix)]
+            direct: tokio::sync::OnceCell::new(),
+            #[cfg(unix)]
+            legacy_direct_bearer: tokio::sync::OnceCell::new(),
         };
 
         // If we have an AOS token, authenticate to get a JWT.
@@ -217,11 +241,76 @@ impl HttpBackend {
     }
 
     /// Appends the backend's extra headers to a request.
-    fn add_headers(&self, mut req: TransferRequest) -> TransferRequest {
+    async fn add_headers(&self, mut req: TransferRequest) -> Result<TransferRequest> {
         for (k, v) in &self.headers {
             req.headers.push((k.clone(), v.clone()));
         }
-        req
+        #[cfg(not(unix))]
+        {
+            req = self.guard_unsupported_hub_upload(req).await?;
+        }
+        #[cfg(unix)]
+        if let Some(bearer) = self.legacy_direct_bearer.get() {
+            let mut bearer = bearer.lock().await;
+            let token = self
+                .headers
+                .iter()
+                .find(|(name, _)| name.eq_ignore_ascii_case("authorization"))
+                .and_then(|(_, value)| value.strip_prefix("Bearer "))
+                .map(str::to_owned)
+                .or_else(|| match self.engine.auth().get(&self.origin) {
+                    Some(aos_transfer::Credential::Bearer { token, .. }) => Some(token),
+                    _ => None,
+                })
+                .ok_or_else(|| anyhow::anyhow!("legacy Hub credential renewal is unavailable"))?;
+            let hub = aos_hub_client::HubClient::connect_with_token(&self.origin, &token)?;
+            bearer.refresh(&hub, &self.direct_options).await?;
+            bearer.apply(&mut req)?;
+        }
+        Ok(req)
+    }
+
+    // Downloads retain their existing transport even when uploads require a
+    // journal adapter unavailable on this platform. Positive-Hub POSTs here
+    // are upload controls; standalone query-missing does not set is_hub.
+    #[cfg(any(not(unix), test))]
+    async fn guard_unsupported_hub_upload(
+        &self,
+        mut req: TransferRequest,
+    ) -> Result<TransferRequest> {
+        if self.is_hub.load(Ordering::Relaxed)
+            && matches!(
+                req.method,
+                aos_transfer::Method::Put
+                    | aos_transfer::Method::Post
+                    | aos_transfer::Method::Delete
+            )
+        {
+            let token = self
+                .headers
+                .iter()
+                .find(|(name, _)| name.eq_ignore_ascii_case("authorization"))
+                .and_then(|(_, value)| value.strip_prefix("Bearer "))
+                .map(str::to_owned)
+                .or_else(|| match self.engine.auth().get(&self.origin) {
+                    Some(aos_transfer::Credential::Bearer { token, .. }) => Some(token),
+                    _ => None,
+                })
+                .ok_or_else(|| {
+                    anyhow::anyhow!("Hub upload policy needs an authenticated bearer")
+                })?;
+            let hub = aos_hub_client::HubClient::connect_with_token(&self.origin, &token)?;
+            aos_hub_client::DirectHubControl::new(&hub)?
+                .require_legacy_transport()
+                .await?;
+            // The request sends the same owned bearer used for policy proof,
+            // without a later shared-cache substitution.
+            req.headers
+                .retain(|(name, _)| !name.eq_ignore_ascii_case("authorization"));
+            req.headers
+                .push(("Authorization".into(), format!("Bearer {token}")));
+        }
+        Ok(req)
     }
 
     // `base_url` already encodes the view (e.g. `http://host:15000/default`);
@@ -249,13 +338,33 @@ impl HttpBackend {
 
 #[async_trait]
 impl CacheBackend for HttpBackend {
+    #[cfg(unix)]
+    async fn direct_coordinator(
+        &self,
+        jobs: usize,
+        bytes_per_second: u64,
+    ) -> Result<Option<Arc<aos_hub_client::DirectUploadCoordinator>>> {
+        self.discover_direct(jobs, bytes_per_second).await
+    }
+
+    #[cfg(unix)]
+    async fn finish_direct_uploads(&self) -> Result<()> {
+        if let Some(Some(coordinator)) = self.direct.get() {
+            coordinator
+                .finish(std::time::Duration::from_secs(3600))
+                .await?;
+            eprintln!("Direct upload client: {}", coordinator.diagnostic_summary());
+        }
+        Ok(())
+    }
+
     fn transfer_manager(&self) -> Option<&TransferEngine> {
         Some(self.engine.as_ref())
     }
 
     async fn exists(&self, relative_path: &str) -> Result<bool> {
         let url = self.static_file_url(relative_path);
-        let req = self.add_headers(TransferRequest::head(&url));
+        let req = self.add_headers(TransferRequest::head(&url)).await?;
         let result = self.engine.execute(req).await?;
         Ok(result.status < 400)
     }
@@ -269,10 +378,12 @@ impl CacheBackend for HttpBackend {
         // metadata. Read the representation itself and hash those exact bytes
         // before allowing publication to reuse a remote image object.
         let snapshot = tempfile::NamedTempFile::new().context("creating static readback file")?;
-        let req = self.add_headers(TransferRequest::get_to_file(
-            &url,
-            snapshot.path().to_path_buf(),
-        ));
+        let req = self
+            .add_headers(TransferRequest::get_to_file(
+                &url,
+                snapshot.path().to_path_buf(),
+            ))
+            .await?;
         let result = match self.engine.execute(req).await {
             Ok(result) => result,
             Err(error)
@@ -316,14 +427,14 @@ impl CacheBackend for HttpBackend {
 
     async fn has_narinfo(&self, store_hash: &str) -> Result<bool> {
         let url = self.narinfo_url(store_hash);
-        let req = self.add_headers(TransferRequest::head(&url));
+        let req = self.add_headers(TransferRequest::head(&url)).await?;
         let result = self.engine.execute(req).await?;
         Ok(result.status < 400)
     }
 
     async fn get_narinfo(&self, store_hash: &str) -> Result<String> {
         let url = self.narinfo_url(store_hash);
-        let req = self.add_headers(TransferRequest::get(&url));
+        let req = self.add_headers(TransferRequest::get(&url)).await?;
         let result = self.engine.execute(req).await.context("fetching narinfo")?;
 
         result
@@ -332,6 +443,17 @@ impl CacheBackend for HttpBackend {
     }
 
     async fn put_narinfo(&self, store_hash: &str, content: &str) -> Result<()> {
+        #[cfg(unix)]
+        if self
+            .stage_direct_bytes(
+                &format!("{store_hash}.narinfo"),
+                content.as_bytes(),
+                aos_hub_api::direct_upload::DirectDependencyPhase::Visibility,
+            )
+            .await?
+        {
+            return Ok(());
+        }
         if self.is_hub.load(Ordering::Relaxed) {
             let path = format!("{store_hash}.narinfo");
             let upload_url = self
@@ -362,7 +484,7 @@ impl CacheBackend for HttpBackend {
             None,
             None,
         );
-        let req = self.add_headers(req);
+        let req = self.add_headers(req).await?;
         self.engine
             .execute(req)
             .await
@@ -372,7 +494,7 @@ impl CacheBackend for HttpBackend {
 
     async fn get_nar(&self, url: &str) -> Result<Vec<u8>> {
         let full_url = self.nar_url(url);
-        let req = self.add_headers(TransferRequest::get(&full_url));
+        let req = self.add_headers(TransferRequest::get(&full_url)).await?;
         let result = self.engine.execute(req).await.context("fetching NAR")?;
 
         result
@@ -381,6 +503,17 @@ impl CacheBackend for HttpBackend {
     }
 
     async fn put_nar(&self, filename: &str, data: &[u8]) -> Result<()> {
+        #[cfg(unix)]
+        if self
+            .stage_direct_bytes(
+                &format!("nar/{filename}"),
+                data,
+                aos_hub_api::direct_upload::DirectDependencyPhase::Content,
+            )
+            .await?
+        {
+            return Ok(());
+        }
         if self.is_hub.load(Ordering::Relaxed) {
             let path = format!("nar/{filename}");
             return match self.create_object_upload(&path, data.len() as u64).await? {
@@ -416,7 +549,7 @@ impl CacheBackend for HttpBackend {
             None,
             None,
         );
-        let req = self.add_headers(req);
+        let req = self.add_headers(req).await?;
         self.engine.execute(req).await.context("uploading NAR")?;
         Ok(())
     }
@@ -448,7 +581,7 @@ impl CacheBackend for HttpBackend {
         .to_string();
         let mut req = TransferRequest::post(&url, body.into_bytes());
         add_connect_json_headers(&mut req);
-        let req = self.add_headers(req);
+        let req = self.add_headers(req).await?;
         let result = self.engine.execute(req).await?;
         anyhow::ensure!(
             result.status < 400,
@@ -484,7 +617,7 @@ impl CacheBackend for HttpBackend {
             "{}/aos.hub.v1.BinaryCacheService/UploadObject/",
             self.origin
         )) {
-            self.add_headers(req)
+            self.add_headers(req).await?
         } else {
             req
         };
@@ -536,7 +669,7 @@ impl CacheBackend for HttpBackend {
         .to_string();
         let mut req = TransferRequest::post(&url, body.into_bytes());
         add_connect_json_headers(&mut req);
-        let req = self.add_headers(req);
+        let req = self.add_headers(req).await?;
         let result = self.engine.execute(req).await?;
         anyhow::ensure!(
             result.status < 400,
@@ -615,7 +748,7 @@ impl CacheBackend for HttpBackend {
         .to_string();
         let mut req = TransferRequest::post(&url, body.into_bytes());
         add_connect_json_headers(&mut req);
-        let result = self.engine.execute(self.add_headers(req)).await?;
+        let result = self.engine.execute(self.add_headers(req).await?).await?;
         anyhow::ensure!(
             result.status < 400,
             "registering cache narinfos failed with HTTP {}: {}",
@@ -654,7 +787,7 @@ impl CacheBackend for HttpBackend {
         };
         let mut req = TransferRequest::post(&url, serde_json::to_vec(&body)?);
         add_connect_json_headers(&mut req);
-        let req = self.add_headers(req);
+        let req = self.add_headers(req).await?;
         let result = self
             .engine
             .execute(req)
@@ -693,7 +826,7 @@ impl CacheBackend for HttpBackend {
         );
         let mut req = TransferRequest::put(&url, data.to_vec());
         add_static_metadata_headers(&mut req, Some("application/x-nix-nar"), None, None, None);
-        let req = self.add_headers(req);
+        let req = self.add_headers(req).await?;
         let result = match self.engine.execute(req).await {
             Ok(result) => result,
             Err(error)
@@ -748,7 +881,7 @@ impl CacheBackend for HttpBackend {
         }))?;
         let mut req = TransferRequest::post(&url, payload);
         add_connect_json_headers(&mut req);
-        let req = self.add_headers(req);
+        let req = self.add_headers(req).await?;
         let result = match self.engine.execute(req).await {
             Ok(result) => result,
             Err(error)
@@ -783,7 +916,7 @@ impl CacheBackend for HttpBackend {
             serde_json::to_vec(&serde_json::json!({ "uploadId": upload_id }))?,
         );
         add_connect_json_headers(&mut req);
-        let req = self.add_headers(req);
+        let req = self.add_headers(req).await?;
         let result = self
             .engine
             .execute(req)
@@ -807,7 +940,7 @@ impl CacheBackend for HttpBackend {
             let mut req = TransferRequest::post(&url, body);
             req.headers
                 .push(("Content-Type".to_string(), "application/json".to_string()));
-            let req = self.add_headers(req);
+            let req = self.add_headers(req).await?;
             let result = self
                 .engine
                 .execute(req)
@@ -833,11 +966,33 @@ impl CacheBackend for HttpBackend {
     }
 
     async fn ensure_cache_info(&self, _store_dir: &str) -> Result<()> {
+        #[cfg(unix)]
+        if self
+            .stage_direct_bytes(
+                "nix-cache-info",
+                b"StoreDir: /nix/store\nWantMassQuery: 1\nPriority: 30\n",
+                aos_hub_api::direct_upload::DirectDependencyPhase::Visibility,
+            )
+            .await?
+        {
+            return Ok(());
+        }
         // HTTP caches are assumed to already have nix-cache-info.
         Ok(())
     }
 
     async fn put_cache_info(&self, content: &str) -> Result<()> {
+        #[cfg(unix)]
+        if self
+            .stage_direct_bytes(
+                "nix-cache-info",
+                content.as_bytes(),
+                aos_hub_api::direct_upload::DirectDependencyPhase::Visibility,
+            )
+            .await?
+        {
+            return Ok(());
+        }
         if self.is_aos {
             // AOS server cache-info is served dynamically from the view.
             let _ = content;
@@ -854,7 +1009,7 @@ impl CacheBackend for HttpBackend {
             None,
             None,
         );
-        let req = self.add_headers(req);
+        let req = self.add_headers(req).await?;
         let result = self
             .engine
             .execute(req)
@@ -878,6 +1033,13 @@ impl CacheBackend for HttpBackend {
         content_disposition: Option<&str>,
         sha256: Option<&str>,
     ) -> Result<()> {
+        #[cfg(unix)]
+        if self
+            .stage_direct_file(relative_path, source, sha256)
+            .await?
+        {
+            return Ok(());
+        }
         let size = std::fs::metadata(source)
             .with_context(|| format!("stat static file {}", source.display()))?
             .len();
@@ -914,7 +1076,7 @@ impl CacheBackend for HttpBackend {
                     "{}/aos.hub.v1.BinaryCacheService/UploadObject/",
                     self.origin
                 )) {
-                    self.add_headers(req)
+                    self.add_headers(req).await?
                 } else {
                     req
                 };
@@ -954,7 +1116,7 @@ impl CacheBackend for HttpBackend {
             content_disposition,
             sha256,
         );
-        let req = self.add_headers(req);
+        let req = self.add_headers(req).await?;
         let result = self
             .engine
             .execute(req)
@@ -980,7 +1142,7 @@ impl CacheBackend for HttpBackend {
             "Content-Type".to_string(),
             "application/octet-stream".to_string(),
         ));
-        let req = self.add_headers(req);
+        let req = self.add_headers(req).await?;
         let result = self
             .engine
             .execute(req)

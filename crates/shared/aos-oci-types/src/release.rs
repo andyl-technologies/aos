@@ -496,12 +496,26 @@ fn decode_canonical_base64(value: &str, field: &'static str) -> Result<Vec<u8>> 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ContainerSignatureInputEvidence {
+    /// OCI referrer manifest for the native deployment document, when emitted.
+    /// Older image bundles omit this field; present documents remain signed roots.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_optional_strict_descriptor"
+    )]
+    pub deployment: Option<Descriptor>,
+
     /// OCI referrer manifest retaining static abilities and launch obligations.
     ///
-    /// This descriptor is archival evidence. It does not itself grant an
+    /// This descriptor may be omitted when the full native deployment document
+    /// is present. It is archival evidence and does not itself grant an
     /// ability or prove that a launch environment discharged its obligations.
-    #[serde(deserialize_with = "deserialize_strict_descriptor")]
-    pub abilities: Descriptor,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_optional_strict_descriptor"
+    )]
+    pub abilities: Option<Descriptor>,
     /// OCI referrer manifest for the SPDX 2.3 JSON SBOM.
     #[serde(deserialize_with = "deserialize_strict_descriptor")]
     pub sbom: Descriptor,
@@ -521,14 +535,31 @@ impl ContainerSignatureInputEvidence {
     ///
     /// # Errors
     ///
-    /// Returns an error unless every descriptor is a correctly typed OCI
-    /// referrer manifest.
+    /// Returns an error if neither deployment contract is present, or if any
+    /// descriptor is not a correctly typed OCI referrer manifest.
     pub fn validate(&self) -> Result<()> {
-        validate_evidence_descriptor(
-            &self.abilities,
-            "container signature input abilities",
-            MediaType::AosContainerStaticAbilities,
-        )?;
+        if self.deployment.is_none() && self.abilities.is_none() {
+            return Err(Error::invalid(
+                "container signature input deployment contract",
+                "requires a native deployment or static abilities descriptor",
+            ));
+        }
+
+        if let Some(deployment) = &self.deployment {
+            validate_evidence_descriptor(
+                deployment,
+                "container signature input deployment",
+                MediaType::AosArtifactDeployment,
+            )?;
+        }
+
+        if let Some(abilities) = &self.abilities {
+            validate_evidence_descriptor(
+                abilities,
+                "container signature input abilities",
+                MediaType::AosContainerStaticAbilities,
+            )?;
+        }
         validate_evidence_descriptor(
             &self.sbom,
             "container signature input SBOM",
@@ -552,7 +583,8 @@ impl ContainerSignatureInputEvidence {
     }
 
     fn matches(&self, evidence: &ContainerReleaseEvidence) -> bool {
-        self.abilities == evidence.abilities
+        self.deployment == evidence.deployment
+            && self.abilities == evidence.abilities
             && self.sbom == evidence.sbom
             && self.source == evidence.source
             && self.license == evidence.license
@@ -690,8 +722,11 @@ impl ContainerEvidenceMappingUnknownPath {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ContainerEvidencePackageCandidate {
-    /// Exact derivation store path for the package definition.
-    pub derivation_path: String,
+    /// Exact derivation store path, or `None` for retained source inputs.
+    pub derivation_path: Option<String>,
+    /// Indicates definition-level explicit attribution, when the builder reports it.
+    #[serde(rename = "override", default, skip_serializing_if = "Option::is_none")]
+    pub override_attribution: Option<bool>,
     /// Evaluated package name.
     pub pname: String,
     /// Evaluated package version.
@@ -701,18 +736,21 @@ pub struct ContainerEvidencePackageCandidate {
     /// Evaluated source identities.
     pub sources: Vec<ContainerEvidenceSourceIdentity>,
     /// Runtime dependency output paths used during evidence selection.
-    pub runtime_dependencies: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_dependencies: Option<Vec<String>>,
     /// Candidate output name and realized path.
     pub output: ContainerEvidencePackageOutput,
 }
 
 impl ContainerEvidencePackageCandidate {
     fn validate(&self) -> Result<()> {
-        validate_store_path(
-            &self.derivation_path,
-            "container mapping candidate derivationPath",
-            true,
-        )?;
+        if let Some(derivation_path) = &self.derivation_path {
+            validate_store_path(
+                derivation_path,
+                "container mapping candidate derivationPath",
+                true,
+            )?;
+        }
         validate_diagnostic_text(&self.pname, "container mapping candidate pname")?;
         validate_diagnostic_text(&self.version, "container mapping candidate version")?;
         validate_item_count(
@@ -725,23 +763,25 @@ impl ContainerEvidencePackageCandidate {
             "container mapping candidate sources",
             MAX_PLATFORMS_PER_INDEX,
         )?;
-        validate_item_count(
-            self.runtime_dependencies.len(),
-            "container mapping candidate runtimeDependencies",
-            MAX_REACHABLE_DESCRIPTORS,
-        )?;
+        if let Some(dependencies) = &self.runtime_dependencies {
+            validate_item_count(
+                dependencies.len(),
+                "container mapping candidate runtimeDependencies",
+                MAX_REACHABLE_DESCRIPTORS,
+            )?;
+            for dependency in dependencies {
+                validate_store_path(
+                    dependency,
+                    "container mapping candidate runtime dependency",
+                    false,
+                )?;
+            }
+        }
         for license in &self.licenses {
             validate_diagnostic_text(license, "container mapping candidate license")?;
         }
         for source in &self.sources {
             source.validate()?;
-        }
-        for dependency in &self.runtime_dependencies {
-            validate_store_path(
-                dependency,
-                "container mapping candidate runtime dependency",
-                false,
-            )?;
         }
         self.output.validate()
     }
@@ -1049,12 +1089,26 @@ impl NixOutputIdentity {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ContainerReleaseEvidence {
+    /// OCI referrer manifest for the native deployment document, when emitted.
+    /// Older image bundles omit this field; present documents remain signed roots.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_optional_strict_descriptor"
+    )]
+    pub deployment: Option<Descriptor>,
+
     /// OCI referrer manifest retaining static abilities and launch obligations.
     ///
-    /// This descriptor is archival evidence. It does not itself grant an
+    /// This descriptor may be omitted when the full native deployment document
+    /// is present. It is archival evidence and does not itself grant an
     /// ability or prove that a launch environment discharged its obligations.
-    #[serde(deserialize_with = "deserialize_strict_descriptor")]
-    pub abilities: Descriptor,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_optional_strict_descriptor"
+    )]
+    pub abilities: Option<Descriptor>,
     /// OCI referrer manifest for the SPDX 2.3 JSON software bill of materials.
     #[serde(deserialize_with = "deserialize_strict_descriptor")]
     pub sbom: Descriptor,
@@ -1077,14 +1131,31 @@ impl ContainerReleaseEvidence {
     ///
     /// # Errors
     ///
-    /// Returns an error unless every field is an OCI referrer-manifest
-    /// descriptor whose `artifactType` exactly matches its required role.
+    /// Returns an error if neither deployment contract is present, or if any
+    /// supplied referrer descriptor has an incorrect `artifactType`.
     pub fn validate(&self) -> Result<()> {
-        validate_evidence_descriptor(
-            &self.abilities,
-            "container release abilities",
-            MediaType::AosContainerStaticAbilities,
-        )?;
+        if self.deployment.is_none() && self.abilities.is_none() {
+            return Err(Error::invalid(
+                "container release deployment contract",
+                "requires a native deployment or static abilities descriptor",
+            ));
+        }
+
+        if let Some(deployment) = &self.deployment {
+            validate_evidence_descriptor(
+                deployment,
+                "container release deployment",
+                MediaType::AosArtifactDeployment,
+            )?;
+        }
+
+        if let Some(abilities) = &self.abilities {
+            validate_evidence_descriptor(
+                abilities,
+                "container release abilities",
+                MediaType::AosContainerStaticAbilities,
+            )?;
+        }
         validate_evidence_descriptor(&self.sbom, "container release SBOM", MediaType::SpdxJson)?;
         validate_evidence_descriptor(
             &self.source,
@@ -1223,7 +1294,7 @@ fn validate_descriptor_json_size(descriptor: &Descriptor, field: &'static str) -
 }
 
 fn validate_unique_release_descriptors(release: &ContainerRelease) -> Result<()> {
-    let descriptors = [
+    let mut descriptors = vec![
         (&release.oci.index, "OCI index"),
         (&release.nix.closure, "closure"),
         (&release.evidence.sbom, "SBOM"),
@@ -1232,7 +1303,13 @@ fn validate_unique_release_descriptors(release: &ContainerRelease) -> Result<()>
         (&release.evidence.provenance, "provenance"),
         (&release.evidence.signature, "signature"),
     ];
-    let mut digests = BTreeSet::from([release.evidence.abilities.digest]);
+    if let Some(deployment) = &release.evidence.deployment {
+        descriptors.push((deployment, "deployment"));
+    }
+    if let Some(abilities) = &release.evidence.abilities {
+        descriptors.push((abilities, "abilities"));
+    }
+    let mut digests = BTreeSet::new();
     for (descriptor, role) in descriptors {
         if !digests.insert(descriptor.digest) {
             return Err(Error::invalid(
@@ -1256,7 +1333,7 @@ fn validate_unique_release_descriptors(release: &ContainerRelease) -> Result<()>
 }
 
 fn validate_unique_signature_input_descriptors(input: &ContainerSignatureInput) -> Result<()> {
-    let descriptors = [
+    let mut descriptors = vec![
         (&input.oci.index, "OCI index"),
         (&input.nix.closure, "closure"),
         (&input.evidence.sbom, "SBOM"),
@@ -1264,7 +1341,13 @@ fn validate_unique_signature_input_descriptors(input: &ContainerSignatureInput) 
         (&input.evidence.license, "license"),
         (&input.evidence.provenance, "provenance"),
     ];
-    let mut digests = BTreeSet::from([input.evidence.abilities.digest]);
+    if let Some(deployment) = &input.evidence.deployment {
+        descriptors.push((deployment, "deployment"));
+    }
+    if let Some(abilities) = &input.evidence.abilities {
+        descriptors.push((abilities, "abilities"));
+    }
+    let mut digests = BTreeSet::new();
     for (descriptor, role) in descriptors {
         if !digests.insert(descriptor.digest) {
             return Err(Error::invalid(
@@ -1591,6 +1674,16 @@ where
     StrictDescriptor::deserialize(deserializer).map(Descriptor::from)
 }
 
+fn deserialize_optional_strict_descriptor<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<Descriptor>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Option::<StrictDescriptor>::deserialize(deserializer)
+        .map(|descriptor| descriptor.map(Descriptor::from))
+}
+
 fn deserialize_strict_descriptors<'de, D>(
     deserializer: D,
 ) -> std::result::Result<Vec<Descriptor>, D::Error>
@@ -1645,6 +1738,40 @@ mod tests {
         }
     }
 
+    #[test]
+    fn mapping_candidates_preserve_native_and_legacy_diagnostics() {
+        let source_path = "/nix/store/00000000000000000000000000000000-configuration";
+        let native = serde_json::json!({
+            "derivationPath": null,
+            "override": false,
+            "pname": "native-configuration-input",
+            "version": "1",
+            "licenses": [],
+            "sources": [],
+            "output": {"name": "source", "path": source_path},
+        });
+        let legacy = serde_json::json!({
+            "derivationPath": "/nix/store/00000000000000000000000000000000-package.drv",
+            "pname": "package",
+            "version": "1",
+            "licenses": ["Apache-2.0"],
+            "sources": [],
+            "runtimeDependencies": [source_path],
+            "output": {"name": "out", "path": source_path},
+        });
+
+        for diagnostic in [native, legacy] {
+            let candidate: ContainerEvidencePackageCandidate =
+                serde_json::from_value(diagnostic.clone()).expect("mapping candidate");
+
+            candidate.validate().expect("valid diagnostic");
+            assert_eq!(
+                to_canonical_json(&candidate).expect("canonical candidate"),
+                to_canonical_json(&diagnostic).expect("canonical builder diagnostic"),
+            );
+        }
+    }
+
     fn release_fixture() -> ContainerRelease {
         let mut platform_manifest = descriptor(MediaType::OciImageManifest, "amd64-manifest");
         platform_manifest.platform = Some(Platform::linux_amd64());
@@ -1676,7 +1803,11 @@ mod tests {
             },
             qualification: qualification_fixture(),
             evidence: ContainerReleaseEvidence {
-                abilities: evidence_descriptor(MediaType::AosContainerStaticAbilities, "abilities"),
+                deployment: None,
+                abilities: Some(evidence_descriptor(
+                    MediaType::AosContainerStaticAbilities,
+                    "abilities",
+                )),
                 sbom: evidence_descriptor(MediaType::SpdxJson, "sbom"),
                 source: evidence_descriptor(MediaType::AosSourceClosure, "source"),
                 license: evidence_descriptor(MediaType::AosLicenseReport, "license"),
@@ -1694,6 +1825,7 @@ mod tests {
             oci: release.oci,
             nix: release.nix,
             evidence: ContainerSignatureInputEvidence {
+                deployment: release.evidence.deployment,
                 abilities: release.evidence.abilities,
                 sbom: release.evidence.sbom,
                 source: release.evidence.source,
@@ -1732,6 +1864,72 @@ mod tests {
         let mut mismatched = release;
         mismatched.identity.package_version = "0.1.1".to_string();
         assert!(input.validate_final_release(&mismatched).is_err());
+    }
+
+    #[test]
+    fn native_deployment_is_strict_signed_and_optional_for_older_images() {
+        let mut input = signature_input_fixture();
+        let mut release = release_fixture();
+        let deployment = evidence_descriptor(MediaType::AosArtifactDeployment, "deployment");
+        input.evidence.deployment = Some(deployment.clone());
+        release.evidence.deployment = Some(deployment);
+
+        let bytes = to_canonical_json(&input).expect("canonical signature input");
+        assert_eq!(
+            ContainerSignatureInput::from_canonical_json(&bytes).expect("deployment input"),
+            input
+        );
+        input
+            .validate_final_release(&release)
+            .expect("signed deployment binding");
+
+        release.evidence.deployment = None;
+        assert!(input.validate_final_release(&release).is_err());
+        let mut malformed = serde_json::to_value(&input).expect("input value");
+        malformed["evidence"]["deployment"]["unexpected"] = serde_json::json!(true);
+        assert!(
+            ContainerSignatureInput::from_json(
+                &to_canonical_json(&malformed).expect("malformed bytes")
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn native_deployment_can_supply_the_contract_without_a_legacy_report() {
+        let mut input = signature_input_fixture();
+        let mut release = release_fixture();
+        let deployment = evidence_descriptor(MediaType::AosArtifactDeployment, "deployment");
+        input.evidence.abilities = None;
+        input.evidence.deployment = Some(deployment.clone());
+        release.evidence.abilities = None;
+        release.evidence.deployment = Some(deployment);
+
+        let bytes = to_canonical_json(&input).expect("canonical signature input");
+        assert_eq!(
+            ContainerSignatureInput::from_canonical_json(&bytes).expect("native deployment input"),
+            input
+        );
+        input
+            .validate_final_release(&release)
+            .expect("signed native deployment contract");
+
+        input.evidence.deployment = None;
+        release.evidence.deployment = None;
+        assert!(input.validate().is_err());
+        assert!(release.validate().is_err());
+    }
+
+    #[test]
+    fn native_deployment_rejects_wrong_roles_and_reused_roots() {
+        let mut input = signature_input_fixture();
+        input.evidence.deployment = Some(input.evidence.provenance.clone());
+        assert!(input.validate().is_err());
+
+        let mut deployment = evidence_descriptor(MediaType::AosArtifactDeployment, "deployment");
+        deployment.digest = input.evidence.provenance.digest;
+        input.evidence.deployment = Some(deployment);
+        assert!(input.validate().is_err());
     }
 
     #[test]

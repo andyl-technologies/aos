@@ -128,16 +128,67 @@ impl RpcService {
         if !token_allows(claims, perm, &context) {
             return Err(denied());
         }
-        let principal = claims_principal(claims).ok_or_else(denied)?;
+        let principal = self.current_principal(claims).await?;
         let grants = self
             .db
             .effective_scopes(principal)
             .await
             .map_err(RpcError::internal)?;
         if iam::allow(&grants, perm, &context) {
+            // IAM awaits may observe a replacement in a recyclable numeric
+            // slot. Recheck the exact signed owner and credential before success.
+            self.current_principal(claims).await?;
+            let observed_kind = match perm {
+                Permission::Read => Some("permission_read"),
+                Permission::Publish => Some("permission_publish"),
+                _ => None,
+            };
+            if let Some(kind) = observed_kind {
+                aos_hub_db::hybrid_ingress::observation::record_existing_check(
+                    kind,
+                    &(
+                        claims,
+                        principal,
+                        scope.as_str(),
+                        aos_hub_db::hybrid_ingress::observation::grant_projection(&grants),
+                    ),
+                );
+            }
             Ok(())
         } else {
+            let observed_kind = match perm {
+                Permission::Read => Some("permission_read"),
+                Permission::Publish => Some("permission_publish"),
+                _ => None,
+            };
+            if let Some(kind) = observed_kind {
+                aos_hub_db::hybrid_ingress::observation::record_existing_outcome(
+                    kind,
+                    false,
+                    &(
+                        claims,
+                        principal,
+                        scope.as_str(),
+                        aos_hub_db::hybrid_ingress::observation::grant_projection(&grants),
+                    ),
+                );
+            }
             Err(denied())
         }
+    }
+}
+
+impl RpcService {
+    /// Selects the upload transport advertised by an enabled hybrid origin.
+    ///
+    /// Worker proxy mode retains signed ingress and Native body restrictions.
+    /// It does not provide a fallback when direct controls fail.
+    #[must_use]
+    pub fn with_hybrid_upload_mode(
+        mut self,
+        mode: aos_hub_db::hybrid_upload::HybridUploadMode,
+    ) -> Self {
+        self.hybrid_upload_mode = mode;
+        self
     }
 }

@@ -320,34 +320,54 @@ impl RpcService {
             .map_err(RpcError::internal)?
             .ok_or_else(|| RpcError::not_found("registry"))?;
         self.require_registry_stream_read(auth, &registry).await?;
+        let cacheable = registry.visibility == "public"
+            && matches!(auth, ReadAuthorization::AuthorizationHeader(None));
         if signed_image_path {
             return self
-                .serve_signed_image_object(&registry, path, image_request)
+                .serve_signed_image_object(&registry, path, image_request, cacheable)
                 .await;
         }
         let range_header = image_request
             .range
             .and_then(|value| std::str::from_utf8(value).ok());
-        let requested = parse_byte_range(range_header);
         let mirror = self
             .db
             .registry_mirror(registry.id)
             .await
             .map_err(RpcError::internal)?;
+        let requirement = if mirror
+            .as_ref()
+            .is_some_and(|mirror| mirror.mode == "pull_through")
+        {
+            PlacementReadRequirement::Untracked
+        } else {
+            placement_read::requirement_for_path(SurfaceTarget::Registry(registry.id), path)
+        };
+        if self.hybrid_delivery {
+            return self
+                .hybrid_surface_delivery(
+                    SurfaceTarget::Registry(registry.id),
+                    path,
+                    requirement,
+                    cacheable,
+                )
+                .await
+                .map(|response| {
+                    response.map_or(
+                        RegistryServeOutcome::NotFound,
+                        RegistryServeOutcome::Response,
+                    )
+                });
+        }
+
+        let requested = parse_byte_range(range_header);
         let read = match placement_read::stream_from_placements_with_requirement(
             self.db.as_ref(),
             self.surface.as_ref(),
             SurfaceTarget::Registry(registry.id),
             path,
             requested,
-            if mirror
-                .as_ref()
-                .is_some_and(|mirror| mirror.mode == "pull_through")
-            {
-                PlacementReadRequirement::Untracked
-            } else {
-                placement_read::requirement_for_path(SurfaceTarget::Registry(registry.id), path)
-            },
+            requirement,
         )
         .await
         .map_err(RpcError::surface_read)?
@@ -355,9 +375,13 @@ impl RpcService {
             PlacementReadOutcome::Found(read) => read.value,
             PlacementReadOutcome::NotFound => return Ok(RegistryServeOutcome::NotFound),
         };
-        Ok(RegistryServeOutcome::Response(
-            Self::streamed_surface_response(path, read)?,
-        ))
+        let response = Self::streamed_surface_response(path, read)?;
+        let response = if cacheable {
+            response
+        } else {
+            Self::private_delivery_response(response)
+        };
+        Ok(RegistryServeOutcome::Response(response))
     }
 
     /// Applies a reviewed registry-mirror replacement exactly once.
@@ -798,140 +822,237 @@ impl RpcService {
         auth: Option<&str>,
         req: pb::CommitRegistryPublicationRequest,
     ) -> Result<pb::RegistryPublication, RpcError> {
-        let claims = self.require_claims(auth)?;
-        let publication = self
-            .db
-            .registry_publication(&req.publication_id)
-            .await
-            .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::not_found("registry publication"))?;
-        let registry = self
-            .db
-            .registry_by_id(publication.registry_id)
-            .await
-            .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::not_found("registry"))?;
-        let scope = self.registry_scope(&registry).await?;
-        self.require_permission(&claims, Permission::Publish, &scope)
-            .await?;
-        if let Some(state) = self
-            .db
-            .staged_publication_state(&req.publication_id)
-            .await
-            .map_err(RpcError::internal)?
-        {
-            if !matches!(state.as_str(), "releasing" | "released") {
-                return Err(RpcError::FailedPrecondition(
-                    "staged release publication requires explicit finalization".into(),
-                ));
-            }
-        }
-        if publication.state == "ready" {
-            // A retry is also the explicit recovery path when publication
-            // succeeded but its derived index did not. Returning immediately
-            // here would leave operators waiting for a periodic reconciliation
-            // even though the commit request is safe and idempotent.
-            self.db
-                .restore_ready_registry_publication_object_evidence(
-                    &req.publication_id,
-                    clock::now_unix_secs(),
-                )
-                .await
-                .map_err(RpcError::internal)?;
-            self.db
-                .refresh_registry_publication_delivery_manifests(&req.publication_id)
-                .await
-                .map_err(RpcError::internal)?;
-            self.refresh_registry_index_after_publication(&registry, &req.publication_id)
-                .await;
-            return self
-                .registry_publication_response(&req.publication_id, true)
-                .await;
-        }
-        let immutable_complete = self
-            .db
-            .registry_publication_class_is_complete(&req.publication_id, "immutable")
-            .await
-            .map_err(RpcError::internal)?;
-        let pointers_complete = self
-            .db
-            .registry_publication_class_is_complete(&req.publication_id, "mutable_pointer")
-            .await
-            .map_err(RpcError::internal)?;
-        if !immutable_complete || !pointers_complete {
-            return Err(RpcError::FailedPrecondition(
-                "publication is not complete on every required placement".into(),
-            ));
-        }
-
-        if publication.state == "preparing" {
-            // A publication whose exact objects already exist needs no upload
-            // request. Open its pointer phase here so reuse-only generations
-            // follow the same watermark protocol as generations that wrote a
-            // pointer body.
-            self.lease
-                .acquire(
-                    registry.id,
-                    &publication.publication_id,
-                    clock::now_unix_secs(),
-                )
-                .await
-                .map_err(|holder| {
-                    RpcError::FailedPrecondition(format!(
-                        "registry publication lease is held by {holder}"
-                    ))
-                })?;
-            if !self
+        use aos_hub_db::application_body_observation::publication as publication_observation;
+        use aos_hub_db::application_body_observation::publication::Phase;
+        publication_observation::begin(&req);
+        let result = async {
+            let claims = self.require_claims(auth)?;
+            let publication = self
                 .db
-                .advance_registry_publication(
-                    &req.publication_id,
-                    "preparing",
-                    "writing_pointers",
-                    clock::now_unix_secs(),
-                )
+                .registry_publication(&req.publication_id)
+                .await
+                .map_err(RpcError::internal)?
+                .ok_or_else(|| RpcError::not_found("registry publication"))?;
+            let registry = self
+                .db
+                .registry_by_id(publication.registry_id)
+                .await
+                .map_err(RpcError::internal)?
+                .ok_or_else(|| RpcError::not_found("registry"))?;
+            let scope = self.registry_scope(&registry).await?;
+            self.require_permission(&claims, Permission::Publish, &scope)
+                .await?;
+            publication_observation::completed(
+                &req.publication_id,
+                Phase::Authorized,
+                0,
+                &(
+                    &claims.sub,
+                    &claims.owner_kind,
+                    claims.owner_id,
+                    &claims.owner_incarnation,
+                    &claims.scope,
+                    &claims.perms,
+                    registry.id,
+                    &scope,
+                ),
+            );
+            if let Some(state) = self
+                .db
+                .staged_publication_state(&req.publication_id)
                 .await
                 .map_err(RpcError::internal)?
             {
-                let current = self
-                    .db
-                    .registry_publication(&req.publication_id)
-                    .await
-                    .map_err(RpcError::internal)?
-                    .ok_or_else(|| RpcError::not_found("registry publication"))?;
-                if current.state != "writing_pointers" {
+                if !matches!(state.as_str(), "releasing" | "released") {
                     return Err(RpcError::FailedPrecondition(
-                        "publication pointer phase changed concurrently".into(),
+                        "staged release publication requires explicit finalization".into(),
                     ));
                 }
             }
-        } else if publication.state != "writing_pointers" {
-            return Err(RpcError::FailedPrecondition(
-                "publication is not ready to commit".into(),
-            ));
-        }
-
-        for progress in self
-            .db
-            .registry_publication_placement_records(&req.publication_id)
-            .await
-            .map_err(RpcError::internal)?
-        {
-            if !progress.required || progress.state == "ready" {
-                continue;
+            if publication.state == "ready" {
+                // A retry is also the explicit recovery path when publication
+                // succeeded but its derived index did not. Returning immediately
+                // here would leave operators waiting for a periodic reconciliation
+                // even though the commit request is safe and idempotent.
+                self.db
+                    .restore_ready_registry_publication_object_evidence(
+                        &req.publication_id,
+                        clock::now_unix_secs(),
+                    )
+                    .await
+                    .map_err(RpcError::internal)?;
+                publication_observation::completed(
+                    &req.publication_id,
+                    Phase::ReadyEvidenceRestored,
+                    0,
+                    &publication.state,
+                );
+                self.db
+                    .refresh_registry_publication_delivery_manifests(&req.publication_id)
+                    .await
+                    .map_err(RpcError::internal)?;
+                publication_observation::completed(
+                    &req.publication_id,
+                    Phase::DeliveryRefreshed,
+                    0,
+                    &req.publication_id,
+                );
+                self.refresh_registry_index_after_publication(&registry, &req.publication_id)
+                    .await;
+                publication_observation::completed(
+                    &req.publication_id,
+                    Phase::IndexRefreshReturned,
+                    0,
+                    &req.publication_id,
+                );
+                let response = self
+                    .registry_publication_response(&req.publication_id, true)
+                    .await?;
+                publication_observation::completed(
+                    &req.publication_id,
+                    Phase::ResponseMaterialized,
+                    0,
+                    &(
+                        &response.publication_id,
+                        &response.state,
+                        &response.manifest_digest,
+                        &response.refs_digest,
+                        response.objects.len(),
+                        response.placements.len(),
+                    ),
+                );
+                return Ok(response);
             }
-            let mut placement = self
+            let immutable_complete = self
                 .db
-                .surface_placement(progress.placement_id)
+                .registry_publication_class_is_complete(&req.publication_id, "immutable")
+                .await
+                .map_err(RpcError::internal)?;
+            let pointers_complete = self
+                .db
+                .registry_publication_class_is_complete(&req.publication_id, "mutable_pointer")
+                .await
+                .map_err(RpcError::internal)?;
+            if !immutable_complete || !pointers_complete {
+                return Err(RpcError::FailedPrecondition(
+                    "publication is not complete on every required placement".into(),
+                ));
+            }
+
+            publication_observation::completed(
+                &req.publication_id,
+                Phase::CompletenessChecked,
+                0,
+                &(
+                    immutable_complete,
+                    pointers_complete,
+                    &publication.manifest_digest,
+                    &publication.refs_digest,
+                ),
+            );
+            if publication.state == "preparing" {
+                // A publication whose exact objects already exist needs no upload
+                // request. Open its pointer phase here so reuse-only generations
+                // follow the same watermark protocol as generations that wrote a
+                // pointer body.
+                if let Some(holder) = self
+                    .lease
+                    .acquire(
+                        registry.id,
+                        &publication.publication_id,
+                        clock::now_unix_secs(),
+                    )
+                    .await
+                    .map_err(RpcError::internal)?
+                {
+                    return Err(RpcError::FailedPrecondition(format!(
+                        "registry publication lease is held by {holder}"
+                    )));
+                }
+                if !self
+                    .db
+                    .advance_registry_publication(
+                        &req.publication_id,
+                        "preparing",
+                        "writing_pointers",
+                        clock::now_unix_secs(),
+                    )
+                    .await
+                    .map_err(RpcError::internal)?
+                {
+                    let current = self
+                        .db
+                        .registry_publication(&req.publication_id)
+                        .await
+                        .map_err(RpcError::internal)?
+                        .ok_or_else(|| RpcError::not_found("registry publication"))?;
+                    if current.state != "writing_pointers" {
+                        return Err(RpcError::FailedPrecondition(
+                            "publication pointer phase changed concurrently".into(),
+                        ));
+                    }
+                }
+            } else if publication.state != "writing_pointers" {
+                return Err(RpcError::FailedPrecondition(
+                    "publication is not ready to commit".into(),
+                ));
+            }
+
+            publication_observation::completed(
+                &req.publication_id,
+                Phase::PointerPhaseOpened,
+                0,
+                &publication.state,
+            );
+            for progress in self
+                .db
+                .registry_publication_placement_records(&req.publication_id)
                 .await
                 .map_err(RpcError::internal)?
-                .ok_or_else(|| RpcError::FailedPrecondition("placement disappeared".into()))?;
-            if progress.state == "preparing" {
+            {
+                if !progress.required || progress.state == "ready" {
+                    continue;
+                }
+                let mut placement = self
+                    .db
+                    .surface_placement(progress.placement_id)
+                    .await
+                    .map_err(RpcError::internal)?
+                    .ok_or_else(|| RpcError::FailedPrecondition("placement disappeared".into()))?;
+                if progress.state == "preparing" {
+                    let watermark_version =
+                        placement.watermark_resource_version.ok_or_else(|| {
+                            RpcError::FailedPrecondition(
+                                "placement has no publication watermark".into(),
+                            )
+                        })?;
+                    placement = self
+                        .db
+                        .begin_registry_pointer_advance(
+                            &req.publication_id,
+                            placement.id,
+                            placement.resource_version,
+                            watermark_version,
+                            clock::now_unix_secs(),
+                        )
+                        .await
+                        .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
+                    publication_observation::completed(
+                        &req.publication_id,
+                        Phase::PointerAdvanceBegun,
+                        1,
+                        &(
+                            placement.id,
+                            placement.resource_version,
+                            placement.watermark_resource_version,
+                        ),
+                    );
+                }
                 let watermark_version = placement.watermark_resource_version.ok_or_else(|| {
                     RpcError::FailedPrecondition("placement has no publication watermark".into())
                 })?;
-                placement = self
-                    .db
-                    .begin_registry_pointer_advance(
+                self.db
+                    .finalize_registry_pointer_advance(
                         &req.publication_id,
                         placement.id,
                         placement.resource_version,
@@ -940,63 +1061,104 @@ impl RpcService {
                     )
                     .await
                     .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
-            }
-            let watermark_version = placement.watermark_resource_version.ok_or_else(|| {
-                RpcError::FailedPrecondition("placement has no publication watermark".into())
-            })?;
-            self.db
-                .finalize_registry_pointer_advance(
+                publication_observation::completed(
                     &req.publication_id,
-                    placement.id,
-                    placement.resource_version,
-                    watermark_version,
+                    Phase::PointerAdvanceFinalized,
+                    1,
+                    &(placement.id, placement.resource_version, watermark_version),
+                );
+            }
+            self.db
+                .promote_registry_publication_mutable_objects(&req.publication_id)
+                .await
+                .map_err(RpcError::internal)?;
+            if !self
+                .db
+                .advance_registry_publication(
+                    &req.publication_id,
+                    "writing_pointers",
+                    "ready",
                     clock::now_unix_secs(),
                 )
                 .await
+                .map_err(RpcError::internal)?
+            {
+                return Err(RpcError::FailedPrecondition(
+                    "publication could not become ready".into(),
+                ));
+            }
+            publication_observation::completed(
+                &req.publication_id,
+                Phase::PublicationReady,
+                0,
+                &req.publication_id,
+            );
+            let state = self
+                .db
+                .registry_publication_state(registry.id)
+                .await
+                .map_err(RpcError::internal)?
+                .ok_or_else(|| RpcError::Internal)?;
+            self.db
+                .set_current_registry_publication(
+                    registry.id,
+                    &req.publication_id,
+                    Some(state.resource_version),
+                )
+                .await
                 .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
-        }
-        self.db
-            .promote_registry_publication_mutable_objects(&req.publication_id)
-            .await
-            .map_err(RpcError::internal)?;
-        if !self
-            .db
-            .advance_registry_publication(
+            publication_observation::completed(
                 &req.publication_id,
-                "writing_pointers",
-                "ready",
-                clock::now_unix_secs(),
-            )
-            .await
-            .map_err(RpcError::internal)?
-        {
-            return Err(RpcError::FailedPrecondition(
-                "publication could not become ready".into(),
-            ));
-        }
-        let state = self
-            .db
-            .registry_publication_state(registry.id)
-            .await
-            .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::Internal)?;
-        self.db
-            .set_current_registry_publication(
-                registry.id,
+                Phase::CurrentHeadSet,
+                0,
+                &(registry.id, state.resource_version, &req.publication_id),
+            );
+            self.db
+                .refresh_registry_publication_delivery_manifests(&req.publication_id)
+                .await
+                .map_err(RpcError::internal)?;
+            publication_observation::completed(
                 &req.publication_id,
-                Some(state.resource_version),
-            )
-            .await
-            .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
-        self.db
-            .refresh_registry_publication_delivery_manifests(&req.publication_id)
-            .await
-            .map_err(RpcError::internal)?;
-        self.lease.release(registry.id, &req.publication_id).await;
-        self.refresh_registry_index_after_publication(&registry, &req.publication_id)
-            .await;
-        self.registry_publication_response(&req.publication_id, true)
-            .await
+                Phase::DeliveryRefreshed,
+                0,
+                &req.publication_id,
+            );
+            self.lease.release(registry.id, &req.publication_id).await;
+            publication_observation::completed(
+                &req.publication_id,
+                Phase::LeaseReleaseReturned,
+                0,
+                &(registry.id, &req.publication_id),
+            );
+            self.refresh_registry_index_after_publication(&registry, &req.publication_id)
+                .await;
+            publication_observation::completed(
+                &req.publication_id,
+                Phase::IndexRefreshReturned,
+                0,
+                &req.publication_id,
+            );
+            let response = self
+                .registry_publication_response(&req.publication_id, true)
+                .await?;
+            publication_observation::completed(
+                &req.publication_id,
+                Phase::ResponseMaterialized,
+                0,
+                &(
+                    &response.publication_id,
+                    &response.state,
+                    &response.manifest_digest,
+                    &response.refs_digest,
+                    response.objects.len(),
+                    response.placements.len(),
+                ),
+            );
+            Ok(response)
+        }
+        .await;
+        publication_observation::returned(result.is_ok());
+        result
     }
 
     /// Aborts an incomplete publication without exposing any of its objects.

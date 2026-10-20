@@ -280,9 +280,12 @@ use std::path::Path;
 use anyhow::{bail, Context, Result};
 use sha2::Digest as _;
 
-use crate::backend::{Backend, CheckedStatement, Statement};
+use crate::backend::Backend;
+use crate::backend::CheckedStatement;
+use crate::backend::Statement;
 use crate::dialect::Dialect;
-use crate::value::{Row, Value};
+use crate::value::Row;
+use crate::value::Value;
 use aos_hub_model::domain::Permission;
 
 // SqlxBackend is the native driver (sqlx does not build for wasm32); the
@@ -438,6 +441,21 @@ mod snapshot_insert_tests {
     }
 }
 
+mod binding_identity;
+mod credential_probe;
+mod credential_registration;
+mod direct_identity;
+mod direct_target;
+mod direct_upload;
+mod external_copy;
+mod mirror_imports;
+mod mirror_publication;
+mod native_direct_upload;
+mod publish_lease;
+mod registry_accounting;
+mod session_identity;
+mod storage_authority;
+
 mod cache_write_admission;
 pub use cache_write_admission::*;
 mod delivery_identity;
@@ -524,22 +542,22 @@ pub fn portable_relational_id(incarnation: uuid::Uuid) -> i64 {
 /// from development histories must be reset before deploying this checkpoint;
 /// subsequent production changes require new forward migrations.
 ///
-/// | Version | Script | Change |
-/// | --- | --- | --- |
-/// | 1 | `schema.sql` | Production baseline. |
-/// | 2 | `release_channel_advances.sql` | Channel ledger that admits per-train channel names. |
-/// | 3 | `staged_releases.sql` | Private release drafts, retention roots, and public catalog selections. |
-/// | 4 | `oci_registry_retirement.sql` | Reviewed OCI catalog retirement flag on GC runs. |
-/// | 5 | `oci_namespace_routes.sql` | Instance-owned OCI root routes and per-registry OCI namespaces. |
-/// | 6 | `migration-0006-release-ability-graphs.sql` | Native release ability references. |
-/// | 7 | `migration-0007-native-documentation.sql` | Native documentation and search projections. |
-/// | 8 | `migration-0008-native-deployment-report.sql` | Native deployment reports and replay fences. |
+/// Versions 1 through 13 retain the Hybrid production history. Versions 14
+/// through 16 append Native ability references, documentation, and deployment reports.
 pub const MIGRATIONS: &[&str] = &[
     include_str!("schema.sql"),
+    include_str!("002-r2-gc-incarnation.sql"),
+    include_str!("003-physical-storage-authorities.sql"),
+    include_str!("004-direct-upload-sessions.sql"),
+    include_str!("005-mirror-imports.sql"),
+    include_str!("006-mirror-import-generations.sql"),
+    include_str!("007-catalogue-lifetimes.sql"),
     include_str!("release_channel_advances.sql"),
     include_str!("staged_releases.sql"),
     include_str!("oci_registry_retirement.sql"),
     include_str!("oci_namespace_routes.sql"),
+    include_str!("012-oci-inventory-progress.sql"),
+    include_str!("013-native-direct-uploads.sql"),
     include_str!("migration-0006-release-ability-graphs.sql"),
     include_str!("migration-0007-native-documentation.sql"),
     include_str!("migration-0008-native-deployment-report.sql"),
@@ -549,7 +567,7 @@ pub const MIGRATIONS: &[&str] = &[
 ///
 /// Historical development ledgers are incompatible even when their integer
 /// version happens to match a production migration.
-pub const SCHEMA_IDENTITY: &str = "aos-hub/production-baseline/1";
+pub const SCHEMA_IDENTITY: &str = "aos-hub/canonical-serving/16";
 
 /// Returns every migration's individual SQL statements, in order.
 ///
@@ -991,7 +1009,7 @@ const POPULATION_COLUMNS: &str = "id, cache_id, registry_id, trigger_kind, requi
 const PLAN_COLUMNS: &str = "plan_id, plan_kind, actor_kind, actor_id, actor_label,
     scope, input_versions_json, effects_json, warnings_json, confirmation_hash,
     request_idempotency_key, request_digest, apply_idempotency_key, apply_result_json,
-    created_at, expires_at, applied_at";
+    created_at, expires_at, applied_at, actor_incarnation";
 const OPERATION_COLUMNS: &str = "operation_id, operation_kind, authorization_scope_key,
     control_permission, primary_target_kind, primary_target_stable_id,
     primary_target_generation_key, primary_target_configuration_digest,
@@ -1160,6 +1178,7 @@ fn row_to_topology_plan(row: &Row) -> Result<TopologyPlanRecord> {
         created_at: row.get(14)?,
         expires_at: row.get(15)?,
         applied_at: row.get(16)?,
+        actor_incarnation: row.get(17)?,
     })
 }
 
@@ -1519,6 +1538,7 @@ fn oci_release_root_statements(
                     | "source"
                     | "license"
                     | "provenance"
+                    | "deployment"
                     | "signature"
             ),
             "signed container evidence kind is invalid"
@@ -1753,6 +1773,7 @@ fn validate_container_release_descriptor_snapshot(
             | ContainerReleaseDescriptorRole::Source
             | ContainerReleaseDescriptorRole::License
             | ContainerReleaseDescriptorRole::Provenance
+            | ContainerReleaseDescriptorRole::Deployment
             | ContainerReleaseDescriptorRole::Signature => anyhow::ensure!(
                 media_type == aos_oci_types::MediaType::OciImageManifest,
                 "signed container required descriptor is not an OCI image manifest"
@@ -1792,6 +1813,14 @@ fn validate_container_release_descriptor_snapshot(
             .unwrap_or_default()
             <= 1,
         "signed container descriptor snapshot repeats static ability evidence"
+    );
+    anyhow::ensure!(
+        roles
+            .get(&ContainerReleaseDescriptorRole::Deployment)
+            .copied()
+            .unwrap_or_default()
+            <= 1,
+        "signed container descriptor snapshot repeats native deployment evidence"
     );
     Ok(())
 }
@@ -2032,3 +2061,53 @@ pub mod fixtures;
 
 mod records;
 pub use records::*;
+
+// Shared by production initialization and trusted disposable schema compilation.
+pub(crate) const SCHEMA_VERSION_DDL: &str =
+    "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)";
+
+/// Identifies immutable generation-thirteen archives independently of serving DDL.
+pub const SNAPSHOT_SCHEMA_IDENTITY_13: &str = "aos-hub/canonical-serving/13";
+
+/// Identifies immutable generation-twelve archives independently of serving DDL.
+pub const SNAPSHOT_SCHEMA_IDENTITY_12: &str = "aos-hub/canonical-serving/12";
+
+/// Identifies immutable generation-eight archives independently of serving DDL.
+pub const SNAPSHOT_SCHEMA_IDENTITY_8: &str = "aos-hub/canonical-serving/8";
+
+/// Identifies genuine generation-three through generation-seven archives.
+///
+/// Historical verification preserves this identity; it grants no current
+/// serving eligibility and never selects an automatic live upgrade.
+pub const HISTORICAL_SCHEMA_IDENTITY: &str = "aos-hub/production-baseline/1";
+
+/// Returns the identity committed by a supported snapshot generation.
+///
+/// # Errors
+/// Returns an error for an unsupported generation.
+pub fn snapshot_schema_identity(generation: usize) -> Result<&'static str> {
+    match generation {
+        3..=7 => Ok(HISTORICAL_SCHEMA_IDENTITY),
+        8 => Ok(SNAPSHOT_SCHEMA_IDENTITY_8),
+        12 => Ok(SNAPSHOT_SCHEMA_IDENTITY_12),
+        13 => Ok(SNAPSHOT_SCHEMA_IDENTITY_13),
+        16 => Ok(SCHEMA_IDENTITY),
+        _ => anyhow::bail!("unsupported snapshot schema generation"),
+    }
+}
+
+pub use direct_upload::*;
+
+pub use mirror_imports::*;
+
+pub use mirror_publication::*;
+
+pub use storage_authority::*;
+
+pub use binding_identity::BindingIdentityReservation;
+
+pub use binding_identity::{
+    validate_binding_identity_plan_confirmation, validate_binding_identity_snapshot_history,
+};
+pub use direct_target::{validate_direct_presence_provenance, DirectPresenceProvenance};
+pub use native_direct_upload::NativeDirectUploadRecord;

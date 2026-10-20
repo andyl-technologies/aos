@@ -223,8 +223,8 @@ impl Database {
                     "INSERT INTO placement_policies
                      (id, registry_id, cache_id, name, creation_token, created_at)
                      SELECT ?1, ?2, ?3, ?4, ?5, ?6
-                     WHERE (?2 IS NOT NULL AND EXISTS (SELECT 1 FROM registries WHERE id = ?2))
-                        OR (?3 IS NOT NULL AND EXISTS (SELECT 1 FROM binary_caches WHERE id = ?3))",
+                     WHERE (CAST(?2 AS BIGINT) IS NOT NULL AND EXISTS (SELECT 1 FROM registries WHERE id = ?2))
+                        OR (CAST(?3 AS BIGINT) IS NOT NULL AND EXISTS (SELECT 1 FROM binary_caches WHERE id = ?3))",
                     vals![id, registry_id, cache_id, name, creation_token, now],
                 )
                 .expecting(1),
@@ -550,8 +550,8 @@ impl Database {
                  SELECT id, registry_id, cache_id, ?2, ?3, kind, ?4, ?5, ?6
                  FROM placement_policy_revisions
                  WHERE id = ?1
-                   AND (registry_id = ?7 OR (registry_id IS NULL AND ?7 IS NULL))
-                   AND (cache_id = ?8 OR (cache_id IS NULL AND ?8 IS NULL))
+                   AND (registry_id = ?7 OR (registry_id IS NULL AND CAST(?7 AS BIGINT) IS NULL))
+                   AND (cache_id = ?8 OR (cache_id IS NULL AND CAST(?8 AS BIGINT) IS NULL))
                    AND state = 'building' AND build_version = ?9",
                 vals![
                     revision_id,
@@ -605,8 +605,8 @@ impl Database {
                    ON p.id = ?3 AND (p.registry_id = g.registry_id OR p.cache_id = g.cache_id)
                  JOIN placement_policy_revisions r ON r.id = g.policy_revision_id
                  WHERE g.policy_revision_id = ?1 AND g.group_id = ?2
-                   AND (g.registry_id = ?5 OR (g.registry_id IS NULL AND ?5 IS NULL))
-                   AND (g.cache_id = ?6 OR (g.cache_id IS NULL AND ?6 IS NULL))
+                   AND (g.registry_id = ?5 OR (g.registry_id IS NULL AND CAST(?5 AS BIGINT) IS NULL))
+                   AND (g.cache_id = ?6 OR (g.cache_id IS NULL AND CAST(?6 AS BIGINT) IS NULL))
                    AND p.kind = 'complete' AND r.state = 'building'
                    AND r.build_version = ?7",
                 vals![

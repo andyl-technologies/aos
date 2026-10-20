@@ -23,7 +23,10 @@
 
 use async_trait::async_trait;
 
-use aos_hub_service::ratelimit::{CoordinatorRateLimiter, RateClass, RateDecision, RateLimiter};
+use aos_hub_service::ratelimit::CoordinatorRateLimiter;
+use aos_hub_service::ratelimit::RateClass;
+use aos_hub_service::ratelimit::RateDecision;
+use aos_hub_service::ratelimit::RateLimiter;
 
 /// The fixed window length the bindings are configured with, in seconds.
 ///

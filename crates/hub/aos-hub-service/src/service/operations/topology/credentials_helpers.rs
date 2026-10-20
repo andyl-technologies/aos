@@ -88,23 +88,33 @@ impl RpcService {
                 "credentialFingerprint is required and must be SHA-256 hex",
             ));
         }
-        let secrets = self.secret_versions.as_deref().ok_or_else(|| {
-            RpcError::FailedPrecondition("secret-version provider is not configured".to_string())
-        })?;
-        let resolved = secrets
-            .resolve(&req.secret_version_ref)
-            .await
-            .map_err(|error| {
-                RpcError::FailedPrecondition(format!(
-                    "secret version cannot be resolved: {error:#}"
-                ))
+        if self.credential_registration_policy
+            == CredentialRegistrationPolicy::ResolveProviderMaterial
+        {
+            let secrets = self.secret_versions.as_deref().ok_or_else(|| {
+                RpcError::FailedPrecondition(
+                    "secret-version provider is not configured".to_string(),
+                )
             })?;
-        aos_hub_model::secret_version::verify_secret_fingerprint(
-            &resolved,
-            &req.credential_fingerprint,
-        )
-        .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
-        drop(resolved);
+            let resolved = secrets
+                .resolve(&req.secret_version_ref)
+                .await
+                .map_err(|error| {
+                    RpcError::FailedPrecondition(format!(
+                        "secret version cannot be resolved: {error:#}"
+                    ))
+                })?;
+            aos_hub_model::secret_version::verify_secret_fingerprint(
+                &resolved,
+                &req.credential_fingerprint,
+            )
+            .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
+            drop(resolved);
+        }
+
+        // Persist the observed binding CAS even when the caller omitted it.
+        // Apply cannot replace this original with a newly current binding.
+        req.expected_resource_version = binding.resource_version.to_string();
         let idempotency_key = std::mem::take(&mut req.idempotency_key);
         let credential_fingerprint = req.credential_fingerprint.clone();
         let input = BindingCredentialPlanInput {
@@ -182,16 +192,28 @@ impl RpcService {
             .await
             .map_err(RpcError::internal)?
             .ok_or_else(|| RpcError::not_found("binding"))?;
-        if binding.id != input.binding_db_id {
+        let original_version = input
+            .request
+            .expected_resource_version
+            .parse::<i64>()
+            .map_err(|_| {
+                RpcError::FailedPrecondition(
+                    "credential plan lacks its original binding version".into(),
+                )
+            })?;
+        if binding.id != input.binding_db_id
+            || binding.resource_version != original_version
+            || binding.owner_scope_key != input.owner_scope_key
+        {
             return Err(RpcError::FailedPrecondition(
-                "binding identity changed after credential planning".to_string(),
+                "binding identity, owner or version changed after credential planning".to_string(),
             ));
         }
         let claims = self.require_claims(auth)?;
         let record = self
             .db
-            .set_binding_credential_revision(
-                binding.id,
+            .set_binding_credential_revision_checked(
+                &binding,
                 &input.request.purpose,
                 &input.request.secret_version_ref,
                 input.request.expected_current_generation,

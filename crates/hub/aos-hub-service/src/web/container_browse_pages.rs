@@ -8,14 +8,24 @@
 use std::fmt::Write as _;
 
 use crate::web::browse::BrowseQuery;
-use crate::web::browse_pages::{catalog_select, registry_crumbs, registry_nav, state_line};
-use crate::web::console_render::{page_with_session, urlencode, Pager, SessionIndicator};
+use crate::web::browse_pages::catalog_select;
+use crate::web::browse_pages::registry_crumbs;
+use crate::web::browse_pages::registry_nav;
+use crate::web::browse_pages::state_line;
+use crate::web::console_render::page_with_session;
+use crate::web::console_render::urlencode;
+use crate::web::console_render::Pager;
+use crate::web::console_render::SessionIndicator;
 use crate::web::release_browse::ReleaseContext;
-use crate::web::render::{escape, human_size, table};
-use aos_hub_db::db::{
-    IndexStatus, OciAdminManifestRecord, OciAdminPlatformRecord, OciAdminRepositoryRecord,
-    OciAdminTagRecord, RegistryRecord,
-};
+use crate::web::render::escape;
+use crate::web::render::human_size;
+use crate::web::render::table;
+use aos_hub_db::db::IndexStatus;
+use aos_hub_db::db::OciAdminManifestRecord;
+use aos_hub_db::db::OciAdminPlatformRecord;
+use aos_hub_db::db::OciAdminRepositoryRecord;
+use aos_hub_db::db::OciAdminTagRecord;
+use aos_hub_db::db::RegistryRecord;
 use aos_hub_model::clock::Instant;
 use aos_oci_types::RepositoryName;
 

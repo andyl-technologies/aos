@@ -55,6 +55,17 @@ impl RpcService {
         }
         if self
             .db
+            .binding_identity_reservation(&req.stable_id)
+            .await
+            .map_err(RpcError::internal)?
+            .is_some()
+        {
+            return Err(RpcError::AlreadyExists(
+                "binding stable identity is permanently reserved".to_string(),
+            ));
+        }
+        if self
+            .db
             .list_bindings_by_scope(&req.owner_scope_key)
             .await
             .map_err(RpcError::internal)?
@@ -134,12 +145,23 @@ impl RpcService {
                 blockers.join(", ")
             )));
         }
+        let reservation = self
+            .db
+            .binding_identity_reservation(&binding.stable_id)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| {
+                RpcError::FailedPrecondition(
+                    "binding lacks its permanent identity reservation".into(),
+                )
+            })?;
         let input = BindingDeletePlanInput {
             stable_id: req.stable_id,
             owner_scope_key: owner_scope_key.clone(),
             org_id,
             binding_db_id: binding.id,
             baseline_resource_version: expected,
+            reservation_id: Some(reservation.reservation_id),
         };
         let confirmation_hash = hex::encode(Sha256::digest(
             serde_json::to_vec(&input).map_err(RpcError::internal)?,

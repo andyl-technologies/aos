@@ -24,12 +24,11 @@ use aos_nar::verify::{
     verify_nar_hash_with_compression,
 };
 use aos_package_manager::download::{
-    DownloadRequest as NarDownloadRequest, default_engine as default_nar_engine, download_nars,
-    fetch_narinfos,
+    DownloadRequest as NarDownloadRequest, download_nars_with_engine, fetch_narinfos,
 };
 use aos_transfer::{
-    TransferEvent, TransferManager, TransferManagerConfig, TransferObserver, TransferOutput,
-    TransferRequest, TransferSink,
+    Credential, TransferEngine, TransferEngineConfig, TransferEvent, TransferManager,
+    TransferManagerConfig, TransferObserver, TransferOutput, TransferRequest, TransferSink,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -356,6 +355,32 @@ async fn download(args: &ImageDownloadArgs, printer: &Printer) -> Result<()> {
     print_download_result(&output, &image, resumed_from, elapsed, false, printer)
 }
 
+/// Keeps Hub credentials on their exact origin for narinfo and NAR requests.
+fn image_nar_engine(selection: &ImageSelectionArgs) -> Result<TransferEngine> {
+    let config = TransferEngineConfig {
+        // Narinfo may name an absolute URL. Origin matching protects that
+        // request; disabling redirects also prevents credential forwarding.
+        follow_http_redirects: selection.hub.is_none(),
+        ..TransferEngineConfig::default()
+    };
+    let engine = TransferEngine::new(config);
+    if let Some(hub) = &selection.hub {
+        let origin = reqwest::Url::parse(hub)
+            .context("invalid Hub URL")?
+            .origin();
+        if let Some(token) = hub_token(selection) {
+            engine.auth().set(
+                &origin.ascii_serialization(),
+                Credential::Bearer {
+                    token,
+                    refresh: None,
+                },
+            );
+        }
+    }
+    Ok(engine)
+}
+
 async fn download_store_backed_image(
     args: &ImageDownloadArgs,
     image: &SystemImage,
@@ -396,8 +421,8 @@ async fn download_store_backed_image(
         mirror_url,
         fallback_mirrors,
     }];
-    let engine = Arc::new(default_nar_engine());
-    let resolved = fetch_narinfos(engine, &requests, 1, printer).await?;
+    let engine = Arc::new(image_nar_engine(&args.selection)?);
+    let resolved = fetch_narinfos(Arc::clone(&engine), &requests, 1, printer).await?;
     let narinfo = &resolved
         .first()
         .context("image cache returned no narinfo")?
@@ -410,7 +435,7 @@ async fn download_store_backed_image(
         bail!("cache narinfo disagrees with the signed image store identity");
     }
 
-    let downloaded = download_nars(&resolved, &nar_cache, 1, printer).await?;
+    let downloaded = download_nars_with_engine(engine, &resolved, &nar_cache, 1, printer).await?;
     let result = downloaded
         .first()
         .context("image cache returned no NAR download")?;

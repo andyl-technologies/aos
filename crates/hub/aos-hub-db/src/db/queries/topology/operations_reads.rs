@@ -64,7 +64,7 @@ impl Database {
                     "SELECT {OPERATION_COLUMNS} FROM topology_operations o
                       WHERE o.primary_target_kind = ?1 AND o.primary_target_stable_id = ?2
                         AND (?3 = '' OR o.state = ?3)
-                        AND (?4 IS NULL OR o.created_at < ?4
+                        AND (CAST(?4 AS BIGINT) IS NULL OR o.created_at < ?4
                           OR (o.created_at = ?4 AND o.operation_id > ?5))
                       ORDER BY o.created_at DESC, o.operation_id
                       LIMIT ?6"
@@ -158,7 +158,7 @@ impl Database {
                          ON ancestry.descendant_scope_key = o.authorization_scope_key
                       WHERE ancestry.ancestor_scope_key = ?1
                         AND (?2 = '' OR o.state = ?2)
-                        AND (?3 IS NULL OR o.created_at < ?3
+                        AND (CAST(?3 AS BIGINT) IS NULL OR o.created_at < ?3
                           OR (o.created_at = ?3 AND o.operation_id > ?4))
                       ORDER BY o.created_at DESC, o.operation_id
                       LIMIT ?5"

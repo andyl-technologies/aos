@@ -415,26 +415,26 @@ async fn registry_publication_inherits_exact_reusable_evidence() {
     })
     .await
     .unwrap();
-    let object = db
-        .create_surface_object(&SetSurfaceObject {
-            surface: SurfaceTarget::Registry(registry_id),
+    db.admit_registry_publication_manifest_objects(
+        registry_id,
+        first_publication,
+        &[RegistryPublicationManifestObject {
             object_key: "images/sha256/aa/system.qcow2".into(),
-            content_hash: Some("d".repeat(64)),
-            size: Some(91),
+            expected_hash: "d".repeat(64),
+            expected_size: 91,
             object_kind: "immutable".into(),
-            mutable_publication_id: None,
-        })
-        .await
-        .unwrap();
-    db.set_registry_publication_object(&SetRegistryPublicationObject {
-        publication_id: first_publication.into(),
-        surface_object_id: object.id,
-        object_kind: "immutable".into(),
-        expected_hash: "d".repeat(64),
-        expected_size: 91,
-    })
+        }],
+    )
     .await
     .unwrap();
+    let object = db
+        .surface_object_named(
+            SurfaceTarget::Registry(registry_id),
+            "images/sha256/aa/system.qcow2",
+        )
+        .await
+        .unwrap()
+        .unwrap();
     db.set_registry_publication_placement(&SetRegistryPublicationPlacement {
         publication_id: first_publication.into(),
         placement_id: placement.id,
@@ -506,8 +506,120 @@ async fn registry_publication_inherits_exact_reusable_evidence() {
         .await
         .unwrap()
         .unwrap();
+    let usage = db.org_usage(org_id).await.unwrap();
+    assert_eq!((usage.used_bytes, usage.object_count), (91, 1));
+
     assert_eq!(evidence.get::<String>(0).unwrap(), "d".repeat(64));
     assert_eq!(evidence.get::<i64>(1).unwrap(), 91);
     assert_eq!(evidence.get::<String>(2).unwrap(), "\"r2-version-1\"");
     assert_eq!(evidence.get::<i64>(3).unwrap(), 5);
+}
+
+#[tokio::test]
+async fn publication_presence_requires_exact_hybrid_placement_fence() {
+    let db = Database::open_in_memory().await.unwrap();
+    let org_id = db
+        .create_org("fenced-upload", "Fenced upload")
+        .await
+        .unwrap();
+    let binding_id = create_test_binding(&db, org_id, "fenced-upload", "/tmp/fenced-upload").await;
+    let binding = db.binding(binding_id).await.unwrap().unwrap();
+    let registry_id = db
+        .create_managed_registry(org_id, "", "registry", "public", &[], false)
+        .await
+        .unwrap();
+    let mut placement = topology_placement(
+        SurfaceTarget::Registry(registry_id),
+        "primary",
+        "fenced-upload",
+        0,
+    );
+    placement.binding_id = binding_id;
+    let placement = db.create_surface_placement(&placement).await.unwrap();
+    let publication_id = "fenced-upload-publication";
+    db.create_registry_publication(&NewRegistryPublication {
+        publication_id: publication_id.into(),
+        registry_id,
+        generation: "generation-1".into(),
+        manifest_digest: "a".repeat(64),
+        refs_digest: "b".repeat(64),
+        default_commit: Some("c".repeat(40)),
+        parent_publication_id: None,
+    })
+    .await
+    .unwrap();
+    let digest = "d".repeat(64);
+    db.admit_registry_publication_manifest_objects(
+        registry_id,
+        publication_id,
+        &[RegistryPublicationManifestObject {
+            object_key: "images/sha256/dd/system.qcow2".into(),
+            expected_hash: digest.clone(),
+            expected_size: 91,
+            object_kind: "immutable".into(),
+        }],
+    )
+    .await
+    .unwrap();
+    let object = db
+        .surface_object_named(
+            SurfaceTarget::Registry(registry_id),
+            "images/sha256/dd/system.qcow2",
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    db.set_registry_publication_placement(&SetRegistryPublicationPlacement {
+        publication_id: publication_id.into(),
+        placement_id: placement.id,
+        required: true,
+        state: "preparing".into(),
+        observed_at: 1,
+    })
+    .await
+    .unwrap();
+
+    let record = |placement_version, binding_version| {
+        db.record_registry_publication_object_presence_fenced(
+            publication_id,
+            object.id,
+            placement.id,
+            &digest,
+            91,
+            Some("\"r2-version-1\""),
+            2,
+            placement_version,
+            binding_version,
+        )
+    };
+    assert!(
+        record(placement.resource_version + 1, binding.resource_version)
+            .await
+            .is_err()
+    );
+    assert!(!db
+        .registry_publication_class_is_complete(publication_id, "immutable")
+        .await
+        .unwrap());
+    record(placement.resource_version, binding.resource_version)
+        .await
+        .unwrap();
+    assert_eq!(
+        db.surface_object_usage(object.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .accounted_bytes,
+        91
+    );
+
+    assert!(
+        record(placement.resource_version, binding.resource_version + 1)
+            .await
+            .is_err()
+    );
+    assert!(db
+        .registry_publication_class_is_complete(publication_id, "immutable")
+        .await
+        .unwrap());
 }

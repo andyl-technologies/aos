@@ -40,6 +40,7 @@
   coreutils,
   diffutils,
   grep,
+  iproute2,
   nodejs,
   nix,
   workerd-source,
@@ -178,10 +179,18 @@
       return { status: r.status, body: await r.text() };
     }
     let last = null;
-    for (let i = 0; i < 80; i++) {
-      try { last = await bootstrap(); break; } catch { await new Promise((r) => setTimeout(r, 250)); }
+    let lastError = null;
+    for (let i = 0; i < 240; i++) {
+      try { last = await bootstrap(); break; }
+      catch (error) {
+        lastError = String(error?.cause ?? error);
+        await new Promise((r) => setTimeout(r, 250));
+      }
     }
-    if (!last) { console.error("workerd never accepted a connection"); process.exit(1); }
+    if (!last) {
+      console.error(`workerd never accepted a connection: ''${lastError}`);
+      process.exit(1);
+    }
     if (last.status !== 200) { console.error(last.body); process.exit(1); }
     const deploymentIdentity = await fetch(BASE + "/.well-known/aos-deployment");
     if (deploymentIdentity.status !== 200
@@ -693,7 +702,7 @@
         || publicList.text.includes('"objectKey"')
         || !publicList.text.includes('"cacheUrls":["http://127.0.0.1:8799/flat-cache"]')
         || !publicList.text.includes('"releaseVerification":"verified"')
-        || !publicList.text.includes('"bootVerification":"signed-unverified"')
+        || !publicList.text.includes('"bootVerification":"provider-contract:aos.hub-test.image-artifacts/v2"')
         || !publicList.text.includes(rawSha256)) {
       throw new Error(`public image list: ''${publicList.response.status} ''${publicList.text}`);
     }
@@ -726,8 +735,7 @@
     const imagesPage = await fetch(BASE + "/failure/images-public/-/images");
     const imagesHtml = await imagesPage.text();
     if (imagesPage.status !== 200
-        || !imagesHtml.includes("CDN / CLI")
-        || !imagesHtml.includes("Delivered from the registry cache with aos image download")
+        || !imagesHtml.includes("aos image download")
         || !imagesHtml.includes("qcow2")
         || !imagesHtml.includes("2026.3.0")
         || !imagesHtml.includes("stable")
@@ -735,9 +743,10 @@
         || !imagesHtml.includes("QEMU/KVM")
         || !imagesHtml.includes(humanSize(rawBytes.length))
         || !imagesHtml.includes(rawSha256)
-        || !imagesHtml.includes("verified")
-        || !imagesHtml.includes("signed, unverified")
-        || !imagesHtml.includes('href="/failure/images-public/-/images"')
+        || !imagesHtml.includes("release verified")
+        || !imagesHtml.includes("provider contract")
+        || !imagesHtml.includes("aos.hub-test.image-artifacts/v2")
+        || !imagesHtml.includes('href="/failure/images-public/-/images?release=2026.3.0"')
         || !imagesHtml.includes('aria-current="page">Images')) {
       throw new Error(`Worker Images page: ''${imagesPage.status} ''${imagesHtml}`);
     }
@@ -855,7 +864,7 @@
     );
     const privateImagesHtml = await privateImagesPage.text();
     if (privateImagesPage.status !== 200
-        || !privateImagesHtml.includes("CDN / CLI")
+        || !privateImagesHtml.includes("aos image download")
         || !privateImagesHtml.includes(qcow2Sha256)) {
       throw new Error(`private cookie Images page: ''${privateImagesPage.status} ''${privateImagesHtml}`);
     }
@@ -874,13 +883,30 @@
         || privateApi.text.includes('"downloadUrl"')
         || privateApi.text.includes('"objectKey"')
         || !privateApi.text.includes('"storePath":"/nix/store/')
-        || privateApi.text.includes('"cacheUrls"')) {
+        || JSON.stringify(privateApi.value?.images?.[0]?.cacheUrls)
+          !== JSON.stringify([BASE + "/failure/images-private"])) {
       throw new Error(`private image API: ''${privateApi.response.status} ''${privateApi.text}`);
     }
     const privateUrl = privateApi.value?.images?.[0]?.downloadUrl;
     if (privateUrl !== undefined) {
       throw new Error(`private store-backed image exposed a direct download URL: ''${privateUrl}`);
     }
+    const privateImage = privateApi.value.images[0];
+    const privateStoreHash = privateImage.storePath.split("/").pop().slice(0, 32);
+    const privateNarinfoUrl = BASE + "/failure/images-private/" + privateStoreHash + ".narinfo";
+    const anonymousNarinfo = await fetch(privateNarinfoUrl);
+    if (![401, 403].includes(anonymousNarinfo.status)) {
+      throw new Error("private image narinfo did not require authentication");
+    }
+    const privateNarinfo = await fetch(privateNarinfoUrl, { headers });
+    if (privateNarinfo.status !== 200
+        || !(await privateNarinfo.text()).includes("StorePath: " + privateImage.storePath)) {
+      throw new Error(`authenticated private image narinfo was unavailable: ''${privateNarinfo.status}`);
+    }
+    fs.writeFileSync(path.join(fixtureRoot, "worker-private-token"), token, {
+      mode: 0o600,
+      flag: "wx",
+    });
 
     async function cacheRpc(method, body) {
       const response = await fetch(BASE + `/aos.hub.v1.BinaryCacheService/''${method}`, {
@@ -1097,6 +1123,15 @@ in
           ${workerd-source}/bin/workerd serve worker.capnp > "\$work/workerd.log" 2>&1 &
           WPID=\$!
           if ! ${nodejs}/bin/node driver.mjs; then
+            if kill -0 "\$WPID" 2>/dev/null; then
+              echo "workerd remained alive during the failed probe"
+              ${grep}/bin/grep -E '^(State|Threads|VmPeak|VmRSS):' "/proc/\$WPID/status" || true
+              ${coreutils}/bin/cat "/proc/\$WPID/wchan" || true
+              ${grep}/bin/grep -E ':(225F|2260) ' /proc/net/tcp /proc/net/tcp6 || true
+            else
+              wait "\$WPID" || echo "workerd exited with status \$?"
+              WPID=""
+            fi
             echo "=== workerd.log ==="
             cat "\$work/workerd.log" || true
             exit 1
@@ -1111,6 +1146,13 @@ in
             --registry failure/images-public --channel stable --format raw \
             --output "\$work/worker-cli.img" >/dev/null
           ${diffutils}/bin/cmp "\$work/worker-cli.img" "\$(${coreutils}/bin/cat "\$work/producer/raw-path")"
+          AOS_TOKEN="\$(${coreutils}/bin/cat "\$work/producer/worker-private-token")" \
+            ${aos}/bin/aos image download \
+            --hub http://127.0.0.1:8799 \
+            --registry failure/images-private --channel stable --format qcow2 \
+            --output "\$work/worker-private.qcow2" >/dev/null
+          ${diffutils}/bin/cmp "\$work/worker-private.qcow2" "\$(${coreutils}/bin/cat "\$work/producer/qcow2-path")"
+          echo "aos-hub-worker public and private CLI image bytes: PASS"
           EOF
           chmod +x "$out/bin/aos-hub-worker-do-e2e"
         '';
@@ -1130,11 +1172,12 @@ in
     }: {
       live-worker-topology = testing.mkVMTest {
         name = "aos-hub-worker-do-e2e-live";
-        rootfsDeps = [self];
-        memory = 2048;
+        rootfsDeps = [self iproute2];
+        memory = 4096;
         testScript = ''
           ${nix}/bin/nix-store --load-db < /usr/lib/aos/nix-registration
           export NIX_REMOTE=""
+          ${iproute2}/sbin/ip link set lo up
           ${self}/bin/aos-hub-worker-do-e2e
         '';
       };

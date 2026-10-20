@@ -73,21 +73,20 @@
         else {}
       );
 
-    coordinatedContainer = variant: _: let
+    coordinatedContainer = variant: name: _: let
       # The bootstrap ladder starts on x86_64 and performs its reviewed
       # x86_64→aarch64 transition at gcc4_8_cross. Post-cross target tools run
       # through the build host's configured QEMU binfmt handler while Nix keeps
       # scheduling the derivations on x86_64.
       coordinatorSystem = "x86_64-linux";
       coordinator = aosFor coordinatorSystem;
-      # The release contract and the package inventory read the same list. A
-      # deferred platform is not built at all, so its container never enters
-      # the published index.
+      # The release contract and package inventory share this platform list.
+      # Deferred platforms are omitted for every named container.
       deferredPlatforms = import ./qualification/deferred-platforms.nix;
       released = system: !(builtins.elem system deferredPlatforms);
       platformBuilds =
         coordinator.lib.optional (released "x86_64-linux")
-        coordinator.systems.${variant}.build.defaultContainer
+        coordinator.systems.${variant}.build.containers.${name}
         ++ coordinator.lib.optional (released "aarch64-linux")
         (import ./. {
           system = coordinatorSystem;
@@ -98,7 +97,9 @@
           variant
         }
         .build
-        .defaultContainer;
+.containers.${
+          name
+        };
       releaseTargets = [
         {
           system = "aarch64-linux";
@@ -114,11 +115,11 @@
     in
       coordinator.pkgs.mkOciMultiPlatformContainer {
         inherit platformBuilds releaseTargets qualificationCheck deferredPlatforms;
-        name = "aos";
+        inherit name;
       };
 
-    productionContainer = coordinatedContainer "server";
-    experimentalContainer = coordinatedContainer "aos-experimental";
+    productionContainer = coordinatedContainer "server" "aos";
+    experimentalContainer = coordinatedContainer "aos-experimental" "aos";
 
     # Flatten systems into flake packages:
     #   server-image-raw, server-image-qcow2, edge-image-raw, etc.
@@ -186,6 +187,10 @@
           name: let
             container = aos.containerImages.${name};
             platform = container.platforms.${system};
+            coordinated =
+              if name == "aos"
+              then production
+              else coordinatedContainer "server" name system;
           in [
             {
               name = "container-${name}-oci";
@@ -201,7 +206,7 @@
             }
             {
               name = "container-${name}-index";
-              value = production.ociIndex;
+              value = coordinated.ociIndex;
             }
             {
               name = "container-${name}-platform-index";
@@ -209,15 +214,15 @@
             }
             {
               name = "container-${name}-evidence";
-              value = production.evidence;
+              value = coordinated.evidence;
             }
             {
               name = "container-${name}-publication-inputs";
-              value = production.publicationInputs;
+              value = coordinated.publicationInputs;
             }
             {
               name = "container-${name}-qualification";
-              value = production.check;
+              value = coordinated.check;
             }
           ]
         ) (builtins.attrNames aos.containerImages)

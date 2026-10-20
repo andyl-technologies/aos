@@ -674,7 +674,10 @@ fn is_canonical_semantic_name(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::retained_control::primitives::{ActorKind, AuditIntent, OutboxIntent, Revision};
+    use crate::retained_control::primitives::ActorKind;
+    use crate::retained_control::primitives::AuditIntent;
+    use crate::retained_control::primitives::OutboxIntent;
+    use crate::retained_control::primitives::Revision;
 
     fn actor(id: u64) -> Actor {
         Actor::new(ActorKind::User, Some(id), format!("user-{id}")).unwrap()

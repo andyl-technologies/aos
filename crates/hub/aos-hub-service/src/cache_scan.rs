@@ -13,16 +13,24 @@ use anyhow::{bail, Context, Result};
 use base64::Engine as _;
 use sha2::{Digest, Sha256};
 
-use crate::fetch::{
-    SurfaceListedEvidence, SurfaceListingBudget, SurfaceObjectEvidence, SurfaceProvider,
-};
-use crate::surface_write::{MultipartAbortOutcome, SurfaceWriteProvider};
-use aos_hub_db::db::{
-    BinaryCache, CacheInventoryListedObject, CacheInventoryNarinfoCandidate,
-    CacheObjectPresenceObservation, CacheWriteTicketRecord, Database, ReusablePlacementEvidence,
-    SurfaceObjectRecord, SurfacePlacementRecord, SurfaceTarget, WriteObjectIdentity,
-};
+use crate::fetch::SurfaceListedEvidence;
+use crate::fetch::SurfaceListingBudget;
+use crate::fetch::SurfaceObjectEvidence;
+use crate::fetch::SurfaceProvider;
+use crate::surface_write::SurfaceWriteProvider;
+use aos_hub_db::db::BinaryCache;
+use aos_hub_db::db::CacheInventoryListedObject;
+use aos_hub_db::db::CacheInventoryNarinfoCandidate;
+use aos_hub_db::db::CacheObjectPresenceObservation;
+use aos_hub_db::db::CacheWriteTicketRecord;
+use aos_hub_db::db::Database;
+use aos_hub_db::db::ReusablePlacementEvidence;
+use aos_hub_db::db::SurfaceObjectRecord;
+use aos_hub_db::db::SurfacePlacementRecord;
+use aos_hub_db::db::SurfaceTarget;
+use aos_hub_db::db::WriteObjectIdentity;
 use aos_hub_model::clock;
+use aos_hub_model::storage::MultipartAbortOutcome;
 
 /// Maximum expired writes or tombstones cleaned by one scheduled pass.
 pub const MAX_CLEANUP_ITEMS_PER_PASS: i64 = 128;
@@ -553,6 +561,22 @@ async fn build_inventory(
                             )
                         })?,
                 };
+                if observed.provider_version.is_some()
+                    || listed_evidence
+                        .get(path)
+                        .is_some_and(|listed| listed.provider_version.is_some())
+                {
+                    let head = fetch.inventory_head(path).await?.context(
+                        "cache object disappeared before guarded inventory confirmation",
+                    )?;
+                    anyhow::ensure!(
+                        observed.provider_version.is_some()
+                            && head.provider_version == observed.provider_version
+                            && head.strong_etag == observed.strong_etag
+                            && head.size == observed.size,
+                        "cache object '{path}' changed incarnation during inventory; rescan required"
+                    );
+                }
                 content_hasher.update(path.as_bytes());
                 content_hasher.update(b":");
                 content_hasher.update(hex::encode(observed.sha256).as_bytes());
@@ -560,6 +584,8 @@ async fn build_inventory(
                 content_hasher.update(observed.size.to_string().as_bytes());
                 content_hasher.update(b":");
                 content_hasher.update(observed.strong_etag.as_deref().unwrap_or("-").as_bytes());
+                content_hasher.update(b":");
+                content_hasher.update(serde_json::to_vec(&observed.provider_version)?);
                 content_hasher.update(b"\n");
                 prior_path = Some(path.clone());
 
@@ -573,6 +599,7 @@ async fn build_inventory(
                     observed_sha256: hex::encode(observed.sha256),
                     observed_size: observed.size,
                     etag: observed.strong_etag.clone(),
+                    provider_version: observed.provider_version.clone(),
                 })
                 .collect::<Vec<_>>();
             db.stage_cache_inventory_listed_objects(
@@ -640,7 +667,7 @@ async fn build_inventory(
                     continue;
                 }
                 let Some(bytes) = fetch
-                    .fetch_bounded(path, crate::fetch::MAX_CACHE_NARINFO_BYTES)
+                    .fetch_bounded(path, aos_hub_model::storage::MAX_CACHE_NARINFO_BYTES)
                     .await?
                 else {
                     bail!(
@@ -700,7 +727,7 @@ async fn build_inventory(
                         object.file_size,
                     )
                     .await?;
-                    if let Some((nar_sha256, nar_size, nar_etag)) = db
+                    if let Some((nar_sha256, nar_size, nar_etag, provider_version)) = db
                         .cache_inventory_listed_object_evidence(
                             cache.id,
                             generation,
@@ -713,6 +740,7 @@ async fn build_inventory(
                         let nar_sha256 = hex::decode(nar_sha256)
                             .context("staged NAR evidence hash is not hexadecimal")?;
                         let nar_evidence = SurfaceObjectEvidence {
+                            provider_version,
                             sha256: nar_sha256.try_into().map_err(|_| {
                                 anyhow::anyhow!("staged NAR evidence hash is not SHA-256")
                             })?,
@@ -884,6 +912,7 @@ async fn stage_observed_surface_object(
             }),
             observed_size: Some(observed.size),
             etag: observed.strong_etag.clone(),
+            provider_version: observed.provider_version.clone(),
             inventory_generation: generation,
             observed_at,
         },
@@ -903,18 +932,22 @@ fn reusable_inventory_evidence(
         || prior.observed_hash != object.content_hash
         || prior.observed_size != object.size
         || object.size != Some(listed.size)
+        || prior.provider_version != listed.provider_version
     {
         return None;
     }
 
-    let listed_etag = crate::surface_write::strong_if_match_etag(&listed.strong_etag).ok()?;
-    let prior_etag = crate::surface_write::strong_if_match_etag(prior.etag.as_deref()?).ok()?;
+    let listed_etag =
+        aos_hub_model::delivery_http::strong_if_match_etag(&listed.strong_etag).ok()?;
+    let prior_etag =
+        aos_hub_model::delivery_http::strong_if_match_etag(prior.etag.as_deref()?).ok()?;
     if listed_etag != prior_etag {
         return None;
     }
     let sha256 = canonical_sha256_digest(prior.observed_hash.as_deref()?)?;
 
     Some(SurfaceObjectEvidence {
+        provider_version: listed.provider_version.clone(),
         sha256,
         size: listed.size,
         strong_etag: Some(listed_etag),
@@ -1063,7 +1096,9 @@ mod tests {
     use std::sync::Mutex;
 
     use crate::fetch::SurfaceFetch;
-    use crate::surface_write::{SurfaceDeleteOutcome, SurfaceDeletePrecondition, SurfaceWrite};
+    use crate::surface_write::SurfaceDeleteOutcome;
+    use crate::surface_write::SurfaceDeletePrecondition;
+    use crate::surface_write::SurfaceWrite;
 
     struct RecoveryFetch {
         evidence: Option<SurfaceObjectEvidence>,
@@ -1176,6 +1211,7 @@ mod tests {
 
     fn evidence(bytes: &[u8]) -> SurfaceObjectEvidence {
         SurfaceObjectEvidence {
+            provider_version: None,
             sha256: Sha256::digest(bytes).into(),
             size: i64::try_from(bytes.len()).unwrap(),
             strong_etag: None,
@@ -1241,6 +1277,7 @@ mod tests {
         let listed = SurfaceListedEvidence {
             size: 22,
             strong_etag: "provider-version".into(),
+            provider_version: None,
         };
         let mut prior = ReusablePlacementEvidence {
             surface_object_id: object.id,
@@ -1248,6 +1285,7 @@ mod tests {
             observed_hash: object.content_hash.clone(),
             observed_size: object.size,
             etag: Some("\"provider-version\"".into()),
+            provider_version: None,
         };
 
         let reused = reusable_inventory_evidence(&object, Some(&listed), Some(&prior)).unwrap();
@@ -1256,6 +1294,48 @@ mod tests {
 
         prior.etag = Some("different-version".into());
         assert!(reusable_inventory_evidence(&object, Some(&listed), Some(&prior)).is_none());
+    }
+
+    #[test]
+    fn cache_inventory_reuse_rejects_identical_bytes_from_another_upload() {
+        let digest: [u8; 32] = Sha256::digest(b"same physical bytes").into();
+        let object = SurfaceObjectRecord {
+            id: 7,
+            registry_id: None,
+            cache_id: Some(1),
+            object_key: "nar/replaced.nar".into(),
+            content_hash: Some(format!("sha256:{}", hex::encode(digest))),
+            size: Some(19),
+            object_kind: "immutable".into(),
+            mutable_publication_id: None,
+            lifecycle_state: "active".into(),
+            tombstoned_at: None,
+            created_at: 0,
+            updated_at: 0,
+            resource_version: 1,
+        };
+        let listed = SurfaceListedEvidence {
+            size: 19,
+            strong_etag: "same-etag".into(),
+            provider_version: Some("new-upload".into()),
+        };
+        let mut prior = ReusablePlacementEvidence {
+            surface_object_id: 7,
+            state: "present".into(),
+            observed_hash: object.content_hash.clone(),
+            observed_size: object.size,
+            etag: Some("same-etag".into()),
+            provider_version: Some("old-upload".into()),
+        };
+
+        assert!(reusable_inventory_evidence(&object, Some(&listed), Some(&prior)).is_none());
+        prior.provider_version = None;
+        assert!(reusable_inventory_evidence(&object, Some(&listed), Some(&prior)).is_none());
+
+        prior.provider_version = listed.provider_version.clone();
+        let reused = reusable_inventory_evidence(&object, Some(&listed), Some(&prior)).unwrap();
+        assert_eq!(reused.provider_version.as_deref(), Some("new-upload"));
+        assert_eq!(reused.sha256, digest);
     }
 
     #[test]
