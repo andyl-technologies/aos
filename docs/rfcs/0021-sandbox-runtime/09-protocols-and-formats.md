@@ -20,6 +20,39 @@ schemas and implementation live in optional coordinator crates, not the default
 local protocol closure. Shared local ownership/fencing contracts are separate
 from remote reconciliation. See [section 18](18-implementation-boundaries-and-single-node-rollout.md).
 
+### Controller image and recipient compatibility
+
+The Controller recovery range uses these closed local formats. Their sizes are
+payload sizes; native descriptor custody, financial admission and currentness
+remain separate requirements.
+
+| Format | Bytes | Purpose and canonical owner |
+| --- | ---: | --- |
+| `AOSRSB11` | 3248 | Image policy with explicit recovery reserve R, recipient count K and invocation allowance A; [image codec](../../../crates/aos-sandbox-protocol/src/domain_ledger/resource_bank/codec.rs). |
+| `AOSRSE03` | 192 | Controller-only sealed delivery of the actual consumed ordinal and range commitment; [pair reader](../../../crates/aos-sandbox-broker/src/receiving/pair.rs). |
+| `AOSRRI03` | 840 | Current recipient and immutable committed-recipient history; [recipient codec and CAS](../../../crates/aos-sandbox-protocol/src/domain_ledger/resource_bank/recipient/range.rs). |
+| `AOSRCO02` | 184 | Actual PID1 Offer, Controller ACK and PID1 Confirm; [native launch consumer](../../../crates/aos-sandbox-broker/src/controller_receiving/bank_launch/launch.rs). |
+
+The current Controller recovery-reserve route cuts over to V11 and refuses the
+old V10 reserve route before launch; canonical V10 and `AOSRSE02` decoders do
+not migrate an old reserve into an unused range. This restriction does not retire
+older independent F image profiles or their genuine role recipes. Independent
+roles, including Root on a V11 image, retain their 152-byte `AOSRSE01` delivery.
+A no-recovery Controller remains initial-only, using the 184-byte exchange with
+a zero range suffix.
+
+The three exchange phases bind one range commitment, consumed ordinal and
+recipient. The physical donor invocation and last confirmed bank floor remain
+distinct: an attempt that committed a bank row but died before ACK is not
+relabelled as confirmed. Committed history retains exact predecessor rows and
+may skip ordinals consumed by contained attempts that never committed. Native
+owners still prove every intervening terminal cut; hashes, decoded rows and
+receipt bytes alone grant no launch, currentness or receiving allowance.
+
+The [rollout boundary](18-implementation-boundaries-and-single-node-rollout.md#controller-recovery-range)
+defines the finite accounting and native retirement requirements. Exact field
+layouts remain beside the canonical Rust codecs rather than a second encoder.
+
 ## Public API
 
 The public API uses protobuf service definitions in `aos.sandbox.v1` and AOS's
@@ -1523,6 +1556,44 @@ old-process history under an exact generation/head/publication CAS; ambiguous
 replacement retains its exact recovery target, while nonterminal old-process
 state fails closed for operator reconciliation. This preserves current-session
 anti-replay without making every prior process identity permanently unopenable.
+
+The resource-backed Storage receiver may also carry its **same-process** terminal
+into a new transcript through a private positively retired predecessor. The
+same actual protected Journal, floor, Broker endpoint and boot receiving original
+remain held. Before that predecessor exists, the old Session must have an exact
+current terminal with no outstanding request, a positively observed native Sent
+response, actual same-socket shutdown, every required independent terminal,
+subject, floor, endpoint and original-service post, and disposal of the completed
+control transport. Sent or shutdown alone is not peer acknowledgement, effect
+Drain, a resource refund, or permission to forget uncertainty. The actual old
+committed terminal and signed historical checkpoint remain on the same owner;
+bytes, names, a fresh HELLO or a caller status cannot construct that predecessor.
+
+The new HELLO uses fresh nonces and authenticates its own transcript. It does
+not initialize, replace, delete or reset protected traffic. Only the separately
+funded first new signed request may consume the private predecessor. It must
+reverify the exact old transcript/checkpoint, full historical signatures and
+traffic, terminal request and outcome, protected context, generation, head and
+endpoint publication against that held predecessor. It then uses the existing
+exact predecessor CAS and complete target readback, with monotone generation.
+A stale, nonterminal, historically mismatched, reused or unconfirmed predecessor
+fails closed. Ambiguous replacement retains both the old authenticated owner
+and the complete exact new recovery target; a fresh connection cannot rearm it.
+Old durable frames remain in the protected Journal. Cross-transcript replay of
+the old packet stays invalid; the old terminal is not reinterpreted as a new
+authenticated request. Later operations on the new transcript retain the normal
+sequence and replay rules.
+
+The paired Controller client must retain its own positively completed terminal
+and prove no outstanding request before its own next-session transition. A
+Broker's Sent/end observations do not prove the client durably received or
+committed that terminal. A client with an outstanding or ambiguous old request
+must use its applicable exact recovery path; opening another connection cannot
+discard it. This same-process mode does not relax ordinary current-process
+initialization without the private actual retirement owner, reopen startup
+Native stages, reset the original cold cutoff, or create another receiving
+account. The full selected caller/producer and resource qualification are
+required before enabling the continuation.
 
 The dormant FUSE operations adapter separately owns one fixed root-owned
 `registrations.journal` in namespace 50. Its canonical record commits the exact

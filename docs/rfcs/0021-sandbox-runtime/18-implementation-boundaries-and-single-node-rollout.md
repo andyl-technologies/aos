@@ -61,6 +61,55 @@ fleet, or an online off-host service. It retains the independently protected
 local authority and any required provisioned local floor; it does not claim
 cross-host exclusivity or whole-host rollback resistance without their proofs.
 
+## Controller recovery range
+
+The selected source defines the finite Controller range and
+[its versioned local formats](09-protocols-and-formats.md#controller-image-and-recipient-compatibility).
+This is a source contract, not evidence of installed availability or successful
+runtime qualification.
+
+The existing Controller baseline B excludes permanent subdivisions, including
+FirstGlobal P, and is partitioned as B=N+R. R, per-recipient allowance A and
+finite recipient count K must be explicitly declared, with checked K*A<=R in
+all 22 dimensions. Initial receiving reserves R and spends within N; each
+genuine later recipient reserves B-A on its own same-B ledger. Every consumed
+allowance remains charged. There is no default K, automatic cap increase, refund
+or new account. The actual compiled receiving programme must fit its allowance
+before growth; a declaration alone proves no operational headroom.
+
+Standing P remains reserved or committed under its original permanent
+BootLifetime claim and cannot be released. Its CPU dimension is a rate outside
+B, reused only for sequential native recipients; the installed quota comes from
+P, not A. The image's memory, task and NOFILE controls remain authoritative.
+This does not establish a generic unpriced CPU exemption or waive other
+financial and physical checks.
+
+PID1 enables the range only after the initial protected bank seal, readback and
+actual ACK/Confirm posts. It consumes each new ordinal before dependent growth
+or clone, retaining cumulative parent M debt and bounded attempt history.
+A candidate's EOF or pre-ACK death is negative only. Another ordinal still
+requires its actual held PIDFD death, manager reap, cgroup Empty, delivery
+closure and account/native posts. Malformed input or uncertain native, issuer,
+account or close results fence further entry; no failed prefix is reset.
+
+The latest physical donor may differ from the last confirmed recipient.
+The same actual PID1 range owner retains that distinction, while the exact bank
+CAS advances only from its real committed predecessor and archives that row
+unchanged. Unconfirmed attempts do not acquire fictional ACKs. Existing Source
+seeds, original deadlines and A8 settlement history remain literal; fresh
+recovery still needs its genuine current authority and native proofs. Lost
+native custody across unsupported daemon reexec or reboot cannot be recreated
+from range DATA.
+
+The Controller recovery-reserve route requires the matched V11 producer and
+consumer with no V10 reserve fallback. No-recovery Controller startup remains
+initial-only; independent F image families retain their own closed role
+recipes. Source compilation, native ABI/stack and limit checks, actual funded
+profile fit, pre-ACK crash handling and range exhaustion must all be qualified
+on the normal path. These declarations and source changes do not
+substitute for matching qualification receipts. This contract changes no
+deferred FUSE, VM, fleet or first-lifecycle scope.
+
 ## Dependency direction
 
 Arrows below mean "depends on", not IPC or privilege inheritance:
