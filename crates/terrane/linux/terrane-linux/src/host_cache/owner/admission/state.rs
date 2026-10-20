@@ -21,15 +21,8 @@ pub(super) fn begin(
     // predicts neither allocation rounding nor directory/allocator metadata.
     // Native hard quotas bound growth; excess actual charge faults completion
     // without releasing the physical resources or this logical hold.
-    let hold = u64::try_from(payload)
-        .map_err(io::Error::other)?
-        .checked_add(owner.preparation.config.metadata_sync_hold_bytes)
-        .ok_or_else(|| io::Error::other("admission hold overflow"))?;
-    let future = owner.state.reservations.iter().try_fold(hold, |sum, row| {
-        sum.checked_add(row.bytes)
-            .ok_or_else(|| io::Error::other("admission hold sum overflow"))
-    })?;
-    check_charge(owner, future)?;
+    let hold = incoming_hold(owner, payload)?;
+    check_incoming(owner, hold)?;
     let mut random = [0; 16];
     File::open("/dev/urandom")?.read_exact(&mut random)?;
     let token = hex(&random);
@@ -70,6 +63,33 @@ pub(super) fn begin(
     owner.faulted = true;
     owner.state = next;
     super::super::snapshot::prepare(executor, owner)
+}
+
+/// Computes the unchanged payload and snapshot-overlap future hold.
+///
+/// # Errors
+/// Refuses an unrepresentable payload or overflowing future hold.
+pub(super) fn incoming_hold(owner: &Custody, payload: usize) -> io::Result<u64> {
+    u64::try_from(payload)
+        .map_err(io::Error::other)?
+        .checked_add(owner.preparation.config.metadata_sync_hold_bytes)
+        .ok_or_else(|| io::Error::other("admission hold overflow"))
+}
+
+/// Checks an incoming hold against all existing holds and fresh kernel usage.
+///
+/// # Errors
+/// Refuses overflowing holds and actual charged usage exceeding capacity.
+pub(super) fn check_incoming(owner: &Custody, incoming: u64) -> io::Result<()> {
+    let future = owner
+        .state
+        .reservations
+        .iter()
+        .try_fold(incoming, |sum, row| {
+            sum.checked_add(row.bytes)
+                .ok_or_else(|| io::Error::other("admission hold sum overflow"))
+        })?;
+    check_charge(owner, future)
 }
 
 /// Checks fresh full-owner charge separately from every logical future hold.

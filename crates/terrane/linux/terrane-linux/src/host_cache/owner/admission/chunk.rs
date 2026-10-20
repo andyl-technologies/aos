@@ -22,11 +22,11 @@ use terrane_sdk::store::ChunkPosition;
 /// # Errors
 /// Refuses unavailable, changed or invalid native inputs and failed completion.
 pub(super) async fn run(
-    executor: &NativeOwnerExecutor,
+    executor: &mut NativeOwnerExecutor,
     custody: &Arc<Mutex<Custody>>,
     resource: &Arc<Mutex<AdmissionJob>>,
 ) -> io::Result<(u64, u64)> {
-    let (encoded, hash, reservation) = {
+    let (encoded, hash, hashes) = {
         let mut job = backing::lock(resource)?;
         let (descriptor, position, encoded) = match &job.input {
             Input::Chunk {
@@ -36,7 +36,7 @@ pub(super) async fn run(
             } => (descriptor.clone(), *position, Arc::clone(encoded)),
             _ => return Err(io::Error::other("chunk admission received metadata input")),
         };
-        let mut owner = custody
+        let owner = custody
             .lock()
             .map_err(|_| io::Error::other("admission custody poisoned"))?;
         owner.check_current()?;
@@ -94,10 +94,18 @@ pub(super) async fn run(
             ));
         }
         super::refuse_completed(executor, &owner, resource, &job.input)?;
-        let prepared = state::begin(executor, &mut owner, &mut job, encoded.len(), &hashes)?;
         drop(plaintext);
         drop(dictionary);
-        (encoded, hash, prepared)
+        (encoded, hash, hashes)
+    };
+    super::pressure::prepare(executor, encoded.len()).await?;
+    let reservation = {
+        let mut job = backing::lock(resource)?;
+        let mut owner = custody
+            .lock()
+            .map_err(|_| io::Error::other("admission custody poisoned"))?;
+        owner.check_current()?;
+        state::begin(executor, &mut owner, &mut job, encoded.len(), &hashes)?
     };
     super::super::snapshot::persist(executor, reservation).await?;
     let completion = {
@@ -158,8 +166,8 @@ pub(in crate::host_cache::owner) fn dictionary(
         }
         state::check_registration(owner, &job)?;
         // A cache-owned dictionary has genuine retained native custody rather
-        // than a producer hold. This physical turn excludes eviction until
-        // state::begin synchronizes the new admission's own dependency pin.
+        // than a producer hold. The actual registered dependency protects this
+        // source through pressure eviction before state::begin funds its pin.
         let pin_owner = format!("admission:{}", job.token);
         if job.cached.is_none()
             && (!owner.state.pins.iter().any(|pin| {

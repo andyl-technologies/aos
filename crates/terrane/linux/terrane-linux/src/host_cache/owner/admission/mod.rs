@@ -3,7 +3,8 @@
 //! Durable reservations precede every namespace or data write. Files, input
 //! bytes and unresolved progress remain registered outside embedded custody;
 //! dropping an accepted command's waiter cannot cancel its physical execution.
-//! These commands establish no eviction, consumer pin or full bucket readiness.
+//! Verified inputs may request bounded eviction before reservation. These
+//! commands establish neither consumer pins nor full bucket readiness.
 
 mod backing;
 mod cache_error;
@@ -14,6 +15,7 @@ pub(super) mod handoff;
 mod io;
 mod memory;
 mod metadata;
+mod pressure;
 pub(in crate::host_cache::owner) mod reads;
 mod reconcile;
 mod state;
@@ -98,10 +100,14 @@ impl NativeMetadataOwner {
     ///
     /// Domain and profile derive from actual preparation. No caller declaration
     /// grants hash, pin, quota, filesystem or publication authority.
+    /// Verified input may trigger one bounded cache eviction attempt before
+    /// reserving space; pending deletion retains its actual quota charge.
     ///
     /// # Errors
     /// Returns untouched inputs on local/queue refusal; accepted failures retain
     /// physical resources and durable holds in the worker for reconciliation.
+    /// Capacity refusal before reservation returns an accepted `StorageFull`
+    /// error and leaves no reservation or files for the incoming input.
     pub async fn admit_chunk(
         &self,
         descriptor: Descriptor,
@@ -157,9 +163,13 @@ impl NativeMetadataOwner {
 
     /// Submits one bounded untrusted metadata pack and exact detached index.
     ///
+    /// Both members are verified before bounded eviction and reservation.
+    ///
     /// # Errors
     /// Returns untouched inputs on local/queue refusal. Verification, durability
     /// or accounting failures after acceptance retain all physical custody.
+    /// Capacity refusal before reservation returns an accepted `StorageFull`
+    /// error and leaves no reservation or files for the incoming pair.
     pub async fn admit_metadata_pack(
         &self,
         expected_id: PackId,

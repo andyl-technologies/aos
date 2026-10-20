@@ -4,6 +4,9 @@
 //! here describe those inodes without granting a lease or retirement authority.
 //! Every transition uses the real confined owner and authenticated publisher.
 
+#[path = "admission_pressure.rs"]
+mod admission_pressure;
+
 use super::{
     config::{HOLD, Inputs, STATE},
     manifest_publication,
@@ -459,7 +462,8 @@ pub(super) fn run(
     control("done")?;
     emit(
         "PASS actual mixed FIFO encoded restoration, consumer and dictionary protection, complete pack unit removal and original descriptor closure; no Ready",
-    )
+    )?;
+    admission_pressure::run(owner, runtime, inputs)
 }
 
 fn admit(

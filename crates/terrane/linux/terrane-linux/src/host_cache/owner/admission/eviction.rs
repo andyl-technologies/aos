@@ -122,13 +122,14 @@ impl EncodedAllocation {
                 continue;
             }
             let dependent = backing::lock(dependent)?;
-            if dependent.complete
-                && dependent.dependencies.iter().any(|dictionary| {
-                    self.members
-                        .iter()
-                        .any(|member| Arc::ptr_eq(member, dictionary))
-                })
-            {
+            // A verified incoming admission can request eviction before it has
+            // its own durable pin. Its original registered dependency must
+            // already protect the dictionary during that physical turn.
+            if dependent.dependencies.iter().any(|dictionary| {
+                self.members
+                    .iter()
+                    .any(|member| Arc::ptr_eq(member, dictionary))
+            }) {
                 return Ok(true);
             }
         }

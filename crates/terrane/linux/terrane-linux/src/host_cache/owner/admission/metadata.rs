@@ -22,12 +22,12 @@ use terrane_sdk::{
 /// # Errors
 /// Refuses unavailable, changed or invalid native inputs and failed completion.
 pub(super) async fn run(
-    executor: &super::super::retention::NativeOwnerExecutor,
+    executor: &mut super::super::retention::NativeOwnerExecutor,
     custody: &Arc<Mutex<Custody>>,
     resource: &Arc<Mutex<AdmissionJob>>,
 ) -> io::Result<(u64, u64)> {
-    let (expected_id, pack, index, reservation) = {
-        let mut job = backing::lock(resource)?;
+    let (expected_id, pack, index, payload, hashes) = {
+        let job = backing::lock(resource)?;
         let (expected_id, pack, index) = match &job.input {
             Input::Metadata {
                 expected_id,
@@ -36,7 +36,7 @@ pub(super) async fn run(
             } => (*expected_id, Arc::clone(pack), Arc::clone(index)),
             _ => return Err(io::Error::other("metadata admission received chunk input")),
         };
-        let mut owner = custody
+        let owner = custody
             .lock()
             .map_err(|_| io::Error::other("admission custody poisoned"))?;
         owner.check_current()?;
@@ -56,8 +56,16 @@ pub(super) async fn run(
             .checked_add(index.len())
             .ok_or_else(|| io::Error::other("metadata payload overlap overflow"))?;
         super::refuse_completed(executor, &owner, resource, &job.input)?;
-        let prepared = state::begin(executor, &mut owner, &mut job, payload, &hashes)?;
-        (expected_id, pack, index, prepared)
+        (expected_id, pack, index, payload, hashes)
+    };
+    super::pressure::prepare(executor, payload).await?;
+    let reservation = {
+        let mut job = backing::lock(resource)?;
+        let mut owner = custody
+            .lock()
+            .map_err(|_| io::Error::other("admission custody poisoned"))?;
+        owner.check_current()?;
+        state::begin(executor, &mut owner, &mut job, payload, &hashes)?
     };
     super::super::snapshot::persist(executor, reservation).await?;
     let completion = {

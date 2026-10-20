@@ -34,10 +34,11 @@
     name = "terrane-native-host-cache-component-ext4";
     memory = 1024;
     # Encoded FIFO adds seven genuine 30-second producer, consumer and native
-    # retirement windows; dictionary promotion adds two more. Extend only the
-    # whole-guest allowance for this added work; all per-control and actual
+    # retirement windows; dictionary promotion and automatic admission pressure
+    # each add two more. Extend only the whole-guest allowance for this added
+    # work; all per-control and actual
     # production deadlines stay fixed.
-    timeout = 780;
+    timeout = 870;
     rootfsDeps = [image pkgs.coreutils pkgs.util-linux pkgs.e2fsprogs pkgs.python3];
     testScript = ''
       set -eu

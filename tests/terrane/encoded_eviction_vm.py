@@ -144,6 +144,114 @@ def run(driver, uuid):
         print(f"PASS independent encoded {kind} observer verifies original inode closure and measured charge release; funding unchanged",
               flush=True)
 
+    def admission_pressure():
+        """Checks actual automatic admission pressure on the same Running owner."""
+        lines.until("READY original admission pressure allocations and independent consumers retained", timeout=30)
+        expiry, incoming, incoming_hold = one(
+            r"^ADMISSION_PRESSURE_INIT expires=(\d+) incoming=([0-9a-f]{64}) hold=(\d+)$",
+            "missing unique actual incoming pressure inventory")
+        members = re.findall(r"^ADMISSION_PRESSURE_MEMBER index=(\d+) hash=([0-9a-f]{64})$",
+                             lines.bytes.decode(), re.M)
+        driver.require([int(index) for index, _hash in members] == list(range(19))
+                       and len({digest for _index, digest in members}) == 19
+                       and int(incoming_hold) == 262144 + 16384,
+                       "automatic pressure lacks original bounded admission inventory")
+        labels = []
+        for index, digest in members:
+            label = "pressure:" + index
+            originals[label] = Original(driver, case, root / "chunks" / digest[:2] / (digest + ".0"), 840)
+            driver.require(originals[label].binding[5] == 262144
+                           and originals[label].allocated == 262144
+                           and os.pread(originals[label].fd, 1, 0) == b"\x00",
+                           "pressure input does not occupy actual original raw blocks")
+            labels.append(label)
+        driver.require(len({originals[label].key[:2] for label in labels}) == 19,
+                       "pressure members alias original allocation units")
+        incoming_path = root / "chunks" / incoming[:2] / (incoming + ".0")
+        canonical = set(labels)
+        scene(canonical, set())
+        policy = state()
+        consumers = owned(policy, "leases", "consumer:")
+        consumer_pins = owned(policy, "pins", "consumer:")
+        holds = policy["reservations"]
+        driver.require(len(consumers) == len(consumer_pins) == 3 and len(holds) == 4
+                       and all(row["bytes"] == 262144 for row in holds)
+                       and {pin["hash"] for pin in consumer_pins} == {digest for _index, digest in members[-3:]}
+                       and not incoming_path.exists(),
+                       "automatic pressure lacks actual independently funded protected consumers")
+        grace = owned(policy, "leases", "admission-grace:")
+        driver.require(grace and max(row["expires"] for row in grace) == int(expiry),
+                       "pressure deadline differs from original durable producer grace")
+
+        def pressure_measurement(kind):
+            charged, future = map(int, one(
+                rf"^ADMISSION_PRESSURE_MEASUREMENT kind={kind} charged=(\d+) future=(\d+)$",
+                "missing actual automatic admission pressure measurement"))
+            driver.require(quota(driver, case) == charged
+                           and sum(row["bytes"] for row in state()["reservations"]) == future,
+                           "automatic admission measurement differs from native quota or real funding")
+            return charged, future
+
+        wait_grace(expiry)
+        original_policy = snapshot.read_bytes()
+        control("pressure-invalid")
+        lines.until("READY invalid incoming chunk refused before automatic eviction or funding", timeout=30)
+        before, future = pressure_measurement("before")
+        driver.require(before + future + int(incoming_hold) > 6 * 1024 * 1024
+                       and snapshot.read_bytes() == original_policy,
+                       "invalid input did not exercise real pressure without policy effects")
+        scene(canonical, set())
+        control("pressure-admit")
+        lines.until("READY verified incoming admission retires original FIFO units but refuses pending quota charge", timeout=30)
+        pending_files = files(root / "pending-delete")
+        pending = {label for label in labels if originals[label].key in pending_files.values()}
+        count = int(one(r"^ADMISSION_PRESSURE_PENDING members=(\d+)$",
+                        "missing actual admission-selected victim count"))
+        driver.require(0 < count < 16 and pending == set(labels[:count])
+                       and len(pending_files) == count and not incoming_path.exists()
+                       and state()["reservations"] == holds
+                       and owned(state(), "leases", "consumer:") == consumers
+                       and owned(state(), "pins", "consumer:") == consumer_pins,
+                       "automatic admission did not retire the original eligible FIFO prefix or retained failed funding")
+        canonical -= pending
+        scene(canonical, pending)
+        charged, remaining = pressure_measurement("pending")
+        driver.require(charged >= sum(originals[label].allocated for label in labels)
+                       and remaining == future,
+                       "pending automatic victims were falsely credited as released quota")
+        print("PASS independent observer verifies corrupt input has no eviction effects and verified admission alone retires original eligible FIFO units while preserving real charge and three consumers", flush=True)
+
+        wait_removed(canonical, pending)
+        control("pressure-drop")
+        lines.until("READY automatic pressure victims close while independent observers retain charge", timeout=30)
+        held, remaining = pressure_measurement("held")
+        allocated = sum(originals[label].allocated for label in pending)
+        for label in pending:
+            originals[label].check(0)
+            originals[label].close()
+        control("pressure-observers")
+        lines.until("READY original pressure observer closure releases measured quota without changing funding", timeout=30)
+        closed, final_future = pressure_measurement("closed")
+        driver.require(closed <= held - allocated and remaining == final_future == future
+                       and state()["reservations"] == holds,
+                       "automatic pressure released quota before actual final closure or changed original funding")
+        control("pressure-retry")
+        lines.until("READY same incoming admission succeeds after actual last-description quota release", timeout=30)
+        originals["pressure:incoming"] = Original(driver, case, incoming_path, 840)
+        driver.require(originals["pressure:incoming"].binding[5] == 16384
+                       and os.pread(originals["pressure:incoming"].fd, 16384, 0) == b"\x00" + bytes([221]) * 16383,
+                       "successful retry did not admit the exact original verified incoming bytes")
+        canonical.add("pressure:incoming")
+        scene(canonical, set())
+        _charged, final_future = pressure_measurement("admitted")
+        driver.require(final_future == future and state()["reservations"] == holds
+                       and owned(state(), "leases", "consumer:") == consumers
+                       and owned(state(), "pins", "consumer:") == consumer_pins,
+                       "successful automatic retry lost original consumer promises or leaked producer funding")
+        print("PASS independent observer verifies actual last-description quota release permits the same incoming admission to reserve and complete while original consumer funding survives", flush=True)
+        control("pressure-done")
+        lines.until("PASS genuine verified admission requests bounded native eviction, retains pending charge and live consumers, then retries after original descriptor closure; no Ready", timeout=30)
+
     try:
         lines.until("READY mixed encoded allocations retain original producer grace", timeout=30)
         print(driver.process_status(process, 840), flush=True)
@@ -292,6 +400,7 @@ def run(driver, uuid):
                        "final native encoded removal lost bootstrap funding or retained obsolete promises")
         control("done")
         lines.until("PASS actual mixed FIFO encoded restoration, consumer and dictionary protection, complete pack unit removal and original descriptor closure; no Ready", timeout=30)
+        admission_pressure()
         output, error = process.communicate(timeout=10)
         driver.require(process.returncode == 0 and not output and not error,
                        "encoded FIFO actor did not exit successfully")
