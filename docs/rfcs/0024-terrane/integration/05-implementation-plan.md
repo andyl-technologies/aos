@@ -8743,6 +8743,20 @@ running its 1,933 Terrane tests on that unchanged source. The earlier
 `bf3c74517e` surface feature-matrix run finished with 1,157 passed and two
 publication-timing failures; its aggregate successor did not run.
 
+Native cache component checkpoint `99447f30cd` passes the complete local native
+witness in 671.10 seconds, including 356.69 guest seconds within the unchanged
+390-second limit. Independent review verifies 5,086 source inputs, four original
+Cargo executables, all 55 actual selected unit cases under UID/GID 842 with empty
+capabilities, and 48 runtime selectors. A genuine dictionary and its distinct
+admitted dependent retain their original inodes through producer handoff, real
+release grace and an actual dictionary-retirement refusal; measured Q is
+339,968 bytes and the sole bootstrap H is 262,144 bytes. The corrected fixture
+uses a dictionary below the inline size ceiling so the refusal reaches the
+physical dependency guard. Earlier invalid-fixture failures remain retained.
+This is component evidence on the preserved task branch. Encoded consumer grants,
+encoded eviction, shared-chunk re-extraction, full recovery/readiness and complete
+T2 task acceptance remain unqualified.
+
 Status: in progress, resumed without sub-agents (2026-10-17). T1's 22 tasks and
 89 current gates are complete; its identity, encoding, bucket-key and Store-trait
 freeze applies. Preserved worktrees cover the five T2 tasks, including dedicated
