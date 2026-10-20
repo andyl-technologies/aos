@@ -12,9 +12,9 @@ mirror/
 cli/target/
 crates/target/
 
-# Nix build results
-result
-result-*
+# Nix build results at the checkout root, not nested source modules.
+/result
+/result-*
 
 # Direnv
 .direnv/

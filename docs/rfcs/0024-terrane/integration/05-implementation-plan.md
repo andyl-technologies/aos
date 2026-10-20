@@ -8704,6 +8704,16 @@ Earlier qualification records below identify their original sources and names.
 The unfinished dictionary dependency fixture is checkpointed separately before
 the merge. No T2 task is accepted by importing upstream changes.
 
+Upstream source-retention follow-up: recover the exact pre-migration 833-line
+executor result-operations module from `origin/master^`. The checkout ignored
+all directories named `result`, and the immutable Cargo source filter excluded
+them as well. Scope both rules to checkout-root build outputs. An actual filtered
+source observation changes from absent to present, and repository-wide Rust
+format checking then passes. The restored module's SHA-256 is
+`a0760df5a700326ca7771fae0b9fda42508d10cc6d5f2162e67826f897ac9a3b`;
+its executable logic is unchanged. Compilation against current daemon APIs is
+still running; no task or full gate-set acceptance follows from restoration.
+
 Integration checks: Cargo metadata, all five renamed packages' all-target
 compilation, crate graph, the reviewed native unsafe-binding audit, the Nix
 registry-complete gate and complete gate listing pass. All 638 external upstream
