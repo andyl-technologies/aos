@@ -76,7 +76,8 @@
                   type = lib.types.bool;
                   default = false;
                 };
-              }) // {
+              })
+              // {
                 # This fixture bypasses Dendritic discovery. Reuse the real
                 # schemas for every newer role read by the enclosure module;
                 # missing production declarations must not become `or false`.

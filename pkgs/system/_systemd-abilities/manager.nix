@@ -55,12 +55,13 @@
         # Explicit requests retain unchanged selected-package bases beside
         # authored drop-ins. Ordinary images request none; every collision fails.
         ${lib.concatMapStringsSep "\n" (name: ''
-          if [ -e "$out/${name}" ] || [ -L "$out/${name}" ]; then
-            echo "The requested package base collides with another manager entry: ${name}" >&2
-            exit 1
-          fi
-          cp --no-preserve=mode ${systemdPackage}/lib/systemd/system/${name} "$out/${name}"
-        '') config.systemd.packagedBaseUnits}
+            if [ -e "$out/${name}" ] || [ -L "$out/${name}" ]; then
+              echo "The requested package base collides with another manager entry: ${name}" >&2
+              exit 1
+            fi
+            cp --no-preserve=mode ${systemdPackage}/lib/systemd/system/${name} "$out/${name}"
+          '')
+          config.systemd.packagedBaseUnits}
       '';
     presets =
       runCommand "systemd-system-preset" {
@@ -140,7 +141,8 @@ in {
     aos.manager.selected = authoredManager;
     system.build = {
       systemdBootstrapServices = bootstrapServices;
-      systemdBootstrapServiceOwners = builtins.mapAttrs
+      systemdBootstrapServiceOwners =
+        builtins.mapAttrs
         (name: _: config.aos.abilities.serviceManagement.operations.realize.effects.${name}.contract.owner)
         bootstrapServices;
       systemdPackagedUnitOwners = lib.genAttrs config.systemd.packagedBaseUnits (_: toString systemdPackage);

@@ -37,9 +37,12 @@ in
     # Nix's reference graph is the complete, exact package closure. The
     # publisher copies this immutable template, never a controller path.
     exportReferencesGraph = [
-      "closure-guest-agent" guestAgent
-      "closure-openssh" openssh
-      "closure-systemd" systemd
+      "closure-guest-agent"
+      guestAgent
+      "closure-openssh"
+      openssh
+      "closure-systemd"
+      systemd
     ];
     buildDeps = [rootBuilder coreutils grep sed];
     runtimeDeps = [guestAgent openssh systemd];

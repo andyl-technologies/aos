@@ -688,7 +688,11 @@ async fn apr_release_store_path_publishes_signed_cache_channel_and_installs() ->
     )?;
     assert_eq!(
         release_commit,
-        git_stdout(&registry_dir, &["rev-parse", "HEAD"], "resolving registry HEAD")?,
+        git_stdout(
+            &registry_dir,
+            &["rev-parse", "HEAD"],
+            "resolving registry HEAD"
+        )?,
     );
     assert!(aos_registry_client::security::verify_commit_signature(
         &registry_dir,

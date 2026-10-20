@@ -45,7 +45,10 @@
     "~fchmodat2"
   ];
 
-  mkStorageWorkerSocket = {description, path}: {
+  mkStorageWorkerSocket = {
+    description,
+    path,
+  }: {
     inherit description;
     wantedBy = ["sockets.target"];
     requires = ["aos-sandbox-zfs-ready.service"];
@@ -306,24 +309,26 @@ in {
         RestrictSUIDSGID = workerRestrictSuidSgid;
         Slice = "aos-control.slice";
         SystemCallArchitectures = ["native"];
-        SystemCallFilter = [
-          "@system-service"
-          "~@mount"
-          "~@reboot"
-          "~@swap"
-          "~@module"
-          "~@raw-io"
-          "~socket"
-          "~socketpair"
-          "~connect"
-          "landlock_create_ruleset"
-          "landlock_add_rule"
-          "landlock_restrict_self"
-          "~chmod"
-          "~fchmod"
-          "~fchmodat"
-          "~fchmodat2"
-        ] ++ ioUringDeny;
+        SystemCallFilter =
+          [
+            "@system-service"
+            "~@mount"
+            "~@reboot"
+            "~@swap"
+            "~@module"
+            "~@raw-io"
+            "~socket"
+            "~socketpair"
+            "~connect"
+            "landlock_create_ruleset"
+            "landlock_add_rule"
+            "landlock_restrict_self"
+            "~chmod"
+            "~fchmod"
+            "~fchmodat"
+            "~fchmodat2"
+          ]
+          ++ ioUringDeny;
         SystemCallErrorNumber = "EPERM";
         TasksMax = 16;
       };
@@ -384,30 +389,32 @@ in {
         RestrictSUIDSGID = true;
         Slice = "aos-control.slice";
         SystemCallArchitectures = ["native"];
-        SystemCallFilter = [
-          "@system-service"
-          "fsopen"
-          "fsconfig"
-          "fsmount"
-          "mount_setattr"
-          "openat2"
-          "statx"
-          "~mount"
-          "~umount2"
-          "~move_mount"
-          "~open_tree"
-          "~pivot_root"
-          "~chroot"
-          "~setns"
-          "~unshare"
-          "~@reboot"
-          "~@swap"
-          "~@module"
-          "~@raw-io"
-          "~socket"
-          "~socketpair"
-          "~connect"
-        ] ++ ioUringDeny;
+        SystemCallFilter =
+          [
+            "@system-service"
+            "fsopen"
+            "fsconfig"
+            "fsmount"
+            "mount_setattr"
+            "openat2"
+            "statx"
+            "~mount"
+            "~umount2"
+            "~move_mount"
+            "~open_tree"
+            "~pivot_root"
+            "~chroot"
+            "~setns"
+            "~unshare"
+            "~@reboot"
+            "~@swap"
+            "~@module"
+            "~@raw-io"
+            "~socket"
+            "~socketpair"
+            "~connect"
+          ]
+          ++ ioUringDeny;
         SystemCallErrorNumber = "EPERM";
         TasksMax = 4;
       };
@@ -474,25 +481,27 @@ in {
         RestrictSUIDSGID = workerRestrictSuidSgid;
         Slice = "aos-control.slice";
         SystemCallArchitectures = ["native"];
-        SystemCallFilter = [
-          "@system-service"
-          "setns"
-          "fsopen"
-          "fsconfig"
-          "fsmount"
-          "move_mount"
-          "mount_setattr"
-          "umount2"
-          "socket"
-          "connect"
-          "~@reboot"
-          "~@swap"
-          "~@module"
-          "~@raw-io"
-          # The worker connects only to the root-only initializer socket;
-          # RestrictAddressFamilies limits the new client surface to AF_UNIX.
-          "~socketpair"
-        ] ++ workspacePinWorkerRootMutationDeny ++ ioUringDeny;
+        SystemCallFilter =
+          [
+            "@system-service"
+            "setns"
+            "fsopen"
+            "fsconfig"
+            "fsmount"
+            "move_mount"
+            "mount_setattr"
+            "umount2"
+            "socket"
+            "connect"
+            "~@reboot"
+            "~@swap"
+            "~@module"
+            "~@raw-io"
+            # The worker connects only to the root-only initializer socket;
+            # RestrictAddressFamilies limits the new client surface to AF_UNIX.
+            "~socketpair"
+          ]
+          ++ workspacePinWorkerRootMutationDeny ++ ioUringDeny;
         SystemCallErrorNumber = "EPERM";
         TasksMax = 16;
       };
@@ -573,33 +582,35 @@ in {
         RestrictSUIDSGID = workerRestrictSuidSgid;
         Slice = "aos-control.slice";
         SystemCallArchitectures = ["native"];
-        SystemCallFilter = [
-          "@system-service"
-          "setns"
-          "fsopen"
-          "fsconfig"
-          "fsmount"
-          "mount_setattr"
-          "fchown"
-          "fchmod"
-          "~chmod"
-          "~chown"
-          "~lchown"
-          "~fchownat"
-          "~fchmodat"
-          "~fchmodat2"
-          "~mount"
-          "~move_mount"
-          "~umount2"
-          "~pivot_root"
-          "~@reboot"
-          "~@swap"
-          "~@module"
-          "~@raw-io"
-          "~socket"
-          "~socketpair"
-          "~connect"
-        ] ++ ioUringDeny;
+        SystemCallFilter =
+          [
+            "@system-service"
+            "setns"
+            "fsopen"
+            "fsconfig"
+            "fsmount"
+            "mount_setattr"
+            "fchown"
+            "fchmod"
+            "~chmod"
+            "~chown"
+            "~lchown"
+            "~fchownat"
+            "~fchmodat"
+            "~fchmodat2"
+            "~mount"
+            "~move_mount"
+            "~umount2"
+            "~pivot_root"
+            "~@reboot"
+            "~@swap"
+            "~@module"
+            "~@raw-io"
+            "~socket"
+            "~socketpair"
+            "~connect"
+          ]
+          ++ ioUringDeny;
         SystemCallErrorNumber = "EPERM";
         TasksMax = 16;
       };
@@ -672,40 +683,42 @@ in {
         RestrictSUIDSGID = workerRestrictSuidSgid;
         Slice = "aos-control.slice";
         SystemCallArchitectures = ["native"];
-        SystemCallFilter = [
-          "@system-service"
-          "setns"
-          "~mount"
-          "~umount2"
-          "~fsopen"
-          "~fsconfig"
-          "~fsmount"
-          "~move_mount"
-          "~mount_setattr"
-          # The observer may clone one verified workspace mount into an
-          # unattached descriptor; attachment and separate mutation syscalls
-          # stay denied.
-          "open_tree"
-          # The LocalLive variant applies read-only attributes before the
-          # cloned descriptor is published to the observer.
-          "open_tree_attr"
-          "~pivot_root"
-          "~chroot"
-          "~@reboot"
-          "~@swap"
-          "~@module"
-          "~@raw-io"
-          "~socket"
-          "~socketpair"
-          "~connect"
-          "landlock_create_ruleset"
-          "landlock_add_rule"
-          "landlock_restrict_self"
-          "~chmod"
-          "~fchmod"
-          "~fchmodat"
-          "~fchmodat2"
-        ] ++ ioUringDeny;
+        SystemCallFilter =
+          [
+            "@system-service"
+            "setns"
+            "~mount"
+            "~umount2"
+            "~fsopen"
+            "~fsconfig"
+            "~fsmount"
+            "~move_mount"
+            "~mount_setattr"
+            # The observer may clone one verified workspace mount into an
+            # unattached descriptor; attachment and separate mutation syscalls
+            # stay denied.
+            "open_tree"
+            # The LocalLive variant applies read-only attributes before the
+            # cloned descriptor is published to the observer.
+            "open_tree_attr"
+            "~pivot_root"
+            "~chroot"
+            "~@reboot"
+            "~@swap"
+            "~@module"
+            "~@raw-io"
+            "~socket"
+            "~socketpair"
+            "~connect"
+            "landlock_create_ruleset"
+            "landlock_add_rule"
+            "landlock_restrict_self"
+            "~chmod"
+            "~fchmod"
+            "~fchmodat"
+            "~fchmodat2"
+          ]
+          ++ ioUringDeny;
         SystemCallErrorNumber = "EPERM";
         TasksMax = 16;
       };

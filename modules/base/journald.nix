@@ -29,5 +29,4 @@
     requires = ["aos-journald-runtime-prep.service"];
     after = ["aos-journald-runtime-prep.service"];
   };
-
 }

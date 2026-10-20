@@ -2,7 +2,8 @@
 {
   mkDerivation,
   coreutils,
-}: mkDerivation {
+}:
+mkDerivation {
   platformSupport = {
     build = [
       {

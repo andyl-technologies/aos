@@ -9,13 +9,15 @@
 }: let
   names = builtins.attrNames objects;
   canonicalNames = builtins.all (name: builtins.match "[0-9a-f]{64}" name != null) names;
-  objectCommands = lib.concatMapStringsSep "\n" (name: ''
-    source=${lib.escapeShellArg (toString objects.${name})}
-    test -f "$source"
-    actual="$(${coreutils}/bin/sha256sum "$source")"
-    test "''${actual%% *}" = ${lib.escapeShellArg name}
-    ${coreutils}/bin/install --mode=0444 "$source" "$out/objects/${name}"
-  '') names;
+  objectCommands =
+    lib.concatMapStringsSep "\n" (name: ''
+      source=${lib.escapeShellArg (toString objects.${name})}
+      test -f "$source"
+      actual="$(${coreutils}/bin/sha256sum "$source")"
+      test "''${actual%% *}" = ${lib.escapeShellArg name}
+      ${coreutils}/bin/install --mode=0444 "$source" "$out/objects/${name}"
+    '')
+    names;
 in
   assert canonicalNames;
   assert names != [];

@@ -18,22 +18,27 @@
     "aos-sandbox-network-worker@"
     "aos-sandbox-network-observation-worker@"
   ];
-  workerProfileInput = map (name: {
-    unit = "${name}.service";
-    rendered = config.systemd.units."${name}.service".text;
-    service = let selected = config.systemd.services.${name}.serviceConfig; in {
-      inherit (selected) ExecStart LimitNOFILE MemoryMax TasksMax;
-    };
-  }) workerProfileNames;
+  workerProfileInput =
+    map (name: {
+      unit = "${name}.service";
+      rendered = config.systemd.units."${name}.service".text;
+      service = let
+        selected = config.systemd.services.${name}.serviceConfig;
+      in {
+        inherit (selected) ExecStart LimitNOFILE MemoryMax TasksMax;
+      };
+    })
+    workerProfileNames;
   # This contains final selected unit DATA. It neither grants a child budget
   # nor changes any unit limit; the protected Netd programme prices its use.
-  workerProfile = pkgs.runCommand "aos-network-worker-profile-v2" {
-    nativeBuildInputs = [pkgs.python3];
-    inputJson = builtins.toJSON workerProfileInput;
-    passAsFile = ["inputJson"];
-  } ''
-    ${pkgs.python3}/bin/python3 -B ${./_network-worker-profile.py} "$inputJsonPath" "$out"
-  '';
+  workerProfile =
+    pkgs.runCommand "aos-network-worker-profile-v2" {
+      nativeBuildInputs = [pkgs.python3];
+      inputJson = builtins.toJSON workerProfileInput;
+      passAsFile = ["inputJson"];
+    } ''
+      ${pkgs.python3}/bin/python3 -B ${./_network-worker-profile.py} "$inputJsonPath" "$out"
+    '';
 in {
   options.aos.sandbox.networkWorker = {
     enable = lib.mkEnableOption "the authenticated one-shot Network preparation worker";
@@ -60,7 +65,7 @@ in {
 
     assertions = [
       {
-        assertion = (import ./_fixed-systemd-profile.nix {inherit config pkgs;});
+        assertion = import ./_fixed-systemd-profile.nix {inherit config pkgs;};
         message = "Network worker PID 1 must use the canonical per-system Systemd package bound to the selected boot kernel";
       }
       {

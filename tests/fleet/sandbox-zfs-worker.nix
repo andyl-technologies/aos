@@ -145,15 +145,15 @@
           RuntimeMaxSec = lib.mkForce "8s";
           ReadWritePaths = [faultStateDirectory];
           ExecStart = lib.mkForce ''
-              ${pkgs.aos-landlock}/bin/aos-landlock \
-              --require-abi 4 \
-              --fs-read / \
-              --fs-read /sys/fs/cgroup \
-              --fs-ro /nix/store \
-              --fs-rw ${faultStateDirectory} \
-              -- \
-              ${config.aos.sandbox.storageWorker.package}/bin/aos-sandbox-zfs-worker \
-              ${selectedZfs}/sbin/zfs
+            ${pkgs.aos-landlock}/bin/aos-landlock \
+            --require-abi 4 \
+            --fs-read / \
+            --fs-read /sys/fs/cgroup \
+            --fs-ro /nix/store \
+            --fs-rw ${faultStateDirectory} \
+            -- \
+            ${config.aos.sandbox.storageWorker.package}/bin/aos-sandbox-zfs-worker \
+            ${selectedZfs}/sbin/zfs
           '';
         };
 

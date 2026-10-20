@@ -17,6 +17,10 @@ use aos_sandbox_api::aos::sandbox::local::v1::{
 };
 #[cfg(test)]
 use aos_sandbox_broker::{AdmissionRequest, BrokerAuthority, BrokerDomain};
+use aos_sandbox_linux::boot::KernelBootId;
+use aos_sandbox_linux::cgroup::CgroupV2Root;
+use aos_sandbox_linux::pidfd::{NamespaceFd, NamespaceKind, SingleThreadedProcess};
+use aos_sandbox_linux::seqpacket::RecordSubjectListener;
 use aos_sandbox_model::format::{
     encode_broker_authorization_plan, encode_ownership_lease, encode_sandbox_spec,
     encode_signature, encode_trust_policy,
@@ -34,10 +38,6 @@ use aos_sandbox_model::{
     ProtocolVersion, RawClockProvenance, RawPairedClockSample, ResourceVector, RevocationScopeId,
     SandboxId, TrustScopeId, descriptor_for_bytes, sign_statement,
 };
-use aos_sandbox_linux::boot::KernelBootId;
-use aos_sandbox_linux::cgroup::CgroupV2Root;
-use aos_sandbox_linux::pidfd::{NamespaceFd, NamespaceKind, SingleThreadedProcess};
-use aos_sandbox_linux::seqpacket::RecordSubjectListener;
 use aos_sandbox_network::{
     ActivatedNetworkDescriptors, AuthenticatedNetworkPreparationV1,
     ExecutedNetworkLifecycleWorkerV1, FixedBpfObservationReader, FixedNftablesObservationReader,
@@ -677,10 +677,7 @@ fn marker_descriptor(kind: PortableMediaType, marker: u8) -> Result<ObjectDescri
     ))
 }
 
-fn apply_request(
-    manifest: &CanonicalAssignmentManifestV1,
-    spec: &SandboxSpec,
-) -> Result<Vec<u8>> {
+fn apply_request(manifest: &CanonicalAssignmentManifestV1, spec: &SandboxSpec) -> Result<Vec<u8>> {
     apply_request_with_deadline(manifest, spec, 180)
 }
 
@@ -691,8 +688,8 @@ fn apply_request_with_deadline(
 ) -> Result<Vec<u8>> {
     let assignment = manifest.broker_assignment()?;
     let specification = canonical_network_preparation_specification_v2(manifest, spec)?;
-    let content = NetworkPreparationContentV2::new(manifest.canonical_bytes(), &specification)?
-        .encode()?;
+    let content =
+        NetworkPreparationContentV2::new(manifest.canonical_bytes(), &specification)?.encode()?;
     let reference = NetworkPreparationContentReferenceV2::for_content(&content)?;
 
     let mut request = ApplyNetworkRequest::default();
@@ -1002,33 +999,37 @@ impl AuthorityFixture {
             [49; 16],
         )?;
         let lease_bytes = encode_ownership_lease(&lease);
-        validated_artifacts(request, &candidate, BrokerAuthorizationArtifactsV1 {
-            broker_plan_signature: signed(
-                &plan_bytes,
-                PortableMediaType::BrokerAuthorizationPlan,
-                self.plan_scope,
-                self.plan_signer.clone(),
-                SignaturePurpose::BrokerAuthorization,
-                &self.plan_descriptor,
-                &self.plan_key,
-                issued_wall_seconds,
-                expires_wall_seconds,
-            )?,
-            broker_plan: plan_bytes,
-            ownership_lease_signature: signed(
-                &lease_bytes,
-                PortableMediaType::OwnershipLease,
-                self.lease_scope,
-                self.lease_signer.clone(),
-                SignaturePurpose::OwnershipLease,
-                &self.lease_descriptor,
-                &self.lease_key,
-                issued_wall_seconds,
-                expires_wall_seconds,
-            )?,
-            ownership_lease: lease_bytes,
-            ..Default::default()
-        })
+        validated_artifacts(
+            request,
+            &candidate,
+            BrokerAuthorizationArtifactsV1 {
+                broker_plan_signature: signed(
+                    &plan_bytes,
+                    PortableMediaType::BrokerAuthorizationPlan,
+                    self.plan_scope,
+                    self.plan_signer.clone(),
+                    SignaturePurpose::BrokerAuthorization,
+                    &self.plan_descriptor,
+                    &self.plan_key,
+                    issued_wall_seconds,
+                    expires_wall_seconds,
+                )?,
+                broker_plan: plan_bytes,
+                ownership_lease_signature: signed(
+                    &lease_bytes,
+                    PortableMediaType::OwnershipLease,
+                    self.lease_scope,
+                    self.lease_signer.clone(),
+                    SignaturePurpose::OwnershipLease,
+                    &self.lease_descriptor,
+                    &self.lease_key,
+                    issued_wall_seconds,
+                    expires_wall_seconds,
+                )?,
+                ownership_lease: lease_bytes,
+                ..Default::default()
+            },
+        )
     }
 }
 

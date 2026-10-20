@@ -74,15 +74,17 @@
       }
     ];
 
-    passthru = {
-      inherit rootPaths graph targetSystem seedMeasurement;
-      seedDescriptor = seedMeasurement;
-      seedRootRelativePath = "root";
-      seedDescriptorRelativePath = "seed280";
-      evidenceSources = [./aos-sandbox-nix-generation-template.nix];
-    } // lib.optionalAttrs emitPortableSeedGraph {
-      inherit portableSeedGraph;
-    };
+    passthru =
+      {
+        inherit rootPaths graph targetSystem seedMeasurement;
+        seedDescriptor = seedMeasurement;
+        seedRootRelativePath = "root";
+        seedDescriptorRelativePath = "seed280";
+        evidenceSources = [./aos-sandbox-nix-generation-template.nix];
+      }
+      // lib.optionalAttrs emitPortableSeedGraph {
+        inherit portableSeedGraph;
+      };
 
     meta = {
       description = "Complete private Nix seed tree DATA, without G0 authority";
@@ -148,5 +150,4 @@
 in
   assert validRoots;
   assert builtins.elem targetSystem ["x86_64-linux" "aarch64-linux"];
-  assert nix.version == "2.24.12";
-    seedTree
+  assert nix.version == "2.24.12"; seedTree

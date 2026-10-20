@@ -21,7 +21,8 @@
     path = ../../tests/sandbox;
     name = "aos-namespace-inspector-manager-query-fixture-source";
     filter = path: type:
-      type == "directory"
+      type
+      == "directory"
       || lib.hasPrefix "namespace-inspector-manager-query-fixture" (builtins.baseNameOf path)
       || builtins.baseNameOf path == "broker-loader-environment-test.c";
   };

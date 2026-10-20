@@ -9,7 +9,10 @@
 
   cfg = config.aos.sandbox.policyAuthority;
   resourcePolicy = config.aos.sandbox.resourceBank.policy;
-  rootReceiving = if resourcePolicy == null then null else resourcePolicy.rootReceiving;
+  rootReceiving =
+    if resourcePolicy == null
+    then null
+    else resourcePolicy.rootReceiving;
   controller = config.aos.sandbox.controller;
   ownershipTrust = config.aos.sandbox.hostBroker.credentials;
   mountPlanTrust = config.aos.sandbox.mountBroker.credentials;
@@ -140,13 +143,16 @@
     deleteMountSessionManifest = "brokerSessionMountManifest";
     deleteNetworkSessionManifest = "brokerSessionNetworkManifest";
   };
-  deleteBrokerTrustSelected = lib.any
+  deleteBrokerTrustSelected =
+    lib.any
     (option: cfg.credentials.${option} != null)
     (builtins.attrNames deleteBrokerCredentials);
   executionNoApplyCredentials = {
     rootNoApplyFloorSigningKey = "root-noapply-floor-signing";
   };
-  executionNoApplySelected = cfg.credentials.rootNoApplyFloorSigningKey != null
+  executionNoApplySelected =
+    cfg.credentials.rootNoApplyFloorSigningKey
+    != null
     || ownershipTrust.rootNoApplyFloorPublicKey != null;
   gitEvidenceCredentials = {
     gitEvidenceProvision = "git-evidence-provision-v1";
@@ -402,15 +408,20 @@ in {
       requiredCredentials
       ++ [
         {
-          assertion = !executionNoApplySelected
-            || (cfg.credentials.rootNoApplyFloorSigningKey != null
+          assertion =
+            !executionNoApplySelected
+            || (cfg.credentials.rootNoApplyFloorSigningKey
+              != null
               && ownershipTrust.rootNoApplyFloorPublicKey != null
               && cfg.credentials.rootNoApplyFloorSigningKey != ownershipTrust.rootNoApplyFloorPublicKey);
           message = "Root NoApply floor signing and Host public pin require distinct external credential names provisioned together";
         }
         {
-          assertion = !executionNoApplySelected
-            || (confined && ownershipTrustSelected && cfg.package == pkgs.aos-sandboxd
+          assertion =
+            !executionNoApplySelected
+            || (confined
+              && ownershipTrustSelected
+              && cfg.package == pkgs.aos-sandboxd
               && config.aos.sandbox.hostBroker.enable
               && config.aos.sandbox.hostBroker.componentControl);
           message = "Root NoApply floor credentials require the selected confined normal Root receiving owner and Host component control";
@@ -420,56 +431,73 @@ in {
           message = "selected Root current physical Cache reads require the same public Cache memory-ceiling credential as the Cache signer";
         }
         {
-          assertion = !ownershipTrustSelected
-            || (ownershipTrust.brokerPlanPolicy != null
+          assertion =
+            !ownershipTrustSelected
+            || (ownershipTrust.brokerPlanPolicy
+              != null
               && ownershipTrust.brokerPlanPublicKey != null
               && ownershipTrust.brokerRevocationScope != null);
           message = "selected Root receiving requires the independently installed Controller broker-plan public policy, key and revocation scope";
         }
         {
-          assertion = !deleteBrokerTrustSelected
-            || (mountPlanTrust.brokerPlanPolicy != null
+          assertion =
+            !deleteBrokerTrustSelected
+            || (mountPlanTrust.brokerPlanPolicy
+              != null
               && mountPlanTrust.brokerPlanPublicKey != null
               && mountPlanTrust.brokerRevocationScope != null);
           message = "Root broker comparison requires Mount's same public broker-plan policy, key, and revocation scope";
         }
         {
-          assertion = !ownershipTrustSelected
-            || (ownershipTrust.ownershipLeasePolicy != null
+          assertion =
+            !ownershipTrustSelected
+            || (ownershipTrust.ownershipLeasePolicy
+              != null
               && ownershipTrust.ownershipLeasePublicKey != null);
           message = "selected Root receiving requires its own installed public Ownership lease policy and key from the existing Host trust configuration";
         }
         {
-          assertion = cfg.credentials.createStorageSessionManifest == null
+          assertion =
+            cfg.credentials.createStorageSessionManifest
+            == null
             || cfg.credentials.createStorageSessionManifest
-              == config.aos.sandbox.controllerService.credentials.brokerSessionStorageManifest;
+            == config.aos.sandbox.controllerService.credentials.brokerSessionStorageManifest;
           message = "Root Storage Create requires the same independently provisioned public Controller Storage session manifest";
         }
         {
-          assertion = lib.all
+          assertion =
+            lib.all
             (option: (cfg.credentials.${option} != null) == deleteBrokerTrustSelected)
             (builtins.attrNames deleteBrokerCredentials);
           message = "Root Delete requires the Host, Mount and Network public session manifests together";
         }
         {
-          assertion = !deleteBrokerTrustSelected
-            || (confined && ownershipTrustSelected && cfg.package == pkgs.aos-sandboxd
+          assertion =
+            !deleteBrokerTrustSelected
+            || (confined
+              && ownershipTrustSelected
+              && cfg.package == pkgs.aos-sandboxd
               && lib.all
-                (option: cfg.credentials.${option}
-                  == config.aos.sandbox.controllerService.credentials.${deleteBrokerControllerOptions.${option}})
-                (builtins.attrNames deleteBrokerCredentials));
+              (option:
+                cfg.credentials.${option}
+                == config.aos.sandbox.controllerService.credentials.${deleteBrokerControllerOptions.${option}})
+              (builtins.attrNames deleteBrokerCredentials));
           message = "Root Delete requires the selected confined Root and the same independently provisioned Controller broker manifests";
         }
         {
-          assertion = lib.all (option: (cfg.credentials.${option} != null) == coverageSelected)
+          assertion =
+            lib.all (option: (cfg.credentials.${option} != null) == coverageSelected)
             (builtins.attrNames gitCoverageCredentials);
           message = "Root Git coverage requires enrollment, complete owner catalog and both fixed session manifests together";
         }
         {
-          assertion = !coverageSelected || (confined && cfg.package == pkgs.aos-sandboxd
-            && cfg.credentials.gitCoverageMountSessionManifest
+          assertion =
+            !coverageSelected
+            || (confined
+              && cfg.package == pkgs.aos-sandboxd
+              && cfg.credentials.gitCoverageMountSessionManifest
               == config.aos.sandbox.controllerService.credentials.brokerSessionMountManifest
-            && cfg.credentials.gitCoverageStorageSessionManifest
+              && cfg.credentials.gitCoverageStorageSessionManifest
               == config.aos.sandbox.controllerService.credentials.brokerSessionStorageManifest);
           message = "Root coverage requires the selected normal Root and the same independently provisioned original Controller session manifests";
         }
@@ -625,7 +653,8 @@ in {
         # The active system unit co-retains this actual immutable package and
         # its copied closure bytes. The compiled Root profile commits the exact
         # selected source/target binding; absence grants no default Environment.
-        ReadOnlyPaths = lib.optional environmentProvisionSelected
+        ReadOnlyPaths =
+          lib.optional environmentProvisionSelected
           (toString cfg.environmentProvision);
         StateDirectory = "aos/sandbox/policy-compiler";
         StateDirectoryMode = "0700";

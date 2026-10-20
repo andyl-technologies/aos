@@ -1,15 +1,17 @@
 ##! Exercises the actual fixed Root Delete credential wiring without builds.
 {lib}: let
-  mountOptions = (import ../../modules/sandbox/mount-broker.nix {
-    inherit lib;
-    pkgs = {};
-    config = {};
-  }).options.aos.sandbox.mountBroker.credentials;
-  hostOptions = (import ../../modules/sandbox/host-broker.nix {
-    inherit lib;
-    pkgs = {};
-    config = {};
-  }).options.aos.sandbox.hostBroker.credentials;
+  mountOptions =
+    (import ../../modules/sandbox/mount-broker.nix {
+      inherit lib;
+      pkgs = {};
+      config = {};
+    }).options.aos.sandbox.mountBroker.credentials;
+  hostOptions =
+    (import ../../modules/sandbox/host-broker.nix {
+      inherit lib;
+      pkgs = {};
+      config = {};
+    }).options.aos.sandbox.hostBroker.credentials;
   credentialDefaults = options: lib.mapAttrs (_: option: option.default) options;
   mount = {
     brokerPlanPolicy = "fixture-mount-policy";
@@ -45,11 +47,16 @@
             enable = true;
             package = "fixture-normal-root";
             environmentProvision = null;
-            credentials = lib.genAttrs
+            credentials =
+              lib.genAttrs
               (builtins.attrNames production.options.aos.sandbox.policyAuthority.credentials)
-              (_: null) // credentials;
+              (_: null)
+              // credentials;
           };
-          resourceBank.policy = if selected then {rootReceiving = {};} else null;
+          resourceBank.policy =
+            if selected
+            then {rootReceiving = {};}
+            else null;
           controllerService.credentials = controllerCredentials;
           cacheSignerService.credentials.memoryCeiling = null;
           # Direct fixture imports bypass discovery; retain the genuine
@@ -61,11 +68,14 @@
     };
     actual = assert production.config._type == "if" && production.config._condition;
       production.config._value;
-    assertions = builtins.filter
+    assertions =
+      builtins.filter
       (item: builtins.elem item.message messages)
       actual.assertions;
   in {
-    accepted = builtins.length assertions == 3
+    accepted =
+      builtins.length assertions
+      == 3
       && lib.all (item: item.assertion) assertions;
     loaded = actual.systemd.services.aos-sandbox-policy-authorityd.serviceConfig.LoadCredential;
   };
@@ -81,7 +91,8 @@
   missingMountScope = inspect root controller (mount // {brokerRevocationScope = null;}) true true;
 in
   complete.accepted
-  && complete.loaded == [
+  && complete.loaded
+  == [
     "delete-host-session-manifest-v2:/run/credentials/@system/fixture-host"
     "delete-mount-session-manifest-v2:/run/credentials/@system/fixture-mount"
     "delete-network-session-manifest-v2:/run/credentials/@system/fixture-network"
@@ -89,7 +100,8 @@ in
     "mount-broker-plan-public-key:/run/credentials/@system/fixture-mount-public"
     "mount-broker-revocation-scope:/run/credentials/@system/fixture-mount-scope"
   ]
-  && absent.accepted && absent.loaded == []
+  && absent.accepted
+  && absent.loaded == []
   && !partial.accepted
   && !foreign.accepted
   && !unconfined.accepted

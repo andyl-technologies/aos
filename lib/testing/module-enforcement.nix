@@ -1396,9 +1396,10 @@
         message = "nullable parent enclosure preserves absence and typed selected audit bounds";
       }
       {
-        ok = (import ./controller-recovery-installation.nix {
-          inherit pkgs lib mkSystem;
-        }).incompleteAssertions;
+        ok =
+          (import ./controller-recovery-installation.nix {
+            inherit pkgs lib mkSystem;
+          }).incompleteAssertions;
         message = "recovery-only Controller uses real module types and rejects absent bank/profile installation";
       }
       {

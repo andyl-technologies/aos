@@ -177,13 +177,16 @@
       inherit target;
     };
   };
-  authoredUnit = (systemdLib.generateUnits {
-    type = "system";
-    units."demo.service" = (overlapUnit "demo.service") // {
-      overrideStrategy = "asDropin";
-      wantedBy = ["multi-user.target"];
-    };
-  })."demo.service";
+  authoredUnit =
+    (systemdLib.generateUnits {
+      type = "system";
+      units."demo.service" =
+        (overlapUnit "demo.service")
+        // {
+          overrideStrategy = "asDropin";
+          wantedBy = ["multi-user.target"];
+        };
+    })."demo.service";
   providerEtc = systemdLib.unitsToEtc {
     package = externalUnit "demo.service" "${artifactPackage}/lib/systemd/system/demo.service";
     dropin = externalUnit "demo.service.d/10-package.conf" "${artifactPackage}/lib/systemd/system/demo.service.d/10-package.conf";
@@ -191,9 +194,10 @@
   };
   retiredArgumentsRejected = extra:
     !(builtins.tryEval (builtins.toJSON (systemdLib.generateUnits ({
-      type = "system";
-      units = {};
-    } // extra)))).success;
+        type = "system";
+        units = {};
+      }
+      // extra)))).success;
   providerCollisionRejected =
     !(builtins.tryEval (builtins.toJSON (systemdLib.unitsToEtc {
       first = externalUnit "demo.service" "${artifactPackage}/first";
@@ -263,13 +267,15 @@
     }
     {
       cond =
-        providerEtc."systemd/system/demo.service" == {
+        providerEtc."systemd/system/demo.service"
+        == {
           kind = "store-symlink";
           target = "${artifactPackage}/lib/systemd/system/demo.service";
         }
         && providerEtc."systemd/system/demo.service.d/overrides.conf".kind == "text"
         && providerEtc."systemd/system/demo.service.d/10-package.conf".kind == "store-symlink"
-        && providerEtc."systemd/system/multi-user.target.wants/demo.service" == {
+        && providerEtc."systemd/system/multi-user.target.wants/demo.service"
+        == {
           kind = "symlink";
           target = "../demo.service";
         };
@@ -278,14 +284,18 @@
     {
       cond =
         retiredArgumentsRejected {packages = [artifactPackage];}
-        && retiredArgumentsRejected {package = artifactPackage; upstreamUnits = ["demo.service"];}
+        && retiredArgumentsRejected {
+          package = artifactPackage;
+          upstreamUnits = ["demo.service"];
+        }
         && retiredArgumentsRejected {allowCollisions = false;}
         && providerCollisionRejected;
       msg = "systemd-lib: retired inventory arguments and overlapping provider entries must fail closed";
     }
     {
       cond =
-        builtins.attrNames frozenArtifacts == ["fixture" "fixtureAlias"]
+        builtins.attrNames frozenArtifacts
+        == ["fixture" "fixtureAlias"]
         && frozenArtifactJson == orderedArtifactJson
         && frozenArtifacts.fixture._type == "aos-package-artifact"
         && frozenArtifacts.fixture.name == "fixture"
@@ -296,7 +306,8 @@
     }
     {
       cond =
-        toString frozenArtifacts.fixture == toString artifactPackage
+        toString frozenArtifacts.fixture
+        == toString artifactPackage
         && !containsStr "/nix/store/" frozenArtifactJson
         && !containsStr "0123456789abcdfghijklmnpqrsvwxyz" frozenArtifactJson
         && containsStr "@nix-store@/" frozenArtifactJson;

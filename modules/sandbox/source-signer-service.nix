@@ -17,10 +17,10 @@
   sourceService = config.systemd.services.aos-sandbox-source-signerd;
   sourceConfig = sourceService.serviceConfig;
   sourceSocket = config.systemd.sockets.aos-sandbox-source-signerd.socketConfig;
-  rootProfileFiles = lib.optional (policy._normalStartupProfile != null)
+  rootProfileFiles =
+    lib.optional (policy._normalStartupProfile != null)
     "${policy._normalStartupProfile}/profile.json:aos-source-root-profile:read-only";
   profileMatches = import ./_fixed-signer-profile.nix;
-
 in {
   options.aos.sandbox.sourceSignerService = {
     enable = lib.mkEnableOption "the separate, nonauthorizing Source-only hold signer";
@@ -52,16 +52,19 @@ in {
       {
         # The installed binary has one immediate selected cutover. Missing
         # original F/PID1 descriptors cannot select the ordinary library API.
-        assertion = protectedOrigin
+        assertion =
+          protectedOrigin
           && config.aos.sandbox.resourceBank.parentEnclosure.sourceSignerReceiving != null
           && config.aos.sandbox.resourceBank.parentEnclosure.sourceSignerSender != null;
         message = "installed Source signer requires its genuine Parent and explicit Source receiving/sender F/M slices";
       }
       {
-        assertion = policy._normalStartupProfile != null
+        assertion =
+          policy._normalStartupProfile
+          != null
           && (sourceConfig.OpenFile or []) == rootProfileFiles
           && builtins.all (name: (sourceSocket.${name} or false) == true)
-            ["PassCredentials" "PassPIDFD" "PassSecurity" "PassSubjectBeforeListen"];
+          ["PassCredentials" "PassPIDFD" "PassSecurity" "PassSubjectBeforeListen"];
         message = "installed Source signer requires its exact image-delivered Root profile and all three PID1 pre-listen subject options";
       }
       {
@@ -71,15 +74,17 @@ in {
       {
         # Parent03 selects a new finite machine-role launch profile. Ordinary
         # library callers and systemd's generic PAM/EnvFile support are separate.
-        assertion = !protectedOrigin || (
-          profileMatches {
-            inherit config lib pkgs;
-            package = cfg.package;
-            unit = sourceService;
-            identity = "aos-source-signer";
-            expectedExec = expectedExecStart;
-          }
-        );
+        assertion =
+          !protectedOrigin
+          || (
+            profileMatches {
+              inherit config lib pkgs;
+              package = cfg.package;
+              unit = sourceService;
+              identity = "aos-source-signer";
+              expectedExec = expectedExecStart;
+            }
+          );
         message = "protected Source origin v1 requires the immutable policy-labelled image and its exact single signer role, no auxiliary commands, PAM or EnvironmentFile; no helper user/PID/BPF/delegated namespaces or DynamicUser, and the exact source-built systemd loader profile; generic systemd modes keep their existing features";
       }
       {

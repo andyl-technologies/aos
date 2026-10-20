@@ -14,9 +14,11 @@
     };
     # Reuse both the actual provider's projection and the production schema.
     # This fixture checks directives; the record does not enroll a process.
-    options.aos.manager.selected = managerOptions.options.aos.manager.selected // {
-      default = selectedManager;
-    };
+    options.aos.manager.selected =
+      managerOptions.options.aos.manager.selected
+      // {
+        default = selectedManager;
+      };
     options.systemd.services = lib.mkOption {
       type = lib.types.attrsOf (lib.types.submodule {
         freeformType = lib.types.attrsOf lib.types.anything;

@@ -159,7 +159,8 @@
     gitCoverageDeploymentPublicKey = "deployment-public-key";
   };
   coverageSelected = cfg.credentials.gitCoverageEnrollment != null;
-  gitCoverageCredentials = lib.mapAttrsToList
+  gitCoverageCredentials =
+    lib.mapAttrsToList
     (option: name: "${name}:/run/credentials/@system/${cfg.credentials.${option}}")
     (lib.filterAttrs (option: _: cfg.credentials.${option} != null) gitCoverageCredentialNames);
   projectAuthorizationIssuerCredential =
@@ -350,11 +351,13 @@ in {
           description = "External protected credential loaded as ${name} for the public TLS endpoint.";
         })
       publicCredentialNames
-      // lib.mapAttrs (_: name: lib.mkOption {
-        type = lib.types.nullOr credentialNameType;
-        default = null;
-        description = "Optional independently provisioned exclusive-cohort public input ${name}; the complete fixed profile is required together.";
-      }) gitCoverageCredentialNames;
+      // lib.mapAttrs (_: name:
+        lib.mkOption {
+          type = lib.types.nullOr credentialNameType;
+          default = null;
+          description = "Optional independently provisioned exclusive-cohort public input ${name}; the complete fixed profile is required together.";
+        })
+      gitCoverageCredentialNames;
   };
 
   config = lib.mkIf cfg.enable {
@@ -363,56 +366,69 @@ in {
     assertions =
       [
         {
-          assertion = !cfg.operatorRecoveryOnly.enable || (
-            config.aos.sandbox.resourceBank.policy != null
-            && config.aos.sandbox.resourceBank.policy.controllerRecovery != null
-            && cfg.publicApi.enable
-            && normalRootProfile != null
-            && cfg.package == pkgs.aos-sandboxd
-            && !cfg.publisherIngress.enable
-            && !cfg.sourceSuccessorIssuance.enable
-            && !cfg.createQ04PolicySubgate.enable
-            && !cfg.gitUploadBootstrap.enable
-            && !cfg.gitReadInspection.enable
-            && !onlineNix.enable
-          );
+          assertion =
+            !cfg.operatorRecoveryOnly.enable
+            || (
+              config.aos.sandbox.resourceBank.policy
+              != null
+              && config.aos.sandbox.resourceBank.policy.controllerRecovery != null
+              && cfg.publicApi.enable
+              && normalRootProfile != null
+              && cfg.package == pkgs.aos-sandboxd
+              && !cfg.publisherIngress.enable
+              && !cfg.sourceSuccessorIssuance.enable
+              && !cfg.createQ04PolicySubgate.enable
+              && !cfg.gitUploadBootstrap.enable
+              && !cfg.gitReadInspection.enable
+              && !onlineNix.enable
+            );
           message = "Operator recovery requires the selected public Controller/Root profile and excludes ordinary startup purposes; a genuine confirmed successor remains mandatory at runtime";
         }
         {
-          assertion = lib.all (option: (cfg.credentials.${option} != null) == coverageSelected)
+          assertion =
+            lib.all (option: (cfg.credentials.${option} != null) == coverageSelected)
             (builtins.attrNames gitCoverageCredentialNames);
           message = "Controller Git coverage requires the four fixed public inputs together";
         }
         {
-          assertion = !coverageSelected || (cfg.gitUploadBootstrap.enable
-            && normalRootProfile != null && cfg.package == pkgs.aos-sandboxd
-            && !cfg.sourceSuccessorIssuance.enable
-            && cfg.credentials.controllerSourceTreeSeed == null
-            && cfg.credentials.projectAuthorizationSource == null);
+          assertion =
+            !coverageSelected
+            || (cfg.gitUploadBootstrap.enable
+              && normalRootProfile != null
+              && cfg.package == pkgs.aos-sandboxd
+              && !cfg.sourceSuccessorIssuance.enable
+              && cfg.credentials.controllerSourceTreeSeed == null
+              && cfg.credentials.projectAuthorizationSource == null);
           message = "Git coverage requires the original selected Controller/Root profile and Cache bootstrap, without a new Source genesis or issue request";
         }
         {
-          assertion = !coverageSelected || (
-            cfg.credentials.gitCoverageEnrollment == policyAuthority.credentials.gitCoverageEnrollment
-            && cfg.credentials.gitCoverageOwnerCatalog == policyAuthority.credentials.gitCoverageOwnerCatalog
-            && cfg.credentials.gitCoverageProjectPublicKey == policyAuthority.credentials.projectPublicKey
-            && cfg.credentials.gitCoverageDeploymentPublicKey == policyAuthority.credentials.deploymentPublicKey
-            && cfg.credentials.gitCoverageEnrollment == brokers.mountBroker.credentials.gitCoverageEnrollment
-            && cfg.credentials.gitCoverageOwnerCatalog == brokers.mountBroker.credentials.gitCoverageOwnerCatalog
-            && cfg.credentials.gitCoverageProjectPublicKey == brokers.mountBroker.credentials.gitCoverageProjectPublicKey
-            && cfg.credentials.gitCoverageDeploymentPublicKey == brokers.mountBroker.credentials.gitCoverageDeploymentPublicKey
-            && cfg.credentials.gitCoverageEnrollment == brokers.storageBroker.credentials.gitCoverageEnrollment
-            && cfg.credentials.gitCoverageOwnerCatalog == brokers.storageBroker.credentials.gitCoverageOwnerCatalog
-            && cfg.credentials.gitCoverageProjectPublicKey == brokers.storageBroker.credentials.gitCoverageProjectPublicKey
-            && cfg.credentials.gitCoverageDeploymentPublicKey == brokers.storageBroker.credentials.gitCoverageDeploymentPublicKey);
+          assertion =
+            !coverageSelected
+            || (
+              cfg.credentials.gitCoverageEnrollment
+              == policyAuthority.credentials.gitCoverageEnrollment
+              && cfg.credentials.gitCoverageOwnerCatalog == policyAuthority.credentials.gitCoverageOwnerCatalog
+              && cfg.credentials.gitCoverageProjectPublicKey == policyAuthority.credentials.projectPublicKey
+              && cfg.credentials.gitCoverageDeploymentPublicKey == policyAuthority.credentials.deploymentPublicKey
+              && cfg.credentials.gitCoverageEnrollment == brokers.mountBroker.credentials.gitCoverageEnrollment
+              && cfg.credentials.gitCoverageOwnerCatalog == brokers.mountBroker.credentials.gitCoverageOwnerCatalog
+              && cfg.credentials.gitCoverageProjectPublicKey == brokers.mountBroker.credentials.gitCoverageProjectPublicKey
+              && cfg.credentials.gitCoverageDeploymentPublicKey == brokers.mountBroker.credentials.gitCoverageDeploymentPublicKey
+              && cfg.credentials.gitCoverageEnrollment == brokers.storageBroker.credentials.gitCoverageEnrollment
+              && cfg.credentials.gitCoverageOwnerCatalog == brokers.storageBroker.credentials.gitCoverageOwnerCatalog
+              && cfg.credentials.gitCoverageProjectPublicKey == brokers.storageBroker.credentials.gitCoverageProjectPublicKey
+              && cfg.credentials.gitCoverageDeploymentPublicKey == brokers.storageBroker.credentials.gitCoverageDeploymentPublicKey
+            );
           message = "Git coverage must independently deliver the same signed profile and existing role pins to Root, Controller, Mount and Storage";
         }
       ]
-      ++
-      [
+      ++ [
         {
-          assertion = !cfg.gitReadInspection.enable
-            || (cfg.publicApi.enable && cfg.publisherIngress.enable && cfg.gitUploadBootstrap.enable
+          assertion =
+            !cfg.gitReadInspection.enable
+            || (cfg.publicApi.enable
+              && cfg.publisherIngress.enable
+              && cfg.gitUploadBootstrap.enable
               && config.aos.sandbox.gitGatewayTransport.enable
               && !cfg.sourceSuccessorIssuance.enable
               && cfg.credentials.publicApiClientCa == config.aos.sandbox.gitGatewayTransport.credentials.clientCa
@@ -426,32 +442,42 @@ in {
           message = "aos.sandbox.controllerService.credentials.nodeId is required";
         }
         {
-          assertion = !cfg.createQ04PolicySubgate.enable
-            || (!cfg.sourceSuccessorIssuance.enable && normalRootProfile != null
-              && cfg.package == (
+          assertion =
+            !cfg.createQ04PolicySubgate.enable
+            || (!cfg.sourceSuccessorIssuance.enable
+              && normalRootProfile != null
+              && cfg.package
+              == (
                 if onlineNix.enable
                 then onlineNix._package
                 else pkgs.aos-sandboxd
               )
-              && cacheSignerView.enable && sourceSignerView.enable
-              && cacheSignerService.enable && sourceSignerService.enable);
+              && cacheSignerView.enable
+              && sourceSignerView.enable
+              && cacheSignerService.enable
+              && sourceSignerService.enable);
           message = "Q04 policy subgate requires the genuine selected normal-Root profile and both existing signer views/services; it is not issue mode or public Create activation";
         }
         {
-          assertion = !cfg.createQ04PolicySubgate.enable
-            || (brokers.resourceBank.policy != null
+          assertion =
+            !cfg.createQ04PolicySubgate.enable
+            || (brokers.resourceBank.policy
+              != null
               && brokers.resourceBank.policy.createContinuationIntake != null
               && brokers.resourceBank.policy.storageReceiving != null);
           message = "Selected original Create requires the explicit V7 Controller and Storage subdivisions inside their already-paid envelopes";
         }
         {
-          assertion = !cfg.createQ04PolicySubgate.enable
+          assertion =
+            !cfg.createQ04PolicySubgate.enable
             || !cfg.gitUploadBootstrap.enable;
           message = "original Q04 freshness cannot share the previously initialized Git bootstrap Cache owner";
         }
         {
-          assertion = !cfg.createQ04PolicySubgate.enable
-            || (cfg.credentials.controllerHoldSigningKey != null
+          assertion =
+            !cfg.createQ04PolicySubgate.enable
+            || (cfg.credentials.controllerHoldSigningKey
+              != null
               && cfg.credentials.controllerHoldPublicKey != null
               && cfg.credentials.cacheOwnerReadbackSigningKey != null
               && cfg.credentials.cacheOwnerReadbackPublicKey != null
@@ -463,14 +489,17 @@ in {
         {
           assertion =
             !cfg.sourceSuccessorIssuance.enable
-            || (!cfg.publicApi.enable && !cfg.publisherIngress.enable
-              && normalRootProfile != null && cfg.package == pkgs.aos-sandboxd);
+            || (!cfg.publicApi.enable
+              && !cfg.publisherIngress.enable
+              && normalRootProfile != null
+              && cfg.package == pkgs.aos-sandboxd);
           message = "Source successor issuance requires the exact selected Controller/normal-Root image and exclusive nonpublic issue mode";
         }
         {
           assertion =
             !cfg.sourceSuccessorIssuance.enable
-            || (cfg.credentials.controllerHoldSigningKey != null
+            || (cfg.credentials.controllerHoldSigningKey
+              != null
               && cfg.credentials.controllerHoldPublicKey != null
               && cfg.credentials.controllerSourceTreeSeedIssuer != null
               && cfg.credentials.projectAuthorizationIssuer != null);
@@ -602,15 +631,18 @@ in {
           message = "aos.sandbox.controllerService requires aos.sandbox.networkBroker";
         }
         {
-          assertion = !onlineNix.enable || (
-            cfg.package == onlineNix._package
-            && !cfg.sourceSuccessorIssuance.enable
-            && !cfg.method46TpmFloor.required
-            && normalRootProfile != null
-            && brokers.policyAuthority.package == onlineNix._package
-            && cfg.credentials.brokerPlanSigningKey != null
-            && ownershipAuthority.enable
-          );
+          assertion =
+            !onlineNix.enable
+            || (
+              cfg.package
+              == onlineNix._package
+              && !cfg.sourceSuccessorIssuance.enable
+              && !cfg.method46TpmFloor.required
+              && normalRootProfile != null
+              && brokers.policyAuthority.package == onlineNix._package
+              && cfg.credentials.brokerPlanSigningKey != null
+              && ownershipAuthority.enable
+            );
           message = "online Resolve50 requires the exact selected Controller/Root package, genuine paired Root/Nix startup, independent plan/lease inputs, and no method46 or successor-issuance substitution";
         }
         {
@@ -729,7 +761,10 @@ in {
         StartLimitBurst = 5;
       };
       serviceConfig = {
-        Type = if cfg.sourceSuccessorIssuance.enable then "oneshot" else "notify";
+        Type =
+          if cfg.sourceSuccessorIssuance.enable
+          then "oneshot"
+          else "notify";
         SELinuxContext = lib.mkIf (config.aos.security.selinux.enable && config.aos.security.selinux.bootMode == "immutable-stage0") "system_u:system_r:aos_sandbox_controller_t";
         NotifyAccess = "main";
         ExecStart =
@@ -788,7 +823,10 @@ in {
           ++ lib.optionals onlineNix.storageGenerationPrepare.enable [
             "nix-storage-generation-origin-v1:/run/credentials/@system/${onlineNix.storageGenerationPrepare.origin}"
           ];
-        Restart = if cfg.sourceSuccessorIssuance.enable || onlineNix.enable then "no" else "on-failure";
+        Restart =
+          if cfg.sourceSuccessorIssuance.enable || onlineNix.enable
+          then "no"
+          else "on-failure";
         RestartSec = "2s";
         # Population, not cgroup.procs, retains exiting TPM helper tasks until
         # kernel file-release work drains. Never time out that restart barrier.
@@ -798,7 +836,10 @@ in {
         # Recovery serves explicit requests while remaining unready. Keep the
         # same Type=notify dependency barrier; no timer may kill that retained
         # successor merely because ordinary Ready is intentionally unavailable.
-        TimeoutStartSec = if cfg.operatorRecoveryOnly.enable then "infinity" else "90s";
+        TimeoutStartSec =
+          if cfg.operatorRecoveryOnly.enable
+          then "infinity"
+          else "90s";
         User = "aos-sandboxd";
         Group = "aos-sandboxd";
         StateDirectory = [
@@ -810,7 +851,8 @@ in {
           "aos/sandboxd/view-sources"
         ];
         StateDirectoryMode = "0700";
-        RuntimeDirectory = if cfg.gitReadInspection.enable
+        RuntimeDirectory =
+          if cfg.gitReadInspection.enable
           then ["aos/sandboxd" "aos/git-upload-delegation"]
           else "aos/sandboxd";
         # Traversal grants no access to diagnostics or authority; the public
@@ -825,9 +867,15 @@ in {
         DevicePolicy = "closed";
         DeviceAllow = lib.optional (cfg.method46TpmFloor.required || onlineNix.enable) "/dev/tpmrm0 rw";
         LimitCORE = 0;
-        LimitNOFILE = if onlineNix.enable then 16384 else 128;
+        LimitNOFILE =
+          if onlineNix.enable
+          then 16384
+          else 128;
         LockPersonality = true;
-        MemoryMax = if onlineNix.enable then "4G" else "512M";
+        MemoryMax =
+          if onlineNix.enable
+          then "4G"
+          else "512M";
         MemoryDenyWriteExecute = true;
         NoNewPrivileges = true;
         PrivateDevices = !(cfg.method46TpmFloor.required || onlineNix.enable);
@@ -845,7 +893,10 @@ in {
         ProtectKernelTunables = true;
         # Selected peers need their exact stat/attr observations. MAC still
         # denies generic foreign task contents; this is not ptrace authority.
-        ProtectProc = if cfg.gitReadInspection.enable || onlineNix.enable then "default" else "invisible";
+        ProtectProc =
+          if cfg.gitReadInspection.enable || onlineNix.enable
+          then "default"
+          else "invisible";
         ProtectSystem = "strict";
         RestrictAddressFamilies = ["AF_UNIX"];
         RestrictNamespaces = true;

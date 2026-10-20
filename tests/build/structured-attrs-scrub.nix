@@ -96,15 +96,15 @@
 
   retainedChecks = builtins.concatStringsSep "\n" (
     builtins.map (reference: ''
-        check_present "$manifest" "${reference}"
-      '')
+      check_present "$manifest" "${reference}"
+    '')
     retainedReferences
   );
   unwantedChecks = builtins.concatStringsSep "\n" (
     builtins.map (reference: ''
-        check_absent "$manifest" "${reference}"
-        check_present "$manifest" "${scrubbedReference reference}"
-      '')
+      check_absent "$manifest" "${reference}"
+      check_present "$manifest" "${scrubbedReference reference}"
+    '')
     unwantedReferences
   );
 in

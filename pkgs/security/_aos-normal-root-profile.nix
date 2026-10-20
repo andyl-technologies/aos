@@ -20,19 +20,30 @@
 in
   mkDerivation {
     pname = "aos-normal-root-startup-profile";
-    version = if environmentProvision == null then "2" else "3";
+    version =
+      if environmentProvision == null
+      then "2"
+      else "3";
     src = ./aos-normal-root-profile.py;
     buildDeps = [buildPackages.python3 buildPackages.patchelf buildPackages.binutils buildPackages.setools];
     runtimeDeps = [];
     propagatedDeps = [];
     outputChecks = {};
     inherit unitContract;
-    environmentProvisionRoot = if environmentProvision == null then "" else toString environmentProvision;
+    environmentProvisionRoot =
+      if environmentProvision == null
+      then ""
+      else toString environmentProvision;
     identitiesJson = builtins.toJSON identities;
     passAsFile = ["unitContract" "identitiesJson"];
     exportReferencesGraph.normalRootRuntimeClosure = [aos-sandboxd];
-    nukeRefsKeep = [aos-sandboxd systemd aos-selinux-production-policy aos-selinux-kernel-policy-readback]
-      ++ (if environmentProvision == null then [] else [environmentProvision]);
+    nukeRefsKeep =
+      [aos-sandboxd systemd aos-selinux-production-policy aos-selinux-kernel-policy-readback]
+      ++ (
+        if environmentProvision == null
+        then []
+        else [environmentProvision]
+      );
 
     phases = [
       {

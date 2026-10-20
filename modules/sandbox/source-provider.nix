@@ -71,51 +71,56 @@ in {
         StartLimitIntervalSec = 60;
         StartLimitBurst = 5;
       };
-      serviceConfig = {
-        Type = "simple";
-        Sockets = ["aos-source-providerd.socket"];
-        ExecStartPre = [
-          "${cfg.package}/bin/aos-source-providerd --check-source-provider-authority${selectedArguments}"
-          "${cfg.package}/bin/aos-source-providerd --install-catalog${selectedArguments}"
-        ];
-        ExecStart = "${cfg.package}/bin/aos-source-providerd${selectedArguments}";
-        LoadCredential = [
-          "current-catalog-publication:/run/credentials/@system/${cfg.credentials.catalogPublication}"
-          "current-catalog-manifest:/run/credentials/@system/${cfg.credentials.catalogManifest}"
-        ];
-        Restart = "on-failure";
-        RestartSec = "2s";
-        StateDirectory = "aos/source-provider";
-        StateDirectoryMode = "0700";
-        UMask = "0077";
+      serviceConfig =
+        {
+          Type = "simple";
+          Sockets = ["aos-source-providerd.socket"];
+          ExecStartPre = [
+            "${cfg.package}/bin/aos-source-providerd --check-source-provider-authority${selectedArguments}"
+            "${cfg.package}/bin/aos-source-providerd --install-catalog${selectedArguments}"
+          ];
+          ExecStart = "${cfg.package}/bin/aos-source-providerd${selectedArguments}";
+          LoadCredential = [
+            "current-catalog-publication:/run/credentials/@system/${cfg.credentials.catalogPublication}"
+            "current-catalog-manifest:/run/credentials/@system/${cfg.credentials.catalogManifest}"
+          ];
+          Restart = "on-failure";
+          RestartSec = "2s";
+          StateDirectory = "aos/source-provider";
+          StateDirectoryMode = "0700";
+          UMask = "0077";
 
-        CapabilityBoundingSet = "";
-        DevicePolicy = "closed";
-        LockPersonality = true;
-        MemoryDenyWriteExecute = true;
-        NoNewPrivileges = true;
-        PrivateDevices = true;
-        PrivateTmp = true;
-        ProcSubset = "all";
-        ProtectClock = true;
-        ProtectControlGroups = true;
-        ProtectHome = true;
-        ProtectKernelLogs = true;
-        ProtectKernelModules = true;
-        ProtectKernelTunables = true;
-        ProtectProc = if selectedSourceMount then "default" else "invisible";
-        ProtectSystem = "strict";
-        RestrictAddressFamilies = ["AF_UNIX"];
-        RestrictNamespaces = true;
-        RestrictRealtime = true;
-        RestrictSUIDSGID = true;
-        Slice = "aos-control.slice";
-        TasksMax = 32;
-      } // lib.optionalAttrs selectedSourceMount {
-        AosOwnLauncherImage = true;
-        NonBlocking = true;
-        SELinuxContext = "system_u:system_r:aos_source_provider_t:s0";
-      };
+          CapabilityBoundingSet = "";
+          DevicePolicy = "closed";
+          LockPersonality = true;
+          MemoryDenyWriteExecute = true;
+          NoNewPrivileges = true;
+          PrivateDevices = true;
+          PrivateTmp = true;
+          ProcSubset = "all";
+          ProtectClock = true;
+          ProtectControlGroups = true;
+          ProtectHome = true;
+          ProtectKernelLogs = true;
+          ProtectKernelModules = true;
+          ProtectKernelTunables = true;
+          ProtectProc =
+            if selectedSourceMount
+            then "default"
+            else "invisible";
+          ProtectSystem = "strict";
+          RestrictAddressFamilies = ["AF_UNIX"];
+          RestrictNamespaces = true;
+          RestrictRealtime = true;
+          RestrictSUIDSGID = true;
+          Slice = "aos-control.slice";
+          TasksMax = 32;
+        }
+        // lib.optionalAttrs selectedSourceMount {
+          AosOwnLauncherImage = true;
+          NonBlocking = true;
+          SELinuxContext = "system_u:system_r:aos_source_provider_t:s0";
+        };
     };
   };
 }

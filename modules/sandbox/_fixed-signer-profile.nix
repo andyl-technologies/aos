@@ -10,9 +10,15 @@
 }: let
   settings = unit.serviceConfig;
   emptyDirective = value: value == null || value == "" || value == [];
-  disabledDirective = value: emptyDirective value || value == false || value == 0
+  disabledDirective = value:
+    emptyDirective value
+    || value == false
+    || value == 0
     || (builtins.isString value && builtins.elem (lib.toLower value) ["no" "false" "0"]);
-  connectedPrivateTmp = value: value == true || value == 1
+  connectedPrivateTmp = value:
+    value
+    == true
+    || value == 1
     || (builtins.isString value && builtins.elem (lib.toLower value) ["yes" "true" "1" "connected"]);
   auxiliaryCommands = ["ExecCondition" "ExecStartPre" "ExecStartPost" "ExecReload" "ExecReloadPost" "ExecStop" "ExecStopPost"];
 in
@@ -30,8 +36,20 @@ in
   && connectedPrivateTmp (settings.PrivateTmp or false)
   && connectedPrivateTmp (settings.PrivateVarTmp or settings.PrivateTmp or false)
   && builtins.all (name: emptyDirective (settings.${name} or null))
-    ["RootDirectory" "RootImage" "RootMStack" "MountImages" "ExtensionImages" "ExtensionDirectories" "TemporaryFileSystem"
-     "RuntimeDirectory" "StateDirectory" "CacheDirectory" "LogsDirectory" "ConfigurationDirectory"]
+  [
+    "RootDirectory"
+    "RootImage"
+    "RootMStack"
+    "MountImages"
+    "ExtensionImages"
+    "ExtensionDirectories"
+    "TemporaryFileSystem"
+    "RuntimeDirectory"
+    "StateDirectory"
+    "CacheDirectory"
+    "LogsDirectory"
+    "ConfigurationDirectory"
+  ]
   && emptyDirective (settings.PAMName or null)
   && emptyDirective (settings.EnvironmentFile or null)
   && (settings.ExecStart or null) == expectedExec

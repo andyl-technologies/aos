@@ -46,19 +46,20 @@
   # Exact script outputs contain the image's real UID/GID values. Their
   # interpreter/tool paths do not depend on this policy, avoiding a cycle.
   productionPolicy = pkgs.aosSelinuxProductionPolicyWith ({
-    inherit viewPreparers homeContextAliases;
-    environmentProvision = config.aos.sandbox.policyAuthority.environmentProvision;
-    gitReadDelegation = config.aos.sandbox.controllerService.gitReadInspection.enable;
-    sourceProviderMount = selectedSourceMount;
-    runtimeDeploymentPublisher = config.aos.sandbox.runtimeDeploymentPublisher.enable;
-    resourceBankEnrollment = config.aos.sandbox.resourceBank.policy != null;
-    hostComponentControl = config.aos.sandbox.hostBroker.componentControl;
-  } // lib.optionalAttrs selectedOnlineNix {
-    onlineNix = true;
-    aos-sandboxd = config.aos.sandbox.nixBroker._package;
-    aos-nix-runtime-tpm-helpers = pkgs.aos-nix-runtime-tpm-helpers;
-    aos-nix-online-store-reader = config.aos.sandbox.nixBroker._package.nixOnlineStoreReader;
-  });
+      inherit viewPreparers homeContextAliases;
+      environmentProvision = config.aos.sandbox.policyAuthority.environmentProvision;
+      gitReadDelegation = config.aos.sandbox.controllerService.gitReadInspection.enable;
+      sourceProviderMount = selectedSourceMount;
+      runtimeDeploymentPublisher = config.aos.sandbox.runtimeDeploymentPublisher.enable;
+      resourceBankEnrollment = config.aos.sandbox.resourceBank.policy != null;
+      hostComponentControl = config.aos.sandbox.hostBroker.componentControl;
+    }
+    // lib.optionalAttrs selectedOnlineNix {
+      onlineNix = true;
+      aos-sandboxd = config.aos.sandbox.nixBroker._package;
+      aos-nix-runtime-tpm-helpers = pkgs.aos-nix-runtime-tpm-helpers;
+      aos-nix-online-store-reader = config.aos.sandbox.nixBroker._package.nixOnlineStoreReader;
+    });
   canonicalPolicyPath = "${productionPolicy}/etc/selinux/aos/policy/policy.33";
   # selinuxfs serializes the loaded policydb; its bytes are not the input file.
   # Bind the exact expected image to the selected deployment kernel.
@@ -228,7 +229,6 @@ in {
           }
         ];
       };
-
     })
 
     (lib.mkIf (cfg.enable && immutableStage0) {
@@ -355,14 +355,15 @@ in {
         "rootflags=nodev"
       ];
       aos.boot.initrd.stage0 = pkgs.aosSelinuxStage0With ({
-        aos-selinux-production-policy = productionPolicy;
-        aos-selinux-runtime-roots = runtimeRootsProvisioner;
-        expectedPolicy = canonicalReadbackPath;
-        expectedPolicyKernel = config.system.build.kernel;
-      } // lib.optionalAttrs selectedSourceMount {
-        mountExecutableCarrier = config.boot.initrd.systemd.mountExecutableCarrier;
-        mountCarrierFirstLauncher = true;
-      });
+          aos-selinux-production-policy = productionPolicy;
+          aos-selinux-runtime-roots = runtimeRootsProvisioner;
+          expectedPolicy = canonicalReadbackPath;
+          expectedPolicyKernel = config.system.build.kernel;
+        }
+        // lib.optionalAttrs selectedSourceMount {
+          mountExecutableCarrier = config.boot.initrd.systemd.mountExecutableCarrier;
+          mountCarrierFirstLauncher = true;
+        });
       aos.kernel._extraConfigFragments = [strictKernelConfig];
 
       # Keep production admission closed until the signed-boot VM matrix has

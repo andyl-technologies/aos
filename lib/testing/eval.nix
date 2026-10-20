@@ -86,17 +86,16 @@ in {
   # Image assembly, ELF and rendered unit validation have their own artifact
   # checks. These fixtures exercise the actual authored policy and native stage
   # composition without repeatedly resolving entire server/edge images.
-  rendered-system =
-    assert derivationFinalizationContract;
-    assert builtins.isString selinuxKernelPolicyReadback;
-      check "rendered-system" [
-        ../../tests/effects/build-invariants.nix
-        ../../tests/effects/stages.nix
-        ../../tests/effects/boot-consumers.nix
-        ../../tests/effects/init-system.nix
-        ../../tests/effects/systemd-resources.nix
-        ../../tests/effects/configuration-policy.nix
-      ];
+  rendered-system = assert derivationFinalizationContract;
+  assert builtins.isString selinuxKernelPolicyReadback;
+    check "rendered-system" [
+      ../../tests/effects/build-invariants.nix
+      ../../tests/effects/stages.nix
+      ../../tests/effects/boot-consumers.nix
+      ../../tests/effects/init-system.nix
+      ../../tests/effects/systemd-resources.nix
+      ../../tests/effects/configuration-policy.nix
+    ];
 
   # Preserve the public target name while checking source/library contracts.
   # The native library derives its schema from declarations, with no ABI counter.

@@ -17,7 +17,8 @@ let
   carrierHasNativeSealingAndTargetData = carrier: let
     held = carrier.passthru;
   in
-    carrier.system == "x86_64-linux"
+    carrier.system
+    == "x86_64-linux"
     && held.targetSystem == "aarch64-linux"
     && held.kernel.drvPath == aos.pkgs.linux.drvPath
     && held.launcher.drvPath == aos.pkgs.systemd.drvPath

@@ -15,12 +15,16 @@
   program = "${cfg.package}/bin/aos-sandbox-git-gateway";
   policyPath = "${selinux._canonicalReadback}/policy.33";
   residencyProfile = "service-memcg-observed-node-memory-v1";
-  selectedProfile = if cfg.residencyProfile == null then "" else cfg.residencyProfile;
+  selectedProfile =
+    if cfg.residencyProfile == null
+    then ""
+    else cfg.residencyProfile;
   selectedMinimum =
     if cfg.minimumObservedNodeAvailableBytes == null
     then ""
     else toString cfg.minimumObservedNodeAvailableBytes;
-  arguments = [program cfg.endpoint (toString cfg.uid) (toString cfg.gid) policyPath selectedProfile selectedMinimum]
+  arguments =
+    [program cfg.endpoint (toString cfg.uid) (toString cfg.gid) policyPath selectedProfile selectedMinimum]
     ++ lib.optionals inspection ["--read-scope-inspection" (toString controller.uid) (toString controller.gid)];
   credentialNames = {
     serverCert = "public-api-server-cert";
@@ -75,11 +79,12 @@ in {
       description = "Dedicated, collision-checked Gateway primary GID.";
     };
 
-    credentials = lib.genAttrs (builtins.attrNames credentialNames) (_: lib.mkOption {
-      type = lib.types.nullOr credentialNameType;
-      default = null;
-      description = "Independently provisioned TLS credential, not inherited from Controller configuration.";
-    });
+    credentials = lib.genAttrs (builtins.attrNames credentialNames) (_:
+      lib.mkOption {
+        type = lib.types.nullOr credentialNameType;
+        default = null;
+        description = "Independently provisioned TLS credential, not inherited from Controller configuration.";
+      });
   };
 
   config = lib.mkIf cfg.enable {
@@ -87,13 +92,18 @@ in {
       {
         # These are policy coordinates in the exact immutable unit, not an
         # authority Boolean. Startup retains and reads the actual kernel file.
-        assertion = cfg.residencyProfile == residencyProfile
+        assertion =
+          cfg.residencyProfile
+          == residencyProfile
           && cfg.minimumObservedNodeAvailableBytes != null;
         message = "Gateway requires the explicit service-memcg/observed-node-memory profile and minimum. Hard tenant or all-node network profiles are unsupported; live startup must independently admit the original service and kernel observation.";
       }
       {
-        assertion = selinux.enable && selinux.mode == "enforcing"
-          && selinux.bootMode == "immutable-stage0" && cfg.package == pkgs.aos-sandboxd;
+        assertion =
+          selinux.enable
+          && selinux.mode == "enforcing"
+          && selinux.bootMode == "immutable-stage0"
+          && cfg.package == pkgs.aos-sandboxd;
         message = "Gateway requires immutable-stage0 enforcing MAC, its selected-kernel canonical readback, and the exact policy-labelled AOS package.";
       }
       {
@@ -101,13 +111,18 @@ in {
         message = "Gateway requires an explicitly selected numeric TCP endpoint; startup additionally checks canonical spelling and an unprivileged nonzero port.";
       }
       {
-        assertion = lib.all (value: value != null) (builtins.attrValues cfg.credentials)
+        assertion =
+          lib.all (value: value != null) (builtins.attrValues cfg.credentials)
           && lib.length (lib.unique (builtins.attrValues cfg.credentials)) == 4;
         message = "Gateway requires four distinct, independently provisioned TLS credential selections.";
       }
       {
-        assertion = lib.all (user: (user.uid or null) != cfg.uid
-          && (user.group or null) != name && !(lib.elem name (user.extraGroups or []))) (builtins.attrValues otherUsers)
+        assertion =
+          lib.all (user:
+            (user.uid or null)
+            != cfg.uid
+            && (user.group or null) != name
+            && !(lib.elem name (user.extraGroups or []))) (builtins.attrValues otherUsers)
           && lib.all (group: (group.gid or null) != cfg.gid) (builtins.attrValues otherGroups)
           && (config.aos.users.users.${name}.uid or null) == cfg.uid
           && (config.aos.users.groups.${name}.gid or null) == cfg.gid
@@ -116,18 +131,27 @@ in {
         message = "Gateway needs its own collision-free UID/GID and no supplementary groups.";
       }
       {
-        assertion = (service.Type or null) == "exec"
+        assertion =
+          (service.Type or null)
+          == "exec"
           && (service.ExecStart or null) == lib.escapeShellArgs arguments
-          && (service.ExecStartPre or []) == [] && (service.ExecStartPost or []) == []
-          && (service.User or null) == name && (service.Group or null) == name
+          && (service.ExecStartPre or []) == []
+          && (service.ExecStartPost or []) == []
+          && (service.User or null) == name
+          && (service.Group or null) == name
           && (service.SupplementaryGroups or null) == ""
           && (service.DynamicUser or null) == false
           && (service.SELinuxContext or null) == "system_u:system_r:aos_sandbox_git_gateway_t"
-          && (service.Restart or null) == "no" && (service.Slice or null) == "system.slice"
-          && (service.MemoryMax or null) == "1G" && (service.MemorySwapMax or null) == 0
-          && (service.TasksMax or null) == 8 && (service.LimitNOFILE or null) == 128
-          && (service.CPUQuota or null) == "100%" && (service.CPUQuotaPeriodSec or null) == "100ms"
-          && (service.CapabilityBoundingSet or null) == "" && (service.AmbientCapabilities or null) == ""
+          && (service.Restart or null) == "no"
+          && (service.Slice or null) == "system.slice"
+          && (service.MemoryMax or null) == "1G"
+          && (service.MemorySwapMax or null) == 0
+          && (service.TasksMax or null) == 8
+          && (service.LimitNOFILE or null) == 128
+          && (service.CPUQuota or null) == "100%"
+          && (service.CPUQuotaPeriodSec or null) == "100ms"
+          && (service.CapabilityBoundingSet or null) == ""
+          && (service.AmbientCapabilities or null) == ""
           && (service.NoNewPrivileges or null) == true
           && (service.ProtectSystem or null) == "strict"
           && (service.ProtectControlGroups or null) == true
@@ -136,14 +160,26 @@ in {
           && (service.RestrictNamespaces or null) == true
           && (service.MemoryDenyWriteExecute or null) == true
           && (service.LoadCredential or []) == delivery
-          && (service.SetCredential or []) == [] && (service.LoadCredentialEncrypted or []) == []
-          && (service.SetCredentialEncrypted or []) == [] && (service.ImportCredential or []) == []
-          && (service.OpenFile or []) == [] && (service.ExtraFileDescriptorNames or []) == []
+          && (service.SetCredential or []) == []
+          && (service.LoadCredentialEncrypted or []) == []
+          && (service.SetCredentialEncrypted or []) == []
+          && (service.ImportCredential or []) == []
+          && (service.OpenFile or []) == []
+          && (service.ExtraFileDescriptorNames or []) == []
           && (service.FileDescriptorStoreMax or null) == 0
-          && (service.ReadWritePaths or []) == [] && (service.BindPaths or []) == []
-          && (service.StateDirectory or []) == [] && (service.RuntimeDirectory or []) == []
-          && (service.ProtectProc or null) == (if inspection then "default" else "invisible") && (service.ProcSubset or null) == "all"
-          && (service.RootDirectory or "") == "" && (service.RootImage or "") == ""
+          && (service.ReadWritePaths or []) == []
+          && (service.BindPaths or []) == []
+          && (service.StateDirectory or []) == []
+          && (service.RuntimeDirectory or []) == []
+          && (service.ProtectProc or null)
+          == (
+            if inspection
+            then "default"
+            else "invisible"
+          )
+          && (service.ProcSubset or null) == "all"
+          && (service.RootDirectory or "") == ""
+          && (service.RootImage or "") == ""
           && (service.RestrictAddressFamilies or []) == ["AF_UNIX" "AF_INET" "AF_INET6"];
         message = "Gateway final unit must retain the fixed dedicated launch, credential delivery, two-slot hard envelope and read-only confinement without owner/helper authority.";
       }
@@ -202,7 +238,10 @@ in {
         PrivateTmp = true;
         ProtectSystem = "strict";
         ProtectHome = true;
-        ProtectProc = if inspection then "default" else "invisible";
+        ProtectProc =
+          if inspection
+          then "default"
+          else "invisible";
         # Original clocks and advisory node-memory reads need global proc files.
         # No proc networking allocator or reservation authority is inferred.
         ProcSubset = "all";

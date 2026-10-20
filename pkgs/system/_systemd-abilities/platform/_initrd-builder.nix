@@ -155,7 +155,8 @@
       kind = "runtime-package";
       store_path = "${package}";
       available_stage = "initrd";
-    }) extraRuntimeRoots;
+    })
+    extraRuntimeRoots;
 
   # Short /bin/<name> symlinks. A binary only needs to appear here if an
   # initrd unit (or a script invoked by one) references it as `/bin/foo`
@@ -513,8 +514,9 @@
           # Additional immutable boot inputs must be registered alongside the
           # selected runtime roots, never copied outside native admission.
           ${lib.concatMapStringsSep "\n" (package: ''
-            ${grep}/bin/grep -Fx -- ${lib.escapeShellArg (toString package)} closure-paths >/dev/null
-          '') extraRuntimeRoots}
+              ${grep}/bin/grep -Fx -- ${lib.escapeShellArg (toString package)} closure-paths >/dev/null
+            '')
+            extraRuntimeRoots}
           echo "    $(wc -l < closure-paths) unique store paths in initrd closure"
 
           # ── 1. Directory skeleton ───────────────────────────────────────
@@ -971,7 +973,11 @@
 
           archive_size=$(stat -c %s "$out/initrd.img")
           archive_sha256=$(sha256sum "$out/initrd.img" | cut -d ' ' -f1)
-          configuration_root=${if immutableStage0 then "stage1-root" else "root"}
+          configuration_root=${
+            if immutableStage0
+            then "stage1-root"
+            else "root"
+          }
           rendered_networks=$(
             ${findutils}/bin/find "$configuration_root/etc/systemd/network" \
               -maxdepth 1 -type f -printf '%f\n' \
@@ -1082,12 +1088,14 @@
     meta.description = "AOS initrd with explicit retained dependency roots";
   };
 in
-  if immutableStage0 && builtins.any (tool: tool == null) [
-    nativeErofsUtils
-    nativeLibselinux
-    nativePatchelf
-    nativePython
-  ]
+  if
+    immutableStage0
+    && builtins.any (tool: tool == null) [
+      nativeErofsUtils
+      nativeLibselinux
+      nativePatchelf
+      nativePython
+    ]
   then throw "immutable initrd requires explicit native EROFS, SELinux, patchelf, and Python tools"
   else if checkedMountExecutableCarrier != null && nativeCryptsetup == null
   then throw "Mount executable carrier verification requires native cryptsetup"

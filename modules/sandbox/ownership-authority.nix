@@ -34,13 +34,13 @@ in {
       default = null;
       description = "External 32-byte local ownership signing seed matching the fixed protected bootstrap; never included in the Nix store.";
     };
-
   };
 
   config = lib.mkIf cfg.enable {
     assertions = [
       {
-        assertion = protectedOrigin
+        assertion =
+          protectedOrigin
           && config.aos.sandbox.resourceBank.parentEnclosure.ownershipReceiving != null
           && config.aos.sandbox.resourceBank.parentEnclosure.ownershipSender != null;
         message = "the ownership daemon requires its genuine PID1 parent and distinct explicit Ownership receiving/sender subdivisions";

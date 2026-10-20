@@ -90,15 +90,18 @@ let
   in
     builtins.head (builtins.fromJSON (builtins.unsafeDiscardStringContext test.manifest.text)).machines;
 in {
-  nativeAssemblyTools = (disk {}).buildDeps == [
-    buildPackages.e2fsprogs
-    buildPackages.coreutils
-    buildPackages.fakeroot
-    buildPackages.jq
-    buildPackages.util-linux
-  ];
+  nativeAssemblyTools =
+    (disk {}).buildDeps
+    == [
+      buildPackages.e2fsprogs
+      buildPackages.coreutils
+      buildPackages.fakeroot
+      buildPackages.jq
+      buildPackages.util-linux
+    ];
   architectureSpecificRootTypes =
-    partitionType operator "root-a" == "4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709"
+    partitionType operator "root-a"
+    == "4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709"
     && partitionType operator "root-b" == partitionType operator "root-a"
     && partitionType (assembly {guestArchitecture = "aarch64";}) "root-a" == "B921B045-1DF0-41C3-AF44-4C6F280D3FAE"
     && partitionType (assembly {guestArchitecture = "i686";}) "root-a" == "44479540-F297-41B2-9AF7-D131D5F0458A"

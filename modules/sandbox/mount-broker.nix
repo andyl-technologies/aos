@@ -58,11 +58,13 @@
   # regular immutable copies and literal paths checked by PID1 before spawn.
   brokerSessionInstallCommands =
     if cfg.sourceProviderSession.enable
-    then map (
-      builtins.replaceStrings
-      ["${pkgs.coreutils}/bin/install" "${pkgs.coreutils}/bin/chmod" "%d/"]
-      ["/run/aos/mount-executable-carrier/install" "/run/aos/mount-executable-carrier/chmod" "/run/credentials/aos-sandbox-mountd.service/"]
-    ) brokerSessionConfiguration.installCommands
+    then
+      map (
+        builtins.replaceStrings
+        ["${pkgs.coreutils}/bin/install" "${pkgs.coreutils}/bin/chmod" "%d/"]
+        ["/run/aos/mount-executable-carrier/install" "/run/aos/mount-executable-carrier/chmod" "/run/credentials/aos-sandbox-mountd.service/"]
+      )
+      brokerSessionConfiguration.installCommands
     else brokerSessionConfiguration.installCommands;
   credentialFields = {
     brokerPlanPolicy = "broker-plan-policy.cbor";
@@ -158,12 +160,14 @@ in {
       ++ lib.mapAttrsToList (name: _: {
         assertion = (cfg.credentials.${name} != null) == coverageSelected;
         message = "Mount Git coverage credentials must be configured as one complete fixed four-input profile";
-      }) coverageCredentialFields
+      })
+      coverageCredentialFields
       ++ [
         {
           assertion =
             !attachmentSelected
-            || (config.aos.sandbox.resourceBank.parentEnclosure != null
+            || (config.aos.sandbox.resourceBank.parentEnclosure
+              != null
               && cfg.package == pkgs.aos-sandbox-mountd
               && (import ./_fixed-systemd-profile.nix {inherit config pkgs;})
               && !cfg.sourceProviderSession.enable
@@ -218,7 +222,8 @@ in {
       ]
       ++ brokerSessionConfiguration.assertions;
 
-    boot.initrd.systemd.mountExecutableCarrier = lib.mkIf cfg.sourceProviderSession.enable
+    boot.initrd.systemd.mountExecutableCarrier =
+      lib.mkIf cfg.sourceProviderSession.enable
       (pkgs.aosMountSourceExecutableCarrierForKernel config.system.build.kernel);
 
     systemd.sockets.aos-sandbox-mountd = {
@@ -246,69 +251,78 @@ in {
         StartLimitIntervalSec = 60;
         StartLimitBurst = 5;
       };
-      serviceConfig = {
-        Type = "simple";
-        NotifyAccess = "main";
-        ExecStartPre =
-          if attachmentSelected
-          then []
-          else brokerSessionInstallCommands
+      serviceConfig =
+        {
+          Type = "simple";
+          NotifyAccess = "main";
+          ExecStartPre =
+            if attachmentSelected
+            then []
+            else
+              brokerSessionInstallCommands
+              ++ lib.optionals cfg.sourceProviderSession.enable [
+                "${daemonPath} --check-selected-source-provider-authority"
+              ];
+          # The service does not provision RootMount custody; the daemon checks
+          # its fixed files, peer and signed hello before retaining the session.
+          ExecStart =
+            if attachmentSelected
+            then "${daemonPath} --selected-attachment-anchor-v4"
+            else "${daemonPath} ${cfg.package}/bin/aos-sandbox-mount-helper${lib.optionalString cfg.sourceProviderSession.enable " --source-provider --selected-mount-source"}${lib.optionalString coverageSelected " --git-upload-exclusive-cohort"}";
+          LoadCredential =
+            loadCredentials
+            ++ brokerSessionConfiguration.loadCredentials
+            ++ coverageLoadCredentials
             ++ lib.optionals cfg.sourceProviderSession.enable [
-              "${daemonPath} --check-selected-source-provider-authority"
+              "current-catalog-publication:/run/credentials/@system/${sourceProvider.credentials.catalogPublication}"
+              "current-catalog-manifest:/run/credentials/@system/${sourceProvider.credentials.catalogManifest}"
             ];
-        # The service does not provision RootMount custody; the daemon checks
-        # its fixed files, peer and signed hello before retaining the session.
-        ExecStart =
-          if attachmentSelected
-          then "${daemonPath} --selected-attachment-anchor-v4"
-          else "${daemonPath} ${cfg.package}/bin/aos-sandbox-mount-helper${lib.optionalString cfg.sourceProviderSession.enable " --source-provider --selected-mount-source"}${lib.optionalString coverageSelected " --git-upload-exclusive-cohort"}";
-        LoadCredential = loadCredentials ++ brokerSessionConfiguration.loadCredentials ++ coverageLoadCredentials
-          ++ lib.optionals cfg.sourceProviderSession.enable [
-            "current-catalog-publication:/run/credentials/@system/${sourceProvider.credentials.catalogPublication}"
-            "current-catalog-manifest:/run/credentials/@system/${sourceProvider.credentials.catalogManifest}"
-          ];
-        Restart = "on-failure";
-        RestartSec = "2s";
-        FileDescriptorStoreMax = cfg.maximumRetainedMounts;
-        FileDescriptorStorePreserve = "yes";
-        StateDirectory = "aos/sandbox-mount";
-        StateDirectoryMode = "0700";
-        RuntimeDirectory = "aos/sandbox-mount-catalog";
-        RuntimeDirectoryMode = "0700";
-        RuntimeDirectoryPreserve = "restart";
-        UMask = "0077";
+          Restart = "on-failure";
+          RestartSec = "2s";
+          FileDescriptorStoreMax = cfg.maximumRetainedMounts;
+          FileDescriptorStorePreserve = "yes";
+          StateDirectory = "aos/sandbox-mount";
+          StateDirectoryMode = "0700";
+          RuntimeDirectory = "aos/sandbox-mount-catalog";
+          RuntimeDirectoryMode = "0700";
+          RuntimeDirectoryPreserve = "restart";
+          UMask = "0077";
 
-        CapabilityBoundingSet = ["CAP_SYS_ADMIN" "CAP_SYS_CHROOT"];
-        AmbientCapabilities = ["CAP_SYS_ADMIN" "CAP_SYS_CHROOT"];
-        DevicePolicy = "closed";
-        DeviceAllow = ["/dev/fuse rw"];
-        LimitNOFILE = 4096;
-        LockPersonality = true;
-        MemoryHigh = "512M";
-        MemoryMax = "1G";
-        MemoryDenyWriteExecute = true;
-        NoNewPrivileges = true;
-        PrivateDevices = false;
-        PrivateTmp = true;
-        ProcSubset = "all";
-        ProtectClock = true;
-        ProtectControlGroups = true;
-        ProtectHome = true;
-        ProtectKernelLogs = true;
-        ProtectKernelModules = true;
-        ProtectKernelTunables = true;
-        ProtectProc = if cfg.sourceProviderSession.enable || attachmentSelected then "default" else "invisible";
-        ProtectSystem = "strict";
-        RestrictAddressFamilies = ["AF_UNIX"];
-        RestrictRealtime = true;
-        RestrictSUIDSGID = true;
-        Slice = "aos-control.slice";
-        TasksMax = 64;
-      } // lib.optionalAttrs cfg.sourceProviderSession.enable {
-        AosOwnLauncherImage = true;
-        NonBlocking = true;
-        SELinuxContext = "system_u:system_r:aos_sandbox_mount_t:s0";
-      };
+          CapabilityBoundingSet = ["CAP_SYS_ADMIN" "CAP_SYS_CHROOT"];
+          AmbientCapabilities = ["CAP_SYS_ADMIN" "CAP_SYS_CHROOT"];
+          DevicePolicy = "closed";
+          DeviceAllow = ["/dev/fuse rw"];
+          LimitNOFILE = 4096;
+          LockPersonality = true;
+          MemoryHigh = "512M";
+          MemoryMax = "1G";
+          MemoryDenyWriteExecute = true;
+          NoNewPrivileges = true;
+          PrivateDevices = false;
+          PrivateTmp = true;
+          ProcSubset = "all";
+          ProtectClock = true;
+          ProtectControlGroups = true;
+          ProtectHome = true;
+          ProtectKernelLogs = true;
+          ProtectKernelModules = true;
+          ProtectKernelTunables = true;
+          ProtectProc =
+            if cfg.sourceProviderSession.enable || attachmentSelected
+            then "default"
+            else "invisible";
+          ProtectSystem = "strict";
+          RestrictAddressFamilies = ["AF_UNIX"];
+          RestrictRealtime = true;
+          RestrictSUIDSGID = true;
+          Slice = "aos-control.slice";
+          TasksMax = 64;
+        }
+        // lib.optionalAttrs cfg.sourceProviderSession.enable {
+          AosOwnLauncherImage = true;
+          NonBlocking = true;
+          SELinuxContext = "system_u:system_r:aos_sandbox_mount_t:s0";
+        };
     };
   };
 }

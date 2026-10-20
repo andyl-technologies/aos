@@ -112,20 +112,21 @@ in {
     original = contracts.cargoVendor;
     provenance = contract.registrySourcePatches;
     retainedProvenance = fixtures.cargoVendorPatched.passthru.aos.fixedOutput.registrySourcePatches;
-    patchInputFixture = rewritePatch: builders.fetchCargoVendor (common
-      // {
-        cargo = sourceFile;
-        python3 = sourceFile;
-        git = sourceFile;
-        caCertificates = sourceFile;
-        patchTool = sourceFile;
-        registryPatches = builtins.map (record:
-          record
-          // {
-            patch = rewritePatch record.patch;
-          })
-        retainedProvenance.patches;
-      });
+    patchInputFixture = rewritePatch:
+      builders.fetchCargoVendor (common
+        // {
+          cargo = sourceFile;
+          python3 = sourceFile;
+          git = sourceFile;
+          caCertificates = sourceFile;
+          patchTool = sourceFile;
+          registryPatches = builtins.map (record:
+            record
+            // {
+              patch = rewritePatch record.patch;
+            })
+          retainedProvenance.patches;
+        });
     contextFreePatch = patchInputFixture builtins.unsafeDiscardStringContext;
     unrelatedContextPatch = patchInputFixture (patch:
       builtins.appendContext
@@ -137,7 +138,8 @@ in {
       builtins.tryEval unrelatedContextPatch.passthru.aos.fixedOutput.registrySourcePatches.normalizedRecipe;
   in
     lib.throwIfNot
-    (provenance.upstreamStagingDerivation == original.outputDerivation
+    (provenance.upstreamStagingDerivation
+      == original.outputDerivation
       && provenance.patchedVendorDerivation == fixtures.cargoVendorPatched.drvPath
       && provenance.patchExecutable == "${sourceFile}/bin/patch"
       && builtins.length provenance.patches == 1

@@ -241,10 +241,22 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     # Kernel build tools retain the ordinary package fixed point to avoid a
     # dependency cycle through Systemd's generated kernel layout.
     systemPackages = import ./pkgs {
-      inherit lib stdenv firmwarePackages sharedGoCacheDir sharedBazelCacheDir
-        sharedRustTargetDir sharedRustIncremental sharedAccacheDir
-        sharedAccacheStateDir ordinaryToolchainPackages;
-      buildPackages = if isCrossBuild then buildPackages else systemPackages;
+      inherit
+        lib
+        stdenv
+        firmwarePackages
+        sharedGoCacheDir
+        sharedBazelCacheDir
+        sharedRustTargetDir
+        sharedRustIncremental
+        sharedAccacheDir
+        sharedAccacheStateDir
+        ordinaryToolchainPackages
+        ;
+      buildPackages =
+        if isCrossBuild
+        then buildPackages
+        else systemPackages;
       releasePlatforms = selectedReleasePlatforms;
       kernelPackages = pkgs;
       systemdKernel = selectedRuntimeKernel;
@@ -376,13 +388,16 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
             aos.activation.scope = hostScope;
             assertions = [
               {
-                assertion = specialArgs ? pkgs || (
-                  needsKernelLayout finalHostEvaluation.config
-                  == needsKernelLayout selectionEvaluation.config
-                  && (selectedRuntimeKernel == null
-                    || builtins.toString finalHostEvaluation.config.system.build.kernel
-                    == builtins.toString selectedRuntimeKernel)
-                );
+                assertion =
+                  specialArgs ? pkgs
+                  || (
+                    needsKernelLayout finalHostEvaluation.config
+                    == needsKernelLayout selectionEvaluation.config
+                    && (selectedRuntimeKernel
+                      == null
+                      || builtins.toString finalHostEvaluation.config.system.build.kernel
+                      == builtins.toString selectedRuntimeKernel)
+                  );
                 message = "package modules must preserve the kernel layout used to build the selected runtime libraries";
               }
             ];

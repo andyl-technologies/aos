@@ -22,13 +22,29 @@ in
     propagatedDeps = [];
     outputChecks = {};
     inherit unitContract;
-    hardwareMode = if hardware then "1" else "0";
-    offlineHelper = if hardware then "${aos-nix-offline-tpm-helper}/libexec/aos-nix-offline-tpm-helper" else "";
+    hardwareMode =
+      if hardware
+      then "1"
+      else "0";
+    offlineHelper =
+      if hardware
+      then "${aos-nix-offline-tpm-helper}/libexec/aos-nix-offline-tpm-helper"
+      else "";
     passAsFile = ["unitContract"];
-    exportReferencesGraph.offlinePrepareRuntimeClosure = [aos-sandboxd]
-      ++ (if hardware then [aos-nix-offline-tpm-helper] else []);
-    nukeRefsKeep = [aos-sandboxd systemd aos-selinux-production-policy aos-selinux-kernel-policy-readback]
-      ++ (if hardware then [aos-nix-offline-tpm-helper] else []);
+    exportReferencesGraph.offlinePrepareRuntimeClosure =
+      [aos-sandboxd]
+      ++ (
+        if hardware
+        then [aos-nix-offline-tpm-helper]
+        else []
+      );
+    nukeRefsKeep =
+      [aos-sandboxd systemd aos-selinux-production-policy aos-selinux-kernel-policy-readback]
+      ++ (
+        if hardware
+        then [aos-nix-offline-tpm-helper]
+        else []
+      );
 
     phases = [
       {
@@ -161,7 +177,8 @@ in
       support
     ];
     meta = {
-      description = if hardware
+      description =
+        if hardware
         then "Original offline Nix hardware startup comparisons; no independent approval authority"
         else "Prepare-only original offline Nix startup comparisons; no TPM or approval authority";
       license = "GPL-2.0-or-later";

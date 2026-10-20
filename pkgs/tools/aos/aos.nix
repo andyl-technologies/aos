@@ -167,7 +167,8 @@
   applicationTestPackages = builtins.sort builtins.lessThan (lib.unique (
     builtins.filter (
       name: lib.hasPrefix "aos-" name && name != "aos-sandbox-coordinator"
-    ) workspacePackageNames
+    )
+    workspacePackageNames
   ));
   applicationTestFlags =
     "--features aos-cli/release-fleet-fixture "
@@ -246,9 +247,11 @@
       if withTests
       then testCargoEnv
       else cargoEnv;
-    buildDeps = [buildPerl buildPkgConfig buildProtobuf buildCmake]
+    buildDeps =
+      [buildPerl buildPkgConfig buildProtobuf buildCmake]
       ++ lib.optionals (!isDarwinCross) [aos-fuse-transport];
-    runtimeDeps = [openssl sqlite libssh2 zlib]
+    runtimeDeps =
+      [openssl sqlite libssh2 zlib]
       ++ lib.optionals (!isDarwinCross) [aos-fuse-transport];
   };
 
@@ -272,9 +275,11 @@
       cargoBuildCommands = [
         "test --no-run --frozen --offline -j$NIX_BUILD_CORES ${cargoFlags}"
       ];
-      buildDeps = [buildPerl buildPkgConfig buildProtobuf buildCmake]
+      buildDeps =
+        [buildPerl buildPkgConfig buildProtobuf buildCmake]
         ++ lib.optionals (!isDarwinCross) [aos-fuse-transport];
-      runtimeDeps = [openssl sqlite libssh2 zlib]
+      runtimeDeps =
+        [openssl sqlite libssh2 zlib]
         ++ lib.optionals (!isDarwinCross) [aos-fuse-transport];
       installBins = false;
       doCheck = false;

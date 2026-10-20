@@ -11,12 +11,16 @@
         policyAuthority = {
           enable = true;
           environmentProvision = null;
-          credentials = lib.genAttrs
+          credentials =
+            lib.genAttrs
             (builtins.attrNames production.options.aos.sandbox.policyAuthority.credentials)
             (_: null);
         };
         cacheSignerService.credentials.memoryCeiling = null;
-        resourceBank.policy = if selected then {rootReceiving = {};} else null;
+        resourceBank.policy =
+          if selected
+          then {rootReceiving = {};}
+          else null;
         hostBroker.credentials = {
           rootNoApplyFloorPublicKey = null;
           brokerPlanPolicy = null;
@@ -34,14 +38,16 @@
     };
     # mkIf remains an explicit module definition here. Read its real content,
     # rather than replacing the production condition with a copied predicate.
-    actual =
-      assert production.config._type == "if" && production.config._condition;
+    actual = assert production.config._type == "if" && production.config._condition;
       production.config._value;
-    trustAssertion = builtins.filter
+    trustAssertion =
+      builtins.filter
       (item: item.message == "selected Root receiving requires its own installed public Ownership lease policy and key from the existing Host trust configuration")
       actual.assertions;
   in {
-    accepted = builtins.length trustAssertion == 1
+    accepted =
+      builtins.length trustAssertion
+      == 1
       && (builtins.head trustAssertion).assertion;
     credentials = actual.systemd.services.aos-sandbox-policy-authorityd.serviceConfig.LoadCredential;
   };
@@ -55,7 +61,8 @@ in
   && !missingPolicy.accepted
   && !missingKey.accepted
   && complete.accepted
-  && complete.credentials == [
+  && complete.credentials
+  == [
     "ownership-lease-policy.cbor:/run/credentials/@system/fixture-policy"
     "ownership-lease-public-key:/run/credentials/@system/fixture-public"
   ]

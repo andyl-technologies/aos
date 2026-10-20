@@ -10,8 +10,13 @@
   cfg = config.aos.sandbox.storageBroker;
   controller = config.aos.sandbox.controller;
   resourcePolicy = config.aos.sandbox.resourceBank.policy;
-  storageReceiving = if resourcePolicy == null then null else resourcePolicy.storageReceiving;
-  storageCpuQuota = if storageReceiving == null then null
+  storageReceiving =
+    if resourcePolicy == null
+    then null
+    else resourcePolicy.storageReceiving;
+  storageCpuQuota =
+    if storageReceiving == null
+    then null
     else "${toString (storageReceiving.cpu-micros-per-period / 1000)}%";
   worker = config.aos.sandbox.storageWorker;
   brokerSession = import ./_broker-session-credentials.nix {inherit lib pkgs;};
@@ -48,8 +53,11 @@
     != null
     && cfg.operatorRecoveryStorageOwnerKey != null;
   sourceOriginalWorkerStartup = cfg.sourceOriginalWorkerStartup.enable;
-  startupImageDelivery = cfg.method46TpmFloor.required || sourceOriginalWorkerStartup
-    || cfg.nixGenerationPrepare.enable || config.aos.sandbox.resourceBank.policy != null;
+  startupImageDelivery =
+    cfg.method46TpmFloor.required
+    || sourceOriginalWorkerStartup
+    || cfg.nixGenerationPrepare.enable
+    || config.aos.sandbox.resourceBank.policy != null;
   coverageCredentialFields = {
     gitCoverageEnrollment = "git-upload-coverage-enrollment-v1";
     gitCoverageOwnerCatalog = "git-upload-owner-catalog-v1";
@@ -104,7 +112,8 @@ in {
       description = "Optional existing root-owned directory containing storage-resolver-policy.catalog.";
     };
 
-    credentials = brokerSession.mkOptions brokerSessionEndpoints
+    credentials =
+      brokerSession.mkOptions brokerSessionEndpoints
       // lib.mapAttrs (_: credentialFile:
         lib.mkOption {
           type = lib.types.nullOr credentialNameType;
@@ -183,20 +192,23 @@ in {
       lib.mapAttrsToList (name: _: {
         assertion = (cfg.credentials.${name} != null) == coverageSelected;
         message = "Storage Git coverage credentials must be configured as one complete fixed four-input profile";
-      }) coverageCredentialFields
+      })
+      coverageCredentialFields
       ++ [
         {
-          assertion = !cfg.nixGenerationPrepare.enable || (
-            config.aos.sandbox.nixBroker.enable
-            && config.aos.sandbox.nixBroker.storageGenerationPrepare.enable
-            && cfg.resolverPolicyDirectory != null
-            && !coverageSelected
-            && (import ./_fixed-systemd-profile.nix {inherit config pkgs;})
-            && config.aos.security.selinux.enable
-            && config.aos.security.selinux.bootMode == "immutable-stage0"
-            && config.aos.security.selinux.mode == "enforcing"
-            && config.aos.security.selinux.policy == "aos"
-          );
+          assertion =
+            !cfg.nixGenerationPrepare.enable
+            || (
+              config.aos.sandbox.nixBroker.enable
+              && config.aos.sandbox.nixBroker.storageGenerationPrepare.enable
+              && cfg.resolverPolicyDirectory != null
+              && !coverageSelected
+              && (import ./_fixed-systemd-profile.nix {inherit config pkgs;})
+              && config.aos.security.selinux.enable
+              && config.aos.security.selinux.bootMode == "immutable-stage0"
+              && config.aos.security.selinux.mode == "enforcing"
+              && config.aos.security.selinux.policy == "aos"
+            );
           message = "Nix generation Prepare requires the genuine paired Controller selection, existing resolver and immutable enforcing PID1/Storage launch; an enrolled Git cohort cannot be repurposed";
         }
         {
@@ -286,11 +298,13 @@ in {
           assertion =
             !sourceOriginalWorkerStartup
             || (
-              cfg.zfsHoldSigningKey == "/var/lib/aos/sandbox-storage-credential-sources/storage-zfs-hold-key-v1"
+              cfg.zfsHoldSigningKey
+              == "/var/lib/aos/sandbox-storage-credential-sources/storage-zfs-hold-key-v1"
               && (
                 !operatorRecoveryConfigured
                 || (
-                  cfg.operatorRecoveryControllerPublicKey == "/var/lib/aos/sandbox-storage-credential-sources/operator-recovery-controller-public-key-v1"
+                  cfg.operatorRecoveryControllerPublicKey
+                  == "/var/lib/aos/sandbox-storage-credential-sources/operator-recovery-controller-public-key-v1"
                   && cfg.operatorRecoveryStorageOwnerKey == "/var/lib/aos/sandbox-storage-credential-sources/operator-recovery-storage-owner-key-v1"
                 )
               )

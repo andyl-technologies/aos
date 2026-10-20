@@ -21,21 +21,28 @@
     else protobuf;
   workspaceCargo = import ./aos/_workspace-cargo.nix {inherit lib aosWorkspaceVendor;};
   inherit (workspaceCargo) src cargoDeps;
-  cargoEnv = {
-    PROTOC = "${buildProtobuf}/bin/protoc";
-    AOS_METHOD46_TPM_PID1 = "${systemd}/lib/systemd/systemd";
-    AOS_RUNTIME_DEPLOYMENT_TPM_HELPER = "${aos-runtime-deployment-tpm-helper}/libexec/aos-runtime-deployment-tpm-helper";
-  } // lib.optionalAttrs bootPreparation {
-    AOS_KERNEL_CLONE_LAYOUT_DIR = "${kernelCloneLayout}/share/aos-kernel-clone-layout-v1";
-  };
-  selectedFeature = if bootPreparation
+  cargoEnv =
+    {
+      PROTOC = "${buildProtobuf}/bin/protoc";
+      AOS_METHOD46_TPM_PID1 = "${systemd}/lib/systemd/systemd";
+      AOS_RUNTIME_DEPLOYMENT_TPM_HELPER = "${aos-runtime-deployment-tpm-helper}/libexec/aos-runtime-deployment-tpm-helper";
+    }
+    // lib.optionalAttrs bootPreparation {
+      AOS_KERNEL_CLONE_LAYOUT_DIR = "${kernelCloneLayout}/share/aos-kernel-clone-layout-v1";
+    };
+  selectedFeature =
+    if bootPreparation
     then "aos-sandbox-services/runtime-boot-preparation,aos-sandbox-services/selected-kernel-clone-layout"
     else "aos-sandbox-services/runtime-publisher";
   runtime = [systemd aos-runtime-deployment-tpm-helper];
   cargoArtifactContract = {
-    family = if bootPreparation then "aos-runtime-boot-preparation-native" else "aos-runtime-publisher-native";
+    family =
+      if bootPreparation
+      then "aos-runtime-boot-preparation-native"
+      else "aos-runtime-publisher-native";
     checkType = "debug";
-    nativeInputs = map toString ([buildProtobuf] ++ runtime
+    nativeInputs = map toString ([buildProtobuf]
+      ++ runtime
       ++ lib.optional bootPreparation kernelCloneLayout);
   };
   cargoArtifacts = mkCargoArtifacts {

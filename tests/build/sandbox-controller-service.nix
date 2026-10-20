@@ -194,16 +194,18 @@
   q04Evaluation = controllerEvaluation.extendModules {
     modules = [
       ({lib, ...}: {
-        options.aos.sandbox = lib.genAttrs [
-          "policyAuthority"
-          "cacheSignerView"
-          "sourceSignerView"
-          "cacheSignerService"
-          "sourceSignerService"
-        ] (_: lib.mkOption {
-          type = lib.types.attrsOf lib.types.anything;
-          default = {};
-        });
+        options.aos.sandbox =
+          lib.genAttrs [
+            "policyAuthority"
+            "cacheSignerView"
+            "sourceSignerView"
+            "cacheSignerService"
+            "sourceSignerService"
+          ] (_:
+            lib.mkOption {
+              type = lib.types.attrsOf lib.types.anything;
+              default = {};
+            });
 
         config.aos.sandbox = {
           controllerService.createQ04PolicySubgate.enable = true;
@@ -226,21 +228,27 @@
     domainIdHex = "02020202020202020202020202020202";
   };
   q04OnlineEvaluation = q04Evaluation.extendModules {
-    modules = [{
-      aos.sandbox.nixBroker = {
-        enable = true;
-        _package = q04OnlinePackage;
-      };
-      aos.sandbox.controllerService.package = q04OnlinePackage;
-    }];
+    modules = [
+      {
+        aos.sandbox.nixBroker = {
+          enable = true;
+          _package = q04OnlinePackage;
+        };
+        aos.sandbox.controllerService.package = q04OnlinePackage;
+      }
+    ];
   };
-  q04WrongPackage = package: q04OnlineEvaluation.extendModules {
-    modules = [({lib, ...}: {
-      aos.sandbox.controllerService.package = lib.mkForce package;
-    })];
-  };
+  q04WrongPackage = package:
+    q04OnlineEvaluation.extendModules {
+      modules = [
+        ({lib, ...}: {
+          aos.sandbox.controllerService.package = lib.mkForce package;
+        })
+      ];
+    };
   q04PackageAdmitted = evaluation: let
-    checks = lib.filter
+    checks =
+      lib.filter
       (check: check.message == "Q04 policy subgate requires the genuine selected normal-Root profile and both existing signer views/services; it is not issue mode or public Create activation")
       evaluation.config.assertions;
   in

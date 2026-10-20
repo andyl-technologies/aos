@@ -9,11 +9,13 @@
   ...
 }: {
   config = lib.mkIf (config.aos.image.enable && config.aos.boot.storage.backend != "zfs-zvol") {
-    aos.storageProvisioning.protectedVarContext = lib.mkIf (
-      config.aos.security.selinux.protectedSandboxNetworkRoots.enable
-      || config.aos.sandbox.controllerService.method46TpmFloor.required
-      || config.aos.sandbox.storageBroker.method46TpmFloor.required
-    ) config.aos.security.selinux.protectedSandboxNetworkRoots._varRootContext;
+    aos.storageProvisioning.protectedVarContext =
+      lib.mkIf (
+        config.aos.security.selinux.protectedSandboxNetworkRoots.enable
+        || config.aos.sandbox.controllerService.method46TpmFloor.required
+        || config.aos.sandbox.storageBroker.method46TpmFloor.required
+      )
+      config.aos.security.selinux.protectedSandboxNetworkRoots._varRootContext;
     environment.systemPackages = [pkgs.aos-storage-provisioning-provider];
     aos.boot.initrd.packageRoots = [pkgs.aos-storage-provisioning-provider];
   };

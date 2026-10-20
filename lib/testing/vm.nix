@@ -42,9 +42,11 @@
         inherit (buildPackages) mkDerivation;
         testAgent = guestPackages.aos-test-agent;
         sshTools = buildPackages.openssh;
-        inputs = arguments // {
-          guestArchitecture = guestPackages.stdenv.hostPlatform.constraints.cpu;
-        };
+        inputs =
+          arguments
+          // {
+            guestArchitecture = guestPackages.stdenv.hostPlatform.constraints.cpu;
+          };
       };
 
   # ---------------------------------------------------------------------------

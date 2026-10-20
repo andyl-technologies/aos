@@ -5,13 +5,20 @@
   ...
 }: let
   policy = config.aos.sandbox.resourceBank.policy;
-  receiving = if policy == null then null else policy.storageReceiving;
+  receiving =
+    if policy == null
+    then null
+    else policy.storageReceiving;
   selected = config.aos.sandbox.storageBroker.enable && receiving != null;
 
   # The real initial receiver prepays main plus one joined property observer.
   # Preserve those two task slots during effect, rollback and owed posts.
   workerTasks = name:
-    lib.min (if name == "aos-sandbox-held-snapshot-reader@" then 4 else 16) (receiving.pids - 2);
+    lib.min (
+      if name == "aos-sandbox-held-snapshot-reader@"
+      then 4
+      else 16
+    ) (receiving.pids - 2);
 
   # This fixed roster contains the existing worker services. Selecting their
   # aggregate preserves their executable, privilege, timeout, socket and
@@ -66,7 +73,9 @@ in {
         # fixed worker launch. Recipients compare its kernel identity with the
         # compiled aggregate; the descriptor is never a payer or effect grant.
         # The readiness helper and main do not consume a worker protocol.
-        TasksMax = lib.mkIf (name != "aos-storaged" && name != "aos-sandbox-zfs-ready"
+        TasksMax = lib.mkIf (name
+          != "aos-storaged"
+          && name != "aos-sandbox-zfs-ready"
           && name != "aos-sandbox-guest-root-publisher@") (lib.mkForce (workerTasks name));
         OpenFile = lib.mkIf (name != "aos-storaged" && name != "aos-sandbox-zfs-ready") [
           "/sys/fs/cgroup/aos.slice/aos-control.slice/aos-control-storage.slice:aos-storage-worker-aggregate-v1:read-only"

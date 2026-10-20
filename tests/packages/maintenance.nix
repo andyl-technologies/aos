@@ -131,7 +131,8 @@ in
   assert builtins.deepSeq [
     fixedOutputSourceInputs.contracts
     fixedOutputSourceInputs.registryPatchContract
-  ] true;
+  ]
+  true;
   assert !invalidContract.success;
   assert baseline.drvPath == annotated.drvPath;
   assert !(builtins.hasAttr "update" annotated);

@@ -33,7 +33,10 @@
 }: let
   policyVersion = "33";
   policySupport = ./_aos-selinux-production-policy;
-  gitReadCheckerArgument = if gitReadDelegation then "--git-read-delegation" else "";
+  gitReadCheckerArgument =
+    if gitReadDelegation
+    then "--git-read-delegation"
+    else "";
   homeAliases = builtins.toFile "aos-selinux-home-context-aliases" homeContextAliases;
   closedOnlineSource = source: let
     parts = builtins.split "\n# AOS_ONLINE_NIX_BEGIN\n" source;
@@ -56,7 +59,10 @@
       then builtins.split "# AOS_HOST_RUNTIME_END\n" (builtins.elemAt parts 2)
       else [];
   in
-    if builtins.length parts != 3 || builtins.length ending != 3
+    if
+      builtins.length parts
+      != 3
+      || builtins.length ending != 3
       || builtins.length (builtins.split "# AOS_HOST_RUNTIME_END\n" source) != 3
     then throw "Host runtime policy requires exactly one closed block"
     else if runtimeDeploymentPublisher
@@ -69,7 +75,10 @@
       then builtins.split "# AOS_RESOURCE_BANK_ENROLLMENT_END\n" (builtins.elemAt parts 2)
       else [];
   in
-    if builtins.length parts != 3 || builtins.length ending != 3
+    if
+      builtins.length parts
+      != 3
+      || builtins.length ending != 3
       || builtins.length (builtins.split "# AOS_RESOURCE_BANK_ENROLLMENT_BEGIN\n" source) != 3
       || builtins.length (builtins.split "# AOS_RESOURCE_BANK_ENROLLMENT_END\n" source) != 3
     then throw "resource bank policy requires exactly one closed block"
@@ -83,7 +92,10 @@
       then builtins.split "# AOS_HOST_COMPONENT_CONTROL_END\n" (builtins.elemAt parts 2)
       else [];
   in
-    if builtins.length parts != 3 || builtins.length ending != 3
+    if
+      builtins.length parts
+      != 3
+      || builtins.length ending != 3
       || builtins.length (builtins.split "# AOS_HOST_COMPONENT_CONTROL_BEGIN\n" source) != 3
       || builtins.length (builtins.split "# AOS_HOST_COMPONENT_CONTROL_END\n" source) != 3
     then throw "Host component policy requires exactly one closed block"
@@ -115,7 +127,8 @@
     else builtins.replaceStrings [literal] [replacement] source;
   environmentOwnerData =
     if environmentProvision != null
-    then replaceSelectedInitializer
+    then
+      replaceSelectedInitializer
       "ENVIRONMENT_PROVISION = False"
       "ENVIRONMENT_PROVISION = False"
       "ENVIRONMENT_PROVISION = True"
@@ -123,7 +136,8 @@
     else builtins.readFile (policySupport + "/owner_policy.py");
   resourceBankOwnerData =
     if resourceBankEnrollment
-    then replaceSelectedInitializer
+    then
+      replaceSelectedInitializer
       "RESOURCE_BANK_RECIPIENTS = \\(\\)"
       "RESOURCE_BANK_RECIPIENTS = ()"
       "RESOURCE_BANK_RECIPIENTS = RESOURCE_BANK_KNOWN_RECIPIENTS"
@@ -131,7 +145,8 @@
     else environmentOwnerData;
   runtimeOwnerData =
     if runtimeDeploymentPublisher
-    then replaceSelectedInitializer
+    then
+      replaceSelectedInitializer
       "RUNTIME_DOMAINS = \\(\\)"
       "RUNTIME_DOMAINS = ()"
       "RUNTIME_DOMAINS = RUNTIME_KNOWN_DOMAINS"
@@ -140,22 +155,24 @@
   mountSourceOwnerData =
     if !sourceProviderMount
     then runtimeOwnerData
-    else (
-      replaceSelectedInitializer
-      "SELECTED_LAUNCHER_IMAGE_IOCTL_SELECTORS = frozenset\\(\\)"
-      "SELECTED_LAUNCHER_IMAGE_IOCTL_SELECTORS = frozenset()"
-      "SELECTED_LAUNCHER_IMAGE_IOCTL_SELECTORS = frozenset({0x6686})"
+    else
       (
         replaceSelectedInitializer
-        "SELECTED_MOUNT_SOURCE_DOMAINS = \\(\\)"
-        "SELECTED_MOUNT_SOURCE_DOMAINS = ()"
-        "SELECTED_MOUNT_SOURCE_DOMAINS = (\"aos_sandbox_mount_t\", \"aos_source_provider_t\")"
-        runtimeOwnerData
-      )
-    );
+        "SELECTED_LAUNCHER_IMAGE_IOCTL_SELECTORS = frozenset\\(\\)"
+        "SELECTED_LAUNCHER_IMAGE_IOCTL_SELECTORS = frozenset()"
+        "SELECTED_LAUNCHER_IMAGE_IOCTL_SELECTORS = frozenset({0x6686})"
+        (
+          replaceSelectedInitializer
+          "SELECTED_MOUNT_SOURCE_DOMAINS = \\(\\)"
+          "SELECTED_MOUNT_SOURCE_DOMAINS = ()"
+          "SELECTED_MOUNT_SOURCE_DOMAINS = (\"aos_sandbox_mount_t\", \"aos_source_provider_t\")"
+          runtimeOwnerData
+        )
+      );
   selectedOwnerData = builtins.toFile "aos-selected-owner-policy.py" (
     if onlineNix
-    then replaceSelectedInitializer
+    then
+      replaceSelectedInitializer
       "ONLINE_NIX_DOMAINS = \\(\\)"
       "ONLINE_NIX_DOMAINS = ()"
       "ONLINE_NIX_DOMAINS = ONLINE_NIX_KNOWN_DOMAINS"
@@ -164,7 +181,8 @@
   );
   selectedEffectiveData = builtins.toFile "aos-selected-effective-policy.py" (
     if hostComponentControl
-    then replaceSelectedInitializer
+    then
+      replaceSelectedInitializer
       "HOST_COMPONENT_CONTROL = False"
       "HOST_COMPONENT_CONTROL = False"
       "HOST_COMPONENT_CONTROL = True"
@@ -239,7 +257,8 @@
     + builtins.substring 1 (builtins.stringLength systemdBasename - 1) systemdBasename;
   systemdVersionSibling = builtins.replaceStrings ["-systemd-261.2"] ["-systemd-261.3"] systemdBasename;
   exactSystemdPinLabel =
-    systemd.name == "systemd-261.2"
+    systemd.name
+    == "systemd-261.2"
     && systemd.version == "261.2"
     && builtins.match "[a-z0-9]{32}-systemd-261\\.2" systemdBasename != null
     && builtins.match systemdPinPathRegex (systemdPinPath "nix" systemdBasename) != null
@@ -256,8 +275,16 @@
     + closedSelectedSource (policySupport + "/owner_confinement.te")
     + "\n"
     + builtins.readFile (policySupport + "/view_confinement.te")
-    + (if environmentProvision != null then "\n" + builtins.readFile (policySupport + "/environment_confinement.te") else "")
-    + (if gitReadDelegation then "\n" + builtins.readFile (policySupport + "/git_read_delegation.te") else "")
+    + (
+      if environmentProvision != null
+      then "\n" + builtins.readFile (policySupport + "/environment_confinement.te")
+      else ""
+    )
+    + (
+      if gitReadDelegation
+      then "\n" + builtins.readFile (policySupport + "/git_read_delegation.te")
+      else ""
+    )
   );
   viewEntrypointContext = entry: let
     basename = builtins.unsafeDiscardStringContext (builtins.baseNameOf (toString entry.package));
@@ -373,12 +400,24 @@
       builtins.toFile "aos_sandbox.fc" (
         builtins.replaceStrings
         (["@AOS_NETD_BASENAME_REGEX@" "@AOS_FUSE_WORKER_BASENAME_REGEX@" "@AOS_ZFS_WORKER_BASENAME_REGEX@" "@AOS_CONTROLLER_BASENAME_REGEX@" "@AOS_STORAGE_BASENAME_REGEX@" "@AOS_TPM_HELPER_BASENAME_REGEX@" "@AOS_VIEW_TOOLS_BASENAME_REGEX@" "@AOS_SYSTEMD_BASENAME_REGEX@"]
-          ++ (if sourceProviderMount then ["@AOS_MOUNT_BASENAME_REGEX@" "@AOS_SOURCE_PROVIDER_BASENAME_REGEX@"] else []))
+          ++ (
+            if sourceProviderMount
+            then ["@AOS_MOUNT_BASENAME_REGEX@" "@AOS_SOURCE_PROVIDER_BASENAME_REGEX@"]
+            else []
+          ))
         ([netdBasenameRegex workerBasenameRegex publisherBasenameRegex (exactPackageBasename "aos-sandboxd" aos-sandboxd) (exactPackageBasename "aos-storaged" aos-storaged) (exactPackageBasename "aos-method46-tpm-helper" aos-method46-tpm-helper) (exactPackageBasename "aos-sandbox-view-preparer-tools" aos-sandbox-view-preparer-tools) systemdBasenameRegex]
-          ++ (if sourceProviderMount then [(exactPackageBasename "aos-sandbox-mountd" aos-sandbox-mountd) (exactPackageBasename "aos-source-providerd" aos-source-providerd)] else []))
+          ++ (
+            if sourceProviderMount
+            then [(exactPackageBasename "aos-sandbox-mountd" aos-sandbox-mountd) (exactPackageBasename "aos-source-providerd" aos-source-providerd)]
+            else []
+          ))
         (closedSelectedSource (policySupport + "/aos_sandbox.fc"))
         + builtins.concatStringsSep "" (map viewEntrypointContext viewPreparers)
-        + (if gitReadDelegation then builtins.readFile (policySupport + "/git_read_delegation.fc") else "")
+        + (
+          if gitReadDelegation
+          then builtins.readFile (policySupport + "/git_read_delegation.fc")
+          else ""
+        )
         + onlineFileContexts
         + environmentFileContexts
       )
@@ -426,17 +465,25 @@ in
           attribute_negative_module=aos_sandbox_attribute_negative
           export PYTHONPATH=${setools}/lib/python3/site-packages
 
-          ${if sourceProviderMount || onlineNix || runtimeDeploymentPublisher || resourceBankEnrollment || hostComponentControl || environmentProvision != null then ''
-            mkdir selected-policy-checker
-            cp -R ${policySupport}/. selected-policy-checker/
-            chmod u+w selected-policy-checker
-            chmod u+w selected-policy-checker/owner_policy.py
-            install -m 0444 ${selectedOwnerData} selected-policy-checker/owner_policy.py
-            ${if hostComponentControl then ''
-              chmod u+w selected-policy-checker/effective_policy.py
-              install -m 0444 ${selectedEffectiveData} selected-policy-checker/effective_policy.py
-            '' else ""}
-          '' else ""}
+          ${
+            if sourceProviderMount || onlineNix || runtimeDeploymentPublisher || resourceBankEnrollment || hostComponentControl || environmentProvision != null
+            then ''
+              mkdir selected-policy-checker
+              cp -R ${policySupport}/. selected-policy-checker/
+              chmod u+w selected-policy-checker
+              chmod u+w selected-policy-checker/owner_policy.py
+              install -m 0444 ${selectedOwnerData} selected-policy-checker/owner_policy.py
+              ${
+                if hostComponentControl
+                then ''
+                  chmod u+w selected-policy-checker/effective_policy.py
+                  install -m 0444 ${selectedEffectiveData} selected-policy-checker/effective_policy.py
+                ''
+                else ""
+              }
+            ''
+            else ""
+          }
 
           AOS_SELINUX_PRODUCTION_RECIPE=${./aos-selinux-production-policy.nix} \
             ${python3}/bin/python3 ${policySupport}/effective_policy_test.py
@@ -669,14 +716,18 @@ in
             -o file_contexts.bin \
             file_contexts
           test -s file_contexts.bin
-          ${if environmentProvision == null then "" else ''
-            # Verify the final whole-policy context precedence, not merely the
-            # contributed .fc fragment or guessed default labels.
-            ${python3}/bin/python3 ${policySupport}/verify_context_lookups.py \
-              --file-contexts file_contexts.bin \
-              --libselinux ${libselinux}/lib/libselinux.so.1 \
-              --expected ${environmentContextExpectations}
-          ''}
+          ${
+            if environmentProvision == null
+            then ""
+            else ''
+              # Verify the final whole-policy context precedence, not merely the
+              # contributed .fc fragment or guessed default labels.
+              ${python3}/bin/python3 ${policySupport}/verify_context_lookups.py \
+                --file-contexts file_contexts.bin \
+                --libselinux ${libselinux}/lib/libselinux.so.1 \
+                --expected ${environmentContextExpectations}
+            ''
+          }
         '';
       }
       {
@@ -726,13 +777,17 @@ in
             deficient-binary-diagnostic \
             "$evidence_root/"
           install -m 0644 ${fileContexts} "$evidence_root/aos_sandbox.fc"
-          ${if onlineNix || runtimeDeploymentPublisher || resourceBankEnrollment || hostComponentControl || environmentProvision != null then ''
-            # Adjacent modules and rendered expectation DATA are the same
-            # inputs used above; the relative passthru has no output cycle.
-            mkdir -p "$out/share/aos/selected-policy-checker"
-            install -m 0444 selected-policy-checker/*.py \
-              "$out/share/aos/selected-policy-checker/"
-          '' else ""}
+          ${
+            if onlineNix || runtimeDeploymentPublisher || resourceBankEnrollment || hostComponentControl || environmentProvision != null
+            then ''
+              # Adjacent modules and rendered expectation DATA are the same
+              # inputs used above; the relative passthru has no output cycle.
+              mkdir -p "$out/share/aos/selected-policy-checker"
+              install -m 0444 selected-policy-checker/*.py \
+                "$out/share/aos/selected-policy-checker/"
+            ''
+            else ""
+          }
 
           cat > "$evidence_root/gate-result" <<'EOF'
           kernel_classmap_ordered_prefix=pass
@@ -749,15 +804,21 @@ in
       }
     ];
 
-    passthru = {
-      evidenceSources = [
-        policySupport
-        refpolicy-production.src
-        linux.src
-      ];
-    } // (if onlineNix || runtimeDeploymentPublisher || resourceBankEnrollment || hostComponentControl || environmentProvision != null then {
-      effectivePolicyCheckerRelative = "share/aos/selected-policy-checker/effective_policy.py";
-    } else {});
+    passthru =
+      {
+        evidenceSources = [
+          policySupport
+          refpolicy-production.src
+          linux.src
+        ];
+      }
+      // (
+        if onlineNix || runtimeDeploymentPublisher || resourceBankEnrollment || hostComponentControl || environmentProvision != null
+        then {
+          effectivePolicyCheckerRelative = "share/aos/selected-policy-checker/effective_policy.py";
+        }
+        else {}
+      );
 
     meta = {
       description = "Offline SELinux policy matched to the production Linux class map";

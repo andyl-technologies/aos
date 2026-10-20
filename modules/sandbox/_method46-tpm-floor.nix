@@ -1,7 +1,6 @@
 ##! Image-pinned method-46 floor mode and external per-owner NV credentials.
 {lib}: let
   credentialNameType = import ./_credential-name-type.nix {inherit lib;};
-
 in {
   options = {
     required = lib.mkOption {

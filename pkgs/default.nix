@@ -667,7 +667,8 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
 
   fetchCargoVendor = args: let
     canonicalSource =
-      args.src == canonicalWorkspaceSource
+      args.src
+      == canonicalWorkspaceSource
       || args.src == aosWorkspaceVendorSource;
     registryPatches =
       if canonicalSource

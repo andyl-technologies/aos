@@ -34,8 +34,16 @@
     priority_boost = 4
     flush = INCREMENTAL_ASYNC
     freq = 50
-    num_logs = ${toString (if cfg.bounds == null then 5 else cfg.bounds.numLogs)}
-    max_log_file = ${toString (if cfg.bounds == null then 50 else cfg.bounds.maxLogFileMiB)}
+    num_logs = ${toString (
+      if cfg.bounds == null
+      then 5
+      else cfg.bounds.numLogs
+    )}
+    max_log_file = ${toString (
+      if cfg.bounds == null
+      then 50
+      else cfg.bounds.maxLogFileMiB
+    )}
     max_log_file_action = ROTATE
     space_left = 75
     space_left_action = SYSLOG
@@ -156,7 +164,8 @@ in {
       assertions = lib.optionals (cfg.bounds != null) [
         {
           assertion =
-            builtins.length cfg.rules <= cfg.bounds.maximumRules
+            builtins.length cfg.rules
+            <= cfg.bounds.maximumRules
             && builtins.all (rule: builtins.stringLength rule <= cfg.bounds.maximumRuleBytes) cfg.rules;
           message = "Selected audit rules exceed the configured finite input bounds.";
         }

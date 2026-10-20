@@ -226,60 +226,61 @@
                 echo "AOS root-handoff custody before: inode=$inode"
               '';
             };
-            aos-root-handoff-adversary = lib.mkIf (builtins.elem mode [
-              "guard-substitution"
-              "missing-runtime-root"
-              "runtime-shadows"
-            ]) {
-              description = "Install qualification-only overlay shadow fixtures";
-              requiredBy = ["initrd-switch-root.target"];
-              requires = ["nix-overlay-setup.service" "etc-overlay-setup.service"];
-              after = ["nix-overlay-setup.service" "etc-overlay-setup.service"];
-              before = ["initrd-switch-root.target"];
-              serviceConfig = {
-                Type = "oneshot";
-                StandardOutput = "journal+console";
-                StandardError = "journal+console";
-              };
-              script =
-                if mode == "guard-substitution"
-                then ''
-                  set -eu
-                  printf '# invalid substituted guard\n' > /run/aos-substituted-guard
-                  chmod 0555 /run/aos-substituted-guard
-                  ${pkgs.util-linux}/bin/mount --bind \
-                    /run/aos-substituted-guard \
-                    /sysroot/usr/lib/systemd/aos-selinux-root-handoff
-                  echo "AOS root-handoff adversary: substituted guard"
-                ''
-                else if mode == "missing-runtime-root"
-                then ''
-                  set -eu
-                  ${pkgs.coreutils}/bin/rm -rf \
-                    /sysroot/nix/store/${libcapBasename}
-                  printf 'AOS_WHITEOUTED_RUNTIME_ROOT\n' \
-                    > /sysroot/nix/store/${libcapBasename}
-                  echo "AOS root-handoff adversary: runtime root replaced by non-directory"
-                ''
-                else ''
-                  set -eu
-                  printf 'AOS_ATTACKER_SYSTEMD\n' > /run/aos-shadow-systemd
-                  printf 'AOS_ATTACKER_LOADER\n' > /run/aos-shadow-loader
-                  printf 'AOS_ATTACKER_DSO\n' > /run/aos-shadow-dso
-                  printf '/run/aos-attacker-preload.so\n' > /run/aos-shadow-preload
-                  chmod 0555 /run/aos-shadow-systemd /run/aos-shadow-loader /run/aos-shadow-dso
+            aos-root-handoff-adversary =
+              lib.mkIf (builtins.elem mode [
+                "guard-substitution"
+                "missing-runtime-root"
+                "runtime-shadows"
+              ]) {
+                description = "Install qualification-only overlay shadow fixtures";
+                requiredBy = ["initrd-switch-root.target"];
+                requires = ["nix-overlay-setup.service" "etc-overlay-setup.service"];
+                after = ["nix-overlay-setup.service" "etc-overlay-setup.service"];
+                before = ["initrd-switch-root.target"];
+                serviceConfig = {
+                  Type = "oneshot";
+                  StandardOutput = "journal+console";
+                  StandardError = "journal+console";
+                };
+                script =
+                  if mode == "guard-substitution"
+                  then ''
+                    set -eu
+                    printf '# invalid substituted guard\n' > /run/aos-substituted-guard
+                    chmod 0555 /run/aos-substituted-guard
+                    ${pkgs.util-linux}/bin/mount --bind \
+                      /run/aos-substituted-guard \
+                      /sysroot/usr/lib/systemd/aos-selinux-root-handoff
+                    echo "AOS root-handoff adversary: substituted guard"
+                  ''
+                  else if mode == "missing-runtime-root"
+                  then ''
+                    set -eu
+                    ${pkgs.coreutils}/bin/rm -rf \
+                      /sysroot/nix/store/${libcapBasename}
+                    printf 'AOS_WHITEOUTED_RUNTIME_ROOT\n' \
+                      > /sysroot/nix/store/${libcapBasename}
+                    echo "AOS root-handoff adversary: runtime root replaced by non-directory"
+                  ''
+                  else ''
+                    set -eu
+                    printf 'AOS_ATTACKER_SYSTEMD\n' > /run/aos-shadow-systemd
+                    printf 'AOS_ATTACKER_LOADER\n' > /run/aos-shadow-loader
+                    printf 'AOS_ATTACKER_DSO\n' > /run/aos-shadow-dso
+                    printf '/run/aos-attacker-preload.so\n' > /run/aos-shadow-preload
+                    chmod 0555 /run/aos-shadow-systemd /run/aos-shadow-loader /run/aos-shadow-dso
 
-                  ${pkgs.util-linux}/bin/mount --bind /run/aos-shadow-systemd \
-                    /sysroot/nix/store/${systemdBasename}/lib/systemd/systemd
-                  ${pkgs.util-linux}/bin/mount --bind /run/aos-shadow-loader \
-                    /sysroot/nix/store/${glibcBasename}/lib/${dynamicLinker}
-                  ${pkgs.util-linux}/bin/mount --bind /run/aos-shadow-dso \
-                    /sysroot/nix/store/${libcapBasename}/lib/libcap.so.2
-                  ${pkgs.util-linux}/bin/mount --bind /run/aos-shadow-preload \
-                    /sysroot/etc/ld.so.preload
-                  echo "AOS root-handoff adversary: executable loader DSO and preload shadowed"
-                '';
-            };
+                    ${pkgs.util-linux}/bin/mount --bind /run/aos-shadow-systemd \
+                      /sysroot/nix/store/${systemdBasename}/lib/systemd/systemd
+                    ${pkgs.util-linux}/bin/mount --bind /run/aos-shadow-loader \
+                      /sysroot/nix/store/${glibcBasename}/lib/${dynamicLinker}
+                    ${pkgs.util-linux}/bin/mount --bind /run/aos-shadow-dso \
+                      /sysroot/nix/store/${libcapBasename}/lib/libcap.so.2
+                    ${pkgs.util-linux}/bin/mount --bind /run/aos-shadow-preload \
+                      /sysroot/etc/ld.so.preload
+                    echo "AOS root-handoff adversary: executable loader DSO and preload shadowed"
+                  '';
+              };
           };
         };
 

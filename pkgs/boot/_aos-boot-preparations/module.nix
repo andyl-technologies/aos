@@ -334,9 +334,18 @@
   };
   substrateEnvironment = {
     variables = {
-      AOS_PROTECTED_VAR = if protectedSandboxRoots then "true" else "false";
-      AOS_PROTECTED_SANDBOX_OWNER_ROOTS = if protectedSandboxOwnerRoots then "true" else "false";
-      AOS_VAR_ROOT_CONTEXT = if protectedSandboxRoots then varRootContext else "";
+      AOS_PROTECTED_VAR =
+        if protectedSandboxRoots
+        then "true"
+        else "false";
+      AOS_PROTECTED_SANDBOX_OWNER_ROOTS =
+        if protectedSandboxOwnerRoots
+        then "true"
+        else "false";
+      AOS_VAR_ROOT_CONTEXT =
+        if protectedSandboxRoots
+        then varRootContext
+        else "";
       AOS_RUNTIME_ROOTS_EXECUTABLE =
         if protectedSandboxRoots
         then "${config.aos.security.selinux._runtimeRootsProvisioner}/bin/aos-selinux-runtime-roots"

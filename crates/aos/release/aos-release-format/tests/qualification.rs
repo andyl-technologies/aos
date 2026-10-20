@@ -391,7 +391,8 @@ fn contract_identity_is_its_rust_canonical_encoding() {
     let value: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
     let encoded_requirements = value["requirements"].as_array().unwrap();
     assert_eq!(encoded_requirements.len(), contract.requirements.len());
-    for (requirement, encoded_requirement) in contract.requirements.iter().zip(encoded_requirements) {
+    for (requirement, encoded_requirement) in contract.requirements.iter().zip(encoded_requirements)
+    {
         assert_eq!(
             encoded_requirement["id"].as_str(),
             Some(requirement.id.as_str())

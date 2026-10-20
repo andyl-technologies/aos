@@ -18,7 +18,8 @@
   expectedExecStart = "${cfg.package}/bin/aos-sandbox-cache-signerd ${toString controller.uid} ${toString controller.gid} ${toString views.uid} ${toString views.gid}";
   service = config.systemd.services.aos-sandbox-cache-signerd;
   socket = config.systemd.sockets.aos-sandbox-cache-signerd.socketConfig;
-  rootProfileFiles = lib.optional (policy._normalStartupProfile != null)
+  rootProfileFiles =
+    lib.optional (policy._normalStartupProfile != null)
     "${policy._normalStartupProfile}/profile.json:aos-cache-root-profile:read-only";
   profileMatches = import ./_fixed-signer-profile.nix;
 in {
@@ -60,20 +61,24 @@ in {
         message = "installed Cache signer requires its genuine Parent and distinct explicit Cache receiving/sender F/M slices";
       }
       {
-        assertion = policy._normalStartupProfile != null
+        assertion =
+          policy._normalStartupProfile
+          != null
           && (service.serviceConfig.OpenFile or []) == rootProfileFiles
           && builtins.all (name: (socket.${name} or false) == true)
-            ["PassCredentials" "PassPIDFD" "PassSecurity" "PassSubjectBeforeListen"];
+          ["PassCredentials" "PassPIDFD" "PassSecurity" "PassSubjectBeforeListen"];
         message = "installed Cache signer requires its exact image-delivered Root profile and all PID1 pre-listen subject options";
       }
       {
-        assertion = !protectedOrigin || profileMatches {
-          inherit config lib pkgs;
-          package = cfg.package;
-          unit = service;
-          identity = "aos-cache-signer";
-          expectedExec = expectedExecStart;
-        };
+        assertion =
+          !protectedOrigin
+          || profileMatches {
+            inherit config lib pkgs;
+            package = cfg.package;
+            unit = service;
+            identity = "aos-cache-signer";
+            expectedExec = expectedExecStart;
+          };
         message = "protected Cache signer requires the immutable selected image and its exact single signer role without helper commands or namespaces";
       }
       {

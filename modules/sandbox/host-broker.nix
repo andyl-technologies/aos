@@ -9,14 +9,19 @@
 
   cfg = config.aos.sandbox.hostBroker;
   confined = config.aos.security.selinux.enable && config.aos.security.selinux.bootMode == "immutable-stage0";
-  bootPreparation = config.aos.sandbox.runtimeDeploymentPublisher.enable
+  bootPreparation =
+    config.aos.sandbox.runtimeDeploymentPublisher.enable
     && config.aos.sandbox.runtimeDeploymentPublisher.bootPreparation;
   bootPreparationReceiving =
-    if !bootPreparation then null
-    else if config.aos.sandbox.resourceBank.parentEnclosure == null
+    if !bootPreparation
+    then null
+    else if
+      config.aos.sandbox.resourceBank.parentEnclosure
+      == null
       || config.aos.sandbox.resourceBank.parentEnclosure.hostBootPreparationReceiving == null
     then throw "normal BootPreparation requires its actual HostService receiving subdivision"
-    else lib.map
+    else
+      lib.map
       (dimension: config.aos.sandbox.resourceBank.parentEnclosure.hostBootPreparationReceiving.${dimension})
       config.aos.sandbox.resourceBank._dimensionOrder;
   controller = config.aos.sandbox.controller;
@@ -133,7 +138,10 @@
   ];
   hostPolicy = config.aos.sandbox.resourceBank.policy;
   hostServiceLimits = lib.map (dimension: hostPolicy.hostService.${dimension}) [
-    "cpu-micros-per-period" "memory-bytes" "pids" "open-files"
+    "cpu-micros-per-period"
+    "memory-bytes"
+    "pids"
+    "open-files"
   ];
   canaryOpenFiles = [
     "${pid1Image}:aos-host-pid1-image:read-only"
@@ -143,148 +151,163 @@
   # Render the same final merged service, substituting only the profile's
   # complete OpenFile line. Removing that one self-reference avoids a unit /
   # profile store-path cycle; no other command, property or byte is exempted.
-  normalizedHost = selectedHost // {
-    environment = config.systemd.globalEnvironment // selectedHost.environment;
-    serviceConfig = selectedHost.serviceConfig // {
-      OpenFile = [
-        "${pid1Image}:aos-host-pid1-image:read-only"
-        "@AOS_HOST_CANARY_PROFILE@:aos-host-startup-profile:read-only"
-      ];
+  normalizedHost =
+    selectedHost
+    // {
+      environment = config.systemd.globalEnvironment // selectedHost.environment;
+      serviceConfig =
+        selectedHost.serviceConfig
+        // {
+          OpenFile = [
+            "${pid1Image}:aos-host-pid1-image:read-only"
+            "@AOS_HOST_CANARY_PROFILE@:aos-host-startup-profile:read-only"
+          ];
+        };
     };
-  };
   renderedHost = systemdLib.serviceToUnit normalizedHost;
-  materializedHost = builtins.replaceStrings
+  materializedHost =
+    builtins.replaceStrings
     (builtins.map (job: job.placeholder) renderedHost.jobScripts)
     (builtins.map (job: job.path) renderedHost.jobScripts)
     renderedHost.text;
-  canaryProfile = pkgs.runCommand (
-    if cfg.componentControl then "aos-host-component-control-startup-profile"
-    else "aos-host-canary-startup-profile"
-  ) ({
-    nativeBuildInputs = [pkgs.python3 pkgs.coreutils];
-    unitContract = materializedHost;
-    passAsFile = ["unitContract"];
-    argvContract = builtins.toJSON (if cfg.componentControl then componentArgv else canaryArgv);
-    preContract = builtins.toJSON (selectedHost.serviceConfig.ExecStartPre or []);
-    postContract = builtins.toJSON (selectedHost.serviceConfig.ExecStartPost or []);
-    parentResourcesContract = builtins.toJSON (
+  canaryProfile =
+    pkgs.runCommand (
       if cfg.componentControl
-      then lib.map (dimension: hostPolicy.components.${dimension})
-        config.aos.sandbox.resourceBank._dimensionOrder
-      else cfg.nodeParentResources
-    );
-    hostServiceLimitsContract = builtins.toJSON (
-      if cfg.componentControl then hostServiceLimits else cfg.canaryHostServiceLimits
-    );
-    guardianServiceLimitsContract = builtins.toJSON cfg.canaryGuardianServiceLimits;
-  } // lib.optionalAttrs cfg.componentControl {
-    resourcePolicyContract = builtins.toJSON hostPolicy;
-    executionReceivingContract = builtins.toJSON cfg.executionReceiving;
-    bootPreparationReceivingContract = builtins.toJSON bootPreparationReceiving;
-    resourcePolicyPath = "${config.aos.sandbox.resourceBank._imagePolicy}/bootstrap.bin";
-    dimensionContract = builtins.toJSON config.aos.sandbox.resourceBank._dimensionOrder;
-  }) ''
-    set -eu
-    mkdir -p "$out"
-    ${pkgs.python3}/bin/python3 -B - "$out/profile.json" \
-      "$unitContractPath" ${pid1Image} ${hostImage} ${canonicalReadbackPath} \
-      ${pkgs.systemd}/share/aos/payload-filter-programs-v1 <<'PY'
-    import hashlib
-    import json
-    import os
-    import shlex
-    import sys
-    from pathlib import Path
+      then "aos-host-component-control-startup-profile"
+      else "aos-host-canary-startup-profile"
+    ) ({
+        nativeBuildInputs = [pkgs.python3 pkgs.coreutils];
+        unitContract = materializedHost;
+        passAsFile = ["unitContract"];
+        argvContract = builtins.toJSON (
+          if cfg.componentControl
+          then componentArgv
+          else canaryArgv
+        );
+        preContract = builtins.toJSON (selectedHost.serviceConfig.ExecStartPre or []);
+        postContract = builtins.toJSON (selectedHost.serviceConfig.ExecStartPost or []);
+        parentResourcesContract = builtins.toJSON (
+          if cfg.componentControl
+          then
+            lib.map (dimension: hostPolicy.components.${dimension})
+            config.aos.sandbox.resourceBank._dimensionOrder
+          else cfg.nodeParentResources
+        );
+        hostServiceLimitsContract = builtins.toJSON (
+          if cfg.componentControl
+          then hostServiceLimits
+          else cfg.canaryHostServiceLimits
+        );
+        guardianServiceLimitsContract = builtins.toJSON cfg.canaryGuardianServiceLimits;
+      }
+      // lib.optionalAttrs cfg.componentControl {
+        resourcePolicyContract = builtins.toJSON hostPolicy;
+        executionReceivingContract = builtins.toJSON cfg.executionReceiving;
+        bootPreparationReceivingContract = builtins.toJSON bootPreparationReceiving;
+        resourcePolicyPath = "${config.aos.sandbox.resourceBank._imagePolicy}/bootstrap.bin";
+        dimensionContract = builtins.toJSON config.aos.sandbox.resourceBank._dimensionOrder;
+      }) ''
+      set -eu
+      mkdir -p "$out"
+      ${pkgs.python3}/bin/python3 -B - "$out/profile.json" \
+        "$unitContractPath" ${pid1Image} ${hostImage} ${canonicalReadbackPath} \
+        ${pkgs.systemd}/share/aos/payload-filter-programs-v1 <<'PY'
+      import hashlib
+      import json
+      import os
+      import shlex
+      import sys
+      from pathlib import Path
 
-    output, unit_path, pid1, host, policy, programs = map(Path, sys.argv[1:])
-    unit = unit_path.read_bytes()
-    marker = b"OpenFile=@AOS_HOST_CANARY_PROFILE@:aos-host-startup-profile:read-only\n"
-    if not unit or len(unit) > 65536 or unit.splitlines(keepends=True).count(marker) != 1:
-        raise ValueError("Host canary unit must contain exactly its complete profile line")
-    argv = json.loads(os.environ["argvContract"])
-    expected = ("ExecStart=" + " ".join(argv) + "\n").encode()
-    commands = [line for line in unit.splitlines(keepends=True) if line.startswith(b"ExecStart=")]
-    if commands != [expected]:
-        raise ValueError("Host canary unit command differs from its fixed installed caller")
+      output, unit_path, pid1, host, policy, programs = map(Path, sys.argv[1:])
+      unit = unit_path.read_bytes()
+      marker = b"OpenFile=@AOS_HOST_CANARY_PROFILE@:aos-host-startup-profile:read-only\n"
+      if not unit or len(unit) > 65536 or unit.splitlines(keepends=True).count(marker) != 1:
+          raise ValueError("Host canary unit must contain exactly its complete profile line")
+      argv = json.loads(os.environ["argvContract"])
+      expected = ("ExecStart=" + " ".join(argv) + "\n").encode()
+      commands = [line for line in unit.splitlines(keepends=True) if line.startswith(b"ExecStart=")]
+      if commands != [expected]:
+          raise ValueError("Host canary unit command differs from its fixed installed caller")
 
-    def digest(path):
-        return list(hashlib.sha256(path.read_bytes()).digest())
+      def digest(path):
+          return list(hashlib.sha256(path.read_bytes()).digest())
 
-    # These are only the existing generated command DATA. PID1 supplies its
-    # actual parsed command arrays independently during startup admission.
-    pre = [shlex.split(command) for command in json.loads(os.environ["preContract"])]
-    post = [shlex.split(command) for command in json.loads(os.environ["postContract"])]
-    profile = {
-        "version": 2,
-        "pid1_path": str(pid1),
-        "pid1_sha256": digest(pid1),
-        "host_path": str(host),
-        "host_sha256": digest(host),
-        "argv": argv,
-        "exec_start_pre": pre,
-        "exec_start_post": post,
-        "unit_sha256": list(hashlib.sha256(unit).digest()),
-        "policy_path": str(policy),
-        "policy_sha256": digest(policy),
-        "payload_programs_path": str(programs),
-        "payload_programs_sha256": digest(programs),
-        "parent_resources": json.loads(os.environ["parentResourcesContract"]),
-        "cpu_period_usec": 100000,
-        "host_service_limits": json.loads(os.environ["hostServiceLimitsContract"]),
-        "guardian_service_limits": json.loads(os.environ["guardianServiceLimitsContract"]),
-    }
-    ${lib.optionalString cfg.componentControl ''
-      resource_policy = json.loads(os.environ["resourcePolicyContract"])
-      dimensions = json.loads(os.environ["dimensionContract"])
-      service = [resource_policy["hostService"][dimension] for dimension in dimensions]
-      control = [resource_policy["hostControl"][dimension] for dimension in dimensions]
-      profile["version"] = 3
-      profile["parent_resources"] = [resource_policy["components"][dimension] for dimension in dimensions]
-      del profile["guardian_service_limits"]
-      profile.update({
-          "kind": "host-component-control-v1",
-          "node": list(bytes.fromhex(resource_policy["node"])),
-          "resource_epoch": list(bytes.fromhex(resource_policy["epoch"])),
-          "resource_policy_sha256": digest(Path(os.environ["resourcePolicyPath"])),
-          "host_service": service,
-          "host_control": control,
-      })
-      execution_receiving = json.loads(os.environ["executionReceivingContract"])
-      boot_receiving = json.loads(os.environ["bootPreparationReceivingContract"])
-      if boot_receiving is not None and execution_receiving is None:
-          raise ValueError("BootPreparation requires the selected real Host baseline receiving ledger")
-      if execution_receiving is not None:
-          if (set(execution_receiving) != {"prepare", "accept", "launch"}
-                  or any(len(execution_receiving[name]) != 22 for name in ("prepare", "accept", "launch"))
-                  or any(type(value) is not int or value < 0
-                         for name in ("prepare", "accept", "launch") for value in execution_receiving[name])
-                  or any(prepare + accept + launch > bound for prepare, accept, launch, bound in zip(
-                      execution_receiving["prepare"], execution_receiving["accept"],
-                      execution_receiving["launch"], service))):
-              raise ValueError("Host execution receiving must fit the same HostService subdivision")
-          profile["version"] = 5
-          if boot_receiving is not None:
-              if (len(boot_receiving) != 22
-                      or any(type(value) is not int or value < 0 or value > (1 << 64) - 1 for value in boot_receiving)
-                      or any(boot_receiving[index] == 0 for index in (0, 1, 2, 3))
-                      or boot_receiving[21] != 1):
-                  raise ValueError("BootPreparation requires its complete finite one-shot subdivision")
-              combined = [sum(parts) for parts in zip(boot_receiving,
-                  execution_receiving["prepare"], execution_receiving["accept"], execution_receiving["launch"])]
-              if (any(used > whole for used, whole in zip(combined, service))
-                      or any(service[index] - combined[index] == 0 for index in (1, 2, 3))):
-                  raise ValueError("BootPreparation overlaps the Host baseline or execution subdivisions")
-              execution_receiving["boot_preparation"] = boot_receiving
-              profile["version"] = 6
-          profile["host_execution_receiving"] = execution_receiving
-    ''}
-    encoded = json.dumps(profile, separators=(",", ":")).encode()
-    if len(encoded) > 1048576:
-        raise ValueError("Host canary profile exceeds its fixed admission bound")
-    output.write_bytes(encoded)
-    PY
-    chmod 0444 "$out/profile.json"
-  '';
+      # These are only the existing generated command DATA. PID1 supplies its
+      # actual parsed command arrays independently during startup admission.
+      pre = [shlex.split(command) for command in json.loads(os.environ["preContract"])]
+      post = [shlex.split(command) for command in json.loads(os.environ["postContract"])]
+      profile = {
+          "version": 2,
+          "pid1_path": str(pid1),
+          "pid1_sha256": digest(pid1),
+          "host_path": str(host),
+          "host_sha256": digest(host),
+          "argv": argv,
+          "exec_start_pre": pre,
+          "exec_start_post": post,
+          "unit_sha256": list(hashlib.sha256(unit).digest()),
+          "policy_path": str(policy),
+          "policy_sha256": digest(policy),
+          "payload_programs_path": str(programs),
+          "payload_programs_sha256": digest(programs),
+          "parent_resources": json.loads(os.environ["parentResourcesContract"]),
+          "cpu_period_usec": 100000,
+          "host_service_limits": json.loads(os.environ["hostServiceLimitsContract"]),
+          "guardian_service_limits": json.loads(os.environ["guardianServiceLimitsContract"]),
+      }
+      ${lib.optionalString cfg.componentControl ''
+        resource_policy = json.loads(os.environ["resourcePolicyContract"])
+        dimensions = json.loads(os.environ["dimensionContract"])
+        service = [resource_policy["hostService"][dimension] for dimension in dimensions]
+        control = [resource_policy["hostControl"][dimension] for dimension in dimensions]
+        profile["version"] = 3
+        profile["parent_resources"] = [resource_policy["components"][dimension] for dimension in dimensions]
+        del profile["guardian_service_limits"]
+        profile.update({
+            "kind": "host-component-control-v1",
+            "node": list(bytes.fromhex(resource_policy["node"])),
+            "resource_epoch": list(bytes.fromhex(resource_policy["epoch"])),
+            "resource_policy_sha256": digest(Path(os.environ["resourcePolicyPath"])),
+            "host_service": service,
+            "host_control": control,
+        })
+        execution_receiving = json.loads(os.environ["executionReceivingContract"])
+        boot_receiving = json.loads(os.environ["bootPreparationReceivingContract"])
+        if boot_receiving is not None and execution_receiving is None:
+            raise ValueError("BootPreparation requires the selected real Host baseline receiving ledger")
+        if execution_receiving is not None:
+            if (set(execution_receiving) != {"prepare", "accept", "launch"}
+                    or any(len(execution_receiving[name]) != 22 for name in ("prepare", "accept", "launch"))
+                    or any(type(value) is not int or value < 0
+                           for name in ("prepare", "accept", "launch") for value in execution_receiving[name])
+                    or any(prepare + accept + launch > bound for prepare, accept, launch, bound in zip(
+                        execution_receiving["prepare"], execution_receiving["accept"],
+                        execution_receiving["launch"], service))):
+                raise ValueError("Host execution receiving must fit the same HostService subdivision")
+            profile["version"] = 5
+            if boot_receiving is not None:
+                if (len(boot_receiving) != 22
+                        or any(type(value) is not int or value < 0 or value > (1 << 64) - 1 for value in boot_receiving)
+                        or any(boot_receiving[index] == 0 for index in (0, 1, 2, 3))
+                        or boot_receiving[21] != 1):
+                    raise ValueError("BootPreparation requires its complete finite one-shot subdivision")
+                combined = [sum(parts) for parts in zip(boot_receiving,
+                    execution_receiving["prepare"], execution_receiving["accept"], execution_receiving["launch"])]
+                if (any(used > whole for used, whole in zip(combined, service))
+                        or any(service[index] - combined[index] == 0 for index in (1, 2, 3))):
+                    raise ValueError("BootPreparation overlaps the Host baseline or execution subdivisions")
+                execution_receiving["boot_preparation"] = boot_receiving
+                profile["version"] = 6
+            profile["host_execution_receiving"] = execution_receiving
+      ''}
+      encoded = json.dumps(profile, separators=(",", ":")).encode()
+      if len(encoded) > 1048576:
+          raise ValueError("Host canary profile exceeds its fixed admission bound")
+      output.write_bytes(encoded)
+      PY
+      chmod 0444 "$out/profile.json"
+    '';
 in {
   options.aos.sandbox.hostBroker = {
     enable = lib.mkEnableOption "the fixed AOS sandbox host broker";
@@ -303,18 +326,22 @@ in {
       description = "The descriptor-pinned per-assignment Guardian executable.";
     };
 
-    canary = lib.mkEnableOption
+    canary =
+      lib.mkEnableOption
       "the independently approved private startup canary, not public runtime activation";
-    componentControl = lib.mkEnableOption
+    componentControl =
+      lib.mkEnableOption
       "the original image-owned Host service/control subdivision, not live effects";
 
     executionReceiving = lib.mkOption {
       type = lib.types.nullOr (lib.types.submodule {
-        options = lib.genAttrs ["prepare" "accept" "launch"] (name: lib.mkOption {
-          type = lib.types.listOf (lib.types.addCheck lib.types.int
-            (value: value >= 0 && value <= 9223372036854775807));
-          description = "Explicit finite 22-resource ${name} capacity inside the original HostService allocation.";
-        });
+        options = lib.genAttrs ["prepare" "accept" "launch"] (name:
+          lib.mkOption {
+            type =
+              lib.types.listOf (lib.types.addCheck lib.types.int
+                (value: value >= 0 && value <= 9223372036854775807));
+            description = "Explicit finite 22-resource ${name} capacity inside the original HostService allocation.";
+          });
       });
       default = null;
       description = ''
@@ -328,8 +355,9 @@ in {
     };
 
     nodeParentResources = lib.mkOption {
-      type = lib.types.listOf (lib.types.addCheck lib.types.int
-        (value: value >= 0 && value <= 9223372036854775807));
+      type =
+        lib.types.listOf (lib.types.addCheck lib.types.int
+          (value: value >= 0 && value <= 9223372036854775807));
       default = [];
       description = ''
         Independently administered finite readiness-canary pool in the exact
@@ -339,8 +367,9 @@ in {
     };
 
     canaryHostServiceLimits = lib.mkOption {
-      type = lib.types.listOf (lib.types.addCheck lib.types.int
-        (value: value > 0 && value <= 9223372036854775807));
+      type =
+        lib.types.listOf (lib.types.addCheck lib.types.int
+          (value: value > 0 && value <= 9223372036854775807));
       default = [];
       description = ''
         Host CPU microseconds per 100ms, memory bytes, tasks and file descriptors.
@@ -350,8 +379,9 @@ in {
     };
 
     canaryGuardianServiceLimits = lib.mkOption {
-      type = lib.types.listOf (lib.types.addCheck lib.types.int
-        (value: value > 0 && value <= 9223372036854775807));
+      type =
+        lib.types.listOf (lib.types.addCheck lib.types.int
+          (value: value > 0 && value <= 9223372036854775807));
       default = [];
       description = ''
         Independently selected Guardian CPU microseconds per 100ms, memory
@@ -412,12 +442,15 @@ in {
       ++ brokerSessionConfiguration.assertions
       ++ [
         {
-          assertion = cfg.credentials.rootNoApplyFloorPublicKey == null
-            || (cfg.componentControl && confined
+          assertion =
+            cfg.credentials.rootNoApplyFloorPublicKey
+            == null
+            || (cfg.componentControl
+              && confined
               && config.aos.sandbox.policyAuthority.enable
               && config.aos.sandbox.policyAuthority.credentials.rootNoApplyFloorSigningKey != null
               && cfg.credentials.rootNoApplyFloorPublicKey
-                != config.aos.sandbox.policyAuthority.credentials.rootNoApplyFloorSigningKey);
+              != config.aos.sandbox.policyAuthority.credentials.rootNoApplyFloorSigningKey);
           message = "Host Root NoApply floor pin requires confined component control and the paired dedicated normal Root signing credential under a distinct external name";
         }
         {
@@ -441,98 +474,130 @@ in {
           message = "phase-0 backend readiness requires the fixed shifted-target inspector credentials";
         }
         {
-          assertion = !cfg.canary || (phase0ProbeActive
-            && cfg.credentials.canaryApprovalPublicKey != null
-            && cfg.credentials.canaryJob != null
-            && cfg.credentials.guestAgentSigningSeed != null
-            && cfg.credentials.opensshAttachHostPrivateKey != null
-            && cfg.credentials.opensshAttachTrust != null
-            && cfg.credentials.opensshAttachGrantPublicKey != null);
+          assertion =
+            !cfg.canary
+            || (phase0ProbeActive
+              && cfg.credentials.canaryApprovalPublicKey != null
+              && cfg.credentials.canaryJob != null
+              && cfg.credentials.guestAgentSigningSeed != null
+              && cfg.credentials.opensshAttachHostPrivateKey != null
+              && cfg.credentials.opensshAttachTrust != null
+              && cfg.credentials.opensshAttachGrantPublicKey != null);
           message = "Host canary requires independent original job/key, phase-0 and Guest attach inputs";
         }
         {
-          assertion = hostPolicy == null || (
-            (cfg.executionReceiving == null) == (hostPolicy.hostExecutionPrepare == null)
-            && (cfg.executionReceiving == null || (
-              hostPolicy.hostExecutionAccept != null
-              && cfg.executionReceiving.prepare == map
-                (dimension: hostPolicy.hostExecutionPrepare.${dimension})
-                config.aos.sandbox.resourceBank._dimensionOrder
-              && cfg.executionReceiving.accept == map
-                (dimension: hostPolicy.hostExecutionAccept.${dimension})
-                config.aos.sandbox.resourceBank._dimensionOrder
-            ))
-          );
+          assertion =
+            hostPolicy
+            == null
+            || (
+              (cfg.executionReceiving == null)
+              == (hostPolicy.hostExecutionPrepare == null)
+              && (cfg.executionReceiving
+                == null
+                || (
+                  hostPolicy.hostExecutionAccept
+                  != null
+                  && cfg.executionReceiving.prepare
+                  == map
+                  (dimension: hostPolicy.hostExecutionPrepare.${dimension})
+                  config.aos.sandbox.resourceBank._dimensionOrder
+                  && cfg.executionReceiving.accept
+                  == map
+                  (dimension: hostPolicy.hostExecutionAccept.${dimension})
+                  config.aos.sandbox.resourceBank._dimensionOrder
+                ))
+            );
           message = "Host receiving profile must match the same image Bank's paired execution reservations exactly.";
         }
         {
-          assertion = cfg.executionReceiving == null || (
-            cfg.componentControl
-            && hostPolicy != null && hostPolicy.hostService != null
-            && lib.all (name: builtins.length cfg.executionReceiving.${name} == 22) ["prepare" "accept" "launch"]
-            && lib.all (index:
-              builtins.elemAt cfg.executionReceiving.prepare index
-              + builtins.elemAt cfg.executionReceiving.accept index
-              + builtins.elemAt cfg.executionReceiving.launch index
-              <= hostPolicy.hostService.${builtins.elemAt config.aos.sandbox.resourceBank._dimensionOrder index})
+          assertion =
+            cfg.executionReceiving
+            == null
+            || (
+              cfg.componentControl
+              && hostPolicy != null
+              && hostPolicy.hostService != null
+              && lib.all (name: builtins.length cfg.executionReceiving.${name} == 22) ["prepare" "accept" "launch"]
+              && lib.all (index:
+                builtins.elemAt cfg.executionReceiving.prepare index
+                + builtins.elemAt cfg.executionReceiving.accept index
+                + builtins.elemAt cfg.executionReceiving.launch index
+                <= hostPolicy.hostService.${builtins.elemAt config.aos.sandbox.resourceBank._dimensionOrder index})
               (lib.range 0 21)
-            && lib.all (name:
-              lib.all (index: builtins.elemAt cfg.executionReceiving.${name} index > 0) [1 3 21])
+              && lib.all (name:
+                lib.all (index: builtins.elemAt cfg.executionReceiving.${name} index > 0) [1 3 21])
               ["prepare" "accept" "launch"]
-            && lib.all (index:
-              builtins.elemAt cfg.executionReceiving.prepare index
-              + builtins.elemAt cfg.executionReceiving.accept index
-              + builtins.elemAt cfg.executionReceiving.launch index
-              < hostPolicy.hostService.${builtins.elemAt config.aos.sandbox.resourceBank._dimensionOrder index})
+              && lib.all (index:
+                builtins.elemAt cfg.executionReceiving.prepare index
+                + builtins.elemAt cfg.executionReceiving.accept index
+                + builtins.elemAt cfg.executionReceiving.launch index
+                < hostPolicy.hostService.${builtins.elemAt config.aos.sandbox.resourceBank._dimensionOrder index})
               [1 2 3]
-          );
+            );
           message = "Host execution receiving requires three explicit 22-resource capacities inside the same HostService, with a finite service complement.";
         }
         {
-          assertion = !cfg.componentControl || (
-            !cfg.canary
-            && hostPolicy != null
-            && hostPolicy.hostService != null && hostPolicy.hostControl != null
-            && config.aos.security.selinux.enable
-            && config.aos.security.selinux.mode == "enforcing"
-            && config.aos.security.selinux.bootMode == "immutable-stage0"
-          );
+          assertion =
+            !cfg.componentControl
+            || (
+              !cfg.canary
+              && hostPolicy != null
+              && hostPolicy.hostService != null
+              && hostPolicy.hostControl != null
+              && config.aos.security.selinux.enable
+              && config.aos.security.selinux.mode == "enforcing"
+              && config.aos.security.selinux.bootMode == "immutable-stage0"
+            );
           message = "Host component control requires independently provisioned V2 bank policy and immutable enforcing PID1 custody.";
         }
         {
-          assertion = !cfg.componentControl || (
-            lib.all (value: value > 0 && value <= 9223372036854775807) hostServiceLimits
-            && builtins.div (builtins.elemAt hostServiceLimits 0) 1000 * 1000
+          assertion =
+            !cfg.componentControl
+            || (
+              lib.all (value: value > 0 && value <= 9223372036854775807) hostServiceLimits
+              && builtins.div (builtins.elemAt hostServiceLimits 0) 1000
+              * 1000
               == builtins.elemAt hostServiceLimits 0
-            && builtins.elemAt hostServiceLimits 0 <= 922337203685477580
-            && builtins.div (builtins.elemAt hostServiceLimits 1) 4096 * 4096
+              && builtins.elemAt hostServiceLimits 0 <= 922337203685477580
+              && builtins.div (builtins.elemAt hostServiceLimits 1) 4096
+              * 4096
               == builtins.elemAt hostServiceLimits 1
-          );
+            );
           message = "Host component service requires exact finite aligned image-owned enforcement limits.";
         }
         {
-          assertion = !cfg.canary || (builtins.length cfg.nodeParentResources == 22
-            && builtins.length cfg.canaryHostServiceLimits == 4
-            && lib.all (index:
-              builtins.elemAt cfg.canaryHostServiceLimits index
-              <= builtins.elemAt cfg.nodeParentResources index) [0 1 2 3]
-            && builtins.div (builtins.elemAt cfg.canaryHostServiceLimits 0) 1000 * 1000
+          assertion =
+            !cfg.canary
+            || (builtins.length cfg.nodeParentResources
+              == 22
+              && builtins.length cfg.canaryHostServiceLimits == 4
+              && lib.all (index:
+                builtins.elemAt cfg.canaryHostServiceLimits index
+                <= builtins.elemAt cfg.nodeParentResources index) [0 1 2 3]
+              && builtins.div (builtins.elemAt cfg.canaryHostServiceLimits 0) 1000
+              * 1000
               == builtins.elemAt cfg.canaryHostServiceLimits 0
-            && builtins.elemAt cfg.canaryHostServiceLimits 0 <= 922337203685477580
-            && builtins.div (builtins.elemAt cfg.canaryHostServiceLimits 1) 4096 * 4096
+              && builtins.elemAt cfg.canaryHostServiceLimits 0 <= 922337203685477580
+              && builtins.div (builtins.elemAt cfg.canaryHostServiceLimits 1) 4096
+              * 4096
               == builtins.elemAt cfg.canaryHostServiceLimits 1);
           message = "Host canary requires an independent finite 22-resource pool and matching aligned Host limits";
         }
         {
-          assertion = !cfg.canary || (builtins.length cfg.nodeParentResources == 22
-            && builtins.length cfg.canaryGuardianServiceLimits == 4
-            && lib.all (index:
-              builtins.elemAt cfg.canaryGuardianServiceLimits index
-              <= builtins.elemAt cfg.nodeParentResources index) [0 1 2 3]
-            && builtins.div (builtins.elemAt cfg.canaryGuardianServiceLimits 0) 1000 * 1000
+          assertion =
+            !cfg.canary
+            || (builtins.length cfg.nodeParentResources
+              == 22
+              && builtins.length cfg.canaryGuardianServiceLimits == 4
+              && lib.all (index:
+                builtins.elemAt cfg.canaryGuardianServiceLimits index
+                <= builtins.elemAt cfg.nodeParentResources index) [0 1 2 3]
+              && builtins.div (builtins.elemAt cfg.canaryGuardianServiceLimits 0) 1000
+              * 1000
               == builtins.elemAt cfg.canaryGuardianServiceLimits 0
-            && builtins.elemAt cfg.canaryGuardianServiceLimits 0 <= 922337203685477580
-            && builtins.div (builtins.elemAt cfg.canaryGuardianServiceLimits 1) 4096 * 4096
+              && builtins.elemAt cfg.canaryGuardianServiceLimits 0 <= 922337203685477580
+              && builtins.div (builtins.elemAt cfg.canaryGuardianServiceLimits 1) 4096
+              * 4096
               == builtins.elemAt cfg.canaryGuardianServiceLimits 1);
           message = "Host canary requires independently configured finite sibling Guardian limits";
         }
@@ -616,74 +681,99 @@ in {
         StartLimitIntervalSec = 60;
         StartLimitBurst = 5;
       };
-      serviceConfig = {
-        Type = "simple";
-        Sockets = [
-          "aos-sandbox-hostd.socket"
-          "aos-sandbox-host-root-mount.socket"
-          "aos-sandbox-host-storage.socket"
-        ];
-        ExecStartPre =
-          ["${pkgs.coreutils}/bin/test -f ${pkgs.systemd}/share/aos/backend-policy-artifact-v2"]
-          ++ brokerSessionConfiguration.installCommands;
-        ExecStart = "${cfg.package}/bin/aos-sandbox-hostd ${toString controller.uid} ${toString controller.gid} ${pkgs.systemd}/bin/systemd-nspawn ${cfg.guardianPackage}/bin/aos-sandbox-guardian ${canonicalReadbackPath}"
-          + lib.optionalString cfg.canary " --host-canary-v1"
-          + lib.optionalString cfg.componentControl " --host-component-control-v2";
-        # This public digest is pinned to the deployed immutable guest package,
-        # independent of Storage's assignment-bound physical root proof.
-        LoadCredential =
-          loadCredentials
-          ++ brokerSessionConfiguration.loadCredentials
-          ++ ["guest-root-package-binding-v1:${pkgs.aos-sandbox-guest-root-template}/package-binding"];
-        Restart = "on-failure";
-        RestartSec = "2s";
-        StateDirectory =
-          if cfg.canary
-          then ["aos/sandbox-host" "aos/sandbox-host/canary-capacity-v1"]
-          else "aos/sandbox-host";
-        StateDirectoryMode = "0700";
-        RuntimeDirectory = "aos/sandbox-host";
-        RuntimeDirectoryMode = "0710";
-        UMask = "0077";
+      serviceConfig =
+        {
+          Type = "simple";
+          Sockets = [
+            "aos-sandbox-hostd.socket"
+            "aos-sandbox-host-root-mount.socket"
+            "aos-sandbox-host-storage.socket"
+          ];
+          ExecStartPre =
+            ["${pkgs.coreutils}/bin/test -f ${pkgs.systemd}/share/aos/backend-policy-artifact-v2"]
+            ++ brokerSessionConfiguration.installCommands;
+          ExecStart =
+            "${cfg.package}/bin/aos-sandbox-hostd ${toString controller.uid} ${toString controller.gid} ${pkgs.systemd}/bin/systemd-nspawn ${cfg.guardianPackage}/bin/aos-sandbox-guardian ${canonicalReadbackPath}"
+            + lib.optionalString cfg.canary " --host-canary-v1"
+            + lib.optionalString cfg.componentControl " --host-component-control-v2";
+          # This public digest is pinned to the deployed immutable guest package,
+          # independent of Storage's assignment-bound physical root proof.
+          LoadCredential =
+            loadCredentials
+            ++ brokerSessionConfiguration.loadCredentials
+            ++ ["guest-root-package-binding-v1:${pkgs.aos-sandbox-guest-root-template}/package-binding"];
+          Restart = "on-failure";
+          RestartSec = "2s";
+          StateDirectory =
+            if cfg.canary
+            then ["aos/sandbox-host" "aos/sandbox-host/canary-capacity-v1"]
+            else "aos/sandbox-host";
+          StateDirectoryMode = "0700";
+          RuntimeDirectory = "aos/sandbox-host";
+          RuntimeDirectoryMode = "0710";
+          UMask = "0077";
 
-        # hostd probes the fixed shifted target under this exact service
-        # sandbox. That does not prove access to a real nspawn payload; do not
-        # add CAP_SYS_PTRACE to make such access appear to work.
-        CapabilityBoundingSet = "";
-        DevicePolicy = "closed";
-        LockPersonality = true;
-        MemoryDenyWriteExecute = true;
-        NoNewPrivileges = true;
-        PrivateDevices = true;
-        PrivateTmp = true;
-        ProcSubset = "pid";
-        ProtectClock = true;
-        ProtectControlGroups = true;
-        ProtectHome = true;
-        ProtectKernelLogs = true;
-        ProtectKernelModules = true;
-        ProtectKernelTunables = true;
-        ProtectProc = "invisible";
-        ProtectSystem = "strict";
-        RestrictAddressFamilies = ["AF_UNIX"];
-        RestrictNamespaces = true;
-        RestrictRealtime = true;
-        RestrictSUIDSGID = true;
-        SystemCallArchitectures = hostSyscallProfile.architectures;
-        SystemCallFilter = hostSyscallProfile.filter;
-        SystemCallErrorNumber = hostSyscallProfile.errorNumber;
-      } // lib.optionalAttrs (cfg.canary || cfg.componentControl) {
-        OpenFile = canaryOpenFiles;
-        SELinuxContext = "system_u:system_r:aos_sandbox_host_t";
-        ExtraFileDescriptorNames = [];
-        FileDescriptorStoreMax = 0;
-        CPUQuota = "${toString (builtins.div (builtins.elemAt (if cfg.componentControl then hostServiceLimits else cfg.canaryHostServiceLimits) 0) 1000)}%";
-        CPUQuotaPeriodSec = "100ms";
-        MemoryMax = builtins.elemAt (if cfg.componentControl then hostServiceLimits else cfg.canaryHostServiceLimits) 1;
-        TasksMax = builtins.elemAt (if cfg.componentControl then hostServiceLimits else cfg.canaryHostServiceLimits) 2;
-        LimitNOFILE = let limits = if cfg.componentControl then hostServiceLimits else cfg.canaryHostServiceLimits;
+          # hostd probes the fixed shifted target under this exact service
+          # sandbox. That does not prove access to a real nspawn payload; do not
+          # add CAP_SYS_PTRACE to make such access appear to work.
+          CapabilityBoundingSet = "";
+          DevicePolicy = "closed";
+          LockPersonality = true;
+          MemoryDenyWriteExecute = true;
+          NoNewPrivileges = true;
+          PrivateDevices = true;
+          PrivateTmp = true;
+          ProcSubset = "pid";
+          ProtectClock = true;
+          ProtectControlGroups = true;
+          ProtectHome = true;
+          ProtectKernelLogs = true;
+          ProtectKernelModules = true;
+          ProtectKernelTunables = true;
+          ProtectProc = "invisible";
+          ProtectSystem = "strict";
+          RestrictAddressFamilies = ["AF_UNIX"];
+          RestrictNamespaces = true;
+          RestrictRealtime = true;
+          RestrictSUIDSGID = true;
+          SystemCallArchitectures = hostSyscallProfile.architectures;
+          SystemCallFilter = hostSyscallProfile.filter;
+          SystemCallErrorNumber = hostSyscallProfile.errorNumber;
+        }
+        // lib.optionalAttrs (cfg.canary || cfg.componentControl) {
+          OpenFile = canaryOpenFiles;
+          SELinuxContext = "system_u:system_r:aos_sandbox_host_t";
+          ExtraFileDescriptorNames = [];
+          FileDescriptorStoreMax = 0;
+          CPUQuota = "${toString (builtins.div (builtins.elemAt (
+              if cfg.componentControl
+              then hostServiceLimits
+              else cfg.canaryHostServiceLimits
+            )
+            0)
+          1000)}%";
+          CPUQuotaPeriodSec = "100ms";
+          MemoryMax =
+            builtins.elemAt (
+              if cfg.componentControl
+              then hostServiceLimits
+              else cfg.canaryHostServiceLimits
+            )
+            1;
+          TasksMax =
+            builtins.elemAt (
+              if cfg.componentControl
+              then hostServiceLimits
+              else cfg.canaryHostServiceLimits
+            )
+            2;
+          LimitNOFILE = let
+            limits =
+              if cfg.componentControl
+              then hostServiceLimits
+              else cfg.canaryHostServiceLimits;
           in "${toString (builtins.elemAt limits 3)}:${toString (builtins.elemAt limits 3)}";
-      };
+        };
     };
 
     systemd.services.aos-sandbox-host-phase0-target = lib.mkIf phase0ProbeActive {

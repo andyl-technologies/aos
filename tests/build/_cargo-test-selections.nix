@@ -67,7 +67,8 @@ let
   rolePackages = map rolePackage roleRecipes;
   expectedWorkspaceSource = import ../../pkgs/tools/aos/_workspace-source.nix {inherit lib;};
   sharedVendorRetained = package:
-    package.cargoDeps == sharedVendor
+    package.cargoDeps
+    == sharedVendor
     && package.src == expectedWorkspaceSource
     && package.cargoArtifacts.cargoDeps == package.cargoDeps
     && package.passthru.cargoDeps == package.cargoDeps;
@@ -167,26 +168,27 @@ let
     requiredNames = lib.filter (name: !formals.${name}) (builtins.attrNames formals);
     dependencies = lib.genAttrs requiredNames (name: "unused-${name}");
   in
-    packageFunction (builtins.intersectAttrs formals (dependencies // {
-      inherit lib;
-      mkAosCargoPackage = capturePackage;
-      callPackage = _: _: {packageRuntime = "/test/aos-package-runtime";};
-      mkCargoArtifacts = capturePackage;
-      mkCargoDummySource = _: "unused-dummy-source";
-      aosWorkspaceVendor = sharedVendor;
-      mkDerivation =
-        if darwin
-        then _: throw "Darwin test environment must not construct a Linux launcher"
-        else capturePackage;
-      stdenv = {
-        isCross = darwin;
-        hostPlatform = {
-          isDarwin = darwin;
-          isLinux = !darwin;
+    packageFunction (builtins.intersectAttrs formals (dependencies
+      // {
+        inherit lib;
+        mkAosCargoPackage = capturePackage;
+        callPackage = _: _: {packageRuntime = "/test/aos-package-runtime";};
+        mkCargoArtifacts = capturePackage;
+        mkCargoDummySource = _: "unused-dummy-source";
+        aosWorkspaceVendor = sharedVendor;
+        mkDerivation =
+          if darwin
+          then _: throw "Darwin test environment must not construct a Linux launcher"
+          else capturePackage;
+        stdenv = {
+          isCross = darwin;
+          hostPlatform = {
+            isDarwin = darwin;
+            isLinux = !darwin;
+          };
         };
-      };
-      buildPackages = dependencies;
-    }));
+        buildPackages = dependencies;
+      }));
   networkPackage = import ../../pkgs/tools/aos-netd.nix {
     inherit lib;
     mkCargoPackage = capturePackage;
@@ -217,7 +219,8 @@ let
       }
     ));
   in
-    (environment.AOS_NO_SETID_TEST_LAUNCHER or null) == launcherPath
+    (environment.AOS_NO_SETID_TEST_LAUNCHER or null)
+    == launcherPath
     && lib.hasInfix "export AOS_NO_SETID_TEST_LAUNCHER='${launcherPath}'" configure.script;
   nativeAos = aosPackage false;
   darwinAos = aosPackage true;

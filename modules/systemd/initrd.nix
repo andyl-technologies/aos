@@ -15,6 +15,5 @@
         activate it or authorize Mount startup capture.
       '';
     };
-
   };
 }

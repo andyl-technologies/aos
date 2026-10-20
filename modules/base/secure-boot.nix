@@ -429,11 +429,13 @@ in {
     })
 
     (lib.mkIf cfg.measuredBoot.enable {
-      aos.security.measuredVar.protectedVarContext = lib.mkIf (
-        config.aos.security.selinux.protectedSandboxNetworkRoots.enable
-        || config.aos.sandbox.controllerService.method46TpmFloor.required
-        || config.aos.sandbox.storageBroker.method46TpmFloor.required
-      ) config.aos.security.selinux.protectedSandboxNetworkRoots._varRootContext;
+      aos.security.measuredVar.protectedVarContext =
+        lib.mkIf (
+          config.aos.security.selinux.protectedSandboxNetworkRoots.enable
+          || config.aos.sandbox.controllerService.method46TpmFloor.required
+          || config.aos.sandbox.storageBroker.method46TpmFloor.required
+        )
+        config.aos.security.selinux.protectedSandboxNetworkRoots._varRootContext;
 
       aos.config._artifactSources.pcr-public-key = pcrKeyForInitrd;
       aos.activation.stages.host.configurationBuilders = [retainPcrPolicy];

@@ -7,8 +7,10 @@ const TRAFFIC_PROOF_SOURCE: &str = include_str!("../src/handshake/traffic.rs");
 const LIBRARY_SOURCE: &str = include_str!("../src/lib.rs");
 const PROTOCOL_AUTHENTICATED_SESSION_SOURCE: &str =
     include_str!("../../../protocol/aos-sandbox-protocol/src/authenticated_session.rs");
-const PROTOCOL_LIBRARY_SOURCE: &str = include_str!("../../../protocol/aos-sandbox-protocol/src/lib.rs");
-const NETWORK_SERVICE_SOURCE: &str = include_str!("../../../host/aos-sandbox-network/src/service.rs");
+const PROTOCOL_LIBRARY_SOURCE: &str =
+    include_str!("../../../protocol/aos-sandbox-protocol/src/lib.rs");
+const NETWORK_SERVICE_SOURCE: &str =
+    include_str!("../../../host/aos-sandbox-network/src/service.rs");
 
 // External test-source paths are metadata, not reverse dependencies. Preserve
 // the old broad ownership check everywhere outside this one exact section.
@@ -56,7 +58,8 @@ default = []
         "dependencies.alias = { package = \"upper-owner\", version = \"1\" }",
     ] {
         assert!(
-            manifest_without_test_source_metadata(&format!("{declaration}\n{metadata}")).contains("upper-owner"),
+            manifest_without_test_source_metadata(&format!("{declaration}\n{metadata}"))
+                .contains("upper-owner"),
             "dependency edge escaped the ownership barrier: {declaration}"
         );
     }
@@ -82,7 +85,10 @@ fn dependency_boundary_keeps_crypto_and_application_ownership_explicit() {
 
     // The complete method adapters own canonical protobuf traffic directly;
     // keep that wire dependency explicit instead of adding a generic codec.
-    assert_eq!(CRATE_MANIFEST.matches("aos-sandbox-api.workspace").count(), 1);
+    assert_eq!(
+        CRATE_MANIFEST.matches("aos-sandbox-api.workspace").count(),
+        1
+    );
     assert_eq!(CRATE_MANIFEST.matches("buffa.workspace").count(), 1);
     assert_eq!(CRATE_MANIFEST.matches("aos-sandbox-protocol").count(), 1);
 }
@@ -90,8 +96,12 @@ fn dependency_boundary_keeps_crypto_and_application_ownership_explicit() {
 #[test]
 fn executable_and_http_registration_ownership_is_outside_security() {
     let controller_sources = [
-        include_str!("../../../controller/aos-sandbox-controller-runtime/src/controller_service.rs"),
-        include_str!("../../../controller/aos-sandbox-controller-runtime/src/controller_service/effects/mod.rs"),
+        include_str!(
+            "../../../controller/aos-sandbox-controller-runtime/src/controller_service.rs"
+        ),
+        include_str!(
+            "../../../controller/aos-sandbox-controller-runtime/src/controller_service/effects/mod.rs"
+        ),
         include_str!(
             "../../../controller/aos-sandbox-controller-runtime/src/controller_service/effects/admission.rs"
         ),
@@ -110,20 +120,32 @@ fn executable_and_http_registration_ownership_is_outside_security() {
         include_str!(
             "../../../controller/aos-sandbox-controller-runtime/src/controller_service/effects/lifecycle/tests.rs"
         ),
-        include_str!("../../../controller/aos-sandbox-controller-runtime/src/controller_service/worker.rs"),
-        include_str!("../../../controller/aos-sandbox-controller-runtime/src/controller_service/worker/tests.rs"),
-        include_str!("../../../controller/aos-sandbox-controller-runtime/src/controller_service/activation.rs"),
+        include_str!(
+            "../../../controller/aos-sandbox-controller-runtime/src/controller_service/worker.rs"
+        ),
+        include_str!(
+            "../../../controller/aos-sandbox-controller-runtime/src/controller_service/worker/tests.rs"
+        ),
+        include_str!(
+            "../../../controller/aos-sandbox-controller-runtime/src/controller_service/activation.rs"
+        ),
         include_str!(
             "../../../controller/aos-sandbox-controller-runtime/src/controller_service/activation/configuration.rs"
         ),
-        include_str!("../../../controller/aos-sandbox-controller-runtime/src/controller_service/commands.rs"),
-        include_str!("../../../controller/aos-sandbox-controller-runtime/src/controller_service/public_rpc.rs"),
+        include_str!(
+            "../../../controller/aos-sandbox-controller-runtime/src/controller_service/commands.rs"
+        ),
+        include_str!(
+            "../../../controller/aos-sandbox-controller-runtime/src/controller_service/public_rpc.rs"
+        ),
         include_str!(
             "../../../controller/aos-sandbox-controller-runtime/src/controller_service/public_rpc/tests.rs"
         ),
     ];
     assert!(!CRATE_MANIFEST.contains("[[bin]]"));
-    assert!(!manifest_without_test_source_metadata(CRATE_MANIFEST).contains("aos-sandbox-services"));
+    assert!(
+        !manifest_without_test_source_metadata(CRATE_MANIFEST).contains("aos-sandbox-services")
+    );
     for controller in controller_sources {
         assert!(!controller.contains("axum::serve("));
         assert!(!controller.contains("::register("));
@@ -194,18 +216,27 @@ fn endpoint_surface_exposes_no_signer_or_scalar_escape_hatch() {
     assert!(!LIBRARY_SOURCE.contains("pub mod handshake"));
     // The module stays private. Only these finite, opaque receiving/session
     // ports are reexported; an additional signer or raw transport still fails.
-    let exports = LIBRARY_SOURCE.split("pub use handshake")
+    let exports = LIBRARY_SOURCE
+        .split("pub use handshake")
         .skip(1)
         .map(|suffix| format!("pub use handshake{};", suffix.split(';').next().unwrap()))
-        .map(|export| export.chars().filter(|character| !character.is_whitespace()).collect::<String>())
+        .map(|export| {
+            export
+                .chars()
+                .filter(|character| !character.is_whitespace())
+                .collect::<String>()
+        })
         .collect::<Vec<_>>();
-    assert_eq!(exports, [
-        "pubusehandshake::output_registration_continuation::{ExecutionAvailabilitySessionIoOriginalV2,ExecutionAvailabilityClientSessionBorrowV2,HostExecutionNoApplySessionIoOriginalV2,HostExecutionNoApplyClientSessionBorrowV2,};",
-        "pubusehandshake::output_registration_continuation::{FixedServiceRequestOriginalV4,FixedServiceRequestClosedV4};",
-        "pubusehandshake::output_registration_continuation::{FixedServiceResponseOriginalV4,FixedServiceResponseClosedV4,FixedServiceResponseProgressV4};",
-        "pubusehandshake::{FixedServiceSessionOpenOriginalV4,FixedServiceSessionBorrowV4,FixedServiceSessionClosedV4};",
-        "pubusehandshake::{StartResourceSessionOpenOriginalV4,StartResourceSessionClosedV4,StartResourceSessionBorrowV4};",
-    ]);
+    assert_eq!(
+        exports,
+        [
+            "pubusehandshake::output_registration_continuation::{ExecutionAvailabilitySessionIoOriginalV2,ExecutionAvailabilityClientSessionBorrowV2,HostExecutionNoApplySessionIoOriginalV2,HostExecutionNoApplyClientSessionBorrowV2,};",
+            "pubusehandshake::output_registration_continuation::{FixedServiceRequestOriginalV4,FixedServiceRequestClosedV4};",
+            "pubusehandshake::output_registration_continuation::{FixedServiceResponseOriginalV4,FixedServiceResponseClosedV4,FixedServiceResponseProgressV4};",
+            "pubusehandshake::{FixedServiceSessionOpenOriginalV4,FixedServiceSessionBorrowV4,FixedServiceSessionClosedV4};",
+            "pubusehandshake::{StartResourceSessionOpenOriginalV4,StartResourceSessionClosedV4,StartResourceSessionBorrowV4};",
+        ]
+    );
 
     for forbidden in ["AsRawFd", "IntoRawFd", "FromRawFd"] {
         assert!(!HANDSHAKE_SOURCE.contains(forbidden));
@@ -213,14 +244,24 @@ fn endpoint_surface_exposes_no_signer_or_scalar_escape_hatch() {
 
     assert!(HANDSHAKE_SOURCE.contains("self.owner.arm_execution_client_socket_post_v1("));
     assert!(HANDSHAKE_SOURCE.contains("self.owner.finish_execution_client_socket_post_v1("));
-    assert_eq!(HANDSHAKE_SOURCE.matches("self.socket.as_fd().ok()").count(), 3);
+    assert_eq!(
+        HANDSHAKE_SOURCE.matches("self.socket.as_fd().ok()").count(),
+        3
+    );
 
     let post = include_str!("../src/recovery/journal/client_session_continuation.rs");
-    let socket_post = post.split("impl ProtectedBrokerSessionOwnerV1 {\n    /// Arms the same native post")
-        .nth(1).unwrap();
+    let socket_post = post
+        .split("impl ProtectedBrokerSessionOwnerV1 {\n    /// Arms the same native post")
+        .nth(1)
+        .unwrap();
     assert!(socket_post.contains("socket: Option<std::os::fd::BorrowedFd<'_>>"));
-    assert!(socket_post.contains("let socket = socket.map(|socket| socket.as_raw_fd()).unwrap_or(-1);"));
-    assert!(socket_post.contains("self.finish_execution_client_post_v1(transcript, peer, socket, original)"));
+    assert!(
+        socket_post.contains("let socket = socket.map(|socket| socket.as_raw_fd()).unwrap_or(-1);")
+    );
+    assert!(
+        socket_post
+            .contains("self.finish_execution_client_post_v1(transcript, peer, socket, original)")
+    );
 
     for forbidden in [
         "pub struct",
@@ -720,9 +761,8 @@ fn controller_composition_has_an_exact_closed_declaration_surface() {
 
     // The Create flight exposes only inert custody and compiled byte geometry.
     // Its signing, native IO and completion methods remain crate-private.
-    let create_flight = include_str!(
-        "../src/handshake/output_registration_continuation/storage_create.rs"
-    );
+    let create_flight =
+        include_str!("../src/handshake/output_registration_continuation/storage_create.rs");
     assert_eq!(
         public_declaration_names(create_flight),
         [
@@ -928,7 +968,10 @@ fn controller_runtime_is_an_upper_owner_without_a_security_reverse_edge() {
     assert!(runtime.contains("aos-sandbox-broker-session-security.workspace = true"));
     assert!(!runtime.contains("aos-sandbox-services"));
     assert!(!runtime.contains("[[bin]]"));
-    assert!(!manifest_without_test_source_metadata(CRATE_MANIFEST).contains("aos-sandbox-controller-runtime"));
+    assert!(
+        !manifest_without_test_source_metadata(CRATE_MANIFEST)
+            .contains("aos-sandbox-controller-runtime")
+    );
     assert!(!LIBRARY_SOURCE.contains("mod controller_service"));
     assert!(!LIBRARY_SOURCE.contains("pub use controller_service"));
     assert!(services.contains("dep:aos-sandbox-controller-runtime"));
@@ -942,22 +985,29 @@ fn controller_startup_orchestration_stays_above_security() {
     let lower = include_str!("../src/production_startup.rs");
     let exports = include_str!("../src/controller_composition.rs");
 
-    for upper in ["ControllerStartupContinuationV1", "CapturedControllerStartupV1",
-        "ControllerStartupCaptureAttemptV1", "ControllerResourceBankOpeningV1",
-        "ControllerNixStartRecipeSelectorV2"]
-    {
-        assert!(!lower.contains(upper), "upper startup body remains: {upper}");
-        assert!(!exports.contains(upper), "upper startup export remains: {upper}");
+    for upper in [
+        "ControllerStartupContinuationV1",
+        "CapturedControllerStartupV1",
+        "ControllerStartupCaptureAttemptV1",
+        "ControllerResourceBankOpeningV1",
+        "ControllerNixStartRecipeSelectorV2",
+    ] {
+        assert!(
+            !lower.contains(upper),
+            "upper startup body remains: {upper}"
+        );
+        assert!(
+            !exports.contains(upper),
+            "upper startup export remains: {upper}"
+        );
     }
     assert!(!lower.contains("profile: Option<Arc<ProductionControllerNormalRootProfileV1>>"));
 }
 
-
 #[test]
 fn provisioning_composition_requires_opaque_native_loans_and_private_flights() {
-    let source = include_str!(
-        "../src/handshake/output_registration_continuation/storage_provisioning.rs"
-    );
+    let source =
+        include_str!("../src/handshake/output_registration_continuation/storage_provisioning.rs");
     assert_eq!(
         public_declaration_names(source),
         [
@@ -1000,9 +1050,7 @@ fn provisioning_composition_requires_opaque_native_loans_and_private_flights() {
         .next()
         .unwrap();
     assert!(!fields.contains("pub "));
-    assert!(source.contains(
-        "Self::new_kind_v4(ProvisioningKindV4::Storage)"
-    ));
+    assert!(source.contains("Self::new_kind_v4(ProvisioningKindV4::Storage)"));
 
     let compact = source.split_whitespace().collect::<String>();
     for signature in [
@@ -1012,7 +1060,10 @@ fn provisioning_composition_requires_opaque_native_loans_and_private_flights() {
         "pubfncompleted_apply_outcome_v1(&self)->Option<&AuthenticatedBrokerMethodOutcomeV1>",
         "pubfnretained_post_receiving_demand_v1()->Option<aos_sandbox_model::ResourceVector>",
     ] {
-        assert!(compact.contains(signature), "changed closed provisioning signature: {signature}");
+        assert!(
+            compact.contains(signature),
+            "changed closed provisioning signature: {signature}"
+        );
     }
 
     for forbidden in [
@@ -1025,7 +1076,10 @@ fn provisioning_composition_requires_opaque_native_loans_and_private_flights() {
         "pub fn require_complete",
         "pub fn debit",
     ] {
-        assert!(!source.contains(forbidden), "provisioning escape: {forbidden}");
+        assert!(
+            !source.contains(forbidden),
+            "provisioning escape: {forbidden}"
+        );
     }
     assert!(!LIBRARY_SOURCE.contains("StorageProvisioningSessionIoOriginalV1"));
     assert!(!LIBRARY_SOURCE.contains("StorageProvisioningSessionIoClosedV1"));
@@ -1033,9 +1087,8 @@ fn provisioning_composition_requires_opaque_native_loans_and_private_flights() {
 
 #[test]
 fn negotiated_delete_and_capture_history_are_borrowed_data_without_factories() {
-    let inventory = include_str!(
-        "../src/handshake/output_registration_continuation/delete_inventory.rs"
-    );
+    let inventory =
+        include_str!("../src/handshake/output_registration_continuation/delete_inventory.rs");
     let preimages = inventory
         .split("pub struct DeleteInventoryNegotiatedPreimagesV2<'answer> {")
         .nth(1)
@@ -1065,7 +1118,10 @@ fn negotiated_delete_and_capture_history_are_borrowed_data_without_factories() {
         "pubfntranscript_v2(&self)->&VerifiedBrokerSessionTranscriptV1",
         "pubconstfnfixed_location_v2(&self)->(&'staticstr,&'staticstr)",
     ] {
-        assert!(compact.contains(signature), "changed borrowed preimage signature: {signature}");
+        assert!(
+            compact.contains(signature),
+            "changed borrowed preimage signature: {signature}"
+        );
     }
 
     let dormant = include_str!("../src/dormant_handshake.rs")
@@ -1081,19 +1137,37 @@ fn completed_start_models_have_only_borrowed_post_disposal_ports() {
     let source = include_str!(
         "../src/handshake/output_registration_continuation/storage_provisioning/completed_models.rs"
     );
-    assert_eq!(public_declaration_names(source), [
-        "StartResourceCompletedModelsOriginalV2",
-        "completed_models_v2",
-        "mount_v2",
-        "network_v2",
-        "resident_memory_bytes_data_v2",
-        "storage_v2",
-    ]);
-    for forbidden in ["pub fn new", "pub fn from_", "pub fn into_", "pub fn sign",
-        "pub fn debit", "pub fn as_fd", "pub fn verification_context"] {
-        assert!(!source.contains(forbidden), "completed-model escape: {forbidden}");
+    assert_eq!(
+        public_declaration_names(source),
+        [
+            "StartResourceCompletedModelsOriginalV2",
+            "completed_models_v2",
+            "mount_v2",
+            "network_v2",
+            "resident_memory_bytes_data_v2",
+            "storage_v2",
+        ]
+    );
+    for forbidden in [
+        "pub fn new",
+        "pub fn from_",
+        "pub fn into_",
+        "pub fn sign",
+        "pub fn debit",
+        "pub fn as_fd",
+        "pub fn verification_context",
+    ] {
+        assert!(
+            !source.contains(forbidden),
+            "completed-model escape: {forbidden}"
+        );
     }
-    let fields = source.split("pub struct StartResourceCompletedModelsOriginalV2 {")
-        .nth(1).unwrap().split("\n}").next().unwrap();
+    let fields = source
+        .split("pub struct StartResourceCompletedModelsOriginalV2 {")
+        .nth(1)
+        .unwrap()
+        .split("\n}")
+        .next()
+        .unwrap();
     assert!(!fields.contains("pub "));
 }

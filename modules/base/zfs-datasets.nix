@@ -17,7 +17,8 @@ in {
     assertions = [
       {
         assertion =
-          cfg.datasets.var.mountPoint == "/var"
+          cfg.datasets.var.mountPoint
+          == "/var"
           && cfg.datasets."var/lib".mountPoint == "/var/lib"
           && hasExactRootContext cfg.datasets.var "rootcontext=system_u:object_r:var_t"
           && hasExactRootContext cfg.datasets."var/lib" "rootcontext=system_u:object_r:var_lib_t";

@@ -1766,9 +1766,11 @@
         patch = let
           importedPatch = "${record.patch}";
           contextRoots = builtins.attrNames (builtins.getContext importedPatch);
-          relatedContext = builtins.any
+          relatedContext =
+            builtins.any
             (root:
-              importedPatch == root
+              importedPatch
+              == root
               || builtins.substring 0 (builtins.stringLength root + 1) importedPatch == "${root}/")
             contextRoots;
         in
@@ -1867,41 +1869,41 @@
     throwIfNot (registryPatches == [] || patchTool != null)
     "fetchCargoVendor: nonempty registry patches require the fixed source-built patch tool"
     (annotateFixedOutput vendorFinal ({
-      kind = "cargo-vendor";
-      inherit hash;
-      hashMode = "recursive";
-      sourceInputs =
-        [(builtins.toString src)]
-        ++ (
-          if registryPatches == []
-          then []
-          else [registryPatchManifest] ++ builtins.map (record: record.patch) normalizedRegistryPatches
-        );
-      outputDerivation = vendorStaging.drvPath;
-      builderParameters = {
-        sourceRoot =
-          if sourceRoot == null
-          then "<auto>"
-          else sourceRoot;
-        patches = builtins.map builtins.toString cargoPatches;
-        cargo = builtins.toString cargo;
-        inherit system;
-      };
-    }
-    // (
-      if registryPatches == []
-      then {}
-      else {
-        registrySourcePatches = {
-          schema = "aos.registry-source-patches/v1";
-          upstreamStagingDerivation = vendorStaging.drvPath;
-          patchedVendorDerivation = vendorFinal.drvPath;
-          normalizedRecipe = registryPatchManifest;
-          patches = normalizedRegistryPatches;
-          patchExecutable = "${patchTool}/bin/patch";
+        kind = "cargo-vendor";
+        inherit hash;
+        hashMode = "recursive";
+        sourceInputs =
+          [(builtins.toString src)]
+          ++ (
+            if registryPatches == []
+            then []
+            else [registryPatchManifest] ++ builtins.map (record: record.patch) normalizedRegistryPatches
+          );
+        outputDerivation = vendorStaging.drvPath;
+        builderParameters = {
+          sourceRoot =
+            if sourceRoot == null
+            then "<auto>"
+            else sourceRoot;
+          patches = builtins.map builtins.toString cargoPatches;
+          cargo = builtins.toString cargo;
+          inherit system;
         };
       }
-    )));
+      // (
+        if registryPatches == []
+        then {}
+        else {
+          registrySourcePatches = {
+            schema = "aos.registry-source-patches/v1";
+            upstreamStagingDerivation = vendorStaging.drvPath;
+            patchedVendorDerivation = vendorFinal.drvPath;
+            normalizedRecipe = registryPatchManifest;
+            patches = normalizedRegistryPatches;
+            patchExecutable = "${patchTool}/bin/patch";
+          };
+        }
+      )));
 
   # ---------------------------------------------------------------------------
   # fetchGoModules

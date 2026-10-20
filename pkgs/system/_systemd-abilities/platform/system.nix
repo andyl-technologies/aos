@@ -65,7 +65,8 @@
 in {
   options.systemd = {
     packagedBaseUnits = lib.mkOption {
-      type = lib.types.addCheck
+      type =
+        lib.types.addCheck
         (lib.types.listOf (lib.types.strMatching "[A-Za-z0-9_@:-][A-Za-z0-9_.@:-]*\\.(service|socket|target|timer|path|slice|mount|automount|scope|swap)"))
         (names: builtins.length names == builtins.length (lib.unique names));
       default = [];
