@@ -8870,12 +8870,26 @@ Combined source `65d5916d94` supplies the genuine surface caller alongside
 those maintenance fixes and the reviewed quota fixture. Full source review
 covers the 47-file surface diff against the maintenance parent. All six strict
 Clippy profiles, both private documentation builds, formatting, crate graph,
-unsafe audit, core no-std and all four authentication gates pass. Surface
-interface and read-only commit-path gates also pass. Remaining surface, native
-configuration, feature-matrix, application and aggregate qualification continues;
-no task checkbox or milestone freeze advances. Before merging, preserve the
-trunk's renamed format-coverage labels and correct the CLI's stale crate-name
-comment after source-guarded execution finishes.
+unsafe audit, core no-std and all four authentication gates pass. All four
+surface checks subsequently pass 25 exact nonignored executions, including
+the metadata-only observer and genuine ext4 presentation. The singleton-lease
+gate passes 21 exact cases, including the separate non-Send binding. Independent
+review verifies their 4,907 immutable inputs and actual Cargo artifacts. The
+configured SDK image passes all eleven unit cases and the ext4 example and
+actual CLI success/late-token-refusal controls. Required application compilation
+passes with the exact 181 artifacts from 59 packages. No task checkbox advances.
+
+Source `57d01528ea` preserves current trunk history and the canonical
+`terrane-format` coverage labels, and corrects the CLI crate-name comment.
+Combined source `d4af629791` then merges the preserved module branch into that
+reviewed surface configuration. All six module files are independently reviewed;
+all 88 declarative assertions, formatting, crate graph, unsafe audit, six strict
+Clippy profiles and both private documentation builds pass. Native and application
+qualification continues. Unstarted duplicate long checks on predecessor sources
+are explicitly deferred without execution or pass credit. The final combined
+source must run the full implemented aggregate, including the feature matrix
+and long GC gate. That aggregate is serialized after older native suites and
+the recovery component checks finish; workloads and operating clocks are unchanged.
 
 Shared-directory source `744aa55567` restores its preserved SDK adapter in the
 new layout. Its all-target compilation passes, while local Nextest explicitly
@@ -8949,6 +8963,23 @@ inode links while independently retained descriptors preserve the original
 partial bytes. The parallel and original check clients consume the same single
 native derivation result. This is a chunk scratch recovery component; complete
 recovery, readiness and host-task acceptance remain open.
+
+Detached-index follow-up `cfeb020125` extends that original cleanup to the
+existing generated names beneath `objects/pack/<shard>/`. Every candidate is
+preflighted before the first unlink, including aliases across chunk and index
+directories. Its guest witness preserves the original controls and adds malformed
+index names, symlinks, FIFO refusal, a preexisting index alias during refusal,
+and seven generated links across four retained original inodes. The helper is
+extracted separately with normalized AST equivalence for the original witness;
+its installed bytes join the source identity and checksum inventory. Formatting,
+crate graph, unsafe audit, all three strict Linux profiles, private docs, the
+Cargo example build and native quota confinement pass. The narrow Cargo shell
+lacks nextest; its failed invocation executes no tests, and a retry using the
+existing AOS-built executable passes the local directory-incarnation case.
+The raw-filename case retains its mandatory ext4 execution. Complete native
+recovery, application and filesystem qualification remains pending. No frozen
+format, store trait, dependency, kernel confinement or stopped wipe policy changes.
+
 All five T2 task checkboxes remain open. Encoded eviction, shared-chunk
 re-extraction, complete recovery/readiness and the stopped
 HOST-3/HOST-25/DOM-18 zero-wipe conflict remain outstanding; T3 and branch
