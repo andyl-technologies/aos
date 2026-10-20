@@ -6,20 +6,20 @@
   qemuSourceUrl = "https://download.qemu.org/qemu-11.1.1.tar.xz";
 
   file = "crucible-qemu-11.1.1.patch";
-  sha256 = "e79676347799aa5140a345061805609a1f80e0fe1ba9b7e7d9edda421783ba8f";
-  subject = "Integrate Crucible retained native fingerprint pipeline";
-  body = "Retain versioned Source, checkpoint, parent Park and resident Root\nintegration, callback Original validation, ordered Native disposition and\ncanonical registration cleanup. Preserve decoded standing fixture inputs,\nexisting controls, bounds, independent failure journals and per-file licenses.\n\nCarry three fixed Material cells and two Work cells through serial-checked\ncapture, pending, active and completed custody. Permit Main to return one\ncompleted Material while the actual worker owns another, retain born\nnegative results, and distinguish pending cancellation from physical byte\ncompletion. Retain exact return receipts, sticky close uncertainty and\ncontrol lifetime uncertainty through final destruction checks.\n\nCheck caller Ref and output spans against retained Source and workspace\nstorage before reading or writing them. Publish immutable standing identity\nonly during construction; runtime readers observe through local scratch.\nAmortize only repeated Material fstat under the matched module's borrowed-only\nno-close, no-dup, no-rebind and no-flag-change contract plus real Work and byte\npins. Preserve live standing, cancellation, clocks and Original observations.\n\nRefresh the genuine Source extraction closure and all affected direct and\ntransitive fingerprints. Preserve upstream attributes and the single signed\nintegration commit with only the pinned upstream base as parent. Native\nactivation, actual worker execution, concurrent lifecycle, complete provider\nbacking and measured performance remain separate qualification obligations.";
-  commit = "7cc483e5a0ffdaef4a1b0e1393afa2088df4ed8b";
-  tree = "8aef2d5ab0b074fa13c7222ddd6a8ef598115430";
+  sha256 = "4e06a4517ca2d66ff8cf92c221d941d09d9c3c88ed817ed70a6d408226f75d02";
+  subject = "Integrate Crucible native pipeline and exec-only OpenRISC importer spawn";
+  body = "Retain versioned Source, checkpoint, parent Park and resident Root\nintegration, callback Original validation, ordered Native disposition and\ncanonical registration cleanup. Preserve standing fixture inputs, existing\ncontrols, bounds, independent failure journals and per-file licenses.\n\nCarry fixed Material and Work cells through serial-checked capture, pending,\nactive and completed custody. Retain cancellation, physical byte completion,\nreturn receipts, sticky close uncertainty and control lifetime uncertainty.\nCheck caller Ref and output spans before access and preserve standing identity,\nworkspace storage, worker ownership and live Original observations.\n\nKeep the genuine Source extraction closure and its direct and transitive\nfingerprints. Preserve upstream attributes and retain only the pinned upstream\nbase as the parent of this complete-source integration commit.\n\nBracket the standalone OpenRISC clock fixture's synchronous exec-only importer\nspawn with the existing balanced RCU atfork disable and enable API. Restore\nparent fork support before asserting the actual spawn result, including the\nfailure path. The new executable initializes its own RCU state; rebuilding an\ninherited worker before exec can wait on copied process-private locks.\nPreserve all arguments, output capture, assertions, vectors and test limits.\n\nThis source integration does not establish native activation, actual worker\nexecution, concurrent lifecycle, complete provider backing or performance.\nBuilds and execution tests remain unrun.";
+  commit = "ceee01b060bbdfe90b3710ae04cefaafefd63c80";
+  tree = "330024fcccfbb1fc245d8c95558fb0eb2b563088";
   catalogName = "crucible-deterministic-qemu-integration";
   class = "F";
   enforces = "DET-1,DET-35,HFORK-4,HFORK-22,CPERF-5,PATCH-39,QEMU-43,PKG-9";
   capability = "one atomic, reconstructible QEMU 11.1.1 integration artifact provides the versioned Crucible plugin protocol, deterministic execution, exact checkpoint capture and restore, retained hot fork with asynchronous-worker quiescence, device fingerprints, and their build and test plumbing";
 
-  branchRef = "dplecki/native-fingerprint-pipeline";
+  branchRef = "dplecki/openrisc-exec-spawn";
   branchModel = "single-atomic-final-state-integration-commit";
   bundle = ./crucible-qemu-11.1.1.bundle;
-  bundleSha256 = "092c8f6232490f45482866e102b857fe82a28786cd51f79728b628b05afd0f8f";
+  bundleSha256 = "7906a9cbbf02d407fc54a68b53976461b0127396506eb90fa6195b64eebc965e";
   baseCommit = "1ed046750938db278a12dc55c6a7934d5fc68c14";
   baseTree = "c08cc386be14139bc835ab077baa0e72ef7ba7ef";
   deterministicAuthorName = "Dylan Plecki";

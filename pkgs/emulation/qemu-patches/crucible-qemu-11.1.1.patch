@@ -1,32 +1,34 @@
-From 7cc483e5a0ffdaef4a1b0e1393afa2088df4ed8b Mon Sep 17 00:00:00 2001
+From ceee01b060bbdfe90b3710ae04cefaafefd63c80 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:00 +0000
-Subject: [PATCH] Integrate Crucible retained native fingerprint pipeline
+Subject: [PATCH] Integrate Crucible native pipeline and exec-only OpenRISC
+ importer spawn
 
 Retain versioned Source, checkpoint, parent Park and resident Root
 integration, callback Original validation, ordered Native disposition and
-canonical registration cleanup. Preserve decoded standing fixture inputs,
-existing controls, bounds, independent failure journals and per-file licenses.
+canonical registration cleanup. Preserve standing fixture inputs, existing
+controls, bounds, independent failure journals and per-file licenses.
 
-Carry three fixed Material cells and two Work cells through serial-checked
-capture, pending, active and completed custody. Permit Main to return one
-completed Material while the actual worker owns another, retain born
-negative results, and distinguish pending cancellation from physical byte
-completion. Retain exact return receipts, sticky close uncertainty and
-control lifetime uncertainty through final destruction checks.
+Carry fixed Material and Work cells through serial-checked capture, pending,
+active and completed custody. Retain cancellation, physical byte completion,
+return receipts, sticky close uncertainty and control lifetime uncertainty.
+Check caller Ref and output spans before access and preserve standing identity,
+workspace storage, worker ownership and live Original observations.
 
-Check caller Ref and output spans against retained Source and workspace
-storage before reading or writing them. Publish immutable standing identity
-only during construction; runtime readers observe through local scratch.
-Amortize only repeated Material fstat under the matched module's borrowed-only
-no-close, no-dup, no-rebind and no-flag-change contract plus real Work and byte
-pins. Preserve live standing, cancellation, clocks and Original observations.
+Keep the genuine Source extraction closure and its direct and transitive
+fingerprints. Preserve upstream attributes and retain only the pinned upstream
+base as the parent of this complete-source integration commit.
 
-Refresh the genuine Source extraction closure and all affected direct and
-transitive fingerprints. Preserve upstream attributes and the single signed
-integration commit with only the pinned upstream base as parent. Native
-activation, actual worker execution, concurrent lifecycle, complete provider
-backing and measured performance remain separate qualification obligations.
+Bracket the standalone OpenRISC clock fixture's synchronous exec-only importer
+spawn with the existing balanced RCU atfork disable and enable API. Restore
+parent fork support before asserting the actual spawn result, including the
+failure path. The new executable initializes its own RCU state; rebuilding an
+inherited worker before exec can wait on copied process-private locks.
+Preserve all arguments, output capture, assertions, vectors and test limits.
+
+This source integration does not establish native activation, actual worker
+execution, concurrent lifecycle, complete provider backing or performance.
+Builds and execution tests remain unrun.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -268806,10 +268808,10 @@ index 0000000000000000000000000000000000000000..bb46211d9641f0d43e0ff04304d92725
 +}
 diff --git a/tests/unit/test-crucible-openrisc-wide-clock.c b/tests/unit/test-crucible-openrisc-wide-clock.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..264f9d2aaf8a9692551cb3ee9ffd4f559af93f50
+index 0000000000000000000000000000000000000000..7f5b3e82aa07f9d8d4f47845cfc940d955e25892
 --- /dev/null
 +++ b/tests/unit/test-crucible-openrisc-wide-clock.c
-@@ -0,0 +1,612 @@
+@@ -0,0 +1,621 @@
 +/*
 + * Literal OpenRISC timer execution and migration with a controlled clock.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -268818,6 +268820,7 @@ index 0000000000000000000000000000000000000000..264f9d2aaf8a9692551cb3ee9ffd4f55
 +#include "qemu/osdep.h"
 +#include "qapi/error.h"
 +#include "qemu/main-loop.h"
++#include "qemu/rcu.h"
 +#include "system/cpu-timers.h"
 +#include "io/channel-buffer.h"
 +#include "../../migration/qemu-file.h"
@@ -269305,6 +269308,7 @@ index 0000000000000000000000000000000000000000..264f9d2aaf8a9692551cb3ee9ffd4f55
 +    g_autofree char *output = NULL;
 +    g_autofree char *errors = NULL;
 +    int status;
++    gboolean spawned;
 +    char *arguments[7];
 +
 +    if (!g_test_subprocess()) {
@@ -269341,8 +269345,15 @@ index 0000000000000000000000000000000000000000..264f9d2aaf8a9692551cb3ee9ffd4f55
 +    arguments[4] = (char *)(kind == 1 ? "wide" : "representable");
 +    arguments[5] = (char *)(kind == 2 ? "inactive" : "active");
 +    arguments[6] = NULL;
-+    g_assert_true(g_spawn_sync(NULL, arguments, NULL, 0, NULL, NULL,
-+                              &output, &errors, &status, NULL));
++    /* This child only execs the importer. Reconstructing an inherited RCU
++     * worker in its atfork handler can wait on copied process-private locks
++     * before exec, leaving spawn waiting for the exec-error pipe to close.
++     * The new executable initializes its own RCU state. */
++    rcu_disable_atfork();
++    spawned = g_spawn_sync(NULL, arguments, NULL, 0, NULL, NULL,
++                           &output, &errors, &status, NULL);
++    rcu_enable_atfork();
++    g_assert_true(spawned);
 +    if (status) {
 +        g_test_message("ordinary import: %s", errors);
 +    }
