@@ -259,74 +259,6 @@ def cold_candidates():
     metadata(sibling, 840, 844, 0o770)
 
 
-def chunk_temporary_recovery(uuid):
-    """Checks actual scratch refusal and cleanup before the first empty recovery."""
-    directory = root("empty") / "chunks/ab"
-    directory.mkdir()
-    metadata(directory, 840, 845, 0o2770)
-    original_directory = (directory.stat().st_dev, directory.stat().st_ino)
-    first = directory / (".terrane-tmp:" + "11" * 16)
-    second = directory / (".terrane-tmp:" + "22" * 16)
-    alias = directory / (".terrane-tmp:" + "33" * 16)
-    partial = [b"interrupted chunk before canonical mode", b"interrupted verified chunk before insertion"]
-    for path, body, mode in [(first, partial[0], 0o600), (second, partial[1], 0o640)]:
-        path.write_bytes(body)
-        metadata(path, 840, 845, mode)
-        with path.open("rb") as retained:
-            os.fsync(retained.fileno())
-    os.link(second, alias)
-    retained = [first.open("rb"), second.open("rb")]
-    policy = root("empty") / "state/cache/records.toml"
-
-    def snapshot():
-        return {path.name: (value.st_dev, value.st_ino, value.st_mode, value.st_uid,
-                            value.st_gid, value.st_nlink, value.st_size,
-                            value.st_mtime_ns, value.st_ctime_ns)
-                for path in directory.iterdir() for value in [path.lstat()]}
-
-    def refuses(message):
-        before = snapshot()
-        result = subprocess.run(role_command(840, [IMAGE / "bin/host_cache_fixture", "empty"]),
-                                env=actor_environment("empty", uuid), text=True,
-                                capture_output=True, timeout=30)
-        print(result.stdout, end="", flush=True)
-        print(result.stderr, end="", flush=True)
-        require(result.returncode != 0 and message in result.stderr
-                and "PASS actual empty recovery" not in result.stdout
-                and not policy.exists() and snapshot() == before,
-                "invalid chunk scratch changed names, inodes or policy before refusal")
-        for file, body in zip(retained, partial):
-            file.seek(0)
-            require(file.read() == body, "scratch refusal changed original partial bytes")
-
-    try:
-        bad = directory / ".terrane-tmp:zz"
-        bad.write_bytes(b"malformed generated identifier must survive")
-        metadata(bad, 840, 845, 0o640)
-        refuses("malformed generated chunk scratch identifier")
-        bad.unlink()
-
-        bad = directory / (".terrane-tmp:" + "ff" * 16)
-        bad.symlink_to(first.name)
-        refuses("generated chunk scratch is not a regular inode")
-        bad.unlink()
-
-        require(first.stat().st_nlink == 1 and second.stat().st_nlink == alias.stat().st_nlink == 2,
-                "scratch fixture lacks actual single and duplicate inode links")
-        actor("empty", "empty", uuid)
-        require((directory.stat().st_dev, directory.stat().st_ino) == original_directory
-                and list(directory.iterdir()) == [],
-                "recovery replaced the shard or left generated scratch names")
-        for file, body in zip(retained, partial):
-            file.seek(0)
-            require(os.fstat(file.fileno()).st_nlink == 0 and file.read() == body,
-                    "cleanup did not unlink the original retained scratch inode unchanged")
-        print("PASS actual generated chunk scratch cleanup preserves refusal controls and unlinks original inodes after verified preflight", flush=True)
-    finally:
-        for file in retained:
-            file.close()
-
-
 def publisher_confinement_cases():
     """Exercises actual kernel enforcement and preexisting descriptor rejection."""
     cases = [
@@ -891,7 +823,7 @@ def verify_image():
             "installed VM supervisor differs from immutable source")
     require(pathlib.Path(__file__).read_bytes() == supervisor_source.read_bytes(),
             "executed VM supervisor differs from source")
-    helper_names = ["manifest_publication_vm.py", "source_cleanup_vm.py", "admission_cache_vm.py"]
+    helper_names = ["manifest_publication_vm.py", "source_cleanup_vm.py", "admission_cache_vm.py", "host_cache_temporaries_vm.py"]
     require(set(identity["supervisor_helpers"]) == set(helper_names),
             "native supervisor helper inventory changed")
     for helper_name in helper_names:
@@ -1126,7 +1058,7 @@ def main():
                         and value.st_uid == 841 and value.st_mode & 0o7777 == 0o700,
                         "actual publisher namespace ownership changed: " + str(path))
         print("PASS actual configured publisher retains exclusive private namespace ownership", flush=True)
-        chunk_temporary_recovery(uuid)
+        runpy.run_path(str(IMAGE / "share/host_cache_temporaries_vm.py"))["run"](sys.modules[__name__], uuid)
         # A new physical owner must preserve the first owner's durable hold,
         # synchronize a distinct bootstrap and account both without reusing H.
         old_policy = tomllib.loads((root("empty") / "state/cache/records.toml").read_text())
