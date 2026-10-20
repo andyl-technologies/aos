@@ -32,7 +32,7 @@ a descriptor or QEMU memory does not preserve a fresh owner scope and journal.
 
 ## Original execution custody
 
-`crucible-protocol::node_control` defines pointer-free, independently versioned
+`crucible_qemu_protocol::node_control` defines pointer-free, independently versioned
 frames. The header is `CNQEMU01`, a big-endian 16-bit version and kind, and a
 big-endian 32-bit body length. The body limit is 4096 bytes. Native ABI structs
 and callbacks exist only inside the GPL plugin and QEMU processes; they are

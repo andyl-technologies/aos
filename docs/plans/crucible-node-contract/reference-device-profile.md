@@ -1,6 +1,6 @@
 # Controlled checksum device reference profile
 
-The `crucible-node-provider` package includes a source-built
+The `crucible-node-transport` package includes a source-built
 `crucible-reference-device` executable and a `reference_device::ReferenceDevice`
 driver. This is a non-compute device reference for T-CN-24/T-CN-30. It exercises
 actual separate-process execution, immutable input cuts, quantized output custody

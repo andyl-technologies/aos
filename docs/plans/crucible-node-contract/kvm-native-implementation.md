@@ -7,7 +7,7 @@ execution profile.
 
 ## Executable foundation
 
-`crucible_qemu::kvm_profile` implements:
+`crucible_qemu_host::kvm_profile` implements:
 
 - `probe_native_kvm`: opens the actual `/dev/kvm` character device, checks API
   version 12, and queries actual system capabilities. It refuses unsupported

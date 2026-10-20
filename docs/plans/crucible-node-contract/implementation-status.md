@@ -12,6 +12,110 @@ specific stage; they are not cumulative coverage of the latest source.
 
 ## Latest checkpoint
 
+The portable logical configuration is committed in `36d4a75506`, and genuine
+service-startup extraction in `afcd81a1fa` preserves the original startup
+schedule. The producer, actor observer and registered VM wiring are committed
+in `6dc61277ad`. The original supervised-job join is separately committed in
+`6643f5a607`; its distinct application gate also passes within the scope below.
+
+The new configuration recipe omits PID-derived Host tokens and derived
+coordinator/initial/launch references. The actual consuming actor constructs and
+retains its genuine Host before deriving those local records. The same pinned
+logical input can produce different operational references, receipts and saved
+state across processes. This fixed four-node recipe retains Unqualified native
+nodes, Nondeterministic native/world rows and the genuine Host's unchanged
+guarantees. It refuses deterministic scenario requirements and does not repair
+or reinterpret installation snapshots.
+
+The producer writes configuration separately from measuring the finished file.
+The VM recipe builds test-support producer/consumer separately from the
+default-feature CLI and independently measures the actual consumer and CLI ELFs.
+It does not substitute fixture features or the current executable for that CLI. The
+actor observer records first authenticated template outcome and retained world
+credit; its phase is neither authority nor continuous Source-custody proof.
+Normal commands still return `Refused`. The registered failure below supplies no
+execution result for these planned flights.
+
+All nine focused configuration controls pass. The complete default-feature
+Daemon run with **eight test threads passes 1,823 tests, zero failures and 163
+existing ignores**, with zero filtering. An earlier automatic-thread run had
+1,822 passes and one failure in the unchanged 10ms Vec fixture; the same exact
+binary passed that control alone. That fixture's assertion, deadline and ignore
+status were unchanged.
+Twelve selected crates pass all-feature/all-target checking, and all six
+registered architecture checks pass after startup extraction, without a policy
+exception. These runs supply neither a full-graph nor a two-PID template result.
+
+The registered funded-Source-template VM attempt fails **before boot** while
+building its canonical worker dependency: Store reports one Clippy error and
+Transport 1,595 errors at that captured input. The failure audit locates these
+1,596 primary diagnostics in 406 defining files, without overlap with this
+batch's named source owners; neither master nor the full branch is thereby
+proved clean. No template, full-graph, two-PID
+positive, installed CLI deployment or Ready execution follows. This result does
+not qualify the intended observer/credit/cleanup flight.
+
+The mandatory application gate passes for its independently audited immutable
+capture: **180 newly compiled test executables across 58 full Cargo package IDs
+and manifests**, including 71 integration targets across 15 of those packages.
+Final target compilation takes 9 minutes 29 seconds after separate prerequisites;
+this is not performance evidence. The capture contains 10,676 files, 1,942
+directories and 81 manifests. Its 34 changed paths comprise 33 Daemon paths
+outside compiler selection and one captured Engine cfg(test) fixture, which is
+not compiled as a Crucible unit-test target.
+The gate executes no tests and emits no Crucible unit-test executable. CLI,
+Daemon and worker packages are compiler-excluded, and the VM recipes are outside
+its source filter.
+All later worker-job posts are excluded. This result grants no current whole-tree,
+VM, template, worker-job or Ready qualification.
+
+The committed original-job join retains the real Linux attempt, its strong
+attempt/program identities, immutable input receipt, sealed completion and first
+typed failure independently of Source loans. The actor exports once through the
+concrete quota-owned input, then ends Source loans before starting or polling.
+Same-Source/program verification checks that completion's captured output;
+successful banks remain ranges in that original allocation, with currentness
+reauthenticated on access. Cancellation revokes acceptance, including after
+completion. Retirement keeps all jobs, failed prefixes and world credit until
+actual drainage, receiver closure and namespace cleanup permit release.
+
+For this distinct job checkpoint, twelve-crate all-feature/all-target checking
+and six architecture checks pass. The full default Engine suite passes
+**2,047 tests, zero failures and 33 existing ignores**, zero filtered, including
+all seven new job controls. The complete default-feature Daemon suite passes
+**1,823 tests, zero failures and 163 existing ignores**, zero filtered, at eight
+threads in 298.06 seconds. These are component/unit results, not an installed
+successful job or bank-acceptance witness. The registered VM's preboot failure
+remains unresolved. Genuine selected-route Initial/Recipe constructors are
+absent; their next step is design-only. Normal commands still refuse readiness.
+
+The distinct job application gate also passes for its independently audited
+immutable capture: **180 newly compiled test executables across 58 full Cargo
+package IDs and manifests**, comprising 56 library, 53 binary and 71 integration
+targets. The integration subset spans 15 of those packages. Final target
+compilation takes 10 minutes 3 seconds after separate prerequisites; the two
+application captures are not performance comparisons. This capture contains
+10,682 files, 1,944 directories and 81 manifests. Its 21 changed paths comprise
+five Daemon and sixteen Engine paths, including six new files, over the prior
+capture; the restricted reexport correction is within those 21 roles. All member
+manifests, the workspace manifest and lock are unchanged. It executes no tests
+and emits no Crucible unit-test executable; Daemon, CLI and worker packages remain
+compiler-excluded. Owner-baseline metadata is outside this application filter.
+Neither application result qualifies the whole current HEAD, an installed job,
+VM execution, accepted Source/Ready, preservation or strict lint.
+
+The separately committed testing-standards baseline migration changes only 82
+owner keys: 59 Provider, 12 QEMU and 11 Engine. All 318 existing debt entries
+retain their counts, patterns and targets; no allowance is added. The actual
+rerun still fails with four passes and one failure. Findings fall from 220
+(138 unbaselined plus 82 stale) to 56 unbaselined and zero stale, independently
+reconciled against the exact residual set. These 56 remain unresolved. The
+historical strict harness result of 26 passes and five known failures is
+separate and has not been rerun.
+
+The earlier checkpoints below retain their own captured input, feature and
+execution scopes.
+
 The branch includes the master merge and schema/owner corrections through
 `f7b0d801af`. The target-discovery correction in `e8df62e9ef` classifies library
 targets from Cargo manifests and source presence. Its strict harness run passes

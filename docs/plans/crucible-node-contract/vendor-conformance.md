@@ -2,7 +2,7 @@
 
 `crucible-node-conformance` exercises an actual external provider through public
 CNP/1 envelopes. Its portable plans and reports use schema version 1. The
-library implementation is `crucible_node_provider::conformance`; a trusted host
+library implementation is `crucible_node_transport::conformance`; a trusted host
 can supply its own `ProbeConnector` and `ProbeSession` without coupling the
 runner to an engine or native implementation.
 

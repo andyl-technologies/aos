@@ -3,7 +3,7 @@
 The portable vendor boundary is CNP/1, specified by RFC-0025 chapter 06.
 Native Rust traits are a host implementation technique, not the vendor ABI.
 A third-party process can use the public framing, envelope, negotiation, schema,
-blob and original-request journal components in `crucible-node-provider`, or
+blob and original-request journal components in `crucible-node-transport`, or
 implement the same wire grammar in another language.
 
 The common host path is already public. An installed broker can implement
