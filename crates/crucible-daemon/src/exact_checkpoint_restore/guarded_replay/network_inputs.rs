@@ -1,10 +1,12 @@
 //! Root-authenticated input and decision order for physical QEMU replay.
 
+use crucible::model::{FaultAdapter, FaultObservation, FaultObservationKind};
 use crucible::{
-    BackendInput, Configuration, EventLogSegmentReader, Icount, NodeId, ScheduledEventPayload,
-    SchedulerEventLogClass, SchedulerEventLogPayload, SingleSchedulerCheckpoint, World,
+    Action, BackendInput, Configuration, EventLogSegmentReader, Icount, NodeId,
+    ScheduledEventPayload, SchedulerEventLogClass, SchedulerEventLogPayload,
+    SingleSchedulerCheckpoint, TriggerActionApplication, World,
 };
-use crucible_qemu::QemuVmRealizationError;
+use crucible_qemu::{QemuReplayOracleUnsupportedEffect, QemuVmRealizationError};
 
 /// One scheduler-recorded effect that the local replay must enact in order.
 pub(super) enum ReplayStep {
@@ -19,6 +21,11 @@ pub(super) enum ReplayStep {
 }
 
 /// Validates a complete event prefix and extracts the local physical replay plan.
+///
+/// The prefix is scanned before any QEMU work, so a recorded effect that the
+/// thin node cannot reproduce refuses promotion here with a typed
+/// [`QemuVmRealizationError::ReplayOracleUnsupported`] instead of after the
+/// replay budget is spent.
 pub(super) fn authenticated_replay_steps(
     world: &World,
     configuration: &Configuration,
@@ -145,6 +152,12 @@ pub(super) fn authenticated_replay_steps(
                     delivery_icount,
                 });
             }
+            SchedulerEventLogPayload::FaultObservation(observation) => {
+                reject_vm_fault_effect(node, entry.sequence(), observation)?;
+            }
+            SchedulerEventLogPayload::TriggerActionApplied(application) => {
+                reject_node_lifecycle_action(node, entry.sequence(), application)?;
+            }
             _ => {}
         }
     }
@@ -159,6 +172,73 @@ pub(super) fn authenticated_replay_steps(
         ));
     }
     Ok(steps)
+}
+
+/// Refuses a committed fault effect that acted on VM-side state.
+///
+/// Network effects act in the scheduler's link model and reach a VM only as
+/// logged inputs, which replay reproduces. Storage and node effects run as
+/// QEMU-side fault commands that guarded replay does not issue. Their targets
+/// name nodes by fault-object identity or devices by content, so the check
+/// refuses every such effect rather than guessing which node it touched.
+fn reject_vm_fault_effect(
+    node: &NodeId,
+    sequence: u64,
+    observation: &FaultObservation,
+) -> Result<(), QemuVmRealizationError> {
+    let changes_state = matches!(
+        observation.kind,
+        FaultObservationKind::BindingActivation
+            | FaultObservationKind::BindingDeactivation
+            | FaultObservationKind::EffectCommitted
+            | FaultObservationKind::EffectApplied
+    );
+    if !changes_state {
+        return Ok(());
+    }
+
+    let target = observation.target.as_ref().map(|target| target.kind());
+    if target.is_some_and(|kind| kind.adapter() == FaultAdapter::Network) {
+        return Ok(());
+    }
+    Err(unsupported(
+        node,
+        QemuReplayOracleUnsupportedEffect::VmFaultEffect {
+            sequence,
+            kind: observation.kind,
+            target,
+        },
+    ))
+}
+
+/// Refuses a trigger action that started or stopped the replayed node.
+///
+/// The thin node runs continuously from baked genesis, so it cannot enact a
+/// recorded lifecycle change. Lifecycle changes on other nodes reach it only
+/// through logged inputs.
+fn reject_node_lifecycle_action(
+    node: &NodeId,
+    sequence: u64,
+    application: &TriggerActionApplication,
+) -> Result<(), QemuVmRealizationError> {
+    match &application.action {
+        Action::StartNode { node: target } | Action::StopNode { node: target }
+            if target == node =>
+        {
+            Err(unsupported(
+                node,
+                QemuReplayOracleUnsupportedEffect::NodeLifecycleAction { sequence },
+            ))
+        }
+        _ => Ok(()),
+    }
+}
+
+fn unsupported(node: &NodeId, effect: QemuReplayOracleUnsupportedEffect) -> QemuVmRealizationError {
+    QemuVmRealizationError::ReplayOracleUnsupported {
+        node: node.name.clone(),
+        effect,
+    }
 }
 
 fn invalid_input(message: impl Into<String>) -> QemuVmRealizationError {

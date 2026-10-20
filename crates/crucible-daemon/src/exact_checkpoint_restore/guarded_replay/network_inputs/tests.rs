@@ -411,3 +411,5 @@ fn exact_scheduler_restore_keeps_the_rebased_physical_delivery_counter()
     );
     Ok(())
 }
+
+mod unsupported_effects;
