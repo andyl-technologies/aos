@@ -95,7 +95,7 @@ use network_fault_boundary::{
 use observation_candidate::{
     build_observation_candidate, build_observation_candidate_with_supplemental, project_boundary,
 };
-use resume_progress::report_first_restored_guest_marker;
+use resume_progress::RestoredMarkerNotices;
 use selection_projection::{
     has_unselected_discovery, is_next_choice_stop, produced_selections_after_start,
     validate_live_network_preselection,
@@ -1291,7 +1291,7 @@ fn drive_modeled_attempt_inner(
             },
         ));
     }
-    let mut resumed_progress_reported = false;
+    let mut restored_marker_notices = RestoredMarkerNotices::default();
     lifecycle
         .set_attempt_stop_frontier(None)
         .map_err(classify_scheduler_error)?;
@@ -1588,13 +1588,12 @@ fn drive_modeled_attempt_inner(
             &discoveries,
         )?;
 
-        // This notice requires a scheduler-owned marker in a completed quantum.
-        resumed_progress_reported = report_first_restored_guest_marker(
+        // These notices require scheduler-owned markers in a completed quantum.
+        restored_marker_notices.report(
             context,
             replay_target.is_some(),
             &outcome.event_log_entries,
             completed_quanta,
-            resumed_progress_reported,
         );
 
         check_cancellation(context)?;
