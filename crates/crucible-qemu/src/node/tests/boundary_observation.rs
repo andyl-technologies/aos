@@ -296,3 +296,80 @@ fn completed_selectable_drain_keeps_the_original_request_and_empty_second_batch(
     fixture.node.shutdown_child()?;
     Ok(())
 }
+
+/// Mapped publication owned by the modeled QEMU after the node moved out.
+struct ModeledPublisher {
+    producer: MappedSetupRegion,
+    file: std::fs::File,
+    layout: RegionLayout,
+}
+
+impl ModeledPublisher {
+    fn write_sequence(&self, sequence: u32) -> Result<(), std::io::Error> {
+        self.file.write_all_at(
+            &sequence.to_ne_bytes(),
+            self.layout.node_slots_off + crucible_shmem::NODE_SLOT_PUBLISH_GEN_OFFSET as u64,
+        )
+    }
+
+    /// Runs one node read while a slot publication is open.
+    ///
+    /// After a completed RUN, QEMU settles the host's clamp advance. A read
+    /// that lands inside that write must wait for it instead of failing.
+    fn read_during_clamp_settlement<T: Send>(
+        &self,
+        node: &mut QemuNode,
+        read: impl FnOnce(&mut QemuNode) -> Result<T, QemuNodeError> + Send,
+    ) -> Result<T, Box<dyn Error>> {
+        let slot = self.producer.node_slot(0)?;
+        let open = slot.snapshot().publish_gen + 1;
+        self.write_sequence(open)?;
+
+        std::thread::scope(|scope| -> Result<T, Box<dyn Error>> {
+            let reader = scope.spawn(move || read(node));
+            std::thread::sleep(Duration::from_millis(50));
+            assert!(
+                !reader.is_finished(),
+                "a read during an open publication must wait for it"
+            );
+
+            // Close the write, then settle the clamp at tick 100 as QEMU does.
+            self.write_sequence(open + 1)?;
+            assert!(slot.publish_settled_icount(100, 100)?);
+            let value = reader.join().map_err(|_| "node reader panicked")??;
+            Ok(value)
+        })
+    }
+}
+
+#[test]
+fn node_reads_after_a_completed_run_wait_for_the_clamp_settlement() -> Result<(), Box<dyn Error>> {
+    let CompletedObservation {
+        mut node,
+        producer,
+        file,
+        layout,
+        notifications: _notifications,
+    } = CompletedObservation::new()?;
+    let publisher = ModeledPublisher {
+        producer,
+        file,
+        layout,
+    };
+
+    // The guarded-replay sampler reads the instruction count right after its
+    // advance; each other coherent single-slot read shares the same path.
+    let current = publisher.read_during_clamp_settlement(&mut node, QemuNode::current_icount)?;
+    assert_eq!(current, Icount { retired: 100 });
+    let idle = publisher.read_during_clamp_settlement(&mut node, QemuNode::idle_state)?;
+    assert_eq!(idle.current_icount, Icount { retired: 100 });
+    let calibration =
+        publisher.read_during_clamp_settlement(&mut node, QemuNode::logical_time_calibration)?;
+    assert_eq!(calibration.logical_icount, 100);
+    let witness =
+        publisher.read_during_clamp_settlement(&mut node, QemuNode::virtual_timer_fire_witness)?;
+    assert_eq!(witness, None);
+
+    node.shutdown_child()?;
+    Ok(())
+}

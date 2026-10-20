@@ -540,7 +540,7 @@ impl QemuReplayValidationExecutor {
             Ok(sample) => (oracle_component_details(&sample), Some(sample)),
             Err(error) => (format!("unavailable ({error})"), None),
         };
-        let calibration = node.logical_time_calibration().ok();
+        let calibration = node.try_logical_time_calibration().ok();
         self.performance.bind_node(ReplayLeg::Exact, &node);
         self.active_node = Some(node);
         let runtime = runtime_from_checkpoint_material(config, &snapshot.checkpoint, runtime_id)?;
@@ -716,7 +716,7 @@ impl QemuReplayValidationExecutor {
         if fat.runtime.id != thin.runtime.id {
             let (thin_components, thin_sample, thin_calibration) = match self.active_node.as_mut() {
                 Some(node) => {
-                    let calibration = node.logical_time_calibration().ok();
+                    let calibration = node.try_logical_time_calibration().ok();
                     match node.fingerprint_sample() {
                         Ok(sample) => {
                             (oracle_component_details(&sample), Some(sample), calibration)

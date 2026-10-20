@@ -1501,16 +1501,18 @@ impl QemuNode {
 
     /// Reads the current retired-instruction count through shared memory.
     ///
+    /// A completed RUN does not stop QEMU from publishing: it settles the
+    /// host's clamp advance right after acknowledging it, so a single
+    /// coherent read can race that write. Contention is retried under the
+    /// retained RUN budget, without draining, waking, or running the guest.
+    ///
     /// # Errors
     ///
-    /// Returns [`QemuNodeError`] when the shared-memory hot path cannot be read.
+    /// Returns [`QemuNodeError`] when the shared-memory hot path cannot be
+    /// read, or when no coherent publication appears within the retained
+    /// budget; the child is then shut down as a crashed node.
     pub fn current_icount(&mut self) -> Result<Icount, QemuNodeError> {
-        self.channels
-            .shmem_hot_path
-            .current_icount()
-            .map_err(|source| {
-                QemuNodeError::from_channel(QemuNodeChannelPlane::ShmemHotPath, source)
-            })
+        self.read_boundary_observation("current_icount", |channel| channel.current_icount())
     }
 
     /// Synchronizes the scheduler-facing time mirror after launch-time priming.
@@ -2025,7 +2027,7 @@ impl QemuNode {
             virtual_time_from_advance_outcome(ceiling, advance, self.last_step_final_state);
         // crucible-lint: allow host-nondeterminism-state -- this opt-in diagnostic reads an already published boundary and changes no scheduler state.
         if std::env::var_os("CRUCIBLE_PHASE4_CLOCK_TRACE").is_some()
-            && let Ok(calibration) = self.logical_time_calibration()
+            && let Ok(calibration) = self.try_logical_time_calibration()
             && (5_823_790_656..=5_825_708_109).contains(&calibration.raw_icount)
             && calibration.logical_icount <= 555_385_025_750
         {
@@ -2138,22 +2140,39 @@ impl QemuNode {
 
     /// Reads the current idle state through shared memory.
     ///
+    /// Publication contention is retried like [`Self::current_icount`].
+    ///
     /// # Errors
     ///
-    /// Returns [`QemuNodeError`] when the shared-memory idle state cannot be read.
+    /// Returns [`QemuNodeError`] when the shared-memory idle state cannot be
+    /// read within the retained RUN budget.
     pub fn idle_state(&mut self) -> Result<QemuNodeIdleState, QemuNodeError> {
-        self.channels.shmem_hot_path.idle_state().map_err(|source| {
-            QemuNodeError::from_channel(QemuNodeChannelPlane::ShmemHotPath, source)
-        })
+        self.read_boundary_observation("idle_state", |channel| channel.idle_state())
     }
 
     /// Reads the coherent logical/raw time calibration published by the plugin.
     ///
+    /// Publication contention is retried like [`Self::current_icount`].
+    ///
     /// # Errors
     ///
-    /// Returns [`QemuNodeError`] when the shared-memory state cannot be read or
-    /// its raw instruction count is ahead of logical time.
+    /// Returns [`QemuNodeError`] when the shared-memory state cannot be read
+    /// within the retained RUN budget or its raw instruction count is ahead of
+    /// logical time.
     pub fn logical_time_calibration(
+        &mut self,
+    ) -> Result<QemuLogicalTimeCalibration, QemuNodeError> {
+        self.read_boundary_observation("logical-time calibration", |channel| {
+            channel.logical_time_calibration()
+        })
+    }
+
+    /// Reads the calibration once, for diagnostics that must not wait.
+    ///
+    /// Publication contention returns an error instead of waiting, so a
+    /// best-effort report can never spend the retained RUN budget or shut the
+    /// child down.
+    pub(crate) fn try_logical_time_calibration(
         &mut self,
     ) -> Result<QemuLogicalTimeCalibration, QemuNodeError> {
         self.channels
@@ -2166,18 +2185,18 @@ impl QemuNode {
 
     /// Reads the most recent actual virtual-timer callback witness.
     ///
+    /// Publication contention is retried like [`Self::current_icount`].
+    ///
     /// # Errors
     ///
-    /// Returns [`QemuNodeError`] when the shared-memory state cannot be read.
+    /// Returns [`QemuNodeError`] when the shared-memory state cannot be read
+    /// within the retained RUN budget.
     pub fn virtual_timer_fire_witness(
         &mut self,
     ) -> Result<Option<QemuVirtualTimerFireWitness>, QemuNodeError> {
-        self.channels
-            .shmem_hot_path
-            .virtual_timer_fire_witness()
-            .map_err(|source| {
-                QemuNodeError::from_channel(QemuNodeChannelPlane::ShmemHotPath, source)
-            })
+        self.read_boundary_observation("virtual-timer fire witness", |channel| {
+            channel.virtual_timer_fire_witness()
+        })
     }
 
     pub(crate) fn prepare_terminal_fingerprint(&mut self) -> Result<(), QemuNodeError> {
