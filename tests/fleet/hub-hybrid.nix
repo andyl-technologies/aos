@@ -210,10 +210,10 @@
     then "https://aos-origin.fleet.test"
     else "https://aos-origin.fleet.test:8443";
   nativeTCPPorts =
-    [443 8443]
-    ++ lib.optionals externalDirect [8453 4644 4673 4674 4677]
+    [443 8443 8453]
+    ++ lib.optionals externalDirect [4644 4673 4674 4677]
     ++ lib.optional (externalDirect && !separateDatabase) 5432;
-  edgeTCPPorts = [443] ++ lib.optionals externalDirect [8453 4643 4644 4673 4674];
+  edgeTCPPorts = [443 8453] ++ lib.optionals externalDirect [4643 4644 4673 4674];
   fleetHostModule = allowedTCP:
     pkgs.writeTextFile {
       name = "hub-hybrid-fleet-runtime-policy";

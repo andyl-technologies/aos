@@ -24,7 +24,9 @@ def qualify_registry_runtime_parity(client, native, worker, *, tools, fixture, s
                 or not re.fullmatch(r"[0-9a-f]{64}", corpus_fixture["sourceCommit"])
                 or not corpus_fixture["surfaceRoot"].startswith("/var/lib/hybrid-client/")):
             raise ValueError("selected signed parity corpus identity differs")
-    port = 8443 if corpus_fixture is None else 8453
+    # The proxy fixture's hybrid origin already owns 8443 on the Native VM.
+    # Both standalone companions use the dedicated parity port on their own VMs.
+    port = 8453
     native_origin = f"https://aos-origin.fleet.test:{port}"
     worker_origin = f"https://aos.fleet.test:{port}"
     registry_slug = "fleet/containers" if corpus_fixture is None else corpus_fixture["registrySlug"]
