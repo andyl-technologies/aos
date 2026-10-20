@@ -231,7 +231,7 @@ impl NativeMetadataOwner {
 /// the first snapshot attempt, failures retain the owner's hold and fault state.
 pub(super) async fn run(executor: &mut NativeOwnerExecutor) -> io::Result<CompletedRecovery> {
     let custody = Arc::clone(executor.custody());
-    let (session, inspector, shared, state_parent, requires_cold_backing) = {
+    let (session, inspector, mut shared, state_parent, requires_cold_backing) = {
         let mut owner = custody
             .lock()
             .map_err(|_| io::Error::other("recovery custody poisoned"))?;
@@ -266,6 +266,23 @@ pub(super) async fn run(executor: &mut NativeOwnerExecutor) -> io::Result<Comple
     };
     // No embedded guard is held while acquiring the actual client RPC mutex.
     let context = session.recovery_context().map_err(io::Error::other)?;
+    session
+        .check_recovery_context(&context)
+        .map_err(io::Error::other)?;
+    // Generated unverified scratch has no content/adoption authority. Remove
+    // it before the first candidate scan, including when cold policy survives.
+    // The physical executor owns these synchronous effects despite cancellation
+    // of a requesting waiter; no embedded lock crosses the actual IO or RPC.
+    if shared.discard_chunk_temporaries()? != 0 {
+        let owner = custody
+            .lock()
+            .map_err(|_| io::Error::other("recovery custody poisoned"))?;
+        owner.check_current()?;
+        shared = SharedNamespaceObservation::inspect(&owner.preparation)?;
+    }
+    session
+        .check_recovery_context(&context)
+        .map_err(io::Error::other)?;
     if requires_cold_backing && inspector.inspect()?.candidates().is_empty() {
         return Err(unresolved(
             "cold policy has no native backing candidates to reconcile",

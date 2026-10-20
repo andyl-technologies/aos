@@ -4,6 +4,15 @@
 //! object children. Recovery needs this separate bounded physical observation
 //! before it can claim an empty namespace. Private publisher directories remain
 //! the publisher's responsibility; this module cannot prove complete recovery.
+//!
+//! Startup may discard only the existing generated chunk scratch grammar:
+//!
+//! ```text
+//! chunks/<two lowercase hex digits>/.terrane-tmp:<32 lowercase hex digits>
+//! ```
+//!
+//! Cleanup precedes native adoption and retains original readonly inode custody.
+//! Canonical names and unrelated files are never classified as scratch.
 
 use super::NativeCachePreparation;
 use crate::{
@@ -11,7 +20,7 @@ use crate::{
     host_quota::NativeProject,
     quota_confinement::Installed,
 };
-use rustix::fs::{Dir, Mode, OFlags, open, openat};
+use rustix::fs::{AtFlags, Dir, Mode, OFlags, open, openat, statat, unlinkat};
 use std::{
     collections::BTreeMap,
     ffi::OsString,
@@ -193,6 +202,112 @@ impl SharedNamespaceObservation {
         Ok(())
     }
 
+    /// Discards generated chunk scratch under the original native directory custody.
+    ///
+    /// Every candidate is classified and checked before the first unlink. Exact
+    /// inode snapshots are carried through the effects, including multiple
+    /// temporary links to one inode. A surviving canonical link is preserved.
+    /// The caller must take a fresh shared observation after cleanup, before
+    /// any candidate adoption or completed-recovery authority exists.
+    ///
+    /// # Errors
+    /// Refuses malformed generated names, nonregular or foreign/project-mismatched
+    /// scratch, changed retained or named inodes, failed unlink/directory sync,
+    /// or a surviving/replaced temporary name. Partial progress grants no service.
+    pub(super) fn discard_chunk_temporaries(&self) -> io::Result<usize> {
+        let mut files = Vec::new();
+        files
+            .try_reserve_exact(self.entries.len())
+            .map_err(io::Error::other)?;
+        let mut current = BTreeMap::new();
+        for entry in &self.entries {
+            if !chunk_temporary(entry)? {
+                continue;
+            }
+            if !entry.metadata.is_file() {
+                return Err(invalid("generated chunk scratch is not a regular inode"));
+            }
+            let name = entry
+                .name
+                .to_str()
+                .ok_or_else(|| invalid("generated chunk scratch is not UTF-8"))?;
+            let file = super::open_regular_at(&entry.parent, name)?;
+            self.check_temporary(&file, &entry.metadata)?;
+            let inode = (entry.metadata.dev(), entry.metadata.ino());
+            if let Some(previous) = current.insert(inode, file.metadata()?)
+                && (!same_inode(&previous, &entry.metadata)
+                    || previous.nlink() != entry.metadata.nlink())
+            {
+                return Err(invalid(
+                    "temporary aliases disagree about original inode custody",
+                ));
+            }
+            files.push((entry, file));
+        }
+        self.check_current()?;
+
+        for (entry, file) in &files {
+            self.confinement.check_current()?;
+            self.layout.recheck()?;
+            self.check_root(&entry.parent)?;
+            let inode = (entry.metadata.dev(), entry.metadata.ino());
+            let before = current
+                .get(&inode)
+                .ok_or_else(|| invalid("chunk scratch lost its original inode snapshot"))?;
+            let name = entry
+                .name
+                .to_str()
+                .ok_or_else(|| invalid("generated chunk scratch is not UTF-8"))?;
+            let named = super::open_regular_at(&entry.parent, name)?;
+            self.check_temporary(&named, before)?;
+            self.check_temporary(file, before)?;
+
+            unlinkat(&entry.parent, name, AtFlags::empty())?;
+            entry.parent.sync_all()?;
+            let after = file.metadata()?;
+            let links = before
+                .nlink()
+                .checked_sub(1)
+                .ok_or_else(|| invalid("chunk scratch link count underflow"))?;
+            if !same_payload_binding(before, &after) || after.nlink() != links {
+                return Err(invalid(
+                    "chunk scratch unlink changed another inode or payload",
+                ));
+            }
+            match statat(&entry.parent, name, AtFlags::SYMLINK_NOFOLLOW) {
+                Err(rustix::io::Errno::NOENT) => {}
+                Err(error) => return Err(error.into()),
+                Ok(_) => return Err(invalid("chunk scratch name survived or was replaced")),
+            }
+            // Unlink legitimately changes ctime and nlink on every alias. Carry
+            // that actual outcome into the next alias comparison; bytes, owner,
+            // mode and mtime must retain their original bindings throughout.
+            current.insert(inode, after);
+        }
+        self.confinement.check_current()?;
+        self.layout.recheck()?;
+        Ok(files.len())
+    }
+
+    fn check_temporary(&self, file: &File, before: &Metadata) -> io::Result<()> {
+        let observed = file.metadata()?;
+        if !observed.is_file()
+            || !same_inode(before, &observed)
+            || observed.nlink() == 0
+            || observed.nlink() != before.nlink()
+            || observed.uid() != self.uid
+            || observed.gid() != self.gid
+            || !matches!(observed.mode() & 0o7777, 0o600 | 0o640)
+            || observed.dev() != self.layout.directory_binding("layout-root")?.0
+            || NativeProject::inspect(file)?.project_id != self.project_id
+        {
+            return Err(invalid(
+                "chunk scratch differs from original native custody",
+            ));
+        }
+        Ok(())
+    }
+
     /// Reports whether all observed entries are recognized empty shard scaffolds.
     ///
     /// This is shared-name absence only, never complete recovery evidence.
@@ -296,6 +411,45 @@ impl SharedNamespaceObservation {
         }
         Ok(())
     }
+}
+
+/// Recognizes generated scratch only in the existing canonical chunk shard.
+fn chunk_temporary(entry: &EntryObservation) -> io::Result<bool> {
+    if !entry.name.as_encoded_bytes().starts_with(b".terrane-tmp") {
+        return Ok(false);
+    }
+    let components = entry.relative.iter().collect::<Vec<_>>();
+    if !matches!(components.as_slice(), [root, shard, _] if *root == "chunks" && canonical_shard(shard))
+    {
+        // A matching spelling elsewhere is not an admission temporary. Leave
+        // it to ordinary exhaustive recovery instead of deleting another class.
+        return Ok(false);
+    }
+    let suffix = entry
+        .name
+        .to_str()
+        .and_then(|name| name.strip_prefix(".terrane-tmp:"))
+        .ok_or_else(|| invalid("malformed generated chunk scratch name"))?;
+    if suffix.len() != 32
+        || !suffix
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(invalid("malformed generated chunk scratch identifier"));
+    }
+    Ok(true)
+}
+
+/// Checks unchanged payload custody while allowing the known unlink's metadata.
+fn same_payload_binding(before: &Metadata, after: &Metadata) -> bool {
+    before.dev() == after.dev()
+        && before.ino() == after.ino()
+        && before.mode() == after.mode()
+        && before.uid() == after.uid()
+        && before.gid() == after.gid()
+        && before.len() == after.len()
+        && before.mtime() == after.mtime()
+        && before.mtime_nsec() == after.mtime_nsec()
 }
 
 fn empty_scaffold(entry: &EntryObservation) -> bool {
