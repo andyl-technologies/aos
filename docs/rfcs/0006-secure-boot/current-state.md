@@ -19,7 +19,7 @@ rather than re-deriving it.
 - Source pin (`:40,44`): `edk2-stable202602`, rev `b7a715f7…`,
   `builtins.fetchGit submodules=true`.
 
-**UKI** — `pkgs/boot/aos-uki.nix`
+**UKI** — `pkgs/system/_systemd-abilities/platform/_uki-builder.nix`
 
 - `ukify build` (`:71-77`): `--stub --linux --initrd --cmdline --os-release
   --output`. **No `--secureboot-private-key`, `--secureboot-certificate`,
@@ -28,7 +28,7 @@ rather than re-deriving it.
   today**; should be corrected as part of phase 1.
 - Stub (`:38`): `${systemd}/lib/systemd/boot/efi/linuxx64.efi.stub`, unsigned.
 
-**sd-boot / ESP** — `modules/image/_builder.nix`
+**sd-boot / ESP** — `pkgs/system/_systemd-abilities/platform/_image-builder.nix`
 
 - ESP tree (`:6-9`): `EFI/BOOT/BOOTX64.EFI`,
   `EFI/systemd/systemd-bootx64.efi`, `EFI/Linux/aos-<ver>.efi`,
@@ -122,7 +122,7 @@ rather than re-deriving it.
   `CONFIG_SYSTEM_TRUSTED_KEYS`, `CONFIG_SYSTEM_BLACKLIST_KEYS`,
   `CONFIG_LOCK_DOWN_IN_EFI_SECURE_BOOT`. `CONFIG_EFI_PARTITION=y` is the only
   EFI-relevant setting (`storage.config:63`).
-- Cmdline (assembled from `aos.boot.kernelParams`, `modules/image/_builder.nix:37`,
+- Cmdline (assembled from `aos.boot.kernelParams`, `pkgs/system/_systemd-abilities/platform/_image-builder.nix:37`,
   base in `modules/base/boot.nix:107-129`): `console=… systemd.gpt-auto=0
   root=/dev/disk/by-partlabel/root-a ro` + `audit=1` + x86 hardening +
   `selinux=1 security=selinux`. **No** `lockdown=`, `module.sig_enforce`,
@@ -141,7 +141,7 @@ rather than re-deriving it.
 
 ## Registry / metadata
 
-- `crates/aos-package/src/types.rs`: `PackageMeta` (`:447`) — name, version,
+- `crates/aos/packages/aos-package-manager/src/types.rs`: `PackageMeta` (`:447`) — name, version,
   description, homepage, license, maintainer, platform, store_path,
   `nar_hash`, nar_size, references, source_drv, source_nar_hash,
   closure_size, `sysroot: bool`, previous, `images: Vec<SysrootImageEntry>`.
@@ -152,11 +152,11 @@ rather than re-deriving it.
   metadata is TOML in the git tree; the signed tag covers the tree state.
 - narinfo: `apm` verifies `file_hash` (compressed) and `nar_hash`
   (decompressed) + store-path integrity on import
-  (`crates/aos-package/src/{download,verify,sysroot}.rs`); it does **not**
+  (`crates/aos/packages/aos-package-manager/src/{download,verify,sysroot}.rs`); it does **not**
   verify narinfo `signatures:` — provenance comes from the signed tag, not
   per-NAR sigs.
 - `apr publish --sysroot` records `sysroot = true` + `[[images]]` entries
-  (`crates/aos-package/src/registry_ops.rs`).
+  (`crates/aos/registry/aos-registry-authoring/src/registry_ops.rs`).
 
 ## Existing docs to align with (not duplicate)
 

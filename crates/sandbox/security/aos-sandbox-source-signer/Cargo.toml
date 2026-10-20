@@ -1,0 +1,33 @@
+[package]
+name = "aos-sandbox-source-signer"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+autobins = false
+
+[package.metadata.aos]
+test_source_inputs = [
+    "crates/sandbox/controller/aos-sandbox-services/Cargo.toml",
+    "crates/sandbox/controller/aos-sandbox-services/src/bin/aos-sandbox-source-signerd.rs",
+]
+
+[features]
+default = []
+
+[dependencies]
+aos-sandbox-broker.workspace = true
+aos-sandbox-source.workspace = true
+aos-sandbox-model.workspace = true
+aos-sandbox-linux.workspace = true
+aos-sandbox-protocol.workspace = true
+aos-sandbox-ledger-replay.workspace = true
+ed25519-dalek = { workspace = true, features = ["zeroize"] }
+rustix = { workspace = true, features = ["fs", "net", "process", "rand", "time"] }
+thiserror.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

@@ -5,7 +5,7 @@
   mkCargoPackage,
   mkCargoArtifacts,
   mkCargoDummySource,
-  fetchCargoVendor,
+  aosWorkspaceVendor,
   patchelf,
   glibc,
   sqliteStatic,
@@ -28,12 +28,8 @@
   guestLinkDeps = lib.optional stdenv.isCross sqliteStatic;
 
   src = import ./crucible/_source.nix {inherit lib;};
-  cargoDeps = fetchCargoVendor {
-    inherit src;
-    name = "crucible-guest-vendor-${version}";
-    sourceRoot = "source/crates";
-    hash = import ./crucible/_cargo-deps-hash.nix;
-  };
+  cargoDeps = aosWorkspaceVendor;
+  cargoWorkspaceMembers = import ./crucible/_workspace.nix {inherit lib;};
   targetTriple =
     {
       "x86_64-linux" = "x86_64-unknown-linux-gnu";
@@ -79,7 +75,7 @@
   };
   cargoArtifacts = mkCargoArtifacts {
     pname = "crucible-static-guest-artifacts";
-    inherit version cargoDeps cargoArtifactContract cargoEnv;
+    inherit version cargoDeps cargoWorkspaceMembers cargoArtifactContract cargoEnv;
     src = mkCargoDummySource {
       srcRoot = ../../crates;
       name = "crucible-static-guest-dummy-source";
@@ -96,10 +92,77 @@
   };
 in
   mkCargoPackage {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
     pname = "crucible-guest";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The command returns success and documents verbs:.";
+        "files" = {};
+        "input" = "The packaged crucible-guest command-line interface.";
+        "operation" = "Request its offline help text.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess\nresult = subprocess.run([\"@out@/bin/crucible-guest\",\"--help\"], capture_output=True, text=True)\nassert result.returncode == 0 and \"verbs:\" in (result.stdout + result.stderr), (result.returncode, result.stdout, result.stderr)\nprint(\"crucible-guest operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "crucible-guest operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The command rejects the unsupported option before performing its main operation.";
+        "files" = {};
+        "input" = "A crucible-guest invocation containing an unsupported command-line option.";
+        "operation" = "Parse the unknown option without starting a service or contacting a remote endpoint.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess, sys\nresult = subprocess.run([\"@out@/bin/crucible-guest\",\"aos-invalid-verb\"], capture_output=True, text=True)\nassert result.returncode != 0, (result.returncode, result.stdout, result.stderr)\nsys.stderr.write(\"crucible-guest rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "crucible-guest rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version src;
 
-    inherit cargoDeps cargoArtifacts cargoArtifactContract cargoEnv;
+    inherit cargoDeps cargoWorkspaceMembers cargoArtifacts cargoArtifactContract cargoEnv;
     cargoRoot = "crates";
     cargoNextest = true;
 
@@ -134,7 +197,7 @@ in
 
       doorbell_instruction_abi_version=$(sed -n \
         's/^pub const WHITEBOX_DOORBELL_INSTRUCTION_ABI_VERSION: u16 = \([0-9][0-9]*\);$/\1/p' \
-        crucible-protocol/src/doorbell_abi.rs)
+        crucible/protocol/crucible-qemu-protocol/src/doorbell_abi.rs)
       test -n "$doorbell_instruction_abi_version"
 
       mkdir -p "$out/nix-support"

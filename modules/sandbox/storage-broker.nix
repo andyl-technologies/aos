@@ -5,6 +5,8 @@
   pkgs,
   ...
 }: let
+  credentialNameType = import ./_credential-name-type.nix {inherit lib;};
+
   cfg = config.aos.sandbox.storageBroker;
   controller = config.aos.sandbox.controller;
   resourcePolicy = config.aos.sandbox.resourceBank.policy;
@@ -105,7 +107,7 @@ in {
     credentials = brokerSession.mkOptions brokerSessionEndpoints
       // lib.mapAttrs (_: credentialFile:
         lib.mkOption {
-          type = lib.types.nullOr lib.serviceTypes.credentialName;
+          type = lib.types.nullOr credentialNameType;
           default = null;
           description = "Fixed public exclusive-cohort input loaded as ${credentialFile}. All four inputs are required together; this selects denial-only enrollment, not Storage allocation authority.";
         })
@@ -132,7 +134,7 @@ in {
     };
 
     kernelExportStageSignerCredential = lib.mkOption {
-      type = lib.types.nullOr lib.serviceTypes.credentialName;
+      type = lib.types.nullOr credentialNameType;
       default = null;
       description = "Reserved external AOSKGA02 stage-signing credential name. It is deliberately not loaded into Storage until a held-barrier signer is implemented.";
     };

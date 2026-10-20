@@ -10,15 +10,15 @@
   riskDoc = builtins.readFile ../../docs/rfcs/0010-crucible/30-risks-spikes.md;
   decisionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/31-decision-register.md;
   defaultChecks = builtins.readFile ./default.nix;
-  backend = builtins.readFile ../../crates/crucible/src/backend.rs;
-  backendTests = builtins.readFile ../../crates/crucible/src/backend/tests.rs;
+  backend = builtins.readFile ../../crates/crucible/engine/crucible-engine/src/backend.rs;
+  backendTests = builtins.readFile ../../crates/crucible/engine/crucible-engine/src/backend/tests.rs;
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   simBackend = import ./_crucible-local-and-test-backends-source.nix;
   sessionLib = import ./_crucible-session-source.nix {inherit lib;};
-  sessionEventLogStream = builtins.readFile ../../crates/crucible-session/tests/event_log_stream.rs;
-  qemuNode = builtins.readFile ../../crates/crucible-qemu/src/node.rs;
-  productionDebugLoop = builtins.readFile ../../crates/crucible-api/src/vm_lifecycle/quantum_loop.rs;
-  gatewayOwner = builtins.readFile ../../crates/crucible-api/src/debug_gateway.rs;
+  sessionEventLogStream = builtins.readFile ../../crates/crucible/control/crucible-session/tests/event_log_stream.rs;
+  qemuNode = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-host/src/node.rs;
+  productionDebugLoop = builtins.readFile ../../crates/crucible/control/crucible-daemon/src/vm_lifecycle/quantum_loop.rs;
+  gatewayOwner = builtins.readFile ../../crates/crucible/control/crucible-control-server/src/debug_gateway.rs;
 
   taskList = builtins.concatStringsSep "," taskIds;
 
@@ -62,7 +62,7 @@
         needle = "sessionDebugTimeTravel = import ./phase5-session-debug-time-travel.nix";
       }
     ]
-    ++ failuresFor "crates/crucible/src/backend.rs" backend [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/backend.rs" backend [
       {
         label = "gdb listen endpoint type";
         needle = "pub struct GdbListen";
@@ -80,13 +80,13 @@
         needle = "BackendError::Unsupported";
       }
     ]
-    ++ failuresFor "crates/crucible/src/backend/tests.rs" backendTests [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/backend/tests.rs" backendTests [
       {
         label = "mock rejects gdbstub";
         needle = "mock_simulation_backend_rejects_gdbstub_capability_with_typed_error";
       }
     ]
-    ++ failuresFor "crates/crucible/src/scheduler.rs" scheduler [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/scheduler.rs" scheduler [
       {
         label = "quantum-loop gdbstub pass-through";
         needle = "fn open_gdbstub";
@@ -104,7 +104,7 @@
         needle = "capability: \"open_gdbstub\"";
       }
     ]
-    ++ failuresFor "crates/crucible/src/sim_backend.rs" simBackend [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/sim_backend.rs" simBackend [
       {
         label = "SimDouble rejects gdbstub capability";
         needle = "fn open_gdbstub";
@@ -118,7 +118,7 @@
         needle = "sim_double_rejects_gdbstub_capability_with_typed_error";
       }
     ]
-    ++ failuresFor "crates/crucible-session/src/lib.rs" sessionLib [
+    ++ failuresFor "crates/crucible/control/crucible-session/src/lib.rs" sessionLib [
       {
         label = "attach command";
         needle = "AttachGdb";
@@ -216,7 +216,7 @@
         needle = "boundary_control_log().is_empty()";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/src/node.rs" qemuNode [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/src/node.rs" qemuNode [
       {
         label = "QEMU node stores gdbstub config";
         needle = "gdbstub: Option<QemuGdbstubChannelConfig>";
@@ -230,19 +230,19 @@
         needle = "pub const fn gdbstub_channel";
       }
     ]
-    ++ failuresFor "crates/crucible-session/tests/event_log_stream.rs" sessionEventLogStream [
+    ++ failuresFor "crates/crucible/control/crucible-session/tests/event_log_stream.rs" sessionEventLogStream [
       {
         label = "event-log partial truncation subscriber regression test";
         needle = "event_log_generation_reset_preserves_retained_prefix_for_lagging_stream";
       }
     ]
-    ++ failuresFor "crates/crucible-api/src/vm_lifecycle/quantum_loop.rs" productionDebugLoop [
+    ++ failuresFor "crates/crucible/control/crucible-daemon/src/vm_lifecycle/quantum_loop.rs" productionDebugLoop [
       {
         label = "production gdbstub attaches through gateway";
         needle = "DebugGatewayProcess::launch_with_owner_unix";
       }
     ]
-    ++ failuresFor "crates/crucible-api/src/debug_gateway.rs" gatewayOwner [
+    ++ failuresFor "crates/crucible/control/crucible-control-server/src/debug_gateway.rs" gatewayOwner [
       {
         label = "owner-only gateway launch";
         needle = "pub fn launch_with_owner_unix";

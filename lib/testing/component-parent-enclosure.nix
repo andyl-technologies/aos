@@ -20,8 +20,8 @@
     managerOpenFilesPerProcess = 1;
     fixedOpenFilesPerProcess = 1;
     journal = {
-      systemMaxUse = 1;
-      systemMaxFileSize = 1;
+      systemMaxUse = 1048576;
+      systemMaxFileSize = 1048576;
       runtimeMaxUse = 1;
       runtimeMaxFileSize = 1;
     };
@@ -40,9 +40,13 @@
             provenance,
             ...
           }: let
-            auditModule = import ../../modules/security/audit.nix {inherit config lib pkgs;};
-            journalModule = import ../../modules/base/journald.nix {inherit config lib pkgs;};
-            systemdModule = import ../../modules/systemd/system.nix {inherit config lib pkgs provenance;};
+            auditModule = import ../../pkgs/security/_audit/policy.nix {inherit lib;};
+            journalModule = import ../../pkgs/system/_aos-host-policy/journald.nix {inherit lib;};
+            systemdModule = import ../../pkgs/system/_systemd-abilities/platform/system.nix {inherit config lib pkgs provenance;};
+            serviceModule = import ../../pkgs/system/_service-management/module.nix {
+              inherit lib;
+              config.aos.abilities.serviceManagement.operations.realize.input = ../../pkgs/system/_service-management/input.nix;
+            };
             mountModule = import ../../modules/sandbox/mount-broker.nix {inherit config lib pkgs;};
             networkModule = import ../../modules/sandbox/network-broker.nix {inherit config lib pkgs;};
             publisherModule = import ../../modules/sandbox/runtime-deployment-publisher.nix {inherit config lib pkgs;};
@@ -52,9 +56,13 @@
             options.aos.security.audit.bounds = auditModule.options.aos.security.audit.bounds;
             options.aos.security.audit.enable = auditModule.options.aos.security.audit.enable;
             options.aos.journald = journalModule.options.aos.journald;
+            # Read the canonical service schema with its real operation input.
+            # Its effect-producing config is not part of this projection test.
+            options.aos.services = serviceModule.options.aos.services;
             options.systemd.services = systemdModule.options.systemd.services;
             options.systemd.slices = systemdModule.options.systemd.slices;
             options.systemd.sockets = systemdModule.options.systemd.sockets;
+            options.systemd.packagedBaseUnits = systemdModule.options.systemd.packagedBaseUnits;
             options.aos.sandbox =
               lib.genAttrs [
                 "sourceSignerService"
@@ -119,7 +127,7 @@
   invalid = evaluate (profile // {audit = auditBounds // {numLogs = 1;};}) [];
   invalidBounds = builtins.tryEval (builtins.deepSeq invalid.aos.security.audit.bounds true);
   boundsData = value: builtins.removeAttrs value ["_module"];
-  journalFields = ["maxUse" "systemMaxFileSize" "runtimeMaxUse" "runtimeMaxFileSize"];
+  journalFields = ["maxUseBytes" "maxFileSizeBytes" "runtimeMaxUse" "runtimeMaxFileSize"];
   project = names: value: lib.genAttrs names (name: value.${name});
   serviceFields = ["CPUQuota" "MemoryMax" "TasksMax" "LimitNOFILE"];
   sliceFields = ["CPUQuota" "MemoryMax" "TasksMax"];
@@ -142,8 +150,8 @@
   };
   independentService = independentSlice // {LimitNOFILE = 2;};
   independentJournal = {
-    maxUse = "3";
-    systemMaxFileSize = "4";
+    maxUseBytes = 3 * 1048576;
+    maxFileSizeBytes = 4 * 1048576;
     runtimeMaxUse = 2;
     runtimeMaxFileSize = 3;
   };
@@ -157,14 +165,22 @@ in
   == null
   && disabled.environment.etc == {}
   && disabled.systemd.services == {}
+  && disabled.systemd.packagedBaseUnits == []
+  # Lazy service maps retain dormant keys; they must neither enable a native
+  # service nor request its immutable bootstrap base without a selected Parent.
+  && builtins.all (service: !service.enable && !service.bootstrap)
+  (builtins.attrValues disabled.aos.services)
   && disabled.systemd.slices == {}
-  && disabled.aos.journald.maxUse == "500M"
-  && disabled.aos.journald.systemMaxFileSize == "50M"
+  && disabled.aos.journald.maxUseBytes == 500 * 1048576
+  && disabled.aos.journald.maxFileSizeBytes == 50 * 1048576
   && disabled.aos.journald.runtimeMaxUse == null
   && disabled.aos.journald.runtimeMaxFileSize == null
   && disabled.fixture.ownership == expectedOwnership
   && boundsData independent.aos.security.audit.bounds == auditBounds
   && independent.environment.etc == {}
+  && builtins.all (service: !service.enable && !service.bootstrap)
+  (builtins.attrValues independent.aos.services)
+  && independent.systemd.packagedBaseUnits == []
   && project journalFields independent.aos.journald == independentJournal
   && project serviceFields independent.systemd.services.systemd-journald.serviceConfig == independentService
   && project sliceFields independent.systemd.slices.aoscomponents.sliceConfig == independentSlice
@@ -173,13 +189,19 @@ in
   && project sliceFields selected.systemd.slices.aoscomponents.sliceConfig == expectedSlice
   && builtins.attrNames selected.systemd.services
   == ["aos-journald-runtime-prep" "audit-rules" "auditd" "systemd-journald"]
+  && selected.systemd.packagedBaseUnits == ["systemd-journald.service"]
+  && builtins.attrNames selected.aos.services == ["audit.audit-rules" "audit.auditd"]
+  && selected.aos.services."audit.audit-rules".bootstrap
+  && selected.aos.services."audit.auditd".bootstrap
+  && selected.systemd.services.audit-rules.overrideStrategy == "asDropin"
+  && selected.systemd.services.auditd.overrideStrategy == "asDropin"
   && builtins.all (service:
     project serviceFields service.serviceConfig == expectedService)
   (builtins.attrValues selected.systemd.services)
   && project journalFields selected.aos.journald
   == {
-    maxUse = "1";
-    systemMaxFileSize = "1";
+    maxUseBytes = 1048576;
+    maxFileSizeBytes = 1048576;
     runtimeMaxUse = 1;
     runtimeMaxFileSize = 1;
   }

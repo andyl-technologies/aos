@@ -11,7 +11,7 @@ replaceable node-local mmap index.
 
 The authoritative [portable v1 CDDL](portable-v1.cddl), the rules below, and the
 golden vectors in this document form one normative contract. Phase 1 copies
-them into conformance tests under `crates/aos-sandbox-core/formats/`; it does
+them into conformance tests under `crates/sandbox/model/aos-sandbox-model/formats/`; it does
 not fill in missing wire semantics. Changing a rule that affects bytes or
 semantics requires a new media-type version, not an in-place parser change.
 

@@ -4,6 +4,11 @@ Use `apm` to find, install, update, and remove software on your AOS host. Give
 it package names; APM downloads the packages and installs the dependencies
 they need to work.
 
+In an AOS container, ordinary package installation also works in Dockerfile
+`RUN` steps. File/configuration effects execute during installation; service
+effects can remain pending until the selected init starts. See
+[packages in containers](containers.md) for the target handlers and lifecycle.
+
 ## Personal packages
 
 By default, `apm` manages packages for your own account. Each user has a
@@ -11,6 +16,11 @@ separate package profile, so installing, upgrading, or removing your packages
 does not change another user's selection. Users can keep different package
 versions when needed.
 
+For packages that contribute services, inspect the signed package contract and
+selected resources described in [Understand native package runtime
+policy](package-sandbox.md). [Secure Boot and package trust](secure-boot.md)
+explains how image-baked registry anchors connect package admission to the boot
+chain.
 Package builds and their dependencies live in the shared `/nix/store`. Users
 and the machine-wide profile reuse identical store paths instead of keeping
 separate installed copies. Different versions or builds can coexist; each
@@ -193,6 +203,28 @@ apm gc
 Garbage collection works across the shared store. Files still referenced by
 another user's profile or a retained generation remain available.
 
+## Prepare an image before selecting it
+
+On a live AOS host, root can authenticate and stage a system image separately
+from choosing the next boot:
+
+```sh
+apm image prepare server --registry acme --dry-run
+apm image prepare server --registry acme --yes
+```
+
+Preparation imports the signed closure, performs physical staging, and indexes
+the authenticated receipt. It prints the exact staged `ImageGeneration` as JSON.
+A dry-run resolves the package without importing, staging, or writing image
+state. Preparation does not select the next boot or submit a rollout.
+
+Add `--qualified` to require explicit authenticated candidate health before
+staging for a later qualified rollout. This check does not itself qualify a
+rollout; subsequent operator-source admission still applies. Pending profile or
+image work must be recovered before preparing another candidate. Cancellation
+waits for immutable transfers to finish before physical writes; interrupted
+physical staging retains its intent for authenticated retry.
+
 ## Manage machine-wide packages
 
 Administrators can add `--system` to manage packages for everyone on the
@@ -260,7 +292,7 @@ set from a TOML file. This is optional; use `install` for everyday additions.
 For example, save this as `desired.toml`:
 
 ```toml
-packages = ["nginx", "curl"]
+packages = ["tailscale"]
 ```
 
 Preview and apply it as an administrator:
@@ -276,6 +308,17 @@ APM installs missing packages and their dependencies, removes explicitly
 installed packages omitted from the file, and removes dependencies that are
 no longer needed. Packages supplied by the base OS are managed separately.
 If you are editing an existing file, preserve every package you want to keep.
+
+Keep every explicit package you want in this file when adding a workload.
+Alternatively, [host policy](host-nix.md#understand-the-runtime-boundary) can
+select a package with `aos.apm.desiredPackages` and configure its native service
+in one generation, without a prior installation. Installing a payload alone
+does not substitute for reviewing and enabling its service configuration.
+
+The list is declarative. Explicit packages omitted from the next file are
+removed during reconciliation, including packages made unreachable by that
+change. To remove `tailscale`, delete it from `packages` and run the same command
+again. Named package removal also accepts `--system`.
 
 Reconciliation keeps an already-installed package rather than selecting a new
 version. Use `apm upgrade --system` to upgrade installed packages. A dry run
@@ -300,7 +343,7 @@ recovery procedure requires it.
 
 | State | Personal packages | Machine-wide packages |
 | --- | --- | --- |
-| Profile | `/var/lib/profiles/per-user/$USER` | `/var/lib/profiles/system-packages` |
+| Profile | `/var/lib/profiles/per-user/$USER` | `/var/lib/profiles/system` |
 | Registry clones | `~/.local/share/apm/registries` | `/var/lib/apm/registries` |
 | Package lists | `~/.local/share/apm/remote` | `/var/lib/apm/remote` |
 | Download cache | `~/.cache/apm` | `/var/lib/apm/cache` |

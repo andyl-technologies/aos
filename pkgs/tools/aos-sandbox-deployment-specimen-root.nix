@@ -8,6 +8,23 @@
   rootMeasurer = buildPackages.aos-sandbox-agent;
 in
   mkDerivation {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64"];
+          os = ["linux"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
     pname = "aos-sandbox-deployment-specimen-root";
     version = "0.1.0";
     src = ../security/aos-installed-filter-collector;
@@ -69,8 +86,8 @@ in
     passthru.evidenceSources = [
       ./aos-sandbox-deployment-specimen-root.nix
       ../security/aos-installed-filter-collector/specimen.c
-      ../../crates/aos-sandbox-guest-root-tree/src/guest_root_tree.rs
-      ../../crates/aos-sandbox-guest/src/bin/aos-sandbox-guest-root-tree-digest.rs
+      ../../crates/sandbox/guest/aos-sandbox-guest-root-measurement/src/guest_root_tree.rs
+      ../../crates/sandbox/guest/aos-sandbox-guest/src/bin/aos-sandbox-guest-root-tree-digest.rs
     ];
 
     meta = {

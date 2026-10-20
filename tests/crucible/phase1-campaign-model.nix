@@ -116,7 +116,7 @@ in
               --target-dir "$TMPDIR/campaign-model-target" \
               -p crucible-campaign --test gate_campaign_model -- --test-threads=1
             run_exact_lib_test \
-              crucible \
+              crucible-engine \
               model::measurement::runtime::tests::model_sources_project_exact_replay_samples
             run_exact_lib_test \
               crucible-daemon \

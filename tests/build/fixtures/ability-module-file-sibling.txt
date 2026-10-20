@@ -1,0 +1,1 @@
+This sibling must never enter the single-file module artifact.

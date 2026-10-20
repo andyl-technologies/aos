@@ -16,6 +16,25 @@
   version = "2.4.12";
 in
   mkDerivation {
+    # The complete service recipe links Linux PAM and the Linux ACL library.
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
+
     pname = "cups-full";
     inherit version;
 

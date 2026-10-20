@@ -99,7 +99,7 @@
       --offline \
       --target-dir "$TMPDIR/checkpoint-delta-target" \
       --manifest-path crates/Cargo.toml \
-      -p crucible-qemu \
+      -p crucible-qemu-host \
       --lib \
       --no-run
   '';
@@ -203,7 +203,7 @@
           --offline \
           --target-dir "$TMPDIR/checkpoint-delta-target" \
           --manifest-path crates/Cargo.toml \
-          -p crucible-qemu \
+          -p crucible-qemu-host \
           --lib \
           "qmp::checkpoint_delta_flight_tests::$test_name" \
           -- --ignored --exact --nocapture > "$log" 2>&1

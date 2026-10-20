@@ -1,0 +1,42 @@
+[package]
+name = "aos-sandbox-host"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+autobins = false
+
+[features]
+default = []
+kernel-tests = ["aos-sandbox-linux/kernel-tests"]
+
+[dependencies]
+aos-sandbox-api = { path = "../../protocol/aos-sandbox-api" }
+aos-sandbox-controller-domain.workspace = true
+aos-sandbox-journal.workspace = true
+aos-sandbox-guest-protocol.workspace = true
+aos-sandbox-guest-root-realization.workspace = true
+aos-sandbox-broker.workspace = true
+aos-sandbox-model = { path = "../../model/aos-sandbox-model" }
+aos-sandbox-linux = { path = "../aos-sandbox-linux" }
+aos-sandbox-protocol = { path = "../../protocol/aos-sandbox-protocol" }
+aos-systemd-client = { path = "../../../shared/aos-systemd-client" }
+async-trait.workspace = true
+buffa.workspace = true
+ed25519-dalek.workspace = true
+rand.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+ssh-key.workspace = true
+thiserror.workspace = true
+rustix = { workspace = true, features = ["event", "fs", "net", "process", "time"] }
+tokio.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+aos-sandbox-controller-domain = { workspace = true, features = ["test-fixtures"] }
+aos-sandbox-guardian.workspace = true
+tempfile = "3"
+
+[lints]
+workspace = true

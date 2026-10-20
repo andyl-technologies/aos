@@ -471,7 +471,7 @@ genuinely unresolved and is tracked as a spike in
   with `FrameEntry` payloads), driven by a per-node max-advance ceiling and futex
   wake — not an IPC-barrier / message-passing rendezvous. Every input carries its
   **delivery icount in-band** so the consumer is time-driven, not arrival-driven.
-  The shared-memory layout (the `crucible-shmem` ABI) is the **single, explicitly
+  The shared-memory layout (the `crucible-qemu-shmem` ABI) is the **single, explicitly
   versioned public protocol** for the data-plane boundary, covered by conformance
   tests/golden vectors and independently implementable from its public semantics.
 - **Rationale:** The most important correctness property of the transport is that
@@ -667,7 +667,7 @@ genuinely unresolved and is tracked as a spike in
   (`commanded_preemption_discriminating`, `known_race_manifested_under_one_choice`,
   `known_race_absent_under_another_choice`, `single_vcpu_interrupt_variation_distinct`).
   The model witness is
-  `crates/crucible/tests/preemption_discrimination.rs::commanded_preemption_discriminates_a_known_two_vcpu_race`:
+  `crates/crucible/engine/crucible-engine/tests/preemption_discrimination.rs::commanded_preemption_discriminates_a_known_two_vcpu_race`:
   a known two-vCPU last-writer-wins race resolves to different observable outcomes
   under different commanded `Decision::Preemption` values (the race manifests under
   one choice, is absent under another, and the choices produce distinct replayable
@@ -872,14 +872,14 @@ genuinely unresolved and is tracked as a spike in
 - **Date:** 2026-07-08.
 - **Decided by:** project owner.
 
-### D-32 — Remote checkpoint store is the same `crucible-cas` interface, not a separate backend
+### D-32 — Remote checkpoint store is the same `crucible-store` interface, not a separate backend
 
 - **Status:** Decided
 - **Decision:** The remote/shared checkpoint store is **in scope** and is
-  satisfied by the **existing `crucible-cas` `DagStore` interface** — the same
+  satisfied by the **existing `crucible-store` `DagStore` interface** — the same
   backend-agnostic `put`/`get`/`has`(-by-content-hash) trait Crucible already
   ships — **not** by a second, separately-designed store. The fleet-visible and
-  team-shared backend is `crucible_cas::SharedDagStore` today; a future RFC-0007
+  team-shared backend is `crucible_store::SharedDagStore` today; a future RFC-0007
   (`ratchet`) shared substrate is a **drop-in replacement of the interface's
   internals**, gated behind D-17 and expressed only as documented merge-marker
   text, never as a build- or run-time dependency. This resolves the D-20
@@ -892,7 +892,7 @@ genuinely unresolved and is tracked as a spike in
     object-safe `pub trait DagStore: Send + Sync` with exactly
     `put(&[u8]) -> ContentHash`, `get(&ContentHash) -> Vec<u8>`, and
     `has(&ContentHash) -> bool`
-    (`crates/crucible-cas/src/lib.rs:195`). Three interchangeable
+    (`crates/crucible/storage/crucible-store/src/lib.rs:195`). Three interchangeable
     implementations already exist behind it —
     `MemoryDagStore` (`:251`), the filesystem `LocalDagStore` (`:316`), and the
     fleet-visible `SharedDagStore` (`:449`) — proving the backend is a swap-in
@@ -943,13 +943,13 @@ genuinely unresolved and is tracked as a spike in
     merge as replacing **`DagStore::put`/`get`/`has` + `InvalidationQuery::evaluate`**
     internals behind an unchanged interface, "a thin adapter behind that unchanged
     interface," with **"no RFC-0007 dependency exists"** until the merge
-    (`crates/crucible-cas/src/lib.rs:1`–`:24`). The merge is therefore a
+    (`crates/crucible/storage/crucible-store/src/lib.rs:1`–`:24`). The merge is therefore a
     contained refactor behind an unchanged
     trait — exactly the "cheap to integrate later" posture D-17 promised — and
     **choosing a separate remote backend now is unnecessary and would duplicate
     that seam.**
 - **Alternatives considered:**
-  - *Design a separate remote checkpoint store distinct from `crucible-cas`.*
+  - *Design a separate remote checkpoint store distinct from `crucible-store`.*
     Rejected: the store role is fully expressed by the backend-agnostic
     `DagStore` trait, and `SharedDagStore` already provides fleet-visible,
     location-independent, idempotent, immutable-on-conflict semantics. A second
@@ -970,7 +970,7 @@ genuinely unresolved and is tracked as a spike in
     deferred.
 - **Affects:** [INV-6], [G-6], [NG-7]; [TEMP-21], [TEMP-22], [TEMP-24]–[TEMP-26];
   [DCE-3], [DCE-4], [DCE-28], [DCE-29]; files 07 (§7, §8), 35 (§35.2.1, §35.6.2),
-  26 (§26.9); crates `crucible-cas` (`DagStore`, `SharedDagStore`,
+  26 (§26.9); crates `crucible-store` (`DagStore`, `SharedDagStore`,
   `SharedFrontier`, `SharedDedupIndex`, and `SharedCampaignStore`). References
   D-17, D-28.
 - **Supersedes:** [D-20] (the Open provisional local-only default and its
@@ -1160,7 +1160,7 @@ genuinely unresolved and is tracked as a spike in
   floor is exactly the smallest value that keeps the conservative lookahead budget
   positive. w8's landed perf suite (`gate:perf-bench`,
   `checks.crucible.phase7.gates.perfBench`, 21/21 green) includes the
-  **latency-parallelism sweep** (`crucible_harness::perf::latency_parallelism_sweep`,
+  **latency-parallelism sweep** (`crucible_test_support::perf::latency_parallelism_sweep`,
   [PERF-4]) which measures the **parallelism-is-the-lookahead-budget identity**:
   realized parallelism `P` scales with the minimum link latency and *degrades
   toward single-TB lockstep as the latency approaches the floor* (the cost model
@@ -1179,17 +1179,17 @@ genuinely unresolved and is tracked as a spike in
   former belongs in the hard minimum.
 - **Evidence — the decision is already implemented and gated:**
   - *Floor value:* `pub const MIN_LINK_LATENCY: SimDuration = SimDuration { ticks: 1_000 };`
-    (`crates/crucible/src/model.rs:57`).
+    (`crates/crucible/engine/crucible-engine/src/model.rs:57`).
   - *Reject (static base):* `CrucibleModelError::LinkLatencyBelowFloor { base_latency_ns, floor_ns }`
     with the rustdoc "a link's base latency MUST be strictly positive and at or
     above the configured minimum link-latency floor … rejected at construction
-    rather than silently accepted" (`crates/crucible-device/src/error.rs:171`).
+    rather than silently accepted" (`crates/crucible/engine/crucible-device/src/error.rs:171`).
   - *Clamp (dynamic fault):* the `NetLink` sub-node "enforces the
     strictly-positive latency floor, clamps sub-floor latency faults, raises the
     scheduler lookahead-recompute signal when the conservative minimum latency
-    bound changes ([IO-33])" (`crates/crucible-device/src/netlink.rs:12`), with
+    bound changes ([IO-33])" (`crates/crucible/engine/crucible-device/src/netlink.rs:12`), with
     the `subfloor_latency_is_clamped_to_floor` regression test
-    (`crates/crucible-device/src/netlink.rs:140`).
+    (`crates/crucible/engine/crucible-device/src/netlink.rs:140`).
   - *Gate:* `checks.crucible.phase3.schedulerLinkLatencyFloor` needles the
     `MIN_LINK_LATENCY` constant, the "a link MUST have a strictly positive
     latency" rule, the constructor floor rejection, and the
@@ -1217,13 +1217,13 @@ genuinely unresolved and is tracked as a spike in
     of `P` toward the floor.
 - **Affects:** [INV-3], [DET-12], [SCHED-6], [SCHED-20], [G-9]; [IO-33], [IO-34],
   [PERF-4]; files 08, 15 (§15.4.2), 25; constant
-  `crucible::MIN_LINK_LATENCY` (`model.rs:57`); errors
-  `CrucibleModelError::LinkLatencyBelowFloor` (`crucible-device/src/error.rs`);
-  the `NetLink` sub-node (`crucible-device/src/netlink.rs`); gates
+  `crucible_engine::MIN_LINK_LATENCY` (`model.rs:57`); errors
+  `CrucibleModelError::LinkLatencyBelowFloor` (`crucible/engine/crucible-device/src/error.rs`);
+  the `NetLink` sub-node (`crucible/engine/crucible-device/src/netlink.rs`); gates
   `checks.crucible.phase3.schedulerLinkLatencyFloor`,
   `checks.crucible.phase0.multiVmParallelism`,
   `checks.crucible.phase7.gates.perfBench`; the sweep
-  `crucible_harness::perf::latency_parallelism_sweep`. References D-10 (lookahead
+  `crucible_test_support::perf::latency_parallelism_sweep`. References D-10 (lookahead
   is the parallelism budget).
 - **Supersedes:** [D-21] (the Open provisional framing that left the floor value
   and the clamp-vs-reject choice unresolved pending benchmarks).
@@ -1273,7 +1273,7 @@ becomes a new `Decided` entry referencing the one it supersedes).
 
 > **Superseded by [D-32].** The T-D-2 spike confirmed the store interface is
 > backend-pluggable today and that the remote/shared backend is satisfied by the
-> **same `crucible-cas` `DagStore` interface** (`SharedDagStore`), with the
+> **same `crucible-store` `DagStore` interface** (`SharedDagStore`), with the
 > RFC-0007 (`ratchet`) substrate as a later drop-in behind the unchanged seam —
 > **not** a separate store and **not** a ratchet dependency. D-20 is retained
 > below as the original Open provisional framing; D-32 is the current decision.
@@ -1304,7 +1304,7 @@ becomes a new `Decided` entry referencing the one it supersedes).
 > `MIN_LINK_LATENCY = 1` ns and the clamp-vs-reject question to a source-keyed
 > split: a static sub-floor base latency is **rejected** at construction, a
 > dynamic sub-floor latency **fault** is **clamped** to the floor. The decision is
-> already implemented (`crates/crucible/src/model.rs:57`,
+> already implemented (`crates/crucible/engine/crucible-engine/src/model.rs:57`,
 > `crucible-device` netlink/error) and gated
 > (`checks.crucible.phase3.schedulerLinkLatencyFloor`). D-21 is retained below as
 > the original Open provisional framing; D-35 is the current decision.
@@ -1403,7 +1403,7 @@ becomes a new `Decided` entry referencing the one it supersedes).
   dependency trees would expand the hermetic bootstrap without increasing the
   bounded state space covered by this gate.
 - **Evidence:** `checks.crucible.phase1.concurrencyAbiOracleStandards` and the
-  mirrored `crucible-harness` test require the two executable model entrypoints
+  mirrored `crucible-test-support` test require the two executable model entrypoints
   and emit `spsc=exhaustive-ordering-model`.
 - **Affects:** [STD-22], [STD-23], [HARN-33]; files 13, 24, and 28.
 - **Date:** 2026-07-28.
@@ -1911,7 +1911,7 @@ register.
     good C encoder matches the Rust golden bytes, good C and Rust views round-trip
     the fixture byte-for-byte, and a drifted C encoder matches the generated
     drifted fixture while differing from the good fixture. The production
-    `crucible-shmem` crate and full
+    `crucible-qemu-shmem` crate and full
     `gate:abi-conformance` still own the permanent generated header, checked-in
     golden corpus, and version-bump workflow.
   - **Fallback:** none adopted.
@@ -2135,7 +2135,7 @@ register.
     default-determinism prerequisites; both are green. It also witnesses that
     commanded preemption **discriminates a known race at the deterministic model
     layer** (the race outcome fields remain explicitly `modeled`;
-    witness `crates/crucible/tests/preemption_discrimination.rs::commanded_preemption_discriminates_a_known_two_vcpu_race`):
+    witness `crates/crucible/engine/crucible-engine/tests/preemption_discrimination.rs::commanded_preemption_discriminates_a_known_two_vcpu_race`):
     a known two-vCPU race resolves to different observable outcomes under
     different commanded `Decision::Preemption` values, and single-vCPU
     interrupt-timing variation is distinct. The live gate proves that those
@@ -2211,8 +2211,8 @@ register.
   remote backend is satisfied by the gated ratchet substrate (D-17) or a separate
   store; record the resolution superseding D-20. — resolves [D-20]; satisfies
   [INV-6]; spec [`30-risks-spikes.md`](30-risks-spikes.md), §07. Resolved by
-  [D-32]: the `crucible-cas` `DagStore` trait
-  (`crates/crucible-cas/src/lib.rs:195`) is proven backend-pluggable
+  [D-32]: the `crucible-store` `DagStore` trait
+  (`crates/crucible/storage/crucible-store/src/lib.rs:195`) is proven backend-pluggable
   (`MemoryDagStore`/`LocalDagStore`/`SharedDagStore`), the remote/shared backend
   is the same interface via `SharedDagStore`, and the ratchet substrate is a
   later drop-in behind the unchanged seam — neither a separate store nor a
@@ -2222,7 +2222,7 @@ register.
   zero-latency links; record the resolution superseding D-21. — resolves [D-21];
   satisfies [DET-12], [G-9]; spec [`30-risks-spikes.md`](30-risks-spikes.md),
   §08, §25. Resolved by [D-35]: floor is the strictly-positive
-  `MIN_LINK_LATENCY = 1` ns (`crates/crucible/src/model.rs:57`), chosen from w8's
+  `MIN_LINK_LATENCY = 1` ns (`crates/crucible/engine/crucible-engine/src/model.rs:57`), chosen from w8's
   `latency_parallelism_sweep` (P collapses toward the floor, so the floor is the
   liveness minimum, recommended operating point well above it); clamp-vs-reject is
   source-keyed — a static sub-floor base latency is **rejected** at construction
@@ -2237,7 +2237,7 @@ register.
   remains available. — resolves [D-25]; satisfies [SCHED-45], [G-9]; spec
   [`30-risks-spikes.md`](30-risks-spikes.md), §30.11c, §22, §25. Resolved by
   [D-36]: the known-race model witness
-  `crates/crucible/tests/preemption_discrimination.rs::commanded_preemption_discriminates_a_known_two_vcpu_race`
+  `crates/crucible/engine/crucible-engine/tests/preemption_discrimination.rs::commanded_preemption_discriminates_a_known_two_vcpu_race`
   is composed with exact production loaded-QEMU vCPU-switch and interrupt
   application at every candidate quantum. All five candidates reproduce with
   bounded scheduler preemption and preserve race yield, while `4096` is the smallest candidate over

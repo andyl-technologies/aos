@@ -5,6 +5,8 @@
   pkgs,
   ...
 }: let
+  credentialNameType = import ./_credential-name-type.nix {inherit lib;};
+
   cfg = config.aos.sandbox.sourceSignerService;
   controller = config.aos.sandbox.controller;
   view = config.aos.sandbox.sourceSignerView;
@@ -32,13 +34,13 @@ in {
 
     credentials = {
       seed = lib.mkOption {
-        type = lib.types.nullOr lib.serviceTypes.credentialName;
+        type = lib.types.nullOr credentialNameType;
         default = null;
         description = "Signer-private 32-byte Ed25519 Source-purpose seed.";
       };
 
       publicKey = lib.mkOption {
-        type = lib.types.nullOr lib.serviceTypes.credentialName;
+        type = lib.types.nullOr credentialNameType;
         default = null;
         description = "80-byte AOSSPK01 pin shared by name with the independently provisioned Root credential.";
       };

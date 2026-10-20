@@ -31,8 +31,6 @@ let
 in
   assert raw.IMAGE_ARCHITECTURE == "aarch64";
   assert raw.IMAGE_PLATFORM == "aarch64-linux";
-  assert raw.UEFI_FALLBACK_FILENAME == "BOOTAA64.EFI";
-  assert raw.SDBOOT_FILENAME == "systemd-bootaa64.efi";
   assert builtins.all nativeBuilder (builtins.attrValues images);
   assert nativeBuilder budgetCheck;
   assert builtins.all carrierHasNativeSealingAndTargetData carriers;

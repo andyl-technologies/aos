@@ -608,7 +608,7 @@ def physical_lower_path(path: str | Path) -> str:
         or logical != str(candidate)
     ):
         fail(f"cannot map noncanonical store path into the physical lower store: {logical}")
-    return "/nix.lower/store/" + logical.removeprefix("/nix/store/")
+    return "/usr/lib/aos/nix/store/" + logical.removeprefix("/nix/store/")
 
 
 def sha256_file(path: Path) -> str:

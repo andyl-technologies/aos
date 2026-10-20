@@ -17,7 +17,10 @@ let
 
   lib = import ../../lib {system = "x86_64-linux";};
   capturePackage = arguments: arguments // {outPath = "/test/${arguments.pname}";};
-  captureVendor = arguments: arguments // {outPath = "/test/${arguments.name}";};
+  sharedVendor = {
+    outPath = "/test/aos-workspace-vendor";
+    identity = "canonical-shared-workspace-vendor";
+  };
 
   # Capture every actual role recipe while retaining optional input defaults.
   roleRecipes = [
@@ -46,7 +49,7 @@ let
         mkCargoPackage = capturePackage;
         mkCargoArtifacts = capturePackage;
         mkCargoDummySource = _: "unused-dummy-source";
-        fetchCargoVendor = captureVendor;
+        aosWorkspaceVendor = sharedVendor;
         mkDerivation = capturePackage;
         git = capturePackage {
           pname = "git";
@@ -62,16 +65,10 @@ let
         buildPackages = dependencies;
       }));
   rolePackages = map rolePackage roleRecipes;
-  expectedVendorArguments = {
-    src = import ../../pkgs/tools/aos/_workspace-source.nix {inherit lib;};
-    name = "aos-vendor-0.1.0";
-    sourceRoot = "source/crates";
-    hash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
-  };
+  expectedWorkspaceSource = import ../../pkgs/tools/aos/_workspace-source.nix {inherit lib;};
   sharedVendorRetained = package:
-    builtins.removeAttrs package.cargoDeps ["outPath"]
-    == expectedVendorArguments
-    && package.src == expectedVendorArguments.src
+    package.cargoDeps == sharedVendor
+    && package.src == expectedWorkspaceSource
     && package.cargoArtifacts.cargoDeps == package.cargoDeps
     && package.passthru.cargoDeps == package.cargoDeps;
   roleArtifactFamilies = map (package: package.cargoArtifactContract.family) rolePackages;
@@ -82,7 +79,7 @@ let
         mkCargoPackage = capturePackage;
         mkCargoArtifacts = capturePackage;
         mkCargoDummySource = _: "unused-dummy-source";
-        fetchCargoVendor = _: "unused-vendor";
+        aosWorkspaceVendor = sharedVendor;
         mkDerivation = capturePackage;
         coreutils = "unused-coreutils";
         git = capturePackage {
@@ -135,7 +132,7 @@ let
       lib.hasInfix "-p aos-sandbox-services" command
       || lib.hasInfix "-p aos-sandbox-publisher" command)
     artifactTests;
-    coreArtifactTests = lib.filter (lib.hasInfix "-p aos-sandbox -p aos-sandbox-broker-session-security") artifactTests;
+    coreArtifactTests = lib.filter (lib.hasInfix "-p aos-sandbox-controller-domain -p aos-sandbox-broker-session-security") artifactTests;
   in
     # Logged build executables are installed: test targets must stay in the
     # artifact producer and independent check selections, never this list.
@@ -159,23 +156,24 @@ let
     && signerTestsRetained "policy-key-pin" "aos-sandbox-policy" package.cargoTestFlagSets
     && signerTestsRetained "cache-signer" "aos-sandbox-cache-signer" package.cargoTestFlagSets
     && signerTestsRetained "source-signer" "aos-sandbox-source-signer" package.cargoTestFlagSets
-    && lib.any (lib.hasInfix "-p aos-sandbox-services -p aos-sandbox -p aos-sandbox-broker-session-security") package.cargoTestFlagSets
+    && lib.any (lib.hasInfix "-p aos-sandbox-services -p aos-sandbox-controller-domain -p aos-sandbox-broker-session-security") package.cargoTestFlagSets
     && package.doCheck
     && package.cargoNextest;
 
   # Capture the actual package arguments without building their dependencies.
   aosPackage = darwin: let
     packageFunction = import ../../pkgs/tools/aos/aos.nix;
-    dependencies = lib.genAttrs (builtins.attrNames (builtins.functionArgs packageFunction)) (
-      name: "unused-${name}"
-    );
+    formals = builtins.functionArgs packageFunction;
+    requiredNames = lib.filter (name: !formals.${name}) (builtins.attrNames formals);
+    dependencies = lib.genAttrs requiredNames (name: "unused-${name}");
   in
-    packageFunction (dependencies // {
+    packageFunction (builtins.intersectAttrs formals (dependencies // {
       inherit lib;
-      mkCargoPackage = capturePackage;
+      mkAosCargoPackage = capturePackage;
+      callPackage = _: _: {packageRuntime = "/test/aos-package-runtime";};
       mkCargoArtifacts = capturePackage;
       mkCargoDummySource = _: "unused-dummy-source";
-      fetchCargoVendor = _: "unused-vendor";
+      aosWorkspaceVendor = sharedVendor;
       mkDerivation =
         if darwin
         then _: throw "Darwin test environment must not construct a Linux launcher"
@@ -188,13 +186,13 @@ let
         };
       };
       buildPackages = dependencies;
-    });
+    }));
   networkPackage = import ../../pkgs/tools/aos-netd.nix {
     inherit lib;
     mkCargoPackage = capturePackage;
     mkCargoArtifacts = capturePackage;
     mkCargoDummySource = _: "unused-dummy-source";
-    fetchCargoVendor = _: "unused-vendor";
+    aosWorkspaceVendor = sharedVendor;
     mkDerivation = capturePackage;
     protobuf = "unused-protobuf";
     stdenv = {
@@ -255,13 +253,13 @@ in
   assert lib.length (lib.unique roleArtifactFamilies) == 12;
   assert controllerSelectionsRetained false;
   assert controllerSelectionsRetained true;
-  assert launcher.src == ../../crates/aos-sandbox-network/tests/no_setid_exec.c;
+  assert launcher.src == ../../crates/sandbox/host/aos-sandbox-network/tests/no_setid_exec.c;
   assert launcher.buildDeps == [] && launcher.runtimeDeps == [];
   assert lib.hasInfix ''$CC -O2 -Wall -Wextra -Werror "$src" -o no-setid-exec'' (builtins.head launcher.phases).script;
   assert lib.all launcherEnvironmentRetained nativeLauncherEnvironments;
   assert lib.any (lib.hasInfix "-p aos-sandbox-network") nativeAos.passthru.testTargets.cargoBuildCommands;
   assert lib.any (lib.hasInfix "-p aos-sandbox-cache-signer") nativeAos.passthru.testTargets.cargoBuildCommands;
-  assert lib.any (lib.hasInfix "-p aos-sandbox-guest-root-tree") nativeAos.passthru.testTargets.cargoBuildCommands;
+  assert lib.any (lib.hasInfix "-p aos-sandbox-guest-root-measurement") nativeAos.passthru.testTargets.cargoBuildCommands;
   assert lib.any (lib.hasInfix "-p aos-sandbox-guest-root-realization") nativeAos.passthru.testTargets.cargoBuildCommands;
   assert lib.any (lib.hasInfix "-p aos-sandbox-source-signer") nativeAos.passthru.testTargets.cargoBuildCommands;
   assert lib.any (lib.hasInfix "-p aos-sandbox-policy") nativeAos.passthru.testTargets.cargoBuildCommands;

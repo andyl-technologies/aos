@@ -10,6 +10,30 @@
   version = "0.14";
 in
   mkDerivation {
+    # The Unix daemon library uses the glibc and Darwin UNIX03 interfaces.
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
+
     pname = "libdaemon";
     inherit version;
 

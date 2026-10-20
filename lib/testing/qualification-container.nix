@@ -374,7 +374,7 @@ in
 
       case_json=$(${pkgs.jq}/bin/jq -cS '.qualification_case' "$request")
       case_digest=$(
-        printf '%s\000%s' 'aos.release.qualification-case/v1' "$case_json" \
+        printf '%s\000%s' 'aos.release.qualification-case/v2' "$case_json" \
           | ${pkgs.coreutils}/bin/sha256sum \
           | ${pkgs.gawk}/bin/awk '{print "sha256:" $1}'
       )

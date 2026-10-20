@@ -5,6 +5,8 @@
   pkgs,
   ...
 }: let
+  credentialNameType = import ./_credential-name-type.nix {inherit lib;};
+
   cfg = config.aos.sandbox.networkBroker;
   loaderEnvironment = import ./_network-loader-environment.nix {inherit lib;};
   immutableStoreView = import ./_network-immutable-store-view.nix {inherit lib;};
@@ -105,26 +107,26 @@ in {
     credentials =
       lib.mapAttrs (name: credentialFile:
         lib.mkOption {
-          type = lib.types.nullOr lib.serviceTypes.credentialName;
+          type = lib.types.nullOr credentialNameType;
           default = null;
           description = "External system credential loaded as ${credentialFile}; its bytes never enter the Nix store.";
         })
       authorityCredentialFields
       // lib.mapAttrs (name: credentialFile:
         lib.mkOption {
-          type = lib.types.nullOr lib.serviceTypes.credentialName;
+          type = lib.types.nullOr credentialNameType;
           default = null;
           description = "External protected Network inspector ${name} credential loaded as ${credentialFile}; its bytes never enter the Nix store.";
         })
       inspectorDeploymentCredentialFields
       // {
         inspectorLaunchPolicyV3 = lib.mkOption {
-          type = lib.types.nullOr lib.serviceTypes.credentialName;
+          type = lib.types.nullOr credentialNameType;
           default = null;
           description = "Signed V3 Network inspector and lifecycle-worker argv and unit-fragment policy bound to the V2 contract.";
         };
         lifecycleWorkerLaunchDigest = lib.mkOption {
-          type = lib.types.nullOr lib.serviceTypes.credentialName;
+          type = lib.types.nullOr credentialNameType;
           default = null;
           description = "Protected lifecycle-worker launch digest shared with the Network inspector; it is distinct from the signed V2 inspector V1 contract digest.";
         };

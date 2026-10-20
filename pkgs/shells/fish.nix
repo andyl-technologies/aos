@@ -1,9 +1,9 @@
 ##! fish — User-friendly interactive shell
 {
+  lib,
   mkDerivation,
   fetchurl,
   fetchCargoDeps,
-  lib,
   stdenv,
   buildPackages,
   rust,
@@ -49,8 +49,65 @@
   };
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "fish";
-    inherit version src;
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Fish prints the selected field.";
+        "files" = {};
+        "input" = "A Fish program splitting a colon-delimited string.";
+        "operation" = "Evaluate the program and select the second field.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/fish"
+              "-c"
+              "string split : alpha:beta:gamma | string match beta"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "beta\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Fish rejects the syntax error with status 127.";
+        "files" = {};
+        "input" = "A Fish program with an unterminated command substitution.";
+        "operation" = "Parse the malformed Fish program without executing it.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/fish"
+              "-n"
+              "-c"
+              "echo (string upper broken"
+            ];
+            "exit_code" = 127;
+            "observes_rejection" = true;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
+    # Fish removes deprecated interfaces within a major release series.
+    # https://fishshell.com/docs/current/relnotes.html
+    version = "=${version}";
+    inherit src;
 
     buildDeps =
       [

@@ -15,6 +15,25 @@
   };
 in
   mkDerivation {
+    # The native translator links the GNU/Linux LLVM and SPIR-V libraries.
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
+
     pname = "spirv-llvm-translator";
     inherit version;
 

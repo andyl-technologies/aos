@@ -342,7 +342,7 @@ writes and can be recovered after transport loss. The floor must bind both
 exact protected heads and reject rollback or uncertain release on cold replay
 before FloorSeal, failed-Create CAS, or ACK can be enabled.
 
-- `crates/aos-sandbox-broker-session-security/src/controller_service.rs` now
+- `crates/sandbox/security/aos-sandbox-broker-session-security/src/controller_service.rs` now
   constructs `NodeController<ProductionOperationCompilerV1,
   ProductionEffectExecutor>` with one protected journal writer. Public admission
   carries live TLS peer evidence into the compiler, binds principal/project
@@ -5029,7 +5029,7 @@ deadline behavior. `SBX-STOR-01` remains open, and no completion is claimed for
 
 The local commit `1913849fe` adds a coordinator-owned authenticated physical
 catalog provider in
-[`catalog_transition.rs`](../../../crates/aos-sandbox-storage/src/catalog_transition.rs).
+[`catalog_transition.rs`](../../../crates/sandbox/storage/aos-sandbox-storage/src/catalog_transition.rs).
 It bootstraps only from an explicit complete protected snapshot; it does not
 infer authority from ambient ZFS discovery. Before a mutation can cross into
 Ambiguous state, the provider records the worst-case transition bound and runs
@@ -5044,7 +5044,7 @@ recomputes its resulting state. Every transition must join the authenticated
 request, mutation, catalog generation, and physical object GUID; semantic
 conflicts and branches fail closed even when their individual records are
 authenticated. The provider and
-[`state.rs`](../../../crates/aos-sandbox-storage/src/state.rs) accept only the
+[`state.rs`](../../../crates/sandbox/storage/aos-sandbox-storage/src/state.rs) accept only the
 sole v1 catalog-bearing operation record and reject unknown version markers.
 They poison cached authority after a commit failure so a later request cannot
 continue from a possibly divergent in-memory view.
@@ -6782,7 +6782,7 @@ observation rather than a globally atomic process snapshot. A raw-response unit
 test covers all eight mappings and omission of the credentials mask bit.
 
 Qualification used a clean archive of exact parent `d79866de2` plus only
-`crates/aos-sandbox-linux/src/pidfd.rs`; its final SHA-256 was
+`crates/sandbox/host/aos-sandbox-linux/src/pidfd.rs`; its final SHA-256 was
 `d9c22dda5258c15f342e42a482c60222b3c8f3f5f4ea859d38cf55ca829e2f39`.
 The live shared file differed from that frozen source only by a pre-existing,
 separately owned 19-line `terminate` method. The pinned realized AOS development
@@ -6870,7 +6870,7 @@ bounded exact-test subprocesses so parallel descriptor allocation cannot reuse
 a just-closed integer before its postcondition is inspected.
 
 Qualification used a clean archive of exact parent `81ea8e1bb` plus only
-`crates/aos-sandbox-linux/src/lib.rs`, `uapi.rs`, and the new
+`crates/sandbox/host/aos-sandbox-linux/src/lib.rs`, `uapi.rs`, and the new
 `unix_stream.rs`. Their SHA-256 digests were respectively
 `992fa8004aad3165d2090dde043fd035d0d3e658caa8a429b801a055065625c5`,
 `7c4d5827e7cddb02fa499ce8ceba33668dd9aa3c101c25c0b99b274ad7c7d60a`,
@@ -8021,7 +8021,7 @@ increment. No task checkbox is added or closed here.
 
 Signed commit `c75d91f324040577b1ad44f4fb929c796a450c98`, subject
 `Repair missing initial workspace pins`, changes exactly eleven paths under
-`crates/aos-sandbox-storage/src` with 4,037 insertions and 346 deletions:
+`crates/sandbox/storage/aos-sandbox-storage/src` with 4,037 insertions and 346 deletions:
 `broker.rs`,
 `broker/tests/missing_initial_runtime_tests.rs`,
 `broker/tests/missing_initial_tests.rs`, `helper.rs`,

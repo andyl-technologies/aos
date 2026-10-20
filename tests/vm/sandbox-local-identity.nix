@@ -5,7 +5,7 @@
   pkgs,
 }: let
   packages = [
-    "aos-sandbox"
+    "aos-sandbox-controller-domain"
     "aos-sandbox-broker-session-security"
     "aos-sandbox-controller-runtime"
     "aos-sandbox-services"
@@ -45,8 +45,14 @@
     postBuild = ''
       mkdir kernel-fixtures
       for crate in aos_sandbox aos_sandbox_broker_session_security aos_sandbox_controller_runtime aos_sandbox_services aos_sandbox_linux aos_sandbox_host aos_sandbox_mount aos_sandbox_network; do
+        # Keep the guest fixture basename stable across Cargo package moves.
+        artifact_prefix=$crate
+        if [ "$crate" = aos_sandbox ]; then
+          artifact_prefix=aos_sandbox_controller_domain
+        fi
+
         count=0
-        for candidate in target/debug/deps/"$crate"-*; do
+        for candidate in target/debug/deps/"$artifact_prefix"-*; do
           if [ -f "$candidate" ] && [ -x "$candidate" ]; then
             install -m 0755 "$candidate" "kernel-fixtures/$crate"
             count=$((count + 1))

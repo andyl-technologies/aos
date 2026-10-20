@@ -114,14 +114,21 @@
         }
         .build
         .defaultContainer;
-      oci = import ./lib/build/oci {
-        inherit (coordinator) lib;
-        inherit (coordinator.pkgs) mkDerivation coreutils findutils gzip jq tar;
-      };
+      releaseTargets = [
+        {
+          system = "aarch64-linux";
+          architecture = "arm64";
+        }
+        {
+          system = "x86_64-linux";
+          architecture = "amd64";
+        }
+      ];
+      qualificationCheck = args:
+        import ./tests/containers/production-multi-platform.nix args;
     in
-      import ./lib/containers/multi-platform.nix {
-        inherit (coordinator) lib pkgs;
-        inherit oci platformBuilds deferredPlatforms;
+      coordinator.pkgs.mkOciMultiPlatformContainer {
+        inherit platformBuilds releaseTargets qualificationCheck deferredPlatforms;
         name = "aos";
       };
 
@@ -351,22 +358,16 @@
         devLauncher = pkgs.writeShellScriptBin "aos-dev" ''
           exec ${pkgs.bash}/bin/bash "''${AOS_DEV_ROOT:?Enter the AOS dev shell first}/tools/dev/aos-dev" "$@"
         '';
-        packages = [
+        configurationLowerCargoEnv = import ./pkgs/boot/_aos-configuration-lower/cargo-env.nix {
+          inherit (pkgs) erofs-utils util-linux;
+          packageRuntime = pkgs.aos.packageRuntime;
+        };
+        cargoBuildPackages = [
           registryCargo
-          devLauncher
-          aosCli
-          aosCli.apm
-          aosCli.apr
-          pkgs.bash
-          pkgs.nix
-          pkgs.alejandra
-          pkgs.acl
-          pkgs.just
           pkgs.rust
           pkgs.rust.dev
-          pkgs.cargo-nextest
-          pkgs.cargo-hakari
           pkgs.bootstrapTools
+          pkgs.coreutils
           pkgs.perl
           pkgs.pkg-config
           pkgs.aos-fuse-transport
@@ -374,10 +375,11 @@
           pkgs.openssl
           pkgs.sqlite
           pkgs.protobuf
-          # Runtime tools the aos/apm/apr binaries shell out to by bare name
-          # (see runtimeTools in pkgs/tools/aos/aos.nix), so impure cargo runs
-          # in the dev shell resolve the same AOS-built tools the hermetic build
-          # uses instead of falling back to whatever is installed on the host.
+        ];
+        cargoTestPackages = [
+          pkgs.cargo-nextest
+          pkgs.cargo-hakari
+          # The full dev shell supplies AOS-built tools for integration tests.
           pkgs.git
           pkgs.gnupg
           pkgs.openssh
@@ -387,8 +389,7 @@
           pkgs.zstd
           pkgs.which
         ];
-        binPath = builtins.concatStringsSep ":" (map (p: "${p}/bin") packages);
-        # Native cargo rustflags env var for the dev-shell host. Used to
+        # Per-target cargo rustflags env var for the dev-shell host. Used to
         # inject an OpenSSL rpath for native `cargo build` (see shellHook)
         # without disturbing the wasm32 rustflags in crates/.cargo/config.toml:
         # a plain RUSTFLAGS would replace those and break the Workers build.
@@ -396,55 +397,82 @@
           "x86_64-linux" = "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS";
           "aarch64-linux" = "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS";
         };
-      in {
-        default = builtins.derivation {
-          name = "aos-dev";
-          outputs = ["out"];
-          system = coordinatorSystem;
-          builder = "${pkgs.bash}/bin/bash";
-          args = [
-            "-c"
-            "echo 'Use nix develop, not nix build' >&2; ${pkgs.coreutils}/bin/mkdir -p $out"
-          ];
-          shellHook =
-            (
-              if binPath != ""
-              then ''
-                export PATH="${binPath}''${PATH:+:$PATH}"
-              ''
-              else ""
-            )
-            + ''
-              # Prefer the live checkout so edits to the script are immediately
-              # visible. Explicit flake paths outside a checkout use the snapshot;
-              # AOS_DEV_ROOT can select a live checkout in that case.
-              if [ -z "''${AOS_DEV_ROOT:-}" ]; then
-                aos_dev_checkout=$(${pkgs.git}/bin/git rev-parse --show-toplevel 2>/dev/null || true)
-                if [ -f "$aos_dev_checkout/tools/dev/aos-dev" ]; then
-                  export AOS_DEV_ROOT="$aos_dev_checkout"
-                else
-                  export AOS_DEV_ROOT="${./.}"
+        mkDevShell = name: packages: let
+          livePackageRuntime = name == "aos-cargo-dev";
+          requestedCheckout = builtins.getEnv "AOS_DEV_ROOT";
+          checkoutRoot =
+            if requestedCheckout != ""
+            then requestedCheckout
+            else ./.;
+          binPath = builtins.concatStringsSep ":" (map (p: "${p}/bin") ([devLauncher pkgs.bash pkgs.nix pkgs.alejandra pkgs.acl] ++ packages));
+        in
+          builtins.derivation {
+            inherit (configurationLowerCargoEnv) AOS_MKFS_EROFS AOS_FSCK_EROFS AOS_MOUNT AOS_UMOUNT;
+            AOS_PACKAGE_RUNTIME =
+              if livePackageRuntime
+              then ""
+              else configurationLowerCargoEnv.AOS_PACKAGE_RUNTIME;
+            inherit name;
+            system = coordinatorSystem;
+            outputs = ["out"];
+            builder = "${pkgs.bash}/bin/bash";
+            args = [
+              "-c"
+              "echo 'Use nix develop, not nix build' >&2; ${pkgs.coreutils}/bin/mkdir -p $out"
+            ];
+            shellHook =
+              (
+                if binPath != ""
+                then ''
+                  export PATH="${binPath}''${PATH:+:$PATH}"
+                ''
+                else ""
+              )
+              + ''
+                # Prefer the live checkout so edits to the script are immediately
+                # visible. Explicit flake paths outside a checkout use the snapshot;
+                # AOS_DEV_ROOT can select a live checkout in that case.
+                if [ -z "''${AOS_DEV_ROOT:-}" ]; then
+                  aos_dev_checkout=$(${pkgs.git}/bin/git rev-parse --show-toplevel 2>/dev/null || true)
+                  if [ -f "$aos_dev_checkout/tools/dev/aos-dev" ]; then
+                    export AOS_DEV_ROOT="$aos_dev_checkout"
+                  else
+                    export AOS_DEV_ROOT="${checkoutRoot}"
+                  fi
+                  unset aos_dev_checkout
                 fi
-                unset aos_dev_checkout
-              fi
-              export NIX_CONFIG="''${NIX_CONFIG:+$NIX_CONFIG
-              }${devNixConfig.text}"
-              export RUST_SRC_PATH="${pkgs.rust.dev}/lib/rustlib/src/rust/library"
-              export OPENSSL_DIR="${pkgs.openssl}"
-              export OPENSSL_NO_VENDOR=1
-              export AOS_METHOD46_TPM_HELPER="${pkgs.aos-method46-tpm-helper}/libexec/aos-method46-tpm-helper"
-              export AOS_METHOD46_TPM_PID1="${pkgs.systemd}/lib/systemd/systemd"
-              export LIBSQLITE3_SYS_USE_PKG_CONFIG=1
-              export PKG_CONFIG_PATH="${pkgs.aos-fuse-transport}/lib/pkgconfig:${pkgs.sqlite}/lib/pkgconfig''${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
-              # OPENSSL_DIR above only lets `openssl-sys` *link* against the AOS
-              # OpenSSL and pkg-config above only let native crates link against
-              # the AOS libraries; the resulting binary still records SONAMEs.
-              # Bake all three library directories into native cargo binaries so
-              # they run directly without an LD_LIBRARY_PATH that would poison
-              # the `nix` subprocesses they launch.
-              export ${cargoHostRustflagsVar}="-C link-arg=-Wl,-rpath,${pkgs.openssl}/lib -C link-arg=-Wl,-rpath,${pkgs.sqlite}/lib -C link-arg=-Wl,-rpath,${pkgs.aos-fuse-transport}/lib"
-            '';
-        };
+                ${aos.lib.optionalString livePackageRuntime ''
+                  # Cargo-first development uses the local binary built by the caller.
+                  export AOS_PACKAGE_RUNTIME="$(${pkgs.coreutils}/bin/realpath -m -- "''${CARGO_TARGET_DIR:-$AOS_DEV_ROOT/crates/target}/debug/aos-package-runtime")"
+                ''}
+                export NIX_CONFIG="''${NIX_CONFIG:+$NIX_CONFIG
+                }${devNixConfig.text}"
+                export RUST_SRC_PATH="${pkgs.rust.dev}/lib/rustlib/src/rust/library"
+                export OPENSSL_DIR="${pkgs.openssl}"
+                export OPENSSL_NO_VENDOR=1
+                export AOS_METHOD46_TPM_HELPER="${pkgs.aos-method46-tpm-helper}/libexec/aos-method46-tpm-helper"
+                export AOS_METHOD46_TPM_PID1="${pkgs.systemd}/lib/systemd/systemd"
+                export LIBSQLITE3_SYS_USE_PKG_CONFIG=1
+                export PKG_CONFIG_PATH="${pkgs.aos-fuse-transport}/lib/pkgconfig:${pkgs.sqlite}/lib/pkgconfig''${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+                # OPENSSL_DIR above only lets `openssl-sys` *link* against the AOS
+                # OpenSSL and pkg-config above only let native crates link against
+                # the AOS libraries; the resulting binary still records SONAMEs.
+                # Bake all three library directories into native cargo binaries so
+                # they run directly without an LD_LIBRARY_PATH that would poison
+                # the `nix` subprocesses they launch.
+                export ${cargoHostRustflagsVar}="-C link-arg=-Wl,-rpath,${pkgs.openssl}/lib -C link-arg=-Wl,-rpath,${pkgs.sqlite}/lib -C link-arg=-Wl,-rpath,${pkgs.aos-fuse-transport}/lib"
+              '';
+          };
+      in {
+        default = mkDevShell "aos-dev" ([
+            aosCli
+            aosCli.apm
+            aosCli.apr
+            pkgs.just
+          ]
+          ++ cargoBuildPackages
+          ++ cargoTestPackages);
+        cargo = mkDevShell "aos-cargo-dev" cargoBuildPackages;
 
         # The operator shell for canonical releases: only the installed
         # release tooling closure, whose wrappers export AOS_RELEASE_TOOLING
@@ -475,14 +503,19 @@
         };
         crossChecks = let
           coordinator = aosFor coordinatorSystem;
-        in {
-          build-cross-platform-foundation = coordinator.checks.build.cross-platform-foundation;
-          build-linux-cross-llvm = coordinator.checks.build.linux-cross-llvm;
-          build-linux-cross-runtime = coordinator.checks.build.linux-cross-runtime;
-          build-linux-cross-smoke = coordinator.checks.build.linux-cross-smoke;
-          build-package-platform-support = coordinator.checks.build.package-platform-support;
-          container-multi-platform = production.check;
-        };
+        in
+          {
+            build-cross-platform-foundation = coordinator.checks.build.cross-platform-foundation;
+            build-darwin-cross-smoke = coordinator.checks.build.darwin-cross-smoke;
+            build-darwin-interpreters = coordinator.checks.build.darwin-interpreters;
+            build-darwin-language-toolchains = coordinator.checks.build.darwin-language-toolchains;
+            build-linux-cross-llvm = coordinator.checks.build.linux-cross-llvm;
+            build-linux-cross-runtime = coordinator.checks.build.linux-cross-runtime;
+            build-linux-cross-smoke = coordinator.checks.build.linux-cross-smoke;
+            build-package-platform-support = coordinator.checks.build.package-platform-support;
+            container-multi-platform = production.check;
+          }
+          // flattenAttrs "build-darwin-package-matrix" coordinator.checks.build.darwin-package-matrix;
       in
         if system != coordinatorSystem
         then crossChecks
@@ -516,6 +549,7 @@
             rust-crucible-qemu-plugin = aos.checks.rust.crucible-qemu-plugin;
             rust-crucible-guest = aos.checks.rust.crucible-guest;
           }
+          // flattenAttrs "eval" (builtins.removeAttrs aos.checks.eval-suites ["core"])
           // flattenAttrs "build" aos.checks.build
           // flattenAttrs "container" aos.checks.container
           // flattenAttrs "qualification" (builtins.removeAttrs aos.checks.qualification ["inventory"])

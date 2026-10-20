@@ -1,0 +1,33 @@
+[package]
+name = "aos-sandbox-filesystem-fuse"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[features]
+default = []
+test-fixtures = ["aos-sandbox-filesystem-view/test-fixtures"]
+
+[dependencies]
+aos-sandbox-filesystem-view.workspace = true
+aos-sandbox-model.workspace = true
+aos-sandbox-controller-domain.workspace = true
+aos-sandbox-linux.workspace = true
+aos-sandbox-protocol.workspace = true
+aos-sandbox-broker-session-protocol.workspace = true
+aos-sandbox-broker-session-security.workspace = true
+ed25519-dalek.workspace = true
+libc.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+
+[build-dependencies]
+pkg-config = "0.3"
+
+[dev-dependencies]
+aos-sandbox-filesystem-view = { workspace = true, features = ["test-fixtures"] }
+aos-sandbox-controller-domain = { workspace = true, features = ["test-fixtures"] }
+tempfile.workspace = true
+
+[lints]
+workspace = true

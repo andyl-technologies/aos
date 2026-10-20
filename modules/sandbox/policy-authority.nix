@@ -5,6 +5,8 @@
   pkgs,
   ...
 }: let
+  credentialNameType = import ./_credential-name-type.nix {inherit lib;};
+
   cfg = config.aos.sandbox.policyAuthority;
   resourcePolicy = config.aos.sandbox.resourceBank.policy;
   rootReceiving = if resourcePolicy == null then null else resourcePolicy.rootReceiving;
@@ -45,7 +47,7 @@
   );
   confined = config.aos.security.selinux.enable && config.aos.security.selinux.bootMode == "immutable-stage0";
   normalUnit = config.systemd.services.aos-sandbox-policy-authorityd;
-  systemdLib = import ../../lib/modules/systemd/lib.nix {inherit lib pkgs;};
+  systemdLib = import ../../pkgs/system/_systemd-abilities/platform/render.nix {inherit lib pkgs;};
   # Replace only the explicit profile self-reference. All other final selected
   # service bytes (including global environment and external overrides) remain
   # committed without a profile→unit→profile derivation cycle.
@@ -72,7 +74,7 @@
     renderedNormalUnit.text;
   normalRootProfile = pkgs.aosNormalRootStartupProfileWith {
     aos-sandboxd = cfg.package;
-    systemd = config.systemd.package;
+    systemd = config.aos.manager.selected.package;
     aos-selinux-production-policy = config.aos.security.selinux._productionPolicy;
     aos-selinux-kernel-policy-readback = config.aos.security.selinux._canonicalReadback;
     unitContract = materializedNormalUnit;
@@ -355,7 +357,7 @@ in {
 
     credentials = lib.mapAttrs (option: _:
       lib.mkOption {
-        type = lib.types.nullOr lib.serviceTypes.credentialName;
+        type = lib.types.nullOr credentialNameType;
         default = null;
         description =
           if option == "deploymentPublicKey"

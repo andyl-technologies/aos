@@ -112,7 +112,63 @@
   '';
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      target = [];
+      role = "build-input";
+    };
     pname = "crucible-fixtures";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The root image matches its manifest digest and the entropy seed is exactly 32 bytes.";
+        "files" = {};
+        "input" = "The deterministic Crucible fixture manifest, entropy seed, and root image.";
+        "operation" = "Parse the manifest and verify its declared image digest and fixed seed size.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import hashlib, pathlib, tomllib\nroot = pathlib.Path(\"@out@/share/crucible/fixtures\")\nmanifest = tomllib.loads((root / \"manifest.toml\").read_text())\nimage = pathlib.Path(\"@out@\") / manifest[\"fixture\"][\"root_image\"]\ndigest = hashlib.sha256(image.read_bytes()).hexdigest()\nassert digest == manifest[\"fixture\"][\"root_image_sha256\"]\nseed = pathlib.Path(\"@out@\") / manifest[\"entropy\"][\"seed_artifact\"]\nassert len(seed.read_bytes()) == 32\nprint(\"crucible-fixtures data passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "crucible-fixtures data passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The package rejects the absent mutable overlay artifact.";
+        "files" = {};
+        "input" = "A request for a mutable copy-on-write overlay inside the immutable fixture package.";
+        "operation" = "Resolve the runtime overlay path beneath the fixture tree.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import pathlib, sys\nif pathlib.Path(\"@out@/share/crucible/fixtures/root/aos-minimal-overlay.qcow2\").exists():\n    raise SystemExit(2)\nsys.stderr.write(\"crucible-fixtures rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "crucible-fixtures rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
     src = null;
 

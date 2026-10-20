@@ -5,6 +5,8 @@
   pkgs,
   ...
 }: let
+  credentialNameType = import ./_credential-name-type.nix {inherit lib;};
+
   cfg = config.aos.sandbox.runtimeDeploymentPublisher;
   storage = config.aos.sandbox.storageBroker;
   host = config.aos.sandbox.hostBroker;
@@ -17,7 +19,7 @@
   readinessDirectory = "/var/lib/aos/sandbox/runtime-deployment/readiness";
   controller = config.aos.sandbox.controller;
   selinux = config.aos.security.selinux;
-  systemdLib = import ../../lib/modules/systemd/lib.nix {inherit lib pkgs;};
+  systemdLib = import ../../pkgs/system/_systemd-abilities/platform/render.nix {inherit lib pkgs;};
   publicRoles = [
     "runtime-deployment-genesis-v1"
     "runtime-deployment-provisioner-pin-v1"
@@ -29,7 +31,7 @@
     host.credentials.phase0ProbeSigningSeed
   ];
   publisher = pkgs.callPackage ../../pkgs/tools/aos-sandbox-runtime-publisher.nix {
-    systemd = config.systemd.package;
+    systemd = config.aos.manager.selected.package;
     kernelCloneLayout = config.system.build.kernel.dev;
     bootPreparation = cfg.bootPreparation;
   };
@@ -69,14 +71,14 @@
     bootPreparation = cfg.bootPreparation;
     hostd = host.package;
     storage = storage.package;
-    systemd = config.systemd.package;
+    systemd = config.aos.manager.selected.package;
     policy = selinux._productionPolicy;
     canonicalPolicy = selinux._canonicalReadback;
     publisherUnit = render normalizedPublisher;
     storageUnit = render config.systemd.services.aos-storaged;
   };
   externalCredential = description: lib.mkOption {
-    type = lib.types.nullOr lib.serviceTypes.credentialName;
+    type = lib.types.nullOr credentialNameType;
     default = null;
     inherit description;
   };

@@ -5,6 +5,8 @@
   pkgs,
   ...
 }: let
+  credentialNameType = import ./_credential-name-type.nix {inherit lib;};
+
   cfg = config.aos.sandbox.gitGatewayTransport;
   inspection = config.aos.sandbox.controllerService.gitReadInspection.enable;
   controller = config.aos.sandbox.controller;
@@ -74,7 +76,7 @@ in {
     };
 
     credentials = lib.genAttrs (builtins.attrNames credentialNames) (_: lib.mkOption {
-      type = lib.types.nullOr lib.serviceTypes.credentialName;
+      type = lib.types.nullOr credentialNameType;
       default = null;
       description = "Independently provisioned TLS credential, not inherited from Controller configuration.";
     });

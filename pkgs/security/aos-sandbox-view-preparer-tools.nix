@@ -6,6 +6,23 @@
   util-linux,
 }:
 mkDerivation {
+  platformSupport = {
+    build = [
+      {
+        abi = ["gnu"];
+        os = ["linux"];
+      }
+    ];
+    host = [
+      {
+        abi = ["gnu"];
+        cpu = ["x86_64" "aarch64"];
+        os = ["linux"];
+      }
+    ];
+    target = [];
+    role = "public-package";
+  };
   pname = "aos-sandbox-view-preparer-tools";
   version = "1.0.0";
   src = null;

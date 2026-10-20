@@ -10,7 +10,7 @@
 
   advancedDoc = builtins.readFile ../../docs/rfcs/0010-crucible/22-advanced-features.md;
   temporalGraph = import ./_crucible-model-source.nix {inherit lib;};
-  forkReplayGateTest = builtins.readFile ../../crates/crucible/tests/gate_fork_replay_oracle.rs;
+  forkReplayGateTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/gate_fork_replay_oracle.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -71,7 +71,7 @@
         needle = "Completed by `checks.crucible.phase6.gates.replayOracle`";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" temporalGraph [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" temporalGraph [
       {
         label = "fork API";
         needle = "pub fn fork<I>";
@@ -93,7 +93,7 @@
         needle = "graph.replay_checkpoint(config, snapshot)?;";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/gate_fork_replay_oracle.rs" forkReplayGateTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/gate_fork_replay_oracle.rs" forkReplayGateTest [
       {
         label = "base and branch validation test";
         needle = "gate_fork_replay_oracle_validates_base_and_materialized_branch";
@@ -143,7 +143,7 @@
         needle = "thin replay after cache eviction should realize the fork branch";
       }
     ]
-    ++ forbiddenFailuresFor "crates/crucible/tests/gate_fork_replay_oracle.rs" forkReplayGateTest [
+    ++ forbiddenFailuresFor "crates/crucible/engine/crucible-engine/tests/gate_fork_replay_oracle.rs" forkReplayGateTest [
       {
         label = "ignored red placeholder";
         needle = "#[ignore";
@@ -264,7 +264,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-fork-replay-oracle-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible \
+              -p crucible-engine \
               --test gate_fork_replay_oracle \
               -- --test-threads=1
           '';
@@ -280,7 +280,7 @@ in
             tasks=${taskList}
             gate=gate:replay-oracle
             fork=base-validated,branch-materialized,divergence-localized
-            rust_test=crucible::gate_fork_replay_oracle
+            rust_test=crucible_engine::gate_fork_replay_oracle
             RESULT
           '';
         }

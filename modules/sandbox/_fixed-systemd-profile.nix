@@ -5,4 +5,6 @@
 }:
 # mkSystem binds this package set's sole Systemd to the actual boot kernel.
 # The paid native kernel-notes comparison remains independently mandatory.
-config.systemd.package == pkgs.systemd
+config.aos.manager.selected != null
+&& config.aos.manager.selected.name == "systemd"
+&& config.aos.manager.selected.package == toString pkgs.systemd

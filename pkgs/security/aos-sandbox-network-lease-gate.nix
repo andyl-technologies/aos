@@ -18,6 +18,23 @@
   abiHeader = ./aos-sandbox-network-lease-gate.h;
 in
   mkDerivation {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
     pname = "aos-sandbox-network-lease-gate";
     version = "1";
     src = null;

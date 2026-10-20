@@ -33,6 +33,23 @@
 in
   assert nix.version == "2.24.12";
     mkDerivation {
+      platformSupport = {
+        build = [
+          {
+            abi = ["gnu"];
+            os = ["linux"];
+          }
+        ];
+        host = [
+          {
+            abi = ["gnu"];
+            cpu = ["x86_64" "aarch64"];
+            os = ["linux"];
+          }
+        ];
+        target = [];
+        role = "build-input";
+      };
       pname = "aos-nix-generation-seed-builder";
       version = "1";
       src = ./aos-nix-generation-seed-builder;

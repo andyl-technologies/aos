@@ -28,10 +28,10 @@ remain separate requirements.
 
 | Format | Bytes | Purpose and canonical owner |
 | --- | ---: | --- |
-| `AOSRSB11` | 3248 | Image policy with explicit recovery reserve R, recipient count K and invocation allowance A; [image codec](../../../crates/aos-sandbox-protocol/src/domain_ledger/resource_bank/codec.rs). |
-| `AOSRSE03` | 192 | Controller-only sealed delivery of the actual consumed ordinal and range commitment; [pair reader](../../../crates/aos-sandbox-broker/src/receiving/pair.rs). |
-| `AOSRRI03` | 840 | Current recipient and immutable committed-recipient history; [recipient codec and CAS](../../../crates/aos-sandbox-protocol/src/domain_ledger/resource_bank/recipient/range.rs). |
-| `AOSRCO02` | 184 | Actual PID1 Offer, Controller ACK and PID1 Confirm; [native launch consumer](../../../crates/aos-sandbox-broker/src/controller_receiving/bank_launch/launch.rs). |
+| `AOSRSB11` | 3248 | Image policy with explicit recovery reserve R, recipient count K and invocation allowance A; [image codec](../../../crates/sandbox/protocol/aos-sandbox-protocol/src/domain_ledger/resource_bank/codec.rs). |
+| `AOSRSE03` | 192 | Controller-only sealed delivery of the actual consumed ordinal and range commitment; [pair reader](../../../crates/sandbox/host/aos-sandbox-broker/src/receiving/pair.rs). |
+| `AOSRRI03` | 840 | Current recipient and immutable committed-recipient history; [recipient codec and CAS](../../../crates/sandbox/protocol/aos-sandbox-protocol/src/domain_ledger/resource_bank/recipient/range.rs). |
+| `AOSRCO02` | 184 | Actual PID1 Offer, Controller ACK and PID1 Confirm; [native launch consumer](../../../crates/sandbox/host/aos-sandbox-broker/src/controller_receiving/bank_launch/launch.rs). |
 
 The current Controller recovery-reserve route cuts over to V11 and refuses the
 old V10 reserve route before launch; canonical V10 and `AOSRSE02` decoders do

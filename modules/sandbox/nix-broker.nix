@@ -5,11 +5,13 @@
   pkgs,
   ...
 }: let
+  credentialNameType = import ./_credential-name-type.nix {inherit lib;};
+
   cfg = config.aos.sandbox.nixBroker;
   controller = config.aos.sandbox.controller;
   controllerService = config.aos.sandbox.controllerService;
   selinux = config.aos.security.selinux;
-  systemdLib = import ../../lib/modules/systemd/lib.nix {inherit lib pkgs;};
+  systemdLib = import ../../pkgs/system/_systemd-abilities/platform/render.nix {inherit lib pkgs;};
   selectedPackage = if cfg.enable then pkgs.aosNixOnlineControllerWith {
     domainIdHex = if cfg.domainIdHex == null
       then throw "online Resolve50 requires an explicit nonzero domain16"
@@ -31,7 +33,7 @@
     "mount-broker-revocation-scope"
   ];
   credential = description: lib.mkOption {
-    type = lib.types.nullOr lib.serviceTypes.credentialName;
+    type = lib.types.nullOr credentialNameType;
     default = null;
     inherit description;
   };
@@ -97,7 +99,7 @@
   profile = role: pkgs.aosNixStartupProfileWith {
     inherit role identities;
     aos-sandboxd = selectedPackage;
-    systemd = config.systemd.package;
+    systemd = config.aos.manager.selected.package;
     aos-selinux-production-policy = selinux._productionPolicy;
     aos-selinux-kernel-policy-readback = selinux._canonicalReadback;
     unitContract = normalizedUnit role;

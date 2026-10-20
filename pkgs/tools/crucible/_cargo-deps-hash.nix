@@ -1,4 +1,2 @@
-# Shared workspace vendor staging hash: Cargo.lock plus external source archives.
-# The complete lockfile is copied into staging, so local dependency edits also
-# require refreshing this recursive hash even when external pins are unchanged.
-"sha256-CG4tReHsR28XNn/RQ+5y3ZUTMhjKeUjEZ1wEWXbszs4="
+# Resolve provenance from the shared monorepo vendor rather than another pin.
+{cargoDeps}: cargoDeps.passthru.aos.fixedOutput.hash

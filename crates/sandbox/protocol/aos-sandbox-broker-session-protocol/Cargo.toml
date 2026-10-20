@@ -1,0 +1,32 @@
+[package]
+name = "aos-sandbox-broker-session-protocol"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[package.metadata.aos]
+test_source_inputs = [
+    "crates/sandbox/controller/aos-sandbox-controller-domain/src/controller.rs",
+    "crates/sandbox/controller/aos-sandbox-controller-domain/src/dispatch.rs",
+    "crates/sandbox/controller/aos-sandbox-controller-domain/src/mount_attempt/completion.rs",
+    "crates/sandbox/controller/aos-sandbox-controller-domain/src/mount_preparation.rs",
+    "crates/sandbox/controller/aos-sandbox-controller-domain/src/resource_inventory.rs",
+    "crates/sandbox/host/aos-sandbox-host/src/service.rs",
+    "crates/sandbox/host/aos-sandbox-mount/src/service.rs",
+    "crates/sandbox/host/aos-sandbox-network/src/service.rs",
+    "crates/sandbox/storage/aos-sandbox-storage/src/service.rs",
+]
+
+[dependencies]
+aos-sandbox-api.workspace = true
+aos-sandbox-model.workspace = true
+buffa.workspace = true
+ed25519-dalek.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+hex.workspace = true
+
+[lints]
+workspace = true

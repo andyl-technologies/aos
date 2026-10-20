@@ -5,7 +5,7 @@
   fetchurl,
   buildPackages,
   stdenv,
-  apr,
+  apache-portable-runtime,
   bazelNettyTcnativeClasses2061,
   version ? "2.0.61.Final",
 }: let
@@ -29,15 +29,15 @@
     import ./_bazel-netty-tcnative-native-2061.nix {
       mkDerivation = targetMkDerivation;
       stdenv = targetStdenv;
-      apr = targetApr;
+      apache-portable-runtime = targetApr;
       inherit fetchgit fetchurl buildPackages bazelNettyTcnativeClasses2061 version;
       bazelNettyBoringssl2061 = boringsslFor targetMkDerivation targetStdenv;
     };
 
-  nativeLinuxX64 = nativeFor mkDerivation stdenv apr;
-  nativeLinuxArm = nativeFor linuxArmPackages.pkgs.mkDerivation linuxArmPackages.stdenv linuxArmPackages.pkgs.apr;
-  nativeDarwinX64 = nativeFor darwinX64Packages.pkgs.mkDerivation darwinX64Packages.stdenv darwinX64Packages.pkgs.apr;
-  nativeDarwinArm = nativeFor darwinArmPackages.pkgs.mkDerivation darwinArmPackages.stdenv darwinArmPackages.pkgs.apr;
+  nativeLinuxX64 = nativeFor mkDerivation stdenv apache-portable-runtime;
+  nativeLinuxArm = nativeFor linuxArmPackages.pkgs.mkDerivation linuxArmPackages.stdenv linuxArmPackages.pkgs.apache-portable-runtime;
+  nativeDarwinX64 = nativeFor darwinX64Packages.pkgs.mkDerivation darwinX64Packages.stdenv darwinX64Packages.pkgs.apache-portable-runtime;
+  nativeDarwinArm = nativeFor darwinArmPackages.pkgs.mkDerivation darwinArmPackages.stdenv darwinArmPackages.pkgs.apache-portable-runtime;
 
   mavenRepository = classifier: nativePackage:
     mkDerivation {

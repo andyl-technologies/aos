@@ -150,41 +150,328 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 
 [[package]]
-name = "aos"
+name = "aos-activation"
 version = "0.1.0"
 dependencies = [
- "alejandra",
  "anyhow",
- "aos-cache",
- "aos-contract",
  "aos-core",
- "aos-doc",
- "aos-doc-model",
- "aos-hub",
- "aos-hub-core",
- "aos-image-finalizer",
- "aos-maintain",
- "aos-net",
- "aos-oci",
- "aos-oci-types",
- "aos-package",
- "aos-profile",
- "aos-proto",
- "aos-proto-types",
- "aos-registry-surface",
- "aos-release",
- "aos-remote",
- "aos-sandbox-client",
- "aos-sandbox-core",
- "aos-sandbox-protocol",
- "aos-server",
+ "aos-module-format",
+ "rustix 1.1.4",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "aos-activation-bpf-lsm"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-activation",
+ "aos-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "aos-activation-bpf-network"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-activation",
+ "aos-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "aos-activation-config-files"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "rustix 1.1.4",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "toml 0.8.23",
+]
+
+[[package]]
+name = "aos-activation-crucible"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-activation",
+ "aos-core",
+ "crucible-engine",
+ "crucible-guest",
+ "rustix 1.1.4",
+ "serde",
+ "tempfile",
+]
+
+[[package]]
+name = "aos-activation-filesystem"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-activation",
+ "aos-core",
+ "aos-module-format",
+ "rustix 1.1.4",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "aos-activation-kubernetes"
+version = "0.1.0"
+dependencies = [
+ "aos-activation",
+ "aos-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "aos-activation-nftables"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-activation",
+ "aos-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "aos-activation-nix-store"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-activation",
+ "aos-artifact-evidence",
+ "aos-core",
+ "aos-module-format",
+ "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "aos-activation-storage"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-activation",
+ "aos-core",
+ "aos-module-format",
+ "aos-storage-layout",
+ "rustix 1.1.4",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "aos-activation-sysctl"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-core",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "aos-activation-systemd"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-activation",
+ "aos-core",
+ "aos-module-format",
+ "aos-nix",
+ "aos-systemd-client",
+ "hex",
+ "rustix 1.1.4",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "aos-artifact-evidence"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-core",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "aos-boot-identity"
+version = "0.1.0"
+
+[[package]]
+name = "aos-boot-runtime"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-activation",
+ "aos-boot-identity",
+ "aos-core",
+ "aos-nix",
+ "aos-release-format",
+ "hex",
+ "rustix 1.1.4",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "zstd",
+]
+
+[[package]]
+name = "aos-build-api"
+version = "0.1.0"
+dependencies = [
+ "buffa",
+ "connectrpc",
+ "connectrpc-build",
+ "futures",
+ "http-body 1.0.1",
+ "prost",
+ "prost-types",
+ "serde",
+]
+
+[[package]]
+name = "aos-build-client"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-build-api",
+ "aos-nar",
+ "buffa",
+ "connectrpc",
+ "http 1.4.1",
+ "prost",
+ "rustls-native-certs",
+ "tokio",
+ "tokio-stream",
+ "webpki-roots",
+]
+
+[[package]]
+name = "aos-build-server"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-build-api",
+ "aos-build-client",
+ "aos-nar",
+ "aos-nix",
  "async-trait",
  "axum",
  "base64 0.22.1",
  "buffa",
+ "connectrpc",
+ "console",
+ "ed25519-dalek",
+ "futures",
+ "futures-util",
+ "glob",
+ "hex",
+ "humantime",
+ "humantime-serde",
+ "indicatif",
+ "jsonwebtoken",
+ "prost",
+ "rand 0.9.4",
+ "rcgen",
+ "regex",
+ "rusqlite",
+ "rustls",
+ "rustls-pemfile",
+ "rustls-pki-types",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "tokio",
+ "tokio-rustls",
+ "tokio-stream",
+ "tokio-util",
+ "toml 0.8.23",
+ "tower-http",
+ "tracing",
+ "uuid",
+ "zstd",
+]
+
+[[package]]
+name = "aos-cli"
+version = "0.1.0"
+dependencies = [
+ "alejandra",
+ "anyhow",
+ "aos-activation",
+ "aos-artifact-evidence",
+ "aos-build-client",
+ "aos-build-server",
+ "aos-cli-ui",
+ "aos-closure-analysis",
+ "aos-core",
+ "aos-deployment",
+ "aos-deployment-format",
+ "aos-hub-api",
+ "aos-hub-client",
+ "aos-hub-db",
+ "aos-hub-model",
+ "aos-hub-native",
+ "aos-hub-service",
+ "aos-image-finalizer",
+ "aos-module-docs",
+ "aos-module-format",
+ "aos-nar",
+ "aos-nix",
+ "aos-nix-cache",
+ "aos-nix-docs",
+ "aos-oci",
+ "aos-oci-types",
+ "aos-package-maintenance",
+ "aos-package-manager",
+ "aos-registry-authoring",
+ "aos-registry-client",
+ "aos-registry-format",
+ "aos-release-coordinator",
+ "aos-release-format",
+ "aos-sandbox-api",
+ "aos-sandbox-client",
+ "aos-sandbox-protocol",
+ "aos-transfer",
+ "async-trait",
+ "axum",
+ "base64 0.22.1",
  "clap",
  "clap_complete",
- "connectrpc",
  "console",
  "crossterm",
  "ed25519-dalek",
@@ -192,7 +479,6 @@ dependencies = [
  "futures-util",
  "glob",
  "hex",
- "http 1.4.1",
  "humantime",
  "hyper-util",
  "ignore",
@@ -211,6 +497,7 @@ dependencies = [
  "sha2 0.10.9",
  "tar",
  "tempfile",
+ "thiserror 2.0.18",
  "tokio",
  "tokio-rustls",
  "tokio-util",
@@ -224,174 +511,222 @@ dependencies = [
 ]
 
 [[package]]
-name = "aos-boot-identity"
+name = "aos-cli-ui"
 version = "0.1.0"
+dependencies = [
+ "aos-transfer",
+ "console",
+ "indicatif",
+ "serde_json",
+ "tokio",
+]
 
 [[package]]
-name = "aos-cache"
+name = "aos-closure-analysis"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "aos-cli-ui",
  "aos-core",
- "aos-net",
- "aos-proto-types",
- "async-trait",
+ "aos-nix",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "aos-configuration-image"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-activation",
+ "aos-core",
  "base64 0.22.1",
- "console",
- "futures",
- "hex",
- "indicatif",
- "regex",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
- "tokio",
- "tokio-util",
- "url",
- "zstd",
-]
-
-[[package]]
-name = "aos-contract"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "serde",
- "serde_json",
- "sha2 0.10.9",
 ]
 
 [[package]]
 name = "aos-core"
 version = "0.1.0"
 dependencies = [
- "alejandra",
  "anyhow",
- "base64 0.22.1",
- "console",
- "ed25519-dalek",
- "glob",
- "hex",
- "humantime",
- "ignore",
- "indicatif",
- "regex",
- "rustix 1.1.4",
  "serde",
  "serde_json",
  "sha2 0.10.9",
- "tempfile",
  "thiserror 2.0.18",
- "tokio",
 ]
 
 [[package]]
-name = "aos-doc"
+name = "aos-deployment"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-activation",
+ "aos-core",
+ "aos-deployment-format",
+ "aos-module-docs",
+ "aos-module-format",
+ "aos-nar",
+ "aos-nix",
+ "aos-registry-format",
+ "aos-release-format",
+ "base64 0.22.1",
+ "hex",
+ "rustix 1.1.4",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "aos-deployment-format"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "aos-core",
- "crossterm",
- "glob",
- "ignore",
- "ratatui",
- "regex",
+ "aos-module-docs",
+ "aos-module-format",
+ "aos-registry-format",
+ "semver",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "aos-hub-api"
+version = "0.1.0"
+dependencies = [
+ "pbjson",
+ "pbjson-build",
+ "prost",
+ "prost-build",
+ "prost-types",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "aos-hub-client"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-hub-api",
+ "http 1.4.1",
+ "reqwest",
  "serde",
  "serde_json",
  "tokio",
+ "tokio-util",
+ "url",
 ]
 
 [[package]]
-name = "aos-doc-model"
+name = "aos-hub-console"
 version = "0.1.0"
 dependencies = [
+ "aos-hub-api",
+ "aos-hub-ui",
+ "aos-module-docs",
+ "aos-registry-format",
+ "futures",
+ "gloo-net",
+ "js-sys",
+ "leptos",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
+name = "aos-hub-db"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-hub-model",
+ "aos-module-docs",
+ "aos-oci-types",
+ "aos-registry-format",
+ "aos-release-format",
+ "async-trait",
+ "base64 0.22.1",
+ "ed25519-dalek",
+ "futures-util",
+ "hex",
+ "hmac 0.12.1",
+ "rand 0.9.4",
+ "rusqlite",
+ "semver",
  "serde",
  "serde_json",
  "sha2 0.10.9",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "aos-filesystem-fuse"
-version = "0.1.0"
-dependencies = [
- "aos-filesystem-view",
- "aos-sandbox",
- "aos-sandbox-broker-session-protocol",
- "aos-sandbox-broker-session-security",
- "aos-sandbox-core",
- "aos-sandbox-linux",
- "aos-sandbox-protocol",
- "ed25519-dalek",
- "libc",
- "pkg-config",
- "sha2 0.10.9",
+ "sqlx",
  "tempfile",
  "thiserror 2.0.18",
+ "tokio",
+ "toml 0.8.23",
+ "tracing",
+ "unicode-normalization",
+ "url",
+ "uuid",
 ]
 
 [[package]]
-name = "aos-filesystem-fuse-kernel-worker"
-version = "0.0.0"
-dependencies = [
- "aos-filesystem-fuse",
- "aos-filesystem-view",
- "aos-sandbox-core",
- "aos-sandbox-linux",
- "libc",
-]
-
-[[package]]
-name = "aos-filesystem-fuse-link-consumer"
-version = "0.0.0"
-dependencies = [
- "aos-filesystem-fuse",
-]
-
-[[package]]
-name = "aos-filesystem-view"
-version = "0.1.0"
-dependencies = [
- "aos-filesystem-view-core",
- "aos-sandbox-broker-session-protocol",
- "aos-sandbox-broker-session-security",
- "aos-sandbox-core",
- "aos-sandbox-linux",
- "ed25519-dalek",
- "libc",
- "rustix 1.1.4",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "aos-filesystem-view-core"
-version = "0.1.0"
-dependencies = [
- "aos-sandbox-core",
- "sha2 0.10.9",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "aos-hub"
+name = "aos-hub-model"
 version = "0.1.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
- "aos-cache",
+ "aos-hub-api",
+ "aos-oci-types",
+ "aos-registry-format",
+ "argon2",
+ "async-trait",
+ "base64 0.22.1",
+ "getrandom 0.2.17",
+ "getrandom 0.3.4",
+ "hex",
+ "hmac 0.12.1",
+ "js-sys",
+ "password-hash",
+ "rand 0.9.4",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
+ "tokio",
+ "unicode-normalization",
+ "url",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "zeroize",
+]
+
+[[package]]
+name = "aos-hub-native"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "anyhow",
  "aos-core",
- "aos-doc-model",
- "aos-hub-core",
+ "aos-hub-api",
+ "aos-hub-client",
+ "aos-hub-db",
+ "aos-hub-model",
+ "aos-hub-service",
+ "aos-nar",
+ "aos-nix-cache",
  "aos-oci",
  "aos-oci-types",
- "aos-package",
- "aos-proto-types",
- "aos-registry-surface",
- "aos-remote",
+ "aos-registry-authoring",
+ "aos-registry-client",
+ "aos-registry-format",
  "argon2",
  "async-trait",
  "axum",
@@ -437,46 +772,21 @@ dependencies = [
 ]
 
 [[package]]
-name = "aos-hub-console"
+name = "aos-hub-service"
 version = "0.1.0"
 dependencies = [
- "aos-doc-model",
- "aos-hub-console-contract",
- "aos-proto-types",
- "aos-registry-surface",
- "futures",
- "gloo-net",
- "js-sys",
- "leptos",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
-]
-
-[[package]]
-name = "aos-hub-console-contract"
-version = "0.1.0"
-dependencies = [
- "serde_json",
-]
-
-[[package]]
-name = "aos-hub-core"
-version = "0.1.0"
-dependencies = [
- "aes-gcm",
  "anyhow",
- "aos-doc-model",
- "aos-hub-console-contract",
+ "aos-core",
+ "aos-hub-api",
+ "aos-hub-db",
+ "aos-hub-model",
+ "aos-hub-ui",
+ "aos-module-docs",
+ "aos-module-format",
  "aos-oci-types",
- "aos-package",
- "aos-proto-types",
- "aos-registry-surface",
- "aos-release",
- "argon2",
+ "aos-registry-authoring",
+ "aos-registry-format",
+ "aos-release-format",
  "async-trait",
  "axum",
  "base64 0.22.1",
@@ -492,17 +802,13 @@ dependencies = [
  "jwt-rustcrypto",
  "md-5 0.11.0",
  "p256",
- "password-hash",
  "rand 0.9.4",
  "rsa",
- "rusqlite",
  "semver",
  "send_wrapper",
  "serde",
  "serde_json",
- "serde_urlencoded",
  "sha2 0.10.9",
- "sqlx",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -518,15 +824,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "aos-hub-ui"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "aos-hub-worker"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "aos-hub",
- "aos-hub-core",
+ "aos-hub-api",
+ "aos-hub-db",
+ "aos-hub-model",
+ "aos-hub-native",
+ "aos-hub-service",
  "aos-oci-types",
- "aos-proto-types",
- "aos-registry-surface",
+ "aos-registry-format",
  "async-trait",
  "axum",
  "base64 0.22.1",
@@ -560,7 +875,9 @@ name = "aos-image-finalizer"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "aos-release",
+ "aos-boot-identity",
+ "aos-deployment-format",
+ "aos-release-format",
  "async-trait",
  "base64 0.22.1",
  "rustix 1.1.4",
@@ -572,41 +889,113 @@ dependencies = [
 ]
 
 [[package]]
-name = "aos-maintain"
+name = "aos-linux-project-quota"
 version = "0.1.0"
 dependencies = [
- "anyhow",
- "aos-contract",
- "semver",
- "serde",
- "serde_json",
- "url",
+ "libc",
+ "rustix 1.1.4",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
-name = "aos-net"
+name = "aos-module-docs"
 version = "0.1.0"
 dependencies = [
- "anyhow",
- "async-trait",
- "aws-config",
- "aws-sdk-s3",
- "aws-types",
- "bytes",
- "digest 0.10.7",
- "futures-util",
- "hex",
- "rand 0.9.4",
- "reqwest",
+ "aos-core",
+ "aos-module-format",
+ "schemars",
+ "semver",
  "serde",
  "serde_json",
  "sha2 0.10.9",
- "ssh2",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "aos-module-format"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-artifact-evidence",
+ "aos-core",
+ "regex",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "aos-nar"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "ed25519-dalek",
+ "hex",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.18",
+ "zstd",
+]
+
+[[package]]
+name = "aos-nix"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-core",
+ "aos-nar",
+ "rustix 1.1.4",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "aos-nix-cache"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-cli-ui",
+ "aos-hub-api",
+ "aos-nar",
+ "aos-nix",
+ "aos-transfer",
+ "async-trait",
+ "base64 0.22.1",
+ "console",
+ "futures",
+ "hex",
+ "indicatif",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
  "tempfile",
  "tokio",
  "tokio-util",
- "tracing",
  "url",
+ "zstd",
+]
+
+[[package]]
+name = "aos-nix-docs"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-cli-ui",
+ "aos-nix",
+ "crossterm",
+ "glob",
+ "ignore",
+ "ratatui",
+ "regex",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -615,7 +1004,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "aos-oci-types",
- "aos-registry-surface",
+ "aos-registry-format",
  "axum",
  "base64 0.22.1",
  "bytes",
@@ -642,101 +1031,93 @@ dependencies = [
 name = "aos-oci-types"
 version = "0.1.0"
 dependencies = [
+ "aos-core",
  "base64 0.22.1",
  "serde",
  "serde_json",
- "sha2 0.10.9",
  "thiserror 2.0.18",
 ]
 
 [[package]]
-name = "aos-package"
+name = "aos-package-maintenance"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "aos-boot-identity",
- "aos-cache",
  "aos-core",
- "aos-doc-model",
- "aos-net",
- "aos-oci",
- "aos-oci-types",
- "aos-proto-types",
- "aos-registry-surface",
- "aos-remote",
- "aos-systemd",
- "async-trait",
+ "semver",
+ "serde",
+ "serde_json",
+ "url",
+]
+
+[[package]]
+name = "aos-package-manager"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-activation",
+ "aos-cli-ui",
+ "aos-core",
+ "aos-deployment",
+ "aos-deployment-format",
+ "aos-hub-api",
+ "aos-hub-client",
+ "aos-module-docs",
+ "aos-module-format",
+ "aos-nar",
+ "aos-nix",
+ "aos-nix-cache",
+ "aos-platform-metadata",
+ "aos-registry-authoring",
+ "aos-registry-client",
+ "aos-registry-format",
+ "aos-storage-layout",
+ "aos-transfer",
  "base64 0.22.1",
  "clap",
- "console",
  "crc32fast",
  "ed25519-dalek",
- "flate2",
- "futures-util",
- "git2",
- "glob",
  "hex",
- "humantime",
- "indicatif",
  "libc",
  "rand 0.9.4",
- "rayon",
- "regex",
- "reqwest",
- "rusqlite",
  "rustix 1.1.4",
  "semver",
  "serde",
  "serde_json",
- "sha1 0.10.6",
  "sha2 0.10.9",
  "ssh-key",
- "tar",
  "tempfile",
+ "thiserror 2.0.18",
  "tokio",
- "tokio-stream",
  "toml 0.8.23",
  "url",
+ "zbus",
  "zstd",
 ]
 
 [[package]]
-name = "aos-profile"
+name = "aos-platform-metadata"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "aos-activation",
  "aos-core",
+ "aos-module-format",
+ "aos-nix",
+ "aos-storage-layout",
+ "aos-transfer",
+ "async-trait",
+ "base64 0.22.1",
+ "hex",
+ "rand 0.9.4",
+ "reqwest",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
+ "ssh-key",
  "tempfile",
-]
-
-[[package]]
-name = "aos-proto"
-version = "0.1.0"
-dependencies = [
- "buffa",
- "buffa-codegen",
- "connectrpc",
- "connectrpc-build",
- "futures",
- "http-body 1.0.1",
- "prost",
- "prost-types",
- "serde",
-]
-
-[[package]]
-name = "aos-proto-types"
-version = "0.1.0"
-dependencies = [
- "pbjson",
- "pbjson-build",
- "prost",
- "prost-build",
- "prost-types",
- "serde",
- "serde_json",
+ "tokio",
+ "url",
 ]
 
 [[package]]
@@ -747,11 +1128,110 @@ dependencies = [
 ]
 
 [[package]]
-name = "aos-registry-spa"
+name = "aos-registry-authoring"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "aos-registry-surface",
+ "aos-cli-ui",
+ "aos-deployment",
+ "aos-deployment-format",
+ "aos-hub-client",
+ "aos-module-docs",
+ "aos-nar",
+ "aos-nix",
+ "aos-nix-cache",
+ "aos-oci",
+ "aos-oci-types",
+ "aos-registry-client",
+ "aos-registry-format",
+ "aos-release-format",
+ "aos-transfer",
+ "async-trait",
+ "base64 0.22.1",
+ "clap",
+ "crc32fast",
+ "ed25519-dalek",
+ "flate2",
+ "futures-util",
+ "git2",
+ "hex",
+ "libc",
+ "rand 0.9.4",
+ "rayon",
+ "reqwest",
+ "rustix 1.1.4",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "ssh-key",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "toml 0.8.23",
+ "url",
+ "zstd",
+]
+
+[[package]]
+name = "aos-registry-client"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-core",
+ "aos-hub-client",
+ "aos-nar",
+ "aos-registry-format",
+ "aos-transfer",
+ "async-trait",
+ "base64 0.22.1",
+ "ed25519-dalek",
+ "flate2",
+ "futures-util",
+ "git2",
+ "hex",
+ "libc",
+ "rand 0.9.4",
+ "reqwest",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha1 0.10.6",
+ "sha2 0.10.9",
+ "ssh-key",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "toml 0.8.23",
+ "url",
+ "zstd",
+]
+
+[[package]]
+name = "aos-registry-format"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-core",
+ "aos-oci-types",
+ "base64 0.22.1",
+ "crc32fast",
+ "ed25519-dalek",
+ "flate2",
+ "hex",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "toml 0.8.23",
+]
+
+[[package]]
+name = "aos-registry-web"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-registry-format",
  "ed25519-dalek",
  "gloo-net",
  "hex",
@@ -764,30 +1244,40 @@ dependencies = [
 ]
 
 [[package]]
-name = "aos-registry-surface"
+name = "aos-release-coordinator"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "aos-oci-types",
+ "aos-image-finalizer",
+ "aos-nar",
+ "aos-nix-cache",
+ "aos-registry-client",
+ "aos-registry-format",
+ "aos-release-format",
+ "async-trait",
  "base64 0.22.1",
- "crc32fast",
  "ed25519-dalek",
- "flate2",
- "hex",
- "semver",
+ "futures-util",
+ "humantime",
+ "reqwest",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "tempfile",
+ "tokio",
  "toml 0.8.23",
+ "url",
 ]
 
 [[package]]
-name = "aos-release"
+name = "aos-release-format"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "aos-contract",
- "aos-registry-surface",
+ "aos-core",
+ "aos-module-format",
+ "aos-registry-format",
  "base64 0.22.1",
  "ed25519-dalek",
  "humantime",
@@ -804,7 +1294,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "aos-oci-types",
- "aos-release",
+ "aos-release-format",
  "base64 0.22.1",
  "clap",
  "ed25519-dalek",
@@ -818,42 +1308,160 @@ dependencies = [
 ]
 
 [[package]]
-name = "aos-remote"
+name = "aos-sandbox-api"
 version = "0.1.0"
 dependencies = [
- "anyhow",
- "aos-proto",
- "aos-proto-types",
  "buffa",
+ "buffa-codegen",
  "connectrpc",
- "http 1.4.1",
+ "connectrpc-build",
+ "futures",
+ "http-body 1.0.1",
  "prost",
- "reqwest",
- "rustls-native-certs",
+ "prost-types",
  "serde",
- "serde_json",
- "tokio",
- "tokio-stream",
- "tokio-util",
- "url",
- "webpki-roots",
 ]
 
 [[package]]
-name = "aos-sandbox"
+name = "aos-sandbox-broker"
 version = "0.1.0"
 dependencies = [
- "aos-filesystem-view-core",
- "aos-proto",
- "aos-sandbox-agent",
+ "aos-sandbox-journal",
+ "aos-sandbox-linux",
+ "aos-sandbox-model",
+ "aos-sandbox-protocol",
+ "aos-systemd-client",
+ "ed25519-dalek",
+ "hex",
+ "hmac 0.12.1",
+ "rustix 1.1.4",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "zeroize",
+]
+
+[[package]]
+name = "aos-sandbox-broker-session-protocol"
+version = "0.1.0"
+dependencies = [
+ "aos-sandbox-api",
+ "aos-sandbox-model",
+ "buffa",
+ "ed25519-dalek",
+ "hex",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "aos-sandbox-broker-session-security"
+version = "0.1.0"
+dependencies = [
+ "aos-sandbox-api",
  "aos-sandbox-broker",
  "aos-sandbox-broker-session-protocol",
- "aos-sandbox-coordinator-protocol",
- "aos-sandbox-core",
- "aos-sandbox-guest-root-tree",
+ "aos-sandbox-controller-domain",
+ "aos-sandbox-filesystem-format",
+ "aos-sandbox-guest-protocol",
+ "aos-sandbox-host",
  "aos-sandbox-journal",
  "aos-sandbox-ledger-replay",
  "aos-sandbox-linux",
+ "aos-sandbox-model",
+ "aos-sandbox-mount",
+ "aos-sandbox-mount-native",
+ "aos-sandbox-network",
+ "aos-sandbox-ownership-protocol",
+ "aos-sandbox-policy",
+ "aos-sandbox-protocol",
+ "aos-sandbox-source-provider",
+ "aos-sandbox-source-provider-protocol",
+ "aos-sandbox-source-provider-security",
+ "aos-sandbox-storage",
+ "aos-systemd-client",
+ "async-trait",
+ "axum",
+ "base64 0.22.1",
+ "buffa",
+ "connectrpc",
+ "ed25519-dalek",
+ "futures",
+ "hex",
+ "rcgen",
+ "reqwest",
+ "rustix 1.1.4",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "ssh-key",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "zeroize",
+]
+
+[[package]]
+name = "aos-sandbox-cache-signer"
+version = "0.1.0"
+dependencies = [
+ "aos-sandbox-broker",
+ "aos-sandbox-journal",
+ "aos-sandbox-ledger-replay",
+ "aos-sandbox-linux",
+ "aos-sandbox-model",
+ "aos-sandbox-protocol",
+ "aos-systemd-client",
+ "ed25519-dalek",
+ "rustix 1.1.4",
+ "tempfile",
+ "thiserror 2.0.18",
+ "zeroize",
+]
+
+[[package]]
+name = "aos-sandbox-client"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-sandbox-api",
+ "aos-sandbox-model",
+ "aos-sandbox-protocol",
+ "base64 0.22.1",
+ "buffa",
+ "connectrpc",
+ "hex",
+ "http 1.4.1",
+ "hyper-util",
+ "rand 0.9.4",
+ "rustix 1.1.4",
+ "rustls-pemfile",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-rustls",
+ "tower",
+ "zeroize",
+]
+
+[[package]]
+name = "aos-sandbox-controller-domain"
+version = "0.1.0"
+dependencies = [
+ "aos-sandbox-api",
+ "aos-sandbox-broker",
+ "aos-sandbox-broker-session-protocol",
+ "aos-sandbox-coordinator-protocol",
+ "aos-sandbox-filesystem-format",
+ "aos-sandbox-guest-protocol",
+ "aos-sandbox-guest-root-measurement",
+ "aos-sandbox-journal",
+ "aos-sandbox-ledger-replay",
+ "aos-sandbox-linux",
+ "aos-sandbox-model",
  "aos-sandbox-ownership",
  "aos-sandbox-ownership-protocol",
  "aos-sandbox-policy",
@@ -862,7 +1470,7 @@ dependencies = [
  "aos-sandbox-source",
  "aos-sandbox-source-provider-ledger",
  "aos-sandbox-source-provider-protocol",
- "aos-systemd",
+ "aos-systemd-client",
  "axum",
  "base64 0.22.1",
  "blake3",
@@ -891,159 +1499,20 @@ dependencies = [
 ]
 
 [[package]]
-name = "aos-sandbox-agent"
-version = "0.1.0"
-dependencies = [
- "aos-sandbox-core",
- "ed25519-dalek",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "ssh-key",
- "thiserror 2.0.18",
- "zeroize",
-]
-
-[[package]]
-name = "aos-sandbox-broker"
-version = "0.1.0"
-dependencies = [
- "aos-sandbox-core",
- "aos-sandbox-journal",
- "aos-sandbox-linux",
- "aos-sandbox-protocol",
- "aos-systemd",
- "ed25519-dalek",
- "hex",
- "hmac 0.12.1",
- "rustix 1.1.4",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "zeroize",
-]
-
-[[package]]
-name = "aos-sandbox-broker-session-protocol"
-version = "0.1.0"
-dependencies = [
- "aos-proto",
- "aos-sandbox-core",
- "buffa",
- "ed25519-dalek",
- "hex",
- "sha2 0.10.9",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "aos-sandbox-broker-session-security"
-version = "0.1.0"
-dependencies = [
- "aos-filesystem-view-core",
- "aos-proto",
- "aos-sandbox",
- "aos-sandbox-agent",
- "aos-sandbox-broker",
- "aos-sandbox-broker-session-protocol",
- "aos-sandbox-core",
- "aos-sandbox-host",
- "aos-sandbox-journal",
- "aos-sandbox-ledger-replay",
- "aos-sandbox-linux",
- "aos-sandbox-mount",
- "aos-sandbox-mount-native",
- "aos-sandbox-network",
- "aos-sandbox-ownership-protocol",
- "aos-sandbox-policy",
- "aos-sandbox-protocol",
- "aos-sandbox-source-provider",
- "aos-sandbox-source-provider-protocol",
- "aos-sandbox-source-provider-security",
- "aos-sandbox-storage",
- "aos-systemd",
- "async-trait",
- "axum",
- "base64 0.22.1",
- "buffa",
- "connectrpc",
- "ed25519-dalek",
- "futures",
- "hex",
- "rcgen",
- "reqwest",
- "rustix 1.1.4",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "ssh-key",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "zeroize",
-]
-
-[[package]]
-name = "aos-sandbox-cache-signer"
-version = "0.1.0"
-dependencies = [
- "aos-sandbox-broker",
- "aos-sandbox-core",
- "aos-sandbox-journal",
- "aos-sandbox-ledger-replay",
- "aos-sandbox-linux",
- "aos-sandbox-protocol",
- "aos-systemd",
- "ed25519-dalek",
- "rustix 1.1.4",
- "tempfile",
- "thiserror 2.0.18",
- "zeroize",
-]
-
-[[package]]
-name = "aos-sandbox-client"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "aos-proto",
- "aos-sandbox-core",
- "aos-sandbox-protocol",
- "base64 0.22.1",
- "buffa",
- "connectrpc",
- "hex",
- "http 1.4.1",
- "hyper-util",
- "rand 0.9.4",
- "rustix 1.1.4",
- "rustls-pemfile",
- "serde_json",
- "tempfile",
- "tokio",
- "tokio-rustls",
- "tower",
- "zeroize",
-]
-
-[[package]]
 name = "aos-sandbox-controller-runtime"
 version = "0.1.0"
 dependencies = [
- "aos-filesystem-view-core",
- "aos-proto",
- "aos-sandbox",
- "aos-sandbox-agent",
+ "aos-sandbox-api",
  "aos-sandbox-broker",
  "aos-sandbox-broker-session-protocol",
  "aos-sandbox-broker-session-security",
- "aos-sandbox-core",
+ "aos-sandbox-controller-domain",
+ "aos-sandbox-filesystem-format",
+ "aos-sandbox-guest-protocol",
  "aos-sandbox-journal",
  "aos-sandbox-ledger-replay",
  "aos-sandbox-linux",
+ "aos-sandbox-model",
  "aos-sandbox-mount",
  "aos-sandbox-mount-native",
  "aos-sandbox-ownership-protocol",
@@ -1051,7 +1520,7 @@ dependencies = [
  "aos-sandbox-protocol",
  "aos-sandbox-publisher",
  "aos-sandbox-source-provider-protocol",
- "aos-systemd",
+ "aos-systemd-client",
  "axum",
  "buffa",
  "connectrpc",
@@ -1072,10 +1541,10 @@ dependencies = [
 name = "aos-sandbox-coordinator"
 version = "0.1.0"
 dependencies = [
- "aos-proto",
- "aos-sandbox",
+ "aos-sandbox-api",
+ "aos-sandbox-controller-domain",
  "aos-sandbox-coordinator-protocol",
- "aos-sandbox-core",
+ "aos-sandbox-model",
  "buffa",
  "sha2 0.10.9",
 ]
@@ -1084,8 +1553,8 @@ dependencies = [
 name = "aos-sandbox-coordinator-protocol"
 version = "0.1.0"
 dependencies = [
- "aos-proto",
- "aos-sandbox-core",
+ "aos-sandbox-api",
+ "aos-sandbox-model",
  "buffa",
  "buffa-codegen",
  "connectrpc",
@@ -1098,25 +1567,75 @@ dependencies = [
 ]
 
 [[package]]
-name = "aos-sandbox-core"
+name = "aos-sandbox-filesystem-format"
 version = "0.1.0"
 dependencies = [
- "ciborium",
+ "aos-sandbox-model",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "aos-sandbox-filesystem-fuse"
+version = "0.1.0"
+dependencies = [
+ "aos-sandbox-broker-session-protocol",
+ "aos-sandbox-broker-session-security",
+ "aos-sandbox-controller-domain",
+ "aos-sandbox-filesystem-view",
+ "aos-sandbox-linux",
+ "aos-sandbox-model",
+ "aos-sandbox-protocol",
  "ed25519-dalek",
- "hex",
+ "libc",
+ "pkg-config",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "aos-sandbox-filesystem-fuse-kernel-worker"
+version = "0.0.0"
+dependencies = [
+ "aos-sandbox-filesystem-fuse",
+ "aos-sandbox-filesystem-view",
+ "aos-sandbox-linux",
+ "aos-sandbox-model",
+ "libc",
+]
+
+[[package]]
+name = "aos-sandbox-filesystem-fuse-link-consumer"
+version = "0.0.0"
+dependencies = [
+ "aos-sandbox-filesystem-fuse",
+]
+
+[[package]]
+name = "aos-sandbox-filesystem-view"
+version = "0.1.0"
+dependencies = [
+ "aos-sandbox-broker-session-protocol",
+ "aos-sandbox-broker-session-security",
+ "aos-sandbox-filesystem-format",
+ "aos-sandbox-linux",
+ "aos-sandbox-model",
+ "ed25519-dalek",
+ "libc",
+ "rustix 1.1.4",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "thiserror 2.0.18",
- "uuid",
 ]
 
 [[package]]
 name = "aos-sandbox-guardian"
 version = "0.1.0"
 dependencies = [
- "aos-sandbox-core",
  "aos-sandbox-linux",
+ "aos-sandbox-model",
  "ed25519-dalek",
  "hex",
  "rustix 1.1.4",
@@ -1129,11 +1648,11 @@ dependencies = [
 name = "aos-sandbox-guest"
 version = "0.1.0"
 dependencies = [
- "aos-sandbox-agent",
- "aos-sandbox-core",
+ "aos-sandbox-guest-protocol",
+ "aos-sandbox-guest-root-measurement",
  "aos-sandbox-guest-root-realization",
- "aos-sandbox-guest-root-tree",
  "aos-sandbox-linux",
+ "aos-sandbox-model",
  "ed25519-dalek",
  "nix",
  "rustix 1.1.4",
@@ -1147,25 +1666,39 @@ dependencies = [
 ]
 
 [[package]]
-name = "aos-sandbox-guest-root-realization"
+name = "aos-sandbox-guest-protocol"
 version = "0.1.0"
 dependencies = [
- "aos-sandbox-agent",
- "aos-sandbox-guest-root-tree",
+ "aos-sandbox-model",
+ "ed25519-dalek",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "ssh-key",
+ "thiserror 2.0.18",
+ "zeroize",
+]
+
+[[package]]
+name = "aos-sandbox-guest-root-measurement"
+version = "0.1.0"
+dependencies = [
  "aos-sandbox-linux",
+ "aos-sandbox-model",
  "rustix 1.1.4",
+ "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.18",
 ]
 
 [[package]]
-name = "aos-sandbox-guest-root-tree"
+name = "aos-sandbox-guest-root-realization"
 version = "0.1.0"
 dependencies = [
- "aos-sandbox-core",
+ "aos-sandbox-guest-protocol",
+ "aos-sandbox-guest-root-measurement",
  "aos-sandbox-linux",
  "rustix 1.1.4",
- "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.18",
 ]
@@ -1174,17 +1707,17 @@ dependencies = [
 name = "aos-sandbox-host"
 version = "0.1.0"
 dependencies = [
- "aos-proto",
- "aos-sandbox",
- "aos-sandbox-agent",
+ "aos-sandbox-api",
  "aos-sandbox-broker",
- "aos-sandbox-core",
+ "aos-sandbox-controller-domain",
  "aos-sandbox-guardian",
+ "aos-sandbox-guest-protocol",
  "aos-sandbox-guest-root-realization",
  "aos-sandbox-journal",
  "aos-sandbox-linux",
+ "aos-sandbox-model",
  "aos-sandbox-protocol",
- "aos-systemd",
+ "aos-systemd-client",
  "async-trait",
  "buffa",
  "ed25519-dalek",
@@ -1229,10 +1762,10 @@ dependencies = [
 name = "aos-sandbox-ledger-replay"
 version = "0.1.0"
 dependencies = [
- "aos-proto",
+ "aos-sandbox-api",
  "aos-sandbox-broker",
- "aos-sandbox-core",
  "aos-sandbox-journal",
+ "aos-sandbox-model",
  "aos-sandbox-protocol",
  "aos-sandbox-source-provider-ledger",
  "aos-sandbox-source-provider-protocol",
@@ -1256,22 +1789,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "aos-sandbox-model"
+version = "0.1.0"
+dependencies = [
+ "ciborium",
+ "ed25519-dalek",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
+ "uuid",
+]
+
+[[package]]
 name = "aos-sandbox-mount"
 version = "0.1.0"
 dependencies = [
- "aos-proto",
- "aos-sandbox",
+ "aos-sandbox-api",
  "aos-sandbox-broker",
- "aos-sandbox-core",
+ "aos-sandbox-controller-domain",
  "aos-sandbox-journal",
  "aos-sandbox-linux",
+ "aos-sandbox-model",
  "aos-sandbox-mount-native",
  "aos-sandbox-protocol",
  "aos-sandbox-source",
  "aos-sandbox-source-provider",
  "aos-sandbox-source-provider-protocol",
  "aos-sandbox-source-provider-security",
- "aos-systemd",
+ "aos-systemd-client",
  "buffa",
  "ed25519-dalek",
  "hex",
@@ -1288,15 +1835,15 @@ dependencies = [
 name = "aos-sandbox-mount-native"
 version = "0.1.0"
 dependencies = [
- "aos-proto",
+ "aos-sandbox-api",
  "aos-sandbox-broker",
- "aos-sandbox-core",
  "aos-sandbox-journal",
  "aos-sandbox-ledger-replay",
  "aos-sandbox-linux",
+ "aos-sandbox-model",
  "aos-sandbox-protocol",
  "aos-sandbox-source-provider-protocol",
- "aos-systemd",
+ "aos-systemd-client",
  "buffa",
  "ed25519-dalek",
  "rand 0.9.4",
@@ -1310,15 +1857,15 @@ dependencies = [
 name = "aos-sandbox-network"
 version = "0.1.0"
 dependencies = [
- "aos-proto",
- "aos-sandbox",
+ "aos-sandbox-api",
  "aos-sandbox-broker",
- "aos-sandbox-core",
+ "aos-sandbox-controller-domain",
  "aos-sandbox-journal",
  "aos-sandbox-ledger-replay",
  "aos-sandbox-linux",
+ "aos-sandbox-model",
  "aos-sandbox-protocol",
- "aos-systemd",
+ "aos-systemd-client",
  "base64 0.22.1",
  "buffa",
  "ed25519-dalek",
@@ -1345,11 +1892,11 @@ name = "aos-sandbox-network-systemd-custody-fixture"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "aos-proto",
- "aos-sandbox",
+ "aos-sandbox-api",
  "aos-sandbox-broker",
- "aos-sandbox-core",
+ "aos-sandbox-controller-domain",
  "aos-sandbox-linux",
+ "aos-sandbox-model",
  "aos-sandbox-network",
  "aos-sandbox-protocol",
  "buffa",
@@ -1365,9 +1912,9 @@ name = "aos-sandbox-ownership"
 version = "0.1.0"
 dependencies = [
  "aos-sandbox-broker",
- "aos-sandbox-core",
  "aos-sandbox-journal",
  "aos-sandbox-linux",
+ "aos-sandbox-model",
  "aos-sandbox-ownership-protocol",
  "aos-sandbox-protocol",
  "ed25519-dalek",
@@ -1381,7 +1928,7 @@ dependencies = [
 name = "aos-sandbox-ownership-protocol"
 version = "0.1.0"
 dependencies = [
- "aos-sandbox-core",
+ "aos-sandbox-model",
  "ed25519-dalek",
  "hmac 0.12.1",
  "sha2 0.10.9",
@@ -1393,7 +1940,7 @@ dependencies = [
 name = "aos-sandbox-policy"
 version = "0.1.0"
 dependencies = [
- "aos-sandbox-core",
+ "aos-sandbox-model",
  "aos-sandbox-protocol",
  "ed25519-dalek",
  "serde",
@@ -1406,11 +1953,11 @@ dependencies = [
 name = "aos-sandbox-protocol"
 version = "0.1.0"
 dependencies = [
- "aos-proto",
- "aos-sandbox-agent",
+ "aos-sandbox-api",
  "aos-sandbox-broker-session-protocol",
- "aos-sandbox-core",
+ "aos-sandbox-guest-protocol",
  "aos-sandbox-journal",
+ "aos-sandbox-model",
  "aos-sandbox-ownership-protocol",
  "aos-sandbox-source-provider-ledger",
  "aos-sandbox-source-provider-protocol",
@@ -1427,8 +1974,8 @@ dependencies = [
 name = "aos-sandbox-publisher"
 version = "0.1.0"
 dependencies = [
- "aos-sandbox-core",
  "aos-sandbox-linux",
+ "aos-sandbox-model",
  "aos-sandbox-protocol",
  "rand 0.9.4",
  "rustix 1.1.4",
@@ -1441,11 +1988,11 @@ dependencies = [
 name = "aos-sandbox-service-journal-probe"
 version = "0.0.0"
 dependencies = [
- "aos-sandbox",
  "aos-sandbox-broker",
  "aos-sandbox-broker-session-security",
- "aos-sandbox-core",
+ "aos-sandbox-controller-domain",
  "aos-sandbox-linux",
+ "aos-sandbox-model",
  "aos-sandbox-policy",
  "aos-sandbox-protocol",
  "aos-sandbox-source",
@@ -1463,16 +2010,16 @@ dependencies = [
 name = "aos-sandbox-services"
 version = "0.1.0"
 dependencies = [
- "aos-proto",
- "aos-sandbox",
+ "aos-sandbox-api",
  "aos-sandbox-broker",
  "aos-sandbox-broker-session-security",
  "aos-sandbox-cache-signer",
+ "aos-sandbox-controller-domain",
  "aos-sandbox-controller-runtime",
- "aos-sandbox-core",
  "aos-sandbox-host",
  "aos-sandbox-ledger-replay",
  "aos-sandbox-linux",
+ "aos-sandbox-model",
  "aos-sandbox-mount",
  "aos-sandbox-mount-native",
  "aos-sandbox-network",
@@ -1483,7 +2030,7 @@ dependencies = [
  "aos-sandbox-source-provider-security",
  "aos-sandbox-source-signer",
  "aos-sandbox-storage",
- "aos-systemd",
+ "aos-systemd-client",
  "axum",
  "buffa",
  "connectrpc",
@@ -1505,12 +2052,12 @@ dependencies = [
 name = "aos-sandbox-source"
 version = "0.1.0"
 dependencies = [
- "aos-proto",
+ "aos-sandbox-api",
  "aos-sandbox-broker",
- "aos-sandbox-core",
  "aos-sandbox-journal",
  "aos-sandbox-ledger-replay",
  "aos-sandbox-linux",
+ "aos-sandbox-model",
  "aos-sandbox-protocol",
  "aos-sandbox-source-provider-ledger",
  "aos-sandbox-source-provider-protocol",
@@ -1529,9 +2076,9 @@ name = "aos-sandbox-source-provider"
 version = "0.1.0"
 dependencies = [
  "aos-sandbox-broker",
- "aos-sandbox-core",
  "aos-sandbox-ledger-replay",
  "aos-sandbox-linux",
+ "aos-sandbox-model",
  "aos-sandbox-protocol",
  "aos-sandbox-source",
  "aos-sandbox-source-provider-ledger",
@@ -1548,7 +2095,7 @@ dependencies = [
 name = "aos-sandbox-source-provider-ledger"
 version = "0.1.0"
 dependencies = [
- "aos-sandbox-core",
+ "aos-sandbox-model",
  "aos-sandbox-protocol",
  "aos-sandbox-source",
  "aos-sandbox-source-provider-protocol",
@@ -1561,7 +2108,7 @@ dependencies = [
 name = "aos-sandbox-source-provider-protocol"
 version = "0.1.0"
 dependencies = [
- "aos-sandbox-core",
+ "aos-sandbox-model",
  "ed25519-dalek",
  "hex",
  "sha2 0.10.9",
@@ -1573,9 +2120,9 @@ name = "aos-sandbox-source-provider-security"
 version = "0.1.0"
 dependencies = [
  "aos-sandbox-broker",
- "aos-sandbox-core",
  "aos-sandbox-ledger-replay",
  "aos-sandbox-linux",
+ "aos-sandbox-model",
  "aos-sandbox-mount-native",
  "aos-sandbox-protocol",
  "aos-sandbox-source",
@@ -1596,9 +2143,9 @@ name = "aos-sandbox-source-signer"
 version = "0.1.0"
 dependencies = [
  "aos-sandbox-broker",
- "aos-sandbox-core",
  "aos-sandbox-ledger-replay",
  "aos-sandbox-linux",
+ "aos-sandbox-model",
  "aos-sandbox-protocol",
  "aos-sandbox-source",
  "ed25519-dalek",
@@ -1612,16 +2159,16 @@ dependencies = [
 name = "aos-sandbox-storage"
 version = "0.1.0"
 dependencies = [
- "aos-filesystem-view-core",
- "aos-proto",
- "aos-sandbox",
- "aos-sandbox-agent",
+ "aos-sandbox-api",
  "aos-sandbox-broker",
- "aos-sandbox-core",
+ "aos-sandbox-controller-domain",
+ "aos-sandbox-filesystem-format",
+ "aos-sandbox-guest-protocol",
+ "aos-sandbox-guest-root-measurement",
  "aos-sandbox-guest-root-realization",
- "aos-sandbox-guest-root-tree",
  "aos-sandbox-journal",
  "aos-sandbox-linux",
+ "aos-sandbox-model",
  "aos-sandbox-mount",
  "aos-sandbox-protocol",
  "aos-sandbox-source-provider-protocol",
@@ -1641,60 +2188,27 @@ dependencies = [
 name = "aos-sandbox-verity-backing-probe"
 version = "0.0.0"
 dependencies = [
- "aos-sandbox-core",
  "aos-sandbox-linux",
+ "aos-sandbox-model",
  "libc",
  "rustix 1.1.4",
 ]
 
 [[package]]
-name = "aos-server"
+name = "aos-storage-layout"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "aos-core",
- "aos-proto",
- "aos-remote",
- "async-trait",
- "axum",
- "base64 0.22.1",
- "buffa",
- "connectrpc",
- "console",
- "ed25519-dalek",
- "futures",
- "futures-util",
- "glob",
- "hex",
- "humantime",
- "humantime-serde",
- "indicatif",
- "jsonwebtoken",
- "prost",
- "rand 0.9.4",
- "rcgen",
- "regex",
- "rusqlite",
- "rustls",
- "rustls-pemfile",
- "rustls-pki-types",
+ "aos-module-format",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
- "tokio",
- "tokio-rustls",
- "tokio-stream",
- "tokio-util",
- "toml 0.8.23",
- "tower-http",
- "tracing",
- "uuid",
- "zstd",
 ]
 
 [[package]]
-name = "aos-systemd"
+name = "aos-systemd-client"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -1709,6 +2223,32 @@ dependencies = [
  "tokio",
  "tracing",
  "zbus",
+]
+
+[[package]]
+name = "aos-transfer"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "aws-config",
+ "aws-sdk-s3",
+ "aws-types",
+ "bytes",
+ "digest 0.10.7",
+ "futures-util",
+ "hex",
+ "rand 0.9.4",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "ssh2",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "url",
 ]
 
 [[package]]
@@ -1768,7 +2308,7 @@ checksum = "3109e49b1e4909e9db6515a30c633684d68cdeaa252f215214cb4fa1a5bfee2c"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
  "synstructure",
 ]
 
@@ -1780,7 +2320,7 @@ checksum = "7b18050c2cd6fe86c3a76584ef5e0baf286d038cda203eb6223df2cc413565f7"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -1814,7 +2354,7 @@ checksum = "3b43422f69d8ff38f95f1b2bb76517c91589a924d1559a0e935d7c8ce0274c11"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -1825,7 +2365,7 @@ checksum = "9035ad2d096bed7955a320ee7e2230574d28fd3c3a0f186cbea1ff3c7eed5dbb"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -1854,7 +2394,7 @@ dependencies = [
  "manyhow",
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -1870,7 +2410,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "quote-use",
- "syn",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -2279,7 +2819,7 @@ checksum = "8d7396fd9500589e62e460e987ecb671bad374934e55ec3b5f498cc7a8a8a7b7"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -2404,7 +2944,7 @@ checksum = "7aa268c23bfbbd2c4363b9cd302a4f504fb2a9dfe7e3451d66f35dd392e20aca"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -2539,7 +3079,7 @@ dependencies = [
  "prettyplease",
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
  "thiserror 2.0.18",
 ]
 
@@ -2738,7 +3278,7 @@ dependencies = [
  "heck",
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -2885,7 +3425,7 @@ dependencies = [
  "prettyplease",
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -3098,71 +3638,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "crucible"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "ciborium",
- "crucible-campaign",
- "crucible-cas",
- "crucible-device",
- "crucible-harness",
- "crucible-protocol",
- "crucible-shmem",
- "crucible-sim",
- "regex",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "toml 0.8.23",
- "tracing",
-]
-
-[[package]]
-name = "crucible-api"
-version = "0.1.0"
-dependencies = [
- "axum",
- "blake3",
- "bytes",
- "ciborium",
- "crucible",
- "crucible-campaign",
- "crucible-device",
- "crucible-protocol",
- "crucible-qemu",
- "crucible-session",
- "crucible-shmem",
- "futures-util",
- "hyper-util",
- "reqwest",
- "rustix 1.1.4",
- "rustls",
- "rustls-pemfile",
- "rustls-pki-types",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tokio-rustls",
- "uuid",
-]
-
-[[package]]
-name = "crucible-assert"
-version = "0.1.0"
-dependencies = [
- "thiserror 2.0.18",
-]
-
-[[package]]
 name = "crucible-campaign"
 version = "0.1.0"
 dependencies = [
  "blake3",
- "crucible-cas",
+ "crucible-store",
  "ed25519-dalek",
  "num-bigint",
  "num-integer",
@@ -3175,20 +3655,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "crucible-cas"
-version = "0.1.0"
-dependencies = [
- "aes-gcm",
- "blake3",
- "rusqlite",
- "rustix 1.1.4",
- "tempfile",
- "thiserror 2.0.18",
- "zeroize",
- "zstd",
-]
-
-[[package]]
 name = "crucible-cli"
 version = "0.1.0"
 dependencies = [
@@ -3196,18 +3662,20 @@ dependencies = [
  "aws-sdk-s3",
  "clap",
  "clap_complete",
- "crucible",
- "crucible-api",
  "crucible-campaign",
- "crucible-cas",
+ "crucible-control-api",
+ "crucible-control-client",
+ "crucible-control-server",
  "crucible-daemon",
  "crucible-device",
+ "crucible-engine",
  "crucible-guest",
- "crucible-harness",
- "crucible-protocol",
- "crucible-qemu",
+ "crucible-qemu-host",
+ "crucible-qemu-protocol",
+ "crucible-qemu-shmem",
  "crucible-session",
- "crucible-shmem",
+ "crucible-store",
+ "crucible-test-support",
  "hex",
  "libc",
  "rcgen",
@@ -3224,27 +3692,91 @@ dependencies = [
 ]
 
 [[package]]
-name = "crucible-daemon"
+name = "crucible-control-api"
 version = "0.1.0"
 dependencies = [
  "blake3",
  "ciborium",
- "crucible",
- "crucible-api",
- "crucible-campaign",
- "crucible-cas",
- "crucible-guest",
- "crucible-linux-resource",
- "crucible-protocol",
- "crucible-qemu",
- "crucible-s3-store",
+ "crucible-engine",
+ "crucible-qemu-protocol",
  "crucible-session",
- "crucible-shmem",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "crucible-control-client"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "bytes",
+ "crucible-control-api",
+ "crucible-control-server",
+ "crucible-engine",
+ "crucible-qemu-protocol",
+ "crucible-qemu-shmem",
+ "crucible-session",
+ "futures-util",
+ "reqwest",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "crucible-control-server"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "bytes",
+ "crucible-control-api",
+ "crucible-control-client",
+ "crucible-engine",
+ "crucible-qemu-protocol",
+ "crucible-qemu-shmem",
+ "crucible-session",
+ "futures-util",
+ "hyper-util",
+ "rustix 1.1.4",
+ "rustls",
+ "rustls-pemfile",
+ "rustls-pki-types",
+ "sha2 0.10.9",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-rustls",
+ "uuid",
+]
+
+[[package]]
+name = "crucible-daemon"
+version = "0.1.0"
+dependencies = [
+ "aos-linux-project-quota",
+ "blake3",
+ "ciborium",
+ "crucible-campaign",
+ "crucible-control-api",
+ "crucible-control-client",
+ "crucible-control-server",
+ "crucible-device",
+ "crucible-engine",
+ "crucible-guest",
+ "crucible-qemu-host",
+ "crucible-qemu-protocol",
+ "crucible-qemu-shmem",
+ "crucible-session",
+ "crucible-store",
+ "crucible-store-s3",
  "ed25519-dalek",
  "rand 0.9.4",
  "rustix 1.1.4",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -3252,12 +3784,9 @@ dependencies = [
 ]
 
 [[package]]
-name = "crucible-debug-gateway"
+name = "crucible-determinism"
 version = "0.1.0"
 dependencies = [
- "crucible-api",
- "crucible-protocol",
- "tempfile",
  "thiserror 2.0.18",
 ]
 
@@ -3267,10 +3796,31 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "ciborium",
- "crucible-shmem",
- "crucible-sim",
+ "crucible-determinism",
+ "crucible-qemu-shmem",
  "serde",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "crucible-engine"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "ciborium",
+ "crucible-campaign",
+ "crucible-determinism",
+ "crucible-device",
+ "crucible-qemu-protocol",
+ "crucible-qemu-shmem",
+ "crucible-store",
+ "crucible-test-support",
+ "regex",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "toml 0.8.23",
+ "tracing",
 ]
 
 [[package]]
@@ -3278,54 +3828,32 @@ name = "crucible-guest"
 version = "0.1.0"
 dependencies = [
  "crucible-campaign",
- "crucible-protocol",
+ "crucible-qemu-protocol",
  "libc",
  "thiserror 2.0.18",
 ]
 
 [[package]]
-name = "crucible-harness"
+name = "crucible-qemu-debug-gateway"
 version = "0.1.0"
 dependencies = [
- "rustix 1.1.4",
- "serde",
- "serde_json",
- "sha2 0.10.9",
+ "crucible-control-server",
+ "crucible-qemu-protocol",
  "tempfile",
- "toml 0.8.23",
-]
-
-[[package]]
-name = "crucible-linux-resource"
-version = "0.1.0"
-dependencies = [
- "libc",
- "rustix 1.1.4",
  "thiserror 2.0.18",
 ]
 
 [[package]]
-name = "crucible-protocol"
+name = "crucible-qemu-host"
 version = "0.1.0"
 dependencies = [
- "blake3",
- "libc",
- "sha2 0.10.9",
- "thiserror 2.0.18",
- "unicode-normalization",
-]
-
-[[package]]
-name = "crucible-qemu"
-version = "0.1.0"
-dependencies = [
+ "aos-linux-project-quota",
  "blake3",
  "ciborium",
- "crucible",
  "crucible-device",
- "crucible-linux-resource",
- "crucible-protocol",
- "crucible-shmem",
+ "crucible-engine",
+ "crucible-qemu-protocol",
+ "crucible-qemu-shmem",
  "libc",
  "rustix 1.1.4",
  "serde",
@@ -3341,9 +3869,9 @@ name = "crucible-qemu-plugin"
 version = "0.1.0"
 dependencies = [
  "blake3",
- "crucible",
- "crucible-protocol",
- "crucible-shmem",
+ "crucible-engine",
+ "crucible-qemu-protocol",
+ "crucible-qemu-shmem",
  "hex",
  "libc",
  "serde_json",
@@ -3352,32 +3880,22 @@ dependencies = [
 ]
 
 [[package]]
-name = "crucible-s3-store"
-version = "0.1.0"
-dependencies = [
- "aws-config",
- "aws-sdk-s3",
- "crucible-cas",
- "thiserror 2.0.18",
- "tokio",
-]
-
-[[package]]
-name = "crucible-session"
-version = "0.1.0"
-dependencies = [
- "crucible",
- "crucible-protocol",
- "thiserror 2.0.18",
- "tokio",
-]
-
-[[package]]
-name = "crucible-shmem"
+name = "crucible-qemu-protocol"
 version = "0.1.0"
 dependencies = [
  "blake3",
- "crucible-protocol",
+ "libc",
+ "sha2 0.10.9",
+ "thiserror 2.0.18",
+ "unicode-normalization",
+]
+
+[[package]]
+name = "crucible-qemu-shmem"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "crucible-qemu-protocol",
  "libc",
  "serde",
  "serde_json",
@@ -3386,10 +3904,50 @@ dependencies = [
 ]
 
 [[package]]
-name = "crucible-sim"
+name = "crucible-session"
 version = "0.1.0"
 dependencies = [
+ "crucible-engine",
+ "crucible-qemu-protocol",
  "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
+name = "crucible-store"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "blake3",
+ "rusqlite",
+ "rustix 1.1.4",
+ "tempfile",
+ "thiserror 2.0.18",
+ "zeroize",
+ "zstd",
+]
+
+[[package]]
+name = "crucible-store-s3"
+version = "0.1.0"
+dependencies = [
+ "aws-config",
+ "aws-sdk-s3",
+ "crucible-store",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
+name = "crucible-test-support"
+version = "0.1.0"
+dependencies = [
+ "rustix 1.1.4",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "toml 0.8.23",
 ]
 
 [[package]]
@@ -3472,7 +4030,7 @@ checksum = "f46882e17999c6cc590af592290432be3bce0428cb0d5f8b6715e4dc7b383eb3"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -3495,7 +4053,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "strsim",
- "syn",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -3506,7 +4064,7 @@ checksum = "ac3984ec7bd6cfa798e62b4a642426a5be0e68f9401cfc2a01e3fa9ea2fcdb8d"
 dependencies = [
  "darling_core",
  "quote",
- "syn",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -3571,7 +4129,7 @@ checksum = "d08b3a0bcc0d079199cd476b2cae8435016ec11d1c0986c6901c5ac223041534"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -3606,7 +4164,7 @@ checksum = "1ac70aa55017e108007fbaf5aa0f54b021c98f92ff8af59d42eda9da96e3dd4f"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -3741,7 +4299,7 @@ checksum = "67c78a4d8fdf9953a5c9d458f9efe940fd97a0cab0941c075a813ac594733827"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -3983,7 +4541,7 @@ checksum = "e835b70203e41293343137df5c0664546da5745f82ec9b84d40be8336958447b"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -4658,7 +5216,7 @@ dependencies = [
  "indoc",
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -4886,7 +5444,7 @@ dependencies = [
  "quote",
  "rstml",
  "serde",
- "syn",
+ "syn 2.0.118",
  "walkdir",
 ]
 
@@ -4908,7 +5466,7 @@ dependencies = [
  "quote",
  "rstml",
  "server_fn_macro",
- "syn",
+ "syn 2.0.118",
  "uuid",
 ]
 
@@ -4945,7 +5503,7 @@ dependencies = [
  "proc-macro-error2",
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -5134,7 +5692,7 @@ dependencies = [
  "manyhow-macros",
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -5606,7 +6164,7 @@ checksum = "c96395f0a926bc13b1c17622aaddda1ecb55d49c8f1bf9777e4d877800a43f8b"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -5703,7 +6261,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "479ca8adacdd7ce8f1fb39ce9ecccbfe93a3f1344b3d0d97f20bc0196208f62b"
 dependencies = [
  "proc-macro2",
- "syn",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -5743,7 +6301,7 @@ dependencies = [
  "proc-macro-error-attr2",
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -5774,7 +6332,7 @@ checksum = "af066a9c399a26e020ada66a034357a868728e72cd426f3adcd35f80d88d88c8"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
  "version_check",
  "yansi",
 ]
@@ -5805,7 +6363,7 @@ dependencies = [
  "prost",
  "prost-types",
  "regex",
- "syn",
+ "syn 2.0.118",
  "tempfile",
 ]
 
@@ -5819,7 +6377,7 @@ dependencies = [
  "itertools 0.14.0",
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -5914,7 +6472,7 @@ dependencies = [
  "proc-macro-utils",
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -6089,7 +6647,7 @@ dependencies = [
  "proc-macro-error2",
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -6108,6 +6666,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c5102a6aaa05aa011a238e178e6bca86d2cb56fc9f586d37cb80f5bca6e07759"
 dependencies = [
  "bitflags",
+]
+
+[[package]]
+name = "ref-cast"
+version = "1.0.27"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7e440fb4e4b4147295338efb76001ab9e4efc0e5839df2c47fc5ac2381d365c3"
+dependencies = [
+ "ref-cast-impl",
+]
+
+[[package]]
+name = "ref-cast-impl"
+version = "1.0.27"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "92ecd8964f8453721699a1ed72037b0db49ce2f5a5138486ee89bed6f67cdf3a"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.5",
 ]
 
 [[package]]
@@ -6266,7 +6844,7 @@ dependencies = [
  "proc-macro2",
  "proc-macro2-diagnostics",
  "quote",
- "syn",
+ "syn 2.0.118",
  "syn_derive",
  "thiserror 2.0.18",
 ]
@@ -6431,6 +7009,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "schemars"
+version = "1.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "687274d293b6cdc6e73e0fee520bf2049650090d7164f87672d212a3c530cf4a"
+dependencies = [
+ "dyn-clone",
+ "ref-cast",
+ "schemars_derive",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "schemars_derive"
+version = "1.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d98c67716b46af2f0b8cf752abc930f6f9aecfbf671ecfb531db8a31dbe4e2ba"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "serde_derive_internals",
+ "syn 3.0.5",
+]
+
+[[package]]
 name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6526,7 +7129,18 @@ checksum = "d540f220d3187173da220f885ab66608367b6574e925011a9353e4badda91d79"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
+]
+
+[[package]]
+name = "serde_derive_internals"
+version = "0.30.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f852137cce035d6a4df67ccce505ff6b3e9fd3a10e3e52b24dc71e650bb1a9bd"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.5",
 ]
 
 [[package]]
@@ -6572,7 +7186,7 @@ checksum = "175ee3e80ae9982737ca543e96133087cbd9a485eecc3bc4de9c1a37b47ea59c"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -6645,7 +7259,7 @@ dependencies = [
  "convert_case 0.6.0",
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
  "xxhash-rust",
 ]
 
@@ -6656,7 +7270,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "eb8b274f568c94226a8045668554aace8142a59b8bca5414ac5a79627c825568"
 dependencies = [
  "server_fn_macro",
- "syn",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -6908,7 +7522,7 @@ dependencies = [
  "quote",
  "sqlx-core",
  "sqlx-macros-core",
- "syn",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -6931,7 +7545,7 @@ dependencies = [
  "sqlx-mysql",
  "sqlx-postgres",
  "sqlx-sqlite",
- "syn",
+ "syn 2.0.118",
  "tokio",
  "url",
 ]
@@ -7150,7 +7764,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "rustversion",
- "syn",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -7162,7 +7776,7 @@ dependencies = [
  "heck",
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -7183,6 +7797,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "syn"
+version = "3.0.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "12df2e0110f65b775f769bb17ef989067a1d931b2eb822bd4346631eeada89f9"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "unicode-ident",
+]
+
+[[package]]
 name = "syn_derive"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7191,7 +7816,7 @@ dependencies = [
  "proc-macro-error2",
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -7211,7 +7836,7 @@ checksum = "728a70f3dbaf5bab7f0c4b1ac8d7ae5ea60a4b5549c8a5914361c99147a709d2"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -7304,7 +7929,7 @@ checksum = "4fee6c4efc90059e10f81e6d42c60a18f76588c3d74cb83a0b242a2b6c7504c1"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -7315,7 +7940,7 @@ checksum = "ebc4ee7f67670e9b64d05fa4253e753e016c6c95ff35b89b7941d6b856dec1d5"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -7408,7 +8033,7 @@ checksum = "385a6cb71ab9ab790c5fe8d67f1645e6c450a7ce006a33de03daa956cf70a496"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -7599,7 +8224,7 @@ checksum = "7490cfa5ec963746568740651ac6781f701c9c5ea257c58e057f3ba8cf69e8da"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -7634,7 +8259,7 @@ checksum = "3c36781cc0e46a83726d9879608e4cf6c2505237e263a8eb8c24502989cfdb28"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -7883,7 +8508,7 @@ dependencies = [
  "bumpalo",
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
  "wasm-bindgen-shared",
 ]
 
@@ -8243,7 +8868,7 @@ dependencies = [
  "heck",
  "indexmap",
  "prettyplease",
- "syn",
+ "syn 2.0.118",
  "wasm-metadata",
  "wit-bindgen-core",
  "wit-component",
@@ -8259,7 +8884,7 @@ dependencies = [
  "prettyplease",
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
  "wit-bindgen-core",
  "wit-bindgen-rust",
 ]
@@ -8342,7 +8967,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "strum 0.27.2",
- "syn",
+ "syn 2.0.118",
  "wasm-bindgen",
  "wasm-bindgen-macro-support",
  "worker-sys",
@@ -8441,7 +9066,7 @@ checksum = "de844c262c8848816172cef550288e7dc6c7b7814b4ee56b3e1553f275f1858e"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
  "synstructure",
 ]
 
@@ -8484,7 +9109,7 @@ dependencies = [
  "proc-macro-crate",
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
  "zbus_names",
  "zvariant",
  "zvariant_utils",
@@ -8518,7 +9143,7 @@ checksum = "8fd425244944f4ab65ccff928e7323354c5a018c75838362fdce749dfad2ee1e"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -8538,7 +9163,7 @@ checksum = "11532158c46691caf0f2593ea8358fed6bbf68a0315e80aae9bd41fbade684a1"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
  "synstructure",
 ]
 
@@ -8578,7 +9203,7 @@ checksum = "625dc425cab0dca6dc3c3319506e6593dcb08a9f387ea3b284dbd52a92c40555"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
 ]
 
 [[package]]
@@ -8644,7 +9269,7 @@ dependencies = [
  "proc-macro-crate",
  "proc-macro2",
  "quote",
- "syn",
+ "syn 2.0.118",
  "zvariant_utils",
 ]
 
@@ -8657,6 +9282,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "serde",
- "syn",
+ "syn 2.0.118",
  "winnow 1.0.3",
 ]

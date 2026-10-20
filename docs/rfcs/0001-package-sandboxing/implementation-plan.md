@@ -117,8 +117,8 @@ invent a field.
 **Deliverables.**
 
 - [x] **Capability gate (D19) — first.** Add a `min-format` / `requires-features`
-      field to `PackageMeta` (`crates/aos-package/src/types.rs`) and the registry
-      parser (`crates/aos-package/src/registry/parse.rs`); permission-bearing
+      field to `PackageMeta` (`crates/aos/packages/aos-package-manager/src/types.rs`) and the registry
+      parser (`crates/aos/registry/aos-registry-client/src/registry/parse.rs`); permission-bearing
       entries carry the gate inside a structured `references` table so an apm
       predating the schema **fails closed** instead of silently dropping the
       privilege metadata. Land this *before* any `[permissions]`/`expose` package
@@ -137,7 +137,7 @@ invent a field.
       (package names, not store-path hashes). Semantics: **install-time pull-in**
       (deb-style `Depends:`) materialized atomically in the shared profile
       generation; **no version-constraint solver** (the registry channel model
-      already pins versions). Resolve names in `crates/aos-package/src/resolve.rs`
+      already pins versions). Resolve names in `crates/aos/packages/aos-package-manager/src/resolve.rs`
       (today hash-only); emit target ordering edges in the expose phase (P5).
 - [x] **The permission surface (`permissions.md`).** Document the manifest
       fields and their per-unit-directive mapping as the canonical table:
@@ -157,7 +157,7 @@ invent a field.
       allowlist; image-baked EROFS default, overridable per host by an
       Ignition-written copy in a higher overlay layer (same precedence as
       presets); evaluated by `apm` at install/enable. Nix-evaluated policy is
-      rejected (no evaluator at runtime install). Parser in `crates/aos-package/`.
+      rejected (no evaluator at runtime install). Parser in `crates/aos/packages/aos-package-manager/`.
 
 **Phase 0 implementation scope.** `apm` can parse, validate, display, resolve,
 persist, and policy-admit generator-authored registry metadata carrying these
@@ -189,7 +189,7 @@ no central module tree. (migration.md increment 1.)
       hand it to the renderer instead. One filter-list entry, not N top-level args.
 - [x] **Build-time renderer as a cheap sibling derivation.** Render
       `expose.units` to unit text + a manifest copy via a trivial builder
-      (`pkgs/build-support/trivial-builders.nix`), surfaced as `pkg.expose` via
+      (`pkgs/build-support/_trivial-builders.nix`), surfaced as `pkg.expose` via
       `passthru`. Editing a unit re-renders text and never rebuilds the payload;
       the payload closure never references its own integration.
 - [x] **Reuse the pure renderers.** Call `serviceToUnit`/`targetToUnit`/… from
@@ -354,8 +354,8 @@ apm at first boot; define upgrade/rollback.
 - [x] **`apm install` expose phase.** Read `expose` + the `[permissions]`
       manifest; verify `request ∩ host policy` (refuse if the manifest exceeds
       policy); materialize the per-unit + gated units; run the preset; start the
-      target. In `crates/aos-package/src/install.rs` (reuse the existing async
-      zbus client `crates/aos-systemd` for start/stop/reload).
+      target. In `crates/aos/packages/aos-package-manager/src/install.rs` (reuse the existing async
+      zbus client `crates/shared/aos-systemd-client` for start/stop/reload).
 - [x] **Attach dir (D16).** Materialize runtime-installed units as **gc-rooted
       store-path symlinks** under `/var/etc/systemd/system.attached/` (apm-owned,
       portablectl-attach shape) + the enable line in `30-aos-apm.preset`. Both
@@ -630,20 +630,13 @@ Full spec: [`enforcement.md`](enforcement.md).
       Current coverage enables `CONFIG_BPF_EVENTS`, `CONFIG_BPF_LSM`,
       `CONFIG_FUNCTION_TRACER`, `CONFIG_DYNAMIC_FTRACE`, `bpf` in `CONFIG_LSM`,
       AOS-built `pahole`/dwarves, and `CONFIG_DEBUG_INFO_BTF` /
-      `CONFIG_DEBUG_INFO_BTF_MODULES`; adds the `bpf-lsm-policy-v1` signed
-      package metadata gate, registry parser support, and host policy
-      `[[ebpf-lsm.policies]]` selector; ships the AOS-built
-      `aos-ebpf-lsm-policy` helper and seed BPF-LSM policy package; and loads
-      selected installed policy artifacts through
-      `apm _load-ebpf-lsm-policies --system`, resolving the JSON policy and
-      `.bpf.o` object from installed, signed package metadata rooted in the
-      current system package generation before pinning BPF links under
-      `/sys/fs/bpf/aos/lsm`. The `aos-ebpf-lsm-policies.service` prepares bpffs
-      and runs after package seed and install services, while the helper also
-      verifies or mounts bpffs for direct and live-reconcile invocations. Live
-      package target reconciliation loads the selected fleet BPF-LSM policies
-      before exposing package targets; complete existing pin sets are treated as
-      already loaded, and partial pin sets fail closed.
+      `CONFIG_DEBUG_INFO_BTF_MODULES`; ships the selected package's typed
+      BPF-LSM policy resource, exact JSON and `.bpf.o` artifact references, and
+      package-owned Linux terminal. The checked ability runtime resolves those
+      ordinary signed package artifacts and applies them through the selected
+      terminal before exposing dependent resources. The backend validates or
+      mounts bpffs, pins links under its admitted realization, treats complete
+      owned pin sets as already loaded, and rejects partial or unowned pin sets.
 - [x] **Full systemd hardening baseline** on every generated workload service (the
       `systemd-analyze security` consensus set — see [`enforcement.md`](enforcement.md));
       relaxations computed from the manifest, never hand-written. The renderer
@@ -675,8 +668,8 @@ Full spec: [`enforcement.md`](enforcement.md).
 the default `systemd-analyze` threshold; its Landlock ruleset denies an
 out-of-manifest path in a VM test *with a host-path hole present* (proves
 namespace-independence); its MAC profile loads and denies a default-denied
-operation; a signed fleet BPF-LSM package selected by `/etc/aos/policy.toml` is
-rooted in the current package generation, loads in a VM with `bpf` active in
+operation; a signed fleet BPF-LSM package selected in the checked package
+fixed point loads in a VM with `bpf` active in
 `/sys/kernel/security/lsm`, emits the trusted helper's success record, survives
 an idempotent second load, and pins the expected BPF link before package targets
 are exposed.
@@ -894,7 +887,7 @@ the cited phase's exit is ticked.
       tmpfiles entries, `systemd-measure`, TPM2 setup units and generator, and the
       cryptsetup TPM2 token plugin. Verified by `checks.systemd-credentials`.
 - [x] **Exact `expose` schema (P0/P1).** Verified in
-      `crates/aos-package/src/types.rs`: `PackageMeta` carries
+      `crates/aos/packages/aos-package-manager/src/types.rs`: `PackageMeta` carries
       `min-format`, `requires-features`, `expose: Option<ExposeMeta>`,
       `expose_artifact: Option<ExposeArtifactMeta>`, and the signed
       `PermissionsMeta`; `ExposeMeta` covers target, units, images, package
@@ -910,7 +903,7 @@ the cited phase's exit is ticked.
       `permissions`, computes confinement when absent, and rejects malformed
       MAC/profile artifacts before writing registry TOML.
 - [x] **Runtime package scope (P5).** Whether runtime apm-installed packages share
-      the `system` scope or get their own (`crates/aos-package/src/profile/mod.rs`);
+      the `system` scope or get their own (`crates/aos/packages/aos-package-manager/src/profile/mod.rs`);
       the apm package generation must stay independent of the toplevel generation.
 - [x] **Desired-packages file layout (P5).** Reuse `registries.d/` + a separate
       `packages.d/desired.toml`, or fold both into one document.
@@ -922,7 +915,7 @@ the cited phase's exit is ticked.
       download and generation-root `expose.images[].store_path` on ordinary
       packages, verify the image NAR against signed registry metadata, and
       reject image NARs that declare unsigned runtime references
-      (`crates/aos-package/src/install.rs`, `upgrade.rs`).
+      (`crates/aos/packages/aos-package-manager/src/install.rs`, `upgrade.rs`).
 - [x] **nspawn feature checks (P8, only if nspawn lands).** Not applicable to
       the MVP because the nspawn substrate did not land (D17/P11). If a future
       multi-unit-init package reopens nspawn, that implementation must check

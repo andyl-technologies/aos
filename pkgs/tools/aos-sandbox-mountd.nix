@@ -4,7 +4,7 @@
   mkCargoPackage,
   mkCargoArtifacts,
   mkCargoDummySource,
-  fetchCargoVendor,
+  aosWorkspaceVendor,
   protobuf,
   elfutils,
   stdenv,
@@ -16,7 +16,7 @@
     if isDarwinCross
     then buildPackages.protobuf
     else protobuf;
-  workspaceCargo = import ./aos/_workspace-cargo.nix {inherit lib fetchCargoVendor;};
+  workspaceCargo = import ./aos/_workspace-cargo.nix {inherit lib aosWorkspaceVendor;};
   inherit (workspaceCargo) src cargoDeps;
   cargoEnv = {
     PROTOC = "${buildProtobuf}/bin/protoc";
@@ -50,6 +50,23 @@
   };
 in
   mkCargoPackage {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
     pname = "aos-sandbox-mountd";
     inherit version src cargoDeps cargoArtifacts cargoArtifactContract cargoEnv;
     cargoRoot = "crates";

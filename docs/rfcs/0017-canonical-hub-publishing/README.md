@@ -42,10 +42,13 @@ and are not distinct AOS distributions. A release is published to destinations
 such as `staging/candidate` and `production/stable`; each destination's profile
 states what the release must prove before that destination moves.
 
-Every stable release closes one four-target package matrix:
+This RFC's stable release policy selects and closes one four-target package
+matrix:
 `x86_64-linux`, `aarch64-linux`, `x86_64-darwin`, and `aarch64-darwin`. Both
 Linux targets also carry the complete system-image and recovery matrix. Darwin
-targets carry packages and their authenticated supporting artifacts only.
+targets carry packages and their authenticated supporting artifacts only. The
+generic package platform schema remains open to other OS, CPU, ABI, and feature
+identities.
 
 The release flow is:
 

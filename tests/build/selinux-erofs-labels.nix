@@ -31,12 +31,15 @@
   labeledEtcDump = labeledSystem.config.system.build.etcDump;
   labeledEtcImage = labeledSystem.config.system.build.etcMetadataImage;
   labeledEtcPlan = labeledSystem.config.system.build.etcSelinuxContextPlan;
-  labeledRootSystem.config.system.build = {
-    inherit (legacySystem.config.system.build) kernel systemdSystemPresets toplevel;
-    immutableSelinuxPolicy = policy;
+  labeledRootSystem.config = lib.recursiveUpdate legacySystem.config {
+    system.build.immutableSelinuxPolicy = policy;
   };
-  labeledRootfs = (import ../../lib/build/rootfs.nix) {
+  labeledRootfs = (import ../../pkgs/system/_systemd-abilities/platform/_rootfs-builder.nix) {
     inherit pkgs lib;
+    closureInfoFor = lib.build.closureInfo {pkgs = pkgs.buildPackages;};
+    kernel = legacySystem.config.aos.kernel.selected;
+    managerConfiguration = legacySystem.config.system.build.managerConfiguration;
+    managerRootfsPlan = legacySystem.config.aos.manager.selected.configuration.rootfs;
     system = labeledRootSystem;
     pname = "selinux-labeled-rootfs-fixture";
     fsType = "erofs";

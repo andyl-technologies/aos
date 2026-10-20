@@ -370,9 +370,9 @@ class ManifestEncodingTests(unittest.TestCase):
             fields = output.read_bytes().split(b"\0")
             header_text = header.read_text(encoding="ascii")
 
-        physical_systemd = b"/nix.lower/store/" + systemd_root.name.encode() + b"/lib/systemd/systemd"
+        physical_systemd = b"/usr/lib/aos/nix/store/" + systemd_root.name.encode() + b"/lib/systemd/systemd"
         physical_interpreter = (
-            b"/nix.lower/store/" + glibc_root.name.encode() + b"/lib/ld-linux.so.2"
+            b"/usr/lib/aos/nix/store/" + glibc_root.name.encode() + b"/lib/ld-linux.so.2"
         )
         self.assertEqual(
             fields[2:7],
@@ -405,7 +405,7 @@ class ManifestEncodingTests(unittest.TestCase):
         )
         self.assertNotIn("/nix.lower/nix/store/", header_text)
 
-        lower_store = Path("/nix.lower/store")
+        lower_store = Path("/usr/lib/aos/nix/store")
         self.assertEqual(
             manifest.physical_lower_path(systemd_root),
             str(lower_store / systemd_root.name),
@@ -433,9 +433,9 @@ class ManifestEncodingTests(unittest.TestCase):
         valid_fields = [
             manifest.MAGIC,
             manifest.VERSION,
-            b"/nix.lower/store/systemd/lib/systemd/systemd",
-            b"/nix.lower/store/glibc/lib/ld.so",
-            b"/nix.lower/store/helper/bin/helper",
+            b"/usr/lib/aos/nix/store/systemd/lib/systemd/systemd",
+            b"/usr/lib/aos/nix/store/glibc/lib/ld.so",
+            b"/usr/lib/aos/nix/store/helper/bin/helper",
             policy_digest.encode(),
             b"1",
             *roots,

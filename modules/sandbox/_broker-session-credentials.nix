@@ -3,6 +3,8 @@
   lib,
   pkgs,
 }: let
+  credentialNameType = import ./_credential-name-type.nix {inherit lib;};
+
   roleFiles = role:
     if role == "client"
     then [
@@ -81,7 +83,7 @@ in {
       map (entry: {
         name = entry.name;
         value = lib.mkOption {
-          type = lib.types.nullOr lib.serviceTypes.credentialName;
+          type = lib.types.nullOr credentialNameType;
           default = null;
           description = "External system credential for the ${endpoint.description} broker-session ${entry.label}; its bytes never enter the Nix store.";
         };

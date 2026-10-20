@@ -6,7 +6,7 @@
 mkDerivation {
   pname = "aos-network-no-setid-test-launcher";
   inherit version;
-  src = ../../../crates/aos-sandbox-network/tests/no_setid_exec.c;
+  src = ../../../crates/sandbox/host/aos-sandbox-network/tests/no_setid_exec.c;
   buildDeps = [];
   runtimeDeps = [];
   phases = [

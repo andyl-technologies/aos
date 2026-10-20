@@ -1,194 +1,254 @@
 [workspace]
 resolver = "2"
 members = [
-    "aos",
-    "aos-oci",
-    "aos-oci-types",
-    "aos-contract",
-    "aos-maintain",
-    "aos-core",
-    "aos-boot-identity",
-    "aos-recovery",
-    "aos-net",
-    "aos-proto",
-    "aos-proto-types",
-    "aos-server",
-    "aos-cache",
-    "aos-remote",
-    "aos-doc",
-    "aos-doc-model",
-    "aos-package",
-    "aos-hub-console-contract",
-    "aos-hub-core",
-    "aos-hub",
-    "aos-registry-surface",
-    "aos-release",
-    "aos-release-signer",
-    "aos-image-finalizer",
-    "aos-registry-spa",
-    "aos-hub-worker",
-    "aos-hub-console",
-    "aos-profile",
-    "aos-systemd",
-    "aos-filesystem-view",
-    "aos-filesystem-view-core",
-    "aos-filesystem-fuse",
-    "aos-filesystem-fuse/tests/fixtures/kernel-worker",
-    "aos-filesystem-fuse/tests/fixtures/link-consumer",
-    "aos-sandbox-agent",
-    "aos-sandbox-client",
-    "aos-sandbox-guest",
-    "aos-sandbox-guest-root-realization",
-    "aos-sandbox-guest-root-tree",
-    "aos-sandbox-core",
-    "aos-sandbox-coordinator",
-    "aos-sandbox-coordinator-protocol",
-    "aos-sandbox-journal",
-    "aos-sandbox-policy",
-    "aos-sandbox-ownership-protocol",
-    "aos-sandbox-ownership",
-    "aos-sandbox-source-provider-ledger",
-    "aos-sandbox-source-provider",
-    "aos-sandbox-source-provider-protocol",
-    "aos-sandbox-source-provider-security",
-    "aos-sandbox-source",
-    "aos-sandbox-ledger-replay",
-    "aos-sandbox-source-signer",
-    "aos-sandbox-broker-session-protocol",
-    "aos-sandbox-broker-session-security",
-    "aos-sandbox-controller-runtime",
-    "aos-sandbox-cache-signer",
-    "aos-sandbox-services",
-    "aos-sandbox-protocol",
-    "aos-sandbox-publisher",
-    "aos-sandbox",
-    "aos-sandbox/tests/fixtures/service-journal",
-    "aos-sandbox-linux",
-    "aos-sandbox-kernel-export-owner-peer",
-    "aos-sandbox-linux/tests/fixtures/verity-backing",
-    "aos-sandbox-broker",
-    "aos-sandbox-host",
-    "aos-sandbox-guardian",
-    "aos-sandbox-mount",
-    "aos-sandbox-mount-native",
-    "aos-sandbox-network",
-    "aos-sandbox-network/tests/fixtures/protected-store",
-    "aos-sandbox-network/tests/fixtures/systemd-custody",
-    "aos-sandbox-storage",
-    "crucible-cas",
-    "crucible-linux-resource",
-    "crucible-s3-store",
-    "crucible-campaign",
-    "crucible-sim",
-    "crucible-assert",
-    "crucible-shmem",
-    "crucible-protocol",
-    "crucible-device",
-    "crucible-debug-gateway",
-    "crucible-qemu",
-    "crucible-qemu-plugin",
-    "crucible-guest",
-    "crucible",
-    "crucible-session",
-    "crucible-api",
-    "crucible-daemon",
-    "crucible-cli",
-    "crucible-harness",
+    "aos/cli/aos-cli",
+    "shared/aos-oci",
+    "shared/aos-oci-types",
+    "aos/modules/aos-module-format",
+    "aos/activation/aos-activation",
+    "aos/activation/aos-activation-crucible",
+    "aos/release/aos-package-maintenance",
+    "shared/aos-core",
+    "aos/boot/aos-boot-identity",
+    "aos/boot/aos-recovery",
+    "shared/aos-transfer",
+    "aos/packages/aos-build-api",
+    "hub/aos-hub-api",
+    "aos/packages/aos-build-server",
+    "aos/packages/aos-nix-cache",
+    "aos/packages/aos-build-client",
+    "aos/cli/aos-nix-docs",
+    "aos/modules/aos-module-docs",
+    "aos/packages/aos-package-manager",
+    "aos/boot/aos-platform-metadata",
+    "hub/aos-hub-ui",
+    "hub/aos-hub-service",
+    "hub/aos-hub-native",
+    "aos/registry/aos-registry-format",
+    "aos/release/aos-release-format",
+    "aos/release/aos-release-signer",
+    "aos/release/aos-image-finalizer",
+    "aos/registry/aos-registry-web",
+    "hub/aos-hub-worker",
+    "hub/aos-hub-console",
+    "aos/cli/aos-closure-analysis",
+    "shared/aos-systemd-client",
+    "aos/boot/aos-configuration-image",
+    "aos/activation/aos-activation-config-files",
+    "aos/activation/aos-activation-filesystem",
+    "aos/activation/aos-activation-kubernetes",
+    "aos/activation/aos-activation-sysctl",
+    "aos/activation/aos-activation-nftables",
+    "aos/activation/aos-activation-bpf-lsm",
+    "aos/activation/aos-activation-bpf-network",
+    "aos/activation/aos-activation-nix-store",
+    "aos/activation/aos-activation-systemd",
+    "aos/activation/aos-activation-storage",
+    "aos/boot/aos-storage-layout",
+    "crucible/storage/crucible-store",
+    "shared/aos-linux-project-quota",
+    "crucible/storage/crucible-store-s3",
+    "crucible/engine/crucible-campaign",
+    "crucible/engine/crucible-determinism",
+    "crucible/protocol/crucible-qemu-shmem",
+    "crucible/protocol/crucible-qemu-protocol",
+    "crucible/engine/crucible-device",
+    "crucible/qemu/crucible-qemu-debug-gateway",
+    "crucible/qemu/crucible-qemu-host",
+    "crucible/qemu/crucible-qemu-plugin",
+    "crucible/guest/crucible-guest",
+    "crucible/engine/crucible-engine",
+    "crucible/control/crucible-session",
+    "crucible/control/crucible-control-api",
+    "crucible/control/crucible-daemon",
+    "crucible/control/crucible-cli",
+    "crucible/testing/crucible-test-support",
+    "shared/aos-artifact-evidence",
+    "shared/aos-nar",
+    "shared/aos-nix",
+    "aos/cli/aos-cli-ui",
+    "aos/boot/aos-boot-runtime",
+    "aos/release/aos-release-coordinator",
+    "aos/packages/aos-deployment-format",
+    "aos/packages/aos-deployment",
+    "aos/registry/aos-registry-client",
+    "aos/registry/aos-registry-authoring",
+    "hub/aos-hub-model",
+    "hub/aos-hub-db",
+    "hub/aos-hub-client",
+    "crucible/control/crucible-control-client",
+    "crucible/control/crucible-control-server",
+    "sandbox/filesystem/aos-sandbox-filesystem-fuse",
+    "sandbox/filesystem/aos-sandbox-filesystem-fuse/tests/fixtures/kernel-worker",
+    "sandbox/filesystem/aos-sandbox-filesystem-fuse/tests/fixtures/link-consumer",
+    "sandbox/filesystem/aos-sandbox-filesystem-format",
+    "sandbox/filesystem/aos-sandbox-filesystem-view",
+    "sandbox/protocol/aos-sandbox-guest-protocol",
+    "sandbox/protocol/aos-sandbox-broker-session-protocol",
+    "sandbox/security/aos-sandbox-broker-session-security",
+    "sandbox/host/aos-sandbox-broker",
+    "sandbox/security/aos-sandbox-cache-signer",
+    "sandbox/controller/aos-sandbox-client",
+    "sandbox/controller/aos-sandbox-controller-runtime",
+    "sandbox/protocol/aos-sandbox-coordinator-protocol",
+    "sandbox/controller/aos-sandbox-coordinator",
+    "sandbox/model/aos-sandbox-model",
+    "sandbox/security/aos-sandbox-guardian",
+    "sandbox/guest/aos-sandbox-guest-root-realization",
+    "sandbox/guest/aos-sandbox-guest-root-measurement",
+    "sandbox/guest/aos-sandbox-guest",
+    "sandbox/host/aos-sandbox-host",
+    "sandbox/controller/aos-sandbox-journal",
+    "sandbox/security/aos-sandbox-kernel-export-owner-peer",
+    "sandbox/controller/aos-sandbox-ledger-replay",
+    "sandbox/host/aos-sandbox-linux",
+    "sandbox/host/aos-sandbox-linux/tests/fixtures/verity-backing",
+    "sandbox/host/aos-sandbox-mount-native",
+    "sandbox/host/aos-sandbox-mount",
+    "sandbox/host/aos-sandbox-network",
+    "sandbox/host/aos-sandbox-network/tests/fixtures/protected-store",
+    "sandbox/host/aos-sandbox-network/tests/fixtures/systemd-custody",
+    "sandbox/protocol/aos-sandbox-ownership-protocol",
+    "sandbox/model/aos-sandbox-ownership",
+    "sandbox/model/aos-sandbox-policy",
+    "sandbox/protocol/aos-sandbox-protocol",
+    "sandbox/host/aos-sandbox-publisher",
+    "sandbox/controller/aos-sandbox-services",
+    "sandbox/storage/aos-sandbox-source-provider-ledger",
+    "sandbox/protocol/aos-sandbox-source-provider-protocol",
+    "sandbox/security/aos-sandbox-source-provider-security",
+    "sandbox/storage/aos-sandbox-source-provider",
+    "sandbox/security/aos-sandbox-source-signer",
+    "sandbox/storage/aos-sandbox-source",
+    "sandbox/storage/aos-sandbox-storage",
+    "sandbox/controller/aos-sandbox-controller-domain",
+    "sandbox/controller/aos-sandbox-controller-domain/tests/fixtures/service-journal",
+    "sandbox/protocol/aos-sandbox-api",
 ]
 
-# Preserve the existing default selection; coordinator transport is explicit.
+# Coordinator transport remains an explicitly selected graph.
 default-members = [
-    "aos",
-    "aos-oci",
-    "aos-oci-types",
-    "aos-contract",
-    "aos-maintain",
-    "aos-core",
-    "aos-boot-identity",
-    "aos-recovery",
-    "aos-net",
-    "aos-proto",
-    "aos-proto-types",
-    "aos-server",
-    "aos-cache",
-    "aos-remote",
-    "aos-doc",
-    "aos-doc-model",
-    "aos-package",
-    "aos-hub-console-contract",
-    "aos-hub-core",
-    "aos-hub",
-    "aos-registry-surface",
-    "aos-release",
-    "aos-release-signer",
-    "aos-image-finalizer",
-    "aos-registry-spa",
-    "aos-hub-worker",
-    "aos-hub-console",
-    "aos-profile",
-    "aos-systemd",
-    "aos-filesystem-view",
-    "aos-filesystem-view-core",
-    "aos-filesystem-fuse",
-    "aos-filesystem-fuse/tests/fixtures/kernel-worker",
-    "aos-filesystem-fuse/tests/fixtures/link-consumer",
-    "aos-sandbox-agent",
-    "aos-sandbox-client",
-    "aos-sandbox-guest",
-    "aos-sandbox-guest-root-realization",
-    "aos-sandbox-guest-root-tree",
-    "aos-sandbox-core",
-    "aos-sandbox-journal",
-    "aos-sandbox-policy",
-    "aos-sandbox-ownership-protocol",
-    "aos-sandbox-ownership",
-    "aos-sandbox-source-provider-ledger",
-    "aos-sandbox-source-provider",
-    "aos-sandbox-source-provider-protocol",
-    "aos-sandbox-source-provider-security",
-    "aos-sandbox-source",
-    "aos-sandbox-ledger-replay",
-    "aos-sandbox-source-signer",
-    "aos-sandbox-broker-session-protocol",
-    "aos-sandbox-broker-session-security",
-    "aos-sandbox-controller-runtime",
-    "aos-sandbox-cache-signer",
-    "aos-sandbox-services",
-    "aos-sandbox-protocol",
-    "aos-sandbox-publisher",
-    "aos-sandbox",
-    "aos-sandbox/tests/fixtures/service-journal",
-    "aos-sandbox-linux",
-    "aos-sandbox-kernel-export-owner-peer",
-    "aos-sandbox-linux/tests/fixtures/verity-backing",
-    "aos-sandbox-broker",
-    "aos-sandbox-host",
-    "aos-sandbox-guardian",
-    "aos-sandbox-mount",
-    "aos-sandbox-mount-native",
-    "aos-sandbox-network",
-    "aos-sandbox-network/tests/fixtures/protected-store",
-    "aos-sandbox-network/tests/fixtures/systemd-custody",
-    "aos-sandbox-storage",
-    "crucible-cas",
-    "crucible-linux-resource",
-    "crucible-s3-store",
-    "crucible-campaign",
-    "crucible-sim",
-    "crucible-assert",
-    "crucible-shmem",
-    "crucible-protocol",
-    "crucible-device",
-    "crucible-debug-gateway",
-    "crucible-qemu",
-    "crucible-qemu-plugin",
-    "crucible-guest",
-    "crucible",
-    "crucible-session",
-    "crucible-api",
-    "crucible-daemon",
-    "crucible-cli",
-    "crucible-harness",
+    "aos/cli/aos-cli",
+    "shared/aos-oci",
+    "shared/aos-oci-types",
+    "aos/modules/aos-module-format",
+    "aos/activation/aos-activation",
+    "aos/activation/aos-activation-crucible",
+    "aos/release/aos-package-maintenance",
+    "shared/aos-core",
+    "aos/boot/aos-boot-identity",
+    "aos/boot/aos-recovery",
+    "shared/aos-transfer",
+    "aos/packages/aos-build-api",
+    "hub/aos-hub-api",
+    "aos/packages/aos-build-server",
+    "aos/packages/aos-nix-cache",
+    "aos/packages/aos-build-client",
+    "aos/cli/aos-nix-docs",
+    "aos/modules/aos-module-docs",
+    "aos/packages/aos-package-manager",
+    "aos/boot/aos-platform-metadata",
+    "hub/aos-hub-ui",
+    "hub/aos-hub-service",
+    "hub/aos-hub-native",
+    "aos/registry/aos-registry-format",
+    "aos/release/aos-release-format",
+    "aos/release/aos-release-signer",
+    "aos/release/aos-image-finalizer",
+    "aos/registry/aos-registry-web",
+    "hub/aos-hub-worker",
+    "hub/aos-hub-console",
+    "aos/cli/aos-closure-analysis",
+    "shared/aos-systemd-client",
+    "aos/boot/aos-configuration-image",
+    "aos/activation/aos-activation-config-files",
+    "aos/activation/aos-activation-filesystem",
+    "aos/activation/aos-activation-kubernetes",
+    "aos/activation/aos-activation-sysctl",
+    "aos/activation/aos-activation-nftables",
+    "aos/activation/aos-activation-bpf-lsm",
+    "aos/activation/aos-activation-bpf-network",
+    "aos/activation/aos-activation-nix-store",
+    "aos/activation/aos-activation-systemd",
+    "aos/activation/aos-activation-storage",
+    "aos/boot/aos-storage-layout",
+    "crucible/storage/crucible-store",
+    "shared/aos-linux-project-quota",
+    "crucible/storage/crucible-store-s3",
+    "crucible/engine/crucible-campaign",
+    "crucible/engine/crucible-determinism",
+    "crucible/protocol/crucible-qemu-shmem",
+    "crucible/protocol/crucible-qemu-protocol",
+    "crucible/engine/crucible-device",
+    "crucible/qemu/crucible-qemu-debug-gateway",
+    "crucible/qemu/crucible-qemu-host",
+    "crucible/qemu/crucible-qemu-plugin",
+    "crucible/guest/crucible-guest",
+    "crucible/engine/crucible-engine",
+    "crucible/control/crucible-session",
+    "crucible/control/crucible-control-api",
+    "crucible/control/crucible-daemon",
+    "crucible/control/crucible-cli",
+    "crucible/testing/crucible-test-support",
+    "shared/aos-artifact-evidence",
+    "shared/aos-nar",
+    "shared/aos-nix",
+    "aos/cli/aos-cli-ui",
+    "aos/boot/aos-boot-runtime",
+    "aos/release/aos-release-coordinator",
+    "aos/packages/aos-deployment-format",
+    "aos/packages/aos-deployment",
+    "aos/registry/aos-registry-client",
+    "aos/registry/aos-registry-authoring",
+    "hub/aos-hub-model",
+    "hub/aos-hub-db",
+    "hub/aos-hub-client",
+    "crucible/control/crucible-control-client",
+    "crucible/control/crucible-control-server",
+    "sandbox/filesystem/aos-sandbox-filesystem-fuse",
+    "sandbox/filesystem/aos-sandbox-filesystem-fuse/tests/fixtures/kernel-worker",
+    "sandbox/filesystem/aos-sandbox-filesystem-fuse/tests/fixtures/link-consumer",
+    "sandbox/filesystem/aos-sandbox-filesystem-format",
+    "sandbox/filesystem/aos-sandbox-filesystem-view",
+    "sandbox/protocol/aos-sandbox-guest-protocol",
+    "sandbox/protocol/aos-sandbox-broker-session-protocol",
+    "sandbox/security/aos-sandbox-broker-session-security",
+    "sandbox/host/aos-sandbox-broker",
+    "sandbox/security/aos-sandbox-cache-signer",
+    "sandbox/controller/aos-sandbox-client",
+    "sandbox/controller/aos-sandbox-controller-runtime",
+    "sandbox/model/aos-sandbox-model",
+    "sandbox/security/aos-sandbox-guardian",
+    "sandbox/guest/aos-sandbox-guest-root-realization",
+    "sandbox/guest/aos-sandbox-guest-root-measurement",
+    "sandbox/guest/aos-sandbox-guest",
+    "sandbox/host/aos-sandbox-host",
+    "sandbox/controller/aos-sandbox-journal",
+    "sandbox/security/aos-sandbox-kernel-export-owner-peer",
+    "sandbox/controller/aos-sandbox-ledger-replay",
+    "sandbox/host/aos-sandbox-linux",
+    "sandbox/host/aos-sandbox-linux/tests/fixtures/verity-backing",
+    "sandbox/host/aos-sandbox-mount-native",
+    "sandbox/host/aos-sandbox-mount",
+    "sandbox/host/aos-sandbox-network",
+    "sandbox/host/aos-sandbox-network/tests/fixtures/protected-store",
+    "sandbox/host/aos-sandbox-network/tests/fixtures/systemd-custody",
+    "sandbox/protocol/aos-sandbox-ownership-protocol",
+    "sandbox/model/aos-sandbox-ownership",
+    "sandbox/model/aos-sandbox-policy",
+    "sandbox/protocol/aos-sandbox-protocol",
+    "sandbox/host/aos-sandbox-publisher",
+    "sandbox/controller/aos-sandbox-services",
+    "sandbox/storage/aos-sandbox-source-provider-ledger",
+    "sandbox/protocol/aos-sandbox-source-provider-protocol",
+    "sandbox/security/aos-sandbox-source-provider-security",
+    "sandbox/storage/aos-sandbox-source-provider",
+    "sandbox/security/aos-sandbox-source-signer",
+    "sandbox/storage/aos-sandbox-source",
+    "sandbox/storage/aos-sandbox-storage",
+    "sandbox/controller/aos-sandbox-controller-domain",
+    "sandbox/controller/aos-sandbox-controller-domain/tests/fixtures/service-journal",
+    "sandbox/protocol/aos-sandbox-api",
 ]
 
 [workspace.package]
@@ -201,6 +261,7 @@ thiserror = "2"
 miette = { version = "7", features = ["fancy"] }
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
+schemars = "1"
 num-bigint = "0.4"
 num-integer = "0.1"
 num-traits = "0.2"
@@ -248,14 +309,13 @@ zbus = { version = "5", default-features = false, features = ["tokio"] }
 # Server
 axum = { version = "0.8", features = ["macros"] }
 tower-http = { version = "0.6", features = ["cors", "trace"] }
-# Async SQL toolkit driving the registry-hub `Backend` over concrete pools
-# (RFC-0004 phase 5, step 3b). The per-engine driver features (sqlite/postgres/
-# mysql) are selected by `aos-hub`'s own cargo features; the bundled
-# sqlite driver is pure-Rust and needs no system library. `runtime-tokio` reuses
-# the existing tokio runtime rather than spawning a second reactor.
+# Async SQL toolkit implementing aos-hub-db's native Backend over concrete pools.
+# SQLite is enabled by aos-hub-db; aos-hub-native selects optional PostgreSQL
+# and MySQL drivers through the database crate's features. runtime-tokio reuses
+# the native application's existing Tokio runtime.
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio"] }
-# Still used by aos-package, aos-server, and aos-hub-worker; the registry
-# hub moved off it to sqlx (RFC-0004 Phase 5 step 3b).
+# Used by aos-build-server and crucible-store, and by Hub database/native
+# migration fixtures. Production Hub database operations use SQLx.
 rusqlite = "0.32"
 jsonwebtoken = "9"
 uuid = { version = "1", features = ["v4", "serde"] }
@@ -351,72 +411,105 @@ tokio-rustls = "0.26"
 rcgen = "0.14"
 
 # Internal crates
-aos-contract = { path = "aos-contract" }
-aos-maintain = { path = "aos-maintain" }
-crucible-cas = { path = "crucible-cas" }
-crucible-linux-resource = { path = "crucible-linux-resource" }
-crucible-s3-store = { path = "crucible-s3-store" }
-crucible-campaign = { path = "crucible-campaign" }
-aos-core = { path = "aos-core" }
-aos-oci-types = { path = "aos-oci-types" }
-aos-oci = { path = "aos-oci" }
-aos-boot-identity = { path = "aos-boot-identity" }
-aos-net = { path = "aos-net" }
-aos-proto = { path = "aos-proto" }
-aos-sandbox-coordinator = { path = "aos-sandbox-coordinator" }
-aos-sandbox-coordinator-protocol = { path = "aos-sandbox-coordinator-protocol" }
-aos-proto-types = { path = "aos-proto-types" }
-aos-server = { path = "aos-server" }
-aos-cache = { path = "aos-cache" }
-aos-remote = { path = "aos-remote" }
-aos-doc = { path = "aos-doc" }
-aos-doc-model = { path = "aos-doc-model" }
-aos-package = { path = "aos-package" }
-aos-hub-console-contract = { path = "aos-hub-console-contract" }
-aos-hub-core = { path = "aos-hub-core" }
-aos-hub = { path = "aos-hub" }
-aos-registry-surface = { path = "aos-registry-surface" }
-aos-release = { path = "aos-release" }
-aos-release-signer = { path = "aos-release-signer" }
-aos-image-finalizer = { path = "aos-image-finalizer" }
-aos-profile = { path = "aos-profile" }
-aos-systemd = { path = "aos-systemd" }
-aos-filesystem-view = { path = "aos-filesystem-view" }
-aos-filesystem-view-core = { path = "aos-filesystem-view-core" }
-aos-filesystem-fuse = { path = "aos-filesystem-fuse" }
-aos-sandbox-agent = { path = "aos-sandbox-agent" }
-aos-sandbox-client = { path = "aos-sandbox-client" }
-aos-sandbox-guest = { path = "aos-sandbox-guest" }
-aos-sandbox-guest-root-realization = { path = "aos-sandbox-guest-root-realization" }
-aos-sandbox-guest-root-tree = { path = "aos-sandbox-guest-root-tree" }
-aos-sandbox-core = { path = "aos-sandbox-core" }
-aos-sandbox-journal = { path = "aos-sandbox-journal" }
-aos-sandbox-policy = { path = "aos-sandbox-policy" }
-aos-sandbox-guardian = { path = "aos-sandbox-guardian" }
-aos-sandbox-ownership-protocol = { path = "aos-sandbox-ownership-protocol" }
-aos-sandbox-ownership = { path = "aos-sandbox-ownership" }
-aos-sandbox-source-provider = { path = "aos-sandbox-source-provider" }
-aos-sandbox-source-provider-ledger = { path = "aos-sandbox-source-provider-ledger" }
-aos-sandbox-source-provider-protocol = { path = "aos-sandbox-source-provider-protocol" }
-aos-sandbox-source-provider-security = { path = "aos-sandbox-source-provider-security" }
-aos-sandbox-source = { path = "aos-sandbox-source" }
-aos-sandbox-ledger-replay = { path = "aos-sandbox-ledger-replay" }
-aos-sandbox-source-signer = { path = "aos-sandbox-source-signer" }
-aos-sandbox-broker-session-protocol = { path = "aos-sandbox-broker-session-protocol" }
-aos-sandbox-broker-session-security = { path = "aos-sandbox-broker-session-security" }
-aos-sandbox-controller-runtime = { path = "aos-sandbox-controller-runtime" }
-aos-sandbox-cache-signer = { path = "aos-sandbox-cache-signer" }
-aos-sandbox-services = { path = "aos-sandbox-services" }
-aos-sandbox-protocol = { path = "aos-sandbox-protocol" }
-aos-sandbox-publisher = { path = "aos-sandbox-publisher" }
-aos-sandbox = { path = "aos-sandbox" }
-aos-sandbox-broker = { path = "aos-sandbox-broker" }
-aos-sandbox-mount = { path = "aos-sandbox-mount" }
-aos-sandbox-mount-native = { path = "aos-sandbox-mount-native" }
-aos-sandbox-network = { path = "aos-sandbox-network" }
-aos-sandbox-storage = { path = "aos-sandbox-storage" }
-aos-sandbox-linux = { path = "aos-sandbox-linux" }
-aos-sandbox-host = { path = "aos-sandbox-host" }
+aos-module-format = { path = "aos/modules/aos-module-format" }
+aos-activation = { path = "aos/activation/aos-activation" }
+aos-activation-crucible = { path = "aos/activation/aos-activation-crucible" }
+aos-package-maintenance = { path = "aos/release/aos-package-maintenance" }
+crucible-store = { path = "crucible/storage/crucible-store" }
+aos-linux-project-quota = { path = "shared/aos-linux-project-quota" }
+crucible-store-s3 = { path = "crucible/storage/crucible-store-s3" }
+crucible-campaign = { path = "crucible/engine/crucible-campaign" }
+aos-core = { path = "shared/aos-core" }
+aos-oci-types = { path = "shared/aos-oci-types" }
+aos-oci = { path = "shared/aos-oci" }
+aos-boot-identity = { path = "aos/boot/aos-boot-identity" }
+aos-transfer = { path = "shared/aos-transfer", default-features = false }
+aos-build-api = { path = "aos/packages/aos-build-api" }
+aos-hub-api = { path = "hub/aos-hub-api" }
+aos-build-server = { path = "aos/packages/aos-build-server" }
+aos-nix-cache = { path = "aos/packages/aos-nix-cache" }
+aos-build-client = { path = "aos/packages/aos-build-client" }
+aos-nix-docs = { path = "aos/cli/aos-nix-docs" }
+aos-module-docs = { path = "aos/modules/aos-module-docs" }
+aos-package-manager = { path = "aos/packages/aos-package-manager" }
+aos-platform-metadata = { path = "aos/boot/aos-platform-metadata" }
+aos-storage-layout = { path = "aos/boot/aos-storage-layout" }
+aos-configuration-image = { path = "aos/boot/aos-configuration-image" }
+aos-activation-filesystem = { path = "aos/activation/aos-activation-filesystem" }
+aos-activation-nix-store = { path = "aos/activation/aos-activation-nix-store" }
+aos-hub-ui = { path = "hub/aos-hub-ui" }
+aos-hub-service = { path = "hub/aos-hub-service" }
+aos-hub-native = { path = "hub/aos-hub-native" }
+aos-registry-format = { path = "aos/registry/aos-registry-format" }
+aos-release-format = { path = "aos/release/aos-release-format" }
+aos-release-signer = { path = "aos/release/aos-release-signer" }
+aos-image-finalizer = { path = "aos/release/aos-image-finalizer" }
+aos-closure-analysis = { path = "aos/cli/aos-closure-analysis" }
+aos-systemd-client = { path = "shared/aos-systemd-client" }
+aos-activation-kubernetes = { path = "aos/activation/aos-activation-kubernetes" }
+
+aos-artifact-evidence = { path = "shared/aos-artifact-evidence" }
+aos-nar = { path = "shared/aos-nar" }
+aos-nix = { path = "shared/aos-nix" }
+aos-cli-ui = { path = "aos/cli/aos-cli-ui" }
+aos-boot-runtime = { path = "aos/boot/aos-boot-runtime" }
+aos-release-coordinator = { path = "aos/release/aos-release-coordinator" }
+aos-deployment-format = { path = "aos/packages/aos-deployment-format" }
+aos-deployment = { path = "aos/packages/aos-deployment" }
+aos-registry-client = { path = "aos/registry/aos-registry-client" }
+aos-registry-authoring = { path = "aos/registry/aos-registry-authoring" }
+aos-hub-model = { path = "hub/aos-hub-model" }
+aos-hub-db = { path = "hub/aos-hub-db" }
+aos-hub-client = { path = "hub/aos-hub-client" }
+crucible-control-client = { path = "crucible/control/crucible-control-client" }
+crucible-control-server = { path = "crucible/control/crucible-control-server" }
+
+aos-sandbox-filesystem-fuse = { path = "sandbox/filesystem/aos-sandbox-filesystem-fuse" }
+aos-sandbox-filesystem-fuse-kernel-worker = { path = "sandbox/filesystem/aos-sandbox-filesystem-fuse/tests/fixtures/kernel-worker" }
+aos-sandbox-filesystem-fuse-link-consumer = { path = "sandbox/filesystem/aos-sandbox-filesystem-fuse/tests/fixtures/link-consumer" }
+aos-sandbox-filesystem-format = { path = "sandbox/filesystem/aos-sandbox-filesystem-format" }
+aos-sandbox-filesystem-view = { path = "sandbox/filesystem/aos-sandbox-filesystem-view" }
+aos-sandbox-guest-protocol = { path = "sandbox/protocol/aos-sandbox-guest-protocol" }
+aos-sandbox-broker-session-protocol = { path = "sandbox/protocol/aos-sandbox-broker-session-protocol" }
+aos-sandbox-broker-session-security = { path = "sandbox/security/aos-sandbox-broker-session-security" }
+aos-sandbox-broker = { path = "sandbox/host/aos-sandbox-broker" }
+aos-sandbox-cache-signer = { path = "sandbox/security/aos-sandbox-cache-signer" }
+aos-sandbox-client = { path = "sandbox/controller/aos-sandbox-client" }
+aos-sandbox-controller-runtime = { path = "sandbox/controller/aos-sandbox-controller-runtime" }
+aos-sandbox-coordinator-protocol = { path = "sandbox/protocol/aos-sandbox-coordinator-protocol" }
+aos-sandbox-coordinator = { path = "sandbox/controller/aos-sandbox-coordinator" }
+aos-sandbox-model = { path = "sandbox/model/aos-sandbox-model" }
+aos-sandbox-guardian = { path = "sandbox/security/aos-sandbox-guardian" }
+aos-sandbox-guest-root-realization = { path = "sandbox/guest/aos-sandbox-guest-root-realization" }
+aos-sandbox-guest-root-measurement = { path = "sandbox/guest/aos-sandbox-guest-root-measurement" }
+aos-sandbox-guest = { path = "sandbox/guest/aos-sandbox-guest" }
+aos-sandbox-host = { path = "sandbox/host/aos-sandbox-host" }
+aos-sandbox-journal = { path = "sandbox/controller/aos-sandbox-journal" }
+aos-sandbox-kernel-export-owner-peer = { path = "sandbox/security/aos-sandbox-kernel-export-owner-peer" }
+aos-sandbox-ledger-replay = { path = "sandbox/controller/aos-sandbox-ledger-replay" }
+aos-sandbox-linux = { path = "sandbox/host/aos-sandbox-linux" }
+aos-sandbox-verity-backing-probe = { path = "sandbox/host/aos-sandbox-linux/tests/fixtures/verity-backing" }
+aos-sandbox-mount-native = { path = "sandbox/host/aos-sandbox-mount-native" }
+aos-sandbox-mount = { path = "sandbox/host/aos-sandbox-mount" }
+aos-sandbox-network = { path = "sandbox/host/aos-sandbox-network" }
+aos-sandbox-network-protected-store-fixture = { path = "sandbox/host/aos-sandbox-network/tests/fixtures/protected-store" }
+aos-sandbox-network-systemd-custody-fixture = { path = "sandbox/host/aos-sandbox-network/tests/fixtures/systemd-custody" }
+aos-sandbox-ownership-protocol = { path = "sandbox/protocol/aos-sandbox-ownership-protocol" }
+aos-sandbox-ownership = { path = "sandbox/model/aos-sandbox-ownership" }
+aos-sandbox-policy = { path = "sandbox/model/aos-sandbox-policy" }
+aos-sandbox-protocol = { path = "sandbox/protocol/aos-sandbox-protocol" }
+aos-sandbox-publisher = { path = "sandbox/host/aos-sandbox-publisher" }
+aos-sandbox-services = { path = "sandbox/controller/aos-sandbox-services" }
+aos-sandbox-source-provider-ledger = { path = "sandbox/storage/aos-sandbox-source-provider-ledger" }
+aos-sandbox-source-provider-protocol = { path = "sandbox/protocol/aos-sandbox-source-provider-protocol" }
+aos-sandbox-source-provider-security = { path = "sandbox/security/aos-sandbox-source-provider-security" }
+aos-sandbox-source-provider = { path = "sandbox/storage/aos-sandbox-source-provider" }
+aos-sandbox-source-signer = { path = "sandbox/security/aos-sandbox-source-signer" }
+aos-sandbox-source = { path = "sandbox/storage/aos-sandbox-source" }
+aos-sandbox-storage = { path = "sandbox/storage/aos-sandbox-storage" }
+aos-sandbox-controller-domain = { path = "sandbox/controller/aos-sandbox-controller-domain" }
+aos-sandbox-service-journal-probe = { path = "sandbox/controller/aos-sandbox-controller-domain/tests/fixtures/service-journal" }
+aos-sandbox-api = { path = "sandbox/protocol/aos-sandbox-api" }
 
 [workspace.lints.clippy]
 all = "deny"

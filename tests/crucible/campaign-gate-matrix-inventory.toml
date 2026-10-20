@@ -209,25 +209,25 @@ execution_family = "static-closure"
 
 [[targets]]
 gate = "gate:harness-lint"
-package = "crucible-harness"
+package = "crucible-test-support"
 test_target = "harness_lint"
 features = []
 
 [[targets]]
 gate = "gate:license-boundary"
-package = "crucible-harness"
+package = "crucible-test-support"
 test_target = "gate_license_boundary"
 features = []
 
 [[targets]]
 gate = "gate:layer0-determinism"
-package = "crucible-qemu"
+package = "crucible-qemu-host"
 test_target = "deterministic_launch"
 features = []
 
 [[targets]]
 gate = "gate:single-vm-fingerprint"
-package = "crucible-qemu"
+package = "crucible-qemu-host"
 test_target = "deterministic_launch"
 features = []
 
@@ -251,37 +251,37 @@ features = []
 
 [[targets]]
 gate = "gate:layer1-injection"
-package = "crucible-protocol"
+package = "crucible-qemu-protocol"
 test_target = "gate_layer1_injection"
 features = []
 
 [[targets]]
 gate = "gate:layer1-injection"
-package = "crucible-shmem"
+package = "crucible-qemu-shmem"
 test_target = "gate_layer1_injection"
 features = []
 
 [[targets]]
 gate = "gate:abi-conformance"
-package = "crucible-harness"
+package = "crucible-test-support"
 test_target = "gate_abi_conformance"
 features = []
 
 [[targets]]
 gate = "gate:abi-conformance"
-package = "crucible-shmem"
+package = "crucible-qemu-shmem"
 test_target = "gate_abi_conformance"
 features = []
 
 [[targets]]
 gate = "gate:abi-conformance"
-package = "crucible-protocol"
+package = "crucible-qemu-protocol"
 test_target = "gate_abi_conformance"
 features = []
 
 [[targets]]
 gate = "gate:abi-conformance"
-package = "crucible-api"
+package = "crucible-control-api"
 test_target = "gate_abi_conformance"
 features = []
 
@@ -299,7 +299,7 @@ features = []
 
 [[targets]]
 gate = "gate:abi-conformance"
-package = "crucible"
+package = "crucible-engine"
 test_target = "gate_abi_conformance"
 features = ["test-double"]
 
@@ -311,19 +311,19 @@ features = []
 
 [[targets]]
 gate = "gate:replay-oracle"
-package = "crucible"
+package = "crucible-engine"
 test_target = "gate_replay_oracle"
 features = ["test-double"]
 
 [[targets]]
 gate = "gate:content-address"
-package = "crucible"
+package = "crucible-engine"
 test_target = "gate_content_address"
 features = []
 
 [[targets]]
 gate = "gate:content-address"
-package = "crucible-sim"
+package = "crucible-determinism"
 test_target = "gate_content_address"
 features = []
 
@@ -341,7 +341,7 @@ features = []
 
 [[targets]]
 gate = "gate:scheduler-liveness"
-package = "crucible-qemu"
+package = "crucible-qemu-host"
 test_target = "deterministic_launch"
 features = []
 
@@ -353,7 +353,7 @@ features = []
 
 [[targets]]
 gate = "gate:control-responsive"
-package = "crucible-api"
+package = "crucible-control-server"
 test_target = "gate_control_responsive"
 features = []
 
@@ -365,13 +365,13 @@ features = []
 
 [[targets]]
 gate = "gate:any-guest"
-package = "crucible-qemu"
+package = "crucible-qemu-host"
 test_target = "deterministic_launch"
 features = []
 
 [[targets]]
 gate = "gate:qemu-inert"
-package = "crucible-qemu"
+package = "crucible-qemu-host"
 test_target = "gate_qemu_inert"
 features = []
 
@@ -389,19 +389,19 @@ features = []
 
 [[targets]]
 gate = "gate:divergence-bisect"
-package = "crucible-harness"
+package = "crucible-test-support"
 test_target = "gate_divergence_bisect"
 features = []
 
 [[targets]]
 gate = "gate:adversarial-determinism"
-package = "crucible"
+package = "crucible-engine"
 test_target = "gate_adversarial_determinism"
 features = []
 
 [[targets]]
 gate = "gate:e2e-determinism"
-package = "crucible"
+package = "crucible-engine"
 test_target = "gate_e2e_determinism_concurrency"
 features = ["test-double"]
 
@@ -413,48 +413,48 @@ features = []
 
 [[targets]]
 gate = "gate:basic-block-coverage"
-package = "crucible"
+package = "crucible-engine"
 test_target = "gate_basic_block_coverage"
 features = []
 
 [[targets]]
 gate = "gate:basic-block-coverage"
-package = "crucible-qemu"
+package = "crucible-qemu-host"
 test_target = "gate_basic_block_coverage"
 features = []
 
 [[targets]]
 gate = "gate:checkpoint-materialization"
-package = "crucible"
+package = "crucible-engine"
 test_target = "gate_checkpoint_materialization"
 features = []
 
 [[targets]]
 gate = "gate:state-space-search"
-package = "crucible"
+package = "crucible-engine"
 test_target = "gate_state_space_search"
 features = []
 
 [[targets]]
 gate = "gate:fleet-equivalence"
-package = "crucible"
+package = "crucible-engine"
 test_target = "gate_fleet_equivalence"
 features = []
 
 [[targets]]
 gate = "gate:campaign-continuity"
-package = "crucible-cas"
+package = "crucible-store"
 test_target = "gate_campaign_continuity"
 features = []
 
 [[targets]]
 gate = "gate:signal-fault-system"
-package = "crucible"
+package = "crucible-engine"
 test_target = "gate_signal_fault_system"
 features = []
 
 [[targets]]
 gate = "gate:perf-bench"
-package = "crucible-harness"
+package = "crucible-test-support"
 test_target = "gate_perf_bench"
 features = []

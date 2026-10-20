@@ -5,6 +5,8 @@
   pkgs,
   ...
 }: let
+  credentialNameType = import ./_credential-name-type.nix {inherit lib;};
+
   cfg = config.aos.sandbox.hostBroker;
   confined = config.aos.security.selinux.enable && config.aos.security.selinux.bootMode == "immutable-stage0";
   bootPreparation = config.aos.sandbox.runtimeDeploymentPublisher.enable
@@ -25,7 +27,7 @@
   canonicalReadbackPath = "${canonicalReadback}/policy.33";
 
   # One image-owned profile drives both PID 1's unit and Host's exact readback.
-  hostSyscallProfile = builtins.fromJSON (builtins.readFile ../../crates/aos-sandbox-host/src/plan/host_syscall_profile_v1.json);
+  hostSyscallProfile = builtins.fromJSON (builtins.readFile ../../crates/sandbox/host/aos-sandbox-host/src/plan/host_syscall_profile_v1.json);
   brokerSession = import ./_broker-session-credentials.nix {inherit lib pkgs;};
   brokerSessionEndpoints = [
     {
@@ -107,9 +109,9 @@
       "phase0-probe-public-key-v1:/run/credentials/@system/${cfg.credentials.phase0ProbePublicKey}"
     ]
     else [];
-  systemdLib = import ../../lib/modules/systemd/lib.nix {inherit lib pkgs;};
+  systemdLib = import ../../pkgs/system/_systemd-abilities/platform/render.nix {inherit lib pkgs;};
   selectedHost = config.systemd.services.aos-sandbox-hostd;
-  pid1Image = "${config.systemd.package}/lib/systemd/systemd";
+  pid1Image = "${config.aos.manager.selected.package}/lib/systemd/systemd";
   hostImage = "${cfg.package}/bin/aos-sandbox-hostd";
   canaryArgv = [
     hostImage
@@ -373,7 +375,7 @@ in {
     credentials =
       lib.mapAttrs (name: credentialFile:
         lib.mkOption {
-          type = lib.types.nullOr lib.serviceTypes.credentialName;
+          type = lib.types.nullOr credentialNameType;
           default = null;
           description =
             if name == "backendReadiness"

@@ -33,7 +33,7 @@ service's time and memory limits.
 
 Evaluation returns:
 
-- `aos.config-manifest/v1`, containing `/etc`, units, job-script text, users,
+- `aos.config-manifest/v1`, containing `/etc`, job-script text, users,
   desired packages, credential references, and authenticated input pins.
 
 Missing providers, undefined options, conflicting unique values, failed

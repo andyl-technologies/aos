@@ -30,7 +30,7 @@
         needle = "`T-SESS-4` is green through `checks.crucible.phase5.sessionCommandSet`";
       }
     ]
-    ++ failuresFor "crates/crucible-session/src/lib.rs" sessionLib [
+    ++ failuresFor "crates/crucible/control/crucible-session/src/lib.rs" sessionLib [
       {
         label = "reply wrapper";
         needle = "pub struct CommandReply<T>";
@@ -159,8 +159,11 @@ in
       version = "0";
       src = crucibleSrc;
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps =
         [
+          pkgs.sqlite
           pkgs.coreutils
           pkgs.rust
           pkgs.sed

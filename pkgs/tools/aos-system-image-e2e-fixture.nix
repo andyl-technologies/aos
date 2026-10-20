@@ -5,6 +5,7 @@
 ##! launchers; neither consumer is allowed to synthesize package TOML, Git
 ##! objects, image receipts, or direct-delivery paths itself.
 {
+  lib,
   mkDerivation,
   aos,
   bash,
@@ -218,7 +219,63 @@
   };
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      target = [];
+      role = "build-input";
+    };
     pname = "aos-system-image-e2e-fixture";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The fixture is valid Bash and declares both image formats plus its signed release flow.";
+        "files" = {};
+        "input" = "The installed system-image publication fixture.";
+        "operation" = "Parse the script and inspect its raw and qcow2 publication contract.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import pathlib, subprocess\nscript = pathlib.Path(\"@out@/bin/aos-system-image-e2e-fixture\")\nresult = subprocess.run([\"@bash@\", \"-n\", script], capture_output=True)\nsource = script.read_text()\nassert result.returncode == 0 and \"--image-format raw\" in source\nassert \"--image-format qcow2\" in source and \"apr release 2026.3.0\" in source\nprint(\"aos-system-image-e2e-fixture data passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "aos-system-image-e2e-fixture data passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The immutable fixture package rejects runtime publication state.";
+        "files" = {};
+        "input" = "A request for a mutable release surface inside the package output.";
+        "operation" = "Resolve the absent runtime-produced registry surface.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import pathlib, sys\nif pathlib.Path(\"@out@/surface/info/refs\").exists():\n    raise SystemExit(2)\nsys.stderr.write(\"aos-system-image-e2e-fixture rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "aos-system-image-e2e-fixture rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     version = "0.1.0";
     src = null;
     runtimeDeps = [

@@ -13,43 +13,43 @@
   temporalGraph = import ./_crucible-model-source.nix {inherit lib;};
   engineLib = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/src/lib.rs;
+    entry = ../../crates/crucible/engine/crucible-engine/src/lib.rs;
   };
   # The launch module was split into a `launch/` directory; concatenate the
   # control-channel submodule so gdbstub/QMP channel needles remain scannable.
   qemuLaunch =
     (import ./_rust-module-source.nix {
       inherit lib;
-      entry = ../../crates/crucible-qemu/src/launch.rs;
+      entry = ../../crates/crucible/qemu/crucible-qemu-host/src/launch.rs;
     })
     + (import ./_rust-module-source.nix {
       inherit lib;
-      entry = ../../crates/crucible-qemu/src/launch/control_channels.rs;
+      entry = ../../crates/crucible/qemu/crucible-qemu-host/src/launch/control_channels.rs;
     });
-  gatewayOwner = builtins.readFile ../../crates/crucible-api/src/debug_gateway.rs;
-  gatewayMain = builtins.readFile ../../crates/crucible-debug-gateway/src/main.rs;
-  gatewayTest = builtins.readFile ../../crates/crucible-debug-gateway/src/main/tests.rs;
+  gatewayOwner = builtins.readFile ../../crates/crucible/control/crucible-control-server/src/debug_gateway.rs;
+  gatewayMain = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-debug-gateway/src/main.rs;
+  gatewayTest = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-debug-gateway/src/main/tests.rs;
   qemuLib = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu/src/lib.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-host/src/lib.rs;
   };
   qemuNode = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu/src/node.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-host/src/node.rs;
   };
   cliMain = import ./_cli-source.nix {inherit lib;};
   modelTest = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/tests/gate_debug_attach.rs;
+    entry = ../../crates/crucible/engine/crucible-engine/tests/gate_debug_attach.rs;
   };
   qemuTest =
     (import ./_rust-module-source.nix {
       inherit lib;
-      entry = ../../crates/crucible-qemu/tests/debug_gdbstub.rs;
+      entry = ../../crates/crucible/qemu/crucible-qemu-host/tests/debug_gdbstub.rs;
     })
     + (import ./_rust-module-source.nix {
       inherit lib;
-      entry = ../../crates/crucible-qemu/tests/qmp_launch_channel.rs;
+      entry = ../../crates/crucible/qemu/crucible-qemu-host/tests/qmp_launch_channel.rs;
     });
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -82,7 +82,7 @@
         needle = "--gdb-listen";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" temporalGraph [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" temporalGraph [
       {
         label = "debug attach API";
         needle = "pub fn debug_attach";
@@ -128,7 +128,7 @@
         needle = "DebugAttachUnknownNode";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" engineLib [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" engineLib [
       {
         label = "debug attach request export";
         needle = "DebugAttachRequest";
@@ -142,7 +142,7 @@
         needle = "DebugGdbstubChannel";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/src/launch.rs" qemuLaunch [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/src/launch.rs" qemuLaunch [
       {
         label = "QEMU gdbstub config";
         needle = "pub struct QemuGdbstubChannelConfig";
@@ -172,7 +172,7 @@
         needle = "pub const fn carries_frame_data";
       }
     ]
-    ++ failuresFor "crates/crucible-api/src/debug_gateway.rs" gatewayOwner [
+    ++ failuresFor "crates/crucible/control/crucible-control-server/src/debug_gateway.rs" gatewayOwner [
       {
         label = "private gateway owner";
         needle = "pub fn launch_with_owner_unix";
@@ -182,7 +182,7 @@
         needle = "std::fs::Permissions::from_mode(0o700)";
       }
     ]
-    ++ failuresFor "crates/crucible-debug-gateway/src/main.rs" gatewayMain [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-debug-gateway/src/main.rs" gatewayMain [
       {
         label = "Unix operator bind";
         needle = "UnixListener::bind(path)";
@@ -192,25 +192,25 @@
         needle = "std::fs::Permissions::from_mode(0o600)";
       }
     ]
-    ++ failuresFor "crates/crucible-debug-gateway/src/main/tests.rs" gatewayTest [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-debug-gateway/src/main/tests.rs" gatewayTest [
       {
         label = "direct unbranched write rejection";
         needle = "direct_operator_writes_require_private_branch_authorization";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/src/lib.rs" qemuLib [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/src/lib.rs" qemuLib [
       {
         label = "QEMU gdbstub config export";
         needle = "QemuGdbstubChannelConfig";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/src/node.rs" qemuNode [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/src/node.rs" qemuNode [
       {
         label = "ordinary node remains three-channel";
         needle = "pub const fn roles(&self) -> [QemuNodeChannelPlane; 3]";
       }
     ]
-    ++ failuresFor "crates/crucible-cli/src/main.rs" cliMain [
+    ++ failuresFor "crates/crucible/control/crucible-cli/src/main.rs" cliMain [
       {
         label = "debug gdb listen flag";
         needle = "gdb_listen: Option<String>";
@@ -220,7 +220,7 @@
         needle = "#[arg(long, value_name = \"ADDR\")]";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/gate_debug_attach.rs" modelTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/gate_debug_attach.rs" modelTest [
       {
         label = "model debug attach gate";
         needle = "debug_attach_instantiates_checkpoint_and_reports_fourth_channel";
@@ -242,7 +242,7 @@
         needle = "operator_listen.as_str()";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/tests/debug_gdbstub.rs" qemuTest [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/tests/debug_gdbstub.rs" qemuTest [
       {
         label = "QEMU debug gdbstub gate";
         needle = "qmp_and_gdbstub_remain_distinct_out_of_band_launch_channels";
@@ -270,7 +270,7 @@
         needle = "phase6.unifyingView.rawGate";
       }
     ]
-    ++ forbiddenFailuresFor "crates/crucible/src/model.rs" temporalGraph [
+    ++ forbiddenFailuresFor "crates/crucible/engine/crucible-engine/src/model.rs" temporalGraph [
       {
         label = "debug attach timing payload";
         needle = "carries_per_quantum_timing: true";
@@ -280,7 +280,7 @@
         needle = "carries_frame_data: true";
       }
     ]
-    ++ forbiddenFailuresFor "crates/crucible-qemu/tests/debug_gdbstub.rs" qemuTest [
+    ++ forbiddenFailuresFor "crates/crucible/qemu/crucible-qemu-host/tests/debug_gdbstub.rs" qemuTest [
       {
         label = "ignored red placeholder";
         needle = "#[ignore";
@@ -352,7 +352,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-debug-attach-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible \
+              -p crucible-engine \
               --test gate_debug_attach \
               -- --test-threads=1
             cargo test \
@@ -360,7 +360,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-debug-attach-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible-qemu \
+              -p crucible-qemu-host \
               --test debug_gdbstub \
               -- --test-threads=1
             cargo test \
@@ -368,7 +368,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-debug-attach-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible-qemu \
+              -p crucible-qemu-host \
               --test qmp_launch_channel \
               qmp_and_gdbstub_remain_distinct_out_of_band_launch_channels \
               -- --exact --test-threads=1
@@ -377,7 +377,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-debug-attach-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible-debug-gateway \
+              -p crucible-qemu-debug-gateway \
               direct_operator_writes_require_private_branch_authorization \
               -- --test-threads=1
             cargo test \

@@ -158,7 +158,7 @@ in {
         mkdir -p "$home" "$config" "$data" "$cache" "$cache/nix" "$system_config" "$profile_root" "$store_dir" "$state_dir/db" "$state_dir/gcroots" "$state_dir/log/nix" "$nix_conf" "$host_bin"
         # System registry commands require an explicitly identified AOS root.
         mkdir -p "$aos_root/etc"
-        printf '%s\n' 'ID=aos' 'AOS_MODULE_ABI=1' > "$aos_root/etc/os-release"
+        printf '%s\n' 'ID=aos' 'AOS_PACKAGE_MODULE_LIBRARY=/nix/store/00000000000000000000000000000000-aos-module-library' > "$aos_root/etc/os-release"
 
         profile="$profile_root/per-user/unknown"
         default_profile="/var/lib/profiles/per-user/unknown"
@@ -2049,11 +2049,6 @@ in {
         cat > "$work/host-build-sysroot.sh" << 'SCRIPT'
         set -eu
         @AOS_COREUTILS@/bin/mkdir -p "$out/bin" "$out/etc"
-        {
-          printf '%s\n' '#!@AOS_BASH@/bin/bash'
-          printf '%s\n' 'printf "host sysroot fixture activated\n"'
-        } > "$out/activate"
-        @AOS_COREUTILS@/bin/chmod +x "$out/activate"
         printf '%s\n' "host sysroot payload" > "$out/etc/host-sysroot-release"
         SCRIPT
         cat > "$work/host-build-sysroot-image.sh" << 'SCRIPT'
@@ -8825,8 +8820,8 @@ in {
   # ---------------------------------------------------------------------------
   # apr origin upload → s3:// against a real SigV4 endpoint (garage)
   # ---------------------------------------------------------------------------
-  # The s3:// scheme of the cache/upload backend (crates/aos-cache/src/
-  # backend/s3.rs over crates/aos-net/src/protocol/s3.rs, aws-sdk-s3 with
+  # The s3:// scheme of the cache/upload backend (crates/aos/packages/aos-nix-cache/src/
+  # backend/s3.rs over crates/shared/aos-transfer/src/protocol/s3.rs, aws-sdk-s3 with
   # a custom endpoint + forced path style) had no end-to-end coverage —
   # every other test uploads via file:// and reads via http://. This test
   # stands up a single-node garage, uploads a registry's static origin

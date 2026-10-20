@@ -1,0 +1,36 @@
+[package]
+name = "aos-sandbox-mount-native"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[features]
+default = []
+test-fixtures = ["aos-sandbox-broker/test-fixtures", "aos-sandbox-journal/test-fixtures"]
+kernel-tests = ["aos-sandbox-linux/kernel-tests"]
+
+[dependencies]
+aos-sandbox-broker.workspace = true
+aos-sandbox-model.workspace = true
+aos-sandbox-journal = { workspace = true, features = ["protected-unix"] }
+aos-sandbox-ledger-replay.workspace = true
+aos-sandbox-linux.workspace = true
+aos-sandbox-protocol.workspace = true
+aos-sandbox-source-provider-protocol.workspace = true
+aos-systemd-client.workspace = true
+rand.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+aos-sandbox-api.workspace = true
+buffa.workspace = true
+aos-sandbox-broker = { workspace = true, features = ["test-fixtures"] }
+ed25519-dalek.workspace = true
+aos-sandbox-ledger-replay = { workspace = true, features = ["test-fixtures"] }
+aos-sandbox-protocol = { workspace = true, features = ["test-fixtures"] }
+tempfile.workspace = true
+
+[lints]
+workspace = true

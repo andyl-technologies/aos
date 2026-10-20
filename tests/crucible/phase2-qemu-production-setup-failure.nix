@@ -14,7 +14,9 @@ in
     pname = "crucible-qemu-production-setup-failure";
     version = "0";
     src = source;
-    buildDeps = [pkgs.coreutils pkgs.grep pkgs.rust];
+    runtimeDeps = [pkgs.sqlite];
+
+    buildDeps = [pkgs.sqlite pkgs.coreutils pkgs.grep pkgs.rust];
     ATTR_PATH = attrPath;
     TASK_IDS = taskList;
 
@@ -42,14 +44,14 @@ in
           set -eu
           qemu_tests="$TMPDIR/crucible-qemu-tests"
           cargo test --frozen --offline --manifest-path crates/Cargo.toml \
-            --target-dir "$TMPDIR/target" -p crucible-qemu --lib -- --list \
+            --target-dir "$TMPDIR/target" -p crucible-qemu-host --lib -- --list \
             > "$qemu_tests"
 
           run_exact_test() {
             name="$1"
             grep -Fqx "$name: test" "$qemu_tests"
             cargo test --frozen --offline --manifest-path crates/Cargo.toml \
-              --target-dir "$TMPDIR/target" -p crucible-qemu --lib \
+              --target-dir "$TMPDIR/target" -p crucible-qemu-host --lib \
               "$name" -- --exact --test-threads=1
           }
 

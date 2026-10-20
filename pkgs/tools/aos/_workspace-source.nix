@@ -1,6 +1,36 @@
-{lib}: let
+{
+  lib,
+  includeIntegrationInputs ? false,
+  selectedCrates ? null,
+  extraPaths ? [],
+}: let
   repoRoot = ../../..;
   repoRootString = toString repoRoot;
+  cratesRoot = "${repoRootString}/crates";
+  selectedCrateInput = pathString:
+    pathString
+    == cratesRoot
+    || pathString == "${cratesRoot}/Cargo.toml"
+    || pathString == "${cratesRoot}/Cargo.lock"
+    || builtins.any
+    (crate: let
+      selectedPath = "${cratesRoot}/${crate}";
+    in
+      pathString
+      == selectedPath
+      || lib.hasPrefix "${selectedPath}/" pathString
+      # Nested workspace members need every ancestor retained for traversal.
+      || lib.hasPrefix "${pathString}/" selectedPath)
+    selectedCrates;
+  extraInput = pathString:
+    builtins.any (relative: let
+      selectedPath = "${repoRootString}/${relative}";
+    in
+      pathString
+      == selectedPath
+      || lib.hasPrefix "${selectedPath}/" pathString
+      || lib.hasPrefix "${pathString}/" selectedPath)
+    extraPaths;
 in
   builtins.path {
     path = repoRoot;
@@ -8,6 +38,7 @@ in
     filter = path: type: let
       pathString = toString path;
       base = baseNameOf path;
+      daemonRunState = "${cratesRoot}/crucible/control/crucible-daemon/run-state";
       generatedDir =
         type
         == "directory"
@@ -21,19 +52,44 @@ in
           || base == "target"
           || lib.hasPrefix "target-" base
         );
-    in
-      !generatedDir
-      && (
+      # Cargo builds need the workspace, JSON fixtures included by Rust tests,
+      # and API manifests consumed by build scripts. Nix-only test edits must
+      # not rebuild every Rust provider.
+      workspaceInput =
         pathString
         == repoRootString
-        || lib.hasPrefix "${repoRootString}/crates" pathString
-        || lib.hasPrefix "${repoRootString}/lib" pathString
+        || (
+          if selectedCrates == null
+          then lib.hasPrefix cratesRoot pathString
+          else selectedCrateInput pathString
+        )
+        || extraInput pathString
+        || (selectedCrates == null && (pathString == "${repoRootString}/api" || lib.hasPrefix "${repoRootString}/api/proto" pathString))
+        || pathString == "${repoRootString}/tests"
+        || pathString == "${repoRootString}/tests/abilities"
+        || pathString == "${repoRootString}/tests/abilities/fixtures"
+        || lib.hasPrefix "${repoRootString}/tests/abilities/fixtures/" pathString
+        || (
+          selectedCrates
+          == null
+          && (
+            pathString
+            == "${repoRootString}/docs"
+            || pathString == "${repoRootString}/docs/rfcs"
+            || lib.hasPrefix "${repoRootString}/docs/rfcs/0012-hub-surface-topology" pathString
+          )
+        );
+      # The aos integration-test package evaluates repository Nix modules and
+      # must retain their exact source alongside the Cargo workspace.
+      integrationInput =
+        lib.hasPrefix "${repoRootString}/lib" pathString
         || lib.hasPrefix "${repoRootString}/modules" pathString
         || lib.hasPrefix "${repoRootString}/pkgs" pathString
         || lib.hasPrefix "${repoRootString}/qualification" pathString
         || lib.hasPrefix "${repoRootString}/stdenv" pathString
         || lib.hasPrefix "${repoRootString}/systems" pathString
-        || pathString == "${repoRootString}/tests"
+        || lib.hasPrefix "${repoRootString}/tests/abilities" pathString
+        || lib.hasPrefix "${repoRootString}/tests/build" pathString
         || lib.hasPrefix "${repoRootString}/tests/fleet" pathString
         || lib.hasPrefix "${repoRootString}/tests/qualification" pathString
         || lib.hasPrefix "${repoRootString}/tests/vm" pathString
@@ -44,9 +100,10 @@ in
         || pathString == "${repoRootString}/tests/sandbox/network-kernel-plan-v1.hex"
         || pathString == "${repoRootString}/default.nix"
         || pathString == "${repoRootString}/flake.nix"
-        || pathString == "${repoRootString}/justfile"
-        || pathString == "${repoRootString}/docs"
-        || pathString == "${repoRootString}/docs/rfcs"
-        || lib.hasPrefix "${repoRootString}/docs/rfcs/0012-hub-surface-topology" pathString
-      );
+        || pathString == "${repoRootString}/justfile";
+    in
+      !generatedDir
+      && pathString != daemonRunState
+      && !lib.hasPrefix "${daemonRunState}/" pathString
+      && (workspaceInput || (includeIntegrationInputs && integrationInput));
   }

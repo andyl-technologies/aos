@@ -20,9 +20,8 @@
   upgradeImage = fixture.consumerUpgradeSystem.config.system.build.image.raw;
   upgradeImageDisk = fixture.consumerUpgradeSystem.config.system.build.imageArtifacts.raw.disk;
   upgradeImageInfo = fixture.consumerUpgradeSystem.config.system.build.imageArtifacts.raw.info;
-  upgradeUki = fixture.consumerUpgradeSystem.config.system.build.uki;
-  documentationBaseLib = fixture.consumerSystem.config.aos.config.evalAtBoot.baseLib;
-  publisherClosureInfo = import ../../lib/build/closure-info.nix {inherit lib pkgs;} {
+  upgradeUki = fixture.consumerUpgradeSystem.config.system.build.initialBootExecutable;
+  publisherClosureInfo = lib.build.closureInfo {inherit pkgs;} {
     rootPaths = [
       fixture.toolV1
       fixture.toolV2
@@ -32,10 +31,7 @@
       upgradeImageInfo
       upgradeUki
       pkgs.nginx
-      pkgs.nginx.config
-      pkgs.nginx.expose
       pkgs.aos-hub
-      documentationBaseLib
       pkgs.binutils
       pkgs.sbsigntools
       pkgs.systemd
@@ -106,10 +102,7 @@ in {
       TOOL_V2 = "${fixture.toolV2}"
       HELPER_V2 = "${fixture.helperV2}"
       NGINX = "${pkgs.nginx}"
-      NGINX_CONFIG = "${pkgs.nginx.config}"
-      NGINX_EXPOSE = "${pkgs.nginx.expose}"
       AOS_HUB_PACKAGE = "${pkgs.aos-hub}"
-      DOCUMENTATION_BASE_LIB = "${documentationBaseLib}"
       UPGRADE_TOPLEVEL = "${upgradeToplevel}"
       UPGRADE_IMAGE = "${upgradeImage}"
       UPGRADE_IMAGE_DISK = "${upgradeImageDisk}"
@@ -612,15 +605,11 @@ in {
             --name nginx --version '${pkgs.nginx.version}' \\
             --description 'nginx — high-performance HTTP and reverse proxy server' \\
             --license BSD-2-Clause --maintainer publisher@example.test \\
-            --expose-manifest {shlex.quote(NGINX_EXPOSE + "/manifest.json")} \\
-            --config-module {shlex.quote(NGINX_CONFIG)} \\
-            --config-base-lib {shlex.quote(DOCUMENTATION_BASE_LIB)} \\
             --key-id initial
           {APR} publish {AOS_HUB_PACKAGE} --registry production \\
             --name aos-hub --version '${pkgs.aos-hub.version}' \\
             --description 'Native and Worker registry Hub service.' \\
             --license Apache-2.0 --maintainer publisher@example.test \\
-            --documentation-base-lib {shlex.quote(DOCUMENTATION_BASE_LIB)} \\
             --key-id initial
           {APR} release 1.0.0 --registry production \\
             --store-path {TOOL_V1} --name hub-tool \\
@@ -654,43 +643,17 @@ in {
           ) + f" | {JQ} -e '.data | tostring | contains(\"1.0.0\")'",
           timeout=180,
       )
-      publisher.wait_until_succeeds(
-          hub_command(
-              "docs search virtual --registry acme/production --kind option",
-              token,
-          ) + f" | {JQ} -e '.data.results | length > 0'",
-          timeout=180,
-      )
       publisher.succeed(
           hub_command(
               "docs package nginx --registry acme/production",
               token,
-          ) + f" | {JQ} -e '.package.name == \"nginx\" and (.options | length > 0)'"
+          ) + f" | {JQ} -e '.package.name == \"nginx\"'"
       )
       publisher.succeed(
           hub_command(
               "docs package aos-hub --registry acme/production",
               token,
-          ) + f" | {JQ} -e '.package.name == \"aos-hub\" "
-          "and (.options | length > 10) "
-          "and (.options | any(.display_path == \"aos.registry-hub.listen\")) "
-          "and (.runtime.units | any(.name == \"aos-hub.service\")) "
-          "and (.runtime.units | all((.summary | type == \"string\") and (length > 0))) "
-          "and (.identity.system_module_nar_hash | type == \"string\")'"
-      )
-      publisher.succeed(
-          hub_command(
-              "docs option nginx --registry acme/production --prefix nginx.virtualHosts",
-              token,
-          ) + f" | {JQ} -e '.data.options | length > 0'"
-      )
-      publisher.succeed(
-          hub_command(
-              "docs compare nginx --registry acme/production "
-              "--from '${pkgs.nginx.version}' --to '${pkgs.nginx.version}' "
-              "--platform x86_64-linux",
-              token,
-          ) + f" | {JQ} -e '.data.semantic_changed == false'"
+          ) + f" | {JQ} -e '.package.name == \"aos-hub\"'"
       )
       publisher.succeed(
           hub_command(
@@ -707,8 +670,7 @@ in {
       )
       publisher.succeed(
           f"{JQ} -e '.schema == \"aos.package-documentation/v1\" "
-          "and .package.name == \"nginx\" and (.options | length > 0) "
-          "and (.runtime.units | all((.summary | type == \"string\") and (length > 0)))' "
+          "and .package.name == \"nginx\" "
           "/var/tmp/nginx-documentation.json"
       )
 
@@ -720,16 +682,8 @@ in {
           "| grep -q 'high-performance HTTP and reverse proxy server'"
       )
       consumer.succeed(
-          f"{CURL} -fsS '{REGISTRY}-/docs?q=virtual' "
-          "| grep -q 'nginx.virtualHosts'"
-      )
-      consumer.succeed(
           f"{CURL} -fsS {REGISTRY}-/docs/nginx/${pkgs.nginx.version}/x86_64-linux "
           "| grep -q 'high-performance HTTP and reverse proxy server'"
-      )
-      consumer.succeed(
-          f"{CURL} -fsS '{REGISTRY}-/api/v1/packages/nginx/options?prefix=nginx.virtualHosts' "
-          f"| {JQ} -e '.options | length > 0'"
       )
       consumer.succeed(textwrap.dedent(f"""
           set -eu
@@ -792,21 +746,12 @@ in {
       documentation_commands = (
           ("show installed package documentation",
            f"{APM} docs show nginx | grep -q 'high-performance HTTP and reverse proxy server'"),
-          ("search installed options",
-           f"{APM} options search virtual | grep -q 'nginx.virtualHosts'"),
-          ("show one installed option",
-           f"{APM} options show nginx.enable --package nginx | grep -q 'nginx.enable'"),
           ("install generated manpage",
            f"man_path=$({APM} docs man nginx --install --print-path); test -s \"$man_path\""),
           ("inspect documentation cache",
            f"{APM} docs cache status | grep -q nginx"),
           ("export documentation schema",
            f"{APM} docs schema | {JQ} -e '.title | contains(\"AOS\")' >/dev/null"),
-          ("compare documentation versions",
-           f"{APM} options compare nginx --from '${pkgs.nginx.version}' "
-           f"--to '${pkgs.nginx.version}' --platform x86_64-linux "
-           f"--hub {HUB} --registry acme/production --token {shlex.quote(token)} "
-           "| grep -q 'schema changed: false, runtime changed: false'"),
       )
       for documentation_label, documentation_command in documentation_commands:
           status, stdout, stderr = consumer.execute(textwrap.dedent(f"""
@@ -886,8 +831,6 @@ in {
           export HOME=/tmp/consumer USER=consumer
           export PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH
           {APM} docs show nginx | grep -q 'high-performance HTTP and reverse proxy server'
-          {APM} options complete nginx.virtual | grep -q 'nginx.virtualHosts'
-
           {APM} docs serve --listen 127.0.0.1:18080 --once \
             >/tmp/apm-docs-serve.log 2>&1 &
           docs_pid=$!

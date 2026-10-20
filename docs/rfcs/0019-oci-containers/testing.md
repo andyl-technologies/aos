@@ -10,7 +10,7 @@ the smallest responsible boundary.
 Evaluation checks cover:
 
 - exactly one registered definition named `aos`;
-- package-root parity with the production server golden image;
+- package-root parity with the evaluated container slice and backend roots;
 - supported AOS-to-OCI platform mapping;
 - valid layer names and ordering;
 - no duplicate roots or facade collisions;
@@ -75,6 +75,11 @@ exposed as `packages.<system>.container-aos-publication-inputs` and contains:
 - `evidence-layout/` and `evidence.oci.tar`, the unsigned OCI evidence graph;
 - `signature-input.json`, `signing-request.json`, and
   `publication-roots.json`.
+
+The canonical `/v1` signature input requires the static ability evidence
+descriptor. Tests parse that same contract through the signer, finalizer, Hub
+indexer, CLI, and registry graph walkers, and reject an input or release with a
+missing ability descriptor.
 
 It deliberately does not contain `container-release.json`. An external signer
 must add the DSSE object to a final layout and produce the canonical signed
@@ -195,8 +200,8 @@ The focused commands are:
 
 ```text
 nix develop -c cargo test --manifest-path crates/Cargo.toml -p aos-oci --tests
-nix develop -c cargo test --manifest-path crates/Cargo.toml -p aos --test container_cli
-nix develop -c cargo test --manifest-path crates/Cargo.toml -p aos --test container_cli_transfer
+nix develop -c cargo test --manifest-path crates/Cargo.toml -p aos-cli --test container_cli
+nix develop -c cargo test --manifest-path crates/Cargo.toml -p aos-cli --test container_cli_transfer
 ```
 
 ## Hub native integration
@@ -224,7 +229,7 @@ Every database migration and query is exercised by the existing SQLite,
 PostgreSQL, and MySQL dialect gate.
 
 Native and Worker qualification share
-`crates/aos-hub/tests/fixtures/oci-protocol-parity-v1.json`. The transcript
+`crates/hub/aos-hub-native/tests/fixtures/oci-protocol-parity-v1.json`. The transcript
 covers Distribution discovery and token exchange, anonymous public and denied
 private reads, Basic-to-bearer private authentication, manifest/blob/tag and
 referrer reads, upload completion, and ContainerService repository, tag,
@@ -241,7 +246,7 @@ references plus Docker-compatible credentials while listening only on
 AOS_OCI_TRANSCRIPT_HOLD_SECONDS=900 \
 AOS_OCI_TRANSCRIPT_ENDPOINTS_FILE=/tmp/aos-oci-endpoints.json \
 nix develop -c cargo test --manifest-path crates/Cargo.toml \
-  -p aos-hub --test oci_distribution \
+  -p aos-hub-native --test oci_distribution \
   native_oci_protocol_transcript_matches_worker_v1 -- --exact --nocapture
 ```
 

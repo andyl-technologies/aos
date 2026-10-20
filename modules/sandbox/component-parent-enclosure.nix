@@ -56,8 +56,24 @@
   );
   unitEntries = config.system.build.systemdEtcEntries;
   bodies = config.system.build.systemdUnitBodies;
-  systemdLib = import ../../lib/modules/systemd/lib.nix {inherit lib pkgs;};
-  leafOwnership = systemdLib.unitsToOwnership bodies config.system.build.systemdUnitOwners;
+  nativeAuditNames = lib.optionalAttrs config.aos.security.audit.enable {
+    "audit.auditd" = "auditd";
+    "audit.audit-rules" = "audit-rules";
+  };
+  nativeAuditUnits = lib.mapAttrs' (key: name: let
+    input = config.system.build.systemdBootstrapServices.${key};
+  in lib.nameValuePair "${name}.service" {
+    valid = input.enabled && input.service == name
+      && input.manager_identity == null
+      && (input.instantiation == null || input.instantiation.kind == "singleton");
+    owner = config.system.build.systemdBootstrapServiceOwners.${key};
+  }) nativeAuditNames;
+  # These are owners of actual final leaves, not a synthetic package inventory.
+  leafOwnership = config.system.build.systemdEtcEntryOwners
+    // lib.mapAttrs' (name: unit:
+      lib.nameValuePair "systemd/system/${name}" unit.owner) nativeAuditUnits
+    // lib.mapAttrs' (name: owner:
+      lib.nameValuePair "systemd/system/${name}" owner) config.system.build.systemdPackagedUnitOwners;
   entryPaths = builtins.attrNames unitEntries;
   dropinsFor = name:
     builtins.filter (path: lib.hasPrefix "systemd/system/${name}.d/" path) entryPaths;
@@ -65,25 +81,6 @@
     inherit name;
     dropins = builtins.map (lib.removePrefix "systemd/system/") (dropinsFor name);
   }) members;
-
-  # Register the existing package leaf through the same inventory resolver as
-  # other package units. A drop-in alone does not put journald's base fragment
-  # in systemdSystemUnits; no copied upstream definition or new derivation is
-  # introduced by this purpose-local metadata on the same package outPath.
-  journalInventory = config.systemd.package.systemdUnitInventory
-    or (config.systemd.package.passthru.systemdUnitInventory or {});
-  journalLeaf = "lib/systemd/system/systemd-journald.service";
-  journalLeaves = [journalLeaf "etc/systemd/system/systemd-journald.service"];
-  journalEntries = journalInventory.system or [];
-  journalAlreadyInventoried = builtins.any (entry:
-    (builtins.isString entry && builtins.elem entry journalLeaves)
-    || (builtins.isAttrs entry && builtins.elem (entry.path or null) journalLeaves))
-  journalEntries;
-  journalPackage = config.systemd.package // {
-    systemdUnitInventory = journalInventory // {
-      system = journalEntries ++ lib.optional (!journalAlreadyInventoried) journalLeaf;
-    };
-  };
 
   manifest = pkgs.runCommand "aos-resource-parent-enclosure-v5" {
     nativeBuildInputs = [pkgs.python3 pkgs.coreutils];
@@ -108,7 +105,7 @@
     ${pkgs.python3}/bin/python3 -B ${../../pkgs/system/tests/source-protected-profile.py} "$sourceProfileValidator"
     mkdir -p "$out"
     ${pkgs.python3}/bin/python3 -B - "$out/enclosure.bin" \
-      "${bank._imagePolicy}/bootstrap.bin" "${config.system.build.systemdSystemUnits}" <<'PY'
+      "${bank._imagePolicy}/bootstrap.bin" "${config.system.build.managerConfiguration}/systemd-units" <<'PY'
     import hashlib
     import importlib.util
     import json
@@ -456,9 +453,10 @@ in {
       {
         assertion = builtins.length members <= 16
           && builtins.all (name: bodies ? ${name} && bodies.${name}.enable && bodies.${name}.aliases == []) members
-          && builtins.all (name: unitEntries ? ${"systemd/system/${name}"}
-            && leafOwnership ? ${"systemd/system/${name}"}) members;
-        message = "Parent roster requires every real enabled image base, including journald's package inventory.";
+          && builtins.all (name: leafOwnership ? ${"systemd/system/${name}"}) members
+          && builtins.all (unit: unit.valid) (builtins.attrValues nativeAuditUnits)
+          && (import ./_fixed-systemd-profile.nix {inherit config pkgs;});
+        message = "Parent roster requires every real enabled image base from the selected manager or its authenticated native services.";
       }
       {
         assertion = builtins.all (name: builtins.length (dropinsFor name) <= 4
@@ -479,7 +477,12 @@ in {
       mode = "0444";
     };
 
-    systemd.packages = [journalPackage];
+    # The exact selected base and its drop-ins share one final manager tree.
+    systemd.packagedBaseUnits = ["systemd-journald.service"];
+
+    # Audit keeps its genuine native lifecycle and base. Its resource controls
+    # augment that base as drop-ins, and the same native input enters the image.
+    aos.services = lib.mapAttrs (_: _: {bootstrap = true;}) nativeAuditNames;
     systemd.slices.aoscomponents = {
       description = "Image-selected fixed Components services";
       sliceConfig = {
@@ -506,6 +509,7 @@ in {
       };
     };
     systemd.services = lib.genAttrs serviceNames (name: {
+      overrideStrategy = lib.mkIf (builtins.elem name (builtins.attrValues nativeAuditNames)) "asDropin";
       serviceConfig = let
         service =
           if name == "aos-sandbox-source-signerd" then cfg.sourceSignerReceiving
@@ -545,8 +549,8 @@ in {
     });
 
     aos.journald = {
-      maxUse = lib.mkForce (selectedValue (toString cfg.journal.systemMaxUse));
-      systemMaxFileSize = lib.mkForce (selectedValue (toString cfg.journal.systemMaxFileSize));
+      maxUseBytes = lib.mkForce (selectedValue cfg.journal.systemMaxUse);
+      maxFileSizeBytes = lib.mkForce (selectedValue cfg.journal.systemMaxFileSize);
       runtimeMaxUse = lib.mkForce (selectedValue cfg.journal.runtimeMaxUse);
       runtimeMaxFileSize = lib.mkForce (selectedValue cfg.journal.runtimeMaxFileSize);
     };

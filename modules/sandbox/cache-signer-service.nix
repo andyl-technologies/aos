@@ -5,6 +5,8 @@
   pkgs,
   ...
 }: let
+  credentialNameType = import ./_credential-name-type.nix {inherit lib;};
+
   cfg = config.aos.sandbox.cacheSignerService;
   controller = config.aos.sandbox.controller;
   views = config.aos.sandbox.cacheSignerView;
@@ -32,19 +34,19 @@ in {
 
     credentials = {
       seed = lib.mkOption {
-        type = lib.types.nullOr lib.serviceTypes.credentialName;
+        type = lib.types.nullOr credentialNameType;
         default = null;
         description = "Signer-private 32-byte Ed25519 seed, distinct from the Controller diagnostic seed.";
       };
 
       publicKey = lib.mkOption {
-        type = lib.types.nullOr lib.serviceTypes.credentialName;
+        type = lib.types.nullOr credentialNameType;
         default = null;
         description = "80-byte AOSCPK01 pin shared by name with the independently provisioned root credential.";
       };
 
       memoryCeiling = lib.mkOption {
-        type = lib.types.nullOr lib.serviceTypes.credentialName;
+        type = lib.types.nullOr credentialNameType;
         default = null;
         description = "Signer-private AOSCSM01 physical heap ceiling; all other limits come from protected Cache quotas.";
       };

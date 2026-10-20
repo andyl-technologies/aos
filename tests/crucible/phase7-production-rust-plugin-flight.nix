@@ -87,31 +87,31 @@
           sed "s|@vendor@|${cargoDeps}|g" \
             "${cargoDeps}/.cargo/config.toml" > .cargo/config.toml
           test "$(${pkgs.grep}/bin/grep -Fxc '        .with_console_capture()' \
-            crates/crucible-qemu/examples/crucible-qemu-production-plugin-flight.rs)" -eq 1
+            crates/crucible/qemu/crucible-qemu-host/examples/crucible-qemu-production-plugin-flight.rs)" -eq 1
           cargo build --frozen --offline --release \
             --manifest-path crates/Cargo.toml \
             --target-dir "$TMPDIR/target" \
-            -p crucible-qemu \
+            -p crucible-qemu-host \
             --example crucible-qemu-production-plugin-flight
           cargo test --frozen --offline \
             --manifest-path crates/Cargo.toml \
             --target-dir "$TMPDIR/target" \
-            -p crucible-qemu \
+            -p crucible-qemu-host \
             --example crucible-qemu-production-plugin-flight
           cargo test --frozen --offline \
             --manifest-path crates/Cargo.toml \
             --target-dir "$TMPDIR/target" \
-            -p crucible-qemu --lib \
+            -p crucible-qemu-host --lib \
             spawn::tests::streamed_runtime_trace_rejects_replacement_oversize_and_partial_reads
           cargo test --frozen --offline \
             --manifest-path crates/Cargo.toml \
             --target-dir "$TMPDIR/target" \
-            -p crucible-qemu --lib \
+            -p crucible-qemu-host --lib \
             runtime_trace_budget_rejects_unbounded_or_empty_admission
           cargo test --frozen --offline \
             --manifest-path crates/Cargo.toml \
             --target-dir "$TMPDIR/target" \
-            -p crucible-qemu --lib \
+            -p crucible-qemu-host --lib \
             supervision::runtime_determinism_trace::tests
           cargo test --frozen --offline --release --no-run \
             --message-format=json-render-diagnostics \

@@ -1,0 +1,31 @@
+[package]
+name = "aos-sandbox-ledger-replay"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[features]
+default = []
+# Canonical comparison DATA fixtures only; never a live native owner factory.
+test-fixtures = ["dep:aos-sandbox-api", "dep:buffa"]
+
+[dependencies]
+aos-sandbox-api = { workspace = true, optional = true }
+buffa = { workspace = true, optional = true }
+aos-sandbox-broker.workspace = true
+aos-sandbox-model.workspace = true
+aos-sandbox-journal.workspace = true
+aos-sandbox-protocol.workspace = true
+aos-sandbox-source-provider-ledger.workspace = true
+aos-sandbox-source-provider-protocol.workspace = true
+ed25519-dalek.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+aos-sandbox-api.workspace = true
+buffa.workspace = true
+
+[lints]
+workspace = true

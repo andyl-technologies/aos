@@ -8,9 +8,9 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
-  libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
-  concurrencyTest = builtins.readFile ../../crates/crucible/tests/scheduler_concurrency.rs;
-  schedulerConcurrencyTests = builtins.readFile ../../crates/crucible/src/scheduler/tests/concurrent.rs;
+  libSource = builtins.readFile ../../crates/crucible/engine/crucible-engine/src/lib.rs;
+  concurrencyTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/scheduler_concurrency.rs;
+  schedulerConcurrencyTests = builtins.readFile ../../crates/crucible/engine/crucible-engine/src/scheduler/tests/concurrent.rs;
   schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -36,7 +36,7 @@
         needle = "gate:e2e-determinism";
       }
     ]
-    ++ failuresFor "crates/crucible/src/scheduler.rs" scheduler [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/scheduler.rs" scheduler [
       {
         label = "concurrent trait";
         needle = "pub trait ConcurrentQuantumLoop";
@@ -82,7 +82,7 @@
         needle = "current_time != frontier";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" libSource [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" libSource [
       {
         label = "concurrent trait export";
         needle = "ConcurrentQuantumLoop";
@@ -96,7 +96,7 @@
         needle = "SchedulerConcurrentRunSet";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/scheduler_concurrency.rs" concurrencyTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/scheduler_concurrency.rs" concurrencyTest [
       {
         label = "horizon-bounded run set test";
         needle = "concurrent_run_set_is_fixed_by_scheduler_horizons";
@@ -126,13 +126,13 @@
         needle = "concurrent_frontiers";
       }
     ]
-    ++ failuresFor "crates/crucible/src/scheduler/tests/concurrent.rs" schedulerConcurrencyTests [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/scheduler/tests/concurrent.rs" schedulerConcurrencyTests [
       {
         label = "zero worker rejection test";
         needle = "concurrent_backend_rejects_zero_workers_before_preparation";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/scheduler_concurrency.rs" concurrencyTest [
+    ++ forbiddenFor "crates/crucible/engine/crucible-engine/tests/scheduler_concurrency.rs" concurrencyTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -157,7 +157,10 @@ in
       version = "0";
       src = crucibleSrc;
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.rust
         pkgs.sed
@@ -201,14 +204,14 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-scheduler-concurrency-target" \
-              -p crucible \
+              -p crucible-engine \
               --test scheduler_concurrency \
               -- --test-threads=1
             cargo test \
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-scheduler-concurrency-target" \
-              -p crucible \
+              -p crucible-engine \
               --lib \
               concurrent_backend_rejects_zero_workers_before_preparation \
               -- --test-threads=1

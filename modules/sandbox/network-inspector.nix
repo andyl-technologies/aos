@@ -5,6 +5,8 @@
   pkgs,
   ...
 }: let
+  credentialNameType = import ./_credential-name-type.nix {inherit lib;};
+
   cfg = config.aos.sandbox.networkInspector;
   credentialFiles = {
     deploymentContract = "deployment-contract";
@@ -57,7 +59,7 @@ in {
 
     credentials = lib.mapAttrs (name: credentialFile:
       lib.mkOption {
-        type = lib.types.nullOr lib.serviceTypes.credentialName;
+        type = lib.types.nullOr credentialNameType;
         default = null;
         description = "External protected ${name} credential loaded as ${credentialFile}; its bytes never enter the Nix store.";
       })

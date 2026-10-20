@@ -1,5 +1,6 @@
 ##! gsettings-desktop-schemas — Shared desktop settings schemas
 {
+  lib,
   mkDerivation,
   fetchurl,
   meson,
@@ -11,7 +12,63 @@
   version = "50.1";
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "gsettings-desktop-schemas";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The catalog contains org.gnome.desktop.interface with a typed color-scheme key.";
+        "files" = {};
+        "input" = "The installed desktop-interface GSettings schema XML.";
+        "operation" = "Parse the schema catalog and locate its color-scheme key.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import pathlib, xml.etree.ElementTree as ET\nroots = [ET.parse(path).getroot() for path in pathlib.Path(\"@out@/share/glib-2.0/schemas\").glob(\"*.xml\")]\nschemas = [schema for root in roots for schema in root.findall(\"schema\")]\ninterface = next(schema for schema in schemas if schema.get(\"id\") == \"org.gnome.desktop.interface\")\ncolor_scheme = next(key for key in interface.findall(\"key\") if key.get(\"name\") == \"color-scheme\")\nassert color_scheme.get(\"type\") == \"s\" and color_scheme.find(\"default\") is not None\nprint(\"gsettings-desktop-schemas data passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "gsettings-desktop-schemas data passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The catalog lookup rejects the unknown schema ID.";
+        "files" = {};
+        "input" = "A request for a schema ID absent from the installed catalog.";
+        "operation" = "Resolve the nonexistent schema through the parsed catalog.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import pathlib, sys, xml.etree.ElementTree as ET\nids = {schema.get(\"id\") for path in pathlib.Path(\"@out@/share/glib-2.0/schemas\").glob(\"*.xml\") for schema in ET.parse(path).getroot().findall(\"schema\")}\nif \"org.aos.nonexistent\" in ids:\n    raise SystemExit(2)\nsys.stderr.write(\"gsettings-desktop-schemas rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "gsettings-desktop-schemas rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

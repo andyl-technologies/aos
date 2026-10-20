@@ -60,7 +60,7 @@ in {
 
     assertions = [
       {
-        assertion = config.systemd.package == pkgs.systemd;
+        assertion = (import ./_fixed-systemd-profile.nix {inherit config pkgs;});
         message = "Network worker PID 1 must use the canonical per-system Systemd package bound to the selected boot kernel";
       }
       {

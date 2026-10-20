@@ -2,7 +2,6 @@
 {
   lib,
   mkCargoPackage,
-  fetchCargoDeps,
   stdenv,
   buildPackages,
   grep,
@@ -10,9 +9,10 @@
   sqlite,
 }: let
   version = "0.1.0";
-  cargoDepsHash = import ./crucible/_cargo-deps-hash.nix;
   src = import ./crucible/_source.nix {inherit lib;};
+  cargoWorkspaceMembers = import ./crucible/_workspace.nix {inherit lib;};
   cargoArtifacts = crucible-controller.passthru.cargoArtifacts;
+  cargoDepsHash = import ./crucible/_cargo-deps-hash.nix {cargoDeps = crucible-controller.passthru.cargoDeps;};
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
   probeProgram =
     if isDarwinCross
@@ -20,18 +20,91 @@
     else ''"$TMPDIR/crucible-fleet-store-probe-bin"'';
 in
   mkCargoPackage {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
+      target = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
+      role = "public-package";
+    };
     pname = "crucible-fleet-store";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The probe reports the SharedDagStore backend and location-independent identity.";
+        "files" = {};
+        "input" = "An empty local directory for a deterministic shared DAG-store probe.";
+        "operation" = "Run the fleet-store's built-in backend probe.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess\nresult = subprocess.run([\"@out@/bin/crucible-fleet-store\", \"probe\", \"fleet-store\"], capture_output=True, text=True)\nassert result.returncode == 0 and \"backend=SharedDagStore\" in result.stdout and \"location_independent_identity=true\" in result.stdout, (result.returncode, result.stdout, result.stderr)\nprint(\"crucible-fleet-store operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "crucible-fleet-store operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The fleet-store rejects the unsupported operation.";
+        "files" = {};
+        "input" = "A fleet-store invocation naming an unknown operation.";
+        "operation" = "Parse the unsupported operation before opening a store.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess, sys\nresult = subprocess.run([\"@out@/bin/crucible-fleet-store\", \"aos-invalid-operation\"], capture_output=True, text=True)\nassert result.returncode != 0, (result.returncode, result.stdout, result.stderr)\nsys.stderr.write(\"crucible-fleet-store rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "crucible-fleet-store rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version src;
 
     cargoDeps = crucible-controller.passthru.cargoDeps;
-    inherit cargoArtifacts;
+    inherit cargoArtifacts cargoWorkspaceMembers;
     cargoArtifactContract = cargoArtifacts.passthru.cargoArtifactContract;
     cargoEnv = cargoArtifacts.passthru.cargoArtifactContract.cargoEnv;
     cargoRoot = "crates";
     cargoNextest = true;
 
-    cargoFlags = "-p crucible-cas --bin crucible-fleet-store";
-    cargoTestFlags = "-p crucible-cas";
+    cargoFlags = "-p crucible-store --bin crucible-fleet-store";
+    cargoTestFlags = "-p crucible-store";
     doCheck = true;
     buildDeps =
       [buildPackages.grep buildPackages.pkg-config sqlite]
@@ -113,9 +186,9 @@ in
       package=crucible-fleet-store
       build_system=mkCargoPackage
       cargo_deps=fetchCargoVendor
-      cargo_deps_source_root=source/crates
+      cargo_deps_source_root=source
       cargo_deps_hash=${cargoDepsHash}
-      cargo_package=crucible-cas
+      cargo_package=crucible-store
       cargo_binary=crucible-fleet-store
       dag_store_backend=SharedDagStore
       store_interface=DagStore::put,DagStore::get,DagStore::has

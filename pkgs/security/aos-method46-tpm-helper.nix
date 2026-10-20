@@ -12,6 +12,23 @@ in
   # A TSS upgrade requires reviewing and running the mock-TCTI regression first.
   assert tpm2-tss.version == pinnedTssVersion;
     mkDerivation {
+      platformSupport = {
+        build = [
+          {
+            abi = ["gnu"];
+            os = ["linux"];
+          }
+        ];
+        host = [
+          {
+            abi = ["gnu"];
+            cpu = ["x86_64" "aarch64"];
+            os = ["linux"];
+          }
+        ];
+        target = [];
+        role = "public-package";
+      };
       pname = "aos-method46-tpm-helper";
       version = "0.1.0";
       src = ./aos-method46-tpm-helper;

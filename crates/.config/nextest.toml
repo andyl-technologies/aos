@@ -77,10 +77,18 @@ threads-required = "num-test-threads"
 filter = 'test(real_client_mounts_cancels_and_roundtrips_a_complete_multi_platform_graph)'
 threads-required = "num-test-threads"
 
+# This manifest-admission race intentionally holds one digest claim while a
+# second request polls the bounded finalization window. Isolate the two-request
+# test from unrelated workspace I/O so the application deadline remains the
+# behavior under test.
+[[profile.default.overrides]]
+filter = 'test(manifest_admission_stages_before_validation_and_claims_each_digest_once)'
+threads-required = "num-test-threads"
+
 [profile.ci]
 inherits = "default"
 fail-fast = false
-junit = { path = "target/nextest/ci/junit.xml" }
+junit = { path = "junit.xml" }
 
 # Protected ancestry, real cgroup-v2 and user-xattr fixtures require the
 # host-native profile described in README.md. Default and ci stay unfiltered.
@@ -90,7 +98,7 @@ junit = { path = "target/nextest/ci/junit.xml" }
 inherits = "ci"
 default-filter = """
 not (
-  (package(=aos-sandbox) & (
+  (package(=aos-sandbox-controller-domain) & (
     test(=journal::protected_storage::currentness::tests::one_native_ancestry_binds_actual_writers_and_rejects_different_directory_uid_or_path) or
     test(=journal::protected_storage::opening::retained::captured_preparation::tests::changed_captured_prefix_refuses_before_tail_repair_or_handoff) or
     test(=journal::protected_storage::opening::retained::captured_preparation::tests::positive_captured_handoff_retires_only_traversal_ancestors) or
@@ -157,7 +165,7 @@ not (
   ))
 )
 """
-junit = { path = "target/nextest/nix-sandbox/junit.xml" }
+junit = { path = "junit.xml" }
 
 # Requires actual protected uid0->test-owner ancestry, a real cgroup-v2 root,
 # working user.* xattrs, matching source/binary/package/feature receipts and
@@ -165,4 +173,4 @@ junit = { path = "target/nextest/nix-sandbox/junit.xml" }
 [profile.host-native]
 inherits = "ci"
 default-filter = "all()"
-junit = { path = "target/nextest/host-native/junit.xml" }
+junit = { path = "junit.xml" }

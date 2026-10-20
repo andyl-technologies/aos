@@ -11,7 +11,7 @@
     name = "aos-namespace-inspector-manager-query-source";
   };
   manifestDirectory = builtins.path {
-    path = ../../crates/aos-sandbox-network/src/namespace_inspector/manager_query;
+    path = ../../crates/sandbox/host/aos-sandbox-network/src/namespace_inspector/manager_query;
     name = "aos-namespace-inspector-manager-query-manifest";
     filter = path: type:
       type == "directory" || builtins.baseNameOf path == "systemd_v259_properties.def";
@@ -43,6 +43,23 @@
 in
   assert systemd.version == "261.2";
     mkDerivation {
+      platformSupport = {
+        build = [
+          {
+            abi = ["gnu"];
+            os = ["linux"];
+          }
+        ];
+        host = [
+          {
+            abi = ["gnu"];
+            cpu = ["x86_64" "aarch64"];
+            os = ["linux"];
+          }
+        ];
+        target = [];
+        role = "public-package";
+      };
       pname = "aos-namespace-inspector-manager-query";
       version = "1";
       src = null;

@@ -97,8 +97,115 @@
     RUST_TARGET_DIR=target/${stdenv.hostPlatform.config}/release'';
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      role = "public-package";
+    };
     pname = "git" + lib.optionalString minimal "-minimal";
     inherit version;
+
+    qualification.packageProbe =
+    if minimal
+    then lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Git emits the exact SHA-1 object identifier.";
+        "files" = {};
+        "input" = "A fixed byte sequence to encode as a Git blob object.";
+        "operation" = "Compute the blob object identifier with minimal Git's hash-object command.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/git"
+              "hash-object"
+              "--stdin"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdin" = "qualification object
+";
+            "stdout" = {
+              "exact" = "157adbdcc19d3c521d96614eb0e7af902f2bdfb4
+";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Git rejects the missing input with status 128.";
+        "files" = {};
+        "input" = "A path that does not exist.";
+        "operation" = "Hash the missing path as a Git object.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/git"
+              "hash-object"
+              "@work@/bad-input/missing"
+            ];
+            "exit_code" = 128;
+            "observes_rejection" = true;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    }
+    else lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Git emits the exact SHA-1 object identifier.";
+        "files" = {};
+        "input" = "A fixed byte sequence to encode as a Git blob object.";
+        "operation" = "Compute the blob object identifier with git hash-object.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/git"
+              "hash-object"
+              "--stdin"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdin" = "qualification object
+";
+            "stdout" = {
+              "exact" = "157adbdcc19d3c521d96614eb0e7af902f2bdfb4
+";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Git rejects the missing input with status 128.";
+        "files" = {};
+        "input" = "A path that does not exist.";
+        "operation" = "Hash the missing path as a Git object.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/git"
+              "hash-object"
+              "@work@/bad-input/missing"
+            ];
+            "exit_code" = 128;
+            "observes_rejection" = true;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
 
     src = fetchurl {
       urls = [

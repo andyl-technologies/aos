@@ -5,29 +5,29 @@
 }: let
   moduleSource = builtins.readFile ../../modules/sandbox/controller-service.nix;
   hostModuleSource = builtins.readFile ../../modules/sandbox/host-broker.nix;
-  runtimeRootSource = builtins.readFile ../../crates/aos-sandbox-controller-runtime/src/controller_service.rs;
-  activationSource = builtins.readFile ../../crates/aos-sandbox-controller-runtime/src/controller_service/activation.rs;
-  activationConfigurationSource = builtins.readFile ../../crates/aos-sandbox-controller-runtime/src/controller_service/activation/configuration.rs;
-  effectsSource = builtins.readFile ../../crates/aos-sandbox-controller-runtime/src/controller_service/effects/mod.rs;
-  effectAdmissionSource = builtins.readFile ../../crates/aos-sandbox-controller-runtime/src/controller_service/effects/admission.rs;
-  effectExecutionSource = builtins.readFile ../../crates/aos-sandbox-controller-runtime/src/controller_service/effects/execution.rs;
-  effectLifecycleSource = builtins.readFile ../../crates/aos-sandbox-controller-runtime/src/controller_service/effects/lifecycle.rs;
-  effectSnapshotCoordinationSource = builtins.readFile ../../crates/aos-sandbox-controller-runtime/src/controller_service/effects/snapshot_coordination.rs;
-  effectExecutionTestSource = builtins.readFile ../../crates/aos-sandbox-controller-runtime/src/controller_service/effects/execution/tests.rs;
-  effectLifecycleTestSource = builtins.readFile ../../crates/aos-sandbox-controller-runtime/src/controller_service/effects/lifecycle/tests.rs;
-  workerSource = builtins.readFile ../../crates/aos-sandbox-controller-runtime/src/controller_service/worker.rs;
-  workerTestSource = builtins.readFile ../../crates/aos-sandbox-controller-runtime/src/controller_service/worker/tests.rs;
-  commandsSource = builtins.readFile ../../crates/aos-sandbox-controller-runtime/src/controller_service/commands.rs;
-  publicRpcSource = builtins.readFile ../../crates/aos-sandbox-controller-runtime/src/controller_service/public_rpc.rs;
-  publicRpcTestSource = builtins.readFile ../../crates/aos-sandbox-controller-runtime/src/controller_service/public_rpc/tests.rs;
+  runtimeRootSource = builtins.readFile ../../crates/sandbox/controller/aos-sandbox-controller-runtime/src/controller_service.rs;
+  activationSource = builtins.readFile ../../crates/sandbox/controller/aos-sandbox-controller-runtime/src/controller_service/activation.rs;
+  activationConfigurationSource = builtins.readFile ../../crates/sandbox/controller/aos-sandbox-controller-runtime/src/controller_service/activation/configuration.rs;
+  effectsSource = builtins.readFile ../../crates/sandbox/controller/aos-sandbox-controller-runtime/src/controller_service/effects/mod.rs;
+  effectAdmissionSource = builtins.readFile ../../crates/sandbox/controller/aos-sandbox-controller-runtime/src/controller_service/effects/admission.rs;
+  effectExecutionSource = builtins.readFile ../../crates/sandbox/controller/aos-sandbox-controller-runtime/src/controller_service/effects/execution.rs;
+  effectLifecycleSource = builtins.readFile ../../crates/sandbox/controller/aos-sandbox-controller-runtime/src/controller_service/effects/lifecycle.rs;
+  effectSnapshotCoordinationSource = builtins.readFile ../../crates/sandbox/controller/aos-sandbox-controller-runtime/src/controller_service/effects/snapshot_coordination.rs;
+  effectExecutionTestSource = builtins.readFile ../../crates/sandbox/controller/aos-sandbox-controller-runtime/src/controller_service/effects/execution/tests.rs;
+  effectLifecycleTestSource = builtins.readFile ../../crates/sandbox/controller/aos-sandbox-controller-runtime/src/controller_service/effects/lifecycle/tests.rs;
+  workerSource = builtins.readFile ../../crates/sandbox/controller/aos-sandbox-controller-runtime/src/controller_service/worker.rs;
+  workerTestSource = builtins.readFile ../../crates/sandbox/controller/aos-sandbox-controller-runtime/src/controller_service/worker/tests.rs;
+  commandsSource = builtins.readFile ../../crates/sandbox/controller/aos-sandbox-controller-runtime/src/controller_service/commands.rs;
+  publicRpcSource = builtins.readFile ../../crates/sandbox/controller/aos-sandbox-controller-runtime/src/controller_service/public_rpc.rs;
+  publicRpcTestSource = builtins.readFile ../../crates/sandbox/controller/aos-sandbox-controller-runtime/src/controller_service/public_rpc/tests.rs;
   runtimeSource = runtimeRootSource + activationSource + activationConfigurationSource + effectsSource + effectAdmissionSource + effectExecutionSource + effectLifecycleSource + effectSnapshotCoordinationSource + effectExecutionTestSource + effectLifecycleTestSource + workerSource + workerTestSource + commandsSource + publicRpcSource + publicRpcTestSource;
-  diagnosticSource = builtins.readFile ../../crates/aos-sandbox-services/src/controller/diagnostic.rs;
-  assemblySource = builtins.readFile ../../crates/aos-sandbox-services/src/controller.rs;
-  journalSource = builtins.readFile ../../crates/aos-sandbox/src/journal/controller.rs;
+  diagnosticSource = builtins.readFile ../../crates/sandbox/controller/aos-sandbox-services/src/controller/diagnostic.rs;
+  assemblySource = builtins.readFile ../../crates/sandbox/controller/aos-sandbox-services/src/controller.rs;
+  journalSource = builtins.readFile ../../crates/sandbox/controller/aos-sandbox-controller-domain/src/journal/controller.rs;
   catalogReconciliationSource =
-    builtins.readFile ../../crates/aos-sandbox/src/host_catalog_reconciliation.rs;
+    builtins.readFile ../../crates/sandbox/controller/aos-sandbox-controller-domain/src/host_catalog_reconciliation.rs;
   resourceInventorySource =
-    builtins.readFile ../../crates/aos-sandbox/src/resource_inventory.rs;
+    builtins.readFile ../../crates/sandbox/controller/aos-sandbox-controller-domain/src/resource_inventory.rs;
   packageSource = builtins.readFile ../../pkgs/tools/aos-sandboxd.nix;
   brokerSession = import ../../modules/sandbox/_broker-session-credentials.nix {inherit lib pkgs;};
   credentialEndpoint = {
@@ -374,7 +374,7 @@ in
   assert requires ''--frozen --offline'' packageSource;
   assert requires ''-p aos-sandbox-services --bin aos-sandboxd'' packageSource;
   assert requires "cargoTestFlags =" packageSource;
-  assert requires "-p aos-sandbox-services -p aos-sandbox -p aos-sandbox-broker-session-security -p aos-sandbox-controller-runtime" packageSource;
+  assert requires "-p aos-sandbox-services -p aos-sandbox-controller-domain -p aos-sandbox-broker-session-security -p aos-sandbox-controller-runtime" packageSource;
     pkgs.mkDerivation {
       pname = "sandbox-controller-service-source-contract";
       version = "0";

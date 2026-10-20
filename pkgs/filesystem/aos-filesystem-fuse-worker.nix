@@ -12,14 +12,31 @@
   src = import ../tools/aos/_workspace-source.nix {inherit lib;};
 in
   mkCargoPackage {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
     pname = "aos-filesystem-fuse-worker";
     inherit version src;
     # The complete workspace has one vendor input contract. Reuse Mount's
     # source-only vendor derivation rather than adding another divergent pin.
     cargoDeps = aos-sandbox-mountd.passthru.cargoDeps;
     cargoRoot = "crates";
-    cargoFlags = "-p aos-filesystem-fuse --bin aos-filesystem-fuse-worker";
-    cargoTestFlags = "-p aos-filesystem-fuse";
+    cargoFlags = "-p aos-sandbox-filesystem-fuse --bin aos-filesystem-fuse-worker";
+    cargoTestFlags = "-p aos-sandbox-filesystem-fuse";
     # Protected journal fixtures are debug-only; the installed worker remains
     # a release build without fixture authority.
     checkType = "debug";

@@ -34,13 +34,18 @@
     system = probeSystem;
   };
   rootfsBuilder = builtins.elemAt probeDisk.passthru.rootfs.args 1;
+  managerInit = probeSystem.config.aos.manager.selected.configuration.rootfs.initExecutable;
 
   adapterContract =
     if !(lib.hasInfix "cp -a ${kernelModuleSentinel}/lib/modules/. rootfs/usr/lib/modules/" rootfsBuilder)
     then throw "VM rootfs adapter did not forward configured kernel module packages"
     else if !(lib.hasInfix "cp -a ${firmwareSentinel}/lib/firmware/. rootfs/usr/lib/firmware/" rootfsBuilder)
     then throw "VM rootfs adapter did not forward configured firmware packages"
-    else "module and firmware packages forwarded";
+    else if !(lib.hasInfix "ln -sfn ${lib.escapeShellArg (builtins.toString managerInit)} rootfs/usr/bin/init" rootfsBuilder)
+    then throw "VM rootfs adapter did not use the selected manager's init executable"
+    else if probeDisk.system != pkgs.stdenv.buildPlatform.system
+    then throw "VM disk assembly must execute on the native build platform"
+    else "module, firmware, selected manager, and native assembly inputs forwarded";
 in
   pkgs.mkDerivation {
     pname = "vm-rootfs-adapter-check";

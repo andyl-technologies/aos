@@ -44,14 +44,13 @@ case " $* " in
   *' category checks '*' scope build.aos-dev-cli '*) printf 'build.aos-dev-cli' ;;
   *' category checks '*' scope build.aos-dev '*) : ;;
   *' category checks '*' scope build '*) printf 'build.aos-dev-cli\nbuild.aos-dev-cache-identity' ;;
-  *' category checks '*' scope eval '*' crossSystem x86_64-darwin '*) printf 'eval' ;;
-  *' category checks '*' scope eval '*) printf 'eval' ;;
-  *' category checks '*' scope group '*) printf 'group.child' ;;
-  *' category checks '*' scope '*) : ;;
-  *' category checks '*) printf 'eval\nbuild.all' ;;
+  *' category checks '*) printf 'eval\nbuild' ;;
   *' category images '*) printf 'server:qcow2' ;;
   *' category containers '*) printf 'aos:oci' ;;
-  *' category builds '*) printf 'server:toplevel' ;;
+  *' category builds '*)
+    [[ ${AOS_DEV_TEST_BLOCK_BUILD_LIST:-0} != 1 ]] || exit 19
+    printf 'server:toplevel'
+    ;;
   *) exit 1 ;;
 esac
 MOCK
@@ -133,56 +132,46 @@ bash -n "$root/tools/dev/aos-dev" "$root"/tools/dev/lib/*.bash
 bash "$root/tools/dev/aos-dev" help | grep -Fq 'Usage: aos-dev'
 bash "$root/tools/dev/aos-dev" completion bash | grep -Fq '_aos_dev_complete()'
 test "$(bash "$root/tools/dev/aos-dev" list packages)" = $'alpha\nbeta'
+test "$(bash "$root/tools/dev/aos-dev" list check)" = $'eval\nbuild'
+test "$(bash "$root/tools/dev/aos-dev" list check build)" = 'build'
+test "$(bash "$root/tools/dev/aos-dev" list check build.)" = $'build.aos-dev-cli\nbuild.aos-dev-cache-identity'
 test "$(bash "$root/tools/dev/aos-dev" list check build.aos-dev)" = $'build.aos-dev-cli\nbuild.aos-dev-cache-identity'
 test "$(bash "$root/tools/dev/aos-dev" list check build.aos-dev-cli)" = 'build.aos-dev-cli'
-
-test "$(AOS_DEV_TEST_EVAL_LOG="$scratch/scoped-eval.log" \
-  bash "$root/tools/dev/aos-dev" --release build check build.aos-dev-cli --no-out-link)" = /tmp/aos-dev-test-output
-grep -Fq -- 'scope build.aos-dev-cli' "$scratch/scoped-eval.log"
-grep -Fq -- '--extra-experimental-features nix-command eval --raw --file tools/dev/targets.nix' "$scratch/scoped-eval.log"
-if grep -F -- 'category checks' "$scratch/scoped-eval.log" | grep -Fv -- 'scope build.aos-dev-cli'; then
-  echo 'nested check validation evaluated unrelated check groups' >&2
-  exit 1
-fi
-if bash "$root/tools/dev/aos-dev" --release build check build.aos-dev --no-out-link >/dev/null 2>&1; then
-  echo 'check completion prefix was accepted as an exact target' >&2
-  exit 1
-fi
-
-# A named leaf must not force the mock's unrelated check tree.
+test "$(bash "$root/tools/dev/aos-dev" --release build check build.aos-dev-cli --no-out-link)" = /tmp/aos-dev-test-output
+grep -Fq -- '-A checks.build.aos-dev-cli --no-out-link' "$AOS_DEV_TEST_LOG"
+# Direct check paths must reach only the requested Nix attribute. Native,
+# cross and deeper paths must not enumerate unrelated check groups first.
 export AOS_DEV_TEST_REQUIRE_CHECK_SCOPE=1
-test "$(AOS_DEV_TEST_EVAL_LOG="$scratch/leaf-eval.log" \
-  bash "$root/tools/dev/aos-dev" --release build check eval --dry-run)" = /tmp/aos-dev-test-output
-grep -Fq -- 'category checks --argstr scope eval' "$scratch/leaf-eval.log"
-test "$(wc -l < "$scratch/leaf-eval.log")" -eq 1
-if grep -Fq -- 'crossSystem' "$scratch/leaf-eval.log"; then
-  echo 'native check validation added a cross target' >&2
-  exit 1
-fi
-
-test "$(AOS_DEV_TEST_EVAL_LOG="$scratch/cross-leaf-eval.log" \
+for check_name in eval group.child.deep build.aos-dev-cli; do
+  eval_log="$scratch/direct-$check_name-eval.log"
+  test "$(AOS_DEV_TEST_EVAL_LOG="$eval_log" \
+    bash "$root/tools/dev/aos-dev" --release build check "$check_name" --dry-run)" = /tmp/aos-dev-test-output
+  test ! -e "$eval_log"
+  grep -Fq -- "-A checks.$check_name --dry-run" "$AOS_DEV_TEST_LOG"
+done
+test "$(AOS_DEV_TEST_EVAL_LOG="$scratch/cross-direct-eval.log" \
   bash "$root/tools/dev/aos-dev" --release build check eval \
     --argstr crossSystem x86_64-darwin --dry-run)" = /tmp/aos-dev-test-output
-grep -Fq -- 'scope eval --argstr crossSystem x86_64-darwin' "$scratch/cross-leaf-eval.log"
+test ! -e "$scratch/cross-direct-eval.log"
 grep -Fq -- '-A checks.eval --argstr crossSystem x86_64-darwin --dry-run' "$AOS_DEV_TEST_LOG"
-
-for invalid_check in eva group build.aos-dev; do
-  if bash "$root/tools/dev/aos-dev" --release build check "$invalid_check" --dry-run >/dev/null 2>&1; then
-    echo "nonexact check target was accepted: $invalid_check" >&2
-    exit 1
-  fi
-done
-# Deep direct attributes remain the requested Nix build's responsibility.
-test "$(AOS_DEV_TEST_EVAL_LOG="$scratch/deep-eval.log" \
-  bash "$root/tools/dev/aos-dev" --release build check group.child.deep --dry-run)" = /tmp/aos-dev-test-output
-test ! -e "$scratch/deep-eval.log"
 unset AOS_DEV_TEST_REQUIRE_CHECK_SCOPE
 
 test "$(bash "$root/tools/dev/aos-dev" list checks eva)" = eval
-test "$(bash "$root/tools/dev/aos-dev" list check build.aos-dev)" = $'build.aos-dev-cli\nbuild.aos-dev-cache-identity'
 
+test "$(bash "$root/tools/dev/aos-dev" --release build check package-documentation --no-out-link)" = /tmp/aos-dev-test-output
+grep -Fq -- '-A checks.package-documentation --no-out-link' "$AOS_DEV_TEST_LOG"
+if bash "$root/tools/dev/aos-dev" --release build check 'build..invalid' --no-out-link >/dev/null 2>&1; then
+  echo 'malformed check target was accepted' >&2
+  exit 1
+fi
 test "$(bash "$root/tools/dev/aos-dev" --release build package alpha --no-out-link)" = /tmp/aos-dev-test-output
 grep -Fq -- '-A pkgs.alpha --no-out-link' "$AOS_DEV_TEST_LOG"
+test "$(AOS_DEV_TEST_BLOCK_BUILD_LIST=1 bash "$root/tools/dev/aos-dev" --release build build server:toplevel --no-out-link)" = /tmp/aos-dev-test-output
+grep -Fq -- '-A systems.server.build.toplevel --no-out-link' "$AOS_DEV_TEST_LOG"
+if bash "$root/tools/dev/aos-dev" --release build build 'server:..invalid' --no-out-link >/dev/null 2>&1; then
+  echo 'malformed system build target was accepted' >&2
+  exit 1
+fi
 test "$(bash "$root/tools/dev/aos-dev" --release all checks --no-out-link)" = /tmp/aos-dev-test-output
 grep -Fq -- '-A allChecks --no-out-link' "$AOS_DEV_TEST_LOG"
 if bash "$root/tools/dev/aos-dev" --release build package darwin-runtimes --no-out-link >/dev/null 2>&1; then

@@ -8,14 +8,14 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   model = import ./_crucible-model-source.nix {inherit lib;};
-  canonical = builtins.readFile ../../crates/crucible/src/model/canonical.rs;
+  canonical = builtins.readFile ../../crates/crucible/engine/crucible-engine/src/model/canonical.rs;
   crateRoot = import ./_crucible-tests-source.nix {inherit lib;};
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "crates/crucible/src/model.rs" model [
+    failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" model [
       {
         label = "ScenarioDef type";
         needle = "pub struct ScenarioDef";
@@ -45,7 +45,7 @@
         needle = "pub fn content_hash(&self) -> ContentHash";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model/canonical.rs" canonical [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model/canonical.rs" canonical [
       {
         label = "configuration hash function";
         needle = "pub(super) fn configuration_hash(configuration: &Configuration) -> ContentHash";
@@ -59,7 +59,7 @@
         needle = "write_schedule(&mut hasher, &configuration.schedule);";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" crateRoot [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" crateRoot [
       {
         label = "configuration identity test";
         needle = "configuration_id_is_content_addressed_by_def_and_schedule";
@@ -120,7 +120,10 @@ in
       version = "0";
       src = crucibleSrc;
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.rust
         pkgs.sed
@@ -164,7 +167,7 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-execution-model-core-target" \
-              -p crucible \
+              -p crucible-engine \
               --lib \
               -- --test-threads=1
           '';
@@ -180,7 +183,7 @@ in
             tasks=${builtins.concatStringsSep "," taskIds}
             types=ScenarioDef,Configuration,Schedule,Decision
             identity=Configuration::id
-            rust_test=crucible::configuration_id_is_content_addressed_by_def_and_schedule
+            rust_test=crucible_engine::configuration_id_is_content_addressed_by_def_and_schedule
             RESULT
           '';
         }

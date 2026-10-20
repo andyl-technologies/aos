@@ -121,7 +121,7 @@ class ElfClassificationTest(unittest.TestCase):
             source.write_bytes(image)
             source.chmod(0o755)
 
-            for namespace in ("nix/store", "nix.lower/store"):
+            for namespace in ("nix/store", "nix.lower/store", "usr/lib/aos/nix/store"):
                 for library in ("lib", "lib32", "lib64"):
                     path = (
                         f"/{namespace}/{outer}/root/nix/store/{inner}/"
@@ -388,6 +388,43 @@ class PlanSemanticsTest(unittest.TestCase):
             self.assertEqual(
                 by_path["/nix.lower/store/hash-systemd-units/aos-sandboxd.service"],
                 "system_u:object_r:systemd_unit_t",
+            )
+
+    def test_physical_image_store_preserves_logical_package_policy(self) -> None:
+        package = "a" * 32 + "-selected-component-1"
+        logical = f"/nix/store/{package}/bin/component"
+        physical = f"/usr/lib/aos/nix/store/{package}/bin/component"
+
+        class Resolver:
+            def lookup(
+                self, path: str, _kind: context_plan.InodeKind
+            ) -> str | None:
+                if path == logical:
+                    return "system_u:object_r:selected_component_exec_t"
+                return "system_u:object_r:default_t"
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            executable = root / physical.removeprefix("/")
+            executable.parent.mkdir(parents=True)
+            executable.write_bytes(elf64(context_plan.ET_EXEC))
+            executable.chmod(0o755)
+            alias = root / "usr/bin/component"
+            alias.parent.mkdir(parents=True)
+            alias.symlink_to(logical)
+
+            entries = context_plan.inventory_tree(root)
+            labels = context_plan.plan_labels(entries, Resolver())
+            by_path = {label.path: label.context for label in labels}
+            resolved = context_plan._resolve_symlink_target(
+                next(entry for entry in entries if entry.path == "/usr/bin/component"),
+                {entry.path: entry for entry in entries},
+            )
+
+            self.assertIsNotNone(resolved)
+            self.assertEqual(resolved.path, physical)
+            self.assertEqual(
+                by_path[physical], "system_u:object_r:selected_component_exec_t"
             )
 
     def test_specific_alias_overrides_dual_use_libc_fallback(self) -> None:

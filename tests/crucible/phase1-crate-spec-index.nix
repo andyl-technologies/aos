@@ -2,37 +2,32 @@
   pkgs,
   lib,
 }: let
+  inherit (import ./_workspace-packages.nix {inherit lib;}) packageDir packageNames cruciblePackages;
   cratesDir = ../../crates;
   rfcDir = ../../docs/rfcs/0010-crucible;
   campaignRfcDir = ../../docs/rfcs/0020-crucible-campaigns;
 
   specs = [
     {
-      package = "crucible-cas";
+      package = "crucible-store";
       root = "src/lib.rs";
       specFiles = ["35"];
       section6 = true;
     }
     {
-      package = "crucible-sim";
+      package = "crucible-determinism";
       root = "src/lib.rs";
       specFiles = ["04" "08" "09"];
       section6 = true;
     }
     {
-      package = "crucible-assert";
-      root = "src/lib.rs";
-      specFiles = ["18"];
-      section6 = true;
-    }
-    {
-      package = "crucible-shmem";
+      package = "crucible-qemu-shmem";
       root = "src/lib.rs";
       specFiles = ["13"];
       section6 = true;
     }
     {
-      package = "crucible-protocol";
+      package = "crucible-qemu-protocol";
       root = "src/lib.rs";
       specFiles = ["14" "16"];
       section6 = true;
@@ -44,7 +39,7 @@
       section6 = true;
     }
     {
-      package = "crucible-qemu";
+      package = "crucible-qemu-host";
       root = "src/lib.rs";
       specFiles = ["10" "11"];
       section6 = true;
@@ -56,7 +51,7 @@
       section6 = true;
     }
     {
-      package = "crucible-debug-gateway";
+      package = "crucible-qemu-debug-gateway";
       root = "src/lib.rs";
       specFiles = ["36"];
       section6 = true;
@@ -69,7 +64,7 @@
       section6 = true;
     }
     {
-      package = "crucible";
+      package = "crucible-engine";
       root = "src/lib.rs";
       specFiles = ["05" "06" "07" "08" "17" "18" "19"];
       section6 = true;
@@ -81,7 +76,19 @@
       section6 = true;
     }
     {
-      package = "crucible-api";
+      package = "crucible-control-client";
+      root = "src/lib.rs";
+      specFiles = ["21"];
+      section6 = true;
+    }
+    {
+      package = "crucible-control-server";
+      root = "src/lib.rs";
+      specFiles = ["21"];
+      section6 = true;
+    }
+    {
+      package = "crucible-control-api";
       root = "src/lib.rs";
       specFiles = ["21"];
       section6 = true;
@@ -100,7 +107,7 @@
       section6 = true;
     }
     {
-      package = "crucible-harness";
+      package = "crucible-test-support";
       root = "src/lib.rs";
       specFiles = ["24" "27"];
       section6 = false;
@@ -113,14 +120,7 @@
       section6 = false;
     }
     {
-      package = "crucible-linux-resource";
-      root = "src/lib.rs";
-      specFiles = [];
-      campaignSpecFiles = ["04a" "06"];
-      section6 = false;
-    }
-    {
-      package = "crucible-s3-store";
+      package = "crucible-store-s3";
       root = "src/lib.rs";
       specFiles = [];
       campaignSpecFiles = ["06"];
@@ -129,13 +129,7 @@
   ];
 
   expectedPackages = lib.sort builtins.lessThan (map (spec: spec.package) specs);
-  foundPackages = lib.sort builtins.lessThan (
-    builtins.filter (
-      name:
-        lib.hasPrefix "crucible" name
-        && builtins.pathExists (cratesDir + "/${name}/Cargo.toml")
-    ) (builtins.attrNames (builtins.readDir cratesDir))
-  );
+  foundPackages = lib.sort builtins.lessThan cruciblePackages;
 
   packageSetFailures =
     if foundPackages == expectedPackages
@@ -206,7 +200,7 @@
       spec:
         crateDocFailures
         spec
-        (builtins.readFile (cratesDir + "/${spec.package}/${spec.root}"))
+        (builtins.readFile (packageDir spec.package + "/${spec.root}"))
         "crates/${spec.package}/${spec.root}"
     )
     specs;
@@ -303,7 +297,7 @@
 
   regressionFailures = let
     spec = {
-      package = "crucible-sim";
+      package = "crucible-determinism";
       root = "src/lib.rs";
       specFiles = ["04" "08" "09"];
       section6 = true;
@@ -318,7 +312,7 @@
       //! Spec index: RFC-0010 files 04, 09.
       #![forbid(unsafe_code)]
     '' "synthetic";
-    staleRowFindings = section6RowFailures spec "| `crucible-sim` | [`04`](04-determinism-contract.md), [`09`](09-virtual-time-icount.md) | `gate:layer0-determinism` |";
+    staleRowFindings = section6RowFailures spec "| `crucible-determinism` | [`04`](04-determinism-contract.md), [`09`](09-virtual-time-icount.md) | `gate:layer0-determinism` |";
     hasFinding = needle: findings:
       builtins.any (finding: hasInfix needle finding) findings;
   in

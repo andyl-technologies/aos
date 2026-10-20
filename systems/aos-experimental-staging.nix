@@ -10,8 +10,8 @@
   aos.image.budgets.maxInitrdMiB = 160;
   # Arm embeds its uncompressed kernel alongside the complete runtime initrd.
   # The ESP retains both normal and recovery UKIs with filesystem headroom.
-  aos.image.budgets.maxUkiMiB = 224;
-  aos.image.budgets.maxEspMiB = 768;
+  aos.image.budgets.maxBootExecutableMiB = 224;
+  aos.image.budgets.maxFirmwarePartitionMiB = 768;
 
   # Locale data and the complete libc utility interpreter increase the root
   # payload. Size staging partitions for that payload before external signing.

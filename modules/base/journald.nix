@@ -1,172 +1,33 @@
-##! modules/base/journald.nix — Journald configuration module
-##!
-##! Configures systemd-journald logging behavior: storage backend (persistent
-##! to disk vs volatile in memory), retention policy, size limits, and rate
-##! limiting. Generates /etc/systemd/journald.conf with a [Journal] section
-##! containing all configured options.
-##!
-##! Persistent storage (the default) writes journal files to /var/log/journal,
-##! which survives reboots. Volatile storage uses tmpfs at /run/log/journal and
-##! is lost on reboot but avoids disk I/O.
+##! Loads the retained journal-policy declarations during image selection.
 {
-  config,
-  pkgs,
   lib,
+  pkgs,
+  packageModulesAvailable ? false,
   ...
-}: let
-  cfg = config.aos.journald;
-  runtimeLimits =
-    lib.optionalString (cfg.runtimeMaxUse != null) "\nRuntimeMaxUse=${toString cfg.runtimeMaxUse}"
-    + lib.optionalString (cfg.runtimeMaxFileSize != null) "\nRuntimeMaxFileSize=${toString cfg.runtimeMaxFileSize}";
-in {
-  options.aos.journald = {
-    ## Journal storage mode (persistent, volatile, auto).
-    storage = lib.mkOption {
-      type = lib.types.enum [
-        "persistent"
-        "volatile"
-        "auto"
-      ];
-      default = "persistent";
-      description = ''
-        Journal storage mode:
-        - persistent: write to /var/log/journal (survives reboot)
-        - volatile: write to /run/log/journal (lost on reboot)
-        - auto: use persistent if /var/log/journal exists, else volatile
-      '';
-    };
+}: {
+  imports = lib.optionals (!packageModulesAvailable) [../../pkgs/system/_aos-host-policy/journald.nix];
 
-    ## Maximum time to keep journal entries.
-    maxRetentionSec = lib.mkOption {
-      type = lib.types.str;
-      default = "1month";
-      description = ''
-        Maximum time to keep journal entries. Entries older than this are
-        removed during journal rotation. Accepts systemd time span syntax
-        (e.g. "1month", "2weeks", "7d").
-      '';
-    };
-
-    ## Maximum disk space the journal may use.
-    maxUse = lib.mkOption {
-      type = lib.types.str;
-      default = "500M";
-      description = ''
-        Maximum disk space the journal may use. When this limit is reached,
-        the oldest entries are pruned. Accepts size suffixes (K, M, G).
-      '';
-    };
-
-    ## Maximum size of individual journal files.
-    systemMaxFileSize = lib.mkOption {
-      type = lib.types.str;
-      default = "50M";
-      description = ''
-        Maximum size of individual journal files. When a file reaches this
-        size, journald rotates to a new file. Accepts size suffixes (K, M, G).
-      '';
-    };
-
-    runtimeMaxUse = lib.mkOption {
-      type = lib.types.nullOr (lib.types.addCheck lib.types.int (value: value > 0));
-      default = null;
-      description = "Optional finite runtime journal retention target in bytes; not a filesystem quota or a reservation.";
-    };
-
-    runtimeMaxFileSize = lib.mkOption {
-      type = lib.types.nullOr (lib.types.addCheck lib.types.int (value: value > 0));
-      default = null;
-      description = "Optional finite runtime journal rotation target in bytes; active files and queued records require separate allowance.";
-    };
-
-    ## Time interval for rate limiting.
-    rateLimitInterval = lib.mkOption {
-      type = lib.types.str;
-      default = "30s";
-      description = ''
-        Time interval for rate limiting. If more than rateLimitBurst messages
-        are received from a service within this interval, further messages
-        are dropped until the interval resets.
-      '';
-    };
-
-    ## Maximum messages per service within rateLimitInterval.
-    rateLimitBurst = lib.mkOption {
-      type = lib.types.int;
-      default = 10000;
-      description = ''
-        Maximum number of messages a service may log within rateLimitInterval
-        before rate limiting kicks in. The default of 10000 is generous enough
-        for most server workloads while still protecting against log floods.
-      '';
-    };
-
-    ## Forward journal messages to a traditional syslog daemon.
-    forwardToSyslog = lib.mkOption {
-      type = lib.types.bool;
-      default = false;
-      description = ''
-        Forward journal messages to a traditional syslog daemon. Disabled by
-        default because AOS uses journald as the sole logging system. Enable
-        this if a syslog-based log aggregator is in use.
-      '';
+  # The real-root machine ID differs from the initrd's. Create its runtime
+  # directory before journald installs the no-set-ID guard on the SGID root.
+  # Manager units enter the immutable bootstrap unit tree, before activation
+  # could materialize ordinary configuration file effects.
+  systemd.services.aos-journald-runtime-prep = {
+    description = "Prepare the current machine's runtime journal directory";
+    before = ["systemd-journald.service"];
+    unitConfig.DefaultDependencies = "no";
+    serviceConfig = {
+      Type = "oneshot";
+      ExecStart = ''${pkgs.systemd}/bin/systemd-tmpfiles --create --inline "d /run/log/journal 2755 root systemd-journal -" "d /run/log/journal/%%m 2750 root systemd-journal -"'';
+      NoNewPrivileges = true;
+      ProtectSystem = "strict";
+      ReadWritePaths = ["/run"];
     };
   };
 
-  config = {
-    # /etc/systemd/journald.conf — systemd-journald configuration.
-    # Applied when systemd-journald.service starts or receives SIGUSR2.
-    environment.etc."systemd/journald.conf" = {
-      text = ''
-        # /etc/systemd/journald.conf
-        # Generated by modules/base/journald.nix — do not edit manually.
-
-        [Journal]
-        Storage=${cfg.storage}
-        MaxRetentionSec=${cfg.maxRetentionSec}
-        SystemMaxUse=${cfg.maxUse}
-        SystemMaxFileSize=${cfg.systemMaxFileSize}${runtimeLimits}
-        RateLimitIntervalSec=${cfg.rateLimitInterval}
-        RateLimitBurst=${toString cfg.rateLimitBurst}
-        ForwardToSyslog=${
-          if cfg.forwardToSyslog
-          then "yes"
-          else "no"
-        }
-        Compress=yes
-      '';
-    };
-
-    # Ensure the persistent journal directory exists when using persistent storage.
-    environment.etc."tmpfiles.d/aos-journald.conf" = {
-      text = ''
-        # Journald state directories — generated by modules/base/journald.nix
-        d /var/log/journal 2755 root systemd-journal -
-      '';
-    };
-
-    # The initrd and real root have different machine IDs. The stage-2 journal
-    # directory must exist before journald starts: RestrictSUIDSGID= installs
-    # AOS's no-set-ID guard, which forbids mkdir below the SGID journal root.
-    systemd.services.aos-journald-runtime-prep = {
-      description = "Prepare the current machine's runtime journal directory";
-      before = ["systemd-journald.service"];
-      unitConfig.DefaultDependencies = "no";
-      serviceConfig = {
-        Type = "oneshot";
-        # %% defers machine-ID expansion to tmpfiles after switch-root.
-        ExecStart = ''${pkgs.systemd}/bin/systemd-tmpfiles --create --inline "d /run/log/journal 2755 root systemd-journal -" "d /run/log/journal/%%m 2750 root systemd-journal -"'';
-        NoNewPrivileges = true;
-        ProtectSystem = "strict";
-        # /run always exists; /run/log/journal may not yet exist on a fresh boot.
-        ReadWritePaths = ["/run"];
-      };
-    };
-
-    systemd.services.systemd-journald = {
-      overrideStrategy = "asDropin";
-      requires = ["aos-journald-runtime-prep.service"];
-      after = ["aos-journald-runtime-prep.service"];
-    };
+  systemd.services.systemd-journald = {
+    overrideStrategy = "asDropin";
+    requires = ["aos-journald-runtime-prep.service"];
+    after = ["aos-journald-runtime-prep.service"];
   };
+
 }

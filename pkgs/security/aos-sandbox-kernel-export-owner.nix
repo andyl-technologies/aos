@@ -22,6 +22,23 @@
   abiHeader = ./aos-sandbox-kernel-export-deny.h;
 in
   mkDerivation {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
     pname = "aos-sandbox-kernel-export-owner";
     version = "1";
     src = null;

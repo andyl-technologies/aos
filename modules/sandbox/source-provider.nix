@@ -5,6 +5,8 @@
   pkgs,
   ...
 }: let
+  credentialNameType = import ./_credential-name-type.nix {inherit lib;};
+
   cfg = config.aos.sandbox.sourceProvider;
   selectedSourceMount = config.aos.sandbox.mountBroker.sourceProviderSession.enable;
   selectedArguments = lib.optionalString selectedSourceMount " --selected-mount-source";
@@ -20,13 +22,13 @@ in {
     };
 
     credentials.catalogPublication = lib.mkOption {
-      type = lib.types.nullOr lib.serviceTypes.credentialName;
+      type = lib.types.nullOr credentialNameType;
       default = null;
       description = "External canonical 520-byte signed catalog publication installed as a nonauthorizing locator; protected provider custody and journal must be provisioned separately.";
     };
 
     credentials.catalogManifest = lib.mkOption {
-      type = lib.types.nullOr lib.serviceTypes.credentialName;
+      type = lib.types.nullOr credentialNameType;
       default = null;
       description = "External canonical LocalLive or native row catalog whose digest is the signed catalog head; it cannot authorize effects without protected journal and attempt proof.";
     };

@@ -10,6 +10,23 @@
 in
   assert tpm2-tss.version == pinnedTssVersion;
     mkDerivation {
+      platformSupport = {
+        build = [
+          {
+            abi = ["gnu"];
+            os = ["linux"];
+          }
+        ];
+        host = [
+          {
+            abi = ["gnu"];
+            cpu = ["x86_64" "aarch64"];
+            os = ["linux"];
+          }
+        ];
+        target = [];
+        role = "public-package";
+      };
       pname = "aos-runtime-deployment-tpm-helper";
       version = "0.1.0";
       src = ./aos-method46-tpm-helper;

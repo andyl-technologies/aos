@@ -32,6 +32,23 @@
   selectedNixPath = "${nix}/bin/nix";
 
   seedTree = mkDerivation {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
     pname = "aos-sandbox-nix-generation-template";
     version = "1";
     src = null;

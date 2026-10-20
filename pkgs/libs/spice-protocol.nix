@@ -15,6 +15,19 @@
     else meson;
 in
   mkDerivation {
+    # Only public protocol headers and pkg-config metadata are installed.
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [];
+      target = [];
+      role = "public-package";
+    };
+
     pname = "spice-protocol";
     inherit version;
 

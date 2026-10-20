@@ -5,6 +5,8 @@
   pkgs,
   ...
 }: let
+  credentialNameType = import ./_credential-name-type.nix {inherit lib;};
+
   cfg = config.aos.sandbox.controllerService;
   controller = config.aos.sandbox.controller;
   brokers = config.aos.sandbox;
@@ -235,107 +237,107 @@ in {
     credentials =
       {
         nodeId = lib.mkOption {
-          type = lib.types.nullOr lib.serviceTypes.credentialName;
+          type = lib.types.nullOr credentialNameType;
           default = null;
           description = "External system credential containing the raw nonzero 16-byte node identity.";
         };
         brokerPlanSigningKey = lib.mkOption {
-          type = lib.types.nullOr lib.serviceTypes.credentialName;
+          type = lib.types.nullOr credentialNameType;
           default = null;
           description = "Optional external 32-byte controller broker-plan signing seed for authority publications and Guardian arm plans.";
         };
         opensshAttachGrantSigningKey = lib.mkOption {
-          type = lib.types.nullOr lib.serviceTypes.credentialName;
+          type = lib.types.nullOr credentialNameType;
           default = null;
           description = "Optional external 32-byte seed for the dedicated signed public OpenSSH attach pending grant.";
         };
         opensshAttachCaSigningKey = lib.mkOption {
-          type = lib.types.nullOr lib.serviceTypes.credentialName;
+          type = lib.types.nullOr credentialNameType;
           default = null;
           description = "Optional external Ed25519 OpenSSH user CA private key for authorized attachment certificate issuance.";
         };
         cacheReplayBundle = lib.mkOption {
-          type = lib.types.nullOr lib.serviceTypes.credentialName;
+          type = lib.types.nullOr credentialNameType;
           default = null;
           description = "Optional protected canonical cache Replay bundle; required for clean cache bootstrap unless the controller source journal was provisioned earlier.";
         };
         cacheOwnerReadbackSigningKey = lib.mkOption {
-          type = lib.types.nullOr lib.serviceTypes.credentialName;
+          type = lib.types.nullOr credentialNameType;
           default = null;
           description = "Optional Controller-held v1 diagnostic Cache readback seed; it is not the separate Cache-only AOSCRB02 signer key and no Create publication consumes it.";
         };
         cacheOwnerReadbackPublicKey = lib.mkOption {
-          type = lib.types.nullOr lib.serviceTypes.credentialName;
+          type = lib.types.nullOr credentialNameType;
           default = null;
           description = "Optional matching 80-byte AOSCPK01 pin for the Controller-held v1 diagnostic seed.";
         };
         controllerHoldSigningKey = lib.mkOption {
-          type = lib.types.nullOr lib.serviceTypes.credentialName;
+          type = lib.types.nullOr credentialNameType;
           default = null;
           description = "Optional separate-purpose 32-byte Controller hold readback signing seed; no Q04 exchange consumes it.";
         };
         controllerHoldPublicKey = lib.mkOption {
-          type = lib.types.nullOr lib.serviceTypes.credentialName;
+          type = lib.types.nullOr credentialNameType;
           default = null;
           description = "Optional matching 80-byte AOSCTK01 Controller hold signer pin for local seed verification.";
         };
         publisherServiceScope = lib.mkOption {
-          type = lib.types.nullOr lib.serviceTypes.credentialName;
+          type = lib.types.nullOr credentialNameType;
           default = null;
           description = "External 64-byte AOSPMS01 scope: principal, project, cache resource, publisher UID/GID; never derived from socket credentials.";
         };
         publisherPolicySource = lib.mkOption {
-          type = lib.types.nullOr lib.serviceTypes.credentialName;
+          type = lib.types.nullOr credentialNameType;
           default = null;
           description = "External 272-byte signed AOSPSC01 initial publisher-policy source, bound to the publisher principal, node, project, and cache resource.";
         };
         publisherPolicy = lib.mkOption {
-          type = lib.types.nullOr lib.serviceTypes.credentialName;
+          type = lib.types.nullOr credentialNameType;
           default = null;
           description = "Exact canonical publisher policy CBOR committed by the signed AOSPSC01 source.";
         };
         publisherPolicySourcePublicKey = lib.mkOption {
-          type = lib.types.nullOr lib.serviceTypes.credentialName;
+          type = lib.types.nullOr credentialNameType;
           default = null;
           description = "Dedicated 32-byte Ed25519 verifier for the publisher-policy source.";
         };
         projectAuthorizationIssuer = lib.mkOption {
-          type = lib.types.nullOr lib.serviceTypes.credentialName;
+          type = lib.types.nullOr credentialNameType;
           default = null;
           description = "Optional separately provisioned 80-byte AOSPAK02 project-authorization issuer pin; absence keeps protected project-authorization retention closed.";
         };
         controllerSourceTreeSeedIssuer = lib.mkOption {
-          type = lib.types.nullOr lib.serviceTypes.credentialName;
+          type = lib.types.nullOr credentialNameType;
           default = null;
           description = "Optional separately provisioned 80-byte AOSCSK01 Controller Source-tree seed public verifier; absence keeps fixed-issuer seed verification closed.";
         };
         controllerSourceTreeSeed = lib.mkOption {
-          type = lib.types.nullOr lib.serviceTypes.credentialName;
+          type = lib.types.nullOr credentialNameType;
           default = null;
           description = "Optional externally signed 224-byte AOSCSE01 startup input; delivery does not admit Source genesis or open Create.";
         };
         projectAuthorizationSource = lib.mkOption {
-          type = lib.types.nullOr lib.serviceTypes.credentialName;
+          type = lib.types.nullOr credentialNameType;
           default = null;
           description = "Optional independently signed 224-byte AOSPSC02 paired with the Source seed; legacy AOSPSC01 publisher policy is not accepted.";
         };
         publicApiEntitlements = lib.mkOption {
-          type = lib.types.nullOr lib.serviceTypes.credentialName;
+          type = lib.types.nullOr credentialNameType;
           default = null;
           description = "Optional signed canonical principal-specific first-capability entitlements; bootstrap stays closed when absent.";
         };
         publicApiEntitlementPublicKey = lib.mkOption {
-          type = lib.types.nullOr lib.serviceTypes.credentialName;
+          type = lib.types.nullOr credentialNameType;
           default = null;
           description = "Dedicated externally provisioned Ed25519 verifier for first-capability entitlements.";
         };
         operatorRecoveryControllerKey = lib.mkOption {
-          type = lib.types.nullOr lib.serviceTypes.credentialName;
+          type = lib.types.nullOr credentialNameType;
           default = null;
           description = "Dedicated AOSORCK1 Ed25519 controller Repair signing record; null keeps public Repair closed.";
         };
         operatorRecoveryStorageOwnerPublicKey = lib.mkOption {
-          type = lib.types.nullOr lib.serviceTypes.credentialName;
+          type = lib.types.nullOr credentialNameType;
           default = null;
           description = "Independently provisioned AOSORSK1 Storage owner public-key record for Repair receipts.";
         };
@@ -343,13 +345,13 @@ in {
       // brokerSession.mkOptions brokerSessionEndpoints
       // lib.mapAttrs (_: name:
         lib.mkOption {
-          type = lib.types.nullOr lib.serviceTypes.credentialName;
+          type = lib.types.nullOr credentialNameType;
           default = null;
           description = "External protected credential loaded as ${name} for the public TLS endpoint.";
         })
       publicCredentialNames
       // lib.mapAttrs (_: name: lib.mkOption {
-        type = lib.types.nullOr lib.serviceTypes.credentialName;
+        type = lib.types.nullOr credentialNameType;
         default = null;
         description = "Optional independently provisioned exclusive-cohort public input ${name}; the complete fixed profile is required together.";
       }) gitCoverageCredentialNames;

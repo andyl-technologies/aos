@@ -60,7 +60,7 @@ The realized-device manifest reports stable device and implementation IDs,
 class and fault-family masks, queue range/depth, maximum input/output bytes,
 device-memory size, ECC-mode mask, closed job-kind count, and VMState support.
 The manifest codec is
-[`FaultAcceleratorCapabilityRowV1`](../../../../crates/crucible-shmem/src/shmem/fault_target_manifest.rs);
+[`FaultAcceleratorCapabilityRowV1`](../../../../crates/crucible/protocol/crucible-qemu-shmem/src/shmem/fault_target_manifest.rs);
 the QEMU producer is
 [`qemu_plugin_crucible_fault_accelerator_manifest`](../../../../pkgs/emulation/qemu-patches/crucible-qemu-11.1.1.patch).
 
@@ -73,7 +73,7 @@ The protocol has exactly one job kind per advertised class:
 | FPGA (`3`) | lookup-table (`1`) | exactly 256 LUT bytes followed by input bytes | one LUT result byte per input byte | truncated LUT or output beyond the manifest limit |
 
 The normative host execution is in
-[`accelerator_io_servicer.rs`](../../../../crates/crucible-qemu/src/supervision/accelerator_io_servicer.rs).
+[`accelerator_io_servicer.rs`](../../../../crates/crucible/qemu/crucible-qemu-host/src/supervision/accelerator_io_servicer.rs).
 Job identity is the immutable tuple `(device_id, generation, sequence, class,
 job_kind, queue_id, service_units, output_capacity)` plus the entry payload.
 

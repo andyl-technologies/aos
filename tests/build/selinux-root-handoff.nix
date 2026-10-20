@@ -7,15 +7,16 @@
 }: let
   stage0 = pkgs.aos-selinux-stage0;
   runtimeRootsProvisioner = pkgs.aos-selinux-runtime-roots;
-  fixtureSystem.config = {
-    system.build = {
-      inherit (system.config.system.build) kernel systemdSystemPresets toplevel;
-      immutableSelinuxPolicy = pkgs.aos-selinux-production-policy;
-    };
+  fixtureSystem.config = lib.recursiveUpdate system.config {
+    system.build.immutableSelinuxPolicy = pkgs.aos-selinux-production-policy;
     aos.boot.initrd.stage0 = stage0;
   };
-  rootfs = (import ../../lib/build/rootfs.nix) {
+  rootfs = (import ../../pkgs/system/_systemd-abilities/platform/_rootfs-builder.nix) {
     inherit lib pkgs;
+    closureInfoFor = lib.build.closureInfo {pkgs = pkgs.buildPackages;};
+    kernel = system.config.aos.kernel.selected;
+    managerConfiguration = system.config.system.build.managerConfiguration;
+    managerRootfsPlan = system.config.aos.manager.selected.configuration.rootfs;
     system = fixtureSystem;
     pname = "selinux-root-handoff-fixture";
     fsType = "erofs";

@@ -47,6 +47,10 @@
     constraintsCompatible
     ;
   hardening = import ./hardening.nix;
+  packagePlatform = import ./package-platform.nix {
+    lists = import ./lists.nix;
+    platform = import ./platform.nix;
+  };
 
   unique = values:
     builtins.foldl' (
@@ -463,10 +467,15 @@
   ## lets call sites express intent without forcing every package to
   ## split outputs.
   ## # Type
-  ## `string -> derivation -> derivation`
+  ## `string -> (derivation | artifact) -> (derivation | artifact)`
   getOutput = name: drv:
-    assert isDerivation drv;
-      drv.${name} or drv;
+    if (drv._type or null) == "aos-package-artifact"
+    then
+      (import ./packages/artifacts.nix {}).value (builtins.removeAttrs (drv
+        // {
+          path = drv.outputs.${name} or drv.path;
+        }) ["_type" "outPath" "__toString" "meta"])
+    else assert isDerivation drv; drv.${name} or drv;
 
   ## Return the "bin" output of a derivation, or the default output if
   ## no `bin` output is declared.
@@ -483,9 +492,9 @@
   ## Return the absolute path of a named binary inside a derivation. Use
   ## when you want a specific tool rather than the "main" one.
   ## # Type
-  ## `derivation -> string -> string`
+  ## `(derivation | artifact) -> string -> string`
   getExe' = drv: binName:
-    assert isDerivation drv;
+    assert isDerivation drv || (drv._type or null) == "aos-package-artifact";
     assert builtins.isString binName; "${getBin drv}/bin/${binName}";
 
   ## Return the absolute path of a derivation's main binary. Reads
@@ -699,7 +708,6 @@
     passthru ? {},
     update ? null,
     checks ? null,
-    expose ? null,
     # ── Compiler-hardening policy ─────────────────────────────────────
     # Per-package opt-in / opt-out over the central token set. The
     # effective set is (defaultHardeningFlags ++ hardeningEnable) minus
@@ -742,8 +750,13 @@
     #   outputChecks = { out = { disallowedReferences = [ gcc ]; }; };
     # When null (default), behaves identically to historical mkDerivation.
     outputChecks ? null,
+    platformSupport ? null,
     ...
   }: let
+    normalizedPlatformSupport =
+      if platformSupport == null
+      then null
+      else packagePlatform.normalize "package '${effectivePname}' platformSupport" platformSupport;
     useStructuredAttrs = outputChecks != null;
     mergeAllowed = inherited: perOutput:
       if inherited == null
@@ -848,9 +861,9 @@
     # into every package's closure. Skip if the caller already supplied
     # a fixup — the cargo/go/bazel phase templates bundle their own.
     #
-    # scrubPhase always runs last, regardless of whether the caller
-    # supplied a custom fixup. Inlining it into fixup would skip it
-    # whenever cargo/go/bazel templates override the fixup phase.
+    # Scrubbing follows fixup even when the caller supplied a custom fixup;
+    # dependency/platform metadata and postFinalize follow it. Keeping scrub
+    # separate avoids skipping it when cargo/go/bazel override the fixup phase.
     defaultFixupPhase =
       if
         buildPlatform.system
@@ -861,16 +874,34 @@
       then crossElfFixupPhase
       else fixupPhase;
 
+    # A published output must itself retain dependencies needed by consumers;
+    # builder inputs alone do not become references in the output closure.
+    propagatedDependencyMetadataPhase = {
+      name = "propagated-dependency-metadata";
+      script = ''
+        for outputName in ''${AOS_OUTPUT_NAMES:-out}; do
+          eval "outputPath=\"\''${$outputName:-}\""
+          [ -d "$outputPath" ] && [ ! -L "$outputPath" ] || continue
+          mkdir -p "$outputPath/nix-support"
+          printf '%s\n' ${builtins.concatStringsSep " " (map (dependency: escapeShellArg (builtins.toString dependency)) propagatedDeps)} \
+            > "$outputPath/nix-support/propagated-build-inputs"
+        done
+      '';
+    };
+
     allPhases =
       (
         if builtins.any (p: p.name == "fixup") finalPhases
         then finalPhases
         else finalPhases ++ [defaultFixupPhase]
       )
-      ++ [
-        scrubPhase
-        (targetPlatformMetadataPhase outputPlatform.system)
-      ]
+      ++ [scrubPhase]
+      ++ (
+        if propagatedDeps == []
+        then []
+        else [propagatedDependencyMetadataPhase]
+      )
+      ++ [(targetPlatformMetadataPhase outputPlatform.system)]
       ++ (
         if postFinalize != ""
         then [
@@ -927,7 +958,7 @@
       "passthru"
       "update"
       "checks"
-      "expose"
+      "platformSupport"
       "hardeningEnable"
       "hardeningDisable"
       "defaultHardeningFlags"
@@ -1166,19 +1197,26 @@
 
     # Named outputs are fresh derivation attrsets. Preserve the package-level
     # dependency and execution contract when consumers select one directly.
-    outputMetadata = {
-      inherit meta version runtimeDeps propagatedDeps;
-      pname = effectivePname;
-      platforms = derivationPlatforms;
-      constraints = {
-        build = buildPlatform.constraints;
-        execute = ourExecute;
-        target =
-          if meta ? target
-          then codeTargetPlatform.constraints
-          else null;
-      };
-    };
+    outputMetadata =
+      {
+        inherit meta;
+        inherit version runtimeDeps propagatedDeps;
+        pname = effectivePname;
+        platforms = derivationPlatforms;
+        constraints = {
+          build = buildPlatform.constraints;
+          execute = ourExecute;
+          target =
+            if meta ? target
+            then codeTargetPlatform.constraints
+            else null;
+        };
+      }
+      // (
+        if normalizedPlatformSupport == null
+        then {}
+        else {platformSupport = normalizedPlatformSupport;}
+      );
     annotatedOutputs = builtins.listToAttrs (
       builtins.map (output: {
         name = output;
@@ -1210,11 +1248,6 @@
             platforms = derivationPlatforms;
           }
           // (
-            if expose != null
-            then {inherit expose;}
-            else {}
-          )
-          // (
             if update != null
             then {
               aos = (passthru.aos or {}) // {maintenance = update;};
@@ -1222,11 +1255,6 @@
             else {}
           );
       }
-      // (
-        if expose != null
-        then {inherit expose;}
-        else {}
-      )
       // (
         if checks != null
         then {inherit checks;}
@@ -1840,6 +1868,7 @@
     "fetchCargoVendor: nonempty registry patches require the fixed source-built patch tool"
     (annotateFixedOutput vendorFinal ({
       kind = "cargo-vendor";
+      inherit hash;
       hashMode = "recursive";
       sourceInputs =
         [(builtins.toString src)]

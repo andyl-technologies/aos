@@ -1,11 +1,10 @@
 {
+  lib,
   mkDerivation,
   fetchurl,
   m4,
   flex,
   bison,
-  autoconf,
-  automake,
   texinfo,
   gnumake,
   ncurses,
@@ -47,16 +46,88 @@
   ];
 in
   mkDerivation {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
     pname = "bash";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Bash prints the selected array value and computed integer.";
+        "files" = {};
+        "input" = "A shell program using an indexed array and arithmetic expansion.";
+        "operation" = "Evaluate the program with Bash.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/bash"
+              "-c"
+              "values=(alpha beta); printf \"%s:%d\\n\" \"\${values[1]}\" \"$((6 * 7))\""
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "beta:42\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Bash reports a syntax failure with status 2.";
+        "files" = {};
+        "input" = "A shell program with an unterminated conditional expression.";
+        "operation" = "Ask Bash to parse the malformed program.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/bash"
+              "-n"
+              "-c"
+              "if true; then echo broken"
+            ];
+            "exit_code" = 2;
+            "observes_rejection" = true;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version src;
 
-    buildDeps = [m4 flex bison autoconf automake texinfo gnumake];
+    # Release tarballs include configure and Makefile.in. Using Autoconf or
+    # Automake here would recurse through their interactive Bash dependency.
+    buildDeps = [m4 flex bison texinfo gnumake];
     # Recursive consumers race the generated builtins on highly parallel hosts.
     enableParallelBuilding = false;
-    runtimeDeps =
-      if stdenv.hostPlatform.isDarwin
-      then [ncurses]
-      else [];
+    # Readline needs real terminal capabilities for redraw and screen clearing.
+    # Ncurses retains its own terminfo database; the bundled termcap fallback
+    # otherwise expects an /etc/termcap file that AOS images do not provide.
+    runtimeDeps = [ncurses];
     postPatch = ''
       # GNU Bash's official patches are authored for -p0 from the unpacked
       # source directory, unlike the repository's usual -p1 patches.
@@ -96,13 +167,7 @@ in
         export CC_FOR_BUILD="$PWD/.aos-build-tools/cc"
       ''
       else "";
-    configureFlags =
-      "--without-bash-malloc --disable-nls"
-      + (
-        if stdenv.hostPlatform.isDarwin
-        then " --with-curses"
-        else ""
-      );
+    configureFlags = "--without-bash-malloc --disable-nls --with-curses";
     # Bash's makefiles invoke helper scripts through $(SHELL).
     makeFlags = "SHELL=${stdenv.shell}";
     postInstall = ''

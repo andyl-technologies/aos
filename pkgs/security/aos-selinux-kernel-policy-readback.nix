@@ -34,6 +34,23 @@
   qemuBinary = "${buildPackages.qemu}/bin/${qemuPlatform.binary}";
 in
   mkDerivation {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64"];
+          os = ["linux"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
     pname = "aos-selinux-kernel-policy-readback";
     version = "1";
     src = ./aos-selinux-kernel-readback.c;

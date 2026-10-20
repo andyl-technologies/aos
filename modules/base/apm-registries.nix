@@ -28,6 +28,7 @@
 {
   config,
   lib,
+  packageModulesAvailable ? false,
   ...
 }: let
   cfg = config.aos.apm.registries;
@@ -42,27 +43,8 @@
     trustedSbCerts
     trustKeyPattern
     ;
-  # An operator id is the `<op>.pub` filename stem and the `<op>:` prefix of
-  # every trust line in that file — same grammar as a registry name.
-  configKeyPattern = name: "${lib.escapeRegex name}:Ed25519:[A-Za-z0-9+/]+=*";
 in {
-  options.aos.apm.configKeys = lib.mkOption {
-    default = {};
-    description = ''
-      Operator host-configuration signing keys for signed policy, baked
-      into the image as
-      `/etc/apm/trusted-config-keys.d/<op>.pub`. Each attribute name is an
-      operator id; its value is a list of `<op>:Ed25519:<base64>` public key
-      lines (rotation overlap is a multi-element list). In signed mode the
-      initrd verifies the exact `host.nix` bytes in the `aos-config` SSHSIG
-      namespace before either restricted or full evaluation.
-      Missing or untrusted signatures fail closed. Explicit off-boot
-      `apm switch --require-signed-host-nix` operations use the same anchors
-      with the same domain-separated namespace.
-    '';
-    type = lib.types.attrsOf (lib.types.listOf lib.types.str);
-  };
-
+  imports = lib.optional (!packageModulesAvailable) ../../pkgs/tools/_aos-metadata-provider/policy.nix;
   options.aos.apm.registries = lib.mkOption {
     default.andyl = {
       url = "https://cdn.aos.andyl.org/";
@@ -82,58 +64,28 @@ in {
   };
 
   config = {
-    assertions =
-      lib.flatten (lib.mapAttrsToList (
-          name: registry:
-            [
-              {
-                assertion = builtins.match registryNamePattern name != null;
-                message = ''
-                  aos.apm.registries.${name}: registry names must match
-                  ${registryNamePattern} (ASCII letters, digits, '-' and '_').
-                '';
-              }
-            ]
-            ++ builtins.map (key: {
-              assertion = builtins.match (trustKeyPattern name) key != null;
+    assertions = lib.flatten (lib.mapAttrsToList (
+        name: registry:
+          [
+            {
+              assertion = builtins.match registryNamePattern name != null;
               message = ''
-                aos.apm.registries.${name}: trust key '${key}' must be
-                '${name}:Ed25519:<base64>' (the registry prefix has to match
-                the attribute name).
+                aos.apm.registries.${name}: registry names must match
+                ${registryNamePattern} (ASCII letters, digits, '-' and '_').
               '';
-            })
-            registry.trustKeys
-        )
-        cfg)
-      ++ lib.flatten (lib.mapAttrsToList (
-          op: keys:
-            [
-              {
-                assertion = builtins.match registryNamePattern op != null;
-                message = ''
-                  aos.apm.configKeys.${op}: operator ids must match
-                  ${registryNamePattern} (ASCII letters, digits, '-' and '_').
-                '';
-              }
-              {
-                assertion = keys != [];
-                message = ''
-                  aos.apm.configKeys.${op}: at least one '${op}:Ed25519:<base64>'
-                  key is required (an empty operator anchor trusts nothing).
-                '';
-              }
-            ]
-            ++ builtins.map (key: {
-              assertion = builtins.match (configKeyPattern op) key != null;
-              message = ''
-                aos.apm.configKeys.${op}: config key '${key}' must be
-                '${op}:Ed25519:<base64>' (the operator prefix has to match the
-                attribute name).
-              '';
-            })
-            keys
-        )
-        configKeys);
+            }
+          ]
+          ++ builtins.map (key: {
+            assertion = builtins.match (trustKeyPattern name) key != null;
+            message = ''
+              aos.apm.registries.${name}: trust key '${key}' must be
+              '${name}:Ed25519:<base64>' (the registry prefix has to match
+              the attribute name).
+            '';
+          })
+          registry.trustKeys
+      )
+      cfg);
 
     environment.etc = lib.mkMerge (
       (lib.mapAttrsToList (name: registry:

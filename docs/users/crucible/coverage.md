@@ -58,7 +58,7 @@ terminal conditions, and exit codes are cataloged in
 
 | Surface | Authority | Status | Documentation |
 |---|---|---|---|
-| `ScenarioDef = World + Plan + Properties + Seed` | `crucible::model` | Packaged and public API | [Operating Crucible](README.md#the-model), [Scenarios](scenarios.md) |
+| `ScenarioDef = World + Plan + Properties + Seed` | `crucible_engine::model` | Packaged and public API | [Operating Crucible](README.md#the-model), [Scenarios](scenarios.md) |
 | Canonical TOML and derived content IDs | `ScenarioDefForm` and TOML model | Packaged and public API | [Scenarios](scenarios.md#authoring-surfaces), [Reference](reference.md#canonical-scenario-document) |
 | VM nodes and logical links | `World`, `WorldNode`, `LinkDef` | Packaged and public API | [Scenarios](scenarios.md#world), [Reference](reference.md#worldnode-vm-fields) |
 | Block and 9p I/O sub-nodes | `WorldIoNode` | Public API and certified live adapter | [Scenarios](scenarios.md), [Storage and hardware faults](storage-node-faults.md) |

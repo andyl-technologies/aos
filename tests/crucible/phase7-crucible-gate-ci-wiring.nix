@@ -13,7 +13,7 @@
   phasePlan = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   packagingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/26-packaging-aos-integration.md;
   gateCatalog = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
-  phasePlanRust = builtins.readFile ../../crates/crucible-harness/src/phase_plan.rs;
+  phasePlanRust = builtins.readFile ../../crates/crucible/testing/crucible-test-support/src/phase_plan.rs;
   harnessLint = builtins.readFile ./phase1-harness-lint.nix;
   layer0Determinism = builtins.readFile ./phase1-layer0-determinism.nix;
   productionFingerprint = builtins.readFile ./phase1-production-fingerprint-sample.nix;
@@ -185,7 +185,7 @@
         needle = gate.gate;
       }
     ]
-    ++ failuresFor "crates/crucible-harness/src/phase_plan.rs" phasePlanRust [
+    ++ failuresFor "crates/crucible/testing/crucible-test-support/src/phase_plan.rs" phasePlanRust [
       {
         label = "${gate.path} canonical phase-plan target";
         needle = "\"" + gate.path + "\"";

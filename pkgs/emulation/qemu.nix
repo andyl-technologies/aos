@@ -9,6 +9,7 @@
   pkg-config,
   meson,
   ninja,
+  binutils,
   python3,
   python3-pygdbmi,
   setuptools,
@@ -44,6 +45,7 @@
   zstd,
   buildPackages,
   pname ? "qemu",
+  qualification ? null,
   enablePlugins ? false,
   applyCruciblePatch ? false,
   enableLinuxUser ? pname == "qemu" && stdenv.hostPlatform.isLinux,
@@ -97,6 +99,10 @@
     then throw "the full patched-QEMU test suite requires an explicit generic QEMU runner"
     else null;
   version = atomicPatch.qemuVersion;
+  nativeCostsBaseline = import ./qemu-patches/_native-costs-baseline.nix;
+  nativeCostsBaselineManifest = builtins.toFile "native-costs-baseline.json" (
+    builtins.toJSON (builtins.removeAttrs nativeCostsBaseline ["patch"])
+  );
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
 
   # The Crucible check phase executes the built target programs, so a cross
@@ -117,6 +123,10 @@
     if stdenv.isCross
     then buildPackages.python3
     else python3;
+  buildBinutils =
+    if stdenv.isCross
+    then buildPackages.binutils
+    else binutils;
   buildMeson =
     if stdenv.isCross
     then buildPackages.meson
@@ -225,8 +235,8 @@
     builtins.filter (name: name != "")
     (lib.splitString "\n" (builtins.readFile thoroughTestInventory))
   );
-  shmemLib = builtins.readFile ../../crates/crucible-shmem/src/lib.rs;
-  shmemGeneratedHeader = ../../crates/crucible-shmem/include/crucible_shmem_abi.h;
+  shmemLib = builtins.readFile ../../crates/crucible/protocol/crucible-qemu-shmem/src/lib.rs;
+  shmemGeneratedHeader = ../../crates/crucible/protocol/crucible-qemu-shmem/include/crucible_shmem_abi.h;
   shmemHeaderInstallPath = "include/aos/crucible/crucible_shmem_abi.h";
   shmemHeaderHash = builtins.hashFile "sha256" shmemGeneratedHeader;
   qemuSimCapability =
@@ -503,8 +513,126 @@ in
   assert _fullTestSuitePolicy == null;
   assert _fullTestVmPolicy == null;
     mkDerivation {
+      platformSupport =
+        if pname == "qemu"
+        then {
+          build = [
+            {
+              abi = ["gnu"];
+              os = ["linux"];
+            }
+          ];
+          host = [
+            {
+              abi = ["gnu"];
+              cpu = ["x86_64" "aarch64"];
+              os = ["linux"];
+            }
+            {
+              abi = ["darwin"];
+              cpu = ["x86_64" "aarch64"];
+              os = ["darwin"];
+            }
+          ];
+          target = [
+            {
+              abi = ["gnu"];
+              cpu = ["x86_64" "aarch64"];
+              os = ["linux"];
+            }
+            {
+              abi = ["darwin"];
+              cpu = ["x86_64" "aarch64"];
+              os = ["darwin"];
+            }
+          ];
+          role = "public-package";
+        }
+        else {
+          build = [
+            {
+              abi = ["gnu"];
+              os = ["linux"];
+            }
+          ];
+          host = [
+            {
+              abi = ["gnu"];
+              cpu = ["x86_64" "aarch64"];
+              os = ["linux"];
+            }
+          ];
+          target = [];
+          role = "build-input";
+        };
+      qualification.packageProbe =
+        if qualification != null
+        then qualification.packageProbe
+        else
+          lib.qualification.commandProbe {
+            "primary" = {
+              "artifacts" = [];
+              "expected" = "qemu-img reports the two images as identical.";
+              "files" = {
+                "left.raw" = "AOS raw image payload\n";
+                "right.raw" = "AOS raw image payload\n";
+              };
+              "input" = "Two raw disk-image byte streams with identical contents.";
+              "operation" = "Compare the images byte for byte through qemu-img's raw-image reader.";
+              "steps" = [
+                {
+                  "argv" = [
+                    "@out@/bin/qemu-img"
+                    "compare"
+                    "-f"
+                    "raw"
+                    "-F"
+                    "raw"
+                    "left.raw"
+                    "right.raw"
+                  ];
+                  "exit_code" = 0;
+                  "stderr" = {
+                    "exact" = "";
+                  };
+                  "stdout" = {
+                    "exact" = "Images are identical.\n";
+                  };
+                }
+              ];
+            };
+            "badInput" = {
+              "artifacts" = [];
+              "expected" = "qemu-img identifies the content mismatch and returns its comparison status.";
+              "files" = {
+                "left.raw" = "answer=41\n";
+                "right.raw" = "answer=42\n";
+              };
+              "input" = "Two raw disk-image byte streams that differ in one value.";
+              "operation" = "Compare the mismatched images through qemu-img.";
+              "steps" = [
+                {
+                  "argv" = [
+                    "@out@/bin/qemu-img"
+                    "compare"
+                    "-f"
+                    "raw"
+                    "-F"
+                    "raw"
+                    "left.raw"
+                    "right.raw"
+                  ];
+                  "exit_code" = 1;
+                  "observes_rejection" = true;
+                }
+              ];
+            };
+          };
+
       inherit pname;
-      inherit version;
+      # QEMU permits deprecated interface removal without a major-version bump.
+      # https://www.qemu.org/docs/master/about/deprecated.html
+      version = "=${version}";
 
       # The complete native build script exceeds Linux's 128 KiB argument cap.
       passBuildScriptAsFile = true;
@@ -524,6 +652,7 @@ in
             buildPackages.pkg-config
             buildMeson
             buildPackages.ninja
+            buildBinutils
             buildPython
             buildSetuptools
             buildDistlib
@@ -538,6 +667,7 @@ in
             pkg-config
             meson
             ninja
+            buildBinutils
             python3
             setuptools
             distlib
@@ -1697,6 +1827,15 @@ in
                   "control-observer", "control-delivery",
                   "stopped-control-rearm", "template-control-drain", "net-stop-chain",
                   "aio-fork-custody", "stop-context",
+                  "tcg-fast-paths",
+                  "mutex-owner-cache",
+                  "snapshot-fast-path",
+                  "settle-prepark",
+                  "cold-fault-predicates",
+                  "lazy-memory-identity",
+                  "accel-classification",
+                  "fault-rule-presence",
+                  "rr-sim-barriers",
               ):
                   with (source_root / f"{name}.result").open("w") as result:
                       subprocess.run([
@@ -1710,6 +1849,99 @@ in
                 control-deferred.result control-observer.result control-delivery.result \
                 stopped-control-rearm.result template-control-drain.result net-stop-chain.result \
                 aio-fork-custody.result stop-context.result
+              cat tcg-fast-paths.result
+              grep -q '^PASS production TCG fast paths:' tcg-fast-paths.result
+              cat mutex-owner-cache.result
+              grep -q '^PASS production mutex owner cache:' mutex-owner-cache.result
+              cat snapshot-fast-path.result
+              grep -q '^PASS production snapshot fast path:' snapshot-fast-path.result
+              cat settle-prepark.result
+              grep -q '^PASS production settle prepark:' settle-prepark.result
+              cat cold-fault-predicates.result
+              grep -q '^PASS production cold fault predicates:' cold-fault-predicates.result
+              cat lazy-memory-identity.result
+              grep -q '^PASS production lazy memory identity:' lazy-memory-identity.result
+              cat accel-classification.result
+              grep -q '^PASS production accel classification:' accel-classification.result
+              cat fault-rule-presence.result
+              grep -q '^PASS production-body differential rule-presence fixture' fault-rule-presence.result
+              cat rr-sim-barriers.result
+              grep -q '^PASS healthy ordinary 8->3 cycles per CPU' rr-sim-barriers.result
+              # Use each changed translation unit's actual configured command,
+              # then compare the reconstructed prior production bodies. Every
+              # negative must compile and fail a native ownership assertion.
+              ${python3}/bin/python3 - <<'PYTHON'
+              import json
+              import os
+              from pathlib import Path
+              import shlex
+              import subprocess
+              import sys
+
+              source_root = Path.cwd()
+              commands = json.loads((source_root / "build/compile_commands.json").read_text())
+              for name, source_file in (
+                  ("mutex-waiter-counters", "/util/qemu-thread-posix.c"),
+                  ("tcg-page-collection", "/accel/tcg/tb-maint.c"),
+                  ("tcg-crossing-membership", "/accel/tcg/tb-maint.c"),
+                  ("tsc-source-index", "/plugins/crucible-fault-clock.c"),
+              ):
+                  entries = [entry for entry in commands
+                             if entry["file"].endswith(source_file)]
+                  if source_file == "/accel/tcg/tb-maint.c":
+                      # This target-neutral unit is compiled for both shared
+                      # libraries; its system definition owns PageDesc locks.
+                      entries = [entry for entry in entries
+                                 if "-DCONFIG_SOFTMMU" in shlex.split(entry["command"])]
+                  if len(entries) != 1:
+                      raise SystemExit(f"expected one configured {name} compile command")
+
+                  entry = entries[0]
+                  proof_dir = source_root / f"{name}-proof"
+                  proof_dir.mkdir(exist_ok=True)
+                  (proof_dir / "configured-production-compile-command.json").write_text(
+                      json.dumps(entry, indent=2) + "\n"
+                  )
+                  command = shlex.split(entry["command"])
+                  flags = []
+                  arguments = iter(command[1:])
+                  for argument in arguments:
+                      if argument in ("-MQ", "-MF", "-o", "-c"):
+                          next(arguments)
+                      elif argument not in ("-MD", "-MMD", "-MP"):
+                          flags.append(argument)
+
+                  environment = os.environ.copy()
+                  environment["CC"] = command[0]
+                  environment["CFLAGS"] = shlex.join(flags)
+                  environment["LDFLAGS"] = "-L${glib.dev}/lib -Wl,-rpath,${glib}/lib -lglib-2.0"
+                  with (source_root / f"{name}.result").open("w") as result:
+                      subprocess.run([
+                          sys.executable, "${../../tests/crucible/qemu-native-cost-proofs.py}",
+                          "--case", name, "--source-root", str(source_root),
+                          "--baseline-manifest", "${nativeCostsBaselineManifest}",
+                          "--baseline-patch", "${nativeCostsBaseline.patch}",
+                          "--output-dir", str(source_root / f"{name}-proof"),
+                      ], cwd=entry["directory"], env=environment,
+                         stdout=result, check=True)
+              PYTHON
+              for name in mutex-waiter-counters tcg-page-collection tcg-crossing-membership tsc-source-index; do
+                cat "$name.result"
+                grep -Fxq "PASS production $name: differential observations and compiled causal negatives" \
+                  "$name.result"
+              done
+
+              # Select exactly one bare-metal system guest. This exercises real
+              # TB invalidation, including physical page order and current-TB
+              # writes; the extracted page-table provider cannot establish it.
+              make -rR -C build/tests/tcg/x86_64-softmmu \
+                -f "$PWD/tests/tcg/Makefile.target" SRC_PATH="$PWD" V=1 TIMEOUT=60 \
+                QEMU="$PWD/build/qemu-system-x86_64 -L $PWD/pc-bios -accel tcg,thread=single -smp 1" \
+                run-self-modifying-code > self-modifying-code.build-run.log 2>&1
+              cat self-modifying-code.build-run.log
+              cp build/tests/tcg/x86_64-softmmu/self-modifying-code.out \
+                self-modifying-code.result
+              grep -Fxq 'self-modifying code: passed' self-modifying-code.result
               grep -Fxq 'PASS production TX/stop/clock/RR: batches, race, completion settlement, paused ack, explicit retry' \
                 net-output-stop.result
               grep -Fxq 'PASS lifecycle production encode/rebind: full save retained, canonical custody independence, guest frontier sensitivity, invalid rebind refusal' \
@@ -3045,12 +3277,12 @@ in
                    r"&crucible_global_virtual_timer_owner, owner\);\s*\}", 1),
                   ("sim precise unresolved deadline budget", icount,
                    r"if \(limit <= 0\) \{\s*"
-                   r"if \(strcmp\(current_accel_name\(\), \"sim\"\) == 0 &&\s*"
+                   r"if \(current_accel_is_sim\(\) &&\s*"
                    r"icount_enabled\(\) == ICOUNT_PRECISE\) \{\s*return 0;\s*\}"
                    r"\s*return \(int64_t\)remaining;\s*\}", 1),
                   ("generic RR unresolved deadline fallback", icount,
                    r"if \(rr_switch_quantum != 0 && limit <= 0 &&\s*"
-                   r"\(strcmp\(current_accel_name\(\), \"sim\"\) != 0 \|\|\s*"
+                   r"\(!current_accel_is_sim\(\) \|\|\s*"
                    r"icount_enabled\(\) != ICOUNT_PRECISE\)\) \{\s*"
                    r"cpu->icount_budget = cpu_budget;", 1),
                   ("sole global virtual timer owner registration", rr,
@@ -4196,6 +4428,19 @@ in
               done
             ''}
 
+            ${lib.optionalString (!stdenv.hostPlatform.isDarwin) ''
+              # ELF-relative function ranges survive stripping and let local
+              # profilers resolve samples without retaining DWARF or paths.
+              for executable in "$out"/bin/qemu-system-*; do
+                [ -f "$executable" ] || continue
+                executable_name=''${executable##*/}
+                ${buildPython}/bin/python3 ${./_qemu-function-map.py} \
+                  --nm ${buildBinutils}/bin/nm \
+                  --executable "$executable" \
+                  --output "$out/share/qemu/symbols/$executable_name.tsv"
+              done
+            ''}
+
             ${lib.optionalString (stdenv.isCross && !isDarwinCross) ''
               # QEMU's generated Meson cross file preserves explicitly found
               # GLib paths but drops the wrapper's remaining install RPATH.
@@ -4253,12 +4498,24 @@ in
                 "$out/share/aos/crucible/procfd-flags.compile-command.json"
               for name in net-output-stop lifecycle-projection control-deferred \
                 control-observer control-delivery stopped-control-rearm \
-                template-control-drain net-stop-chain aio-fork-custody stop-context; do
+                template-control-drain net-stop-chain aio-fork-custody stop-context \
+                tcg-fast-paths mutex-owner-cache snapshot-fast-path settle-prepark \
+                cold-fault-predicates lazy-memory-identity accel-classification \
+                fault-rule-presence rr-sim-barriers; do
                 install -m 644 "$name.result" \
                   "$out/share/aos/crucible/$name.result"
                 install -m 644 "$name-proof/compile-command.json" \
                   "$out/share/aos/crucible/$name.compile-command.json"
               done
+              for name in mutex-waiter-counters tcg-page-collection tcg-crossing-membership tsc-source-index; do
+                install -m 644 "$name.result" \
+                  "$out/share/aos/crucible/$name.result"
+                cp -R "$name-proof" "$out/share/aos/crucible/$name-proof"
+              done
+              install -m 644 self-modifying-code.build-run.log self-modifying-code.result \
+                "$out/share/aos/crucible/"
+              install -m 644 build/tests/tcg/x86_64-softmmu/config-target.mak \
+                "$out/share/aos/crucible/self-modifying-code.config-target.mak"
               install -m 644 acpi-fingerprint-tests.tap \
                 "$out/share/aos/crucible/acpi-fingerprint-tests.tap"
               install -m 644 vga-fingerprint-tests.tap \

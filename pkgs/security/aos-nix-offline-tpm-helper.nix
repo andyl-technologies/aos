@@ -53,6 +53,23 @@ in
   assert tpm2-tss.version == "4.2.0";
   assert openssl.version == "4.0.2";
     mkDerivation {
+      platformSupport = {
+        build = [
+          {
+            abi = ["gnu"];
+            os = ["linux"];
+          }
+        ];
+        host = [
+          {
+            abi = ["gnu"];
+            cpu = ["x86_64" "aarch64"];
+            os = ["linux"];
+          }
+        ];
+        target = [];
+        role = "public-package";
+      };
       pname = "aos-nix-offline-tpm-helper";
       version = "5";
       src = ./aos-method46-tpm-helper;

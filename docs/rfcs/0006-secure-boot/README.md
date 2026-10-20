@@ -5,7 +5,7 @@
 - **PR:** [#102](https://github.com/andyl-technologies/aos/pull/102)
 - **Audience:** anyone working on `pkgs/boot/`, `pkgs/system/systemd.nix`,
   `pkgs/kernel/`, `modules/security/`, `modules/services/ignition.nix`,
-  `crates/aos-package/`, `lib/testing/`, or release/key operations.
+  `crates/aos/packages/aos-package-manager/`, `lib/testing/`, or release/key operations.
 
 This is a directory RFC. The README carries the status header, the trust
 model, and the phased plan; the topic files hold the detail:
@@ -34,10 +34,10 @@ the implemented result.
 
 - `pkgs/boot/edk2.nix` builds `OvmfPkgX64.dsc` with no `-D SECURE_BOOT_ENABLE`
   — the firmware has no authenticated-variable / SB drivers compiled in.
-- `pkgs/boot/aos-uki.nix` calls `ukify build` with no
+- `pkgs/system/_systemd-abilities/platform/_uki-builder.nix` calls `ukify build` with no
   `--secureboot-private-key`/`--secureboot-certificate` — the UKI is
   assembled, not signed (the docstring's "signed PE-COFF" is wrong).
-- `modules/image/_builder.nix` copies `systemd-bootx64.efi` to the ESP
+- `pkgs/system/_systemd-abilities/platform/_image-builder.nix` copies `systemd-bootx64.efi` to the ESP
   unsigned.
 - `pkgs/system/systemd.nix` builds with `-Dtpm=false` / `-Dtpm2=disabled`;
   `modules/base/_initrd-builder.nix:632` strips `systemd-measure`,
@@ -131,8 +131,8 @@ the validation facts*, and neither is the role that *enforces at runtime*.
 | Layer | Today | Source |
 |---|---|---|
 | OVMF | no SB drivers compiled | `pkgs/boot/edk2.nix:141-146` |
-| UKI | assembled, unsigned | `pkgs/boot/aos-uki.nix:71-77` |
-| sd-boot | copied unsigned to ESP | `modules/image/_builder.nix:117-118` |
+| UKI | assembled, unsigned | `pkgs/system/_systemd-abilities/platform/_uki-builder.nix:71-77` |
+| sd-boot | copied unsigned to ESP | `pkgs/system/_systemd-abilities/platform/_image-builder.nix:117-118` |
 | SBAT | distro metadata set on sd-boot/stub | `pkgs/system/systemd.nix:231-236` |
 | sbsigntools | packaged, never invoked | `pkgs/boot/sbsigntools.nix` |
 | TPM (systemd) | `-Dtpm=false`, `-Dtpm2=disabled` | `pkgs/system/systemd.nix:237,293` |
@@ -143,7 +143,7 @@ the validation facts*, and neither is the role that *enforces at runtime*.
 | dm-verity | module exists, default off | `modules/security/verity.nix` |
 | disk encryption | swap only, random key, unsealed | `modules/base/filesystems.nix:272-327` |
 | registry trust | signed git tags, baked anchor | `docs/registry/signing-and-trust.md` |
-| package metadata | `PackageMeta`/`SysrootImageEntry`, no SB fields | `crates/aos-package/src/types.rs:447,1267` |
+| package metadata | `PackageMeta`/`SysrootImageEntry`, no SB fields | `crates/aos/packages/aos-package-manager/src/types.rs:447,1267` |
 
 The one real asset already in place: the UKI design itself is exactly right
 for SB — kernel, initrd, and cmdline are PE sections *inside* the UKI, so

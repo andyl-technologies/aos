@@ -5,7 +5,7 @@ Nix sandbox does not have the authority to create ``security.selinux`` xattrs.
 This module instead derives labels from the production file-context database
 and emits exact, type-qualified entries for the image namespace.
 
-Paths below ``/nix/store`` and ``/nix.lower/store`` need additional handling.
+Paths below logical and immutable physical Nix stores need additional handling.
 Reference Policy does not know content-addressed AOS store paths, while the
 kernel ultimately checks the target inode rather than a conventional symlink.
 The planner therefore propagates labels from conventional aliases and uses
@@ -46,7 +46,7 @@ DF_1_PIE = 0x08000000
 
 NIX_STORE_HASH = r"[0-9abcdfghijklmnpqrsvwxyz]{32}"
 GUEST_TEMPLATE_NESTED_STORE = re.compile(
-    rf"^/(?:nix|nix\.lower)/store/{NIX_STORE_HASH}-"
+    rf"^/(?:nix|nix\.lower|usr/lib/aos/nix)/store/{NIX_STORE_HASH}-"
     rf"aos-sandbox-guest-root-template-1/root/nix/store/"
     rf"{NIX_STORE_HASH}-[^/]+/(?P<relative>.+)$"
 )
@@ -321,7 +321,7 @@ def inspect_elf(path: Path) -> ElfIdentity | None:
 
 
 def _store_relative_path(path: str) -> str | None:
-    for prefix in ("/nix/store/", "/nix.lower/store/"):
+    for prefix in ("/nix/store/", "/nix.lower/store/", "/usr/lib/aos/nix/store/"):
         if path.startswith(prefix):
             components = path[len(prefix) :].split("/", 1)
             return components[1] if len(components) == 2 else ""
@@ -329,7 +329,10 @@ def _store_relative_path(path: str) -> str | None:
 
 
 def _is_nix_namespace_path(path: str) -> bool:
-    return path in {"/nix", "/nix/store", "/nix.lower", "/nix.lower/store"} or (
+    return path in {
+        "/nix", "/nix/store", "/nix.lower", "/nix.lower/store",
+        "/usr/lib/aos/nix", "/usr/lib/aos/nix/store",
+    } or (
         _store_relative_path(path) is not None
     )
 
@@ -658,11 +661,11 @@ def _resolve_symlink_target(
         if not path.startswith("/"):
             raise PlanError(f"symlink escaped image namespace: {entry.path}")
         components = path.split("/")[1:]
-        if lookup_prefix == "/" and (
-            components[:2] == ["nix", "store"]
-            and "/nix.lower/store" in entries_by_path
-        ):
-            components[:2] = ["nix.lower", "store"]
+        if lookup_prefix == "/" and components[:2] == ["nix", "store"]:
+            if "/usr/lib/aos/nix/store" in entries_by_path:
+                components[:2] = ["usr", "lib", "aos", "nix", "store"]
+            elif "/nix.lower/store" in entries_by_path:
+                components[:2] = ["nix.lower", "store"]
         return components
 
     pending = absolute_components(entry.path)
@@ -784,9 +787,18 @@ def plan_labels(
     if len(entries_by_path) != len(entries):
         raise PlanError("inventory contains duplicate image paths")
     loader_paths = frozenset(dynamic_loaders)
+    def policy_lookup_path(path: str) -> str:
+        # The physical image store contains the exact logical package inodes.
+        # Apply the same package-specific policy, retaining physical map keys
+        # for the label writer and image verification.
+        physical_root = "/usr/lib/aos/nix"
+        if path == physical_root or path.startswith(physical_root + "/"):
+            return "/nix" + path[len(physical_root):]
+        return path
+
     direct_contexts = {
         entry.path: resolver.lookup(
-            runtime_lookup_path(entry.path, lookup_prefix), entry.kind
+            policy_lookup_path(runtime_lookup_path(entry.path, lookup_prefix)), entry.kind
         )
         for entry in entries
     }
@@ -802,7 +814,7 @@ def plan_labels(
             continue
 
         context = resolver.lookup(
-            runtime_lookup_path(alias_path, lookup_prefix), target.kind
+            policy_lookup_path(runtime_lookup_path(alias_path, lookup_prefix)), target.kind
         )
         if context is not None:
             alias_contexts.setdefault(target.inode_key, []).append(context)

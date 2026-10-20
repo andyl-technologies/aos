@@ -42,7 +42,7 @@
           cargo build --frozen --offline --release \
             --manifest-path crates/Cargo.toml \
             --target-dir "$TMPDIR/target" \
-            -p crucible-qemu \
+            -p crucible-qemu-host \
             --example crucible-qemu-rr-control-boundary-device-flight
           mkdir -p "$out/bin"
           cp \

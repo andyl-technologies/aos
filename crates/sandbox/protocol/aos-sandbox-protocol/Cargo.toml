@@ -1,0 +1,26 @@
+[package]
+name = "aos-sandbox-protocol"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[features]
+# Supplies passive synthetic codec DATA for dependent crate tests only.
+test-fixtures = []
+
+[dependencies]
+aos-sandbox-ownership-protocol = { path = "../aos-sandbox-ownership-protocol" }
+aos-sandbox-api = { path = "../aos-sandbox-api" }
+aos-sandbox-model = { path = "../../model/aos-sandbox-model" }
+aos-sandbox-journal = { path = "../../controller/aos-sandbox-journal" }
+aos-sandbox-guest-protocol = { path = "../aos-sandbox-guest-protocol" }
+aos-sandbox-broker-session-protocol = { path = "../aos-sandbox-broker-session-protocol" }
+aos-sandbox-source-provider-protocol = { path = "../aos-sandbox-source-provider-protocol" }
+aos-sandbox-source-provider-ledger = { path = "../../storage/aos-sandbox-source-provider-ledger" }
+buffa.workspace = true
+ed25519-dalek.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+ssh-key.workspace = true
+thiserror.workspace = true

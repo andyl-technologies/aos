@@ -112,7 +112,7 @@
         nativeBuildInputs = [pkgs.python3 pkgs.coreutils];
         parentImage = sandbox.resourceBank._parentImage;
         bootstrapImage = sandbox.resourceBank._imagePolicy;
-        unitImage = cfg.system.build.systemdSystemUnits;
+        unitImage = "${cfg.system.build.managerConfiguration}/systemd-units";
         rootProfile = sourceProfile;
         selectedPolicy = cfg.aos.security.selinux._productionPolicy;
         expectedSourceExec = expectedExec;
@@ -132,7 +132,7 @@
   in {
     inherit evaluated validation;
     parentImage = sandbox.resourceBank._parentImage;
-    systemdUnits = cfg.system.build.systemdSystemUnits;
+    systemdUnits = "${cfg.system.build.managerConfiguration}/systemd-units";
     rootProfile = sourceProfile;
     selectedPolicy = cfg.aos.security.selinux._productionPolicy;
     canonicalReadback = cfg.aos.security.selinux._canonicalReadback;

@@ -9,7 +9,7 @@
     inherit lib pkgs systems;
   };
   hostPackage = pkgs.aos-sandbox-hostd;
-  hostSyscallProfile = builtins.fromJSON (builtins.readFile ../../crates/aos-sandbox-host/src/plan/host_syscall_profile_v1.json);
+  hostSyscallProfile = builtins.fromJSON (builtins.readFile ../../crates/sandbox/host/aos-sandbox-host/src/plan/host_syscall_profile_v1.json);
   widenedHostFilter = lib.concatStringsSep " " (hostSyscallProfile.filter ++ ["ptrace"]);
   inspector = "${hostPackage}/bin/aos-sandbox-host-phase0-probe";
   hostd = "${hostPackage}/bin/aos-sandbox-hostd";

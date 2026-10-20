@@ -3,6 +3,23 @@
   mkDerivation,
   coreutils,
 }: mkDerivation {
+  platformSupport = {
+    build = [
+      {
+        abi = ["gnu"];
+        os = ["linux"];
+      }
+    ];
+    host = [
+      {
+        abi = ["gnu"];
+        cpu = ["x86_64"];
+        os = ["linux"];
+      }
+    ];
+    target = [];
+    role = "public-package";
+  };
   pname = "aos-installed-filter-collector";
   version = "0.1.0";
   src = ./aos-installed-filter-collector;

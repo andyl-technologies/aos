@@ -134,7 +134,7 @@
     inherit ordinary selected validation negativeAssertions;
     bootstrapImage = sandbox.resourceBank._imagePolicy;
     rootProfile = normalProfile;
-    systemdUnits = cfg.system.build.systemdSystemUnits;
+    systemdUnits = "${cfg.system.build.managerConfiguration}/systemd-units";
   };
 in {
   inherit incomplete incompleteAssertions forConfigurationModules;

@@ -11,6 +11,23 @@
 in
   assert tpm2-tss.version == "4.2.0";
     mkDerivation {
+      platformSupport = {
+        build = [
+          {
+            abi = ["gnu"];
+            os = ["linux"];
+          }
+        ];
+        host = [
+          {
+            abi = ["gnu"];
+            cpu = ["x86_64" "aarch64"];
+            os = ["linux"];
+          }
+        ];
+        target = [];
+        role = "public-package";
+      };
       pname = "aos-nix-runtime-tpm-helpers";
       version = "1";
       src = helperSource;

@@ -4,7 +4,7 @@
   mkCargoPackage,
   mkCargoArtifacts,
   mkCargoDummySource,
-  fetchCargoVendor,
+  aosWorkspaceVendor,
   mkDerivation,
   coreutils,
   git,
@@ -65,7 +65,7 @@
   roleFlags = role:
     "--no-default-features"
     + lib.optionalString (role != "publisher") " --features aos-sandbox-services/${role}"
-    + lib.optionalString (role == "controller") ",aos-sandbox/git-helper-mechanics"
+    + lib.optionalString (role == "controller") ",aos-sandbox-controller-domain/git-helper-mechanics"
     + lib.optionalString (onlineSelected && role == "controller") ",aos-sandbox-services/online-nix";
   controllerRoleFlags = roleFlags "controller";
   roleTestFlags = role:
@@ -84,12 +84,12 @@
     + lib.concatStringsSep " " (map (bin: "--bin ${bin}") roleBins.${role}))
   serviceRoles;
   roleTestCommands = map (role: "test --no-run --frozen --offline -j$NIX_BUILD_CORES ${roleTestFlags role} ${roleTestPackages role}") serviceRoles;
-  coreTestCommand = "test --no-run --frozen --offline -j$NIX_BUILD_CORES ${controllerRoleFlags} -p aos-sandbox -p aos-sandbox-broker-session-security -p aos-sandbox-controller-runtime";
+  coreTestCommand = "test --no-run --frozen --offline -j$NIX_BUILD_CORES ${controllerRoleFlags} -p aos-sandbox-controller-domain -p aos-sandbox-broker-session-security -p aos-sandbox-controller-runtime";
   onlineInputs = lib.optionals onlineSelected [nixOnlineStoreReader aos-nix-runtime-tpm-helpers];
   # The installed Controller owns the same pinned Required-floor helper and
   # original PID1 image used by the production packaged CLI.
   requiredFloorInputs = lib.optionals stdenv.hostPlatform.isLinux [aos-method46-tpm-helper systemd];
-  workspaceCargo = import ./aos/_workspace-cargo.nix {inherit lib fetchCargoVendor;};
+  workspaceCargo = import ./aos/_workspace-cargo.nix {inherit lib aosWorkspaceVendor;};
   inherit (workspaceCargo) src cargoDeps;
   cargoEnv =
     {
@@ -127,6 +127,23 @@
 in
   assert !onlineSelected || aos-nix-runtime-tpm-helpers != null;
     mkCargoPackage {
+      platformSupport = {
+        build = [
+          {
+            abi = ["gnu"];
+            os = ["linux"];
+          }
+        ];
+        host = [
+          {
+            abi = ["gnu"];
+            cpu = ["x86_64" "aarch64"];
+            os = ["linux"];
+          }
+        ];
+        target = [];
+        role = "public-package";
+      };
       pname = "aos-sandboxd";
       inherit version src cargoDeps cargoArtifacts cargoArtifactContract cargoEnv;
       cargoRoot = "crates";
@@ -136,10 +153,10 @@ in
       cargoFlags = "${controllerRoleFlags} -p aos-sandbox-services --bin aos-sandboxd";
       checkType = "debug";
       # The Controller role and retained integration suites keep their own tests.
-      cargoTestFlags = "${controllerRoleFlags} -p aos-sandbox-services -p aos-sandbox -p aos-sandbox-broker-session-security -p aos-sandbox-controller-runtime";
+      cargoTestFlags = "${controllerRoleFlags} -p aos-sandbox-services -p aos-sandbox-controller-domain -p aos-sandbox-broker-session-security -p aos-sandbox-controller-runtime";
       cargoTestFlagSets =
         [
-          "${controllerRoleFlags} -p aos-sandbox-services -p aos-sandbox -p aos-sandbox-broker-session-security -p aos-sandbox-controller-runtime"
+          "${controllerRoleFlags} -p aos-sandbox-services -p aos-sandbox-controller-domain -p aos-sandbox-broker-session-security -p aos-sandbox-controller-runtime"
         ]
         ++ map (role: "${roleTestFlags role} ${roleTestPackages role}")
         (lib.filter (role: role != "controller") serviceRoles);

@@ -25,7 +25,7 @@ in
           PASS
           check=checks.crucible.phase1.rfcConsistency
           tasks=T-PLAN-1,T-PLAN-2,T-STD-12
-          rust_test=crucible-harness::rfc_consistency
+          rust_test=crucible_test_support::rfc_consistency
           RESULT
         '';
       }

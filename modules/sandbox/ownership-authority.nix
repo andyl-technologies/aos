@@ -5,6 +5,8 @@
   pkgs,
   ...
 }: let
+  credentialNameType = import ./_credential-name-type.nix {inherit lib;};
+
   cfg = config.aos.sandbox.ownershipAuthority;
   controller = config.aos.sandbox.controller;
   protectedOrigin = config.aos.sandbox.resourceBank.parentEnclosure != null;
@@ -23,12 +25,12 @@ in {
     };
 
     credentials.sessionKey = lib.mkOption {
-      type = lib.types.nullOr lib.serviceTypes.credentialName;
+      type = lib.types.nullOr credentialNameType;
       default = null;
       description = "External 32-byte local ownership-session key shared with the controller; its bytes never enter the Nix store.";
     };
     credentials.signingKey = lib.mkOption {
-      type = lib.types.nullOr lib.serviceTypes.credentialName;
+      type = lib.types.nullOr credentialNameType;
       default = null;
       description = "External 32-byte local ownership signing seed matching the fixed protected bootstrap; never included in the Nix store.";
     };

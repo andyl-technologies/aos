@@ -10,7 +10,7 @@ extends them.
 Because the eval is a pure function of its inputs (`host.nix`, the installed
 set's config modules, registry-pinned inputs), it runs identically off-host
 (CI) and on-host. The command mirrors the existing `dry_run` reconcile plumbing
-(`crates/aos-package/src/desired.rs:90`, `config_artifact.rs:51`
+(`crates/aos/packages/aos-package-manager/src/desired.rs:90`, `config_artifact.rs:51`
 `preflight_desired_config`):
 
 ```text
@@ -32,10 +32,10 @@ manifest diff (gen-7 → candidate)
     + /etc/nftables/forward.conf            (new; provider: firewall)
     - /etc/aos/packages/legacy/config.toml  (package 'legacy' removed)
 
-  systemd units
-    ~ web.service        reload   (config artifact changed)
-    ~ firewall.service   restart  (forwardPolicy drop→accept)
-    + tracing.service    start    (new unit from 'web')
+  ability resources
+    ~ web-runtime
+    ~ firewall-policy
+    + tracing-runtime
 
   packages to fetch (closure delta)
     + /nix/store/…-otel-collector-0.9   (12.4 MiB NAR, not in cache)
@@ -43,12 +43,12 @@ manifest diff (gen-7 → candidate)
   cross-package resolution
     firewall.forwardPolicy = accept   (web → firewall; won over base default 'drop')
 
-3 etc changes, 3 unit actions, 1 path to fetch (12.4 MiB). No conflicts. No assertion failures.
+3 etc changes, 3 resource changes, 1 path to fetch (12.4 MiB). No conflicts. No assertion failures.
 ```
 
 The `--json` form extends the existing planned-status envelope (`desired.rs:214`)
-with `etc_diff`, `unit_actions`, `fetch_plan` (closure delta vs the local store,
-enumerated by `aos-cache/src/discover.rs:18`), and `resolution_trace`.
+with `etc_diff`, `resource_changes`, `fetch_plan` (closure delta vs the local store,
+enumerated by `aos/packages/aos-nix-cache/src/discover.rs:18`), and `resolution_trace`.
 
 **Off-host CI preflight.** A `checks.config-eval` derivation
 (`default.nix` `checks` rec) evaluates the same expression with

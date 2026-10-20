@@ -52,7 +52,7 @@ normative policy is
   `qemu-crucible-source` output. Publication checks scan the full closure, so
   plugin or unmarked wrapper roots are not valid bypasses. Keep generic
   unpatched QEMU unrestricted.
-- `crucible-protocol` and `crucible-shmem` are permissive boundary components;
+- `crucible-qemu-protocol` and `crucible-qemu-shmem` are permissive boundary components;
   neither may acquire a dependency on a QEMU implementation or QEMU headers.
 - Boundary changes MUST pass `gate:abi-conformance` and
   `gate:license-boundary`. A distributed patched-QEMU binary MUST have a
@@ -218,21 +218,23 @@ nix run . -- <subcommand>
 ### Incremental builds
 
 `nix build` / `nix run` rebuild the whole `pkgs.aos` derivation hermetically and
-are slow to iterate on. For a fast edit–build–run loop on the Rust code, build
-with `cargo` in the dev-shell environment via `nix develop -c` — a single
-non-interactive command (a bare `nix develop` only opens an interactive shell) —
-then run the resulting binary directly:
+are slow to iterate on. For a fast edit–build–run loop on the Rust code, use
+the Cargo dev shell, which supplies the AOS-built compiler and native libraries
+without building the packaged CLI or integration-test services. Select it through `cargo-shell.nix`
+to avoid the flake's broad output evaluation. Pass the command to `nix develop -c`
+in one invocation (a bare `nix develop` only opens an interactive shell), then
+run the resulting binary directly:
 
 ```sh
 # Build (incremental). `nix develop -c` execs its argument directly (no shell),
 # so pass cargo the workspace with --manifest-path rather than `cd`-ing:
-nix develop -c cargo build --manifest-path crates/Cargo.toml --bin aos   # or --bin apr / --bin apm
+nix develop --file cargo-shell.nix -c cargo build --manifest-path crates/Cargo.toml --bin aos   # or --bin apr / --bin apm
 
 # Run the freshly built binary directly — its OpenSSL rpath is baked in:
 crates/target/debug/aos <subcommand>
 ```
 
-- **Build through `nix develop -c`.** The dev shell points `openssl-sys` at the
+- **Build through the Cargo shell.** It points `openssl-sys` at the
   AOS OpenSSL and bakes its `rpath` into the linked binary (via a per-target
   `CARGO_TARGET_*_RUSTFLAGS`), so it runs with no `patchelf` or
   `LD_LIBRARY_PATH`. A cargo build in a bare shell produces a binary that can't
@@ -250,6 +252,20 @@ crates/target/debug/aos <subcommand>
 - `crates/target/debug/` is independent of the packaged `aos`; `aos-dev run aos`
   and `nix run` use the hermetic package, while any installed CLI keeps its
   last packaged build until rebuilt.
+
+Native doctests need the same library paths baked into their temporary
+executables. Cargo does not forward its target `RUSTFLAGS` to rustdoc. Copy the
+host flags for that invocation; avoid `LD_LIBRARY_PATH` and keep these native
+linker flags separate from WebAssembly documentation:
+
+```sh
+AOS_DEV_ROOT="$PWD" nix develop --accept-flake-config --file cargo-shell.nix -c bash -c '
+  aos_doc_host=$(rustc -vV | sed -n "s/^host: //p")
+  aos_doc_flags_key="CARGO_TARGET_$(printf "%s" "$aos_doc_host" | tr "[:lower:]-" "[:upper:]_")_RUSTFLAGS"
+  export RUSTDOCFLAGS="${!aos_doc_flags_key}${RUSTDOCFLAGS:+ $RUSTDOCFLAGS}"
+  cargo test --manifest-path crates/Cargo.toml --workspace --doc --locked --offline --no-fail-fast
+'
+```
 
 ### Subcommands
 
@@ -364,7 +380,8 @@ the local design no worse and improve it where that is safe and proportionate.
 
 ## Testing
 
-- `nix-build -A checks.eval` — pure evaluation checks
+- `nix-build -A checks.eval` — core evaluation checks
+- `aos test eval` — complete sharded evaluation suite
 - `nix-build -A checks.vm.boot` — VM boot test using QEMU direct kernel boot
 - `nix-build -A checks.rust.aos-test-targets` — compiles every application
   crate's unit and `tests/` integration targets without running them; run it

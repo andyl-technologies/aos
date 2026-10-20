@@ -2,15 +2,20 @@
 {
   pkgs,
   lib,
+  mkSystem,
 }: let
+  selectedManager = (mkSystem [../../systems/server-test.nix]).config.aos.manager.selected;
+  managerOptions = import ../../modules/base/_manager-selection.nix {inherit lib;};
+
   systemdOptions = {lib, ...}: {
     options.assertions = lib.mkOption {
       type = lib.types.listOf lib.types.anything;
       default = [];
     };
-    options.systemd.package = lib.mkOption {
-      type = lib.types.package;
-      default = pkgs.systemd;
+    # Reuse both the actual provider's projection and the production schema.
+    # This fixture checks directives; the record does not enroll a process.
+    options.aos.manager.selected = managerOptions.options.aos.manager.selected // {
+      default = selectedManager;
     };
     options.systemd.services = lib.mkOption {
       type = lib.types.attrsOf (lib.types.submodule {
@@ -175,7 +180,9 @@
     modules = [{aos.sandbox.policyAuthority._normalStartupProfile = lib.mkForce null;}];
   };
   wrongSystemd = evaluation.extendModules {
-    modules = [{systemd.package = lib.mkForce pkgs.coreutils;}];
+    # The genuine projection is an option default, so one explicit definition
+    # replaces it without wrapping the discriminated submodule in mkForce.
+    modules = [{aos.manager.selected = selectedManager // {package = toString pkgs.coreutils;};}];
   };
   refuses = message: result:
     lib.any (check: check.message == message && !check.assertion) result.config.assertions;

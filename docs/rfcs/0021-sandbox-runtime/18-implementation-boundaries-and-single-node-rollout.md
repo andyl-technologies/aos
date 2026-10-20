@@ -305,15 +305,15 @@ Selected native physical ownership is not qualification on other Unix targets.
 
 | Current owner | Responsibility and retained boundary |
 | --- | --- |
-| [Core](../../../crates/aos-sandbox-core/src/lib.rs), Agent wire and Linux | Shared bounded mechanics, portable messages and fixed native mechanics; role validation and authority stay with callers. |
-| [Journal](../../../crates/aos-sandbox-journal/src/lib.rs) | Portable framing/native DATA and opt-in physical custody; Domain retains typed semantic admission and final crossings. |
-| [Protocol](../../../crates/aos-sandbox-protocol/src/lib.rs) | Canonical historical/local DATA; current grants, signing keys and native loans remain upper. |
-| [Domain Journal](../../../crates/aos-sandbox/src/journal.rs) and [protected domain adapter](../../../crates/aos-sandbox/src/protected_domain_journal.rs) | Native role transitions, original retained causes and cross-owner loans; private organization, not protected role-crate isolation. |
-| [Native Source](../../../crates/aos-sandbox/src/source_domain/mod.rs) | Private fixed-writer owner retains paid opening and Q04 custody in Domain, without a Source Cargo boundary. |
-| [Ownership](../../../crates/aos-sandbox-ownership/src/lib.rs) and [Policy](../../../crates/aos-sandbox-policy/src/lib.rs) | Historical lease state and pure compiler/verifier DATA; fresh issuance, Root binding and protected publication remain Native. |
-| [Controller Runtime](../../../crates/aos-sandbox-controller-runtime/src/lib.rs), Security and signers | Concrete Controller above session custody; Security and Source/Cache signers still depend on Domain. |
-| [Guest root tree](../../../crates/aos-sandbox-guest-root-tree/src/lib.rs) and [realization](../../../crates/aos-sandbox-guest-root-realization/src/lib.rs) | Separate nonauthorizing measurement and physical realization; original admission/effect/recovery custody remains at callers. |
-| [Coordinator](../../../crates/aos-sandbox-coordinator/src/lib.rs) | Explicitly selected placement/watch/projection; protected remote handoffs remain selected Domain owners. |
+| [Core](../../../crates/sandbox/model/aos-sandbox-model/src/lib.rs), Agent wire and Linux | Shared bounded mechanics, portable messages and fixed native mechanics; role validation and authority stay with callers. |
+| [Journal](../../../crates/sandbox/controller/aos-sandbox-journal/src/lib.rs) | Portable framing/native DATA and opt-in physical custody; Domain retains typed semantic admission and final crossings. |
+| [Protocol](../../../crates/sandbox/protocol/aos-sandbox-protocol/src/lib.rs) | Canonical historical/local DATA; current grants, signing keys and native loans remain upper. |
+| [Domain Journal](../../../crates/sandbox/controller/aos-sandbox-controller-domain/src/journal.rs) and [protected domain adapter](../../../crates/sandbox/controller/aos-sandbox-controller-domain/src/protected_domain_journal.rs) | Native role transitions, original retained causes and cross-owner loans; private organization, not protected role-crate isolation. |
+| [Native Source](../../../crates/sandbox/controller/aos-sandbox-controller-domain/src/source_domain/mod.rs) | Private fixed-writer owner retains paid opening and Q04 custody in Domain, without a Source Cargo boundary. |
+| [Ownership](../../../crates/sandbox/model/aos-sandbox-ownership/src/lib.rs) and [Policy](../../../crates/sandbox/model/aos-sandbox-policy/src/lib.rs) | Historical lease state and pure compiler/verifier DATA; fresh issuance, Root binding and protected publication remain Native. |
+| [Controller Runtime](../../../crates/sandbox/controller/aos-sandbox-controller-runtime/src/lib.rs), Security and signers | Concrete Controller above session custody; Security and Source/Cache signers still depend on Domain. |
+| [Guest root tree](../../../crates/sandbox/guest/aos-sandbox-guest-root-measurement/src/lib.rs) and [realization](../../../crates/sandbox/guest/aos-sandbox-guest-root-realization/src/lib.rs) | Separate nonauthorizing measurement and physical realization; original admission/effect/recovery custody remains at callers. |
+| [Coordinator](../../../crates/sandbox/controller/aos-sandbox-coordinator/src/lib.rs) | Explicitly selected placement/watch/projection; protected remote handoffs remain selected Domain owners. |
 
 ### Shared mechanics and canonical DATA
 

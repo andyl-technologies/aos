@@ -26,9 +26,13 @@ in {
     phase = option (lib.types.enum ["build" "staging" "rollout" "complete"]) "Release hold point requiring this evidence.";
     scope = option (lib.types.enum ["release" "packages" "images" "containers"]) "Artifact population expanded into cases.";
     method = (option (lib.types.enum ["automated" "operator"]) "Source of the observation.") // {default = "automated";};
+    production_only = (option lib.types.bool "Requires this native operation only for production-registry destinations.") // {default = false;};
     checks = strings "Acceptance conditions required in every observation.";
     regressions = (strings "Source regression gates; these do not replace release execution.") // {default = [];};
     invalidated_by = (strings "Identities whose change invalidates evidence.") // {default = ["subject" "policy" "executor" "environment"];};
+    native_operation_spec =
+      (option (lib.types.nullOr lib.types.attrs) "Exact independently scoped native operation cohorts required by this requirement.")
+      // {default = null;};
     measurements =
       (option (lib.types.attrsOf (closed {
         minimum = option natural "Inclusive measured lower bound.";

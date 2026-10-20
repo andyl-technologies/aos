@@ -37,6 +37,23 @@ in
   assert builtins.isInt controllerGid && controllerGid > 0 && controllerGid < 65536;
   assert !viewZfsState || builtins.match "[A-Za-z][A-Za-z0-9_.:-]*/var/lib" viewZfsSource != null;
     mkDerivation {
+      platformSupport = {
+        build = [
+          {
+            abi = ["gnu"];
+            os = ["linux"];
+          }
+        ];
+        host = [
+          {
+            abi = ["gnu"];
+            cpu = ["x86_64" "aarch64"];
+            os = ["linux"];
+          }
+        ];
+        target = [];
+        role = "public-package";
+      };
       pname = "aos-selinux-runtime-roots";
       version = "1";
       src = null;

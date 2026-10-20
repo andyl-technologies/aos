@@ -1,0 +1,21 @@
+[package]
+name = "aos-sandbox-filesystem-fuse-kernel-worker"
+version = "0.0.0"
+edition = "2024"
+license.workspace = true
+publish = false
+
+[dependencies]
+aos-sandbox-filesystem-fuse = { workspace = true, features = ["test-fixtures"] }
+aos-sandbox-filesystem-view = { workspace = true, features = ["test-fixtures"] }
+aos-sandbox-model.workspace = true
+aos-sandbox-linux.workspace = true
+libc.workspace = true
+
+[lints]
+workspace = true
+
+# Preserve the installed command while its Cargo package moves.
+[[bin]]
+name = "aos-filesystem-fuse-kernel-worker"
+path = "src/main.rs"

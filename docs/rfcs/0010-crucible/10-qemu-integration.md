@@ -1,7 +1,7 @@
 # 10 — QEMU integration (host side)
 
 This file specifies the **host-side** half of the QEMU layer (L2): the Rust
-crate `crucible-qemu` that owns each VM's QEMU child process, drives it through
+crate `crucible-qemu-host` that owns each VM's QEMU child process, drives it through
 the determinism contract, and exposes it to the scheduler as a single
 scheduling node. The *in-VM* half — the cdylib that holds time control and runs
 the device/channel callbacks — is [`12-qemu-plugin.md`](12-qemu-plugin.md); the
@@ -26,7 +26,7 @@ realization branches (descriptor restore / replay / baked genesis) are the execu
 the protocol of [`14-protocol.md`](14-protocol.md), the shared-memory ABI of
 [`13-shmem-abi.md`](13-shmem-abi.md), and QMP defined here.
 
-`crucible-qemu` is Apache host-side code. It launches and supervises QEMU as a
+`crucible-qemu-host` is Apache host-side code. It launches and supervises QEMU as a
 separate process and MUST NOT link to QEMU, include its headers, or expose QEMU
 callback entry points. All Crucible-specific communication crosses the public
 process protocols defined in 13/14 and constrained by
@@ -797,7 +797,7 @@ determinism contract (04).
   line into the scenario content hash. — satisfies [QEMU-3], [QEMU-4], [QEMU-5],
   [QEMU-6], [QEMU-7], [QEMU-8], [QEMU-9], [QEMU-10], [QEMU-12], [QEMU-13],
   [QEMU-14]; spec §10.2.
-  Completed as the typed `crucible-qemu` launch-command builder: it validates the
+  Completed as the typed `crucible-qemu-host` launch-command builder: it validates the
   deterministic profile, requires content-addressed VM launch artifacts resolved
   to AOS store paths (QEMU binary, plugin, kernel, root image, optional initrd),
   emits the CoW root-disk argv, appends the plugin activation argument with fixed
@@ -822,9 +822,9 @@ determinism contract (04).
   synchronous scheduler node interface with the strict control/data split. —
   satisfies [QEMU-16], [QEMU-17], [QEMU-18]; spec §10.3.
   Completed as the `QemuNode` one-child/three-plane wrapper in
-  `crucible-qemu`: it owns a private `std::process::Child` handle through
+  `crucible-qemu-host`: it owns a private `std::process::Child` handle through
   `QemuNodeChild` plus a `QemuNodeChannels` bundle, exposes the synchronous
-  `crucible::Backend` boundary, routes current icount/advance/frame/idle/
+  `crucible_engine::Backend` boundary, routes current icount/advance/frame/idle/
   fingerprint operations only through the shmem hot path, rejects generic
   backend snapshot/restore, routes the paired exact-checkpoint API through QMP,
   and runs scheduler shutdown through the existing
@@ -875,7 +875,7 @@ determinism contract (04).
   memfd + wake eventfd at fixed fd numbers, dup'd for the child) and die-with-host
   on every exit path (`kill_on_drop` + `PR_SET_PDEATHSIG=SIGKILL`). — satisfies
   [QEMU-28], [QEMU-29]; spec §10.6.
-  Completed as the Linux-only `crucible-qemu` spawn adapter: it consumes a
+  Completed as the Linux-only `crucible-qemu-host` spawn adapter: it consumes a
   validated `QemuLaunchCommand`, creates the per-node plugin control
   `socketpair`, shmem `memfd`, and wake `eventfd`, keeps host copies, duplicates
   child copies, maps the child side to fd 3/4/5 in `pre_exec`, sets
@@ -898,7 +898,7 @@ determinism contract (04).
   plugin), and add the
   per-elimination micro-tests + inertness checks. — satisfies [QEMU-33],
   [QEMU-35]; spec §10.7.
-  Completed as the `crucible-qemu` determinism-boundary validator: it accepts
+  Completed as the `crucible-qemu-host` determinism-boundary validator: it accepts
   only a deterministic launch profile plus sim-mode inertness evidence, defines
   a content-addressed black-box plugin fingerprint definition with authenticated
   on-demand icount, architectural-register, guest-memory, and device-state components,
@@ -929,7 +929,7 @@ determinism contract (04).
   unconditional futex wake + plugin eventfd write → advance → frame inject/emit
   / I/O), with state and payloads entirely in shmem and no per-quantum
   QMP/plugin-IPC traffic. — satisfies [QEMU-36]; spec §10.8.
-  Completed as the `crucible-qemu` shared-memory hot path: the
+  Completed as the `crucible-qemu-host` shared-memory hot path: the
   `QemuQuantumShmemHotPath` adapter observes plugin-published node reports,
   authorizes and stores scheduler ceilings through the node slot, wakes the
   plugin via the futex word and eventfd counter, finishes after a later shared-memory completion
@@ -965,7 +965,7 @@ determinism contract (04).
   per-await timeouts → crash/escalate, and no host-timing influence on any
   ordering-significant decision. — satisfies [QEMU-39], [QEMU-40], [QEMU-41],
   [QEMU-42]; spec §10.9.
-  Completed as the `crucible-qemu` bounded async driver boundary: the
+  Completed as the `crucible-qemu-host` bounded async driver boundary: the
   `QemuHostIoRuntime` trait owns real-time child awaits and explicit
   control-plane yields, `QemuAsyncDriverPolicy` requires nonzero timeouts for
   handshake, QMP command, process-event, and advance-completion waits, and

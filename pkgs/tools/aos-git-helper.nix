@@ -17,6 +17,23 @@
 in
   assert git.version == "2.55.0" && git.pname == "git";
     mkDerivation {
+      platformSupport = {
+        build = [
+          {
+            abi = ["gnu"];
+            os = ["linux"];
+          }
+        ];
+        host = [
+          {
+            abi = ["gnu"];
+            cpu = ["x86_64" "aarch64"];
+            os = ["linux"];
+          }
+        ];
+        target = [];
+        role = "public-package";
+      };
       pname = "aos-git-helper";
       version = "1";
       src = sourceDirectory;

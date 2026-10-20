@@ -5,6 +5,8 @@
   pkgs,
   ...
 }: let
+  credentialNameType = import ./_credential-name-type.nix {inherit lib;};
+
   cfg = config.aos.sandbox.mountBroker;
   hostBroker = config.aos.sandbox.hostBroker;
   sourceProvider = config.aos.sandbox.sourceProvider;
@@ -131,14 +133,14 @@ in {
     credentials =
       lib.mapAttrs (name: credentialFile:
         lib.mkOption {
-          type = lib.types.nullOr lib.serviceTypes.credentialName;
+          type = lib.types.nullOr credentialNameType;
           default = null;
           description = "External system credential loaded as ${credentialFile}; its bytes never enter the Nix store.";
         })
       credentialFields
       // lib.mapAttrs (_: credentialFile:
         lib.mkOption {
-          type = lib.types.nullOr lib.serviceTypes.credentialName;
+          type = lib.types.nullOr credentialNameType;
           default = null;
           description = "Fixed public exclusive-cohort input loaded as ${credentialFile}. All four inputs are required together; this selects denial-only enrollment, not Mount allocation authority.";
         })
@@ -183,7 +185,7 @@ in {
             || (cfg.useExecutableCarrier
               && cfg.package == pkgs.aos-sandbox-mountd
               && sourceProvider.package == pkgs.aos-source-providerd
-              && config.systemd.package == pkgs.systemd
+              && (import ./_fixed-systemd-profile.nix {inherit config pkgs;})
               && config.aos.security.selinux.enable
               && config.aos.security.selinux.bootMode == "immutable-stage0"
               && config.aos.security.selinux.mode == "enforcing"

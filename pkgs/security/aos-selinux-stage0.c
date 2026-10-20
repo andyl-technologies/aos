@@ -67,7 +67,7 @@
 #define AOS_RUNTIME_ROOTS_HANDOFF "--runtime-roots-handoff"
 #define AOS_MANIFEST_MAGIC "AOS_AUTHENTICATED_RUNTIME_CLOSURE"
 #define AOS_MANIFEST_VERSION "1"
-#define AOS_PHYSICAL_STORE_ROOT "/nix.lower/store"
+#define AOS_PHYSICAL_STORE_ROOT "/usr/lib/aos/nix/store"
 #define AOS_PHYSICAL_STORE_PREFIX AOS_PHYSICAL_STORE_ROOT "/"
 #define MAX_RUNTIME_ROOTS 1024U
 
@@ -1459,7 +1459,7 @@ static void pin_runtime_closure(const char *phase, const char *handoff_systemd_p
         }
     }
 
-    lower_store_fd = open("/nix.lower/store", O_PATH | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    lower_store_fd = open("/usr/lib/aos/nix/store", O_PATH | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
     if (lower_store_fd < 0) {
         fail_closed("open physical lower store: %s", strerror(errno));
     }
@@ -1732,11 +1732,11 @@ static void run_root_handoff(int argc, char **argv) {
 
     require_filesystem("/", EROFS_SUPER_MAGIC_V1, ST_RDONLY | ST_NODEV, 0);
     require_filesystem(
-        "/nix.lower",
+        "/usr/lib/aos/nix",
         EROFS_SUPER_MAGIC_V1,
         ST_RDONLY | ST_NODEV,
         0);
-    if (stat("/", &root_status) < 0 || stat("/nix.lower", &lower_status) < 0 ||
+    if (stat("/", &root_status) < 0 || stat("/usr/lib/aos/nix", &lower_status) < 0 ||
         stat("/dev/mapper/root", &mapper_status) < 0 || !S_ISBLK(mapper_status.st_mode) ||
         root_status.st_dev != lower_status.st_dev || root_status.st_dev != mapper_status.st_rdev) {
         fail_closed("root handoff is not executing on the verified /dev/mapper/root filesystem");
@@ -1802,12 +1802,14 @@ static void run_runtime_roots_launcher(int argc, char **argv) {
         strcmp(argv[3], "--root") != 0 ||
         (strcmp(argv[4], "/") != 0 && strcmp(argv[4], "/sysroot") != 0) ||
         (strcmp(argv[5], "--prepare-var-base") != 0 &&
-         strcmp(argv[5], "--prepare-sandbox-network-roots") != 0)) {
+         strcmp(argv[5], "--prepare-sandbox-network-roots") != 0 &&
+         strcmp(argv[5], "--prepare-sandbox-owner-roots") != 0)) {
         fail_closed(
             "runtime-root launch arguments do not match the authenticated contract");
     }
     if ((strcmp(argv[4], "/sysroot") == 0) !=
-        (strcmp(argv[5], "--prepare-var-base") == 0)) {
+        (strcmp(argv[5], "--prepare-var-base") == 0 ||
+         strcmp(argv[5], "--prepare-sandbox-owner-roots") == 0)) {
         fail_closed("runtime-root launch phase and root are not the supported fixed pair");
     }
     root_prefix = argv[4];
@@ -1822,7 +1824,7 @@ static void run_runtime_roots_launcher(int argc, char **argv) {
     if (strcmp(root_prefix, "/") == 0) {
         if (snprintf(guard_path, sizeof(guard_path), "%s", AOS_ROOT_HANDOFF_PATH) >=
                 (int)sizeof(guard_path) ||
-            snprintf(lower_path, sizeof(lower_path), "/nix.lower") >=
+            snprintf(lower_path, sizeof(lower_path), "/usr/lib/aos/nix") >=
                 (int)sizeof(lower_path)) {
             fail_closed("runtime-root physical path exceeds PATH_MAX");
         }
@@ -1835,7 +1837,7 @@ static void run_runtime_roots_launcher(int argc, char **argv) {
                snprintf(
                    lower_path,
                    sizeof(lower_path),
-                   "%s/nix.lower",
+                   "%s/usr/lib/aos/nix",
                    root_prefix) >= (int)sizeof(lower_path)) {
         fail_closed("prefixed runtime-root physical path exceeds PATH_MAX");
     }
@@ -1885,9 +1887,11 @@ static void run_runtime_roots_handoff(int argc, char **argv) {
     if (argc != 5 || strcmp(argv[2], "--root") != 0 ||
         (strcmp(argv[3], "/") != 0 && strcmp(argv[3], "/sysroot") != 0) ||
         (strcmp(argv[4], "--prepare-var-base") != 0 &&
-         strcmp(argv[4], "--prepare-sandbox-network-roots") != 0) ||
+         strcmp(argv[4], "--prepare-sandbox-network-roots") != 0 &&
+         strcmp(argv[4], "--prepare-sandbox-owner-roots") != 0) ||
         ((strcmp(argv[3], "/sysroot") == 0) !=
-         (strcmp(argv[4], "--prepare-var-base") == 0))) {
+         (strcmp(argv[4], "--prepare-var-base") == 0 ||
+          strcmp(argv[4], "--prepare-sandbox-owner-roots") == 0))) {
         fail_closed("runtime-root handoff arguments do not match the fixed phase contract");
     }
     root_prefix = argv[3];
@@ -1899,15 +1903,15 @@ static void run_runtime_roots_handoff(int argc, char **argv) {
     require_clean_loader_environment();
     require_filesystem(root_prefix, EROFS_SUPER_MAGIC_V1, ST_RDONLY | ST_NODEV, 0);
     if (strcmp(root_prefix, "/") == 0) {
-        require_filesystem("/nix.lower", EROFS_SUPER_MAGIC_V1, ST_RDONLY | ST_NODEV, 0);
+        require_filesystem("/usr/lib/aos/nix", EROFS_SUPER_MAGIC_V1, ST_RDONLY | ST_NODEV, 0);
         if (stat(root_prefix, &root_status) < 0 ||
-            stat("/nix.lower", &lower_status) < 0) {
+            stat("/usr/lib/aos/nix", &lower_status) < 0) {
             fail_closed("inspect runtime-root handoff EROFS identity: %s", strerror(errno));
         }
     } else {
-        require_filesystem("/sysroot/nix.lower", EROFS_SUPER_MAGIC_V1, ST_RDONLY | ST_NODEV, 0);
+        require_filesystem("/sysroot/usr/lib/aos/nix", EROFS_SUPER_MAGIC_V1, ST_RDONLY | ST_NODEV, 0);
         if (stat(root_prefix, &root_status) < 0 ||
-            stat("/sysroot/nix.lower", &lower_status) < 0) {
+            stat("/sysroot/usr/lib/aos/nix", &lower_status) < 0) {
             fail_closed("inspect prefixed runtime-root handoff EROFS identity: %s", strerror(errno));
         }
     }

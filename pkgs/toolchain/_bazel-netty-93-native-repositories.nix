@@ -36,7 +36,7 @@
   nativeTcnativeFor = target:
     import ./_bazel-netty-tcnative-native.nix {
       inherit fetchgit fetchurl buildPackages bazelNettyTcnativeClasses;
-      inherit (target.pkgs) mkDerivation apr;
+      inherit (target.pkgs) mkDerivation apache-portable-runtime;
       inherit (target) stdenv;
       bazelNettyBoringssl = import ./_bazel-netty-boringssl.nix {
         inherit fetchgit buildPackages;

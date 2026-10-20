@@ -12,7 +12,7 @@
   program = "${pkgs.aos-sandboxd}/bin/aos-sandbox-nix-floor-provision";
   command = "${program} ${cfg.command}";
   hardware = builtins.elem cfg.command ["initialize" "recover"];
-  systemdLib = import ../../lib/modules/systemd/lib.nix {inherit lib pkgs;};
+  systemdLib = import ../../pkgs/system/_systemd-abilities/platform/render.nix {inherit lib pkgs;};
   delivery = [
     "node-id:/etc/credstore/node-id"
     "nix-floor-provision-approval-public-key-v3:/etc/credstore/nix-floor-provision-approval-public-key-v3"
@@ -43,7 +43,7 @@
     rendered.text;
   profile = pkgs.aosNixOfflineStartupProfileWith {
     inherit hardware;
-    systemd = config.systemd.package;
+    systemd = config.aos.manager.selected.package;
     aos-selinux-production-policy = selinux._productionPolicy;
     aos-selinux-kernel-policy-readback = selinux._canonicalReadback;
     unitContract = materialized;

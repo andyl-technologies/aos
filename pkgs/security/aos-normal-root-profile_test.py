@@ -73,7 +73,7 @@ class ProducerTests(unittest.TestCase):
 
         for path in (root / "objects", Path(str(root) + "-alias"),
                      Path(str(root).replace("provision-1", "provision-2")),
-                     Path(str(root).replace("/nix/store/", "/nix.lower/store/"))):
+                     Path(str(root).replace("/nix/store/", "/usr/lib/aos/nix/store/"))):
             with self.subTest(path=path), self.assertRaises(ValueError):
                 PROFILE.require_environment_provision_binding(path, f"ReadOnlyPaths={path}\n".encode())
 
@@ -84,7 +84,7 @@ class ProducerTests(unittest.TestCase):
         self.assertTrue(callable(helpers.resolve_needed_dso))
         # No alternate serializer or wrapper validator is introduced.
         root = "00000000000000000000000000000000-image"
-        self.assertEqual(helpers.physical_lower_path(f"/nix/store/{root}/bin/root"), f"/nix.lower/store/{root}/bin/root")
+        self.assertEqual(helpers.physical_lower_path(f"/nix/store/{root}/bin/root"), f"/usr/lib/aos/nix/store/{root}/bin/root")
 
 
 if __name__ == "__main__":

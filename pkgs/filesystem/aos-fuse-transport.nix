@@ -16,6 +16,23 @@
   source = ./aos-fuse-transport;
 in
   mkDerivation {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
     pname = "aos-fuse-transport";
     version = "0.1.0";
 
@@ -87,7 +104,7 @@ in
         src = import ../tools/aos/_workspace-source.nix {inherit lib;};
         cargoDeps = pkgs.aos.passthru.cargoDeps;
         cargoRoot = "crates";
-        cargoFlags = "-p aos-filesystem-fuse-kernel-worker --bin aos-filesystem-fuse-kernel-worker";
+        cargoFlags = "-p aos-sandbox-filesystem-fuse-kernel-worker --bin aos-filesystem-fuse-kernel-worker";
         # This executable requires inherited real mount descriptors; its test
         # runs below inside the VM rather than in the package build sandbox.
         doCheck = false;

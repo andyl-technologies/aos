@@ -1,5 +1,8 @@
 ##! Image-pinned method-46 floor mode and external per-owner NV credentials.
-{lib}: {
+{lib}: let
+  credentialNameType = import ./_credential-name-type.nix {inherit lib;};
+
+in {
   options = {
     required = lib.mkOption {
       type = lib.types.bool;
@@ -8,13 +11,13 @@
     };
 
     provisionCredential = lib.mkOption {
-      type = lib.types.nullOr lib.serviceTypes.credentialName;
+      type = lib.types.nullOr credentialNameType;
       default = null;
       description = "External exact AOSBTD01 public provisioning credential for this owner, binding node/deployment epoch/endpoint and its separately provisioned SHA-256 salt-key Name. Normal startup never creates or adopts TPM/journal state.";
     };
 
     indexAuthCredential = lib.mkOption {
-      type = lib.types.nullOr lib.serviceTypes.credentialName;
+      type = lib.types.nullOr credentialNameType;
       default = null;
       description = "External exact 32-byte high-entropy owner-specific NV index auth. It must grant no owner/platform/lockout hierarchy authority, Clear, Define or Undefine; never put it in the Nix store. The existing daemon UID requires a separately provisioned /dev/tpmrm0 ACL.";
     };
