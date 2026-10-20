@@ -9059,9 +9059,45 @@ unresolved. Two additional native domains retain original inodes across owner
 restarts: one tests actual expiry, and the other loses only its deadline after
 the original interval and must refuse immediate deletion. All 56 prior
 selectors and 67 selected native unit cases are retained; three selectors and
-one source-bound helper are added. Local strict all-target Clippy and formatting
-pass. Source-guarded isolated profiles, native VM and mandatory application
-qualification are running; the new runtime controls are not yet credited.
+one source-bound helper are added. Local and all three isolated strict Clippy
+profiles, private documentation, formatting, native quota confinement and the
+source-bound image pass. The actual ext4 component passes in 449.879 seconds:
+independent review verifies 5,105 source inputs, four original Cargo executables,
+67 selected native unit cases, all 59 selectors and six installed helpers.
+Three actual unexpired or unknown-deadline attempts refuse removal; one expired
+original inode is removed. Independent observation checks original bytes and
+policy holds through deadline loss and physical owner restarts. The complete
+filesystem suite passes all 126 nonignored cases with the original six
+privileged ignores and 5,095 verified crate inputs. Both owning publisher gates
+also pass. Mandatory application compilation continues; complete task acceptance
+remains pending.
+
+Encoded pending-chunk continuation `ec17f3299b` additionally recognizes actual
+pending chunk custody only after an authenticated canonical `NotFound`, no
+canonical or verified content handle, and the exact unresolved inspection
+categories. It preserves the synchronized physical turn and original deadline
+checks. Native controls add raw, zstd and dictionary-coded expiry and
+lost-deadline cases; dictionary data is deliberately absent because removal
+grants no decoding or serving authority. Independent kernel measurement
+distinguishes sealed and encoded inodes. All 59 prior selectors are retained;
+five are added across six new domains. Their combined finite project budget is
+432 MiB within the existing disk-backed 512 MiB image. Local strict Clippy and
+formatting pass. Source-guarded profiles, image/archive preparation and mandatory
+application compilation are running. Its native phase remains unstarted until
+the combined Surface/module aggregate actually terminates; this preparation
+does not delay that aggregate further. No new native or task result is claimed.
+
+The older shared-directory aggregate at `86fb63e127` actually terminates with
+failure after 18,940.237 seconds. Nextest reports 2,149 run, 2,141 passed,
+seven failed, one timed out and ten skipped. Five failed Linux cases use the
+filesystem-dependent operations whose unchanged bodies now pass in native
+ext4; the failed xattr case is similarly routed to the mandatory native
+surface-status proof on the combined candidate. The noncanonical staging cycle
+process timeout and off-batch staging arrival failure remain failed observations;
+their cause is not established. None of these component results is credited as
+a passing aggregate. After actual completion of both that failed controller
+and the current passing native publisher controller is collected, the combined
+Surface/module candidate `d4af629791` starts the full implemented gate set.
 No task checkbox advances.
 
 All five T2 task checkboxes remain open. Encoded eviction, shared-chunk
