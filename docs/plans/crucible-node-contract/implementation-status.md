@@ -10,6 +10,61 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Portable DATA and contained-worker checkpoint
+
+The extraction in `130525c154` introduces the Apache-licensed L1
+`crucible-source-birth-data` crate. It owns the shared records, schema factories,
+serializers and bounded SourceBirth algorithm. Engine and Transport retain
+native ownership, currentness and admission. The worker's complete Cargo graph,
+including development, build and target dependencies, reaches only three local
+packages: Worker, DATA and Node Format. Its 48 registry dependencies are distinct
+from the workspace's unchanged 639 registry records.
+
+Original public record paths remain reexports. Upper-specific accounting methods
+now require named extension traits, and the constant counter entry point is a
+free function. These are source API changes. Failed literal reads transfer their
+owners into the existing reserved retirement bank without allocating another
+bank; executable controls verify the returned error types stay below 128 bytes.
+Sharing the original metadata facts record removes adapter storage that caused
+twelve real Transport regressions. The original assertions and limits remain.
+
+Thirteen selected crates pass all-feature/all-target checking. All six registered
+architecture gates pass. The unfiltered default library suites pass **2,025
+Engine, 1,823 Daemon, 1,693 Transport and 34 DATA tests**, with zero failures.
+Existing ignored populations are 33, 163, 15 and zero, respectively. Default and
+raw-JSON worker runs each pass 34 DATA, one worker unit and three stdio controls.
+Both unchanged pre-extraction stdio executables also pass their three controls
+against each new worker variant. Current raw-JSON parent oracles separately pass
+eight Engine and seven Transport controls.
+
+The ordinary worker package passes its strict all-target Clippy step, one unit
+test and three stdio controls; its build-only manifest emitter passes nine tests.
+The installed worker is 2,048,912 bytes and needs only glibc and its loader. Its
+combined launcher/worker runtime graph contains four store paths: worker,
+launcher, glibc and libseccomp. Independent inspection matches its 477 tree
+entries, 290 ELF records and actual store-reference edges. The source and vendor
+archives match their real derivation inputs. OpenSSL and SQLite declarations
+remain unchanged and are absent from this measured runtime graph.
+
+The shared vendor hash is refreshed from the actual new staging output. Exact
+lockfile guards remain enabled; canonical, captured, staging and realized vendor
+locks agree on 82 local and 639 registry packages. All registry checksum joins
+verify. Source identity is established independently of normalized output hashes.
+
+The fresh application gate passes compilation only: **180 freshly compiled test
+executables across 58 full Cargo package IDs**, including 71 integration targets.
+Final target compilation takes 9 minutes 6 seconds after prerequisites. Its
+audited capture has 10,757 files, 1,975 directories and 82 manifests. All 250
+owned changed paths are accounted for: 243 captured paths and seven excluded
+documentation/architecture roles. Two preserved unrelated ARM source files are
+also captured. The gate executes no tests and emits no Crucible unit-test ELF;
+Crucible's CLI, Daemon and worker remain compiler-excluded.
+
+The strict reference package still has substantial unused private implementation
+diagnostics. Installed Source/native readiness, backend parity, full RFC-0025
+qualification and new VM performance measurements remain outstanding. Subsequent
+Fresh15 proposals are separate from this tested checkpoint.
+
 ## Private seed and import-cleanup checkpoint
 
 Twenty Transport roles remove only verified unused private imports/reexports;
