@@ -1,5 +1,10 @@
 ##! Declares and derives a package-owned native effect from ordinary operator settings.
-{lib, config, package, ...}: {
+{
+  lib,
+  config,
+  package,
+  ...
+}: {
   options.aos.provenance.message = lib.mkOption {
     type = lib.types.str;
     default = "package-owned";

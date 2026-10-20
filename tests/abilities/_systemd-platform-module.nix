@@ -1,5 +1,5 @@
 ##! Test adapter for the authenticated systemd package module.
-args@{pkgs, ...}:
+args @ {pkgs, ...}:
 import ../../pkgs/system/_systemd-abilities/platform/system.nix (
   args
   // {
