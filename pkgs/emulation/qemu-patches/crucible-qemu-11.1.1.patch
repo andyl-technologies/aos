@@ -1,46 +1,42 @@
-From 31cf681571259f53f363ce7550d4db0a00d89841 Mon Sep 17 00:00:00 2001
+From 652fbfb40f97c912eecd2fd9b18b79f9ebd491c6 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:00 +0000
-Subject: [PATCH] Complete standalone cached-writer disposition declarations
+Subject: [PATCH] tests/unit: retain real CPU receipt geometry wrappers
 
-Retain the complete reviewed Crucible source integration, including the native
-fingerprint pipeline, required workers, readiness closing disposition, physical
-return journals, literal Source dependencies, selector component and exec-only
-OpenRISC importer correction. Preserve source licenses, upstream attributes,
-all existing assertions, controls, bounds and mandatory qualification gates.
+Retain the complete reviewed Crucible source, including bounded worker and
+factual CPU custody, typed pause return, readiness and physical-end journals,
+cached-writer declarations, Source closure, selector and pipeline/OpenRISC
+changes. Preserve all existing assertions, bounds, licenses and runtime gates.
 
-The standalone cached-writer fixture copies QemuThreadRamPauseTransaction from
-the real thread header. Its new end field embeds QemuRamPauseEndDisposition by
-value, so select that real typedef before the containing transaction. The
-shared assembly prefix supplies the normal fixture and all ten omission
-variants without inventing a layout or changing their bodies or assertions.
-The owning thread header is already pinned and tracked by the existing Meson
-inputs; the extractor itself is the command-file regeneration dependency.
-Other direct clients already include the real owning header before use.
+The actual startup-source unit linker reported missing CPU receipt bytes and
+alignment wrappers from its extracted cpu_allocation_identity_locked body.
+Select exactly those two existing realization definitions through the storage
+getter tuple. Each delegates to the already linked real QOM producer using
+sizeof or _Alignof the genuine private receipt. No copied layout, constant,
+weak provider or admission substitute is introduced.
 
-This is the exact reviewed two-line source correction atop the prior signed
-source tree, repackaged with only the pinned upstream base as parent. No further
-production or dependency changes are included. Source-only audits preserve
-all 147 declared hash edges, 117 distinct inputs and exact Source/Meson scope.
-No generator, model, build or execution test was run for this successor; the
-reported missing-type compile failure is addressed in source but compilation
-has not been rerun or claimed successful here.
+Refresh the primary helper's five incoming pins and the changed preexec-purpose
+helper's incoming pin. Existing Source inputs, roots, selected bodies and
+Meson dependency sets remain unchanged. SDK, production code and licensing
+remain byte-identical; only the two literal wrapper selections and six pins
+change. Package exactly the reviewed tree with pinned upstream as sole parent.
 
-Local source integrity does not establish provider, runtime, lifecycle,
-activation or performance qualification. Earlier Source-unit evidence reached
-118 PASS before incomplete genuine reserve_v7 role/provider rosters refused
-with EINVAL. Those original assertions and unresolved failure remain. Complete
-worker funding, allocator/TLS/TSD cleanup, real native census/disposition and
-matched module construction, readiness overlap, handoff, close, join and
-physical identity return remain unjoined. No accepting provider, capacity
-donation, legacy adapter, success substitute or test waiver is added.
+This source correction has not been generated, compiled, linked or executed
+here. The reported actual startup-unit LINK failure remains an execution gap;
+no complete link or test pass is claimed. The earlier bounded-thread correction
+compiled in the integrating check, which supplies no broader qualification.
 
-The mandatory genuine launched capture lifecycle still fails explicitly after
-component evidence. Actual Source/Root ownership, cursor/read/refusal,
-Original-post, rearm, ACK, sticky failure and physical cleanup remain required.
-Authored component detectors and source review cannot satisfy those gates.
-Preserve actual physical-end reentry, returned effect/post/unlock journals and
-negative-history terminalization obligations for genuine lifecycle execution.
+This is WIP local source integrity, not provider, runtime, lifecycle,
+activation, production or performance qualification. Earlier Source-unit
+evidence reached 118 PASS before incomplete genuine reserve_v7 role/provider
+rosters refused with EINVAL. Those assertions and failure remain. Genuine
+roles, matched providers, funding, task custody, census, allocator/TLS/TSD and
+selected positive CPU custody remain unjoined.
+
+The mandatory genuine launched capture lifecycle still fails explicitly.
+Actual cursor/refusal, Original/post, rearm, sticky failure and physical
+cleanup obligations remain; component controls cannot satisfy those gates.
+No support, preinit, activation, child reconstruction or fork grant is issued.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -64568,7 +64564,7 @@ index 890497b0d22ede109c03bcc24fbc3aa24b09e59c..5dd867c2d765690a2644af92a6520b8b
  
  int monitor_puts(Monitor *mon, const char *str);
 diff --git a/include/plugins/qemu-plugin.h b/include/plugins/qemu-plugin.h
-index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..759a6ac483c8b7d9f02220e9b50c8c1961602e88 100644
+index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..068bce0df0ec074f6f027c37a336aff412e0f189 100644
 --- a/include/plugins/qemu-plugin.h
 +++ b/include/plugins/qemu-plugin.h
 @@ -198,6 +198,326 @@ typedef void (*qemu_plugin_vcpu_discon_cb_t)(unsigned int vcpu_index,
@@ -67335,7 +67331,7 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..759a6ac483c8b7d9f02220e9b50c8c19
  
  /**
   * qemu_plugin_u64_set() - set value of a qemu_plugin_u64 for a given vcpu
-@@ -1353,15 +3225,3718 @@ uint64_t qemu_plugin_u64_get(qemu_plugin_u64 entry, unsigned int vcpu_index);
+@@ -1353,15 +3225,3756 @@ uint64_t qemu_plugin_u64_get(qemu_plugin_u64 entry, unsigned int vcpu_index);
   * @val: new value
   */
  QEMU_PLUGIN_API
@@ -68374,6 +68370,44 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..759a6ac483c8b7d9f02220e9b50c8c19
 +QEMU_PLUGIN_API
 +int qemu_plugin_crucible_required_worker_identity_return_v1(
 +    qemu_plugin_id_t id, struct QemuCrucibleRequiredWorker **holder);
++
++/* Same-birth native enrollment facts for the three actual Source workers.
++ * These independent snapshots issue no Source claim, role quiescence, child
++ * restart, activation or physical-return proof. Registry departure precedes
++ * possible TLS/TSD destruction; only the real successful join proves that end.
++ * Initialize schema_version=1 and struct_size=sizeof(*out). No output is
++ * written on identity/schema/size refusal. Existing worker status APIs retain
++ * their own layouts; neither an enrollment snapshot nor an older status grants
++ * admission. Only the Source-owned creator/entry transition may release work. */
++struct qemu_plugin_crucible_worker_enrollment_status_v1 {
++    uint32_t schema_version;
++    uint32_t struct_size;
++    uint64_t birth_generation;
++    int32_t native_enrollment_status;
++    int32_t entry_enrollment_status;
++    int32_t creator_enrollment_status;
++    int32_t enrollment_post_status;
++    int32_t registry_close_status;
++    int32_t registry_return_status;
++    int32_t registry_identity_return_status;
++    int32_t registry_identity_return_post_status;
++    uint32_t entry_enrollment_returned;
++    uint32_t native_enrollment_complete;
++    uint32_t registry_registered;
++    uint32_t registry_returned;
++    uint32_t native_closing;
++    uint32_t native_joined;
++    uint32_t native_identity_returned;
++};
++
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_required_worker_enrollment_observe_v1(
++    qemu_plugin_id_t id, struct QemuCrucibleRequiredWorker *worker,
++    struct qemu_plugin_crucible_worker_enrollment_status_v1 *out);
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_fingerprint_worker_enrollment_observe_v1(
++    qemu_plugin_id_t id, struct QemuCrucibleFingerprintWorker *worker,
++    struct qemu_plugin_crucible_worker_enrollment_status_v1 *out);
 +
 +/* Copied native journals only. Independent signed failures and known physical
 + * effects coexist; this status cannot issue a role or qualify a provider. */
@@ -73393,10 +73427,10 @@ index 0000000000000000000000000000000000000000..498d54da637e2c6aaf7a067ba1aa3ae2
 +#endif
 diff --git a/include/qemu/crucible-native-invocation.h b/include/qemu/crucible-native-invocation.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..e76645e14775afbf8e157120472599b0d69cb0ef
+index 0000000000000000000000000000000000000000..47877e4ac5900a76e47fb5cc82e64b18f8f64f6f
 --- /dev/null
 +++ b/include/qemu/crucible-native-invocation.h
-@@ -0,0 +1,436 @@
+@@ -0,0 +1,462 @@
 +/*
 + * Retained native callback provenance, private to QEMU.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -73431,6 +73465,8 @@ index 0000000000000000000000000000000000000000..e76645e14775afbf8e157120472599b0
 +    QEMU_CRUCIBLE_NATIVE_MAX_ADVANCE,
 +    QEMU_CRUCIBLE_NATIVE_CONTROL,
 +    QEMU_CRUCIBLE_NATIVE_UNQUALIFIED,
++    /* Factual actual CPU callback custody; not operation admission. */
++    QEMU_CRUCIBLE_NATIVE_VCPU_INIT,
 +};
 +
 +/* Both pools are included in the complete Source prebirth sizeof. Exhaustion
@@ -73487,6 +73523,8 @@ index 0000000000000000000000000000000000000000..e76645e14775afbf8e157120472599b0
 +    int first_status;
 +    int post_status;
 +    int return_status;
++    /* Independent factual invocation failures never poison installation. */
++    int first_invocation_status;
 +    bool reserved;
 +    bool effect_started;
 +    bool effect_finished;
@@ -73553,6 +73591,10 @@ index 0000000000000000000000000000000000000000..e76645e14775afbf8e157120472599b0
 +    QemuCrucibleStartupRuntimePurpose *runtime;
 +    QemuCrucibleCommandConsumerStorage *storage;
 +    QemuCrucibleCommandConsumerStorage **storage_holder;
++    struct CPUState *cpu;
++    struct QemuCrucibleCpuSourceAllocationOwner *cpu_owner;
++    struct QemuCrucibleCpuAllocationReceipt *cpu_receipt;
++    uint64_t cpu_generation;
 +    QemuThread thread;
 +    pid_t process;
 +    uint64_t process_generation;
@@ -73562,6 +73604,7 @@ index 0000000000000000000000000000000000000000..e76645e14775afbf8e157120472599b0
 +    unsigned int suppressed_children;
 +    enum QemuCrucibleNativeInvocationKind kind;
 +    bool live;
++    bool cpu_return_in_flight;
 +};
 +
 +/* Source alone creates and binds this inline holder under genuine prebirth
@@ -73642,12 +73685,23 @@ index 0000000000000000000000000000000000000000..e76645e14775afbf8e157120472599b0
 +typedef struct QemuCrucibleNativeGroupUse {
 +    QemuCrucibleNativeRegistration *record;
 +    QemuCrucibleNativeInvocationTicket mask;
++    QemuCrucibleNativeInvocationTicket invocation;
++    int invocation_status;
 +} QemuCrucibleNativeGroupUse;
 +
 +QemuCrucibleNativeGroupUse qemu_plugin_crucible_native_group_use_begin_context_v1(
 +    QemuCrucibleNativeRegistration *const *slot,
 +    QemuCrucibleNativeGroupContextDescriptorObserver observe, void *context,
 +    size_t member, QemuCrucibleNativeGroupDescriptorView *actual);
++
++/* Actual core VCPU_INIT only. cpu is a live QOM object supplied by core;
++ * current_cpu/membership, paid Source instance and the protected descriptor
++ * corroborate it. A factual frame grants no generic operation borrowing. */
++QemuCrucibleNativeGroupUse qemu_plugin_crucible_native_vcpu_init_use_begin_v1(
++    QemuCrucibleNativeRegistration *const *slot,
++    QemuCrucibleNativeGroupContextDescriptorObserver observe, void *context,
++    size_t member, struct CPUState *cpu,
++    QemuCrucibleNativeGroupDescriptorView *actual);
 +
 +/* Pure retained facts. A copy is neither an accepting group gate nor a
 + * lifetime return token; Source observes before its independent post. */
@@ -73661,6 +73715,8 @@ index 0000000000000000000000000000000000000000..e76645e14775afbf8e157120472599b0
 +    int first_status;
 +    int post_status;
 +    int return_status;
++    /* Independent factual invocation failures never poison installation. */
++    int first_invocation_status;
 +    bool reserved;
 +    bool effect_started;
 +    bool effect_finished;
@@ -73755,6 +73811,10 @@ index 0000000000000000000000000000000000000000..e76645e14775afbf8e157120472599b0
 +/* Source owns the release-published pointer to its permanent inline holder.
 + * The acquire-load is a callback-free, lock-free selection hint, not authority.
 + * The pointed-to process field is immutable before publication. */
++/* Prepared permanent holder, solely for same-thread parent suppression.
++ * It is never an activation selection or a Source operation issuer. */
++QemuCrucibleNativeInvocationRegistry *
++qemu_crucible_startup_source_native_dispatch_hint_v1(void);
 +QemuCrucibleNativeInvocationRegistry *
 +qemu_crucible_startup_source_native_selection_v1(void);
 +QemuCrucibleNativeInvocationRegistry *const *
@@ -76556,7 +76616,7 @@ index 758808b705e4b0bbbda1988c377f010ae179d3e1..bece818ef45e7be1e9c7dfcacfd5e3bf
  
  /*
 diff --git a/include/qemu/thread.h b/include/qemu/thread.h
-index 98cc5c41ac58e0cac5c60aa23de849e88ff676be..6ed5ad9422c6fd83e2caccb95581897344ec0227 100644
+index 98cc5c41ac58e0cac5c60aa23de849e88ff676be..caaad5da96e7c8f957c0fb26255b0957fdcfbe5f 100644
 --- a/include/qemu/thread.h
 +++ b/include/qemu/thread.h
 @@ -9,6 +9,7 @@ typedef struct QemuCond QemuCond;
@@ -76567,7 +76627,7 @@ index 98cc5c41ac58e0cac5c60aa23de849e88ff676be..6ed5ad9422c6fd83e2caccb955818973
  
  /*
   * QemuEvent
-@@ -218,6 +219,396 @@ G_NORETURN void qemu_thread_exit(void *retval);
+@@ -218,6 +219,450 @@ G_NORETURN void qemu_thread_exit(void *retval);
  void qemu_thread_set_name(const char *name);
  const char *qemu_thread_get_name(void);
  
@@ -76577,10 +76637,17 @@ index 98cc5c41ac58e0cac5c60aa23de849e88ff676be..6ed5ad9422c6fd83e2caccb955818973
 +/* Complete requested registry record and list-cell geometry. The enclosing
 + * constructor must supply its actual same-owner fee before either is born. */
 +size_t qemu_thread_hot_fork_record_storage_bytes(void);
++/* The distinct native retained-record head belongs to the fixed prebirth
++ * floor. Individual actual records remain in the dynamic bounded geometry. */
++size_t qemu_thread_bounded_registry_fixed_storage_bytes(void);
 +size_t qemu_thread_bounded_control_bytes(size_t name_bytes);
 +
-+/* Joinable thread on an already retained stack mapping. Failure before birth
-+ * returns a negative errno. A born thread and its stack remain caller-owned. */
++/* Joinable thread on an already retained stack mapping. The receipt starts
++ * zeroed and remains caller-owned through actual registry departure and join.
++ * It may be reused only after bounded_identity_return succeeds. The opaque
++ * argument is the exact retained native owner; it must be nonnull. Neither
++ * receipt nor actual birth supplies Source enrollment or fork permission.
++ * Failure before birth returns a negative errno; a born thread stays owned. */
 +typedef struct QemuThreadBoundedCreateReceipt {
 +    bool birth_attempted;
 +    bool born;
@@ -76590,12 +76657,59 @@ index 98cc5c41ac58e0cac5c60aa23de849e88ff676be..6ed5ad9422c6fd83e2caccb955818973
 +    int create_status;
 +    int mask_restore_status;
 +    int attr_destroy_status;
++    /* Native birth facts only, never a Source claim or fork disposition.
++     * Immutable identity is installed before pthread_create. Mutable registry
++     * facts are protected by the native thread registry lock. */
++    struct QemuThreadBoundedCreateReceipt *canonical_owner;
++    QemuThread *thread_owner;
++    QemuThread creator;
++    void *native_owner;
++    int64_t process_id;
++    /* Nonwrapping attempt generation of this exact native owner/cell. */
++    uint64_t birth_generation;
++    int enrollment_status;
++    int registry_return_status;
++    bool enrollment_complete;
++    bool registry_registered;
++    bool registry_returned;
++    bool closing;
++    bool joined;
++    bool joining;
++    bool identity_returned;
 +} QemuThreadBoundedCreateReceipt;
 +
 +int qemu_thread_create_bounded(QemuThread *thread, const char *name,
 +                              void *(*entry)(void *), void *opaque,
 +                              void *stack, size_t stack_bytes,
 +                              QemuThreadBoundedCreateReceipt *receipt);
++
++/* Exact same-birth observations. current is creator-only after create returns
++ * and refuses closed/departed owners. self_current instead requires the real
++ * just-born registry record on the calling thread; it alone works before the
++ * creator publishes pthread_create's result, without reading that output.
++ * Registry departure is not proof of TLS/TSD completion or physical join. */
++int qemu_thread_bounded_current(QemuThread *thread, void *native_owner,
++                               QemuThreadBoundedCreateReceipt *receipt);
++int qemu_thread_bounded_self_current(QemuThread *thread, void *native_owner,
++                                    QemuThreadBoundedCreateReceipt *receipt);
++/* Creator-only after create returns. Copied facts include close/return;
++ * close, tryjoin and identity_return are likewise creator-only.
++ * out is a distinct snapshot;
++ * its canonical pointer still names the original, so the copy cannot enroll. */
++int qemu_thread_bounded_observe(QemuThread *thread, void *native_owner,
++                               QemuThreadBoundedCreateReceipt *receipt,
++                               QemuThreadBoundedCreateReceipt *out);
++int qemu_thread_bounded_close(QemuThread *thread, void *native_owner,
++                             QemuThreadBoundedCreateReceipt *receipt);
++/* Performs the real nonblocking join; independent registry-return failure is
++ * retained in the receipt, not substituted for the actual join result. */
++int qemu_thread_bounded_tryjoin(QemuThread *thread, void *native_owner,
++                               QemuThreadBoundedCreateReceipt *receipt,
++                               void **result);
++/* No-birth or actual join plus definite registry departure only. Returning
++ * this native identity does not return any Source role, stack or task debt. */
++int qemu_thread_bounded_identity_return(QemuThread *thread, void *native_owner,
++                                       QemuThreadBoundedCreateReceipt *receipt);
 +
 +/* Linux nonblocking physical join; output is unchanged while not joined. */
 +int qemu_thread_tryjoin(QemuThread *thread, void **result);
@@ -77428,10 +77542,10 @@ index 1e2abe4032d589790eb4a83f1c083d8fffa5d561..e90f7d8debfd927ee4f673c718c7ab64
  
  void qstring_unref(QString *q);
 diff --git a/include/qom/object.h b/include/qom/object.h
-index 11f55613fcd085f58aed1c76b1d72a218fe5ff53..17574a8195557d9d8846f0dc95e5d1c973ba01e7 100644
+index 11f55613fcd085f58aed1c76b1d72a218fe5ff53..4454eca79a1cbf8389832f54aba09b316dad1c50 100644
 --- a/include/qom/object.h
 +++ b/include/qom/object.h
-@@ -2141,4 +2141,83 @@ char *object_property_help(const char *name, const char *type,
+@@ -2141,4 +2141,88 @@ char *object_property_help(const char *name, const char *type,
  
  G_DEFINE_AUTOPTR_CLEANUP_FUNC(Object, object_unref)
  
@@ -77479,6 +77593,11 @@ index 11f55613fcd085f58aed1c76b1d72a218fe5ff53..17574a8195557d9d8846f0dc95e5d1c9
 +    QemuCrucibleCpuAllocationRequest *request,
 +    const ObjectNativeAllocationOps *ops,
 +    QemuCrucibleCpuSourceAllocationOwner **out);
++/* Retained actual instance identity, independent of constructor expiry. The
++ * caller holds a real Object reference throughout this callback-free check. */
++int object_native_allocation_live_instance_current(
++    Object *instance, QemuCrucibleCpuSourceAllocationOwner *source_owner,
++    QemuCrucibleCpuAllocationReceipt *receipt, uint64_t generation);
 +int object_native_allocation_returned_current(
 +    QemuCrucibleCpuSourceAllocationOwner *source_owner);
 +int object_native_allocation_receipt_identity_return(
@@ -98462,7 +98581,7 @@ index eb982f9aad7f564314654723e70a5fd679c5256f..214ccc07a9b035db04de432017968ed3
  }
 -
 diff --git a/plugins/core.c b/plugins/core.c
-index 1113bfe5673c904bf0e5a50d03fca434a3d7bde7..eb12a5ad364bffd650058728d46c1f51f0230cca 100644
+index 1113bfe5673c904bf0e5a50d03fca434a3d7bde7..4b2e88310264a0ab73814d9e5dd2b9d367409e84 100644
 --- a/plugins/core.c
 +++ b/plugins/core.c
 @@ -15,6 +15,7 @@
@@ -98579,9 +98698,9 @@ index 1113bfe5673c904bf0e5a50d03fca434a3d7bde7..eb12a5ad364bffd650058728d46c1f51
 +            if (ev == QEMU_PLUGIN_EV_VCPU_INIT) {
 +                QemuCrucibleNativeGroupDescriptorView actual;
 +                QemuCrucibleNativeGroupUse use =
-+                    qemu_plugin_crucible_native_group_use_begin_context_v1(
++                    qemu_plugin_crucible_native_vcpu_init_use_begin_v1(
 +                        &cb->native_registration, plugin_vcpu_init_descriptor_observe,
-+                        cb, 0, &actual);
++                        cb, 0, cpu, &actual);
 +                qemu_plugin_vcpu_udata_cb_t init = actual.function;
 +
 +                if (init) {
@@ -101237,10 +101356,10 @@ index 0000000000000000000000000000000000000000..5be0b398ed73730aaaccef5270326e2c
 +}
 diff --git a/plugins/crucible-callback-publication.inc.h b/plugins/crucible-callback-publication.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..9b3ccd8a8078194e260a9d209ea0e0834146556c
+index 0000000000000000000000000000000000000000..5fa429333eac7974d7272a2839c089758c8ac057
 --- /dev/null
 +++ b/plugins/crucible-callback-publication.inc.h
-@@ -0,0 +1,817 @@
+@@ -0,0 +1,826 @@
 +/*
 + * Retained Source child publication and permanent native holder custody
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -101385,6 +101504,9 @@ index 0000000000000000000000000000000000000000..9b3ccd8a8078194e260a9d209ea0e083
 +    native->initialized = true;
 +    callbacks->native_preparing = false;
 +    callbacks->native_prepared = true;
++    /* Paid permanent holder discovery lets unknown nested callbacks suppress
++     * factual frames. Runtime selection and bound admission stay separate. */
++    qatomic_store_release(&callbacks->dispatch_hint, native);
 +    qemu_mutex_unlock(&commands->mutex);
 +    return 0;
 +}
@@ -101892,6 +102014,12 @@ index 0000000000000000000000000000000000000000..9b3ccd8a8078194e260a9d209ea0e083
 +#else
 +    return -ENOTSUP;
 +#endif
++}
++
++QemuCrucibleNativeInvocationRegistry *
++qemu_crucible_startup_source_native_dispatch_hint_v1(void)
++{
++    return qatomic_load_acquire(&startup_source.callbacks.dispatch_hint);
 +}
 +
 +QemuCrucibleNativeInvocationRegistry *
@@ -148193,10 +148321,10 @@ index 0000000000000000000000000000000000000000..69dba27cb08fa26f74d985c06994aef4
 +type_init(crucible_fault_register_abi_handlers)
 diff --git a/plugins/crucible-fingerprint-worker.inc.h b/plugins/crucible-fingerprint-worker.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..1cf361a97922529ee8b1808494187e974f494915
+index 0000000000000000000000000000000000000000..a0211bc0424e00097ffcee2ad42febebafdd9d8b
 --- /dev/null
 +++ b/plugins/crucible-fingerprint-worker.inc.h
-@@ -0,0 +1,1446 @@
+@@ -0,0 +1,1456 @@
 +/*
 + * Source-owned fingerprint worker construction and physical byte custody
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -149584,6 +149712,16 @@ index 0000000000000000000000000000000000000000..1cf361a97922529ee8b1808494187e97
 +                                  projection, runtime_field);
 +}
 +
++int qemu_plugin_crucible_fingerprint_worker_enrollment_observe_v1(
++    qemu_plugin_id_t id, QemuCrucibleFingerprintWorker *worker,
++    struct qemu_plugin_crucible_worker_enrollment_status_v1 *out)
++{
++    if (worker != &startup_source.fingerprint_worker) {
++        return -EPERM;
++    }
++    return plugin_worker_enrollment_observe(id, &worker->native, out);
++}
++
 +int qemu_plugin_crucible_fingerprint_worker_observe_v2(
 +    qemu_plugin_id_t id, QemuCrucibleFingerprintWorker *worker,
 +    struct qemu_plugin_crucible_fingerprint_worker_status_v2 *out)
@@ -149822,10 +149960,10 @@ index 0000000000000000000000000000000000000000..e8d98a0beb68a58aed72e673fb28070c
 +}
 diff --git a/plugins/crucible-native-invocation.c b/plugins/crucible-native-invocation.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..1abddb9fce59811e6504a65c550c0ae288a6846b
+index 0000000000000000000000000000000000000000..4e8588aecbba8a6193893134d7cc0c25fec53dec
 --- /dev/null
 +++ b/plugins/crucible-native-invocation.c
-@@ -0,0 +1,2066 @@
+@@ -0,0 +1,2285 @@
 +/*
 + * Native entered-callback lifetime and factual physical-use association.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -149839,6 +149977,13 @@ index 0000000000000000000000000000000000000000..1abddb9fce59811e6504a65c550c0ae2
 +#endif
 +
 +extern struct qemu_plugin_state plugin;
++
++#if defined(CONFIG_LINUX) && !defined(CONFIG_USER_ONLY)
++static QemuCrucibleNativeInvocationTicket native_vcpu_init_enter(
++    QemuCrucibleNativeRegistration *record, CPUState *cpu,
++    QemuCrucibleCpuSourceAllocationOwner *owner,
++    QemuCrucibleCpuAllocationReceipt *receipt, uint64_t generation, int *status);
++#endif
 +
 +size_t qemu_plugin_crucible_native_registry_bytes_v1(void)
 +{
@@ -149962,6 +150107,15 @@ index 0000000000000000000000000000000000000000..1abddb9fce59811e6504a65c550c0ae2
 +{
 +#ifndef CONFIG_USER_ONLY
 +    return qemu_crucible_startup_source_native_selection_v1();
++#else
++    return NULL;
++#endif
++}
++
++static QemuCrucibleNativeInvocationRegistry *native_dispatch_hint(void)
++{
++#ifndef CONFIG_USER_ONLY
++    return qemu_crucible_startup_source_native_dispatch_hint_v1();
 +#else
 +    return NULL;
 +#endif
@@ -150558,6 +150712,7 @@ index 0000000000000000000000000000000000000000..1abddb9fce59811e6504a65c550c0ae2
 +            .first_status = group->first_status,
 +            .post_status = group->post_status,
 +            .return_status = group->return_status,
++            .first_invocation_status = group->first_invocation_status,
 +            .reserved = group->reserved,
 +            .effect_started = group->effect_started,
 +            .effect_finished = group->effect_finished,
@@ -150827,15 +150982,82 @@ index 0000000000000000000000000000000000000000..1abddb9fce59811e6504a65c550c0ae2
 +    return use;
 +}
 +
++#if defined(CONFIG_LINUX) && !defined(CONFIG_USER_ONLY)
++/* plugin.lock owns membership. The actual CPU producer also corroborates its
++ * execution context; an arbitrary index or another thread cannot supply it. */
++static bool vcpu_init_cpu_current_locked(CPUState *cpu)
++{
++    gpointer key, value;
++
++    return cpu && current_cpu == cpu &&
++        cpu->cpu_index != UNASSIGNED_CPU_INDEX && plugin.cpu_ht &&
++        g_hash_table_lookup_extended(plugin.cpu_ht, &cpu->cpu_index, &key, &value) &&
++        key == &cpu->cpu_index && value == &cpu->cpu_index;
++}
++#endif
++
++QemuCrucibleNativeGroupUse qemu_plugin_crucible_native_vcpu_init_use_begin_v1(
++    QemuCrucibleNativeRegistration *const *slot,
++    QemuCrucibleNativeGroupContextDescriptorObserver observe, void *context,
++    size_t member, CPUState *cpu, QemuCrucibleNativeGroupDescriptorView *actual)
++{
++    QemuCrucibleNativeGroupUse use =
++        qemu_plugin_crucible_native_group_use_begin_context_v1(
++            slot, observe, context, member, actual);
++#if defined(CONFIG_LINUX) && !defined(CONFIG_USER_ONLY)
++    QemuCrucibleCpuSourceAllocationOwner *owner = NULL;
++    QemuCrucibleCpuAllocationReceipt *receipt = NULL;
++    uint64_t generation = 0;
++    bool pinned = false;
++
++    if (!use.record) {
++        use.invocation_status = -ENOENT;
++        return use;
++    }
++    use.invocation_status = -EPERM;
++    if (cpu && object_dynamic_cast(OBJECT(cpu), TYPE_CPU)) {
++        qemu_rec_mutex_lock(&plugin.lock);
++        if (vcpu_init_cpu_current_locked(cpu)) {
++            object_ref(OBJECT(cpu));
++            pinned = true;
++        }
++        qemu_rec_mutex_unlock(&plugin.lock);
++    }
++    if (pinned) {
++        use.invocation_status =
++            qemu_crucible_startup_source_cpu_instance_identity_v1(
++                OBJECT(cpu), &owner, &receipt, &generation);
++        if (!use.invocation_status) {
++            use.invocation = native_vcpu_init_enter(use.record, cpu, owner,
++                receipt, generation, &use.invocation_status);
++        }
++        if (!use.invocation.frame) {
++            object_unref(OBJECT(cpu));
++        }
++    }
++    /* The real pinned group survives every refused factual observation.
++     * Installation's first/post/return journals keep their original meaning. */
++    qemu_mutex_lock(&use.record->owner->mutex);
++    if (use.invocation_status && !use.record->group->first_invocation_status) {
++        use.record->group->first_invocation_status = use.invocation_status;
++    }
++    qemu_mutex_unlock(&use.record->owner->mutex);
++#else
++    use.invocation_status = -ENOTSUP;
++#endif
++    return use;
++}
++
 +void qemu_plugin_crucible_native_group_use_end_v1(QemuCrucibleNativeGroupUse use)
 +{
++    qemu_plugin_crucible_native_exit_v1(use.invocation);
++    qemu_plugin_crucible_native_exit_v1(use.mask);
 +    if (use.record && registry_process_current(use.record->owner, getpid())) {
 +        qemu_mutex_lock(&use.record->owner->mutex);
 +        assert(use.record->references);
 +        use.record->references--;
 +        qemu_mutex_unlock(&use.record->owner->mutex);
 +    }
-+    qemu_plugin_crucible_native_exit_v1(use.mask);
 +}
 +
 +/* Source authenticates the actual retained registrar before any Native or
@@ -151281,6 +151503,8 @@ index 0000000000000000000000000000000000000000..1abddb9fce59811e6504a65c550c0ae2
 +        if (frame->canonical_owner || frame->owner || frame->child_owner ||
 +            frame->registration || frame->ctx || frame->module || frame->runtime ||
 +            frame->storage || frame->storage_holder || frame->serial ||
++            frame->cpu || frame->cpu_owner || frame->cpu_receipt ||
++            frame->cpu_generation || frame->cpu_return_in_flight ||
 +            frame->live || frame->use_references || frame->suppressed_children) {
 +            status = -EBUSY;
 +        }
@@ -151458,24 +151682,124 @@ index 0000000000000000000000000000000000000000..1abddb9fce59811e6504a65c550c0ae2
 +    return NULL;
 +}
 +
-+static void frame_reclaim_locked(QemuCrucibleNativeInvocation *frame)
++static CPUState *frame_reclaim_locked(QemuCrucibleNativeInvocation *frame)
 +{
-+    if (!frame->live && !frame->use_references &&
-+        !frame->suppressed_children) {
-+        if (frame->registration) {
-+            assert(frame->registration->references);
-+            frame->registration->references--;
-+        }
-+        *frame = (QemuCrucibleNativeInvocation) { 0 };
++    if (frame->live || frame->use_references || frame->suppressed_children ||
++        frame->cpu_return_in_flight) {
++        return NULL;
 +    }
++    if (frame->cpu) {
++        /* Keep the slot and descriptor pin through the real unlocked unref.
++         * Terminal census and pool reuse must still see this physical effect. */
++        frame->cpu_return_in_flight = true;
++        return frame->cpu;
++    }
++    if (frame->registration) {
++        assert(frame->registration->references);
++        frame->registration->references--;
++    }
++    *frame = (QemuCrucibleNativeInvocation) { 0 };
++    return NULL;
 +}
++
++#if defined(CONFIG_LINUX) && !defined(CONFIG_USER_ONLY)
++static QemuCrucibleNativeInvocationTicket native_vcpu_init_enter(
++    QemuCrucibleNativeRegistration *record, CPUState *cpu,
++    QemuCrucibleCpuSourceAllocationOwner *owner,
++    QemuCrucibleCpuAllocationReceipt *receipt, uint64_t generation, int *status)
++{
++    QemuCrucibleNativeInvocationTicket ticket = { 0 };
++    QemuCrucibleNativeInvocationRegistry *registry = record->owner;
++    QemuCrucibleNativeRegistrationGroup *group = record->group;
++    QemuCrucibleNativeInvocation *frame = NULL;
++    QemuThread thread;
++    pid_t process = getpid();
++
++    *status = -EPERM;
++    if (!registry_process_current(registry, process) ||
++        native_dispatch_hint() != registry || !owner || !receipt || !generation) {
++        return ticket;
++    }
++    qemu_thread_get_self(&thread);
++    qemu_rec_mutex_lock(&plugin.lock);
++    qemu_mutex_lock(&registry->mutex);
++    /* The real transient record user and Object ref already own both physical
++     * lifetimes. Recheck withdrawal, exact membership and descriptor publication
++     * after the unlocked Source identity observation. */
++    if (!registry_identity_locked(registry, process) || registry->revoked ||
++        !vcpu_init_cpu_current_locked(cpu) ||
++        !group_identity_locked(registry, group) || group->terminal ||
++        group->kind != QEMU_CRUCIBLE_NATIVE_GROUP_VCPU_INIT || !group->complete ||
++        group->member_count != 1 || group->members != record ||
++        !group->module_retained || !record->descriptor_retained ||
++        !record->source_authenticated || !record->references ||
++        record->owner != registry || record->ctx != registry->ctx ||
++        record->module != registry->module ||
++        record->kind != QEMU_CRUCIBLE_NATIVE_REGISTERED ||
++        record->publication_serial != group->publication_serial ||
++        record->registrar_serial != group->registrar_serial ||
++        record->child_owner != group->child_owner ||
++        record->child_owner != registry->child_owner ||
++        !registry->child_registration_seen || !group_descriptor_current_locked(record)) {
++        *status = -ESTALE;
++    } else if (registry->serial == UINT64_MAX || record->references == UINT_MAX) {
++        *status = -EOVERFLOW;
++    } else {
++        for (size_t index = 0; index < ARRAY_SIZE(registry->frames); index++) {
++            if (!registry->frames[index].canonical_owner) {
++                frame = &registry->frames[index];
++                break;
++            }
++        }
++        *status = frame ? 0 : -ENOSPC;
++    }
++    if (frame) {
++        /* Physical pins transfer into the fixed paid slot before publication.
++         * This kind is deliberately excluded from generic operation borrowing. */
++        *frame = (QemuCrucibleNativeInvocation) {
++            .owner = registry,
++            .canonical_owner = frame,
++            .registration = record,
++            .child_owner = record->child_owner,
++            .coordinate = record->coordinate,
++            .function = record->function,
++            .userdata = record->userdata,
++            .ctx = registry->ctx,
++            .module = registry->module,
++            .runtime = registry->runtime,
++            .storage = registry->storage,
++            .storage_holder = registry->storage_holder,
++            .cpu = cpu,
++            .cpu_owner = owner,
++            .cpu_receipt = receipt,
++            .cpu_generation = generation,
++            .thread = thread,
++            .process = process,
++            .process_generation = registry->process_generation,
++            .account_generation = registry->account_generation,
++            .serial = ++registry->serial,
++            .kind = QEMU_CRUCIBLE_NATIVE_VCPU_INIT,
++            .live = true,
++        };
++        record->references++;
++        ticket = (QemuCrucibleNativeInvocationTicket) {
++            .registry = registry, .frame = frame, .serial = frame->serial,
++        };
++        qatomic_store_release(&registry->active_frame_hint,
++                             qatomic_read(&registry->active_frame_hint) + 1);
++    }
++    qemu_mutex_unlock(&registry->mutex);
++    qemu_rec_mutex_unlock(&plugin.lock);
++    return ticket;
++}
++#endif
 +
 +QemuCrucibleNativeInvocationTicket qemu_plugin_crucible_native_enter_v1(
 +    struct qemu_plugin_ctx *ctx, const void *coordinate, void *function,
 +    void *userdata, enum QemuCrucibleNativeInvocationKind kind)
 +{
 +    QemuCrucibleNativeInvocationTicket ticket = { 0 };
-+    QemuCrucibleNativeInvocationRegistry *registry = native_selection();
++    QemuCrucibleNativeInvocationRegistry *registry = native_dispatch_hint();
 +    QemuCrucibleNativeRegistration *record = NULL;
 +    QemuCrucibleNativeInvocation *parent, *frame = NULL;
 +    QemuThread thread;
@@ -151506,7 +151830,8 @@ index 0000000000000000000000000000000000000000..1abddb9fce59811e6504a65c550c0ae2
 +
 +    parent = top_locked(registry);
 +    if (kind != QEMU_CRUCIBLE_NATIVE_UNQUALIFIED &&
-+        registry_current_locked(registry, process)) {
++        kind != QEMU_CRUCIBLE_NATIVE_VCPU_INIT &&
++        native_selection() == registry && registry_current_locked(registry, process)) {
 +        record = registration_locked(registry, coordinate, function, userdata, kind);
 +    }
 +    /* Context and callback arguments corroborate the retained descriptor;
@@ -151593,10 +151918,28 @@ index 0000000000000000000000000000000000000000..1abddb9fce59811e6504a65c550c0ae2
 +    return 0;
 +}
 +
++/* The fixed slot and descriptor remain retained until the actual Object pin
++ * return completes, including any QOM finalizers run by object_unref. */
++static void frame_cpu_pin_return(QemuCrucibleNativeInvocationTicket ticket,
++                                 CPUState *cpu)
++{
++    QemuCrucibleNativeInvocationRegistry *registry = ticket.registry;
++    QemuCrucibleNativeInvocation *frame = ticket.frame;
++
++    object_unref(OBJECT(cpu));
++    qemu_mutex_lock(&registry->mutex);
++    assert(!frame_identity_locked(registry, frame, ticket.serial, getpid()));
++    assert(frame->cpu_return_in_flight && frame->cpu == cpu);
++    frame->cpu = NULL;
++    frame->cpu_return_in_flight = false;
++    frame_reclaim_locked(frame);
++    qemu_mutex_unlock(&registry->mutex);
++}
++
 +QemuCrucibleNativeInvocationTicket qemu_plugin_crucible_native_mask_v1(
 +    const void *coordinate, void *function, void *userdata)
 +{
-+    QemuCrucibleNativeInvocationRegistry *registry = native_selection();
++    QemuCrucibleNativeInvocationRegistry *registry = native_dispatch_hint();
 +
 +    /* Unknown ownership cannot inherit a selected parent. The hint only
 +     * avoids native work when no selected parent can exist; it grants nothing. */
@@ -151610,6 +151953,7 @@ index 0000000000000000000000000000000000000000..1abddb9fce59811e6504a65c550c0ae2
 +void qemu_plugin_crucible_native_exit_v1(QemuCrucibleNativeInvocationTicket ticket)
 +{
 +    QemuCrucibleNativeInvocationRegistry *registry;
++    CPUState *release_cpu = NULL;
 +    pid_t process;
 +
 +    if (!ticket.frame) {
@@ -151636,9 +151980,12 @@ index 0000000000000000000000000000000000000000..1abddb9fce59811e6504a65c550c0ae2
 +            qatomic_store_release(&registry->active_frame_hint,
 +                                 qatomic_read(&registry->active_frame_hint) - 1);
 +        }
-+        frame_reclaim_locked(ticket.frame);
++        release_cpu = frame_reclaim_locked(ticket.frame);
 +    }
 +    qemu_mutex_unlock(&registry->mutex);
++    if (release_cpu) {
++        frame_cpu_pin_return(ticket, release_cpu);
++    }
 +}
 +
 +int qemu_plugin_crucible_native_use_borrow_v1(
@@ -151664,6 +152011,7 @@ index 0000000000000000000000000000000000000000..1abddb9fce59811e6504a65c550c0ae2
 +    qemu_mutex_lock(&registry->mutex);
 +    frame = top_locked(registry);
 +    if (frame && registry_current_locked(registry, process) &&
++        frame->kind != QEMU_CRUCIBLE_NATIVE_VCPU_INIT &&
 +        !frame->suppressed_children && frame->storage == storage &&
 +        (!frame->registration || frame->registration->active)) {
 +        if (frame->use_references == UINT_MAX) {
@@ -151697,6 +152045,7 @@ index 0000000000000000000000000000000000000000..1abddb9fce59811e6504a65c550c0ae2
 +    status = frame_identity_locked(registry, frame, serial, process);
 +    if (!status && (!registry_current_locked(registry, process) ||
 +                    !frame->live || !frame->use_references ||
++                    frame->kind == QEMU_CRUCIBLE_NATIVE_VCPU_INIT ||
 +                    frame->suppressed_children || frame != top_locked(registry) ||
 +                    frame->storage != storage ||
 +                    (frame->registration && !frame->registration->active))) {
@@ -151710,6 +152059,8 @@ index 0000000000000000000000000000000000000000..1abddb9fce59811e6504a65c550c0ae2
 +    QemuCrucibleNativeInvocation **projection, uint64_t serial)
 +{
 +    QemuCrucibleNativeInvocationRegistry *registry = native_registry(false);
++    CPUState *release_cpu = NULL;
++    QemuCrucibleNativeInvocationTicket returned = { 0 };
 +    pid_t process = getpid();
 +    int status;
 +
@@ -151731,11 +152082,17 @@ index 0000000000000000000000000000000000000000..1abddb9fce59811e6504a65c550c0ae2
 +    if (!status) {
 +        QemuCrucibleNativeInvocation *frame = *projection;
 +
++        returned = (QemuCrucibleNativeInvocationTicket) {
++            .registry = registry, .frame = frame, .serial = serial,
++        };
 +        frame->use_references--;
 +        *projection = NULL;
-+        frame_reclaim_locked(frame);
++        release_cpu = frame_reclaim_locked(frame);
 +    }
 +    qemu_mutex_unlock(&registry->mutex);
++    if (release_cpu) {
++        frame_cpu_pin_return(returned, release_cpu);
++    }
 +    return status;
 +}
 +
@@ -160840,10 +161197,10 @@ index 0000000000000000000000000000000000000000..56e7923907c8519e4999fb98608e1136
 +}
 diff --git a/plugins/crucible-plugin-worker.inc.h b/plugins/crucible-plugin-worker.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..88c71882ddf0737b567f741b6e20ab6ba808fd8a
+index 0000000000000000000000000000000000000000..9b8732a6b4bc5c4aa8319792c00082cf28f9d2f0
 --- /dev/null
 +++ b/plugins/crucible-plugin-worker.inc.h
-@@ -0,0 +1,985 @@
+@@ -0,0 +1,1108 @@
 +/*
 + * Shared Source-owned native lifetime for fingerprint, RUN and teardown workers
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -161385,14 +161742,19 @@ index 0000000000000000000000000000000000000000..88c71882ddf0737b567f741b6e20ab6b
 +{
 +    QemuCruciblePluginWorker *worker = opaque;
 +    QemuCrucibleCommandConsumerRegistry *commands = &startup_source.commands;
-+    int status = -ECANCELED;
++    int status = qemu_thread_bounded_self_current(&worker->thread, worker,
++                                                 &worker->birth);
 +
 +    qemu_mutex_lock(&commands->mutex);
++    worker->enrollment_status = status;
++    worker->enrollment_returned = true;
++    qemu_cond_broadcast(&worker->wake);
 +    while (!worker->entry_released) {
 +        qemu_cond_wait(&worker->wake, &commands->mutex);
 +    }
-+    if (worker->birth.born && qemu_thread_is_self(&worker->thread) &&
-+        worker->entry_allowed && !worker->closing && worker->initialized &&
++    status = status ? status : -ECANCELED;
++    if (!worker->enrollment_status && worker->birth.born &&
++        qemu_thread_is_self(&worker->thread) && worker->entry_allowed && !worker->closing && worker->initialized &&
 +        worker->owning_alias && !plugin_worker_identity(worker)) {
 +        worker->entry_entered = true;
 +        if (worker == &startup_source.run_worker.native) {
@@ -161438,6 +161800,38 @@ index 0000000000000000000000000000000000000000..88c71882ddf0737b567f741b6e20ab6b
 +            worker->layout.stack_bytes, &worker->stack_charge);
 +    }
 +    worker->funding_status = status;
++    return status;
++}
++
++static int plugin_worker_enrollment(qemu_plugin_id_t id,
++                                    QemuCruciblePluginWorker *worker)
++{
++    uint64_t bounded_ns;
++    int status;
++
++    for (;;) {
++        /* Query this same genuine Setup Original outside the native locks.
++         * A timeout/refusal keeps the actual born owner for close and join. */
++        status = qemu_plugin_crucible_startup_source_query_slice_v1(id, &bounded_ns);
++        if (status) {
++            break;
++        }
++        qemu_mutex_lock(&startup_source.commands.mutex);
++        if (worker->enrollment_returned) {
++            status = worker->enrollment_status;
++            qemu_mutex_unlock(&startup_source.commands.mutex);
++            break;
++        }
++        qemu_cond_timedwait(&worker->wake, &startup_source.commands.mutex,
++            MIN(bounded_ns / 1000000 + !!(bounded_ns % 1000000), INT_MAX));
++        qemu_mutex_unlock(&startup_source.commands.mutex);
++    }
++    if (!status) {
++        status = qemu_thread_bounded_current(&worker->thread, worker, &worker->birth);
++    }
++    worker->enrollment_admission_status = status;
++    /* An independent post cannot erase the actual enrollment result. */
++    plugin_worker_stage_post(worker, &worker->enrollment_post_status);
 +    return status;
 +}
 +
@@ -161491,6 +161885,11 @@ index 0000000000000000000000000000000000000000..88c71882ddf0737b567f741b6e20ab6b
 +            worker->task_return_status = returned;
 +        }
 +        status = status ? status : returned;
++    }
++    if (worker->birth.born) {
++        int enrollment = plugin_worker_enrollment(id, worker);
++
++        status = status ? status : enrollment;
 +    }
 +    worker->first_status = status;
 +    plugin_worker_post(worker);
@@ -161546,7 +161945,18 @@ index 0000000000000000000000000000000000000000..88c71882ddf0737b567f741b6e20ab6b
 +        qemu_cond_broadcast(&worker->wake);
 +    }
 +    qemu_mutex_unlock(&startup_source.commands.mutex);
++    if (admitted && worker->birth.born) {
++        int registry = qemu_thread_bounded_close(&worker->thread, worker,
++                                                 &worker->birth);
++
++        if (registry && !worker->registry_close_status) {
++            worker->registry_close_status = registry;
++        }
++        status = status ? status : registry;
++    }
 +    if (invoke) {
++        int preclose = status;
++
 +        status = worker->close(worker, owning_alias);
 +        qemu_mutex_lock(&startup_source.commands.mutex);
 +        worker->close_status = status;
@@ -161556,6 +161966,7 @@ index 0000000000000000000000000000000000000000..88c71882ddf0737b567f741b6e20ab6b
 +            worker->first_status = status;
 +        }
 +        qemu_mutex_unlock(&startup_source.commands.mutex);
++        status = preclose ? preclose : status;
 +    }
 +    if (admitted && worker != &startup_source.fingerprint_worker.native) {
 +        int post = plugin_worker_post(worker);
@@ -161606,7 +162017,8 @@ index 0000000000000000000000000000000000000000..88c71882ddf0737b567f741b6e20ab6b
 +    if (worker->birth.born && !worker->joined) {
 +        void *physical_result;
 +
-+        status = qemu_thread_tryjoin(&worker->thread, &physical_result);
++        status = qemu_thread_bounded_tryjoin(&worker->thread, worker,
++                                             &worker->birth, &physical_result);
 +        qemu_mutex_lock(&startup_source.commands.mutex);
 +        worker->join_status = status;
 +        if (!status) {
@@ -161731,6 +162143,22 @@ index 0000000000000000000000000000000000000000..88c71882ddf0737b567f741b6e20ab6b
 +        }
 +        status = retired;
 +    }
++    if (!status && worker->birth.canonical_owner &&
++        !worker->birth.identity_returned) {
++        int returned = qemu_thread_bounded_identity_return(&worker->thread,
++                                                          worker, &worker->birth);
++
++        if (returned && !worker->registry_identity_return_status) {
++            worker->registry_identity_return_status = returned;
++        }
++        status = returned;
++        if (!returned && worker != &startup_source.fingerprint_worker.native) {
++            int post = plugin_worker_stage_post(worker,
++                &worker->registry_identity_return_post_status);
++
++            independent_post = independent_post ? independent_post : post;
++        }
++    }
 +    qemu_mutex_lock(&startup_source.commands.mutex);
 +    if (!status && !worker->stack && !worker->stack_charge.held &&
 +        !worker->owning_alias && !worker->task_reserved &&
@@ -161794,6 +162222,58 @@ index 0000000000000000000000000000000000000000..88c71882ddf0737b567f741b6e20ab6b
 +        }
 +    }
 +    return status;
++}
++
++static int plugin_worker_enrollment_observe(qemu_plugin_id_t id,
++    QemuCruciblePluginWorker *worker,
++    struct qemu_plugin_crucible_worker_enrollment_status_v1 *out)
++{
++    QemuThreadBoundedCreateReceipt facts = { 0 };
++    int status;
++
++    if (!plugin_worker_slot(worker) || !worker->attempted || !out ||
++        id != startup_source.saved.plugin_id || !startup_owner() ||
++        callback_child_output_overlap(out, sizeof(*out), &startup_source,
++                                      sizeof(startup_source))) {
++        return -EPERM;
++    }
++    if (fingerprint_output_workspace_overlap(out, sizeof(*out)) ||
++        out->schema_version != 1 || out->struct_size != sizeof(*out)) {
++        return -EINVAL;
++    }
++    /* Native registry facts use its own mutex, never the Source mutex. These
++     * are independent observations, not an atomic activation/return receipt. */
++    if (worker->birth.canonical_owner) {
++        status = qemu_thread_bounded_observe(&worker->thread, worker,
++                                             &worker->birth, &facts);
++        if (status) {
++            return status;
++        }
++    }
++    qemu_mutex_lock(&startup_source.commands.mutex);
++    *out = (struct qemu_plugin_crucible_worker_enrollment_status_v1) {
++        .schema_version = 1,
++        .struct_size = sizeof(*out),
++        .birth_generation = facts.birth_generation,
++        .native_enrollment_status = facts.enrollment_status,
++        .entry_enrollment_status = worker->enrollment_status,
++        .creator_enrollment_status = worker->enrollment_admission_status,
++        .enrollment_post_status = worker->enrollment_post_status,
++        .registry_close_status = worker->registry_close_status,
++        .registry_return_status = facts.registry_return_status,
++        .registry_identity_return_status = worker->registry_identity_return_status,
++        .registry_identity_return_post_status =
++            worker->registry_identity_return_post_status,
++        .entry_enrollment_returned = worker->enrollment_returned,
++        .native_enrollment_complete = facts.enrollment_complete,
++        .registry_registered = facts.registry_registered,
++        .registry_returned = facts.registry_returned,
++        .native_closing = facts.closing,
++        .native_joined = facts.joined,
++        .native_identity_returned = facts.identity_returned,
++    };
++    qemu_mutex_unlock(&startup_source.commands.mutex);
++    return 0;
 +}
 +
 +static int plugin_worker_identity_return(qemu_plugin_id_t id,
@@ -165010,10 +165490,10 @@ index 0000000000000000000000000000000000000000..85e0007223fe4cedc5bd88b561174bdc
 +}
 diff --git a/plugins/crucible-ram-control.inc.h b/plugins/crucible-ram-control.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..896327eb90215e0da805b8143d59a8e62156b30e
+index 0000000000000000000000000000000000000000..c7c31159fb37a0afa186d852ea1c47cd98583d7e
 --- /dev/null
 +++ b/plugins/crucible-ram-control.inc.h
-@@ -0,0 +1,2150 @@
+@@ -0,0 +1,2162 @@
 +/*
 + * Partial sole-actor construction and bounded native receipt
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -166094,7 +166574,8 @@ index 0000000000000000000000000000000000000000..896327eb90215e0da805b8143d59a8e6
 +            return ram_control_failure(actor, -EINPROGRESS, true);
 +        }
 +        actor->join_attempted = true;
-+        status = qemu_thread_tryjoin(&actor->thread, &returned);
++        status = qemu_thread_bounded_tryjoin(&actor->thread, actor,
++                                             &actor->creation_receipt, &returned);
 +        actor->join_result = status;
 +        actor->join_errno = status < 0 ? -status : 0;
 +        if (!status) {
@@ -166167,6 +166648,11 @@ index 0000000000000000000000000000000000000000..896327eb90215e0da805b8143d59a8e6
 +        actor->first_status || actor->post_status || actor->entry_status ||
 +        actor->incarnation == UINT64_MAX) {
 +        return -EINPROGRESS;
++    }
++    status = qemu_thread_bounded_identity_return(&actor->thread, actor,
++                                                 &actor->creation_receipt);
++    if (status) {
++        return ram_control_failure(actor, status, true);
 +    }
 +    original->rearm_attempted = true;
 +    /* Exactly the retired physical incarnation's transient publication fields
@@ -166276,7 +166762,8 @@ index 0000000000000000000000000000000000000000..896327eb90215e0da805b8143d59a8e6
 +        return actor->joined ? -EALREADY : -EPERM;
 +    }
 +    actor->join_attempted = true;
-+    status = qemu_thread_tryjoin(&actor->thread, &returned);
++    status = qemu_thread_bounded_tryjoin(&actor->thread, actor,
++                                             &actor->creation_receipt, &returned);
 +    actor->join_result = status;
 +    actor->join_errno = status < 0 ? -status : 0;
 +    if (status) {
@@ -166292,6 +166779,11 @@ index 0000000000000000000000000000000000000000..896327eb90215e0da805b8143d59a8e6
 +    }
 +    /* Successful join establishes physical stack retirement eligibility,
 +     * independently from entry status or retained pending event custody. */
++    status = qemu_thread_bounded_identity_return(&actor->thread, actor,
++                                                 &actor->creation_receipt);
++    if (status) {
++        return ram_control_failure(actor, status, true);
++    }
 +    if (munmap(actor->stack, actor->stack_bytes) < 0) {
 +        actor->stack_uncertain = true;
 +        return ram_control_failure(actor, -errno, true);
@@ -167664,10 +168156,10 @@ index 0000000000000000000000000000000000000000..06c7717a72f48d51622e9c7da2c2fc98
 +#endif
 diff --git a/plugins/crucible-required-workers.inc.h b/plugins/crucible-required-workers.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..b4e2de9e4c362fcf3f91a2afcf10d5f7917d3596
+index 0000000000000000000000000000000000000000..42383e0441ee8d50ef8c5d023fae058a0ff1ecf9
 --- /dev/null
 +++ b/plugins/crucible-required-workers.inc.h
-@@ -0,0 +1,755 @@
+@@ -0,0 +1,765 @@
 +/*
 + * Genuine required RUN and teardown role adapters for the shared native worker
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -168341,6 +168833,16 @@ index 0000000000000000000000000000000000000000..b4e2de9e4c362fcf3f91a2afcf10d5f7
 +    worker = *holder;
 +    return required_worker_slot(worker) ?
 +        plugin_worker_identity_return(id, &worker->native, holder) : -EPERM;
++}
++
++int qemu_plugin_crucible_required_worker_enrollment_observe_v1(
++    qemu_plugin_id_t id, QemuCrucibleRequiredWorker *worker,
++    struct qemu_plugin_crucible_worker_enrollment_status_v1 *out)
++{
++    if (!required_worker_slot(worker)) {
++        return -EPERM;
++    }
++    return plugin_worker_enrollment_observe(id, &worker->native, out);
 +}
 +
 +int qemu_plugin_crucible_required_worker_observe_v1(
@@ -170150,10 +170652,10 @@ index 0000000000000000000000000000000000000000..f33911c6d93010f8c345aa392c9b7974
 +}
 diff --git a/plugins/crucible-startup-source.c b/plugins/crucible-startup-source.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..d2a2ffb1cb99b3eb34776e9c95a35fa00a013d1e
+index 0000000000000000000000000000000000000000..51b28bf45dcc3e4795c7d60ee39ef02e54037196
 --- /dev/null
 +++ b/plugins/crucible-startup-source.c
-@@ -0,0 +1,7555 @@
+@@ -0,0 +1,7595 @@
 +/*
 + * Original installer startup source custody
 + *
@@ -170344,6 +170846,7 @@ index 0000000000000000000000000000000000000000..d2a2ffb1cb99b3eb34776e9c95a35fa0
 +    uint64_t execution = qemu_crucible_fingerprint_main_execution_storage_bytes_v1();
 +    uint64_t park_requests = qemu_crucible_native_park_request_static_extent();
 +    const uint64_t descriptor_storage[] = {
++        qemu_thread_bounded_registry_fixed_storage_bytes(),
 +        qemu_plugin_crucible_native_shmem_dispatch_descriptor_storage_bytes_v1(),
 +        qemu_plugin_crucible_native_net_tx_descriptor_storage_bytes_v1(),
 +        qemu_plugin_crucible_native_block_io_descriptor_storage_bytes_v1(),
@@ -170382,9 +170885,9 @@ index 0000000000000000000000000000000000000000..d2a2ffb1cb99b3eb34776e9c95a35fa0
 +        return UINT64_MAX;
 +    }
 +    fixed += park_requests;
-+    /* Idle/resume already belongs to control_stop. These seven independent
-+     * declarations are the actual per-provider association arrays; the
-+     * embedded Source groups and members belong to sizeof(startup_source). */
++    /* Idle/resume already belongs to control_stop. The retained bounded-record
++     * head and these seven provider association arrays are separate physical
++     * declarations; embedded groups, receipts and members belong to Source. */
 +    for (size_t index = 0; index < G_N_ELEMENTS(descriptor_storage); index++) {
 +        uint64_t bytes = descriptor_storage[index];
 +
@@ -175557,6 +176060,45 @@ index 0000000000000000000000000000000000000000..d2a2ffb1cb99b3eb34776e9c95a35fa0
 +    return status;
 +}
 +
++int qemu_crucible_startup_source_cpu_instance_identity_v1(
++    Object *instance, QemuCrucibleCpuSourceAllocationOwner **out,
++    QemuCrucibleCpuAllocationReceipt **receipt, uint64_t *generation)
++{
++    QemuCrucibleCpuSourceAllocationOwner *owner;
++    int status;
++
++    if (!instance || !out || *out || !receipt || *receipt || !generation ||
++        *generation) {
++        return -EINVAL;
++    }
++    /* Reject inherited Source before its potentially inherited mutex. */
++    if (getpid() != startup_source.owner_process) {
++        return -EPERM;
++    }
++    status = pthread_mutex_trylock(&startup_source.cpu_allocations.lock);
++    if (status) {
++        return -status;
++    }
++    for (owner = startup_source.cpu_allocations.owners; owner;
++         owner = owner->next) {
++        if (owner->payload == instance) {
++            break;
++        }
++    }
++    status = owner ? cpu_allocation_identity_locked(owner) : -ENOENT;
++    if (!status) {
++        status = object_native_allocation_live_instance_current(instance, owner,
++            owner->receipt, owner->request_serial);
++    }
++    if (!status) {
++        *out = owner;
++        *receipt = owner->receipt;
++        *generation = owner->request_serial;
++    }
++    pthread_mutex_unlock(&startup_source.cpu_allocations.lock);
++    return status;
++}
++
 +int qemu_crucible_startup_source_cpu_allocation_result_v1(
 +    QemuCrucibleCpuAllocationRequest *request,
 +    QemuCrucibleCpuSourceAllocationOwner *owner)
@@ -177711,10 +178253,10 @@ index 0000000000000000000000000000000000000000..d2a2ffb1cb99b3eb34776e9c95a35fa0
 +#include "crucible-parent-park-metadata.inc.h"
 diff --git a/plugins/crucible-startup-source.h b/plugins/crucible-startup-source.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..99408af8246d8a3b0a9b7f279ef33ff7c9ccd8e1
+index 0000000000000000000000000000000000000000..9edaa5d2fbe4f27c7a9dd6e8b0475f75aa11b690
 --- /dev/null
 +++ b/plugins/crucible-startup-source.h
-@@ -0,0 +1,2289 @@
+@@ -0,0 +1,2303 @@
 +/*
 + * Fixed process-private control for the original installer startup source
 + *
@@ -177922,6 +178464,13 @@ index 0000000000000000000000000000000000000000..99408af8246d8a3b0a9b7f279ef33ff7
 +    int first_status;
 +    int post_status;
 +    int entry_status;
++    int enrollment_status;
++    int enrollment_admission_status;
++    int enrollment_post_status;
++    int registry_close_status;
++    int registry_identity_return_status;
++    int registry_identity_return_post_status;
++    bool enrollment_returned;
 +    int join_status;
 +    int unmap_status;
 +    int control_status;
@@ -178349,6 +178898,8 @@ index 0000000000000000000000000000000000000000..99408af8246d8a3b0a9b7f279ef33ff7
 +    QemuCrucibleCallbackRegistrationBorrow registrar;
 +    QemuCrucibleNativeInvocationRegistry native;
 +    QemuCrucibleNativeInvocationRegistry *selection;
++    /* Suppression discovery only; never runtime selection or admission. */
++    QemuCrucibleNativeInvocationRegistry *dispatch_hint;
 +    uint64_t publication_serial;
 +    uint64_t registrar_serial;
 +    bool native_preparing;
@@ -179873,6 +180424,11 @@ index 0000000000000000000000000000000000000000..99408af8246d8a3b0a9b7f279ef33ff7
 +    QemuCrucibleCpuAllocationRequest *request,
 +    QemuCrucibleCpuSourceAllocationOwner *owner,
 +    QemuCrucibleCpuAllocationReceipt **out);
++/* Caller retains the actual Object. Identity only; no constructor Original,
++ * execution grant, or new allocation/loan is issued by this observation. */
++int qemu_crucible_startup_source_cpu_instance_identity_v1(
++    Object *instance, QemuCrucibleCpuSourceAllocationOwner **owner,
++    QemuCrucibleCpuAllocationReceipt **receipt, uint64_t *generation);
 +int qemu_crucible_startup_source_cpu_allocation_result_v1(
 +    QemuCrucibleCpuAllocationRequest *request,
 +    QemuCrucibleCpuSourceAllocationOwner *owner);
@@ -189739,7 +190295,7 @@ index 78d1e057c1284d5989fc3be41ecedcea2045ff33..61d0e06993f29b42ab4872490546b8c0
  }
  
 diff --git a/qom/object.c b/qom/object.c
-index f79b2cf3618369a87d25685b1bd834f8b2218936..4850339fe204094316d91385c530077b1fb3d11d 100644
+index f79b2cf3618369a87d25685b1bd834f8b2218936..9221b553cac5714bd482878faa21948875de2b52 100644
 --- a/qom/object.c
 +++ b/qom/object.c
 @@ -37,6 +37,9 @@
@@ -189752,7 +190308,7 @@ index f79b2cf3618369a87d25685b1bd834f8b2218936..4850339fe204094316d91385c530077b
  
  #define MAX_INTERFACES 32
  
-@@ -77,6 +80,827 @@ struct TypeImpl
+@@ -77,6 +80,860 @@ struct TypeImpl
      InterfaceImpl interfaces[MAX_INTERFACES];
  };
  
@@ -190086,6 +190642,39 @@ index f79b2cf3618369a87d25685b1bd834f8b2218936..4850339fe204094316d91385c530077b
 +    }
 +    if (!status) {
 +        *out = request->receipt->source_owner;
++    }
++    pthread_mutex_unlock(&native_allocations.lock);
++    return status;
++}
++
++int object_native_allocation_live_instance_current(
++    Object *instance, QemuCrucibleCpuSourceAllocationOwner *source_owner,
++    QemuCrucibleCpuAllocationReceipt *candidate, uint64_t generation)
++{
++    QemuCrucibleCpuAllocationReceipt *receipt;
++    int status = -ESTALE;
++
++    if (!instance || !source_owner || !candidate || !generation) {
++        return -EINVAL;
++    }
++    pthread_mutex_lock(&native_allocations.lock);
++    /* Authenticate nominal membership before dereferencing the candidate.
++     * A live Object ref prevents matching free/receipt retirement here. */
++    for (receipt = native_allocations.receipts; receipt; receipt = receipt->next) {
++        if (receipt != candidate) {
++            continue;
++        }
++        if (receipt->active && receipt->process == getpid() &&
++            receipt->source_owner == source_owner &&
++            receipt->generation == generation &&
++            receipt->kind == OBJECT_NATIVE_ALLOCATION_INSTANCE &&
++            receipt->allocation_started && !receipt->allocation_abandoned &&
++            !receipt->free_in_flight && !receipt->physical_returned &&
++            receipt->aliases && receipt->payload == instance &&
++            receipt->type == instance->class->type) {
++            status = 0;
++        }
++        break;
 +    }
 +    pthread_mutex_unlock(&native_allocations.lock);
 +    return status;
@@ -190580,7 +191169,7 @@ index f79b2cf3618369a87d25685b1bd834f8b2218936..4850339fe204094316d91385c530077b
  static Type type_interface;
  
  static GHashTable *type_table;
-@@ -352,7 +1176,15 @@ static void type_initialize(TypeImpl *ti)
+@@ -352,7 +1209,15 @@ static void type_initialize(TypeImpl *ti)
          assert(!ti->instance_finalize);
          assert(!ti->num_interfaces);
      }
@@ -190597,7 +191186,7 @@ index f79b2cf3618369a87d25685b1bd834f8b2218936..4850339fe204094316d91385c530077b
  
      parent = type_get_parent(ti);
      if (parent) {
-@@ -691,12 +1523,20 @@ static Object *object_new_with_type(Type type)
+@@ -691,12 +1556,20 @@ static Object *object_new_with_type(Type type)
       * Do not use qemu_memalign unless required.  Depending on the
       * implementation, extra alignment implies extra overhead.
       */
@@ -190862,7 +191451,7 @@ index f8e17dcf1ce91d8aefb8d82cafd3196a4fd9edf6..f24121d2d3c66f1436ba73c976a7bd76
      return true;
 diff --git a/scripts/extract-crucible-preexec-purpose.py b/scripts/extract-crucible-preexec-purpose.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..997e436b10f5bdf8a42e7356d379f35031500200
+index 0000000000000000000000000000000000000000..94f5167ad88618e5df2a709d8ba98460671d1752
 --- /dev/null
 +++ b/scripts/extract-crucible-preexec-purpose.py
 @@ -0,0 +1,87 @@
@@ -190888,9 +191477,9 @@ index 0000000000000000000000000000000000000000..997e436b10f5bdf8a42e7356d379f350
 +    'include/qemu/crucible-device-workspace.h':
 +        '5710b0cc44f68508cecd4186cca2e10c6aa32eceed1b81f2250ca9faf9028a4b',
 +    'include/plugins/qemu-plugin.h':
-+        '541c9d4f9997c930f5995eb6405076b47f457da522c388e0d3269450ff1ba2fa',
++        'bf8b9db5f3f9205ca246d9367b889a77c0df9ef0ceeb7ae73e5eda630898bdc7',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'eedd118f1a00f6a1953338541ec75d49d9bd857c7619dc90253f97f969cb5a52',
++        '7f164821979539e429388fe616ba6ece061dd28eebb0c51eb16ebf253118b102',
 +}
 +
 +PURPOSE_FUNCTIONS = (
@@ -234072,10 +234661,10 @@ index 0000000000000000000000000000000000000000..f517993ed29c5a6611a6d10ad6a2a612
 +#endif /* TESTS_CRUCIBLE_TIMER_STREAM_H */
 diff --git a/tests/unit/extract-crucible-cached-writer.py b/tests/unit/extract-crucible-cached-writer.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..976c53cf6b27d78a5f9fc576c968aeb55ed89252
+index 0000000000000000000000000000000000000000..2617c754aa1ea8587f6eaabe5a8bdf68a7fc81d8
 --- /dev/null
 +++ b/tests/unit/extract-crucible-cached-writer.py
-@@ -0,0 +1,354 @@
+@@ -0,0 +1,361 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Extract real Linux writer/cache bodies and ten behavioral omissions.
 +
@@ -234093,11 +234682,11 @@ index 0000000000000000000000000000000000000000..976c53cf6b27d78a5f9fc576c968aeb5
 +
 +SOURCE_HASHES = {
 +    'util/qemu-thread-posix.c':
-+        '97bf9fabbb1ea859e27329469a9e9cf4abf677f06f62211a7c8ece2b945007a6',
++        '51e5c80f326eff7c390aa8ea491f7e36e22bde5af9214a1e8099fd38d1ddd7f1',
 +    'util/oslib-posix.c':
 +        '04c5696686ee58dbd402f0ed31845de3dec234c38b7aa97ec98506356adc9789',
 +    'include/qemu/thread.h':
-+        '835ed6117a2ba74a0e4c85ef4ffa5d191db2c9274896393992f111b4fe4e5bc6',
++        'b4efa814a832b1b891eb8e36b93b9a3cf219b3e51d5b902030dab48b73cd1103',
 +    'include/qemu/thread-posix.h':
 +        '22edf9398513dc3889c9fdb2f558ebd0321cfcc7ee33e6ad574941c220c22b6c',
 +    'include/system/memory_cached.h':
@@ -234204,6 +234793,7 @@ index 0000000000000000000000000000000000000000..976c53cf6b27d78a5f9fc576c968aeb5
 +    ).group() + '\n'
 +    # Emit by-value journal dependencies before their containing owner.
 +    for name in [
++        'QemuThreadBoundedCreateReceipt',
 +        'QemuThreadHotForkDisposition',
 +        'QemuThreadRamPauseRefusal',
 +        'QemuRamPauseEndDisposition',
@@ -234222,11 +234812,13 @@ index 0000000000000000000000000000000000000000..976c53cf6b27d78a5f9fc576c968aeb5
 +        source.index('static pthread_mutex_t qemu_hot_fork_thread_lock'):
 +        source.index('/* Introspection may reenter the registry.')
 +    ]
-+    # These two unrelated registry operations are not part of this finite fixture.
++    # Unrelated registry owners are not part of this finite writer fixture.
 +    globals_text = globals_text.replace(
 +        'static size_t qemu_hot_fork_thread_starts_in_flight;\n', '',
 +    ).replace(
 +        'static int64_t qemu_hot_fork_coordinator_thread_id;\n', '',
++    ).replace(
++        'static QemuHotForkThreadRecord *qemu_hot_fork_bounded_threads;\n', '',
 +    )
 +    prefix += globals_text
 +    prefix += '''
@@ -234319,6 +234911,10 @@ index 0000000000000000000000000000000000000000..976c53cf6b27d78a5f9fc576c968aeb5
 +        'qemu_thread_ram_cpu_construction_end',
 +        'qemu_thread_ram_cpu_construction_upgrade_writer',
 +        'qemu_hot_fork_thread_register',
++        # Actual unregister now journals a bounded receipt when present. This
++        # fixture creates only ordinary records; retain its literal predicate
++        # and real receipt layout without modeling a bounded/Source issuer.
++        'bounded_identity',
 +        'qemu_hot_fork_thread_unregister',
 +        'qemu_thread_hot_fork_record_storage_bytes',
 +        'ram_cpu_execution_identity_locked',
@@ -234432,7 +235028,7 @@ index 0000000000000000000000000000000000000000..976c53cf6b27d78a5f9fc576c968aeb5
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-placement.py b/tests/unit/extract-crucible-checkpoint-placement.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..3a4eb827fc1ccc45c078f3912ebab2abc0ad9c95
+index 0000000000000000000000000000000000000000..90edde07fbaf25ab39056f4b11fd93c1ffcd102e
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-placement.py
 @@ -0,0 +1,100 @@
@@ -234450,7 +235046,7 @@ index 0000000000000000000000000000000000000000..3a4eb827fc1ccc45c078f3912ebab2ab
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'eedd118f1a00f6a1953338541ec75d49d9bd857c7619dc90253f97f969cb5a52',
++        '7f164821979539e429388fe616ba6ece061dd28eebb0c51eb16ebf253118b102',
 +}
 +
 +FUNCTIONS = (
@@ -234538,7 +235134,7 @@ index 0000000000000000000000000000000000000000..3a4eb827fc1ccc45c078f3912ebab2ab
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-receiving.py b/tests/unit/extract-crucible-checkpoint-receiving.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..2e6859c00dd0c25838ac0725251104001df6027f
+index 0000000000000000000000000000000000000000..a373b39b08aa68829f0451e240a553a91d91d6a9
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-receiving.py
 @@ -0,0 +1,241 @@
@@ -234559,17 +235155,17 @@ index 0000000000000000000000000000000000000000..2e6859c00dd0c25838ac072525110400
 +    'plugins/crucible-checkpoint-finalizer.inc.h':
 +        '6616d8f61ceaa17d668033d824d0fd6dc37ff4fafe76fc7665582a80447c7303',
 +    'plugins/crucible-startup-source.c':
-+        'e77896e06556424d3f44019d279748e38558ff2cb02356bb16ad7125075d15a6',
++        '41c09fe1c1f0eb8d750e1722802d6cf8f5134e86ded2ec1dd5f9128dde805a07',
 +    'plugins/crucible-startup-source.h':
-+        '01e44b748b185c81020f44dfcfd0803dc30a272d3fe282582904c37a2e74820c',
++        '8fe0c76b7008fb7bf08fd35ea89b4afc56d38115ae3d15213d31f4297568c9ae',
 +    'include/plugins/qemu-plugin.h':
-+        '541c9d4f9997c930f5995eb6405076b47f457da522c388e0d3269450ff1ba2fa',
++        'bf8b9db5f3f9205ca246d9367b889a77c0df9ef0ceeb7ae73e5eda630898bdc7',
 +    'system/crucible-hot-fork-coordinator.c':
 +        'c782e9f0e3410ea7fcaea903772a5bdf799225c0e4cb340f39656d5f6657909c',
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'eedd118f1a00f6a1953338541ec75d49d9bd857c7619dc90253f97f969cb5a52',
++        '7f164821979539e429388fe616ba6ece061dd28eebb0c51eb16ebf253118b102',
 +}
 +
 +FUNCTIONS = (
@@ -234785,7 +235381,7 @@ index 0000000000000000000000000000000000000000..2e6859c00dd0c25838ac072525110400
 +    main()
 diff --git a/tests/unit/extract-crucible-monitor-fd-loans.py b/tests/unit/extract-crucible-monitor-fd-loans.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..4ef6c13c5e3ca098330601254c6c430687b7bd2b
+index 0000000000000000000000000000000000000000..a0d0b389074a5880d3b9409f46dfdf3cccf4100a
 --- /dev/null
 +++ b/tests/unit/extract-crucible-monitor-fd-loans.py
 @@ -0,0 +1,112 @@
@@ -234803,13 +235399,13 @@ index 0000000000000000000000000000000000000000..4ef6c13c5e3ca098330601254c6c4306
 +    'monitor/monitor-internal.h':
 +        'a176f21207aa1307470b2fc1785cfe09cb547aedc66a1af9de4cacee5d521967',
 +    'qom/object.c':
-+        '381f0c17eb7c3c3ceb5d48346b9b964bdadf89e0a96ae4e84568bcca547da821',
++        'f7783285fb45e5e227bdf18c6b18234bc91e6201b4cd6fc32397842053c3a40e',
 +    'include/qom/object.h':
-+        'faa9179526b91ac70c3813eb273f5367bb1510a06345994d84a9a1342742f414',
++        'ea0d72424e90257e7560bba241ae6beba1dc3fa3608ba05af9a21e67c9ee37f3',
 +    'monitor/monitor.c':
 +        '6773b71937e9c0058143070560f3ce3bb114a966d6d4224c7a60d8862fb8d05b',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'eedd118f1a00f6a1953338541ec75d49d9bd857c7619dc90253f97f969cb5a52',
++        '7f164821979539e429388fe616ba6ece061dd28eebb0c51eb16ebf253118b102',
 +}
 +
 +FUNCTIONS = (
@@ -234903,7 +235499,7 @@ index 0000000000000000000000000000000000000000..4ef6c13c5e3ca098330601254c6c4306
 +    main()
 diff --git a/tests/unit/extract-crucible-preexec-setup.py b/tests/unit/extract-crucible-preexec-setup.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..3e4aec41da7a45818f858add516c5a844a9c6d2a
+index 0000000000000000000000000000000000000000..7f37ade2ea78de45da3afaf55d54d8504901e552
 --- /dev/null
 +++ b/tests/unit/extract-crucible-preexec-setup.py
 @@ -0,0 +1,173 @@
@@ -234938,21 +235534,21 @@ index 0000000000000000000000000000000000000000..3e4aec41da7a45818f858add516c5a84
 +    'include/qemu/crucible-device-workspace.h':
 +        '5710b0cc44f68508cecd4186cca2e10c6aa32eceed1b81f2250ca9faf9028a4b',
 +    'include/plugins/qemu-plugin.h':
-+        '541c9d4f9997c930f5995eb6405076b47f457da522c388e0d3269450ff1ba2fa',
++        'bf8b9db5f3f9205ca246d9367b889a77c0df9ef0ceeb7ae73e5eda630898bdc7',
 +    'plugins/crucible-process-purpose.c':
 +        '514f3d0e678d947fb35ad0ab92f808f1f2d06dbcdddefac01d0624c7a6ee9d23',
 +    'plugins/crucible-device-workspace.c':
 +        '3dd77a2ad8d4688fb57ccc94618763485d36b9460e3461ac5ff4bc6fa25c558d',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'eedd118f1a00f6a1953338541ec75d49d9bd857c7619dc90253f97f969cb5a52',
++        '7f164821979539e429388fe616ba6ece061dd28eebb0c51eb16ebf253118b102',
 +    'scripts/extract-crucible-preexec-purpose.py':
-+        'bec55531e4c2a64355489cb8b5edb9e610a97f9a2a48b1343855fdca7c450201',
++        '6add5379d254488cd27043dbc959156021ed1cc55f91378b6d3592a235de9ef6',
 +    'meson.build':
 +        '7eef2c0d1494dfdeed66f56c77f092382cd63d3fd5ad7c0b7c7ac85ca599e39e',
 +    'tests/unit/test-crucible-preexec-setup.c':
 +        'd26871f569f6be81b3b6189a373f2937b4b2e705a5f06c93120a6a18e0416a6c',
 +    'tests/unit/meson.build':
-+        'e497418c6929b1a7d49217799fdc5a5e86a8670147928cd2504622511a36a458',
++        '9c3a0f6d1ad7c207640c4e0d87b8530c806810a7dc2cebcae2b4b829362f5cd5',
 +}
 +
 +PRIVATE_INCLUDES = ('family', 'contract', 'artifact', 'ram', 'workspace')
@@ -235082,10 +235678,10 @@ index 0000000000000000000000000000000000000000..3e4aec41da7a45818f858add516c5a84
 +        main()
 diff --git a/tests/unit/extract-crucible-startup-source-controls.py b/tests/unit/extract-crucible-startup-source-controls.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..20007e7c63c0908a7dc3f8a8c92384f19abb17a3
+index 0000000000000000000000000000000000000000..040455be7fe01d08212e01d36752fcd2f2ba7f79
 --- /dev/null
 +++ b/tests/unit/extract-crucible-startup-source-controls.py
-@@ -0,0 +1,927 @@
+@@ -0,0 +1,936 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Extract literal startup integration control cuts, never an issuer fixture."""
 +
@@ -235146,7 +235742,7 @@ index 0000000000000000000000000000000000000000..20007e7c63c0908a7dc3f8a8c92384f1
 +    'plugins/crucible-setup-mapping.inc.h':
 +        '873455344e7aace6607c1426cc573ad68ea7701770756b6fd51eba0670fc10b4',
 +    'tests/unit/test-crucible-startup-source.c':
-+        'f071e74aa251c2ac01e62d7b2bd2eb5eb8e006efa957632da6d2457be8e33ddc',
++        '3ffe86ddebbbd387f1adbcb6e74b0ddc02a41a95635ed9e9f69f3d0fd8e26d80',
 +    'tests/unit/crucible-startup-source-fixture.inc.h':
 +        '5a709cd4af1b16b0f1990d9fcb17a200b1755d62e9be080309e7f069f78153d7',
 +    'include/qemu/crucible-metadata-partition.h':
@@ -235156,7 +235752,7 @@ index 0000000000000000000000000000000000000000..20007e7c63c0908a7dc3f8a8c92384f1
 +    'plugins/crucible-fault-lifecycle.c':
 +        '8119526bf428c17645bbf9137e62aab3abe3b05aeed527f72a24a526e92d2af8',
 +    'plugins/core.c':
-+        '6a00e840ed6aaccc8755b10f2fd500a205176911ecfe8a2d70d93b109b1c882c',
++        'eae2530525b5bdd22a5d4bebb06fc9af49f082875c6e6e193e0dc949081a4d90',
 +    'plugins/loader.c':
 +        'ee5bb6da8d25638e197eb03de2e9d5de344eae52f77f8a0143513124bed9f502',
 +    'plugins/crucible-paged-ram.c':
@@ -235166,15 +235762,15 @@ index 0000000000000000000000000000000000000000..20007e7c63c0908a7dc3f8a8c92384f1
 +    'system/crucible-hot-fork-coordinator.c':
 +        'c782e9f0e3410ea7fcaea903772a5bdf799225c0e4cb340f39656d5f6657909c',
 +    'plugins/crucible-startup-source.c':
-+        'e77896e06556424d3f44019d279748e38558ff2cb02356bb16ad7125075d15a6',
++        '41c09fe1c1f0eb8d750e1722802d6cf8f5134e86ded2ec1dd5f9128dde805a07',
 +    'plugins/crucible-startup-source.h':
-+        '01e44b748b185c81020f44dfcfd0803dc30a272d3fe282582904c37a2e74820c',
++        '8fe0c76b7008fb7bf08fd35ea89b4afc56d38115ae3d15213d31f4297568c9ae',
 +    'plugins/crucible-device-workspace.c':
 +        '3dd77a2ad8d4688fb57ccc94618763485d36b9460e3461ac5ff4bc6fa25c558d',
 +    'include/qemu/crucible-device-workspace.h':
 +        '5710b0cc44f68508cecd4186cca2e10c6aa32eceed1b81f2250ca9faf9028a4b',
 +    'include/plugins/qemu-plugin.h':
-+        '541c9d4f9997c930f5995eb6405076b47f457da522c388e0d3269450ff1ba2fa',
++        'bf8b9db5f3f9205ca246d9367b889a77c0df9ef0ceeb7ae73e5eda630898bdc7',
 +    'plugins/crucible-command-consumer.inc.h':
 +        '90e66020ed3cd06206739f0921207a2ba0a35ccdf2144b6c829dd77c5f44fd2f',
 +    'plugins/crucible-callback-owner.inc.h':
@@ -235182,23 +235778,23 @@ index 0000000000000000000000000000000000000000..20007e7c63c0908a7dc3f8a8c92384f1
 +    'plugins/crucible-callback-child.inc.h':
 +        '9f5e5bd4dce6c85414b0d6361be1e39688effdf865dda79c25653039e0ff6faa',
 +    'plugins/crucible-callback-publication.inc.h':
-+        '62df974b3cbc7a373f7618a79089ebd76344fccd56eeee86b9529c116c629a07',
++        '5f91b39050b0fd482825221f4dd573d7f5f61f677d26afb4d45947b6a200689a',
 +    'plugins/crucible-plugin-worker.inc.h':
-+        '1483027daf1a104e96e8ef1533fb76398e8697afa49ea8a3aaee628f659a80ad',
++        '65fd11bcadaad0c3fedf4d35560170456ccfc4d2317d71410bd14dcbcb6647f8',
 +    'plugins/crucible-required-workers.inc.h':
-+        '5b1b78ed5a6b2c593b17e900926aecff57d17a2d2240e34f7b15279642b677d7',
++        '7416b21879fe77c2eeaaf91f935fdaf77187b35a4d3c844fb871db764e46b3b2',
 +    'plugins/crucible-fingerprint-worker.inc.h':
-+        'f146c75e1b64b7f79ccfa9c4129bf0963fad5efb0ee22d244f91a072cb61f2e1',
++        '2938b67c33735cbe7dc3c71570e3a43a6a3b0847adb321a0ae37c92d06a94407',
 +    'plugins/crucible-ram-control.inc.h':
-+        '300ede8e92ee73efe152e86834106938a380a1f9ae911260fb79aadd5147c62b',
++        'ba7241bb6b513368086dfb489983181ec976e4baac90654e4ffec6d44fe481f3',
 +    'plugins/crucible-ram-record.inc.h':
 +        '9a372b3721ff9a4f13d4a17636d7a63ff0a69ec40517ebed945f0315fc9bce25',
 +    'include/qemu/crucible-shared-region-layout.h':
 +        '9ad3be4a8b3aa0e0c10ab0f12908b0e827e219ec93e91d3939c90606383f54b5',
 +    'include/qemu/crucible-native-invocation.h':
-+        '31fe108347d4f581fea1a3744f43a9838888d308e3f82f08a645df4533cd3e30',
++        '0c52c382a78cd5f2095becbda87215584ef11fad0a200700a007f4e52270f3d2',
 +    'plugins/crucible-native-invocation.c':
-+        '4c0e49d61421450c092090b1a53a306cb3782857cdc2aaff3dbf864204a89bba',
++        '2191bec24cba9ece1e0cacc6361ce0c69d64dc6730e8bf80bcb29fa5f3863d8f',
 +    'cpu-common.c':
 +        'c8eefc24511efd7ddc63e8c99a5d44b1d3cbc6b390bedf7f24046a4f6d486c4d',
 +    'include/hw/core/cpu.h':
@@ -235234,7 +235830,7 @@ index 0000000000000000000000000000000000000000..20007e7c63c0908a7dc3f8a8c92384f1
 +    'util/main-loop.c':
 +        '2db25444346dd67bc5f2b4b3c9bc7efed5e053ac25cf257db7adcc1186e289ef',
 +    'qom/object.c':
-+        '381f0c17eb7c3c3ceb5d48346b9b964bdadf89e0a96ae4e84568bcca547da821',
++        'f7783285fb45e5e227bdf18c6b18234bc91e6201b4cd6fc32397842053c3a40e',
 +    'system/crucible-observation-realization.c':
 +        'be20ad9c90068e19343732b4f4766d6a9745666acc27693bcdc2c8ea3bc4832f',
 +    'system/crucible-observation-writer.c':
@@ -235248,15 +235844,15 @@ index 0000000000000000000000000000000000000000..20007e7c63c0908a7dc3f8a8c92384f1
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'include/qemu/thread.h':
-+        '835ed6117a2ba74a0e4c85ef4ffa5d191db2c9274896393992f111b4fe4e5bc6',
++        'b4efa814a832b1b891eb8e36b93b9a3cf219b3e51d5b902030dab48b73cd1103',
 +    'util/qemu-thread-posix.c':
-+        '97bf9fabbb1ea859e27329469a9e9cf4abf677f06f62211a7c8ece2b945007a6',
++        '51e5c80f326eff7c390aa8ea491f7e36e22bde5af9214a1e8099fd38d1ddd7f1',
 +    'include/qemu/crucible-process-purpose.h':
 +        '9d1ef70162bb666a8e98c865b71d3a10973f058ddf968ffcf7f2f2408fb9fd7c',
 +    'include/qemu/crucible-paged-ram.h':
 +        'b494cc6b7158fd4b98d237e3b6238ddb259a09f5e8de3f18686cbbdb8b4b3eaa',
 +    'include/qom/object.h':
-+        'faa9179526b91ac70c3813eb273f5367bb1510a06345994d84a9a1342742f414',
++        'ea0d72424e90257e7560bba241ae6beba1dc3fa3608ba05af9a21e67c9ee37f3',
 +    'qobject/json-writer.c':
 +        '541ad1d3522391e8c8b79b77d22e814aae56dda9a7d8b3ed4eebbe8f2ee07a08',
 +    'include/qobject/json-writer.h':
@@ -235410,6 +236006,12 @@ index 0000000000000000000000000000000000000000..20007e7c63c0908a7dc3f8a8c92384f1
 +    "qemu_crucible_startup_source_total_matches",
 +    "qemu_plugin_crucible_native_exit_v1",
 +    "qemu_plugin_crucible_native_mask_v1",
++    # Refusal-only actual ordinary callback control; no selected CPU grant.
++    "plugin_vcpu_init_descriptor_observe",
++    "qemu_plugin_crucible_native_vcpu_init_use_begin_v1",
++    "qemu_plugin_crucible_native_group_use_end_v1",
++    "qemu_plugin_crucible_native_use_borrow_v1",
++    "qemu_crucible_startup_source_native_dispatch_hint_v1",
 +    "qemu_plugin_crucible_register_checkpoint_pager_v1",
 +    "qemu_plugin_crucible_register_parent_park_drain_v1",
 +    "qemu_plugin_crucible_parent_park_drain_original_check_v1",
@@ -235609,6 +236211,7 @@ index 0000000000000000000000000000000000000000..20007e7c63c0908a7dc3f8a8c92384f1
 +    cpus = sources["system/cpus.c"]
 +    output = [core[:core.index("*/") + 2]]
 +    for opening in (
++        "static bool plugin_vcpu_init_descriptor_observe(",
 +        "static void plugin_cpu_update__async(",
 +        "static void plugin_cpu_update__locked(",
 +        "bool plugin_vcpu_init_descriptor_terminal__locked(",
@@ -235823,7 +236426,9 @@ index 0000000000000000000000000000000000000000..20007e7c63c0908a7dc3f8a8c92384f1
 +                                                  "qemu_crucible_fingerprint_main_execution_storage_alignment_v1"),
 +        "util/main-loop.c": ("main_loop_crucible_fingerprint_ready_storage_bytes_v1",),
 +        "system/crucible-observation-realization.c": ("qemu_crucible_observation_boot_body_bytes_v1",
-+                                                    "qemu_crucible_observation_boot_body_alignment_v1"),
++                                                    "qemu_crucible_observation_boot_body_alignment_v1",
++                                                    "qemu_crucible_cpu_allocation_receipt_bytes_v1",
++                                                    "qemu_crucible_cpu_allocation_receipt_alignment_v1"),
 +        "system/crucible-observation-writer.c": ("qemu_crucible_observation_writer_metadata_bytes_v1",),
 +    }
 +    for name, names in getters.items():
@@ -236112,7 +236717,7 @@ index 0000000000000000000000000000000000000000..228f5bfb67fb64768c9806c3617cc308
 +if __name__ == "__main__":
 +    main()
 diff --git a/tests/unit/meson.build b/tests/unit/meson.build
-index dc3fb954c03a02a82f09b38521e2d85ede2549f5..0144f9bccb8076b01daa70be88cf8bfaabb26078 100644
+index dc3fb954c03a02a82f09b38521e2d85ede2549f5..21853dd1705de2655551e359f62cd6a0f8640fed 100644
 --- a/tests/unit/meson.build
 +++ b/tests/unit/meson.build
 @@ -21,6 +21,8 @@ tests = {
@@ -236173,7 +236778,21 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..0144f9bccb8076b01daa70be88cf8bfa
    if config_host_data.get('CONFIG_INOTIFY1')
      tests += {'test-util-filemonitor': []}
    endif
-@@ -207,3 +244,1156 @@ foreach test_name, extra: tests
+@@ -186,6 +223,13 @@ slow_tests = {
+   'test-replication': 60,
+ }
+ 
++if host_os == 'linux'
++  tests += {
++    'test-crucible-bounded-thread': [],
++    'test-crucible-cpu-instance': [qom],
++  }
++endif
++
+ foreach test_name, extra: tests
+   src = [test_name + '.c']
+   deps = [qemuutil]
+@@ -207,3 +251,1156 @@ foreach test_name, extra: tests
         priority: slow_tests.get(test_name, 30),
         suite: ['unit'])
  endforeach
@@ -245768,6 +246387,412 @@ index 0000000000000000000000000000000000000000..f36e51da6056a7fa343f3c951b2472df
 +    g_test_add_func("/arm/ordinary", test_ordinary);
 +    return g_test_run();
 +}
+diff --git a/tests/unit/test-crucible-bounded-thread.c b/tests/unit/test-crucible-bounded-thread.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..b118eb4dcf2989aee45533c8a7b886a471366381
+--- /dev/null
++++ b/tests/unit/test-crucible-bounded-thread.c
+@@ -0,0 +1,400 @@
++/*
++ * Real bounded birth and native registry enrollment component controls.
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ *
++ * These exercise qemuutil's actual pthread/registry implementation. A test
++ * owner is not a Source issuer, role claim, metadata lender or fork grant.
++ */
++#include "qemu/osdep.h"
++#include "qemu/thread.h"
++#include <sys/mman.h>
++#include <sys/wait.h>
++
++#define BOUNDED_TEST_STACK_BYTES (1024 * 1024)
++
++typedef struct BoundedOwner {
++    QemuThread thread;
++    QemuThreadBoundedCreateReceipt birth;
++    pthread_mutex_t lock;
++    pthread_cond_t wake;
++    void *stack;
++    bool entered;
++    bool release;
++    bool use_tsd;
++    bool tsd_entered;
++    bool tsd_release;
++    int self_status;
++    int newborn_current_status;
++    struct BoundedOwner *probe_target;
++    int probe_current_status;
++} BoundedOwner;
++
++static pthread_key_t bounded_test_key;
++
++static void owner_wait(BoundedOwner *owner, bool *condition)
++{
++    struct timespec deadline;
++
++    g_assert_cmpint(clock_gettime(CLOCK_REALTIME, &deadline), ==, 0);
++    deadline.tv_sec += 10;
++    while (!*condition) {
++        g_assert_cmpint(pthread_cond_timedwait(&owner->wake, &owner->lock,
++                                              &deadline), ==, 0);
++    }
++}
++
++static void owner_init(BoundedOwner *owner)
++{
++    *owner = (BoundedOwner) { 0 };
++    g_assert_cmpint(pthread_mutex_init(&owner->lock, NULL), ==, 0);
++    g_assert_cmpint(pthread_cond_init(&owner->wake, NULL), ==, 0);
++    owner->stack = mmap(NULL, BOUNDED_TEST_STACK_BYTES, PROT_READ | PROT_WRITE,
++                        MAP_PRIVATE | MAP_ANONYMOUS | MAP_STACK, -1, 0);
++    g_assert_true(owner->stack != MAP_FAILED);
++}
++
++static void owner_dispose(BoundedOwner *owner)
++{
++    g_assert_true(owner->birth.identity_returned);
++    g_assert_cmpint(munmap(owner->stack, BOUNDED_TEST_STACK_BYTES), ==, 0);
++    g_assert_cmpint(pthread_cond_destroy(&owner->wake), ==, 0);
++    g_assert_cmpint(pthread_mutex_destroy(&owner->lock), ==, 0);
++}
++
++static void *bounded_entry(void *opaque)
++{
++    BoundedOwner *owner = opaque;
++
++    /* The real newborn must refuse the creator API even if it runs before
++     * pthread_create publishes its output; self_current uses its actual row. */
++    owner->newborn_current_status = qemu_thread_bounded_current(&owner->thread,
++        owner, &owner->birth);
++    owner->self_status = qemu_thread_bounded_self_current(&owner->thread, owner,
++                                                         &owner->birth);
++    if (owner->probe_target) {
++        BoundedOwner *target = owner->probe_target;
++
++        owner->probe_current_status = qemu_thread_bounded_current(&target->thread,
++            target, &target->birth);
++    }
++    g_assert_cmpint(pthread_mutex_lock(&owner->lock), ==, 0);
++    owner->entered = true;
++    g_assert_cmpint(pthread_cond_broadcast(&owner->wake), ==, 0);
++    owner_wait(owner, &owner->release);
++    g_assert_cmpint(pthread_mutex_unlock(&owner->lock), ==, 0);
++    if (owner->use_tsd) {
++        g_assert_cmpint(pthread_setspecific(bounded_test_key, owner), ==, 0);
++    }
++    return owner;
++}
++
++static void owner_create(BoundedOwner *owner)
++{
++    g_assert_cmpint(qemu_thread_create_bounded(&owner->thread, "bounded-test",
++        bounded_entry, owner, owner->stack, BOUNDED_TEST_STACK_BYTES,
++        &owner->birth), ==, 0);
++    g_assert_true(owner->birth.born);
++    g_assert_cmpint(pthread_mutex_lock(&owner->lock), ==, 0);
++    owner_wait(owner, &owner->entered);
++    g_assert_cmpint(owner->self_status, ==, 0);
++    g_assert_cmpint(owner->newborn_current_status, ==, -EPERM);
++    g_assert_cmpint(pthread_mutex_unlock(&owner->lock), ==, 0);
++}
++
++static void owner_release(BoundedOwner *owner)
++{
++    g_assert_cmpint(pthread_mutex_lock(&owner->lock), ==, 0);
++    owner->release = true;
++    g_assert_cmpint(pthread_cond_broadcast(&owner->wake), ==, 0);
++    g_assert_cmpint(pthread_mutex_unlock(&owner->lock), ==, 0);
++}
++
++static void owner_join(BoundedOwner *owner)
++{
++    int64_t deadline = g_get_monotonic_time() + 10 * G_TIME_SPAN_SECOND;
++    void *result = NULL;
++    int status;
++
++    do {
++        status = qemu_thread_bounded_tryjoin(&owner->thread, owner,
++                                            &owner->birth, &result);
++        if (status == -EBUSY) {
++            g_assert_cmpint(g_get_monotonic_time(), <, deadline);
++            g_thread_yield();
++        }
++    } while (status == -EBUSY);
++    g_assert_cmpint(status, ==, 0);
++    g_assert_true(result == owner);
++    g_assert_true(owner->birth.joined);
++    g_assert_true(owner->birth.registry_returned);
++    g_assert_cmpint(owner->birth.registry_return_status, ==, 0);
++    g_assert_cmpint(qemu_thread_bounded_identity_return(&owner->thread, owner,
++                                                      &owner->birth), ==, 0);
++}
++
++static void test_current_close_join(void)
++{
++    BoundedOwner owner;
++    void *unchanged = &owner;
++
++    owner_init(&owner);
++    owner_create(&owner);
++
++    g_assert_cmpuint(owner.birth.birth_generation, >, 0);
++    g_assert_true(owner.birth.registry_registered);
++    g_assert_cmpint(qemu_thread_bounded_current(&owner.thread, &owner,
++                                               &owner.birth), ==, 0);
++    g_assert_cmpint(qemu_thread_bounded_self_current(&owner.thread, &owner,
++                                                    &owner.birth), ==, -ESTALE);
++    g_assert_cmpint(qemu_thread_bounded_tryjoin(&owner.thread, &owner,
++        &owner.birth, &unchanged), ==, -EBUSY);
++    g_assert_true(unchanged == &owner);
++    g_assert_cmpint(qemu_thread_bounded_identity_return(&owner.thread, &owner,
++        &owner.birth), ==, -EBUSY);
++    g_assert_cmpint(qemu_thread_bounded_close(&owner.thread, &owner,
++                                             &owner.birth), ==, 0);
++    g_assert_cmpint(qemu_thread_bounded_current(&owner.thread, &owner,
++                                               &owner.birth), ==, -ESTALE);
++    /* Enrollment and close never relabel this real thread as fork-safe. */
++    {
++        QemuThreadHotForkInventory inventory;
++        size_t unclassified = 0;
++
++        qemu_thread_hot_fork_inventory(&inventory);
++        for (size_t i = 0; i < inventory.entry_count; i++) {
++            unclassified += inventory.entries[i].disposition ==
++                QEMU_THREAD_HOT_FORK_UNCLASSIFIED;
++        }
++        g_assert_cmpuint(unclassified, >, 0);
++        qemu_thread_hot_fork_inventory_destroy(&inventory);
++    }
++    owner_release(&owner);
++    owner_join(&owner);
++    owner_dispose(&owner);
++}
++
++static void test_identity_and_copy_refusal(void)
++{
++    BoundedOwner owner;
++    QemuThreadBoundedCreateReceipt copy;
++    QemuThreadBoundedCreateReceipt unissued = { 0 };
++    QemuThread foreign;
++    void *unchanged = &copy;
++
++    owner_init(&owner);
++    owner_create(&owner);
++    copy = owner.birth;
++
++    g_assert_cmpint(qemu_thread_bounded_current(&owner.thread, &owner, &copy),
++                    ==, -EPERM);
++    g_assert_cmpint(qemu_thread_bounded_current(&foreign, &owner, &owner.birth),
++                    ==, -EPERM);
++    g_assert_cmpint(qemu_thread_bounded_current(&owner.thread, &foreign,
++                                               &owner.birth), ==, -EPERM);
++    g_assert_cmpint(qemu_thread_bounded_current(&owner.thread, &owner, &unissued),
++                    ==, -EPERM);
++    g_assert_cmpint(qemu_thread_bounded_close(&owner.thread, &owner, &copy),
++                    ==, -EPERM);
++    g_assert_cmpint(qemu_thread_bounded_tryjoin(&owner.thread, &owner, &copy,
++                                               &unchanged), ==, -EPERM);
++    g_assert_true(unchanged == &copy);
++    g_assert_cmpint(qemu_thread_bounded_identity_return(&owner.thread, &owner,
++                                                      &copy), ==, -EPERM);
++    /* Repointing a copied projection cannot create its missing native record. */
++    copy.canonical_owner = &copy;
++    g_assert_cmpint(qemu_thread_bounded_current(&owner.thread, &owner, &copy),
++                    ==, -ESTALE);
++    g_assert_cmpint(qemu_thread_bounded_tryjoin(&owner.thread, &owner, &copy,
++                                               &unchanged), ==, -ESTALE);
++    g_assert_true(unchanged == &copy);
++    g_assert_cmpint(qemu_thread_create_bounded(&owner.thread, "bounded-test",
++        bounded_entry, &owner, owner.stack, BOUNDED_TEST_STACK_BYTES,
++        &owner.birth), ==, -EALREADY);
++    g_assert_cmpint(qemu_thread_bounded_current(&owner.thread, &owner,
++                                               &owner.birth), ==, 0);
++    owner_release(&owner);
++    owner_join(&owner);
++    owner_dispose(&owner);
++}
++
++static void test_noncreator_current_refusal(void)
++{
++    BoundedOwner target;
++    BoundedOwner probe;
++
++    owner_init(&target);
++    owner_create(&target);
++    owner_init(&probe);
++    probe.probe_target = &target;
++    owner_create(&probe);
++
++    /* An actual different pthread has all exact canonical pointers, but did
++     * not create the parked target. Refusal must not change target admission. */
++    g_assert_cmpint(probe.probe_current_status, ==, -EPERM);
++    g_assert_cmpint(qemu_thread_bounded_current(&target.thread, &target,
++                                               &target.birth), ==, 0);
++    owner_release(&probe);
++    owner_join(&probe);
++    owner_release(&target);
++    owner_join(&target);
++    owner_dispose(&probe);
++    owner_dispose(&target);
++}
++
++static void test_definite_no_birth(void)
++{
++    BoundedOwner owner;
++
++    owner_init(&owner);
++    /* The real pthread attribute setter refuses this physical stack geometry. */
++    g_assert_cmpint(qemu_thread_create_bounded(&owner.thread, "bounded-test",
++        bounded_entry, &owner, owner.stack, 1, &owner.birth), ==, -EINVAL);
++    g_assert_false(owner.birth.birth_attempted);
++    g_assert_false(owner.birth.born);
++    g_assert_false(owner.birth.registry_registered);
++    g_assert_false(owner.birth.joined);
++    g_assert_cmpint(qemu_thread_bounded_identity_return(&owner.thread, &owner,
++                                                      &owner.birth), ==, 0);
++    owner_dispose(&owner);
++}
++
++static void bounded_tsd_destructor(void *opaque)
++{
++    BoundedOwner *owner = opaque;
++
++    g_assert_cmpint(pthread_mutex_lock(&owner->lock), ==, 0);
++    owner->tsd_entered = true;
++    g_assert_cmpint(pthread_cond_broadcast(&owner->wake), ==, 0);
++    owner_wait(owner, &owner->tsd_release);
++    g_assert_cmpint(pthread_mutex_unlock(&owner->lock), ==, 0);
++}
++
++static void test_registry_departure_before_tsd(void)
++{
++    BoundedOwner owner;
++    void *unchanged = &owner;
++
++    owner_init(&owner);
++    owner.use_tsd = true;
++    g_assert_cmpint(pthread_key_create(&bounded_test_key,
++                                      bounded_tsd_destructor), ==, 0);
++    owner_create(&owner);
++    owner_release(&owner);
++    g_assert_cmpint(pthread_mutex_lock(&owner.lock), ==, 0);
++    owner_wait(&owner, &owner.tsd_entered);
++
++    /* Actual unregister has run, but this actual thread still owns live TSD. */
++    g_assert_cmpint(qemu_thread_bounded_current(&owner.thread, &owner,
++                                               &owner.birth), ==, -ESTALE);
++    {
++        QemuThreadBoundedCreateReceipt facts;
++
++        g_assert_cmpint(qemu_thread_bounded_observe(&owner.thread, &owner,
++            &owner.birth, &facts), ==, 0);
++        g_assert_true(facts.registry_returned);
++        g_assert_false(facts.joined);
++        g_assert_cmpint(qemu_thread_bounded_current(&owner.thread, &owner,
++                                                   &facts), ==, -EPERM);
++    }
++    g_assert_false(owner.birth.joined);
++    {
++        QemuThreadRamPauseTransaction *pause = g_new0(QemuThreadRamPauseTransaction, 1);
++
++        g_assert_cmpint(qemu_thread_ram_pause_begin(pause), ==, -EBUSY);
++        g_assert_false(pause->active);
++        g_free(pause);
++    }
++    g_assert_cmpint(qemu_thread_bounded_tryjoin(&owner.thread, &owner,
++        &owner.birth, &unchanged), ==, -EBUSY);
++    g_assert_true(unchanged == &owner);
++    g_assert_cmpint(qemu_thread_bounded_identity_return(&owner.thread, &owner,
++                                                      &owner.birth), ==, -EBUSY);
++    owner.tsd_release = true;
++    g_assert_cmpint(pthread_cond_broadcast(&owner.wake), ==, 0);
++    g_assert_cmpint(pthread_mutex_unlock(&owner.lock), ==, 0);
++
++    owner_join(&owner);
++    {
++        QemuThreadRamPauseTransaction *pause = g_new0(QemuThreadRamPauseTransaction, 1);
++        QemuRamPauseEndDisposition end = { 0 };
++
++        /* The genuine native component is now just the live coordinator;
++         * this membership loan still supplies no Source/provider permission. */
++        g_assert_cmpint(qemu_thread_ram_pause_begin(pause), ==, 0);
++        g_assert_cmpint(qemu_thread_ram_pause_validate(pause), ==, 0);
++        g_assert_cmpint(qemu_thread_ram_pause_end_v2(pause, &end), ==, 0);
++        g_assert_true(end.entered);
++        g_assert_true(end.released);
++        g_assert_true(end.notify_entered);
++        g_assert_true(end.notify_returned);
++        g_assert_true(end.complete);
++        g_assert_false(end.uncertain);
++        g_assert_false(pause->active);
++        g_free(pause);
++    }
++    g_assert_cmpint(pthread_key_delete(bounded_test_key), ==, 0);
++    owner_dispose(&owner);
++}
++
++static void test_reuse_after_actual_join(void)
++{
++    BoundedOwner owner;
++    uint64_t prior_generation;
++
++    owner_init(&owner);
++    owner_create(&owner);
++    prior_generation = owner.birth.birth_generation;
++    owner_release(&owner);
++    owner_join(&owner);
++
++    owner.entered = false;
++    owner.release = false;
++    owner_create(&owner);
++    g_assert_cmpuint(owner.birth.birth_generation, >, prior_generation);
++    owner_release(&owner);
++    owner_join(&owner);
++    owner_dispose(&owner);
++}
++
++static void test_copied_process_refusal(void)
++{
++    BoundedOwner owner;
++    pid_t child;
++    int status;
++
++    owner_init(&owner);
++    owner_create(&owner);
++    child = fork();
++    g_assert_cmpint(child, >=, 0);
++    if (!child) {
++        /* Rejection precedes the inherited registry mutex. No child grant. */
++        _exit(qemu_thread_bounded_current(&owner.thread, &owner, &owner.birth)
++              == -EPERM ? 0 : 1);
++    }
++    g_assert_cmpint(waitpid(child, &status, 0), ==, child);
++    g_assert_true(WIFEXITED(status));
++    g_assert_cmpint(WEXITSTATUS(status), ==, 0);
++    owner_release(&owner);
++    owner_join(&owner);
++    owner_dispose(&owner);
++}
++
++int main(int argc, char **argv)
++{
++    g_test_init(&argc, &argv, NULL);
++    g_test_add_func("/crucible/bounded/current-close-join",
++                    test_current_close_join);
++    g_test_add_func("/crucible/bounded/identity-copy-refusal",
++                    test_identity_and_copy_refusal);
++    g_test_add_func("/crucible/bounded/noncreator-current",
++                    test_noncreator_current_refusal);
++    g_test_add_func("/crucible/bounded/definite-no-birth",
++                    test_definite_no_birth);
++    g_test_add_func("/crucible/bounded/registry-before-tsd",
++                    test_registry_departure_before_tsd);
++    g_test_add_func("/crucible/bounded/reuse-after-join",
++                    test_reuse_after_actual_join);
++    g_test_add_func("/crucible/bounded/copied-process",
++                    test_copied_process_refusal);
++    return g_test_run();
++}
 diff --git a/tests/unit/test-crucible-cached-writer.c b/tests/unit/test-crucible-cached-writer.c
 new file mode 100644
 index 0000000000000000000000000000000000000000..2f3d5024f23d2a00d35ae44fb111e2a1e5bde5a3
@@ -251293,6 +252318,85 @@ index 0000000000000000000000000000000000000000..c5cb19100334b78babc16bb6398e5af1
 +
 +if __name__ == "__main__":
 +    main()
+diff --git a/tests/unit/test-crucible-cpu-instance.c b/tests/unit/test-crucible-cpu-instance.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..c00e8391e7b6010a9e630f9c3d3dc8b8b7161926
+--- /dev/null
++++ b/tests/unit/test-crucible-cpu-instance.c
+@@ -0,0 +1,73 @@
++/*
++ * Actual QOM untracked-instance refusal controls; no Source issuer fixture.
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++#include "qemu/osdep.h"
++#include "qemu/module.h"
++#include "qom/object.h"
++
++#define TYPE_UNTRACKED_INSTANCE "crucible-untracked-instance"
++
++static unsigned int finalized;
++
++static void instance_finalize(Object *object)
++{
++    (void)object;
++    finalized++;
++}
++
++static const TypeInfo instance_type = {
++    .name = TYPE_UNTRACKED_INSTANCE,
++    .parent = TYPE_OBJECT,
++    .instance_size = sizeof(Object),
++    .instance_finalize = instance_finalize,
++};
++
++static void test_untracked_instance(void)
++{
++    Object *instance = object_new(TYPE_UNTRACKED_INSTANCE);
++    uintptr_t foreign_receipt = 0;
++    QemuCrucibleCpuSourceAllocationOwner *foreign_owner = (void *)instance;
++    QemuCrucibleCpuAllocationReceipt *receipt = (void *)&foreign_receipt;
++
++    finalized = 0;
++    object_ref(instance);
++    /* Real allocation and Object references do not enroll a Source header or
++     * receipt. The foreign opaque address must not be dereferenced/adopted. */
++    g_assert_cmpint(object_native_allocation_live_instance_current(
++        instance, foreign_owner, receipt, 1), ==, -ESTALE);
++    object_unref(instance);
++    g_assert_cmpuint(finalized, ==, 0);
++    g_assert_cmpint(object_native_allocation_live_instance_current(
++        instance, foreign_owner, receipt, 2), ==, -ESTALE);
++    object_unref(instance);
++    g_assert_cmpuint(finalized, ==, 1);
++}
++
++static void test_invalid_arguments(void)
++{
++    Object *instance = object_new(TYPE_UNTRACKED_INSTANCE);
++    uintptr_t foreign_receipt = 0;
++    QemuCrucibleCpuSourceAllocationOwner *foreign_owner = (void *)instance;
++    QemuCrucibleCpuAllocationReceipt *receipt = (void *)&foreign_receipt;
++
++    g_assert_cmpint(object_native_allocation_live_instance_current(
++        NULL, foreign_owner, receipt, 1), ==, -EINVAL);
++    g_assert_cmpint(object_native_allocation_live_instance_current(
++        instance, NULL, receipt, 1), ==, -EINVAL);
++    g_assert_cmpint(object_native_allocation_live_instance_current(
++        instance, foreign_owner, NULL, 1), ==, -EINVAL);
++    g_assert_cmpint(object_native_allocation_live_instance_current(
++        instance, foreign_owner, receipt, 0), ==, -EINVAL);
++    object_unref(instance);
++}
++
++int main(int argc, char **argv)
++{
++    g_test_init(&argc, &argv, NULL);
++    module_call_init(MODULE_INIT_QOM);
++    type_register_static(&instance_type);
++    g_test_add_func("/crucible/cpu-instance/untracked", test_untracked_instance);
++    g_test_add_func("/crucible/cpu-instance/invalid", test_invalid_arguments);
++    return g_test_run();
++}
 diff --git a/tests/unit/test-crucible-cpu-service-debt.py b/tests/unit/test-crucible-cpu-service-debt.py
 new file mode 100644
 index 0000000000000000000000000000000000000000..e3b00a458e83c3118c2fd43062a99fd714c731ea
@@ -283444,10 +284548,10 @@ index 0000000000000000000000000000000000000000..2d6095e07373bad053241cac032344a2
 +}
 diff --git a/tests/unit/test-crucible-startup-source.c b/tests/unit/test-crucible-startup-source.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..b669b36b2d8e6471d86e2d0a1a8abca45dc08f99
+index 0000000000000000000000000000000000000000..199a68685cfbb10375d42f0d2fb0fa6374c3dcd5
 --- /dev/null
 +++ b/tests/unit/test-crucible-startup-source.c
-@@ -0,0 +1,4675 @@
+@@ -0,0 +1,4718 @@
 +/*
 + * Actual Source lifecycle, accounting and registration controls.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -286698,6 +287802,47 @@ index 0000000000000000000000000000000000000000..b669b36b2d8e6471d86e2d0a1a8abca4
 +    g_assert_false(child->held);
 +}
 +
++static void ordinary_vcpu_init(unsigned int index, void *userdata)
++{
++    unsigned int *calls = userdata;
++
++    (void)index;
++    (*calls)++;
++}
++
++static void scenario_vcpu_unselected_custody_refusal(void)
++{
++    unsigned int calls = 0;
++    struct qemu_plugin_cb callback = { .udata = &calls };
++    QemuCrucibleNativeGroupDescriptorView actual;
++    QemuCrucibleNativeGroupUse use;
++    QemuCrucibleNativeInvocation *frame = NULL;
++    uint64_t serial = 0;
++    qemu_plugin_vcpu_udata_cb_t invoke;
++
++    callback.f.vcpu_udata = ordinary_vcpu_init;
++    /* The actual ordinary descriptor observer and Native dispatch run here.
++     * No native association, Source role or CPU is fabricated into acceptance. */
++    use = qemu_plugin_crucible_native_vcpu_init_use_begin_v1(
++        &callback.native_registration, plugin_vcpu_init_descriptor_observe,
++        &callback, 0, NULL, &actual);
++    g_assert_cmpint(use.invocation_status, ==, -ENOENT);
++    g_assert_null(use.record);
++    g_assert_null(use.invocation.frame);
++    g_assert_null(use.mask.frame);
++    invoke = actual.function;
++    g_assert_true(invoke == ordinary_vcpu_init);
++    invoke(0, actual.userdata);
++    qemu_plugin_crucible_native_group_use_end_v1(use);
++    g_assert_cmpuint(calls, ==, 1);
++    g_assert_cmpint(qemu_plugin_crucible_native_use_borrow_v1(
++        NULL, &frame, &serial), ==, -EPERM);
++    g_assert_null(frame);
++    g_assert_cmpuint(serial, ==, 0);
++    g_assert_null(qemu_crucible_startup_source_native_selection_v1());
++    g_assert_null(qemu_crucible_startup_source_native_dispatch_hint_v1());
++}
++
 +static void scenario_registration_cleanup_prepared(void)
 +{
 +    fixture_cleanup_prepare(true);
@@ -287908,6 +289053,7 @@ index 0000000000000000000000000000000000000000..b669b36b2d8e6471d86e2d0a1a8abca4
 +SOURCE_SCENARIO(action_codec_distinct_borrower_rows)
 +SOURCE_SCENARIO(action_same_birth_masks_are_monotone)
 +SOURCE_SCENARIO(setup_layout_is_not_a_mapping_owner)
++SOURCE_SCENARIO(vcpu_unselected_custody_refusal)
 +SOURCE_SCENARIO(registration_cleanup_prepared)
 +SOURCE_SCENARIO(registration_cleanup_no_native)
 +SOURCE_SCENARIO(registration_cleanup_no_owner)
@@ -288077,6 +289223,7 @@ index 0000000000000000000000000000000000000000..b669b36b2d8e6471d86e2d0a1a8abca4
 +    REGISTER_SCENARIO(action_codec_distinct_borrower_rows);
 +    REGISTER_SCENARIO(action_same_birth_masks_are_monotone);
 +    REGISTER_SCENARIO(setup_layout_is_not_a_mapping_owner);
++    REGISTER_SCENARIO(vcpu_unselected_custody_refusal);
 +    REGISTER_SCENARIO(registration_cleanup_prepared);
 +    REGISTER_SCENARIO(registration_cleanup_no_native);
 +    REGISTER_SCENARIO(registration_cleanup_no_owner);
@@ -299916,7 +301063,7 @@ index 4773755fd582e82436159cba2e114e047aae7478..74516a1c97422b317868dfb54686c357
          }
          break;
 diff --git a/util/qemu-thread-posix.c b/util/qemu-thread-posix.c
-index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..80013eb0c4819b90d167512b94b00b9aeb03f68e 100644
+index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..cf26f44bbd6bd2e288c15708f03719e7fc8f1f59 100644
 --- a/util/qemu-thread-posix.c
 +++ b/util/qemu-thread-posix.c
 @@ -22,6 +22,138 @@
@@ -300734,11 +301881,12 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..80013eb0c4819b90d167512b94b00b9a
      if (err && err != ETIMEDOUT) {
          error_exit(err, __func__);
      }
-@@ -379,65 +1087,1976 @@ typedef struct {
+@@ -379,65 +1087,2270 @@ typedef struct {
      void *(*start_routine)(void *);
      void *arg;
      char *name;
 +    int mode;
++    QemuThreadBoundedCreateReceipt *bounded;
  } QemuThreadArgs;
  
 -static void *qemu_thread_start(void *args)
@@ -300756,6 +301904,13 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..80013eb0c4819b90d167512b94b00b9a
 +    bool tracked;
 +    QemuThreadHotForkDisposition disposition;
 +    QemuThreadRamActorBinding ram_actor;
++    QemuThreadBoundedCreateReceipt *bounded;
++    void *bounded_native_owner;
++    pthread_t bounded_thread;
++    uint64_t bounded_birth_generation;
++    struct QemuHotForkThreadRecord *bounded_next;
++    bool bounded_departed;
++    bool bounded_joined;
 +    /* Whole record geometry includes these fields. A constructor must retain
 +     * its own prebirth fee; the fixed writer floor never pays registry rows. */
 +    void *ram_writer_cpu;
@@ -300769,6 +301924,8 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..80013eb0c4819b90d167512b94b00b9a
 +
 +static pthread_mutex_t qemu_hot_fork_thread_lock = PTHREAD_MUTEX_INITIALIZER;
 +static GList *qemu_hot_fork_threads;
++/* Exact actual bounded records, retained independently of live census rows. */
++static QemuHotForkThreadRecord *qemu_hot_fork_bounded_threads;
 +static size_t qemu_hot_fork_thread_count;
 +static size_t qemu_hot_fork_thread_overflow;
 +static size_t qemu_hot_fork_thread_starts_in_flight;
@@ -301607,6 +302764,249 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..80013eb0c4819b90d167512b94b00b9a
 +    }
 +}
 +
++static bool bounded_identity(QemuThread *thread, void *native_owner,
++                             QemuThreadBoundedCreateReceipt *receipt)
++{
++    /* Process identity is immutable and checked before inherited locks. */
++    return thread && native_owner && receipt &&
++        receipt->canonical_owner == receipt && receipt->thread_owner == thread &&
++        receipt->native_owner == native_owner && receipt->process_id == getpid();
++}
++
++static bool bounded_creator(QemuThread *thread, void *native_owner,
++                            QemuThreadBoundedCreateReceipt *receipt)
++{
++    return bounded_identity(thread, native_owner, receipt) &&
++        qemu_thread_is_self(&receipt->creator);
++}
++
++static QemuHotForkThreadRecord *bounded_record_locked(
++    QemuThreadBoundedCreateReceipt *receipt)
++{
++    QemuHotForkThreadRecord *record;
++
++    for (record = qemu_hot_fork_bounded_threads; record;
++         record = record->bounded_next) {
++        if (record->bounded == receipt &&
++            record->bounded_native_owner == receipt->native_owner &&
++            record->bounded_birth_generation == receipt->birth_generation) {
++            return record;
++        }
++    }
++    return NULL;
++}
++
++static void qemu_hot_fork_thread_bounded_enroll(
++    QemuHotForkThreadRecord *record, QemuThreadBoundedCreateReceipt *receipt,
++    void *native_owner)
++{
++    int status;
++
++    if (!receipt) {
++        return;
++    }
++    pthread_mutex_lock(&qemu_hot_fork_thread_lock);
++    /* Keep the actual record association even on inventory refusal so its
++     * later real unregister has an independent retained return journal. */
++    record->bounded = receipt;
++    record->bounded_native_owner = native_owner;
++    record->bounded_thread = pthread_self();
++    record->bounded_birth_generation = receipt->birth_generation;
++    record->bounded_next = qemu_hot_fork_bounded_threads;
++    qemu_hot_fork_bounded_threads = record;
++    receipt->registry_registered = true;
++    status = !bounded_identity(receipt->thread_owner, native_owner, receipt) || !receipt->birth_generation ? -EPERM :
++        !record->tracked ? -ENOSPC : 0;
++    receipt->enrollment_status = status;
++    receipt->enrollment_complete = true;
++    pthread_mutex_unlock(&qemu_hot_fork_thread_lock);
++}
++
++static int bounded_current(QemuThread *thread, void *native_owner,
++                           QemuThreadBoundedCreateReceipt *receipt, bool self)
++{
++    QemuHotForkThreadRecord *match;
++    int status;
++
++    if (!bounded_identity(thread, native_owner, receipt)) {
++        return -EPERM;
++    }
++    pthread_mutex_lock(&qemu_hot_fork_thread_lock);
++    if (receipt->identity_returned || receipt->closing ||
++        receipt->registry_returned) {
++        status = -ESTALE;
++    } else if (!receipt->enrollment_complete) {
++        status = -EAGAIN;
++    } else if (receipt->enrollment_status) {
++        status = receipt->enrollment_status;
++    } else {
++        match = bounded_record_locked(receipt);
++        status = !receipt->birth_generation || !receipt->registry_registered ||
++            !match || !match->tracked || match->bounded_departed ||
++            (self ? match != qemu_hot_fork_current_thread :
++             !pthread_equal(match->bounded_thread, thread->thread)) ? -ESTALE : 0;
++    }
++    pthread_mutex_unlock(&qemu_hot_fork_thread_lock);
++    return status;
++}
++
++int qemu_thread_bounded_current(QemuThread *thread, void *native_owner,
++                               QemuThreadBoundedCreateReceipt *receipt)
++{
++    /* Only the creator may observe the published pthread output. A newborn
++     * must use self_current's actual registry/TLS identity instead. */
++    if (!bounded_creator(thread, native_owner, receipt)) {
++        return -EPERM;
++    }
++    return bounded_current(thread, native_owner, receipt, false);
++}
++
++int qemu_thread_bounded_self_current(QemuThread *thread, void *native_owner,
++                                    QemuThreadBoundedCreateReceipt *receipt)
++{
++    return bounded_current(thread, native_owner, receipt, true);
++}
++
++int qemu_thread_bounded_observe(QemuThread *thread, void *native_owner,
++                               QemuThreadBoundedCreateReceipt *receipt,
++                               QemuThreadBoundedCreateReceipt *out)
++{
++    uintptr_t output = (uintptr_t)out;
++    uintptr_t input = (uintptr_t)receipt;
++
++    if (!bounded_creator(thread, native_owner, receipt) || !out) {
++        return -EPERM;
++    }
++    if (output > UINTPTR_MAX - sizeof(*out) ||
++        input > UINTPTR_MAX - sizeof(*receipt) ||
++        (output < input + sizeof(*receipt) && input < output + sizeof(*out))) {
++        return -EINVAL;
++    }
++    pthread_mutex_lock(&qemu_hot_fork_thread_lock);
++    if (receipt->born && !receipt->identity_returned &&
++        !bounded_record_locked(receipt)) {
++        pthread_mutex_unlock(&qemu_hot_fork_thread_lock);
++        return -ESTALE;
++    }
++    *out = *receipt;
++    pthread_mutex_unlock(&qemu_hot_fork_thread_lock);
++    return 0;
++}
++
++int qemu_thread_bounded_close(QemuThread *thread, void *native_owner,
++                             QemuThreadBoundedCreateReceipt *receipt)
++{
++    if (!bounded_creator(thread, native_owner, receipt)) {
++        return -EPERM;
++    }
++    pthread_mutex_lock(&qemu_hot_fork_thread_lock);
++    if (receipt->identity_returned ||
++        (receipt->registry_registered && !bounded_record_locked(receipt))) {
++        pthread_mutex_unlock(&qemu_hot_fork_thread_lock);
++        return -ESTALE;
++    }
++    receipt->closing = true;
++    pthread_mutex_unlock(&qemu_hot_fork_thread_lock);
++    return 0;
++}
++
++int qemu_thread_bounded_tryjoin(QemuThread *thread, void *native_owner,
++                               QemuThreadBoundedCreateReceipt *receipt,
++                               void **result)
++{
++    QemuHotForkThreadRecord *record;
++    int status;
++
++    if (!result || !bounded_creator(thread, native_owner, receipt)) {
++        return -EPERM;
++    }
++    pthread_mutex_lock(&qemu_hot_fork_thread_lock);
++    record = bounded_record_locked(receipt);
++    if (receipt->identity_returned || !receipt->born) {
++        status = -EPERM;
++    } else if (!receipt->enrollment_complete) {
++        status = -EBUSY;
++    } else if (!record || !pthread_equal(record->bounded_thread, thread->thread)) {
++        status = -ESTALE;
++    } else if (receipt->joined) {
++        status = -EALREADY;
++    } else {
++        status = receipt->joining ? -EBUSY : 0;
++    }
++    if (!status) {
++        receipt->joining = true;
++    }
++    pthread_mutex_unlock(&qemu_hot_fork_thread_lock);
++    if (status) {
++        return status;
++    }
++    status = qemu_thread_tryjoin(thread, result);
++    pthread_mutex_lock(&qemu_hot_fork_thread_lock);
++    if (!status) {
++        receipt->joined = true;
++        record = bounded_record_locked(receipt);
++        if (record) {
++            record->bounded_joined = true;
++        } else if (!receipt->registry_return_status) {
++            /* Preserve actual join separately from an independent lost join
++             * association. Neither status reconstructs a missing owner. */
++            receipt->registry_return_status = -ESTALE;
++        }
++    }
++    receipt->joining = false;
++    pthread_mutex_unlock(&qemu_hot_fork_thread_lock);
++    return status;
++}
++
++int qemu_thread_bounded_identity_return(QemuThread *thread, void *native_owner,
++                                       QemuThreadBoundedCreateReceipt *receipt)
++{
++    QemuHotForkThreadRecord *record = NULL;
++    int status = 0;
++
++    if (!bounded_creator(thread, native_owner, receipt)) {
++        return -EPERM;
++    }
++    pthread_mutex_lock(&qemu_hot_fork_thread_lock);
++    if (receipt->identity_returned) {
++        status = -EALREADY;
++    } else if (receipt->registry_return_status) {
++        status = receipt->registry_return_status;
++    } else if (receipt->joining) {
++        status = -EBUSY;
++    } else if (receipt->born) {
++        record = bounded_record_locked(receipt);
++        if (!record) {
++            status = -ESTALE;
++        } else if (!receipt->joined || !record->bounded_joined ||
++                   !receipt->registry_registered || !receipt->registry_returned ||
++                   !record->bounded_departed) {
++            status = -EBUSY;
++        }
++    } else if (receipt->registry_registered ||
++               (receipt->birth_attempted && receipt->create_status >= 0)) {
++        status = -EBUSY;
++    }
++    if (!status) {
++        if (record) {
++            QemuHotForkThreadRecord **link = &qemu_hot_fork_bounded_threads;
++
++            while (*link != record) {
++                link = &(*link)->bounded_next;
++            }
++            *link = record->bounded_next;
++        }
++        receipt->identity_returned = true;
++    }
++    pthread_mutex_unlock(&qemu_hot_fork_thread_lock);
++    /* The real record allocation retires only after actual join. Allocator
++     * history remains paid; no native lock spans this physical free. */
++    if (!status) {
++        g_free(record);
++    }
++    return status;
++}
++
 +static void qemu_hot_fork_thread_start_end(void)
 +{
 +    int err = pthread_mutex_lock(&qemu_hot_fork_thread_lock);
@@ -301702,6 +303102,21 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..80013eb0c4819b90d167512b94b00b9a
 +        error_exit(err, __func__);
 +    }
 +    ram_membership_wait_locked();
++    if (record->bounded) {
++        QemuThreadBoundedCreateReceipt *receipt = record->bounded;
++        int status = !bounded_identity(receipt->thread_owner,
++                                       record->bounded_native_owner, receipt) ||
++            !pthread_equal(record->bounded_thread, pthread_self()) ||
++            receipt->birth_generation != record->bounded_birth_generation ||
++            !receipt->registry_registered || receipt->registry_returned ?
++            -ESTALE : 0;
++
++        if (status && !receipt->registry_return_status) {
++            receipt->registry_return_status = status;
++        }
++        receipt->registry_returned = true;
++        record->bounded_departed = true;
++    }
 +    if (record->tracked) {
 +        qemu_hot_fork_threads = g_list_remove(qemu_hot_fork_threads, record);
 +        assert(qemu_hot_fork_thread_count > 0);
@@ -301716,7 +303131,9 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..80013eb0c4819b90d167512b94b00b9a
 +        error_exit(err, __func__);
 +    }
 +    qemu_hot_fork_current_thread = NULL;
-+    g_free(record);
++    if (!record->bounded) {
++        g_free(record);
++    }
 +}
 +
 +static int qemu_hot_fork_thread_entry_compare(const void *left,
@@ -302029,6 +303446,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..80013eb0c4819b90d167512b94b00b9a
 +        restart_thread_ids[restart_thread_count++] = record->thread_id;
 +    }
 +    if (qemu_hot_fork_thread_overflow != 0 ||
++        qemu_hot_fork_bounded_threads ||
 +        qemu_hot_fork_thread_starts_in_flight != 0 ||
 +        coordinator_count != 1 || rcu_restart_count != 1 ||
 +        monitor_restart_count != 1 || vcpu_restart_count > 1 ||
@@ -302159,6 +303577,25 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..80013eb0c4819b90d167512b94b00b9a
 +    return status ? -status : matches == 1 ? 0 : -ESTALE;
 +}
 +
++static bool bounded_ram_pause_current_locked(QemuThreadRamActorBinding *binding)
++{
++    QemuHotForkThreadRecord *record;
++
++    for (record = qemu_hot_fork_bounded_threads; record;
++         record = record->bounded_next) {
++        /* Preserve only the existing exact, separately paused RAM actor. All
++         * other bounded owners lack role quiescence; even a departed record
++         * can still own live TLS/TSD until actual join and identity return. */
++        if (record->bounded_departed || binding != &record->ram_actor ||
++            binding->record != record || binding->process_id != getpid() ||
++            binding->thread_id != record->thread_id ||
++            record->disposition != QEMU_THREAD_HOT_FORK_RAM_ACTOR) {
++            return false;
++        }
++    }
++    return true;
++}
++
 +int qemu_thread_ram_pause_begin_actor(QemuThreadRamPauseTransaction *transaction,
 +                                      QemuThreadRamActorBinding *binding)
 +{
@@ -302181,6 +303618,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..80013eb0c4819b90d167512b94b00b9a
 +    }
 +    if (ram_membership_owner || qemu_hot_fork_thread_overflow ||
 +        qemu_hot_fork_thread_starts_in_flight ||
++        !bounded_ram_pause_current_locked(binding) ||
 +        qemu_hot_fork_thread_count > QEMU_RAM_PAUSE_MAX_THREADS) {
 +        status = -EBUSY;
 +        goto fail;
@@ -302436,6 +303874,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..80013eb0c4819b90d167512b94b00b9a
 +    }
 +    qemu_hot_fork_registry_blocker[0] = '\0';
 +    if (qemu_hot_fork_thread_overflow != 0 ||
++        qemu_hot_fork_bounded_threads ||
 +        qemu_hot_fork_thread_starts_in_flight != 0 ||
 +        qemu_hot_fork_thread_count != 3 + vcpu_restart_count ||
 +        coordinator_count != 1 ||
@@ -302704,6 +304143,8 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..80013eb0c4819b90d167512b94b00b9a
 +    hot_fork_record = qemu_hot_fork_thread_register(
 +        qemu_thread_args->name, mode, QEMU_THREAD_HOT_FORK_UNCLASSIFIED);
 +    qemu_hot_fork_current_thread = hot_fork_record;
++    qemu_hot_fork_thread_bounded_enroll(hot_fork_record,
++                                        qemu_thread_args->bounded, arg);
 +    qemu_hot_fork_thread_start_end();
 +    g_free(qemu_thread_args->name);
 +    g_free(qemu_thread_args);
@@ -302756,7 +304197,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..80013eb0c4819b90d167512b94b00b9a
      sigfillset(&set);
      /* Blocking the signals can result in undefined behaviour. */
      sigdelset(&set, SIGSEGV);
-@@ -450,18 +3069,142 @@ void qemu_thread_create(QemuThread *thread, const char *name,
+@@ -450,18 +3363,178 @@ void qemu_thread_create(QemuThread *thread, const char *name,
      qemu_thread_args->name = g_strdup(name);
      qemu_thread_args->start_routine = start_routine;
      qemu_thread_args->arg = arg;
@@ -302777,6 +304218,11 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..80013eb0c4819b90d167512b94b00b9a
      pthread_attr_destroy(&attr);
  }
  
++size_t qemu_thread_bounded_registry_fixed_storage_bytes(void)
++{
++    return sizeof(qemu_hot_fork_bounded_threads);
++}
++
 +size_t qemu_thread_hot_fork_record_storage_bytes(void)
 +{
 +    /* Requested typed bodies, including padding and the actual list cell.
@@ -302802,12 +304248,42 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..80013eb0c4819b90d167512b94b00b9a
 +    QemuThreadArgs *arguments = NULL;
 +    sigset_t blocked, previous;
 +    size_t name_bytes;
++    uint64_t prior_generation = 0;
 +    int status;
 +
-+    if (!thread || !name || !entry || !stack || !stack_bytes || !receipt) {
++    if (!thread || !name || !entry || !opaque || !stack || !stack_bytes || !receipt) {
 +        return -EINVAL;
 +    }
-+    *receipt = (QemuThreadBoundedCreateReceipt) { 0 };
++    if (receipt->canonical_owner) {
++        if (!bounded_creator(thread, opaque, receipt)) {
++            return -EPERM;
++        }
++        pthread_mutex_lock(&qemu_hot_fork_thread_lock);
++        status = bounded_record_locked(receipt) || !receipt->identity_returned ?
++            -EALREADY : 0;
++        pthread_mutex_unlock(&qemu_hot_fork_thread_lock);
++        if (status) {
++            return status;
++        }
++        prior_generation = receipt->birth_generation;
++    }
++    *receipt = (QemuThreadBoundedCreateReceipt) {
++        .canonical_owner = receipt,
++        .thread_owner = thread,
++        .native_owner = opaque,
++        .process_id = getpid(),
++        .birth_generation = prior_generation,
++        .enrollment_status = -EINPROGRESS,
++    };
++    qemu_thread_get_self(&receipt->creator);
++    if (prior_generation == UINT64_MAX) {
++        receipt->first_status = -EOVERFLOW;
++        return -EOVERFLOW;
++    }
++    /* Generation is local to this retained owner/cell identity, not a TID or
++     * the independently mutable registry census generation. Failed attempts
++     * consume history too; no process-global counter or new credit is needed. */
++    receipt->birth_generation++;
 +    name_bytes = strnlen(name, QEMU_HOT_FORK_THREAD_NAME_MAX + 1) + 1;
 +    if (!qemu_thread_bounded_control_bytes(name_bytes)) {
 +        receipt->first_status = -EINVAL;
@@ -302842,6 +304318,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..80013eb0c4819b90d167512b94b00b9a
 +    arguments->start_routine = entry;
 +    arguments->arg = opaque;
 +    arguments->mode = QEMU_THREAD_JOINABLE;
++    arguments->bounded = receipt;
 +
 +    sigfillset(&blocked);
 +    sigdelset(&blocked, SIGSEGV);

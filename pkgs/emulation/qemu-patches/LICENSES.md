@@ -266,6 +266,8 @@ The atomic integration patch creates these QEMU source files:
 | `plugins/crucible-parent-park.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `stubs/crucible-native-park.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `system/crucible-native-park-request.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-bounded-thread.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-cpu-instance.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 
 The separately built Rust `crucible-qemu-plugin` and C
 `crucible-qemu-trace-plugin` carry explicit GPL-2.0-only notices. The generated

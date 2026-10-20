@@ -1693,7 +1693,9 @@ in
                   ./pyvenv/bin/meson test --no-rebuild --verbose \
                     test-crucible-process-purpose test-qmp-cmds \
                     test-crucible-hot-fork-coordinator \
-                    test-crucible-acpi-pm-wide-clock
+                    test-crucible-acpi-pm-wide-clock \
+                    test-crucible-bounded-thread \
+                    test-crucible-cpu-instance
                 )
               ''}
 
