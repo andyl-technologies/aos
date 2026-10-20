@@ -9299,6 +9299,23 @@ current-trunk aggregate remains required before merging this component.
 Existing guarded sources and native qualification order remain preserved,
 and no task checkbox advances.
 
+Lower-serving continuation `ab3ea96d59` connects the existing verified lower
+fetch to the native owner's actual bounded admission queue. It returns the
+verified encoded body immediately alongside a ticket for the real physical
+command; callers need not wait for reservation, eviction or completion to use
+lower bytes. The immutable configured chunk profile and independent repository
+descriptor bind verification. Existing direct admission awaits the same
+completion channel, and dropping a ticket does not cancel accepted work.
+The native pressure control now also refuses corrupt lower bytes, holds actual
+policy custody while returning valid bytes, independently observes unchanged
+original backing and policy, retains the served body through genuine capacity
+refusal, and retries after measured last-descriptor quota release. All earlier
+controls, selected cases, project bounds and deadlines remain unchanged.
+Source-bound strict checks, image/archive preparation and required application
+target compilation are under qualification. Native execution remains queued
+after actual collection and review of `8c33b55956`; no runtime pass, complete
+HOST-19, NativeReady or task acceptance is claimed.
+
 The older shared-directory aggregate at `86fb63e127` actually terminates with
 failure after 18,940.237 seconds. Nextest reports 2,149 run, 2,141 passed,
 seven failed, one timed out and ten skipped. Five failed Linux cases use the
