@@ -1,5 +1,6 @@
 """Checks actual pending pack units, missing peers and foreign charge ownership."""
 
+import contextlib
 import fcntl
 import hashlib
 import os
@@ -40,13 +41,56 @@ def body_paths(root):
     return list((root / "pending-delete").iterdir()) + list((root / "objects/pack").glob("*/*"))
 
 
+@contextlib.contextmanager
+def seed_namespace(driver, case):
+    """Injects foreign custody before startup, then restores directory inheritance."""
+    if case != "pending-pack-foreign":
+        yield
+        return
+
+    path = driver.root(case) / "pending-delete"
+    driver.require(not any(path.iterdir()), "foreign seed namespace is not empty")
+    directory = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        original = bytearray(28)
+        fcntl.ioctl(directory, 0x801c581f, original, True)
+        flags = struct.unpack_from("<I", original)[0]
+        driver.require(flags & 0x200 and struct.unpack_from("<I", original, 12)[0]
+                       == driver.project(case), "foreign seed lost its inheriting project root")
+        before = os.fstat(directory)
+
+        # ext4 refuses a foreign-project rename into a PROJINHERIT directory.
+        # Only root administration, before either role starts, relaxes this
+        # directory flag for fault injection. Neither inode's project changes.
+        temporary = bytearray(original)
+        struct.pack_into("<I", temporary, 0, flags & ~0x200)
+        fcntl.ioctl(directory, 0x401c5820, temporary)
+        try:
+            os.fsync(directory)
+            yield
+        finally:
+            fcntl.ioctl(directory, 0x401c5820, original)
+            os.fsync(directory)
+            restored = bytearray(28)
+            fcntl.ioctl(directory, 0x801c581f, restored, True)
+            after = os.fstat(directory)
+            driver.require(restored[:8] == original[:8] and restored[12:] == original[12:]
+                           and (after.st_dev, after.st_ino, after.st_uid, after.st_gid,
+                                after.st_mode) == (before.st_dev, before.st_ino, before.st_uid,
+                                                   before.st_gid, before.st_mode),
+                           "foreign seed failed to restore original directory custody")
+    finally:
+        os.close(directory)
+
+
 def seed(driver, uuid):
     """Retains real administrative inputs before either native role starts."""
     originals = {}
     for case, locations in CASES.items():
-        result = driver.run(driver.admin_command(driver.SEED_CAPS, [
-            driver.IMAGE / "bin/host_cache_fixture", "seed-pending-pack",
-        ]), env=driver.actor_environment(case, uuid), text=True, capture_output=True)
+        with seed_namespace(driver, case):
+            result = driver.run(driver.admin_command(driver.SEED_CAPS, [
+                driver.IMAGE / "bin/host_cache_fixture", "seed-pending-pack",
+            ]), env=driver.actor_environment(case, uuid), text=True, capture_output=True)
         driver.require(result.stdout.splitlines() == [
             "SEEDED actual pending pack/index candidates; no content or retirement authority"
         ], "pending pack seed omitted actual administrative inputs")
