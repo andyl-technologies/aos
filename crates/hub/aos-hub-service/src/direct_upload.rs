@@ -12,8 +12,11 @@ use aos_hub_db::db::{Database, DirectUploadSessionRecord};
 use aos_hub_db::direct_upload::*;
 use aos_hub_model::auth::jwt::Claims;
 
-// Bounds remote authority reads and SQL work while preserving public item order.
-const MAX_AUTHORITY_ITEM_CONCURRENCY: usize = 8;
+/// Maximum logical items processed concurrently within one control request.
+///
+/// Native discovery advertises at most one execution wave so queued items do
+/// not consume the same foreground deadline before their validation starts.
+pub const MAX_AUTHORITY_ITEM_CONCURRENCY: usize = 8;
 
 /// Retained logical service whose configured authority owns current dependencies.
 pub struct DirectUploadService {
@@ -65,6 +68,16 @@ impl DirectUploadService {
     /// # Errors
     /// Returns an error for absent current authentication, invalid envelope or time.
     pub async fn dispatch(
+        &self,
+        claims: &Claims,
+        envelope: &DirectLogicalRequestEnvelope,
+        now: i64,
+    ) -> Result<DirectUploadLogicalReply> {
+        Database::with_direct_dependency_plan_scope(self.dispatch_inner(claims, envelope, now))
+            .await
+    }
+
+    async fn dispatch_inner(
         &self,
         claims: &Claims,
         envelope: &DirectLogicalRequestEnvelope,

@@ -147,6 +147,16 @@ impl Database {
         &self,
         publication: &str,
     ) -> Result<Vec<CheckedStatement>> {
+        super::plan_scope::publication_plan(self, publication, || {
+            self.build_direct_publication_provenance_locks(publication)
+        })
+        .await
+    }
+
+    async fn build_direct_publication_provenance_locks(
+        &self,
+        publication: &str,
+    ) -> Result<Vec<CheckedStatement>> {
         const MAX_COPIES: i64 = 65_536;
         const MAX_STATEMENTS: usize = 11_000;
         let count = self.backend.query_opt(

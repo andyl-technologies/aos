@@ -400,6 +400,10 @@ async fn sixty_four_real_admissions_share_one_signed_discovery_and_new_invocatio
         caps.maximum_batch_items,
         expected_budget.maximum_items().unwrap()
     );
+    assert!(
+        caps.maximum_batch_items <= 8,
+        "foreground batches must fit one Native authority execution wave"
+    );
     server.abort();
 }
 

@@ -1,8 +1,9 @@
-//! Sizes advertised hybrid batches against their private Native replies.
+//! Sizes advertised hybrid batches against execution waves and private replies.
 //!
 //! External placements carry complete read and write authority snapshots. A
 //! small public Begin request can therefore produce a much larger private
-//! reply. Discovery accounts for those snapshots before clients choose a wave.
+//! reply. Discovery accounts for those snapshots and admits at most one Native
+//! authority execution wave within each fixed foreground budget.
 
 use super::*;
 
@@ -42,6 +43,8 @@ impl ReplyBudget {
             .context("direct reply item budget overflow")?;
         let count = (MAX_DIRECT_CONTROL_BYTES - ENVELOPE_RESERVE_BYTES) / item_bytes;
         ensure!(count > 0, "direct placement reply exceeds control budget");
-        Ok(count.min(MAX_DIRECT_BATCH_ITEMS) as u32)
+        Ok(count
+            .min(MAX_DIRECT_BATCH_ITEMS)
+            .min(aos_hub_service::direct_upload::MAX_AUTHORITY_ITEM_CONCURRENCY) as u32)
     }
 }
