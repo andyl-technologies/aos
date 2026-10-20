@@ -270,7 +270,8 @@ impl NativeImport18ShapeValidateAttemptData {
                     };
                     match Id::try_from_owned(code) {
                         Ok(id) => error.code_check = Some(CodeCheck::Valid(id)),
-                        Err((code, reason)) => {
+                        Err(refusal) => {
+                            let (code, reason) = refusal.into_parts();
                             error.code_check = Some(CodeCheck::Invalid(code));
                             return Err(ProviderError::Contract(reason));
                         }

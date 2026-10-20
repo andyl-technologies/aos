@@ -270,6 +270,13 @@ impl HistoricalType for String {
 }
 
 impl HistoricalType for Id {
+    fn borrowed_header_counter_scratch_data() -> usize {
+        std::mem::size_of::<Option<Self>>()
+            + std::mem::size_of::<Result<Option<Self>, ProviderError>>()
+            + crucible_node_format::IdFromOwnedError::construction_transient_bytes_data()
+            + crucible_node_format::IdFromOwnedError::construction_counter_scratch_bytes_data()
+    }
+
     fn read(
         input: &[u8],
         ledger: &mut Ledger<'_, '_, '_>,

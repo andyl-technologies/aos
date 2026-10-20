@@ -528,3 +528,37 @@ fn actual_string_copy_paths_cover_empty_utf8_and_full_invalid_code_without_a_new
         }
     }
 }
+
+#[test]
+fn typed_identifier_refusal_is_funded_before_scalar_transfer_at_exact_boundary() {
+    for short in [false, true] {
+        let source = shallow_error_source("bad id", &"x".repeat(4097));
+        let mut owner = take(source);
+        let row = storage::quote_data(owner.source.as_ref().unwrap(), usize::MAX).unwrap();
+        let exact = add(add(row.retained, row.transient).unwrap(), row.scratch).unwrap();
+        let raw = owner.retained_frame_data().unwrap().bytes.as_ptr();
+        if short {
+            assert!(owner.quote_into_data(exact - 1).is_err());
+            assert!(owner.fields.error.is_none());
+            assert_eq!(owner.retained_frame_data().unwrap().bytes.as_ptr(), raw);
+            assert!(owner.run_data().is_err());
+            assert!(owner.fields.error.is_none());
+        } else {
+            owner.quote_into_data(exact).unwrap();
+            let result = owner.run_data();
+            assert!(matches!(
+                &result,
+                Err(ProviderError::Contract(
+                    crucible_node_format::ContractError::Invalid { field: "id", .. }
+                ))
+            ));
+            census(&owner, &result);
+            assert_eq!(owner.retained_frame_data().unwrap().bytes.as_ptr(), raw);
+            let fields = owner.fields.error.as_ref().unwrap();
+            assert!(
+                matches!(&fields.code_check, Some(CodeCheck::Invalid(text)) if text == "bad id")
+            );
+            assert!(owner.error_details_canonical_bytes_data().is_none());
+        }
+    }
+}

@@ -22,6 +22,98 @@ pub const MAX_ID_BYTES: usize = 128;
 #[serde(transparent)]
 pub struct Id(String);
 
+/// Retains an invalid identifier's original input and its validation cause.
+///
+/// The input remains owned with its original allocation and spare capacity.
+/// Display and Debug render only the validation cause. Call [`Self::into_parts`] to
+/// restore the input to a failed decoder before returning that cause.
+#[repr(transparent)]
+pub struct IdFromOwnedError {
+    inner: (String, ContractError),
+}
+
+impl IdFromOwnedError {
+    /// Returns the original owned input and its unchanged validation cause.
+    ///
+    /// This consumes the refusal without cloning, formatting, or reallocating
+    /// either field. It grants no retry or decoding authority.
+    pub fn into_parts(self) -> (String, ContractError) {
+        self.inner
+    }
+
+    /// Names the concrete owned constructor and recovery windows.
+    ///
+    /// This fixed transient increment excludes the input/cause backing and
+    /// existing scalar parsing, formatting and allocator work. A caller admits
+    /// it before taking its String; it is not an allocation or permission.
+    pub const fn construction_transient_bytes_data() -> usize {
+        OWNED_ID_REFUSAL_TRANSIENT
+    }
+
+    /// Names the added adapter, recovery and partial-drop control loans.
+    ///
+    /// The constant includes its own scalar query outputs. It executes no
+    /// validation, formatting, allocation, or runtime geometry walk.
+    pub const fn construction_counter_scratch_bytes_data() -> usize {
+        OWNED_ID_REFUSAL_CONTROLS
+    }
+}
+
+impl fmt::Debug for IdFromOwnedError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&self.inner.1, formatter)
+    }
+}
+
+impl fmt::Display for IdFromOwnedError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.inner.1, formatter)
+    }
+}
+
+impl std::error::Error for IdFromOwnedError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.inner.1)
+    }
+}
+
+// These terms name actual source operands, rather than borrowing the old
+// tuple/Result row or assuming repr(transparent) pays for ownership transfers.
+const OWNED_ID_REFUSAL_TRANSIENT: usize = std::mem::size_of::<String>() // invalid payload String field input
+    + std::mem::size_of::<ContractError>() // invalid payload cause field input
+    + std::mem::size_of::<(String, ContractError)>() // payload initializer
+    + std::mem::size_of::<(String, ContractError)>() // wrapper field input
+    + std::mem::size_of::<IdFromOwnedError>() // wrapper initializer
+    + std::mem::size_of::<IdFromOwnedError>() // Err owned input
+    + std::mem::size_of::<Result<Id, IdFromOwnedError>>() // selected Ok/Err initializer
+    + std::mem::size_of::<Result<Id, IdFromOwnedError>>() // constructor return
+    + std::mem::size_of::<IdFromOwnedError>() // caller Err match binding
+    + std::mem::size_of::<IdFromOwnedError>() // FnOnce tuple field input
+    + std::mem::size_of::<(IdFromOwnedError,)>() // FnOnce tuple initializer
+    + std::mem::size_of::<(IdFromOwnedError,)>() // FnOnce args owned input
+    + std::mem::size_of::<IdFromOwnedError>() // closure argument binding
+    + std::mem::size_of::<IdFromOwnedError>() // into_parts owned self
+    + std::mem::size_of::<(String, ContractError)>() // moved payload / method return
+    + std::mem::size_of::<(String, ContractError)>() // caller destructuring operand
+    + std::mem::size_of::<String>() // recovered String binding
+    + std::mem::size_of::<String>() // retained slot owned input, or partial drop place
+    + std::mem::size_of::<ContractError>() // recovered cause binding
+    + std::mem::size_of::<ContractError>() // map_err closure cause return
+    + std::mem::size_of::<ContractError>() // mapped Err owned input
+    + std::mem::size_of::<Result<Id, ContractError>>() // mapped Err initializer
+    + std::mem::size_of::<Result<Id, ContractError>>() // map_err return
+    + std::mem::size_of::<Result<Id, IdFromOwnedError>>(); // map_err self input
+
+const OWNED_ID_REFUSAL_CONTROLS: usize = std::mem::size_of::<usize>() // transient query returned scalar
+    + std::mem::size_of::<usize>() // counter query returned scalar
+    + std::mem::size_of::<usize>() // caller transient sum operand
+    + std::mem::size_of::<usize>() // caller counter sum operand
+    + std::mem::size_of::<()>() // capture-free map_err closure initializer
+    + std::mem::size_of::<()>() // map_err owned callable operand
+    + std::mem::size_of::<()>() // FnOnce owned receiver
+    + std::mem::size_of::<&mut (String, ContractError)>() // partial tuple drop loan
+    + std::mem::size_of::<&mut String>(); // remaining String's drop receiver
+
 impl Id {
     /// Constructs a bounded ASCII identifier.
     ///
@@ -29,7 +121,10 @@ impl Id {
     /// Rejects empty identifiers, lengths over 128 bytes, and characters outside
     /// `[A-Za-z0-9][A-Za-z0-9._:/-]*`.
     pub fn new(value: impl Into<String>) -> Result<Self, ContractError> {
-        Self::try_from_owned(value.into()).map_err(|(_, error)| error)
+        Self::try_from_owned(value.into()).map_err(|refusal| {
+            let (_, error) = refusal.into_parts();
+            error
+        })
     }
 
     /// Constructs an identifier while preserving invalid owned input on refusal.
@@ -40,12 +135,14 @@ impl Id {
     /// # Errors
     /// Returns the original backing and validation error for the same invalid
     /// identifiers rejected by [`Self::new`].
-    pub fn try_from_owned(value: String) -> Result<Self, (String, ContractError)> {
+    pub fn try_from_owned(value: String) -> Result<Self, IdFromOwnedError> {
         if !Self::is_valid_str(&value) {
-            return Err((
-                value,
-                invalid("id", "expected 1–128 bounded ASCII identifier bytes"),
-            ));
+            return Err(IdFromOwnedError {
+                inner: (
+                    value,
+                    invalid("id", "expected 1–128 bounded ASCII identifier bytes"),
+                ),
+            });
         }
         Ok(Self(value))
     }
@@ -563,9 +660,10 @@ mod retained_identifier_refusal_tests {
         let pointer = text.as_ptr();
         let capacity = text.capacity();
 
-        let Err((returned, _)) = Id::try_from_owned(text) else {
+        let Err(refusal) = Id::try_from_owned(text) else {
             panic!("invalid identifier was accepted");
         };
+        let (returned, _) = refusal.into_parts();
 
         assert_eq!(returned, "contains space");
         assert_eq!(returned.as_ptr(), pointer);
@@ -580,3 +678,7 @@ mod u64_serialize_tests;
 #[path = "values/codec_counter.rs"]
 mod codec_counter;
 pub use codec_counter::scalar_deserialization_counter_scratch_bytes_data;
+
+#[cfg(test)]
+#[path = "values/owned_id_error_tests.rs"]
+mod owned_id_error_tests;

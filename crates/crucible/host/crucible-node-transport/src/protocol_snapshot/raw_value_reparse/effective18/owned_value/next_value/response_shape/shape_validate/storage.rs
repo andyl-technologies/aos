@@ -104,7 +104,8 @@ fn scalar_initializer_data() -> usize {
         + size_of::<CodeCheck>() * 2
         + size_of::<Option<CodeCheck>>()
         + size_of::<Id>()
-        + size_of::<Result<Id, (String, crucible_node_format::ContractError)>>()
+        + size_of::<Result<Id, crucible_node_format::IdFromOwnedError>>()
+        + crucible_node_format::IdFromOwnedError::construction_transient_bytes_data()
         + size_of::<(String, crucible_node_format::ContractError)>()
         + size_of::<crucible_node_format::ContractError>()
         + size_of::<ProviderError>()
@@ -186,7 +187,8 @@ pub(super) fn counter_data() -> usize {
         + size_of::<&u8>()
         + size_of::<&[u8]>()
         + size_of::<ContractError>() * 2
-        + size_of::<Result<Id,(String,ContractError)>>()
+        + size_of::<Result<Id, crucible_node_format::IdFromOwnedError>>()
+        + crucible_node_format::IdFromOwnedError::construction_counter_scratch_bytes_data()
         + size_of::<(String,ContractError)>()
         + size_of::<Status>()
         + size_of::<Option<Status>>()

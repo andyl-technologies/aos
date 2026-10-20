@@ -172,7 +172,7 @@ impl Bytes {
 struct ScalarControls<'a> {
     input: String,
     string_result: Result<String, serde_json::Error>,
-    preserved_identifier_result: Result<super::Id, (String, crate::ContractError)>,
+    preserved_identifier_result: Result<super::Id, super::IdFromOwnedError>,
     bytes: str::Bytes<'a>,
     digits: &'a str,
     signed_prefix: Option<&'a str>,
@@ -200,6 +200,8 @@ struct ScalarControls<'a> {
 /// it neither invokes Validate nor supplies a codec/native authority.
 pub fn scalar_deserialization_counter_scratch_bytes_data() -> usize {
     size_of::<ScalarControls<'static>>()
+        + super::IdFromOwnedError::construction_transient_bytes_data()
+        + super::IdFromOwnedError::construction_counter_scratch_bytes_data()
         + size_of::<serde_json::Error>()
         + size_of::<Result<(), serde_json::Error>>()
         + size_of::<Result<super::U64, serde_json::Error>>()

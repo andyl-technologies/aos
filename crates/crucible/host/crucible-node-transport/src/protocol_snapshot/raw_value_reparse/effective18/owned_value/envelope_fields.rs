@@ -505,7 +505,9 @@ impl<'bank> NativeImport18EnvelopeFieldsConstructionData<'bank> {
 
         let scalars = size_of::<Result<Id, crucible_node_format::ContractError>>()
             + size_of::<EnvelopeField18Data>() * 2
-            + size_of::<Result<Id, (String, crucible_node_format::ContractError)>>()
+            + size_of::<Result<Id, crucible_node_format::IdFromOwnedError>>()
+            + crucible_node_format::IdFromOwnedError::construction_transient_bytes_data()
+            + crucible_node_format::IdFromOwnedError::construction_counter_scratch_bytes_data()
             + size_of::<(String, crucible_node_format::ContractError)>()
             + size_of::<Result<MessageKind, ProviderError>>()
             + size_of::<Result<Method, ProviderError>>()

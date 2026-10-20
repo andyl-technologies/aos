@@ -299,7 +299,9 @@ impl DecoderPartial for Id {
             + size_of::<Result<Self, Error>>()
             + String::partial_counter_data()
             + size_of::<Result<Self, ContractError>>()
-            + size_of::<Result<Self, (String, ContractError)>>()
+            + size_of::<Result<Self, crucible_node_format::IdFromOwnedError>>()
+            + crucible_node_format::IdFromOwnedError::construction_transient_bytes_data()
+            + crucible_node_format::IdFromOwnedError::construction_counter_scratch_bytes_data()
             + size_of::<std::str::Bytes<'static>>()
     }
 }

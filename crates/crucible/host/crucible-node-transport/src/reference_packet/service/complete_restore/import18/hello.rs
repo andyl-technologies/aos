@@ -253,7 +253,9 @@ impl PacketNativeImport18HelloDeclarationData {
             + size_of::<Id>() * 4
             + swap_transient
             + size_of::<Result<Id, crucible_node_format::ContractError>>()
-            + size_of::<Result<Id, (String, crucible_node_format::ContractError)>>()
+            + size_of::<Result<Id, crucible_node_format::IdFromOwnedError>>()
+            + crucible_node_format::IdFromOwnedError::construction_transient_bytes_data()
+            + crucible_node_format::IdFromOwnedError::construction_counter_scratch_bytes_data()
             + size_of::<Result<(), std::collections::TryReserveError>>();
         Ok([
             retained,

@@ -149,4 +149,5 @@ pub(crate) const fn native_current_graph17_counter_scratch_data() -> usize {
         + NativeCurrentGraph17DecodeAttempt::inline_header_bytes_data()
         + size_of::<crate::retained_metadata::records::ValidatedMetadataRecords<'static>>()
         + size_of::<crate::retained_metadata::records::MetadataRecordRows<'static>>()
+        + crucible_node_format::IdFromOwnedError::construction_counter_scratch_bytes_data()
 }

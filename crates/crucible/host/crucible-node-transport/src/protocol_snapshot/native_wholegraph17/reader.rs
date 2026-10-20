@@ -196,7 +196,7 @@ pub(crate) fn read_native_current_graph17_with_admission_into_data(
             admission.boundary.construct_data(
                 admission.targets,
                 requested,
-                0,
+                crucible_node_format::IdFromOwnedError::construction_transient_bytes_data(),
                 crate::protocol_snapshot::restored_settled17::restored_settled_native17_counter_scratch_data(),
             )?;
         }

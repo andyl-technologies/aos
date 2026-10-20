@@ -277,7 +277,9 @@ impl Attempt {
             + size_of::<String>()
             + size_of::<Vec<u8>>()
             + size_of::<Result<Id, ContractError>>()
-            + size_of::<Result<Id, (String, ContractError)>>()
+            + size_of::<Result<Id, crucible_node_format::IdFromOwnedError>>()
+            + crucible_node_format::IdFromOwnedError::construction_transient_bytes_data()
+            + crucible_node_format::IdFromOwnedError::construction_counter_scratch_bytes_data()
     }
 
     fn local_counter_scratch_data() -> usize {

@@ -155,7 +155,8 @@ impl Native17Build for Id {
             .ok_or_else(invalid)?;
         match Id::try_from_owned(text) {
             Ok(value) => attempt.value = Some(value),
-            Err((text, error)) => {
+            Err(refusal) => {
+                let (text, error) = refusal.into_parts();
                 attempt.invalid_text = Some(text);
                 return Err(error.into());
             }
@@ -291,5 +292,54 @@ impl Native17Build for Bytes {
         observer: &mut MetadataObserver<'_>,
     ) -> Result<(), ProviderError> {
         observer.observe(value)
+    }
+}
+
+#[cfg(test)]
+mod owned_id_refusal_tests {
+    use super::*;
+    use crate::protocol_snapshot::owned11::json_value::HistoricalJsonLimits;
+    use crate::retained_metadata::records::{MetadataCapacityRecord, ValidatedMetadataRecords};
+
+    #[test]
+    fn failed_identifier_keeps_the_same_original_after_repeated_read() {
+        let rows = serde_json::to_vec(&[MetadataCapacityRecord {
+            kind: MetadataRecordKind::String,
+            element_bytes: size_of::<u8>(),
+            alignment: align_of::<u8>(),
+            extent: 61,
+        }])
+        .unwrap();
+        let records = ValidatedMetadataRecords::validate(&rows, 8, 1 << 20).unwrap();
+        let limits = HistoricalJsonLimits {
+            maximum_input_bytes: 1024,
+            maximum_nodes: 32,
+            maximum_depth: 8,
+            maximum_owned_backing_bytes: 1024,
+            maximum_tree_entries: 0,
+        };
+        let mut ledger = Ledger::new(records.rows(), limits);
+        let mut attempt = Native17IdAttempt::default();
+        let result = Id::read_into_data(br#""invalid space""#, &mut ledger, &mut attempt);
+        assert!(matches!(
+            result,
+            Err(ProviderError::Contract(
+                crucible_node_format::ContractError::Invalid { field: "id", .. }
+            ))
+        ));
+        let text = attempt.invalid_text.as_ref().unwrap();
+        assert_eq!(text, "invalid space");
+        assert_eq!(text.capacity(), 61);
+        let pointer = text.as_ptr();
+        assert!(attempt.started && attempt.failed);
+        assert!(Id::output_data(&attempt).is_none());
+
+        assert!(Id::read_into_data(br#""valid""#, &mut ledger, &mut attempt).is_err());
+        let text = attempt.invalid_text.as_ref().unwrap();
+        assert_eq!(text.as_ptr(), pointer);
+        assert_eq!(text.capacity(), 61);
+        assert_eq!(text, "invalid space");
+        assert!(attempt.started && attempt.failed);
+        assert!(Id::take_output_data(&mut attempt).is_none());
     }
 }
