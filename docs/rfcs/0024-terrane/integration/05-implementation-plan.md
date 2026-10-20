@@ -8711,21 +8711,28 @@ them as well. Scope both rules to checkout-root build outputs. An actual filtere
 source observation changes from absent to present, and repository-wide Rust
 format checking then passes. The restored module's SHA-256 is
 `a0760df5a700326ca7771fae0b9fda42508d10cc6d5f2162e67826f897ac9a3b`;
-its executable logic is unchanged. Compilation against current daemon APIs is
-still running; no task or full gate-set acceptance follows from restoration.
+its executable logic is unchanged. Compilation across all current daemon targets
+passes. Repository-wide Rust and Nix format checks pass after a separate mechanical
+Nix baseline commit: all 413 formatted files have identical normalized parsed
+expressions before and after formatting. The independent namespace reference-model
+gate passes; all 15 copied witness input/module paths are audited against their
+nested installation locations. Control/prefix runtime gates on the final source
+and full trunk qualification remain pending. No T2 task is accepted by these
+workspace corrections.
 
 Integration checks: Cargo metadata, all five renamed packages' all-target
 compilation, crate graph, the reviewed native unsafe-binding audit, the Nix
 registry-complete gate and complete gate listing pass. All 638 external upstream
 dependency versions and checksums remain unchanged. The combined lockfile's
 measured shared vendor hash is updated to
-`sha256-GoGnyiyY6gp+gaIlunRCPeTvo58B2D/m7o7mUp/skDA=`. The required
-workspace Rust formatter encounters upstream's declared but absent
+`sha256-GoGnyiyY6gp+gaIlunRCPeTvo58B2D/m7o7mUp/skDA=`. On the initial
+integration source, the required workspace Rust formatter encountered upstream's
+declared but absent
 `crucible-daemon/src/executor_worker/result/operations.rs`; that declaration
-and absence are both present in `origin/master`. The all-format check also
-reports 414 Nix files needing formatting in the integrated tree. These failures
-are retained, not credited as green; source-specific build and gate checks
-continue independently. The earlier `bf3c74517e` surface feature-matrix run
+and absence are both present in `origin/master`. Its all-format check also
+reported 414 Nix files needing formatting. Those original failures are retained;
+the follow-up above resolves the missing source and formatting without claiming
+the initial check succeeded. Source-specific build and gate checks continue. The earlier `bf3c74517e` surface feature-matrix run
 finished with 1,157 passed and two publication-timing failures; its aggregate
 successor did not run.
 
