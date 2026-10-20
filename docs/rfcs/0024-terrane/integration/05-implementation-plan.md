@@ -8759,7 +8759,15 @@ remain green, but no aggregate or task acceptance is credited. A separate
 current-source SDK test image is building for bounded diagnosis of those three
 cases. Its six-minute outer diagnostic bounds preserve the original test logic,
 operation deadlines and assertions; it cannot substitute for the affected
-aggregate or establish an aggregate pass.
+aggregate or establish an aggregate pass. The workspace aggregate additionally
+records `native_index_backfill_updates_existing_required_binding_in_real_commit`
+failing with `Denied(commit)` in 61.182 seconds. The module aggregate records
+`foreign_used_view_and_original_survive_done_reopen_and_zero_node_cold_fork`
+failing with `Denied(fork)` in 179.580 seconds. Their fixture authorities use
+`not_after = u64::MAX`; a cause is not inferred from the elapsed times. Bounded
+current-source diagnostics for both are prepared to run after the three-case
+diagnostic. All actual guards, policies, operation clocks and assertions remain
+unchanged. Both full aggregates remain running and unaccepted.
 
 Shared-directory source `744aa55567` restores its preserved SDK adapter in the
 new layout. Its all-target compilation passes, while local Nextest explicitly
