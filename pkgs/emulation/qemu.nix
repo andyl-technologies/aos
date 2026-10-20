@@ -1910,6 +1910,8 @@ in
                           str(source_root / f"tests/unit/test-crucible-{name}.py"),
                           "--output-dir", str(source_root / f"{name}-proof"),
                       ]
+                      if name == "ram-worker-inventory":
+                          fixture_command += ["--build-dir", entry["directory"]]
                       if name in ("settle-prepark", "control-deferred"):
                           fixture_command = [
                               sys.executable,

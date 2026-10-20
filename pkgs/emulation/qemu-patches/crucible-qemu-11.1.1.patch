@@ -1,31 +1,33 @@
-From 6c982d259cad79b6f0ecfac8fe973f9a84ebef9a Mon Sep 17 00:00:00 2001
+From bb4478755b7db3ab7b7212f0213d94d92c649ede Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:00 +0000
-Subject: [PATCH] crucible: complete RAM-worker literal dependencies
+Subject: [PATCH] crucible: exercise RAM inventory with the complete native
+ provider
 
 Retain the complete Crucible integration on the sole pinned QEMU base.
-Complete only the RAM-worker component's literal Source, Native and
-thread dependency selections and their genuine existing fingerprint pins.
-Preserve every other source blob and mode.
+Use the full native thread translation unit in the RAM inventory fixture,
+with appended test-only accessors into its actual private registry. Build
+the coordinator through its real constructor and preserve the historical
+negative records as explicit standalone corruption inputs. Keep actual
+membership identity, lock observations, diagnostics and return assertions.
 
-Select the actual Source dispatch getter, Native hint, frame identity and
-CPU-pin return bodies in dependency order. Select the unchanged bounded
-RAM-pause helper before its real actor-pause caller. Keep actual identity,
-Object return, finalization, relock and bounded-record checks. Introduce no
-list storage, empty census, scalar grant or accepting provider.
+Recover the provider compile tuple and genuine utility, event-loop and QOM
+support from the owning configured build. Retain the component and both
+provider objects, record their identities and verify a single provider in
+each link. Remove original dependency-output side effects and preserve
+configured inputs. Delete only the two actual end gate-clear writes in
+the mutant and require its existing native_end_complete assertion.
 
-Refresh the changed fixture's real Source pin and all six incoming literal
-edges to their actual fixed point. Seven values change across six existing
-maps; retain all inventories, order, validators and non-map bytes. The
-approved graph remains eight maps, 167 edges and 130 inputs, with the
-separate settle consumer yielding 175 edges and 132 inputs. Preserve every
-existing assertion, causal mutation, limit, ABI, license and support policy.
+Validate the stopped-rearm fixture's authoritative QOM header before output
+creation and emit its actual object_unref declaration. Retain that component
+object for the owning runner's symbol audit. Refresh the RAM emitter's
+genuine incoming fingerprints without changing inventories or validators.
 
-Canonical bounded-list storage and registration producers, actual QOM
-linkage, symbol ownership and runtime controls still require the normal
-owning runner. No selected Source or CPU activation, Main/Original
-admission, positive physical return, RCU, launched lifecycle or performance
-qualification is implied. Preserve their mandatory failures and gates.
+Preserve all other source blobs, modes, licenses, ABI, assertions, causal
+controls, limits and experimental support policy. Actual component symbol
+isolation, genuine provider linkage and runtime controls remain for the
+normal owning runner. No Source or CPU activation, positive RCU grace,
+launched lifecycle, physical-return or performance qualification is implied.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -192960,7 +192962,7 @@ index f8e17dcf1ce91d8aefb8d82cafd3196a4fd9edf6..f24121d2d3c66f1436ba73c976a7bd76
      return true;
 diff --git a/scripts/extract-crucible-preexec-purpose.py b/scripts/extract-crucible-preexec-purpose.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..20310970f4d3858e3f3a0d61b39866f39c30afa0
+index 0000000000000000000000000000000000000000..562e48107caa5fadc446d702960cc150460a3dd1
 --- /dev/null
 +++ b/scripts/extract-crucible-preexec-purpose.py
 @@ -0,0 +1,87 @@
@@ -192988,7 +192990,7 @@ index 0000000000000000000000000000000000000000..20310970f4d3858e3f3a0d61b39866f3
 +    'include/plugins/qemu-plugin.h':
 +        'bf8b9db5f3f9205ca246d9367b889a77c0df9ef0ceeb7ae73e5eda630898bdc7',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '33999c91cb1a1fb4b1363feff828324faf862a141a128c4e8c108ed5cf216340',
++        'd72826a323b2b13f441795a1439f492110bcdacac442184827fb2b01886840bc',
 +}
 +
 +PURPOSE_FUNCTIONS = (
@@ -236793,7 +236795,7 @@ index 0000000000000000000000000000000000000000..2617c754aa1ea8587f6eaabe5a8bdf68
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-placement.py b/tests/unit/extract-crucible-checkpoint-placement.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..04247bd1d6f77f53a2806882fe8a8be4d9dbf3a2
+index 0000000000000000000000000000000000000000..ae7d9b84236f38ec420c2b8eb288d4678b9f8ee2
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-placement.py
 @@ -0,0 +1,100 @@
@@ -236811,7 +236813,7 @@ index 0000000000000000000000000000000000000000..04247bd1d6f77f53a2806882fe8a8be4
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '33999c91cb1a1fb4b1363feff828324faf862a141a128c4e8c108ed5cf216340',
++        'd72826a323b2b13f441795a1439f492110bcdacac442184827fb2b01886840bc',
 +}
 +
 +FUNCTIONS = (
@@ -236899,7 +236901,7 @@ index 0000000000000000000000000000000000000000..04247bd1d6f77f53a2806882fe8a8be4
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-receiving.py b/tests/unit/extract-crucible-checkpoint-receiving.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..725182868db0185c4a16c9d6da140ec4ce8eb66e
+index 0000000000000000000000000000000000000000..a431a51d34aec1cd159a9eb2fd654ecfc989ae32
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-receiving.py
 @@ -0,0 +1,241 @@
@@ -236930,7 +236932,7 @@ index 0000000000000000000000000000000000000000..725182868db0185c4a16c9d6da140ec4
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '33999c91cb1a1fb4b1363feff828324faf862a141a128c4e8c108ed5cf216340',
++        'd72826a323b2b13f441795a1439f492110bcdacac442184827fb2b01886840bc',
 +}
 +
 +FUNCTIONS = (
@@ -237146,7 +237148,7 @@ index 0000000000000000000000000000000000000000..725182868db0185c4a16c9d6da140ec4
 +    main()
 diff --git a/tests/unit/extract-crucible-monitor-fd-loans.py b/tests/unit/extract-crucible-monitor-fd-loans.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..f71129e147cae5a62628585ce81c0026bf48199b
+index 0000000000000000000000000000000000000000..966844439e870d30e99614cdfb79681140d8322c
 --- /dev/null
 +++ b/tests/unit/extract-crucible-monitor-fd-loans.py
 @@ -0,0 +1,112 @@
@@ -237170,7 +237172,7 @@ index 0000000000000000000000000000000000000000..f71129e147cae5a62628585ce81c0026
 +    'monitor/monitor.c':
 +        '6773b71937e9c0058143070560f3ce3bb114a966d6d4224c7a60d8862fb8d05b',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '33999c91cb1a1fb4b1363feff828324faf862a141a128c4e8c108ed5cf216340',
++        'd72826a323b2b13f441795a1439f492110bcdacac442184827fb2b01886840bc',
 +}
 +
 +FUNCTIONS = (
@@ -237264,7 +237266,7 @@ index 0000000000000000000000000000000000000000..f71129e147cae5a62628585ce81c0026
 +    main()
 diff --git a/tests/unit/extract-crucible-preexec-setup.py b/tests/unit/extract-crucible-preexec-setup.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..1a2ec9001d1bd6ebfe8bd9177a5234fdb2b218f8
+index 0000000000000000000000000000000000000000..ccb483ba4057a5aa73ee7e47c997f9f175141135
 --- /dev/null
 +++ b/tests/unit/extract-crucible-preexec-setup.py
 @@ -0,0 +1,173 @@
@@ -237305,9 +237307,9 @@ index 0000000000000000000000000000000000000000..1a2ec9001d1bd6ebfe8bd9177a5234fd
 +    'plugins/crucible-device-workspace.c':
 +        '3dd77a2ad8d4688fb57ccc94618763485d36b9460e3461ac5ff4bc6fa25c558d',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '33999c91cb1a1fb4b1363feff828324faf862a141a128c4e8c108ed5cf216340',
++        'd72826a323b2b13f441795a1439f492110bcdacac442184827fb2b01886840bc',
 +    'scripts/extract-crucible-preexec-purpose.py':
-+        'c917a01f930a63a06c7e52aa7bdaef512c6669bb4f0478c2ffd145a6c381b7d6',
++        'dab07f2f188d6a206b0e7311d3357be73484f1a0a0fbcc145f0246e70edb7531',
 +    'meson.build':
 +        '7eef2c0d1494dfdeed66f56c77f092382cd63d3fd5ad7c0b7c7ac85ca599e39e',
 +    'tests/unit/test-crucible-preexec-setup.c':
@@ -237443,7 +237445,7 @@ index 0000000000000000000000000000000000000000..1a2ec9001d1bd6ebfe8bd9177a5234fd
 +        main()
 diff --git a/tests/unit/extract-crucible-startup-source-controls.py b/tests/unit/extract-crucible-startup-source-controls.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..83de3891473e0022bf3f52f743241b93cd85bb28
+index 0000000000000000000000000000000000000000..273a82642b97e30c1a97a45a44aaee2f1ef6e1f4
 --- /dev/null
 +++ b/tests/unit/extract-crucible-startup-source-controls.py
 @@ -0,0 +1,1047 @@
@@ -237487,7 +237489,7 @@ index 0000000000000000000000000000000000000000..83de3891473e0022bf3f52f743241b93
 +    'plugins/crucible-ram-owner-diagnostic.h':
 +        '437aa8ed61c184163b7a6b0fb5e36c799d6d748410b32166a02e43eb44e2bf1e',
 +    'tests/unit/test-crucible-ram-worker-inventory.py':
-+        'd7c4717a9c0877596182d2242e36014043cdd4012cbc59a991c48a6c7c64033e',
++        '51725d2fa591b02af6ea7822239ab3c332e6be435997601654a083338d9fd998',
 +    'tests/unit/test-crucible-checkpoint-receiving.c':
 +        'c566ba5524cccb7e5fded88101e457c2ee18d998119c450b8d3121b7fd0561f2',
 +    'plugins/crucible-parent-park.inc.h':
@@ -280736,17 +280738,19 @@ index 0000000000000000000000000000000000000000..ef4f6a3710b9620ed30ea671441d310e
 +    main()
 diff --git a/tests/unit/test-crucible-ram-worker-inventory.py b/tests/unit/test-crucible-ram-worker-inventory.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..9ec192437fc28fc9fcda9851c78d453db44096e2
+index 0000000000000000000000000000000000000000..53494531d696dd41e58dec464e3388b743217f35
 --- /dev/null
 +++ b/tests/unit/test-crucible-ram-worker-inventory.py
-@@ -0,0 +1,655 @@
+@@ -0,0 +1,1032 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercises strict RAM membership with actual pthreads and /proc census.
 +
 +The fixture extracts the production private schema validator, membership proof,
 +thread/descriptor census and initial inventory cleanup. Actors really register
-+kernel TIDs and park. Native registration and plugin barrier callbacks are bounded
-+fixture endpoints; this does not qualify a translated guest or VMStop fence.
++kernel TIDs and park. The complete native thread provider owns its real registry;
++test-only accessors inject explicit corruption for its negative controls. Plugin
++barrier callbacks remain fixture endpoints. This does not qualify Source
++activation, a translated guest, or a VMStop fence.
 +"""
 +
 +import argparse
@@ -280794,7 +280798,6 @@ index 0000000000000000000000000000000000000000..9ec192437fc28fc9fcda9851c78d453d
 +    native = (ROOT / "plugins/crucible-native-invocation.c").read_text()
 +    actor = (ROOT / "plugins/crucible-ram-control.inc.h").read_text()
 +    child = (ROOT / "plugins/crucible-callback-child.inc.h").read_text()
-+    thread = (ROOT / "util/qemu-thread-posix.c").read_text()
 +    receiving = (ROOT / "plugins/crucible-checkpoint-receiving.h").read_text()
 +    header = (ROOT / "plugins/crucible-startup-source.h").read_text()
 +    declarations = EXTRACT["body_cut"](
@@ -280810,8 +280813,6 @@ index 0000000000000000000000000000000000000000..9ec192437fc28fc9fcda9851c78d453d
 +        consume = "".join(f"    (void){name};\n" for name in parameters)
 +        bodies.append(declaration(text, signature)[:-1] +
 +                      "\n{\n" + consume + "    g_assert_not_reached();\n}\n")
-+    bodies += [selected(thread, name) for name in
-+               ("qemu_thread_get_self", "qemu_thread_is_self")]
 +    bodies += [selected(publication, name) for name in (
 +        "qemu_crucible_startup_source_native_selection_v1",
 +        "qemu_crucible_startup_source_native_dispatch_hint_v1",
@@ -280846,6 +280847,355 @@ index 0000000000000000000000000000000000000000..9ec192437fc28fc9fcda9851c78d453d
 +    body = definition(source, signature)
 +    start = source.index(signature)
 +    return source[start:source.index(";", start + len(body)) + 1]
++
++
++def configured_command(entry, build_dir):
++    directory = Path(entry["directory"]).resolve()
++    if directory != build_dir:
++        raise ValueError("compile entry does not belong to the configured build")
++    command = entry.get("arguments")
++    if command is None:
++        command = shlex.split(entry["command"])
++    if not command or not all(isinstance(item, str) for item in command):
++        raise ValueError("invalid configured compiler command")
++    return list(command)
++
++
++def configured_path(value, build_dir):
++    return (build_dir / value).resolve()
++
++
++def configured_output(entry, build_dir):
++    command = configured_command(entry, build_dir)
++    if command.count("-o") != 1:
++        raise ValueError("ambiguous configured object output")
++    output = configured_path(command[command.index("-o") + 1], build_dir)
++    if not output.is_relative_to(build_dir):
++        raise ValueError("configured object escapes its build directory")
++    if "output" in entry and configured_path(entry["output"], build_dir) != output:
++        raise ValueError("configured object output mismatch")
++    return output
++
++
++def provider_build(build_dir, component_compiler):
++    """Resolve the owning build's real provider and complete support objects."""
++    commands_path = build_dir / "compile_commands.json"
++    targets_path = build_dir / "meson-info/intro-targets.json"
++    entries = json.loads(commands_path.read_text())
++    targets = json.loads(targets_path.read_text())
++
++    def target(name, kind):
++        matches = [item for item in targets
++                   if item["name"] == name and item["type"] == kind]
++        if len(matches) != 1:
++            raise ValueError(f"missing or ambiguous configured target: {name}")
++        return matches[0]
++
++    def archive(item):
++        if len(item["filename"]) != 1:
++            raise ValueError("ambiguous configured library filename")
++        path = configured_path(item["filename"][0], build_dir)
++        if not path.is_relative_to(build_dir):
++            raise ValueError("configured library escapes its build directory")
++        return path
++
++    provider_source = (ROOT / "util/qemu-thread-posix.c").resolve()
++    matches = [item for item in entries
++               if configured_path(item["file"], build_dir) == provider_source]
++    if len(matches) != 1:
++        raise ValueError("missing or ambiguous actual thread provider compile entry")
++    provider_entry = matches[0]
++    provider_command = configured_command(provider_entry, build_dir)
++    if (not component_compiler or
++            provider_command[:len(component_compiler)] != component_compiler):
++        raise ValueError("component/compiler identity differs from configured provider")
++    if (provider_command.count("-c") != 1 or
++            configured_path(provider_command[provider_command.index("-c") + 1],
++                            build_dir) != provider_source):
++        raise ValueError("configured provider source identity changed")
++
++    utility_archive = archive(target("qemuutil", "static library"))
++    provider_object = configured_output(provider_entry, build_dir)
++    if provider_object.parent != Path(str(utility_archive) + ".p"):
++        raise ValueError("thread provider does not belong to actual qemuutil")
++    if not utility_archive.is_file() or not provider_object.is_file():
++        raise ValueError("configured genuine qemuutil/provider was not built")
++
++    support_objects = []
++    for name in ("event-loop-base", "qom"):
++        item = target(name, "static library")
++        object_directory = Path(str(archive(item)) + ".p")
++        selected_entries = [entry for entry in entries
++                            if configured_output(entry, build_dir).parent ==
++                            object_directory]
++        required_sources = {
++            configured_path(source, build_dir)
++            for group in item["target_sources"]
++            for key in ("sources", "generated_sources")
++            for source in group.get(key, [])
++            if Path(source).suffix in (".c", ".cc", ".cpp", ".S")
++        }
++        actual_sources = {configured_path(entry["file"], build_dir)
++                          for entry in selected_entries}
++        if not required_sources or actual_sources != required_sources:
++            raise ValueError(f"incomplete configured support object closure: {name}")
++        objects = [configured_output(entry, build_dir) for entry in selected_entries]
++        if (len(objects) != len(set(objects)) or
++                not all(path.is_file() for path in objects)):
++            raise ValueError(f"missing or duplicate real support objects: {name}")
++        support_objects.extend(objects)
++    if len(support_objects) != len(set(support_objects)):
++        raise ValueError("duplicate event-loop/QOM objects")
++
++    interface = target("check-qom-interface", "executable")
++    link_groups = [item for item in interface["target_sources"] if "linker" in item]
++    if len(link_groups) != 1:
++        raise ValueError("missing or ambiguous configured QOM link group")
++    linker = link_groups[0]["linker"]
++    if linker != component_compiler:
++        raise ValueError("configured QOM linker/compiler identity mismatch")
++    parameters = link_groups[0]["parameters"]
++    if any("whole-archive" in item for item in parameters):
++        raise ValueError("whole-archive cannot enforce a sole thread provider")
++    if sum(configured_path(item, build_dir) == utility_archive
++           for item in parameters) != 1:
++        raise ValueError("configured QOM link group lacks its unique qemuutil")
++    if any(configured_path(item, build_dir) in support_objects for item in parameters):
++        raise ValueError("configured support objects already appear in link parameters")
++    return {
++        "entry": provider_entry,
++        "provider_object": provider_object,
++        "support_objects": support_objects,
++        "linker": linker,
++        "parameters": parameters,
++        "metadata_hashes": {
++            str(path): hashlib.sha256(path.read_bytes()).hexdigest()
++            for path in (commands_path, targets_path)
++        },
++    }
++
++
++def provider_compile_command(build, build_dir, source, output):
++    original = configured_command(build["entry"], build_dir)
++    command = []
++    removed = []
++    dependency_paths = []
++    index = 0
++    dependency_outputs = ("-MF", "-MQ", "-MT")
++    while index < len(original):
++        argument = original[index]
++        if argument in ("-MD", "-MMD", "-MP"):
++            removed.append(argument)
++        elif argument in dependency_outputs:
++            if index + 1 == len(original):
++                raise ValueError("configured dependency output lacks its operand")
++            removed.extend(original[index:index + 2])
++            if argument == "-MF":
++                dependency_paths.append(configured_path(original[index + 1], build_dir))
++            index += 1
++        elif any(argument.startswith(flag) for flag in dependency_outputs):
++            removed.append(argument)
++            if argument.startswith("-MF"):
++                dependency_paths.append(configured_path(argument[3:], build_dir))
++        elif (argument in ("-M", "-MM", "-MG") or
++              (argument.startswith("-Wp,") and
++               any(item.startswith(("-MD", "-MMD", "-MP", *dependency_outputs))
++                   for item in argument.split(",")))):
++            raise ValueError("unsupported configured dependency-output form")
++        else:
++            command.append(argument)
++        index += 1
++
++    if not dependency_paths and any(flag in original for flag in ("-MD", "-MMD")):
++        dependency_paths.append(build["provider_object"].with_suffix(".d"))
++    command[command.index("-c") + 1] = str(source)
++    command[command.index("-o") + 1] = str(output)
++    if output == build["provider_object"] or output in build["support_objects"]:
++        raise ValueError("test variant would overwrite a configured object")
++    # The literal provider moved to the fixture directory; preserve its original
++    # quoted-include search before any configured generic include directory.
++    command[command.index("-c"):command.index("-c")] = [
++        "-iquote", str(ROOT / "util"),
++    ]
++    return command, {
++        "source_before": original[original.index("-c") + 1],
++        "source_after": str(source),
++        "output_before": original[original.index("-o") + 1],
++        "output_after": str(output),
++        "removed_dependency_arguments": removed,
++        "original_dependency_paths": [str(path) for path in dependency_paths],
++        "added_quote_include": str(ROOT / "util"),
++        "other_arguments_preserved_in_order": True,
++    }
++
++
++def verify_provider_link(map_path, provider_object, configured_object):
++    link_map = map_path.read_text()
++    if link_map.splitlines().count(f"LOAD {provider_object}") != 1:
++        raise AssertionError("link did not load its exact single test provider")
++    archived_provider = re.escape(configured_object.name)
++    if re.search(r"(?:\(|[\s/])" + archived_provider + r"(?:\)|\s|$)", link_map):
++        raise AssertionError("link also pulled the original qemuutil thread provider")
++
++
++NATIVE_TEST_ACCESSORS = r"""
++/* Standalone corruption controls, appended only to the complete test provider.
++ * These are not production APIs, Source grants, or another registry. The two
++ * injection pointers retain only the exact test-owned node in the real list. */
++static pid_t fixture_native_process;
++static int64_t fixture_native_thread;
++static QemuHotForkThreadRecord *fixture_native_coordinator;
++static QemuHotForkThreadRecord *fixture_native_injected_record;
++static GList *fixture_native_injected_node;
++
++void crucible_fixture_native_prepare(void);
++void crucible_fixture_native_corrupt_unclassified(int64_t thread_id);
++QemuThreadRamPauseTransaction *crucible_fixture_native_membership_owner(void);
++bool crucible_fixture_native_registry_unlocked(void);
++
++static void fixture_native_actor_current(void)
++{
++    /* Refuse a fork child before touching an inherited mutable registry. */
++    assert(fixture_native_process == getpid());
++    assert(fixture_native_thread == qemu_get_thread_id());
++}
++
++static void fixture_native_registry_current_locked(void)
++{
++    GList *coordinator_node = qemu_hot_fork_threads;
++
++    assert(!ram_membership_owner);
++    assert(!qemu_hot_fork_bounded_threads);
++    assert(!qemu_hot_fork_thread_starts_in_flight);
++    assert(!qemu_hot_fork_thread_overflow);
++    assert(qemu_hot_fork_coordinator_thread_id == fixture_native_thread);
++    assert(qemu_hot_fork_current_thread == fixture_native_coordinator);
++    assert(fixture_native_coordinator->thread_id == fixture_native_thread);
++    assert(fixture_native_coordinator->tracked);
++    assert(fixture_native_coordinator->disposition ==
++           QEMU_THREAD_HOT_FORK_COORDINATOR);
++
++    if (fixture_native_injected_node) {
++        assert(coordinator_node == fixture_native_injected_node);
++        assert(coordinator_node->prev == NULL);
++        assert(coordinator_node->data == fixture_native_injected_record);
++        assert(fixture_native_injected_record->tracked);
++        assert(!fixture_native_injected_record->bounded);
++        assert(fixture_native_injected_record->disposition ==
++               QEMU_THREAD_HOT_FORK_UNCLASSIFIED);
++        assert(qemu_hot_fork_thread_count == 2);
++        coordinator_node = coordinator_node->next;
++        assert(coordinator_node &&
++               coordinator_node->prev == fixture_native_injected_node);
++    } else {
++        assert(!fixture_native_injected_record);
++        assert(coordinator_node && !coordinator_node->prev);
++        assert(qemu_hot_fork_thread_count == 1);
++    }
++    assert(coordinator_node->data == fixture_native_coordinator);
++    assert(!coordinator_node->next);
++}
++
++void crucible_fixture_native_prepare(void)
++{
++    QemuHotForkThreadRecord *retired_record = NULL;
++    GList *retired_node = NULL;
++
++    if (!fixture_native_process) {
++        /* Do not adopt or erase any pre-existing registration. Only the real
++         * constructor may create this standalone main-thread coordinator. */
++        assert(!qemu_hot_fork_current_thread);
++        assert(pthread_mutex_lock(&qemu_hot_fork_thread_lock) == 0);
++        assert(!qemu_hot_fork_threads && !qemu_hot_fork_thread_count);
++        assert(!qemu_hot_fork_bounded_threads);
++        assert(!qemu_hot_fork_thread_overflow);
++        assert(!qemu_hot_fork_thread_starts_in_flight);
++        assert(!qemu_hot_fork_coordinator_thread_id && !ram_membership_owner);
++        assert(pthread_mutex_unlock(&qemu_hot_fork_thread_lock) == 0);
++
++        fixture_native_process = getpid();
++        fixture_native_thread = qemu_get_thread_id();
++        fixture_native_coordinator = qemu_hot_fork_register_coordinator();
++        assert(fixture_native_coordinator);
++    }
++    fixture_native_actor_current();
++    assert(pthread_mutex_lock(&qemu_hot_fork_thread_lock) == 0);
++    fixture_native_registry_current_locked();
++    if (fixture_native_injected_node) {
++        assert(qemu_hot_fork_thread_generation != UINT64_MAX);
++        retired_record = fixture_native_injected_record;
++        retired_node = fixture_native_injected_node;
++        qemu_hot_fork_threads = g_list_remove_link(qemu_hot_fork_threads,
++                                                  retired_node);
++        qemu_hot_fork_thread_count--;
++        qemu_hot_fork_thread_generation++;
++        fixture_native_injected_record = NULL;
++        fixture_native_injected_node = NULL;
++        fixture_native_registry_current_locked();
++    }
++    assert(pthread_mutex_unlock(&qemu_hot_fork_thread_lock) == 0);
++    if (retired_node) {
++        g_list_free_1(retired_node);
++        g_free(retired_record);
++    }
++}
++
++void crucible_fixture_native_corrupt_unclassified(int64_t thread_id)
++{
++    QemuHotForkThreadRecord *record;
++    GList *node;
++
++    fixture_native_actor_current();
++    record = g_new0(QemuHotForkThreadRecord, 1);
++    node = g_list_alloc();
++    record->thread_id = thread_id;
++    record->tracked = true;
++    record->disposition = QEMU_THREAD_HOT_FORK_UNCLASSIFIED;
++    g_strlcpy(record->name, "worker\nbad-label", sizeof(record->name));
++    node->data = record;
++
++    assert(pthread_mutex_lock(&qemu_hot_fork_thread_lock) == 0);
++    fixture_native_registry_current_locked();
++    assert(!fixture_native_injected_node);
++    assert(qemu_hot_fork_thread_generation != UINT64_MAX);
++    /* The impossible zero-TID case is deliberate corruption of the actual
++     * private list, never an alternate enrollment or positive role proof. */
++    node->next = qemu_hot_fork_threads;
++    node->prev = NULL;
++    qemu_hot_fork_threads->prev = node;
++    qemu_hot_fork_threads = node;
++    qemu_hot_fork_thread_count++;
++    qemu_hot_fork_thread_generation++;
++    fixture_native_injected_record = record;
++    fixture_native_injected_node = node;
++    fixture_native_registry_current_locked();
++    assert(pthread_mutex_unlock(&qemu_hot_fork_thread_lock) == 0);
++}
++
++QemuThreadRamPauseTransaction *crucible_fixture_native_membership_owner(void)
++{
++    QemuThreadRamPauseTransaction *owner;
++
++    fixture_native_actor_current();
++    assert(pthread_mutex_lock(&qemu_hot_fork_thread_lock) == 0);
++    owner = ram_membership_owner;
++    assert(pthread_mutex_unlock(&qemu_hot_fork_thread_lock) == 0);
++    return owner;
++}
++
++bool crucible_fixture_native_registry_unlocked(void)
++{
++    int status;
++
++    fixture_native_actor_current();
++    status = pthread_mutex_trylock(&qemu_hot_fork_thread_lock);
++    if (status) {
++        return false;
++    }
++    assert(pthread_mutex_unlock(&qemu_hot_fork_thread_lock) == 0);
++    return true;
++}
++"""
 +
 +
 +PRELUDE = r"""
@@ -280885,24 +281235,18 @@ index 0000000000000000000000000000000000000000..9ec192437fc28fc9fcda9851c78d453d
 +#include "@RECEIVING_HEADER@"
 +#pragma GCC diagnostic pop
 +
-+bool bql_locked(void) { return true; }
-+bool qemu_in_coroutine(void) { return false; }
++/* These two modeled endpoints belong only to copied component bodies. They
++ * must not interpose on the genuine provider or its utility/QOM dependencies. */
++static bool fixture_in_coroutine(void) { return false; }
++static void fixture_error_free(Error *error) { free(error); }
++#define qemu_in_coroutine fixture_in_coroutine
++#define error_free fixture_error_free
 +
-+void qemu_mutex_lock_impl(QemuMutex *mutex, const char *file, int line)
-+{
-+    (void)file;
-+    (void)line;
-+    assert(pthread_mutex_lock(&mutex->lock) == 0);
-+}
++void crucible_fixture_native_prepare(void);
++void crucible_fixture_native_corrupt_unclassified(int64_t thread_id);
++QemuThreadRamPauseTransaction *crucible_fixture_native_membership_owner(void);
++bool crucible_fixture_native_registry_unlocked(void);
 +
-+void qemu_mutex_unlock_impl(QemuMutex *mutex, const char *file, int line)
-+{
-+    (void)file;
-+    (void)line;
-+    assert(pthread_mutex_unlock(&mutex->lock) == 0);
-+}
-+
-+QemuMutexLockFunc qemu_mutex_lock_func = qemu_mutex_lock_impl;
 +/* Pool retirement has its own actual-QEMU component fixture. */
 +static bool pool_retirement_allowed = true;
 +static unsigned pool_retirement_calls;
@@ -280916,7 +281260,6 @@ index 0000000000000000000000000000000000000000..9ec192437fc28fc9fcda9851c78d453d
 +    }
 +    return pool_retirement_allowed;
 +}
-+void error_free(Error *error) { free(error); }
 +"""
 +
 +ENDPOINTS = r"""
@@ -280967,31 +281310,13 @@ index 0000000000000000000000000000000000000000..9ec192437fc28fc9fcda9851c78d453d
 +{
 +    *inventory = qemu_plugin_crucible_resource_inventory;
 +}
-+static pthread_mutex_t qemu_hot_fork_thread_lock = PTHREAD_MUTEX_INITIALIZER;
-+static GList *qemu_hot_fork_threads;
-+static size_t qemu_hot_fork_thread_count;
-+static size_t qemu_hot_fork_thread_overflow;
-+static size_t qemu_hot_fork_thread_starts_in_flight;
-+static uint64_t qemu_hot_fork_thread_generation = 1;
-+static QemuHotForkThreadRecord coordinator;
-+static GList coordinator_node;
-+static __thread QemuHotForkThreadRecord *qemu_hot_fork_current_thread;
-+int qemu_get_thread_id(void) { return syscall(SYS_gettid); }
-+static void qemu_hot_fork_register_coordinator(void)
-+{
-+    /* Registration is a fixture provider; the production pause policy below
-+     * checks the actual calling thread and this explicit native record. */
-+    assert(qemu_hot_fork_current_thread);
-+}
-+
 +static bool expected_preexisting_hold;
 +static size_t diagnostic_writes;
 +static bool diagnostic_write_failure;
 +static ssize_t inventory_diagnostic_write(int fd, const void *buffer, size_t count)
 +{
 +    /* Observe the exact emission boundary, not merely eventual cleanup. */
-+    assert(pthread_mutex_trylock(&qemu_hot_fork_thread_lock) == 0);
-+    pthread_mutex_unlock(&qemu_hot_fork_thread_lock);
++    assert(crucible_fixture_native_registry_unlocked());
 +    assert(pthread_mutex_trylock(&service_lock) == 0);
 +    pthread_mutex_unlock(&service_lock);
 +    assert(!service_frozen && !owner_closure.threads.active);
@@ -281082,14 +281407,7 @@ index 0000000000000000000000000000000000000000..9ec192437fc28fc9fcda9851c78d453d
 +    expected_preexisting_hold = false;
 +    diagnostic_writes = 0;
 +    diagnostic_write_failure = false;
-+    coordinator = (QemuHotForkThreadRecord) {
-+        .thread_id = qemu_get_thread_id(), .tracked = true,
-+        .disposition = QEMU_THREAD_HOT_FORK_COORDINATOR,
-+    };
-+    coordinator_node = (GList) { .data = &coordinator };
-+    qemu_hot_fork_threads = &coordinator_node;
-+    qemu_hot_fork_current_thread = &coordinator;
-+    qemu_hot_fork_thread_count = 1;
++    crucible_fixture_native_prepare();
 +}
 +static int capture_diagnostic(int *read_fd)
 +{
@@ -281115,9 +281433,8 @@ index 0000000000000000000000000000000000000000..9ec192437fc28fc9fcda9851c78d453d
 +    close(read_fd);
 +    return length;
 +}
-+/* Literal begin/end use this component's explicit registry input and the
-+ * real calling TID/pthreads. Production registry enrollment and Source/whole
-+ * physical lifecycle authority are separate, unqualified obligations. */
++/* Actual begin/end and registry storage come from the complete native provider.
++ * Source activation and whole physical lifecycle authority remain unqualified. */
 +static void test_native_end_disposition(void)
 +{
 +    QemuThreadRamPauseTransaction transaction = { 0 };
@@ -281129,12 +281446,13 @@ index 0000000000000000000000000000000000000000..9ec192437fc28fc9fcda9851c78d453d
 +    alias = transaction;
 +    assert(qemu_thread_ram_pause_end_v2(&alias, &end) == -EPERM);
 +    assert(!end.entered && !end.released && !end.complete && !end.uncertain);
-+    assert(transaction.active && ram_membership_owner == &transaction);
++    assert(transaction.active &&
++           crucible_fixture_native_membership_owner() == &transaction);
 +    assert(qemu_thread_ram_pause_end_v2(&transaction, &transaction.end) == -EPERM);
 +    assert(!transaction.end.entered && transaction.active);
 +    assert(qemu_thread_ram_pause_end_v2(&transaction, &end) == 0);
 +    bool native_end_complete = end.released && end.complete &&
-+        !transaction.active && ram_membership_owner == NULL;
++        !transaction.active && crucible_fixture_native_membership_owner() == NULL;
 +    assert(native_end_complete);
 +    assert(end.entered && end.attempts == 1 && !end.uncertain);
 +    assert(!end.effect_status && !end.notify_status && !end.unlock_status);
@@ -281191,14 +281509,7 @@ index 0000000000000000000000000000000000000000..9ec192437fc28fc9fcda9851c78d453d
 +    stop_actor(&unknown);
 +
 +    reset_inventory(actors);
-+    QemuHotForkThreadRecord unclassified = {
-+        .thread_id = actors[0].tid, .tracked = true,
-+        .disposition = QEMU_THREAD_HOT_FORK_UNCLASSIFIED,
-+        .name = "worker\nbad-label",
-+    };
-+    GList unclassified_node = { .data = &unclassified, .next = &coordinator_node };
-+    qemu_hot_fork_threads = &unclassified_node;
-+    qemu_hot_fork_thread_count = 2;
++    crucible_fixture_native_corrupt_unclassified(actors[0].tid);
 +    saved = capture_diagnostic(&read_fd);
 +    assert(qemu_crucible_ram_owner_inventory(&tasks, &descriptors, &services) == -ENOTSUP);
 +    assert(finish_diagnostic(saved, read_fd, diagnostic) < 192);
@@ -281210,9 +281521,7 @@ index 0000000000000000000000000000000000000000..9ec192437fc28fc9fcda9851c78d453d
 +    assert(!actor_status.flags && !service_frozen && !owner_closure.threads.active);
 +
 +    reset_inventory(actors);
-+    qemu_hot_fork_threads = &unclassified_node;
-+    qemu_hot_fork_thread_count = 2;
-+    unclassified.thread_id = 0;
++    crucible_fixture_native_corrupt_unclassified(0);
 +    assert(qemu_plugin_crucible_hot_fork_barrier(
 +        QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_HOLD, &snapshot) == 0);
 +    expected_preexisting_hold = true;
@@ -281236,9 +281545,7 @@ index 0000000000000000000000000000000000000000..9ec192437fc28fc9fcda9851c78d453d
 +    stop_actor(&unknown);
 +
 +    reset_inventory(actors);
-+    qemu_hot_fork_threads = &unclassified_node;
-+    qemu_hot_fork_thread_count = 2;
-+    unclassified.thread_id = actors[0].tid;
++    crucible_fixture_native_corrupt_unclassified(actors[0].tid);
 +    diagnostic_write_failure = true;
 +    saved = capture_diagnostic(&read_fd);
 +    assert(qemu_crucible_ram_owner_inventory(&tasks, &descriptors, &services) == -ENOTSUP);
@@ -281300,6 +281607,7 @@ index 0000000000000000000000000000000000000000..9ec192437fc28fc9fcda9851c78d453d
 +def main():
 +    parser = argparse.ArgumentParser(description=__doc__)
 +    parser.add_argument("--output-dir", type=Path, required=True)
++    parser.add_argument("--build-dir", type=Path, required=True)
 +    args = parser.parse_args()
 +    # Pin the full literal component dependency closure; this is source
 +    # inventory validation, not evidence of Source/lifecycle qualification.
@@ -281319,13 +281627,15 @@ index 0000000000000000000000000000000000000000..9ec192437fc28fc9fcda9851c78d453d
 +    source = (ROOT / "system/crucible-ram-quiescence.c").read_text()
 +    api = (ROOT / "plugins/api-system.c").read_text()
 +    native_threads = (ROOT / "util/qemu-thread-posix.c").read_text()
++    component_compiler = shlex.split(os.environ["CC"])
++    build_dir = args.build_dir.resolve(strict=True)
++    build = provider_build(build_dir, component_compiler)
 +    constants = "\n".join(re.findall(
 +        r"^#define (?:RAM_SERVICE_WORKERS_MAX|RAM_OWNER_DESCRIPTORS_MAX) .+$",
 +        source, re.MULTILINE,
 +    ))
 +    types = [aggregate(text, signature) for text, signature in [
 +        (native_threads, "struct QemuThreadRamActorBinding {"),
-+        (native_threads, "typedef struct QemuHotForkThreadRecord {"),
 +        (source, "typedef struct RamServiceWorker {"),
 +        (source, "typedef struct RamOwnerDescriptor {"),
 +        (source, "typedef struct RamOwnerClosure {"),
@@ -281342,51 +281652,120 @@ index 0000000000000000000000000000000000000000..9ec192437fc28fc9fcda9851c78d453d
 +        "static void ram_owner_report_inventory_refusal(",
 +        "int qemu_crucible_ram_owner_inventory(",
 +    ]]
-+    args.output_dir.mkdir(parents=True, exist_ok=True)
-+    fixture = args.output_dir / "ram-worker-inventory.c"
-+    binary = args.output_dir / "ram-worker-inventory"
++    end_body = definition(native_threads, "int qemu_thread_ram_pause_end_v2(")
++    effect = """            ram_membership_owner = NULL;
++            transaction->active = false;
++"""
++    if end_body.count(effect) != 1 or native_threads.count(end_body) != 1:
++        raise ValueError("native end omission cut changed")
++    mutant_threads = native_threads.replace(end_body, end_body.replace(effect, ""), 1)
++
++    output_dir = args.output_dir.resolve()
++    output_dir.mkdir(parents=True, exist_ok=True)
++    fixture = output_dir / "ram-worker-inventory.c"
++    component_object = output_dir / "ram-worker-inventory.o"
++    binary = output_dir / "ram-worker-inventory"
 +    fixture.write_text("\n\n".join([
 +        PRELUDE.replace("@SOURCE_HEADER@", str(ROOT / "plugins/crucible-startup-source.h")).replace(
 +            "@RECEIVING_HEADER@", str(ROOT / "plugins/crucible-checkpoint-receiving.h")),
 +        constants, *types, globals_body, ENDPOINTS,
-+        EXTRACT["body_cut"](native_threads,
-+                            "static pthread_cond_t ram_membership_resume",
-+                            "/* Introspection"),
 +        ordinary_source_dependencies(),
 +        definition(api, "int qemu_plugin_crucible_hot_fork_barrier("),
-+        *[definition(native_threads, signature) for signature in [
-+            "static bool bounded_ram_pause_current_locked(",
-+            "int qemu_thread_ram_pause_begin_actor(",
-+            "int qemu_thread_ram_pause_begin(",
-+            "static int ram_membership_current_locked(",
-+            "int qemu_thread_ram_pause_validate(",
-+            "bool qemu_thread_ram_actor_matches(",
-+            "int qemu_thread_ram_pause_end_v2(",
-+        ]], *bodies, TESTS,
++        *bodies, TESTS,
 +    ]))
-+    command = [*shlex.split(os.environ["CC"]), *shlex.split(os.environ.get("CFLAGS", "")),
-+               "-std=gnu11", "-Wall", "-Wextra", "-Werror", "-pthread", str(fixture),
-+               "-o", str(binary), *shlex.split(os.environ.get("LDFLAGS", ""))]
-+    (args.output_dir / "compile-command.json").write_text(json.dumps(command, indent=2) + "\n")
-+    subprocess.run(command, check=True)
-+    subprocess.run([str(binary)], cwd=args.output_dir, check=True, timeout=10)
 +
-+    # Compile the same literal closure, omit only the real gate writes, and
-+    # require its dedicated physical-effect assertion to reject that omission.
-+    original = fixture.read_text()
-+    effect = """            ram_membership_owner = NULL;
-+            transaction->active = false;
-+"""
-+    if original.count(effect) != 1:
-+        raise ValueError("native end omission cut changed")
-+    mutant = args.output_dir / "ram-worker-inventory-native-end-omission.c"
-+    mutant_binary = args.output_dir / "ram-worker-inventory-native-end-omission"
-+    mutant.write_text(original.replace(effect, ""))
-+    mutant_command = [str(mutant) if item == str(fixture) else
-+                      str(mutant_binary) if item == str(binary) else item
-+                      for item in command]
-+    subprocess.run(mutant_command, check=True)
-+    rejected = subprocess.run([str(mutant_binary)], cwd=args.output_dir,
++    provider_source = output_dir / "ram-worker-inventory-native-provider.c"
++    provider_object = provider_source.with_suffix(".o")
++    provider_map = provider_source.with_suffix(".map")
++    mutant_source = output_dir / "ram-worker-inventory-native-end-omission.c"
++    mutant_object = mutant_source.with_suffix(".o")
++    mutant_map = mutant_source.with_suffix(".map")
++    mutant_binary = mutant_source.with_suffix("")
++    provider_source.write_text(native_threads + "\n" + NATIVE_TEST_ACCESSORS)
++    mutant_source.write_text(mutant_threads + "\n" + NATIVE_TEST_ACCESSORS)
++
++    component_command = [
++        *component_compiler, *shlex.split(os.environ.get("CFLAGS", "")),
++        "-std=gnu11", "-Wall", "-Wextra", "-Werror", "-pthread",
++        "-c", str(fixture), "-o", str(component_object),
++    ]
++    provider_command, provider_transform = provider_compile_command(
++        build, build_dir, provider_source, provider_object)
++    mutant_command, mutant_transform = provider_compile_command(
++        build, build_dir, mutant_source, mutant_object)
++
++    def link_command(provider, output, link_map):
++        return [*build["linker"], str(component_object), str(provider),
++                *(str(path) for path in build["support_objects"]),
++                *build["parameters"],
++                *shlex.split(os.environ.get("LDFLAGS", "")),
++                f"-Wl,-Map,{link_map}", "-o", str(output)]
++
++    baseline_link = link_command(provider_object, binary, provider_map)
++    mutant_link = link_command(mutant_object, mutant_binary, mutant_map)
++    commands = {
++        "component": component_command,
++        "provider": provider_command,
++        "mutant_provider": mutant_command,
++        "baseline_link": baseline_link,
++        "mutant_link": mutant_link,
++    }
++    (output_dir / "commands.json").write_text(json.dumps(commands, indent=2) + "\n")
++    provenance = {
++        "build_metadata": build["metadata_hashes"],
++        "configured_provider_object": str(build["provider_object"]),
++        "configured_provider_compile": configured_command(build["entry"], build_dir),
++        "provider_compile_transformations": {
++            "baseline": provider_transform,
++            "mutant": mutant_transform,
++        },
++        "source_hashes": {
++            str(path): hashlib.sha256(path.read_bytes()).hexdigest()
++            for path in (ROOT / "util/qemu-thread-posix.c", fixture,
++                         provider_source, mutant_source)
++        },
++    }
++    provenance_path = output_dir / "provider-provenance.json"
++    protected_paths = {
++        build["provider_object"], *build["support_objects"],
++        *(Path(path) for path in build["metadata_hashes"]),
++        *(Path(path) for path in provider_transform["original_dependency_paths"]),
++    }
++
++    def protected_state():
++        return {
++            str(path): hashlib.sha256(path.read_bytes()).hexdigest()
++            if path.is_file() else None
++            for path in sorted(protected_paths)
++        }
++
++    provenance["configured_inputs_before"] = protected_state()
++    provenance_path.write_text(json.dumps(provenance, indent=2) + "\n")
++
++    # Retain all actual objects before attempting the first genuine link.
++    # Unknown component collisions must fail normally, never gain substitutes.
++    for command in (component_command, provider_command, mutant_command):
++        subprocess.run(command, cwd=build_dir, check=True)
++    provenance["configured_inputs_after"] = protected_state()
++    provenance_path.write_text(json.dumps(provenance, indent=2) + "\n")
++    if provenance["configured_inputs_before"] != provenance["configured_inputs_after"]:
++        raise AssertionError("variant compilation changed configured build inputs")
++    provenance["object_hashes"] = {
++        str(path): hashlib.sha256(path.read_bytes()).hexdigest()
++        for path in (component_object, provider_object, mutant_object,
++                     build["provider_object"], *build["support_objects"])
++    }
++    if (provenance["object_hashes"][str(provider_object)] ==
++            provenance["object_hashes"][str(mutant_object)]):
++        raise AssertionError("native end mutation produced an identical provider object")
++    provenance_path.write_text(json.dumps(provenance, indent=2) + "\n")
++
++    subprocess.run(baseline_link, cwd=build_dir, check=True)
++    verify_provider_link(provider_map, provider_object, build["provider_object"])
++    subprocess.run([str(binary)], cwd=output_dir, check=True, timeout=10)
++    subprocess.run(mutant_link, cwd=build_dir, check=True)
++    verify_provider_link(mutant_map, mutant_object, build["provider_object"])
++    rejected = subprocess.run([str(mutant_binary)], cwd=output_dir,
 +                              capture_output=True, timeout=10)
 +    if rejected.returncode != -signal.SIGABRT or b"native_end_complete" not in rejected.stderr:
 +        raise AssertionError("native gate omission escaped its physical-effect assertion")
@@ -293146,10 +293525,10 @@ index 0000000000000000000000000000000000000000..6e04017762b6144d758422da84b78c7a
 +    main()
 diff --git a/tests/unit/test-crucible-stopped-control-rearm.py b/tests/unit/test-crucible-stopped-control-rearm.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..faf9ef29ce8cfb3ebb3623964f9474caa5226b4f
+index 0000000000000000000000000000000000000000..13edaf335c8184e8a5ff5337cec4acf0555aae39
 --- /dev/null
 +++ b/tests/unit/test-crucible-stopped-control-rearm.py
-@@ -0,0 +1,241 @@
+@@ -0,0 +1,260 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercise retained control intent when native pause reasserts CPU stop.
 +
@@ -293160,6 +293539,7 @@ index 0000000000000000000000000000000000000000..faf9ef29ce8cfb3ebb3623964f9474ca
 +"""
 +
 +import argparse
++import hashlib
 +import json
 +import os
 +from pathlib import Path
@@ -293173,6 +293553,10 @@ index 0000000000000000000000000000000000000000..faf9ef29ce8cfb3ebb3623964f9474ca
 +    "test-crucible-control-deferred.py")))
 +definition = SUPPORT["definition"]
 +NETWORK = SUPPORT["SUPPORT"]
++
++QOM_OBJECT_HEADER_SHA256 = (
++    "ea0d72424e90257e7560bba241ae6beba1dc3fa3608ba05af9a21e67c9ee37f3"
++)
 +
 +EXTRA = r"""
 +#include <sys/eventfd.h>
@@ -293320,6 +293704,12 @@ index 0000000000000000000000000000000000000000..faf9ef29ce8cfb3ebb3623964f9474ca
 +    parser.add_argument("--negative-transfer", action="store_true")
 +    arguments = parser.parse_args()
 +    production_sources = SUPPORT["validated_sources"]()
++    qom_header = (ROOT / "include/qom/object.h").read_bytes()
++    if hashlib.sha256(qom_header).hexdigest() != QOM_OBJECT_HEADER_SHA256:
++        raise SystemExit("include/qom/object.h source hash mismatch")
++    # Use the real declaration without importing component model types.
++    qom_declaration = NETWORK["SUPPORT"]["EXTRACT"]["unique_line"](
++        qom_header.decode("utf-8"), "void object_unref(void *obj);")
 +    arguments.output_dir.mkdir(parents=True, exist_ok=True)
 +    prelude = NETWORK["fixture_prelude"]()
 +    for signature in [
@@ -293374,15 +293764,23 @@ index 0000000000000000000000000000000000000000..faf9ef29ce8cfb3ebb3623964f9474ca
 +        (ROOT / "util/qsp.c").read_text(),
 +        "QemuCondWaitFunc qemu_cond_wait_func = qemu_cond_wait_impl;")
 +    generated.write_text(prelude + SUPPORT["EXTRA"] + EXTRA + wait_dispatch +
-+                         bodies + support + CHECKS)
++                         qom_declaration + "\n\n" + bodies + support + CHECKS)
++    # Retain the component object for the owning runner's symbol audit.
++    component = arguments.output_dir / "stopped-control-rearm.o"
 +    binary = arguments.output_dir / "stopped-control-rearm"
-+    command = [os.environ.get("CC", "cc"),
-+               *shlex.split(os.environ.get("CFLAGS", "")),
-+               "-Wno-missing-prototypes", "-Wno-unused-function", "-Wno-unused-variable",
-+               str(generated), *NETWORK["SUPPORT"]["utility_sources"](), "-o", str(binary),
++    compile_prefix = [os.environ.get("CC", "cc"),
++                      *shlex.split(os.environ.get("CFLAGS", "")),
++                      "-Wno-missing-prototypes", "-Wno-unused-function",
++                      "-Wno-unused-variable"]
++    component_command = [*compile_prefix, "-c", str(generated), "-o", str(component)]
++    command = [*compile_prefix,
++               str(component), *NETWORK["SUPPORT"]["utility_sources"](), "-o", str(binary),
 +               *shlex.split(os.environ.get("LDFLAGS", ""))]
++    (arguments.output_dir / "component-compile-command.json").write_text(
++        json.dumps(component_command, indent=2) + "\n")
 +    (arguments.output_dir / "compile-command.json").write_text(
 +        json.dumps(command, indent=2) + "\n")
++    subprocess.run(component_command, check=True)
 +    subprocess.run(command, check=True)
 +    for case in ["stopped-reader", "admitted-reader", "no-request"]:
 +        print(f"case={case}", flush=True)
