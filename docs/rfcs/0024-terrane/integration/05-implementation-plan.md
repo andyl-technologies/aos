@@ -9269,8 +9269,11 @@ preparation pass in 255.624 and 152.050 seconds; independent review verifies all
 5,105 archive inputs. All 129 predecessor cases and six privileged ignores
 remain unchanged. The preparation controller actually terminates successfully;
 local all-target native-fixture Clippy also passes after the shared target lock
-clears. Required application-target compilation continues. Native execution
-follows actual collection and review of the read-promotion predecessor. This
+clears. Required application-target compilation passes in 2,427.915 seconds;
+all 183 unit and integration artifacts from 59 packages match the declared
+inventory, and its controller actually terminates successfully. These results
+compile the targets without executing their tests. Native execution follows
+actual collection and review of the read-promotion predecessor. This
 component does not qualify lower-tier fallback, full HOST-19, NativeReady or a
 complete task.
 
