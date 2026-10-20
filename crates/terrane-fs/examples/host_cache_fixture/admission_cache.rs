@@ -16,7 +16,7 @@ use std::{
     task::{Context, Poll, Waker},
 };
 use terrane::{
-    host::cache::CacheState,
+    host::cache::{CacheState, ReservationRecord},
     pack::{EntryKind, PackClass, PackId, PackWriter},
     store::{ChunkPosition, TokioLocalFs},
 };
@@ -220,7 +220,7 @@ pub(super) fn run(
         .ok_or_else(|| invalid("metadata pair allocation overflows"))?;
     check_report(runtime, inputs, &before, &report, pair_bytes)?;
     let cached = load(runtime, inputs)?;
-    check_cached(&cached, 4, true)?;
+    check_cached(&cached, 4, true, 1)?;
     let expires = cached
         .leases
         .iter()
@@ -236,7 +236,7 @@ pub(super) fn run(
     emit("READY genuine encoded chunks and metadata pair cached with original inodes retained")?;
     control("after-grace")?;
     let expired = load(runtime, inputs)?;
-    check_cached(&expired, 0, true)?;
+    check_cached(&expired, 0, true, 1)?;
     if fs::read(policy(inputs))? == before_grace {
         return Err(invalid(
             "original encoded release grace was not durably swept",
@@ -256,6 +256,34 @@ pub(super) fn run(
     // producer holds and release grace have disappeared. Dictionary decoding
     // and reconstruction metadata must still come from the original resources.
     let publication = runtime.block_on(owner.publish_manifest(data.identity))?;
+    let published = load(runtime, inputs)?;
+    let metadata_pins: Vec<_> = published
+        .pins
+        .iter()
+        .filter(|pin| pin.owner.starts_with("metadata:"))
+        .cloned()
+        .collect();
+    let mut retained_holds = expired.reservations.clone();
+    let reconstruction: Vec<_> = published
+        .reservations
+        .iter()
+        .filter(|hold| {
+            published
+                .leases
+                .iter()
+                .any(|lease| lease.owner.strip_prefix("metadata:") == Some(hold.id.as_str()))
+        })
+        .cloned()
+        .collect();
+    if reconstruction.len() != 1
+        || metadata_pins.len() != 2
+        || reconstruction.iter().any(|hold| hold.bytes != HOLD)
+    {
+        return Err(invalid(
+            "publication lacks its genuine reconstruction metadata funding",
+        ));
+    }
+    retained_holds.extend(reconstruction);
     let stalled = runtime.block_on(owner.stall_policy_for_fixture())?;
     let mut plaintext = vec![0; data.plaintext.len()];
     publication.handle().read_exact_at(&mut plaintext, 0)?;
@@ -267,7 +295,9 @@ pub(super) fn run(
     drop(stalled);
     emit("READY genuine cached admissions transferred into verified sealed manifest")?;
     control("finish-sources")?;
-    let cleanup = runtime.block_on(publication.finish_retired_sources(owner))?;
+    let cleanup = runtime
+        .block_on(publication.finish_retired_sources(owner))
+        .map_err(|error| io::Error::new(error.kind(), format!("cached source cleanup: {error}")))?;
     if cleanup.completed_sources != 2 {
         return Err(invalid(
             "cached admission cleanup lacks original source acknowledgements",
@@ -277,15 +307,27 @@ pub(super) fn run(
     tail_file.check(false)?;
     drop(first_file);
     drop(tail_file);
+    emit("ADMISSION_CACHE_CLEANUP completed_sources=2")?;
     runtime.block_on(publication.close_resident_reads(owner))?;
     let report = runtime
         .block_on(publication.into_cache(owner))
-        .map_err(io::Error::other)?;
+        .map_err(|error| io::Error::other(format!("cached publication handoff: {error}")))?;
     let after = load(runtime, inputs)?;
-    check_cached(&after, 0, false)?;
+    check_cached(&after, 0, false, 2)?;
+    check_holds(&after, &retained_holds)?;
+    if metadata_pins.iter().any(|original| {
+        !after.pins.iter().any(|pin| {
+            pin.owner == original.owner
+                && pin.hash == original.hash
+                && pin.expires == original.expires
+        })
+    }) {
+        return Err(invalid(
+            "cache handoff released original reconstruction metadata pins",
+        ));
+    }
     if report.released_source_admissions != 2
-        || report.future_hold_bytes != HOLD
-        || after.reservations.len() != 1
+        || report.future_hold_bytes != future(&after)?
         || !after
             .pins
             .iter()
@@ -383,9 +425,17 @@ fn check_report(
     Ok(())
 }
 
-fn check_cached(state: &CacheState, grace: usize, dependency: bool) -> io::Result<()> {
-    if future(state)? != HOLD
-        || state.reservations.len() != 1
+fn check_cached(
+    state: &CacheState,
+    grace: usize,
+    dependency: bool,
+    holds: usize,
+) -> io::Result<()> {
+    let funding = HOLD
+        .checked_mul(u64::try_from(holds).map_err(io::Error::other)?)
+        .ok_or_else(|| invalid("expected encoded cache holds overflow"))?;
+    if future(state)? != funding
+        || state.reservations.len() != holds
         || state
             .leases
             .iter()
@@ -415,6 +465,21 @@ fn check_cached(state: &CacheState, grace: usize, dependency: bool) -> io::Resul
     {
         return Err(invalid(
             "encoded cache protection differs from actual retained dependencies",
+        ));
+    }
+    Ok(())
+}
+
+fn check_holds(state: &CacheState, expected: &[ReservationRecord]) -> io::Result<()> {
+    if state.reservations.len() != expected.len()
+        || expected.iter().any(|original| {
+            !state.reservations.iter().any(|row| {
+                row.id == original.id && row.owner == original.owner && row.bytes == original.bytes
+            })
+        })
+    {
+        return Err(invalid(
+            "cache handoff changed original bootstrap or reconstruction funding",
         ));
     }
     Ok(())

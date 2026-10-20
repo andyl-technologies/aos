@@ -25,9 +25,9 @@ def run(driver, uuid):
     def rows(policy, group, prefix):
         return [row for row in policy.get(group, []) if row["owner"].startswith(prefix)]
 
-    def cached(policy, grace, dependency):
-        driver.require(len(policy["reservations"]) == 1
-                       and sum(row["bytes"] for row in policy["reservations"]) == 262144
+    def cached(policy, grace, dependency, holds=1):
+        driver.require(len(policy["reservations"]) == holds
+                       and sum(row["bytes"] for row in policy["reservations"]) == holds * 262144
                        and not rows(policy, "pins", "admission:")
                        and not rows(policy, "leases", "admission:")
                        and len(rows(policy, "leases", "admission-grace:")) == grace
@@ -87,6 +87,15 @@ def run(driver, uuid):
               flush=True)
         control("after-grace")
         lines.until("READY genuine cached admissions transferred into verified sealed manifest", timeout=30)
+        published = state()
+        metadata_leases = rows(published, "leases", "metadata:")
+        metadata_tokens = {row["owner"].removeprefix("metadata:") for row in metadata_leases}
+        metadata_holds = [row for row in published["reservations"] if row["id"] in metadata_tokens]
+        metadata_pins = rows(published, "pins", "metadata:")
+        driver.require(len(metadata_leases) == len(metadata_holds) == 1
+                       and len(metadata_pins) == 2 and metadata_holds[0]["bytes"] == 262144,
+                       "published manifest lacks original durable reconstruction metadata custody")
+        retained_holds = expired["reservations"] + metadata_holds
         pending = files(root / "pending-delete")
         sealed = files(root / "sealed")
         driver.require(len(sources) == len(pending) == 2 and len(sealed) == 1
@@ -114,7 +123,7 @@ def run(driver, uuid):
         lines.until("READY original cache owner retains dictionary and reconstruction pair after acknowledged source retirement",
                     timeout=30)
         final = state()
-        cached(final, 0, 0)
+        cached(final, 0, 0, holds=2)
         measurements = re.findall(
             r"^ADMISSION_CACHE_FINAL charged_reserved_bytes=(\d+) future_hold_bytes=(\d+)$",
             lines.bytes.decode(), re.M)
@@ -123,7 +132,11 @@ def run(driver, uuid):
         driver.require(process.poll() is None and not files(root / "pending-delete")
                        and files(root / "chunks") == dictionary
                        and files(root / "sealed") == sealed and files(root / "objects") == metadata
-                       and rows(final, "pins", "metadata:") and final_future == 262144
+                       and rows(final, "pins", "metadata:") == metadata_pins
+                       and rows(final, "leases", "metadata:") == metadata_leases
+                       and sorted(final["reservations"], key=lambda row: row["id"])
+                       == sorted(retained_holds, key=lambda row: row["id"])
+                       and final_future == sum(row["bytes"] for row in retained_holds)
                        and quota(driver, case) == final_charged,
                        "acknowledged cached source cleanup lost reconstruction resources or exact quota")
         print("PASS independent observer verifies original cached source retirement and dependency release while reconstruction metadata and native owner remain live",
@@ -134,7 +147,18 @@ def run(driver, uuid):
         output, error = process.communicate(timeout=10)
         driver.require(process.returncode == 0 and not output and not error,
                        "encoded cache handoff actor did not exit successfully")
-        print(lines.bytes.decode(), end="", flush=True)
+    except BaseException:
+        # Preserve the actual native refusal even if the actor exits before the
+        # next handshake. Diagnostics never retry or qualify a failed operation.
+        try:
+            print(lines.bytes[lines.printed:].decode(), end="", flush=True)
+            if process.poll() is None:
+                process.kill()
+            remaining, _ = process.communicate(timeout=5)
+            print(remaining.decode(), end="", flush=True)
+        except Exception as error:
+            print("ADMISSION_CACHE_FAILURE_DIAGNOSTICS unavailable: " + str(error), flush=True)
+        raise
     finally:
         if process.poll() is None:
             process.terminate()
