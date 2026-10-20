@@ -74,6 +74,7 @@ The atomic integration patch creates these QEMU source files:
 | `tests/unit/test-crucible-fault-rule-presence.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-rr-sim-barriers.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-rr-bound-ceiling.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-icount-vmstate-version.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-control-deferred.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-device-load-console.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-console-seal.py` | GPL-2.0-only | Explicit SPDX identifier |

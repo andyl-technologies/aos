@@ -1,6 +1,6 @@
-From 359bf202e7b4c47796949b952b500e5ffc52b056 Mon Sep 17 00:00:00 2001
+From 25185a3bb8967dd399a5cf02257981d4b36c0dec Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Tue, 20 Oct 2026 05:59:52 +0000
+Date: Tue, 20 Oct 2026 07:35:37 +0000
 Subject: [PATCH] Re-deliver coalesced RR control wakes and claim them before
  idle waits
 
@@ -16,7 +16,7 @@ test-crucible-control-deferred runs the production arm and bridge over one halte
 
 test-crucible-rr-sim-barriers now also extracts the RR wake boundary, the claim settlement and the outer loop's claim statement, and takes the wake state machine from its header. A request is published with its own IDLE or ACTIVE kick while every vCPU is halted and the idle callback provider aborts. The wait returns at IDLE without a callback, and the outer claim acknowledges the request; a runnable vCPU keeps its wake. Without the settlement the wait reaches the idle callback and the outer loop never claims, which the new unsettled-control-claim negative control reproduces.
 
-A published logical ceiling is now an upper bound rather than a stop. The RR loop crossed the final partial instruction to MIN(deadline, ceiling), crediting the gap below the ceiling to the guest, and a stalled node jumped to the ceiling, so guest time depended on where the host split quanta. qemu_plugin_register_sim_shmem_settlement_cb registers a settled-publication callback and a callback that reports the plugin's next exact event: an inbound delivery, a device completion, or a ceiling the host declared exact. The partial-instruction advance now targets only a timer or fault deadline or such an event at or before the ceiling. A dispatch boundary whose next retirement would cross the ceiling, with no event before it, is published as settled through the ceiling QEMU sampled, and the final post-execution ceiling completion defers to the advance while an event is pending. A stalled node advances only to events at or before the ceiling, publishing each one, and otherwise settles at its current clock. A plugin that does not register the callbacks keeps its ceiling as the exact stop. The timer/icount migration section moves to version 6, so streams that may carry credited bias are refused, and the shared-memory ABI headers move to version 32. test-crucible-net-stop-chain stubs the boundary publication. The new test-crucible-rr-bound-ceiling extracts the production advance, stalled-deadline, publication and predicate bodies; two negative controls restore the old ceiling credits and fail.
+A published logical ceiling is now an upper bound rather than a stop. The RR loop crossed the final partial instruction to MIN(deadline, ceiling), crediting the gap below the ceiling to the guest, and a stalled node jumped to the ceiling, so guest time depended on where the host split quanta. qemu_plugin_register_sim_shmem_settlement_cb registers a settled-publication callback and a callback that reports the plugin's next exact event: an inbound delivery, a device completion, or a ceiling the host declared exact. The partial-instruction advance now targets only a timer or fault deadline or such an event at or before the ceiling. A dispatch boundary whose next retirement would cross the ceiling, with no event before it, is published as settled through the ceiling QEMU sampled, and the final post-execution ceiling completion defers to the advance while an event is pending. A stalled node advances only to events at or before the ceiling, publishing each one, and otherwise settles at its current clock. A sim node whose plugin dispatches ceilings without registering the callbacks is refused before its first guest instruction, and no fallback treats its ceiling as an exact stop or publishes a plain boundary as settled. The in-tree sim test plugins register the callbacks and declare their own ceilings exact events, so their stops are unchanged. The timer/icount migration section moves to version 6, so streams that may carry credited bias are refused, and the shared-memory ABI headers move to version 32. test-crucible-net-stop-chain stubs the boundary publication. The new test-crucible-rr-bound-ceiling extracts the production advance, stalled-deadline, publication, launch-refusal and predicate bodies; five negative controls restore the old ceiling credits or fallbacks and fail. The new test-crucible-icount-vmstate-version runs the production subsection loader and version gate over the production timer/icount descriptor: version 5 and older streams are refused before any hook runs, and two negative controls that accept them fail.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -4221,10 +4221,10 @@ index 0000000000000000000000000000000000000000..76140d303d1b89512472ebc4f0d0577a
 +    }
 +}
 diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
-index cdaa3e118082d7f100dd7655e57e28b55418d294..876188500f8aeba2d881e8ffe5fb8336605bf539 100644
+index cdaa3e118082d7f100dd7655e57e28b55418d294..315e69aea5715c55e68021668ba5723aa687bdd5 100644
 --- a/accel/tcg/tcg-accel-ops-rr.c
 +++ b/accel/tcg/tcg-accel-ops-rr.c
-@@ -27,45 +27,2076 @@
+@@ -27,45 +27,2098 @@
  #include "qemu/lockable.h"
  #include "system/tcg.h"
  #include "system/replay.h"
@@ -5236,7 +5236,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..876188500f8aeba2d881e8ffe5fb8336
 +/*
 + * Returns the earliest exact event strictly after @now: a QEMU timer or fault
 + * deadline, or a plugin-owned event. A bare ceiling is never an event
-+ * (RFC-0010 SCHED-12), unless a legacy plugin reports it as one.
++ * (RFC-0010 SCHED-12).
 + */
 +static uint64_t rr_crucible_sim_next_gap_event(int64_t now,
 +                                               uint64_t logical_ceiling)
@@ -5278,17 +5278,13 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..876188500f8aeba2d881e8ffe5fb8336
 +
 +/*
 + * Whether an exact event lies after the clock and at or before the logical
-+ * ceiling, so the node must reach it before its boundary can settle. A legacy
-+ * plugin keeps the original completion at its exact ceiling.
++ * ceiling, so the node must reach it before its boundary can settle.
 + */
 +static bool rr_crucible_sim_gap_event_pending(void)
 +{
 +    uint64_t logical_ceiling;
 +    int64_t now;
 +
-+    if (!crucible_sim_shmem_settlement_registered()) {
-+        return false;
-+    }
 +    now = icount_crucible_sim_tick_observed();
 +    logical_ceiling = crucible_sim_shmem_logical_ceiling();
 +    if (now < 0 || (uint64_t)now >= logical_ceiling) {
@@ -5441,8 +5437,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..876188500f8aeba2d881e8ffe5fb8336
 +        if (target_tick >= deadline) {
 +            break;
 +        }
-+        if (!settled && target_tick < logical_ceiling &&
-+            crucible_sim_shmem_settlement_registered()) {
++        if (!settled && target_tick < logical_ceiling) {
 +            /*
 +             * A plugin event below the ceiling is published at its exact
 +             * tick, which delivers it; the rest of the window is decided
@@ -5465,6 +5460,33 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..876188500f8aeba2d881e8ffe5fb8336
 +    qemu_crucible_fault_dispatch_boundary(
 +        CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY, qemu_plugin_icount_raw());
 +    return true;
++}
++
++/*
++ * Whether a Crucible sim node would dispatch without the settlement bridge.
++ * Generic QEMU and sim nodes without host dispatch never need the bridge.
++ */
++static bool rr_crucible_sim_settlement_bridge_missing(void)
++{
++    return rr_crucible_sim_mode() &&
++           (crucible_sim_shmem_dispatch_registered() ||
++            qemu_plugin_crucible_console_dispatch_registered()) &&
++           !crucible_sim_shmem_settlement_registered();
++}
++
++/*
++ * Refuses a sim node whose plugin dispatches ceilings but cannot settle them.
++ * Without the bridge the RR loop could only stop on the ceiling itself and
++ * credit the gap below it to the guest, which RFC-0010 SCHED-12 forbids, so
++ * the node fails before its first guest instruction.
++ */
++static void rr_crucible_sim_require_settlement_bridge(void)
++{
++    if (rr_crucible_sim_settlement_bridge_missing()) {
++        error_report("Crucible sim dispatch requires the plugin settlement "
++                     "bridge for bounded ceilings");
++        abort();
++    }
 +}
 +
 +static void rr_crucible_sim_reset_exit_request(CPUState *cpu)
@@ -6320,7 +6342,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..876188500f8aeba2d881e8ffe5fb8336
  }
  
  /* Kick the currently round-robin scheduled vCPU to next */
-@@ -84,18 +2115,30 @@ static void rr_kick_next_cpu(void)
+@@ -84,18 +2137,30 @@ static void rr_kick_next_cpu(void)
  
  static void rr_kick_thread(void *opaque)
  {
@@ -6353,7 +6375,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..876188500f8aeba2d881e8ffe5fb8336
      }
  }
  
-@@ -110,15 +2153,138 @@ static void rr_wait_io_event(void)
+@@ -110,15 +2175,138 @@ static void rr_wait_io_event(void)
  {
      CPUState *cpu;
  
@@ -6494,7 +6516,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..876188500f8aeba2d881e8ffe5fb8336
      }
  }
  
-@@ -140,6 +2306,18 @@ static void rr_deal_with_unplugged_cpus(void)
+@@ -140,6 +2328,18 @@ static void rr_deal_with_unplugged_cpus(void)
  
  static void rr_force_rcu(Notifier *notify, void *data)
  {
@@ -6513,7 +6535,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..876188500f8aeba2d881e8ffe5fb8336
      rr_kick_next_cpu();
  }
  
-@@ -184,6 +2362,8 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -184,6 +2384,8 @@ static void *rr_cpu_thread_fn(void *arg)
      CPUState *cpu = arg;
  
      assert(tcg_enabled());
@@ -6522,7 +6544,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..876188500f8aeba2d881e8ffe5fb8336
      rcu_register_thread();
      force_rcu.notify = rr_force_rcu;
      rcu_add_force_rcu_notifier(&force_rcu);
-@@ -204,41 +2384,202 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -204,41 +2406,203 @@ static void *rr_cpu_thread_fn(void *arg)
          /* process any pending work */
          CPU_FOREACH(cpu) {
              current_cpu = cpu;
@@ -6531,6 +6553,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..876188500f8aeba2d881e8ffe5fb8336
          }
      }
 +    qatomic_set_mb(&rr_initial_wait_complete, true);
++    rr_crucible_sim_require_settlement_bridge();
  
      rr_start_kick_timer();
  
@@ -6743,7 +6766,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..876188500f8aeba2d881e8ffe5fb8336
  
          if (icount_enabled()) {
              int cpu_count = rr_cpu_count();
-@@ -254,11 +2595,31 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -254,11 +2618,31 @@ static void *rr_cpu_thread_fn(void *arg)
              cpu_budget = icount_percpu_budget(cpu_count);
          }
  
@@ -6776,7 +6799,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..876188500f8aeba2d881e8ffe5fb8336
  
          while (cpu && cpu_work_list_empty(cpu)) {
              /*
-@@ -276,28 +2637,141 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -276,28 +2660,141 @@ static void *rr_cpu_thread_fn(void *arg)
              qemu_clock_enable(QEMU_CLOCK_VIRTUAL,
                                (cpu->singlestep_flags & SSTEP_NOTIMER) == 0);
  
@@ -6933,7 +6956,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..876188500f8aeba2d881e8ffe5fb8336
              } else if (cpu->stop) {
                  if (cpu->unplug) {
                      cpu = CPU_NEXT(cpu);
-@@ -305,11 +2779,137 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -305,11 +2802,137 @@ static void *rr_cpu_thread_fn(void *arg)
                  break;
              }
  
@@ -7073,7 +7096,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..876188500f8aeba2d881e8ffe5fb8336
      }
  
      g_assert_not_reached();
-@@ -318,13 +2918,34 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -318,13 +2941,34 @@ static void *rr_cpu_thread_fn(void *arg)
  void rr_start_vcpu_thread(CPUState *cpu)
  {
      char thread_name[VCPU_THREAD_NAME_SIZE];
@@ -7367,10 +7390,10 @@ index 2a76a296127e81edc61f45a59785a89705daae90..f2fab3a43b284b77f916e832ea1c7e65
  #endif /* TCG_ACCEL_OPS_RR_H */
 diff --git a/accel/tcg/tcg-accel-ops-sim-shmem.c b/accel/tcg/tcg-accel-ops-sim-shmem.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..e7804baeab809652bf225c520a55a4e5ee2c9f6a
+index 0000000000000000000000000000000000000000..c78a3a4f0cae9070c8e1b9fd4f46de9228485c8b
 --- /dev/null
 +++ b/accel/tcg/tcg-accel-ops-sim-shmem.c
-@@ -0,0 +1,234 @@
+@@ -0,0 +1,241 @@
 +/*
 + * QEMU TCG Crucible deterministic simulation shmem dispatch glue
 + */
@@ -7478,8 +7501,13 @@ index 0000000000000000000000000000000000000000..e7804baeab809652bf225c520a55a4e5
 +                                              uint64_t settled_ceiling)
 +{
 +    if (!crucible_sim_shmem_settlement_registered()) {
-+        crucible_sim_shmem_publish_current_icount(current_icount);
-+        return;
++        /*
++         * Sim dispatch is refused at launch without the bridge, so this
++         * would be a plain publication standing in for a settled one.
++         */
++        error_report("Crucible settled publication requires the plugin "
++                     "settlement bridge");
++        abort();
 +    }
 +
 +    crucible_current_icount = current_icount;
@@ -7490,15 +7518,17 @@ index 0000000000000000000000000000000000000000..e7804baeab809652bf225c520a55a4e5
 +}
 +
 +/*
-+ * A plugin without the settlement bridge treats its logical ceiling as the
-+ * exact stop, so the ceiling itself is reported as its only exact event.
++ * Without the settlement bridge there are no plugin-owned exact events. The
++ * logical ceiling is a bound, never an event (RFC-0010 SCHED-12), so it is
++ * not reported as one.
 + */
 +uint64_t crucible_sim_shmem_exact_event_tick(uint64_t logical_ceiling)
 +{
 +    uint64_t tick;
 +
++    (void)logical_ceiling;
 +    if (!crucible_sim_shmem_settlement_registered()) {
-+        return logical_ceiling;
++        return UINT64_MAX;
 +    }
 +
 +    qemu_plugin_crucible_exact_boundary_enter();
@@ -67011,7 +67041,7 @@ index 890497b0d22ede109c03bcc24fbc3aa24b09e59c..36c355bf303715c91112dcceb32fb779
  
  int monitor_puts(Monitor *mon, const char *str);
 diff --git a/include/plugins/qemu-plugin.h b/include/plugins/qemu-plugin.h
-index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..b4b5f926da53960b06555a0cd92c5cf385485715 100644
+index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..827f0f13c8e468b4e4671280cb67fab6124535fa 100644
 --- a/include/plugins/qemu-plugin.h
 +++ b/include/plugins/qemu-plugin.h
 @@ -198,6 +198,352 @@ typedef void (*qemu_plugin_vcpu_discon_cb_t)(unsigned int vcpu_index,
@@ -67367,7 +67397,7 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..b4b5f926da53960b06555a0cd92c5cf3
  /**
   * qemu_plugin_uninstall() - Uninstall a plugin
   * @id: this plugin's opaque ID
-@@ -827,210 +1173,992 @@ QEMU_PLUGIN_API
+@@ -827,210 +1173,993 @@ QEMU_PLUGIN_API
  void qemu_plugin_update_ns(const void *handle, int64_t time);
  
  /**
@@ -68130,8 +68160,9 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..b4b5f926da53960b06555a0cd92c5cf3
 + * With these callbacks the logical ceiling is an upper bound rather than a
 + * stop: a vCPU that cannot retire another instruction at or before the
 + * ceiling keeps its clock unless an exact event lies before the ceiling, and
-+ * the boundary is published as settled. Without them, the plugin's logical
-+ * ceiling remains the exact stop, as for plugins written before this API.
++ * the boundary is published as settled. A Crucible sim node that registers a
++ * dispatch callback without these callbacks is refused before its first
++ * guest instruction; the ceiling is never treated as an exact stop.
 + */
 +QEMU_PLUGIN_API
 +void qemu_plugin_register_sim_shmem_settlement_cb(
@@ -68504,7 +68535,7 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..b4b5f926da53960b06555a0cd92c5cf3
   *
   * Return a string representing the path to the binary. For user-mode
   * this is the main executable. For system emulation we currently
-@@ -1178,6 +2306,59 @@ QEMU_PLUGIN_API
+@@ -1178,6 +2307,59 @@ QEMU_PLUGIN_API
  bool qemu_plugin_read_memory_vaddr(uint64_t addr,
                                     GByteArray *data, size_t len);
  
@@ -68564,7 +68595,7 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..b4b5f926da53960b06555a0cd92c5cf3
  /**
   * qemu_plugin_write_memory_vaddr() - write to memory using a virtual address
   *
-@@ -1292,6 +2473,666 @@ qemu_plugin_write_memory_hwaddr(uint64_t addr, GByteArray *data);
+@@ -1292,6 +2474,666 @@ qemu_plugin_write_memory_hwaddr(uint64_t addr, GByteArray *data);
  QEMU_PLUGIN_API
  bool qemu_plugin_translate_vaddr(uint64_t vaddr, uint64_t *hwaddr);
  
@@ -69231,7 +69262,7 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..b4b5f926da53960b06555a0cd92c5cf3
  /**
   * qemu_plugin_scoreboard_new() - alloc a new scoreboard
   *
-@@ -1363,6 +3204,115 @@ void qemu_plugin_u64_set(qemu_plugin_u64 entry, unsigned int vcpu_index,
+@@ -1363,6 +3205,115 @@ void qemu_plugin_u64_set(qemu_plugin_u64 entry, unsigned int vcpu_index,
  QEMU_PLUGIN_API
  uint64_t qemu_plugin_u64_sum(qemu_plugin_u64 entry);
  
@@ -149568,10 +149599,10 @@ index 0000000000000000000000000000000000000000..d622a5548c4d850037867543e302a289
 +}
 diff --git a/tests/tcg/plugins/crucible-fingerprint-observer.c b/tests/tcg/plugins/crucible-fingerprint-observer.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..40d30003cf4e13a943be1d88904f90d66c971a9a
+index 0000000000000000000000000000000000000000..71d00169b08965f117f24071a190048a7236bccc
 --- /dev/null
 +++ b/tests/tcg/plugins/crucible-fingerprint-observer.c
-@@ -0,0 +1,317 @@
+@@ -0,0 +1,336 @@
 +/*
 + * Crucible live device fingerprint projection observer
 + *
@@ -149635,6 +149666,23 @@ index 0000000000000000000000000000000000000000..40d30003cf4e13a943be1d88904f90d6
 +{
 +    (void)userdata;
 +    return UINT64_MAX;
++}
++
++/*
++ * Sim dispatch requires the settlement bridge. This observer's ceiling is
++ * unbounded and declared its only exact event, so a settled boundary is
++ * published like any other.
++ */
++static void publish_settled(uint64_t icount, uint64_t settled_ceiling,
++                            void *userdata)
++{
++    (void)settled_ceiling;
++    publish_icount(icount, userdata);
++}
++
++static uint64_t exact_event(void *userdata)
++{
++    return max_advance_icount(userdata);
 +}
 +
 +static int send_material(int fd)
@@ -149884,6 +149932,8 @@ index 0000000000000000000000000000000000000000..40d30003cf4e13a943be1d88904f90d6
 +
 +    qemu_plugin_register_sim_shmem_dispatch_cb(
 +        publish_icount, max_advance_icount, max_advance_icount, NULL);
++    qemu_plugin_register_sim_shmem_settlement_cb(publish_settled, exact_event,
++                                                 NULL);
 +    qemu_plugin_register_vcpu_idle_resume_cb(vcpu_idle, vcpu_resumed, NULL);
 +    qemu_plugin_register_control_boundary_cb(control_boundary, NULL);
 +    qemu_plugin_register_vcpu_tb_trans_cb(id, translate_block, NULL);
@@ -149891,10 +149941,10 @@ index 0000000000000000000000000000000000000000..40d30003cf4e13a943be1d88904f90d6
 +}
 diff --git a/tests/tcg/plugins/crucible-idle-wait-liveness.c b/tests/tcg/plugins/crucible-idle-wait-liveness.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..cdce47ec9696eb7d435df1a216c25606f91dee75
+index 0000000000000000000000000000000000000000..c736a9678097e28efa0ffbbecdab41599cce63aa
 --- /dev/null
 +++ b/tests/tcg/plugins/crucible-idle-wait-liveness.c
-@@ -0,0 +1,353 @@
+@@ -0,0 +1,372 @@
 +/*
 + * Crucible idle-wait liveness test plugin
 + *
@@ -150186,6 +150236,23 @@ index 0000000000000000000000000000000000000000..cdce47ec9696eb7d435df1a216c25606
 +    return (uint64_t)tick + raw_ceiling - raw;
 +}
 +
++/*
++ * Sim dispatch requires the settlement bridge. This test declares its logical
++ * ceiling an exact event, so every boundary it observes stops on the ceiling
++ * as before, and a settled boundary is published like any other.
++ */
++static void publish_settled_callback(uint64_t icount, uint64_t settled_ceiling,
++                                     void *userdata)
++{
++    (void)settled_ceiling;
++    publish_icount_callback(icount, userdata);
++}
++
++static uint64_t exact_event_callback(void *userdata)
++{
++    return logical_ceiling_callback(userdata);
++}
++
 +QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
 +                                           const qemu_info_t *info,
 +                                           int argc, char **argv)
@@ -150236,6 +150303,8 @@ index 0000000000000000000000000000000000000000..cdce47ec9696eb7d435df1a216c25606
 +                                                max_advance_icount_callback,
 +                                                logical_ceiling_callback,
 +                                                NULL);
++    qemu_plugin_register_sim_shmem_settlement_cb(publish_settled_callback,
++                                                  exact_event_callback, NULL);
 +    qemu_plugin_register_sim_shmem_observer_cb(
 +        observer_callback, observer_max_icount_callback, NULL);
 +    qemu_plugin_register_vcpu_idle_resume_cb(idle_callback, resume_callback,
@@ -152218,10 +152287,10 @@ index 0000000000000000000000000000000000000000..427abb2ae49c519db9ff362f926fd13d
 +}
 diff --git a/tests/tcg/plugins/crucible-memory-access.c b/tests/tcg/plugins/crucible-memory-access.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..2ae8bf7bb638a8035d8428da33f47a8ddaefb28a
+index 0000000000000000000000000000000000000000..82771622e1cf0692e0fa2488c14f0de6f15d1838
 --- /dev/null
 +++ b/tests/tcg/plugins/crucible-memory-access.c
-@@ -0,0 +1,1229 @@
+@@ -0,0 +1,1256 @@
 +/*
 + * Live Crucible memory-access fault test plugin
 + *
@@ -152379,6 +152448,27 @@ index 0000000000000000000000000000000000000000..2ae8bf7bb638a8035d8428da33f47a8d
 +{
 +    (void)opaque;
 +    return UINT64_MAX;
++}
++
++/*
++ * Sim dispatch requires the settlement bridge. Both dispatch variants declare
++ * their logical ceiling an exact event, so the grant is still reached
++ * exactly, and a settled boundary is published like any other.
++ */
++static void test_cross_grant_publish_settled(uint64_t icount,
++                                             uint64_t settled_ceiling,
++                                             void *opaque)
++{
++    (void)settled_ceiling;
++    test_cross_grant_publish(icount, opaque);
++}
++
++static void test_host_dispatch_publish_settled(uint64_t icount,
++                                               uint64_t settled_ceiling,
++                                               void *opaque)
++{
++    (void)settled_ceiling;
++    test_host_dispatch_publish(icount, opaque);
 +}
 +
 +static bool test_is_page_table_walk_scenario(void)
@@ -153411,9 +153501,15 @@ index 0000000000000000000000000000000000000000..2ae8bf7bb638a8035d8428da33f47a8d
 +            qemu_plugin_register_sim_shmem_dispatch_cb(
 +                test_cross_grant_publish, test_cross_grant_raw_ceiling,
 +                test_cross_grant_logical_ceiling, NULL);
++            qemu_plugin_register_sim_shmem_settlement_cb(
++                test_cross_grant_publish_settled,
++                test_cross_grant_logical_ceiling, NULL);
 +        } else {
 +            qemu_plugin_register_sim_shmem_dispatch_cb(
 +                test_host_dispatch_publish, test_host_dispatch_unbounded,
++                test_host_dispatch_unbounded, NULL);
++            qemu_plugin_register_sim_shmem_settlement_cb(
++                test_host_dispatch_publish_settled,
 +                test_host_dispatch_unbounded, NULL);
 +        }
 +    }
@@ -177071,6 +177167,470 @@ index 0000000000000000000000000000000000000000..e6bebd3a33e520eede13446effe1afb0
 +                    test_sim_fractional_instruction);
 +    return g_test_run();
 +}
+diff --git a/tests/unit/test-crucible-icount-vmstate-version.py b/tests/unit/test-crucible-icount-vmstate-version.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..eff1ba165cbc29b439d9afd88700f868f0c3c305
+--- /dev/null
++++ b/tests/unit/test-crucible-icount-vmstate-version.py
+@@ -0,0 +1,458 @@
++# SPDX-License-Identifier: GPL-2.0-or-later
++"""Prove that a timer/icount migration subsection older than version 6 is refused.
++
++Version 6 of the timer/icount subsection marks clocks that never credit a
++bare scheduler ceiling. Older streams may carry bias from such credits, so
++they must not load.
++
++The production timer/icount and timer descriptors are read from
++system/cpu-timers.c: the subsection's name and version bounds, and its
++listing among the timer section's subsections. The production subsection
++loader, subsection lookup and version-gated vmstate_load_vmsd are extracted
++from migration/vmstate.c and run over in-memory streams. Field decoding,
++pre-load and post-load hooks are bounded providers: this proves the version
++decision for the subsection, not the decoding of its fields.
++"""
++
++import argparse
++import json
++import os
++from pathlib import Path
++import re
++import shlex
++import subprocess
++
++
++ROOT = Path(__file__).resolve().parents[2]
++TIMERS = "system/cpu-timers.c"
++VMSTATE = "migration/vmstate.c"
++NEGATIVES = ["accept-version-5", "unchecked-minimum-version"]
++
++
++def definition(source, signature):
++    """Extract one complete brace-delimited definition without changing it."""
++    start = source.index(signature)
++    opening = source.index("{", start)
++    depth = 0
++    for index in range(opening, len(source)):
++        if source[index] == "{":
++            depth += 1
++        elif source[index] == "}":
++            depth -= 1
++            if depth == 0:
++                return source[start:index + 1]
++    raise AssertionError(f"unterminated definition: {signature}")
++
++
++def field(initializer, name):
++    """Return the single top-level designated initializer value for `name`."""
++    values = re.findall(rf"^    \.{name} = ([^,]+),$", initializer, re.M)
++    assert len(values) == 1, f"expected one .{name} in {initializer[:60]!r}"
++    return values[0]
++
++
++PRELUDE = r"""
++#include <assert.h>
++#include <errno.h>
++#include <stdarg.h>
++#include <stdbool.h>
++#include <stddef.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++
++#define QEMU_VM_SUBSECTION 0x05
++#define ERRP_GUARD() ((void)0)
++
++enum {
++    VMS_POINTER = 1 << 0,
++    VMS_MUST_EXIST = 1 << 1,
++    VMS_END = 1 << 2,
++};
++
++typedef struct VMStateField {
++    const char *name;
++    size_t offset;
++    int flags;
++} VMStateField;
++
++typedef struct VMStateDescription {
++    const char *name;
++    int version_id;
++    int minimum_version_id;
++    const VMStateField *fields;
++    const struct VMStateDescription * const *subsections;
++} VMStateDescription;
++
++/* One in-memory migration stream. */
++typedef struct QEMUFile {
++    const uint8_t *data;
++    size_t length;
++    size_t position;
++} QEMUFile;
++
++typedef struct Error {
++    char message[512];
++} Error;
++
++static Error last_error;
++static unsigned pre_loads;
++static unsigned post_loads;
++
++static void __attribute__((format(printf, 2, 3)))
++error_setg(Error **errp, const char *format, ...)
++{
++    va_list arguments;
++
++    va_start(arguments, format);
++    vsnprintf(last_error.message, sizeof(last_error.message), format,
++              arguments);
++    va_end(arguments);
++    *errp = &last_error;
++}
++
++static void __attribute__((format(printf, 2, 3)))
++error_prepend(Error **errp, const char *format, ...)
++{
++    char message[sizeof(last_error.message)];
++    va_list arguments;
++    size_t used;
++    size_t tail;
++    int prefix;
++
++    va_start(arguments, format);
++    prefix = vsnprintf(message, sizeof(message), format, arguments);
++    va_end(arguments);
++    assert(prefix >= 0 && (size_t)prefix < sizeof(message));
++    used = (size_t)prefix;
++    tail = strlen((*errp)->message);
++    if (tail > sizeof(message) - used - 1) {
++        tail = sizeof(message) - used - 1;
++    }
++    memcpy(&message[used], (*errp)->message, tail);
++    message[used + tail] = '\0';
++    memcpy(last_error.message, message, sizeof(message));
++}
++
++static int qemu_peek_byte(QEMUFile *f, int offset)
++{
++    size_t at = f->position + (size_t)offset;
++
++    return at < f->length ? f->data[at] : 0;
++}
++
++static size_t qemu_peek_buffer(QEMUFile *f, uint8_t **buffer, size_t size,
++                               size_t offset)
++{
++    size_t at = f->position + offset;
++    size_t available = at < f->length ? f->length - at : 0;
++
++    *buffer = (uint8_t *)&f->data[at < f->length ? at : f->length];
++    return size < available ? size : available;
++}
++
++static void qemu_file_skip(QEMUFile *f, int size)
++{
++    f->position += (size_t)size;
++}
++
++static unsigned int qemu_get_be32(QEMUFile *f)
++{
++    unsigned int value = 0;
++
++    for (int index = 0; index < 4; index++) {
++        value = (value << 8) | (unsigned int)qemu_peek_byte(f, 0);
++        qemu_file_skip(f, 1);
++    }
++    return value;
++}
++
++static int qemu_file_get_error(QEMUFile *f)
++{
++    (void)f;
++    return 0;
++}
++
++static void qemu_file_set_error(QEMUFile *f, int error)
++{
++    (void)f;
++    (void)error;
++}
++
++/* Bounded hooks: the version gate runs before any of them. */
++static bool vmstate_pre_load(const VMStateDescription *vmsd, void *opaque,
++                             Error **errp)
++{
++    (void)vmsd;
++    (void)opaque;
++    (void)errp;
++    pre_loads++;
++    return true;
++}
++
++static bool vmstate_post_load(const VMStateDescription *vmsd, void *opaque,
++                              int version_id, Error **errp)
++{
++    (void)vmsd;
++    (void)opaque;
++    (void)version_id;
++    (void)errp;
++    post_loads++;
++    return true;
++}
++
++/* The descriptors carry no fields, so field decoding is never reached. */
++static bool vmstate_field_exists(const VMStateDescription *vmsd,
++                                 const VMStateField *field, void *opaque,
++                                 int version_id)
++{
++    (void)vmsd;
++    (void)field;
++    (void)opaque;
++    (void)version_id;
++    abort();
++}
++
++static int vmstate_n_elems(void *opaque, const VMStateField *field)
++{
++    (void)opaque;
++    (void)field;
++    abort();
++}
++
++static int vmstate_size(void *opaque, const VMStateField *field)
++{
++    (void)opaque;
++    (void)field;
++    abort();
++}
++
++static void vmstate_handle_alloc(void *ptr, const VMStateField *field,
++                                 void *opaque)
++{
++    (void)ptr;
++    (void)field;
++    (void)opaque;
++    abort();
++}
++
++static bool vmstate_load_next(QEMUFile *f, const VMStateField *field,
++                              void *first_elem, void **next_elem, int size,
++                              int i, Error **errp)
++{
++    (void)f;
++    (void)field;
++    (void)first_elem;
++    (void)next_elem;
++    (void)size;
++    (void)i;
++    (void)errp;
++    abort();
++}
++
++static bool vmstate_load_field(QEMUFile *f, void *pv, size_t size,
++                               const VMStateField *field, Error **errp)
++{
++    (void)f;
++    (void)pv;
++    (void)size;
++    (void)field;
++    (void)errp;
++    abort();
++}
++
++static bool vmstate_load_vmsd(QEMUFile *f, const VMStateDescription *vmsd,
++                              void *opaque, int version_id, Error **errp);
++static bool vmstate_subsection_load(QEMUFile *f,
++                                    const VMStateDescription *vmsd,
++                                    void *opaque, Error **errp);
++"""
++
++CHECKS = r"""
++static const VMStateField no_fields[] = {
++    { .name = NULL, .offset = 0, .flags = VMS_END },
++};
++
++static const VMStateDescription icount_vmstate_timers = {
++    .name = ICOUNT_NAME,
++    .version_id = ICOUNT_VERSION,
++    .minimum_version_id = ICOUNT_MINIMUM_VERSION,
++    .fields = no_fields,
++};
++
++static const VMStateDescription * const timer_subsections[] = {
++    &icount_vmstate_timers,
++    NULL,
++};
++
++static const VMStateDescription vmstate_timers = {
++    .name = TIMER_NAME,
++    .version_id = TIMER_VERSION,
++    .minimum_version_id = TIMER_MINIMUM_VERSION,
++    .fields = no_fields,
++    .subsections = timer_subsections,
++};
++
++/* Loads one timer/icount subsection of `version` from a timer section. */
++static bool load_icount_subsection(uint32_t version, Error **errp)
++{
++    uint8_t stream[64];
++    size_t name_length = strlen(icount_vmstate_timers.name);
++    size_t length = 0;
++    QEMUFile file;
++    char state;
++
++    assert(name_length + 6 <= sizeof(stream));
++    stream[length++] = QEMU_VM_SUBSECTION;
++    stream[length++] = (uint8_t)name_length;
++    memcpy(&stream[length], icount_vmstate_timers.name, name_length);
++    length += name_length;
++    for (int shift = 24; shift >= 0; shift -= 8) {
++        stream[length++] = (uint8_t)(version >> shift);
++    }
++    file = (QEMUFile) { .data = stream, .length = length, .position = 0 };
++
++    pre_loads = post_loads = 0;
++    *errp = NULL;
++    return vmstate_subsection_load(&file, &vmstate_timers, &state, errp);
++}
++
++static void check_version_5_stream_is_refused(void)
++{
++    Error *error;
++
++    assert(!load_icount_subsection(5, &error));
++    assert(error != NULL);
++    assert(strstr(error->message, "timer/icount: incoming version_id 5 is "
++                                  "too old for local minimum version_id 6"));
++    assert(strstr(error->message, "Loading VM subsection 'timer/icount'"));
++    /* Refused before any hook or field could observe the old stream. */
++    assert(pre_loads == 0 && post_loads == 0);
++    printf("PASS timer/icount version 5 is refused before loading: %s\n",
++           error->message);
++}
++
++static void check_every_older_version_is_refused(void)
++{
++    Error *error;
++
++    for (uint32_t version = 0; version < 6; version++) {
++        assert(!load_icount_subsection(version, &error));
++        assert(strstr(error->message, "is too old"));
++    }
++    printf("PASS timer/icount versions 0 through 5 are refused\n");
++}
++
++static void check_version_6_stream_loads(void)
++{
++    Error *error;
++
++    assert(load_icount_subsection(6, &error));
++    assert(error == NULL);
++    assert(pre_loads == 1 && post_loads == 1);
++    printf("PASS timer/icount version 6 passes the version gate\n");
++}
++
++static void check_newer_version_is_refused(void)
++{
++    Error *error;
++
++    assert(!load_icount_subsection(7, &error));
++    assert(strstr(error->message, "is too new"));
++    printf("PASS timer/icount version 7 is refused as too new\n");
++}
++
++int main(void)
++{
++    check_version_5_stream_is_refused();
++    check_every_older_version_is_refused();
++    check_version_6_stream_loads();
++    check_newer_version_is_refused();
++    printf("PASS production timer/icount version gate: 4 cases\n");
++    return 0;
++}
++"""
++
++
++def descriptor_values(negative):
++    """Return the production descriptor values the fixture is built from."""
++    timers = (ROOT / TIMERS).read_text()
++    icount = definition(
++        timers, "static const VMStateDescription icount_vmstate_timers = {")
++    parent = definition(
++        timers, "static const VMStateDescription vmstate_timers = {")
++    if negative == "accept-version-5":
++        icount = icount.replace(".minimum_version_id = 6,",
++                                ".minimum_version_id = 5,")
++    assert "&icount_vmstate_timers," in parent, \
++        "timer/icount must be a subsection of the timer section"
++    return {
++        "ICOUNT_NAME": field(icount, "name"),
++        "ICOUNT_VERSION": field(icount, "version_id"),
++        "ICOUNT_MINIMUM_VERSION": field(icount, "minimum_version_id"),
++        "TIMER_NAME": field(parent, "name"),
++        "TIMER_VERSION": field(parent, "version_id"),
++        "TIMER_MINIMUM_VERSION": field(parent, "minimum_version_id"),
++    }
++
++
++def loader_bodies(negative):
++    """Return the production loader definitions in dependency order."""
++    source = (ROOT / VMSTATE).read_text()
++    signatures = [
++        "static const VMStateDescription *\nvmstate_get_subsection(",
++        "bool vmstate_load_vmsd(QEMUFile *f, const VMStateDescription *vmsd,",
++        "static bool vmstate_subsection_load(QEMUFile *f, "
++        "const VMStateDescription *vmsd,\n"
++        "                                    void *opaque, Error **errp)\n{",
++    ]
++    bodies = []
++    for signature in signatures:
++        body = definition(source, signature)
++        if body.startswith("bool "):
++            body = "static " + body
++        if negative == "unchecked-minimum-version":
++            body = body.replace("if  (version_id < vmsd->minimum_version_id) {",
++                                "if (false) {")
++        bodies.append(body)
++    return bodies
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--output-dir", type=Path, required=True)
++    parser.add_argument("--negative-control", choices=NEGATIVES)
++    arguments = parser.parse_args()
++    output = arguments.output_dir.resolve()
++    output.mkdir(parents=True, exist_ok=True)
++
++    values = descriptor_values(arguments.negative_control)
++    bodies = loader_bodies(arguments.negative_control)
++    if arguments.negative_control == "unchecked-minimum-version":
++        assert any("if (false) {" in body for body in bodies), \
++            "negative must mutate the extracted production version gate"
++
++    traces = sorted(set(re.findall(r"\b(trace_\w+)\(", "\n".join(bodies))))
++    macros = [f"#define {name}(...) ((void)0)" for name in traces]
++    macros += [f"#define {name} {value}" for name, value in values.items()]
++
++    generated = output / "icount-vmstate-version.c"
++    generated.write_text("\n\n".join([
++        "/* SPDX-License-Identifier: GPL-2.0-or-later */", PRELUDE,
++        "\n".join(macros), *bodies, CHECKS,
++    ]))
++    binary = output / "icount-vmstate-version"
++    flags = shlex.split(os.environ.get("CFLAGS", ""))
++    links = shlex.split(os.environ.get("LDFLAGS", ""))
++    command = [*shlex.split(os.environ.get("CC", "cc")), "-std=gnu11",
++               *flags, str(generated), "-o", str(binary), *links]
++    (output / "compile-command.json").write_text(json.dumps({
++        "cwd": str(ROOT), "argv": command}, indent=2) + "\n")
++    subprocess.run(command, check=True)
++    print("Compiled production-body timer/icount version fixture", flush=True)
++    subprocess.run([str(binary)], cwd=output, check=True)
++
++
++if __name__ == "__main__":
++    main()
 diff --git a/tests/unit/test-crucible-idle-wait.c b/tests/unit/test-crucible-idle-wait.c
 new file mode 100644
 index 0000000000000000000000000000000000000000..ee2bb16e87d73feab53496231bcb3f461d75f482
@@ -188085,10 +188645,10 @@ index 0000000000000000000000000000000000000000..6a18a6e4dcca7ec12163834700cc92a3
 +}
 diff --git a/tests/unit/test-crucible-rr-bound-ceiling.py b/tests/unit/test-crucible-rr-bound-ceiling.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..a5ddbaea1c41b08ce64313b63b70feea2a78636a
+index 0000000000000000000000000000000000000000..733a132944dd73de7af688b3791ad2b5eca74773
 --- /dev/null
 +++ b/tests/unit/test-crucible-rr-bound-ceiling.py
-@@ -0,0 +1,397 @@
+@@ -0,0 +1,472 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercise bounded scheduler ceilings in the production RR Sim bodies.
 +
@@ -188096,11 +188656,14 @@ index 0000000000000000000000000000000000000000..a5ddbaea1c41b08ce64313b63b70feea
 +another instruction at or before it keeps its clock, unless an exact event
 +lies before the ceiling: a timer or fault deadline, or an event the plugin
 +reports. The boundary is then published as settled, and the gap below the
-+ceiling is never credited to the guest.
++ceiling is never credited to the guest. A sim node whose plugin dispatches
++ceilings without the settlement bridge is refused before it starts, and no
++fallback treats its ceiling as an exact stop.
 +
 +The exact-event advance, the stalled-deadline advance, the dispatch boundary
-+publication and their predicates are extracted from tcg-accel-ops-rr.c; the
-+settlement bridge is extracted from tcg-accel-ops-sim-shmem.c. Clocks, timers,
++publication, the launch refusal and their predicates are extracted from
++tcg-accel-ops-rr.c; the settlement bridge is extracted from
++tcg-accel-ops-sim-shmem.c. Clocks, timers,
 +fault deadlines and plugin callbacks are bounded providers. This proves the
 +local stop decisions, not running guests, the host scheduler or migration.
 +"""
@@ -188116,7 +188679,13 @@ index 0000000000000000000000000000000000000000..a5ddbaea1c41b08ce64313b63b70feea
 +ROOT = Path(__file__).resolve().parents[2]
 +RR = "accel/tcg/tcg-accel-ops-rr.c"
 +SHMEM = "accel/tcg/tcg-accel-ops-sim-shmem.c"
-+NEGATIVES = ["credit-ceiling", "stalled-ceiling-jump"]
++NEGATIVES = [
++    "credit-ceiling",
++    "stalled-ceiling-jump",
++    "legacy-ceiling-fallback",
++    "launch-without-bridge",
++    "plain-settled-fallback",
++]
 +
 +
 +def definition(source, signature):
@@ -188136,10 +188705,13 @@ index 0000000000000000000000000000000000000000..a5ddbaea1c41b08ce64313b63b70feea
 +
 +PRELUDE = r"""
 +#include <assert.h>
++#include <signal.h>
 +#include <stdbool.h>
 +#include <stdint.h>
 +#include <stdio.h>
 +#include <stdlib.h>
++#include <sys/wait.h>
++#include <unistd.h>
 +
 +#define MIN(a, b) ((a) < (b) ? (a) : (b))
 +#define CRUCIBLE_SIM_TICKS_PER_INSTRUCTION 50
@@ -188171,6 +188743,8 @@ index 0000000000000000000000000000000000000000..a5ddbaea1c41b08ce64313b63b70feea
 +static uint64_t published_raw;
 +static uint64_t published_tick;
 +static uint64_t settled_ceiling_seen;
++static bool sim_mode = true;
++static bool dispatch_registered = true;
 +
 +static uint64_t crucible_current_icount;
 +static qemu_plugin_sim_shmem_publish_settled_cb_t crucible_publish_settled_cb;
@@ -188196,11 +188770,11 @@ index 0000000000000000000000000000000000000000..a5ddbaea1c41b08ce64313b63b70feea
 +}
 +static bool qemu_crucible_fault_lifecycle_virtual_timers_paused(void) { return false; }
 +static uint64_t rr_crucible_sim_next_exact_deadline(void) { return fault_deadline; }
-+static bool crucible_sim_shmem_dispatch_registered(void) { return true; }
++static bool crucible_sim_shmem_dispatch_registered(void) { return dispatch_registered; }
 +static uint64_t crucible_sim_shmem_logical_ceiling(void) { return host_ceiling; }
 +static void qemu_plugin_crucible_exact_boundary_enter(void) { }
 +static void qemu_plugin_crucible_exact_boundary_leave(void) { }
-+static bool rr_crucible_sim_mode(void) { return true; }
++static bool rr_crucible_sim_mode(void) { return sim_mode; }
 +static bool rr_crucible_sim_service_available(void) { return false; }
 +static bool qemu_plugin_crucible_console_dispatch_registered(void) { return false; }
 +static void qemu_plugin_crucible_console_dispatch_budget(
@@ -188276,6 +188850,7 @@ index 0000000000000000000000000000000000000000..a5ddbaea1c41b08ce64313b63b70feea
 +    timer_runs = waits = fault_boundaries = 0;
 +    plain_publications = settled_publications = 0;
 +    published_raw = published_tick = settled_ceiling_seen = 0;
++    sim_mode = dispatch_registered = true;
 +    qemu_plugin_register_sim_shmem_settlement_cb(
 +        settlement ? plugin_publish_settled : NULL,
 +        settlement ? plugin_exact_event : NULL,
@@ -188353,15 +188928,59 @@ index 0000000000000000000000000000000000000000..a5ddbaea1c41b08ce64313b63b70feea
 +    printf("PASS a gap of a whole instruction is published without settlement\n");
 +}
 +
-+static void check_legacy_plugin_keeps_its_exact_ceiling(void)
++/* Whether @operation aborts the process, observed from a forked child. */
++static bool aborts(void (*operation)(void))
++{
++    int status;
++    pid_t child;
++
++    fflush(NULL);
++    child = fork();
++    assert(child >= 0);
++    if (child == 0) {
++        operation();
++        _exit(0);
++    }
++    assert(waitpid(child, &status, 0) == child);
++    return WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT;
++}
++
++static void start_node(void)
++{
++    rr_crucible_sim_require_settlement_bridge();
++}
++
++static void publish_settled_boundary(void)
++{
++    crucible_sim_shmem_publish_settled_icount(raw_icount, host_ceiling);
++}
++
++static void check_sim_dispatch_without_bridge_is_refused(void)
 +{
 +    reset(951, 1000, false);
-+    assert(!rr_crucible_sim_gap_event_pending());
-+    assert(rr_crucible_sim_advance_to_exact_event(NULL));
-+    assert(now_tick == 1000);
-+    rr_crucible_sim_publish_dispatch_boundary(raw_icount);
-+    assert(plain_publications == 1 && settled_publications == 0);
-+    printf("PASS legacy plugin keeps its ceiling as the exact stop\n");
++    /* The node fails before its first guest instruction. */
++    assert(rr_crucible_sim_settlement_bridge_missing());
++    assert(aborts(start_node));
++    /* No fallback credits the gap, treats the ceiling as an event, or settles. */
++    assert(!rr_crucible_sim_advance_to_exact_event(NULL));
++    assert(now_tick == 951);
++    assert(crucible_sim_shmem_exact_event_tick(1000) == UINT64_MAX);
++    assert(aborts(publish_settled_boundary));
++    assert(plain_publications == 0 && settled_publications == 0);
++    printf("PASS sim dispatch without the settlement bridge is refused\n");
++}
++
++static void check_generic_qemu_needs_no_bridge(void)
++{
++    reset(951, 1000, false);
++    sim_mode = false;
++    assert(!rr_crucible_sim_settlement_bridge_missing());
++    assert(!aborts(start_node));
++    sim_mode = true;
++    dispatch_registered = false;
++    assert(!rr_crucible_sim_settlement_bridge_missing());
++    assert(!aborts(start_node));
++    printf("PASS generic QEMU and undispatched sim nodes need no bridge\n");
 +}
 +
 +static void check_stalled_node_settles_without_moving(void)
@@ -188404,11 +189023,12 @@ index 0000000000000000000000000000000000000000..a5ddbaea1c41b08ce64313b63b70feea
 +    check_inbound_delivery_in_gap_is_reached();
 +    check_due_plugin_event_does_not_block_settlement();
 +    check_whole_instruction_gap_is_not_settled();
-+    check_legacy_plugin_keeps_its_exact_ceiling();
++    check_sim_dispatch_without_bridge_is_refused();
++    check_generic_qemu_needs_no_bridge();
 +    check_stalled_node_settles_without_moving();
 +    check_stalled_node_reaches_a_deadline_before_the_ceiling();
 +    check_stalled_node_delivers_a_plugin_event_then_settles();
-+    printf("PASS production bounded ceilings: 10 cases\n");
++    printf("PASS production bounded ceilings: 11 cases\n");
 +    return 0;
 +}
 +"""
@@ -188427,7 +189047,9 @@ index 0000000000000000000000000000000000000000..a5ddbaea1c41b08ce64313b63b70feea
 +              "static bool rr_crucible_sim_gap_event_pending(void)\n{",
 +              "static bool rr_crucible_sim_advance_to_exact_event(",
 +              "static bool rr_crucible_sim_advance_stalled_deadline(void)\n{",
-+              "static void rr_crucible_sim_publish_dispatch_boundary("]),
++              "static void rr_crucible_sim_publish_dispatch_boundary(",
++              "static bool rr_crucible_sim_settlement_bridge_missing(void)\n{",
++              "static void rr_crucible_sim_require_settlement_bridge(void)\n{"]),
 +    ]
 +    return [(path, signature,
 +             definition((ROOT / path).read_text(), signature))
@@ -188435,7 +189057,20 @@ index 0000000000000000000000000000000000000000..a5ddbaea1c41b08ce64313b63b70feea
 +
 +
 +def mutated(body, negative):
-+    """Restore one pre-fix ceiling credit in an extracted production body."""
++    """Restore one pre-fix ceiling credit or fallback in an extracted body."""
++    if negative == "legacy-ceiling-fallback" and \
++            "crucible_sim_shmem_exact_event_tick(" in body.split("{", 1)[0]:
++        return body.replace("return UINT64_MAX;", "return logical_ceiling;")
++    if negative == "launch-without-bridge" and \
++            "rr_crucible_sim_require_settlement_bridge(" in body.split("{", 1)[0]:
++        return body.replace("if (rr_crucible_sim_settlement_bridge_missing()) {",
++                            "if (false) {")
++    if negative == "plain-settled-fallback" and \
++            "crucible_sim_shmem_publish_settled_icount(" in body.split("{", 1)[0]:
++        return body.replace(
++            "        abort();\n    }\n",
++            "        crucible_sim_shmem_publish_current_icount(current_icount);\n"
++            "        return;\n    }\n", 1)
 +    if negative == "credit-ceiling":
 +        return body.replace(
 +            "target = MIN(deadline, rr_crucible_sim_plugin_event_after(now, ceiling));",
