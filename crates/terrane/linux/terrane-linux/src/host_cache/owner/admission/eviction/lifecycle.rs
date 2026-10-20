@@ -24,6 +24,7 @@ use crate::{
 };
 use std::{
     collections::BTreeMap,
+    fs::File,
     io,
     sync::{Arc, Mutex},
 };
@@ -432,11 +433,7 @@ fn close_removed(
         let payloads = original_payloads(&job);
         for (index, member) in job.files.iter_mut().enumerate() {
             let expected = unit.inodes[index];
-            let observed = reply
-                .files
-                .iter()
-                .find(|file| super::inode(file).ok() == Some(expected))
-                .ok_or_else(|| invalid("removed encoded member lost original inspection"))?;
+            let observed = original_inspection(&reply.files, expected)?;
             let mut inspection = vec![observed.try_clone()?];
             member.close_finished_source(
                 &owner,
@@ -458,6 +455,16 @@ fn close_removed(
     drop(pending);
     drop(released);
     Ok(())
+}
+
+// An actual metadata error must remain distinguishable from a missing member.
+fn original_inspection(files: &[File], expected: (u64, u64, u64)) -> io::Result<&File> {
+    for file in files {
+        if super::inode(file)? == expected {
+            return Ok(file);
+        }
+    }
+    Err(invalid("removed encoded member lost original inspection"))
 }
 
 fn original_payloads(job: &AdmissionJob) -> Vec<Arc<Vec<u8>>> {
