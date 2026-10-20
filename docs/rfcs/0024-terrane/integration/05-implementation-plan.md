@@ -8719,6 +8719,34 @@ continue independently. The earlier `bf3c74517e` surface feature-matrix run
 finished with 1,157 passed and two publication-timing failures; its aggregate
 successor did not run.
 
+Post-merge qualification (2026-10-19): workspace follow-up `d8a32a97df`
+restores the relocated upstream executor module and copied test-template paths,
+then passes the complete Rust/Nix formatter pair. Its required application
+compilation passes with all 181 test artifacts from 59 application packages
+independently matched to Cargo metadata; this is compilation, not execution.
+Its full implemented-trunk aggregate remains running. The migrated module
+source `f3390be8fb` passes all 88 declarative assertions and the formatter pair;
+its own full aggregate also remains running. Neither aggregate is credited
+before completion.
+
+The encoded consumer component at `2c86ea4e3a` passes the complete native VM
+witness: 55 selected restricted-identity unit cases and 48 actual fixture
+selectors, with original body/dictionary inodes, independent lease funding,
+policy-held concurrent reads, real grace and same-bytes rewrite refusal
+independently checked. Its migrated publisher check subsequently finds a stale
+`terrane_fs` guest launcher; `e5e09630a9` fixes it to the actual
+`terrane_linux` Cargo artifact, retaining all three native socket controls.
+That publisher requalification is running. Surface source `7f7e886dd5` passes
+its crate graph and exact reviewed unsafe audit; remaining qualification is
+running. Shared-directory source `744aa55567` restores its preserved SDK
+adapter in the new layout. `4408bbc7c4` additionally connects genuine sealed
+consumer leases to residence fallback, with actual native isolation,
+allocation, held-policy and revocation controls under qualification.
+All five T2 task checkboxes remain open. Encoded eviction, shared-chunk
+re-extraction, complete recovery/readiness and the stopped
+HOST-3/HOST-25/DOM-18 zero-wipe conflict remain outstanding; T3 and branch
+worklines remain unopened.
+
 Status: in progress, resumed without sub-agents (2026-10-17). T1's 22 tasks and
 89 current gates are complete; its identity, encoding, bucket-key and Store-trait
 freeze applies. Preserved worktrees cover the five T2 tasks, including dedicated
