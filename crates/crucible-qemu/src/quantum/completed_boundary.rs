@@ -195,6 +195,22 @@ impl QemuCompletedQuantumBoundary {
         Ok(())
     }
 
+    /// Reports whether the discovered boundary settled the pending ceiling.
+    ///
+    /// Settlement is read from the discovery snapshot, taken before the clamp.
+    /// After the clamp, QEMU dispatches again under the clamp's own advance and
+    /// settles that one too, which replaces the slot's record. The discovery
+    /// copy is the only record left of the pending ceiling's settlement. It
+    /// counts the same records as the live check: the pending publication, or
+    /// an inbound regrant that republished the same ceiling.
+    pub(crate) const fn settles_pending(self, pending: &QemuPendingQuantum) -> bool {
+        let ceiling = pending.ceiling.retired;
+
+        self.discovery.settles(ceiling, pending.settlement_sequence)
+            || (self.discovery.max_advance_icount == ceiling
+                && self.discovery.settles_current_advance())
+    }
+
     /// Returns the exact idle deadline retained by the accepted clamp.
     ///
     /// The original ceiling-control publication establishes this deadline even

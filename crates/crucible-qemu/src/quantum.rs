@@ -621,6 +621,19 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
         &mut self,
         pending: &QemuPendingQuantum,
     ) -> Result<QemuQuantumReport, QemuQuantumError> {
+        self.poll_quantum_with_boundary(pending, None)
+    }
+
+    /// Polls a pending quantum with the runtime's accepted clamp evidence.
+    ///
+    /// `completed` must already be validated against `pending`. Its discovery
+    /// snapshot keeps the pending ceiling's settlement record after the clamp
+    /// replaced it in the slot.
+    pub(crate) fn poll_quantum_with_boundary(
+        &mut self,
+        pending: &QemuPendingQuantum,
+        completed: Option<QemuCompletedQuantumBoundary>,
+    ) -> Result<QemuQuantumReport, QemuQuantumError> {
         self.record(QemuQuantumOperation::ObservePluginReport);
         let final_snapshot = self.node_snapshot()?;
         let completed_clamp = completed_quantum_clamp_is_attested(pending, &final_snapshot);
@@ -638,13 +651,16 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
                 retired: final_snapshot.idle_wake_icount,
             });
         }
-        // The settlement record survives the host's post-quantum clamp, which
-        // republishes the ceiling at the reached icount under a new sequence.
-        // An inbound regrant may instead republish the same ceiling while the
-        // quantum is pending; settlement of that publication counts as well.
+        // The host's post-quantum clamp republishes the ceiling at the reached
+        // icount under a new sequence, and QEMU settles that advance as well,
+        // replacing the slot's record. The clamp's discovery snapshot keeps the
+        // pending ceiling's record. An inbound regrant may instead republish
+        // the same ceiling while the quantum is pending; settlement of that
+        // publication counts as well.
         let settled = final_snapshot.settles(pending.ceiling.retired, pending.settlement_sequence)
             || (final_snapshot.max_advance_icount == pending.ceiling.retired
-                && final_snapshot.settles_current_advance());
+                && final_snapshot.settles_current_advance())
+            || completed.is_some_and(|boundary| boundary.settles_pending(pending));
         let boundary = classify_quantum_boundary(
             &final_state,
             pending.ceiling.retired,

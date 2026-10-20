@@ -84,3 +84,52 @@ fn settled_publication_records_only_the_live_ceiling() {
     assert!(snapshot.settles_current_advance());
     assert_eq!(snapshot.settled_ceiling_tick, 99);
 }
+
+#[test]
+fn zero_budget_ceilings_settle_without_moving_the_clock() {
+    for (plugin_id, gap) in [(165, 1), (166, TICKS_PER_INSTRUCTION - 1)] {
+        let slot = slot_with_ceiling(TICKS_PER_INSTRUCTION, AdvanceStopCondition::Ceiling);
+        let state = test_live_state(plugin_id, 1, 0, &slot)
+            .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
+        state
+            .on_vcpu_init(0)
+            .unwrap_or_else(|error| panic!("vCPU should initialize: {error}"));
+        state
+            .publish_boundary_icount(1, true, "test-settled", Some(TICKS_PER_INSTRUCTION))
+            .unwrap_or_else(|error| panic!("first ceiling should settle: {error}"));
+
+        // The next ceiling lies less than one retirement past the clock.
+        let ceiling_tick = TICKS_PER_INSTRUCTION + gap;
+        let ceiling = authorize_advance_ceiling(TICKS_PER_INSTRUCTION, ceiling_tick, None)
+            .unwrap_or_else(|error| panic!("next ceiling should authorize: {error}"));
+        slot.publish_scheduler_advance(ceiling, AdvanceStopCondition::Ceiling)
+            .unwrap_or_else(|error| panic!("next ceiling should publish: {error}"));
+        let sequence = slot.snapshot().advance_publication_sequence;
+        TEST_ICOUNT_RAW.set(1);
+
+        // QEMU sees a zero raw budget and no plugin event in the gap.
+        assert_eq!(state.max_advance_icount(), Ok(1));
+        assert_eq!(state.exact_event_tick(), Ok(u64::MAX));
+
+        state
+            .publish_boundary_icount(1, true, "test-settled", Some(ceiling_tick))
+            .unwrap_or_else(|error| panic!("zero-budget ceiling should settle: {error}"));
+        let settled = slot.snapshot();
+        assert_eq!(settled.current_icount, TICKS_PER_INSTRUCTION);
+        assert!(settled.settles(ceiling_tick, sequence));
+
+        // The host's clamp is a new advance, and QEMU settles it as well. That
+        // replaces the record, so the host keeps the pre-clamp snapshot.
+        let clamp = authorize_advance_ceiling(TICKS_PER_INSTRUCTION, TICKS_PER_INSTRUCTION, None)
+            .unwrap_or_else(|error| panic!("clamp should authorize: {error}"));
+        slot.publish_scheduler_advance(clamp, AdvanceStopCondition::Ceiling)
+            .unwrap_or_else(|error| panic!("clamp should publish: {error}"));
+        state
+            .publish_boundary_icount(1, true, "test-settled", Some(TICKS_PER_INSTRUCTION))
+            .unwrap_or_else(|error| panic!("clamp should settle: {error}"));
+        let clamped = slot.snapshot();
+        assert_eq!(clamped.current_icount, TICKS_PER_INSTRUCTION);
+        assert!(clamped.settles_current_advance());
+        assert!(!clamped.settles(ceiling_tick, sequence));
+    }
+}

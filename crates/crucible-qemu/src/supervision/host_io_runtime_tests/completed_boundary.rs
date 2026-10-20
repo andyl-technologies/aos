@@ -2,7 +2,9 @@
 
 use super::*;
 use crate::{QemuMappedQuantumShmemHotPath, QemuQuantumShmemConfig, QemuShmemHotPathChannel};
-use crucible::{ExecutionHorizon, Icount, SchedulerSendAuthorization, SchedulerSendAuthorizer};
+use crucible::{
+    AdvanceOutcome, ExecutionHorizon, Icount, SchedulerSendAuthorization, SchedulerSendAuthorizer,
+};
 use std::io::{Read, Write};
 use std::os::fd::AsFd;
 use std::os::unix::net::UnixStream;
@@ -251,4 +253,84 @@ fn next_arm_clears_evidence_and_wrong_request_cannot_supply_it() {
     assert!(wrong.is_none());
     fixture(mapped.runtime.arm_advance_completion_fence(None));
     assert!(mapped.runtime.completed_quantum_boundary().is_none());
+}
+
+/// Runs a second quantum that QEMU settles without retiring an instruction.
+///
+/// The node sits at tick 100 and the ceiling is one tick ahead. QEMU settles
+/// the ceiling at its current clock; after the host's clamp it dispatches
+/// again and settles the clamp's own advance, which replaces the slot record.
+fn settle_without_retiring(
+    mut mapped: MappedCompletion,
+) -> (MappedCompletion, crate::QemuNodePendingQuantum) {
+    let pending = fixture(mapped.channel.start_quantum(
+        ExecutionHorizon {
+            icount: Icount { retired: 101 },
+        },
+        crate::QemuQuantumStopCondition::Ceiling,
+    ));
+    fixture(
+        mapped
+            .runtime
+            .arm_advance_completion_fence(pending.completion_fence()),
+    );
+    let slot = fixture(mapped.producer.node_slot(0));
+    assert!(fixture(slot.publish_settled_icount(100, 101)));
+    let discovery = slot.snapshot();
+    assert!(discovery.settles_current_advance());
+
+    let mut runtime = mapped.runtime;
+    let host = std::thread::spawn(move || {
+        let result = runtime.clamp_completed_quantum(&discovery, Duration::from_secs(1));
+        (runtime, result)
+    });
+    let mut counter = [0_u8; 8];
+    fixture(mapped.notifications.read_exact(&mut counter));
+    fixture(slot.publish_control_boundary(100, 1));
+    slot.acknowledge_control_boundary();
+    let (runtime, result) = fixture(host.join());
+    fixture(result);
+    mapped.runtime = runtime;
+
+    // QEMU's next pass finds the clamped ceiling already reached and settles it.
+    assert!(fixture(slot.publish_settled_icount(100, 100)));
+    let replaced = slot.snapshot();
+    assert!(!replaced.settles(101, discovery.advance_publication_sequence));
+    (mapped, pending)
+}
+
+#[test]
+fn zero_retirement_settlement_reaches_its_ceiling_after_the_clamp() {
+    let (mut mapped, mut first) = MappedCompletion::new().settle(None, None, false);
+    first.completed_boundary = Some(mapped.capture());
+    let first = fixture(mapped.channel.poll_quantum(&mut first));
+    assert_eq!(first.outcome, AdvanceOutcome::ReachedHorizon);
+
+    let (mut mapped, mut pending) = settle_without_retiring(mapped);
+    pending.completed_boundary = Some(mapped.capture());
+    let report = fixture(mapped.channel.poll_quantum(&mut pending));
+
+    // Settled through 101 with the clock still at 100 (RFC-0010 SCHED-12).
+    assert_eq!(report.outcome, AdvanceOutcome::ReachedHorizon);
+    assert_eq!(report.ceiling, Icount { retired: 101 });
+    assert_eq!(report.final_state.current_icount, Icount { retired: 100 });
+}
+
+#[test]
+fn zero_retirement_settlement_needs_the_clamp_discovery_record() {
+    let (mut mapped, mut first) = MappedCompletion::new().settle(None, None, false);
+    first.completed_boundary = Some(mapped.capture());
+    fixture(mapped.channel.poll_quantum(&mut first));
+
+    // Without the accepted clamp, only the replaced slot record remains, and
+    // it attests nothing about the pending ceiling.
+    let (mut mapped, mut pending) = settle_without_retiring(mapped);
+    let report = fixture(mapped.channel.poll_quantum(&mut pending));
+
+    assert_eq!(
+        report.outcome,
+        AdvanceOutcome::Paused {
+            at: Icount { retired: 100 }
+        }
+    );
 }

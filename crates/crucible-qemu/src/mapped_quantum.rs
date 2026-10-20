@@ -918,8 +918,13 @@ impl QemuShmemHotPathChannel for QemuMappedQuantumShmemHotPath {
             )?;
         }
         self.with_hot_path("finish_quantum", |hot_path| {
-            let mut report = QemuQuantumShmemHotPath::poll_quantum(hot_path, &pending.pending)
-                .map_err(QemuNodeChannelError::from)?;
+            // The boundary was validated against this pending quantum above.
+            let mut report = QemuQuantumShmemHotPath::poll_quantum_with_boundary(
+                hot_path,
+                &pending.pending,
+                completed_boundary,
+            )
+            .map_err(QemuNodeChannelError::from)?;
             let mut operations = pending.start_operations.clone();
             operations.extend(report.operations);
             report.operations = operations;
