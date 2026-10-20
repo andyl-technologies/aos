@@ -8716,9 +8716,11 @@ passes. Repository-wide Rust and Nix format checks pass after a separate mechani
 Nix baseline commit: all 413 formatted files have identical normalized parsed
 expressions before and after formatting. The independent namespace reference-model
 gate passes; all 15 copied witness input/module paths are audited against their
-nested installation locations. Control/prefix runtime gates on the final source
-and full trunk qualification remain pending. No T2 task is accepted by these
-workspace corrections.
+nested installation locations. On guarded `7a98b7978f`, the prefix reference-model
+gate passes in 94.73 seconds and the control reference-model gate in 59.97 seconds.
+A subsequent documentation-only correction preserves PKG-4's original rejected
+program name while applying the crate rename. Full trunk qualification remains
+pending. No T2 task is accepted by these workspace corrections.
 
 Integration checks: Cargo metadata, all five renamed packages' all-target
 compilation, crate graph, the reviewed native unsafe-binding audit, the Nix
@@ -8732,9 +8734,14 @@ declared but absent
 and absence are both present in `origin/master`. Its all-format check also
 reported 414 Nix files needing formatting. Those original failures are retained;
 the follow-up above resolves the missing source and formatting without claiming
-the initial check succeeded. Source-specific build and gate checks continue. The earlier `bf3c74517e` surface feature-matrix run
-finished with 1,157 passed and two publication-timing failures; its aggregate
-successor did not run.
+the initial check succeeded. On guarded pushed source `0e8801389f`, the required
+`checks.rust.aos-test-targets` compilation passes in 2,549.46 seconds: 181 declared
+test targets across 59 application packages, independently matched against the
+current workspace metadata and actual Cargo artifacts. This is compilation
+coverage; it does not claim test execution. The current-trunk aggregate is still
+running its 1,933 Terrane tests on that unchanged source. The earlier
+`bf3c74517e` surface feature-matrix run finished with 1,157 passed and two
+publication-timing failures; its aggregate successor did not run.
 
 Status: in progress, resumed without sub-agents (2026-10-17). T1's 22 tasks and
 89 current gates are complete; its identity, encoding, bucket-key and Store-trait
