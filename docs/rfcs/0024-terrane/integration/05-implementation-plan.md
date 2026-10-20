@@ -9198,8 +9198,13 @@ budget to 512 MiB inside the unchanged 512 MiB image. Native-profile all-target
 compilation, strict Clippy, fixture compilation and the formatter pair pass.
 Source-bound formatting, crate graph and the renewed exact unsafe-source audit
 also pass on `fb102141a1`. All three isolated strict profiles and private
-documentation pass in 95.650 seconds. Image and archive preparation,
-application-target compilation and native qualification remain pending.
+documentation pass in 95.650 seconds. Image and archive preparation pass in
+239.212 and 131.204 seconds. Independent review verifies all 5,115 image
+inputs, four original Cargo executables, 73 selectors and eight supervisor
+helpers, plus all 5,103 archive inputs and the unchanged inventory of 126
+nonignored cases and six original privileged ignores. The preparation
+controller actually terminates successfully. Application-target compilation
+and native qualification remain pending.
 Native execution preserves the order `62bfede7fd`, then
 `c4076a1f56`, then the audited encoded-eviction source. No task checkbox,
 NativeReady claim or frozen format advances; the zero-wipe conflict stays stopped.
@@ -9215,7 +9220,11 @@ their cause is not established. None of these component results is credited as
 a passing aggregate. After actual completion of both that failed controller
 and the current passing native publisher controller is collected, the combined
 Surface/module candidate `d4af629791` starts the full implemented gate set.
-No task checkbox advances.
+Its SDK Nextest portion passes all 1,975 cases across 20 binaries, with one
+skipped and 79 slow, in 15,533.150 seconds. Independent review confirms the
+checkout still matches every byte of the original 8,867-file source guard.
+The remaining aggregate gates continue; this is not a completed aggregate
+result. No task checkbox advances.
 
 All five T2 task checkboxes remain open. Encoded eviction, shared-chunk
 re-extraction, complete recovery/readiness and the stopped
