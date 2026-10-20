@@ -497,6 +497,11 @@ def stage_same_container_graph(machine, origin, tools, fixture, *, refresh_token
     ))
     assert finalized["verification"] == "verified-external-sshsig", finalized
     assert finalized["index_digest"] == fixture["container_index_digest"], finalized
+    # Reuse the genuine public candidate prepared by APR for this exact graph.
+    # Each runtime uploads it through its own authenticated staging API.
+    stage_path = container_root + "/registry-stage.json"
+    private_guest_command(machine,
+        f"printf '%s' {shlex.quote(fixture['container_stage'])} > {shlex.quote(stage_path)}")
     upload_cache = container_root + "/upload-cache"
     machine.succeed(f"{tools['coreutils']}/install -d -m 0700 {shlex.quote(upload_cache)}")
     token = refresh_token()
@@ -507,7 +512,9 @@ def stage_same_container_graph(machine, origin, tools, fixture, *, refresh_token
         f"--release {shlex.quote(finalized['release'])} "
         f"--release-layout {shlex.quote(finalized['layout'])} "
         f"--signature-input {shlex.quote(finalized['signature_input'])} "
+        f"--registry-stage {shlex.quote(stage_path)} "
         f"--registry fleet/containers --registry-origin {shlex.quote(origin)} "
+        f"--hub {shlex.quote(origin)} --token {shlex.quote(token)} "
         f"--registry-token {shlex.quote(token)} --idempotency-key runtime-parity-container-stage --stage-only",
         timeout=900,
     ))

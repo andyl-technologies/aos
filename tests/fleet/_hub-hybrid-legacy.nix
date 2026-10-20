@@ -3130,6 +3130,8 @@
           "container_root": "/var/lib/hybrid-container-final",
           "container_inputs": "${containerPublicationInputs}",
           "container_signature": client.succeed("cat /tmp/hybrid-container-signature.pae.sig"),
+          "container_stage": private_guest_command(client,
+              "${pkgs.coreutils}/bin/cat /var/lib/hybrid-container-registry-stage.json"),
           "container_index_digest": finalized_container["index_digest"],
       },
       snapshot_assert=assert_registry_index_parity,
