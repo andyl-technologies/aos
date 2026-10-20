@@ -61,7 +61,7 @@ CASES = [
     "publication-manifest-reuse-bad-whole",
     "consumer-leases", "lease-foreign",
     "source-cleanup", "source-cleanup-early", "source-cleanup-foreign",
-] + [row[0] for row in MANIFEST_CASES]
+] + [row[0] for row in MANIFEST_CASES] + ["index-recovery", "index-disabled", "index-bound", "index-mismatch"]
 
 LABELS = ["layout-root", "chunks", "objects", "sealed", "staging", "quarantine",
           "pending-delete", "state"]
@@ -1018,6 +1018,8 @@ def main():
                                     os.environ["TERRANE_CACHE_VM_IMAGE"]], text=True, timeout=5).strip().replace("-", "")
     require(len(uuid) == 32, "actual ext4 UUID unavailable")
     manifest_candidates = seed_manifests(uuid)
+    index_candidates = runpy.run_path(str(IMAGE / "share/host_cache_index_recovery_vm.py"))[
+        "seed"](sys.modules[__name__], uuid)
     logs = []
     children = []
     try:
@@ -1117,6 +1119,8 @@ def main():
         running_retention_cases(helper, uuid)
         runpy.run_path(str(IMAGE / "share/manifest_publication_vm.py"))["run"](sys.modules[__name__], publisher, uuid)
         manifest_recovery_cases(uuid, manifest_candidates, helper)
+        runpy.run_path(str(IMAGE / "share/host_cache_index_recovery_vm.py"))[
+            "run"](sys.modules[__name__], uuid, index_candidates)
         runpy.run_path(str(IMAGE / "share/source_cleanup_vm.py"))["run"](sys.modules[__name__], publisher, uuid)
         print("PASS bounded native cache recovery, encoded admission and inline publication; full Running publication/BKT15 remain unqualified", flush=True)
     finally:

@@ -41,6 +41,10 @@ pub(super) fn run(mode: &str) -> io::Result<()> {
             | "cache-admission-handoff"
             | "dictionary-custody"
             | "recover-manifest"
+            | "recover-index-recovery"
+            | "refuse-index-disabled"
+            | "refuse-index-bound"
+            | "refuse-index-mismatch"
             | "refuse-manifest"
             | "refuse-unsealed-manifest"
             | "refuse-unsealed-writable-manifest"
@@ -163,6 +167,10 @@ pub(super) fn run(mode: &str) -> io::Result<()> {
             super::admission::run(mode, &owner, &runtime, &inputs, original)?;
         }
         "recover-manifest"
+        | "recover-index-recovery"
+        | "refuse-index-disabled"
+        | "refuse-index-bound"
+        | "refuse-index-mismatch"
         | "refuse-manifest"
         | "refuse-unsealed-manifest"
         | "refuse-unsealed-writable-manifest"

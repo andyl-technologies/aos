@@ -34,7 +34,7 @@ use tokio::sync::oneshot;
 
 mod cache_metadata;
 mod executor;
-mod index_repair;
+pub(super) mod index_repair;
 use index_repair::IndexRepairCustody;
 mod manifest;
 mod recovery_manifest;
@@ -956,27 +956,33 @@ impl Custody {
     /// Refuses cold/failed/abandoned writes, another generation or inode, and a
     /// prior synchronized state that does not contain the exact required hold.
     fn check_synchronized_bootstrap(&self, id: &[u8; 16]) -> io::Result<()> {
-        self.check_current()?;
-        let completed = self
-            .synchronized_state
-            .as_ref()
-            .ok_or_else(|| invalid("bootstrap snapshot has no completed native write"))?;
-        let (snapshot, metadata) = self
-            .snapshot
-            .as_ref()
-            .ok_or_else(|| invalid("bootstrap snapshot is absent"))?;
-        let actual = snapshot.metadata()?;
-        if !completed.matches_snapshot(self.generation, metadata, &actual) {
-            return Err(invalid(
-                "bootstrap write provenance differs from retained snapshot",
-            ));
-        }
         let cold = self
             .recovery_cold
             .as_ref()
             .ok_or_else(|| invalid("bootstrap lost original cold policy candidates"))?;
-        cold.check_bootstrap(&self.preparation.config, &completed.state, id)?;
-        cold.check_bootstrap(&self.preparation.config, &self.state, id)
+        self.check_synchronized_state(&cold.bootstrap(&self.preparation.config, id)?)
+    }
+
+    /// Requires this generation's completed writer to retain the exact policy.
+    ///
+    /// # Errors
+    /// Refuses a cold, abandoned, changed or unsynchronized snapshot, another
+    /// generation/inode, or any different retained or in-memory policy record.
+    fn check_synchronized_state(&self, expected: &CacheState) -> io::Result<()> {
+        self.check_current()?;
+        let completed = self
+            .synchronized_state
+            .as_ref()
+            .ok_or_else(|| invalid("snapshot has no completed native write"))?;
+        let (snapshot, metadata) = self
+            .snapshot
+            .as_ref()
+            .ok_or_else(|| invalid("synchronized policy snapshot is absent"))?;
+        if !completed.matches_snapshot(self.generation, metadata, &snapshot.metadata()?) {
+            return Err(invalid("write provenance differs from retained snapshot"));
+        }
+        super::recovery_manifest_state::require_same(&completed.state, expected)?;
+        super::recovery_manifest_state::require_same(&self.state, expected)
     }
 
     /// Invalidates an older completion before any new durable command effects.

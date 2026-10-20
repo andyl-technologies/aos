@@ -3,7 +3,7 @@
 use std::{io, path::PathBuf, time::Duration};
 use terrane_format::chunking::ChunkProfile;
 use terrane_linux::{
-    host_cache::NativeCacheOwnerConfig,
+    host_cache::{IndexRepairPolicy, NativeCacheOwnerConfig},
     publisher_local::{client::ClientConfig, socket::RoleIdentities},
 };
 use terrane_sdk::host::cache::{HostDomainLocation, HostReadLimits, PolicyConfig, StateLimits};
@@ -123,7 +123,17 @@ impl Inputs {
             queued_commands: 4,
             retirement_interval: Duration::from_secs(30),
             metadata_sync_hold_bytes: HOLD,
-            index_repair: None,
+            index_repair: match self.domain.as_str() {
+                "tenant:index-recovery" | "tenant:index-mismatch" => Some(IndexRepairPolicy {
+                    max_index_bytes: 65536,
+                    future_hold_bytes: HOLD + 2 * 65536,
+                }),
+                "tenant:index-bound" => Some(IndexRepairPolicy {
+                    max_index_bytes: 1,
+                    future_hold_bytes: HOLD + 2,
+                }),
+                _ => None,
+            },
         })
     }
 }

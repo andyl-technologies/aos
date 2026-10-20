@@ -6,6 +6,8 @@
 //! actor invokes the genuine owner, Inspector and publisher channel; only their
 //! actual result permits Resume.
 
+#[path = "recovery/indexes.rs"]
+mod indexes;
 #[path = "recovery/inline.rs"]
 mod inline;
 #[path = "recovery/reuse.rs"]
@@ -36,6 +38,10 @@ const INLINE_BYTES: &[u8] = b"independent inline cold candidate";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum FixtureCase {
+    MissingIndex,
+    DisabledIndexRepair,
+    BoundedIndexRepair,
+    MismatchingIndex,
     Verified,
     Mismatch,
     Unsealed,
@@ -49,6 +55,10 @@ enum FixtureCase {
 impl FixtureCase {
     fn from_mode(mode: &str) -> io::Result<Self> {
         match mode {
+            "seed-index-recovery" | "recover-index-recovery" => Ok(Self::MissingIndex),
+            "seed-index-disabled" | "refuse-index-disabled" => Ok(Self::DisabledIndexRepair),
+            "seed-index-bound" | "refuse-index-bound" => Ok(Self::BoundedIndexRepair),
+            "seed-index-mismatch" | "refuse-index-mismatch" => Ok(Self::MismatchingIndex),
             "seed-manifest" | "recover-manifest" => Ok(Self::Verified),
             "seed-bad-manifest" | "refuse-manifest" => Ok(Self::Mismatch),
             "seed-unsealed-manifest" | "refuse-unsealed-manifest" => Ok(Self::Unsealed),
@@ -65,6 +75,10 @@ impl FixtureCase {
 
     fn domain(self) -> &'static str {
         match self {
+            Self::MissingIndex => "tenant:index-recovery",
+            Self::DisabledIndexRepair => "tenant:index-disabled",
+            Self::BoundedIndexRepair => "tenant:index-bound",
+            Self::MismatchingIndex => "tenant:index-mismatch",
             Self::Verified => "tenant:manifest-recovery",
             Self::Mismatch => "tenant:manifest-mismatch",
             Self::Unsealed => "tenant:manifest-unsealed",
@@ -83,14 +97,19 @@ impl FixtureCase {
             Self::WritableUnsealed => "unsealed writable manifest",
             Self::Truncated => "truncated manifest",
             Self::MixedMismatch => "mixed manifest mismatch",
-            Self::Verified | Self::WritableVerified | Self::MixedVerified => "valid manifest",
+            Self::Verified | Self::WritableVerified | Self::MixedVerified | Self::MissingIndex => {
+                "valid manifest"
+            }
+            Self::DisabledIndexRepair => "disabled index repair",
+            Self::BoundedIndexRepair => "bounded index repair",
+            Self::MismatchingIndex => "mismatching detached index",
         }
     }
 
     fn recovers(self) -> bool {
         matches!(
             self,
-            Self::Verified | Self::WritableVerified | Self::MixedVerified
+            Self::Verified | Self::WritableVerified | Self::MixedVerified | Self::MissingIndex
         )
     }
 
@@ -336,6 +355,14 @@ pub(super) fn run(
         ));
     }
     let result = runtime.block_on(owner.recover());
+    if matches!(
+        case,
+        FixtureCase::DisabledIndexRepair
+            | FixtureCase::BoundedIndexRepair
+            | FixtureCase::MismatchingIndex
+    ) {
+        return indexes::refuse(case, result, owner, runtime, inputs);
+    }
     if !case.recovers() {
         let error = result
             .err()
@@ -375,6 +402,11 @@ pub(super) fn run(
         return Err(invalid("nonempty recovery lacks actual bounded accounting"));
     }
     check_policy(runtime, inputs, case, true)?;
+    if case == FixtureCase::MissingIndex {
+        println!(
+            "PASS actual startup index repair retained only bootstrap and verified metadata funding before Resume"
+        );
+    }
     refuse_resident_source(owner, runtime, inputs)?;
     if case.mixed() {
         inline::refuse(owner, runtime, inputs)?;

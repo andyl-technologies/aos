@@ -260,7 +260,7 @@ def main():
         shared.require(path.read_bytes() == (source / relative).read_bytes(), "executed proof helper differs from source")
     artifacts = selected_artifacts(workspace, temporary, target)
     source_hashes = shared.source_hashes(workspace, source)
-    for name in ["host-cache-proof.nix", "host_cache_image.py", "host_cache_vm.py", "host_cache_temporaries_vm.py", "manifest_publication_vm.py", "source_cleanup_vm.py", "admission_cache_vm.py", "native_sdk_test_image.py"]:
+    for name in ["host-cache-proof.nix", "host_cache_image.py", "host_cache_vm.py", "host_cache_temporaries_vm.py", "host_cache_index_recovery_vm.py", "manifest_publication_vm.py", "source_cleanup_vm.py", "admission_cache_vm.py", "native_sdk_test_image.py"]:
         path = source / "tests/terrane" / name
         shared.require(path.read_bytes() == (workspace.parent / "tests/terrane" / name).read_bytes(), "mutable proof input: " + name)
         source_hashes["tests/terrane/" + name] = digest(path)
@@ -305,7 +305,7 @@ def main():
                            "installed_path": "share/host_cache_vm.py", "sha256": digest(supervisor)}
     checksums.append(f"{digest(supervisor)}  share/host_cache_vm.py\n")
     supervisor_helpers = {}
-    for helper_name in ["manifest_publication_vm.py", "source_cleanup_vm.py", "admission_cache_vm.py", "host_cache_temporaries_vm.py"]:
+    for helper_name in ["manifest_publication_vm.py", "source_cleanup_vm.py", "admission_cache_vm.py", "host_cache_temporaries_vm.py", "host_cache_index_recovery_vm.py"]:
         helper_source = source / "tests/terrane" / helper_name
         helper_installed = output / "share" / helper_name
         shutil.copy2(helper_source, helper_installed)
@@ -336,6 +336,14 @@ def main():
         "publish-manifest-reuse",
         "publish-manifest-reuse-bad-whole",
         "source-cleanup", "source-cleanup-early",
+        "seed-index-recovery",
+        "seed-index-disabled",
+        "seed-index-bound",
+        "seed-index-mismatch",
+        "recover-index-recovery",
+        "refuse-index-disabled",
+        "refuse-index-bound",
+        "refuse-index-mismatch",
     ]]
     shared.require(listed == expected, "cache fixture exact selector inventory mismatch")
     unit_elf = output / "bin" / UNIT_NAME

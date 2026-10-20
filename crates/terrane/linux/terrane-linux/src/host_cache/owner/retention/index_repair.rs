@@ -12,13 +12,16 @@ use super::{Custody, NativeIndexRepairReport, NativeOwnerExecutor, hex, invalid}
 use crate::{
     host_cache::{DerivedIndexRepair, DetachedIndexStatus},
     host_quota::{NativeProject, synchronized_allocated_bytes},
+    publisher_local::client::{Client, PublisherRecoveryContext},
 };
 use std::{
     fs::File,
     io::{self, Read},
     sync::Arc,
 };
-use terrane_sdk::host::cache::{LeaseRecord, PinRecord, ReservationRecord};
+use terrane_sdk::host::cache::{
+    CacheState, HostDomainLocation, LeaseRecord, PinRecord, ReservationRecord,
+};
 
 /// Retains the actual source, uncertain scratch and completed canonical inode.
 pub(super) struct IndexRepairCustody {
@@ -36,16 +39,108 @@ pub(super) async fn run(
     executor: &NativeOwnerExecutor,
     source: DerivedIndexRepair,
 ) -> io::Result<NativeIndexRepairReport> {
+    repair(executor, source, RepairPhase::Recovered)
+        .await
+        .map(|completion| completion.report)
+}
+
+/// Repairs during the original Drain epoch without enabling adoption or Resume.
+///
+/// Its temporary source pin and future hold are durably removed only after
+/// canonical index verification, synchronization and fresh project accounting.
+/// Any failure retains faulted physical custody independently of the waiter.
+///
+/// # Errors
+/// Refuses a different recovery phase, unsynchronized bootstrap, stale original
+/// publisher context, invalid source, failed effects or uncertain final funding.
+pub(in crate::host_cache::owner) async fn recover(
+    executor: &NativeOwnerExecutor,
+    source: DerivedIndexRepair,
+    bootstrap_id: &[u8; 16],
+    context: &PublisherRecoveryContext<HostDomainLocation>,
+) -> io::Result<u64> {
+    executor.check_recovery_phase()?;
+    executor.check_physical_worker()?;
+    let session = executor
+        .custody()
+        .lock()
+        .map_err(|_| io::Error::other("metadata custody poisoned"))?
+        .preparation
+        .publisher_session();
+    let phase = RepairPhase::Startup {
+        bootstrap_id,
+        context,
+        session: &session,
+    };
+    phase.check_publisher()?;
+    let completed = repair(executor, source, phase).await?;
+    let generation = finish_startup(executor, completed, bootstrap_id, &session, context).await?;
+    session
+        .check_recovery_context(context)
+        .map_err(io::Error::other)?;
+    Ok(generation)
+}
+
+/// Selects existing post-recovery repair or an actual synchronized startup scope.
+enum RepairPhase<'scope> {
+    Recovered,
+    Startup {
+        bootstrap_id: &'scope [u8; 16],
+        context: &'scope PublisherRecoveryContext<HostDomainLocation>,
+        session: &'scope Arc<Client<HostDomainLocation>>,
+    },
+}
+
+impl RepairPhase<'_> {
+    fn original_state(&self, owner: &Custody) -> io::Result<Option<CacheState>> {
+        match self {
+            Self::Recovered if owner.faulted || owner.recovery_required => Err(io::Error::other(
+                "index repair requires failed-operation recovery",
+            )),
+            Self::Recovered => Ok(None),
+            Self::Startup { bootstrap_id, .. } => {
+                if !owner.faulted || !owner.recovery_required || owner.recovery_id.is_some() {
+                    return Err(invalid("index repair lost its actual startup phase"));
+                }
+                owner.check_synchronized_bootstrap(bootstrap_id)?;
+                Ok(Some(owner.state.clone()))
+            }
+        }
+    }
+
+    fn check_publisher(&self) -> io::Result<()> {
+        if let Self::Startup {
+            context, session, ..
+        } = self
+        {
+            session
+                .check_recovery_context(context)
+                .map_err(io::Error::other)?;
+        }
+        Ok(())
+    }
+}
+
+/// Carries original funding and native custody to the startup closing snapshot.
+struct CompletedIndexRepair {
+    id: [u8; 16],
+    source: Arc<DerivedIndexRepair>,
+    original: Option<CacheState>,
+    hold: u64,
+    report: NativeIndexRepairReport,
+}
+
+async fn repair(
+    executor: &NativeOwnerExecutor,
+    source: DerivedIndexRepair,
+    phase: RepairPhase<'_>,
+) -> io::Result<CompletedIndexRepair> {
     let custody = Arc::clone(executor.custody());
-    let (source, id, future, reserved_write) = {
+    let (source, id, hold, future, original, reserved_write) = {
         let mut owner = custody
             .lock()
             .map_err(|_| io::Error::other("metadata custody poisoned"))?;
-        if owner.faulted || owner.recovery_required {
-            return Err(io::Error::other(
-                "index repair requires failed-operation recovery",
-            ));
-        }
+        let original = phase.original_state(&owner)?;
         owner.check_current()?;
         let hold = owner
             .preparation
@@ -94,22 +189,14 @@ pub(super) async fn run(
         {
             return Err(io::Error::other("random index repair identifier collision"));
         }
-        let pin_owner = format!("index-repair:{token}");
         let mut next = owner.state.clone();
-        next.reservations.push(ReservationRecord {
-            id: token,
-            owner: owner.preparation.config.quota_owner.clone(),
-            bytes: hold,
-        });
-        next.leases.push(LeaseRecord {
-            owner: pin_owner.clone(),
-            expires: RETAINED_LEASE_DEADLINE,
-        });
-        next.pins.push(PinRecord {
-            owner: pin_owner,
-            hash: hex(source.pack_identity().digest()),
-            expires: RETAINED_LEASE_DEADLINE,
-        });
+        add_funding(
+            &mut next,
+            &owner.preparation.config.quota_owner,
+            &id,
+            hold,
+            &source,
+        );
         next.encoded_len(owner.preparation.config.state)
             .map_err(io::Error::other)?;
 
@@ -129,9 +216,10 @@ pub(super) async fn run(
         // survive state snapshot/parent synchronization. Every subsequent failure
         // leaves those records and the source in the physical owner's registry.
         let write = super::super::snapshot::prepare(executor, &mut owner)?;
-        (source, id, future, write)
+        (source, id, hold, future, original, write)
     };
     super::super::snapshot::persist(executor, reserved_write).await?;
+    phase.check_publisher()?;
     let (allocated_bytes, completion_write) = {
         let mut owner = custody
             .lock()
@@ -163,6 +251,7 @@ pub(super) async fn run(
         (allocated_bytes, write)
     };
     super::super::snapshot::persist(executor, completion_write).await?;
+    phase.check_publisher()?;
     let mut owner = custody
         .lock()
         .map_err(|_| io::Error::other("metadata custody poisoned"))?;
@@ -186,11 +275,117 @@ pub(super) async fn run(
         .ok_or_else(|| invalid("completed canonical index custody is absent"))?;
     completed.check_current(&retained.source)?;
     owner.check_current()?;
-    owner.faulted = false;
-    Ok(NativeIndexRepairReport {
-        pack_id: source.pack_id(),
-        synchronized_index_bytes: allocated_bytes,
+    if original.is_none() {
+        owner.faulted = false;
+    }
+    Ok(CompletedIndexRepair {
+        id,
+        report: NativeIndexRepairReport {
+            pack_id: source.pack_id(),
+            synchronized_index_bytes: allocated_bytes,
+        },
+        source,
+        original,
+        hold,
     })
+}
+
+fn add_funding(
+    state: &mut CacheState,
+    quota_owner: &str,
+    id: &[u8; 16],
+    hold: u64,
+    source: &DerivedIndexRepair,
+) {
+    let token = hex(id);
+    let pin_owner = format!("index-repair:{token}");
+    state.reservations.push(ReservationRecord {
+        id: token,
+        owner: quota_owner.into(),
+        bytes: hold,
+    });
+    state.leases.push(LeaseRecord {
+        owner: pin_owner.clone(),
+        expires: RETAINED_LEASE_DEADLINE,
+    });
+    state.pins.push(PinRecord {
+        owner: pin_owner,
+        hash: hex(source.pack_identity().digest()),
+        expires: RETAINED_LEASE_DEADLINE,
+    });
+}
+
+async fn finish_startup(
+    executor: &NativeOwnerExecutor,
+    completed: CompletedIndexRepair,
+    bootstrap_id: &[u8; 16],
+    session: &Client<HostDomainLocation>,
+    context: &PublisherRecoveryContext<HostDomainLocation>,
+) -> io::Result<u64> {
+    let custody = executor.custody();
+    let original = completed
+        .original
+        .ok_or_else(|| invalid("missing original startup funding"))?;
+    session
+        .check_recovery_context(context)
+        .map_err(io::Error::other)?;
+    let write = {
+        let mut owner = custody
+            .lock()
+            .map_err(|_| io::Error::other("metadata custody poisoned"))?;
+        if !owner.faulted || !owner.recovery_required || owner.recovery_id.is_some() {
+            return Err(invalid(
+                "completed index repair left its actual startup phase",
+            ));
+        }
+        let mut expected = original.clone();
+        add_funding(
+            &mut expected,
+            &owner.preparation.config.quota_owner,
+            &completed.id,
+            completed.hold,
+            &completed.source,
+        );
+        owner.check_synchronized_state(&expected)?;
+        check_completed(&owner, &completed.id)?;
+        owner.preparation.recheck()?;
+        super::super::recovery::check_charge(&owner, 0)?;
+        owner.begin_mutation()?;
+        owner.state = original;
+        // Retain the actual source/index registry across the closing write.
+        super::super::snapshot::prepare(executor, &mut owner)?
+    };
+    super::super::snapshot::persist(executor, write).await?;
+    session
+        .check_recovery_context(context)
+        .map_err(io::Error::other)?;
+    let mut owner = custody
+        .lock()
+        .map_err(|_| io::Error::other("metadata custody poisoned"))?;
+    owner.check_synchronized_bootstrap(bootstrap_id)?;
+    owner.preparation.recheck()?;
+    super::super::recovery::check_charge(&owner, 0)?;
+    check_completed(&owner, &completed.id)?;
+    let generation = owner.generation;
+    owner
+        .index_repairs
+        .remove(&completed.id)
+        .ok_or_else(|| invalid("startup repair lost original completed registry"))?;
+    // Faulted recovery remains in force. This command issues no completion or Resume.
+    Ok(generation)
+}
+
+fn check_completed(owner: &Custody, id: &[u8; 16]) -> io::Result<()> {
+    let retained = owner
+        .index_repairs
+        .get(id)
+        .ok_or_else(|| invalid("completed index source custody is absent"))?;
+    retained.source.check_pack_current()?;
+    retained
+        .completed
+        .as_ref()
+        .ok_or_else(|| invalid("completed canonical index custody is absent"))?
+        .check_current(&retained.source)
 }
 
 fn check_future_charge(owner: &Custody, future: u64) -> io::Result<()> {

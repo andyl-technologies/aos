@@ -81,6 +81,14 @@ fn main() -> std::process::ExitCode {
             "publish-manifest-reuse-bad-whole",
             "source-cleanup",
             "source-cleanup-early",
+            "seed-index-recovery",
+            "seed-index-disabled",
+            "seed-index-bound",
+            "seed-index-mismatch",
+            "recover-index-recovery",
+            "refuse-index-disabled",
+            "refuse-index-bound",
+            "refuse-index-mismatch",
         ] {
             println!("host-cache:{selector}");
         }
@@ -89,6 +97,10 @@ fn main() -> std::process::ExitCode {
     let result = if matches!(
         mode.as_str(),
         "seed-manifest"
+            | "seed-index-recovery"
+            | "seed-index-disabled"
+            | "seed-index-bound"
+            | "seed-index-mismatch"
             | "seed-bad-manifest"
             | "seed-unsealed-manifest"
             | "seed-unsealed-writable-manifest"

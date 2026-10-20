@@ -10,7 +10,7 @@
 
 use super::{
     recovery_accounting::{self, SynchronizedAllocation},
-    recovery_candidates,
+    recovery_candidates, recovery_indexes,
     recovery_inline::{self, AdoptedInline},
     recovery_manifest_state, recovery_manifests,
     recovery_namespace::SharedNamespaceObservation,
@@ -288,7 +288,7 @@ pub(super) async fn run(executor: &mut NativeOwnerExecutor) -> io::Result<Comple
             "cold policy has no native backing candidates to reconcile",
         ));
     }
-    let (id, generation, bootstrap_write) = {
+    let (id, mut generation, bootstrap_write) = {
         let mut owner = custody
             .lock()
             .map_err(|_| io::Error::other("recovery custody poisoned"))?;
@@ -307,6 +307,21 @@ pub(super) async fn run(executor: &mut NativeOwnerExecutor) -> io::Result<Comple
     };
     super::snapshot::persist(executor, bootstrap_write).await?;
     let initial_inventory = inspector.inspect()?;
+    let (initial_inventory, repaired_generation) =
+        recovery_indexes::run(executor, initial_inventory, &inspector, &id, &context).await?;
+    if let Some(repaired) = repaired_generation {
+        let owner = custody
+            .lock()
+            .map_err(|_| io::Error::other("recovery custody poisoned"))?;
+        owner.check_current()?;
+        if owner.generation != repaired {
+            return Err(unresolved("startup index repair generation changed"));
+        }
+        generation = repaired;
+        // The repaired canonical index is part of a new exhaustive namespace;
+        // the pre-write observation cannot supply final source-closure proof.
+        shared = SharedNamespaceObservation::inspect(&owner.preparation)?;
+    }
     recovery_candidates::preflight(&initial_inventory)?;
     let mut has_manifest = false;
     for candidate in initial_inventory.candidates() {
