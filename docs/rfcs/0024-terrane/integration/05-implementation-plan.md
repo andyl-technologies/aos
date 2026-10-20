@@ -8832,7 +8832,7 @@ authority is shared across invocations. The pure time predicate is exactly the
 previous inclusive authorization comparison. The new core parity case passes
 locally and is added to both owning chain/pure-verification gates, preserving
 every original witness. Two additional native comparisons cover attenuation,
-retirement and duplicate-key clock rollback. All seven hermetic strict profiles,
+retirement and duplicate-key clock rollback. All six hermetic Clippy profiles,
 both private documentation builds, the formatter pair, crate graph, exact unsafe
 audit and `no_std` gate pass. Owning gates and an exact source-bound twenty-case
 native run are underway; a separate
@@ -8840,6 +8840,22 @@ five-case baseline retains the original executable and policies. No performance
 improvement or aggregate success is claimed before those results. No frozen
 identity, encoding, key, store trait, token bytes, dependency or operating
 deadline changes.
+
+The four owning authentication gates subsequently pass all 21 exact
+nonignored executions, independently checked against their unchanged source
+receipts and immutable inputs. The predecessor baseline also passes all five
+original cases, measuring 13.027, 147.526, 120.704, 102.703 and 108.243 seconds.
+The updated twenty-case image remains under qualification. Maintenance source
+`60bfe35963` isolates the five authentication files from the unfinished host
+prototype and adds finite 180-second outer process limits for the three
+measured recovery cases only. Every other parsed nextest setting, case body,
+operating clock and lease policy stays unchanged; the actual nextest parser
+accepts the configuration. Its strict run exposes sixteen unused test-helper
+findings under Tokio without `surface-sdk`. Follow-up `db7fec8fec` applies the
+six already reviewed feature guards matching those helpers' callers, including
+matching conditional diagnostic labels to enum indexes. It introduces no lint
+suppression or production-path change. The corrected isolated maintenance
+source is being requalified before any task merge.
 
 Shared-directory source `744aa55567` restores its preserved SDK adapter in the
 new layout. Its all-target compilation passes, while local Nextest explicitly
