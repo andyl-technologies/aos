@@ -12,6 +12,51 @@ specific stage; they are not cumulative coverage of the latest source.
 
 ## Latest checkpoint
 
+The private derivation-worker foundation is committed in `3aca144b23`, with
+separate presentation changes in `628a575a8a`. It adds closed request/result
+streams, the Engine-only worker process, its measured source-built package recipe,
+retained Linux process supervision and child containment. The worker is the
+81st workspace member. Parent Source activation and accepted-result bank joins
+remain unfinished.
+
+For the captured combined development inputs, the complete default Engine
+library run passes **2,029 tests, zero failures and 33 existing ignores**.
+The actual worker CLI/stdio controls pass all four tests; HostResources passes
+30 tests; and the two Daemon deadline controls and supervisor error-mapping
+control pass. The Protocol run passes 234 library tests with one existing
+ignore and all 18 ABI integration tests. These runs have different feature
+selections and are not cumulative test coverage of one release artifact.
+Eleven-crate all-feature/all-target checking and all six registered architecture
+checks pass. The refreshed production vendor stage is built and independently
+verified against the composed lockfile. Current application-target compilation
+remains pending.
+
+The disposable Linux containment VM passes its actual cgroup, Landlock,
+seccomp, descriptor, filesystem, output, cancellation and waited-cleanup
+controls. Independent review binds the compiled sources, binaries and VM
+results. Its memory control requires a mapped allocation followed by SIGKILL
+and an increase in the original cgroup's OOM counter; the kernel log also
+records that OOM kill. Address-space refusal is tested separately. Quota
+installation and release are exercised; quota exhaustion and quarantine-error
+injection are not. This qualifies the selected child containment boundary,
+without qualifying Source acceptance or total parent/constructor memory
+admission.
+
+The post-merge owner corrections in `f7b0d801af` retain schema and wire versions,
+discover nested workspace owners from manifests and check the active ABI30
+field at byte 39. Registered shared-memory layout and QEMU launch checks pass;
+the Store source check also passes. The spawn gate still encounters older
+test-helper unwraps, whose correction is under review. The worker installation
+and gem5 SE/ARM gate attempts encounter the same 1,602 Transport lint sites;
+none of those failed attempts qualifies an installed worker, SE preservation,
+ARM boot or aggregate ABI/license compliance. No lint allowance or gate-policy
+change is used to bypass these failures.
+
+The separate gem5 thirteen-mode native callable check passes with independently
+verified source, compiler and output bindings, including all five new adverse
+controls. These results are distinct from the modeled cache/table/walker
+controls and do not qualify SE preservation, ARM boot, common Ready or capture.
+
 For the frozen native10 inputs, whose native changes are committed in
 `9b572d78e4`, the registered packaged QEMU native-prefix check passes
 all three selected cases with zero failures or ignores: budget exhaustion at
@@ -97,13 +142,14 @@ build steps complete, and all four native FW_CFG directory-validator cases
 pass. Atomic patch/bundle identities, ABI30 header and license ledger match the
 selected source. Full upstream testing, aggregate ABI/license and release gates,
 matching source-package realization, complete q35 readiness and capture/fresh
-restore remain pending. gem5 native execution, matched performance and full
+restore remain pending. Full-system gem5 execution, matched performance and full
 preservation remain unqualified.
 
 A separately reviewed gem5 change inspects the actual callback target and
 original SystemCounter owner without copying or invoking the callable. Five
 new adverse controls join the eight existing modes. The thirteen-mode native
-check has not run for this change; no additional native capability is issued.
+check now passes within the limited callable-identity scope described above;
+no additional native capability is issued.
 
 The cleanup extraction at `9559fe3526` moves bounded, descriptor-relative
 private-directory removal into HostResources; QEMU keeps its existing storage
