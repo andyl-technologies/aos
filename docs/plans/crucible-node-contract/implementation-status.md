@@ -10,7 +10,48 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
-## Latest checkpoint
+## Private seed and import-cleanup checkpoint
+
+Twenty Transport roles remove only verified unused private imports/reexports;
+sixty facade groups remain. This cleanup changes no public API/runtime route,
+lint allowance or visibility. The separate private seed retains the original
+Job/Completion and bank ranges. It authenticates the original Host operand and
+retains host/launch clones, executable File, revision and key, including failed
+prefixes. No bank is copied into a Birth or adopted from a public DATA summary.
+
+The actor quotes and admits the seed row before its synchronous construction,
+then rechecks the original Source/Job/mechanism after every return. A started
+failure stays spent and revokes further bank acceptance. These known-byte rows
+do not bound opaque runtime, descriptor, kernel or child-resource use; those
+remain separate original-deployment obligations. This seed constructs no Initial,
+Recipe, native member or Ready state; genuine selected-route producers remain
+missing and the selected funded path still refuses readiness.
+
+Twelve selected crates pass all-feature/all-target checking, and all six
+registered architecture checks pass. The full Engine suite passes **2,052 tests,
+zero failures and 33 existing ignores**; Daemon at eight threads passes **1,823
+with zero failures and 163 existing ignores**. Both are unfiltered. The prior full
+Transport result of **1,696 passes, zero failures and 15 existing ignores** is
+unchanged by the seed.
+
+The mandatory application gate passes compilation only for its audited capture:
+**180 freshly compiled test executables across 58 full Cargo package IDs and
+manifests**, including 71 integration targets across 15 packages. It runs no tests
+and emits no Crucible unit-test executable. CLI, Daemon and worker are excluded
+from compilation. The 10,687-file, 1,946-directory capture has 81 manifests and 30
+changed paths: 20 Transport, eight Engine and two Daemon, including five new
+Engine files. The test-only File correction is within those paths; manifests,
+lock and vendor remain unchanged. No whole-HEAD or runtime qualification follows.
+
+The local strict-Clippy comparison fails before and after cleanup: visible
+primary diagnostics fall from 1,596 to 1,573, with 23 removed and none added;
+Transport falls from 1,595 to 1,572 while Store remains at one. In both runs,
+the Transport footer exceeds its visible count by one; the cause is unexplained.
+This scoped diagnostic reduction neither clears package Clippy nor supplies a
+registered VM, installed-job or end-to-end Source/native/Ready result. All earlier
+qualification limits remain.
+
+## Configuration and supervised-job checkpoint
 
 The portable logical configuration is committed in `36d4a75506`, and genuine
 service-startup extraction in `afcd81a1fa` preserves the original startup
