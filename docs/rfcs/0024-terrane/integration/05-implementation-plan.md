@@ -9128,8 +9128,27 @@ verifies restored attributes and original directory custody before either
 role starts. Neither inode's project assignment changes. All original native
 cases and production code remain unchanged. Formatting, crate-graph and unsafe
 checks pass; all three isolated strict profiles and private documentation pass
-in 100.255 seconds. Image and application-target qualification continue;
+in 100.255 seconds. Image and archive preparation pass in 254.678 and 145.801
+seconds, with all 5,107 image inputs independently matched. Application-target
+qualification continues. The unstarted native phase is superseded below;
 native execution and complete task acceptance remain pending.
+
+Binding-conflict continuation `62bfede7fd` allows names-only inventory to retain
+a well-formed conflicting verity record until actual funded adoption can
+reject and quarantine its original inode under HOST-7. Parsing, actual seal
+and plaintext checks, physical record custody and bounded source verification
+remain required; malformed and orphan state remains refused. Inventory grants
+no binding, descriptor or serving authority. The native worker control checks
+unchanged inventory, typed rejection, original bytes/inode/seal quarantine and
+fresh genuine publication. A new cold manifest control changes exactly one
+independently measured verity bit and requires retained recovery funding,
+original-inode quarantine and no Resume. All 68 earlier selectors remain;
+the compiled fixture reports 70, across 62 domains with a finite 496 MiB
+project budget inside the unchanged 512 MiB image. Local all-target check,
+strict Clippy, formatter pair and both focused inventory tests pass. Isolated
+profiles, image/archive and mandatory application qualification are running;
+the native phase still awaits actual completion of the combined aggregate.
+No new native pass, completed host task or format change is claimed.
 
 The older shared-directory aggregate at `86fb63e127` actually terminates with
 failure after 18,940.237 seconds. Nextest reports 2,149 run, 2,141 passed,
