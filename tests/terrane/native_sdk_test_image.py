@@ -3,8 +3,9 @@
 Cargo discovery supplies the actual executable and launch environment. ELF
 inspection retains only reachable runtime libraries, leaving compiler plugins
 behind. Every gate must still discover and execute its own required cases.
-Closed surface-SDK and default-Tokio variants retain their distinct original
-feature selections; importing shared ELF helpers does not select a variant.
+Closed surface-SDK, default-Tokio and default variants retain their distinct
+original feature selections; importing shared ELF helpers does not select a
+variant.
 """
 
 from collections import deque
@@ -39,6 +40,10 @@ def image_configuration(variant):
                 "features": ["default", "send", "std", "tokio"],
                 "cargo_flags": ["--frozen", "--offline", "-p", "terrane-sdk",
                                 "--features", "tokio", "--lib"]}
+    if variant == "default":
+        return {"default_features": True, "requested_features": [],
+                "features": ["default", "std"],
+                "cargo_flags": ["--frozen", "--offline", "-p", "terrane-sdk", "--lib"]}
     raise SystemExit(f"unknown native SDK test image variant: {variant}")
 
 

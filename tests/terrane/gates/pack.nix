@@ -1,17 +1,17 @@
-{sourceGate, ...}: let
+{defaultSdkGate, ...}: let
   runTests = filter: ''
-    cargo test --frozen --offline -p terrane-sdk --lib ${filter} > "$TMPDIR/test.log"
+    "$TERRANE_NATIVE_SDK_TEST_BINARY" ${filter} > "$TMPDIR/test.log"
     python3 -c 'import pathlib, re, sys; output = pathlib.Path(sys.argv[1]).read_text(); print(output); sys.exit(not re.search(r"test result: ok\. [1-9][0-9]* passed; 0 failed", output))' "$TMPDIR/test.log"
   '';
 
   testGate = name: filter:
-    sourceGate name ''
+    defaultSdkGate name ''
       cd crates
       ${runTests filter}
       printf 'PASS: ${name}\n' > "$out/result"
     '';
 in {
-  pack-header = sourceGate "pack-header" ''
+  pack-header = defaultSdkGate "pack-header" ''
     cd crates
     ${runTests "pack::tests::pack_header_"}
     cargo test --frozen --offline -p terrane-format --lib pack_format::tests > "$TMPDIR/core-test.log"
@@ -21,7 +21,7 @@ in {
   pack-id-unique = testGate "pack-id-unique" "pack::tests::pack_id_";
   pack-index-sorted = testGate "pack-index-sorted" "pack::tests::pack_index_is_sorted_";
   pack-index-consistent = testGate "pack-index-consistent" "pack::tests::pack_index_rejects_";
-  pack-kind-domain = sourceGate "pack-kind-domain" ''
+  pack-kind-domain = defaultSdkGate "pack-kind-domain" ''
     cd crates
     ${runTests "pack::tests::pack_meta_separation_"}
     ${runTests "pack::metadata_tests::"}
@@ -29,7 +29,7 @@ in {
   '';
   pack-footer-crc = testGate "pack-footer-crc" "pack::tests::pack_footer_crc_";
   pack-scan-recovery = testGate "pack-scan-recovery" "pack::tests::pack_scan_recovery_";
-  pack-self-describing = sourceGate "pack-self-describing" ''
+  pack-self-describing = defaultSdkGate "pack-self-describing" ''
     cd crates
     ${runTests "pack::tests::pack_self_describing_"}
     ${runTests "pack::tests::pack_native_codecs_"}
@@ -42,7 +42,7 @@ in {
   index-shard-generations = testGate "index-shard-generations" "pack::tests::index_shard_generations_";
   index-tombstones = testGate "index-tombstones" "pack::tests::index_tombstones_";
   index-rebuild = testGate "index-rebuild" "pack::tests::index_rebuild_";
-  bundle-verify = sourceGate "bundle-verify" ''
+  bundle-verify = defaultSdkGate "bundle-verify" ''
     cd crates
     ${runTests "pack::tests::bundle_verify_"}
     ${runTests "pack::metadata_tests::metadata_bundle_"}

@@ -159,6 +159,15 @@
       extraBuildDeps = [pkgs.binutils];
     };
   };
+  # Pack gates retain their original default features without selecting Tokio.
+  defaultSdkTestImage = import ./native-sdk-test-image.nix {
+    variant = "default";
+    sourceGate = sourceGateWithInputs {
+      runtimeDeps = [pkgs.rust pkgs.rust.dev pkgs.diffutils] ++ (pkgs.rust.runtimeDeps or []);
+      nukeRefsKeep = [pkgs.terrane.src];
+      extraBuildDeps = [pkgs.binutils];
+    };
+  };
   nativeSdkGate = nativeSdkGateWithInputs {};
   nativeSdkGateWithInputs = sdkTestGateWithImage {
     image = nativeSdkTestImage;
@@ -171,6 +180,12 @@
     defaultFeatures = true;
     requestedFeatures = ["tokio"];
     features = ["default" "send" "std" "tokio"];
+  } {};
+  defaultSdkGate = sdkTestGateWithImage {
+    image = defaultSdkTestImage;
+    defaultFeatures = true;
+    requestedFeatures = [];
+    features = ["default" "std"];
   } {};
   sdkTestGateWithImage = {
     image,
@@ -333,6 +348,7 @@
           // lib.optionalAttrs (file == "gc.nix") {inherit localTwoPhaseGc;}
           // lib.optionalAttrs (builtins.elem file ["host-publish.nix" "surfaces.nix"]) {inherit sourceGateWithInputs;}
           // lib.optionalAttrs (file == "bucket.nix") {inherit bucketSdkGate;}
+          // lib.optionalAttrs (file == "pack.nix") {inherit defaultSdkGate;}
           // lib.optionalAttrs (file == "host-publish.nix") {inherit publisherLocalProof hostCacheProof;}
         );
         duplicates = builtins.filter (name: builtins.hasAttr name accumulated) (builtins.attrNames added);
@@ -400,6 +416,7 @@ in {
   gates = aggregate // registeredGates;
   activeGates = implementedGates;
   integration.bucket-sdk-test-image = bucketSdkTestImage;
+  integration.default-sdk-test-image = defaultSdkTestImage;
   integration.local-workflow-ext4 = localWorkflow;
   integration.local-sdk-checkout = localSdkCheckout;
   integration.local-cli-workflow = localCliWorkflow;

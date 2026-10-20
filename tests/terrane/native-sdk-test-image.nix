@@ -11,6 +11,10 @@
       name = "bucket-sdk-test-image";
       featureFlags = "--features tokio";
     };
+    default = {
+      name = "default-sdk-test-image";
+      featureFlags = "";
+    };
   };
   configuration = configurations.${variant} or (throw "Unknown Terrane SDK test image variant: ${variant}");
 in
