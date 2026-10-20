@@ -3,7 +3,7 @@
 //! Arguments and file loading live here; configuration semantics and role
 //! behavior live in library crates (CRATE-16). [`local`] calls the T1
 //! repository SDK and registered checkout surface (CRATE-22 to CRATE-24).
-//! Linux configured SDK snapshots run through `terrane-fs`; other configured
+//! Linux configured SDK snapshots run through `terrane-linux`; other configured
 //! runtimes remain unavailable. Syntax checking starts no runtime.
 //! Roles follow specifications 03 and 37, and TOML follows 11 and 26.
 
