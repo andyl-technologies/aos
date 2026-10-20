@@ -59,6 +59,12 @@ impl Drop for SocketModeFixture {
     }
 }
 
+// Exact directory modes require the real ext4 native fixture. The package's
+// user namespace cannot supply every builder filesystem's setgid operations.
+#[cfg_attr(
+    not(feature = "native-test-fixtures"),
+    ignore = "requires the ext4 native fixture for exact setgid directory modes"
+)]
 #[test]
 fn retained_socket_chmod_sets_exact_mode_without_changing_inode_or_group() {
     let fixture = SocketModeFixture::new();
@@ -93,6 +99,10 @@ fn retained_socket_chmod_sets_exact_mode_without_changing_inode_or_group() {
     }
 }
 
+#[cfg_attr(
+    not(feature = "native-test-fixtures"),
+    ignore = "requires the ext4 native fixture for exact setgid directory modes"
+)]
 #[test]
 fn replaced_socket_name_is_rejected_without_changing_either_inode() {
     let fixture = SocketModeFixture::new();
@@ -127,6 +137,10 @@ fn replaced_socket_name_is_rejected_without_changing_either_inode() {
     );
 }
 
+#[cfg_attr(
+    not(feature = "native-test-fixtures"),
+    ignore = "requires the ext4 native fixture for exact setgid directory modes"
+)]
 #[test]
 fn socket_chmod_rejects_wrong_type_and_owner_before_mutation() {
     let fixture = SocketModeFixture::new();

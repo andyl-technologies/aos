@@ -562,6 +562,12 @@ mod tests {
         }
     }
 
+    // The native fixture executes this unchanged case on actual ext4; some
+    // builder filesystems reject non-UTF-8 names before enumeration can run.
+    #[cfg_attr(
+        not(feature = "native-test-fixtures"),
+        ignore = "requires the ext4 native fixture for raw filename bytes"
+    )]
     #[test]
     fn actual_name_scan_counts_coordination_unknown_and_non_utf8_entries() {
         let fixture = Fixture::new();

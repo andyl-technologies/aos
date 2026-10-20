@@ -408,6 +408,12 @@ fn configured_custody_rejects_rebased_owner_and_group() -> TestResult {
     Ok(())
 }
 
+// The native fixture supplies ext4 with real user/group ownership. A user
+// namespace over the builder's filesystem need not support setting setgid.
+#[cfg_attr(
+    not(feature = "native-test-fixtures"),
+    ignore = "requires the ext4 native fixture for exact setgid directory modes"
+)]
 #[test]
 fn configured_directory_mode_is_not_rebased_to_current_metadata() -> TestResult {
     let directory = Directory::new()?;

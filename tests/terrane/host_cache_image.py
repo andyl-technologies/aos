@@ -25,10 +25,22 @@ PROFILE = {"opt_level": "0", "debuginfo": 2, "debug_assertions": True,
 
 UNIT_NAME = "terrane-fs-unit"
 UNIT_PREFIXES = ("host_cache::owner::", "host_cache::recovery_inspection::",
-                 "publisher_local::client::recovery_manifest::")
+                 "publisher_local::client::recovery_manifest::", "publisher_local::socket::tests::")
 UNIT_PROFILE = {"opt_level": "s", "debuginfo": 0, "debug_assertions": True,
                 "overflow_checks": True, "test": True}
 UNIT_TESTS = (
+    'publisher_local::socket::tests::retained_socket_chmod_sets_exact_mode_without_changing_inode_or_group',
+    'publisher_local::socket::tests::replaced_socket_name_is_rejected_without_changing_either_inode',
+    'publisher_local::socket::tests::socket_chmod_rejects_wrong_type_and_owner_before_mutation',
+    'publisher_local::socket::tests::kernel_peer_credentials_cannot_be_claimed_in_packet',
+    'publisher_local::socket::tests::real_seqpacket_roundtrip_requires_response_correlation',
+    'publisher_local::socket::tests::duplicate_active_request_is_rejected_before_dispatch',
+    'publisher_local::socket::tests::unsolicited_and_mismatched_responses_are_rejected',
+    'publisher_local::socket::tests::oversized_payload_and_excess_rights_are_rejected',
+    'publisher_local::socket::tests::received_rights_are_close_on_exec_and_writable_sources_fail',
+    'publisher_local::socket::tests::rejected_rights_do_not_accumulate_descriptors',
+    'publisher_local::socket::tests::ancillary_truncation_and_unregistered_credentials_are_rejected',
+    'publisher_local::socket::tests::configured_domain_selection_has_no_fallback',
     'host_cache::owner::publication::eviction::activity::tests::verified_read_order_keeps_first_promotion_separate_from_later_hits',
     'host_cache::owner::publication::eviction::activity::tests::concurrent_verified_reads_share_one_order_without_losing_first_hits',
     'host_cache::owner::publication::residence::view::tests::close_refuses_new_reads_until_started_backing_is_dropped',
@@ -115,7 +127,8 @@ def source_unit_inventory(workspace):
     """Checks the retained selection against all test declarations in its scope."""
     source_roots = [workspace / "terrane/linux/terrane-linux/src/host_cache/owner",
                     workspace / "terrane/linux/terrane-linux/src/host_cache/recovery_inspection",
-                    workspace / "terrane/linux/terrane-linux/src/publisher_local/client/recovery_manifest.rs"]
+                    workspace / "terrane/linux/terrane-linux/src/publisher_local/client/recovery_manifest.rs",
+                    workspace / "terrane/linux/terrane-linux/src/publisher_local/socket_tests.rs"]
     declared = []
     for root in source_roots:
         for path in sorted(root.rglob("*.rs")) if root.is_dir() else [root]:
