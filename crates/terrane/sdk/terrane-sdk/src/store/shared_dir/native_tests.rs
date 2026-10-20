@@ -3,6 +3,11 @@
 //! Guard-issued test decisions isolate the routing contract. They do not stand
 //! in for end-to-end current-authority verification by repository entry points.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "Fixture setup and success/refusal assertions intentionally panic on unexpected outcomes."
+)]
+
 mod residence_composition;
 
 use std::collections::BTreeMap;
@@ -230,15 +235,18 @@ async fn domain_routes_never_probe_another_directory_or_unreachable_identity() {
     let first = fixture.open(first_root, "tenant:a").await;
     let second = fixture.open(second_root, "tenant:b").await;
     let routes = SharedDirRoutes::new(vec![first, second]).unwrap();
-    let readable = access("tenant:a", &[identity.clone()]);
-    let other = access("tenant:b", &[identity.clone()]);
+    let readable = access("tenant:a", std::slice::from_ref(&identity));
+    let other = access("tenant:b", std::slice::from_ref(&identity));
 
     assert_eq!(
         routes.get(&readable, &identity, None).await.unwrap(),
         encoded
     );
     assert_eq!(
-        routes.has(&other, &[identity.clone()]).await.unwrap(),
+        routes
+            .has(&other, std::slice::from_ref(&identity))
+            .await
+            .unwrap(),
         [false]
     );
     assert!(matches!(
@@ -251,7 +259,7 @@ async fn domain_routes_never_probe_another_directory_or_unreachable_identity() {
     ));
     assert_eq!(
         routes
-            .has(&access("tenant:a", &[]), &[identity.clone()])
+            .has(&access("tenant:a", &[]), std::slice::from_ref(&identity))
             .await
             .unwrap(),
         [false]
@@ -281,7 +289,7 @@ async fn same_domain_snapshots_read_one_existing_inode_without_extending_reachab
     let first_inode = fs::File::open(&path).unwrap().metadata().unwrap();
     let directory = fixture.open(root.clone(), "tenant:a").await;
     let routes = SharedDirRoutes::new(vec![directory]).unwrap();
-    let first = access("tenant:a", &[identity.clone()]);
+    let first = access("tenant:a", std::slice::from_ref(&identity));
     let mut second_binding = binding("tenant:a");
     second_binding.reference = "refs/heads/another-consumer".into();
     second_binding.root = TERRANE_V1
@@ -307,7 +315,10 @@ async fn same_domain_snapshots_read_one_existing_inode_without_extending_reachab
     assert_eq!(routes.get(&first, &identity, None).await.unwrap(), encoded);
     assert_eq!(routes.get(&second, &identity, None).await.unwrap(), encoded);
     assert_eq!(
-        routes.has(&unreachable, &[identity.clone()]).await.unwrap(),
+        routes
+            .has(&unreachable, std::slice::from_ref(&identity))
+            .await
+            .unwrap(),
         [false]
     );
     assert!(matches!(

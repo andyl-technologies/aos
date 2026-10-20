@@ -1,5 +1,10 @@
 //! Checks domain admission policy without acquiring a filesystem capability.
 
+#![allow(
+    clippy::unwrap_used,
+    reason = "Fixture setup and success/refusal assertions intentionally panic on unexpected outcomes."
+)]
+
 use super::check_domain;
 use crate::store::{InvalidReason, StoreErrorKind};
 

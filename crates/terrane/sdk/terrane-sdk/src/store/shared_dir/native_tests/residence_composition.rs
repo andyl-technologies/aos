@@ -149,14 +149,18 @@ async fn portable_resident_routes_preserve_domain_and_reachability_before_lookup
 
     assert_eq!(
         routes
-            .has(&access("tenant:a", &[]), &[identity.clone()])
+            .has(&access("tenant:a", &[]), std::slice::from_ref(&identity))
             .await
             .unwrap(),
         [false]
     );
     assert!(matches!(
         routes
-            .get(&access("tenant:b", &[identity.clone()]), &identity, None)
+            .get(
+                &access("tenant:b", std::slice::from_ref(&identity)),
+                &identity,
+                None
+            )
             .await
             .unwrap_err()
             .kind(),
@@ -165,7 +169,10 @@ async fn portable_resident_routes_preserve_domain_and_reachability_before_lookup
     assert_eq!(reads.load(Ordering::Relaxed), 0);
     assert_eq!(
         routes
-            .has(&access("tenant:a", &[identity.clone()]), &[identity])
+            .has(
+                &access("tenant:a", std::slice::from_ref(&identity)),
+                &[identity]
+            )
             .await
             .unwrap(),
         [true]
