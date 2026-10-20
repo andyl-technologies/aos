@@ -239,6 +239,9 @@ The atomic integration patch creates these QEMU source files:
 | `include/qemu/crucible-prefix-request.h` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `include/qemu/crucible-prefix-stopped.h` | MIT | Explicit SPDX identifier |
 | `accel/tcg/crucible-prefix-stopped-rr.inc.c` | MIT | Explicit SPDX identifier |
+| `accel/tcg/crucible-prefix-live-rr.inc.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `include/qemu/crucible-prefix-live.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-prefix-live.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `include/qemu/crucible-prefix-semantic.h` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `include/qemu/crucible-prefix-timer.h` | MIT | Explicit SPDX identifier |
 | `include/qemu/crucible-prefix-writer.h` | MIT | Explicit SPDX identifier |

@@ -73,6 +73,29 @@ impl NativeAdministrationTransport {
         )
     }
 
+    /// Pins the separately selected live retirement and quiet-operation contract.
+    ///
+    /// This selection supplies no Ready, device closure or archival qualification.
+    ///
+    /// # Errors
+    /// Refuses malformed ancestors, finite bounds or original endpoint failures.
+    pub fn prepare_prefix_live_quiet(
+        phase: NativePhasePreparation,
+        reader_policy_digest: [u8; 32],
+        descriptor_slot: i32,
+        parameters: super::super::super::root::NativeFixedMicrovmParameters,
+        prefix_parameters: NativePrefixParameters,
+    ) -> Result<(Self, NativeLaunchEndpoint), NativeQemuControlError> {
+        Self::prepare_prefix_edition(
+            phase,
+            reader_policy_digest,
+            descriptor_slot,
+            parameters,
+            prefix_parameters,
+            NativeControlEdition::LiveQuiet,
+        )
+    }
+
     fn prepare_prefix_edition(
         phase: NativePhasePreparation,
         reader_policy_digest: [u8; 32],

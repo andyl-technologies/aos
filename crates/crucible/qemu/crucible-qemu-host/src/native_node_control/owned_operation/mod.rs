@@ -19,6 +19,7 @@ mod codec;
 mod evidence;
 mod initial_driver;
 mod initial_store;
+mod live_session;
 mod operation;
 mod session;
 mod session_creation;
@@ -33,10 +34,11 @@ pub use initial_driver::{
     OriginalInitialEvidence, OriginalPreparationDriver, OriginalPreparationProgress,
 };
 pub use initial_store::{InitialEvidenceBudget, InitialEvidenceStore};
+pub use live_session::{NativeLiveProgress, NativeLiveSession, NativeLiveStartFailure};
 pub use operation::OriginalPrefixJournal;
 pub use session::{NativeOwnedPrefixSession, NativePrefixStartFailure};
 pub use session_creation::NativeSessionCreateFailure;
-pub use store::{Archive, ArchiveBudget, StoredOriginal, TurnoverState};
+pub use store::{Archive, ArchiveBudget, QuietTerminalEvidence, StoredOriginal, TurnoverState};
 pub use transport::{
     OriginalOperationDriver, OriginalOperationEndpoint, OriginalOperationProgress,
 };

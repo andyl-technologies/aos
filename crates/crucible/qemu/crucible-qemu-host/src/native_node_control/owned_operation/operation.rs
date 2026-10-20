@@ -243,6 +243,111 @@ impl OriginalPrefixJournal {
         Ok(NativeFrame::ContinuePrefix(Box::new(continuation)))
     }
 
+    /// Builds correlation DATA only from genuine complete consumed-ACK history.
+    ///
+    /// # Errors
+    /// Refuses incomplete or changed original source/history correlation.
+    pub(super) fn retirement_request(
+        &self,
+    ) -> Result<crucible_qemu_protocol::node_control::NativeRetireOriginal, ArchiveError> {
+        if self.pending_continuation.is_some()
+            || self.prefixes.is_empty()
+            || self.prefixes.iter().any(|prefix| {
+                prefix.offered.as_ref() != prefix.consumed.as_ref() || prefix.consumed.is_none()
+            })
+        {
+            return Err(ArchiveError::Conflict);
+        }
+        let last = self.prefixes.last().ok_or(ArchiveError::Conflict)?;
+        let end = match &last.result {
+            ResultBody::Initial(result) => result.end_result,
+            ResultBody::Typed(result) => result.end_result,
+        };
+        if last.result.status() != NativeEffectProgressStatus::Completed || end != 0 {
+            return Err(ArchiveError::Conflict);
+        }
+        let acknowledgement = last
+            .consumed
+            .as_ref()
+            .ok_or(ArchiveError::Conflict)?
+            .encode()?;
+        Ok(crucible_qemu_protocol::node_control::NativeRetireOriginal {
+            identity: crucible_qemu_protocol::node_control::NativeLiveIdentity::from_command(
+                &self.original.command,
+                self.original.effect_preparation,
+            )?,
+            final_acknowledgement: acknowledgement
+                .try_into()
+                .map_err(|_| ArchiveError::Corrupt)?,
+        })
+    }
+
+    /// Matches immutable first-prefix provenance independently of the live cursor.
+    ///
+    /// # Errors
+    /// Refuses incomplete or changed original source/history correlation.
+    pub(super) fn validate_lifetime_provenance(
+        &self,
+        current: &crucible_qemu_protocol::node_control::NativeCurrentCensus,
+    ) -> Result<(), ArchiveError> {
+        let last = self.prefixes.last().ok_or(ArchiveError::Conflict)?;
+        let (cpu, timers) = match &last.result {
+            ResultBody::Initial(result) => (result.returned_service_count.get(), 0),
+            ResultBody::Typed(result) => (
+                result.cumulative_cpu_retirements.get(),
+                result.cumulative_timer_callbacks.get(),
+            ),
+        };
+        let remaining_cpu = self
+            .original
+            .maximum_service_span
+            .get()
+            .checked_sub(cpu)
+            .ok_or(ArchiveError::Conflict)?;
+        let remaining_timers = u64::from(self.original.maximum_callbacks)
+            .checked_sub(timers)
+            .ok_or(ArchiveError::Conflict)?;
+        let expected = [
+            self.original.command.sequence.get(),
+            self.prefixes.len() as u64,
+            self.prefixes.len() as u64,
+            remaining_cpu,
+            remaining_timers,
+        ];
+        for (offset, value) in expected.into_iter().enumerate() {
+            if current.bytes()[344 + offset * 8..352 + offset * 8] != value.to_be_bytes() {
+                return Err(ArchiveError::Conflict);
+            }
+        }
+        Ok(())
+    }
+
+    /// Matches a source proposal to the exact original terminal prefix and ACK.
+    ///
+    /// # Errors
+    /// Refuses incomplete or changed original source/history correlation.
+    pub(super) fn validate_retirement_proposal(
+        &self,
+        proposal: &crucible_qemu_protocol::node_control::NativeRetirementProposal,
+    ) -> Result<(), ArchiveError> {
+        let request = self.retirement_request()?;
+        let last = self.prefixes.last().ok_or(ArchiveError::Conflict)?;
+        let acknowledgement = last.consumed.as_ref().ok_or(ArchiveError::Conflict)?;
+        let (position, raw) = match &last.result {
+            ResultBody::Initial(result) => (result.resulting, result.raw_after),
+            ResultBody::Typed(result) => (result.resulting, result.raw_after),
+        };
+        if proposal.identity()? != request.identity
+            || proposal.current()?.position()? != position
+            || proposal.current()?.raw()? != raw.get()
+            || proposal.bytes()[144..152] != acknowledgement.cut_id.get().to_be_bytes()
+            || proposal.bytes()[176..208] != acknowledgement.result_digest
+        {
+            return Err(ArchiveError::Conflict);
+        }
+        Ok(())
+    }
+
     /// Copies complete terminal history for durable archival before native retirement.
     ///
     /// Native proposal bytes must come from the authentic source retirement

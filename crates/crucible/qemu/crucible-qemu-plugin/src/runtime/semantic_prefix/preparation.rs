@@ -147,18 +147,38 @@ struct PhysicalReply {
     published: bool,
 }
 
-struct Original {
-    frame: NativeFrame,
+pub(super) struct Original {
+    pub(super) frame: NativeFrame,
     cursor: u64,
-    credit: Option<NativeAdministrativeReplyCredit>,
-    reply: Option<NativeFrame>,
+    pub(super) credit: Option<NativeAdministrativeReplyCredit>,
+    pub(super) reply: Option<NativeFrame>,
     retained: bool,
     published: bool,
     repeated: Option<PhysicalReply>,
 }
 
 impl Original {
-    fn admit_repeated(
+    pub(super) fn with_credit(
+        frame: NativeFrame,
+        cursor: u64,
+        credit: NativeAdministrativeReplyCredit,
+    ) -> Self {
+        Self {
+            frame,
+            cursor,
+            credit: Some(credit),
+            reply: None,
+            retained: false,
+            published: false,
+            repeated: None,
+        }
+    }
+
+    pub(super) fn pending(&self) -> bool {
+        !self.published || self.repeated.as_ref().is_some_and(|reply| !reply.published)
+    }
+
+    pub(super) fn admit_repeated(
         &mut self,
         actor: &NativeAdministrativeInbox,
         cursor: u64,
@@ -200,7 +220,10 @@ impl Original {
         Ok(true)
     }
 
-    fn publish(&mut self, actor: &NativeAdministrativeInbox) -> Result<(), NativeCommandError> {
+    pub(super) fn publish(
+        &mut self,
+        actor: &NativeAdministrativeInbox,
+    ) -> Result<(), NativeCommandError> {
         let Some(reply) = &self.reply else {
             return Ok(());
         };

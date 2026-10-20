@@ -220,7 +220,8 @@ impl NativeNodeControl {
                 return;
             }
             if self.prefix.as_ref().is_some_and(|prefix| {
-                prefix.recover_initial_preparation().is_err()
+                prefix.recover_live().is_err()
+                    || prefix.recover_initial_preparation().is_err()
                     || prefix.recover_original_result().is_err()
                     || prefix.recover_original_requests().is_err()
             }) {
@@ -371,6 +372,14 @@ impl NativeNodeControl {
             return Ok(false);
         };
         match frame {
+            NativeFrame::QuietAdvance(_)
+            | NativeFrame::RetireOriginal(_)
+            | NativeFrame::AcceptTerminal(_)
+            | NativeFrame::AcknowledgeRetirement(_) => self
+                .prefix
+                .as_ref()
+                .ok_or(NativeCommandError::Conflict)?
+                .try_admit_live(actor, cursor),
             NativeFrame::QueryStoppedCut(_)
             | NativeFrame::QueryPrefixPreparation { .. }
             | NativeFrame::AcknowledgePrefixPreparation(_) => self

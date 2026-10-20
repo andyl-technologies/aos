@@ -157,6 +157,17 @@ pub(super) fn parse(
         Some("4") if phase.is_some() => {
             crucible_qemu_protocol::node_control::NativeControlEdition::PreparationSuccessor
         }
+        Some("11")
+            if phase.is_some()
+                && administration.is_some()
+                && fixed_microvm.is_some()
+                && bounded_teardown_version == Some(1)
+                && effect_commitment.is_some_and(|value| value != [0; 32])
+                && prefix_commitment.is_some_and(|value| value != [0; 32])
+                && parsed.value("node_prefix_preparation_contract_version") == Some("1") =>
+        {
+            crucible_qemu_protocol::node_control::NativeControlEdition::LiveQuiet
+        }
         Some("10")
             if phase.is_some()
                 && administration.is_some()
@@ -207,6 +218,7 @@ pub(super) fn parse(
                     | crucible_qemu_protocol::node_control::NativeControlEdition::Administration
                     | crucible_qemu_protocol::node_control::NativeControlEdition::Construction
                     | crucible_qemu_protocol::node_control::NativeControlEdition::FiniteEffect
+                    | crucible_qemu_protocol::node_control::NativeControlEdition::LiveQuiet
                     | crucible_qemu_protocol::node_control::NativeControlEdition::PrefixObservation
                     | crucible_qemu_protocol::node_control::NativeControlEdition::PrefixEffect
                     | crucible_qemu_protocol::node_control::NativeControlEdition::FixedMicrovm)))
@@ -214,11 +226,13 @@ pub(super) fn parse(
             && !matches!(edition, crucible_qemu_protocol::node_control::NativeControlEdition::Administration
                 | crucible_qemu_protocol::node_control::NativeControlEdition::Construction
                 | crucible_qemu_protocol::node_control::NativeControlEdition::FiniteEffect
+                    | crucible_qemu_protocol::node_control::NativeControlEdition::LiveQuiet
                     | crucible_qemu_protocol::node_control::NativeControlEdition::PrefixObservation
                     | crucible_qemu_protocol::node_control::NativeControlEdition::PrefixEffect
                     | crucible_qemu_protocol::node_control::NativeControlEdition::FixedMicrovm))
         || (fixed_microvm.is_some()
             && !matches!(edition, crucible_qemu_protocol::node_control::NativeControlEdition::FixedMicrovm | crucible_qemu_protocol::node_control::NativeControlEdition::FiniteEffect
+                    | crucible_qemu_protocol::node_control::NativeControlEdition::LiveQuiet
                     | crucible_qemu_protocol::node_control::NativeControlEdition::PrefixObservation
                     | crucible_qemu_protocol::node_control::NativeControlEdition::PrefixEffect))
     {
@@ -228,6 +242,7 @@ pub(super) fn parse(
         && !matches!(
             edition,
             crucible_qemu_protocol::node_control::NativeControlEdition::FiniteEffect
+                | crucible_qemu_protocol::node_control::NativeControlEdition::LiveQuiet
                 | crucible_qemu_protocol::node_control::NativeControlEdition::PrefixObservation
                 | crucible_qemu_protocol::node_control::NativeControlEdition::PrefixEffect
         )
@@ -241,6 +256,7 @@ pub(super) fn parse(
             if matches!(
                 edition,
                 crucible_qemu_protocol::node_control::NativeControlEdition::PrefixEffect
+                    | crucible_qemu_protocol::node_control::NativeControlEdition::LiveQuiet
                     | crucible_qemu_protocol::node_control::NativeControlEdition::PrefixObservation
             ) =>
         {
@@ -252,6 +268,7 @@ pub(super) fn parse(
         && !matches!(
             edition,
             crucible_qemu_protocol::node_control::NativeControlEdition::PrefixEffect
+                | crucible_qemu_protocol::node_control::NativeControlEdition::LiveQuiet
                 | crucible_qemu_protocol::node_control::NativeControlEdition::PrefixObservation
         )
     {

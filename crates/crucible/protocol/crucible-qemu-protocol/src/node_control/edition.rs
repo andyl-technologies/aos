@@ -13,6 +13,8 @@ use crucible_node_format::U64;
 /// Selects one explicitly prepared native process-protocol edition.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NativeControlEdition {
+    /// Pins live retirement and source-proved zero-evaluation operations.
+    LiveQuiet,
     /// Selects the initial-session current stopped-cut observational contract.
     PrefixObservation,
     /// Selects separately pinned original prefix acknowledgements and continuation.
@@ -42,6 +44,7 @@ impl NativeControlEdition {
     /// Returns the exact portable header version selected before native launch.
     pub const fn version(self) -> u16 {
         match self {
+            Self::LiveQuiet => 11,
             Self::PrefixObservation => 10,
             Self::PrefixEffect => 9,
             Self::FiniteEffect => 8,
@@ -68,6 +71,22 @@ pub fn encode_frame_for_edition(
     edition: NativeControlEdition,
     frame: &NativeFrame,
 ) -> Result<Vec<u8>, NativeCommandError> {
+    if edition == NativeControlEdition::LiveQuiet {
+        return super::live_frames::encode(frame);
+    }
+    if matches!(
+        frame,
+        NativeFrame::QuietAdvance(_)
+            | NativeFrame::QuietProgress(_)
+            | NativeFrame::RetireOriginal(_)
+            | NativeFrame::RetirementProposed(_)
+            | NativeFrame::AcceptTerminal(_)
+            | NativeFrame::RetirementReceipt(_)
+            | NativeFrame::AcknowledgeRetirement(_)
+            | NativeFrame::RetirementCommitted(_)
+    ) {
+        return Err(NativeCommandError::UnsupportedVersion(11));
+    }
     if edition == NativeControlEdition::PrefixObservation {
         return super::stopped_cut_frames::encode(frame);
     }
@@ -271,6 +290,9 @@ pub fn decode_frame_for_edition(
     }
     if edition == NativeControlEdition::Original {
         return super::decode_frame(bytes);
+    }
+    if edition == NativeControlEdition::LiveQuiet {
+        return super::live_frames::decode(bytes);
     }
     if edition == NativeControlEdition::PrefixObservation {
         return super::stopped_cut_frames::decode(bytes);
@@ -541,7 +563,9 @@ mod phase_frame_tests;
 fn construction_frame(frame: &NativeFrame) -> bool {
     matches!(
         frame,
-        NativeFrame::PrepareAdministration(_)
+        NativeFrame::QueryCpuPark(_)
+            | NativeFrame::CpuPark(_)
+            | NativeFrame::PrepareAdministration(_)
             | NativeFrame::QueryAdministration { .. }
             | NativeFrame::AdministrationFacts(_)
             | NativeFrame::QueryInitialization(_)

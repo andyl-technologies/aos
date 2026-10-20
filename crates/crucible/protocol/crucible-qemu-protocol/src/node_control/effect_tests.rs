@@ -163,3 +163,83 @@ fn source_result_reserved_phase_status_and_flags_are_closed() {
         assert!(NativeEffectProgress::decode(&changed).is_err());
     }
 }
+
+#[test]
+fn cpu_only_observations_keep_ancestor_bodies_through_selected_effect_editions() {
+    let frames = [
+        NativeFrame::QueryCpuPark([5; 32]),
+        NativeFrame::CpuPark(NativeCpuParkFacts {
+            coverage: 1,
+            cpu_count: 1,
+            current_ps: U64::new(151),
+            retired_count: U64::new(3),
+            next_service_deadline_ps: Some(U64::new(200)),
+            pending_service_credit_ps: U64::new(0),
+            prepared_scope_hash: [5; 32],
+            roster_sha256: [6; 32],
+        }),
+    ];
+    for frame in frames {
+        let original = encode_frame(&frame).unwrap();
+        for edition in [
+            NativeControlEdition::Construction,
+            NativeControlEdition::FixedMicrovm,
+            NativeControlEdition::FiniteEffect,
+            NativeControlEdition::PrefixEffect,
+            NativeControlEdition::PrefixObservation,
+            NativeControlEdition::LiveQuiet,
+        ] {
+            let bytes = encode_frame_for_edition(edition, &frame).unwrap();
+            assert_eq!(&bytes[8..10], &edition.version().to_be_bytes());
+            let mut normalized = bytes.clone();
+            normalized[8..10]
+                .copy_from_slice(&NativeControlEdition::Original.version().to_be_bytes());
+            assert_eq!(normalized, original);
+            assert_eq!(decode_frame_for_edition(edition, &bytes).unwrap(), frame);
+        }
+    }
+}
+
+#[test]
+fn cpu_observation_compatibility_never_admits_legacy_execution_commands() {
+    let frame = NativeFrame::Command(Box::new(command()));
+    let original = encode_frame(&frame).unwrap();
+    for edition in [
+        NativeControlEdition::Construction,
+        NativeControlEdition::FixedMicrovm,
+        NativeControlEdition::FiniteEffect,
+        NativeControlEdition::PrefixEffect,
+        NativeControlEdition::PrefixObservation,
+        NativeControlEdition::LiveQuiet,
+    ] {
+        assert!(encode_frame_for_edition(edition, &frame).is_err());
+        let mut substituted = original.clone();
+        substituted[8..10].copy_from_slice(&edition.version().to_be_bytes());
+        assert!(decode_frame_for_edition(edition, &substituted).is_err());
+    }
+}
+
+#[test]
+fn selected_effect_editions_keep_typed_compute_bodies_and_replies_unchanged() {
+    let original = compute();
+    let frames = [
+        NativeFrame::EffectCompute(Box::new(original.clone())),
+        NativeFrame::EffectProgress(Box::new(progress(&original))),
+    ];
+    for frame in frames {
+        let reference =
+            encode_frame_for_edition(NativeControlEdition::FiniteEffect, &frame).unwrap();
+        for edition in [
+            NativeControlEdition::PrefixEffect,
+            NativeControlEdition::PrefixObservation,
+            NativeControlEdition::LiveQuiet,
+        ] {
+            let bytes = encode_frame_for_edition(edition, &frame).unwrap();
+            assert_eq!(decode_frame_for_edition(edition, &bytes).unwrap(), frame);
+            let mut normalized = bytes;
+            normalized[8..10]
+                .copy_from_slice(&NativeControlEdition::FiniteEffect.version().to_be_bytes());
+            assert_eq!(normalized, reference);
+        }
+    }
+}

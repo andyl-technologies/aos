@@ -198,6 +198,7 @@ mod tests {
         ] {
             let (host, provider) = NativeChannel::supervised_pair_for_edition(edition).unwrap();
             let other = match edition {
+                NativeControlEdition::LiveQuiet => NativeControlEdition::Original,
                 NativeControlEdition::Original => NativeControlEdition::OwnedCustody,
                 NativeControlEdition::OwnedCustody
                 | NativeControlEdition::PhaseProjection

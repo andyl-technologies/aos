@@ -210,6 +210,24 @@ mod tests {
             )
             .is_err()
         );
+        let live = explicit.replace("node_control_version=9", "node_control_version=11");
+        assert_eq!(
+            PluginArgs::parse(&live)
+                .unwrap()
+                .native_node_control()
+                .unwrap()
+                .edition()
+                .version(),
+            11
+        );
+        assert!(
+            PluginArgs::parse(
+                &complete
+                    .join(",")
+                    .replace("node_control_version=9", "node_control_version=11")
+            )
+            .is_err()
+        );
         for version in ["0", "2", "01", "", "future"] {
             assert!(
                 PluginArgs::parse(&format!(

@@ -377,6 +377,7 @@ impl NativeAdministrativeMailbox {
             NativeFrame::Initialize(_)
                 | NativeFrame::EffectCompute(_)
                 | NativeFrame::ContinuePrefix(_)
+                | NativeFrame::QuietAdvance(_)
         ) {
             let record = self
                 .records
@@ -661,6 +662,27 @@ fn reply_matches(original: &NativeFrame, reply: &NativeFrame, scope: [u8; 32]) -
             NativeFrame::AcknowledgePrefixPreparation(original),
             NativeFrame::PrefixPreparationAcknowledged(reply),
         ) => original.scope == scope && original == reply,
+        (NativeFrame::QuietAdvance(original), NativeFrame::QuietProgress(reply)) => {
+            original.command.scope.identity_digest() == Ok(scope)
+                && reply
+                    .validate_original(original, std::process::id())
+                    .is_ok()
+        }
+        (NativeFrame::RetireOriginal(original), NativeFrame::RetirementProposed(reply)) => {
+            original.identity.scope == scope && reply.identity().as_ref() == Ok(&original.identity)
+        }
+        (NativeFrame::AcceptTerminal(original), NativeFrame::RetirementReceipt(reply)) => {
+            original.identity.scope == scope
+                && reply.bytes()[..32] == original.native_digest
+                && reply.bytes()[32..64] == original.archive_digest
+                && reply.bytes()[80..88] == original.identity.sequence.get().to_be_bytes()
+        }
+        (NativeFrame::AcknowledgeRetirement(original), NativeFrame::RetirementCommitted(reply)) => {
+            original.identity.scope == scope
+                && reply.bytes()[..32] == original.native_digest
+                && reply.bytes()[32..64] == original.archive_digest
+                && reply.bytes()[96..104] == original.identity.sequence.get().to_be_bytes()
+        }
         (NativeFrame::QueryStoppedCut(original), NativeFrame::StoppedCut(reply)) => {
             original.scope == scope && reply.query() == original
         }
@@ -790,6 +812,17 @@ fn classify(
             scope: original_scope,
             ..
         } if original_scope == scope => NativeAdministrativeClass::ReadOriginal,
+        NativeFrame::QuietAdvance(quiet) if quiet.command.scope.identity_digest() == Ok(scope) => {
+            NativeAdministrativeClass::Modeled
+        }
+        NativeFrame::RetireOriginal(original) if original.identity.scope == scope => {
+            NativeAdministrativeClass::AcknowledgeOriginal
+        }
+        NativeFrame::AcceptTerminal(original) | NativeFrame::AcknowledgeRetirement(original)
+            if original.identity.scope == scope =>
+        {
+            NativeAdministrativeClass::AcknowledgeOriginal
+        }
         NativeFrame::QueryStoppedCut(query) if query.scope == scope => {
             NativeAdministrativeClass::ObserveCurrent
         }

@@ -1736,6 +1736,19 @@ in
               fi
               cp fwcfg-directory-tests.tap \
                 "$out/share/aos/crucible/fwcfg-directory-tests.tap"
+              timeout -k 5 60 build/tests/unit/test-crucible-prefix-live --tap \
+                --seed=R02S00000000000000000000000000000000 \
+                > prefix-live-tests.tap
+              cat prefix-live-tests.tap
+              grep -Fxq '1..6' prefix-live-tests.tap
+              test "$(grep -c '^ok [0-9]' prefix-live-tests.tap)" -eq 6
+              if grep -Eq '^not ok|^Bail out!|#[[:space:]]*(SKIP|TODO)([[:space:]]|$)' \
+                prefix-live-tests.tap; then
+                echo "native live-prefix comparison controls did not all execute" >&2
+                exit 1
+              fi
+              cp prefix-live-tests.tap "$out/share/aos/crucible/prefix-live-tests.tap"
+
               # Run each isolated hwcore fixture without a case filter.
               for device_fixture in test-crucible-i3c-timer \
                 test-crucible-mos6522-clock test-qdev test-qdev-global-props; do
@@ -2601,6 +2614,36 @@ in
                   r"/\*.*?\*/", "", stopped_reader, flags=re.DOTALL
               )
 
+              prefix_live = Path(
+                  "accel/tcg/crucible-prefix-live-rr.inc.c"
+              ).read_text()
+              live_header = Path(
+                  "include/qemu/crucible-prefix-live.h"
+              ).read_text()
+              live_unit = Path(
+                  "tests/unit/test-crucible-prefix-live.c"
+              ).read_text()
+              live_quiet = prefix_live[
+                  prefix_live.index("static int rr_prefix_live_quiet("):
+                  prefix_live.index("static int rr_prefix_live_propose(")
+              ]
+              live_retire = prefix_live[
+                  prefix_live.index("static int rr_prefix_live_propose("):
+                  prefix_live.index("static int rr_prefix_live_accept(")
+              ]
+              live_commit = prefix_live[
+                  prefix_live.index("static int rr_prefix_live_accept("):
+                  prefix_live.index("static int rr_prefix_live_service(")
+              ]
+              live_reader = prefix_live[
+                  prefix_live.index(
+                      "int qemu_plugin_crucible_node_query_original_prefix_live("
+                  ):
+              ]
+              live_reader_code = re.sub(
+                  r"/\*.*?\*/", "", live_reader, flags=re.DOTALL
+              )
+
               checks = [
                   # Source predicates bind the observational seam; actual
                   # Session/native execution remains a separate registered gate.
@@ -2638,6 +2681,74 @@ in
                    stopped_header + prefix_stopped,
                    r"#define CRUCIBLE_PREFIX_STOPPED_WIRE_BYTES 408.*?"
                    r"preparation_u32\(&cursor, facts->cpu_interrupt_request != 0\)", 1),
+                  # These bind the selected live11 source path. They do not
+                  # establish execution, common readiness or exact preservation.
+                  ("live RR retirement selects original live dispatcher", prefix_root,
+                   r"if \(!result && rr_prefix_live_initial_retired\).*?"
+                   r"rr_prefix_live_service\(&handled\).*?"
+                   r"if \(!result && !handled\).*?result = -EAGAIN;.*?"
+                   r"else if \(!result\).*?rr_prefix_original_command\(\)", 1),
+                  ("live current census checks actual clock around original source", prefix_live,
+                   r"before_clock = icount_crucible_sim_tick_observed\(\).*?"
+                   r"before_clock != rr_prefix_root.current_cursor.time_ps.*?"
+                   r"rr_prefix_query_stopped\(&rr_prefix_root,.*?&facts\).*?"
+                   r"icount_crucible_sim_tick_observed\(\) != before_clock.*?"
+                   r"stopped_record_encode\(&facts, getpid\(\), qemu_get_thread_id\(\), record\)", 1),
+                  ("live quiet checks actual before and after its authorized park", live_quiet,
+                   r"rr_prefix_query_stopped\(&rr_prefix_root,.*?&before\).*?"
+                   r"crucible_prefix_live_quiet_obstruction\(&before, command->limit\).*?"
+                   r"if \(!needs_evaluation\).*?"
+                   r"icount_crucible_node_service_park\(command->limit.time_ps\).*?"
+                   r"rr_prefix_root.current_cursor = command->limit;.*?"
+                   r"rr_prefix_query_stopped\(&rr_prefix_root,.*?&after\).*?"
+                   r"icount_crucible_sim_tick_observed\(\).*?"
+                   r"memcmp\(expected_record, after_record, sizeof\(expected_record\)\).*?"
+                   r"rr_prefix_live_bank.quiet_retained = true;", 1),
+                  ("live initial retirement requires completed consumed original ACK", live_retire,
+                   r"!last->completed.*?!last->source_transition_valid.*?"
+                   r"qatomic_load_acquire\(&last->acknowledgement_retained\).*?"
+                   r"last->applied_acknowledgement.*?"
+                   r"CRUCIBLE_EFFECT_RESULT_COMPLETED.*?"
+                   r"rr_prefix_cuts\[index\].acknowledgement_retained.*?"
+                   r"rr_prefix_live_census\(current\).*?"
+                   r"rr_prefix_live_bank.phase = 1;", 1),
+                  ("live receipt then commit preserve exact source and archive joins", live_commit,
+                   r"accept->archive_digest.*?"
+                   r"accept->native_digest, rr_prefix_live_bank.proposal_digest.*?"
+                   r"accept->native_digest, rr_prefix_live_bank.receipt_digest.*?"
+                   r"rr_prefix_live_current_matches\(rr_prefix_live_bank.proposal \+ 208\).*?"
+                   r"rr_prefix_live_bank.phase = 2;.*?"
+                   r"preparation_hash\(&cursor, rr_prefix_live_bank.receipt_digest\).*?"
+                   r"preparation_hash\(&cursor, accept->archive_digest\).*?"
+                   r"rr_prefix_live_retired_sequence = rr_prefix_live_bank.identity.sequence;.*?"
+                   r"rr_prefix_live_initial_retired = true;.*?"
+                   r"rr_prefix_live_bank.phase = 3;", 1),
+                  ("live history reader copies only exact original retained result", live_reader_code,
+                   r"rr_prefix_preparation_reader\(root, owned_epoch\).*?"
+                   r"rr_prefix_live_bank.request_retained\[slot\].*?"
+                   r"memcmp\(request, &rr_prefix_live_bank.requests\[slot\], sizeof\(\*request\)\).*?"
+                   r"memcpy\(bytes, reply, reply_length\)", 1),
+                  ("live history reader never resamples or dispatches", live_reader_code,
+                   r"rr_prefix_(?:query_stopped|live_census|live_quiet|live_service|run_cpu)\(|"
+                   r"icount_crucible_node_service_park\(", 0),
+                  ("live obstruction compares full CPU and timer positions", live_header,
+                   r"left.time_ps != right.time_ps.*?left.microstep != right.microstep.*?"
+                   r"return left.phase < right.phase;.*?"
+                   r"facts->cpu_interrupt_request \|\| facts->original_startup_exit_pending.*?"
+                   r"crucible_prefix_live_position_before\(facts->next_cpu, limit\).*?"
+                   r"facts->timer_present.*?facts->next_timer.evaluation, limit", 1),
+                  ("live fixed native storage and portable reply extents", live_header,
+                   r"CRUCIBLE_PREFIX_LIVE_REQUEST_BYTES 312.*?"
+                   r"CRUCIBLE_PREFIX_LIVE_QUIET_BYTES 952.*?"
+                   r"CRUCIBLE_PREFIX_LIVE_PROPOSAL_BYTES 640.*?"
+                   r"CRUCIBLE_PREFIX_LIVE_RECEIPT_BYTES 128.*?"
+                   r"CRUCIBLE_PREFIX_LIVE_COMMIT_BYTES 160", 1),
+                  ("live RR fragment preserves explicit GPL scope", prefix_live,
+                   r"\A/\* SPDX-License-Identifier: GPL-2\.0-or-later \*/", 1),
+                  ("live private header preserves explicit GPL scope", live_header,
+                   r"\A/\* SPDX-License-Identifier: GPL-2\.0-or-later \*/", 1),
+                  ("live ordinary unit preserves explicit GPL scope", live_unit,
+                   r"\A/\* SPDX-License-Identifier: GPL-2\.0-or-later \*/", 1),
                   ("clamp declaration", shmem_header,
                    r"clamp_cpu_budget\([^;]+max_advance_icount\);", 1),
                   ("clamp implementation", shmem,

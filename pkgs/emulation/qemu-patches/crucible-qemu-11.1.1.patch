@@ -1,6 +1,6 @@
-From 138d9d82bb053bc5690291c2e3f5484e2d440466 Mon Sep 17 00:00:00 2001
+From d4506b2d27eac27e5692df0fb375e11e0052a7a8 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Tue, 20 Oct 2026 07:46:00 +0000
+Date: Tue, 20 Oct 2026 11:15:00 +0000
 Subject: [PATCH] Integrate deterministic execution and native effect ownership
 
 Keep small TCG invalidation page-lock sets in four caller-owned sorted
@@ -835,6 +835,35 @@ The source delta has independent finite review. New native compilation,
 ABI/license gates and the registered three-case installed-pair regression
 remain pending. Earlier edition-nine execution evidence retains its own
 source scope and is not qualification of this new contract.
+
+Retain independently negotiated native edition eleven for retirement
+receipts, committed predecessor acknowledgement and source-proved quiet
+intervals after a genuine completed initial prefix. Preserve original
+RR, input epoch, raw counter and full-position cursor custody through the
+same native session and durable Archive receipt/commit association.
+
+Refuse due or unknown CPU/timer work, pending interrupts and changed
+before/after source census. A quiet park evaluates no CPU, timer or effect
+callback and retains initial-prefix provenance separately from current
+cursor storage. Keep pointers private and public observations portable.
+
+Carry three new GPL-2.0-or-later source fragments and their license
+inventory entries. Native arithmetic controls and the installed fourth
+session regression are authored; configured compilation, runtime and
+matching source qualification remain required. This primitive supplies
+no general evaluating turnover, common Ready or archival permission.
+
+Share the exact native quiet-successor eligibility check between RR
+admission and the authenticated cached reader. A committed predecessor
+may leave an old quiet request in the slot while the next genuine request
+awaits RR; report only that eligible successor pending. Preserve all
+foreign, stale, header, epoch, scope, budget, cursor and predecessor
+checks. The reader samples no source and mutates no request or history.
+
+Retain the full RR source census and clock guards before execution.
+Exercise unchanged original controls plus position, immutability and
+changed-field eligibility controls; installed native qualification is
+separate from these pure scalar checks.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -16246,6 +16275,529 @@ index 0000000000000000000000000000000000000000..e5093fbcd199830c18f273a8b73c39fc
 +        rr_prefix_publish_initial(cut, after, end, returned) :
 +        rr_prefix_publish_typed_cpu(cut, after, end, returned);
 +}
+diff --git a/accel/tcg/crucible-prefix-live-rr.inc.c b/accel/tcg/crucible-prefix-live-rr.inc.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..f890d10a33a85c7cbafd6c662895d931c7b72dc2
+--- /dev/null
++++ b/accel/tcg/crucible-prefix-live-rr.inc.c
+@@ -0,0 +1,517 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++/* This opt-in successor retains old effect-cut addresses. Only this separate
++ * scalar bank can turn over after genuine native commit and host acceptance. */
++#include "qemu/crucible-prefix-live.h"
++
++G_STATIC_ASSERT(sizeof(CruciblePrefixLiveIdentity) == 104);
++G_STATIC_ASSERT(sizeof(CruciblePrefixLiveRequest) == CRUCIBLE_PREFIX_LIVE_REQUEST_BYTES);
++
++typedef struct CruciblePrefixLiveBank {
++    CruciblePrefixLiveIdentity identity;
++    CruciblePrefixLiveRequest requests[4];
++    bool request_retained[4];
++    uint8_t quiet[CRUCIBLE_PREFIX_LIVE_QUIET_BYTES];
++    uint8_t proposal[CRUCIBLE_PREFIX_LIVE_PROPOSAL_BYTES];
++    uint8_t receipt[CRUCIBLE_PREFIX_LIVE_RECEIPT_BYTES];
++    uint8_t commit[CRUCIBLE_PREFIX_LIVE_COMMIT_BYTES];
++    uint8_t proposal_digest[32];
++    uint8_t receipt_digest[32];
++    uint64_t generation;
++    uint32_t phase; /* 0 quiet terminal, 1 proposed, 2 receipted, 3 committed */
++    bool quiet_retained;
++} CruciblePrefixLiveBank;
++
++static bool rr_prefix_live_contract;
++static bool rr_prefix_live_initial_retired;
++static QemuMutex rr_prefix_live_lock;
++static CruciblePrefixLiveGetter rr_prefix_live_getter;
++static void *rr_prefix_live_userdata;
++static GChecksum *rr_prefix_live_checksum;
++static CruciblePrefixLiveBank rr_prefix_live_bank;
++static uint64_t rr_prefix_live_retired_sequence;
++static uint64_t rr_prefix_live_retired_generation;
++static uint8_t rr_prefix_live_predecessor[32];
++
++static void rr_prefix_live_hash(const uint8_t *bytes, size_t length,
++                                uint8_t digest[32])
++{
++    gsize size = 32;
++
++    g_checksum_reset(rr_prefix_live_checksum);
++    g_checksum_update(rr_prefix_live_checksum, bytes, length);
++    g_checksum_get_digest(rr_prefix_live_checksum, digest, &size);
++    assert(size == 32);
++}
++
++static void rr_prefix_live_identity(uint8_t **cursor,
++                                    const CruciblePrefixLiveIdentity *identity)
++{
++    preparation_hash(cursor, identity->scope);
++    preparation_hash(cursor, identity->preparation);
++    preparation_hash(cursor, identity->command);
++    preparation_u64(cursor, identity->sequence);
++}
++
++static bool rr_prefix_live_identity_matches(
++    const CruciblePrefixLiveIdentity *left, const CruciblePrefixLiveIdentity *right)
++{
++    return !memcmp(left, right, sizeof(*left));
++}
++
++static int rr_prefix_live_census(uint8_t record[CRUCIBLE_PREFIX_STOPPED_WIRE_BYTES])
++{
++    CruciblePrefixStoppedFacts facts;
++    int64_t before_clock = icount_crucible_sim_tick_observed();
++    int result;
++
++    if (before_clock < 0 || (uint64_t)before_clock != rr_prefix_root.current_cursor.time_ps) {
++        return -ESTALE;
++    }
++    result = rr_prefix_query_stopped(&rr_prefix_root,
++                                     rr_prefix_root.owned_epoch, &facts);
++    if (result) {
++        return result;
++    }
++    if (icount_crucible_sim_tick_observed() != before_clock) {
++        rr_prefix_root.phase = CRUCIBLE_EFFECT_SOURCE_TAINTED;
++        return -ENOTRECOVERABLE;
++    }
++    stopped_record_encode(&facts, getpid(), qemu_get_thread_id(), record);
++    return 0;
++}
++
++static int rr_prefix_live_current_matches(const uint8_t *record)
++{
++    uint8_t current[CRUCIBLE_PREFIX_STOPPED_WIRE_BYTES];
++    int result = rr_prefix_live_census(current);
++
++    return result ? result : memcmp(current, record, sizeof(current)) ? -ESTALE : 0;
++}
++
++int qemu_plugin_register_crucible_prefix_live_contract(
++    uint32_t version, const CrucibleNodePrefixPolicy *policy)
++{
++    if (version != 1 || !policy || !crucible_node_prefix_policy() ||
++        memcmp(policy, crucible_node_prefix_policy(), sizeof(*policy)) ||
++        !rr_prefix_stopped_contract || rr_prefix_root.incarnation ||
++        rr_prefix_live_contract) {
++        return -ESTALE;
++    }
++    /* All source result storage and hashing state precede epoch acquisition. */
++    rr_prefix_live_checksum = g_checksum_new(G_CHECKSUM_SHA256);
++    if (!rr_prefix_live_checksum) {
++        return -ENOMEM;
++    }
++    qemu_mutex_init(&rr_prefix_live_lock);
++    rr_prefix_live_contract = true;
++    return 0;
++}
++
++int qemu_plugin_register_crucible_prefix_live_getter(
++    const CrucibleNodePrefixPolicy *policy,
++    CruciblePrefixLiveGetter getter, void *userdata)
++{
++    const CruciblePrefixInputRegistration *input =
++        crucible_node_prefix_input_registration();
++
++    if (!rr_prefix_live_contract || !policy || !crucible_node_prefix_policy() ||
++        memcmp(policy, crucible_node_prefix_policy(), sizeof(*policy)) ||
++        rr_prefix_root.incarnation || rr_prefix_live_getter || !getter || !input ||
++        input->userdata != userdata || input->original_prefix_policy != policy) {
++        return -ESTALE;
++    }
++    rr_prefix_live_getter = getter;
++    rr_prefix_live_userdata = userdata;
++    return 0;
++}
++
++static CruciblePrefixLiveIdentity rr_prefix_live_command_identity(
++    const CrucibleNodeEffectCommand *command)
++{
++    CruciblePrefixLiveIdentity identity = { .sequence = command->sequence };
++
++    memcpy(identity.scope, command->prepared_scope, 32);
++    memcpy(identity.preparation, command->effect_preparation, 32);
++    memcpy(identity.command, command->original_command_digest, 32);
++    return identity;
++}
++
++static bool rr_prefix_live_inactive_zero(const CruciblePrefixLiveRequest *request,
++                                        size_t active)
++{
++    static const uint8_t zero[sizeof(request->original)];
++
++    return active <= sizeof(request->original) &&
++        !memcmp(request->original.bytes + active, zero,
++                sizeof(request->original) - active);
++}
++
++static bool rr_prefix_live_quiet_eligible(const CruciblePrefixLiveRequest *request)
++{
++    CruciblePrefixLiveSuccessorState state;
++
++    /* Original-cut cursor writes precede live retirement. Only the committed
++     * live bank lets a reader borrow that cursor under this same bank lock. */
++    if (!rr_prefix_live_initial_retired || rr_prefix_live_bank.phase != 3) {
++        return false;
++    }
++    state = (CruciblePrefixLiveSuccessorState) {
++        .initial_retired = rr_prefix_live_initial_retired,
++        .phase = rr_prefix_live_bank.phase,
++        .retired_sequence = rr_prefix_live_retired_sequence,
++        .retired_generation = rr_prefix_live_retired_generation,
++        .maximum_microstep =
++            rr_prefix_root.original_policy.original_effect.maximum_microsteps,
++        .owned_epoch = rr_prefix_root.owned_epoch,
++        .cursor = rr_prefix_root.current_cursor,
++    };
++    memcpy(state.predecessor_commit, rr_prefix_live_predecessor, 32);
++    memcpy(state.scope,
++           rr_prefix_root.original_policy.original_effect.prepared_scope_hash, 32);
++    memcpy(state.preparation,
++           rr_prefix_root.original_policy.prefix_preparation_commitment, 32);
++    return crucible_prefix_live_quiet_successor_eligible(request, &state);
++}
++
++static int rr_prefix_live_quiet(const CruciblePrefixLiveRequest *request)
++{
++    const CruciblePrefixLiveQuiet *offered = &request->original.quiet;
++    const CrucibleNodeEffectCommand *command = &offered->command;
++    CruciblePrefixLiveIdentity identity = rr_prefix_live_command_identity(command);
++    CruciblePrefixStoppedFacts before, after;
++    uint8_t before_record[CRUCIBLE_PREFIX_STOPPED_WIRE_BYTES];
++    uint8_t after_record[CRUCIBLE_PREFIX_STOPPED_WIRE_BYTES];
++    uint8_t expected_record[CRUCIBLE_PREFIX_STOPPED_WIRE_BYTES];
++    uint8_t *cursor;
++    bool needs_evaluation;
++    int64_t before_clock;
++    int result;
++
++    if (!rr_prefix_live_quiet_eligible(request)) {
++        return -ESTALE;
++    }
++    /* The source getter exposed this exact command only beside its original
++     * pre-dequeue reply credit. Native banks already exist; no CPU/timer/effect
++     * callback, bank allocation or fallible reservation follows clock mutation.
++     * The required held-input revalidation still runs after the park. */
++    before_clock = icount_crucible_sim_tick_observed();
++    if (before_clock < 0 || (uint64_t)before_clock != command->start.time_ps) {
++        return -ESTALE;
++    }
++    result = rr_prefix_query_stopped(&rr_prefix_root,
++                                     rr_prefix_root.owned_epoch, &before);
++    if (result) {
++        return result;
++    }
++    if (icount_crucible_sim_tick_observed() != before_clock) {
++        rr_prefix_root.phase = CRUCIBLE_EFFECT_SOURCE_TAINTED;
++        return -ENOTRECOVERABLE;
++    }
++    needs_evaluation = crucible_prefix_live_quiet_obstruction(&before, command->limit);
++    stopped_record_encode(&before, getpid(), qemu_get_thread_id(), before_record);
++    /* No old effect cut, reservation pointer or historical result is recycled. */
++    memset(&rr_prefix_live_bank, 0, sizeof(rr_prefix_live_bank));
++    rr_prefix_live_bank.identity = identity;
++    rr_prefix_live_bank.generation = rr_prefix_live_retired_generation + 1;
++    rr_prefix_live_bank.requests[0] = *request;
++    rr_prefix_live_bank.request_retained[0] = true;
++    if (!needs_evaluation) {
++        if (!icount_crucible_node_service_park(command->limit.time_ps)) {
++            rr_prefix_root.phase = CRUCIBLE_EFFECT_SOURCE_TAINTED;
++            return -ENOTRECOVERABLE;
++        }
++        rr_prefix_root.current_cursor = command->limit;
++    }
++    result = rr_prefix_query_stopped(&rr_prefix_root,
++                                     rr_prefix_root.owned_epoch, &after);
++    if (result || icount_crucible_sim_tick_observed() < 0 ||
++        (uint64_t)icount_crucible_sim_tick_observed() !=
++            (needs_evaluation ? command->start.time_ps : command->limit.time_ps)) {
++        rr_prefix_root.phase = CRUCIBLE_EFFECT_SOURCE_TAINTED;
++        return -ENOTRECOVERABLE;
++    }
++    stopped_record_encode(&after, getpid(), qemu_get_thread_id(), after_record);
++    memcpy(expected_record, before_record, sizeof(expected_record));
++    cursor = expected_record + 24;
++    stopped_position(&cursor, needs_evaluation ? command->start : command->limit);
++    if (memcmp(expected_record, after_record, sizeof(expected_record))) {
++        rr_prefix_root.phase = CRUCIBLE_EFFECT_SOURCE_TAINTED;
++        return -ENOTRECOVERABLE;
++    }
++    cursor = rr_prefix_live_bank.quiet;
++    rr_prefix_live_identity(&cursor, &identity);
++    preparation_u32(&cursor, needs_evaluation ? 2 : 1);
++    preparation_u32(&cursor, 0);
++    preparation_u64(&cursor, getpid());
++    preparation_u64(&cursor, rr_prefix_root.incarnation);
++    preparation_u64(&cursor, rr_prefix_live_bank.generation);
++    memcpy(cursor, before_record, sizeof(before_record));
++    cursor += sizeof(before_record);
++    memcpy(cursor, after_record, sizeof(after_record));
++    cursor += sizeof(after_record);
++    assert(cursor == rr_prefix_live_bank.quiet + CRUCIBLE_PREFIX_LIVE_QUIET_BYTES);
++    rr_prefix_live_bank.quiet_retained = true;
++    return 0;
++}
++
++static int rr_prefix_live_propose(const CruciblePrefixLiveRequest *request)
++{
++    const CruciblePrefixLiveRetire *offered = &request->original.retire;
++    CrucibleNodePrefixEffectCut *last;
++    CruciblePrefixLiveIdentity original;
++    uint8_t result_digest[32], current[CRUCIBLE_PREFIX_STOPPED_WIRE_BYTES];
++    uint64_t cut_id = 0;
++    uint8_t *cursor;
++    int result;
++
++    if (!rr_prefix_live_inactive_zero(request, sizeof(*offered))) {
++        return -ESTALE;
++    }
++    if (rr_prefix_live_bank.quiet_retained) {
++        static const CrucibleEffectPrefixAcknowledgement absent;
++
++        if (rr_prefix_live_bank.phase != 0 ||
++            !rr_prefix_live_identity_matches(&offered->identity,
++                                             &rr_prefix_live_bank.identity) ||
++            memcmp(&offered->final_acknowledgement, &absent, sizeof(absent))) {
++            return -ESTALE;
++        }
++        rr_prefix_live_hash(rr_prefix_live_bank.quiet,
++                             sizeof(rr_prefix_live_bank.quiet), result_digest);
++        result = rr_prefix_live_current_matches(rr_prefix_live_bank.quiet + 544);
++        if (result) {
++            return result;
++        }
++    } else {
++        if (rr_prefix_live_initial_retired || !rr_prefix_cut_count) {
++            return -ESTALE;
++        }
++        last = &rr_prefix_cuts[rr_prefix_cut_count - 1];
++        original = rr_prefix_live_command_identity(&last->original_command);
++        if (!rr_prefix_live_identity_matches(&offered->identity, &original) ||
++            !last->completed || !last->source_transition_valid ||
++            !qatomic_load_acquire(&last->acknowledgement_retained) ||
++            memcmp(&offered->final_acknowledgement, &last->applied_acknowledgement,
++                    sizeof(offered->final_acknowledgement)) ||
++            (last->typed_result_retained ?
++             last->typed_result.status != CRUCIBLE_EFFECT_RESULT_COMPLETED :
++             !last->initial_result_retained ||
++             last->initial_result.status != CRUCIBLE_EFFECT_RESULT_COMPLETED)) {
++            return -ESTALE;
++        }
++        for (uint32_t index = 0; index < rr_prefix_cut_count; index++) {
++            if (!rr_prefix_cuts[index].completed ||
++                !qatomic_load_acquire(&rr_prefix_cuts[index].acknowledgement_retained)) {
++                return -ESTALE;
++            }
++        }
++        rr_prefix_live_bank.identity = original;
++        rr_prefix_live_bank.generation = 1;
++        cut_id = last->original_cut_id;
++        memcpy(result_digest, last->applied_acknowledgement.original_result_digest, 32);
++    }
++    result = rr_prefix_live_census(current);
++    if (result) {
++        return result;
++    }
++    cursor = rr_prefix_live_bank.proposal;
++    preparation_u32(&cursor, 1);
++    preparation_u32(&cursor, CRUCIBLE_PREFIX_LIVE_PROPOSAL_BYTES);
++    rr_prefix_live_identity(&cursor, &rr_prefix_live_bank.identity);
++    preparation_u64(&cursor, getpid());
++    preparation_u64(&cursor, rr_prefix_root.incarnation);
++    preparation_u64(&cursor, qemu_plugin_icount_raw());
++    preparation_u64(&cursor, rr_prefix_live_bank.generation);
++    preparation_u64(&cursor, cut_id);
++    stopped_position(&cursor, rr_prefix_root.current_cursor);
++    preparation_hash(&cursor, result_digest);
++    memcpy(cursor, current, sizeof(current));
++    cursor += sizeof(current);
++    memset(cursor, 0, 24);
++    cursor += 24;
++    assert(cursor == rr_prefix_live_bank.proposal + CRUCIBLE_PREFIX_LIVE_PROPOSAL_BYTES);
++    rr_prefix_live_hash(rr_prefix_live_bank.proposal,
++                         sizeof(rr_prefix_live_bank.proposal),
++                         rr_prefix_live_bank.proposal_digest);
++    rr_prefix_live_bank.phase = 1;
++    return 0;
++}
++
++static int rr_prefix_live_accept(const CruciblePrefixLiveRequest *request)
++{
++    const CruciblePrefixLiveAccept *accept = &request->original.accept;
++    uint8_t *cursor;
++    int result;
++
++    if (!rr_prefix_live_inactive_zero(request, sizeof(*accept)) ||
++        !rr_prefix_live_identity_matches(&accept->identity, &rr_prefix_live_bank.identity) ||
++        !rr_node_digest_present(accept->archive_digest) ||
++        (request->kind == 3 &&
++         (rr_prefix_live_bank.phase != 1 ||
++          memcmp(accept->native_digest, rr_prefix_live_bank.proposal_digest, 32))) ||
++        (request->kind == 4 &&
++         (rr_prefix_live_bank.phase != 2 ||
++          memcmp(accept->native_digest, rr_prefix_live_bank.receipt_digest, 32)))) {
++        return -ESTALE;
++    }
++    result = rr_prefix_live_current_matches(rr_prefix_live_bank.proposal + 208);
++    if (result) {
++        return result;
++    }
++    if (request->kind == 3) {
++        cursor = rr_prefix_live_bank.receipt;
++        preparation_hash(&cursor, rr_prefix_live_bank.proposal_digest);
++        preparation_hash(&cursor, accept->archive_digest);
++        preparation_u64(&cursor, getpid());
++        preparation_u64(&cursor, rr_prefix_root.incarnation);
++        preparation_u64(&cursor, rr_prefix_live_bank.identity.sequence);
++        preparation_u64(&cursor, rr_prefix_live_bank.generation);
++        stopped_position(&cursor, rr_prefix_root.current_cursor);
++        preparation_u64(&cursor, qemu_plugin_icount_raw());
++        assert(cursor == rr_prefix_live_bank.receipt + CRUCIBLE_PREFIX_LIVE_RECEIPT_BYTES);
++        rr_prefix_live_hash(rr_prefix_live_bank.receipt,
++                             sizeof(rr_prefix_live_bank.receipt),
++                             rr_prefix_live_bank.receipt_digest);
++        rr_prefix_live_bank.phase = 2;
++        return 0;
++    }
++    cursor = rr_prefix_live_bank.commit;
++    preparation_hash(&cursor, rr_prefix_live_bank.receipt_digest);
++    preparation_hash(&cursor, accept->archive_digest);
++    preparation_hash(&cursor, rr_prefix_live_bank.proposal_digest);
++    preparation_u64(&cursor, rr_prefix_live_bank.identity.sequence);
++    preparation_u64(&cursor, rr_prefix_live_bank.generation);
++    stopped_position(&cursor, rr_prefix_root.current_cursor);
++    preparation_u64(&cursor, qemu_plugin_icount_raw());
++    preparation_u64(&cursor, rr_prefix_root.incarnation);
++    preparation_u64(&cursor, getpid());
++    assert(cursor == rr_prefix_live_bank.commit + CRUCIBLE_PREFIX_LIVE_COMMIT_BYTES);
++    rr_prefix_live_hash(rr_prefix_live_bank.commit, sizeof(rr_prefix_live_bank.commit),
++                         rr_prefix_live_predecessor);
++    rr_prefix_live_retired_sequence = rr_prefix_live_bank.identity.sequence;
++    rr_prefix_live_retired_generation = rr_prefix_live_bank.generation;
++    rr_prefix_live_initial_retired = true;
++    rr_prefix_live_bank.phase = 3;
++    return 0;
++}
++
++/* The RR source invokes the registered original-credit getter. A reader may
++ * only copy one retained reply; it cannot execute this dispatcher. */
++static int rr_prefix_live_service(bool *handled)
++{
++    CruciblePrefixLiveRequest request;
++    unsigned slot;
++    int result;
++
++    *handled = false;
++    if (!rr_prefix_live_contract) {
++        return 0;
++    }
++    if (!rr_prefix_live_getter || !rr_prefix_parked_owner()) {
++        return -ESTALE;
++    }
++    if (qemu_mutex_trylock(&rr_prefix_live_lock)) {
++        return -EAGAIN;
++    }
++    result = rr_prefix_live_getter(rr_prefix_root.owned_epoch, &request,
++                                   rr_prefix_live_userdata);
++    if (result == -EAGAIN) {
++        qemu_mutex_unlock(&rr_prefix_live_lock);
++        return 0;
++    }
++    *handled = true;
++    if (result || request.version != 1 || request.size != sizeof(request) ||
++        request.reserved || request.kind < 1 || request.kind > 4) {
++        result = result ? result : -EPROTO;
++        goto out;
++    }
++    slot = request.kind - 1;
++    if (rr_prefix_live_bank.request_retained[slot]) {
++        if (!memcmp(&request, &rr_prefix_live_bank.requests[slot], sizeof(request))) {
++            result = 0;
++            goto out;
++        }
++        if (request.kind != 1 || rr_prefix_live_bank.phase != 3) {
++            result = -ESTALE;
++            goto out;
++        }
++    }
++    result = request.kind == 1 ? rr_prefix_live_quiet(&request) :
++        request.kind == 2 ? rr_prefix_live_propose(&request) :
++        rr_prefix_live_accept(&request);
++    if (!result) {
++        rr_prefix_live_bank.requests[slot] = request;
++        rr_prefix_live_bank.request_retained[slot] = true;
++    }
++out:
++    qemu_mutex_unlock(&rr_prefix_live_lock);
++    return result;
++}
++
++int qemu_plugin_crucible_node_query_original_prefix_live(
++    const CrucibleNodePrefixRootSeal *root, void *owned_epoch,
++    const CruciblePrefixLiveRequest *request, uint32_t *kind, uint32_t *length,
++    uint8_t *bytes, uint32_t capacity)
++{
++    const uint8_t *reply = NULL;
++    uint32_t reply_kind = 0, reply_length = 0;
++    int result;
++
++    if (!kind || !length || !bytes || capacity != CRUCIBLE_PREFIX_LIVE_QUIET_BYTES) {
++        return -EINVAL;
++    }
++    *kind = *length = 0;
++    memset(bytes, 0, capacity);
++    if (!rr_prefix_live_contract || !request || request->kind < 1 || request->kind > 4) {
++        return -ESTALE;
++    }
++    result = rr_prefix_preparation_reader(root, owned_epoch);
++    if (result) {
++        return result;
++    }
++    if (qemu_mutex_trylock(&rr_prefix_live_lock)) {
++        return -EAGAIN;
++    }
++    unsigned slot = request->kind - 1;
++
++    if (!rr_prefix_live_bank.request_retained[slot]) {
++        result = -EAGAIN;
++        goto out;
++    }
++    if (memcmp(request, &rr_prefix_live_bank.requests[slot], sizeof(*request))) {
++        /* A committed old quiet bank can still precede RR's next command.
++         * Report only that exact eligible successor pending; never sample or
++         * install it on the historical reader. Other mismatches stay stale. */
++        result = rr_prefix_live_quiet_eligible(request) ? -EAGAIN : -ESTALE;
++        goto out;
++    }
++    switch (request->kind) {
++    case 1:
++        reply = rr_prefix_live_bank.quiet;
++        reply_length = CRUCIBLE_PREFIX_LIVE_QUIET_BYTES;
++        reply_kind = 45;
++        break;
++    case 2:
++        reply = rr_prefix_live_bank.proposal;
++        reply_length = CRUCIBLE_PREFIX_LIVE_PROPOSAL_BYTES;
++        reply_kind = 47;
++        break;
++    case 3:
++        reply = rr_prefix_live_bank.receipt;
++        reply_length = CRUCIBLE_PREFIX_LIVE_RECEIPT_BYTES;
++        reply_kind = 49;
++        break;
++    case 4:
++        reply = rr_prefix_live_bank.commit;
++        reply_length = CRUCIBLE_PREFIX_LIVE_COMMIT_BYTES;
++        reply_kind = 51;
++        break;
++    }
++    memcpy(bytes, reply, reply_length);
++    *length = reply_length;
++    *kind = reply_kind;
++    result = 0;
++out:
++    qemu_mutex_unlock(&rr_prefix_live_lock);
++    return result;
++}
 diff --git a/accel/tcg/crucible-prefix-policy.inc.c b/accel/tcg/crucible-prefix-policy.inc.c
 new file mode 100644
 index 0000000000000000000000000000000000000000..d08a1b6b9875006e24c214ccceb98ba0e4536cc8
@@ -17188,10 +17740,10 @@ index 0000000000000000000000000000000000000000..eba1fd62dd11c4f590ab50091bd6f0bf
 +}
 diff --git a/accel/tcg/crucible-prefix-root-rr.inc.c b/accel/tcg/crucible-prefix-root-rr.inc.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..daf0fb1d4e6beb96dd652afd8295c92083022969
+index 0000000000000000000000000000000000000000..8447488fb6cf2c7696d41243405592d57854180b
 --- /dev/null
 +++ b/accel/tcg/crucible-prefix-root-rr.inc.c
-@@ -0,0 +1,816 @@
+@@ -0,0 +1,829 @@
 +/* SPDX-License-Identifier: MIT */
 +/* Included after the original controller-eight RR leaf. Its private callback
 + * capture and native fresh factory observation are reused as observations;
@@ -17960,6 +18512,7 @@ index 0000000000000000000000000000000000000000..daf0fb1d4e6beb96dd652afd8295c920
 +#include "crucible-prefix-timer-rr.inc.c"
 +#include "crucible-prefix-request-rr.inc.c"
 +#include "crucible-prefix-stopped-rr.inc.c"
++#include "crucible-prefix-live-rr.inc.c"
 +
 +static bool rr_crucible_prefix_service_guard(void)
 +{
@@ -17982,14 +18535,26 @@ index 0000000000000000000000000000000000000000..daf0fb1d4e6beb96dd652afd8295c920
 +        !qatomic_load_acquire(&rr_prefix_stopped_record_retained)) {
 +        result = rr_prefix_stopped_request();
 +    }
-+    if (!result) {
++    if (!result && rr_prefix_live_initial_retired) {
++        bool handled;
++
++        result = rr_prefix_live_service(&handled);
++        if (!result && !handled) {
++            result = -EAGAIN;
++        }
++    } else if (!result) {
 +        result = rr_prefix_original_command();
-+    }
-+    if (!result) {
-+        result = rr_prefix_run_cpu(&rr_prefix_cuts[0]);
-+    }
-+    if (!result && rr_prefix_cuts[0].completed) {
-+        result = rr_prefix_request_original();
++        if (!result) {
++            result = rr_prefix_run_cpu(&rr_prefix_cuts[0]);
++        }
++        if (!result && rr_prefix_cuts[0].completed) {
++            bool handled;
++
++            result = rr_prefix_live_service(&handled);
++            if (!result && !handled) {
++                result = rr_prefix_request_original();
++            }
++        }
 +    }
 +    if ((result && result != -EAGAIN) || qemu_force_shutdown_requested()) {
 +        rr_prefix_root.phase = CRUCIBLE_EFFECT_SOURCE_TAINTED;
@@ -96601,7 +97166,7 @@ index 9edfacf827caeecb4427f5dae5b8fbd037632ee2..d907377393e9faf1f63254ce7e56a0c4
      int link_down;
      QTAILQ_ENTRY(NetClientState) next;
 diff --git a/include/plugins/qemu-plugin.h b/include/plugins/qemu-plugin.h
-index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..ab4c065504b52e960910aba7d7d24c28188af2ac 100644
+index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..7e62e6733ac3ee67d1d200f8a9c56d7c8f25b60c 100644
 --- a/include/plugins/qemu-plugin.h
 +++ b/include/plugins/qemu-plugin.h
 @@ -198,6 +198,326 @@ typedef void (*qemu_plugin_vcpu_discon_cb_t)(unsigned int vcpu_index,
@@ -96931,7 +97496,7 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..ab4c065504b52e960910aba7d7d24c28
  /**
   * qemu_plugin_uninstall() - Uninstall a plugin
   * @id: this plugin's opaque ID
-@@ -827,544 +1147,4103 @@ QEMU_PLUGIN_API
+@@ -827,544 +1147,4120 @@ QEMU_PLUGIN_API
  void qemu_plugin_update_ns(const void *handle, int64_t time);
  
  /**
@@ -99431,67 +99996,67 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..ab4c065504b52e960910aba7d7d24c28
 + *
 + * Returns one when consumed, zero when empty, -ENOSPC without consumption, or
 + * -EINVAL for an invalid pointer contract.
-  */
- QEMU_PLUGIN_API
--uint64_t qemu_plugin_start_code(void);
++ */
++QEMU_PLUGIN_API
 +int qemu_plugin_crucible_fault_event_poll(
 +    struct qemu_plugin_crucible_fault_event *event, uint8_t *payload,
 +    size_t payload_capacity, size_t *payload_length);
- 
- /**
-- * qemu_plugin_end_code() - returns end of text segment
++
++/**
 + * qemu_plugin_crucible_fault_dispatch_node_boundary() - commit due node faults
 + * @raw_icount: exact raw retired-instruction coordinate
-  *
-- * Returns the nominal end address of the main text segment in
-- * user-mode. Currently returns 0 for system emulation.
++ *
 + * Commits every due node-boundary fault while the caller owns the BQL-held
 + * Crucible control-boundary scope. Returns zero on success and a negative errno
 + * when the scope or coordinate is invalid.
   */
  QEMU_PLUGIN_API
--uint64_t qemu_plugin_end_code(void);
+-uint64_t qemu_plugin_start_code(void);
 +int qemu_plugin_crucible_fault_dispatch_node_boundary(uint64_t raw_icount);
  
  /**
-- * qemu_plugin_entry_code() - returns start address for module
+- * qemu_plugin_end_code() - returns end of text segment
 + * qemu_plugin_register_crucible_fault_completion_cb() - register completion
 + * @cb: callback invoked after each boundary-dispatched result, or NULL to clear
 + * @userdata: opaque pointer supplied to @cb
   *
-- * Returns the nominal entry address of the main text segment in
+- * Returns the nominal end address of the main text segment in
 - * user-mode. Currently returns 0 for system emulation.
 + * Registering a callback lets a GPL-side controller complete a prepare/commit
 + * transaction without allowing the guest to retire another instruction.  A
 + * callback may poll and submit, but must not recursively dispatch boundaries.
   */
  QEMU_PLUGIN_API
--uint64_t qemu_plugin_entry_code(void);
+-uint64_t qemu_plugin_end_code(void);
 +void qemu_plugin_register_crucible_fault_completion_cb(
 +    qemu_plugin_crucible_fault_completion_cb_t cb, void *userdata);
  
--/** struct qemu_plugin_register - Opaque handle for register access */
--struct qemu_plugin_register;
-+/**
+ /**
+- * qemu_plugin_entry_code() - returns start address for module
 + * qemu_plugin_scoreboard_new() - alloc a new scoreboard
-+ *
+  *
+- * Returns the nominal entry address of the main text segment in
+- * user-mode. Currently returns 0 for system emulation.
 + * @element_size: size (in bytes) for one entry
 + *
 + * Returns a pointer to a new scoreboard. It must be freed using
 + * qemu_plugin_scoreboard_free.
-+ */
-+QEMU_PLUGIN_API
+  */
+ QEMU_PLUGIN_API
+-uint64_t qemu_plugin_entry_code(void);
 +struct qemu_plugin_scoreboard *qemu_plugin_scoreboard_new(size_t element_size);
  
- /**
-- * typedef qemu_plugin_reg_descriptor - register descriptions
+-/** struct qemu_plugin_register - Opaque handle for register access */
+-struct qemu_plugin_register;
++/**
 + * qemu_plugin_scoreboard_free() - free a scoreboard
 + * @score: scoreboard to free
 + */
 +QEMU_PLUGIN_API
 +void qemu_plugin_scoreboard_free(struct qemu_plugin_scoreboard *score);
-+
-+/**
+ 
+ /**
+- * typedef qemu_plugin_reg_descriptor - register descriptions
 + * qemu_plugin_scoreboard_find() - get pointer to an entry of a scoreboard
 + * @score: scoreboard to query
 + * @vcpu_index: entry index
@@ -100325,6 +100890,7 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..ab4c065504b52e960910aba7d7d24c28
 +typedef struct CruciblePrefixRequest CruciblePrefixRequest;
 +typedef struct CruciblePrefixStoppedFacts CruciblePrefixStoppedFacts;
 +typedef struct CruciblePrefixStoppedQuery CruciblePrefixStoppedQuery;
++typedef struct CruciblePrefixLiveRequest CruciblePrefixLiveRequest;
 +typedef struct CruciblePrefixPreparationFacts CruciblePrefixPreparationFacts;
 +typedef struct CruciblePrefixPreparationAcknowledgement CruciblePrefixPreparationAcknowledgement;
 +
@@ -100365,6 +100931,22 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..ab4c065504b52e960910aba7d7d24c28
 +int qemu_plugin_crucible_node_query_original_prefix_stopped(
 +    const CrucibleNodePrefixRootSeal *root, void *epoch,
 +    const CruciblePrefixStoppedQuery *query, uint8_t *bytes, uint32_t length);
++
++/* Explicit live successor. The getter lends only original request DATA beside
++ * its already reserved reply storage. Source executes it exclusively on RR;
++ * reader recovery copies immutable replies and cannot acquire a current cut. */
++QEMU_PLUGIN_API
++int qemu_plugin_register_crucible_prefix_live_contract(
++    uint32_t version, const CrucibleNodePrefixPolicy *policy);
++QEMU_PLUGIN_API
++int qemu_plugin_register_crucible_prefix_live_getter(
++    const CrucibleNodePrefixPolicy *policy,
++    int (*getter)(void *, CruciblePrefixLiveRequest *, void *), void *userdata);
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_node_query_original_prefix_live(
++    const CrucibleNodePrefixRootSeal *root, void *epoch,
++    const CruciblePrefixLiveRequest *request, uint32_t *kind, uint32_t *length,
++    uint8_t *bytes, uint32_t capacity);
 +
 +/* Native-only stopped-current observation of the same held controller-nine
 + * root/epoch. Refusal clears facts. No wire, Ready, capture or dispatch grant. */
@@ -104161,6 +104743,145 @@ index 0000000000000000000000000000000000000000..3deb1c7df05a758b169d0a40af2fa371
 +
 +int qemu_cpu_node_prefix_irq_observer_install(CruciblePrefixCpuIrqObserver observer);
 +bool qemu_cpu_node_prefix_irq_observer_matches(CruciblePrefixCpuIrqObserver observer);
++
++#endif
+diff --git a/include/qemu/crucible-prefix-live.h b/include/qemu/crucible-prefix-live.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..5ae1d80cf4f56521005f3918523c42ecbbf998c1
+--- /dev/null
++++ b/include/qemu/crucible-prefix-live.h
+@@ -0,0 +1,133 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++#ifndef QEMU_CRUCIBLE_PREFIX_LIVE_H
++#define QEMU_CRUCIBLE_PREFIX_LIVE_H
++
++#include "qemu/crucible-prefix-stopped.h"
++#include "qemu/crucible-effect-prefix.h"
++#include "qemu/crucible-service-finite.h"
++
++#define CRUCIBLE_PREFIX_LIVE_REQUEST_BYTES 312
++#define CRUCIBLE_PREFIX_LIVE_QUIET_BYTES 952
++#define CRUCIBLE_PREFIX_LIVE_PROPOSAL_BYTES 640
++#define CRUCIBLE_PREFIX_LIVE_RECEIPT_BYTES 128
++#define CRUCIBLE_PREFIX_LIVE_COMMIT_BYTES 160
++
++/* These are GPL-local callback storage, never a process wire representation. */
++typedef struct CruciblePrefixLiveIdentity {
++    uint8_t scope[32];
++    uint8_t preparation[32];
++    uint8_t command[32];
++    uint64_t sequence;
++} CruciblePrefixLiveIdentity;
++
++typedef struct CruciblePrefixLiveRetire {
++    CruciblePrefixLiveIdentity identity;
++    CrucibleEffectPrefixAcknowledgement final_acknowledgement;
++} CruciblePrefixLiveRetire;
++
++typedef struct CruciblePrefixLiveQuiet {
++    CrucibleNodeEffectCommand command;
++    uint8_t predecessor_commit[32];
++} CruciblePrefixLiveQuiet;
++
++typedef struct CruciblePrefixLiveAccept {
++    CruciblePrefixLiveIdentity identity;
++    uint8_t native_digest[32];
++    uint8_t archive_digest[32];
++} CruciblePrefixLiveAccept;
++
++typedef struct CruciblePrefixLiveRequest {
++    uint32_t version;
++    uint32_t size;
++    uint32_t kind; /* 1 quiet, 2 propose, 3 accept terminal, 4 ACK receipt */
++    uint32_t reserved;
++    union {
++        CruciblePrefixLiveRetire retire;
++        CruciblePrefixLiveQuiet quiet;
++        CruciblePrefixLiveAccept accept;
++        uint8_t bytes[296];
++    } original;
++} CruciblePrefixLiveRequest;
++
++/* Pure comparison of already source-observed DATA; this helper issues no
++ * native handle, current-cut certificate, execution or closure permission. */
++static inline bool crucible_prefix_live_position_before(
++    QemuTimerFinitePosition left, QemuTimerFinitePosition right)
++{
++    if (left.time_ps != right.time_ps) {
++        return left.time_ps < right.time_ps;
++    }
++    if (left.microstep != right.microstep) {
++        return left.microstep < right.microstep;
++    }
++    return left.phase < right.phase;
++}
++
++static inline bool crucible_prefix_live_quiet_obstruction(
++    const CruciblePrefixStoppedFacts *facts, QemuTimerFinitePosition limit)
++{
++    return facts->cpu_interrupt_request || facts->original_startup_exit_pending ||
++        crucible_prefix_live_position_before(facts->next_cpu, limit) ||
++        (facts->timer_present &&
++         crucible_prefix_live_position_before(facts->next_timer.evaluation, limit));
++}
++
++/* A borrowed GPL-local scalar view, not a RootSeal, current-cut certificate or
++ * permission to execute. The caller authenticates its actual owner separately. */
++typedef struct CruciblePrefixLiveSuccessorState {
++    bool initial_retired;
++    uint32_t phase;
++    uint64_t retired_sequence;
++    uint64_t retired_generation;
++    uint8_t predecessor_commit[32];
++    uint8_t scope[32];
++    uint8_t preparation[32];
++    uint64_t maximum_microstep;
++    void *owned_epoch;
++    QemuTimerFinitePosition cursor;
++} CruciblePrefixLiveSuccessorState;
++
++/* RR uses this exact allocation-free eligibility check before its actual
++ * source census. A history reader may only report a matching successor pending;
++ * it never installs the request, samples a source or changes this state. */
++static inline bool crucible_prefix_live_quiet_successor_eligible(
++    const CruciblePrefixLiveRequest *request,
++    const CruciblePrefixLiveSuccessorState *state)
++{
++    const CruciblePrefixLiveQuiet *offered = &request->original.quiet;
++    const CrucibleNodeEffectCommand *command = &offered->command;
++    static const uint8_t zero[sizeof(request->original)];
++
++    return request->version == 1 && request->size == sizeof(*request) &&
++        request->kind == 1 && !request->reserved &&
++        state->initial_retired && state->phase == 3 &&
++        state->retired_sequence != UINT64_MAX &&
++        state->retired_generation != UINT64_MAX &&
++        command->sequence == state->retired_sequence + 1 &&
++        !memcmp(offered->predecessor_commit, state->predecessor_commit, 32) &&
++        !memcmp(request->original.bytes + sizeof(*offered), zero,
++                sizeof(request->original) - sizeof(*offered)) &&
++        command->version == 1 && command->size == sizeof(*command) &&
++        (command->kind == 1 || command->kind == 2) && !command->reserved &&
++        command->start.phase <= 3 && command->limit.phase <= 3 &&
++        !command->reserved_budget && !command->maximum_callbacks &&
++        !command->maximum_service_span &&
++        command->owned_epoch == state->owned_epoch &&
++        !memcmp(command->prepared_scope, state->scope, 32) &&
++        !memcmp(command->effect_preparation, state->preparation, 32) &&
++        memcmp(command->original_grant_digest, zero, 32) &&
++        memcmp(command->original_command_digest, zero, 32) &&
++        crucible_node_finite_position_valid(command->start, state->maximum_microstep) &&
++        crucible_node_finite_position_valid(command->limit, state->maximum_microstep) &&
++        !memcmp(&command->start, &state->cursor, sizeof(command->start)) &&
++        crucible_node_finite_position_compare(command->start, command->limit) < 0 &&
++        (command->kind != 1 ||
++         (command->start.time_ps < command->limit.time_ps &&
++          !command->limit.microstep && !command->limit.phase)) &&
++        (command->kind != 2 || command->start.time_ps == command->limit.time_ps);
++}
++
++typedef int (*CruciblePrefixLiveGetter)(void *owned_epoch,
++    CruciblePrefixLiveRequest *request, void *userdata);
 +
 +#endif
 diff --git a/include/qemu/crucible-prefix-plugin-core.h b/include/qemu/crucible-prefix-plugin-core.h
@@ -218420,7 +219141,7 @@ index 0000000000000000000000000000000000000000..0134a5e2142edf1fbb6004ce1b513cbc
 +{
 +}
 diff --git a/tests/unit/meson.build b/tests/unit/meson.build
-index dc3fb954c03a02a82f09b38521e2d85ede2549f5..f8742806dcedc23aac8754cbe191e9c6046d1d2d 100644
+index dc3fb954c03a02a82f09b38521e2d85ede2549f5..8264e3978fba2ac5297b19880b530a080f71d561 100644
 --- a/tests/unit/meson.build
 +++ b/tests/unit/meson.build
 @@ -125,6 +125,11 @@ if have_block
@@ -218435,7 +219156,7 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..f8742806dcedc23aac8754cbe191e9c6
  if have_system
    tests += {
      'ptimer-test': ['ptimer-test-stubs.c', meson.project_source_root() / 'hw/core/ptimer.c'],
-@@ -147,6 +152,38 @@ if have_system
+@@ -147,6 +152,39 @@ if have_system
        genh, qemuutil, qom
      ],
    }
@@ -218450,6 +219171,7 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..f8742806dcedc23aac8754cbe191e9c6
 +        migration, io, qom, hwcore, 'crucible-inactive-device-stubs.c'
 +      ],
 +      'test-crucible-fwcfg-directory': [],
++      'test-crucible-prefix-live': [],
 +      'test-crucible-slirp-time': [],
 +      'test-crucible-xtensa-timer': [],
 +      'test-crucible-ahci-fingerprint': [migration, io],
@@ -218474,7 +219196,7 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..f8742806dcedc23aac8754cbe191e9c6
    if config_host_data.get('CONFIG_INOTIFY1')
      tests += {'test-util-filemonitor': []}
    endif
-@@ -162,10 +199,10 @@ if have_system
+@@ -162,10 +200,10 @@ if have_system
      endif
  
      tests += {
@@ -218487,7 +219209,7 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..f8742806dcedc23aac8754cbe191e9c6
  endif
  
  if have_ga and host_os == 'linux'
-@@ -207,3 +244,650 @@ foreach test_name, extra: tests
+@@ -207,3 +245,650 @@ foreach test_name, extra: tests
         priority: slow_tests.get(test_name, 30),
         suite: ['unit'])
  endforeach
@@ -246579,6 +247301,221 @@ index 0000000000000000000000000000000000000000..8e17de0910d8b55fb8e68357ef4fe776
 +        g_test_add_data_func(name, GUINT_TO_POINTER(mutation),
 +                             test_malformed_migration);
 +    }
++    return g_test_run();
++}
+diff --git a/tests/unit/test-crucible-prefix-live.c b/tests/unit/test-crucible-prefix-live.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..6a6ca0e3c1522f7f62d786212193a7159ebe40f8
+--- /dev/null
++++ b/tests/unit/test-crucible-prefix-live.c
+@@ -0,0 +1,209 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++/* Pure DATA controls exercise the exact production comparison helper. They
++ * supply no real RootSeal, input epoch, native cut or callback authority. */
++#include "qemu/osdep.h"
++#include "qemu/crucible-prefix-live.h"
++
++static QemuTimerFinitePosition at(uint64_t time, uint64_t microstep, uint32_t phase)
++{
++    return (QemuTimerFinitePosition) {
++        .time_ps = time, .microstep = microstep, .phase = phase,
++    };
++}
++
++static void cpu_half_open_positions(void)
++{
++    CruciblePrefixStoppedFacts facts = { .next_cpu = at(200, 0, 3) };
++
++    g_assert_false(crucible_prefix_live_quiet_obstruction(&facts, at(199, 0, 0)));
++    g_assert_false(crucible_prefix_live_quiet_obstruction(&facts, at(200, 0, 0)));
++    g_assert_false(crucible_prefix_live_quiet_obstruction(&facts, at(200, 0, 3)));
++    g_assert_true(crucible_prefix_live_quiet_obstruction(&facts, at(200, 1, 0)));
++    g_assert_true(crucible_prefix_live_quiet_obstruction(&facts, at(201, 0, 0)));
++}
++
++static void timer_full_microstep_positions(void)
++{
++    CruciblePrefixStoppedFacts facts = {
++        .next_cpu = at(200, 0, 3),
++        .timer_present = true,
++        .next_timer = { .evaluation = at(175, 7, 3) },
++    };
++
++    g_assert_false(crucible_prefix_live_quiet_obstruction(&facts, at(175, 7, 2)));
++    g_assert_false(crucible_prefix_live_quiet_obstruction(&facts, at(175, 7, 3)));
++    g_assert_true(crucible_prefix_live_quiet_obstruction(&facts, at(175, 8, 0)));
++    facts.next_timer.evaluation = at(175, 0, 3);
++    g_assert_true(crucible_prefix_live_quiet_obstruction(&facts, at(175, 1, 0)));
++    g_assert_false(crucible_prefix_live_quiet_obstruction(&facts, at(175, 0, 3)));
++}
++
++static void pending_original_cpu_sources(void)
++{
++    CruciblePrefixStoppedFacts facts = { .next_cpu = at(200, 0, 3) };
++
++    facts.cpu_interrupt_request = 1;
++    g_assert_true(crucible_prefix_live_quiet_obstruction(&facts, at(175, 0, 0)));
++    facts.cpu_interrupt_request = 0;
++    facts.original_startup_exit_pending = 1;
++    g_assert_true(crucible_prefix_live_quiet_obstruction(&facts, at(175, 0, 0)));
++    facts.original_startup_exit_pending = 0;
++    g_assert_false(crucible_prefix_live_quiet_obstruction(&facts, at(175, 0, 0)));
++}
++
++static void absent_and_equal_deadline_timer(void)
++{
++    CruciblePrefixStoppedFacts facts = {
++        .next_cpu = at(200, 0, 3),
++        .next_timer = { .evaluation = at(1, 0, 3) },
++    };
++
++    g_assert_false(crucible_prefix_live_quiet_obstruction(&facts, at(175, 0, 0)));
++    facts.timer_present = true;
++    g_assert_true(crucible_prefix_live_quiet_obstruction(&facts, at(175, 0, 0)));
++    facts.next_timer.evaluation = at(200, 0, 3);
++    g_assert_false(crucible_prefix_live_quiet_obstruction(&facts, at(200, 0, 3)));
++    g_assert_true(crucible_prefix_live_quiet_obstruction(&facts, at(200, 1, 0)));
++    g_assert_cmpuint(sizeof(CruciblePrefixLiveRequest), ==, 312);
++}
++
++/* Literal request/state DATA exercises eligibility only. The local address is
++ * an equality operand, not a real acquired epoch, source or callback grant. */
++static void quiet_successor_fixture(CruciblePrefixLiveRequest *request,
++                                    CruciblePrefixLiveSuccessorState *state,
++                                    void *epoch)
++{
++    CrucibleNodeEffectCommand *command = &request->original.quiet.command;
++
++    memset(request, 0, sizeof(*request));
++    memset(state, 0, sizeof(*state));
++    state->initial_retired = true;
++    state->phase = 3;
++    state->retired_sequence = 2;
++    state->retired_generation = 2;
++    memset(state->predecessor_commit, 0x33, 32);
++    memset(state->scope, 0x11, 32);
++    memset(state->preparation, 0x22, 32);
++    state->maximum_microstep = 1024;
++    state->owned_epoch = epoch;
++    state->cursor = at(175, 0, 0);
++
++    request->version = 1;
++    request->size = sizeof(*request);
++    request->kind = 1;
++    memcpy(request->original.quiet.predecessor_commit,
++           state->predecessor_commit, 32);
++    *command = (CrucibleNodeEffectCommand) {
++        .version = 1,
++        .size = sizeof(*command),
++        .kind = 1,
++        .sequence = 3,
++        .owned_epoch = epoch,
++        .start = state->cursor,
++        .limit = at(199, 0, 0),
++    };
++    memcpy(command->prepared_scope, state->scope, 32);
++    memcpy(command->effect_preparation, state->preparation, 32);
++    memset(command->original_grant_digest, 0x44, 32);
++    memset(command->original_command_digest, 0x55, 32);
++}
++
++static void quiet_successor_positions_and_immutability(void)
++{
++    uint8_t epoch = 0;
++    CruciblePrefixLiveRequest request, original_request;
++    CruciblePrefixLiveSuccessorState state, original_state;
++
++    quiet_successor_fixture(&request, &state, &epoch);
++    memcpy(&original_request, &request, sizeof(request));
++    memcpy(&original_state, &state, sizeof(state));
++    g_assert_true(crucible_prefix_live_quiet_successor_eligible(&request, &state));
++    g_assert_cmpmem(&request, sizeof(request), &original_request, sizeof(request));
++    g_assert_cmpmem(&state, sizeof(state), &original_state, sizeof(state));
++
++    /* Equality of physical time is valid for a strictly later full Position. */
++    request.original.quiet.command.kind = 2;
++    request.original.quiet.command.limit = at(175, 0, 3);
++    g_assert_true(crucible_prefix_live_quiet_successor_eligible(&request, &state));
++    request.original.quiet.command.start = at(175, 0, 3);
++    state.cursor = request.original.quiet.command.start;
++    request.original.quiet.command.limit = at(175, 1, 0);
++    g_assert_true(crucible_prefix_live_quiet_successor_eligible(&request, &state));
++
++    request.original.quiet.command.kind = 1;
++    request.original.quiet.command.limit = at(199, 0, 0);
++    g_assert_true(crucible_prefix_live_quiet_successor_eligible(&request, &state));
++    g_assert_cmpuint(sizeof(CruciblePrefixLiveRequest), ==, 312);
++    g_assert_cmpuint(sizeof(CrucibleNodeEffectCommand), ==, 224);
++}
++
++static void quiet_successor_refuses_changed_original_fields(void)
++{
++    uint8_t epoch = 0, foreign_epoch = 0;
++    CruciblePrefixLiveRequest original, request;
++    CruciblePrefixLiveSuccessorState original_state, state;
++
++    quiet_successor_fixture(&original, &original_state, &epoch);
++#define REFUSES(change) G_STMT_START { \
++    memcpy(&request, &original, sizeof(request)); \
++    memcpy(&state, &original_state, sizeof(state)); \
++    change; \
++    g_assert_false(crucible_prefix_live_quiet_successor_eligible(&request, &state)); \
++} G_STMT_END
++
++    REFUSES(request.version = 2);
++    REFUSES(request.size--);
++    REFUSES(request.kind = 2);
++    REFUSES(request.reserved = 1);
++    REFUSES(request.original.bytes[sizeof(CruciblePrefixLiveQuiet)] = 1);
++    REFUSES(state.initial_retired = false);
++    REFUSES(state.phase = 2);
++    REFUSES(state.retired_sequence = UINT64_MAX);
++    REFUSES(state.retired_generation = UINT64_MAX);
++    REFUSES(request.original.quiet.command.sequence = 2);
++    REFUSES(request.original.quiet.command.sequence = 4);
++    REFUSES(request.original.quiet.predecessor_commit[0] ^= 1);
++
++    REFUSES(request.original.quiet.command.version = 2);
++    REFUSES(request.original.quiet.command.size--);
++    REFUSES(request.original.quiet.command.kind = 3);
++    REFUSES(request.original.quiet.command.reserved = 1);
++    REFUSES(request.original.quiet.command.reserved_budget = 1);
++    REFUSES(request.original.quiet.command.maximum_callbacks = 1);
++    REFUSES(request.original.quiet.command.maximum_service_span = 1);
++    REFUSES(request.original.quiet.command.owned_epoch = &foreign_epoch);
++    REFUSES(request.original.quiet.command.prepared_scope[0] ^= 1);
++    REFUSES(request.original.quiet.command.effect_preparation[0] ^= 1);
++    REFUSES(memset(request.original.quiet.command.original_grant_digest, 0, 32));
++    REFUSES(memset(request.original.quiet.command.original_command_digest, 0, 32));
++
++    REFUSES(request.original.quiet.command.start = at(176, 0, 0));
++    REFUSES(request.original.quiet.command.start.reserved = 1);
++    REFUSES(request.original.quiet.command.limit.reserved = 1);
++    REFUSES(request.original.quiet.command.start.phase = 4);
++    REFUSES(request.original.quiet.command.limit.phase = 4);
++    REFUSES(request.original.quiet.command.start.microstep = 1024);
++    REFUSES(request.original.quiet.command.limit.microstep = 1024);
++    REFUSES(request.original.quiet.command.limit.time_ps = (uint64_t)INT64_MAX + 1);
++    REFUSES(request.original.quiet.command.limit = state.cursor);
++    REFUSES(request.original.quiet.command.limit = at(174, 0, 0));
++    REFUSES(request.original.quiet.command.limit = at(175, 0, 3));
++    REFUSES(request.original.quiet.command.limit = at(199, 1, 0));
++    REFUSES(request.original.quiet.command.limit = at(199, 0, 3));
++    REFUSES(request.original.quiet.command.kind = 2);
++#undef REFUSES
++}
++
++int main(int argc, char **argv)
++{
++    g_test_init(&argc, &argv, NULL);
++    g_test_add_func("/crucible/prefix-live/cpu-half-open", cpu_half_open_positions);
++    g_test_add_func("/crucible/prefix-live/timer-microsteps", timer_full_microstep_positions);
++    g_test_add_func("/crucible/prefix-live/pending-cpu", pending_original_cpu_sources);
++    g_test_add_func("/crucible/prefix-live/timer-presence", absent_and_equal_deadline_timer);
++    g_test_add_func("/crucible/prefix-live/successor-positions",
++                    quiet_successor_positions_and_immutability);
++    g_test_add_func("/crucible/prefix-live/successor-refusals",
++                    quiet_successor_refuses_changed_original_fields);
 +    return g_test_run();
 +}
 diff --git a/tests/unit/test-crucible-procfd-flags.py b/tests/unit/test-crucible-procfd-flags.py

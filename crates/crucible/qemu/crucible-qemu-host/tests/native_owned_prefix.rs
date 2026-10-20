@@ -2,7 +2,8 @@
 //!
 //! Constructor and absolute supervisor mechanics come from the frozen component
 //! fixture. This distinct scenario drives Compute/ACK/Continue through the owning
-//! archive/transport driver; it grants no timer/output/retirement/common readiness.
+//! archive/transport driver. The explicit live successor also checks native
+//! retirement and no-evaluation intervals; no common readiness or capture follows.
 
 #![cfg(target_os = "linux")]
 // crucible-lint: allow panic-shortcut -- These native node control tests deliberately panic on invalid fixtures or failed invariants.
@@ -223,10 +224,33 @@ fn actual_native_session_observes_initial_cut_before_quiet_completion() -> Resul
 #[path = "native_owned_prefix/initial_session.rs"]
 mod initial_session;
 
+#[test]
+#[ignore = "requires exact live quiet successor contract and GPL runtime"]
+fn actual_native_session_retires_and_settles_quiet_operations() -> Result<(), Box<dyn Error>> {
+    run_original_native_owner_configuration(true, true, true, true)
+}
+
+#[path = "native_owned_prefix/live_quiet.rs"]
+mod live_quiet;
+
 fn run_original_native_owner_scenario(
     initial_contract: bool,
     complete_interval: bool,
     observe_stopped: bool,
+) -> Result<(), Box<dyn Error>> {
+    run_original_native_owner_configuration(
+        initial_contract,
+        complete_interval,
+        observe_stopped,
+        false,
+    )
+}
+
+fn run_original_native_owner_configuration(
+    initial_contract: bool,
+    complete_interval: bool,
+    observe_stopped: bool,
+    live_quiet_contract: bool,
 ) -> Result<(), Box<dyn Error>> {
     let qemu = artifact("CRUCIBLE_NATIVE_PROBE_QEMU")?;
     let plugin = artifact("CRUCIBLE_NATIVE_PROBE_PLUGIN")?;
@@ -274,7 +298,9 @@ fn run_original_native_owner_scenario(
             maximum_callbacks: 64,
         };
         {
-            let prepare = if observe_stopped {
+            let prepare = if live_quiet_contract {
+                NativeAdministrationTransport::prepare_prefix_live_quiet
+            } else if observe_stopped {
                 NativeAdministrationTransport::prepare_prefix_observation
             } else {
                 NativeAdministrationTransport::prepare_prefix
@@ -529,6 +555,9 @@ fn run_original_native_owner_scenario(
         node_count: allocation.layout().node_count,
     });
 
+    if live_quiet_contract {
+        eprintln!("native_live_checkpoint=legacy_handshake_received");
+    }
     original_handshake?;
     legacy.host_send_setup_with_descriptors(
         region_bytes.len() as u64,
@@ -538,6 +567,9 @@ fn run_original_native_owner_scenario(
             plugin_setup_plan_fd: plan.as_raw_fd(),
         },
     )?;
+    if live_quiet_contract {
+        eprintln!("native_live_checkpoint=waiting_setup_ack");
+    }
     legacy.host_accept_setup_ack()?;
     legacy.enter_run_via_shared_memory()?;
     // Release only the legacy install barrier. The registered native controller
@@ -547,6 +579,9 @@ fn run_original_native_owner_scenario(
         AdvanceStopCondition::Ceiling,
     )?;
 
+    if live_quiet_contract {
+        eprintln!("native_live_checkpoint=waiting_original_administration");
+    }
     let mut first = None;
     for _ in 0..2 {
         assert!(native.request_original()?);
@@ -578,6 +613,9 @@ fn run_original_native_owner_scenario(
             first = Some(recovered);
         }
     }
+    if live_quiet_contract {
+        eprintln!("native_live_checkpoint=original_administration_received");
+    }
     let original_preparation = administrative.phase.initialization.clone();
     let query = NativeFrame::QueryInitialization(
         crucible_qemu_protocol::node_control::NativeInitializationQuery {
@@ -586,6 +624,9 @@ fn run_original_native_owner_scenario(
         },
     );
     assert!(native.send_construction(&query)?);
+    if live_quiet_contract {
+        eprintln!("native_live_checkpoint=waiting_initialization_cut");
+    }
     let NativeFrame::InitializationCut(cut) =
         next_construction_reply(&mut native, child.process()?, Duration::from_secs(5))?
     else {
@@ -610,6 +651,9 @@ fn run_original_native_owner_scenario(
     let request = NativeFrame::Initialize(Box::new(initialize.clone()));
     assert!(native.send_construction(&request)?);
 
+    if live_quiet_contract {
+        eprintln!("native_live_checkpoint=waiting_initialization_stopped");
+    }
     let NativeFrame::InitializationStopped(receipt) =
         next_construction_reply(&mut native, child.process()?, Duration::from_secs(5))?
     else {
@@ -621,6 +665,9 @@ fn run_original_native_owner_scenario(
         crucible_qemu_protocol::node_control::NativeInitializationStatus::Applied
     );
     assert_eq!(receipt.applied_callbacks as usize, cut.rows.len());
+    if live_quiet_contract {
+        eprintln!("native_live_checkpoint=waiting_initialization_acknowledgements");
+    }
     let acknowledgement =
         crucible_qemu_protocol::node_control::NativeInitializationAcknowledgement {
             prepared_scope_hash: initialize.prepared_scope_hash,
@@ -645,6 +692,9 @@ fn run_original_native_owner_scenario(
         return Err("changed original construction response".into());
     };
     assert_eq!(recovered, receipt);
+    if live_quiet_contract {
+        eprintln!("native_live_checkpoint=waiting_preparation_successor");
+    }
     let mut original_bytes = Vec::new();
     let mut original_facts = None;
     loop {
@@ -718,12 +768,15 @@ fn run_original_native_owner_scenario(
         compute.command.scope.identity_digest()?,
         compute.effect_preparation,
         ArchiveBudget {
-            lifetime_bytes: 65_536 + 136,
-            lifetime_commands: 1,
+            lifetime_bytes: 65_536 * (if live_quiet_contract { 5 } else { 1 }) + 136,
+            lifetime_commands: if live_quiet_contract { 5 } else { 1 },
             maximum_prefixes: 2,
         },
     )?;
     let original_pid = child.process()?.id();
+    if live_quiet_contract {
+        eprintln!("native_live_checkpoint=waiting_initial_custody_and_stopped_cut");
+    }
     let mut driver = if initial_contract {
         initial_session::prepare_and_consume(
             child.take_child()?,
@@ -738,6 +791,9 @@ fn run_original_native_owner_scenario(
     } else {
         NativeOwnedPrefixOperation::retain(child.take_child()?, native, archive, compute.clone())
     };
+    if live_quiet_contract {
+        eprintln!("native_live_checkpoint=initial_custody_and_stopped_cut_retained");
+    }
     let initial_bytes = initial_session::retained_bytes(&driver, initial_contract)?;
     assert_eq!(driver.process_id(), original_pid);
     assert!(!driver.reaped());
@@ -748,6 +804,9 @@ fn run_original_native_owner_scenario(
     );
     let original_durable_bytes = std::fs::read(&archive_path)?;
 
+    if live_quiet_contract {
+        eprintln!("native_live_checkpoint=waiting_first_effect_result");
+    }
     next_driver_progress(&mut driver, OriginalOperationProgress::ResultRetained)?;
     let NativeFrame::EffectProgress(first) = driver
         .journal()
@@ -768,12 +827,18 @@ fn run_original_native_owner_scenario(
         crucible_qemu_protocol::node_control::NativeEffectProgressStatus::PartialPrefix
     );
     assert!(driver.request_continuation().is_err());
+    if live_quiet_contract {
+        eprintln!("native_live_checkpoint=waiting_first_effect_acknowledgement");
+    }
     next_driver_progress(
         &mut driver,
         OriginalOperationProgress::AcknowledgementConsumed,
     )?;
 
     driver.request_continuation()?;
+    if live_quiet_contract {
+        eprintln!("native_live_checkpoint=waiting_final_effect_result");
+    }
     next_driver_progress(&mut driver, OriginalOperationProgress::ResultRetained)?;
     let NativeFrame::PrefixProgress(prefix) = driver
         .journal()
@@ -809,6 +874,9 @@ fn run_original_native_owner_scenario(
         assert_eq!(prefix.resulting, reaction(200));
         assert!(prefix.resulting < position(350));
     }
+    if live_quiet_contract {
+        eprintln!("native_live_checkpoint=waiting_final_effect_acknowledgement");
+    }
     next_driver_progress(
         &mut driver,
         OriginalOperationProgress::AcknowledgementConsumed,
@@ -827,6 +895,17 @@ fn run_original_native_owner_scenario(
     );
     assert_eq!(std::fs::read(&archive_path)?, original_durable_bytes);
     assert!(!driver.reaped());
+    if live_quiet_contract {
+        live_quiet::exercise(
+            driver,
+            &compute,
+            &archive_path,
+            &archive_directory.path().join("original-initial.evidence"),
+            original_pid,
+        )?;
+        drop(child);
+        return Ok(());
+    }
     driver.dispose(Duration::from_secs(5))?;
     assert!(driver.reaped());
     assert!(driver.poll().is_err());

@@ -105,6 +105,23 @@ impl NativePreparation {
 /// Selects a closed frame of the independently negotiated native channel.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NativeFrame {
+    /// Offers one source-proved zero-evaluation operation under original custody.
+    QuietAdvance(Box<super::NativeQuietCommand>),
+    /// Returns genuine no-evaluation completion or a due-source refusal.
+    QuietProgress(Box<super::NativeQuietProgress>),
+    /// Requests retirement of the exact terminal original operation.
+    RetireOriginal(Box<super::NativeRetireOriginal>),
+    /// Returns the source-owned current-cut proposal, never a retired grant.
+    RetirementProposed(Box<super::NativeRetirementProposal>),
+    /// Names the original durable terminal archive acceptance.
+    AcceptTerminal(super::NativeLiveAccept),
+    /// Returns actual native acceptance of the exact terminal archive record.
+    RetirementReceipt(Box<super::NativeRetirementReceipt>),
+    /// Acknowledges actual durable receipt storage under the original operation.
+    AcknowledgeRetirement(super::NativeLiveAccept),
+    /// Returns source commit; the host must durably retain it before turnover.
+    RetirementCommitted(Box<super::NativeRetirementCommitted>),
+
     /// Requests initial current stopped-cut capture on its explicit edition.
     QueryStoppedCut(super::NativeStoppedCutQuery),
     /// Returns the immutable source-captured cut, never a new readiness grant.

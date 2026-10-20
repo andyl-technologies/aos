@@ -125,6 +125,31 @@ impl<T: OriginalOperationEndpoint> OriginalOperationDriver<T> {
         }
     }
 
+    /// Borrows the same private endpoint without transferring socket custody.
+    pub(super) fn endpoint(&self) -> &T {
+        &self.endpoint
+    }
+
+    /// Moves the same endpoint/archive/history only after terminal consumed-ACK custody.
+    ///
+    /// # Errors
+    /// Returns the complete driver on pending, failed or nonterminal history.
+    pub(super) fn into_live_parts(mut self) -> Result<(T, Archive, OriginalPrefixJournal), Self> {
+        if self.failure.is_some()
+            || self.pending.is_some()
+            || self
+                .journal
+                .as_ref()
+                .is_none_or(|journal| journal.retirement_request().is_err())
+        {
+            return Err(self);
+        }
+        let Some(journal) = self.journal.take() else {
+            return Err(self);
+        };
+        Ok((self.endpoint, self.archive, journal))
+    }
+
     /// Borrows the complete original even when preparation or storage was refused.
     pub fn original(&self) -> &NativeEffectCompute {
         &self.original

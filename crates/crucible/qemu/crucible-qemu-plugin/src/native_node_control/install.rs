@@ -58,6 +58,7 @@ pub(crate) fn install(
         | crucible_qemu_protocol::node_control::NativeControlEdition::Construction
         | crucible_qemu_protocol::node_control::NativeControlEdition::FixedMicrovm
         | crucible_qemu_protocol::node_control::NativeControlEdition::FiniteEffect
+        | crucible_qemu_protocol::node_control::NativeControlEdition::LiveQuiet
         | crucible_qemu_protocol::node_control::NativeControlEdition::PrefixObservation
         | crucible_qemu_protocol::node_control::NativeControlEdition::PrefixEffect => Some(
             super::writer_abi::resolve_query_writers()
@@ -245,6 +246,7 @@ pub(crate) fn install(
             | crucible_qemu_protocol::node_control::NativeControlEdition::Construction
             | crucible_qemu_protocol::node_control::NativeControlEdition::FixedMicrovm
             | crucible_qemu_protocol::node_control::NativeControlEdition::FiniteEffect
+            | crucible_qemu_protocol::node_control::NativeControlEdition::LiveQuiet
             | crucible_qemu_protocol::node_control::NativeControlEdition::PrefixObservation
             | crucible_qemu_protocol::node_control::NativeControlEdition::PrefixEffect
     ) {
@@ -257,6 +259,7 @@ pub(crate) fn install(
         crucible_qemu_protocol::node_control::NativeControlEdition::Construction
             | crucible_qemu_protocol::node_control::NativeControlEdition::FixedMicrovm
             | crucible_qemu_protocol::node_control::NativeControlEdition::FiniteEffect
+            | crucible_qemu_protocol::node_control::NativeControlEdition::LiveQuiet
             | crucible_qemu_protocol::node_control::NativeControlEdition::PrefixObservation
             | crucible_qemu_protocol::node_control::NativeControlEdition::PrefixEffect
     ) {
@@ -272,15 +275,19 @@ pub(crate) fn install(
         Some(preparation) => control.with_effect_preparation(preparation)?,
         None => control,
     };
-    let control = match prefix_preparation {
-        Some(preparation) => control.with_prefix_preparation(
-            preparation,
-            config.prefix_preparation_contract() == Some(1),
-            config.edition()
-                == crucible_qemu_protocol::node_control::NativeControlEdition::PrefixObservation,
-        )?,
-        None => control,
-    };
+    let control =
+        match prefix_preparation {
+            Some(preparation) => control.with_prefix_preparation(
+                preparation,
+                config.prefix_preparation_contract() == Some(1),
+                matches!(config.edition(),
+                crucible_qemu_protocol::node_control::NativeControlEdition::LiveQuiet |
+                crucible_qemu_protocol::node_control::NativeControlEdition::PrefixObservation),
+                config.edition()
+                    == crucible_qemu_protocol::node_control::NativeControlEdition::LiveQuiet,
+            )?,
+            None => control,
+        };
     // Callback ownership lasts until process termination. A leaked transport
     // token cannot drop this controller or its unresolved native journal.
     // Registration is limited to one controller per process by the native API.

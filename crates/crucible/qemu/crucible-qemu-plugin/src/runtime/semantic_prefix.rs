@@ -20,9 +20,6 @@ use crucible_qemu_protocol::node_control::{
 use super::OwnedCallbackRuntimeState;
 use super::installed_endpoint_owner::InstalledEndpointCustody;
 use crate::native_node_control::NativePreparationTransportState;
-use crate::native_node_control::administrative_inbox::{
-    NativeAdministrativeInbox, NativeAdministrativeInboxError,
-};
 use crate::native_node_control::administrative_mailbox::NativeAdministrativeReplyCredit;
 
 mod abi;
@@ -223,6 +220,7 @@ struct State {
     output: Box<[output::Reservation]>,
     requests: Vec<request::OriginalRequest>,
     preparation: preparation::Journal,
+    live: live::Journal,
 }
 
 #[derive(Clone, Copy)]
@@ -248,6 +246,7 @@ pub(crate) struct SemanticPrefixOwner {
     api: SourceApi,
     preparation_api: Option<preparation::SourceApi>,
     stopped_api: Option<preparation::StoppedApi>,
+    live_api: Option<live::Api>,
     runtime: AtomicUsize,
     endpoint: OnceLock<Arc<InstalledEndpointCustody>>,
     state: Mutex<State>,
@@ -271,6 +270,7 @@ impl SemanticPrefixOwner {
         preparation: NativePrefixPreparation,
         initial_contract: bool,
         stopped_contract: bool,
+        live_contract: bool,
     ) -> Result<Arc<Self>, NativeCommandError> {
         preparation.validate()?;
         let initialization = &preparation
@@ -350,6 +350,16 @@ impl SemanticPrefixOwner {
             } else {
                 None
             },
+            live_api: if live_contract {
+                if !stopped_contract {
+                    return Err(NativeCommandError::Conflict);
+                }
+                Some(live::Api::resolve().ok_or(NativeCommandError::Invalid(
+                    "native live contract unavailable",
+                ))?)
+            } else {
+                None
+            },
             runtime: AtomicUsize::new(0),
             endpoint: OnceLock::new(),
             state: Mutex::new(State {
@@ -363,6 +373,7 @@ impl SemanticPrefixOwner {
                 output,
                 requests,
                 preparation: preparation::Journal::default(),
+                live: live::Journal::default(),
             }),
         }))
     }
@@ -386,6 +397,11 @@ impl SemanticPrefixOwner {
             return Err(NativeCommandError::Conflict);
         }
         if let Some(api) = &self.stopped_api
+            && (api.register_contract)(1, &self.policy) != 0
+        {
+            return Err(NativeCommandError::Conflict);
+        }
+        if let Some(api) = &self.live_api
             && (api.register_contract)(1, &self.policy) != 0
         {
             return Err(NativeCommandError::Conflict);
@@ -433,89 +449,18 @@ impl SemanticPrefixOwner {
         if status != 0 {
             return Err(status);
         }
+        if let Some(api) = &self.live_api {
+            let status = (api.register_getter)(&self.policy, live::get_request, userdata);
+            if status != 0 {
+                return Err(status);
+            }
+        }
         let operations = output::Operations::original(userdata);
         let status = (self.api.register_output)(&self.policy, &operations);
         if status != 0 {
             return Err(status);
         }
         Ok(())
-    }
-
-    /// Retains the sole reader's immutable command and reply credit before effects.
-    ///
-    /// # Errors
-    /// Rejects foreign inbox/preparation, widened budgets or conflicting retries.
-    pub(crate) fn try_admit(
-        &self,
-        actor: &Arc<NativeAdministrativeInbox>,
-        cursor: u64,
-    ) -> Result<bool, NativeCommandError> {
-        if self.process_id != std::process::id() {
-            return Err(NativeCommandError::Conflict);
-        }
-        let control =
-            crate::native_node_control::registered_owner().ok_or(NativeCommandError::Conflict)?;
-        if !control
-            .original_administrative_actor()
-            .is_some_and(|original| Arc::ptr_eq(original, actor))
-        {
-            return Err(NativeCommandError::Conflict);
-        }
-        let mut state = match self.state.try_lock() {
-            Ok(state) => state,
-            Err(TryLockError::WouldBlock) => return Ok(false),
-            Err(TryLockError::Poisoned(_)) => return Err(NativeCommandError::Conflict),
-        };
-        if state.failed || (self.preparation_api.is_some() && !state.preparation.acknowledged()) {
-            return Err(NativeCommandError::Conflict);
-        }
-        let frame = match actor.original_frame(cursor) {
-            Ok(frame) => frame,
-            Err(NativeAdministrativeInboxError::Busy) => return Ok(false),
-            Err(_) => return Err(NativeCommandError::Conflict),
-        };
-        let crucible_qemu_protocol::node_control::NativeFrame::EffectCompute(compute) = frame
-        else {
-            return Err(NativeCommandError::Conflict);
-        };
-        compute.validate()?;
-        if compute.effect_preparation != self.policy.prefix_preparation_commitment
-            || compute.maximum_callbacks > self.policy.original_effect.callbacks
-            || compute.maximum_service_span.get() > self.policy.original_effect.maximum_span
-        {
-            state.failed = true;
-            return Err(NativeCommandError::Conflict);
-        }
-        if let Some(original) = state.command.as_mut() {
-            if original.compute != *compute {
-                state.failed = true;
-                return Err(NativeCommandError::Conflict);
-            }
-            original.published = false;
-            return Ok(true);
-        }
-        // The genuine RR preparation hold can borrow this same inbox ledger.
-        // Contention keeps the original packet and pre-dequeue reply allowance;
-        // it must not turn an administrative retry into permanent quarantine.
-        let credit = match actor.reserve_construction_reply(cursor) {
-            Ok(credit) => credit,
-            Err(NativeAdministrativeInboxError::Busy) => return Ok(false),
-            Err(_) => return Err(NativeCommandError::Conflict),
-        };
-        let digest = compute.command.identity_digest()?;
-        state.journal.retain(compute.command.clone())?;
-        state.command = Some(OriginalCommand {
-            compute: *compute,
-            digest,
-            credit: Some(credit),
-            cursor,
-            cut_handle: 0,
-            result: None,
-            replied: false,
-            published: false,
-            cut_id: None,
-        });
-        Ok(true)
     }
 
     fn runtime(&self) -> Result<&OwnedCallbackRuntimeState, c_int> {
@@ -751,7 +696,7 @@ impl SemanticPrefixOwner {
             Ok(state) => {
                 !state.failed
                     && (!state.acquired
-                        || state.preparation.pending()
+                        || (state.preparation.pending() || state.live.pending())
                         || state.requests.iter().any(|request| !request.published)
                         || state
                             .command
@@ -827,6 +772,7 @@ impl crate::native_node_control::NativeNodeControl {
         preparation: NativePrefixPreparation,
         initial_contract: bool,
         stopped_contract: bool,
+        live_contract: bool,
     ) -> Result<Self, NativeCommandError> {
         if self.effect.is_some() || self.prefix.is_some() {
             return Err(NativeCommandError::Conflict);
@@ -835,6 +781,7 @@ impl crate::native_node_control::NativeNodeControl {
             preparation,
             initial_contract,
             stopped_contract,
+            live_contract,
         )?);
         Ok(self)
     }
@@ -1010,3 +957,5 @@ unsafe extern "C" fn get_command(
 #[cfg(test)]
 #[path = "semantic_prefix/tests.rs"]
 mod tests;
+
+mod live;

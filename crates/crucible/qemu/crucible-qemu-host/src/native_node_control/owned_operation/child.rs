@@ -40,10 +40,10 @@ pub enum NativeOwnedPrefixRefusal {
 /// authenticates its own current roles, epoch and cut. No constructor here issues
 /// a `PreparedOwner` or releases a native slot.
 pub struct NativeOwnedPrefixOperation {
-    child: QemuNodeChild,
-    operation: OriginalOperationDriver<NativeAdministrationTransport>,
-    refusal: Option<NativeOwnedPrefixRefusal>,
-    initial: Option<OriginalInitialEvidence>,
+    pub(super) child: QemuNodeChild,
+    pub(super) operation: OriginalOperationDriver<NativeAdministrationTransport>,
+    pub(super) refusal: Option<NativeOwnedPrefixRefusal>,
+    pub(super) initial: Option<OriginalInitialEvidence>,
 }
 
 impl NativeOwnedPrefixOperation {
@@ -165,7 +165,7 @@ impl NativeOwnedPrefixOperation {
         self.child.force_kill_and_reap_failed_helper(timeout)
     }
 
-    fn check_child(&mut self) -> Result<(), ArchiveError> {
+    pub(super) fn check_child(&mut self) -> Result<(), ArchiveError> {
         if self.refusal.is_some() {
             return Err(ArchiveError::Failed);
         }

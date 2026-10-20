@@ -516,3 +516,118 @@ fn unpublished_reply_credit_revalidates_actual_backing_without_consuming_origina
     assert!(mailbox.validate_unpublished_credit(&historical).is_err());
     assert_eq!(mailbox.original(1).unwrap(), bytes);
 }
+
+// These are actual datagrams and reply allocations under edition eleven. The
+// modeled command and predecessor are codec DATA, not source retirement proof.
+fn original_quiet_pair() -> (
+    NativeChannel,
+    NativeAdministrativeMailbox,
+    crucible_qemu_protocol::node_control::NativeQuietCommand,
+) {
+    let (_, _, original, _) = original_effect_pair();
+    let quiet = crucible_qemu_protocol::node_control::NativeQuietCommand {
+        command: original.command,
+        preparation: original.effect_preparation,
+        predecessor_commit: [9; 32],
+        input_batch_sequence: original.input_batch_sequence,
+    };
+    quiet.validate().unwrap();
+    let scope = quiet.command.scope.identity_digest().unwrap();
+    let (host, provider) =
+        NativeChannel::supervised_pair_for_edition(NativeControlEdition::LiveQuiet).unwrap();
+    let mut provider = Some(provider);
+    let mailbox =
+        NativeAdministrativeMailbox::from_pinned_endpoint(&mut provider, scope, 8, 65536).unwrap();
+    assert!(provider.is_none());
+    (host, mailbox, quiet)
+}
+
+#[test]
+fn modeled_quiet_request_retains_backed_credit_before_rr_admission() {
+    let (host, mut mailbox, quiet) = original_quiet_pair();
+    let request = NativeFrame::QuietAdvance(Box::new(quiet));
+    assert!(host.send(&request).unwrap());
+    assert_eq!(
+        mailbox.receive().unwrap(),
+        NativeAdministrativeReceive::Retained(1, NativeAdministrativeClass::Modeled)
+    );
+    let original = mailbox.original(1).unwrap().to_vec();
+    let retained_bytes = mailbox.retained_bytes;
+    let backing = mailbox.records.get(&1).unwrap().reply_storage.as_ptr();
+    assert!(mailbox.records.get(&1).unwrap().reply_reserved);
+    assert!(mailbox.reserve_reply(1).is_err());
+
+    let credit = mailbox.reserve_construction_reply(1).unwrap();
+    assert!(mailbox.validate_unpublished_credit(&credit).is_ok());
+    drop(credit);
+    let recovered = mailbox.reserve_construction_reply(1).unwrap();
+
+    assert!(mailbox.validate_unpublished_credit(&recovered).is_ok());
+    assert_eq!(mailbox.original(1).unwrap(), original);
+    assert_eq!(mailbox.decode_original(1).unwrap(), request);
+    assert_eq!(mailbox.retained_bytes, retained_bytes);
+    assert_eq!(
+        mailbox.records.get(&1).unwrap().reply_storage.as_ptr(),
+        backing
+    );
+    assert!(mailbox.records.get(&1).unwrap().reply.is_none());
+    assert!(host.receive().unwrap().is_none());
+}
+
+#[test]
+fn quiet_credit_requires_the_same_owner_and_actual_predequeue_backing() {
+    let (host, mut mailbox, quiet) = original_quiet_pair();
+    assert!(
+        host.send(&NativeFrame::QuietAdvance(Box::new(quiet)))
+            .unwrap()
+    );
+    assert!(matches!(
+        mailbox.receive().unwrap(),
+        NativeAdministrativeReceive::Retained(1, NativeAdministrativeClass::Modeled)
+    ));
+    let credit = mailbox.reserve_construction_reply(1).unwrap();
+    let foreign = NativeAdministrativeReplyCredit {
+        owner: Arc::new(()),
+        cursor: 1,
+    };
+    assert!(mailbox.validate_unpublished_credit(&foreign).is_err());
+    assert!(mailbox.reserve_construction_reply(2).is_err());
+    let original = mailbox.original(1).unwrap().to_vec();
+
+    let backing = std::mem::take(&mut mailbox.records.get_mut(&1).unwrap().reply_storage);
+    assert!(mailbox.validate_unpublished_credit(&credit).is_err());
+    mailbox.records.get_mut(&1).unwrap().reply_storage = backing;
+
+    assert!(mailbox.validate_unpublished_credit(&credit).is_ok());
+    assert_eq!(mailbox.original(1).unwrap(), original);
+    assert!(host.receive().unwrap().is_none());
+}
+
+#[test]
+fn generic_modeled_command_still_has_no_construction_reply_credit() {
+    // Original accepts Command; the selected construction editions reject it
+    // before mailbox custody. Reach the actual generic modeled-credit boundary.
+    let (_, _, original, _) = original_effect_pair();
+    let scope = original.command.scope.identity_digest().unwrap();
+    let (host, provider) =
+        NativeChannel::supervised_pair_for_edition(NativeControlEdition::Original).unwrap();
+    let mut provider = Some(provider);
+    let mut mailbox =
+        NativeAdministrativeMailbox::from_pinned_endpoint(&mut provider, scope, 8, 65536).unwrap();
+    assert!(provider.is_none());
+    let request = NativeFrame::Command(Box::new(original.command));
+    assert!(host.send(&request).unwrap());
+    assert_eq!(
+        mailbox.receive().unwrap(),
+        NativeAdministrativeReceive::Retained(1, NativeAdministrativeClass::Modeled)
+    );
+    let original = mailbox.original(1).unwrap().to_vec();
+
+    assert!(mailbox.reserve_reply(1).is_err());
+    assert!(mailbox.reserve_construction_reply(1).is_err());
+
+    assert_eq!(mailbox.original(1).unwrap(), original);
+    assert_eq!(mailbox.decode_original(1).unwrap(), request);
+    assert!(mailbox.records.get(&1).unwrap().reply.is_none());
+    assert!(host.receive().unwrap().is_none());
+}

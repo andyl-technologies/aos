@@ -7,6 +7,8 @@
 //! record2: completeTerminalEvidence:blob
 //! record3: terminalRecordDigest32 | originalNativeRetirementReceipt:blob
 //! record4: receiptRecordDigest32 | originalNativeRetirementCommit:blob
+//! record5: previousReceiptDigest32 | completeQuietFrame11:blob
+//! record6: quietResult952:blob | nativeCurrentProposal640:blob
 //! ```
 //!
 //! Every record is checksummed and fsynced before its storage transition is
@@ -101,6 +103,8 @@ pub struct StoredOriginal {
     pub command_frame: Vec<u8>,
     /// Retains every original result/ACK and the native retirement proposal.
     pub terminal: Option<TerminalEvidence>,
+    /// Retains a distinct zero-evaluation terminal record and source proposal.
+    pub quiet_terminal: Option<QuietTerminalEvidence>,
     /// Retains the exact native retirement receipt when durably recorded.
     pub native_receipt: Option<Vec<u8>>,
     /// Retains native confirmation issued after the durable-receipt ACK.
@@ -109,7 +113,8 @@ pub struct StoredOriginal {
 
 struct Pending {
     sequence: u64,
-    original: NativeEffectCompute,
+    original: Option<NativeEffectCompute>,
+    quiet: Option<crucible_qemu_protocol::node_control::NativeQuietCommand>,
     stored: StoredOriginal,
     terminal_digest: Option<[u8; 32]>,
     receipt_digest: Option<[u8; 32]>,
@@ -243,6 +248,11 @@ impl Archive {
         Ok(archive)
     }
 
+    /// Returns only the archive-confirmed historical sequence frontier.
+    pub(super) fn last_committed_sequence(&self) -> u64 {
+        self.last_sequence
+    }
+
     /// Returns the immutable archival prefix quota without granting a native budget.
     pub fn maximum_prefixes(&self) -> u32 {
         self.budget.maximum_prefixes
@@ -304,7 +314,9 @@ impl Archive {
             return Err(ArchiveError::Budget);
         }
         if let Some(pending) = &self.pending {
-            if pending.original == *original && pending.stored.command_frame == command_frame {
+            if pending.original.as_ref() == Some(original)
+                && pending.stored.command_frame == command_frame
+            {
                 return Ok(());
             }
             return Err(ArchiveError::Conflict);
@@ -338,7 +350,10 @@ impl Archive {
     ) -> Result<[u8; 32], ArchiveError> {
         self.check_live()?;
         let pending = self.pending.as_ref().ok_or(ArchiveError::Conflict)?;
-        evidence.validate(&pending.original, self.budget.maximum_prefixes)?;
+        evidence.validate(
+            pending.original.as_ref().ok_or(ArchiveError::Conflict)?,
+            self.budget.maximum_prefixes,
+        )?;
         if let Some(previous) = &pending.stored.terminal {
             if previous == evidence {
                 return pending.terminal_digest.ok_or(ArchiveError::Conflict);
@@ -358,6 +373,94 @@ impl Archive {
         let digest = self.append(2, sequence, &payload)?;
         self.apply_record(Record {
             kind: 2,
+            sequence,
+            payload,
+            digest,
+        })?;
+        Ok(digest)
+    }
+
+    /// Reserves one complete quiet command within the original archive lifetime.
+    ///
+    /// # Errors
+    /// Refuses unfinished/old/foreign requests, exhausted original quota or uncertain durability.
+    pub fn reserve_quiet(
+        &mut self,
+        original: &crucible_qemu_protocol::node_control::NativeQuietCommand,
+    ) -> Result<(), ArchiveError> {
+        self.check_live()?;
+        original.validate()?;
+        let identity = crucible_qemu_protocol::node_control::NativeLiveIdentity::from_command(
+            &original.command,
+            original.preparation,
+        )?;
+        if identity.scope != self.scope || identity.preparation != self.preparation {
+            return Err(ArchiveError::Conflict);
+        }
+        let command_frame = encode_frame_for_edition(
+            NativeControlEdition::LiveQuiet,
+            &NativeFrame::QuietAdvance(Box::new(original.clone())),
+        )?;
+        if command_frame.len() > 4096 {
+            return Err(ArchiveError::Budget);
+        }
+        if let Some(pending) = &self.pending {
+            return if pending.quiet.as_ref() == Some(original)
+                && pending.stored.command_frame == command_frame
+            {
+                Ok(())
+            } else {
+                Err(ArchiveError::Conflict)
+            };
+        }
+        if identity.sequence.get() <= self.last_sequence
+            || self.commands >= self.budget.lifetime_commands
+        {
+            return Err(ArchiveError::Budget);
+        }
+        let mut payload = self.last_receipt.to_vec();
+        put_blob(&mut payload, &command_frame)?;
+        let sequence = identity.sequence.get();
+        let digest = self.append(5, sequence, &payload)?;
+        self.apply_record(Record {
+            kind: 5,
+            sequence,
+            payload,
+            digest,
+        })
+    }
+
+    /// Retains truthful quiet terminal evidence at the existing terminal boundary.
+    ///
+    /// # Errors
+    /// Refuses foreign/incomplete source evidence, changed history or quota/durability failure.
+    pub fn archive_quiet_terminal(
+        &mut self,
+        evidence: &QuietTerminalEvidence,
+    ) -> Result<[u8; 32], ArchiveError> {
+        self.check_live()?;
+        let pending = self.pending.as_ref().ok_or(ArchiveError::Conflict)?;
+        evidence.validate(pending.quiet.as_ref().ok_or(ArchiveError::Conflict)?)?;
+        if let Some(previous) = &pending.stored.quiet_terminal {
+            return if previous == evidence {
+                pending.terminal_digest.ok_or(ArchiveError::Conflict)
+            } else {
+                Err(ArchiveError::Conflict)
+            };
+        }
+        let payload = evidence.encode()?;
+        if pending.bytes
+            + payload.len() as u64
+            + RECORD_OVERHEAD
+            + 2 * (4096 + RECORD_OVERHEAD + 36)
+            > COMMAND_QUOTA
+        {
+            return Err(ArchiveError::Budget);
+        }
+        let sequence = pending.sequence;
+        let digest = self.append(6, sequence, &payload)?;
+        self.apply_record(Record {
+            kind: 6,
             sequence,
             payload,
             digest,
@@ -488,7 +591,7 @@ impl Archive {
     fn apply_record(&mut self, record: Record) -> Result<(), ArchiveError> {
         let bytes = RECORD_OVERHEAD + record.payload.len() as u64;
         match record.kind {
-            1 => {
+            1 | 5 => {
                 if self.pending.is_some()
                     || record.sequence <= self.last_sequence
                     || self.commands >= self.budget.lifetime_commands
@@ -501,24 +604,48 @@ impl Archive {
                 }
                 let command_frame = cursor.blob(4096)?.to_vec();
                 cursor.finish()?;
-                let NativeFrame::EffectCompute(original) =
-                    decode_frame_for_edition(NativeControlEdition::PrefixEffect, &command_frame)?
-                else {
-                    return Err(ArchiveError::Corrupt);
+                let (original, quiet, identity) = if record.kind == 1 {
+                    let NativeFrame::EffectCompute(original) = decode_frame_for_edition(
+                        NativeControlEdition::PrefixEffect,
+                        &command_frame,
+                    )?
+                    else {
+                        return Err(ArchiveError::Corrupt);
+                    };
+                    let identity =
+                        crucible_qemu_protocol::node_control::NativeLiveIdentity::from_command(
+                            &original.command,
+                            original.effect_preparation,
+                        )?;
+                    (Some(*original), None, identity)
+                } else {
+                    let NativeFrame::QuietAdvance(original) =
+                        decode_frame_for_edition(NativeControlEdition::LiveQuiet, &command_frame)?
+                    else {
+                        return Err(ArchiveError::Corrupt);
+                    };
+                    let identity =
+                        crucible_qemu_protocol::node_control::NativeLiveIdentity::from_command(
+                            &original.command,
+                            original.preparation,
+                        )?;
+                    (None, Some(*original), identity)
                 };
-                if original.command.sequence.get() != record.sequence
-                    || original.command.scope.identity_digest()? != self.scope
-                    || original.effect_preparation != self.preparation
+                if identity.sequence.get() != record.sequence
+                    || identity.scope != self.scope
+                    || identity.preparation != self.preparation
                 {
                     return Err(ArchiveError::Corrupt);
                 }
                 self.commands += 1;
                 self.pending = Some(Pending {
                     sequence: record.sequence,
-                    original: *original,
+                    original,
+                    quiet,
                     stored: StoredOriginal {
                         command_frame,
                         terminal: None,
+                        quiet_terminal: None,
                         native_receipt: None,
                         native_commit: None,
                     },
@@ -534,7 +661,10 @@ impl Archive {
                 }
                 let terminal =
                     TerminalEvidence::decode(&record.payload, self.budget.maximum_prefixes)?;
-                terminal.validate(&pending.original, self.budget.maximum_prefixes)?;
+                terminal.validate(
+                    pending.original.as_ref().ok_or(ArchiveError::Corrupt)?,
+                    self.budget.maximum_prefixes,
+                )?;
                 pending.bytes = pending
                     .bytes
                     .checked_add(bytes)
@@ -543,6 +673,23 @@ impl Archive {
                     return Err(ArchiveError::Budget);
                 }
                 pending.stored.terminal = Some(terminal);
+                pending.terminal_digest = Some(record.digest);
+            }
+            6 => {
+                let pending = self.pending.as_mut().ok_or(ArchiveError::Corrupt)?;
+                if record.sequence != pending.sequence || pending.terminal_digest.is_some() {
+                    return Err(ArchiveError::Corrupt);
+                }
+                let evidence = QuietTerminalEvidence::decode(&record.payload)?;
+                evidence.validate(pending.quiet.as_ref().ok_or(ArchiveError::Corrupt)?)?;
+                pending.bytes = pending
+                    .bytes
+                    .checked_add(bytes)
+                    .ok_or(ArchiveError::Budget)?;
+                if pending.bytes > COMMAND_QUOTA {
+                    return Err(ArchiveError::Budget);
+                }
+                pending.stored.quiet_terminal = Some(evidence);
                 pending.terminal_digest = Some(record.digest);
             }
             3 => {
@@ -609,7 +756,7 @@ impl Archive {
                 continue;
             }
             match record.kind {
-                1 => {
+                1 | 5 => {
                     let mut cursor = Cursor(&record.payload);
                     cursor.take(32)?;
                     let command_frame = cursor.blob(4096)?.to_vec();
@@ -617,6 +764,7 @@ impl Archive {
                     found = Some(StoredOriginal {
                         command_frame,
                         terminal: None,
+                        quiet_terminal: None,
                         native_receipt: None,
                         native_commit: None,
                     });
@@ -627,6 +775,10 @@ impl Archive {
                         &record.payload,
                         self.budget.maximum_prefixes,
                     )?);
+                }
+                6 => {
+                    let stored = found.as_mut().ok_or(ArchiveError::Corrupt)?;
+                    stored.quiet_terminal = Some(QuietTerminalEvidence::decode(&record.payload)?);
                 }
                 3 => {
                     let stored = found.as_mut().ok_or(ArchiveError::Corrupt)?;
@@ -646,5 +798,59 @@ impl Archive {
             }
         }
         found.ok_or(ArchiveError::Conflict)
+    }
+}
+
+/// Retains a quiet result and its exact source-owned terminal proposal.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QuietTerminalEvidence {
+    /// Retains the complete genuine zero-evaluation result.
+    pub progress: crucible_qemu_protocol::node_control::NativeQuietProgress,
+    /// Retains the actual current-source retirement proposal.
+    pub proposal: crucible_qemu_protocol::node_control::NativeRetirementProposal,
+}
+
+impl QuietTerminalEvidence {
+    fn validate(
+        &self,
+        original: &crucible_qemu_protocol::node_control::NativeQuietCommand,
+    ) -> Result<(), ArchiveError> {
+        let pid = u64::from_be_bytes(
+            self.progress.bytes()[112..120]
+                .try_into()
+                .map_err(|_| ArchiveError::Corrupt)?,
+        );
+        let pid: u32 = pid.try_into().map_err(|_| ArchiveError::Corrupt)?;
+        self.progress.validate_original(original, pid)?;
+        let p = self.proposal.bytes();
+        use sha2::Digest;
+        let digest: [u8; 32] = sha2::Sha256::digest(self.progress.bytes()).into();
+        if self.proposal.identity()? != self.progress.identity()?
+            || self.proposal.current()? != self.progress.after()?
+            || p[176..208] != digest
+            || p[136..144] != self.progress.bytes()[128..136]
+            || p[144..152] != [0; 8]
+        {
+            return Err(ArchiveError::Conflict);
+        }
+        Ok(())
+    }
+
+    fn encode(&self) -> Result<Vec<u8>, ArchiveError> {
+        let mut bytes = Vec::new();
+        put_blob(&mut bytes, self.progress.bytes())?;
+        put_blob(&mut bytes, self.proposal.bytes())?;
+        Ok(bytes)
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self, ArchiveError> {
+        let mut cursor = Cursor(bytes);
+        let progress =
+            crucible_qemu_protocol::node_control::NativeQuietProgress::decode(cursor.blob(952)?)?;
+        let proposal = crucible_qemu_protocol::node_control::NativeRetirementProposal::decode(
+            cursor.blob(640)?,
+        )?;
+        cursor.finish()?;
+        Ok(Self { progress, proposal })
     }
 }
