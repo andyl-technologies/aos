@@ -133,13 +133,19 @@ pub(super) fn run(
             "dictionary refusal did not reach the physical owner",
         ));
     };
-    if error.kind() != io::ErrorKind::WouldBlock
-        || fs::read(inputs.root.join("state/cache/records.toml"))? != before
-        || fs::metadata(&dictionary_path)?.ino() != original_dictionary.ino()
+    if error.kind() != io::ErrorKind::WouldBlock {
+        return Err(io::Error::other(format!(
+            "dictionary retirement returned an unexpected error: {error:?}"
+        )));
+    }
+    if fs::read(inputs.root.join("state/cache/records.toml"))? != before {
+        return Err(invalid("dictionary retirement refusal changed policy"));
+    }
+    if fs::metadata(&dictionary_path)?.ino() != original_dictionary.ino()
         || fs::metadata(&dependent_path)?.ino() != original_dependent.ino()
     {
         return Err(invalid(
-            "dictionary transfer refusal changed original backing or policy",
+            "dictionary retirement refusal changed original inodes",
         ));
     }
 
