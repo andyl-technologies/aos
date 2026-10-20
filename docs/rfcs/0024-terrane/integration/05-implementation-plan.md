@@ -9717,9 +9717,25 @@ Resumed qualification:
   retirement and exact funding release. Its independent supervisor is included
   in the immutable image input and helper inventories. A provisional fixture
   build finds missing public receipt re-exports; those are corrected before
-  committing this candidate. Native and ten-stage local qualification are now
-  running against the frozen source. This prerequisite supplies no encoded
-  eviction or shared-chunk extraction qualification.
+  committing this candidate. Both builds and all 36 selected cases pass, but
+  strict Clippy refuses its large unsubmitted-error variant. Successor
+  `60338331f1` boxes the original retry receipt and passes that strict check.
+  Native qualification of `29a093589d` fails after 480.356 seconds. It reaches
+  genuine cache ownership, the real release-grace sweep and dictionary-backed
+  sealed reconstruction, then loses the actor's final error at the observer's
+  source-cleanup handshake. At the completed admission handoff, measured project
+  usage is 368,640 bytes and future holds are 262,144 bytes. This partial
+  evidence does not qualify native cleanup. Review also finds that the fixture
+  incorrectly expects only bootstrap funding after publication, although the
+  retained reconstruction metadata requires its own future hold. Candidate
+  `0ebdcaf571` captures and preserves the exact original bootstrap and metadata
+  reservations and metadata pins, retains native failure output and removes a
+  duplicate actor-log print. Production behavior is unchanged from the boxed
+  receipt successor. Native and local qualification are running against this
+  frozen source. The original failure remains retained; a diagnostic using its
+  exact original executable and assertions drains the missing error bytes.
+  This prerequisite supplies no encoded eviction or shared-chunk extraction
+  qualification.
   Shared-chunk extraction, standalone and pack cache ownership, admission
   integration, complete recovery and NativeReady remain pending.
 - Surface candidate `f8da5b4293`: the complete task source review, formatter pair
