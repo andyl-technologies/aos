@@ -1,24 +1,23 @@
-From a6bd0cc8571ad77bc4a08a7d684b84536a879878 Mon Sep 17 00:00:00 2001
+From c1c525a232b485acf878439c1d3049d6224086b3 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:00 +0000
-Subject: [PATCH] crucible: isolate deferred-control component symbols
+Subject: [PATCH] crucible: validate deferred-control emitter callers
 
-Retain the complete Crucible integration on the sole pinned QEMU base.
-Change only the deferred-control component namespace; preserve all other
-source blobs, modes, production providers, APIs, ABI, licenses, configured
-limits and experimental support policy.
+Retain the complete Crucible integration and isolated native components
+on the sole pinned QEMU upstream base. Change only the two derived
+control fixture callers; preserve every other source blob and mode.
 
-Map the 124 observed component definitions except main to fixed private
-names before the first component include. Keep all 28 observed undefined
-provider names unmapped, including object_unref and notifier_list_notify.
-Apply the namespace only to the component translation unit so independently
-compiled QOM and utility providers retain their genuine symbols.
+Before stopped-control-rearm or template-control-drain creates output,
+validate the shared emitter's ten literal production inputs through its
+existing validator. Pass that same mapping to production_bodies and
+forward it unchanged through the template fixture constructor. This
+repairs the two stale no-argument calls without a fallback or pin bypass.
 
-Preserve every existing production selection, input pin, opaque composition,
-assertion, causal mutation and retained-object compile/link/runtime command.
-The actual owning runner must still verify resulting symbols, types,
-relocations, genuine QOM/support linkage and positive/exact-mutant runtime
-behavior. Source metadata review does not qualify those obligations.
+Preserve all opaque composition, providers, production APIs and ABI,
+licenses, input pins, assertions, causal mutations, limits and support
+policy. The normal owning runner must establish subsequent compilation,
+genuine provider linkage and unchanged runtime predicates; this call-shape
+repair does not qualify those obligations.
 
 No selected Source or CPU activation, genuine Main/Original admission,
 positive physical CPU-pin return, RCU, launched lifecycle or performance
@@ -293139,10 +293138,10 @@ index 0000000000000000000000000000000000000000..6e04017762b6144d758422da84b78c7a
 +    main()
 diff --git a/tests/unit/test-crucible-stopped-control-rearm.py b/tests/unit/test-crucible-stopped-control-rearm.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..85b877bdb19b2b68b9234baa9f645392bfd06237
+index 0000000000000000000000000000000000000000..faf9ef29ce8cfb3ebb3623964f9474caa5226b4f
 --- /dev/null
 +++ b/tests/unit/test-crucible-stopped-control-rearm.py
-@@ -0,0 +1,240 @@
+@@ -0,0 +1,241 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercise retained control intent when native pause reasserts CPU stop.
 +
@@ -293312,6 +293311,7 @@ index 0000000000000000000000000000000000000000..85b877bdb19b2b68b9234baa9f645392
 +    parser.add_argument("--negative-control", action="store_true")
 +    parser.add_argument("--negative-transfer", action="store_true")
 +    arguments = parser.parse_args()
++    production_sources = SUPPORT["validated_sources"]()
 +    arguments.output_dir.mkdir(parents=True, exist_ok=True)
 +    prelude = NETWORK["fixture_prelude"]()
 +    for signature in [
@@ -293325,7 +293325,7 @@ index 0000000000000000000000000000000000000000..85b877bdb19b2b68b9234baa9f645392
 +    prelude = prelude.replace(
 +        "/* Model the CPU stop acknowledgment before pause_all_vcpus returns. */", "")
 +    prelude = prelude.replace("return self;", "return current_cpu == target;")
-+    bodies = SUPPORT["production_bodies"]()
++    bodies = SUPPORT["production_bodies"](production_sources)
 +    bodies += "\n\n" + definition((ROOT / "plugins/api-system.c").read_text(),
 +                                 "void qemu_plugin_crucible_rr_control_boundary_rearm(void)")
 +    cpus = (ROOT / "system/cpus.c").read_text()
@@ -295477,10 +295477,10 @@ index 0000000000000000000000000000000000000000..c2fa1f5d461002291d01e26a4432b93b
 +    main()
 diff --git a/tests/unit/test-crucible-template-control-drain.py b/tests/unit/test-crucible-template-control-drain.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..e31bf02c643ba981d77c1f4bed3f5d9e2e0f17ef
+index 0000000000000000000000000000000000000000..eeeb24f497acd36267d0fb706681b23b5563fc3e
 --- /dev/null
 +++ b/tests/unit/test-crucible-template-control-drain.py
-@@ -0,0 +1,537 @@
+@@ -0,0 +1,538 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercise retained template admission with real registered eventfd input.
 +
@@ -295922,7 +295922,7 @@ index 0000000000000000000000000000000000000000..e31bf02c643ba981d77c1f4bed3f5d9e
 +    return "\n\n".join(definition(source, signature) for signature in signatures)
 +
 +
-+def fixture_source():
++def fixture_source(production_sources):
 +    prelude = BASE["fixture_prelude"]()
 +    for signature in ["QEMUBH *qemu_bh_new_full(",
 +                      "void qemu_bh_schedule("]:
@@ -295952,7 +295952,7 @@ index 0000000000000000000000000000000000000000..e31bf02c643ba981d77c1f4bed3f5d9e
 +
 +    native = source_bodies("plugins/api-system.c", [
 +        "static int qemu_plugin_control_drain_wake_state(void)\n{",
-+    ]) + "\n\n" + SUPPORT["production_bodies"]()
++    ]) + "\n\n" + SUPPORT["production_bodies"](production_sources)
 +    native += "\n\n" + source_bodies("plugins/api-system.c", [
 +        "int qemu_plugin_register_wake_fd(int fd)",
 +        "int qemu_plugin_crucible_control_drain_watch(",
@@ -295993,8 +295993,9 @@ index 0000000000000000000000000000000000000000..e31bf02c643ba981d77c1f4bed3f5d9e
 +    parser.add_argument("--output-dir", type=Path, required=True)
 +    parser.add_argument("--negative-control", choices=["callback-return"])
 +    arguments = parser.parse_args()
++    production_sources = SUPPORT["validated_sources"]()
 +    arguments.output_dir.mkdir(parents=True, exist_ok=True)
-+    source = fixture_source()
++    source = fixture_source(production_sources)
 +    if arguments.negative_control == "callback-return":
 +        body = definition(source,
 +                          "static void qemu_plugin_control_boundary_complete_bh(void *opaque)\n{")
