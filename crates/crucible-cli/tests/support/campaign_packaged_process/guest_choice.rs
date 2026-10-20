@@ -1949,7 +1949,11 @@ fn capture_checkpoint_after_progress_with_store(
         let checkpoint = match wait_for_promoted_checkpoint_with_store(fixture, key, checkpoints) {
             Ok(checkpoint) => checkpoint,
             Err(error) => {
-                match service.stderr_lines_with_prefix("CRUCIBLE-PHASE4-CLOCK-TRACE ", 65536, 512) {
+                // A replay-oracle mismatch record carries both full component
+                // lines, so it is longer than one boundary record.
+                let records =
+                    service.stderr_lines_with_prefix("CRUCIBLE-PHASE4-CLOCK-TRACE ", 65536, 4096);
+                match records {
                     Ok(records) => {
                         for record in records {
                             println!("{record}");

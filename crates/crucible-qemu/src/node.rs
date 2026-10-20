@@ -2009,15 +2009,19 @@ impl QemuNode {
         let advance = output_boundary.map_or(advance, |at| AdvanceOutcome::Paused { at });
         self.last_observed_time =
             virtual_time_from_advance_outcome(ceiling, advance, self.last_step_final_state);
+        // The window selects the guest-choice flight's idle peer after its
+        // first exact root: from 560 ms of logical time, below the busy
+        // sender's retirement count. Its live exact-resume steps and its
+        // guarded-replay steps can then be compared boundary by boundary.
         // crucible-lint: allow host-nondeterminism-state -- this opt-in diagnostic reads an already published boundary and changes no scheduler state.
         if std::env::var_os("CRUCIBLE_PHASE4_CLOCK_TRACE").is_some()
             && let Ok(calibration) = self.try_logical_time_calibration()
-            && (5_823_790_656..=5_825_708_109).contains(&calibration.raw_icount)
-            && calibration.logical_icount <= 555_385_025_750
+            && calibration.raw_icount <= 5_862_000_000
+            && calibration.logical_icount >= 560_000_000_000
         {
             // crucible-lint: allow direct-diagnostic -- the opt-in trace is captured from packaged-VM stderr.
             eprintln!(
-                "CRUCIBLE-PHASE4-CLOCK-TRACE pid={} ceiling={} outcome={advance:?} logical={} raw={} bias={:?} raw_mod4096={} next_deadline={:?} inbound={} outputs={}",
+                "CRUCIBLE-PHASE4-CLOCK-TRACE pid={} ceiling={} outcome={advance:?} logical={} raw={} bias={:?} raw_mod4096={} next_deadline={:?} inbound={} outputs={} output_stop={} console_stop={}",
                 self.process_id(),
                 ceiling.retired,
                 calibration.logical_icount,
@@ -2028,6 +2032,8 @@ impl QemuNode {
                     .and_then(|state| state.next_deadline),
                 self.last_step_inbound_frames_consumed,
                 self.pending_network_outputs.len(),
+                output_boundary.is_some(),
+                self.console_output_resume_pending,
             );
         }
         Ok(advance)

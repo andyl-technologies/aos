@@ -730,18 +730,26 @@ impl QemuReplayValidationExecutor {
                     None,
                 ),
             };
+            let detail = format!(
+                "node={} fat_time={} thin_time={} component_match={} fat_components={} thin_components={thin_components}",
+                self.node.name,
+                oracle_calibration_details(fat.calibration),
+                oracle_calibration_details(thin_calibration),
+                oracle_component_matches(fat.sample, thin_sample),
+                fat.components,
+            );
+            // Promotion reports bound their failure detail. The opt-in flight
+            // trace keeps both complete component lines beside its boundary
+            // trace so the differing component can be read in full.
+            // crucible-lint: allow host-nondeterminism-state -- this opt-in diagnostic reports an already decided mismatch and changes no replay state.
+            if std::env::var_os("CRUCIBLE_PHASE4_CLOCK_TRACE").is_some() {
+                // crucible-lint: allow direct-diagnostic -- the opt-in trace is captured from packaged-VM stderr.
+                eprintln!("CRUCIBLE-PHASE4-CLOCK-TRACE oracle-mismatch {detail}");
+            }
             return Err(QemuVmRealizationError::ReplayOracleMismatch {
                 fat_hash: fat.runtime.id,
                 thin_hash: thin.runtime.id,
-                detail: format!(
-                    "node={} fat_time={} thin_time={} component_match={} fat_components={} thin_components={thin_components}",
-                    self.node.name,
-                    oracle_calibration_details(fat.calibration),
-                    oracle_calibration_details(thin_calibration),
-                    oracle_component_matches(fat.sample, thin_sample),
-                    fat.components,
-                )
-                .into_boxed_str(),
+                detail: detail.into_boxed_str(),
             });
         }
         let source = self.launcher.take_exact_target().ok_or_else(|| {

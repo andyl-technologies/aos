@@ -611,7 +611,9 @@ pub enum QemuVmRealizationError {
     },
     /// The exact checkpoint and thin replay produced different runtime fingerprints.
     #[error(
-        "QEMU exact-checkpoint replay oracle mismatch: fat={fat_hash:?} thin={thin_hash:?} {detail}"
+        "QEMU exact-checkpoint replay oracle mismatch: fat={} thin={} {detail}",
+        .fat_hash.to_hex(),
+        .thin_hash.to_hex()
     )]
     ReplayOracleMismatch {
         /// Fingerprint of the probed fat checkpoint.
