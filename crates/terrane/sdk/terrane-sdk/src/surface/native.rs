@@ -1,9 +1,9 @@
 //! Owns native registered realization handles and SDK lifecycle status.
 
-use std::{
-    sync::atomic::{AtomicU8, Ordering},
-    time::Duration,
-};
+use std::time::Duration;
+
+#[cfg(all(feature = "surface-sdk", unix))]
+use std::sync::atomic::{AtomicU8, Ordering};
 
 use terrane_format::identity::Digest;
 
@@ -38,7 +38,11 @@ where
     /// Rejects unavailable surfaces, unsupported reader modes or endpoints,
     /// invalid policy names, denied or untrusted views, unresolved conflicts,
     /// escaping paths, and failed filesystem realization or durability.
-    pub async fn realize(&self, view: View, hints: RealizationHints) -> Result<Serving, Error> {
+    pub async fn realize(
+        &self,
+        view: View,
+        hints: RealizationHints,
+    ) -> Result<ServingHandle, Error> {
         realize(self, view, hints).await
     }
 }
@@ -52,7 +56,7 @@ pub(crate) async fn realize<S, C, F>(
     repository: &crate::repository::Repository<S, C, F>,
     view: View,
     hints: RealizationHints,
-) -> Result<Serving, Error>
+) -> Result<ServingHandle, Error>
 where
     S: crate::store::Store + Sync,
     C: crate::store::Clock + Sync,
@@ -75,6 +79,28 @@ where
     }
 }
 
+/// Starts an exact repository preparation through the compiled registry.
+pub(super) async fn realize_prepared<S, C, F>(
+    repository: &crate::repository::Repository<S, C, F>,
+    prepared: crate::repository::read::PreparedView,
+    hints: RealizationHints,
+) -> Result<ServingHandle, Error>
+where
+    S: crate::store::Store + Sync,
+    C: crate::store::Clock + Sync,
+    F: crate::store::LocalFs + Sync,
+{
+    #[cfg(not(all(feature = "surface-sdk", unix)))]
+    let _ = (repository, prepared);
+    match hints.surface.as_str() {
+        #[cfg(all(feature = "surface-sdk", unix))]
+        "sdk" if hints.reader == ReaderMode::Pinned => {
+            super::sdk::serve_prepared(repository, prepared, hints.endpoint).await
+        }
+        _ => Err(Error::UnavailableSurface(hints.surface)),
+    }
+}
+
 /// Maps a repository view to one registered external interface (SURF-1).
 #[cfg_attr(feature = "send", async_trait::async_trait)]
 #[cfg_attr(not(feature = "send"), async_trait::async_trait(?Send))]
@@ -86,7 +112,7 @@ pub trait Surface {
     ///
     /// # Errors
     /// Returns repository authorization, trust, schema, or presentation errors.
-    async fn serve(&self, view: View, endpoint: Endpoint) -> Result<Serving, Error>;
+    async fn serve(&self, view: View, endpoint: Endpoint) -> Result<ServingHandle, Error>;
 }
 
 /// Reports the lifecycle of an exposure handle.
@@ -118,6 +144,15 @@ pub struct FeatureOutcome {
     pub reason: String,
 }
 
+/// Reports a completed mutation without treating a failure as an acknowledgment.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CommitOutcome {
+    /// Repository publication completed durably.
+    Committed(Digest),
+    /// Publication failed and the consumer must receive its native error.
+    Failed(String),
+}
+
 /// Reports the commit and behavior of one exposure (SURF-27, SURF-28).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExposureStatus {
@@ -134,27 +169,63 @@ pub struct ExposureStatus {
     /// Writer mode, absent for read-only presentations.
     pub writer: Option<WriterMode>,
     /// Whether the most recent mutation committed; absent before mutations.
-    pub last_commit: Option<Digest>,
+    pub last_commit: Option<CommitOutcome>,
     /// Metadata schema state.
     pub schema: SchemaState,
     /// Current exposure lifecycle.
     pub state: ExposureState,
 }
 
+/// Reports and controls a running exposure through its owning executor.
+///
+/// Implementations own their actual requests and shutdown resources. A lifecycle
+/// result does not itself confer repository authority or native completion proof.
+pub trait Serving {
+    /// Returns the currently served commit, schema state and effective modes.
+    fn status(&self) -> ExposureStatus;
+
+    /// Drains pending work within the deadline supplied by the instance.
+    ///
+    /// # Errors
+    /// Returns deadline, pending-operation or executor failures.
+    fn drain(&self, deadline: Duration) -> Result<(), Error>;
+
+    /// Stops the exposure and releases its serving resources.
+    ///
+    /// # Errors
+    /// Returns executor shutdown or resource-release failures.
+    fn stop(&self) -> Result<(), Error>;
+}
+
+/// Owns a native exposure executor with cross-thread lifecycle access.
+#[cfg(feature = "send")]
+pub type ServingHandle = Box<dyn Serving + Send + Sync>;
+
+/// Owns a local exposure executor without imposing cross-thread requirements.
+#[cfg(not(feature = "send"))]
+pub type ServingHandle = Box<dyn Serving>;
+
+/// Constructs only the completed SDK executor after repository materialization.
+#[cfg(all(feature = "surface-sdk", unix))]
+pub(super) fn checkout(commit: Digest) -> ServingHandle {
+    Box::new(SdkServing::checkout(commit))
+}
+
 /// Owns the lifecycle and status of a completed SDK presentation.
 ///
 /// Stopping or draining a directory checkout prevents further exposure work;
 /// it does not delete the consumer's durable directory.
+#[cfg(all(feature = "surface-sdk", unix))]
 #[derive(Debug)]
-pub struct Serving {
+struct SdkServing {
     status: ExposureStatus,
     state: AtomicU8,
 }
 
-impl Serving {
+#[cfg(all(feature = "surface-sdk", unix))]
+impl SdkServing {
     /// Creates a serving handle for a completed pinned directory checkout.
-    #[cfg(all(feature = "surface-sdk", unix))]
-    pub(crate) fn checkout(commit: Digest) -> Self {
+    fn checkout(commit: Digest) -> Self {
         Self {
             status: ExposureStatus {
                 commit,
@@ -170,9 +241,12 @@ impl Serving {
             state: AtomicU8::new(0),
         }
     }
+}
 
+#[cfg(all(feature = "surface-sdk", unix))]
+impl Serving for SdkServing {
     /// Returns the resolved commit and exposure state without backend access.
-    pub fn status(&self) -> ExposureStatus {
+    fn status(&self) -> ExposureStatus {
         let mut status = self.status.clone();
         status.state = match self.state.load(Ordering::Acquire) {
             0 => ExposureState::Serving,
@@ -189,7 +263,7 @@ impl Serving {
     ///
     /// # Errors
     /// This completed SDK presentation has no fallible drain operation.
-    pub fn drain(&self, _deadline: Duration) -> Result<(), Error> {
+    fn drain(&self, _deadline: Duration) -> Result<(), Error> {
         let _ = self
             .state
             .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire);
@@ -200,7 +274,7 @@ impl Serving {
     ///
     /// # Errors
     /// This completed SDK presentation has no fallible stop operation.
-    pub fn stop(&self) -> Result<(), Error> {
+    fn stop(&self) -> Result<(), Error> {
         self.state.store(2, Ordering::Release);
         Ok(())
     }

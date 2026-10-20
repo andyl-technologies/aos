@@ -10,6 +10,17 @@ pub use terrane_format::surface::{
 };
 
 #[cfg(feature = "std")]
+mod exposure;
+#[cfg(feature = "std")]
+pub use exposure::{PreparedExposures, TokenResolver};
+
+#[cfg(feature = "std")]
+pub use crate::repository::schema::{ViewMetadata, validate_schema};
+
+mod registry;
+pub use registry::{SurfaceRegistration, registration};
+
+#[cfg(feature = "std")]
 mod native;
 #[cfg(feature = "std")]
 pub use native::*;

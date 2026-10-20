@@ -3,7 +3,7 @@
 use std::{
     collections::BTreeMap,
     ffi::OsStr,
-    os::unix::{ffi::OsStrExt, fs::PermissionsExt},
+    os::unix::ffi::OsStrExt,
     path::{Path, PathBuf},
 };
 
@@ -15,6 +15,8 @@ use crate::{
 };
 
 use super::path::{validate_destination, validate_symlink, validate_symlink_targets};
+
+mod presentation;
 
 /// Validates the entire presentation before creating its destination.
 fn validate(entries: &[ReadEntry], minimum: u64) -> Result<(), Error> {
@@ -37,6 +39,8 @@ fn validate(entries: &[ReadEntry], minimum: u64) -> Result<(), Error> {
         }
 
         let entry = tree_format::decode_entry_bytes(&item.encoded, minimum)?;
+        presentation::ownership(&entry.attrs, "uid")?;
+        presentation::ownership(&entry.attrs, "gid")?;
         match &entry.kind {
             EntryKind::Directory { .. } => {
                 if item.plaintext.is_some() {
@@ -120,6 +124,8 @@ pub(crate) async fn materialize<F: LocalFs + Sync>(
     validate(entries, minimum)?;
     validate_destination(fs, destination).await?;
     fs.create_dir_new(destination).await?;
+    let root_metadata = fs.symlink_metadata(destination).await?;
+    let mut created = BTreeMap::new();
 
     // Lexical order creates every directory before its children. No symlink
     // exists while ordinary paths and hard links are constructed.
@@ -142,7 +148,12 @@ pub(crate) async fn materialize<F: LocalFs + Sync>(
             EntryKind::Symlink { .. } => continue,
             _ => return Err(Error::Unrealizable),
         }
-        for xattr in entry.xattrs {
+        created.insert(item.key.clone(), fs.symlink_metadata(&target).await?);
+        for xattr in entry
+            .xattrs
+            .into_iter()
+            .filter(|xattr| presentation::visible_xattr(xattr.name))
+        {
             fs.set_xattr(&target, OsStr::from_bytes(xattr.name), xattr.value)
                 .await?;
         }
@@ -154,37 +165,67 @@ pub(crate) async fn materialize<F: LocalFs + Sync>(
             let link = path(destination, &item.key);
             fs.symlink(Path::new(OsStr::from_bytes(target)), &link)
                 .await?;
-            for xattr in entry.xattrs {
+            created.insert(item.key.clone(), fs.symlink_metadata(&link).await?);
+            for xattr in entry
+                .xattrs
+                .into_iter()
+                .filter(|xattr| presentation::visible_xattr(xattr.name))
+            {
                 fs.set_xattr(&link, OsStr::from_bytes(xattr.name), xattr.value)
                     .await?;
             }
         }
     }
 
-    // Finalize restrictive directory modes only after descendants are durable.
-    // The combined operation syncs through an already open handle, including
-    // mode 0000 files that cannot be reopened by pathname after chmod.
+    // Descendants are finalized before their directories. Every native effect
+    // verifies its original inode, applies ownership and epoch timestamps before
+    // restrictive modes, and supplies proof of physical execution and fsync.
     for item in entries.iter().rev() {
         let entry = tree_format::decode_entry_bytes(&item.encoded, minimum)?;
         let mode = match entry.kind {
-            EntryKind::Directory { mode } => mode,
+            EntryKind::Directory { mode } => Some(mode),
             EntryKind::File { mode, link_id, .. } => {
                 if link_id.is_some_and(|first| first != item.key.as_slice()) {
                     continue;
                 }
-                mode
+                Some(mode)
             }
-            EntryKind::Symlink { .. } => continue,
+            EntryKind::Symlink { .. } => None,
             _ => return Err(Error::Unrealizable),
         };
-        fs.set_permissions_and_sync(
+        present_metadata(
+            fs,
             &path(destination, &item.key),
-            std::fs::Permissions::from_mode(u32::from(mode)),
+            created.remove(&item.key).ok_or(Error::Unrealizable)?,
+            mode,
+            presentation::ownership(&entry.attrs, "uid")?,
+            presentation::ownership(&entry.attrs, "gid")?,
         )
         .await?;
     }
-    fs.sync_directory(destination).await?;
+    present_metadata(fs, destination, root_metadata, Some(0o700), None, None).await?;
     fs.sync_directory(destination.parent().ok_or(Error::PathEscape)?)
         .await?;
+    Ok(())
+}
+
+/// Requires the native executor's completion receipt before accepting metadata.
+async fn present_metadata<F: LocalFs + Sync>(
+    fs: &F,
+    path: &Path,
+    expected: std::fs::Metadata,
+    mode: Option<u16>,
+    uid: Option<u32>,
+    gid: Option<u32>,
+) -> Result<(), Error> {
+    let (effect, receipt) =
+        crate::store::native_checkout_metadata::effect(path, expected, mode, uid, gid)?;
+    fs.execute_retained_effect(effect)
+        .await
+        .map_err(|failure| match failure {
+            crate::store::NativeEffectFailure::Rejected(error) => Error::Store(error),
+            crate::store::NativeEffectFailure::Io(error) => Error::Io(error),
+        })?;
+    receipt.take()?;
     Ok(())
 }

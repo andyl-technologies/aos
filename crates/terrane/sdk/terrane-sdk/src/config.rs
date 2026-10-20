@@ -1,57 +1,75 @@
 //! Loads role and store-expression syntax without opening backends.
 //!
-//! The T0 loader accepts the TOML exposure vocabulary from specification 26,
-//! but rejects every exposure with a named unavailable surface. Capability,
-//! token, schema, and backend checks require the later repository milestones.
-//! A syntax check therefore grants no authority and starts no service.
+//! The loader accepts specification 26 exposure tables and the shared role
+//! configuration. Parsing validates syntax and compiled surface availability;
+//! repository authorization and schema preparation must succeed before startup.
+//! A syntax check grants no authority and starts no service.
 //!
 //! ```toml
 //! role = "serve"
 //! store = "guard(policy=warehouse)(bucket(file:///var/lib/terrane))"
 //! ```
 
-use std::collections::BTreeMap;
 use std::fmt;
 
 use serde::Deserialize;
 
 use crate::role::{Role, RoleError};
 
+pub mod exposure;
 pub mod expression;
+pub mod host;
+pub mod local_repository;
+pub mod token;
 
 /// Holds parsed foundation configuration without backend credentials or I/O.
 #[derive(Debug)]
 pub struct Config {
-    role: Role,
+    role: Option<Role>,
+    exposures: Vec<exposure::ConfiguredExposure>,
+    locality: host::Locality,
+    host_tier: Option<host::HostTier>,
+    local_repository: Option<local_repository::TrustedLocalRepository>,
+    tokens: token::Tokens,
     store: expression::StoreExpression,
 }
 
 impl Config {
     /// Parses the specification's TOML vocabulary and store-expression syntax.
     ///
-    /// No surfaces have been implemented in this build. Naming one returns an
-    /// error rather than claiming it has passed token or schema validation.
+    /// Unavailable surfaces and malformed exposure records reject the complete
+    /// configuration. Parsing does not claim token or schema authorization.
     ///
     /// # Errors
     ///
     /// Returns a typed error for malformed TOML, unknown keys or roles, invalid
-    /// store syntax, or any exposure naming a missing surface.
+    /// store syntax, or any exposure naming a missing surface or view policy.
     pub fn parse(input: &str) -> Result<Self, ConfigError> {
         let raw: RawConfig = toml::from_str(input).map_err(ConfigError::Toml)?;
         let store = expression::StoreExpression::parse(&raw.store).map_err(ConfigError::Store)?;
 
-        if let Some(exposure) = raw.expose.first() {
-            return Err(ConfigError::UnavailableSurface(exposure.surface.clone()));
+        let exposures = exposure::parse(raw.expose)?;
+        if let Some(host) = &raw.host_tier {
+            host.validate()?;
+        }
+        raw.tokens.validate()?;
+        if let Some(local) = &raw.local_repository {
+            local.validate()?;
         }
 
         Ok(Self {
             role: raw.role,
+            exposures,
+            locality: raw.locality,
+            host_tier: raw.host_tier,
+            local_repository: raw.local_repository,
+            tokens: raw.tokens,
             store,
         })
     }
 
     /// Returns the sole process role selected by this invocation.
-    pub const fn role(&self) -> Role {
+    pub const fn role(&self) -> Option<Role> {
         self.role
     }
 
@@ -63,15 +81,43 @@ impl Config {
     /// # Errors
     ///
     /// Returns [`RoleError::Mismatch`] when the requested role differs from
-    /// the configured role.
+    /// the configured role, or [`RoleError::Missing`] when neither source selects one.
     pub fn select_role(&self, requested: Option<Role>) -> Result<Role, RoleError> {
-        match requested {
-            Some(requested) if requested != self.role => Err(RoleError::Mismatch {
-                configured: self.role,
-                requested,
-            }),
-            _ => Ok(self.role),
+        match (self.role, requested) {
+            (Some(configured), Some(requested)) if configured != requested => {
+                Err(RoleError::Mismatch {
+                    configured,
+                    requested,
+                })
+            }
+            (Some(role), _) | (None, Some(role)) => Ok(role),
+            (None, None) => Err(RoleError::Missing),
         }
+    }
+
+    /// Returns exposures in configuration order, without opening their endpoints.
+    pub fn exposures(&self) -> &[exposure::ConfiguredExposure] {
+        &self.exposures
+    }
+
+    /// Returns the configured topology labels.
+    pub fn locality(&self) -> &host::Locality {
+        &self.locality
+    }
+
+    /// Returns optional host-tier policy without claiming runtime availability.
+    pub fn host_tier(&self) -> Option<&host::HostTier> {
+        self.host_tier.as_ref()
+    }
+
+    /// Returns explicit trust inputs for strict local reopening, when configured.
+    pub fn local_repository(&self) -> Option<&local_repository::TrustedLocalRepository> {
+        self.local_repository.as_ref()
+    }
+
+    /// Returns configured credential locators without reading their secrets.
+    pub fn tokens(&self) -> &token::Tokens {
+        &self.tokens
     }
 
     /// Returns the immutable, parsed store-expression tree (ARCH-6).
@@ -83,35 +129,36 @@ impl Config {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawConfig {
-    role: Role,
+    role: Option<Role>,
     store: String,
     #[serde(default)]
-    expose: Vec<RawExposure>,
+    expose: Vec<exposure::RawExposure>,
+    #[serde(default)]
+    locality: host::Locality,
+    host_tier: Option<host::HostTier>,
+    local_repository: Option<local_repository::TrustedLocalRepository>,
+    #[serde(default)]
+    tokens: token::Tokens,
 }
 
-// These fields accept the spec vocabulary for configuration loading only. An
-// exposure is refused before any token is read or endpoint is opened in T0.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RawExposure {
-    #[serde(rename = "id")]
-    _id: String,
-    #[serde(rename = "view")]
-    _view: String,
-    surface: String,
-    #[serde(rename = "at")]
-    _at: String,
-    #[serde(rename = "token")]
-    _token: String,
-    #[serde(default, rename = "mode")]
-    _mode: BTreeMap<String, toml::Value>,
-    #[serde(default, rename = "options")]
-    _options: BTreeMap<String, toml::Value>,
+pub(super) fn absolute_path(path: &str) -> bool {
+    std::path::Path::new(path).is_absolute()
+        && !path.as_bytes().contains(&0)
+        && path
+            .split('/')
+            .skip(1)
+            .all(|part| !matches!(part, "." | ".."))
+        && !path.contains("//")
+        && (path == "/" || !path.ends_with('/'))
 }
 
 /// Describes failures to load the entire foundation configuration.
 #[derive(Debug)]
 pub enum ConfigError {
+    /// Rejects an invalid whole-configuration invariant.
+    Invalid(&'static str),
+    /// Preserves malformed view selector diagnostics.
+    View(crate::surface::ViewError),
     /// Preserves TOML diagnostics, including unknown keys and role names.
     Toml(toml::de::Error),
     /// Preserves store-expression syntax diagnostics.
@@ -123,6 +170,8 @@ pub enum ConfigError {
 impl fmt::Display for ConfigError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Invalid(message) => write!(formatter, "invalid configuration: {message}"),
+            Self::View(error) => write!(formatter, "invalid view: {error}"),
             Self::Toml(error) => write!(formatter, "invalid configuration: {error}"),
             Self::Store(error) => write!(formatter, "invalid store expression: {error}"),
             Self::UnavailableSurface(surface) => {
@@ -140,7 +189,8 @@ impl std::error::Error for ConfigError {
         match self {
             Self::Toml(error) => Some(error),
             Self::Store(error) => Some(error),
-            Self::UnavailableSurface(_) => None,
+            Self::View(error) => Some(error),
+            Self::UnavailableSurface(_) | Self::Invalid(_) => None,
         }
     }
 }
@@ -154,7 +204,10 @@ mod tests {
     fn each_role_loads_through_the_same_vocabulary() {
         for role in Role::ALL {
             let text = format!("role = '{role}'\nstore = 'bucket(file:///tmp/store)'\n");
-            assert_eq!(Config::parse(&text).expect("valid syntax").role(), role);
+            assert_eq!(
+                Config::parse(&text).expect("valid syntax").role(),
+                Some(role)
+            );
         }
     }
 
