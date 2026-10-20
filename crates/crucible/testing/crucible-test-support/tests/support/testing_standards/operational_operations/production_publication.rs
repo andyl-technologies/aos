@@ -12,6 +12,12 @@ mod source_installation;
 
 pub(super) const ROLE_REPORTS: Companion = main_custody::REPORT_PINS;
 
+// Reuse canonical custody obligations for the constructor terminal endpoint.
+pub(super) const CONSTRUCTOR_RESERVATION: Companion = main_custody::RESERVATION;
+pub(super) const CONSTRUCTOR_QUEUE: Companion = main_custody::QUEUE;
+pub(super) const CONSTRUCTOR_DRIVER: Companion = main_custody::BODY_DRIVER;
+pub(super) const CONSTRUCTOR_QUEUED_OWNER: Companion = main_custody::QUEUED_OWNER;
+
 pub(super) const CONTRACTS: &[Contract] = &[Contract {
     package: "crucible-daemon",
     target: "src/vm_lifecycle/construction/publication",

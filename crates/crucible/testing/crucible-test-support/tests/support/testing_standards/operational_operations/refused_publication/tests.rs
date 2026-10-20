@@ -13,6 +13,11 @@ fn unavailable_token_contract_rejects_acceptance_and_custody_changes()
     )?;
     let code = crate::scrub_comments_and_strings(&source);
     let companions = read_companions(contract)?;
+    assert!(
+        source_pattern(super::super::construction_endpoint::UNAVAILABLE_RESERVATION).starts_with(
+            &source_pattern("pub(crate) fn unavailable_reservation_for_test()")
+        )
+    );
     let rejects = |candidate: &str, evidence: &[String]| {
         let masked = mask_contract(contract, candidate, evidence);
         !crate::flaky_escape_failures("unreviewed", "unreviewed", &masked).is_empty()
@@ -140,47 +145,110 @@ fn unavailable_token_contract_rejects_acceptance_and_custody_changes()
         );
     }
 
-    for (index, obligation, replacement) in [
+    for (index, unavailable_constructor, obligation, replacement) in [
         (
             0,
+            true,
             "Box::new(CleanupReservation { queue: Weak::new(), index: usize::MAX,",
             "Box::new(CleanupReservation { queue: accepting_queue(), index: usize::MAX,",
         ),
         (
             0,
+            false,
             "return Err((self, owner));",
             "return Ok(accepting_handoff());",
         ),
         (
             0,
+            true,
             "index: usize::MAX, epoch: 0, observed: ProductionVmCleanupStage::BodyRetained, first_failure: None, terminal_history: None, report_reference: false,",
             "index: usize::MAX, epoch: 0, observed: ProductionVmCleanupStage::BodyRetained, first_failure: None, terminal_history: Some(foreign_terminal), report_reference: true,",
         ),
         (
             0,
+            true,
             "PostBody = <crate::ProductionVmConstructionCustody as ProductionVmCleanupOwner>::PostBody, ReturnDestination = crate::lifecycle_cleanup::SourceBodyReturn",
             "PostBody = <crate::ProductionVmConstructionCustody as ProductionVmCleanupOwner>::PostBody, ReturnDestination = ForeignReturnDestination",
         ),
         (
             0,
+            false,
             "self.publish_returned_owner(slot, owner)",
             "self.publish_returned_owner(slot, foreign_owner)",
         ),
         (
             1,
+            false,
             "*returned = Some((reservation, owner));",
             "drop((reservation, owner));",
         ),
-        (1, "if returned.is_some() { return Err(self); }", ""),
+        (1, false, "if returned.is_some() { return Err(self); }", ""),
     ] {
         let mut changed = companions.clone();
         let evidence = crate::scrub_comments_and_strings(&changed[index]);
+        assert_eq!(
+            contract.companions[index].path,
+            if index == 0 {
+                "crates/crucible/control/crucible-daemon/src/lifecycle_cleanup/reservation.rs"
+            } else {
+                "crates/crucible/control/crucible-daemon/src/vm_lifecycle/construction/publication.rs"
+            }
+        );
+        // Constructor mutations always select the complete original helper,
+        // independently of other matching functions or required-clause order.
+        let clause = if unavailable_constructor {
+            let full = super::super::construction_endpoint::UNAVAILABLE_RESERVATION;
+            assert!(
+                contract.companions[index]
+                    .required
+                    .iter()
+                    .any(|(required, count)| *required == full && *count == 1)
+            );
+            full
+        } else {
+            contract.companions[index]
+                .required
+                .iter()
+                .find_map(|(clause, _)| {
+                    source_pattern(clause)
+                        .contains(&source_pattern(obligation))
+                        .then_some(*clause)
+                })
+                .expect("companion mutation must address its required canonical clause")
+        };
+        let original_clause = crate::scrub_comments_and_strings(clause);
+        let changed_clause =
+            replace_one_obligation(&original_clause, &source_pattern(obligation), replacement);
+        assert_ne!(
+            changed_clause, original_clause,
+            "clause mutation missed: {obligation}"
+        );
         changed[index] =
-            replace_one_obligation(&evidence, &source_pattern(obligation), replacement);
+            replace_one_obligation(&evidence, &source_pattern(clause), &changed_clause);
         assert_ne!(
             changed[index], evidence,
             "companion mutation missed: {obligation}"
         );
+        if unavailable_constructor {
+            let handoff = source_pattern(super::super::construction_endpoint::UNAVAILABLE_HANDOFF);
+            assert!(source_pattern(&evidence).contains(&handoff));
+            assert!(source_pattern(&changed[index]).contains(&handoff));
+        }
+        if obligation.starts_with("Box::new(CleanupReservation") {
+            // The historical suffix still matches the other helper. Only the
+            // genuine full reservation fact rejects this accepting constructor.
+            let compact = source_pattern(&changed[index]);
+            assert!(
+                contract.companions[index]
+                    .required
+                    .iter()
+                    .filter(|(required, _)| *required != clause)
+                    .all(|(required, count)| compact
+                        .match_indices(&source_pattern(required))
+                        .count()
+                        == *count)
+            );
+        }
         assert!(
             rejects(&code, &changed),
             "changed canonical provenance was masked: {replacement}"

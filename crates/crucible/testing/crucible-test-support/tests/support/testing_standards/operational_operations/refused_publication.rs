@@ -175,6 +175,7 @@ assert_eq!(expected.cleanup_calls.load(Ordering::SeqCst), 0);"#,
         Companion {
             path: "crates/crucible/control/crucible-daemon/src/lifecycle_cleanup/reservation.rs",
             required: &[
+                (super::construction_endpoint::UNAVAILABLE_RESERVATION, 1),
                 (r#"#[cfg(test)] impl LifecycleCleanupHandle {"#, 1),
                 (
                     r#"pub(crate) fn unavailable_reservation_for_test() -> Box<

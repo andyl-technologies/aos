@@ -15,6 +15,25 @@ mod shared;
 #[path = "hot_fork_retirement/source.rs"]
 mod source;
 
+/// Reuses the unchanged actual complete-body shutdown ordering.
+pub(super) const CONSTRUCTOR_BODY: Companion = Companion {
+    path: source::CONTRACT.companions[3].path,
+    required: source::CONTRACT.companions[3].required,
+};
+/// Reuses actual loan observation and its unchanged canonical ledger provenance.
+pub(super) const CONSTRUCTOR_WORLD_RETURN: Companion = Companion {
+    path: source::CONTRACT.companions[0].path,
+    required: source::CONTRACT.companions[0].required,
+};
+pub(super) const CONSTRUCTOR_WORLD_POOL: Companion = Companion {
+    path: source::CONTRACT.companions[1].path,
+    required: source::CONTRACT.companions[1].required,
+};
+pub(super) const CONSTRUCTOR_WORLD_LEDGER: Companion = Companion {
+    path: source::CONTRACT.companions[2].path,
+    required: source::CONTRACT.companions[2].required,
+};
+
 pub(super) const CONTRACTS: &[Contract] = &[
     owners::PREPARATION,
     owners::REARM,

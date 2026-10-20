@@ -6,6 +6,9 @@
 
 use super::{Companion, Contract};
 
+/// Reuses the existing exact same-pair publication obligations.
+pub(super) const PUBLICATION_ENDPOINT: Companion = facts::PUBLICATION_FACT;
+
 #[path = "constructor_continuations/facts.rs"]
 mod facts;
 #[path = "constructor_continuations/node.rs"]
