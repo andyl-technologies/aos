@@ -660,65 +660,17 @@ fn controller_names(
 ) -> Result<Vec<String>, ControllerProfileErrorV1> {
     let names = crate::receiving::original_activation_names_v1(9)
         .map_err(|_| ControllerProfileErrorV1::Activation)?;
-    if !valid_backend_names(&names, publisher, nix_enabled, git_source_cut) {
+    if !crate::profile_data::delivery::valid_backend_names(
+        &names,
+        publisher,
+        nix_enabled,
+        git_source_cut,
+    ) {
         return Err(ControllerProfileErrorV1::Activation);
     }
     Ok(names)
 }
 
-
-fn valid_backend_names(
-    names: &[String],
-    publisher: bool,
-    nix_enabled: bool,
-    git_source_cut: bool,
-) -> bool {
-    let nix_profile = names
-        .iter()
-        .filter(|name| name.as_str() == CONTROLLER_PROFILE_NAME)
-        .count();
-    let nix_pid1 = names
-        .iter()
-        .filter(|name| name.as_str() == CONTROLLER_PID1_NAME)
-        .count();
-
-    names.len() <= 9
-        && names.iter().filter(|name| name.as_str() == RESOURCE_POLICY_NAME).count() <= 1
-        && names.iter().filter(|name| name.as_str() == RESOURCE_POLICY_NAME).count()
-            == names.iter().filter(|name| name.as_str() == RESOURCE_ENROLLMENT_NAME).count()
-        && names.iter().filter(|name| name.as_str() == RESOURCE_LAUNCH_NAME).count() <= 1
-        && (!names.iter().any(|name| name == RESOURCE_LAUNCH_NAME)
-            || names.iter().any(|name| name == RESOURCE_POLICY_NAME))
-        && nix_profile == usize::from(nix_enabled)
-        && nix_profile == nix_pid1
-        && names.iter().filter(|name| name.as_str() == GIT_SOURCE_LISTENER_NAME).count()
-            == usize::from(git_source_cut)
-        && names
-            .iter()
-            .filter(|name| name.as_str() == PUBLISHER_NAME)
-            .count()
-            == usize::from(publisher)
-        && names
-            .iter()
-            .filter(|name| name.as_str() == TPM_IMAGE_NAME)
-            .count()
-            <= 1
-        && names
-            .iter()
-            .filter(|name| name.as_str() == PROFILE_NAME)
-            .count()
-            <= 1
-        && names.iter().all(|name| {
-            matches!(
-                name.as_str(),
-                PUBLISHER_NAME | TPM_IMAGE_NAME | PROFILE_NAME
-                    | CONTROLLER_PROFILE_NAME
-                    | CONTROLLER_PID1_NAME
-                    | GIT_SOURCE_LISTENER_NAME
-                    | RESOURCE_POLICY_NAME | RESOURCE_ENROLLMENT_NAME | RESOURCE_LAUNCH_NAME
-            )
-        })
-}
 
 
 #[cfg(test)]
