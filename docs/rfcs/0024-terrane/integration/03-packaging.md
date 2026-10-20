@@ -34,7 +34,7 @@ dependency. AOS adds one glue crate.
   `fetchCargoVendor` hash and the `aos` package's workspace test set, per the
   repository's Rust packaging rules (RFC-0015). *Gate:* `checks.eval`.
 - **[PKG-4]** The binary MUST be named `terrane` (spec CRATE-15; decision
-  [AD-1](06-decision-register.md)). AOS MUST NOT ship an `aos-terrane-integration`
+  [AD-1](06-decision-register.md)). AOS MUST NOT ship an `aos-terrane`
   binary; AOS-specific commands live under `aos terrane ...` in the `aos` CLI
   and call the SDK.
 
