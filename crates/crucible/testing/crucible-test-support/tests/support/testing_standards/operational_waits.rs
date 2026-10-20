@@ -324,6 +324,7 @@ const DISPATCHER_TEST_REQUIREMENTS: &[&str] = &[
         })
     );
     assert_eq!(Arc::strong_count(&state), 1);"#,
+    operational_recovery::DISPATCHER_FAILED_STARTUP,
 ];
 
 const DISPATCHER_TEST_LOOPS: &[(&str, usize)] = &[

@@ -8,6 +8,7 @@ use super::{
     compact_code, constructor_continuations, contracts, expression_offsets, hot_fork_retirement,
     host_physical_custody, identifier_count, lifecycle_retirement, mask_contract, read_companions,
     replace_one_obligation, retained_continuations, service_continuations, source_pattern,
+    pager_placement,
 };
 
 #[test]
@@ -207,6 +208,11 @@ fn continuation_waits_require_original_posts_and_physical_custody()
             };
             let changed_expression = if changed_expression == expression {
                 host_physical_custody::altered_expression(expression)
+            } else {
+                changed_expression
+            };
+            let changed_expression = if changed_expression == expression {
+                pager_placement::altered_expression(expression)
             } else {
                 changed_expression
             };

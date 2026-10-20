@@ -26,6 +26,8 @@ mod host_physical_custody;
 mod lifecycle_retirement;
 #[path = "operational_operations/native_registration.rs"]
 mod native_registration;
+#[path = "operational_operations/pager_placement.rs"]
+mod pager_placement;
 #[path = "operational_operations/production_publication.rs"]
 mod production_publication;
 #[path = "operational_operations/refused_publication.rs"]
@@ -705,6 +707,7 @@ fn contracts() -> impl Iterator<Item = &'static Contract> {
         .chain(lifecycle_retirement::CONTRACTS)
         .chain(host_physical_custody::CONTRACTS)
         .chain(hot_fork_retirement::CONTRACTS)
+        .chain(pager_placement::CONTRACTS)
         .chain(native_registration::CONTRACTS)
         .chain(native_registration::REQUIRED_WORKER_CONTRACTS)
         .chain(retained_continuations::CONTRACTS)

@@ -77,6 +77,127 @@ fn dispatcher_startup_is_bound(code: &str) -> bool {
         .all(|requirement| compact.contains(&source_pattern(requirement)))
 }
 
+pub(super) const DISPATCHER_FAILED_STARTUP: &str = r#"fn failed_worker_startup_keeps_independent_original_post_after_physical_close()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crucible_host_resources::host_supervision::{
+        HostOperationBudgets, HostOperationClass, HostOperationState, HostOperationSupervisor,
+        HostSupervisionError,
+    };
+
+    let directory = tempfile::tempdir()?;
+    let state = mechanism_state(directory.path(), 1)?;
+    let descriptor = state._namespace.as_raw_fd();
+    let expected = fs::metadata(format!("/proc/self/fd/{descriptor}"))?;
+    let supervisor = HostOperationSupervisor::new(HostOperationBudgets::default(), None)?;
+    let original = supervisor.begin(HostOperationClass::Preparation)?;
+    let initial = original.status()?;
+    let (published, ready) = std::sync::mpsc::sync_channel(1);
+    let worker_state = Arc::clone(&state);
+    let worker = thread::spawn(move || {
+        // The actual worker records a genuine Vec capacity refusal, not a
+        // fabricated Main/Target admission or a selected error response.
+        run(worker_state, usize::MAX);
+        published.send(()).unwrap();
+    });
+    // A polling slice is not the Preparation's complete allowance. Observe
+    // this same worker once per slice, retaining its unchanged Original.
+    loop {
+        match ready.recv_timeout(original.wait_slice()?) {
+            Ok(()) => break,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(first) => return Err(first.into()),
+        }
+    }
+    let mut dispatcher = TargetDispatcher {
+        purpose: None,
+        capacity: 1,
+        state: Some(state),
+        worker: Some(worker),
+        failed: true,
+        cleanup: None,
+        phase: WorkerPhase::Reserved,
+        worker_panic: Mutex::new(None),
+        startup_history: DispatcherStartupHistory::default(),
+        path: directory.path().to_owned(),
+    };
+
+    original.wait_slice()?;
+    let started = worker_startup_ready(dispatcher.state.as_ref().unwrap()).map(|_| ());
+    dispatcher.startup_history.observe(started, || {
+        supervisor.cancel().unwrap();
+        original
+            .wait_slice()
+            .map(|_| ())
+            .map_err(ServiceBirthError::from)
+            .map_err(DispatcherStartupFailure::Original)
+    });
+    assert!(matches!(
+        dispatcher.startup_history.first,
+        Some(DispatcherStartupFailure::Allocation(_))
+    ));
+    assert!(matches!(
+        dispatcher.startup_history.post,
+        Some(DispatcherStartupFailure::Original(
+            ServiceBirthError::Supervision(HostSupervisionError::Terminal {
+                state: HostOperationState::Canceled
+            })
+        ))
+    ));
+    let terminal = original.status()?;
+    assert_eq!(terminal.operation_id, initial.operation_id);
+    assert_eq!(terminal.class, initial.class);
+    assert_eq!(
+        terminal.started_policy_revision,
+        initial.started_policy_revision
+    );
+    assert_eq!(terminal.completed_work_units, initial.completed_work_units);
+    assert_eq!(terminal.state, HostOperationState::Canceled);
+    let first_report = dispatcher
+        .report_retirement_history()
+        .unwrap_err()
+        .to_string();
+    let first = dispatcher
+        .startup_history
+        .first
+        .as_ref()
+        .unwrap()
+        .to_string();
+    let post = dispatcher
+        .startup_history
+        .post
+        .as_ref()
+        .unwrap()
+        .to_string();
+    assert!(first_report.contains(&format!("{first}; independent startup post: {post}")));
+
+    // Historical failure does not prevent closing these actual component
+    // resources. No authenticated Main purpose exists or is invented here.
+    dispatcher.worker.take().unwrap().join().unwrap();
+    drop(dispatcher.state.take());
+    assert_descriptor_closed(descriptor, &expected);
+    assert!(dispatcher.worker.is_none());
+    assert!(dispatcher.state.is_none());
+    assert!(!dispatcher.is_physically_retired());
+    let final_report = dispatcher
+        .report_retirement_history()
+        .unwrap_err()
+        .to_string();
+    assert_eq!(final_report, first_report);
+    assert!(matches!(
+        dispatcher.startup_history.first,
+        Some(DispatcherStartupFailure::Allocation(_))
+    ));
+    assert!(matches!(
+        dispatcher.startup_history.post,
+        Some(DispatcherStartupFailure::Original(
+            ServiceBirthError::Supervision(HostSupervisionError::Terminal {
+                state: HostOperationState::Canceled
+            })
+        ))
+    ));
+    Ok(())
+}"#;
+
 const CONTRACTS: &[Contract] = &[
     Contract {
         package: "crucible-store",
@@ -559,118 +680,7 @@ const CONTRACTS: &[Contract] = &[
     );
     drop(dispatcher);
     assert_descriptor_closed(descriptor, &expected);"#,
-            r#"fn failed_worker_startup_keeps_independent_original_post_after_physical_close()
--> Result<(), Box<dyn std::error::Error>> {
-    use crucible_host_resources::host_supervision::{
-        HostOperationBudgets, HostOperationClass, HostOperationState, HostOperationSupervisor,
-        HostSupervisionError,
-    };
-
-    let directory = tempfile::tempdir()?;
-    let state = mechanism_state(directory.path(), 1)?;
-    let descriptor = state._namespace.as_raw_fd();
-    let expected = fs::metadata(format!("/proc/self/fd/{descriptor}"))?;
-    let supervisor = HostOperationSupervisor::new(HostOperationBudgets::default(), None)?;
-    let original = supervisor.begin(HostOperationClass::Preparation)?;
-    let initial = original.status()?;
-    let (published, ready) = std::sync::mpsc::sync_channel(0);
-    let worker_state = Arc::clone(&state);
-    let worker = thread::spawn(move || {
-        // The actual worker records a genuine Vec capacity refusal, not a
-        // fabricated Main/Target admission or a selected error response.
-        run(worker_state, usize::MAX);
-        published.send(()).unwrap();
-    });
-    ready.recv_timeout(original.wait_slice()?)?;
-    let mut dispatcher = TargetDispatcher {
-        purpose: None,
-        capacity: 1,
-        state: Some(state),
-        worker: Some(worker),
-        failed: true,
-        cleanup: None,
-        phase: WorkerPhase::Reserved,
-        worker_panic: Mutex::new(None),
-        startup_history: DispatcherStartupHistory::default(),
-        path: directory.path().to_owned(),
-    };
-
-    original.wait_slice()?;
-    let started = worker_startup_ready(dispatcher.state.as_ref().unwrap()).map(|_| ());
-    dispatcher.startup_history.observe(started, || {
-        supervisor.cancel().unwrap();
-        original
-            .wait_slice()
-            .map(|_| ())
-            .map_err(ServiceBirthError::from)
-            .map_err(DispatcherStartupFailure::Original)
-    });
-    assert!(matches!(
-        dispatcher.startup_history.first,
-        Some(DispatcherStartupFailure::Allocation(_))
-    ));
-    assert!(matches!(
-        dispatcher.startup_history.post,
-        Some(DispatcherStartupFailure::Original(
-            ServiceBirthError::Supervision(HostSupervisionError::Terminal {
-                state: HostOperationState::Canceled
-            })
-        ))
-    ));
-    let terminal = original.status()?;
-    assert_eq!(terminal.operation_id, initial.operation_id);
-    assert_eq!(terminal.class, initial.class);
-    assert_eq!(
-        terminal.started_policy_revision,
-        initial.started_policy_revision
-    );
-    assert_eq!(terminal.completed_work_units, initial.completed_work_units);
-    assert_eq!(terminal.state, HostOperationState::Canceled);
-    let first_report = dispatcher
-        .report_retirement_history()
-        .unwrap_err()
-        .to_string();
-    let first = dispatcher
-        .startup_history
-        .first
-        .as_ref()
-        .unwrap()
-        .to_string();
-    let post = dispatcher
-        .startup_history
-        .post
-        .as_ref()
-        .unwrap()
-        .to_string();
-    assert!(first_report.contains(&format!("{first}; independent startup post: {post}")));
-
-    // Historical failure does not prevent closing these actual component
-    // resources. No authenticated Main purpose exists or is invented here.
-    dispatcher.worker.take().unwrap().join().unwrap();
-    drop(dispatcher.state.take());
-    assert_descriptor_closed(descriptor, &expected);
-    assert!(dispatcher.worker.is_none());
-    assert!(dispatcher.state.is_none());
-    assert!(!dispatcher.is_physically_retired());
-    let final_report = dispatcher
-        .report_retirement_history()
-        .unwrap_err()
-        .to_string();
-    assert_eq!(final_report, first_report);
-    assert!(matches!(
-        dispatcher.startup_history.first,
-        Some(DispatcherStartupFailure::Allocation(_))
-    ));
-    assert!(matches!(
-        dispatcher.startup_history.post,
-        Some(DispatcherStartupFailure::Original(
-            ServiceBirthError::Supervision(HostSupervisionError::Terminal {
-                state: HostOperationState::Canceled
-            })
-        ))
-    ));
-    Ok(())
-}"#,
+            DISPATCHER_FAILED_STARTUP,
         ],
         identifiers: &[
             (
@@ -904,6 +914,143 @@ fn dispatcher_recovery_requires_each_actual_custody_observation()
                 "one missing custody observation was admitted: {requirement}"
             );
         }
+    }
+    Ok(())
+}
+
+#[test]
+fn dispatcher_startup_wait_requires_the_same_original_worker_and_independent_history()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = super::super::super::workspace_root();
+    let source = std::fs::read_to_string(root.join(
+        "crates/crucible/qemu/crucible-qemu-host/src/linux_cgroup/target_dispatcher/tests.rs",
+    ))?;
+    let code = super::super::scrub_comments_and_strings(&source);
+    let contract = CONTRACTS
+        .iter()
+        .find(|contract| {
+            contract.package == "crucible-qemu-host"
+                && contract.target == "src/linux_cgroup/target_dispatcher/tests"
+        })
+        .expect("the original dispatcher control remains registered");
+    let has = |source: &str, pattern: &str| {
+        super::super::flaky_escape_failures("unreviewed", "unreviewed", source)
+            .iter()
+            .any(|finding| finding.contains(pattern))
+    };
+    assert!(!has(&mask_contract(contract, &code), "`retry`"));
+    assert!(!has(
+        &super::mask_dispatcher_test_waits(&code),
+        "`thread::sleep`"
+    ));
+    let cases: &[(&str, &str)] = &[
+        (
+            r#"std::sync::mpsc::sync_channel(1)"#,
+            r#"std::sync::mpsc::sync_channel(0)"#,
+        ),
+        (
+            r#"ready.recv_timeout(original.wait_slice()?)"#,
+            r#"ready.recv_timeout(renewed.wait_slice()?)"#,
+        ),
+        (
+            r#"Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}"#,
+            r#"Err(std::sync::mpsc::RecvTimeoutError::Timeout) => break"#,
+        ),
+        (
+            r#"Err(first) => return Err(first.into()),"#,
+            r#"Err(_) => break,"#,
+        ),
+        (
+            r#"loop { match ready.recv_timeout(original.wait_slice()?)"#,
+            r#"loop { original.progress(1)?; match ready.recv_timeout(original.wait_slice()?)"#,
+        ),
+        (
+            r#"loop { match ready.recv_timeout(original.wait_slice()?)"#,
+            r#"loop { let original = supervisor.begin(HostOperationClass::Preparation)?; match ready.recv_timeout(original.wait_slice()?)"#,
+        ),
+        (
+            r#"run(worker_state, usize::MAX); published.send(()).unwrap();"#,
+            r#"published.send(()).unwrap(); run(worker_state, usize::MAX);"#,
+        ),
+        (
+            r#"let initial = original.status()?;"#,
+            r#"let initial = unrelated.status()?;"#,
+        ),
+        (
+            r#"terminal.operation_id, initial.operation_id"#,
+            r#"terminal.operation_id, terminal.operation_id"#,
+        ),
+        (
+            r#"terminal.completed_work_units, initial.completed_work_units"#,
+            r#"terminal.completed_work_units, terminal.completed_work_units"#,
+        ),
+        (
+            r#"terminal.started_policy_revision, initial.started_policy_revision"#,
+            r#"terminal.started_policy_revision, terminal.started_policy_revision"#,
+        ),
+        (
+            r#"supervisor.cancel().unwrap();"#,
+            r#"original.progress(1).unwrap();"#,
+        ),
+        (
+            r#"dispatcher.startup_history.observe(started, || {"#,
+            r#"dispatcher.startup_history.observe(Ok(()), || {"#,
+        ),
+        (
+            r#"Some(DispatcherStartupFailure::Allocation(_))"#,
+            r#"None"#,
+        ),
+        (
+            r#"Some(DispatcherStartupFailure::Original( ServiceBirthError::Supervision(HostSupervisionError::Terminal { state: HostOperationState::Canceled }) ))"#,
+            r#"None"#,
+        ),
+        (
+            r#"dispatcher.worker.take().unwrap().join().unwrap(); drop(dispatcher.state.take());"#,
+            r#"drop(dispatcher.state.take());"#,
+        ),
+        (
+            r#"assert_descriptor_closed(descriptor, &expected);"#,
+            r#"assert!(true);"#,
+        ),
+        (
+            r#"assert!(!dispatcher.is_physically_retired());"#,
+            r#"assert!(dispatcher.is_physically_retired());"#,
+        ),
+        (
+            r#"assert_eq!(final_report, first_report);"#,
+            r#"assert_eq!(final_report, final_report);"#,
+        ),
+    ];
+    let offsets = code
+        .char_indices()
+        .filter(|(_, ch)| !ch.is_whitespace())
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    let compact = compact_code(&code);
+    let body = source_pattern(DISPATCHER_FAILED_STARTUP);
+    let body_offset = compact
+        .find(&body)
+        .expect("the complete real startup test is present");
+    for (before, after) in cases {
+        let needle = source_pattern(before);
+        let at = body_offset
+            + body
+                .find(&needle)
+                .expect("the actual same-Original observation is present");
+        let mut changed = code.clone();
+        changed.replace_range(offsets[at]..offsets[at + needle.len() - 1] + 1, after);
+        assert_ne!(changed, code);
+        assert!(
+            has(&mask_contract(contract, &changed), "`retry`"),
+            "changed synchronization/retained history passed: {before}"
+        );
+        assert!(
+            has(
+                &super::mask_dispatcher_test_waits(&changed),
+                "`thread::sleep`"
+            ),
+            "changed synchronization/retained history hid the bounded waits: {before}"
+        );
     }
     Ok(())
 }
