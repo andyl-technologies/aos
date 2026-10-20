@@ -16,6 +16,7 @@ use std::{
     ptr::NonNull,
 };
 
+// crucible-lint: allow erased-error -- private const-only model of pinned std::io::Error payload geometry; runtime APIs return typed ProviderError.
 type DynError = dyn Error + Send + Sync;
 
 // These helpers are used ONLY by const items below. Their loops, checked
