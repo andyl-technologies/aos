@@ -531,15 +531,19 @@ fn identity(bytes: &[u8]) -> io::Result<Identity> {
         .calculate(IdentityKind::Chunk, bytes)
         .map_err(io::Error::other)
 }
+
 fn descriptor(bytes: &[u8]) -> io::Result<Descriptor> {
     Descriptor::from_identity(&TERRANE_V1, &identity(bytes)?, bytes).map_err(io::Error::other)
 }
+
 fn raw_envelope(bytes: &[u8]) -> Vec<u8> {
     [vec![0], bytes.to_vec()].concat()
 }
+
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
+
 fn now() -> io::Result<u64> {
     TokioClock
         .now()
@@ -547,14 +551,17 @@ fn now() -> io::Result<u64> {
         .map(|time| time.as_secs())
         .map_err(io::Error::other)
 }
+
 fn invalid(message: &'static str) -> io::Error {
     io::Error::other(message)
 }
+
 fn emit(message: &str) -> io::Result<()> {
     let mut out = io::stdout().lock();
     writeln!(out, "{message}")?;
     out.flush()
 }
+
 fn control(expected: &str) -> io::Result<()> {
     let mut line = String::new();
     io::stdin().lock().read_line(&mut line)?;

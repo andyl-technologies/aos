@@ -71,6 +71,7 @@ impl EncodedAllocation {
     pub(in crate::host_cache::owner) fn order(&self) -> u64 {
         self.order
     }
+
     /// Borrows the process-local allocation identity shared with read activity.
     pub(in crate::host_cache::owner) fn key(&self) -> &str {
         &self.key
