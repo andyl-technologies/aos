@@ -9183,6 +9183,27 @@ matched to Cargo metadata. Both preparation controllers actually terminate
 successfully. Its native phase additionally waits for actual collection of the
 `62bfede7fd` native controller; no runtime or complete task pass is claimed.
 
+Encoded-eviction continuation `a78ab58c2f`, with reviewed audit-only successor
+`fb102141a1`, adds original chunk and pack/index allocation units to the native
+FIFO. Actual physical admission order spans encoded and sealed jobs; producer,
+consumer and dictionary protection remain enforced. Original publisher replies
+and descriptors survive restoration, acknowledged removal, synchronized promise
+release and fresh project-quota queries. Verified restored duplicates are
+refused before another future hold is created. The new guest control independently
+observes mixed FIFO order, same-inode restoration, duplicate refusal, complete
+pair removal, dictionary lifetime and charge release after the final observer
+closes. All 72 previous selectors and 63 project assignments remain; the actual
+fixture lists 73 selectors, with one appended domain bringing the finite project
+budget to 512 MiB inside the unchanged 512 MiB image. Native-profile all-target
+compilation, strict Clippy, fixture compilation and the formatter pair pass.
+Source-bound formatting, crate graph and the renewed exact unsafe-source audit
+also pass on `fb102141a1`. All three isolated strict profiles and private
+documentation pass in 95.650 seconds. Image and archive preparation,
+application-target compilation and native qualification remain pending.
+Native execution preserves the order `62bfede7fd`, then
+`c4076a1f56`, then the audited encoded-eviction source. No task checkbox,
+NativeReady claim or frozen format advances; the zero-wipe conflict stays stopped.
+
 The older shared-directory aggregate at `86fb63e127` actually terminates with
 failure after 18,940.237 seconds. Nextest reports 2,149 run, 2,141 passed,
 seven failed, one timed out and ten skipped. Five failed Linux cases use the
