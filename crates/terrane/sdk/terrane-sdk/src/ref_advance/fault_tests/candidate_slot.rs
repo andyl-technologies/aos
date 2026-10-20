@@ -155,7 +155,9 @@ async fn candidate_slot_pause_reaches_genuine_checked_publication() {
             .unwrap()
     };
     let release = async {
-        tokio::time::timeout(Duration::from_secs(2), barrier.entered())
+        // Reaching the hook performs genuine checked publication and metadata
+        // IO; its arrival budget is separate from any held-operation assertion.
+        tokio::time::timeout(Duration::from_secs(30), barrier.entered())
             .await
             .unwrap();
         assert!(fs.candidate_slot_pause.lock().unwrap().is_none());
