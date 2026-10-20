@@ -4,8 +4,9 @@ Implementation work tracks the full [RFC-0025](../../rfcs/0025-crucible-node-con
 The PR remains draft. Component tests and separately qualified native profiles
 do not establish completion of the full architecture.
 
-This summary accompanies the [phased implementation plan](phased-implementation.md)
-and [qualification plan](qualification-plan.md). Detailed test logs, images,
+This summary accompanies the [phased implementation plan](phased-implementation.md),
+[qualification plan](qualification-plan.md) and proposed
+[SourceBirth worker design](source-birth-derivation-worker.md). Detailed test logs, images,
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
@@ -49,14 +50,23 @@ private compile-time standard-IO layout alias carries a reviewed explanation
 under the existing line-local policy. Scanner, rules, source selection,
 ignored-test population and limits remain unchanged in these refreshes.
 
-The registered kernel source check's third run passes all 39 legacy controls
-and eight configured native-object checks, then fails in the FD source-consuming
-control. Bounded failure diagnostics and a separate legacy check are committed;
-the fourth run has not executed. FD ordinary controls, four FD native objects,
-full kernel/source-companion builds and native qualification remain pending.
-Constructor coverage stays `0x001` of required `0x7ff`, with no FD-table or
-startup capability issued. QEMU and gem5 native execution, matched performance
-and full preservation remain unqualified.
+The sixth registered kernel source check passes 21 source-consuming FD cases
+with modeled kernel peers, four ordinary build-host FD groups and compilation
+of four configured kernel translation units. Its mandatory legacy dependency
+retains the successful 39 PIC/EOI/queue controls and eight configured objects.
+These are distinct modeled, host-FD and Kbuild results; full kernel/module
+linking, source-companion builds, boot and patched-kernel runtime remain
+unqualified. Constructor coverage stays `0x001` of required `0x7ff`, with no
+FD-table, CREATE, KVM_RUN or readiness capability issued.
+
+For the QEMU source checkpoint `d5e5a60107`, registered patch regeneration,
+ordinary native compilation and the selected package checks pass. All 3,794
+build steps complete, and all four native FW_CFG directory-validator cases
+pass. Atomic patch/bundle identities, ABI30 header and license ledger match the
+selected source. Full upstream testing, aggregate ABI/license and release gates,
+matching source-package realization, complete q35 readiness and capture/fresh
+restore remain pending. gem5 native execution, matched performance and full
+preservation remain unqualified.
 
 A separately reviewed gem5 change inspects the actual callback target and
 original SystemCounter owner without copying or invoking the callable. Five
@@ -141,8 +151,8 @@ preserves its first error, and uses the existing initial graph precredit walk.
 | Prior runtime test compilation | Standard four-library compilation passes in 4 minutes 2 seconds. Assertions, overflow checks and default stack remain enabled. |
 | Earlier startup/reclamation pair | Baseline reaches the fifteen-minute limit during inactive-runtime construction; optimized construction finishes, then its recheck refuses after 641.39 seconds. Normal retirement and child reclamation pass. |
 | Earlier startup/reclamation control | Native79 passes in 655.45 seconds with its recorded source helpers and the standard default-stack, fifteen-minute control. All three runtime rechecks, attached actor, exact/one-byte-short whole-holder census, destination assertions, retirement and child reclamation complete. Full native preservation remains unqualified. |
-| Kernel FD source application | The complete 43-stage chain applies with exact identities, zero fuzz and no offsets. Its final catalog contains 182 source roles totaling 5,151,009 bytes. The third registered check passes 39 legacy controls and eight configured objects, then compiles the FD model and receives an unexpected nonzero result. Ordinary FD controls and the four FD native objects are not reached. Bounded failure diagnostics and a separate mandatory legacy dependency are committed; their rerun remains pending. |
-| QEMU FW_CFG insertion lineage | Source and signed-artifact review and package evaluation pass. The registered license ledger passes with 296 created files and matching entries. The configured test inventory passes with 1,576 tests and executes none. Compilation, native controls, regeneration and full license-boundary qualification remain pending. |
+| Kernel FD source and object checks | The selected 43-stage source catalog contains 182 roles totaling 5,151,081 bytes. The sixth registered check passes 21 source-consuming FD cases with modeled kernel peers, four ordinary build-host FD groups and exact-source/dependency Kbuild checks for fs/file.o, mm/crucible_allocator.o, mm/slub.o and virt/kvm/kvm_main.o. Its required legacy dependency retains 39 passed controls and eight configured objects. Full kernel/module linking, source-companion builds, boot, patched-kernel runtime and complete FD coverage remain unqualified. |
+| QEMU FW_CFG insertion lineage | Registered regeneration, the ordinary 3,794-step native build and selected package checks pass at the recorded source checkpoint. All four native directory-validator cases pass; exact atomic patch/bundle, ABI30 header and license-ledger bindings agree. The earlier 296-entry license ledger and configured 1,576-test inventory keep their separate scope. Full upstream testing, aggregate ABI/license/release gates, matching corresponding-source realization, host/plugin-pair checks and complete q35 readiness/capture/fresh restore remain pending. |
 | gem5 SystemCounter observation | Source review and package evaluation pass for the bounded cached-state producer and registered counter controls. Compilation and native execution remain pending. Listener, callback backing, full-system timer ownership, capture and fresh restore remain unqualified. |
 | Real-host KVM preparation | The existing exact stopped-VM test passes: one passed, zero failed, 884 filtered, in 0.04 seconds. Standard test compilation passes in 4 minutes 52 seconds. It creates no vCPU or guest execution and does not qualify the controller profile. |
 | Outstanding qualification | Full preservation, strict lint, ABI and license gates remain pending. |
@@ -155,16 +165,19 @@ identity, generation and once-only checks. Twenty-one source cases and four
 ordinary FD groups extend the existing registered PIC source-check facility;
 the existing controls and resource limits remain intact.
 
-The complete source-application derivation passes, and its installed catalog
-matches the exact selected native source chain. This result includes no C
-compilation, patched-kernel execution, image/module linking or matching-source
-release qualification. The third registered check passes eight configured legacy
-objects and 39 PIC, EOI and deferred-queue controls, then compiles the FD model
-and receives an unexpected nonzero result. Ordinary FD controls and four FD
-native objects are not reached. Bounded original-output diagnostics and a
-mandatory independent legacy dependency are committed; their rerun remains
-pending. Constructor coverage remains `0x001` of required `0x7ff`; this checkpoint grants no FD-table,
-CREATE, RUN or readiness capability.
+The earlier complete source-application derivation remains a separate
+source-only result. The sixth registered check uses the updated 43-stage,
+182-role catalog totaling 5,151,081 bytes. It passes all 21 source-consuming
+FD cases with modeled kernel peers and four ordinary build-host groups for
+growth, exhaustion, concurrency and exec. Kbuild compiles fs/file.o,
+mm/crucible_allocator.o, mm/slub.o and virt/kvm/kvm_main.o; installed dependency
+records bind each object to its actual selected source. The required independent
+legacy check retains its successful 39 controls and eight configured objects.
+
+These results establish neither patched-kernel execution nor full kernel/module
+linking, boot, matching source-companion release or physical accounting.
+Constructor coverage remains `0x001` of required `0x7ff`; this checkpoint grants
+no FD-table, CREATE, KVM_RUN or readiness capability.
 
 The QEMU FW_CFG directory mechanism observes original entries, payload and
 callback identities, selectors, both tables and the live directory backing
@@ -175,17 +188,25 @@ The complete atomic patch, signed branch bundle, descriptor and license ledger
 are updated together. The source-package probe now checks its shipped atomic
 descriptor and manifest-named patch and bundle, including their hashes.
 
-Source review and package evaluation establish no native execution result.
-The registered patch-license ledger passes with 296 created files, zero deleted
-files and 296 ledger entries. This check validates patch additions against the
-license inventory; it does not compile QEMU or qualify the full process boundary.
-The registered configured-test inventory also passes with 1,576 tests and no
-test execution. Its first run identified two existing service tests missing
-from the checked-in list; both registrations now appear alongside every prior
-entry. The registered package build, unit execution, patch regeneration and
-remaining licensing checks remain pending. Full FW_CFG payload/callback
-ownership, ROM closure, Ready admission and exact capture/fresh restore remain
-unqualified.
+The registered native QEMU build completes all 3,794 steps for the selected
+x86_64 and aarch64 softmmu targets, followed by its selected package checks.
+The four native FW_CFG cases pass: all insertion positions, original-owner
+controls, pre-effect refusal and directory alias. They execute the production
+inline directory validator against fixture views; they do not exercise complete
+q35 initialization or the full payload/callback lifecycle.
+
+The registered atomic-patch regeneration gate also passes. Its regenerated
+patch, branch bundle, installed ABI30 header and license ledger match the
+selected identities. The repository check verifies pinned embedded signature
+bytes and presence, not independent trusted-signer cryptography. The earlier
+296-entry patch-license ledger and configured 1,576-test inventory remain
+separate scoped results, rather than aggregate process-boundary acceptance.
+
+The full/thorough upstream suite was not selected. Matching complete
+corresponding-source package realization, aggregate ABI/license/release gates
+and installed host/plugin-pair checks remain pending. Full FW_CFG payload/callback
+ownership, ROM closure, Ready admission, Linux guest continuation and exact
+capture/fresh restore remain unqualified.
 
 The gem5 SystemCounter producer reads cached values, frequency-table storage and
 the original frequency-event identity without updating the counter or servicing
