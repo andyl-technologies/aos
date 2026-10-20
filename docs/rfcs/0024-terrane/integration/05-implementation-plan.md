@@ -8805,8 +8805,41 @@ observation exceeds the failed aggregate's
 120-second outer limit, but this test-profile diagnostic is not the failed
 release executable or a passing aggregate. Production clocks, authorities,
 publication windows and test assertions remain unchanged.
-The two current-source authorization diagnostics now run sequentially using
-the same verified executable and its existing test-only denial callsite trace.
+The two current-source authorization diagnostics also pass, in 17.699 seconds
+and 154.515 seconds respectively, using the same verified executable and its
+existing test-only denial callsite trace. Neither produces a denial. These
+observations do not establish the release aggregate's failure cause.
+
+The corrected `65a2ee3152` native VM subsequently passes in 434.452 seconds.
+Independent review verifies all 67 exact nonignored unit cases, including all
+five filesystem-specific cases and twelve socket cases, all 5,097 inputs and
+the four original Cargo executables. Every prior host lifecycle control and
+48 fixture selectors remain intact. Its required application compilation and
+complete filesystem suite continue. The older `2fd26aa7cf` and `8956e89150`
+checkpoints both finish their exact 183-artifact compilation and all 126
+nonignored ext4 filesystem cases, retaining the original six privileged cases.
+Their unstarted duplicate aggregates are explicitly deferred because those
+sources predate the known fixture correction; no aggregate run or success is
+credited for that deferral.
+
+Current-read candidate `acac8818aa` removes repeated parsing and signature
+verification of the same immutable token inside one authorization invocation.
+Its private carrier is constructed only after real full verification, retains
+the selected issuer key and rechecks the complete authenticated time interval
+and unique active issuer at every original boundary. The original paired
+transition, request, ACL, physical and Original checks remain required; no
+authority is shared across invocations. The pure time predicate is exactly the
+previous inclusive authorization comparison. The new core parity case passes
+locally and is added to both owning chain/pure-verification gates, preserving
+every original witness. Two additional native comparisons cover attenuation,
+retirement and duplicate-key clock rollback. All seven hermetic strict profiles,
+both private documentation builds, the formatter pair, crate graph, exact unsafe
+audit and `no_std` gate pass. Owning gates and an exact source-bound twenty-case
+native run are underway; a separate
+five-case baseline retains the original executable and policies. No performance
+improvement or aggregate success is claimed before those results. No frozen
+identity, encoding, key, store trait, token bytes, dependency or operating
+deadline changes.
 
 Shared-directory source `744aa55567` restores its preserved SDK adapter in the
 new layout. Its all-target compilation passes, while local Nextest explicitly
