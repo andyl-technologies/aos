@@ -408,6 +408,7 @@
         in
           builtins.derivation {
             inherit (configurationLowerCargoEnv) AOS_MKFS_EROFS AOS_FSCK_EROFS AOS_MOUNT AOS_UMOUNT;
+            AOS_NIX_STORE = "${pkgs.nix}/bin/nix-store";
             AOS_PACKAGE_RUNTIME =
               if livePackageRuntime
               then ""

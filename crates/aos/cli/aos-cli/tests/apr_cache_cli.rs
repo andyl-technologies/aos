@@ -212,10 +212,24 @@ async fn apr_cache_generate_cli_supports_apm_install_upgrade_and_execution() -> 
     let consumer_home = tmp.path().join("consumer-home");
     let profile_root = tmp.path().join("profiles");
     let registry_name = "cli-install-cache";
+    let release_key = maintainer_home.join(".config/apm/keys/cli-install-cache-release.key");
+    let key_output = run_apr_with_aos_root(
+        &maintainer_home,
+        &producer_aos_root,
+        &["keys", "generate", "release", "--registry", registry_name],
+    )?;
+    let trust_key = extract_public_key(&key_output)?;
     run_apr_with_aos_root(
         &maintainer_home,
         &producer_aos_root,
-        &["create", registry_name],
+        &[
+            "create",
+            registry_name,
+            "--trust-key",
+            &trust_key,
+            "--key",
+            release_key.to_str().context("release key path utf-8")?,
+        ],
     )?;
     let registry_dir = registry_dir(&maintainer_home, registry_name);
     configure_fixture_git_identity(&registry_dir)?;
@@ -255,12 +269,6 @@ async fn apr_cache_generate_cli_supports_apm_install_upgrade_and_execution() -> 
     )?;
     assert_cache_entry_count(&cache_output, 2)?;
 
-    let release_key = maintainer_home.join(".config/apm/keys/cli-install-cache-release.key");
-    run_apr_with_aos_root(
-        &maintainer_home,
-        &producer_aos_root,
-        &["keys", "generate", "release", "--registry", registry_name],
-    )?;
     let upload_dir = tmp.path().join("origin-upload");
     run_apr_with_aos_root(
         &maintainer_home,
@@ -671,16 +679,33 @@ async fn apr_release_store_path_publishes_signed_cache_channel_and_installs() ->
             &upload_url,
         ],
     )?;
-    assert!(
-        release.contains("Committed: publish fixture-tool 1.0.0"),
-        "{release}",
+    // Publication joins the one signed release commit instead of creating an
+    // intermediate package commit. Verify the actual committed release.
+    let release_commit = git_stdout(
+        &registry_dir,
+        &["rev-parse", "refs/tags/1.0.0^{commit}"],
+        "resolving the signed release commit",
+    )?;
+    assert_eq!(
+        release_commit,
+        git_stdout(&registry_dir, &["rev-parse", "HEAD"], "resolving registry HEAD")?,
     );
+    assert!(aos_registry_client::security::verify_commit_signature(
+        &registry_dir,
+        &release_commit,
+        std::slice::from_ref(&trust_key),
+    )?);
+    assert!(aos_registry_client::security::verify_tag_signature(
+        &registry_dir,
+        "1.0.0",
+        std::slice::from_ref(&trust_key),
+    )?);
     assert!(
         release.contains("Updated registry.toml [caches]"),
         "{release}",
     );
     assert!(
-        release.contains("Generated static cache: 3 narinfos, 3 NARs"),
+        release.contains("Generated static cache: 2 narinfos, 2 NARs"),
         "{release}",
     );
     assert!(
@@ -691,9 +716,18 @@ async fn apr_release_store_path_publishes_signed_cache_channel_and_installs() ->
         release.contains("Released release-store-path-cache 1.0.0"),
         "{release}",
     );
-    assert_cache_entry_count(&upload_dir, 3)?;
+    assert_cache_entry_count(&upload_dir, 2)?;
 
     let package_toml = fs::read_to_string(registry_dir.join("packages/f/fixture-tool.toml"))?;
+    assert_eq!(
+        git_stdout(
+            &registry_dir,
+            &["show", "1.0.0:packages/f/fixture-tool.toml"],
+            "reading the package from the signed release tree",
+        )?,
+        package_toml.trim(),
+        "the published package must be part of the signed release",
+    );
     assert!(
         package_toml.contains(&format!("store_path = \"{}\"", fixture.tool_store_path)),
         "{package_toml}",
@@ -704,6 +738,31 @@ async fn apr_release_store_path_publishes_signed_cache_channel_and_installs() ->
     // the helper must have its own realisation record.
     let tool_hash = store_path_hash(&fixture.tool_store_path)?;
     let helper_hash = store_path_hash(&fixture.helper_store_path)?;
+    // Only the tool and helper are registered closure members. Assert their
+    // identities and edge, so the count cannot hide a missing dependency.
+    let tool_narinfo = fs::read_to_string(upload_dir.join(format!("{tool_hash}.narinfo")))?;
+    let helper_narinfo = fs::read_to_string(upload_dir.join(format!("{helper_hash}.narinfo")))?;
+    for (narinfo, store_path) in [
+        (&tool_narinfo, &fixture.tool_store_path),
+        (&helper_narinfo, &fixture.helper_store_path),
+    ] {
+        assert!(
+            narinfo
+                .lines()
+                .any(|line| line == format!("StorePath: {store_path}")),
+            "cache entry must identify {store_path}:\n{narinfo}",
+        );
+    }
+    let helper_basename = Path::new(&fixture.helper_store_path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .context("fixture helper store basename is not UTF-8")?;
+    assert!(
+        tool_narinfo
+            .lines()
+            .any(|line| line == format!("References: {helper_basename}")),
+        "cached tool must retain its helper dependency:\n{tool_narinfo}",
+    );
     let store_dir = registry_dir.join("store");
     let tool_record = fs::read_to_string(store_dir.join(&tool_hash[..2]).join(&tool_hash))
         .with_context(|| format!("reading published store/ record for tool {tool_hash}"))?;
@@ -771,8 +830,8 @@ async fn apr_release_store_path_publishes_signed_cache_channel_and_installs() ->
     )?;
     assert_eq!(installed["action"], "install");
     assert_eq!(installed["status"], "installed", "{installed}");
-    assert_eq!(installed["downloads"]["downloaded"], 3, "{installed}");
-    assert_eq!(installed["downloads"]["imported"], 3, "{installed}");
+    assert_eq!(installed["downloads"]["downloaded"], 2, "{installed}");
+    assert_eq!(installed["downloads"]["imported"], 2, "{installed}");
     assert_eq!(
         run_profile_tool(&profile_root, "fixture-tool")?,
         "fixture-helper 1.0.0\nfixture-tool 1.0.0\n"

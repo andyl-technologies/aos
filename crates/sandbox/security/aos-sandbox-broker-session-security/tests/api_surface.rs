@@ -10,6 +10,58 @@ const PROTOCOL_AUTHENTICATED_SESSION_SOURCE: &str =
 const PROTOCOL_LIBRARY_SOURCE: &str = include_str!("../../../protocol/aos-sandbox-protocol/src/lib.rs");
 const NETWORK_SERVICE_SOURCE: &str = include_str!("../../../host/aos-sandbox-network/src/service.rs");
 
+// External test-source paths are metadata, not reverse dependencies. Preserve
+// the old broad ownership check everywhere outside this one exact section.
+fn manifest_without_test_source_metadata(manifest: &str) -> String {
+    assert!(
+        !manifest.contains("\"\"\"") && !manifest.contains("'''"),
+        "multiline TOML strings require a parser-backed ownership check"
+    );
+    let mut skip_metadata = false;
+    let mut declarations = String::new();
+
+    for line in manifest.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            skip_metadata = trimmed == "[package.metadata.aos]";
+        }
+        if !skip_metadata {
+            declarations.push_str(line);
+            declarations.push('\n');
+        }
+    }
+
+    declarations
+}
+
+#[test]
+fn dependency_barrier_distinguishes_source_inputs_from_dependency_edges() {
+    let metadata = r#"
+[package.metadata.aos]
+test_source_inputs = ["crates/upper-owner/src/lib.rs"]
+[features]
+default = []
+"#;
+    assert!(!manifest_without_test_source_metadata(metadata).contains("upper-owner"));
+
+    for declaration in [
+        "[dependencies]\nupper-owner.workspace = true",
+        "[dependencies.alias]\npackage = \"upper-owner\"",
+        "[build-dependencies] # actual build edge\nalias = { package = \"upper-owner\", version = \"1\" }",
+        "[dev-dependencies]\nupper-owner = \"1\"",
+        "[target.'cfg(unix)'.dependencies]\nupper-owner.workspace = true",
+        "[target.'cfg(unix)'.dependencies.alias]\npackage = \"upper-owner\"",
+        "[dependencies . alias]\npackage = \"upper-owner\"",
+        "[\"dependencies\".alias]\npackage = \"upper-owner\"",
+        "dependencies.alias = { package = \"upper-owner\", version = \"1\" }",
+    ] {
+        assert!(
+            manifest_without_test_source_metadata(&format!("{declaration}\n{metadata}")).contains("upper-owner"),
+            "dependency edge escaped the ownership barrier: {declaration}"
+        );
+    }
+}
+
 #[test]
 fn dependency_boundary_keeps_crypto_and_application_ownership_explicit() {
     for forbidden in ["\nrand =", "\nrand_core =", "\ngetrandom ="] {
@@ -71,7 +123,7 @@ fn executable_and_http_registration_ownership_is_outside_security() {
         ),
     ];
     assert!(!CRATE_MANIFEST.contains("[[bin]]"));
-    assert!(!CRATE_MANIFEST.contains("aos-sandbox-services"));
+    assert!(!manifest_without_test_source_metadata(CRATE_MANIFEST).contains("aos-sandbox-services"));
     for controller in controller_sources {
         assert!(!controller.contains("axum::serve("));
         assert!(!controller.contains("::register("));
@@ -876,7 +928,7 @@ fn controller_runtime_is_an_upper_owner_without_a_security_reverse_edge() {
     assert!(runtime.contains("aos-sandbox-broker-session-security.workspace = true"));
     assert!(!runtime.contains("aos-sandbox-services"));
     assert!(!runtime.contains("[[bin]]"));
-    assert!(!CRATE_MANIFEST.contains("aos-sandbox-controller-runtime"));
+    assert!(!manifest_without_test_source_metadata(CRATE_MANIFEST).contains("aos-sandbox-controller-runtime"));
     assert!(!LIBRARY_SOURCE.contains("mod controller_service"));
     assert!(!LIBRARY_SOURCE.contains("pub use controller_service"));
     assert!(services.contains("dep:aos-sandbox-controller-runtime"));

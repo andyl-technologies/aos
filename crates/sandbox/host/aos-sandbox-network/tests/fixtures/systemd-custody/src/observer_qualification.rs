@@ -13,8 +13,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, bail, ensure};
 use aos_sandbox_api::aos::sandbox::local::v1::{
-    ApplyNetworkRequest, Audience, BrokerAuthorizationArtifactsV1, BrokerMethod,
-    BrokerRequestEnvelope, NetworkAction,
+    ApplyNetworkRequest, Audience, BrokerAuthorizationArtifactsV1, NetworkAction,
 };
 #[cfg(test)]
 use aos_sandbox_broker::{AdmissionRequest, BrokerAuthority, BrokerDomain};
@@ -58,7 +57,14 @@ use aos_sandbox_network::{
     publish_committed_network_preparation,
 };
 use aos_sandbox_protocol::semantics::network::CanonicalNetworkSemanticsV1;
-use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;
+use aos_sandbox_protocol::semantics::network::preparation_content::{
+    NETWORK_PREPARATION_DESCRIPTOR_ROLES_V2, NetworkPreparationContentReferenceV2,
+    NetworkPreparationContentV2, canonical_network_preparation_specification_v2,
+};
+use aos_sandbox_protocol::session::{
+    AuthorizationArtifactBytes, ValidatedUntrustedAuthorizationArtifacts,
+    encode_authorized_request_envelope,
+};
 use aos_sandbox_protocol::{PeerCredentials, PeerPolicy, decode_request_envelope};
 use buffa::Message as _;
 use ed25519_dalek::SigningKey;
@@ -188,7 +194,8 @@ pub(crate) fn plan(mut arguments: impl Iterator<Item = OsString>) -> Result<()> 
     let authority_fixture = AuthorityFixture::new()?;
     let authority = authority_fixture.authority()?;
     let mut preparations = open_preparations(mode, &state_root, gate_digest)?;
-    let prepared = reserve_preparation(mode, &mut preparations, &authority)?;
+    let (manifest, spec) = preparation_models(mode)?;
+    let prepared = reserve_preparation(&manifest, &spec, &mut preparations, &authority)?;
     let assignment = prepared.preparation().assignment();
     let resolution = prepared.preparation().resolution();
     let namespace_plan = preparations
@@ -358,7 +365,8 @@ fn run_observation(
     let authority_fixture = AuthorityFixture::new()?;
     let authority = authority_fixture.authority()?;
     let mut preparations = open_preparations(mode, state_root, gate_digest)?;
-    let prepared = reserve_preparation(mode, &mut preparations, &authority)?;
+    let (manifest, spec) = preparation_models(mode)?;
+    let prepared = reserve_preparation(&manifest, &spec, &mut preparations, &authority)?;
     let resolution = prepared.preparation().resolution().clone();
     let assignment = prepared.preparation().assignment();
     let namespace_plan = preparations
@@ -370,7 +378,7 @@ fn run_observation(
     let kernel_plan = NetworkKernelPlanV1::compile(assignment, namespace_plan, program)
         .context("compile durable kernel plan")?;
 
-    let request = apply_request(assignment)?;
+    let request = apply_request(&manifest, &spec)?;
     let artifacts = authority_fixture.artifacts(&request, assignment)?;
     let operation_store =
         NetworkStateStore::open_root_owned(&state_root.join(OPERATION_DIRECTORY), &authority, 0)
@@ -520,15 +528,19 @@ fn policy_catalog(mode: Mode, gate_digest: Option<ObjectDigest>) -> Result<Netwo
         .context("construct qualification Network policy catalog")
 }
 
+fn preparation_models(mode: Mode) -> Result<(CanonicalAssignmentManifestV1, SandboxSpec)> {
+    let spec = sandbox_spec(network_profile(mode)?)?;
+    let manifest = assignment_manifest(&spec, mode)?;
+    Ok((manifest, spec))
+}
+
 fn reserve_preparation(
-    mode: Mode,
+    manifest: &CanonicalAssignmentManifestV1,
+    spec: &SandboxSpec,
     preparations: &mut NetworkPreparationCatalogV1,
     authority: &aos_sandbox_network::NetworkAuthorityV1,
 ) -> Result<NetworkPreparationCatalogOutcomeV1> {
-    let profile = network_profile(mode)?;
-    let spec = sandbox_spec(profile)?;
-    let manifest = assignment_manifest(&spec, mode)?;
-    let reservation = NetworkPreparationReservationV1::new(&manifest, &spec)?;
+    let reservation = NetworkPreparationReservationV1::new(manifest, spec)?;
 
     preparations
         .reserve(reservation, authority)
@@ -665,14 +677,24 @@ fn marker_descriptor(kind: PortableMediaType, marker: u8) -> Result<ObjectDescri
     ))
 }
 
-fn apply_request(assignment: aos_sandbox_model::BrokerAssignment) -> Result<Vec<u8>> {
-    apply_request_with_deadline(assignment, 180)
+fn apply_request(
+    manifest: &CanonicalAssignmentManifestV1,
+    spec: &SandboxSpec,
+) -> Result<Vec<u8>> {
+    apply_request_with_deadline(manifest, spec, 180)
 }
 
 fn apply_request_with_deadline(
-    assignment: aos_sandbox_model::BrokerAssignment,
+    manifest: &CanonicalAssignmentManifestV1,
+    spec: &SandboxSpec,
     deadline_boottime_nanoseconds: u64,
 ) -> Result<Vec<u8>> {
+    let assignment = manifest.broker_assignment()?;
+    let specification = canonical_network_preparation_specification_v2(manifest, spec)?;
+    let content = NetworkPreparationContentV2::new(manifest.canonical_bytes(), &specification)?
+        .encode()?;
+    let reference = NetworkPreparationContentReferenceV2::for_content(&content)?;
+
     let mut request = ApplyNetworkRequest::default();
     let header = request.header.get_or_insert_default();
     header.protocol_major = 1;
@@ -688,9 +710,13 @@ fn apply_request_with_deadline(
     fence.desired_generation = assignment.desired_generation().get();
     fence.assignment_digest = assignment.digest().as_bytes().to_vec();
     request.action = NetworkAction::NETWORK_ACTION_PREPARE.into();
-    if assignment.sandbox().as_bytes() == &[Mode::Managed.marker(); 16] {
-        request.endpoint_ids = vec![vec![81; 16]];
-    }
+    request.endpoint_ids = spec
+        .network_profile()
+        .endpoint_ids()
+        .iter()
+        .map(|endpoint| endpoint.as_bytes().to_vec())
+        .collect();
+    reference.bind_request(&mut request);
     Ok(request.encode_to_vec())
 }
 
@@ -944,7 +970,7 @@ impl AuthorityFixture {
             candidate.grant_target(),
             candidate.argument_commitment(),
             u32::try_from(request.len()).context("request length exceeds u32")?,
-            0,
+            u16::from(candidate.preparation_content_reference_v2().is_some()),
         )?;
         let plan = BrokerAuthorizationPlan::new(
             BrokerAudience::Network,
@@ -976,7 +1002,7 @@ impl AuthorityFixture {
             [49; 16],
         )?;
         let lease_bytes = encode_ownership_lease(&lease);
-        validated_artifacts(BrokerAuthorizationArtifactsV1 {
+        validated_artifacts(request, &candidate, BrokerAuthorizationArtifactsV1 {
             broker_plan_signature: signed(
                 &plan_bytes,
                 PortableMediaType::BrokerAuthorizationPlan,
@@ -1054,15 +1080,28 @@ fn signed(
 }
 
 fn validated_artifacts(
+    request: &[u8],
+    semantics: &CanonicalNetworkSemanticsV1,
     artifacts: BrokerAuthorizationArtifactsV1,
 ) -> Result<ValidatedUntrustedAuthorizationArtifacts> {
-    let envelope = BrokerRequestEnvelope {
-        method: BrokerMethod::BROKER_METHOD_NETWORK_APPLY.into(),
-        body: vec![1],
-        authorization: Some(artifacts).into(),
-        ..Default::default()
+    let descriptor_roles = if semantics.preparation_content_reference_v2().is_some() {
+        NETWORK_PREPARATION_DESCRIPTOR_ROLES_V2.as_slice()
+    } else {
+        &[]
     };
-    decode_request_envelope(&envelope.encode_to_vec(), ProtocolId::NetworkBroker, 0)
+    let envelope = encode_authorized_request_envelope(
+        ProtocolId::NetworkBroker,
+        semantics.broker_method_v2(),
+        request,
+        descriptor_roles,
+        AuthorizationArtifactBytes {
+            broker_plan: &artifacts.broker_plan,
+            broker_plan_signature: &artifacts.broker_plan_signature,
+            ownership_lease: &artifacts.ownership_lease,
+            ownership_lease_signature: &artifacts.ownership_lease_signature,
+        },
+    )?;
+    decode_request_envelope(&envelope, ProtocolId::NetworkBroker, descriptor_roles.len())
         .context("decode qualification request envelope")?
         .authorization()
         .cloned()
@@ -1087,9 +1126,12 @@ mod tests {
         let assignment = manifest.broker_assignment().unwrap();
         let fixture = AuthorityFixture::new().unwrap();
         let window = WorkerAuthorizationWindow::current().unwrap();
-        let request =
-            apply_request_with_deadline(assignment, window.request_deadline_boottime_nanoseconds)
-                .unwrap();
+        let request = apply_request_with_deadline(
+            &manifest,
+            &spec,
+            window.request_deadline_boottime_nanoseconds,
+        )
+        .unwrap();
 
         let semantics = CanonicalNetworkSemanticsV1::decode(
             &request,
@@ -1119,7 +1161,9 @@ mod tests {
                     assignment,
                     request_id: REQUEST_ID,
                     request_body: &request,
-                    descriptor_count: 0,
+                    descriptor_count: u16::from(
+                        semantics.preparation_content_reference_v2().is_some(),
+                    ),
                     verb: semantics.broker_verb(),
                     target: semantics.grant_target(),
                     argument_commitment: semantics.argument_commitment(),

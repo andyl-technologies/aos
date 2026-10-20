@@ -387,8 +387,29 @@ fn contract_identity_is_its_rust_canonical_encoding() {
         )
         .unwrap()
     );
+
+    let value: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+    let encoded_requirements = value["requirements"].as_array().unwrap();
+    assert_eq!(encoded_requirements.len(), contract.requirements.len());
+    for (requirement, encoded_requirement) in contract.requirements.iter().zip(encoded_requirements) {
+        assert_eq!(
+            encoded_requirement["id"].as_str(),
+            Some(requirement.id.as_str())
+        );
+
+        let expected = requirement
+            .production_only
+            .then_some(serde_json::Value::Bool(true));
+        assert_eq!(
+            encoded_requirement.get("production_only"),
+            expected.as_ref(),
+            "canonical production_only marker for {}",
+            requirement.id
+        );
+    }
+
     let text = String::from_utf8(encoded).unwrap();
-    for key in ["\"production_only\"", "\"thresholds\"", "\"configuration\""] {
+    for key in ["\"thresholds\"", "\"configuration\""] {
         assert!(!text.contains(key), "contract encoding carries {key}");
     }
 }
