@@ -11,6 +11,7 @@ use terrane_sdk::store::{
     IdentityPrefix, RangeCapability, RefCapability, StoreErrorKind, StoreFailure,
 };
 
+/// Retains untrusted lower bytes and the actual provider dispatch counter.
 pub(super) struct LowerChunk {
     identity: Identity,
     encoded: Vec<u8>,
