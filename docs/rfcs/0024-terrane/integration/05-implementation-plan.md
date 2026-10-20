@@ -9690,15 +9690,17 @@ Resumed qualification:
   descriptor closes. Final measured project usage is 696,320 bytes, with future
   holds unchanged at 1,573,265 bytes and unrelated consumers still readable.
   Strict Core checks pass in 174.714 seconds for the `std` library and native
-  and SDK all-target profiles. The owning publisher gate, required application
-  compilation and the complete filesystem suite remain pending.
+  and SDK all-target profiles. The owning publisher gate passes in 523.646
+  seconds; required application compilation and the complete filesystem suite
+  remain pending.
   The older hermetic policy check finishes with 12 passes and one fixture
   failure: an expiry of `u64::MAX` exceeds TOML's signed-integer encoding range,
   so the generous-bound positive control cannot reach its byte-size assertion.
   All three new external-quota and queue-starvation regressions pass; the whole
   policy check remains failed. Test-only successor `5313ee703a` uses a valid
   expiry while preserving exact-size success, full-snapshot refusal and the
-  generous positive control. Its complete 13-case policy run is underway.
+  generous positive control. All 13 policy cases pass on this corrected source;
+  independent review matches the complete declared case inventory.
   Shared-chunk extraction, standalone and pack cache ownership, admission
   integration, complete recovery and NativeReady remain pending.
 - Surface candidate `f8da5b4293`: the complete task source review, formatter pair
@@ -9753,6 +9755,11 @@ Resumed qualification:
   Original logs and bounded diagnostics are retained. These failures require
   diagnosis and a passing full aggregate before a task merge; module evaluation
   success does not qualify the failed aggregate.
+  Both exact retained cases pass in an isolated diagnostic run using the original
+  executable and assertions: directory-sync in 7.154 seconds and traced overlay
+  collection/reopen in 150.613 seconds. Private disk-backed user, mount and
+  network namespaces use AOS tools and are removed afterward. These focused
+  observations do not qualify the aggregate or establish its failure cause.
   There are no Rust, dependency,
   specification or frozen-interface changes relative to the accepted trunk.
 
