@@ -192,6 +192,16 @@ fixtures and six failing fixtures. Stopped control rearm reaches a real QOM
 The remaining RAM-worker helper closure still requires genuine bounded-thread
 storage, incoming source-pin closure and provider/runtime qualification.
 
+Signed source `6c982d259cad79b6f0ecfac8fe973f9a84ebef9a` selects the five unchanged
+RAM-worker dependencies and closes their actual incoming fingerprint graph.
+The complete normal build again passes all 3,863 actions and six selected suites;
+standalone fixtures remain twenty passing and six failing. The RAM-worker
+fixture now reaches only the undeclared canonical bounded-thread list. That list
+belongs to the real thread provider: startup inserts records, unregister retains
+departed debt, and actual join plus creator identity return permits removal.
+Copying an empty list would sever those producers and is not a valid repair.
+Provider integration must preserve that lifecycle and all existing assertions.
+
 Current status: QEMU-SIM implementation qualification and final performance
 parity are in progress. All gem5/KVM live evidence above is unavailable; these
 are specified future profiles and remain disabled.

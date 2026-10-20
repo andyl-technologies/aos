@@ -1,26 +1,30 @@
-From c1c525a232b485acf878439c1d3049d6224086b3 Mon Sep 17 00:00:00 2001
+From 6c982d259cad79b6f0ecfac8fe973f9a84ebef9a Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:00 +0000
-Subject: [PATCH] crucible: validate deferred-control emitter callers
+Subject: [PATCH] crucible: complete RAM-worker literal dependencies
 
-Retain the complete Crucible integration and isolated native components
-on the sole pinned QEMU upstream base. Change only the two derived
-control fixture callers; preserve every other source blob and mode.
+Retain the complete Crucible integration on the sole pinned QEMU base.
+Complete only the RAM-worker component's literal Source, Native and
+thread dependency selections and their genuine existing fingerprint pins.
+Preserve every other source blob and mode.
 
-Before stopped-control-rearm or template-control-drain creates output,
-validate the shared emitter's ten literal production inputs through its
-existing validator. Pass that same mapping to production_bodies and
-forward it unchanged through the template fixture constructor. This
-repairs the two stale no-argument calls without a fallback or pin bypass.
+Select the actual Source dispatch getter, Native hint, frame identity and
+CPU-pin return bodies in dependency order. Select the unchanged bounded
+RAM-pause helper before its real actor-pause caller. Keep actual identity,
+Object return, finalization, relock and bounded-record checks. Introduce no
+list storage, empty census, scalar grant or accepting provider.
 
-Preserve all opaque composition, providers, production APIs and ABI,
-licenses, input pins, assertions, causal mutations, limits and support
-policy. The normal owning runner must establish subsequent compilation,
-genuine provider linkage and unchanged runtime predicates; this call-shape
-repair does not qualify those obligations.
+Refresh the changed fixture's real Source pin and all six incoming literal
+edges to their actual fixed point. Seven values change across six existing
+maps; retain all inventories, order, validators and non-map bytes. The
+approved graph remains eight maps, 167 edges and 130 inputs, with the
+separate settle consumer yielding 175 edges and 132 inputs. Preserve every
+existing assertion, causal mutation, limit, ABI, license and support policy.
 
-No selected Source or CPU activation, genuine Main/Original admission,
-positive physical CPU-pin return, RCU, launched lifecycle or performance
+Canonical bounded-list storage and registration producers, actual QOM
+linkage, symbol ownership and runtime controls still require the normal
+owning runner. No selected Source or CPU activation, Main/Original
+admission, positive physical return, RCU, launched lifecycle or performance
 qualification is implied. Preserve their mandatory failures and gates.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
@@ -192956,7 +192960,7 @@ index f8e17dcf1ce91d8aefb8d82cafd3196a4fd9edf6..f24121d2d3c66f1436ba73c976a7bd76
      return true;
 diff --git a/scripts/extract-crucible-preexec-purpose.py b/scripts/extract-crucible-preexec-purpose.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..d35f805b7c571ade23a7f41b43c25781c9901d48
+index 0000000000000000000000000000000000000000..20310970f4d3858e3f3a0d61b39866f39c30afa0
 --- /dev/null
 +++ b/scripts/extract-crucible-preexec-purpose.py
 @@ -0,0 +1,87 @@
@@ -192984,7 +192988,7 @@ index 0000000000000000000000000000000000000000..d35f805b7c571ade23a7f41b43c25781
 +    'include/plugins/qemu-plugin.h':
 +        'bf8b9db5f3f9205ca246d9367b889a77c0df9ef0ceeb7ae73e5eda630898bdc7',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'e6271f3cccd4cf08d2949b89639bc43cee052944d3535aa3229548904db5ed80',
++        '33999c91cb1a1fb4b1363feff828324faf862a141a128c4e8c108ed5cf216340',
 +}
 +
 +PURPOSE_FUNCTIONS = (
@@ -236789,7 +236793,7 @@ index 0000000000000000000000000000000000000000..2617c754aa1ea8587f6eaabe5a8bdf68
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-placement.py b/tests/unit/extract-crucible-checkpoint-placement.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..2e5641759009ccdb5b7872a7674a17ff5c4d5395
+index 0000000000000000000000000000000000000000..04247bd1d6f77f53a2806882fe8a8be4d9dbf3a2
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-placement.py
 @@ -0,0 +1,100 @@
@@ -236807,7 +236811,7 @@ index 0000000000000000000000000000000000000000..2e5641759009ccdb5b7872a7674a17ff
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'e6271f3cccd4cf08d2949b89639bc43cee052944d3535aa3229548904db5ed80',
++        '33999c91cb1a1fb4b1363feff828324faf862a141a128c4e8c108ed5cf216340',
 +}
 +
 +FUNCTIONS = (
@@ -236895,7 +236899,7 @@ index 0000000000000000000000000000000000000000..2e5641759009ccdb5b7872a7674a17ff
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-receiving.py b/tests/unit/extract-crucible-checkpoint-receiving.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..5937a94bd0d2bf692f3f1ae5d37a8943726e5079
+index 0000000000000000000000000000000000000000..725182868db0185c4a16c9d6da140ec4ce8eb66e
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-receiving.py
 @@ -0,0 +1,241 @@
@@ -236926,7 +236930,7 @@ index 0000000000000000000000000000000000000000..5937a94bd0d2bf692f3f1ae5d37a8943
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'e6271f3cccd4cf08d2949b89639bc43cee052944d3535aa3229548904db5ed80',
++        '33999c91cb1a1fb4b1363feff828324faf862a141a128c4e8c108ed5cf216340',
 +}
 +
 +FUNCTIONS = (
@@ -237142,7 +237146,7 @@ index 0000000000000000000000000000000000000000..5937a94bd0d2bf692f3f1ae5d37a8943
 +    main()
 diff --git a/tests/unit/extract-crucible-monitor-fd-loans.py b/tests/unit/extract-crucible-monitor-fd-loans.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..ba63fc2465171e1a1d2ecae545a83c0d0ffddf5f
+index 0000000000000000000000000000000000000000..f71129e147cae5a62628585ce81c0026bf48199b
 --- /dev/null
 +++ b/tests/unit/extract-crucible-monitor-fd-loans.py
 @@ -0,0 +1,112 @@
@@ -237166,7 +237170,7 @@ index 0000000000000000000000000000000000000000..ba63fc2465171e1a1d2ecae545a83c0d
 +    'monitor/monitor.c':
 +        '6773b71937e9c0058143070560f3ce3bb114a966d6d4224c7a60d8862fb8d05b',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'e6271f3cccd4cf08d2949b89639bc43cee052944d3535aa3229548904db5ed80',
++        '33999c91cb1a1fb4b1363feff828324faf862a141a128c4e8c108ed5cf216340',
 +}
 +
 +FUNCTIONS = (
@@ -237260,7 +237264,7 @@ index 0000000000000000000000000000000000000000..ba63fc2465171e1a1d2ecae545a83c0d
 +    main()
 diff --git a/tests/unit/extract-crucible-preexec-setup.py b/tests/unit/extract-crucible-preexec-setup.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..705e329270ae9507c79a0afee3af9e0ffdf27961
+index 0000000000000000000000000000000000000000..1a2ec9001d1bd6ebfe8bd9177a5234fdb2b218f8
 --- /dev/null
 +++ b/tests/unit/extract-crucible-preexec-setup.py
 @@ -0,0 +1,173 @@
@@ -237301,9 +237305,9 @@ index 0000000000000000000000000000000000000000..705e329270ae9507c79a0afee3af9e0f
 +    'plugins/crucible-device-workspace.c':
 +        '3dd77a2ad8d4688fb57ccc94618763485d36b9460e3461ac5ff4bc6fa25c558d',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'e6271f3cccd4cf08d2949b89639bc43cee052944d3535aa3229548904db5ed80',
++        '33999c91cb1a1fb4b1363feff828324faf862a141a128c4e8c108ed5cf216340',
 +    'scripts/extract-crucible-preexec-purpose.py':
-+        '8951ce0c3f0cce7ffa565c425afc71904e2283f0c44ad17e4e0e380751201722',
++        'c917a01f930a63a06c7e52aa7bdaef512c6669bb4f0478c2ffd145a6c381b7d6',
 +    'meson.build':
 +        '7eef2c0d1494dfdeed66f56c77f092382cd63d3fd5ad7c0b7c7ac85ca599e39e',
 +    'tests/unit/test-crucible-preexec-setup.c':
@@ -237439,7 +237443,7 @@ index 0000000000000000000000000000000000000000..705e329270ae9507c79a0afee3af9e0f
 +        main()
 diff --git a/tests/unit/extract-crucible-startup-source-controls.py b/tests/unit/extract-crucible-startup-source-controls.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..fc6fce77d422bbc5b4475bb7cfcbd836693a39fa
+index 0000000000000000000000000000000000000000..83de3891473e0022bf3f52f743241b93cd85bb28
 --- /dev/null
 +++ b/tests/unit/extract-crucible-startup-source-controls.py
 @@ -0,0 +1,1047 @@
@@ -237483,7 +237487,7 @@ index 0000000000000000000000000000000000000000..fc6fce77d422bbc5b4475bb7cfcbd836
 +    'plugins/crucible-ram-owner-diagnostic.h':
 +        '437aa8ed61c184163b7a6b0fb5e36c799d6d748410b32166a02e43eb44e2bf1e',
 +    'tests/unit/test-crucible-ram-worker-inventory.py':
-+        'b3b3f474a9703efb5ab5ed6dd0ae4cf6ef16f6e491914099a7e6f1d65a4412f6',
++        'd7c4717a9c0877596182d2242e36014043cdd4012cbc59a991c48a6c7c64033e',
 +    'tests/unit/test-crucible-checkpoint-receiving.c':
 +        'c566ba5524cccb7e5fded88101e457c2ee18d998119c450b8d3121b7fd0561f2',
 +    'plugins/crucible-parent-park.inc.h':
@@ -280732,10 +280736,10 @@ index 0000000000000000000000000000000000000000..ef4f6a3710b9620ed30ea671441d310e
 +    main()
 diff --git a/tests/unit/test-crucible-ram-worker-inventory.py b/tests/unit/test-crucible-ram-worker-inventory.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..f966e555764a3fbfe5b08d31b6c385a739195738
+index 0000000000000000000000000000000000000000..9ec192437fc28fc9fcda9851c78d453db44096e2
 --- /dev/null
 +++ b/tests/unit/test-crucible-ram-worker-inventory.py
-@@ -0,0 +1,651 @@
+@@ -0,0 +1,655 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercises strict RAM membership with actual pthreads and /proc census.
 +
@@ -280808,12 +280812,15 @@ index 0000000000000000000000000000000000000000..f966e555764a3fbfe5b08d31b6c385a7
 +                      "\n{\n" + consume + "    g_assert_not_reached();\n}\n")
 +    bodies += [selected(thread, name) for name in
 +               ("qemu_thread_get_self", "qemu_thread_is_self")]
-+    bodies.append(selected(publication,
-+                           "qemu_crucible_startup_source_native_selection_v1"))
++    bodies += [selected(publication, name) for name in (
++        "qemu_crucible_startup_source_native_selection_v1",
++        "qemu_crucible_startup_source_native_dispatch_hint_v1",
++    )]
 +    bodies += [selected(native, name) for name in (
-+        "native_selection", "registry_process_current", "registry_identity_locked",
-+        "registry_current_locked", "top_locked", "registration_locked",
-+        "frame_member_locked", "frame_reclaim_locked",
++        "native_selection", "native_dispatch_hint", "registry_process_current",
++        "registry_identity_locked", "registry_current_locked", "top_locked",
++        "registration_locked", "frame_member_locked", "frame_reclaim_locked",
++        "frame_identity_locked", "frame_cpu_pin_return",
 +        "qemu_plugin_crucible_native_enter_v1",
 +        "qemu_plugin_crucible_native_mask_v1",
 +        "qemu_plugin_crucible_native_exit_v1",
@@ -281348,6 +281355,7 @@ index 0000000000000000000000000000000000000000..f966e555764a3fbfe5b08d31b6c385a7
 +        ordinary_source_dependencies(),
 +        definition(api, "int qemu_plugin_crucible_hot_fork_barrier("),
 +        *[definition(native_threads, signature) for signature in [
++            "static bool bounded_ram_pause_current_locked(",
 +            "int qemu_thread_ram_pause_begin_actor(",
 +            "int qemu_thread_ram_pause_begin(",
 +            "static int ram_membership_current_locked(",
