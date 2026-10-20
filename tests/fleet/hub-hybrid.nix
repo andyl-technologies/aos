@@ -877,10 +877,9 @@ in {
         bootMode = "image";
         hostStoreMount = true;
         hostAliases = ["aos.fleet.test"];
-        imageDiskMiB =
-          if externalDirect
-          then 32768
-          else 16384;
+        # Worker-only parity retains its signed source graph beside the R2
+        # emulator's multipart parts and finalized objects.
+        imageDiskMiB = 32768;
         memoryMiB = 8192;
         vcpuCount = 4;
         varProvisioning = "repart";
