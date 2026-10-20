@@ -38,6 +38,7 @@ pub(super) fn run(mode: &str) -> io::Result<()> {
             | "admit-chunk"
             | "admit-metadata"
             | "admit-cancel"
+            | "cache-admission-handoff"
             | "recover-manifest"
             | "refuse-manifest"
             | "refuse-unsealed-manifest"
@@ -98,6 +99,9 @@ pub(super) fn run(mode: &str) -> io::Result<()> {
         .enable_all()
         .build()?;
     match mode {
+        "cache-admission-handoff" => {
+            super::admission_cache::run(&owner, &runtime, &inputs, original)?;
+        }
         "source-cleanup" | "source-cleanup-early" => {
             super::source_cleanup::run(
                 mode,

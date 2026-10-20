@@ -79,7 +79,11 @@ pub(super) fn finish(owner: &mut Custody, job: &mut AdmissionJob) -> io::Result<
     Ok((allocated, charged))
 }
 
-fn verify(owner: &Custody, job: &AdmissionJob) -> io::Result<()> {
+/// Checks actual original member bytes and every retained dependency.
+///
+/// # Errors
+/// Refuses changed registration, incomplete pairs, dictionaries or native bytes.
+pub(super) fn verify(owner: &Custody, job: &AdmissionJob) -> io::Result<()> {
     state::check_registration(owner, job)?;
     for dependency in &job.dependencies {
         let source = super::backing::lock(dependency)?;

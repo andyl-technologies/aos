@@ -31,6 +31,7 @@ pub(in crate::host_cache::owner) struct TransferredFunding {
     token: String,
     hold: u64,
     hashes: Vec<String>,
+    cached: Option<super::handoff::CachedAdmission>,
 }
 
 impl TransferredFunding {
@@ -50,6 +51,9 @@ impl TransferredFunding {
         state::check_registration(owner, &job)?;
         if job.token != self.token || job.hold != self.hold || job.hashes != self.hashes {
             return Err(invalid("transferred admission funding changed"));
+        }
+        if let Some(cached) = &self.cached {
+            return cached.remove_transferred(owner, &job, next);
         }
         let name = format!("admission:{}", self.token);
         if next.pins.iter().filter(|row| row.owner == name).count() != self.hashes.len() {
@@ -72,6 +76,10 @@ impl TransferredFunding {
         executor: &NativeOwnerExecutor,
     ) -> io::Result<()> {
         executor.check_physical_worker()?;
+        let mut job = self
+            .job
+            .lock()
+            .map_err(|_| invalid("transferred admission poisoned"))?;
         {
             let custody = executor
                 .custody()
@@ -89,11 +97,10 @@ impl TransferredFunding {
             {
                 return Err(invalid("transferred admission funding still present"));
             }
+            if let Some(cached) = &self.cached {
+                cached.check_released(&custody, &job)?;
+            }
         }
-        let mut job = self
-            .job
-            .lock()
-            .map_err(|_| invalid("transferred admission poisoned"))?;
         if !Arc::ptr_eq(&job.custody, executor.custody())
             || job.token != self.token
             || job.hold != self.hold
@@ -110,6 +117,7 @@ impl TransferredFunding {
         job.files.clear();
         job.directory_progress.clear();
         job.dependencies.clear();
+        job.cached = None;
         Ok(())
     }
 
@@ -168,6 +176,7 @@ impl TransferSource {
             token: job.token.clone(),
             hold: job.hold,
             hashes: job.hashes.clone(),
+            cached: job.cached.clone(),
         })
     }
 

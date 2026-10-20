@@ -36,7 +36,8 @@ pub(super) struct Data {
     pub(super) first: Vec<u8>,
     /// Registered encoding of the nonfinal chunk.
     pub(super) encoded_first: Vec<u8>,
-    dictionary: Option<Vec<u8>>,
+    /// Actual ordinary chunk used as the one-hop dictionary when requested.
+    pub(super) dictionary: Option<Vec<u8>>,
     /// Distinct final plaintext chunk.
     pub(super) tail: Vec<u8>,
     /// Complete expected assembled plaintext.

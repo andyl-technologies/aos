@@ -33,9 +33,9 @@
   native = testing.mkVMTest {
     name = "terrane-native-host-cache-component-ext4";
     memory = 1024;
-    # Additional real release-grace and cache-retirement windows extend the
-    # guest workload. Existing per-control deadlines and assertions stay fixed.
-    timeout = 300;
+    # The encoded-admission control adds two genuine 30-second grace windows.
+    # Existing per-control deadlines and assertions stay fixed.
+    timeout = 390;
     rootfsDeps = [image pkgs.coreutils pkgs.util-linux pkgs.e2fsprogs pkgs.python3];
     testScript = ''
       set -eu

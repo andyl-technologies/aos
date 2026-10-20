@@ -103,6 +103,9 @@ pub(super) fn hex(bytes: &[u8]) -> String {
 /// # Errors
 /// Refuses missing or altered durable reservation, lease or dependency pins.
 pub(super) fn check_registration(owner: &Custody, job: &AdmissionJob) -> io::Result<()> {
+    if let Some(cached) = &job.cached {
+        return cached.check(owner, job);
+    }
     let pin_owner = format!("admission:{}", job.token);
     if !job.started.load(std::sync::atomic::Ordering::Acquire)
         || job.hold == 0

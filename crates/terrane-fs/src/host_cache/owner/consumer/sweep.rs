@@ -253,9 +253,10 @@ fn protection_end(
     grace: std::time::Duration,
 ) -> io::Result<u64> {
     let expiry = pin.expires.min(lease.expires);
-    let publication_grace = lease
+    let cache_grace = lease
         .owner
         .strip_prefix("publication-grace:")
+        .or_else(|| lease.owner.strip_prefix("admission-grace:"))
         .is_some_and(|token| {
             token.len() == 32
                 && token
@@ -264,7 +265,7 @@ fn protection_end(
         });
     // These labels interpret an already durable deadline. They establish no
     // native ownership or read authority; original physical custody does that.
-    if publication_grace
+    if cache_grace
         || (lease.owner.starts_with("consumer-grace:") && consumer_token(&lease.owner).is_some())
     {
         Ok(expiry)
@@ -334,6 +335,7 @@ mod tests {
         for owner in [
             "consumer-grace:0123456789abcdef0123456789abcdef",
             "publication-grace:0123456789abcdef0123456789abcdef",
+            "admission-grace:0123456789abcdef0123456789abcdef",
         ] {
             let explicit = policy(owner, 40, &[40]);
             let (expired, _, count) = expired_policy(&explicit, 40, Duration::from_secs(30))?;

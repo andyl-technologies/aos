@@ -51,7 +51,7 @@ INLINE_BYTES = b"independent inline cold candidate"
 CASES = [
     "empty", "pin", "lease", "reservation", "residence", "unknown",
     "state-file", "state-directory", "cancel", "edquot", "exclusive",
-    "admission-chunk", "admission-metadata", "admission-cancel",
+    "admission-chunk", "admission-metadata", "admission-cancel", "admission-cache",
     "publication-inline", "publication-cancel", "publication-transfer",
     "publication-transfer-cancel", "publication-transfer-conflict",
     "retention-running", "retention-running-cancel",
@@ -823,7 +823,7 @@ def verify_image():
             "installed VM supervisor differs from immutable source")
     require(pathlib.Path(__file__).read_bytes() == supervisor_source.read_bytes(),
             "executed VM supervisor differs from source")
-    helper_names = ["manifest_publication_vm.py", "source_cleanup_vm.py"]
+    helper_names = ["manifest_publication_vm.py", "source_cleanup_vm.py", "admission_cache_vm.py"]
     require(set(identity["supervisor_helpers"]) == set(helper_names),
             "native supervisor helper inventory changed")
     for helper_name in helper_names:
@@ -1096,6 +1096,7 @@ def main():
         exclusive_case(uuid)
         actor("edquot", "edquot", uuid)
         admission_cases(helper, uuid)
+        runpy.run_path(str(IMAGE / "share/admission_cache_vm.py"))["run"](sys.modules[__name__], uuid)
         publication_cases(publisher, uuid)
         runpy.run_path(str(IMAGE / "share/manifest_publication_vm.py"))["run_consumer_leases"](sys.modules[__name__], helper, uuid)
         inline_transfer_cases(publisher, uuid)

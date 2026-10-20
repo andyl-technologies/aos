@@ -8,6 +8,8 @@
 mod actor;
 #[path = "host_cache_fixture/admission.rs"]
 mod admission;
+#[path = "host_cache_fixture/admission_cache.rs"]
+mod admission_cache;
 #[path = "host_cache_fixture/config.rs"]
 mod config;
 #[path = "host_cache_fixture/consumer.rs"]
@@ -40,6 +42,7 @@ fn main() -> std::process::ExitCode {
             "admit-chunk",
             "admit-metadata",
             "admit-cancel",
+            "cache-admission-handoff",
             "seed-manifest",
             "seed-bad-manifest",
             "seed-unsealed-manifest",

@@ -36,6 +36,8 @@ pub(in crate::host_cache::owner) struct AdmissionJob {
     pub(super) dependencies: Vec<Arc<Mutex<AdmissionJob>>>,
     /// Records only fully reconciled physical completion.
     pub(super) complete: bool,
+    /// Original synchronized cache custody after producer funding retires.
+    pub(super) cached: Option<super::handoff::CachedAdmission>,
     /// Records the first attempted durable reservation mutation.
     pub(super) started: Arc<std::sync::atomic::AtomicBool>,
 }
@@ -85,6 +87,7 @@ impl AdmissionJob {
             directory_progress,
             dependencies,
             complete: false,
+            cached: None,
             started: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         })
     }
@@ -110,6 +113,22 @@ pub struct NativeChunkAdmission {
 }
 
 impl NativeChunkAdmission {
+    /// Transfers the actual completed chunk into this physical owner's cache.
+    ///
+    /// The worker retains its native resources after the producer hold retires.
+    /// Dictionary dependencies stay protected independently of producer grace.
+    /// This supplies no consumer grant or final-removal authority.
+    ///
+    /// # Errors
+    /// Returns the original admission if submission fails. Accepted failures
+    /// retain physical resources and policy custody in the actual owner.
+    pub async fn into_cache(
+        self,
+        owner: &super::NativeMetadataOwner,
+    ) -> Result<super::NativeAdmissionHandoffReport, super::NativeAdmissionHandoffError<Self>> {
+        super::handoff::submit(owner, Arc::clone(&self._job), self).await
+    }
+
     /// Borrows the independently verified canonical declaration.
     pub fn descriptor(&self) -> &Descriptor {
         &self.descriptor
@@ -156,6 +175,21 @@ pub struct NativeMetadataAdmission {
 }
 
 impl NativeMetadataAdmission {
+    /// Transfers the actual complete metadata pair into this owner's cache.
+    ///
+    /// Reconstruction pins remain independent of the retiring producer hold.
+    /// The pack and index keep their original native resource ownership.
+    ///
+    /// # Errors
+    /// Returns the original admission on submission refusal. Accepted failures
+    /// retain physical resources and policy custody in the actual owner.
+    pub async fn into_cache(
+        self,
+        owner: &super::NativeMetadataOwner,
+    ) -> Result<super::NativeAdmissionHandoffReport, super::NativeAdmissionHandoffError<Self>> {
+        super::handoff::submit(owner, Arc::clone(&self._job), self).await
+    }
+
     /// Returns the canonical identifier of the complete synchronized pair.
     pub fn pack_id(&self) -> PackId {
         self.id

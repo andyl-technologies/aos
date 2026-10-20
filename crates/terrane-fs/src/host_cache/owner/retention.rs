@@ -101,6 +101,11 @@ pub(super) enum Command {
         resource: Arc<Mutex<super::publication::PublicationJob>>,
         response: oneshot::Sender<io::Result<super::NativeCacheHandoffReport>>,
     },
+    /// Transfers an original completed chunk or metadata pair into cache custody.
+    CacheAdmission {
+        resource: Arc<Mutex<super::admission::AdmissionJob>>,
+        response: oneshot::Sender<io::Result<super::NativeAdmissionHandoffReport>>,
+    },
     /// Closes only external producer reads belonging to the original publication.
     ClosePublicationReads {
         resource: Arc<Mutex<super::publication::PublicationJob>>,
@@ -378,6 +383,13 @@ impl NativeMetadataOwner {
                         }
                         Command::CachePublication { resource, response } => {
                             let result = runtime.block_on(super::publication::handoff::execute(
+                                &mut executor,
+                                &resource,
+                            ));
+                            let _ = response.send(result);
+                        }
+                        Command::CacheAdmission { resource, response } => {
+                            let result = runtime.block_on(super::admission::handoff::execute(
                                 &mut executor,
                                 &resource,
                             ));

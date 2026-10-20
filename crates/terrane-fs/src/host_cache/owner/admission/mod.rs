@@ -6,8 +6,10 @@
 //! These commands establish no eviction, consumer pin or full bucket readiness.
 
 mod backing;
+mod cache_error;
 pub(super) mod chunk;
 mod error;
+pub(super) mod handoff;
 mod io;
 mod memory;
 mod metadata;
@@ -17,7 +19,9 @@ mod transfer;
 
 pub(in crate::host_cache::owner) use backing::AdmissionJob;
 pub use backing::{NativeChunkAdmission, NativeMetadataAdmission};
+pub use cache_error::NativeAdmissionHandoffError;
 pub use error::{NativeChunkAdmissionError, NativeMetadataAdmissionError};
+pub use handoff::NativeAdmissionHandoffReport;
 pub(in crate::host_cache::owner) use transfer::{TransferSource, TransferredFunding};
 
 use super::{

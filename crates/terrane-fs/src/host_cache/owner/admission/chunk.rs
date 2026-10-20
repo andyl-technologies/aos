@@ -156,16 +156,20 @@ pub(in crate::host_cache::owner) fn dictionary(
             continue;
         }
         state::check_registration(owner, &job)?;
+        // A cache-owned dictionary has genuine retained native custody rather
+        // than a producer hold. This physical turn excludes eviction until
+        // state::begin synchronizes the new admission's own dependency pin.
         let pin_owner = format!("admission:{}", job.token);
-        if !owner.state.pins.iter().any(|pin| {
-            pin.owner == pin_owner
-                && pin.hash == state::hex(digest)
-                && pin.expires == RETAINED_LEASE_DEADLINE
-        }) || !owner
-            .state
-            .leases
-            .iter()
-            .any(|lease| lease.owner == pin_owner && lease.expires == RETAINED_LEASE_DEADLINE)
+        if job.cached.is_none()
+            && (!owner.state.pins.iter().any(|pin| {
+                pin.owner == pin_owner
+                    && pin.hash == state::hex(digest)
+                    && pin.expires == RETAINED_LEASE_DEADLINE
+            }) || !owner
+                .state
+                .leases
+                .iter()
+                .any(|lease| lease.owner == pin_owner && lease.expires == RETAINED_LEASE_DEADLINE))
         {
             return Err(io::Error::other("admitted dictionary lost its durable pin"));
         }

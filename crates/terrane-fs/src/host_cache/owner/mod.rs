@@ -38,8 +38,8 @@ pub(super) const RETAINED_LEASE_DEADLINE: u64 = i64::MAX as u64;
 pub(super) use index_io::open_regular_at;
 
 pub use admission::{
-    NativeChunkAdmission, NativeChunkAdmissionError, NativeMetadataAdmission,
-    NativeMetadataAdmissionError,
+    NativeAdmissionHandoffError, NativeAdmissionHandoffReport, NativeChunkAdmission,
+    NativeChunkAdmissionError, NativeMetadataAdmission, NativeMetadataAdmissionError,
 };
 pub use config::{IndexRepairPolicy, NativeCacheOwnerConfig};
 pub use consumer::{NativeConsumerLease, NativeLeaseAccounting};

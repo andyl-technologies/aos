@@ -185,10 +185,11 @@ fn check_parts(
 
     // Each complete publication can reference every current residence. Native
     // eviction temporarily holds source, reference and shared-chunk hash sets;
-    // the current census overlaps retained pending-transition custody.
+    // the current census overlaps retained pending-transition custody. Encoded
+    // cache handoffs additionally retain their exact hash and dependency sets.
     add(
         jobs.checked_mul(records).ok_or_else(overflow)?,
-        3 * hash_slot,
+        5 * hash_slot,
     )?;
 
     // Fixed layout depth: two members, three directory-progress entries and
