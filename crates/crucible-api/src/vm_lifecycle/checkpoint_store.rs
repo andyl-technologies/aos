@@ -67,7 +67,7 @@ pub use test_support::{
     build_streaming_production_checkpoint_codec_fixture,
 };
 
-const MANIFEST_MAGIC: &[u8] = b"crucible.production-exact-closure.v11\0";
+const MANIFEST_MAGIC: &[u8] = b"crucible.production-exact-closure.v12\0";
 const MANIFEST_VERSION: u8 = PRODUCTION_EXACT_CLOSURE_SCHEMA_VERSION;
 const MANIFEST_FILE: &str = "manifest.cbor";
 const MAX_MANIFEST_BYTES: usize = 64 * 1024 * 1024;
@@ -2613,7 +2613,7 @@ fn closure_identity(manifest: &ClosureManifest) -> Result<ContentHash, Scheduler
     if manifest.format_version != MANIFEST_VERSION {
         return Err(store_error("unsupported exact checkpoint manifest version"));
     }
-    let domain = "crucible.production-exact-closure.v11";
+    let domain = "crucible.production-exact-closure.v12";
     Ok(ContentHash::from_canonical_material(
         domain,
         &hex_bytes(&bytes),
@@ -2727,7 +2727,7 @@ fn validate_manifest_shape(manifest: &ClosureManifest) -> Result<(), String> {
     for target in &manifest.targets {
         if !target.overlay.sparse {
             return Err(String::from(
-                "v11 closure manifest has an invalid overlay layout",
+                "v12 closure manifest has an invalid overlay layout",
             ));
         }
         validate_sparse_artifact_shape(&target.overlay)?;
@@ -2753,7 +2753,7 @@ fn validate_exact_ram_manifest(checkpoint: &ExactRamManifest) -> Result<(), Stri
         || (checkpoint.layers.len() > 1) != checkpoint.parent_closure.is_some()
     {
         return Err(String::from(
-            "v11 exact RAM chain has an invalid base or depth",
+            "v12 exact RAM chain has an invalid base or depth",
         ));
     }
     validate_dense_artifact_shape(&checkpoint.device)?;
@@ -2762,14 +2762,14 @@ fn validate_exact_ram_manifest(checkpoint: &ExactRamManifest) -> Result<(), Stri
         validate_dense_artifact_shape(&layer.artifact)?;
         if layer.ram_regions == 0 || layer.artifact.length == 0 || layer.topology != topology {
             return Err(String::from(
-                "v11 exact RAM layer has invalid QEMU metadata",
+                "v12 exact RAM layer has invalid QEMU metadata",
             ));
         }
         if index > 0 {
             let parent = &checkpoint.layers[index - 1];
             if layer.kind != ProductionExactRamKind::Delta || layer.parent != Some(parent.identity)
             {
-                return Err(String::from("v11 exact RAM delta chain is not contiguous"));
+                return Err(String::from("v12 exact RAM delta chain is not contiguous"));
             }
         }
     }

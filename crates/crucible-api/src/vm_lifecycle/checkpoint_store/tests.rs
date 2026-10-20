@@ -8,8 +8,8 @@ use super::{ExactSnapshotHandle as Snapshot, *};
 #[path = "tests/block_overlay_closure.rs"]
 mod block_overlay_closure;
 #[cfg(feature = "test-support")]
-#[path = "tests/v11_artifact_refusal.rs"]
-mod v11_artifact_refusal;
+#[path = "tests/closure_artifact_refusal.rs"]
+mod closure_artifact_refusal;
 
 fn wire_string(value: &str) -> decode::FallibleString {
     decode::FallibleString::new(String::from(value))
@@ -701,6 +701,31 @@ fn closure_manifest_round_trip_is_canonical() {
     assert_eq!(
         encode_manifest(&decoded).expect("re-encode canonical closure manifest"),
         bytes
+    );
+}
+
+#[test]
+fn closure_manifest_refuses_the_prior_v11_schema() {
+    // A v11 closure embeds a scheduler continuation without settled node
+    // times. Its body may otherwise be well formed, so only the magic
+    // distinguishes it; the loader must refuse it rather than reinterpret it.
+    let current = encode_manifest(&manifest()).expect("encode canonical closure manifest");
+    let payload = current
+        .strip_prefix(MANIFEST_MAGIC)
+        .expect("current manifest carries the current magic");
+    let mut prior = b"crucible.production-exact-closure.v11\0".to_vec();
+    prior.extend_from_slice(payload);
+
+    let Err(error) = decode::decode_manifest_with_limits(&prior, FaultResourceLimits::default())
+    else {
+        panic!("a v11 closure manifest must be refused");
+    };
+
+    assert!(
+        error
+            .to_string()
+            .contains("unsupported closure manifest version"),
+        "{error}"
     );
 }
 

@@ -158,7 +158,7 @@ crucible.executor.hot-checkpoint-fallback	1	crucible-daemon::hot_checkpoint_rete
 crucible.qemu.vm-snapshot	4	crucible-qemu::realization	device-state	gate:content-address,gate:exact-closure-streaming
 crucible.qemu.vmstate	1	crucible-daemon::exact_checkpoint_store	device-state	gate:content-address,gate:exact-closure-streaming
 crucible.executor.scheduler-continuation	6	crucible-daemon::exact_checkpoint_store	device-state	gate:content-address,gate:exact-closure-streaming
-crucible.production-exact-closure	11	crucible-api::vm_lifecycle	device-state	gate:content-address,gate:exact-closure-streaming
+crucible.production-exact-closure	12	crucible-api::vm_lifecycle	device-state	gate:content-address,gate:exact-closure-streaming
 crucible.production-network-adapter-checkpoint	13	crucible-api::vm_lifecycle::network_faults	checkpoint	gate:campaign-replay,gate:exact-closure-streaming
 crucible.production-run-lock	1	crucible-api::vm_lifecycle	operational-record	gate:campaign-cold-continuity
 crucible.production-lifecycle-exit-log	1	crucible-api::vm_lifecycle::quantum_loop::lifecycle::persistence::exit_log	operational-record	gate:campaign-cold-continuity

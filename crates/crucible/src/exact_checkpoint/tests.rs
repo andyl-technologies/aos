@@ -9,8 +9,8 @@ use crucible_cas::content_envelope::ContentChild;
 
 #[test]
 fn production_exact_closure_schema_matches_current_magic() {
-    assert_eq!(PRODUCTION_EXACT_CLOSURE_SCHEMA_VERSION, 11);
-    assert_eq!(MANIFEST_MAGIC, b"crucible.production-exact-closure.v11\0");
+    assert_eq!(PRODUCTION_EXACT_CLOSURE_SCHEMA_VERSION, 12);
+    assert_eq!(MANIFEST_MAGIC, b"crucible.production-exact-closure.v12\0");
 }
 
 fn hash(label: &[u8]) -> ContentHash {

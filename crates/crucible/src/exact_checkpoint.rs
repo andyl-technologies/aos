@@ -33,14 +33,14 @@ use codec::*;
 /// Maximum number of RAM layers in one authenticated production checkpoint.
 pub const MAX_EXACT_CHECKPOINT_RAM_LAYERS: usize = 8;
 
-/// Maximum canonical v11 closure-manifest size.
+/// Maximum canonical v12 closure-manifest size.
 pub const MAX_EXACT_CHECKPOINT_MANIFEST_BYTES: usize = 64 * 1024 * 1024;
 
 /// Current production exact-closure manifest schema version.
-pub const PRODUCTION_EXACT_CLOSURE_SCHEMA_VERSION: u8 = 11;
+pub const PRODUCTION_EXACT_CLOSURE_SCHEMA_VERSION: u8 = 12;
 
-const MANIFEST_MAGIC: &[u8] = b"crucible.production-exact-closure.v11\0";
-const CLOSURE_DOMAIN: &str = "crucible.production-exact-closure.v11";
+const MANIFEST_MAGIC: &[u8] = b"crucible.production-exact-closure.v12\0";
+const CLOSURE_DOMAIN: &str = "crucible.production-exact-closure.v12";
 const TARGET_DOMAIN: &str = "crucible.production-vm-exact-checkpoint.v3";
 const RAM_TARGET_DOMAIN: &str = "crucible.production-vm-exact-checkpoint.v2";
 const SPARSE_ARTIFACT_DOMAIN: &str = "crucible.production-exact-sparse-artifact.v1";
@@ -210,7 +210,7 @@ struct ExactCheckpointObjectRecord {
     pub length: u64,
 }
 
-/// Complete canonical v11 closure record used to authenticate a target.
+/// Complete canonical v12 closure record used to authenticate a target.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
 struct ExactCheckpointClosureRecord {
@@ -946,7 +946,7 @@ pub enum ExactCheckpointExecutionSourceError {
 /// substitute a snapshot, artifact, RAM layer, parent, or geometry value after
 /// validation.
 /// The decoder admits every owned allocation against `owned_byte_limit`, then
-/// requires the input bytes to match the canonical v11 encoding exactly.
+/// requires the input bytes to match the canonical v12 encoding exactly.
 /// Storage separately authenticates the bytes named by each artifact; QEMU
 /// rechecks those identities while consuming the proof.
 ///
