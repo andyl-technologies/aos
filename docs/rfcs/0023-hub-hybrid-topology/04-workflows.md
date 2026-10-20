@@ -73,7 +73,7 @@ through `SurfaceFetch::fetch_stream`; hybrid mode must replace that path with a
 typed remote verification operation. It must never run a full-object
 `SurfaceFetch` fallback on the Native Hub.
 
-`aos-hub-core::indexer` currently couples its Git walk to `SurfaceFetch`, and
+`aos-hub-service::indexer` currently couples its Git walk to `SurfaceFetch`, and
 `ObjectReader` hydrates bundle bytes in its own process. Introduce a
 `SurfaceInspection` port for bounded, batchable object and metadata queries,
 plus a versioned result type carrying completeness and object evidence. Adapt

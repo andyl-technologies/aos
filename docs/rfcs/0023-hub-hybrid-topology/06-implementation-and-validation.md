@@ -40,13 +40,14 @@ must not fork business rules or database queries into the edge Worker.
 
 ## Code boundaries
 
-The shared router and domain services in `aos-hub-core` remain the source of
-API and authorization behavior. Native `aos-hub` owns PostgreSQL connection,
-background orchestration, and the trusted origin server. `aos-hub-worker` owns
-public ingress, safe cache and shielding, object byte paths, and the storage
-executor. The storage-work request and result schemas belong in a shared,
-runtime-neutral crate or protocol module. The Native caller uses a client
-adapter; Worker-only can call an in-process adapter rather than HTTP to itself.
+The shared router and domain services in `aos-hub-service` remain the source of
+API and authorization behavior. `aos-hub-native` (the `aos-hub` binary) owns
+PostgreSQL connections, background orchestration, and the trusted origin server.
+`aos-hub-worker` owns public ingress, safe cache and shielding, object byte
+paths, and the storage executor. The storage-work request and result schemas
+belong in a shared, runtime-neutral crate or protocol module. The Native caller
+uses a client adapter; Worker-only can call an in-process adapter rather than
+HTTP to itself.
 
 The existing `SurfaceProvider`/`SurfaceFetch` and `SurfaceWriteProvider` seams
 can support local and remote adapters, but the indexer cannot remain a sequence

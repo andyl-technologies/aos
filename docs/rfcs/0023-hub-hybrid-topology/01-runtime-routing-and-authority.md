@@ -55,7 +55,7 @@ Native.
 
 The Worker must not build a second Hub control-plane router for hybrid mode.
 Current Native and Worker-only implementations already mount the shared
-`aos_hub_core` router, but hybrid's Worker dispatches control requests to the
+`aos_hub_service` router, but hybrid's Worker dispatches control requests to the
 Native instance of that router. This keeps IAM, session, topology, and
 publication behavior in one authoritative execution path. Worker-only keeps
 its existing local execution path as a separate deployment mode.
