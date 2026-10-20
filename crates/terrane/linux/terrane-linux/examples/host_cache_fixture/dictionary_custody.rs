@@ -12,7 +12,10 @@ use std::{
     io::{self, BufRead, Write},
     os::unix::fs::MetadataExt,
 };
-use terrane_format::identity::{Descriptor, IdentityKind, TERRANE_V1};
+use terrane_format::{
+    chunking::ChunkProfile,
+    identity::{Descriptor, IdentityKind, TERRANE_V1},
+};
 use terrane_linux::host_cache::{NativeChunkAdmissionError, NativeMetadataOwner};
 use terrane_sdk::{
     host::cache::CacheState,
@@ -41,11 +44,14 @@ pub(super) fn run(
         .block_on(owner.resume_recovered(completed))
         .map_err(io::Error::other)?;
 
-    let data = manifest_publication::data(false, true)?;
+    let data = manifest_publication::data(false, false)?;
+    let profile = ChunkProfile::cdc_1m([0; 32]);
+    // The dictionary must also be a valid inline publication candidate so that
+    // the refusal reaches retirement exclusion rather than the inline size cap.
     let dictionary_bytes = data
-        .dictionary
-        .as_ref()
-        .ok_or_else(|| invalid("dictionary custody fixture lacks its actual dictionary"))?;
+        .first
+        .get(..profile.minimum() - 1)
+        .ok_or_else(|| invalid("dictionary fixture lacks an inline-sized prefix"))?;
     let identity = TERRANE_V1
         .calculate(IdentityKind::Chunk, dictionary_bytes)
         .map_err(io::Error::other)?;
@@ -58,7 +64,9 @@ pub(super) fn run(
         Descriptor::from_identity(&TERRANE_V1, &dependent_identity, &data.first)
             .map_err(io::Error::other)?;
     let raw = [vec![0], dictionary_bytes.to_vec()].concat();
-    let encoded = data.encoded_first;
+    let encoded =
+        terrane_sdk::codec::encode_chunk(&data.first, profile.maximum(), 3, Some(dictionary_bytes))
+            .map_err(io::Error::other)?;
     if encoded.first() != Some(&2)
         || encoded.get(1..33) != Some(identity.digest())
         || dependent_identity == identity
