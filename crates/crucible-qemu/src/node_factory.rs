@@ -975,13 +975,20 @@ where
     let polls = bounded_restore_boundary_polls(async_policy.qmp_command_timeout);
     let mut acknowledged = false;
     for attempt in 0..polls {
-        let boundary_acknowledged = prepared_setup
+        // The plugin republishes the slot while it acknowledges, so a torn
+        // read is contention, not a refusal. It counts as not yet acknowledged
+        // and the bounded poll below retries it.
+        let boundary_acknowledged = match prepared_setup
             .shmem_hot_path
             .logical_time_restore_boundary_acknowledged(restore_boundary, restored_calibration)
-            .map_err(|source| QemuNodeFactoryError::LogicalTimeRestoreBoundary {
-                stage: "observe acknowledgement",
-                message: source.to_string(),
-            });
+        {
+            Err(source) if source.is_publication_unavailable() => Ok(false),
+            observed => observed,
+        }
+        .map_err(|source| QemuNodeFactoryError::LogicalTimeRestoreBoundary {
+            stage: "observe acknowledgement",
+            message: source.to_string(),
+        });
         let boundary_acknowledged = match boundary_acknowledged {
             Ok(acknowledged) => acknowledged,
             Err(error) => return Err(reap_failed_restore_child(child, error)),
