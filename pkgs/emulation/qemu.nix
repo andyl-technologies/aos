@@ -2004,6 +2004,7 @@ in
                   "accel-classification",
                   "fault-rule-presence",
                   "rr-sim-barriers",
+                  "rr-bound-ceiling",
               ):
                   with (source_root / f"{name}.result").open("w") as result:
                       subprocess.run([
@@ -2096,6 +2097,8 @@ in
               cat rr-sim-barriers.result
               grep -q '^PASS healthy ordinary 8->3 cycles per CPU' rr-sim-barriers.result
               grep -q '^PASS all-halted control claim settles its own IDLE/ACTIVE wake' rr-sim-barriers.result
+              cat rr-bound-ceiling.result
+              grep -Fxq 'PASS production bounded ceilings: 10 cases' rr-bound-ceiling.result
               # Use each changed translation unit's actual configured command,
               # then compare the reconstructed prior production bodies. Every
               # negative must compile and fail a native ownership assertion.
@@ -4868,7 +4871,7 @@ in
                 template-control-drain net-stop-chain aio-fork-custody stop-context \
                 control-continuation tcg-fast-paths mutex-owner-cache snapshot-fast-path settle-prepark \
                 cold-fault-predicates lazy-memory-identity accel-classification \
-                fault-rule-presence rr-sim-barriers control-summary; do
+                fault-rule-presence rr-sim-barriers rr-bound-ceiling control-summary; do
                 install -m 644 "$name.result" \
                   "$out/share/aos/crucible/$name.result"
                 install -m 644 "$name-proof/compile-command.json" \

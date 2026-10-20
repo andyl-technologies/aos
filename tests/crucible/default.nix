@@ -238,6 +238,7 @@ in rec {
     qemuAccelClassification = import ./phase1-qemu-accel-classification.nix {inherit pkgs;};
     qemuFaultRulePresence = import ./phase1-qemu-fault-rule-presence.nix {inherit pkgs;};
     qemuRrSimBarriers = import ./phase1-qemu-rr-sim-barriers.nix {inherit pkgs;};
+    qemuRrBoundCeiling = import ./phase1-qemu-rr-bound-ceiling.nix {inherit pkgs;};
     qemuBlockShmem = import ./phase1-qemu-block-shmem.nix {inherit pkgs lib;};
     qemuNinePShmem = import ./phase1-qemu-9p-shmem.nix {inherit pkgs lib;};
     qmpCommand = import ./qmp-command.nix {inherit pkgs;};
