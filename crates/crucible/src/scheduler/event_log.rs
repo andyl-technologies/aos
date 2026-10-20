@@ -862,13 +862,47 @@ pub enum BackendNetworkAdmission {
 }
 
 /// Exact logical event tick and optional physical retirement witness.
+///
+/// A VM node has two clocks: scheduler time, shared by every node, and its
+/// physical QEMU counter. The node's time mapping anchors them at its ready
+/// point and is re-anchored on resume and restart, so the two differ whenever
+/// that anchor is not counter zero. Which clock [`tick`](Self::tick) carries
+/// depends on the entry's payload; [`retired`](Self::retired) is always
+/// physical.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct EventLogTickStamp {
     /// Node to which the event applies, when node-local.
     pub node: Option<NodeId>,
     /// Exact logical tick, including any idle-time jump bias.
+    ///
+    /// The domain depends on the payload:
+    ///
+    /// - Resolved backend inputs, resolved I/O completions, node-local
+    ///   observables (console output, I/O completion, node state), coverage,
+    ///   memory samples, and guest markers carry scheduler time. I/O
+    ///   completions map their physical delivery counter through the target
+    ///   node's time mapping before recording it here.
+    /// - Preemption decisions carry the recorded physical counter
+    ///   [`PreemptionDecision::at`](crate::PreemptionDecision::at), not
+    ///   scheduler time.
+    /// - Every other payload (other decisions, triggers, fault observations,
+    ///   diagnostics, and evaluation boundaries) carries the entry's scheduler
+    ///   time.
+    ///
+    /// For a preemption decision the entry's
+    /// [`EventLogTime::virtual_time`] is the scheduler time planned for it
+    /// when the scheduler recorded one. Without a planned time, the scheduler's
+    /// decision-time helper (`scheduler_decision_event_log_time`) falls back to
+    /// the same physical counter, so that entry's virtual time is physical too.
+    /// Logs rebuilt from a search schedule
+    /// (`search_schedule_decision_event_time`) always use that counter.
     pub tick: SimInstant,
     /// Raw retired count when independently observed by the backend.
+    ///
+    /// This is always the node's physical QEMU counter. A resolved backend
+    /// input records here the counter at which the live VM received the
+    /// frame; coverage, memory samples, and guest markers record the counter
+    /// at which the guest produced them.
     pub retired: Option<Icount>,
 }
 
