@@ -15,6 +15,10 @@ const DENY: u32 = 0x0005_0000 | libc::EPERM as u32;
 const KILL: u32 = 0x8000_0000;
 const ALLOW: u32 = 0x7fff_0000;
 
+/// Checks the source-audited native architecture and scalar ABI.
+///
+/// # Errors
+/// Refuses targets outside little-endian Linux x86-64 and AArch64.
 pub(super) fn supported() -> io::Result<()> {
     if cfg!(all(
         target_pointer_width = "64",
@@ -114,10 +118,11 @@ fn program() -> Vec<libc::sock_filter> {
     program
 }
 
-/// Installs the fixed quota policy with synchronized kernel enforcement.
+/// Installs the fixed filter with mandatory kernel thread synchronization.
 ///
 /// # Errors
-/// Returns invalid program length, kernel installation or TSYNC failures.
+/// Refuses unrepresentable filter length, failed kernel installation or a
+/// positive thread-synchronization failure; no partial installation is accepted.
 pub(super) fn install() -> io::Result<()> {
     install_program(&program())
 }

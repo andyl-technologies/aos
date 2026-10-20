@@ -68,10 +68,12 @@ def main():
             else:
                 check("#![forbid(unsafe_code)]" in root, f"unsafe code not forbidden: {name}")
             # Native bindings added after T0 require a deliberate source audit.
-            # This exact reviewed module has four SAFETY-documented nsfs calls;
+            # These exact reviewed modules bind namespace and confinement ABIs;
             # any additional unsafe source or edit requires another review.
             audited_bindings = {
                 "host_quota/namespace.rs": "288636e7b7c86422d0533ad6ddce4929dd1ff83d9285c442d9161185036a7a2b",
+                "quota_confinement.rs": "33b08c1dea03a09001087fc7246ff585c93a9b7925d5726ec614ced1529f0ca2",
+                "quota_confinement/policy.rs": "ff28f14c265e324bd71aa19fe2f936a79c087b532b012a87d014a852e5a4334d",
             }
             for source in sources:
                 text = source.read_text()

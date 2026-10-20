@@ -167,7 +167,15 @@ fn audit_capabilities() -> io::Result<()> {
     for capability in 0..64 {
         // SAFETY: PR_CAP_AMBIENT_IS_SET (1) takes a scalar capability number;
         // all unused variadic arguments are explicitly initialized.
-        let result = unsafe { libc::prctl(libc::PR_CAP_AMBIENT, 1, capability, 0, 0) };
+        let result = unsafe {
+            libc::prctl(
+                libc::PR_CAP_AMBIENT,
+                1 as libc::c_ulong,
+                capability as libc::c_ulong,
+                0 as libc::c_ulong,
+                0 as libc::c_ulong,
+            )
+        };
         if result == -1 {
             let error = io::Error::last_os_error();
             if capability != 0 && error.raw_os_error() == Some(libc::EINVAL) {
@@ -191,7 +199,15 @@ fn audit_capabilities() -> io::Result<()> {
 fn get_prctl(option: libc::c_int) -> io::Result<libc::c_int> {
     // SAFETY: these GET operations have no pointer arguments; trailing arguments
     // are explicitly initialized for the variadic ABI.
-    let result = unsafe { libc::prctl(option, 0, 0, 0, 0) };
+    let result = unsafe {
+        libc::prctl(
+            option,
+            0 as libc::c_ulong,
+            0 as libc::c_ulong,
+            0 as libc::c_ulong,
+            0 as libc::c_ulong,
+        )
+    };
     if result == -1 {
         Err(io::Error::last_os_error())
     } else {
@@ -201,7 +217,15 @@ fn get_prctl(option: libc::c_int) -> io::Result<libc::c_int> {
 
 fn set_prctl(option: libc::c_int, value: libc::c_ulong) -> io::Result<()> {
     // SAFETY: these SET operations take one scalar and no pointers.
-    let result = unsafe { libc::prctl(option, value, 0, 0, 0) };
+    let result = unsafe {
+        libc::prctl(
+            option,
+            value,
+            0 as libc::c_ulong,
+            0 as libc::c_ulong,
+            0 as libc::c_ulong,
+        )
+    };
     if result == -1 {
         Err(io::Error::last_os_error())
     } else {

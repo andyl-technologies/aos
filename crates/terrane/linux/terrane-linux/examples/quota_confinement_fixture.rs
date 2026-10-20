@@ -213,7 +213,15 @@ fn child(root: &Path, confined: bool) {
         denied(unsafe { libc::syscall(syscall, -1i64, 0, 0, 0, 0, 0) });
     }
     // SAFETY: PR_SET_DUMPABLE has one scalar value and no pointer arguments.
-    denied(unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 1, 0, 0, 0) } as libc::c_long);
+    denied(unsafe {
+        libc::prctl(
+            libc::PR_SET_DUMPABLE,
+            1 as libc::c_ulong,
+            0 as libc::c_ulong,
+            0 as libc::c_ulong,
+            0 as libc::c_ulong,
+        )
+    } as libc::c_long);
     std::thread::spawn(|| {
         // SAFETY: the inherited filter rejects this scalar syscall.
         denied(unsafe { libc::syscall(469, -1i64, 0, 0, 0, 0) });
