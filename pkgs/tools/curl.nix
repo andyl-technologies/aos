@@ -1,5 +1,6 @@
 ##! curl — Command-line URL transfer tool
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -23,7 +24,64 @@
   version = "8.22.0";
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "curl";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Curl writes the exact resource body.";
+        "files" = {
+          "resource.txt" = "curl local transfer passed\n";
+        };
+        "input" = "A local file URL containing a fixed payload.";
+        "operation" = "Transfer the URL through curl's file protocol.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/curl"
+              "--silent"
+              "--show-error"
+              "file://@work@/primary/resource.txt"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "curl local transfer passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Curl rejects the URL with its URL-format status.";
+        "files" = {};
+        "input" = "A URL with a malformed IPv6 host literal.";
+        "operation" = "Ask curl to parse the malformed URL.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/curl"
+              "--silent"
+              "--show-error"
+              "http://[invalid/"
+            ];
+            "exit_code" = 3;
+            "observes_rejection" = true;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

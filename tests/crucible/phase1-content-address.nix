@@ -8,15 +8,18 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
   model = import ./_crucible-model-source.nix {inherit lib;};
-  modelCanonical = builtins.readFile ../../crates/crucible/src/model/canonical.rs;
+  modelCanonical = builtins.readFile ../../crates/crucible/engine/crucible-engine/src/model/canonical.rs;
   trigger = import ./_crucible-trigger-source.nix {inherit lib;};
-  simLib = builtins.readFile ../../crates/crucible-sim/src/lib.rs;
-  crucibleGate = builtins.readFile ../../crates/crucible/tests/gate_content_address.rs;
-  predicateDsl = builtins.readFile ../../crates/crucible/tests/predicate_dsl.rs;
-  simGate = builtins.readFile ../../crates/crucible-sim/tests/gate_content_address.rs;
-  gateTargets = builtins.readFile ../../crates/crucible-harness/src/gate_targets.rs;
-  gateCatalog = builtins.readFile ../../crates/crucible-harness/src/lib.rs;
-  gateCatalogTest = builtins.readFile ../../crates/crucible-harness/tests/gate_catalog.rs;
+  simLib = builtins.readFile ../../crates/crucible/engine/crucible-determinism/src/lib.rs;
+  crucibleGate = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/engine/crucible-engine/tests/gate_content_address.rs;
+  };
+  predicateDsl = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/predicate_dsl.rs;
+  simGate = builtins.readFile ../../crates/crucible/engine/crucible-determinism/tests/gate_content_address.rs;
+  gateTargets = builtins.readFile ../../crates/crucible/testing/crucible-test-support/src/gate_targets.rs;
+  gateCatalog = builtins.readFile ../../crates/crucible/testing/crucible-test-support/src/lib.rs;
+  gateCatalogTest = builtins.readFile ../../crates/crucible/testing/crucible-test-support/tests/gate_catalog.rs;
   gateTargetMapping = builtins.readFile ./phase1-gate-target-mapping.nix;
   defaultChecks = builtins.readFile ./default.nix;
   harnessTesting = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
@@ -26,7 +29,7 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   failures =
-    failuresFor "crates/crucible/src/model.rs" model [
+    failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" model [
       {
         label = "scenario canonical material entry point";
         needle = "pub fn from_canonical_material(domain: &str, material: &str) -> Self";
@@ -384,8 +387,8 @@
         needle = "pub struct PartialOrderReductionPolicy";
       }
       {
-        label = "decision touched-node classifier";
-        needle = "pub fn touched_nodes(&self) -> Option<BTreeSet<NodeId>>";
+        label = "internal decision touched-node classifier";
+        needle = "fn decision_touched_nodes(decision: &Decision) -> Option<BTreeSet<NodeId>>";
       }
       {
         label = "proof-carrying decision independence";
@@ -500,18 +503,18 @@
         needle = "operation: \"save-checkpoint\"";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model/canonical.rs" modelCanonical [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model/canonical.rs" modelCanonical [
       {
         label = "content hash domain separator";
         needle = "crucible.content-hash.v1";
       }
       {
         label = "configuration hash domain separator";
-        needle = "crucible.configuration.v1";
+        needle = "crucible.configuration.v2";
       }
       {
         label = "schedule hash domain separator";
-        needle = "crucible.schedule.v1";
+        needle = "crucible.schedule.v2";
       }
       {
         label = "explicit schedule decision encoding";
@@ -519,7 +522,7 @@
       }
       {
         label = "materialized state domain separator";
-        needle = "crucible.materialized-state.v1";
+        needle = "crucible.materialized-state.v2";
       }
       {
         label = "materialized state VM snapshot hashing";
@@ -542,7 +545,7 @@
         needle = "offset.appended_segment";
       }
     ]
-    ++ failuresFor "crates/crucible-sim/src/lib.rs" simLib [
+    ++ failuresFor "crates/crucible/engine/crucible-determinism/src/lib.rs" simLib [
       {
         label = "stable hashing primitive";
         needle = "pub struct StableHasher";
@@ -551,12 +554,8 @@
         label = "canonical stable digest bytes";
         needle = "pub bytes: [u8; 32]";
       }
-      {
-        label = "content-addressing seam";
-        needle = "FUTURE_RATCHET_INTEGRATION_SEAM";
-      }
     ]
-    ++ failuresFor "crates/crucible/tests/gate_content_address.rs" crucibleGate [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/gate_content_address.rs" crucibleGate [
       {
         label = "fixed vector coverage";
         needle = "gate_content_address_keeps_fixed_vectors_stable";
@@ -834,8 +833,8 @@
         needle = "assert!(!graph.contains_configuration(&covered));";
       }
       {
-        label = "dependent app-random same stream";
-        needle = "assert!(!same_stream_a.is_independent_from(&same_stream_b, &same_stream_proof));";
+        label = "global RNG draw remains dependent despite a supplied proof";
+        needle = "assert!(!global_rng_draw.is_independent_from(&first, &dependent_proofs));";
       }
       {
         label = "POR proof policy used by tests";
@@ -878,7 +877,7 @@
         needle = "assert_twice_reduce_canonical_digest(";
       }
     ]
-    ++ failuresFor "crates/crucible-sim/tests/gate_content_address.rs" simGate [
+    ++ failuresFor "crates/crucible/engine/crucible-determinism/tests/gate_content_address.rs" simGate [
       {
         label = "fixed vector coverage";
         needle = "gate_content_address_keeps_fixed_vectors_stable";
@@ -904,7 +903,7 @@
         needle = "assert_twice_reduce_canonical_digest(";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/gate_content_address.rs" crucibleGate [
+    ++ forbiddenFor "crates/crucible/engine/crucible-engine/tests/gate_content_address.rs" crucibleGate [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -914,7 +913,7 @@
         needle = "implementation is pending T-HARN-11";
       }
     ]
-    ++ forbiddenFor "crates/crucible-sim/tests/gate_content_address.rs" simGate [
+    ++ forbiddenFor "crates/crucible/engine/crucible-determinism/tests/gate_content_address.rs" simGate [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -924,23 +923,23 @@
         needle = "implementation is pending T-HARN-11";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/src/gate_targets.rs" gateTargets [
+    ++ failuresFor "crates/crucible/testing/crucible-test-support/src/gate_targets.rs" gateTargets [
       {
         label = "implemented crucible content-address target";
-        needle = "gate: \"gate:content-address\",\n        package: \"crucible\",\n        test_target: \"gate_content_address\",\n        required_features: &[\"test-double\"],\n        placeholder: false,";
+        needle = "gate: \"gate:content-address\",\n        package: \"crucible-engine\",\n        test_target: \"gate_content_address\",\n        required_features: &[],";
       }
       {
         label = "implemented crucible-sim content-address target";
-        needle = "gate: \"gate:content-address\",\n        package: \"crucible-sim\",\n        test_target: \"gate_content_address\",\n        required_features: &[],\n        placeholder: false,";
+        needle = "gate: \"gate:content-address\",\n        package: \"crucible-determinism\",\n        test_target: \"gate_content_address\",\n        required_features: &[],";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/src/lib.rs" gateCatalog [
+    ++ failuresFor "crates/crucible/testing/crucible-test-support/src/lib.rs" gateCatalog [
       {
         label = "implemented content-address catalog status";
-        needle = "name: \"gate:content-address\",\n        phase: GatePhase::Phase1,\n        owner: \"crucible\",\n        status: GateStatus::Implemented,";
+        needle = "name: \"gate:content-address\",\n        phase: GatePhase::Phase1,\n        owner: \"crucible-engine\",\n        status: GateStatus::Implemented,";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/tests/gate_catalog.rs" gateCatalogTest [
+    ++ failuresFor "crates/crucible/testing/crucible-test-support/tests/gate_catalog.rs" gateCatalogTest [
       {
         label = "content-address implemented status assertion";
         needle = "find_gate(\"gate:content-address\").map(|spec| spec.status),\n        Some(GateStatus::Implemented)";
@@ -949,15 +948,11 @@
     ++ failuresFor "tests/crucible/phase1-gate-target-mapping.nix" gateTargetMapping [
       {
         label = "implemented crucible mapping target";
-        needle = "gate = \"gate:content-address\";\n      package = \"crucible\";\n      testTarget = \"gate_content_address\";\n      requiredFeatures = [\"test-double\"];\n      placeholder = false;";
+        needle = "gate = \"gate:content-address\";\n      package = \"crucible-engine\";\n      testTarget = \"gate_content_address\";\n      requiredFeatures = [];";
       }
       {
         label = "implemented crucible-sim mapping target";
-        needle = "gate = \"gate:content-address\";\n      package = \"crucible-sim\";\n      testTarget = \"gate_content_address\";\n      requiredFeatures = [];\n      placeholder = false;";
-      }
-      {
-        label = "updated placeholder count";
-        needle = "placeholder_targets=0";
+        needle = "gate = \"gate:content-address\";\n      package = \"crucible-determinism\";\n      testTarget = \"gate_content_address\";\n      requiredFeatures = [];";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -1031,7 +1026,7 @@
       }
       {
         label = "T-TEMP-6 completion names CoW refs";
-        needle = "`crucible::CowDeltaRef`";
+        needle = "`crucible_engine::CowDeltaRef`";
       }
       {
         label = "T-TEMP-6 completion names marginal fork API";
@@ -1047,23 +1042,23 @@
       }
       {
         label = "T-TEMP-8 completion names DAG store trait";
-        needle = "`crucible::DagStore`";
+        needle = "`crucible_engine::DagStore`";
       }
       {
         label = "T-TEMP-8 completion names local backend";
-        needle = "`crucible::LocalDagStore`";
+        needle = "`crucible_engine::LocalDagStore`";
       }
       {
         label = "T-TEMP-8 completion names store-key artifact";
-        needle = "`crucible::DagStoreReproductionArtifact`";
+        needle = "`crucible_engine::DagStoreReproductionArtifact`";
       }
       {
         label = "T-TEMP-9 completion names GC roots";
-        needle = "`crucible::TemporalGraphGcRoots`";
+        needle = "`crucible_engine::TemporalGraphGcRoots`";
       }
       {
         label = "T-TEMP-9 completion names GC report";
-        needle = "`crucible::TemporalGraphGcReport`";
+        needle = "`crucible_engine::TemporalGraphGcReport`";
       }
       {
         label = "T-TEMP-9 completion names content-address gate";
@@ -1071,7 +1066,7 @@
       }
       {
         label = "T-TEMP-10 completion names frontier policy";
-        needle = "`crucible::FrontierReductionPolicy`";
+        needle = "`crucible_engine::FrontierReductionPolicy`";
       }
       {
         label = "T-TEMP-10 completion names reduced enumeration";
@@ -1097,23 +1092,23 @@
     ++ failuresFor "docs/rfcs/0010-crucible/29-patterns-and-sketches.md" patternsAndSketches [
       {
         label = "T-PAT-4 completion names checkpoint";
-        needle = "`crucible::Checkpoint`";
+        needle = "`crucible_engine::Checkpoint`";
       }
       {
         label = "T-PAT-4 completion names node blob refs";
-        needle = "`crucible::NodeBlobRef`";
+        needle = "`crucible_engine::NodeBlobRef`";
       }
       {
         label = "T-PAT-4 completion names CoW refs";
-        needle = "`crucible::CowDeltaRef`";
+        needle = "`crucible_engine::CowDeltaRef`";
       }
       {
         label = "T-PAT-4 completion names DagStore";
-        needle = "`crucible::DagStore`";
+        needle = "`crucible_engine::DagStore`";
       }
       {
         label = "T-PAT-4 completion names local DagStore backend";
-        needle = "`crucible::LocalDagStore`";
+        needle = "`crucible_engine::LocalDagStore`";
       }
       {
         label = "T-PAT-4 completion names checkpoint closure persistence";
@@ -1136,12 +1131,16 @@ in
       pname = "crucible-phase1-content-address";
       version = "0";
       src = crucibleSrc;
+      LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
+      runtimeDeps = [pkgs.sqlite];
 
       buildDeps =
         [
           pkgs.coreutils
+          pkgs.pkg-config
           pkgs.rust
           pkgs.sed
+          pkgs.sqlite
         ]
         ++ dependencies;
 
@@ -1183,23 +1182,21 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-content-address-target" \
-              -p crucible \
-              --features test-double \
+              -p crucible-engine \
               --test predicate_dsl \
               -- --test-threads=1
             cargo test \
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-content-address-target" \
-              -p crucible \
-              --features test-double \
+              -p crucible-engine \
               --test gate_content_address \
               -- --test-threads=1
             cargo test \
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-content-address-target" \
-              -p crucible-sim \
+              -p crucible-determinism \
               --test gate_content_address \
               -- --test-threads=1
           '';
@@ -1214,7 +1211,7 @@ in
             check=${attrPath}
             gate=gate:content-address
             tasks=${builtins.concatStringsSep "," taskIds}
-            rust_tests=crucible::predicate_dsl,crucible::gate_content_address,crucible-sim::gate_content_address
+            rust_tests=crucible_engine::predicate_dsl,crucible_engine::gate_content_address,crucible_determinism::gate_content_address
             corpus=fixed-vectors-and-collision-sampling
             predicate_dsl=world-plan-resolved-content-addressed-conditions
             predicate_dsl_host_closures=additive-unknown-named-predicates

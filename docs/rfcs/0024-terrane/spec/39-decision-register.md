@@ -2761,6 +2761,29 @@ is added rather than editing history.
     changes. Implementation and real native qualification remain required.
   - **Affects:** HOST-19/20/23, PROTO-60 and THREAT-1.
 
+- **[D-127] Reconcile reference package names with workspace ownership.**
+  - **Status:** Decided (2026-10-19)
+  - **Decision:** Name the portable format crate `terrane-format`, the
+    portable repository and store crate `terrane-sdk`, and the Linux binding
+    crate `terrane-linux`. Retain `terrane-cli` and its `terrane` executable.
+    Historical crate spellings elsewhere in the specification are aliases
+    defined by section 37's package-name compatibility section.
+  - **Rationale:** The adopting workspace's reviewed crate migration assigns
+    explicit responsibility names and nested ownership directories to this
+    implementation. Keeping contradictory package names in CRATE-1 through
+    CRATE-21 would make the implementation and its normative structure disagree
+    despite preserving exactly the same dependency and portability boundaries.
+  - **Alternatives considered:** Keep obsolete package names behind compatibility
+    facades (rejected: duplicates ownership and obscures the required dependency
+    direction); change stable gate names (rejected: breaks conformance references).
+  - **Compatibility:** A source-level package rename only. No identity preimage,
+    content bytes, bucket key, Store/LocalFs signature, exposure contract, wire
+    protocol, token, requirement ID, or gate name changes. The no_std boundary
+    and exclusive Linux unsafe-code boundary are preserved. This decision does
+    not resolve the separate HOST-3/HOST-25/DOM-18 sealing contradiction or claim
+    any pending task complete.
+  - **Affects:** CRATE-1 through CRATE-21, ARCH-1/4 and their existing gates.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**

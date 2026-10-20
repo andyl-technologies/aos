@@ -1,0 +1,163 @@
+//! Errors returned while building deterministic QEMU launch commands.
+
+use thiserror::Error;
+
+use super::QemuPreSpawnLaunchValidationError;
+
+/// Reports an admitted executor ceiling below a QEMU launch requirement.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum QemuLaunchResourceError {
+    /// The command's fixed vCPU topology exceeds the admitted ceiling.
+    #[error("QEMU launch requires {required} vCPUs but executor admitted {admitted}")]
+    VirtualCpus {
+        /// Fixed `-smp` vCPU count.
+        required: u32,
+        /// Admitted executor vCPU ceiling.
+        admitted: u32,
+    },
+    /// The command's guest RAM alone exceeds the admitted resident ceiling.
+    #[error("QEMU launch requires {required} guest-memory bytes but executor admitted {admitted}")]
+    ResidentBytes {
+        /// Fixed guest RAM baseline.
+        required: u64,
+        /// Admitted resident-memory ceiling.
+        admitted: u64,
+    },
+    /// The exact-VMState container cannot fit below the admitted disk ceiling.
+    #[error("QEMU launch requires {required} writable bytes but executor admitted {admitted}")]
+    WritableBytes {
+        /// Minimum writable VMState/container bytes.
+        required: u64,
+        /// Admitted aggregate writable-byte ceiling.
+        admitted: u64,
+    },
+}
+
+/// Reports an invalid QEMU launch command.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub enum QemuLaunchCommandError {
+    /// A process generation cannot use the reserved zero value.
+    #[error("QEMU plugin process generation must be nonzero")]
+    ZeroProcessGeneration,
+    /// A plugin resource limit was zero or exceeded its compiled ceiling.
+    #[error("QEMU plugin resource limit `{field}` value {configured} is outside 1..={hard}")]
+    InvalidPluginResourceLimit {
+        /// Stable public resource-limit field.
+        field: &'static str,
+        /// Rejected configured value.
+        configured: u64,
+        /// Immutable compiled ceiling.
+        hard: u64,
+    },
+    /// App-random was configured without enabling the white-box callback.
+    #[error("app-random QEMU launch requires white-box mode")]
+    AppRandomWhileWhiteboxDisabled,
+    /// A selectable catalog was configured without enabling white-box callbacks.
+    #[error("guest-selectable QEMU launch requires white-box mode")]
+    SelectableCatalogWhileWhiteboxDisabled,
+    /// Campaign marker parking was configured without white-box callbacks.
+    #[error("campaign marker parking requires white-box mode")]
+    CampaignMarkerParkingWhileWhiteboxDisabled,
+    /// The composite setup plan could not be encoded within its fixed profile.
+    #[error("QEMU plugin setup plan cannot be represented canonically")]
+    InvalidPluginSetupPlan,
+    /// Only part of the app-random branch configuration was supplied.
+    #[error("app-random branch seed and prefix draw count must be configured together")]
+    InvalidAppRandomBranchConfiguration,
+    /// App-random continuation cursors did not match their declared bounds.
+    #[error("app-random continuation cursors do not match their declared draw bounds")]
+    InvalidAppRandomContinuationConfiguration,
+    /// The node name cannot be represented in QEMU's comma-separated plugin args.
+    #[error("app-random node name must not contain `,` or `=`")]
+    InvalidAppRandomNodeName,
+    /// The executable name did not identify an implemented fault architecture.
+    #[error("QEMU executable does not identify an x86_64 or aarch64 fault backend: `{executable}`")]
+    UnsupportedFaultCapabilityArchitecture {
+        /// Executable path whose basename was unsupported.
+        executable: String,
+    },
+    /// The supplied capability declaration was not a canonical exact manifest.
+    #[error("QEMU launch requires an exact admitted World node fault-capability manifest")]
+    InvalidFaultCapabilityRequirement,
+    /// A production launch was not bound to an admitted World node manifest.
+    #[error("production QEMU launch capability requirement is not World-bound")]
+    UnboundFaultCapabilityRequirement,
+    /// The VM and plugin target do not match the manifest's scenario node.
+    #[error("QEMU VM, plugin, and fault-capability node identities do not match")]
+    FaultCapabilityNodeMismatch,
+    /// The realized accelerator attachment differs from the admitted manifest.
+    #[error("QEMU accelerator attachment does not match the fault-capability manifest")]
+    AcceleratorCapabilityMismatch,
+    /// The QEMU system executable architecture differs from the World manifest.
+    #[error("QEMU executable architecture does not match the fault-capability manifest")]
+    FaultCapabilityArchitectureMismatch,
+    /// The launch CPU model does not match the manifest's realized CPU type.
+    #[error("QEMU launch CPU model does not match the fault-capability manifest")]
+    FaultCapabilityCpuModelMismatch,
+    /// White-box mode lacked a live QEMU port-map validation.
+    #[error("white-box QEMU launch requires live setup collision validation")]
+    MissingWhiteboxSetupValidation,
+    /// A white-box validation was attached while the callback was disabled.
+    #[error("white-box setup validation is forbidden when white-box mode is off")]
+    WhiteboxSetupValidationWhileDisabled,
+    /// A command-line field was empty or could not be represented stably.
+    #[error("{field} must be fixed non-empty text without newlines or NUL bytes")]
+    InvalidLaunchText {
+        /// Invalid command-line field.
+        field: &'static str,
+    },
+    /// A debug gdbstub would listen outside the guarded QEMU run directory.
+    #[error("QEMU gdbstub endpoint must be a relative private Unix listener, got `{endpoint}`")]
+    InvalidGdbstubEndpoint {
+        /// Rejected QEMU `-gdb` endpoint.
+        endpoint: String,
+    },
+    /// An immutable launch input was not resolved to an AOS store path.
+    #[error("{field} must be an AOS store path, got `{path}`")]
+    InvalidStorePath {
+        /// Invalid immutable input field.
+        field: &'static str,
+        /// Invalid path.
+        path: String,
+    },
+    /// The CoW overlay file name was not a stable relative file name.
+    #[error("root overlay file name must be stable relative text, got `{file_name}`")]
+    InvalidOverlayFileName {
+        /// Invalid overlay file name.
+        file_name: String,
+    },
+    /// An initrd was supplied for a firmware-only launch with no direct kernel.
+    #[error("QEMU initrd launch requires a directly loaded kernel")]
+    InitrdWithoutKernel,
+    /// The QMP socket file name was not a stable relative file name.
+    #[error("QMP socket file name must be stable relative text, got `{file_name}`")]
+    InvalidQmpSocketFileName {
+        /// Invalid socket file name.
+        file_name: String,
+    },
+    /// A crucible-shmem device length was zero, not a sector multiple, or too large.
+    #[error(
+        "crucible-shmem block size must be a nonzero sector multiple within bounds, got {size}"
+    )]
+    InvalidCrucibleShmemBlockSize {
+        /// Rejected device length in bytes.
+        size: u64,
+    },
+    /// A plugin path contained a comma, which would be ambiguous in QEMU's plugin option.
+    #[error("plugin path must not contain a comma")]
+    PluginPathContainsComma,
+    /// A plugin descriptor was negative.
+    #[error("plugin argument `{field}` has invalid descriptor {fd}")]
+    InvalidFileDescriptor {
+        /// Invalid descriptor field.
+        field: &'static str,
+        /// Invalid descriptor value.
+        fd: i32,
+    },
+    /// The resulting argv failed the pre-spawn QEMU launch validator.
+    #[error("QEMU launch command failed pre-spawn validation: {source}")]
+    PreSpawnValidation {
+        /// Validator error.
+        source: QemuPreSpawnLaunchValidationError,
+    },
+}

@@ -24,7 +24,6 @@ persistent ownership or fleet consistency requires them:
   aos.users.users.operator = {
     uid = 1000;
     group = "operator";
-    home = "/var/lib/operator";
     shell = "${pkgs.bash}/bin/bash";
     description = "Host operator";
     extraGroups = ["adm"];
@@ -36,6 +35,15 @@ persistent ownership or fleet consistency requires them:
   };
 }
 ```
+
+Named accounts have no home directory unless the host enables persistent
+homes. Set `aos.homes.enable = true` to bind `/home` from the state volume and
+give every account with a UID of 1000 or above a home under `/var/home` that
+is created before its first login; see
+[Enable persistent home directories](host-nix.md#enable-persistent-home-directories).
+Without it an operator's home is `/`, which is read-only, and only
+`/etc/ssh/authorized_keys/<user>` carries per-account state. Root's home is
+always persistent at `/root`.
 
 Group membership is authorization. Review access implied by `adm`, device,
 container, virtualization, storage, and service-specific groups before adding

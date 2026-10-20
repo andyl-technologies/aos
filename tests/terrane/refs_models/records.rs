@@ -7,7 +7,7 @@ use super::{
     commits, fields,
     support::{Value, a, encode, m, n, set, t},
 };
-use terrane_core::refs::{
+use terrane_format::refs::{
     Locality, MergePolicy, RefLogReason, RefLogRecord, RefName, RefPolicy, RefRecord, Retention,
     SnapshotEnvelope,
 };

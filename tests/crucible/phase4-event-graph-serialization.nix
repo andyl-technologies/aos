@@ -9,8 +9,8 @@
 
   trigger = import ./_crucible-trigger-source.nix {inherit lib;};
   model = import ./_crucible-model-source.nix {inherit lib;};
-  libRs = builtins.readFile ../../crates/crucible/src/lib.rs;
-  serializationTest = builtins.readFile ../../crates/crucible/tests/event_graph_serialization.rs;
+  libRs = builtins.readFile ../../crates/crucible/engine/crucible-engine/src/lib.rs;
+  serializationTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/event_graph_serialization.rs;
   triggerDoc = builtins.readFile ../../docs/rfcs/0010-crucible/17a-conditions-and-triggers.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -22,164 +22,7 @@
   # string forced after every chunk. A whole-file per-character fold builds a
   # haystack-deep chain of unforced `+` thunks and overflows the evaluator
   # stack on large sources.
-  scrubCommentsAndStrings = content: let
-    scrubChunk = chunkState: chunk: let
-      length = builtins.stringLength chunk;
-      charAt = index: builtins.substring index 1 chunk;
-      indexes = builtins.genList (index: index) length;
-      folded = builtins.foldl' step chunkState indexes;
-      step = state: index:
-        if state.skip
-        then
-          state
-          // {
-            skip = false;
-          }
-        else let
-          ch = charAt index;
-          next =
-            if (index + 1) < length
-            then charAt (index + 1)
-            else "";
-        in
-          if state.mode == "code"
-          then
-            if ch == "/" && next == "/"
-            then
-              state
-              // {
-                out = state.out + "  ";
-                mode = "line";
-                skip = true;
-              }
-            else if ch == "/" && next == "*"
-            then
-              state
-              // {
-                out = state.out + "  ";
-                mode = "block";
-                depth = 1;
-                skip = true;
-              }
-            else if ch == "\""
-            then
-              state
-              // {
-                out = state.out + " ";
-                mode = "string";
-              }
-            else
-              state
-              // {
-                out = state.out + ch;
-              }
-          else if state.mode == "line"
-          then
-            if ch == "\n"
-            then
-              state
-              // {
-                out = state.out + "\n";
-                mode = "code";
-              }
-            else
-              state
-              // {
-                out = state.out + " ";
-              }
-          else if state.mode == "block"
-          then
-            if ch == "/" && next == "*"
-            then
-              state
-              // {
-                out = state.out + "  ";
-                depth = state.depth + 1;
-                skip = true;
-              }
-            else if ch == "*" && next == "/"
-            then
-              state
-              // {
-                out = state.out + "  ";
-                mode =
-                  if state.depth == 1
-                  then "code"
-                  else "block";
-                depth =
-                  if state.depth == 1
-                  then 0
-                  else state.depth - 1;
-                skip = true;
-              }
-            else
-              state
-              // {
-                out =
-                  state.out
-                  + (
-                    if ch == "\n"
-                    then "\n"
-                    else " "
-                  );
-              }
-          else if ch == "\\" && next != ""
-          then
-            state
-            // {
-              out =
-                state.out
-                + " "
-                + (
-                  if next == "\n"
-                  then "\n"
-                  else " "
-                );
-              skip = true;
-            }
-          else if ch == "\""
-          then
-            state
-            // {
-              out = state.out + " ";
-              mode = "code";
-            }
-          else
-            state
-            // {
-              out =
-                state.out
-                + (
-                  if ch == "\n"
-                  then "\n"
-                  else " "
-                );
-            };
-    in
-      # Force the accumulated output flat before the next chunk so thunk
-      # depth stays bounded by the longest line, not the whole file.
-      builtins.seq (builtins.stringLength folded.out) folded;
-    lines = lib.splitString "\n" content;
-    lineCount = builtins.length lines;
-    chunkAt = index:
-      builtins.elemAt lines index
-      + (
-        if index + 1 < lineCount
-        then "\n"
-        else ""
-      );
-    result =
-      builtins.foldl'
-      (state: index: scrubChunk state (chunkAt index))
-      {
-        out = "";
-        mode = "code";
-        depth = 0;
-        skip = false;
-      }
-      (builtins.genList (index: index) lineCount);
-  in
-    result.out;
+  scrubCommentsAndStrings = import ./_rust-scrub.nix {inherit lib;};
 
   taskList = builtins.concatStringsSep "," taskIds;
   serializationSources = builtins.concatStringsSep "\n" [
@@ -199,7 +42,7 @@
         needle = "Completed by `checks.crucible.phase4.gates.replayOracle`";
       }
     ]
-    ++ failuresFor "crates/crucible/src/trigger.rs" trigger [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/trigger.rs" trigger [
       {
         label = "event graph builder type";
         needle = "pub struct EventGraphBuilder";
@@ -233,7 +76,7 @@
         needle = "fn graph_static_evaluation_times";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" model [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" model [
       {
         label = "Plan has one graph-native representation";
         needle = "pub struct Plan";
@@ -291,7 +134,7 @@
         needle = "fn read_action_binary";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" libRs [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" libRs [
       {
         label = "EventGraphBuilder exported";
         needle = "EventGraphBuilder";
@@ -301,7 +144,7 @@
         needle = "EventGraphEventBuilder";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/event_graph_serialization.rs" serializationTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/event_graph_serialization.rs" serializationTest [
       {
         label = "builder validates before hashing test";
         needle = "event_graph_builder_validates_before_plan_hashing";
@@ -382,7 +225,10 @@ in
       version = "0";
       src = crucibleSrc;
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.rust
         pkgs.sed
@@ -426,7 +272,7 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-event-graph-serialization-target" \
-              -p crucible \
+              -p crucible-engine \
               --test event_graph_serialization \
               -- --test-threads=1
           '';

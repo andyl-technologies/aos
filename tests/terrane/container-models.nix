@@ -6,7 +6,7 @@
   ];
 
   runTest = name: ''
-    if ! cargo test --frozen --offline -p terrane-core --test container_vectors ${name} -- --exact \
+    if ! cargo test --frozen --offline -p terrane-format --test container_vectors ${name} -- --exact \
       > "$TMPDIR/container-model-test.log" 2>&1; then
       cat "$TMPDIR/container-model-test.log"
       exit 1
@@ -20,7 +20,7 @@ in
       printf 'Chunk envelope and merged-shard reference models remain pending implementation.\n' >&2
       exit 1
     fi
-    cargo build --frozen --offline -p terrane-core --example reference_blake3
+    cargo build --frozen --offline -p terrane-format --example reference_blake3
     reference_binary="$CARGO_TARGET_DIR/debug/examples/reference_blake3"
     python3 ../tests/terrane/container_vectors.py --self-check \
       --blake3-bin "$reference_binary" > "$out/reference-result"
@@ -29,9 +29,9 @@ in
       --blake3-bin "$reference_binary" >> "$out/reference-result"
     cp ../docs/rfcs/0024-terrane/spec/reference/golden-vectors.md ../tests/terrane/container-reference.md
     cp ../tests/terrane/container-reference.md "$out/reference.md"
-    cp ../tests/terrane/container-models.rs terrane-core/tests/container_vectors.rs
+    cp ../tests/terrane/container-models.rs terrane/sdk/terrane-format/tests/container_vectors.rs
     cargo fmt --all -- --check
     ${builtins.concatStringsSep "\n" (map runTest tests)}
-    cargo clippy --frozen --offline -p terrane-core --test container_vectors -- -D warnings
+    cargo clippy --frozen --offline -p terrane-format --test container_vectors -- -D warnings
     printf 'PASS: independent envelope and merged-shard models with three exact owning-codec groups\n' > "$out/result"
   ''

@@ -49,13 +49,13 @@
         "maint-runner root has a real dependency closure"
 
       # Maintainer creates a local registry and prepares a grouped release branch.
-      $APR create maint-reg
+      create_publish_registry maint-reg
       REG_DIR="$REG_STORAGE/maint-reg"
       DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
       $APR branch create release-2026q2 --registry maint-reg
       $APR branch switch release-2026q2 --registry maint-reg
 
-      $APR publish "$GIT_STORE" \
+      publish_vm_package "$GIT_STORE" \
         --name maint-git \
         --version 1.0.0 \
         --description "Git from the maintainer workflow" \
@@ -64,7 +64,7 @@
         --maintainer release@example.invalid \
         --registry maint-reg \
         --no-commit
-      $APR publish "$CURL_STORE" \
+      publish_vm_package "$CURL_STORE" \
         --name maint-curl \
         --version 1.0.0 \
         --description "Curl from the maintainer workflow" \
@@ -73,7 +73,7 @@
         --maintainer release@example.invalid \
         --registry maint-reg \
         --no-commit
-      $APR publish "$RUNNER_STORE" \
+      publish_vm_package "$RUNNER_STORE" \
         --name maint-runner \
         --version 1.0.0 \
         --description "Executable payload from the maintainer workflow" \
@@ -223,11 +223,8 @@
 
       $APR branch switch "$DEFAULT_BRANCH" --registry maint-reg
       $APR merge release-2026q2 --registry maint-reg
-      ssh-keygen -q -t ed25519 -N "" -f /tmp/maint-release-key
-
-      $APR --json release 1.0.0 \
+      release_vm_package --json 1.0.0 \
         --registry maint-reg \
-        --key /tmp/maint-release-key \
         --cache-url http://127.0.0.1:18084 \
         --channel stable \
         --init-channel \
@@ -295,9 +292,8 @@
       fi
 
       echo "dirty maintainer scratch note" > "$REG_DIR/maintainer-notes.txt"
-      if $APR release 1.0.0 \
+      if release_vm_package 1.0.0 \
         --registry maint-reg \
-        --key /tmp/maint-release-key \
         --cache-url http://127.0.0.1:18083 \
         --upload-url file:///tmp/maint-cache \
         > /tmp/dirty-release.out 2>&1; then
@@ -325,9 +321,8 @@
       fi
       rm -f "$REG_DIR/maintainer-notes.txt"
 
-      $APR --json release 1.0.0 \
+      release_vm_package --json 1.0.0 \
         --registry maint-reg \
-        --key /tmp/maint-release-key \
         --cache-url http://127.0.0.1:18082 \
         --upload-url file:///tmp/maint-cache \
         > /tmp/release.json 2>&1 || {

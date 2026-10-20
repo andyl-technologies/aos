@@ -1,7 +1,10 @@
 ##! GNU soelim — roff source include preprocessor
 {
+  lib,
   mkDerivation,
   fetchurl,
+  stdenv,
+  buildPackages,
   bison,
   gnumake,
   m4,
@@ -10,8 +13,62 @@
   version = "1.23.0";
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "soelim";
-    inherit version;
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Soelim replaces the include request with the referenced file's exact contents.";
+        "files" = {
+          "answer.roff" = "answer=42\n";
+          "document.roff" = ".so answer.roff\n";
+        };
+        "input" = "A roff document that includes a second local source file.";
+        "operation" = "Expand the .so request through GNU soelim.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/soelim"
+              "document.roff"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "answer=42\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Soelim rejects the unresolved include with a failure status.";
+        "files" = {
+          "document.roff" = ".so missing.roff\n";
+        };
+        "input" = "A roff include request naming a file that does not exist.";
+        "operation" = "Resolve the missing include through GNU soelim.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/soelim"
+              "document.roff"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
+    # Keep module compatibility at this release until a broader policy is reviewed.
+    version = "=${version}";
 
     src = fetchurl {
       urls = [
@@ -21,7 +78,10 @@ in
       hash = "sha256-a5dX9ZK3UYtJAutq9+VFcL3Mujeocf3bLTCuOGNRHBM=";
     };
 
-    buildDeps = [bison gnumake m4 perl];
+    buildDeps =
+      if stdenv.isCross
+      then [buildPackages.bison buildPackages.gnumake buildPackages.m4 buildPackages.perl]
+      else [bison gnumake m4 perl];
     runtimeDeps = [];
     propagatedDeps = [];
 
@@ -36,7 +96,10 @@ in
       {
         name = "configure";
         script = ''
-          ./configure --prefix=$out
+          ./configure --prefix=$out ${lib.optionalString stdenv.isCross ''
+            --build=${stdenv.buildPlatform.config} \
+            --host=${stdenv.hostPlatform.config}
+          ''}
         '';
       }
       {

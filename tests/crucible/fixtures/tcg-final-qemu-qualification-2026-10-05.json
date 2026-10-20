@@ -1,0 +1,1737 @@
+{
+  "format": "crucible-final-qemu-qualification-v1",
+  "status": "SCOPED_QEMU_PACKAGE_AND_ORDINARY_CORPUS_AND_REGISTER_67_PASS",
+  "date": "2026-10-05",
+  "scope": "Installed combined signed QEMU stage33343. This report records package/source proofs, ordinary-mode native inertness corpus and existing 67-case register matrix. Other final production-plugin, Sim scheduler/restore/fingerprint/hot-fork gates are owned and reported separately. No timings or performance claim.",
+  "source_identity": {
+    "aos_integration_commit": "e4f5a5558d210d76fac759b7c4d08a70900291d4",
+    "signed_atomic_commit": "33343f63cb5e8749caadcb251c6b8a90ed0482cf",
+    "signed_tree": "4f24df196ef8364bf75a61fd22b7f6e054f9fa4c",
+    "sole_upstream_parent": "1ed046750938db278a12dc55c6a7934d5fc68c14",
+    "upstream_parent_tree": "c08cc386be14139bc835ab077baa0e72ef7ba7ef",
+    "signature_verified": true,
+    "original_author_committer_identities_and_dates_preserved": true,
+    "single_dco": true,
+    "atomic_patch_sha256": "b7e1a2f9d5e9645de1eee9e8c72858ab6f13ca23be8dea72b951aed6303cad3b",
+    "bundle_sha256": "1f2a58084cba5e7c1e4918bbd6f104050be1f047ea903db60f8ea096696a9cae",
+    "canonical_serialization": [
+      "git",
+      "format-patch",
+      "--stdout",
+      "--no-signature",
+      "--no-stat",
+      "--full-index",
+      "--binary",
+      "1ed046750938db278a12dc55c6a7934d5fc68c14..33343f63cb5e8749caadcb251c6b8a90ed0482cf"
+    ],
+    "whole_tree_canonical_reconstruction_result": "PASS\nqemu_version=11.1.1\natomic_patch=crucible-qemu-11.1.1.patch\natomic_patch_hash=b7e1a2f9d5e9645de1eee9e8c72858ab6f13ca23be8dea72b951aed6303cad3b\nbase_commit=1ed046750938db278a12dc55c6a7934d5fc68c14\nbase_tree=c08cc386be14139bc835ab077baa0e72ef7ba7ef\ncommit=33343f63cb5e8749caadcb251c6b8a90ed0482cf\ntree=4f24df196ef8364bf75a61fd22b7f6e054f9fa4c\nbundle_hash=1f2a58084cba5e7c1e4918bbd6f104050be1f047ea903db60f8ea096696a9cae\napply_commit_tree_verified=true\nbundle_matches_patch_commit=true\npinned_bundle_identity_authenticated=true\nbundle_commit_signature_embedded=true\nbundle_commit_tree_matches_reconstruction=true\nbundle_commit_sole_parent_verified=true\natomic_patch_regenerated_exactly=true\ndco_verified=true\nunsigned_commit_negative_control=true\nsole_parent_negative_control=true\nsource_extractions=1\nfull_tree_staging_passes=1\nsource_supplement_files=956\nsource_supplement_entries=7273\nsource_supplement_sha256=aa4cc4852862bc8688212603c5186431ac9ace2fecfa34d77fe5a077ee58cb4f\nsource_reconstruction_inventory_verified=true\nimmutable_shared_git_object_database=true\n",
+    "canonical_source_supplement": {
+      "artifact": "source-supplement.tar",
+      "sha256": "aa4cc4852862bc8688212603c5186431ac9ace2fecfa34d77fe5a077ee58cb4f",
+      "bytes": 20736000
+    },
+    "relevant_signed_qemu_source_files": {
+      "accel/accel-system.c": {
+        "sha256": "9d04dce4398159fc39a5bdae7f1c7e27ffc037fcc87bfa9c9c6c8f33900aeacd",
+        "bytes": 4114
+      },
+      "include/qemu/accel.h": {
+        "sha256": "aaf8410ff0c9a288e77911028b0dda8789eae888eca5ff9b049c43251e8dacf4",
+        "bytes": 3294
+      },
+      "accel/tcg/tcg-accel-ops-rr.c": {
+        "sha256": "0edbc0f720aa18959506cb399ccd3e8f08702576a10118682c3954bfa0d1c291",
+        "bytes": 96888
+      },
+      "accel/tcg/tcg-accel-ops-icount.c": {
+        "sha256": "69592e91d77da137ce0e47076c3ce61f6de7386c15afd4dca8ed1883f4cd8b10",
+        "bytes": 7819
+      },
+      "accel/tcg/tcg-accel-ops-preemption.c": {
+        "sha256": "0369d3391c4e9cccdaf69011b775f7c8c72cafa671a01c975029effe8f288fc5",
+        "bytes": 10149
+      },
+      "accel/tcg/icount-common.c": {
+        "sha256": "580137f73146ba656ab7ca0b1f0c6ed18c88765d6e0115b871a31a1673eb51dd",
+        "bytes": 38966
+      },
+      "system/cpus.c": {
+        "sha256": "2bcee2b7faae9629576788a31f30928c51d4ddf5da411d94488d442658bcf0a6",
+        "bytes": 29933
+      },
+      "plugins/api-system.c": {
+        "sha256": "8421c84733d2f6f8d4d576803797165efc930d59cfa32062b3822360bda99bf2",
+        "bytes": 112330
+      },
+      "plugins/crucible-fault-node.c": {
+        "sha256": "9664e63f9e34fb682736e3b86741ad4cdf694417a15d9ad786ed57bac7978b30",
+        "bytes": 512244
+      },
+      "qapi/run-state.json": {
+        "sha256": "b68b6ff5b4a1eeef2ed94bc11e2b38403c36efc0087a2f93f59e44f8b6ed995a",
+        "bytes": 129614
+      },
+      "tests/unit/test-crucible-accel-classification.py": {
+        "sha256": "2d1533522977b87ff8cc98d358f8b208ae35de5b75d3b27ad9ce1bf2fc308e88",
+        "bytes": 28642
+      },
+      "tests/unit/test-crucible-rr-sim-barriers.py": {
+        "sha256": "e799507284668ae50ccde95f66663826955a789bc5f9e339ab9c6b688cb7e89a",
+        "bytes": 23228
+      },
+      "tests/unit/test-crucible-fault-rule-presence.py": {
+        "sha256": "6df9282b12e9e0af1e9926d51edb29f6d6056d5eaf8cdc94d2d48b4f3d036705",
+        "bytes": 21936
+      },
+      "tests/unit/test-crucible-lazy-memory-identity.py": {
+        "sha256": "5b5a4d9d6af2c7e9f7c03afd28678a7354b148d2e5cb7f254aae493274ae68db",
+        "bytes": 16029
+      },
+      "tests/tcg/plugins/crucible-register.c": {
+        "sha256": "665f38a4c2ee49dc988783e2941754a41c4720427d05fd88349cdab4dd244356",
+        "bytes": 44753
+      }
+    },
+    "base_aos_archive_sha256": "91031491ec7b4392e6a790059c37fee5b41f6873de214c89f47e8e88d4cad267",
+    "base_aos_archive_manifest_sha256": "d2f12e9590015a12789ed1d9f46daca1b5c39a23b02c88ad3e68ab92d4aa98d3"
+  },
+  "installed_package": {
+    "exit_code": 0,
+    "drv": "pljgady66vavrnxrqnzcay82i29qg7ji-qemu-crucible-11.1.1.drv",
+    "output": "lbmf6sf2hqczks1h8vl86d3y8aj23hk0-qemu-crucible-11.1.1",
+    "identity": {
+      "qemu_package": "qemu-crucible",
+      "qemu_version": "11.1.1",
+      "qemu_source_hash": "sha256-B5/7/4pxEbvIkCIQfLq/O7/WFNX8nXzGdZkRlqyhJII=",
+      "qemu_nix_hash": "9fe53c4daabfca23eaedf830a0cf7fb805a88c34b33584feec145779b43b3a88",
+      "qemu_configure_flags_hash": "85313e491e87d9d1553d973bdd3bc71baa3110b1d012b2d083f61b815395f939",
+      "qemu_configure_target_list": "x86_64-softmmu,aarch64-softmmu",
+      "qemu_atomic_patch_hash": "b7e1a2f9d5e9645de1eee9e8c72858ab6f13ca23be8dea72b951aed6303cad3b",
+      "qemu_patch_branch_ref": "dplecki/cached-tick-observation",
+      "qemu_patch_branch_model": "single-atomic-final-state-integration-commit",
+      "qemu_patch_branch_bundle_hash": "1f2a58084cba5e7c1e4918bbd6f104050be1f047ea903db60f8ea096696a9cae",
+      "qemu_patch_branch_base_commit": "1ed046750938db278a12dc55c6a7934d5fc68c14",
+      "qemu_patch_branch_base_tree": "c08cc386be14139bc835ab077baa0e72ef7ba7ef",
+      "qemu_patch_branch_head_commit": "33343f63cb5e8749caadcb251c6b8a90ed0482cf",
+      "qemu_patch_branch_material_hash": "f4e6fa2774987af675fb02a00c447ead21917bb31c1cdf8d0843b667b0466371",
+      "qemu_plugins_enabled": "true",
+      "qemu_crucible_atomic_patch_applied": "true",
+      "qemu_sim_capability": "qemu-crucible",
+      "qemu_shmem_abi_version": "30",
+      "qemu_shmem_abi": "crucible-shmem-abi-v30",
+      "qemu_shmem_header": "include/aos/crucible/crucible_shmem_abi.h",
+      "qemu_shmem_header_hash": "1dc465a755a9d9e8195a7e3cd22ecadcc1496fff89a2e19bcf7ffb7b9c9b8dcd",
+      "qemu_combined_work_license": "GPL-2.0-only",
+      "qemu_unmarked_source_default_license": "GPL-2.0-or-later",
+      "qemu_plugin_header_license": "GPL-2.0-or-later",
+      "qemu_shmem_header_license_option": "MIT",
+      "qemu_build_id": "1665535d7366414640ca1b7cf2fd24aab18441282d549d2ccf2d3593e094a1f0"
+    },
+    "build_cores": 32,
+    "max_jobs": 1,
+    "remote_builders": "",
+    "artifacts": {
+      "bin/qemu-system-x86_64": {
+        "sha256": "4bb772b6198537c265af602eefbd8a28d187c8280acbbf259fff88bad94097d9"
+      },
+      "bin/qemu-system-aarch64": {
+        "sha256": "4f93ffc0c600ace89758d6d8c90c005d3ece23d3a2fa12d070fffd2fa7f06bd8"
+      },
+      "share/qemu/symbols/qemu-system-x86_64.tsv": {
+        "sha256": "0697493e8cc10e80b3c67d23fd72e45ebcb2df5166e7816292819f4db4ff4a44"
+      },
+      "share/qemu/symbols/qemu-system-aarch64.tsv": {
+        "sha256": "aab852304da8976b7f2ee40f0096bd8b638bff4eedeec406c21e37397d8ae9ea"
+      },
+      "share/aos/crucible/qemu-build-identity.env": {
+        "sha256": "8dd035c8888ccd1d8645455d83bd6d5ea1a0681953bfcf5630eb31caa6005308"
+      },
+      "include/aos/crucible/crucible_shmem_abi.h": {
+        "sha256": "1dc465a755a9d9e8195a7e3cd22ecadcc1496fff89a2e19bcf7ffb7b9c9b8dcd"
+      },
+      "share/aos/crucible/rr-sim-barriers.result": {
+        "sha256": "2bf0bfdca56329be62095825c3b5866e70775a905497c32ad6cfb41268db16f5"
+      },
+      "share/aos/crucible/rr-sim-barriers.compile-command.json": {
+        "sha256": "0164ab12a7ab5dd1d2a960f716509df65b43dc5a952dc5d60a68d6b3ba9c99a0"
+      },
+      "share/aos/crucible/accel-classification.result": {
+        "sha256": "002a0214876c4169f3762af647cfd207e0538c970c4106202a733d65e67ea752"
+      },
+      "share/aos/crucible/accel-classification.compile-command.json": {
+        "sha256": "07f4fc8b2a6ad5ad5874a74dfe04f5321686d2feb04aa1b2b3cbdff7490e3c8d"
+      },
+      "share/aos/crucible/fault-rule-presence.result": {
+        "sha256": "7db6d935320e61f56e6ca685016a8778c6e8952b21c139b020a7e08dc4bff1d2"
+      },
+      "share/aos/crucible/fault-rule-presence.compile-command.json": {
+        "sha256": "563d4126d6d9c40ea87a222b112036e7a73fd9322b65e6e1848a112a722340e3"
+      },
+      "share/aos/crucible/lazy-memory-identity.result": {
+        "sha256": "48b7f20d208422ef4dce9d6564bccea21cca618bb49ed455ff4e18f5c395065f"
+      },
+      "share/aos/crucible/lazy-memory-identity.compile-command.json": {
+        "sha256": "5358437500ca16d0253d349b4ee43c23fe04801c0ca6cfe2f81992430720a0ff"
+      },
+      "share/aos/crucible/lifecycle-projection.result": {
+        "sha256": "f2fcdb8a69a9c3aa218e33857be8636bad7d6543701aaf7ea404705a64507124"
+      },
+      "share/aos/crucible/lifecycle-projection.compile-command.json": {
+        "sha256": "3f07eaab3df4112ca766e9db597f9596783c99e37122bbad2fca5819eb3af58f"
+      },
+      "share/aos/crucible/tcg-fast-paths.result": {
+        "sha256": "fdf6c91bf0a133d6dbb3563767da9da75f24c2ee7fc46469bc120ab533266c03"
+      },
+      "share/aos/crucible/tcg-fast-paths.compile-command.json": {
+        "sha256": "c4eafbdcfd84c7423b434a37940f4cc50e20f35fa34c79f7eb7db895e5c440b8"
+      },
+      "share/aos/crucible/mutex-owner-cache.result": {
+        "sha256": "d818b1c5400132ad0ff6340494bafa9dd67e528274c4905bc4d531020e3652a9"
+      },
+      "share/aos/crucible/mutex-owner-cache.compile-command.json": {
+        "sha256": "58fb4165c7631e296f1de00929f09f0aca417d2d411284bcf775bb4c0bebc316"
+      },
+      "share/aos/crucible/settle-prepark.result": {
+        "sha256": "31261d9e4a97d842f7297ecd5950b2be07ce09af25234ab33f320641a7aca846"
+      },
+      "share/aos/crucible/settle-prepark.compile-command.json": {
+        "sha256": "609e400329778a41c9911b9a3f5256ae7b8164fbb4752a38638de77f47574d53"
+      },
+      "share/aos/crucible/snapshot-fast-path.result": {
+        "sha256": "c41dfd15876e7e3fb0f8a4adcecdcc2f8dc000cb6e2b372d972f911a04e27740"
+      },
+      "share/aos/crucible/snapshot-fast-path.compile-command.json": {
+        "sha256": "e382548ee0781f264f3037223127b212994211ea3473f6796ebe6fb740e107f7"
+      },
+      "share/aos/crucible/cold-fault-predicates.result": {
+        "sha256": "431aafc46a90ece14f6746c858ba729d4dd6f9117e115258c1b7a6979c4aaac2"
+      },
+      "share/aos/crucible/cold-fault-predicates.compile-command.json": {
+        "sha256": "6385034b2229322130d03f5fcb6155a887ea314134a224bd4462de869b85e717"
+      }
+    },
+    "sized_elf_relative_function_map_counts": {
+      "share/qemu/symbols/qemu-system-x86_64.tsv": 29317,
+      "share/qemu/symbols/qemu-system-aarch64.tsv": 40346
+    },
+    "manifest": {
+      "artifact": "installed-package-manifest.json",
+      "sha256": "e8b9b95c4bb0462710a61397717799a493ee91fe6c4cb0002b3ee04136ff0331",
+      "bytes": 9773
+    }
+  },
+  "compiler": {
+    "source_built": true,
+    "version": "gcc (GCC) 16.2.0",
+    "wrapper": {
+      "artifact": "gcc",
+      "sha256": "5723ba248c7a7603b3dddc7bccf0e2d79d6e430ae0b886fce82270a4920e3d4a",
+      "bytes": 4792
+    },
+    "underlying_compiler": {
+      "artifact": "gcc",
+      "sha256": "d7d793895b15c5cba1436b8e34c2aac2ad5ff89a6034b4e17a1f79133d3711d6",
+      "bytes": 3922216
+    },
+    "strict_standalone_diagnostics": [
+      "-std=gnu11",
+      "-O2",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-Wmissing-prototypes",
+      "-Wstrict-prototypes",
+      "-Wredundant-decls"
+    ],
+    "configured_proof_flags": "Retained exact installed *.compile-command.json hashes in artifacts. Actual package compile commands include the configured generated-header/include/ABI identity defines and native O2 flags; not replacement stubs."
+  },
+  "prebuild_checks": {
+    "all_exit_codes": 0,
+    "complete_current_source_guards_exit_code": 0,
+    "ledger_rows": 135,
+    "license_ledger_result": {
+      "artifact": "result",
+      "sha256": "41b858db2904e9ebc30d861242f511bc34d256eab489056d8447b0e0555c29af",
+      "bytes": 190
+    },
+    "canonical_output": "qv12k2zjkvhyskw7gy4wqjxa0lqpb55w-crucible-qemu-atomic-patch-repository-0",
+    "standalones": {
+      "standaloneRrSimBarriers": {
+        "status": "PASS",
+        "output": "f3qi2xb3rjf27df79mza9qbc3lam1p83-crucible-phase1-qemu-rr-sim-barriers-0",
+        "files": {
+          "negative-missing-fixed-point/compile-command.json": {
+            "sha256": "7169ca4c65c374bb70fd6f3e9cd94d6c25dc11a970d75e754064ff8e3d87eb40",
+            "bytes": 957
+          },
+          "negative-missing-fixed-point/production-extractions.json": {
+            "sha256": "9d099815651ddf8b12af9aba15cfc04deda5e791f66e5a4f8206771addf0ba9e",
+            "bytes": 3508
+          },
+          "negative-missing-fixed-point/rr-sim-barriers": {
+            "sha256": "cc6370241861d67bf7b4120f3b71d0a640f7f15f13d214791f2713ced0fb840d",
+            "bytes": 31808
+          },
+          "negative-missing-fixed-point/rr-sim-barriers.c": {
+            "sha256": "85aed91c80e26d0ce8616a6e5df73ac5c5face079cb0edec0a1b10f142e22295",
+            "bytes": 30790
+          },
+          "negative-missing-fixed-point.log": {
+            "sha256": "349f8ea168bca229b6f26569585b796e0ecc4db94b5ab38d479fdcc93234f6ce",
+            "bytes": 1054
+          },
+          "negative-missing-owner-restoration/compile-command.json": {
+            "sha256": "f6b31c166d4924aa57e783394f5662a9e52e0212622e09eb586429700190ac50",
+            "bytes": 969
+          },
+          "negative-missing-owner-restoration/production-extractions.json": {
+            "sha256": "2b3b24f42ec2a67c4b69e8fea199483450e92f8c003b927c6af76f1e68078ca1",
+            "bytes": 3514
+          },
+          "negative-missing-owner-restoration/rr-sim-barriers": {
+            "sha256": "11b9b250b71404eb3e7b7a42d75922acf1e06a1b6cc171d1823ee9ce19451980",
+            "bytes": 31752
+          },
+          "negative-missing-owner-restoration/rr-sim-barriers.c": {
+            "sha256": "ed53d0689a039c641d28dd5c541160a62307fc1537e868a9707e7e0951793006",
+            "bytes": 30804
+          },
+          "negative-missing-owner-restoration.log": {
+            "sha256": "94ab571efa4ed1c9965361c69eaa9154ca8cad4f3d41f6158563cadb7acf8e12",
+            "bytes": 1086
+          },
+          "negative-missing-pre-drain/compile-command.json": {
+            "sha256": "f52f9f3f154ef86593be0cccf4c0da1daf21d3f381bab344021aa943dfbdfce3",
+            "bytes": 953
+          },
+          "negative-missing-pre-drain/production-extractions.json": {
+            "sha256": "ec33cd77bd4f31b601a5a9573655cf4919a3ca235479f8de1e2f29c8aa884f71",
+            "bytes": 3506
+          },
+          "negative-missing-pre-drain/rr-sim-barriers": {
+            "sha256": "10996576ccc967b36dc02741c3de1e65c3d6945434db3753d1720a45354f19c5",
+            "bytes": 31752
+          },
+          "negative-missing-pre-drain/rr-sim-barriers.c": {
+            "sha256": "c89ecb4a20af2c8f02cafb5c7cfc253b056b7372bfb4d736b34cd80707e8c578",
+            "bytes": 30746
+          },
+          "negative-missing-pre-drain.log": {
+            "sha256": "801b74f3c7c03cff2ce8085fbfb5a94b7dce52e62c7bf4b0815ffc942aa87702",
+            "bytes": 1066
+          },
+          "negative-skipped-common/compile-command.json": {
+            "sha256": "51788a8efad4dcdbfe6a3b7580978bb4812e816be6f66e7f77276c3409efb5d0",
+            "bytes": 947
+          },
+          "negative-skipped-common/production-extractions.json": {
+            "sha256": "8a14b9a00b9fa834b0ab1717315208e16717e7ef3dc0b8725022d09d021f8aeb",
+            "bytes": 3503
+          },
+          "negative-skipped-common/rr-sim-barriers": {
+            "sha256": "d92f2ddeb0c25aba17350568456f47aa19346126d661f30ea87fbccfbe9852af",
+            "bytes": 31752
+          },
+          "negative-skipped-common/rr-sim-barriers.c": {
+            "sha256": "29213b9261ec7fcdf65f489b4237f05cbac6f2a776968e44bdfebfb799a2e3d4",
+            "bytes": 30780
+          },
+          "negative-skipped-common.log": {
+            "sha256": "592debd2524b92d7a1b0833aea6a1b798c8b54c2d179c4a515ae8f2eae934778",
+            "bytes": 1060
+          },
+          "negative-wrong-mode/compile-command.json": {
+            "sha256": "daca9f98ea73b8b2b5c4e266971117aceeea3d962df7bb52d9791b2cb43913f5",
+            "bytes": 939
+          },
+          "negative-wrong-mode/production-extractions.json": {
+            "sha256": "e76917ca9a465a66ce672140eb0305351eebb1309dec41b89683b7fa9d23dd2d",
+            "bytes": 3499
+          },
+          "negative-wrong-mode/rr-sim-barriers": {
+            "sha256": "1675b7d9ca99a1377d84dd8ca150fdedec94b840440ac31d6714205bfb8c8f3e",
+            "bytes": 31808
+          },
+          "negative-wrong-mode/rr-sim-barriers.c": {
+            "sha256": "d8c56da7ff070f65bf910549355eddbd640f516acc91e3c51e5a7e0216d444e4",
+            "bytes": 30820
+          },
+          "negative-wrong-mode.log": {
+            "sha256": "dbee623b4fb4194bff2941bc86294063e8cfc5fad92b8061c33fa2693e7e4eec",
+            "bytes": 1052
+          },
+          "nix-support/aos-target-platform": {
+            "sha256": "d3b7abad38647ed804b5017c5b990acab7c85648b552a97043d4d86c70ce1f9d",
+            "bytes": 13
+          },
+          "production-proof.result": {
+            "sha256": "2bf0bfdca56329be62095825c3b5866e70775a905497c32ad6cfb41268db16f5",
+            "bytes": 468
+          },
+          "proof/compile-command.json": {
+            "sha256": "20864755b72b8fc6bf3d0e2840f96aff675864cada9fb6b4fc66f6b1badd2041",
+            "bytes": 911
+          },
+          "proof/production-extractions.json": {
+            "sha256": "ea437de60c00f3e5fc166f5aaacb41090f941191a4d73f53d41baa8d2c0a8218",
+            "bytes": 3491
+          },
+          "proof/rr-sim-barriers": {
+            "sha256": "b2d372e4601df119af695d12868e350e197a51775799d30679c0439996888e1e",
+            "bytes": 31808
+          },
+          "proof/rr-sim-barriers.c": {
+            "sha256": "07063236f9b407e66e68fc1e0cb6cb5f77840a24cc563189756a138db92fb8d9",
+            "bytes": 30820
+          },
+          "result": {
+            "sha256": "5d1631e1a6c3ba5d13b5858b2cf6dcabcfdd536a61187bd5fb0dcbf45e9ab4ba",
+            "bytes": 576
+          }
+        }
+      },
+      "standaloneClassAndTick12Negatives": {
+        "status": "PASS",
+        "output": "63hwz04jp6f00npi3g4ygw8mvb8bi2wv-crucible-phase1-qemu-accel-classification-0",
+        "files": {
+          "negative-callback-order/accel-classification": {
+            "sha256": "9e221b7ef4d65086bc63576a2e6c18b1a56e420762ba0e0ed5291652d6c2bed5",
+            "bytes": 35688
+          },
+          "negative-callback-order/accel-classification.c": {
+            "sha256": "6d46fa9152cacbdfd1ceced77e6e9ccf844549447f45c28fc17caefb58342804",
+            "bytes": 28912
+          },
+          "negative-callback-order/compile-command.json": {
+            "sha256": "0b2c0a9c7ce8a1fdb11c7970812ffe0b8e5d816d6f153b94e87d7f330fe6a22c",
+            "bytes": 861
+          },
+          "negative-callback-order.log": {
+            "sha256": "d1117c4d78981bec63a90da20589c355a8b9e8584623b33ea81fea78a75687a5",
+            "bytes": 1123
+          },
+          "negative-predicate-order/accel-classification": {
+            "sha256": "78c9b4bf8ef114d10c3cda7c981445d32d9c88119585c56db3a20397516ef147",
+            "bytes": 35688
+          },
+          "negative-predicate-order/accel-classification.c": {
+            "sha256": "d98e0e19452ce8161befe4719a28ddc94c7dc9bfef6d37b4a082e81d493f6f09",
+            "bytes": 28912
+          },
+          "negative-predicate-order/compile-command.json": {
+            "sha256": "fcc21a7a8e35bd749240066a0943a3ea1168d64bc4ff7d49a6e38daec900b9cf",
+            "bytes": 863
+          },
+          "negative-predicate-order.log": {
+            "sha256": "3499e431a72667a454c19bedad14e2fab6b3b7f7b60662c31a3213c9b00bdabf",
+            "bytes": 1151
+          },
+          "negative-publication-order/accel-classification": {
+            "sha256": "fdb95c698004aa85ef7b130a6c56e067d71fa57af99618d4f493628ae1db53d4",
+            "bytes": 35688
+          },
+          "negative-publication-order/accel-classification.c": {
+            "sha256": "2cd0eaed9450d0dddef120c421bf334b7baa315c9c80ddd2b3af4568527a2cd0",
+            "bytes": 28912
+          },
+          "negative-publication-order/compile-command.json": {
+            "sha256": "293153205a155af2fc108fcab9c65b4525c034b4ced092697d993bbc3574f01e",
+            "bytes": 867
+          },
+          "negative-publication-order.log": {
+            "sha256": "a9e3d08423b6af2d73d09f5c6515b6a4d6aa7c3d76d380155285781f7e01e1fd",
+            "bytes": 1131
+          },
+          "negative-repeated-name-query/accel-classification": {
+            "sha256": "ffe734e915ac890325b20f3d9f6fcc3c58450c5f476b1a02960fe905dd9df27c",
+            "bytes": 35736
+          },
+          "negative-repeated-name-query/accel-classification.c": {
+            "sha256": "65e2b678586b8a88702ea8a717d0b4204236a03ae20b35c90c75cb7742477323",
+            "bytes": 28947
+          },
+          "negative-repeated-name-query/compile-command.json": {
+            "sha256": "bedb8792da7fb5e212562cf1d44866b2e000fb5b314952fe2c27a67ec4d811f2",
+            "bytes": 871
+          },
+          "negative-repeated-name-query.log": {
+            "sha256": "c03cc15fd9bfadf4084dc4e3b4ee89810e9eb3b10997795e80f312864a17f59c",
+            "bytes": 1169
+          },
+          "negative-shared-classification/accel-classification": {
+            "sha256": "2473fc26a7dc5b33d8f5285203b58a457832f21f62b767c480d8f013f949a346",
+            "bytes": 35720
+          },
+          "negative-shared-classification/accel-classification.c": {
+            "sha256": "1449fea672106082cd997fe89a278f6799996d27a63dfdf53e8f9a68a42e6a52",
+            "bytes": 28965
+          },
+          "negative-shared-classification/compile-command.json": {
+            "sha256": "a3f18197ba545f094a673f2e09a43f4bb4992d2156e0c89526b37e3d6be96250",
+            "bytes": 875
+          },
+          "negative-shared-classification.log": {
+            "sha256": "e38e64a5d9dce1010859dd1d371128122be7133f4cbeecb8fa424bade9ed0c48",
+            "bytes": 1120
+          },
+          "negative-stale-retry/accel-classification": {
+            "sha256": "d52108360af7ab85ad95da882344cce9d3eb3ea0f8a0dcd5885040f0ecaf2b55",
+            "bytes": 35728
+          },
+          "negative-stale-retry/accel-classification.c": {
+            "sha256": "f6b810321c3ec20933817da8950fa53043804eecb0cd3cd38e1ae094665533c1",
+            "bytes": 28996
+          },
+          "negative-stale-retry/compile-command.json": {
+            "sha256": "1bac790718b608a33315580347e3a41bf89db3e008d6ec80c30c21b7b1b15259",
+            "bytes": 855
+          },
+          "negative-stale-retry.log": {
+            "sha256": "4997342a78b6ab230cfb45a1afcc96d7322a6b84b3526e5992a64f0c0ca0a241",
+            "bytes": 1150
+          },
+          "negative-superclass-match/accel-classification": {
+            "sha256": "4f1f43bfc5bee4432b9a7422b7d0b77ff19f65487b0bba5d8902cb6ab6f2623d",
+            "bytes": 35688
+          },
+          "negative-superclass-match/accel-classification.c": {
+            "sha256": "aecceb70a1d7c10bf42b970c9cd812d07f424fa3d4ae1e0193e512542a68c464",
+            "bytes": 28983
+          },
+          "negative-superclass-match/compile-command.json": {
+            "sha256": "4a9e26769f8044c72df4484926fd1db51a9cf2c292eea9ac9aa2c21d7edb146e",
+            "bytes": 865
+          },
+          "negative-superclass-match.log": {
+            "sha256": "b8ef2303b15459c3223f76f0fa980e9de4e50d4ae46cd1ea75a0bf5bb6d8ff37",
+            "bytes": 1127
+          },
+          "negative-tick-error-result/accel-classification": {
+            "sha256": "ee7fe88c0baf721ed11c73c8321dc6ad28f06409e8f4421fb16cd238df011a73",
+            "bytes": 35688
+          },
+          "negative-tick-error-result/accel-classification.c": {
+            "sha256": "91d75d572df5049f315d127a8847d76607c7aa7c6a11ec20e928957075b916cc",
+            "bytes": 28911
+          },
+          "negative-tick-error-result/compile-command.json": {
+            "sha256": "4b0a769432a890c765fa4776c7b5cb4acd2edb171004c771c1d58decf6b96f52",
+            "bytes": 867
+          },
+          "negative-tick-error-result.log": {
+            "sha256": "39c5fba751812e4c4c3cf55d0cab3dc1916557e221ed0c839c8dd65f85cef9c3",
+            "bytes": 1159
+          },
+          "negative-tick-icount-order/accel-classification": {
+            "sha256": "0e0d4bc56f096389e539fb3301c17e3e3e356fa9881a773ddfe7d6779ac4ef70",
+            "bytes": 35688
+          },
+          "negative-tick-icount-order/accel-classification.c": {
+            "sha256": "7353004e2bb4d41e9c3bf11efbf88739f25b053a53806f6c02b2135dba799121",
+            "bytes": 28912
+          },
+          "negative-tick-icount-order/compile-command.json": {
+            "sha256": "17a4c3fbb6d13ac85d9dde407ec2913d2f8978e643527ac6d436a988ac889599",
+            "bytes": 867
+          },
+          "negative-tick-icount-order.log": {
+            "sha256": "045aaf5df41f1631a4f15eae85aeefbfcf9a5b75b7d3d7cf502aafe4ee89eefc",
+            "bytes": 1155
+          },
+          "negative-tick-name-query/accel-classification": {
+            "sha256": "64636c61133352bdcf74c78ce9a1f65871e8090857cd095c801231774144f025",
+            "bytes": 35736
+          },
+          "negative-tick-name-query/accel-classification.c": {
+            "sha256": "ec52ce43ea69fe3f4d9703cb06a54b82aad15a495e776402f9a25eded0850c55",
+            "bytes": 28956
+          },
+          "negative-tick-name-query/compile-command.json": {
+            "sha256": "87adce4aec5e2a49419440f0ae66a117cd5dfbd4ce0ddd97a7860f0e465a972d",
+            "bytes": 863
+          },
+          "negative-tick-name-query.log": {
+            "sha256": "7682e768654e08bf9520f1eceea957bea1c621f607cd35aa381885952e38835e",
+            "bytes": 1155
+          },
+          "negative-tick-observation-order/accel-classification": {
+            "sha256": "b482b703c4514c5cb1d1f083e262385cb98fae3e5cef3b70e05b8df89dfdf263",
+            "bytes": 35688
+          },
+          "negative-tick-observation-order/accel-classification.c": {
+            "sha256": "cee7615eb4d2199941f7b963eee16cd3e9203929ee83cba5dbf60fd8da5bcdf1",
+            "bytes": 28937
+          },
+          "negative-tick-observation-order/compile-command.json": {
+            "sha256": "12307028e419857577676847d1c8746b32c20be135c326afea899ec6fbcc1c89",
+            "bytes": 877
+          },
+          "negative-tick-observation-order.log": {
+            "sha256": "47692b981ca044259107f399786ed7e23870903dad70d9aba602738763d71169",
+            "bytes": 1163
+          },
+          "negative-tick-signed-result/accel-classification": {
+            "sha256": "f7faf8d112526a956d00a92956365f3063fe6e7713b7721daaf9eb85faba697c",
+            "bytes": 31776
+          },
+          "negative-tick-signed-result/accel-classification.c": {
+            "sha256": "c479e59bd5b6d8e060434e78d89980c027b45f57c4444c200f2a9492b76a176a",
+            "bytes": 28922
+          },
+          "negative-tick-signed-result/compile-command.json": {
+            "sha256": "d47d21c53d1eae516cab1c6896a0840179bf4e30c3638b3dcbb513aa112ce2be",
+            "bytes": 869
+          },
+          "negative-tick-signed-result.log": {
+            "sha256": "7ebe0c8fb11c343dd3ac29676327add3a27f541604cb8b39bd033aff8c9ba316",
+            "bytes": 1161
+          },
+          "nix-support/aos-target-platform": {
+            "sha256": "d3b7abad38647ed804b5017c5b990acab7c85648b552a97043d4d86c70ce1f9d",
+            "bytes": 13
+          },
+          "production-proof.result": {
+            "sha256": "002a0214876c4169f3762af647cfd207e0538c970c4106202a733d65e67ea752",
+            "bytes": 766
+          },
+          "proof/accel-classification": {
+            "sha256": "787f6c0823c6fa0f03d69d9eaced63934bb532aad5ee9b479cf9e375537a2935",
+            "bytes": 35688
+          },
+          "proof/accel-classification.c": {
+            "sha256": "df0c49c73a0cfa081201cea5216ef88ab8927400cff56c63f2d46d0dbfd5dc2e",
+            "bytes": 28912
+          },
+          "proof/compile-command.json": {
+            "sha256": "4fd168ae1f9a4308b33c29c655f5fd41e32c659d89e5ad1fef59fbf8d4f42af6",
+            "bytes": 825
+          },
+          "result": {
+            "sha256": "57bdddd46e1366af8d4f9416151ae2a3a49b999bb6fcd0f78353daa170f52ad0",
+            "bytes": 604
+          }
+        }
+      },
+      "standaloneLazyPositiveAndNegative": {
+        "status": "PASS",
+        "output": "gfhnj4m0jl1kqwn8rgrd38m97fndhvlc-crucible-phase1-qemu-lazy-memory-identity-0",
+        "files": {
+          "negative-eager-identity/compile-command.json": {
+            "sha256": "a3f1bdae364e9eb36dc6a5c08b39e38c9e607eafeb5c872bfcb63d76098e914e",
+            "bytes": 861
+          },
+          "negative-eager-identity/lazy-memory-identity": {
+            "sha256": "9f4254388fb6158502a33e810607086b54db123b227566cbe71ec78f8bd5b960",
+            "bytes": 22232
+          },
+          "negative-eager-identity/lazy-memory-identity.c": {
+            "sha256": "38148a6f19f8debb05c0c3a2d3cea2efa83c155d90d766ff9d2487d8ff1561fc",
+            "bytes": 16377
+          },
+          "negative-eager-identity.log": {
+            "sha256": "46295772415f4e1c284ff3e475f3986947ea29a69dce9315900179420c5b1b4d",
+            "bytes": 1309
+          },
+          "nix-support/aos-target-platform": {
+            "sha256": "d3b7abad38647ed804b5017c5b990acab7c85648b552a97043d4d86c70ce1f9d",
+            "bytes": 13
+          },
+          "production-proof.result": {
+            "sha256": "48b7f20d208422ef4dce9d6564bccea21cca618bb49ed455ff4e18f5c395065f",
+            "bytes": 442
+          },
+          "proof/compile-command.json": {
+            "sha256": "ea7b4c4ea2f7aab03ae421bf53f5621fd0f6705ecfbc1ec973cfff6b4b1d46b4",
+            "bytes": 825
+          },
+          "proof/lazy-memory-identity": {
+            "sha256": "2dc894f1a7943ac6463d9793e04cccfc9bf7184a0f150f6ad5b3e366f1bd4fe0",
+            "bytes": 22232
+          },
+          "proof/lazy-memory-identity.c": {
+            "sha256": "d7b819510ecaf088f1b43cf7faeba895283ba996f502921566bb743d99b25bea",
+            "bytes": 16393
+          },
+          "result": {
+            "sha256": "e2a5c0d471548bf09b4c1663f891b664113abc476c1f28a9601cfbe962ba9318",
+            "bytes": 403
+          }
+        }
+      },
+      "standalonePresence": {
+        "status": "PASS",
+        "output": "2z2wk14dyg8fimdaq1ryw9wwiz5jp9ki-crucible-phase1-qemu-fault-rule-presence-0",
+        "files": {
+          "negative-boundary-conditions/compile-command.json": {
+            "sha256": "683a192d64c72b2466eb4de3c774289017008682daf88b4ad1e01f563089e7d0",
+            "bytes": 991
+          },
+          "negative-boundary-conditions/fault-rule-presence": {
+            "sha256": "ee74bede08b779b404ca91de9282eed3c2f78dc2525f735b4d0d7c98e19e124a",
+            "bytes": 17336
+          },
+          "negative-boundary-conditions/fault-rule-presence.c": {
+            "sha256": "9be11580c9769bc8eac45ce81c067e53ee30a8b13785b0002d3e5f1ff310ec62",
+            "bytes": 15035
+          },
+          "negative-boundary-conditions/production-extractions.json": {
+            "sha256": "46ca47b18a58d2d94fbe0c8559efdb7f0512470a66cc8c426098915750aed2d2",
+            "bytes": 1783
+          },
+          "negative-boundary-conditions.log": {
+            "sha256": "d58f6115c6c24ba9c3cff00328373f7fbe4c01946f8c6b302a3736403ccb4404",
+            "bytes": 1355
+          },
+          "negative-early-return/compile-command.json": {
+            "sha256": "4281a4844380ae6ae94868869fef757f40404f6d349f0ba2ee6b5952cb600cf9",
+            "bytes": 977
+          },
+          "negative-early-return/fault-rule-presence": {
+            "sha256": "7469afccceb267ec4530757bb3eb7ab796394d2ef3d34c628382ce7027d479f8",
+            "bytes": 26008
+          },
+          "negative-early-return/fault-rule-presence.c": {
+            "sha256": "ae8b770f6ad13db28d16b5be16f3e422dbc3e79d18ba1551bfb9f3d9c8df6476",
+            "bytes": 15313
+          },
+          "negative-early-return/production-extractions.json": {
+            "sha256": "46ca47b18a58d2d94fbe0c8559efdb7f0512470a66cc8c426098915750aed2d2",
+            "bytes": 1783
+          },
+          "negative-early-return.log": {
+            "sha256": "936ace28e1a24d3d859ffcff1440f52c448d5e3c159c0ed67ecad375df875f60",
+            "bytes": 1423
+          },
+          "negative-initializer/compile-command.json": {
+            "sha256": "0c29466d7f9e52f151c84e18d828d966db312aeb990211ae675845d67764f9f5",
+            "bytes": 975
+          },
+          "negative-initializer/fault-rule-presence": {
+            "sha256": "4f7020916906089016a475c6ece6332f62bf052e500bbd50a7e5e072e2ab5e1e",
+            "bytes": 26072
+          },
+          "negative-initializer/fault-rule-presence.c": {
+            "sha256": "0b57167c6fd50896f2ca4cafe292f0ddbc7f2a7a135a2c9f92eb6af4ac8075ee",
+            "bytes": 15339
+          },
+          "negative-initializer/production-extractions.json": {
+            "sha256": "46ca47b18a58d2d94fbe0c8559efdb7f0512470a66cc8c426098915750aed2d2",
+            "bytes": 1783
+          },
+          "negative-initializer.log": {
+            "sha256": "b5f7e0644f94a03b000ba99a9e0526a594964fb4dc5990021202952f0a2e3767",
+            "bytes": 1299
+          },
+          "negative-skipped-comparison/compile-command.json": {
+            "sha256": "d3e54c95cb6ab64eb5af10cc594f29de72fb9137fe24e9f9577b952c92c43cb3",
+            "bytes": 989
+          },
+          "negative-skipped-comparison/fault-rule-presence": {
+            "sha256": "43e9be00a63ae57ccebc286af5f3aa9a800a6f3796ed9102cb1ef1be2d689405",
+            "bytes": 26008
+          },
+          "negative-skipped-comparison/fault-rule-presence.c": {
+            "sha256": "138bdb407d875e25960711acb9bf037bd711635e7bcd9ba217935a3e795a74ad",
+            "bytes": 15328
+          },
+          "negative-skipped-comparison/production-extractions.json": {
+            "sha256": "46ca47b18a58d2d94fbe0c8559efdb7f0512470a66cc8c426098915750aed2d2",
+            "bytes": 1783
+          },
+          "negative-skipped-comparison.log": {
+            "sha256": "192694271a236b28851ca727e0af98e7e974e5b9e1ae7fc295a36b77cfa0f476",
+            "bytes": 1441
+          },
+          "negative-stale-vector/compile-command.json": {
+            "sha256": "db2b95520791e425281dd07c2d33896268ac9e49713b8b551e1c9dc2204c2b07",
+            "bytes": 977
+          },
+          "negative-stale-vector/fault-rule-presence": {
+            "sha256": "865b4b0fa3d9f1f2d8d5eb32f17d5610f722b4ae9180037919f81aa2101ad843",
+            "bytes": 17416
+          },
+          "negative-stale-vector/fault-rule-presence.c": {
+            "sha256": "c55cc75e0239d102fdb18c9ab5de5aa96d1fdcb2c033e42b138f1b3b6024f96d",
+            "bytes": 15371
+          },
+          "negative-stale-vector/production-extractions.json": {
+            "sha256": "46ca47b18a58d2d94fbe0c8559efdb7f0512470a66cc8c426098915750aed2d2",
+            "bytes": 1783
+          },
+          "negative-stale-vector.log": {
+            "sha256": "b293b64c0eef7f33e95c0a9fc93622ada4d0a356b5eebcc856ea5b7dd3d40b78",
+            "bytes": 1308
+          },
+          "negative-wrong-kind/compile-command.json": {
+            "sha256": "1c156f5f755077d76766d05905b332b44c2ad98cb052df784e1d2e56b07372f1",
+            "bytes": 973
+          },
+          "negative-wrong-kind/fault-rule-presence": {
+            "sha256": "888da5cbf6ab2c2e5f380ca2faf24463a4e08b6aa2852b9d535f2d7a8b4aa375",
+            "bytes": 26008
+          },
+          "negative-wrong-kind/fault-rule-presence.c": {
+            "sha256": "b3e5fabc5d0ab09b6ff21d16f96bd64a02897b9a0c259d6be8ff4ddea78c68cb",
+            "bytes": 15332
+          },
+          "negative-wrong-kind/production-extractions.json": {
+            "sha256": "46ca47b18a58d2d94fbe0c8559efdb7f0512470a66cc8c426098915750aed2d2",
+            "bytes": 1783
+          },
+          "negative-wrong-kind.log": {
+            "sha256": "b485a62b004586e7fb0a75d909ddfe0b3c44c5cd27360a5b6f6153ea3fcc196b",
+            "bytes": 1361
+          },
+          "nix-support/aos-target-platform": {
+            "sha256": "d3b7abad38647ed804b5017c5b990acab7c85648b552a97043d4d86c70ce1f9d",
+            "bytes": 13
+          },
+          "production-proof.result": {
+            "sha256": "7db6d935320e61f56e6ca685016a8778c6e8952b21c139b020a7e08dc4bff1d2",
+            "bytes": 559
+          },
+          "proof/compile-command.json": {
+            "sha256": "74d83aed4d083574dd2495cd064d8d05eda2927f21ba24020f0767474f59ee07",
+            "bytes": 945
+          },
+          "proof/fault-rule-presence": {
+            "sha256": "c25ab9beb0f53afe9b4ab3d39c76bb9d47697a761da24b9bfe56c49043977ff2",
+            "bytes": 26008
+          },
+          "proof/fault-rule-presence.c": {
+            "sha256": "3c8cd30c24ff87434fe36fab3d90294633dd2f023da80e167c0fe745cfd5d274",
+            "bytes": 15316
+          },
+          "proof/production-extractions.json": {
+            "sha256": "46ca47b18a58d2d94fbe0c8559efdb7f0512470a66cc8c426098915750aed2d2",
+            "bytes": 1783
+          },
+          "result": {
+            "sha256": "7e2e502673920669b8bfe36623d44fe2b1d43d43ce85a91b2a7dd35f273a9810",
+            "bytes": 407
+          }
+        }
+      }
+    },
+    "compiled_causal_negatives": {
+      "standaloneRrSimBarriers": [
+        {
+          "case": "missing-fixed-point",
+          "compiled": true,
+          "failure_is_assertion": true,
+          "raw_log": {
+            "artifact": "negative-missing-fixed-point.log",
+            "sha256": "349f8ea168bca229b6f26569585b796e0ecc4db94b5ab38d479fdcc93234f6ce",
+            "bytes": 1054
+          }
+        },
+        {
+          "case": "missing-owner-restoration",
+          "compiled": true,
+          "failure_is_assertion": true,
+          "raw_log": {
+            "artifact": "negative-missing-owner-restoration.log",
+            "sha256": "94ab571efa4ed1c9965361c69eaa9154ca8cad4f3d41f6158563cadb7acf8e12",
+            "bytes": 1086
+          }
+        },
+        {
+          "case": "missing-pre-drain",
+          "compiled": true,
+          "failure_is_assertion": true,
+          "raw_log": {
+            "artifact": "negative-missing-pre-drain.log",
+            "sha256": "801b74f3c7c03cff2ce8085fbfb5a94b7dce52e62c7bf4b0815ffc942aa87702",
+            "bytes": 1066
+          }
+        },
+        {
+          "case": "skipped-common",
+          "compiled": true,
+          "failure_is_assertion": true,
+          "raw_log": {
+            "artifact": "negative-skipped-common.log",
+            "sha256": "592debd2524b92d7a1b0833aea6a1b798c8b54c2d179c4a515ae8f2eae934778",
+            "bytes": 1060
+          }
+        },
+        {
+          "case": "wrong-mode",
+          "compiled": true,
+          "failure_is_assertion": true,
+          "raw_log": {
+            "artifact": "negative-wrong-mode.log",
+            "sha256": "dbee623b4fb4194bff2941bc86294063e8cfc5fad92b8061c33fa2693e7e4eec",
+            "bytes": 1052
+          }
+        }
+      ],
+      "standaloneClassAndTick12Negatives": [
+        {
+          "case": "callback-order",
+          "compiled": true,
+          "failure_is_assertion": true,
+          "raw_log": {
+            "artifact": "negative-callback-order.log",
+            "sha256": "d1117c4d78981bec63a90da20589c355a8b9e8584623b33ea81fea78a75687a5",
+            "bytes": 1123
+          }
+        },
+        {
+          "case": "predicate-order",
+          "compiled": true,
+          "failure_is_assertion": true,
+          "raw_log": {
+            "artifact": "negative-predicate-order.log",
+            "sha256": "3499e431a72667a454c19bedad14e2fab6b3b7f7b60662c31a3213c9b00bdabf",
+            "bytes": 1151
+          }
+        },
+        {
+          "case": "publication-order",
+          "compiled": true,
+          "failure_is_assertion": true,
+          "raw_log": {
+            "artifact": "negative-publication-order.log",
+            "sha256": "a9e3d08423b6af2d73d09f5c6515b6a4d6aa7c3d76d380155285781f7e01e1fd",
+            "bytes": 1131
+          }
+        },
+        {
+          "case": "repeated-name-query",
+          "compiled": true,
+          "failure_is_assertion": true,
+          "raw_log": {
+            "artifact": "negative-repeated-name-query.log",
+            "sha256": "c03cc15fd9bfadf4084dc4e3b4ee89810e9eb3b10997795e80f312864a17f59c",
+            "bytes": 1169
+          }
+        },
+        {
+          "case": "shared-classification",
+          "compiled": true,
+          "failure_is_assertion": true,
+          "raw_log": {
+            "artifact": "negative-shared-classification.log",
+            "sha256": "e38e64a5d9dce1010859dd1d371128122be7133f4cbeecb8fa424bade9ed0c48",
+            "bytes": 1120
+          }
+        },
+        {
+          "case": "stale-retry",
+          "compiled": true,
+          "failure_is_assertion": true,
+          "raw_log": {
+            "artifact": "negative-stale-retry.log",
+            "sha256": "4997342a78b6ab230cfb45a1afcc96d7322a6b84b3526e5992a64f0c0ca0a241",
+            "bytes": 1150
+          }
+        },
+        {
+          "case": "superclass-match",
+          "compiled": true,
+          "failure_is_assertion": true,
+          "raw_log": {
+            "artifact": "negative-superclass-match.log",
+            "sha256": "b8ef2303b15459c3223f76f0fa980e9de4e50d4ae46cd1ea75a0bf5bb6d8ff37",
+            "bytes": 1127
+          }
+        },
+        {
+          "case": "tick-error-result",
+          "compiled": true,
+          "failure_is_assertion": true,
+          "raw_log": {
+            "artifact": "negative-tick-error-result.log",
+            "sha256": "39c5fba751812e4c4c3cf55d0cab3dc1916557e221ed0c839c8dd65f85cef9c3",
+            "bytes": 1159
+          }
+        },
+        {
+          "case": "tick-icount-order",
+          "compiled": true,
+          "failure_is_assertion": true,
+          "raw_log": {
+            "artifact": "negative-tick-icount-order.log",
+            "sha256": "045aaf5df41f1631a4f15eae85aeefbfcf9a5b75b7d3d7cf502aafe4ee89eefc",
+            "bytes": 1155
+          }
+        },
+        {
+          "case": "tick-name-query",
+          "compiled": true,
+          "failure_is_assertion": true,
+          "raw_log": {
+            "artifact": "negative-tick-name-query.log",
+            "sha256": "7682e768654e08bf9520f1eceea957bea1c621f607cd35aa381885952e38835e",
+            "bytes": 1155
+          }
+        },
+        {
+          "case": "tick-observation-order",
+          "compiled": true,
+          "failure_is_assertion": true,
+          "raw_log": {
+            "artifact": "negative-tick-observation-order.log",
+            "sha256": "47692b981ca044259107f399786ed7e23870903dad70d9aba602738763d71169",
+            "bytes": 1163
+          }
+        },
+        {
+          "case": "tick-signed-result",
+          "compiled": true,
+          "failure_is_assertion": true,
+          "raw_log": {
+            "artifact": "negative-tick-signed-result.log",
+            "sha256": "7ebe0c8fb11c343dd3ac29676327add3a27f541604cb8b39bd033aff8c9ba316",
+            "bytes": 1161
+          }
+        }
+      ]
+    },
+    "scope_limits": [
+      "Extracted actual production bodies use bounded QOM/machine/CPU/timer/work arbitration providers. They do not establish whole-guest scheduling equivalence.",
+      "Early NULL and initialized nameless safe-getter behavior is an explicit new contract; old NULL current_accel_name behavior was not defined and is not claimed equivalent.",
+      "RR proof preserves actual Sim fixed-point FIFO order and ordinary common stop-before-work order, retaining extra common passes. No universal upstream or previous-patched ordinary callback trace equivalence is claimed.",
+      "No new queue flag, queue elision, registry bypass, TB shape, instruction count or virtual-clock arithmetic change is introduced by these ordinary guards."
+    ]
+  },
+  "native_register_matrix": {
+    "status": "PASS",
+    "exit_code": 0,
+    "observed_pass_markers": 67,
+    "drv": "jn8in928z4f12d023a1j2pqwpggvzldi-crucible-phase2-qemu-register-mutation-0.drv",
+    "output": "4hp7jibdamwrfrcyv1ass7sng65k0vxd-crucible-phase2-qemu-register-mutation-0",
+    "source_revision": "e4f5a5558d210d76fac759b7c4d08a70900291d4",
+    "scope": "Existing x86/ARM impulse/persistent BEFORE/AFTER mutation matrix, architectural readback/evidence, rejection and invalid-input vectors, x86 vCPU indices0/1, stock negative controls and patched ordinary nonSim unavailable behavior.",
+    "observer": "Retained GPL C register observer source compiled by the native fixture; no production Rust plugin loaded. Temporary C observer ELF is not retained in gate output; signed source hash, derivation and raw case logs are retained.",
+    "fixture_sources": {
+      "tests/crucible/phase2-qemu-register-mutation.nix": {
+        "artifact": "tests/crucible/phase2-qemu-register-mutation.nix",
+        "sha256": "ea650c2fb84c5de559c9c27e66824a9f6e617f3c265fc31caab624631066ba89",
+        "bytes": 18066
+      }
+    },
+    "output_files": {
+      "logs/aarch64-impulse-fpsr-after.log": {
+        "sha256": "cfadadee6adcea197d24b3ffe596bc0505bdbe1b664f1c279a8019ed54f91c7e",
+        "bytes": 234
+      },
+      "logs/aarch64-impulse-fpsr-before.log": {
+        "sha256": "8a7034d1398b115e85e2894b079c07a37389f11e69b6d5ca468029da6be75928",
+        "bytes": 235
+      },
+      "logs/aarch64-impulse-pc-after.log": {
+        "sha256": "f03ccae83e2b861bf04f5e2d5f263b793543812713a4edf09c51eeb1e91c6953",
+        "bytes": 232
+      },
+      "logs/aarch64-impulse-pc-before.log": {
+        "sha256": "e70d23804075787343549fa4b476a3a3557a08aa4acd4204fb1ed18c1f354d90",
+        "bytes": 233
+      },
+      "logs/aarch64-impulse-pstate-after.log": {
+        "sha256": "4a658099ef816ed5dcbba965ba411ef15aa9c7d0ca5471001da2634e5620535d",
+        "bytes": 236
+      },
+      "logs/aarch64-impulse-pstate-before.log": {
+        "sha256": "fc7d05db498f384a6c536bd53eba917431c52f1ba3bd414bdfd2fd5162eb3bbf",
+        "bytes": 237
+      },
+      "logs/aarch64-impulse-v28-after.log": {
+        "sha256": "8b918c5ecd21fc14d274b099cd78913af5e4fe6c91319adf4c8bfeae863e3445",
+        "bytes": 233
+      },
+      "logs/aarch64-impulse-v28-before.log": {
+        "sha256": "df09f861b98c381aeb0cd97441e6ab323c12210b43d67d41785707ae2d01482e",
+        "bytes": 234
+      },
+      "logs/aarch64-impulse-x28-after.log": {
+        "sha256": "04bbe59ea16f96c78523675f13445086e9a5ab057238be6d26fde7e90380c5c7",
+        "bytes": 233
+      },
+      "logs/aarch64-impulse-x28-before.log": {
+        "sha256": "cf69377b739d8c5d565fea46493986e1ea0a6c3defc74f2cc664541f6c2f1444",
+        "bytes": 234
+      },
+      "logs/aarch64-persistent-elr-el1-after.log": {
+        "sha256": "3c6b924c2ec54fccfd0d7a4c70f568c310177bd9fa59845cd90753a57dc9e5f5",
+        "bytes": 240
+      },
+      "logs/aarch64-persistent-elr-el1-before.log": {
+        "sha256": "9a0762965f22af5661cb7505ecfccf910aaae6ae9b769ec9da043908dd841e9d",
+        "bytes": 241
+      },
+      "logs/aarch64-persistent-fpsr-after.log": {
+        "sha256": "1faacc5f39d994382cad3b9d7f1b0bf969b7780ac7b0dbefe39868d7dc58b3c3",
+        "bytes": 237
+      },
+      "logs/aarch64-persistent-fpsr-before.log": {
+        "sha256": "5efa06bdfa84232b43174e2eeed8fb4b09916196fc256c9c10859da66c32b20f",
+        "bytes": 238
+      },
+      "logs/aarch64-persistent-pstate-after.log": {
+        "sha256": "74037cfc878c7c6a32831ae03f1f41b141c6e2d9e1dbd61e012e31752d1f0d53",
+        "bytes": 239
+      },
+      "logs/aarch64-persistent-pstate-before.log": {
+        "sha256": "52f4e494584a5ab9bb6dcd5436e39fabd6a34b342c3be015520c05df2aae7520",
+        "bytes": 240
+      },
+      "logs/aarch64-persistent-v28-after.log": {
+        "sha256": "911a139c6e3809412865bf4f5583456009c02c5d6db9418b617ec9fb3e40d8ae",
+        "bytes": 236
+      },
+      "logs/aarch64-persistent-v28-before.log": {
+        "sha256": "c98b94982df4c6b6b7ee3bf563c68eec882c7df985ce385fbdd7f3913f6864d4",
+        "bytes": 237
+      },
+      "logs/aarch64-persistent-x28-after.log": {
+        "sha256": "154b6faa014acc994465d5d1dc03f251ed13ed021a7fd5aabb1d094b677def56",
+        "bytes": 235
+      },
+      "logs/aarch64-persistent-x28-before.log": {
+        "sha256": "703d55b056dbc978a4c04482da04e96202d3d6c5fa4cd9adb2dcf9443a4fe7b8",
+        "bytes": 236
+      },
+      "logs/patched-tcg-unavailable.log": {
+        "sha256": "efa10f5ad82409f14bf4cef95dc44494711bcdc5456431ab6dbd30c51e7a1bfd",
+        "bytes": 131
+      },
+      "logs/stock-mutation.log": {
+        "sha256": "b07151b3b43ae480a8cf25cce27203c32c6d6565221eb20391902601242f0481",
+        "bytes": 182
+      },
+      "logs/x86_64-impulse-cr2-after.log": {
+        "sha256": "8e53badfae3f7b80c919d4a36695f93e2333e6d36dd76fbc076ceda81f08650f",
+        "bytes": 341
+      },
+      "logs/x86_64-impulse-cr2-before.log": {
+        "sha256": "1cf5bf7e40f0f099fbd8e50188381867f4cff0e0b69edf9777bc68d522d7fd28",
+        "bytes": 342
+      },
+      "logs/x86_64-impulse-dr0-after.log": {
+        "sha256": "b8b512b4c1a92c1de0dce145974f916641237b60232e92088b5fe0a1cb038d47",
+        "bytes": 341
+      },
+      "logs/x86_64-impulse-dr0-before.log": {
+        "sha256": "381ac0f56aac1804e93e83b6c749ceddf62f1aa78123da1a4d16289367f3b08b",
+        "bytes": 342
+      },
+      "logs/x86_64-impulse-ds-base-after.log": {
+        "sha256": "0cb73cbfdc978326e1db42086582b92ffe357b5a3916870839cb8d060308e3f0",
+        "bytes": 345
+      },
+      "logs/x86_64-impulse-ds-base-before.log": {
+        "sha256": "a5d8345649eb9e1cde2772770187355e75cb274dae73847e898ef60867ebb0ba",
+        "bytes": 346
+      },
+      "logs/x86_64-impulse-kernel-gs-base-after.log": {
+        "sha256": "b5bfab56c90f520f169a5d8ed5c5dedcfdcc91ff7e8224f86e7db3d8225a160b",
+        "bytes": 352
+      },
+      "logs/x86_64-impulse-kernel-gs-base-before.log": {
+        "sha256": "ac24c77443c8f093c10af11c26dab5afd2f2727391818f642aaf5bf60a2d35c6",
+        "bytes": 353
+      },
+      "logs/x86_64-impulse-mm0-after.log": {
+        "sha256": "146b3efe21758759fc15a90f2a396d2003077f5fd238fcda9c353b9c95860a48",
+        "bytes": 341
+      },
+      "logs/x86_64-impulse-mm0-before.log": {
+        "sha256": "f85b2ed06ff0a384eb1d5dfe4d45e8d16e459a6cbae3d02c1e1eedbde321c41c",
+        "bytes": 342
+      },
+      "logs/x86_64-impulse-rdi-after-terminal-cursor.log": {
+        "sha256": "a1555b87672954179ef2445e64cf5f24971c7c017ac87d8bfb617bd800a53d83",
+        "bytes": 339
+      },
+      "logs/x86_64-impulse-rdi-after.log": {
+        "sha256": "ce0ac0c9f1d50957f8599e7d2e4cb8db5a412348c58fd982d0b2d4ea956b567d",
+        "bytes": 340
+      },
+      "logs/x86_64-impulse-rdi-before-smp2.log": {
+        "sha256": "52b9018dddb628aebb549caf1051023c824d6ffe76a84deb13e757c17f174547",
+        "bytes": 449
+      },
+      "logs/x86_64-impulse-rdi-before.log": {
+        "sha256": "a1a2925b0bb478c84e120c7e1aeb89516570f4f7a76b7b660a4ed3ee953f5841",
+        "bytes": 341
+      },
+      "logs/x86_64-impulse-rflags-after.log": {
+        "sha256": "806c9b7eadf448d00e4e47c555c7bca9262acf2a85b4beaa115d4a58a074e034",
+        "bytes": 344
+      },
+      "logs/x86_64-impulse-rflags-before.log": {
+        "sha256": "8ad21a215ef4c49acb4ab42a95c1b5f843a3d10b0d41244e2c4754f8913b6068",
+        "bytes": 345
+      },
+      "logs/x86_64-impulse-rip-after.log": {
+        "sha256": "f57747c5961181845b2b185f8f48369addf889ba6434dbe6af7735c73f825173",
+        "bytes": 341
+      },
+      "logs/x86_64-impulse-rip-before.log": {
+        "sha256": "81d5aed93b532535de1e7ae396ad58680c675d19a7ca299f0ba83da3bf48e326",
+        "bytes": 342
+      },
+      "logs/x86_64-impulse-xmm15-after.log": {
+        "sha256": "02a8afd4740c58d3740488a00d55cfe71e65ee05ad103638f8675fbc52b4d759",
+        "bytes": 343
+      },
+      "logs/x86_64-impulse-xmm15-before.log": {
+        "sha256": "08d4a4bab34ef56c150993a82b22f8a8ccc397c0c1711bf811b0339f80b4dd4d",
+        "bytes": 344
+      },
+      "logs/x86_64-persistent-cr2-after.log": {
+        "sha256": "99ae39a4d6e815a8d44996bad2133d06d8c709944a4748554879f73344c02267",
+        "bytes": 344
+      },
+      "logs/x86_64-persistent-cr2-before.log": {
+        "sha256": "38e4a9e0b1c61aa52dc3d7bd9c091eb1db267780e45f5f43728f94b7008b2e22",
+        "bytes": 345
+      },
+      "logs/x86_64-persistent-dr0-after.log": {
+        "sha256": "8ce43f869397e393781ff985d9bbdb25a9fae4f3a093c2a4e9b04cab6fb73656",
+        "bytes": 344
+      },
+      "logs/x86_64-persistent-dr0-before.log": {
+        "sha256": "a8fcbcc234b0f9e82c8da027244fa0f2d44dacf237913d0b07bd07bb57136b8b",
+        "bytes": 345
+      },
+      "logs/x86_64-persistent-ds-base-after.log": {
+        "sha256": "29b04b49d8911ab7051f130750e1842c94b8ecdb2c9674a3fa004f5dae55fc1d",
+        "bytes": 348
+      },
+      "logs/x86_64-persistent-ds-base-before.log": {
+        "sha256": "9de56778ee7f1ef19a3c0e63238c37a5e8db9d6fa6fbfb42fe52676282b6859f",
+        "bytes": 349
+      },
+      "logs/x86_64-persistent-kernel-gs-base-after.log": {
+        "sha256": "eff17426d4aa2490268eb94ad5fbf2385ffd0022bb817ab7d6b378e6ffba2cd0",
+        "bytes": 355
+      },
+      "logs/x86_64-persistent-kernel-gs-base-before.log": {
+        "sha256": "8b9edcc56adbe0aa6416d43a7d704f4f0ef178ff060885b28c5f42c75f2071d0",
+        "bytes": 356
+      },
+      "logs/x86_64-persistent-mm0-after.log": {
+        "sha256": "7c0d5337cd949bfcfcff86884cd8d99edd853f658cf2f7caa62646f7157cdcce",
+        "bytes": 344
+      },
+      "logs/x86_64-persistent-mm0-before.log": {
+        "sha256": "6b1cff66cfe0193741db107253456d5684f22d7b505221bce674e6e79d4da417",
+        "bytes": 345
+      },
+      "logs/x86_64-persistent-rdi-after.log": {
+        "sha256": "210ad9fcec9eba69190731164ed56d252f2eb15c61e16a04685947b4286e5483",
+        "bytes": 342
+      },
+      "logs/x86_64-persistent-rdi-before.log": {
+        "sha256": "7d192b3a61a4fe4305aa12131aad27f856961d7ec866d21851cfbb5640a3ab0e",
+        "bytes": 343
+      },
+      "logs/x86_64-persistent-rflags-after.log": {
+        "sha256": "3dbf04e4f0d8ceabf4d55eb3edf7172057a936e8d0fde396a300a43eb026b798",
+        "bytes": 347
+      },
+      "logs/x86_64-persistent-rflags-before.log": {
+        "sha256": "c9d43e78c26eb8ca9f33d067b7aa0288d7f29c3b07792ad7f839c8e3b2a91fe8",
+        "bytes": 348
+      },
+      "logs/x86_64-persistent-rip-after.log": {
+        "sha256": "9b392fa204b8c0f1c7c0b503e3f80643f7f78a2b1226a1bc0c2c27dbc5df8826",
+        "bytes": 344
+      },
+      "logs/x86_64-persistent-rip-before.log": {
+        "sha256": "203c43241d0b1dac3aec8e484cb64d2fa44be717b7ccdb951ed2ad1706a7e6f3",
+        "bytes": 345
+      },
+      "logs/x86_64-persistent-xmm15-after.log": {
+        "sha256": "bb647f3b72c8e487d1f9f13dca6e21aa8bd07af71bdc76ed8302032e5400c906",
+        "bytes": 346
+      },
+      "logs/x86_64-persistent-xmm15-before.log": {
+        "sha256": "76141c412381ca91401efe822ac5a9fe76df7225db52b08bd743f6dfa917583c",
+        "bytes": 347
+      },
+      "logs/x86_64-reject-architecture-identity-cr2-before.log": {
+        "sha256": "1f771005d3a8fe827f64c80c1a10badfd0ea693b25a3ea9a5af159d3d28cb09e",
+        "bytes": 299
+      },
+      "logs/x86_64-reject-invalid-efer-before.log": {
+        "sha256": "ea9c0c46d4f85deef14aef7f35aa710c0c021c66914cd0af3ea6e9b5ed068e38",
+        "bytes": 286
+      },
+      "logs/x86_64-reject-mismatched-register-identity-rdi-before.log": {
+        "sha256": "0f89ca23da3335abbd0f7bba4923410bcb13f8111aff1e2ae728f8c1e704ef25",
+        "bytes": 305
+      },
+      "logs/x86_64-reject-out-of-range-cr2-before.log": {
+        "sha256": "c9ade43d364db458b5761cce969420b131fd2a9d9e21b0b95d8480a5bf1aa099",
+        "bytes": 290
+      },
+      "logs/x86_64-reject-precondition-cr2-before.log": {
+        "sha256": "8b201b8eacf0c945a3c9c230860b02400eb2396647cca7fde6cadf8e66430971",
+        "bytes": 290
+      },
+      "logs/x86_64-reject-read-only-cr0-before.log": {
+        "sha256": "b41bb25c38cc4b279e95174d0fe63271e703f9985a708f21de21b65116d768b0",
+        "bytes": 287
+      },
+      "logs/x86_64-reject-reserved-cr0-before.log": {
+        "sha256": "3c4412cb2a0cbef31428e377ab068a1f975262e002a2f16dde7e1dc1510ef29f",
+        "bytes": 286
+      },
+      "logs/x86_64-reject-unknown-register-identity-cr2-before.log": {
+        "sha256": "67e756d06b97961d0a339dac045c809c12fffd0c6a70ee4f37e574e6889f0c0c",
+        "bytes": 303
+      },
+      "logs/x86_64-reject-vcpu-cr2-before.log": {
+        "sha256": "fdc4ee6d7da414ef6de31eaefcd770ef4f1c3e09d4fe9e440d2a70dc9bfaa28b",
+        "bytes": 282
+      },
+      "nix-support/aos-target-platform": {
+        "sha256": "d3b7abad38647ed804b5017c5b990acab7c85648b552a97043d4d86c70ce1f9d",
+        "bytes": 13
+      },
+      "result": {
+        "sha256": "480d4fecbe168c9a35252e9b9470c8473e9aa68756fcfe0010a7d9eeafac4955",
+        "bytes": 1296
+      }
+    }
+  },
+  "ordinary_inert_initial_failure": {
+    "exit_code": 1,
+    "drv": "cvcs15d76r830rfw0818i3p23v9i11hf-crucible-phase2-qemu-inert-0.drv",
+    "fixture_revision": "e4f5a5558d210d76fac759b7c4d08a70900291d4",
+    "cause": "Expected extension inventory omitted five preexisting commands. Native boot/raw serial/device comparisons ran before the QMP delta assertion failed; migration was not reached.",
+    "missing_existing_names": [
+      "crucible-hot-fork-block-seal",
+      "crucible-hot-fork-cold-stop",
+      "crucible-hot-fork-source-graph",
+      "query-crucible-hot-fork-block-seal",
+      "query-crucible-hot-fork-cold-stop"
+    ],
+    "retained_preparation_errors": [
+      "Initial extra diagnostic assumed absent mutators and omitted required arguments; preserved harness asserted CommandNotFound and failed. Corrected diagnostic uses valid arguments and asserts exact original/final semantic refusal errors.",
+      "Initial skim described only the two queries. Two-line uncommitted preparation was preserved and never run; rereading the full delta identified all five names before committing the complete correction."
+    ],
+    "provenance_files": {
+      "qmp-query-control-initial-assumption.py": {
+        "artifact": "qmp-query-control-initial-assumption.py",
+        "sha256": "758bff78df1c34aefda5cc0ae950c7f4ad669b5d3222a24458edc5b16b3725c4",
+        "bytes": 3355
+      },
+      "initial-qmp-control-harness-failure.json": {
+        "artifact": "initial-qmp-control-harness-failure.json",
+        "sha256": "1a37d6af5d4af63f8b7455198a5ce1d245bd11f98b58762e6f555a196d83f5a6",
+        "bytes": 463
+      },
+      "qmp-query-control.py": {
+        "artifact": "qmp-query-control.py",
+        "sha256": "8cdabd92d7c1bdf15082eb011a633a1d95f0bd5d0dd03e25639d1dcd41a918d2",
+        "bytes": 4422
+      },
+      "qmp-query-control-results.json": {
+        "artifact": "qmp-query-control-results.json",
+        "sha256": "5b111fe31f3355d6893b1b9e2a3174766f847491a06a07cdb82212a19e1acb1b",
+        "bytes": 66344
+      },
+      "qmp-query-control-v2.py": {
+        "artifact": "qmp-query-control-v2.py",
+        "sha256": "4df9dcfde2b8a800a4feb72216a2f88e69701ade0f42175944b78794e81ed5b0",
+        "bytes": 4826
+      },
+      "qmp-query-control-results-v2.json": {
+        "artifact": "qmp-query-control-results-v2.json",
+        "sha256": "ad8fc6d099b94dac82c16a95837d8b9b97f87292ecd6a395c09de3db14749d4b",
+        "bytes": 67425
+      },
+      "inert-query-inventory-control.json": {
+        "artifact": "inert-query-inventory-control.json",
+        "sha256": "dab567d94bd9630ddaeae251f43c15e5487c2c8e070e1e93e21adceb00ec1ec8",
+        "bytes": 1388
+      },
+      "inert-query-inventory-control-v2.json": {
+        "artifact": "inert-query-inventory-control-v2.json",
+        "sha256": "eb10ae3f319c7fb8541a5c102ee4681f7d822e2cd6d14a1a4d3942dd6f5c9a49",
+        "bytes": 1834
+      },
+      "inert-inventory-incomplete-two-line.diff": {
+        "artifact": "inert-inventory-incomplete-two-line.diff",
+        "sha256": "4026c58abeb934059151d51a22d67e0621b26e37ef32707e9e35d20b3e0110e5",
+        "bytes": 611
+      },
+      "inert-inventory-five-line.diff": {
+        "artifact": "inert-inventory-five-line.diff",
+        "sha256": "154e20b0a784673bcd695e756e716b62d28762ddba49808829322ffd37d5d3ee",
+        "bytes": 1199
+      },
+      "inert-inline-builder-five-name.diff": {
+        "artifact": "inert-inline-builder-five-name.diff",
+        "sha256": "4f4ea635ed25a0265176206728b085c752be2ae2160a0173b4e6725f904e040d",
+        "bytes": 918
+      },
+      "inert-corrected-retained-derivation-parity.json": {
+        "artifact": "inert-corrected-retained-derivation-parity.json",
+        "sha256": "fb9d857ba3c3e4c41fce2118c0a266ac8849a5361b898e7e8a1a6c74755e75ca",
+        "bytes": 717
+      },
+      "corrected-inert-retained-inputs.nix": {
+        "artifact": "corrected-inert-retained-inputs.nix",
+        "sha256": "b1fe0f83c0608a98f65ce6f1e8412097bb939035da28cbcdb4050154c9d8261a",
+        "bytes": 525
+      }
+    }
+  },
+  "original_final_qmp_control": {
+    "status": "PASS",
+    "original_output": "h2iphd2bjnm1zpv0wrnija8z6fw6xgk2-qemu-crucible-11.1.1",
+    "final_output": "lbmf6sf2hqczks1h8vl86d3y8aj23hk0-qemu-crucible-11.1.1",
+    "current_master_schema_revision": "72a176f886755319cfd6d42a84962b700dd08906",
+    "current_master_patch_sha256": "1ea54879a67b84c5b2e63e9ce919ffa09f397867b42c6929340317d3599df631",
+    "full_command_names_exact": true,
+    "read_only_query_payloads_exact_except_return_qemu_pid": true,
+    "status_before_queries_after_queries_after_valid_refusal_requests_exact": true,
+    "receipt_inventory_unchanged_after_valid_refusals": true,
+    "three_exact_semantic_refusals": {
+      "crucible-hot-fork-cold-stop": {
+        "id": "crucible-hot-fork-cold-stop",
+        "error": {
+          "class": "GenericError",
+          "desc": "cold stop requires the precise single-threaded simulator: Operation not permitted"
+        }
+      },
+      "crucible-hot-fork-block-seal": {
+        "id": "crucible-hot-fork-block-seal",
+        "error": {
+          "class": "GenericError",
+          "desc": "Crucible block seal requires one exact stopped source process"
+        }
+      },
+      "crucible-hot-fork-source-graph": {
+        "id": "crucible-hot-fork-source-graph",
+        "error": {
+          "class": "GenericError",
+          "desc": "Crucible source graph requires the original prepared source and exact stopped boundary"
+        }
+      }
+    },
+    "read_only_query_payloads": {
+      "coldQuery": {
+        "return": {
+          "cold-receipt-generation": 0,
+          "schema-version": 1,
+          "flush-status": 0,
+          "vmstop-disposition": "none",
+          "qemu-pid": 36,
+          "runstate": "prelaunch"
+        },
+        "id": "query-crucible-hot-fork-cold-stop"
+      },
+      "blockSealQuery": {
+        "return": {
+          "graph-mutation-generation": 0,
+          "barrier-generation": 0,
+          "sealed-roots": [],
+          "candidates": [],
+          "barrier-held": false,
+          "schema-version": 1,
+          "receipt-generation": 0,
+          "backend-generation": 0,
+          "barrier-quiescent": false,
+          "qemu-pid": 36
+        },
+        "id": "query-crucible-hot-fork-block-seal"
+      }
+    },
+    "state": {
+      "status": "prelaunch",
+      "running": false
+    },
+    "native_raw_transcript_sha256": "ad8fc6d099b94dac82c16a95837d8b9b97f87292ecd6a395c09de3db14749d4b"
+  },
+  "corrected_fixture_appendix": {
+    "signed_dco_revision": "605752bfd45e80b2a5e5c7bdfa9b5f9c580f852e",
+    "archive_sha256": "80962a6a6269881fe8c5f822c95659420731659c9ef292249d0cd7309e5b8d3d",
+    "manifest_sha256": "d8f3511f6537f108de7060cca5b0bfe55d446088ea1a823db509e0962a478733",
+    "changed_files": [
+      "tests/crucible/phase2-qemu-inert.nix"
+    ],
+    "unchanged_files_exact_bytes_and_executable_modes": 6400,
+    "fixture_before_after": {
+      "tests/crucible/phase2-qemu-inert.nix": {
+        "before": "19eabd9676e0e902013d5c6fdd54e5e2a9919c660bb39510ab9019692bc1dee4",
+        "after": "85c7d1c33e6e5b5eb66ea6e0185dce5242e3d9a2c46c68b7fbc80419daad32ae"
+      }
+    },
+    "rust307_and_application3439_unchanged": true,
+    "runtime_recipes_exports_unchanged": true,
+    "six_other_gate_fixture_files_unchanged": true,
+    "scope": "Only ordinary inertness uses this corrected fixture appendix. Six separate native/boundary roots remain on the original immutable e4 archive; they are not claimed to share corrected fixture source identity.",
+    "retained_input_derivation_parity": {
+      "status": "PASS",
+      "all_input_drvs_and_sources_exact": true,
+      "builder_system_name_exact": true,
+      "environment_exact_except_own_output_path": true,
+      "inline_script_changes": "Exactly five added sorted inventory names; zero removed/changed lines. No schema/device/migration/runtime assertion/timeout edits.",
+      "source_composition": "Corrected appendix fixture, explicitly original e4 pkgs/lib/patchMicrotests/dependencies. Direct full-appendix import would change a whole-source microtest NAR; it was evaluated only, not run. Retaining original dependency avoids unrelated reruns.",
+      "raw_proof_sha256": "fb9d857ba3c3e4c41fce2118c0a266ac8849a5361b898e7e8a1a6c74755e75ca",
+      "inline_diff_sha256": "4f4ea635ed25a0265176206728b085c752be2ae2160a0173b4e6725f904e040d"
+    }
+  },
+  "ordinary_inert_corrected_native": {
+    "status": "PASS",
+    "exit_code": 0,
+    "drv": "5j03b5c8axzj2crykkw6mm3s477h8bj7-crucible-phase2-qemu-inert-0.drv",
+    "output": "m66rpzdd89r325zhyws26gsdpk2af88i-crucible-phase2-qemu-inert-0",
+    "runtime_qemu_output": "lbmf6sf2hqczks1h8vl86d3y8aj23hk0-qemu-crucible-11.1.1",
+    "production_rust_plugin_loaded": false,
+    "acceptance": "Actual unmodified pinned Linux boot/run with byte-identical raw authoritative serial, device I/O and RNG fingerprint; corruption discriminator; normalized upstream QMP; terminal nonSim rejection with unchanged runstate; legacy migration projection, same-binary repeats, authenticated wide timers, actual restored-resave byte equality.",
+    "migration_parser_corruption_controls": 8,
+    "gate_result": "PASS\ncheck=checks.crucible.phase2.gates.qemuInert\ntasks=T-DET-23,T-HARN-21,T-PATCH-3\nopen_tasks=\nstatus=complete\nevidence_scope=atomic-patch-sim-off-upstream-equivalent-corpus\ngate=gate:qemu-inert\nreference_qemu=${AOS_ARTIFACTS}/z5n8vqd9m0i879yah0s71bh1dp0r3x2j-qemu-crucible-reference-11.1.1\npatched_qemu=${AOS_ARTIFACTS}/lbmf6sf2hqczks1h8vl86d3y8aj23hk0-qemu-crucible-11.1.1\nqemu_version=11.1.1\nplugin_loaded=false\nsim_accel_selected=false\nsim_flags_present=false\nstock_linux_kernel_unmodified=true\ntcg_virtual_clock=upstream-icount\ntcg_virtual_clock_host_load_independent=true\npatch_microtests_dependency_passed=true\nguest_visible_boot_serial_compared_raw=true\nguest_kernel_printk_timestamps_disabled_at_source=true\nserial_normalization_scope=secondary-workload-marker-evidence-only\nserial_normalization_masking_negative_control=red\nreference_vs_patched_boot_tcg_identical=true\nreference_vs_patched_device_io_identical=true\nreal_virtio_rng_hwrng_request_exercised=true\nvirtio_rng_fixed_zero_backend=true\nraw_serial_authority=through-test-result-pass\nreference_vs_patched_rng_output_tcg_identical=true\nreference_vs_patched_rng_read_call_count_tcg_identical=true\ndurable_execution_output_evidence=9p-file\nexecution_output_evidence_fields=block-hash,9p-hash,rng-bytes,rng-byte-count,rng-read-call-count,guest-output-fingerprint,sha256-composite-binding\nexecution_output_composite_binding_validated=true\nreference_vs_patched_execution_output_fingerprint_tcg_identical=true\nrng_leakage_negative_control=mutated-rng-read-call-count\nrng_leakage_negative_control_composite_rebound=true\nrng_leakage_negative_control_discriminated=true\nrng_completion_icount_equivalence_proven=true\nrng_completion_icount_equivalence_method=structural-sim-off-inertness\nrng_completion_delivery_only_added_code_is_sim_guarded=true\nrng_completion_delivery_path_sim_off_identical_to_reference=true\nrng_completion_timing_residual=closed-by-structural-sim-off-inertness\nqmp_upstream_command_set_identical=true\nqmp_introspection_surface_identical_after_control_extension=true\nqmp_crucible_control_extension=crucible-complete-terminal-lifecycle\nqmp_crucible_control_extension_sim_off_rejected_without_run_state_change=true\nmigration_legacy_projection_identical=true\nmigration_wide_timer_subsections_authenticated=true\nmigration_same_binary_repeats_identical=true\nmigration_patched_restore_resave_identical=true\nmigration_patched_restore_preserved_fractional_pit_coordinate=true\nupstream_equivalent_corpus=boot,device-io,virtio-rng-execution-output,qmp,migration-legacy-projection\nmigration_reference_sha256=5576e725637591d230e54115802a3729d554249205a734ee9df000bb94440f33\nmigration_patched_sha256=07e79ca6f757c89fb1cf236403ae186e48960375ee473b3dfe75be79dd1bb6b1\nmigration_legacy_body_sha256=cd7699f0ba5471d39b1fd85bf6ad8a6f726de2ec4b8036cbfb4cced73578e5a7\nmigration_timer_subsection_count=10\nmigration_timer_frame_bytes=1027\nmigration_pit_fractional_phase_ps=578\nmigration_section_id_changes=66\nmigration_legacy_projection_identical=true\nmigration_wide_timer_subsections_authenticated=true\nmigration_same_binary_repeats_identical=true\n",
+    "output_files": {
+      "corpus/boot-tcg-patched.raw": {
+        "sha256": "84909a8f59c9c2c15a63e66fef8ea3db2771b7c59b46554365bd61e8327dfcb1",
+        "bytes": 378
+      },
+      "corpus/boot-tcg-patched.txt": {
+        "sha256": "88d7982c4f6478a3ea0d8134b10af2f8cb3440cfb4b96e26bbdc836580460c74",
+        "bytes": 358
+      },
+      "corpus/boot-tcg-reference.raw": {
+        "sha256": "84909a8f59c9c2c15a63e66fef8ea3db2771b7c59b46554365bd61e8327dfcb1",
+        "bytes": 378
+      },
+      "corpus/boot-tcg-reference.txt": {
+        "sha256": "88d7982c4f6478a3ea0d8134b10af2f8cb3440cfb4b96e26bbdc836580460c74",
+        "bytes": 358
+      },
+      "corpus/execution-output-tcg-patched.sha256": {
+        "sha256": "f06eca0ea3b669144abe07644b030d3d3102667bde9985a0b0bf891228670606",
+        "bytes": 65
+      },
+      "corpus/execution-output-tcg-patched.txt": {
+        "sha256": "bf20c5f2b5d044e3462d9daec614775ad8e691a6b6e91351f8a41284a48399e9",
+        "bytes": 413
+      },
+      "corpus/execution-output-tcg-reference.sha256": {
+        "sha256": "f06eca0ea3b669144abe07644b030d3d3102667bde9985a0b0bf891228670606",
+        "bytes": 65
+      },
+      "corpus/execution-output-tcg-reference.txt": {
+        "sha256": "bf20c5f2b5d044e3462d9daec614775ad8e691a6b6e91351f8a41284a48399e9",
+        "bytes": 413
+      },
+      "corpus/migration-parser-tests.log": {
+        "sha256": "ff55ca94b6b3b5552322ae80bffcd0351d0a1aa47413561312ebcb5aaacdc534",
+        "bytes": 106
+      },
+      "corpus/migration-patched-a.bin": {
+        "sha256": "07e79ca6f757c89fb1cf236403ae186e48960375ee473b3dfe75be79dd1bb6b1",
+        "bytes": 876899
+      },
+      "corpus/migration-patched-a.sha256": {
+        "sha256": "0a40488417b6a2a2ea1b1c9281659bbc409a641ef993a776cccbb8ac46a69e71",
+        "bytes": 65
+      },
+      "corpus/migration-patched-b.bin": {
+        "sha256": "07e79ca6f757c89fb1cf236403ae186e48960375ee473b3dfe75be79dd1bb6b1",
+        "bytes": 876899
+      },
+      "corpus/migration-patched-b.sha256": {
+        "sha256": "0a40488417b6a2a2ea1b1c9281659bbc409a641ef993a776cccbb8ac46a69e71",
+        "bytes": 65
+      },
+      "corpus/migration-patched-restored.bin": {
+        "sha256": "07e79ca6f757c89fb1cf236403ae186e48960375ee473b3dfe75be79dd1bb6b1",
+        "bytes": 876899
+      },
+      "corpus/migration-patched-restored.sha256": {
+        "sha256": "0a40488417b6a2a2ea1b1c9281659bbc409a641ef993a776cccbb8ac46a69e71",
+        "bytes": 65
+      },
+      "corpus/migration-projection.result": {
+        "sha256": "29e0a7a25e8b00d9319c3be5c08a37612473414fe3ba732bd81915c37e08751e",
+        "bytes": 555
+      },
+      "corpus/migration-reference-a.bin": {
+        "sha256": "5576e725637591d230e54115802a3729d554249205a734ee9df000bb94440f33",
+        "bytes": 869598
+      },
+      "corpus/migration-reference-a.sha256": {
+        "sha256": "2b9afc3e0a4175acd48956dd16d8c2e86050bd70fc2274376dc7ab7d6ea72411",
+        "bytes": 65
+      },
+      "corpus/migration-reference-b.bin": {
+        "sha256": "5576e725637591d230e54115802a3729d554249205a734ee9df000bb94440f33",
+        "bytes": 869598
+      },
+      "corpus/migration-reference-b.sha256": {
+        "sha256": "2b9afc3e0a4175acd48956dd16d8c2e86050bd70fc2274376dc7ab7d6ea72411",
+        "bytes": 65
+      },
+      "corpus/qmp-surface-patched.txt": {
+        "sha256": "9985f7393c83c1c20fb0071d49fff567f1c69721f29ef5c9d2e61403a1db31ea",
+        "bytes": 8710
+      },
+      "corpus/qmp-surface-reference.txt": {
+        "sha256": "9985f7393c83c1c20fb0071d49fff567f1c69721f29ef5c9d2e61403a1db31ea",
+        "bytes": 8710
+      },
+      "corpus/rng-leakage-negative-control.diff": {
+        "sha256": "8bb022f63361c01a32cb22796f15f79a309d01d18c4a79e6609974e44dff10a0",
+        "bytes": 640
+      },
+      "nix-support/aos-target-platform": {
+        "sha256": "d3b7abad38647ed804b5017c5b990acab7c85648b552a97043d4d86c70ce1f9d",
+        "bytes": 13
+      },
+      "patch-microtests.result": {
+        "sha256": "9d0621d8253d3460959e39d7338b7a21fed311bae5c1b79b68e39f5037ca5673",
+        "bytes": 2119
+      },
+      "result": {
+        "sha256": "7842c71111142fe3e89f6febd56eb384981a8f88aa5c20add353f45430f7634b",
+        "bytes": 3091
+      },
+      "rng-delivery-inert.result": {
+        "sha256": "d55fb93add51715f5780fd3cf192564ab85cd6ba088685cf9efef3fce5e22c7e",
+        "bytes": 1024
+      }
+    },
+    "fixture_migration_sources": {
+      "tests/crucible/qemu-inert-migration.py": {
+        "artifact": "tests/crucible/qemu-inert-migration.py",
+        "sha256": "959192462ee811db2f630e0302951504ab7bbad893a1d7776f04b2b1a5fc7243",
+        "bytes": 21771
+      },
+      "tests/crucible/test_qemu_inert_migration.py": {
+        "artifact": "tests/crucible/test_qemu_inert_migration.py",
+        "sha256": "93708efa5ff047ee2307a2bff512d82bd89b45580d89612f32f2efacb936637e",
+        "bytes": 5944
+      }
+    }
+  },
+  "unpatched_reference_distinction": {
+    "references": {
+      "native_inert_reference": {
+        "output": "z5n8vqd9m0i879yah0s71bh1dp0r3x2j-qemu-crucible-reference-11.1.1",
+        "installed_identity": {
+          "qemu_package": "qemu-crucible-reference",
+          "qemu_version": "11.1.1",
+          "qemu_source_hash": "sha256-B5/7/4pxEbvIkCIQfLq/O7/WFNX8nXzGdZkRlqyhJII=",
+          "qemu_nix_hash": "9fe53c4daabfca23eaedf830a0cf7fb805a88c34b33584feec145779b43b3a88",
+          "qemu_configure_flags_hash": "85313e491e87d9d1553d973bdd3bc71baa3110b1d012b2d083f61b815395f939",
+          "qemu_configure_target_list": "x86_64-softmmu,aarch64-softmmu",
+          "qemu_atomic_patch_hash": "b7e1a2f9d5e9645de1eee9e8c72858ab6f13ca23be8dea72b951aed6303cad3b",
+          "qemu_patch_branch_ref": "dplecki/cached-tick-observation",
+          "qemu_patch_branch_model": "single-atomic-final-state-integration-commit",
+          "qemu_patch_branch_bundle_hash": "1f2a58084cba5e7c1e4918bbd6f104050be1f047ea903db60f8ea096696a9cae",
+          "qemu_patch_branch_base_commit": "1ed046750938db278a12dc55c6a7934d5fc68c14",
+          "qemu_patch_branch_base_tree": "c08cc386be14139bc835ab077baa0e72ef7ba7ef",
+          "qemu_patch_branch_head_commit": "33343f63cb5e8749caadcb251c6b8a90ed0482cf",
+          "qemu_patch_branch_material_hash": "f4e6fa2774987af675fb02a00c447ead21917bb31c1cdf8d0843b667b0466371",
+          "qemu_plugins_enabled": "true",
+          "qemu_crucible_atomic_patch_applied": "false",
+          "qemu_sim_capability": "none",
+          "qemu_shmem_abi_version": "30",
+          "qemu_shmem_abi": "crucible-shmem-abi-v30",
+          "qemu_shmem_header": "include/aos/crucible/crucible_shmem_abi.h",
+          "qemu_shmem_header_hash": "1dc465a755a9d9e8195a7e3cd22ecadcc1496fff89a2e19bcf7ffb7b9c9b8dcd",
+          "qemu_combined_work_license": "GPL-2.0-only",
+          "qemu_unmarked_source_default_license": "GPL-2.0-or-later",
+          "qemu_plugin_header_license": "GPL-2.0-or-later",
+          "qemu_shmem_header_license_option": "MIT",
+          "qemu_build_id": "19d39e60a0c943a10e8a946a39e70fe72603ba6f662655525d6627d12f190a3c"
+        },
+        "x86_64_elf": {
+          "artifact": "qemu-system-x86_64",
+          "sha256": "70dd75b6ba53f22e3844be562654df6f5c38748548c25d0867b4a4de88967867",
+          "bytes": 29698808
+        }
+      },
+      "frozen_performance_reference": {
+        "output": "aqqa9q8hd7manl58lrkgsai7900n8lsp-qemu-crucible-reference-11.1.1",
+        "installed_identity": {
+          "qemu_package": "qemu-crucible-reference",
+          "qemu_version": "11.1.1",
+          "qemu_source_hash": "sha256-B5/7/4pxEbvIkCIQfLq/O7/WFNX8nXzGdZkRlqyhJII=",
+          "qemu_nix_hash": "a07aad700fa8ba0271393fed0bb842d0d20935823b560ab9808eac798a187ce0",
+          "qemu_configure_flags_hash": "85313e491e87d9d1553d973bdd3bc71baa3110b1d012b2d083f61b815395f939",
+          "qemu_configure_target_list": "x86_64-softmmu,aarch64-softmmu",
+          "qemu_atomic_patch_hash": "b2a976ec4fa0c20778daf67f8418d5becad24771ca67036163832809913858c8",
+          "qemu_patch_branch_ref": "dplecki/lazy-memory-identity",
+          "qemu_patch_branch_model": "single-atomic-final-state-integration-commit",
+          "qemu_patch_branch_bundle_hash": "c54366177d3e25f56f210b0ff9a9b7915b7e4a9751fe17c1c926b24a14caa414",
+          "qemu_patch_branch_base_commit": "1ed046750938db278a12dc55c6a7934d5fc68c14",
+          "qemu_patch_branch_base_tree": "c08cc386be14139bc835ab077baa0e72ef7ba7ef",
+          "qemu_patch_branch_head_commit": "250a6b448ea0901bef47955122a3d7db82ed5193",
+          "qemu_patch_branch_material_hash": "1fa7fc53a39f3906f7e79a374e347a5c0b0045c9549396a148039f84b9684e3a",
+          "qemu_plugins_enabled": "true",
+          "qemu_crucible_atomic_patch_applied": "false",
+          "qemu_sim_capability": "none",
+          "qemu_shmem_abi_version": "30",
+          "qemu_shmem_abi": "crucible-shmem-abi-v30",
+          "qemu_shmem_header": "include/aos/crucible/crucible_shmem_abi.h",
+          "qemu_shmem_header_hash": "1dc465a755a9d9e8195a7e3cd22ecadcc1496fff89a2e19bcf7ffb7b9c9b8dcd",
+          "qemu_combined_work_license": "GPL-2.0-only",
+          "qemu_unmarked_source_default_license": "GPL-2.0-or-later",
+          "qemu_plugin_header_license": "GPL-2.0-or-later",
+          "qemu_shmem_header_license_option": "MIT",
+          "qemu_build_id": "72d03edd993eae185dac356028b7969f51dd457da31e832d0b99795b4ccfe539"
+        },
+        "x86_64_elf": {
+          "artifact": "qemu-system-x86_64",
+          "sha256": "0732f3f334f7fdafb7c7fe987e6e45114e25ee2e5c0bfc6f6b44ccdf7a6d9cd3",
+          "bytes": 29698808
+        }
+      }
+    },
+    "same_upstream_source_version_configure_hash_target_list_and_plugin_enabled_setting": true,
+    "both_atomic_patch_applied_false_and_sim_capability_none": true,
+    "binaries_identical": false,
+    "scope": "Native inertness actually used z5n8, while the timed frozen ordinary reference is aqqa. Their recipe/build identities and ELF bytes differ. This report does not label z5n8 native results as having used the literal aqqa timed binary or establish cross-binary timing equality."
+  },
+  "raw_local_logs": {
+    "full-build.log": {
+      "artifact": "full-build.log",
+      "sha256": "531fbd80ab9a64f3c8738cf7e64174d84221b5cc6642c7969a23f96b5d4585fa",
+      "bytes": 430700
+    },
+    "prebuild-canonical.log": {
+      "artifact": "prebuild-canonical.log",
+      "sha256": "abfe2c037e92ba45e9a8ef4b68074673447fb943b1336af37fc6066b9ff0247c",
+      "bytes": 28354
+    },
+    "prebuild-standalones-ledger.log": {
+      "artifact": "prebuild-standalones-ledger.log",
+      "sha256": "dbe62246493bb78a1bfe12675943c24ad16f8bf30c9fd46559bd0bb6191b3dbb",
+      "bytes": 115616
+    },
+    "prepared-current-package-source-check.log": {
+      "artifact": "prepared-current-package-source-check.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "final-native-register.log": {
+      "artifact": "final-native-register.log",
+      "sha256": "b91a00b8e4de3574e32f39971efd7f321bd4dfbfc15b2dd4d069a1dbb9106288",
+      "bytes": 407454
+    },
+    "final-native-inert.log": {
+      "artifact": "final-native-inert.log",
+      "sha256": "22b0e0151cf9df9af21e4a48c42bec826a1f03e77f7a7efffd4c436a75a6964a",
+      "bytes": 68995
+    },
+    "final-native-inert-corrected.log": {
+      "artifact": "final-native-inert-corrected.log",
+      "sha256": "624f06213411117f3f3cf22bcee840b49ab1e64ca2bf5d95820491483b4ee92f",
+      "bytes": 725
+    }
+  },
+  "qualification_limits": [
+    "This is a scoped correctness report, not a speed benchmark, publication action or claim that Sim matches ordinary TCG latency.",
+    "Production Rust plugin and broad final Sim native qualification are separate evidence; the C fixture scopes above do not imply those gates passed.",
+    "Previous package reports, failed gate output/logs and preparation artifacts remain retained. Correcting the inventory does not remove the initial failed result."
+  ]
+}

@@ -79,6 +79,8 @@ exports:
       - _SecTrustCopyPublicKey
       - _SecTrustSetAnchorCertificates
       - _SecTrustSetAnchorCertificatesOnly
+      - _SecTrustSetOCSPResponse
+      - _SecTrustSetVerifyDate
       - _SecTrustSettingsCopyCertificates
       - _SecTrustSettingsCopyTrustSettings
       - _kSecClass

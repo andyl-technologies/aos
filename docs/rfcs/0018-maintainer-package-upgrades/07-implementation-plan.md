@@ -23,9 +23,9 @@
 
 ## PR 1: Shared contracts and thin maintenance model
 
-Extract RFC-0017's canonical JSON, digest, bounded-decoding, and primitive
-contract support into one pure crate such as `aos-contract`, preserving all
-existing `aos-release` byte fixtures. Add a thin `aos-maintain` crate with:
+Use RFC-0017's existing portable `aos_core::{json,digest,limits,identity}`
+primitives, preserving all `aos-release-format` byte fixtures. The implemented
+`aos-package-maintenance` library owns the update-specific model with:
 
 - inventory envelope, component observation/candidate vector, campaign plan,
   gate plan, run, attempt, mutation, and evidence v1 schemas;
@@ -200,7 +200,7 @@ network, Git, credentials, or later privileged phases.
 
 ## PR 8 series: Typed source and artifact materializers
 
-Refactor [`aos prefetch`](../../../crates/aos/src/commands/prefetch.rs) transfer
+Refactor [`aos prefetch`](../../../crates/aos/cli/aos-cli/src/commands/prefetch.rs) transfer
 and hash machinery, then add materializer kinds incrementally:
 
 1. flat/recursive source slots;
@@ -290,7 +290,7 @@ capability, while ordinary status/inspection remains local.
 ## PR 12: Complex expansion and RFC-0017 identity handoff
 
 Expand typed support for shared sources, lifecycle/default aliases, larger
-artifact graphs/patch stacks, compiler cohorts, curated component vectors, and
+artifact graphs/atomic-patch identities, compiler cohorts, curated component vectors, and
 human-led exceptional campaigns. Add the resolved unit/family/stream/component/
 source identity subset to RFC-0017 release inventory without maintainer mutation
 or agent state.

@@ -1,6 +1,6 @@
-# 0062 - Transactional block transport reset
+# Capability task 0062 — Transactional block transport reset
 
-Patch `0062-crucible-block-transport-reset.patch` makes a resolved
+The atomic patch `crucible-qemu-11.1.1.patch` makes a resolved
 `storage.controller_lifecycle.transition_policy` reset observable by a real
 guest using the `crucible-shmem` block backend. It replaces the unscoped
 request-ID callback ABI with `(epoch, request_id)` identities and adds a
@@ -98,7 +98,7 @@ overflow.
 When `reenumerate_declared` is set, QEMU invokes the block graph's frontend-
 resize notification through the coroutine wrapper. A virtio-blk frontend
 consequently raises a configuration interrupt and the guest re-reads the
-already-declared geometry; the patch never invents or removes an undeclared
+already-declared geometry; the capability never invents or removes an undeclared
 namespace or path.
 
 ## Checkpoint and resource contract
@@ -164,14 +164,14 @@ or probabilistic membership tests.
 - a real migration proves restartable stopped requests resume while dropped
   requests remain unresolved until guest reset purges them;
 - a live patched-QEMU guest observes exact errno results and a virtio
-  configuration interrupt; removing patch `0062` makes the capability and ABI
-  gates fail.
+  configuration interrupt, while the pristine-QEMU negative proves the
+  capability and ABI are absent.
 
 ## Licensing and delivery
 
-The patch modifies existing QEMU files only, including the checked virtqueue
-migration reader in `hw/virtio/virtio.c`, and preserves their per-file licenses,
-so `LICENSES.md` gains no created-file row. The patch commit carries
-the required DCO sign-off. The patch, deterministic branch commit, bundle,
+The atomic patch modifies existing QEMU files only, including the checked
+virtqueue migration reader in `hw/virtio/virtio.c`, and preserves their per-file licenses,
+so `LICENSES.md` gains no created-file row. The atomic commit carries the
+required DCO sign-off. The atomic patch, DCO-signed commit, bundle,
 manifest identity, corresponding-source output, ABI conformance gate, and live
 backend gate update atomically.

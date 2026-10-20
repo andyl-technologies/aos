@@ -2,6 +2,7 @@
 {
   mkDerivation,
   mkManualUpstream,
+  callPackage,
   fetchurl,
   lib,
   stdenv,
@@ -26,7 +27,7 @@
   xz,
   file,
   patchelf,
-  bazel-bootstrap,
+  qemu-img,
   bootstrapTools,
   gcc-libs,
   llvm,
@@ -35,6 +36,7 @@
     inherit
       mkDerivation
       mkManualUpstream
+      callPackage
       fetchurl
       lib
       stdenv
@@ -59,18 +61,47 @@
       xz
       file
       patchelf
-      bazel-bootstrap
+      qemu-img
       bootstrapTools
       gcc-libs
       llvm
       ;
   };
 in
-  target
-  // {
-    passthru =
-      (target.passthru or {})
-      // {
-        aos = builtins.removeAttrs (target.passthru.aos or {}) ["maintenance"];
-      };
-  }
+  target.overrideAttrs (_: {
+    # The versioned package owns this maintenance unit; the alias does not.
+    update = null;
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
+      target = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
+      role = "public-package";
+    };
+  })

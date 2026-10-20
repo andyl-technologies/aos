@@ -1,8 +1,14 @@
 # Contributing to AOS
 
-Thank you for contributing. Before opening a change, read
-[the repository license map](docs/legal/licensing.md) and the instructions in
-[`AGENTS.md`](AGENTS.md).
+Anyone may open issues for bugs and feature requests. External contributions
+are currently disabled, and only project contributors may open pull requests.
+The authorization requirements below do not enable external contributions.
+Report undisclosed vulnerabilities privately under the
+[security policy](SECURITY.md); reporting does not require a contributor
+agreement.
+
+Project contributors must read
+[the repository license map](docs/legal/licensing.md) before opening a change.
 
 ## Code style
 
@@ -12,6 +18,18 @@ a precedent. Feature contributions should leave the local design no worse and
 improve it where that is safe and proportionate. Keep formatting,
 documentation-only work, behavior-preserving refactors, and behavior changes
 reviewable as distinct changes whenever practical.
+
+## Rust workspace ownership
+
+Before adding or splitting a crate, read the
+[workspace organization](docs/architecture/crate-workspace.md) and check the
+[active](docs/architecture/crate-inventory.md) and
+[unmerged](docs/architecture/unmerged-crates.md) inventories for existing reusable
+code and name collisions. A directory hierarchy does not scope Cargo names.
+Use a full package name that identifies its capability or owning subsystem, and
+keep its leaf directory consistent with that name. Add a crate for a justified
+consumer, dependency, platform, packaging, or license boundary; otherwise use
+modules in the existing owner.
 
 ## Contributor agreement
 
@@ -68,7 +86,7 @@ for the complete intake and record-handling requirements.
 ## License by path
 
 - Original AOS files use Apache-2.0 unless a more specific notice applies.
-- `crucible-protocol` and `crucible-shmem` use `MIT OR Apache-2.0`.
+- `crucible-qemu-protocol` and `crucible-qemu-shmem` use `MIT OR Apache-2.0`.
 - `crucible-qemu-plugin` and `crucible-qemu-trace-plugin` use
   `GPL-2.0-only`.
 - Existing QEMU files and patches to them retain the applicable upstream file
@@ -77,7 +95,7 @@ for the complete intake and record-handling requirements.
   Otherwise they inherit QEMU's documented default, currently
   `GPL-2.0-or-later`. Update
   [`pkgs/emulation/qemu-patches/LICENSES.md`](pkgs/emulation/qemu-patches/LICENSES.md)
-  whenever the patch series starts creating or deleting a file.
+  whenever the atomic patch starts creating or deleting a file.
 - Third-party code retains its own license and notices.
 - The patched `qemu-crucible` package is not a standalone release root. Use the
   `crucible` aggregate when publishing; its release policy must retain the

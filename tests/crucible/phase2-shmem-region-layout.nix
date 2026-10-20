@@ -11,12 +11,15 @@
 
   shmemContract = builtins.concatStringsSep "\n" [
     (import ./_crucible-shmem-source.nix {inherit lib;})
-    (builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node.rs)
-    (builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node/frame_entry.rs)
-    (builtins.readFile ../../crates/crucible-shmem/src/shmem/region.rs)
-    (builtins.readFile ../../crates/crucible-shmem/src/shmem/ring_coverage.rs)
+    (import ./_rust-module-source.nix {
+      inherit lib;
+      entry = ../../crates/crucible/protocol/crucible-qemu-shmem/src/shmem/frame_node.rs;
+    })
+    (builtins.readFile ../../crates/crucible/protocol/crucible-qemu-shmem/src/shmem/frame_node/frame_entry.rs)
+    (builtins.readFile ../../crates/crucible/protocol/crucible-qemu-shmem/src/shmem/region.rs)
+    (builtins.readFile ../../crates/crucible/protocol/crucible-qemu-shmem/src/shmem/ring_coverage.rs)
   ];
-  regionTest = builtins.readFile ../../crates/crucible-shmem/tests/region_layout.rs;
+  regionTest = builtins.readFile ../../crates/crucible/protocol/crucible-qemu-shmem/tests/region_layout.rs;
   shmemSpec = builtins.readFile ../../docs/rfcs/0010-crucible/13-shmem-abi.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -80,14 +83,14 @@
     nonShmemSources;
 
   failures =
-    failuresFor "crates/crucible-shmem source modules" shmemContract [
+    failuresFor "crates/crucible/protocol/crucible-qemu-shmem source modules" shmemContract [
       {
         label = "region magic";
         needle = "pub const REGION_MAGIC: u64 = u64::from_le_bytes(*b\"CRUCSHM1\");";
       }
       {
         label = "ABI version";
-        needle = "pub const ABI_VERSION: u32 = 17;";
+        needle = "pub const ABI_VERSION: u32 = 30;";
       }
       {
         label = "physical slot capacity";
@@ -178,12 +181,16 @@
         needle = "pub const RING_HEADER_SIZE";
       }
       {
+        label = "ring header consumer admission offset";
+        needle = "RING_HEADER_CONSUMER_STATE_OFFSET == 8";
+      }
+      {
         label = "ring header read padding offset";
-        needle = "RING_HEADER_PAD_READ_OFFSET == 8";
+        needle = "RING_HEADER_PAD_READ_OFFSET == 16";
       }
       {
         label = "ring header write padding offset";
-        needle = "RING_HEADER_PAD_WRITE_OFFSET == 72";
+        needle = "RING_HEADER_PAD_WRITE_OFFSET == 80";
       }
       {
         label = "frame entry size";
@@ -282,7 +289,7 @@
         needle = "pub fn padding_bytes_are_zero(&self) -> bool";
       }
     ]
-    ++ forbiddenFor "crates/crucible-shmem source modules" shmemContract [
+    ++ forbiddenFor "crates/crucible/protocol/crucible-qemu-shmem source modules" shmemContract [
       {
         label = "public raw header magic";
         needle = "pub magic: AtomicU64";
@@ -292,7 +299,7 @@
         needle = "pub node_count: AtomicU32";
       }
     ]
-    ++ failuresFor "crates/crucible-shmem/tests/region_layout.rs" regionTest [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-shmem/tests/region_layout.rs" regionTest [
       {
         label = "header layout test";
         needle = "region_header_layout_matches_wire_contract";
@@ -326,7 +333,7 @@
         needle = "reserved_executor_slot_constants_are_stable";
       }
     ]
-    ++ forbiddenFor "crates/crucible-shmem/tests/region_layout.rs" regionTest [
+    ++ forbiddenFor "crates/crucible/protocol/crucible-qemu-shmem/tests/region_layout.rs" regionTest [
       {
         label = "ignored region layout test";
         needle = "#[ignore";
@@ -394,7 +401,7 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-shmem-region-layout-target" \
-              -p crucible-shmem \
+              -p crucible-qemu-shmem \
               --test region_layout \
               -- --test-threads=1
           '';
@@ -410,7 +417,7 @@ in
             tasks=${taskList}
             gate=gate:abi-conformance
             gate=gate:layer1-injection
-            rust_tests=crucible-shmem::region_layout
+            rust_tests=crucible_qemu_shmem::region_layout
             layout_target=x86_64-unknown-linux-gnu
             max_nodes_escape=false
             region_header=true

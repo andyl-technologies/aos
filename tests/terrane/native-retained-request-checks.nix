@@ -12,12 +12,12 @@
 in
   sourceGate "native-retained-request-checks" ''
     cd crates
-    cargo test --frozen --offline -p terrane --no-default-features \
+    cargo test --frozen --offline -p terrane-sdk --no-default-features \
       --features tokio,surface-sdk --lib -- --list > "$TMPDIR/retained-request-tests.txt"
     python3 ../tests/terrane/check_native_gate.py inventory \
       "$TMPDIR/retained-request-tests.txt" '${builtins.toJSON selectors}'
     for test_name in ${builtins.concatStringsSep " " selectors}; do
-      if ! cargo test --frozen --offline -p terrane --no-default-features \
+      if ! cargo test --frozen --offline -p terrane-sdk --no-default-features \
         --features tokio,surface-sdk --lib "$test_name" -- --exact \
         > "$TMPDIR/retained-request-test.log" 2>&1; then
         cat "$TMPDIR/retained-request-test.log"

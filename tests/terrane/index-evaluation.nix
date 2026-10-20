@@ -28,7 +28,7 @@
   ];
 
   runTest = name: ''
-    if ! cargo test --frozen --offline -p terrane-core --lib indexing::evaluation_tests::${name} -- --exact \
+    if ! cargo test --frozen --offline -p terrane-format --lib indexing::evaluation_tests::${name} -- --exact \
       > "$TMPDIR/index-evaluation-test.log" 2>&1; then
       cat "$TMPDIR/index-evaluation-test.log"
       exit 1
@@ -37,7 +37,7 @@
   '';
 
   runDiscoveryTest = name: ''
-    if ! cargo test --frozen --offline -p terrane-core --lib indexing::incremental::tests::${name} -- --exact \
+    if ! cargo test --frozen --offline -p terrane-format --lib indexing::incremental::tests::${name} -- --exact \
       > "$TMPDIR/index-discovery-test.log" 2>&1; then
       cat "$TMPDIR/index-discovery-test.log"
       exit 1
@@ -46,7 +46,7 @@
   '';
 
   runMaintenanceTest = name: ''
-    if ! cargo test --frozen --offline -p terrane-core --lib indexing::maintenance::tests::${name} -- --exact \
+    if ! cargo test --frozen --offline -p terrane-format --lib indexing::maintenance::tests::${name} -- --exact \
       > "$TMPDIR/index-maintenance-test.log" 2>&1; then
       cat "$TMPDIR/index-maintenance-test.log"
       exit 1
@@ -55,7 +55,7 @@
   '';
 
   runLookupTest = name: ''
-    if ! cargo test --frozen --offline -p terrane-core --lib indexing::incremental::lookup::tests::${name} -- --exact \
+    if ! cargo test --frozen --offline -p terrane-format --lib indexing::incremental::lookup::tests::${name} -- --exact \
       > "$TMPDIR/source-lookup-test.log" 2>&1; then
       cat "$TMPDIR/source-lookup-test.log"
       exit 1
@@ -69,6 +69,6 @@ in
     ${builtins.concatStringsSep "\n" (map runDiscoveryTest discoveryTests)}
     ${builtins.concatStringsSep "\n" (map runLookupTest lookupTests)}
     ${builtins.concatStringsSep "\n" (map runMaintenanceTest maintenanceTests)}
-    cargo clippy --frozen --offline -p terrane-core --all-targets -- -D warnings
+    cargo clippy --frozen --offline -p terrane-format --all-targets -- -D warnings
     printf 'PASS: pure canonical index relationships, changed-source discovery and repeatable maintenance\n' > "$out/result"
   ''

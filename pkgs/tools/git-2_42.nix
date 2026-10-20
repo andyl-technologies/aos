@@ -1,5 +1,6 @@
 ##! git-2_42 -- Pinned minimum Git for registry compatibility tests
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -17,7 +18,6 @@
   bash,
   stdenv,
   buildPackages,
-  lib,
 }: let
   version = "2.42.0";
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
@@ -56,7 +56,61 @@
     else "--without-iconv";
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      role = "public-package";
+    };
     pname = "git-2_42";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Git emits the exact SHA-1 object identifier.";
+        "files" = {};
+        "input" = "A fixed byte sequence to encode as a Git blob object.";
+        "operation" = "Compute the blob object identifier with Git 2.42 hash-object.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/git"
+              "hash-object"
+              "--stdin"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdin" = "qualification object\n";
+            "stdout" = {
+              "exact" = "157adbdcc19d3c521d96614eb0e7af902f2bdfb4\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Git rejects the missing input with status 128.";
+        "files" = {};
+        "input" = "A path that does not exist.";
+        "operation" = "Hash the missing path as a Git object.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/git"
+              "hash-object"
+              "@work@/bad-input/missing"
+            ];
+            "exit_code" = 128;
+            "observes_rejection" = true;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

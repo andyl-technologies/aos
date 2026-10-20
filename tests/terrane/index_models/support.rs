@@ -167,7 +167,7 @@ impl Value {
 
 const REFERENCE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../docs/rfcs/0024-terrane/spec/reference/golden-vectors.md"
+    "/../../../../docs/rfcs/0024-terrane/spec/reference/golden-vectors.md"
 ));
 
 /// Reads one exact hexadecimal field from a unique published case.

@@ -17,7 +17,7 @@
     reason = "independent reference fixture failures intentionally panic"
 )]
 
-use terrane_core::{
+use terrane_format::{
     codec::{Codec, EncodedChunk, encode_envelope, parse_envelope, validate_envelope_size},
     identity::{IdentityKind, TERRANE_V1},
     pack_format::{MergedRecord, Record, decode_shard, encode_shard},

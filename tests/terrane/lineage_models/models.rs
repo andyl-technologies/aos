@@ -5,10 +5,10 @@
 
 use super::support::{Value, bytes, encode, map, properties, text};
 use Value::{Array, Bool, UInt};
-use terrane_core::auth::{Request, RequestRoot, Verb};
-use terrane_core::gc::publication::evidence::*;
-use terrane_core::gc::publication::{BackendBinding, RemoteProvider};
-use terrane_core::refs::*;
+use terrane_format::auth::{Request, RequestRoot, Verb};
+use terrane_format::gc::publication::evidence::*;
+use terrane_format::gc::publication::{BackendBinding, RemoteProvider};
+use terrane_format::refs::*;
 
 /// Constructs the complete ordinary local/S3/GCS owner models.
 pub(super) fn owner(provider: &str) -> PhysicalRegistration {

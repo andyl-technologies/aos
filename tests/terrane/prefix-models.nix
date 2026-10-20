@@ -24,7 +24,7 @@
 
   prepare = consumer: ''
     template="$PWD/../tests/terrane/prefix_models/${consumer.template}"
-    source="terrane-core/src/${consumer.source}"
+    source="terrane/sdk/terrane-format/src/${consumer.source}"
     if ! test -f "$template" || ! test -f "$source"; then
       printf 'Independent original-prefix field consumers remain pending.\n' >&2
       exit 1
@@ -33,7 +33,7 @@
   '';
 
   runTest = target: name: ''
-    if ! cargo test --frozen --offline -p terrane-core ${target} ${name} -- --exact \
+    if ! cargo test --frozen --offline -p terrane-format ${target} ${name} -- --exact \
       > "$TMPDIR/prefix-model-test.log" 2>&1; then
       cat "$TMPDIR/prefix-model-test.log"
       exit 1
@@ -48,11 +48,11 @@ in
       exit 1
     fi
     ${builtins.concatStringsSep "\n" (map prepare consumers)}
-    cp ../tests/terrane/prefix-models.rs terrane-core/tests/prefix_vectors.rs
+    cp ../tests/terrane/prefix-models.rs terrane/sdk/terrane-format/tests/prefix_vectors.rs
     cp ../docs/rfcs/0024-terrane/spec/reference/golden-vectors.md "$out/reference.md"
     cargo fmt --all -- --check
     ${builtins.concatStringsSep "\n" (map (runTest "--test prefix_vectors") publicTests)}
     ${builtins.concatStringsSep "\n" (map (runTest "--lib") privateTests)}
-    cargo clippy --frozen --offline -p terrane-core --lib --tests -- -D warnings
+    cargo clippy --frozen --offline -p terrane-format --lib --tests -- -D warnings
     printf 'PASS: original published chunk, boundary, entry and unsigned-preimage witnesses in six exact groups\n' > "$out/result"
   ''

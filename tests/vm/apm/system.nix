@@ -5,21 +5,14 @@
 # containment tracking.
 #
 # These tests run apm in a headless Firecracker microVM with mock toplevels.
-# The toplevels are real Nix derivations containing activation scripts, etc/
-# directories, and systemd unit stubs. The install workflow publishes a real
+# The toplevels are real Nix derivations containing etc/ directories and
+# systemd unit stubs. The install workflow publishes a real
 # sysroot registry entry through APR and downloads it through a generated cache;
 # the rollback/diff tests still seed focused generation state directly.
 #
-# NOTE on the systemd D-Bus migration: when a generation switch produces a
-# non-empty service diff (every upgrade/rollback here, but NOT a fresh
-# install), apm now applies it via the `aos-systemd` D-Bus client instead of
-# fire-and-forget `systemctl` shell-outs. This headless microVM runs no system
-# D-Bus, so that activation step fails with a clear "no system bus" error —
-# AFTER the generation symlink + state.json have already been committed
-# atomically. These tests therefore keep `|| true` on the apm invocation and
-# assert on the committed generation state, which is what they exercise; the
-# live service-activation path (start/stop/restart over a real bus) is covered
-# by the apm-systemd-client fleet test.
+# These focused fixtures exercise generation-state and containment behavior.
+# Checked live provider transitions are covered by the ability qualification
+# tests, which supply authenticated provider packages and runtime authority.
 {
   testing,
   apm,
@@ -122,17 +115,6 @@
                 etcFiles
               )
             )}
-
-            # Activation script
-            cat > $out/activate << 'ACTIVATEEOF'
-            #!${pkgs.bash}/bin/bash
-            set -euo pipefail
-            echo "Activating ${pname} ${version}"
-            ${pkgs.coreutils}/bin/mkdir -p /tmp
-            echo "${version}" > /tmp/activated-${version}
-            echo "${version}" > /tmp/activated-current
-            ACTIVATEEOF
-            chmod +x $out/activate
 
             ${
               if kernelPath != null
@@ -380,7 +362,7 @@
   # Preamble for headless system tests.
   # These tests use rootfsDeps mode, where the test script is PID 1 and the
   # stage-2 aos-nix-db.service never runs. The headless rootfs still ships
-  # /aos-registration, so load that stream explicitly after setting up Nix's
+  # /usr/lib/aos/nix-registration, so load that stream explicitly after setting up Nix's
   # runtime library path.
   # nix-store needs its runtime libraries (RPATH doesn't cover all deps yet)
   nixLibPath = builtins.concatStringsSep ":" (map (p: "${p}/lib") [
@@ -443,7 +425,7 @@
         # Nix DB from the same registration stream full images load at boot.
         export NIX_REMOTE=""
         nix-store --init || true
-        nix-store --load-db < /aos-registration
+        nix-store --load-db < /usr/lib/aos/nix-registration
         mkdir -p /var/lib/profiles /nix/var/nix/gcroots/aos-profiles
         if ! ${pkgs.util-linux}/bin/mountpoint -q /nix/var/nix/gcroots/aos-profiles; then
           ${pkgs.util-linux}/bin/mount --bind \
@@ -463,7 +445,7 @@
     sandbox = false
     NIXCONF
     nix-store --init || true
-    nix-store --load-db < /aos-registration
+    nix-store --load-db < /usr/lib/aos/nix-registration
     mkdir -p /var/lib/profiles /nix/var/nix/gcroots/aos-profiles
     if ! ${pkgs.util-linux}/bin/mountpoint -q /nix/var/nix/gcroots/aos-profiles; then
       ${pkgs.util-linux}/bin/mount --bind \
@@ -508,11 +490,11 @@
     }
 
     echo "==> Maintainer: publish server sysroot and static cache"
-    $APR create system-reg
+    create_publish_registry system-reg
     REG_DIR="$REG_STORAGE/system-reg"
     DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
 
-    $APR publish "$TOPLEVEL_STORE" \
+    publish_vm_package "$TOPLEVEL_STORE" \
       --name server \
       --version 2026.03 \
       --description "System install workflow sysroot" \
@@ -692,14 +674,14 @@ in {
     testScript = ''
       ${setupRealSystemInstallWorkflow}
 
-      echo "==> Test: apm install server --system downloads then fails closed"
+      echo "==> Test: apm image install server downloads then fails closed"
 
-      if $APM install server --system --registry system-reg --yes \
+      if $APM image install server --registry system-reg --yes \
         > /tmp/system-install.out 2>&1; then
         cat /tmp/system-install.out
-        fail "apm install --system must reject missing image-generation authority"
+        fail "apm image install must reject missing image-generation authority"
       else
-        pass "apm install --system rejects missing image-generation authority"
+        pass "apm image install rejects missing image-generation authority"
       fi
       cat /tmp/system-install.out
       assert_file_contains /tmp/system-install.out "Downloading" \
@@ -710,8 +692,7 @@ in {
 
       if [ -e /var/lib/profiles/system/state.json ] || \
         [ -e /var/lib/profiles/system/current ] || \
-        [ -e /var/lib/profiles/system/gen-1 ] || \
-        [ -e /tmp/activated-2026.03 ]; then
+        [ -e /var/lib/profiles/system/gen-1 ]; then
         fail "rejected system activation must not create generation state"
       else
         pass "rejected system activation leaves generation state untouched"
@@ -735,7 +716,7 @@ in {
     testScript = ''
       ${setupRealSystemInstallWorkflow}
 
-      echo "==> Test: apm install --system resolves mirrors from system scope"
+      echo "==> Test: apm image install resolves mirrors from system scope"
 
       BAD_HOME=/tmp/system-scope-user-home
       mkdir -p "$BAD_HOME/.local/share/apm/registries/system-reg"
@@ -746,7 +727,7 @@ in {
       endpoint = "http://127.0.0.1:9/user-cache"
       REGEOF
 
-      if HOME="$BAD_HOME" $APM install server --system --registry system-reg --yes \
+      if HOME="$BAD_HOME" $APM image install server --registry system-reg --yes \
         > /tmp/system-mirror-scope-install.out 2>&1; then
         cat /tmp/system-mirror-scope-install.out
         fail "scoped system install must reject missing image-generation authority"
@@ -766,8 +747,7 @@ in {
       fi
       assert_store_valid "$TOPLEVEL_STORE" "system toplevel after scoped mirror install"
       if [ -e /var/lib/profiles/system/state.json ] || \
-        [ -e /var/lib/profiles/system/current ] || \
-        [ -e /tmp/activated-2026.03 ]; then
+        [ -e /var/lib/profiles/system/current ]; then
         fail "rejected scoped system install must not activate the sysroot"
       else
         pass "rejected scoped system install leaves generation state untouched"
@@ -799,9 +779,9 @@ in {
       ln -sfn ${toplevelV1} /var/lib/profiles/system/gen-1/toplevel
       ln -sfn gen-1 /var/lib/profiles/system/current
 
-      echo "==> Test: apm upgrade --system rejects unauthenticated legacy state"
+      echo "==> Test: apm image upgrade rejects unauthenticated legacy state"
 
-      if ${apm}/bin/apm upgrade --system > /tmp/system-upgrade.out 2>&1; then
+      if ${apm}/bin/apm image upgrade > /tmp/system-upgrade.out 2>&1; then
         cat /tmp/system-upgrade.out
         echo "FAIL: legacy system upgrade should require image-generation authority"
         exit 1
@@ -838,9 +818,9 @@ in {
       ln -sfn ${toplevelV2} /var/lib/profiles/system/gen-2/toplevel
       ln -sfn gen-2 /var/lib/profiles/system/current
 
-      echo "==> Test: apm rollback --system rejects unauthenticated legacy state"
+      echo "==> Test: apm config rollback rejects unauthenticated legacy state"
 
-      if ${apm}/bin/apm rollback --system > /tmp/system-rollback.out 2>&1; then
+      if ${apm}/bin/apm config rollback > /tmp/system-rollback.out 2>&1; then
         cat /tmp/system-rollback.out
         echo "FAIL: legacy system rollback should require image-generation authority"
         exit 1
@@ -852,8 +832,6 @@ in {
       }
       test "$(${pkgs.jq}/bin/jq '.current' /var/lib/profiles/system/state.json)" = "2"
       test "$(readlink /var/lib/profiles/system/current)" = "gen-2"
-      test ! -e /tmp/activated-2026.03
-
       echo "==> system-rollback fail-closed boundary PASSED"
     '';
   };
@@ -882,7 +860,7 @@ in {
 
       echo "==> Test: targeted rollback rejects unauthenticated legacy state"
 
-      if ${apm}/bin/apm rollback --system --generation 1 \
+      if ${apm}/bin/apm config rollback --generation 1 \
         > /tmp/system-rollback-generation.out 2>&1; then
         cat /tmp/system-rollback-generation.out
         echo "FAIL: targeted legacy rollback should require image-generation authority"
@@ -1020,7 +998,7 @@ in {
       fi
 
       echo "==> Verify unauthenticated rollback cannot switch /etc authority"
-      if ${apm}/bin/apm rollback --system > /tmp/system-etc-rollback.out 2>&1; then
+      if ${apm}/bin/apm config rollback > /tmp/system-etc-rollback.out 2>&1; then
         cat /tmp/system-etc-rollback.out
         echo "FAIL: unauthenticated rollback unexpectedly succeeded"
         exit 1

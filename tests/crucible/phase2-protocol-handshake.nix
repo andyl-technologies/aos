@@ -7,8 +7,8 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  protocolLib = builtins.readFile ../../crates/crucible-protocol/src/lib.rs;
-  handshakeTest = builtins.readFile ../../crates/crucible-protocol/tests/handshake.rs;
+  protocolLib = builtins.readFile ../../crates/crucible/protocol/crucible-qemu-protocol/src/lib.rs;
+  handshakeTest = builtins.readFile ../../crates/crucible/protocol/crucible-qemu-protocol/tests/handshake.rs;
   protocolSpec = builtins.readFile ../../docs/rfcs/0010-crucible/14-protocol.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -17,14 +17,10 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "crates/crucible-protocol/src/lib.rs" protocolLib [
+    failuresFor "crates/crucible/protocol/crucible-qemu-protocol/src/lib.rs" protocolLib [
       {
         label = "current protocol version";
         needle = "pub const CONTROL_PROTOCOL_VERSION";
-      }
-      {
-        label = "minimum protocol version";
-        needle = "pub const CONTROL_PROTOCOL_MIN_VERSION";
       }
       {
         label = "host handshake config";
@@ -35,7 +31,7 @@
         needle = "pub struct PluginHandshakeConfig";
       }
       {
-        label = "negotiated handshake result";
+        label = "exact-version handshake result";
         needle = "pub struct NegotiatedHandshake";
       }
       {
@@ -51,7 +47,7 @@
         needle = "pub fn plugin_start_handshake";
       }
       {
-        label = "host pure negotiation";
+        label = "host exact-version validation";
         needle = "pub fn host_negotiate_handshake";
       }
       {
@@ -59,8 +55,8 @@
         needle = "pub fn plugin_validate_handshake_ack";
       }
       {
-        label = "minimum-version negotiation rule";
-        needle = "plugin_proto_version.min(config.proto_version)";
+        label = "exact current-version validation";
+        needle = "require_current_control_protocol(plugin_proto_version)?";
       }
       {
         label = "exact ABI mismatch error";
@@ -71,8 +67,8 @@
         needle = "validate_slot_assignment";
       }
       {
-        label = "no-overlap error";
-        needle = "ProtocolVersionNoOverlap";
+        label = "exact protocol-version mismatch error";
+        needle = "ProtocolVersionMismatch";
       }
       {
         label = "hello message write";
@@ -87,10 +83,10 @@
         needle = "writer.flush()";
       }
     ]
-    ++ failuresFor "crates/crucible-protocol/tests/handshake.rs" handshakeTest [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-protocol/tests/handshake.rs" handshakeTest [
       {
         label = "host happy path";
-        needle = "host_accepts_hello_negotiates_minimum_and_writes_hello_ack";
+        needle = "host_accepts_exact_hello_and_writes_hello_ack";
       }
       {
         label = "plugin happy path";
@@ -109,8 +105,8 @@
         needle = "struct ScriptedIo";
       }
       {
-        label = "version no-overlap assertion";
-        needle = "ProtocolVersionNoOverlap";
+        label = "exact version mismatch assertion";
+        needle = "ProtocolVersionMismatch";
       }
       {
         label = "ABI mismatch assertion";
@@ -198,7 +194,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-protocol-handshake-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible-protocol \
+              -p crucible-qemu-protocol \
               --test handshake \
               -- --test-threads=1
           '';
@@ -213,9 +209,9 @@ in
             check=${attrPath}
             tasks=${taskList}
             gate=gate:abi-conformance
-            rust_tests=crucible-protocol::handshake
+            rust_tests=crucible_qemu_protocol::handshake
             handshake=Hello,HelloAck
-            proto_negotiation=min-plugin-host
+            proto_negotiation=exact-current-version
             abi_check=exact
             slot_check=slot-index-lt-node-count
             RESULT

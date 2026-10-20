@@ -6,7 +6,7 @@
 //! ```
 
 use super::wire::{self, Value, a, b, bytes, m, s, u};
-use terrane_core::gc::publication::{
+use terrane_format::gc::publication::{
     Activation, BackendBinding, BackendRegistration, RemoteProvider,
 };
 

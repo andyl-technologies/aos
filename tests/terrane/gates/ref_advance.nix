@@ -2,7 +2,7 @@
   focusedTest = ''
     run_ref_test() {
       test_name=$1
-      cargo test --frozen --offline -p terrane --features tokio --lib -- --list > "$TMPDIR/ref-tests.txt"
+      cargo test --frozen --offline -p terrane-sdk --features tokio --lib -- --list > "$TMPDIR/ref-tests.txt"
       python3 - "$TMPDIR/ref-tests.txt" "$test_name" <<'PYTEST'
     import sys
 
@@ -12,7 +12,7 @@
     if f"{sys.argv[2]}: test" not in names:
         raise SystemExit(f"required reference test is missing: {sys.argv[2]}")
     PYTEST
-      cargo test --frozen --offline -p terrane --features tokio --lib "$test_name" -- --exact
+      cargo test --frozen --offline -p terrane-sdk --features tokio --lib "$test_name" -- --exact
     }
   '';
 in {

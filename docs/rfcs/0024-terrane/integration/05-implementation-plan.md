@@ -8694,6 +8694,31 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
 
 ### T2 — Host tier
 
+Upstream integration (2026-10-19): merge `origin/master` at `68851a3bf1`
+into the existing RFC branch and apply its explicit PR #420 package mapping.
+Current packages are `terrane-format`, `terrane-sdk`, `terrane-linux`,
+`terrane-cli`, and `aos-terrane-integration`, under the Terrane ownership
+subdirectories in `crates/terrane/`. D-127 and AD-14 reconcile names only;
+stable requirements, gates, persisted bytes and T1 freezes remain intact.
+Earlier qualification records below identify their original sources and names.
+The unfinished dictionary dependency fixture is checkpointed separately before
+the merge. No T2 task is accepted by importing upstream changes.
+
+Integration checks: Cargo metadata, all five renamed packages' all-target
+compilation, crate graph, the reviewed native unsafe-binding audit, the Nix
+registry-complete gate and complete gate listing pass. All 638 external upstream
+dependency versions and checksums remain unchanged. The combined lockfile's
+measured shared vendor hash is updated to
+`sha256-GoGnyiyY6gp+gaIlunRCPeTvo58B2D/m7o7mUp/skDA=`. The required
+workspace Rust formatter encounters upstream's declared but absent
+`crucible-daemon/src/executor_worker/result/operations.rs`; that declaration
+and absence are both present in `origin/master`. The all-format check also
+reports 414 Nix files needing formatting in the integrated tree. These failures
+are retained, not credited as green; source-specific build and gate checks
+continue independently. The earlier `bf3c74517e` surface feature-matrix run
+finished with 1,157 passed and two publication-timing failures; its aggregate
+successor did not run.
+
 Status: in progress, resumed without sub-agents (2026-10-17). T1's 22 tasks and
 89 current gates are complete; its identity, encoding, bucket-key and Store-trait
 freeze applies. Preserved worktrees cover the five T2 tasks, including dedicated

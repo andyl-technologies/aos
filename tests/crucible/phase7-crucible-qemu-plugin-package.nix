@@ -11,7 +11,7 @@
   workspaceBuildCheck = builtins.readFile ./phase1-aos-workspace-build.nix;
   pluginAbi = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu-plugin/src/abi.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/abi.rs;
   };
   shmemLib = import ./_crucible-shmem-source.nix {inherit lib;};
   defaultChecks = builtins.readFile ./default.nix;
@@ -39,6 +39,10 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
+  suiteDeclaration = builtins.concatStringsSep " " (
+    builtins.filter builtins.isString (builtins.split "[[:space:]]+" cruciblePackageNix)
+  );
+
   failures =
     failuresFor "docs/rfcs/0010-crucible/26-packaging-aos-integration.md" packagingDoc [
       {
@@ -57,7 +61,7 @@
       }
       {
         label = "vendored cargo deps";
-        needle = "cargoDeps = fetchCargoVendor";
+        needle = "cargoDeps = aosWorkspaceVendor;";
       }
       {
         label = "plugin crate cargo build";
@@ -68,8 +72,8 @@
         needle = "cargoTestFlags = \"-p crucible-qemu-plugin\";";
       }
       {
-        label = "cdylib install enabled";
-        needle = "installLibs = true;";
+        label = "generic library install disabled for explicit cdylib selection";
+        needle = "installLibs = false;";
       }
       {
         label = "matched qemu package dependency";
@@ -77,7 +81,7 @@
       }
       {
         label = "patched qemu plugin header probe";
-        needle = "header=\"" + "$" + "{qemu-crucible}/include/qemu-plugin.h\"";
+        needle = "header=\"" + "$" + "{qemu-crucible}/include/qemu/qemu-plugin.h\"";
       }
       {
         label = "QEMU plugin API version probe";
@@ -85,7 +89,7 @@
       }
       {
         label = "plugin API version source";
-        needle = "done < crates/crucible-qemu-plugin/src/abi.rs";
+        needle = "done < crucible/qemu/crucible-qemu-plugin/src/abi.rs";
       }
       {
         label = "installed QEMU plugin path";
@@ -133,7 +137,7 @@
     ++ failuresFor "pkgs/emulation/qemu.nix" qemuPackageNix [
       {
         label = "QEMU plugin header installed";
-        needle = "install -m 644 include/plugins/qemu-plugin.h \"$out/include/qemu-plugin.h\"";
+        needle = "plugin_header=include/plugins/qemu-plugin.h";
       }
       {
         label = "QEMU output retains GPL-2.0-or-later text for its plugin header";
@@ -152,10 +156,14 @@
         needle = "standalone_release=false";
       }
     ]
-    ++ failuresFor "pkgs/tools/crucible/crucible.nix" cruciblePackageNix [
+    ++ failuresFor "pkgs/tools/crucible/crucible.nix" suiteDeclaration [
       {
         label = "suite carries the separate controller and matched QEMU/plugin runtime deps";
-        needle = "runtimeDeps = [controller qemu-crucible crucible-qemu-plugin qemu-crucible-source linux-crucible crucible-fixtures];";
+        needle = "runtimeDeps = [controller debugGateway qemu-crucible crucible-qemu-plugin qemu-crucible-source linux-crucible crucible-fixtures gdb openssh coreutils grep sed util-linux]";
+      }
+      {
+        label = "cross Linux suite retains its target wrapper shell";
+        needle = "++ lib.optionals (stdenv.isCross && stdenv.hostPlatform.isLinux) [bash]";
       }
       {
         label = "suite wrapper configures QEMU at runtime";
@@ -196,7 +204,7 @@
         needle = "grep -q '^plugin_abi=crucible-shmem-abi-v${shmemAbiVersion}$'";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/abi.rs" pluginAbi [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/abi.rs" pluginAbi [
       {
         label = "plugin API version constant";
         needle = qemuPluginApiVersionPrefix + qemuPluginApiVersion + ";";
@@ -206,7 +214,7 @@
         needle = "pub static qemu_plugin_version: c_int = QEMU_PLUGIN_API_VERSION;";
       }
     ]
-    ++ failuresFor "crates/crucible-shmem/src/lib.rs" shmemLib [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-shmem/src/lib.rs" shmemLib [
       {
         label = "shmem ABI version constant";
         needle = shmemAbiVersionPrefix + shmemAbiVersion + ";";

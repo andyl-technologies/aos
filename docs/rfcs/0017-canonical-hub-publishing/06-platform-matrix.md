@@ -1,6 +1,6 @@
 # Platform and image publication matrix
 
-## Canonical targets
+## Release-selected targets
 
 The Hub and registry use exact Nix system strings as platform identities. The
 canonical public matrix is:
@@ -26,25 +26,30 @@ Linux image fields beneath a Darwin platform entry.
 The required matrix is the Cartesian product of release targets and package
 eligibility, not every discovered derivation on every operating system.
 
-The release planner derives eligibility from a versioned, fail-closed inventory:
+The release planner selects the four targets above, then derives eligibility
+from each recipe's normalized `platformSupport` declaration:
 
-- portable packages are required on all four targets;
-- Linux-only packages are required on both Linux architectures and are
-  explicitly not applicable to Darwin;
-- Darwin-only runtime support packages are required on both Darwin
-  architectures;
+- a public package whose host constraints match every selected platform is
+  required on all four targets;
+- OS-, CPU-, ABI-, or feature-specific constraints determine explicit
+  `not-applicable` cells without defining generic OS-family categories;
 - target-independent data may reuse one content-addressed object, but each
   signed platform entry still names and authenticates that object;
-- build-only bootstrap and test roots are retained as build inputs but are not
-  advertised as installable target packages; and
-- a narrowly documented architecture exception may mark one architecture not
-  applicable only when upstream or bootstrap constraints make that true.
+- recipes without the `public-package` role remain available as derivation
+  inputs but are not advertised as installable target packages; and
+- a narrowly documented recipe constraint may exclude one architecture only
+  when upstream or bootstrap requirements make that true.
 
-[`pkgs/_platform-support.nix`](../../../pkgs/_platform-support.nix) is the
-current Darwin-oriented inventory. It must become the authoritative four-target
-publication inventory before the first stable release. Adding, deleting, or
-renaming a discovered package without classifying every target is an evaluation
-failure.
+Package recipes declare open build, host, and target constraints over OS, CPU,
+ABI, and features through the native `mkDerivation` field. The generic
+normalizer in [`lib/package-platform.nix`](../../../lib/package-platform.nix)
+does not enumerate a fixed system catalog or encode release policy.
+[`pkgs/_target-policy.nix`](../../../pkgs/_target-policy.nix) applies those
+declarations to the exact target identities selected by this release policy.
+Adding, deleting, or renaming a selected package without a complete
+package-owned declaration is an evaluation failure. Source identity and
+retention are derived from the package derivation and authenticated module and
+contract locators.
 
 Every planned package-target cell has exactly one state:
 
@@ -86,9 +91,9 @@ platform entries remain explicit and byte-identical.
 A package version that changes in a stable-eligible release advances together
 on every platform where that package is required. Platform-specific patch
 content may differ, but the public package version and source identity agree.
-If upstream genuinely ships different platform versions, the inventory records
-separate package names or an explicit exception rather than silently skewing
-one signed version.
+If upstream genuinely ships different platform versions, package declarations
+use separate package names or explicit constraints rather than silently
+skewing one signed version.
 
 Unchanged package-platform entries may be reused by digest from the preceding
 release. Reuse avoids rebuilding the world solely to create a catalog snapshot,
@@ -204,15 +209,14 @@ The repository's [`flake.nix`](../../../flake.nix) currently exposes
 [system-image guide](../../maintainers/system-images.md) documents only an
 `x86_64-linux` image target. Darwin cross-package composition and checks exist,
 but the [Darwin package-matrix plan](../../plans/darwin-package-matrix.md) states
-that the inventory is an intended result and that real macOS qualification is
-still required.
+that real macOS qualification is still required.
 
 Consequently, no release may be called full-matrix or stable until:
 
 - the flake or release planner exposes deterministic package publication roots
   for all four targets;
 - AArch64 Linux packages and images build and pass target execution gates;
-- both Darwin package sets complete their declared dependency waves;
+- both Darwin package sets complete their dependency and build-stage work;
 - real x86_64 and AArch64 macOS qualification receipts are integrated;
 - the release manifest enforces the closed eligibility matrix; and
 - Hub, registry, APM, documentation, SBOM, and retention paths are tested with

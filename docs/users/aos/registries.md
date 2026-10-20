@@ -6,8 +6,8 @@ authorized; a cache or AOS Hub transports their bytes.
 
 This guide is for people configuring registries on an AOS host. Registry
 maintainers should use [Operate an AOS package registry](../registry/README.md).
-Package runtime confinement is a separate control described in [Understand the
-package sandbox](package-sandbox.md).
+Package runtime policy is a separate control described in [Understand native
+package runtime policy](package-sandbox.md).
 
 ## Start with the built-in registry
 
@@ -46,7 +46,7 @@ Several controls protect different boundaries:
 | TUF metadata | Role separation, signed release metadata, and freshness for moving release selections |
 | Store realization graph | The exact NAR identity and closure relationships authorized by the signed release |
 | Narinfo signature | Authorization for stock Nix substitution through the cache protocol |
-| Package sandbox | What an activated exposed service may do after installation |
+| Native resource policy | What selected package abilities may realize on the host |
 
 A valid TLS connection or bearer token does not make package content trusted.
 A valid registry signature authenticates an owner and exact bytes; it does not
@@ -168,13 +168,12 @@ resolution within the selected registry:
 
 ```sh
 apm search acme-agent --system --registry acme
-apm install acme-agent --registry acme --dry-run
+apm install --system acme-agent --registry acme --dry-run
 ```
 
-For machine-wide ordinary packages, use the desired-state workflow in [Manage
-packages with APM](packages.md). The direct
-`apm install PACKAGE --system --registry ...` form is reserved for a package
-marked as the system sysroot.
+Use `apm install --system PACKAGE --registry NAME` for machine-wide packages,
+or omit `--system` for personal packages. See [Manage packages with APM](packages.md).
+OS-image installation uses `apm image install PACKAGE --registry NAME`.
 
 ## Understand registry verification
 
@@ -201,7 +200,7 @@ service privilege contract separately:
 
 ```sh
 apm show acme-agent --system --registry acme
-apm info acme-agent --system --permissions
+apm show acme-agent --system --permissions
 apm policy acme-agent --system
 ```
 

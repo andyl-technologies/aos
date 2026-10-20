@@ -7,8 +7,10 @@
 ##! so the build is configured `--enable-zstd`. `fsck.erofs` sanity-checks
 ##! both at build time.
 {
+  lib,
   mkDerivation,
   fetchurl,
+  gawk,
   gnumake,
   pkg-config,
   autoconf,
@@ -22,21 +24,79 @@
   xz,
   zlib,
   zstd,
-  lib,
   stdenv,
 }: let
-  # v1.8.x is the last stable line whose `lib/Makefile.am` keeps the
-  # optional import and compression dependencies gated behind configure
-  # switches. v1.9.x unconditionally pulls in zlib +
-  # libcurl + json-c + libxml2 + openssl for the new OCI / S3 / gzip
-  # importer code paths, which AOS doesn't need for the
-  # composefs-generated EROFS image used by `system.build.etcMetadataImage`.
-  # Bump when AOS needs those importer features.
   version = "1.9.4";
 in
   mkDerivation {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
     pname = "erofs-utils";
-    inherit version;
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The checker accepts the generated read-only filesystem.";
+        "files" = {
+          "tree/payload.txt" = "EROFS qualification payload\n";
+        };
+        "input" = "A directory tree containing a fixed text payload.";
+        "operation" = "Build an EROFS image and validate it with fsck.erofs.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/mkfs.erofs"
+              "filesystem.erofs"
+              "tree"
+            ];
+            "exit_code" = 0;
+          }
+          {
+            "argv" = [
+              "@out@/bin/fsck.erofs"
+              "filesystem.erofs"
+            ];
+            "exit_code" = 0;
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The checker rejects the image with status 1.";
+        "files" = {
+          "invalid.erofs" = "not an EROFS filesystem\n";
+        };
+        "input" = "A text file without an EROFS superblock.";
+        "operation" = "Validate the malformed image with fsck.erofs.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/fsck.erofs"
+              "invalid.erofs"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
+    # Keep module compatibility at this release until a broader policy is reviewed.
+    version = "=${version}";
 
     # kernel.org publishes git snapshots of the upstream tree; no
     # release tarballs ship with a pre-generated `configure`, so the
@@ -48,6 +108,10 @@ in
       ];
       hash = "sha256-fRNaolUDJqWs8g9TxRiupaiQABXOUHAAROQPgYwx3YA=";
     };
+
+    # Compression fallback must restore raw-tail padding before publishing
+    # the immutable store. Otherwise valid images contain corrupted bytes.
+    patches = [./erofs-utils-raw-tail.patch];
 
     buildDeps = [
       gnumake
@@ -175,6 +239,26 @@ in
           cmp \
             "$TMPDIR/erofs-smoke/root/payload" \
             "$TMPDIR/erofs-smoke/extracted/payload"
+
+          # This incompressible PNG reaches compressed-to-raw fallback. Check
+          # the published bytes, since structural fsck accepts a shifted tail.
+          mkdir -p "$TMPDIR/erofs-raw-tail/root"
+          cp ${gawk.src}/doc/gawk_api-figure3.png \
+            "$TMPDIR/erofs-raw-tail/root/payload.png"
+          for workers in 1 2; do
+            env -i "$out/bin/mkfs.erofs" --all-root -T0 \
+              -U bdfb6fc9-0000-4000-8000-000000000001 \
+              --workers="$workers" -z zstd,level=19 \
+              -C262144 -Eztailpacking \
+              "$TMPDIR/erofs-raw-tail/image-$workers.erofs" \
+              "$TMPDIR/erofs-raw-tail/root"
+            "$out/bin/fsck.erofs" \
+              --extract="$TMPDIR/erofs-raw-tail/extracted-$workers" \
+              "$TMPDIR/erofs-raw-tail/image-$workers.erofs" >/dev/null
+            cmp \
+              "$TMPDIR/erofs-raw-tail/root/payload.png" \
+              "$TMPDIR/erofs-raw-tail/extracted-$workers/payload.png"
+          done
         '';
       }
     ];

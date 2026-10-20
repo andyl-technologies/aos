@@ -5,7 +5,7 @@
   ];
 
   runTest = name: ''
-    if ! cargo test --frozen --offline -p terrane --no-default-features --features tokio,surface-sdk --lib \
+    if ! cargo test --frozen --offline -p terrane-sdk --no-default-features --features tokio,surface-sdk --lib \
       repository::local::tests::${name} -- --exact \
       > "$TMPDIR/local-factory-test.log" 2>&1; then
       cat "$TMPDIR/local-factory-test.log"

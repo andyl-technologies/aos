@@ -61,7 +61,7 @@
   ];
 
   runTests = filter: ''
-    cargo test --frozen --offline -p terrane-core --lib ${filter} > "$TMPDIR/test.log"
+    cargo test --frozen --offline -p terrane-format --lib ${filter} > "$TMPDIR/test.log"
     python3 -c 'import pathlib, re, sys; output = pathlib.Path(sys.argv[1]).read_text(); print(output); sys.exit(not re.search(r"test result: ok\. [1-9][0-9]* passed; 0 failed", output))' "$TMPDIR/test.log"
   '';
 in {
@@ -78,7 +78,7 @@ in {
 
     # Bound only the actual test process, after compilation. A malformed count
     # must yield its typed row error rather than reserve gigabytes first.
-    cargo test --frozen --offline -p terrane-core --lib --no-run --message-format=json \
+    cargo test --frozen --offline -p terrane-format --lib --no-run --message-format=json \
       > "$TMPDIR/core-test-artifacts.jsonl"
     python3 - "$TMPDIR/core-test-artifacts.jsonl" > "$TMPDIR/core-test-executable" <<'PYTEST'
     import json
@@ -90,12 +90,12 @@ in {
             artifact = json.loads(line)
             if (artifact.get("reason") == "compiler-artifact"
                     and artifact.get("profile", {}).get("test")
-                    and artifact.get("target", {}).get("name") == "terrane_core"
+                    and artifact.get("target", {}).get("name") == "terrane_format"
                     and artifact.get("executable")):
                 executables.add(artifact["executable"])
 
     if len(executables) != 1:
-        raise SystemExit("expected one compiled terrane-core test executable")
+        raise SystemExit("expected one compiled terrane-format test executable")
     print(next(iter(executables)))
     PYTEST
     core_test_executable=$(cat "$TMPDIR/core-test-executable")

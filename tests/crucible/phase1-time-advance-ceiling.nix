@@ -2,16 +2,22 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.timeAdvanceCeiling",
-  taskIds ? ["T-TIME-7"],
+  taskIds ? [],
   openTaskIds ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   shmemFrameNode =
-    builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node.rs
-    + builtins.readFile ../../crates/crucible-shmem/src/shmem/frame_node/futex.rs;
-  handoffTest = builtins.readFile ../../crates/crucible-shmem/tests/advance_ceiling_handoff.rs;
+    import ./_rust-module-source.nix {
+      inherit lib;
+      entry = ../../crates/crucible/protocol/crucible-qemu-shmem/src/shmem/frame_node.rs;
+    }
+    + builtins.readFile ../../crates/crucible/protocol/crucible-qemu-shmem/src/shmem/frame_node/futex.rs;
+  handoffTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/protocol/crucible-qemu-shmem/tests/advance_ceiling_handoff.rs;
+  };
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   timeSpec = builtins.readFile ../../docs/rfcs/0010-crucible/09-virtual-time-icount.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -19,7 +25,7 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   failures =
-    failuresFor "crates/crucible-shmem/src/shmem/frame_node.rs" shmemFrameNode [
+    failuresFor "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/frame_node.rs" shmemFrameNode [
       {
         label = "node slot ABI";
         needle = "pub struct NodeSlot";
@@ -66,15 +72,15 @@
       }
       {
         label = "scheduler ceiling publisher";
-        needle = "pub fn publish_scheduler_ceiling";
+        needle = "pub fn publish_scheduler_advance";
       }
       {
         label = "release ceiling store";
-        needle = ".store(ceiling.max_advance_icount, Ordering::Release)";
+        needle = ".store(max_advance_icount, Ordering::Release)";
       }
       {
         label = "node acquire ceiling load";
-        needle = "self.max_advance_icount.load(Ordering::Acquire)";
+        needle = "self.load_scheduler_advance()";
       }
       {
         label = "node self-extension check";
@@ -129,7 +135,7 @@
         needle = "pub fn icount_to_virtual_ns";
       }
     ]
-    ++ forbiddenFor "crates/crucible-shmem/src/shmem/frame_node.rs" shmemFrameNode [
+    ++ forbiddenFor "crates/crucible/protocol/crucible-qemu-shmem/src/shmem/frame_node.rs" shmemFrameNode [
       {
         label = "public raw advance ceiling field";
         needle = "pub max_advance_icount: AtomicU64";
@@ -139,7 +145,7 @@
         needle = "pub wake_signal: AtomicU32";
       }
     ]
-    ++ failuresFor "crates/crucible-shmem/tests/advance_ceiling_handoff.rs" handoffTest [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-shmem/tests/advance_ceiling_handoff.rs" handoffTest [
       {
         label = "layout test";
         needle = "node_slot_layout_matches_wire_contract";
@@ -177,7 +183,7 @@
         needle = "frame_delivery_wake_always_bumps_the_futex_word";
       }
     ]
-    ++ failuresFor "crates/crucible/src/scheduler.rs" scheduler [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/scheduler.rs" scheduler [
       {
         label = "horizon ceiling conversion uses ceil timeline helper";
         needle = "ceiling: timeline.max_advance_icount_for_horizon(virtual_time)?";
@@ -193,8 +199,8 @@
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/09-virtual-time-icount.md" timeSpec [
       {
-        label = "T-TIME-7 live completion evidence";
-        needle = "Completed by `checks.crucible.phase2.qemuLivePluginQuantum`";
+        label = "T-TIME-7 production-flight completion";
+        needle = "Completed by `checks.crucible.phase1.timeAdvanceCeiling`";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -256,7 +262,7 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-time-advance-ceiling-target" \
-              -p crucible-shmem \
+              -p crucible-qemu-shmem \
               --test advance_ceiling_handoff \
               -- --test-threads=1
           '';

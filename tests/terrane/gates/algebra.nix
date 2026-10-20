@@ -5,7 +5,7 @@
   ...
 }: let
   runTest = name: ''
-    cargo test --frozen --offline -p terrane-core --lib ${name} -- --exact > "$TMPDIR/test.log"
+    cargo test --frozen --offline -p terrane-format --lib ${name} -- --exact > "$TMPDIR/test.log"
     python3 -c 'import pathlib, sys; output = pathlib.Path(sys.argv[1]).read_text(); print(output); sys.exit("test result: ok. 1 passed; 0 failed" not in output or "test " + sys.argv[2] + " ... ok" not in output)' "$TMPDIR/test.log" "${name}"
   '';
 
@@ -98,12 +98,12 @@ in {
     ${runTest "algebra::domain::tests::conflicting_effective_bindings_are_rejected"}
     ${runTest "algebra::domain::tests::graft_retains_graft_override_owner_instead_of_raw_root_domain"}
     ${runTest "algebra::domain::tests::fold_filters_preserve_the_source_owner_before_merging"}
-    cargo test --frozen --offline -p terrane-core --test algebra_overlay_grafts \
+    cargo test --frozen --offline -p terrane-format --test algebra_overlay_grafts \
       -- --list > "$TMPDIR/overlay-graft-tests.txt"
     python3 ../tests/terrane/check_native_gate.py inventory \
       "$TMPDIR/overlay-graft-tests.txt" '${builtins.toJSON overlayGraftSelectors}'
     for test_name in ${builtins.concatStringsSep " " overlayGraftSelectors}; do
-      if ! cargo test --frozen --offline -p terrane-core --test algebra_overlay_grafts \
+      if ! cargo test --frozen --offline -p terrane-format --test algebra_overlay_grafts \
         "$test_name" -- --exact > "$TMPDIR/overlay-graft-test.log" 2>&1; then
         cat "$TMPDIR/overlay-graft-test.log"
         exit 1

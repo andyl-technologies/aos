@@ -11,6 +11,24 @@ across which the CLI ([`23-cli.md`](23-cli.md)), the search/fuzzing driver
 ([`22-advanced-features.md`](22-advanced-features.md)), and external tooling reach
 a running scenario.
 
+The Rust implementation separates this shared surface from its realizations:
+`crucible-control-api` owns native transport-independent request/response values,
+capability models, and frozen RPC encodings; `crucible-control-client` owns the `ControlClient`
+interface and HTTP/2 client; `crucible-control-server` owns in-process actor
+adapters, lifecycle registries, authentication, and HTTP/2 dispatch. Server-owned
+streams implement typed local transport interfaces without making remote clients
+depend on the server implementation. Production VM lifecycle composition belongs
+to `crucible-daemon`; remote clients and API messages do not depend on the QEMU
+host crate. Package and directory names do not change wire identifiers, version
+negotiation, or golden vectors.
+
+The contract crate shares existing session command, debugger, and event-log
+values with native clients and services. Its session and engine dependencies
+still include Tokio and native host support; the validated dependency graph is
+Linux-native. A WASM contract library requires a separate upstream values/runtime
+boundary. Live event-log hubs and subscriptions are exported by
+`crucible-control-server` and `crucible-session`, not by the contract crate.
+
 Crucible has **no web UI** ([INV/NG-4], [`01-goals-nongoals-invariants.md`](01-goals-nongoals-invariants.md)).
 This file specifies a programmatic API plus a machine-to-machine RPC surface, and
 nothing about a browser front-end. Where the reference service shape uses
@@ -124,7 +142,7 @@ command set; none invents control semantics ([API-2]).
 
     // ── session lifecycle (unary) ───────────────────────────────────────────
     CreateSession(…)               -> SessionRef             // 20 §4: instantiate(genesis)
-    ResumeSession(…)               -> SessionRef             // 20 §4: instantiate(checkpoint)
+    ResumeSession(…)               -> SessionRef             // authenticate observation, then resume
     ListSessions(…)                -> ListSessionsResponse
     DestroySession(…)              -> DestroySessionResponse  // 20 §4: stop + drop
     GetReproduction(…)             -> GetReproductionResponse // recorded command stream (20 §8)
@@ -145,7 +163,7 @@ command set; none invents control semantics ([API-2]).
   ListScenarios     (none; read scenario registry)           names + descriptions; no session
   CreateSession     new actor; Command::Start (20 §4.1)      from scenario ref OR inline def;
                                                              seed; start_paused → Paused(Instan.)
-  ResumeSession     new actor at checkpoint (20 §4.1)        self-contained scenario/schedule/checkpoint closure
+  ResumeSession     new actor after source replay (20 §4.1)  authenticated portable observation source
   ListSessions      read registry + each mirror (SESS-23)    current state may be stale; attach for live
   DestroySession    Command::Stop then drop the actor        epoch-guarded (§21.5)
   GetReproduction   read control log (20 §8)                 recorded command stream (§21.5.2)
@@ -179,10 +197,12 @@ command set; none invents control semantics ([API-2]).
   breakpoints and faults before the first `Continue`). It MUST instantiate the
   genesis configuration `(def, [])` via the session's single `instantiate`
   ([SESS-11]) and return a `SessionRef` (id + epoch + seed, §21.5).
-  `ResumeSession` MUST accept a self-contained scenario form payload, schedule,
-  and fat checkpoint closure, reject seed, scenario-payload, or closure
-  mismatches, instantiate the recorded non-genesis configuration through the same
-  session lifecycle, and return a normal `SessionRef`. *Gate:*
+  `ResumeSession` MUST accept a scenario form, schedule, checkpoint, and
+  content-bound portable observation proof and evidence. The campaign owner MUST
+  authenticate and reproduce that observation before it publishes a resumed
+  session, and MUST reject seed, scenario, checkpoint, or evidence mismatches.
+  Exact-checkpoint resume without portable observation evidence enters through
+  the campaign-owned exact-resume operation rather than this unary route. *Gate:*
   `gate:control-responsive`, `gate:replay-oracle`. *Spec:* §21.2; cross-ref 20
   §4.1, 06.
 
@@ -260,20 +280,19 @@ the event-log payload of [§19.2.2].
   MUST NOT define a parallel event vocabulary ([OBS-35]). An event delivered over
   `Control`/`Watch` MUST carry the log entry's `kind`, `at` (virtual-time + per-node
   icount), `source`, typed attributes, `level`, and an `observational` flag derived
-  from the entry's `EventClass` ([OBS-13], §21.4). *Gate:* `gate:abi-conformance`,
+  from the entry's `SchedulerEventLogClass` ([OBS-13], §21.4). *Gate:* `gate:abi-conformance`,
   `gate:e2e-determinism`. *Spec:* §21.3; cross-ref 19 §19.2, §19.7.
 
 - **[API-13]** Adding a new `kind` (command, breakpoint, fault, or event payload)
-  MUST be a backward-compatible change that does **not** alter the wire envelope
-  types and does **not** break decoders of existing kinds ([OBS-10], [G-8]): an old
-  client receiving an unknown event `kind` MUST be able to treat it as opaque
-  (carry its `kind` and attributes) rather than failing, and a server receiving an
+  MUST bump the applicable wire schema and regenerate its conformance evidence
+  ([OBS-10], [G-8]). A current client receiving an unknown event `kind` MUST
+  treat it as opaque (carry its `kind` and attributes) rather than failing, and a server receiving an
   unknown command or fault `kind` MUST reject it with a typed
   `Unsupported`/`InvalidArgument` error (§21.5.3), never panic or corrupt the
   stream. *Gate:* `gate:abi-conformance`. *Spec:* §21.3; cross-ref 19 §19.2.2.
 
 - **[API-14]** A client MUST treat an unfamiliar `kind` as **opaque** rather than
-  rejecting it (forward compatibility), and the server MUST advertise the kinds it
+  rejecting it, and the server MUST advertise the kinds it
   understands in `Hello`'s capabilities ([API-6]) so a client can detect that a
   `kind` it wants to *send* is unsupported before sending it. The capability set
   MUST be the four open-set categories (commands, breakpoints, faults, event
@@ -327,7 +346,7 @@ the whole log itself.
   same `from_seq` MUST receive a byte-identical causal subsequence ([OBS-21],
   [OBS-23]) under the canonical payload encoding. **Observational entries MUST also
   flow** over the stream ([OBS-15], [OBS-31]) and MUST carry the `observational`
-  flag (derived from `EventClass`, [OBS-13]) so a client can include them in an
+  flag (derived from `SchedulerEventLogClass`, [OBS-13]) so a client can include them in an
   interactive view and exclude them from any determinism comparison it performs.
   *Gate:* `gate:e2e-determinism`, `gate:abi-conformance`. *Spec:* §21.4; cross-ref
   19 §19.3, §19.5.
@@ -470,11 +489,11 @@ the in-process double, gated by `gate:abi-conformance`
 
 - **[API-25]** The protocol MUST carry an **explicit protocol version**
   (major.minor.patch + build identifier) returned by `Hello` and in `Attached`.
-  A wire-incompatible change MUST bump the major version; a backward-compatible
-  addition (a new RPC, a new open-set `kind`, a new optional field) MUST NOT bump
-  the major version ([G-8], [API-13]). A client and server MUST be able to detect
-  a major-version mismatch from `Hello` and refuse to proceed with a typed error
-  rather than mis-decoding. *Gate:* `gate:abi-conformance`. *Spec:* §21.6.
+  A wire-incompatible change MUST bump the major version; additive changes use
+  the minor version and compatible fixes use the patch version. A deployed build
+  admits only its exact major.minor.patch and build identifier. Client and server
+  detect any mismatch through `Hello` and refuse it with a typed error rather
+  than mis-decoding. *Gate:* `gate:abi-conformance`. *Spec:* §21.6.
 
 - **[API-26]** The control-plane RPC MUST be covered by **golden vectors**: a
   frozen, content-addressed corpus of serialized requests, responses, events, and
@@ -614,10 +633,11 @@ ran in-process against the double or over the wire against QEMU.
   `crucible-session` actor without serializing, and an RPC client over HTTP/2 —
   so callers are transport-agnostic; assert the wire types are the serialized form
   of the in-process types. — satisfies [API-1], [API-4]; spec §21.1.
-  Completed by `checks.crucible.phase5.apiControlClient`: `crucible-api::client`
-  defines the async `ControlClient` trait, `InProcessControlClient` over the
-  same-process session actor handles, `RpcControlClient` over an HTTP/2 endpoint,
-  and a shared `ControlWireModel` backed by the frozen RPC ABI encoder. The
+  Completed by `checks.crucible.phase5.apiControlClient`: `crucible_control_client::client`
+  defines the async `ControlClient` trait and `RpcControlClient` over an HTTP/2
+  endpoint. `crucible_control_server::InProcessControlClient` adapts same-process
+  session actor handles, and `crucible_control_api::ControlWireModel` supplies
+  the shared types backed by the frozen RPC ABI encoder. The
   focused gate test proves both transports negotiate through the same typed trait:
   the RPC client posts the typed `Hello` payload over HTTP/2 to
   `/crucible.rpc/hello`, and both transports serialize through the same wire
@@ -627,7 +647,7 @@ ran in-process against the double or over the wire against QEMU.
   read, with no control semantics of its own and no browser-shaped request. —
   satisfies [API-2], [API-3]; spec §21.1, §21.2.
   Completed by `checks.crucible.phase5.apiSessionCommandMapping`:
-  `crucible-api::session_mapping` declares the closed service-method mapping,
+  `crucible_control_api::session_mapping` declares the closed service-method mapping,
   the full `SessionCommandKind::ALL` API command mapping, and the
   `validate_thin_api_mapping` gate assertion. `CreateSession` maps to
   `SessionCommandKind::Start`, `DestroySession` maps to `Stop`, session listings
@@ -636,16 +656,16 @@ ran in-process against the double or over the wire against QEMU.
   RPC execution remains T-API-3; streaming equivalence remains T-API-4.
 - [x] **T-API-3** Implement the discovery/lifecycle unary RPCs — `Hello`
   (version + open-set capabilities), `ListScenarios`, `CreateSession` (scenario ref
-  or inline def + seed + start-paused), `ResumeSession` (self-contained scenario
-  payload and checkpoint closure), `ListSessions`, `DestroySession`
+  or inline def + seed + start-paused), `ResumeSession` (content-bound portable
+  observation source), `ListSessions`, `DestroySession`
   (epoch-guarded, idempotent) — each mapped to its session op (§21.2.1). —
   satisfies [API-5], [API-6], [API-7], [API-8]; spec §21.2, §21.2.1.
   Completed by `checks.crucible.phase5.apiLifecycleUnary`:
-  `crucible-api::lifecycle` implements side-effect-free `Hello` and
+  `crucible_control_server::lifecycle` implements side-effect-free `Hello` and
   `ListScenarios`, scenario-ref and inline `CreateSession` backed by a live
   `SessionActor` and `SessionCommand::Start`, lock-free mirror-backed
-  `ListSessions`, self-contained scenario-payload/checkpoint-closure
-  `ResumeSession`, and epoch-guarded/idempotent `DestroySession` via
+  `ListSessions`, campaign-authenticated portable-observation `ResumeSession`,
+  and epoch-guarded/idempotent `DestroySession` via
   `SessionCommand::Stop`. The shared `ControlClient` trait exposes those unary
   methods, with
   `InProcessLifecycleClient` driving the actor registry directly and
@@ -659,9 +679,11 @@ ran in-process against the double or over the wire against QEMU.
   (full lifecycle drivable from either), with `Send` returning CommandResult +
   optional StateUpdate. — satisfies [API-9], [API-10]; spec §21.2.
   Completed by `checks.crucible.phase5.apiStreamingEquivalence`:
-  `crucible-api::streaming` defines shared attach metadata, `ControlStream`,
-  `WatchStream`, unary `SendRequest`/`SendResponse`, typed `CommandResult`, and
-  optional `StateUpdate`. `ControlClient`/`RpcControlClient` expose transport
+  `crucible_control_api::streaming` defines shared attach metadata, unary
+  `SendRequest`/`SendResponse`, typed `CommandResult`, and optional `StateUpdate`.
+  `crucible_control_server::streaming` defines the in-process `ControlStream`
+  and `WatchStream` implementations over those shared contracts.
+  `ControlClient`/`RpcControlClient` expose transport
   paths for `Control` attach/send, `Watch` attach, and unary `Send`; accepted
   lifecycle stops preserve the joined actor's exact terminal snapshot in the
   response after registry cleanup, while rejected stops retain the session and
@@ -676,7 +698,7 @@ ran in-process against the double or over the wire against QEMU.
   Unsupported/InvalidArgument on send; capabilities-advertised kinds. — satisfies
   [API-11], [API-12], [API-13], [API-14]; spec §21.3.
   Completed by `checks.crucible.phase5.apiOpenSetPayload`:
-  `crucible-api::open_set` defines the shared `OpenSetPayload` typed attribute
+  `crucible_control_api::open_set` defines the shared `OpenSetPayload` typed attribute
   map, category capability catalog, event-log envelope conversion, opaque
   unknown-event receive path, and typed Unsupported/InvalidArgument send
   validation. Event payload schemas are generated from the unified event-kind
@@ -690,9 +712,9 @@ ran in-process against the double or over the wire against QEMU.
   every field log-derivable. — satisfies [API-15], [API-16], [API-17], [API-18];
   spec §21.4; cross-ref 19 §19.6.5, 20 §9.
   Completed by `checks.crucible.phase5.apiStreamingCursor`:
-  `crucible-session::SessionEventLog` now exposes attach-tail subscription and a
+  `crucible_session::SessionEventLog` now exposes attach-tail subscription and a
   retained-prefix snapshot fold without changing append or broadcast semantics.
-  `crucible-api::streaming` reports the attach replay tail as `event_log_len`,
+  `crucible_control_server::streaming` reports the attach replay tail as `event_log_len`,
   includes a log-derived `AttachSnapshot` when `snapshot_on_attach` is
   advertised, and adds `recv_event` helpers that convert replay/live frames into
   open-set API event envelopes carrying cursor, level, source, and
@@ -703,7 +725,7 @@ ran in-process against the double or over the wire against QEMU.
   applied monotonically, so a Watch-only client tracks run-state from
   StateUpdate + SendResponse. — satisfies [API-19]; spec §21.4; cross-ref 20 §2.
   Completed by `checks.crucible.phase5.apiStateUpdateStream`:
-  `crucible-api::streaming` now subscribes each `Control`/`Watch` attach to the
+  `crucible_control_server::streaming` now subscribes each `Control`/`Watch` attach to the
   session actor's state-transition bus, exposes monotone
   `StreamingStateUpdateFrame` delivery separately from event-log frames, and
   recovers a lagged state observer at the retained monotone tail because a newer
@@ -761,18 +783,18 @@ ran in-process against the double or over the wire against QEMU.
   missing sessions without closing live streams; rejected `Send` commands remain
   side-effect-free and subsequent commands on the stream still run.
 - [x] **T-API-11** Implement explicit protocol versioning (major.minor.patch +
-  build) in Hello/Attached, major-bump on wire-incompatible change, detect+refuse
-  on major mismatch. — satisfies [API-25]; spec §21.6.
+  build) in Hello/Attached, major-bump on wire-incompatible change, and exact
+  version refusal for every mismatch. — satisfies [API-25]; spec §21.6.
 - [x] **T-API-12** Freeze golden vectors for the RPC ABI (requests, responses,
   events, payload kinds) wired into `gate:abi-conformance` as the RPC third of the
   boundary-ABI suite; regenerate-in-the-same-change discipline. — satisfies
   [API-26]; spec §21.6; cross-ref 24 §8.
-  Completed by `crucible-api::rpc_abi` and
+  Completed by `crucible_control_api::rpc_abi` and
   `checks.crucible.phase2.gates.abiConformance`: the seed RPC ABI corpus freezes
   Hello request/response, Attached, one command request/response, one event, and
   the advertised open-set payload kinds with explicit
-  `major.minor.patch+build` versioning and typed major-mismatch rejection. The
-  full reference-client lifecycle suite remains T-API-13.
+  `major.minor.patch+build` versioning and typed exact-version mismatch
+  rejection. The full reference-client lifecycle suite remains T-API-13.
 - [x] **T-API-13** Build the reference client + conformance suite driving the full
   lifecycle (Hello…DestroySession incl. both attach paths, faults, breakpoints,
   savepoint, fork, GetReproduction, epoch-guard rejection) against BOTH the QEMU
@@ -786,7 +808,7 @@ ran in-process against the double or over the wire against QEMU.
   `CreateSession`, both `Control` and `Watch` attach paths, `Send` through
   continue/pause/step/fault/breakpoint/savepoint/fork/query, `GetReproduction`,
   stale epoch rejection, `DestroySession`, and idempotent destroy. The gate also
-  runs the `crucible-qemu` `qemu_node_satisfies_simulation_backend_trait` test,
+  runs the `crucible-qemu-host` `qemu_node_satisfies_simulation_backend_trait` test,
   which exercises `QemuNode` step/apply/fingerprint/snapshot/restore/shutdown
   through the `SimulationBackend` contract. The ABI and wire-snapshot tests now
   explicitly cover the frozen RPC request, response, streaming-frame, error, and

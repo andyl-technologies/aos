@@ -19,7 +19,7 @@
   '';
 
   nativeSuite = selector: names:
-    qualifySuite "terrane" "--no-default-features --features tokio,surface-sdk" selector
+    qualifySuite "terrane-sdk" "--no-default-features --features tokio,surface-sdk" selector
     (map (name: "ref_advance::disclosure_tests::${name}") names);
 
   boundaryTests = [
@@ -52,13 +52,13 @@
     "disclosure_projection_safe_index_rebuild_requires_current_attribute_producers"
   ];
 
-  domainCore = qualifySuite "terrane-core" "" "properties::tests::domain_reference" [
+  domainCore = qualifySuite "terrane-format" "" "properties::tests::domain_reference" [
     "properties::tests::domain_reference_closed_order_and_metadata_fail_closed"
     "properties::tests::domain_reference_graft_overrides_and_dedup_scope"
     "properties::tests::domain_reference_conflict_candidates_checked_individually"
   ];
 
-  recordedCore = qualifySuite "terrane-core" "" "provenance::tests::disclosure::recorded::" [
+  recordedCore = qualifySuite "terrane-format" "" "provenance::tests::disclosure::recorded::" [
     "provenance::tests::disclosure::recorded::recorded_disclosure_preserves_selected_view_interpretations_and_actual_occurrences"
     "provenance::tests::disclosure::recorded::recorded_disclosure_refuses_missing_associations_and_conflicting_dependency_scopes"
     "provenance::tests::disclosure::recorded::recorded_disclosure_keeps_certificate_binding_public_retention_and_attribute_producer_checks"
@@ -76,12 +76,12 @@ in {
   dom-reference-order = sourceGate "dom-reference-order" ''
     cd crates
     ${domainCore}
-    ${qualifySuite "terrane" "--no-default-features --features tokio,surface-sdk" "domain::tests::dom_reference_order" [
+    ${qualifySuite "terrane-sdk" "--no-default-features --features tokio,surface-sdk" "domain::tests::dom_reference_order" [
       "domain::tests::dom_reference_order_checks_every_kind_and_incomparable_name"
       "domain::tests::dom_reference_order_rejects_empty_domain_names_before_admission"
       "domain::tests::dom_reference_order_requires_fresh_records_after_closing"
     ]}
-    ${qualifySuite "terrane" "--no-default-features --features tokio,surface-sdk" "domain::native_deletion_tests::" [
+    ${qualifySuite "terrane-sdk" "--no-default-features --features tokio,surface-sdk" "domain::native_deletion_tests::" [
       "domain::native_deletion_tests::audit_intent::domain_deletion_native_failed_audit_intent_preserves_source_and_active_route"
       "domain::native_deletion_tests::domain_deletion_native_erases_generations_and_disables_surviving_and_reopened_routes"
       "domain::native_deletion_tests::domain_deletion_native_rejects_denied_roots_and_whole_inventory_races"
@@ -101,7 +101,7 @@ in {
   dom-dedup-scope = sourceGate "dom-dedup-scope" ''
     cd crates
     ${domainCore}
-    ${qualifySuite "terrane" "--no-default-features --features tokio,surface-sdk" "domain::native_storage_tests::" [
+    ${qualifySuite "terrane-sdk" "--no-default-features --features tokio,surface-sdk" "domain::native_storage_tests::" [
       "domain::native_storage_tests::dom_dedup_scope_native_chunks_manifests_and_nodes_are_independent_after_reopen"
       "domain::native_storage_tests::dom_dedup_scope_native_disclosure_verifies_recompressed_plaintext"
     ]}
@@ -116,10 +116,10 @@ in {
 
   prov-commit-verify = sourceGate "prov-commit-verify" ''
     cd crates
-    ${qualifySuite "terrane" "--no-default-features --features tokio,surface-sdk" "ref_advance::active_completion_tests::native_active_completion_direct_history_refuses_missing_required_auxiliary" [
+    ${qualifySuite "terrane-sdk" "--no-default-features --features tokio,surface-sdk" "ref_advance::active_completion_tests::native_active_completion_direct_history_refuses_missing_required_auxiliary" [
       "ref_advance::active_completion_tests::native_active_completion_direct_history_refuses_missing_required_auxiliary"
     ]}
-    ${qualifySuite "terrane" "--no-default-features --features tokio,surface-sdk" "guard::direct_history::tests::" [
+    ${qualifySuite "terrane-sdk" "--no-default-features --features tokio,surface-sdk" "guard::direct_history::tests::" [
       "guard::direct_history::tests::direct_history_verifies_historical_target_with_fresh_walks_in_both_modes"
       "guard::direct_history::tests::direct_history_retains_genuine_legacy_historical_control"
       "guard::direct_history::tests::configuration::direct_history_preserves_caller_profiles_and_uses_genuine_factory_clock"
@@ -129,7 +129,7 @@ in {
       "guard::direct_history::tests::cancellation::direct_history_submitted_closing_keeps_both_exclusions_after_cancellation"
     ]}
     ${nativeSuite "ref_advance::" boundaryTests}
-    ${qualifySuite "terrane" "--no-default-features --features tokio,surface-sdk" "guard::current_history::tests::" [
+    ${qualifySuite "terrane-sdk" "--no-default-features --features tokio,surface-sdk" "guard::current_history::tests::" [
       "guard::current_history::tests::native_current_history_rejects_invalid_token_before_content_reads"
       "guard::current_history::tests::native_current_history_walks_each_authorization_independently"
       "guard::current_history::tests::native_current_purpose_refuses_changed_whole_ref_epoch"
@@ -137,11 +137,11 @@ in {
       "guard::current_history::tests::native_current_reader_refuses_cached_data_after_real_token_expiry"
       "guard::current_history::tests::native_current_read_refuses_signed_acl_revocation"
     ]}
-    ${qualifySuite "terrane" "--no-default-features --features tokio,surface-sdk" "guard::history::current_reads::tests::" [
+    ${qualifySuite "terrane-sdk" "--no-default-features --features tokio,surface-sdk" "guard::history::current_reads::tests::" [
       "guard::history::current_reads::tests::ordinary_current_binding_preserves_requested_target_and_actual_scope"
       "guard::history::current_reads::tests::current_scope_refuses_candidate_layer_and_partially_held_observations"
     ]}
-    ${qualifySuite "terrane" "--no-default-features --features tokio,surface-sdk" "guard::held_history::tests::" [
+    ${qualifySuite "terrane-sdk" "--no-default-features --features tokio,surface-sdk" "guard::held_history::tests::" [
       "guard::held_history::tests::held_owner_history_preserves_original_purpose_and_baseline_selection"
       "guard::held_history::tests::held_owner_history_checks_each_authorization_with_scoped_pack_reads"
       "guard::held_history::tests::held_owner_history_closes_all_physical_and_current_inputs"

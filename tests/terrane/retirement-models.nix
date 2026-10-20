@@ -10,7 +10,7 @@
   ];
 
   runTest = name: ''
-    if ! cargo test --frozen --offline -p terrane-core --test retirement_vectors ${name} -- --exact \
+    if ! cargo test --frozen --offline -p terrane-format --test retirement_vectors ${name} -- --exact \
       > "$TMPDIR/retirement-model-test.log" 2>&1; then
       cat "$TMPDIR/retirement-model-test.log"
       exit 1
@@ -24,7 +24,7 @@ in
       printf 'Independent retirement record field models remain pending implementation.\n' >&2
       exit 1
     fi
-    cargo build --frozen --offline -p terrane-core --example reference_blake3
+    cargo build --frozen --offline -p terrane-format --example reference_blake3
     reference_binary="$CARGO_TARGET_DIR/debug/examples/reference_blake3"
     python3 ../tests/terrane/retirement_vectors.py --self-check \
       --blake3-bin "$reference_binary" > "$out/reference-result"
@@ -33,10 +33,10 @@ in
       --blake3-bin "$reference_binary" >> "$out/reference-result"
     cp ../docs/rfcs/0024-terrane/spec/reference/golden-vectors.md ../tests/terrane/retirement-reference.md
     cp ../tests/terrane/retirement-reference.md "$out/reference.md"
-    cp ../tests/terrane/retirement-models.rs terrane-core/tests/retirement_vectors.rs
-    cp -r ../tests/terrane/retirement_models terrane-core/tests/retirement_models
+    cp ../tests/terrane/retirement-models.rs terrane/sdk/terrane-format/tests/retirement_vectors.rs
+    cp -r ../tests/terrane/retirement_models terrane/sdk/terrane-format/tests/retirement_models
     cargo fmt --all -- --check
     ${builtins.concatStringsSep "\n" (map runTest tests)}
-    cargo clippy --frozen --offline -p terrane-core --test retirement_vectors -- -D warnings
+    cargo clippy --frozen --offline -p terrane-format --test retirement_vectors -- -D warnings
     printf 'PASS: independent record field models and seven exact owning-codec groups\n' > "$out/result"
   ''

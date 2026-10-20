@@ -1,0 +1,69 @@
+//! The shared no-JS browse UI: one renderer and one set of handlers.
+//!
+//! RFC-0004 Phase 5 unifies the human browse surface (the no-JS HTML pages and
+//! the JSON read API) on a single code path so the native hub and the
+//! Cloudflare Worker render it identically:
+//!
+//! - [`render`] — the transport- and task-local-free HTML builders. The
+//!   masthead brand and the signed-in email ride in an explicit [`PageChrome`]
+//!   rather than a global/task-local, and every page renders from the
+//!   `aos.hub.v1` read shapes, so the module is wasm-clean.
+//! - [`browse`] — the handler functions that call the
+//!   [`RpcService`](crate::service::RpcService) read methods and render via
+//!   [`render`], returning a [`Rendered`](browse::Rendered) the transport layer
+//!   ([`crate::connect`]) turns into an HTTP response. Browse reads
+//!   anonymously, so only `public` registries resolve.
+//! - [`browse_pages`] — the *rich*, session-aware browse renderer lifted from
+//!   the native hub (console-dedup stage G): the searchable/sortable package
+//!   index, the data-rich package detail with closure resolution, the channel
+//!   partition grid and bucket calculator, and the per-registry health page.
+//!   It renders from the [`db`](aos_hub_db::db) record types (richer than the proto
+//!   read shapes) and threads the signed-in identity via an explicit
+//!   [`SessionIndicator`](console_render::SessionIndicator), superseding the
+//!   anonymous proto-shaped builders in [`render`].
+//! - [`host_delivery`] — whether the request's exact host delivers each listed
+//!   registry, from the enabled routes the route dispatcher already resolved,
+//!   so the home and registry pages can mark registries clients cannot fetch
+//!   from this host.
+//!
+//! The browser identity boundary is shared the same way:
+//!
+//! - [`session`] — runtime-neutral session extraction: turn a request's
+//!   `Cookie` header plus a [`Database`](aos_hub_db::db::Database) into a resolved,
+//!   validated [`ResolvedSession`](session::ResolvedSession).
+//! - [`csrf`] — the per-session synchronizer-token CSRF defenses
+//!   ([`mint_csrf_token`](csrf::mint_csrf_token),
+//!   [`connect_or_csrf_ok`](csrf::connect_or_csrf_ok)).
+//! - [`console_render`] — the retained ceremony page chrome
+//!   ([`page_with_session`](console_render::page_with_session),
+//!   [`StateLine`](console_render::StateLine),
+//!   [`SessionIndicator`](console_render::SessionIndicator),
+//!   [`Pager`](console_render::Pager)) and identity page builders, made
+//!   transport- and task-local-free.
+//!
+//! The shared Connect-JSON router ([`crate::connect`]) mounts the browse routes
+//! under the reserved `/` and `/{slug}/-/…` paths, more specific than the
+//! machine-surface facade wildcard, so the two never collide.
+
+mod ability_graph_page;
+pub mod assets;
+pub mod browse;
+pub mod browse_pages;
+pub mod config_form;
+pub mod console;
+pub mod console_render;
+pub mod container_browse_pages;
+pub mod csrf;
+pub mod help;
+pub mod host_delivery;
+pub mod release_browse;
+pub mod release_pages;
+pub mod render;
+pub mod runtime_documentation;
+pub mod session;
+pub mod status_pages;
+pub mod toml_highlight;
+
+pub use render::PageChrome;
+
+pub(crate) mod documentation_browser;

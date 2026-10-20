@@ -1,5 +1,6 @@
 ##! GNU bc — Arbitrary precision calculator language
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -9,7 +10,56 @@
   version = "1.07.1";
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "bc";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The calculator emits the exact integer result.";
+        "files" = {};
+        "input" = "An arithmetic expression combining exponentiation and addition.";
+        "operation" = "Evaluate the expression with bc.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/bc"
+              "-q"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdin" = "2^5 + 10\n";
+            "stdout" = {
+              "exact" = "42\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Bc rejects the option with status 1.";
+        "files" = {};
+        "input" = "A command-line option that bc does not define.";
+        "operation" = "Invoke bc with the invalid option.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/bc"
+              "--definitely-invalid-option"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

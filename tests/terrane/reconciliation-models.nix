@@ -6,7 +6,7 @@
   ];
 
   runTest = name: ''
-    if ! cargo test --frozen --offline -p terrane-core --test reconciliation_vectors ${name} -- --exact \
+    if ! cargo test --frozen --offline -p terrane-format --test reconciliation_vectors ${name} -- --exact \
       > "$TMPDIR/reconciliation-model-test.log" 2>&1; then
       cat "$TMPDIR/reconciliation-model-test.log"
       exit 1
@@ -24,9 +24,9 @@ in
     python3 ../tests/terrane/reconciliation_vectors.py --check ../docs/rfcs/0024-terrane/spec/reference/golden-vectors.md >> "$out/reference-result"
     cp ../docs/rfcs/0024-terrane/spec/reference/golden-vectors.md ../tests/terrane/reconciliation-reference.md
     cp ../tests/terrane/reconciliation-reference.md "$out/reference.md"
-    cp ../tests/terrane/reconciliation-models.rs terrane-core/tests/reconciliation_vectors.rs
+    cp ../tests/terrane/reconciliation-models.rs terrane/sdk/terrane-format/tests/reconciliation_vectors.rs
     cargo fmt --all -- --check
     ${builtins.concatStringsSep "\n" (map runTest tests)}
-    cargo clippy --frozen --offline -p terrane-core --test reconciliation_vectors -- -D warnings
+    cargo clippy --frozen --offline -p terrane-format --test reconciliation_vectors -- -D warnings
     printf 'PASS: ordinary local reconciliation fields and three exact pure codec groups\n' > "$out/result"
   ''

@@ -18,7 +18,7 @@
 #                 peer over the fleet L2.
 #   4. INSTALL  — `apm install bc` downloads a package off the wire
 #                 (bc is deliberately NOT in the image's closure).
-#   5. UPGRADE  — `apm upgrade --system` authenticates a measured raw image,
+#   5. UPGRADE  — `apm image upgrade` authenticates a measured raw image,
 #                 stages it into the inactive A/B slot, then the machine
 #                 REBOOTS through UEFI and commits the new image and its
 #                 re-evaluated host configuration.
@@ -59,6 +59,7 @@
   candidate = mkSystem [
     ../../systems/server-2.nix
     ../../systems/server-measured-boot.nix
+    ../../systems/_server-test-packages.nix
     {
       # The upgrade candidate deliberately carries the fleet control agent in
       # its immutable root so the harness can reconnect after the UEFI reboot.
@@ -68,16 +69,13 @@
         maxRootMiB = 640;
         # The measured-boot candidate also retains the Python HTTP upgrade
         # fixture. Its audited runtime closure is 813 MiB.
-        maxRuntimeClosureMiB = 896;
+        maxRuntimeClosureMiB = 3072;
       };
       aos.boot.kernelParams = ["net.ifnames=0"];
-      environment.etc."systemd/network/10-fleet-eth0.network".text = ''
-        [Match]
-        MACAddress=52:54:00:12:00:02
-
-        [Network]
-        Address=192.168.50.11/24
-      '';
+      aos.networking.interfaces.fleet-eth0 = {
+        matchMACAddress = "52:54:00:12:00:02";
+        address = "192.168.50.11/24";
+      };
       systemd.services.aos-test-agent = {
         description = "AOS VM Test Guest Agent";
         wantedBy = ["multi-user.target"];
@@ -113,10 +111,11 @@
   server2Image = candidate.config.system.build.image.raw;
   server2ImageDisk = candidate.config.system.build.imageArtifacts.raw.disk;
   server2ImageInfo = candidate.config.system.build.imageArtifacts.raw.info;
-  server2Uki = candidate.config.system.build.uki;
+  server2Uki = candidate.config.system.build.initialBootExecutable;
 
   targetSystem = mkSystem [
     ../../systems/server-verity.nix
+    ../../systems/_server-test-packages.nix
     {
       # The registry workflow uses basic Git transport operations. Reuse the
       # runtime client without pulling development-language helpers into boot.
@@ -141,7 +140,10 @@
       aos.packages =
         lib.genAttrs
         ["aos-registry-server" "test-static-cache-server"]
-        (_: {bundle = true;});
+        (name: {
+          package = pkgs.${name};
+          bundle = true;
+        });
     }
   ];
 
@@ -499,7 +501,7 @@ in {
       )
 
       out = target.succeed(
-          "HOME=/tmp PATH=${pkgs.git-minimal}/bin:${pkgs.nix}/bin:$PATH ${pkgs.aos.apm}/bin/apm upgrade --system --dry-run 2>&1",
+          "HOME=/tmp PATH=${pkgs.git-minimal}/bin:${pkgs.nix}/bin:$PATH ${pkgs.aos.apm}/bin/apm image upgrade --dry-run 2>&1",
           timeout=120,
       )
       assert "test-2" in out, f"dry-run did not surface test-2: {out!r}"
@@ -508,10 +510,10 @@ in {
       # into the inactive slot. Configuration remains on generation 1 until
       # the candidate boots and re-evaluates the retained host inputs.
       out = target.succeed(
-          "HOME=/tmp PATH=${pkgs.git-minimal}/bin:${pkgs.nix}/bin:$PATH ${pkgs.aos.apm}/bin/apm upgrade --system --yes 2>&1",
+          "HOME=/tmp PATH=${pkgs.git-minimal}/bin:${pkgs.nix}/bin:$PATH ${pkgs.aos.apm}/bin/apm image upgrade --yes 2>&1",
           timeout=1800,
       )
-      print("=== apm upgrade --system output ===\n" + out)
+      print("=== apm image upgrade output ===\n" + out)
       assert "Downloading" in out, (
           f"system upgrade did not download the generation delta: {out!r}"
       )

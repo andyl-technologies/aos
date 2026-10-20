@@ -9,7 +9,7 @@
   ];
 
   runTest = name: ''
-    if ! cargo test --frozen --offline -p terrane-core --lib ${name} -- --exact \
+    if ! cargo test --frozen --offline -p terrane-format --lib ${name} -- --exact \
       > "$TMPDIR/property-registry-test.log" 2>&1; then
       cat "$TMPDIR/property-registry-test.log"
       exit 1
@@ -20,6 +20,6 @@ in
   sourceGate "property-registry" ''
     cd crates
     ${builtins.concatStringsSep "\n" (map runTest tests)}
-    cargo clippy --frozen --offline -p terrane-core --all-targets -- -D warnings
+    cargo clippy --frozen --offline -p terrane-format --all-targets -- -D warnings
     printf 'PASS: immutable property revisions and inert later-name fences\n' > "$out/result"
   ''

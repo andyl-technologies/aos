@@ -1,0 +1,133 @@
+//! Single-scheduler quantum-loop boundary.
+//!
+//! The module owns the L3 interface that all virtual-time advancement and
+//! cross-node event resolution must pass through. It intentionally defines the
+//! boundary and ordering vocabulary, implements the authoritative
+//! PICK/RUN/RESOLVE/EMIT/STEP quantum boundary, and materializes scheduler
+//! EMIT output as dense, content-addressed event-log segment bytes before STEP
+//! advances the frontier.
+
+use std::collections::BTreeMap;
+use std::collections::BTreeSet;
+use std::collections::VecDeque;
+use std::error::Error;
+use std::fmt;
+use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
+
+use crate::device::NetworkLinkDirection;
+use crate::model::{DagStore, FaultObservation, FaultObservationKind, MemoryDagStore, Schedule};
+use crate::node_time::NodeTimeMapping;
+use crate::trigger::{
+    Action, ConditionEvaluationPass, ConditionEventLogPrefix, ConditionLeafOracle, EventFiring,
+    EventFirings, EventGraph, EventGraphState, GuestMeasurementEvent, GuestMeasurementValue,
+    GuestSemanticMarkerDetail, LogLevel, ObservableEvent, ObservableEventPayload,
+    OfflineAssertionCheckError, RecordedAssertionLog,
+};
+use crate::{
+    AssertionId, AssertionPhase, AssertionQuantifierKind, BackendError, BackendInput,
+    BackendNetworkOutput, BackendNetworkRoute, BackendRngEvidence, Configuration, ContentHash,
+    DebugRuntimeRepositionReport, DebugRuntimeRepositionRequest, Decision, DecisionRecorder,
+    DecisionRngState, DeliveryOrderDecision, EventId, EventKey, EventLogOffset, EventSequenceState,
+    FingerprintSample, GdbAttachInfo, GdbListen, Icount, LinkDef, LinkId, MIN_LINK_LATENCY,
+    MarkerId, NetworkLinkPendingFrame, NodeCounter, NodeId, NodeLifecycle, PendingFrame,
+    PreemptionDecision, PreemptionKind, RngStreamId, RngStreamPosition, ScenarioDef,
+    SchedulerNodeId, SchedulerState, SchedulingNodeKind, SchedulingPoint, SearchFrontierChoices,
+    SearchRuntimeFrontier, Seed, SelectionDecision, SimDuration, SimInstant, SimulationBackend,
+    TimeConversionError, TimerId, VcpuId, VirtualTime, World, WorldIoInstantiationError,
+    WorldIoLayoutPolicy, WorldLookaheadEdge, WorldStaticTopology, instantiate_world_io_sub_nodes,
+    try_step,
+};
+
+const EVENT_LOG_SEGMENT_BINARY_MAGIC: &[u8; 16] = b"CRUCIBLE-ELOGSEG";
+const EVENT_LOG_SEGMENT_BINARY_VERSION: u32 = 5;
+const EVENT_LOG_SEGMENT_NODE_ABSENT: u8 = 0;
+const EVENT_LOG_SEGMENT_NODE_PRESENT: u8 = 1;
+const EVENT_LOG_LEVEL_TRACE: u8 = 0;
+const EVENT_LOG_LEVEL_DEBUG: u8 = 1;
+
+/// Returns whether a typed selection belongs to the live-network outcome vocabulary.
+#[must_use]
+pub fn is_live_world_network_selection(selection: &crucible_campaign::Selection) -> bool {
+    let crucible_campaign::ChoiceValue::Discrete(selected) = selection.value() else {
+        return false;
+    };
+    let axes = ["loss", "duplicate", "corrupt"];
+    for mask in 1_u8..8 {
+        let included = axes
+            .iter()
+            .enumerate()
+            .filter_map(|(index, axis)| ((mask & (1 << index)) != 0).then_some(*axis))
+            .collect::<Vec<_>>();
+        for outcomes in 0_u8..(1 << included.len()) {
+            let name = included
+                .iter()
+                .enumerate()
+                .map(|(index, axis)| {
+                    let outcome = if outcomes & (1 << index) == 0 {
+                        "fire"
+                    } else {
+                        "pass"
+                    };
+                    format!("{axis}-{outcome}")
+                })
+                .collect::<Vec<_>>()
+                .join("+");
+            if *selected == liveness::live_network_alternative_id(&name) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+const EVENT_LOG_LEVEL_INFO: u8 = 2;
+const EVENT_LOG_LEVEL_WARN: u8 = 3;
+const EVENT_LOG_LEVEL_ERROR: u8 = 4;
+const EVENT_LOG_CLASS_CAUSAL: u8 = 0;
+const EVENT_LOG_CLASS_OBSERVATIONAL: u8 = 1;
+
+mod backend_lifecycle;
+mod branch_exploration;
+mod checkpoint;
+mod concurrent_prepare;
+mod fixed_input;
+pub use fixed_input::{BackendFixedInputResult, BackendFixedInputState, PreparedHostFixedInput};
+mod control_state;
+mod device_group_selection;
+mod event_codec;
+mod event_log;
+mod inactive_time;
+mod io_inventory;
+mod liveness;
+mod run_admission;
+mod runtime_state;
+mod scenario;
+mod single_scheduler_drive;
+mod single_scheduler_state;
+mod topology;
+
+pub use checkpoint::*;
+pub use concurrent_prepare::*;
+pub use control_state::*;
+pub use device_group_selection::{
+    BackendDeviceGroupObservation, BackendDeviceGroupOwner, DeviceGroupSelectionPublication,
+    PreparedDeviceGroupSelection,
+};
+pub(crate) use event_codec::*;
+pub(crate) use event_codec::{
+    recorded_assertion_log_from_schedule_for_search, scheduler_event_log_empty_prefix,
+    scheduler_event_log_segment_bytes,
+};
+pub use event_log::*;
+pub use liveness::*;
+pub use run_admission::{PreparedRunAdmission, PreparedRunInputInventory};
+pub use runtime_state::*;
+pub use scenario::*;
+pub use topology::*;
+
+#[cfg(test)]
+// crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
+#[allow(clippy::expect_used)]
+#[path = "scheduler/tests.rs"]
+mod tests;

@@ -1,11 +1,11 @@
-# 0085 - Register rejection atomicity
+# Capability task 0085 — Register rejection atomicity
 
 ## Purpose
 
-This patch closes the observation and rejection contract for architecture
+This capability closes the observation and rejection contract for architecture
 register faults. It adds no alternate mutation path. It strengthens the one
-manifest-driven implementation introduced by patch `0051` and the rejection
-matrix completed by patch `0082`.
+manifest-driven implementation specified by capability task 0051 and the rejection
+matrix specified by capability task 0082.
 
 ## Admission and ownership
 
@@ -33,30 +33,13 @@ and state fingerprint each compare every row - including names, widths, groups,
 phase masks, capability bits, side-effect bits, and all four bit-class masks -
 for every realized vCPU against the sealed model manifest.
 
-## Whole-machine rejection observation
+## Internal rejection fingerprint
 
-`qemu_plugin_crucible_register_rejection_observe` constructs one SHA-256 digest
-from the canonical GDB export of every realized vCPU in numeric order. Framing
-binds the domain, vCPU index, encoded length, retired-instruction field, register
-descriptor names and features, register lengths, and register bytes. The export
-uses architecture GDB readers only; in particular, x86 MXCSR observation uses
-the pure getter and cannot synchronize state as a read side effect.
-
-The same observation snapshots six monotonic counters, indexed by the existing
-register side-effect bitmap. A thread-local audit scope is entered only around
-an admitted architecture register write. Production primitives increment the
-counters only while executing in that call chain, so ordinary interrupts,
-translation maintenance, and vCPU exits cannot be misattributed to a register
-mutation:
-
-| Index | Effect | Instrumented production operation |
-| --- | --- | --- |
-| 0 | TLB | `tlb_flush` |
-| 1 | TB | `tb_flush` |
-| 2 | flags | architecture flags/FPU status recomputation |
-| 3 | interrupt | interrupt request/reset and architecture reevaluation |
-| 4 | timer | reserved and required to remain zero because no supported register advertises a timer side effect |
-| 5 | control flow | `cpu_exit` |
+The fault engine computes an internal SHA-256 fingerprint from every register
+row in the realized, sealed manifest before validating a mutation. It computes
+the same fingerprint after validation and rejects the operation unless the two
+match. The fingerprint is process-private; plugins cannot request or use it as
+a separate observation authority.
 
 The user-mode build receives inert inline scope and observation hooks because
 Crucible register faults exist only in system emulation. System emulation
@@ -98,7 +81,7 @@ and an unchanged full selected-register value.
 
 All changes remain in the QEMU/applicable GPL process. No QEMU object, native
 pointer, or counter crosses into the Apache host or shared-memory ABI. Existing
-files retain their per-file licenses; the patch creates no QEMU source file and
+files retain their per-file licenses; the atomic patch creates no QEMU source file and
 therefore adds no `LICENSES.md` row.
 
 ## Required gates
@@ -108,7 +91,7 @@ rejection case against patched QEMU. It must prove ownership rejection outside
 an exact serialized callback, full-manifest divergence rejection at read and
 decode, exact canonical digest equality for delayed failures, side-effect
 counter equality for every failure, and reentrant equality for malformed
-identity. Patch regeneration, ABI conformance, non-sim inertness, VMState
+identity. Atomic-patch regeneration, ABI conformance, non-sim inertness, VMState
 continuation, and license-boundary gates remain mandatory.
 
 - **[QFP-REG-3]** Live register observation MUST prove exact-callback depth and

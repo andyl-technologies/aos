@@ -1,0 +1,1710 @@
+{
+  "baseline_test_executable_sha256": "1adf8fd73fe5d47e35f741a539b68252c3c85d4800edf081cad4da3071e47a44",
+  "candidate_test_executable_sha256": "14c190815c2b4ff6d775cc8a8dc1a989724d41996e290d94516230a8470f1f4c",
+  "million_admission_qualification": false,
+  "runs": {
+    "baseline-256": {
+      "component": {
+        "calls": 256,
+        "maximum_nanoseconds": 75698213,
+        "nanoseconds": 1996562259
+      },
+      "latest": {
+        "discover": {
+          "listed_read_ids": 82,
+          "maximum_reads_of_one_id": 14,
+          "operations": {
+            "open-read-handle": {
+              "bytes": 0,
+              "calls": 195,
+              "nanoseconds": 3030844
+            },
+            "put-batch": {
+              "bytes": 32923,
+              "calls": 5,
+              "nanoseconds": 20878930
+            },
+            "put-single": {
+              "bytes": 3814,
+              "calls": 3,
+              "nanoseconds": 10499148
+            },
+            "stream-read": {
+              "bytes": 323856,
+              "calls": 391,
+              "nanoseconds": 1210083
+            }
+          },
+          "request": 256,
+          "unlisted_reads": 0
+        },
+        "planner": {
+          "listed_read_ids": 764,
+          "maximum_reads_of_one_id": 322,
+          "operations": {
+            "contains": {
+              "bytes": 0,
+              "calls": 721,
+              "nanoseconds": 12289250
+            },
+            "open-read-handle": {
+              "bytes": 0,
+              "calls": 5088,
+              "nanoseconds": 38645297
+            },
+            "put-batch": {
+              "bytes": 701911,
+              "calls": 15,
+              "nanoseconds": 139422517
+            },
+            "put-single": {
+              "bytes": 22749,
+              "calls": 10,
+              "nanoseconds": 29336104
+            },
+            "stream-read": {
+              "bytes": 9573545,
+              "calls": 10192,
+              "nanoseconds": 28491880
+            }
+          },
+          "request": 256,
+          "unlisted_reads": 0
+        },
+        "planner-component": {
+          "listed_read_ids": 0,
+          "maximum_reads_of_one_id": 0,
+          "operations": {},
+          "request": 256,
+          "unlisted_reads": 0
+        },
+        "planner-preflight": {
+          "listed_read_ids": 88,
+          "maximum_reads_of_one_id": 42,
+          "operations": {
+            "open-read-handle": {
+              "bytes": 0,
+              "calls": 517,
+              "nanoseconds": 5007028
+            },
+            "put-single": {
+              "bytes": 4740,
+              "calls": 5,
+              "nanoseconds": 32986927
+            },
+            "stream-read": {
+              "bytes": 795409,
+              "calls": 1037,
+              "nanoseconds": 2626591
+            }
+          },
+          "request": 256,
+          "unlisted_reads": 0
+        },
+        "publish-request": {
+          "listed_read_ids": 3,
+          "maximum_reads_of_one_id": 3,
+          "operations": {
+            "open-read-handle": {
+              "bytes": 0,
+              "calls": 7,
+              "nanoseconds": 295446
+            },
+            "put-single": {
+              "bytes": 3891,
+              "calls": 3,
+              "nanoseconds": 6596897
+            },
+            "stream-read": {
+              "bytes": 10039,
+              "calls": 14,
+              "nanoseconds": 63961
+            }
+          },
+          "request": 256,
+          "unlisted_reads": 0
+        },
+        "setup": {
+          "listed_read_ids": 70,
+          "maximum_reads_of_one_id": 18,
+          "operations": {
+            "open-read-handle": {
+              "bytes": 0,
+              "calls": 203,
+              "nanoseconds": 3211119
+            },
+            "put-batch": {
+              "bytes": 54486,
+              "calls": 8,
+              "nanoseconds": 27195423
+            },
+            "put-single": {
+              "bytes": 5263,
+              "calls": 5,
+              "nanoseconds": 6119399
+            },
+            "stream-read": {
+              "bytes": 392583,
+              "calls": 406,
+              "nanoseconds": 1275575
+            }
+          },
+          "request": 256,
+          "unlisted_reads": 0
+        }
+      },
+      "log_sha256": "c10fca1b561a54762dca29eb5496ab91fa0ed5937667cad856895f16bb272cf0",
+      "ordered_plan_ids_sha256": "5db45b372e24c289f844d883aa7360798deb55ef9b8d2e48d0ad9c5bb128ffd7",
+      "plan_count": 256,
+      "stage_totals": {
+        "discover": {
+          "open-read-handle": {
+            "bytes": 0,
+            "calls": 48231,
+            "nanoseconds": 626527373
+          },
+          "put-batch": {
+            "bytes": 7130435,
+            "calls": 1280,
+            "nanoseconds": 5700164525
+          },
+          "put-single": {
+            "bytes": 976384,
+            "calls": 768,
+            "nanoseconds": 1719398709
+          },
+          "stream-read": {
+            "bytes": 76690718,
+            "calls": 96716,
+            "nanoseconds": 261085748
+          }
+        },
+        "planner": {
+          "contains": {
+            "bytes": 0,
+            "calls": 210197,
+            "nanoseconds": 3692998800
+          },
+          "open-read-handle": {
+            "bytes": 0,
+            "calls": 1218138,
+            "nanoseconds": 10468316893
+          },
+          "put-batch": {
+            "bytes": 148779219,
+            "calls": 3806,
+            "nanoseconds": 37735643950
+          },
+          "put-single": {
+            "bytes": 5822563,
+            "calls": 2560,
+            "nanoseconds": 8328734586
+          },
+          "stream-read": {
+            "bytes": 2205504077,
+            "calls": 2440355,
+            "nanoseconds": 6659532784
+          }
+        },
+        "planner-component": {},
+        "planner-preflight": {
+          "open-read-handle": {
+            "bytes": 0,
+            "calls": 127865,
+            "nanoseconds": 1469545017
+          },
+          "put-single": {
+            "bytes": 1212480,
+            "calls": 1280,
+            "nanoseconds": 1870519425
+          },
+          "stream-read": {
+            "bytes": 190973200,
+            "calls": 256492,
+            "nanoseconds": 653081070
+          }
+        },
+        "publish-request": {
+          "open-read-handle": {
+            "bytes": 0,
+            "calls": 1792,
+            "nanoseconds": 72195268
+          },
+          "put-single": {
+            "bytes": 995876,
+            "calls": 768,
+            "nanoseconds": 5557800564
+          },
+          "stream-read": {
+            "bytes": 2569544,
+            "calls": 3584,
+            "nanoseconds": 11275926
+          }
+        },
+        "setup": {
+          "open-read-handle": {
+            "bytes": 0,
+            "calls": 49758,
+            "nanoseconds": 909448517
+          },
+          "put-batch": {
+            "bytes": 12348470,
+            "calls": 2048,
+            "nanoseconds": 9923279418
+          },
+          "put-single": {
+            "bytes": 1347328,
+            "calls": 1280,
+            "nanoseconds": 3203677764
+          },
+          "stream-read": {
+            "bytes": 90221271,
+            "calls": 99516,
+            "nanoseconds": 292695337
+          }
+        }
+      },
+      "terminal": {
+        "admissions": 4096,
+        "allocated_bytes": 265428992,
+        "cold_claimable": 4096,
+        "cold_pages": 41,
+        "cold_reopen_queue_ns": 51744073600,
+        "combined_peak_rss_upper_bound_kib": 39500,
+        "coordinator_peak_rss_kib": 33068,
+        "hot_claimable": 4096,
+        "hot_pages": 41,
+        "hot_queue_ns": 2693746678,
+        "index_bytes": 153584105,
+        "logical_bytes": 176660113,
+        "objects": 108848,
+        "physical_bytes": 265428992,
+        "planner_ns": 118065585925,
+        "planner_worker_peak_rss_kib": 6432,
+        "request_size": 16,
+        "requests": 256,
+        "setup_ns": 38858424491
+      }
+    },
+    "baseline-64": {
+      "component": {
+        "calls": 64,
+        "maximum_nanoseconds": 15288479,
+        "nanoseconds": 425591513
+      },
+      "latest": {
+        "discover": {
+          "listed_read_ids": 77,
+          "maximum_reads_of_one_id": 14,
+          "operations": {
+            "open-read-handle": {
+              "bytes": 0,
+              "calls": 186,
+              "nanoseconds": 37412712
+            },
+            "put-batch": {
+              "bytes": 28178,
+              "calls": 5,
+              "nanoseconds": 17377566
+            },
+            "put-single": {
+              "bytes": 3814,
+              "calls": 3,
+              "nanoseconds": 10456037
+            },
+            "stream-read": {
+              "bytes": 294017,
+              "calls": 373,
+              "nanoseconds": 1224949
+            }
+          },
+          "request": 64,
+          "unlisted_reads": 0
+        },
+        "planner": {
+          "listed_read_ids": 603,
+          "maximum_reads_of_one_id": 322,
+          "operations": {
+            "contains": {
+              "bytes": 0,
+              "calls": 967,
+              "nanoseconds": 11206112
+            },
+            "open-read-handle": {
+              "bytes": 0,
+              "calls": 4471,
+              "nanoseconds": 22682539
+            },
+            "put-batch": {
+              "bytes": 520787,
+              "calls": 15,
+              "nanoseconds": 95434377
+            },
+            "put-single": {
+              "bytes": 22749,
+              "calls": 10,
+              "nanoseconds": 21248410
+            },
+            "stream-read": {
+              "bytes": 8158471,
+              "calls": 8958,
+              "nanoseconds": 24656488
+            }
+          },
+          "request": 64,
+          "unlisted_reads": 0
+        },
+        "planner-component": {
+          "listed_read_ids": 0,
+          "maximum_reads_of_one_id": 0,
+          "operations": {},
+          "request": 64,
+          "unlisted_reads": 0
+        },
+        "planner-preflight": {
+          "listed_read_ids": 79,
+          "maximum_reads_of_one_id": 42,
+          "operations": {
+            "open-read-handle": {
+              "bytes": 0,
+              "calls": 490,
+              "nanoseconds": 3997477
+            },
+            "put-single": {
+              "bytes": 4740,
+              "calls": 5,
+              "nanoseconds": 11299223
+            },
+            "stream-read": {
+              "bytes": 727945,
+              "calls": 983,
+              "nanoseconds": 2947455
+            }
+          },
+          "request": 64,
+          "unlisted_reads": 0
+        },
+        "publish-request": {
+          "listed_read_ids": 3,
+          "maximum_reads_of_one_id": 3,
+          "operations": {
+            "open-read-handle": {
+              "bytes": 0,
+              "calls": 7,
+              "nanoseconds": 227804
+            },
+            "put-single": {
+              "bytes": 3889,
+              "calls": 3,
+              "nanoseconds": 4303621
+            },
+            "stream-read": {
+              "bytes": 10035,
+              "calls": 14,
+              "nanoseconds": 45111
+            }
+          },
+          "request": 64,
+          "unlisted_reads": 0
+        },
+        "setup": {
+          "listed_read_ids": 61,
+          "maximum_reads_of_one_id": 18,
+          "operations": {
+            "open-read-handle": {
+              "bytes": 0,
+              "calls": 183,
+              "nanoseconds": 3448766
+            },
+            "put-batch": {
+              "bytes": 46966,
+              "calls": 8,
+              "nanoseconds": 21086438
+            },
+            "put-single": {
+              "bytes": 5263,
+              "calls": 5,
+              "nanoseconds": 12274421
+            },
+            "stream-read": {
+              "bytes": 337654,
+              "calls": 366,
+              "nanoseconds": 1323741
+            }
+          },
+          "request": 64,
+          "unlisted_reads": 0
+        }
+      },
+      "log_sha256": "1888bae1433f1301df534c5c806b7bb332c8263b4bc2e9e1bf40f5eafc597558",
+      "ordered_plan_ids_sha256": "da8980b10d81dde3d0e8549c2ff68fd55fdd5f19c763b171576b44734a4104df",
+      "plan_count": 64,
+      "stage_totals": {
+        "discover": {
+          "open-read-handle": {
+            "bytes": 0,
+            "calls": 11330,
+            "nanoseconds": 135955757
+          },
+          "put-batch": {
+            "bytes": 1304703,
+            "calls": 320,
+            "nanoseconds": 1052214506
+          },
+          "put-single": {
+            "bytes": 244096,
+            "calls": 192,
+            "nanoseconds": 361762696
+          },
+          "stream-read": {
+            "bytes": 16751473,
+            "calls": 22722,
+            "nanoseconds": 55196428
+          }
+        },
+        "planner": {
+          "contains": {
+            "bytes": 0,
+            "calls": 47944,
+            "nanoseconds": 510411165
+          },
+          "open-read-handle": {
+            "bytes": 0,
+            "calls": 270330,
+            "nanoseconds": 1102279398
+          },
+          "put-batch": {
+            "bytes": 24700554,
+            "calls": 909,
+            "nanoseconds": 4815646757
+          },
+          "put-single": {
+            "bytes": 1454755,
+            "calls": 640,
+            "nanoseconds": 1398110603
+          },
+          "stream-read": {
+            "bytes": 453644876,
+            "calls": 541667,
+            "nanoseconds": 1353874619
+          }
+        },
+        "planner-component": {},
+        "planner-preflight": {
+          "open-read-handle": {
+            "bytes": 0,
+            "calls": 30249,
+            "nanoseconds": 125861709
+          },
+          "put-single": {
+            "bytes": 302400,
+            "calls": 320,
+            "nanoseconds": 363757136
+          },
+          "stream-read": {
+            "bytes": 42679960,
+            "calls": 60684,
+            "nanoseconds": 140497017
+          }
+        },
+        "publish-request": {
+          "open-read-handle": {
+            "bytes": 0,
+            "calls": 448,
+            "nanoseconds": 14548998
+          },
+          "put-single": {
+            "bytes": 248876,
+            "calls": 192,
+            "nanoseconds": 601315319
+          },
+          "stream-read": {
+            "bytes": 642200,
+            "calls": 896,
+            "nanoseconds": 2538597
+          }
+        },
+        "setup": {
+          "open-read-handle": {
+            "bytes": 0,
+            "calls": 11431,
+            "nanoseconds": 76104394
+          },
+          "put-batch": {
+            "bytes": 2494030,
+            "calls": 512,
+            "nanoseconds": 1518058930
+          },
+          "put-single": {
+            "bytes": 336832,
+            "calls": 320,
+            "nanoseconds": 697232738
+          },
+          "stream-read": {
+            "bytes": 18875871,
+            "calls": 22862,
+            "nanoseconds": 58966781
+          }
+        }
+      },
+      "terminal": {
+        "admissions": 1024,
+        "allocated_bytes": 49602560,
+        "cold_claimable": 1024,
+        "cold_pages": 11,
+        "cold_reopen_queue_ns": 8115599307,
+        "combined_peak_rss_upper_bound_kib": 24284,
+        "coordinator_peak_rss_kib": 17848,
+        "hot_claimable": 1024,
+        "hot_pages": 11,
+        "hot_queue_ns": 511372459,
+        "index_bytes": 24884179,
+        "logical_bytes": 30661251,
+        "objects": 22396,
+        "physical_bytes": 49602560,
+        "planner_ns": 19977514901,
+        "planner_worker_peak_rss_kib": 6436,
+        "request_size": 16,
+        "requests": 64,
+        "setup_ns": 6401696612
+      }
+    },
+    "baseline-64-repeat": {
+      "component": {
+        "calls": 64,
+        "maximum_nanoseconds": 21079457,
+        "nanoseconds": 452070030
+      },
+      "latest": {
+        "discover": {
+          "listed_read_ids": 77,
+          "maximum_reads_of_one_id": 14,
+          "operations": {
+            "open-read-handle": {
+              "bytes": 0,
+              "calls": 186,
+              "nanoseconds": 1477822
+            },
+            "put-batch": {
+              "bytes": 28178,
+              "calls": 5,
+              "nanoseconds": 16950332
+            },
+            "put-single": {
+              "bytes": 3814,
+              "calls": 3,
+              "nanoseconds": 2970012
+            },
+            "stream-read": {
+              "bytes": 294017,
+              "calls": 373,
+              "nanoseconds": 979744
+            }
+          },
+          "request": 64,
+          "unlisted_reads": 0
+        },
+        "planner": {
+          "listed_read_ids": 603,
+          "maximum_reads_of_one_id": 322,
+          "operations": {
+            "contains": {
+              "bytes": 0,
+              "calls": 967,
+              "nanoseconds": 10497990
+            },
+            "open-read-handle": {
+              "bytes": 0,
+              "calls": 4471,
+              "nanoseconds": 18004551
+            },
+            "put-batch": {
+              "bytes": 520787,
+              "calls": 15,
+              "nanoseconds": 134974305
+            },
+            "put-single": {
+              "bytes": 22749,
+              "calls": 10,
+              "nanoseconds": 22302412
+            },
+            "stream-read": {
+              "bytes": 8158471,
+              "calls": 8958,
+              "nanoseconds": 23537352
+            }
+          },
+          "request": 64,
+          "unlisted_reads": 0
+        },
+        "planner-component": {
+          "listed_read_ids": 0,
+          "maximum_reads_of_one_id": 0,
+          "operations": {},
+          "request": 64,
+          "unlisted_reads": 0
+        },
+        "planner-preflight": {
+          "listed_read_ids": 79,
+          "maximum_reads_of_one_id": 42,
+          "operations": {
+            "open-read-handle": {
+              "bytes": 0,
+              "calls": 490,
+              "nanoseconds": 2973887
+            },
+            "put-single": {
+              "bytes": 4740,
+              "calls": 5,
+              "nanoseconds": 4293464
+            },
+            "stream-read": {
+              "bytes": 727945,
+              "calls": 983,
+              "nanoseconds": 2403275
+            }
+          },
+          "request": 64,
+          "unlisted_reads": 0
+        },
+        "publish-request": {
+          "listed_read_ids": 3,
+          "maximum_reads_of_one_id": 3,
+          "operations": {
+            "open-read-handle": {
+              "bytes": 0,
+              "calls": 7,
+              "nanoseconds": 310536
+            },
+            "put-single": {
+              "bytes": 3889,
+              "calls": 3,
+              "nanoseconds": 6119703
+            },
+            "stream-read": {
+              "bytes": 10035,
+              "calls": 14,
+              "nanoseconds": 44492
+            }
+          },
+          "request": 64,
+          "unlisted_reads": 0
+        },
+        "setup": {
+          "listed_read_ids": 61,
+          "maximum_reads_of_one_id": 18,
+          "operations": {
+            "open-read-handle": {
+              "bytes": 0,
+              "calls": 183,
+              "nanoseconds": 1382832
+            },
+            "put-batch": {
+              "bytes": 46966,
+              "calls": 8,
+              "nanoseconds": 16676407
+            },
+            "put-single": {
+              "bytes": 5263,
+              "calls": 5,
+              "nanoseconds": 5778244
+            },
+            "stream-read": {
+              "bytes": 337654,
+              "calls": 366,
+              "nanoseconds": 1035288
+            }
+          },
+          "request": 64,
+          "unlisted_reads": 0
+        }
+      },
+      "log_sha256": "0d4e432af27951db4d7d3fe870246717015939fe4a705660fa9eb8058630214d",
+      "ordered_plan_ids_sha256": "da8980b10d81dde3d0e8549c2ff68fd55fdd5f19c763b171576b44734a4104df",
+      "plan_count": 64,
+      "stage_totals": {
+        "discover": {
+          "open-read-handle": {
+            "bytes": 0,
+            "calls": 11330,
+            "nanoseconds": 101162269
+          },
+          "put-batch": {
+            "bytes": 1304703,
+            "calls": 320,
+            "nanoseconds": 1209647530
+          },
+          "put-single": {
+            "bytes": 244096,
+            "calls": 192,
+            "nanoseconds": 372660111
+          },
+          "stream-read": {
+            "bytes": 16751473,
+            "calls": 22722,
+            "nanoseconds": 58058221
+          }
+        },
+        "planner": {
+          "contains": {
+            "bytes": 0,
+            "calls": 47944,
+            "nanoseconds": 537330082
+          },
+          "open-read-handle": {
+            "bytes": 0,
+            "calls": 270330,
+            "nanoseconds": 1165578211
+          },
+          "put-batch": {
+            "bytes": 24700554,
+            "calls": 909,
+            "nanoseconds": 8606890242
+          },
+          "put-single": {
+            "bytes": 1454755,
+            "calls": 640,
+            "nanoseconds": 2624106004
+          },
+          "stream-read": {
+            "bytes": 453644876,
+            "calls": 541667,
+            "nanoseconds": 1374743029
+          }
+        },
+        "planner-component": {},
+        "planner-preflight": {
+          "open-read-handle": {
+            "bytes": 0,
+            "calls": 30249,
+            "nanoseconds": 163265748
+          },
+          "put-single": {
+            "bytes": 302400,
+            "calls": 320,
+            "nanoseconds": 404917879
+          },
+          "stream-read": {
+            "bytes": 42679960,
+            "calls": 60684,
+            "nanoseconds": 145788197
+          }
+        },
+        "publish-request": {
+          "open-read-handle": {
+            "bytes": 0,
+            "calls": 448,
+            "nanoseconds": 17138405
+          },
+          "put-single": {
+            "bytes": 248876,
+            "calls": 192,
+            "nanoseconds": 684035947
+          },
+          "stream-read": {
+            "bytes": 642200,
+            "calls": 896,
+            "nanoseconds": 2641657
+          }
+        },
+        "setup": {
+          "open-read-handle": {
+            "bytes": 0,
+            "calls": 11431,
+            "nanoseconds": 116967084
+          },
+          "put-batch": {
+            "bytes": 2494030,
+            "calls": 512,
+            "nanoseconds": 1885617347
+          },
+          "put-single": {
+            "bytes": 336832,
+            "calls": 320,
+            "nanoseconds": 796016946
+          },
+          "stream-read": {
+            "bytes": 18875871,
+            "calls": 22862,
+            "nanoseconds": 63370552
+          }
+        }
+      },
+      "terminal": {
+        "admissions": 1024,
+        "allocated_bytes": 49602560,
+        "cold_claimable": 1024,
+        "cold_pages": 11,
+        "cold_reopen_queue_ns": 8226758806,
+        "combined_peak_rss_upper_bound_kib": 24272,
+        "coordinator_peak_rss_kib": 17832,
+        "hot_claimable": 1024,
+        "hot_pages": 11,
+        "hot_queue_ns": 447007662,
+        "index_bytes": 24884179,
+        "logical_bytes": 30661251,
+        "objects": 22396,
+        "physical_bytes": 49602560,
+        "planner_ns": 24642241938,
+        "planner_worker_peak_rss_kib": 6440,
+        "request_size": 16,
+        "requests": 64,
+        "setup_ns": 7546554516
+      }
+    },
+    "candidate-256": {
+      "component": {
+        "calls": 256,
+        "maximum_nanoseconds": 35156263,
+        "nanoseconds": 1806036282
+      },
+      "latest": {
+        "discover": {
+          "listed_read_ids": 80,
+          "maximum_reads_of_one_id": 14,
+          "operations": {
+            "open-read-handle": {
+              "bytes": 0,
+              "calls": 193,
+              "nanoseconds": 1824922
+            },
+            "put-batch": {
+              "bytes": 26683,
+              "calls": 3,
+              "nanoseconds": 37748954
+            },
+            "put-single": {
+              "bytes": 3814,
+              "calls": 3,
+              "nanoseconds": 12324536
+            },
+            "stream-read": {
+              "bytes": 317616,
+              "calls": 387,
+              "nanoseconds": 1021487
+            }
+          },
+          "request": 256,
+          "unlisted_reads": 0
+        },
+        "planner": {
+          "listed_read_ids": 764,
+          "maximum_reads_of_one_id": 322,
+          "operations": {
+            "contains": {
+              "bytes": 0,
+              "calls": 721,
+              "nanoseconds": 15620096
+            },
+            "open-read-handle": {
+              "bytes": 0,
+              "calls": 5088,
+              "nanoseconds": 77937033
+            },
+            "put-batch": {
+              "bytes": 701911,
+              "calls": 15,
+              "nanoseconds": 170740810
+            },
+            "put-single": {
+              "bytes": 22749,
+              "calls": 10,
+              "nanoseconds": 53016410
+            },
+            "stream-read": {
+              "bytes": 9573545,
+              "calls": 10192,
+              "nanoseconds": 27823690
+            }
+          },
+          "request": 256,
+          "unlisted_reads": 0
+        },
+        "planner-component": {
+          "listed_read_ids": 0,
+          "maximum_reads_of_one_id": 0,
+          "operations": {},
+          "request": 256,
+          "unlisted_reads": 0
+        },
+        "planner-preflight": {
+          "listed_read_ids": 88,
+          "maximum_reads_of_one_id": 42,
+          "operations": {
+            "open-read-handle": {
+              "bytes": 0,
+              "calls": 517,
+              "nanoseconds": 3312615
+            },
+            "put-single": {
+              "bytes": 4740,
+              "calls": 5,
+              "nanoseconds": 10424566
+            },
+            "stream-read": {
+              "bytes": 795409,
+              "calls": 1037,
+              "nanoseconds": 2508784
+            }
+          },
+          "request": 256,
+          "unlisted_reads": 0
+        },
+        "publish-request": {
+          "listed_read_ids": 3,
+          "maximum_reads_of_one_id": 3,
+          "operations": {
+            "open-read-handle": {
+              "bytes": 0,
+              "calls": 7,
+              "nanoseconds": 173093
+            },
+            "put-single": {
+              "bytes": 3891,
+              "calls": 3,
+              "nanoseconds": 11960780
+            },
+            "stream-read": {
+              "bytes": 10039,
+              "calls": 14,
+              "nanoseconds": 38830
+            }
+          },
+          "request": 256,
+          "unlisted_reads": 0
+        },
+        "setup": {
+          "listed_read_ids": 68,
+          "maximum_reads_of_one_id": 18,
+          "operations": {
+            "open-read-handle": {
+              "bytes": 0,
+              "calls": 200,
+              "nanoseconds": 2071011
+            },
+            "put-batch": {
+              "bytes": 48246,
+              "calls": 6,
+              "nanoseconds": 27958088
+            },
+            "put-single": {
+              "bytes": 5263,
+              "calls": 5,
+              "nanoseconds": 26978532
+            },
+            "stream-read": {
+              "bytes": 383223,
+              "calls": 400,
+              "nanoseconds": 1142858
+            }
+          },
+          "request": 256,
+          "unlisted_reads": 0
+        }
+      },
+      "log_sha256": "8ad6cb8c05e723951ec27708f82620daca60355289ae65a0e1a7ce13f2b82ad9",
+      "ordered_plan_ids_sha256": "5db45b372e24c289f844d883aa7360798deb55ef9b8d2e48d0ad9c5bb128ffd7",
+      "plan_count": 256,
+      "stage_totals": {
+        "discover": {
+          "open-read-handle": {
+            "bytes": 0,
+            "calls": 47655,
+            "nanoseconds": 1398691440
+          },
+          "put-batch": {
+            "bytes": 5427126,
+            "calls": 768,
+            "nanoseconds": 6029788670
+          },
+          "put-single": {
+            "bytes": 976384,
+            "calls": 768,
+            "nanoseconds": 2111089539
+          },
+          "stream-read": {
+            "bytes": 74987409,
+            "calls": 95564,
+            "nanoseconds": 252028503
+          }
+        },
+        "planner": {
+          "contains": {
+            "bytes": 0,
+            "calls": 210197,
+            "nanoseconds": 3605342343
+          },
+          "open-read-handle": {
+            "bytes": 0,
+            "calls": 1218138,
+            "nanoseconds": 10030693882
+          },
+          "put-batch": {
+            "bytes": 148779219,
+            "calls": 3806,
+            "nanoseconds": 41840997280
+          },
+          "put-single": {
+            "bytes": 5822563,
+            "calls": 2560,
+            "nanoseconds": 9647137134
+          },
+          "stream-read": {
+            "bytes": 2205504077,
+            "calls": 2440355,
+            "nanoseconds": 6671219449
+          }
+        },
+        "planner-component": {},
+        "planner-preflight": {
+          "open-read-handle": {
+            "bytes": 0,
+            "calls": 127865,
+            "nanoseconds": 1673777427
+          },
+          "put-single": {
+            "bytes": 1212480,
+            "calls": 1280,
+            "nanoseconds": 1992922570
+          },
+          "stream-read": {
+            "bytes": 190973200,
+            "calls": 256492,
+            "nanoseconds": 650908304
+          }
+        },
+        "publish-request": {
+          "open-read-handle": {
+            "bytes": 0,
+            "calls": 1792,
+            "nanoseconds": 85749037
+          },
+          "put-single": {
+            "bytes": 995876,
+            "calls": 768,
+            "nanoseconds": 6907701396
+          },
+          "stream-read": {
+            "bytes": 2569544,
+            "calls": 3584,
+            "nanoseconds": 11171083
+          }
+        },
+        "setup": {
+          "open-read-handle": {
+            "bytes": 0,
+            "calls": 48934,
+            "nanoseconds": 1001030537
+          },
+          "put-batch": {
+            "bytes": 10613625,
+            "calls": 1536,
+            "nanoseconds": 9534337997
+          },
+          "put-single": {
+            "bytes": 1347328,
+            "calls": 1280,
+            "nanoseconds": 4461950031
+          },
+          "stream-read": {
+            "bytes": 87658430,
+            "calls": 97868,
+            "nanoseconds": 284058864
+          }
+        }
+      },
+      "terminal": {
+        "admissions": 4096,
+        "allocated_bytes": 260186112,
+        "cold_claimable": 4096,
+        "cold_pages": 41,
+        "cold_reopen_queue_ns": 48302006342,
+        "combined_peak_rss_upper_bound_kib": 36480,
+        "coordinator_peak_rss_kib": 30044,
+        "hot_claimable": 4096,
+        "hot_pages": 41,
+        "hot_queue_ns": 2338757055,
+        "index_bytes": 150157251,
+        "logical_bytes": 173233259,
+        "objects": 107718,
+        "physical_bytes": 260186112,
+        "planner_ns": 130497188525,
+        "planner_worker_peak_rss_kib": 6436,
+        "request_size": 16,
+        "requests": 256,
+        "setup_ns": 43606953547
+      }
+    },
+    "candidate-64": {
+      "component": {
+        "calls": 64,
+        "maximum_nanoseconds": 33414886,
+        "nanoseconds": 653166191
+      },
+      "latest": {
+        "discover": {
+          "listed_read_ids": 75,
+          "maximum_reads_of_one_id": 14,
+          "operations": {
+            "open-read-handle": {
+              "bytes": 0,
+              "calls": 184,
+              "nanoseconds": 1987433
+            },
+            "put-batch": {
+              "bytes": 21938,
+              "calls": 3,
+              "nanoseconds": 15523843
+            },
+            "put-single": {
+              "bytes": 3814,
+              "calls": 3,
+              "nanoseconds": 2803377
+            },
+            "stream-read": {
+              "bytes": 287777,
+              "calls": 369,
+              "nanoseconds": 916668
+            }
+          },
+          "request": 64,
+          "unlisted_reads": 0
+        },
+        "planner": {
+          "listed_read_ids": 603,
+          "maximum_reads_of_one_id": 322,
+          "operations": {
+            "contains": {
+              "bytes": 0,
+              "calls": 967,
+              "nanoseconds": 12159462
+            },
+            "open-read-handle": {
+              "bytes": 0,
+              "calls": 4471,
+              "nanoseconds": 25902182
+            },
+            "put-batch": {
+              "bytes": 520787,
+              "calls": 15,
+              "nanoseconds": 57923880
+            },
+            "put-single": {
+              "bytes": 22749,
+              "calls": 10,
+              "nanoseconds": 15228637
+            },
+            "stream-read": {
+              "bytes": 8158471,
+              "calls": 8958,
+              "nanoseconds": 24552882
+            }
+          },
+          "request": 64,
+          "unlisted_reads": 0
+        },
+        "planner-component": {
+          "listed_read_ids": 0,
+          "maximum_reads_of_one_id": 0,
+          "operations": {},
+          "request": 64,
+          "unlisted_reads": 0
+        },
+        "planner-preflight": {
+          "listed_read_ids": 79,
+          "maximum_reads_of_one_id": 42,
+          "operations": {
+            "open-read-handle": {
+              "bytes": 0,
+              "calls": 490,
+              "nanoseconds": 2692657
+            },
+            "put-single": {
+              "bytes": 4740,
+              "calls": 5,
+              "nanoseconds": 3608520
+            },
+            "stream-read": {
+              "bytes": 727945,
+              "calls": 983,
+              "nanoseconds": 2449203
+            }
+          },
+          "request": 64,
+          "unlisted_reads": 0
+        },
+        "publish-request": {
+          "listed_read_ids": 3,
+          "maximum_reads_of_one_id": 3,
+          "operations": {
+            "open-read-handle": {
+              "bytes": 0,
+              "calls": 7,
+              "nanoseconds": 259925
+            },
+            "put-single": {
+              "bytes": 3889,
+              "calls": 3,
+              "nanoseconds": 10082200
+            },
+            "stream-read": {
+              "bytes": 10035,
+              "calls": 14,
+              "nanoseconds": 39300
+            }
+          },
+          "request": 64,
+          "unlisted_reads": 0
+        },
+        "setup": {
+          "listed_read_ids": 59,
+          "maximum_reads_of_one_id": 18,
+          "operations": {
+            "open-read-handle": {
+              "bytes": 0,
+              "calls": 180,
+              "nanoseconds": 3046610
+            },
+            "put-batch": {
+              "bytes": 40726,
+              "calls": 6,
+              "nanoseconds": 45803252
+            },
+            "put-single": {
+              "bytes": 5263,
+              "calls": 5,
+              "nanoseconds": 13404247
+            },
+            "stream-read": {
+              "bytes": 328294,
+              "calls": 360,
+              "nanoseconds": 1043084
+            }
+          },
+          "request": 64,
+          "unlisted_reads": 0
+        }
+      },
+      "log_sha256": "bdb79b3cfe001f365181ddfc8f5689f9b9ebbabf100fbeb8af922107901e891c",
+      "ordered_plan_ids_sha256": "da8980b10d81dde3d0e8549c2ff68fd55fdd5f19c763b171576b44734a4104df",
+      "plan_count": 64,
+      "stage_totals": {
+        "discover": {
+          "open-read-handle": {
+            "bytes": 0,
+            "calls": 11186,
+            "nanoseconds": 96956092
+          },
+          "put-batch": {
+            "bytes": 918551,
+            "calls": 192,
+            "nanoseconds": 1075662869
+          },
+          "put-single": {
+            "bytes": 244096,
+            "calls": 192,
+            "nanoseconds": 529032810
+          },
+          "stream-read": {
+            "bytes": 16365321,
+            "calls": 22434,
+            "nanoseconds": 57306610
+          }
+        },
+        "planner": {
+          "contains": {
+            "bytes": 0,
+            "calls": 47944,
+            "nanoseconds": 669935000
+          },
+          "open-read-handle": {
+            "bytes": 0,
+            "calls": 270330,
+            "nanoseconds": 1578185085
+          },
+          "put-batch": {
+            "bytes": 24700554,
+            "calls": 909,
+            "nanoseconds": 6493824454
+          },
+          "put-single": {
+            "bytes": 1454755,
+            "calls": 640,
+            "nanoseconds": 2146952269
+          },
+          "stream-read": {
+            "bytes": 453644876,
+            "calls": 541667,
+            "nanoseconds": 1401535180
+          }
+        },
+        "planner-component": {},
+        "planner-preflight": {
+          "open-read-handle": {
+            "bytes": 0,
+            "calls": 30249,
+            "nanoseconds": 165265989
+          },
+          "put-single": {
+            "bytes": 302400,
+            "calls": 320,
+            "nanoseconds": 536503221
+          },
+          "stream-read": {
+            "bytes": 42679960,
+            "calls": 60684,
+            "nanoseconds": 152557396
+          }
+        },
+        "publish-request": {
+          "open-read-handle": {
+            "bytes": 0,
+            "calls": 448,
+            "nanoseconds": 27786090
+          },
+          "put-single": {
+            "bytes": 248876,
+            "calls": 192,
+            "nanoseconds": 1769894338
+          },
+          "stream-read": {
+            "bytes": 642200,
+            "calls": 896,
+            "nanoseconds": 2889433
+          }
+        },
+        "setup": {
+          "open-read-handle": {
+            "bytes": 0,
+            "calls": 11232,
+            "nanoseconds": 105429917
+          },
+          "put-batch": {
+            "bytes": 2077869,
+            "calls": 384,
+            "nanoseconds": 1834112137
+          },
+          "put-single": {
+            "bytes": 336832,
+            "calls": 320,
+            "nanoseconds": 1055294970
+          },
+          "stream-read": {
+            "bytes": 18261954,
+            "calls": 22464,
+            "nanoseconds": 61693869
+          }
+        }
+      },
+      "terminal": {
+        "admissions": 1024,
+        "allocated_bytes": 48160768,
+        "cold_claimable": 1024,
+        "cold_pages": 11,
+        "cold_reopen_queue_ns": 8444368460,
+        "combined_peak_rss_upper_bound_kib": 23864,
+        "coordinator_peak_rss_kib": 17448,
+        "hot_claimable": 1024,
+        "hot_pages": 11,
+        "hot_queue_ns": 481560841,
+        "index_bytes": 24081866,
+        "logical_bytes": 29858938,
+        "objects": 22117,
+        "physical_bytes": 48160768,
+        "planner_ns": 25082611019,
+        "planner_worker_peak_rss_kib": 6416,
+        "request_size": 16,
+        "requests": 64,
+        "setup_ns": 9099373428
+      }
+    },
+    "candidate-64-repeat": {
+      "component": {
+        "calls": 64,
+        "maximum_nanoseconds": 22560867,
+        "nanoseconds": 416788452
+      },
+      "latest": {
+        "discover": {
+          "listed_read_ids": 75,
+          "maximum_reads_of_one_id": 14,
+          "operations": {
+            "open-read-handle": {
+              "bytes": 0,
+              "calls": 184,
+              "nanoseconds": 1030268
+            },
+            "put-batch": {
+              "bytes": 21938,
+              "calls": 3,
+              "nanoseconds": 11948160
+            },
+            "put-single": {
+              "bytes": 3814,
+              "calls": 3,
+              "nanoseconds": 3126863
+            },
+            "stream-read": {
+              "bytes": 287777,
+              "calls": 369,
+              "nanoseconds": 884274
+            }
+          },
+          "request": 64,
+          "unlisted_reads": 0
+        },
+        "planner": {
+          "listed_read_ids": 603,
+          "maximum_reads_of_one_id": 322,
+          "operations": {
+            "contains": {
+              "bytes": 0,
+              "calls": 967,
+              "nanoseconds": 10100912
+            },
+            "open-read-handle": {
+              "bytes": 0,
+              "calls": 4471,
+              "nanoseconds": 15241942
+            },
+            "put-batch": {
+              "bytes": 520787,
+              "calls": 15,
+              "nanoseconds": 63382852
+            },
+            "put-single": {
+              "bytes": 22749,
+              "calls": 10,
+              "nanoseconds": 21789642
+            },
+            "stream-read": {
+              "bytes": 8158471,
+              "calls": 8958,
+              "nanoseconds": 23654487
+            }
+          },
+          "request": 64,
+          "unlisted_reads": 0
+        },
+        "planner-component": {
+          "listed_read_ids": 0,
+          "maximum_reads_of_one_id": 0,
+          "operations": {},
+          "request": 64,
+          "unlisted_reads": 0
+        },
+        "planner-preflight": {
+          "listed_read_ids": 79,
+          "maximum_reads_of_one_id": 42,
+          "operations": {
+            "open-read-handle": {
+              "bytes": 0,
+              "calls": 490,
+              "nanoseconds": 3116676
+            },
+            "put-single": {
+              "bytes": 4740,
+              "calls": 5,
+              "nanoseconds": 3112812
+            },
+            "stream-read": {
+              "bytes": 727945,
+              "calls": 983,
+              "nanoseconds": 2965771
+            }
+          },
+          "request": 64,
+          "unlisted_reads": 0
+        },
+        "publish-request": {
+          "listed_read_ids": 3,
+          "maximum_reads_of_one_id": 3,
+          "operations": {
+            "open-read-handle": {
+              "bytes": 0,
+              "calls": 7,
+              "nanoseconds": 183241
+            },
+            "put-single": {
+              "bytes": 3889,
+              "calls": 3,
+              "nanoseconds": 4440780
+            },
+            "stream-read": {
+              "bytes": 10035,
+              "calls": 14,
+              "nanoseconds": 37702
+            }
+          },
+          "request": 64,
+          "unlisted_reads": 0
+        },
+        "setup": {
+          "listed_read_ids": 59,
+          "maximum_reads_of_one_id": 18,
+          "operations": {
+            "open-read-handle": {
+              "bytes": 0,
+              "calls": 180,
+              "nanoseconds": 1711352
+            },
+            "put-batch": {
+              "bytes": 40726,
+              "calls": 6,
+              "nanoseconds": 28609225
+            },
+            "put-single": {
+              "bytes": 5263,
+              "calls": 5,
+              "nanoseconds": 13910512
+            },
+            "stream-read": {
+              "bytes": 328294,
+              "calls": 360,
+              "nanoseconds": 1089012
+            }
+          },
+          "request": 64,
+          "unlisted_reads": 0
+        }
+      },
+      "log_sha256": "894f96efda9de205c426cc910b08984b53cd2976cec993511ed33a7afcf89c44",
+      "ordered_plan_ids_sha256": "da8980b10d81dde3d0e8549c2ff68fd55fdd5f19c763b171576b44734a4104df",
+      "plan_count": 64,
+      "stage_totals": {
+        "discover": {
+          "open-read-handle": {
+            "bytes": 0,
+            "calls": 11186,
+            "nanoseconds": 135688243
+          },
+          "put-batch": {
+            "bytes": 918551,
+            "calls": 192,
+            "nanoseconds": 1890112799
+          },
+          "put-single": {
+            "bytes": 244096,
+            "calls": 192,
+            "nanoseconds": 458369179
+          },
+          "stream-read": {
+            "bytes": 16365321,
+            "calls": 22434,
+            "nanoseconds": 54487837
+          }
+        },
+        "planner": {
+          "contains": {
+            "bytes": 0,
+            "calls": 47944,
+            "nanoseconds": 513677221
+          },
+          "open-read-handle": {
+            "bytes": 0,
+            "calls": 270330,
+            "nanoseconds": 1209822018
+          },
+          "put-batch": {
+            "bytes": 24700554,
+            "calls": 909,
+            "nanoseconds": 4867556707
+          },
+          "put-single": {
+            "bytes": 1454755,
+            "calls": 640,
+            "nanoseconds": 2495542626
+          },
+          "stream-read": {
+            "bytes": 453644876,
+            "calls": 541667,
+            "nanoseconds": 1348249625
+          }
+        },
+        "planner-component": {},
+        "planner-preflight": {
+          "open-read-handle": {
+            "bytes": 0,
+            "calls": 30249,
+            "nanoseconds": 125118491
+          },
+          "put-single": {
+            "bytes": 302400,
+            "calls": 320,
+            "nanoseconds": 427382218
+          },
+          "stream-read": {
+            "bytes": 42679960,
+            "calls": 60684,
+            "nanoseconds": 140325922
+          }
+        },
+        "publish-request": {
+          "open-read-handle": {
+            "bytes": 0,
+            "calls": 448,
+            "nanoseconds": 15509864
+          },
+          "put-single": {
+            "bytes": 248876,
+            "calls": 192,
+            "nanoseconds": 1502912926
+          },
+          "stream-read": {
+            "bytes": 642200,
+            "calls": 896,
+            "nanoseconds": 2559300
+          }
+        },
+        "setup": {
+          "open-read-handle": {
+            "bytes": 0,
+            "calls": 11232,
+            "nanoseconds": 104963830
+          },
+          "put-batch": {
+            "bytes": 2077869,
+            "calls": 384,
+            "nanoseconds": 1524197757
+          },
+          "put-single": {
+            "bytes": 336832,
+            "calls": 320,
+            "nanoseconds": 848148749
+          },
+          "stream-read": {
+            "bytes": 18261954,
+            "calls": 22464,
+            "nanoseconds": 58178037
+          }
+        }
+      },
+      "terminal": {
+        "admissions": 1024,
+        "allocated_bytes": 48160768,
+        "cold_claimable": 1024,
+        "cold_pages": 11,
+        "cold_reopen_queue_ns": 7972852839,
+        "combined_peak_rss_upper_bound_kib": 23952,
+        "coordinator_peak_rss_kib": 17520,
+        "hot_claimable": 1024,
+        "hot_pages": 11,
+        "hot_queue_ns": 436057948,
+        "index_bytes": 24081866,
+        "logical_bytes": 29858938,
+        "objects": 22117,
+        "physical_bytes": 48160768,
+        "planner_ns": 21318702821,
+        "planner_worker_peak_rss_kib": 6432,
+        "request_size": 16,
+        "requests": 64,
+        "setup_ns": 8854949216
+      }
+    }
+  },
+  "schema": 1,
+  "source_base": "4b6c0cdc4c58f6abf2ee80f33ce792655f01e1bb",
+  "worker_controller_sha256": "497e1bab6938d5f99ecc2575489d9ad8aca2d705001f3858a78cce949102151b",
+  "worker_source_revision": "Earlier packaged worker; exact source revision not established by these diagnostic runs.",
+  "worker_wrapper_sha256": "61d892e0fc7dbfb27b37e8546cb8861d92898fa285293f42d6af6b9cd4a62cd3"
+}

@@ -44,7 +44,7 @@ normative policy is
   applicable QEMU/GPL-compatible scope. Apache-only crates MUST NOT link QEMU,
   include QEMU headers, or expose QEMU callback entry points.
 - Preserve QEMU's per-file licenses. The emulator is GPL-2.0-only as a combined
-  work, while unmarked QEMU 10.0 source files default to GPL-2.0-or-later.
+  work, while unmarked QEMU 11.1.1 source files default to GPL-2.0-or-later.
   Changes that create or remove QEMU files MUST update
   `pkgs/emulation/qemu-patches/LICENSES.md`.
 - Do not publish `qemu-crucible` as a standalone store-path root. Publish the
@@ -52,7 +52,7 @@ normative policy is
   `qemu-crucible-source` output. Publication checks scan the full closure, so
   plugin or unmarked wrapper roots are not valid bypasses. Keep generic
   unpatched QEMU unrestricted.
-- `crucible-protocol` and `crucible-shmem` are permissive boundary components;
+- `crucible-qemu-protocol` and `crucible-qemu-shmem` are permissive boundary components;
   neither may acquire a dependency on a QEMU implementation or QEMU headers.
 - Boundary changes MUST pass `gate:abi-conformance` and
   `gate:license-boundary`. A distributed patched-QEMU binary MUST have a
@@ -145,26 +145,46 @@ correctly. Stubbing is acceptable only for truly complex bootstrapping problems
 ## The `aos-dev` development entry point
 
 Use the in-repository Bash CLI for build targets, checks, formatting, cache
-maintenance, and release preparation. Run `bash ./aos-dev help` for commands,
-flags, and completion; the entry point has no host-specific shebang.
+maintenance, and release preparation. Assume `aos-dev` is in PATH through
+direnv or `nix develop`; the dev shell also provides the ordinary packaged
+`aos` CLI. Run `aos-dev help` for commands, flags, and completion.
 
 ```sh
-bash ./aos-dev list packages crucible
-bash ./aos-dev build package crucible --no-out-link
-bash ./aos-dev build image server:qcow2
-bash ./aos-dev all checks
-bash ./aos-dev cache init
-bash ./aos-dev cache rust status
+aos-dev list packages crucible
+aos-dev build package crucible --no-out-link
+aos-dev build image server:qcow2
+aos-dev all checks
+aos-dev cache init
+aos-dev cache rust status
 ```
 
+Run `aos-dev run aos <arguments>`, `aos-dev run apm <arguments>`, or
+`aos-dev run apr <arguments>` to fetch or build the ordinary packaged tool and
+execute it. These commands and `release` keep production derivation identities
+without shared compiler caches; explicit `build` commands use the development
+settings below.
+
+The flake and `aos-dev` use the production experimental binary cache at
+`https://cdn.aos.andyl.org/andyl/experimental/` with its dedicated public Nix signing
+key and source fallback. Direnv's `use flake . --accept-flake-config` accepts
+these settings when loading the shell. For manual Nix commands, accept the
+settings when prompted or use `--accept-flake-config`; multi-user hosts must
+authorize the cache and key in their daemon configuration. Missing binaries
+build from source, and failed substitutions also fall back to source builds.
+The cache settings append to
+the caller's configuration and do not introduce nixpkgs build dependencies.
+
 Development builds default to shared Go and Bazel caches, a persistent Cargo
-target directory, and Rust incremental compilation. Leading `--no-go-cache`,
-`--no-bazel-cache`, `--no-rust-target-cache`, and `--no-rust-incremental` flags
-control them independently. Cache paths inside the sandbox are configured by
+target directory, Rust incremental compilation, and accache. Leading `--no-go-cache`,
+`--no-bazel-cache`, `--no-rust-target-cache`, `--no-rust-incremental`, and
+`--no-accache` flags control them independently. Sandbox cache paths are set by
 `AOS_DEV_GO_CACHE_DIR`, `AOS_DEV_BAZEL_CACHE_DIR`, and
-`AOS_DEV_RUST_TARGET_DIR`; `AOS_DEV_CACHE_DIR` selects their host storage root.
-The CLI passes each enabled path to the matching language builder. Generic
-packages and toolchains keep their ordinary derivation identities.
+`AOS_DEV_RUST_TARGET_DIR`; `AOS_DEV_CACHE_DIR` selects their host storage root
+(XDG cache by default, with `/var/tmp` fallback for private homes).
+The CLI passes each enabled path to the matching language builder. Opted-in
+CMake applications use accache; toolchains keep their ordinary identities.
+Accache caches nonincremental Rust actions; incremental invocations pass through. See
+[`tools/accache/README.md`](tools/accache/README.md) for coverage and diagnostics.
 
 Run `cache init` once per machine; it sets up directories and ACLs without
 building a compiler or starting a host service. The host cache path must be
@@ -185,31 +205,36 @@ The `aos` CLI is a Rust tool (`crates/`) for working with this repo. Run it via
 the Nix flake — do NOT use `cargo run` directly (it needs alejandra in PATH):
 
 ```sh
-# Enter the dev shell (provides aos + just in PATH):
+# Enter the dev shell (provides aos + aos-dev + just in PATH):
 nix develop
 
-# Or run a one-off command without entering the shell:
+# Fetch or build aos on demand inside the shell:
+aos-dev run aos <subcommand>
+
+# Or run the packaged CLI directly without entering the shell:
 nix run . -- <subcommand>
 ```
 
 ### Incremental builds
 
 `nix build` / `nix run` rebuild the whole `pkgs.aos` derivation hermetically and
-are slow to iterate on. For a fast edit–build–run loop on the Rust code, build
-with `cargo` in the dev-shell environment via `nix develop -c` — a single
-non-interactive command (a bare `nix develop` only opens an interactive shell) —
-then run the resulting binary directly:
+are slow to iterate on. For a fast edit–build–run loop on the Rust code, use
+the Cargo dev shell, which supplies the AOS-built compiler and native libraries
+without building the packaged CLI or integration-test services. Select it through `cargo-shell.nix`
+to avoid the flake's broad output evaluation. Pass the command to `nix develop -c`
+in one invocation (a bare `nix develop` only opens an interactive shell), then
+run the resulting binary directly:
 
 ```sh
 # Build (incremental). `nix develop -c` execs its argument directly (no shell),
 # so pass cargo the workspace with --manifest-path rather than `cd`-ing:
-nix develop -c cargo build --manifest-path crates/Cargo.toml --bin aos   # or --bin apr / --bin apm
+nix develop --file cargo-shell.nix -c cargo build --manifest-path crates/Cargo.toml --bin aos   # or --bin apr / --bin apm
 
 # Run the freshly built binary directly — its OpenSSL rpath is baked in:
 crates/target/debug/aos <subcommand>
 ```
 
-- **Build through `nix develop -c`.** The dev shell points `openssl-sys` at the
+- **Build through the Cargo shell.** It points `openssl-sys` at the
   AOS OpenSSL and bakes its `rpath` into the linked binary (via a per-target
   `CARGO_TARGET_*_RUSTFLAGS`), so it runs with no `patchelf` or
   `LD_LIBRARY_PATH`. A cargo build in a bare shell produces a binary that can't
@@ -224,8 +249,23 @@ crates/target/debug/aos <subcommand>
   entry points with disjoint parsers backed by shared Rust libraries. Build and
   run the exact binary whose command surface you are testing; there is no
   `aos package` compatibility path.
-- `crates/target/debug/` is independent of the flake-installed `aos`; `nix run`
-  and any installed CLI keep the last packaged build until rebuilt.
+- `crates/target/debug/` is independent of the packaged `aos`; `aos-dev run aos`
+  and `nix run` use the hermetic package, while any installed CLI keeps its
+  last packaged build until rebuilt.
+
+Native doctests need the same library paths baked into their temporary
+executables. Cargo does not forward its target `RUSTFLAGS` to rustdoc. Copy the
+host flags for that invocation; avoid `LD_LIBRARY_PATH` and keep these native
+linker flags separate from WebAssembly documentation:
+
+```sh
+AOS_DEV_ROOT="$PWD" nix develop --accept-flake-config --file cargo-shell.nix -c bash -c '
+  aos_doc_host=$(rustc -vV | sed -n "s/^host: //p")
+  aos_doc_flags_key="CARGO_TARGET_$(printf "%s" "$aos_doc_host" | tr "[:lower:]-" "[:upper:]_")_RUSTFLAGS"
+  export RUSTDOCFLAGS="${!aos_doc_flags_key}${RUSTDOCFLAGS:+ $RUSTDOCFLAGS}"
+  cargo test --manifest-path crates/Cargo.toml --workspace --doc --locked --offline --no-fail-fast
+'
+```
 
 ### Subcommands
 
@@ -340,7 +380,8 @@ the local design no worse and improve it where that is safe and proportionate.
 
 ## Testing
 
-- `nix-build -A checks.eval` — pure evaluation checks
+- `nix-build -A checks.eval` — core evaluation checks
+- `aos test eval` — complete sharded evaluation suite
 - `nix-build -A checks.vm.boot` — VM boot test using QEMU direct kernel boot
 - `nix-build -A checks.rust.aos-test-targets` — compiles every application
   crate's unit and `tests/` integration targets without running them; run it

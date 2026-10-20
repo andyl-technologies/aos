@@ -10,8 +10,11 @@
 
   advancedDoc = builtins.readFile ../../docs/rfcs/0010-crucible/22-advanced-features.md;
   temporalGraph = import ./_crucible-model-source.nix {inherit lib;};
-  libRs = builtins.readFile ../../crates/crucible/src/lib.rs;
-  minimizationTest = builtins.readFile ../../crates/crucible/tests/gate_minimization.rs;
+  libRs = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/engine/crucible-engine/src/lib.rs;
+  };
+  minimizationTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/gate_minimization.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -42,7 +45,7 @@
         needle = "candidate-shrink order MUST\n  be a seeded, content-address-tie-broken function";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" temporalGraph [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" temporalGraph [
       {
         label = "minimization config";
         needle = "pub struct MinimizationConfig";
@@ -64,8 +67,8 @@
         needle = "fn minimization_candidate_key";
       }
       {
-        label = "shortest-first candidate generator";
-        needle = "fn collect_minimization_candidates_for_len";
+        label = "deterministic minimization candidate generator";
+        needle = "pub(super) fn minimization_candidates(";
       }
       {
         label = "schedule constructor";
@@ -80,7 +83,7 @@
         needle = "FindingReproductionArtifact::capture";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" libRs [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" libRs [
       {
         label = "minimization config export";
         needle = "MinimizationConfig";
@@ -94,7 +97,7 @@
         needle = "MinimizationRun";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/gate_minimization.rs" minimizationTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/gate_minimization.rs" minimizationTest [
       {
         label = "deterministic shrink gate";
         needle = "gate_minimization_shrinks_schedule_and_rng_decisions_deterministically";
@@ -166,7 +169,7 @@
         needle = "phase6.reproductionArtifacts";
       }
     ]
-    ++ forbiddenFailuresFor "crates/crucible/tests/gate_minimization.rs" minimizationTest [
+    ++ forbiddenFailuresFor "crates/crucible/engine/crucible-engine/tests/gate_minimization.rs" minimizationTest [
       {
         label = "ignored red placeholder";
         needle = "#[ignore";
@@ -185,7 +188,10 @@ in
       version = "0";
       src = crucibleSrc;
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.rust
         pkgs.sed
@@ -233,7 +239,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-minimization-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible \
+              -p crucible-engine \
               --test gate_minimization \
               -- --test-threads=1
           '';

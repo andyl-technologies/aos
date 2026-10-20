@@ -14,27 +14,27 @@ dependency. AOS adds one glue crate.
 
 | Crate | Placement | Contents |
 | --- | --- | --- |
-| `terrane-core` | `crates/terrane-core` | `no_std` formats and algorithms (CRATE-1, CRATE-2) |
-| `terrane` | `crates/terrane` | store, combinators, backends, repository, guard, GC; features `tokio`, `wasm` (CRATE-6 to CRATE-8) |
-| `terrane-fs` | `crates/terrane-fs` | Linux surfaces; the only `unsafe` crate (CRATE-10 to CRATE-12) |
+| `terrane-format` | `crates/terrane/sdk/terrane-format` | `no_std` formats and algorithms (CRATE-1, CRATE-2) |
+| `terrane-sdk` | `crates/terrane/sdk/terrane-sdk` | store, combinators, backends, repository, guard, GC; features `tokio`, `wasm` (CRATE-6 to CRATE-8) |
+| `terrane-linux` | `crates/terrane/linux/terrane-linux` | Linux surfaces; the only `unsafe` crate (CRATE-10 to CRATE-12) |
 | `terrane-edge` | `crates/terrane-edge` | wasm32 bindings (CRATE-13, CRATE-14) |
-| `terrane-cli` | `crates/terrane-cli` | the `terrane` binary and roles (CRATE-15 to CRATE-17) |
-| `aos-terrane` | `crates/aos-terrane` | AOS glue: RFC-0021 trait impls, identity profile `aos-sandbox-v1`, domain map, Hub token issuer adapter, systemd wiring via `aos-systemd`, Crucible adapter (CRATE-18) |
+| `terrane-cli` | `crates/terrane/cli/terrane-cli` | the `terrane` binary and roles (CRATE-15 to CRATE-17) |
+| `aos-terrane-integration` | `crates/terrane/integration/aos-terrane-integration` | AOS glue: RFC-0021 trait impls, identity profile `aos-sandbox-v1`, domain map, Hub token issuer adapter, systemd wiring via `aos-systemd-client`, Crucible adapter (CRATE-18) |
 
 - **[PKG-1]** The five specification crates MUST NOT depend on any `aos-*`
-  or `crucible-*` crate (spec CRATE-18, CRATE-19). `aos-terrane` is the only
+  or `crucible-*` crate (spec CRATE-18, CRATE-19). `aos-terrane-integration` is the only
   crate that may depend on both. *Gate:* `checks.terrane.gates.crate-graph`.
 - **[PKG-2]** The crates MUST be workspace members in `crates/Cargo.toml`
   with `[lints] workspace = true`, edition 2024, and the workspace's
   `clippy.toml` (no `HashMap`, no `Instant::now` outside the `Clock` trait).
-  `terrane-fs` MUST set `#![deny(unsafe_op_in_unsafe_fn)]`; every other crate
+  `terrane-linux` MUST set `#![deny(unsafe_op_in_unsafe_fn)]`; every other crate
   MUST set `#![forbid(unsafe_code)]` (spec CRATE-12, CRATE-30). *Gate:*
   `checks.terrane.gates.unsafe-audit`.
 - **[PKG-3]** Adding the crates MUST update every affected
   `fetchCargoVendor` hash and the `aos` package's workspace test set, per the
   repository's Rust packaging rules (RFC-0015). *Gate:* `checks.eval`.
 - **[PKG-4]** The binary MUST be named `terrane` (spec CRATE-15; decision
-  [AD-1](06-decision-register.md)). AOS MUST NOT ship an `aos-terrane`
+  [AD-1](06-decision-register.md)). AOS MUST NOT ship an `aos-terrane-integration`
   binary; AOS-specific commands live under `aos terrane ...` in the `aos` CLI
   and call the SDK.
 
@@ -45,7 +45,7 @@ dependency. AOS adds one glue crate.
 {
   lib,
   mkCargoPackage,
-  fetchCargoVendor,
+  aosWorkspaceVendor,
   protobuf,
   fuse3,
   erofs-utils,
@@ -53,12 +53,8 @@ dependency. AOS adds one glue crate.
 }: let
   version = "0.1.0";
   src = import ./aos/_workspace-source.nix {inherit lib;};
-  cargoDeps = fetchCargoVendor {
-    inherit src;
-    name = "terrane-vendor-${version}";
-    sourceRoot = "source/crates";
-    hash = "sha256-...";
-  };
+  cargoDeps = aosWorkspaceVendor;
+
 in
   mkCargoPackage {
     pname = "terrane";
@@ -69,7 +65,7 @@ in
     buildDeps = [protobuf];
     runtimeDeps = [fuse3 erofs-utils zstd];
     cargoNextest = true;
-    cargoTestFlags = "-p terrane-core -p terrane -p terrane-fs -p terrane-cli";
+    cargoTestFlags = "-p terrane-format -p terrane-sdk -p terrane-linux -p terrane-cli";
     meta.description = "terrane — content-addressed, branchable filesystem store";
   }
 ```

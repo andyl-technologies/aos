@@ -23,7 +23,7 @@ def prepare():
     config.write_text(json.dumps({
         "schema_version": "aos.release.file-signer-config/v1",
         "provider_revision": "qualification-fixture-v1",
-        "registries": ["andyl/testing"],
+        "registries": ["andyl/experimental"],
         "keys": [{
             "key_id": "fixture-v1",
             "roles": ["release-evidence"],

@@ -30,7 +30,7 @@ Two things fall out of making privilege declarative:
    service package is fronted by an `aos-pkg-<name>.target`
    (see [container-model.md](container-model.md)). k3s stops being a carve-out.
 2. **Legibility.** You can ask a package *what it needs to run* before you
-   install or enable it — `apm info <pkg> --permissions` — the way an app store
+   install or enable it — `apm show <pkg> --permissions` — the way an app store
    shows permissions before install. A fleet policy can refuse a package that
    asks for more than allowed. The permission set is part of the package's
    **signed** metadata, so it cannot escalate after publish.
@@ -268,10 +268,10 @@ interface is the precedent). Full composition rules:
 
 ## Introspection, policy, and signing (the app-store story)
 
-- **Introspect before install/enable:** `apm info <pkg> --permissions` (and
+- **Introspect before install/enable:** `apm show <pkg> --permissions` (and
   `aos describe <pkg>`) render the manifest — the permission prompt. This is
   the answer to "what does this package need to run?"
-- **Computed confinement label:** above the itemized list, `apm info` renders a
+- **Computed confinement label:** above the itemized list, `apm show` renders a
   label **derived by fixed rules from the manifest** — `sandboxed` /
   `sandboxed-with-holes (<grants>)` / `unconfined` — never authored by the
   package. Root-equivalent grants force `unconfined`: `CAP_SYS_ADMIN` alone is
@@ -285,7 +285,7 @@ interface is the precedent). Full composition rules:
 - **Attestable, not just introspectable:** the **signed manifest digest is
   measured into the TPM** (see [attestation.md](attestation.md)). A node's
   *declared + granted* privilege is hashed into a PCR at activation, so the
-  confinement label is not merely something `apm info` can show — it becomes
+  confinement label is not merely something `apm show` can show — it becomes
   part of the node's **attested state**. A remote verifier can confirm that the
   privilege a node *actually* runs under matches the signed manifest it
   *claims*, closing the gap between "introspectable on the box" and "provable to
@@ -300,7 +300,7 @@ interface is the precedent). Full composition rules:
   PodSecurityPolicy in favor of exactly three named Pod Security Standards
   because per-knob policy proved unwritable and unauditable, and systemd
   portable services ship four named profiles for the same reason. The host file
-  is `/etc/aos/policy.toml`, parsed by `crates/aos-package/src/policy.rs`:
+  is `/etc/aos/policy.toml`, parsed by `crates/aos/packages/aos-package-manager/src/policy.rs`:
 
   ```toml
   tier = "baseline"

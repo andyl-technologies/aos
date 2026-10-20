@@ -28,6 +28,9 @@ pkgs.mkDerivation {
         _start:
           cli
           movl $stack_top, %esp
+          movl $random_request_frame, %eax
+          movl $27, %ecx
+          outb %al, $0xe7
           movl $0x9e3779b9, %eax
           movl $256, %ecx
         workload_loop:
@@ -52,6 +55,18 @@ pkgs.mkDerivation {
         halted:
           hlt
           jmp halted
+
+        .section .data
+        .align 16
+        random_request_frame:
+          .byte 0x43, 0x52, 0x42, 0x4c
+          .byte 0x03, 0x00
+          .byte 0x05, 0x00
+          .byte 0x0f, 0x00, 0x00, 0x00
+          .byte 0x04, 0x03, 0x02, 0x01
+          .byte 0x03
+          .byte 0x08, 0x00
+          .ascii "live-rng"
 
         .section .bss
         .align 16

@@ -2,18 +2,18 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.timeMultiVcpuAggregateClock",
-  taskIds ? ["T-TIME-9"],
+  taskIds ? [],
   openTaskIds ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  contractA = builtins.readFile ../../crates/crucible-sim/src/contract_a.rs;
-  contractATests = builtins.readFile ../../crates/crucible-sim/tests/contract_a.rs;
-  deadline = builtins.readFile ../../crates/crucible-qemu-plugin/src/deadline.rs;
-  pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
+  contractA = builtins.readFile ../../crates/crucible/engine/crucible-determinism/src/contract_a.rs;
+  contractATests = builtins.readFile ../../crates/crucible/engine/crucible-determinism/tests/contract_a.rs;
+  deadline = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/deadline.rs;
+  pluginLib = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/lib.rs;
   shmemLib = import ./_crucible-shmem-source.nix {inherit lib;};
-  harnessObservation = builtins.readFile ../../crates/crucible-harness/src/fingerprint/observation.rs;
+  harnessObservation = builtins.readFile ../../crates/crucible/testing/crucible-test-support/src/fingerprint/observation.rs;
   phase0S11 = builtins.readFile ./phase0-s11.nix;
   timeSpec = builtins.readFile ../../docs/rfcs/0010-crucible/09-virtual-time-icount.md;
   decisionRegister = builtins.readFile ../../docs/rfcs/0010-crucible/31-decision-register.md;
@@ -22,9 +22,9 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   failures =
-    failuresFor "crates/crucible-sim/src/contract_a.rs" contractA [
+    failuresFor "crates/crucible/engine/crucible-determinism/src/contract_a.rs" contractA [
       {
-        label = "node-icount RR quantum getter";
+        label = "retired-instruction RR quantum getter";
         needle = "pub fn rr_switch_quantum(&self) -> u64";
       }
       {
@@ -40,7 +40,7 @@
         needle = "fn vcpu_for_icount(config: &ContractAConfig, aggregate_icount: u64) -> u64";
       }
       {
-        label = "RR cursor uses node-icount quantum";
+        label = "RR cursor uses retired-instruction quantum";
         needle = "(aggregate_icount / config.rr_switch_quantum) % config.vcpu_count";
       }
       {
@@ -52,14 +52,14 @@
         needle = "pub time_trajectory: Vec<TimeTrajectorySample>";
       }
     ]
-    ++ failuresFor "crates/crucible-sim/tests/contract_a.rs" contractATests [
+    ++ failuresFor "crates/crucible/engine/crucible-determinism/tests/contract_a.rs" contractATests [
       {
         label = "single aggregate time axis test";
         needle = "contract_a_multi_vcpu_uses_single_aggregate_time_axis";
       }
       {
         label = "RR quantum content-addressing test";
-        needle = "contract_a_rr_switch_quantum_is_content_addressed_node_icount_units";
+        needle = "contract_a_rr_switch_quantum_is_content_addressed_retired_instructions";
       }
       {
         label = "aggregate cursor proof";
@@ -70,7 +70,7 @@
         needle = "vec![0, 0, 0, 1, 1, 1, 2]";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/deadline.rs" deadline [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/deadline.rs" deadline [
       {
         label = "per-vCPU deadline report";
         needle = "pub struct PerVcpuDeadlineReport";
@@ -136,7 +136,7 @@
         needle = "multi_vcpu_deadline_rejects_incomplete_vcpu_report_sets";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu-plugin/src/lib.rs" pluginLib [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/lib.rs" pluginLib [
       {
         label = "deadline reducer exported";
         needle = "aggregate_multi_vcpu_deadline";
@@ -146,7 +146,7 @@
         needle = "PerVcpuDeadlineReport";
       }
     ]
-    ++ failuresFor "crates/crucible-harness/src/fingerprint/observation.rs" harnessObservation [
+    ++ failuresFor "crates/crucible/testing/crucible-test-support/src/fingerprint/observation.rs" harnessObservation [
       {
         label = "per-vCPU retired counts restricted to fingerprint observation";
         needle = "pub struct VcpuRetiredCount";
@@ -175,7 +175,7 @@
       }
       {
         label = "multi-vCPU spike pins the predeclared S11 horizon";
-        needle = "stopAt ? 4000000000";
+        needle = "stopAt ? 8000000000";
       }
       {
         label = "multi-vCPU spike sustains four-thread contention";
@@ -196,8 +196,8 @@
         needle = "retired-instruction count across all `N` vCPUs";
       }
       {
-        label = "TIME-35 node-icount RR quantum";
-        needle = "in **node-icount units**";
+        label = "TIME-35 retired-instruction RR quantum";
+        needle = "integer number of retired instructions";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/31-decision-register.md" decisionRegister [
@@ -215,12 +215,8 @@
         label = "phase1 exposes multi-vCPU aggregate clock check";
         needle = "timeMultiVcpuAggregateClock = import ./phase1-time-multi-vcpu-aggregate-clock.nix";
       }
-      {
-        label = "layer0 gate lists T-TIME-9";
-        needle = "\"T-TIME-9\"";
-      }
     ]
-    ++ forbiddenFor "crates/crucible-shmem/src/lib.rs" shmemLib [
+    ++ forbiddenFor "crates/crucible/protocol/crucible-qemu-shmem/src/lib.rs" shmemLib [
       {
         label = "per-vCPU shared-memory field";
         needle = "per_vcpu";
@@ -251,7 +247,10 @@ in
       version = "0";
       src = crucibleSrc;
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.rust
         pkgs.sed
@@ -295,7 +294,7 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-time-multi-vcpu-aggregate-clock-target" \
-              -p crucible-sim \
+              -p crucible-determinism \
               --test contract_a \
               -- --test-threads=1
             cargo test \
@@ -325,7 +324,7 @@ in
             node_clock_source=aggregate_retired_instructions
             per_vcpu_counts_surface=execution-fingerprint-only
             per_vcpu_shmem_fields=false
-            rr_switch_quantum_units=node-icount
+            rr_switch_quantum_units=retired-instructions
             rr_switch_quantum_content_addressed=true
             multi_vcpu_deadline=min-armed-vcpu-deadline
             RESULT

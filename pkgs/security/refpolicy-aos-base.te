@@ -1,0 +1,16 @@
+module aos_base 1.0;
+
+require {
+  type kernel_t;
+  type unlabeled_t;
+  type tmpfs_t;
+  class user_namespace { create };
+  class filesystem { associate };
+}
+
+# Permit systemd on an unlabeled AOS root to create the user namespaces used
+# to establish package service confinement.
+allow kernel_t self:user_namespace create;
+
+# Permit private service tmpfs mounts to associate with the unlabeled root.
+allow unlabeled_t tmpfs_t:filesystem associate;

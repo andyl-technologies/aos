@@ -6,6 +6,11 @@
 }: let
   cfg = config.qualification.qemu;
   types = import ./_types.nix {inherit lib;};
+  # Deferred platforms keep their reviewed target, but it does not gate the
+  # release until the platform returns; see ../deferred-platforms.nix.
+  releasedPlatforms =
+    builtins.filter (platform: !(builtins.elem platform config.qualification.deferredPlatforms))
+    ["x86_64-linux" "aarch64-linux"];
   host = platform: {
     inherit platform;
     backend = {
@@ -16,7 +21,7 @@
   target = platform: machine: accelerator: {
     inherit platform;
     kind = "image";
-    required = true;
+    required = builtins.elem platform releasedPlatforms;
     environment = {
       layers = [
         (host (
@@ -70,8 +75,9 @@ in {
         assertion = builtins.all (platform:
           builtins.any (target:
             target.platform == platform && target.kind == "image" && target.required)
-          (builtins.attrValues config.qualification.targets)) ["x86_64-linux" "aarch64-linux"];
-        message = "QEMU requires both Linux architectures.";
+          (builtins.attrValues config.qualification.targets))
+        releasedPlatforms;
+        message = "QEMU requires every Linux architecture that is not deferred.";
       }
     ];
   };

@@ -7,7 +7,7 @@ use super::{
     fields,
     support::{Value, a, b, encode, m, n, repeated, set, t, texts},
 };
-use terrane_core::{
+use terrane_format::{
     auth::{Request, RequestRoot, Verb},
     refs::{
         Commit, CommitContext, CommitSource, DisclosureProof, EntryOrigin, EntryReceipt,

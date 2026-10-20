@@ -10,21 +10,36 @@
 
   apiDoc = builtins.readFile ../../docs/rfcs/0010-crucible/21-api.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
-  apiCargo = builtins.readFile ../../crates/crucible-api/Cargo.toml;
-  apiLib = builtins.readFile ../../crates/crucible-api/src/lib.rs;
-  apiClient = builtins.readFile ../../crates/crucible-api/src/client.rs;
+  apiCargo = builtins.concatStringsSep "\n" [
+    (builtins.readFile ../../crates/crucible/control/crucible-control-client/Cargo.toml)
+    (builtins.readFile ../../crates/crucible/control/crucible-control-server/Cargo.toml)
+  ];
+  apiLib = import ./_crucible-control-source.nix {
+    inherit lib;
+    component = "exports";
+  };
+  apiClient = import ./_crucible-control-source.nix {
+    inherit lib;
+    component = "client";
+  };
   model = import ./_crucible-model-source.nix {inherit lib;};
-  lifecycle = builtins.readFile ../../crates/crucible-api/src/lifecycle.rs;
-  lifecycleTest = builtins.readFile ../../crates/crucible-api/tests/gate_lifecycle_unary.rs;
+  lifecycle = import ./_crucible-control-source.nix {
+    inherit lib;
+    component = "lifecycle";
+  };
+  lifecycleTest = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/control/crucible-control-server/tests/gate_lifecycle_unary.rs;
+  };
   controlClientTest = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-api/tests/gate_control_client.rs;
+    entry = ../../crates/crucible/control/crucible-control-client/tests/gate_control_client.rs;
   };
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
 
-  inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
+  inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   failures =
     failuresFor "docs/rfcs/0010-crucible/21-api.md" apiDoc [
@@ -43,13 +58,13 @@
         needle = "`T-API-3` is green through `checks.crucible.phase5.apiLifecycleUnary`";
       }
     ]
-    ++ failuresFor "crates/crucible-api/Cargo.toml" apiCargo [
+    ++ failuresFor "crates/crucible/control/crucible-control-api/Cargo.toml" apiCargo [
       {
         label = "crucible production dependency";
-        needle = ''crucible = { path = "../crucible" }'';
+        needle = ''crucible-engine = { path = "../../engine/crucible-engine" }'';
       }
     ]
-    ++ failuresFor "crates/crucible-api/src/lib.rs" apiLib [
+    ++ failuresFor "crates/crucible/control/crucible-control-api/src/lib.rs" apiLib [
       {
         label = "lifecycle module exported";
         needle = "pub mod lifecycle";
@@ -67,7 +82,7 @@
         needle = "ResumeSessionRequest";
       }
     ]
-    ++ failuresFor "crates/crucible-api/src/client.rs" apiClient [
+    ++ failuresFor "crates/crucible/control/crucible-control-client/src/client.rs" apiClient [
       {
         label = "control client list scenarios method";
         needle = "fn list_scenarios(&self)";
@@ -125,13 +140,13 @@
         needle = ''"/crucible.rpc/destroy-session"'';
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" model [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" model [
       {
-        label = "opaque inline scenario transport constructor";
-        needle = "pub fn from_content_hash_seed_and_app_random_draw_cap";
+        label = "complete inline scenario source-form constructor";
+        needle = "pub fn from_components_with_app_random_draw_cap";
       }
     ]
-    ++ failuresFor "crates/crucible-api/src/lifecycle.rs" lifecycle [
+    ++ failuresFor "crates/crucible/control/crucible-control-api/src/lifecycle.rs" lifecycle [
       {
         label = "lifecycle control plane";
         needle = "pub struct LifecycleControlPlane";
@@ -209,10 +224,6 @@
         needle = "ResumeCheckpoint";
       }
       {
-        label = "resume lifecycle method";
-        needle = "pub async fn resume_session";
-      }
-      {
         label = "resume checkpoint closure validation";
         needle = "fn validate_resume_checkpoint_closure";
       }
@@ -223,6 +234,14 @@
       {
         label = "resume checkpoint instantiation";
         needle = "Engine::from_recorded_checkpoint";
+      }
+      {
+        label = "authenticated observation resume preparation";
+        needle = "fn prepare_observation_resume";
+      }
+      {
+        label = "authenticated observation resume publication";
+        needle = "async fn commit_observation_resume";
       }
       {
         label = "list reads live mirror";
@@ -240,8 +259,18 @@
         label = "absent destroy idempotent";
         needle = "already_absent: true";
       }
+      {
+        label = "internal timeout permit regression";
+        needle = "timed_out_observation_preparation_retains_then_releases_its_permit";
+      }
     ]
-    ++ failuresFor "crates/crucible-api/tests/gate_lifecycle_unary.rs" lifecycleTest [
+    ++ forbiddenFor "crates/crucible/control/crucible-control-api/src/lifecycle.rs" lifecycle [
+      {
+        label = "test-only public observation timeout override";
+        needle = "with_resume_observation_preparation_timeout";
+      }
+    ]
+    ++ failuresFor "crates/crucible/control/crucible-control-server/tests/gate_lifecycle_unary.rs" lifecycleTest [
       {
         label = "hello/list side-effect-free test";
         needle = "lifecycle_hello_and_list_scenarios_are_side_effect_free";
@@ -279,19 +308,15 @@
         needle = "create_session_rejects_inline_seed_mismatch_without_side_effects";
       }
       {
-        label = "resume checkpoint closure test";
-        needle = "resume_session_accepts_checkpoint_closure_and_paused_live_mirror";
+        label = "observation resume preparation test";
+        needle = "observation_resume_factory_finishes_before_session_publication";
       }
       {
-        label = "resume checkpoint rejection test";
-        needle = "resume_session_rejects_mismatched_checkpoint_closure_without_side_effects";
-      }
-      {
-        label = "resume genesis material rejection test";
-        needle = "resume_session_rejects_tampered_zero_time_baked_genesis";
+        label = "observation resume bounded concurrency test";
+        needle = "http_observation_preparation_releases_registry_lock_and_bounds_in_flight_work";
       }
     ]
-    ++ failuresFor "crates/crucible-api/tests/gate_control_client*.rs" controlClientTest [
+    ++ failuresFor "crates/crucible/control/crucible-control-client/tests/gate_control_client*.rs" controlClientTest [
       {
         label = "RPC server backed by lifecycle control plane";
         needle = "LifecycleControlPlane<ServerQuantumLoop";
@@ -322,7 +347,7 @@
       }
       {
         label = "RPC inline scenario reconstruction";
-        needle = "ScenarioDef::from_content_hash_seed_and_app_random_draw_cap";
+        needle = "ScenarioDefForm::from_components_with_app_random_draw_cap";
       }
       {
         label = "RPC inline scenario seed parser";
@@ -353,12 +378,17 @@ in
   pkgs.mkDerivation {
     pname = "crucible-phase5-api-lifecycle-unary";
     version = "0";
+    LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
+    runtimeDeps = [pkgs.sqlite];
     src = crucibleSrc;
 
     buildDeps = [
       pkgs.coreutils
       pkgs.rust
       pkgs.sed
+
+      pkgs.pkg-config
+      pkgs.sqlite
     ];
 
     CRUCIBLE_T_API_3_FAILURES = failureText;
@@ -413,14 +443,15 @@ in
             --frozen \
             --offline \
             --target-dir "$TMPDIR/crucible-api-lifecycle-unary-target" \
-            -p crucible-api \
+            -p crucible-control-server \
+            --features test-support \
             --test gate_lifecycle_unary \
             -- --test-threads=1
           cargo test \
             --frozen \
             --offline \
             --target-dir "$TMPDIR/crucible-api-lifecycle-unary-target" \
-            -p crucible-api \
+            -p crucible-control-client \
             --test gate_control_client \
             -- --test-threads=1
         '';
@@ -439,6 +470,7 @@ in
             printf 'hello=side_effect_free\n'
             printf 'list_scenarios=registry_read\n'
             printf 'create_session=start_command\n'
+            printf 'resume_session=authenticated_observation_source\n'
             printf 'list_sessions=live_mirror_read\n'
             printf 'destroy_session=epoch_guarded_stop\n'
             printf 'rpc_lifecycle=control_client_transport\n'

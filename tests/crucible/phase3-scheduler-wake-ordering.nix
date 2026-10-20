@@ -10,20 +10,20 @@
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   libSource = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/src/lib.rs;
+    entry = ../../crates/crucible/engine/crucible-engine/src/lib.rs;
   };
   shmem = import ./_crucible-shmem-source.nix {inherit lib;};
   shmemTest = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-shmem/tests/advance_ceiling_handoff.rs;
+    entry = ../../crates/crucible/protocol/crucible-qemu-shmem/tests/advance_ceiling_handoff.rs;
   };
   runCeilingTest = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/tests/scheduler_run_ceiling.rs;
+    entry = ../../crates/crucible/engine/crucible-engine/tests/scheduler_run_ceiling.rs;
   };
   qemuQuantum = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-qemu/src/quantum.rs;
+    entry = ../../crates/crucible/qemu/crucible-qemu-host/src/quantum.rs;
   };
   schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
   runCeilingGate = builtins.readFile ./phase3-scheduler-run-ceiling.nix;
@@ -47,7 +47,7 @@
         needle = "consistent `(ceiling, pending-inputs)` snapshot";
       }
     ]
-    ++ failuresFor "crates/crucible-shmem/src/lib.rs" shmem [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-shmem/src/lib.rs" shmem [
       {
         label = "pending input publication type";
         needle = "pub struct PendingInputPublication";
@@ -58,11 +58,11 @@
       }
       {
         label = "combined publish API";
-        needle = "pub fn publish_scheduler_inputs_and_ceiling";
+        needle = "pub fn publish_scheduler_inputs_and_advance";
       }
       {
         label = "borrowed inbox publish API";
-        needle = "pub fn publish_scheduler_inbox_and_ceiling";
+        needle = "pub fn publish_scheduler_inbox_and_advance";
       }
       {
         label = "ceiling prevalidation before enqueue";
@@ -94,7 +94,7 @@
       }
       {
         label = "ceiling release store";
-        needle = ".store(ceiling.max_advance_icount, Ordering::Release);";
+        needle = ".store(max_advance_icount, Ordering::Release);";
       }
       {
         label = "prevalidated final publish";
@@ -117,27 +117,27 @@
         needle = "FrameSourceMismatch";
       }
     ]
-    ++ failuresFor "crates/crucible/src/scheduler.rs" scheduler [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/scheduler.rs" scheduler [
       {
         label = "scheduler handoff adapter";
         needle = "pub fn publish_to_shmem_after_inputs";
       }
       {
         label = "adapter uses combined shmem API";
-        needle = "region.publish_scheduler_inputs_and_ceiling(dst_slot, pending_inputs, ceiling)";
+        needle = "region.publish_scheduler_inputs_and_advance(";
       }
       {
         label = "handoff error type";
         needle = "pub enum SchedulerRunCeilingHandoffError";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" libSource [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" libSource [
       {
         label = "handoff error export";
         needle = "SchedulerRunCeilingHandoffError";
       }
     ]
-    ++ failuresFor "crates/crucible-shmem/tests/advance_ceiling_handoff.rs" shmemTest [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-shmem/tests/advance_ceiling_handoff.rs" shmemTest [
       {
         label = "single input before wake test";
         needle = "scheduler_wake_enqueues_pending_inputs_before_ceiling_and_futex_wake";
@@ -167,7 +167,7 @@
         needle = "scheduler_wake_publication_source_orders_inbox_before_ceiling_before_wake";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/scheduler_run_ceiling.rs" runCeilingTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/scheduler_run_ceiling.rs" runCeilingTest [
       {
         label = "scheduler adapter regression";
         needle = "published_ceiling_writes_pending_inputs_before_futex_wake";
@@ -177,14 +177,14 @@
         needle = ".publish_to_shmem_after_inputs(&mut region, dst_slot, &pending)";
       }
     ]
-    ++ failuresFor "crates/crucible-qemu/src/quantum.rs" qemuQuantum [
+    ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/src/quantum.rs" qemuQuantum [
       {
         label = "QEMU imports wake publication error";
         needle = "SchedulerWakePublicationError";
       }
       {
         label = "QEMU production ordered handoff call";
-        needle = ".publish_scheduler_inbox_and_ceiling(";
+        needle = ".publish_scheduler_inbox_and_advance(";
       }
       {
         label = "QEMU routes VM slot to handoff";
@@ -241,7 +241,7 @@
         needle = "wake_ordering=deferred-to-T-SCHED-21";
       }
     ]
-    ++ forbiddenFor "crates/crucible-shmem/tests/advance_ceiling_handoff.rs" shmemTest [
+    ++ forbiddenFor "crates/crucible/protocol/crucible-qemu-shmem/tests/advance_ceiling_handoff.rs" shmemTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -260,7 +260,10 @@ in
       version = "0";
       src = crucibleSrc;
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.rust
         pkgs.sed
@@ -304,7 +307,7 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-scheduler-wake-ordering-target" \
-              -p crucible-shmem \
+              -p crucible-qemu-shmem \
               --test advance_ceiling_handoff \
               scheduler_wake \
               -- --test-threads=1
@@ -312,7 +315,7 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-scheduler-wake-ordering-target" \
-              -p crucible \
+              -p crucible-engine \
               --features test-double \
               --test scheduler_run_ceiling \
               published_ceiling_writes_pending_inputs_before_futex_wake \
@@ -321,7 +324,7 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-scheduler-wake-ordering-target" \
-              -p crucible-qemu \
+              -p crucible-qemu-host \
               ordered_scheduler_wake_handoff \
               -- --test-threads=1
           '';

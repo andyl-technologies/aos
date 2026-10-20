@@ -13,8 +13,11 @@
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   temporalGraph = import ./_crucible-model-source.nix {inherit lib;};
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
-  engineLib = builtins.readFile ../../crates/crucible/src/lib.rs;
-  branchTest = builtins.readFile ../../crates/crucible/tests/gate_debug_non_canonical_branch.rs;
+  engineLib = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/engine/crucible-engine/src/lib.rs;
+  };
+  branchTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/gate_debug_non_canonical_branch.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -52,7 +55,7 @@
         needle = "`T-DBG-6` is green through `checks.crucible.phase6.debugNonCanonicalBranch`";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" temporalGraph [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" temporalGraph [
       {
         label = "non-canonical branch API";
         needle = "pub fn debug_non_canonical_branch";
@@ -114,7 +117,7 @@
         needle = "DebugNonCanonicalBranchMissingTriggerEvidence";
       }
     ]
-    ++ failuresFor "crates/crucible/src/scheduler.rs" scheduler [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/scheduler.rs" scheduler [
       {
         label = "catalog fork marker constructor";
         needle = "pub(crate) fn fork_marker";
@@ -128,7 +131,7 @@
         needle = "SchedulerEventLogClass::Causal";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" engineLib [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" engineLib [
       {
         label = "branch request export";
         needle = "DebugNonCanonicalBranchRequest";
@@ -150,7 +153,7 @@
         needle = "DebugOperatorControlKind";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/gate_debug_non_canonical_branch.rs" branchTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/gate_debug_non_canonical_branch.rs" branchTest [
       {
         label = "main branch test";
         needle = "non_canonical_debug_branch_marks_and_preserves_canonical_run";
@@ -210,7 +213,7 @@
         needle = "phase6.debugScopedTimeTravel";
       }
     ]
-    ++ forbiddenFailuresFor "crates/crucible/tests/gate_debug_non_canonical_branch.rs" branchTest [
+    ++ forbiddenFailuresFor "crates/crucible/engine/crucible-engine/tests/gate_debug_non_canonical_branch.rs" branchTest [
       {
         label = "ignored red placeholder";
         needle = "#[ignore";
@@ -229,7 +232,10 @@ in
       version = "0";
       src = crucibleSrc;
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.rust
         pkgs.sed
@@ -277,7 +283,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-debug-non-canonical-branch-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible \
+              -p crucible-engine \
               --test gate_debug_non_canonical_branch \
               -- --test-threads=1
           '';

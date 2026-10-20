@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: GPL-2.0-only
+--- a/arch/x86/kernel/apic/apic.c
++++ b/arch/x86/kernel/apic/apic.c
+@@ -175,8 +175,12 @@
+ 	.flags = IORESOURCE_MEM | IORESOURCE_BUSY,
+ };
+ 
+-/* Measured in ticks per HZ. */
+-unsigned int lapic_timer_period = 0;
++/*
++ * QEMU's local APIC counter advances once per virtual nanosecond before
++ * division. The S5 fixture knows its exact timer period, so no 100 ms
++ * calibration wait is needed before the MMU workload runs.
++ */
++unsigned int lapic_timer_period = TICK_NSEC;
+ 
+ static void apic_pm_activate(void);
+ 

@@ -9,12 +9,12 @@
 in
   sourceGate "local-sdk-checkout" ''
     cd crates
-    cargo test --frozen --offline -p terrane --no-default-features \
+    cargo test --frozen --offline -p terrane-sdk --no-default-features \
       --features tokio,surface-sdk --test local_sdk -- --list > "$TMPDIR/sdk-tests.txt"
     python3 ../tests/terrane/check_native_gate.py inventory \
       "$TMPDIR/sdk-tests.txt" '${builtins.toJSON tests}'
     for test_name in ${builtins.concatStringsSep " " tests}; do
-      if ! cargo test --frozen --offline -p terrane --no-default-features \
+      if ! cargo test --frozen --offline -p terrane-sdk --no-default-features \
         --features tokio,surface-sdk --test local_sdk "$test_name" -- --exact \
         > "$TMPDIR/sdk-test.log" 2>&1; then
         cat "$TMPDIR/sdk-test.log"

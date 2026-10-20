@@ -10,7 +10,7 @@
   ];
 
   runTest = name: ''
-    if ! cargo test --frozen --offline -p terrane-core --test control_vectors ${name} -- --exact \
+    if ! cargo test --frozen --offline -p terrane-format --test control_vectors ${name} -- --exact \
       > "$TMPDIR/control-model-test.log" 2>&1; then
       cat "$TMPDIR/control-model-test.log"
       exit 1
@@ -24,7 +24,7 @@ in
       printf 'Independent publication and control-record field alternatives remain pending.\n' >&2
       exit 1
     fi
-    cargo build --frozen --offline -p terrane-core --example reference_blake3
+    cargo build --frozen --offline -p terrane-format --example reference_blake3
     reference_binary="$CARGO_TARGET_DIR/debug/examples/reference_blake3"
     python3 ../tests/terrane/control_vectors.py --self-check \
       --blake3-bin "$reference_binary" > "$out/reference-result"
@@ -32,10 +32,10 @@ in
       --blake3-bin "$reference_binary" >> "$out/reference-result"
     cp ../docs/rfcs/0024-terrane/spec/reference/golden-vectors.md ../tests/terrane/control-reference.md
     cp ../tests/terrane/control-reference.md "$out/reference.md"
-    cp ../tests/terrane/control-models.rs terrane-core/tests/control_vectors.rs
-    cp -r ../tests/terrane/control_models terrane-core/tests/control_models
+    cp ../tests/terrane/control-models.rs terrane/sdk/terrane-format/tests/control_vectors.rs
+    cp -r ../tests/terrane/control_models terrane/sdk/terrane-format/tests/control_models
     cargo fmt --all -- --check
     ${builtins.concatStringsSep "\n" (map runTest tests)}
-    cargo clippy --frozen --offline -p terrane-core --test control_vectors -- -D warnings
+    cargo clippy --frozen --offline -p terrane-format --test control_vectors -- -D warnings
     printf 'PASS: independent publication/control alternatives and seven exact owning-codec groups\n' > "$out/result"
   ''

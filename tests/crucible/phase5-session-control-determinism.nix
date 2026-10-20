@@ -30,7 +30,7 @@
         needle = "`T-SESS-9` is green through `checks.crucible.phase5.sessionControlDeterminism`";
       }
     ]
-    ++ failuresFor "crates/crucible-session/src/lib.rs" sessionLib [
+    ++ failuresFor "crates/crucible/control/crucible-session/src/lib.rs" sessionLib [
       {
         label = "control replay artifact type";
         needle = "pub struct SessionControlReplayArtifact";
@@ -119,8 +119,11 @@ in
       version = "0";
       src = crucibleSrc;
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps =
         [
+          pkgs.sqlite
           pkgs.coreutils
           pkgs.rust
           pkgs.sed

@@ -1,5 +1,14 @@
 # ZFS storage
 
+> [!NOTE]
+> ZFS is the lowest of AOS's
+> [filesystem support tiers](support-status.md#filesystem-support-tiers): opt-in
+> and supported when configured, but below the in-tree ext4 default and xfs.
+> The bounds described here limit what configuration can reach; they do not
+> remove the OpenZFS failure classes recorded there. Deployments that only
+> need redundancy or encryption should use ext4 or xfs on MD arrays, declared
+> through [`host.nix`](host-nix.md#mirror-the-system-state).
+
 AOS treats ZFS as a bounded tenant of the host rather than as a filesystem that
 sizes itself. This page covers what that means in practice, how to declare
 datasets, and how to operate a pool.

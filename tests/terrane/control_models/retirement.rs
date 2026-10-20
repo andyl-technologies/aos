@@ -13,7 +13,7 @@ use super::{
     publication,
     wire::{self, Value, a, b, bytes, m, s, u},
 };
-use terrane_core::{
+use terrane_format::{
     bucket::Tombstone,
     gc::{GcLease, publication::*, retirement::*},
 };

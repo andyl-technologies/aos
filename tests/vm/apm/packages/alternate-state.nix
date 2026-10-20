@@ -86,11 +86,11 @@
       mount -o remount,rw / || true
       assert_store_valid "$SOURCE_STORE" "sourceful"
 
-      $APR create source-alt-reg
+      create_publish_registry source-alt-reg
       REG_DIR="$REG_STORAGE/source-alt-reg"
       DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
 
-      $APR publish "$SOURCE_STORE" \
+      publish_vm_package "$SOURCE_STORE" \
         --name source-alt \
         --version 1.0.0 \
         --description "Alternate-state source verification fixture" \

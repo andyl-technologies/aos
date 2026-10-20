@@ -311,8 +311,10 @@ static void completion(void *opaque)
     poll_events();
 }
 
-static void tcg_exec(unsigned int cpu_index, uint64_t icount, void *opaque)
+static void tb_exec(unsigned int cpu_index, void *opaque)
 {
+    uint64_t icount = qemu_plugin_icount_raw();
+
     (void)cpu_index;
     (void)opaque;
     if (initialized && !command_submitted) {
@@ -326,6 +328,13 @@ static void tcg_exec(unsigned int cpu_index, uint64_t icount, void *opaque)
         submit(1, icount + 64, true, NULL);
     }
     poll_events();
+}
+
+static void tb_translate(struct qemu_plugin_tb *tb, void *opaque)
+{
+    (void)opaque;
+    qemu_plugin_register_vcpu_tb_exec_cb(
+        tb, tb_exec, QEMU_PLUGIN_CB_NO_REGS, NULL);
 }
 
 static void at_exit(void *opaque)
@@ -364,6 +373,7 @@ static void initialize_hardware(void)
     const char *binding_error;
     size_t capability_count;
     size_t row_count;
+    size_t copied_row_count;
     size_t selected = 0;
     bool requested_capability = false;
     uint16_t manifest_architecture = 0;
@@ -395,9 +405,14 @@ static void initialize_hardware(void)
         NULL, 0, &manifest_architecture);
     rows = g_new0(
         struct qemu_plugin_crucible_fault_hardware_error_capability, row_count);
+    copied_row_count = qemu_plugin_crucible_fault_hardware_error_manifest(
+        rows, row_count, &manifest_architecture);
     if (manifest_architecture != architecture || row_count == 0 ||
-        qemu_plugin_crucible_fault_hardware_error_manifest(
-            rows, row_count, &manifest_architecture) != row_count) {
+        copied_row_count != row_count) {
+        g_printerr("hardware-error manifest architecture=%u expected=%u "
+                   "rows=%zu copied=%zu\n",
+                   manifest_architecture, architecture, row_count,
+                   copied_row_count);
         fail("realized hardware-error manifest changed during setup");
     }
     for (size_t index = 0; index < row_count; index++) {
@@ -465,7 +480,7 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
     }
     qemu_plugin_register_crucible_fault_completion_cb(completion, NULL);
     guest_ready = g_byte_array_new();
-    qemu_plugin_register_tcg_exec_cb(tcg_exec, NULL);
+    qemu_plugin_register_vcpu_tb_trans_cb(id, tb_translate, NULL);
     qemu_plugin_register_atexit_cb(id, at_exit, NULL);
     qemu_plugin_register_vcpu_init_cb(id, vcpu_initialized, NULL);
     return 0;

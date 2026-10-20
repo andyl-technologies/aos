@@ -11,8 +11,12 @@
   triageDoc = builtins.readFile ../../docs/rfcs/0010-crucible/34-failure-triage.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   temporalGraph = import ./_crucible-model-source.nix {inherit lib;};
-  engineLib = builtins.readFile ../../crates/crucible/src/lib.rs;
-  signatureTest = builtins.readFile ../../crates/crucible/tests/gate_failure_signature.rs;
+  failureSignatureMaterial = builtins.readFile ../../crates/crucible/engine/crucible-engine/src/model/failure/material.rs;
+  engineLib = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/engine/crucible-engine/src/lib.rs;
+  };
+  signatureTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/gate_failure_signature.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -53,7 +57,7 @@
         needle = "checks.crucible.phase6.failureNormalization";
       }
     ]
-    ++ failuresFor "crates/crucible/src/model.rs" temporalGraph [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" temporalGraph [
       {
         label = "normalization input";
         needle = "pub struct FailureSignatureNormalization";
@@ -103,15 +107,15 @@
         needle = "failure_causal_cone_entries";
       }
       {
-        label = "property violation point validation";
-        needle = "validate_violation_point";
+        label = "replayed property violation validation";
+        needle = "validated_property_violation";
       }
       {
         label = "divergence point returns causal index";
         needle = "Result<usize, EngineError>";
       }
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" engineLib [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" engineLib [
       {
         label = "normalization export";
         needle = "FailureSignatureNormalization";
@@ -121,10 +125,10 @@
         needle = "FailureSymmetryCanonicalizer";
       }
     ]
-    ++ failuresFor "crates/crucible/tests/gate_failure_signature.rs" signatureTest [
+    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/gate_failure_signature.rs" signatureTest [
       {
-        label = "normalization regression test";
-        needle = "failure_signature_applies_t_tri_2_normalizations";
+        label = "property report-only icount and guest witness regression";
+        needle = "property_signature_excludes_report_only_icount_but_binds_guest_witness";
       }
       {
         label = "report-only icount regression";
@@ -132,11 +136,19 @@
       }
       {
         label = "icount not in key regression";
-        needle = "!replica_a_signature";
+        needle = "shifted_icount.content_hash(), base_signature.content_hash()";
       }
       {
-        label = "symmetry class regression";
-        needle = "symmetry-class:8:replicas";
+        label = "symmetric node normalization regression";
+        needle = "timeout_signature_validates_boundary_and_normalizes_symmetric_nodes";
+      }
+      {
+        label = "symmetric node equality assertion";
+        needle = "replica_a_signature.first_failing_point.faulting_node";
+      }
+      {
+        label = "recorded guest witness assertion";
+        needle = "guest_marker_witness=";
       }
       {
         label = "out-of-cone causal stability regression";
@@ -181,7 +193,7 @@
         needle = "phase6.failureSignature";
       }
     ]
-    ++ forbiddenFailuresFor "crates/crucible/tests/gate_failure_signature.rs" signatureTest [
+    ++ forbiddenFailuresFor "crates/crucible/engine/crucible-engine/tests/gate_failure_signature.rs" signatureTest [
       {
         label = "ignored test";
         needle = "#[ignore]";
@@ -195,7 +207,7 @@
         needle = "unimplemented!";
       }
     ]
-    ++ forbiddenFailuresFor "crates/crucible/src/model.rs" temporalGraph [
+    ++ forbiddenFailuresFor "crates/crucible/engine/crucible-engine/src/model/failure/material.rs" failureSignatureMaterial [
       {
         label = "deferred causal slice";
         needle = "until the T-TRI-2 cone normalization";
@@ -226,7 +238,10 @@ in
       version = "0";
       src = crucibleSrc;
 
+      runtimeDeps = [pkgs.sqlite];
+
       buildDeps = [
+        pkgs.sqlite
         pkgs.coreutils
         pkgs.rust
         pkgs.sed
@@ -274,7 +289,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-failure-normalization-target" \
               --manifest-path crates/Cargo.toml \
-              -p crucible \
+              -p crucible-engine \
               --test gate_failure_signature \
               -- --test-threads=1
           '';

@@ -1,14 +1,13 @@
-# Structural proof that the deterministic virtio-rng delivery patches
-# (0031-crucible-det-rng-delivery, 0032-crucible-det-virtio-ioeventfd) are
-# byte-for-byte inert when the Crucible sim accelerator is OFF, so the async
-# RNG-completion delivery icount of the patched QEMU is identical to the
-# unpatched reference by construction.
+# Structural proof that the atomic Crucible integration patch's deterministic
+# virtio-rng delivery capability is byte-for-byte inert when the Crucible sim
+# accelerator is OFF, so the async RNG-completion delivery icount of the
+# integrated QEMU is identical to the unpatched reference by construction.
 #
 # Why this is a proof and not a measurement: RFC-0010 §4.6 hazard E7a defines
 # the reference's async device-completion delivery icount as host-timing
 # dependent -- the unpatched reference is *not* deterministic by contract, so a
 # runtime icount measurement of it is empirical evidence, never a proof, and
-# would risk a flaky gate. Both patches gate every added statement on
+# would risk a flaky gate. The capability gates every added statement on
 # `icount_enabled() && strcmp(current_accel_name(), "sim") == 0`. With sim off
 # that predicate is false, so the patched binary executes the identical upstream
 # instruction stream for RNG completion delivery; identical instructions deliver
@@ -34,8 +33,7 @@
   qemuPackage ? pkgs.qemu-crucible,
 }: let
   patchDir = ../../pkgs/emulation/qemu-patches;
-  series = import ../../pkgs/emulation/qemu-patches/_series.nix;
-  patchFiles = series.patchFiles;
+  atomicPatch = import ../../pkgs/emulation/qemu-patches/_atomic-patch.nix;
 in
   pkgs.mkDerivation {
     pname = "crucible-phase2-qemu-rng-delivery-inert";
@@ -61,8 +59,8 @@ in
 
           mkdir -p "$out"
 
-          # Reference (pristine) and patched (full carried series) source trees.
-          # Applying the whole series -- no build -- is cheap and gives the exact
+          # Reference (pristine) and atomically patched source trees.
+          # Applying the artifact without building is cheap and gives the exact
           # patched source the shipped qemu-crucible compiles.
           ref_root="$TMPDIR/qemu-reference"
           patched_root="$TMPDIR/qemu-patched"
@@ -73,9 +71,7 @@ in
           patched_src="$patched_root/qemu-${qemuPackage.version}"
           (
             cd "$patched_src"
-            for patch in ${builtins.concatStringsSep " " patchFiles}; do
-              patch --batch --forward --fuzz=0 -p1 -i "${patchDir}/$patch"
-            done
+            patch --batch --forward --fuzz=0 -p1 -i "${patchDir}/${atomicPatch.file}"
           )
 
           # extract_fn FILE SIGNATURE_LINE > body

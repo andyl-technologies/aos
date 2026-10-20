@@ -37,9 +37,9 @@ and [R2 durability guidance](https://developers.cloudflare.com/r2/reference/dura
 
 ## Recovery objectives
 
-For testing, retain captured recovery points for 30 days; a recovery point is
+For the experimental registry, retain captured recovery points for 30 days; a recovery point is
 not required before each staging deployment. Keep every closed release bundle
-needed to rebuild the active edge outside Cloudflare for at least 90 days. Testing may instead be rebuilt under a new root
+needed to rebuild the active edge outside Cloudflare for at least 90 days. The experimental registry may instead be rebuilt under a new root
 epoch when explicitly approved.
 
 Main must not open until a portable HubDb logical export/import and an isolated
@@ -150,7 +150,7 @@ If validation fails, schedule the retained undo bookmark, restart again, and
 record the failed recovery attempt. Never continue serving an indeterminate
 mixture of restored database state and unreconciled objects.
 
-## Rebuild testing from scratch
+## Rebuild the experimental registry from scratch
 
 The first stable production checkpoint permits a one-time discard of unused
 development state, including the production Worker and its class migration
@@ -158,7 +158,7 @@ history. Follow the explicit first-install procedure in
 [`aos-hub-deployment.md`](aos-hub-deployment.md). It is production-only and does
 not authorize deleting or changing staging.
 
-After that checkpoint, a deliberate abandonment of testing registry history or
+After that checkpoint, a deliberate abandonment of experimental registry history or
 root trust requires a separately reviewed recovery plan:
 
 1. preserve public evidence and revoke all old tokens;
@@ -169,9 +169,9 @@ root trust requires a separately reviewed recovery plan:
    resources, and new environment secrets;
 4. bootstrap the owner and recreate explicit topology/IAM configuration;
 5. advance the registry trust-root epoch as described in
-   [`registry-testing.md`](registry-testing.md);
+   [`registry-experimental.md`](registry-experimental.md);
 6. bootstrap and replay only verified releases into the new registry;
-7. validate from a new testing image before routing consumers to it.
+7. validate from a new experimental image before routing consumers to it.
 
 After the initial checkpoint, deleting or reinstalling the Worker is not an
 upgrade or routine recovery mechanism. Its class migration history is provider
@@ -181,7 +181,7 @@ then deploys the existing Worker name.
 
 ## Routine restore exercise
 
-Monthly for testing and before main launch, perform a clean-room rebuild with
+Monthly for the experimental registry and before main launch, perform a clean-room rebuild with
 new logical resource names and no production route. Restore/replay the selected
 backup, validate all invariants and representative downloads, then destroy the
 exercise resources. Record duration, missing dependencies, object/row counts,

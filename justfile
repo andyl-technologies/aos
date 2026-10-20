@@ -102,7 +102,7 @@ test-hub-e2e:
 #   just hub worker install --external-url https://reg.example.com --root-email a@b.c --root-password-stdin
 #   just hub worker deploy  --external-url https://reg.example.com
 # Requires CLOUDFLARE_API_TOKEN (or `wrangler login`). See
-# crates/aos-hub-worker/deploy/DEPLOY.md.
+# crates/hub/aos-hub-worker/deploy/DEPLOY.md.
 hub *args:
     `nix-build -A pkgs.aos-hub-cloudflare --no-out-link`/bin/aos-hub {{args}}
 

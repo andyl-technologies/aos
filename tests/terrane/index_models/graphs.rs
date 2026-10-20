@@ -4,7 +4,7 @@ use super::fields::{MINIMUM, context, digest, node, wire};
 use super::models::{Case, cases};
 use super::support::{Value, encode, hex};
 use std::collections::BTreeMap;
-use terrane_core::{
+use terrane_format::{
     identity::{Digest, IdentityKind, TERRANE_V1},
     indexing::{
         IndexEvaluationRecipe,
@@ -75,7 +75,7 @@ fn inventory(
         match &row.entry.kind {
             EntryKind::File { size, content, .. } => {
                 assert_eq!(*size, 33);
-                let terrane_core::tree_format::ContentRef::Inline(object) = content else {
+                let terrane_format::tree_format::ContentRef::Inline(object) = content else {
                     panic!("actual inline O")
                 };
                 out.push(Occurrence {
@@ -309,7 +309,7 @@ pub(crate) fn controls() {
         if let Some(props) = &decoded.props
             && props.iter().any(|property| property.name == "index-gaps")
         {
-            use terrane_core::properties::semantics::RecordedContext;
+            use terrane_format::properties::semantics::RecordedContext;
             for revision in [1, 2] {
                 let old = RecordedContext::new(revision, 3, &["index-gaps"]).unwrap();
                 old.validate_map(props)
@@ -322,7 +322,7 @@ pub(crate) fn controls() {
 
         if case.role == "ordinary-namespace" {
             assert!(
-                terrane_core::properties::semantics::RecordedContext::new(3, 3, &[])
+                terrane_format::properties::semantics::RecordedContext::new(3, 3, &[])
                     .unwrap()
                     .validate_map(decoded.props.as_ref().unwrap())
                     .is_err()

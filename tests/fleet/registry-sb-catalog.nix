@@ -22,7 +22,7 @@
 #      reproduces byte-for-byte (RFC-0006 #3: the recorded value is the
 #      genuine sd-stub section measurement, not a stand-in).
 #   2. REFUSE (unknown signer) — the catalog lists only a decoy db cert, so
-#      the image's real signer is not active. `apm upgrade --system` must
+#      the image's real signer is not active. `apm image upgrade` must
 #      download, then REFUSE without changing either generation axis.
 #   3. REFUSE (SBAT floor) — the real signer is now active, but the SBAT
 #      floor is raised one above the image's generation. `apm upgrade` must
@@ -50,19 +50,20 @@
 }: let
   sbSystem = mkSystem [
     ../../systems/server-measured-boot.nix
+    ../../systems/_server-test-packages.nix
     {
       # The consumer boots the default 0.1.0 fixture. A distinct release is
-      # required for `apm upgrade --system` to evaluate the candidate policy
+      # required for `apm image upgrade` to evaluate the candidate policy
       # instead of correctly reporting that the system is already current.
       aos.system.version = "test-sb-catalog";
     }
   ];
   sbTop = sbSystem.config.system.build.toplevel;
-  sbUki = sbSystem.config.system.build.uki;
+  sbUki = sbSystem.config.system.build.initialBootExecutable;
   sbImage = sbSystem.config.system.build.image.raw;
   sbImageDisk = sbSystem.config.system.build.imageArtifacts.raw.disk;
   sbImageInfo = sbSystem.config.system.build.imageArtifacts.raw.info;
-  publicationClosureInfo = import ../../lib/build/closure-info.nix {inherit lib pkgs;} {
+  publicationClosureInfo = lib.build.closureInfo {inherit pkgs;} {
     rootPaths = [
       sbTop
       sbUki
@@ -86,7 +87,10 @@
       aos.packages =
         lib.genAttrs
         ["aos-registry-server" "test-static-cache-server"]
-        (_: {bundle = true;});
+        (name: {
+          package = pkgs.${name};
+          bundle = true;
+        });
       # The static server binds this directory before publication fills it.
       environment.etc."tmpfiles.d/fleet-registry-cache.conf".text = ''
         d /var/lib/sysreg-cache 0755 root root - -
@@ -457,7 +461,7 @@ in {
       # refuses before creating a generation.
       out = target.fail(
           "HOME=/tmp PATH=${pkgs.nix}/bin:$PATH "
-          "${pkgs.aos.apm}/bin/apm upgrade --system --yes 2>&1",
+          "${pkgs.aos.apm}/bin/apm image upgrade --yes 2>&1",
           timeout=1800,
       )
       print("=== refuse (unknown signer) ===\n" + out)
@@ -499,7 +503,7 @@ in {
       ], rotated_catalog
       out = target.fail(
           "HOME=/tmp PATH=${pkgs.nix}/bin:$PATH "
-          "${pkgs.aos.apm}/bin/apm upgrade --system --yes 2>&1",
+          "${pkgs.aos.apm}/bin/apm image upgrade --yes 2>&1",
           timeout=600,
       )
       print("=== refuse (sbat floor) ===\n" + out)
@@ -521,7 +525,7 @@ in {
       )
       out = target.fail(
           "HOME=/tmp PATH=${pkgs.nix}/bin:$PATH "
-          "${pkgs.aos.apm}/bin/apm upgrade --system --yes 2>&1",
+          "${pkgs.aos.apm}/bin/apm image upgrade --yes 2>&1",
           timeout=600,
       )
       print("=== accept catalog, reach unavailable ESP ===\n" + out)

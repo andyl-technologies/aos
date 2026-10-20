@@ -1,0 +1,19 @@
+--- a/agen5/autogen.h
++++ b/agen5/autogen.h
+@@ -425,12 +425,13 @@
+     || (  (((_f).tv_sec == (_s).tv_sec))        \
+        && (((_f).tv_nsec < (_s).tv_nsec)) )     \
+     )
++/* Darwin names nanosecond stat fields with the timespec suffix. */
+ #undef  st_atime
+-#define st_atime st_atim
++#define st_atime st_atimespec
+ #undef  st_mtime
+-#define st_mtime st_mtim
++#define st_mtime st_mtimespec
+ #undef  st_ctime
+-#define st_ctime st_ctim
++#define st_ctime st_ctimespec
+ #endif // HAVE_UTIMENSAT
+ 
+ /**

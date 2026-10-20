@@ -1,4 +1,4 @@
-# Patch 0066 — `crucible-immutable-process-generation`
+# Capability task 0066 — `crucible-immutable-process-generation`
 
 ## Purpose
 
@@ -56,5 +56,5 @@ wrapping.
 The setter and lifecycle state are QEMU/GPL-side changes. The Apache host passes
 only a scalar launch argument and communicates terminal requests through the
 versioned QAPI process boundary; it does not link QEMU code or headers. The
-signed patch, branch bundle, corresponding source, and boundary gates ship as
+DCO-signed atomic patch, bundle, corresponding source, and boundary gates ship as
 one retained suite.

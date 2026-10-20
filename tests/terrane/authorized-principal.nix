@@ -5,7 +5,7 @@
   ];
 
   runTest = name: ''
-    if ! cargo test --frozen --offline -p terrane --lib guard::principal_tests::${name} -- --exact \
+    if ! cargo test --frozen --offline -p terrane-sdk --lib guard::principal_tests::${name} -- --exact \
       > "$TMPDIR/authorized-principal-test.log" 2>&1; then
       cat "$TMPDIR/authorized-principal-test.log"
       exit 1

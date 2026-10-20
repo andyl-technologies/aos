@@ -96,7 +96,7 @@ main(void)
 
   puts(pass ? "PASS" : "FAIL");
   puts("spike=rr-switch-quantum-default");
-  puts("check=checks.crucible.phase0.s13RrSwitchQuantumFallback");
+  puts("check=checks.crucible.phase0.s13RrSwitchQuantum");
   puts("candidate_quantums=1024,2048,4096,8192,16384");
   puts("throughput_metric=modeled_retired_instruction_efficiency_x1000");
   puts("throughput_measurement_scope=modeled_rr_switch_overhead_default_only");
@@ -129,10 +129,9 @@ main(void)
   puts("s11_sim_rerun_green=true");
   puts("s11_rr_switch_quantum=4096");
   puts("s11_workload_affinity_active=true");
-  puts("s11_extended_fingerprint_match=true");
+  puts("s11_aggregate_fingerprint_match=true");
   puts("decision_preemption_exploration_enabled=true");
   puts("d25_status=resolved_rr_switch_quantum_4096");
-  puts("fallback_adopted=none");
   puts("s13_complete=true");
 
   return pass ? 0 : 1;

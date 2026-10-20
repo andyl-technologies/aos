@@ -1,5 +1,6 @@
 ##! ant — Apache Ant build tool, bootstrapped from source with OpenJDK 17
 {
+  lib,
   mkDerivation,
   fetchurl,
   buildPackages,
@@ -11,7 +12,62 @@
   buildBash = buildPackages.bash;
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      role = "public-package";
+    };
     pname = "ant";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [
+          {
+            "path" = "result.txt";
+            "text" = "ant result\n";
+          }
+        ];
+        "expected" = "Ant runs the declared target and creates the exact artifact.";
+        "files" = {
+          "build.xml" = "<project name=\"qualification\" default=\"qualify\">\n  <target name=\"qualify\">\n    <echo file=\"result.txt\" message=\"ant result&#10;\"/>\n  </target>\n</project>\n";
+        };
+        "input" = "An Ant project whose default target writes a fixed result file.";
+        "operation" = "Execute the project with the packaged Ant launcher.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/ant"
+              "-f"
+              "build.xml"
+              "qualify"
+            ];
+            "exit_code" = 0;
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Ant rejects the build file with status 1.";
+        "files" = {
+          "build.xml" = "<project name=\"qualification\" default=\"broken\">\n  <target name=\"broken\">\n    <aos-unknown-task/>\n  </target>\n</project>\n";
+        };
+        "input" = "An Ant project containing a task name that is not defined.";
+        "operation" = "Execute the target containing the unknown task.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/ant"
+              "-f"
+              "build.xml"
+              "broken"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

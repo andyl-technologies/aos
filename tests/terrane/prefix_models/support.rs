@@ -15,7 +15,7 @@ use alloc::{format, string::String, vec::Vec};
 /// Supplies the exact UTF-8 reference compiled into each sandbox consumer.
 pub(super) const REFERENCE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../docs/rfcs/0024-terrane/spec/reference/golden-vectors.md"
+    "/../../../../docs/rfcs/0024-terrane/spec/reference/golden-vectors.md"
 ));
 
 /// Returns the sole exact top-level section without normalizing line endings.

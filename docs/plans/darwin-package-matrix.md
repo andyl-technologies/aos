@@ -1,34 +1,42 @@
 # Darwin package build and publication matrix
 
-The authoritative package inventory is
-[`pkgs/_platform-support.nix`](../../pkgs/_platform-support.nix). It classifies
-every package root, package expression, factory, underscore-prefixed helper,
-and excluded source resource. Classification is fail-closed: adding or removing
-any of them without updating the inventory makes the evaluation check fail.
+Package recipes own their platform facts through the native
+`mkDerivation { platformSupport = ...; }` field. The normalized projection uses
+open build, host, and target constraint sets over platform OS, CPU, ABI, and
+features. The orthogonal role says whether the result is a public package or a
+build input; derivation inputs remain the authority for the build graph.
 
-This inventory describes the intended result, not the current build state. A
-package marked `target` must eventually produce an executable or library for
-the selected Darwin architecture. Marking it eligible does not permit stubbing
-features, using a host tool, importing nixpkgs, or skipping its dependency
-chain. A package marked `independent` contains no host executable and may reuse
-the same store object for multiple platform entries. `build-only` roots are
-Linux-native test or bootstrap artifacts. `linux-only` roots implement Linux
-kernel, guest, service-manager, security or device interfaces and are never
-published under a Darwin platform key.
+[`pkgs/_target-policy.nix`](../../pkgs/_target-policy.nix) evaluates those
+declarations for the exact platforms selected by its caller. The generic
+normalizer does not define a finite OS or CPU catalog and does not decide which
+targets a release publishes. The release profile owns those decisions.
 
-The `blockers` on an eligible entry describe unfinished Darwin cross-build
-work. They apply only to Darwin publication cells. Linux build reproducibility
-and public package behavior are enforced by the release build and qualification
-contracts instead of being duplicated as package-inventory blockers.
+Classification remains fail-closed without restating package names in a second
+catalog. [`pkgs/_target-policy.nix`](../../pkgs/_target-policy.nix) rejects any
+selected package without a normalized declaration, and
+[`tests/build/package-platform-support.nix`](../../tests/build/package-platform-support.nix)
+checks that the package set and release projection preserve those declarations.
+Source retention comes from derivation `src` and `evidenceSources`, authenticated
+module and contract locators, and release provenance.
+
+These declarations describe platform and build-graph facts, not the current
+porting state. Declaring a Darwin host constraint does not permit stubbing
+features, using a host tool, importing nixpkgs, or skipping the dependency
+chain. Build inputs remain available to the build graph without being
+advertised as installable target packages. Linux interface packages express
+their compatibility through constraints and features.
 
 The selector filters publication roots only. It must not filter dependencies
 from a derivation. Cross builds use separate package sets so native code
 generators and build tools come from the Linux build package set while headers,
 libraries and final programs come from the Darwin host package set.
 
-## Dependency waves
+## Suggested porting sequence
 
-| Wave | Scope | Required cross-build work |
+This sequence is project planning guidance. It is not package metadata or a
+publication rule; recipe dependencies determine the actual build order.
+
+| Step | Scope | Required cross-build work |
 | --- | --- | --- |
 | 1 | Target-independent data, leaf libraries, GNU/POSIX basics | Source SDK and sysroot, cctools/ld64, Mach-O fixup, basic Autoconf triples |
 | 2 | Portable C/C++ libraries and Unix tools | Consistent build/host flags, native generators, Darwin API and library selection |
@@ -36,11 +44,11 @@ libraries and final programs come from the Darwin host package set.
 | 4 | AOS and third-party applications | Language target configuration, platform-specific runtime closures, static artifact validation |
 | 5 | Bazel, Envoy and the OpenJDK ladder | Native bootstrap tools, JNI/HotSpot target builds, large target-generated source graphs |
 
-Both matrices contain every eligible package unless upstream support is
-architecture-specific. The current architecture exception inventory is
-limited to Go 1.4 and OpenJDK 7 through 16, which produce x86_64 Darwin outputs;
-the current Go, Rust, LLVM/Clang, GCC, Node, Python and OpenJDK packages are
-required for both x86_64 Darwin and AArch64 Darwin.
+The selected release matrices contain every eligible package unless the
+package recipe declares an architecture-specific host constraint. Go 1.4 and
+OpenJDK 7 through 16 currently constrain their Darwin outputs to x86_64. The
+current Go, Rust, LLVM/Clang, GCC, Node, Python and OpenJDK recipes support both
+x86_64 Darwin and AArch64 Darwin.
 
 ## Critical toolchains
 
@@ -62,12 +70,16 @@ runtime or split from the package instead of entering the Darwin closure.
 
 ## Validation
 
-Evaluate the inventory without building packages:
+Evaluate the package-owned declarations and the caller-selected platform
+projection without building packages:
 
 ```text
 nix-instantiate --eval --strict -E \
-  'let aos = import ./. {}; s = import ./pkgs/_platform-support.nix; \
-   in s.validate (aos.pkgs.allPackageNames or aos.pkgs.packageNames)'
+  'let aos = import ./. {}; in {
+     platforms = aos.pkgs.platformSupport.platforms;
+     packages = aos.pkgs.platformSupport.publicationMatrix
+       aos.pkgs.allPackageNames;
+   }'
 ```
 
 Build the focused check after it is wired into the top-level check set:

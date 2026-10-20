@@ -10,7 +10,7 @@
   shmemLib = import ./_crucible-shmem-source.nix {inherit lib;};
   handoffTest = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible-shmem/tests/advance_ceiling_handoff.rs;
+    entry = ../../crates/crucible/protocol/crucible-qemu-shmem/tests/advance_ceiling_handoff.rs;
   };
   shmemSpec = builtins.readFile ../../docs/rfcs/0010-crucible/13-shmem-abi.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -20,22 +20,22 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   failures =
-    failuresFor "crates/crucible-shmem/src/lib.rs" shmemLib [
+    failuresFor "crates/crucible/protocol/crucible-qemu-shmem/src/lib.rs" shmemLib [
       {
         label = "node slot ABI";
         needle = "pub struct NodeSlot";
       }
       {
         label = "scheduler-only ceiling publisher";
-        needle = "pub fn publish_scheduler_ceiling";
+        needle = "pub fn publish_scheduler_advance";
       }
       {
         label = "release ceiling store";
-        needle = ".store(ceiling.max_advance_icount, Ordering::Release)";
+        needle = ".store(max_advance_icount, Ordering::Release)";
       }
       {
         label = "node acquire ceiling load";
-        needle = "self.max_advance_icount.load(Ordering::Acquire)";
+        needle = "self.load_scheduler_advance()";
       }
       {
         label = "node-side advance check";
@@ -118,7 +118,7 @@
         needle = "Ok(FutexWakeResult";
       }
     ]
-    ++ forbiddenFor "crates/crucible-shmem/src/lib.rs" shmemLib [
+    ++ forbiddenFor "crates/crucible/protocol/crucible-qemu-shmem/src/lib.rs" shmemLib [
       {
         label = "public raw advance ceiling field";
         needle = "pub max_advance_icount: AtomicU64";
@@ -127,8 +127,12 @@
         label = "private futex operation";
         needle = "FUTEX_PRIVATE_FLAG";
       }
+      {
+        label = "raw scheduler ceiling loader";
+        needle = "pub fn load_node_ceiling";
+      }
     ]
-    ++ failuresFor "crates/crucible-shmem/tests/advance_ceiling_handoff.rs" handoffTest [
+    ++ failuresFor "crates/crucible/protocol/crucible-qemu-shmem/tests/advance_ceiling_handoff.rs" handoffTest [
       {
         label = "layout test";
         needle = "node_slot_layout_matches_wire_contract";
@@ -235,7 +239,7 @@ in
               --frozen \
               --offline \
               --target-dir "$TMPDIR/crucible-shmem-handoff-futex-target" \
-              -p crucible-shmem \
+              -p crucible-qemu-shmem \
               --test advance_ceiling_handoff \
               -- --test-threads=1
           '';
@@ -251,7 +255,7 @@ in
             tasks=${taskList}
             gate=gate:layer1-injection
             gate=gate:abi-conformance
-            rust_tests=crucible-shmem::advance_ceiling_handoff
+            rust_tests=crucible_qemu_shmem::advance_ceiling_handoff
             advance_ceiling=release-store-acquire-load
             publish_gen=seqlock
             futex=non-private

@@ -10,19 +10,23 @@ system because they can replace infrastructure and data.
 ## Pin the release artifact
 
 Download the image format published for the target and verify its release
-checksum or signature. Record the release, image checksum, and
-`image-info.json`; do not identify an image only by a mutable object-storage
-name.
+checksum or signature. Record the release, image checksum,
+`image-delivery.json`, and `image-info.json`; a mutable object-storage name
+does not identify the deployed bytes.
 
 Discover and download the immutable release through AOS Hub as described in
 the [installation guide](installation.md). Bare-metal raw images arrive as
-zstd-compressed disk streams; the signed catalog binds the transferred bytes,
-and `image-info.json` binds the exact reconstructed GPT disk.
+zstd-compressed disk streams. The signed catalog authenticates the delivery
+record, which binds the transferred bytes and reconstructed disk digest. The
+provider's `image-info.json` records the root filesystem, GPT layout, and boot
+artifacts. Converting the disk encoding changes the delivery record and preserves
+the provider contract.
 
 ## Size the target before first boot
 
-The integrity-bound `image-info.json` records the image's declared artifact
-budgets and exact GPT layout. Use that layout as the immutable-storage contract
+The integrity-bound `image-info.json` records the exact GPT layout under
+`disk.layout`; `image-delivery.json` records delivery sizes and declared artifact
+budgets. Use the GPT layout as the immutable-storage contract
 rather than deriving slot sizes from the current compressed payload. The target
 also needs trailing unallocated space for swap, `/var`, the provisioning marker,
 and partition alignment. The stock policy needs more than 6 GiB beyond the built
@@ -58,8 +62,10 @@ Choose a transport supported by the target: an `aos-metadata` drive, NoCloud
 user-data channel. Use signed trust only with a transport that also carries the
 detached signature.
 
-Stage 2 resolves authenticated package configuration, materializes an EROFS
-`/etc` lower, and commits a numbered configuration generation atomically. Keep
+Stage 2 evaluates the retained package and authorized host sources, runs the
+selected native handlers, and commits a generation in the system package profile.
+The configuration handler materializes an EROFS `/etc` lower. Later APM changes
+and boot recovery use the same profile journal. Keep
 an image-baked or out-of-band recovery identity while qualifying runtime
 network and access changes.
 

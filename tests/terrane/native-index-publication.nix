@@ -15,13 +15,13 @@ in
   # through publication. This prerequisite does not certify incremental work.
   sourceGate "native-index-publication" ''
     cd crates
-    cargo test --frozen --offline -p terrane --no-default-features \
+    cargo test --frozen --offline -p terrane-sdk --no-default-features \
       --features tokio,surface-sdk --lib -- --list > "$TMPDIR/index-publication-tests.txt"
     python3 ../tests/terrane/check_native_gate.py inventory \
       "$TMPDIR/index-publication-tests.txt" '${builtins.toJSON selectors}'
 
     for test_name in ${builtins.concatStringsSep " " selectors}; do
-      if ! cargo test --frozen --offline -p terrane --no-default-features \
+      if ! cargo test --frozen --offline -p terrane-sdk --no-default-features \
         --features tokio,surface-sdk --lib "$test_name" -- --exact \
         > "$TMPDIR/index-publication-test.log" 2>&1; then
         cat "$TMPDIR/index-publication-test.log"

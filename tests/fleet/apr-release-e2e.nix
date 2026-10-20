@@ -38,7 +38,10 @@
       aos.packages =
         lib.genAttrs
         ["aos-registry-server" "test-static-cache-server"]
-        (_: {bundle = true;});
+        (name: {
+          package = pkgs.${name};
+          bundle = true;
+        });
       # The static server binds this directory before publication fills it.
       environment.etc."tmpfiles.d/fleet-registry-cache.conf".text = ''
         d /var/lib/sysreg-cache 0755 root root - -

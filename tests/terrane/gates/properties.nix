@@ -4,7 +4,7 @@
   ...
 }: let
   runTests = filter: ''
-    if ! cargo test --frozen --offline -p terrane-core --lib ${filter} > "$TMPDIR/test.log" 2>&1; then
+    if ! cargo test --frozen --offline -p terrane-format --lib ${filter} > "$TMPDIR/test.log" 2>&1; then
       cat "$TMPDIR/test.log"
       exit 1
     fi

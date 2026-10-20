@@ -37,7 +37,7 @@
       }
 
       publish_feature_package() {
-        $APR publish "$FEATURE_STORE" \
+        publish_vm_package "$FEATURE_STORE" \
           --name featurepkg \
           --version 1.0.0 \
           --description "Real branch workflow fixture" \
@@ -68,7 +68,7 @@
       assert_file_contains /tmp/branch-feature-refs.out "$FEATURE_DEP_STORE" \
         "feature package has a real Nix reference to its dependency"
 
-      $APR create test-reg
+      create_publish_registry test-reg
       REG_DIR="$REG_STORAGE/test-reg"
       DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
 
@@ -346,7 +346,7 @@
       }
       cat /tmp/branch-noff-switch.out
 
-      $APR publish "$FEATURE_DEP_STORE" \
+      publish_vm_package "$FEATURE_DEP_STORE" \
         --name noffpkg \
         --version 1.0.0 \
         --description "No-ff maintainer merge fixture" \
@@ -426,7 +426,7 @@
       }
       cat /tmp/branch-squash-switch.out
 
-      $APR publish "$FEATURE_STORE" \
+      publish_vm_package "$FEATURE_STORE" \
         --name squashpkg \
         --version 1.0.0 \
         --description "Squash maintainer changeset fixture" \
@@ -595,7 +595,7 @@
         "Real branch workflow fixture" \
         "second maintainer clone sees merged package metadata"
 
-      $APR publish "$FEATURE_DEP_STORE" \
+      publish_vm_package "$FEATURE_DEP_STORE" \
         --name collab-local \
         --version 1.0.0 \
         --description "Local collaborator package before rebase" \
@@ -615,7 +615,7 @@
       }
       cat /tmp/branch-collab-local-commit.out
 
-      $APR publish "$FEATURE_STORE" \
+      publish_vm_package "$FEATURE_STORE" \
         --name remote-added \
         --version 1.0.0 \
         --description "Remote maintainer package for pull workflow" \

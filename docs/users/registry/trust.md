@@ -6,11 +6,10 @@ realizations, and optional signed narinfo. Upload authentication controls who
 can write the serving surface; it does not replace those checks.
 
 These controls authenticate the publisher and exact content; they do not prove
-that a package is benign. Runtime confinement is a separate defense-in-depth
-control for services activated through a package's `expose` contract, and a
-package can declare permissions that weaken or remove that boundary. Review the
-confinement model in [Understand the package sandbox](../aos/package-sandbox.md)
-in addition to establishing registry trust. Consumer-side registry selection
+that a package is benign. Review the selected typed resources and native
+providers in [Understand native package runtime
+policy](../aos/package-sandbox.md) in addition to establishing registry trust.
+Consumer-side registry selection
 and bootstrap are documented in [Configure package registries](../aos/registries.md);
 this guide owns the producer's key and incident procedures.
 
@@ -106,19 +105,13 @@ apr release 2026.8.0 \
   --upload-url s3://acme-packages/registry
 ```
 
-After the overlap has reached the fleet, retire the old key with the survivor:
+Publish a higher-version release with the surviving key and move the affected
+channels before retirement. Existing semver tag objects remain immutable:
+retirement cannot repair their old signatures by replacing them. The default
+retirement fails before changing the roster if any release would lose its last
+active signer.
 
-```sh
-apr keys retire 2026-q2 \
-  --registry acme \
-  --vouched-by 2026-q4 \
-  --key-id 2026-q4 \
-  --reason "planned rotation"
-```
-
-Retirement keeps at least one active survivor and re-signs affected release
-and channel tags by default. Publish the updated static origin and a new
-release with the survivor:
+For example, first publish the survivor-signed replacement:
 
 ```sh
 apr release 2026.8.1 \
@@ -128,9 +121,35 @@ apr release 2026.8.1 \
   --upload-url s3://acme-packages/registry
 ```
 
-When more than one survivor remains, `--vouched-by` is required. Do not use
-`--no-resign` unless a reviewed recovery plan will re-sign every item printed
-by the command before publication.
+Promote the replacement with [the channel workflow](rollouts.md). Then publish
+the retirement roster in a different, higher version after the explicit
+revocation below.
+
+Once the overlap has reached the fleet and the replacement is published,
+explicitly revoke the old key when that loss of historical release trust is
+intended:
+
+```sh
+apr keys retire 2026-q2 \
+  --registry acme \
+  --vouched-by 2026-q4 \
+  --key-id 2026-q4 \
+  --no-resign \
+  --reason "planned rotation; old release signatures revoked"
+
+apr release 2026.8.2 \
+  --registry acme \
+  --key-id 2026-q4 \
+  --cache-url https://packages.example.com/acme/ \
+  --upload-url s3://acme-packages/registry
+```
+
+Retirement keeps at least one active survivor. When more than one survivor
+remains, `--vouched-by` is required. `--no-resign` preserves immutable tag bytes
+and deliberately leaves affected old releases and channels untrusted. Publish
+the updated roster in a newer survivor-signed release and move channels to a
+release that verifies with the surviving active roster. Partition-only
+re-signing is possible when the target release already verifies with survivors.
 
 For image-baked trust, include both public keys during the overlap. A verified
 in-band roster masks a retired key even if an older read-only image anchor
@@ -143,7 +162,9 @@ Stop publication, revoke its upload and Git credentials, preserve the current
 origin and audit logs, and determine the last known-good signed head.
 
 If a different active key was already present and remained secure, use that
-survivor to retire the compromised key, inspect the re-sign plan, publish a new
+survivor to retire the compromised key. Review the affected immutable releases,
+explicitly revoke their trust when necessary with `--no-resign`, publish a
+higher-version replacement
 release, and verify the public roster from a clean consumer.
 
 If the compromised key was the only trusted key, there is no safe in-band

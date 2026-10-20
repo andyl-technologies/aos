@@ -21,10 +21,10 @@
 
       echo "==> Test: apr verify (TOML schema validation)"
 
-      $APR create test-reg
+      create_publish_registry test-reg
       REG_DIR="$REG_STORAGE/test-reg"
 
-      $APR publish "${closureLeafTool}" \
+      publish_vm_package "${closureLeafTool}" \
         --name validpkg \
         --version 1.0.0 \
         --description "Real verify schema fixture" \
@@ -89,10 +89,10 @@
       assert_file_contains /tmp/tagpkg-refs.out "$TAG_DEP_STORE" \
         "tagged package has a real Nix reference to its dependency"
 
-      $APR create test-reg
+      create_publish_registry test-reg
       REG_DIR="$REG_STORAGE/test-reg"
 
-      $APR publish "$TAG_STORE" \
+      publish_vm_package "$TAG_STORE" \
         --name tagpkg \
         --version 1.0.0 \
         --description "Real signed tag fixture" \

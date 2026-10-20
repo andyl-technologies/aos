@@ -7,6 +7,7 @@
 {
   config,
   lib,
+  pkgs,
   ...
 }: let
   cfg = config.aos.profiles.canonicalRelease;
@@ -52,6 +53,27 @@ in {
   };
 
   config = lib.mkIf cfg.enable {
+    # The signed-release preset has its own policy dependencies. Admit their
+    # sources explicitly so optional workloads remain outside the golden base.
+    aos.packages = {
+      audit = {
+        package = pkgs.audit;
+        enable = true;
+      };
+      nftables = {
+        package = pkgs.nftables;
+        enable = true;
+      };
+      aos-network-ruleset-provider = {
+        package = pkgs.aos-network-ruleset-provider;
+        enable = true;
+      };
+      refpolicy = {
+        package = pkgs.refpolicy;
+        enable = true;
+      };
+    };
+
     assertions = [
       {
         assertion = !sourceEvaluation || authorities.secureBootCertificate != null;

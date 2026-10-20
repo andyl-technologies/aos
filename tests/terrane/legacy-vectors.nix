@@ -15,7 +15,7 @@
   ];
 
   runTest = name: ''
-    if ! cargo test --frozen --offline -p terrane-core --test legacy_vectors ${name} -- --exact \
+    if ! cargo test --frozen --offline -p terrane-format --test legacy_vectors ${name} -- --exact \
       > "$TMPDIR/legacy-model-test.log" 2>&1; then
       cat "$TMPDIR/legacy-model-test.log"
       exit 1
@@ -27,13 +27,13 @@ in
     cd crates
     cargo fmt --all -- --check
     ${builtins.concatStringsSep "\n" (map runTest tests)}
-    if ! cargo test --frozen --offline -p terrane-core --lib \
+    if ! cargo test --frozen --offline -p terrane-format --lib \
       auth::tests::legacy_vectors::published_token_private_fields_match_separately_constructed_model -- --exact \
       > "$TMPDIR/legacy-token-test.log" 2>&1; then
       cat "$TMPDIR/legacy-token-test.log"
       exit 1
     fi
     python3 -c 'import pathlib, sys; output = pathlib.Path(sys.argv[1]).read_text(); print(output); sys.exit("test result: ok. 1 passed; 0 failed; 0 ignored" not in output)' "$TMPDIR/legacy-token-test.log"
-    cargo clippy --frozen --offline -p terrane-core --all-targets -- -D warnings
+    cargo clippy --frozen --offline -p terrane-format --all-targets -- -D warnings
     printf 'PASS: twelve exact public legacy groups and one complete private token-model group\n' > "$out/result"
   ''

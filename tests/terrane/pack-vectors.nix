@@ -7,7 +7,7 @@
   ];
 
   runCase = name: ''
-    cargo test --frozen --offline -p terrane-core --test pack_vectors ${name} \
+    cargo test --frozen --offline -p terrane-format --test pack_vectors ${name} \
       -- --exact > "$TMPDIR/pack-vector-test.log"
     python3 - "$TMPDIR/pack-vector-test.log" <<'PYTEST'
     import pathlib
@@ -22,7 +22,7 @@
 in
   sourceGate "pack-format-vectors" ''
     cd crates
-    cargo build --frozen --offline -p terrane-core --example reference_blake3
+    cargo build --frozen --offline -p terrane-format --example reference_blake3
     cd ..
     python3 tests/terrane/pack_vectors.py --check \
       --blake3-bin "$CARGO_TARGET_DIR/debug/examples/reference_blake3" \
