@@ -9638,8 +9638,38 @@ Resumed qualification:
   neither supplies native handoff qualification. Follow-up `68aab2b064` requires
   exact recovered dependency protection in both actor and independent supervisor;
   it preserves all original inode, funding, residence and refusal checks.
-  Local and native qualification are running on this committed source.
-  Eviction, NativeReady and complete host-task acceptance remain pending.
+  Both builds, all 34 selected cases, all three strict Clippy profiles and
+  formatting pass on this committed source. Native qualification passes in
+  472.129 seconds, including all 53 selected filesystem cases. Independent
+  review verifies all 3,501 image inputs, four original Cargo ELFs and the exact
+  queue-refusal, retry and handoff controls. Actual producer and closed-source
+  future holds decrease by 1,588,749 bytes; a fresh independent consumer adds
+  its own 262,144-byte hold. Final future holds are 1,573,265 bytes and measured
+  project usage is 700,416 bytes. Reconstruction metadata and both consumers
+  remain live after the actual release grace. The owning publisher gate passes
+  in 544.631 seconds; independent artifact reinspection matches its report.
+  This qualifies handoff, not full cache eviction or host-task acceptance.
+- Native-eviction candidate `e367ac9d26` connects the original completed
+  publication receipts to S3-FIFO selection and authenticated publisher
+  retirement, restoration and final removal. Successful reads record activity
+  outside embedded-state locks. Native quota observations include pending
+  inodes; final removal releases policy funding and closes all actual original
+  publication descriptors before querying freed charge. The worker drains a
+  bounded cut of accepted requests before finalizing due retirements, allowing
+  an already queued pin to restore its original inode even if policy stalls
+  across the retirement deadline. Both direct builds, all 36 selected cases and
+  formatting pass; hermetic strict-profile and policy tests are running.
+  Native execution stops at a genuine permission error: restoration succeeds,
+  but the cache identity cannot reopen the publisher-owned file for reading
+  to check its canonical inode. No consumer pin is acknowledged. The original
+  body, reconstruction metadata and durable protection remain retained.
+  Successor `386f94080c` observes that pathname with `O_PATH` and restores
+  pending objects before duplicate inline or manifest publication. Its added
+  native control requires the same original inode, one charge for both genuine
+  publication receipts, another real producer-grace window and final descriptor
+  closure before physical charge release. Qualification is running; no success
+  is claimed. Shared-chunk extraction, standalone and pack cache ownership,
+  admission integration, complete recovery and NativeReady remain pending.
 - Surface candidate `f8da5b4293`: the complete task source review, formatter pair
   and all seven strict Clippy/documentation profiles pass. The interface,
   commit-path, status and schema gates pass on unchanged final source, including
