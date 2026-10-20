@@ -29,6 +29,10 @@ pub(crate) use super::effects::{created, AbortPlacementReceipt};
 pub(crate) async fn fetch(mut request: Request, env: &Env) -> worker::Result<Response> {
     match execute(&mut request, env).await {
         Ok(response) => Response::from_json(&response),
+        Err(error) if error.is::<control::BeginReplyExpiredBeforeEffects>() => {
+            worker::console_error!("direct_upload_begin_reply_expired_before_effects");
+            Response::error("direct upload control unavailable", 503)
+        }
         Err(_) => {
             worker::console_error!("direct_upload_request_refused");
             Response::error("direct upload control unavailable", 409)
@@ -110,7 +114,8 @@ async fn execute(request: &mut Request, env: &Env) -> Result<DirectUploadRespons
                     intents: batch.items,
                 },
             )
-            .await?
+            .await
+            .map_err(control::before_begin)?
             .reply;
             response.sessions = reply.sessions.clone();
             response.errors = reply.errors.clone();

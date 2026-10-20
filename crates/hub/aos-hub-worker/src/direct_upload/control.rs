@@ -21,6 +21,25 @@ pub(super) trait Transport {
     async fn post(&self, phase: &str, signed: SignedDirectControl) -> Result<SignedDirectControl>;
 }
 
+/// Marks expiry before the initial Begin exchange has dispatched physical work.
+#[derive(Debug)]
+pub(super) struct BeginReplyExpiredBeforeEffects;
+
+impl std::fmt::Display for BeginReplyExpiredBeforeEffects {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("direct Begin reply expired before physical dispatch")
+    }
+}
+
+/// Retains all other failures, including unauthenticated or uncertain replies.
+pub(super) fn before_begin(error: anyhow::Error) -> anyhow::Error {
+    if error.is::<DirectLogicalReplyExpired>() {
+        error.context(BeginReplyExpiredBeforeEffects)
+    } else {
+        error
+    }
+}
+
 pub(super) async fn exchange<T: Transport>(
     transport: &T,
     key: &StorageWorkKey,
@@ -117,3 +136,6 @@ pub(super) async fn exchange<T: Transport>(
         context: context.clone(),
     })
 }
+
+#[cfg(test)]
+mod tests;

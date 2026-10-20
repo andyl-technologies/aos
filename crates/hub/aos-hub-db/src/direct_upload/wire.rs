@@ -20,6 +20,22 @@ use super::*;
 const REQUEST_DOMAIN: &[u8] = b"aos.direct-upload.logical-request.v3\0";
 const REPLY_DOMAIN: &[u8] = b"aos.direct-upload.logical-reply.v3\0";
 
+/// Identifies an authenticated, correlated reply whose request deadline elapsed.
+///
+/// This error grants no permission to use the expired reply or repeat an unknown
+/// provider effect. Callers may retry a retained operation only when their own
+/// effect boundary proves that doing so is safe.
+#[derive(Debug)]
+pub struct DirectLogicalReplyExpired;
+
+impl std::fmt::Display for DirectLogicalReplyExpired {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("direct logical reply expired")
+    }
+}
+
+impl std::error::Error for DirectLogicalReplyExpired {}
+
 /// Dedicated exact-body signature header for the private logical request/reply.
 pub const DIRECT_LOGICAL_SIGNATURE_HEADER: &str = "x-aos-direct-upload-logical-signature";
 
@@ -59,7 +75,17 @@ impl DirectRequestContext {
     /// # Errors
     /// Returns a value-free error for audience, method, hash, path or time mismatch.
     pub fn validate(&self, deployment: &str, executor_origin: &str, latest_now: u64) -> Result<()> {
+        self.validate_shape(deployment, executor_origin)?;
         self.foreground.validate_at(latest_now)?;
+        ensure!(
+            self.issued_at.get() <= latest_now && latest_now < self.expires_at.get(),
+            "direct logical request expired or invalid"
+        );
+        Ok(())
+    }
+
+    // Check immutable framing before distinguishing a reply's elapsed deadline.
+    fn validate_shape(&self, deployment: &str, executor_origin: &str) -> Result<()> {
         self.foreground
             .validate_context_window(self.issued_at, self.expires_at)?;
         ensure!(
@@ -78,13 +104,10 @@ impl DirectRequestContext {
             "invalid direct logical request context"
         );
         ensure!(
-            self.issued_at.get() <= latest_now
-                && latest_now < self.expires_at.get()
-                && self
-                    .expires_at
-                    .get()
-                    .checked_sub(self.issued_at.get())
-                    .is_some_and(|ttl| ttl > 0 && ttl <= 30),
+            self.expires_at
+                .get()
+                .checked_sub(self.issued_at.get())
+                .is_some_and(|ttl| ttl > 0 && ttl <= 30),
             "direct logical request expired or invalid"
         );
         Ok(())
@@ -218,6 +241,8 @@ pub fn sign_direct_logical_reply(
 /// # Errors
 /// Returns an error for signature, encoding, changed context, stale time or
 /// malformed bounded reply. Business/provider evidence remains independently checked.
+/// An authenticated, correlated reply with an elapsed request deadline returns
+/// [`DirectLogicalReplyExpired`]; the reply remains unusable for provider effects.
 pub fn verify_direct_logical_reply(
     key: &StorageWorkKey,
     signature: &str,
@@ -230,12 +255,21 @@ pub fn verify_direct_logical_reply(
         &envelope.context == expected,
         "direct logical reply correlation mismatch"
     );
+    envelope
+        .context
+        .validate_shape(&expected.deployment_id, &expected.executor_public_origin)?;
+    envelope.reply.validate(&expected.deployment_id)?;
+    validate_permission_context(&envelope, None)?;
+    if latest_now >= envelope.context.expires_at.get()
+        || latest_now >= envelope.context.foreground.expires_at.get()
+    {
+        return Err(DirectLogicalReplyExpired.into());
+    }
     envelope.context.validate(
         &expected.deployment_id,
         &expected.executor_public_origin,
         latest_now,
     )?;
-    envelope.reply.validate(&expected.deployment_id)?;
     validate_permission_context(&envelope, Some(latest_now))?;
     Ok(envelope)
 }

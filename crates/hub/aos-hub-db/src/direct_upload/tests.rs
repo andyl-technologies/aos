@@ -867,3 +867,63 @@ fn reply_preserves_exact_foreground_identity_and_rejects_old_response_domain() {
     reply.context.expires_at = WireInteger::new(131);
     assert!(sign_direct_logical_reply(&key, &reply).is_err());
 }
+
+#[test]
+fn expired_reply_is_retry_classifiable_only_after_authentication_and_correlation() {
+    let key = StorageWorkKey::new([7; 32]).unwrap();
+    let request = authority_request("primary.test");
+    let mut envelope = DirectLogicalReplyEnvelope {
+        context: request.context.clone(),
+        reply: DirectUploadLogicalReply {
+            admissions: vec![],
+            sessions: vec![],
+            session_summaries: vec![],
+            authorizations: vec![],
+            baseline_permissions: vec![],
+            errors: vec![],
+        },
+    };
+    let signed = sign_direct_logical_reply(&key, &envelope).unwrap();
+    let deadline = request.context.expires_at.get();
+
+    verify_direct_logical_reply(
+        &key,
+        &signed.signature,
+        &signed.body,
+        &request.context,
+        deadline - 1,
+    )
+    .unwrap();
+    let elapsed = verify_direct_logical_reply(
+        &key,
+        &signed.signature,
+        &signed.body,
+        &request.context,
+        deadline,
+    )
+    .unwrap_err();
+    assert!(elapsed.is::<DirectLogicalReplyExpired>());
+
+    let wrong_key = StorageWorkKey::new([8; 32]).unwrap();
+    let unauthenticated = verify_direct_logical_reply(
+        &wrong_key,
+        &signed.signature,
+        &signed.body,
+        &request.context,
+        deadline,
+    )
+    .unwrap_err();
+    assert!(!unauthenticated.is::<DirectLogicalReplyExpired>());
+
+    envelope.context.foreground.invocation_id = "bb".repeat(32);
+    let changed = sign_direct_logical_reply(&key, &envelope).unwrap();
+    let uncorrelated = verify_direct_logical_reply(
+        &key,
+        &changed.signature,
+        &changed.body,
+        &request.context,
+        deadline,
+    )
+    .unwrap_err();
+    assert!(!uncorrelated.is::<DirectLogicalReplyExpired>());
+}
