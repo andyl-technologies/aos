@@ -223,14 +223,21 @@ fn replay_plan_preserves_input_decision_input_order_and_rejects_wrong_generation
     Ok(())
 }
 
-#[test]
-fn replay_plan_delivers_inputs_at_the_recorded_physical_counter_of_a_rebased_vm()
--> Result<(), Box<dyn std::error::Error>> {
-    // A ready point after counter zero anchors scheduler time zero at this
-    // physical counter, so every live delivery lands this far past its
-    // scheduler time. Thin replay must use the counter, not scheduler time.
-    const READY_COUNTER: u64 = 1_000;
+/// Physical counter at which a rebased receiver's ready point anchors scheduler
+/// time zero. Every live delivery to it lands this far past its scheduler time.
+const READY_COUNTER: u64 = 1_000;
 
+/// Two-node world whose receiver's ready point follows counter zero.
+struct RebasedReceiver {
+    world: World,
+    receiver: NodeId,
+    scenario: SchedulerLivenessScenario,
+}
+
+/// Builds a [`RebasedReceiver`] with one input at each scheduler time.
+fn rebased_receiver_scenario(
+    input_times: [u64; 2],
+) -> Result<RebasedReceiver, Box<dyn std::error::Error>> {
     let sender = NodeId {
         name: String::from("sender"),
     };
@@ -242,6 +249,7 @@ fn replay_plan_delivers_inputs_at_the_recorded_physical_counter_of_a_rebased_vm(
         vec![LinkDef::new(sender.clone(), receiver.clone())?],
     )?;
     let link = world.links()[0].scheduler_node_id();
+
     let mut rebased_receiver = scheduler_node(&receiver, SchedulerNodeActivity::Runnable);
     rebased_receiver.counter = NodeCounter {
         ticks: READY_COUNTER,
@@ -255,8 +263,8 @@ fn replay_plan_delivers_inputs_at_the_recorded_physical_counter_of_a_rebased_vm(
             scheduler_node(&sender, SchedulerNodeActivity::Done),
         ],
         vec![
-            input_event(&receiver, &link, 1, 0),
-            input_event(&receiver, &link, 2, 1),
+            input_event(&receiver, &link, input_times[0], 0),
+            input_event(&receiver, &link, input_times[1], 1),
         ],
     )
     .with_ready_point_counter(
@@ -269,16 +277,70 @@ fn replay_plan_delivers_inputs_at_the_recorded_physical_counter_of_a_rebased_vm(
         },
     )
     .with_world(&world);
+
+    Ok(RebasedReceiver {
+        world,
+        receiver,
+        scenario,
+    })
+}
+
+/// One resolved input's scheduler tick and recorded physical counter.
+type RecordedInputStamp = (u64, Option<Icount>);
+
+/// Returns every resolved input's [`RecordedInputStamp`] in log order.
+fn recorded_input_stamps(
+    scheduler: &SingleScheduler,
+) -> Result<Vec<RecordedInputStamp>, Box<dyn std::error::Error>> {
+    Ok(resolved_input_entries(scheduler)?
+        .iter()
+        .map(|entry| (entry.time().stamp.tick.ticks, entry.time().stamp.retired))
+        .collect())
+}
+
+/// Returns the physical delivery counters of the receiver's replay plan.
+fn replay_plan_deliveries(
+    world: &World,
+    scheduler: &SingleScheduler,
+    receiver: &NodeId,
+) -> Result<Vec<u64>, Box<dyn std::error::Error>> {
+    let checkpoint = scheduler.checkpoint()?;
+    let segments = scheduler.event_log_segment_store();
+    let steps = authenticated_replay_steps(
+        world,
+        scheduler.configuration(),
+        &checkpoint,
+        segments.as_ref(),
+        1,
+        receiver,
+        2,
+    )?;
+
+    Ok(steps
+        .iter()
+        .filter_map(|step| match step {
+            ReplayStep::Input {
+                delivery_icount, ..
+            } => Some(delivery_icount.retired),
+            ReplayStep::Decision { .. } => None,
+        })
+        .collect())
+}
+
+#[test]
+fn replay_plan_delivers_inputs_at_the_recorded_physical_counter_of_a_rebased_vm()
+-> Result<(), Box<dyn std::error::Error>> {
+    let RebasedReceiver {
+        world,
+        receiver,
+        scenario,
+    } = rebased_receiver_scenario([1, 2])?;
     let mut scheduler = SingleScheduler::new(scenario)?;
     drive_until_resolved_inputs(&mut scheduler, 2)?;
 
     // The live log keeps scheduler time and the physical counter apart.
-    let recorded = resolved_input_entries(&scheduler)?
-        .iter()
-        .map(|entry| (entry.time().stamp.tick.ticks, entry.time().stamp.retired))
-        .collect::<Vec<_>>();
     assert_eq!(
-        recorded,
+        recorded_input_stamps(&scheduler)?,
         vec![
             (
                 1,
@@ -294,28 +356,58 @@ fn replay_plan_delivers_inputs_at_the_recorded_physical_counter_of_a_rebased_vm(
             ),
         ]
     );
+    // Thin replay must deliver at the counter, not at scheduler time.
+    assert_eq!(
+        replay_plan_deliveries(&world, &scheduler, &receiver)?,
+        vec![READY_COUNTER + 1, READY_COUNTER + 2]
+    );
+    Ok(())
+}
 
-    let checkpoint = scheduler.checkpoint()?;
-    let segments = scheduler.event_log_segment_store();
-    let steps = authenticated_replay_steps(
-        &world,
-        scheduler.configuration(),
-        &checkpoint,
-        segments.as_ref(),
-        1,
-        &receiver,
-        2,
+#[test]
+fn exact_scheduler_restore_keeps_the_rebased_physical_delivery_counter()
+-> Result<(), Box<dyn std::error::Error>> {
+    let input_times = [2, 12];
+
+    let RebasedReceiver {
+        world,
+        receiver,
+        scenario,
+    } = rebased_receiver_scenario(input_times)?;
+    let mut uninterrupted = SingleScheduler::new(scenario)?;
+    drive_until_resolved_inputs(&mut uninterrupted, 2)?;
+
+    // Stop after the first delivery, restore that continuation into a fresh
+    // scheduler sharing the sealed log, and resolve the second input there.
+    let mut original = SingleScheduler::new(rebased_receiver_scenario(input_times)?.scenario)?;
+    drive_until_resolved_inputs(&mut original, 1)?;
+    let checkpoint = original.checkpoint()?;
+    let mut restored = SingleScheduler::new_with_event_log_segment_store(
+        rebased_receiver_scenario(input_times)?.scenario,
+        original.event_log_segment_store(),
     )?;
-    let deliveries = steps
-        .iter()
-        .filter_map(|step| match step {
-            ReplayStep::Input {
-                delivery_icount, ..
-            } => Some(delivery_icount.retired),
-            ReplayStep::Decision { .. } => None,
-        })
-        .collect::<Vec<_>>();
+    checkpoint.restore_into(&mut restored)?;
+    drive_until_resolved_inputs(&mut restored, 2)?;
 
-    assert_eq!(deliveries, vec![READY_COUNTER + 1, READY_COUNTER + 2]);
+    let expected = vec![
+        (
+            input_times[0],
+            Some(Icount {
+                retired: READY_COUNTER + input_times[0],
+            }),
+        ),
+        (
+            input_times[1],
+            Some(Icount {
+                retired: READY_COUNTER + input_times[1],
+            }),
+        ),
+    ];
+    assert_eq!(recorded_input_stamps(&uninterrupted)?, expected);
+    assert_eq!(recorded_input_stamps(&restored)?, expected);
+    assert_eq!(
+        replay_plan_deliveries(&world, &restored, &receiver)?,
+        replay_plan_deliveries(&world, &uninterrupted, &receiver)?
+    );
     Ok(())
 }
