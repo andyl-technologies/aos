@@ -9114,8 +9114,10 @@ helpers and 61 domains with a finite 488 MiB project budget within the unchanged
 pass. All three isolated strict profiles and private documentation also pass
 in 107.337 seconds. Source-bound image and archive preparation pass in 254.944
 and 144.174 seconds; independent image verification matches all 5,107 inputs.
-Mandatory application compilation continues. Native execution remains
-unstarted until the combined Surface/module aggregate actually terminates;
+Mandatory application compilation passes with exactly 183 test artifacts from
+59 packages in 2,220.190 seconds, independently matched to Cargo metadata.
+Both preparation controllers actually terminate successfully. Native execution
+remains unstarted until the combined Surface/module aggregate terminates;
 this preparation does not extend its serialization barrier. No new native
 or task pass is claimed.
 
@@ -9130,7 +9132,9 @@ cases and production code remain unchanged. Formatting, crate-graph and unsafe
 checks pass; all three isolated strict profiles and private documentation pass
 in 100.255 seconds. Image and archive preparation pass in 254.678 and 145.801
 seconds, with all 5,107 image inputs independently matched. Application-target
-qualification continues. The unstarted native phase is superseded below;
+qualification passes with exactly 183 artifacts from 59 packages in
+1,450.807 seconds. Both preparation controllers actually terminate with
+success. The unstarted native phase is superseded below;
 native execution and complete task acceptance remain pending.
 
 Binding-conflict continuation `62bfede7fd` allows names-only inventory to retain
@@ -9145,9 +9149,10 @@ independently measured verity bit and requires retained recovery funding,
 original-inode quarantine and no Resume. All 68 earlier selectors remain;
 the compiled fixture reports 70, across 62 domains with a finite 496 MiB
 project budget inside the unchanged 512 MiB image. Local all-target check,
-strict Clippy, formatter pair and both focused inventory tests pass. Isolated
-profiles, image/archive and mandatory application qualification are running;
-the native phase still awaits actual completion of the combined aggregate.
+strict Clippy, formatter pair and both focused inventory tests pass. All three
+isolated strict profiles and private documentation pass in 96.473 seconds.
+Image/archive and mandatory application qualification are running; the native
+phase still awaits actual completion of the combined aggregate.
 No new native pass, completed host task or format change is claimed.
 
 The older shared-directory aggregate at `86fb63e127` actually terminates with
