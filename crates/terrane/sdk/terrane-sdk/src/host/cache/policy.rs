@@ -327,6 +327,18 @@ impl CachePolicy {
         self.entries.remove(key);
         Ok(())
     }
+
+    /// Forgets scheduling state for an allocation outside the managed inventory.
+    ///
+    /// This changes only the reconstructible model and preserves future holds.
+    /// It neither removes native bytes nor acknowledges physical reclamation or
+    /// durable pin release. A caller must independently account in-flight and
+    /// transferred allocations before making admission decisions.
+    pub fn forget_allocation(&mut self, key: &str) {
+        self.entries.remove(key);
+        self.probation.retain(|candidate| candidate != key);
+        self.main.retain(|candidate| candidate != key);
+    }
 }
 
 fn capacity() -> StoreFailure {

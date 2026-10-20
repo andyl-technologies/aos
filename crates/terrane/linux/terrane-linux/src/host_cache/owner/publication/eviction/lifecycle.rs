@@ -20,7 +20,12 @@ use crate::{
     },
     publisher_local::client::{CacheBodyCompletion, PendingCacheBody},
 };
-use std::{collections::BTreeMap, io, sync::Arc, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    io,
+    sync::Arc,
+    time::Duration,
+};
 use terrane_format::identity::{Identity, IdentityKind, TERRANE_V1};
 use terrane_sdk::store::{Clock, TokioClock};
 use tokio::sync::oneshot;
@@ -154,8 +159,16 @@ pub(in crate::host_cache::owner) async fn run(
     if executor.cache.queue.is_none() {
         executor.cache.queue = Some(Queue::new(config, owner)?);
     }
+    let pending = executor
+        .cache
+        .pending
+        .keys()
+        .map(String::as_str)
+        .chain(encoded::pending_keys(executor))
+        .map(str::to_owned)
+        .collect::<BTreeSet<_>>();
     {
-        let activities = executor
+        let mut activities = executor
             .cache
             .activities
             .lock()
@@ -165,7 +178,7 @@ pub(in crate::host_cache::owner) async fn run(
             .queue
             .as_mut()
             .ok_or_else(|| invalid("native FIFO absent"))?
-            .refresh(&units, &encoded_units, &activities)?;
+            .refresh(&units, &encoded_units, &pending, &mut activities)?;
     }
     policy::synchronize_policy(executor)?;
     let before = observe(executor)?;

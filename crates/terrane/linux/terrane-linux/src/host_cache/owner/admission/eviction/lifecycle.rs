@@ -92,6 +92,13 @@ pub(in crate::host_cache::owner) fn contains_key(
     executor.cache.encoded.pending.contains_key(key)
 }
 
+/// Borrows actual retained retirements for reconstructible queue reconciliation.
+pub(in crate::host_cache::owner) fn pending_keys(
+    executor: &NativeOwnerExecutor,
+) -> impl Iterator<Item = &str> {
+    executor.cache.encoded.pending.keys().map(String::as_str)
+}
+
 /// Starts retirement only for the original unprotected allocation under exclusion.
 ///
 /// # Errors

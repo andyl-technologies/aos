@@ -59,6 +59,57 @@ struct RetiredSource<'job> {
     acknowledgement: Option<&'job AcknowledgedSourceRetirement>,
 }
 
+/// Recognizes original admissions already held by acknowledged source retirement.
+///
+/// These inodes have left the canonical namespace. Their original jobs and
+/// funding remain registered until final removal and descriptor closure, and
+/// complete-project quota still counts them. They cannot enter the canonical
+/// eviction census or acquire another retirement merely because they exist.
+///
+/// # Errors
+/// Refuses poisoned jobs, changed original custody, incomplete publication,
+/// missing retirement observations or changed retained source bytes.
+pub(in crate::host_cache::owner) fn retains_retired_admission(
+    executor: &NativeOwnerExecutor,
+    owner: &Custody,
+    resource: &Arc<Mutex<super::super::admission::AdmissionJob>>,
+) -> io::Result<bool> {
+    executor.check_physical_worker()?;
+    for publication in executor.publication_jobs() {
+        let job = publication
+            .lock()
+            .map_err(|_| invalid("retired source publication poisoned"))?;
+        let index = if let Some(manifest) = &job.manifest {
+            manifest
+                .transfers
+                .iter()
+                .position(|entry| entry.retired && entry.source.retains_admission(resource))
+        } else if job.transfer_retired
+            && job
+                .transfer
+                .as_ref()
+                .is_some_and(|source| source.retains_admission(resource))
+        {
+            Some(0)
+        } else {
+            None
+        };
+        let Some(index) = index else {
+            continue;
+        };
+        if !job.complete || !Arc::ptr_eq(&job.custody, executor.custody()) {
+            return Err(invalid("retired source lost completed publication custody"));
+        }
+        let retired = retired_source(&job, index)?;
+        if retired.observation.key() != retired.source.key() {
+            return Err(invalid("retired source changed original observation"));
+        }
+        retired.source.check_retired(owner)?;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
 /// Borrows one genuine original transfer only after its correlated final removal.
 ///
 /// Only this module constructs the scope, while holding the actual completed

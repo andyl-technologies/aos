@@ -2,7 +2,11 @@
 
 use super::{super::invalid, activity::Registry, graph::Unit};
 use crate::host_cache::owner::admission::eviction::EncodedAllocation;
-use std::{collections::BTreeMap, io, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    io,
+    time::Duration,
+};
 use terrane_sdk::host::cache::{CacheEntry, CachePolicy, PolicyConfig};
 
 struct Entry {
@@ -43,7 +47,8 @@ impl Queue {
         &mut self,
         units: &[Unit],
         encoded: &[EncodedAllocation],
-        activities: &Registry,
+        pending: &BTreeSet<String>,
+        activities: &mut Registry,
     ) -> io::Result<()> {
         let mut allocations = units
             .iter()
@@ -62,6 +67,20 @@ impl Queue {
             )
             .collect::<Vec<_>>();
         allocations.sort_unstable_by_key(|(order, _, _, _)| *order);
+
+        // A successful complete native census has already refused unknown
+        // missing names. Source transfers leave this scheduling inventory, but
+        // actual cache retirements must retain their original queue entries
+        // through restoration or final acknowledgment. Neither case changes Q.
+        let current: BTreeSet<_> = allocations.iter().map(|(_, key, _, _)| *key).collect();
+        self.entries.retain(|key, _| {
+            if current.contains(key.as_str()) || pending.contains(key) {
+                return true;
+            }
+            self.policy.forget_allocation(key);
+            false
+        });
+
         for (_, key, allocated, protected) in allocations {
             if !self.entries.contains_key(key) {
                 self.policy
@@ -105,14 +124,17 @@ impl Queue {
         let mut reads = activities.snapshot()?;
         reads.sort_unstable_by_key(|read| read.first);
         for read in reads {
-            if read.first == 0 {
-                continue;
-            }
             let (device, inode) = read.inode;
             let key = format!("{device}:{inode}");
             let Some(entry) = self.entries.get_mut(&key) else {
+                // A later native inode reuse must start with fresh activity.
+                // Retained old read views may keep their own activity Arc.
+                activities.remove(read.inode);
                 continue;
             };
+            if read.first == 0 {
+                continue;
+            }
             if !entry.promoted || read.latest > entry.latest {
                 self.policy.touch(&key);
                 entry.promoted = true;

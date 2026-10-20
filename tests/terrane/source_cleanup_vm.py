@@ -51,6 +51,9 @@ def run(driver, publisher, uuid):
         lines.until("READY actual inline and manifest retired sources; retain original native grace")
         driver.require("PASS actual foreign physical owner refused source cleanup and remained usable"
                        in lines.bytes.decode().splitlines(), "missing actual foreign cleanup refusal")
+        driver.require(lines.bytes.decode().splitlines().count(
+            "PASS actual eviction census retains original inline and manifest pending sources under unsatisfied capacity pressure; durable funding unchanged"
+        ) == 1, "missing actual eviction census with original pending source custody")
         print(driver.process_status(process, 840), flush=True)
         snapshot = driver.root(case) / "state/cache/records.toml"
         before = snapshot.read_bytes()

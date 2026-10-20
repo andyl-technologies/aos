@@ -128,6 +128,14 @@ impl TransferredFunding {
 }
 
 impl TransferSource {
+    /// Recognizes only the original admission retained by this transfer.
+    pub(in crate::host_cache::owner) fn retains_admission(
+        &self,
+        resource: &Arc<Mutex<AdmissionJob>>,
+    ) -> bool {
+        Arc::ptr_eq(&self.job, resource)
+    }
+
     /// Retains funding only under the actual original final-removal acknowledgment.
     ///
     /// # Errors

@@ -85,7 +85,7 @@ impl Registry {
         Ok(rows)
     }
 
-    /// Removes bookkeeping after the actual native allocation is durably retired.
+    /// Removes scheduling bookkeeping after the allocation leaves this inventory.
     pub(super) fn remove(&mut self, inode: (u64, u64)) {
         self.bodies.remove(&inode);
     }

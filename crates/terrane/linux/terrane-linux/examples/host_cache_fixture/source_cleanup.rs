@@ -59,6 +59,15 @@ pub(super) fn run(
         .block_on(owner.resume_recovered(completed))
         .map_err(io::Error::other)?;
     let (descriptor, inline_source) = admit(owner, runtime, inputs, INLINE, ChunkPosition::Final)?;
+    let before_transfer = fs::read(policy(inputs))?;
+    let producer_census = runtime.block_on(owner.evict_cached(0))?;
+    if producer_census.retired_allocations != 0
+        || !producer_census.target_met
+        || inline_source.metadata()?.nlink() != 1
+        || fs::read(policy(inputs))? != before_transfer
+    {
+        return Err(invalid("canonical census changed producer-owned admission"));
+    }
     let inline = runtime
         .block_on(owner.publish_inline(descriptor, encoded(INLINE)))
         .map_err(io::Error::other)?;
@@ -102,6 +111,25 @@ pub(super) fn run(
             ));
         }
     }
+    // Both publication classes still own real pending sources. A canonical
+    // cache census must retain their original custody rather than reopening
+    // the missing canonical names or trying to retire these inodes again.
+    let census = runtime.block_on(owner.evict_cached(inputs.owner_config()?.policy.capacity))?;
+    if census.retired_allocations != 0 || census.target_met || fs::read(policy(inputs))? != before {
+        return Err(invalid(
+            "eviction census changed original pending source custody or funding",
+        ));
+    }
+    for source in &sources {
+        if source.metadata()?.nlink() != 1 {
+            return Err(invalid(
+                "eviction census unlinked an original pending source",
+            ));
+        }
+    }
+    emit(
+        "PASS actual eviction census retains original inline and manifest pending sources under unsatisfied capacity pressure; durable funding unchanged",
+    )?;
     emit("READY actual inline and manifest retired sources; retain original native grace")?;
     control("start")?;
     let mut pending = Box::pin(inline.finish_retired_sources(owner));

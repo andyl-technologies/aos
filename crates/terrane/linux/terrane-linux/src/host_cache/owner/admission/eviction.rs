@@ -9,8 +9,8 @@ mod lifecycle;
 pub(in crate::host_cache::owner) mod turn;
 
 pub(in crate::host_cache::owner) use lifecycle::{
-    DueRetirements, Runtime, contains_key, due_retirements, finish_due, restore_for, restore_pack,
-    retire,
+    DueRetirements, Runtime, contains_key, due_retirements, finish_due, pending_keys, restore_for,
+    restore_pack, retire,
 };
 
 use super::{AdmissionJob, Input, backing, io as native, reconcile, state};
@@ -240,7 +240,7 @@ impl EncodedAllocation {
         Ok(())
     }
 
-    /// Checks original registration and canonical members before any transition.
+    /// Checks original registration and canonical members without granting retirement.
     ///
     /// # Errors
     /// Refuses another worker, lost original jobs, changed allocation or input,
@@ -258,7 +258,6 @@ impl EncodedAllocation {
             check_registered(executor, resource)?;
             let job = backing::lock(resource)?;
             if !job.complete
-                || job.cached.is_none()
                 || !Arc::ptr_eq(&job.custody, executor.custody())
                 || body_key(&job)? != self.body
                 || original_inodes(&job)? != self.inodes
@@ -304,7 +303,11 @@ pub(in crate::host_cache::owner) fn capture(
         policy::check_bootstrap(&owner, &running)?;
 
         for resource in executor.admission_jobs() {
-            if lifecycle::contains_resource(executor, resource)? {
+            if lifecycle::contains_resource(executor, resource)?
+                || super::super::publication::retirement::retains_retired_admission(
+                    executor, &owner, resource,
+                )?
+            {
                 continue;
             }
             let job = backing::lock(resource)?;

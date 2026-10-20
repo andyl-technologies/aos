@@ -195,6 +195,41 @@ fn host_cache_external_quota_deficit_does_not_require_fictitious_reservations() 
 }
 
 #[test]
+fn host_cache_inventory_departure_preserves_future_holds_and_other_fifo_order() {
+    let mut cache = cache();
+    insert(&mut cache, "transferred", 30);
+    insert(&mut cache, "cold", 20);
+    insert(&mut cache, "hot", 20);
+    cache.pin("transferred").unwrap();
+    cache.touch("hot");
+    cache.reserve("future".into(), "tenant".into(), 10).unwrap();
+    assert!(
+        cache
+            .reserve("replacement".into(), "tenant".into(), 30)
+            .is_err()
+    );
+
+    // Only the reconstructible inventory changes. The future hold and the
+    // surviving hot/cold queue positions must not reset along with the source.
+    cache.forget_allocation("transferred");
+    cache.forget_allocation("absent");
+
+    assert_eq!(cache.resident_bytes(), 40);
+    assert_eq!(cache.charged_bytes(), 50);
+    assert!(cache.reserve("future".into(), "tenant".into(), 1).is_err());
+    insert(&mut cache, "replacement", 30);
+    assert_eq!(cache.charged_bytes(), 80);
+    assert_eq!(
+        cache.eviction_candidates_to_reclaim(25, Duration::ZERO),
+        ["cold", "replacement"]
+    );
+    assert!(cache.finish_retirement("transferred").is_err());
+    assert!(cache.finish_retirement("hot").is_err());
+    cache.pin("hot").unwrap();
+    assert_eq!(cache.charged_bytes(), 80);
+}
+
+#[test]
 fn host_cache_external_deficit_preserves_pins_grace_and_main_second_chance() {
     let mut cache = cache();
     insert(&mut cache, "pinned", 20);
