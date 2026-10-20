@@ -3,6 +3,7 @@
 //! Both physical owners require genuine confinement, native preparation, recovery
 //! and acknowledged Resume. Caller metadata and fixture bytes confer no authority.
 
+#[path = "consumer/shared.rs"]
 mod shared;
 
 use super::config::{HARD_LIMIT, HOLD, Inputs, STATE};
