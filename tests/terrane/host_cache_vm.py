@@ -6,6 +6,7 @@ identities execute the actual publisher CLI and confined cache example.
 """
 
 import ast
+import errno
 import fcntl
 import hashlib
 import json
@@ -49,8 +50,11 @@ MANIFEST_CASES = [
      "refuse-mixed-manifest", False, "mixed manifest mismatch"),
     ("manifest-binding-conflict", "seed-conflicting-binding",
      "refuse-conflicting-binding", False, "conflicting manifest binding"),
+    ("manifest-bound-unsealed", "seed-bound-unsealed",
+     "refuse-bound-unsealed", False, "bound unsealed manifest"),
 ]
 MIXED_CASES = {"manifest-mixed", "manifest-mixed-mismatch"}
+BOUND_CASES = {"manifest-binding-conflict", "manifest-bound-unsealed"}
 INLINE_BYTES = b"independent inline cold candidate"
 CASES = [
     "empty", "pin", "lease", "reservation", "residence", "unknown",
@@ -291,11 +295,16 @@ def publisher_confinement_cases():
 
 
 def kernel_seal(path):
-    """Measures the actual retained fs-verity digest without trusting private state."""
+    """Measures the actual seal, returning absence only for kernel ENODATA."""
     measurement = bytearray(68)
     struct.pack_into("<HH", measurement, 0, 0, 64)
     with path.open("rb") as file:
-        fcntl.ioctl(file, 0xc0046686, measurement, True)
+        try:
+            fcntl.ioctl(file, 0xc0046686, measurement, True)
+        except OSError as error:
+            if error.errno == errno.ENODATA:
+                return None
+            raise
     algorithm, width = struct.unpack_from("<HH", measurement)
     require((algorithm, width) in {(1, 32), (2, 64)}, "unexpected actual kernel seal algorithm")
     return algorithm, bytes(measurement[4:4 + width])
@@ -319,7 +328,7 @@ def seed_manifests(uuid):
         packs = list((root(case) / "objects/pack").glob("*/*"))
         require(len(bodies) == (2 if case in MIXED_CASES else 1) and len(packs) == 2
                 and sorted(path.suffix for path in packs) == [".idx", ".pack"]
-                and (case == "manifest-binding-conflict"
+                and (case in BOUND_CASES
                      or list((root(case) / "state/publication").iterdir()) == [])
                 and list((root(case) / "state/cache").iterdir()) == [],
                 "seed fabricated policy/publication state or omitted physical bytes")
@@ -334,7 +343,7 @@ def seed_manifests(uuid):
         require(len(remaining) == 1, "fixture manifest candidate is ambiguous")
         body = remaining[0]
         conflict = None
-        if case == "manifest-binding-conflict":
+        if case in BOUND_CASES:
             records = list((root(case) / "state/publication").iterdir())
             require(len(records) == 1 and records[0].name.endswith("-" + body.name + ".toml")
                     and records[0].stat().st_uid == 841
@@ -344,14 +353,36 @@ def seed_manifests(uuid):
             require(set(record) == {"version", "domain", "descriptor", "verity_algorithm", "verity_digest"}
                     and record["version"] == 1 and record["domain"] == domain(case),
                     "binding conflict seed changed fields outside the existing record format")
-            algorithm, measured = kernel_seal(body)
-            corrupted = bytearray(measured)
-            corrupted[0] ^= 1
+            actual = kernel_seal(body)
+            if case == "manifest-bound-unsealed":
+                donor = root(case) / "staging/bound-seal-donor"
+                prior = kernel_seal(donor)
+                require(actual is None and body.stat().st_mode & 0o7777 == 0o600
+                        and prior is not None and donor.read_bytes() == body.read_bytes()
+                        and donor.stat().st_uid == 841
+                        and donor.stat().st_mode & 0o7777 == 0o400,
+                        "bound unsealed seed omitted its real prior seal and writable replacement")
+                algorithm, measured = prior
+                expected_digest = measured
+                donor.unlink()
+                directory = os.open(donor.parent, os.O_RDONLY | os.O_DIRECTORY)
+                try:
+                    os.fsync(directory)
+                finally:
+                    os.close(directory)
+                require(not any(donor.parent.iterdir()),
+                        "administrative seal donor survived until native role startup")
+            else:
+                require(actual is not None, "binding conflict seed lost its actual seal")
+                algorithm, measured = actual
+                corrupted = bytearray(measured)
+                corrupted[0] ^= 1
+                expected_digest = bytes(corrupted)
             require(record["verity_algorithm"] == algorithm
-                    and bytes(record["verity_digest"]) == bytes(corrupted),
-                    "binding conflict seed did not alter exactly one actual measurement bit")
+                    and bytes(record["verity_digest"]) == expected_digest,
+                    "bound seed omitted its exact prior measurement or one-bit corruption")
             conflict = {"path": records[0], "bytes": records[0].read_bytes(),
-                        "inode": records[0].stat().st_ino, "seal": (algorithm, measured)}
+                        "inode": records[0].stat().st_ino, "seal": actual}
         cold = runpy.run_path(str(IMAGE / "share/manifest_publication_vm.py"))[
             "seed_cold_policy"](sys.modules[__name__], case, body, companions)
         seeded[case] = {"cold_policy": cold, "body": body, "inode": body.stat().st_ino,
@@ -426,6 +457,14 @@ def manifest_recovery_cases(uuid, seeded, helper):
                         and kernel_seal(retained) == original["conflicting_binding"]["seal"],
                         "conflicting binding was rewritten or retained after actual quarantine")
                 print("PASS actual conflicting manifest binding refused by funded adoption; original sealed inode quarantined without replacement or Resume", flush=True)
+            elif case == "manifest-bound-unsealed":
+                binding = original["conflicting_binding"]
+                require(binding["path"].stat().st_ino == binding["inode"]
+                        and binding["path"].read_bytes() == binding["bytes"]
+                        and kernel_seal(retained) is None
+                        and retained.stat().st_mode & 0o7777 == 0o600,
+                        "unsealed quarantine changed its original inode, mode or retained binding")
+                print("PASS actual bound unsealed manifest reached funded adoption and original-inode quarantine; stale binding and metadata funding retained; no Resume", flush=True)
         require(hashlib.sha256(retained.read_bytes()).hexdigest() == original["hash"],
                 "recovery changed actual candidate body bytes")
 

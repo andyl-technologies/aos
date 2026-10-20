@@ -60,6 +60,7 @@ pub(super) fn run(mode: &str) -> io::Result<()> {
             | "recover-mixed-manifest"
             | "refuse-mixed-manifest"
             | "refuse-conflicting-binding"
+            | "refuse-bound-unsealed"
             | "publish-inline"
             | "publish-inline-cancel"
             | "publish-inline-transfer"
@@ -195,7 +196,8 @@ pub(super) fn run(mode: &str) -> io::Result<()> {
         | "recover-writable-manifest"
         | "recover-mixed-manifest"
         | "refuse-mixed-manifest"
-        | "refuse-conflicting-binding" => {
+        | "refuse-conflicting-binding"
+        | "refuse-bound-unsealed" => {
             super::recovery::run(mode, &owner, &runtime, &inputs, original)?;
         }
         "late-refuse" => late_refuse(&owner, &runtime, &inputs, original)?,

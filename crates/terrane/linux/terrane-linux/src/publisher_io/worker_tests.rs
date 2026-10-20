@@ -24,6 +24,9 @@ use super::{
     NativeWipePolicy, WorkerGate,
 };
 
+#[path = "worker_tests/bound.rs"]
+mod bound;
+
 fn fixture(name: &str) -> [PathBuf; 4] {
     let root =
         PathBuf::from(std::env::var_os("TERRANE_PUBLISH_VM_ROOT").expect("disk-backed VM fixture"));
@@ -950,6 +953,7 @@ fn prepared_roots_defer_staging_effects_and_retain_actual_exclusion(
             .execute(context.clone(), NativeOperation::Drain)
             .await
             .unwrap();
+        bound::exercise(&worker, &context, root).await;
         for name in [
             "retirement-unknown.toml".to_owned(),
             ".binding-incomplete".to_owned(),

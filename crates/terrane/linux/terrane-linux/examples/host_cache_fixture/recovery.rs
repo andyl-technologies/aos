@@ -35,7 +35,7 @@ use terrane_linux::{host_cache::NativeMetadataOwner, host_quota::NativeProject};
 use terrane_sdk::{
     host::{
         cache::CacheState,
-        publication::{FsPublicationState, PublicationClaim, PublicationRecipe},
+        publication::{FsPublicationState, PublicationClaim, PublicationRecipe, VerityBinding},
     },
     pack::{EntryKind, PackClass, PackId, PackWriter},
     store::TokioLocalFs,
@@ -58,6 +58,7 @@ enum FixtureCase {
     MixedVerified,
     MixedMismatch,
     BindingConflict,
+    BoundUnsealed,
 }
 
 impl FixtureCase {
@@ -78,6 +79,7 @@ impl FixtureCase {
             "seed-mixed-manifest" | "recover-mixed-manifest" => Ok(Self::MixedVerified),
             "seed-mixed-bad-manifest" | "refuse-mixed-manifest" => Ok(Self::MixedMismatch),
             "seed-conflicting-binding" | "refuse-conflicting-binding" => Ok(Self::BindingConflict),
+            "seed-bound-unsealed" | "refuse-bound-unsealed" => Ok(Self::BoundUnsealed),
             _ => Err(invalid("unknown manifest fixture selector")),
         }
     }
@@ -97,6 +99,7 @@ impl FixtureCase {
             Self::MixedVerified => "tenant:manifest-mixed",
             Self::MixedMismatch => "tenant:manifest-mixed-mismatch",
             Self::BindingConflict => "tenant:manifest-binding-conflict",
+            Self::BoundUnsealed => "tenant:manifest-bound-unsealed",
         }
     }
 
@@ -108,6 +111,7 @@ impl FixtureCase {
             Self::Truncated => "truncated manifest",
             Self::MixedMismatch => "mixed manifest mismatch",
             Self::BindingConflict => "conflicting manifest binding",
+            Self::BoundUnsealed => "bound unsealed manifest",
             Self::Verified | Self::WritableVerified | Self::MixedVerified | Self::MissingIndex => {
                 "valid manifest"
             }
@@ -240,7 +244,7 @@ pub(super) fn seed(mode: &str) -> io::Result<()> {
     }
     let mode = if matches!(
         case,
-        FixtureCase::WritableUnsealed | FixtureCase::WritableVerified
+        FixtureCase::WritableUnsealed | FixtureCase::WritableVerified | FixtureCase::BoundUnsealed
     ) {
         0o600
     } else {
@@ -249,7 +253,10 @@ pub(super) fn seed(mode: &str) -> io::Result<()> {
     write(&inputs, &sealed, &fixture.plaintext, 841, 841, mode)?;
     // The only writer is closed before any actual permanent kernel seal.
     let retained = File::open(&sealed)?;
-    if matches!(case, FixtureCase::Unsealed | FixtureCase::WritableUnsealed) {
+    if matches!(
+        case,
+        FixtureCase::Unsealed | FixtureCase::WritableUnsealed | FixtureCase::BoundUnsealed
+    ) {
         match terrane_linux::verity::measure(&retained) {
             Err(error) if error.raw_os_error() == Some(libc::ENODATA) => {}
             Err(error) => return Err(error),
@@ -266,7 +273,10 @@ pub(super) fn seed(mode: &str) -> io::Result<()> {
             Err(error) => return Err(error),
             Ok(_) => return Err(invalid("kernel-sealed fixture permitted a write open")),
         }
-    } else if case == FixtureCase::WritableUnsealed {
+    } else if matches!(
+        case,
+        FixtureCase::WritableUnsealed | FixtureCase::BoundUnsealed
+    ) {
         // Close this actual writer before any role starts or recovery runs.
         drop(OpenOptions::new().write(true).open(&sealed)?);
     }
@@ -274,6 +284,8 @@ pub(super) fn seed(mode: &str) -> io::Result<()> {
     File::open(&sealed_parent)?.sync_all()?;
     if case == FixtureCase::BindingConflict {
         seed_conflicting_binding(&inputs, &fixture, &retained)?;
+    } else if case == FixtureCase::BoundUnsealed {
+        seed_bound_unsealed(&inputs, &fixture)?;
     }
     if case.mixed() {
         let hash = inline_hash()?;
@@ -323,6 +335,28 @@ fn seed_conflicting_binding(inputs: &Inputs, fixture: &Fixture, sealed: &File) -
         .first_mut()
         .ok_or_else(|| invalid("seeded seal has no digest"))?;
     *first ^= 1;
+    seed_binding_record(inputs, fixture, &measured)
+}
+
+fn seed_bound_unsealed(inputs: &Inputs, fixture: &Fixture) -> io::Result<()> {
+    // Model a lost sealed incarnation: its real measurement survives beside a
+    // writable canonical replacement. The supervisor checks and removes this
+    // administrative donor before either native role starts.
+    let donor = inputs.root.join("staging/bound-seal-donor");
+    write(inputs, &donor, &fixture.plaintext, 841, 841, 0o400)?;
+    let file = File::open(donor)?;
+    terrane_linux::verity::enable(&file)?;
+    file.sync_all()?;
+    let measured = terrane_linux::verity::measure(&file)?;
+    seed_binding_record(inputs, fixture, &measured)?;
+    File::open(inputs.root.join("staging"))?.sync_all()
+}
+
+fn seed_binding_record(
+    inputs: &Inputs,
+    fixture: &Fixture,
+    measured: &VerityBinding,
+) -> io::Result<()> {
     let identity = TERRANE_V1
         .calculate(IdentityKind::Manifest, &fixture.manifest)
         .map_err(io::Error::other)?;

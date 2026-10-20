@@ -1,4 +1,4 @@
-//! Reconciles bounded publication state against verified native content.
+//! Associates bounded publication state with retained native candidates.
 //!
 //! The existing portable binding parser remains authoritative for its private
 //! format. Record names never supply a content claim. Known historical leases
@@ -7,7 +7,8 @@
 //! deletion or replacement. Manifest claims keep their actual verified metadata
 //! pack/index and native custody through finish. A well-formed conflicting
 //! binding remains an unchanged candidate for funded adoption to quarantine;
-//! names-only inventory never grants binding or serving authority.
+//! an absent seal, writable mode or plaintext mismatch remains adoption work.
+//! Names-only inventory never grants binding or serving authority.
 
 use super::*;
 use std::os::unix::fs::MetadataExt;
@@ -60,8 +61,17 @@ struct Body {
     name: String,
     file: File,
     observed: std::fs::Metadata,
-    measured: VerityBinding,
-    verified: SealedClaim,
+    seal: Option<VerityBinding>,
+    claim: SealedClaim,
+}
+
+/// Records actual kernel seal presence without treating other query errors as absence.
+fn observed_seal(file: &File) -> io::Result<Option<VerityBinding>> {
+    match crate::verity::measure(file) {
+        Ok(binding) => Ok(Some(binding)),
+        Err(error) if error.raw_os_error() == Some(libc::ENODATA) => Ok(None),
+        Err(error) => Err(error),
+    }
 }
 
 struct Record {
@@ -183,25 +193,25 @@ impl StateInventory {
         Ok(())
     }
 
-    /// Matches an existing record to actual verified inline or manifest content.
+    /// Associates a parsed record with an independently reconstructed content claim.
     ///
-    /// An unbound manifest key remains a candidate until funded native adoption
-    /// independently verifies plaintext and can quarantine a rejected inode.
+    /// A matching private record supplies no seal or plaintext authority. Funded
+    /// native adoption verifies the actual inode and quarantines a rejection.
     ///
     /// # Errors
-    /// Rejects changed sources/custody, invalid content, malformed state, seal
-    /// changes and exhausted retained-metadata budgets. A well-formed recorded
-    /// measurement mismatch remains subject to independent funded adoption.
+    /// Rejects changed sources/custody, invalid claim metadata, malformed state,
+    /// uncertain or changed kernel observations and exhausted retained-metadata
+    /// budgets. Actual plaintext, mode and seal validity remain adoption work.
     pub(super) async fn reconcile(
         &mut self,
         inventory: &NativeInventory,
         parent: &File,
         name: &str,
         file: &mut File,
-        verified: SealedClaim,
+        reconstructed: SealedClaim,
     ) -> io::Result<()> {
-        let claim = verified.claim();
-        verified.recheck(inventory)?;
+        let claim = reconstructed.claim();
+        reconstructed.recheck(inventory)?;
         inventory.check_sealed_candidate(file)?;
         let observed = file.metadata()?;
         // Only the actual retained private directory supplies this parser path.
@@ -223,7 +233,7 @@ impl StateInventory {
             // This remains an unadopted candidate, not a verified body or
             // reconstructed binding. Actual funded adoption must verify its
             // plaintext and quarantine a mismatch while retaining metadata.
-            verified.recheck(inventory)?;
+            reconstructed.recheck(inventory)?;
             if !same_inode_snapshot(&observed, &file.metadata()?) {
                 return Err(invalid("unbound inventory candidate changed"));
             }
@@ -234,22 +244,11 @@ impl StateInventory {
                 "publication-state record matched multiple canonical bodies",
             ));
         }
-        inventory.check(file, Custody::Publisher, InodeKind::File)?;
-        if observed.mode() & 0o222 != 0 || observed.len() != claim.plaintext_size() {
-            return Err(invalid("unsafe canonical inventory inode"));
-        }
-        let measured = crate::verity::measure(&*file)?;
-        file.seek(SeekFrom::Start(0))?;
-        // The manifest identity authenticates canonical metadata, never assembled
-        // bytes. This separately checks exact length, ordered chunks and every
-        // required whole-file hash under that authenticated claim.
-        claim.verify_reader(file)?;
-        verified.recheck(inventory)?;
-        if !same_inode_snapshot(&observed, &file.metadata()?)
-            || crate::verity::measure(&*file)? != measured
-        {
+        let seal = observed_seal(file)?;
+        reconstructed.recheck(inventory)?;
+        if !same_inode_snapshot(&observed, &file.metadata()?) || observed_seal(file)? != seal {
             return Err(invalid(
-                "canonical inventory inode changed during verification",
+                "canonical inventory inode changed during observation",
             ));
         }
         let retained_bytes = retain_source_budget(self.retained_bytes, claim)?;
@@ -269,8 +268,8 @@ impl StateInventory {
             name: name.to_owned(),
             file: file.try_clone()?,
             observed,
-            measured,
-            verified,
+            seal,
+            claim: reconstructed,
         };
         Self::recheck_body(inventory, &body)?;
         record.body = Some(body);
@@ -279,19 +278,19 @@ impl StateInventory {
     }
 
     fn recheck_body(inventory: &NativeInventory, body: &Body) -> io::Result<()> {
-        body.verified.recheck(inventory)?;
+        body.claim.recheck(inventory)?;
         inventory.check(&body.parent, Custody::Publisher, InodeKind::Directory)?;
         let current = open(&body.parent, &body.name, false)?;
-        inventory.check(&current, Custody::Publisher, InodeKind::File)?;
-        inventory.check(&body.file, Custody::Publisher, InodeKind::File)?;
+        inventory.check_sealed_candidate(&current)?;
+        inventory.check_sealed_candidate(&body.file)?;
         if !same_inode_snapshot(&body.observed, &current.metadata()?)
             || !same_inode_snapshot(&body.observed, &body.file.metadata()?)
-            || crate::verity::measure(&current)? != body.measured
-            || crate::verity::measure(&body.file)? != body.measured
+            || observed_seal(&current)? != body.seal
+            || observed_seal(&body.file)? != body.seal
         {
             return Err(invalid("canonical binding body or seal changed"));
         }
-        body.verified.recheck(inventory)
+        body.claim.recheck(inventory)
     }
 
     fn recheck_binding(inventory: &NativeInventory, record: &Record) -> io::Result<()> {
