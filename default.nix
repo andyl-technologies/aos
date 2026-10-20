@@ -1654,7 +1654,7 @@ in rec {
   checks = rec {
     terrane = import ./tests/terrane {
       inherit pkgs lib;
-      mkSystem = mkFixtureSystem;
+      mkSystem = mkPackageFixtureSystem;
     };
     bootstrap.kotlin-java = import ./pkgs/toolchain/_kotlin-bootstrap-2011.nix {
       inherit (buildPackages) mkDerivation;
