@@ -12,7 +12,18 @@ specific stage; they are not cumulative coverage of the latest source.
 
 ## Latest checkpoint
 
-The workspace at `cb1f6ae448` includes the merge of `origin/master`
+The refactor at `b86bcd18eb` shares secret-free launch, Hello and registration
+operands with their original consumers, and adds bounded literal-Value streams
+with iterative success/failure ownership and closed diagnostics. Engine and
+Transport pass all-feature/all-target checking. Their complete default and
+separate raw-value library runs each pass **3,706 tests with zero failures and
+48 existing ignores**. All 28 new controls execute in both configurations: seven
+launch-validation comparisons, five Hello/registration comparisons, four shared
+serializer comparisons and twelve literal-stream controls. Application-target
+compilation and registered gates for this successor remain pending. Process
+containment, the parent job join and native activation remain unqualified.
+
+The earlier workspace at `cb1f6ae448` includes the merge of `origin/master`
 (`68851a3bf1`, merge `f83ea82651`), the reference-provider vendor and source-filter
 refresh, safe callback-layout measurements, strict-parser cursor extraction,
 owned identifier refusals and the ordinary Prepared observer projection. The
