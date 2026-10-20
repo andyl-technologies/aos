@@ -11,6 +11,11 @@
   libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
   rendezvousTest = builtins.readFile ../../crates/crucible/tests/scheduler_rendezvous.rs;
   livenessTest = builtins.readFile ../../crates/crucible/tests/gate_scheduler_liveness.rs;
+  # Bounded ceilings (RFC-0010 SCHED-12) must not move guest events: a costed
+  # double proves it for the scheduler, and the live flight's partition probe
+  # proves it on the production QEMU path.
+  frequencyTest = builtins.readFile ../../crates/crucible/tests/scheduler_frequency_independence.rs;
+  partitionProbe = builtins.readFile ../../crates/crucible-qemu/examples/crucible-qemu-production-plugin-flight/partition_probe.rs;
   schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -102,6 +107,34 @@
         needle = "vec![(12, vec![77])]";
       }
     ]
+    ++ failuresFor "crates/crucible/tests/scheduler_frequency_independence.rs" frequencyTest [
+      {
+        label = "costed bounded-ceiling trajectory test";
+        needle = "bounded_ceilings_leave_every_guest_event_independent_of_the_schedule";
+      }
+      {
+        label = "legacy ceiling credit negative control";
+        needle = "legacy_ceiling_credit_is_detected_as_schedule_dependent";
+      }
+      {
+        label = "seeded ceiling schedule property";
+        needle = "seeded_random_ceiling_schedules_match_the_unconstrained_baseline";
+      }
+    ]
+    ++ failuresFor "crates/crucible-qemu/examples/crucible-qemu-production-plugin-flight/partition_probe.rs" partitionProbe [
+      {
+        label = "production alternating rendezvous bounds";
+        needle = "PartitionSchedule::AlternatingRendezvous";
+      }
+      {
+        label = "production seeded odd-picosecond bounds";
+        needle = "PartitionSchedule::SeededOdd";
+      }
+      {
+        label = "production frequency-independence evidence";
+        needle = "bound_frequency_independent=true";
+      }
+    ]
     ++ failuresFor "crates/crucible/tests/gate_scheduler_liveness.rs" livenessTest [
       {
         label = "liveness no per-quantum decision assumption";
@@ -118,6 +151,10 @@
       {
         label = "phase3 exposes scheduler rendezvous check";
         needle = "schedulerRendezvous = import ./phase3-scheduler-rendezvous.nix";
+      }
+      {
+        label = "phase4 exposes the production bounded-ceiling flight";
+        needle = "schedulerBoundFrequencyQemuVm = phase7.productionRustPluginFlight.rawGate.partitionDiagnostic;";
       }
     ];
 in
@@ -175,6 +212,7 @@ in
               --target-dir "$TMPDIR/crucible-scheduler-rendezvous-target" \
               -p crucible \
               --test scheduler_rendezvous \
+              --test scheduler_frequency_independence \
               -- --test-threads=1
           '';
         }
@@ -191,6 +229,8 @@ in
             rendezvous=exact-shared-horizon-cap
             ordering_exactness=frequency-independent
             empty_rendezvous_quantum=no-canonical-decision
+            bounded_ceilings=guest-trajectory-frequency-independent
+            production_path=checks.crucible.phase4.schedulerBoundFrequencyQemuVm
             RESULT
           '';
         }

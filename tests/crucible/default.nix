@@ -908,6 +908,9 @@ in rec {
     packagedCampaignEnvoyDirectQuietVm = import ./phase4-packaged-campaign-envoy-direct-quiet-vm.nix {inherit pkgs lib;};
     packagedCampaignEnvoyProxyVm = import ./phase4-packaged-campaign-envoy-proxy-vm.nix {inherit pkgs lib;};
     packagedCampaignChoiceVm = import ./phase4-packaged-campaign-choice-vm.nix {inherit pkgs lib;};
+    # T3 for RFC-0010 SCHED-12: five ceiling schedules over one live QEMU
+    # interval must leave the same guest state.
+    schedulerBoundFrequencyQemuVm = phase7.productionRustPluginFlight.rawGate.partitionDiagnostic;
     packagedCampaignLifecycleVm = import ./phase4-packaged-campaign-lifecycle-vm.nix {inherit pkgs lib;};
     packagedCampaignEnvoyNetworkVm = import ./phase4-packaged-campaign-envoy-network-vm.nix {inherit pkgs lib;};
     packagedCampaignMaterializationVm = import ./phase4-packaged-campaign-materialization-vm.nix {inherit pkgs lib;};
@@ -1463,6 +1466,7 @@ in rec {
             phase4.guestHostChannelDeterminism
             phase4.guestHostChannelGateWiring
             phase4.guestHostAppRandomDoorbell
+            phase4.schedulerBoundFrequencyQemuVm
           ];
         };
         dependencies = [
@@ -1473,6 +1477,7 @@ in rec {
           phase4.guestHostChannelDeterminism
           phase4.guestHostChannelGateWiring
           phase4.guestHostAppRandomDoorbell
+          phase4.schedulerBoundFrequencyQemuVm
         ];
       };
     };

@@ -156,20 +156,37 @@ fn boundary(target: u64, rr_current_vcpu: u32, rr_position_in_quantum: u64) -> B
     }
 }
 
+/// Adds the fractional-phase stop for a retirement grid that lands on the
+/// lower instruction-exact target: the earlier target settles one retirement
+/// before it.
 fn boundaries_with_fractional_phase(
     lower: BoundaryEvidence,
     upper: BoundaryEvidence,
 ) -> Vec<BoundaryEvidence> {
+    let previous = lower.calibration.logical_icount - FLIGHT_TICKS_PER_INSTRUCTION;
     let mut fractional = lower.clone();
     fractional.target = FRACTIONAL_PHASE_LOWER_TARGET;
-    fractional.sample.sample_icount = FRACTIONAL_PHASE_LOWER_TARGET;
-    fractional.sample.device_state_digest[0] = FRACTIONAL_PHASE_LOWER_TARGET.to_le_bytes()[0];
-    fractional.calibration.logical_icount = FRACTIONAL_PHASE_LOWER_TARGET;
+    fractional.sample.sample_icount = previous;
+    fractional.sample.device_state_digest[0] = previous.to_le_bytes()[0];
+    fractional.calibration = QemuLogicalTimeCalibration {
+        logical_icount: previous,
+        raw_icount: lower.calibration.raw_icount - 1,
+    };
     fractional.fingerprint = ExecutionFingerprint {
-        hash: ContentHash::from_bytes(&FRACTIONAL_PHASE_LOWER_TARGET.to_be_bytes()),
+        hash: ContentHash::from_bytes(&previous.to_be_bytes()),
     };
 
     vec![fractional, lower, upper]
+}
+
+/// Moves a boundary's stop to `logical` below its target, as a settled bound.
+fn settled_at(mut boundary: BoundaryEvidence, logical: u64) -> BoundaryEvidence {
+    boundary.sample.sample_icount = logical;
+    boundary.calibration = QemuLogicalTimeCalibration {
+        logical_icount: logical,
+        raw_icount: logical / FLIGHT_TICKS_PER_INSTRUCTION,
+    };
+    boundary
 }
 
 fn idle_evidence(timer_generation: u64) -> IdleEvidence {
@@ -316,6 +333,7 @@ fn adjacent_samples_prove_one_instruction_localization() {
 
     let evidence = instruction_exact_evidence(&boundaries)
         .expect("adjacent exact samples must produce localization evidence");
+    assert_eq!(evidence.fractional_phase_retirements, 1);
     assert_eq!(evidence.lower_target, 2_000_001);
     assert_eq!(evidence.upper_target, 2_000_051);
     assert_eq!(evidence.lower_rr_vcpu, evidence.upper_rr_vcpu);
@@ -341,28 +359,49 @@ fn adjacent_samples_prove_one_instruction_localization() {
 }
 
 #[test]
-fn fractional_phase_rejects_retired_state_change() {
-    let lower = boundary(INSTRUCTION_EXACT_LOWER_TARGET, 0, 47);
-    let upper = boundary(INSTRUCTION_EXACT_UPPER_TARGET, 0, 48);
-    let mut boundaries = boundaries_with_fractional_phase(lower, upper);
-    boundaries[1].sample.rr_position_in_quantum += 1;
+fn fractional_phase_between_retirements_leaves_the_stop_unchanged() {
+    // The grid ends retirements at 1_999_990 and 2_000_040, so both the
+    // fractional and lower targets settle at 1_999_990.
+    let lower = settled_at(boundary(INSTRUCTION_EXACT_LOWER_TARGET, 0, 47), 1_999_990);
+    let upper = settled_at(boundary(INSTRUCTION_EXACT_UPPER_TARGET, 0, 48), 2_000_040);
+    let mut fractional = lower.clone();
+    fractional.target = FRACTIONAL_PHASE_LOWER_TARGET;
 
-    let error = instruction_exact_evidence(&boundaries)
-        .expect_err("one picosecond must not retire an instruction");
-    assert!(error.contains("fractional-phase sample changed retired state"));
+    let evidence = instruction_exact_evidence(&[fractional, lower, upper])
+        .expect("an unretired picosecond must leave the stop bit-identical");
+    assert_eq!(evidence.fractional_phase_retirements, 0);
 }
 
 #[test]
-fn fractional_phase_requires_a_timer_projection_change() {
+fn fractional_phase_rejects_a_credited_clock() {
+    let lower = settled_at(boundary(INSTRUCTION_EXACT_LOWER_TARGET, 0, 47), 1_999_990);
+    let upper = settled_at(boundary(INSTRUCTION_EXACT_UPPER_TARGET, 0, 48), 2_000_040);
+    let mut fractional = lower.clone();
+    fractional.target = FRACTIONAL_PHASE_LOWER_TARGET;
+    // Same retirement, but the later target moved the clock by one picosecond.
+    let mut credited = lower.clone();
+    credited.sample.sample_icount += 1;
+    credited.calibration.logical_icount += 1;
+    credited.fingerprint = ExecutionFingerprint {
+        hash: ContentHash::from_bytes(b"credited"),
+    };
+
+    let error = instruction_exact_evidence(&[fractional, credited, upper])
+        .expect_err("a ceiling must never be credited to the guest clock");
+    assert!(error.contains("credited the clock"));
+}
+
+#[test]
+fn samples_must_settle_their_targets() {
     let lower = boundary(INSTRUCTION_EXACT_LOWER_TARGET, 0, 47);
     let upper = boundary(INSTRUCTION_EXACT_UPPER_TARGET, 0, 48);
     let mut boundaries = boundaries_with_fractional_phase(lower, upper);
-    let phase_device_digest = boundaries[0].sample.device_state_digest;
-    boundaries[1].sample.device_state_digest = phase_device_digest;
+    // A full instruction below its target is not the last retirement.
+    boundaries[2] = settled_at(boundaries[2].clone(), INSTRUCTION_EXACT_UPPER_TARGET - 50);
 
     let error = instruction_exact_evidence(&boundaries)
-        .expect_err("one picosecond must advance the timer projection");
-    assert!(error.contains("omitted timer projection"));
+        .expect_err("a stop a whole instruction below its target must fail");
+    assert!(error.contains("do not settle adjacent requested coordinates"));
 }
 
 #[test]

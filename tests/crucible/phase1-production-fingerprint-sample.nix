@@ -78,8 +78,7 @@ in
             instruction_exact_window_lower_picoseconds=2000001 \
             instruction_exact_window_upper_picoseconds=2000051 \
             instruction_exact_window_width_picoseconds=50 \
-            fractional_phase_no_retirement=true \
-            fractional_phase_timer_projection_changed=true \
+            fractional_phase_clock_not_credited=true \
             instruction_exact_raw_retirement_successor=true \
             instruction_exact_rr_successor=true \
             instruction_exact_state_projection_changed=true \
@@ -88,7 +87,7 @@ in
             bounded_scheduler_preemption_applied=true \
             component_failures=0 \
             per_vcpu_register_files_present=true \
-            sample_logical_picoseconds_equal_target=true
+            sample_logical_picoseconds_settle_target=true
           do
             test "$(grep -Fxc "$line" "$flight")" -eq 1
           done
@@ -121,8 +120,7 @@ in
           mismatch_localization=one-instruction-window
           instruction_exact_window_picoseconds=2000001,2000051
           fractional_phase_window_picoseconds=2000000,2000001
-          fractional_phase_no_retirement=true
-          fractional_phase_timer_projection_changed=true
+          fractional_phase_clock_not_credited=true
           instruction_exact_rr_cursor=authenticated-owner-and-position
           instruction_exact_raw_retirement_successor=true
           instruction_exact_state_projection=owning-vcpu-register-digest

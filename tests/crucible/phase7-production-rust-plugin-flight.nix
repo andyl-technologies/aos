@@ -233,9 +233,7 @@
       instruction_exact_window_width_picoseconds=50 \
       fractional_phase_window_lower_picoseconds=2000000 \
       fractional_phase_window_upper_picoseconds=2000001 \
-      fractional_phase_no_retirement=true \
-      fractional_phase_timer_projection_changed=true \
-      fractional_phase_fingerprint_changed=true \
+      fractional_phase_clock_not_credited=true \
       instruction_exact_raw_retirement_successor=true \
       instruction_exact_rr_successor=true \
       instruction_exact_state_projection_changed=true \
@@ -260,7 +258,7 @@
       hot_fork_preparation_order=block-recovery-settled,draining,prepared \
       component_failures=0 \
       per_vcpu_register_files_present=true \
-      sample_logical_picoseconds_equal_target=true; do
+      sample_logical_picoseconds_settle_target=true; do
       test "$(${pkgs.grep}/bin/grep -Fxc "$evidence" "$result")" -eq 1
     done
     for numeric_evidence in \
@@ -270,6 +268,8 @@
       test "$(${pkgs.grep}/bin/grep -Ec "^$numeric_evidence=[1-9][0-9]*$" "$result")" -eq 1
     done
     test "$(${pkgs.grep}/bin/grep -Ec '^block_recovery_start_tick=[0-9]+$' "$result")" -eq 1
+    # A one-picosecond later bound admits at most the retirement ending on it.
+    test "$(${pkgs.grep}/bin/grep -Ec '^fractional_phase_retirements=[01]$' "$result")" -eq 1
     witness_value() {
       ${pkgs.grep}/bin/grep -E "^$1=" "$result" \
         | ${pkgs.coreutils}/bin/cut -d = -f 2-
@@ -519,7 +519,8 @@
   partitionDiagnostic = testing.mkVMTest {
     name = "crucible-phase4-qemu-clock-partition-diagnostic";
     memory = 8192;
-    timeout = 1200;
+    # Five sequential boots, one per ceiling schedule.
+    timeout = 3600;
     inherit rootfsDeps;
     testScript = ''
       set -eu
@@ -535,6 +536,8 @@
       ${pkgs.grep}/bin/grep -Fxq 'diagnostic_mode=phase4-partition-probe' "$result"
       ${pkgs.grep}/bin/grep -Fxq 'phase4_partition_span_ps=1000000' "$result"
       ${pkgs.grep}/bin/grep -Fq 'phase4_partition_exact_match=true' "$result"
+      ${pkgs.grep}/bin/grep -Fxq 'phase4_partition_variants=coarse,fine,alternating-rendezvous,ten-nanosecond,seeded-odd' "$result"
+      ${pkgs.grep}/bin/grep -Fxq 'bound_frequency_independent=true' "$result"
     '';
   };
   exposedGate =

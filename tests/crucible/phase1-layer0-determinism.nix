@@ -30,7 +30,7 @@ in
       "mismatch_localization=one-instruction-window"
       "instruction_exact_window_picoseconds=2000001,2000051"
       "fractional_phase_window_picoseconds=2000000,2000001"
-      "fractional_phase_no_retirement=true"
+      "fractional_phase_clock_not_credited=true"
       "instruction_exact_raw_retirement_successor=true"
     ];
     semanticEvidence = [
@@ -41,7 +41,7 @@ in
       "sample_target_picoseconds=2000000,2000001,2000051,4000000,8000000"
       "restart_stream_identity=true"
       "mismatch_localization=one-instruction-window"
-      "fractional_phase_no_retirement=true"
+      "fractional_phase_clock_not_credited=true"
       "host_adversary=bounded-scheduler-preemption"
     ];
   }
