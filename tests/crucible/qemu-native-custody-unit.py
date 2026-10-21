@@ -24,8 +24,14 @@ COMPONENTS = (
     "clock-storage-return", "flatview-custody", "memory-discard-custody",
     "memory-region-custody", "provider-metadata", "publisher-member-return",
     "shmem-callback-return", "publisher-service-transfer",
-    "initial-register-read", "ram-mapping-journal",
+    "initial-register-read", "ram-mapping-journal", "initial-native-read",
+    "advance-content", "advance-post-refusal", "advance-recipient-leaves",
+    "advance-registration", "publisher-initial-state",
 )
+POSITIONAL_ARGUMENTS = {
+    "advance-content", "advance-post-refusal", "advance-recipient-leaves",
+    "advance-registration", "publisher-initial-state",
+}
 FULL_LINK = {
     "action-edge-post", "apic-timer-storage", "clock-storage-return",
     "shmem-callback-return",
@@ -209,8 +215,11 @@ def main():
         settings["LDFLAGS"] = shlex.join(link if name in FULL_LINK else [glib, "-pthread"])
         if name in TARGET_FLAGS:
             settings["CFLAGS"] = shlex.join(flags + target_flags)
-        argv = [sys.executable, str(source / f"tests/unit/test-crucible-{name}.py"),
-                "--output-dir", str(cases)]
+        argv = [sys.executable, str(source / f"tests/unit/test-crucible-{name}.py")]
+        if name in POSITIONAL_ARGUMENTS:
+            argv.extend((str(source), str(cases)))
+        else:
+            argv.extend(("--output-dir", str(cases)))
         if name in QOM_LINK:
             argv.extend(("--qemu-util", str(build / "libqemuutil.a")))
             for path in qom:

@@ -10,6 +10,17 @@ The atomic integration patch creates these QEMU source files:
 
 | Created file | License | Basis |
 | --- | --- | --- |
+| `docs/devel/crucible-advance-receiver.rst` | GPL-2.0-or-later | QEMU default |
+| `docs/devel/crucible-quantum-handoff-proposal.rst` | GPL-2.0-or-later | QEMU default |
+| `plugins/crucible-advance-receiver.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-native-initial-read.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `system/crucible-preexec-publisher-recipient.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-advance-content.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-advance-post-refusal.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-advance-recipient-leaves.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-advance-registration.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-initial-native-read.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-publisher-initial-state.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `docs/devel/crucible-apic-getter.rst` | GPL-2.0-or-later | QEMU default |
 | `docs/devel/crucible-fault-retirement.rst` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `docs/devel/crucible-publisher-construction.rst` | GPL-2.0-or-later | Explicit SPDX identifier |
