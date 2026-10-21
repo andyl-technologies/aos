@@ -46,6 +46,8 @@
           type = systemdTypes.services;
           default = {};
         };
+        options.fixture.orderedText = lib.mkOption {type = lib.types.lines;};
+        options.fixture.nestedText = lib.mkOption {type = lib.types.attrsOf lib.types.lines;};
       }
       {
         config.systemd.services = {
@@ -105,6 +107,31 @@
           };
         };
       }
+      {
+        config.fixture.orderedText = lib.mkAfter "last";
+        config.fixture.nestedText.value = lib.mkAfter "last";
+        config.systemd.services.ordered-directives.serviceConfig = {
+          ExecStart = "${pkgs.coreutils}/bin/true";
+          OpenFile = lib.mkAfter ["last"];
+          ReadWritePaths = lib.mkAfter ["/discarded-after"];
+        };
+      }
+      {
+        config.fixture.orderedText = "middle";
+        config.fixture.nestedText.value = "middle";
+        config.systemd.services.ordered-directives.serviceConfig = {
+          OpenFile = "middle";
+          ReadWritePaths = lib.mkForce (lib.mkAfter ["/forced"]);
+        };
+      }
+      {
+        config.fixture.orderedText = lib.mkBefore "first";
+        config.fixture.nestedText.value = lib.mkBefore "first";
+        config.systemd.services.ordered-directives.serviceConfig = {
+          OpenFile = lib.mkBefore ["first"];
+          ReadWritePaths = lib.mkBefore ["/discarded-before"];
+        };
+      }
     ];
     lib = lib;
   };
@@ -142,16 +169,8 @@
   };
   pureScriptUnit = pureGenerated."script-only.service";
   pureKeys = builtins.attrNames pureScriptUnit;
-  artifactPackage = {
-    # Asymmetric bytes prove the original basename is absent from the bundle.
-    outPath = "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-artifact-fixture";
-    __toString = self: self.outPath;
-    type = "derivation";
-    pname = "artifact-fixture";
-    name = "artifact-fixture-1";
-    version = "1";
-    outputs = ["out"];
-  };
+  # Artifact decoding validates the realized store path, so use an AOS artifact.
+  artifactPackage = builtins.removeAttrs pkgs.coreutils ["catalogName"];
   artifactCandidates = {
     fixture = artifactPackage;
     fixtureAlias = artifactPackage;
@@ -192,12 +211,11 @@
     dropin = externalUnit "demo.service.d/10-package.conf" "${artifactPackage}/lib/systemd/system/demo.service.d/10-package.conf";
     override = authoredUnit;
   };
-  retiredArgumentsRejected = extra:
-    !(builtins.tryEval (builtins.toJSON (systemdLib.generateUnits ({
-        type = "system";
-        units = {};
-      }
-      // extra)))).success;
+  # Nix argument type errors escape tryEval. Inspect the public signature
+  # rather than intentionally making an uncatchable invalid function call.
+  retiredArgumentsAbsent = extra:
+    builtins.all (name: !(builtins.hasAttr name (builtins.functionArgs systemdLib.generateUnits)))
+    (builtins.attrNames extra);
   providerCollisionRejected =
     !(builtins.tryEval (builtins.toJSON (systemdLib.unitsToEtc {
       first = externalUnit "demo.service" "${artifactPackage}/first";
@@ -283,14 +301,14 @@
     }
     {
       cond =
-        retiredArgumentsRejected {packages = [artifactPackage];}
-        && retiredArgumentsRejected {
+        retiredArgumentsAbsent {packages = [artifactPackage];}
+        && retiredArgumentsAbsent {
           package = artifactPackage;
           upstreamUnits = ["demo.service"];
         }
-        && retiredArgumentsRejected {allowCollisions = false;}
+        && retiredArgumentsAbsent {allowCollisions = false;}
         && providerCollisionRejected;
-      msg = "systemd-lib: retired inventory arguments and overlapping provider entries must fail closed";
+      msg = "systemd-lib: retired arguments must stay outside the public signature and overlapping provider entries must fail closed";
     }
     {
       cond =
@@ -309,13 +327,29 @@
         toString frozenArtifacts.fixture
         == toString artifactPackage
         && !containsStr "/nix/store/" frozenArtifactJson
-        && !containsStr "0123456789abcdfghijklmnpqrsvwxyz" frozenArtifactJson
+        && !containsStr (builtins.unsafeDiscardStringContext (builtins.baseNameOf (toString artifactPackage))) frozenArtifactJson
         && containsStr "@nix-store@/" frozenArtifactJson;
       msg = "systemd-lib: selected artifact paths must round-trip without serialized store references";
     }
     {
       cond = duplicateFinalEtcRejected && nonAdjacentAncestorEtcRejected;
       msg = "systemd-lib: duplicate and ancestor-overlapping final /etc targets must be rejected";
+    }
+    {
+      cond =
+        result.config.fixture.orderedText
+        == "first\nmiddle\nlast"
+        && result.config.fixture.nestedText.value == "first\nmiddle\nlast";
+      msg = "systemd-lib: ordered text blocks must merge at top-level and nested option boundaries";
+    }
+    {
+      cond =
+        svc.ordered-directives.serviceConfig.OpenFile
+        == ["first" "middle" "last"]
+        && svc.ordered-directives.serviceConfig.ReadWritePaths == ["/forced"]
+        && containsStr "OpenFile=first\nOpenFile=middle\nOpenFile=last\n"
+        (systemdLib.serviceToUnit svc.ordered-directives).text;
+      msg = "systemd-lib: ordered repeated directives must render in order without module property markers";
     }
     {
       cond = lib.hasPrefix "#aos-jobscript:" scriptOnlyExec;

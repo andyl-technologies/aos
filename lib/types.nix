@@ -267,7 +267,11 @@ in rec {
     name = "lines";
     description = "strings concatenated with newlines";
     check = builtins.isString;
-    merge = _loc: defs: builtins.concatStringsSep "\n" (builtins.map (d: d.value) defs);
+    merge = loc: defs:
+      builtins.concatStringsSep "\n" ((listOf str).merge loc (
+        # A line block is one ordered element, including an empty block.
+        builtins.map (def: def // {value = [def.value];}) defs
+      ));
     _aosDocType = str._aosDocType;
   };
 
