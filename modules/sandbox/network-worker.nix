@@ -37,7 +37,7 @@
       inputJson = builtins.toJSON workerProfileInput;
       passAsFile = ["inputJson"];
     } ''
-      ${pkgs.python3}/bin/python3 -B ${./_network-worker-profile.py} "$inputJsonPath" "$out"
+      ${pkgs.python3}/bin/python3 -B ${./_network-worker-profile.py} "$inputJsonPath" "$out/profile"
     '';
 in {
   options.aos.sandbox.networkWorker = {
@@ -59,7 +59,7 @@ in {
 
   config = lib.mkIf cfg.enable {
     environment.etc."aos/sandbox-network-worker-profile-v2" = {
-      source = toString workerProfile;
+      source = "${workerProfile}/profile";
       mode = "0444";
     };
 
