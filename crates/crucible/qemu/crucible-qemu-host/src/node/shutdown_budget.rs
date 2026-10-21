@@ -24,7 +24,7 @@ impl QemuNodeShutdownTarget<'_, '_, '_> {
                 return Ok(QemuChildWait::Exited);
             }
             guard.wait_slice().map_err(|source| {
-                QemuShutdownTargetError::new("wait for cleanup", source.to_string())
+                QemuShutdownTargetError::operational_supervision("wait for cleanup", source)
             })?;
 
             // Each phase gets a fifth of the current finite class allowance.
@@ -32,7 +32,7 @@ impl QemuNodeShutdownTarget<'_, '_, '_> {
             // enclosing cleanup operation. Exhaustion advances containment;
             // the original total deadline still bounds the complete ladder.
             let (_, budgets) = supervisor.budgets().map_err(|source| {
-                QemuShutdownTargetError::new("observe cleanup policy", source.to_string())
+                QemuShutdownTargetError::operational_supervision("observe cleanup policy", source)
             })?;
             let budget = budgets.classes[HostOperationClass::Cleanup as usize];
             let allowance = [budget.total_timeout, budget.progress_timeout]
@@ -49,7 +49,7 @@ impl QemuNodeShutdownTarget<'_, '_, '_> {
                 return Ok(QemuChildWait::StillRunning);
             }
             guard.wait_for_change().map_err(|source| {
-                QemuShutdownTargetError::new("wait for cleanup", source.to_string())
+                QemuShutdownTargetError::operational_supervision("wait for cleanup", source)
             })?;
         }
     }

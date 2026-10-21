@@ -471,9 +471,9 @@ impl QemuNodeShutdownTarget<'_, '_, '_> {
                     self.observations[index].0 = Some(first);
                     *self.history_pending = true;
                 }
-                Err(QemuShutdownTargetError::new(
+                Err(QemuShutdownTargetError::operational_supervision(
                     "enter child cleanup rung",
-                    first.to_string(),
+                    first,
                 ))
             }
             None => effect(self),
@@ -493,9 +493,9 @@ impl QemuNodeShutdownTarget<'_, '_, '_> {
         }
         let status = match (first, after) {
             (Some(first), _) => Err(first),
-            (None, Some(after)) => Err(QemuShutdownTargetError::new(
+            (None, Some(after)) => Err(QemuShutdownTargetError::operational_supervision(
                 "post child cleanup rung",
-                after.to_string(),
+                after,
             )),
             (None, None) => Ok(()),
         };

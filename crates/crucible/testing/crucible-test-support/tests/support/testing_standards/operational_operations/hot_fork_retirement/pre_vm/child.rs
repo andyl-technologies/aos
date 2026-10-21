@@ -522,7 +522,7 @@ pub(super) fn under_original_observed<T>(
                 self.observations[index].0 = Some(first);
                 *self.history_pending = true;
             }
-            Err(QemuShutdownTargetError::new("enter child cleanup rung", first.to_string(),))
+            Err(QemuShutdownTargetError::operational_supervision("enter child cleanup rung", first,))
         }
         None => effect(self),
     };
@@ -539,7 +539,7 @@ pub(super) fn under_original_observed<T>(
     }
     let status = match (first, after) {
         (Some(first), _) => Err(first),
-        (None, Some(after)) => Err(QemuShutdownTargetError::new("post child cleanup rung", after.to_string(),)),
+        (None, Some(after)) => Err(QemuShutdownTargetError::operational_supervision("post child cleanup rung", after,)),
         (None, None) => Ok(()),
     };
     (output, status)
@@ -566,10 +566,10 @@ pub(super) const WAIT: Companion = Companion {
             return Ok(QemuChildWait::Exited);
         }
         guard.wait_slice().map_err(|source| {
-            QemuShutdownTargetError::new("wait for cleanup", source.to_string())
+            QemuShutdownTargetError::operational_supervision("wait for cleanup", source)
         })?;
         let (_, budgets) = supervisor.budgets().map_err(|source| {
-            QemuShutdownTargetError::new("observe cleanup policy", source.to_string())
+            QemuShutdownTargetError::operational_supervision("observe cleanup policy", source)
         })?;
         let budget = budgets.classes[HostOperationClass::Cleanup as usize];
         let allowance = [budget.total_timeout, budget.progress_timeout]
@@ -578,7 +578,7 @@ pub(super) const WAIT: Companion = Companion {
             })?;
         if started.elapsed() >= allowance / 5 { return Ok(QemuChildWait::StillRunning); }
         guard.wait_for_change().map_err(|source| {
-            QemuShutdownTargetError::new("wait for cleanup", source.to_string())
+            QemuShutdownTargetError::operational_supervision("wait for cleanup", source)
         })?;
     }
 }"#,

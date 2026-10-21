@@ -6,6 +6,7 @@
 //! unresponsive guests without spawning QEMU, while [`UnixQemuChildShutdownTarget`]
 //! provides the production Unix process adapter.
 
+use std::borrow::Cow;
 use std::io::Write;
 use std::process::Child;
 use std::thread;
@@ -125,23 +126,68 @@ pub struct QemuShutdownReport {
 }
 
 /// Error returned by a shutdown target operation.
-#[derive(Clone, Debug, Error, PartialEq, Eq)]
-#[error("{operation} failed: {message}")]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QemuShutdownTargetError {
     /// Operation being attempted.
     pub operation: &'static str,
-    /// Human-readable failure detail.
-    pub message: String,
+    /// Authored detail, borrowed for static text and empty for typed refusals.
+    pub message: Cow<'static, str>,
+    supervision: Option<crucible_host_resources::host_supervision::HostSupervisionError>,
+}
+
+impl std::fmt::Display for QemuShutdownTargetError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.supervision {
+            Some(source) if self.message.is_empty() => {
+                write!(formatter, "{} failed: {source}", self.operation)
+            }
+            _ => write!(formatter, "{} failed: {}", self.operation, self.message),
+        }
+    }
+}
+
+impl std::error::Error for QemuShutdownTargetError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.supervision.as_ref().map(|source| source as _)
+    }
 }
 
 impl QemuShutdownTargetError {
-    /// Creates a target error from displayable context.
+    /// Creates a target error without copying its diagnostic.
+    ///
+    /// Static text is borrowed; owned messages retain their existing allocation.
+    /// Dynamic diagnostic construction still requires its own admission.
     #[must_use]
-    pub fn new(operation: &'static str, message: impl Into<String>) -> Self {
+    pub fn new(operation: &'static str, message: impl Into<Cow<'static, str>>) -> Self {
         Self {
             operation,
             message: message.into(),
+            supervision: None,
         }
+    }
+
+    /// Retains a typed Cleanup refusal without formatting a diagnostic.
+    ///
+    /// This preserves the actual cause; it grants no further operation or
+    /// physical-return authority.
+    #[must_use]
+    pub fn operational_supervision(
+        operation: &'static str,
+        source: crucible_host_resources::host_supervision::HostSupervisionError,
+    ) -> Self {
+        Self {
+            operation,
+            message: Cow::Borrowed(""),
+            supervision: Some(source),
+        }
+    }
+
+    /// Returns the original typed operational refusal, when present.
+    #[must_use]
+    pub const fn operational_supervision_source(
+        &self,
+    ) -> Option<crucible_host_resources::host_supervision::HostSupervisionError> {
+        self.supervision
     }
 }
 

@@ -162,6 +162,166 @@ fn close(
 }
 
 #[test]
+fn shutdown_diagnostics_borrow_static_text_and_retain_typed_original() -> Result<(), Box<dyn Error>>
+{
+    use crucible_host_resources::test_support::TestAllocationObserver;
+    use std::borrow::Cow;
+
+    let supervisor = HostOperationSupervisor::new(HostOperationBudgets::default(), None)?;
+    let original = supervisor.begin(HostOperationClass::Cleanup)?;
+    original.complete()?;
+    let source = original.wait_slice().unwrap_err();
+
+    let (errors, counts) = TestAllocationObserver::count(|| {
+        let first = QemuShutdownTargetError::new("cleanup", "fixed refusal");
+        let alias = first.clone();
+        let channel = super::super::channel_error_to_shutdown_error(QemuNodeChannelError::new(
+            "channel cleanup",
+            "bounded writer absent",
+        ));
+        let typed = QemuShutdownTargetError::operational_supervision("cleanup", source);
+        [first, alias, channel, typed.clone(), typed]
+    });
+
+    assert_eq!(counts.allocations, 0);
+    assert_eq!(counts.reallocations, 0);
+    assert!(!counts.overflow);
+    assert!(
+        errors
+            .iter()
+            .all(|error| matches!(error.message, Cow::Borrowed(_)))
+    );
+    assert_eq!(errors[0], errors[1]);
+    assert_eq!(errors[2].message, "bounded writer absent");
+    assert_eq!(errors[3].operational_supervision_source(), Some(source));
+    assert_eq!(errors[3], errors[4]);
+    assert_eq!(
+        errors[3]
+            .source()
+            .and_then(|source| source.downcast_ref::<HostSupervisionError>()),
+        Some(&source),
+    );
+    assert_eq!(errors[3].to_string(), format!("cleanup failed: {source}"));
+
+    let message = String::from("original owned shutdown diagnostic");
+    let allocation = message.as_ptr();
+    let (owned, counts) =
+        TestAllocationObserver::count(|| QemuShutdownTargetError::new("cleanup", message));
+
+    assert_eq!(counts.allocations, 0);
+    assert_eq!(counts.reallocations, 0);
+    assert!(!counts.overflow);
+    assert!(matches!(owned.message, Cow::Owned(_)));
+    assert_eq!(owned.message.as_ptr(), allocation);
+    Ok(())
+}
+
+#[test]
+fn actual_shutdown_bracket_retains_refused_entry_without_diagnostic_allocation()
+-> Result<(), Box<dyn Error>> {
+    use crucible_host_resources::test_support::TestAllocationObserver;
+
+    let (mut node, supervisor, closed, _) = fixture(false)?;
+    let original = supervisor.begin(HostOperationClass::Cleanup)?;
+    original.complete()?;
+    let first = original.wait_slice().unwrap_err();
+    let mut observations = [(None, None); 5];
+    let mut pending = false;
+    let mut entered = false;
+    let mut target = QemuNodeShutdownTarget {
+        child: &mut node.child,
+        plugin_control: None,
+        qmp_machine_control: None,
+        supervisor: Some(&supervisor),
+        guard: Some(&original),
+        observations: &mut observations,
+        history_pending: &mut pending,
+    };
+
+    let ((output, status), counts) = TestAllocationObserver::count(|| {
+        target.under_original_observed(QemuShutdownRung::ControlQuit, |_| {
+            entered = true;
+            Ok(())
+        })
+    });
+
+    assert!(output.is_none());
+    assert!(!entered);
+    assert_eq!(counts.allocations, 0);
+    assert_eq!(counts.reallocations, 0);
+    assert!(!counts.overflow);
+    assert_eq!(
+        status.unwrap_err().operational_supervision_source(),
+        Some(first)
+    );
+    assert_eq!(observations[0], (Some(first), Some(first)));
+    assert!(pending);
+    closed.store(true, Ordering::Release);
+    Ok(())
+}
+
+#[test]
+fn actual_shutdown_bracket_retains_first_and_post_without_diagnostic_allocation()
+-> Result<(), Box<dyn Error>> {
+    use crucible_host_resources::test_support::TestAllocationObserver;
+
+    for work_refuses in [false, true] {
+        let (mut node, supervisor, closed, _) = fixture(false)?;
+        let original = supervisor.begin(HostOperationClass::Cleanup)?;
+        let (revision, mut budgets) = supervisor.budgets()?;
+        budgets.classes[HostOperationClass::Cleanup as usize] =
+            HostOperationBudget::finite(Duration::from_nanos(1));
+        let mut observations = [(None, None); 5];
+        let mut pending = false;
+        let mut target = QemuNodeShutdownTarget {
+            child: &mut node.child,
+            plugin_control: None,
+            qmp_machine_control: None,
+            supervisor: Some(&supervisor),
+            guard: Some(&original),
+            observations: &mut observations,
+            history_pending: &mut pending,
+        };
+
+        let ((output, status), counts) = TestAllocationObserver::count(|| {
+            target.under_original_observed(QemuShutdownRung::ControlQuit, |_| {
+                // Amend the real class allowance from its original start
+                // after entry. This effect claims no child return.
+                supervisor.update_budgets(revision, budgets).unwrap();
+                if work_refuses {
+                    Err(QemuShutdownTargetError::new(
+                        "entered effect",
+                        "actual refusal",
+                    ))
+                } else {
+                    Ok(17_u8)
+                }
+            })
+        });
+
+        let post = original.wait_slice().unwrap_err();
+        let error = status.unwrap_err();
+        assert_eq!(counts.allocations, 0);
+        assert_eq!(counts.reallocations, 0);
+        assert!(!counts.overflow);
+        assert_eq!(observations[0], (None, Some(post)));
+        assert!(pending);
+        if work_refuses {
+            assert!(output.is_none());
+            assert_eq!(error.operation, "entered effect");
+            assert_eq!(error.message, "actual refusal");
+            assert!(error.operational_supervision_source().is_none());
+        } else {
+            assert_eq!(output, Some(17));
+            assert_eq!(error.operation, "post child cleanup rung");
+            assert_eq!(error.operational_supervision_source(), Some(post));
+        }
+        closed.store(true, Ordering::Release);
+    }
+    Ok(())
+}
+
+#[test]
 fn entered_refusal_and_independent_posts_survive_same_original_until_factual_close()
 -> Result<(), Box<dyn Error>> {
     let (mut node, supervisor, closed, signals) = fixture(true)?;
