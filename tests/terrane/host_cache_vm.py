@@ -917,6 +917,7 @@ def verify_image():
         "source_cleanup_vm.py",
         "admission_cache_vm.py",
         "host_cache_temporaries_vm.py",
+        "host_cache_encoded_recovery_vm.py",
         "host_cache_index_recovery_vm.py",
         "host_cache_pending_recovery_vm.py",
         "host_cache_pending_packs_vm.py",
