@@ -23,6 +23,7 @@ const SHMEM_SOURCE: &str = concat!(
     include_str!("../src/shmem/ring_coverage.rs"),
     include_str!("../src/shmem/frame_node.rs"),
     include_str!("../src/shmem/frame_node/runtime.rs"),
+    include_str!("../src/shmem/frame_node/scheduler_publication.rs"),
     include_str!("../src/shmem/delivery_errors.rs"),
 );
 
@@ -327,8 +328,9 @@ fn scheduler_wake_publication_source_orders_inbox_before_ceiling_before_wake() {
         source,
         &[
             "self.preflight_scheduler_wake_capacity(&enqueue_plans)?;",
+            "let publication = self.slots[dst_index].reserve_scheduler_advance()?;",
             ".enqueue(&mut self.frame_entries[plan.entry_range], frame)",
-            "publish_prevalidated_scheduler_ceiling(ceiling, stop_condition)?;",
+            "publication.publish(ceiling, stop_condition)?;",
         ],
         "combined scheduler publication must enqueue inbox frames before the ceiling wake",
     );
@@ -338,8 +340,9 @@ fn scheduler_wake_publication_source_orders_inbox_before_ceiling_before_wake() {
         &[
             "self.validate_scheduler_ceiling(ceiling)?;",
             "crate::region::helpers::preflight_ring_enqueue_capacity(",
+            "let publication = self.reserve_scheduler_advance()?;",
             ".enqueue(inbox_entries, frame)",
-            "publish_prevalidated_scheduler_ceiling(ceiling, stop_condition)?;",
+            "publication.publish(ceiling, stop_condition)?;",
         ],
         "borrowed scheduler publication must enqueue inbox frames before the ceiling wake",
     );
@@ -352,12 +355,16 @@ fn scheduler_wake_publication_source_orders_inbox_before_ceiling_before_wake() {
         ],
         "node-slot direct publication must validate before the prevalidated publish path",
     );
-    let source = function_source("fn publish_prevalidated_scheduler_ceiling(");
+    let source = function_source(
+        "fn publish(
+        self,
+        ceiling: AdvanceCeiling,",
+    );
     assert_source_order(
         source,
         &[
-            "self.publish_scheduler_advance_fields(ceiling.max_advance_icount, stop_condition);",
-            "self.wake_after_signal_increment()",
+            "self.publish_without_wake(ceiling.max_advance_icount, stop_condition);",
+            "slot.wake_after_signal_increment()",
         ],
         "prevalidated node-slot publication must commit the advance tuple before waking",
     );

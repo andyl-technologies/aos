@@ -100,8 +100,9 @@ impl NodeSlot {
     /// # Errors
     ///
     /// Returns [`NodeSlotError::CeilingBeforePublishedCurrent`] when the ceiling
-    /// is behind the slot's published current icount, or
-    /// [`NodeSlotError::FutexWake`] when the non-private futex wake fails.
+    /// is behind the slot's published current icount, a generation error when
+    /// the writer is occupied or exhausted, or [`NodeSlotError::FutexWake`]
+    /// when the non-private futex wake fails.
     pub fn publish_scheduler_advance(
         &self,
         ceiling: AdvanceCeiling,
@@ -125,7 +126,8 @@ impl NodeSlot {
     /// # Errors
     ///
     /// Returns [`NodeSlotError::CeilingBeforePublishedCurrent`] when
-    /// `restored_icount` is behind the slot's currently published counter.
+    /// `restored_icount` is behind the slot's currently published counter, or a
+    /// generation error when the writer is occupied or exhausted.
     pub fn arm_external_state_restore_ceiling(
         &self,
         restored_icount: u64,
@@ -135,7 +137,8 @@ impl NodeSlot {
             max_advance_icount: restored_icount,
         };
         self.validate_scheduler_ceiling(ceiling)?;
-        self.publish_scheduler_advance_fields(restored_icount, AdvanceStopCondition::Ceiling);
+        self.reserve_scheduler_advance()?
+            .publish_without_wake(restored_icount, AdvanceStopCondition::Ceiling);
         Ok(())
     }
 
@@ -151,7 +154,10 @@ impl NodeSlot {
     ///
     /// Returns [`SchedulerWakePublicationError`] when the node slot rejects the
     /// ceiling, an input frame is stamped with a different source than
-    /// `src_slot`, the inbox rejects the batch, or the futex wake fails.
+    /// `src_slot`, the inbox rejects the batch, the advance generation is
+    /// occupied or exhausted, or the futex wake fails. Generation reservation
+    /// precedes every inbox write. A later failure may retain published inputs
+    /// without committing a new ceiling or wake.
     // crucible-lint: allow rust-allow -- the borrowed adapter binds every independent ring and scheduler-advance input explicitly.
     #[allow(
         clippy::too_many_arguments,
@@ -178,13 +184,14 @@ impl NodeSlot {
         )
         .map_err(RegionAllocationAccessError::from)?;
 
+        let publication = self.reserve_scheduler_advance()?;
         for frame in pending_inputs {
             inbox
                 .enqueue(inbox_entries, frame)
                 .map_err(RegionAllocationAccessError::from)?;
         }
 
-        let wake = self.publish_prevalidated_scheduler_ceiling(ceiling, stop_condition)?;
+        let wake = publication.publish(ceiling, stop_condition)?;
         Ok(SchedulerWakePublication {
             dst_slot,
             pending_input_count: pending_inputs.len(),
@@ -756,56 +763,8 @@ impl NodeSlot {
         ceiling: AdvanceCeiling,
         stop_condition: AdvanceStopCondition,
     ) -> Result<WakeAction, NodeSlotError> {
-        self.publish_scheduler_advance_fields(ceiling.max_advance_icount, stop_condition);
-
-        self.wake_after_signal_increment()
-            .map_err(|source| NodeSlotError::FutexWake { source })
-    }
-
-    fn publish_scheduler_advance_fields(
-        &self,
-        max_advance_icount: u64,
-        stop_condition: AdvanceStopCondition,
-    ) {
-        let published_sequence = loop {
-            let observed = self.advance_publication_sequence.load(Ordering::Acquire);
-            if !observed.is_multiple_of(2) {
-                core::hint::spin_loop();
-                continue;
-            }
-            match self.advance_publication_sequence.compare_exchange(
-                observed,
-                observed.wrapping_add(1),
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
-                Ok(_) => break observed.wrapping_add(2),
-                Err(_) => core::hint::spin_loop(),
-            }
-        };
-
-        match stop_condition {
-            AdvanceStopCondition::NextAuthenticatedIdle => {
-                // A peer that observes the raised ceiling must also observe the
-                // stop mode that prevents that ceiling from authorizing an idle
-                // deadline.
-                self.advance_stop_condition
-                    .store(stop_condition.encode(), Ordering::Release);
-                self.max_advance_icount
-                    .store(max_advance_icount, Ordering::Release);
-            }
-            AdvanceStopCondition::Ceiling => {
-                // A peer that observes the cleared mode must first observe the
-                // clamp or replacement ceiling that bounds renewed execution.
-                self.max_advance_icount
-                    .store(max_advance_icount, Ordering::Release);
-                self.advance_stop_condition
-                    .store(stop_condition.encode(), Ordering::Release);
-            }
-        }
-
-        self.advance_publication_sequence
-            .store(published_sequence, Ordering::Release);
+        self.reserve_scheduler_advance()?
+            .publish(ceiling, stop_condition)
     }
 
     pub(crate) fn load_scheduler_advance_raw(&self) -> (u64, u8, u64) {

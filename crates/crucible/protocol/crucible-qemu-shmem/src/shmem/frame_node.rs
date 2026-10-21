@@ -32,6 +32,8 @@ mod layout;
 #[path = "frame_node/runtime.rs"]
 mod runtime;
 pub use runtime::ControlBoundaryPublicationError;
+#[path = "frame_node/scheduler_publication.rs"]
+mod scheduler_publication;
 #[path = "frame_node/snapshot.rs"]
 mod snapshot;
 
@@ -341,6 +343,21 @@ mod advance_publication_tests {
         assert!(after.advance_publication_sequence.is_multiple_of(2));
     }
 
+    // This test deliberately supplies two writers. Production publication
+    // refuses contention; only this fixture retries under a finite bound.
+    fn publish_with_contention_retry(slot: &NodeSlot, maximum: u64, mode: AdvanceStopCondition) {
+        for _ in 0..100_000 {
+            match slot.publish_scheduler_advance(ceiling(maximum), mode) {
+                Ok(_) => return,
+                Err(NodeSlotError::AdvancePublicationOccupied { .. }) => {
+                    std::thread::yield_now();
+                }
+                Err(error) => panic!("scheduler publication failed: {error}"),
+            }
+        }
+        panic!("concurrent fixture exhausted its publication attempt bound");
+    }
+
     #[test]
     fn concurrent_publication_never_exposes_a_mixed_scheduler_tuple() {
         const ITERATIONS: usize = 10_000;
@@ -349,20 +366,17 @@ mod advance_publication_tests {
         let next_idle_slot = Arc::clone(&slot);
         let next_idle_writer = std::thread::spawn(move || {
             for _ in 0..ITERATIONS {
-                next_idle_slot
-                    .publish_scheduler_advance(
-                        ceiling(100),
-                        AdvanceStopCondition::NextAuthenticatedIdle,
-                    )
-                    .unwrap_or_else(|error| panic!("next-idle publication failed: {error}"));
+                publish_with_contention_retry(
+                    &next_idle_slot,
+                    100,
+                    AdvanceStopCondition::NextAuthenticatedIdle,
+                );
             }
         });
         let ceiling_slot = Arc::clone(&slot);
         let ceiling_writer = std::thread::spawn(move || {
             for _ in 0..ITERATIONS {
-                ceiling_slot
-                    .publish_scheduler_advance(ceiling(7), AdvanceStopCondition::Ceiling)
-                    .unwrap_or_else(|error| panic!("ceiling publication failed: {error}"));
+                publish_with_contention_retry(&ceiling_slot, 7, AdvanceStopCondition::Ceiling);
             }
         });
 
