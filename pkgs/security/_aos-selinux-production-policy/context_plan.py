@@ -793,6 +793,15 @@ def plan_labels(
     # alias resolves to /usr/lib. Other library aliases retain their own policy.
     image_library_prefixes = ["/usr/lib/aos"]
     image_prefix = lookup_prefix.rstrip("/")
+    usr_alias = entries_by_path.get(image_prefix + "/usr")
+    usr_target = (
+        _resolve_symlink_target(usr_alias, entries_by_path, lookup_prefix)
+        if usr_alias is not None and usr_alias.kind is InodeKind.symlink
+        else None
+    )
+    usr_aliases_root = (
+        usr_target is not None and usr_target.path == (image_prefix or "/")
+    )
     for alias_path in ("/lib", "/lib64"):
         alias = entries_by_path.get(image_prefix + alias_path)
         if alias is None or alias.kind is not InodeKind.symlink:
@@ -802,6 +811,14 @@ def plan_labels(
             image_library_prefixes.append(alias_path + "/aos")
 
     def policy_lookup_path(path: str) -> str:
+        # The initrd's /usr -> . gives these same physical kernel modules
+        # their conventional /usr/lib/modules policy. Keep this rewrite
+        # confined to that observed alias and the actual module subtree.
+        if usr_aliases_root and (
+            path == "/lib/modules" or path.startswith("/lib/modules/")
+        ):
+            return "/usr" + path
+
         # The physical image store contains the exact logical package inodes.
         # Apply the same package-specific policy, retaining physical map keys
         # for the label writer and image verification.

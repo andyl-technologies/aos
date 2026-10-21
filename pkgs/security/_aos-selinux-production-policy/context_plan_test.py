@@ -482,6 +482,44 @@ class PlanSemanticsTest(unittest.TestCase):
                     ):
                         context_plan.plan_labels(entries, Resolver())
 
+    def test_initrd_usr_alias_preserves_kernel_module_policy(self) -> None:
+        class Resolver:
+            def lookup(self, path: str, kind: context_plan.InodeKind) -> str:
+                if path.startswith("/usr/lib/modules/"):
+                    return "system_u:object_r:modules_object_t"
+                if path == "/usr/lib/unrelated-helper":
+                    return "system_u:object_r:bin_t"
+                return "system_u:object_r:lib_t"
+
+        for usr_aliases_root in (True, False):
+            with (
+                self.subTest(usr_aliases_root=usr_aliases_root),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
+                root = Path(temporary)
+                module = root / "lib/modules/7.2.3/kernel/fs/fuse/virtiofs.ko"
+                module.parent.mkdir(parents=True)
+                module.write_bytes(b"immutable module bytes")
+                (root / "lib/unrelated-helper").write_bytes(b"ordinary library-path data")
+                if usr_aliases_root:
+                    (root / "usr").symlink_to(".")
+                else:
+                    (root / "usr").mkdir()
+
+                labels = context_plan.plan_labels(
+                    context_plan.inventory_tree(root), Resolver()
+                )
+                by_path = {label.path: label.context for label in labels}
+
+                expected = "modules_object_t" if usr_aliases_root else "lib_t"
+                self.assertEqual(
+                    by_path["/lib/modules/7.2.3/kernel/fs/fuse/virtiofs.ko"],
+                    f"system_u:object_r:{expected}",
+                )
+                self.assertEqual(
+                    by_path["/lib/unrelated-helper"], "system_u:object_r:lib_t"
+                )
+
     def test_immutable_seed_descendants_use_runtime_profile_policy(self) -> None:
         class Resolver:
             def lookup(
