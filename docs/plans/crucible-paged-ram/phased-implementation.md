@@ -28,9 +28,9 @@ The current transport source contracts are:
 | --- | --- |
 | Plugin control | Version 8; noncurrent peers are refused. |
 | Shared region | ABI 33; each node slot is 768 bytes. Ordinary action return remains at offset 264; parent-Park return has a separate journal at offset 512. Constructor and clone reset paths clear both journals. The checked-in C header is emitted from the actual Rust layout. |
-| Selected pre-exec Setup | Edition 5, selector `QEMU_CRUCIBLE_PREEXEC_SETUP=5`, tag `0x15`, 61-byte frame (4-byte length, 1-byte tag, 56-byte payload). |
-| Setup descriptor roster | Five mandatory roles, in order: shared region, wake event, sealed plan, read-only standing publication, distinct standing cancellation event. An optional device workspace is sixth. |
-| Sealed plan | `CRUCSUP8`, schema 8, containing one `CRUCPUR8` process purpose of 2520 bytes. |
+| Selected pre-exec Setup | Edition 6, selector `QEMU_CRUCIBLE_PREEXEC_SETUP=6`, tag `0x16`, 125-byte frame. |
+| Setup descriptor roster | Eight mandatory roles: shared region, wake event, sealed plan, read-only standing publication, standing cancellation event, publisher region and distinct producer/receiver events. An optional device workspace precedes the publisher trio, making nine roles. |
+| Sealed plan | `CRUCSUP9`, schema 9, retaining the `CRUCPUR8` process purpose of 2520 bytes and adding the exact 224-byte publisher purpose. |
 | Native receiver declaration | The selected complete ELF contains one 40-byte `CRUCRCV1` record. Source activation and checkpoint ingress have separate edition fields. Startup checks Source activation independently; zero and unspecified positive activation editions refuse. The complete declaration and ELF digest remain bound to the installed Source. A declaration grants no execution authority. |
 | Standing publication | Schema 4 with producer-retention edition 1 at byte 196 in a 1504-byte shared file: one 8-byte sequence followed by a 1496-byte observation, accessed as atomic big-endian 64-bit words. The observation binds each action's kind, cohort, and parent-Park correlation where applicable. The host alone holds the writable mapping; the transmitted file role is read-only. |
 | Sealed standing corroboration | The purpose's 1520-byte tail binds the retained publication file identity/extent and its initial 1496-byte observation. Copied fields issue no authority. |
@@ -60,14 +60,79 @@ failed attempts appear in the dated entries below.
 
 | Surface | Latest checkpoint | Remaining qualification |
 | --- | --- | --- |
-| Publisher transport | `28bc78d341`: 165 protocol unit tests, 95 integration tests and strict protocol Clippy pass for preparation-only Setup6 framing. | Actual paid publisher construction and the paired runtime caller remain unfinished. |
+| Publisher transport | `e9784079c4` creates the once-owned physical session under the actual Source payer and installing Original, exports exact roles and sends Setup6 with plan nine. Six physical controls, five alias controls, seven startup controls, setup completion and hygiene pass. | Mandatory application compilation passes with all 5,279 committed Rust/TOML files matching the frozen source. Genuine launched transfer, command publication, peer acquisition and terminal consumption remain unqualified. |
 | Host alias custody | `90f00965fa` journals each standing descriptor before the next guarded duplication. Five real-socket controls, 73 focused policy checks and five hygiene checks pass. | Mandatory application compilation passes at `yyiy0g0z5lfdkx3x563k0sgnf1i20d1c`; all 5,272 committed Rust/TOML files match its immutable source. All 211 exact supervision cases pass at `dy2jldwf5dizmsmj0icwwxnlfpf8k45a`. |
 | Installing plan reads | `54caaed474` guards every plan read and retry with the same installing Source and preserves the first validation cause on failed ACK. All 24 focused setup tests, 73 policy controls and five hygiene controls pass. | Mandatory application compilation passes with all 5,274 Rust/TOML files matching the immutable source. The corrected setup gate `edb742a73f` passes 39 tests; all 218 exact supervision cases pass at `7iwxg7vg1r0gxwv39ajixz95n45jg9b4`. Genuine Native admission remains unexecuted. |
-| Native integration | `83ecde0031` retains signed `9770a340c3`, tree `ca1face2`, including bounded registries, real RAM disposal exclusion, receiver lifetime, workspace pairs and fixture corrections. Signed reconstruction, 187 owning scenarios and the 319-file license inventory pass. The configured delivery entry passes in 49.089 seconds. | The full package completes 3,991 compile/link actions and passes 25 of 26 fixtures; mandatory launched capture lifecycle remains the sole failure. Fresh ABI and all twelve prior independent custody suites pass; all thirteen custody suites pass at `sdg49q1ywai7b0nij91wcs18nzlqwj59`. The canonical license-boundary gate is blocked by strict controller Clippy. Later header observation and mapping changes remain outside this artifact. |
+| Native integration | `3811d30684` imports signed `e1dde9de57`, tree `446bedad`, adding retained mapping journals, bounded header observations, Runtime service transfer and construction read children. Exact atomic reconstruction and the 327-file license inventory pass. The independently configured 1,918-object cohort and first normal delivery pass at 51.556 seconds. | Fresh owning Source qualification passes. The full package completes 4,060 build actions and passes 25/26 fixtures; mandatory launched dirty capture remains the sole failure. Fresh ABI and all sixteen independently bounded custody suites pass. Genuine paid/selected execution remains unexecuted; the license-boundary gate stops at strict controller Clippy. |
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
-| Policy and release | Latest focused checks pass all 73 policy and five hygiene controls; the broad gate retains thirteen daemon paths. | The canonical license-boundary check is blocked by strict controller Clippy (1,177 host-library and 1,250 host-test errors); its boundary assertions did not run. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
+| Policy and release | Latest focused checks pass all 73 policy and five hygiene controls; the broad gate retains thirteen daemon paths. | The fresh canonical license-boundary check is blocked by strict controller Clippy (1,189 host-library and 1,262 host-test errors); its boundary assertions did not run. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 341 bindings: 322 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
+| Requirements | 347 bindings: 328 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
+
+#### Paid host publisher handover and cumulative Native custody
+
+`e9784079c4` retains the actual publisher memfd, shared mapping and two distinct
+events inside the Source's prepaid once holder. The complete allocation and
+scratch overlap, page-rounded backing and four-descriptor physical peak are
+reserved before birth. Each born mapping, descriptor and exported alias is
+journaled before its independent Original post. Uncertain physical return keeps
+the complete allocation and payer; exported roles require actual launch cleanup
+proof before local physical disposal. Existing single-node admission remains
+in force. This physical session does not issue a Quantum command or operation.
+
+The six new real-syscall component controls, five existing alias controls and
+seven startup controls pass. Setup completion passes at
+`lsgy96d0w853f2sxbm477milc6w2921i`; engineering hygiene passes at
+`zcvijji792yblcv5r97p578pnwrl3izi`. Mandatory application test-target compilation
+passes at `k68kwnrn96al45149r04jpway1i91mqs`. All 5,279 committed Rust/TOML files
+match immutable source `i01q6vamp0b3q5ymb5k7lpyqyxmdqws6`; the comparison record
+has SHA-256 `e5ae25b46977de09b3777bf8a359621ec44dec1af5606de35713007eacd5d103`.
+The receiver's 224 exact supervision cases pass at
+`c8chba6qq90s5rs7g64nh4aycg4wg8ld`; the expanded host run is still pending.
+
+`3811d30684` retains atomic Native commit
+`e1dde9de5750f667487389a80533020641c0b249`, exact tree
+`446bedad29f0a2b646ba03c0a63da8e61413cdcd`, on the sole pinned upstream base.
+Independent verification matches 8,855 sealed evidence files, 156 literal
+symlink targets and all three artifact hashes. Deterministic signed
+reconstruction passes at `6kks9n3b5mmydlxhnd102djcc4kkmr4k`; the complete
+327-added/zero-deleted license inventory passes at
+`cjd2aj9hwb94y46y3s1jaj8q7a6vhmq5`.
+
+Its retained configured evidence includes all 1,918 affected objects, both full
+system links, six owning units, 69 preexec omissions and the first and only
+normal delivery entry at 51.556 seconds under the unchanged 60-second bound.
+Actual Source/fixed-floor extents are 230168/274006 bytes. Runtime service
+custody remains attached to the actual registered component through genuine
+Source group closure; independent drain and physical-return observations retain
+all eleven group owners' debts. Construction register reads require their own
+actual entered producer and read children. These facts do not qualify a genuine
+selected external caller. The raw deferred fixture still has its direct-link
+gap despite a separately passing authenticated complete closure; the mandatory
+dirty launched lifecycle still fails. Prior conflict-resolution, configuration
+and output-audit failures remain in the sealed evidence.
+
+The configured proof's seventeen standalone suites are not selected by its
+owning/delivery entry. The repository custody runner now selects sixteen of
+those suites, including Runtime service transfer, construction read and mapping
+journals, with each suite's original independent bounds. The ordinary QMP
+physical mapping observer remains separate. Fresh owning Source qualification passes at
+`5bglky5igc4s7izz6nc79gvdxz51jvq6`. The full package completes all 4,060
+build actions and passes 25 of 26 fixtures; mandatory launched dirty capture
+remains its sole failure. All 966 changed signed source files match the kept
+package build; comparison SHA-256 is
+`da5f81873fa59b034b2dda67eb037152542ab91f4eec9fcfb693865fbd8ed4fa`.
+All sixteen expanded custody suites pass at
+`gbmn0p5dbslkg8ibccmkdcm5nwnsyba2`, retaining each independent bound. Fresh ABI
+conformance passes at `kn0zhw67nvzr9frjwhvlv0qpwx3j0ylf`. Header/service custody and
+these component observations do not enable Source activation, an immutable
+command membership, asynchronous Advance or CPU use.
+
+The fresh canonical license-boundary gate fails before its boundary assertions:
+strict controller Clippy reports 1,189 host-library and 1,262 host-test errors,
+including retained large error owners and unused unfinished ownership paths.
+The prior counts were 1,177/1,250; the added host methods add twelve diagnostics.
+No check or owner is removed to turn those failures into qualification.
 
 #### Rust publisher receiver and paid Runtime custody
 
@@ -86,8 +151,8 @@ controls. The hermetic setup gate passes 45 selected tests at
 passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`. All 5,277 committed Rust/TOML files
 match immutable source `lwlbbzllsj404ymsqvx8447syi3k4mwv`; the comparison record
 has SHA-256 `1d998b932d19b365999593ee7df8f1f8aa88f1ebb2404bdd3ed6a59a358dda67`.
-These are component and compilation results. The paired host producer and new
-Native artifact are still being integrated; actual installed service transfer,
+These are component and compilation results. The paired host session and Native
+artifact are retained in the later checkpoints above; actual installed service transfer,
 its physical return, Source activation and command execution remain unqualified.
 
 #### Installing plan reads and setup gate correction
