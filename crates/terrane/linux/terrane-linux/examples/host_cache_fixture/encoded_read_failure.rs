@@ -1,14 +1,18 @@
 //! Exercises retained encoded read denial and exact original quarantine.
 
-use super::config::Inputs;
+use super::{config::Inputs, lower_fetch, manifest_publication};
 use std::{
     fs,
     io::{self, BufRead, Write},
-    time::UNIX_EPOCH,
+    time::{Duration, UNIX_EPOCH},
 };
 use terrane_format::identity::{Descriptor, IdentityKind, TERRANE_V1};
-use terrane_linux::host_cache::NativeMetadataOwner;
-use terrane_sdk::store::{ChunkPosition, Clock, TokioClock};
+use terrane_linux::host_cache::{NativeChunkFetchRequest, NativeMetadataOwner};
+use terrane_sdk::{
+    host::cache::CircuitBreaker,
+    repository::MetadataValidator,
+    store::{ChunkPosition, Clock, TokioClock},
+};
 
 /// Exercises native corruption through independent actual consumer grants.
 ///
@@ -20,7 +24,8 @@ pub(super) fn run(
     inputs: &Inputs,
     original: Option<Vec<u8>>,
 ) -> io::Result<()> {
-    if inputs.domain != "tenant:encoded-read-failure" || original.is_some() {
+    let with_dictionary = inputs.domain == "tenant:encoded-dictionary-read-failure";
+    if (!with_dictionary && inputs.domain != "tenant:encoded-read-failure") || original.is_some() {
         return Err(invalid("encoded failure requires a fresh dedicated domain"));
     }
     let completed = runtime.block_on(owner.recover())?;
@@ -28,15 +33,49 @@ pub(super) fn run(
         .block_on(owner.resume_recovered(completed))
         .map_err(io::Error::other)?;
 
-    let plaintext = b"original encoded consumer custody";
+    let profile = inputs.owner_config()?.location.chunk_profile().clone();
+    let plaintext = if with_dictionary {
+        manifest_publication::data(false, false)?.first
+    } else {
+        b"original encoded consumer custody".to_vec()
+    };
     let identity = TERRANE_V1
-        .calculate(IdentityKind::Chunk, plaintext)
+        .calculate(IdentityKind::Chunk, &plaintext)
         .map_err(io::Error::other)?;
     let descriptor =
-        Descriptor::from_identity(&TERRANE_V1, &identity, plaintext).map_err(io::Error::other)?;
-    let encoded = [vec![0], plaintext.to_vec()].concat();
+        Descriptor::from_identity(&TERRANE_V1, &identity, &plaintext).map_err(io::Error::other)?;
+    let dictionary = if with_dictionary {
+        let bytes = plaintext
+            .get(..profile.minimum() - 1)
+            .ok_or_else(|| invalid("missing dictionary prefix"))?;
+        let identity = TERRANE_V1
+            .calculate(IdentityKind::Chunk, bytes)
+            .map_err(io::Error::other)?;
+        let descriptor =
+            Descriptor::from_identity(&TERRANE_V1, &identity, bytes).map_err(io::Error::other)?;
+        let encoded = [vec![0], bytes.to_vec()].concat();
+        let admission = runtime
+            .block_on(owner.admit_chunk(descriptor, ChunkPosition::Final, encoded))
+            .map_err(io::Error::other)?;
+        // Keep this genuine dictionary producer receipt. Its reservation must
+        // remain distinct from the dependent's completed cache handoff.
+        Some((admission, bytes.to_vec()))
+    } else {
+        None
+    };
+    let (position, encoded) = if let Some((_, dictionary)) = &dictionary {
+        let encoded =
+            terrane_sdk::codec::encode_chunk(&plaintext, profile.maximum(), 3, Some(dictionary))
+                .map_err(io::Error::other)?;
+        if encoded.first() != Some(&2) {
+            return Err(invalid("fixture lacks genuine dictionary encoding"));
+        }
+        (ChunkPosition::NonFinal, encoded)
+    } else {
+        (ChunkPosition::Final, [vec![0], plaintext.clone()].concat())
+    };
     let admission = runtime
-        .block_on(owner.admit_chunk(descriptor, ChunkPosition::Final, encoded))
+        .block_on(owner.admit_chunk(descriptor.clone(), position, encoded.clone()))
         .map_err(io::Error::other)?;
     runtime
         .block_on(admission.into_cache(owner))
@@ -49,7 +88,7 @@ pub(super) fn run(
         .checked_add(90)
         .ok_or_else(|| invalid("encoded failure deadline overflow"))?;
     let first = runtime.block_on(owner.pin_resident_chunk(identity.clone(), expires))?;
-    let alias = runtime.block_on(owner.pin_resident_chunk(identity, expires))?;
+    let alias = runtime.block_on(owner.pin_resident_chunk(identity.clone(), expires))?;
     if first.read_verified()? != plaintext || alias.read_verified()? != plaintext {
         return Err(invalid("encoded failure lacks genuine verified consumers"));
     }
@@ -77,9 +116,67 @@ pub(super) fn run(
     }
     emit("READY actual encoded failed-read quarantine completed with original funding retained")?;
     control("finish")?;
+
+    let mut corrupt = encoded.clone();
+    let codec = corrupt
+        .first_mut()
+        .ok_or_else(|| invalid("missing original encoded envelope"))?;
+    *codec = 0xff;
+    let lower = [
+        lower_fetch::LowerChunk::new(identity.clone(), corrupt),
+        lower_fetch::LowerChunk::new(identity, encoded.clone()),
+    ];
+    let mut circuits = [
+        CircuitBreaker::new(1, Duration::from_secs(5)).map_err(io::Error::other)?,
+        CircuitBreaker::new(1, Duration::from_secs(5)).map_err(io::Error::other)?,
+    ];
+    let validator = MetadataValidator::new(profile);
+    let fetched = runtime
+        .block_on(owner.fetch_chunk(
+            &lower,
+            &mut circuits,
+            &TokioClock,
+            NativeChunkFetchRequest {
+                descriptor: &descriptor,
+                position,
+                dictionary: dictionary.as_ref().map(|(_, bytes)| bytes.as_slice()),
+                budget: Duration::from_secs(5),
+            },
+            &validator,
+        ))
+        .map_err(io::Error::other)?;
+    if fetched.encoded_bytes() != encoded || lower.iter().any(|source| source.calls() != 1) {
+        return Err(invalid(
+            "lower refetch did not reject corrupt bytes and verify its good fallback",
+        ));
+    }
+    let (_, admission) = fetched.into_parts();
+    let failed = match admission {
+        Ok(ticket) => runtime.block_on(ticket.finish()).is_err(),
+        Err(_) => true,
+    };
+    if !failed
+        || fs::read(&policy)? != records
+        || alias.read_verified().is_ok()
+        || first.read_encoded().is_ok()
+    {
+        return Err(invalid(
+            "verified lower refetch revived rejected native custody or changed original protection",
+        ));
+    }
     emit(
-        "PASS actual encoded read failure denies all original consumer aliases after byte restoration and quarantines original inode without funding release",
-    )
+        "READY verified good lower refetch returned while rejected aliases, original quarantine and funding remain retained",
+    )?;
+    control("refetch-checked")?;
+    if with_dictionary {
+        emit(
+            "PASS actual encoded read failure retains producer-funded original dictionary and dependency pins while denying dependent aliases and quarantining only its original inode",
+        )
+    } else {
+        emit(
+            "PASS actual encoded read failure denies all original consumer aliases after byte restoration and quarantines original inode without funding release",
+        )
+    }
 }
 
 fn control(expected: &str) -> io::Result<()> {

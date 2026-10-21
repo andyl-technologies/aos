@@ -327,7 +327,7 @@ def main():
                             text=True, capture_output=True).stdout.splitlines()
     expected = ["host-cache:" + name for name in [
         "prepare", "empty", "refuse", "late-refuse", "cancel", "edquot", "hold", "start-refuse",
-        "admit-chunk", "admit-metadata", "admit-cancel", "cache-admission-handoff", "dictionary-custody", "encoded-read-failure",
+        "admit-chunk", "admit-metadata", "admit-cancel", "cache-admission-handoff", "dictionary-custody", "encoded-read-failure", "encoded-dictionary-read-failure",
         "seed-manifest", "seed-bad-manifest", "seed-unsealed-manifest",
         "seed-unsealed-writable-manifest", "seed-truncated-manifest", "seed-writable-manifest",
         "recover-manifest", "refuse-manifest", "refuse-unsealed-manifest",

@@ -20,6 +20,8 @@ mod dictionary_custody;
 mod encoded_eviction;
 #[path = "host_cache_fixture/encoded_read_failure.rs"]
 mod encoded_read_failure;
+#[path = "host_cache_fixture/lower_fetch.rs"]
+mod lower_fetch;
 #[path = "host_cache_fixture/manifest_publication.rs"]
 mod manifest_publication;
 #[path = "host_cache_fixture/network.rs"]
@@ -51,6 +53,7 @@ fn main() -> std::process::ExitCode {
             "cache-admission-handoff",
             "dictionary-custody",
             "encoded-read-failure",
+            "encoded-dictionary-read-failure",
             "seed-manifest",
             "seed-bad-manifest",
             "seed-unsealed-manifest",

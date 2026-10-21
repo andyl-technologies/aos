@@ -8694,6 +8694,19 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
 
 ### T2 — Host tier
 
+Encoded dependency/refetch qualification preparation (2026-10-21): a second
+actual read-failure actor keeps its dictionary under original producer funding
+while handing only the dependent into cache custody. Independent consumers
+read both original inodes before damage; the supervisor checks that only the
+dependent enters quarantine and that dictionary allocation, producer records,
+consumer pins and cache-dependency promises remain unchanged. Both raw and
+dictionary-dependent actors then reject a corrupt lower candidate and return
+a separately verified good lower copy while native admission remains refused.
+The supervisor rechecks original quarantine and funding after that refetch;
+old aliases remain permanently denied. This does not reconcile the faulted
+physical owner or release quarantine. Runtime and application qualification
+remain pending; no T2 task is accepted.
+
 Cold encoded quarantine preparation (2026-10-21): original shared-content
 quarantine members are classified with a closed generated filename grammar,
 retained through read-only kernel inode handles, and checked against configured

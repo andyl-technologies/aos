@@ -105,7 +105,7 @@ RECOVERABLE_ENCODED_QUARANTINE = {
     "quarantine-encoded-private", "quarantine-encoded-readonly",
 }
 CASES += QUARANTINE_CASES
-CASES += ["publication-read-failure", "publication-prepare-failure", "encoded-read-failure"]
+CASES += ["publication-read-failure", "publication-prepare-failure", "encoded-read-failure", "encoded-dictionary-read-failure"]
 BUDGET = HARD * len(CASES)
 PROVISION_CAPS = "-all,+sys_admin,+dac_read_search,+fowner,+chown,+fsetid"
 QUERY_CAPS = "-all,+sys_admin,+dac_read_search"
@@ -731,16 +731,23 @@ def admission_cases(helper, uuid):
 
 
 
-def encoded_failed_read_case(uuid):
+def encoded_failed_read_case(uuid, case="encoded-read-failure"):
     """Changes actual encoded bytes and independently checks retained quarantine."""
-    case = "encoded-read-failure"
-    process = controlled_actor(case, "encoded-read-failure", uuid)
+    process = controlled_actor(case, case, uuid)
     try:
         lines = Lines(process)
         lines.until("READY genuine encoded consumers verified with physical policy held")
         candidates = list((root(case) / "chunks").glob("*/*"))
-        require(len(candidates) == 1, "encoded failure original inventory differs")
-        canonical = candidates[0]
+        dictionary_case = case == "encoded-dictionary-read-failure"
+        require(len(candidates) == (2 if dictionary_case else 1), "encoded failure original inventory differs")
+        canonical = next(path for path in candidates if path.name.endswith(".2")) if dictionary_case else candidates[0]
+        dictionaries = {path: (path.stat().st_dev, path.stat().st_ino, path.stat().st_blocks, path.read_bytes())
+                        for path in candidates if path != canonical}
+        if dictionary_case:
+            policy = tomllib.loads((root(case) / "state/cache/records.toml").read_text())
+            require(len(policy["reservations"]) == 4
+                    and sum(row["owner"].startswith("admission:") for row in policy["leases"]) == 1,
+                    "dictionary fixture did not retain distinct producer funding and two consumer grants")
         original = canonical.stat()
         content = canonical.read_bytes()
         records = (root(case) / "state/cache/records.toml").read_bytes()
@@ -772,7 +779,27 @@ def encoded_failed_read_case(uuid):
                 and moved.read_bytes() == content
                 and (root(case) / "state/cache/records.toml").read_bytes() == records,
                 "encoded quarantine lost original inode, bytes or durable funding")
-        finish_controlled(process, "finish")
+        for path, expected in dictionaries.items():
+            actual = path.stat()
+            require((actual.st_dev, actual.st_ino, actual.st_blocks, path.read_bytes()) == expected
+                    and actual.st_nlink == 1 and actual.st_uid == 840
+                    and actual.st_mode & 0o7777 == 0o640,
+                    "dependent quarantine changed its producer-funded original dictionary")
+        process.stdin.write(b"finish\n")
+        process.stdin.flush()
+        lines.until("READY verified good lower refetch returned while rejected aliases, original quarantine and funding remain retained")
+        after = moved.stat()
+        require((after.st_dev, after.st_ino, after.st_blocks, after.st_nlink)
+                == (original.st_dev, original.st_ino, original.st_blocks, 1)
+                and moved.read_bytes() == content
+                and (root(case) / "state/cache/records.toml").read_bytes() == records
+                and not canonical.exists(),
+                "lower refetch released, replaced or revived original rejected backing")
+        for path, expected in dictionaries.items():
+            actual = path.stat()
+            require((actual.st_dev, actual.st_ino, actual.st_blocks, path.read_bytes()) == expected,
+                    "lower refetch changed the original producer-funded dictionary")
+        finish_controlled(process, "refetch-checked")
     finally:
         if process.poll() is None:
             process.kill()
@@ -1480,6 +1507,7 @@ def main():
         failed_read_case(uuid)
         failed_preparation_case(uuid)
         encoded_failed_read_case(uuid)
+        encoded_failed_read_case(uuid, "encoded-dictionary-read-failure")
         runpy.run_path(str(IMAGE / "share/manifest_publication_vm.py"))["run_consumer_leases"](sys.modules[__name__], helper, uuid)
         inline_transfer_cases(publisher, uuid)
         # Preserve resource facts at the failed preparation boundary without

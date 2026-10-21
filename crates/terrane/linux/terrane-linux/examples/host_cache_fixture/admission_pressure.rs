@@ -4,8 +4,7 @@
 //! eviction request supplies pressure: only the incoming verified admission
 //! may select victims. Original open descriptors keep their actual quota charge.
 
-#[path = "lower_fetch.rs"]
-mod lower_fetch;
+use crate::lower_fetch;
 
 use super::{
     HOLD, Inputs, NativeChunkAdmissionError, NativeMetadataOwner, Observed, admit, control,
