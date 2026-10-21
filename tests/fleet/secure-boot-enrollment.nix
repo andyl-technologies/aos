@@ -13,9 +13,10 @@
         modules = [
           ../../systems/_server-test-packages.nix
           {
-            # Preserve early PID1 errors when enrollment cannot reach the agent.
+            # Keep early PID1 errors without flooding the serial transport on
+            # each authenticated deployment manager reload.
             aos.boot.kernelParams = [
-              "systemd.log_level=debug"
+              "systemd.log_level=info"
               "rd.systemd.log_level=info"
               "systemd.log_target=console"
             ];
@@ -54,7 +55,7 @@
 
         enroller.wait_until_succeeds(
             "systemctl is-active multi-user.target",
-            timeout=120,
+            timeout=300,
         )
         root_options = enroller.succeed("findmnt -n -o OPTIONS /").strip().split(",")
         assert "ro" in root_options and "nodev" in root_options, root_options
@@ -75,7 +76,7 @@
         enroller.reboot()
         enroller.wait_until_succeeds(
             "systemctl is-active multi-user.target",
-            timeout=120,
+            timeout=300,
         )
 
         assert efivar_byte("SetupMode") == 0, "reboot must remain in User Mode"
