@@ -2,7 +2,8 @@
 //!
 //! [`config`] loads the vocabulary in specifications 11 and 26; [`role`]
 //! selects the process roles in specifications 03 and 37. [`codec`] owns
-//! native compression and [`store`] defines the I/O boundaries. These T1
+//! native compression and [`store`] defines the I/O boundaries. The `workload`
+//! module mints bounded capabilities from configured signing authority. These T1
 //! modules are completed by their named tasks; unavailable services and
 //! surfaces continue to fail explicitly.
 
@@ -36,3 +37,6 @@ pub(crate) mod selected_bridge;
 pub mod store;
 pub mod surface;
 pub mod wire;
+
+#[cfg(feature = "std")]
+pub mod workload;

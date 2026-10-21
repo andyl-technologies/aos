@@ -11894,3 +11894,37 @@ The replacement transport check at `aa150620b5` passes independent review of
 structured-status change at `2d4cd51b98` also passes required application-target
 compilation: 184 test executables across 59 packages, bound to 7,881 source
 files. This is compilation evidence only.
+
+
+#### Static-key workload issuance
+
+The native SDK now loads a raw Ed25519 signing seed from a private, singly
+linked, owned regular file and matches it to independently configured public
+authority. Bounded descriptor reads reject unsafe permissions, symlinks, FIFOs,
+incorrect lengths, replaced metadata and key mismatch. Owned key and credential
+buffers are zeroized on drop and excluded from diagnostic formatting.
+
+Issuance takes trusted job claims, fixes the principal kind to workload, and
+intersects the job's expected end plus a configured finite margin, maximum token
+lifetime, optional earlier requested expiry and exclusive issuer retirement.
+Secure host entropy supplies distinct token identifiers and terminal signing
+keys. A fresh clock check after entropy acquisition refuses regression or
+expiry. The host can use the separate terminal key for offline attenuation;
+that secret is not encoded in the wire token or passed into a surface.
+
+Seven native integration cases pass against real key files and host entropy,
+including complete authenticated claims, each lifetime bound, offline
+attenuation, malformed inputs and nonblocking FIFO rejection. The new
+`integration.workload-issuer` check binds the exact inventory to Cargo and
+immutable source. Frozen qualification remains pending. This component accepts
+trusted scheduler/provisioning claims; it does not authenticate a remote caller,
+perform GCP instance-identity exchange or close T-AUTH-2 or auth-workload-mint.
+
+The private receive check at `160e40d239` passes independent frozen review of
+7,892 immutable files, 5,211 crate inputs and all eight exact cases. Its required
+application compilation passes with 184 test executables across 59 packages.
+The full native cache component at `aa150620b5` also passes independent review:
+7,888 immutable files, 5,224 bound inputs and all 128 actual ext4 library cases,
+including five initial-creator cases. The remaining lifecycle controls pass in
+the same VM; the full feature matrix and aggregate trunk qualification remain
+open. These results do not close an unqualified trunk task.
