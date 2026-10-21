@@ -34,6 +34,11 @@ mod source_authentication;
 
 #[path = "bootstrap_import18/initial_reconstruction.rs"]
 mod initial_reconstruction;
+
+#[path = "bootstrap_import18/controller_measurement.rs"]
+mod controller_measurement;
+
+pub(in crate::reference_packet::service) use controller_measurement::construction_data as controller_measurement_construction_data;
 use receiving_banks::OriginalImport18ReceivingBanks;
 
 /// Restricts the three raw inputs independently of their announced allocation.

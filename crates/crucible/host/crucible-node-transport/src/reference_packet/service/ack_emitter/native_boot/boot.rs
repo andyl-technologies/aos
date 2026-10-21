@@ -686,11 +686,15 @@ pub(crate) use restore_prepare::{
     OriginalNativePrepareStartupAllocation, measure_conformance_executable_data,
     measure_original_prepare_executable_data,
     original_conformance_executable_measurement_counter_scratch_data,
+    original_prepare_executable_measurement_construction_data,
     original_prepare_executable_measurement_counter_scratch_data,
 };
 pub use restore_prepare::{
     PacketNativePrepareStartupStorageData, original_native_prepare_startup_counter_scratch_data,
     original_native_prepare_startup_storage_data,
+};
+pub(in crate::reference_packet::service::ack_emitter::native_boot) use restore_prepare::{
+    measure_original_restore_controller_executable, measure_original_restore_current_executable,
 };
 
 #[path = "restored_suffix.rs"]

@@ -70,7 +70,8 @@ impl OriginalImport18RawBootstrap {
             self.header.as_ref().ok_or_else(refused)?,
             derived,
         )?;
-        self.authenticate_controller_kernel_data()
+        self.authenticate_controller_kernel_data()?;
+        self.authenticate_controller_executable_data()
     }
 
     fn authenticate_controller_kernel_data(&self) -> Result<(), ProviderError> {

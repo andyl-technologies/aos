@@ -11,6 +11,9 @@ use std::{fs::File, io::Read, os::unix::fs::MetadataExt, path::Path};
 const MAXIMUM_EXECUTABLE_BYTES: u64 = 256 * 1024 * 1024;
 const STREAM_BUFFER_BYTES: usize = 256 * 1024;
 const CONFORMANCE_STREAM_BUFFER_BYTES: usize = 256 * 1024;
+const EXECUTABLE_HASH_ALGORITHM: &str = "blake3-256";
+const EXECUTABLE_HASH_DOMAIN: &str = "cnp.blob.v1";
+const EXECUTABLE_MEDIA_TYPE: &str = "application/octet-stream";
 
 // Legacy probes finish their bounded read before comparing the original length
 // and post-read metadata. Prepare already refuses immediately on growth. Keep
@@ -34,6 +37,47 @@ struct MeasuredExecutableStream {
 /// Prepare read buffer comes from the SAME STREAM_BUFFER_BYTES constant below.
 pub(crate) const fn original_prepare_executable_measurement_counter_scratch_data() -> usize {
     measurement_counter_scratch_data::<STREAM_BUFFER_BYTES>()
+}
+
+/// Prices one streamed executable reference without retaining its output.
+///
+/// The caller keeps its existing raw/typed owners charged. Returned reference
+/// leaves and partial String construction are transient here; the real read
+/// bank and metadata/hash work use the same defining Prepare counter below.
+pub(crate) fn original_prepare_executable_measurement_construction_data() -> [usize; 3] {
+    let strings = EXECUTABLE_HASH_ALGORITHM.len()
+        + EXECUTABLE_HASH_DOMAIN.len()
+        + EXECUTABLE_MEDIA_TYPE.len()
+        // Count old/new formatter banks across possible String growth. The
+        // final digest has exactly two hexadecimal characters per hash byte.
+        + 2 * (2 * blake3::OUT_LEN);
+    let transient = strings
+        + std::mem::size_of::<ContentRef>() * 2
+        + std::mem::size_of::<Result<ContentRef, ProviderError>>()
+        + std::mem::size_of::<HashRef>()
+        + std::mem::size_of::<String>() * 4;
+    let scratch = original_prepare_executable_measurement_counter_scratch_data()
+        + hash_hex_output_layout_data(blake3::Hash::to_hex)
+        + std::mem::size_of::<std::fmt::Arguments<'static>>()
+        + std::mem::size_of::<std::fmt::Formatter<'static>>()
+        + std::mem::size_of::<std::fmt::Result>()
+        + std::mem::size_of::<Result<(), crucible_node_format::ContractError>>()
+        + std::mem::size_of::<&ContentRef>()
+        + std::mem::size_of::<&HashRef>()
+        + std::mem::size_of::<&String>() * 4
+        + std::mem::size_of::<&str>() * 4
+        + std::mem::size_of::<std::str::Bytes<'static>>()
+        + std::mem::size_of::<Option<u8>>()
+        + std::mem::size_of::<bool>()
+        + std::mem::size_of::<[usize; 3]>()
+        + std::mem::size_of::<usize>() * 3;
+    [0, transient, scratch]
+}
+
+// Names the public method's opaque return layout through its function type.
+// No sample digest, formatter or prospective reference is constructed.
+fn hash_hex_output_layout_data<T>(_method: fn(&blake3::Hash) -> T) -> usize {
+    std::mem::size_of::<T>()
 }
 
 /// Reports the complete generic bank and the same conservative headers.
@@ -288,12 +332,12 @@ fn reference_from_stream(measured: MeasuredExecutableStream) -> Result<ContentRe
     let length = measured.length;
     let reference = ContentRef {
         hash: HashRef {
-            algorithm: "blake3-256".to_owned(),
-            domain: "cnp.blob.v1".to_owned(),
+            algorithm: EXECUTABLE_HASH_ALGORITHM.to_owned(),
+            domain: EXECUTABLE_HASH_DOMAIN.to_owned(),
             digest: measured.digest.to_hex().to_string(),
         },
         length: U64::new(length),
-        media_type: "application/octet-stream".to_owned(),
+        media_type: EXECUTABLE_MEDIA_TYPE.to_owned(),
     };
     reference.validate()?;
     Ok(reference)

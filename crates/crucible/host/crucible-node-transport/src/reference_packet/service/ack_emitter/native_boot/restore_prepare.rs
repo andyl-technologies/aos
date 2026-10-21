@@ -26,9 +26,10 @@ pub(crate) use prepare_measurement::{
     measure_conformance_executable as measure_conformance_executable_data,
     measure_executable as measure_original_prepare_executable_data,
     original_conformance_executable_measurement_counter_scratch_data,
+    original_prepare_executable_measurement_construction_data,
     original_prepare_executable_measurement_counter_scratch_data,
 };
-pub(super) use prepare_measurement::{
+pub(in crate::reference_packet::service::ack_emitter::native_boot) use prepare_measurement::{
     measure_controller_executable as measure_original_restore_controller_executable,
     measure_current_executable as measure_original_restore_current_executable,
 };

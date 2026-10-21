@@ -739,9 +739,45 @@ executable measurement or Ready is issued by these DATA comparisons.
 
 Both full Transport configurations pass 1,789 tests, zero failures, no filtering
 and sixteen existing ignores. All-feature/all-target checking for affected
-crates and the six architecture checks pass. The required application
-compilation capture is running. Actual controller executable measurement and
-the remaining full native/bootstrap/phase constructors are still unfinished.
+crates and the six architecture checks pass. Required application compilation
+passes at `icrmn7gfpqfmd9aj3zz8qwqv27ng77ry-aos-test-targets-0.1.0`, compiling
+180 test executables across 58 package IDs and 71 integration targets. Of the
+129 owned Rust paths at `46dfe817ba`, 128 match the registered source exactly;
+the sole difference is seven subsequently added rustdoc lines in the private
+identity helper. All production behavior matches. The next checkpoint adds
+actual executable measurement; full native/bootstrap/phase constructors remain
+unfinished.
+
+## Running controller executable correspondence
+
+After authenticating the original inherited socket's PID/UID and the private
+Birth/header joins, the native initial reconstruction now measures that same
+controller's running image through `/proc/<pid>/exe`. It compares the complete
+normative ContentRef to the retained selected-launch reference. The existing
+stream reader checks the opened descriptor's length and metadata before and
+after hashing. Its 256 KiB read bank, 256 MiB image restriction, CNP hash framing
+and existing growth refusal behavior remain unchanged.
+
+The shared initial formula now prices that actual sequential measurement,
+metadata/hash controls, hexadecimal output layout, partial String construction
+and temporary full-reference comparison. The caller admits this independent
+row before the read, retaining all original raw/typed owners throughout. No
+measurement sample, prospective digest, executable-sized buffer or renewed cut
+is created to derive its numeric demand. Failed measurements leave the original
+initial reconstruction spent and still run the terminal custody checks.
+
+The real inherited-socket matrix adds a case in which both announced full
+executable references agree but differ from the running controller image. It
+requires the specific executable-correlation refusal. Both valid program
+families pass using the actual test parent's image, and the seven input headers
+remain empty. The three focused tests cover 22 flights in each JSON
+configuration. Both full Transport configurations pass 1,789 tests, zero
+failures, no filtering and sixteen existing ignores. All-feature/all-target
+checking for Transport, Engine and Daemon and all six architecture gates pass.
+Required application-target compilation is running for this source. These
+checks do not construct full Recipe/Initial, native model or common Ready;
+seven-bank Prepare/upload custody and the complete phase constructors remain
+unfinished.
 
 ## Original launch custody and shared startup geometry
 

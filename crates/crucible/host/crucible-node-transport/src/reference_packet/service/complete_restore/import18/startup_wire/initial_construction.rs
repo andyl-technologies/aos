@@ -7,7 +7,10 @@
 
 use super::prospective::{PrivateOperands, ProspectiveBodyConstructionData};
 use super::*;
-use crate::reference_packet::service::ack_emitter::native_boot::original_import18_raw_bootstrap_storage_data;
+use crate::reference_packet::service::ack_emitter::native_boot::{
+    original_import18_controller_measurement_construction_data,
+    original_import18_raw_bootstrap_storage_data,
+};
 
 /// Retains a numeric construction observation without creating opaque funding.
 pub struct PacketNativeImport18InitialConstructionData {
@@ -137,6 +140,11 @@ fn combine(
     row[0] = add(row[0], source[0])?;
     row[1] = row[1].max(source[1]).max(formatter[1]);
     row[2] = add(row[2], source[2])?.max(add(raw[2], formatter[2])?);
+    // Executable measurement follows all parser/Source/header work. Its actual
+    // temporary reference and fixed read bank overlap the same retained owners.
+    let measurement = original_import18_controller_measurement_construction_data();
+    row[1] = row[1].max(measurement[1]);
+    row[2] = row[2].max(add(raw[2], measurement[2])?);
     if add(add(row[0], row[1])?, row[2])? > maximum {
         return Err(exhausted());
     }
@@ -172,7 +180,7 @@ pub fn native_import18_initial_construction_counter_scratch_data() -> usize {
         + native_import18_startup_wire_counter_scratch_data()
         + size_of::<InitialConstructionData>()
         + size_of::<Result<InitialConstructionData, ProviderError>>()
-        + size_of::<[usize; 3]>() * 5
+        + size_of::<[usize; 3]>() * 6
         + size_of::<std::array::IntoIter<[usize; 3], 3>>()
         + size_of::<Result<[usize; 3], ProviderError>>()
         + size_of::<usize>() * 3

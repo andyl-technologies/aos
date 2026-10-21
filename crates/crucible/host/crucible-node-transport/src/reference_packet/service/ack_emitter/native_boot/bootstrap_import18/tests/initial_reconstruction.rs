@@ -20,6 +20,12 @@ fn operands(case: &str) -> [Value; 3] {
         recipe["escrow"] = json!(["5", "1", "1"]);
     }
     let mut selected = inert_bootstrap_fixtures::selected_launch(case == "initial_reactive");
+    let executable = crate::reference_packet::service::ack_emitter::native_boot::measure_original_restore_current_executable().unwrap();
+    selected["launch"]["controller_executable"] = json!(executable);
+    if case == "initial_unmeasured_controller_executable" {
+        // Both announced references agree; the actual running image differs.
+        selected["launch"]["controller_executable"]["hash"]["digest"] = json!("a".repeat(64));
+    }
     let actual_pid = u64::from(std::process::id());
     let actual_uid = u64::from(rustix::process::geteuid().as_raw());
     selected["launch"]["controller_pid"] =
@@ -164,6 +170,14 @@ pub(super) fn assert_child(
                 ))
             ));
         }
+        if case == "initial_unmeasured_controller_executable" {
+            assert!(matches!(
+                &result,
+                Err(ProviderError::Correlation(
+                    "original import18 controller executable DATA"
+                ))
+            ));
+        }
         if matches!(case, "initial_producer" | "initial_reactive") {
             result.unwrap();
             assert!(owner.initial_reconstructed);
@@ -198,6 +212,7 @@ fn independent_formula_rejects_each_changed_header_operand_and_small_escrow() {
         "initial_bad_host_executable",
         "initial_bad_controller_pid",
         "initial_bad_controller_uid",
+        "initial_unmeasured_controller_executable",
         "initial_short_key",
         "initial_short_birth",
         "initial_bad_prefix_recipe",

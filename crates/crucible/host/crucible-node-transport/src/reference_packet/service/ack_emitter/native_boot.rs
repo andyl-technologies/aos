@@ -10,6 +10,9 @@ pub use boot::{
     original_native_restore_commit_construction_counter_scratch_data,
     original_native_restore_commit_construction_storage_data,
 };
+use boot::{
+    measure_original_restore_controller_executable, measure_original_restore_current_executable,
+};
 mod bootstrap;
 mod owned_read;
 
@@ -33,6 +36,7 @@ pub(crate) use boot::{
     original_native_restoration_upload_counter_scratch_data,
     original_restored_suffix_post_observation_counter_scratch_data,
 };
+pub(in crate::reference_packet::service) use bootstrap_import18::controller_measurement_construction_data as original_import18_controller_measurement_construction_data;
 pub(in crate::reference_packet::service) use bootstrap_import18::raw_storage_floor as original_import18_raw_bootstrap_storage_data;
 
 pub(crate) use boot::{
@@ -54,6 +58,7 @@ pub(crate) use boot::{
     OriginalNativePrepareStartupAllocation, measure_conformance_executable_data,
     measure_original_prepare_executable_data,
     original_conformance_executable_measurement_counter_scratch_data,
+    original_prepare_executable_measurement_construction_data,
     original_prepare_executable_measurement_counter_scratch_data,
 };
 pub use boot::{
