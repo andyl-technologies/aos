@@ -124,6 +124,18 @@ impl OriginalImport18HelloRequestAdmission for Admission<'_> {
     }
 }
 
+pub(super) fn construct_for_registrar(owner: &mut OriginalImport18RawBootstrap) {
+    super::hello_value::construct_for_request(owner);
+    let admission = Admission {
+        case: "initial_hello_request_complete",
+        calls: Cell::new(0),
+        before: owner.retained_requested_bytes().unwrap(),
+        row: Cell::new(None),
+    };
+    owner.inspect_hello_request_data(&admission).unwrap();
+    assert_eq!(admission.calls.get(), 3);
+}
+
 pub(super) fn assert_child(case: &str, owner: &mut OriginalImport18RawBootstrap) {
     if case != "initial_hello_request_unchecked_value" {
         super::hello_value::construct_for_request(owner);

@@ -31,6 +31,9 @@ mod hello_selection;
 #[path = "initial_reconstruction/hello_request.rs"]
 mod hello_request;
 
+#[path = "initial_reconstruction/hello_registrar.rs"]
+mod hello_registrar;
+
 pub(super) fn hello_request_body_data(case: &str) -> Vec<u8> {
     hello_request::body_data(case)
 }
@@ -111,9 +114,13 @@ fn operands(case: &str) -> [Value; 3] {
             | "initial_hello_literal_reactive"
             | "initial_hello_value_reactive"
             | "initial_hello_request_reactive"
+            | "initial_hello_registrar_reactive"
     ));
     if case.starts_with("initial_selection_") || case.starts_with("initial_hello_") {
         selection::prepare_selected(case, &mut selected);
+    }
+    if case.starts_with("initial_hello_registrar_") {
+        hello_registrar::prepare_selected(case, &mut selected);
     }
     let executable = measure_original_restore_current_executable().unwrap();
     selected["launch"]["controller_executable"] = json!(executable);
@@ -370,6 +377,10 @@ pub(super) fn assert_child(
     }
     if case.starts_with("initial_selection_") {
         selection::assert_child(case, &mut owner);
+        return;
+    }
+    if case.starts_with("initial_hello_registrar_") {
+        hello_registrar::assert_child(case, &mut owner);
         return;
     }
     if case.starts_with("initial_hello_request_") {

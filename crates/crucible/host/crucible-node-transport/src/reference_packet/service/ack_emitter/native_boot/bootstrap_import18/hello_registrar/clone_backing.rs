@@ -31,6 +31,7 @@ pub(super) struct Walk {
     tree_slot_bytes: usize,
     tree_alignment: usize,
     tree_backing: usize,
+    tree_clone_controls: [usize; 2],
 }
 
 /// Names only the concrete fresh-clone field families below.
@@ -68,6 +69,7 @@ impl Walk {
             tree_slot_bytes: 0,
             tree_alignment: 1,
             tree_backing: 0,
+            tree_clone_controls: [0; 2],
         })
     }
 
@@ -82,6 +84,63 @@ impl Walk {
     /// Returns the quoted clone backing as ordinary unauthenticated DATA.
     pub(super) fn finish_data(self) -> usize {
         self.backing
+    }
+
+    /// Prices an additional actual retained tree in this owner's shared census.
+    ///
+    /// This is separate from Clone: the fresh issuer's empty request-ID set has
+    /// a census root but no allocating clone operation.
+    ///
+    /// # Errors
+    /// Refuses checked population/layout overflow or an inconsistent delta.
+    pub(super) fn additional_retained_tree_backing_data<K, V>(
+        &self,
+        entries: usize,
+    ) -> Result<usize, ProviderError> {
+        let containers = self.tree_containers.checked_add(1).ok_or_else(refused)?;
+        let entries = self.tree_entries.checked_add(entries).ok_or_else(refused)?;
+        let slot = size_of::<K>()
+            .checked_add(size_of::<V>())
+            .ok_or_else(refused)?;
+        let alignment = self
+            .tree_alignment
+            .max(align_of::<K>())
+            .max(align_of::<V>());
+        let backing = tree_storage_data(
+            containers,
+            entries,
+            self.tree_slot_bytes.max(slot),
+            alignment,
+        )?;
+        backing.checked_sub(self.tree_backing).ok_or_else(refused)
+    }
+
+    /// Adds actual recursive tree clone windows to the concrete typed controls.
+    ///
+    /// The closed DAG has at most one typed extension map outside the allowed
+    /// 64 JSON containers. Each map contributes at most its actual occupied
+    /// levels; independent maps reuse the maximum control window.
+    ///
+    /// # Errors
+    /// Refuses checked control composition overflow or the independent bound.
+    pub(super) fn finish_clone_data(self, typed: [usize; 2]) -> Result<[usize; 3], ProviderError> {
+        let tree_windows = 64usize.checked_add(1).ok_or_else(refused)?;
+        let transient = self.tree_clone_controls[0]
+            .checked_mul(tree_windows)
+            .and_then(|n| n.checked_add(typed[0]))
+            .ok_or_else(refused)?;
+        let scratch = self.tree_clone_controls[1]
+            .checked_mul(tree_windows)
+            .and_then(|n| n.checked_add(typed[1]))
+            .ok_or_else(refused)?;
+        let row = [self.backing, transient, scratch];
+        let peak = row.iter().try_fold(0usize, |sum, axis| {
+            sum.checked_add(*axis).ok_or_else(refused)
+        })?;
+        if peak > self.maximum {
+            return Err(refused());
+        }
+        Ok(row)
     }
 
     /// Counts a fresh String from an original borrowed spelling.
@@ -130,6 +189,9 @@ impl Walk {
     }
 
     fn tree<K, V>(&mut self, entries: usize) -> Result<(), ProviderError> {
+        let controls = super::clone_controls::tree_data::<K, V>(entries)?;
+        self.tree_clone_controls[0] = self.tree_clone_controls[0].max(controls[0]);
+        self.tree_clone_controls[1] = self.tree_clone_controls[1].max(controls[1]);
         self.tree_containers = self.tree_containers.checked_add(1).ok_or_else(refused)?;
         self.tree_entries = self.tree_entries.checked_add(entries).ok_or_else(refused)?;
         let slot_bytes = size_of::<K>()

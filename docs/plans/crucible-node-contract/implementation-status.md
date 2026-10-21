@@ -1553,6 +1553,37 @@ control rows, original initial funding, bootstrap-retained registrar slots and
 guarded invocation remain required before native use. These helpers supply no
 opaque Initial/Recipe, connection lease, Hello reply, ACK, model or Ready result.
 
+## Retained fresh registrar under original bootstrap custody
+
+The complete registrar component now prices the pinned Rust String, Vec and
+BTreeMap clone controls, the actual closed installation/policy validation,
+partial owners and fresh shared epoch/gate/registry allocations. Concrete field
+rosters bind the typed compositions; quote-control arrays share their actual
+compiler-checked roster types. The original empty request-ID tree contributes
+its real combined-census delta without being represented as a cloned map.
+
+Source and native initial calculations independently include this retained
+population beside every earlier raw, typed, literal and request owner. The
+physical registrar attempt exists before the first private read. Separate
+admissions cover quote work and the stored constructor row before allocation.
+Actual configuration, validation errors, plain issuer, concrete empty registry
+and unselected extension wrapper remain in their initialized slots on failure.
+The same original request, launch, roster and cut guard every callback and
+constructor outcome; retries refuse without releasing surviving allocations.
+An immutable completed-wrapper loan checks the same guards after both successful
+and error callbacks. This component creates no connection, reply, ACK or model.
+
+Nine lower registrar controls, all four independent initial-construction controls
+and fifteen inherited-socket flights pass. The inherited positive launch fixtures
+now sort the complete schema roster by its actual (ID, edition) contract; the
+older malformed order remains a refusal control and retains its real SDK
+validation error. Both program families, quote/constructor/terminal admission
+refusals, expiry, substituted cuts, unchanged original allocations and spent
+retries are covered. Production ceilings and validation remain unchanged.
+The broader frozen-source qualification is pending at this checkpoint. Full
+Native18 policy, live Hello authentication, reply/ACK and the remaining RFC
+acceptance exits remain unfinished.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.
