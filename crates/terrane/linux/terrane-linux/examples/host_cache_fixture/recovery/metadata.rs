@@ -158,6 +158,10 @@ impl Observation {
             || after.leases.len() != self.policy.leases.len() + 1
             || !same_original(&self.policy, &after)
         {
+            eprintln!(
+                "mixed metadata policy mismatch: before={:?} after={after:?} expected_hashes={hashes:?} earliest={earliest} latest={latest}",
+                self.policy
+            );
             return Err(invalid(
                 "mixed metadata changed original policy or lost actual funded grace",
             ));
