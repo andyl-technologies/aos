@@ -274,6 +274,11 @@ in {
 
     def storaged_diagnostics():
         for command in (
+            "systemctl show aos-sandboxd.service "
+            "-p ActiveState -p SubState -p Result -p MainPID "
+            "-p ExecMainCode -p ExecMainStatus -p NRestarts",
+            "systemctl status aos-sandboxd.service --no-pager -l",
+            "journalctl -u aos-sandboxd.service --no-pager -n 200",
             "systemctl show aos-storaged.service "
             "-p ActiveState -p SubState -p Result -p MainPID "
             "-p ExecMainCode -p ExecMainStatus -p NRestarts",
