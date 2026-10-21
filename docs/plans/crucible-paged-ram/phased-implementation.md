@@ -1824,7 +1824,9 @@ Final mandatory application compilation passes at
 `/nix/store/2nlh4dxpjb5hlyqiaxn96nkngkwv45hy-aos-test-targets-0.1.0`;
 all 5,258 tracked crate Rust/TOML files byte-match `ef729ddf7f` and immutable
 `am0rrwdvwl19l794hlzvfwbwdkr7s83j-aos-workspace-src`.
-The corrected 150-case supervision run is pending. The first binding placed the
+All 150 corrected exact hermetic supervision cases pass at
+`/nix/store/jmw24cvgcq9g6n81knf22f5xw1mv86xf-crucible-gate-ram-supervision-0`.
+The first binding placed the
 control in continuation rather than supervision, so that snapshot cannot
 qualify 150 supervision cases. Other invalid-input I/O payloads, dynamic
 funding and genuine selected helper admission remain unfinished.
@@ -1863,6 +1865,64 @@ still failing. Genuine owned Node callbacks, restore/handoff and physical
 retirement remain unexecuted at this artifact. No selected payer, activation,
 ACK or physical peer return is qualified. The full license gate still fails
 at controller lint prerequisites; the ledger does not replace it.
+
+### 2026-10-21 static and typed shutdown diagnostics
+
+Commit `905cdf8c32` borrows fixed shutdown messages and retains actual typed
+supervision failures inline through Cleanup entry, budget waits and independent
+postchecks. Owned messages move without another allocation. Actual refused
+entry prevents work; entered work keeps its output or first refusal separately
+from the same Original's failed post. No diagnostic formatting is required to
+retain either cause, and typed errors expose their actual source on demand.
+
+Eight focused controls, 216 Node tests (one existing ignored), seven shutdown
+controls, 73 policy checks and five hygiene checks pass. Mandatory application
+compilation passes at
+`/nix/store/azp25i78kgl1rccwmhqa9hfvyffhvcvp-aos-test-targets-0.1.0`.
+All 5,258 tracked crate Rust/TOML files match `905cdf8c32` and immutable
+`p3xc865bcq6pa989n4h2crpsrjba1q29-aos-workspace-src`. The expanded 153-case
+supervision run is pending. The initial test that completed the actual guard
+inside its counted effect exposed one deadline-report allocation and failed;
+the corrected diagnostic-specific control amends the real budget after entry,
+preserving the actual expired post without concealing that separate reporting
+allocation. Dynamic diagnostics, complete cleanup funding and genuine selected
+Source execution remain unfinished.
+
+### 2026-10-21 native rule and reservation storage custody
+
+Commit `765ecc56c0` integrates atomic
+`db7d16a91a1cfcd038776657939ca1a697e2f738`, tree
+`ba4b0217a28aedbf6cd28ccc73253e6d202117cd`. Actual Node temporary state,
+copied rules and event reservations retain storage membership through reference
+return and payload destruction. Ordinary recursive operations serialize, and
+prepaid retirement cursors survive unpublication, independent post refusal and
+the real pending FREE_STATE receipt. Prepared reservation discard stays distinct
+from release of live event credits. Selected preallocation ENOKEY and full
+registration return ENOTSUP remain.
+
+All 187 owning scenarios, signed sole-parent reconstruction and the exact
+280-file license ledger pass. The complete causal sweep passes all 34
+independently compiled controls with checked source hashes, compiler commands,
+exact intended assertions and no timeouts at
+`/nix/store/9p659dxrf1fqm8s0drq45pjk4123pjd9-crucible-qemu-received-delivery-causal-11.1.1`.
+The positive takes 56.327 seconds of the unchanged 60-second limit; the slowest
+defect takes 24.282 seconds. Ordinary real reservation controls and four rebuilt
+storage defects pass, including retention of the actual free receipt after a
+refused post, preventing repeated free and rebirth. The first TCG compile
+failure from the missing genuine storage getter dependency remains recorded;
+including the literal provider preserves all original assertions and limits.
+
+Fresh raw ABI passes at
+`/nix/store/nns0b3y83vlj6jzj766zkzigmf35r4hi-crucible-phase2-abi-conformance-0`,
+bound to all 5,258 byte-matched crate Rust/TOML files in immutable
+`3bs17ing422di8kmgg0ghgnhw7778vpi-crucible-workspace-src`. Later helper test
+formatting and shutdown changes are outside that verdict. Full native
+compilation completes all 3,863 targets and passes 25/26 fixtures; the mandatory
+launched Source/Root lifecycle remains the sole refusal. Genuine owned Node
+ARM, copied-rule consumer, aggregate restore and registration retirement remain
+unexecuted at this artifact. No selected payer, activation, ACK or physical peer
+return is qualified. The full license gate still fails at controller lint
+prerequisites; the exact ledger does not replace it.
 
 ### Canonical native observation gate cutover (required)
 
