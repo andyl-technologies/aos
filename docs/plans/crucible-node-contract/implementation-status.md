@@ -1793,10 +1793,17 @@ an older lease's distinct empty allocation charged after revocation.
 Eight new controls cover genuine admissions, retained spare capacity, rejected
 authentication and contract checks, containment, supersession, equal-looking
 foreign owners, missing/nonempty selections and each independently substituted
-registrar allocation. The complete standard Transport library passes 1,896 tests
-with zero failures, no filtering and sixteen existing ignores. Raw-value and
-application qualification remain pending. This census grants no currentness or
-native authority and does not yet perform original Native18 SDK admission.
+registrar allocation. For `83aad1de3f`, both complete standard and raw-value
+Transport libraries pass 1,896 tests each, with zero failures, no filtering and
+sixteen existing ignores. Affected Transport/Engine/Daemon all-feature/all-target
+checking, scoped formatting and all six architecture gates pass. Required
+application compilation passes with 180 test executables across 58 package
+identities, including 71 integration targets. All 232 owned changed Rust paths
+and the Transport manifest match that committed checkpoint in the exact
+application derivation's captured source. No funded-Source VM is rerun for this
+standalone census checkpoint. Subsequent borrowed-custody changes are excluded.
+This census grants no currentness or native authority and does not yet perform
+original Native18 SDK admission.
 
 ## Borrowed original physical custody
 
