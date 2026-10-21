@@ -86,6 +86,47 @@ pub struct GcpInstanceIssuer {
     timeout: Duration,
 }
 
+/// Checks trusted assignment policy without opening signing material or the network.
+///
+/// # Errors
+/// Rejects invalid audience/deadline policy, incomplete identities and duplicate
+/// instance assignments before a configured opener accesses its signing key.
+pub(crate) fn validate_configuration(
+    audience: &str,
+    assignments: &[InstanceAssignment],
+    timeout: Duration,
+) -> Result<(), InstanceError> {
+    if audience.is_empty()
+        || audience.len() > 2048
+        || assignments.is_empty()
+        || timeout.is_zero()
+        || timeout > Duration::from_secs(30)
+    {
+        return Err(InstanceError::Configuration);
+    }
+    let mut unique = BTreeSet::new();
+    for assignment in assignments {
+        if assignment.project_id.is_empty()
+            || assignment.project_number == 0
+            || assignment.zone.is_empty()
+            || !decimal(&assignment.instance_id)
+            || !decimal(&assignment.service_account_subject)
+            || assignment.job.subject.is_empty()
+            || assignment.job.workload.is_empty()
+            || assignment.job.grants.is_empty()
+            || !unique.insert((
+                assignment.project_id.clone(),
+                assignment.zone.clone(),
+                assignment.instance_id.clone(),
+            ))
+        {
+            return Err(InstanceError::Configuration);
+        }
+    }
+
+    Ok(())
+}
+
 impl GcpInstanceIssuer {
     /// Checks the exact audience, finite exchange deadline and unambiguous assignments.
     ///
@@ -101,33 +142,7 @@ impl GcpInstanceIssuer {
         assignments: Vec<InstanceAssignment>,
         timeout: Duration,
     ) -> Result<Self, InstanceError> {
-        if audience.is_empty()
-            || audience.len() > 2048
-            || assignments.is_empty()
-            || timeout.is_zero()
-            || timeout > Duration::from_secs(30)
-        {
-            return Err(InstanceError::Configuration);
-        }
-        let mut unique = BTreeSet::new();
-        for assignment in &assignments {
-            if assignment.project_id.is_empty()
-                || assignment.project_number == 0
-                || assignment.zone.is_empty()
-                || !decimal(&assignment.instance_id)
-                || !decimal(&assignment.service_account_subject)
-                || assignment.job.subject.is_empty()
-                || assignment.job.workload.is_empty()
-                || assignment.job.grants.is_empty()
-                || !unique.insert((
-                    assignment.project_id.clone(),
-                    assignment.zone.clone(),
-                    assignment.instance_id.clone(),
-                ))
-            {
-                return Err(InstanceError::Configuration);
-            }
-        }
+        validate_configuration(&audience, &assignments, timeout)?;
 
         Ok(Self {
             issuer,

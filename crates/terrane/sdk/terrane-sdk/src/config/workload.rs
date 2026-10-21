@@ -24,6 +24,9 @@ use serde::Deserialize;
 
 use super::ConfigError;
 
+/// Loads exact trusted GCE assignments and their configured workload grants.
+pub mod gcp;
+
 #[cfg(all(feature = "std", unix))]
 mod open;
 

@@ -12,6 +12,8 @@ CASES = [
     "unavailable_ambiguous_and_excessive_key_responses_never_mint",
     "complete_exchange_deadline_drops_a_pending_key_stream",
     "duplicate_assignments_and_invalid_trusted_configuration_are_rejected",
+    "configured_instance_policy_refuses_unknown_signers_and_invalid_assignments_before_opening",
+    "configured_instance_opening_checks_role_name_and_actual_signing_file",
 ]
 
 

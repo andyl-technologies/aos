@@ -24,6 +24,8 @@ use terrane_format::auth::{
     self, Grant, IssuerKey, Locality, PrincipalKind, Request, Token, Verb, Verbs,
 };
 use terrane_sdk::{
+    config::{Config, workload::IssuerOpenError},
+    role::Role,
     store::{
         Clock, HttpClient, HttpError, HttpRequest, HttpResponse, TokioLocalFs,
         http_stream::{
@@ -67,14 +69,60 @@ impl Fixture {
         .unwrap()
     }
 
+    fn configuration(&self, timeout: Duration, job: &WorkloadClaims) -> Value {
+        let path = self.0.join("issuer.seed");
+        let public: String = public_key()
+            .public_key
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        let grants: Vec<_> = job
+            .grants
+            .iter()
+            .map(|grant| {
+                let verbs: Vec<_> = [
+                    (Verb::Read, "read"),
+                    (Verb::Fork, "fork"),
+                    (Verb::Commit, "commit"),
+                    (Verb::Tag, "tag"),
+                    (Verb::Admin, "admin"),
+                ]
+                .into_iter()
+                .filter(|(verb, _)| grant.verbs().bits() & *verb as u8 != 0)
+                .map(|(_, name)| name)
+                .collect();
+                json!({"pattern": grant.pattern(), "verbs": verbs})
+            })
+            .collect();
+        let mut configured_job = json!({"subject":job.subject, "workload":job.workload,
+            "groups":job.groups, "grants":grants, "expected_end":job.expected_end});
+        if let Some(expiry) = job.not_after {
+            configured_job["not_after"] = json!(expiry);
+        }
+        json!({"role":"serve", "store":"bucket(file:///not-opened)",
+            "static_workload_issuers":{"key":{
+                "issuer":"warehouse", "key_id":"primary", "public_key":public,
+                "signing_key_file":path.to_str().unwrap(),
+                "owner_uid":fs::metadata(path).unwrap().uid(),
+                "maximum_lifetime_seconds":60, "lifetime_margin_seconds":5}},
+            "gcp_instance_issuers":{"runner":{
+                "signing_issuer":"key", "audience":"https://warehouse.test/identity",
+                "timeout_ms":u64::try_from(timeout.as_millis()).unwrap(),
+                "assignments":[{"project_id":"project-a", "project_number":42,
+                    "zone":"region-a1", "instance_id":"789", "creation_timestamp":70,
+                    "service_account_subject":"123456", "job":configured_job}]}}})
+    }
+
     fn issuer(&self, timeout: Duration) -> GcpInstanceIssuer {
-        GcpInstanceIssuer::new(
-            self.static_issuer(),
-            "https://warehouse.test/identity".into(),
-            vec![assignment()],
-            timeout,
-        )
-        .unwrap()
+        self.configured_issuer(timeout, &assignment().job)
+    }
+
+    fn configured_issuer(&self, timeout: Duration, job: &WorkloadClaims) -> GcpInstanceIssuer {
+        let source = toml::to_string(&self.configuration(timeout, job)).unwrap();
+        Config::parse(&source)
+            .unwrap()
+            .open_gcp_instance_issuer("runner", Role::Serve)
+            .unwrap()
     }
 }
 
@@ -299,13 +347,7 @@ async fn signed_ci_identity_cannot_mint_baseline_or_other_change_writes() {
         120,
     )
     .unwrap();
-    let issuer = GcpInstanceIssuer::new(
-        fixture.static_issuer(),
-        "https://warehouse.test/identity".into(),
-        vec![assigned],
-        Duration::from_secs(2),
-    )
-    .unwrap();
+    let issuer = fixture.configured_issuer(Duration::from_secs(2), &assigned.job);
     let credential = issuer
         .exchange(
             &TokioLocalFs,
@@ -618,4 +660,106 @@ fn duplicate_assignments_and_invalid_trusted_configuration_are_rejected() {
             Err(InstanceError::Configuration)
         ));
     }
+}
+
+#[test]
+fn configured_instance_policy_refuses_unknown_signers_and_invalid_assignments_before_opening() {
+    let fixture = Fixture::new();
+    let mut valid = fixture.configuration(Duration::from_secs(2), &assignment().job);
+    valid["static_workload_issuers"]["key"]["signing_key_file"] =
+        json!("/does-not-exist/issuer.seed");
+    assert!(Config::parse(&toml::to_string(&valid).unwrap()).is_ok());
+
+    for (field, value) in [
+        ("signing_issuer", json!("missing")),
+        ("audience", json!("")),
+        ("timeout_ms", json!(0)),
+        ("timeout_ms", json!(30001)),
+    ] {
+        let mut invalid = valid.clone();
+        invalid["gcp_instance_issuers"]["runner"][field] = value;
+        assert!(
+            Config::parse(&toml::to_string(&invalid).unwrap()).is_err(),
+            "accepted {field}"
+        );
+    }
+    for (field, value) in [
+        ("project_number", json!(0)),
+        ("instance_id", json!("name")),
+        ("service_account_subject", json!("")),
+        ("zone", json!("")),
+    ] {
+        let mut invalid = valid.clone();
+        invalid["gcp_instance_issuers"]["runner"]["assignments"][0][field] = value;
+        assert!(
+            Config::parse(&toml::to_string(&invalid).unwrap()).is_err(),
+            "accepted {field}"
+        );
+    }
+    for (field, value) in [
+        ("subject", json!("")),
+        ("workload", json!("")),
+        ("expected_end", json!(0)),
+        ("groups", json!([""])),
+        ("grants", json!([])),
+        (
+            "grants",
+            json!([{"pattern":"refs/heads/ci/**/invalid", "verbs":[]}]),
+        ),
+        (
+            "grants",
+            json!([{"pattern":"refs/heads/ci/pr/123", "verbs":["unknown"]}]),
+        ),
+    ] {
+        let mut invalid = valid.clone();
+        invalid["gcp_instance_issuers"]["runner"]["assignments"][0]["job"][field] = value;
+        assert!(
+            Config::parse(&toml::to_string(&invalid).unwrap()).is_err(),
+            "accepted {field}"
+        );
+    }
+    let mut duplicate = valid.clone();
+    let assignments = duplicate["gcp_instance_issuers"]["runner"]["assignments"]
+        .as_array_mut()
+        .unwrap();
+    assignments.push(assignments[0].clone());
+    assert!(Config::parse(&toml::to_string(&duplicate).unwrap()).is_err());
+    valid["gcp_instance_issuers"]["runner"]["jwks_url"] = json!("https://untrusted.example/keys");
+    assert!(Config::parse(&toml::to_string(&valid).unwrap()).is_err());
+}
+
+#[test]
+fn configured_instance_opening_checks_role_name_and_actual_signing_file() {
+    let fixture = Fixture::new();
+    let source =
+        toml::to_string(&fixture.configuration(Duration::from_secs(2), &assignment().job)).unwrap();
+    let config = Config::parse(&source).unwrap();
+    assert!(matches!(
+        config.open_gcp_instance_issuer("missing", Role::Serve),
+        Err(IssuerOpenError::MissingInstanceIssuer)
+    ));
+    for role in Role::ALL.into_iter().filter(|role| *role != Role::Serve) {
+        assert!(matches!(
+            config.open_gcp_instance_issuer("runner", role),
+            Err(IssuerOpenError::Role(_))
+        ));
+        let configured =
+            Config::parse(&source.replace("role = \"serve\"", &format!("role = \"{role}\"")))
+                .unwrap();
+        assert!(
+            matches!(configured.open_gcp_instance_issuer("runner", role), Err(IssuerOpenError::WrongRole(actual)) if actual == role)
+        );
+    }
+    let path = fixture.0.join("issuer.seed");
+    fs::write(&path, [24; 32]).unwrap();
+    assert!(matches!(
+        config.open_gcp_instance_issuer("runner", Role::Serve),
+        Err(IssuerOpenError::Issuer(_))
+    ));
+    fs::write(&path, [23; 32]).unwrap();
+    fs::set_permissions(path, fs::Permissions::from_mode(0o644)).unwrap();
+    assert!(matches!(
+        config.open_gcp_instance_issuer("runner", Role::Serve),
+        Err(IssuerOpenError::Issuer(_))
+    ));
 }

@@ -33,6 +33,7 @@ pub struct Config {
     local_repository: Option<local_repository::TrustedLocalRepository>,
     tokens: token::Tokens,
     static_workload_issuers: std::collections::BTreeMap<String, workload::StaticWorkloadIssuer>,
+    gcp_instance_issuers: std::collections::BTreeMap<String, workload::gcp::GcpInstanceIssuer>,
     store: expression::StoreExpression,
 }
 
@@ -45,7 +46,7 @@ impl Config {
     /// # Errors
     ///
     /// Returns a typed error for malformed TOML, unknown keys or roles, invalid
-    /// store syntax, invalid static workload issuer policy, unsupported host-tier
+    /// store syntax, invalid workload issuer policy, unsupported host-tier
     /// wipe policies, or any exposure naming a missing surface or view policy.
     pub fn parse(input: &str) -> Result<Self, ConfigError> {
         let raw: RawConfig = toml::from_str(input).map_err(ConfigError::Toml)?;
@@ -57,6 +58,7 @@ impl Config {
         }
         raw.tokens.validate()?;
         workload::validate(&raw.static_workload_issuers)?;
+        workload::gcp::validate(&raw.gcp_instance_issuers, &raw.static_workload_issuers)?;
         if let Some(local) = &raw.local_repository {
             local.validate()?;
         }
@@ -69,6 +71,7 @@ impl Config {
             local_repository: raw.local_repository,
             tokens: raw.tokens,
             static_workload_issuers: raw.static_workload_issuers,
+            gcp_instance_issuers: raw.gcp_instance_issuers,
             store,
         })
     }
@@ -132,6 +135,13 @@ impl Config {
         &self.static_workload_issuers
     }
 
+    /// Returns trusted instance assignments without opening signing keys or HTTP.
+    pub fn gcp_instance_issuers(
+        &self,
+    ) -> &std::collections::BTreeMap<String, workload::gcp::GcpInstanceIssuer> {
+        &self.gcp_instance_issuers
+    }
+
     /// Returns the immutable, parsed store-expression tree (ARCH-6).
     pub fn store(&self) -> &expression::StoreExpression {
         &self.store
@@ -153,6 +163,8 @@ struct RawConfig {
     tokens: token::Tokens,
     #[serde(default)]
     static_workload_issuers: std::collections::BTreeMap<String, workload::StaticWorkloadIssuer>,
+    #[serde(default)]
+    gcp_instance_issuers: std::collections::BTreeMap<String, workload::gcp::GcpInstanceIssuer>,
 }
 
 pub(super) fn absolute_path(path: &str) -> bool {

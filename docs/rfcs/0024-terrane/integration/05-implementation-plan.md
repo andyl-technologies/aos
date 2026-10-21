@@ -12100,4 +12100,23 @@ integration work; no task is newly accepted.
 
 Frozen `e83a19b600` CLI qualification passes independent review of all four
 actual process cases and 7,916 immutable source files. Its guarded-history
-and required application-target qualification runs remain pending.
+qualification also passes all ten actual cases, with the same immutable source
+and 5,225 reviewed crate inputs. Required application-target qualification
+remains pending.
+
+Frozen `7a9c22f76b` passes the expanded owning AUTH-3 gate. Independent review
+verifies 7,921 immutable source files, 5,228 crate inputs and all twenty actual
+issuer cases, including the configured private-file opener. Its application
+target build remains running. No additional task is accepted.
+
+GCP instance issuers now also open through trusted configuration. Each names
+a configured static signer and supplies the exact audience, finite exchange
+deadline, instance incarnation, service account, job and validated grants.
+Unknown signers, ambiguous assignments, invalid job policy and caller-selected
+key endpoints are refused before private-file access. The native opener checks
+the selected serve role and uses the existing private-file/public-key checks.
+The recorded-RSA exchange tests, including exact CI grants and the original
+negative identity controls, now use this configured opening path. Two additional
+cases cover whole-map preflight and role/name/actual signing-file refusal.
+All ten GCP cases, four static configuration cases and ten configured-repository
+cases pass locally. Frozen qualification and deployed issuance remain pending.
