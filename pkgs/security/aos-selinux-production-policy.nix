@@ -389,6 +389,27 @@
       ];
   });
 
+  moduleContextExpectations = builtins.toFile "aos-kernel-module-context-expectations.json" (builtins.toJSON {
+    version = 1;
+    entries = [
+      {
+        path = "/usr/lib/modules/7.2.3/kernel/fs/fuse/virtiofs.ko";
+        kind = "regular";
+        context = "system_u:object_r:modules_object_t";
+      }
+      {
+        path = "/usr/lib/modules/7.2.3/modules.dep";
+        kind = "regular";
+        context = "system_u:object_r:modules_dep_t";
+      }
+      {
+        path = "/usr/lib/unrelated-data";
+        kind = "regular";
+        context = "system_u:object_r:lib_t";
+      }
+    ];
+  });
+
   nspawnContextExpectations = builtins.toFile "aos-nspawn-context-expectations.json" (builtins.toJSON {
     version = 1;
     entries =
@@ -748,6 +769,15 @@ in
             fi
           done
 
+          # Module concatenation loses refpolicy's required specificity order.
+          # Use its pinned upstream sorter so a later generic library rule cannot
+          # relabel kernel modules or other more specific executable objects.
+          tar -xOf ${refpolicy-production.src} refpolicy/support/fc_sort.py > fc_sort.py
+          ${python3}/bin/python3 fc_sort.py file_contexts file_contexts.sorted
+          mv file_contexts.sorted file_contexts
+
+          # Exact AOS store entry points override refpolicy's generic store
+          # labels. Preserve that precedence after sorting the upstream modules.
           cat ${fileContexts} >> file_contexts
           printf '\n' >> file_contexts
 
@@ -762,6 +792,10 @@ in
             -o file_contexts.bin \
             file_contexts
           test -s file_contexts.bin
+          ${python3}/bin/python3 ${policySupport}/verify_context_lookups.py \
+            --file-contexts file_contexts.bin \
+            --libselinux ${libselinux}/lib/libselinux.so.1 \
+            --expected ${moduleContextExpectations}
           ${python3}/bin/python3 ${policySupport}/verify_context_lookups.py \
             --file-contexts file_contexts.bin \
             --libselinux ${libselinux}/lib/libselinux.so.1 \
