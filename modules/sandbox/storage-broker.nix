@@ -20,6 +20,7 @@
     else "${toString (storageReceiving.cpu-micros-per-period / 1000)}%";
   worker = config.aos.sandbox.storageWorker;
   brokerSession = import ./_broker-session-credentials.nix {inherit lib pkgs;};
+  identitySocketOrdering = import ./_identity-socket-ordering.nix {inherit config lib;};
   brokerSessionEndpoints = [
     {
       name = "storage-broker";
@@ -323,26 +324,29 @@ in {
       d /run/aos/sandbox-storage 0710 root aos-sandboxd - -
     '';
 
-    systemd.sockets.aos-storaged = {
-      description = "AOS sandbox Storage broker socket";
-      wantedBy = ["sockets.target"];
-      requires = ["systemd-tmpfiles-setup.service"];
-      after = ["systemd-tmpfiles-setup.service"];
-      socketConfig = {
-        ListenSequentialPacket = "/run/aos/sandbox-storage/control.sock";
-        FileDescriptorName = "aos-storaged";
-        Service = "aos-storaged.service";
-        Accept = false;
-        PassCredentials = true;
-        PassPIDFD = true;
-        SocketUser = "aos-sandboxd";
-        SocketGroup = "aos-sandboxd";
-        SocketMode = "0600";
-        DirectoryMode = "0710";
-        SendBuffer = "4M";
-        RemoveOnStop = true;
-      };
-    };
+    systemd.sockets.aos-storaged = lib.mkMerge [
+      {
+        description = "AOS sandbox Storage broker socket";
+        wantedBy = ["sockets.target"];
+        requires = ["systemd-tmpfiles-setup.service"];
+        after = ["systemd-tmpfiles-setup.service"];
+        socketConfig = {
+          ListenSequentialPacket = "/run/aos/sandbox-storage/control.sock";
+          FileDescriptorName = "aos-storaged";
+          Service = "aos-storaged.service";
+          Accept = false;
+          PassCredentials = true;
+          PassPIDFD = true;
+          SocketUser = "aos-sandboxd";
+          SocketGroup = "aos-sandboxd";
+          SocketMode = "0600";
+          DirectoryMode = "0710";
+          SendBuffer = "4M";
+          RemoveOnStop = true;
+        };
+      }
+      (identitySocketOrdering.module)
+    ];
 
     systemd.sockets.aos-storaged-root-export = {
       description = "AOS Host-only detached guest-root export socket";
@@ -432,27 +436,30 @@ in {
       };
     };
 
-    systemd.sockets.aos-storaged-operator-repair = {
-      description = "AOS controller-signed operator Storage Repair socket";
-      wantedBy = lib.optional operatorRecoveryConfigured "sockets.target";
-      requires = ["systemd-tmpfiles-setup.service"];
-      after = ["systemd-tmpfiles-setup.service"];
-      socketConfig = {
-        ListenSequentialPacket = "/run/aos/sandbox-storage/operator-repair.sock";
-        FileDescriptorName = "aos-storaged-operator-repair";
-        Service = "aos-storaged.service";
-        Accept = false;
-        PassCredentials = true;
-        PassPIDFD = true;
-        SocketUser = "aos-sandboxd";
-        SocketGroup = "aos-sandboxd";
-        SocketMode = "0600";
-        DirectoryMode = "0710";
-        ReceiveBuffer = "4M";
-        SendBuffer = "4M";
-        RemoveOnStop = true;
-      };
-    };
+    systemd.sockets.aos-storaged-operator-repair = lib.mkMerge [
+      {
+        description = "AOS controller-signed operator Storage Repair socket";
+        wantedBy = lib.optional operatorRecoveryConfigured "sockets.target";
+        requires = ["systemd-tmpfiles-setup.service"];
+        after = ["systemd-tmpfiles-setup.service"];
+        socketConfig = {
+          ListenSequentialPacket = "/run/aos/sandbox-storage/operator-repair.sock";
+          FileDescriptorName = "aos-storaged-operator-repair";
+          Service = "aos-storaged.service";
+          Accept = false;
+          PassCredentials = true;
+          PassPIDFD = true;
+          SocketUser = "aos-sandboxd";
+          SocketGroup = "aos-sandboxd";
+          SocketMode = "0600";
+          DirectoryMode = "0710";
+          ReceiveBuffer = "4M";
+          SendBuffer = "4M";
+          RemoveOnStop = true;
+        };
+      }
+      (lib.mkIf operatorRecoveryConfigured identitySocketOrdering.module)
+    ];
 
     systemd.services.aos-storaged = {
       description = "AOS authenticated Storage Prepare, repair, and inventory broker";

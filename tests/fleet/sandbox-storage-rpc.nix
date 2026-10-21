@@ -82,6 +82,14 @@
           --ignored --exact '${selectedFixture}' --test-threads=1 --nocapture
       '';
     in {
+      # Selection-time fixture modules are not replayed as operator policy.
+      # Retain the same identity in the native host activation input as well.
+      aos.activation.stages.host.configuration = [
+        (builtins.path {
+          path = ./_sandbox-storage-rpc-identity.nix;
+          name = "aos-sandbox-storage-rpc-identity.nix";
+        })
+      ];
       aos.sandbox.storageWorker = {
         enable = true;
         inherit authorityDirectory;
@@ -267,6 +275,8 @@ in {
             raise
 
     machine.wait_for_unit("multi-user.target", timeout=120)
+    controller_account = machine.succeed("getent passwd aos-sandboxd").strip().split(":")
+    assert controller_account[2:4] == ["811", "811"], controller_account
     machine.wait_for_unit("aos-sandbox-zfs-ready.service", timeout=30)
     machine.succeed("systemctl is-active --quiet aos-sandbox-zfs-ready.service")
     for unit in (
@@ -276,7 +286,19 @@ in {
         "aos-sandbox-workspace-root-initializer.socket",
         "aos-storaged.socket",
     ):
-        machine.wait_for_unit(unit, timeout=30)
+        try:
+            machine.wait_for_unit(unit, timeout=30)
+        except Exception:
+            for command in (
+                f"systemctl status {unit} --no-pager -l",
+                f"journalctl -b -u {unit} -u systemd-tmpfiles-setup.service --no-pager -n 100",
+                "getent passwd aos-sandboxd",
+            ):
+                status, stdout, stderr = machine.execute(command)
+                print(f"startup diagnostic ({status}): {command}")
+                print(stdout.decode("utf-8", errors="replace"))
+                print(stderr.decode("utf-8", errors="replace"))
+            raise
 
     for executable in (
         "${system.config.aos.sandbox.storageBroker.package}/bin/aos-storaged",
@@ -448,9 +470,15 @@ in {
         "PassPIDFD=true",
         "SocketUser=aos-sandboxd",
         "SocketGroup=aos-sandboxd",
+        "DefaultDependencies=false",
         "SocketMode=0600",
     ):
         assert setting in installed_socket, (setting, installed_socket)
+    for property_name in ("After", "Requires"):
+        dependencies = machine.succeed(
+            f"systemctl show aos-storaged.socket --property={property_name} --value"
+        ).split()
+        assert "aos-ability-host-controller.service" in dependencies, dependencies
     assert machine.succeed(
         f"{COREUTILS}/stat -c '%u:%g:%a' /run/aos/sandbox-storage"
     ).strip() == "0:811:710"
