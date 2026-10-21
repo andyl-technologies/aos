@@ -241,7 +241,7 @@ def run(driver, image):
         else:
             driver.require(len(candidates) == 1, "native SDK did not read a genuine whole sealed object")
             metadata = candidates[0].stat()
-            driver.require(metadata.st_uid == 841 and metadata.st_gid == 845
+            driver.require(metadata.st_uid == metadata.st_gid == 841
                            and metadata.st_nlink == 1 and metadata.st_mode & 0o7777 == 0o400,
                            "native SDK sealed object has different original custody")
             measurement = bytearray(68)

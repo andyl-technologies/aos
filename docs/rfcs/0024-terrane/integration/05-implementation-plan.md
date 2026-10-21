@@ -11533,3 +11533,13 @@ After the original five-second interval, exactly one genuine lower probe is
 permitted; its failure must reopen the same shared circuit. The actor and VM
 bounds remain unchanged. These runtime controls require a passing source-bound
 native VM before granting HOST-35/HOST-36 evidence; qualification is pending.
+
+
+The first whole-object VM on `f18a9a4288` completed both inline snapshots,
+the exact original-publication observer and funding checks. It then rejected
+the supervisor's incorrect sealed GID expectation. Native sealed files retain
+the publisher's private `841:841` custody, matching the existing kernel
+publication controls; shared encoded source files use content GID 845. The
+observer now checks the exact private pair while preserving single-link,
+mode0400, independent plaintext and actual fs-verity measurement requirements.
+That failed run supplies no whole-object or lower-circuit completion credit.
