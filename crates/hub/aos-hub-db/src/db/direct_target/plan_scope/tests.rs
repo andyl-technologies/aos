@@ -1,4 +1,4 @@
-//! Checks concurrent plan reuse against actual SQL and fresh-request rebuilding.
+//! Checks bounded plan reuse against actual SQL and current transaction fences.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -64,11 +64,86 @@ async fn concurrent_items_share_reads_but_each_transaction_rechecks_originals() 
     })
     .await;
 
+    let retained = Database::with_direct_dependency_plan_scope(plan(&db, &calls))
+        .await
+        .unwrap();
+    assert!(db.backend.checked_batch(&retained).await.is_err());
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+    db.invalidate_direct_dependency_plan();
     let rebuilt = Database::with_direct_dependency_plan_scope(plan(&db, &calls))
         .await
         .unwrap();
     db.backend.checked_batch(&rebuilt).await.unwrap();
     assert_eq!(calls.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn concurrent_requests_share_one_build_and_expired_plans_rebuild() {
+    let db = database().await;
+    let calls = AtomicUsize::new(0);
+
+    let plans =
+        join_all((0..8).map(|_| Database::with_direct_dependency_plan_scope(plan(&db, &calls))))
+            .await;
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    for statements in plans {
+        db.backend
+            .checked_batch(&statements.unwrap())
+            .await
+            .unwrap();
+    }
+
+    db.direct_dependency_plans
+        .selected
+        .lock()
+        .unwrap()
+        .as_mut()
+        .unwrap()
+        .created = tokio::time::Instant::now() - std::time::Duration::from_secs(30);
+    Database::with_direct_dependency_plan_scope(plan(&db, &calls))
+        .await
+        .unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn a_different_publication_evicts_the_single_retained_plan() {
+    let db = database().await;
+    let calls = AtomicUsize::new(0);
+    Database::with_direct_dependency_plan_scope(plan(&db, &calls))
+        .await
+        .unwrap();
+
+    Database::with_direct_dependency_plan_scope(publication_plan(&db, "other", || async {
+        calls.fetch_add(1, Ordering::SeqCst);
+        Ok(Vec::new())
+    }))
+    .await
+    .unwrap();
+
+    Database::with_direct_dependency_plan_scope(plan(&db, &calls))
+        .await
+        .unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 3);
+}
+
+#[tokio::test]
+async fn failed_builds_are_not_retained_as_successful_plans() {
+    let db = database().await;
+    let calls = AtomicUsize::new(0);
+    let failed = Database::with_direct_dependency_plan_scope(publication_plan(
+        &db,
+        "publication",
+        || async { anyhow::bail!("original unavailable") },
+    ))
+    .await;
+    assert!(failed.is_err());
+
+    Database::with_direct_dependency_plan_scope(plan(&db, &calls))
+        .await
+        .unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]

@@ -758,6 +758,8 @@ pub const MAX_WEBHOOKS_PER_ORG: usize = 100;
 /// The hub database handle.
 pub struct Database {
     pub(super) backend: Box<dyn Backend>,
+    #[cfg(not(target_arch = "wasm32"))]
+    direct_dependency_plans: direct_target::plan_scope::PublicationPlanCache,
 }
 
 impl Database {

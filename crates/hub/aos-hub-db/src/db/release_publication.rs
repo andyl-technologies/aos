@@ -1976,9 +1976,7 @@ mod tests {
         let backend = crate::backend::SqlxBackend::connect_sqlite(path.to_str().unwrap())
             .await
             .unwrap();
-        let db = Database {
-            backend: Box::new(backend),
-        };
+        let db = Database::attach(Box::new(backend));
         let bundle = admitted_bundle(&db, "ledger-upgrade").await;
         commit_staging(&db, &bundle, "ledger-upgrade").await;
         create_channel(&db, bundle.registry_id, 1, "edge").await;
@@ -2058,9 +2056,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let db = Database {
-            backend: Box::new(backend),
-        };
+        let db = Database::attach(Box::new(backend));
         let version: i64 = db
             .backend
             .query_opt("SELECT version FROM schema_version", &[])

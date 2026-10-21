@@ -350,10 +350,15 @@ impl DirectAuthorityBatch<'_> {
                 held.statement.sql == statement.statement.sql
                     && held.statement.params == statement.statement.params
                     && held.expected_rows == statement.expected_rows
+                    && held.postgres_lock_sql == statement.postgres_lock_sql
             }) {
                 plan.push(statement.clone());
             }
         }
-        self.db.backend.checked_batch(&plan).await
+        let result = self.db.backend.checked_batch(&plan).await;
+        if result.is_err() {
+            self.db.invalidate_direct_dependency_plan();
+        }
+        result
     }
 }

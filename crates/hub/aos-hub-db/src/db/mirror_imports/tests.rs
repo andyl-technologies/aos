@@ -1000,9 +1000,7 @@ async fn generation_five_serving_refuses_and_isolated_backfill_preserves_origina
         .await
         .unwrap();
     let retained_backend = cloned_sqlite_backend(&backend);
-    let legacy_db = Database {
-        backend: Box::new(backend),
-    };
+    let legacy_db = Database::attach(Box::new(backend));
     // Create the binding using the genuine generation-five row contract.
     // Current registration reserves stable identities in generation seven;
     // invoking it here would silently require a future table in this fixture.

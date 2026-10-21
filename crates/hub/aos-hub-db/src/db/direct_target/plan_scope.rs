@@ -1,9 +1,11 @@
-//! Reuses one publication's derived SQL fences within a Native control request.
+//! Reuses bounded derived SQL fences while retaining transactional verification.
 //!
 //! Building a pointer's provenance plan validates every immutable dependency.
-//! Items in the same request can share that work, while every transaction still
-//! executes the exact source, receipt, copy and cardinality fences. A new request
-//! rebuilds the plan; no authentication decision or successful mutation is cached.
+//! New Native control requests can reuse one publication's plan for thirty
+//! seconds after its creation. In-flight requests retain their selected plan,
+//! while every transaction still executes the exact source, receipt, copy and
+//! cardinality fences. No authentication decision or successful mutation is
+//! cached. A failed direct transaction discards the shared plan.
 
 use std::future::Future;
 
@@ -13,7 +15,57 @@ use super::super::Database;
 use crate::backend::CheckedStatement;
 
 #[cfg(not(target_arch = "wasm32"))]
-use std::{cell::RefCell, sync::Arc};
+use std::{
+    cell::RefCell,
+    sync::{Arc, Mutex},
+};
+
+#[cfg(not(target_arch = "wasm32"))]
+type PlanCell = Arc<tokio::sync::OnceCell<Vec<CheckedStatement>>>;
+
+/// Retains one bounded, derived SQL plan, never a permission or mutation result.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Default)]
+pub(in crate::db) struct PublicationPlanCache {
+    selected: Mutex<Option<CachedPlan>>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct CachedPlan {
+    publication: String,
+    created: tokio::time::Instant,
+    statements: PlanCell,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl PublicationPlanCache {
+    fn select(&self, publication: &str) -> PlanCell {
+        let Ok(mut selected) = self.selected.lock() else {
+            return Arc::new(tokio::sync::OnceCell::new());
+        };
+        if let Some(plan) = selected.as_ref() {
+            if plan.publication == publication
+                && plan.created.elapsed() < std::time::Duration::from_secs(30)
+            {
+                return Arc::clone(&plan.statements);
+            }
+        }
+
+        let statements = Arc::new(tokio::sync::OnceCell::new());
+        *selected = Some(CachedPlan {
+            publication: publication.to_owned(),
+            created: tokio::time::Instant::now(),
+            statements: Arc::clone(&statements),
+        });
+        statements
+    }
+
+    fn invalidate(&self) {
+        if let Ok(mut selected) = self.selected.lock() {
+            *selected = None;
+        }
+    }
+}
 
 #[cfg(not(target_arch = "wasm32"))]
 struct PublicationPlan {
@@ -28,12 +80,21 @@ tokio::task_local! {
 }
 
 impl Database {
-    /// Shares one derived publication dependency plan within a logical request.
+    /// Discards derived SQL after a failed transaction without replaying effects.
+    pub(crate) fn invalidate_direct_dependency_plan(&self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        self.direct_dependency_plans.invalidate();
+    }
+
+    /// Shares one bounded derived publication dependency plan during a request.
     ///
     /// The scope retains at most one publication and database identity. Other
-    /// publications use ordinary uncached reads. Transactional fences remain
-    /// mandatory, and errors pass through unchanged. Spawned tasks do not inherit
-    /// the scope. Wasm keeps its ordinary database path.
+    /// publications use ordinary uncached reads. Native requests may reuse the
+    /// database handle's most recent plan for thirty seconds. This only avoids
+    /// reloading immutable terminal originals: every transaction still locks and
+    /// checks the exact source, receipt, copy and cardinality pins. Errors pass
+    /// through unchanged. Spawned tasks do not inherit the scope. Wasm keeps its
+    /// ordinary database path.
     pub async fn with_direct_dependency_plan_scope<F: Future>(request: F) -> F::Output {
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -58,16 +119,16 @@ where
     {
         // The address distinguishes handles only inside this request. It never
         // crosses a process boundary or substitutes for a SQL identity fence.
-        let database = std::ptr::from_ref(database) as usize;
+        let identity = std::ptr::from_ref(database) as usize;
         let cell = PLAN
             .try_with(|scope| {
                 let mut selected = scope.try_borrow_mut().ok()?;
                 let plan = selected.get_or_insert_with(|| PublicationPlan {
-                    database,
+                    database: identity,
                     publication: publication.to_owned(),
-                    statements: Arc::new(tokio::sync::OnceCell::new()),
+                    statements: database.direct_dependency_plans.select(publication),
                 });
-                (plan.database == database && plan.publication == publication)
+                (plan.database == identity && plan.publication == publication)
                     .then(|| Arc::clone(&plan.statements))
             })
             .ok()

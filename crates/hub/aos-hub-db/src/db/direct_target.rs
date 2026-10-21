@@ -10,7 +10,7 @@ use crate::value::Value;
 
 mod dependency_locks;
 mod locks;
-mod plan_scope;
+pub(super) mod plan_scope;
 mod provenance;
 mod publication;
 pub use provenance::{validate_direct_presence_provenance, DirectPresenceProvenance};
