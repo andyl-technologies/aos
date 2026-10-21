@@ -725,7 +725,7 @@ fn terminal_signed_graph() -> Vec<StoredRecordV2> {
         1,
         PROVIDER,
         HOLDER,
-        ObjectDigest::from_bytes(row.acquisition_id),
+        ObjectDigest::from_bytes(row.provider_acquisition.acquisition_id),
         ObjectDigest::from_bytes(attempt.signed_request_digest),
         ObjectDigest::from_bytes(attempt.record_digest),
     )

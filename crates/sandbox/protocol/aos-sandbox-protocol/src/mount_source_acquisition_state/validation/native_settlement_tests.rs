@@ -620,7 +620,20 @@ fn resolve_absent_inventory(mut table: SourceAcquisitionTableV2) -> SourceAcquis
     table
 }
 
-fn settle_graph(mut table: SourceAcquisitionTableV2) -> SourceAcquisitionTableV2 {
+fn settle_graph(table: SourceAcquisitionTableV2) -> SourceAcquisitionTableV2 {
+    let provider_acquisition = table
+        .acquisitions
+        .values()
+        .next()
+        .unwrap()
+        .provider_acquisition;
+    settle_graph_for_query(table, provider_acquisition.acquisition_id)
+}
+
+fn settle_graph_for_query(
+    mut table: SourceAcquisitionTableV2,
+    query_acquisition_id: [u8; 32],
+) -> SourceAcquisitionTableV2 {
     let root = original(&table).clone();
     let head = table.provider_heads.values().next().unwrap().clone();
     let session = &table.provider_sessions[&head.current_session_id];
@@ -631,7 +644,7 @@ fn settle_graph(mut table: SourceAcquisitionTableV2) -> SourceAcquisitionTableV2
         1,
         root.scope.provider_authority_id,
         root.scope.holder_authority_id,
-        ObjectDigest::from_bytes(row.acquisition_id),
+        ObjectDigest::from_bytes(query_acquisition_id),
         ObjectDigest::from_bytes(root.signed_request_digest),
         ObjectDigest::from_bytes(root.record_digest),
     )
@@ -954,6 +967,27 @@ pub(in crate::mount_source_acquisition_state) fn later_unrelated_barrier_graph()
         head,
     );
     table
+}
+
+#[test]
+fn native_settlement_binds_provider_identity_instead_of_mount_identity() {
+    let stages = native_absence_stages();
+    let row = stages.resolved.acquisitions.values().next().unwrap();
+    assert_ne!(row.acquisition_id, row.provider_acquisition.acquisition_id);
+
+    let substituted = settle_graph_for_query(stages.resolved.clone(), row.acquisition_id);
+    let records = canonical_records(&substituted);
+
+    assert!(
+        validate_mount_source_state_graph_v2(
+            records
+                .iter()
+                .map(|(key, value)| (key.as_slice(), value.as_slice())),
+        )
+        .is_err()
+    );
+    validate_native_no_dispatch_settlement_artifact(original(&stages.settled), &stages.settled)
+        .unwrap();
 }
 
 #[test]

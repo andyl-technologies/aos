@@ -138,7 +138,7 @@ impl SourceAcquisitionTableV2 {
         };
         if !predecessor_matches
             || query.session_binding().as_bytes() != &current_session.session_binding
-            || query.acquisition_id() != acquisition_id
+            || query.acquisition_id().as_bytes() != &row.provider_acquisition.acquisition_id
             || query.original_signed_request_digest().as_bytes()
                 != &old_attempt.signed_request_digest
             || query.original_attempt_digest().as_bytes() != &old_attempt.record_digest

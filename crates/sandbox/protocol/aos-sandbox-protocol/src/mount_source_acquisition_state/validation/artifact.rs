@@ -534,7 +534,7 @@ pub(super) fn validate_native_no_dispatch_settlement_artifact(
                 attempt.scope.provider_authority_id,
                 attempt.scope.holder_authority_id,
             )
-        || query.acquisition_id().as_bytes() != &acquisition_id
+        || query.acquisition_id().as_bytes() != &row.provider_acquisition.acquisition_id
         || query.original_signed_request_digest().as_bytes() != &attempt.signed_request_digest
         || settlement_session.scope != attempt.scope
         || signed

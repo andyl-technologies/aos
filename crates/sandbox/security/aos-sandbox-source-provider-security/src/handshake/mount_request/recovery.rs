@@ -38,7 +38,6 @@ impl CurrentRootMountSourceProviderSessionV1 {
             .get(acquisition_id.as_bytes())
             .filter(|row| {
                 row.acquisition_id == *acquisition_id.as_bytes()
-                    && row.provider_acquisition.acquisition_id == row.acquisition_id
                     && row.phase == SourceAcquisitionPhaseV2::PendingQuery
                     && row.acquire_terminal_attempt.is_none()
                     && row.evidence.is_none()
@@ -89,10 +88,12 @@ impl CurrentRootMountSourceProviderSessionV1 {
         if signed_digest.as_bytes() != &attempt.signed_request_digest {
             return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
         }
+        // The local ID selects Mount's row; the authenticated request names
+        // the separately allocated Provider acquisition retained in that row.
         let result = self.advance_recovery_identity(
             row.scope.provider_authority_id,
             row.scope.holder_authority_id,
-            acquisition_id,
+            ObjectDigest::from_bytes(row.provider_acquisition.acquisition_id),
             signed_digest,
             ObjectDigest::from_bytes(attempt.record_digest),
         )?;
