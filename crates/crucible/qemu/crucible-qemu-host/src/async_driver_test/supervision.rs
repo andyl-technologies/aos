@@ -16,9 +16,9 @@ enum RuntimeRefusalCut {
     Renew,
 }
 
-struct SupervisedRuntime {
-    supervisor: HostOperationSupervisor,
-    scripted: ScriptedRuntime,
+pub(super) struct SupervisedRuntime {
+    pub(super) supervisor: HostOperationSupervisor,
+    pub(super) scripted: ScriptedRuntime,
     cancel_on_yield: Option<usize>,
     cancel_on_wait: bool,
     refuse_at: Option<RuntimeRefusalCut>,
@@ -26,7 +26,7 @@ struct SupervisedRuntime {
 }
 
 impl SupervisedRuntime {
-    fn new() -> Result<Self, Box<dyn std::error::Error>> {
+    pub(super) fn new() -> Result<Self, Box<dyn std::error::Error>> {
         Ok(Self {
             supervisor: HostOperationSupervisor::new(
                 HostOperationBudgets::default(),
@@ -128,7 +128,7 @@ impl QemuHostIoRuntime for SupervisedRuntime {
     }
 }
 
-fn run(
+pub(super) fn run(
     target: &mut ScriptedTarget,
     runtime: &mut SupervisedRuntime,
 ) -> Result<QemuAsyncNodeStepReport, QemuAsyncDriverError> {
@@ -413,6 +413,9 @@ fn runtime_refusals_keep_first_and_actual_original_post_at_every_runtime_cut()
             usize::from(cut == RuntimeRefusalCut::Yield(2))
         );
         assert_eq!(target.shutdowns, 0);
+        if let RuntimeRefusalCut::Wait(attempt) = cut {
+            assert_eq!(target.health_calls.get(), attempt);
+        }
         assert!(
             error
                 .to_string()

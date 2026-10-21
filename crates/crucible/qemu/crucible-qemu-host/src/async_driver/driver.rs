@@ -149,6 +149,25 @@ fn observe_channel_return<T>(
     }
 }
 
+/// Checks the same operation after health returns, including a Source refusal.
+/// A negative health observation retains its original owner and typed post;
+/// neither observation authorizes a pending quantum to complete.
+fn observe_health_return(
+    result: Result<(), QemuAsyncDriverHealthError>,
+    original: Option<&crucible_host_resources::host_supervision::HostOperationGuard>,
+) -> Result<(), QemuAsyncDriverError> {
+    let post = original.and_then(|operation| operation.wait_slice().err());
+
+    match (result, post) {
+        (Ok(()), None) => Ok(()),
+        (Ok(()), Some(source)) => Err(supervision_error(source)),
+        (Err(source), None) => Err(QemuAsyncDriverError::OperationalHealth(source)),
+        (Err(source), Some(post)) => Err(QemuAsyncDriverError::OperationalHealth(
+            source.with_operational_supervision_post(post),
+        )),
+    }
+}
+
 fn run_node_step_with_operation<T, R, F>(
     target: &mut T,
     runtime: &mut R,
@@ -180,9 +199,7 @@ where
     // A driver-issued Quantum needs the same cancellation checks as a loan.
     let active_operation = original.or(host_operation.as_ref());
 
-    target
-        .operational_health()
-        .map_err(QemuAsyncDriverError::OperationalHealth)?;
+    observe_health_return(target.operational_health(), active_operation)?;
 
     let mut async_operations = Vec::new();
     observe_runtime_return(runtime.yield_to_control_plane(), active_operation)?;
@@ -240,17 +257,19 @@ where
         // Quantum waits, retain the existing Source-health priority over a
         // transport failure caused by that Source closing its socket.
         let wait_result = observe_runtime_return(wait_result, active_operation);
-        let wait_result = if original.is_some() {
-            Ok(wait_result?)
-        } else {
-            wait_result
+        let wait_result = match wait_result {
+            Err(QemuAsyncDriverError::Runtime(source))
+                if source.operational_supervision_post().is_some() =>
+            {
+                return Err(QemuAsyncDriverError::Runtime(source));
+            }
+            result if original.is_some() => Ok(result?),
+            result => result,
         };
         // Source failure closes only operational continuation. The actual
         // process and pending buffers remain owned for explicit containment;
         // this path never turns a blocked memory access into a guest crash.
-        target
-            .operational_health()
-            .map_err(QemuAsyncDriverError::OperationalHealth)?;
+        observe_health_return(target.operational_health(), active_operation)?;
         let wait_outcome = wait_result?;
         check_original(active_operation)?;
         let observed_wait = QemuAsyncDriverOperation::AwaitChild {
@@ -311,16 +330,12 @@ where
         check_original(active_operation)?;
         match observe_channel_return(target.finish_quantum(&mut pending), active_operation) {
             Ok(completion) => {
-                target
-                    .operational_health()
-                    .map_err(QemuAsyncDriverError::OperationalHealth)?;
+                observe_health_return(target.operational_health(), active_operation)?;
                 check_original(active_operation)?;
                 break Some(completion);
             }
             Err(QemuAsyncDriverError::Channel(error)) => {
-                target
-                    .operational_health()
-                    .map_err(QemuAsyncDriverError::OperationalHealth)?;
+                observe_health_return(target.operational_health(), active_operation)?;
                 if error.is_retryable() {
                     continue;
                 }
@@ -460,6 +475,48 @@ mod tests {
     use super::*;
     use crucible_host_resources::host_supervision::{HostOperationBudgets, HostOperationSupervisor};
     use crucible_host_resources::test_support::TestAllocationObserver;
+
+    #[test]
+    fn actual_original_health_post_retains_owner_without_allocating()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let supervisor = HostOperationSupervisor::new(HostOperationBudgets::default(), None)?;
+        let original = supervisor.begin(HostOperationClass::Quantum)?;
+        let source = QemuAsyncDriverHealthError::ram_source(
+            crate::ram_source::QemuRamSourceError::Ownership,
+        );
+        let observer = source.clone();
+        supervisor.cancel()?;
+        let expected = original
+            .wait_slice()
+            .expect_err("actual Original is canceled");
+
+        let (result, counts) =
+            TestAllocationObserver::count(|| observe_health_return(Err(source), Some(&original)));
+
+        let QemuAsyncDriverError::OperationalHealth(error) = result.unwrap_err() else {
+            panic!("both actual observations must survive");
+        };
+        assert_eq!(counts.allocations, 0);
+        assert_eq!(counts.reallocations, 0);
+        assert!(!counts.overflow);
+        assert!(std::ptr::eq(
+            error.source_failure(),
+            observer.source_failure()
+        ));
+        assert_eq!(error.operational_supervision_post(), Some(expected));
+        let displayed = error.to_string();
+        assert!(displayed.starts_with(&observer.to_string()));
+        assert!(displayed.ends_with(&format!("independent Original post: {expected}")));
+        assert_eq!(error.clone(), error);
+        assert_ne!(error, observer);
+        assert_eq!(
+            error
+                .with_operational_supervision_post(HostSupervisionError::Unavailable)
+                .operational_supervision_post(),
+            Some(expected),
+        );
+        Ok(())
+    }
 
     #[test]
     fn actual_original_channel_post_retains_first_without_allocating()

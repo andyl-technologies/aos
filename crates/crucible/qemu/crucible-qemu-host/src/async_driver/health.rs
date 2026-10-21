@@ -14,10 +14,12 @@ use crucible_host_resources::host_supervision::{HostOperationState, HostSupervis
 /// An owned host service failure observed during node execution or cleanup.
 ///
 /// Clones retain the original error allocation. Equality identifies observers
-/// of that same failure, rather than comparing mutable diagnostics or clocks.
+/// of that same failure and independent operation post, rather than comparing
+/// mutable diagnostics or clocks.
 #[derive(Clone, Debug)]
 pub struct QemuAsyncDriverHealthError {
     source: HealthFailure,
+    original_after: Option<HostSupervisionError>,
 }
 
 #[derive(Clone, Debug)]
@@ -43,7 +45,10 @@ impl QemuAsyncDriverHealthError {
             QemuRamSourceError::WorkerFailed(source) => HealthFailure::Worker(source),
             source => HealthFailure::Direct(Arc::new(source)),
         };
-        Self { source }
+        Self {
+            source,
+            original_after: None,
+        }
     }
 
     /// Returns the original typed source cause and its retained error chain.
@@ -58,10 +63,34 @@ impl QemuAsyncDriverHealthError {
         source_kind(self.source.failure())
     }
 
+    /// Returns the independent failure of the same entered operation after health returned.
+    #[must_use]
+    pub const fn operational_supervision_post(&self) -> Option<HostSupervisionError> {
+        self.original_after
+    }
+
+    pub(crate) fn with_operational_supervision_post(
+        mut self,
+        source: HostSupervisionError,
+    ) -> Self {
+        if self.original_after.is_none() {
+            self.original_after = Some(source);
+        }
+        self
+    }
+
     pub(crate) fn into_backend_cause(self) -> BackendOperationalCause {
+        // The worker shortcut is valid only when it cannot discard an
+        // independently observed failure of the entered operation.
+        if self.original_after.is_some() {
+            return BackendOperationalCause::new(self);
+        }
         match self.source {
             HealthFailure::Worker(source) => source.into_backend_cause(),
-            source => BackendOperationalCause::new(Self { source }),
+            source => BackendOperationalCause::new(Self {
+                source,
+                original_after: None,
+            }),
         }
     }
 }
@@ -102,7 +131,11 @@ fn source_kind(source: &QemuRamSourceError) -> BackendOperationalFailureKind {
 
 impl fmt::Display for QemuAsyncDriverHealthError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.source.failure().fmt(formatter)
+        self.source.failure().fmt(formatter)?;
+        if let Some(post) = self.original_after {
+            write!(formatter, "; independent Original post: {post}")?;
+        }
+        Ok(())
     }
 }
 
@@ -114,11 +147,14 @@ impl Error for QemuAsyncDriverHealthError {
 
 impl PartialEq for QemuAsyncDriverHealthError {
     fn eq(&self, other: &Self) -> bool {
-        match (&self.source, &other.source) {
-            (HealthFailure::Worker(left), HealthFailure::Worker(right)) => left == right,
-            (HealthFailure::Direct(left), HealthFailure::Direct(right)) => Arc::ptr_eq(left, right),
-            _ => false,
-        }
+        self.original_after == other.original_after
+            && match (&self.source, &other.source) {
+                (HealthFailure::Worker(left), HealthFailure::Worker(right)) => left == right,
+                (HealthFailure::Direct(left), HealthFailure::Direct(right)) => {
+                    Arc::ptr_eq(left, right)
+                }
+                _ => false,
+            }
     }
 }
 

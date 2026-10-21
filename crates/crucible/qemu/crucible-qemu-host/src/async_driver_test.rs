@@ -547,6 +547,12 @@ struct ScriptedTarget {
     completion_fence: Option<QemuAdvanceCompletionFence>,
     child_exit_status: Option<std::process::ExitStatus>,
     health_forbidden: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    health_calls: std::cell::Cell<usize>,
+    cancel_during_health: Option<(
+        crucible_host_resources::host_supervision::HostOperationSupervisor,
+        usize,
+        Option<QemuAsyncDriverHealthError>,
+    )>,
     refuse_start: Option<crucible_host_resources::host_supervision::HostOperationSupervisor>,
     refuse_finish: Option<(
         crucible_host_resources::host_supervision::HostOperationSupervisor,
@@ -579,6 +585,8 @@ impl ScriptedTarget {
             completion_fence: None,
             child_exit_status: None,
             health_forbidden: None,
+            health_calls: std::cell::Cell::new(0),
+            cancel_during_health: None,
             refuse_start: None,
             refuse_finish: None,
         }
@@ -612,6 +620,14 @@ impl QemuAsyncNodeStepTarget for ScriptedTarget {
     type PendingQuantum = u64;
 
     fn operational_health(&self) -> Result<(), QemuAsyncDriverHealthError> {
+        let call = self.health_calls.get() + 1;
+        self.health_calls.set(call);
+        if let Some((supervisor, cut, failure)) = &self.cancel_during_health
+            && call == *cut
+        {
+            supervisor.cancel().unwrap();
+            return failure.clone().map_or(Ok(()), Err);
+        }
         if let Some(forbidden) = &self.health_forbidden {
             assert!(
                 !forbidden.load(std::sync::atomic::Ordering::Acquire),
@@ -925,3 +941,6 @@ fn reset_original_wait_refusal_precedes_later_health_and_guard_loss()
 
 #[path = "async_driver_test/supervision.rs"]
 mod supervision;
+
+#[path = "async_driver_test/health_posts.rs"]
+mod health_posts;
