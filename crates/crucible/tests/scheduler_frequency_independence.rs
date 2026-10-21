@@ -1,9 +1,11 @@
 //! RFC-0010 SCHED-12 regression: RUN ceilings never perturb the guest.
 //!
 //! A ceiling is an upper bound. A node stops at its last retirement at or
-//! below the ceiling unless an exact event inside the remaining gap permits a
-//! time-only advance to that event (TIME-4), and it attests settlement through
-//! the ceiling separately from its actual clock. These tests drive the real
+//! below the ceiling unless its own timer inside the remaining gap permits a
+//! time-only advance (TIME-4), and it attests settlement through the ceiling
+//! separately from its actual clock. A running node takes a frame at its
+//! first boundary at or after the delivery tick; a halted node wakes exactly
+//! there. These tests drive the real
 //! [`SingleScheduler`] through the bounded-control host path with a costed
 //! test double whose retirements cost picoseconds and cannot land on an
 //! arbitrary ceiling:
@@ -13,7 +15,8 @@
 //! - each node arms a periodic timer with a picosecond phase and periodically
 //!   halts until its next timer or inbound frame;
 //! - each node emits frames to its peer at fixed retirements, and every frame
-//!   is delivered at its exact link-latency tick.
+//!   is delivered at its exact link-latency tick. An off-lattice latency makes
+//!   those deliveries land between the receiver's boundaries.
 //!
 //! The same scenario runs under different ceiling schedules: a 250 µs
 //! rendezvous, a 10 µs rendezvous, and no rendezvous with attempt and branch
@@ -24,10 +27,11 @@
 //! ceiling; it must diverge, proving the comparison can see the defect.
 //!
 //! A three-node scenario adds a fault-timed link partition at a picosecond
-//! phase (SCHED-39). The two partitioned nodes must arrive exactly at the
-//! activation tick, which the scheduler declares an exact event for them only.
-//! The third node treats the activation as a bound, so its trajectory must
-//! match a run without the fault.
+//! phase (SCHED-39), which the scheduler declares an exact event for the two
+//! partitioned nodes only. A halted partitioned node arrives exactly at the
+//! activation tick; a running one settles through it at its last boundary
+//! below (TIME-30). The third node treats the activation as a bound, so its
+//! trajectory must match a run without the fault.
 
 // crucible-lint: allow panic-shortcut -- deterministic fixtures use panic assertions.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
@@ -84,8 +88,13 @@ enum TraceKind {
     Emit {
         sequence: u64,
     },
+    /// A frame was taken at this coordinate; `due` is its delivery tick.
+    ///
+    /// A halted node wakes exactly at `due`. A running node takes the frame
+    /// at its first retirement boundary at or after `due`.
     Receive {
         sequence: u64,
+        due: u64,
     },
     /// The node ended an exact-event RUN at its ceiling.
     ///
@@ -93,6 +102,14 @@ enum TraceKind {
     /// the ceiling itself when a retirement or real event landed there.
     ExactArrival {
         from: u64,
+    },
+    /// A running node settled an exact-event RUN below its ceiling.
+    ///
+    /// Its next retirement would end past `ceiling`, and a running node never
+    /// moves its clock without one, so it stays at its last boundary and takes
+    /// the event at its next one (TIME-30).
+    ExactSettle {
+        ceiling: u64,
     },
 }
 
@@ -184,22 +201,29 @@ impl CostedNode {
         self.inbound.keys().next().map(|(tick, _)| *tick)
     }
 
-    /// Returns the earliest exact event: the timer or the next inbound frame.
-    fn next_exact_event(&self) -> u64 {
+    /// Returns the earliest real wake of a halted node: its timer or next frame.
+    fn next_wake(&self) -> u64 {
         self.next_inbound()
             .map_or(self.timer, |inbound| inbound.min(self.timer))
     }
 
-    /// Handles every exact event due at the current tick.
+    /// Handles every event due at the current tick.
+    ///
+    /// Frames are due once their delivery tick is at or below the clock, so a
+    /// running node takes a frame delivered between two of its boundaries at
+    /// the later one.
     fn service_due_events(&mut self) {
         while let Some(((tick, order), sequence)) = self
             .inbound
             .first_key_value()
             .map(|(key, sequence)| (*key, *sequence))
-            .filter(|((tick, _), _)| *tick == self.now)
+            .filter(|((tick, _), _)| *tick <= self.now)
         {
             self.inbound.remove(&(tick, order));
-            self.record(TraceKind::Receive { sequence });
+            self.record(TraceKind::Receive {
+                sequence,
+                due: tick,
+            });
             if self.halted {
                 self.halted = false;
                 self.record(TraceKind::Wake);
@@ -237,8 +261,11 @@ impl CostedNode {
 
     /// Executes one RUN toward `ceiling` and reports how it returned control.
     ///
-    /// An exact-event ceiling is one more exact event in the gap: the node
-    /// reaches it by retirement or by a time-only advance (TIME-4).
+    /// A halted node advances time only to its real wake or to an exact-event
+    /// ceiling (TIME-4). A running node moves its clock by retirements, and by
+    /// a time-only advance only onto its own timer inside the final gap. It
+    /// takes frames at its first boundary at or after their delivery, and
+    /// settles an exact-event ceiling it cannot land on (TIME-30).
     fn run(
         &mut self,
         ceiling: u64,
@@ -260,13 +287,12 @@ impl CostedNode {
                 self.record(TraceKind::ExactArrival { from });
                 return (self.settle(ceiling_time), Vec::new());
             }
-            let mut event = self.next_exact_event();
-            assert!(event > self.now, "exact event left behind");
-            if exact {
-                event = event.min(ceiling);
-            }
-
             if self.halted {
+                let mut event = self.next_wake();
+                assert!(event > self.now, "exact event left behind");
+                if exact {
+                    event = event.min(ceiling);
+                }
                 if event <= ceiling {
                     // TIME-4: a halted vCPU advances only to its real wake.
                     if event == ceiling {
@@ -278,8 +304,15 @@ impl CostedNode {
                 return (self.park(ceiling_time), Vec::new());
             }
 
-            let bound = ceiling.min(event);
-            self.retire_whole_cycles(bound);
+            let timer = self.timer;
+            assert!(timer > self.now, "timer left behind");
+            let bound = ceiling.min(timer);
+            // Whole cycles stop short of a pending delivery so that the frame
+            // is taken at the first boundary at or after it.
+            let cycle_limit = self
+                .next_inbound()
+                .map_or(bound, |delivery| bound.min(delivery));
+            self.retire_whole_cycles(cycle_limit);
             let next_retirement = self.now + self.cost(self.raw);
             if next_retirement <= bound {
                 self.raw += 1;
@@ -289,13 +322,16 @@ impl CostedNode {
                 }
                 continue;
             }
-            if event <= ceiling {
-                // TIME-4: the gap holds an exact event and no retirement.
-                if event == ceiling {
+            if timer <= ceiling {
+                // TIME-4: the gap holds the node's own timer and no retirement.
+                if timer == ceiling {
                     arrival_from = Some(self.now);
                 }
-                self.now = event;
+                self.now = timer;
                 continue;
+            }
+            if exact {
+                self.record(TraceKind::ExactSettle { ceiling });
             }
             return (self.settle(ceiling_time), Vec::new());
         }
@@ -1178,6 +1214,110 @@ fn settling_below_an_exact_topology_swap_is_refused() {
         error.to_string().contains("settled exact-event ceiling"),
         "{error}"
     );
+}
+
+/// Returns every exact-event settlement a node recorded.
+fn exact_settlements(trajectory: &Trajectory, node: &str) -> Vec<TraceEvent> {
+    trajectory.traces[node]
+        .iter()
+        .filter(|event| matches!(event.kind, TraceKind::ExactSettle { .. }))
+        .cloned()
+        .collect()
+}
+
+#[test]
+fn a_running_node_settles_an_exact_topology_swap_it_cannot_land_on() {
+    // Probe activation times until a partitioned node is running there. Each
+    // probe is off every retirement lattice, so a running node cannot land on
+    // it and must settle at its last boundary below.
+    let schedules = t1_schedules();
+    let (_, coarse) = &schedules[0];
+    let found = (0..64_u64)
+        .map(|probe| FAULT_AT + probe * (MICROSECOND + 7))
+        .find_map(|at| {
+            let fault = LinkFault {
+                between: ("vm-a", "vm-b"),
+                at,
+            };
+            let (trajectory, _) = drive_scenario(
+                StopModel::Bound,
+                &partition_scenario(Some(fault)),
+                coarse,
+                Faults::default(),
+            )
+            .unwrap_or_else(|error| panic!("swap at {at}: {error}"));
+            ["vm-a", "vm-b"]
+                .into_iter()
+                .any(|node| !exact_settlements(&trajectory, node).is_empty())
+                .then_some((fault, trajectory))
+        });
+    let (fault, baseline) = found.expect("some probe must meet a running node");
+
+    for node in ["vm-a", "vm-b"] {
+        let settled = exact_settlements(&baseline, node);
+        let arrived = exact_arrivals(&baseline, node);
+        // The swap stops each partitioned node once: by arrival if it was
+        // halted, or by a settlement within one retirement if it was running.
+        assert_eq!(
+            settled.len() + arrived.len(),
+            1,
+            "{node}: {settled:?} {arrived:?}"
+        );
+        for event in settled {
+            assert_eq!(event.kind, TraceKind::ExactSettle { ceiling: fault.at });
+            assert!(event.tick < fault.at, "{node}: {event:?}");
+            assert!(fault.at - event.tick < 70, "{node}: {event:?}");
+        }
+    }
+
+    let scenario = partition_scenario(Some(fault));
+    for (label, schedule) in &schedules[1..] {
+        let (trajectory, _) =
+            drive_scenario(StopModel::Bound, &scenario, schedule, Faults::default())
+                .unwrap_or_else(|error| panic!("{label}: {error}"));
+        assert_same_trajectory(&baseline, &trajectory, label);
+    }
+}
+
+// T1: frames delivered between a receiver's retirement boundaries
+
+/// A latency off every retirement lattice, so deliveries land between boundaries.
+const OFF_LATTICE_LATENCY: u64 = LINK_LATENCY + 23;
+
+#[test]
+fn frames_delivered_between_boundaries_are_taken_at_the_next_boundary() {
+    let runs = t1_schedules().map(|(label, schedule)| {
+        let (trajectory, stats) =
+            drive(StopModel::Bound, OFF_LATTICE_LATENCY, TIME_LIMIT, &schedule);
+        (label, trajectory, stats)
+    });
+
+    // A running receiver takes each frame at its first boundary at or after
+    // the delivery, never before it and never a whole retirement late.
+    let (baseline_label, baseline, _) = &runs[0];
+    let receives = baseline
+        .traces
+        .values()
+        .flatten()
+        .filter_map(|event| match event.kind {
+            TraceKind::Receive { due, .. } => Some((event.tick, due)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        receives.iter().any(|(tick, due)| tick > due),
+        "{baseline_label}: some frame must land between boundaries: {receives:?}"
+    );
+    for (tick, due) in &receives {
+        assert!(
+            tick >= due && tick - due < 70,
+            "{baseline_label}: {tick} for {due}"
+        );
+    }
+
+    for (label, trajectory, _) in &runs[1..] {
+        assert_same_trajectory(baseline, trajectory, label);
+    }
 }
 
 // T2: seeded property over random ceiling schedules

@@ -72,9 +72,16 @@ pub(super) fn validate_host_run_outcome(
             ),
         });
     }
-    // An exact-event ceiling is a modeled event for this node (SCHED-39), so
-    // the node must arrive there; settling below it would hide the event.
-    if settled_below_ceiling && planned.admission.dispatch_stop() == RunCeilingStop::ExactEvent {
+    // An exact-event ceiling is a modeled event for this node (SCHED-39). A
+    // halted node reaches it by an idle advance, so an idle park below it
+    // would hide the event. A runnable node never moves its clock without a
+    // retirement: it settles through the ceiling at its last boundary below
+    // it and takes the event at its first boundary at or after it (TIME-30).
+    // Only the backend knows its retirement cost, so it bounds that gap.
+    if settled_below_ceiling
+        && planned.admission.dispatch_stop() == RunCeilingStop::ExactEvent
+        && completed.step.physical_stop != BackendPhysicalStop::Horizon
+    {
         return Err(SchedulerError::BoundaryViolation {
             message: format!(
                 "host worker for `{}` settled exact-event ceiling {} without arriving from {}",

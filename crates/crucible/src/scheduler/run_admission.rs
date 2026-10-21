@@ -236,8 +236,9 @@ impl PreparedRunAdmission {
     ///
     /// [`RunCeilingStop::ExactEvent`] means the dispatch horizon is a modeled
     /// event for this node, such as a fault-timed topology swap that changes
-    /// one of its links (RFC-0010 SCHED-39). The node must arrive there
-    /// exactly. Otherwise the horizon is an upper bound (SCHED-12).
+    /// one of its links (RFC-0010 SCHED-39). A halted node must arrive there
+    /// exactly; a runnable node may settle through it at its last boundary
+    /// below. Otherwise the horizon is an upper bound (SCHED-12).
     #[must_use]
     pub const fn dispatch_stop(&self) -> RunCeilingStop {
         self.dispatch_stop

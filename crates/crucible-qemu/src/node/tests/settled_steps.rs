@@ -85,11 +85,10 @@ fn an_exact_event_ceiling_is_published_as_an_exact_event() -> Result<(), Box<dyn
     Ok(())
 }
 
-#[test]
-fn an_exact_event_ceiling_refuses_a_settlement_below_it() -> Result<(), Box<dyn Error>> {
+fn settled_exact_event_step(stopped_tick: u64) -> Result<StepObservation, Box<dyn Error>> {
     let mut nodes = scripted_node_set(ScriptedNetworkOutput {
         emit_tick: 0,
-        stopped_tick: 951,
+        stopped_tick,
         outcome: AdvanceOutcome::ReachedHorizon,
         next_deadline: None,
         frames: 0,
@@ -100,16 +99,34 @@ fn an_exact_event_ceiling_refuses_a_settlement_below_it() -> Result<(), Box<dyn 
         VirtualTime { ticks: CEILING },
         crucible::RunCeilingStop::ExactEvent,
     );
+    nodes.shutdown()?;
+    Ok(result?)
+}
 
-    // The same report completes a bound ceiling; an exact event must be reached.
+#[test]
+fn a_running_node_settles_an_exact_event_ceiling_it_cannot_land_on() -> Result<(), Box<dyn Error>> {
+    // The next retirement from 951 would end at 1001, past the exact event,
+    // so the running node settles through it at its last boundary (TIME-30).
+    let step = settled_exact_event_step(CEILING - crucible::SIM_TICKS_PER_INSTRUCTION + 1)?;
+
+    assert_eq!(step.reached, VirtualTime { ticks: 951 });
+    assert_eq!(step.settled_through, VirtualTime { ticks: CEILING });
+    assert_eq!(step.physical_stop, BackendPhysicalStop::Horizon);
+    Ok(())
+}
+
+#[test]
+fn an_exact_event_ceiling_refuses_a_settlement_a_whole_retirement_below_it() {
+    // From 950 a whole retirement still fits, so settling would skip the event.
+    let result = settled_exact_event_step(CEILING - crucible::SIM_TICKS_PER_INSTRUCTION);
+
     assert!(
         matches!(
             &result,
-            Err(BackendError::Rejected { message })
-                if message.contains("settled exact-event ceiling 1000 without arriving from 951")
+            Err(error) if error.to_string().contains(
+                "settled exact-event ceiling 1000 without arriving from 950"
+            )
         ),
         "{result:?}"
     );
-    nodes.shutdown()?;
-    Ok(())
 }

@@ -2,8 +2,11 @@
 //!
 //! A RUN ceiling is an upper bound (RFC-0010 SCHED-12): the node stops at its
 //! last retirement at or below it and settles through the rest. A ceiling that
-//! is itself a modeled event is different. The node must arrive there exactly,
-//! by a time-only advance when no retirement lands on it (TIME-4).
+//! is itself a modeled event is different. A halted node arrives there
+//! exactly, by an idle advance. A runnable node never moves its clock without
+//! a retirement: when no retirement lands on the ceiling it settles through
+//! it at its last boundary below, and takes the event at its first boundary
+//! at or after it (TIME-30).
 //!
 //! This module owns the scheduler's decision for fault-timed topology swaps
 //! (SCHED-39). A swap at activation time `A` is an exact event only for the
@@ -36,9 +39,10 @@ pub enum RunCeilingStop {
     Bound,
     /// The ceiling is a modeled exact event for this node.
     ///
-    /// The node must arrive at the ceiling exactly. When no retirement lands on
-    /// it, the node advances time only from its last retirement (TIME-4). A
-    /// completion that settles below such a ceiling is refused.
+    /// A halted node arrives at the ceiling exactly by an idle advance, and an
+    /// idle park below it is refused. A runnable node whose retirements do not
+    /// land on it settles through it with its clock at its last boundary
+    /// below, and takes the event at its next boundary (TIME-30).
     ExactEvent,
 }
 

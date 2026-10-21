@@ -2781,13 +2781,14 @@ impl QemuNode {
     /// A [`crucible::RunCeilingStop::Bound`] ceiling may settle with the
     /// node's clock at its last retirement or exact event below it (RFC-0010
     /// SCHED-12). A [`crucible::RunCeilingStop::ExactEvent`] ceiling is
-    /// published as an exact event, so QEMU reaches it by a time-only advance
-    /// when no retirement lands on it (TIME-4, SCHED-39).
+    /// published as an exact event: a halted node idles to it, and a running
+    /// node that cannot land on it settles through it with its clock less than
+    /// one retirement below (TIME-30, SCHED-39).
     ///
     /// # Errors
     ///
     /// Returns [`BackendError`] when the bounded advance fails, or when an
-    /// exact-event ceiling settles without the node arriving there.
+    /// exact-event ceiling settles more than one retirement below it.
     pub fn step_to_with_stop(
         &mut self,
         ceiling: VirtualTime,
@@ -2846,11 +2847,12 @@ impl QemuNode {
             }
         }
         if stop == crucible::RunCeilingStop::ExactEvent
-            && observation.reached < ceiling
             && observation.settled_through == ceiling
+            && !exact_event_settlement_is_admissible(ceiling, observation.reached)
         {
-            // The ceiling is a modeled event for this node (SCHED-39); a
-            // settlement below it would let the event pass unobserved.
+            // The ceiling is a modeled event for this node (SCHED-39). Only a
+            // running node whose next retirement crosses it may settle below
+            // it; a wider gap would let the event pass unobserved.
             return Err(BackendError::Rejected {
                 message: format!(
                     "QEMU node settled exact-event ceiling {} without arriving from {}",
@@ -2860,6 +2862,16 @@ impl QemuNode {
         }
         Ok(observation)
     }
+}
+
+/// Returns whether a QEMU node may settle an exact-event `ceiling` at `reached`.
+///
+/// A running vCPU never moves its clock without a retirement. When none lands
+/// on the ceiling, QEMU settles it with the clock at the last boundary below,
+/// which lies less than one retirement under the ceiling, and the event is
+/// taken at the next boundary (TIME-30). Arriving exactly is always admissible.
+fn exact_event_settlement_is_admissible(ceiling: VirtualTime, reached: VirtualTime) -> bool {
+    reached <= ceiling && ceiling.ticks - reached.ticks < crucible::SIM_TICKS_PER_INSTRUCTION
 }
 
 fn scheduler_preemption_command(
