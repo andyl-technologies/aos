@@ -1,10 +1,11 @@
 # SourceBirth derivation worker implementation plan
 
-This plan describes a proposed private construction mechanism for RFC-0025.
-It is nonnormative and supplies no implemented worker, deployed containment,
-passing control or native qualification. The
+This nonnormative plan describes the isolated private construction mechanism
+for RFC-0025. The worker and its retained parent integration now exist; the
 [implementation status](implementation-status.md) records executed results;
 the [qualification plan](qualification-plan.md) defines the broader gates.
+The implementation does not yet establish common Ready or full native
+qualification. The design discussion below retains its original proposal scope.
 
 ## Purpose and first delivery
 

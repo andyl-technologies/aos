@@ -87,8 +87,16 @@ This format does not promise cross-process equality of receipts, incarnations,
 operational commitments or saved continuation bytes. Existing PID/thread/Rc,
 Arm/preparation, restored-ticket and snapshot currentness rules remain unchanged.
 
-This stage supplies no worker job, sealed completion, accepted derived bank,
-Initial/Recipe, native startup, snapshot, capture, preservation or Ready authority.
+After template authentication, the actor polls each actual confined worker
+through its original job, accepts the sealed completion and separately admits
+parent startup-bank copies. Successful construction transfers the retained
+executable File, signing key and private identity into the original Source's
+private Birth. Completion bytes and failed allocation prefixes remain owned.
+The original launch and Source are authenticated before and after construction;
+ordinary Sources and the legacy in-process path cannot enter this transition.
+
+This stage supplies no Initial/Recipe, native startup, snapshot, capture,
+preservation or Ready authority. The public preparation response remains Refused.
 Preparation failures retain the funded capsule/credit and any actual namespace
 obligation; shutdown closes receivers before original-descriptor cleanup. A
 failed cleanup keeps the original owner and credit until it genuinely succeeds.

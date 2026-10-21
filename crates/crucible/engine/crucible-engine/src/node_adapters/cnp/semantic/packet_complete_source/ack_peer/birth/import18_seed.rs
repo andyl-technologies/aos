@@ -1,8 +1,9 @@
 //! Owns bank-free private inputs beside the Source's original completed Job.
 //!
 //! This operational seed retains every clone/File/key prefix before later work.
-//! It supplies no Birth ready bit, mapping nonce/generation, Recipe, Initial or
-//! native member. Canonical banks remain with the original Job/Completion.
+//! Its once-only transfer assembles private boot custody after the Source has
+//! separately funded startup-bank copies. It supplies no mapping generation,
+//! Recipe, Initial or native member. Original banks remain with Completion.
 
 use super::*;
 use crate::node_adapters::cnp::semantic::source::{
@@ -100,6 +101,106 @@ impl OriginalImport18PrivateSeed {
         self.authenticate_file()
     }
 
+    /// Moves original private inputs into a retained, initially closed Birth.
+    ///
+    /// The Source has already authenticated the completed job and admitted both
+    /// startup banks. No entropy or executable clone is repeated here. Installing
+    /// the destination before the final File check retains every moved child if
+    /// that check fails. Native startup gates remain closed.
+    ///
+    /// # Errors
+    /// Refuses an occupied destination, incomplete seed, missing bank or changed
+    /// executable identity, preserving every original child on either side.
+    pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn retain_birth_into(
+        &mut self,
+        source: &mut Vec<u8>,
+        registration: &mut Vec<u8>,
+        completed: &mut Option<OriginalAckPeerBirth>,
+    ) -> Result<(), RuntimeError> {
+        if completed.is_some() {
+            return Err(RuntimeError::DuplicateOperation);
+        }
+        self.authenticate()?;
+        if source.is_empty() || registration.is_empty() {
+            return Err(RuntimeError::InvalidReceipt);
+        }
+        let children = (
+            self.host.take(),
+            self.private_launch.take(),
+            self.file.take(),
+            self.revision.take(),
+            self.birth_id.take(),
+        );
+        let (host_executable, private_launch, host_file, host_revision, birth_id) = match children {
+            (Some(host), Some(launch), Some(file), Some(revision), Some(birth_id)) => {
+                (host, launch, file, revision, birth_id)
+            }
+            (host, launch, file, revision, birth_id) => {
+                self.host = host;
+                self.private_launch = launch;
+                self.file = file;
+                self.revision = revision;
+                self.birth_id = birth_id;
+                return Err(RuntimeError::OwnerUnavailable);
+            }
+        };
+        self.complete = false;
+        *completed = Some(OriginalAckPeerBirth {
+            process: self.process,
+            thread: self.thread,
+            key: std::mem::take(&mut self.key),
+            birth_id,
+            host_executable,
+            host_file,
+            host_revision,
+            private_launch,
+            source_birth: std::mem::take(source),
+            expected_host_registration: std::mem::take(registration),
+            boot_started: std::cell::Cell::new(false),
+            ready: false,
+            failed: true,
+            report_startup_required: true,
+            report_startup: None,
+            native_startup: None,
+            native_import18: None,
+            native_host_finalization: None,
+            host_startup: std::cell::RefCell::new(None),
+        });
+        let birth = completed.as_mut().ok_or(RuntimeError::OwnerUnavailable)?;
+        private_identity::authenticate_private_file(
+            birth.process,
+            birth.thread,
+            &birth.host_executable,
+            &birth.host_file,
+            &birth.host_revision,
+        )?;
+        birth.ready = true;
+        birth.failed = false;
+        Ok(())
+    }
+
+    pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn birth_transfer_counter_scratch_data()
+    -> usize {
+        HOST_EXECUTABLE_STREAM_BYTES
+            + private_identity::delegation_controls()
+            + size_of::<&mut Self>()
+            + size_of::<&mut Vec<u8>>() * 2
+            + size_of::<&mut Option<OriginalAckPeerBirth>>()
+            + size_of::<&mut OriginalAckPeerBirth>()
+            + size_of::<OriginalAckPeerBirth>()
+            + size_of::<Option<OriginalAckPeerBirth>>()
+            + size_of::<(
+                Option<ContentRef>,
+                Option<Id>,
+                Option<File>,
+                Option<HostRevision>,
+                Option<[u8; 32]>,
+            )>()
+            + size_of::<(ContentRef, Id, File, HostRevision, [u8; 32])>()
+            + size_of::<[u8; 32]>()
+            + size_of::<Result<(), RuntimeError>>()
+    }
+
     pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn known_backing(
         &self,
     ) -> Result<usize, RuntimeError> {
@@ -186,6 +287,43 @@ impl OriginalImport18PrivateSeed {
             + size_of::<[usize; 3]>()
             + size_of::<Result<[usize; 3], RuntimeError>>()
             + size_of::<Result<(), RuntimeError>>() * 2
+    }
+}
+
+impl OriginalAckPeerBirth {
+    /// Allows a census of complete or failed construction before startup effects.
+    ///
+    /// # Errors
+    /// Refuses foreign creation custody, started boot or any startup finalizer.
+    pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn authenticate_isolated_construction_storage_data(
+        &self,
+    ) -> Result<(), RuntimeError> {
+        if self.process != std::process::id() || self.thread != std::thread::current().id() {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        if self.boot_started.get()
+            || !self.report_startup_required
+            || self.report_startup.is_some()
+            || self.native_startup.is_some()
+            || self.native_import18.is_some()
+            || self.native_host_finalization.is_some()
+            || self
+                .host_startup
+                .try_borrow()
+                .map_err(|_| RuntimeError::OutstandingObligations)?
+                .is_some()
+        {
+            return Err(RuntimeError::OutstandingObligations);
+        }
+        Ok(())
+    }
+
+    /// Revokes private boot without dropping the original key, File or banks.
+    pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn revoke_isolated_construction(
+        &mut self,
+    ) {
+        self.ready = false;
+        self.failed = true;
     }
 }
 

@@ -22,7 +22,7 @@
         pkgs.openssl
         pkgs.pkg-config
         pkgs.protobuf
-        pkgs.rust.dev
+        pkgs.rust
         pkgs.sed
         pkgs.sqlite
       ];
@@ -123,7 +123,7 @@
     ];
   };
   buildClosure = (lib.build.closureInfo {inherit pkgs lib;}) {
-    rootPaths = [source cargoDeps pkgs.rust.dev pkgs.coreutils pkgs.sed pkgs.pkg-config pkgs.protobuf pkgs.openssl pkgs.sqlite];
+    rootPaths = [source cargoDeps pkgs.rust pkgs.coreutils pkgs.sed pkgs.pkg-config pkgs.protobuf pkgs.openssl pkgs.sqlite];
     pname = "crucible-funded-source-component-build-inputs";
   };
 in {

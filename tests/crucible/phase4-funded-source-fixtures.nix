@@ -10,7 +10,7 @@
       host_executable = executable;
       peer_executable = "${peers}/bin/crucible-reference-packet-provider";
       sources = {
-        adapter_source = "${source}/crates/crucible/engine/crucible-engine/src/node_adapters/cnp/packet_complete_source.rs";
+        adapter_source = "${source}/crates/crucible/engine/crucible-engine/src/node_adapters/cnp/semantic/packet_complete_source.rs";
         build_closure = "${buildClosure}/inventory.json";
         contract_source = "${source}/crates/crucible/host/crucible-node-transport/src/reference_packet/continuation_contracts.rs";
         harness_source = "${source}/crates/crucible/control/crucible-daemon/src/node_qualification/packet_collection/complete/installed/source/fresh_target/prepared.rs";
@@ -34,8 +34,10 @@
       };
       maximum_coordinator_records = 256;
     };
-  cases = ["templates-a" "templates-b" "bad-pin" "cli"];
-  deployment = name: {
+  cases = ["templates-a" "templates-b" "births-a" "births-b" "bad-pin" "cli"];
+  deployment = name: let
+    deriveBirths = builtins.elem name ["births-a" "births-b"];
+  in {
     format = "crucible.node-operational-deployment";
     version = 1;
     parent = {
@@ -50,22 +52,61 @@
       user_id = 20000;
       group_id = 20000;
       limits = {
-        memory_bytes = 33554432;
-        address_space_bytes = 268435456;
-        cpu_seconds = 2;
+        memory_bytes =
+          if deriveBirths
+          then 134217728
+          else 33554432;
+        address_space_bytes =
+          if deriveBirths
+          then 536870912
+          else 268435456;
+        cpu_seconds =
+          if deriveBirths
+          then 10
+          else 2;
         descriptors = 32;
-        disk_bytes = 1048576;
-        inodes = 32;
-        input_bytes = 1024;
-        maximum_input_elements = 1024;
-        maximum_result_bytes = 1024;
-        diagnostic_bytes = 256;
-        stdout_bytes = 2048;
-        stderr_bytes = 2048;
-        wall_seconds = 15;
+        disk_bytes =
+          if deriveBirths
+          then 33554432
+          else 1048576;
+        inodes =
+          if deriveBirths
+          then 128
+          else 32;
+        input_bytes =
+          if deriveBirths
+          then 8388608
+          else 1024;
+        maximum_input_elements =
+          if deriveBirths
+          then 262144
+          else 1024;
+        maximum_result_bytes =
+          if deriveBirths
+          then 8388608
+          else 1024;
+        diagnostic_bytes =
+          if deriveBirths
+          then 4096
+          else 256;
+        stdout_bytes =
+          if deriveBirths
+          then 16777216
+          else 2048;
+        stderr_bytes =
+          if deriveBirths
+          then 65536
+          else 2048;
+        wall_seconds =
+          if deriveBirths
+          then 30
+          else 15;
       };
     };
-    export_workspace_slots = 1;
+    export_workspace_slots =
+      if deriveBirths
+      then 4096
+      else 1;
   };
   daemon = name: {
     format = "crucible.node-daemon-policy";

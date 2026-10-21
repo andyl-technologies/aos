@@ -11,12 +11,24 @@ use crucible_engine::node_adapters::cnp::source_birth_derivation::request_wire::
 use crucible_host_resources::LinuxPureWorkerAttempt;
 
 impl PreparedCompleteRestoration {
+    #[cfg(feature = "test-support")]
+    pub(crate) fn funded_private_births_retained_data(&self) -> bool {
+        !self.import18_templates.failed
+            && self.import18_templates.funded_complete
+            && self
+                .import18_templates
+                .members
+                .iter()
+                .all(|member| member.stage == Stage::PrivateBirth)
+    }
+
     /// Advances the isolated operational step without claiming preparation success.
     ///
     /// The actor calls this from its existing poll. A real failed job stops new
     /// starts but retains its original input/error/cleanup owners. Cleanup visits
     /// all members even if an earlier member refuses. This is not a native Ready,
-    /// Initial, Recipe or legacy BirthWorker route.
+    /// Initial, Recipe or legacy BirthWorker route. Private Birth assembly keeps
+    /// native startup closed until its independent finalization is available.
     ///
     /// # Errors
     /// Refuses unavailable original ownership, actual export/start/result error
@@ -96,7 +108,8 @@ impl PreparedCompleteRestoration {
                 Stage::DerivedBanks => {
                     self.prepare_funded_private_seed(selected)?;
                 }
-                Stage::PrivateSeed => {}
+                Stage::PrivateSeed => self.prepare_funded_private_birth(selected)?,
+                Stage::PrivateBirth => {}
                 _ => return Err(RuntimeError::OutstandingObligations),
             }
         }
@@ -126,6 +139,27 @@ impl PreparedCompleteRestoration {
         let observed = self.observe_import18_templates_data([0; 3]);
         result.and(observed)?;
         self.import18_templates.members[selected].stage = Stage::PrivateSeed;
+        Ok(())
+    }
+
+    fn prepare_funded_private_birth(&mut self, selected: usize) -> Result<(), RuntimeError> {
+        self.observe_import18_templates_data([
+            0,
+            0,
+            PacketCompleteSemanticSource::native_import18_private_birth_counter_scratch_data(),
+        ])?;
+        let requested = self.import18_templates.members[selected]
+            .output
+            .completed_data()?
+            .native_import18_private_birth_construction_data(usize::MAX)?;
+        self.observe_import18_templates_data(requested)?;
+        let result = self.import18_templates.members[selected]
+            .output
+            .completed_unique_data()?
+            .prepare_native_import18_private_birth_into();
+        let observed = self.observe_import18_templates_data([0; 3]);
+        result.and(observed)?;
+        self.import18_templates.members[selected].stage = Stage::PrivateBirth;
         Ok(())
     }
 
@@ -226,6 +260,7 @@ impl PreparedCompleteRestoration {
                     | Stage::DerivationRunning
                     | Stage::DerivedBanks
                     | Stage::PrivateSeed
+                    | Stage::PrivateBirth
                     | Stage::DerivationFailed
             ) {
                 let cancelled = member

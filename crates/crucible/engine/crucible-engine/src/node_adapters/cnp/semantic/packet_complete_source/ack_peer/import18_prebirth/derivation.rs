@@ -3,7 +3,8 @@
 //! The association spends export once and owns transferred planned operands.
 //! Result acceptance owns the same sealed completion before inspecting it;
 //! accepted banks are ranges in that completion, never reconstructed summaries.
-//! This owner issues neither Birth nor Initial, Recipe or native permission.
+//! A separately funded transition assembles private Birth custody from these
+//! banks. Initial, Recipe and native permissions require their own producers.
 
 use super::*;
 use crate::node_adapters::cnp::source_birth_derivation::original_launch::OriginalSourceBirthLaunch;
@@ -17,6 +18,9 @@ use std::ops::Range;
 
 #[path = "derivation/private_seed.rs"]
 mod private_seed;
+
+#[path = "derivation/private_birth.rs"]
+mod private_birth;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum DerivationStage {
@@ -37,6 +41,9 @@ pub(in crate::node_adapters::cnp::semantic) struct NativeImport18DerivationState
     receipt: Option<RequestReceipt>,
     host_reference: Option<[u8; 32]>,
     private_seed: Option<birth::OriginalImport18PrivateSeed>,
+    private_birth_started: bool,
+    source_bank: Vec<u8>,
+    registration_bank: Vec<u8>,
     job: Option<SourceBirthDerivationJob>,
     banks: Option<[Range<usize>; 2]>,
     stage: DerivationStage,
@@ -129,6 +136,9 @@ impl PacketCompleteSemanticSource {
             receipt: None,
             host_reference: None,
             private_seed: None,
+            private_birth_started: false,
+            source_bank: Vec::new(),
+            registration_bank: Vec::new(),
             job: None,
             banks: None,
             stage: DerivationStage::Failed,
@@ -375,6 +385,11 @@ impl PacketCompleteSemanticSource {
             if let Some(job) = &mut state.job {
                 job.cancel();
             }
+            if state.private_birth_started
+                && let Some(birth) = self.ack_peer_birth.get_mut()
+            {
+                birth.revoke_isolated_construction();
+            }
         }
         self.storage_origin_with_error::<RuntimeError>()?;
         if self.native_import18_derivation.is_some() {
@@ -410,7 +425,7 @@ impl PacketCompleteSemanticSource {
             || state.process != self.process
             || state.thread != self.thread
             || self.native_import18_derivation_mechanism.is_none()
-            || self.ack_birth_attempted
+            || self.ack_birth_attempted != state.private_birth_started
             || self.native_import18_birth_construction.is_some()
         {
             return Err(RuntimeError::ForeignAuthority);
@@ -460,6 +475,11 @@ impl PacketCompleteSemanticSource {
         if let Some(seed) = &state.private_seed {
             bytes = storage::sum(&[bytes, seed.known_backing()?])?;
         }
+        bytes = storage::sum(&[
+            bytes,
+            state.source_bank.capacity(),
+            state.registration_bank.capacity(),
+        ])?;
         if bytes > maximum {
             return Err(RuntimeError::ResourceLimit);
         }

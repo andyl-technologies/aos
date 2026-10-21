@@ -88,6 +88,14 @@ impl FundedTemplateCapsule {
             FundedTemplatePhase::Reclaimed
         } else if !self.attempted {
             FundedTemplatePhase::Unattempted
+        } else if self.templates_authenticated && self.failure.is_some() {
+            FundedTemplatePhase::DerivationFailed
+        } else if self
+            .prepared
+            .as_ref()
+            .is_some_and(PreparedCompleteRestoration::funded_private_births_retained_data)
+        {
+            FundedTemplatePhase::PrivateBirthsRetained
         } else if self.templates_authenticated {
             FundedTemplatePhase::TemplatesRetained
         } else {

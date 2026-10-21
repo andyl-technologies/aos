@@ -190,8 +190,7 @@ impl PacketCompleteSemanticSource {
                     ));
                 }
             }
-            PrebirthStoragePurpose::TemplateConstruction
-            | PrebirthStoragePurpose::IsolatedTemplate(_) => {
+            PrebirthStoragePurpose::TemplateConstruction => {
                 // A template output remains owned by its once attempt during
                 // declaration/bank binding and worker initialization. A spent
                 // flag alone cannot stand in for its actual retained worker.
@@ -207,6 +206,24 @@ impl PacketCompleteSemanticSource {
                     return Err(E::refused(
                         "template construction has entered private birth or association",
                     ));
+                }
+            }
+            PrebirthStoragePurpose::IsolatedTemplate(_) => {
+                self.authenticate_template18_worker_storage_custody_data()
+                    .map_err(E::runtime)?;
+                if self.native_import18_derivation.is_some() {
+                    self.authenticate_isolated_private_birth_storage_data()
+                        .map_err(E::runtime)?;
+                } else if birth.is_some() {
+                    return Err(E::refused("isolated template has a foreign private birth"));
+                }
+                if self
+                    .ack_peer_association
+                    .try_borrow()
+                    .map_err(E::unknown)?
+                    .is_some()
+                {
+                    return Err(E::refused("isolated template has entered association"));
                 }
             }
             PrebirthStoragePurpose::ReportStartup => {
@@ -298,7 +315,7 @@ impl PacketCompleteSemanticSource {
     /// this numeric component never becomes a complete Source byte total.
     ///
     /// # Errors
-    /// Refuses another deployment/creator, native or private-Birth custody,
+    /// Refuses another deployment/creator, native or started-boot custody,
     /// unsupported actual components, arithmetic or the supplied restriction.
     pub fn original_isolated_template_deployment_storage_data<'a>(
         self: &'a Rc<Self>,
@@ -330,6 +347,7 @@ impl PacketCompleteSemanticSource {
         use crate::node_adapters::cnp::source_birth_derivation::deployment::SourceDeploymentStorageRead;
         Self::retained_requested_storage_precredit_scratch_data()
             .saturating_add(Self::isolated_derivation_counter_scratch_data())
+            .saturating_add(Self::native_import18_private_birth_counter_scratch_data())
             .saturating_add(std::mem::size_of::<SourceDeploymentStorageRead<'static>>() * 2)
             .saturating_add(std::mem::size_of::<
                 Result<SourceDeploymentStorageRead<'static>, RuntimeError>,

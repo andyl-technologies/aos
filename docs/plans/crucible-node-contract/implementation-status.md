@@ -10,6 +10,41 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Isolated parent private Birth construction
+
+The next working-tree change connects the accepted original worker result and
+bank-free seed to genuine private Birth construction. The Source separately
+quotes both startup-bank copies, authenticates the unchanged original launch
+and completion, and transfers the original executable File, private identity
+and signing key once. The completed job retains its original response bytes;
+partial copies and failed Births stay in their actual owners and storage census.
+Cancellation revokes the private Birth before releasing deployment custody.
+
+The actor advances all three members on its existing poll, outside Source
+loans. Its test-support observer distinguishes authenticated templates, three
+retained private Births and a subsequent derivation failure. The public command
+continues to refuse preparation success. No startup finalizer, Initial, Recipe,
+native readiness, Capture or preservation authority follows from this transition.
+
+The registered funded-template VM check adds two independent actual consumers
+that must finish all three confined jobs and private Births, retain spent retry
+credit, and reclaim their namespaces before publishing success. Separate finite
+worker policies fund this positive flight; the earlier small-policy foundation,
+foreign pin and default-feature CLI refusal controls remain. The component
+derivation now depends on the source-built Rust compiler/Cargo output rather
+than its developer-tools-only output; the measured adapter path also follows
+its existing `semantic/` module location.
+
+All-feature/all-target Engine and Daemon checking, the six registered
+architecture gates and changed-file Rust/Nix formatting pass. The three new
+File/key/bank-transfer controls pass in the ordinary Engine run. That run has
+2,029 passing tests and five missing-installed-packet-executable failures;
+the complete configured rerun is pending. The required application test-target
+gate passes for an earlier construction snapshot and is being refreshed for
+the final Rust inputs. Native funded-worker/Birth VM execution and complete
+Daemon regression results remain pending. These are component results and
+do not qualify common Ready or full RFC-0025 completion.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.

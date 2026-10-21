@@ -17,6 +17,10 @@ pub enum FundedTemplatePhase {
     AttemptFailed,
     /// The first preparation returned authenticated template success only.
     TemplatesRetained,
+    /// All three original worker results and private Births remain retained.
+    PrivateBirthsRetained,
+    /// An authenticated template later failed its worker or Birth construction.
+    DerivationFailed,
     /// Explicit revocation and actual namespace cleanup released its credit.
     Reclaimed,
 }

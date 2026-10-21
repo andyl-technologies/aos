@@ -1,7 +1,7 @@
 //! Exercises the actual funded endpoint and reads its actor-owned foundation state.
 //!
 //! ```text
-//! crucible-funded-source-templates-flight POLICY.json OPERATIONAL.json INSTALLATION.json EXPECTED.json templates|failure
+//! crucible-funded-source-templates-flight POLICY.json OPERATIONAL.json INSTALLATION.json EXPECTED.json templates|births|failure
 //! ```
 //!
 //! Each ordinary process installs its original reservation synchronously before
@@ -36,12 +36,15 @@ type Failure = Box<dyn Error>;
 fn main() -> Result<(), Failure> {
     let arguments: Vec<_> = std::env::args_os().skip(1).collect();
     if arguments.len() != 5 {
-        return Err("expected POLICY OPERATIONAL INSTALLATION EXPECTED templates|failure".into());
+        return Err(
+            "expected POLICY OPERATIONAL INSTALLATION EXPECTED templates|births|failure".into(),
+        );
     }
     let expected_phase = match arguments[4].to_str() {
         Some("templates") => FundedTemplatePhase::TemplatesRetained,
+        Some("births") => FundedTemplatePhase::PrivateBirthsRetained,
         Some("failure") => FundedTemplatePhase::AttemptFailed,
-        _ => return Err("expected templates or failure".into()),
+        _ => return Err("expected templates, births or failure".into()),
     };
     // The same public defining entry precedes daemon startup and the client thread.
     let operational =
@@ -119,6 +122,9 @@ fn main() -> Result<(), Failure> {
     println!("PASS");
     println!("actual_command_twice_and_retained_world_credit=true");
     println!("terminal_namespace_absent_and_world_credit_released=true");
+    if expected_phase == FundedTemplatePhase::PrivateBirthsRetained {
+        println!("actual_three_worker_results_and_private_births_retained=true");
+    }
     Ok(())
 }
 
@@ -133,12 +139,30 @@ fn await_phase(
     observer: &FundedTemplateObserver,
     phase: FundedTemplatePhase,
 ) -> Result<(), String> {
-    // The existing public exchange has its own unchanged deadline. This bound
-    // waits only for the next fixed actor publication after that real reply.
-    let deadline = Instant::now() + Duration::from_secs(1);
+    // The public exchange keeps its own deadline. The birth flight also waits
+    // for three confined jobs; the foundation flight needs only publication.
+    let deadline = Instant::now()
+        + if phase == FundedTemplatePhase::PrivateBirthsRetained {
+            Duration::from_secs(60)
+        } else {
+            Duration::from_secs(1)
+        };
     loop {
-        if observer.snapshot().map_err(|e| e.to_string())?.phase() == phase {
+        let observed = observer.snapshot().map_err(|e| e.to_string())?.phase();
+        if observed == phase
+            || (phase == FundedTemplatePhase::TemplatesRetained
+                && matches!(
+                    observed,
+                    FundedTemplatePhase::PrivateBirthsRetained
+                        | FundedTemplatePhase::DerivationFailed
+                ))
+        {
             return Ok(());
+        }
+        if phase == FundedTemplatePhase::PrivateBirthsRetained
+            && observed == FundedTemplatePhase::DerivationFailed
+        {
+            return Err("original funded worker or private Birth construction failed".into());
         }
         if Instant::now() >= deadline {
             return Err("actor did not publish the actual expected foundation outcome".into());

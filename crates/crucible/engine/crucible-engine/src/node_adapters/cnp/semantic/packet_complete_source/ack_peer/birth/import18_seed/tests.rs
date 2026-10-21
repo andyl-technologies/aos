@@ -110,3 +110,120 @@ fn retained_original_file_authentication_rejects_foreign_descriptor() {
     seed.file = original;
     seed.authenticate().unwrap();
 }
+
+#[test]
+fn private_birth_transfer_preserves_original_identity_and_bank_allocations() {
+    let host = current_host();
+    let launch = Id::new("private-birth-transfer").unwrap();
+    let mut seed = OriginalImport18PrivateSeed::empty();
+    seed.prepare(&host, &launch).unwrap();
+    let descriptor = seed.file.as_ref().unwrap().as_raw_fd();
+    let key = seed.key;
+    let identity = seed.birth_id.unwrap();
+    let mut source = b"original source bank".to_vec();
+    let mut registration = b"original registration bank".to_vec();
+    let source_pointer = source.as_ptr();
+    let registration_pointer = registration.as_ptr();
+    let mut output = None;
+
+    seed.retain_birth_into(&mut source, &mut registration, &mut output)
+        .unwrap();
+
+    let birth = output.as_ref().unwrap();
+    assert_eq!(birth.host_file.as_raw_fd(), descriptor);
+    assert_eq!(birth.host_executable, host);
+    assert_eq!(birth.private_launch, launch);
+    assert_eq!(birth.key, key);
+    assert_eq!(birth.birth_id, identity);
+    assert_eq!(birth.source_birth.as_ptr(), source_pointer);
+    assert_eq!(
+        birth.expected_host_registration.as_ptr(),
+        registration_pointer
+    );
+    assert_eq!(birth.source_birth, b"original source bank");
+    assert_eq!(
+        birth.expected_host_registration,
+        b"original registration bank"
+    );
+    birth.authenticate_unstarted_storage_phase().unwrap();
+    birth
+        .authenticate_isolated_construction_storage_data()
+        .unwrap();
+    assert!(birth.report_startup_required);
+    assert!(birth.report_startup.is_none());
+    assert!(birth.native_startup.is_none());
+    assert!(birth.native_import18.is_none());
+    assert!(birth.native_host_finalization.is_none());
+    assert!(birth.host_startup.borrow().is_none());
+    assert!(!birth.boot_started.get());
+    assert!(source.is_empty() && source.capacity() == 0);
+    assert!(registration.is_empty() && registration.capacity() == 0);
+    assert_eq!(seed.known_backing().unwrap(), 0);
+    assert_eq!(seed.key, [0; 32]);
+    assert!(seed.authenticate().is_err());
+
+    assert_eq!(
+        seed.retain_birth_into(&mut source, &mut registration, &mut output),
+        Err(RuntimeError::DuplicateOperation)
+    );
+    assert_eq!(output.as_ref().unwrap().host_file.as_raw_fd(), descriptor);
+}
+
+#[test]
+fn missing_bank_refuses_transfer_without_consuming_original_seed() {
+    let mut seed = OriginalImport18PrivateSeed::empty();
+    seed.prepare(
+        &current_host(),
+        &Id::new("private-birth-missing-bank").unwrap(),
+    )
+    .unwrap();
+    let descriptor = seed.file.as_ref().unwrap().as_raw_fd();
+    let identity = seed.birth_id;
+    let mut source = b"retained source".to_vec();
+    let mut registration = Vec::new();
+    let mut output = None;
+
+    assert_eq!(
+        seed.retain_birth_into(&mut source, &mut registration, &mut output),
+        Err(RuntimeError::InvalidReceipt)
+    );
+
+    seed.authenticate().unwrap();
+    assert_eq!(seed.file.as_ref().unwrap().as_raw_fd(), descriptor);
+    assert_eq!(seed.birth_id, identity);
+    assert_eq!(source, b"retained source");
+    assert!(output.is_none());
+}
+
+#[test]
+fn construction_census_refuses_started_boot_and_retains_failed_birth_backing() {
+    let mut seed = OriginalImport18PrivateSeed::empty();
+    seed.prepare(&current_host(), &Id::new("private-birth-census").unwrap())
+        .unwrap();
+    let mut source = b"source".to_vec();
+    let mut registration = b"registration".to_vec();
+    let mut output = None;
+    seed.retain_birth_into(&mut source, &mut registration, &mut output)
+        .unwrap();
+    let birth = output.as_mut().unwrap();
+    let backing = birth
+        .retained_heap_storage_data_with_error::<RuntimeError>(usize::MAX)
+        .unwrap();
+
+    birth.revoke_isolated_construction();
+    birth
+        .authenticate_isolated_construction_storage_data()
+        .unwrap();
+    assert_eq!(
+        birth.retained_heap_storage_data_with_error::<RuntimeError>(usize::MAX),
+        Ok(backing)
+    );
+    assert!(birth.authenticate_unstarted_storage_phase().is_err());
+    assert!(birth.begin_private_boot().is_err());
+
+    birth.boot_started.set(true);
+    assert_eq!(
+        birth.authenticate_isolated_construction_storage_data(),
+        Err(RuntimeError::OutstandingObligations)
+    );
+}
