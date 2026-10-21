@@ -15,13 +15,14 @@
 }: let
   primitives = ../pkgs/security/aos-normal-root-profile.py;
   manifest = ../pkgs/security/aos-selinux-runtime-manifest.py;
-  checkerRelative = policy.effectivePolicyCheckerRelative
+  checkerRelative = policy.passthru.effectivePolicyCheckerRelative
     or (throw "Host runtime profiles require the delivered selected policy checker");
   checker =
     if checkerRelative == "share/aos/selected-policy-checker/effective_policy.py"
     then "${policy}/${checkerRelative}"
     else throw "Host runtime profiles require the fixed relative policy checker path";
   sourcePolicy = "${policy}/etc/selinux/aos/policy/policy.33";
+  checkerArguments = policy.passthru.effectivePolicyCheckerArguments or "";
   makeProfile = storageOnly:
     pkgs.mkDerivation {
       pname =
@@ -87,7 +88,7 @@
             install -m 0444 ${sourcePolicy} "$out/source-policy.33"
             export PYTHONPATH=${pkgs.buildPackages.setools}/lib/python3/site-packages
             ${pkgs.buildPackages.python3}/bin/python3 -B ${checker} \
-              ${sourcePolicy} > effective-policy.tsv
+              ${checkerArguments} ${sourcePolicy} > effective-policy.tsv
             test -s effective-policy.tsv
             install -m 0444 effective-policy.tsv "$out/effective-policy.tsv"
 
