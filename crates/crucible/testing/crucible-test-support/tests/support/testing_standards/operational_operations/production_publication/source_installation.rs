@@ -284,9 +284,76 @@ pub(super) const NATIVE_WORLD: Companion = super::super::source_world_admission:
 pub(super) const NATIVE_REFUSAL: Companion = Companion {
     path: "crates/crucible/host/crucible-host-resources/src/host_services/process_birth/executor_purpose/native_pool/refusal.rs",
     required: &[
+        (r#"#[derive(Debug)]
+pub(super) struct RetainedClaim {
+    owner: RetainedOwner,
+    delivery: Option<ServiceBirthError>,
+    receiver: Option<&'static str>,
+}
+
+// Each issuer can transfer exactly one actual owner into its refusal. Keep the
+// alternatives inline so exhaustion cannot require another allocation, without
+// reserving simultaneous storage for owners that no issuer can produce together.
+#[derive(Debug)]
+enum RetainedOwner {
+    None,
+    Pool {
+        _pool: AuthenticatedNativePoolPurpose,
+    },
+    Source {
+        _source: AuthenticatedSourceHostPurpose,
+    },
+    Dispatcher {
+        _dispatcher: super::super::AuthenticatedTargetDispatcherPurpose,
+    },
+    World {
+        world: Option<AuthenticatedNativeWorldClaim>,
+    },
+    Window {
+        _window: AuthenticatedNativeNodeHostWindow,
+    },
+}
+
+impl RetainedClaim {
+    fn new(owner: RetainedOwner) -> Self {
+        Self {
+            owner,
+            delivery: None,
+            receiver: None,
+        }
+    }
+
+    pub(super) fn source(source: AuthenticatedSourceHostPurpose) -> Self {
+        Self::new(RetainedOwner::Source { _source: source })
+    }
+
+    pub(super) fn pool(pool: AuthenticatedNativePoolPurpose) -> Self {
+        Self::new(RetainedOwner::Pool { _pool: pool })
+    }
+
+    pub(super) fn dispatcher(
+        dispatcher: super::super::AuthenticatedTargetDispatcherPurpose,
+    ) -> Self {
+        Self::new(RetainedOwner::Dispatcher {
+            _dispatcher: dispatcher,
+        })
+    }
+
+    pub(super) fn world(world: AuthenticatedNativeWorldClaim) -> Self {
+        Self::new(RetainedOwner::World { world: Some(world) })
+    }
+
+    pub(super) fn window(window: AuthenticatedNativeNodeHostWindow) -> Self {
+        Self::new(RetainedOwner::Window { _window: window })
+    }
+}
+"#, 1),
         (
             r#"pub fn take_retained_world(&mut self) -> Option<AuthenticatedNativeWorldClaim> {
-    self._retained.as_mut()?._world.take()
+    match &mut self._retained.as_mut()?.owner {
+        RetainedOwner::World { world } => world.take(),
+        _ => None,
+    }
 }"#,
             1,
         ),

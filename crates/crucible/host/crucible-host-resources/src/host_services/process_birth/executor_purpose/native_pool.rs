@@ -25,8 +25,9 @@ mod refusal;
 mod window;
 mod world_return;
 mod worker_admission;
-use ledger::{NodeSlot, PoolLedger, WorldSlot};
 use super::world_admission::{borrow_world_control, observe_world_attempt};
+use ledger::{NodeSlot, PoolLedger, WorldSlot};
+use refusal::RetainedClaim;
 
 pub use world_return::NativePoolReturnError;
 
@@ -196,67 +197,6 @@ pub struct NativePoolRefusal {
     world_assignment_refused: bool,
 }
 
-#[derive(Debug)]
-struct RetainedClaim {
-    _pool: Option<AuthenticatedNativePoolPurpose>,
-    _source: Option<AuthenticatedSourceHostPurpose>,
-    _dispatcher: Option<super::AuthenticatedTargetDispatcherPurpose>,
-    _world: Option<AuthenticatedNativeWorldClaim>,
-    _window: Option<AuthenticatedNativeNodeHostWindow>,
-    delivery: Option<ServiceBirthError>,
-    receiver: Option<&'static str>,
-}
-
-impl RetainedClaim {
-    fn source(source: AuthenticatedSourceHostPurpose) -> Self {
-        Self {
-            _source: Some(source),
-            _dispatcher: None,
-            _pool: None,
-            _world: None,
-            _window: None,
-            delivery: None,
-            receiver: None,
-        }
-    }
-
-    fn pool(pool: AuthenticatedNativePoolPurpose) -> Self {
-        Self {
-            _source: None,
-            _dispatcher: None,
-            _pool: Some(pool),
-            _world: None,
-            _window: None,
-            delivery: None,
-            receiver: None,
-        }
-    }
-
-    fn world(world: AuthenticatedNativeWorldClaim) -> Self {
-        Self {
-            _source: None,
-            _dispatcher: None,
-            _pool: None,
-            _world: Some(world),
-            _window: None,
-            delivery: None,
-            receiver: None,
-        }
-    }
-
-    fn window(window: AuthenticatedNativeNodeHostWindow) -> Self {
-        Self {
-            _source: None,
-            _dispatcher: None,
-            _pool: None,
-            _world: None,
-            _window: Some(window),
-            delivery: None,
-            receiver: None,
-        }
-    }
-}
-
 pub(super) fn missing_node_window(
     after: Option<ServiceBirthError>,
 ) -> Result<(), NativePoolRefusal> {
@@ -284,15 +224,7 @@ pub(super) fn finish_dispatcher(
             world_assignment_refused: false,
             cause: ServiceBirthError::policy("Target dispatcher postcut refused"),
             after: Some(after),
-            _retained: Some(RetainedClaim {
-                _pool: None,
-                _source: None,
-                _dispatcher: Some(purpose),
-                _world: None,
-                _window: None,
-                delivery: None,
-                receiver: None,
-            }),
+            _retained: Some(RetainedClaim::dispatcher(purpose)),
         }),
     }
 }

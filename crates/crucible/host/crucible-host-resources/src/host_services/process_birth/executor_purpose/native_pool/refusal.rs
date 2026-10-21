@@ -2,13 +2,80 @@
 
 use super::*;
 
+#[derive(Debug)]
+pub(super) struct RetainedClaim {
+    owner: RetainedOwner,
+    delivery: Option<ServiceBirthError>,
+    receiver: Option<&'static str>,
+}
+
+// Each issuer can transfer exactly one actual owner into its refusal. Keep the
+// alternatives inline so exhaustion cannot require another allocation, without
+// reserving simultaneous storage for owners that no issuer can produce together.
+#[derive(Debug)]
+enum RetainedOwner {
+    None,
+    Pool {
+        _pool: AuthenticatedNativePoolPurpose,
+    },
+    Source {
+        _source: AuthenticatedSourceHostPurpose,
+    },
+    Dispatcher {
+        _dispatcher: super::super::AuthenticatedTargetDispatcherPurpose,
+    },
+    World {
+        world: Option<AuthenticatedNativeWorldClaim>,
+    },
+    Window {
+        _window: AuthenticatedNativeNodeHostWindow,
+    },
+}
+
+impl RetainedClaim {
+    fn new(owner: RetainedOwner) -> Self {
+        Self {
+            owner,
+            delivery: None,
+            receiver: None,
+        }
+    }
+
+    pub(super) fn source(source: AuthenticatedSourceHostPurpose) -> Self {
+        Self::new(RetainedOwner::Source { _source: source })
+    }
+
+    pub(super) fn pool(pool: AuthenticatedNativePoolPurpose) -> Self {
+        Self::new(RetainedOwner::Pool { _pool: pool })
+    }
+
+    pub(super) fn dispatcher(
+        dispatcher: super::super::AuthenticatedTargetDispatcherPurpose,
+    ) -> Self {
+        Self::new(RetainedOwner::Dispatcher {
+            _dispatcher: dispatcher,
+        })
+    }
+
+    pub(super) fn world(world: AuthenticatedNativeWorldClaim) -> Self {
+        Self::new(RetainedOwner::World { world: Some(world) })
+    }
+
+    pub(super) fn window(window: AuthenticatedNativeNodeHostWindow) -> Self {
+        Self::new(RetainedOwner::Window { _window: window })
+    }
+}
+
 impl NativePoolRefusal {
     /// Moves only the actual committed World retained by this refusal.
     ///
     /// The original first cause and independent postcut remain in this report.
     /// This neither reclaims an assignment nor creates a loan or new authority.
     pub fn take_retained_world(&mut self) -> Option<AuthenticatedNativeWorldClaim> {
-        self._retained.as_mut()?._world.take()
+        match &mut self._retained.as_mut()?.owner {
+            RetainedOwner::World { world } => world.take(),
+            _ => None,
+        }
     }
 
     /// Borrows a later failure to deliver this World's genuine cleanup custody.
@@ -21,15 +88,9 @@ impl NativePoolRefusal {
     ///
     /// This changes diagnostics only; it issues no World or cleanup permission.
     pub fn retain_world_delivery_error(&mut self, error: ServiceBirthError) {
-        let retained = self._retained.get_or_insert_with(|| RetainedClaim {
-            _pool: None,
-            _source: None,
-            _dispatcher: None,
-            _world: None,
-            _window: None,
-            delivery: None,
-            receiver: None,
-        });
+        let retained = self
+            ._retained
+            .get_or_insert_with(|| RetainedClaim::new(RetainedOwner::None));
         retained.delivery.get_or_insert(error);
     }
 
@@ -41,15 +102,9 @@ impl NativePoolRefusal {
 
     /// Retains the first receiving-stage refusal without allocating a carrier.
     pub fn retain_world_receiver_refusal(&mut self, operation: &'static str) {
-        let retained = self._retained.get_or_insert_with(|| RetainedClaim {
-            _pool: None,
-            _source: None,
-            _dispatcher: None,
-            _world: None,
-            _window: None,
-            delivery: None,
-            receiver: None,
-        });
+        let retained = self
+            ._retained
+            .get_or_insert_with(|| RetainedClaim::new(RetainedOwner::None));
         retained.receiver.get_or_insert(operation);
     }
 

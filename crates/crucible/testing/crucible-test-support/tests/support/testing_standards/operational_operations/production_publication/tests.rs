@@ -559,8 +559,18 @@ fn canonical_cell_and_source_receipt_obligations_reject_foreign_or_early_closure
         ),
         (
             "native_pool/refusal.rs",
-            r#"self._retained.as_mut()?._world.take()"#,
-            r#"None"#,
+            r#"RetainedOwner::World { world } => world.take(),"#,
+            r#"RetainedOwner::World { world } => None,"#,
+        ),
+        (
+            "native_pool/refusal.rs",
+            r#"Self::new(RetainedOwner::World { world: Some(world) })"#,
+            r#"Self::new(RetainedOwner::World { world: None })"#,
+        ),
+        (
+            "native_pool/refusal.rs",
+            r#"Self::new(RetainedOwner::Dispatcher { _dispatcher: dispatcher, })"#,
+            r#"Self::new(RetainedOwner::None)"#,
         ),
         (
             "native_pool/refusal.rs",
