@@ -448,6 +448,7 @@ impl QemuNodeError {
     #[must_use]
     pub fn from_async_driver(source: QemuAsyncDriverError) -> Self {
         if let QemuAsyncDriverError::Runtime(runtime) = &source
+            && runtime.operational_supervision_post().is_none()
             && let Some((field, current, requested, configured, hard)) =
                 runtime.resource_limit_coordinates()
         {
@@ -640,9 +641,27 @@ impl From<QemuNodeError> for BackendError {
             QemuNodeError::AsyncDriver {
                 source: QemuAsyncDriverError::Runtime(runtime),
             } => {
-                if let Some(source) = runtime.operational_supervision_source() {
+                let kind = runtime
+                    .operational_supervision_source()
+                    .map(operational_failure_kind)
+                    .or_else(|| {
+                        runtime.operational_supervision_post().map(|post| {
+                            // Preserve the initiating typed capacity category,
+                            // while retaining the independent post in the same
+                            // error instead of projecting away its history.
+                            if runtime.resource_limit_coordinates().is_some()
+                                || runtime.fault_result_storage_coordinates().is_some()
+                                || runtime.fault_event_storage_coordinates().is_some()
+                            {
+                                BackendOperationalFailureKind::CapacityExhausted
+                            } else {
+                                operational_failure_kind(post)
+                            }
+                        })
+                    });
+                if let Some(kind) = kind {
                     return Self::RetainedOperationalFailure {
-                        kind: operational_failure_kind(source),
+                        kind,
                         source: BackendOperationalCause::new(runtime),
                     };
                 }

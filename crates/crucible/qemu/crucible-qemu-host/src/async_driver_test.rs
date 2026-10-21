@@ -886,9 +886,15 @@ fn reset_original_wait_refusal_precedes_later_health_and_guard_loss()
         &original,
     );
 
-    assert!(
-        matches!(result, Err(QemuAsyncDriverError::Runtime(source)) if source.operation == "original fixture refusal")
+    let QemuAsyncDriverError::Runtime(source) = result.expect_err("adapter refuses") else {
+        panic!("the initiating runtime error must remain typed");
+    };
+    assert_eq!(source.operation, "original fixture refusal");
+    assert_eq!(
+        source.operational_supervision_post(),
+        original.wait_slice().err(),
     );
+    assert!(source.operational_supervision_post().is_some());
     assert_eq!(target.finished, 0);
     assert_eq!(target.shutdowns, 0);
     assert!(original.wait_slice().is_err());

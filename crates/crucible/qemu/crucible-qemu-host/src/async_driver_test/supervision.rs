@@ -8,11 +8,20 @@ use crucible_host_resources::host_supervision::{
     HostOperationSupervisor,
 };
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RuntimeRefusalCut {
+    Yield(usize),
+    Fence,
+    Wait(usize),
+    Renew,
+}
+
 struct SupervisedRuntime {
     supervisor: HostOperationSupervisor,
     scripted: ScriptedRuntime,
     cancel_on_yield: Option<usize>,
     cancel_on_wait: bool,
+    refuse_at: Option<RuntimeRefusalCut>,
     final_yield_operations: Vec<HostOperationStatus>,
 }
 
@@ -26,6 +35,7 @@ impl SupervisedRuntime {
             scripted: ScriptedRuntime::new([QemuAsyncWaitOutcome::Completed]),
             cancel_on_yield: None,
             cancel_on_wait: false,
+            refuse_at: None,
             final_yield_operations: Vec::new(),
         })
     }
@@ -34,6 +44,17 @@ impl SupervisedRuntime {
         self.supervisor.cancel().map_err(|source| {
             QemuAsyncDriverRuntimeError::operational_supervision("fixture cancellation", source)
         })
+    }
+
+    fn refuse(&self, cut: RuntimeRefusalCut) -> Result<(), QemuAsyncDriverRuntimeError> {
+        if self.refuse_at == Some(cut) {
+            self.cancel()?;
+            return Err(QemuAsyncDriverRuntimeError::new(
+                "actual runtime first refusal",
+                "adapter returned after canceling its actual supervisor",
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -63,6 +84,7 @@ impl QemuHostIoRuntime for SupervisedRuntime {
         if self.cancel_on_yield == Some(self.scripted.yields) {
             self.cancel()?;
         }
+        self.refuse(RuntimeRefusalCut::Yield(self.scripted.yields))?;
         Ok(())
     }
 
@@ -70,7 +92,8 @@ impl QemuHostIoRuntime for SupervisedRuntime {
         &mut self,
         fence: Option<QemuAdvanceCompletionFence>,
     ) -> Result<(), QemuAsyncDriverRuntimeError> {
-        self.scripted.arm_advance_completion_fence(fence)
+        self.scripted.arm_advance_completion_fence(fence)?;
+        self.refuse(RuntimeRefusalCut::Fence)
     }
 
     fn repoll_child(
@@ -78,7 +101,9 @@ impl QemuHostIoRuntime for SupervisedRuntime {
         wait: QemuAsyncWait,
         timeout: Duration,
     ) -> Result<QemuAsyncWaitOutcome, QemuAsyncDriverRuntimeError> {
-        self.scripted.repoll_child(wait, timeout)
+        let outcome = self.scripted.repoll_child(wait, timeout)?;
+        self.refuse(RuntimeRefusalCut::Wait(self.scripted.repolls + 1))?;
+        Ok(outcome)
     }
 
     fn await_child(
@@ -90,7 +115,16 @@ impl QemuHostIoRuntime for SupervisedRuntime {
         if self.cancel_on_wait {
             self.cancel()?;
         }
+        self.refuse(RuntimeRefusalCut::Wait(1))?;
         Ok(outcome)
+    }
+
+    fn renew_advance_completion_poll(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        self.scripted.renew_advance_completion_poll(timeout)?;
+        self.refuse(RuntimeRefusalCut::Renew)
     }
 }
 
@@ -234,4 +268,98 @@ fn unsupported_metadata_runtime_refuses_without_diagnostic_allocation() {
     );
     assert_eq!(runtime.yields, 0);
     assert_eq!(runtime.awaits, 0);
+}
+
+#[test]
+fn runtime_refusals_keep_first_and_actual_original_post_at_every_runtime_cut()
+-> Result<(), Box<dyn std::error::Error>> {
+    for cut in [
+        RuntimeRefusalCut::Yield(1),
+        RuntimeRefusalCut::Fence,
+        RuntimeRefusalCut::Wait(1),
+        RuntimeRefusalCut::Wait(2),
+        RuntimeRefusalCut::Renew,
+        RuntimeRefusalCut::Yield(2),
+    ] {
+        let mut target = ScriptedTarget::completed();
+        let mut runtime = SupervisedRuntime::new()?;
+        runtime.refuse_at = Some(cut);
+        if matches!(cut, RuntimeRefusalCut::Wait(2) | RuntimeRefusalCut::Renew) {
+            runtime.scripted = ScriptedRuntime::new([
+                QemuAsyncWaitOutcome::TimedOut,
+                QemuAsyncWaitOutcome::Completed,
+            ]);
+        }
+
+        let error = run(&mut target, &mut runtime).expect_err("actual runtime cut refuses");
+
+        let QemuAsyncDriverError::Runtime(error) = error else {
+            panic!("initiating runtime refusal must remain typed at {cut:?}");
+        };
+        assert_eq!(error.operation, "actual runtime first refusal", "{cut:?}");
+        assert_eq!(
+            error.operational_supervision_post(),
+            Some(
+                crucible_host_resources::host_supervision::HostSupervisionError::Terminal {
+                    state: HostOperationState::Canceled,
+                }
+            ),
+            "{cut:?}",
+        );
+        assert_eq!(
+            target.finished,
+            usize::from(cut == RuntimeRefusalCut::Yield(2))
+        );
+        assert_eq!(target.shutdowns, 0);
+        assert!(
+            error
+                .to_string()
+                .contains("independent host operation postcheck failed")
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn lifecycle_runtime_refusals_keep_first_and_actual_original_post()
+-> Result<(), Box<dyn std::error::Error>> {
+    for wait in [
+        QemuAsyncWait::Handshake,
+        QemuAsyncWait::QmpCommand,
+        QemuAsyncWait::ProcessEvent,
+    ] {
+        for cut in [RuntimeRefusalCut::Wait(1), RuntimeRefusalCut::Wait(2)] {
+            let mut target = ScriptedTarget::completed();
+            let mut runtime = SupervisedRuntime::new()?;
+            runtime.refuse_at = Some(cut);
+            runtime.scripted = ScriptedRuntime::new([
+                QemuAsyncWaitOutcome::TimedOut,
+                QemuAsyncWaitOutcome::Completed,
+            ]);
+
+            let result = await_bounded_lifecycle_event(
+                &mut target,
+                &mut runtime,
+                QemuAsyncDriverPolicy::fast_test(),
+                &QemuCrashDetector::new("vm-a"),
+                wait,
+            );
+
+            let QemuAsyncDriverError::Runtime(error) = result.expect_err("adapter refuses") else {
+                panic!("initiating runtime error must remain typed at {wait:?}/{cut:?}");
+            };
+            assert_eq!(error.operation, "actual runtime first refusal");
+            // Cleanup remains live after outer cancellation so containment can
+            // still run; its independent post is genuinely successful.
+            let expected_post = (wait != QemuAsyncWait::ProcessEvent).then_some(
+                crucible_host_resources::host_supervision::HostSupervisionError::Terminal {
+                    state: HostOperationState::Canceled,
+                },
+            );
+            assert_eq!(error.operational_supervision_post(), expected_post,);
+            assert_eq!(target.shutdowns, 0);
+            assert!(target.started.is_empty());
+        }
+    }
+    Ok(())
 }

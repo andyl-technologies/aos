@@ -15,6 +15,7 @@ pub struct QemuAsyncDriverRuntimeError {
     /// combined diagnostic was explicitly saved here.
     pub message: Cow<'static, str>,
     detail: QemuAsyncDriverRuntimeErrorDetail,
+    supervision_post: Option<crucible_host_resources::host_supervision::HostSupervisionError>,
 }
 
 impl std::fmt::Display for QemuAsyncDriverRuntimeError {
@@ -26,7 +27,14 @@ impl std::fmt::Display for QemuAsyncDriverRuntimeError {
                 write!(formatter, "{} failed: {source}", self.operation)
             }
             _ => write!(formatter, "{} failed: {}", self.operation, self.message),
+        }?;
+        if let Some(post) = self.supervision_post {
+            write!(
+                formatter,
+                "; independent host operation postcheck failed: {post}"
+            )?;
         }
+        Ok(())
     }
 }
 
@@ -34,7 +42,7 @@ impl std::error::Error for QemuAsyncDriverRuntimeError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match &self.detail {
             QemuAsyncDriverRuntimeErrorDetail::HostSupervision(source) => Some(source),
-            _ => None,
+            _ => self.supervision_post.as_ref().map(|source| source as _),
         }
     }
 }
@@ -62,6 +70,7 @@ impl QemuAsyncDriverRuntimeError {
             // it only when requested; exhaustion must not format another String.
             message: Cow::Borrowed(""),
             detail: QemuAsyncDriverRuntimeErrorDetail::HostSupervision(source),
+            supervision_post: None,
         }
     }
 
@@ -76,6 +85,29 @@ impl QemuAsyncDriverRuntimeError {
         }
     }
 
+    /// Returns the first independently observed Original postcheck failure.
+    ///
+    /// The initiating adapter failure remains available through its original
+    /// message, typed coordinates and source. This observation never completes
+    /// the operation or returns any process, pending-quantum or Source custody.
+    #[must_use]
+    pub const fn operational_supervision_post(
+        &self,
+    ) -> Option<crucible_host_resources::host_supervision::HostSupervisionError> {
+        self.supervision_post
+    }
+
+    pub(crate) const fn with_operational_supervision_post(
+        mut self,
+        source: crucible_host_resources::host_supervision::HostSupervisionError,
+    ) -> Self {
+        // Propagation must never overwrite an already retained post failure.
+        if self.supervision_post.is_none() {
+            self.supervision_post = Some(source);
+        }
+        self
+    }
+
     /// Creates a runtime adapter error, borrowing static diagnostic text.
     ///
     /// Existing owned diagnostics move into the error without copying. This
@@ -86,6 +118,7 @@ impl QemuAsyncDriverRuntimeError {
             operation,
             message: message.into(),
             detail: QemuAsyncDriverRuntimeErrorDetail::Message,
+            supervision_post: None,
         }
     }
 
@@ -102,6 +135,7 @@ impl QemuAsyncDriverRuntimeError {
                 u32::try_from(requested).unwrap_or(u32::MAX),
                 u32::try_from(configured).unwrap_or(u32::MAX),
             ),
+            supervision_post: None,
         }
     }
 
@@ -116,6 +150,7 @@ impl QemuAsyncDriverRuntimeError {
                 u64::try_from(requested).unwrap_or(u64::MAX),
                 u64::try_from(configured).unwrap_or(u64::MAX),
             ),
+            supervision_post: None,
         }
     }
 
@@ -134,6 +169,7 @@ impl QemuAsyncDriverRuntimeError {
             detail: QemuAsyncDriverRuntimeErrorDetail::ResourceLimit(
                 field, current, requested, configured, hard,
             ),
+            supervision_post: None,
         }
     }
 

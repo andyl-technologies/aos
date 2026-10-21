@@ -75,6 +75,58 @@ fn resource_limit_coordinates_survive_node_and_scheduler_conversion() {
 }
 
 #[test]
+fn runtime_original_post_survives_scheduler_conversion_without_erasing_first()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crucible_host_resources::host_supervision::{
+        HostOperationBudgets, HostOperationClass, HostOperationSupervisor,
+    };
+
+    let supervisor = HostOperationSupervisor::new(HostOperationBudgets::default(), None)?;
+    let original = supervisor.begin(HostOperationClass::Quantum)?;
+    supervisor.cancel()?;
+    let post = original
+        .wait_slice()
+        .expect_err("actual Original is canceled");
+
+    for (first, kind) in [
+        (
+            QemuAsyncDriverRuntimeError::new("adapter", "initiating diagnostic"),
+            BackendOperationalFailureKind::Canceled,
+        ),
+        (
+            QemuAsyncDriverRuntimeError::operational_supervision(
+                "adapter",
+                HostSupervisionError::Unavailable,
+            ),
+            BackendOperationalFailureKind::Unavailable,
+        ),
+        (
+            QemuAsyncDriverRuntimeError::resource_limit("storage_request_bytes", 3, 5, 7, 11),
+            BackendOperationalFailureKind::CapacityExhausted,
+        ),
+    ] {
+        let expected = first.clone().with_operational_supervision_post(post);
+
+        let node = QemuNodeError::from_async_driver(QemuAsyncDriverError::Runtime(
+            first.with_operational_supervision_post(post),
+        ));
+        let scheduler = SchedulerError::from(BackendError::from(node));
+
+        assert!(matches!(scheduler, SchedulerError::Backend(ref backend)
+            if backend.operational_kind() == Some(kind)));
+        let retained = scheduler
+            .source()
+            .and_then(Error::source)
+            .and_then(Error::source)
+            .and_then(|source| source.downcast_ref::<QemuAsyncDriverRuntimeError>())
+            .expect("complete first and post remain downcastable");
+        assert_eq!(retained, &expected);
+        assert_eq!(retained.operational_supervision_post(), Some(post));
+    }
+    Ok(())
+}
+
+#[test]
 fn pending_source_failures_remain_typed_operational_scheduler_errors() {
     use crate::QemuAsyncDriverHealthError;
     use crate::ram_source::QemuRamSourceError;
