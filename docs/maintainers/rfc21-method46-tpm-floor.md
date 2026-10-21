@@ -693,8 +693,12 @@ checkpoint rejection, and exact retained-target readback after process exit
 without application cleanup, an orderly reboot, an unclean SysRq guest reset,
 and termination and relaunch of both QEMU and swtpm. The hard-cut phase retains
 the same guest disk and persistent TPM state without restoring a snapshot.
-Repeated recovery must refuse without another extend. Clearing and
-reprovisioning the TPM must leave both old endpoint fixtures invalid. The
+A second hard cut persists preparation, suspends swtpm before the extend,
+and resumes the actual ESYS caller until it blocks on the stopped transport.
+After killing and restarting both processes, authenticated readback must match
+the predecessor, target recovery must refuse, and all 32 pending bytes must
+remain unchanged. Repeated recovery must refuse without another extend.
+Clearing and reprovisioning the TPM must leave both old endpoint fixtures invalid. The
 external fixture sets a 32-attempt dictionary-attack allowance so the bounded
 wrong-credential matrix does not lock out later positive reads. Runtime has no
 lockout hierarchy credential and cannot change that allowance or clear lockout.
@@ -710,12 +714,12 @@ runtime transport. The component test uses synthetic input bytes; installed
 hook qualification must instead seed the actual authenticated journal cut.
 
 The executed component check passes at
-`/nix/store/wh69ji865nprsi8nns5zk6c7bdxnv5d3-aos-fleet-test-sandbox-method46-tpm-transport-0`.
+`/nix/store/2yxb8jpf8fmdazqhwc8dnlgi0k7j1rhc-aos-fleet-test-sandbox-method46-tpm-transport-0`.
 Its small retained checkpoint fixture is not the production durable coordinator
 or either daemon's journal. It does not exercise the helper's
 private carrier, SELinux transition, PID1 ownership, installed daemon restart,
-or public lifecycle. The hard cut follows an already completed NV command;
-it does not model interruption during an NV media write or loss of host storage.
+or public lifecycle. The hard cuts cover completed and blocked NV commands;
+they do not model interruption during an NV media write or loss of host storage.
 Snapshotting the virtual TPM together
 with the guest still permits whole-machine rollback. Neither building the
 probe nor passing this component test enables installed method 46.
