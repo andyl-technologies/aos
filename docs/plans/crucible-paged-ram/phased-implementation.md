@@ -55,8 +55,22 @@ activation and CPU-use issuance, complete diagnostic payload funding and native
 physical-return qualification remain open. Smaller initial and steady physical
 peaks and CPU/elapsed-time parity remain unproved.
 
-The evidence below distinguishes the last complete workspace run from the
-current whole-node RAM cleanup changes. Local Cargo uses the AOS toolchain with
+The latest checkpoints are summarized here; their detailed source scopes and
+failed attempts appear in the dated entries below.
+
+| Surface | Latest checkpoint | Remaining qualification |
+| --- | --- | --- |
+| Publisher transport | `28bc78d341`: 165 protocol unit tests, 95 integration tests, strict protocol Clippy, 73 focused policy checks and five hygiene checks pass. All 5,271 committed Rust/TOML files match the immutable application input. | Mandatory application compilation passes at `fgb5z0hh71l7y0sa5axdcvx3ar7sxjl8`; the expanded 206-case supervision gate is running. Paid producer/session construction and native module transfer remain unfinished. |
+| Prior carrier validation | `9d9a713dae`: mandatory application compilation and all 201 exact supervision cases pass; all 5,269 committed source files match the immutable input. | These verdicts precede the Setup6 transport checkpoint. |
+| Native integration | Commit `b69de00f81` retains signed `3376c0ee90`, tree `54e3dd7f`, with architecture, getter, clock, retirement storage and publisher-session prerequisites. The configured delivery entry passes in 50.057 seconds under its unchanged limits. Signed reconstruction, 187 owning scenarios and the 318-file license inventory pass. | Clean hermetic delivery fails on build-relative compiler includes; the full package completes 3,895 compile/link actions but passes only twenty of twenty-six fixtures. Extractor regressions and mandatory launched lifecycle gaps remain. ABI and independent standalone custody checks are running; later bounded registry, receiver lifetime, workspace and RAM disposal changes remain outside this artifact. |
+| Committed native build | The preceding `5a39df062d` artifact compiles all 3,863 targets and passes 25 of 26 fixture drivers. | Mandatory launched Source/Root/read-post/rearm/ACK/physical-return still refuses. Later candidate results do not qualify that installed lifecycle. |
+| Policy and release | Latest focused checks pass all 73 policy and five hygiene controls; the broad gate retains thirteen daemon paths. | Strict workspace Clippy/license qualification retains its recorded failures. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
+| Requirements | 323 bindings: 304 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
+
+#### Earlier workspace evidence
+
+The following historical evidence distinguishes the then-complete workspace run
+from its whole-node RAM cleanup changes. Local Cargo uses the AOS toolchain with
 remote builders disabled; a packaged Rust application build is not a prerequisite.
 Passing historical results do not qualify the later ownership changes.
 
@@ -2321,7 +2335,8 @@ All 165 protocol unit tests and 95 integration tests pass, together with strict
 protocol Clippy, 73 focused policy checks and five hygiene checks. Real Unix
 socket transfers verify every received alias identity and use each distinct
 endpoint; malformed frames and rosters send no bytes. Mandatory application
-compilation and the expanded 206-case exact supervision gate remain pending.
+compilation passes at `fgb5z0hh71l7y0sa5axdcvx3ar7sxjl8-aos-test-targets-0.1.0`;
+the expanded 206-case exact supervision gate remains pending.
 All 5,271 tracked crate Rust/TOML files in immutable
 `dr7h3bbzvhkz3wa68vj1fg68rashf8nn-aos-workspace-src` match committed Git blobs;
 source manifest SHA256 is
@@ -2333,6 +2348,39 @@ receipt only: the actual paid host lender/session construction, matched queued
 owner, native module transfer, class-one operation and activation remain
 unfinished. It does not authenticate the physical role meanings or issue an
 Original from matching bytes.
+
+### 2026-10-21 integrated native custody prerequisites
+
+Commit `b69de00f81` retains signed atomic
+`3376c0ee90df1af3f1091412cef914bf314b9022`, tree
+`54e3dd7ffddc97492c2cfa59f92c7975e25a481c`. It preserves the reviewed
+architecture, getter, APIC timer, clock row/callback, QObject retirement,
+first-read, receiver storage and publisher-session prerequisites. The complete
+configured cohort rebuilt 1,872 dependent objects and relinked both system
+targets. All 954 changed source hashes and 7,488 retained evidence hashes match.
+The real delivery entry, including complete provider authentication, passes in
+50.057 seconds under its existing 60-second and 6 GiB limits. This supersedes
+the earlier unsuccessful `bacc4317d242` candidate without discarding its evidence.
+
+Independent signed reconstruction passes at
+`0vgz34spf3i00hd02cp7ciq45z9h80s2`; the 318-file license ledger passes at
+`8xv4wdg9cyhkl9nvvdgmnhxmg46zgpii`, preserving two LGPL-2.1-or-later additions.
+All 187 owning Source scenarios pass at `6x50mgfykaaxh8q5nlnx4kgva8fl64ny`.
+These component results issue no native Source, Initial or Original.
+
+Clean hermetic qualification exposes additional fixture regressions. Delivery's
+quantum execution helper changes directories while retaining build-relative
+includes and cannot find `config-host.h`. The full package completes all 3,895
+compile/link actions, then passes twenty of twenty-six fixtures. The same
+delivery failure, stale TCG dependency extraction and changed fault-rule visitor
+body account for three failures; stopped-control rearm, dirty iteration and
+cold fault predicates still refuse mandatory genuine launched lifecycle coverage.
+Neither the full package nor the causal gate passes. All 954 signed changed
+files match the retained failed package source; manifest SHA256 is
+`0da74700bd5f99c4d7b8fe6b54b2c78f99f32268e2113d2780e9c01b2b0b2ff0`.
+Fresh ABI and independent hermetic standalone custody checks remain pending.
+Later receiver module lifetime, workspace, bounded registry and RAM disposal
+changes belong to a separate integration cut.
 
 ### 2026-10-21 native rule and reservation storage custody
 
