@@ -1923,7 +1923,19 @@ was tightened to the pinned serde cautious-size-hint and Rust Vec growth bound,
 four times each bounded length plus four slots. Its actual 256-definition
 control remains passing. The corrected run passes all 99 bootstrap controls,
 with zero failures and the existing private child ignored. No resource ceiling
-was raised. Complete qualification remains pending.
+was raised.
+
+For `1093ea1f08`, both complete standard and raw-value Transport libraries pass
+1,908 tests each, with zero failures, no filtering and 16 existing ignores.
+Affected Transport/Engine/Daemon all-feature/all-target checking, scoped
+formatting and all six architecture gates pass. Required application compilation
+passes with 180 test executables across 58 package identities, including 71
+integration targets. The funded-Source VM passes both independent three-Birth
+consumer flights, refusal controls, cleanup and default-feature CLI refusal.
+All 237 owned changed Rust paths and the Transport manifest match that committed
+checkpoint in the application and all three exact VM component source captures.
+The later SDK I/O census change is excluded. Full Engine and Daemon library
+runtime qualification remains at `f2150ce5c7`.
 
 Only retained successful ownership is reserved by this addition. Complete SDK
 constructor transient/validation/callback funding, the genuine Native18 verifier
