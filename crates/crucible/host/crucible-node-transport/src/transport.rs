@@ -214,6 +214,41 @@ impl<R: Read> FrameReader<R> {
         result
     }
 
+    /// Begins one caller-admitted literal read in this reader's same bank.
+    ///
+    /// This allocates nothing and grants no JSON or native authority. The
+    /// original Hello owner separately spends its once-only attempt first.
+    ///
+    /// # Errors
+    /// Refuses fenced readers, changed bank, invalid framing or bank borrowing.
+    pub(crate) fn begin_original_literal_data(
+        &mut self,
+        maximum: usize,
+        bank: &Rc<RefCell<OriginalFrameReservation>>,
+    ) -> Result<usize, ProviderError> {
+        if self.failed
+            || maximum == 0
+            || maximum > self.maximum_bytes
+            || self
+                .originals
+                .as_ref()
+                .is_none_or(|actual| !Rc::ptr_eq(actual, bank))
+        {
+            return Err(ProviderError::Frame("original literal reader unavailable"));
+        }
+        let slot = bank
+            .try_borrow_mut()
+            .map_err(|_| ProviderError::Conflict("original literal bank borrowed"))?
+            .begin(FrameDirection::Incoming, maximum + 4)?;
+        self.last_original_slot = Some(slot);
+        Ok(slot)
+    }
+
+    /// Permanently fences the same reader after an original literal failure.
+    pub(crate) fn fence_original_literal_data(&mut self) {
+        self.failed = true;
+    }
+
     pub(crate) fn stream_mut(&mut self) -> &mut R {
         &mut self.stream
     }

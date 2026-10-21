@@ -136,6 +136,11 @@ impl OriginalImport18RawBootstrap {
         self.hello_exchange.as_ref().map_or(Ok(0), |exchange| {
             exchange.retained_backing_beside_reservation_data(
                 self.hello_frames.as_ref().ok_or_else(refused)?,
+                self.hello_literal
+                    .as_ref()
+                    .map(|literal| literal.original_bank_data())
+                    .transpose()?
+                    .flatten(),
                 OriginalNativePublicBirthChannel::retained_backing_data,
             )
         })

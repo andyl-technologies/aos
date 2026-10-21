@@ -1355,14 +1355,67 @@ changed-cut refusal without consuming queued bytes or emitting a reply.
 Both complete standard and raw-value Transport libraries pass 1,825 tests,
 zero failures, no filtering and sixteen existing ignores. Affected
 all-feature/all-target checking, scoped formatting and all six architecture
-gates pass. Required application compilation and the funded-Source VM are
-running against immutable captures matching all 172 owned changed Rust paths
-byte for byte. These pending builds are not completed qualification. The full
-Engine/Daemon runs remain qualified at `99dc0fdb5e`.
+gates pass. The required application gate and funded-Source VM also pass for
+`515e271742`. The application gate compiles 180 test executables across 58
+package IDs, including 71 integration targets; all 172 owned changed Rust paths
+match its immutable capture byte for byte. All three VM component captures
+likewise match those 172 paths. Both independent consumers retain three actual
+private Birth/declaration/projection/launch results, exercise refusal controls
+and release their terminal namespaces and credit. The VM result is
+`/nix/store/zm2lf3a24hyhjn1yrv6k88sflhpgrk28-aos-vm-test-crucible-funded-source-templates-0`.
+The full Engine/Daemon runs remain qualified at `99dc0fdb5e`.
 
 This creates a physical framing exchange only. Receiving/authenticating Hello,
 the complete model-absent policy, bootstrap ACK, genuine five-phase Recipe and
 Initial producers, native adoption and complete restoration remain required.
+
+## Retained original public Hello literal
+
+The original bootstrap now admits a bounded body allocation before its first
+public read, then retains the actual header, body allocation and read cursors.
+The incoming literal slot belongs to the same original journal and records each
+observed prefix. Partial headers, partial bodies, expired reads, invalid lengths
+and terminal refusals preserve initialized owners and a spent attempt. The
+seven input banks and original private raw bodies remain unchanged.
+
+The body retains an actual shared edge to its original journal allocation.
+Complete-DATA loans require checked pointer equality with the same exchange,
+its same reader bank and actual slot/header/body/progress correspondence.
+Identical bytes on a different actual bank cannot substitute custody. The
+whole census includes this fifth actual bank edge, discounts checked aliases
+and separately charges distinct backing. No body hash or numeric identifier
+substitutes for this actual ownership check.
+
+Both initial calculations independently include the maximum separate body bank,
+constructor moves and actual read/guard controls. The grouped Hello populations
+keep roster, journal and body terms explicit. The public channel sets each
+native socket timeout from the original opaque cut; deadline and changed-cut
+refusals use allocation-free error kinds, including expiration between the
+physical check and remaining-time calculation. The existing legacy stream path
+keeps its original behavior.
+
+Five lower-level controls cover unchanged literal bytes, partial allocations,
+invalid lengths, occupied outputs and different-bank substitution. The original
+exchange census control additionally checks fifth-edge alias/unique-bank charges
+and borrowed-bank refusal. Fifteen new actual inherited-socket flights cover
+both program families, missing prior framing, pre-read/construct/terminal
+refusal and expiration, malformed lengths, partial headers and bodies, timeout,
+callback refusal and an expired loan. Refused pre-read admission leaves the
+public header queued; successful reads leave the following suffix queued. No
+public reply is emitted, no retry is accepted and actual allocations survive.
+
+Both complete standard and raw-value Transport libraries pass 1,831 tests,
+zero failures, no filtering and sixteen existing ignores. Affected
+all-feature/all-target checks, scoped formatting and all six architecture gates
+pass for the final source. Application compilation and funded-Source VM
+qualification are still running; their application capture and all three VM
+component captures match all 175 owned changed Rust paths byte for byte. These
+pending builds are not completed qualification. Engine/Daemon full library
+execution remains qualified at `99dc0fdb5e`.
+
+A complete literal deliberately leaves response publication disabled. Strict
+Hello parsing and authentication, complete model-absent policy, bootstrap ACK,
+genuine Recipe/Initial producers, native adoption and restoration remain open.
 
 ## Original launch custody and shared startup geometry
 

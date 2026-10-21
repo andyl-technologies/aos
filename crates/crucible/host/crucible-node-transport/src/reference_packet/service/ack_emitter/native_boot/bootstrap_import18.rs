@@ -54,6 +54,13 @@ pub(in crate::reference_packet::service) use selection::{
     counter_scratch_data as selection_counter_scratch_data,
 };
 
+#[path = "bootstrap_import18/hello_literal.rs"]
+mod hello_literal;
+pub(in crate::reference_packet::service) use hello_literal::{
+    construction_data as hello_literal_construction_data,
+    counter_scratch_data as hello_literal_counter_scratch_data,
+};
+
 #[path = "bootstrap_import18/hello_exchange.rs"]
 mod hello_exchange;
 pub(in crate::reference_packet::service) use hello_exchange::{
@@ -130,6 +137,10 @@ pub(super) struct OriginalImport18RawBootstrap {
             crate::client::OriginalNativePublicBirthChannel,
         >,
     >,
+    hello_literal: Option<crate::native_hello::OriginalNativeHelloLiteral>,
+    hello_literal_row: Option<[usize; 3]>,
+    hello_literal_started: bool,
+    hello_literal_complete: bool,
     hello_exchange_row: Option<[usize; 3]>,
     hello_exchange_started: bool,
     hello_exchange_complete: bool,
@@ -187,6 +198,10 @@ impl OriginalImport18RawBootstrap {
             public_channel_started: false,
             public_channel_complete: false,
             hello_exchange: None,
+            hello_literal: None,
+            hello_literal_row: None,
+            hello_literal_started: false,
+            hello_literal_complete: false,
             hello_exchange_row: None,
             hello_exchange_started: false,
             hello_exchange_complete: false,
@@ -311,8 +326,10 @@ impl OriginalImport18RawBootstrap {
         let hello_frames_backing = self.hello_frames_backing_data()?;
         let public_channel_backing = self.public_channel_backing_data()?;
         let hello_exchange_backing = self.hello_exchange_backing_data()?;
+        let hello_literal_backing = self.hello_literal_backing_data()?;
         retained
-            .checked_add(input_backing)
+            .checked_add(hello_literal_backing)
+            .and_then(|n| n.checked_add(input_backing))
             .and_then(|n| n.checked_add(typed_backing))
             .and_then(|n| n.checked_add(hello_backing))
             .and_then(|n| n.checked_add(hello_frames_backing))

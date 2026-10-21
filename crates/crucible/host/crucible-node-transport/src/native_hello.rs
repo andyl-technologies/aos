@@ -946,3 +946,7 @@ mod capture_metadata_tests {
 
 pub(crate) mod settled17;
 pub(crate) use settled17::HistoricalNativeHello17;
+
+#[path = "native_hello/retained_literal.rs"]
+mod retained_literal;
+pub(crate) use retained_literal::OriginalNativeHelloLiteral;

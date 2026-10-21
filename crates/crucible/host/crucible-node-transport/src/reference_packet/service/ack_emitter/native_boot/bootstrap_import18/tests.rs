@@ -83,6 +83,7 @@ fn child(case: &str, wire: &[u8]) {
         .stderr(Stdio::piped());
     let mut public_peer = if case.starts_with("initial_hello_channel_")
         || case.starts_with("initial_hello_exchange_")
+        || case.starts_with("initial_hello_literal_")
     {
         let (peer, inherited) = UnixStream::pair().unwrap();
         command.stderr(Stdio::from(std::os::fd::OwnedFd::from(inherited)));
@@ -93,7 +94,30 @@ fn child(case: &str, wire: &[u8]) {
     let process = command.spawn().unwrap();
     drop(command);
     if let Some(peer) = &mut public_peer {
-        peer.write_all(b"unconsumed public Hello DATA").unwrap();
+        if case.starts_with("initial_hello_literal_") {
+            let body = b"{unparsed public Hello DATA";
+            let length = match case {
+                "initial_hello_literal_zero" => 0,
+                "initial_hello_literal_oversized" => 1048577,
+                "initial_hello_literal_partial_body" | "initial_hello_literal_timeout" => 64,
+                _ => body.len() as u32,
+            };
+            let header = length.to_be_bytes();
+            if case == "initial_hello_literal_partial_header" {
+                peer.write_all(&header[..2]).unwrap();
+                peer.shutdown(Shutdown::Write).unwrap();
+            } else {
+                peer.write_all(&header).unwrap();
+                peer.write_all(body).unwrap();
+                if case == "initial_hello_literal_partial_body" {
+                    peer.shutdown(Shutdown::Write).unwrap();
+                } else if case != "initial_hello_literal_timeout" {
+                    peer.write_all(b"literal suffix").unwrap();
+                }
+            }
+        } else {
+            peer.write_all(b"unconsumed public Hello DATA").unwrap();
+        }
     }
     parent.write_all(wire).unwrap();
     if case != "open_writer" {
@@ -149,7 +173,10 @@ fn inherited_raw_bootstrap_child() {
     let mut owner =
         OriginalImport18RawBootstrap::retain(UnixStream::from(original), selected_bounds).unwrap();
     assert!(owner.inputs.is_empty_data());
-    if case.starts_with("initial_hello_channel_") || case.starts_with("initial_hello_exchange_") {
+    if case.starts_with("initial_hello_channel_")
+        || case.starts_with("initial_hello_exchange_")
+        || case.starts_with("initial_hello_literal_")
+    {
         initial_reconstruction::retain_public_before_read(&case, &mut owner);
     }
     let result = owner.receive();

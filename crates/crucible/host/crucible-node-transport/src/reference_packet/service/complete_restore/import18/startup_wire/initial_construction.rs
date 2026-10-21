@@ -13,6 +13,8 @@ use crate::reference_packet::service::ack_emitter::native_boot::{
     original_import18_hello_exchange_counter_scratch_data,
     original_import18_hello_frames_construction_data,
     original_import18_hello_frames_counter_scratch_data,
+    original_import18_hello_literal_construction_data,
+    original_import18_hello_literal_counter_scratch_data,
     original_import18_hello_selection_construction_data,
     original_import18_hello_selection_counter_scratch_data,
     original_import18_public_channel_construction_data,
@@ -90,8 +92,11 @@ pub(in crate::reference_packet) fn initial_construction_projection_data<H: Seria
         source,
         initial_quote_formatter_data(launch)?,
         native_import18_launch_identity_construction_data(launch, maximum)?,
-        original_import18_hello_selection_construction_data(launch)?,
-        original_import18_hello_frames_construction_data(launch)?,
+        HelloConstructionData {
+            roster: original_import18_hello_selection_construction_data(launch)?,
+            frames: original_import18_hello_frames_construction_data(launch)?,
+            literal: original_import18_hello_literal_construction_data(launch)?,
+        },
         maximum,
     )
 }
@@ -131,10 +136,20 @@ pub(in crate::reference_packet) fn initial_construction_from_wire_data(
         source,
         initial_quote_formatter_data(launch)?,
         native_import18_launch_identity_construction_data(launch, maximum)?,
-        original_import18_hello_selection_construction_data(launch)?,
-        original_import18_hello_frames_construction_data(launch)?,
+        HelloConstructionData {
+            roster: original_import18_hello_selection_construction_data(launch)?,
+            frames: original_import18_hello_frames_construction_data(launch)?,
+            literal: original_import18_hello_literal_construction_data(launch)?,
+        },
         maximum,
     )
+}
+
+/// Groups the independent retained Hello constructor populations.
+struct HelloConstructionData {
+    roster: [usize; 3],
+    frames: [usize; 3],
+    literal: [usize; 3],
 }
 
 fn combine(
@@ -142,10 +157,14 @@ fn combine(
     source: [usize; 3],
     formatter: [usize; 3],
     launch_identity: (usize, usize),
-    hello: [usize; 3],
-    hello_frames: [usize; 3],
+    hello: HelloConstructionData,
     maximum: usize,
 ) -> Result<InitialConstructionData, ProviderError> {
+    let HelloConstructionData {
+        roster: hello,
+        frames: hello_frames,
+        literal: hello_literal,
+    } = hello;
     // Future U64 decimal widths are fixed before a row exists. Raw and typed
     // outputs coexist; the three body parsers and Source check run sequentially.
     let raw = original_import18_raw_bootstrap_storage_data(bodies.maximum_encoded_bytes)?;
@@ -195,6 +214,11 @@ fn combine(
     row[0] = add(row[0], hello_exchange[0])?;
     row[1] = row[1].max(hello_exchange[1]);
     row[2] = row[2].max(add(raw[2], hello_exchange[2])?);
+    // The unparsed incoming body retains its own actual bounded allocation
+    // beside the immutable literal journal; strict parsing is a later admission.
+    row[0] = add(row[0], hello_literal[0])?;
+    row[1] = row[1].max(hello_literal[1]);
+    row[2] = row[2].max(add(raw[2], hello_literal[2])?);
     if add(add(row[0], row[1])?, row[2])? > maximum {
         return Err(exhausted());
     }
@@ -233,6 +257,8 @@ pub fn native_import18_initial_construction_counter_scratch_data() -> usize {
         + original_import18_hello_selection_counter_scratch_data()
         + original_import18_hello_frames_counter_scratch_data()
         + size_of::<[usize; 3]>() // The retained physical Hello constructor row.
+        + original_import18_hello_literal_counter_scratch_data()
+        + size_of::<[usize; 3]>() // The retained literal-read constructor row.
         + original_import18_hello_exchange_counter_scratch_data()
         + size_of::<[usize; 3]>() // The retained framing constructor row.
         + original_import18_public_channel_counter_scratch_data()
@@ -247,6 +273,7 @@ pub fn native_import18_initial_construction_counter_scratch_data() -> usize {
         + size_of::<[u8; 32]>() * 4
         + size_of::<InitialConstructionData>()
         + size_of::<Result<InitialConstructionData, ProviderError>>()
+        + size_of::<HelloConstructionData>()
         + size_of::<[usize; 3]>() * 6
         + size_of::<std::array::IntoIter<[usize; 3], 3>>()
         + size_of::<Result<[usize; 3], ProviderError>>()

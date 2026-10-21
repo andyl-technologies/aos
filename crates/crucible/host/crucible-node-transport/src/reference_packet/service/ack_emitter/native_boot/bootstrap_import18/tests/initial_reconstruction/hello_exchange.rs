@@ -59,6 +59,20 @@ impl OriginalImport18HelloExchangeAdmission for Admission<'_> {
     }
 }
 
+pub(super) fn construct_for_literal(owner: &mut OriginalImport18RawBootstrap) {
+    super::public_channel::construct_for_exchange(owner);
+    let admission = Admission {
+        case: "initial_hello_exchange_complete",
+        calls: Cell::new(0),
+        before: owner.retained_requested_bytes().unwrap(),
+        moved: owner.public_channel_backing_data().unwrap(),
+        row: Cell::new(None),
+    };
+    owner.construct_hello_exchange_data(&admission).unwrap();
+    assert!(owner.hello_exchange_complete);
+    assert_eq!(admission.calls.get(), 2);
+}
+
 pub(super) fn assert_child(case: &str, owner: &mut OriginalImport18RawBootstrap) {
     if case != "initial_hello_exchange_unchecked_channel" {
         super::public_channel::construct_for_exchange(owner);

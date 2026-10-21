@@ -28,6 +28,9 @@ mod normalized_framing;
 #[path = "initial_reconstruction/hello_selection.rs"]
 mod hello_selection;
 
+#[path = "initial_reconstruction/hello_literal.rs"]
+mod hello_literal;
+
 #[path = "initial_reconstruction/hello_exchange.rs"]
 mod hello_exchange;
 
@@ -91,6 +94,7 @@ fn operands(case: &str) -> [Value; 3] {
             | "initial_hello_frames_reactive"
             | "initial_hello_channel_reactive"
             | "initial_hello_exchange_reactive"
+            | "initial_hello_literal_reactive"
     ));
     if case.starts_with("initial_selection_") || case.starts_with("initial_hello_") {
         selection::prepare_selected(case, &mut selected);
@@ -338,6 +342,10 @@ pub(super) fn assert_child(
     }
     if case.starts_with("initial_selection_") {
         selection::assert_child(case, &mut owner);
+        return;
+    }
+    if case.starts_with("initial_hello_literal_") {
+        hello_literal::assert_child(case, &mut owner);
         return;
     }
     if case.starts_with("initial_hello_exchange_") {

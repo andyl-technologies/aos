@@ -227,6 +227,13 @@ impl OriginalNativePublicBirthChannel {
             + size_of::<Option<rustix::process::Pid>>()
             + size_of::<rustix::process::Uid>()
             + size_of::<Option<Refusal>>()
+            + size_of::<Duration>() * 2
+            + size_of::<Option<Duration>>()
+            + size_of::<io::Result<Duration>>()
+            + size_of::<io::Result<usize>>()
+            + size_of::<io::Result<()>>()
+            + size_of::<&mut UnixStream>()
+            + size_of::<io::ErrorKind>()
             + size_of::<Result<(), ProviderError>>() * 3
             + size_of::<Result<[usize; 3], ProviderError>>()
             + size_of::<[usize; 3]>()
@@ -253,21 +260,27 @@ impl OriginalNativePublicBirthChannel {
 
 impl Read for OriginalNativePublicBirthChannel {
     fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
-        self.ensure_io_current()?;
-        self.bounded
+        let remaining = self.io_remaining_data()?;
+        let stream = &mut self
+            .bounded
             .as_mut()
             .ok_or(io::ErrorKind::NotConnected)?
-            .read(bytes)
+            .stream;
+        stream.set_read_timeout(Some(remaining))?;
+        stream.read(bytes)
     }
 }
 
 impl Write for OriginalNativePublicBirthChannel {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        self.ensure_io_current()?;
-        self.bounded
+        let remaining = self.io_remaining_data()?;
+        let stream = &mut self
+            .bounded
             .as_mut()
             .ok_or(io::ErrorKind::NotConnected)?
-            .write(bytes)
+            .stream;
+        stream.set_write_timeout(Some(remaining))?;
+        stream.write(bytes)
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -275,13 +288,27 @@ impl Write for OriginalNativePublicBirthChannel {
         self.bounded
             .as_mut()
             .ok_or(io::ErrorKind::NotConnected)?
+            .stream
             .flush()
     }
 }
 
 impl OriginalNativePublicBirthChannel {
-    // Static error kinds keep a refused physical check allocation-free. The
-    // bounded stream independently checks the same immutable cut before I/O.
+    // Static error kinds keep every physical refusal allocation-free, including
+    // expiration between authentication and calculating the remaining timeout.
+    fn io_remaining_data(&self) -> io::Result<Duration> {
+        self.ensure_io_current()?;
+        self.original
+            .remaining()
+            .filter(|remaining| !remaining.is_zero())
+            .ok_or_else(|| {
+                if let Some(cut) = &self.cut {
+                    cut.0.refusal.set(Some(Refusal::Expired));
+                }
+                io::Error::from(io::ErrorKind::TimedOut)
+            })
+    }
+
     fn ensure_io_current(&self) -> io::Result<()> {
         self.completed_data(self.original).map_err(|_| {
             io::Error::from(if self.original.is_expired() {

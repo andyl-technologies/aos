@@ -87,9 +87,34 @@ impl<S: Read + Write> RetainedOriginalNativeHelloExchange<S> {
         Ok(result)
     }
 
+    /// Receives one independently admitted literal into its surviving owner.
+    ///
+    /// # Errors
+    /// Refuses incomplete or stale framing, repeated read, partial I/O or a
+    /// terminal creator check. Neither outcome parses or publishes a Hello.
+    pub(crate) fn receive_literal_into_data(
+        &mut self,
+        output: &mut Option<OriginalNativeHelloLiteral>,
+    ) -> Result<(), ProviderError> {
+        self.owner.ensure_current()?;
+        if !self.complete {
+            return Err(refused());
+        }
+        let exchange = self.exchange.as_mut().ok_or_else(refused)?;
+        exchange.journal.owner.ensure_current()?;
+        let outcome = exchange.receive_literal_into_data(output);
+        let terminal = self
+            .owner
+            .ensure_current()
+            .and_then(|()| exchange.journal.owner.ensure_current());
+        outcome?;
+        terminal
+    }
+
     /// Counts actual binding backing beside the original reservation's own census.
     ///
     /// `stream_backing` counts the surviving actual stream's child allocations.
+    /// `literal_bank` borrows the actual retained incoming body's bank edge.
     /// Existing reservation bank backing must be included separately. Distinct
     /// banks receive separate charges; only proven Rc aliases are discounted.
     /// Expiration and incomplete construction do not hide surviving owners.
@@ -100,6 +125,7 @@ impl<S: Read + Write> RetainedOriginalNativeHelloExchange<S> {
     pub(crate) fn retained_backing_beside_reservation_data(
         &self,
         reservation: &OriginalNativeHelloReservation,
+        literal_bank: Option<&Rc<RefCell<OriginalFrameReservation>>>,
         stream_backing: impl Fn(&S) -> Result<usize, ProviderError>,
     ) -> Result<usize, ProviderError> {
         let Self {
@@ -158,6 +184,7 @@ impl<S: Read + Write> RetainedOriginalNativeHelloExchange<S> {
                 .as_ref()
                 .map(|refusal| journal_bank_data(&refusal.journal))
                 .transpose()?,
+            literal_bank,
         ];
 
         for (index, bank) in banks.iter().enumerate() {
@@ -226,7 +253,7 @@ impl<S: Read + Write> RetainedOriginalNativeHelloExchange<S> {
             + size_of::<&OriginalNativeHelloJournal>() * 3
             + size_of::<Result<Option<&Rc<RefCell<OriginalFrameReservation>>>, ProviderError>>()
             + size_of::<Result<&Rc<RefCell<OriginalFrameReservation>>, ProviderError>>()
-            + size_of::<[Option<&Rc<RefCell<OriginalFrameReservation>>>; 4]>()
+            + size_of::<[Option<&Rc<RefCell<OriginalFrameReservation>>>; 5]>()
             + size_of::<
                 std::slice::Iter<'static, Option<&'static Rc<RefCell<OriginalFrameReservation>>>>,
             >() * 2
@@ -323,7 +350,7 @@ mod tests {
         assert_eq!(bank.retained_backing_data().unwrap(), before);
         assert_eq!(
             original
-                .retained_backing_beside_reservation_data(&bank, |stream| Ok(stream
+                .retained_backing_beside_reservation_data(&bank, None, |stream| Ok(stream
                     .get_ref()
                     .capacity()))
                 .unwrap(),
@@ -354,7 +381,7 @@ mod tests {
         assert_eq!(bank.retained_backing_data().unwrap(), before);
         assert_eq!(
             original
-                .retained_backing_beside_reservation_data(&bank, |stream| Ok(stream
+                .retained_backing_beside_reservation_data(&bank, None, |stream| Ok(stream
                     .get_ref()
                     .capacity()))
                 .unwrap(),
@@ -377,7 +404,7 @@ mod tests {
         assert_eq!(bank.retained_backing_data().unwrap(), before);
         assert_eq!(
             original
-                .retained_backing_beside_reservation_data(&bank, |_| Ok(0))
+                .retained_backing_beside_reservation_data(&bank, None, |_| Ok(0))
                 .unwrap(),
             0
         );
@@ -407,21 +434,56 @@ mod tests {
             .unwrap();
         assert_eq!(
             original
-                .retained_backing_beside_reservation_data(&bank, |_| Ok(0))
+                .retained_backing_beside_reservation_data(&bank, None, |_| Ok(0))
                 .unwrap(),
             expected
         );
+        assert_eq!(
+            original
+                .retained_backing_beside_reservation_data(&bank, Some(&other.bank), |_| Ok(0))
+                .unwrap(),
+            expected
+        );
+        let distinct_literal = OriginalNativeHelloJournal::reserve(128, 64).unwrap();
+        let distinct_backing = distinct_literal.allocated_bytes()
+            + size_of::<RefCell<OriginalFrameReservation>>()
+            + crate::retained_metadata::requested_storage::shared_header_storage_data(
+                1,
+                std::mem::align_of::<RefCell<OriginalFrameReservation>>(),
+            )
+            .unwrap();
+        assert_eq!(
+            original
+                .retained_backing_beside_reservation_data(
+                    &bank,
+                    Some(&distinct_literal.bank),
+                    |_| Ok(0)
+                )
+                .unwrap(),
+            expected + distinct_backing
+        );
+        let held_literal = distinct_literal.bank.borrow_mut();
+        assert!(
+            original
+                .retained_backing_beside_reservation_data(
+                    &bank,
+                    Some(&distinct_literal.bank),
+                    |_| Ok(0)
+                )
+                .is_err()
+        );
+        drop(held_literal);
         let same_bank = Rc::clone(&original.exchange.as_ref().unwrap().journal.bank);
         let held = same_bank.borrow_mut();
         assert!(
             original
-                .retained_backing_beside_reservation_data(&bank, |_| Ok(0))
+                .retained_backing_beside_reservation_data(&bank, None, |_| Ok(0))
                 .is_err()
         );
         drop(held);
         assert_eq!(
             original
-                .retained_backing_beside_reservation_data(&bank, |_| Ok(0))
+                .retained_backing_beside_reservation_data(&bank, None, |_| Ok(0))
                 .unwrap(),
             expected
         );
