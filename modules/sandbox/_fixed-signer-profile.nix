@@ -24,7 +24,7 @@
 in
   config.aos.security.selinux.enable
   && config.aos.security.selinux.bootMode == "immutable-stage0"
-  && package == pkgs.aos-sandboxd
+  && package == (import ./_selected-controller-package.nix {inherit config pkgs;})
   && (import ./_fixed-systemd-profile.nix {inherit config pkgs;})
   && disabledDirective (settings.PrivateUsers or false)
   && disabledDirective (settings.PrivatePIDs or false)

@@ -10,6 +10,7 @@
 
   cfg = config.aos.sandbox.cacheSignerService;
   controller = config.aos.sandbox.controller;
+  selectedPackage = import ./_selected-controller-package.nix {inherit config pkgs;};
   views = config.aos.sandbox.cacheSignerView;
   policy = config.aos.sandbox.policyAuthority;
   controllerService = config.aos.sandbox.controllerService;
@@ -29,8 +30,8 @@ in {
 
     package = lib.mkOption {
       type = lib.types.package;
-      default = pkgs.aos-sandboxd;
-      defaultText = "pkgs.aos-sandboxd";
+      default = selectedPackage;
+      defaultText = "image-selected shared Controller artifact";
       description = "The package containing aos-sandbox-cache-signerd.";
     };
 
@@ -83,7 +84,7 @@ in {
         message = "protected Cache signer requires the immutable selected image and its exact single signer role without helper commands or namespaces";
       }
       {
-        assertion = !(config.aos.security.selinux.enable && config.aos.security.selinux.bootMode == "immutable-stage0") || cfg.package == pkgs.aos-sandboxd;
+        assertion = !(config.aos.security.selinux.enable && config.aos.security.selinux.bootMode == "immutable-stage0") || cfg.package == selectedPackage;
         message = "confined Cache signer requires the exact evaluated policy-labelled AOS executable";
       }
       {

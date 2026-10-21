@@ -10,6 +10,7 @@
   ...
 }: let
   cfg = config.aos.sandbox.resourceBank;
+  selectedPackage = import ./_selected-controller-package.nix {inherit config pkgs;};
   onlineNix = config.aos.sandbox.nixBroker.enable;
   controllerMinimum = {
     memory-bytes =
@@ -591,7 +592,7 @@ in {
           || (cfg.policy.q04OriginalIntake
             != null
             && config.aos.sandbox.policyAuthority.enable
-            && config.aos.sandbox.policyAuthority.package == pkgs.aos-sandboxd);
+            && config.aos.sandbox.policyAuthority.package == selectedPackage);
         message = "V6 original Root receiving requires the complete V5 family and the selected confined Root service.";
       }
       {

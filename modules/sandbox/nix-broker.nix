@@ -15,13 +15,7 @@
   systemdLib = import ../../pkgs/system/_systemd-abilities/platform/render.nix {inherit lib pkgs;};
   selectedPackage =
     if cfg.enable
-    then
-      pkgs.aosNixOnlineControllerWith {
-        domainIdHex =
-          if cfg.domainIdHex == null
-          then throw "online Resolve50 requires an explicit nonzero domain16"
-          else cfg.domainIdHex;
-      }
+    then import ./_selected-controller-package.nix {inherit config pkgs;}
     else null;
   identities = [controller.uid controller.gid cfg.builderUid cfg.builderGid];
   publicNames = [

@@ -10,6 +10,7 @@
 
   cfg = config.aos.sandbox.sourceSignerService;
   controller = config.aos.sandbox.controller;
+  selectedPackage = import ./_selected-controller-package.nix {inherit config pkgs;};
   view = config.aos.sandbox.sourceSignerView;
   policy = config.aos.sandbox.policyAuthority;
   signerServiceHardening = import ./_signer-service-hardening.nix;
@@ -28,8 +29,8 @@ in {
 
     package = lib.mkOption {
       type = lib.types.package;
-      default = pkgs.aos-sandboxd;
-      defaultText = "pkgs.aos-sandboxd";
+      default = selectedPackage;
+      defaultText = "image-selected shared Controller artifact";
       description = "The package containing aos-sandbox-source-signerd.";
     };
 
@@ -69,7 +70,7 @@ in {
         message = "installed Source signer requires its exact image-delivered Root profile and all three PID1 pre-listen subject options";
       }
       {
-        assertion = !(config.aos.security.selinux.enable && config.aos.security.selinux.bootMode == "immutable-stage0") || cfg.package == pkgs.aos-sandboxd;
+        assertion = !(config.aos.security.selinux.enable && config.aos.security.selinux.bootMode == "immutable-stage0") || cfg.package == selectedPackage;
         message = "confined Source signer requires the exact evaluated policy-labelled AOS executable";
       }
       {

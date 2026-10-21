@@ -14,6 +14,7 @@
     then null
     else resourcePolicy.rootReceiving;
   controller = config.aos.sandbox.controller;
+  selectedPackage = import ./_selected-controller-package.nix {inherit config pkgs;};
   ownershipTrust = config.aos.sandbox.hostBroker.credentials;
   mountPlanTrust = config.aos.sandbox.mountBroker.credentials;
   ownershipTrustSelected = rootReceiving != null;
@@ -350,8 +351,8 @@ in {
 
     package = lib.mkOption {
       type = lib.types.package;
-      default = pkgs.aos-sandboxd;
-      defaultText = "pkgs.aos-sandboxd";
+      default = selectedPackage;
+      defaultText = "image-selected shared Controller artifact";
       description = "The package containing the independent policy authority executable.";
     };
 
@@ -398,7 +399,7 @@ in {
   config = lib.mkIf cfg.enable {
     assertions =
       lib.optional environmentProvisionSelected {
-        assertion = confined && rootReceiving != null && cfg.package == pkgs.aos-sandboxd;
+        assertion = confined && rootReceiving != null && cfg.package == selectedPackage;
         message = "policyAuthority.environmentProvision requires the selected confined Root profile and its actual Root receiving original";
       }
       ++ lib.mapAttrsToList (option: _: {
@@ -421,7 +422,7 @@ in {
             !executionNoApplySelected
             || (confined
               && ownershipTrustSelected
-              && cfg.package == pkgs.aos-sandboxd
+              && cfg.package == selectedPackage
               && config.aos.sandbox.hostBroker.enable
               && config.aos.sandbox.hostBroker.componentControl);
           message = "Root NoApply floor credentials require the selected confined normal Root receiving owner and Host component control";
@@ -476,7 +477,7 @@ in {
             !deleteBrokerTrustSelected
             || (confined
               && ownershipTrustSelected
-              && cfg.package == pkgs.aos-sandboxd
+              && cfg.package == selectedPackage
               && lib.all
               (option:
                 cfg.credentials.${option}
@@ -494,7 +495,7 @@ in {
           assertion =
             !coverageSelected
             || (confined
-              && cfg.package == pkgs.aos-sandboxd
+              && cfg.package == selectedPackage
               && cfg.credentials.gitCoverageMountSessionManifest
               == config.aos.sandbox.controllerService.credentials.brokerSessionMountManifest
               && cfg.credentials.gitCoverageStorageSessionManifest
@@ -502,11 +503,11 @@ in {
           message = "Root coverage requires the selected normal Root and the same independently provisioned original Controller session manifests";
         }
         {
-          assertion = cfg.credentials.gitEvidenceProvision == null || (confined && cfg.package == pkgs.aos-sandboxd);
+          assertion = cfg.credentials.gitEvidenceProvision == null || (confined && cfg.package == selectedPackage);
           message = "Git evidence provisioning requires the selected confined normal Root package";
         }
         {
-          assertion = !(config.aos.security.selinux.enable && config.aos.security.selinux.bootMode == "immutable-stage0") || cfg.package == pkgs.aos-sandboxd;
+          assertion = !(config.aos.security.selinux.enable && config.aos.security.selinux.bootMode == "immutable-stage0") || cfg.package == selectedPackage;
           message = "confined normal policy authority requires the exact policy-labelled AOS package; the same-ELF recovery invocation remains outside the normal role";
         }
         {

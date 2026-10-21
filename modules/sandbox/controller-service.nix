@@ -10,6 +10,7 @@
 
   cfg = config.aos.sandbox.controllerService;
   controller = config.aos.sandbox.controller;
+  selectedPackage = import ./_selected-controller-package.nix {inherit config pkgs;};
   brokers = config.aos.sandbox;
   ownershipAuthority =
     brokers.ownershipAuthority or {
@@ -229,8 +230,8 @@ in {
 
     package = lib.mkOption {
       type = lib.types.package;
-      default = pkgs.aos-sandboxd;
-      defaultText = "pkgs.aos-sandboxd";
+      default = selectedPackage;
+      defaultText = "image-selected shared Controller artifact";
       description = "The independently packaged unprivileged controller executable.";
     };
 

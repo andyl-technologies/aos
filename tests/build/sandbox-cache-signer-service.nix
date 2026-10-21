@@ -4,7 +4,26 @@
   lib,
   mkSystem,
 }: let
-  selectedManager = (mkSystem [../../systems/server-test.nix]).config.aos.manager.selected;
+  baseImage = mkSystem [../../systems/server-test.nix];
+  selectedManager = baseImage.config.aos.manager.selected;
+  onlineDomain = "01010101010101010101010101010101";
+  onlineImage = baseImage.extendModules {
+    modules = [
+      {
+        aos.sandbox.nixBroker = {
+          enable = true;
+          domainIdHex = onlineDomain;
+        };
+      }
+    ];
+  };
+  sharedPackages = image:
+    map (role: image.config.aos.sandbox.${role}.package)
+    ["controllerService" "policyAuthority" "sourceSignerService" "cacheSignerService"];
+  onlinePackage = pkgs.aosNixOnlineControllerWith {domainIdHex = onlineDomain;};
+  otherOnlinePackage = pkgs.aosNixOnlineControllerWith {
+    domainIdHex = "02020202020202020202020202020202";
+  };
   managerOptions = import ../../modules/base/_manager-selection.nix {inherit lib;};
 
   systemdOptions = {lib, ...}: {
@@ -169,6 +188,24 @@
       })
     ];
   };
+  onlineEvaluation = evaluation.extendModules {
+    # These are selection-only fixtures; no credential or native original is
+    # created by changing a package's public domain comparison input.
+    modules = [
+      ({lib, ...}: {
+        options.aos.sandbox.nixBroker = lib.mkOption {
+          type = lib.types.attrsOf lib.types.anything;
+        };
+        config.aos.sandbox.nixBroker = {
+          enable = true;
+          domainIdHex = onlineDomain;
+        };
+      })
+    ];
+  };
+  otherDomainSigner = onlineEvaluation.extendModules {
+    modules = [{aos.sandbox.cacheSignerService.package = lib.mkForce otherOnlinePackage;}];
+  };
   missingParent = evaluation.extendModules {
     modules = [{aos.sandbox.resourceBank.parentEnclosure = lib.mkForce null;}];
   };
@@ -194,7 +231,13 @@
   exactPackageAssertion = check:
     check.message == "confined Cache signer requires the exact evaluated policy-labelled AOS executable";
 in
+  assert lib.all (package: package == pkgs.aos-sandboxd) (sharedPackages baseImage);
+  assert lib.all (package: package == onlinePackage) (sharedPackages onlineImage);
+  assert onlinePackage != otherOnlinePackage;
   assert lib.all (check: check.assertion) config.assertions;
+  assert lib.all (check: check.assertion) onlineEvaluation.config.assertions;
+  assert refuses signerMessage otherDomainSigner;
+  assert lib.any (check: !check.assertion) (lib.filter exactPackageAssertion otherDomainSigner.config.assertions);
   assert lib.any (check: !check.assertion) weakened.config.assertions;
   assert lib.any (check: !check.assertion) badPin.config.assertions;
   assert lib.any (check: !check.assertion) controllerSigning.config.assertions;
