@@ -13,8 +13,12 @@ pub enum FailureKind {
     RoleSelection,
     /// A process role other than `serve` requested repository ownership.
     ServeOnly,
-    /// Native host-tier composition is not implemented by this adapter.
-    HostTierUnavailable,
+    /// Explicit same-domain native cache inputs are missing or invalid.
+    NativeCacheConfiguration,
+    /// Whole-object native preparation is unavailable through this SDK adapter.
+    NativeCacheObjectPolicy,
+    /// Actual native cache recovery or publisher Resume failed.
+    NativeCacheOpen,
     /// The store is not one exact local file-bucket leaf.
     UnsupportedStore,
     /// Existing local authority and policy inputs were not supplied.
@@ -115,6 +119,7 @@ impl Error {
             FailureKind::Confinement
                 | FailureKind::ConfinementChanged
                 | FailureKind::Runtime
+                | FailureKind::NativeCacheOpen
                 | FailureKind::RepositoryOpen
                 | FailureKind::Preparation
                 | FailureKind::Presentation
@@ -138,9 +143,13 @@ impl fmt::Display for Error {
         let message = match self.kind {
             FailureKind::RoleSelection => "configured SDK role selection failed",
             FailureKind::ServeOnly => "only the serve role may run configured SDK snapshots",
-            FailureKind::HostTierUnavailable => {
-                "configured SDK startup does not compose a native host tier"
+            FailureKind::NativeCacheConfiguration => {
+                "configured SDK native cache configuration is invalid"
             }
+            FailureKind::NativeCacheObjectPolicy => {
+                "configured SDK native cache requires chunk serving policy"
+            }
+            FailureKind::NativeCacheOpen => "configured SDK native cache recovery failed",
             FailureKind::UnsupportedStore => {
                 "configured SDK startup requires one exact local file-bucket leaf"
             }

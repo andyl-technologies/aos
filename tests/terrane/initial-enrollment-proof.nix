@@ -3,6 +3,7 @@
   pkgs,
   lib,
   sourceGateWithInputs,
+  configuredSdkProof,
 }: let
   testing = import ../../lib/testing {inherit pkgs lib;};
   image =
@@ -43,9 +44,13 @@
       name =
         if scenario == "enrollment"
         then "terrane-native-initial-enrollment-ext4"
-        else "terrane-native-reassembly-ext4";
+        else if scenario == "reassembly"
+        then "terrane-native-reassembly-ext4"
+        else "terrane-native-sdk-cache-ext4";
       memory = 1024;
-      rootfsDeps = [image verified pkgs.coreutils pkgs.util-linux pkgs.e2fsprogs pkgs.python3 pkgs.binutils];
+      rootfsDeps =
+        [image verified pkgs.coreutils pkgs.util-linux pkgs.e2fsprogs pkgs.python3 pkgs.binutils]
+        ++ lib.optional (scenario == "sdk") configuredSdkProof.image;
       testScript = ''
         set -eu
         test "$(cat ${verified}/verified-image)" = ${lib.escapeShellArg (toString image)}
@@ -91,9 +96,12 @@
         chmod 700 "$TERRANE_INITIAL_FIXTURE_ROOT/scratch"
         export TMPDIR="$TERRANE_INITIAL_FIXTURE_ROOT/scratch"
         export TERRANE_INITIAL_VM_IMAGE="$proof_disk"
+        ${lib.optionalString (scenario == "sdk") ''
+          export TERRANE_CONFIGURED_SDK_IMAGE=${configuredSdkProof.image}
+        ''}
         export LD_LIBRARY_PATH="$(cat ${image}/share/runtime-library-path)"
         ${pkgs.python3}/bin/python3 ${image}/share/initial_enrollment_image.py verify ${image} ${pkgs.terrane.src}
-        ${pkgs.python3}/bin/python3 ${image}/share/initial_enrollment_vm.py ${image} ${pkgs.terrane.src} ${lib.optionalString (scenario == "reassembly") "reassembly"}
+        ${pkgs.python3}/bin/python3 ${image}/share/initial_enrollment_vm.py ${image} ${pkgs.terrane.src} ${lib.optionalString (scenario != "enrollment") scenario}
       '';
     };
   # The headless harness does not forward mkVMTest's system-mode timeout.
@@ -115,4 +123,5 @@ in {
   inherit image;
   native = nativeFor "enrollment";
   reassembly = nativeFor "reassembly";
+  sdk = nativeFor "sdk";
 }

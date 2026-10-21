@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import pathlib
+import runpy
 import select
 import signal
 import subprocess
@@ -39,7 +40,7 @@ def require(condition, message):
 def verify_inputs():
     """Checks the completed image identity again before guest fixture effects."""
     identity = json.loads((IMAGE / "share/identity.json").read_text())
-    for filename in ["initial_enrollment_vm.py", "initial_enrollment_image.py"]:
+    for filename in ["initial_enrollment_vm.py", "initial_enrollment_image.py", "configured_sdk_cache_vm.py"]:
         key = "tests/terrane/" + filename
         expected = identity["input_sha256"][key]
         require(hashlib.sha256((SOURCE / key).read_bytes()).hexdigest() == expected,
@@ -204,7 +205,10 @@ def configured_publication():
             require(publisher.poll() is None and time.monotonic() < deadline,
                     "configured publisher failed before binding actual listener")
             time.sleep(0.02)
-        if SCENARIO == "reassembly":
+        if SCENARIO == "sdk":
+            runpy.run_path(str(IMAGE / "share/configured_sdk_cache_vm.py"))["run"](
+                sys.modules[__name__], pathlib.Path(os.environ["TERRANE_CONFIGURED_SDK_IMAGE"]))
+        elif SCENARIO == "reassembly":
             before = sealed_snapshot()
             run_case("reassembly-public-private", role_command("reassembly-public-private", 840, [844, 845]))
             after = sealed_snapshot()
@@ -258,7 +262,7 @@ def configured_publication():
 
 def main():
     """Runs real same-process enrollment, authenticated queries and credential refusals."""
-    require(len(sys.argv) in [3, 4] and SCENARIO in ["enrollment", "reassembly"],
+    require(len(sys.argv) in [3, 4] and SCENARIO in ["enrollment", "reassembly", "sdk"],
             "requires a registered native proof scenario")
     verify_inputs()
     # Fixture TOML publication intentionally respects the caller's umask. Fix

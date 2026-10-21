@@ -335,6 +335,14 @@ impl NativeConfiguredCache {
         &self.content
     }
 
+    /// Transfers the genuine running content owner to a composed raw store.
+    ///
+    /// Callers retain their own object preparation policy. This transfer does
+    /// not prepare objects, create authority or repeat native initialization.
+    pub fn into_content(self) -> NativeContentStore {
+        self.content
+    }
+
     /// Returns the reassembly mode retained from the checked host configuration.
     pub fn reassembly(&self) -> ReassemblyMode {
         self.reassembly

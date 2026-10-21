@@ -11351,3 +11351,24 @@ rejects a mutation, materializes the authorized pinned SDK snapshot and checks
 that the original publication pointer is unchanged. That test passes. Native
 configured SDK wiring and full application-target compilation remain pending;
 this bridge alone does not close the common-store or T2 gate.
+
+#### Confined SDK native-cache startup
+
+Configured SDK startup now accepts explicit same-domain native cache resources
+under `reassembly=never`. Pure preflight rejects overlapping cache/original
+roots, cache/exposure paths and unsupported object preparation policy. After
+confinement and protected original repository reopening, actual native cache
+opening must complete quota checks, recovery and publisher Resume. Only that
+returned native content owner enters the read-only repository adapter. Original
+references, signatures and protected verification records remain with the
+opened original backend; lower reads currently do not populate the cache.
+
+`checks.terrane.integration.native-sdk-cache` joins the existing source-bound
+SDK CLI image with fresh actual enrollment, helper and publisher processes.
+Its independent supervisor checks original publication pointers and payloads,
+new exact native recovery funding, and refusal of an unenrolled cache before
+presentation. Ordinary SDK launchers retain their empty-group assertion;
+separate source-bound cache launchers require the actual content/state groups.
+All eleven configured SDK unit tests and strict native Clippy pass. The new VM
+and complete Rust compilation are pending. Whole-object policy and
+cache population remain open; this checkpoint does not close T2 or SURF-32.

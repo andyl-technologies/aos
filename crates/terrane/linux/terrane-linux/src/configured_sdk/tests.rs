@@ -72,10 +72,25 @@ fn preflight_refuses_unavailable_compositions_before_missing_authority_io() -> T
     )?;
     assert_eq!(
         preflight(&config, Role::Serve)
-            .expect_err("host tier unavailable")
+            .expect_err("native cache inputs unavailable")
             .kind(),
-        FailureKind::HostTierUnavailable
+        FailureKind::NativeCacheConfiguration
     );
+    for (host, expected) in [
+        (
+            "[host_tier]\npath='/missing-cache'\nsize_bytes=1024\nreassembly='always'\n[host_tier.domains.public]\npath='/missing-cache/public'\nwipe='none'\n",
+            FailureKind::NativeCacheObjectPolicy,
+        ),
+        (
+            "[host_tier]\npath='/missing-configured-sdk-bucket'\nsize_bytes=1024\nreassembly='never'\n[host_tier.domains.public]\npath='/missing-configured-sdk-bucket/cache'\nwipe='none'\n",
+            FailureKind::NativeCacheConfiguration,
+        ),
+    ] {
+        let config = configuration("bucket(file:///missing-configured-sdk-bucket)", "", host)?;
+        let error = preflight(&config, Role::Serve).expect_err("unsupported native cache boundary");
+        assert_eq!(error.kind(), expected);
+        assert!(!error.requires_process_exit());
+    }
     Ok(())
 }
 

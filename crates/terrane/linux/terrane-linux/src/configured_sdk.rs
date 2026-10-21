@@ -9,8 +9,10 @@
 //! preparation never substitutes that authority's token for an exposure capability.
 //!
 //! This component supports only the exact local file-bucket leaf, explicit local
-//! trust and compiled read-only pinned SDK surface. Any `host_tier` is refused:
-//! host caching, routing, publisher and collector composition remain separate.
+//! trust and compiled read-only pinned SDK surface. An explicit native host tier
+//! may supply same-domain resident content under `reassembly = "never"`; current
+//! references and Original verification retain the opened original repository.
+//! Whole-object native preparation remains a separate serving integration.
 //! Completion means durable snapshots whose actual handles have drained and
 //! stopped. It never parks a pretend daemon or advertises host-tier readiness.
 //!
@@ -30,17 +32,23 @@ pub use tokens::TOKEN_FILE_BYTE_BUDGET;
 use std::{
     fmt,
     path::{Path, PathBuf},
+    sync::Arc,
     time::Duration,
 };
 
 use terrane_sdk::{
+    bucket::BucketBinding,
     config::Config,
+    repository::Repository,
     role::Role,
-    store::{TokioClock, TokioLocalFs},
+    store::{Store, TokioClock, TokioLocalFs},
     surface::{ExposureStatus, PreparedExposures, ServingHandle},
 };
 
-use crate::quota_confinement::{self, Installed};
+use crate::{
+    configured::NativeCachePlan,
+    quota_confinement::{self, Installed},
+};
 
 /// Borrows a completely preflighted configuration without native authority.
 ///
@@ -48,6 +56,7 @@ use crate::quota_confinement::{self, Installed};
 /// credentials, opening repository state or starting any executor.
 pub struct ValidatedSdk<'config> {
     config: &'config Config,
+    cache: Option<NativeCachePlan>,
 }
 
 impl ValidatedSdk<'_> {
@@ -66,8 +75,10 @@ impl ValidatedSdk<'_> {
         if tokio::runtime::Handle::try_current().is_ok() {
             return Err(Error::refused(FailureKind::ExistingRuntime));
         }
-        let installed = quota_confinement::install()
-            .map_err(|error| Error::io(FailureKind::Confinement, error))?;
+        let installed = Arc::new(
+            quota_confinement::install()
+                .map_err(|error| Error::io(FailureKind::Confinement, error))?,
+        );
         installed
             .check_current()
             .map_err(|error| Error::io(FailureKind::ConfinementChanged, error))?;
@@ -76,7 +87,7 @@ impl ValidatedSdk<'_> {
             .enable_all()
             .build()
             .map_err(|error| Error::io(FailureKind::Runtime, error))?;
-        let outcome = runtime.block_on(start_exposures(self.config, &installed));
+        let outcome = runtime.block_on(start_exposures(self.config, &installed, self.cache));
         // Runtime drop joins its blocking work while the real receipt remains
         // retained. No asynchronous filesystem action outlives this boundary.
         drop(runtime);
@@ -119,7 +130,7 @@ pub fn run(config: &Config, selected_role: Role) -> Result<CompletedSdk, Error> 
 /// persist after this result is dropped; dropping the receipt does not undo the
 /// kernel policy, which remains installed for the lifetime of this process.
 pub struct CompletedSdk {
-    installed: Installed,
+    installed: Arc<Installed>,
     snapshots: Vec<CompletedSnapshot>,
 }
 
@@ -182,7 +193,8 @@ impl fmt::Debug for CompletedSnapshot {
 
 async fn start_exposures(
     config: &Config,
-    installed: &Installed,
+    installed: &Arc<Installed>,
+    cache: Option<NativeCachePlan>,
 ) -> Result<Vec<CompletedSnapshot>, Error> {
     installed
         .check_current()
@@ -191,12 +203,35 @@ async fn start_exposures(
         .open_local_repository(Role::Serve, TokioLocalFs, TokioClock)
         .await
         .map_err(Error::local)?;
+    if let Some(plan) = cache {
+        let domain = &config
+            .local_repository()
+            .ok_or_else(|| Error::refused(FailureKind::NativeCacheConfiguration))?
+            .domain;
+        let mut caches = plan
+            .open(Arc::clone(installed))
+            .await
+            .map_err(|error| Error::io(FailureKind::NativeCacheOpen, error))?;
+        let cache = caches
+            .remove(domain)
+            .ok_or_else(|| Error::refused(FailureKind::NativeCacheOpen))?;
+        let repository = repository.with_read_cache(cache.into_content());
+        return present(config, installed, &repository).await;
+    }
+    present(config, installed, &repository).await
+}
+
+async fn present<S: Store + Sync + BucketBinding>(
+    config: &Config,
+    installed: &Installed,
+    repository: &Repository<S, TokioClock, TokioLocalFs>,
+) -> Result<Vec<CompletedSnapshot>, Error> {
     let resolver = tokens::FileTokens { installed };
-    let prepared = PreparedExposures::prepare(&repository, config.exposures(), &resolver)
+    let prepared = PreparedExposures::prepare(repository, config.exposures(), &resolver)
         .await
         .map_err(|error| Error::repository(FailureKind::Preparation, error))?;
     let handles = prepared
-        .start(&repository)
+        .start(repository)
         .await
         .map_err(|error| Error::repository(FailureKind::Presentation, error))?;
 

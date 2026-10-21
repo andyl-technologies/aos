@@ -126,7 +126,7 @@
   # These component checks cannot stand in for complete host-tier readiness.
   initialEnrollmentProof =
     if builtins.pathExists ./initial-enrollment-proof.nix
-    then import ./initial-enrollment-proof.nix {inherit pkgs lib sourceGateWithInputs;}
+    then import ./initial-enrollment-proof.nix {inherit pkgs lib sourceGateWithInputs configuredSdkProof;}
     else
       builtins.listToAttrs (map (name: {
         inherit name;
@@ -134,7 +134,7 @@
           name = "initial-enrollment-${name}";
           requirements = "HOST-23/DOM-12 fresh native enrollment component";
         };
-      }) ["image" "native" "reassembly"]);
+      }) ["image" "native" "reassembly" "sdk"]);
 
   algebraFormatVectors = import ./algebra-models.nix {inherit sourceGate;};
 
@@ -441,6 +441,7 @@ in {
   integration.initial-enrollment-image = initialEnrollmentProof.image;
   integration.native-initial-enrollment = initialEnrollmentProof.native;
   integration.native-reassembly = initialEnrollmentProof.reassembly;
+  integration.native-sdk-cache = initialEnrollmentProof.sdk;
   integration.foundation-format-vectors = import ./foundation-vectors.nix {inherit sourceGate;};
   integration.retirement-reference-generator = import ./retirement-reference.nix {inherit sourceGate;};
   integration.retirement-reference-models = import ./retirement-models.nix {inherit sourceGate;};

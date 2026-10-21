@@ -13,8 +13,10 @@ use super::{Error, FailureKind, ValidatedSdk, tokens};
 
 /// Validates the entire narrow SDK composition without opening any resource.
 ///
-/// Host-tier, routed and remote compositions are unavailable here. Instance
-/// credentials and non-file exposure providers are not silently ignored. The
+/// Routed and remote compositions are unavailable here. A native cache must
+/// bind the trusted repository domain and remain disjoint from original state.
+/// Whole-object native preparation is not yet composed through this adapter.
+/// Instance credentials and non-file exposure providers are not silently ignored. The
 /// returned plan still has no repository authority or kernel receipt.
 ///
 /// # Errors
@@ -26,9 +28,6 @@ pub fn preflight(config: &Config, selected_role: Role) -> Result<ValidatedSdk<'_
         .map_err(Error::role)?;
     if role != Role::Serve {
         return Err(Error::refused(FailureKind::ServeOnly));
-    }
-    if config.host_tier().is_some() {
-        return Err(Error::refused(FailureKind::HostTierUnavailable));
     }
     let expression = config.store();
     if expression.name() != "bucket" || !expression.children().is_empty() {
@@ -52,6 +51,42 @@ pub fn preflight(config: &Config, selected_role: Role) -> Result<ValidatedSdk<'_
     {
         return Err(Error::refused(FailureKind::InvalidPath));
     }
+    let cache = if let Some(host) = config.host_tier() {
+        if !host.domains.contains_key(&trusted.domain) {
+            return Err(Error::refused(FailureKind::NativeCacheConfiguration));
+        }
+        if host.reassembly != terrane_sdk::config::host::Reassembly::Never {
+            return Err(Error::refused(FailureKind::NativeCacheObjectPolicy));
+        }
+        for directory in host.domains.values() {
+            for path in std::iter::once(directory.path.as_str())
+                .chain(directory.administrative_root.as_deref())
+            {
+                let path = Path::new(path);
+                if !canonical_path(path)
+                    || overlaps(path, &location.bucket)
+                    || overlaps(path, &location.authority)
+                {
+                    return Err(Error::refused(FailureKind::NativeCacheConfiguration));
+                }
+            }
+        }
+        let locality = config.locality();
+        Some(
+            crate::configured::NativeCachePlan::from_host(
+                host,
+                terrane_format::refs::Locality {
+                    region: (!locality.region.is_empty()).then(|| locality.region.clone()),
+                    zone: (!locality.zone.is_empty()).then(|| locality.zone.clone()),
+                    host: (!locality.host.is_empty()).then(|| locality.host.clone()),
+                },
+            )
+            .map_err(|error| Error::io(FailureKind::NativeCacheConfiguration, error))?,
+        )
+    } else {
+        None
+    };
+
     if config.tokens().host_token.is_some() || !config.tokens().issuer_public_keys.is_empty() {
         return Err(Error::refused(FailureKind::InstanceCredentialsUnavailable));
     }
@@ -83,6 +118,13 @@ pub fn preflight(config: &Config, selected_role: Role) -> Result<ValidatedSdk<'_
         if overlaps(endpoint, &location.bucket)
             || overlaps(endpoint, &location.authority)
             || endpoints.iter().any(|other| overlaps(endpoint, other))
+            || config.host_tier().is_some_and(|host| {
+                host.domains.values().any(|directory| {
+                    std::iter::once(directory.path.as_str())
+                        .chain(directory.administrative_root.as_deref())
+                        .any(|path| overlaps(endpoint, Path::new(path)))
+                })
+            })
         {
             return Err(Error::refused(FailureKind::OverlappingEndpoint));
         }
@@ -90,7 +132,7 @@ pub fn preflight(config: &Config, selected_role: Role) -> Result<ValidatedSdk<'_
             .map_err(|_| Error::refused(FailureKind::UnsupportedCredentialReference))?;
         endpoints.push(endpoint);
     }
-    Ok(ValidatedSdk { config })
+    Ok(ValidatedSdk { config, cache })
 }
 
 pub(super) fn canonical_path(path: &Path) -> bool {
