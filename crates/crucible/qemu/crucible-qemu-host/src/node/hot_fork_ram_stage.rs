@@ -76,8 +76,8 @@ impl QemuHotForkRamStage {
         }
         let guard = supervisor
             .begin(HostOperationClass::Preparation)
-            .map_err(failure)?;
-        guard.wait_slice().map_err(failure)?;
+            .map_err(supervision_failure)?;
+        guard.wait_slice().map_err(supervision_failure)?;
         let root_bytes = source
             .as_ref()
             .map_or(0, |(backing, _)| backing.root_record().encoded_len());
@@ -344,8 +344,8 @@ impl QemuHotForkRamStage {
         let guard = self
             .supervisor
             .begin(HostOperationClass::Preparation)
-            .map_err(failure)?;
-        guard.wait_slice().map_err(failure)?;
+            .map_err(supervision_failure)?;
+        guard.wait_slice().map_err(supervision_failure)?;
         let plan = RamForkPlan {
             template_generation: template,
             process_contract_generation: contract,
@@ -363,12 +363,16 @@ impl QemuHotForkRamStage {
                     resources: resources_to_wire(self.registration.resources),
                 }),
             },
-            outer_cap: outer_cap_to_wire(self.supervisor.outer_cap_binding().map_err(failure)?)
-                .map_err(failure)?,
+            outer_cap: outer_cap_to_wire(
+                self.supervisor
+                    .outer_cap_binding()
+                    .map_err(supervision_failure)?,
+            )
+            .map_err(failure)?,
             source: self.source_record.clone(),
         };
         self.plan = Some(sealed_plan(&plan.encode().map_err(failure)?)?);
-        guard.complete().map_err(failure)?;
+        guard.complete().map_err(supervision_failure)?;
         Ok(())
     }
 
@@ -775,6 +779,10 @@ fn retain_target_original(
     Ok(())
 }
 
+fn supervision_failure(error: HostSupervisionError) -> QemuNodeChannelError {
+    QemuNodeChannelError::operational_supervision("prepare independent child RAM", error)
+}
+
 fn failure(error: impl std::fmt::Display) -> QemuNodeChannelError {
     QemuNodeChannelError::new("prepare independent child RAM", error.to_string())
 }
@@ -837,5 +845,89 @@ impl<T> std::ops::Deref for RamAllocation<T> {
 impl<T> std::ops::DerefMut for RamAllocation<T> {
     fn deref_mut(&mut self) -> &mut T {
         &mut self.body
+    }
+}
+
+#[cfg(test)]
+mod supervision_tests {
+    //! Checks the actual child RAM supervision conversion before descriptor work.
+
+    use super::*;
+    use crucible_host_resources::host_supervision::{HostOperationBudgets, HostOperationState};
+    use crucible_host_resources::test_support::TestAllocationObserver;
+    use std::error::Error;
+
+    #[test]
+    fn actual_preparation_refusals_retain_typed_cause_without_allocating()
+    -> Result<(), Box<dyn Error>> {
+        let supervisor = HostOperationSupervisor::new(HostOperationBudgets::default(), None)?;
+        let waiting = supervisor.begin(HostOperationClass::Preparation)?;
+        let completing = supervisor.begin(HostOperationClass::Preparation)?;
+        supervisor.cancel()?;
+        let expected = HostSupervisionError::Terminal {
+            state: HostOperationState::Canceled,
+        };
+
+        let (errors, counts) = TestAllocationObserver::count(|| {
+            [
+                supervisor
+                    .begin(HostOperationClass::Preparation)
+                    .map(|_| ())
+                    .map_err(supervision_failure),
+                waiting
+                    .wait_slice()
+                    .map(|_| ())
+                    .map_err(supervision_failure),
+                completing
+                    .complete()
+                    .map(|_| ())
+                    .map_err(supervision_failure),
+            ]
+            .map(|result| {
+                let channel = result.expect_err("the actual original is canceled");
+                QemuNodeError::from_channel(QemuNodeChannelPlane::QmpMachineControl, channel)
+            })
+        });
+
+        assert_eq!(counts.allocations, 0);
+        assert_eq!(counts.reallocations, 0);
+        assert!(!counts.overflow);
+        for node in errors {
+            assert_eq!(
+                node.source()
+                    .and_then(|source| source.downcast_ref::<HostSupervisionError>()),
+                Some(&expected)
+            );
+            assert_eq!(
+                node.to_string(),
+                format!(
+                    "QMP machine control channel operation prepare independent child RAM failed: {expected}"
+                )
+            );
+
+            // Backend retention still owns its existing shared carrier. Only
+            // channel and node conversion above are allocation-free here.
+            let scheduler = crucible_engine::SchedulerError::from(
+                crucible_engine::BackendError::from(node.clone()),
+            );
+            assert!(
+                matches!(scheduler, crucible_engine::SchedulerError::Backend(ref backend)
+                if backend.operational_kind() == Some(crucible_engine::BackendOperationalFailureKind::Canceled))
+            );
+            let retained = scheduler
+                .source()
+                .and_then(Error::source)
+                .and_then(Error::source)
+                .and_then(|source| source.downcast_ref::<QemuNodeError>())
+                .expect("the scheduler retains the actual node error");
+            assert_eq!(retained, &node);
+            assert_eq!(
+                retained
+                    .source()
+                    .and_then(|source| source.downcast_ref::<HostSupervisionError>()),
+                Some(&expected)
+            );
+        }
+        Ok(())
     }
 }

@@ -73,6 +73,56 @@ fn channel_diagnostics_borrow_static_text_and_move_owned_allocations() {
 }
 
 #[test]
+fn channel_supervision_retains_actual_cause_through_shutdown_without_allocating()
+-> Result<(), Box<dyn Error>> {
+    use crucible_host_resources::host_supervision::{
+        HostOperationBudgets, HostOperationClass, HostOperationSupervisor,
+    };
+    use crucible_host_resources::test_support::TestAllocationObserver;
+
+    let supervisor = HostOperationSupervisor::new(HostOperationBudgets::default(), None)?;
+    let original = supervisor.begin(HostOperationClass::Cleanup)?;
+    original.complete()?;
+    let expected = original
+        .wait_slice()
+        .expect_err("the actual Cleanup has completed");
+
+    let ((channel, shutdown), counts) = TestAllocationObserver::count(|| {
+        let channel =
+            QemuNodeChannelError::operational_supervision("send supervised plugin Quit", expected);
+        let shutdown = super::super::channel_error_to_shutdown_error(channel.clone());
+        (channel, shutdown)
+    });
+
+    assert_eq!(counts.allocations, 0);
+    assert_eq!(counts.reallocations, 0);
+    assert!(!counts.overflow);
+    assert_eq!(channel.operational_supervision_source(), Some(expected));
+    assert_eq!(
+        channel
+            .source()
+            .and_then(|source| source.downcast_ref::<HostSupervisionError>()),
+        Some(&expected)
+    );
+    assert!(!channel.is_retryable());
+    assert_eq!(channel.bounded_timeout(), None);
+    assert!(matches!(channel.message, Cow::Borrowed("")));
+    assert_eq!(shutdown.operational_supervision_source(), Some(expected));
+    assert_eq!(
+        shutdown
+            .source()
+            .and_then(|source| source.downcast_ref::<HostSupervisionError>()),
+        Some(&expected)
+    );
+    assert_eq!(channel.to_string(), shutdown.to_string());
+    assert_eq!(
+        channel.to_string(),
+        format!("send supervised plugin Quit failed: {expected}")
+    );
+    Ok(())
+}
+
+#[test]
 fn unsupported_supervised_quit_refuses_without_allocation_or_effect() -> Result<(), Box<dyn Error>>
 {
     use crate::QemuPluginIpcControlChannel;

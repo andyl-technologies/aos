@@ -46,17 +46,17 @@ impl fmt::Display for QemuNodeChannelPlane {
 }
 
 /// Reports a channel-local operation error before node-plane context is attached.
-#[derive(Clone, Debug, Error, PartialEq, Eq)]
-#[error("{operation} failed: {message}")]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QemuNodeChannelError {
     /// Operation being attempted on the channel.
     pub operation: &'static str,
-    /// Failure detail, borrowed for static text or moved from an owned message.
+    /// Authored detail, borrowed for static text and empty for typed refusals.
     pub message: Cow<'static, str>,
     /// Timeout budget when this channel error came from a bounded await timeout.
     pub timeout: Option<Duration>,
     /// Whether the operation may be retried without republishing its request.
     pub retryable: bool,
+    supervision: Option<HostSupervisionError>,
 }
 
 impl QemuNodeChannelError {
@@ -71,6 +71,7 @@ impl QemuNodeChannelError {
             message: message.into(),
             timeout: None,
             retryable: false,
+            supervision: None,
         }
     }
 
@@ -82,6 +83,7 @@ impl QemuNodeChannelError {
             message: message.into(),
             timeout: None,
             retryable: true,
+            supervision: None,
         }
     }
 
@@ -97,7 +99,28 @@ impl QemuNodeChannelError {
             message: message.into(),
             timeout: Some(timeout),
             retryable: false,
+            supervision: None,
         }
+    }
+
+    /// Retains a typed operational refusal without formatting a diagnostic.
+    ///
+    /// This carries the original cause and issues no operation or return authority.
+    #[must_use]
+    pub fn operational_supervision(operation: &'static str, source: HostSupervisionError) -> Self {
+        Self {
+            operation,
+            message: Cow::Borrowed(""),
+            timeout: None,
+            retryable: false,
+            supervision: Some(source),
+        }
+    }
+
+    /// Returns the original typed supervision refusal, when present.
+    #[must_use]
+    pub const fn operational_supervision_source(&self) -> Option<HostSupervisionError> {
+        self.supervision
     }
 
     /// Returns the bounded await timeout that caused this channel failure.
@@ -110,6 +133,23 @@ impl QemuNodeChannelError {
     #[must_use]
     pub const fn is_retryable(&self) -> bool {
         self.retryable
+    }
+}
+
+impl fmt::Display for QemuNodeChannelError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.supervision {
+            Some(source) if self.message.is_empty() => {
+                write!(formatter, "{} failed: {source}", self.operation)
+            }
+            _ => write!(formatter, "{} failed: {}", self.operation, self.message),
+        }
+    }
+}
+
+impl std::error::Error for QemuNodeChannelError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.supervision.as_ref().map(|source| source as _)
     }
 }
 
@@ -151,6 +191,17 @@ pub enum QemuNodeError {
         operation: &'static str,
         /// Failure detail retaining the channel's borrowed or owned storage.
         message: Cow<'static, str>,
+    },
+    /// A channel retained its actual operational supervision refusal.
+    #[error("{plane} channel operation {operation} failed: {source}")]
+    ChannelSupervision {
+        /// Channel role in which the original operation refused.
+        plane: QemuNodeChannelPlane,
+        /// Operation attempted before the original refusal.
+        operation: &'static str,
+        /// Actual typed original cause, without diagnostic replacement.
+        #[source]
+        source: HostSupervisionError,
     },
     /// RAM source cleanup failed while its service remains retained.
     #[error("{operation} failed: {source}")]
@@ -379,6 +430,7 @@ pub enum QemuNodeError {
 impl QemuNodeError {
     fn shutdown_original_failure(&self) -> Option<HostSupervisionError> {
         match self {
+            Self::ChannelSupervision { source, .. } => Some(*source),
             Self::ShutdownOriginal {
                 begin,
                 observations,
@@ -420,13 +472,20 @@ impl QemuNodeError {
         }
     }
 
-    /// Attaches a node channel role to a channel-local error.
+    /// Attaches a node channel role while preserving its typed cause or text.
     #[must_use]
     pub fn from_channel(plane: QemuNodeChannelPlane, source: QemuNodeChannelError) -> Self {
-        Self::Channel {
-            plane,
-            operation: source.operation,
-            message: source.message,
+        match source.supervision {
+            Some(supervision) => Self::ChannelSupervision {
+                plane,
+                operation: source.operation,
+                source: supervision,
+            },
+            None => Self::Channel {
+                plane,
+                operation: source.operation,
+                message: source.message,
+            },
         }
     }
 
@@ -618,7 +677,8 @@ impl From<QemuNodeError> for BackendError {
                     source: BackendOperationalCause::new(error),
                 };
             }
-            error @ (QemuNodeError::Shutdown { .. }
+            error @ (QemuNodeError::ChannelSupervision { .. }
+            | QemuNodeError::Shutdown { .. }
             | QemuNodeError::ShutdownAfterChannelFailure { .. }
             | QemuNodeError::RamCleanupLender { .. }
             | QemuNodeError::RamStageCleanup { .. }

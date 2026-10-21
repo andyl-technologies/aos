@@ -2636,7 +2636,10 @@ impl QemuShutdownTarget for QemuNodeShutdownTarget<'_, '_, '_> {
 }
 
 fn channel_error_to_shutdown_error(error: QemuNodeChannelError) -> QemuShutdownTargetError {
-    QemuShutdownTargetError::new(error.operation, error.message)
+    match error.operational_supervision_source() {
+        Some(source) => QemuShutdownTargetError::operational_supervision(error.operation, source),
+        None => QemuShutdownTargetError::new(error.operation, error.message),
+    }
 }
 
 #[cfg(all(target_os = "linux", any(test, feature = "test-support")))]
