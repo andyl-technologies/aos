@@ -250,8 +250,6 @@ pub enum QemuLiveNodeStepGateError {
         primary: Box<QemuLiveNodeStepGateError>,
         /// Independent force-kill/reap failure.
         cleanup: crate::QemuNodeError,
-        /// Nonduplicable direct-child handle retained after failed reap.
-        retained_owner: Option<crate::QemuFailedLaunchOwner>,
     },
     /// A bounded node step failed.
     #[error("{operation} failed")]
@@ -294,24 +292,21 @@ pub enum QemuLiveNodeStepGateError {
 }
 
 impl QemuLiveNodeStepGateError {
-    /// Moves the same failed phase to its original preborn receiver.
-    pub fn take_retained_owner(&mut self) -> Option<crate::QemuFailedLaunchOwner> {
-        match self {
-            Self::FailedCleanup { retained_owner, .. } => retained_owner.take(),
-            _ => None,
-        }
-    }
-
-    /// Observes an actual retained body without extracting or dropping it.
+    /// Reports a retained Source receiver requiring physical disposition.
+    ///
+    /// The same prebirth receiver owns any failed child or Node. The error
+    /// retains only its existing shared control; it never extracts that body.
+    /// A diagnostic alone cannot establish physical return.
     #[must_use]
     pub fn has_retained_owner(&self) -> bool {
-        matches!(
-            self,
-            Self::FailedCleanup {
-                retained_owner: Some(_),
-                ..
-            }
-        )
+        #[cfg(target_os = "linux")]
+        {
+            matches!(self, Self::OriginalNativeLaunch { .. })
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            false
+        }
     }
 
     /// Builds a [`QemuLiveNodeStepGateError::Step`] for a node operation.

@@ -1112,7 +1112,7 @@ pub(crate) fn launch_atomic_exact_restore(
     original_workspace: Option<crate::spawn::OriginalDeviceDigestWorkspace>,
 ) -> Result<
     (
-        QemuNode,
+        crate::node::IssuedLaunchOwner,
         crucible_engine::exact_checkpoint::ExactCheckpointVerifiedNode,
     ),
     QemuLiveNodeStepGateError,
@@ -1130,7 +1130,7 @@ pub(crate) fn launch_atomic_exact_restore(
         request.ram_inputs.source(),
     );
     validate_restore_descriptors(&restore)?;
-    let node = build_live_node_with_authority(
+    let node = prepare_paused_live_node(
         config,
         LiveNodeAssembly {
             run_directory: request.run_directory,
@@ -1144,7 +1144,8 @@ pub(crate) fn launch_atomic_exact_restore(
             #[cfg(target_os = "linux")]
             original_workspace,
         },
-    )?;
+    )?
+    .prime_and_build_issued()?;
     let target = request.ram_inputs.into_target();
 
     Ok((node, target))
@@ -2087,25 +2088,10 @@ fn reap_failed_live_node_child(
 ) -> QemuLiveNodeStepGateError {
     match child.retry_cleanup() {
         Ok(()) => primary,
-        Err(cleanup) => QemuLiveNodeStepGateError::FailedCleanup {
+        Err(cleanup) => child.retain_cleanup_failure(QemuLiveNodeStepGateError::FailedCleanup {
             primary: Box::new(primary),
             cleanup,
-            retained_owner: None,
-        },
-    }
-}
-
-fn finish_failed_live_owner(
-    mut owner: crate::QemuFailedLaunchOwner,
-    primary: QemuLiveNodeStepGateError,
-) -> QemuLiveNodeStepGateError {
-    match owner.retry_cleanup() {
-        Ok(()) => primary,
-        Err(cleanup) => QemuLiveNodeStepGateError::FailedCleanup {
-            primary: Box::new(primary),
-            cleanup,
-            retained_owner: Some(owner),
-        },
+        }),
     }
 }
 
@@ -2122,24 +2108,22 @@ fn complete_host_setup_or_reap<T>(
     }
 }
 
-fn reap_failed_live_node(
-    node: QemuNode,
-    primary: QemuLiveNodeStepGateError,
-) -> QemuLiveNodeStepGateError {
-    finish_failed_live_owner(crate::QemuFailedLaunchOwner::node(node), primary)
-}
-
 pub(crate) fn resume_restored_exact_node(
-    mut node: QemuNode,
+    mut owner: crate::node::IssuedLaunchOwner,
 ) -> Result<QemuNode, QemuLiveNodeStepGateError> {
-    if let Err(source) = node.resume_after_restore() {
-        let error = QemuLiveNodeStepGateError::Step {
+    let result = owner.node_mut().and_then(QemuNode::resume_after_restore);
+    if let Err(source) = result {
+        let primary = QemuLiveNodeStepGateError::Step {
             operation: "resume repository-restored exact node",
             source,
         };
-        return Err(reap_failed_live_node(node, error));
+        return Err(reap_failed_live_node_child(owner, primary));
     }
-    Ok(node)
+    owner.into_node().map_err(
+        |_retained| QemuLiveNodeStepGateError::ExactSnapshotInvariant {
+            reason: String::from("issued exact Node was not assembled before resume handoff"),
+        },
+    )
 }
 
 #[path = "node_step_gate/support.rs"]

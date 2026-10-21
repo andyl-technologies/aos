@@ -237,16 +237,15 @@ impl IssuedLaunchOwner {
             }
         }
     }
-}
 
-impl Drop for IssuedLaunchOwner {
-    fn drop(&mut self) {
-        if let Some(receiver) = &self.receiver {
+    /// Moves the retained body to its prebirth receiver without cleanup work.
+    pub(crate) fn return_to_receiver(&mut self) {
+        if let Some(receiver) = self.receiver.take() {
             if let Some(body) = self.body.take() {
                 receiver.return_issued_owner(QemuFailedLaunchOwner {
                     body: Mutex::new(body),
                     source_cleanup: FailedSourceCleanup::Required(
-                        self.lender.clone().ok_or(
+                        self.lender.take().ok_or(
                             crate::linux_attempt_host::OriginalActorAccountError::Unavailable,
                         ),
                     ),
@@ -256,4 +255,30 @@ impl Drop for IssuedLaunchOwner {
             }
         }
     }
+
+    /// Returns the actual body before publishing its retained cleanup error.
+    pub(crate) fn retain_cleanup_failure(
+        mut self,
+        primary: crate::QemuLiveNodeStepGateError,
+    ) -> crate::QemuLiveNodeStepGateError {
+        let receiver = self.receiver.clone();
+        self.return_to_receiver();
+        match receiver {
+            Some(source) => {
+                source.record_returned_cleanup_failure(primary);
+                crate::QemuLiveNodeStepGateError::OriginalNativeLaunch { source }
+            }
+            None => primary,
+        }
+    }
 }
+
+impl Drop for IssuedLaunchOwner {
+    fn drop(&mut self) {
+        self.return_to_receiver();
+    }
+}
+
+#[cfg(test)]
+#[path = "issued/tests.rs"]
+mod tests;

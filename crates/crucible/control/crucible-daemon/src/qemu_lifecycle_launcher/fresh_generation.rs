@@ -201,7 +201,7 @@ where
                 });
             }
             let has_retained_owner = error.has_retained_owner();
-            preparation.retain_unexpected_owner(&mut error);
+            preparation.mark_unexpected_launch_failure();
             if has_retained_owner {
                 return Err(LifecycleApiError::BackendConstruction {
                     source: crucible_control_api::LifecycleBackendConstructionError::new(error),

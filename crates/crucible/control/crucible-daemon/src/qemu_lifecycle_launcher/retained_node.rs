@@ -73,7 +73,6 @@ impl NativeLaunchProgress {
 pub(super) enum FreshPreparationBody {
     Empty,
     Node(QemuNode),
-    Unexpected(crucible_qemu_host::QemuFailedLaunchOwner),
 }
 
 impl RetainedFreshPreparation {
@@ -172,18 +171,10 @@ impl RetainedFreshPreparation {
         };
     }
 
-    /// Keeps an unexpected actual body without issuing ordinary cleanup for it.
-    pub(super) fn retain_unexpected_owner(
-        &mut self,
-        error: &mut crucible_qemu_host::QemuLiveNodeStepGateError,
-    ) {
+    /// Retains uncertainty without inventing an owner outside its receiver.
+    pub(super) fn mark_unexpected_launch_failure(&mut self) {
         if self.native != NativeLaunchProgress::NotEntered {
             self.native = NativeLaunchProgress::Unresolved;
-        }
-        if matches!(self.body, FreshPreparationBody::Empty)
-            && let Some(owner) = error.take_retained_owner()
-        {
-            self.body = FreshPreparationBody::Unexpected(owner);
         }
     }
 

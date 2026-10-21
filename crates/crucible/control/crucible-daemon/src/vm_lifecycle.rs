@@ -1363,7 +1363,7 @@ impl ProductionVmAtomicExactRestore {
     {
         let launched = issuer(self.request)?;
         if self.paused {
-            Ok(launched.into_node_and_run_directory())
+            launched.into_node_and_run_directory()
         } else {
             launched.into_running_node_and_run_directory()
         }

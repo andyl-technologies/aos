@@ -410,7 +410,7 @@ fn authenticate_immutable_backing(
 /// Launched exact node with its retained directory and consumed root relation.
 #[must_use = "retain the launched node and its run-directory authority"]
 pub struct QemuProductionExactRestoreLaunch {
-    node: QemuNode,
+    node: crate::node::IssuedLaunchOwner,
     run_directory: QemuPreparedRunDirectory,
     target: crucible_engine::exact_checkpoint::ExactCheckpointVerifiedNode,
 }
@@ -423,12 +423,27 @@ impl QemuProductionExactRestoreLaunch {
     /// only after admitting that checkpoint as the live continuation.
     pub(crate) fn into_paused_parts(
         self,
-    ) -> (
-        QemuNode,
-        QemuPreparedRunDirectory,
-        crucible_engine::exact_checkpoint::ExactCheckpointVerifiedNode,
-    ) {
-        (self.node, self.run_directory, self.target)
+    ) -> Result<
+        (
+            QemuNode,
+            QemuPreparedRunDirectory,
+            crucible_engine::exact_checkpoint::ExactCheckpointVerifiedNode,
+        ),
+        QemuLiveNodeStepGateError,
+    > {
+        let node = self.node.into_node().map_err(|_retained| {
+            QemuLiveNodeStepGateError::ExactSnapshotInvariant {
+                reason: String::from("issued exact Node was not assembled before paused handoff"),
+            }
+        })?;
+        Ok((node, self.run_directory, self.target))
+    }
+
+    /// Returns the node before this same receiver retains the exact metadata.
+    pub(crate) fn retain_node_in_receiver(&mut self) {
+        // The receiver can retain these files and their root relation, but an
+        // issued guard strongly retaining that same receiver would form a cycle.
+        self.node.return_to_receiver();
     }
 
     /// Resumes a fully restored node under its retained exact relation.
@@ -445,8 +460,14 @@ impl QemuProductionExactRestoreLaunch {
     }
 
     /// Consumes a lifecycle launch while dropping its replay-only root proof.
-    pub fn into_node_and_run_directory(self) -> (QemuNode, QemuPreparedRunDirectory) {
-        (self.node, self.run_directory)
+    ///
+    /// # Errors
+    /// Retains an unexpected unassembled body in its original receiver.
+    pub fn into_node_and_run_directory(
+        self,
+    ) -> Result<(QemuNode, QemuPreparedRunDirectory), QemuLiveNodeStepGateError> {
+        self.into_paused_parts()
+            .map(|(node, run_directory, _target)| (node, run_directory))
     }
 
     pub(crate) fn into_running_parts(

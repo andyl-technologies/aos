@@ -766,16 +766,7 @@ pub(super) fn launch_guarded_source_placed(
         )?,
     ) {
         Ok(node) => node,
-        Err(mut error) => {
-            if let Some(owner) = error.take_retained_owner() {
-                return Err(QemuLiveNodeStepGateError::FailedCleanup {
-                    primary: Box::new(error),
-                    cleanup: crate::QemuNodeError::RamCleanupPending,
-                    retained_owner: Some(owner),
-                });
-            }
-            return Err(error);
-        }
+        Err(error) => return Err(error),
     };
     let source_vmstate_path = source_directory.path().join(DEFAULT_VMSTATE_FILE_NAME);
     Ok(GuardedSource {

@@ -77,7 +77,6 @@ impl NativeLaunchProgress {
 pub(super) enum FreshPreparationBody {
     Empty,
     Node(QemuNode),
-    Unexpected(crucible_qemu_host::QemuFailedLaunchOwner),
 }
 
 impl RetainedFreshPreparation {
@@ -171,18 +170,10 @@ impl RetainedFreshPreparation {
         };
     }
 
-    /// Keeps an unexpected actual body without issuing ordinary cleanup for it.
-    pub(super) fn retain_unexpected_owner(
-        &mut self,
-        error: &mut crucible_qemu_host::QemuLiveNodeStepGateError,
-    ) {
+    /// Retains uncertainty without inventing an owner outside its receiver.
+    pub(super) fn mark_unexpected_launch_failure(&mut self) {
         if self.native != NativeLaunchProgress::NotEntered {
             self.native = NativeLaunchProgress::Unresolved;
-        }
-        if matches!(self.body, FreshPreparationBody::Empty)
-            && let Some(owner) = error.take_retained_owner()
-        {
-            self.body = FreshPreparationBody::Unexpected(owner);
         }
     }
 
@@ -523,7 +514,7 @@ pub(super) const BIRTH: Companion = Companion {
                 });
             }
             let has_retained_owner = error.has_retained_owner();
-            preparation.retain_unexpected_owner(&mut error);
+            preparation.mark_unexpected_launch_failure();
             if has_retained_owner {
                 return Err(LifecycleApiError::BackendConstruction {
                     source: crucible_control_api::LifecycleBackendConstructionError::new(error),
@@ -562,14 +553,18 @@ pub(super) const NATIVE_RETURN: Companion = Companion {
     required: &[
         (
             r#"fn record(&self, primary: FreshLaunchCause, original_after: Option<HostSupervisionError>) {
-    let mut primary = primary;
-    let owner = match &mut primary {
-        FreshLaunchCause::Launch(first) => first.take_retained_owner(),
-        _ => None,
-    };
-    if let Some(owner) = owner { self.return_issued_owner(owner); }
-    let _ = self.primary.set(primary);
-    if let Some(after) = original_after { let _ = self.original_after.set(after); }
+        // The issued guard returns its actual body before publishing an error.
+        // Recording diagnostics never moves that body out of its prepaid cell.
+        let _ = self.primary.set(primary);
+        if let Some(after) = original_after {
+            let _ = self.original_after.set(after);
+        }
+    }"#,
+            1,
+        ),
+        (
+            r#"pub(crate) fn record_returned_cleanup_failure(&self, primary: QemuLiveNodeStepGateError) {
+    self.record(FreshLaunchCause::Launch(primary), None);
 }"#,
             1,
         ),
@@ -782,20 +777,45 @@ pub(super) const ISSUED_RETURN: Companion = Companion {
             1,
         ),
         (
-            r#"impl Drop for IssuedLaunchOwner {
-    fn drop(&mut self) {
-        if let Some(receiver) = &self.receiver {
+            r#"pub(crate) fn return_to_receiver(&mut self) {
+        if let Some(receiver) = self.receiver.take() {
             if let Some(body) = self.body.take() {
                 receiver.return_issued_owner(QemuFailedLaunchOwner {
                     body: Mutex::new(body),
                     source_cleanup: FailedSourceCleanup::Required(
-                        self.lender.clone().ok_or(
+                        self.lender.take().ok_or(
                             crate::linux_attempt_host::OriginalActorAccountError::Unavailable,
                         ),
                     ),
                 });
-            } else { receiver.finish_child_borrow(); }
+            } else {
+                receiver.finish_child_borrow();
+            }
         }
+    }"#,
+            1,
+        ),
+        (
+            r#"pub(crate) fn retain_cleanup_failure(
+        mut self,
+        primary: crate::QemuLiveNodeStepGateError,
+    ) -> crate::QemuLiveNodeStepGateError {
+        let receiver = self.receiver.clone();
+        self.return_to_receiver();
+        match receiver {
+            Some(source) => {
+                source.record_returned_cleanup_failure(primary);
+                crate::QemuLiveNodeStepGateError::OriginalNativeLaunch { source }
+            }
+            None => primary,
+        }
+    }"#,
+            1,
+        ),
+        (
+            r#"impl Drop for IssuedLaunchOwner {
+    fn drop(&mut self) {
+        self.return_to_receiver();
     }
 }"#,
             1,

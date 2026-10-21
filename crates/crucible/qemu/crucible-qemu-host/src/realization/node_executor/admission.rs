@@ -174,7 +174,7 @@ impl QemuReplayValidationExactAdmission {
                 source: crate::OriginalActorAccountError::Unavailable,
             })
             .and_then(|issuer| issuer.launch_exact_node(request))
-            .map(QemuProductionExactRestoreLaunch::into_paused_parts);
+            .and_then(QemuProductionExactRestoreLaunch::into_paused_parts);
         let result = result.map(|(node, run_directory, target)| {
             self.run_directory = Some(run_directory);
             self.target = Some(target);

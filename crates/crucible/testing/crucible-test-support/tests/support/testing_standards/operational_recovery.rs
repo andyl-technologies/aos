@@ -15,6 +15,9 @@ mod delivery;
 #[path = "operational_recovery/physical_cleanup.rs"]
 mod physical_cleanup;
 
+#[path = "operational_recovery/issued_return.rs"]
+mod issued_return;
+
 struct Contract {
     package: &'static str,
     target: &'static str,
@@ -280,13 +283,34 @@ const CONTRACTS: &[Contract] = &[
         package: "crucible-qemu-host",
         target: "src/supervision/node_step_gate",
         required: &[
-            r#"primary: Box::new(primary), cleanup, retained_owner: None,"#,
-            r#"primary: Box::new(primary), cleanup, retained_owner: Some(owner),"#,
+            r#"child.retain_cleanup_failure(QemuLiveNodeStepGateError::FailedCleanup {"#,
+            r#"return Err(reap_failed_live_node_child(owner, primary));"#,
         ],
         identifiers: &[],
         expressions: &[
             (physical_cleanup::ISSUED_FAILURE_SETTLEMENT, 1),
-            (physical_cleanup::FAILED_FAILURE_SETTLEMENT, 1),
+            (physical_cleanup::EXACT_RESUME_BOUNDARY, 1),
+        ],
+    },
+    Contract {
+        package: "crucible-qemu-host",
+        target: "src/node/failed_launch/issued/tests",
+        required: &[
+            "assert_eq!(owner.process_id(), Some(process_id));",
+            "assert!(!owner.child_reaped());",
+            "Err(QemuNodeError::RamCleanupPending)",
+            "assert!(owner.child_reaped());",
+            "if source.same_owner(&receiver)",
+            "assert_eq!(supervisor.operation_statuses()?.len(), before);",
+            "assert!(!receiver.retry_physical_cleanup());",
+            "assert!(unwind.is_err());",
+            "close_component_child(&receiver, process_id)?;",
+        ],
+        identifiers: &[],
+        expressions: &[
+            (issued_return::CHILD_CLEANUP, 1),
+            (issued_return::FAILURE_RETURN, 1),
+            (issued_return::UNWIND_RETURN, 1),
         ],
     },
     Contract {

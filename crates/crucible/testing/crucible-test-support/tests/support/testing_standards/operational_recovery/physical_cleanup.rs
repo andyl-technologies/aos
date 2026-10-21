@@ -230,25 +230,29 @@ pub(super) const ISSUED_FAILURE_SETTLEMENT: &str = r##"fn reap_failed_live_node_
 ) -> QemuLiveNodeStepGateError {
     match child.retry_cleanup() {
         Ok(()) => primary,
-        Err(cleanup) => QemuLiveNodeStepGateError::FailedCleanup {
+        Err(cleanup) => child.retain_cleanup_failure(QemuLiveNodeStepGateError::FailedCleanup {
             primary: Box::new(primary),
             cleanup,
-            retained_owner: None,
-        },
+        }),
     }
 }"##;
-
-/// Binds the complete failed failure settlement body.
-pub(super) const FAILED_FAILURE_SETTLEMENT: &str = r##"fn finish_failed_live_owner(
-    mut owner: crate::QemuFailedLaunchOwner,
-    primary: QemuLiveNodeStepGateError,
-) -> QemuLiveNodeStepGateError {
-    match owner.retry_cleanup() {
-        Ok(()) => primary,
-        Err(cleanup) => QemuLiveNodeStepGateError::FailedCleanup {
-            primary: Box::new(primary),
-            cleanup,
-            retained_owner: Some(owner),
-        },
+/// Binds exact resume to the same prebirth issued return route.
+pub(super) const EXACT_RESUME_BOUNDARY: &str = r##"pub(crate) fn resume_restored_exact_node(
+    mut owner: crate::node::IssuedLaunchOwner,
+) -> Result<QemuNode, QemuLiveNodeStepGateError> {
+    let result = owner
+        .node_mut()
+        .and_then(QemuNode::resume_after_restore);
+    if let Err(source) = result {
+        let primary = QemuLiveNodeStepGateError::Step {
+            operation: "resume repository-restored exact node",
+            source,
+        };
+        return Err(reap_failed_live_node_child(owner, primary));
     }
+    owner.into_node().map_err(
+        |_retained| QemuLiveNodeStepGateError::ExactSnapshotInvariant {
+            reason: String::from("issued exact Node was not assembled before resume handoff"),
+        },
+    )
 }"##;

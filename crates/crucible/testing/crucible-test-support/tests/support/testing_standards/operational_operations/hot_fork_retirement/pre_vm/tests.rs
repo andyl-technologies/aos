@@ -522,10 +522,10 @@ fn fresh_native_continuation_requires_actual_return_and_same_saved_cleanup()
             "unexpected entered return loses uncertainty",
         ),
         (
-            "retained_node.rs",
-            "self.body = FreshPreparationBody::Unexpected(owner);",
-            "drop(owner);",
-            "unexpected actual owner dropped",
+            "failed_launch/issued.rs",
+            "let receiver = self.receiver.clone(); self.return_to_receiver();",
+            "let receiver = self.receiver.clone();",
+            "actual returned body omitted before diagnostic publication",
         ),
         (
             "retained_node.rs",
@@ -625,9 +625,9 @@ fn fresh_native_continuation_requires_actual_return_and_same_saved_cleanup()
         ),
         (
             "fresh_generation.rs",
-            "preparation.retain_unexpected_owner(&mut error);",
+            "preparation.mark_unexpected_launch_failure();",
             "drop(error);",
-            "actual unrecognized returned body lost",
+            "unexpected launch uncertainty discarded",
         ),
         (
             "original_node.rs",
@@ -721,9 +721,21 @@ fn fresh_native_continuation_requires_actual_return_and_same_saved_cleanup()
         ),
         (
             "failed_launch/issued.rs",
-            "body: Mutex::new(body), source_cleanup: FailedSourceCleanup::Required(self.lender.clone().ok_or(crate::linux_attempt_host::OriginalActorAccountError::Unavailable,),),",
+            "body: Mutex::new(body), source_cleanup: FailedSourceCleanup::Required(self.lender.take().ok_or(crate::linux_attempt_host::OriginalActorAccountError::Unavailable,),),",
             "body: Mutex::new(body), source_cleanup: FailedSourceCleanup::Existing,",
             "unwind owner return invents ordinary cleanup fallback",
+        ),
+        (
+            "failed_launch/issued.rs",
+            "let receiver = self.receiver.clone(); self.return_to_receiver();",
+            "self.return_to_receiver(); let receiver = self.receiver.clone();",
+            "actual receiver identity discarded before error handoff",
+        ),
+        (
+            "failed_launch/issued.rs",
+            "if let Some(receiver) = self.receiver.take()",
+            "if let Some(receiver) = self.receiver.clone()",
+            "returned guard keeps a strong cycle to its recipient",
         ),
         (
             "process_purpose/source_cleanup.rs",

@@ -91,6 +91,20 @@ impl OriginalNativeFreshLaunchError {
         Self::prepare_body(origin, None)
     }
 
+    /// Creates only an unfunded component receiver, with no issued Source role.
+    #[cfg(test)]
+    pub(crate) fn component_receiver(
+        origin: &Arc<HostOperationGuard>,
+    ) -> RetainedNativeFreshLaunchError {
+        Self::prepare_unissued(origin)
+    }
+
+    /// Extracts a component's body for its explicit, independent test cleanup.
+    #[cfg(test)]
+    pub(crate) fn take_component_returned_owner(&self) -> Option<crate::QemuFailedLaunchOwner> {
+        self.node.try_lock().ok()?.owner.take()
+    }
+
     fn prepare_body(
         origin: &Arc<HostOperationGuard>,
         mut funding: Option<retained_error::LaunchControllerFunding>,
@@ -202,19 +216,17 @@ impl OriginalNativeFreshLaunchError {
     }
 
     fn record(&self, primary: FreshLaunchCause, original_after: Option<HostSupervisionError>) {
-        // Save the actual body before shared diagnostics expose the refusal.
-        let mut primary = primary;
-        let owner = match &mut primary {
-            FreshLaunchCause::Launch(first) => first.take_retained_owner(),
-            _ => None,
-        };
-        if let Some(owner) = owner {
-            self.return_issued_owner(owner);
-        }
+        // The issued guard returns its actual body before publishing an error.
+        // Recording diagnostics never moves that body out of its prepaid cell.
         let _ = self.primary.set(primary);
         if let Some(after) = original_after {
             let _ = self.original_after.set(after);
         }
+    }
+
+    /// Saves a failed cleanup after its issued guard returned the same body.
+    pub(crate) fn record_returned_cleanup_failure(&self, primary: QemuLiveNodeStepGateError) {
+        self.record(FreshLaunchCause::Launch(primary), None);
     }
 
     /// Continues the same held launch without replacing its saved Cleanup.
@@ -278,9 +290,10 @@ impl OriginalNativeFreshLaunchError {
     /// Retains the exact node, its directory and root relation on a late refusal.
     pub(crate) fn retain_exact_launch(
         &self,
-        launch: crate::QemuProductionExactRestoreLaunch,
+        mut launch: crate::QemuProductionExactRestoreLaunch,
         after: HostSupervisionError,
     ) {
+        launch.retain_node_in_receiver();
         let _ = self.primary.set(FreshLaunchCause::Binding(
             OriginalActorAccountError::Supervision(after),
         ));
