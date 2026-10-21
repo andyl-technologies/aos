@@ -227,6 +227,13 @@ impl IssuedLaunchOwner {
         }
     }
 
+    /// Retains only this guard's actual prebirth physical return recipient.
+    pub(crate) fn retained_receiver(
+        &self,
+    ) -> Option<crate::linux_attempt_host::RetainedNativeFreshLaunchError> {
+        self.receiver.clone()
+    }
+
     /// Moves only the successfully assembled Node to its next actual owner.
     pub(crate) fn into_node(mut self) -> Result<QemuNode, Self> {
         match self.body.take() {

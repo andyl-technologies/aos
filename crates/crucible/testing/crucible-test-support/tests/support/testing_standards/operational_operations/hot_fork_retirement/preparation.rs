@@ -6,9 +6,15 @@ use super::Companion;
 
 #[path = "preparation/native.rs"]
 mod native;
+#[path = "preparation/exact_artifacts.rs"]
+mod exact_artifacts;
 
 pub(super) const CUSTODY: Companion = native::CUSTODY;
 pub(super) const BIRTH: Companion = native::BIRTH;
+pub(super) const EXACT_HANDOFF: Companion = exact_artifacts::HANDOFF;
+pub(super) const EXACT_LAUNCH: Companion = exact_artifacts::LAUNCH;
+pub(super) const EXACT_ARTIFACTS: Companion = exact_artifacts::CONTRACT;
+
 pub(super) const NATIVE_RETURN: Companion = native::NATIVE_RETURN;
 pub(super) const NATIVE_OWNER: Companion = native::NATIVE_OWNER;
 pub(super) const ISSUED_RETURN: Companion = native::ISSUED_RETURN;

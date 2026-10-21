@@ -56,38 +56,39 @@ pub(super) const HELPER_CONTINUATION: &str = r##"pub fn retry_retained_helper(&s
 
 /// Binds the complete controller continuation body.
 pub(super) const CONTROLLER_CONTINUATION: &str = r##"pub fn retry_physical_cleanup(&self) -> bool {
-    if !self.retry_retained_helper() {
-        return false;
-    }
-    if self
-        .child_borrowed
-        .load(std::sync::atomic::Ordering::Acquire)
-    {
-        return false;
-    }
-    let Ok(mut retained) = self.node.try_lock() else {
-        return false;
-    };
-    let Some(owner) = retained.owner.as_mut() else {
-        return true;
-    };
-    match owner.retry_cleanup() {
-        Ok(()) => {
-            let returned = retained.owner.take();
+        if !self.retry_retained_helper() {
+            return false;
+        }
+        if self
+            .child_borrowed
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return false;
+        }
+        let Ok(mut retained) = self.node.try_lock() else {
+            return false;
+        };
+        let Some(owner) = retained.owner.as_mut() else {
             drop(retained);
-            drop(returned);
-            true
-        }
-        Err(first) => {
-            if retained.first_cleanup.is_none() {
-                retained.first_cleanup = Some(first);
-            } else if retained.latest_cleanup.as_ref() != Some(&first) {
-                retained.latest_cleanup = Some(first);
+            return self.exact_launch.close();
+        };
+        match owner.retry_cleanup() {
+            Ok(()) => {
+                let returned = retained.owner.take();
+                drop(retained);
+                drop(returned);
+                self.exact_launch.close()
             }
-            false
+            Err(first) => {
+                if retained.first_cleanup.is_none() {
+                    retained.first_cleanup = Some(first);
+                } else if retained.latest_cleanup.as_ref() != Some(&first) {
+                    retained.latest_cleanup = Some(first);
+                }
+                false
+            }
         }
-    }
-}"##;
+    }"##;
 
 /// Binds the complete issued continuation body.
 pub(super) const ISSUED_CONTINUATION: &str = r##"pub(crate) fn retry_cleanup(&mut self) -> Result<(), QemuNodeError> {
@@ -239,10 +240,8 @@ pub(super) const ISSUED_FAILURE_SETTLEMENT: &str = r##"fn reap_failed_live_node_
 /// Binds exact resume to the same prebirth issued return route.
 pub(super) const EXACT_RESUME_BOUNDARY: &str = r##"pub(crate) fn resume_restored_exact_node(
     mut owner: crate::node::IssuedLaunchOwner,
-) -> Result<QemuNode, QemuLiveNodeStepGateError> {
-    let result = owner
-        .node_mut()
-        .and_then(QemuNode::resume_after_restore);
+) -> Result<crate::node::IssuedLaunchOwner, QemuLiveNodeStepGateError> {
+    let result = owner.node_mut().and_then(QemuNode::resume_after_restore);
     if let Err(source) = result {
         let primary = QemuLiveNodeStepGateError::Step {
             operation: "resume repository-restored exact node",
@@ -250,9 +249,5 @@ pub(super) const EXACT_RESUME_BOUNDARY: &str = r##"pub(crate) fn resume_restored
         };
         return Err(reap_failed_live_node_child(owner, primary));
     }
-    owner.into_node().map_err(
-        |_retained| QemuLiveNodeStepGateError::ExactSnapshotInvariant {
-            reason: String::from("issued exact Node was not assembled before resume handoff"),
-        },
-    )
+    Ok(owner)
 }"##;

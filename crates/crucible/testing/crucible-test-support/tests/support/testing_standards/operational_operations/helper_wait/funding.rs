@@ -160,7 +160,9 @@ pub(super) const ORIGINAL: Companion = Companion {
     helper: Mutex<helper_receiver::HelperDebt>,
     source_host: Option<retained_error::LaunchControllerFunding>,
     helper_first: OnceLock<crate::QemuIssuedHelperFailure>,
-    exact_launch: Mutex<Option<crate::QemuProductionExactRestoreLaunch>>,
+    exact_launch: exact_artifacts::ExactArtifactCell<
+        crate::supervision::exact_restore::QemuExactRestoreArtifacts,
+    >,
     workspace: Mutex<Option<crate::spawn::OriginalDeviceDigestWorkspace>>,
 }"#,
             1,
@@ -195,7 +197,7 @@ pub(super) const ORIGINAL: Companion = Companion {
             helper: Mutex::new(helper),
             source_host: funding,
             helper_first: OnceLock::new(),
-            exact_launch: Mutex::new(None),
+            exact_launch: exact_artifacts::ExactArtifactCell::default(),
             workspace: Mutex::new(None),
         })
     }"#,

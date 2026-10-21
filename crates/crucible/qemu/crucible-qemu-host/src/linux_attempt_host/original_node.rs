@@ -7,6 +7,7 @@
 #[cfg(feature = "private-measurement-domain")]
 use std::io;
 
+mod exact_artifacts;
 mod helper_receiver;
 pub use helper_receiver::QemuIssuedHelperHistory;
 pub(super) mod retained_error;
@@ -65,7 +66,9 @@ pub struct OriginalNativeFreshLaunchError {
     helper: Mutex<helper_receiver::HelperDebt>,
     source_host: Option<retained_error::LaunchControllerFunding>,
     helper_first: OnceLock<crate::QemuIssuedHelperFailure>,
-    exact_launch: Mutex<Option<crate::QemuProductionExactRestoreLaunch>>,
+    exact_launch: exact_artifacts::ExactArtifactCell<
+        crate::supervision::exact_restore::QemuExactRestoreArtifacts,
+    >,
     workspace: Mutex<Option<crate::spawn::OriginalDeviceDigestWorkspace>>,
 }
 
@@ -125,7 +128,7 @@ impl OriginalNativeFreshLaunchError {
             helper: Mutex::new(helper),
             source_host: funding,
             helper_first: OnceLock::new(),
-            exact_launch: Mutex::new(None),
+            exact_launch: exact_artifacts::ExactArtifactCell::default(),
             workspace: Mutex::new(None),
         })
     }
@@ -248,14 +251,15 @@ impl OriginalNativeFreshLaunchError {
             return false;
         };
         let Some(owner) = retained.owner.as_mut() else {
-            return true;
+            drop(retained);
+            return self.exact_launch.close();
         };
         match owner.retry_cleanup() {
             Ok(()) => {
                 let returned = retained.owner.take();
                 drop(retained);
                 drop(returned);
-                true
+                self.exact_launch.close()
             }
             Err(first) => {
                 if retained.first_cleanup.is_none() {
@@ -284,24 +288,42 @@ impl OriginalNativeFreshLaunchError {
         let Ok(retained) = self.node.try_lock() else {
             return false;
         };
-        retained.owner.is_none()
+        retained.owner.is_none() && self.exact_launch.returned()
     }
 
     /// Retains the exact node, its directory and root relation on a late refusal.
     pub(crate) fn retain_exact_launch(
         &self,
-        mut launch: crate::QemuProductionExactRestoreLaunch,
+        launch: crate::QemuProductionExactRestoreLaunch,
         after: HostSupervisionError,
     ) {
-        launch.retain_node_in_receiver();
+        drop(launch);
         let _ = self.primary.set(FreshLaunchCause::Binding(
             OriginalActorAccountError::Supervision(after),
         ));
         let _ = self.original_after.set(after);
-        *self
-            .exact_launch
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(launch);
+    }
+
+    /// Keeps artifact return pending while the same launch guard holds its files.
+    pub(crate) fn reserve_exact_artifact_transfer(&self) -> bool {
+        self.exact_launch.reserve_transfer()
+    }
+
+    /// Hands those exact files to their successful next external owner.
+    pub(crate) fn finish_exact_artifact_transfer(&self) -> bool {
+        self.exact_launch.finish_transfer()
+    }
+
+    /// Retains actual pinned restore files in this same prebirth controller.
+    pub(crate) fn retain_exact_artifacts(
+        &self,
+        artifacts: crate::supervision::exact_restore::QemuExactRestoreArtifacts,
+    ) {
+        if let Err(artifacts) = self.exact_launch.retain(artifacts) {
+            // Duplicate delivery permanently quarantines the original cell.
+            // Retain this additional body as well; neither can certify closure.
+            std::mem::forget(artifacts);
+        }
     }
 
     /// Borrows the independent same-original refusal after the initiating cut.
@@ -386,14 +408,6 @@ impl Drop for OriginalNativeFreshLaunchError {
             // physical owner remains responsible for the child; the outstanding
             // witness deliberately prevents vector/control credit reuse.
             std::mem::forget(node);
-        }
-        if let Some(launch) = self
-            .exact_launch
-            .get_mut()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take()
-        {
-            std::mem::forget(launch);
         }
     }
 }

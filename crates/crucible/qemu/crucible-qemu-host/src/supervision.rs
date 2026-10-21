@@ -10,7 +10,7 @@ mod block_io_servicer;
 pub(crate) mod bounded_scheduler_preemption;
 mod deadline;
 mod device_host_work;
-mod exact_restore;
+pub(crate) mod exact_restore;
 pub(crate) mod host_io_runtime;
 mod ninep_io_servicer;
 mod node_step_gate;

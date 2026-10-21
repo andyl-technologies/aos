@@ -2110,7 +2110,7 @@ fn complete_host_setup_or_reap<T>(
 
 pub(crate) fn resume_restored_exact_node(
     mut owner: crate::node::IssuedLaunchOwner,
-) -> Result<QemuNode, QemuLiveNodeStepGateError> {
+) -> Result<crate::node::IssuedLaunchOwner, QemuLiveNodeStepGateError> {
     let result = owner.node_mut().and_then(QemuNode::resume_after_restore);
     if let Err(source) = result {
         let primary = QemuLiveNodeStepGateError::Step {
@@ -2119,11 +2119,7 @@ pub(crate) fn resume_restored_exact_node(
         };
         return Err(reap_failed_live_node_child(owner, primary));
     }
-    owner.into_node().map_err(
-        |_retained| QemuLiveNodeStepGateError::ExactSnapshotInvariant {
-            reason: String::from("issued exact Node was not assembled before resume handoff"),
-        },
-    )
+    Ok(owner)
 }
 
 #[path = "node_step_gate/support.rs"]

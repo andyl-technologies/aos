@@ -569,6 +569,66 @@ pub(super) const NATIVE_RETURN: Companion = Companion {
             1,
         ),
         (
+            r#"pub(crate) fn retain_exact_launch(
+        &self,
+        launch: crate::QemuProductionExactRestoreLaunch,
+        after: HostSupervisionError,
+    ) {
+        drop(launch);
+        let _ = self.primary.set(FreshLaunchCause::Binding(
+            OriginalActorAccountError::Supervision(after),
+        ));
+        let _ = self.original_after.set(after);
+    }"#,
+            1,
+        ),
+        (
+            r#"pub(crate) fn retain_exact_artifacts(
+        &self,
+        artifacts: crate::supervision::exact_restore::QemuExactRestoreArtifacts,
+    ) {
+        if let Err(artifacts) = self.exact_launch.retain(artifacts) {
+            // Duplicate delivery permanently quarantines the original cell.
+            // Retain this additional body as well; neither can certify closure.
+            std::mem::forget(artifacts);
+        }
+    }"#,
+            1,
+        ),
+        (
+            r#"pub(super) fn physical_owners_returned(&self) -> bool {
+        if self
+            .child_borrowed
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return false;
+        }
+        let Ok(helper) = self.helper.try_lock() else {
+            return false;
+        };
+        if helper.child.is_some() {
+            return false;
+        }
+        let Ok(retained) = self.node.try_lock() else {
+            return false;
+        };
+        retained.owner.is_none() && self.exact_launch.returned()
+    }"#,
+            1,
+        ),
+        (
+            r#"pub(crate) fn reserve_exact_artifact_transfer(&self) -> bool {
+        self.exact_launch.reserve_transfer()
+    }"#,
+            1,
+        ),
+        (
+            r#"pub(crate) fn finish_exact_artifact_transfer(&self) -> bool {
+        self.exact_launch.finish_transfer()
+    }"#,
+            1,
+        ),
+        (
             r#"pub(crate) fn reserve_child_owner(
     &self,
     lender: super::SourceCleanupLender,
@@ -618,26 +678,39 @@ pub(crate) fn return_issued_owner(&self, owner: crate::QemuFailedLaunchOwner) {
         ),
         (
             r#"pub fn retry_physical_cleanup(&self) -> bool {
-    if !self.retry_retained_helper() { return false; }
-    if self.child_borrowed.load(std::sync::atomic::Ordering::Acquire) { return false; }
-    let Ok(mut retained) = self.node.try_lock() else { return false; };
-    let Some(owner) = retained.owner.as_mut() else { return true; };
-    match owner.retry_cleanup() {
-        Ok(()) => {
-            let returned = retained.owner.take();
+        if !self.retry_retained_helper() {
+            return false;
+        }
+        if self
+            .child_borrowed
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return false;
+        }
+        let Ok(mut retained) = self.node.try_lock() else {
+            return false;
+        };
+        let Some(owner) = retained.owner.as_mut() else {
             drop(retained);
-            drop(returned);
-            true
-        }
-        Err(first) => {
-            if retained.first_cleanup.is_none() { retained.first_cleanup = Some(first); }
-            else if retained.latest_cleanup.as_ref() != Some(&first) {
-                retained.latest_cleanup = Some(first);
+            return self.exact_launch.close();
+        };
+        match owner.retry_cleanup() {
+            Ok(()) => {
+                let returned = retained.owner.take();
+                drop(retained);
+                drop(returned);
+                self.exact_launch.close()
             }
-            false
+            Err(first) => {
+                if retained.first_cleanup.is_none() {
+                    retained.first_cleanup = Some(first);
+                } else if retained.latest_cleanup.as_ref() != Some(&first) {
+                    retained.latest_cleanup = Some(first);
+                }
+                false
+            }
         }
-    }
-}"#,
+    }"#,
             1,
         ),
         (

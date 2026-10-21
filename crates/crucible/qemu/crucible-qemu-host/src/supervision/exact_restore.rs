@@ -19,6 +19,10 @@ use crate::{
     QemuLiveNodeStepGateError, QemuNode, QemuPreparedRunDirectory, QemuVmSnapshot,
 };
 
+mod artifacts;
+pub(crate) use artifacts::QemuExactRestoreArtifacts;
+use artifacts::IssuedExactRestoreArtifacts;
+
 use super::node_step_gate::{
     AtomicExactRestoreAdmission, launch_atomic_exact_restore, resume_restored_exact_node,
 };
@@ -307,11 +311,8 @@ impl QemuProductionExactRestoreRequest {
                 )?;
                 let (node, target) =
                     launch_atomic_exact_restore(&config, admission, false, binding, workspace)?;
-                Ok(QemuProductionExactRestoreLaunch {
-                    node,
-                    run_directory,
-                    target,
-                })
+                let artifacts = IssuedExactRestoreArtifacts::new(&node, run_directory, target)?;
+                Ok(QemuProductionExactRestoreLaunch { node, artifacts })
             },
             |launch, refusal, after| refusal.retain_exact_launch(launch, after),
         )
@@ -408,11 +409,15 @@ fn authenticate_immutable_backing(
 }
 
 /// Launched exact node with its retained directory and consumed root relation.
+///
+/// Abandonment returns the actual process and files to their existing receiver.
+/// Its reserved artifact cell prevents a process return from racing file return.
 #[must_use = "retain the launched node and its run-directory authority"]
 pub struct QemuProductionExactRestoreLaunch {
+    // Field order returns the process before its artifacts; the occupied
+    // artifact cell prevents an interim process return from certifying closure.
     node: crate::node::IssuedLaunchOwner,
-    run_directory: QemuPreparedRunDirectory,
-    target: crucible_engine::exact_checkpoint::ExactCheckpointVerifiedNode,
+    artifacts: IssuedExactRestoreArtifacts,
 }
 
 impl QemuProductionExactRestoreLaunch {
@@ -431,19 +436,7 @@ impl QemuProductionExactRestoreLaunch {
         ),
         QemuLiveNodeStepGateError,
     > {
-        let node = self.node.into_node().map_err(|_retained| {
-            QemuLiveNodeStepGateError::ExactSnapshotInvariant {
-                reason: String::from("issued exact Node was not assembled before paused handoff"),
-            }
-        })?;
-        Ok((node, self.run_directory, self.target))
-    }
-
-    /// Returns the node before this same receiver retains the exact metadata.
-    pub(crate) fn retain_node_in_receiver(&mut self) {
-        // The receiver can retain these files and their root relation, but an
-        // issued guard strongly retaining that same receiver would form a cycle.
-        self.node.return_to_receiver();
+        self.artifacts.into_parts(self.node)
     }
 
     /// Resumes a fully restored node under its retained exact relation.
@@ -480,8 +473,10 @@ impl QemuProductionExactRestoreLaunch {
         ),
         QemuLiveNodeStepGateError,
     > {
-        let node = resume_restored_exact_node(self.node)?;
-        Ok((node, self.run_directory, self.target))
+        match resume_restored_exact_node(self.node) {
+            Ok(owner) => self.artifacts.into_parts(owner),
+            Err(error) => Err(self.artifacts.retain_failure(error)),
+        }
     }
 }
 

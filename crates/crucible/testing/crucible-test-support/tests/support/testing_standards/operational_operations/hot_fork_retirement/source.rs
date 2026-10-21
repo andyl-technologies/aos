@@ -12,6 +12,10 @@ pub(super) const PRE_VM_ALLOCATION: Companion = preparation::ALLOCATION;
 pub(super) const PRE_VM_RECEIVER: Companion = preparation::RECEIVER;
 pub(super) const PRE_VM_HELPER_RETURN: Companion = preparation::HELPER_RETURN;
 pub(super) const PRE_VM_LENDER: Companion = preparation::LENDER;
+pub(super) const PRE_VM_EXACT_HANDOFF: Companion = preparation::EXACT_HANDOFF;
+pub(super) const PRE_VM_EXACT_LAUNCH: Companion = preparation::EXACT_LAUNCH;
+pub(super) const PRE_VM_EXACT_ARTIFACTS: Companion = preparation::EXACT_ARTIFACTS;
+
 pub(super) const PRE_VM_NATIVE_RETURN: Companion = preparation::NATIVE_RETURN;
 pub(super) const PRE_VM_NATIVE_OWNER: Companion = preparation::NATIVE_OWNER;
 pub(super) const PRE_VM_ISSUED_RETURN: Companion = preparation::ISSUED_RETURN;
@@ -219,30 +223,12 @@ pub(super) const REQUIRED: &[(&str, usize)] = &[
 }"#,
         1,
     ),
-    (
-        r#"cleanup.wait_slice()"#,
-        6,
-    ),
-    (
-        r#"state.shutdown_attempted = true;"#,
-        1,
-    ),
-    (
-        r#"state.body_closed = true;"#,
-        1,
-    ),
-    (
-        r#"HostOperationSupervisor::new("#,
-        0,
-    ),
-    (
-        r#"begin_original_cleanup_control("#,
-        0,
-    ),
-    (
-        r#"Instant::now("#,
-        0,
-    ),
+    (r#"cleanup.wait_slice()"#, 6),
+    (r#"state.shutdown_attempted = true;"#, 1),
+    (r#"state.body_closed = true;"#, 1),
+    (r#"HostOperationSupervisor::new("#, 0),
+    (r#"begin_original_cleanup_control("#, 0),
+    (r#"Instant::now("#, 0),
 ];
 
 pub(super) const CONTRACT: Contract = Contract {
@@ -254,21 +240,9 @@ pub(super) const CONTRACT: Contract = Contract {
             r#"pub fn retry(&mut self) -> Result<crucible_control_api::ProductionVmCleanupStage, LifecycleApiError>"#,
             1,
         ),
-        (
-            r#"self.handoff.retry()"#,
-            1,
-        ),
+        (r#"self.handoff.retry()"#, 1),
     ],
-    identifiers: &[
-        (
-            r#"retry"#,
-            2,
-        ),
-        (
-            r#"retry_source_retirement_body"#,
-            1,
-        ),
-    ],
+    identifiers: &[(r#"retry"#, 2), (r#"retry_source_retirement_body"#, 1)],
     companions: &[
         Companion {
             path: "crates/crucible/control/crucible-daemon/src/lifecycle_cleanup/post_body.rs",
@@ -354,18 +328,16 @@ pub(super) const CONTRACT: Contract = Contract {
         },
         Companion {
             path: "crates/crucible/host/crucible-host-resources/src/host_services/process_birth/executor_purpose/native_pool.rs",
-            required: &[
-                (
-                    r#"pub fn retained_cleanup(&self) -> Result<Arc<HostOperationGuard>, ServiceBirthError> {
+            required: &[(
+                r#"pub fn retained_cleanup(&self) -> Result<Arc<HostOperationGuard>, ServiceBirthError> {
     self.held
         .ledger
         .lock()
         .map_err(|_| ServiceBirthError::policy("native World Cleanup ledger is uncertain"))?
         .retained_cleanup(self.epoch)
 }"#,
-                    1,
-                ),
-            ],
+                1,
+            )],
         },
         Companion {
             path: "crates/crucible/host/crucible-host-resources/src/host_services/process_birth/executor_purpose/native_pool/ledger.rs",
@@ -591,6 +563,9 @@ pub(super) const CONTRACT: Contract = Contract {
         super::super::host_physical_custody::SOURCE_CLEANUP,
         super::super::host_physical_custody::SOURCE_ORIGINAL,
         preparation::NATIVE_RETURN,
+        preparation::EXACT_ARTIFACTS,
+        preparation::EXACT_HANDOFF,
+        preparation::EXACT_LAUNCH,
         preparation::NATIVE_OWNER,
         preparation::ISSUED_RETURN,
         preparation::NATIVE_ISSUER,
