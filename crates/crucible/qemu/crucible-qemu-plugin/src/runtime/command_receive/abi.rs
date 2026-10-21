@@ -42,9 +42,10 @@ pub(super) struct Status {
     pub(super) terminal_uncertain: u32,
 }
 
-/// Holds only the nine genuine physical member/receive entry points.
+/// Holds the genuine physical member, receive and delivery entry points.
 #[derive(Clone, Copy)]
 pub(super) struct Api {
+    pub(super) delivery: super::delivery::Api,
     pub(super) member_create:
         extern "C" fn(u64, *mut NativeComponent, Reader, Writer, *mut *mut Member) -> i32,
     pub(super) member_transfer: extern "C" fn(u64, *mut *mut Member, *mut *mut Member) -> i32,
@@ -87,6 +88,7 @@ impl Api {
             }};
         }
         Ok(Self {
+            delivery: super::delivery::Api::resolve()?,
             member_create: entry!(
                 c"qemu_plugin_crucible_startup_source_command_member_create_v2",
                 extern "C" fn(u64, *mut NativeComponent, Reader, Writer, *mut *mut Member) -> i32

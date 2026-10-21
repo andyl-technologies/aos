@@ -176,6 +176,7 @@ extern "C" fn receive_return(_: u64, field: *mut *mut Receive, _: u64) -> i32 {
 
 fn api() -> Api {
     Api {
+        delivery: super::delivery::model_api(),
         member_create,
         member_transfer,
         member_current,
@@ -220,9 +221,12 @@ fn received_zero_facts_survive_negative_post_and_never_reenter_creation() {
     assert_eq!(observed.status, -libc::EAGAIN);
     assert_eq!(observed.facts.map(|facts| facts.control_sequence), Some(0));
     assert_eq!(keeper.progress.request_received, 1);
+    assert_eq!(super::delivery::model_calls(), (1, 1, 0));
     assert!(keeper.identity_return().is_err());
+    assert_eq!(super::delivery::model_calls(), (1, 1, 1));
     assert_eq!(keeper.serial, 19);
     assert_eq!(keeper.ready_facts().status, -libc::EAGAIN);
+    assert_eq!(super::delivery::model_calls(), (1, 1, 1));
 
     CUTS.with_borrow(|cuts| {
         assert_eq!(cuts.creates, 1);

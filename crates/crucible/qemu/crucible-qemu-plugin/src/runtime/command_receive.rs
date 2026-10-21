@@ -12,6 +12,7 @@ use crate::StartupSourceError;
 use std::cell::UnsafeCell;
 
 mod abi;
+mod delivery;
 use abi::{Api, Member, Reader, Receive, Status, Writer};
 
 /// Retains the same physical member/receive graph inside the paid pinned Runtime.
@@ -30,6 +31,7 @@ pub(super) struct CommandReceive {
     serial: u64,
     receive_attempted: bool,
     receive_transfer_attempted: bool,
+    delivery: delivery::Delivery,
     facts: Option<ControlIntentFacts>,
     progress: ReceiveProgress,
     journal: Status,
@@ -53,6 +55,7 @@ impl CommandReceive {
             serial: 0,
             receive_attempted: false,
             receive_transfer_attempted: false,
+            delivery: delivery::Delivery::new(),
             facts: None,
             progress: ReceiveProgress {
                 first_status: 0,
@@ -164,7 +167,8 @@ impl CommandReceive {
                     self.first_status
                 }));
             }
-            return native_status((api.receive_current)(self.id, self.receive, self.serial));
+            native_status((api.receive_current)(self.id, self.receive, self.serial))?;
+            return self.retain_delivery(api);
         }
         native_status((api.member_current)(self.id, self.member))?;
         // A prior no-request loan can be replaced only after actual Source
@@ -203,13 +207,32 @@ impl CommandReceive {
         } else {
             Err(status_error(-libc::ESTALE))
         };
+        // Preserve actual delivery custody before interpreting any independent
+        // receive failure. Source checks the real receipt graph; these copied
+        // progress fields can only gate an attempt, never issue its owner.
+        let delivery = self.retain_delivery(api);
+        if let Err(StartupSourceError::NativeStatus { status }) = &delivery {
+            self.record(*status);
+        }
         native_status(first)?;
         observation?;
         transfer?;
+        delivery?;
         if !self.receive_creation.is_null() {
             return Err(status_error(-libc::EPROTO));
         }
         native_status((api.receive_current)(self.id, self.receive, self.serial))
+    }
+
+    fn retain_delivery(&mut self, api: Api) -> Result<(), StartupSourceError> {
+        if self.progress.request_received != 1 {
+            return Ok(());
+        }
+        if self.receive.is_null() || self.serial == 0 {
+            return Err(status_error(-libc::EPROTO));
+        }
+        self.delivery
+            .retain(api.delivery, self.id, self.receive, self.serial)
     }
 
     /// Reports retained copied facts even when the actual receiving post refused.
@@ -252,6 +275,7 @@ impl CommandReceive {
         if self.receive.is_null() || self.serial == 0 {
             return Err(status_error(-libc::ESTALE));
         }
+        self.delivery.identity_return(api.delivery, self.id)?;
         let canonical = self.receive_transfer_attempted && self.receive_creation.is_null();
         let field = if canonical {
             self.receive_holder.get()
@@ -268,6 +292,7 @@ impl CommandReceive {
         self.serial = 0;
         self.receive_attempted = false;
         self.receive_transfer_attempted = false;
+        self.delivery = delivery::Delivery::new();
         Ok(())
     }
 
