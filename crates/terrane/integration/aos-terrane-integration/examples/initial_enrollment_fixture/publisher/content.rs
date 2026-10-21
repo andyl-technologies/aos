@@ -179,6 +179,10 @@ pub(super) async fn exercise_sealed(store: &NativeContentStore) -> io::Result<()
     use terrane_linux::host_cache::NativePreparedObject;
     use terrane_sdk::host::cache::ReassemblyMode;
 
+    // The supervisor waits on the original persisted consumer-grace deadlines.
+    // Only the resumed physical owner may reconcile and remove those promises.
+    store.ready().owner().sweep_consumer_leases().await?;
+    println!("INLINE_SEAL_STAGE original expired consumer grants reconciled");
     let identity = TERRANE_V1
         .calculate(IdentityKind::Chunk, &[])
         .map_err(io::Error::other)?;
@@ -196,9 +200,34 @@ pub(super) async fn exercise_sealed(store: &NativeContentStore) -> io::Result<()
     assert!(object.handle().write_at(b"forbidden", 0).is_err());
     assert_eq!(object.handle().metadata()?.len(), 0);
 
+    println!(
+        "INLINE_SEAL_STAGE actual empty sealed publication verified; completing cache handoff"
+    );
     let report = object.into_cache().await.map_err(io::Error::other)?;
     assert_eq!(report.released_source_admissions, 0);
-    assert!(report.release_grace_ends_at > 0);
+    let state = terrane_sdk::host::cache::CacheState::load(
+        &terrane_sdk::store::TokioLocalFs,
+        &store.ready().layout().layout().root().join("state/cache"),
+        terrane_sdk::host::cache::StateLimits {
+            bytes: 65536,
+            records: 64,
+        },
+    )
+    .await
+    .map_err(io::Error::other)?
+    .ok_or_else(|| io::Error::other("inline handoff lost its durable snapshot"))?;
+    let hash: String = identity
+        .digest()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    assert!(state.leases.iter().any(|lease| {
+        lease.owner.starts_with("publication-grace:")
+            && lease.expires == report.release_grace_ends_at
+            && state.pins.iter().any(|pin| {
+                pin.owner == lease.owner && pin.hash == hash && pin.expires == lease.expires
+            })
+    }));
     println!(
         "PASS actual never-mode inline object is a read-only fs-verity inode with genuine completed cache handoff"
     );

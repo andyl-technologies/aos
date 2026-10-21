@@ -4,7 +4,10 @@
 //! checks its registered job and obtains real publisher final-removal replies;
 //! elapsed time never acknowledges cleanup or releases durable protection.
 
-use super::{NativeCacheHandoffReport, NativeInlinePublication, NativeManifestPublication};
+use super::{
+    NativeCacheHandoffError, NativeCacheHandoffReport, NativeInlinePublication,
+    NativeManifestPublication,
+};
 use crate::host_cache::NativeMetadataOwner;
 use std::{io, time::Duration};
 use terrane_sdk::store::{Clock, TokioClock};
@@ -50,7 +53,7 @@ impl NativeInlinePublication {
         self.close_resident_reads(owner).await?;
         wait(self.completion.cleanup_not_before).await?;
         self.finish_retired_sources(owner).await?;
-        self.into_cache(owner).await.map_err(io::Error::other)
+        self.into_cache(owner).await.map_err(handoff_failure)
     }
 }
 
@@ -74,6 +77,15 @@ impl NativeManifestPublication {
         self.close_resident_reads(owner).await?;
         wait(self.completion.cleanup_not_before).await?;
         self.finish_retired_sources(owner).await?;
-        self.into_cache(owner).await.map_err(io::Error::other)
+        self.into_cache(owner).await.map_err(handoff_failure)
+    }
+}
+
+fn handoff_failure<P>(failure: NativeCacheHandoffError<P>) -> io::Error {
+    // Preserve the original typed policy/I/O refusal for the ContentStore boundary.
+    // Dropping an unsubmitted receipt does not drop its registered physical job.
+    match failure {
+        NativeCacheHandoffError::Unsubmitted { error, .. }
+        | NativeCacheHandoffError::Accepted(error) => error,
     }
 }

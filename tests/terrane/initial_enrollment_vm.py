@@ -211,6 +211,7 @@ def configured_publication():
         require(sealed_snapshot() == sealed_before,
                 "chunked object reads changed the original sealed namespace")
         print("PASS root observed unchanged original sealed inodes across native chunked object reads", flush=True)
+        wait_released_consumer_grace()
         run_case("seal-public-private", role_command("seal-public-private", 840, [844, 845]))
         sealed_after = sealed_snapshot()
         before_paths = {(row[0], row[1]): row for row in sealed_before}
