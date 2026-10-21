@@ -214,9 +214,9 @@ fn actual_locked_payload_borrow_refuses_return_without_consumption() {
     fixture
         .reader
         .with_pending_request(|_| {
-            // SAFETY: this exact field stays live. The actual held journal lock
-            // must refuse destruction until its genuine borrower has returned.
             assert_eq!(
+                // SAFETY: this exact field stays live. The actual held journal
+                // lock must refuse destruction until its borrower has returned.
                 unsafe {
                     fixture
                         .reader

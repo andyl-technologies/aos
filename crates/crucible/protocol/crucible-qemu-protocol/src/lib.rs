@@ -1263,7 +1263,7 @@ fn preexec_socket_identity(socket: RawFd) -> Result<(u64, u64), DescriptorHandov
             reason: "pre-exec handover requires its retained socket",
         });
     }
-    // Native stat scalar widths differ across the supported Unix targets.
+    // crucible-lint: allow rust-allow -- native stat scalar widths differ across supported Unix targets; both authenticated identities use the protocol u64 width.
     #[allow(clippy::unnecessary_cast)]
     let identity = (status.st_dev as u64, status.st_ino as u64);
     Ok(identity)
