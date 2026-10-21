@@ -106,7 +106,7 @@
           name = "native-host-cache-${name}";
           requirements = "HOST-23/HOST-31 native host owner proof";
         };
-      }) ["image" "native" "reassembly"]);
+      }) ["image" "native"]);
 
   # Transport components qualify actual peer and native command behavior,
   # independently of complete cache recovery or host-tier readiness.
@@ -134,7 +134,7 @@
           name = "initial-enrollment-${name}";
           requirements = "HOST-23/DOM-12 fresh native enrollment component";
         };
-      }) ["image" "native"]);
+      }) ["image" "native" "reassembly"]);
 
   algebraFormatVectors = import ./algebra-models.nix {inherit sourceGate;};
 
@@ -349,7 +349,7 @@
           // lib.optionalAttrs (builtins.elem file ["host-publish.nix" "surfaces.nix"]) {inherit sourceGateWithInputs;}
           // lib.optionalAttrs (builtins.elem file ["bucket.nix" "ref_advance.nix"]) {inherit bucketSdkGate;}
           // lib.optionalAttrs (file == "pack.nix") {inherit defaultSdkGate;}
-          // lib.optionalAttrs (file == "host-publish.nix") {inherit publisherLocalProof hostCacheProof moduleEval;}
+          // lib.optionalAttrs (file == "host-publish.nix") {inherit publisherLocalProof hostCacheProof initialEnrollmentProof moduleEval;}
         );
         duplicates = builtins.filter (name: builtins.hasAttr name accumulated) (builtins.attrNames added);
       in

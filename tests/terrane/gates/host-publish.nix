@@ -6,6 +6,7 @@
   nativeSdkGate,
   publisherLocalProof,
   hostCacheProof,
+  initialEnrollmentProof,
   moduleEval,
   ...
 }: let
@@ -185,6 +186,11 @@
             mkdir -p "$out"
             test -e ${portable}/ordering.log
             test -e ${native}
+            # The original fixture proves kernel ordering. These separate VMs
+            # also require real configured cache recovery and completed native
+            # handoff for inline, multi-chunk and direct single-chunk objects.
+            test -e ${initialEnrollmentProof.native}
+            test -e ${initialEnrollmentProof.reassembly}
             python3 - ${image} ${pkgs.terrane.src} <<'PYIDENTITY'
             import hashlib
             import json
@@ -225,7 +231,7 @@
                 if hashlib.sha256((image / "lib" / name).read_bytes()).hexdigest() != digest:
                     raise SystemExit("native publication runtime library hash mismatch")
             PYIDENTITY
-            printf '%s\n' '${name}: portable ordering and disk-backed kernel proof passed' > "$out/result"
+            printf '%s\n' '${name}: portable ordering, kernel publication, configured recovery and native reassembly handoff passed' > "$out/result"
           '';
         }
       ];
