@@ -318,6 +318,7 @@ in
       ./patches/0033-controller-prepaid-recipient-range.patch
       ./patches/0034-resource-enrollment-startup-diagnostics.patch
       ./patches/0035-merged-usr-immutable-image-paths.patch
+      ./patches/0036-select-sandbox-resource-unit-families.patch
     ];
 
     buildDeps = [
@@ -373,6 +374,7 @@ in
       {
         name = "patch-source";
         script = ''
+          cp ${./aos-resource-unit-name.h} src/core/aos-resource-unit-name.h
           nativePython=$(command -v python3)
 
           # kernel-install and its complete plugin set live with ukify in the
