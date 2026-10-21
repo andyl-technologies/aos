@@ -77,6 +77,7 @@ in
     checkType = "debug";
     cargoTestFlags = "--no-default-features --features aos-sandbox-services/mount -p aos-sandbox-services -p aos-sandbox-mount -p aos-sandbox-mount-native";
     cargoNextest = true;
+    cargoNextestProfile = "nix-sandbox";
     doCheck = true;
     buildDeps = [buildProtobuf elfutils];
     runtimeDeps = [];

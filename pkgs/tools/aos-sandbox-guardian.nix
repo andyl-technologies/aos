@@ -56,6 +56,7 @@ in
     cargoFlags = "-p aos-sandbox-guardian --bin aos-sandbox-guardian";
     cargoTestFlags = "-p aos-sandbox-guardian";
     cargoNextest = true;
+    cargoNextestProfile = "nix-sandbox";
     doCheck = true;
     buildDeps = [];
     runtimeDeps = [];

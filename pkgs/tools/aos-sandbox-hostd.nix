@@ -72,6 +72,7 @@ in
     checkType = "debug";
     cargoTestFlags = "--no-default-features --features aos-sandbox-services/host,aos-sandbox-services/selected-kernel-clone-layout -p aos-sandbox-services -p aos-sandbox-broker-session-security";
     cargoNextest = true;
+    cargoNextestProfile = "nix-sandbox";
     # Match the workspace native test runner; installed stack limits stay fixed.
     RUST_MIN_STACK = "33554432";
     doCheck = true;

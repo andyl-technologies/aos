@@ -69,6 +69,7 @@ in
     checkType = "debug";
     cargoTestFlags = "--no-default-features --features aos-sandbox-services/source-provider -p aos-sandbox-services -p aos-sandbox-broker-session-security production_source_provider";
     cargoNextest = true;
+    cargoNextestProfile = "nix-sandbox";
     doCheck = true;
     buildDeps = [buildProtobuf];
     runtimeDeps = [];

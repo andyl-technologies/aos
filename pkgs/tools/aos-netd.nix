@@ -85,6 +85,7 @@ in
     ];
     cargoTestFlags = "--no-default-features --features aos-sandbox-services/network -p aos-sandbox-services -p aos-sandbox-network";
     cargoNextest = true;
+    cargoNextestProfile = "nix-sandbox";
     doCheck = true;
     buildDeps = [buildProtobuf];
     runtimeDeps = [];

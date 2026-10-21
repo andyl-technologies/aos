@@ -57,6 +57,7 @@ in
     cargoFlags = "-p aos-sandbox-kernel-export-owner-peer --bins";
     cargoTestFlags = "-p aos-sandbox-kernel-export-owner-peer --lib";
     cargoNextest = true;
+    cargoNextestProfile = "nix-sandbox";
     doCheck = true;
     buildDeps = [];
     runtimeDeps = [aos-selinux-production-policy];

@@ -119,6 +119,7 @@ in
     cargoFlags = "-p aos-sandbox-storage";
     cargoTestFlags = "-p aos-sandbox-storage";
     cargoNextest = true;
+    cargoNextestProfile = "nix-sandbox";
     doCheck = true;
     buildDeps = [buildProtobuf];
     runtimeDeps = [];

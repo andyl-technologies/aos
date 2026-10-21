@@ -65,6 +65,11 @@ let
         buildPackages = dependencies;
       }));
   rolePackages = map rolePackage roleRecipes;
+  hermeticRoleProfiles =
+    lib.all (
+      package: !(package.cargoNextest or false) || package.cargoNextestProfile == "nix-sandbox"
+    )
+    rolePackages;
   expectedWorkspaceSource = import ../../pkgs/tools/aos/_workspace-source.nix {inherit lib;};
   sharedVendorRetained = package:
     package.cargoDeps
@@ -243,6 +248,7 @@ let
     darwinAos.passthru.testTargets.cargoEnv
   ];
 in
+  assert hermeticRoleProfiles;
   assert scalar == singleton;
   assert matches ".*AOS_CROSS_COMPILING.*" cargo;
   assert matches ".*cargo test.*-p first --features controller.*cargo test.*-p second --features policy.*" cargo;

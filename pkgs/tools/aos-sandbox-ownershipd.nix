@@ -69,6 +69,7 @@ in
     checkType = "debug";
     cargoTestFlags = "--no-default-features --features aos-sandbox-services/ownership -p aos-sandbox-services -p aos-sandbox-broker-session-security ownership_authority_";
     cargoNextest = true;
+    cargoNextestProfile = "nix-sandbox";
     doCheck = true;
     buildDeps = [buildProtobuf];
     runtimeDeps = [];
