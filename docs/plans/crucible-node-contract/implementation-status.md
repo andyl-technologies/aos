@@ -774,10 +774,55 @@ remain empty. The three focused tests cover 22 flights in each JSON
 configuration. Both full Transport configurations pass 1,789 tests, zero
 failures, no filtering and sixteen existing ignores. All-feature/all-target
 checking for Transport, Engine and Daemon and all six architecture gates pass.
-Required application-target compilation is running for this source. These
-checks do not construct full Recipe/Initial, native model or common Ready;
+Required application-target compilation passes for `9bb90d2f8a`, with all 133
+owned changed Rust paths matching the registered source exactly. Its output is
+`cw47xygaqh73wzml5mfjc5mxk70sw117-aos-test-targets-0.1.0`, with 180 test
+executables across 58 package IDs and 71 integration targets. These compilation
+checks do not execute native restoration or construct full Recipe/Initial,
+native model or common Ready;
 seven-bank Prepare/upload custody and the complete phase constructors remain
 unfinished.
+
+## Seven-bank reservation and transfer primitives
+
+The seven physical bank headers now retain distinct optional full references,
+a reservation/receive cursor and partial allocations. The separate backing
+formula counts exact byte requests, all four String leaves in each full
+reference, partial reference construction and the actual reservation/upload
+controls. The initial formula continues to count its real empty headers and
+retained-census controls; later transfer work has its own row. No future phase's
+counter workspace substitutes for initial demand.
+
+Reservation spends the occurrence before validation, validates every role
+extent/reference before allocating, and installs each empty full reference
+before its first fallible String reserve. Exact String and byte reserves are
+checked against requested capacities. Every partial reference and earlier bank
+remains in the same physical owner after refusal, and its census includes all
+actual spare capacity. The full-reference and bank-field census rosters are
+exhaustive.
+
+Private Blob primitives enforce ordered full-reference Begin, unique transfer
+IDs, contiguous nonempty chunks of at most 4 KiB, and full normative CNP content
+hash/length agreement at Finish. Copying never grows reserved backing. A failed
+new mutation poisons the occurrence while retaining all received bytes; only
+seven completed banks can be borrowed together as DATA. The original dispatcher
+must separately authenticate the genuine Prepare token/current connection and
+retain literal retries and cached replies before selecting these primitives.
+No public native dispatcher or token constructor is enabled by this component.
+
+Five new primitive controls cover all seven distinct bodies, a multi-chunk
+seventh body, unchanged backing throughout upload, one-byte-short construction,
+invalid full references, wrong offsets/transfer/order/extensions/content and a
+reused role transfer. A deterministic `Vec` capacity-overflow control fails
+before asking the allocator for a huge layout and verifies that all six earlier
+banks and the seventh full reference stay retained. The inherited-socket controls
+continue to verify that all seven headers remain empty throughout bootstrap.
+Both full Transport configurations pass 1,794 tests, zero failures, no filtering
+and sixteen existing ignores. All-feature/all-target checking for Transport,
+Engine and Daemon and all six architecture checks pass for the final exhaustive
+counter roster. Required application compilation is running. This is component DATA
+validation; genuine native Prepare custody, completed full Recipe/Initial,
+model adoption and the full RFC remain unfinished.
 
 ## Original launch custody and shared startup geometry
 
