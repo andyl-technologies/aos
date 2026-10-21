@@ -96,7 +96,7 @@
 # AOS_HOST_RUNTIME_END
 
 /run/aos/sandbox-root-(controller|storage-session|host-session|mount-session|network-session|cache-bootstrap|cache-objects) -d system_u:object_r:aos_sandbox_cache_view_mount_t
-/run/aos/sandbox-root-source -d system_u:object_r:aos_sandbox_source_view_mount_t
+/run/aos/sandbox-root-source -d system_u:object_r:aos_sandbox_cache_view_mount_t
 
 /var/lib/aos/sandboxd/controller\.journal(\.lock|\.compact\.tmp)? -- system_u:object_r:aos_sandbox_root_read_journal_t
 /var/lib/aos/sandboxd/cache-residency-authority/bootstrap-v1\.journal(\.lock|\.compact\.tmp)? -- system_u:object_r:aos_sandbox_root_read_journal_t

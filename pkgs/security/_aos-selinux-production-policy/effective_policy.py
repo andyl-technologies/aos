@@ -48,6 +48,7 @@ EXPLICIT_LOADER_DOMAINS = (fuse_worker_policy.WORKER_DOMAIN, GUEST_OWNER, GUEST_
 NO_CONTEXT_TRANSLATION_ATTRIBUTE = "aos_no_context_translation_domain"
 NO_CONTEXT_TRANSLATION_DOMAINS = (
     fuse_worker_policy.WORKER_DOMAIN,
+    owner_policy.OFFLINE_HELPER,
     *owner_policy.HELPER_DOMAINS,
     *view_policy.SIGNER_DOMAINS,
     *owner_policy.SELECTED_MOUNT_SOURCE_DOMAINS,

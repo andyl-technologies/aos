@@ -810,6 +810,23 @@ or provisioning must deny it at **both** endpoints and close the dependent
 public CreateExecution readiness path. Existing other-method broker policies
 and separate Source/Host authority requirements are unchanged.
 
+## Compiled production policy receipt
+
+The source-built production SELinux policy passes all 142 checker unit tests,
+the expanded-policy positive and negative matrix, and the compiled mutation
+checks. Its output is
+`/nix/store/qp6dr0mmr1351jc1lxdyw893d88l2jzs-aos-selinux-production-policy-1`.
+
+The checks require Normal Root's readonly Source and Cache inputs and the
+Controller lock-file identity, while denying writes, writer locks, Storage lock
+access, and foreign signer reads. The Cache preparer uses its own mount-target
+label for Root's Source view. The offline TPM helper cannot acquire context
+translation sockets. The mutable unlabeled-root compatibility module is excluded
+from the non-MLS production base.
+
+This receipt covers compiled policy. Enforcing installed startup and the normal
+Controller/Storage TPM lifecycle remain separate qualification requirements.
+
 ## Primary references
 
 The durability, extend, and interrupted-write rules are in

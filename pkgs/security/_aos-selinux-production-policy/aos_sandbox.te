@@ -46,7 +46,7 @@ require {
     class process { fork getcap getattr getpgid getsched noatsecure ptrace rlimitinh setexec setfscreate setpgid setrlimit setsched setsockcreate sigchld siginh sigkill signal sigstop transition };
     class process2 { nnp_transition nosuid_transition };
     class security read_policy;
-    class memfd_file { getattr ioctl map open read };
+    class memfd_file { create getattr ioctl map open read write };
     class sock_file { create getattr open read rename setattr unlink write };
     class unix_stream_socket { accept bind connect connectto create getattr getopt ioctl listen read setopt shutdown write };
 }

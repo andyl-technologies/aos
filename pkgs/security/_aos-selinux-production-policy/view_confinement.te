@@ -185,7 +185,6 @@ allow aos_method46_tpm_device_t device_t:filesystem associate;
 # These rules expose only the existing journal/object reader operations.
 allow aos_sandbox_cache_view_preparer_t { aos_sandbox_controller_state_t aos_method46_controller_floor_t aos_sandbox_source_journal_t }:dir { getattr open read search };
 allow aos_sandbox_cache_view_preparer_t { aos_sandbox_controller_state_t aos_method46_controller_floor_t aos_method46_controller_lock_t aos_sandbox_source_journal_t }:file getattr;
-allow aos_sandbox_cache_view_preparer_t aos_sandbox_source_view_mount_t:dir { getattr mounton open read search };
 allow aos_sandbox_policy_authority_t { aos_sandbox_controller_state_t aos_method46_controller_floor_t aos_sandbox_source_journal_t aos_sandbox_cache_object_t }:dir { getattr open read search };
 allow aos_sandbox_policy_authority_t { aos_sandbox_root_read_journal_t aos_method46_controller_lock_t aos_sandbox_source_journal_t aos_sandbox_cache_object_t }:file { getattr open read };
 

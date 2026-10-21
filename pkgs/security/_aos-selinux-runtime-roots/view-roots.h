@@ -169,7 +169,7 @@ static const struct directory_spec view_target_specs[] = {
         {"sandbox-root-network-session", "/run/aos/sandbox-root-network-session",
          "system_u:object_r:aos_sandbox_cache_view_mount_t", 0700, 0, 0},
         {"sandbox-root-source", "/run/aos/sandbox-root-source",
-         "system_u:object_r:aos_sandbox_source_view_mount_t", 0700, 0, 0},
+         "system_u:object_r:aos_sandbox_cache_view_mount_t", 0700, 0, 0},
         {"sandbox-root-cache-bootstrap", "/run/aos/sandbox-root-cache-bootstrap",
          "system_u:object_r:aos_sandbox_cache_view_mount_t", 0700, 0, 0},
         {"sandbox-root-cache-objects", "/run/aos/sandbox-root-cache-objects",

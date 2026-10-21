@@ -678,7 +678,13 @@ def matrix(Access, Transition, accesses, ordinary_domains):
             if other != owner:
                 negative.append(Access(other, helper, "process", "transition"))
             if other not in (owner, helper):
-                negative.extend(accesses(other, lock, "file", ("open", "read", *file_mutate)))
+                # Root's fixed readonly Controller mappings open the lock file
+                # to retain its native identity, without taking a writer lock.
+                root_controller_reader = other == root and role == "controller"
+                if root_controller_reader:
+                    positive.extend(accesses(other, lock, "file", file_read))
+                denied_lock = file_mutate if root_controller_reader else ("open", "read", *file_mutate)
+                negative.extend(accesses(other, lock, "file", denied_lock))
                 negative.extend(accesses(other, floor, "file", ("open", "read", *file_mutate)))
         for foreign_role in HELPERS:
             if foreign_role != role:

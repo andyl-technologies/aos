@@ -119,6 +119,9 @@ type_transition aos_nix_offline_prepare_t aos_nix_offline_prepare_state_t:file a
 # manual unit remains disabled; ordinary startup still has no hardware recipe.
 type aos_nix_offline_tpm_helper_t;
 typeattribute aos_nix_offline_tpm_helper_t domain;
+# The measured helper uses raw contexts and only its inherited parent socket.
+# Context translation would add an unrelated socket creation/connection route.
+typeattribute aos_nix_offline_tpm_helper_t aos_no_context_translation_domain;
 typeattribute aos_nix_offline_tpm_helper_t aos_private_root_custody_domain;
 role system_r types aos_nix_offline_tpm_helper_t;
 type aos_nix_offline_tpm_helper_exec_t;

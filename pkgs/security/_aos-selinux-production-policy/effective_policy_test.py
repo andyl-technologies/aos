@@ -599,6 +599,7 @@ class EffectivePolicyTest(unittest.TestCase):
             set(effective_policy.NO_CONTEXT_TRANSLATION_DOMAINS),
             {
                 worker,
+                "aos_nix_offline_tpm_helper_t",
                 "aos_method46_controller_helper_t",
                 "aos_method46_storage_helper_t",
                 "aos_sandbox_cache_signer_t",
@@ -606,8 +607,7 @@ class EffectivePolicyTest(unittest.TestCase):
             },
         )
         self.assertEqual(
-            set(effective_policy.NO_CONTEXT_TRANSLATION_DOMAINS)
-            | {effective_policy.owner_policy.OFFLINE_HELPER},
+            set(effective_policy.NO_CONTEXT_TRANSLATION_DOMAINS),
             {
                 access.source for access in effective_policy.NEGATIVE_ACCESS
                 if access.target == "*"
@@ -973,6 +973,55 @@ class EffectivePolicyTest(unittest.TestCase):
                 policy.allows[access] = [FakeRule("foreign preparation permission", active=False)]
                 with self.assertRaisesRegex(ValueError, "forbidden allow exists"):
                     effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+    def test_root_input_views_require_reads_and_refuse_mutation_or_foreign_readers(self) -> None:
+        root = "aos_sandbox_policy_authority_t"
+        for target in (
+            "aos_sandbox_source_journal_t",
+            "aos_sandbox_cache_journal_t",
+            "aos_sandbox_cache_object_t",
+        ):
+            for permission in ("getattr", "open", "read"):
+                with self.subTest(target=target, permission=permission):
+                    self.assert_missing_allow_rejected(
+                        effective_policy.Access(root, target, "file", permission)
+                    )
+
+            for permission in ("append", "create", "link", "rename", "setattr", "unlink", "write"):
+                with self.subTest(target=target, permission=permission):
+                    self.assert_forbidden_allow_rejected(
+                        effective_policy.Access(root, target, "file", permission)
+                    )
+
+        for domain, target in (
+            ("aos_sandbox_source_signer_t", "aos_sandbox_cache_object_t"),
+            ("aos_sandbox_cache_signer_t", "aos_sandbox_source_journal_t"),
+        ):
+            for permission in ("open", "read"):
+                with self.subTest(domain=domain, target=target, permission=permission):
+                    self.assert_forbidden_allow_rejected(
+                        effective_policy.Access(domain, target, "file", permission)
+                    )
+
+    def test_root_controller_lock_identity_is_readonly_and_storage_lock_is_private(self) -> None:
+        root = "aos_sandbox_policy_authority_t"
+        controller_lock = "aos_method46_controller_lock_t"
+        storage_lock = "aos_method46_storage_lock_t"
+
+        for permission in ("getattr", "open", "read"):
+            self.assert_missing_allow_rejected(
+                effective_policy.Access(root, controller_lock, "file", permission)
+            )
+
+        for permission in ("append", "create", "link", "lock", "rename", "setattr", "unlink", "write"):
+            self.assert_forbidden_allow_rejected(
+                effective_policy.Access(root, controller_lock, "file", permission)
+            )
+
+        for permission in ("open", "read", "write", "lock"):
+            self.assert_forbidden_allow_rejected(
+                effective_policy.Access(root, storage_lock, "file", permission)
+            )
 
     def test_static_view_provider_dac_search_never_opens_protected_data(self) -> None:
         for target in (

@@ -208,12 +208,16 @@ in
           test -f "$contexts"
           printf '%s\n' '/var/home /home' '/var/roothome /root' >> "$contexts"
 
-          checkmodule -M -m \
-            -o "$out/usr/share/selinux/refpolicy/aos_base.mod" \
-            ${./refpolicy-aos-base.te}
-          semodule_package \
-            -o "$out/usr/share/selinux/refpolicy/aos_base.pp" \
-            -m "$out/usr/share/selinux/refpolicy/aos_base.mod"
+          ${lib.optionalString (!production) ''
+            # Unlabeled-root compatibility belongs only to the mutable policy.
+            # The production base is non-MLS and retains its explicit owners.
+            checkmodule -M -m \
+              -o "$out/usr/share/selinux/refpolicy/aos_base.mod" \
+              ${./refpolicy-aos-base.te}
+            semodule_package \
+              -o "$out/usr/share/selinux/refpolicy/aos_base.pp" \
+              -m "$out/usr/share/selinux/refpolicy/aos_base.mod"
+          ''}
 
           mkdir -p "$out/libexec"
           sed \
@@ -226,7 +230,11 @@ in
             ${./refpolicy-load-policy.sh} \
             > "$out/libexec/aos-selinux-load-policy"
           chmod 0755 "$out/libexec/aos-selinux-load-policy"
-          test -s "$out/usr/share/selinux/refpolicy/aos_base.pp"
+          ${
+            if production
+            then ''test ! -e "$out/usr/share/selinux/refpolicy/aos_base.pp"''
+            else ''test -s "$out/usr/share/selinux/refpolicy/aos_base.pp"''
+          }
 
           # Patch the installed devel Makefile to use store paths instead
           # of hardcoded /usr and /etc paths

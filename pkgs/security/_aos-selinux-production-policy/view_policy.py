@@ -95,9 +95,10 @@ def matrix(Access, Transition, accesses, roles):
             positive.extend(accesses(provisioner, object_type, "dir", (
                 "create", "getattr", "open", "read", "search", "setattr",
             )))
-            readers = {controller, signer}
-            if object_type == "aos_sandbox_cache_journal_t":
-                readers.add(root)
+            # Normal Root independently compares these protected inputs through
+            # its fixed readonly mappings. It receives no mutation permission.
+            positive.extend(accesses(root, object_type, "file", ("getattr", "open", "read")))
+            readers = {controller, signer, root}
             for actor in actors:
                 if actor != controller:
                     negative.extend(accesses(actor, object_type, "file", mutable_file))
