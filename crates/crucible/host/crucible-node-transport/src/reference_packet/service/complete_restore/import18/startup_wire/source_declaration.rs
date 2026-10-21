@@ -18,6 +18,11 @@ use serde::ser::SerializeStruct;
 #[path = "source_declaration/projection.rs"]
 mod projection;
 
+pub use projection::{
+    native_import18_source_declaration_encoding_construction_data,
+    native_import18_source_declaration_encoding_counter_scratch_data,
+};
+
 pub(in crate::reference_packet) use projection::{
     native_import18_source_declaration_formatter_requested_data,
     native_import18_source_declaration_projection_counter_scratch_data,

@@ -15,11 +15,13 @@ impl PreparedCompleteRestoration {
     pub(crate) fn funded_private_births_retained_data(&self) -> bool {
         !self.import18_templates.failed
             && self.import18_templates.funded_complete
-            && self
-                .import18_templates
-                .members
-                .iter()
-                .all(|member| member.stage == Stage::PrivateBirth)
+            && self.import18_templates.members.iter().all(|member| {
+                member.stage == Stage::PrivateBirth
+                    && member
+                        .declaration_encoding
+                        .as_ref()
+                        .is_some_and(|bank| !bank.is_empty())
+            })
     }
 
     /// Advances the isolated operational step without claiming preparation success.
@@ -164,17 +166,31 @@ impl PreparedCompleteRestoration {
             .prepare_native_import18_private_birth_into();
         let observed = self.observe_import18_templates_data([0; 3]);
         result.and(observed)?;
-        self.note_funded_operation_stage("lending original pre-report Source bank");
+        self.note_funded_operation_stage("quoting original Source declaration encoding");
         self.observe_import18_templates_data(
-            PacketCompleteSemanticSource::native_import18_source_declaration_construction_data(),
+            PacketCompleteSemanticSource::native_import18_declaration_encoding_quote_construction_data(),
         )?;
-        let declared = self.import18_templates.members[selected]
+        let row = self.import18_templates.members[selected]
             .output
             .completed_data()?
-            .native_import18_source_declaration_data()
-            .map(drop);
+            .native_import18_declaration_encoding_construction_data(usize::MAX)?;
+        self.import18_templates.members[selected].declaration_encoding_row = Some(row);
+        self.observe_import18_templates_data(row)?;
+        self.note_funded_operation_stage("encoding original pre-report Source declaration");
+        let encoded = {
+            let member = &mut self.import18_templates.members[selected];
+            member
+                .output
+                .completed_data()?
+                .encode_native_import18_source_declaration_into_data(
+                    usize::MAX,
+                    &mut member.declaration_encoding,
+                )
+        };
+        // All original declaration/Birth loans end before this whole-Prepared
+        // census, including after a partial canonical write or guard refusal.
         let observed = self.observe_import18_templates_data([0; 3]);
-        declared.and(observed)?;
+        encoded.and(observed)?;
         self.import18_templates.members[selected].stage = Stage::PrivateBirth;
         Ok(())
     }

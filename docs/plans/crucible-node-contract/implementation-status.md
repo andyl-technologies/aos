@@ -365,6 +365,36 @@ executables across 58 package IDs, including 71 integration targets, without
 running them. The gate excludes the later retained-custody lint cleanup,
 submission guard and raw-bootstrap receiver.
 
+## Retained original Source declaration encoding
+
+The funded private-Birth path now encodes each genuine borrowed Source
+declaration into a bank retained by its original Member. The quote derives the
+actual declaration's canonical bank, temporary Value/JCS work, Bytes formatter,
+original loan guards and error controls. It admits the full row before output
+allocation. The bounded writer cannot grow the retained bank, occupied outputs
+refuse unchanged, and failed allocations or partial output remain counted by
+both the direct and projected storage censuses. All Source/Birth loans end
+before the complete Prepared census.
+
+The original worker response and SourceBirth6..12 bank remain opaque and
+unchanged. The new declaration's Value executes the genuine serializer's
+before/after original-custody checks. The ordinary producer/reactive negative
+controls refuse both quoting and encoding without output or Birth effects.
+The funded VM observer now requires three nonempty encoded declaration banks
+beside three genuine private Births.
+
+The complete configured Engine library passes 2,036 tests, with zero failures,
+no filtering and 34 ignores. Standard and raw-JSON Transport libraries each pass
+1,755 tests, with zero failures, no filtering and 16 ignores. All-feature and
+all-target checking for Engine, Daemon and Transport, formatting and the six
+architecture gates pass. The funded Source VM passes both actual consumers,
+all three encoded declarations/private Births, spent credit, retry and cleanup
+controls. That VM and the complete library snapshot precede the final explicit
+Vec/Option constructor-header additions to the encoding row; final-source
+qualification remains pending. The complete configured Daemon run and required
+application compilation gate are also still in progress at this checkpoint.
+No Initial, complete Recipe, native startup, Ready or preservation is claimed.
+
 ## Immediate spent preparation submission refusal
 
 The service reserves complete-scene submission before queue admission. Once its

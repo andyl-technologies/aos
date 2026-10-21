@@ -42,6 +42,8 @@ pub use source_declaration::{
     PacketNativeImport18SourceDeclarationWireData,
     native_import18_source_declaration_bank_view_data,
     native_import18_source_declaration_counter_scratch_data,
+    native_import18_source_declaration_encoding_construction_data,
+    native_import18_source_declaration_encoding_counter_scratch_data,
     native_import18_source_declaration_wire_data,
 };
 

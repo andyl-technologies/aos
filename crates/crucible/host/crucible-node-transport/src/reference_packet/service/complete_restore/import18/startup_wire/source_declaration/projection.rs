@@ -97,6 +97,56 @@ fn exhausted() -> ProviderError {
     ProviderError::ResourceExhausted("native import18 declaration projection")
 }
 
+/// Quotes a retained canonical declaration bank and its actual Value/JCS work.
+///
+/// The declaring Source separately admits its original loan, authentication,
+/// error and output-slot controls. This projection performs no serialization,
+/// allocation or provenance check and creates no startup or native admission.
+///
+/// # Errors
+/// Refuses shape arithmetic overflow or the complete row above the restriction.
+pub fn native_import18_source_declaration_encoding_construction_data(
+    declaration: &PacketNativeImport18SourceDeclarationView<'_>,
+    maximum: usize,
+) -> Result<[usize; 3], ProviderError> {
+    let shape = native_import18_source_declaration_serialization_data(declaration, maximum)?;
+    let retained = shape.canonical_output_requested_bytes;
+    let transient = shape
+        .dom_and_canonical_scratch_bytes
+        .checked_add(shape.serializer_temporary_requested_bytes)
+        .and_then(|bytes| bytes.checked_add(size_of::<Value>()))
+        .and_then(|bytes| bytes.checked_add(size_of::<Result<Value, serde_json::Error>>()))
+        .ok_or_else(exhausted)?;
+    let scratch = shape
+        .declared_counter_scratch_bytes
+        .checked_add(native_import18_source_declaration_projection_counter_scratch_data())
+        .and_then(|bytes| bytes.checked_add(size_of::<[usize; 3]>() * 2))
+        .and_then(|bytes| bytes.checked_add(size_of::<Result<[usize; 3], ProviderError>>()))
+        .ok_or_else(exhausted)?;
+    let row = [retained, transient, scratch];
+    let peak = row.into_iter().try_fold(0usize, |total, bytes| {
+        total.checked_add(bytes).ok_or_else(exhausted)
+    })?;
+    if peak > maximum {
+        return Err(exhausted());
+    }
+    Ok(row)
+}
+
+/// Names the allocation-free declaration encoding quote's direct controls.
+///
+/// Original Source loan/currentness and the actual encoding remain separate
+/// construction windows; this counter grants neither their work nor storage.
+pub fn native_import18_source_declaration_encoding_counter_scratch_data() -> usize {
+    native_import18_source_declaration_projection_counter_scratch_data()
+        + size_of::<[usize; 3]>() * 2
+        + size_of::<std::array::IntoIter<usize, 3>>()
+        + size_of::<Result<[usize; 3], ProviderError>>()
+        + size_of::<Result<usize, ProviderError>>()
+        + size_of::<Option<usize>>()
+        + size_of::<usize>() * 6
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -123,6 +173,18 @@ mod tests {
             assert_eq!(formatter, actual_encoded.len());
             assert!(shape.serializer_temporary_requested_bytes >= formatter);
             assert!(shape.maximum_encoded_bytes >= bytes.len());
+            let encoding = native_import18_source_declaration_encoding_construction_data(
+                &view,
+                usize::MAX / 16,
+            )
+            .unwrap();
+            let mut retained = Vec::with_capacity(encoding[0]);
+            canonical::canonical_json_to_writer(&value, &mut retained).unwrap();
+            assert_eq!(retained, bytes);
+            assert_eq!(retained.capacity(), encoding[0]);
+            assert!(
+                native_import18_source_declaration_encoding_construction_data(&view, 1).is_err()
+            );
             assert!(native_import18_source_declaration_serialization_data(&view, 1).is_err());
         }
     }

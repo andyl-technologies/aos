@@ -55,6 +55,8 @@ struct Member {
     birth_row: Option<NativeImport18BirthConstructionQuote>,
     output: OriginalNativeSourceTemplate18Attempt,
     job: Option<SourceBirthDerivationJob>,
+    declaration_encoding_row: Option<[usize; 3]>,
+    declaration_encoding: Option<Vec<u8>>,
 }
 
 impl Member {
@@ -70,6 +72,8 @@ impl Member {
             birth_row: None,
             output: OriginalNativeSourceTemplate18Attempt::default(),
             job: None,
+            declaration_encoding_row: None,
+            declaration_encoding: None,
         }
     }
 }
@@ -96,6 +100,8 @@ struct MemberObservation<'a> {
     birth_row: &'a Option<NativeImport18BirthConstructionQuote>,
     output: &'a OriginalNativeSourceTemplate18Attempt,
     job: &'a Option<SourceBirthDerivationJob>,
+    declaration_encoding_row: &'a Option<[usize; 3]>,
+    declaration_encoding: &'a Option<Vec<u8>>,
 }
 
 impl<'a> MemberObservation<'a> {
@@ -111,6 +117,8 @@ impl<'a> MemberObservation<'a> {
             birth_row,
             output,
             job,
+            declaration_encoding_row,
+            declaration_encoding,
         } = member;
         Self {
             stage,
@@ -123,6 +131,8 @@ impl<'a> MemberObservation<'a> {
             birth_row,
             output,
             job,
+            declaration_encoding_row,
+            declaration_encoding,
         }
     }
 }
@@ -157,7 +167,14 @@ impl MemberObservation<'_> {
             birth_row: _,
             output,
             job,
+            declaration_encoding_row: _,
+            declaration_encoding,
         } = *self;
+        if let Some(bank) = declaration_encoding {
+            counter
+                .add(bank.capacity())
+                .map_err(|_| RuntimeError::ResourceLimit)?;
+        }
         registration.charge_retained_data(counter)?;
         if let Some(job) = job {
             let context = deployment
@@ -240,6 +257,8 @@ const fn member_field_references_data() -> usize {
         + size_of::<&Option<NativeImport18BirthConstructionQuote>>()
         + size_of::<&OriginalNativeSourceTemplate18Attempt>()
         + size_of::<&Option<SourceBirthDerivationJob>>()
+        + size_of::<&Option<[usize; 3]>>()
+        + size_of::<&Option<Vec<u8>>>()
 }
 
 const MEMBER_PROJECTION_CONTROLS: usize = size_of::<&Member>() // from_member_data input
@@ -278,6 +297,12 @@ const MEMBER_CHARGE_CONTROLS: usize = size_of::<&MemberObservation<'static>>() /
     + size_of::<&registration_plan::Attempt>() // copied actual registration reference
     + size_of::<&OriginalNativeSourceTemplate18Attempt>() // copied actual output reference
     + size_of::<&Option<SourceBirthDerivationJob>>() // copied actual external job slot
+    + size_of::<&Option<Vec<u8>>>()
+    + size_of::<Option<&Vec<u8>>>()
+    + size_of::<&Vec<u8>>()
+    + size_of::<usize>()
+    + size_of::<Result<(), QualificationError>>()
+    + size_of::<Result<(), RuntimeError>>()
     + size_of::<()>() // member Ok constructor owned unit operand
     + size_of::<Result<(), RuntimeError>>() // member Ok initializer
     + size_of::<Result<(), RuntimeError>>(); // extra member-helper return
@@ -344,6 +369,11 @@ impl Templates {
                 .map_err(|_| RuntimeError::ResourceLimit)?;
         }
         for member in &self.members {
+            if let Some(bank) = &member.declaration_encoding {
+                counter
+                    .add(bank.capacity())
+                    .map_err(|_| RuntimeError::ResourceLimit)?;
+            }
             member.registration.charge_retained_data(counter)?;
             if let Some(job) = &member.job {
                 let context = self
@@ -765,6 +795,8 @@ pub(super) fn assert_projection_members_data(launches: &[PacketNative5SourceLaun
     for (index, launch) in launches.iter().enumerate() {
         let member = &mut templates.members[index];
         member.stage = Stage::RegistrationPlan;
+        member.declaration_encoding_row = Some([37, 11, 5]);
+        member.declaration_encoding = Some(Vec::with_capacity(37 + index));
         member.registration.begin_data().unwrap();
         let row = registration_plan::Quote::for_launch_data(launch, index).unwrap();
         member.registration_row = Some(row);
@@ -793,6 +825,14 @@ pub(super) fn assert_projection_members_data(launches: &[PacketNative5SourceLaun
         assert!(std::ptr::eq(view.bank_row, &member.bank_row));
         assert!(std::ptr::eq(view.birth_row, &member.birth_row));
         assert!(std::ptr::eq(view.output, &member.output));
+        assert!(std::ptr::eq(
+            view.declaration_encoding_row,
+            &member.declaration_encoding_row
+        ));
+        assert!(std::ptr::eq(
+            view.declaration_encoding,
+            &member.declaration_encoding
+        ));
     }
 
     let mut expected = Counter::new(usize::MAX);

@@ -191,6 +191,8 @@ pub use startup_wire::{
     native_import18_selected_launch_wire_data, native_import18_source_binding_wire_data,
     native_import18_source_declaration_bank_view_data,
     native_import18_source_declaration_counter_scratch_data,
+    native_import18_source_declaration_encoding_construction_data,
+    native_import18_source_declaration_encoding_counter_scratch_data,
     native_import18_source_declaration_wire_data,
     native_import18_startup_wire_construction_transient_data,
     native_import18_startup_wire_counter_scratch_data,

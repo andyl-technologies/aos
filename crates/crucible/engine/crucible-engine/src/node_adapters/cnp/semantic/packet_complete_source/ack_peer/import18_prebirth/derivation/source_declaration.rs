@@ -1,8 +1,9 @@
 //! Lends the accepted pre-report bank while retaining its genuine Birth guard.
 //!
 //! The worker's original completion owns the unchanged SourceBirth6..12 bytes.
-//! Its trusted installed algorithm supplies their derivation; the parent does
-//! not reconstruct a DOM. Native retains its independent full semantic checks.
+//! Its trusted installed algorithm supplies their derivation. The parent never
+//! parses that response or SourceBirth bank. Native retains its independent
+//! full semantic checks.
 //! Every serialization authenticates the original Source, launch, completion,
 //! private executable and both Birth banks before and after the actual writer.
 
@@ -13,6 +14,12 @@ use crucible_node_transport::reference_packet::service::complete_restore::import
 };
 use serde::{Serialize, Serializer, ser::Error};
 use std::{cell::Ref, mem::size_of};
+
+#[path = "source_declaration/encoding.rs"]
+mod encoding;
+
+const UNAVAILABLE: &str = "original import18 declaration unavailable";
+const CHANGED: &str = "original import18 declaration changed";
 
 struct OriginalSourceDeclarationLoan<'a> {
     source: &'a PacketCompleteSemanticSource,
@@ -49,13 +56,11 @@ impl OriginalSourceDeclarationLoan<'_> {
 impl Serialize for OriginalSourceDeclarationLoan<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         self.authenticate()
-            .map_err(|_| S::Error::custom("original import18 declaration unavailable"))?;
+            .map_err(|_| S::Error::custom(UNAVAILABLE))?;
         let serialized = self.declaration.serialize(serializer);
         // Always measure the terminal original, including a failed write. The
         // first serializer failure stays first; neither result releases custody.
-        let current = self
-            .authenticate()
-            .map_err(|_| S::Error::custom("original import18 declaration changed"));
+        let current = self.authenticate().map_err(|_| S::Error::custom(CHANGED));
         match serialized {
             Err(error) => Err(error),
             Ok(output) => current.map(|()| output),
@@ -79,6 +84,12 @@ impl PacketCompleteSemanticSource {
     pub fn native_import18_source_declaration_data(
         &self,
     ) -> Result<impl Serialize + '_, RuntimeError> {
+        self.original_source_declaration_loan()
+    }
+
+    fn original_source_declaration_loan(
+        &self,
+    ) -> Result<OriginalSourceDeclarationLoan<'_>, RuntimeError> {
         let (source, _) = self.native_import18_derived_banks_data()?;
         let state = self
             .native_import18_derivation
@@ -113,7 +124,8 @@ impl PacketCompleteSemanticSource {
     /// same guard workspace, which callers must keep admitted while writing.
     pub fn native_import18_source_declaration_construction_data() -> [usize; 3] {
         let transient = size_of::<OriginalSourceDeclarationLoan<'static>>()
-            + size_of::<Result<OriginalSourceDeclarationLoan<'static>, RuntimeError>>();
+            // Concrete helper return and the public opaque forwarding result.
+            + size_of::<Result<OriginalSourceDeclarationLoan<'static>, RuntimeError>>() * 2;
         let scratch = Self::isolated_derivation_counter_scratch_data()
             + birth::OriginalAckPeerBirth::isolated_declaration_counter_scratch_data()
             + native_import18_source_declaration_counter_scratch_data()

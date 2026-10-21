@@ -79,6 +79,25 @@ fn genuine_ordinary_sources_refuse_seed_without_spending_or_rebinding() {
         );
         assert!(source.prepare_native_import18_private_birth_into().is_err());
         assert!(source.native_import18_source_declaration_data().is_err());
+        assert!(
+            source
+                .native_import18_declaration_encoding_construction_data(usize::MAX)
+                .is_err()
+        );
+        let mut encoded = None;
+        assert!(
+            source
+                .encode_native_import18_source_declaration_into_data(usize::MAX, &mut encoded)
+                .is_err()
+        );
+        assert!(encoded.is_none());
+        let mut occupied = Some(b"original DATA".to_vec());
+        assert!(
+            source
+                .encode_native_import18_source_declaration_into_data(usize::MAX, &mut occupied)
+                .is_err()
+        );
+        assert_eq!(occupied.as_deref(), Some(b"original DATA".as_slice()));
         assert!(source.native_import18_derivation.is_none());
         assert!(source.native_import18_derivation_mechanism.is_none());
         assert!(source.native_import18_birth_construction.is_none());
