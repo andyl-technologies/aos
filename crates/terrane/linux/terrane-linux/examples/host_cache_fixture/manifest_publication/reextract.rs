@@ -212,20 +212,7 @@ pub(crate) fn run(
         "READY original shared body pending deletion; replacement and independent consumer retained",
     )?;
     control("deleted")?;
-    runtime.block_on(owner.evict_cached(0))?;
-    let state = load(runtime, inputs)?;
-    if inputs
-        .root
-        .join("sealed")
-        .join(&object[..2])
-        .join(&object)
-        .exists()
-        || state.residences.iter().any(|row| row.object == object)
-    {
-        return Err(invalid(
-            "retired shared body retains its original canonical residence",
-        ));
-    }
+    wait_removed(owner, runtime, inputs, &object)?;
     check_reads(owner, runtime, &replacement, &independent, &first, &second)?;
     emit("READY original shared body removed; real consumers remain readable with policy held")?;
     control("finish")?;
@@ -234,6 +221,47 @@ pub(crate) fn run(
     emit(
         "PASS actual shared-chunk re-extraction preserves one residence, durable grace, independent consumers and final original descriptor closure; no Ready",
     )
+}
+
+/// Observes final deletion rather than treating an eviction reply as its barrier.
+///
+/// Due maintenance drains the bounded preexisting command batch first. An
+/// eviction reply from that batch can precede final removal. The original
+/// ten-second driver handshake remains unchanged; this observation is bounded
+/// inside it and never treats pending retirement as completed deletion.
+fn wait_removed(
+    owner: &NativeMetadataOwner,
+    runtime: &tokio::runtime::Runtime,
+    inputs: &Inputs,
+    object: &str,
+) -> io::Result<()> {
+    let deadline = TokioClock
+        .monotonic()
+        .checked_add(std::time::Duration::from_secs(5))
+        .ok_or_else(|| invalid("shared deletion observation deadline overflows"))?;
+    let canonical = inputs.root.join("sealed").join(&object[..2]).join(object);
+    loop {
+        let state = load(runtime, inputs)?;
+        let named = canonical.try_exists()?;
+        let residences = state
+            .residences
+            .iter()
+            .filter(|row| row.object == object)
+            .count();
+        if !named && residences == 0 {
+            break;
+        }
+        if TokioClock.monotonic() >= deadline {
+            return Err(io::Error::other(format!(
+                "retired shared body retains canonical={named} residences={residences}"
+            )));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    // The final policy snapshot precedes descriptor closure within maintenance.
+    // This subsequent actual owner reply waits behind that physical completion.
+    runtime.block_on(owner.evict_cached(0))?;
+    Ok(())
 }
 
 fn pin(
