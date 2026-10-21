@@ -1741,6 +1741,45 @@ unexecuted. The full license gate remains blocked at its controller lint
 prerequisites. Pending-fault storage and later execution checkpoints are
 separate work.
 
+### 2026-10-21 runtime posts and prepaid worker journals
+
+Commit `664c96bb16` observes the same entered operation after every actual
+adapter return, including refusals. It retains the initiating typed error and
+independent supervision post inline through Node and scheduler conversion.
+Ordinary Source-health failures retain priority over consequential socket
+transport failures. Cleanup remains live after outer cancellation; the initial
+test that incorrectly expected Cleanup cancellation is retained as a failed
+snapshot rather than qualification of the corrected implementation.
+
+All 26 driver tests, five Node conversion tests, 62 host-I/O controls, three
+actual Source-health tests, 73 source-policy checks and five hygiene checks
+pass. Final mandatory application compilation passes at
+`/nix/store/zza3ig7f4xs4s6z8wp1246c6q1hnrdyq-aos-test-targets-0.1.0`.
+All 144 exact hermetic supervision cases pass at
+`/nix/store/kx4b0938dv6dskv0kyx4dag084c03ngx-crucible-gate-ram-supervision-0`.
+These snapshots precede the subsequent worker journal change. Target, channel
+and health failure post retention, complete diagnostic funding and genuine
+native issuance remain unfinished.
+
+Commit `25bad78d7f` reserves and creates separate launch and worker failure
+journals during Source preparation, before transferring the socket/backing or
+starting a worker. The separate launch journal survives a failed thread spawn
+destroying its closure and worker journal. Recording consumes the unpublished
+owner and fills the same shared control without allocating. Published typed,
+cloned and backend observers retain the original loan through control close.
+
+All 27 Source tests pass, including success, unwind, retained-file custody,
+conversion, zero-allocation recording and refusal before input transfer when
+capacity covers only one of the two actual journals. All 73 focused policy and
+five hygiene controls pass. Mandatory application compilation passes at
+`/nix/store/wf9sq6b731z373pkf29di195ilbkwdgz-aos-test-targets-0.1.0`;
+all 5,258 tracked crate Rust/TOML files byte-match immutable source
+`/nix/store/j0vq3mlpmddzhwjwkdvqpisby8alm4yx-aos-workspace-src`.
+The expanded 146-case hermetic supervision run is pending. Dynamic payloads,
+thread-builder allocations and genuine selected Source execution remain
+unqualified. The inventory has 263 bindings: 244 component and 19 native;
+243 requirements, 149 uncovered requirements and zero qualified requirements.
+
 ### Canonical native observation gate cutover (required)
 
 The supplemental service flights do not yet replace the canonical plugin gate.
