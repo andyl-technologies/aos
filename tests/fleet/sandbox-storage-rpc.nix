@@ -614,7 +614,9 @@ in {
     controller("repair", "repair")
     observer_repaired = socket_sample("aos-sandbox-workspace-pin-observer.socket")
     worker_repaired = socket_sample("aos-sandbox-workspace-pin-worker.socket")
-    assert observer_repaired == (observer_started[0] + 1, observer_started[1]), (
+    # Repair independently observes admission before the effect and reconciles
+    # the resulting catalog afterward. Both calls use the same socket lifetime.
+    assert observer_repaired == (observer_started[0] + 2, observer_started[1]), (
         observer_started,
         observer_repaired,
     )
