@@ -28,6 +28,9 @@ mod normalized_framing;
 #[path = "initial_reconstruction/hello_selection.rs"]
 mod hello_selection;
 
+#[path = "initial_reconstruction/hello_frames.rs"]
+mod hello_frames;
+
 #[path = "initial_reconstruction/selection.rs"]
 mod selection;
 
@@ -75,7 +78,10 @@ fn operands(case: &str) -> [Value; 3] {
     }
     let mut selected = inert_bootstrap_fixtures::initial_selected_launch(matches!(
         case,
-        "initial_reactive" | "initial_hello_reactive" | "initial_selection_reactive"
+        "initial_reactive"
+            | "initial_hello_reactive"
+            | "initial_selection_reactive"
+            | "initial_hello_frames_reactive"
     ));
     if case.starts_with("initial_selection_") || case.starts_with("initial_hello_") {
         selection::prepare_selected(case, &mut selected);
@@ -233,13 +239,10 @@ pub(super) fn assert_child(
         owner.bodies[0][0] ^= 1;
     }
     if case == "initial_foreign" {
-        owner = std::thread::spawn(move || {
+        with_foreign_thread_record(&mut owner, |owner| {
             assert!(owner.reconstruct_initial_data().is_err());
             assert!(!owner.initial_reconstructed);
-            owner
-        })
-        .join()
-        .unwrap();
+        });
     } else {
         let result = owner.reconstruct_initial_data();
         if matches!(
@@ -326,6 +329,10 @@ pub(super) fn assert_child(
     }
     if case.starts_with("initial_selection_") {
         selection::assert_child(case, &mut owner);
+        return;
+    }
+    if case.starts_with("initial_hello_frames_") {
+        hello_frames::assert_child(case, &mut owner);
         return;
     }
     if case.starts_with("initial_hello_") {

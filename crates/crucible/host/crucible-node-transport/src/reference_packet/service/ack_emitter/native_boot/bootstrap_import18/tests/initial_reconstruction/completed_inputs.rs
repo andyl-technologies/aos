@@ -106,22 +106,17 @@ pub(super) fn assert_child(case: &str, owner: &mut OriginalImport18RawBootstrap)
         owner.cut = OperationalDeadline::expired_fixture();
     }
     if case == "initial_inputs_foreign" {
-        std::thread::scope(|scope| {
-            scope
-                .spawn(|| {
-                    let mut called = false;
-                    assert!(
-                        owner
-                            .with_completed_inputs_data(|_| {
-                                called = true;
-                                Ok(())
-                            })
-                            .is_err()
-                    );
-                    assert!(!called);
-                })
-                .join()
-                .unwrap();
+        with_foreign_thread_record(owner, |owner| {
+            let mut called = false;
+            assert!(
+                owner
+                    .with_completed_inputs_data(|_| {
+                        called = true;
+                        Ok(())
+                    })
+                    .is_err()
+            );
+            assert!(!called);
         });
         assert_eq!(owner.retained_requested_bytes().unwrap(), retained);
         return;

@@ -232,6 +232,39 @@ fn a_changed_complete_body_never_becomes_a_completed_raw_receipt() {
     child("changed_body", &wire);
 }
 
+// The actual retained journal uses Rc and makes cross-thread transfer illegal.
+// These runtime controls additionally reject a foreign recorded creator.
+fn with_foreign_thread_record(
+    owner: &mut OriginalImport18RawBootstrap,
+    check: impl FnOnce(&mut OriginalImport18RawBootstrap),
+) {
+    let original = owner.thread;
+    owner.thread = std::thread::spawn(|| std::thread::current().id())
+        .join()
+        .unwrap();
+    check(owner);
+    owner.thread = original;
+}
+
+#[test]
+fn native_hello_custody_statically_confines_the_entire_original_bootstrap() {
+    trait AmbiguousIfSend<A> {
+        fn marker() {}
+    }
+    impl<T: ?Sized> AmbiguousIfSend<()> for T {}
+    struct SendMarker;
+    impl<T: ?Sized + Send> AmbiguousIfSend<SendMarker> for T {}
+    let _ = <OriginalImport18RawBootstrap as AmbiguousIfSend<_>>::marker;
+
+    trait AmbiguousIfSync<A> {
+        fn marker() {}
+    }
+    impl<T: ?Sized> AmbiguousIfSync<()> for T {}
+    struct SyncMarker;
+    impl<T: ?Sized + Sync> AmbiguousIfSync<SyncMarker> for T {}
+    let _ = <OriginalImport18RawBootstrap as AmbiguousIfSync<_>>::marker;
+}
+
 #[test]
 fn same_process_socket_and_foreign_thread_refuse_without_receiving() {
     let (peer, stream) = UnixStream::pair().unwrap();
@@ -243,14 +276,11 @@ fn same_process_socket_and_foreign_thread_refuse_without_receiving() {
         owner.retained_requested_bytes().unwrap(),
         size_of::<OriginalImport18RawBootstrap>()
     );
-    let returned = std::thread::spawn(move || {
+    with_foreign_thread_record(&mut owner, |owner| {
         assert!(owner.retained_requested_bytes().is_err());
-        owner
-    })
-    .join()
-    .unwrap();
+    });
     assert_eq!(
-        returned.retained_requested_bytes().unwrap(),
+        owner.retained_requested_bytes().unwrap(),
         size_of::<OriginalImport18RawBootstrap>()
     );
     drop(peer);

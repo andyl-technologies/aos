@@ -22,6 +22,10 @@ use std::{
     rc::Rc,
 };
 
+#[path = "native_hello/retained_reservation.rs"]
+mod retained_reservation;
+pub(crate) use retained_reservation::OriginalNativeHelloReservation;
+
 const MAXIMUM_HELLO_BYTES: usize = 1024 * 1024;
 
 /// Owns one precharged native Hello attempt, including partial failed traffic.

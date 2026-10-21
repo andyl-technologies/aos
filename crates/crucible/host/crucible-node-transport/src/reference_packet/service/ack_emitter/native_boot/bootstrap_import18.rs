@@ -54,6 +54,13 @@ pub(in crate::reference_packet::service) use selection::{
     counter_scratch_data as selection_counter_scratch_data,
 };
 
+#[path = "bootstrap_import18/hello_frames.rs"]
+mod hello_frames;
+pub(in crate::reference_packet::service) use hello_frames::{
+    construction_data as hello_frames_construction_data,
+    counter_scratch_data as hello_frames_counter_scratch_data,
+};
+
 #[path = "bootstrap_import18/hello_selection.rs"]
 mod hello_selection;
 pub(in crate::reference_packet::service) use hello_selection::{
@@ -96,6 +103,10 @@ pub(super) struct OriginalImport18RawBootstrap {
     hello_construction_row: Option<[usize; 3]>,
     hello_started: bool,
     hello_complete: bool,
+    hello_frames: Option<crate::native_hello::OriginalNativeHelloReservation>,
+    hello_frames_row: Option<[usize; 3]>,
+    hello_frames_started: bool,
+    hello_frames_complete: bool,
     decoding_row: Option<[usize; 3]>,
     decode_started: bool,
     decoded: bool,
@@ -141,6 +152,10 @@ impl OriginalImport18RawBootstrap {
             hello_construction_row: None,
             hello_started: false,
             hello_complete: false,
+            hello_frames: None,
+            hello_frames_row: None,
+            hello_frames_started: false,
+            hello_frames_complete: false,
             decoding_row: None,
             decode_started: false,
             decoded: false,
@@ -259,10 +274,12 @@ impl OriginalImport18RawBootstrap {
         let input_backing = self.inputs.retained_backing_data()?;
         let typed_backing = self.parsed.retained_backing_data()?;
         let hello_backing = self.hello_selection_backing_data()?;
+        let hello_frames_backing = self.hello_frames_backing_data()?;
         retained
             .checked_add(input_backing)
             .and_then(|n| n.checked_add(typed_backing))
             .and_then(|n| n.checked_add(hello_backing))
+            .and_then(|n| n.checked_add(hello_frames_backing))
             .ok_or_else(exhausted)
     }
 

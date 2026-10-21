@@ -72,6 +72,19 @@ impl OriginalImport18HelloSelectionAdmission for Admission<'_> {
     }
 }
 
+pub(super) fn construct_for_frames(owner: &mut OriginalImport18RawBootstrap) {
+    super::selection::authenticate_for_hello(owner);
+    let admission = Admission {
+        case: "initial_hello_complete",
+        calls: Cell::new(0),
+        row: Cell::new(None),
+        before: owner.retained_requested_bytes().unwrap(),
+    };
+    owner.construct_hello_selection_data(&admission).unwrap();
+    assert!(owner.hello_complete);
+    assert_eq!(admission.calls.get(), 2);
+}
+
 pub(super) fn assert_child(case: &str, owner: &mut OriginalImport18RawBootstrap) {
     if case != "initial_hello_unchecked_selection" {
         super::selection::authenticate_for_hello(owner);

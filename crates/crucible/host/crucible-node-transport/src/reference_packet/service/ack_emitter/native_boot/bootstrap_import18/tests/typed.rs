@@ -143,13 +143,10 @@ pub(super) fn assert_child(
     assert!(owner.inputs.is_empty_data());
 
     if case == "typed_foreign" {
-        owner = std::thread::spawn(move || {
+        with_foreign_thread_record(&mut owner, |owner| {
             assert!(owner.typed_bodies_data().is_err());
             assert!(owner.retained_requested_bytes().is_err());
-            owner
-        })
-        .join()
-        .unwrap();
+        });
         owner.typed_bodies_data().unwrap();
     }
     if case == "typed_changed_raw" {

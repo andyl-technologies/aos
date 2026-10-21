@@ -9,6 +9,8 @@ use super::prospective::{PrivateOperands, ProspectiveBodyConstructionData};
 use super::*;
 use crate::reference_packet::service::ack_emitter::native_boot::{
     original_import18_controller_measurement_construction_data,
+    original_import18_hello_frames_construction_data,
+    original_import18_hello_frames_counter_scratch_data,
     original_import18_hello_selection_construction_data,
     original_import18_hello_selection_counter_scratch_data,
     original_import18_raw_bootstrap_storage_data, original_import18_selection_construction_data,
@@ -85,6 +87,7 @@ pub(in crate::reference_packet) fn initial_construction_projection_data<H: Seria
         initial_quote_formatter_data(launch)?,
         native_import18_launch_identity_construction_data(launch, maximum)?,
         original_import18_hello_selection_construction_data(launch)?,
+        original_import18_hello_frames_construction_data(launch)?,
         maximum,
     )
 }
@@ -125,6 +128,7 @@ pub(in crate::reference_packet) fn initial_construction_from_wire_data(
         initial_quote_formatter_data(launch)?,
         native_import18_launch_identity_construction_data(launch, maximum)?,
         original_import18_hello_selection_construction_data(launch)?,
+        original_import18_hello_frames_construction_data(launch)?,
         maximum,
     )
 }
@@ -135,6 +139,7 @@ fn combine(
     formatter: [usize; 3],
     launch_identity: (usize, usize),
     hello: [usize; 3],
+    hello_frames: [usize; 3],
     maximum: usize,
 ) -> Result<InitialConstructionData, ProviderError> {
     // Future U64 decimal widths are fixed before a row exists. Raw and typed
@@ -169,6 +174,11 @@ fn combine(
     row[0] = add(row[0], hello[0])?;
     row[1] = row[1].max(hello[1]);
     row[2] = row[2].max(add(raw[2], hello[2])?);
+    // The physical Hello journal and both literal directions coexist with the
+    // selected roster and every original raw/typed owner.
+    row[0] = add(row[0], hello_frames[0])?;
+    row[1] = row[1].max(hello_frames[1]);
+    row[2] = row[2].max(add(raw[2], hello_frames[2])?);
     if add(add(row[0], row[1])?, row[2])? > maximum {
         return Err(exhausted());
     }
@@ -205,6 +215,8 @@ pub fn native_import18_initial_construction_counter_scratch_data() -> usize {
         + native_import18_launch_identity_counter_scratch_data()
         + native_import18_recipe_identity_counter_scratch_data()
         + original_import18_hello_selection_counter_scratch_data()
+        + original_import18_hello_frames_counter_scratch_data()
+        + size_of::<[usize; 3]>() // The retained physical Hello constructor row.
         + original_import18_selection_counter_scratch_data()
         + size_of::<[usize; 3]>() // The sequential compiled-definition row.
         + size_of::<[usize; 3]>() // The separate native Hello constructor row.

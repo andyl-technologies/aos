@@ -1131,8 +1131,8 @@ Required application compilation passes at
 targets. Its capture at
 `/nix/store/z1ll67jfr386mifp4qhlclhbsh8p8xp6-aos-workspace-src` matches all
 154 owned changed Rust paths through `8a06469476` byte for byte. The original
-initial row, physical bootstrap fields and contract bytes are unchanged by this later input-validation pass. Genuine signed
-Controller/SDK/Source proof conjunction, complete native model/semantic-spend
+initial row, physical bootstrap fields and contract bytes are unchanged by this
+later input-validation pass. Genuine signed Controller/SDK/Source proof conjunction, complete native model/semantic-spend
 validation and independent recipe reconstruction remain mandatory before fresh
 native installation or Hold effects.
 
@@ -1158,11 +1158,19 @@ and the separate quote control. The fourteen new Hello flights include both
 program families, occupied partial output, each one-byte-short constructor axis,
 admission refusal, incomplete initial custody and expiry before, during and after
 construction/loan. Both complete Transport suites pass 1,809 tests with zero
-failures and sixteen existing ignores. Affected all-feature/all-target checking, scoped formatting
-and all six architecture gates pass. Required application compilation and the
-funded-Source VM are still running; their immutable captures already
-match all 156 owned changed Rust paths byte for byte. These pending builds are
-not qualification results.
+failures and sixteen existing ignores. Affected all-feature/all-target checking,
+scoped formatting and all six architecture gates pass. Required application compilation passes at
+`/nix/store/11bjzh0g66231zrckgl4w83cw4xfv330-aos-test-targets-0.1.0`, with
+180 test executables across 58 package identities and 71 integration targets.
+Its source at `/nix/store/3yj766sh7rf3wmjl757cid64gvjh65f8-aos-workspace-src`
+matches all 156 owned changed Rust paths through `4cf6428d9b` byte for byte.
+The funded-Source VM passes at
+`/nix/store/rfdkk98ch4kq32sycql5mr7chfnrp9i9-aos-vm-test-crucible-funded-source-templates-0`.
+All three component captures use
+`/nix/store/xdz7fy57a8g7yjk5j5xfnx9pgnp2a66w-crucible-workspace-src`, with
+all 156 owned changed Rust paths byte-exact to `4cf6428d9b`. Both independent
+consumers, the three private Birth/declaration/projection/launch results, refusal
+controls and terminal namespace/credit release pass.
 
 A retained roster is not a completed native Hello, model-absent policy,
 bootstrap ACK, opaque Initial/Recipe or restoration permission. Those actual
@@ -1191,15 +1199,63 @@ Both inert program families pass. A separate Hello flight refuses an unchecked
 selection. All ten focused tests pass, covering 138 inherited-socket flights and
 the separate quote control. Both complete Transport builds pass 1,810 tests,
 zero failures and sixteen existing ignores. All six architecture gates pass.
-Affected all-feature/all-target checking and scoped formatting pass. Full
-Engine/Daemon libraries, required application compilation and the funded-Source
-VM are still running. Their
-application and three VM source captures already match all 158 owned changed
-Rust paths byte for byte; pending builds are not passing qualification results.
+Affected all-feature/all-target checking and scoped formatting pass. Required
+application compilation passes at
+`/nix/store/cxhwd99bid293lg6aav0hzvh7alj50qj-aos-test-targets-0.1.0`, with
+180 test executables across 58 package identities and 71 integration targets.
+Its source at `/nix/store/14x0i5sqdal7sm13wl38rcn684ba6rin-aos-workspace-src`
+matches all 158 owned changed Rust paths through `8697d521e9` byte for byte.
+The funded-Source VM passes at
+`/nix/store/4pq9xvshnyk8swpnq98wsv80mvmqlwgj-aos-vm-test-crucible-funded-source-templates-0`.
+All three component captures use
+`/nix/store/z6v351sfmy64kmdbyhr119sbnfvsbl0d-crucible-workspace-src`, with
+all 158 owned changed Rust paths byte-exact to `8697d521e9`. Both independent
+consumers, three private Birth/declaration/projection/launch results, refusal
+controls and terminal namespace/credit release pass. The broader Engine/Daemon
+run was interrupted as the next physical-owner source changed; it is not
+qualification evidence and will run on that final source.
 
 The complete native model-absent policy, physical Hello/ACK custody, opaque
 Initial/full Recipe producers and actual signed native/Source restoration
 conjunction remain unfinished.
+
+## Native Hello journal and literal storage retained before allocation
+
+The original bootstrap now retains the actual Hello reservation capsule, literal
+byte/descriptor bank and journal. The capsule is installed before fallible
+reservation. The same bank moves into one shared allocation and the journal
+retains that exact bank. The backing census checks actual shared-pointer identity
+before deduplication, counts distinct journal banks separately and refuses an
+outstanding mutable borrow. Failed reservations, occupied destinations and later
+admission/cut failures leave their actual constructor and allocations retained.
+
+Both initial calculations price the literal directions, two descriptors, shared
+header and bank payload beside the raw/typed owners and Hello roster. Inline
+constructor fields belong to the physical raw floor. Only completed full
+selection and roster checks permit journal construction. Each journal loan
+rechecks original custody after the callback, including callback refusal.
+
+The actual journal's Rc ownership makes the entire bootstrap neither Send nor
+Sync. A compilation control enforces both properties. Runtime origin controls
+additionally challenge the recorded creator with a real foreign thread identity;
+they no longer transfer an owner whose real journal forbids that transfer.
+
+All eleven focused reconstruction tests pass, covering 149 inherited-socket
+flights and the separate quote control. Eleven new literal-storage flights cover
+both program families, unchecked roster, occupied constructor, both admission
+boundaries, callback refusal and real expiration before/during/after work.
+All eight retained-reservation tests pass, including three new actual Hello
+constructor/census controls. Both complete Transport builds pass 1,815 tests,
+zero failures, no filtering and sixteen existing ignores. Affected
+all-feature/all-target checking, scoped formatting and all six architecture
+gates pass. Required application compilation, the funded-Source VM and the
+broader Engine/Daemon libraries are running. The immutable application and three
+VM component captures match all 162 owned changed Rust paths byte for byte;
+pending builds are not passing qualification results.
+
+This constructs physical journal storage, not an authenticated Hello exchange,
+model-absent native policy, bootstrap ACK or opaque Initial/Recipe. Those actual
+constructors and complete native/Source restoration remain required.
 
 ## Original launch custody and shared startup geometry
 

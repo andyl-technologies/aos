@@ -91,13 +91,10 @@ pub(super) fn assert_child(
         owner.bodies[2][0] ^= 1;
     }
     if case == "source_foreign" {
-        owner = std::thread::spawn(move || {
+        with_foreign_thread_record(&mut owner, |owner| {
             assert!(owner.authenticate_source_data().is_err());
             assert!(!owner.source_authenticated);
-            owner
-        })
-        .join()
-        .unwrap();
+        });
     } else {
         let outcome = owner.authenticate_source_data();
         if matches!(case, "source_producer" | "source_reactive") {
