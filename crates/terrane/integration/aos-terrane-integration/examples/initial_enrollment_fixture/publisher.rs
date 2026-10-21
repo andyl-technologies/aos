@@ -58,79 +58,81 @@ pub(super) fn prepare() -> io::Result<()> {
     use std::time::Duration;
     use terrane_format::chunking::ChunkProfile;
     use terrane_linux::{
-        host_cache::{NativeCacheOwnerConfig, NativeCachePreparation},
+        host_cache::{NativeCacheOwnerConfig, NativeReady},
         host_quota::{filesystem_uuid, open_host_path},
         publisher_local::{client::ClientConfig, socket::RoleIdentities},
     };
+    use terrane_sdk::bucket::portable_reader::PortableReadLimits;
     use terrane_sdk::host::cache::{HostDomainLocation, HostReadLimits, PolicyConfig, StateLimits};
 
     let case = Case::existing("positive")?;
     let confinement = Arc::new(terrane_linux::quota_confinement::install()?);
     for owner in 0..2 {
-        let preparation = NativeCachePreparation::inspect(
-            NativeCacheOwnerConfig {
-                location: HostDomainLocation::new(
-                    case.root(owner),
-                    DOMAINS[owner].to_owned(),
-                    ChunkProfile::cdc_1m(SEED),
-                )
-                .map_err(super::source_error)?,
-                administrative_root: Some(case.administrative(owner)),
-                publisher: ClientConfig {
-                    socket_path: socket(),
-                    identities: RoleIdentities {
-                        serve_uid: 840,
-                        publish_uid: 841,
-                    },
-                    chunk_profile_name: "cdc-1m".to_owned(),
-                    wait_budget_ms: 10_000,
+        let config = NativeCacheOwnerConfig {
+            location: HostDomainLocation::new(
+                case.root(owner),
+                DOMAINS[owner].to_owned(),
+                ChunkProfile::cdc_1m(SEED),
+            )
+            .map_err(super::source_error)?,
+            administrative_root: Some(case.administrative(owner)),
+            publisher: ClientConfig {
+                socket_path: socket(),
+                identities: RoleIdentities {
+                    serve_uid: 840,
+                    publish_uid: 841,
                 },
-                quota_socket: case.socket(),
-                quota_epoch: 1u128.to_be_bytes(),
-                quota_owner: OWNERS[owner].to_owned(),
-                filesystem_uuid: filesystem_uuid(&open_host_path(&case.root(owner), true)?)?,
-                project_id: case.project(owner),
-                project_hard_limit_bytes: LIMIT,
-                project_hard_inode_limit: 0,
-                content_uid: 840,
-                content_gid: 845,
-                state_gid: 844,
-                tier_charge_budget_bytes: 2 * LIMIT,
-                policy: PolicyConfig {
-                    capacity: 24 * 1024 * 1024,
-                    low_watermark: 16 * 1024 * 1024,
-                    probation_bytes: 65536,
-                    release_grace: Duration::from_secs(30),
-                    scan_limit: 64,
-                },
-                retirement_interval: Duration::from_secs(30),
-                reads: HostReadLimits {
-                    max_allocation_bytes: 2 * 1024 * 1024,
-                },
-                state: StateLimits {
-                    bytes: 65536,
-                    records: 64,
-                },
-                inventory_entries: 128,
-                queued_commands: 4,
-                metadata_sync_hold_bytes: 256 * 1024,
-                index_repair: None,
+                chunk_profile_name: "cdc-1m".to_owned(),
+                wait_budget_ms: 10_000,
             },
+            quota_socket: case.socket(),
+            quota_epoch: 1u128.to_be_bytes(),
+            quota_owner: OWNERS[owner].to_owned(),
+            filesystem_uuid: filesystem_uuid(&open_host_path(&case.root(owner), true)?)?,
+            project_id: case.project(owner),
+            project_hard_limit_bytes: LIMIT,
+            project_hard_inode_limit: 0,
+            content_uid: 840,
+            content_gid: 845,
+            state_gid: 844,
+            tier_charge_budget_bytes: 2 * LIMIT,
+            policy: PolicyConfig {
+                capacity: 24 * 1024 * 1024,
+                low_watermark: 16 * 1024 * 1024,
+                probation_bytes: 65536,
+                release_grace: Duration::from_secs(30),
+                scan_limit: 64,
+            },
+            retirement_interval: Duration::from_secs(30),
+            reads: HostReadLimits {
+                max_allocation_bytes: 2 * 1024 * 1024,
+            },
+            state: StateLimits {
+                bytes: 65536,
+                records: 64,
+            },
+            inventory_entries: 128,
+            queued_commands: 4,
+            metadata_sync_hold_bytes: 256 * 1024,
+            index_repair: None,
+        };
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let ready = runtime.block_on(NativeReady::open(
+            config,
+            case.bucket(owner, SEED),
+            PortableReadLimits::default(),
             confinement.clone(),
-        )?;
-        assert_eq!(preparation.quota().observation().owner_id, OWNERS[owner]);
-        assert_eq!(
-            preparation
-                .layout()
-                .directory_binding("administrative-root")?,
-            {
-                use std::os::unix::fs::MetadataExt;
-                let original = std::fs::metadata(case.administrative(owner))?;
-                (original.dev(), original.ino())
-            }
-        );
+        ))?;
+        runtime.block_on(ready.validate_portable())?;
+        assert_eq!(ready.layout().directory_binding("administrative-root")?, {
+            use std::os::unix::fs::MetadataExt;
+            let original = std::fs::metadata(case.administrative(owner))?;
+            (original.dev(), original.ino())
+        });
         println!(
-            "PASS actual configured publisher and native preparation for {} with private distinct administrative custody",
+            "PASS actual portable validation, native recovery and publisher Resume for {} with private distinct administrative custody",
             DOMAINS[owner]
         );
     }

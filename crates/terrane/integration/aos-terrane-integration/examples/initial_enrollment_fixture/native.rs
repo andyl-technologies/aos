@@ -26,7 +26,7 @@ const SELECTORS: &[&str] = &[
     "initialize-unsafe-parent",
     "serve-positive",
     "publisher-positive",
-    "prepare-public-private",
+    "ready-public-private",
     "verify-positive",
     "read-public",
     "read-private",
@@ -72,7 +72,7 @@ pub(super) fn run() -> io::Result<()> {
             Ok(())
         }
         "publisher-positive" => publisher::run(),
-        "prepare-public-private" => publisher::prepare(),
+        "ready-public-private" => publisher::prepare(),
         "read-public" | "read-private" | "read-publisher" | "foreign-private" => {
             reader::run(selector)
         }

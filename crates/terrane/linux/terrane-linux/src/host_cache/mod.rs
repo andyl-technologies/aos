@@ -12,6 +12,8 @@ mod metadata;
 #[cfg(feature = "tokio")]
 mod owner;
 mod quota;
+#[cfg(feature = "tokio")]
+mod ready;
 mod reassembly;
 #[cfg(feature = "tokio")]
 mod recovery_inspection;
@@ -47,6 +49,8 @@ pub use owner::{
     NativeResidentChunkSource, NativeResumeError, NativeSourceCleanupReport, RetainedManifest,
 };
 pub use quota::ProjectQuota;
+#[cfg(feature = "tokio")]
+pub use ready::NativeReady;
 pub use reassembly::NativeReassemblyPlan;
 #[cfg(feature = "tokio")]
 pub use recovery_inspection::{

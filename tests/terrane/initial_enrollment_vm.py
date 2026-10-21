@@ -166,7 +166,7 @@ def configured_publication():
             require(publisher.poll() is None and time.monotonic() < deadline,
                     "configured publisher failed before binding actual listener")
             time.sleep(0.02)
-        run_case("prepare-public-private", role_command("prepare-public-private", 840, [844, 845]))
+        run_case("ready-public-private", role_command("ready-public-private", 840, [844, 845]))
         require(publisher.poll() is None, "configured publisher exited during actual preparation")
     finally:
         stop(publisher)
