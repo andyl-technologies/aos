@@ -701,8 +701,16 @@ lockout hierarchy credential and cannot change that allowance or clear lockout.
 Occupied persistent handles must refuse a fresh fixture without replacing the
 existing endpoint.
 
+The fixture's `prepare` operation leaves the index unwritten, allowing an
+external initializer to learn the salt Name before deriving the canonical
+journal-cut extension input in Rust. Its `initialize` operation accepts exactly
+32 nonzero bytes and refuses an already-written index, including when given a
+restored pre-initialization fixture. Unwritten indices remain unusable by the
+runtime transport. The component test uses synthetic input bytes; installed
+hook qualification must instead seed the actual authenticated journal cut.
+
 The executed component check passes at
-`/nix/store/vqlvqq3gsmwfpxrmp6alqfcnwvk8whb5-aos-fleet-test-sandbox-method46-tpm-transport-0`.
+`/nix/store/wh69ji865nprsi8nns5zk6c7bdxnv5d3-aos-fleet-test-sandbox-method46-tpm-transport-0`.
 Its small retained checkpoint fixture is not the production durable coordinator
 or either daemon's journal. It does not exercise the helper's
 private carrier, SELinux transition, PID1 ownership, installed daemon restart,

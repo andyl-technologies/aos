@@ -39,8 +39,23 @@ static void save_fixture(const char *path, const struct fixture *fixture)
     require(fsync(fd) == 0 && close(fd) == 0, "persist fixture output");
 }
 
+static void initialize_index(struct floor_context *context,
+    struct fixture *fixture, const uint8_t input[32])
+{
+    TPM2B_MAX_NV_BUFFER seed = {.size = 32};
+    memcpy(seed.buffer, input, seed.size);
+    require(Esys_NV_Extend(context->esys, context->index, context->index,
+        ESYS_TR_PASSWORD, ESYS_TR_NONE, ESYS_TR_NONE, &seed) == TSS2_RC_SUCCESS,
+        "initialize endpoint index");
+
+    uint8_t digest_input[64] = {0};
+    memcpy(digest_input + 32, input, 32);
+    require(EVP_Digest(digest_input, sizeof(digest_input), fixture->checkpoint,
+        NULL, EVP_sha256(), NULL) == 1, "calculate initial checkpoint");
+}
+
 static void provision(struct floor_context *context, unsigned role,
-    struct fixture *fixture)
+    struct fixture *fixture, int initialize)
 {
     ESYS_TR primary = ESYS_TR_NONE;
     ESYS_TR persistent = ESYS_TR_NONE;
@@ -95,15 +110,11 @@ static void provision(struct floor_context *context, unsigned role,
         &context->index) == TSS2_RC_SUCCESS, "define exact endpoint index");
     require(Esys_TR_SetAuth(context->esys, context->index, &auth) == TSS2_RC_SUCCESS,
         "set fixture index auth");
-    TPM2B_MAX_NV_BUFFER seed = {.size = 32};
-    memset(seed.buffer, (int)(role + 1), seed.size);
-    require(Esys_NV_Extend(context->esys, context->index, context->index,
-        ESYS_TR_PASSWORD, ESYS_TR_NONE, ESYS_TR_NONE, &seed) == TSS2_RC_SUCCESS,
-        "initialize endpoint index");
-    uint8_t input[64] = {0};
-    memcpy(input + 32, seed.buffer, 32);
-    require(EVP_Digest(input, sizeof(input), fixture->checkpoint, NULL,
-        EVP_sha256(), NULL) == 1, "calculate initial checkpoint");
+    if (initialize) {
+        uint8_t seed[32];
+        memset(seed, (int)(role + 1), sizeof(seed));
+        initialize_index(context, fixture, seed);
+    }
     erase(&auth, sizeof(auth));
 }
 
@@ -138,7 +149,8 @@ static int authenticate(struct floor_context *context, unsigned role,
 
 int main(int argc, char **argv)
 {
-    require(argc == 4, "usage: probe operation endpoint state-file");
+    require(argc == 4 || (argc == 5 && strcmp(argv[1], "initialize") == 0),
+        "usage: probe operation endpoint state-file [initial-cut-input]");
     require(strcmp(argv[2], "0") == 0 || strcmp(argv[2], "1") == 0,
         "fixed endpoint selection");
     unsigned role = (unsigned)(argv[2][0] - '0');
@@ -147,16 +159,50 @@ int main(int argc, char **argv)
         .index = ESYS_TR_NONE, .session = ESYS_TR_NONE};
     require(open_direct_device(&context) == 0, "production device TCTI");
 
-    if (strcmp(argv[1], "provision") == 0) {
+    if (strcmp(argv[1], "provision") == 0 || strcmp(argv[1], "prepare") == 0) {
         require(access(argv[3], F_OK) != 0 && errno == ENOENT,
             "refuse fixture replacement");
-        provision(&context, role, &fixture);
+        provision(&context, role, &fixture, strcmp(argv[1], "provision") == 0);
         save_fixture(argv[3], &fixture);
         close_context(&context);
         return EXIT_SUCCESS;
     }
 
     load_fixture(argv[3], &fixture);
+    if (strcmp(argv[1], "initialize") == 0) {
+        require(argc == 5, "initial cut input is required");
+        require(!nonzero(fixture.checkpoint, sizeof(fixture.checkpoint))
+            && !nonzero(fixture.pending, sizeof(fixture.pending)),
+            "refuse initialized fixture");
+        require(authenticate(&context, role, &fixture) == 0,
+            "authenticate prepared salt and index");
+
+        TPM2B_NV_PUBLIC *public = NULL;
+        require(Esys_NV_ReadPublic(context.esys, context.index, ESYS_TR_NONE,
+            ESYS_TR_NONE, ESYS_TR_NONE, &public, NULL) == TSS2_RC_SUCCESS
+            && public != NULL && public->nvPublic.nvIndex == context.index_handle
+            && public->nvPublic.nameAlg == TPM2_ALG_SHA256
+            && public->nvPublic.attributes == UINT32_C(0x00040044)
+            && public->nvPublic.authPolicy.size == 0 && public->nvPublic.dataSize == 32,
+            "refuse written or foreign initial index");
+        Esys_Free(public);
+
+        /* Installed-hook callers must derive this preimage with the canonical
+         * Rust journal codec after learning the provisioned salt Name. This
+         * transport fixture never reconstructs or chooses a runtime cut. */
+        uint8_t seed[32];
+        FILE *input = fopen(argv[4], "rb");
+        require(input != NULL && fread(seed, sizeof(seed), 1, input) == 1
+            && fgetc(input) == EOF && !ferror(input), "exact initial cut input");
+        require(fclose(input) == 0 && nonzero(seed, sizeof(seed)),
+            "nonzero initial cut input");
+        initialize_index(&context, &fixture, seed);
+        save_fixture(argv[3], &fixture);
+        close_context(&context);
+        erase(&fixture, sizeof(fixture));
+        return EXIT_SUCCESS;
+    }
+
     if (strcmp(argv[1], "wrong-pin") == 0) {
         fixture.salt_name[2] ^= 1;
         require(authenticate(&context, role, &fixture) != 0,
