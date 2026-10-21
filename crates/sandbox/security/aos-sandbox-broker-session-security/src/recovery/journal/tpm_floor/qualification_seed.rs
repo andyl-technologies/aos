@@ -2,8 +2,9 @@
 //!
 //! This ignored VM fixture runs while both installed owners are stopped. It
 //! retains the real endpoint and protected main journal while deriving the
-//! canonical initial checkpoint. It never provisions NV, installs a sidecar,
-//! changes image mode, or grants runtime readiness.
+//! canonical initial checkpoint. A separate offline fixture can install that
+//! checkpoint after the VM harness authenticates the initialized NV value.
+//! Neither fixture provisions NV, changes image mode, or grants readiness.
 //!
 //! Its private directory contains public staging inputs and canonical outputs:
 //!
@@ -17,9 +18,10 @@ use std::error::Error;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write as _;
 use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use aos_sandbox_broker_session_protocol::BrokerSessionProtocolV1;
+use aos_sandbox_controller_domain::{Journal, JournalRecord, JournalTransaction, RecordNamespace};
 use sha2::{Digest as _, Sha256};
 
 use super::format::FloorEndpointV1;
@@ -41,9 +43,16 @@ fn write_new(directory: &Path, name: &str, bytes: &[u8]) -> Result<(), Box<dyn E
     Ok(())
 }
 
-#[test]
-#[ignore = "requires stopped installed Storage owners and externally prepared vTPM indices"]
-fn stage_installed_initial_floor() -> Result<(), Box<dyn Error>> {
+/// Retains the actual main writer while deriving its complete initial cut.
+struct InstalledInitialFloor {
+    directory: PathBuf,
+    owner: ProtectedBrokerSessionJournalV1,
+    profile: FloorProfileV1,
+    checkpoint: FloorCheckpointV1,
+    salt_name: [u8; 34],
+}
+
+fn installed_initial_floor() -> Result<InstalledInitialFloor, Box<dyn Error>> {
     let (endpoint, role) = match std::env::var("AOS_FLOOR_SEED_ROLE")?.as_str() {
         "client" => (
             ProtectedBrokerSessionFixedEndpointV1::ControllerStorageClient,
@@ -57,8 +66,8 @@ fn stage_installed_initial_floor() -> Result<(), Box<dyn Error>> {
     };
     let directory = std::env::var_os("AOS_FLOOR_SEED_DIRECTORY")
         .ok_or("offline floor output directory is absent")?;
-    let directory = Path::new(&directory);
-    let metadata = fs::symlink_metadata(directory)?;
+    let directory = PathBuf::from(directory);
+    let metadata = fs::symlink_metadata(&directory)?;
     if !metadata.is_dir()
         || metadata.uid() != rustix::process::geteuid().as_raw()
         || metadata.mode() & 0o077 != 0
@@ -114,20 +123,117 @@ fn stage_installed_initial_floor() -> Result<(), Box<dyn Error>> {
     }
     let checkpoint = FloorCheckpointV1::new(1, profile.scope(), cut, [0; 32], [0; 32])?;
 
+    Ok(InstalledInitialFloor {
+        directory,
+        owner,
+        profile,
+        checkpoint,
+        salt_name,
+    })
+}
+
+#[test]
+#[ignore = "requires stopped installed Storage owners and externally prepared vTPM indices"]
+fn stage_installed_initial_floor() -> Result<(), Box<dyn Error>> {
+    let InstalledInitialFloor {
+        directory,
+        mut owner,
+        profile,
+        checkpoint,
+        salt_name,
+    } = installed_initial_floor()?;
+
     let mut provisioning = [0u8; 160];
     provisioning[..8].copy_from_slice(b"AOSBTD01");
     provisioning[8..10].copy_from_slice(&1u16.to_be_bytes());
     provisioning[12..124].copy_from_slice(&profile.encode());
     provisioning[124..158].copy_from_slice(&salt_name);
-    write_new(directory, "provision", &provisioning)?;
-    write_new(directory, "checkpoint", &checkpoint.encode())?;
-    write_new(directory, "extend-input", &checkpoint.extend_input())?;
-    write_new(directory, "expected-nv", &checkpoint.nv_value())?;
-    File::open(directory)?.sync_all()?;
+    write_new(&directory, "provision", &provisioning)?;
+    write_new(&directory, "checkpoint", &checkpoint.encode())?;
+    write_new(&directory, "extend-input", &checkpoint.extend_input())?;
+    write_new(&directory, "expected-nv", &checkpoint.nv_value())?;
+    File::open(&directory)?.sync_all()?;
 
     // All outputs describe the same protected cut, held until the final check.
-    if owner.tpm_floor_cuts(profile, None)? != (cut, None) {
+    if owner.tpm_floor_cuts(profile, None)? != (checkpoint.cut(), None) {
         return Err("installed main journal changed while staging its floor".into());
+    }
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires stopped installed owners and the harness-authenticated initial NV observation"]
+fn install_installed_initial_floor() -> Result<(), Box<dyn Error>> {
+    let InstalledInitialFloor {
+        directory,
+        mut owner,
+        profile,
+        checkpoint,
+        ..
+    } = installed_initial_floor()?;
+    if fs::read(directory.join("checkpoint"))? != checkpoint.encode()
+        || fs::read(directory.join("extend-input"))? != checkpoint.extend_input()
+        || fs::read(directory.join("expected-nv"))? != checkpoint.nv_value()
+        || fs::read(directory.join("observed-nv"))? != checkpoint.nv_value()
+    {
+        return Err(
+            "offline checkpoint does not match installed history and authenticated NV".into(),
+        );
+    }
+
+    let endpoint = match profile.endpoint() {
+        FloorEndpointV1::ControllerStorageClient => {
+            ProtectedBrokerSessionFixedEndpointV1::ControllerStorageClient
+        }
+        FloorEndpointV1::StorageBroker => ProtectedBrokerSessionFixedEndpointV1::StorageBroker,
+    };
+    let fixed = fixed_endpoint(endpoint);
+    let name = super::FLOOR_SIDECAR_NAME;
+    let root = Path::new(fixed.journal_root);
+    for path in [root.join(name), root.join(format!("{name}.lock"))] {
+        match fs::symlink_metadata(path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+            Ok(_) => return Err("offline floor sidecar already exists".into()),
+        }
+    }
+
+    // Reserve without replacement. A later failure leaves a closed partial
+    // installation; repeating this fixture must never adopt or repair it.
+    let reservation = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(root.join(name))?;
+    reservation.sync_all()?;
+    File::open(root)?.sync_all()?;
+
+    let limits = crate::tpm_nv_custody::sidecar_limits(protected_session_journal_limits())?;
+    let uid = rustix::process::geteuid().as_raw();
+    let (mut sidecar, _) = Journal::open_protected_at_for_uid(root, name, limits, uid)?;
+    if sidecar.all_records().next().is_some() {
+        return Err("offline floor reservation unexpectedly contains history".into());
+    }
+    let transaction = JournalTransaction::new(
+        [1; 16],
+        vec![JournalRecord::put(
+            RecordNamespace::BrokerSessionTraffic,
+            crate::tpm_nv_custody::CHECKPOINT_KEY.to_vec(),
+            checkpoint.encode().to_vec(),
+        )],
+    )?;
+    sidecar.commit(&transaction)?;
+    drop(sidecar);
+
+    let (sidecar, _) = Journal::open_existing_protected_at_for_uid(root, name, limits, uid)?;
+    if sidecar.all_records().count() != 1
+        || sidecar.get(
+            RecordNamespace::BrokerSessionTraffic,
+            crate::tpm_nv_custody::CHECKPOINT_KEY,
+        ) != Some(checkpoint.encode().as_slice())
+        || owner.tpm_floor_cuts(profile, None)? != (checkpoint.cut(), None)
+    {
+        return Err("offline floor failed exact protected replay".into());
     }
     Ok(())
 }

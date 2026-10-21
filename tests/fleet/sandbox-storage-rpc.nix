@@ -759,8 +759,9 @@ in {
 
     ${lib.optionalString qualifyTpmFloorSeed ''
       # Offline provisioning consumes the real, fully replayed namespace-47 cut
-      # on each installed endpoint. This seeds no sidecar and grants no method-46
-      # readiness; Required-mode hook qualification remains a separate gate.
+      # on each installed endpoint. The offline installer runs only after the
+      # external probe authenticates the exact initialized NV value. This grants
+      # no method-46 readiness; Required-mode hook qualification is a separate gate.
       machine.succeed(
           "install -d -m 0711 /var/lib/method46-offline; "
           "install -d -m 0700 /var/lib/method46-external; "
@@ -797,12 +798,34 @@ in {
           machine.succeed(f"{transport} read {index} {state}")
           machine.succeed(
               f"dd if={state} of={directory}/observed-nv bs=1 skip=66 count=32 status=none; "
-              f"cmp {directory}/expected-nv {directory}/observed-nv"
+              f"chown {owner}:{owner} {directory}/observed-nv; "
+              f"chmod 0400 {directory}/observed-nv"
           )
+          machine.succeed(f"cmp {directory}/expected-nv {directory}/observed-nv")
           machine.fail(stage, timeout=30)
           assert machine.succeed(f"sha256sum {staged_files}") == staged_hashes
           machine.fail(f"{transport} initialize {index} {state} {directory}/extend-input")
           machine.succeed(f"{transport} read {index} {state}")
+          install = stage.replace("stage_installed_initial_floor", "install_installed_initial_floor")
+          journal_root = (
+              "/var/lib/aos/sandboxd/broker-session/storage"
+              if role == "client" else "/var/lib/aos/sandbox-storage/broker-session"
+          )
+          sidecar = f"{journal_root}/session-floor.journal"
+          machine.succeed(
+              f"cp {directory}/observed-nv {directory}/observed-nv.saved; "
+              f"head -c 32 /dev/zero > {directory}/observed-nv"
+          )
+          machine.fail(install, timeout=30)
+          machine.succeed(f"test ! -e {sidecar}")
+          machine.succeed(f"test ! -e {sidecar}.lock")
+          machine.succeed(f"cat {directory}/observed-nv.saved > {directory}/observed-nv")
+          machine.succeed(f"cmp {directory}/expected-nv {directory}/observed-nv")
+          machine.succeed(install, timeout=30)
+          sidecar_hash = machine.succeed(f"sha256sum {sidecar} {sidecar}.lock")
+          machine.fail(install, timeout=30)
+          assert machine.succeed(f"sha256sum {sidecar} {sidecar}.lock") == sidecar_hash
+          assert machine.succeed(f"sha256sum {staged_files}") == staged_hashes
     ''}
   '';
 }
