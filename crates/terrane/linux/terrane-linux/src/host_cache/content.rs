@@ -6,7 +6,10 @@
 //! substitutes for a native source. This host-local adapter grants no ref writes
 //! or guest authorization; callers apply their repository guard separately.
 
+mod object;
 mod validation;
+
+pub use object::{NativeChunkedObject, NativeChunkedReader};
 
 use super::{NativeConsumerLease, NativeReady};
 use std::{
@@ -83,8 +86,8 @@ impl NativeContentStore {
         &self.ready
     }
 
-    async fn pin(&self, identity: &Identity) -> Result<NativeConsumerLease, StoreFailure> {
-        let expires = TokioClock
+    fn consumer_deadline(&self) -> Result<u64, StoreFailure> {
+        TokioClock
             .now()
             .duration_since(UNIX_EPOCH)
             .map_err(|error| {
@@ -92,7 +95,11 @@ impl NativeContentStore {
             })?
             .as_secs()
             .checked_add(self.lease_duration.as_secs())
-            .ok_or_else(|| StoreFailure::new(StoreErrorKind::Capacity))?;
+            .ok_or_else(|| StoreFailure::new(StoreErrorKind::Capacity))
+    }
+
+    async fn pin(&self, identity: &Identity) -> Result<NativeConsumerLease, StoreFailure> {
+        let expires = self.consumer_deadline()?;
         self.ready
             .owner()
             .pin_resident_chunk(identity.clone(), expires)

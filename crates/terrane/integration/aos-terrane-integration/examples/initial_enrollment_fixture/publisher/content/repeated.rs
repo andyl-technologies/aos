@@ -80,7 +80,7 @@ pub(super) async fn exercise(store: &NativeContentStore, profile: &ChunkProfile)
     Ok(())
 }
 
-fn natural_chunk(profile: &ChunkProfile) -> io::Result<Vec<u8>> {
+pub(super) fn natural_chunk(profile: &ChunkProfile) -> io::Result<Vec<u8>> {
     // Independent deterministic input finds a genuine boundary below the real
     // owner's 2 MiB read bound, without changing the registered chunk profile.
     for seed in 1..=16u64 {

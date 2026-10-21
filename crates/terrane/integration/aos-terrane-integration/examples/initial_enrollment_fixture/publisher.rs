@@ -57,6 +57,14 @@ pub(super) fn run() -> io::Result<()> {
 }
 
 pub(super) fn prepare() -> io::Result<()> {
+    prepare_with(false)
+}
+
+pub(super) fn prepare_objects() -> io::Result<()> {
+    prepare_with(true)
+}
+
+fn prepare_with(objects: bool) -> io::Result<()> {
     super::reader::actual_identity(840, &[844, 845])?;
     use std::time::Duration;
     use terrane_format::chunking::ChunkProfile;
@@ -140,12 +148,26 @@ pub(super) fn prepare() -> io::Result<()> {
         );
         let store =
             NativeContentStore::new(ready, Duration::from_secs(30)).map_err(super::source_error)?;
-        runtime.block_on(content::exercise(&store, &ChunkProfile::cdc_1m(SEED)))?;
+        if objects {
+            runtime.block_on(content::exercise_objects(
+                &store,
+                &ChunkProfile::cdc_1m(SEED),
+            ))?;
+        } else {
+            runtime.block_on(content::exercise(&store, &ChunkProfile::cdc_1m(SEED)))?;
+        }
         runtime.block_on(store.ready().validate_portable())?;
-        println!(
-            "PASS actual native ContentStore chunk and metadata admission, verified reads, ranges, membership and invalid deduplication context for {}",
-            DOMAINS[owner]
-        );
+        if objects {
+            println!(
+                "PASS actual reopened native chunked object reads and original grant renewal for {}",
+                DOMAINS[owner]
+            );
+        } else {
+            println!(
+                "PASS actual native ContentStore chunk and metadata admission, verified reads, ranges, membership and invalid deduplication context for {}",
+                DOMAINS[owner]
+            );
+        }
     }
     confinement.check_current()
 }

@@ -1,5 +1,7 @@
 //! Exercises real content operations after the physical owner's acknowledged Resume.
 
+#[path = "content/objects.rs"]
+mod objects;
 #[path = "content/repeated.rs"]
 mod repeated;
 
@@ -161,4 +163,12 @@ pub(super) async fn exercise(store: &NativeContentStore, profile: &ChunkProfile)
     );
     repeated::exercise(store, profile).await?;
     Ok(())
+}
+
+/// Exercises chunked objects separately from the finite 65-reference admission case.
+pub(super) async fn exercise_objects(
+    store: &NativeContentStore,
+    profile: &ChunkProfile,
+) -> io::Result<()> {
+    objects::exercise(store, profile).await
 }
