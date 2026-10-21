@@ -156,8 +156,8 @@ mod process_control;
 #[cfg(target_os = "linux")]
 mod process_identity;
 pub use error::{
-    QemuBoundedSchedulerPreemptionTargetError, QemuNodeChannelError, QemuNodeChannelPlane,
-    QemuNodeError,
+    QemuBoundedSchedulerPreemptionTargetError, QemuFingerprintSampleError, QemuNodeChannelError,
+    QemuNodeChannelPlane, QemuNodeError,
 };
 #[cfg(target_os = "linux")]
 use hot_fork_child_console::QemuHotForkChildConsoleStage;

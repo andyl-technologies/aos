@@ -46,12 +46,30 @@ impl fmt::Display for QemuNodeChannelPlane {
     }
 }
 
+/// Retains a fingerprint protocol or component-capture failure without formatting.
+#[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
+pub enum QemuFingerprintSampleError {
+    /// The actual shared-memory sample violates its protocol contract.
+    #[error("{source}")]
+    Protocol {
+        /// Original shared-memory validation failure.
+        #[source]
+        source: crucible_qemu_shmem::FingerprintSampleError,
+    },
+    /// The plugin reported failed component captures in its actual sample.
+    #[error("black-box fingerprint sample has component failure mask {mask:#x}")]
+    ComponentFailures {
+        /// Complete failure bitset, retained without interpreting unknown bits.
+        mask: u32,
+    },
+}
+
 /// Reports a channel-local operation error before node-plane context is attached.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QemuNodeChannelError {
     /// Operation being attempted on the channel.
     pub operation: &'static str,
-    /// Authored detail, borrowed for static text and empty for typed refusals.
+    /// Authored detail, borrowed for static text and empty for typed causes.
     pub message: Cow<'static, str>,
     /// Timeout budget when this channel error came from a bounded await timeout.
     pub timeout: Option<Duration>,
@@ -60,12 +78,13 @@ pub struct QemuNodeChannelError {
     detail: ChannelFailureDetail,
 }
 
-/// Retains operational causes inline; shared decode refusals keep their original allocation.
+/// Retains typed causes inline; shared decode refusals keep their original allocation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum ChannelFailureDetail {
     Message,
     Supervision(HostSupervisionError),
     DecodeAdmission(DecodeAdmissionError),
+    FingerprintSample(QemuFingerprintSampleError),
 }
 
 impl QemuNodeChannelError {
@@ -162,6 +181,27 @@ impl QemuNodeChannelError {
         }
     }
 
+    /// Retains an actual fingerprint failure without allocating its diagnostic.
+    #[must_use]
+    pub fn fingerprint_sample(operation: &'static str, source: QemuFingerprintSampleError) -> Self {
+        Self {
+            operation,
+            message: Cow::Borrowed(""),
+            timeout: None,
+            retryable: false,
+            detail: ChannelFailureDetail::FingerprintSample(source),
+        }
+    }
+
+    /// Returns the original fingerprint failure, when present.
+    #[must_use]
+    pub const fn fingerprint_sample_source(&self) -> Option<QemuFingerprintSampleError> {
+        match self.detail {
+            ChannelFailureDetail::FingerprintSample(source) => Some(source),
+            _ => None,
+        }
+    }
+
     /// Returns the bounded await timeout that caused this channel failure.
     #[must_use]
     pub const fn bounded_timeout(&self) -> Option<Duration> {
@@ -185,6 +225,9 @@ impl fmt::Display for QemuNodeChannelError {
                 ChannelFailureDetail::DecodeAdmission(source) => {
                     return write!(formatter, "{} failed: {source}", self.operation);
                 }
+                ChannelFailureDetail::FingerprintSample(source) => {
+                    return write!(formatter, "{} failed: {source}", self.operation);
+                }
                 ChannelFailureDetail::Message => {}
             }
         }
@@ -197,6 +240,7 @@ impl std::error::Error for QemuNodeChannelError {
         match &self.detail {
             ChannelFailureDetail::Supervision(source) => Some(source),
             ChannelFailureDetail::DecodeAdmission(source) => Some(source),
+            ChannelFailureDetail::FingerprintSample(source) => Some(source),
             ChannelFailureDetail::Message => None,
         }
     }
@@ -262,6 +306,17 @@ pub enum QemuNodeError {
         /// Actual shared refusal without a replacement diagnostic allocation.
         #[source]
         source: DecodeAdmissionError,
+    },
+    /// A channel retained its actual fingerprint validation failure.
+    #[error("{plane} channel operation {operation} failed: {source}")]
+    ChannelFingerprintSample {
+        /// Channel role that returned the invalid sample.
+        plane: QemuNodeChannelPlane,
+        /// Operation whose sample validation failed.
+        operation: &'static str,
+        /// Original protocol failure or complete component-failure bitset.
+        #[source]
+        source: QemuFingerprintSampleError,
     },
     /// RAM source cleanup failed while its service remains retained.
     #[error("{operation} failed: {source}")]
@@ -546,6 +601,13 @@ impl QemuNodeError {
                 operation: source.operation,
                 source: admission,
             },
+            ChannelFailureDetail::FingerprintSample(fingerprint) => {
+                Self::ChannelFingerprintSample {
+                    plane,
+                    operation: source.operation,
+                    source: fingerprint,
+                }
+            }
             ChannelFailureDetail::Message => Self::Channel {
                 plane,
                 operation: source.operation,

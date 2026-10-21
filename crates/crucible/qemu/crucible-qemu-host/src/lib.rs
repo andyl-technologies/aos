@@ -278,11 +278,11 @@ pub use node::{
     QemuHotForkSchedulerNodeInstallError, QemuHotForkSourceRearmError,
 };
 pub use node::{
-    QemuBoundedSchedulerPreemptionTargetError, QemuFailedLaunchOwner, QemuLogicalTimeCalibration,
-    QemuNode, QemuNodeChannelError, QemuNodeChannelPlane, QemuNodeChannels, QemuNodeChild,
-    QemuNodeEmittedFrame, QemuNodeError, QemuNodeExternalProcessControl, QemuNodeIdleState,
-    QemuNodeLifecycleState, QemuNodePendingQuantum, QemuPluginIpcControlChannel,
-    QemuShmemHotPathChannel,
+    QemuBoundedSchedulerPreemptionTargetError, QemuFingerprintSampleError, QemuFailedLaunchOwner,
+    QemuLogicalTimeCalibration, QemuNode, QemuNodeChannelError, QemuNodeChannelPlane,
+    QemuNodeChannels, QemuNodeChild, QemuNodeEmittedFrame, QemuNodeError,
+    QemuNodeExternalProcessControl, QemuNodeIdleState, QemuNodeLifecycleState,
+    QemuNodePendingQuantum, QemuPluginIpcControlChannel, QemuShmemHotPathChannel,
 };
 #[cfg(target_os = "linux")]
 #[cfg(unix)]

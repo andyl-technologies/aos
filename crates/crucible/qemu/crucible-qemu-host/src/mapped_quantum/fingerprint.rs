@@ -13,16 +13,18 @@ const BLACK_BOX_EXECUTION_FINGERPRINT_DOMAIN: &str =
 pub(crate) fn validate_black_box_fingerprint_sample(
     sample: &FingerprintSample,
 ) -> Result<(), QemuNodeChannelError> {
-    sample
-        .validate()
-        .map_err(|source| QemuNodeChannelError::new("execution_fingerprint", source.to_string()))?;
-    if sample.component_failures != 0 {
-        return Err(QemuNodeChannelError::new(
+    sample.validate().map_err(|source| {
+        QemuNodeChannelError::fingerprint_sample(
             "execution_fingerprint",
-            format!(
-                "black-box fingerprint sample has component failure mask {:#x}",
-                sample.component_failures
-            ),
+            crate::QemuFingerprintSampleError::Protocol { source },
+        )
+    })?;
+    if sample.component_failures != 0 {
+        return Err(QemuNodeChannelError::fingerprint_sample(
+            "execution_fingerprint",
+            crate::QemuFingerprintSampleError::ComponentFailures {
+                mask: sample.component_failures,
+            },
         ));
     }
     if sample.vcpu_count == 0 {
@@ -466,6 +468,156 @@ mod diagnostic_tests {
             other => panic!("actual operational cause was erased: {other:?}"),
         }
         Ok(())
+    }
+
+    #[test]
+    fn invalid_fingerprint_sample_retains_exact_cause_without_formatting() {
+        use crucible_host_resources::test_support::TestAllocationObserver;
+
+        let valid = FingerprintSample {
+            vcpu_count: 1,
+            ram_bytes: 4096,
+            device_state_bytes: 512,
+            device_state_sections: 1,
+            device_state_schema_digest: [1; 32],
+            ..FingerprintSample::default()
+        };
+        let incomplete = "black-box fingerprint sample contains incomplete component evidence";
+        let cases = [
+            (
+                FingerprintSample {
+                    vcpu_count: u32::MAX,
+                    ..valid
+                },
+                "fingerprint sample vcpu count 4294967295 exceeds slot capacity 8",
+            ),
+            (
+                FingerprintSample {
+                    vcpu_count: 9,
+                    component_failures: 1,
+                    ram_bytes: 0,
+                    ..valid
+                },
+                "fingerprint sample vcpu count 9 exceeds slot capacity 8",
+            ),
+            (
+                FingerprintSample {
+                    component_failures: u32::MAX,
+                    ..valid
+                },
+                "black-box fingerprint sample has component failure mask 0xffffffff",
+            ),
+            (
+                FingerprintSample {
+                    component_failures: 1,
+                    vcpu_count: 0,
+                    ram_bytes: 0,
+                    ..valid
+                },
+                "black-box fingerprint sample has component failure mask 0x1",
+            ),
+            (
+                FingerprintSample {
+                    vcpu_count: 0,
+                    ..valid
+                },
+                "black-box fingerprint sample contains no vCPU state",
+            ),
+            (
+                FingerprintSample {
+                    ram_bytes: 0,
+                    ..valid
+                },
+                incomplete,
+            ),
+            (
+                FingerprintSample {
+                    device_state_bytes: 0,
+                    ..valid
+                },
+                incomplete,
+            ),
+            (
+                FingerprintSample {
+                    device_state_sections: 0,
+                    ..valid
+                },
+                incomplete,
+            ),
+            (
+                FingerprintSample {
+                    device_state_schema_digest: [0; 32],
+                    ..valid
+                },
+                incomplete,
+            ),
+        ];
+
+        for (sample, expected) in cases {
+            let (result, counts) = TestAllocationObserver::count(|| {
+                validate_black_box_fingerprint_sample(&sample).map_err(|channel| {
+                    let node = crate::QemuNodeError::from_channel(
+                        crate::QemuNodeChannelPlane::ShmemHotPath,
+                        channel.clone(),
+                    );
+                    (channel, node)
+                })
+            });
+
+            let (channel, node) = result.expect_err("incomplete samples must refuse");
+            assert_eq!(counts.allocations, 0, "{counts:?}");
+            assert_eq!(counts.reallocations, 0, "{counts:?}");
+            assert!(!counts.overflow);
+            assert_eq!(
+                channel.to_string(),
+                format!("execution_fingerprint failed: {expected}")
+            );
+            assert_eq!(
+                node.to_string(),
+                format!(
+                    "shmem hot path channel operation execution_fingerprint failed: {expected}"
+                )
+            );
+            assert!(!channel.is_retryable());
+            assert!(channel.bounded_timeout().is_none());
+
+            let expected_source = if sample.vcpu_count > 8 {
+                Some(crate::QemuFingerprintSampleError::Protocol {
+                    source: crucible_qemu_shmem::FingerprintSampleError::TooManyVcpus {
+                        requested: sample.vcpu_count,
+                        capacity: 8,
+                    },
+                })
+            } else if sample.component_failures != 0 {
+                Some(crate::QemuFingerprintSampleError::ComponentFailures {
+                    mask: sample.component_failures,
+                })
+            } else {
+                None
+            };
+            assert_eq!(channel.fingerprint_sample_source(), expected_source);
+            assert_eq!(
+                std::error::Error::source(&node)
+                    .and_then(|source| source.downcast_ref::<crate::QemuFingerprintSampleError>())
+                    .copied(),
+                expected_source,
+            );
+            if let Some(crate::QemuFingerprintSampleError::Protocol { source }) = expected_source {
+                let retained = std::error::Error::source(&node)
+                    .and_then(std::error::Error::source)
+                    .and_then(|source| {
+                        source.downcast_ref::<crucible_qemu_shmem::FingerprintSampleError>()
+                    });
+                assert_eq!(retained, Some(&source));
+            }
+
+            // The existing scheduler projection is outside this measurement;
+            // this cut does not fund its final diagnostic allocation.
+            assert!(matches!(
+                crucible_engine::BackendError::from(node),
+                crucible_engine::BackendError::Rejected { .. }
+            ));
+        }
     }
 
     #[test]
