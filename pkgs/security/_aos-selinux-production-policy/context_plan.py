@@ -719,6 +719,16 @@ def _choose_alias_context(path: str, contexts: Iterable[str]) -> str | None:
         if context_type(context) not in GENERIC_CONTEXT_TYPES
         and context_type(context) not in DEFAULT_CONTEXT_TYPES
     ]
+    if len(specific) > 1 and all(
+        context_type(context).endswith("_unit_t") for context in specific
+    ):
+        # A generic unit-directory alias can name the same immutable fragment
+        # as its service-specific policy path. Preserve that specific unit
+        # type; two distinct specific unit types remain an error.
+        specific = [
+            context for context in specific
+            if context_type(context) != "systemd_unit_t"
+        ]
     if len(specific) > 1:
         raise PlanError(f"conflicting specific alias labels for {path}: {specific}")
     if specific:

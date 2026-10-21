@@ -393,6 +393,41 @@ class PlanSemanticsTest(unittest.TestCase):
                 "system_u:object_r:systemd_unit_t",
             )
 
+    def test_specific_unit_alias_overrides_only_the_generic_unit_type(self) -> None:
+        class Resolver:
+            def lookup(self, path, _kind):
+                if path.startswith("/usr/lib/systemd/system/"):
+                    return "system_u:object_r:systemd_networkd_unit_t"
+                if path == "/etc/foreign-unit.service":
+                    return "system_u:object_r:systemd_logind_unit_t"
+                if path.startswith("/etc/systemd/system/"):
+                    return "system_u:object_r:systemd_unit_t"
+                if path.startswith("/nix"):
+                    return "system_u:object_r:default_t"
+                return "system_u:object_r:root_t"
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fragment = root / "nix/store/hash-systemd/lib/systemd/system/wait-online.service"
+            fragment.parent.mkdir(parents=True)
+            fragment.write_text("[Service]\nExecStart=/fixed-owner\n", encoding="ascii")
+            fragment.chmod(0o444)
+            for alias in ("usr/lib/systemd/system", "etc/systemd/system"):
+                path = root / alias
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.symlink_to("/nix/store/hash-systemd/lib/systemd/system")
+
+            labels = context_plan.plan_labels(context_plan.inventory_tree(root), Resolver())
+            by_path = {label.path: label.context for label in labels}
+            self.assertEqual(
+                by_path["/nix/store/hash-systemd/lib/systemd/system/wait-online.service"],
+                "system_u:object_r:systemd_networkd_unit_t",
+            )
+
+            (root / "etc/foreign-unit.service").hardlink_to(fragment)
+            with self.assertRaisesRegex(context_plan.PlanError, "conflicting specific alias labels"):
+                context_plan.plan_labels(context_plan.inventory_tree(root), Resolver())
+
     def test_physical_image_store_preserves_logical_package_policy(self) -> None:
         package = "a" * 32 + "-selected-component-1"
         logical = f"/nix/store/{package}/bin/component"
