@@ -12,6 +12,7 @@ from native_sdk_test_image import source_hashes
 
 CASES = [
     "private_file_mints_exact_authenticated_workload_claims",
+    "ci_change_credentials_allow_only_baseline_fork_and_assigned_branch_writes",
     "every_lifetime_bound_can_narrow_but_never_widen_issuance",
     "real_entropy_produces_distinct_tokens_and_offline_attenuation_keys",
     "expired_overflowing_and_discontinuous_time_refuse_issuance",

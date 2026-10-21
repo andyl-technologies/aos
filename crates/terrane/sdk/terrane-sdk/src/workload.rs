@@ -12,9 +12,9 @@
 //! expiry <= min(job end + margin, now + maximum lifetime, key retirement - 1)
 //! ```
 
-use std::{fmt, time::UNIX_EPOCH};
+use std::{fmt, num::NonZeroU64, time::UNIX_EPOCH};
 
-use terrane_format::auth::{self, Authority, Grant, IssuerKey, PrincipalKind, Token};
+use terrane_format::auth::{self, Authority, Grant, IssuerKey, PrincipalKind, Token, Verb, Verbs};
 use zeroize::Zeroizing;
 
 use crate::store::{Clock, LocalFs};
@@ -108,6 +108,50 @@ pub struct WorkloadClaims {
     pub expected_end: u64,
     /// Optionally requests an earlier expiry; it cannot widen the issuer bounds.
     pub not_after: Option<u64>,
+}
+
+impl WorkloadClaims {
+    /// Constructs a change job's exact baseline-fork and branch-commit policy.
+    ///
+    /// CI-5 grants `fork` on `refs/heads/ci/master` and `commit` on exactly
+    /// `refs/heads/ci/pr/<change>`. Both imply `read` under AUTH-22; neither
+    /// grants baseline writes, access to other change branches, tags or admin.
+    /// The initial group set is empty. The issuer independently bounds expiry.
+    ///
+    /// The caller must obtain the subject, job identity, change number and
+    /// expected completion time from trusted provisioning or authenticated job
+    /// metadata. This constructor does not authenticate a remote declaration.
+    ///
+    /// # Errors
+    /// Rejects an empty subject or job identity and invalid canonical grants.
+    pub fn ci_change(
+        subject: String,
+        workload: String,
+        change: NonZeroU64,
+        expected_end: u64,
+    ) -> Result<Self, MintError> {
+        if subject.is_empty() || workload.is_empty() {
+            return Err(MintError::Claims);
+        }
+        let grant = |reference, verb: Verb| {
+            Verbs::new(verb as u8)
+                .and_then(|verbs| Grant::new(reference, verbs))
+                .map_err(|_| MintError::Claims)
+        };
+        let grants = vec![
+            grant("refs/heads/ci/master".into(), Verb::Fork)?,
+            grant(format!("refs/heads/ci/pr/{change}"), Verb::Commit)?,
+        ];
+
+        Ok(Self {
+            subject,
+            workload,
+            groups: Vec::new(),
+            grants,
+            expected_end,
+            not_after: None,
+        })
+    }
 }
 
 /// Holds static signing authority without exposing secrets through diagnostics.

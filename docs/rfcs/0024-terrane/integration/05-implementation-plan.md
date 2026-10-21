@@ -11989,3 +11989,15 @@ same immutable source, verifies their complete inventories and actual execution
 logs, and binds their Cargo artifacts. This gate owns AUTH-3 only. GCP issuance
 in the deployed serve role, CI's exact grant policy and downstream enforcement
 remain unqualified. Its frozen qualification is pending; T-AUTH-2 remains open.
+
+The CI job policy constructor supplies exactly CI-5's two initial grants: fork
+on `refs/heads/ci/master` and commit on `refs/heads/ci/pr/<n>`, with AUTH-22's
+implied reads. The positive change number cannot introduce a glob or another
+ref. Subject, concrete job identity, change assignment and expected lifetime
+remain trusted provisioning inputs. The constructor supplies no group claims.
+Eight static-key and eight actual-RSA GCP cases pass, including the original
+generic identity controls and separate exact CI policy cases. Minted tokens
+refuse baseline writes, neighboring change branches, tags and admin operations.
+Both source-bound inventories include the new cases. Strict SDK Clippy, Rust
+formatting and the native `std,wasm` feature check pass; frozen qualification
+and deployed CI integration remain pending. No new task checkbox is accepted.

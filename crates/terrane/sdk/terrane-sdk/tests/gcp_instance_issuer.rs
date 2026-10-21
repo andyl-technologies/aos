@@ -20,7 +20,9 @@ use std::{
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
 use serde_json::{Value, json};
-use terrane_format::auth::{self, Grant, IssuerKey, PrincipalKind, Token, Verbs};
+use terrane_format::auth::{
+    self, Grant, IssuerKey, Locality, PrincipalKind, Request, Token, Verb, Verbs,
+};
 use terrane_sdk::{
     store::{
         Clock, HttpClient, HttpError, HttpRequest, HttpResponse, TokioLocalFs,
@@ -284,6 +286,73 @@ async fn signed_full_identity_mints_only_the_assigned_instance_and_job() {
         auth::public_key_from_secret(credential.signing_secret())
     );
     assert_eq!(http.calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn signed_ci_identity_cannot_mint_baseline_or_other_change_writes() {
+    let fixture = Fixture::new();
+    let mut assigned = assignment();
+    assigned.job = WorkloadClaims::ci_change(
+        "ci-job".into(),
+        "job-123".into(),
+        std::num::NonZeroU64::new(123).unwrap(),
+        120,
+    )
+    .unwrap();
+    let issuer = GcpInstanceIssuer::new(
+        fixture.static_issuer(),
+        "https://warehouse.test/identity".into(),
+        vec![assigned],
+        Duration::from_secs(2),
+    )
+    .unwrap();
+    let credential = issuer
+        .exchange(
+            &TokioLocalFs,
+            &Times::new(&[100]),
+            &Http::new(jwks()),
+            &signed(&payload(), "google-fixture"),
+            "job-123",
+        )
+        .await
+        .unwrap();
+    let token = Token::decode(credential.token()).unwrap();
+    let verified = token.verify(&[public_key()], 100).unwrap();
+    let authority = verified.authority();
+
+    assert!(authority.groups.is_empty());
+    assert_eq!(authority.grants.len(), 2);
+    assert_eq!(authority.grants[0].pattern(), "refs/heads/ci/master");
+    assert_eq!(authority.grants[0].verbs().bits(), 2);
+    assert_eq!(authority.grants[1].pattern(), "refs/heads/ci/pr/123");
+    assert_eq!(authority.grants[1].verbs().bits(), 4);
+    assert_eq!(authority.not_after, 118);
+
+    for (reference, verb, permitted) in [
+        ("refs/heads/ci/master", Verb::Fork, true),
+        ("refs/heads/ci/master", Verb::Commit, false),
+        ("refs/heads/ci/pr/123", Verb::Commit, true),
+        ("refs/heads/ci/pr/123", Verb::Read, true),
+        ("refs/heads/ci/pr/124", Verb::Commit, false),
+        ("refs/heads/ci/pr/124", Verb::Read, false),
+        ("refs/heads/ci/pr/123", Verb::Admin, false),
+    ] {
+        assert_eq!(
+            verified
+                .authorize(&Request {
+                    reference: reference.as_bytes(),
+                    verb,
+                    roots: &[],
+                    now: 100,
+                    surface: "sdk",
+                    locality: &Locality::default(),
+                    epochs: &[],
+                })
+                .is_ok(),
+            permitted,
+            "{verb:?} on {reference}"
+        );
+    }
 }
 
 #[tokio::test]

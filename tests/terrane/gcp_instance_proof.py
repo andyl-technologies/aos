@@ -12,6 +12,7 @@ from native_sdk_test_image import source_hashes
 
 CASES = [
     "signed_full_identity_mints_only_the_assigned_instance_and_job",
+    "signed_ci_identity_cannot_mint_baseline_or_other_change_writes",
     "changed_signatures_unknown_keys_and_unsupported_headers_are_denied",
     "signed_claims_cannot_select_another_project_instance_account_or_job",
     "signed_identity_times_are_checked_with_the_injected_clock",

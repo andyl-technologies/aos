@@ -5,13 +5,16 @@
 
 use std::{
     fs,
+    num::NonZeroU64,
     os::unix::fs::{MetadataExt, PermissionsExt, symlink},
     path::PathBuf,
     sync::atomic::{AtomicUsize, Ordering},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use terrane_format::auth::{self, Attenuation, Grant, IssuerKey, PrincipalKind, Token, Verbs};
+use terrane_format::auth::{
+    self, Attenuation, Grant, IssuerKey, Locality, PrincipalKind, Request, Token, Verb, Verbs,
+};
 use terrane_sdk::{
     store::{Clock, TokioLocalFs},
     workload::{IssuerPolicy, MintError, StaticKeyIssuer, WorkloadClaims},
@@ -148,6 +151,83 @@ async fn private_file_mints_exact_authenticated_workload_claims() {
     assert!(token.verify(&[public_key()], 125).is_ok());
     assert!(token.verify(&[public_key()], 126).is_err());
     assert!(token.verify(&[public_key()], 99).is_err());
+}
+
+#[tokio::test]
+async fn ci_change_credentials_allow_only_baseline_fork_and_assigned_branch_writes() {
+    let fixture = Fixture::new();
+    let issuer = fixture.issuer(60, 5, None);
+
+    for change in [1, 123, u64::MAX] {
+        let claims = WorkloadClaims::ci_change(
+            "ci-job".into(),
+            format!("run-{change}"),
+            NonZeroU64::new(change).unwrap(),
+            120,
+        )
+        .unwrap();
+        let credential = issuer
+            .mint(&TokioLocalFs, &Times::new(&[100]), claims)
+            .await
+            .unwrap();
+        let token = Token::decode(credential.token()).unwrap();
+        let verified = token.verify(&[public_key()], 100).unwrap();
+        let authority = verified.authority();
+        let assigned = format!("refs/heads/ci/pr/{change}");
+
+        assert!(authority.groups.is_empty());
+        assert_eq!(authority.grants.len(), 2);
+        assert_eq!(authority.grants[0].pattern(), "refs/heads/ci/master");
+        assert_eq!(authority.grants[0].verbs().bits(), 2);
+        assert_eq!(authority.grants[1].pattern(), assigned);
+        assert_eq!(authority.grants[1].verbs().bits(), 4);
+        assert_eq!(authority.not_after, 125);
+
+        for (reference, read, fork, commit) in [
+            ("refs/heads/ci/master", true, true, false),
+            (assigned.as_str(), true, false, true),
+            ("refs/heads/ci/pr/0", false, false, false),
+            ("refs/heads/ci/pr/0123", false, false, false),
+            ("refs/heads/ci/pr/123/child", false, false, false),
+            ("refs/heads/other", false, false, false),
+            ("refs/tags/ci/pr/123", false, false, false),
+        ] {
+            for (verb, permitted) in [
+                (Verb::Read, read),
+                (Verb::Fork, fork),
+                (Verb::Commit, commit),
+                (Verb::Tag, false),
+                (Verb::Admin, false),
+            ] {
+                let request = Request {
+                    reference: reference.as_bytes(),
+                    verb,
+                    roots: &[],
+                    now: 100,
+                    surface: "sdk",
+                    locality: &Locality::default(),
+                    epochs: &[],
+                };
+                assert_eq!(
+                    verified.authorize(&request).is_ok(),
+                    permitted,
+                    "change {change}: {verb:?} on {reference}"
+                );
+            }
+        }
+    }
+
+    for (subject, workload) in [("", "run-1"), ("ci-job", "")] {
+        assert!(
+            WorkloadClaims::ci_change(
+                subject.into(),
+                workload.into(),
+                NonZeroU64::new(1).unwrap(),
+                120,
+            )
+            .is_err()
+        );
+    }
 }
 
 #[tokio::test]
