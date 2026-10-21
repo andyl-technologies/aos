@@ -11,8 +11,28 @@ use crate::direct_upload::DirectSessionState;
 use crate::direct_upload::DirectUploadTarget;
 
 use super::super::DirectUploadSessionRecord;
-use crate::backend::CheckedStatement;
+use crate::backend::{CheckedStatement, PostgresLockSql};
 use crate::db::Database;
+
+mod postgres;
+
+fn copy_lock(
+    predicates: &[String],
+    values: Vec<crate::value::Value>,
+    native_postgres: bool,
+) -> CheckedStatement {
+    let mut lock = CheckedStatement::row_lock(
+        "object_placements",
+        "observed_at",
+        predicates.join(" OR "),
+        values,
+        predicates.len() as u64,
+    );
+    if native_postgres {
+        lock.postgres_lock_sql = Some(PostgresLockSql::new(postgres::copy_locks(predicates.len())));
+    }
+    lock
+}
 
 /// Describes the SQL copy whose explicit DirectUpload source is being checked.
 #[derive(Debug, Clone)]
@@ -133,8 +153,10 @@ impl Database {
     /// At most one full canonical record is retained. Compact source tuples and
     /// exact copy tuples are bounded to 65,536 copies and 11,000 checked statements;
     /// exceeding either limit refuses before pointer effects. Predicates are grouped
-    /// below 96 parameters for every backend. Terminal originals and receipts are
-    /// immutable through production APIs: completion inserts once, exact replay is
+    /// below 96 parameters for SQLite/Worker and MySQL; PostgreSQL uses bounded
+    /// groups of at most 5,120 parameters to avoid per-copy round trips.
+    /// Terminal originals and receipts are immutable through production APIs:
+    /// completion inserts once, exact replay is
     /// read-only, and Abort cannot alter a committed source.
     ///
     /// Callers append this plan after catalogue locks and before presence locks,
@@ -159,6 +181,11 @@ impl Database {
     ) -> Result<Vec<CheckedStatement>> {
         const MAX_COPIES: i64 = 65_536;
         const MAX_STATEMENTS: usize = 11_000;
+        // Worker turns retain their 96-parameter bound. PostgreSQL admits larger
+        // fixed groups, with identical predicates and exact affected-row fences.
+        let native_postgres = self.backend.dialect() == crate::dialect::Dialect::Postgres;
+        let (copy_group_size, source_group_size) =
+            if native_postgres { (512, 512) } else { (8, 24) };
         let count = self.backend.query_opt(
             "SELECT COUNT(*) FROM registry_publication_objects object
              JOIN registry_publication_placements required ON required.publication_id = object.publication_id AND required.required = 1
@@ -276,14 +303,11 @@ impl Database {
                     write_spec,
                     binding_version
                 ]);
-                if copy_predicates.len() == 8 {
-                    copy_checks.push(CheckedStatement::exact(
-                        format!(
-                            "UPDATE object_placements SET observed_at = observed_at WHERE {}",
-                            copy_predicates.join(" OR ")
-                        ),
+                if copy_predicates.len() == copy_group_size {
+                    copy_checks.push(copy_lock(
+                        &copy_predicates,
                         std::mem::take(&mut copy_values),
-                        copy_predicates.len() as u64,
+                        native_postgres,
                     ));
                     copy_predicates.clear();
                 }
@@ -295,14 +319,7 @@ impl Database {
             "direct provenance source set changed during read"
         );
         if !copy_predicates.is_empty() {
-            copy_checks.push(CheckedStatement::exact(
-                format!(
-                    "UPDATE object_placements SET observed_at = observed_at WHERE {}",
-                    copy_predicates.join(" OR ")
-                ),
-                copy_values,
-                copy_predicates.len() as u64,
-            ));
+            copy_checks.push(copy_lock(&copy_predicates, copy_values, native_postgres));
         }
 
         // These fixed set-based locks precede all exact copy locks. Original and
@@ -312,11 +329,23 @@ impl Database {
             JOIN object_placements presence ON presence.surface_object_id = object.surface_object_id AND presence.placement_id = required.placement_id
             WHERE object.publication_id = ?1 AND object.object_kind = 'immutable' AND presence.direct_upload_session_id IS NOT NULL";
         let mut statements = vec![
-            CheckedStatement::exact(format!("UPDATE direct_upload_sessions SET updated_at = updated_at WHERE state = 'committed' AND session_id IN ({selected})"), vals![publication], sources.len() as u64),
-            CheckedStatement::exact(format!("UPDATE direct_upload_completion_receipts SET committed_at = committed_at WHERE session_id IN ({selected})"), vals![publication], sources.len() as u64),
+            CheckedStatement::row_lock(
+                "direct_upload_sessions",
+                "updated_at",
+                format!("state = 'committed' AND session_id IN ({selected})"),
+                vals![publication],
+                sources.len() as u64,
+            ),
+            CheckedStatement::row_lock(
+                "direct_upload_completion_receipts",
+                "committed_at",
+                format!("session_id IN ({selected})"),
+                vals![publication],
+                sources.len() as u64,
+            ),
         ];
         let source_rows = sources.into_iter().collect::<Vec<_>>();
-        for group in source_rows.chunks(24) {
+        for group in source_rows.chunks(source_group_size) {
             let mut predicates = Vec::new();
             let mut values = Vec::new();
             for (session, (fingerprint, version, evidence_digest)) in group {
@@ -325,12 +354,22 @@ impl Database {
                     AND EXISTS (SELECT 1 FROM direct_upload_completion_receipts receipt WHERE receipt.session_id = direct_upload_sessions.session_id AND receipt.evidence_digest = ?{}))", start+1, start+2, start+3));
                 values.extend(vals![session, fingerprint, version, evidence_digest]);
             }
-            statements.push(CheckedStatement::exact(format!("UPDATE direct_upload_sessions SET updated_at = updated_at WHERE state = 'committed' AND ({})", predicates.join(" OR ")), values, group.len() as u64));
+            let mut lock = CheckedStatement::row_lock(
+                "direct_upload_sessions",
+                "updated_at",
+                format!("state = 'committed' AND ({})", predicates.join(" OR ")),
+                values,
+                group.len() as u64,
+            );
+            if native_postgres {
+                lock.postgres_lock_sql =
+                    Some(PostgresLockSql::new(postgres::source_locks(group.len())));
+            }
+            statements.push(lock);
         }
         statements.extend(copy_checks);
         // New links appearing after preflight cannot bypass typed validation.
-        statements.push(CheckedStatement::exact(
-            "UPDATE registry_publications SET mutation_version = mutation_version WHERE publication_id = ?1
+        statements.push(CheckedStatement::row_lock("registry_publications", "mutation_version", "publication_id = ?1
                AND (SELECT COUNT(*) FROM registry_publication_objects object
                  JOIN registry_publication_placements required ON required.publication_id = object.publication_id AND required.required = 1
                  JOIN object_placements presence ON presence.surface_object_id = object.surface_object_id AND presence.placement_id = required.placement_id

@@ -877,21 +877,47 @@ mod postgres {
         tx: &mut sqlx::Transaction<'_, Postgres>,
         stmts: &[CheckedStatement],
     ) -> Result<()> {
+        use std::borrow::Cow;
+
+        use futures_util::TryStreamExt as _;
+
         for checked in stmts {
-            let (sql, params) = prepare(
-                Dialect::Postgres,
-                &checked.statement.sql,
-                &checked.statement.params,
-            )?;
-            let result = bind(sqlx::query(&sql), &params, &sql)
-                .execute(&mut **tx)
-                .await
-                .with_context(|| format!("executing {sql}"))?;
+            let (sql, params) = if let Some(lock) = &checked.postgres_lock_sql {
+                (
+                    Cow::Borrowed(lock.translated_sql()?),
+                    Cow::Borrowed(checked.statement.params.as_slice()),
+                )
+            } else {
+                let (sql, params) = prepare(
+                    Dialect::Postgres,
+                    &checked.statement.sql,
+                    &checked.statement.params,
+                )?;
+                (Cow::Owned(sql), Cow::Owned(params))
+            };
+            let affected = if checked.postgres_lock_sql.is_some() {
+                let mut rows = bind(sqlx::query(&sql), &params, &sql).fetch(&mut **tx);
+                let mut count = 0_u64;
+                while rows
+                    .try_next()
+                    .await
+                    .with_context(|| format!("locking rows for {sql}"))?
+                    .is_some()
+                {
+                    count += 1;
+                }
+                count
+            } else {
+                bind(sqlx::query(&sql), &params, &sql)
+                    .execute(&mut **tx)
+                    .await
+                    .with_context(|| format!("executing {sql}"))?
+                    .rows_affected()
+            };
             if let Some(expected) = checked.expected_rows {
                 anyhow::ensure!(
-                    result.rows_affected() == expected,
-                    "checked batch expected {expected} affected rows, got {} for {sql}",
-                    result.rows_affected()
+                    affected == expected,
+                    "checked batch expected {expected} affected rows, got {affected} for {sql}"
                 );
             }
         }
@@ -914,6 +940,102 @@ mod postgres {
         use crate::backend::CheckedStatement;
         use crate::backend::Statement;
         use crate::value::Value;
+
+        #[tokio::test]
+        #[ignore = "requires an isolated PostgreSQL server via AOS_TEST_POSTGRES_SOCKET"]
+        async fn row_locks_preserve_tuples_block_writers_and_roll_back_count_mismatches(
+        ) -> Result<()> {
+            let socket = std::env::var("AOS_TEST_POSTGRES_SOCKET")?;
+            anyhow::ensure!(socket.starts_with('/'), "a local Unix socket is required");
+            let pool = PgPoolOptions::new()
+                .max_connections(3)
+                .connect_with(
+                    PgConnectOptions::new()
+                        .host(&socket)
+                        .username("postgres")
+                        .database("postgres")
+                        .ssl_mode(PgSslMode::Disable),
+                )
+                .await?;
+            let schema = format!("row_lock_{}", uuid::Uuid::new_v4().simple());
+            sqlx::raw_sql(&format!(
+                "CREATE SCHEMA {schema};
+                 CREATE TABLE {schema}.counters (id BIGINT PRIMARY KEY, value BIGINT NOT NULL);
+                 INSERT INTO {schema}.counters VALUES (1, 0), (2, 0);"
+            ))
+            .execute(&pool)
+            .await?;
+
+            let result = check_row_locks(&pool, &schema).await;
+            let cleanup = sqlx::raw_sql(&format!("DROP SCHEMA {schema} CASCADE"))
+                .execute(&pool)
+                .await;
+            pool.close().await;
+            result?;
+            cleanup?;
+            Ok(())
+        }
+
+        async fn check_row_locks(pool: &sqlx::PgPool, schema: &str) -> Result<()> {
+            let table = format!("{schema}.counters");
+            let lock = CheckedStatement::row_lock(
+                &table,
+                "value",
+                "id = ?1 AND value = ?2",
+                vec![Value::Int(1), Value::Int(0)],
+                1,
+            );
+            let version_sql = format!("SELECT xmin::text FROM {table} WHERE id = 1");
+            let original: String = sqlx::query_scalar(&version_sql).fetch_one(pool).await?;
+
+            let mut owner = pool.begin().await?;
+            super::checked_statements(&mut owner, &[lock.clone()]).await?;
+            let mut writer = pool.begin().await?;
+            sqlx::query("SET LOCAL lock_timeout = '100ms'")
+                .execute(&mut *writer)
+                .await?;
+            let blocked = sqlx::query(&format!("UPDATE {table} SET value = 1 WHERE id = 1"))
+                .execute(&mut *writer)
+                .await
+                .expect_err("a checked row lock must block a concurrent writer");
+            assert_eq!(
+                blocked
+                    .as_database_error()
+                    .and_then(sqlx::error::DatabaseError::code)
+                    .as_deref(),
+                Some("55P03")
+            );
+            writer.rollback().await?;
+            owner.commit().await?;
+
+            let retained: String = sqlx::query_scalar(&version_sql).fetch_one(pool).await?;
+            assert_eq!(
+                original, retained,
+                "locking must not create a new tuple version"
+            );
+
+            let mut wrong_count = lock;
+            wrong_count.expected_rows = Some(2);
+            let rejected = checked_batch(
+                pool,
+                &[
+                    CheckedStatement::exact(
+                        format!("UPDATE {table} SET value = 1 WHERE id = 2"),
+                        Vec::new(),
+                        1,
+                    ),
+                    wrong_count,
+                ],
+            )
+            .await;
+            assert!(rejected.is_err());
+            let unchanged: i64 =
+                sqlx::query_scalar(&format!("SELECT value FROM {table} WHERE id = 2"))
+                    .fetch_one(pool)
+                    .await?;
+            assert_eq!(unchanged, 0, "count mismatch must roll back earlier writes");
+            Ok(())
+        }
 
         #[tokio::test]
         #[ignore = "requires an isolated PostgreSQL server via AOS_TEST_POSTGRES_SOCKET"]

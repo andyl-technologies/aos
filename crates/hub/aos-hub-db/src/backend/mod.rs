@@ -98,6 +98,7 @@ impl Statement {
         CheckedStatement {
             statement: self,
             expected_rows: Some(expected_rows),
+            postgres_lock_sql: None,
         }
     }
 
@@ -107,11 +108,12 @@ impl Statement {
         CheckedStatement {
             statement: self,
             expected_rows: None,
+            postgres_lock_sql: None,
         }
     }
 }
 
-/// One atomic batch statement with an optional affected-row assertion.
+/// One atomic batch statement with an optional exact row-count assertion.
 ///
 /// A mismatch is a transaction error, not a post-commit diagnostic. Native
 /// backends roll the transaction back and the Worker propagates the error from
@@ -121,11 +123,95 @@ impl Statement {
 pub struct CheckedStatement {
     /// Statement to execute.
     pub statement: Statement,
-    /// Required affected-row count, or `None` when the statement is auxiliary.
+    /// Required affected or locked-row count, or `None` for an auxiliary statement.
     pub expected_rows: Option<u64>,
+    /// Equivalent PostgreSQL row-lock query for a checked no-op update.
+    ///
+    /// Other engines execute `statement`. PostgreSQL can retain the same exact
+    /// predicate and exclusive row locks without creating new tuple versions.
+    pub postgres_lock_sql: Option<PostgresLockSql>,
+}
+
+/// A PostgreSQL row-lock query with shared, lazily translated SQL.
+///
+/// Cloned dependency plans retain one translation of each immutable query. Bound
+/// values, transaction execution and exact row-count checks remain per invocation.
+#[derive(Debug, Clone)]
+pub struct PostgresLockSql {
+    inner: std::sync::Arc<PostgresLockSqlInner>,
+}
+
+#[derive(Debug)]
+struct PostgresLockSqlInner {
+    source: String,
+    #[cfg(not(target_arch = "wasm32"))]
+    translated: std::sync::OnceLock<String>,
+}
+
+impl PartialEq for PostgresLockSql {
+    fn eq(&self, other: &Self) -> bool {
+        self.inner.source == other.inner.source
+    }
+}
+
+impl Eq for PostgresLockSql {}
+
+impl PostgresLockSql {
+    /// Builds a row-lock query from trusted source SQL with numbered parameters.
+    #[must_use]
+    pub fn new(source: impl Into<String>) -> Self {
+        Self {
+            inner: std::sync::Arc::new(PostgresLockSqlInner {
+                source: source.into(),
+                #[cfg(not(target_arch = "wasm32"))]
+                translated: std::sync::OnceLock::new(),
+            }),
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn translated_sql(&self) -> Result<&str> {
+        if self.inner.translated.get().is_none() {
+            let translated = Dialect::Postgres.translate(&self.inner.source)?.sql;
+            // Concurrent first users may derive the same immutable SQL. Only the
+            // first stores it; no transaction result or parameter is retained.
+            let _ = self.inner.translated.set(translated);
+        }
+        self.inner
+            .translated
+            .get()
+            .map(String::as_str)
+            .context("translated PostgreSQL row-lock query absent")
+    }
 }
 
 impl CheckedStatement {
+    /// Locks exactly the rows matching a trusted SQL predicate.
+    ///
+    /// PostgreSQL uses `SELECT FOR UPDATE`; other engines use a checked no-op
+    /// update. Both forms retain exclusive locks until the surrounding batch
+    /// ends and assert the same row count. Table and column names are source
+    /// constants; values belong in `params`.
+    #[must_use]
+    pub fn row_lock(
+        table: &str,
+        column: &str,
+        predicate: impl Into<String>,
+        params: Vec<Value>,
+        expected_rows: u64,
+    ) -> Self {
+        let predicate = predicate.into();
+        let mut checked = Self::exact(
+            format!("UPDATE {table} SET {column} = {column} WHERE {predicate}"),
+            params,
+            expected_rows,
+        );
+        checked.postgres_lock_sql = Some(PostgresLockSql::new(format!(
+            "SELECT 1 FROM {table} WHERE {predicate} FOR UPDATE"
+        )));
+        checked
+    }
+
     /// Builds a statement that must affect exactly `expected_rows`.
     #[must_use]
     pub fn exact(sql: impl Into<String>, params: Vec<Value>, expected_rows: u64) -> Self {

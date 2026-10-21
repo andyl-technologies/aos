@@ -277,6 +277,7 @@ pub(crate) async fn execute_remote_sql(
                         params: statement.params,
                     },
                     expected_rows: statement.expected_rows,
+                    postgres_lock_sql: None,
                 })
                 .collect::<Vec<_>>();
             backend.checked_batch_owned(checked).await?;

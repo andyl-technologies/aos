@@ -160,19 +160,70 @@ impl Database {
             .checked_mul(placements)
             .context("direct dependency count overflow")?;
         let mut locks = vec![
-            CheckedStatement::exact("UPDATE registry_publication_placements SET observed_at = observed_at WHERE publication_id = ?1 AND required = 1", vals![publication], u64::try_from(placements)?),
-            CheckedStatement::exact("UPDATE registry_publication_objects SET expected_size = expected_size WHERE publication_id = ?1 AND object_kind = 'immutable'", vals![publication], u64::try_from(objects)?),
-            CheckedStatement::exact("UPDATE registry_publication_manifest_sessions SET resource_version = resource_version WHERE publication_id = ?1 AND state = 'sealed'", vals![publication], 1),
-            CheckedStatement::exact("UPDATE surface_objects SET updated_at = updated_at WHERE id IN (SELECT surface_object_id FROM registry_publication_objects WHERE publication_id = ?1 AND object_kind = 'immutable')", vals![publication], u64::try_from(objects)?),
+            CheckedStatement::row_lock(
+                "registry_publication_placements",
+                "observed_at",
+                "publication_id = ?1 AND required = 1",
+                vals![publication],
+                u64::try_from(placements)?,
+            ),
+            CheckedStatement::row_lock(
+                "registry_publication_objects",
+                "expected_size",
+                "publication_id = ?1 AND object_kind = 'immutable'",
+                vals![publication],
+                u64::try_from(objects)?,
+            ),
+            CheckedStatement::row_lock(
+                "registry_publication_manifest_sessions",
+                "resource_version",
+                "publication_id = ?1 AND state = 'sealed'",
+                vals![publication],
+                1,
+            ),
+            CheckedStatement::row_lock(
+                "surface_objects",
+                "updated_at",
+                "id IN (SELECT surface_object_id FROM registry_publication_objects
+                  WHERE publication_id = ?1 AND object_kind = 'immutable')",
+                vals![publication],
+                u64::try_from(objects)?,
+            ),
         ];
         locks.extend(
             self.direct_publication_provenance_locks(publication)
                 .await?,
         );
         locks.extend([
-            CheckedStatement::exact("UPDATE object_placements SET observed_at = observed_at WHERE surface_object_id IN (SELECT surface_object_id FROM registry_publication_objects WHERE publication_id = ?1 AND object_kind = 'immutable') AND placement_id IN (SELECT placement_id FROM registry_publication_placements WHERE publication_id = ?1 AND required = 1)", vals![publication], u64::try_from(copies)?),
-            CheckedStatement::exact("UPDATE registry_publication_object_evidence SET observed_at = observed_at WHERE publication_id = ?1 AND surface_object_id IN (SELECT surface_object_id FROM registry_publication_objects WHERE publication_id = ?1 AND object_kind = 'immutable') AND placement_id IN (SELECT placement_id FROM registry_publication_placements WHERE publication_id = ?1 AND required = 1)", vals![publication], u64::try_from(copies)?),
-            CheckedStatement::exact("UPDATE registry_placement_publication_watermarks SET observed_at = observed_at WHERE placement_id IN (SELECT placement_id FROM registry_publication_placements WHERE publication_id = ?1 AND required = 1)", vals![publication], u64::try_from(placements)?),
+            CheckedStatement::row_lock(
+                "object_placements",
+                "observed_at",
+                "surface_object_id IN (SELECT surface_object_id FROM registry_publication_objects
+                   WHERE publication_id = ?1 AND object_kind = 'immutable')
+                 AND placement_id IN (SELECT placement_id FROM registry_publication_placements
+                   WHERE publication_id = ?1 AND required = 1)",
+                vals![publication],
+                u64::try_from(copies)?,
+            ),
+            CheckedStatement::row_lock(
+                "registry_publication_object_evidence",
+                "observed_at",
+                "publication_id = ?1 AND surface_object_id IN
+                   (SELECT surface_object_id FROM registry_publication_objects
+                    WHERE publication_id = ?1 AND object_kind = 'immutable')
+                 AND placement_id IN (SELECT placement_id FROM registry_publication_placements
+                   WHERE publication_id = ?1 AND required = 1)",
+                vals![publication],
+                u64::try_from(copies)?,
+            ),
+            CheckedStatement::row_lock(
+                "registry_placement_publication_watermarks",
+                "observed_at",
+                "placement_id IN (SELECT placement_id FROM registry_publication_placements
+                   WHERE publication_id = ?1 AND required = 1)",
+                vals![publication],
+                u64::try_from(placements)?,
+            ),
         ]);
         Ok(locks)
     }
