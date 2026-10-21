@@ -730,11 +730,19 @@ The AOS Nix QEMU checks `fleet.sandbox-domain-native-journal` and
 and native Policy unit suites, respectively, with zero filtered tests. They
 run as UID 1000 beneath real root-owned guest ancestry, with a 32 MiB libtest
 stack and serial execution. Their passing artifacts are
-`/nix/store/q4rijnjq0f8n8h266m6pq0k30p7n3mpc-aos-fleet-test-sandbox-domain-native-journal-0`
+`/nix/store/g9qz5zl5c4zsi2hdsb52bvnw654ga8vi-aos-fleet-test-sandbox-domain-native-journal-0`
 and
 `/nix/store/j4dssy0j5wh62w82xkblhlnshsz35l0y-aos-fleet-test-sandbox-policy-native-journal-0`.
 This includes the protected-ancestry cases excluded from the Nix build
 sandbox; it supplies no installed Controller admission or TPM floor authority.
+
+The Domain rerun after the Storage host-descriptor handoff passes all 1,783
+tests. It includes the closed PID 1 OpenFile role, path, flag, and uniqueness
+checks for the immutable image, host mount namespace, and workspace pin root.
+Storage receives those originals from PID 1 before its private namespace is
+created; it does not open PID 1's procfs namespace or retain a host-root FD.
+Passing these native tests does not qualify the Storage restart/repair VM or
+the installed two-owner floor hooks.
 
 The AOS Nix QEMU check `fleet.sandbox-publisher-native-sessions` passes the
 complete seven-test Publisher suite with `kernel-tests`, including all five
