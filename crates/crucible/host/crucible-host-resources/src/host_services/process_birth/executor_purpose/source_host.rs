@@ -109,6 +109,10 @@ impl AuthenticatedNativeSubdivision {
     /// # Errors
     /// Refuses changed Main custody, an occupied Source window, an invalid peak
     /// or exhausted existing metadata/descriptor capacity.
+    #[expect(
+        clippy::result_large_err,
+        reason = "The refusal retains actual inline custody without allocation."
+    )]
     pub fn reserve_source_host_purpose(
         &self,
         control_peak: u64,

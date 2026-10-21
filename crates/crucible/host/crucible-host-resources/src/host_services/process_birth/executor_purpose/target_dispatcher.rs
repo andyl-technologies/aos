@@ -108,6 +108,10 @@ impl AuthenticatedNativeSubdivision {
     /// # Errors
     /// Refuses changed Main/family ownership, unavailable original capacity,
     /// absent paid descriptor remainder, or an occupied or insufficient window.
+    #[expect(
+        clippy::result_large_err,
+        reason = "The refusal retains actual inline custody without allocation."
+    )]
     pub fn reserve_target_dispatcher_purpose(
         &self,
         control_peak: u64,

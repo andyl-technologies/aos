@@ -35,10 +35,16 @@ fn worker_with_held_tls() -> (NativeJoinOwner, Receiver<()>, Sender<()>) {
     (NativeJoinOwner::from_worker(worker), observed, release)
 }
 
+// crucible-lint: allow clippy-disallowed-method -- this kernel-only fixture watchdog supplies no execution Original or modeled time.
+// crucible-lint: allow rust-allow -- only this actual pthread-return observation uses the fixture watchdog.
+#[allow(clippy::disallowed_methods)]
 fn require_joined(owner: &mut NativeJoinOwner) {
     let end = Instant::now() + Duration::from_secs(5);
     loop {
-        match owner.poll().unwrap() {
+        match owner
+            .poll()
+            .unwrap_or_else(|error| panic!("poll actual TLS task: {error:?}"))
+        {
             NativeJoinObservation::Returned => return,
             NativeJoinObservation::Pending => {
                 assert!(Instant::now() < end, "actual TLS task did not return");

@@ -39,6 +39,8 @@ struct SupervisedAudit<'a> {
     first: Cell<Option<HostSupervisionError>>,
 }
 
+type ProjectAdmission<'a> = &'a mut dyn FnMut((u64, u32)) -> Result<(), LinuxProjectQuotaError>;
+
 impl SupervisedAudit<'_> {
     fn observe(&self, result: Result<(), HostSupervisionError>) -> Result<(), QuotaAuditRefusal> {
         result.map_err(|first| {
@@ -172,6 +174,10 @@ impl SupervisedProjectQuotaBinding {
         Ok(binding)
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Quota geometry, retained supervision and namespace disposition remain explicit."
+    )]
     fn bind(
         root: &Path,
         project_id: u32,
@@ -180,7 +186,7 @@ impl SupervisedProjectQuotaBinding {
         supervisor: HostOperationSupervisor,
         operation: &HostOperationGuard,
         retain_uncertain_namespace: bool,
-        admission: Option<&mut dyn FnMut((u64, u32)) -> Result<(), LinuxProjectQuotaError>>,
+        admission: Option<ProjectAdmission<'_>>,
     ) -> Result<Self, SupervisedProjectQuotaError> {
         let audit = SupervisedAudit {
             operation,

@@ -362,6 +362,10 @@ impl AuthenticatedNativeSlotPurpose {
     /// Refuses a foreign or inactive Preparation, an occupied root claim,
     /// exhausted Main capacity, or an unrepresentable pool control extent.
     /// Refused root/kernel/descriptor effects remain in the permanent Main.
+    #[expect(
+        clippy::result_large_err,
+        reason = "The refusal retains actual inline custody without allocation."
+    )]
     pub fn claim_native_pool(
         self: &Arc<Self>,
         request: HostResourceVector,
@@ -570,6 +574,10 @@ impl AuthenticatedNativeSubdivision {
     ///
     /// # Errors
     /// Refuses absent node custody, foreign/inactive Preparation or postcut.
+    #[expect(
+        clippy::result_large_err,
+        reason = "The refusal retains actual inline custody without allocation."
+    )]
     pub fn reserve_node_target_window(
         &self,
         original: &Arc<HostOperationGuard>,

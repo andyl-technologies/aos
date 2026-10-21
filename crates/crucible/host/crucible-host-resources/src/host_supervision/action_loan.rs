@@ -636,6 +636,10 @@ impl HostOperationGuard {
     /// # Errors
     /// Refuses occupied output, invalid row/dependency shape, expired authority,
     /// insufficient actual Source credit or uncertain synchronization.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "The lender, publisher, exact binding and borrower coordinates remain explicit."
+    )]
     pub fn lend_action(
         &self,
         purpose: &AuthenticatedSourceHostPurpose,
@@ -764,10 +768,10 @@ pub(super) fn publish_all(
 ) -> Result<(), HostSupervisionError> {
     let mut failure = None;
     for &id in state.operations.keys() {
-        if let Err(error) = publish_operation(shared, state, id) {
-            if failure.is_none() {
-                failure = Some(error);
-            }
+        if let Err(error) = publish_operation(shared, state, id)
+            && failure.is_none()
+        {
+            failure = Some(error);
         }
     }
     failure.map_or(Ok(()), Err)

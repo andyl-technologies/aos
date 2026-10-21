@@ -84,6 +84,10 @@ impl Session {
     ///
     /// # Errors
     /// Returns pack integrity, identity, original or resource refusal.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "The fresh file, authenticated coordinates and operation boundaries remain explicit."
+    )]
     pub(super) fn authenticate(
         &mut self,
         file: &File,

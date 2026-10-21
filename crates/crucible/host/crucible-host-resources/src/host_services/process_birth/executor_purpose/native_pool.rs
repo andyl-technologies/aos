@@ -7,6 +7,11 @@
 
 // SPDX-License-Identifier: Apache-2.0
 
+#![expect(
+    clippy::result_large_err,
+    reason = "Native refusals retain actual inline custody without allocating on failure."
+)]
+
 use std::sync::{Arc, Mutex};
 
 use super::{
@@ -176,6 +181,9 @@ pub(super) enum WindowRole {
 }
 
 /// Preserves the first refusal, independent postcut and any issued custody.
+///
+/// Custody remains inline so exhaustion never requires another allocation to
+/// deliver the actual retained owners. Its size is part of caller admission.
 #[derive(Debug, thiserror::Error)]
 #[error("native subdivision refused: {cause}; independent original: {after:?}")]
 pub struct NativePoolRefusal {

@@ -77,10 +77,10 @@ impl AuthenticatedNativeNodeHostWindow {
 
 impl Drop for AuthenticatedNativeNodeHostWindow {
     fn drop(&mut self) {
-        if let Some(held) = self.held.take() {
-            if !self.closed {
-                std::mem::forget(held);
-            }
+        if let Some(held) = self.held.take()
+            && !self.closed
+        {
+            std::mem::forget(held);
         }
     }
 }

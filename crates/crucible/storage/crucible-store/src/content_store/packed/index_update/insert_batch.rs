@@ -215,6 +215,12 @@ impl Frame {
     }
 }
 
+// BatchControls prepays this fixed inline value. Boxing its leaf would add an
+// independently allocated owner and a new admission/failure boundary.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "The admitted inline value requires no extra failure-path allocation."
+)]
 enum Prepared {
     Branch(Frame),
     Leaf(Replacement),

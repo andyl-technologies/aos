@@ -37,6 +37,10 @@ struct Fixture {
     control: RetainedControl<PrepaidControl>,
 }
 
+#[expect(
+    clippy::unwrap_used,
+    reason = "Failed allocation/accounting fixture setup must fail its calling test."
+)]
 fn fixture() -> Fixture {
     let accounts = [
         HostServiceAllocator::new(1, 1, 4096).unwrap(),

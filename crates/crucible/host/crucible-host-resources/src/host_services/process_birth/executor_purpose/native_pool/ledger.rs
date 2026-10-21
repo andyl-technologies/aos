@@ -164,6 +164,10 @@ impl PoolLedger {
         )
     }
 
+    #[expect(
+        clippy::explicit_counter_loop,
+        reason = "Each published row advances its checked protocol assignment epoch."
+    )]
     fn publish_assignment(
         &mut self,
         identity: NativeWorldIdentity,

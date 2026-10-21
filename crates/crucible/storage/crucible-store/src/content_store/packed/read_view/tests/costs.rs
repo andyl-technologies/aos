@@ -52,7 +52,7 @@ fn compare_read_costs(
     let baseline = fixture.quota.0.usage().unwrap();
     // Alternate the ordinary pass around the cold/warm pair so neither path
     // always benefits from filesystem order or elapsed background activity.
-    let ordinary_first = repetition % 2 == 0;
+    let ordinary_first = repetition.is_multiple_of(2);
     let first = ordinary_first.then(|| read_all(fixture, false, order));
     assert_eq!(fixture.quota.0.usage().unwrap(), baseline);
     let (cold, cold_ns) = read_all(fixture, true, order);

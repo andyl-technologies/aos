@@ -804,7 +804,7 @@ struct PackManifestEntry {
 }
 
 impl PackManifestEntry {
-    const fn to_index_entry(&self, pack: PackId) -> IndexEntry {
+    const fn to_index_entry(self, pack: PackId) -> IndexEntry {
         IndexEntry {
             pack,
             offset: self.offset,

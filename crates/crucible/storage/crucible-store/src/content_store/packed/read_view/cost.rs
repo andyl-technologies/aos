@@ -20,13 +20,15 @@ pub(crate) struct ReadViewCost {
 }
 
 thread_local! {
-    static COST: Cell<ReadViewCost> = Cell::new(ReadViewCost {
-        lookups: 0,
-        pack_switches: 0,
-        authenticated_manifests: 0,
-        authenticated_rows: 0,
-        authenticated_manifest_bytes: 0,
-    });
+    static COST: Cell<ReadViewCost> = const {
+        Cell::new(ReadViewCost {
+            lookups: 0,
+            pack_switches: 0,
+            authenticated_manifests: 0,
+            authenticated_rows: 0,
+            authenticated_manifest_bytes: 0,
+        })
+    };
 }
 
 pub(crate) fn reset() {

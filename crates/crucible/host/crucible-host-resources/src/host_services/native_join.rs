@@ -91,7 +91,7 @@ impl NativeJoinOwner {
     /// The worker delivers its real result and panic payload into its existing
     /// retained outcome cell before returning unit. Taking the pthread drops
     /// Rust's result-packet reference and never reads private packet storage.
-    #[must_use]
+    #[must_use = "retain the unique native join owner until physical thread retirement"]
     pub fn from_worker(worker: JoinHandle<()>) -> Self {
         let thread = worker.thread().id();
         let creator_process = std::process::id();

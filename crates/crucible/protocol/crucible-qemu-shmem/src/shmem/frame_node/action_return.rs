@@ -142,10 +142,8 @@ impl NodeSlot {
                 Ordering::SeqCst,
             )
             .map_err(|_| ActionDecodeError)?;
-        for (word, bytes) in words[1..].iter().zip(bytes.chunks_exact(8)) {
-            let mut value = [0; 8];
-            value.copy_from_slice(bytes);
-            word.store(u64::from_be_bytes(value).to_be(), Ordering::SeqCst);
+        for (word, bytes) in words[1..].iter().zip(bytes.as_chunks::<8>().0) {
+            word.store(u64::from_be_bytes(*bytes).to_be(), Ordering::SeqCst);
         }
         words[0]
             .compare_exchange(
@@ -194,7 +192,12 @@ impl NodeSlot {
             return Ok(None);
         }
         let mut bytes = [0; ACTION_RETURN_BYTES];
-        for (target, word) in bytes.chunks_exact_mut(8).zip(words[1..].iter()) {
+        for (target, word) in bytes
+            .as_chunks_mut::<8>()
+            .0
+            .iter_mut()
+            .zip(words[1..].iter())
+        {
             target.copy_from_slice(&u64::from_be(word.load(Ordering::SeqCst)).to_be_bytes());
         }
         if u64::from_be(words[0].load(Ordering::SeqCst)) != before {
