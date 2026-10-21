@@ -40,6 +40,8 @@
     installBins = false;
     buildDeps = [pkgs.protobuf];
     runtimeDeps = [];
+    # Match the production package and workspace runner for large test frames.
+    RUST_MIN_STACK = "33554432";
     cargoEnv.PROTOC = "${pkgs.protobuf}/bin/protoc";
     # Preserve the feature-enabled executables before the check phase compiles
     # distinct default-feature test binaries into the same Cargo target tree.
@@ -90,6 +92,8 @@
     installBins = false;
     buildDeps = [pkgs.protobuf];
     runtimeDeps = [];
+    # Match the production package and workspace runner for large test frames.
+    RUST_MIN_STACK = "33554432";
     cargoEnv.PROTOC = "${pkgs.protobuf}/bin/protoc";
     postBuild = ''
       mkdir kernel-fixtures
