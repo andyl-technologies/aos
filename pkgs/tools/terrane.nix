@@ -3,10 +3,16 @@
   lib,
   stdenv,
   mkCargoPackage,
+  protobuf,
+  buildPackages,
   aosWorkspaceVendor,
   util-linux,
 }: let
   version = "0.1.0";
+  buildProtobuf =
+    if stdenv.isCross
+    then buildPackages.protobuf
+    else protobuf;
   # Gates bind the full integration inputs; Cargo providers share upstream's
   # lockfile-only vendor instead of retaining an independent dependency pin.
   src = import ./aos/_workspace-source.nix {
@@ -44,6 +50,8 @@ in
     };
     pname = "terrane";
     inherit version src cargoDeps;
+    buildDeps = [buildProtobuf];
+    cargoEnv.PROTOC = "${buildProtobuf}/bin/protoc";
     cargoRoot = "crates";
     cargoFlags = "-p terrane-cli --bin terrane";
     cargoNextest = true;

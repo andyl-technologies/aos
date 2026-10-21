@@ -7,6 +7,9 @@ license.workspace = true
 [dependencies]
 terrane-format.workspace = true
 async-trait.workspace = true
+buffa = { workspace = true, features = ["json"] }
+buffa-types = { version = "=0.9.2", features = ["json"] }
+serde_json.workspace = true
 serde.workspace = true
 toml.workspace = true
 zstd.workspace = true
@@ -19,13 +22,23 @@ reqwest = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
 futures-util = { workspace = true, optional = true }
+connectrpc = { workspace = true, optional = true }
+
+[dev-dependencies]
+prost.workspace = true
+prost-types = "0.13"
+
+[build-dependencies]
+buffa.workspace = true
+buffa-codegen = "=0.9.2"
+connectrpc-codegen = "=0.9.0"
 
 [features]
 default = ["std"]
 std = ["dep:xattr", "dep:libc", "dep:rustix"]
 surface-sdk = ["std"]
 send = []
-tokio = ["std", "send", "dep:tokio", "dep:reqwest", "dep:bytes", "dep:futures-util"]
+tokio = ["std", "send", "dep:tokio", "dep:reqwest", "dep:bytes", "dep:futures-util", "dep:connectrpc"]
 wasm = []
 
 [lints]

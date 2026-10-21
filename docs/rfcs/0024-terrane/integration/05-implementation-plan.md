@@ -11709,3 +11709,38 @@ its immutable-source review is retained independently. The setgid VM stopped
 before test execution because its minimal rootfs lacks `/var/lib`; scratch
 creation now creates the missing parent. Its failed receipt is retained, and
 the corrected owning proof remains pending.
+
+
+#### Generated Distribution wire contract
+
+A checked-in `terrane.v1` schema now matches every Distribution protobuf
+block in the normative reference, including complete canonical ref/reflog
+records and all 18 Content/Ref/Tier method shapes. One AOS-built `protoc`
+descriptor set feeds portable Buffa message/view/ProtoJSON generation and
+separately generated native Connect service bindings. Native service code and
+its transport dependency remain behind `tokio`. The SDK includes the compiled
+descriptors; generation does not add native I/O dependencies to core.
+
+Seven runtime-free public codec tests pass against fixed protobuf bytes, an
+independent Prost descriptor decoder, uint64/base64 JSON, open enum numbers,
+unknown fields, oneof conflicts and canonical Timestamp/Duration values. The
+source-bound `integration.wire-contract` check additionally compares the whole
+compiled schema to the normative reference and records its compiler binding.
+The lockfile-driven vendor is rebuilt with its measured content hash. Package
+and gate builds explicitly bind the source-built protobuf compiler, including
+cross builds. The host broker package also selects its actual renamed workspace
+package and declares its Linux platform support. Strict native SDK/Linux all-target Clippy and the std/wasm profile check
+pass. Frozen wire qualification and the required application-target
+compilation remain pending; generated service
+traits do not implement or qualify the Distribution service policy.
+
+The `ee6cbedec9` native host-cache VM passes all 83 selected exact unit cases,
+including all eight configured preflight cases as actual UID/GID 842 with
+empty groups, no capabilities and no-new-privileges. Independent review binds
+7,869 source files, 5,211 image inputs, every original Cargo ELF and the guest
+identity witnesses. Its application-target build separately passes with 184
+test executables across 59 packages. A later catalog-batch population run at
+`7c0a066f8e` times out at the original 1,800-second 4,096-entry ordinary case;
+its earlier four cases pass. This failed result remains retained and does not
+replace the separately passing six-case `af82dc0c49` evidence or close the
+current-source qualification requirement.

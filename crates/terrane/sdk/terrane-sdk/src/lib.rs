@@ -35,3 +35,4 @@ pub mod role;
 pub(crate) mod selected_bridge;
 pub mod store;
 pub mod surface;
+pub mod wire;

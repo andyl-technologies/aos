@@ -45,7 +45,7 @@
       dontStrip = preserveArtifactBytes;
       dontPatchELF = preserveArtifactBytes;
       dontNukeRefs = preserveArtifactBytes;
-      buildDeps = [pkgs.rust pkgs.rust.dev pkgs.python3 pkgs.util-linux] ++ extraBuildDeps;
+      buildDeps = [pkgs.rust pkgs.rust.dev pkgs.python3 pkgs.util-linux pkgs.protobuf] ++ extraBuildDeps;
       phases = [
         {
           name = "check";
@@ -59,6 +59,7 @@
             export CARGO_HOME="$TMPDIR/cargo-home"
             export CARGO_TARGET_DIR="$TMPDIR/cargo-target"
             export CARGO_BUILD_JOBS="$NIX_BUILD_CORES"
+            export PROTOC="${pkgs.protobuf}/bin/protoc"
             mkdir -p "$CARGO_HOME" crates/.cargo
             sed 's|@vendor@|${pkgs.terrane.passthru.cargoDeps}|g' \
               ${pkgs.terrane.passthru.cargoDeps}/.cargo/config.toml > crates/.cargo/config.toml
@@ -489,6 +490,7 @@ in {
   integration.native-index-rebuild = import ./native-index-rebuild.nix {sourceGate = nativeSdkGate;};
   integration.native-index-backfill = import ./native-index-backfill.nix {sourceGate = nativeSdkGate;};
   integration.native-index-locality = import ./native-index-locality.nix {sourceGate = nativeSdkGate;};
+  integration.wire-contract = import ./wire-contract.nix {inherit sourceGate;};
   integration.streaming-http = import ./streaming-http.nix {inherit sourceGate;};
   integration.native-index-populations = import ./native-index-populations.nix {
     sourceGate = nativeSdkGateWithInputs {extraBuildDeps = [pkgs.coreutils];};
