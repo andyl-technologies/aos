@@ -67,7 +67,29 @@ failed attempts appear in the dated entries below.
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | Latest focused checks pass all 73 policy and five hygiene controls; the broad gate retains thirteen daemon paths. | The fresh canonical license-boundary check is blocked by strict controller Clippy (1,189 host-library and 1,262 host-test errors); its boundary assertions did not run. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 359 committed bindings: 340 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
+| Requirements | 362 committed bindings: 343 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
+
+#### Bounded completion and typed channel observations
+
+`c6ce47af32` makes the five quantum channel readers and pending-completion
+observation refuse an occupied node publication after one bounded attempt.
+The refusal retains its typed slot coordinates inline through channel and node
+conversion. Only a changed report or occupied advance publication is retryable;
+a terminal report failure cannot authorize another attempt. A pending quantum
+survives observation refusal without republishing its tuple or waking again.
+Compatibility readers outside these six paths still need separate review.
+
+All 62 quantum and mapped-adapter cases, seven focused mapped-read cases and
+eleven postcheck cases pass against the final source. Engineering hygiene and
+mandatory application test-target compilation pass at
+`r7590d54v44czcvi867ra5zdgh3scx5z`. All 5,280 committed Rust/TOML inputs match
+immutable source `y4mqafwvaryc96fk21j25f1n913wgdaz`; the comparison record has
+SHA-256 `fac5f7071a7943667325e0424cc5398d2e83f0d79c916fbd182ce6400650895a`.
+The initial missing-match compilation failure and the test's repeated-view
+log-spill allocation failure remain recorded separately from the corrected
+final run. The expanded supervision run remains pending. These component
+checks establish neither the actual publisher command join nor Native Advance
+admission, complete diagnostic funding or physical return.
 
 #### Independent channel refusal and Quantum post
 
@@ -115,7 +137,8 @@ engineering hygiene pass. Mandatory application compilation passes at
 immutable source `k3k7blb7ij1nv3bmszs9pr5y094a4j21`. The comparison SHA-256 is
 `279103214b73bdbec4d58945a9a9748d81dda00fc15da8c0068e34235129c9d6`.
 Seven exact component bindings bring the committed inventory to 354; the
-expanded 237-case supervision run remains pending. Neither checkpoint integrates
+expanded 237-case supervision run passes at
+`sb0s2grwrm3kgh04nn88l8y332dp483j`. Neither checkpoint integrates
 the actual immutable command publisher, recipient or asynchronous Advance.
 
 #### Paid host publisher handover and cumulative Native custody
