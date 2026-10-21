@@ -44,6 +44,9 @@ mod staged_finalization;
 #[cfg(test)]
 mod finalization_tests;
 
+#[cfg(test)]
+mod publication_upload_tests;
+
 pub use direct_upload::DirectHubControl;
 #[cfg(unix)]
 pub use direct_upload::{
@@ -55,8 +58,8 @@ pub use direct_upload::{
 
 /// Default per-request timeout for hub RPC calls.
 const HUB_TIMEOUT_SECS: u64 = 30;
-/// Deadline for one bounded multipart publication part.
-const PUBLICATION_PART_TIMEOUT_SECS: u64 = 120;
+/// Deadline for one bounded publication object or multipart part.
+const PUBLICATION_UPLOAD_TIMEOUT_SECS: u64 = 120;
 /// Deadline for checking and installing an entire staged release inventory.
 const STAGED_FINALIZATION_TIMEOUT_SECS: u64 = 600;
 
@@ -2160,6 +2163,12 @@ impl HubClient {
         let mut request = self
             .upload_http
             .put(target.clone())
+            // Complete-object URLs admit only bounded request bodies. A lost
+            // response must release the caller's upload budget so its existing
+            // idempotent transport retry can replay the declared bytes.
+            .timeout(std::time::Duration::from_secs(
+                PUBLICATION_UPLOAD_TIMEOUT_SECS,
+            ))
             .header(reqwest::header::CONTENT_LENGTH, size)
             .body(body);
         if let Some(token) = &self.token {
@@ -2222,7 +2231,7 @@ impl HubClient {
             .upload_http
             .put(target.clone())
             .timeout(std::time::Duration::from_secs(
-                PUBLICATION_PART_TIMEOUT_SECS,
+                PUBLICATION_UPLOAD_TIMEOUT_SECS,
             ))
             .header(reqwest::header::CONTENT_LENGTH, size)
             .body(bytes);

@@ -1416,6 +1416,10 @@
   # Its bound covers both phases so a progressing transfer can finish.
   private_guest_command(client, textwrap.dedent(f"""
       set -euo pipefail
+      # Keep pending output on disk even when the agent transport times out.
+      umask 077
+      exec > /var/lib/hybrid-client/container-stage.stdout.private.log \\
+        2> /var/lib/hybrid-client/container-stage.stderr.private.log
       export HOME=/var/lib/hybrid-apr-home USER=fleet-publisher
       export TMPDIR="$HOME/.cache/tmp"
       mkdir -p "$TMPDIR"
