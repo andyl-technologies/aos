@@ -17,6 +17,7 @@
   packedMaintenance ? false,
   tierMaintenance ? false,
   idlePlanDiagnosticMinimumPs ? null,
+  fingerprintMaterialWindow ? null,
   nativeControlSummary ? false,
   policyTimeout ? false,
   singleGuest ? null,
@@ -81,6 +82,17 @@ assert idlePlanDiagnosticMinimumPs
   && builtins.isInt idlePlanDiagnosticMinimumPs
   && idlePlanDiagnosticMinimumPs >= 0
   && idlePlanDiagnosticMinimumPs <= 9223372036854775807
+);
+# Preimage dumps are a guest-choice diagnostic: a logical icount window keeps
+# the exact fingerprint material for the samples a replay-oracle mismatch names.
+assert fingerprintMaterialWindow
+== null
+|| (
+  guestChoice
+  && builtins.isInt fingerprintMaterialWindow.minimumIcount
+  && builtins.isInt fingerprintMaterialWindow.maximumIcount
+  && 0 <= fingerprintMaterialWindow.minimumIcount
+  && fingerprintMaterialWindow.minimumIcount <= fingerprintMaterialWindow.maximumIcount
 );
 assert !packedMaintenance
 || (
@@ -348,6 +360,15 @@ assert !interruptedTransfer
       maximum_events = 256
     ''}
   '';
+  # Keep the exact fingerprint preimages in the requested window so a
+  # replay-oracle mismatch names its differing pages and device sections.
+  # QEMU children write as their own users.
+  fingerprintMaterialExports = lib.optionalString (fingerprintMaterialWindow != null) ''
+    export CRUCIBLE_FINGERPRINT_MATERIAL_DUMP_DIR=/var/tmp/crucible-fingerprint-material
+    export CRUCIBLE_FINGERPRINT_MATERIAL_DUMP_MIN_ICOUNT=${toString fingerprintMaterialWindow.minimumIcount}
+    export CRUCIBLE_FINGERPRINT_MATERIAL_DUMP_MAX_ICOUNT=${toString fingerprintMaterialWindow.maximumIcount}
+    ${pkgs.coreutils}/bin/mkdir -p -m 1777 "$CRUCIBLE_FINGERPRINT_MATERIAL_DUMP_DIR"
+  '';
   choiceInitramfs = import ./phase4-packaged-campaign-choice-guest.nix {inherit pkgs;};
   networkChoiceInitramfs = import ./phase2-qemu-live-network-io-guest.nix {
     inherit pkgs;
@@ -408,7 +429,7 @@ assert !interruptedTransfer
       else if campaignLifecycle
       then "crucible-packaged-campaign-lifecycle"
       else if guestChoice
-      then "crucible-packaged-campaign-choice"
+      then "crucible-packaged-campaign-choice${lib.optionalString (fingerprintMaterialWindow != null) "-fingerprint-material"}"
       else if findingForkWrite
       then "crucible-campaign-finding-fork-write"
       else if findingExactBundle
@@ -1067,13 +1088,7 @@ assert !interruptedTransfer
         then ''
           export CRUCIBLE_INITRD=${networkChoiceInitramfs}/initrd.img
           export CRUCIBLE_PHASE4_CLOCK_TRACE=1
-          # Keep the exact fingerprint preimages near the post-restart
-          # checkpoint so a replay-oracle mismatch names its differing pages
-          # and device sections. QEMU children write as their own users.
-          export CRUCIBLE_FINGERPRINT_MATERIAL_DUMP_DIR=/var/tmp/crucible-fingerprint-material
-          export CRUCIBLE_FINGERPRINT_MATERIAL_DUMP_MIN_ICOUNT=550000000000
-          export CRUCIBLE_FINGERPRINT_MATERIAL_DUMP_MAX_ICOUNT=575000000000
-          ${pkgs.coreutils}/bin/mkdir -p -m 1777 "$CRUCIBLE_FINGERPRINT_MATERIAL_DUMP_DIR"
+          ${fingerprintMaterialExports}
           if ! ${flight}/bin/campaign-store-process-flight --ignored --list \
             > /tmp/guest-choice-flight-list.log 2>&1; then
             cat /tmp/guest-choice-flight-list.log

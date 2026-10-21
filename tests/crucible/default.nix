@@ -908,6 +908,14 @@ in rec {
     packagedCampaignEnvoyDirectQuietVm = import ./phase4-packaged-campaign-envoy-direct-quiet-vm.nix {inherit pkgs lib;};
     packagedCampaignEnvoyProxyVm = import ./phase4-packaged-campaign-envoy-proxy-vm.nix {inherit pkgs lib;};
     packagedCampaignChoiceVm = import ./phase4-packaged-campaign-choice-vm.nix {inherit pkgs lib;};
+    packagedCampaignChoiceFingerprintMaterialVm = import ./phase4-packaged-campaign-choice-vm.nix {
+      inherit pkgs lib;
+      # The post-restart checkpoint window, kept for replay-oracle diagnosis.
+      fingerprintMaterialWindow = {
+        minimumIcount = 550000000000;
+        maximumIcount = 575000000000;
+      };
+    };
     # T3 for RFC-0010 SCHED-12: five ceiling schedules over one live QEMU
     # interval must leave the same guest state.
     schedulerBoundFrequencyQemuVm = phase7.productionRustPluginFlight.rawGate.partitionDiagnostic;
