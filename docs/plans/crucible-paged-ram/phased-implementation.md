@@ -1690,6 +1690,57 @@ It still has 243 requirements, 149 uncovered requirements and zero qualified
 requirements. Dynamic diagnostic payload funding, independent failure postcuts,
 native Source activation and physical peer return remain unfinished.
 
+### 2026-10-21 static runtime and fault registration checkpoints
+
+Commit `3d768cb6b2` borrows static adapter diagnostics and moves owned dynamic
+messages without copying their allocation. The actual unsupported metadata
+method refuses with zero allocations and reallocations, before issuing a lease
+or performing runtime waits. All 23 async-driver tests, 62 host-I/O controls,
+73 source-policy controls and five hygiene checks pass. Final application
+test-target compilation passes at
+`/nix/store/hld69pr020dpw3ik49wqz0bbfm1fcpga-aos-test-targets-0.1.0`.
+The 140-case hermetic supervision snapshot passes at
+`/nix/store/z15sz7d0wz0carz3rzlnmcy8gypivk70-crucible-gate-ram-supervision-0`;
+it precedes the test's unused-mutability cleanup and subsequent runtime-post
+changes. Its verdict does not cover those later bytes. The inventory has
+257 bindings: 238 component and 19 native, with 243 requirements, 149 uncovered
+and zero qualified. Dynamic diagnostic funding remains unfinished.
+
+Commit `3f106e543f` integrates nominal fault registration custody as atomic
+commit `e12c9a8c00e894e9ef7c329210f77b951f6d7da6`, tree
+`78e1212fd07321a08889bca0a0850d6960d5dcc5`. The actual permanent Node producer
+owns canonical registration identity and construction intervals. Registration
+checks process identity before inherited locks, preserves existing edges on
+duplicate or sealed refusal, and retains actual Submit/VMState validation
+identity, copied command, first/post and physical callback return. Selected
+preallocation remains refused; no selected payer is supplied.
+
+All 187 owning startup scenarios pass without skips under the unchanged
+600-second build, 60-second execution and 6-GiB address-space bounds. Signed
+reconstruction and the 277-file corresponding-source ledger pass. The complete
+34-defect causal sweep passes at
+`/nix/store/sxgx746f6lpxks2780pg7yzrqi1aqs6y-crucible-qemu-received-delivery-causal-11.1.1`:
+the positive takes 59.057 seconds, the slowest defect takes 30.488 seconds,
+and no run times out. Every retained command, source hash and intended assertion
+was checked. Full compilation completes all 3,863 targets; 25/26 fixture drivers
+pass and the mandatory launched lifecycle still fails. Preserve the earlier
+misplaced-header compile failure and 24/26 full sweep. The corrected TCG fixture
+uses actual empty producer/thread providers and aborts on an unexpected Source
+selection query; it supplies no accepting owner.
+
+Raw ABI passes at
+`/nix/store/h5dc0w42pdcgjymyn9l7k64l96xbjd4z-crucible-phase2-abi-conformance-0`
+against immutable source
+`/nix/store/sv2gvdqbhl9c79ywlcpd6iz7lnfliwnc-crucible-workspace-src`.
+All 5,258 tracked crate Rust/TOML files match the source captured at `f9faafee9a`
+plus two frozen runtime diagnostic/test edits. Later static-message and
+runtime-post bytes are excluded. The TCG-only repair changes none of that
+gate's inputs. Genuine producer construction, duplicate registration,
+callbacks, retirement, Source activation and physical peer return remain
+unexecuted. The full license gate remains blocked at its controller lint
+prerequisites. Pending-fault storage and later execution checkpoints are
+separate work.
+
 ### Canonical native observation gate cutover (required)
 
 The supplemental service flights do not yet replace the canonical plugin gate.
