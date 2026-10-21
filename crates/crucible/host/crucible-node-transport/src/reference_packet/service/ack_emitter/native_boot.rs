@@ -12,6 +12,9 @@ pub use boot::{
 };
 mod bootstrap;
 mod owned_read;
+
+#[path = "native_boot/bootstrap_import18.rs"]
+mod bootstrap_import18;
 pub(crate) use boot::ORIGINAL_ACK_CONTEXT_BANK_BYTES;
 pub(crate) use boot::{
     NativeRestorationObservationAttempt, NativeRestorationUploadAttempt,

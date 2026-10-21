@@ -382,6 +382,33 @@ execution, refreshed application-target compilation and the actual funded VM
 retry control are still running. General bounded actor polling and physical
 native readiness remain unqualified.
 
+## Physical import18 raw bootstrap receipt
+
+The new private receiver owns the inherited Unix socket, original five-second
+cut, fixed prefix and every partial raw body before fallible reads. It checks
+actual parent PID/UID, prefix MAC, independent body restrictions and its own
+raw-storage floor before reserving the three banks. Actual capacities and read
+cursors remain retained after refusal. All three completed raw hashes and exact
+private-channel EOF precede a completed raw loan; an unexpected suffix byte is
+retained, and an open writer expires the same original cut. Re-entry cannot
+renew successful or failed receipt.
+
+The complete standard and RawValue Transport library configurations each pass
+1,755 tests with zero failures, no filtering and 16 ignores. Eight new controls
+exercise actual parent-child descriptor inheritance, exact raw bodies, each
+one-byte-short raw axis, independent policy refusal, partial prefix/body custody,
+changed hashes, wrong origin/thread, overflow, spent receipt, unexpected suffix
+and the real five-second open-writer timeout. The private child helper is ignored
+in ordinary discovery and invoked explicitly by its parent tests. These fixtures
+contain inert raw bodies and construct no opaque Initial or Recipe.
+
+This physical precursor remains unselected from native startup. Its floor is
+only raw receiver demand; typed body parsing, complete seven-bank custody and
+their independent Initial producer remain unfinished. No model, native Boot,
+startup finalizer, common Ready or full-RFC qualification follows. The refreshed
+architecture and application compilation checks still need the final EOF source;
+the running funded VM snapshot predates that receiver-only refinement.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.
