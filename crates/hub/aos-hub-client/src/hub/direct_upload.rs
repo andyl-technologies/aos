@@ -51,6 +51,10 @@ use serde::{Serialize, de::DeserializeOwned};
 use super::HubClient;
 
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(30);
+// Complete performs authorization, destination copies, and Native commit in
+// separate bounded phases. Its HTTP deadline must cover that whole operation;
+// the server still checks every phase's original authority and expiry.
+const COMPLETE_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Preserves a transport category without exposing its credential-bearing URL.
 fn control_transport_failure(
@@ -295,6 +299,10 @@ impl DirectHubControl {
             Some("CommitRegistryPublication") => Kind::PublicationCommit,
             _ => Kind::MetadataRead,
         };
+        if matches!(kind, Kind::Complete) {
+            request = request.timeout(COMPLETE_TIMEOUT);
+        }
+
         self.metrics.record_control_attempt(kind);
         let started = std::time::Instant::now();
         let mut response = request
@@ -343,6 +351,9 @@ impl DirectHubControl {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod deadline_tests;
 
 #[async_trait]
 impl DirectUploadControl for DirectHubControl {
