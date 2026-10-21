@@ -275,9 +275,9 @@ fn guarded_probe_exec_inherits_only_read_only_overlay_authority() -> Result<(), 
     )?;
 
     assert!(
-        output.status.success(),
+        output.output().status.success(),
         "{}",
-        String::from_utf8_lossy(&output.stderr)
+        String::from_utf8_lossy(&output.output().stderr)
     );
     assert_eq!(
         std::fs::metadata(
@@ -332,9 +332,9 @@ fn overlay_relative_name_requires_actual_original_cwd_and_admitted_inode()
         &fixture.contract,
     )?;
     assert!(
-        output.status.success(),
+        output.output().status.success(),
         "{}",
-        String::from_utf8_lossy(&output.stderr)
+        String::from_utf8_lossy(&output.output().stderr)
     );
     Ok(())
 }

@@ -6,6 +6,9 @@
 
 use super::*;
 
+mod probe_output;
+pub(crate) use probe_output::GuardedProbeOutput;
+
 /// Identifies the constructor-bound recipient of an already issued helper.
 ///
 /// This observer keeps the existing Source lender's roster, generation and
@@ -112,7 +115,7 @@ impl QemuChildProcessContract {
             &crucible_host_resources::host_supervision::HostOperationGuard,
             &mut Option<RetainedHelperOutput>,
         ) -> Result<T, QemuSpawnError>,
-    ) -> Result<T, QemuGuardedImagePreparationError> {
+    ) -> Result<T::Received, QemuGuardedImagePreparationError> {
         #[cfg(target_os = "linux")]
         {
             let receiver =
@@ -302,10 +305,16 @@ pub(super) fn wait_probe(
 
 /// Moves either existing helper output into the same fixed recipient journal.
 pub(crate) trait HelperOutput: Sized {
+    type Received;
+
     const CAPTURES_PROBE: bool;
     fn prepare_storage() -> Option<RetainedHelperOutput>;
     fn retain(self) -> RetainedHelperOutput;
     fn take(output: RetainedHelperOutput) -> Option<Self>;
+    fn receive(
+        self,
+        controls: crucible_host_resources::host_services::process_birth::SourceHostControlLease,
+    ) -> Self::Received;
 }
 
 pub(crate) enum RetainedHelperOutput {
@@ -331,6 +340,7 @@ pub(crate) const DESCRIPTOR_PEAK: u64 = 3 * 2 + 2;
 pub(crate) fn retained_control_bytes() -> Option<u64> {
     std::mem::size_of::<crate::node::RetainedChild>()
         .checked_add(std::mem::size_of::<RetainedHelperOutput>())
+        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<GuardedProbeOutput>()))
         .and_then(|bytes| bytes.checked_add(MAXIMUM_PROBE_OUTPUT_BYTES.checked_mul(2)?))
         .and_then(|bytes| u64::try_from(bytes).ok())
 }
@@ -361,6 +371,8 @@ impl RetainedHelperOutput {
 }
 
 impl HelperOutput for () {
+    type Received = ();
+
     const CAPTURES_PROBE: bool = false;
 
     fn prepare_storage() -> Option<RetainedHelperOutput> {
@@ -376,9 +388,19 @@ impl HelperOutput for () {
             _ => None,
         }
     }
+
+    fn receive(
+        self,
+        controls: crucible_host_resources::host_services::process_birth::SourceHostControlLease,
+    ) {
+        // Image output owns no buffers; the caller has already observed reap.
+        drop(controls);
+    }
 }
 
 impl HelperOutput for std::process::Output {
+    type Received = GuardedProbeOutput;
+
     const CAPTURES_PROBE: bool = true;
 
     fn prepare_storage() -> Option<RetainedHelperOutput> {
@@ -397,6 +419,13 @@ impl HelperOutput for std::process::Output {
             RetainedHelperOutput::Probe(output) => Some(output),
             _ => None,
         }
+    }
+
+    fn receive(
+        self,
+        controls: crucible_host_resources::host_services::process_birth::SourceHostControlLease,
+    ) -> Self::Received {
+        GuardedProbeOutput::new(self, controls)
     }
 }
 

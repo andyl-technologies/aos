@@ -268,6 +268,27 @@ eighteen ABI and four license controls pass. This review changes no shutdown
 behavior and proves neither native activation nor cached-stack physical return.
 
 
+Successful probe output now moves both capture buffers and their existing Main
+control loan into one closed receiving owner. Callers borrow the output; they
+cannot detach a buffer or refund its loan independently. Both buffers are
+destroyed before that loan returns. Whitebox parsing borrows UTF-8 directly,
+including on invalid input, rather than moving captured bytes into an error.
+
+Two paired-account allocator controls observe the original charges through each
+actual buffer deallocation, including a receiving-thread move. Reversing the
+production field destruction order makes the control fail with both charges
+already returned. The host run passes 1,244 library tests and every integration
+target, with the same eight missing-receiver failures and four ignored probes.
+The daemon compiles all targets with all features. All 71 specific source-policy
+controls pass; the broad gate retains twenty unfinished paths. Hygiene, rustdoc,
+ABI and license controls pass. Coverage names 119 component cases, with 149
+uncovered and zero qualified requirements. The hermetic supervision gate passes
+all 21 exact cases, and required application test-target compilation passes.
+This closes successful capture-buffer
+funding, while separately allocated parser diagnostics, command construction,
+weak roster headers and genuine native activation remain unfinished.
+
+
 Whole-node shutdown now keeps one continuation through process reap, RAM service
 return and controller retirement. Physical closure, initiating failure and
 independent boundary checks remain separate facts. Failed construction retains

@@ -16,7 +16,7 @@ pub(super) const CALLER: Companion = Companion {
         &crucible_host_resources::host_supervision::HostOperationGuard,
         &mut Option<RetainedHelperOutput>,
     ) -> Result<T, QemuSpawnError>,
-) -> Result<T, QemuGuardedImagePreparationError> {
+) -> Result<T::Received, QemuGuardedImagePreparationError> {
     #[cfg(target_os = "linux")]
     {
         let receiver = self.attempt_binding.helper_receiver.get().ok_or_else(|| {
@@ -80,7 +80,7 @@ fn save_first(&mut self, first: crate::QemuSpawnError) {
         &HostOperationGuard,
         &mut Option<RetainedHelperOutput>,
     ) -> Result<T, crate::QemuSpawnError>,
-) -> Result<T, crate::spawn::QemuGuardedImagePreparationError> {
+) -> Result<T::Received, crate::spawn::QemuGuardedImagePreparationError> {
     let refused = || {
         crate::spawn::QemuGuardedImagePreparationError::issued(
             crate::spawn::helper_receiver::helper_custody_refusal(),
@@ -151,16 +151,11 @@ fn save_first(&mut self, first: crate::QemuSpawnError) {
             receiver,
         ));
     }
-    if slot.child.is_none() && slot.first_cleanup.is_none() {
-        if let Some(output) = slot.output.take() {
-            let output = T::take(output).ok_or_else(refused)?;
-            if !T::CAPTURES_PROBE {
-                // Image output owns no buffers; actual reap already closed
-                // the last physical leaf before this borrower returns.
-                drop(slot.controls.take());
-            }
-            return Ok(output);
-        }
+    if slot.child.is_none() && slot.first_cleanup.is_none() && slot.output.is_some() {
+        let controls = slot.controls.take().ok_or_else(refused)?;
+        let output = slot.output.take().ok_or_else(refused)?;
+        let output = T::take(output).ok_or_else(refused)?;
+        return Ok(output.receive(controls));
     }
     Err(refused())
 }

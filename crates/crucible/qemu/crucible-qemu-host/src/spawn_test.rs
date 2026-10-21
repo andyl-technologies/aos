@@ -2101,7 +2101,7 @@ impl GuardedProbeFixture {
             Err(error) => Ok(error),
             Ok(output) => Err(format!(
                 "guarded probe unexpectedly succeeded with status {}",
-                output.status
+                output.output().status
             )
             .into()),
         }

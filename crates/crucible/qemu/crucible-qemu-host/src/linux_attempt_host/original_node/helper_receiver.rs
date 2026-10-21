@@ -203,7 +203,7 @@ impl OriginalNativeFreshLaunchError {
             &HostOperationGuard,
             &mut Option<RetainedHelperOutput>,
         ) -> Result<T, crate::QemuSpawnError>,
-    ) -> Result<T, crate::spawn::QemuGuardedImagePreparationError> {
+    ) -> Result<T::Received, crate::spawn::QemuGuardedImagePreparationError> {
         let refused = || {
             crate::spawn::QemuGuardedImagePreparationError::issued(
                 crate::spawn::helper_receiver::helper_custody_refusal(),
@@ -274,16 +274,13 @@ impl OriginalNativeFreshLaunchError {
                 receiver,
             ));
         }
-        if slot.child.is_none() && slot.first_cleanup.is_none() {
-            if let Some(output) = slot.output.take() {
-                let output = T::take(output).ok_or_else(refused)?;
-                if !T::CAPTURES_PROBE {
-                    // Image output owns no buffers; actual reap already closed
-                    // the last physical leaf before this borrower returns.
-                    drop(slot.controls.take());
-                }
-                return Ok(output);
-            }
+        if slot.child.is_none() && slot.first_cleanup.is_none() && slot.output.is_some() {
+            // The returned captures keep their original loan independently of
+            // this controller. No raw Output can detach the funded buffers.
+            let controls = slot.controls.take().ok_or_else(refused)?;
+            let output = slot.output.take().ok_or_else(refused)?;
+            let output = T::take(output).ok_or_else(refused)?;
+            return Ok(output.receive(controls));
         }
         Err(refused())
     }

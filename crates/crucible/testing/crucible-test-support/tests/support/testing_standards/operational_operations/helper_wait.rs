@@ -7,6 +7,8 @@ use super::{Companion, Contract};
 
 #[path = "helper_wait/funding.rs"]
 mod funding;
+#[path = "helper_wait/probe_output.rs"]
+mod probe_output;
 
 pub(super) const CONTRACT: Contract = Contract {
     package: "crucible-qemu-host",
@@ -17,6 +19,7 @@ pub(super) const CONTRACT: Contract = Contract {
             r#"pub(crate) fn retained_control_bytes() -> Option<u64> {
     std::mem::size_of::<crate::node::RetainedChild>()
         .checked_add(std::mem::size_of::<RetainedHelperOutput>())
+        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<GuardedProbeOutput>()))
         .and_then(|bytes| bytes.checked_add(MAXIMUM_PROBE_OUTPUT_BYTES.checked_mul(2)?))
         .and_then(|bytes| u64::try_from(bytes).ok())
 }"#,
@@ -96,6 +99,10 @@ loop {
     )],
     identifiers: &[],
     companions: &[
+        probe_output::OWNER,
+        probe_output::RECEIVER,
+        probe_output::HANDOFF,
+        probe_output::CONSUMER,
         funding::MAIN,
         funding::CONTROLLER,
         funding::FIRST,

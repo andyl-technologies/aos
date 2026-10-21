@@ -2037,7 +2037,7 @@ pub(crate) fn run_guarded_qemu_setup_probe(
     timeout: Duration,
     run_directory: &QemuPreparedRunDirectory,
     process_contract: &QemuChildProcessContract,
-) -> Result<Output, QemuGuardedImagePreparationError> {
+) -> Result<helper_receiver::GuardedProbeOutput, QemuGuardedImagePreparationError> {
     let fail = |source| QemuGuardedImagePreparationError::local(source);
     run_directory
         .validate_launch_basis(launch, process_contract)
@@ -2079,7 +2079,7 @@ fn run_guarded_qemu_setup_probe_inner(
     timeout: Duration,
     run_directory: &QemuPreparedRunDirectory,
     process_contract: &QemuChildProcessContract,
-) -> Result<Output, QemuGuardedImagePreparationError> {
+) -> Result<helper_receiver::GuardedProbeOutput, QemuGuardedImagePreparationError> {
     if let Err(source) = run_directory
         .validate_launch_basis(launch, process_contract)
         .and_then(|()| run_directory.revalidate())
