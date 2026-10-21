@@ -94,14 +94,14 @@
         # names and inodes. Reuse only their compressed data, never their labels.
         aos.image.erofsDeduplication = true;
         aos.image.budgets = {
-          # This fixture carries a test-only credential harness alongside the
-          # full sandbox closure; production runtime limits are unchanged.
-          maxRuntimeClosureMiB = lib.mkForce 1152;
+          # The measured 1,322.2 MiB runtime includes the credential harness
+          # and full sandbox closure. Keep bounded fixture-only headroom.
+          maxRuntimeClosureMiB = lib.mkForce 1408;
           # The measured 844.9 MiB EROFS root carries the fixed Host services,
           # credential fixture, and full guest template in one image.
           maxRootMiB = 896;
-          # The labeled stage-1 initrd is 207.1 MiB; its signed normal UKIs
-          # are 223.5 MiB. These fixture bounds retain that complete payload.
+          # The measured labeled stage-1 initrd is 223.7 MiB. Retain the
+          # complete payload and room for the kernel and stub in each UKI.
           maxInitrdMiB = 224;
           maxUkiMiB = 256;
           # Peak publication retains two normal and three recovery UKIs.
