@@ -209,6 +209,9 @@ pub enum StorageRuntimeError {
     /// The fixed worker boundary could not be constructed.
     #[error("fixed Storage worker was rejected: {0}")]
     Worker(#[from] ZfsWorkerError),
+    /// The ordinary Storage helper rejected a protected backend or operation.
+    #[error("Storage helper was rejected: {0}")]
+    Helper(#[source] crate::helper::ZfsHelperError),
     /// The fixed ZFS executable contract was invalid.
     #[error("fixed Storage transaction contract was rejected: {0}")]
     Transaction(#[from] ZfsTransactionError),
@@ -2536,7 +2539,7 @@ impl StorageBrokerRuntime {
                 } else {
                     SystemdZfsProcessBackend::with_protected_snapshot_metadata(
                         executor.take().ok_or(StorageRuntimeError::Receiving)?,
-                    ).map_err(|_| StorageRuntimeError::Recovery)?
+                    ).map_err(StorageRuntimeError::Helper)?
                 };
                 (backend, StorageApplyReadiness::ProtectedWorkerReady)
             }

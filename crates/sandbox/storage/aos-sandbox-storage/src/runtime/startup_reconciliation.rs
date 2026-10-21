@@ -67,8 +67,10 @@ impl StartupReconciliationOriginalV1 {
         result.map_err(|error| {
             if selected {
                 self.worker_error = Some(error);
+                StorageRuntimeError::Recovery
+            } else {
+                StorageRuntimeError::Worker(error)
             }
-            StorageRuntimeError::Recovery
         })
     }
 
@@ -131,7 +133,7 @@ impl StartupReconciliationOriginalV1 {
 }
 
 // Startup and recurring work retain distinct owners but share the same
-// ordinary classification and selected whole-cause disposition.
+// ordinary error propagation and selected whole-cause disposition.
 fn project_helper_result_v1<T>(
     result: Result<T, crate::helper::ZfsHelperError>,
     selected: bool,
@@ -140,8 +142,10 @@ fn project_helper_result_v1<T>(
     result.map_err(|cause| {
         if selected {
             *destination = Some(cause);
+            StorageRuntimeError::Recovery
+        } else {
+            StorageRuntimeError::Helper(cause)
         }
-        StorageRuntimeError::Recovery
     })
 }
 
@@ -243,8 +247,10 @@ impl ReconciliationPartsV1<'_> {
             issuance.validate_active_holds(self.coordinator).map_err(|cause| {
                 if selected {
                     original.issuance_error = Some(cause);
+                    StorageRuntimeError::Recovery
+                } else {
+                    StorageRuntimeError::StartupNativeIssuance(Box::new(cause))
                 }
-                StorageRuntimeError::Recovery
             })?;
             // Recovery must not publish a pending ReleaseHold around an active
             // interest, even when observation reports that the effect already
@@ -265,9 +271,11 @@ impl ReconciliationPartsV1<'_> {
                         .map_err(|_| StorageRuntimeError::Recovery)?;
                     issuance.check_release(catalog.plan()).map_err(|cause| {
                         if selected {
-                    original.issuance_error = Some(cause);
-                }
-                        StorageRuntimeError::Recovery
+                            original.issuance_error = Some(cause);
+                            StorageRuntimeError::Recovery
+                        } else {
+                            StorageRuntimeError::StartupNativeIssuance(Box::new(cause))
+                        }
                     })?;
                 }
             }
@@ -826,6 +834,31 @@ mod tests {
             .map(|(namespace, key, value)| (namespace, key.to_vec(), value.to_vec())).collect();
         assert_eq!(before, after);
         assert!(!runtime.startup_reconciliation.transactions.entered_for_test_v1());
+    }
+
+    #[test]
+    fn ordinary_errors_keep_the_native_cause_without_a_selected_original() {
+        let mut original = StartupReconciliationOriginalV1::new();
+
+        let helper = original.helper_result_v1::<()>(
+            Err(crate::helper::ZfsHelperError::PreconditionMismatch),
+            false,
+        );
+        let worker = original.worker_result_v1::<()>(
+            Err(ZfsWorkerError::PeerMismatch),
+            false,
+        );
+
+        assert!(matches!(
+            helper,
+            Err(StorageRuntimeError::Helper(crate::helper::ZfsHelperError::PreconditionMismatch))
+        ));
+        assert!(matches!(
+            worker,
+            Err(StorageRuntimeError::Worker(ZfsWorkerError::PeerMismatch))
+        ));
+        assert!(original.helper_error.is_none());
+        assert!(original.worker_error.is_none());
     }
 
     #[test]

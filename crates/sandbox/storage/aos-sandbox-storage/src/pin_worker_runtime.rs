@@ -1330,7 +1330,7 @@ fn run_inherited_workspace_pin_worker_inner(
         .map_err(|error| ZfsWorkerError::Executable(error.to_string()))?;
     let executable_pin = PinnedExecutable::open(&contract)?;
     let protected = StorageProtectedConfigurationV1::from_protected_directory(authority_directory)
-        .map_err(|_| ZfsWorkerError::Authority)?;
+        .map_err(ZfsWorkerError::AuthorityConfiguration)?;
     let cgroup_root = open_cgroup_root()?;
     let selected_aggregate = aggregate.is_some();
     let storaged_cgroup = match aggregate {
@@ -1455,7 +1455,7 @@ fn run_inherited_workspace_pin_observer_inner(
         .map_err(|error| ZfsWorkerError::Executable(error.to_string()))?;
     let executable_pin = PinnedExecutable::open(&contract)?;
     let protected = StorageProtectedConfigurationV1::from_protected_directory(authority_directory)
-        .map_err(|_| ZfsWorkerError::Authority)?;
+        .map_err(ZfsWorkerError::AuthorityConfiguration)?;
     let cgroup_root = open_cgroup_root()?;
     let selected_aggregate = aggregate.is_some();
     let storaged_cgroup = match aggregate {

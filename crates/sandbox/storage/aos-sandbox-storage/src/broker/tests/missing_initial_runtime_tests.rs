@@ -664,7 +664,7 @@ fn public_runtime_worker_failures_reopen_by_observing_the_effect_boundary() {
                 peer_policy(),
                 &mut || Ok(clock()),
             ),
-            Err(crate::StorageRuntimeError::Recovery)
+            Err(crate::StorageRuntimeError::Worker(crate::ZfsWorkerError::Protocol(_)))
         ));
         assert_eq!(state.lock().unwrap().pin_present, pin_present_after_failure);
         assert_eq!(state.lock().unwrap().executions, 1);

@@ -68,6 +68,7 @@ fn encode_runtime_error(
             "protected Storage state is unavailable",
         ),
         StorageRuntimeError::Worker(_)
+        | StorageRuntimeError::Helper(_)
         | StorageRuntimeError::Transaction(_)
         | StorageRuntimeError::StartupPinAuthority(_)
         | StorageRuntimeError::StartupAuthority(_)
@@ -127,6 +128,8 @@ fn ambiguous_runtime_failures_are_never_labelled_retryable() {
     for error in [
         StorageRuntimeError::Recovery,
         StorageRuntimeError::Receiving,
+        StorageRuntimeError::Helper(crate::helper::ZfsHelperError::ProcessContract),
+        StorageRuntimeError::Worker(crate::ZfsWorkerError::PeerMismatch),
         StorageRuntimeError::StartupPinAuthority(crate::helper::ZfsHelperError::Authority),
         StorageRuntimeError::StartupAuthority(crate::StorageBrokerError::State(
             crate::StorageStateError::Rollback,

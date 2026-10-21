@@ -146,6 +146,9 @@ pub enum ZfsWorkerError {
     /// Protected durable authority did not authorize the requested worker effect.
     #[error("fixed ZFS worker protected authority was rejected")]
     Authority,
+    /// The fixed worker could not load its protected Storage configuration.
+    #[error("fixed ZFS worker protected configuration was rejected: {0}")]
+    AuthorityConfiguration(#[source] crate::StorageAuthorityConfigError),
     /// A dispatched worker unit could not be proved completely quiescent.
     #[error("fixed ZFS worker whole-unit quiescence failed: {0}")]
     Quiescence(String),
