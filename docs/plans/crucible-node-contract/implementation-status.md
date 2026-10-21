@@ -170,8 +170,34 @@ configured Daemon library passes 1,824 tests with zero failures, no filtering an
 compiles 180 test executables across 58 package IDs and 71 integration targets.
 Its source snapshot predates the final test-only requested-state observer and
 rustdoc additions, which the final all-feature check includes. The fresh confined
-VM is pending; no runtime worker, private Birth, native or Ready success follows
-from these component checks.
+VM terminated its first consumer at about 65 seconds of guest uptime under the
+60-second parent CPU policy, before a terminal preparation observation. This is
+consistent with exhaustion of the parent's hard CPU ceiling; the last operation
+was not available after that process kill. No runtime worker, private Birth,
+native or Ready success follows from these component checks.
+
+A contained derivation failure now retains the spent capsule and world credit
+while its same supervisor continues cancellation and original child waits. It
+no longer requests daemon shutdown merely because the logical derivation failed.
+The completed template authenticator is retained in every build; a partial setup
+cannot select that polling path. The tiny-policy VM control waits for the actual
+DerivationFailed observation before retrying and checking its retained credit.
+Fixed test-support stage transitions are also written once when they change, so
+a subsequent process kill cannot erase the last entered operation.
+
+The full configured Daemon library again passes 1,824 tests with zero failures,
+no filtering and 165 ignores. Daemon all-feature/all-target checking and scoped
+Rust/Nix formatting pass. The six architecture gates pass before the final trace
+addition. The required application gate again compiles the same 180/58/71 targets
+and captures the failure-retention code before the final trace/deadline changes;
+those final architecture and application snapshots are running. A repository-wide
+formatting check additionally encounters unrelated existing formatting and scratch
+diff parse errors; scoped formatting passes without editing those files.
+The qualification fixture now selects a finite 180-second parent CPU policy and
+240-second consumer wall limit, leaving worker limits and source checks intact.
+The fresh VM must still establish actual fit, retained failure/retry, worker
+results and private Births. No native qualification or full RFC completion is
+claimed.
 
 ## Original launch custody and shared startup geometry
 

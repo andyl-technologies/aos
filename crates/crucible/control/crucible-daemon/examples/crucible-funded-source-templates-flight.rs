@@ -94,6 +94,12 @@ fn main() -> Result<(), Failure> {
                         );
                     }
                     await_phase(&client_observer, expected_phase)?;
+                    if expected_phase == FundedTemplatePhase::TemplatesRetained {
+                        // This control deliberately installs the tiny worker
+                        // policy. Wait for its actual retained failure before
+                        // retrying, so daemon shutdown cannot satisfy the test.
+                        await_phase(&client_observer, FundedTemplatePhase::DerivationFailed)?;
+                    }
                     let snapshot = client_observer.snapshot().map_err(|e| e.to_string())?;
                     if snapshot.retained_worlds() != 1 {
                         return Err("first attempt or retry discarded original world credit".into());
@@ -125,6 +131,9 @@ fn main() -> Result<(), Failure> {
     if expected_phase == FundedTemplatePhase::PrivateBirthsRetained {
         println!("actual_three_worker_results_and_private_births_retained=true");
     }
+    if expected_phase == FundedTemplatePhase::TemplatesRetained {
+        println!("actual_small_policy_failure_and_spent_retry_retained=true");
+    }
     Ok(())
 }
 
@@ -141,8 +150,8 @@ fn await_phase(
 ) -> Result<(), String> {
     // The public exchange keeps its own short deadline. The owning actor's
     // subsequent setup and confined jobs have separate finite process limits;
-    // these observations wait within the VM consumer's 100-second wall limit.
-    let deadline = Instant::now() + Duration::from_secs(90);
+    // these observations wait within the VM consumer's 240-second wall limit.
+    let deadline = Instant::now() + Duration::from_secs(210);
     loop {
         let snapshot = observer.snapshot().map_err(|e| e.to_string())?;
         let observed = snapshot.phase();

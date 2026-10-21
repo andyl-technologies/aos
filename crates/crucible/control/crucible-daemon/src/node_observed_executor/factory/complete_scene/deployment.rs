@@ -20,7 +20,6 @@ pub(in crate::node_observed_executor::factory) struct FundedTemplateCapsule {
     started: bool,
     failure: Option<QualificationError>,
     retired: bool,
-    #[cfg(feature = "test-support")]
     templates_authenticated: bool,
 }
 
@@ -39,7 +38,6 @@ impl FundedTemplateCapsule {
             started: false,
             failure: None,
             retired: false,
-            #[cfg(feature = "test-support")]
             templates_authenticated: false,
         }
     }
@@ -88,12 +86,9 @@ impl FundedTemplateCapsule {
             self.failure = Some(error);
             return Err(refused("funded input preparation is unavailable"));
         }
-        // This test-only observation records the actual completed authenticator,
-        // rather than inferring success from a partially populated output.
-        #[cfg(feature = "test-support")]
-        {
-            self.templates_authenticated = true;
-        }
+        // Only this completed authenticator permits later derivation polling;
+        // a partial Prepared output cannot select the operational job path.
+        self.templates_authenticated = true;
         Ok(())
     }
 
@@ -146,7 +141,7 @@ impl FundedTemplateCapsule {
             let _ = self.prepare_requested();
             return Ok(());
         }
-        if self.failure.is_some() {
+        if self.failure.is_some() && !self.templates_authenticated {
             return Ok(());
         }
         let Some(prepared) = &mut self.prepared else {
@@ -157,7 +152,11 @@ impl FundedTemplateCapsule {
                 let _ = error; // the original typed cause remains in Prepared or its Job
                 self.failure = Some(QualificationError::Refused("funded derivation failed"));
             }
-            return Err(refused("funded derivation remains unavailable"));
+            // A contained logical failure spends this occurrence, not the
+            // daemon's lifetime. Keep polling the same failed Prepared so its
+            // supervisor cancels and waits for every actual child. World credit
+            // remains retained until explicit retirement proves reclamation.
+            return Ok(());
         }
         Ok(())
     }

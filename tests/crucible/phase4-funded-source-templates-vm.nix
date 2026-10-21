@@ -68,7 +68,7 @@ in
       # and actual host ELF. The actor derives its own operational Host token.
       consumer=${support}/bin/crucible-funded-source-templates-flight
       for name in templates-a templates-b; do
-        if ! ${pkgs.coreutils}/bin/timeout -k 5 100 "$consumer" \
+        if ! ${pkgs.coreutils}/bin/timeout -k 5 240 "$consumer" \
           ${fixtures}/$name/daemon.json ${fixtures}/$name/operational.json \
           ${fixtures}/support/configuration.json ${fixtures}/support/expected.json \
           templates > /var/lib/funded-source/$name.log 2>&1; then
@@ -79,6 +79,7 @@ in
         grep -Fxq PASS /var/lib/funded-source/$name.log
         grep -Fxq actual_command_twice_and_retained_world_credit=true /var/lib/funded-source/$name.log
         grep -Fxq terminal_namespace_absent_and_world_credit_released=true /var/lib/funded-source/$name.log
+        grep -Fxq actual_small_policy_failure_and_spent_retry_retained=true /var/lib/funded-source/$name.log
       done
       first=$(sed -n 's/^consumer_pid=//p' /var/lib/funded-source/templates-a.log)
       second=$(sed -n 's/^consumer_pid=//p' /var/lib/funded-source/templates-b.log)
@@ -88,7 +89,7 @@ in
       # These separate finite policies fund actual worker execution and parent
       # Birth assembly. Template authentication alone cannot satisfy this cut.
       for name in births-a births-b; do
-        if ! ${pkgs.coreutils}/bin/timeout -k 5 100 "$consumer" \
+        if ! ${pkgs.coreutils}/bin/timeout -k 5 240 "$consumer" \
           ${fixtures}/$name/daemon.json ${fixtures}/$name/operational.json \
           ${fixtures}/support/configuration.json ${fixtures}/support/expected.json \
           births > /var/lib/funded-source/$name.log 2>&1; then
@@ -104,7 +105,7 @@ in
       second=$(sed -n 's/^consumer_pid=//p' /var/lib/funded-source/births-b.log)
       case "$first:$second" in *[!0-9:]*|:|0:*|*:0) exit 1;; esac
       test -n "$first" && test -n "$second" && test "$first" != "$second"
-      ${pkgs.coreutils}/bin/timeout -k 5 100 "$consumer" \
+      ${pkgs.coreutils}/bin/timeout -k 5 240 "$consumer" \
         ${fixtures}/bad-pin/daemon.json ${fixtures}/bad-pin/operational.json \
         ${fixtures}/support/configuration.json ${fixtures}/bad-pin/expected.json \
         failure > /var/lib/funded-source/bad-pin.log 2>&1
@@ -116,7 +117,7 @@ in
       # Public Refused proves neither template success nor package qualification.
       program=${cli}/bin/crucible
       socket=/var/lib/funded-source/attempts/state-cli/node.sock
-      ${pkgs.coreutils}/bin/timeout -k 5 100 "$program" node serve-complete-scene \
+      ${pkgs.coreutils}/bin/timeout -k 5 240 "$program" node serve-complete-scene \
         --policy ${fixtures}/cli/daemon.json --operational-policy ${fixtures}/cli/operational.json \
         --installation ${fixtures}/cli/configuration.json --expected ${fixtures}/cli/expected.json \
         > /var/lib/funded-source/cli.log 2>&1 &

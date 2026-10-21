@@ -271,7 +271,17 @@ impl InstalledDeployment {
     /// Records a fixed diagnostic without changing the original failure or custody.
     pub(crate) fn note_operation_stage(&self, stage: &'static str) {
         #[cfg(feature = "test-support")]
-        self.operation_stage.set(Some(stage));
+        if self.operation_stage.replace(Some(stage)) != Some(stage) {
+            use std::io::Write;
+
+            // Fixed transition diagnostics survive a process-limit kill before
+            // the actor can publish its next copied observation. No input or
+            // authority leaves the original owner, and logging never retries.
+            let _ = writeln!(
+                std::io::stderr().lock(),
+                "funded operation entered: {stage}"
+            );
+        }
         #[cfg(not(feature = "test-support"))]
         let _ = stage;
     }

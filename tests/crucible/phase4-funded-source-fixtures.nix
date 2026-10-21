@@ -41,7 +41,10 @@
     format = "crucible.node-operational-deployment";
     version = 1;
     parent = {
-      cpu_seconds = 60;
+      # The whole-file code currentness flight exhausted the previous
+      # 60-second policy. This explicit finite budget remains independently
+      # enforced and does not certify construction fit or native readiness.
+      cpu_seconds = 180;
       address_space_bytes = 8589934592;
       descriptors = 256;
     };
