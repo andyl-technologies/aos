@@ -105,13 +105,13 @@
         /proc/self/fd/7/aos/post-pin-preload \
         /proc/self/fd/6/etc/ld.so.preload
 
-      ${pkgs.gnugrep}/bin/grep -Fq AOS_POST_PIN_ATTACKER_SYSTEMD \
+      ${pkgs.grep}/bin/grep -Fq AOS_POST_PIN_ATTACKER_SYSTEMD \
         /proc/self/fd/3/lib/systemd/systemd
-      ${pkgs.gnugrep}/bin/grep -Fq AOS_POST_PIN_ATTACKER_LOADER \
+      ${pkgs.grep}/bin/grep -Fq AOS_POST_PIN_ATTACKER_LOADER \
         /proc/self/fd/4/lib/${dynamicLinker}
-      ${pkgs.gnugrep}/bin/grep -Fq AOS_POST_PIN_ATTACKER_DSO \
+      ${pkgs.grep}/bin/grep -Fq AOS_POST_PIN_ATTACKER_DSO \
         /proc/self/fd/5/lib/libcap.so.2
-      ${pkgs.gnugrep}/bin/grep -Fq post-pin-attacker.so \
+      ${pkgs.grep}/bin/grep -Fq post-pin-attacker.so \
         /proc/self/fd/6/etc/ld.so.preload
 
       printf 'parent_namespace=%s\npid1_namespace=%s\n' \
@@ -166,13 +166,13 @@
         /proc/self/fd/7/aos/post-pin-preload \
         /proc/self/fd/6/etc/ld.so.preload
 
-      ${pkgs.gnugrep}/bin/grep -Fq AOS_POST_PIN_ATTACKER_SYSTEMD \
+      ${pkgs.grep}/bin/grep -Fq AOS_POST_PIN_ATTACKER_SYSTEMD \
         /proc/self/fd/3/lib/systemd/systemd
-      ${pkgs.gnugrep}/bin/grep -Fq AOS_POST_PIN_ATTACKER_LOADER \
+      ${pkgs.grep}/bin/grep -Fq AOS_POST_PIN_ATTACKER_LOADER \
         /proc/self/fd/4/lib/${dynamicLinker}
-      ${pkgs.gnugrep}/bin/grep -Fq AOS_POST_PIN_ATTACKER_DSO \
+      ${pkgs.grep}/bin/grep -Fq AOS_POST_PIN_ATTACKER_DSO \
         /proc/self/fd/5/lib/libcap.so.2
-      ${pkgs.gnugrep}/bin/grep -Fq post-pin-attacker.so \
+      ${pkgs.grep}/bin/grep -Fq post-pin-attacker.so \
         /proc/self/fd/6/etc/ld.so.preload
 
       printf 'parent_namespace=%s\npid1_namespace=%s\n' \
