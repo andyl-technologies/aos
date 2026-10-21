@@ -46,6 +46,17 @@ fn body(
 ) -> Result<[usize; 3], ProviderError> {
     let raw = raw_json_extent_data(bytes)?;
     let reset = raw_value_reparse::quote_raw_json_data(bytes, maximum)?;
+    body_population(&raw, &reset, bytes.len(), geometry, partials, maximum)
+}
+
+pub(super) fn body_population(
+    raw: &OriginalJsonValueStorageExtentData,
+    reset: &raw_value_reparse::JsonValueReparseConstructionData,
+    diagnostic_input: usize,
+    geometry: PrivateBodyTypedGeometryData,
+    partials: usize,
+    maximum: usize,
+) -> Result<[usize; 3], ProviderError> {
     let (reset_retained, reset_transient, reset_scratch) = reset.requested_storage_data();
     let (extra_nodes, extra_members, extra_text) = reset.expanded_json_extents_data();
     let nodes = add(raw.maximum_value_nodes, extra_nodes)?;
@@ -80,7 +91,7 @@ fn body(
         0
     };
 
-    let diagnostic = diagnostic_storage_data(add(bytes.len(), extra_text)?, geometry)?;
+    let diagnostic = diagnostic_storage_data(add(diagnostic_input, extra_text)?, geometry)?;
     let retained = sum(&[typed, reset_retained, diagnostic])?;
     let tagged = mul(typed, geometry.buffered_tag_levels)?;
     let transient = sum(&[
@@ -153,6 +164,9 @@ pub(in crate::reference_packet) fn private_body_decode_counter_scratch_data() ->
 
 fn body_controls() -> usize {
     size_of::<&[u8]>()
+        + size_of::<&OriginalJsonValueStorageExtentData>()
+        + size_of::<&raw_value_reparse::JsonValueReparseConstructionData>()
+        + size_of::<PrivateBodyTypedGeometryData>()
         + size_of::<PrivateBodyTypedGeometryData>()
         + size_of::<OriginalJsonValueStorageExtentData>()
         + size_of::<Result<OriginalJsonValueStorageExtentData, ProviderError>>()

@@ -21,6 +21,11 @@ use serde_json::{Map, Value};
 use std::mem::size_of;
 
 mod geometry;
+mod serialization;
+
+pub(crate) use serialization::{
+    quote_serialized_data, quote_serialized_raw_bound_data, serialized_scanner_counter_scratch_data,
+};
 
 const RAW_VALUE_KEY: &str = "$serde_json::private::RawValue";
 // Raw Control callers already use canonical::parse_json's depth64 profile.
@@ -71,6 +76,31 @@ impl JsonValueReparseConstructionData {
     /// their defining constructor populations to these expanded DATA if needed.
     pub const fn expanded_json_extents_data(&self) -> (usize, usize, usize) {
         (self.values, self.members, self.strings)
+    }
+
+    /// Includes a separately owned original forest without a shared-tree discount.
+    ///
+    /// # Errors
+    /// Refuses checked population overflow or combined reset demand above the
+    /// independent restriction. A refusal leaves the previous DATA unchanged.
+    pub(crate) fn include_data(
+        &mut self,
+        other: Self,
+        maximum: usize,
+    ) -> Result<(), ProviderError> {
+        let combined = Self {
+            retained: add(self.retained, other.retained)?,
+            transient: add(self.transient, other.transient)?,
+            scratch: add(self.scratch, other.scratch)?,
+            markers: add(self.markers, other.markers)?,
+            layers: add(self.layers, other.layers)?,
+            values: add(self.values, other.values)?,
+            members: add(self.members, other.members)?,
+            strings: add(self.strings, other.strings)?,
+        };
+        combined.check(maximum)?;
+        *self = combined;
+        Ok(())
     }
 
     fn add_string_data(

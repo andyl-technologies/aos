@@ -41,6 +41,9 @@ pub(in crate::reference_packet) use decoding::{
     private_body_decode_backing_data, private_body_decode_counter_scratch_data,
 };
 
+#[path = "startup_wire/prospective.rs"]
+mod prospective;
+
 #[path = "startup_wire/retained.rs"]
 mod retained;
 

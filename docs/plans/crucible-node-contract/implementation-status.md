@@ -526,14 +526,48 @@ controls exercise actual producer/reactive decoding, every underfunded parser
 axis, independent complete restriction, malformed recipe/launch/boot prefixes,
 RawValue expansion, changed raw bytes, foreign thread, expiry, retry and checked
 ownership overflow. All-feature/all-target checking and the six architecture
-gates pass. The refreshed required application compilation and funded Source VM
-checks are still running at this checkpoint.
+gates pass. The required application-target gate passes for `d9ec1e7028`:
+all 112 owned changed Rust files match the captured source byte-for-byte. It
+compiles 180 test executables across 58 package IDs, including 71 integration
+targets, without running them. Its output is
+`0gyl9pvxk3fhmj26wk5xcyrb1za1zlfb-aos-test-targets-0.1.0`. The funded Source
+VM also passes for this receiver checkpoint, including both actual consumers,
+three worker results/private Births/declaration banks, the original small-policy
+and foreign-pin refusals, retained spent retry credit and terminal namespace
+cleanup. Neither capture includes the later prospective body projection.
 
 The fixtures and returned loans contain inert DATA. No parsed announcement is
 converted into an opaque Recipe/Initial. Seven empty headers still contain no
 input backing, Prepare token or completed native custody. Genuine Initial/full
 Recipe production, semantic joins, startup selection, native effects and common
 Ready remain unfinished; this receipt does not qualify full RFC-0025 completion.
+
+## Prospective private-body construction
+
+The Source-side precursor now projects actual recipe, Launch5, declaration and
+private operands before an Initial row exists. Only the three future U64 decimal
+string widths are projected; no placeholder Initial numbers, recipe, hash or
+permission are constructed. The three parser rows share the actual receiver's
+population/layout calculation and additionally price its real typed census.
+Physical Bootstrap18/header ownership, Source semantic validation and the complete
+Initial producer remain separate unfinished terms.
+
+The actual borrowed serializer walk observes RawValue marker strings without a
+Value or encoded bank. A separate raw-token bound covers the native scanner's
+quoted/escaped literal extent, and actual outer wrappers consume the same finite
+canonical nesting profile. Custom serializer formatters and original Source
+custody guards still require their independent admission and lenders.
+
+The first prospective comparison failed on boot parser S: decoded marker length
+did not cover the raw scanner's complete encoded token. The corrected quote uses
+the canonical literal bound. Eight controls now compare prospective populations
+with independent actual Value/raw walks, streamed Display keys, character
+strings, forest addition, exact/one-byte-short reset work, wrapper depth, and
+actual closed body encodings at both program families, Bytes boundaries and
+full-width U64 decimals. The complete standard and RawValue Transport suites
+each pass 1,774 tests, zero failures, no filtering and sixteen existing ignores;
+all-feature/all-target checking passes. The current six architecture checks are
+running. No opaque Initial/Recipe or native startup is produced by these tests.
 
 ## Original launch custody and shared startup geometry
 
