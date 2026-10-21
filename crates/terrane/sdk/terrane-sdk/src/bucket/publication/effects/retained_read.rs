@@ -105,11 +105,24 @@ impl PayloadReadCapture {
 
 impl RetainedPayloadRead {
     async fn ancestors<F: LocalFs + BucketBinding>(&self, fs: &F) -> Result<(), StoreFailure> {
-        for parent in &self.read.parents {
-            let metadata = fs
-                .symlink_metadata(&parent.path)
-                .await
-                .map_err(io_failure)?;
+        // Keep both complete ancestor checks around the leaf read, but submit
+        // each ordered set to the native reader lane in one bounded request.
+        let paths: Vec<_> = self
+            .read
+            .parents
+            .iter()
+            .map(|parent| parent.path.clone())
+            .collect();
+        let observations = fs
+            .symlink_metadata_batch(&paths)
+            .await
+            .map_err(io_failure)?;
+        if observations.len() != self.read.parents.len() {
+            return Err(unsupported());
+        }
+
+        for (parent, observation) in self.read.parents.iter().zip(observations) {
+            let metadata = observation.map_err(io_failure)?;
             let stamp = MetadataStamp::checked(&metadata).map_err(io_failure)?;
             FencePolicy::ProtectedAncestor {
                 owner: self.read.owner,
