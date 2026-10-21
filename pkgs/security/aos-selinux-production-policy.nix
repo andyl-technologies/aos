@@ -389,6 +389,18 @@
       ];
   });
 
+  nspawnContextExpectations = builtins.toFile "aos-nspawn-context-expectations.json" (builtins.toJSON {
+    version = 1;
+    entries =
+      map (path: {
+        inherit path;
+        kind = "regular";
+        context = "system_u:object_r:aos_nspawn_exec_t";
+      }) (["/usr/bin/systemd-nspawn"]
+        ++ map (root: "/${root}/store/${systemdBasename}/bin/systemd-nspawn")
+        ["nix" "nix.lower" "usr/lib/aos/nix"]);
+  });
+
   environmentContextExpectations = builtins.toFile "aos-environment-context-expectations.json" (builtins.toJSON {
     version = 1;
     entries =
@@ -515,6 +527,7 @@ in
 
           AOS_SELINUX_PRODUCTION_RECIPE=${./aos-selinux-production-policy.nix} \
             ${python3}/bin/python3 ${policySupport}/effective_policy_test.py
+          ${python3}/bin/python3 ${policySupport}/nspawn_context_test.py
           # Compare the real indexed and stock matchers on bounded native data,
           # not mock policy rules or another full production-policy scan.
           ${checkpolicy}/bin/checkpolicy -c ${policyVersion} -U reject \
@@ -738,6 +751,11 @@ in
           cat ${fileContexts} >> file_contexts
           printf '\n' >> file_contexts
 
+          # The merged-/usr alias and its immutable store target are the same
+          # executable. Keep the fixed AOS transition at both lookup paths;
+          # conflicting alias labels must still fail in the context planner.
+          ${python3}/bin/python3 ${policySupport}/nspawn_context.py file_contexts
+
           test -s file_contexts
           ${libselinux}/sbin/sefcontext_compile \
             -p final-policy.${policyVersion} \
@@ -748,6 +766,10 @@ in
             --file-contexts file_contexts.bin \
             --libselinux ${libselinux}/lib/libselinux.so.1 \
             --expected ${storeScaffoldContextExpectations}
+          ${python3}/bin/python3 ${policySupport}/verify_context_lookups.py \
+            --file-contexts file_contexts.bin \
+            --libselinux ${libselinux}/lib/libselinux.so.1 \
+            --expected ${nspawnContextExpectations}
           ${
             if environmentProvision == null
             then ""
