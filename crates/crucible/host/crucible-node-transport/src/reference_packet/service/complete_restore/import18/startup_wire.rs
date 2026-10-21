@@ -47,6 +47,9 @@ mod prospective;
 #[path = "startup_wire/initial_construction.rs"]
 mod initial_construction;
 
+#[path = "startup_wire/private_identity.rs"]
+mod private_identity;
+
 pub use initial_construction::{
     PacketNativeImport18InitialConstructionData,
     native_import18_initial_construction_counter_scratch_data,

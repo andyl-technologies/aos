@@ -19,7 +19,13 @@ fn operands(case: &str) -> [Value; 3] {
         recipe["phases"] = json!(([["1", "1", "1"]; 5]));
         recipe["escrow"] = json!(["5", "1", "1"]);
     }
-    let selected = inert_bootstrap_fixtures::selected_launch(case == "initial_reactive");
+    let mut selected = inert_bootstrap_fixtures::selected_launch(case == "initial_reactive");
+    let actual_pid = u64::from(std::process::id());
+    let actual_uid = u64::from(rustix::process::geteuid().as_raw());
+    selected["launch"]["controller_pid"] =
+        json!((actual_pid + u64::from(case == "initial_bad_controller_pid")).to_string());
+    selected["launch"]["controller_uid"] =
+        json!((actual_uid + u64::from(case == "initial_bad_controller_uid")).to_string());
     let launch: crate::reference_packet::service::complete_restore::import18::PacketNativeImport18SelectedLaunchWireData = serde_json::from_value(selected.clone()).unwrap();
     let source = inert_bootstrap_fixtures::source_birth(launch.launch_data());
     let mut boot = inert_bootstrap_fixtures::boot(1, json!({"actual": "host DATA"}));
@@ -27,6 +33,10 @@ fn operands(case: &str) -> [Value; 3] {
         json!(Bytes::new(canonical::canonical_json(&source).unwrap()));
     boot["source_birth"]["declaration"]["fresh_restore_allocation_selection"] = json!(null);
     boot["source_birth"]["prebirth_recipe"] = recipe.clone();
+    boot["host_executable"] = selected["launch"]["controller_executable"].clone();
+    boot["birth_id"] = json!(Bytes::new(
+        blake3::derive_key("source-owned.packet-canonical-ack-birth/5", &[23; 32]).to_vec()
+    ));
     [recipe, selected, boot]
 }
 
@@ -80,6 +90,10 @@ fn flight(case: &str) {
             values[2]["source_birth"]["prebirth_recipe"]["nonce"] = json!(([1; 32]))
         }
         "initial_bad_key" => values[2]["private_key"] = json!(Bytes::new(vec![24; 32])),
+        "initial_bad_birth" => values[2]["birth_id"] = json!(Bytes::new(vec![42; 32])),
+        "initial_bad_host_executable" => {
+            values[2]["host_executable"]["hash"]["digest"] = json!("a".repeat(64));
+        }
         "initial_short_key" => values[2]["private_key"] = json!(Bytes::new(vec![23; 31])),
         "initial_short_birth" => values[2]["birth_id"] = json!(Bytes::new(vec![17; 31])),
         "initial_overstated_prefix" => row[0] += 1,
@@ -129,6 +143,27 @@ pub(super) fn assert_child(
         .unwrap();
     } else {
         let result = owner.reconstruct_initial_data();
+        if matches!(case, "initial_bad_birth" | "initial_bad_host_executable") {
+            // Canonical extents, raw hashes and all funding announcements still
+            // match. The actual new private-identity join must reject this DATA.
+            assert!(matches!(
+                &result,
+                Err(ProviderError::Correlation(
+                    "original import18 private Birth DATA"
+                ))
+            ));
+        }
+        if matches!(
+            case,
+            "initial_bad_controller_pid" | "initial_bad_controller_uid"
+        ) {
+            assert!(matches!(
+                &result,
+                Err(ProviderError::Correlation(
+                    "original import18 controller kernel DATA"
+                ))
+            ));
+        }
         if matches!(case, "initial_producer" | "initial_reactive") {
             result.unwrap();
             assert!(owner.initial_reconstructed);
@@ -159,6 +194,10 @@ fn independent_formula_rejects_each_changed_header_operand_and_small_escrow() {
         "initial_bad_selected_recipe",
         "initial_bad_recipe_copy",
         "initial_bad_key",
+        "initial_bad_birth",
+        "initial_bad_host_executable",
+        "initial_bad_controller_pid",
+        "initial_bad_controller_uid",
         "initial_short_key",
         "initial_short_birth",
         "initial_bad_prefix_recipe",

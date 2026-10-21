@@ -698,10 +698,50 @@ actual closed registration type fixes the control's premise. Existing hostile
 RawValue population controls remain in place.
 
 Both full Transport configurations pass 1,789 tests, zero failures, no filtering
-and sixteen existing ignores. The six architecture checks pass. Final
-all-feature/all-target checking, the required application compilation capture,
-full Engine/Daemon runs and the funded Source VM are running. Genuine full
-five-phase Recipe/Initial production and native startup remain unfinished.
+and sixteen existing ignores. All-feature/all-target checking for affected
+crates and the six architecture checks pass. The full Engine suite passes
+2,036 tests with zero failures, no filtering and 34 existing ignores. The full
+default-feature Daemon suite passes 1,826 tests with zero failures, no filtering
+and 165 existing ignores; this does not include its optional test-support tests. Required application compilation passes for `2e04d39385`: all
+128 owned changed Rust files match its captured source. It compiles 180 test
+executables across 58 package IDs, including 71 integration targets, at
+`la1x4s7amrz7aq1vv76bsq5v74qnvh2g-aos-test-targets-0.1.0`.
+
+The funded Source VM passes at
+`ams009ilkffkj0190nz30ywfmiga8cps-aos-vm-test-crucible-funded-source-templates-0`.
+Its support, ordinary-peer and default-CLI components all capture the same
+production Rust implementation as `2e04d39385`; the only owned Rust difference
+is the earlier synthetic Host unit control, corrected before that commit. Both
+independent private-Birth consumers retain three genuine worker results,
+private Births, encoded declarations and the new initial projections. Small
+policy, foreign pin, spent retry, default-feature CLI refusals and terminal
+namespace/credit release controls also pass. This VM selects no Native18 route.
+Genuine full five-phase Recipe/Initial production and native startup remain
+unfinished; these captures precede subsequent private-identity joins.
+
+## Private bootstrap identity joins
+
+Initial reconstruction now joins the actual received private key to the
+unchanged genuine Birth derivation domain, and the full Boot Host executable
+reference to the selected launch reference. Its real Hasher/Hash and borrowed
+comparison controls enter the shared independent initial formula. The physical
+owner also compares the launch's controller PID/UID to the actual credentials
+of its same original inherited socket. This happens under the original once
+bit and nonrenewing cut, with terminal custody checks on every outcome.
+
+The real-socket controls now cover 21 flights across the existing three tests.
+Four additional cases preserve raw hashes and consistent funding announcements
+while changing the full-width Birth ID, Host digest, controller PID or UID.
+They require their specific private-identity/kernel refusal, with unchanged
+retained owners and seven still-empty input headers. Both program families
+pass the valid joins. No input backing, native model, full Recipe/Initial,
+executable measurement or Ready is issued by these DATA comparisons.
+
+Both full Transport configurations pass 1,789 tests, zero failures, no filtering
+and sixteen existing ignores. All-feature/all-target checking for affected
+crates and the six architecture checks pass. The required application
+compilation capture is running. Actual controller executable measurement and
+the remaining full native/bootstrap/phase constructors are still unfinished.
 
 ## Original launch custody and shared startup geometry
 

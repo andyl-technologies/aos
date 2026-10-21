@@ -167,6 +167,7 @@ pub(in crate::reference_packet) use native_import18_initial_quote_formatter_data
 /// Names the real projection, Source checker, combining and returned controls.
 pub fn native_import18_initial_construction_counter_scratch_data() -> usize {
     prospective::counter_scratch_data()
+        + super::private_identity::counter_scratch_data()
         + source_authentication_counter_scratch_data()
         + native_import18_startup_wire_counter_scratch_data()
         + size_of::<InitialConstructionData>()
@@ -199,7 +200,8 @@ pub(in crate::reference_packet) use native_import18_initial_construction_counter
 /// Complete native recipe recomputation still precedes every model/Hold effect.
 ///
 /// # Errors
-/// Refuses malformed recipe structure, key or any prefix/body announcement join.
+/// Refuses malformed recipe structure, private Birth/key/executable correspondence
+/// or any prefix/body announcement join.
 pub(in crate::reference_packet) fn authenticate_initial_headers_data(
     recipe: &PacketNativeImport18PrebirthRecipeWireData,
     selected: &PacketNativeImport18SelectedLaunchWireData,
@@ -221,6 +223,7 @@ pub(in crate::reference_packet) fn authenticate_initial_headers_data(
         .try_into()
         .map_err(|_| invalid())?;
     prefix.authenticate_private_boot_key_data(key)?;
+    super::private_identity::authenticate_data(boot, selected.launch_data(), key)?;
     prefix.authenticate_announced_recipe_identity_data(recipe.announced_identity_data())?;
     prefix.authenticate_initial_funding_data(&row)?;
     selected.authenticate_initial_data(recipe.announced_identity_data(), &row)?;
