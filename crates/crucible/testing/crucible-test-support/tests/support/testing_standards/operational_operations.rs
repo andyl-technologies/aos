@@ -14,6 +14,8 @@ use super::{
 mod cache;
 #[path = "operational_operations/cleanup_delegation.rs"]
 mod cleanup_delegation;
+#[path = "operational_operations/custody_delegation.rs"]
+mod custody_delegation;
 #[path = "operational_operations/construction_endpoint.rs"]
 mod construction_endpoint;
 #[path = "operational_operations/constructor_continuations.rs"]
@@ -673,6 +675,7 @@ fn contracts() -> impl Iterator<Item = &'static Contract> {
         .chain(native_registration::REQUIRED_WORKER_CONTRACTS)
         .chain(owned_process_controls::CONTRACTS)
         .chain(retained_continuations::CONTRACTS)
+        .chain(custody_delegation::CONTRACTS)
         .chain(constructor_continuations::CONTRACTS)
         .chain(construction_endpoint::CONTRACTS)
         .chain(service_continuations::CONTRACTS)
