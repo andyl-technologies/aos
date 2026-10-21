@@ -88,11 +88,23 @@ impl NativeRecoveryInspector {
         &self,
         descriptor: &Descriptor,
     ) -> io::Result<NativeQuarantinedInode> {
+        self.inspect_quarantined_entry(descriptor, None)
+    }
+
+    /// Observes a legacy name or a public incarnation-tagged quarantine entry.
+    ///
+    /// # Errors
+    /// Returns the same native custody and transport errors as sealed inspection.
+    pub(in crate::host_cache) fn inspect_quarantined_entry(
+        &self,
+        descriptor: &Descriptor,
+        incarnation: Option<[u8; 32]>,
+    ) -> io::Result<NativeQuarantinedInode> {
         self.check_current()?;
         let context = self.session.recovery_context().map_err(io::Error::other)?;
         let file = self
             .session
-            .inspect_quarantined_sealed(descriptor)
+            .inspect_quarantined_sealed(descriptor, incarnation)
             .map_err(io::Error::other)?;
         let observed = file.metadata()?;
         if !observed.is_file()
@@ -108,11 +120,7 @@ impl NativeRecoveryInspector {
         let result = NativeQuarantinedInode {
             layout: Arc::clone(&self.layout),
             file,
-            name: descriptor
-                .digest()
-                .iter()
-                .map(|byte| format!("{byte:02x}"))
-                .collect(),
+            name: crate::publisher_io::quarantine_name(descriptor, incarnation.as_ref()),
             observed,
             project_id: self.project_id,
         };

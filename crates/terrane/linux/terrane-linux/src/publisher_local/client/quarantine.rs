@@ -11,6 +11,7 @@ impl<L: HostReadLocation> Client<L> {
     pub(crate) fn inspect_quarantined_sealed(
         &self,
         descriptor: &Descriptor,
+        incarnation: Option<[u8; 32]>,
     ) -> Result<File, Error> {
         let mut state = self.lock()?;
         self.require_drained(&state)?;
@@ -18,6 +19,7 @@ impl<L: HostReadLocation> Client<L> {
             &mut state,
             Operation::InspectQuarantine,
             RequestPayload {
+                incarnation: incarnation.map_or_else(Vec::new, |tag| tag.to_vec()),
                 body: Some(BodyKey {
                     kind: BodyKind::Sealed as i32,
                     descriptor: descriptor.encode(),

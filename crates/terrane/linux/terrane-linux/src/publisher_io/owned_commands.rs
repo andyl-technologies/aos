@@ -140,6 +140,15 @@ pub enum NativeOperation {
     InspectQuarantine {
         /// A registered sealed key selecting only its scoped quarantine name.
         key: NativeBodyKey,
+        /// An optional public name tag; this grants no lifecycle authority.
+        incarnation: Option<[u8; 32]>,
+    },
+    /// Quarantines an exact retained canonical sealed inode without replacing another.
+    Quarantine {
+        /// The registered key of the retained original canonical inode.
+        key: NativeBodyKey,
+        /// Its existing publisher-issued canonical incarnation token.
+        incarnation: [u8; 32],
     },
     /// Begins two-phase deletion of an exact retained incarnation.
     Retire {
@@ -362,7 +371,8 @@ impl CommandOwner {
         match &operation {
             NativeOperation::InspectBody { key, .. }
             | NativeOperation::InspectPending { key }
-            | NativeOperation::InspectQuarantine { key }
+            | NativeOperation::InspectQuarantine { key, .. }
+            | NativeOperation::Quarantine { key, .. }
             | NativeOperation::Retire { key, .. }
             | NativeOperation::Restore { key, .. }
             | NativeOperation::FinishRetirement { key, .. } => key.validate()?,
@@ -451,8 +461,9 @@ impl CommandOwner {
             NativeOperation::InspectPending { key } => self.inspect_pending(key).await,
             NativeOperation::InspectQuarantine {
                 key: NativeBodyKey::Sealed { descriptor },
+                incarnation,
             } => self.kernel(|native| {
-                let file = native.inspect_quarantined_sealed(&descriptor)?;
+                let file = native.inspect_quarantined_sealed(&descriptor, incarnation.as_ref())?;
                 Ok(NativeCommandResult::Quarantined {
                     body: NativeBodyHandle(file),
                 })
@@ -460,6 +471,7 @@ impl CommandOwner {
             NativeOperation::InspectQuarantine { .. } => {
                 Err(invalid("quarantine inspection requires a sealed-body key"))
             }
+            NativeOperation::Quarantine { key, incarnation } => self.quarantine(key, incarnation),
             NativeOperation::Retire { key, incarnation } => {
                 self.transition(key, incarnation, Transition::Retire).await
             }
@@ -477,6 +489,36 @@ impl CommandOwner {
                 Err(invalid("inventory requires drained recovery custody"))
             }
         }
+    }
+
+    fn quarantine(
+        &mut self,
+        key: NativeBodyKey,
+        token: [u8; 32],
+    ) -> io::Result<NativeCommandResult> {
+        let index = self
+            .bodies
+            .iter()
+            .position(|body| body.key == key && body.token == token)
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::PermissionDenied, "unknown body incarnation")
+            })?;
+        let body = &self.bodies[index];
+        if !matches!(key, NativeBodyKey::Sealed { .. }) || body.location != Location::Canonical {
+            return Err(invalid(
+                "quarantine requires an original canonical sealed inode",
+            ));
+        }
+        let claim = body
+            .claim
+            .clone()
+            .ok_or_else(|| invalid("quarantine requires original adoption custody"))?;
+        let original = body.file.try_clone()?;
+        self.kernel(|native| native.quarantine_registered(&claim, &original, &token))?;
+        // The name tag remains public routing data. The old lifecycle token is
+        // removed only after the exact move and both directory syncs complete.
+        self.bodies.remove(index);
+        Ok(NativeCommandResult::Complete)
     }
 
     async fn inspect_pending(&mut self, key: NativeBodyKey) -> io::Result<NativeCommandResult> {

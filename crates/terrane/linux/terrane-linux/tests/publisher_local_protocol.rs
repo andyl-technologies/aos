@@ -93,6 +93,17 @@ fn quarantine_inspection_returns_only_one_unverified_descriptor() {
         assert!(validate_packet(&changed, 0, false, &policy()).is_err());
     }
 
+    for length in [0, 1, 31, 32, 33] {
+        let changed = Packet {
+            body_incarnation: vec![3; length],
+            ..request.clone()
+        };
+        assert_eq!(
+            decode_packet(&changed.encode_to_vec(), 0, false, &policy()).is_ok(),
+            matches!(length, 0 | 32)
+        );
+    }
+
     let response = Packet {
         operation: Operation::InspectQuarantine as i32,
         response: true,
@@ -123,6 +134,57 @@ fn quarantine_inspection_returns_only_one_unverified_descriptor() {
     ] {
         assert!(validate_packet(&changed, 1, true, &policy()).is_err());
         assert!(decode_packet(&changed.encode_to_vec(), 1, true, &policy()).is_err());
+    }
+}
+
+#[test]
+fn quarantine_requires_an_exact_sealed_incarnation_and_returns_no_authority() {
+    let request = Packet {
+        operation: Operation::Quarantine as i32,
+        body: publish(false).body,
+        body_incarnation: vec![3; 32],
+        ..probe()
+    };
+    assert!(decode_packet(&request.encode_to_vec(), 0, false, &policy()).is_ok());
+    assert!(decode_packet(&request.encode_to_vec(), 1, false, &policy()).is_err());
+    for length in [0, 1, 31, 33] {
+        let changed = Packet {
+            body_incarnation: vec![3; length],
+            ..request.clone()
+        };
+        assert!(decode_packet(&changed.encode_to_vec(), 0, false, &policy()).is_err());
+    }
+    for kind in [BodyKind::Chunk, BodyKind::Pack] {
+        let mut changed = request.clone();
+        changed.body.as_mut().unwrap().kind = kind as i32;
+        assert!(validate_packet(&changed, 0, false, &policy()).is_err());
+    }
+    let changed = Packet {
+        claim: publish(false).claim,
+        ..request
+    };
+    assert!(decode_packet(&changed.encode_to_vec(), 0, false, &policy()).is_err());
+
+    let response = Packet {
+        operation: Operation::Quarantine as i32,
+        response: true,
+        wait_budget_ms: 0,
+        ..probe()
+    };
+    assert!(decode_packet(&response.encode_to_vec(), 0, true, &policy()).is_ok());
+    assert!(decode_packet(&response.encode_to_vec(), 1, true, &policy()).is_err());
+    for changed in [
+        Packet {
+            body_incarnation: vec![3; 32],
+            ..response.clone()
+        },
+        Packet {
+            verity_algorithm: 1,
+            verity_digest: vec![4; 32],
+            ..response
+        },
+    ] {
+        assert!(decode_packet(&changed.encode_to_vec(), 0, true, &policy()).is_err());
     }
 }
 

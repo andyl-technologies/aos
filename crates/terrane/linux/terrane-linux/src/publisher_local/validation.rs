@@ -177,19 +177,31 @@ pub fn validate_packet(
             Operation::InspectBody
                 | Operation::InspectPending
                 | Operation::InspectQuarantine
+                | Operation::Quarantine
                 | Operation::Retire
                 | Operation::Restore
                 | Operation::FinishRetirement
         );
     let needs_token = matches!(
         operation,
-        Operation::Retire | Operation::Restore | Operation::FinishRetirement
+        Operation::Retire
+            | Operation::Restore
+            | Operation::FinishRetirement
+            | Operation::Quarantine
     );
+    let valid_token = if operation == Operation::InspectQuarantine {
+        matches!(packet.body_incarnation.len(), 0 | 32)
+    } else {
+        packet.body_incarnation.len() == if needs_token { 32 } else { 0 }
+    };
     if packet.claim.is_some() != needs_claim
         || packet.body.is_some() != needs_body
-        || packet.body_incarnation.len() != if needs_token { 32 } else { 0 }
+        || !valid_token
         || needs_claim && !sealed
-        || operation == Operation::InspectQuarantine && !sealed
+        || matches!(
+            operation,
+            Operation::InspectQuarantine | Operation::Quarantine
+        ) && !sealed
     {
         return Err(Error::Invalid("request command fields"));
     }
@@ -283,11 +295,13 @@ fn allowed_fields(packet: &Packet) -> Result<u32, Error> {
             Operation::Publish | Operation::Adopt | Operation::InspectBody => {
                 fields |= bits(&[7, 8])
             }
-            Operation::Retire | Operation::Restore | Operation::FinishRetirement => {
-                fields |= bits(&[8, 9])
-            }
+            Operation::Retire
+            | Operation::Restore
+            | Operation::FinishRetirement
+            | Operation::Quarantine => fields |= bits(&[8, 9]),
             Operation::Inventory => fields |= bits(&[14]),
-            Operation::InspectPending | Operation::InspectQuarantine => fields |= bits(&[8]),
+            Operation::InspectPending => fields |= bits(&[8]),
+            Operation::InspectQuarantine => fields |= bits(&[8, 9]),
             _ => {}
         }
     }

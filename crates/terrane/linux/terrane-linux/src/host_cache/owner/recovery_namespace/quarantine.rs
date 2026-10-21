@@ -69,8 +69,8 @@ impl SharedNamespaceObservation {
             if name.parent() != Some(Path::new("")) || !entry.metadata.is_file() {
                 return Err(invalid("unrecognized quarantine namespace member"));
             }
-            let digest = parse_name(name)?;
-            // InspectQuarantine routes by digest only. The registered kind and
+            let (digest, incarnation) = parse_name(name)?;
+            // The digest and optional tag route to a candidate. The kind and
             // observed size are unverified routing fields, never content context.
             // In particular, no fabricated chunk may enter verified_hashes.
             let key = Descriptor::from_wire(
@@ -81,7 +81,7 @@ impl SharedNamespaceObservation {
                 entry.metadata.len(),
             )
             .map_err(invalid)?;
-            let observation = inspector.inspect_quarantined_sealed(&key)?;
+            let observation = inspector.inspect_quarantined_entry(&key, incarnation)?;
             observation.check_current()?;
             if !same_inode(&entry.metadata, &observation.handle().metadata()?) {
                 return Err(invalid("quarantine reply differs from exhaustive scan"));
@@ -94,16 +94,25 @@ impl SharedNamespaceObservation {
     }
 }
 
-fn parse_name(path: &Path) -> io::Result<[u8; 32]> {
+fn parse_name(path: &Path) -> io::Result<([u8; 32], Option<[u8; 32]>)> {
     let name = path
         .to_str()
-        .filter(|name| {
-            name.len() == 64
-                && name
-                    .bytes()
-                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-        })
-        .ok_or_else(|| invalid("quarantine name is not a canonical digest"))?;
+        .ok_or_else(|| invalid("quarantine name is not UTF-8"))?;
+    let (digest, incarnation) = match name.split_once('.') {
+        Some((digest, suffix)) => (digest, Some(parse_digest(suffix)?)),
+        None => (name, None),
+    };
+    Ok((parse_digest(digest)?, incarnation))
+}
+
+fn parse_digest(name: &str) -> io::Result<[u8; 32]> {
+    if name.len() != 64
+        || !name
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(invalid("quarantine name has a noncanonical digest or tag"));
+    }
     let mut digest = [0; 32];
     for (index, byte) in digest.iter_mut().enumerate() {
         *byte = u8::from_str_radix(&name[index * 2..index * 2 + 2], 16).map_err(invalid)?;

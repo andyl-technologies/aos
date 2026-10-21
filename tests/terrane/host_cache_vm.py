@@ -92,7 +92,7 @@ MANIFEST_CASES += [
     ("manifest-pending-metadata-cold", "seed-writable-manifest", "recover-writable-manifest", True, "valid manifest"),
 ]
 CASES += ["manifest-pending-metadata", "manifest-pending-metadata-cold"]
-CASES += ["quarantine-only", "quarantine-unknown", "quarantine-foreign"]
+CASES += ["quarantine-only", "quarantine-unknown", "quarantine-foreign", "quarantine-tagged"]
 BUDGET = HARD * len(CASES)
 PROVISION_CAPS = "-all,+sys_admin,+dac_read_search,+fowner,+chown,+fsetid"
 QUERY_CAPS = "-all,+sys_admin,+dac_read_search"
@@ -1209,7 +1209,7 @@ def main():
                                     os.environ["TERRANE_CACHE_VM_IMAGE"]], text=True, timeout=5).strip().replace("-", "")
     require(len(uuid) == 32, "actual ext4 UUID unavailable")
     runpy.run_path(str(IMAGE / "share/host_cache_encoded_recovery_vm.py"))["seed"](sys.modules[__name__], uuid)
-    for case in ["quarantine-only", "quarantine-unknown", "quarantine-foreign"]:
+    for case in ["quarantine-only", "quarantine-unknown", "quarantine-foreign", "quarantine-tagged"]:
         result = run(admin_command(SEED_CAPS, [IMAGE / "bin/host_cache_fixture", "seed-quarantine"]),
                      env=actor_environment(case, uuid), text=True, capture_output=True)
         require(result.stdout.splitlines() == ["SEEDED opaque quarantine candidate; no content or recovery authority"],
@@ -1304,20 +1304,23 @@ def main():
                 path = root(case) / "state/old-policy"
                 require(path.is_dir() and path.stat().st_ino == directory_identity and list(path.iterdir()) == [],
                         "unknown state directory changed or disappeared")
-        for case in ["quarantine-only", "quarantine-unknown", "quarantine-foreign"]:
+        for case in ["quarantine-only", "quarantine-unknown", "quarantine-foreign", "quarantine-tagged"]:
             entries = list((root(case) / "quarantine").iterdir())
-            require(len(entries) == 1, "quarantine seed inventory changed")
-            path = entries[0]
-            original = (path.stat().st_dev, path.stat().st_ino, path.read_bytes(), path.stat().st_uid)
-            mode = "recover-quarantine" if case == "quarantine-only" else "refuse-quarantine"
+            require(len(entries) == (2 if case == "quarantine-tagged" else 1), "quarantine seed inventory changed")
+            originals = {path: (path.stat().st_dev, path.stat().st_ino, path.read_bytes(), path.stat().st_uid)
+                         for path in entries}
+            mode = "recover-quarantine" if case in {"quarantine-only", "quarantine-tagged"} else "refuse-quarantine"
             output = actor(case, mode, uuid)
-            require((path.stat().st_dev, path.stat().st_ino, path.read_bytes(), path.stat().st_uid) == original,
-                    "cold recovery changed or removed original opaque quarantine")
+            require(set((root(case) / "quarantine").iterdir()) == set(originals),
+                    "cold recovery changed original quarantine names")
+            for path, original in originals.items():
+                require((path.stat().st_dev, path.stat().st_ino, path.read_bytes(), path.stat().st_uid) == original,
+                        "cold recovery changed or removed original opaque quarantine")
             require(not list((root(case) / "sealed").iterdir())
                     and not list((root(case) / "state/publication").iterdir()),
                     "opaque quarantine gained sealed publication authority")
             expected = ("PASS actual cold quarantine retained charged original inode across recovery and Resume without content, pins or residences"
-                        if case == "quarantine-only" else "PASS unsafe original quarantine refused before funding or Resume:")
+                        if case in {"quarantine-only", "quarantine-tagged"} else "PASS unsafe original quarantine refused before funding or Resume:")
             require(any(line.startswith(expected) for line in output.splitlines()),
                     "missing actual cold quarantine result: " + case)
         cancel_case(helper, uuid)

@@ -371,6 +371,15 @@ fn native_operation(
         },
         Operation::InspectQuarantine => NativeOperation::InspectQuarantine {
             key: required_body()?,
+            incarnation: if packet.body_incarnation.is_empty() {
+                None
+            } else {
+                Some(token()?)
+            },
+        },
+        Operation::Quarantine => NativeOperation::Quarantine {
+            key: required_body()?,
+            incarnation: token()?,
         },
         Operation::Unspecified => return Err(Error::Invalid("operation")),
     })

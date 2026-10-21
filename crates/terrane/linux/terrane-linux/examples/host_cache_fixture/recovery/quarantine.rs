@@ -27,19 +27,29 @@ fn name() -> io::Result<String> {
 pub(crate) fn seed() -> io::Result<()> {
     let inputs = Inputs::load()?;
     let (filename, uid) = match inputs.domain.as_str() {
-        "tenant:quarantine-only" => (name()?, 841),
+        "tenant:quarantine-only" | "tenant:quarantine-tagged" => (name()?, 841),
         "tenant:quarantine-unknown" => ("unrecognized-name".to_owned(), 841),
         "tenant:quarantine-foreign" => (name()?, 842),
         _ => return Err(invalid("unknown quarantine seed domain")),
     };
-    super::write(
-        &inputs,
-        &inputs.root.join("quarantine").join(filename),
-        CORRUPT,
-        uid,
-        uid,
-        0o600,
-    )?;
+    let names = if inputs.domain == "tenant:quarantine-tagged" {
+        vec![
+            format!("{filename}.{}", "13".repeat(32)),
+            format!("{filename}.{}", "24".repeat(32)),
+        ]
+    } else {
+        vec![filename]
+    };
+    for filename in names {
+        super::write(
+            &inputs,
+            &inputs.root.join("quarantine").join(filename),
+            CORRUPT,
+            uid,
+            uid,
+            0o600,
+        )?;
+    }
     fs::File::open(inputs.root.join("quarantine"))?.sync_all()?;
     println!("SEEDED opaque quarantine candidate; no content or recovery authority");
     Ok(())
@@ -78,15 +88,33 @@ pub(crate) fn run(
     }
     let completed = result?;
     completed.check_current()?;
-    let path = inputs.root.join("quarantine").join(name()?);
-    let before = fs::metadata(&path)?;
-    let allocation = before
-        .blocks()
-        .checked_mul(512)
-        .ok_or_else(|| invalid("quarantine allocation overflow"))?;
-    if allocation == 0
-        || completed.synchronized_quarantined_inode_bytes() != allocation
-        || completed.synchronized_quarantined_inodes() != 1
+    let names = if inputs.domain == "tenant:quarantine-tagged" {
+        vec![
+            format!("{}.{}", name()?, "13".repeat(32)),
+            format!("{}.{}", name()?, "24".repeat(32)),
+        ]
+    } else {
+        vec![name()?]
+    };
+    let mut originals = Vec::new();
+    let mut allocation = 0_u64;
+    for filename in names {
+        let path = inputs.root.join("quarantine").join(filename);
+        let before = fs::metadata(&path)?;
+        let bytes = before
+            .blocks()
+            .checked_mul(512)
+            .ok_or_else(|| invalid("quarantine allocation overflow"))?;
+        if bytes == 0 {
+            return Err(invalid("quarantine candidate lacks original allocation"));
+        }
+        allocation = allocation
+            .checked_add(bytes)
+            .ok_or_else(|| invalid("quarantine allocation sum overflow"))?;
+        originals.push((path, before));
+    }
+    if completed.synchronized_quarantined_inode_bytes() != allocation
+        || completed.synchronized_quarantined_inodes() != originals.len()
         || completed.synchronized_retained_inode_bytes() < allocation
         || completed.charged_reserved_bytes() < allocation
     {
@@ -122,10 +150,25 @@ pub(crate) fn run(
         .block_on(owner.pin_resident_chunk(identity, expires))
         .err()
         .ok_or_else(|| invalid("quarantine supplied a consumer source"))?;
-    if error.kind() != io::ErrorKind::NotFound || fs::metadata(&path)?.ino() != before.ino() {
+    if error.kind() != io::ErrorKind::NotFound {
         return Err(invalid(
             "quarantine was served or lost original native custody",
         ));
+    }
+    for (path, before) in originals {
+        let after = fs::metadata(&path)?;
+        if (after.dev(), after.ino(), after.blocks())
+            != (before.dev(), before.ino(), before.blocks())
+        {
+            return Err(invalid(
+                "original quarantine allocation changed across Resume",
+            ));
+        }
+    }
+    if inputs.domain == "tenant:quarantine-tagged" {
+        println!(
+            "PASS actual cold recovery retains both tagged original quarantine allocations of one hash without serving either"
+        );
     }
     println!(
         "PASS actual cold quarantine retained charged original inode across recovery and Resume without content, pins or residences"

@@ -53,6 +53,7 @@ enum PublisherOperation {
   PUBLISHER_RESUME = 10;
   PUBLISHER_INSPECT_PENDING = 11;
   PUBLISHER_INSPECT_QUARANTINE = 12;
+  PUBLISHER_QUARANTINE = 13;
 }
 
 enum PublisherBodyKind {
@@ -132,6 +133,7 @@ retirement unit. Keys use existing identity and layout rules unchanged.
 | Resume | none | none | Leave recovery custody after actual cache state reconciliation |
 | InspectPending | none | none | Retain a pending inode incarnation for non-serving lifecycle recovery |
 | InspectQuarantine | none | one read-only unverified quarantine inode | Observe existing publisher-owned sealed-body quarantine custody; no lifecycle token |
+| Quarantine | none | none | Move the exact retained canonical sealed inode into quarantine without replacement |
 
 Error responses carry no descriptors, binding or body-incarnation token.
 Replies echo version, request ID, operation, domain and cache incarnation.
@@ -142,7 +144,7 @@ them by supplying device/inode numbers. They are invalid after publisher
 restart. A fresh InspectBody or verified Adopt is required after recovery.
 The same token follows that retained inode through canonical, pending-delete
 and restored states; each command checks legality against the publisher's
-current state. Retirement does not consume the token. Final removal or
+current state. Retirement does not consume the token. Final removal, quarantine or
 replacement of the inode invalidates it.
 
 Only `serve` sends requests and only `publish` sends responses. Clients
@@ -162,7 +164,8 @@ are zero. Claims, bodies and tokens are absent unless required below.
 | Drain, Resume | none | none |
 | Inventory | optional inventory cursor | inventory and optional next cursor |
 | InspectPending | body | body-incarnation token |
-| InspectQuarantine | sealed body | none |
+| InspectQuarantine | sealed body and optional 32-byte quarantine name suffix | none |
+| Quarantine | sealed body and body-incarnation token | none |
 
 Claim profile and plaintext size must agree with configured profile and
 verified content. Inline claims have zero manifest offset/length and no
@@ -216,7 +219,10 @@ unlinking its name revokes existing open descriptors or mappings.
 
 InspectQuarantine opens only an existing publisher-owned regular file under
 that domain's configured `quarantine/` root, using the digest of a registered
-sealed-body key. The read-only descriptor is an opaque custody observation:
+sealed-body key. An optional 32-byte value in `body_incarnation` selects the
+public hexadecimal name suffix of a previously quarantined incarnation; here
+it is only a name selector, never lifecycle authority. Without that suffix,
+the legacy digest-only name is selected. The read-only descriptor is an opaque custody observation:
 its bytes may be corrupt or unsealed. No content verification, verity binding,
 body-incarnation token, restore, retirement, pin or serving authority follows.
 The receiver independently checks its actual device, inode, project and
@@ -224,6 +230,19 @@ namespace custody before using it for recovery accounting. The operation
 creates, renames and deletes no entry and leaves publication records unchanged.
 It is permitted in recovery and running custody. Unknown operation values
 remain rejected; an older receiver cannot substitute another operation.
+
+Quarantine requires the publisher's existing token for an actually retained
+canonical sealed inode. The publisher compares that original inode with its
+canonical directory entry, then moves it without replacement to
+`quarantine/<hash>.<incarnation>`, where the suffix is the token's 64 lowercase
+hexadecimal digits. Both directories are synchronized before success and the
+old lifecycle token is removed. Earlier quarantined copies of the same hash
+remain intact, including a legacy `quarantine/<hash>` entry. A conflicting
+quarantine name is refused without replacement. A successful response carries
+no descriptor, binding or token. Quarantine grants no permission to serve,
+restore, wipe or remove that inode, and does not revoke descriptors already
+held by readers. The cache must independently revoke its affected read views
+and retain the original allocation and funding under HOST-15 and HOST-27.
 
 InspectPending is permitted during recovery custody. It independently opens
 the domain's pending entry through its typed key and verifies directory-relative
@@ -242,6 +261,8 @@ Drain; the publisher rejects conflicting work until all prior-incarnation
 commands finish. Drain then grants the new incarnation exclusive recovery
 custody: Inventory, Probe, InspectBody, InspectPending, InspectQuarantine and
 Adopt are permitted.
+Quarantine is permitted only for a canonical sealed incarnation actually
+retained by that publisher after Drain; a token from before Drain is invalid.
 Restore and FinishRetirement of verified pending incarnations are permitted;
 ordinary publication and new retirement remain blocked. The cache reconstructs its real
 durable state and pins before sending Resume. Resume succeeds only for that

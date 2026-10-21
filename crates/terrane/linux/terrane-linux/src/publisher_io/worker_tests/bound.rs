@@ -48,7 +48,7 @@ pub(super) async fn exercise(
         .await
         .unwrap();
     let sealed = worker
-        .publish(claim.clone(), File::open(input).unwrap())
+        .publish(claim.clone(), File::open(&input).unwrap())
         .await
         .unwrap()
         .into_handle();
@@ -129,6 +129,7 @@ pub(super) async fn exercise(
         .execute(
             context.clone(),
             NativeOperation::InspectQuarantine {
+                incarnation: None,
                 key: NativeBodyKey::Sealed {
                     descriptor: descriptor.clone(),
                 },
@@ -168,16 +169,176 @@ pub(super) async fn exercise(
     // Restore the genuine previously published inode, then require actual
     // adoption rather than copying a binding or declaring inventory Ready.
     rename(&saved, &canonical);
-    worker
-        .execute(context.clone(), NativeOperation::Adopt { claim })
+    let adopted = worker
+        .execute(
+            context.clone(),
+            NativeOperation::Adopt {
+                claim: claim.clone(),
+            },
+        )
         .await
         .unwrap();
+    let NativeCommandResult::Published { incarnation, .. } = adopted else {
+        panic!("actual adoption must retain the original canonical incarnation")
+    };
     assert_eq!(
         fs::metadata(&canonical).unwrap().ino(),
         sealed.metadata().unwrap().ino()
     );
     assert_eq!(crate::verity::measure(&sealed).unwrap(), measurement);
     assert_eq!(fs::read(&record).unwrap(), record_bytes);
+
+    let key = NativeBodyKey::Sealed {
+        descriptor: descriptor.clone(),
+    };
+    let mut token = *incarnation.bytes();
+    let mut original = sealed.metadata().unwrap().ino();
+    let mut retained = Vec::new();
+    for round in 0..2 {
+        let tagged = root
+            .join("quarantine")
+            .join(crate::publisher_io::quarantine_name(
+                &descriptor,
+                Some(&token),
+            ));
+        if round == 0 {
+            fs::write(&tagged, b"earlier quarantine entry").unwrap();
+            let existing = fs::metadata(&tagged).unwrap().ino();
+            let error = worker
+                .execute(
+                    context.clone(),
+                    NativeOperation::Quarantine {
+                        key: key.clone(),
+                        incarnation: token,
+                    },
+                )
+                .await
+                .err()
+                .unwrap();
+            assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+            assert_eq!(fs::metadata(&tagged).unwrap().ino(), existing);
+            assert_eq!(fs::read(&tagged).unwrap(), b"earlier quarantine entry");
+            assert_eq!(fs::metadata(&canonical).unwrap().ino(), original);
+            fs::remove_file(&tagged).unwrap();
+            File::open(root.join("quarantine"))
+                .unwrap()
+                .sync_all()
+                .unwrap();
+        }
+        let mut wrong = token;
+        wrong[0] ^= 1;
+        assert_eq!(
+            worker
+                .execute(
+                    context.clone(),
+                    NativeOperation::Quarantine {
+                        key: key.clone(),
+                        incarnation: wrong
+                    }
+                )
+                .await
+                .err()
+                .unwrap()
+                .kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+        assert_eq!(fs::metadata(&canonical).unwrap().ino(), original);
+        assert!(matches!(
+            worker
+                .execute(
+                    context.clone(),
+                    NativeOperation::Quarantine {
+                        key: key.clone(),
+                        incarnation: token
+                    }
+                )
+                .await
+                .unwrap(),
+            NativeCommandResult::Complete
+        ));
+        assert!(!canonical.exists());
+        assert_eq!(fs::metadata(&tagged).unwrap().ino(), original);
+        assert_eq!(fs::metadata(&quarantine).unwrap().ino(), inode.ino());
+
+        for operation in [
+            NativeOperation::Quarantine {
+                key: key.clone(),
+                incarnation: token,
+            },
+            NativeOperation::Restore {
+                key: key.clone(),
+                incarnation: token,
+            },
+            NativeOperation::FinishRetirement {
+                key: key.clone(),
+                incarnation: token,
+            },
+        ] {
+            assert_eq!(
+                worker
+                    .execute(context.clone(), operation)
+                    .await
+                    .err()
+                    .unwrap()
+                    .kind(),
+                std::io::ErrorKind::PermissionDenied
+            );
+        }
+        let inspected = worker
+            .execute(
+                context.clone(),
+                NativeOperation::InspectQuarantine {
+                    key: key.clone(),
+                    incarnation: Some(token),
+                },
+            )
+            .await
+            .unwrap();
+        let NativeCommandResult::Quarantined { body } = inspected else {
+            panic!("tagged quarantine cannot return backing or lifecycle authority")
+        };
+        let opaque = body.into_handle();
+        assert_eq!(opaque.metadata().unwrap().ino(), original);
+        assert_eq!(opaque.metadata().unwrap().mode() & 0o7777, 0o400);
+        retained.push((tagged, original));
+
+        if round == 0 {
+            worker
+                .execute(context.clone(), NativeOperation::Resume)
+                .await
+                .unwrap();
+            let replacement = worker
+                .execute(
+                    context.clone(),
+                    NativeOperation::Publish {
+                        claim: claim.clone(),
+                        source: File::open(&input).unwrap(),
+                    },
+                )
+                .await
+                .unwrap();
+            let NativeCommandResult::Published {
+                object,
+                incarnation,
+            } = replacement
+            else {
+                panic!("replacement must be independently published and sealed")
+            };
+            let replacement = object.into_handle();
+            original = replacement.metadata().unwrap().ino();
+            token = *incarnation.bytes();
+            assert_ne!(original, sealed.metadata().unwrap().ino());
+            assert_eq!(crate::verity::measure(&replacement).unwrap(), measurement);
+        }
+    }
+    assert_ne!(retained[0].0, retained[1].0);
+    for (path, original) in retained {
+        assert_eq!(fs::metadata(path).unwrap().ino(), original);
+    }
+    assert_eq!(fs::read(&record).unwrap(), record_bytes);
+    println!(
+        "PASS exact retained sealed incarnations quarantined without replacement; repeated hashes preserved and old lifecycle tokens revoked"
+    );
 }
 
 fn rename(source: &Path, target: &Path) {

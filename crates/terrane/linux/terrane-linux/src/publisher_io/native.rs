@@ -19,6 +19,12 @@ use crate::verity;
 #[path = "native_adoption.rs"]
 mod adoption;
 
+#[path = "native_quarantine.rs"]
+mod quarantine;
+
+#[cfg(feature = "tokio")]
+pub(crate) use quarantine::quarantine_name;
+
 fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
@@ -530,29 +536,6 @@ impl NativePublisher {
         self.retire(claim)
     }
 
-    /// Opens only the original publisher-owned quarantined inode read-only.
-    ///
-    /// No content, seal or lifecycle claim follows from this observation. The
-    /// consumer must check its actual project and retained namespace identity.
-    #[cfg(feature = "tokio")]
-    pub(super) fn inspect_quarantined_sealed(&self, descriptor: &Descriptor) -> io::Result<File> {
-        self.confinement.check_current()?;
-        let name: String = descriptor
-            .digest()
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect();
-        // O_PATH classification precedes the readable open so an unexpected
-        // special file is never opened as a device or a blocking FIFO.
-        let file = adoption::open_candidate(&self.quarantine, &name, &self.sealed)?;
-        let metadata = file.metadata()?;
-        if metadata.nlink() != 1 || !matches!(metadata.mode() & 0o7777, 0o400 | 0o600) {
-            return Err(invalid("unsafe quarantined sealed inode custody"));
-        }
-        self.quarantine.sync_all()?;
-        Ok(file)
-    }
-
     // This observation intentionally does not measure verity or hash bytes.
     // A pending sealed entry may be corrupt and still need safe retirement.
     #[cfg(feature = "tokio")]
@@ -664,51 +647,6 @@ impl NativePublisher {
         self.check_claim(claim)?;
         fs::unlinkat(&self.pending, name(claim).as_str(), AtFlags::empty())?;
         self.pending.sync_all()
-    }
-
-    /// Moves an independently rejected canonical entry to scoped quarantine.
-    ///
-    /// The canonical entry must still match the retained rejected inode. The
-    /// target directory comes from trusted configuration, not a request pathname.
-    /// Cache policy retains quarantine until scrub confirms
-    /// another good copy or the configured retention expires.
-    ///
-    /// # Errors
-    /// Returns invalid target custody, cross-device, missing source, conflicting
-    /// quarantine name or directory synchronization errors.
-    pub fn quarantine_rejected(
-        &mut self,
-        claim: &PublicationClaim,
-        rejected: &File,
-        quarantine: &File,
-    ) -> io::Result<()> {
-        self.confinement.check_current()?;
-        self.check_claim(claim)?;
-        let target = quarantine.metadata()?;
-        if !target.is_dir()
-            || target.mode() & 0o002 != 0
-            || target.dev() != self.sealed.metadata()?.dev()
-        {
-            return Err(invalid("unsafe quarantine directory or filesystem"));
-        }
-        let shard = self.shard(claim)?;
-        let name = name(claim);
-        let canonical = File::from(fs::openat(
-            &shard,
-            name.as_str(),
-            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-            Mode::empty(),
-        )?);
-        compare_inode(rejected, &canonical)?;
-        fs::renameat_with(
-            &shard,
-            name.as_str(),
-            quarantine,
-            name.as_str(),
-            fs::RenameFlags::NOREPLACE,
-        )?;
-        shard.sync_all()?;
-        quarantine.sync_all()
     }
 }
 

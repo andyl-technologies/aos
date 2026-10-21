@@ -14,6 +14,8 @@ pub use manifest::NativeManifestWitness;
 pub(crate) use manifest::ReceivedManifest;
 mod native;
 #[cfg(feature = "tokio")]
+pub(crate) use native::quarantine_name;
+#[cfg(feature = "tokio")]
 mod worker;
 
 pub use native::{NativePublisher, StagedFile};

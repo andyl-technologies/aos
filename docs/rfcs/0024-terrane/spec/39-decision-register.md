@@ -2818,6 +2818,22 @@ is added rather than editing history.
     correct physical charge ownership.
   - **Affects:** HOST-15, HOST-27, HOST-32 and publisher-local-v1.
 
+- **[D-130] Quarantine exact sealed incarnations without replacing earlier copies.**
+  - **Status:** Decided (2026-10-21)
+  - **Decision:** Register publisher-local operation 13, Quarantine. Only an
+    actual retained canonical sealed incarnation can authorize the move. Its
+    destination is `quarantine/<hash>.<incarnation>`, using a 64-digit lowercase
+    hexadecimal suffix, and is never replaced. Synchronize both directories
+    before success and remove the old lifecycle token. InspectQuarantine may
+    select that suffix as public naming information without acquiring lifecycle
+    authority. Recovery accepts both tagged and legacy digest-only entries as
+    independently checked opaque custody, never verified content.
+  - **Rationale:** Refetching a hash can produce a new physical inode while a
+    previous corrupt copy still awaits scrub. A single digest-only quarantine
+    name cannot preserve both copies. The suffix distinguishes the original
+    allocations without allowing a caller to mint mutation authority.
+  - **Affects:** HOST-15, HOST-27, HOST-32 and publisher-local-v1.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**
