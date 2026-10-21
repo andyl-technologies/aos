@@ -78,6 +78,19 @@ pub struct CommitReport {
 }
 
 impl<S: Store, C: Clock, F: LocalFs> Repository<S, C, F> {
+    /// Checks a configured leaf against the actual opened backend's report.
+    ///
+    /// # Errors
+    /// Rejects expression shapes and requirements incompatible with that backend.
+    pub(crate) fn validate_store_leaf(
+        &self,
+        expression: &crate::config::expression::StoreExpression,
+    ) -> Result<(), crate::config::expression::validation::ValidationError> {
+        expression.validate_opened(&crate::config::expression::validation::OpenedStore::leaf(
+            self.coordinator.guard().store(),
+        ))
+    }
+
     /// Composes the shared coordinator with its exact filesystem and chunk profile.
     ///
     /// Composition supplies no original authoring authority. Mutating verbs that

@@ -1,8 +1,8 @@
 //! Parses the store-expression syntax from specification 11.
 //!
 //! Parsing establishes only the expression's shape. It cannot infer whether a
-//! disk or remote is an authority; STORE-27 and STORE-28 require backend probes
-//! in the later store implementation. Nesting is bounded before recursion.
+//! disk or remote is an authority. [`validation`] checks STORE-27 and STORE-28
+//! using the actual opened backends' reports. Nesting is bounded before recursion.
 //!
 //! ```text
 //! routed[shared-dir(/objects), remote(unix:///run/terrane.sock)]
@@ -11,6 +11,9 @@
 //! ```
 
 use std::fmt;
+
+/// Checks opened backend capabilities against expression positions and policy.
+pub mod validation;
 
 /// Stores one syntactically valid backend or combinator expression.
 #[derive(Debug, Eq, PartialEq)]

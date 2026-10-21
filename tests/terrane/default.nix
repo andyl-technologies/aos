@@ -506,6 +506,7 @@ in {
   integration.workload-issuer = workloadIssuerProof;
 
   integration.gcp-instance-issuer = instanceIssuerProof;
+  integration.store-expression-opened = import ./store-expression-opened.nix {inherit sourceGate;};
   integration.native-index-populations = import ./native-index-populations.nix {
     sourceGate = nativeSdkGateWithInputs {extraBuildDeps = [pkgs.coreutils];};
     coreutils = pkgs.coreutils;

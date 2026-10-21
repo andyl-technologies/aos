@@ -12001,3 +12001,41 @@ refuse baseline writes, neighboring change branches, tags and admin operations.
 Both source-bound inventories include the new cases. Strict SDK Clippy, Rust
 formatting and the native `std,wasm` feature check pass; frozen qualification
 and deployed CI integration remain pending. No new task checkbox is accepted.
+
+
+#### Opened store-expression compatibility
+
+The SDK validates a parsed expression against the reports of actual opened
+backends and combinators, in the same tree shape. It rejects competing routed
+authorities, shared-directory authority, incompatible cache or guard ref modes,
+single-writer authority under a concurrent-writer guard, missing required
+presigning and misplaced writer policy. Every nested child is checked before
+a cache wrapper masks its ref interface. Optional replicated and striped
+combinators remain unavailable in the trunk. Validation grants no operational
+authority and supplies no missing backend or durability receipt.
+
+The configured local repository opener now checks its actual opened file-bucket
+report before returning the repository. Ten integration cases pass, including
+a genuinely opened file bucket and routed composition. Strict SDK Clippy and
+Rust formatting pass. The source-bound `integration.store-expression-opened`
+check retains the exact Cargo artifact, inventory and individual executions.
+Composite expression opening, trusted named-policy compilation and the owning
+`store-expression-validate` gate remain open; T-STORE-2 is not accepted.
+
+Frozen qualification of the exact CI grants at `cb9688d39c` passes the owning
+AUTH-3 gate: 7,905 immutable files, 5,219 crate inputs and all sixteen actual
+issuer cases independently reviewed. Its required application-target build
+also passes, with 184 test executables across 59 packages. The earlier
+`c86390959e` application-target build passes with the same executable/package
+counts and 7,904 reviewed source files. These application checks compile
+targets; they do not execute them. The growing-index, feature-matrix and full
+trunk qualification runs remain pending. No additional task is accepted.
+
+All ten configured-local-repository integration cases also pass using the
+workspace's prescribed optimized test profile. The unoptimized development
+profile overflows its test-thread stack on both unchanged `cb9688d39c` and
+this change; the baseline failure is retained. No stack-size override or test
+assertion change is used. The no-default-feature and native `std,wasm` feature
+checks pass; the latter does not establish an actual WebAssembly target build.
+The frozen `c86390959e` runtime-agnostic gate also passes independent review
+of 7,904 immutable files and all 32 selected controls.
