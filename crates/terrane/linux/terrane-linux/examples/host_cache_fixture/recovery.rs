@@ -308,6 +308,24 @@ pub(super) fn seed(mode: &str) -> io::Result<()> {
         File::open(parent)?.sync_all()?;
     }
     File::open(inputs.root.join("sealed"))?.sync_all()?;
+    if matches!(
+        inputs.domain.as_str(),
+        "tenant:manifest-pending-metadata" | "tenant:manifest-pending-metadata-cold"
+    ) {
+        // This only names independently observed seed bytes for administrative
+        // crash injection. Native recovery must verify the actual pair itself.
+        let pack_hash = TERRANE_V1
+            .calculate(IdentityKind::Pack, pack.bytes())
+            .map_err(io::Error::other)?;
+        let index_hash = TERRANE_V1
+            .calculate(IdentityKind::Index, pack.index_object())
+            .map_err(io::Error::other)?;
+        println!(
+            "METADATA_RETIREMENT pack={} idx={}",
+            hex(pack_hash.digest()),
+            hex(index_hash.digest())
+        );
+    }
     println!("SEEDED actual cold manifest candidate; no publication or recovery authority");
     Ok(())
 }
@@ -842,10 +860,13 @@ fn require_domain(inputs: &Inputs, case: FixtureCase) -> io::Result<()> {
         && !(case == FixtureCase::Verified
             && matches!(
                 inputs.domain.as_str(),
-                metadata::DOMAIN | "tenant:manifest-pending"
+                metadata::DOMAIN | "tenant:manifest-pending" | "tenant:manifest-pending-metadata"
             ))
         && !(case == FixtureCase::WritableVerified
-            && inputs.domain == "tenant:manifest-pending-cold")
+            && matches!(
+                inputs.domain.as_str(),
+                "tenant:manifest-pending-cold" | "tenant:manifest-pending-metadata-cold"
+            ))
     {
         return Err(invalid("manifest fixture requires its dedicated domain"));
     }

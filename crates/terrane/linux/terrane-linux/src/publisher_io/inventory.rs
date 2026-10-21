@@ -38,6 +38,9 @@ mod lease_records;
 #[path = "inventory_startup.rs"]
 mod startup;
 
+#[path = "inventory_pending_manifest.rs"]
+mod pending_manifest;
+
 /// Retains actual generated temporary inodes until startup cleanup completes.
 pub(super) struct RetainedScratch {
     directory: File,
@@ -65,12 +68,13 @@ struct Snapshot {
     cursor: Vec<u8>,
 }
 
-// Neither variant is reconstructed from private publication-state bytes. The
-// manifest variant retains the actual verified pack/index and provisioning guard
-// until the exhaustive binding decision, without claiming a durable cache pin.
+// No claim is reconstructed from private publication-state bytes. Manifest
+// sources retain their verified canonical or pending pair through the binding
+// decision, without claiming a durable cache pin or restoration authority.
 enum SealedClaim {
     Inline(PublicationClaim),
     Manifest(Box<NativeManifestSource>),
+    PendingManifest(Box<pending_manifest::PendingManifest>),
 }
 
 impl SealedClaim {
@@ -78,6 +82,7 @@ impl SealedClaim {
         match self {
             Self::Inline(claim) => claim,
             Self::Manifest(source) => source.claim(),
+            Self::PendingManifest(source) => source.claim(),
         }
     }
 
@@ -88,6 +93,9 @@ impl SealedClaim {
     }
 
     fn recheck(&self, inventory: &NativeInventory) -> io::Result<()> {
+        if let Self::PendingManifest(source) = self {
+            source.recheck(inventory)?;
+        }
         if let Self::Manifest(source) = self {
             source.recheck()?;
             for file in [source.files().0, source.files().1] {
@@ -383,6 +391,17 @@ impl NativeInventory {
         let identity = TERRANE_V1
             .from_digest(IdentityKind::Manifest, &claimed_digest)
             .map_err(source)?;
+        // Only canonical absence permits an inventory-only pending source.
+        // Corrupt canonical metadata stays an error; no private state or sealed
+        // plaintext supplies a manifest descriptor during this namespace scan.
+        match reader.get_entry(&identity).await {
+            Ok(_) => {}
+            Err(error) if matches!(error.kind(), terrane_sdk::store::StoreErrorKind::Absent(_)) => {
+                return pending_manifest::find(self, &identity)
+                    .map(|source| SealedClaim::PendingManifest(Box::new(source)));
+            }
+            Err(error) => return Err(source(error)),
+        }
         let manifest =
             NativeManifestSource::open(&reader, &identity, HostReadLimits::default()).await?;
         // This read-only scan has not changed publication state. Keep the full

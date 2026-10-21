@@ -96,7 +96,7 @@ pub(super) struct StateInventory {
     retained_bytes: usize,
 }
 
-fn same_inode_snapshot(left: &std::fs::Metadata, right: &std::fs::Metadata) -> bool {
+pub(super) fn same_inode_snapshot(left: &std::fs::Metadata, right: &std::fs::Metadata) -> bool {
     left.dev() == right.dev()
         && left.ino() == right.ino()
         && left.mode() == right.mode()

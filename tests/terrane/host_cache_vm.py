@@ -86,6 +86,12 @@ MANIFEST_CASES += [
     ("manifest-pending-cold", "seed-writable-manifest", "recover-writable-manifest", True, "valid manifest"),
 ]
 CASES += ["manifest-pending", "manifest-pending-cold"]
+PENDING_METADATA_CASES = {"manifest-pending-metadata", "manifest-pending-metadata-cold"}
+MANIFEST_CASES += [
+    ("manifest-pending-metadata", "seed-manifest", "recover-manifest", True, "valid manifest"),
+    ("manifest-pending-metadata-cold", "seed-writable-manifest", "recover-writable-manifest", True, "valid manifest"),
+]
+CASES += ["manifest-pending-metadata", "manifest-pending-metadata-cold"]
 BUDGET = HARD * len(CASES)
 PROVISION_CAPS = "-all,+sys_admin,+dac_read_search,+fowner,+chown,+fsetid"
 QUERY_CAPS = "-all,+sys_admin,+dac_read_search"
@@ -334,7 +340,17 @@ def seed_manifests(uuid):
             print(error.stdout or "", end="", flush=True)
             print(error.stderr or "", end="", flush=True)
             raise
-        require(result.stdout.splitlines() == [
+        seed_lines = result.stdout.splitlines()
+        retirement_names = None
+        if case in PENDING_METADATA_CASES:
+            require(len(seed_lines) == 2 and seed_lines[0].startswith("METADATA_RETIREMENT "),
+                    "pending metadata seed omitted its actual content identities")
+            retirement_names = dict(field.split("=", 1) for field in seed_lines.pop(0).split()[1:])
+            require(set(retirement_names) == {"pack", "idx"}
+                    and all(len(value) == 64 and set(value) <= set("0123456789abcdef")
+                            for value in retirement_names.values()),
+                    "pending metadata seed has invalid content identities")
+        require(seed_lines == [
             "SEEDED actual cold manifest candidate; no publication or recovery authority"
         ], "missing actual cold seed witness: " + case)
         bodies = list((root(case) / "sealed").glob("*/*"))
@@ -404,6 +420,30 @@ def seed_manifests(uuid):
                         "companions": [(path, path.stat().st_ino) for path in companions],
                         "packs": {str(path): hashlib.sha256(path.read_bytes()).hexdigest() for path in packs},
                         "conflicting_binding": conflict}
+        if retirement_names is not None:
+            retired = []
+            for member in packs:
+                pending = root(case) / "pending-delete" / retirement_names[member.suffix[1:]]
+                before = member.stat()
+                require(not pending.exists(), "pending metadata seed collides with another inode")
+                member.rename(pending)
+                for parent in [member.parent, pending.parent]:
+                    descriptor = os.open(parent, os.O_RDONLY | os.O_DIRECTORY)
+                    try:
+                        os.fsync(descriptor)
+                    finally:
+                        os.close(descriptor)
+                after = pending.stat()
+                require((after.st_dev, after.st_ino, after.st_uid, after.st_gid,
+                         after.st_mode, after.st_nlink, after.st_size)
+                        == (before.st_dev, before.st_ino, before.st_uid, before.st_gid,
+                            before.st_mode, before.st_nlink, before.st_size)
+                        and not member.exists()
+                        and hashlib.sha256(pending.read_bytes()).hexdigest()
+                        == seeded[case]["packs"][str(member)],
+                        "pending metadata setup changed the original incarnation or bytes")
+                retired.append((member, pending, before.st_dev, before.st_ino))
+            seeded[case]["pending_metadata"] = retired
         if case in {"manifest-pending", "manifest-pending-cold"}:
             # Root administration models the durable rename left by a crash.
             # The publisher must issue its own incarnation and Restore; the
@@ -475,6 +515,13 @@ def manifest_recovery_cases(uuid, seeded, helper):
         for name, digest in original["packs"].items():
             require(hashlib.sha256(pathlib.Path(name).read_bytes()).hexdigest() == digest,
                     "manifest recovery changed retained metadata bytes")
+        if "pending_metadata" in original:
+            for canonical, pending, device, inode in original["pending_metadata"]:
+                current = canonical.stat()
+                require(not pending.exists() and (current.st_dev, current.st_ino) == (device, inode),
+                        "metadata recovery replaced the original pending inode or retained its old name")
+            print("PASS original pending metadata pair restored before verified manifest recovery: " + case,
+                  flush=True)
         if "pending" in original:
             require(not original["pending"].exists(),
                     "acknowledged recovery retained the original pending name")
