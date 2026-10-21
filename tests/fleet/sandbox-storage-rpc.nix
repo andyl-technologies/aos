@@ -731,7 +731,6 @@ in {
       prepare_claims = replay_claims()
       prepare_datasets = dataset_snapshot()
       prepare_before = journal_hash()
-      controller("prepare-one-two-unavailable", "prepare-one-two-unavailable")
       controller("prepare", "prepare")
       prepare_after = journal_hash()
       assert prepare_after != prepare_before
@@ -819,7 +818,19 @@ in {
       assert socket_sample("aos-sandbox-workspace-pin-worker.socket") == worker_repaired
       assert replay_claims() == 1
 
+      # The rejected 1.2 HELLO closes the broker's accept loop. PID 1 may then
+      # reconcile a restarted broker and invoke the read-only observer again.
+      # Run this denial after the ordinary Prepare and restart assertions, and
+      # check both retained session journals after the owners have stopped.
+      session_journals = (
+          "/var/lib/aos/sandboxd/broker-session/storage/session.journal "
+          "/var/lib/aos/sandbox-storage/broker-session/session.journal"
+      )
+      before_downgrade = machine.succeed(f"{COREUTILS}/sha256sum {session_journals}")
+      controller("prepare-one-two-unavailable", "prepare-one-two-unavailable")
       finish()
+      assert journal_hash() == stable_hash
+      assert machine.succeed(f"{COREUTILS}/sha256sum {session_journals}") == before_downgrade
 
       ${lib.optionalString qualifyTpmFloorSeed ''
         # Offline provisioning consumes the real, fully replayed namespace-47 cut
