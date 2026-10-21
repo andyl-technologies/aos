@@ -2,6 +2,7 @@
 // Immutable SELinux stage-0 policy loader and pre-systemd PID 1 guard.
 
 #include <errno.h>
+#include <dirent.h>
 #include <fcntl.h>
 #include <linux/limits.h>
 #include <linux/magic.h>
@@ -2069,6 +2070,8 @@ static void run_outer_loader(void) {
     fail_closed("exec inner stage-1 guard: %s", strerror(errno));
 }
 
+#include "_aos-selinux-stage0-initrd-store.inc"
+
 static void run_inner_guard(void) {
     char systemd_context[256];
     char unit_argument[320];
@@ -2109,6 +2112,8 @@ static void run_inner_guard(void) {
     systemd_fd = open_verified_stage1_systemd(systemd_context, sizeof(systemd_context));
 #endif
     verify_systemd_exec(systemd_context);
+
+    prepare_initial_store_state();
 
     if (AOS_ADMISSION_UNIT[0] != '\0') {
         if (snprintf(

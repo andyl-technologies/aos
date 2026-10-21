@@ -191,6 +191,8 @@ in
             else ""
           }
 
+          cp ${./_aos-selinux-stage0-initrd-store.inc} ./_aos-selinux-stage0-initrd-store.inc
+
           $CC \
             -std=c17 \
             -D_GNU_SOURCE \
