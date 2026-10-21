@@ -2393,7 +2393,9 @@ and sampled aggregate address space peaks at 429,527,040 bytes under 6 GiB.
 The owning Source unit remains separately bounded at 600 build/60 test seconds.
 A final runner refinement preserves stdout, stderr and first status in the kept
 build after failure, with a direct success/refusal diagnostic check passing;
-its hermetic replay is running. The initial runner invocation rejected an
+its final hermetic replay passes all twelve components at
+`wxxp873qw0khc3zykvlfhgi2f6x9ff63-crucible-qemu-native-custody-unit-11.1.1`.
+The initial runner invocation rejected an
 unsupported CLI argument after three components; the corrected invocation
 preserves every component assertion and deadline. Only text/proof leaves the
 check, and component success establishes no launched Source authority.
@@ -2422,8 +2424,12 @@ invocations preserve their first status and diagnostics in the kept build.
 
 The corrected runner passes all twelve components (173.874 seconds total),
 with results scoped to signed native `3376c0ee90`. The final failure-evidence
-refinement passes direct success/refusal checks and is undergoing hermetic
-replay. Engineering hygiene passes at `zcvijji792yblcv5r97p578pnwrl3izi`.
+refinement passes direct success/refusal checks and its final hermetic replay
+passes all twelve at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. This final run takes
+190.969 seconds across the twelve independently bounded components, with a longest
+component of 37.476 seconds and peak sampled address space of
+429,621,248 bytes. Engineering hygiene passes at
+`zcvijji792yblcv5r97p578pnwrl3izi`.
 No ordinary component grant substitutes for the missing actual installed
 Source, producer operation, launched lifecycle or physical parent return.
 
