@@ -505,7 +505,7 @@ def stage_same_container_graph(machine, origin, tools, fixture, *, refresh_token
     upload_cache = container_root + "/upload-cache"
     machine.succeed(f"{tools['coreutils']}/install -d -m 0700 {shlex.quote(upload_cache)}")
     token = refresh_token()
-    staged = json.loads(machine.succeed(
+    command = (
         f"XDG_CACHE_HOME={shlex.quote(upload_cache)} "
         f"{tools['aos']} --json --progress off --color never container publish aos "
         f"{shlex.quote(authority + '/aos:parity')} "
@@ -515,9 +515,26 @@ def stage_same_container_graph(machine, origin, tools, fixture, *, refresh_token
         f"--registry-stage {shlex.quote(stage_path)} "
         f"--registry fleet/containers --registry-origin {shlex.quote(origin)} "
         f"--hub {shlex.quote(origin)} --token {shlex.quote(token)} "
-        f"--registry-token {shlex.quote(token)} --idempotency-key runtime-parity-container-stage --stage-only",
-        timeout=900,
-    ))
+        f"--registry-token {shlex.quote(token)} --idempotency-key runtime-parity-container-stage --stage-only"
+    )
+    try:
+        staged = json.loads(machine.succeed(command, timeout=900))
+    except Exception:
+        # Guest teardown can discard the last dirty log pages. Collect runtime
+        # failures while the guest is alive, without replaying the publication.
+        try:
+            diagnostics = machine.succeed(textwrap.dedent("""
+                tail -n 100 /var/lib/hub-parity-worker/worker.log 2>/dev/null || true
+                journalctl -k --no-pager -n 60 || true
+                if test -r /var/lib/hub-parity-worker/worker.pid; then
+                    runtime_pid=$(cat /var/lib/hub-parity-worker/worker.pid)
+                    cat /proc/"$runtime_pid"/status 2>/dev/null || true
+                fi
+            """), timeout=30)
+            print("Container parity staging failure diagnostics:", diagnostics)
+        except Exception as diagnostic_error:
+            print("Container parity diagnostics unavailable:", type(diagnostic_error).__name__)
+        raise
     assert staged["state"] == "staged" and not staged["tag_updated"], staged
     assert staged["index_digest"] == fixture["container_index_digest"], staged
 
