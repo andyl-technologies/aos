@@ -132,6 +132,44 @@ impl LiveFingerprintDigestWorker {
             .with_control(false, |control| self.drain_control(control, false))
     }
 
+    /// Returns semantic leaves in the actual ordinary or closed cleanup scope.
+    ///
+    /// # Errors
+    /// Retains incomplete actual close, busy material, worker handoffs and each
+    /// independent failure. Observed closing selects only a terminal attempt;
+    /// Source authenticates completed close before the closure can run.
+    pub(in crate::runtime::live_callbacks) fn drain_semantic_completed(
+        &self,
+    ) -> Result<(), LiveVcpuTimeCallbackError> {
+        let terminal = self.native.observe()?.closing == 1;
+        self.native.with_control(terminal, |control| {
+            if !terminal {
+                return self.drain_control(control, false);
+            }
+            control.close();
+            let material_error = match control.capture_attempt.try_lock() {
+                Ok(mut attempt) => attempt
+                    .retire_native_material(self.native.id, self.native.api)
+                    .err()
+                    .map(|source| {
+                        control
+                            .lock()
+                            .native_cleanup_failure
+                            .get_or_insert(source.clone());
+                        control.refuse(FingerprintWorkerCause::Digest(source));
+                        Self::failed(control)
+                    }),
+                Err(_) => Some(status_error(-libc::EBUSY)),
+            };
+            // Material refusal does not skip independent completed-work return.
+            let drained = self.drain_control(control, true);
+            match material_error {
+                Some(error) => Err(error),
+                None => drained,
+            }
+        })
+    }
+
     /// Queues one prepared capture while the preceding digest remains active.
     ///
     /// # Errors
@@ -173,6 +211,7 @@ impl LiveFingerprintDigestWorker {
                     if slot.is_some() {
                         continue;
                     }
+                    let receipt_epoch = state.receipts.reserve().map_err(status_error)?;
                     if !state.pipeline.reserve(index) {
                         drop(slot);
                         drop(state);
@@ -184,7 +223,11 @@ impl LiveFingerprintDigestWorker {
                         control.lock().pipeline.publish(index, false);
                         return Err(status_error(-libc::EPROTO));
                     };
-                    *slot = Some(LiveFingerprintDigestWork::new(sample, capture_request));
+                    *slot = Some(LiveFingerprintDigestWork::new(
+                        sample,
+                        capture_request,
+                        receipt_epoch,
+                    ));
                     let Some(job) = slot.as_mut() else {
                         return Err(status_error(-libc::EPROTO));
                     };
@@ -508,11 +551,6 @@ impl LiveFingerprintDigestWorker {
                 }
                 .matches()
             });
-        if cancelled {
-            return Err(ReturnFailure::CaptureCancelled {
-                capture_request: job.capture_request,
-            });
-        }
         let healthy = native_return_healthy
             && job.native_history.work_result == Some(0)
             && job.native_history.take_status == Some(0)
@@ -523,6 +561,34 @@ impl LiveFingerprintDigestWorker {
                 .native_history
                 .pipeline
                 .is_some_and(|native| native.work_result == 0);
+        if terminal && physically_returned && job.physical_leaves_returned() {
+            let failure = if first < 0 {
+                first
+            } else if cancelled {
+                -libc::ECANCELED
+            } else if healthy {
+                0
+            } else {
+                // Acknowledgement alone cannot erase an independent return,
+                // material, observation or native pipeline failure. Full typed
+                // histories remain in the paid job beside this summary.
+                -libc::EIO
+            };
+            control.lock().receipts.record(
+                index,
+                CaptureReceipt {
+                    epoch: job.receipt_epoch,
+                    capture: job.capture_request,
+                    sample_completed: job.publication == MaterialPublication::Acknowledged,
+                    first: failure,
+                },
+            )?;
+        }
+        if cancelled {
+            return Err(ReturnFailure::CaptureCancelled {
+                capture_request: job.capture_request,
+            });
+        }
         if !healthy {
             if first == 0 {
                 first = -libc::EIO;
@@ -538,6 +604,15 @@ impl LiveFingerprintDigestWorker {
         if !terminal && !state.pipeline.returned(index) {
             return Err(ReturnFailure::Native(-libc::EPROTO));
         }
+        state.receipts.record(
+            index,
+            CaptureReceipt {
+                epoch: job.receipt_epoch,
+                capture: job.capture_request,
+                sample_completed: true,
+                first: 0,
+            },
+        )?;
         drop(slot.take());
         drop(state);
         drop(slot);
@@ -747,5 +822,24 @@ impl LiveFingerprintDigestWorker {
         } else {
             Ok(JobOutcome::Completed)
         }
+    }
+}
+
+impl LiveFingerprintDigestWork {
+    // The saved Source observation is corroboration of actual consumed fields;
+    // neither a status nor a local empty marker can certify these leaves alone.
+    pub(in crate::runtime::live_callbacks::fingerprint_worker) fn physical_leaves_returned(
+        &self,
+    ) -> bool {
+        self.work_returned
+            && self.native_work.is_empty()
+            && self.worker_work.is_empty()
+            && self.captured.native_material().is_empty()
+            && self.native_history.pipeline.is_some_and(|status| {
+                status.physical_returned == 1
+                    && status.close_uncertain == 0
+                    && status.bytes_held == 0
+                    && status.work_returned == 1
+            })
     }
 }

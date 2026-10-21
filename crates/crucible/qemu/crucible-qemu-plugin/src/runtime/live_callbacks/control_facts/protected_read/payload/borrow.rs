@@ -185,6 +185,10 @@ impl ProtectedReader {
             return Err(-libc::ESTALE);
         }
 
+        if pending.action.is_some() {
+            return Err(-libc::EBUSY);
+        }
+
         pending.borrow = None;
         // SAFETY: real record consumption precedes clearing its exact fields.
         // Source saves all three physical outputs before any independent post.

@@ -17,6 +17,7 @@ struct Cuts {
     payload_return_address: usize,
     borrow_acquire_address: usize,
     borrow_release_address: usize,
+    action_addresses: [usize; 4],
     member_transfer_status: i32,
     member_field: usize,
     member_returned_field: usize,
@@ -46,6 +47,10 @@ extern "C" fn member_create(
     release: abi::PayloadReturn,
     borrow_acquire: abi::PayloadBorrowAcquire,
     borrow_release: abi::PayloadBorrowRelease,
+    action_enter: abi::ActionEnter,
+    action_current: abi::ActionCurrent,
+    action_post: abi::ActionPost,
+    action_return: abi::ActionReturn,
     out: *mut *mut Member,
 ) -> i32 {
     // SAFETY: this fixture table receives one distinct live local output cell.
@@ -59,6 +64,12 @@ extern "C" fn member_create(
         cuts.payload_return_address = release as usize;
         cuts.borrow_acquire_address = borrow_acquire as usize;
         cuts.borrow_release_address = borrow_release as usize;
+        cuts.action_addresses = [
+            action_enter as usize,
+            action_current as usize,
+            action_post as usize,
+            action_return as usize,
+        ];
         cuts.member_create_status
     })
 }
@@ -145,6 +156,10 @@ fn payload_callbacks() -> PayloadCallbacks {
         release: payload_return,
         borrow_acquire: payload_borrow_acquire,
         borrow_release: payload_borrow_release,
+        action_enter: super::super::live_callbacks::fingerprint_action_enter,
+        action_current: super::super::live_callbacks::fingerprint_action_current,
+        action_post: super::super::live_callbacks::fingerprint_action_post,
+        action_return: super::super::live_callbacks::fingerprint_action_return,
     }
 }
 
@@ -417,6 +432,12 @@ fn first_member_constructor_receives_the_exact_writer_before_negative_status() {
     let return_address = supplied_payload.release as *const () as usize;
     let borrow_acquire_address = supplied_payload.borrow_acquire as *const () as usize;
     let borrow_release_address = supplied_payload.borrow_release as *const () as usize;
+    let action_addresses = [
+        supplied_payload.action_enter as usize,
+        supplied_payload.action_current as usize,
+        supplied_payload.action_post as usize,
+        supplied_payload.action_return as usize,
+    ];
 
     let result = keeper.enroll_using(
         3,
@@ -439,6 +460,7 @@ fn first_member_constructor_receives_the_exact_writer_before_negative_status() {
         assert_eq!(cuts.payload_return_address, return_address);
         assert_eq!(cuts.borrow_acquire_address, borrow_acquire_address);
         assert_eq!(cuts.borrow_release_address, borrow_release_address);
+        assert_eq!(cuts.action_addresses, action_addresses);
     });
     assert!(
         keeper

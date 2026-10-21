@@ -4,6 +4,7 @@
 use super::super::control_component::NativeComponent;
 use super::super::live_callbacks::{
     ControlIntentFacts, ParkReturnWriteProgress, Payload, PayloadBorrow, ReceiveProgress,
+    FingerprintAction, FingerprintActionEvidence,
 };
 use crate::StartupSourceError;
 use std::ffi::c_void;
@@ -54,6 +55,58 @@ pub(super) type PayloadBorrowRelease = extern "C" fn(
     *mut c_void,
 ) -> i32;
 
+/// Matches the first-bound actual module semantic sample entry.
+pub(super) type ActionEnter = extern "C" fn(
+    *mut *mut Payload,
+    u64,
+    *mut *mut PayloadBorrow,
+    u64,
+    *mut *mut FingerprintAction,
+    *mut u64,
+    *mut u32,
+    *mut FingerprintActionEvidence,
+    *mut c_void,
+) -> i32;
+
+/// Matches the same nominal semantic owner's independent observation.
+pub(super) type ActionCurrent = extern "C" fn(
+    *mut *mut Payload,
+    u64,
+    *mut *mut PayloadBorrow,
+    u64,
+    *mut *mut FingerprintAction,
+    u64,
+    *mut FingerprintActionEvidence,
+    *mut c_void,
+) -> i32;
+
+/// Matches actual callback history independently of asynchronous completion.
+pub(super) type ActionPost = extern "C" fn(
+    *mut *mut Payload,
+    u64,
+    *mut *mut PayloadBorrow,
+    u64,
+    *mut *mut FingerprintAction,
+    u64,
+    *mut i32,
+    *mut i32,
+    *mut FingerprintActionEvidence,
+    *mut c_void,
+) -> i32;
+
+/// Matches physical semantic owner consumption before independent status.
+pub(super) type ActionReturn = extern "C" fn(
+    *mut *mut Payload,
+    u64,
+    *mut *mut PayloadBorrow,
+    u64,
+    *mut *mut FingerprintAction,
+    *mut u64,
+    *mut FingerprintActionEvidence,
+    *mut u32,
+    *mut c_void,
+) -> i32;
+
 /// Binds payload custody and local borrow endpoints to the same complete child.
 #[derive(Clone, Copy)]
 pub(in crate::runtime) struct PayloadCallbacks {
@@ -61,6 +114,10 @@ pub(in crate::runtime) struct PayloadCallbacks {
     pub(in crate::runtime) release: PayloadReturn,
     pub(in crate::runtime) borrow_acquire: PayloadBorrowAcquire,
     pub(in crate::runtime) borrow_release: PayloadBorrowRelease,
+    pub(in crate::runtime) action_enter: ActionEnter,
+    pub(in crate::runtime) action_current: ActionCurrent,
+    pub(in crate::runtime) action_post: ActionPost,
+    pub(in crate::runtime) action_return: ActionReturn,
 }
 
 /// Copies Source's actual callback and validation dispositions.
@@ -92,6 +149,10 @@ pub(super) struct Api {
         PayloadReturn,
         PayloadBorrowAcquire,
         PayloadBorrowRelease,
+        ActionEnter,
+        ActionCurrent,
+        ActionPost,
+        ActionReturn,
         *mut *mut Member,
     ) -> i32,
     pub(super) member_transfer: extern "C" fn(u64, *mut *mut Member, *mut *mut Member) -> i32,
@@ -136,7 +197,7 @@ impl Api {
         Ok(Self {
             delivery: super::delivery::Api::resolve()?,
             member_create: entry!(
-                c"qemu_plugin_crucible_startup_source_command_member_create_v4",
+                c"qemu_plugin_crucible_startup_source_command_member_create_v5",
                 extern "C" fn(
                     u64,
                     *mut NativeComponent,
@@ -146,6 +207,10 @@ impl Api {
                     PayloadReturn,
                     PayloadBorrowAcquire,
                     PayloadBorrowRelease,
+                    ActionEnter,
+                    ActionCurrent,
+                    ActionPost,
+                    ActionReturn,
                     *mut *mut Member,
                 ) -> i32
             ),

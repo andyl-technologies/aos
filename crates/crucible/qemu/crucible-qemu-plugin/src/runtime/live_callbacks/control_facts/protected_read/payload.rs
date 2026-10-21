@@ -23,10 +23,10 @@ pub(in crate::runtime) struct PayloadBorrow {
 
 /// Keeps the original Source output fields inside the prepaid pending journal.
 pub(super) struct PayloadBorrowState {
-    holder: *mut *mut PayloadBorrow,
-    serial_holder: *mut u64,
-    serial: u64,
-    thread: libc::pid_t,
+    pub(super) holder: *mut *mut PayloadBorrow,
+    pub(super) serial_holder: *mut u64,
+    pub(super) serial: u64,
+    pub(super) thread: libc::pid_t,
 }
 
 impl ProtectedReader {

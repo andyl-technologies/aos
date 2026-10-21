@@ -11,6 +11,10 @@ use crucible_qemu_shmem::{FingerprintSampleSlot, NodeSlot};
 use std::sync::{Mutex, MutexGuard, TryLockError};
 
 mod payload;
+mod semantic;
+pub(in crate::runtime) use semantic::{
+    FingerprintAction, FingerprintActionEvidence, SemanticPayloadBorrow,
+};
 pub(in crate::runtime) use payload::{Payload, PayloadBorrow};
 
 /// Keeps captured output separate from the first and independent post results.
@@ -47,6 +51,7 @@ struct ReadJournal {
     // This counts actual local reads, not Host publisher births or operations.
     sequence: u64,
     borrow_sequence: u64,
+    action_sequence: u64,
     active: bool,
     local_reader_released: bool,
     outcome: ReadOutcome,
@@ -65,6 +70,8 @@ struct PendingRequest {
     facts: ControlIntentFacts,
     canonical_holder: *mut *mut Payload,
     borrow: Option<payload::PayloadBorrowState>,
+    action: Option<semantic::ActionState>,
+    semantic_attempted: bool,
 }
 
 /// Lives inside the complete child Layout before its actual Source allocation.
@@ -82,6 +89,7 @@ impl ProtectedReader {
             journal: Mutex::new(ReadJournal {
                 sequence: 0,
                 borrow_sequence: 0,
+                action_sequence: 0,
                 active: false,
                 local_reader_released: true,
                 pending: None,
@@ -215,6 +223,8 @@ impl ProtectedReader {
                     facts,
                     canonical_holder: std::ptr::null_mut(),
                     borrow: None,
+                    action: None,
+                    semantic_attempted: false,
                 });
                 entered.journal.outcome.facts = Some(facts);
             }

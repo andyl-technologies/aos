@@ -18,6 +18,8 @@ use std::thread::JoinHandle;
 use super::*;
 
 mod pipeline_queue;
+mod semantic_receipt;
+pub(in crate::runtime::live_callbacks) use semantic_receipt::{CaptureReceipt, CaptureReceiptSnapshot};
 mod worker_outcome;
 
 #[cfg(not(test))]
@@ -51,6 +53,7 @@ impl From<LiveVcpuTimeCallbackError> for FingerprintCaptureActionError {
 struct LiveFingerprintDigestWork {
     captured: CapturedFingerprintSample,
     capture_request: u32,
+    receipt_epoch: u64,
     publication: MaterialPublication,
     #[cfg(not(test))]
     native_work: crate::fingerprint_native::WorkRef,
@@ -76,10 +79,11 @@ enum MaterialPublication {
 }
 
 impl LiveFingerprintDigestWork {
-    fn new(captured: CapturedFingerprintSample, capture_request: u32) -> Self {
+    fn new(captured: CapturedFingerprintSample, capture_request: u32, receipt_epoch: u64) -> Self {
         Self {
             captured,
             capture_request,
+            receipt_epoch,
             publication: MaterialPublication::NotStarted,
             #[cfg(not(test))]
             native_work: crate::fingerprint_native::WorkRef::empty(),
@@ -263,6 +267,7 @@ enum FingerprintWorkerCause {
 }
 
 struct FingerprintWorkerState {
+    receipts: semantic_receipt::ReceiptJournal,
     #[cfg(test)]
     pending: Option<LiveFingerprintDigestWork>,
     closed: bool,
@@ -328,6 +333,7 @@ impl FingerprintWorkerControl {
             #[cfg(not(test))]
             capture_attempt: Mutex::new(crate::fingerprint_sampler::CaptureAttempt::new()),
             state: Mutex::new(FingerprintWorkerState {
+                receipts: semantic_receipt::ReceiptJournal::default(),
                 #[cfg(test)]
                 pending: None,
                 closed: false,
@@ -421,10 +427,15 @@ impl FingerprintWorkerControl {
         if state.failure.is_some() || state.closed {
             return Err(());
         }
+        let receipt_epoch = state.receipts.reserve().map_err(|_| ())?;
         let Some(captured) = captured.take() else {
             return Err(());
         };
-        state.pending = Some(LiveFingerprintDigestWork::new(captured, capture_request));
+        state.pending = Some(LiveFingerprintDigestWork::new(
+            captured,
+            capture_request,
+            receipt_epoch,
+        ));
         drop(state);
         self.available.notify_one();
         Ok(())
@@ -652,7 +663,17 @@ impl LiveFingerprintDigestWorker {
                 control.refuse(FingerprintWorkerCause::UnsettledWork);
                 break;
             }
+            let receipt = CaptureReceipt {
+                epoch: work.receipt_epoch,
+                capture: work.capture_request,
+                sample_completed: true,
+                first: 0,
+            };
             drop(in_flight.take());
+            if control.lock().receipts.record(0, receipt).is_err() {
+                control.refuse(FingerprintWorkerCause::UnsettledWork);
+                break;
+            }
         }
     }
 

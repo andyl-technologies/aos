@@ -940,6 +940,10 @@ impl OwnedCallbackRuntimeState {
                         release: live_callbacks::protected_payload_return,
                         borrow_acquire: live_callbacks::protected_payload_borrow_acquire,
                         borrow_release: live_callbacks::protected_payload_borrow_release,
+                        action_enter: live_callbacks::fingerprint_action_enter,
+                        action_current: live_callbacks::fingerprint_action_current,
+                        action_post: live_callbacks::fingerprint_action_post,
+                        action_return: live_callbacks::fingerprint_action_return,
                     },
                 )
             };

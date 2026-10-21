@@ -129,6 +129,10 @@ impl CommandReceive {
             payload.release,
             payload.borrow_acquire,
             payload.borrow_release,
+            payload.action_enter,
+            payload.action_current,
+            payload.action_post,
+            payload.action_return,
             &mut self.member_creation,
         );
         self.member = self.member_creation;

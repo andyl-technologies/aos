@@ -393,7 +393,7 @@ impl Handle {
         self.worker as *mut Worker
     }
 
-    fn observe(self) -> Result<WorkerStatus, LiveVcpuTimeCallbackError> {
+    pub(super) fn observe(self) -> Result<WorkerStatus, LiveVcpuTimeCallbackError> {
         let mut status = WorkerStatus::default();
         native_status((self.api.observe)(self.id, self.pointer(), &mut status))?;
         validate_status(&status)?;
@@ -865,7 +865,7 @@ fn native_status(status: i32) -> Result<(), LiveVcpuTimeCallbackError> {
     }
 }
 
-fn status_error(status: i32) -> LiveVcpuTimeCallbackError {
+pub(super) fn status_error(status: i32) -> LiveVcpuTimeCallbackError {
     LiveVcpuTimeCallbackError::CallbackChildStorage {
         source: crate::StartupSourceError::NativeStatus { status },
     }

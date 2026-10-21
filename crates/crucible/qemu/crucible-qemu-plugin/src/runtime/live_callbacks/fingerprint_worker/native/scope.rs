@@ -16,7 +16,7 @@ impl Handle {
     /// incomplete synchronous result. This method grants no operation authority.
     /// Copy success values cannot hide custody when an independent native post
     /// fails; all successful effects remain in the actual paid control journals.
-    pub(super) fn with_control<F, R>(
+    pub(in crate::runtime::live_callbacks::fingerprint_worker) fn with_control<F, R>(
         self,
         terminal: bool,
         action: F,

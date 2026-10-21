@@ -164,6 +164,12 @@ pub enum LiveVcpuTimeCallbackError {
         /// Fixed typed admission, descriptor or mapping failure.
         source: crate::DeviceDigestWorkspaceError,
     },
+    /// The retained semantic sample branch refused actual module dispatch.
+    #[error("fingerprint semantic action refused ({status})")]
+    FingerprintSemanticAction {
+        /// Signed local custody or independent module post refusal.
+        status: i32,
+    },
     /// The fingerprint digest worker is no longer accepting captures.
     #[error("fingerprint digest worker is unavailable")]
     FingerprintWorkerUnavailable,

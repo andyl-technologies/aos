@@ -24,6 +24,7 @@ mod candidate;
 mod held;
 mod native;
 mod ordinary;
+pub(crate) use ordinary::pending_sample_class;
 mod original;
 pub(crate) use admission::admitted_inventory;
 pub(crate) use candidate::CaptureClose;

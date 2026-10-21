@@ -7,6 +7,36 @@
 
 use super::*;
 
+/// Corroborates the module's retained baseline before a semantic sample entry.
+///
+/// This observation reads no guest memory and issues no Root or operation. The
+/// genuine native Main issuer independently checks its accepted baseline.
+///
+/// # Errors
+/// Refuses an absent observer, lock contention, poison or any competing cache
+/// transaction. A busy or staged cache cannot be treated as an absent baseline.
+pub(crate) fn pending_sample_class() -> Result<u32, RamError> {
+    let observer = OBSERVER.get().ok_or("RAM observer is absent")?;
+    if observer.original.is_none() {
+        return Err(RamError::Invariant("native Original owner is absent"));
+    }
+    let cache = observer
+        .cache
+        .try_lock()
+        .map_err(|_| "RAM baseline is busy")?;
+    if cache.frozen
+        || cache.ordinary_active
+        || cache.held_publication.is_some()
+        || cache.pending.is_some()
+        || cache.restore.is_some()
+        || cache.held.is_some()
+        || cache.held_accepted.is_some()
+    {
+        return Err(RamError::Invariant("RAM baseline has competing custody"));
+    }
+    Ok(if cache.view.is_some() { 5 } else { 4 })
+}
+
 /// Runs one actual native Root without issuing a module-local operation.
 pub(super) fn observe_ordinary(
     observer: &Observer,

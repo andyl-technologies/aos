@@ -110,6 +110,13 @@ in
       buildDeps = [pkgs.coreutils pkgs.grep pkgs.sed pkgs.rust pkgs.pkg-config pkgs.sqlite];
       runtimeDeps = [pkgs.sqlite];
 
+      # Exact selectors and their evidence grow with the normative inventory.
+      # Keep them in Nix-managed files rather than the builder's environment,
+      # whose per-string exec limit is smaller than the complete case corpus.
+      exactCasesScript = lib.concatStringsSep "\n" (indexedMap runGroup testGroups);
+      evidenceInventory = "${inventory}\n";
+      passAsFile = ["exactCasesScript" "evidenceInventory"];
+
       phases = [
         {
           name = "unpack";
@@ -135,14 +142,14 @@ in
           script = ''
             set -eu
             mkdir -p "$out/evidence"
-            ${lib.concatStringsSep "\n" (indexedMap runGroup testGroups)}
+            . "$exactCasesScriptPath"
           '';
         }
         {
           name = "write-evidence";
           script = ''
             set -eu
-            printf '%s\n' ${lib.escapeShellArg inventory} > "$out/evidence/inventory.json"
+            cp "$evidenceInventoryPath" "$out/evidence/inventory.json"
             {
               printf 'PASS\n'
               printf 'check=%s\n' ${lib.escapeShellArg attrPath}

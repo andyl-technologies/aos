@@ -10,11 +10,18 @@ use crucible_qemu_shmem::{FingerprintSampleSlot, NodeSlot};
 mod protected_read;
 pub(super) use protected_read::{ProtectedReader, ReadOutcome};
 mod payload;
+mod semantic;
+pub(in crate::runtime) use semantic::{
+    fingerprint_action_enter, fingerprint_action_current, fingerprint_action_post,
+    fingerprint_action_return,
+};
 pub(in crate::runtime) use payload::{
     protected_payload_borrow_acquire, protected_payload_borrow_release, protected_payload_claim,
     protected_payload_return,
 };
-pub(in crate::runtime) use protected_read::{Payload, PayloadBorrow};
+pub(in crate::runtime) use protected_read::{
+    Payload, PayloadBorrow, FingerprintAction, FingerprintActionEvidence, SemanticPayloadBorrow,
+};
 
 /// Matches the factual callback record in the selected Native plugin interface.
 #[repr(C)]

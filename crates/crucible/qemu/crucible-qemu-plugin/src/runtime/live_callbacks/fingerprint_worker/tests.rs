@@ -91,6 +91,23 @@ fn close_drains_pending_capture_and_refuses_new_producer() {
 }
 
 #[test]
+fn closed_worker_receipt_preserves_shutdown_and_actual_pending_debt() {
+    let control = control();
+    assert!(enqueue(&control, 7).is_ok());
+    let worker = worker(Arc::clone(&control));
+
+    control.close();
+    let snapshot = worker.semantic_receipt_snapshot().unwrap();
+
+    assert!(snapshot.closed);
+    assert!(!snapshot.quiet);
+    assert_eq!(snapshot.sequence, 1);
+    assert_eq!(snapshot.returned, [None; 2]);
+    assert_eq!(take_received(&control).capture_request, 7);
+    assert!(worker.semantic_receipt_snapshot().unwrap().closed);
+}
+
+#[test]
 fn close_wakes_blocked_producer_without_stealing_pending_capture() {
     let deadline = TransportDeadline::new(Duration::from_secs(5)).unwrap();
     let control = control();
@@ -534,6 +551,19 @@ fn completed_publication_and_exact_ack_release_inflight_material() {
     assert!(control.in_flight().is_none());
     assert!(control.lock().failure.is_none());
     let mut worker = worker(control);
+    let receipt = worker.semantic_receipt_snapshot().unwrap();
+    assert_eq!(receipt.sequence, 1);
+    assert!(receipt.quiet);
+    assert_eq!(
+        receipt.returned[0],
+        Some(CaptureReceipt {
+            epoch: 1,
+            capture: request,
+            sample_completed: true,
+            first: 0,
+        })
+    );
+    assert_eq!(receipt.returned[1], None);
     worker.retire().unwrap();
     assert!(worker.control.is_none());
 }
@@ -561,6 +591,10 @@ fn changed_ack_keeps_published_material_and_blocks_retirement_and_fork() {
         MaterialPublication::AcknowledgementAttempted
     );
     let mut worker = worker(control);
+    let receipt = worker.semantic_receipt_snapshot().unwrap();
+    assert_eq!(receipt.sequence, 1);
+    assert!(!receipt.quiet);
+    assert_eq!(receipt.returned, [None; 2]);
     // SAFETY: this synchronous fixture has no worker/callback actors.
     assert!(unsafe { worker.hold_workspace_for_fork() }.is_err());
     assert!(worker.retire().is_err());

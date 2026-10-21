@@ -65,6 +65,8 @@ mod registration;
 pub(super) use control_callback_witness::ControlCallbackWitness;
 pub(super) use control_facts::{
     ControlIntentFacts, Payload, PayloadBorrow, ReadyObservation, ReceiveProgress,
+    FingerprintAction, FingerprintActionEvidence, fingerprint_action_enter,
+    fingerprint_action_current, fingerprint_action_post, fingerprint_action_return,
     protected_payload_borrow_acquire, protected_payload_borrow_release, protected_payload_claim,
     protected_payload_return, protected_request_snapshot,
 };
