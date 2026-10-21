@@ -170,7 +170,7 @@ impl AuditedProjectQuotaBinding {
         maximum_inodes: u64,
         operation: &A,
         retain_uncertain_namespace: bool,
-        admission: Option<&mut dyn FnMut((u64, u32)) -> Result<(), LinuxProjectQuotaError>>,
+        admission: Option<ProjectAdmission<'_>>,
     ) -> Result<Self, LinuxProjectQuotaError> {
         Self::bind_existing_internal(
             root,
