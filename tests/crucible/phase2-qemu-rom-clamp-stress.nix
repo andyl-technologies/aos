@@ -9,7 +9,13 @@
   firmwareGuest = (import ./phase2-qemu-live-whitebox-doorbell.nix {inherit pkgs lib;}).passthru.guest;
   flight = mkCrucibleBinaries {
     pname = "crucible-rom-clamp-stress-flight";
-    builds = [(if ackPollExperiment then workspaceTests.apacheReleaseTestSupport else workspaceTests.apacheRelease)];
+    builds = [
+      (
+        if ackPollExperiment
+        then workspaceTests.apacheReleaseTestSupport
+        else workspaceTests.apacheRelease
+      )
+    ];
     executables = {
       crucible-qemu-rom-clamp-stress = "build --release -p crucible-qemu ${lib.optionalString ackPollExperiment "--features test-support"} --example crucible-qemu-rom-clamp-stress";
     };
