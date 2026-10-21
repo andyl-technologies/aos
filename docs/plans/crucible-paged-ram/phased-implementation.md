@@ -2145,7 +2145,9 @@ checks the entire existing sequence without changing execution behavior.
 All 83 quantum-related controls, 73 policy checks and five hygiene checks pass.
 Mandatory application test-target compilation passes at
 `/nix/store/68nmi1vfk55brh90s3scn4nv9x4mg7an-aos-test-targets-0.1.0`.
-The expanded 175-case supervision gate is running. All 5,261 tracked crate Rust/TOML files match immutable application
+All 175 exact supervision cases pass at
+`/nix/store/12a0y0xxi6wjfxq2jsyh8h9wh4yncd0n-crucible-gate-ram-supervision-0`.
+All 5,261 tracked crate Rust/TOML files match immutable application
 source `4b49zz7l0hzh93aydjyw46dshrsj20ja-aos-workspace-src`.
 
 Coverage binds 273 component and 19 native cases; 243 requirements, 149 uncovered
@@ -2183,6 +2185,36 @@ Later host changes are outside this ABI verdict. Full license-boundary
 qualification remains blocked by controller lint prerequisites. Activation,
 genuine class-1 issuance and owned continuation/physical return remain
 unqualified.
+
+### 2026-10-21 Main cleanup waits for actual action closure
+
+Commit `5a39df062d` integrates atomic
+`8c726fa874350779b2e62eb48d6b0c514f779036`, tree
+`aa9086e2fd7c15440157d342af4dc79f9d0617ff`. Actual Core, Source and Native
+return paths retain payload, Ready borrowers, QOM and descriptor dependencies
+until the real action-closed predicate succeeds. First and payload-post failures
+remain separate across later attempts. A negative status cannot establish
+physical closure.
+
+Literal Main and RR positives and all 12 independently rebuilt omissions pass.
+These use modeled journals and refusal-only dependencies, with no accepting
+action provider. All 187 owning scenarios and all 34 causal controls pass.
+The causal positive takes 57.679 of 60 seconds; its slowest defect takes 19.365.
+All original assertions and resource limits remain. Full compilation completes
+3,863 targets and passes 25/26 fixtures, with mandatory launched Source/Root
+the sole failure. The complete matched build is retained; all 907 patched
+sources match the signed tree.
+
+Signed reconstruction, exact regeneration and the unchanged 289-file ledger
+pass. Raw ABI passes at
+`/nix/store/44lgvsff8chfiwcz0acwgyjqvgmf1v72-crucible-phase2-abi-conformance-0`,
+using immutable `8bj8kdnq9bfplc69256qx0mm1wlx0sfp-crucible-workspace-src`.
+All 5,261 tracked crate Rust/TOML files match before/current/immutable bytes at
+capture; manifest SHA256 is
+`4abdb9aaf634cd430d723c3636901d54ca006029fbe9e65585c759ff58dfa92e`.
+Later codec and architecture checkpoints are outside this verdict. Genuine
+provider-backed closure, selected construction, Quantum/Advance issuance,
+activation and full license-boundary qualification remain unfinished.
 
 ### 2026-10-21 native rule and reservation storage custody
 
