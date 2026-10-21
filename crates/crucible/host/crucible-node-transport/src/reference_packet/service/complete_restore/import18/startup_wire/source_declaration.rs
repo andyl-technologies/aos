@@ -37,14 +37,24 @@ enum DeclarationSchema {
 
 /// Borrows the unchanged Source birth and the one additional launch selection.
 ///
-/// The fields remain private and the defining constructor checks the borrowed pre-report
-/// Value roster. Raw-bank correspondence and whole semantic launch validation has its own independently funded
-/// method; this view never constructs or extends an allocation row.
+/// The checked constructor validates a borrowed pre-report Value roster. A
+/// separate bank serializer lets a genuine isolated producer lend its original
+/// bytes without parsing. Native raw-bank correspondence and whole semantic
+/// validation retain their independently funded checks; this view issues no row.
 #[derive(Clone, Copy, Serialize)]
 pub struct PacketNativeImport18SourceDeclarationView<'a> {
     schema: &'static str,
-    source_birth: &'a Bytes,
+    #[serde(serialize_with = "serialize_source_birth")]
+    source_birth: &'a [u8],
     fresh_restore_allocation_selection: Option<PacketNative5FreshRestoreAllocationSelection>,
+}
+
+// Use the defining Bytes codec over the original bank without cloning a Vec.
+fn serialize_source_birth<S: Serializer>(
+    source_birth: &&[u8],
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    Bytes::borrowed_serialization_data(source_birth).serialize(serializer)
 }
 
 /// Retains the exact declaration without recreating a live Source or Birth.
@@ -103,6 +113,31 @@ pub fn native_import18_source_declaration_wire_data<'a>(
         return Err(invalid());
     }
     source_birth_roster(parsed_source_birth)?;
+    Ok(PacketNativeImport18SourceDeclarationView {
+        schema: NATIVE_IMPORT18_SOURCE_DECLARATION_SCHEMA,
+        source_birth: source_birth.as_slice(),
+        fresh_restore_allocation_selection: launch.fresh_restore_allocation_selection,
+    })
+}
+
+/// Borrows a pre-report bank for serialization without parsing or validating it.
+///
+/// The isolated Source producer authenticates its original accepted completion,
+/// unchanged launch and private Birth before lending this DATA view. This helper
+/// checks only the launch edition and nonempty bank; it cannot establish that
+/// provenance or validate any Source fields. The native wire reader still checks
+/// the complete pre-report roster and semantic correspondence independently.
+/// Serializer, formatter and output construction require separate admission.
+///
+/// # Errors
+/// Refuses an empty bank or a launch edition other than five.
+pub fn native_import18_source_declaration_bank_view_data<'a>(
+    source_birth: &'a [u8],
+    launch: &PacketNative5SourceLaunch,
+) -> Result<PacketNativeImport18SourceDeclarationView<'a>, ProviderError> {
+    if launch.schema_version != 5 || source_birth.is_empty() {
+        return Err(invalid());
+    }
     Ok(PacketNativeImport18SourceDeclarationView {
         schema: NATIVE_IMPORT18_SOURCE_DECLARATION_SCHEMA,
         source_birth,
@@ -351,6 +386,9 @@ pub fn native_import18_source_declaration_counter_scratch_data() -> usize {
     size_of::<PacketNativeImport18SourceDeclarationView<'static>>()
         + size_of::<Result<PacketNativeImport18SourceDeclarationView<'static>, ProviderError>>()
         + size_of::<&PacketNativeImport18SourceDeclarationWireData>()
+        + size_of::<&[u8]>()
+        + size_of::<&&[u8]>()
+        + Bytes::borrowed_serialization_counter_scratch_data()
         + size_of::<&PacketNative5SourceLaunch>()
         + size_of::<&Value>() * 4
         + size_of::<Bytes>()
@@ -459,7 +497,7 @@ mod tests {
         let raw = Bytes::new(canonical::canonical_json(&original).unwrap());
         let view = PacketNativeImport18SourceDeclarationView {
             schema: NATIVE_IMPORT18_SOURCE_DECLARATION_SCHEMA,
-            source_birth: &raw,
+            source_birth: raw.as_slice(),
             fresh_restore_allocation_selection: None,
         };
         let encoded = serde_json::to_vec(&view).unwrap();
@@ -477,7 +515,7 @@ mod tests {
         let raw = Bytes::new(deep.as_bytes().to_vec());
         let view = PacketNativeImport18SourceDeclarationView {
             schema: NATIVE_IMPORT18_SOURCE_DECLARATION_SCHEMA,
-            source_birth: &raw,
+            source_birth: raw.as_slice(),
             fresh_restore_allocation_selection: None,
         };
         let parsed: PacketNativeImport18SourceDeclarationWireData =

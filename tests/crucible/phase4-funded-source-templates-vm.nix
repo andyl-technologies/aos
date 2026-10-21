@@ -115,6 +115,21 @@ in
 
       # This separate default-feature component has its own host measurement.
       # Public Refused proves neither template success nor package qualification.
+      cli_stage='starting default-feature daemon'
+      report_cli_failure() {
+        aos_cli_status=$?
+        trap - EXIT
+        if test "$aos_cli_status" -ne 0; then
+          printf 'default-feature CLI failure during %s (status %s)\n' "$cli_stage" "$aos_cli_status" >&2
+          for log in /var/lib/funded-source/cli.log /var/lib/funded-source/cli-first.log /var/lib/funded-source/cli-spent.log; do
+            if test -f "$log"; then
+              cat "$log" >&2
+            fi
+          done
+        fi
+        exit "$aos_cli_status"
+      }
+      trap report_cli_failure EXIT
       program=${cli}/bin/crucible
       socket=/var/lib/funded-source/attempts/state-cli/node.sock
       ${pkgs.coreutils}/bin/timeout -k 5 240 "$program" node serve-complete-scene \
@@ -123,6 +138,7 @@ in
         > /var/lib/funded-source/cli.log 2>&1 &
       monitor=$!
       daemon_pid=
+      cli_stage='waiting for original daemon socket'
       for tick in $(seq 1 500); do
         if test -S "$socket" && test -r /proc/$monitor/task/$monitor/children; then
           children=$(cat /proc/$monitor/task/$monitor/children)
@@ -136,17 +152,21 @@ in
       done
       test -n "$daemon_pid"
       for attempt in first spent; do
+        cli_stage="checking $attempt public refusal"
         if "$program" node complete-scene-prepare --socket "$socket" \
           > /var/lib/funded-source/cli-$attempt.log 2>&1; then
           exit 1
         fi
         grep -Fq 'node actor refused' /var/lib/funded-source/cli-$attempt.log
       done
+      cli_stage='waiting for normal daemon shutdown'
       kill -TERM "$daemon_pid"
       wait "$monitor"
+      cli_stage='checking terminal namespace cleanup'
       test ! -e /var/lib/funded-source/attempts/state-cli/complete-scene
       test ! -L /var/lib/funded-source/attempts/state-cli/complete-scene
       ${pkgs.util-linux}/bin/umount /var/lib/funded-source/attempts
+      trap - EXIT
       echo same_configuration_two_actual_consumer_pids=true
       echo private_birth_construction_two_actual_consumer_pids=true
       echo first_failure_and_spent_retry_keep_credit_until_terminal_release=true

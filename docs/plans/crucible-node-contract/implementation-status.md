@@ -320,6 +320,33 @@ failed. Added stage-specific failure diagnostics retain that control's assertion
 and deadlines. Native startup, common Ready and full preservation remain
 unqualified.
 
+## Borrowed original Source declaration
+
+The isolated Source lends the unchanged pre-report bank directly from its
+accepted worker completion. The opaque serializer retains a shared loan of the
+actual private Birth. It authenticates the original Source, selected launch,
+completion, both Birth banks and complete executable before and after each
+serialization, including failed writes. The parent creates no response DOM or
+additional bank copy. The transport bank view is explicitly serialization-only
+DATA; native full roster and semantic validation remain unchanged.
+
+The funded actor admits this loan's concrete construction and guard workspace
+before obtaining and dropping it from each genuine private Birth. It releases
+the loan before whole-Prepared observation. Actual formatter, serializer, error
+and output owners still require separate admission. This transition creates no
+Initial, Recipe, startup finalizer, native member or Ready grant.
+
+All-feature/all-target Engine, Daemon and Transport checking and all six
+architecture checks pass. The complete configured Engine library run passes
+2,035 tests with zero failures, no filtering and 34 ignores. Its first run
+omitted the required installed packet-provider input and failed five fixture
+setups; the complete configured rerun uses the same actual test executable.
+All 1,747 standard Transport library tests pass, with zero failures, no filtering
+and 15 ignores, including direct equality with the original owned Bytes codec.
+Changed-file formatting passes. The actual funded VM and required application
+compilation refresh are running; this checkpoint does not claim their results
+or qualification of an actual declaration serialization callback.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.

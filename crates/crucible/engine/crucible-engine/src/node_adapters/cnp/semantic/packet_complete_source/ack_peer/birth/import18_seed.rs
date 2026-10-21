@@ -318,6 +318,46 @@ impl OriginalAckPeerBirth {
         Ok(())
     }
 
+    /// Joins the unchanged accepted banks to the same complete private Birth.
+    ///
+    /// # Errors
+    /// Refuses failed, started, finalized, changed or foreign private custody.
+    pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn authenticate_isolated_declaration_banks_data(
+        &self,
+        private_launch: &Id,
+        host: &ContentRef,
+        source: &[u8],
+        registration: &[u8],
+    ) -> Result<(), RuntimeError> {
+        self.authenticate_unstarted_storage_phase_with_error::<RuntimeError>()?;
+        self.authenticate_isolated_construction_storage_data()?;
+        if &self.private_launch != private_launch
+            || &self.host_executable != host
+            || self.source_birth != source
+            || self.expected_host_registration != registration
+        {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        private_identity::authenticate_private_file(
+            self.process,
+            self.thread,
+            &self.host_executable,
+            &self.host_file,
+            &self.host_revision,
+        )
+    }
+
+    pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn isolated_declaration_counter_scratch_data()
+    -> usize {
+        private_identity::authentication_counter_scratch_data()
+            + size_of::<&Self>()
+            + size_of::<&Id>()
+            + size_of::<&ContentRef>()
+            + size_of::<&[u8]>() * 2
+            + size_of::<bool>()
+            + size_of::<Result<(), RuntimeError>>() * 2
+    }
+
     /// Revokes private boot without dropping the original key, File or banks.
     pub(in crate::node_adapters::cnp::semantic::packet_complete_source) fn revoke_isolated_construction(
         &mut self,

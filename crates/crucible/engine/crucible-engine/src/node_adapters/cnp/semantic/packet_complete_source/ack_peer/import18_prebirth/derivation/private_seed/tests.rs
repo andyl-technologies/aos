@@ -78,6 +78,7 @@ fn genuine_ordinary_sources_refuse_seed_without_spending_or_rebinding() {
                 .is_err()
         );
         assert!(source.prepare_native_import18_private_birth_into().is_err());
+        assert!(source.native_import18_source_declaration_data().is_err());
         assert!(source.native_import18_derivation.is_none());
         assert!(source.native_import18_derivation_mechanism.is_none());
         assert!(source.native_import18_birth_construction.is_none());

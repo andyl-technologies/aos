@@ -1,6 +1,6 @@
 //! Projects the actual declaration's raw-Source Bytes without invoking its codec.
 //!
-//! The raw bank remains borrowed from the genuine BodyPlan owner. This child
+//! The raw bank remains borrowed from its retained producer. This child
 //! prices serializer DATA only and cannot prove that bank's origin or launch.
 
 use super::*;
@@ -18,7 +18,7 @@ use std::mem::size_of;
 pub(in crate::reference_packet) fn native_import18_source_declaration_formatter_requested_data(
     declaration: &PacketNativeImport18SourceDeclarationView<'_>,
 ) -> Result<usize, ProviderError> {
-    base64::encoded_len(declaration.source_birth.as_slice().len(), false).ok_or_else(exhausted)
+    base64::encoded_len(declaration.source_birth.len(), false).ok_or_else(exhausted)
 }
 
 /// Adds the actual declaration's complete three fields without allocating.
@@ -108,11 +108,12 @@ mod tests {
             // This private serializer view is inert DATA, not a genuine Source.
             let view = PacketNativeImport18SourceDeclarationView {
                 schema: NATIVE_IMPORT18_SOURCE_DECLARATION_SCHEMA,
-                source_birth: &raw,
+                source_birth: raw.as_slice(),
                 fresh_restore_allocation_selection: None,
             };
             let value = serde_json::to_value(view).unwrap();
             let actual_encoded = value["source_birth"].as_str().unwrap();
+            assert_eq!(value["source_birth"], serde_json::to_value(&raw).unwrap());
             let formatter =
                 native_import18_source_declaration_formatter_requested_data(&view).unwrap();
             let shape =

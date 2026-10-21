@@ -22,6 +22,9 @@ mod private_seed;
 #[path = "derivation/private_birth.rs"]
 mod private_birth;
 
+#[path = "derivation/source_declaration.rs"]
+mod source_declaration;
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum DerivationStage {
     Exporting,

@@ -40,6 +40,7 @@ pub(in crate::reference_packet) use source_declaration::{
 pub use source_declaration::{
     NATIVE_IMPORT18_SOURCE_DECLARATION_SCHEMA, PacketNativeImport18SourceDeclarationView,
     PacketNativeImport18SourceDeclarationWireData,
+    native_import18_source_declaration_bank_view_data,
     native_import18_source_declaration_counter_scratch_data,
     native_import18_source_declaration_wire_data,
 };

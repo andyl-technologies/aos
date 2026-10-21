@@ -93,3 +93,32 @@ pub(super) const fn delegation_controls() -> usize {
         + std::mem::size_of::<&mut [u8; 32]>()
         + std::mem::size_of::<Result<(), RuntimeError>>()
 }
+
+/// Names the actual executable authentication workspace, excluding opaque IO.
+pub(super) fn authentication_counter_scratch_data() -> usize {
+    use std::mem::size_of;
+
+    HOST_EXECUTABLE_STREAM_BYTES
+        + delegation_controls()
+        + size_of::<File>()
+        + size_of::<Result<File, std::io::Error>>()
+        + size_of::<std::fs::Metadata>()
+        + size_of::<Result<std::fs::Metadata, std::io::Error>>()
+        + size_of::<HostRevision>() * 2
+        + size_of::<Result<HostRevision, RuntimeError>>()
+        + size_of::<blake3::Hasher>()
+        + size_of::<blake3::Hash>()
+        + returned_layout(blake3::Hash::to_hex)
+        + size_of::<&[u8]>() * 2
+        + size_of::<&mut [u8]>()
+        + size_of::<u64>() * 3
+        + size_of::<usize>()
+        + size_of::<Result<usize, std::num::TryFromIntError>>()
+        + size_of::<Result<(), std::io::Error>>()
+        // Pinned Linux File::open's small C-string buffer for this literal.
+        + 384
+}
+
+fn returned_layout<T>(_: fn(&blake3::Hash) -> T) -> usize {
+    std::mem::size_of::<T>() + std::mem::size_of::<fn(&blake3::Hash) -> T>()
+}

@@ -164,6 +164,17 @@ impl PreparedCompleteRestoration {
             .prepare_native_import18_private_birth_into();
         let observed = self.observe_import18_templates_data([0; 3]);
         result.and(observed)?;
+        self.note_funded_operation_stage("lending original pre-report Source bank");
+        self.observe_import18_templates_data(
+            PacketCompleteSemanticSource::native_import18_source_declaration_construction_data(),
+        )?;
+        let declared = self.import18_templates.members[selected]
+            .output
+            .completed_data()?
+            .native_import18_source_declaration_data()
+            .map(drop);
+        let observed = self.observe_import18_templates_data([0; 3]);
+        declared.and(observed)?;
         self.import18_templates.members[selected].stage = Stage::PrivateBirth;
         Ok(())
     }
