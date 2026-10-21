@@ -28,6 +28,10 @@ The atomic integration patch creates these QEMU source files:
 | `tests/unit/test-crucible-arm-register-preflight.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `include/hw/core/crucible-register-helpers.h` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-register-description.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `include/qemu/crucible-register-workspace.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-initial-register.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-register-workspace.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-register-workspace.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-initial-manifest-refusal.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `plugins/crucible-publisher-subscription.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/crucible-action-original-fixture.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
