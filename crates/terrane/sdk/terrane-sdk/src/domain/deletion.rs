@@ -5,12 +5,16 @@
 //! `Repository::delete_domain` to compare complete current
 //! authority under retained exclusion before removing domain-owned records.
 
+#[cfg(feature = "std")]
 use terrane_format::auth::Verb;
 use terrane_format::identity::Identity;
+#[cfg(feature = "std")]
 use terrane_format::properties::Domain;
 
 use super::{DomainAccess, DomainBinding};
-use crate::store::{InvalidReason, StoreErrorKind, StoreFailure};
+use crate::store::StoreFailure;
+#[cfg(feature = "std")]
+use crate::store::{InvalidReason, StoreErrorKind};
 
 /// Carries domain administration from its verified registered route authority.
 ///

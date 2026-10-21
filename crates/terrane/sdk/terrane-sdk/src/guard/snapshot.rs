@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 // Captures addresses within the existing complete canonical validator.
 mod grafts;
+#[cfg(feature = "std")]
 pub use grafts::IndexGraftValidationWork;
 pub(crate) use grafts::ValidatedGrafts;
 

@@ -11595,3 +11595,22 @@ executes both new original-body batch controls. All 21 exact host selectors
 passed locally without ignored cases; all four complete dependency graphs
 instantiate and Nix formatting passes. Frozen native qualification is pending
 and no T2 task checkbox changes.
+
+
+#### Portable feature and root-qualified preflight controls
+
+A direct no-default-features check of `919f594d88` found that the read-only
+cache adapter imported the deliberately std-gated bucket module unconditionally.
+The adapter now has the same std boundary; std-only administrative imports and
+graft-work re-export follow their existing callers. The native package run
+also exposed a cache-plan fixture expecting its positive case to accept the
+protected harness's root identity. Production correctly refuses that identity.
+The fixture now checks root refusal, then executes the unchanged positive and
+negative checks in a separate user namespace with real effective UID 1000. The
+harness provides its AOS-built unshare path explicitly, and the parent requires
+exactly one actual passing child test. The focused test passes under both the
+ordinary identity and an actual root-to-UID-1000 namespace transition. Strict
+native all-target Clippy, no-default-features and std/wasm compilation pass;
+the portable build retains existing std-only evidence dead-code warnings.
+Frozen qualification remains pending; the original failed checks remain retained
+without acceptance credit.

@@ -22,6 +22,7 @@ pub(crate) mod protected_read;
 pub mod shared_dir;
 
 /// Composes a read-only cache with the original reference authority.
+#[cfg(feature = "std")]
 pub mod read_only;
 
 #[cfg(feature = "std")]

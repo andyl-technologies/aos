@@ -9,6 +9,7 @@
   export TERRANE_CHECK_WORKDIR="$PWD"
   # Genuine procfs read-error fixtures bind only their own process directory
   # beneath protected fixture storage, retaining every physical ownership check.
+  export TERRANE_TEST_UNSHARE="${util-linux}/bin/unshare"
   export TERRANE_TEST_PROC_MOUNT="${util-linux}/bin/mount"
   export TERRANE_TEST_PROC_UMOUNT="${util-linux}/bin/umount"
 
