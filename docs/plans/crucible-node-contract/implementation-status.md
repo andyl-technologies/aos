@@ -1580,9 +1580,22 @@ older malformed order remains a refusal control and retains its real SDK
 validation error. Both program families, quote/constructor/terminal admission
 refusals, expiry, substituted cuts, unchanged original allocations and spent
 retries are covered. Production ceilings and validation remain unchanged.
-The broader frozen-source qualification is pending at this checkpoint. Full
-Native18 policy, live Hello authentication, reply/ACK and the remaining RFC
-acceptance exits remain unfinished.
+For `d96da4c4b9`, both complete standard and raw-value Transport libraries pass
+1,861 tests, with zero failures, no filtering and sixteen existing ignores.
+Affected Transport/Engine/Daemon all-feature/all-target checking, scoped
+formatting and all six architecture gates pass. The required application gate
+passes with 180 test executables across 58 package identities, including 71
+integration targets. The funded-Source VM passes both independent three-Birth
+consumer flights, refusal controls, cleanup and the default-feature CLI refusal.
+All 207 owned changed Rust paths match this committed checkpoint in the
+application capture and each of the three actual VM component captures. The
+exact running VM derivation supplies those captures; later reevaluation after
+repository metadata changes is not substituted for its recorded inputs.
+
+Later SDK request construction is excluded from these results. Full Engine and
+Daemon libraries remain qualified at `f2150ce5c7`. Full Native18 policy, live
+Hello authentication, reply/ACK and the remaining RFC acceptance exits remain
+unfinished.
 
 ## Original launch custody and shared startup geometry
 
