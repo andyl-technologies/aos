@@ -30,9 +30,10 @@ use terrane_sdk::{
 /// consumer grant afterward. Cancellation leaves accepted physical work and
 /// durable leases with the owner until reconciliation or expiry.
 ///
-/// Container-pack upload and advisory listing are currently unavailable through
-/// this adapter. Canonical metadata uploads are stored as genuine ordinary
-/// metadata pack/index pairs; chunks retain their offered verified encoding.
+/// Container-pack upload is currently unavailable through this adapter.
+/// Canonical metadata uploads are stored as genuine ordinary metadata pack/index
+/// pairs; chunks retain their offered verified encoding. Advisory listing covers
+/// ordinary content and may omit sealed-only chunk residences.
 pub struct NativeContentStore {
     ready: NativeReady,
     capabilities: Capabilities,
@@ -189,8 +190,11 @@ impl ContentStore for NativeContentStore {
         Ok(result)
     }
 
-    async fn list(&self, _prefix: &IdentityPrefix) -> Result<Vec<Identity>, StoreFailure> {
-        Err(StoreFailure::new(StoreErrorKind::Unsupported))
+    async fn list(&self, prefix: &IdentityPrefix) -> Result<Vec<Identity>, StoreFailure> {
+        self.ready
+            .metadata()
+            .list_candidates(prefix, self.max_requests)
+            .await
     }
 }
 

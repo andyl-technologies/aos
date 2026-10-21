@@ -8,7 +8,10 @@ use super::{HostDomainLocation, HostReadLimits, HostReadOnlyContent};
 use crate::{
     bucket::BucketBinding,
     pack::PackId,
-    store::{ByteRange, ContentValidator, LocalFs, StoreErrorKind, StoreFailure},
+    store::{
+        ByteRange, ContentValidator, IdentityPrefix, InvalidReason, LocalFs, StoreErrorKind,
+        StoreFailure,
+    },
 };
 use terrane_format::identity::{Identity, IdentityKind};
 
@@ -84,6 +87,33 @@ impl<F: LocalFs + BucketBinding, V: ContentValidator + BucketBinding> HostMetada
             pack_id,
             range,
         })
+    }
+
+    /// Lists bounded ordinary-content candidates for recovery, GC or scrub.
+    ///
+    /// The result is advisory and may be partial or immediately stale. It grants
+    /// no serving, native adoption, deletion or pin authority. Sealed-only chunk
+    /// residences are omitted; consumers verify every candidate independently.
+    /// Existing ordinary packs and standalone chunks use the same bounded,
+    /// no-follow reads and identity checks as the encoded content reader.
+    ///
+    /// # Errors
+    /// Refuses a digest prefix longer than 32 bytes, a zero or exhausted result
+    /// budget, changed roots, invalid/corrupt content and filesystem failures.
+    pub async fn list_candidates(
+        &self,
+        prefix: &IdentityPrefix,
+        max_entries: usize,
+    ) -> Result<Vec<Identity>, StoreFailure> {
+        if prefix.digest_prefix.len() > 32 {
+            return Err(StoreFailure::new(StoreErrorKind::Invalid(
+                InvalidReason::MalformedRequest,
+            )));
+        }
+        if max_entries == 0 {
+            return Err(StoreFailure::new(StoreErrorKind::Capacity));
+        }
+        self.inner.list_bounded(prefix, max_entries).await
     }
 
     /// Returns the physical root identity observed during opening.

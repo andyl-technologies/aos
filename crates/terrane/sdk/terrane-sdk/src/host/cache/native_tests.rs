@@ -661,6 +661,36 @@ async fn host_cache_host_local_metadata_needs_no_repository_binding() {
     .await
     .unwrap();
     assert_eq!(metadata.get(&identity).await.unwrap(), canonical);
+    let prefix = IdentityPrefix {
+        kind: IdentityKind::Manifest,
+        digest_prefix: identity.digest().to_vec(),
+    };
+    assert_eq!(
+        metadata.list_candidates(&prefix, 1).await.unwrap(),
+        std::slice::from_ref(&identity)
+    );
+    assert!(matches!(
+        metadata
+            .list_candidates(&prefix, 0)
+            .await
+            .unwrap_err()
+            .kind(),
+        StoreErrorKind::Capacity
+    ));
+    assert!(matches!(
+        metadata
+            .list_candidates(
+                &IdentityPrefix {
+                    kind: IdentityKind::Manifest,
+                    digest_prefix: vec![0; 33],
+                },
+                1
+            )
+            .await
+            .unwrap_err()
+            .kind(),
+        StoreErrorKind::Invalid(crate::store::InvalidReason::MalformedRequest)
+    ));
     let located = metadata.get_entry(&identity).await.unwrap();
     assert_eq!(located.pack_id, pack_id);
     let start = usize::try_from(located.range.start).unwrap();
@@ -714,4 +744,5 @@ async fn host_cache_host_local_metadata_needs_no_repository_binding() {
     damaged[last] ^= 1;
     std::fs::write(pack_path, damaged).unwrap();
     assert!(metadata.get(&identity).await.is_err());
+    assert!(metadata.list_candidates(&prefix, 1).await.is_err());
 }

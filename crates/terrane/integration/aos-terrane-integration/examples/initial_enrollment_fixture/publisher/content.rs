@@ -11,8 +11,8 @@ use terrane_format::{
 };
 use terrane_linux::host_cache::NativeContentStore;
 use terrane_sdk::store::{
-    ByteRange, ChunkPosition, ChunkUpload, ContentStore, ContentUpload, InvalidReason, MetaUpload,
-    StoreErrorKind,
+    ByteRange, ChunkPosition, ChunkUpload, ContentStore, ContentUpload, IdentityPrefix,
+    InvalidReason, MetaUpload, StoreErrorKind,
 };
 
 pub(super) async fn exercise(store: &NativeContentStore, profile: &ChunkProfile) -> io::Result<()> {
@@ -134,8 +134,30 @@ pub(super) async fn exercise(store: &NativeContentStore, profile: &ChunkProfile)
         metadata
     );
     assert_eq!(
-        store.has(&[metadata]).await.map_err(io::Error::other)?,
+        store
+            .has(std::slice::from_ref(&metadata))
+            .await
+            .map_err(io::Error::other)?,
         [true]
+    );
+    for candidate in [&identity, &metadata] {
+        assert_eq!(
+            store
+                .list(&IdentityPrefix {
+                    kind: candidate.kind(),
+                    digest_prefix: candidate.digest().to_vec(),
+                })
+                .await
+                .map_err(io::Error::other)?,
+            std::slice::from_ref(candidate)
+        );
+    }
+    assert!(matches!(store.list(&IdentityPrefix {
+        kind: IdentityKind::Chunk,
+        digest_prefix: vec![0; 33],
+    }).await, Err(error) if matches!(error.kind(), StoreErrorKind::Invalid(InvalidReason::MalformedRequest))));
+    println!(
+        "PASS actual native advisory listing finds ordinary chunk and metadata candidates and rejects malformed prefixes"
     );
     repeated::exercise(store, profile).await?;
     Ok(())

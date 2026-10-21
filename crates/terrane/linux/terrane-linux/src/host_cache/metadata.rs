@@ -10,7 +10,7 @@ use terrane_format::identity::Identity;
 use terrane_sdk::{
     host::cache::{HostDomainLocation, HostMetadataEntry, HostMetadataReader, HostReadLimits},
     repository::MetadataValidator,
-    store::{StoreErrorKind, StoreFailure, TokioLocalFs},
+    store::{IdentityPrefix, StoreErrorKind, StoreFailure, TokioLocalFs},
 };
 
 /// Reads verified canonical metadata for a genuine inspected host-local domain.
@@ -69,6 +69,26 @@ impl NativeHostMetadataReader {
     /// roots and filesystem failures. Chunk/pack identities are unsupported.
     pub async fn get(&self, identity: &Identity) -> Result<Vec<u8>, StoreFailure> {
         Ok(self.get_entry(identity).await?.canonical)
+    }
+
+    /// Lists advisory ordinary-content candidates under retained native roots.
+    ///
+    /// This performs no adoption or policy mutation and grants no deletion or
+    /// presence authority. Sealed-only residences may be absent from the partial
+    /// result. Callers use this only for recovery, GC candidate sets or scrub.
+    ///
+    /// # Errors
+    /// Refuses invalid prefixes, result/allocation capacity, changed roots,
+    /// corrupt ordinary content and filesystem failures.
+    pub async fn list_candidates(
+        &self,
+        prefix: &IdentityPrefix,
+        max_entries: usize,
+    ) -> Result<Vec<Identity>, StoreFailure> {
+        self.layout.recheck().map_err(native_failure)?;
+        let result = self.reader.list_candidates(prefix, max_entries).await;
+        self.layout.recheck().map_err(native_failure)?;
+        result
     }
 
     /// Reads verified metadata together with its existing pack-body location.
