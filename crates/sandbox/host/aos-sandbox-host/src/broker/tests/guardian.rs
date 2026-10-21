@@ -561,9 +561,12 @@ async fn guardian_reducer_ambiguous_absent_start_expires_on_replay() {
         GuardianLaunchPhase::GuardianStartIssued
     ));
     assert_eq!(starts.load(Ordering::SeqCst), 1);
+    // Restart the broker against the original configured executable inode.
+    let retained_guardian = interrupted.guardian.as_ref().unwrap().clone();
     drop(interrupted);
 
-    let mut recovered = configured_broker(&fixture, credentials.path(), store.clone(), worker);
+    let mut recovered = configured_broker(&fixture, credentials.path(), store.clone(), worker)
+        .with_guardian(retained_guardian);
     let receipt = recovered
         .apply_runtime(
             &request,
@@ -631,10 +634,12 @@ async fn guardian_reducer_terminal_start_persists_cleanup_before_replay_stop() {
     ));
     assert_eq!(starts.load(Ordering::SeqCst), 1);
     assert!(stop_roles.lock().unwrap().is_empty());
+    let retained_guardian = interrupted.guardian.as_ref().unwrap().clone();
     drop(interrupted);
 
     worker.residual_stop_once.store(true, Ordering::SeqCst);
-    let mut recovered = configured_broker(&fixture, credentials.path(), store.clone(), worker);
+    let mut recovered = configured_broker(&fixture, credentials.path(), store.clone(), worker)
+        .with_guardian(retained_guardian);
     let receipt = recovered
         .apply_runtime(
             &request,
