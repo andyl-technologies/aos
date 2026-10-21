@@ -4,8 +4,7 @@
   attrPath ? "checks.crucible.phase4.guestHostDecoderHardening",
   taskIds ? ["T-GHC-14"],
 }: let
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
   protocolFrame = import ./_rust-module-source.nix {
     inherit lib;
@@ -160,45 +159,14 @@ in
       ${builtins.concatStringsSep "\n" failures}
     ''
   else
-    pkgs.mkDerivation {
+    mkCrucibleTestGate {
       pname = "crucible-phase4-guest-host-decoder-hardening";
-      version = "0";
-      src = crucibleSrc;
-      buildDeps = [pkgs.coreutils pkgs.rust pkgs.sed];
+      buildDeps = [pkgs.coreutils pkgs.sed];
       phases = [
-        {
-          name = "unpack";
-          script = ''
-            cp -R "$src" source
-            chmod -R u+w source
-            cd source
-          '';
-        }
-        {
-          name = "configure";
-          script = ''
-            set -eu
-            export CARGO_HOME="$TMPDIR/cargo-home"
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
-            mkdir -p "$CARGO_HOME" .cargo
-            if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
-              sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
-                > .cargo/config.toml
-            else
-              printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
-                > .cargo/config.toml
-            fi
-          '';
-        }
         {
           name = "run-guest-host-decoder-hardening";
           script = ''
             set -eu
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
             require_listed() {
               listed="$1"
               test_name="$2"
@@ -207,33 +175,21 @@ in
                 exit 1
               fi
             }
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-guest-host-decoder-hardening-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible-protocol \
               --test codec \
               -- --list > "$TMPDIR/protocol-codec-tests"
             require_listed \
               "$TMPDIR/protocol-codec-tests" \
               "doorbell_frame_decoder_reports_typed_shape_errors"
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-guest-host-decoder-hardening-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible-protocol \
               --test gate_abi_conformance \
               -- --list > "$TMPDIR/protocol-abi-tests"
             require_listed \
               "$TMPDIR/protocol-abi-tests" \
               "protocol_doorbell_decoder_fuzz_corpus_is_clean_and_bounded"
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-guest-host-decoder-hardening-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible-qemu-plugin \
               --lib \
               -- --list > "$TMPDIR/plugin-tests"
@@ -246,45 +202,25 @@ in
             require_listed \
               "$TMPDIR/plugin-tests" \
               "whitebox_doorbell::tests::whitebox_doorbell_records_unknown_kind_decode_diagnostic_without_marker"
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-guest-host-decoder-hardening-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible-protocol \
               --test codec \
               doorbell_frame_decoder_reports_typed_shape_errors \
               -- --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-guest-host-decoder-hardening-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible-protocol \
               --test gate_abi_conformance \
               protocol_doorbell_decoder_fuzz_corpus_is_clean_and_bounded \
               -- --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-guest-host-decoder-hardening-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible-qemu-plugin \
               --lib whitebox_app_random_decoder \
               -- --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-guest-host-decoder-hardening-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible-qemu-plugin \
               --lib whitebox_app_random_drops_bad_magic \
               -- --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-guest-host-decoder-hardening-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible-qemu-plugin \
               --lib whitebox_doorbell_records_unknown_kind_decode_diagnostic \
               -- --test-threads=1

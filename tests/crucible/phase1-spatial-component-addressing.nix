@@ -4,8 +4,7 @@
   attrPath ? "checks.crucible.phase1.spatialComponentAddressing",
   taskIds ? ["T-SPAT-3"],
 }: let
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
   model = import ./_crucible-model-source.nix {inherit lib;};
   crateRoot = import ./_crucible-tests-source.nix {inherit lib;};
@@ -127,64 +126,25 @@ in
   if failures != []
   then throw "crucible phase1 spatial component addressing check failed:\n${builtins.concatStringsSep "\n" failures}"
   else
-    pkgs.mkDerivation {
+    mkCrucibleTestGate {
       pname = "crucible-phase1-spatial-component-addressing";
-      version = "0";
-      src = crucibleSrc;
 
       buildDeps = [
         pkgs.coreutils
-        pkgs.rust
         pkgs.sed
       ];
 
       phases = [
         {
-          name = "unpack";
-          script = ''
-            cp -R "$src" source
-            chmod -R u+w source
-            cd source
-          '';
-        }
-        {
-          name = "configure";
-          script = ''
-            export CARGO_HOME="$TMPDIR/cargo"
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
-            mkdir -p "$CARGO_HOME" .cargo
-            if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
-              sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
-                > .cargo/config.toml
-            else
-              printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
-                > .cargo/config.toml
-            fi
-          '';
-        }
-        {
           name = "run-spatial-component-addressing";
           script = ''
             set -eu
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-spatial-component-addressing-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible \
               --test event_graph_serialization \
               graph_plan_is_the_scenario_plan_component \
               -- --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-spatial-component-addressing-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible \
               --features test-double \
               --test property_fingerprint_neutrality \

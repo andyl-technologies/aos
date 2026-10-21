@@ -5,8 +5,7 @@
   taskIds ? ["T-API-4"],
   dependencies ? [],
 }: let
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
   apiDoc = builtins.readFile ../../docs/rfcs/0010-crucible/21-api.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
@@ -212,20 +211,12 @@
 
   failureText = builtins.concatStringsSep "\n" failures;
 in
-  pkgs.mkDerivation {
+  mkCrucibleTestGate {
     pname = "crucible-phase5-api-streaming-equivalence";
-    version = "0";
-    LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
-    runtimeDeps = [pkgs.sqlite];
-    src = crucibleSrc;
 
     buildDeps = [
       pkgs.coreutils
-      pkgs.rust
       pkgs.sed
-
-      pkgs.pkg-config
-      pkgs.sqlite
     ];
 
     CRUCIBLE_T_API_4_FAILURES = failureText;
@@ -236,33 +227,6 @@ in
 
     phases = [
       {
-        name = "unpack";
-        script = ''
-          set -eu
-          cp -R "$src" source
-          chmod -R u+w source
-          cd source
-        '';
-      }
-      {
-        name = "configure";
-        script = ''
-          set -eu
-          export CARGO_HOME="$TMPDIR/cargo"
-          if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-            cd source
-          fi
-          mkdir -p "$CARGO_HOME" .cargo
-          if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
-            sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
-              > .cargo/config.toml
-          else
-            printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
-              > .cargo/config.toml
-          fi
-        '';
-      }
-      {
         name = "run-phase5-api-streaming-equivalence";
         script = ''
           set -eu
@@ -272,21 +236,12 @@ in
             exit 1
           fi
 
-          if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-            cd source
-          fi
           cd crates
-          cargo test \
-            --frozen \
-            --offline \
-            --target-dir "$TMPDIR/crucible-api-streaming-equivalence-target" \
+          crucible-cargo test \
             -p crucible-api \
             --test gate_streaming_equivalence \
             -- --test-threads=1
-          cargo test \
-            --frozen \
-            --offline \
-            --target-dir "$TMPDIR/crucible-api-streaming-equivalence-target" \
+          crucible-cargo test \
             -p crucible-api \
             --test gate_control_client \
             -- --test-threads=1

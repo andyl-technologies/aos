@@ -6,63 +6,31 @@
   taskIds ? ["T-CAM-5.3"],
   dependencies ? [],
 }: let
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 in
-  pkgs.mkDerivation {
+  mkCrucibleTestGate {
     pname = "crucible-phase5-exact-closure-streaming";
-    version = "0";
-    LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
-    runtimeDeps = [pkgs.sqlite];
-    src = crucibleSrc;
 
     buildDeps =
       [
         pkgs.coreutils
         pkgs.grep
-        pkgs.rust
         pkgs.sed
         checkpointDeltaFlight
-        pkgs.pkg-config
-        pkgs.sqlite
       ]
       ++ dependencies;
 
     phases = [
       {
-        name = "unpack";
-        script = ''
-          set -eu
-          cp -R "$src" source
-          chmod -R u+w source
-          cd source
-        '';
-      }
-      {
-        name = "configure";
-        script = ''
-          set -eu
-          export CARGO_HOME="$TMPDIR/cargo"
-          mkdir -p "$CARGO_HOME" .cargo
-          sed "s|@vendor@|${cargoDeps}|g" \
-            "${cargoDeps}/.cargo/config.toml" > .cargo/config.toml
-        '';
-      }
-      {
         name = "run-exact-closure-streaming";
         script = ''
           set -eu
-          target="$TMPDIR/exact-closure-streaming-target"
 
           run_exact_lib_test() {
             package=$1
             name=$2
 
-            if listing=$(cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$target" \
-              --manifest-path crates/Cargo.toml \
+            if listing=$(crucible-cargo test \
               -p "$package" \
               --lib \
               "$name" \
@@ -76,11 +44,7 @@ in
             fi
             test "$(printf '%s\n' "$listing" | grep -Fxc "$name: test")" -eq 1
 
-            if output=$(cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$target" \
-              --manifest-path crates/Cargo.toml \
+            if output=$(crucible-cargo test \
               -p "$package" \
               --lib \
               "$name" \

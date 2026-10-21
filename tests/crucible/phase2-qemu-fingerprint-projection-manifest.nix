@@ -18,8 +18,7 @@
   refreshMode ? false,
   baselineManifests ? null,
 }: let
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
   inherit (import ./_lib.nix {inherit lib;}) failuresFor;
   atomicPatch = import ../../pkgs/emulation/qemu-patches/_atomic-patch.nix;
   patchSource = builtins.readFile (
@@ -39,13 +38,10 @@ in
   if failures != []
   then throw "Crucible fingerprint projection manifest gate failed:\n${builtins.concatStringsSep "\n" failures}"
   else
-    pkgs.mkDerivation {
+    mkCrucibleTestGate {
       pname =
         "crucible-phase2-qemu-fingerprint-projection-manifest"
         + lib.optionalString refreshMode "-refresh";
-      version = "0";
-      LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
-      src = crucibleSrc;
 
       buildDeps = [
         pkgs.coreutils
@@ -53,49 +49,19 @@ in
         pkgs.glib.dev
         pkgs.jq
         pkgs.pkg-config
-        pkgs.rust
         pkgs.sed
-        pkgs.sqlite
         qemuPackage
       ];
-      runtimeDeps = [pkgs.sqlite];
-
       phases = [
-        {
-          name = "unpack";
-          script = ''
-            cp -R "$src" source
-            chmod -R u+w source
-          '';
-        }
-        {
-          name = "configure-rust";
-          script = ''
-            export CARGO_HOME="$TMPDIR/cargo"
-            export RUSTFLAGS="-C link-arg=-Wl,-rpath,${pkgs.sqlite}/lib"
-            mkdir -p source/.cargo
-            if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
-              sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
-                > source/.cargo/config.toml
-            else
-              printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
-                > source/.cargo/config.toml
-            fi
-          '';
-        }
         {
           name = "verify-launch-derived-catalog";
           script = ''
-            cd source
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/fingerprint-projection-manifest-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible-qemu \
               --lib \
               fingerprint_projection \
               -- --test-threads=1
+            # Later phases work beside the unpacked source, as before.
             cd ..
           '';
         }

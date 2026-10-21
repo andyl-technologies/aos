@@ -5,8 +5,7 @@
   taskIds ? ["T-PLUG-1"],
   openTaskIds ? [],
 }: let
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
   pluginCargo = builtins.readFile ../../crates/crucible-qemu-plugin/Cargo.toml;
   pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
@@ -151,73 +150,31 @@ in
   if failures != []
   then throw "crucible phase2 plugin runtime install check failed:\n${builtins.concatStringsSep "\n" failures}"
   else
-    pkgs.mkDerivation {
+    mkCrucibleTestGate {
       pname = "crucible-phase2-plugin-runtime-install";
-      version = "0";
-      src = crucibleSrc;
 
       buildDeps = [
         pkgs.binutils
         pkgs.grep
         pkgs.qemu-crucible
-        pkgs.rust
         pkgs.sed
       ];
 
       phases = [
         {
-          name = "unpack";
-          script = ''
-            cp -R "$src" source
-            chmod -R u+w source
-            cd source
-          '';
-        }
-        {
-          name = "configure";
-          script = ''
-            export CARGO_HOME="$TMPDIR/cargo"
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
-            mkdir -p "$CARGO_HOME" .cargo
-            if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
-              sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
-                > .cargo/config.toml
-            else
-              printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
-                > .cargo/config.toml
-            fi
-          '';
-        }
-        {
           name = "run-plugin-runtime-install";
           script = ''
             set -eu
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
-            target_dir="$TMPDIR/crucible-plugin-runtime-install-target"
             qemu_header="${pkgs.qemu-crucible}/include/qemu/qemu-plugin.h"
             test -f "$qemu_header"
             grep -q '#define QEMU_PLUGIN_VERSION 7' "$qemu_header"
             grep -q 'extern QEMU_PLUGIN_EXPORT int qemu_plugin_version;' "$qemu_header"
             grep -q 'qemu_plugin_crucible_single_threaded_rr' "$qemu_header"
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$target_dir" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible-qemu-plugin \
               abi \
               -- --test-threads=1
-            cargo build \
-              --frozen \
-              --offline \
-              --target-dir "$target_dir" \
-              --manifest-path crates/Cargo.toml \
-              -p crucible-qemu-plugin
-            plugin_so="$target_dir/debug/libcrucible_qemu_plugin.so"
+            plugin_so=$(crucible-cargo executable build -p crucible-qemu-plugin)
             test -f "$plugin_so"
             nm -D --defined-only "$plugin_so" > "$TMPDIR/crucible-plugin-abi-symbols"
             grep -Eq ' T qemu_plugin_install$' "$TMPDIR/crucible-plugin-abi-symbols"

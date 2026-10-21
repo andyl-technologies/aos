@@ -12,22 +12,16 @@
   campaignServiceModuleContract,
   dependencies ? [],
 }: let
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 in
-  pkgs.mkDerivation {
+  mkCrucibleTestGate {
     pname = "crucible-phase9-campaign-operational-continuity";
-    version = "0";
-    LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
-    runtimeDeps = [pkgs.sqlite];
-    src = crucibleSrc;
 
     buildDeps =
       [
         pkgs.coreutils
         pkgs.findutils
         pkgs.grep
-        pkgs.rust
         pkgs.sed
         campaignStoreEquivalence
         campaignStoreComposition
@@ -36,42 +30,14 @@ in
         campaignStorageRecovery
         campaignMidpointDebug
         campaignServiceModuleContract
-
-        pkgs.pkg-config
-        pkgs.sqlite
       ]
       ++ dependencies;
 
     phases = [
       {
-        name = "unpack";
-        script = ''
-          set -eu
-          cp -R "$src" source
-          chmod -R u+w source
-          cd source
-        '';
-      }
-      {
-        name = "configure";
-        script = ''
-          set -eu
-          export CARGO_HOME="$TMPDIR/cargo"
-          if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-            cd source
-          fi
-          mkdir -p "$CARGO_HOME" .cargo
-          sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
-            > .cargo/config.toml
-        '';
-      }
-      {
         name = "run-operational-continuity";
         script = ''
           set -eu
-          if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-            cd source
-          fi
 
           require_result_line() {
             result="$1"
@@ -254,28 +220,19 @@ in
             "evidence_manifest_sha256=$midpoint_manifest_digest"
           sha256sum -c "$midpoint_manifest"
 
-          target="$TMPDIR/crucible-campaign-operational-continuity-target"
           run_exact_process_test() {
             selector="$1"
             evidence_name="$2"
             listing_file="$out/evidence/$evidence_name.listing"
             output_file="$out/evidence/$evidence_name.output"
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible-cli \
               --test campaign_store_process \
               "$selector" \
               -- --exact --list > "$listing_file"
             grep -Fqx "$selector: test" "$listing_file"
 
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible-cli \
               --test campaign_store_process \
               "$selector" \

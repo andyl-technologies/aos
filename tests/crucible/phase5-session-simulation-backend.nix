@@ -6,8 +6,7 @@
   openTaskIds ? [],
   dependencies ? [],
 }: let
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
   backendLib = builtins.readFile ../../crates/crucible/src/backend.rs;
   mockBackendLib = builtins.readFile ../../crates/crucible/src/backend/mock.rs;
@@ -303,10 +302,8 @@ in
   if failures != []
   then throw "crucible phase5 session-simulation-backend check failed:\n${builtins.concatStringsSep "\n" failures}"
   else
-    pkgs.mkDerivation {
+    mkCrucibleTestGate {
       pname = "crucible-phase5-session-simulation-backend";
-      version = "0";
-      src = crucibleSrc;
 
       buildDeps =
         [
@@ -319,38 +316,13 @@ in
 
       phases = [
         {
-          name = "unpack";
-          script = ''
-            cp -R "$src" source
-            chmod -R u+w source
-            cd source
-          '';
-        }
-        {
-          name = "configure";
-          script = ''
-            export CARGO_HOME="$TMPDIR/cargo"
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
-            mkdir -p "$CARGO_HOME" .cargo
-            if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
-              sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
-                > .cargo/config.toml
-            else
-              printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
-                > .cargo/config.toml
-            fi
-          '';
-        }
-        {
           name = "run-session-simulation-backend";
           script = ''
             set -eu
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
             cd crates
+            # Exception to the prebuilt test executables: this negative
+            # compile check builds a separate one-crate workspace against
+            # default Crucible features, so it must run Cargo itself.
             negative_consumer="$TMPDIR/crucible-default-no-mock"
             mkdir -p "$negative_consumer/src" "$negative_consumer/.cargo"
             cp ../.cargo/config.toml "$negative_consumer/.cargo/config.toml"
@@ -382,18 +354,12 @@ in
             fi
             grep -Fq 'unresolved import `crucible::MockSimulationBackend`' \
               "$negative_consumer/check.log"
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-session-simulation-backend-target" \
+            crucible-cargo test \
               -p crucible \
               --features test-double \
               simulation_backend \
               -- --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-session-simulation-backend-target" \
+            crucible-cargo test \
               -p crucible-qemu \
               --lib \
               qemu_node_satisfies_simulation_backend_trait \

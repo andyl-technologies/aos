@@ -4,8 +4,7 @@
   attrPath ? "checks.crucible.phase4.workloadSeed",
   taskIds ? ["T-WL-3"],
 }: let
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
   workloadDoc = builtins.readFile ../../docs/rfcs/0010-crucible/33-examples-and-workloads.md;
   engineModel = import ./_crucible-model-source.nix {inherit lib;};
@@ -148,45 +147,14 @@ in
       ${builtins.concatStringsSep "\n" failures}
     ''
   else
-    pkgs.mkDerivation {
+    mkCrucibleTestGate {
       pname = "crucible-phase4-workload-seed";
-      version = "0";
-      src = crucibleSrc;
-      buildDeps = [pkgs.coreutils pkgs.rust pkgs.sed];
+      buildDeps = [pkgs.coreutils pkgs.sed];
       phases = [
-        {
-          name = "unpack";
-          script = ''
-            cp -R "$src" source
-            chmod -R u+w source
-            cd source
-          '';
-        }
-        {
-          name = "configure";
-          script = ''
-            set -eu
-            export CARGO_HOME="$TMPDIR/cargo-home"
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
-            mkdir -p "$CARGO_HOME" .cargo
-            if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
-              sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
-                > .cargo/config.toml
-            else
-              printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
-                > .cargo/config.toml
-            fi
-          '';
-        }
         {
           name = "run-workload-seed";
           script = ''
             set -eu
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
             require_listed() {
               listed="$1"
               test_name="$2"
@@ -195,11 +163,7 @@ in
                 exit 1
               fi
             }
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-workload-seed-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible \
               --test workload_model \
               -- --list > "$TMPDIR/workload-seed-tests"
@@ -218,47 +182,27 @@ in
             require_listed \
               "$TMPDIR/workload-seed-tests" \
               "workload_seed_rejects_malformed_toml_and_binary_forms"
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-workload-seed-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible \
               --test workload_model \
               workload_seed_is_plain_content_addressed_cmdline_config \
               -- --exact --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-workload-seed-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible \
               --test workload_model \
               workload_seed_changes_scenario_identity_without_changing_global_seed \
               -- --exact --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-workload-seed-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible \
               --test workload_model \
               workload_seed_black_box_config_path_suffices_without_white_box \
               -- --exact --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-workload-seed-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible \
               --test workload_model \
               workload_seed_rejects_malformed_and_duplicate_values \
               -- --exact --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-workload-seed-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible \
               --test workload_model \
               workload_seed_rejects_malformed_toml_and_binary_forms \

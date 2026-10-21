@@ -4,8 +4,7 @@
   attrPath ? "checks.crucible.phase1.spatialValidationPass",
   taskIds ? ["T-SPAT-21"],
 }: let
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
   model = import ./_crucible-model-source.nix {inherit lib;};
   coreTests = import ./_crucible-tests-source.nix {inherit lib;};
@@ -323,119 +322,56 @@ in
   if failures != []
   then throw "crucible phase1 spatial validation pass check failed:\n${builtins.concatStringsSep "\n" failures}"
   else
-    pkgs.mkDerivation {
+    mkCrucibleTestGate {
       pname = "crucible-phase1-spatial-validation-pass";
-      version = "0";
-      src = crucibleSrc;
 
       buildDeps = [
         pkgs.coreutils
-        pkgs.rust
         pkgs.sed
       ];
 
       phases = [
         {
-          name = "unpack";
-          script = ''
-            cp -R "$src" source
-            chmod -R u+w source
-            cd source
-          '';
-        }
-        {
-          name = "configure";
-          script = ''
-            export CARGO_HOME="$TMPDIR/cargo"
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
-            mkdir -p "$CARGO_HOME" .cargo
-            if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
-              sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
-                > .cargo/config.toml
-            else
-              printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
-                > .cargo/config.toml
-            fi
-          '';
-        }
-        {
           name = "run-spatial-validation-pass";
           script = ''
             set -eu
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-spatial-validation-pass-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible \
               --lib \
               world_topology_rejects_invalid_links \
               -- --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-spatial-validation-pass-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible \
               --lib \
               world_link_transport_rejects_invalid_floor_and_loss \
               -- --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-spatial-validation-pass-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible \
               --lib \
               world_node_launch_inputs_are_portable_and_identity_bearing \
               -- --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-spatial-validation-pass-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible \
               --lib \
               fault_signal::plan_test \
               -- --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-spatial-validation-pass-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible \
               --features test-double \
               --test gate_replay_oracle \
               gate_replay_oracle_materialized_state_captures_exact_resume_components \
               -- --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-spatial-validation-pass-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible-qemu \
               --test deterministic_launch \
               multi_vcpu_round_robin_launch_is_pinned_validated_and_hashed \
               -- --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-spatial-validation-pass-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible-qemu \
               --test deterministic_launch \
               launch_profile_rejects_mutating_or_interactive_state \
               -- --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-spatial-validation-pass-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible-qemu \
               --test deterministic_launch \
               launch_profile_pins_fixed_tick_scale_for_each_node \

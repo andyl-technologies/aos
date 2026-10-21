@@ -4,8 +4,7 @@
   attrPath ? "checks.crucible.phase4.guestHostMarkerVocabulary",
   taskIds ? ["T-GHC-8"],
 }: let
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
   protocolLib = import ./_rust-module-source.nix {
     inherit lib;
@@ -354,103 +353,44 @@ in
       ${builtins.concatStringsSep "\n" failures}
     ''
   else
-    pkgs.mkDerivation {
+    mkCrucibleTestGate {
       pname = "crucible-phase4-guest-host-marker-vocabulary";
-      version = "0";
-      src = crucibleSrc;
-      buildDeps = [pkgs.coreutils pkgs.rust pkgs.sed];
+      buildDeps = [pkgs.coreutils pkgs.sed];
       phases = [
-        {
-          name = "unpack";
-          script = ''
-            cp -R "$src" source
-            chmod -R u+w source
-            cd source
-          '';
-        }
-        {
-          name = "configure";
-          script = ''
-            set -eu
-            export CARGO_HOME="$TMPDIR/cargo-home"
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
-            mkdir -p "$CARGO_HOME" .cargo
-            if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
-              sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
-                > .cargo/config.toml
-            else
-              printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
-                > .cargo/config.toml
-            fi
-          '';
-        }
         {
           name = "run-guest-host-marker-vocabulary";
           script = ''
             set -eu
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-guest-host-marker-vocabulary-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible-protocol \
               --test gate_abi_conformance \
               protocol_doorbell_marker_payload_golden_vectors_match_live_codec_bytes \
               -- --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-guest-host-marker-vocabulary-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible-protocol \
               --test gate_abi_conformance \
               protocol_doorbell_marker_kind_vocabulary_is_closed_and_versioned \
               -- --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-guest-host-marker-vocabulary-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible-protocol \
               --test gate_abi_conformance \
               protocol_doorbell_marker_subvocabularies_are_closed_and_versioned \
               -- --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-guest-host-marker-vocabulary-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible-protocol \
               --test golden_vectors \
               marker_payload_golden_vectors_match_canonical_codec_bytes \
               -- --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-guest-host-marker-vocabulary-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible-protocol \
               --test codec \
               marker_payload_decoder_reports_typed_shape_errors \
               -- --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-guest-host-marker-vocabulary-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible-qemu-plugin \
               --lib whitebox_doorbell_rejects_random_request_on_observational_marker_path \
               -- --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-guest-host-marker-vocabulary-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible \
               --features test-double \
               --test gate_abi_conformance \

@@ -5,8 +5,7 @@
   taskIds ? ["T-ADV-6"],
   dependencies ? [],
 }: let
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
   graphSource = import ./_crucible-model-source.nix {inherit lib;};
   gateTest = builtins.readFile ../../crates/crucible/tests/gate_checkpoint_materialization.rs;
   defaultChecks = builtins.readFile ./default.nix;
@@ -51,40 +50,17 @@ in
   if failures != []
   then throw "crucible phase6 checkpoint materialization check failed:\n${builtins.concatStringsSep "\n" failures}"
   else
-    pkgs.mkDerivation {
+    mkCrucibleTestGate {
       pname = "crucible-phase6-checkpoint-materialization";
-      version = "0";
-      src = crucibleSrc;
-      LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
-      buildDeps = [pkgs.pkg-config pkgs.rust pkgs.sed pkgs.sqlite];
-      runtimeDeps = [pkgs.sqlite];
+      buildDeps = [pkgs.sed];
       DEPENDENCIES = builtins.concatStringsSep ":" dependencies;
       phases = [
-        {
-          name = "unpack";
-          script = ''
-            cp -R "$src" source
-            chmod -R u+w source
-            cd source
-          '';
-        }
-        {
-          name = "configure";
-          script = ''
-            : "$DEPENDENCIES"
-            export CARGO_HOME="$TMPDIR/cargo-home"
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then cd source; fi
-            mkdir -p "$CARGO_HOME" .cargo
-            sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" > .cargo/config.toml
-          '';
-        }
         {
           name = "run-checkpoint-materialization";
           script = ''
             if [ -d source ] && [ -f source/crates/Cargo.toml ]; then cd source; fi
-            cargo test --frozen --offline \
-              --target-dir "$TMPDIR/crucible-checkpoint-materialization-target" \
-              --manifest-path crates/Cargo.toml -p crucible \
+            crucible-cargo test \
+              -p crucible \
               --test gate_checkpoint_materialization -- --test-threads=1
           '';
         }

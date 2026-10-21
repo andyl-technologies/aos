@@ -5,8 +5,7 @@
   taskIds ? ["T-PLUG-15"],
   openTaskIds ? [],
 }: let
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
   pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
   pluginArgs = builtins.readFile ../../crates/crucible-qemu-plugin/src/args.rs;
@@ -650,46 +649,18 @@ in
   if failures != []
   then throw "crucible phase2 plugin coverage check failed:\n${builtins.concatStringsSep "\n" failures}"
   else
-    pkgs.mkDerivation {
+    mkCrucibleTestGate {
       pname = "crucible-phase2-plugin-coverage";
-      version = "0";
-      src = crucibleSrc;
 
       buildDeps = [
         pkgs.glib
         pkgs.glib.dev
         pkgs.pkg-config
         pkgs.qemu-crucible
-        pkgs.rust
         pkgs.sed
       ];
 
       phases = [
-        {
-          name = "unpack";
-          script = ''
-            cp -R "$src" source
-            chmod -R u+w source
-            cd source
-          '';
-        }
-        {
-          name = "configure";
-          script = ''
-            export CARGO_HOME="$TMPDIR/cargo"
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
-            mkdir -p "$CARGO_HOME" .cargo
-            if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
-              sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
-                > .cargo/config.toml
-            else
-              printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
-                > .cargo/config.toml
-            fi
-          '';
-        }
         {
           name = "verify-qemu11-coverage-callback-ordering";
           script = ''
@@ -774,9 +745,6 @@ in
           name = "compile-coverage-qemu-abi";
           script = ''
             set -eu
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
             cc -std=c11 -Wall -Wextra -Werror \
               $(pkg-config --cflags glib-2.0) \
               -I${pkgs.qemu-crucible}/include \
@@ -789,38 +757,19 @@ in
           name = "run-plugin-coverage";
           script = ''
             set -eu
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-plugin-coverage-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible-qemu-plugin \
               coverage_ \
               -- --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-plugin-coverage-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible-shmem \
               --test gate_abi_conformance \
               -- --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-plugin-coverage-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible-qemu \
               --test mapped_quantum \
               -- --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-plugin-coverage-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible-session \
               actor_publishes_ \
               -- --test-threads=1

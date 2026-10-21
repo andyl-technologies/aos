@@ -4,8 +4,7 @@
   attrPath ? "checks.crucible.phase4.guestHostAppRandomCap",
   taskIds ? ["T-GHC-17"],
 }: let
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
   engineModel = import ./_crucible-model-source.nix {inherit lib;};
   engineDecision = builtins.readFile ../../crates/crucible/src/decision.rs;
@@ -244,45 +243,14 @@ in
       ${builtins.concatStringsSep "\n" failures}
     ''
   else
-    pkgs.mkDerivation {
+    mkCrucibleTestGate {
       pname = "crucible-phase4-guest-host-app-random-cap";
-      version = "0";
-      src = crucibleSrc;
-      buildDeps = [pkgs.coreutils pkgs.rust pkgs.sed];
+      buildDeps = [pkgs.coreutils pkgs.sed];
       phases = [
-        {
-          name = "unpack";
-          script = ''
-            cp -R "$src" source
-            chmod -R u+w source
-            cd source
-          '';
-        }
-        {
-          name = "configure";
-          script = ''
-            set -eu
-            export CARGO_HOME="$TMPDIR/cargo-home"
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
-            mkdir -p "$CARGO_HOME" .cargo
-            if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
-              sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
-                > .cargo/config.toml
-            else
-              printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
-                > .cargo/config.toml
-            fi
-          '';
-        }
         {
           name = "run-app-random-cap";
           script = ''
             set -eu
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
             require_listed() {
               listed="$1"
               test_name="$2"
@@ -291,11 +259,7 @@ in
                 exit 1
               fi
             }
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-guest-host-app-random-cap-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible \
               --lib \
               -- --list > "$TMPDIR/crucible-lib-tests"
@@ -317,11 +281,7 @@ in
             require_listed \
               "$TMPDIR/crucible-lib-tests" \
               "decision::tests::app_random_draw_cap_fails_loud_in_checked_step_and_reduce"
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-guest-host-app-random-cap-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible \
               --features test-double \
               --test guest_host_channel_determinism \
@@ -329,11 +289,7 @@ in
             require_listed \
               "$TMPDIR/channel-tests" \
               "app_random_compiled_in_zero_requests_is_fingerprint_identical"
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-guest-host-app-random-cap-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible-guest \
               --test gate_abi_conformance \
               -- --list > "$TMPDIR/guest-abi-tests"
@@ -346,87 +302,47 @@ in
             require_listed \
               "$TMPDIR/guest-abi-tests" \
               "guest_cli_rejects_malformed_inputs"
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-guest-host-app-random-cap-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible \
               --lib decision::tests::decision_recorder_enforces_app_random_draw_cap \
               -- --exact --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-guest-host-app-random-cap-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible \
               --lib decision::tests::decision_recorder_counts_existing_app_random_decisions_against_cap \
               -- --exact --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-guest-host-app-random-cap-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible \
               --lib decision::tests::decision_recorder_app_random_override_obeys_draw_cap \
               -- --exact --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-guest-host-app-random-cap-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible \
               --lib decision::tests::app_random_draw_cap_is_scenario_hash_material \
               -- --exact --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-guest-host-app-random-cap-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible \
               --lib decision::tests::app_random_draw_cap_round_trips_through_scenario_form_serialization \
               -- --exact --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-guest-host-app-random-cap-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible \
               --lib decision::tests::app_random_draw_cap_fails_loud_in_checked_step_and_reduce \
               -- --exact --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-guest-host-app-random-cap-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible \
               --features test-double \
               --test guest_host_channel_determinism \
               app_random_compiled_in_zero_requests_is_fingerprint_identical \
               -- --exact --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-guest-host-app-random-cap-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible-guest \
               --test gate_abi_conformance \
               guest_cli_verbs_encode_shared_marker_payloads \
               -- --exact --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-guest-host-app-random-cap-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible-guest \
               --test gate_abi_conformance \
               guest_get_random_round_trip_reads_reply_from_payload_range \
               -- --exact --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-guest-host-app-random-cap-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible-guest \
               --test gate_abi_conformance \
               guest_cli_rejects_malformed_inputs \

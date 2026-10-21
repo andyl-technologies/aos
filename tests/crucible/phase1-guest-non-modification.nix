@@ -4,8 +4,7 @@
   attrPath ? "checks.crucible.phase1.guestNonModification",
   taskIds ? ["T-DET-21"],
 }: let
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
   qemuLaunch =
     builtins.readFile ../../crates/crucible-qemu/src/launch.rs
@@ -263,59 +262,21 @@ in
   if failures != []
   then throw "crucible phase1 guest non-modification check failed:\n${builtins.concatStringsSep "\n" failures}"
   else
-    pkgs.mkDerivation {
+    mkCrucibleTestGate {
       pname = "crucible-phase1-guest-non-modification";
-      version = "0";
-      src = crucibleSrc;
-      LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
 
       buildDeps = [
         pkgs.coreutils
-        pkgs.pkg-config
-        pkgs.rust
         pkgs.sed
-        pkgs.sqlite
       ];
-      runtimeDeps = [pkgs.sqlite];
 
       phases = [
-        {
-          name = "unpack";
-          script = ''
-            cp -R "$src" source
-            chmod -R u+w source
-            cd source
-          '';
-        }
-        {
-          name = "configure";
-          script = ''
-            export CARGO_HOME="$TMPDIR/cargo"
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
-            mkdir -p "$CARGO_HOME" .cargo
-            if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
-              sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
-                > .cargo/config.toml
-            else
-              printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
-                > .cargo/config.toml
-            fi
-          '';
-        }
         {
           name = "run-guest-non-modification";
           script = ''
             set -eu
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
             cd crates
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-guest-non-modification-target" \
+            crucible-cargo test \
               -p crucible-qemu \
               --test deterministic_launch \
               launch_profile_enforces_guest_non_modification \

@@ -5,62 +5,27 @@
   taskIds ? ["T-CAM-4.1" "T-CAM-4.2" "T-CAM-4.3" "T-CAM-4.4" "T-CAM-4.5" "T-CAM-4.6"],
   dependencies ? [],
 }: let
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 in
-  pkgs.mkDerivation {
+  mkCrucibleTestGate {
     pname = "crucible-phase4-lazy-frontier";
-    version = "0";
-    LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
-    runtimeDeps = [pkgs.sqlite];
-    src = crucibleSrc;
 
-    buildDeps = [pkgs.coreutils pkgs.grep pkgs.rust pkgs.pkg-config pkgs.sqlite];
+    buildDeps = [pkgs.coreutils pkgs.grep];
     ATTR_PATH = attrPath;
     TASK_IDS = builtins.concatStringsSep "," taskIds;
     DEPENDENCY_PATHS = builtins.concatStringsSep ":" dependencies;
 
     phases = [
       {
-        name = "unpack";
-        script = ''
-          cp -R "$src" source
-          chmod -R u+w source
-          cd source
-        '';
-      }
-      {
-        name = "configure";
-        script = ''
-          export CARGO_HOME="$TMPDIR/cargo"
-          if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-            cd source
-          fi
-          mkdir -p "$CARGO_HOME" .cargo
-          if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
-            sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
-              > .cargo/config.toml
-          else
-            printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
-              > .cargo/config.toml
-          fi
-        '';
-      }
-      {
         name = "run-lazy-frontier";
         script = ''
           set -eu
           : "$DEPENDENCY_PATHS"
-          if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-            cd source
-          fi
 
-          target="$TMPDIR/lazy-frontier-target"
           run_exact_lib_test() {
             package="$1"
             expected="$2"
-            list_output=$(cargo test --frozen --offline \
-              --manifest-path crates/Cargo.toml --target-dir "$target" \
+            list_output=$(crucible-cargo test \
               -p "$package" --lib "$expected" -- --exact --list 2>&1)
             exact_count=$(printf '%s\n' "$list_output" | grep -Fxc "$expected: test" || true)
             if [ "$exact_count" -ne 1 ]; then
@@ -69,8 +34,7 @@ in
               exit 1
             fi
 
-            test_output=$(cargo test --frozen --offline \
-              --manifest-path crates/Cargo.toml --target-dir "$target" \
+            test_output=$(crucible-cargo test \
               -p "$package" --lib "$expected" -- \
               --exact --test-threads=1 2>&1)
             printf '%s\n' "$test_output"
@@ -84,8 +48,8 @@ in
           run_exact_lib_test \
             crucible-campaign \
             merkle::bulk::tests::million_dormant_continuations_use_bounded_production_frontier_pages
-          test_output=$(cargo test --frozen --offline --manifest-path crates/Cargo.toml \
-            --target-dir "$target" -p crucible-campaign \
+          test_output=$(crucible-cargo test \
+            -p crucible-campaign \
             --features test-support \
             --test gate_lazy_frontier -- --test-threads=1 --nocapture 2>&1)
           printf '%s\n' "$test_output"

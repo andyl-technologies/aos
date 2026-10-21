@@ -5,25 +5,16 @@
   taskIds ? ["T-CAM-4.5" "T-CAM-4.6" "T-CAM-4.9" "T-CAM-8.1" "T-CAM-8.2"],
   dependencies ? [],
 }: let
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 in
-  pkgs.mkDerivation {
+  mkCrucibleTestGate {
     pname = "crucible-phase4-control-responsiveness";
-    version = "0";
-    LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
-    runtimeDeps = [pkgs.sqlite];
-    src = crucibleSrc;
 
     buildDeps =
       [
         pkgs.coreutils
         pkgs.grep
-        pkgs.rust
         pkgs.sed
-
-        pkgs.pkg-config
-        pkgs.sqlite
       ]
       ++ dependencies;
     ATTR_PATH = attrPath;
@@ -32,42 +23,12 @@ in
 
     phases = [
       {
-        name = "unpack";
-        script = ''
-          cp -R "$src" source
-          chmod -R u+w source
-          cd source
-        '';
-      }
-      {
-        name = "configure";
-        script = ''
-          export CARGO_HOME="$TMPDIR/cargo"
-          if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-            cd source
-          fi
-          mkdir -p "$CARGO_HOME" .cargo
-          if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
-            sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
-              > .cargo/config.toml
-          else
-            printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
-              > .cargo/config.toml
-          fi
-        '';
-      }
-      {
         name = "run-control-responsiveness";
         script = ''
           set -eu
-          if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-            cd source
-          fi
 
-          target="$TMPDIR/control-responsiveness-target"
           exact_test="executor_pool::tests::campaign_controls_remain_responsive_while_every_executor_slot_is_busy"
-          if list_output=$(cargo test --frozen --offline \
-            --manifest-path crates/Cargo.toml --target-dir "$target" \
+          if list_output=$(crucible-cargo test \
             -p crucible-daemon --lib "$exact_test" -- --exact --list 2>&1); then
             :
           else
@@ -82,8 +43,7 @@ in
             exit 1
           fi
 
-          if test_output=$(cargo test --frozen --offline \
-            --manifest-path crates/Cargo.toml --target-dir "$target" \
+          if test_output=$(crucible-cargo test \
             -p crucible-daemon --lib "$exact_test" -- \
             --exact --test-threads=1 2>&1); then
             :

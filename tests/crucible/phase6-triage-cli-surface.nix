@@ -19,7 +19,8 @@
     )
     forbidden;
 
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
+  # Recorded in the build products as the vendored dependency identity.
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   triageDoc = builtins.readFile ../../docs/rfcs/0010-crucible/34-failure-triage.md;
@@ -222,62 +223,23 @@ in
   if failures != []
   then throw "crucible phase6 triage CLI surface check failed:\n${builtins.concatStringsSep "\n" failures}"
   else
-    pkgs.mkDerivation {
+    mkCrucibleTestGate {
       pname = "crucible-phase6-triage-cli-surface";
-      version = "0";
-      LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
-      runtimeDeps = [pkgs.sqlite];
-      src = crucibleSrc;
 
       buildDeps =
         [
           pkgs.coreutils
-          pkgs.rust
           pkgs.sed
-
-          pkgs.pkg-config
-          pkgs.sqlite
         ]
         ++ dependencies;
 
       phases = [
         {
-          name = "unpack";
-          script = ''
-            cp -R "$src" source
-            chmod -R u+w source
-            cd source
-          '';
-        }
-        {
-          name = "configure";
-          script = ''
-            export CARGO_HOME="$TMPDIR/cargo"
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
-            mkdir -p "$CARGO_HOME" .cargo
-            if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
-              sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
-                > .cargo/config.toml
-            else
-              printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
-                > .cargo/config.toml
-            fi
-          '';
-        }
-        {
           name = "run-triage-cli-surface-test";
           script = ''
             set -eu
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
             cd crates
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-triage-cli-surface-target" \
+            crucible-cargo test \
               -p crucible-cli \
               --bin crucible \
               cli_triage_help_surface_lists_required_flags_and_exit_code_contract \

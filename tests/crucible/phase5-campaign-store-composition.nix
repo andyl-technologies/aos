@@ -5,97 +5,43 @@
   taskIds ? ["T-CAM-5.5" "T-CAM-5.6" "T-CAM-5.7"],
   dependencies ? [],
 }: let
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 in
-  pkgs.mkDerivation {
+  mkCrucibleTestGate {
     pname = "crucible-phase5-campaign-store-composition";
-    version = "0";
-    LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
-    runtimeDeps = [pkgs.sqlite];
-    src = crucibleSrc;
 
     buildDeps =
       [
         pkgs.coreutils
         pkgs.grep
-        pkgs.rust
         pkgs.sed
-
-        pkgs.pkg-config
-        pkgs.sqlite
       ]
       ++ dependencies;
 
     phases = [
       {
-        name = "unpack";
-        script = ''
-          set -eu
-          cp -R "$src" source
-          chmod -R u+w source
-          cd source
-        '';
-      }
-      {
-        name = "configure";
-        script = ''
-          set -eu
-          export CARGO_HOME="$TMPDIR/cargo"
-          if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-            cd source
-          fi
-          mkdir -p "$CARGO_HOME" .cargo
-          if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
-            sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
-              > .cargo/config.toml
-          else
-            printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
-              > .cargo/config.toml
-          fi
-        '';
-      }
-      {
         name = "run-campaign-store-composition";
         script = ''
           set -eu
-          if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-            cd source
-          fi
 
-          target="$TMPDIR/crucible-campaign-store-composition-target"
           component_test=same_campaign_survives_direct_rpc_and_independent_component_restarts
-          component_listing=$(cargo test \
-            --frozen \
-            --offline \
-            --target-dir "$target" \
-            --manifest-path crates/Cargo.toml \
+          component_listing=$(crucible-cargo test \
             -p crucible-daemon \
             --features test-support \
             --test gate_campaign_component_contract \
             "$component_test" \
             -- --list)
           printf '%s\n' "$component_listing" | grep -Fqx "$component_test: test"
-          cargo test \
-            --frozen \
-            --offline \
-            --target-dir "$target" \
-            --manifest-path crates/Cargo.toml \
+          crucible-cargo test \
             -p crucible-cas \
             --test gate_campaign_store_composition \
             -- --test-threads=1
-          cargo test \
-            --frozen \
-            --offline \
-            --target-dir "$target" \
-            --manifest-path crates/Cargo.toml \
+          crucible-cargo test \
             -p crucible-cli \
             --features test-double \
             --test gate_campaign_store_composition \
             -- --test-threads=1
-          socket_listing=$(cargo test \
-            --frozen --offline --target-dir "$target" \
-            --manifest-path crates/Cargo.toml \
+          socket_listing=$(crucible-cargo test \
             -p crucible-cli --test campaign_store_process \
             campaign_socket_wait_ -- --list)
           for socket_test in \
@@ -104,28 +50,18 @@ in
           do
             printf '%s\n' "$socket_listing" | grep -Fqx "$socket_test: test"
           done
-          cargo test \
-            --frozen --offline --target-dir "$target" \
-            --manifest-path crates/Cargo.toml \
+          crucible-cargo test \
             -p crucible-cli --test campaign_store_process \
             campaign_socket_wait_ -- --test-threads=1
           sqlite_deployment_test=cli_campaign_store::tests::strict_sqlite_store_loads_and_reopens_with_physical_admin
-          sqlite_deployment_listing=$(cargo test \
-            --frozen --offline --target-dir "$target" \
-            --manifest-path crates/Cargo.toml \
+          sqlite_deployment_listing=$(crucible-cargo test \
             -p crucible-cli --bin crucible "$sqlite_deployment_test" -- --exact --list)
           printf '%s\n' "$sqlite_deployment_listing" \
             | grep -Fqx "$sqlite_deployment_test: test"
-          cargo test \
-            --frozen --offline --target-dir "$target" \
-            --manifest-path crates/Cargo.toml \
+          crucible-cargo test \
             -p crucible-cli --bin crucible "$sqlite_deployment_test" \
             -- --exact --test-threads=1
-          cargo test \
-            --frozen \
-            --offline \
-            --target-dir "$target" \
-            --manifest-path crates/Cargo.toml \
+          crucible-cargo test \
             -p crucible-daemon \
             --features test-support \
             --test gate_campaign_component_contract \
@@ -135,11 +71,7 @@ in
           run_exact_lib_test() {
             package=$1
             test_name=$2
-            listing=$(cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$target" \
-              --manifest-path crates/Cargo.toml \
+            listing=$(crucible-cargo test \
               -p "$package" \
               --lib "$test_name" \
               -- --list)
@@ -147,11 +79,7 @@ in
               printf 'required composition test is absent: %s\n' "$test_name" >&2
               return 1
             fi
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p "$package" \
               --lib "$test_name" \
               -- --exact --test-threads=1
@@ -197,15 +125,11 @@ in
             content_store::tests::packed::pack_compaction_interruption_keeps_the_previous_root \
             content_store::packed::tests::interrupted_migration_keeps_the_legacy_index_authoritative
           do
-            recovery_listing=$(cargo test \
-              --frozen --offline --target-dir "$target" \
-              --manifest-path crates/Cargo.toml \
+            recovery_listing=$(crucible-cargo test \
               -p crucible-cas --features destructive-recovery-faults \
               --lib "$recovery_test" -- --list)
             printf '%s\n' "$recovery_listing" | grep -Fqx "$recovery_test: test"
-            cargo test \
-              --frozen --offline --target-dir "$target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible-cas --features destructive-recovery-faults \
               --lib "$recovery_test" -- --exact --test-threads=1
           done
@@ -214,9 +138,7 @@ in
           # this explicit feature build. Default builds omit the new control.
           unset CRUCIBLE_DESTRUCTIVE_RECOVERY_TRIGGER
           publication_test=write_back_interruption::public_write_back_snapshot_process_loss_retains_roots_and_retries
-          default_publication_listing=$(cargo test \
-            --frozen --offline --target-dir "$target" \
-            --manifest-path crates/Cargo.toml \
+          default_publication_listing=$(crucible-cargo test \
             -p crucible-cli --test campaign_store_process \
             "$publication_test" -- --exact --list)
           if printf '%s\n' "$default_publication_listing" \
@@ -228,16 +150,12 @@ in
             "$publication_test" \
             public_composed_store_flight_evicts_cache_and_flushes_write_back
           do
-            publication_listing=$(cargo test \
-              --frozen --offline --target-dir "$target" \
-              --manifest-path crates/Cargo.toml \
+            publication_listing=$(crucible-cargo test \
               -p crucible-cli --features destructive-recovery-faults \
               --test campaign_store_process "$public_write_back_test" -- --exact --list)
             printf '%s\n' "$publication_listing" | grep -Fqx "$public_write_back_test: test"
             publication_log="$TMPDIR/$public_write_back_test.log"
-            if ! cargo test \
-              --frozen --offline --target-dir "$target" \
-              --manifest-path crates/Cargo.toml \
+            if ! crucible-cargo test \
               -p crucible-cli --features destructive-recovery-faults \
               --test campaign_store_process "$public_write_back_test" \
               -- --exact --nocapture --test-threads=1 > "$publication_log" 2>&1; then

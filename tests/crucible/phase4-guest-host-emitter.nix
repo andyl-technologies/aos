@@ -4,8 +4,7 @@
   attrPath ? "checks.crucible.phase4.guestHostEmitter",
   taskIds ? ["T-GHC-10"],
 }: let
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
   guestCargo = builtins.readFile ../../crates/crucible-guest/Cargo.toml;
   guestLib = builtins.readFile ../../crates/crucible-guest/src/lib.rs;
@@ -247,58 +246,19 @@ in
       ${builtins.concatStringsSep "\n" failures}
     ''
   else
-    pkgs.mkDerivation {
+    mkCrucibleTestGate {
       pname = "crucible-phase4-guest-host-emitter";
-      version = "0";
-      src = crucibleSrc;
-      buildDeps = [pkgs.coreutils pkgs.rust pkgs.sed pkgs.patchelf pkgs.crucible-guest];
+      buildDeps = [pkgs.coreutils pkgs.sed pkgs.patchelf pkgs.crucible-guest];
       phases = [
-        {
-          name = "unpack";
-          script = ''
-            cp -R "$src" source
-            chmod -R u+w source
-            cd source
-          '';
-        }
-        {
-          name = "configure";
-          script = ''
-            set -eu
-            export CARGO_HOME="$TMPDIR/cargo-home"
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
-            mkdir -p "$CARGO_HOME" .cargo
-            if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
-              sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
-                > .cargo/config.toml
-            else
-              printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
-                > .cargo/config.toml
-            fi
-          '';
-        }
         {
           name = "run-guest-host-emitter";
           script = ''
             set -eu
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-guest-host-emitter-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible-guest \
               --test gate_abi_conformance \
               -- --test-threads=1
-            cargo build \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-guest-host-emitter-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo build \
               -p crucible-guest \
               --bin crucible-guest
             test -x "${pkgs.crucible-guest}/bin/crucible-guest"

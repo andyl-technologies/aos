@@ -7,8 +7,7 @@
   gateName,
   dependencies ? [],
 }: let
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
   advancedDoc = builtins.readFile ../../docs/rfcs/0010-crucible/22-advanced-features.md;
   temporalGraph = import ./_crucible-model-source.nix {inherit lib;};
@@ -355,14 +354,11 @@ in
   if failures != []
   then throw "crucible phase6 guided/adaptive exploration check failed:\n${builtins.concatStringsSep "\n" failures}"
   else
-    pkgs.mkDerivation {
+    mkCrucibleTestGate {
       pname = "crucible-phase6-guided-adaptive-exploration";
-      version = "0";
-      src = crucibleSrc;
 
       buildDeps = [
         pkgs.coreutils
-        pkgs.rust
         pkgs.sed
       ];
 
@@ -370,54 +366,16 @@ in
 
       phases = [
         {
-          name = "unpack";
-          script = ''
-            cp -R "$src" source
-            chmod -R u+w source
-            cd source
-          '';
-        }
-        {
-          name = "configure";
-          script = ''
-            set -eu
-            : "$DEPENDENCIES"
-            export CARGO_HOME="$TMPDIR/cargo-home"
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
-            mkdir -p "$CARGO_HOME" .cargo
-            if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
-              sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
-                > .cargo/config.toml
-            else
-              printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
-                > .cargo/config.toml
-            fi
-          '';
-        }
-        {
           name = "run-guided-adaptive-exploration";
           script = ''
             set -eu
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-guided-adaptive-exploration-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible \
               --test gate_guided_adaptive_exploration \
               ${taskSpec.testFilter} \
               -- --test-threads=1
             ${lib.optionalString (taskId == "T-ADV-19") ''
-              cargo test \
-                --frozen \
-                --offline \
-                --target-dir "$TMPDIR/crucible-guided-adaptive-exploration-target" \
-                --manifest-path crates/Cargo.toml \
+              crucible-cargo test \
                 -p crucible-harness \
                 --test harness_lint \
                 guidance \

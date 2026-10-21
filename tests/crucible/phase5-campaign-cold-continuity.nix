@@ -5,83 +5,35 @@
   taskIds ? ["T-CAM-1.3" "T-CAM-1.4" "T-CAM-1.5" "T-CAM-5.8" "T-CAM-5.9"],
   dependencies ? [],
 }: let
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 in
-  pkgs.mkDerivation {
+  mkCrucibleTestGate {
     pname = "crucible-phase5-campaign-cold-continuity";
-    version = "0";
-    LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
-    runtimeDeps = [pkgs.sqlite];
-    src = crucibleSrc;
 
     buildDeps =
       [
         pkgs.coreutils
         pkgs.grep
-        pkgs.rust
         pkgs.sed
-
-        pkgs.pkg-config
-        pkgs.sqlite
       ]
       ++ dependencies;
 
     phases = [
       {
-        name = "unpack";
-        script = ''
-          set -eu
-          cp -R "$src" source
-          chmod -R u+w source
-          cd source
-        '';
-      }
-      {
-        name = "configure";
-        script = ''
-          set -eu
-          export CARGO_HOME="$TMPDIR/cargo"
-          if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-            cd source
-          fi
-          mkdir -p "$CARGO_HOME" .cargo
-          if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
-            sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
-              > .cargo/config.toml
-          else
-            printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
-              > .cargo/config.toml
-          fi
-        '';
-      }
-      {
         name = "run-campaign-cold-continuity";
         script = ''
           set -eu
-          if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-            cd source
-          fi
 
-          target="$TMPDIR/crucible-campaign-cold-continuity-target"
           gate_test=campaign_cold_continuity_survives_pause_restart_archive_restore_and_resume
           helper_test=continuity_process_helper
-          listing=$(cargo test \
-            --frozen \
-            --offline \
-            --target-dir "$target" \
-            --manifest-path crates/Cargo.toml \
+          listing=$(crucible-cargo test \
             -p crucible-campaign \
             --test gate_campaign_cold_continuity \
             -- --list)
           printf '%s\n' "$listing" | grep -Fqx "$gate_test: test"
           printf '%s\n' "$listing" | grep -Fqx "$helper_test: test"
 
-          gate_output=$(cargo test \
-            --frozen \
-            --offline \
-            --target-dir "$target" \
-            --manifest-path crates/Cargo.toml \
+          gate_output=$(crucible-cargo test \
             -p crucible-campaign \
             --test gate_campaign_cold_continuity \
             "$gate_test" \
@@ -92,20 +44,12 @@ in
 
           run_exact_lib_test() {
             test_name=$1
-            test_listing=$(cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$target" \
-              --manifest-path crates/Cargo.toml \
+            test_listing=$(crucible-cargo test \
               -p crucible-campaign \
               --lib "$test_name" \
               -- --list)
             printf '%s\n' "$test_listing" | grep -Fqx "$test_name: test"
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible-campaign \
               --lib "$test_name" \
               -- --exact --test-threads=1

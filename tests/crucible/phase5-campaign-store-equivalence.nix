@@ -5,15 +5,10 @@
   taskIds ? ["T-CAM-5.1" "T-CAM-5.5" "T-CAM-5.7" "T-CAM-5.8"],
   dependencies ? [],
 }: let
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 in
-  pkgs.mkDerivation {
+  mkCrucibleTestGate {
     pname = "crucible-phase5-campaign-store-equivalence";
-    version = "0";
-    LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
-    runtimeDeps = [pkgs.sqlite];
-    src = crucibleSrc;
 
     buildDeps =
       [
@@ -23,57 +18,18 @@ in
         pkgs.gawk
         pkgs.grep
         pkgs.openssl
-        pkgs.rust
         pkgs.sed
         pkgs.socat
-
-        pkgs.pkg-config
-        pkgs.sqlite
       ]
       ++ dependencies;
 
     phases = [
       {
-        name = "unpack";
-        script = ''
-          set -eu
-          cp -R "$src" source
-          chmod -R u+w source
-          cd source
-        '';
-      }
-      {
-        name = "configure";
-        script = ''
-          set -eu
-          export CARGO_HOME="$TMPDIR/cargo"
-          if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-            cd source
-          fi
-          mkdir -p "$CARGO_HOME" .cargo
-          if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
-            sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
-              > .cargo/config.toml
-          else
-            printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
-              > .cargo/config.toml
-          fi
-        '';
-      }
-      {
         name = "run-campaign-store-equivalence";
         script = ''
           set -eu
-          if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-            cd source
-          fi
 
-          target="$TMPDIR/crucible-campaign-store-equivalence-target"
-          cargo test \
-            --frozen \
-            --offline \
-            --target-dir "$target" \
-            --manifest-path crates/Cargo.toml \
+          crucible-cargo test \
             -p crucible-cas \
             --features test-support \
             --test gate_campaign_store_equivalence \
@@ -81,11 +37,7 @@ in
 
           # The fake service is the deterministic emulator for multipart,
           # pagination, versioned ref CAS, failure, and cleanup semantics.
-          s3_listing=$(cargo test \
-            --frozen \
-            --offline \
-            --target-dir "$target" \
-            --manifest-path crates/Cargo.toml \
+          s3_listing=$(crucible-cargo test \
             -p crucible-cas \
             --lib content_store::s3 \
             -- --list)
@@ -95,25 +47,17 @@ in
           do
             printf '%s\n' "$s3_listing" | grep -Fqx "$expected_test: test"
           done
-          cargo test \
-            --frozen \
-            --offline \
-            --target-dir "$target" \
-            --manifest-path crates/Cargo.toml \
+          crucible-cargo test \
             -p crucible-cas \
             --lib content_store::s3 \
             -- --test-threads=1
 
           packed_test=archive_transfer::public_worked_network_archive_survives_packed_repack_outage_and_corruption
-          packed_listing=$(cargo test \
-            --frozen --offline --target-dir "$target" \
-            --manifest-path crates/Cargo.toml \
+          packed_listing=$(crucible-cargo test \
             -p crucible-cli --test campaign_store_process \
             "$packed_test" -- --list)
           printf '%s\n' "$packed_listing" | grep -Fqx "$packed_test: test"
-          if ! cargo test \
-            --frozen --offline --target-dir "$target" \
-            --manifest-path crates/Cargo.toml \
+          if ! crucible-cargo test \
             -p crucible-cli --test campaign_store_process \
             "$packed_test" -- --exact --nocapture --test-threads=1 \
             > "$TMPDIR/packed-worked-network.log" 2>&1; then
@@ -198,11 +142,7 @@ in
           export CRUCIBLE_S3_TEST_ENDPOINT=http://127.0.0.1:3900
           export CRUCIBLE_S3_TEST_BUCKET=crucible-conformance
           export CRUCIBLE_S3_TEST_PREFIX=phase5-equivalence
-          cargo test \
-            --frozen \
-            --offline \
-            --target-dir "$target" \
-            --manifest-path crates/Cargo.toml \
+          crucible-cargo test \
             -p crucible-s3-store \
             --test live_conformance \
             -- --ignored --test-threads=1
@@ -252,11 +192,7 @@ in
           export CRUCIBLE_S3_TEST_ENDPOINT=https://127.0.0.1:3902
           export CRUCIBLE_S3_TEST_GARAGE_PID="$garage_pid"
           export CRUCIBLE_S3_TEST_KILL=${pkgs.coreutils}/bin/kill
-          if ! cargo test \
-            --frozen \
-            --offline \
-            --target-dir "$target" \
-            --manifest-path crates/Cargo.toml \
+          if ! crucible-cargo test \
             -p crucible-cli \
             --test campaign_store_process \
             live_s3_product::public_worked_network_survives_live_s3_outage_and_credential_expiry \
@@ -270,9 +206,7 @@ in
           grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' \
             "$TMPDIR/live-s3-product.log"
 
-          if ! cargo test \
-            --frozen --offline --target-dir "$target" \
-            --manifest-path crates/Cargo.toml \
+          if ! crucible-cargo test \
             -p crucible-cli --test campaign_store_process \
             live_s3_product::public_paused_composed_campaign_survives_s3_outage_repack_archive_and_gc \
             -- --ignored --exact --nocapture --test-threads=1 \

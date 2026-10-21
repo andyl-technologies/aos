@@ -4,8 +4,7 @@
   attrPath ? "checks.crucible.phase3.blockWireAbi",
   taskIds ? ["T-IO-3"],
 }: let
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
   blockIo = import ./_rust-module-source.nix {
     inherit lib;
@@ -250,62 +249,22 @@ in
   if failures != []
   then throw "crucible phase3 block wire ABI check failed:\n${builtins.concatStringsSep "\n" failures}"
   else
-    pkgs.mkDerivation {
+    mkCrucibleTestGate {
       pname = "crucible-phase3-block-wire-abi";
-      version = "0";
-      src = crucibleSrc;
 
       # The plugin's test-only crucible dependency links the campaign
       # store's SQLite backend, so the lib-test link needs it.
-      LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
-      runtimeDeps = [pkgs.sqlite];
       buildDeps = [
         pkgs.coreutils
-        pkgs.rust
         pkgs.sed
-
-        pkgs.pkg-config
-        pkgs.sqlite
       ];
 
       phases = [
         {
-          name = "unpack";
-          script = ''
-            cp -R "$src" source
-            chmod -R u+w source
-            cd source
-          '';
-        }
-        {
-          name = "configure";
-          script = ''
-            export CARGO_HOME="$TMPDIR/cargo"
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
-            mkdir -p "$CARGO_HOME" .cargo
-            if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
-              sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
-                > .cargo/config.toml
-            else
-              printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
-                > .cargo/config.toml
-            fi
-          '';
-        }
-        {
           name = "run-block-wire-unit-tests";
           script = ''
             set -eu
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-block-wire-abi-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible-qemu-plugin \
               block_io \
               -- --test-threads=1
@@ -315,14 +274,7 @@ in
           name = "run-block-wire-fuzz-corpus";
           script = ''
             set -eu
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-block-wire-abi-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible-qemu-plugin \
               io_wire_fuzz \
               -- --test-threads=1

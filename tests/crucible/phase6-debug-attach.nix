@@ -6,8 +6,7 @@
   openTaskIds ? [],
   dependencies ? [],
 }: let
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
   debugDoc = builtins.readFile ../../docs/rfcs/0010-crucible/36-time-travel-debugging.md;
   temporalGraph = import ./_crucible-model-source.nix {inherit lib;};
@@ -294,97 +293,39 @@ in
   if failures != []
   then throw "crucible phase6 debug-attach check failed:\n${builtins.concatStringsSep "\n" failures}"
   else
-    pkgs.mkDerivation {
+    mkCrucibleTestGate {
       pname = "crucible-phase6-debug-attach";
-      version = "0";
-      LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
-      runtimeDeps = [pkgs.sqlite];
-      src = crucibleSrc;
 
       buildDeps = [
         pkgs.coreutils
-        pkgs.rust
         pkgs.sed
-
-        pkgs.pkg-config
-        pkgs.sqlite
       ];
 
       DEPENDENCIES = builtins.concatStringsSep ":" dependencies;
 
       phases = [
         {
-          name = "unpack";
-          script = ''
-            cp -R "$src" source
-            chmod -R u+w source
-            cd source
-          '';
-        }
-        {
-          name = "configure";
-          script = ''
-            set -eu
-            : "$DEPENDENCIES"
-            export CARGO_HOME="$TMPDIR/cargo-home"
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
-            mkdir -p "$CARGO_HOME" .cargo
-            if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
-              sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
-                > .cargo/config.toml
-            else
-              printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
-                > .cargo/config.toml
-            fi
-          '';
-        }
-        {
           name = "run-debug-attach";
           script = ''
             set -eu
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-debug-attach-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible \
               --test gate_debug_attach \
               -- --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-debug-attach-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible-qemu \
               --test debug_gdbstub \
               -- --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-debug-attach-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible-qemu \
               --test qmp_launch_channel \
               qmp_and_gdbstub_remain_distinct_out_of_band_launch_channels \
               -- --exact --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-debug-attach-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible-debug-gateway \
               direct_operator_writes_require_private_branch_authorization \
               -- --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-debug-attach-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible-cli \
               cli_failure_artifact_writer_emits_replay_and_debug_commands \
               -- --test-threads=1

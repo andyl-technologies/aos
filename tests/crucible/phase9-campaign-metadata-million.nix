@@ -6,61 +6,33 @@
 }:
 assert diagnosticRequests == null || (builtins.isInt diagnosticRequests && diagnosticRequests > 0 && diagnosticRequests <= 256); let
   source = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate releaseBuilds;
 in
-  pkgs.mkDerivation {
+  mkCrucibleTestGate {
+    builds = releaseBuilds;
     pname =
       if diagnosticRequests == null
       then "crucible-phase9-campaign-metadata-million"
       else "crucible-phase9-campaign-admission-diagnostic";
-    version = "0";
-    LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
     src = source;
 
     buildDeps = [
       pkgs.coreutils
       pkgs.grep
-      pkgs.openssl
-      pkgs.pkg-config
-      pkgs.protobuf
-      pkgs.rust
       pkgs.sed
       pkgs.crucible
-
-      pkgs.sqlite
     ];
-    runtimeDeps = [pkgs.openssl pkgs.sqlite];
 
     phases = [
-      {
-        name = "unpack";
-        script = ''
-          cp -R "$src" source
-          chmod -R u+w source
-          cd source
-        '';
-      }
-      {
-        name = "configure";
-        script = ''
-          export CARGO_HOME="$TMPDIR/cargo"
-          mkdir -p "$CARGO_HOME" .cargo
-          sed "s|@vendor@|${cargoDeps}|g" \
-            "${cargoDeps}/.cargo/config.toml" > .cargo/config.toml
-        '';
-      }
       {
         name = "run-million-admission-gate";
         script = ''
           set -eu
-          target="$TMPDIR/campaign-performance-target"
-          ${pkgs.rust}/bin/cargo test --frozen --offline --release \
-            --manifest-path crates/Cargo.toml --target-dir "$target" \
+          crucible-cargo test --release \
             -p crucible-daemon --test gate_campaign_metadata_million --no-run
 
           mkdir -p "$out/evidence"
-          ${pkgs.rust}/bin/cargo test --frozen --offline --release \
-            --manifest-path crates/Cargo.toml --target-dir "$target" \
+          crucible-cargo test --release \
             -p crucible-daemon --test gate_campaign_metadata_million \
             million_admission_ancestry_capacity_probe -- \
             --exact --nocapture --test-threads=1 \
@@ -95,8 +67,7 @@ in
             else ''
                 export CRUCIBLE_CAMPAIGN_MILLION_DIAGNOSTIC_REQUESTS=${toString diagnosticRequests}
                 export CRUCIBLE_CAMPAIGN_STORE_PROFILE=1
-                if ! timeout -k 15 600 ${pkgs.rust}/bin/cargo test --frozen --offline --release \
-                  --manifest-path crates/Cargo.toml --target-dir "$target" \
+                if ! timeout -k 15 600 crucible-cargo test --release \
                   -p crucible-daemon --test gate_campaign_metadata_million \
                   small_real_admission_corpus_exercises_the_same_path -- \
                   --ignored --exact --nocapture --test-threads=1 \
@@ -130,8 +101,7 @@ in
                 exit 0
             ''
           }
-          if ! timeout -k 60 604800 ${pkgs.rust}/bin/cargo test --frozen --offline --release \
-            --manifest-path crates/Cargo.toml --target-dir "$target" \
+          if ! timeout -k 60 604800 crucible-cargo test --release \
             -p crucible-daemon --test gate_campaign_metadata_million \
             million_real_admissions_fit_compact_metadata_budget -- \
             --ignored --exact --nocapture --test-threads=1 \

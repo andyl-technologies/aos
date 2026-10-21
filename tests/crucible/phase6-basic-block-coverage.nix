@@ -6,47 +6,24 @@
   openTaskIds ? [],
   dependencies ? [],
 }: let
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 in
-  pkgs.mkDerivation {
+  mkCrucibleTestGate {
     pname = "crucible-phase6-basic-block-coverage";
-    version = "0";
-    src = crucibleSrc;
-    LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
-    buildDeps = [pkgs.coreutils pkgs.grep pkgs.pkg-config pkgs.rust pkgs.sed pkgs.sqlite] ++ dependencies;
-    runtimeDeps = [pkgs.sqlite];
+    buildDeps = [pkgs.coreutils pkgs.grep pkgs.sed] ++ dependencies;
     phases = [
-      {
-        name = "unpack";
-        script = ''
-          cp -R "$src" source
-          chmod -R u+w source
-          cd source
-        '';
-      }
-      {
-        name = "configure";
-        script = ''
-          export CARGO_HOME="$TMPDIR/cargo"
-          mkdir -p "$CARGO_HOME" .cargo
-          sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
-            > .cargo/config.toml
-        '';
-      }
       {
         name = "run-current-coverage-contracts";
         script = ''
           set -eu
-          target="$TMPDIR/basic-block-coverage-target"
-          cargo test --frozen --offline --target-dir "$target" \
-            --manifest-path crates/Cargo.toml -p crucible \
+          crucible-cargo test \
+            -p crucible \
             --test gate_basic_block_coverage -- --test-threads=1
-          cargo test --frozen --offline --target-dir "$target" \
-            --manifest-path crates/Cargo.toml -p crucible-qemu \
+          crucible-cargo test \
+            -p crucible-qemu \
             mapped_quantum::coverage_tests --lib -- --test-threads=1
-          cargo test --frozen --offline --target-dir "$target" \
-            --manifest-path crates/Cargo.toml -p crucible-qemu-plugin \
+          crucible-cargo test \
+            -p crucible-qemu-plugin \
             coverage --lib -- --test-threads=1
         '';
       }

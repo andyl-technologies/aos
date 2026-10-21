@@ -4,8 +4,7 @@
   attrPath ? "checks.crucible.phase2.qemuNodeFactory",
   taskIds ? ["T-QEMU-3" "T-QEMU-6" "T-QEMU-7" "T-QEMU-12"],
 }: let
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
   nodeFactory = builtins.readFile ../../crates/crucible-qemu/src/node_factory.rs;
   restorePlan = builtins.readFile ../../crates/crucible-qemu/src/node_factory/restore_plan.rs;
@@ -106,35 +105,15 @@ in
   if failures != []
   then throw "crucible phase2 QEMU node factory check failed:\n${builtins.concatStringsSep "\n" failures}"
   else
-    pkgs.mkDerivation {
+    mkCrucibleTestGate {
       pname = "crucible-phase2-qemu-node-factory";
-      version = "0";
-      src = crucibleSrc;
-      buildDeps = [pkgs.rust pkgs.sed];
+      buildDeps = [pkgs.sed];
 
       phases = [
         {
-          name = "unpack";
-          script = ''
-            cp -R "$src" source
-            chmod -R u+w source
-            cd source
-          '';
-        }
-        {
-          name = "configure";
-          script = ''
-            export CARGO_HOME="$TMPDIR/cargo"
-            mkdir -p "$CARGO_HOME" .cargo
-            sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" > .cargo/config.toml
-          '';
-        }
-        {
           name = "run-node-factory-tests";
           script = ''
-            cargo test --frozen --offline \
-              --target-dir "$TMPDIR/qemu-node-factory-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible-qemu --lib node_factory -- --test-threads=1
           '';
         }

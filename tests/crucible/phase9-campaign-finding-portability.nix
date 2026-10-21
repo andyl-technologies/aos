@@ -6,71 +6,32 @@
   packagedReplay,
   dependencies ? [],
 }: let
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 in
-  pkgs.mkDerivation {
+  mkCrucibleTestGate {
     pname = "crucible-phase9-campaign-finding-portability";
-    version = "0";
-    LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
-    runtimeDeps = [pkgs.sqlite];
-    src = crucibleSrc;
 
-    buildDeps = [pkgs.coreutils pkgs.grep pkgs.rust pkgs.sed packagedReplay pkgs.pkg-config pkgs.sqlite] ++ dependencies;
+    buildDeps = [pkgs.coreutils pkgs.grep pkgs.sed packagedReplay] ++ dependencies;
 
     phases = [
-      {
-        name = "unpack";
-        script = ''
-          set -eu
-          cp -R "$src" source
-          chmod -R u+w source
-          cd source
-        '';
-      }
-      {
-        name = "configure";
-        script = ''
-          set -eu
-          export CARGO_HOME="$TMPDIR/cargo"
-          if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-            cd source
-          fi
-          mkdir -p "$CARGO_HOME" .cargo
-          sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
-            > .cargo/config.toml
-        '';
-      }
       {
         name = "run-self-contained-finding-replay";
         script = ''
           set -eu
-          if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-            cd source
-          fi
 
-          target="$TMPDIR/crucible-campaign-finding-portability-target"
           run_exact_test() {
             package=$1
             target_kind=$2
             test_target=$3
             selector=$4
-            listing=$(cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$target" \
-              --manifest-path crates/Cargo.toml \
+            listing=$(crucible-cargo test \
               -p "$package" \
               "$target_kind" "$test_target" \
               "$selector" \
               -- --exact --list)
             printf '%s\n' "$listing" | grep -Fqx "$selector: test"
 
-            output=$(cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$target" \
-              --manifest-path crates/Cargo.toml \
+            output=$(crucible-cargo test \
               -p "$package" \
               "$target_kind" "$test_target" \
               "$selector" \

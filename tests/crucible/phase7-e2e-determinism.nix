@@ -8,8 +8,7 @@
   campaignComposition ? null,
   testing ? import ../../lib/testing {inherit pkgs lib;},
 }: let
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
   cliE2eGate = builtins.readFile ../../crates/crucible-cli/tests/gate_e2e_determinism.rs;
   e2eHarness = builtins.readFile ../../crates/crucible-harness/src/e2e.rs;
@@ -155,65 +154,27 @@ in
       inherit attrPath taskIds dependencies;
     }
   else
-    pkgs.mkDerivation {
+    mkCrucibleTestGate {
       pname = "crucible-phase7-e2e-determinism";
-      version = "0";
-      LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
-      runtimeDeps = [pkgs.sqlite];
-      src = crucibleSrc;
 
       buildDeps =
         [
           pkgs.bash
           pkgs.coreutils
           pkgs.grep
-          pkgs.rust
           pkgs.sed
-
-          pkgs.pkg-config
-          pkgs.sqlite
         ]
         ++ dependencies;
 
       phases = [
         {
-          name = "unpack";
-          script = ''
-            cp -R "$src" source
-            chmod -R u+w source
-            cd source
-          '';
-        }
-        {
-          name = "configure";
-          script = ''
-            export CARGO_HOME="$TMPDIR/cargo"
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
-            mkdir -p "$CARGO_HOME" .cargo
-            if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
-              sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
-                > .cargo/config.toml
-            else
-              printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
-                > .cargo/config.toml
-            fi
-          '';
-        }
-        {
           name = "run-component-and-contract-tests";
           script = ''
             set -eu
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
             cd crates
-            cargo test --frozen --offline \
-              --target-dir "$TMPDIR/crucible-phase7-e2e-determinism-target" \
+            crucible-cargo test \
               -p crucible-cli --test gate_e2e_determinism -- --test-threads=1
-            cargo test --frozen --offline \
-              --target-dir "$TMPDIR/crucible-phase7-e2e-determinism-target" \
+            crucible-cargo test \
               -p crucible-harness --test gate_e2e_determinism -- --test-threads=1
 
             ${pkgs.bash}/bin/bash -n ${nativeRunner}

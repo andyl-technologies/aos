@@ -4,8 +4,7 @@
   attrPath ? "checks.crucible.phase1.executionLifecycleRoutes",
   taskIds ? ["T-EXEC-7" "T-PAT-9"],
 }: let
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
   apiLifecycle = builtins.readFile ../../crates/crucible-api/src/vm_lifecycle.rs;
   daemonLifecycle = builtins.readFile ../../crates/crucible-daemon/src/qemu_campaign_lifecycle.rs;
@@ -59,43 +58,19 @@ in
   if failures != []
   then throw "crucible execution lifecycle route check failed:\n${builtins.concatStringsSep "\n" failures}"
   else
-    pkgs.mkDerivation {
+    mkCrucibleTestGate {
       pname = "crucible-phase1-execution-lifecycle-routes";
-      version = "0";
-      LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
-      runtimeDeps = [pkgs.sqlite];
-      src = crucibleSrc;
-      buildDeps = [pkgs.rust pkgs.sed pkgs.pkg-config pkgs.sqlite];
+      buildDeps = [pkgs.sed];
 
       phases = [
         {
-          name = "unpack";
-          script = ''
-            cp -R "$src" source
-            chmod -R u+w source
-            cd source
-          '';
-        }
-        {
-          name = "configure";
-          script = ''
-            export CARGO_HOME="$TMPDIR/cargo"
-            mkdir -p "$CARGO_HOME" .cargo
-            sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" > .cargo/config.toml
-          '';
-        }
-        {
           name = "run-lifecycle-route-tests";
           script = ''
-            cargo test --frozen --offline \
-              --target-dir "$TMPDIR/execution-lifecycle-routes-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible-daemon --lib \
               qemu_campaign_lifecycle::tests::exact_resume_is_rejected_before_resource_installation \
               -- --exact
-            cargo test --frozen --offline \
-              --target-dir "$TMPDIR/execution-lifecycle-routes-target" \
-              --manifest-path crates/Cargo.toml \
+            crucible-cargo test \
               -p crucible-daemon --lib \
               qemu_baked_genesis::tests::baked_catalog_routes_by_the_complete_world_scenario_basis \
               -- --exact

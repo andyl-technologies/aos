@@ -4,8 +4,7 @@
   attrPath ? "checks.crucible.phase3.schedulerWakeOrdering",
   taskIds ? ["T-SCHED-21"],
 }: let
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   libSource = import ./_rust-module-source.nix {
@@ -255,72 +254,32 @@ in
   if failures != []
   then throw "crucible phase3 scheduler wake-ordering check failed:\n${builtins.concatStringsSep "\n" failures}"
   else
-    pkgs.mkDerivation {
+    mkCrucibleTestGate {
       pname = "crucible-phase3-scheduler-wake-ordering";
-      version = "0";
-      src = crucibleSrc;
 
       buildDeps = [
         pkgs.coreutils
-        pkgs.rust
         pkgs.sed
       ];
 
       phases = [
         {
-          name = "unpack";
-          script = ''
-            cp -R "$src" source
-            chmod -R u+w source
-            cd source
-          '';
-        }
-        {
-          name = "configure";
-          script = ''
-            export CARGO_HOME="$TMPDIR/cargo"
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
-            mkdir -p "$CARGO_HOME" .cargo
-            if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
-              sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
-                > .cargo/config.toml
-            else
-              printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
-                > .cargo/config.toml
-            fi
-          '';
-        }
-        {
           name = "run-scheduler-wake-ordering";
           script = ''
             set -eu
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
             cd crates
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-scheduler-wake-ordering-target" \
+            crucible-cargo test \
               -p crucible-shmem \
               --test advance_ceiling_handoff \
               scheduler_wake \
               -- --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-scheduler-wake-ordering-target" \
+            crucible-cargo test \
               -p crucible \
               --features test-double \
               --test scheduler_run_ceiling \
               published_ceiling_writes_pending_inputs_before_futex_wake \
               -- --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-scheduler-wake-ordering-target" \
+            crucible-cargo test \
               -p crucible-qemu \
               ordered_scheduler_wake_handoff \
               -- --test-threads=1

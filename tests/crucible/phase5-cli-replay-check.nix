@@ -6,8 +6,7 @@
   openTaskIds ? [],
   dependencies ? [],
 }: let
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
   networkInitramfs = import ./phase2-qemu-live-network-io-guest.nix {inherit pkgs;};
 
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
@@ -479,21 +478,13 @@ in
   if failures != []
   then throw "crucible phase5 CLI replay check failed:\n${builtins.concatStringsSep "\n" failures}"
   else
-    pkgs.mkDerivation {
+    mkCrucibleTestGate {
       pname = "crucible-phase5-cli-replay-check";
-      version = "0";
-      LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
-      runtimeDeps = [pkgs.sqlite];
-      src = crucibleSrc;
 
       buildDeps = [
         pkgs.coreutils
         pkgs.crucible
-        pkgs.rust
         pkgs.sed
-
-        pkgs.pkg-config
-        pkgs.sqlite
       ];
 
       ATTR_PATH = attrPath;
@@ -504,85 +495,36 @@ in
 
       phases = [
         {
-          name = "unpack";
-          script = ''
-            cp -R "$src" source
-            chmod -R u+w source
-            cd source
-          '';
-        }
-        {
-          name = "configure";
-          script = ''
-            export CARGO_HOME="$TMPDIR/cargo"
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
-            mkdir -p "$CARGO_HOME" .cargo
-            if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
-              sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
-                > .cargo/config.toml
-            else
-              printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
-                > .cargo/config.toml
-            fi
-          '';
-        }
-        {
           name = "run-cli-replay-check";
           script = ''
             set -eu
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
             cd crates
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-cli-replay-check-target" \
+            crucible-cargo test \
               -p crucible-cli \
               cli_replay \
               -- --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-cli-replay-check-target" \
+            crucible-cargo test \
               -p crucible-cli \
               live_qemu_replay_contract \
               -- --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-cli-replay-check-target" \
+            crucible-cargo test \
               -p crucible-cli \
               terminal_fingerprint_capture \
               -- --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-cli-replay-check-target" \
+            crucible-cargo test \
               -p crucible-cli \
               --test gate_e2e_determinism \
               e2e_artifact_component_replays_across_modeled_machine_profiles \
               -- --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-cli-replay-check-target" \
+            crucible-cargo test \
               -p crucible-cli \
               cli_help_surface_rejects_unimplemented_future_flags \
               -- --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-cli-replay-check-target" \
+            crucible-cargo test \
               -p crucible-cli \
               cli_exit_machine_readable_replay_check_jsonl_reports_final_outcome \
               -- --test-threads=1
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-cli-replay-check-target" \
+            crucible-cargo test \
               -p crucible-cli \
               cli_exit_machine_readable_replay_to_savepoint_jsonl_reports_final_outcome \
               -- --test-threads=1

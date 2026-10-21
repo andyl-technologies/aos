@@ -9,11 +9,10 @@
     },
   dependencies ? [],
 }: let
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   exactRestoreReachability = import ./phase2-qemu-exact-restore-reachability.nix {
     inherit pkgs lib;
   };
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
   busySmpGuest = import ./phase2-qemu-live-plugin-quantum-smp-guest.nix {
     inherit pkgs;
     guestVcpus = 2;
@@ -183,24 +182,19 @@ in
   if failures != []
   then throw "crucible phase2 QEMU exact snapshot restore check failed:\n${builtins.concatStringsSep "\n" failures}"
   else
-    pkgs.mkDerivation {
+    mkCrucibleTestGate {
       pname = "crucible-phase2-qemu-exact-snapshot-restore";
-      version = "0";
-      src = crucibleSrc;
       buildDeps =
         [
           pkgs.coreutils
           pkgs.crucible-qemu-plugin
           pkgs.grep
           pkgs.qemu-crucible
-          pkgs.rust
           pkgs.sed
-          pkgs.sqlite
           checkpointDeltaFlight
           exactRestoreReachability
         ]
         ++ dependencies;
-      runtimeDeps = [pkgs.sqlite];
       GUEST_KERNEL = "${busySmpGuest}/smp-idle-guest.elf";
       GUEST_KERNEL_IS_FILE = "1";
       DISKLESS_INITRD = "";
@@ -212,44 +206,19 @@ in
       ATTR_PATH = attrPath;
       phases = [
         {
-          name = "unpack";
-          script = ''
-            cp -R "$src" source
-            chmod -R u+w source
-            cd source
-          '';
-        }
-        {
-          name = "configure";
-          script = ''
-            export CARGO_HOME="$TMPDIR/cargo"
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then cd source; fi
-            mkdir -p "$CARGO_HOME" .cargo
-            if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
-              sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
-                > .cargo/config.toml
-            else
-              printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
-                > .cargo/config.toml
-            fi
-          '';
-        }
-        {
           name = "run-real-exact-snapshot";
           script = ''
             set -eu
             if [ -d source ] && [ -f source/crates/Cargo.toml ]; then cd source; fi
             qemu_lib_tests="$TMPDIR/crucible-qemu-lib-tests"
-            cargo test --frozen --offline \
-              --target-dir "$TMPDIR/exact-snapshot-target" \
-              --manifest-path crates/Cargo.toml -p crucible-qemu --lib \
+            crucible-cargo test \
+              -p crucible-qemu --lib \
               -- --list > "$qemu_lib_tests"
             run_exact_qemu_test() {
               test_name="$1"
               grep -Fqx "$test_name: test" "$qemu_lib_tests"
-              cargo test --frozen --offline \
-                --target-dir "$TMPDIR/exact-snapshot-target" \
-                --manifest-path crates/Cargo.toml -p crucible-qemu --lib \
+              crucible-cargo test \
+                -p crucible-qemu --lib \
                 "$test_name" -- --exact --include-ignored --test-threads=1
             }
             run_exact_qemu_test \

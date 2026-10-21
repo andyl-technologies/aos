@@ -4,8 +4,7 @@
   attrPath ? "checks.crucible.phase2.qemuPluginUnsafeBoundary",
   taskIds ? ["T-PLUG-21"],
 }: let
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
   pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
   pluginAbi = import ./_rust-module-source.nix {
@@ -277,50 +276,19 @@ in
   if failures != []
   then throw "crucible phase2 plugin unsafe-boundary check failed:\n${builtins.concatStringsSep "\n" failures}"
   else
-    pkgs.mkDerivation {
+    mkCrucibleTestGate {
       pname = "crucible-phase2-plugin-unsafe-boundary";
-      version = "0";
-      src = crucibleSrc;
 
       buildDeps = [
         pkgs.grep
-        pkgs.rust
         pkgs.sed
       ];
 
       phases = [
         {
-          name = "unpack";
-          script = ''
-            cp -R "$src" source
-            chmod -R u+w source
-            cd source
-          '';
-        }
-        {
-          name = "configure";
-          script = ''
-            export CARGO_HOME="$TMPDIR/cargo"
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
-            mkdir -p "$CARGO_HOME" .cargo
-            if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
-              sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
-                > .cargo/config.toml
-            else
-              printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
-                > .cargo/config.toml
-            fi
-          '';
-        }
-        {
           name = "run-plugin-unsafe-boundary";
           script = ''
             set -eu
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
 
             grep -RnlE 'unsafe[[:space:]]*(\{|fn|extern|impl|trait)' \
               crates/crucible-qemu-plugin/src > "$TMPDIR/plugin-unsafe-files" || true
@@ -485,13 +453,8 @@ in
               esac
             done < "$TMPDIR/plugin-guest-write-files"
 
-            target_dir="$TMPDIR/crucible-plugin-unsafe-boundary-target"
             for filter in abi setup whitebox_ network_tx network_rx block_ ninep_ coverage_; do
-              cargo test \
-                --frozen \
-                --offline \
-                --target-dir "$target_dir" \
-                --manifest-path crates/Cargo.toml \
+              crucible-cargo test \
                 -p crucible-qemu-plugin \
                 "$filter" \
                 -- --test-threads=1

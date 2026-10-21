@@ -6,56 +6,22 @@
   openTaskIds ? [],
   dependencies ? [],
 }: let
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
   networkInitramfs = import ./phase2-qemu-live-network-io-guest.nix {inherit pkgs;};
   fuzzGuest = import ./phase5-cli-fuzz-guest.nix {inherit pkgs;};
-  liveFixtures = pkgs.mkDerivation {
+  liveFixtures = mkCrucibleTestGate {
     pname = "crucible-phase5-cli-search-fuzz-live-fixtures";
-    version = "0";
-    src = crucibleSrc;
-    buildDeps = [pkgs.coreutils pkgs.rust pkgs.sed];
+    buildDeps = [pkgs.coreutils pkgs.sed];
 
     phases = [
-      {
-        name = "unpack";
-        script = ''
-          set -eu
-          cp -R "$src" source
-          chmod -R u+w source
-          cd source
-        '';
-      }
-      {
-        name = "configure";
-        script = ''
-          set -eu
-          export CARGO_HOME="$TMPDIR/cargo"
-          export CARGO_TARGET_DIR="$TMPDIR/phase5-live-fixtures-target"
-          if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-            cd source
-          fi
-          mkdir -p "$CARGO_HOME" .cargo
-          if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
-            sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
-              > .cargo/config.toml
-          else
-            printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
-              > .cargo/config.toml
-          fi
-        '';
-      }
       {
         name = "materialize-live-fixtures";
         script = ''
           set -eu
-          if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-            cd source
-          fi
           cd crates
-          cargo test --frozen --offline -p crucible \
+          crucible-cargo test -p crucible \
             --example phase5_live_asset_fixture -- --test-threads=1
-          cargo run --frozen --offline -p crucible \
+          crucible-cargo run -p crucible \
             --example phase5_live_asset_fixture -- \
             ${pkgs.linux-crucible}/boot/vmlinuz-${pkgs.linux-crucible.version} \
             ${fuzzGuest}/fuzz-guest.elf \
@@ -1115,68 +1081,25 @@ in
   if failures != []
   then throw "crucible phase5 CLI search/fuzz workflow check failed:\n${builtins.concatStringsSep "\n" failures}"
   else let
-    sourceChecks = pkgs.mkDerivation {
+    sourceChecks = mkCrucibleTestGate {
       pname = "crucible-phase5-cli-search-fuzz-source-checks";
-      version = "0";
-      LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
-      src = crucibleSrc;
 
       buildDeps = [
         pkgs.coreutils
-        pkgs.rust
         pkgs.sed
-        pkgs.pkg-config
-        pkgs.sqlite
       ];
-      runtimeDeps = [pkgs.sqlite];
 
       phases = [
-        {
-          name = "unpack";
-          script = ''
-            set -eu
-            cp -R "$src" source
-            chmod -R u+w source
-            cd source
-          '';
-        }
-        {
-          name = "configure";
-          script = ''
-            set -eu
-            export CARGO_HOME="$TMPDIR/cargo"
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
-            mkdir -p "$CARGO_HOME" .cargo
-            if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
-              sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
-                > .cargo/config.toml
-            else
-              printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
-                > .cargo/config.toml
-            fi
-          '';
-        }
         {
           name = "run-cli-search-fuzz-workflow";
           script = ''
             set -eu
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
             cd crates
-            cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-cli-search-fuzz-workflow-target" \
+            crucible-cargo test \
               -p crucible-cli \
               cli_search_fuzz \
               -- --test-threads=1
-            if ! cargo test \
-              --frozen \
-              --offline \
-              --target-dir "$TMPDIR/crucible-cli-search-fuzz-workflow-target" \
+            if ! crucible-cargo test \
               -p crucible-cli \
               --features test-double \
               cli_exit_machine_readable_search_fuzz_jsonl_reports_final_outcome \

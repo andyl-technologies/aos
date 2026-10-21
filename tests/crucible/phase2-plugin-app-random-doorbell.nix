@@ -5,8 +5,7 @@
   taskIds ? [],
   openTaskIds ? [],
 }: let
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
   pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;
   pluginWhitebox = builtins.readFile ../../crates/crucible-qemu-plugin/src/whitebox_doorbell.rs;
@@ -261,58 +260,23 @@ in
   if failures != []
   then throw "crucible phase2 plugin app-random doorbell check failed:\n${builtins.concatStringsSep "\n" failures}"
   else
-    pkgs.mkDerivation {
+    mkCrucibleTestGate {
       pname = "crucible-phase2-plugin-app-random-doorbell";
-      version = "0";
-      src = crucibleSrc;
 
       buildDeps = [
-        pkgs.rust
         pkgs.sed
       ];
 
       phases = [
         {
-          name = "unpack";
-          script = ''
-            cp -R "$src" source
-            chmod -R u+w source
-            cd source
-          '';
-        }
-        {
-          name = "configure";
-          script = ''
-            export CARGO_HOME="$TMPDIR/cargo"
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
-            mkdir -p "$CARGO_HOME" .cargo
-            if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
-              sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
-                > .cargo/config.toml
-            else
-              printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
-                > .cargo/config.toml
-            fi
-          '';
-        }
-        {
           name = "run-plugin-app-random-doorbell";
           script = ''
             set -eu
-            if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-              cd source
-            fi
 
             run_exact_test() {
               expected="$1"
               filter="$2"
-              list_output=$(cargo test \
-                --frozen \
-                --offline \
-                --target-dir "$TMPDIR/crucible-plugin-app-random-doorbell-target" \
-                --manifest-path crates/Cargo.toml \
+              list_output=$(crucible-cargo test \
                 -p crucible-qemu-plugin \
                 "$filter" \
                 -- --list 2>&1)
@@ -323,11 +287,7 @@ in
                 exit 1
               fi
 
-              test_output=$(cargo test \
-                --frozen \
-                --offline \
-                --target-dir "$TMPDIR/crucible-plugin-app-random-doorbell-target" \
-                --manifest-path crates/Cargo.toml \
+              test_output=$(crucible-cargo test \
                 -p crucible-qemu-plugin \
                 "$filter" \
                 -- --exact --nocapture 2>&1)

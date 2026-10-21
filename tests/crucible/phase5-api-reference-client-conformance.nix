@@ -5,8 +5,7 @@
   taskIds ? ["T-API-13"],
   dependencies ? [],
 }: let
-  crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
-  cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  inherit (import ./_test-gate.nix {inherit pkgs lib;}) mkCrucibleTestGate;
 
   apiDoc = builtins.readFile ../../docs/rfcs/0010-crucible/21-api.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
@@ -275,21 +274,13 @@
 
   failureText = builtins.concatStringsSep "\n" failures;
 in
-  pkgs.mkDerivation {
+  mkCrucibleTestGate {
     pname = "crucible-phase5-api-reference-client-conformance";
-    version = "0";
-    LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
-    runtimeDeps = [pkgs.sqlite];
-    src = crucibleSrc;
 
     buildDeps = [
       pkgs.coreutils
       pkgs.grep
-      pkgs.rust
       pkgs.sed
-
-      pkgs.pkg-config
-      pkgs.sqlite
     ];
 
     CRUCIBLE_T_API_13_FAILURES = failureText;
@@ -300,33 +291,6 @@ in
 
     phases = [
       {
-        name = "unpack";
-        script = ''
-          set -eu
-          cp -R "$src" source
-          chmod -R u+w source
-          cd source
-        '';
-      }
-      {
-        name = "configure";
-        script = ''
-          set -eu
-          export CARGO_HOME="$TMPDIR/cargo"
-          if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-            cd source
-          fi
-          mkdir -p "$CARGO_HOME" .cargo
-          if [ -f "${cargoDeps}/.cargo/config.toml" ]; then
-            sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
-              > .cargo/config.toml
-          else
-            printf '[source.crates-io]\nreplace-with = "vendored-sources"\n\n[source.vendored-sources]\ndirectory = "${cargoDeps}"\n\n' \
-              > .cargo/config.toml
-          fi
-        '';
-      }
-      {
         name = "run-phase5-api-reference-client-conformance";
         script = ''
           set -eu
@@ -336,14 +300,8 @@ in
             exit 1
           fi
 
-          if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
-            cd source
-          fi
           cd crates
-          cargo test \
-            --frozen \
-            --offline \
-            --target-dir "$TMPDIR/crucible-api-reference-client-conformance-target" \
+          crucible-cargo test \
             -p crucible-api \
             --test gate_control_client \
             -- --list \
@@ -351,18 +309,12 @@ in
           grep -Fxq \
             'contract_tests::transport_conformance::reference_client_conformance_drives_full_lifecycle_across_transports_with_simdouble_backend: test' \
             "$TMPDIR/reference-client-tests.list"
-          cargo test \
-            --frozen \
-            --offline \
-            --target-dir "$TMPDIR/crucible-api-reference-client-conformance-target" \
+          crucible-cargo test \
             -p crucible-api \
             --test gate_control_client \
             contract_tests::transport_conformance::reference_client_conformance_drives_full_lifecycle_across_transports_with_simdouble_backend \
             -- --exact --test-threads=1
-          cargo test \
-            --frozen \
-            --offline \
-            --target-dir "$TMPDIR/crucible-api-reference-client-conformance-target" \
+          crucible-cargo test \
             -p crucible-api \
             --test gate_control_client \
             -- --list \
@@ -370,18 +322,12 @@ in
           grep -Fxq \
             'contract_tests::rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants: test' \
             "$TMPDIR/reference-client-tests.list"
-          cargo test \
-            --frozen \
-            --offline \
-            --target-dir "$TMPDIR/crucible-api-reference-client-conformance-target" \
+          crucible-cargo test \
             -p crucible-api \
             --test gate_control_client \
             contract_tests::rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants \
             -- --exact --test-threads=1
-          cargo test \
-            --frozen \
-            --offline \
-            --target-dir "$TMPDIR/crucible-api-reference-client-conformance-target" \
+          crucible-cargo test \
             -p crucible-api \
             --test gate_abi_conformance \
             -- --list \
@@ -389,18 +335,12 @@ in
           grep -Fxq \
             'rpc_golden_vectors_cover_requests_responses_events_and_payload_kinds: test' \
             "$TMPDIR/abi-conformance-tests.list"
-          cargo test \
-            --frozen \
-            --offline \
-            --target-dir "$TMPDIR/crucible-api-reference-client-conformance-target" \
+          crucible-cargo test \
             -p crucible-api \
             --test gate_abi_conformance \
             rpc_golden_vectors_cover_requests_responses_events_and_payload_kinds \
             -- --exact --test-threads=1
-          cargo test \
-            --frozen \
-            --offline \
-            --target-dir "$TMPDIR/crucible-api-reference-client-conformance-target" \
+          crucible-cargo test \
             -p crucible-qemu \
             --lib \
             -- --list \
@@ -408,10 +348,7 @@ in
           grep -Fxq \
             'node::tests::exact_lifecycle::qemu_node_satisfies_simulation_backend_trait: test' \
             "$TMPDIR/qemu-library-tests.list"
-          cargo test \
-            --frozen \
-            --offline \
-            --target-dir "$TMPDIR/crucible-api-reference-client-conformance-target" \
+          crucible-cargo test \
             -p crucible-qemu \
             node::tests::exact_lifecycle::qemu_node_satisfies_simulation_backend_trait \
             -- --exact --test-threads=1
