@@ -2292,8 +2292,12 @@ Workspace-present and absent carriers retain their same original bindings.
 All 160 protocol unit tests and 95 integration tests pass, including eight new
 literal, truncation, geometry, identity, workspace and aggregate-limit controls.
 Strict protocol Clippy, all 73 focused policy checks and five hygiene checks
-pass. Mandatory application compilation and the 201-case exact supervision gate
-remain pending. All 5,269 tracked crate Rust/TOML files in the application's
+pass. Mandatory application targets compile at
+`/nix/store/v28d69s3wx8mszpjbriv1m5zym3qj559-aos-test-targets-0.1.0`.
+The 201-case exact supervision gate passes at
+`/nix/store/glzrlqw2db675q6q3im40m29a28sk4wh-crucible-gate-ram-supervision-0`.
+All 5,269 tracked crate
+Rust/TOML files in the application's
 immutable `rlsg3b0cpsk22nv3qjqkw1fqwdq60hnb-aos-workspace-src` match committed
 Git blobs; source manifest SHA256 is
 `2726dcb90be4eae0b8904793ec4071b300444b28fbe32ed17950ecca0367ec53`.
