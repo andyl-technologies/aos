@@ -380,6 +380,9 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       initrdAbilityEvaluation
       ;
     finalHostEvaluation = lib.evalModules {
+      # A stale budget name would otherwise be dropped before artifact builders
+      # see it, silently retaining a smaller default instead of the chosen limit.
+      checkDefinitionPaths = [["aos" "image" "budgets"]];
       modules =
         modules
         ++ moduleList

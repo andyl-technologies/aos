@@ -103,11 +103,11 @@
           # The measured labeled stage-1 initrd is 223.7 MiB. Retain the
           # complete payload and room for the kernel and stub in each UKI.
           maxInitrdMiB = 224;
-          maxUkiMiB = 256;
+          maxBootExecutableMiB = 256;
           # Peak publication retains two normal and three recovery UKIs.
           # Two 256 MiB normal images + three 64 MiB recovery images + 32 MiB
           # of FAT headroom preserve the existing transaction-size formula.
-          maxEspMiB = 736;
+          maxFirmwarePartitionMiB = 736;
           maxDownloadMiB = 960;
           # Bound the converted fixture by root + 736 MiB ESP + 16 MiB hash
           # partition + 16 MiB conversion/GPT overhead; root slots stay 1 GiB.

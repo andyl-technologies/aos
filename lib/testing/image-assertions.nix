@@ -3,13 +3,15 @@
   pkgs,
   lib,
 }: let
-  evaluateFor = cpu: rootPartitionMiB:
+  evaluateFor = cpu: rootPartitionMiB: extraModule:
     lib.evalModules {
       inherit lib;
+      checkDefinitionPaths = [["aos" "image" "budgets"]];
       pkgs.stdenv.hostPlatform.constraints = {inherit cpu;};
       modules = [
         ../../modules/image/default.nix
         ../../modules/base/boot-storage.nix
+        extraModule
         {
           options.assertions = lib.mkOption {
             type = lib.types.listOf lib.types.attrs;
@@ -25,10 +27,34 @@
   failedMessages = evaluation:
     builtins.map (assertion: assertion.message)
     (builtins.filter (assertion: !assertion.assertion) evaluation.config.assertions);
-  healthy = evaluateFor "x86_64" 1024;
-  undersized = evaluateFor "x86_64" 511;
-  foreign = evaluateFor "aarch64" 1024;
+  healthy = evaluateFor "x86_64" 1024 {};
+  undersized = evaluateFor "x86_64" 511 {};
+  foreign = evaluateFor "aarch64" 1024 {};
+  staleBudgetNames = evaluateFor "x86_64" 1024 {
+    aos.image.budgets = {
+      maxUkiMiB = 256;
+      maxEspMiB = 736;
+    };
+  };
+  expandedBudgets = evaluateFor "x86_64" 1024 {
+    aos.image.budgets = {
+      maxBootExecutableMiB = 256;
+      maxFirmwarePartitionMiB = 736;
+    };
+  };
   checks = [
+    {
+      ok = !(builtins.tryEval (builtins.deepSeq staleBudgetNames.config.aos.image.budgets true)).success;
+      message = "stale image budget names must fail instead of silently retaining defaults";
+    }
+    {
+      ok =
+        failedMessages expandedBudgets
+        == []
+        && expandedBudgets.config.aos.image.budgets.maxBootExecutableMiB == 256
+        && expandedBudgets.config.aos.image.budgets.maxFirmwarePartitionMiB == 736;
+      message = "declared boot executable and firmware budget overrides must remain effective";
+    }
     {
       ok =
         healthy.config.aos.image.budgets.maxInitrdMiB

@@ -32,10 +32,10 @@
     imports = [(stage0Fixture stage0)];
 
     aos.image.erofsCompressionLevel = 1;
-    aos.image.budgets.maxEspMiB = 896;
+    aos.image.budgets.maxFirmwarePartitionMiB = 896;
     aos.image.budgets.maxRootMiB = 896;
     aos.image.budgets.maxInitrdMiB = 256;
-    aos.image.budgets.maxUkiMiB = 288;
+    aos.image.budgets.maxBootExecutableMiB = 288;
     aos.image.budgets.maxDownloadMiB = 1536;
     aos.image.budgets.maxRuntimeClosureMiB = 1024;
     aos.boot.initrd.extraPackages = [
@@ -125,7 +125,7 @@
       && toString cfg.boot.initrd.systemd.mountExecutableCarrier == toString carrier
       && cfg.aos.image.budgets.maxRootMiB == 896
       && cfg.aos.image.budgets.maxInitrdMiB == 256
-      && cfg.aos.image.budgets.maxUkiMiB == 288
+      && cfg.aos.image.budgets.maxBootExecutableMiB == 288
       && cfg.aos.image.budgets.maxDownloadMiB == 1536
       && cfg.aos.image.budgets.maxRuntimeClosureMiB == 1024
       && builtins.elem "selinux=1" cfg.aos.boot.kernelParams

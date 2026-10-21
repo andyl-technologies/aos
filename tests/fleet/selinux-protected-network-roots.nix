@@ -83,8 +83,8 @@
     # headroom local to this fixture and below the 1 GiB root partition.
     aos.image.budgets.maxRootMiB = 800;
     aos.image.budgets.maxInitrdMiB = 224;
-    aos.image.budgets.maxUkiMiB = 240;
-    aos.image.budgets.maxEspMiB = 704;
+    aos.image.budgets.maxBootExecutableMiB = 240;
+    aos.image.budgets.maxFirmwarePartitionMiB = 704;
     aos.image.budgets.maxRuntimeClosureMiB = 896;
     aos.image.budgets.maxDownloadMiB = 1024;
     aos.image.testArtifactRoots =

@@ -200,7 +200,9 @@
         # and bound the additional signed image payload separately from the base.
         aos.image.budgets = {
           maxRootMiB = 896;
-          maxDownloadMiB = 1024;
+          maxBootExecutableMiB = 256;
+          maxFirmwarePartitionMiB = 736;
+          maxDownloadMiB = 1536;
         };
 
         # The production hold remains declared and unchanged. This signed test
