@@ -60,9 +60,9 @@ failed attempts appear in the dated entries below.
 
 | Surface | Latest checkpoint | Remaining qualification |
 | --- | --- | --- |
-| Publisher transport | `28bc78d341`: 165 protocol unit tests, 95 integration tests, strict protocol Clippy, 73 focused policy checks and five hygiene checks pass. All 5,271 committed Rust/TOML files match the immutable application input. | Mandatory application compilation passes at `fgb5z0hh71l7y0sa5axdcvx3ar7sxjl8`; the expanded 206-case supervision gate is running. Paid producer/session construction and native module transfer remain unfinished. |
+| Publisher transport | `28bc78d341`: 165 protocol unit tests, 95 integration tests, strict protocol Clippy, 73 focused policy checks and five hygiene checks pass. All 5,271 committed Rust/TOML files match the immutable application input. | Mandatory application compilation passes at `fgb5z0hh71l7y0sa5axdcvx3ar7sxjl8`; all 206 exact supervision cases pass at `xgxkghygzs95cp23d4pgjhmcswdi1x75`. Paid producer/session construction and native module transfer remain unfinished. |
 | Prior carrier validation | `9d9a713dae`: mandatory application compilation and all 201 exact supervision cases pass; all 5,269 committed source files match the immutable input. | These verdicts precede the Setup6 transport checkpoint. |
-| Native integration | Commit `b69de00f81` retains signed `3376c0ee90`, tree `54e3dd7f`, with architecture, getter, clock, retirement storage and publisher-session prerequisites. The configured delivery entry passes in 50.057 seconds under its unchanged limits. Signed reconstruction, 187 owning scenarios and the 318-file license inventory pass. | Clean hermetic delivery fails on build-relative compiler includes; the full package completes 3,895 compile/link actions but passes only twenty of twenty-six fixtures. Extractor regressions and mandatory launched lifecycle gaps remain. ABI and independent standalone custody checks are running; later bounded registry, receiver lifetime, workspace and RAM disposal changes remain outside this artifact. |
+| Native integration | Commit `b69de00f81` retains signed `3376c0ee90`, tree `54e3dd7f`, with architecture, getter, clock, retirement storage and publisher-session prerequisites. The configured delivery entry passes in 50.057 seconds under its unchanged limits. Signed reconstruction, 187 owning scenarios and the 318-file license inventory pass. | Clean hermetic delivery fails on build-relative compiler includes; the full package completes 3,895 compile/link actions but passes only twenty of twenty-six fixtures. Five fixture dependency/extraction regressions and the mandatory launched lifecycle refusal remain. Fresh raw ABI passes at `xsw5495756h6a8n7gqgg504i9ndrq4qx`; all twelve standalone custody components pass, with the final failure-evidence refinement under hermetic replay; later bounded registry, receiver lifetime, workspace and RAM disposal changes remain outside this artifact. |
 | Committed native build | The preceding `5a39df062d` artifact compiles all 3,863 targets and passes 25 of 26 fixture drivers. | Mandatory launched Source/Root/read-post/rearm/ACK/physical-return still refuses. Later candidate results do not qualify that installed lifecycle. |
 | Policy and release | Latest focused checks pass all 73 policy and five hygiene controls; the broad gate retains thirteen daemon paths. | Strict workspace Clippy/license qualification retains its recorded failures. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Requirements | 323 bindings: 304 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
@@ -2336,7 +2336,8 @@ protocol Clippy, 73 focused policy checks and five hygiene checks. Real Unix
 socket transfers verify every received alias identity and use each distinct
 endpoint; malformed frames and rosters send no bytes. Mandatory application
 compilation passes at `fgb5z0hh71l7y0sa5axdcvx3ar7sxjl8-aos-test-targets-0.1.0`;
-the expanded 206-case exact supervision gate remains pending.
+all 206 exact supervision cases pass at
+`xgxkghygzs95cp23d4pgjhmcswdi1x75-crucible-gate-ram-supervision-0`.
 All 5,271 tracked crate Rust/TOML files in immutable
 `dr7h3bbzvhkz3wa68vj1fg68rashf8nn-aos-workspace-src` match committed Git blobs;
 source manifest SHA256 is
@@ -2372,15 +2373,59 @@ Clean hermetic qualification exposes additional fixture regressions. Delivery's
 quantum execution helper changes directories while retaining build-relative
 includes and cannot find `config-host.h`. The full package completes all 3,895
 compile/link actions, then passes twenty of twenty-six fixtures. The same
-delivery failure, stale TCG dependency extraction and changed fault-rule visitor
-body account for three failures; stopped-control rearm, dirty iteration and
-cold fault predicates still refuse mandatory genuine launched lifecycle coverage.
+delivery failure, stale TCG dependency extraction, changed fault-rule visitor
+body, stopped-control rearm scalar-header pin and removed cold-clock extraction
+delimiter account for five fixture regressions. Dirty iteration reaches the
+explicit mandatory genuine launched lifecycle refusal. These first obstacles
+must remain distinct from unexecuted later lifecycle obligations.
 Neither the full package nor the causal gate passes. All 954 signed changed
 files match the retained failed package source; manifest SHA256 is
 `0da74700bd5f99c4d7b8fe6b54b2c78f99f32268e2113d2780e9c01b2b0b2ff0`.
-Fresh ABI and independent hermetic standalone custody checks remain pending.
+Fresh raw ABI passes at
+`xsw5495756h6a8n7gqgg504i9ndrq4qx-crucible-phase2-abi-conformance-0`.
+All 5,271 committed Rust/TOML files match its immutable
+`qpdw6w5hqan6xa40rbcq06m5mh780grj-crucible-workspace-src`; manifest SHA256 is
+`2d946be943ce621b45d9d8e29a8d3d2259efe6b346bdfcd1a69d5e725f1cddfe`.
+All twelve standalone custody components pass independently at
+`s4zkwidb2r30asif31ayv3n6pqgsjrmg-crucible-qemu-native-custody-unit-11.1.1`.
+Each retains its existing 180-second bound; the longest takes 32.019 seconds
+and sampled aggregate address space peaks at 429,527,040 bytes under 6 GiB.
+The owning Source unit remains separately bounded at 600 build/60 test seconds.
+A final runner refinement preserves stdout, stderr and first status in the kept
+build after failure, with a direct success/refusal diagnostic check passing;
+its hermetic replay is running. The initial runner invocation rejected an
+unsupported CLI argument after three components; the corrected invocation
+preserves every component assertion and deadline. Only text/proof leaves the
+check, and component success establishes no launched Source authority.
 Later receiver module lifetime, workspace, bounded registry and RAM disposal
 changes belong to a separate integration cut.
+
+### 2026-10-21 independent native custody control execution
+
+Commit `d025c341e4` adds
+`checks.crucible.phase7.qemuNativeCustodyUnit`, which builds the actual registered
+Source unit and its genuine QEMU support before running twelve standalone
+custody suites. These cover Action post, APIC getter/error/timer storage,
+clock callback/rows/return, FlatView, memory region/discard, provider metadata
+and shared-memory callback return. Merely authenticating a Python file as a
+source dependency did not execute it; this check makes that execution explicit.
+
+The runner derives compiler flags from actual configured common/APIC commands,
+rebases include paths for helper directory changes, and authenticates the real
+provider/QOM/utility link closure. Components run sequentially in separate
+process groups under their existing 180-second bounds, sampled aggregate 6 GiB
+limit and unchanged internal subprocess limits. The prior owning Source test
+retains its own 60-second bound. Complete source hashes are checked after every
+component; emitted evidence includes commands, flags, generated sources and
+outcomes, while executable/archive files remain in the build tree. Failed
+invocations preserve their first status and diagnostics in the kept build.
+
+The corrected runner passes all twelve components (173.874 seconds total),
+with results scoped to signed native `3376c0ee90`. The final failure-evidence
+refinement passes direct success/refusal checks and is undergoing hermetic
+replay. Engineering hygiene passes at `zcvijji792yblcv5r97p578pnwrl3izi`.
+No ordinary component grant substitutes for the missing actual installed
+Source, producer operation, launched lifecycle or physical parent return.
 
 ### 2026-10-21 native rule and reservation storage custody
 
