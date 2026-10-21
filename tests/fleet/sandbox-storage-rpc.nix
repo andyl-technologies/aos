@@ -358,7 +358,12 @@ in {
         "-o refquota=67108864 -o reservation=1048576 "
         "aosproof/aos/project/rpc-workspace"
     )
-    machine.succeed(f"{ZFS} set quota=268435456 aosproof/aos/project")
+    # Match the complete authenticated ancestor policy before seeding the
+    # ambiguous pin attempt; quota alone is not its physical postcondition.
+    machine.succeed(
+        f"{ZFS} set quota=268435456 filesystem_limit=8 snapshot_limit=16 "
+        "aosproof/aos/project"
+    )
     root_guid = machine.succeed(
         f"{ZFS} get -Hp -o value guid aosproof/aos"
     ).strip()
