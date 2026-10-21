@@ -14,6 +14,7 @@
 }: let
   cfg = config.aos.pam;
   parentConfig = config;
+  hostStage = (config.aos.boot.stage or "host") == "host";
 
   autoOrderRules = rules:
     lib.pipe rules [
@@ -374,7 +375,8 @@ in {
         '';
       };
 
-      aos.abilities.configuration.operations.file.effects = lib.mapAttrs' (path: file:
+      # The immutable initrd carries policy; host activation owns /etc/PAM files.
+      aos.abilities.configuration.operations.file.effects = lib.mkIf hostStage (lib.mapAttrs' (path: file:
         lib.nameValuePair "pam-${builtins.hashString "sha256" path}" {
           input = {
             path = "/etc/${path}";
@@ -382,7 +384,7 @@ in {
             mode = "0444";
           };
         })
-      cfg.files;
+      cfg.files);
 
       aos.pam.files =
         pamServiceFiles

@@ -38,6 +38,7 @@ let
           ../../pkgs/system/_aos-host-policy/networking.nix
           ../../pkgs/networking/_nftables/module.nix
           ../../pkgs/security/_audit/module.nix
+          ../../pkgs/security/_linux-pam/module.nix
           ({lib, ...}: {
             options.aos.homes = {
               enable = lib.mkOption {
@@ -170,6 +171,18 @@ let
   explicitLink = builtins.head (links explicit);
   graph = defaults.config.aos.activation.graph;
 in {
+  pamFilesMaterializeOnlyOnHost = let
+    pamEffects = evaluated:
+      lib.filterAttrs (name: _: lib.hasPrefix "pam-" name)
+      evaluated.config.aos.abilities.configuration.operations.file.effects;
+  in
+    initrd.config.aos.pam.files
+    == defaults.config.aos.pam.files
+    && defaults.config.aos.pam.files ? "pam.d/other"
+    && defaults.config.aos.pam.files ? "pam/environment"
+    && builtins.length (builtins.attrNames (pamEffects defaults)) == builtins.length (builtins.attrNames defaults.config.aos.pam.files)
+    && pamEffects initrd == {};
+
   initrdPreservesKernelHardeningWithoutHostFileMutation =
     builtins.all (
       name: (initrd.config.aos.kernel.sysctl.${name} or null) == defaults.config.aos.security.hardening.sysctl.${name}
