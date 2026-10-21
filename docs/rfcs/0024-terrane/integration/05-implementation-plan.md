@@ -8694,6 +8694,19 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
 
 ### T2 — Host tier
 
+Cold encoded quarantine preparation (2026-10-21): original shared-content
+quarantine members are classified with a closed generated filename grammar,
+retained through read-only kernel inode handles, and checked against configured
+ownership, project and the actual drained publisher context. They enter only
+the exhaustive opaque allocation census. An orphan pack or index member is
+accounted without reconstructing a pair or claiming valid bytes. Native
+controls cover standalone chunks, both pair members, one partial member,
+owner-only read/write and read-only custody, foreign ownership and malformed
+codecs; prior sealed controls remain.
+Runtime and application qualification remain pending. Verified repair from a
+lower copy remains required before releasing original corrupt backing or pins.
+No T2 task is accepted.
+
 Encoded read rejection preparation (2026-10-21): cache handoff captures an
 original publisher incarnation before producer funding release. Body and
 one-hop dictionary readers share permanent atomic rejection signals; the read

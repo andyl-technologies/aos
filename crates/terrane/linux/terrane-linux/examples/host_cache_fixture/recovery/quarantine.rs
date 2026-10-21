@@ -26,19 +26,27 @@ fn name() -> io::Result<String> {
 /// Refuses unsupported domains, failed project inheritance or native durability.
 pub(crate) fn seed() -> io::Result<()> {
     let inputs = Inputs::load()?;
-    let (filename, uid) = match inputs.domain.as_str() {
-        "tenant:quarantine-only" | "tenant:quarantine-tagged" => (name()?, 841),
-        "tenant:quarantine-unknown" => ("unrecognized-name".to_owned(), 841),
-        "tenant:quarantine-foreign" => (name()?, 842),
-        _ => return Err(invalid("unknown quarantine seed domain")),
-    };
-    let names = if inputs.domain == "tenant:quarantine-tagged" {
-        vec![
-            format!("{filename}.{}", "13".repeat(32)),
-            format!("{filename}.{}", "24".repeat(32)),
-        ]
+    let encoded = inputs.domain.starts_with("tenant:quarantine-encoded-");
+    let names = candidate_names(&inputs)?;
+    let (uid, gid, mode) = if encoded {
+        let uid = if inputs.domain == "tenant:quarantine-encoded-foreign" {
+            842
+        } else {
+            840
+        };
+        let mode = match inputs.domain.as_str() {
+            "tenant:quarantine-encoded-private" => 0o600,
+            "tenant:quarantine-encoded-readonly" => 0o400,
+            _ => 0o640,
+        };
+        (uid, 845, mode)
     } else {
-        vec![filename]
+        let uid = if inputs.domain == "tenant:quarantine-foreign" {
+            842
+        } else {
+            841
+        };
+        (uid, uid, 0o600)
     };
     for filename in names {
         super::write(
@@ -46,8 +54,8 @@ pub(crate) fn seed() -> io::Result<()> {
             &inputs.root.join("quarantine").join(filename),
             CORRUPT,
             uid,
-            uid,
-            0o600,
+            gid,
+            mode,
         )?;
     }
     fs::File::open(inputs.root.join("quarantine"))?.sync_all()?;
@@ -88,14 +96,7 @@ pub(crate) fn run(
     }
     let completed = result?;
     completed.check_current()?;
-    let names = if inputs.domain == "tenant:quarantine-tagged" {
-        vec![
-            format!("{}.{}", name()?, "13".repeat(32)),
-            format!("{}.{}", name()?, "24".repeat(32)),
-        ]
-    } else {
-        vec![name()?]
-    };
+    let names = candidate_names(inputs)?;
     let mut originals = Vec::new();
     let mut allocation = 0_u64;
     for filename in names {
@@ -170,8 +171,41 @@ pub(crate) fn run(
             "PASS actual cold recovery retains both tagged original quarantine allocations of one hash without serving either"
         );
     }
-    println!(
-        "PASS actual cold quarantine retained charged original inode across recovery and Resume without content, pins or residences"
-    );
+    if inputs.domain.starts_with("tenant:quarantine-encoded-") {
+        println!(
+            "PASS actual cold encoded quarantine retained every original charged member across recovery and Resume without content, pins or residences"
+        );
+    } else {
+        println!(
+            "PASS actual cold quarantine retained charged original inode across recovery and Resume without content, pins or residences"
+        );
+    }
     Ok(())
+}
+
+/// Generates untrusted names only; native recovery must authenticate every inode.
+fn candidate_names(inputs: &Inputs) -> io::Result<Vec<String>> {
+    let digest = name()?;
+    let tag = "35".repeat(32);
+    Ok(match inputs.domain.as_str() {
+        "tenant:quarantine-only" | "tenant:quarantine-foreign" => vec![digest],
+        "tenant:quarantine-unknown" => vec!["unrecognized-name".to_owned()],
+        "tenant:quarantine-tagged" => vec![
+            format!("{digest}.{}", "13".repeat(32)),
+            format!("{digest}.{}", "24".repeat(32)),
+        ],
+        "tenant:quarantine-encoded-chunk"
+        | "tenant:quarantine-encoded-foreign"
+        | "tenant:quarantine-encoded-private"
+        | "tenant:quarantine-encoded-readonly" => {
+            vec![format!("encoded.{digest}.0.{tag}")]
+        }
+        "tenant:quarantine-encoded-pack" => vec![
+            format!("encoded.{digest}.pack.{tag}"),
+            format!("encoded.{digest}.idx.{tag}"),
+        ],
+        "tenant:quarantine-encoded-partial" => vec![format!("encoded.{digest}.idx.{tag}")],
+        "tenant:quarantine-encoded-malformed" => vec![format!("encoded.{digest}.3.{tag}")],
+        _ => return Err(invalid("unknown quarantine seed domain")),
+    })
 }

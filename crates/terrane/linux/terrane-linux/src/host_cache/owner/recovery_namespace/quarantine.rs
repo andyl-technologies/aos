@@ -1,7 +1,7 @@
 //! Reconciles opaque quarantine custody separately from verified recovery sources.
 //!
-//! Names select candidates only. Actual publisher descriptors establish original
-//! native inode and project custody; no quarantine byte is read or acknowledged
+//! Names select candidates only. Publisher descriptors or retained shared-content
+//! handles establish original inode and project custody; no byte is acknowledged
 //! as valid content. Every entry remains in the exhaustive allocation census.
 
 use super::{SharedNamespaceObservation, invalid, same_inode};
@@ -69,19 +69,26 @@ impl SharedNamespaceObservation {
             if name.parent() != Some(Path::new("")) || !entry.metadata.is_file() {
                 return Err(invalid("unrecognized quarantine namespace member"));
             }
-            let (digest, incarnation) = parse_name(name)?;
-            // The digest and optional tag route to a candidate. The kind and
-            // observed size are unverified routing fields, never content context.
-            // In particular, no fabricated chunk may enter verified_hashes.
-            let key = Descriptor::from_wire(
-                &TERRANE_V1,
-                TERRANE_V1.algorithm(),
-                TERRANE_V1.domain(IdentityKind::Chunk).map_err(invalid)?,
-                &digest,
-                entry.metadata.len(),
-            )
-            .map_err(invalid)?;
-            let observation = inspector.inspect_quarantined_entry(&key, incarnation)?;
+            let filename = name
+                .to_str()
+                .ok_or_else(|| invalid("quarantine name is not UTF-8"))?;
+            let observation = if filename.starts_with("encoded.") {
+                inspector.inspect_quarantined_encoded(filename)?
+            } else {
+                let (digest, incarnation) = parse_name(name)?;
+                // The digest and optional tag route to a candidate. The kind and
+                // observed size are unverified routing fields, never content context.
+                // In particular, no fabricated chunk may enter verified_hashes.
+                let key = Descriptor::from_wire(
+                    &TERRANE_V1,
+                    TERRANE_V1.algorithm(),
+                    TERRANE_V1.domain(IdentityKind::Chunk).map_err(invalid)?,
+                    &digest,
+                    entry.metadata.len(),
+                )
+                .map_err(invalid)?;
+                inspector.inspect_quarantined_entry(&key, incarnation)?
+            };
             observation.check_current()?;
             if !same_inode(&entry.metadata, &observation.handle().metadata()?) {
                 return Err(invalid("quarantine reply differs from exhaustive scan"));

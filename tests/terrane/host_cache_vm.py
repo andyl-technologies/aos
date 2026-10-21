@@ -92,7 +92,19 @@ MANIFEST_CASES += [
     ("manifest-pending-metadata-cold", "seed-writable-manifest", "recover-writable-manifest", True, "valid manifest"),
 ]
 CASES += ["manifest-pending-metadata", "manifest-pending-metadata-cold"]
-CASES += ["quarantine-only", "quarantine-unknown", "quarantine-foreign", "quarantine-tagged"]
+ENCODED_QUARANTINE_CASES = [
+    "quarantine-encoded-chunk", "quarantine-encoded-pack", "quarantine-encoded-partial",
+    "quarantine-encoded-foreign", "quarantine-encoded-malformed",
+    "quarantine-encoded-private", "quarantine-encoded-readonly",
+]
+QUARANTINE_CASES = [
+    "quarantine-only", "quarantine-unknown", "quarantine-foreign", "quarantine-tagged",
+] + ENCODED_QUARANTINE_CASES
+RECOVERABLE_ENCODED_QUARANTINE = {
+    "quarantine-encoded-chunk", "quarantine-encoded-pack", "quarantine-encoded-partial",
+    "quarantine-encoded-private", "quarantine-encoded-readonly",
+}
+CASES += QUARANTINE_CASES
 CASES += ["publication-read-failure", "publication-prepare-failure", "encoded-read-failure"]
 BUDGET = HARD * len(CASES)
 PROVISION_CAPS = "-all,+sys_admin,+dac_read_search,+fowner,+chown,+fsetid"
@@ -1338,7 +1350,7 @@ def main():
                                     os.environ["TERRANE_CACHE_VM_IMAGE"]], text=True, timeout=5).strip().replace("-", "")
     require(len(uuid) == 32, "actual ext4 UUID unavailable")
     runpy.run_path(str(IMAGE / "share/host_cache_encoded_recovery_vm.py"))["seed"](sys.modules[__name__], uuid)
-    for case in ["quarantine-only", "quarantine-unknown", "quarantine-foreign", "quarantine-tagged"]:
+    for case in QUARANTINE_CASES:
         result = run(admin_command(SEED_CAPS, [IMAGE / "bin/host_cache_fixture", "seed-quarantine"]),
                      env=actor_environment(case, uuid), text=True, capture_output=True)
         require(result.stdout.splitlines() == ["SEEDED opaque quarantine candidate; no content or recovery authority"],
@@ -1433,12 +1445,13 @@ def main():
                 path = root(case) / "state/old-policy"
                 require(path.is_dir() and path.stat().st_ino == directory_identity and list(path.iterdir()) == [],
                         "unknown state directory changed or disappeared")
-        for case in ["quarantine-only", "quarantine-unknown", "quarantine-foreign", "quarantine-tagged"]:
+        for case in QUARANTINE_CASES:
             entries = list((root(case) / "quarantine").iterdir())
-            require(len(entries) == (2 if case == "quarantine-tagged" else 1), "quarantine seed inventory changed")
+            require(len(entries) == (2 if case in {"quarantine-tagged", "quarantine-encoded-pack"} else 1), "quarantine seed inventory changed")
             originals = {path: (path.stat().st_dev, path.stat().st_ino, path.read_bytes(), path.stat().st_uid)
                          for path in entries}
-            mode = "recover-quarantine" if case in {"quarantine-only", "quarantine-tagged"} else "refuse-quarantine"
+            recoverable = case in {"quarantine-only", "quarantine-tagged"} | RECOVERABLE_ENCODED_QUARANTINE
+            mode = "recover-quarantine" if recoverable else "refuse-quarantine"
             output = actor(case, mode, uuid)
             require(set((root(case) / "quarantine").iterdir()) == set(originals),
                     "cold recovery changed original quarantine names")
@@ -1448,8 +1461,12 @@ def main():
             require(not list((root(case) / "sealed").iterdir())
                     and not list((root(case) / "state/publication").iterdir()),
                     "opaque quarantine gained sealed publication authority")
-            expected = ("PASS actual cold quarantine retained charged original inode across recovery and Resume without content, pins or residences"
-                        if case in {"quarantine-only", "quarantine-tagged"} else "PASS unsafe original quarantine refused before funding or Resume:")
+            if case in RECOVERABLE_ENCODED_QUARANTINE:
+                expected = "PASS actual cold encoded quarantine retained every original charged member across recovery and Resume without content, pins or residences"
+            elif recoverable:
+                expected = "PASS actual cold quarantine retained charged original inode across recovery and Resume without content, pins or residences"
+            else:
+                expected = "PASS unsafe original quarantine refused before funding or Resume:"
             require(any(line.startswith(expected) for line in output.splitlines()),
                     "missing actual cold quarantine result: " + case)
         cancel_case(helper, uuid)

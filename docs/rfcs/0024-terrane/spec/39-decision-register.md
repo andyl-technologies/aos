@@ -2844,8 +2844,11 @@ is added rather than editing history.
     A failed encoded exchange excludes further mutation through its old token
     in that owner; reconciliation requires fresh physical custody. Quarantine
     supplies no content validity, restore, deletion, pin or funding-release
-    authority. InspectQuarantine remains sealed-only until its encoded recovery
-    observation contract is implemented and independently qualified.
+    authority. InspectQuarantine remains sealed-only. Cold encoded members use
+    direct original read-only handles under the configured shared-content owner,
+    project, retained root and actual drained publisher context. Each member of
+    a partial quarantine is accounted independently without establishing a
+    complete pack, valid content or mutation authority.
   - **Rationale:** Later-read verification also covers encoded chunks,
     dictionaries and metadata. Their original inode allocations must survive
     corruption, and moving a pack cannot discard its separately charged index.

@@ -29,6 +29,7 @@ UNIT_PREFIXES = ("host_cache::owner::", "host_cache::recovery_inspection::",
 UNIT_PROFILE = {"opt_level": "s", "debuginfo": 0, "debug_assertions": True,
                 "overflow_checks": True, "test": True}
 UNIT_TESTS = (
+    'host_cache::recovery_inspection::quarantine::tests::encoded_quarantine_names_are_closed_routing_fields_without_content_authority',
     'publisher_local::socket::tests::retained_socket_chmod_sets_exact_mode_without_changing_inode_or_group',
     'publisher_local::socket::tests::replaced_socket_name_is_rejected_without_changing_either_inode',
     'publisher_local::socket::tests::socket_chmod_rejects_wrong_type_and_owner_before_mutation',

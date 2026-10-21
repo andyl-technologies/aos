@@ -1,8 +1,10 @@
-//! Checks opaque publisher quarantine observations against actual namespace and project custody.
+//! Checks opaque quarantine observations against actual namespace and project custody.
 //!
 //! Quarantine bytes are never interpreted as valid content. The authenticated
 //! descriptor makes native project inspection possible even when the cache
-//! cannot read the publisher-owned inode through its mode0400 pathname.
+//! cannot read a publisher-owned inode through its mode0400 pathname. Encoded
+//! members retain shared-content ownership and are inspected through original
+//! read-only kernel handles without interpreting bytes or acquiring lifecycle tokens.
 
 use super::NativeRecoveryInspector;
 use crate::{host_cache::NativeHostLayout, host_quota::NativeProject};
@@ -10,7 +12,7 @@ use rustix::fs::{self, Mode, OFlags};
 use std::{
     fs::{File, Metadata},
     io,
-    os::unix::fs::MetadataExt,
+    os::{fd::AsRawFd, unix::fs::MetadataExt},
     sync::Arc,
 };
 use terrane_format::identity::Descriptor;
@@ -74,6 +76,68 @@ impl NativeQuarantinedInode {
 }
 
 impl NativeRecoveryInspector {
+    /// Retains a shared encoded quarantine inode without interpreting its bytes.
+    ///
+    /// The public tag routes to a candidate and confers no publisher authority.
+    /// A partial pack/index quarantine may retain either member independently;
+    /// this observation never establishes the other member or valid metadata.
+    ///
+    /// # Errors
+    /// Refuses unknown names, unsafe inode kinds, changed native custody,
+    /// another configured content owner/project or stale recovery context.
+    pub(in crate::host_cache) fn inspect_quarantined_encoded(
+        &self,
+        name: &str,
+    ) -> io::Result<NativeQuarantinedInode> {
+        self.check_current()?;
+        check_encoded_name(name)?;
+        let context = self.session.recovery_context().map_err(io::Error::other)?;
+        let parent = self
+            .layout
+            .directories
+            .get("quarantine")
+            .ok_or_else(|| invalid("quarantine root absent"))?;
+        // Classify first, then reopen that same kernel inode. A replaced FIFO,
+        // symlink or device must never be opened through a readable pathname.
+        let path = File::from(fs::openat(
+            parent,
+            name,
+            OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )?);
+        let observed = path.metadata()?;
+        self.custody.check(&observed, false)?;
+        // Rejected custody may have lost group access or write access. These
+        // readable owner-only classes still supply no serving grant.
+        let readable_mode = matches!(observed.mode() & 0o7777, 0o400 | 0o600 | 0o640);
+        if observed.nlink() != 1
+            || !readable_mode
+            || observed.dev() != self.layout.directory_binding("layout-root")?.0
+        {
+            return Err(invalid(
+                "encoded quarantine differs from configured content custody",
+            ));
+        }
+        let file = File::from(fs::open(
+            format!("/proc/self/fd/{}", path.as_raw_fd()),
+            OFlags::RDONLY | OFlags::NONBLOCK | OFlags::CLOEXEC,
+            Mode::empty(),
+        )?);
+        let result = NativeQuarantinedInode {
+            layout: Arc::clone(&self.layout),
+            file,
+            name: name.to_owned(),
+            observed,
+            project_id: self.project_id,
+        };
+        result.check_current()?;
+        self.session
+            .check_recovery_context(&context)
+            .map_err(io::Error::other)?;
+        self.check_current()?;
+        Ok(result)
+    }
+
     /// Observes a publisher-owned quarantined sealed-body candidate without reading bytes.
     ///
     /// The actual authenticated publisher session must retain recovery custody.
@@ -149,4 +213,54 @@ fn same_metadata(left: &Metadata, right: &Metadata) -> bool {
 
 fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
+}
+
+/// Recognizes only the closed generated encoded quarantine filename grammar.
+fn check_encoded_name(name: &str) -> io::Result<()> {
+    let mut parts = name.split('.');
+    if parts.next() != Some("encoded")
+        || !parts.next().is_some_and(canonical_hex)
+        || !matches!(parts.next(), Some("0" | "1" | "2" | "pack" | "idx"))
+        || !parts.next().is_some_and(canonical_hex)
+        || parts.next().is_some()
+    {
+        return Err(invalid("unrecognized encoded quarantine name"));
+    }
+    Ok(())
+}
+
+fn canonical_hex(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::check_encoded_name;
+
+    #[test]
+    fn encoded_quarantine_names_are_closed_routing_fields_without_content_authority() {
+        let digest = "13".repeat(32);
+        let tag = "24".repeat(32);
+        for member in ["0", "1", "2", "pack", "idx"] {
+            assert!(check_encoded_name(&format!("encoded.{digest}.{member}.{tag}")).is_ok());
+        }
+        for name in [
+            format!("encoded.{digest}.3.{tag}"),
+            format!("encoded.{digest}.00.{tag}"),
+            format!("encoded.{digest}.0.{tag}.extra"),
+            format!("encoded.{digest}.0"),
+            format!(
+                "encoded.{}.pack.{tag}",
+                digest.to_uppercase().replace('1', "A")
+            ),
+            format!("encoded.{digest}.idx.{}", &tag[..62]),
+            format!("../encoded.{digest}.0.{tag}"),
+            format!("encoded.{digest}/other.0.{tag}"),
+        ] {
+            assert!(check_encoded_name(&name).is_err(), "{name}");
+        }
+    }
 }
