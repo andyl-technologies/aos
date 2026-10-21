@@ -715,15 +715,17 @@ probe nor passing this component test enables installed method 46.
 ### Installed owners
 
 The durable coordinator, sealed physical producer, image/credential wiring and
-actual owner hooks remain installed-unqualified. The selected combined native
-library run on `0aba3a682b64f0c67dc495b4a02532b9cc8df398` exits successfully:
-17 libraries, 3,032 distinct tests passed, zero failed, and 15 ignored. The
-broker-session security library contributes 291 passing tests. The run uses
-the AOS development shell with frozen, offline Cargo dependencies, two jobs,
-and `--no-fail-fast`; ignored kernel/installed prerequisites remain unqualified.
-This is selected library qualification, not the full package, daemon or
-installed RFC qualification. Existing native Journal commits are reused
-through one mutation funnel, including archive
+actual owner hooks remain installed-unqualified. The owner extraction at
+`aefd7fd50c` passes the AOS Nix application test-target compilation check at
+`/nix/store/jh4qybavmzp992cpqzc1smzk03gmmdch-aos-test-targets-0.1.0`.
+Selected AOS-toolchain unit runs pass with zero failures: Domain 1,781,
+Controller Runtime 142, broker-session Security 384, Cache 117, and native
+Policy 68. These runs use locked offline dependencies, a 32 MiB libtest stack,
+and serial test execution. Ignored kernel/installed prerequisites remain
+unqualified. This is component and compilation evidence; it does not qualify
+the full package, daemon or installed RFC.
+
+Existing native Journal commits use one mutation funnel, including archive
 retention/retirement and terminal process rollover. Schema-only validation is
 private to the opaque retained reconciliation borrow; ordinary reads cannot
 skip the floor. No traffic-journal compaction/reset is exposed. Fixed-name
@@ -733,10 +735,11 @@ authentication, service confinement or effect boundaries.
 
 The native lock-loan, helper framing, startup-state, image-hash,
 weakened-property, durable recovery and mocked physical-backend tests pass in
-that run. Their temporary journals and fake NV do not establish actual TPM or
-service custody. Compiler/API qualification must cover the packaged TSS 4.2.0
-initial-response SAPI decode, not assume that a later public read refreshed
-the cached salt key. The exact packaged-4.2.0 repeated-Complete regression and
+the selected Security run. Their temporary journals and fake NV do not
+establish actual TPM or service custody. Compiler/API qualification must cover
+the packaged TSS 4.2.0 initial-response SAPI decode, not assume that a later
+public read refreshed the cached salt key. The exact packaged-4.2.0
+repeated-Complete regression and
 check wiring above passed natively; neither uses a physical TPM. They must pass
 again before a future TSS upgrade or producer qualification. Required-mode
 effective unit policy and the exact old
