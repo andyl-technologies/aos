@@ -73,6 +73,7 @@
     + lib.optionalString (role == "publisher") " --features aos-sandbox-publisher/kernel-tests";
   roleTestPackages = role:
     "-p ${rolePackage role}"
+    + lib.optionalString (role == "controller") " -p aos-sandbox-controller-domain -p aos-sandbox-broker-session-security -p aos-sandbox-controller-runtime"
     + lib.optionalString (role == "policy-key-pin") " -p aos-sandbox-policy"
     + lib.optionalString (role == "cache-signer") " -p aos-sandbox-cache-signer"
     + lib.optionalString (role == "source-signer") " -p aos-sandbox-source-signer";
@@ -84,7 +85,6 @@
     + lib.concatStringsSep " " (map (bin: "--bin ${bin}") roleBins.${role}))
   serviceRoles;
   roleTestCommands = map (role: "test --no-run --frozen --offline -j$NIX_BUILD_CORES ${roleTestFlags role} ${roleTestPackages role}") serviceRoles;
-  coreTestCommand = "test --no-run --frozen --offline -j$NIX_BUILD_CORES ${controllerRoleFlags} -p aos-sandbox-controller-domain -p aos-sandbox-broker-session-security -p aos-sandbox-controller-runtime";
   onlineInputs = lib.optionals onlineSelected [nixOnlineStoreReader aos-nix-runtime-tpm-helpers];
   # The installed Controller owns the same pinned Required-floor helper and
   # original PID1 image used by the production packaged CLI.
@@ -120,7 +120,7 @@
     };
     cargoRoot = "crates";
     checkType = "debug";
-    cargoBuildCommands = roleBuildCommands ++ roleTestCommands ++ [coreTestCommand];
+    cargoBuildCommands = roleBuildCommands ++ roleTestCommands;
     buildDeps = [buildProtobuf] ++ onlineInputs ++ requiredFloorInputs;
     runtimeDeps = [aos-git-helper git] ++ onlineInputs ++ requiredFloorInputs;
   };
