@@ -5,7 +5,9 @@
 //! alone supplies no Source funding, connection lease, native policy or reply.
 
 use crate::ProviderError;
-use crate::handshake::{ExtensionHandshake, Handshake, NegotiationPolicy, TrustedInstallation};
+use crate::handshake::{
+    ConnectionAuthority, ExtensionHandshake, Handshake, NegotiationPolicy, TrustedInstallation,
+};
 use crate::operational_time::OperationalDeadline;
 use crate::protocol_snapshot::ProtocolCaptureOwner;
 use crate::reference_packet::service::PacketNative5SourceLaunch;
@@ -16,6 +18,9 @@ use crate::retained_metadata::{MetadataObserver, requested_metadata_backing_stor
 use crucible_node_format::ContractError;
 use std::mem::size_of;
 use std::rc::Rc;
+
+#[path = "initial_admission.rs"]
+mod initial_admission;
 
 /// Retains every physical fresh-registrar owner before an initial exchange.
 pub(in super::super) struct Attempt {
@@ -29,6 +34,9 @@ pub(in super::super) struct Attempt {
     registry: Option<Rc<EmptyBootExtensions>>,
     wrapper: Option<ExtensionHandshake>,
     failure: Option<ProviderError>,
+    admission_started: bool,
+    authority: Option<ConnectionAuthority>,
+    admission_failure: Option<ProviderError>,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -56,6 +64,9 @@ const _: fn(&Attempt) = |value| {
         registry: _,
         wrapper: _,
         failure: _,
+        admission_started: _,
+        authority: _,
+        admission_failure: _,
     } = value;
 };
 
@@ -73,6 +84,9 @@ impl Attempt {
             registry: None,
             wrapper: None,
             failure: None,
+            admission_started: false,
+            authority: None,
+            admission_failure: None,
         }
     }
 
@@ -143,6 +157,9 @@ impl Attempt {
             || self.registry.is_some()
             || self.wrapper.is_some()
             || self.failure.is_some()
+            || self.admission_started
+            || self.authority.is_some()
+            || self.admission_failure.is_some()
             || launch.selection.realization.bindings.len() != 1
         {
             return Err(refused());
@@ -210,7 +227,13 @@ impl Attempt {
     /// Refuses foreign custody or incomplete/refused physical construction.
     pub(super) fn complete_data(&mut self) -> Result<(), ProviderError> {
         self.guard(self.cut.ok_or_else(refused)?)?;
-        if self.stage != Stage::Wrapped || self.wrapper.is_none() || self.failure.is_some() {
+        if self.stage != Stage::Wrapped
+            || self.wrapper.is_none()
+            || self.failure.is_some()
+            || self.admission_started
+            || self.authority.is_some()
+            || self.admission_failure.is_some()
+        {
             return Err(refused());
         }
         self.stage = Stage::Complete;
@@ -231,7 +254,12 @@ impl Attempt {
         cut: OperationalDeadline,
     ) -> Result<&ExtensionHandshake, ProviderError> {
         self.guard(cut)?;
-        if self.stage != Stage::Complete || self.failure.is_some() {
+        if self.stage != Stage::Complete
+            || self.failure.is_some()
+            || self.admission_started
+            || self.authority.is_some()
+            || self.admission_failure.is_some()
+        {
             return Err(refused());
         }
         self.wrapper.as_ref().ok_or_else(refused)
@@ -307,9 +335,14 @@ impl Attempt {
             bytes = add(
                 bytes,
                 requested_metadata_backing_storage_data(
-                    &wrapper.original_empty_retained_metadata_facts_data(registry)?,
+                    &wrapper.original_empty_state_metadata_facts_data(
+                        registry,
+                        self.authority.as_ref(),
+                    )?,
                 )?,
             )?;
+        } else if self.authority.is_some() {
+            return Err(refused());
         } else if let Some(registry) = &self.registry {
             let mut observer = MetadataObserver::new();
             observer.shared_value(registry.as_ref())?;
@@ -318,7 +351,10 @@ impl Attempt {
                 requested_metadata_backing_storage_data(&observer.finish())?,
             )?;
         }
-        if let Some(failure) = &self.failure {
+        for failure in [&self.failure, &self.admission_failure]
+            .into_iter()
+            .flatten()
+        {
             match failure {
                 ProviderError::Contract(ContractError::Invalid { reason, .. }) => {
                     bytes = add(bytes, reason.capacity())?
@@ -362,6 +398,9 @@ impl Attempt {
             + size_of::<Option<&Rc<EmptyBootExtensions>>>()
             + size_of::<Option<&ExtensionHandshake>>()
             + size_of::<Option<&ProviderError>>()
+            + size_of::<Option<&ConnectionAuthority>>()
+            + size_of::<[&Option<ProviderError>; 2]>()
+            + size_of::<std::array::IntoIter<&Option<ProviderError>, 2>>()
             + size_of::<MetadataObserver<'static>>() * 2
             + size_of::<crate::retained_metadata::RetainedProtocolMetadataFacts>()
             + size_of::<

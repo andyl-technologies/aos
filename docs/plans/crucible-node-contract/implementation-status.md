@@ -1823,6 +1823,32 @@ child ignored. Complete library, application and funded-Source VM qualification
 remain pending for this subsequent source. Live Native18 SDK admission and its
 model-absent policy/ACK route remain unfinished.
 
+## Retained initial SDK admission primitive
+
+The pre-read registrar attempt now includes physical slots for actual SDK
+connection authority and admission failure, plus a separately spent occurrence.
+Its initial-only primitive calls the real SDK against borrowed original request,
+response and typed Hello operands. A returned lease enters its slot before
+fallible terminal cut/registration checks. SDK or terminal refusal retains the
+actual diagnostic and contains the issuer. Later enclosing refusal can revoke
+registration without reclaiming the lease or its backing.
+
+The selected/retired census includes these real owners. A distinct state loan
+checks the retained selected lease while preserving the original unselected-only
+loan's phase contract. Subsequent immutable Hello guards use that state loan;
+failed or revoked admission cannot reopen those loans. Complete diagnostics
+remain retained when an unknown error representation makes census refuse.
+
+Six new model-callback controls exercise genuine SDK issuance for both program
+families, actual diagnostic capacity, post-SDK expiry, later containment,
+request/response correspondence refusal, incomplete/resumed operands and spent
+retries. All 98 bootstrap controls pass, with zero failures and the existing
+private child ignored. Complete qualification remains pending. These SDK unit
+controls establish no native process qualification. The original bootstrap
+still needs the complete separately admitted SDK constructor row and genuine
+Native18 verifier before invoking this primitive; response publication, ACK,
+model-absent policy and opaque Initial/Recipe production remain unfinished.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.

@@ -71,7 +71,7 @@ impl OriginalImport18RawBootstrap {
     }
 
     fn guard_sdk_hello_request_inputs(&self) -> Result<(), ProviderError> {
-        self.with_hello_registrar_data(|_| Ok(()))?;
+        self.with_hello_registrar_state_data(|_| Ok(()))?;
         Ok(())
     }
 

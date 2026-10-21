@@ -137,6 +137,29 @@ impl OriginalImport18RawBootstrap {
         Ok(output)
     }
 
+    /// Lends original issuer DATA before or after successful initial admission.
+    ///
+    /// Selected custody additionally requires the same retained live lease.
+    /// The caller admits its callback separately; this loan exports no lease
+    /// and authenticates the original inputs even after callback refusal.
+    ///
+    /// # Errors
+    /// Refuses original input/cut guards, incomplete or refused issuer state,
+    /// failed selected registration or either callback/terminal failure.
+    pub(in super::super::super) fn with_hello_registrar_state_data<R: Copy>(
+        &self,
+        inspect: impl FnOnce(&ExtensionHandshake) -> Result<R, ProviderError>,
+    ) -> Result<R, ProviderError> {
+        self.guard_hello_registrar_inputs()?;
+        let outcome = inspect(self.hello_registrar.state_data(self.cut)?);
+        let terminal = self
+            .guard_hello_registrar_inputs()
+            .and_then(|()| self.hello_registrar.state_data(self.cut).map(|_| ()));
+        let output = outcome?;
+        terminal?;
+        Ok(output)
+    }
+
     /// Names the completed registrar loan and its original input guards.
     ///
     /// This loan does not repeat configuration cloning, validation or shared
@@ -149,6 +172,12 @@ impl OriginalImport18RawBootstrap {
             + size_of::<crate::operational_time::OperationalDeadline>()
             + size_of::<Option<crate::operational_time::OperationalDeadline>>()
             + size_of::<&ExtensionHandshake>()
+            + size_of::<&crate::handshake::ConnectionAuthority>()
+            + size_of::<Option<&crate::handshake::ConnectionAuthority>>()
+            + size_of::<Result<&crate::handshake::ConnectionAuthority, ProviderError>>()
+            + size_of::<std::sync::atomic::Ordering>()
+            + size_of::<u64>()
+            + size_of::<bool>()
             + size_of::<Option<&ExtensionHandshake>>()
             + size_of::<Result<&ExtensionHandshake, ProviderError>>()
             + size_of::<R>() * 2
