@@ -202,19 +202,10 @@ def configured_publication():
             require(publisher.poll() is None and time.monotonic() < deadline,
                     "configured publisher failed before binding actual listener")
             time.sleep(0.02)
+        before_ready = sealed_snapshot()
         run_case("ready-public-private", role_command("ready-public-private", 840, [844, 845]))
-        wait_released_consumer_grace()
-        # The consumer cannot inspect this publisher-only namespace. Root observes
-        # the original sealed inodes around the complete unprivileged operation.
-        sealed_before = sealed_snapshot()
-        run_case("open-public-private", role_command("open-public-private", 840, [844, 845]))
-        require(sealed_snapshot() == sealed_before,
-                "chunked object reads changed the original sealed namespace")
-        print("PASS root observed unchanged original sealed inodes across native chunked object reads", flush=True)
-        wait_released_consumer_grace()
-        run_case("seal-public-private", role_command("seal-public-private", 840, [844, 845]))
         sealed_after = sealed_snapshot()
-        before_paths = {(row[0], row[1]): row for row in sealed_before}
+        before_paths = {(row[0], row[1]): row for row in before_ready}
         after_paths = {(row[0], row[1]): row for row in sealed_after}
         require(all(after_paths.get(key) == row for key, row in before_paths.items()),
                 "inline sealing changed an original sealed inode")
@@ -224,6 +215,14 @@ def configured_publication():
                 and all((row[4] & 0o170000) == 0o100000 and row[5] == 0 for row in new_files),
                 "inline sealing lacks exactly one actual empty sealed inode per domain")
         print("PASS root observed actual distinct empty sealed inodes in both native domains", flush=True)
+        wait_released_consumer_grace()
+        # The consumer cannot inspect this publisher-only namespace. Root observes
+        # the original sealed inodes around the complete unprivileged operation.
+        sealed_before = sealed_snapshot()
+        run_case("open-public-private", role_command("open-public-private", 840, [844, 845]))
+        require(sealed_snapshot() == sealed_before,
+                "chunked object reads changed the original sealed namespace")
+        print("PASS root observed unchanged original sealed inodes across native chunked object reads", flush=True)
         require(publisher.poll() is None, "configured publisher exited during actual preparation")
     finally:
         stop(publisher)

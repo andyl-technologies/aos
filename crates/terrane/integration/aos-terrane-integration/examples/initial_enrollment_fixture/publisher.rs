@@ -64,15 +64,10 @@ pub(super) fn prepare_objects() -> io::Result<()> {
     prepare_with(Preparation::Objects)
 }
 
-pub(super) fn prepare_sealed() -> io::Result<()> {
-    prepare_with(Preparation::Sealed)
-}
-
 #[derive(Clone, Copy)]
 enum Preparation {
     Content,
     Objects,
-    Sealed,
 }
 
 fn prepare_with(preparation: Preparation) -> io::Result<()> {
@@ -164,8 +159,13 @@ fn prepare_with(preparation: Preparation) -> io::Result<()> {
             Preparation::Objects => {
                 runtime.block_on(content::exercise_objects(&store, &profile))?
             }
-            Preparation::Content => runtime.block_on(content::exercise(&store, &profile))?,
-            Preparation::Sealed => runtime.block_on(content::exercise_sealed(&store))?,
+            Preparation::Content => {
+                // Exercise direct sealing on the first genuine Running owner.
+                // Another cold reopen would add an unrelated recovery workload
+                // to this deliberately bounded 64-record content fixture.
+                runtime.block_on(content::exercise_sealed(&store))?;
+                runtime.block_on(content::exercise(&store, &profile))?;
+            }
         }
         runtime.block_on(store.ready().validate_portable())?;
         if matches!(preparation, Preparation::Objects) {

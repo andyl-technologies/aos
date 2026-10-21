@@ -179,10 +179,6 @@ pub(super) async fn exercise_sealed(store: &NativeContentStore) -> io::Result<()
     use terrane_linux::host_cache::NativePreparedObject;
     use terrane_sdk::host::cache::ReassemblyMode;
 
-    // The supervisor waits on the original persisted consumer-grace deadlines.
-    // Only the resumed physical owner may reconcile and remove those promises.
-    store.ready().owner().sweep_consumer_leases().await?;
-    println!("INLINE_SEAL_STAGE original expired consumer grants reconciled");
     let identity = TERRANE_V1
         .calculate(IdentityKind::Chunk, &[])
         .map_err(io::Error::other)?;
