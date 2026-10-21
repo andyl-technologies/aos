@@ -2,6 +2,8 @@
 
 #[path = "content/objects.rs"]
 mod objects;
+#[path = "content/reassembly.rs"]
+mod reassembly;
 #[path = "content/repeated.rs"]
 mod repeated;
 
@@ -201,6 +203,27 @@ pub(super) async fn exercise_sealed(store: &NativeContentStore) -> io::Result<()
     );
     let report = object.into_cache().await.map_err(io::Error::other)?;
     assert_eq!(report.released_source_admissions, 0);
+    assert_cache_grace(store, &identity, report.release_grace_ends_at).await?;
+    println!(
+        "PASS actual never-mode inline object is a read-only fs-verity inode with genuine completed cache handoff"
+    );
+    Ok(())
+}
+
+/// Exercises actual direct and whole-object sealing on a fresh Running owner.
+pub(super) async fn exercise_reassembly(
+    store: &NativeContentStore,
+    profile: &ChunkProfile,
+) -> io::Result<()> {
+    reassembly::exercise(store, profile).await
+}
+
+/// Observes the actual durable protection after a completed physical handoff.
+async fn assert_cache_grace(
+    store: &NativeContentStore,
+    identity: &terrane_format::identity::Identity,
+    deadline: u64,
+) -> io::Result<()> {
     let state = terrane_sdk::host::cache::CacheState::load(
         &terrane_sdk::store::TokioLocalFs,
         &store.ready().layout().layout().root().join("state/cache"),
@@ -211,7 +234,7 @@ pub(super) async fn exercise_sealed(store: &NativeContentStore) -> io::Result<()
     )
     .await
     .map_err(io::Error::other)?
-    .ok_or_else(|| io::Error::other("inline handoff lost its durable snapshot"))?;
+    .ok_or_else(|| io::Error::other("publication handoff lost its durable snapshot"))?;
     let hash: String = identity
         .digest()
         .iter()
@@ -219,13 +242,10 @@ pub(super) async fn exercise_sealed(store: &NativeContentStore) -> io::Result<()
         .collect();
     assert!(state.leases.iter().any(|lease| {
         lease.owner.starts_with("publication-grace:")
-            && lease.expires == report.release_grace_ends_at
+            && lease.expires == deadline
             && state.pins.iter().any(|pin| {
                 pin.owner == lease.owner && pin.hash == hash && pin.expires == lease.expires
             })
     }));
-    println!(
-        "PASS actual never-mode inline object is a read-only fs-verity inode with genuine completed cache handoff"
-    );
     Ok(())
 }

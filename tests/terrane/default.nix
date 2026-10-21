@@ -106,7 +106,7 @@
           name = "native-host-cache-${name}";
           requirements = "HOST-23/HOST-31 native host owner proof";
         };
-      }) ["image" "native"]);
+      }) ["image" "native" "reassembly"]);
 
   # Transport components qualify actual peer and native command behavior,
   # independently of complete cache recovery or host-tier readiness.
@@ -440,6 +440,7 @@ in {
   integration.native-publisher-local = publisherLocalProof.native;
   integration.initial-enrollment-image = initialEnrollmentProof.image;
   integration.native-initial-enrollment = initialEnrollmentProof.native;
+  integration.native-reassembly = initialEnrollmentProof.reassembly;
   integration.foundation-format-vectors = import ./foundation-vectors.nix {inherit sourceGate;};
   integration.retirement-reference-generator = import ./retirement-reference.nix {inherit sourceGate;};
   integration.retirement-reference-models = import ./retirement-models.nix {inherit sourceGate;};

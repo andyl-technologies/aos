@@ -35,18 +35,20 @@ max_selected_bytes = 33554432
 "#;
 
 #[test]
-fn explicit_native_cache_resources_preserve_operator_bounds() {
-    let config = Config::parse(CONFIG).unwrap();
-    let resources = config.host_tier().unwrap().domains["public"]
-        .cache
-        .as_ref()
-        .unwrap();
+fn explicit_native_cache_resources_preserve_operator_bounds()
+-> Result<(), Box<dyn std::error::Error>> {
+    let config = Config::parse(CONFIG)?;
+    let resources = config
+        .host_tier()
+        .and_then(|host| host.domains["public"].cache.as_ref())
+        .ok_or("missing explicit cache resources")?;
 
     assert_eq!(resources.state_records, 64);
     assert_eq!(resources.capacity_bytes, 24 * 1024 * 1024);
     assert_eq!(resources.consumer_lease_seconds, 30);
     assert_eq!(resources.portable.max_files, 4096);
     assert!(resources.index_repair.is_none());
+    Ok(())
 }
 
 #[test]

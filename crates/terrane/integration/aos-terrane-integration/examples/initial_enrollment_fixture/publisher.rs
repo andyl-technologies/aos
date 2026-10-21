@@ -14,13 +14,21 @@ pub(super) fn socket() -> PathBuf {
 }
 
 pub(super) fn run() -> io::Result<()> {
+    run_with(30_000)
+}
+
+pub(super) fn run_reassembly() -> io::Result<()> {
+    run_with(1_000)
+}
+
+fn run_with(retirement_grace_ms: u64) -> io::Result<()> {
     super::reader::actual_identity(841, &[845])?;
     let case = Case::existing("positive")?;
-    let host = configuration(&case);
+    let host = configuration(&case, retirement_grace_ms);
     terrane_linux::configured::run_configured_publisher(&host)
 }
 
-fn configuration(case: &Case) -> HostTier {
+fn configuration(case: &Case, retirement_grace_ms: u64) -> HostTier {
     HostTier {
         path: case.path.to_string_lossy().into_owned(),
         size_bytes: 2 * LIMIT,
@@ -60,7 +68,7 @@ fn configuration(case: &Case) -> HostTier {
                         wipe: Wipe::None,
                         quota_owner_id: Some(OWNERS[owner].to_owned()),
                         publisher: Some(DomainPublisher {
-                            retirement_grace_ms: 30_000,
+                            retirement_grace_ms,
                             chunk_profile: "cdc-1m".to_owned(),
                             chunk_seed: SEED,
                         }),
@@ -91,10 +99,15 @@ pub(super) fn prepare_objects() -> io::Result<()> {
     prepare_with(Preparation::Objects)
 }
 
+pub(super) fn prepare_reassembly() -> io::Result<()> {
+    prepare_with(Preparation::Reassembly)
+}
+
 #[derive(Clone, Copy)]
 enum Preparation {
     Content,
     Objects,
+    Reassembly,
 }
 
 fn prepare_with(preparation: Preparation) -> io::Result<()> {
@@ -103,8 +116,15 @@ fn prepare_with(preparation: Preparation) -> io::Result<()> {
     use terrane_linux::configured::NativeCachePlan;
 
     let case = Case::existing("positive")?;
+    // The separate reassembly scenario exercises an explicit one-second
+    // retirement policy. Original enrollment keeps its thirty-second policy.
+    let retirement_grace_ms = if matches!(preparation, Preparation::Reassembly) {
+        1_000
+    } else {
+        30_000
+    };
     let plan = NativeCachePlan::from_host(
-        &configuration(&case),
+        &configuration(&case, retirement_grace_ms),
         terrane_format::refs::Locality::default(),
     )?;
     let confinement = Arc::new(terrane_linux::quota_confinement::install()?);
@@ -137,6 +157,9 @@ fn prepare_with(preparation: Preparation) -> io::Result<()> {
         match preparation {
             Preparation::Objects => {
                 runtime.block_on(content::exercise_objects(&store, &profile))?
+            }
+            Preparation::Reassembly => {
+                runtime.block_on(content::exercise_reassembly(&store, &profile))?
             }
             Preparation::Content => {
                 // Exercise direct sealing on the first genuine Running owner.

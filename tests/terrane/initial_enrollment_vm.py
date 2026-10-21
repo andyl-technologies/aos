@@ -18,6 +18,7 @@ import tomllib
 
 IMAGE = pathlib.Path(sys.argv[1])
 SOURCE = pathlib.Path(sys.argv[2])
+SCENARIO = sys.argv[3] if len(sys.argv) == 4 else "enrollment"
 ROOT = pathlib.Path(os.environ["TERRANE_INITIAL_FIXTURE_ROOT"])
 EXECUTABLE = IMAGE / "bin/initial_enrollment_fixture"
 MAX_OUTPUT = 256 * 1024
@@ -192,7 +193,8 @@ def sealed_snapshot():
 
 def configured_publication():
     """Requires the real two-domain publisher and actual content-role preparation."""
-    publisher = subprocess.Popen(role_command("publisher-positive", 841, [845]),
+    publisher_selector = "publisher-reassembly" if SCENARIO == "reassembly" else "publisher-positive"
+    publisher = subprocess.Popen(role_command(publisher_selector, 841, [845]),
                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                  start_new_session=True)
     try:
@@ -202,27 +204,48 @@ def configured_publication():
             require(publisher.poll() is None and time.monotonic() < deadline,
                     "configured publisher failed before binding actual listener")
             time.sleep(0.02)
-        before_ready = sealed_snapshot()
-        run_case("ready-public-private", role_command("ready-public-private", 840, [844, 845]))
-        sealed_after = sealed_snapshot()
-        before_paths = {(row[0], row[1]): row for row in before_ready}
-        after_paths = {(row[0], row[1]): row for row in sealed_after}
-        require(all(after_paths.get(key) == row for key, row in before_paths.items()),
-                "inline sealing changed an original sealed inode")
-        new_files = [row for key, row in after_paths.items()
-                     if key not in before_paths and not (row[4] & 0o170000) == 0o040000]
-        require(len(new_files) == 2 and {row[0] for row in new_files} == {"public", "private"}
-                and all((row[4] & 0o170000) == 0o100000 and row[5] == 0 for row in new_files),
-                "inline sealing lacks exactly one actual empty sealed inode per domain")
-        print("PASS root observed actual distinct empty sealed inodes in both native domains", flush=True)
-        wait_released_consumer_grace()
-        # The consumer cannot inspect this publisher-only namespace. Root observes
-        # the original sealed inodes around the complete unprivileged operation.
-        sealed_before = sealed_snapshot()
-        run_case("open-public-private", role_command("open-public-private", 840, [844, 845]))
-        require(sealed_snapshot() == sealed_before,
-                "chunked object reads changed the original sealed namespace")
-        print("PASS root observed unchanged original sealed inodes across native chunked object reads", flush=True)
+        if SCENARIO == "reassembly":
+            before = sealed_snapshot()
+            run_case("reassembly-public-private", role_command("reassembly-public-private", 840, [844, 845]))
+            after = sealed_snapshot()
+            prior = {(row[0], row[1]): row for row in before}
+            current = {(row[0], row[1]): row for row in after}
+            require(all(current.get(key) == row for key, row in prior.items()),
+                    "manifest reassembly changed an original sealed inode")
+            files = [row for key, row in current.items() if key not in prior
+                     and (row[4] & 0o170000) == 0o100000]
+            require(len(files) == 4, "manifest reassembly lacks four actual sealed inodes")
+            sizes = []
+            for domain in ["public", "private"]:
+                domain_files = [row for row in files if row[0] == domain]
+                lengths = sorted(row[5] for row in domain_files)
+                require(len(domain_files) == 2 and lengths[0] == 33 and lengths[1] > 262144,
+                        "domain lacks actual single and multi-chunk sealed objects")
+                sizes.append(lengths)
+            require(sizes[0] == sizes[1], "domain reassembly plaintext lengths differ")
+            print("PASS root observed four distinct single and multi-chunk sealed inodes across both native domains", flush=True)
+        else:
+            before_ready = sealed_snapshot()
+            run_case("ready-public-private", role_command("ready-public-private", 840, [844, 845]))
+            sealed_after = sealed_snapshot()
+            before_paths = {(row[0], row[1]): row for row in before_ready}
+            after_paths = {(row[0], row[1]): row for row in sealed_after}
+            require(all(after_paths.get(key) == row for key, row in before_paths.items()),
+                    "inline sealing changed an original sealed inode")
+            new_files = [row for key, row in after_paths.items()
+                         if key not in before_paths and not (row[4] & 0o170000) == 0o040000]
+            require(len(new_files) == 2 and {row[0] for row in new_files} == {"public", "private"}
+                    and all((row[4] & 0o170000) == 0o100000 and row[5] == 0 for row in new_files),
+                    "inline sealing lacks exactly one actual empty sealed inode per domain")
+            print("PASS root observed actual distinct empty sealed inodes in both native domains", flush=True)
+            wait_released_consumer_grace()
+            # The consumer cannot inspect this publisher-only namespace. Root observes
+            # the original sealed inodes around the complete unprivileged operation.
+            sealed_before = sealed_snapshot()
+            run_case("open-public-private", role_command("open-public-private", 840, [844, 845]))
+            require(sealed_snapshot() == sealed_before,
+                    "chunked object reads changed the original sealed namespace")
+            print("PASS root observed unchanged original sealed inodes across native chunked object reads", flush=True)
         require(publisher.poll() is None, "configured publisher exited during actual preparation")
     finally:
         stop(publisher)
@@ -235,6 +258,8 @@ def configured_publication():
 
 def main():
     """Runs real same-process enrollment, authenticated queries and credential refusals."""
+    require(len(sys.argv) in [3, 4] and SCENARIO in ["enrollment", "reassembly"],
+            "requires a registered native proof scenario")
     verify_inputs()
     # Fixture TOML publication intentionally respects the caller's umask. Fix
     # this administrative input before any child creates portable metadata.
