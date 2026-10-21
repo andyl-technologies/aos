@@ -321,7 +321,8 @@ in {
         vm.succeed("systemctl start aos-host-worker-qualification.service", timeout=280)
         vm.fail("systemctl is-active --quiet ${runtimeUnit}")
     finally:
-        print(vm.execute("journalctl -u aos-host-worker-qualification.service -u ${runtimeUnit} --no-pager")[1].decode("utf-8", errors="replace"))
+        print(vm.execute("${pkgs.coreutils}/bin/tail -n 80 /run/aos-guardian-systemd-root-test /run/aos-guardian-systemd-isolation-root-test")[1].decode("utf-8", errors="replace"))
+        print(vm.execute("journalctl -b -u aos-host-worker-qualification.service -u 'aos-sandbox-*.service' -u 'aos-lease-guard-*.service' --no-pager -n 400")[1].decode("utf-8", errors="replace"))
         print(vm.execute("journalctl -k -n 100 --no-pager")[1].decode("utf-8", errors="replace"))
         print(vm.execute("${pkgs.grep}/bin/grep 'type=SECCOMP' /var/log/audit/audit.log")[1].decode("utf-8", errors="replace"))
         vm.execute("systemctl stop ${runtimeUnit} ${guardian}.service aos-sandbox-71717171717171717171717171717171.service aos-lease-guard-71717171717171717171717171717171.service aos-sandbox-75757575757575757575757575757575.service aos-lease-guard-75757575757575757575757575757575.service ${isolationFirstRuntimeUnit} ${isolationFirstGuardianUnit} ${isolationSecondRuntimeUnit} ${isolationSecondGuardianUnit} ${expiringFirstRuntimeUnit} ${expiringFirstGuardianUnit} ${expiringSecondRuntimeUnit} ${expiringSecondGuardianUnit} ${expiringThirdRuntimeUnit} ${expiringThirdGuardianUnit}")
