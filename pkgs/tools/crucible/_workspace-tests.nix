@@ -34,8 +34,10 @@
 ##! manifest.tsv               selection, role (harness|artifact), kind, name,
 ##!                            package, path, required-features (or -)
 ##! packages/<name>.env        Cargo's run-time package environment
-##! libexec/<sha>-<name>       content-addressed executables (and cdylibs); the
-##!                            build-only store references are removed there
+##! libexec/<sha>-<name>.zst   content-addressed executables, zstd-compressed;
+##!                            cdylibs stay uncompressed for QEMU to load
+##! nix-support/executable-references
+##!                            the store paths the executables reference
 ##! doctests/<selection>/<package>.*
 ##!                            doctest outcomes, replayed with libtest filters
 ##! ```
@@ -68,6 +70,7 @@
   gawk,
   grep,
   sed,
+  zstd,
 }: let
   selections = import ./_workspace-test-selections.nix;
   buildSource = import ./_cargo-build-source.nix {inherit lib;};
@@ -343,6 +346,22 @@
             LC_ALL=C sed -i "s|/nix/store/$hash-|/nix/store/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-|g" "$file"
           done
     done
+
+    # Test executables are most of a family and compress about fivefold;
+    # the runner decompresses each into the gate's writable copy, which it
+    # makes anyway. Compression hides store paths from Nix's reference
+    # scan, so the paths that exist (run-time libraries, not fixtures) are
+    # recorded in plain text first.
+    mkdir -p "$out/nix-support"
+    find "$out/libexec" -type f -exec grep -aohE '/nix/store/[0-9a-z]{32}-[^/[:space:][:cntrl:]"]+' {} + \
+      | LC_ALL=C sort -u | while read -r reference; do
+          [ ! -e "$reference" ] || printf '%s\n' "$reference"
+        done > "$out/nix-support/executable-references"
+    find "$out/libexec" -type f ! -name '*.so' -print0 \
+      | xargs -0 -r -n 8 -P "$NIX_BUILD_CORES" ${zstd}/bin/zstd -q -9 -T1 --rm
+    awk -F '\t' 'BEGIN { OFS = "\t" } $6 !~ /[.]so$/ { $6 = $6 ".zst" } { print }' \
+      "$out/manifest.tsv" > "$out/manifest.tsv.new"
+    mv "$out/manifest.tsv.new" "$out/manifest.tsv"
   '';
 
   # A family compiles its selections once against its own dependency
@@ -438,7 +457,7 @@
     pname = "crucible-cargo";
     inherit version;
     src = null;
-    runtimeDeps = [bash coreutils gawk grep sed rust];
+    runtimeDeps = [bash coreutils gawk grep sed zstd rust];
     phases = [
       {
         name = "install";
@@ -447,7 +466,7 @@
           sed \
             -e 's|@bash@|${bash}/bin/bash|' \
             -e 's|@cargo@|${rust}/bin/cargo|' \
-            -e 's|@path@|${lib.makeBinPath [coreutils gawk grep sed]}|' \
+            -e 's|@path@|${lib.makeBinPath [coreutils gawk grep sed zstd]}|' \
             ${./crucible-cargo.sh} > "$out/bin/crucible-cargo"
           chmod +x "$out/bin/crucible-cargo"
         '';

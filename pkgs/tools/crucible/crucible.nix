@@ -20,6 +20,7 @@
   gawk,
   grep,
   sed,
+  zstd,
   util-linux,
   qemu-crucible-source,
   sqlite,
@@ -188,7 +189,7 @@
   workspaceTests = import ./_workspace-tests.nix {
     inherit lib mkDerivation mkCargoPackage mkCargoArtifacts mkCargoDummySource;
     inherit version cargoDeps rust buildRustDev buildPkgConfig buildProtobuf openssl sqlite;
-    inherit bash coreutils gawk grep sed;
+    inherit bash coreutils gawk grep sed zstd;
     cargoEnv = controllerCargoEnv;
   };
   controller = mkCargoPackage {

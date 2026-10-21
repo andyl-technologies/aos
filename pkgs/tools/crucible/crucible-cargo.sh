@@ -17,7 +17,9 @@
 #   crucible-cargo executable <test|build|run> [CARGO OPTIONS]
 #
 # `executable` prints the path of the single executable that the Cargo
-# command would build or run, for gates that copy executables elsewhere.
+# command would build or run, for gates that copy executables elsewhere. The
+# path is a decompressed copy in $TMPDIR, except for cdylibs, which are
+# published uncompressed.
 #
 # Environment:
 #   CRUCIBLE_CARGO_BUILDS     colon-separated workspace test build outputs
@@ -241,15 +243,20 @@ select_targets() {
 # Cargo's target executables are writable files owned by the caller, and
 # tests rely on that: some copy `std::env::current_exe()` and then change the
 # copy's contents. Run a private writable copy of each published executable,
-# made once per gate in its temporary directory.
+# made once per gate in its temporary directory. Families publish
+# executables zstd-compressed; the copy is the decompressed executable.
 writable_copy() {
   local published=$1
   local copies="${TMPDIR:-/tmp}/crucible-cargo-executables"
-  local copy="$copies/${published##*/}"
+  local name=${published##*/}
+  local copy="$copies/${name%.zst}"
   if [ ! -x "$copy" ]; then
     mkdir -p "$copies"
-    cp "$published" "$copy.partial"
-    chmod u+w "$copy.partial"
+    case $published in
+      *.zst) zstd -q -d -c "$published" > "$copy.partial" ;;
+      *) cp "$published" "$copy.partial" ;;
+    esac
+    chmod u+wx "$copy.partial"
     mv "$copy.partial" "$copy"
   fi
   printf '%s\n' "$copy"
@@ -536,8 +543,12 @@ case $subcommand in
     ;;
   executable)
     case $executable_mode in
-      test) row_path "$(harness_row)" ;;
-      build | run) row_path "$(artifact_row)" ;;
+      test) published=$(row_path "$(harness_row)") ;;
+      build | run) published=$(row_path "$(artifact_row)") ;;
+    esac
+    case $published in
+      *.zst) writable_copy "$published" ;;
+      *) printf '%s\n' "$published" ;;
     esac
     ;;
   *) die "unsupported subcommand '$subcommand'" ;;
