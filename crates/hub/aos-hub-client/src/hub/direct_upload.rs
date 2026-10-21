@@ -52,6 +52,30 @@ use super::HubClient;
 
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Preserves a transport category without exposing its credential-bearing URL.
+fn control_transport_failure(
+    kind: aos_transfer::direct_upload::DirectControlKind,
+    phase: &str,
+    started: std::time::Instant,
+    error: &reqwest::Error,
+) -> DirectClientError {
+    let reason = if error.is_timeout() {
+        "timeout"
+    } else if error.is_connect() {
+        "connect"
+    } else {
+        "transport"
+    };
+    // Neither the error's Display implementation nor its source chain is safe:
+    // both can include upstream URLs or response material. Keep only enums,
+    // source-owned phase labels and elapsed time in this diagnostic.
+    eprintln!(
+        "Direct upload control failed: kind={kind:?} phase={phase} reason={reason} elapsed_ms={}",
+        started.elapsed().as_millis()
+    );
+    DirectClientError::ControlUnavailable
+}
+
 /// Authenticated bounded Hub controls that never send application file bytes.
 #[derive(Clone)]
 pub struct DirectHubControl {
@@ -272,17 +296,24 @@ impl DirectHubControl {
             _ => Kind::MetadataRead,
         };
         self.metrics.record_control_attempt(kind);
+        let started = std::time::Instant::now();
         let mut response = request
             .send()
             .await
-            .map_err(|_| DirectClientError::ControlUnavailable)?;
+            .map_err(|error| control_transport_failure(kind, "response", started, &error))?;
         // Error envelopes may contain upstream URLs or provider bodies. Do not
         // parse, log or attach their text to a public error chain.
         match response.status().as_u16() {
             200 => {}
             401 | 403 => return Err(DirectClientError::Denied),
             409 | 412 => return Err(DirectClientError::Blocked),
-            429 | 500..=599 => return Err(DirectClientError::ControlUnavailable),
+            status @ (429 | 500..=599) => {
+                eprintln!(
+                    "Direct upload control failed: kind={kind:?} phase=response reason=http status={status} elapsed_ms={}",
+                    started.elapsed().as_millis()
+                );
+                return Err(DirectClientError::ControlUnavailable);
+            }
             _ => return Err(DirectClientError::Invalid),
         }
         if response
@@ -295,7 +326,7 @@ impl DirectHubControl {
         while let Some(chunk) = response
             .chunk()
             .await
-            .map_err(|_| DirectClientError::ControlUnavailable)?
+            .map_err(|error| control_transport_failure(kind, "body", started, &error))?
         {
             if bytes
                 .len()
