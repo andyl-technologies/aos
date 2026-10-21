@@ -4,7 +4,24 @@ use super::super::restored_settled18::{
     NATIVE_IMPORT18_PRIVATE_BOOT_SCHEMA, NATIVE_IMPORT18_SOURCE_BINDING_SCHEMA,
 };
 use super::*;
+use crate::reference_packet::service::PacketNative5SourceLaunch;
 use serde_json::{Value, json};
+
+/// Builds matching Source fields for DATA checks without validating a program.
+pub(in crate::reference_packet) fn source_birth(launch: &PacketNative5SourceLaunch) -> Value {
+    json!({
+        "schema": "source-owned.packet-canonical-ack-source-binding/6",
+        "selection": launch.selection,
+        "program": launch.program,
+        "coordinator": canonical::parse_json(launch.initial_coordinator.bytes.as_slice(), usize::MAX).unwrap(),
+        "limits": launch.limits,
+        "storage": launch.storage,
+        "capture_profile": launch.capture_profile,
+        "confirmation_selection": launch.confirmation_selection,
+        "ack_emitter_selection": launch.ack_emitter_selection,
+        "codec_metadata_extent": "CanonicalAck512KiB",
+    })
+}
 
 pub(in crate::reference_packet) fn recipe() -> Value {
     json!({

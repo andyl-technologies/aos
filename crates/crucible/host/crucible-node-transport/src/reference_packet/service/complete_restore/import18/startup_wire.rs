@@ -59,7 +59,9 @@ pub(in crate::reference_packet) use source_declaration::{
     native_import18_source_declaration_formatter_requested_data,
     native_import18_source_declaration_projection_counter_scratch_data,
     native_import18_source_declaration_projection_data,
-    native_import18_source_declaration_serialization_data,
+    native_import18_source_declaration_serialization_data, source_authentication_construction_data,
+    source_authentication_counter_scratch_data, source_authentication_projection_data,
+    source_authentication_quote_construction_data,
 };
 
 pub use source_declaration::{

@@ -22,6 +22,9 @@ use std::{
 #[path = "tests/typed.rs"]
 mod typed;
 
+#[path = "tests/source_authentication.rs"]
+mod source_authentication;
+
 const CHILD_CASE: &str = "CRUCIBLE_IMPORT18_RAW_BOOTSTRAP_CHILD";
 const CHILD_TEST: &str = "reference_packet::service::ack_emitter::native_boot::bootstrap_import18::tests::inherited_raw_bootstrap_child";
 const BODIES: [&[u8]; 3] = [
@@ -95,13 +98,16 @@ fn child(case: &str, wire: &[u8]) {
 fn inherited_raw_bootstrap_child() {
     let case = std::env::var(CHILD_CASE).unwrap();
     let original = rustix::io::dup(rustix::stdio::stdin()).unwrap();
-    let mut selected_bounds = if case.starts_with("typed_") {
+    let mut selected_bounds = if case.starts_with("typed_") || case.starts_with("source_") {
         typed::bounds()
     } else {
         bounds()
     };
     if case == "typed_independent_peak" {
         selected_bounds.requested_peak = typed::required_peak(&case) - 1;
+    }
+    if case == "source_independent_peak" {
+        selected_bounds.requested_peak = source_authentication::required_peak(&case) - 1;
     }
     if case == "independent_peak" {
         selected_bounds.requested_peak = 1;
@@ -113,6 +119,10 @@ fn inherited_raw_bootstrap_child() {
     assert!(owner.inputs.is_empty_data());
     if case.starts_with("typed_") {
         typed::assert_child(&case, owner, result);
+        return;
+    }
+    if case.starts_with("source_") {
+        source_authentication::assert_child(&case, owner, result);
         return;
     }
     let received = owner.received;

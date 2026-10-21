@@ -26,6 +26,9 @@ mod receiving_banks;
 
 #[path = "bootstrap_import18/decoding.rs"]
 mod decoding;
+
+#[path = "bootstrap_import18/source_authentication.rs"]
+mod source_authentication;
 use receiving_banks::OriginalImport18ReceivingBanks;
 
 /// Restricts the three raw inputs independently of their announced allocation.
@@ -52,6 +55,9 @@ pub(super) struct OriginalImport18RawBootstrap {
     decoding_row: Option<[usize; 3]>,
     decode_started: bool,
     decoded: bool,
+    source_authentication_row: Option<[usize; 3]>,
+    source_authentication_started: bool,
+    source_authenticated: bool,
     received: [usize; 3],
     tail: [u8; 1],
     tail_received: usize,
@@ -82,6 +88,9 @@ impl OriginalImport18RawBootstrap {
             decoding_row: None,
             decode_started: false,
             decoded: false,
+            source_authentication_row: None,
+            source_authentication_started: false,
+            source_authenticated: false,
             received: [0; 3],
             tail: [0; 1],
             tail_received: 0,
@@ -251,6 +260,7 @@ pub(super) fn raw_storage_floor(lengths: [usize; 3]) -> Result<[usize; 3], Provi
         + private_body_decode_counter_scratch_data()
         + private_body_owner_counter_scratch_data()
         + decoding::counter_scratch_data()
+        + source_authentication::counter_scratch_data()
         + size_of::<&OriginalImport18RawBootstrap>()
         + size_of::<&mut OriginalImport18RawBootstrap>()
         + size_of::<&UnixStream>()

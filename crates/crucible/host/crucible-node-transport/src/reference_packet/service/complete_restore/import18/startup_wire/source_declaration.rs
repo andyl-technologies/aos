@@ -21,6 +21,14 @@ mod projection;
 #[path = "source_declaration/decoder_partials.rs"]
 mod decoder_partials;
 
+#[path = "source_declaration/authentication.rs"]
+mod authentication;
+
+pub(in crate::reference_packet) use authentication::{
+    source_authentication_construction_data, source_authentication_counter_scratch_data,
+    source_authentication_projection_data, source_authentication_quote_construction_data,
+};
+
 pub use projection::{
     native_import18_source_declaration_encoding_construction_data,
     native_import18_source_declaration_encoding_counter_scratch_data,

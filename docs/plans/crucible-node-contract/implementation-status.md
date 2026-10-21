@@ -566,8 +566,37 @@ strings, forest addition, exact/one-byte-short reset work, wrapper depth, and
 actual closed body encodings at both program families, Bytes boundaries and
 full-width U64 decimals. The complete standard and RawValue Transport suites
 each pass 1,774 tests, zero failures, no filtering and sixteen existing ignores;
-all-feature/all-target checking passes. The current six architecture checks are
-running. No opaque Initial/Recipe or native startup is produced by these tests.
+all-feature/all-target checking and the six architecture checks pass. No opaque
+Initial/Recipe or native startup is produced by these tests.
+
+## Original Source correspondence under the physical bootstrap cut
+
+The raw owner now retains a separate Source-comparison spent bit and result row
+before receipt. After typed decoding, it independently admits the actual launch
+formatter before serialization, then the complete original Source parser,
+canonical equality, typed-field comparison and diagnostic windows before the
+first Source parser. Parent and native quotes share actual bank length and real
+Value/container/JCS layouts; the parent leaves its worker bank opaque. Each
+announced axis restricts independently derived demand, and the independent total
+restriction remains mandatory. Matching DATA creates no Source purpose, genuine
+Birth, opaque Initial/Recipe or native admission.
+
+The actual parser and every terminal outcome remain under the original socket,
+process/thread, raw hashes and nonrenewing five-second cut. Failed and successful
+attempts stay spent, with unchanged raw banks and installed typed outputs. Five
+new inherited-socket controls cover both program families, every underfunded
+axis, independent total demand, malformed/changed/noncanonical Source bytes,
+forbidden startup report fields, foreign thread, changed raw bytes, expired cut,
+retry and checked population overflow. Three separate accounting controls check
+parent/native row equality, exact and one-byte-short complete demand, opaque
+malformed/RawValue-looking banks and the existing full Source field checker.
+
+Both full Transport library configurations pass 1,782 tests, zero failures, no
+filtering and sixteen existing ignores. All-feature/all-target checking passes.
+The six architecture checks and required application-target compilation gate
+are running for this checkpoint. Full Initial/Recipe production and native
+startup selection remain unfinished; these DATA controls do not establish full
+RFC-0025 completion.
 
 ## Original launch custody and shared startup geometry
 

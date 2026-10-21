@@ -130,7 +130,7 @@ pub(super) fn body_population(
     Ok(row)
 }
 
-fn diagnostic_storage_data(
+pub(super) fn diagnostic_storage_data(
     text: usize,
     geometry: PrivateBodyTypedGeometryData,
 ) -> Result<usize, ProviderError> {
