@@ -2022,13 +2022,35 @@ through the standard error-source chain.
 Mandatory application test-target compilation passes at
 `/nix/store/zrv3955dlphb8lkdxhylrm52vvjf2iv0-aos-test-targets-0.1.0`.
 All 5,261 tracked crate Rust/TOML files match `9515ebefea` and immutable
-`flc4dcb3piv8hfym8asjnaw9965l0wmq-aos-workspace-src`. The expanded 167-case
-supervision gate is still running. Coverage binds 265 component and 19 native
+`flc4dcb3piv8hfym8asjnaw9965l0wmq-aos-workspace-src`. All 167 expanded exact supervision cases pass at
+`/nix/store/3w3p1whaz5lflxnk36ahwaqsm499s7dd-crucible-gate-ram-supervision-0`. Coverage binds 265 component and 19 native
 cases across 243 requirements; 149 remain uncovered and none fully qualified.
 The diagnostic event counter gates the existing owned recipe but supplies no
 byte funding. Enabled diagnostic initialization and payloads, validation-error
 formatting, initial refusal allocation, scheduler-carrier birth and complete
 selected admission remain unqualified.
+
+### 2026-10-21 streamed fingerprint component diagnostics
+
+Commit `2db30b57a6` writes the existing diagnostic record directly from borrowed
+sample fields. Hashing and diagnostics share the ordered component visitor;
+only fixed ASCII labels, integers and lowercase digests use the quoted wrapper.
+Authored node names retain standard debug escaping and a 160-character UTF-8
+prefix. The event counter and record format remain unchanged.
+
+The actual pre-change formatter measured 22 allocations and 13 reallocations.
+All seven focused fingerprint controls pass. The new formatter control compares
+24 full records against the independent old recipe for one through eight vCPUs,
+numeric limits and Unicode/escaping boundaries, with zero allocations or
+reallocations into already-reserved output. All 73 focused policy and five
+hygiene checks pass. Mandatory application compilation passes at
+`/nix/store/qwd7ldzj523jfgsr9q248sd5flsx060n-aos-test-targets-0.1.0`;
+all 5,261 tracked crate Rust/TOML files match `2db30b57a6` and immutable
+`65v7by54nizzamnjaw31jqsj55ljyryy-aos-workspace-src`. The expanded 168-case
+supervision gate is running. Coverage binds 266 component and 19 native cases;
+243 requirements, 149 uncovered and none fully qualified remain unchanged.
+Environment and stderr initialization, output funding and backpressure,
+validation-error formatting and complete selected admission remain unqualified.
 
 ### 2026-10-21 native rule and reservation storage custody
 
@@ -2128,6 +2150,34 @@ fingerprint changes. Complete native compilation finishes all 3,863 targets;
 the sole failure. Earlier predicate and timeout failures remain recorded.
 Aggregate restore, full registration return, activation and selected CPU or
 physical-return authority remain unqualified at this checkpoint.
+
+### 2026-10-21 ordinary initialized aggregate restore
+
+Commit `7de44a9d52` integrates atomic
+`9b3c140c4ed0bbbd9513b69183684e83acf576c8`, tree
+`9bff5ac7a2f2029229df744fe94471af866a4d18`. This adds seven test/documentation
+paths without changing production code or private layouts. Actual initialized
+RR genesis, drained control stop, unchanged complete save/load and all event
+fields are exercised through real stage and pending journals. Nine independent
+rebuilt runs pass, including stage return/handoff and the previous six
+physical-journal and decoder defects. The actual 19,038-byte aggregate has
+SHA-256 `f33f7f31c4e29805e2264aa01114c9c52d3c8779969ad01a48de0cf55e12b6cd`.
+The unconsumed 630-byte save/load stream remains exact. Cross-run default RTC
+epoch differences remain in the evidence; no normalized whole-stream identity
+is claimed.
+
+All 187 owning scenarios, all 34 independently compiled causal controls,
+signed sole-parent reconstruction and the exact 287-file license ledger pass.
+The causal positive takes 47.301 seconds of the unchanged 60-second bound;
+all original resource and runtime limits remain. Raw ABI passes at
+`/nix/store/fq7g16v4kkxbp1pwj8svw68czn61vd48-crucible-phase2-abi-conformance-0`.
+All 5,261 tracked crate Rust/TOML files match `9515ebefea` and immutable
+`c10ijqhaykpigfp71q0i5fhqrz4d1cnx-crucible-workspace-src`, excluding the later
+diagnostic formatting change. Complete native compilation finishes 3,863
+targets and passes 25/26 fixtures. Mandatory launched Source/Root remains the
+sole failure. Selected activation, CPU borrowers, full handler retirement and
+physical return remain unqualified. Subsequent CPUState layout changes require
+a fresh complete native object cohort before executable validation.
 
 ### Canonical native observation gate cutover (required)
 
