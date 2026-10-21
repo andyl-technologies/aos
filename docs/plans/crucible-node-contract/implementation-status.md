@@ -1538,12 +1538,15 @@ empty advertisements from another allocation cannot substitute for this owner.
 The corresponding wrapper constructor refuses an owning marker before consuming
 the plain handshake. Historical known-registry owners keep their separate census.
 
-Ten new controls pass. Both complete standard and raw-value Transport libraries
+Ten new controls pass for `66e859f087`. Both complete standard and raw-value Transport libraries
 pass 1,855 tests, with zero failures, no filtering and sixteen existing ignores.
 Scoped formatting, affected all-feature/all-target checking and all six
-architecture checks pass. Required application compilation and the funded-Source
-VM are still being qualified for this checkpoint. All 199 owned changed Rust paths
-match its application and three VM component source captures.
+architecture checks pass. Required application compilation passes with 180 test
+executables across 58 package identities, including 71 integration targets. The
+funded-Source VM passes both independent three-Birth consumer flights, refusal
+controls, cleanup and the default-feature CLI refusal. All 199 owned changed Rust
+paths match this committed checkpoint in the application and three VM component
+source captures. Subsequent clone-control work is excluded from these results.
 
 The clone supplier prices backing only. Complete constructor validation and
 control rows, original initial funding, bootstrap-retained registrar slots and
