@@ -539,8 +539,10 @@ class Lines:
             chunk = os.read(self.process.stdout.fileno(), 4096)
             require(chunk, "actor stdout closed before handshake")
             self.bytes += chunk
-        print(self.bytes[self.printed:].decode(), end="", flush=True)
-        self.printed = len(self.bytes)
+            # Preserve the actual actor error even if it exits before producing
+            # the requested handshake. Buffered diagnostics must survive refusal.
+            print(self.bytes[self.printed:].decode(), end="", flush=True)
+            self.printed = len(self.bytes)
 
 
 def controlled_actor(case, mode, uuid):
@@ -1202,6 +1204,9 @@ def main():
                         and value.st_uid == 841 and value.st_mode & 0o7777 == 0o700,
                         "actual publisher namespace ownership changed: " + str(path))
         print("PASS actual configured publisher retains exclusive private namespace ownership", flush=True)
+        # This isolated domain has no dependency on the other component cases.
+        # Exercise its new crash-sensitive transfer before the longer FIFO run.
+        runpy.run_path(str(IMAGE / "share/shared_reextract_vm.py"))["run"](sys.modules[__name__], uuid)
         runpy.run_path(str(IMAGE / "share/host_cache_temporaries_vm.py"))["run"](sys.modules[__name__], uuid)
         def pending_chunk_cases():
             runpy.run_path(str(IMAGE / "share/host_cache_pending_recovery_vm.py"))[
@@ -1268,7 +1273,6 @@ def main():
         running_retention_cases(helper, uuid)
         runpy.run_path(str(IMAGE / "share/manifest_publication_vm.py"))["run"](sys.modules[__name__], publisher, uuid)
         runpy.run_path(str(IMAGE / "share/host_cache_encoded_recovery_vm.py"))["run"](sys.modules[__name__], uuid)
-        runpy.run_path(str(IMAGE / "share/shared_reextract_vm.py"))["run"](sys.modules[__name__], uuid)
         manifest_recovery_cases(uuid, manifest_candidates, helper)
         runpy.run_path(str(IMAGE / "share/host_cache_index_recovery_vm.py"))[
             "run"](sys.modules[__name__], uuid, index_candidates)
