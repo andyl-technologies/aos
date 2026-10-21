@@ -16,8 +16,9 @@
 ##! features     package-qualified features passed with --features
 ##! invocations  Cargo commands sharing that resolution: `command` is test
 ##!              (compiled with --no-run) or build, `targets` its target
-##!              flags; a build that names examples resolves dev-dependencies
-##!              exactly as the test command does, so it adds no recompiles
+##!              flags, and `cargoProfile` an optional --profile; a build
+##!              that names examples resolves dev-dependencies exactly as the
+##!              test command does, so it adds no recompiles
 ##! collect      packages whose executables are published (default packages)
 ##! doctests     run and record doctests for the selected packages
 ##! serves       gate requests this selection answers, keyed by mode:
@@ -36,8 +37,14 @@
 ##! crucible's test-double gates; crucible-cargo skips those targets for that
 ##! request, as Cargo does.
 ##!
+##! Debug `cargo build` and `cargo run` requests are served from the test
+##! profile, which inherits the development profile's debug assertions and
+##! overflow checks and differs only in optimization level and debug info
+##! (which collection strips anyway). Building them with the development
+##! profile would compile every crate a second time.
+##!
 ##! A gate request that no selection serves fails with the request to add.
-let
+{lib}: let
   # Apache host crates whose tests gates run in the debug profile.
   apacheDebugPackages = [
     "aos-ability-crucible"
@@ -92,6 +99,9 @@ let
   # Every kind except examples, for packages whose examples come from a
   # selection without crucible-qemu's test support.
   nonExampleKinds = ["lib" "bin" "test" "bench"];
+
+  # Packages whose dev-dependencies enable crucible-qemu's test support.
+  qemuTestSupportPackages = ["crucible-api" "crucible-cli" "crucible-daemon"];
 in {
   # Apache host crates, debug test profile.
   apacheTests = [
@@ -112,6 +122,7 @@ in {
         }
         {
           command = "build";
+          cargoProfile = "test";
           targets = [
             "--bins"
             "--example phase5_live_asset_fixture"
@@ -178,11 +189,14 @@ in {
     # Conflict: destructive-recovery-faults compiles fault-injection tests
     # that arm process-wide triggers and change store recovery paths. The
     # CLI feature enables it on crucible-daemon, crucible-campaign, and
-    # crucible-cas, so both gate requests share this one resolution.
+    # crucible-cas, so both gate requests share this one resolution. It
+    # changes crucible-cas, under nearly every Crucible crate, so the
+    # selection names only the two requested packages: their lib and test
+    # targets are all it compiles beyond the libraries.
     {
       id = "destructive-recovery-faults";
-      packages = apacheDebugPackages;
-      features = apacheDebugFeatures ++ ["crucible-cli/destructive-recovery-faults"];
+      packages = ["crucible-cas" "crucible-cli"];
+      features = ["crucible-cli/destructive-recovery-faults"];
       invocations = [
         {
           command = "test";
@@ -204,13 +218,17 @@ in {
 
     # Conflict: crucible-qemu's production examples take cfg(not(feature =
     # "test-support")) paths, and their tests assert that behavior; the
-    # unified build enables test-support through its dev-dependencies.
-    # crucible/test-support matches the unified crucible so only
-    # crucible-qemu recompiles.
+    # unified build enables test-support through the dev-dependencies of
+    # crucible-api, crucible-cli, and crucible-daemon. Leaving those three
+    # out, and enabling the session test support only crucible-api's
+    # dev-dependencies supplied, keeps every first-party feature as in the
+    # unified build. Cargo cannot enable the third-party features only
+    # those packages need (rustix termios, serde_core defaults), so
+    # crucible-campaign and crucible recompile here as well.
     {
       id = "qemu-production-examples";
-      packages = ["crucible-qemu"];
-      features = ["crucible/test-support"];
+      packages = lib.subtractLists qemuTestSupportPackages apacheDebugPackages;
+      features = apacheDebugFeatures ++ ["crucible-session/test-support"];
       invocations = [
         {
           command = "test";
@@ -218,9 +236,11 @@ in {
         }
         {
           command = "build";
+          cargoProfile = "test";
           targets = ["--example crucible-qemu-live-block-realization"];
         }
       ];
+      collect = ["crucible-qemu"];
       serves = {
         test = [
           {

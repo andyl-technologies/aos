@@ -72,7 +72,7 @@
   sed,
   zstd,
 }: let
-  selections = import ./_workspace-test-selections.nix;
+  selections = import ./_workspace-test-selections.nix {inherit lib;};
   buildSource = import ./_cargo-build-source.nix {inherit lib;};
   dummySource = mkCargoDummySource {
     srcRoot = ../../../crates;
@@ -110,6 +110,7 @@
           )
           (selectionFlags profile selection)
         ]
+        ++ lib.optional (invocation ? cargoProfile) "--profile ${invocation.cargoProfile}"
         ++ invocation.targets
       );
     })
