@@ -133,7 +133,7 @@ retirement unit. Keys use existing identity and layout rules unchanged.
 | Resume | none | none | Leave recovery custody after actual cache state reconciliation |
 | InspectPending | none | none | Retain a pending inode incarnation for non-serving lifecycle recovery |
 | InspectQuarantine | none | one read-only unverified quarantine inode | Observe existing publisher-owned sealed-body quarantine custody; no lifecycle token |
-| Quarantine | none | none | Move the exact retained canonical sealed inode into quarantine without replacement |
+| Quarantine | none | none | Move the exact retained canonical sealed inode or encoded body unit into quarantine without replacement |
 
 Error responses carry no descriptors, binding or body-incarnation token.
 Replies echo version, request ID, operation, domain and cache incarnation.
@@ -165,7 +165,7 @@ are zero. Claims, bodies and tokens are absent unless required below.
 | Inventory | optional inventory cursor | inventory and optional next cursor |
 | InspectPending | body | body-incarnation token |
 | InspectQuarantine | sealed body and optional 32-byte quarantine name suffix | none |
-| Quarantine | sealed body and body-incarnation token | none |
+| Quarantine | sealed, chunk or pack body and body-incarnation token | none |
 
 Claim profile and plaintext size must agree with configured profile and
 verified content. Inline claims have zero manifest offset/length and no
@@ -232,8 +232,8 @@ It is permitted in recovery and running custody. Unknown operation values
 remain rejected; an older receiver cannot substitute another operation.
 
 Quarantine requires the publisher's existing token for an actually retained
-canonical sealed inode. The publisher compares that original inode with its
-canonical directory entry, then moves it without replacement to
+canonical body unit. For a sealed body, the publisher compares that original
+inode with its canonical directory entry, then moves it without replacement to
 `quarantine/<hash>.<incarnation>`, where the suffix is the token's 64 lowercase
 hexadecimal digits. Both directories are synchronized before success and the
 old lifecycle token is removed. Earlier quarantined copies of the same hash
@@ -243,6 +243,18 @@ no descriptor, binding or token. Quarantine grants no permission to serve,
 restore, wipe or remove that inode, and does not revoke descriptors already
 held by readers. The cache must independently revoke its affected read views
 and retain the original allocation and funding under HOST-15 and HOST-27.
+
+For an encoded chunk or pack/index pair, the same operation retains the exact
+original members observed by InspectBody. Each destination is
+`quarantine/encoded.<canonical-filename>.<incarnation>`, preserving the chunk
+codec or the pack/index extension. Every original and every destination is
+checked before the first move; each move is no-replace and both directories
+are synchronized. A partial filesystem failure retains the original unit's
+actual member locations and descriptors for cold reconciliation. After any
+failed encoded exchange the old token cannot authorize another mutation in
+that owner. An incomplete pair supplies no authority to restore or delete its
+surviving member. Encoded quarantine does not verify bytes, issue a verity
+binding, release original funding or grant content-serving authority (D-131).
 
 InspectPending is permitted during recovery custody. It independently opens
 the domain's pending entry through its typed key and verifies directory-relative
@@ -261,7 +273,7 @@ Drain; the publisher rejects conflicting work until all prior-incarnation
 commands finish. Drain then grants the new incarnation exclusive recovery
 custody: Inventory, Probe, InspectBody, InspectPending, InspectQuarantine and
 Adopt are permitted.
-Quarantine is permitted only for a canonical sealed incarnation actually
+Quarantine is permitted only for a canonical body incarnation actually
 retained by that publisher after Drain; a token from before Drain is invalid.
 Restore and FinishRetirement of verified pending incarnations are permitted;
 ordinary publication and new retirement remain blocked. The cache reconstructs its real

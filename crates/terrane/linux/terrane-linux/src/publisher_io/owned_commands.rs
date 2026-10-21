@@ -143,7 +143,7 @@ pub enum NativeOperation {
         /// An optional public name tag; this grants no lifecycle authority.
         incarnation: Option<[u8; 32]>,
     },
-    /// Quarantines an exact retained canonical sealed inode without replacing another.
+    /// Quarantines an exact retained canonical body unit without replacing another.
     Quarantine {
         /// The registered key of the retained original canonical inode.
         key: NativeBodyKey,
@@ -255,6 +255,7 @@ enum Transition {
 enum Location {
     Canonical,
     Pending,
+    Quarantined,
 }
 
 struct RetainedBody {
@@ -504,10 +505,20 @@ impl CommandOwner {
                 io::Error::new(io::ErrorKind::PermissionDenied, "unknown body incarnation")
             })?;
         let body = &self.bodies[index];
-        if !matches!(key, NativeBodyKey::Sealed { .. }) || body.location != Location::Canonical {
-            return Err(invalid(
-                "quarantine requires an original canonical sealed inode",
-            ));
+        if body.location != Location::Canonical {
+            return Err(invalid("quarantine requires an original canonical inode"));
+        }
+        if !matches!(key, NativeBodyKey::Sealed { .. }) {
+            // A failed multi-member exchange cannot reuse the old token for
+            // restore, retirement or removal. Retain all original progress.
+            let body = &mut self.bodies[index];
+            body.location = Location::Quarantined;
+            body.encoded
+                .as_mut()
+                .ok_or_else(|| invalid("encoded quarantine lost original unit"))?
+                .quarantine(&self.body_io, &token)?;
+            self.bodies.remove(index);
+            return Ok(NativeCommandResult::Complete);
         }
         let claim = body
             .claim
@@ -612,6 +623,9 @@ impl CommandOwner {
                 _ => false,
             };
             if same {
+                if body.location == Location::Quarantined {
+                    return Err(invalid("encoded quarantine requires cold reconciliation"));
+                }
                 let token = body.token;
                 body.encoded = Some(unit);
                 body.location = if pending {

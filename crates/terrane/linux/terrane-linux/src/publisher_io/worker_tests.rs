@@ -27,6 +27,9 @@ use super::{
 #[path = "worker_tests/bound.rs"]
 mod bound;
 
+#[path = "worker_tests/encoded_quarantine.rs"]
+mod encoded_quarantine;
+
 fn fixture(name: &str) -> [PathBuf; 4] {
     let root =
         PathBuf::from(std::env::var_os("TERRANE_PUBLISH_VM_ROOT").expect("disk-backed VM fixture"));
@@ -590,6 +593,7 @@ fn pack_pair_reconciles_actual_partial_rename_without_replacing_collision(
     assert!(pack.exists() && index.exists());
     drop(worker);
     owner.join().unwrap();
+    encoded_quarantine::exercise(confinement, root, &pack, &index);
 }
 
 fn failed_second_unlink_recovers_orphan_index_without_pack_authority(

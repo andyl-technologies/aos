@@ -77,6 +77,14 @@ fn fixture_inputs() -> io::Result<()> {
             );
         }
     }
+    println!(
+        "worker-pack-partial-rename/chunks/51/{}.0\t{}",
+        "51".repeat(32),
+        b"\0unverified-chunk"
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    );
     Ok(())
 }
 

@@ -2834,6 +2834,26 @@ is added rather than editing history.
     allocations without allowing a caller to mint mutation authority.
   - **Affects:** HOST-15, HOST-27, HOST-32 and publisher-local-v1.
 
+- **[D-131] Preserve exact encoded units during quarantine.**
+  - **Status:** Decided (2026-10-21)
+  - **Decision:** Extend publisher-local Quarantine to the actually retained
+    encoded chunk and pack/index keys. Name each original member
+    `quarantine/encoded.<canonical-filename>.<incarnation>` without replacement.
+    Check the complete original unit and all destinations before moving any
+    member, synchronize each actual move, and retain partial progress on error.
+    A failed encoded exchange excludes further mutation through its old token
+    in that owner; reconciliation requires fresh physical custody. Quarantine
+    supplies no content validity, restore, deletion, pin or funding-release
+    authority. InspectQuarantine remains sealed-only until its encoded recovery
+    observation contract is implemented and independently qualified.
+  - **Rationale:** Later-read verification also covers encoded chunks,
+    dictionaries and metadata. Their original inode allocations must survive
+    corruption, and moving a pack cannot discard its separately charged index.
+    The canonical name and original token distinguish codec, member class and
+    incarnation without treating corrupt bytes as a content-validity receipt.
+  - **Affects:** HOST-15, HOST-27, HOST-32 and publisher-local-v1. Native read
+    reporting, refetch and recovery reconciliation remain separate obligations.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**

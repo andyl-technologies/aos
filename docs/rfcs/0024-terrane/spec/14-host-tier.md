@@ -37,7 +37,8 @@ registered prefixes:
   chunks/<aa>/<hash>.<codec>           cached individual chunk bodies
   sealed/<aa>/<object-hash>            sealed whole files, verity-enabled
   staging/<publisher-id>/...           publisher-private, never served
-  quarantine/<hash>[.<incarnation>]    failed verification, awaiting scrub
+  quarantine/<hash>[.<incarnation>]    failed sealed verification, awaiting scrub
+  quarantine/encoded.<name>.<incarnation>  original encoded member awaiting scrub
   pending-delete/<hash>                two-phase delete, first phase
   state/                               embedded KV: pins, reservations, leases
 ```

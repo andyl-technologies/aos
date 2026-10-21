@@ -138,7 +138,7 @@ fn quarantine_inspection_returns_only_one_unverified_descriptor() {
 }
 
 #[test]
-fn quarantine_requires_an_exact_sealed_incarnation_and_returns_no_authority() {
+fn quarantine_requires_an_exact_body_incarnation_and_returns_no_authority() {
     let request = Packet {
         operation: Operation::Quarantine as i32,
         body: publish(false).body,
@@ -157,7 +157,28 @@ fn quarantine_requires_an_exact_sealed_incarnation_and_returns_no_authority() {
     for kind in [BodyKind::Chunk, BodyKind::Pack] {
         let mut changed = request.clone();
         changed.body.as_mut().unwrap().kind = kind as i32;
+        changed.body.as_mut().unwrap().codec = 255;
         assert!(validate_packet(&changed, 0, false, &policy()).is_err());
+    }
+    for body in [
+        BodyKey {
+            kind: BodyKind::Chunk as i32,
+            descriptor: publish(false).body.unwrap().descriptor,
+            codec: 0,
+            ..BodyKey::default()
+        },
+        BodyKey {
+            kind: BodyKind::Pack as i32,
+            pack_id: vec![2; 16],
+            ..BodyKey::default()
+        },
+    ] {
+        let encoded = Packet {
+            body: Some(body),
+            ..request.clone()
+        };
+        assert!(decode_packet(&encoded.encode_to_vec(), 0, false, &policy()).is_ok());
+        assert!(decode_packet(&encoded.encode_to_vec(), 1, false, &policy()).is_err());
     }
     let changed = Packet {
         claim: publish(false).claim,

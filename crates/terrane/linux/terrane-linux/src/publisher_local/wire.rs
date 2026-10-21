@@ -35,7 +35,7 @@ pub enum Operation {
     InspectPending = 11,
     /// Observes retained quarantine custody without content or lifecycle authority.
     InspectQuarantine = 12,
-    /// Moves an exact retained canonical sealed inode into non-serving quarantine.
+    /// Moves an exact retained canonical body unit into non-serving quarantine.
     Quarantine = 13,
 }
 

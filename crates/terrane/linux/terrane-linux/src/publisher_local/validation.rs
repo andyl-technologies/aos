@@ -198,10 +198,7 @@ pub fn validate_packet(
         || packet.body.is_some() != needs_body
         || !valid_token
         || needs_claim && !sealed
-        || matches!(
-            operation,
-            Operation::InspectQuarantine | Operation::Quarantine
-        ) && !sealed
+        || operation == Operation::InspectQuarantine && !sealed
     {
         return Err(Error::Invalid("request command fields"));
     }

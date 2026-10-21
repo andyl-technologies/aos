@@ -38,7 +38,7 @@ EXPECTED = {
     },
     "publisher_local_protocol": {
         "quarantine_inspection_returns_only_one_unverified_descriptor",
-        "quarantine_requires_an_exact_sealed_incarnation_and_returns_no_authority",
+        "quarantine_requires_an_exact_body_incarnation_and_returns_no_authority",
         "registered_probe_roundtrips_without_descriptors",
         "unknown_fields_fail_at_every_message_depth",
         "duplicate_singular_wrong_wire_and_boolean_fields_fail",

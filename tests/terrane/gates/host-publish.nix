@@ -86,6 +86,7 @@
                   for root, byte in [("worker-pack-partial-rename", "31"),
                                      ("worker-pack-partial-unlink", "42")]
                   for extension in ["pack", "idx"]}
+      expected.add("worker-pack-partial-rename/chunks/51/" + "51" * 32 + ".0")
       seen = set()
       for record in pathlib.Path(sys.argv[2]).read_text().splitlines():
           relative, encoded = record.split("\t")
@@ -150,6 +151,10 @@
         chmod 2770 "$root/objects" "$root/objects/pack" "$root/objects/pack/$byte"
         chmod 0640 "$root/objects/pack/$byte/$pack_id.pack" "$root/objects/pack/$byte/$pack_id.idx"
       done
+      chunk_root=/mnt/terrane-publication/worker-pack-partial-rename/chunks/51
+      chown -R 840:845 "$chunk_root"
+      chmod 2770 "$chunk_root"
+      chmod 0640 "$chunk_root"/*.0
       ln /mnt/terrane-publication/worker-pack-partial-unlink/objects/pack/42/42424242424242424242424242424242.idx \
         /mnt/terrane-publication/worker-pack-partial-unlink/index-survivor
       TERRANE_PUBLISH_VM=1 TERRANE_PUBLISH_VM_ROOT=/mnt/terrane-publication \

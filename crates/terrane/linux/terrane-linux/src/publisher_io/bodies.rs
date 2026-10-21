@@ -18,6 +18,7 @@ pub(super) struct BodyIo {
     chunks: File,
     objects: File,
     pending: File,
+    quarantine: File,
     uid: u32,
     gid: u32,
     device: u64,
@@ -29,6 +30,7 @@ pub(super) struct BodyIo {
 enum Location {
     Canonical,
     Pending,
+    Quarantined,
 }
 
 struct Member {
@@ -91,6 +93,7 @@ impl BodyIo {
             chunks,
             objects: open("objects")?,
             pending: open("pending-delete")?,
+            quarantine: open("quarantine")?,
             uid: config.content_uid,
             gid: config.content_gid,
             device,
@@ -433,6 +436,66 @@ impl EncodedUnit {
         io.pending.sync_all()
     }
 
+    /// Moves every original member into quarantine without content verification.
+    ///
+    /// Both names of a pack/index pair are checked before the first effect.
+    /// Any partial progress remains in this unit for recovery; this operation
+    /// never restores, deletes or replaces an inode after a failed exchange.
+    ///
+    /// # Errors
+    /// Refuses missing members, foreign custody, changed canonical inodes,
+    /// existing quarantine destinations or actual rename/synchronization errors.
+    pub(super) fn quarantine(&mut self, io: &BodyIo, token: &[u8; 32]) -> io::Result<()> {
+        if self.missing.is_some() || self.members.is_empty() {
+            return Err(invalid("quarantine requires every original encoded member"));
+        }
+        io.check(&io.quarantine, true)?;
+        let names = self
+            .members
+            .iter()
+            .map(|member| format!("encoded.{}.{}", member.canonical, hex(token)))
+            .collect::<Vec<_>>();
+        for (member, name) in self.members.iter().zip(&names) {
+            if member.location != Location::Canonical {
+                return Err(invalid("encoded quarantine requires canonical originals"));
+            }
+            io.check(&member.parent, true)?;
+            io.check(&member.file, false)?;
+            compare(
+                &member.file,
+                &readonly(&member.parent, &member.canonical, false)?,
+            )?;
+            match fs::statat(&io.quarantine, name.as_str(), AtFlags::SYMLINK_NOFOLLOW) {
+                Ok(_) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::AlreadyExists,
+                        "encoded quarantine destination exists",
+                    ));
+                }
+                Err(rustix::io::Errno::NOENT) => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        for (member, name) in self.members.iter_mut().zip(&names) {
+            // Recheck the exact original immediately before each no-replace move.
+            compare(
+                &member.file,
+                &readonly(&member.parent, &member.canonical, false)?,
+            )?;
+            fs::renameat_with(
+                &member.parent,
+                member.canonical.as_str(),
+                &io.quarantine,
+                name.as_str(),
+                fs::RenameFlags::NOREPLACE,
+            )?;
+            member.location = Location::Quarantined;
+            member.parent.sync_all()?;
+            io.quarantine.sync_all()?;
+        }
+        Ok(())
+    }
+
     pub(super) fn retire(&mut self, io: &BodyIo) -> io::Result<()> {
         for member in &mut self.members {
             if member.location == Location::Pending {
@@ -441,6 +504,9 @@ impl EncodedUnit {
                     &readonly(&io.pending, &member.pending, false)?,
                 )?;
                 continue;
+            }
+            if member.location != Location::Canonical {
+                return Err(invalid("quarantined encoded member cannot retire"));
             }
             compare(
                 &member.file,
@@ -475,6 +541,9 @@ impl EncodedUnit {
                     &readonly(&member.parent, &member.canonical, false)?,
                 )?;
                 continue;
+            }
+            if member.location != Location::Pending {
+                return Err(invalid("quarantined encoded member cannot restore"));
             }
             compare(
                 &member.file,
