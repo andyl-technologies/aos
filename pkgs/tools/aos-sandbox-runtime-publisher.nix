@@ -91,6 +91,8 @@ in
     checkType = "debug";
     cargoTestFlags = "--no-default-features --features ${selectedFeature} -p aos-sandbox-services -p aos-sandbox-broker-session-security";
     cargoNextest = true;
+    # Match the workspace native test runner; installed stack limits stay fixed.
+    RUST_MIN_STACK = "33554432";
     doCheck = true;
     buildDeps = [buildProtobuf] ++ lib.optional bootPreparation (toString kernelCloneLayout);
     runtimeDeps = runtime;

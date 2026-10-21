@@ -161,6 +161,8 @@ in
         ++ map (role: "${roleTestFlags role} ${roleTestPackages role}")
         (lib.filter (role: role != "controller") serviceRoles);
       cargoNextest = true;
+      # Match the workspace native test runner; installed stack limits stay fixed.
+      RUST_MIN_STACK = "33554432";
       doCheck = true;
       buildDeps = [buildProtobuf] ++ onlineInputs ++ requiredFloorInputs;
       runtimeDeps = [aos-git-helper git] ++ onlineInputs ++ requiredFloorInputs;
