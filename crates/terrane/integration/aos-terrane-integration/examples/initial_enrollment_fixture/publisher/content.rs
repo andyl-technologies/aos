@@ -172,3 +172,35 @@ pub(super) async fn exercise_objects(
 ) -> io::Result<()> {
     objects::exercise(store, profile).await
 }
+
+/// Seals the canonical empty inline object without a fabricated source admission.
+pub(super) async fn exercise_sealed(store: &NativeContentStore) -> io::Result<()> {
+    use std::os::unix::fs::FileExt;
+    use terrane_linux::host_cache::NativePreparedObject;
+    use terrane_sdk::host::cache::ReassemblyMode;
+
+    let identity = TERRANE_V1
+        .calculate(IdentityKind::Chunk, &[])
+        .map_err(io::Error::other)?;
+    let NativePreparedObject::Sealed(object) = store
+        .prepare_object(&identity, ReassemblyMode::Never)
+        .await
+        .map_err(io::Error::other)?
+    else {
+        return Err(io::Error::other("inline object escaped mandatory sealing"));
+    };
+    assert_eq!(object.identity(), &identity);
+    assert_eq!(object.claim().plaintext_size(), 0);
+    assert_eq!(object.handle().metadata()?.len(), 0);
+    terrane_linux::verity::measure(object.handle())?;
+    assert!(object.handle().write_at(b"forbidden", 0).is_err());
+    assert_eq!(object.handle().metadata()?.len(), 0);
+
+    let report = object.into_cache().await.map_err(io::Error::other)?;
+    assert_eq!(report.released_source_admissions, 0);
+    assert!(report.release_grace_ends_at > 0);
+    println!(
+        "PASS actual never-mode inline object is a read-only fs-verity inode with genuine completed cache handoff"
+    );
+    Ok(())
+}

@@ -57,14 +57,25 @@ pub(super) fn run() -> io::Result<()> {
 }
 
 pub(super) fn prepare() -> io::Result<()> {
-    prepare_with(false)
+    prepare_with(Preparation::Content)
 }
 
 pub(super) fn prepare_objects() -> io::Result<()> {
-    prepare_with(true)
+    prepare_with(Preparation::Objects)
 }
 
-fn prepare_with(objects: bool) -> io::Result<()> {
+pub(super) fn prepare_sealed() -> io::Result<()> {
+    prepare_with(Preparation::Sealed)
+}
+
+#[derive(Clone, Copy)]
+enum Preparation {
+    Content,
+    Objects,
+    Sealed,
+}
+
+fn prepare_with(preparation: Preparation) -> io::Result<()> {
     super::reader::actual_identity(840, &[844, 845])?;
     use std::time::Duration;
     use terrane_format::chunking::ChunkProfile;
@@ -148,21 +159,21 @@ fn prepare_with(objects: bool) -> io::Result<()> {
         );
         let store =
             NativeContentStore::new(ready, Duration::from_secs(30)).map_err(super::source_error)?;
-        if objects {
-            runtime.block_on(content::exercise_objects(
-                &store,
-                &ChunkProfile::cdc_1m(SEED),
-            ))?;
-        } else {
-            runtime.block_on(content::exercise(&store, &ChunkProfile::cdc_1m(SEED)))?;
+        let profile = ChunkProfile::cdc_1m(SEED);
+        match preparation {
+            Preparation::Objects => {
+                runtime.block_on(content::exercise_objects(&store, &profile))?
+            }
+            Preparation::Content => runtime.block_on(content::exercise(&store, &profile))?,
+            Preparation::Sealed => runtime.block_on(content::exercise_sealed(&store))?,
         }
         runtime.block_on(store.ready().validate_portable())?;
-        if objects {
+        if matches!(preparation, Preparation::Objects) {
             println!(
                 "PASS actual reopened native chunked object reads and original grant renewal for {}",
                 DOMAINS[owner]
             );
-        } else {
+        } else if matches!(preparation, Preparation::Content) {
             println!(
                 "PASS actual native ContentStore chunk and metadata admission, verified reads, ranges, membership and invalid deduplication context for {}",
                 DOMAINS[owner]

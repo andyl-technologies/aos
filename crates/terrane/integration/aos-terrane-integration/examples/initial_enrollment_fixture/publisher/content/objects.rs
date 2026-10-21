@@ -9,7 +9,8 @@ use terrane_format::{
     identity::{IdentityKind, TERRANE_V1},
     manifest::{ChunkRef, Manifest},
 };
-use terrane_linux::host_cache::NativeContentStore;
+use terrane_linux::host_cache::{NativeContentStore, NativePreparedObject};
+use terrane_sdk::host::cache::ReassemblyMode;
 use terrane_sdk::store::{
     ByteRange, ChunkPosition, ChunkUpload, Clock, ContentStore, ContentUpload, MetaUpload,
     StoreErrorKind, TokioClock,
@@ -86,10 +87,14 @@ pub(super) async fn exercise(store: &NativeContentStore, profile: &ChunkProfile)
         .map_err(io::Error::other)?;
 
     println!("OBJECT_OPEN_STAGE open-manifest");
-    let object = store
-        .open_manifest_chunks(&identity)
+    let NativePreparedObject::Chunked(object) = store
+        .prepare_object(&identity, ReassemblyMode::Never)
         .await
-        .map_err(io::Error::other)?;
+        .map_err(io::Error::other)?
+    else {
+        return Err(io::Error::other("never mode sealed a multi-chunk object"));
+    };
+    let object = *object;
     assert_eq!(object.identity(), &identity);
     assert_eq!(object.plaintext_size(), expected.len() as u64);
 

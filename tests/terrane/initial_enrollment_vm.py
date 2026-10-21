@@ -211,6 +211,18 @@ def configured_publication():
         require(sealed_snapshot() == sealed_before,
                 "chunked object reads changed the original sealed namespace")
         print("PASS root observed unchanged original sealed inodes across native chunked object reads", flush=True)
+        run_case("seal-public-private", role_command("seal-public-private", 840, [844, 845]))
+        sealed_after = sealed_snapshot()
+        before_paths = {(row[0], row[1]): row for row in sealed_before}
+        after_paths = {(row[0], row[1]): row for row in sealed_after}
+        require(all(after_paths.get(key) == row for key, row in before_paths.items()),
+                "inline sealing changed an original sealed inode")
+        new_files = [row for key, row in after_paths.items()
+                     if key not in before_paths and not (row[4] & 0o170000) == 0o040000]
+        require(len(new_files) == 2 and {row[0] for row in new_files} == {"public", "private"}
+                and all((row[4] & 0o170000) == 0o100000 and row[5] == 0 for row in new_files),
+                "inline sealing lacks exactly one actual empty sealed inode per domain")
+        print("PASS root observed actual distinct empty sealed inodes in both native domains", flush=True)
         require(publisher.poll() is None, "configured publisher exited during actual preparation")
     finally:
         stop(publisher)

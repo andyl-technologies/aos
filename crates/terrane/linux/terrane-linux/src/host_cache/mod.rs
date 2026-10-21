@@ -26,7 +26,10 @@ mod shared_residences;
 mod source;
 
 #[cfg(feature = "tokio")]
-pub use content::{NativeChunkedObject, NativeChunkedReader, NativeContentStore};
+pub use content::{
+    NativeChunkedObject, NativeChunkedReader, NativeContentStore, NativePreparedObject,
+    NativeSealedObject,
+};
 #[cfg(feature = "tokio")]
 pub use manifest_source::NativeManifestSource;
 #[cfg(feature = "tokio")]

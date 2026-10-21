@@ -7,9 +7,11 @@
 //! or guest authorization; callers apply their repository guard separately.
 
 mod object;
+mod prepared;
 mod validation;
 
 pub use object::{NativeChunkedObject, NativeChunkedReader};
+pub use prepared::{NativePreparedObject, NativeSealedObject};
 
 use super::{NativeConsumerLease, NativeReady};
 use std::{

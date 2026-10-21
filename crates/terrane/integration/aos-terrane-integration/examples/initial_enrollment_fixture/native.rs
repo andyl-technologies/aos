@@ -28,6 +28,7 @@ const SELECTORS: &[&str] = &[
     "publisher-positive",
     "ready-public-private",
     "open-public-private",
+    "seal-public-private",
     "verify-positive",
     "read-public",
     "read-private",
@@ -75,6 +76,7 @@ pub(super) fn run() -> io::Result<()> {
         "publisher-positive" => publisher::run(),
         "ready-public-private" => publisher::prepare(),
         "open-public-private" => publisher::prepare_objects(),
+        "seal-public-private" => publisher::prepare_sealed(),
         "read-public" | "read-private" | "read-publisher" | "foreign-private" => {
             reader::run(selector)
         }
