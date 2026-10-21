@@ -89,6 +89,84 @@ class BootstrapHarness:
         return stack
 
 
+class PublicationPreparationTests(unittest.TestCase):
+    def setUp(self):
+        self.tools = {name: name for name in (
+            "python", "apr", "git", "opensshBin", "nixBin", "helperStorePath",
+            "workerUrl", "publicationProject",
+        )}
+
+    def test_local_corpus_finishes_before_runtime_and_authority_setup(self):
+        events = []
+        signed = [{"surfaceRoot": "surface-a"}, {"surfaceRoot": "surface-b"}]
+        corpus = {"large_objects": [{"sha256": "original"}]}
+        distributed = ({"original": "a"}, {"original": "b"})
+        retained = {}
+
+        def author(*args, **kwargs):
+            events.append(kwargs["authoring_name"])
+            return signed[len(events) - 1]
+
+        def prepare(*args):
+            events.append("corpus")
+            return corpus
+
+        def distribute(client, tools, first, second, original):
+            self.assertIs(first, signed[0])
+            self.assertIs(second, signed[1])
+            self.assertIs(original, corpus)
+            events.append("distribute")
+            return distributed
+
+        def begin_runtime(*args, **kwargs):
+            events.append("runtime")
+            raise RuntimeError("stop after local preparation")
+
+        with ExitStack() as stack:
+            for name, callback in {
+                "prepare_direct_signed_surface": author,
+                "prepare_direct_publication_corpus": prepare,
+                "split_direct_publication_sources": distribute,
+                "retain_direct_flow": lambda name, value: retained.update({name: value}),
+                "private_guest_command": begin_runtime,
+            }.items():
+                stack.enter_context(patch.object(FLOW, name, callback, create=True))
+            with self.assertRaisesRegex(RuntimeError, "stop after local preparation"):
+                FLOW.run_external_direct_fleet(
+                    "client", "native", "worker", "s3", "database", self.tools,
+                    "database-host", "configuration")
+
+        self.assertEqual(events, [
+            "external-direct", "external-overlap", "corpus", "distribute", "runtime"])
+        self.assertIs(retained["actual-publication-source-corpus.json"], corpus)
+
+    def test_failed_local_authoring_starts_no_runtime_or_authority_work(self):
+        with patch.object(FLOW, "prepare_direct_signed_surface",
+                side_effect=ValueError("authoring failed"), create=True), patch.object(
+                FLOW, "private_guest_command", create=True) as runtime:
+            with self.assertRaisesRegex(ValueError, "authoring failed"):
+                FLOW.run_external_direct_fleet(
+                    "client", "native", "worker", "s3", "database", self.tools,
+                    "database-host", "configuration")
+
+        runtime.assert_not_called()
+
+    def test_prepared_inputs_keep_the_complete_corpus_for_runtime_assessment(self):
+        corpus = {"large_objects": [{"sha256": "original"}], "metadata_source_bytes": 123}
+        corpora = ({"original": "a"}, {"original": "b"})
+
+        with patch.object(FLOW, "prepare_direct_signed_surface",
+                side_effect=[{"surfaceRoot": "a"}, {"surfaceRoot": "b"}], create=True), patch.object(
+                FLOW, "prepare_direct_publication_corpus", return_value=corpus, create=True), patch.object(
+                FLOW, "split_direct_publication_sources", return_value=corpora, create=True), patch.object(
+                FLOW, "retain_direct_flow"):
+            prepared = FLOW.prepare_external_direct_publication_sources("client", self.tools)
+
+        self.assertIs(prepared["corpus"], corpus)
+        self.assertIs(prepared["corpora"]["a"], corpora[0])
+        self.assertIs(prepared["corpora"]["b"], corpora[1])
+
+
 class WorkerBootstrapTests(unittest.TestCase):
     def test_state_is_disjoint_and_runtime_inputs_are_preserved(self):
         original = original_configuration()

@@ -792,9 +792,8 @@ def prepare_direct_client_provider_policy(client, tools, credentials, *,
     return {**tools, "providerPolicyFile": policy["policyFile"]}
 
 
-def run_external_direct_publication(client, native, worker, s3, tools, controls, credentials,
-                                   authority, process, identity, acceptance, database_machine):
-    """Publish the real signed business corpus and retain runtime gates separately."""
+def prepare_external_direct_publication_sources(client, tools):
+    """Author local publication inputs before bounded authority is admitted."""
     sources = {}
     for label, name in (("a", "external-direct"), ("b", "external-overlap")):
         sources[label] = prepare_direct_signed_surface(client, tools["python"], tools["apr"], tools["git"],
@@ -804,6 +803,17 @@ def run_external_direct_publication(client, native, worker, s3, tools, controls,
     corpus = prepare_direct_publication_corpus(client, tools["python"], sources["a"]["surfaceRoot"])
     retain_direct_flow("actual-publication-source-corpus.json", corpus)
     corpus_a, corpus_b = split_direct_publication_sources(client, tools, sources["a"], sources["b"], corpus)
+    return {"sources": sources, "corpus": corpus, "corpora": {"a": corpus_a, "b": corpus_b}}
+
+
+def run_external_direct_publication(client, native, worker, s3, tools, controls, credentials,
+                                   authority, process, identity, acceptance, database_machine,
+                                   publication_inputs):
+    """Publish the real signed business corpus and retain runtime gates separately."""
+    sources = publication_inputs["sources"]
+    corpus = publication_inputs["corpus"]
+    corpus_a = publication_inputs["corpora"]["a"]
+    corpus_b = publication_inputs["corpora"]["b"]
     registries = {}
     for label, name in (("a", "external-direct"), ("b", "external-overlap")):
         registries[label] = controls.create_external_registry(
@@ -1066,6 +1076,9 @@ def run_external_direct_publication(client, native, worker, s3, tools, controls,
 def run_external_direct_fleet(client, native, worker, s3, database_machine, tools,
                               database_host, original_configuration):
     """Execute the genuine External path with no legacy snapshot/material shortcut."""
+    # Local APR compression and corpus generation need no provider authority.
+    # Complete them before the attestation's fixed lifetime starts ticking.
+    publication_inputs = prepare_external_direct_publication_sources(client, tools)
     private_guest_command(worker, "umask 077; install -d -m 0700 /var/lib/hybrid-worker")
     artifacts = capture_direct_artifacts(worker, tools)
     tools = {**tools, "installedNativeExecutableSha256": artifacts["files"]["nativeHub"]["sha256"],
@@ -1220,7 +1233,7 @@ def run_external_direct_fleet(client, native, worker, s3, database_machine, tool
     # paths in the caller so later verification/copy windows do not recreate it.
     tools = prepare_direct_client_provider_policy(client, tools, credentials)
     publication, process = run_external_direct_publication(client, native, worker, s3, tools, controls, credentials,
-        authority, process, identity, acceptance, database_machine)
+        authority, process, identity, acceptance, database_machine, publication_inputs)
     queue_spec = importlib.util.spec_from_file_location("production_queue_window", tools["queueFaultWindow"])
     queue_module = importlib.util.module_from_spec(queue_spec)
     queue_spec.loader.exec_module(queue_module)
