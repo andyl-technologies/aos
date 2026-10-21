@@ -78,6 +78,17 @@ pub(super) fn reject_missing_authority(packet: &[u8]) {
     );
 }
 
+pub(super) fn reject_unresolved_history() {
+    assert_eq!(
+        invoke(
+            "reject-unresolved-history",
+            BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES,
+            &[]
+        ),
+        b"unresolved-history-rejected-v1",
+    );
+}
+
 pub(super) fn reject_conflicting_operation(method: BrokerMethod, packet: &[u8]) {
     assert_eq!(
         invoke("reject-conflicting-operation", method, packet),

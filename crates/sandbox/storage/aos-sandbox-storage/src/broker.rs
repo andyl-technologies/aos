@@ -9494,6 +9494,10 @@ mod tests {
                     live_inventory_response = Some(inventory);
                     "inventory-live"
                 }
+                "inventory-blocked" => {
+                    storage_rpc_session::reject_unresolved_history();
+                    "inventory-blocked"
+                }
                 "retry" => {
                     storage_rpc_repair(true);
                     "retry-rejected"

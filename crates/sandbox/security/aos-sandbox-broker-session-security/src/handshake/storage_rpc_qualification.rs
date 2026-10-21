@@ -217,7 +217,10 @@ fn assert_exact_terminal_replay(
         wait_for_handshake_readiness(session.as_fd().unwrap(), false, deadline).unwrap();
         match session.0.receive_response_packet(RESPONSE_BYTES as usize) {
             Ok(packet) => {
-                assert_eq!(packet, outcome.canonical_packet());
+                assert!(
+                    packet == outcome.canonical_packet(),
+                    "signed terminal replay bytes differ"
+                );
                 break;
             }
             Err(Transport) => continue,
@@ -288,6 +291,29 @@ fn installed_storage_rpc_client() {
                 .unwrap()
                 .canonical_packet()
                 .to_vec()
+        }
+        "reject-unresolved-history" => {
+            assert_eq!(
+                method,
+                BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES
+            );
+            let (mut session, _) = connect(method, None).unwrap();
+            let prepared = session.prepare_authenticated_request(method, |coordinates| {
+                BrokerRequestEnvelope {
+                    method: method.into(),
+                    body: InventoryStorageRequest {
+                        header: Some(coordinates.request_header()).into(),
+                        ..Default::default()
+                    }
+                    .encode_to_vec(),
+                    ..Default::default()
+                }
+            });
+            assert!(matches!(
+                prepared,
+                Err(crate::BrokerSessionSecurityError::Currentness)
+            ));
+            b"unresolved-history-rejected-v1".to_vec()
         }
         "reject-conflicting-operation" => {
             assert!(matches!(
