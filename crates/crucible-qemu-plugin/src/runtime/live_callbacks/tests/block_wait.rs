@@ -2,6 +2,18 @@
 
 use super::*;
 
+/// Parks every vCPU, as the RR idle scan does before a guest-idle device wait.
+pub(super) fn park_every_vcpu(state: &LiveVcpuTimeCallbackState) {
+    let mut halted_vcpus = state
+        .try_halted_vcpus()
+        .unwrap_or_else(|error| panic!("halt tracker should be free: {error}"));
+    for vcpu in 0..halted_vcpus.vcpu_count() {
+        halted_vcpus
+            .mark_halted(vcpu)
+            .unwrap_or_else(|error| panic!("test vCPU should halt: {error}"));
+    }
+}
+
 #[test]
 fn live_block_wait_defers_until_the_host_publishes_a_deadline() {
     let slot = NodeSlot::new(KIND_VM);
@@ -11,6 +23,7 @@ fn live_block_wait_defers_until_the_host_publishes_a_deadline() {
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
     let state = test_live_state(48, 1, 0, &slot)
         .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
+    park_every_vcpu(&state);
     TEST_CLOCK_DEADLINE_PS.set(-1);
     LAST_QUEUED_ADVANCE_TICK.set(-1);
 
@@ -30,6 +43,7 @@ fn live_block_wait_does_not_authorize_a_deadline_during_next_idle() {
     slot.store_device_completion_deadline_tick(12);
     let state = test_live_state(148, 1, 0, &slot)
         .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
+    park_every_vcpu(&state);
     TEST_CLOCK_DEADLINE_PS.set(-1);
     LAST_QUEUED_ADVANCE_TICK.set(-1);
 
@@ -56,6 +70,7 @@ fn live_block_wait_parks_when_an_advance_still_owns_the_qemu_barrier() {
     slot.store_device_completion_deadline_tick(12);
     let state = test_live_state(48, 1, 0, &slot)
         .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
+    park_every_vcpu(&state);
     TEST_CLOCK_DEADLINE_PS.set(-1);
     LAST_QUEUED_ADVANCE_TICK.set(-1);
     TEST_QUEUED_ADVANCE_STATUS.set(-libc::EBUSY);
@@ -83,6 +98,7 @@ fn live_block_wait_queues_and_commits_the_device_deadline() {
     slot.store_device_completion_deadline_tick(12);
     let state = test_live_state(48, 1, 0, &slot)
         .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
+    park_every_vcpu(&state);
     TEST_CLOCK_DEADLINE_PS.set(-1);
     LAST_QUEUED_ADVANCE_TICK.set(-1);
 
@@ -107,6 +123,7 @@ fn live_block_wait_parks_below_a_ceiling_before_the_device_deadline() {
     slot.store_device_completion_deadline_tick(50);
     let state = test_live_state(48, 1, 0, &slot)
         .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
+    park_every_vcpu(&state);
     TEST_CLOCK_DEADLINE_PS.set(-1);
     LAST_QUEUED_ADVANCE_TICK.set(-1);
 
@@ -131,6 +148,7 @@ fn live_block_wait_preserves_an_earlier_timer_deadline() {
     slot.store_device_completion_deadline_tick(12);
     let state = test_live_state(48, 1, 0, &slot)
         .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
+    park_every_vcpu(&state);
     TEST_CLOCK_DEADLINE_PS.set(8);
     LAST_QUEUED_ADVANCE_TICK.set(-1);
 
@@ -151,6 +169,7 @@ fn live_block_wait_arms_from_its_fresh_raw_coordinate() {
     slot.store_device_completion_deadline_tick(300);
     let state = test_live_state(48, 1, 0, &slot)
         .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
+    park_every_vcpu(&state);
     TEST_CLOCK_DEADLINE_PS.set(-1);
     LAST_QUEUED_ADVANCE_TICK.set(-1);
     TEST_ICOUNT_RAW.set(4);

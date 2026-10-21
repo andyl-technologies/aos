@@ -302,10 +302,18 @@ impl RoundRobinRunState {
 }
 
 /// Per-vCPU halt state for the node-idle predicate.
+///
+/// A halt bit can be retained after QEMU reports the vCPU runnable again, for
+/// example while a control boundary or pause defers the resume's wake
+/// publication. Such a vCPU is *dispatchable*: still counted halted for the
+/// idle edge, but able to execute guest code. [`Self::all_halted_and_parked`]
+/// excludes it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VcpuHaltTracker {
     halted: Vec<bool>,
     halted_count: u32,
+    dispatchable: Vec<bool>,
+    dispatchable_count: u32,
 }
 
 impl VcpuHaltTracker {
@@ -321,6 +329,8 @@ impl VcpuHaltTracker {
         Ok(Self {
             halted: vec![false; vcpu_count as usize],
             halted_count: 0,
+            dispatchable: vec![false; vcpu_count as usize],
+            dispatchable_count: 0,
         })
     }
 
@@ -370,6 +380,8 @@ impl VcpuHaltTracker {
             *halted = true;
             self.halted_count += 1;
         }
+        // QEMU reports idle only for a vCPU that has no work, so it is parked.
+        self.clear_dispatchable(vcpu_id);
         Ok(())
     }
 
@@ -391,7 +403,39 @@ impl VcpuHaltTracker {
             *halted = false;
             self.halted_count -= 1;
         }
+        self.clear_dispatchable(vcpu_id);
         Ok(())
+    }
+
+    /// Records that QEMU reported a halted vCPU runnable without clearing its halt bit.
+    ///
+    /// The halt bit keeps its idle-edge meaning until the full resume runs,
+    /// but the vCPU no longer counts as parked. A running vCPU is unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RoundRobinError::VcpuOutOfRange`] when `vcpu_id` is outside the
+    /// configured range.
+    pub fn mark_dispatchable(&mut self, vcpu_id: u32) -> Result<(), RoundRobinError> {
+        if !self.is_halted(vcpu_id)? {
+            return Ok(());
+        }
+        if let Some(dispatchable) = self.dispatchable.get_mut(vcpu_id as usize)
+            && !*dispatchable
+        {
+            *dispatchable = true;
+            self.dispatchable_count += 1;
+        }
+        Ok(())
+    }
+
+    fn clear_dispatchable(&mut self, vcpu_id: u32) {
+        if let Some(dispatchable) = self.dispatchable.get_mut(vcpu_id as usize)
+            && *dispatchable
+        {
+            *dispatchable = false;
+            self.dispatchable_count -= 1;
+        }
     }
 
     /// Returns the next runnable vCPU after `vcpu_id` in fixed ascending order.
@@ -430,6 +474,15 @@ impl VcpuHaltTracker {
     #[must_use]
     pub fn all_halted(&self) -> bool {
         self.halted_count as usize == self.halted.len()
+    }
+
+    /// Returns whether every vCPU is halted and none can be dispatched.
+    ///
+    /// Only this state guarantees that QEMU will not execute guest code, so
+    /// only it may admit an idle jump from outside the RR idle path.
+    #[must_use]
+    pub fn all_halted_and_parked(&self) -> bool {
+        self.all_halted() && self.dispatchable_count == 0
     }
 }
 

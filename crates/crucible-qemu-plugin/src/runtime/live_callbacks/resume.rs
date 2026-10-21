@@ -38,7 +38,7 @@ impl LiveVcpuTimeCallbackState {
                 Some(raw_icount),
                 None,
             );
-            return Ok(());
+            return self.retain_halt_bit_while_dispatchable(vcpu_index);
         }
         if self.preserve_network_output_stop(raw_icount, "vcpu-resume")? {
             observe_selectable_resume(
@@ -47,7 +47,7 @@ impl LiveVcpuTimeCallbackState {
                 Some(raw_icount),
                 None,
             );
-            return Ok(());
+            return self.retain_halt_bit_while_dispatchable(vcpu_index);
         }
         let control_boundary_requested =
             PluginShmemOrdering::control_boundary_is_requested(self.slot.get());
@@ -59,7 +59,7 @@ impl LiveVcpuTimeCallbackState {
                     Some(raw_icount),
                     None,
                 );
-                return Ok(());
+                return self.retain_halt_bit_while_dispatchable(vcpu_index);
             }
             observe_selectable_resume(
                 SelectableResumePhase::IdleError,
@@ -98,7 +98,7 @@ impl LiveVcpuTimeCallbackState {
                 Some(raw_icount),
                 Some(current_icount),
             );
-            return Ok(());
+            return self.retain_halt_bit_while_dispatchable(vcpu_index);
         }
         let was_halted = {
             let mut halted_vcpus = self.try_halted_vcpus()?;
@@ -133,5 +133,21 @@ impl LiveVcpuTimeCallbackState {
             Some(current_icount),
         );
         Ok(())
+    }
+
+    /// Keeps a deferred resume's halt bit while recording that QEMU can run the vCPU.
+    ///
+    /// The early returns above defer the wake publication, so the halt bit
+    /// must survive until a later resume or idle callback settles it. QEMU
+    /// fires this callback only for a runnable vCPU, though, and may dispatch
+    /// it once the BQL drops. Marking it dispatchable keeps device waits from
+    /// arming an idle jump while it can still retire instructions.
+    fn retain_halt_bit_while_dispatchable(
+        &self,
+        vcpu_index: u32,
+    ) -> Result<(), LiveVcpuTimeCallbackError> {
+        self.try_halted_vcpus()?
+            .mark_dispatchable(vcpu_index)
+            .map_err(|source| LiveVcpuTimeCallbackError::VcpuHaltTracking { source })
     }
 }

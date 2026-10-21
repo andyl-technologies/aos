@@ -147,6 +147,32 @@ fn network_output_stop_survives_a_resume_before_original_frame_consumption()
 }
 
 #[test]
+fn network_output_deferred_resume_keeps_device_waits_from_arming()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut fixture = OutputFixture::new()?;
+    let state = fixture.state()?;
+    state.on_vcpu_init(0)?;
+    state.try_halted_vcpus()?.mark_halted(0)?;
+    TEST_CLOCK_DEADLINE_PS.set(-1);
+    LAST_QUEUED_ADVANCE_TICK.set(-1);
+
+    // The preserved output stop returns the resume before its wake work.
+    state.on_network_tx(20, b"frame")?;
+    state.on_vcpu_resume(0, 20)?;
+    {
+        let halted_vcpus = state.try_halted_vcpus()?;
+        assert!(halted_vcpus.all_halted());
+        assert!(!halted_vcpus.all_halted_and_parked());
+    }
+
+    fixture.slot.store_device_completion_deadline_tick(1_050);
+    state.on_block_wait(1)?;
+    assert_eq!(LAST_QUEUED_ADVANCE_TICK.get(), -1);
+    assert!(!state.idle_advance_is_pending());
+    Ok(())
+}
+
+#[test]
 fn network_output_resume_retries_a_busy_idle_reservation_after_the_control_ack()
 -> Result<(), Box<dyn std::error::Error>> {
     let _runtime_state = crate::runtime::isolate_runtime_state_for_test();

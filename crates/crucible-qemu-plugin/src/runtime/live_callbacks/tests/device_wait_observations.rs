@@ -38,6 +38,7 @@ fn genuine_wait_success_busy_and_completion_refusal_keep_original_reads_and_stat
             slot.store_device_completion_deadline_tick(12);
             let mut state =
                 test_live_state(48, 1, 0, &slot).unwrap_or_else(|e| panic!("state: {e}"));
+            super::block_wait::park_every_vcpu(&state);
             let (witness, mut capture) = captured_witness();
             state.device_wait_witness = if enabled {
                 witness
@@ -100,6 +101,7 @@ fn genuine_local_occupied_branch_has_no_sdk_call_or_diagnostic_owner_lookup() {
     slot.publish_scheduler_advance(ceiling, AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|e| panic!("publication: {e}"));
     let mut state = test_live_state(48, 1, 0, &slot).unwrap_or_else(|e| panic!("state: {e}"));
+    super::block_wait::park_every_vcpu(&state);
     let (witness, mut capture) = captured_witness();
     state.device_wait_witness = witness;
     let observation = state
@@ -161,6 +163,7 @@ fn genuine_callback_ignores_full_fifo_and_busy_capture_without_changing_completi
         .unwrap_or_else(|e| panic!("publication: {e}"));
     slot.store_device_completion_deadline_tick(12);
     let mut state = test_live_state(48, 1, 0, &slot).unwrap_or_else(|e| panic!("state: {e}"));
+    super::block_wait::park_every_vcpu(&state);
     state.device_wait_witness =
         device_wait_witness::DeviceWaitWitness::from_setting(Some(OsStr::new("256")));
     state.device_wait_witness.destination = Some(Mutex::new(original));
@@ -198,6 +201,7 @@ fn due_original_timer_reports_exact_deadline_and_suppressed_device_target() {
         .unwrap_or_else(|e| panic!("publication: {e}"));
     slot.store_device_completion_deadline_tick(300);
     let mut state = test_live_state(48, 1, 0, &slot).unwrap_or_else(|e| panic!("state: {e}"));
+    super::block_wait::park_every_vcpu(&state);
     let (witness, mut capture) = captured_witness();
     state.device_wait_witness = witness;
     TEST_ICOUNT_RAW.set(1);
@@ -260,6 +264,7 @@ fn genuine_nested_enqueue_keeps_late_original_return_and_new_completion_attribut
         .unwrap_or_else(|e| panic!("publication: {e}"));
     slot.store_device_completion_deadline_tick(12);
     let mut state = test_live_state(48, 1, 0, &slot).unwrap_or_else(|e| panic!("state: {e}"));
+    super::block_wait::park_every_vcpu(&state);
     let (witness, mut capture) = captured_witness();
     state.device_wait_witness = witness;
     state.queued_idle_advance =
