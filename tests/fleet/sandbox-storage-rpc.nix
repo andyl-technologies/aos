@@ -13,6 +13,8 @@
   fixtureDirectory = "/run/aos/storage-rpc-fixture";
   stateDirectory = "/var/lib/aos/sandbox-storage";
   credentialFixture = import ./_broker-session-credential-fixture.nix {inherit lib pkgs;};
+  qualifyTpmFloorSeed = pkgs.stdenv.hostPlatform.isx86_64;
+  floorTransportProbe = import ./_method46-tpm-transport-probe.nix {inherit pkgs;};
   seccompProbeChmodStatus =
     if pkgs.stdenv.hostPlatform.isx86_64
     then "chmod"
@@ -125,7 +127,9 @@
         maxRootMiB = 1024;
         maxDownloadMiB = 1152;
       };
-      environment.systemPackages = [pkgs.coreutils pkgs.systemd zfs];
+      environment.systemPackages =
+        [pkgs.coreutils pkgs.systemd zfs]
+        ++ lib.optional qualifyTpmFloorSeed floorTransportProbe;
 
       # This fixture replaces the Controller unit without enabling its module.
       # Its real Storage journal still requires an explicit immutable mode pin.
@@ -209,7 +213,10 @@ in {
   timeout = 420;
   bootTimeout = 180;
 
-  machines.machine = {inherit system;};
+  machines.machine = {
+    inherit system;
+    tpm = qualifyTpmFloorSeed;
+  };
 
   testScript = ''
     COREUTILS = "${pkgs.coreutils}/bin"
@@ -741,5 +748,53 @@ in {
     machine.succeed(f"${pkgs.util-linux}/bin/umount -- '{pin}'")
     machine.succeed(f"{ZFS} destroy aosproof/aos/project/rpc-workspace")
     machine.succeed(f"{ZPOOL} destroy aosproof")
+
+    ${lib.optionalString qualifyTpmFloorSeed ''
+      # Offline provisioning consumes the real, fully replayed namespace-47 cut
+      # on each installed endpoint. This seeds no sidecar and grants no method-46
+      # readiness; Required-mode hook qualification remains a separate gate.
+      machine.succeed(
+          "install -d -m 0711 /var/lib/method46-offline; "
+          "install -d -m 0700 /var/lib/method46-external; "
+          "head -c 16 /dev/urandom > /var/lib/method46-external/deployment-epoch"
+      )
+      transport = "${floorTransportProbe}/bin/method46-tpm-transport-probe"
+      for index, role, owner in ((0, "client", 811), (1, "broker", 0)):
+          directory = f"/var/lib/method46-offline/{role}"
+          state = f"/var/lib/method46-external/endpoint-{index}"
+          machine.succeed(f"install -d -o {owner} -g {owner} -m 0700 {directory}")
+          machine.succeed(f"{transport} prepare {index} {state}")
+          machine.succeed(
+              f"dd if={state} of={directory}/salt-name bs=1 skip=32 count=34 status=none; "
+              f"cp /var/lib/method46-external/deployment-epoch {directory}/deployment-epoch; "
+              f"chown {owner}:{owner} {directory}/salt-name {directory}/deployment-epoch; "
+              f"chmod 0400 {directory}/salt-name {directory}/deployment-epoch"
+          )
+          stage = (
+              "${pkgs.util-linux}/bin/setpriv "
+              f"--reuid={owner} --regid={owner} --clear-groups "
+              "${pkgs.coreutils}/bin/env RUST_MIN_STACK=33554432 "
+              f"AOS_FLOOR_SEED_ROLE={role} AOS_FLOOR_SEED_DIRECTORY={directory} "
+              "${credentialFixture}/bin/broker-session-credential-fixture "
+              "--ignored --exact recovery::journal::tpm_floor::qualification_seed::"
+              "stage_installed_initial_floor --test-threads=1 --nocapture"
+          )
+          machine.succeed(stage, timeout=30)
+          staged_files = " ".join(
+              f"{directory}/{name}"
+              for name in ("provision", "checkpoint", "extend-input", "expected-nv")
+          )
+          staged_hashes = machine.succeed(f"sha256sum {staged_files}")
+          machine.succeed(f"{transport} initialize {index} {state} {directory}/extend-input")
+          machine.succeed(f"{transport} read {index} {state}")
+          machine.succeed(
+              f"dd if={state} of={directory}/observed-nv bs=1 skip=66 count=32 status=none; "
+              f"cmp {directory}/expected-nv {directory}/observed-nv"
+          )
+          machine.fail(stage, timeout=30)
+          assert machine.succeed(f"sha256sum {staged_files}") == staged_hashes
+          machine.fail(f"{transport} initialize {index} {state} {directory}/extend-input")
+          machine.succeed(f"{transport} read {index} {state}")
+    ''}
   '';
 }
