@@ -8,6 +8,9 @@ use aos_sandbox_policy::signed_inputs::{
     PolicyDeploymentInputsV1, verify_policy_deployment_head_v1,
     verify_signed_project_policy_source_v2,
 };
+use aos_sandbox_policy::policy_signer_credential::{
+    PolicySignerRoleV1, encode_policy_signer_credential_v1,
+};
 
 use aos_sandbox_policy::controller_readback::{
     PinnedControllerHoldSignerV1, encode_controller_hold_signer_credential_v1,
@@ -86,7 +89,11 @@ fn run() -> Result<(), Box<dyn Error>> {
         }
         "root-signed-inputs" => {
             require_uid(0)?;
-            provision_root_signed_inputs()?;
+            provision_root_signed_inputs(false)?;
+        }
+        "external-root-credentials-bootstrap" => {
+            require_uid(0)?;
+            provision_root_signed_inputs(true)?;
         }
         "root-settlement-absent" => {
             require_uid(CONTROLLER_UID)?;
@@ -349,7 +356,7 @@ fn signed_packet(magic: &[u8; 8], domain: &[u8], payload: &[u8], key: &SigningKe
     packet
 }
 
-fn provision_root_signed_inputs() -> Result<(), Box<dyn Error>> {
+fn provision_root_signed_inputs(external: bool) -> Result<(), Box<dyn Error>> {
     let deployment_key = SigningKey::from_bytes(&[10; 32]);
     let project_key = SigningKey::from_bytes(&[11; 32]);
     let now = i64::try_from(SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs())?;
@@ -440,17 +447,65 @@ fn provision_root_signed_inputs() -> Result<(), Box<dyn Error>> {
     )
     .map_err(aos_sandbox_controller_domain::policy_compiler::PolicyDeploymentHeadErrorV1::from)?;
 
-    let root = "aos-sandbox-policy-authorityd.service";
-    for (name, bytes) in [
-        ("deployment-head.packet", deployment.as_slice()),
-        ("node-policy.json", inputs[0].as_slice()),
-        ("site-policy.json", inputs[1].as_slice()),
-        ("backend-capabilities.json", inputs[2].as_slice()),
-        ("catalogs.json", inputs[3].as_slice()),
-        ("project-head-v2.packet", project_packet.as_slice()),
-        ("project-layer-v2.json", project_layer.as_slice()),
+    let root = if external {
+        "@system"
+    } else {
+        "aos-sandbox-policy-authorityd.service"
+    };
+    for (name, external_name, bytes) in [
+        (
+            "deployment-head.packet",
+            "deploymentHeadPacket",
+            deployment.as_slice(),
+        ),
+        ("node-policy.json", "nodePolicy", inputs[0].as_slice()),
+        ("site-policy.json", "sitePolicy", inputs[1].as_slice()),
+        (
+            "backend-capabilities.json",
+            "backendCapabilities",
+            inputs[2].as_slice(),
+        ),
+        ("catalogs.json", "catalogs", inputs[3].as_slice()),
+        (
+            "project-head-v2.packet",
+            "projectHeadPacketV2",
+            project_packet.as_slice(),
+        ),
+        (
+            "project-layer-v2.json",
+            "projectLayerV2",
+            project_layer.as_slice(),
+        ),
     ] {
-        create_credential(root, name, bytes)?;
+        let name = if external {
+            format!("qualification-root-{external_name}")
+        } else {
+            name.to_owned()
+        };
+        create_credential(root, &name, bytes)?;
+    }
+    if external {
+        // PID 1 delivers these inputs to the real service. Writing external
+        // inputs does not forge its credential mount or startup originals.
+        create_credential(
+            root,
+            "qualification-root-deploymentPublicKey",
+            &encode_policy_signer_credential_v1(
+                PolicySignerRoleV1::Deployment,
+                1,
+                &deployment_key.verifying_key(),
+            )?,
+        )?;
+        create_credential(
+            root,
+            "qualification-root-projectPublicKey",
+            &encode_policy_signer_credential_v1(
+                PolicySignerRoleV1::Project,
+                1,
+                &project_key.verifying_key(),
+            )?,
+        )?;
+        return Ok(());
     }
     fs::write(
         "/tmp/q04-deployment-public-key.raw",
