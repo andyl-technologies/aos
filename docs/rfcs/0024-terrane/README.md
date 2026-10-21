@@ -1,6 +1,6 @@
 # RFC-0024: Terrane — a distributed, content-addressed, branchable filesystem
 
-- **Status:** Proposed (design-only)
+- **Status:** Proposed (implementation in progress)
 - **Date:** 2026-09-25
 - **Audience:** maintainers of the sandbox runtime, AOS Hub storage, Crucible,
   the Rust workspace, release and cache infrastructure, and anyone who needs a
@@ -105,7 +105,12 @@ The full index, conformance levels, and versioning policy are in
 
 ## Status notes
 
-This RFC is design-only. No Terrane code exists in the tree at the time of
-writing. The specification's own status and version are tracked in
+T0 foundations and all twenty-two T1 local-repository tasks are complete.
+T2 host-tier implementation and qualification are in progress; its five tasks
+remain open. T3 through T6 and the branch worklines remain deferred. The
+current acceptance record and component evidence are in the
+[`implementation plan`](integration/05-implementation-plan.md).
+
+The specification's own status and version are tracked in
 [`spec/README.md`](spec/README.md) independently of this RFC's status, because
 AOS adoption and specification maturity will move at different speeds.
