@@ -54,6 +54,12 @@ pub enum BrokerSessionSecurityError {
     /// Revalidation detected any protected-state change.
     #[error("protected endpoint currentness check failed")]
     Currentness,
+    /// A protected-state comparison changed since endpoint capture.
+    #[error("protected endpoint currentness check failed: {observation}")]
+    CurrentnessObservation {
+        /// Fixed observation label, never a path, identifier, or file content.
+        observation: &'static str,
+    },
     /// This same selected Session retained the actual native transaction error.
     #[error("protected captured journal mutation retained its native failure")]
     CapturedJournalMutation {

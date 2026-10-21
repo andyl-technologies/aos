@@ -511,7 +511,9 @@ mod tests {
             });
         assert!(matches!(
             result,
-            Err(BrokerSessionSecurityError::Currentness)
+            Err(BrokerSessionSecurityError::CurrentnessObservation {
+                observation: "file read comparison",
+            })
         ));
     }
 }

@@ -30,7 +30,9 @@ impl FileOpenOriginalsV1 {
         self.native.directory_once(path);
         self.result = Some(match self.native.result() {
             Some(Ok(_)) => Ok(()),
-            _ if currentness => Err(BrokerSessionSecurityError::Currentness),
+            _ if currentness => Err(BrokerSessionSecurityError::CurrentnessObservation {
+                observation: "directory open",
+            }),
             _ => Err(BrokerSessionSecurityError::filesystem("endpoint directory", "open")),
         });
     }
@@ -56,7 +58,9 @@ impl FileOpenOriginalsV1 {
         self.native.corresponding_directory_once(held, path);
         self.result = Some(match self.native.result() {
             Some(Ok(_)) => Ok(()),
-            _ => Err(BrokerSessionSecurityError::Currentness),
+            _ => Err(BrokerSessionSecurityError::CurrentnessObservation {
+                observation: "corresponding directory open",
+            }),
         });
     }
 
@@ -239,7 +243,13 @@ impl<Bytes: AsRef<[u8]> + AsMut<[u8]>> FileContentsOriginalsV1<Bytes> {
         if self.after.snapshot().is_none() { return; }
         self.compared = Some(if self.before.snapshot() == self.after.snapshot()
             && self.exact.as_ref().map(AsRef::as_ref) == self.repeated.as_ref().map(AsRef::as_ref)
-        { Ok(()) } else { Err(BrokerSessionSecurityError::Currentness) });
+        {
+            Ok(())
+        } else {
+            Err(BrokerSessionSecurityError::CurrentnessObservation {
+                observation: "file read comparison",
+            })
+        });
     }
 
     pub(super) fn completed(&self) -> bool { matches!(self.compared, Some(Ok(()))) }

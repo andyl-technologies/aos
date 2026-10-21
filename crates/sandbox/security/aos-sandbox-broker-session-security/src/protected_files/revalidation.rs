@@ -39,8 +39,12 @@ fn error<T>(slot: &Option<Result<T, BrokerSessionSecurityError>>) -> Option<&Bro
     slot.as_ref().and_then(|result| result.as_ref().err())
 }
 
-fn require(comparison: bool) -> Result<(), BrokerSessionSecurityError> {
-    if comparison { Ok(()) } else { Err(BrokerSessionSecurityError::Currentness) }
+fn require(comparison: bool, observation: &'static str) -> Result<(), BrokerSessionSecurityError> {
+    if comparison {
+        Ok(())
+    } else {
+        Err(BrokerSessionSecurityError::CurrentnessObservation { observation })
+    }
 }
 
 impl ProtectedEndpointFilesRevalidationV1 {
@@ -148,11 +152,17 @@ impl ProtectedEndpointFilesRevalidationV1 {
     }
 
     fn observe_inner(&mut self, files: &ProtectedEndpointFiles, retained: bool) -> Result<(), BrokerSessionSecurityError> {
-        self.owner = Some(require(rustix::process::geteuid().as_raw() == files.owner));
+        self.owner = Some(require(
+            rustix::process::geteuid().as_raw() == files.owner,
+            "effective owner",
+        ));
         self.owner.as_ref().ok_or(BrokerSessionSecurityError::Currentness)?.clone()?;
         self.held_directory.directory_once(&files.directory, files.owner);
         if let Some(cause) = self.held_directory.classified_failure() { return Err(cause); }
-        self.held_directory_comparison = Some(require(self.held_directory.snapshot() == Some(files.directory_metadata)));
+        self.held_directory_comparison = Some(require(
+            self.held_directory.snapshot() == Some(files.directory_metadata),
+            "held directory metadata",
+        ));
         self.held_directory_comparison.as_ref().ok_or(BrokerSessionSecurityError::Currentness)?.clone()?;
         self.held_opposite.observe_once(&files.directory, files.role);
         if let Some(cause) = self.held_opposite.classified_failure() { return Err(cause); }
@@ -160,7 +170,10 @@ impl ProtectedEndpointFilesRevalidationV1 {
         self.held_manifest.observe_once(&files.manifest_file.descriptor, files.owner,
             BROKER_SESSION_MANIFEST_BYTES, "manifest", new_manifest_bytes, || Ok(()));
         if let Some(cause) = self.held_manifest.classified_failure() { return Err(cause); }
-        self.held_manifest_comparison = Some(require(manifest_matches(&self.held_manifest, &files.manifest_file)));
+        self.held_manifest_comparison = Some(require(
+            manifest_matches(&self.held_manifest, &files.manifest_file),
+            "held manifest",
+        ));
         self.held_manifest_comparison.as_ref().ok_or(BrokerSessionSecurityError::Currentness)?.clone()?;
         if !retained { self.held_manifest = FileContentsOriginalsV1::new(); }
 
@@ -168,16 +181,25 @@ impl ProtectedEndpointFilesRevalidationV1 {
             self.held_secrets[index].observe_once(&secret.descriptor, files.owner, SECRET_BYTES,
                 secret.label, new_secret_bytes, || Ok(()));
             if let Some(cause) = self.held_secrets[index].classified_failure() { return Err(cause); }
-            self.held_secret_comparisons[index] = Some(require(secret_matches(&self.held_secrets[index], secret)));
+            self.held_secret_comparisons[index] = Some(require(
+                secret_matches(&self.held_secrets[index], secret),
+                "held secret",
+            ));
             self.held_secret_comparisons[index].as_ref().ok_or(BrokerSessionSecurityError::Currentness)?.clone()?;
             if !retained { self.held_secrets[index] = FileContentsOriginalsV1::new(); }
         }
 
         self.reopened_directory.corresponding_directory_once(&files.directory, &files.path);
+        if let Some(cause) = self.reopened_directory.classified_failure() {
+            return Err(cause);
+        }
         let directory = self.reopened_directory.descriptor().ok_or(BrokerSessionSecurityError::Currentness)?;
         self.reopened_metadata.directory_once(directory, files.owner);
         if let Some(cause) = self.reopened_metadata.classified_failure() { return Err(cause); }
-        self.reopened_directory_comparison = Some(require(self.reopened_metadata.snapshot() == Some(files.directory_metadata)));
+        self.reopened_directory_comparison = Some(require(
+            self.reopened_metadata.snapshot() == Some(files.directory_metadata),
+            "reopened directory metadata",
+        ));
         self.reopened_directory_comparison.as_ref().ok_or(BrokerSessionSecurityError::Currentness)?.clone()?;
         self.reopened_opposite.observe_once(directory, files.role);
         if let Some(cause) = self.reopened_opposite.classified_failure() { return Err(cause); }
@@ -195,6 +217,7 @@ impl ProtectedEndpointFilesRevalidationV1 {
             manifest.metadata == files.manifest_file.metadata
                 && manifest.digest == files.manifest_file.digest
                 && manifest.exact == files.manifest_file.exact,
+            "reopened manifest",
         ));
         self.reopened_manifest_comparison.as_ref().ok_or(BrokerSessionSecurityError::Currentness)?.clone()?;
         for (index, (secret, (name, label, _))) in files.secrets.iter().zip(files.role.local_files()).enumerate() {
@@ -209,6 +232,7 @@ impl ProtectedEndpointFilesRevalidationV1 {
             let reopened = self.reopened_secret_files[index].as_ref().ok_or(BrokerSessionSecurityError::Currentness)?;
             self.reopened_secret_comparisons[index] = Some(require(
                 reopened.metadata == secret.metadata && reopened.exact[..] == secret.exact[..],
+                "reopened secret",
             ));
             if !retained { self.reopened_secret_files[index] = None; }
             self.reopened_secret_comparisons[index].as_ref().ok_or(BrokerSessionSecurityError::Currentness)?.clone()?;
