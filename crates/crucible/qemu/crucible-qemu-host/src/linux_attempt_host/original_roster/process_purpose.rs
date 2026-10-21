@@ -504,7 +504,7 @@ impl NativeAccountAttempt {
         let host = normal
             .reserve_source_host_purpose(peak, descriptors, &original)
             .map_err(|source| InstalledProcessPurposeError::Original(source.into()))?;
-        let payer = host.downgrade();
+        let payer = host.retain_control_payer();
         controller.retain_source_host(host)?;
         slot.source_control_payer = Some(payer);
         purpose.ready = true;

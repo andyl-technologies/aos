@@ -152,6 +152,10 @@
         (case "host_supervision::tests::repeated_progress_does_not_renew_a_stalled_operation" "adversarial" ["TIME-2" "TIME-3"] "Repeated completed-work coordinates cannot renew component progress; no deployed guest quantum oracle.")
         (case "host_supervision::tests::saturated_work_inventory_retains_two_finite_control_records" "adversarial" ["TIME-9"] "Finite ordinary work saturation preserves separately bounded control and cleanup records; no native fault-service availability qualification.")
       ])
+      (group "host/crucible-host-resources" "source_control_terminal" [] [
+        (case "final_control_header_closes_before_original_paired_credit_returns" "positive" ["TIME-9"] "The production Source control owner closes its actual shared allocation while both original service loans remain charged; this component creates no Native Source or physical-return proof.")
+        (case "concurrent_control_observers_close_before_one_paired_refund" "adversarial" ["TIME-9"] "Concurrent observers perform one actual control close before either paired account refunds; this control proves no native worker, process-family or complete diagnostic lifetime.")
+      ])
       (group "qemu/crucible-qemu-host" "lib" [] [
         (case "spawn::helper_receiver::tests::probe_timeout_retains_both_partial_streams_and_the_live_child" "adversarial" ["TIME-7" "TIME-9"] "A real component probe times out with both actual partial diagnostic streams retained in its receiving slot and its child still owned for cleanup; no native Source, funding transfer or full-owner return qualification.")
         (case "spawn::helper_receiver::tests::probe_output_limit_keeps_the_first_bounded_bytes_and_child_custody" "adversarial" ["TIME-7" "TIME-9"] "The production probe rejects excess real output while preserving each bounded prefix and actual process custody; no native Source or final diagnostic funding qualification.")

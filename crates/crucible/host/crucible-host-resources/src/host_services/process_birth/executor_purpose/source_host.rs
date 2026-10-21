@@ -11,39 +11,40 @@ use std::sync::Mutex;
 
 use super::*;
 
+mod retained_control;
+use retained_control::RetainedControl;
+
 /// Retains one Source launch's actual Main payer and descriptor window.
 ///
-/// Clones retain one shared charge. The last physical holder can discharge it
-/// only after its real child is reaped, or no process birth was attempted.
+/// Clones and control payers retain one shared charge through the allocation's
+/// actual deallocation. The final owner can discharge it only after its real
+/// child is reaped, or no process birth was attempted, and all controls return.
 #[derive(Clone)]
 pub struct AuthenticatedSourceHostPurpose {
-    held: Arc<SourceHostState>,
+    held: RetainedControl<SourceHostState>,
 }
 
-/// Borrows an existing Source control payer without extending its lifetime.
+/// Retains the existing Source payer while its issued control routes remain.
 ///
-/// This weak link issues no Source or credit; a reservation must upgrade the
-/// same actual purpose and pass its existing live/capacity checks.
+/// Clones keep the same Main reservation live without allocating another control.
+/// This observer owns no process and creates no Source, operation or resource
+/// credit. It cannot outlive the funding of its shared allocation header.
 #[derive(Clone)]
-pub struct WeakSourceHostPurpose {
-    held: std::sync::Weak<SourceHostState>,
+pub struct SourceHostControlPayer {
+    purpose: AuthenticatedSourceHostPurpose,
 }
 
-impl WeakSourceHostPurpose {
+impl SourceHostControlPayer {
     /// Reserves actual controls from the same retained Source before birth.
     ///
     /// # Errors
-    /// Refuses a retired payer, changed Main or exhausted existing peak.
+    /// Refuses changed Main custody or exhausted existing control capacity.
     pub fn reserve_controls(
         &self,
         descriptors: u64,
         bytes: u64,
     ) -> Result<SourceHostControlLease, ServiceBirthError> {
-        let held = self
-            .held
-            .upgrade()
-            .ok_or_else(|| ServiceBirthError::policy("Source control payer has retired"))?;
-        AuthenticatedSourceHostPurpose { held }.reserve_controls(descriptors, bytes)
+        self.purpose.reserve_controls(descriptors, bytes)
     }
 }
 
@@ -178,7 +179,7 @@ fn construct_source_host(
     metadata: HostServiceLeasePair,
 ) -> AuthenticatedSourceHostPurpose {
     AuthenticatedSourceHostPurpose {
-        held: Arc::new(SourceHostState {
+        held: RetainedControl::new(SourceHostState {
             issuer,
             window: Some(window),
             child: Mutex::new(SourceChildState::default()),
@@ -192,11 +193,14 @@ fn construct_source_host(
 }
 
 impl AuthenticatedSourceHostPurpose {
-    /// Lends nonowning access to this actual Source control reservation.
+    /// Retains this actual Source payer for an already issued control route.
+    ///
+    /// The observer shares the original allocation and Main charge; it grants
+    /// neither process ownership nor a separately spendable resource window.
     #[must_use]
-    pub fn downgrade(&self) -> WeakSourceHostPurpose {
-        WeakSourceHostPurpose {
-            held: Arc::downgrade(&self.held),
+    pub fn retain_control_payer(&self) -> SourceHostControlPayer {
+        SourceHostControlPayer {
+            purpose: self.clone(),
         }
     }
 
@@ -238,7 +242,7 @@ impl AuthenticatedSourceHostPurpose {
     /// Compares actual shared Source control custody without using wire identity.
     #[must_use]
     pub fn same_owner(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.held, &other.held)
+        self.held.same_owner(&other.held)
     }
 
     /// Corroborates this payer against its actual retained native subdivision.

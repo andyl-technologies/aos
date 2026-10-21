@@ -94,6 +94,84 @@ loop {
     identifiers: &[],
     companions: &[
         Companion {
+            path: "crates/crucible/host/crucible-host-resources/src/host_services/process_birth/executor_purpose/source_host.rs",
+            required: &[
+                (
+                    "pub struct AuthenticatedSourceHostPurpose { held: RetainedControl<SourceHostState>, }",
+                    1,
+                ),
+                (
+                    r#"pub struct SourceHostControlPayer {
+    purpose: AuthenticatedSourceHostPurpose,
+}
+impl SourceHostControlPayer {
+    pub fn reserve_controls(&self, descriptors: u64, bytes: u64,)
+        -> Result<SourceHostControlLease, ServiceBirthError>
+    {
+        self.purpose.reserve_controls(descriptors, bytes)
+    }
+}"#,
+                    1,
+                ),
+                (
+                    r#"pub fn retain_control_payer(&self) -> SourceHostControlPayer {
+    SourceHostControlPayer { purpose: self.clone(), }
+}"#,
+                    1,
+                ),
+                (
+                    r#"held: RetainedControl::new(SourceHostState {
+    issuer, window: Some(window),
+    child: Mutex::new(SourceChildState::default()),
+    controls: Mutex::new(SourceControlState::default()),
+    control_peak, descriptor_peak,
+    descriptors: Some(descriptors), metadata: Some(metadata),
+}),"#,
+                    1,
+                ),
+            ],
+        },
+        Companion {
+            path: "crates/crucible/host/crucible-host-resources/src/host_services/process_birth/executor_purpose/source_host/retained_control.rs",
+            required: &[
+                (
+                    "pub(super) struct RetainedControl<T> { shared: Option<Arc<T>>, }",
+                    1,
+                ),
+                (
+                    r#"pub(super) fn new(value: T) -> Self {
+    Self { shared: Some(Arc::new(value)), }
+}"#,
+                    1,
+                ),
+                (
+                    r#"fn shared(&self) -> &Arc<T> {
+    match &self.shared {
+        Some(shared) => shared,
+        None => unreachable!("a live control retains its original allocation"),
+    }
+}"#,
+                    1,
+                ),
+                (
+                    r#"impl<T> Clone for RetainedControl<T> {
+    fn clone(&self) -> Self { Self { shared: self.shared.clone(), } }
+}"#,
+                    1,
+                ),
+                (
+                    r#"impl<T> Drop for RetainedControl<T> {
+    fn drop(&mut self) {
+        if let Some(shared) = self.shared.take() {
+            drop(Arc::into_inner(shared));
+        }
+    }
+}"#,
+                    1,
+                ),
+            ],
+        },
+        Companion {
             path: "crates/crucible/qemu/crucible-qemu-host/src/linux_attempt_host/original_roster/process_purpose.rs",
             required: &[
                 (
@@ -107,7 +185,7 @@ loop {
                     r#"let (_, peak, descriptors) = source_admission::source_host_peak()?;
 let host = normal.reserve_source_host_purpose(peak, descriptors, &original)
     .map_err(|source| InstalledProcessPurposeError::Original(source.into()))?;
-let payer = host.downgrade();
+let payer = host.retain_control_payer();
 controller.retain_source_host(host)?;
 slot.source_control_payer = Some(payer);
 purpose.ready = true;"#,

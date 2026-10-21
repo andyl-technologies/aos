@@ -947,7 +947,7 @@ struct NativeSlot {
     family_constructor_bytes: u64,
     installed_process: Option<process_purpose::InstalledProcessState>,
     source_control_payer:
-        Option<crucible_host_resources::host_services::process_birth::WeakSourceHostPurpose>,
+        Option<crucible_host_resources::host_services::process_birth::SourceHostControlPayer>,
     launch_in_flight: bool,
     launch_abandoned: bool,
     launch_refusal: Option<Arc<super::original_node::OriginalNativeFreshLaunchError>>,

@@ -149,6 +149,32 @@ hygiene check, and required application test-target compilation pass. Coverage
 now names 109 component cases, with 149 uncovered and zero qualified requirements.
 The updated hermetic supervision gate passes all eleven exact cases.
 
+The Source control-lifetime increment replaces the weak payer facade with a
+retained observer of the same authentic purpose. Its private shared-control
+owner consumes every alias through `Arc::into_inner`, freeing the allocation
+before dropping the extracted state and its actual Main loans. No raw Arc or
+Weak observer escapes this control owner. The same recorded child reap and
+returned-control checks still decide physical return; alias closure is not a
+process-return oracle. The payer retains only the existing Main purpose and
+adds no back-reference to the QEMU roster.
+
+Two component controls observe actual allocator deallocation with both original
+service-account charges still live, including concurrent final observers. An
+independently rebuilt ordinary-Arc-drop mutation fails both controls, observing
+zero original charge at deallocation instead of the retained charge. These
+controls exercise the production shared owner without constructing a Native
+Source. They do not qualify actual Native Source activation, every diagnostic
+payload or the separate original-error controller allocation.
+
+After that cutover, all host-resource targets pass: 258 library tests, one ignored
+case and every integration target. The QEMU host again passes 1,237 library tests
+with the same eight missing-receiver failures and four ignored probes; all its
+integration targets pass. Seventy specific source-policy checks and the five
+hygiene, two rustdoc, eighteen ABI and four license controls pass. The broad
+source gate retains the same 21 unfinished paths. The hermetic supervision gate
+passes all thirteen exact cases. Coverage names 111 component cases, with 149
+uncovered and zero qualified requirements.
+
 Whole-node shutdown now keeps one continuation through process reap, RAM service
 return and controller retirement. Physical closure, initiating failure and
 independent boundary checks remain separate facts. Failed construction retains
