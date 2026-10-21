@@ -2234,13 +2234,48 @@ All 5,265 tracked crate Rust/TOML files in immutable
 `7j2gx6jlv6mp57c8jrg58vgw2nxkhsfb-aos-workspace-src` match committed Git blobs;
 source manifest SHA256 is
 `a1a26459f5b9e5fb7da519b827f71bd6769bf343f188f6813b401a88480779a3`.
-The expanded 190-case hermetic supervision gate is still running.
+All 190 exact hermetic supervision cases pass at
+`/nix/store/dnbs90j4f4k86ic6qn4n8j66c7zldxqm-crucible-gate-ram-supervision-0`.
 
 The inventory contains 307 bindings (288 component and 19 native), with 148
 requirements uncovered and none qualified. Actual paid session construction,
 mapping/doorbell custody, bounded atomic snapshots, ticket transitions, physical
 returns and class-1 scheduler ownership remain unfinished. Current transport 8,
 Setup 5 and the unavailable activation declaration are unchanged.
+
+### 2026-10-21 standing construction under its original Setup
+
+Commit `418fdb6c3e` enters the actual Setup before paid startup allocation and
+standing publication construction. Physical construction runs only after the
+same guard's first observation and actual inherited cancellation check; its
+independent post retains either the constructed result or initiating failure.
+Successful construction cannot bypass a refused post.
+
+All seven startup and thirty standing controls pass, including real descriptor
+construction/refusal and cancellation across this shared boundary. All 73
+focused policy and five hygiene controls pass. Mandatory application targets
+compile at
+`/nix/store/62q9r03a7sg9ahanc6r9hzj39wy9b2bl-aos-test-targets-0.1.0`.
+All 5,265 tracked crate Rust/TOML files in immutable
+`jfv13k43pv4sq8463bdmfyilj2l96id9-aos-workspace-src` match committed Git blobs;
+source manifest SHA256 is
+`c3809ce92a2e455339610d25b27ca08638b29d2f4623a07929de576ba7675742`.
+The 193-case exact supervision gate remains pending. Current coverage has 310
+bindings (291 component and nineteen native), 148 uncovered requirements and
+none qualified. Genuine Source issuance and complete physical cleanup remain
+unfinished.
+
+The separate native scheduling candidate `bacc4317d242` passes all 187 owning
+scenarios, signed reconstruction, the 289-file ledger and scoped raw ABI at
+`/nix/store/k68rgbzqllvj34636wcma775vzynkpbg-crucible-phase2-abi-conformance-0`.
+That ABI capture precedes the final placement of standing construction after
+the actual cancellation check; it does not qualify that placement. Full native
+compilation finishes all 3,863 targets and passes 25/26 fixtures, with mandatory
+launched Source/Root the sole refusal. The formal causal positive times out at
+60.007 seconds under its unchanged 60-second limit, before defect execution.
+An earlier 43.380-second diagnostic bypassed repeated provider metadata
+loading and is not a formal timing pass. This candidate remains uncommitted;
+matched integration and real metadata authentication efficiency are in progress.
 
 ### 2026-10-21 native rule and reservation storage custody
 
