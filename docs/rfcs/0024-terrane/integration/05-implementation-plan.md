@@ -11580,3 +11580,18 @@ fault-boundary controls executed with nonzero passing counts. Strict native
 and portable Clippy and formatting passed. The complete frozen store/index
 and application-target qualification remain pending. The earlier
 4096-entry timeouts retain their original 1800-second limit and no acceptance.
+
+
+#### Native host owning-gate composition
+
+The host layout, verify-before-admit, S3-FIFO and startup crash-recovery
+gates now require exact discovered SDK policy/filesystem cases together with
+the full native cache, initial enrollment, manifest reassembly and configured
+SDK VMs from the same immutable package source. Each dependency must actually
+pass; a policy-only result cannot qualify physical admission or adoption.
+The crash-recovery gate covers HOST-32 startup; T6's separate every-role,
+every-fsync crash campaign remains pending. The store verification gate also
+executes both new original-body batch controls. All 21 exact host selectors
+passed locally without ignored cases; all four complete dependency graphs
+instantiate and Nix formatting passes. Frozen native qualification is pending
+and no T2 task checkbox changes.

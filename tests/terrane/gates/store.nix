@@ -67,6 +67,8 @@ in {
     run_store_test bucket::files::ordinary_receipt_tests::ordinary_receipt_preserves_missing_and_incompatible_layout_outcomes --features tokio
     run_store_test bucket::files::ordinary_receipt_tests::ordinary_receipt_refuses_equal_bytes_replaced_leaf_and_ancestor --features tokio
     run_store_test bucket::files::ordinary_receipt_tests::ordinary_receipt_cannot_supply_protected_effect_inputs --features tokio
+    run_store_test bucket::files::ordinary_receipt_tests::ordinary_body_batch_preserves_each_original_and_stops_at_missing_suffix --features tokio
+    run_store_test bucket::files::ordinary_receipt_tests::ordinary_body_batch_refuses_symlinked_leaf_before_later_body_reads --features tokio
     run_store_test store::tests::native_clock_ticks_do_not_move_backward --features tokio
     run_store_test store::bindings::tests::native_timer_waits_and_rejects_duration_overflow --features tokio
     run_store_test store::bindings::tests::native_metadata_preserves_links_permissions_and_nofollow_attributes --features tokio
