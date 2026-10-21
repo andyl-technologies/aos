@@ -45,4 +45,3 @@ impl IndexedTransferPurposeDataV1 {
         }
     }
 }
-

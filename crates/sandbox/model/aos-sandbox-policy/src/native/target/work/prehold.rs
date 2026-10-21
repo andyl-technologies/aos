@@ -313,7 +313,7 @@ impl RootPolicyPublicationWorkV1<'_> {
         }
         aos_sandbox_protocol::domain_ledger::create_q04_history::Q04PreholdPublicationDataV1::from_body(body, identity.nonce())
             .map_err(ErrorV1::from)
-    
+
         })();
         match returned { Ok(reply) => Ok(reply), Err(error) => { let _later = self.cause.set(error); Err(()) } }
     }

@@ -248,7 +248,7 @@ impl RootSubjectChunkReceivingV1 {
                         }
                         posts.observe_before_v1(flight, purpose)
                     }
-    
+
                     RootSubjectPurposeV1::StopCleanup(owner) => {
                         *purpose_posts = Some(Box::new(RootChunkPostsV1::StopCleanup(Default::default())));
                         let posts = purpose_posts.as_mut().ok_or(Error::Ready)?;
@@ -298,7 +298,7 @@ impl RootSubjectChunkReceivingV1 {
                         RootSubjectPurposeV1::ExecutionNoApply(_) => {
                             flight.receive_execution_no_apply_subject_chunk_into_v2(buffer, geometry)
                         }
-    
+
                         RootSubjectPurposeV1::StopCleanup(_) => {
                             flight.receive_stop_cleanup_subject_chunk_into_v1(buffer, geometry)
                         }

@@ -365,4 +365,3 @@ fn idempotency_compaction_scope(
     )
     .map_err(|_| CacheFormatError::InvalidFloor)
 }
-

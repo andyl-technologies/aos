@@ -32,4 +32,3 @@ pub fn delete_decode_bytes_v1<T>(encoded: usize) -> Option<usize> {
         .checked_add(encoded.checked_mul(32)?)?
         .checked_add(fixed)
 }
-

@@ -14,7 +14,7 @@ macro_rules! define_current_authorization_records_data_recipe_v1 {
             pub(super) policy: aos_sandbox_protocol::policy_data::PreparedPublisherPolicyRevisionV1,
             pub(super) floor: ProtectedTimeFloorRevisionV1,
         }
-        
+
         impl CurrentAuthorizationRecordsV1 {
             pub(super) fn load_v1(records: PublisherReadDataV2<'_>, capability: CapabilityId)
                 -> Result<Self, CliAuthorizationAdapterError>
@@ -35,7 +35,7 @@ macro_rules! define_current_authorization_records_data_recipe_v1 {
                 )?.ok_or_else(refused)?;
                 Ok(Self { capability, controller, revocation, policy, floor })
             }
-        
+
             pub(super) fn require_scope_v1(&self, holder: PrincipalId, channel: ChannelBinding,
                 kind: ResourceKind, operation: Operation, selector: &Selector, wall: i64,
             ) -> Result<(), CliAuthorizationAdapterError> {
@@ -43,7 +43,7 @@ macro_rules! define_current_authorization_records_data_recipe_v1 {
                     &self.controller, &self.revocation, holder, channel, kind, operation,
                     selector, wall, CapabilityCheckV1::Scope)
             }
-        
+
             pub(super) fn revision_v1(&self) -> AuthorizationRevisionDigestV1 {
                 aos_sandbox_protocol::domain_ledger::delete_root::named_cuts::protected_authorization_revision_data_v2(
                     &self.capability, self.controller.generation, self.policy.generation(),

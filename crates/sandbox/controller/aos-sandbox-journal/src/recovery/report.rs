@@ -10,4 +10,3 @@ pub struct RecoveryReport {
     /// Counts incomplete tail bytes removed by the separately selected repair.
     pub truncated_bytes: u64,
 }
-

@@ -107,12 +107,11 @@ pub use namespace::{
     PortableNamespaceGraphV1, ViewExecutionV1,
 };
 pub use resources::{
-    inherited_parentless_resource_namespace_entries_v1,
-    SpecResourceCompatibilityErrorV1, require_specification_resource_profile_v1,
     BackendEnforcementSetV1, HardEnforcementV1, HardLimitProvenanceV1, HardLimitRequestV1,
     HardLimitValueV1, HardResourceKeyV1, HardResourceModelError, HardResourcePlanV1,
     HardResourceProfileV1, HardResourceScopeV1, PORTABLE_LIMIT_DIMENSIONS, ResolvedHardLimitV1,
-    ResolvedHardLimitValueV1, UnlimitedProvenanceV1,
+    ResolvedHardLimitValueV1, SpecResourceCompatibilityErrorV1, UnlimitedProvenanceV1,
+    inherited_parentless_resource_namespace_entries_v1, require_specification_resource_profile_v1,
 };
 
 pub use advisory::canonicalize_advisory_actions;

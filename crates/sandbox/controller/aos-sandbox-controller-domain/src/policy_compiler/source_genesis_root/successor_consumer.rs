@@ -1882,4 +1882,3 @@ fn sign_controller_successor_with_recipe_v3(
     // independent owner checks; none can discard the signed packet on failure.
     Ok(bytes)
 }
-

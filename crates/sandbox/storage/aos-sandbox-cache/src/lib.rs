@@ -27,19 +27,19 @@
 //! reclamation evidence.
 
 mod clock;
+mod error;
 mod journal;
 mod protected_transaction;
-mod error;
 
 pub(crate) use journal::{Journal, JournalError};
 
 pub use error::{CacheJournalErrorV1, CacheNativePrefixErrorV1, CacheQ04ErrorV1};
 #[cfg(target_os = "linux")]
 pub use protected_owner::{
-    CacheHeldAppendContextV1, CacheHeldAppendGateV1, CacheHeldAppendGuardV1,
-    CacheHeldClosedV1, CacheHeldCurrentnessOriginalV1, CacheHeldCurrentnessSiteV1, CacheHeldPostSiteV1,
-    CacheHeldErrorV1, CacheHeldIdentityDataV1, CacheHeldNativeSemanticShapeV1,
-    CacheHeldPreRootCutV1, CacheCreateStorageReceivingShapeV1,
+    CacheCreateStorageReceivingShapeV1, CacheHeldAppendContextV1, CacheHeldAppendGateV1,
+    CacheHeldAppendGuardV1, CacheHeldClosedV1, CacheHeldCurrentnessOriginalV1,
+    CacheHeldCurrentnessSiteV1, CacheHeldErrorV1, CacheHeldIdentityDataV1,
+    CacheHeldNativeSemanticShapeV1, CacheHeldPostSiteV1, CacheHeldPreRootCutV1,
     OriginalCreateStorageCacheLoanV1,
 };
 
@@ -48,69 +48,69 @@ pub use protected_owner::CacheGitOperationOriginalV1;
 
 #[cfg(target_os = "linux")]
 pub use protected_owner::{
-    CacheRootQ04TerminalObservationV1, Q04RootCacheTerminalOutcomeV1,
-    Q04RootCacheTerminalRequestV1,
+    CacheRootQ04TerminalObservationV1, Q04RootCacheTerminalOutcomeV1, Q04RootCacheTerminalRequestV1,
 };
 
 #[cfg(target_os = "linux")]
 mod root_v8_released_proof;
 #[cfg(target_os = "linux")]
 pub use root_v8_released_proof::{
-    RootV8ReleasedProofV1, RootV8ReleasedProofReadErrorV1,
-    read_root_v8_released_proof_original_v1,
+    RootV8ReleasedProofReadErrorV1, RootV8ReleasedProofV1, read_root_v8_released_proof_original_v1,
     validate_untrusted_root_v8_release_reply_frame_original_v1,
 };
 
 #[cfg(target_os = "linux")]
-pub use protected_owner::{CacheV8TerminalOriginalV1, CacheV8TerminalContextV1};
+pub use protected_journal::{CacheV8InspectionContextV1, CacheV8InspectionGuardV1};
 #[cfg(target_os = "linux")]
-pub use protected_journal::{CacheV8InspectionGuardV1, CacheV8InspectionContextV1};
+pub use protected_owner::{CacheV8TerminalContextV1, CacheV8TerminalOriginalV1};
 
 pub mod admission;
 mod authority_record;
 mod controller_bootstrap;
 #[cfg(target_os = "linux")]
 pub(crate) use controller_bootstrap::CONTROLLER_CACHE_ROOT as CONTROLLER_CACHE_READONLY_ROOT_V1;
+pub(crate) use controller_bootstrap::CacheBootstrapImportGeometryV1;
 #[cfg(target_os = "linux")]
 #[doc(hidden)]
 pub use controller_bootstrap::CacheSelectedBootstrapImportV1;
-pub(crate) use controller_bootstrap::CacheBootstrapImportGeometryV1;
 pub mod domain;
-#[cfg(target_os = "linux")]
-mod physical;
 pub mod eviction;
 pub mod format;
 #[cfg(target_os = "linux")]
 mod owner_readback;
+#[cfg(target_os = "linux")]
+mod physical;
 pub mod pin;
 mod protected_journal;
 mod protected_owner;
 #[cfg(target_os = "linux")]
 #[doc(hidden)]
-pub use protected_owner::{CacheDeleteNativeOriginalV1, CacheDeleteNativePayloadsV1};
-#[cfg(target_os = "linux")]
-pub(crate) use protected_owner::{
-    CacheHeldSelectionOriginalV1,
-    };
-pub(crate) use protected_owner::PROTECTED_CACHE_ROOT;
-#[cfg(target_os = "linux")]
-pub(crate) use protected_owner::InitializerJournal;
-pub(crate) use protected_owner::CacheReplayManifestGeometryV1;
+pub use aos_sandbox_protocol::cache_state::hold_state::q04_recipes::Q04CacheTerminalPhaseV1;
 #[cfg(target_os = "linux")]
 #[doc(hidden)]
-pub use protected_owner::initialization::{
-    q04_capture_pricing::{OriginalQ04CachePreflightLoanV1, OriginalQ04CacheCaptureShapeV1},
-    original_q04::{OriginalQ04CacheOwnerCutV1, CacheQ04RecipeCaptureBorrowV1, CacheQ04AppendOriginalBorrowV1, CacheQ04SigningBorrowV1, CacheQ04UnsignedSigningBorrowV1, CacheQ04ReleaseBindingBorrowV1, CacheQ04TerminalBorrowV1},
-};
+pub use journal::CacheQ04TransactionRecipesV1;
+#[cfg(target_os = "linux")]
+pub(crate) use protected_owner::CacheHeldSelectionOriginalV1;
+pub(crate) use protected_owner::CacheReplayManifestGeometryV1;
+#[cfg(target_os = "linux")]
+pub(crate) use protected_owner::InitializerJournal;
+pub(crate) use protected_owner::PROTECTED_CACHE_ROOT;
 #[cfg(target_os = "linux")]
 #[doc(hidden)]
 pub use protected_owner::Q04CachePrepareReadbackV1;
 #[cfg(target_os = "linux")]
 #[doc(hidden)]
-pub use journal::CacheQ04TransactionRecipesV1;
+pub use protected_owner::initialization::{
+    original_q04::{
+        CacheQ04AppendOriginalBorrowV1, CacheQ04RecipeCaptureBorrowV1,
+        CacheQ04ReleaseBindingBorrowV1, CacheQ04SigningBorrowV1, CacheQ04TerminalBorrowV1,
+        CacheQ04UnsignedSigningBorrowV1, OriginalQ04CacheOwnerCutV1,
+    },
+    q04_capture_pricing::{OriginalQ04CacheCaptureShapeV1, OriginalQ04CachePreflightLoanV1},
+};
 #[cfg(target_os = "linux")]
 #[doc(hidden)]
-pub use aos_sandbox_protocol::cache_state::hold_state::q04_recipes::Q04CacheTerminalPhaseV1;
+pub use protected_owner::{CacheDeleteNativeOriginalV1, CacheDeleteNativePayloadsV1};
 mod public_pin;
 pub mod read_authority;
 pub mod recovery;
@@ -132,23 +132,6 @@ pub use domain::{
     AuthorizedLookupKey, CacheAuthorityError, CacheAuthorityOwner, CacheAuthorityPurposeV1,
     CacheAuthorityScopeV1, LookupAuthorityScopeV1, VerifiedCacheCapabilityV1,
 };
-#[cfg(target_os = "linux")]
-pub use physical::{
-    CacheEffectObservationV1, CacheLookupV1, CacheMaterializationOutcomeV1,
-    CacheMaterializationRecoveryFailureV1, CacheOrphanResolutionFailureV1,
-    CacheOrphanResolutionPendingV1, CacheOwnerAdmissionV1, CacheOwnerCurrentnessV1,
-    CacheOwnerErrorV1, CacheOwnerEvictionAdmissionV1, CacheOwnerHeldSnapshotV1, CacheOwnerLimitsV1,
-    CacheOwnerOutcomeUnknownV1, CacheOwnerPinActionV1, CacheOwnerPinAdmissionV1, CacheOwnerPinIdV1,
-    CacheOwnerPinPresenceV1, CacheOwnerPinReconciliationStateV1, CacheOwnerPinReconciliationV1,
-    CacheOwnerPinSettlementErrorV1, CacheOwnerPinSettlementV1, CacheOwnerPinSnapshotV1,
-    CacheOwnerRecoveryFailureV1, CacheOwnerReleaseFailureV1, CacheOwnerReopenTicketV1,
-    DormantCacheOwnerV1, EvictedCacheObjectV1,
-};
-#[cfg(target_os = "linux")]
-#[doc(hidden)]
-pub use physical::{
-    cache_lifecycle_availability_effect_v1, cache_owner_effect_commitment_v1,
-};
 pub use eviction::{
     AuthorizedUnlinkV1, EvictionCandidateStateV1, EvictionCandidateV1, EvictionError,
     EvictionProgressV1, EvictionRetryAuthorityV1, FrozenEvictionPlanV1, ReclamationEvidenceV1,
@@ -167,6 +150,21 @@ pub use owner_readback::CacheOwnerReadbackErrorV1;
 #[cfg(all(any(test, feature = "test-fixtures"), target_os = "linux"))]
 #[doc(hidden)]
 pub use owner_readback::sign_test_cache_owner_readback_v2;
+#[cfg(target_os = "linux")]
+pub use physical::{
+    CacheEffectObservationV1, CacheLookupV1, CacheMaterializationOutcomeV1,
+    CacheMaterializationRecoveryFailureV1, CacheOrphanResolutionFailureV1,
+    CacheOrphanResolutionPendingV1, CacheOwnerAdmissionV1, CacheOwnerCurrentnessV1,
+    CacheOwnerErrorV1, CacheOwnerEvictionAdmissionV1, CacheOwnerHeldSnapshotV1, CacheOwnerLimitsV1,
+    CacheOwnerOutcomeUnknownV1, CacheOwnerPinActionV1, CacheOwnerPinAdmissionV1, CacheOwnerPinIdV1,
+    CacheOwnerPinPresenceV1, CacheOwnerPinReconciliationStateV1, CacheOwnerPinReconciliationV1,
+    CacheOwnerPinSettlementErrorV1, CacheOwnerPinSettlementV1, CacheOwnerPinSnapshotV1,
+    CacheOwnerRecoveryFailureV1, CacheOwnerReleaseFailureV1, CacheOwnerReopenTicketV1,
+    DormantCacheOwnerV1, EvictedCacheObjectV1,
+};
+#[cfg(target_os = "linux")]
+#[doc(hidden)]
+pub use physical::{cache_lifecycle_availability_effect_v1, cache_owner_effect_commitment_v1};
 pub use pin::{
     CachePinCompactionPhysicalProofV1, CachePinId, CachePinKindV1, CachePinLedgerV1, CachePinV1,
     PinCompactionFloorV1, PinDrainEvidenceV1, PinDrainOutcomeV1, PinError, ReleasedCachePinV1,
@@ -189,19 +187,21 @@ pub(crate) use protected_journal::{
 #[cfg(target_os = "linux")]
 #[doc(hidden)]
 pub use protected_owner::CacheV8SettledClearV1;
+pub use protected_owner::CurrentProjectPhysicalCacheHeadV1;
 #[cfg(all(target_os = "linux", feature = "cache-physical-join-vm-fixture"))]
 pub use protected_owner::with_fixed_closed_cache_physical_policy_cut_vm_fixture_v1;
 #[doc(hidden)]
-pub use protected_owner::{CacheLifecycleBootInventoryV1, release_fixed_closed_policy_cache_hold_after_root_readback_v1};
-pub use protected_owner::CurrentProjectPhysicalCacheHeadV1;
 pub use protected_owner::{
-    CacheResidentInitializationV1, CacheResidentUnavailableV1,
+    CacheLifecycleBootInventoryV1, release_fixed_closed_policy_cache_hold_after_root_readback_v1,
+};
+pub use protected_owner::{
     CacheProjectUsageLoanV1, CacheProjectUsageObservationErrorV1, CacheProjectUsagePartitionV1,
     CacheResidencyAuthorizedControllerV1, CacheResidencyAuthorizedPayloadV1,
     CacheResidencyProtectedColdOutcomeV1, CacheResidencyProtectedOpenReportV1,
     CacheResidencyProtectedOwnerRecoveryV1, CacheResidencyProtectedOwnerV1,
     CacheResidencyRootReadOnlyPolicyHoldV1, CacheResidencyRootReadOnlyReplayV1,
-    PublicLogicalPinAcquisitionCommitV1, replay_fixed_root_read_only_cache_journals_v1,
+    CacheResidentInitializationV1, CacheResidentUnavailableV1, PublicLogicalPinAcquisitionCommitV1,
+    replay_fixed_root_read_only_cache_journals_v1,
     replay_fixed_root_read_only_cache_policy_hold_v1,
 };
 #[cfg(target_os = "linux")]
@@ -239,9 +239,13 @@ pub use scrub::{
 pub use signer_readback::{CacheSignerReadbackErrorV1, sign_fixed_signer_cache_owner_readback_v2};
 
 #[cfg(target_os = "linux")]
-pub use protected_owner::{CreateStorageCacheCurrentExtentsDataV1, create_storage_cache_current_dynamic_receiving_demand_v1, create_storage_cache_current_dynamic_with_upper_semantic_quote_v1};
-#[cfg(target_os = "linux")]
 pub use protected_owner::current_cache_fixed_receiving_demand_v1;
+#[cfg(target_os = "linux")]
+pub use protected_owner::{
+    CreateStorageCacheCurrentExtentsDataV1,
+    create_storage_cache_current_dynamic_receiving_demand_v1,
+    create_storage_cache_current_dynamic_with_upper_semantic_quote_v1,
+};
 
 // Historical-only selection; it cannot construct any Native Cache original.
 #[doc(hidden)]
@@ -258,10 +262,11 @@ pub use protected_journal::{CacheQ04ReadbackContextV1, CacheQ04ReadbackGuardV1};
 #[cfg(target_os = "linux")]
 pub use physical::delete_metadata::require_deadline_sample_v2 as cache_delete_deadline_sample_data_v2;
 
-
-
 #[cfg(target_os = "linux")]
-pub use protected_owner::{CacheReleasedOriginalsV1, CacheReleasedShapeV1, release_receiving_demand_v1, release_append_bytes_v1};
+pub use protected_owner::{
+    CacheReleasedOriginalsV1, CacheReleasedShapeV1, release_append_bytes_v1,
+    release_receiving_demand_v1,
+};
 
 #[cfg(target_os = "linux")]
 pub use protected_owner::{CacheCurrentAuditOriginalsV1, CacheCurrentAuditShapeV1};
@@ -271,8 +276,6 @@ pub use protected_owner::{CacheCurrentAuditOriginalsV1, CacheCurrentAuditShapeV1
 pub use protected_owner::initialization::original_q04::{
     CacheQ04AppendContextV1, CacheQ04AppendGateV1, CacheQ04AppendGuardV1,
 };
-
-
 
 #[cfg(all(feature = "test-fixtures", not(debug_assertions)))]
 compile_error!("the private Cache fixture is unavailable in release builds");

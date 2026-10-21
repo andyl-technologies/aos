@@ -118,4 +118,3 @@ pub(super) fn validate_settled_host_floor_join(
     }
     Ok(())
 }
-

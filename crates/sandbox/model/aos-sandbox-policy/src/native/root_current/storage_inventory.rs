@@ -197,4 +197,3 @@ impl RootCurrentStorageInventoryV1 {
             .ok_or(JournalError::ProtectedBoundary)
     }
 }
-

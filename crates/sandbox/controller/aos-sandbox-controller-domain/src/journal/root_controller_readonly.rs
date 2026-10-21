@@ -547,4 +547,3 @@ fn require_positive<T, E>(result: &Option<Result<T, E>>) -> Result<(), JournalEr
         _ => Err(JournalError::ProtectedBoundary),
     }
 }
-

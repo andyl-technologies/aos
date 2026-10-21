@@ -225,7 +225,7 @@ impl HostCanaryLocalChildOriginalsV1 {
         self.require_same_child()?;
 
         for (slot, kind) in CANARY_CHILD_NAMESPACES.into_iter().enumerate() {
-            crate::pidfd::acquire_namespace_retaining_v2(self.child.as_ref().ok_or_else(closed)?, 
+            crate::pidfd::acquire_namespace_retaining_v2(self.child.as_ref().ok_or_else(closed)?,
                 kind, &mut self.namespace_raw[slot],
             )?;
             let identity = NamespaceFd::validate_original_kind(

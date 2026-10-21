@@ -481,4 +481,3 @@ pub enum PolicyPublicationColdRecoveryV1 {
     /// A terminal publication may be revalidated as one exact transaction.
     Terminal(PolicyCompilerColdObservationV1),
 }
-

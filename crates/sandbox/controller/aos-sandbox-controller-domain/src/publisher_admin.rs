@@ -16,5 +16,3 @@ pub mod audit;
 pub mod registration;
 
 pub(crate) use aos_sandbox_protocol::publisher_policy::PublisherReadDataV2;
-
-

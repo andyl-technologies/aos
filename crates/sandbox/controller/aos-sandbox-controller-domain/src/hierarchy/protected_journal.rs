@@ -531,4 +531,3 @@ pub(crate) fn hierarchy_reducer_envelope_v1(
     aos_sandbox_ledger_replay::replay::hierarchy_records::hierarchy_reducer_envelope_v1(key, revision, predecessor, record, validator)
         .map_err(HierarchyProtectedJournalErrorV1::from)
 }
-

@@ -128,4 +128,3 @@ fn require_tree_identity_v1(
     }
     Ok(())
 }
-

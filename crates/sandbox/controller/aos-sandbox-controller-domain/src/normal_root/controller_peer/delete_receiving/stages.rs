@@ -543,4 +543,3 @@ impl RootMaintenanceStorageStageReceivingV2<'_, '_> {
     }
 
 }
-

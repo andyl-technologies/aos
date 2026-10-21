@@ -62,4 +62,3 @@ pub fn verify_root_signed_project_sources_data_v1(
     }
     Ok((project, deployment, decoded))
 }
-

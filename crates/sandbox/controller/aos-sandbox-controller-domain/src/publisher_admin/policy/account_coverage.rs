@@ -14,4 +14,3 @@
 aos_sandbox_protocol::define_provider_account_coverage_data_recipe_v1!(
     super::PublisherPolicyError::CorruptState
 );
-

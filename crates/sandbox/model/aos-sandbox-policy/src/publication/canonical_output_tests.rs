@@ -206,4 +206,3 @@ fn canonical_output_diagnostics_rejects_hostile_fields_and_complete_stage_corrup
         );
     }
 }
-

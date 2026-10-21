@@ -245,4 +245,3 @@ pub(crate) fn genesis_manifest_project_count(
     aos_sandbox_protocol::cache_state::replay_evidence::genesis_manifest_project_count(bytes, limits)
         .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)
 }
-

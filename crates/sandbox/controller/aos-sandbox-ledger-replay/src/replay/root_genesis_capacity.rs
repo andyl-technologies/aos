@@ -139,7 +139,7 @@ pub fn validate_admission(
     transaction: &JournalTransaction,
     reservation: &GlobalCapacityReservationRequestV1,
 ) -> Result<(), JournalError> {
-    
+
     if reservation.purpose != GlobalCapacityReservationPurposeV1::RootSourceGenesisAnchor
         || transaction.records().len() != 2
     {
@@ -182,7 +182,7 @@ pub fn validate_settlement(
     reservation: &GlobalCapacityReservationRequestV1,
     capacity_id: [u8; 32],
 ) -> Result<(), JournalError> {
-    
+
     let key = [INTENT_PREFIX, reservation_project(rows, reservation)?].concat();
     let intent = RootSourceGenesisIntentRecordV1::from_record_bytes(
         rows.get(RecordNamespace::DesiredState, &key)

@@ -22,15 +22,15 @@ macro_rules! define_provider_native_account_data_recipe_v1 {
         const ACCOUNT_DOMAIN: &[u8] = b"aos.sandbox.git-upload.account-revision.v1\0";
         const ACCOUNT_BYTES: usize = 452;
         const HEAD_BYTES: usize = 68;
-        
+
         fn account_key(project: ProjectId, generation: u64) -> Vec<u8> {
             key(ACCOUNT_PREFIX, project.as_bytes(), Some(generation))
         }
-        
+
         fn account_head_key(project: ProjectId) -> Vec<u8> {
             key(HEAD_PREFIX, project.as_bytes(), None)
         }
-        
+
         fn check_record_header(
             bytes: &[u8],
             magic: &[u8; 8],
@@ -49,7 +49,7 @@ macro_rules! define_provider_native_account_data_recipe_v1 {
             }
             Ok((project, generation))
         }
-        
+
         struct AccountRevision {
             predecessor: ObjectDigest,
             origin: ObjectDigest,
@@ -57,7 +57,7 @@ macro_rules! define_provider_native_account_data_recipe_v1 {
             reserved: ResourceVector,
             digest: ObjectDigest,
         }
-        
+
         // Called only after the existing header/width/key checks. Both namespace
         // replay and the native co-commit relation use these same account amounts.
         fn decode_account_contents(bytes: &[u8]) -> Result<AccountRevision, PublisherPolicyError> {
@@ -77,7 +77,7 @@ macro_rules! define_provider_native_account_data_recipe_v1 {
                 digest: commitment(ACCOUNT_DOMAIN, bytes),
             })
         }
-        
+
         pub(crate) fn require_coverage_native_account_transaction(
             transaction: &JournalTransaction,
         ) -> Result<(), PublisherPolicyError> {
@@ -93,7 +93,7 @@ macro_rules! define_provider_native_account_data_recipe_v1 {
                 (records[2].key(), records[2].value()),
             ])
         }
-        
+
         fn require_coverage_native_account_parts(
             transaction_id: &[u8; 16],
             records: [(&[u8], Option<&[u8]>); 3],
@@ -131,7 +131,7 @@ macro_rules! define_provider_native_account_data_recipe_v1 {
             }
             Ok(())
         }
-        
+
             pub(crate) fn require_complete_coverage_read_state_data_v1(
                 state: &std::collections::BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
             ) -> Result<(), PublisherPolicyError> {
@@ -156,6 +156,6 @@ macro_rules! define_provider_native_account_data_recipe_v1 {
                     (coverage_key, Some(bytes)), (&account_key, Some(account)), (&head_key, Some(head)),
                 ])
             }
-        
+
     };
 }

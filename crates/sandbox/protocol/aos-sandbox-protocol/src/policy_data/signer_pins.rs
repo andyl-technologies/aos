@@ -110,4 +110,3 @@ pub fn read_u64(bytes: &[u8], offset: usize) -> Result<u64, PolicySignerPinsData
             .ok_or(PolicySignerPinsDataErrorV1::InvalidHead)?,
     ))
 }
-

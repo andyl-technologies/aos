@@ -296,4 +296,3 @@ pub fn q04_independent_publication_data_v1(
         diagnostics_key,
     )
 }
-
