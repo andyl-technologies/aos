@@ -1172,7 +1172,15 @@ fn receive_observer_request_before(
 ) -> Result<ObserverRequest, ZfsWorkerError> {
     let maximum_packet_bytes =
         MAXIMUM_PIN_WORKER_PACKET_BYTES.max(MAXIMUM_CATALOG_OBSERVATION_PACKET_BYTES);
-    let first = receive_packet_before(socket, maximum_packet_bytes, deadline_boottime_nanoseconds)?;
+    // Both request families transfer the mount namespace and pin root only
+    // on their first frame. Continuations must carry no descriptors.
+    let first = aos_sandbox_linux::seqpacket::bounded::receive_provisioned_worker_record(
+        socket,
+        maximum_packet_bytes,
+        2,
+        deadline_boottime_nanoseconds,
+    )
+    .map_err(map_worker_record_error)?;
     let catalog = is_catalog_observation_frame(first.payload());
 
     if catalog {
@@ -2827,6 +2835,82 @@ mod tests {
             DescriptorSubjectSocket::from_owned(first).unwrap(),
             DescriptorSubjectSocket::from_owned(second).unwrap(),
         )
+    }
+
+    #[test]
+    fn observer_request_accepts_two_rights_only_on_first_frame() {
+        for length in [32, MAXIMUM_PIN_WORKER_PACKET_BYTES + 1] {
+            let (mut sender, mut receiver) = packet_socket_pair();
+            let first = tempfile::tempfile().unwrap();
+            let second = tempfile::tempfile().unwrap();
+            let payload = vec![7; length];
+
+            let deadline = quiescence_deadline(Duration::from_secs(5)).unwrap();
+            let received = std::thread::scope(|scope| {
+                // The framed sender may encounter backpressure before the
+                // receiver consumes its first packet.
+                let sending = scope.spawn(|| {
+                    send_request_before(
+                        &mut sender,
+                        &payload,
+                        [first.as_fd(), second.as_fd()],
+                        deadline,
+                    )
+                });
+                let received = receive_observer_request_before(&mut receiver, deadline);
+                sending.join().unwrap().unwrap();
+                received
+            });
+            let ObserverRequest::WorkspacePin(request) = received.unwrap()
+            else {
+                panic!("pin request was classified as catalog observation");
+            };
+
+            assert_eq!(request.bytes, payload);
+            assert_eq!(request.descriptors.len(), 2);
+        }
+    }
+
+    #[test]
+    fn observer_request_rejects_inexact_first_frame_rights() {
+        for count in [0, 1] {
+            let (mut sender, mut receiver) = packet_socket_pair();
+            let file = tempfile::tempfile().unwrap();
+            let mut frames =
+                crate::pin_worker::WorkspacePinRequestFrameEncoder::new(b"request").unwrap();
+            let frame = frames.next_frame().unwrap();
+
+            if count == 0 {
+                sender.send(&frame).unwrap();
+            } else {
+                sender
+                    .send_with_descriptors(&frame, &vec![file.as_fd(); count])
+                    .unwrap();
+            }
+            let result = receive_observer_request_before(&mut receiver, u64::MAX);
+
+            assert!(matches!(result, Err(ZfsWorkerError::Transport(_))));
+            assert!(matches!(receiver.as_fd(), Err(SeqpacketError::Closed)));
+        }
+    }
+
+    #[test]
+    fn observer_request_rejects_continuation_rights() {
+        let (mut sender, mut receiver) = packet_socket_pair();
+        let file = tempfile::tempfile().unwrap();
+        let payload = vec![7; MAXIMUM_PIN_WORKER_PACKET_BYTES + 1];
+        let mut frames = crate::pin_worker::WorkspacePinRequestFrameEncoder::new(&payload).unwrap();
+
+        sender
+            .send_with_descriptors(&frames.next_frame().unwrap(), &[file.as_fd(), file.as_fd()])
+            .unwrap();
+        sender
+            .send_with_descriptors(&frames.next_frame().unwrap(), &[file.as_fd()])
+            .unwrap();
+        let result = receive_observer_request_before(&mut receiver, u64::MAX);
+
+        assert!(matches!(result, Err(ZfsWorkerError::Transport(_))));
+        assert!(matches!(receiver.as_fd(), Err(SeqpacketError::Closed)));
     }
 
     #[test]
