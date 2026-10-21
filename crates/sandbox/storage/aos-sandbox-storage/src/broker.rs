@@ -9298,12 +9298,34 @@ mod tests {
         )
         .unwrap();
         let policy_path = resolver_policy_directory.join("storage-resolver-policy.catalog");
+        // The seed preparation already committed its resolver floor. Publish
+        // a later catalog and admit its exact protected bytes before recording
+        // the baseline; startup must replay that floor rather than roll it back.
+        let seeded_floor = coordinator.transactions.resolver_policy_floor().unwrap();
+        let policy_generation = seeded_floor.generation().checked_add(1).unwrap();
         fs::write(
             &policy_path,
-            encode_catalog_for_test(7, fixture.protected_authority_binding(), &[resolver_policy]),
+            encode_catalog_for_test(
+                policy_generation,
+                fixture.protected_authority_binding(),
+                &[resolver_policy],
+            ),
         )
         .unwrap();
         fs::set_permissions(&policy_path, fs::Permissions::from_mode(0o600)).unwrap();
+        let policies = ProtectedStorageResolverPolicyDirectoryV1::open_root_owned(
+            &resolver_policy_directory,
+            fixture.protected_authority_binding(),
+        )
+        .unwrap();
+        let published_policy = policies.load().unwrap().binding().unwrap();
+        assert!(published_policy.generation() > seeded_floor.generation());
+        assert_eq!(
+            coordinator
+                .admit_trusted_resolver_policy(published_policy)
+                .unwrap(),
+            crate::state::StorageResolverPolicyAdmissionOutcomeV1::Advanced,
+        );
         write_public_fixture_file(
             &fixture_directory.join("prepare-request.pb"),
             &prepare_request,
