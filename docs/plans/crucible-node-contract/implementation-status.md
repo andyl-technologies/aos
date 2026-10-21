@@ -1505,9 +1505,14 @@ operands. The corrected control prices those actual inputs and sets its ceiling
 one byte below their independent row; both final full libraries include it.
 Production checks and ceilings are unchanged.
 
-Affected all-feature/all-target checking and scoped formatting also pass. The
-required application gate and funded-Source VM are running for the final frozen
-source. Full live Hello
+Affected all-feature/all-target checking and scoped formatting also pass for
+`42f8197dd0`. The required application gate passes with 180 test executables
+across 58 package identities, including 71 integration targets. The funded-Source
+VM passes both independent consumers, each retaining three original private
+Births and passing refusal and cleanup controls, plus the default-feature CLI
+refusal. All 190 owned changed Rust paths match the committed checkpoint in the
+application capture and each of the three VM component captures. Full Engine
+and Daemon libraries remain qualified at `f2150ce5c7`. Full live Hello
 authentication, model-absent policy, bootstrap ACK and the remaining RFC
 acceptance exits are still required.
 
