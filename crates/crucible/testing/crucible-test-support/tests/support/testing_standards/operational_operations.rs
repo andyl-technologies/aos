@@ -151,6 +151,7 @@ const CONTRACTS: &[Contract] = &[
         ],
     },
     ram_source_cleanup::CONTRACT,
+    ram_source_cleanup::STOP_CONTRACT,
     helper_wait::CONTRACT,
     Contract {
         package: "crucible-qemu-plugin",

@@ -6,6 +6,10 @@
 
 use super::{Companion, Contract};
 
+#[path = "ram_source_cleanup/source_stop.rs"]
+mod source_stop;
+pub(super) const STOP_CONTRACT: Contract = source_stop::CONTRACT;
+
 pub(super) const CONTRACT: Contract = Contract {
     package: "crucible-qemu-host",
     target: "src/node/host_policy",

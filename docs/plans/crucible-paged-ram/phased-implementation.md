@@ -244,13 +244,28 @@ and four ignored probes. Source-policy checks bind the separate reservation,
 Original verification, journal handoff and closed owner, including omission and
 first-cause replacement controls. The broad gate retains the same 21 unfinished
 paths. Hygiene, rustdoc, ABI and license controls pass. Coverage names 117
-component cases, with 149 uncovered and zero qualified requirements.
+component cases, with 149 uncovered and zero qualified requirements. The
+hermetic supervision gate passes all nineteen exact cases.
 
 This fixed control loan does not fund an error's separately allocated payloads,
 command construction, returned output storage, or weak roster headers. The final
 diagnostic quarantine remains. Late helper work still needs its actual entered
 Work or Restore Original and current Source incarnation; retaining the creation
 Original cannot authorize that later action.
+
+
+The bounded RAM-source shutdown wait now has an exact source-policy contract.
+Classification requires the actual saved Cleanup, current-process check, native
+join observation and independent cancellation, join and wait posts. It also
+requires the real worker result, panic and uncertainty history to remain owned.
+The wait is exposed again if any one of these obligations is removed, including
+through the generic omission control. Nine specific mutations reject foreign
+Originals, invented return, discarded history or posts, and an unbounded sleep.
+
+All 71 specific source-policy controls pass; the broad gate reports twenty
+unfinished paths, fourteen daemon and six host. Five hygiene, two rustdoc,
+eighteen ABI and four license controls pass. This review changes no shutdown
+behavior and proves neither native activation nor cached-stack physical return.
 
 
 Whole-node shutdown now keeps one continuation through process reap, RAM service

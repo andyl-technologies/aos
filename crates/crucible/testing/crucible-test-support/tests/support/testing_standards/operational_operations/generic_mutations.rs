@@ -161,6 +161,7 @@ fn continuation_waits_require_original_posts_and_physical_custody()
             let changed_expression = expression
                 .replace("from_millis(1)", "from_millis(2)")
                 .replace("from_millis(10)", "from_millis(11)")
+                .replace("from_millis(20)", "from_millis(21)")
                 .replace("(&error)", "(&other_error)")
                 .replace("retry_unsettled()", "retry_unsettled(altered)")
                 .replace("retry_pending()", "retry_pending(altered)")
