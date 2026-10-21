@@ -1,6 +1,11 @@
 //! Verifies genuine Always and single-chunk Never publication and physical handoff.
 
-use std::{collections::BTreeMap, io, os::unix::fs::FileExt};
+use std::{
+    collections::BTreeMap,
+    io,
+    os::unix::fs::FileExt,
+    time::{Duration, UNIX_EPOCH},
+};
 use terrane_format::{
     chunking::ChunkProfile,
     identity::{Identity, IdentityKind, TERRANE_V1},
@@ -9,7 +14,9 @@ use terrane_format::{
 use terrane_linux::host_cache::{NativeContentStore, NativePreparedObject};
 use terrane_sdk::{
     host::cache::ReassemblyMode,
-    store::{ChunkPosition, ChunkUpload, ContentStore, ContentUpload, MetaUpload},
+    store::{
+        ChunkPosition, ChunkUpload, Clock, ContentStore, ContentUpload, MetaUpload, TokioClock,
+    },
 };
 
 pub(super) async fn exercise(
@@ -57,6 +64,10 @@ pub(super) async fn exercise(
         (&multiple, ReassemblyMode::Always, expected.as_slice()),
         (&single, ReassemblyMode::Never, last.as_slice()),
     ] {
+        // Manifest validation acquired real independent consumer grants. Their
+        // durable release grace must expire before the original encoded sources
+        // can retire; publication alone cannot revoke those readers.
+        wait_consumer_grace(store).await?;
         let prepared = if mode == ReassemblyMode::Always {
             cache.prepare_object(identity).await
         } else {
@@ -124,4 +135,41 @@ async fn admit_manifest(
         ))
         .await
         .map_err(io::Error::other)
+}
+
+/// Waits for observed durable deadlines, then asks the real owner to reconcile.
+async fn wait_consumer_grace(store: &NativeContentStore) -> io::Result<()> {
+    let state = terrane_sdk::host::cache::CacheState::load(
+        &terrane_sdk::store::TokioLocalFs,
+        &store.ready().layout().layout().root().join("state/cache"),
+        terrane_sdk::host::cache::StateLimits {
+            bytes: 65536,
+            records: 64,
+        },
+    )
+    .await
+    .map_err(io::Error::other)?
+    .ok_or_else(|| io::Error::other("reassembly lost its actual durable policy"))?;
+    let deadline = state
+        .leases
+        .iter()
+        .filter(|lease| lease.owner.starts_with("consumer-grace:"))
+        .map(|lease| lease.expires)
+        .max();
+    if let Some(deadline) = deadline {
+        let end = UNIX_EPOCH
+            .checked_add(Duration::from_secs(deadline))
+            .ok_or_else(|| io::Error::other("consumer grace deadline overflows"))?;
+        if let Ok(remaining) = end.duration_since(TokioClock.now()) {
+            tokio::time::sleep(remaining).await;
+        }
+    }
+    let removed = store.ready().owner().sweep_consumer_leases().await?;
+    if deadline.is_some() {
+        assert!(removed > 0);
+        println!(
+            "PASS actual consumer release deadlines elapsed and native owner reconciled source protection before retirement"
+        );
+    }
+    Ok(())
 }

@@ -24,11 +24,15 @@ pub(super) fn run_reassembly() -> io::Result<()> {
 fn run_with(retirement_grace_ms: u64) -> io::Result<()> {
     super::reader::actual_identity(841, &[845])?;
     let case = Case::existing("positive")?;
-    let host = configuration(&case, retirement_grace_ms);
+    let host = configuration(&case, retirement_grace_ms, 30);
     terrane_linux::configured::run_configured_publisher(&host)
 }
 
-fn configuration(case: &Case, retirement_grace_ms: u64) -> HostTier {
+fn configuration(
+    case: &Case,
+    retirement_grace_ms: u64,
+    consumer_release_grace_seconds: u64,
+) -> HostTier {
     HostTier {
         path: case.path.to_string_lossy().into_owned(),
         size_bytes: 2 * LIMIT,
@@ -43,7 +47,7 @@ fn configuration(case: &Case, retirement_grace_ms: u64) -> HostTier {
                             capacity_bytes: 24 * 1024 * 1024,
                             low_watermark_bytes: 16 * 1024 * 1024,
                             probation_bytes: 65536,
-                            release_grace_seconds: 30,
+                            release_grace_seconds: consumer_release_grace_seconds,
                             scan_limit: 64,
                             max_read_bytes: 2 * 1024 * 1024,
                             state_bytes: 65536,
@@ -123,7 +127,12 @@ fn prepare_with(preparation: Preparation) -> io::Result<()> {
     } else {
         30_000
     };
-    let mut host = configuration(&case, retirement_grace_ms);
+    let consumer_release_grace_seconds = if matches!(preparation, Preparation::Reassembly) {
+        1
+    } else {
+        30
+    };
+    let mut host = configuration(&case, retirement_grace_ms, consumer_release_grace_seconds);
     if matches!(preparation, Preparation::Reassembly) {
         host.reassembly = Reassembly::Always;
     }
