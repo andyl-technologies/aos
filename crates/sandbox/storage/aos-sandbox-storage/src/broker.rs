@@ -12585,7 +12585,7 @@ mod tests {
                         .map_err(Into::into)
                     },
                 ),
-                Err(crate::StorageRuntimeError::Recovery)
+                Err(crate::StorageRuntimeError::StartupAuthority(_))
             ));
             assert_eq!(samples.get(), 0);
             assert!(!inventory_opened.get());
