@@ -70,8 +70,8 @@ fn selected() -> Vec<u8> {
         purpose[offset..offset + 8].copy_from_slice(&value.to_be_bytes());
     }
     let mut standing = [0_u8; 1496];
-    standing[..8].copy_from_slice(b"CRUCSRV3");
-    standing[8..12].copy_from_slice(&3_u32.to_be_bytes());
+    standing[..8].copy_from_slice(b"CRUCSRV4");
+    standing[8..12].copy_from_slice(&4_u32.to_be_bytes());
     standing[12..16].copy_from_slice(&1496_u32.to_be_bytes());
     standing[16..48].copy_from_slice(&purpose[184..216]);
     standing[88..120].copy_from_slice(&purpose[184..216]);
@@ -85,6 +85,7 @@ fn selected() -> Vec<u8> {
     // Independently authored schema11 literal roster: fourteen 1ns polls,
     // absent progress and 500us total bounds, with canonical zero padding.
     standing[192..196].copy_from_slice(&256_u32.to_be_bytes());
+    standing[196..200].copy_from_slice(&1_u32.to_be_bytes());
     standing[232..236].copy_from_slice(&11_u32.to_be_bytes());
     for index in 0..14 {
         let offset = 236 + index * 18;

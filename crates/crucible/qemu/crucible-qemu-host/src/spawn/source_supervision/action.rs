@@ -27,6 +27,26 @@ enum RequestIdentity {
     },
 }
 
+impl RequestIdentity {
+    // Matching bytes in a pending untyped request cannot create a producing
+    // membership retrospectively. The real producer invokes this before birth.
+    fn require_unpublished_request(
+        &self,
+        node: &crucible_qemu_shmem::NodeSlot,
+    ) -> Result<(), HostSupervisionError> {
+        let acknowledged = node.control_boundary_token();
+        let token_matches = match self {
+            Self::Control { token, .. } => acknowledged.wrapping_add(1) == *token,
+            #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+            Self::Park { .. } => true,
+        };
+        if acknowledged & 1 == 0 || !token_matches || node.action_frontier_is_retained() {
+            return Err(HostSupervisionError::BorrowedOperation);
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug)]
 pub(super) struct PendingAction {
     pub(super) observation: ActionObservation,
@@ -423,16 +443,11 @@ impl ActionSourceProducer {
         let node = mapping
             .node_slot(slot)
             .map_err(|_| HostSupervisionError::Unavailable)?;
-        // A previously published untyped request cannot acquire a producing
-        // loan retrospectively, even when its tuple happens to match.
-        let acknowledged = node.control_boundary_token();
-        if acknowledged & 1 == 0
-            || (park_request.is_none() && acknowledged.wrapping_add(1) != token)
-            || node.action_frontier_is_retained()
-            || mapping
-                .fault_command_write_index(slot)
-                .map_err(|_| HostSupervisionError::Unavailable)?
-                != frontier
+        request.require_unpublished_request(node)?;
+        if mapping
+            .fault_command_write_index(slot)
+            .map_err(|_| HostSupervisionError::Unavailable)?
+            != frontier
         {
             return Err(HostSupervisionError::BorrowedOperation);
         }

@@ -822,10 +822,6 @@ fn offline_assertion_checker_evaluates_valid_observation_after_deferred_prefix()
     let terminal = crucible_engine::test_support::condition_prefix_from_scheduler_entries_for_test(
         entries.clone(),
     )
-    .expect("current observation should make the online prefix valid");
-    let terminal = crucible_engine::test_support::condition_prefix_from_scheduler_entries_for_test(
-        entries.clone(),
-    )
     .expect("terminal online boundary should be valid");
     let mut online_evaluator = HostAssertionEvaluator::new(&properties)
         .unwrap_or_else(|error| panic!("finite component assertion setup: {error}"))

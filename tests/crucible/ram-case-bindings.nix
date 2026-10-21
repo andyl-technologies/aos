@@ -145,6 +145,12 @@
       ])
     ];
     supervision = component "gate:ram-supervision" "model" [
+      (group "protocol/crucible-qemu-protocol" "lib" [] [
+        (case "source_supervision::tests::independent_source_observation_preserves_submillisecond_timing_and_raw_event_zero" "positive" ["TIME-9"] "Independent schema-four bytes preserve the explicit producer-retention edition and exact timing observations; decoding issues no Source, subscriber or operation authority.")
+        (case "source_supervision::tests::predecessor_or_mixed_source_editions_never_imply_producer_retention" "adversarial" ["TIME-9"] "Predecessor and mixed standing schema/magic editions cannot imply the producer's retention promise; no Native subscription or operation is issued.")
+        (case "source_supervision::tests::missing_or_unknown_producer_retention_promise_refuses_before_observation" "adversarial" ["TIME-9"] "Missing and unknown producer-retention editions refuse before observation decoding; no runtime assignment or physical return is established.")
+        (case "source_supervision::tests::live_or_initial_unknown_retention_cannot_be_validated_by_equal_identity" "adversarial" ["TIME-9"] "Equal identity cannot validate an unknown retention promise in either initial or live observations; no Native membership or activation is established.")
+      ])
       (group "qemu/crucible-qemu-plugin" "lib" [] [
         (case "runtime::live_callbacks::control_facts::protected_read::payload::borrow::tests::actual_borrow_blocks_payload_return_until_record_and_both_fields_close" "positive" ["TIME-9"] "The actual pinned module journal blocks payload destruction until the real local borrow record and both canonical outputs close; the mapped request remains pending. No Native Main, action Original, publisher membership or ACK is issued.")
         (case "runtime::live_callbacks::control_facts::protected_read::payload::borrow::tests::copied_borrow_holder_cannot_consume_the_actual_journal_record" "adversarial" ["TIME-9"] "A copied holder cannot consume the actual inline borrow record despite a matching opaque token and local serial. No Native Main, action Original, publisher membership or ACK is issued.")
@@ -223,6 +229,8 @@
         (case "mixed_typed_and_lifecycle_observers_close_once_before_the_paired_refund" "adversarial" ["TIME-9"] "Concurrent typed and lifecycle observers preserve the same downcastable error and one allocation, then observe one physical control close before either paired loan refunds; no Native Source is issued.")
       ])
       (group "qemu/crucible-qemu-host" "lib" [] [
+        (case "spawn::source_supervision::action::tests::matching_pending_untyped_request_cannot_acquire_producing_membership" "adversarial" ["TIME-9"] "The actual prebirth request guard rejects a matching already-pending untyped request without mutating its token, frontier or capture; no producing membership or Native Original is issued.")
+        (case "spawn::source_supervision::action::tests::action_birth_requires_next_unpublished_token_and_unoccupied_real_frontier" "adversarial" ["TIME-9"] "Actual NodeSlot token and frontier ownership reject stale tokens and an occupied frontier before action birth; no Native publisher subscription or physical peer return is established.")
         (case "linux_attempt_host::original_roster::storage::tests::funded_roster_returns_native_body_credit_while_weak_allocation_stays_paid" "positive" ["TIME-9"] "The production closed roster body returns real native mechanism pairs while actual Weak allocation custody retains a separate paid pair through observed final deallocation; no Main authentication or Source qualification.")
         (case "linux_attempt_host::original_roster::storage::tests::real_strong_borrow_refuses_retirement_without_sealing_later_cleanup" "adversarial" ["TIME-9"] "A real strong roster borrower blocks credit release without sealing the later cleanup route; only actual borrower destruction permits retirement.")
         (case "linux_attempt_host::original_roster::storage::tests::live_native_slot_refuses_retirement_without_sealing_its_physical_cleanup" "adversarial" ["TIME-9"] "A live original slot prevents funded body retirement and leaves its real cleanup route available until physical vector closure.")

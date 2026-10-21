@@ -417,3 +417,53 @@ fn missing_pause_action_refuses_before_header_or_scheduler_mutation() {
     assert_eq!(slot.load_scheduler_advance().unwrap(), before);
     assert_eq!(slot.control_boundary_token(), 1);
 }
+
+#[test]
+fn matching_pending_untyped_request_cannot_acquire_producing_membership() {
+    let slot = crucible_qemu_shmem::NodeSlot::new(crucible_qemu_shmem::KIND_VM);
+    let token = slot.request_control_boundary(7, Some(1)).unwrap();
+    let request = RequestIdentity::Control {
+        token,
+        capture: Some(1),
+    };
+
+    assert_eq!(slot.preview_action_token(7, Some(1)), Ok(token));
+    assert!(matches!(
+        request.require_unpublished_request(&slot),
+        Err(HostSupervisionError::BorrowedOperation)
+    ));
+    assert_eq!(slot.control_boundary_token(), token);
+    assert_eq!(slot.control_boundary_fault_command_frontier(), 7);
+    assert_eq!(slot.control_boundary_capture_request(), Some(1));
+    assert!(!slot.action_frontier_is_retained());
+}
+
+#[test]
+fn action_birth_requires_next_unpublished_token_and_unoccupied_real_frontier() {
+    let slot = crucible_qemu_shmem::NodeSlot::new(crucible_qemu_shmem::KIND_VM);
+    let next = RequestIdentity::Control {
+        token: 2,
+        capture: None,
+    };
+    let stale = RequestIdentity::Control {
+        token: 0,
+        capture: None,
+    };
+
+    assert!(next.require_unpublished_request(&slot).is_ok());
+    assert!(matches!(
+        stale.require_unpublished_request(&slot),
+        Err(HostSupervisionError::BorrowedOperation)
+    ));
+    slot.retain_action_frontier(12).unwrap();
+
+    assert!(matches!(
+        next.require_unpublished_request(&slot),
+        Err(HostSupervisionError::BorrowedOperation)
+    ));
+    assert_eq!(slot.control_boundary_token(), 1);
+    assert!(slot.action_frontier_is_retained());
+    assert!(slot.release_action_frontier(14).is_err());
+    slot.release_action_frontier(12).unwrap();
+    assert!(next.require_unpublished_request(&slot).is_ok());
+}

@@ -4,13 +4,13 @@
 //! live[1504]: BE-u64 atomic sequence | payload[1496]
 //! sealed[1520]: file device(u64) | inode(u64) | extent=1504(u64) | initial payload
 //! payload header[232]:
-//!   0 magic CRUCSRV3; 8 schema3(u32); 12 length1496(u32)
+//!   0 magic CRUCSRV4; 8 schema4(u32); 12 length1496(u32)
 //!  16 supervisor cap[32]; 48 immutable monotonic origin(u64)
 //!  56 outer revision(u64); 64 allowance tag; 65 sticky state; 66 zero[6]
 //!  72 account generation(u64); 80 Source generation(u64)
 //!  88 containing cap[32]; 120 Source reservation[32]; 152 roster revision(u64)
 //! 160 cancellation device(u64); 168 inode(u64); 176 event-ID+1(u64)
-//! 184 original-start allowance ns(u64); 192 roster bytes(u32); 196 zero[4]
+//! 184 original-start allowance ns(u64); 192 roster bytes(u32); 196 producer retention edition1(u32)
 //! 200 artifact SHA-256[32]; 232 single schema11 nanosecond roster; zero padding to600; action[896]
 //! ```
 //!
@@ -22,6 +22,15 @@
 //! operation, never an invented clock. Native borrows a read-only descriptor
 //! and mapping; the host sole writable mapping predates future-write sealing.
 //! Syntax and matching observations issue no Source or operation authority.
+//!
+//! Retention edition 1 promises that the actual producer retains every born
+//! action membership, including dirty or unprojected rows. Once publication is
+//! attempted, the action binding and those memberships cannot be replaced until
+//! the assigned peer's authenticated physical closure. Before that cut, local
+//! abandonment requires the producer's proof that no matching request was
+//! published. Producer failure or cancellation does not certify peer return.
+//! A received local view returning is distinct from publisher membership return;
+//! this edition declares the producer's contract and grants no receiver authority.
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
 use crate::ram_control::{RAM_CONTROL_BUDGET_COUNT, RamControlBudget, decode_ram_control_budgets};
@@ -33,13 +42,20 @@ pub const SOURCE_SUPERVISION_PAYLOAD_BYTES: usize = 1496;
 /// Fixed sealed file corroboration and initial-observation extent.
 pub const SOURCE_SUPERVISION_CORROBORATION_BYTES: usize = 1520;
 
-const SCHEMA: u32 = 3;
+/// Identifies the producer's retained-action-membership lifetime contract.
+///
+/// This word is a versioned promise, not proof of runtime assignment or closure.
+pub const SOURCE_PRODUCER_RETENTION_EDITION: u32 = 1;
+
+const SCHEMA: u32 = 4;
 
 /// Pure observations decoded from a standing Source publication.
 ///
 /// No observation authenticates a descriptor, issuer or runtime assignment.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SourceSupervisionObservation {
+    /// Versioned producer retention promise; decoding accepts only edition 1.
+    pub producer_retention_edition: u32,
     /// Exact containing supervisor identity.
     pub cap: [u8; 32],
     /// Immutable local CLOCK_MONOTONIC origin.
@@ -77,19 +93,20 @@ pub struct SourceSupervisionDecodeError;
 ///
 /// # Errors
 /// Refuses predecessor geometry, unknown flags/state, noncanonical padding,
-/// invalid identities, unsupported allowance or a malformed precise roster.
+/// invalid identities, missing or unknown retention promises, unsupported allowance
+/// or a malformed precise roster.
 pub fn decode_source_supervision_payload(
     bytes: &[u8],
 ) -> Result<SourceSupervisionObservation, SourceSupervisionDecodeError> {
     let invalid = SourceSupervisionDecodeError;
     if bytes.len() != SOURCE_SUPERVISION_PAYLOAD_BYTES
-        || bytes[..8] != *b"CRUCSRV3"
+        || bytes[..8] != *b"CRUCSRV4"
         || u32_at(bytes, 8) != Some(SCHEMA)
         || u32_at(bytes, 12) != Some(1496)
         || bytes[64] > 1
         || bytes[65] > 3
         || bytes[66..72] != [0; 6]
-        || bytes[196..200] != [0; 4]
+        || u32_at(bytes, 196) != Some(SOURCE_PRODUCER_RETENTION_EDITION)
         || bytes[16..48] == [0; 32]
         || bytes[16..48] != bytes[88..120]
         || bytes[120..152] == [0; 32]
@@ -143,6 +160,7 @@ pub fn decode_source_supervision_payload(
         return Err(invalid);
     }
     Ok(SourceSupervisionObservation {
+        producer_retention_edition: SOURCE_PRODUCER_RETENTION_EDITION,
         cap,
         reservation,
         artifact,
@@ -175,7 +193,9 @@ pub fn validate_source_supervision_update(
     initial: &SourceSupervisionObservation,
     live: &SourceSupervisionObservation,
 ) -> Result<(), SourceSupervisionDecodeError> {
-    if live.cap != initial.cap
+    if initial.producer_retention_edition != SOURCE_PRODUCER_RETENTION_EDITION
+        || live.producer_retention_edition != SOURCE_PRODUCER_RETENTION_EDITION
+        || live.cap != initial.cap
         || live.original_monotonic_ns != initial.original_monotonic_ns
         || live.account_generation != initial.account_generation
         || live.process_generation != initial.process_generation

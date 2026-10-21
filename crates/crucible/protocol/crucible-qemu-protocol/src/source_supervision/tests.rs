@@ -4,8 +4,8 @@ use super::*;
 
 fn payload() -> [u8; 1496] {
     let mut bytes = [0; 1496];
-    bytes[..8].copy_from_slice(b"CRUCSRV3");
-    bytes[8..12].copy_from_slice(&3_u32.to_be_bytes());
+    bytes[..8].copy_from_slice(b"CRUCSRV4");
+    bytes[8..12].copy_from_slice(&4_u32.to_be_bytes());
     bytes[12..16].copy_from_slice(&1496_u32.to_be_bytes());
     bytes[16..48].fill(7);
     bytes[88..120].fill(7);
@@ -15,6 +15,7 @@ fn payload() -> [u8; 1496] {
         bytes[offset..offset + 8].copy_from_slice(&value.to_be_bytes());
     }
     bytes[192..196].copy_from_slice(&256_u32.to_be_bytes());
+    bytes[196..200].copy_from_slice(&1_u32.to_be_bytes());
     bytes[232..236].copy_from_slice(&11_u32.to_be_bytes());
     for index in 0..14 {
         let offset = 236 + index * 18;
@@ -38,6 +39,7 @@ fn predecessor_source_cannot_supply_a_typed_park_lender() {
 fn independent_source_observation_preserves_submillisecond_timing_and_raw_event_zero() {
     let observed = decode_source_supervision_payload(&payload()).unwrap();
 
+    assert_eq!(observed.producer_retention_edition, 1);
     assert_eq!(observed.cancellation[2], 1);
     assert_eq!(observed.budgets[5].poll_ns, 1);
     assert_eq!(observed.budgets[5].total_ns, Some(500_000));
@@ -124,4 +126,38 @@ fn terminal_state_cannot_be_cleared_by_a_new_policy_revision() {
     live.state = 0;
 
     assert!(validate_source_supervision_update(&initial, &live).is_err());
+}
+
+#[test]
+fn predecessor_or_mixed_source_editions_never_imply_producer_retention() {
+    for (magic, schema) in [(b"CRUCSRV3", 3_u32), (b"CRUCSRV3", 4), (b"CRUCSRV4", 3)] {
+        let mut bytes = payload();
+        bytes[..8].copy_from_slice(magic);
+        bytes[8..12].copy_from_slice(&schema.to_be_bytes());
+
+        assert!(decode_source_supervision_payload(&bytes).is_err());
+    }
+}
+
+#[test]
+fn missing_or_unknown_producer_retention_promise_refuses_before_observation() {
+    for edition in [0_u32, 2, u32::MAX] {
+        let mut bytes = payload();
+        bytes[196..200].copy_from_slice(&edition.to_be_bytes());
+
+        assert!(decode_source_supervision_payload(&bytes).is_err());
+    }
+}
+
+#[test]
+fn live_or_initial_unknown_retention_cannot_be_validated_by_equal_identity() {
+    let initial = decode_source_supervision_payload(&payload()).unwrap();
+    for edition in [0_u32, 2, u32::MAX] {
+        let mut changed = initial;
+        changed.producer_retention_edition = edition;
+
+        assert!(validate_source_supervision_update(&initial, &changed).is_err());
+        assert!(validate_source_supervision_update(&changed, &initial).is_err());
+        assert!(validate_source_supervision_update(&changed, &changed).is_err());
+    }
 }

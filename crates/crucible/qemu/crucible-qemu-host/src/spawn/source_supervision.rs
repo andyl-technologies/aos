@@ -324,8 +324,8 @@ impl SourcePublisher {
             })
             .transpose()?;
         let mut payload = [0; SOURCE_PAYLOAD_BYTES];
-        payload[..8].copy_from_slice(b"CRUCSRV3");
-        payload[8..12].copy_from_slice(&3_u32.to_be_bytes());
+        payload[..8].copy_from_slice(b"CRUCSRV4");
+        payload[8..12].copy_from_slice(&4_u32.to_be_bytes());
         payload[12..16].copy_from_slice(&(SOURCE_PAYLOAD_BYTES as u32).to_be_bytes());
         payload[16..48].copy_from_slice(&snapshot.outer.cap_id);
         payload[64] = u8::from(allowance.is_some());
@@ -338,6 +338,13 @@ impl SourcePublisher {
         payload[88..120].copy_from_slice(&self.subject.containing_cap);
         payload[120..152].copy_from_slice(&self.subject.reservation);
         payload[192..196].copy_from_slice(&(roster.len() as u32).to_be_bytes());
+        // The actual paid publisher retains every born loan in action_loans.
+        // Publication loses local-abandon privilege before the request write;
+        // only the assigned mapping's physical-return journal can settle it.
+        payload[196..200].copy_from_slice(
+            &crucible_qemu_protocol::source_supervision::SOURCE_PRODUCER_RETENTION_EDITION
+                .to_be_bytes(),
+        );
         payload[200..232].copy_from_slice(&self.artifact);
         for (offset, value) in [
             (48, snapshot.outer.original_monotonic_ns),

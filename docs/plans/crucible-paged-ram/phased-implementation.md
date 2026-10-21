@@ -32,7 +32,7 @@ The current transport source contracts are:
 | Setup descriptor roster | Five mandatory roles, in order: shared region, wake event, sealed plan, read-only standing publication, distinct standing cancellation event. An optional device workspace is sixth. |
 | Sealed plan | `CRUCSUP8`, schema 8, containing one `CRUCPUR8` process purpose of 2520 bytes. |
 | Native receiver declaration | The selected complete ELF contains one 40-byte `CRUCRCV1` record. Source activation and checkpoint ingress have separate edition fields. Startup checks Source activation independently; zero and unspecified positive activation editions refuse. The complete declaration and ELF digest remain bound to the installed Source. A declaration grants no execution authority. |
-| Standing publication | Schema 3 in a 1504-byte shared file: one 8-byte sequence followed by a 1496-byte observation, accessed as atomic big-endian 64-bit words. The observation binds each action's kind, cohort, and parent-Park correlation where applicable. The host alone holds the writable mapping; the transmitted file role is read-only. |
+| Standing publication | Schema 4 with producer-retention edition 1 at byte 196 in a 1504-byte shared file: one 8-byte sequence followed by a 1496-byte observation, accessed as atomic big-endian 64-bit words. The observation binds each action's kind, cohort, and parent-Park correlation where applicable. The host alone holds the writable mapping; the transmitted file role is read-only. |
 | Sealed standing corroboration | The purpose's 1520-byte tail binds the retained publication file identity/extent and its initial 1496-byte observation. Copied fields issue no authority. |
 | Standing cancellation | A separate nonblocking eventfd, with kernel event identity encoded as raw ID plus one. It is distinct from the wake event and Setup amendment event. |
 | Operational durations | One exact-nanosecond roster under RAM schema 11; Host operational frames use schema 4. Configured values are positive and checked; observed expiry may be zero. |
@@ -554,8 +554,11 @@ targets compile; 25 of 26 full fixtures pass, with the mandatory launched
 Source/Root lifecycle still refusing. The first complete causal attempt stopped
 at a stronger payload identity assertion after thirteen intended defects; its
 corrected second attempt reached eight intended defects before the unchanged
-60-second limit expired on `ready-delivery-dependency`. That timeout remains a
-failed, unresolved attempt, not complete causal qualification.
+60-second limit expired in the real fork/child prerequisite before the
+`ready-delivery-dependency` mutation ran. Diagnostic stacks identify a child
+blocked on a thread-registration lock inherited while the constructor RCU worker
+was still registering. That causal diagnosis does not erase the failed attempt
+or complete its qualification.
 
 A fresh broad source-policy run reports 21 paths: the previous fourteen daemon
 and six host paths, plus the delivery test's physical-lifetime retry name.
@@ -563,6 +566,44 @@ That component test preserves its first error through a second modeled physical
 return; its exact source-policy custody companion remains to be added. The
 broad gate remains failing, without a new baseline or scanner exemption.
 
+The standing protocol now explicitly declares schema 4 and producer-retention
+edition 1 in the former reserved word at byte 196, preserving its 1496-byte
+payload, 1504-byte live file and 1520-byte seal. The actual publisher declares
+that it retains every born action membership, including dirty and unprojected
+rows. Its irreversible publication cut precedes the first request mutation;
+only its assigned peer's authenticated physical return can settle a published
+cohort. Earlier local abandonment requires actual unpublished custody. The
+promise supplies no receiver subscription, entered operation or return receipt.
+
+All 137 protocol unit controls and 95 integration controls pass. Literal
+predecessor/mixed editions, absent or unknown promises, and invalid initial/live
+promises refuse. The real prebirth request guard rejects a matching already
+pending untyped request and an occupied real frontier; all eighteen publisher
+controls pass. Seventeen matching module Setup controls, eighteen direct license
+controls and five engineering-hygiene controls pass. The coverage inventory now
+names 186 component cases and nineteen native cases; 149 requirements remain
+uncovered and none qualified.
+
+The matching native compatibility checkpoint is signed atomic commit
+`39fa2c7e87f1a72959638d3c443e182aa204c4b7`, tree
+`9b71f5ed899082b536b169ff81b3f4373da37f0e`. Its thirteen decoder groups and
+two independently rebuilt rejection defects pass, as do the 187 owning tests,
+raw ABI conformance, atomic reconstruction and unchanged 257-entry license
+ledger. Both actual native compilation variants pass. The complete 3863-target
+build still passes only 25 of 26 fixtures: the mandatory launched Source/Root
+capture lifecycle still refuses. This compatibility declaration adds no callback
+activation or operational issuer. Mandatory application test-target compilation
+also passes for the matching host implementation.
+
+The exact delivery lifetime body now has a focused source-policy companion;
+changed custody assertions and extra reviewed-name attempts remain rejected.
+Its first draft removed the function name together with its body in the generic
+adversarial control; retaining the name and binding the complete body fixes that
+control. All 71 focused policy controls pass. The broad gate again reports only
+the previous fourteen daemon and six host paths, without a scanner exemption.
+The duplicate engine `terminal` observation was removed; all fourteen affected
+integration tests pass. This does not resolve the controller's retained-error
+representation or its remaining strict lint prerequisite failures.
 
 Whole-node shutdown now keeps one continuation through process reap, RAM service
 return and controller retirement. Physical closure, initiating failure and

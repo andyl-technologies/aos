@@ -9,6 +9,9 @@ use super::{
     source_pattern,
 };
 
+#[path = "operational_recovery/delivery.rs"]
+mod delivery;
+
 struct Contract {
     package: &'static str,
     target: &'static str,
@@ -211,6 +214,16 @@ pub(super) const DISPATCHER_FAILED_STARTUP: &str = r#"fn failed_worker_startup_k
 }"#;
 
 const CONTRACTS: &[Contract] = &[
+    Contract {
+        package: "crucible-qemu-plugin",
+        target: "src/runtime/command_receive/delivery/tests",
+        required: &[delivery::READY_RETURN],
+        identifiers: &[(
+            "refused_ready_return_preserves_first_error_through_real_lifetime_retry",
+            1,
+        )],
+        expressions: &[],
+    },
     Contract {
         package: "crucible-store",
         target: "src/ram/tests/packed_volume/archive_sender",

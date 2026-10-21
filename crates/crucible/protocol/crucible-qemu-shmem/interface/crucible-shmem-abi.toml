@@ -150,10 +150,12 @@ golden_fixture = "../tests/fixtures/shmem_abi_golden.fixture"
 header_generator = "../src/abi_header.rs"
 
 [boundary_action]
-forward = "CRUCSRV3/control-CRUCACT2/park-CRUCPRK1"
+forward = "CRUCSRV4/control-CRUCACT2/park-CRUCPRK1"
 standing_live_bytes = 1504
 standing_payload_bytes = 1496
 standing_corroboration_bytes = 1520
+producer_retention_edition_offset = 196
+producer_retention_edition = 1
 action_bytes = 896
 maximum_primary_rows = 2
 maximum_parent_rows = 4
