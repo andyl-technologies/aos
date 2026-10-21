@@ -935,6 +935,10 @@ impl OwnedCallbackRuntimeState {
                     component,
                     live_callbacks::protected_request_snapshot,
                     live_callbacks::protected_park_return_writer,
+                    command_receive::PayloadCallbacks {
+                        claim: live_callbacks::protected_payload_claim,
+                        release: live_callbacks::protected_payload_return,
+                    },
                 )
             };
             drop(receiver);

@@ -14,6 +14,7 @@ use std::cell::UnsafeCell;
 mod abi;
 mod delivery;
 use abi::{Api, Member, Reader, Receive, Status, Writer};
+pub(super) use abi::PayloadCallbacks;
 
 /// Retains the same physical member/receive graph inside the paid pinned Runtime.
 pub(super) struct CommandReceive {
@@ -80,7 +81,7 @@ impl CommandReceive {
         }
     }
 
-    /// Enrolls the reader and protected Park writer at first nominal member birth.
+    /// Enrolls the reader, Park writer and payload endpoints at first member birth.
     ///
     /// # Safety
     /// This keeper is already inline in paid pinned Runtime. Component is a
@@ -94,12 +95,13 @@ impl CommandReceive {
         component: *mut NativeComponent,
         reader: Reader,
         writer: Writer,
+        payload: PayloadCallbacks,
     ) -> Result<(), StartupSourceError> {
         if self.member_attempted {
             return Err(status_error(-libc::EALREADY));
         }
         let api = Api::resolve()?;
-        self.enroll_using(id, component, reader, writer, api)
+        self.enroll_using(id, component, reader, writer, payload, api)
     }
 
     fn enroll_using(
@@ -108,6 +110,7 @@ impl CommandReceive {
         component: *mut NativeComponent,
         reader: Reader,
         writer: Writer,
+        payload: PayloadCallbacks,
         api: Api,
     ) -> Result<(), StartupSourceError> {
         if self.member_attempted {
@@ -117,7 +120,15 @@ impl CommandReceive {
         self.id = id;
         self.process = std::process::id();
         self.member_attempted = true;
-        let first = (api.member_create)(id, component, reader, writer, &mut self.member_creation);
+        let first = (api.member_create)(
+            id,
+            component,
+            reader,
+            writer,
+            payload.claim,
+            payload.release,
+            &mut self.member_creation,
+        );
         self.member = self.member_creation;
         self.record(first);
         native_status(first)?;
@@ -275,7 +286,12 @@ impl CommandReceive {
         if self.receive.is_null() || self.serial == 0 {
             return Err(status_error(-libc::ESTALE));
         }
-        self.delivery.identity_return(api.delivery, self.id)?;
+        if let Err(error) = self.delivery.identity_return(api.delivery, self.id) {
+            if let StartupSourceError::NativeStatus { status } = &error {
+                self.record(*status);
+            }
+            return Err(error);
+        }
         let canonical = self.receive_transfer_attempted && self.receive_creation.is_null();
         let field = if canonical {
             self.receive_holder.get()

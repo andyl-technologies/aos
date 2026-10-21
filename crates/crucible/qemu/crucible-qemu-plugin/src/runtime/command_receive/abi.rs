@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: GPL-2.0-only
 
 use super::super::control_component::NativeComponent;
-use super::super::live_callbacks::{ControlIntentFacts, ParkReturnWriteProgress, ReceiveProgress};
+use super::super::live_callbacks::{
+    ControlIntentFacts, ParkReturnWriteProgress, Payload, ReceiveProgress,
+};
 use crate::StartupSourceError;
 use std::ffi::c_void;
 
@@ -26,6 +28,19 @@ pub(super) type Reader =
 pub(super) type Writer =
     extern "C" fn(*const u8, usize, *mut ParkReturnWriteProgress, *mut c_void) -> i32;
 
+/// Matches the first-bound actual module payload claim callback.
+pub(super) type PayloadClaim = extern "C" fn(*mut *mut Payload, *mut u64, *mut c_void) -> i32;
+
+/// Matches the first-bound exact canonical payload return callback.
+pub(super) type PayloadReturn = extern "C" fn(*mut *mut Payload, u64, *mut c_void) -> i32;
+
+/// Binds both lifetime endpoints to the same genuine complete child.
+#[derive(Clone, Copy)]
+pub(in crate::runtime) struct PayloadCallbacks {
+    pub(in crate::runtime) claim: PayloadClaim,
+    pub(in crate::runtime) release: PayloadReturn,
+}
+
 /// Copies Source's actual callback and validation dispositions.
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -46,8 +61,15 @@ pub(super) struct Status {
 #[derive(Clone, Copy)]
 pub(super) struct Api {
     pub(super) delivery: super::delivery::Api,
-    pub(super) member_create:
-        extern "C" fn(u64, *mut NativeComponent, Reader, Writer, *mut *mut Member) -> i32,
+    pub(super) member_create: extern "C" fn(
+        u64,
+        *mut NativeComponent,
+        Reader,
+        Writer,
+        PayloadClaim,
+        PayloadReturn,
+        *mut *mut Member,
+    ) -> i32,
     pub(super) member_transfer: extern "C" fn(u64, *mut *mut Member, *mut *mut Member) -> i32,
     pub(super) member_current: extern "C" fn(u64, *mut Member) -> i32,
     pub(super) member_return: extern "C" fn(u64, *mut *mut Member) -> i32,
@@ -90,8 +112,16 @@ impl Api {
         Ok(Self {
             delivery: super::delivery::Api::resolve()?,
             member_create: entry!(
-                c"qemu_plugin_crucible_startup_source_command_member_create_v2",
-                extern "C" fn(u64, *mut NativeComponent, Reader, Writer, *mut *mut Member) -> i32
+                c"qemu_plugin_crucible_startup_source_command_member_create_v3",
+                extern "C" fn(
+                    u64,
+                    *mut NativeComponent,
+                    Reader,
+                    Writer,
+                    PayloadClaim,
+                    PayloadReturn,
+                    *mut *mut Member,
+                ) -> i32
             ),
             member_transfer: entry!(
                 c"qemu_plugin_crucible_startup_source_command_member_transfer_v1",

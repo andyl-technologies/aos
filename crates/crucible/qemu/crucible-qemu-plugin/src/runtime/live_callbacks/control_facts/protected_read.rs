@@ -10,6 +10,9 @@ use super::{ControlIntentFacts, snapshot_with_interleave};
 use crucible_qemu_shmem::{FingerprintSampleSlot, NodeSlot};
 use std::sync::{Mutex, MutexGuard, TryLockError};
 
+mod payload;
+pub(in crate::runtime) use payload::Payload;
+
 /// Keeps captured output separate from the first and independent post results.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::runtime) struct ReadOutcome {
@@ -59,6 +62,7 @@ struct PendingRequest {
     serial: u64,
     process: u32,
     facts: ControlIntentFacts,
+    canonical_holder: *mut *mut Payload,
 }
 
 /// Lives inside the complete child Layout before its actual Source allocation.
@@ -206,6 +210,7 @@ impl ProtectedReader {
                     serial: sequence,
                     process: std::process::id(),
                     facts,
+                    canonical_holder: std::ptr::null_mut(),
                 });
                 entered.journal.outcome.facts = Some(facts);
             }

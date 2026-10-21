@@ -13,6 +13,8 @@ struct Cuts {
     member_creates: usize,
     member_create_status: i32,
     writer_address: usize,
+    payload_claim_address: usize,
+    payload_return_address: usize,
     member_transfer_status: i32,
     member_field: usize,
     member_returned_field: usize,
@@ -38,6 +40,8 @@ extern "C" fn member_create(
     _: *mut NativeComponent,
     _: Reader,
     writer: Writer,
+    claim: abi::PayloadClaim,
+    release: abi::PayloadReturn,
     out: *mut *mut Member,
 ) -> i32 {
     // SAFETY: this fixture table receives one distinct live local output cell.
@@ -47,6 +51,8 @@ extern "C" fn member_create(
     CUTS.with_borrow_mut(|cuts| {
         cuts.member_creates += 1;
         cuts.writer_address = writer as usize;
+        cuts.payload_claim_address = claim as usize;
+        cuts.payload_return_address = release as usize;
         cuts.member_create_status
     })
 }
@@ -87,6 +93,29 @@ extern "C" fn writer(
     _: *mut std::ffi::c_void,
 ) -> i32 {
     -libc::ENOTSUP
+}
+
+extern "C" fn payload_claim(
+    _: *mut *mut super::super::live_callbacks::Payload,
+    _: *mut u64,
+    _: *mut std::ffi::c_void,
+) -> i32 {
+    -libc::ENOKEY
+}
+
+extern "C" fn payload_return(
+    _: *mut *mut super::super::live_callbacks::Payload,
+    _: u64,
+    _: *mut std::ffi::c_void,
+) -> i32 {
+    -libc::ENOKEY
+}
+
+fn payload_callbacks() -> PayloadCallbacks {
+    PayloadCallbacks {
+        claim: payload_claim,
+        release: payload_return,
+    }
 }
 
 extern "C" fn receive_create(
@@ -194,7 +223,14 @@ fn fixture() -> Box<CommandReceive> {
     // stable; no fixture pointer is admitted as genuine Source allocation.
     let mut keeper = Box::new(CommandReceive::new());
     keeper
-        .enroll_using(3, std::ptr::null_mut(), reader, writer, api())
+        .enroll_using(
+            3,
+            std::ptr::null_mut(),
+            reader,
+            writer,
+            payload_callbacks(),
+            api(),
+        )
         .unwrap();
     keeper
 }
@@ -274,7 +310,14 @@ fn moved_destination_is_used_after_negative_transfer_without_foreign_field_read(
     let mut keeper = Box::new(CommandReceive::new());
 
     assert_eq!(
-        keeper.enroll_using(3, std::ptr::null_mut(), reader, writer, api()),
+        keeper.enroll_using(
+            3,
+            std::ptr::null_mut(),
+            reader,
+            writer,
+            payload_callbacks(),
+            api()
+        ),
         Err(status_error(-libc::EIO))
     );
     assert!(keeper.member_creation.is_null());
@@ -339,8 +382,18 @@ fn first_member_constructor_receives_the_exact_writer_before_negative_status() {
     // resolve to different addresses in optimized code.
     let supplied_writer = std::hint::black_box(writer as Writer);
     let supplied_address = supplied_writer as *const () as usize;
+    let supplied_payload = std::hint::black_box(payload_callbacks());
+    let claim_address = supplied_payload.claim as *const () as usize;
+    let return_address = supplied_payload.release as *const () as usize;
 
-    let result = keeper.enroll_using(3, std::ptr::null_mut(), reader, supplied_writer, api());
+    let result = keeper.enroll_using(
+        3,
+        std::ptr::null_mut(),
+        reader,
+        supplied_writer,
+        supplied_payload,
+        api(),
+    );
 
     assert!(result.is_err());
     assert_eq!(keeper.member_creation, member());
@@ -350,10 +403,19 @@ fn first_member_constructor_receives_the_exact_writer_before_negative_status() {
     CUTS.with_borrow(|cuts| {
         assert_eq!(cuts.member_creates, 1);
         assert_eq!(cuts.writer_address, supplied_address);
+        assert_eq!(cuts.payload_claim_address, claim_address);
+        assert_eq!(cuts.payload_return_address, return_address);
     });
     assert!(
         keeper
-            .enroll_using(3, std::ptr::null_mut(), reader, supplied_writer, api())
+            .enroll_using(
+                3,
+                std::ptr::null_mut(),
+                reader,
+                supplied_writer,
+                supplied_payload,
+                api()
+            )
             .is_err()
     );
     CUTS.with_borrow(|cuts| assert_eq!(cuts.member_creates, 1));

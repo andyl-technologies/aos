@@ -22,6 +22,10 @@ struct Model {
     creation_field: usize,
     canonical_field: usize,
     returned_field: usize,
+    payload_claims: usize,
+    payload_returns: usize,
+    payload_claim_status: i32,
+    payload_return_status: i32,
 }
 
 thread_local! {
@@ -93,7 +97,23 @@ fn api() -> Api {
         transfer,
         current,
         identity_return,
+        payload_claim,
+        payload_return,
     }
+}
+
+extern "C" fn payload_claim(_: u64, _: *mut Owner, _: u64) -> i32 {
+    MODEL.with_borrow_mut(|model| {
+        model.payload_claims += 1;
+        model.payload_claim_status
+    })
+}
+
+extern "C" fn payload_return(_: u64, _: *mut Owner, _: u64) -> i32 {
+    MODEL.with_borrow_mut(|model| {
+        model.payload_returns += 1;
+        model.payload_return_status
+    })
 }
 
 pub(super) fn fresh_api() -> Api {
@@ -140,6 +160,7 @@ fn negative_birth_transfers_custody_before_reporting_first_failure() {
     MODEL.with_borrow(|model| {
         assert_eq!(model.creates, 1);
         assert_eq!(model.transfers, 1);
+        assert_eq!(model.payload_claims, 1);
         assert_eq!(model.current_checks, 0);
     });
     delivery.identity_return(api(), 7).unwrap();
@@ -242,5 +263,72 @@ fn current_refusal_never_releases_or_recreates_delivery() {
         assert_eq!(model.creates, 1);
         assert_eq!(model.transfers, 1);
         assert_eq!(model.returns, 0);
+    });
+}
+
+#[test]
+fn negative_payload_claim_keeps_born_delivery_for_actual_return() {
+    reset(|model| model.payload_claim_status = -libc::EIO);
+    let mut delivery = Box::pin(Delivery::new());
+
+    assert_eq!(status(retain(&mut delivery)), -libc::EIO);
+    assert!(!delivery.projection.is_null());
+    assert!(delivery.creation.is_null());
+    assert!(delivery.payload_attempted);
+    MODEL.with_borrow(|model| assert_eq!(model.payload_claims, 1));
+
+    assert_eq!(status(delivery.identity_return(api(), 7)), 0);
+    assert!(delivery.returned);
+    MODEL.with_borrow(|model| {
+        assert_eq!(model.payload_returns, 1);
+        assert_eq!(model.returns, 1);
+    });
+    assert_eq!(status(retain(&mut delivery)), -libc::EIO);
+    MODEL.with_borrow(|model| assert_eq!(model.creates, 1));
+}
+
+#[test]
+fn payload_post_refusal_saves_real_lifetime_consumption_before_reporting_failure() {
+    reset(|model| model.payload_return_status = -libc::ECANCELED);
+    let mut delivery = Box::pin(Delivery::new());
+    assert_eq!(status(retain(&mut delivery)), 0);
+
+    assert_eq!(status(delivery.identity_return(api(), 7)), -libc::ECANCELED);
+
+    assert!(delivery.returned);
+    assert!(delivery.projection.is_null());
+    assert_eq!(delivery.serial, 0);
+    assert_eq!(delivery.payload_return_status, -libc::ECANCELED);
+    assert_eq!(status(delivery.identity_return(api(), 7)), 0);
+    assert_eq!(status(retain(&mut delivery)), -libc::ESTALE);
+    MODEL.with_borrow(|model| {
+        assert_eq!(model.payload_returns, 1);
+        assert_eq!(model.returns, 1);
+        assert_eq!(model.creates, 1);
+    });
+}
+
+#[test]
+fn retained_payload_refusal_preserves_custody_and_initiating_error() {
+    reset(|model| {
+        model.payload_return_status = -libc::EIO;
+        model.return_status = -libc::EBUSY;
+    });
+    let mut delivery = Box::pin(Delivery::new());
+    assert_eq!(status(retain(&mut delivery)), 0);
+    let projection = delivery.projection;
+    let serial = delivery.serial;
+
+    assert_eq!(status(delivery.identity_return(api(), 7)), -libc::EIO);
+
+    assert!(!delivery.returned);
+    assert_eq!(delivery.projection, projection);
+    assert_eq!(delivery.serial, serial);
+    // SAFETY: the local model retains this actual pinned field; no Native
+    // implementation or foreign canonical field is accessed by the test.
+    assert_eq!(unsafe { delivery.holder.get().read() }, projection);
+    MODEL.with_borrow(|model| {
+        assert_eq!(model.payload_returns, 1);
+        assert_eq!(model.returns, 1);
     });
 }

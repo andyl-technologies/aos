@@ -11,13 +11,15 @@ pub(super) struct Owner {
     _private: [u8; 0],
 }
 
-/// Contains only the four actual delivery owner entry points.
+/// Contains the actual delivery owner and physical payload entry points.
 #[derive(Clone, Copy)]
 pub(in crate::runtime::command_receive) struct Api {
     pub(super) create: extern "C" fn(u64, *mut Receive, u64, *mut *mut Owner, *mut u64) -> i32,
     pub(super) transfer: extern "C" fn(u64, *mut *mut Owner, u64, *mut *mut Owner) -> i32,
     pub(super) current: extern "C" fn(u64, *mut Owner, u64) -> i32,
     pub(super) identity_return: extern "C" fn(u64, *mut *mut Owner, u64) -> i32,
+    pub(super) payload_claim: extern "C" fn(u64, *mut Owner, u64) -> i32,
+    pub(super) payload_return: extern "C" fn(u64, *mut Owner, u64) -> i32,
 }
 
 impl Api {
@@ -58,6 +60,14 @@ impl Api {
             identity_return: entry!(
                 c"qemu_plugin_crucible_startup_source_received_delivery_identity_return_v1",
                 extern "C" fn(u64, *mut *mut Owner, u64) -> i32
+            ),
+            payload_claim: entry!(
+                c"qemu_plugin_crucible_startup_source_received_delivery_payload_claim_v1",
+                extern "C" fn(u64, *mut Owner, u64) -> i32
+            ),
+            payload_return: entry!(
+                c"qemu_plugin_crucible_startup_source_received_delivery_payload_return_v1",
+                extern "C" fn(u64, *mut Owner, u64) -> i32
             ),
         })
     }

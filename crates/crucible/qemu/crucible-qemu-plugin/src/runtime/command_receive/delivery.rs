@@ -1,8 +1,9 @@
 //! Retains the actual Native received-delivery lifetime in paid Runtime storage.
 //!
 //! Canonical holder fields belong to the pinned Runtime. Opaque projections and
-//! serials only identify those fields; they grant no action, module payload
-//! retirement, callback activation or Host publisher return.
+//! serials only identify those fields. The separate first-bound payload callbacks
+//! transfer actual local module custody; neither route grants an entered action,
+//! callback activation or Host publisher return.
 // SPDX-License-Identifier: GPL-2.0-only
 
 use super::abi::Receive;
@@ -21,8 +22,10 @@ pub(super) struct Delivery {
     serial: u64,
     attempted: bool,
     transfer_attempted: bool,
+    payload_attempted: bool,
     returned: bool,
     first_status: i32,
+    payload_return_status: i32,
 }
 
 impl Delivery {
@@ -34,8 +37,10 @@ impl Delivery {
             serial: 0,
             attempted: false,
             transfer_attempted: false,
+            payload_attempted: false,
             returned: false,
             first_status: 0,
+            payload_return_status: 0,
         }
     }
 
@@ -81,8 +86,21 @@ impl Delivery {
             Err(status_error(-libc::EPROTO))
         };
 
+        // Claim only through the genuine first-bound child. Source journals
+        // callback entry, actual born output and independent post separately;
+        // even a failed receive can still contain its real module payload.
+        let payload = if !self.projection.is_null() && self.serial != 0 {
+            self.payload_attempted = true;
+            let status = (api.payload_claim)(id, self.projection, self.serial);
+            self.record(status);
+            native_status(status)
+        } else {
+            Err(status_error(-libc::EPROTO))
+        };
+
         native_status(first)?;
         transfer?;
+        payload?;
         self.current(api, id)
     }
 
@@ -108,10 +126,12 @@ impl Delivery {
 
     /// Returns only this delivery's exact canonical lifetime holder.
     ///
-    /// This pure Source entry consumes its field only on zero. Every negative
+    /// The final pure Source entry consumes its field only on zero. Every negative
     /// retains the holder and dependencies, including live native borrowers.
-    /// It performs no module callback, free or operation postcheck and proves
-    /// no peer, payload or physical resource return.
+    /// A separate first-bound callback first attempts actual module payload
+    /// retirement. Pure lifetime return then independently checks Native's
+    /// retained debt; a negative payload post cannot resurrect a consumed owner.
+    /// This proves no Host publisher, peer or physical resource return.
     ///
     /// # Errors
     /// Retains malformed or refused custody. A projection or current result
@@ -123,13 +143,28 @@ impl Delivery {
         if self.projection.is_null() || self.serial == 0 {
             return Err(status_error(-libc::EPROTO));
         }
+        let payload = if self.payload_attempted {
+            let status = (api.payload_return)(id, self.projection, self.serial);
+            if self.payload_return_status == 0 && status != 0 {
+                self.payload_return_status = status;
+            }
+            native_status(self.payload_return_status)
+        } else {
+            Ok(())
+        };
         let canonical = self.transfer_attempted && self.creation.is_null();
         let field = if canonical {
             self.holder.get()
         } else {
             &mut self.creation
         };
-        native_status((api.identity_return)(id, field, self.serial))?;
+        let lifetime = native_status((api.identity_return)(id, field, self.serial));
+        if let Err(error) = lifetime {
+            // Native alone decides whether the actual module payload and local
+            // borrowers are closed. Preserve the initiating payload refusal.
+            payload?;
+            return Err(error);
+        }
         if !canonical && !self.creation.is_null() {
             return Err(status_error(-libc::EPROTO));
         }
@@ -139,7 +174,9 @@ impl Delivery {
         // A returned local delivery cannot reissue from the same still-retained
         // receive. Only actual parent receive consumption permits a new keeper.
         self.returned = true;
-        Ok(())
+        // Save real lifetime consumption before reporting an independent
+        // payload-return post failure. A later cleanup cannot reissue it.
+        payload
     }
 }
 

@@ -67,7 +67,7 @@ Passing historical results do not qualify the later ownership changes.
 | New RAM cleanup controls | All 22 cleanup controls, both registry controls and all eight whole-set teardown controls pass in the affected runtime run. The latter include actual descriptor destruction and a panicking node-field destructor that permanently refuses return. | Component success does not qualify complete native provider return, failure payload funding or lower physical peaks. |
 | Source policy | All 66 specific controls pass, including the imported replay terminal route. The broad gate reports 21 paths: fourteen daemon and seven host paths, one fewer than the preceding whole-node run. An obsolete baseline entry for the relocated RAM wait was removed without a replacement waiver. | Complete the owning caller cutovers. Scanner bounds, classification and assertions remain unchanged. |
 | Boundary and hygiene | All 65 unsafe/ABI/license controls pass against the current cleanup implementation. All five hygiene controls, 36 harness controls and both Rust documentation controls pass. Eight content-bound review records were refreshed after source review using the unchanged counter. | Keep original shape limits and recheck subsequent functional changes. |
-| Native build | Signed source `5e6dec358c26` completes all 3,863 C compile/link actions. Twenty-five of twenty-six standalone fixtures pass, including sixteen new received-delivery lifetime scenarios. The worker inventory retains the genuinely linked RCU registration and its actual task census. | The regeneration gate fails at the unchanged mandatory launched capture lifecycle refusal. Component passes do not establish Source activation, real read/post/rearm/ACK or physical-return qualification. |
+| Native build | Signed source `78ca20b4207d` completes all 3,863 C compile/link actions. Twenty-five of twenty-six standalone fixtures pass, including sixteen received-delivery lifetime and thirteen module-payload component scenarios. The latter use an explicitly modeled C module journal. The worker inventory retains the genuinely linked RCU registration and its actual task census. | The regeneration gate fails at the unchanged mandatory launched capture lifecycle refusal. Component passes do not establish Source activation, real read/post/rearm/ACK or physical-return qualification. |
 | Deferred control | The retained object has 124 private component definitions plus `main` and 28 genuine provider references. The owning runner resolves QOM support from the configured Meson build. All positive scenarios and both exact native assertion mutations pass. | Component linkage and runtime checks supply no Source activation or physical CPU-pin return evidence. |
 | Native cleanup | All four changed production C units pass syntax checks; the actual generated fixture compiles and links. Ten new controls, the replacement capacity control and four independently rebuilt causal mutations pass their exact checks. | Positive RCU grace, launched capture and resource/performance qualification remain required. |
 | Native Source unit | All 187 scenarios pass with matched compiled C layouts, actual worker backing charges, canonical Bridge/Child holders, RUN socket handoff, teardown semaphore entry, bounded join, control destruction and stack/storage return. The original 1 MiB budget remains an insufficient-budget negative. | Prepared-family and completion-binding enrollment remain explicitly modeled inputs. These component lifetimes qualify neither the production Rust module nor standing/Original/Source/CPU activation. Positive lifecycle qualification requires a paired normal-service flight. |
@@ -323,11 +323,49 @@ Native's sixteen new lifetime scenarios execute the actual C reader and
 receive/delivery bodies with real mutex/thread/runtime storage; member and
 standing boundary providers remain explicit modeled inputs. Three independent
 native rebuilds detect omitted use retention, copied-holder acceptance and
-delivery rebirth. Coverage names 132 component cases and nineteen native cases,
+delivery rebirth. The hermetic supervision gate passes all 34 exact cases.
+Coverage names 132 component cases and nineteen native cases,
 with 149 uncovered and zero qualified requirements. These controls establish
 local custody only. Module payload
 transfer/return, live publisher membership, entered action Originals, real CPU
 borrowers, ACK and physical peer return remain separate unfinished work.
+
+
+The compiler-compatibility follow-up preserves admitted inline refusal custody
+and existing shared-memory bytes. Strict all-target, all-feature Clippy passes
+for the affected host-resource, shared-memory and store crates. Their complete
+unit/integration runs pass, including all 693 store unit cases, all 105
+shared-memory unit cases and the actual 512 MiB capture/restore/repack workloads.
+This does not clear the separate unfinished controller compiler gate.
+
+
+The paired v3 member now first-binds actual module payload claim and release
+callbacks alongside the existing reader and Park writer. The Runtime requires
+that constructor without falling back to v2. Claim records the exact stable
+Source field in the actual non-Copy pending request inside the pinned complete
+child. A copied field or local serial cannot replace that holder. Return holds
+the real journal lock, destroys the pending request, then clears only its exact
+holder. Contention, stale identity and poisoned ownership preserve custody.
+
+Source journals callback entry, born output and its independent post separately.
+The Runtime attempts payload claim even after a born-negative delivery result.
+Cleanup independently attempts pure lifetime return: actual module destruction
+followed by a negative Native post retains the diagnostic without resurrecting
+consumed debt. A refusal that leaves the module payload retained blocks lifetime
+return. The containing receive remains retained and cannot return a Host
+publisher or peer merely because its local delivery closed.
+
+All 1,110 plugin unit tests pass, including seven actual module-journal controls
+and fifteen receive/delivery wrapper controls. Required hermetic application
+test-target compilation passes. Four independently rebuilt Rust defects fail the intended
+assertions for copied-holder acceptance, omitted payload destruction, lost
+born-negative claim and skipped lifetime consumption after a negative payload
+post. Native component coverage uses its actual v3 constructor and transfer
+with an explicitly modeled C module journal; this does not qualify the actual
+Rust/QEMU pairing. Coverage now names 143 component cases and nineteen native
+cases, with 149 uncovered and zero qualified requirements. Operational payload
+use, live publisher membership, entered action Originals, actual CPU borrowers,
+ACK and physical peer return still require genuine integration.
 
 
 Whole-node shutdown now keeps one continuation through process reap, RAM service
