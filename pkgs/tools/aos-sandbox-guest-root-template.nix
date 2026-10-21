@@ -5,6 +5,7 @@
   openssh,
   systemd,
   coreutils,
+  findutils,
   grep,
   sed,
   buildPackages,
@@ -44,7 +45,7 @@ in
       "closure-systemd"
       systemd
     ];
-    buildDeps = [rootBuilder coreutils grep sed];
+    buildDeps = [rootBuilder coreutils findutils grep sed];
     runtimeDeps = [guestAgent openssh systemd];
     # The output deliberately embeds the complete reference graph, including
     # transitive ELF runtime paths. Generic fixup/scrub would mutate copied
@@ -100,6 +101,12 @@ in
           ln -s /usr/libexec/sshd-session \
             "$out/root${openssh}/libexec/sshd-session"
           chmod u-w "$out/root${openssh}/libexec"
+
+          # The commitment includes modes. Measure the canonical store modes
+          # that consumers receive after Nix registers this output.
+          find "$out/root" -type f -perm /111 -exec chmod 0555 {} +
+          find "$out/root" -type f ! -perm /111 -exec chmod 0444 {} +
+          find "$out/root" -type d -exec chmod 0555 {} +
 
           ${rootBuilder}/bin/aos-sandbox-guest-root-tree-digest \
             "$out/root" > "$out/root-tree-digest"
