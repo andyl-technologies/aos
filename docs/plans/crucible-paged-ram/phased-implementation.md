@@ -1907,8 +1907,8 @@ failures remain recorded; no threshold or rule changes. Mandatory application
 compilation passes at
 `/nix/store/lr8mn0qsjkffiq9s9q9ky7nragp54z6r-aos-test-targets-0.1.0`.
 All 5,259 tracked crate Rust/TOML files match `cd64c5ce24` and immutable
-`p0c0bgcb2hb2mnyhj9sb7z942w9pbb7p-aos-workspace-src`. Its expanded 155-case
-exact supervision run is pending.
+`p0c0bgcb2hb2mnyhj9sb7z942w9pbb7p-aos-workspace-src`. All 155 expanded exact supervision cases pass at
+`/nix/store/b559qs3akbpm1127xdggdzpifw7q41ni-crucible-gate-ram-supervision-0`.
 
 Commit `8fe4c8d231` returns to the actual Cleanup completion path that originally
 exposed the allocation. Completing the real guard inside an entered rung now
@@ -1919,11 +1919,30 @@ Nine focused controls, 217 Node tests (one existing ignored), 73 policy checks
 and five hygiene checks pass. Mandatory application compilation passes at
 `/nix/store/45ck89h9bk4ndzrx3prr2vrsdq9ax512-aos-test-targets-0.1.0`;
 all 5,259 tracked crate Rust/TOML files match `8fe4c8d231` and immutable
-`mqda8wz5gmxirrl5q6gsa3r6h9h45649-aos-workspace-src`. Its expanded 156-case
-exact supervision run is pending. The broad source-policy check still fails
+`mqda8wz5gmxirrl5q6gsa3r6h9h45649-aos-workspace-src`. All 156 expanded exact supervision cases pass at
+`/nix/store/22s309169ipnc6pfj6s3j6haib8l9534-crucible-gate-ram-supervision-0`. The broad source-policy check still fails
 its same 13 daemon paths. No source mask, rename or exception is added. These
 component controls issue no Source, selected operation or child-return receipt;
 dynamic diagnostics and complete cleanup funding remain unfinished.
+
+### 2026-10-21 setup memfd construction
+
+Commit `09bd612efe` uses a static C string and the existing safe descriptor
+interfaces for actual setup memfd creation, sizing and shrink sealing. It
+preserves close-on-exec, write access, descriptor length and operation-specific
+kernel errors. Oversized lengths still refuse before descriptor creation.
+The primitive grants no Source, helper or child authority.
+
+The pre-change real-descriptor control failed with one Rust heap allocation;
+the corrected descriptor and oversized-length controls pass without allocating.
+The existing spawn-resource test, all 73 policy checks and five hygiene checks
+pass. Mandatory application test-target compilation passes at
+`/nix/store/sbvfpx449kvjr5fh3609552gw8zvm5jh-aos-test-targets-0.1.0`.
+All 5,260 tracked crate Rust/TOML files match `09bd612efe` and immutable
+`p0vc3sid02ryp39y5lflfzgaxhi5dd4s-aos-workspace-src`. The expanded 158-case
+exact supervision run is pending. Coverage binds 256 component and 19 native
+cases across 243 requirements, with 149 uncovered and none fully qualified.
+Dynamic process setup, diagnostics and complete cleanup funding remain unfinished.
 
 ### 2026-10-21 native rule and reservation storage custody
 
