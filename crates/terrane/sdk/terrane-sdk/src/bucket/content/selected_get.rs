@@ -106,17 +106,14 @@ where
         observed.revalidate().await?;
 
         // These are the SAME recipes captured before their original bodies.
-        // Recapturing ancestry now would miss identical-byte reincarnation.
-        for record in observed.physical_reads() {
-            record.revalidate_retained(self.bucket.fs()).await?;
-        }
+        // Only their native queue handoff is grouped; every original physical
+        // check remains within this request and its two selection checks.
         let records = self
             .records
             .into_inner()
             .map_err(|_| files::layout_corrupt())?;
-        for record in &records {
-            record.revalidate_retained(self.bucket.fs()).await?;
-        }
+        RecordRead::revalidate_all_retained(self.bucket.fs(), observed.physical_reads(), &records)
+            .await?;
         let members = self
             .members
             .into_inner()

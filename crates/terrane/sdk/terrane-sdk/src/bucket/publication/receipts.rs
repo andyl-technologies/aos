@@ -116,6 +116,39 @@ impl RecordRead {
         retained.revalidate(fs).await
     }
 
+    /// Revalidates one request's original receipts without repeated worker handoffs.
+    ///
+    /// Protected recipes retain their original strict checks. Ordinary receipts
+    /// are grouped only for this closing operation; every original physical and
+    /// consumed-range check still executes before the caller's final selection
+    /// check. No observation supplies authority to another request.
+    ///
+    /// # Errors
+    /// Refuses missing retained evidence, unavailable native execution or any
+    /// changed original ancestry, inode, metadata, absence or consumed bytes.
+    pub(crate) async fn revalidate_all_retained<F>(
+        fs: &F,
+        selected: &[Self],
+        consumed: &[Self],
+    ) -> Result<(), crate::store::StoreFailure>
+    where
+        F: crate::store::LocalFs + crate::bucket::BucketBinding,
+    {
+        #[cfg(all(feature = "tokio", unix))]
+        let mut ordinary = Vec::new();
+        for record in selected.iter().chain(consumed) {
+            #[cfg(all(feature = "tokio", unix))]
+            if let Some(retained) = &record.ordinary_retained {
+                ordinary.push(Arc::clone(retained));
+                continue;
+            }
+            record.revalidate_retained(fs).await?;
+        }
+        #[cfg(all(feature = "tokio", unix))]
+        RetainedPayloadRanges::revalidate_all(fs, ordinary).await?;
+        Ok(())
+    }
+
     /// Borrows the actual full bytes or the observed absence.
     pub(crate) fn bytes(&self) -> Option<&[u8]> {
         self.bytes.as_deref()

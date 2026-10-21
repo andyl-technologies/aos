@@ -82,6 +82,7 @@ enum Recipe {
         range: ByteRange,
     },
     Check(RetainedPayloadRanges),
+    CheckBatch(Vec<Arc<RetainedPayloadRanges>>),
 }
 
 #[cfg(all(feature = "tokio", unix))]
@@ -456,6 +457,32 @@ impl RetainedPayloadRanges {
         }
     }
 
+    /// Rechecks one request's original recipes in a single native worker turn.
+    ///
+    /// No ancestry, descriptor or consumed-range check is omitted or cached.
+    /// The worker retains all original recipes after waiter cancellation.
+    ///
+    /// # Errors
+    /// Refuses unavailable native execution or any failed original recipe.
+    pub(crate) async fn revalidate_all<F: LocalFs + BucketBinding>(
+        fs: &F,
+        originals: Vec<Arc<Self>>,
+    ) -> Result<(), StoreFailure> {
+        if originals.is_empty() {
+            return Ok(());
+        }
+        let request = NativePayloadRangeRead::new(Recipe::CheckBatch(originals));
+        let record = fs
+            .read_payload_ranges(request)
+            .await
+            .map_err(io_failure)?
+            .ok_or_else(unsupported)?;
+        match record.outcome {
+            Outcome::Checked => Ok(()),
+            _ => Err(io_failure(unexpected_outcome())),
+        }
+    }
+
     #[cfg(all(feature = "tokio", unix))]
     /// Checks the same original descriptor and every previously consumed range.
     ///
@@ -510,14 +537,21 @@ impl NativePayloadRangeRead {
     #[cfg(all(test, feature = "tokio", unix))]
     pub(crate) fn closing_data_ranges_for_test(
         &self,
-    ) -> Option<impl Iterator<Item = (&Path, ByteRange)> + '_> {
+    ) -> Option<Box<dyn Iterator<Item = (&Path, ByteRange)> + '_>> {
         match &self.recipe {
-            Recipe::Check(retained) => Some(
-                retained
-                    .ranges
-                    .iter()
-                    .map(move |expected| (retained.original.path.as_path(), expected.range)),
-            ),
+            Recipe::Check(retained) => {
+                Some(Box::new(retained.ranges.iter().map(move |expected| {
+                    (retained.original.path.as_path(), expected.range)
+                })))
+            }
+            Recipe::CheckBatch(originals) => {
+                Some(Box::new(originals.iter().flat_map(|retained| {
+                    retained
+                        .ranges
+                        .iter()
+                        .map(move |expected| (retained.original.path.as_path(), expected.range))
+                })))
+            }
             _ => None,
         }
     }
@@ -547,6 +581,12 @@ impl NativePayloadRangeRead {
             }
             Recipe::Check(retained) => {
                 retained.check_ranges()?;
+                Outcome::Checked
+            }
+            Recipe::CheckBatch(originals) => {
+                for original in &originals {
+                    original.check_ranges()?;
+                }
                 Outcome::Checked
             }
         };

@@ -40,6 +40,70 @@ impl Drop for Fixture {
 }
 
 #[tokio::test]
+async fn closing_batch_checks_every_original_and_never_rebinds_a_changed_suffix() {
+    let fixture = Fixture::new();
+    let second_path = fixture.root.join("second.pack");
+    std::fs::copy(&fixture.path, &second_path).unwrap();
+
+    let range = ByteRange {
+        start: 8,
+        length: 14,
+    };
+    let mut first = PayloadRangeCapture::capture_ordinary(&TokioLocalFs, &fixture.path)
+        .await
+        .unwrap();
+    let mut second = PayloadRangeCapture::capture_ordinary(&TokioLocalFs, &second_path)
+        .await
+        .unwrap();
+    assert_eq!(
+        first.read_range(&TokioLocalFs, range).await.unwrap(),
+        b"requested-body"
+    );
+    assert_eq!(
+        second.read_range(&TokioLocalFs, range).await.unwrap(),
+        b"requested-body"
+    );
+    let first = Arc::new(first.finish());
+    let second = Arc::new(second.finish());
+    let originals = vec![Arc::clone(&first), Arc::clone(&second)];
+    RetainedPayloadRanges::revalidate_all(&TokioLocalFs, originals.clone())
+        .await
+        .unwrap();
+
+    // The prefix remains valid. A changed later original must refuse the whole
+    // request, even if a fresh capture can now verify its current body.
+    std::fs::write(
+        &second_path,
+        b"header--changed---body--unrelated-body--footer",
+    )
+    .unwrap();
+    first.revalidate(&TokioLocalFs).await.unwrap();
+    assert!(
+        RetainedPayloadRanges::revalidate_all(&TokioLocalFs, originals.clone())
+            .await
+            .is_err()
+    );
+    let mut fresh = PayloadRangeCapture::capture_ordinary(&TokioLocalFs, &second_path)
+        .await
+        .unwrap();
+    assert_eq!(
+        fresh.read_range(&TokioLocalFs, range).await.unwrap(),
+        b"changed---body"
+    );
+    RetainedPayloadRanges::revalidate_all(
+        &TokioLocalFs,
+        vec![Arc::clone(&first), Arc::new(fresh.finish())],
+    )
+    .await
+    .unwrap();
+    assert!(
+        RetainedPayloadRanges::revalidate_all(&TokioLocalFs, originals)
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
 async fn repeated_leaf_captures_share_only_handles_and_release_them() {
     let fixture = Fixture::new();
     let mut first = PayloadRangeCapture::capture_ordinary(&TokioLocalFs, &fixture.path)
