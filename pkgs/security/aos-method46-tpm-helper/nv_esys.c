@@ -11,7 +11,9 @@
  * pending ESYS command can manufacture retry authority. A fresh owner must
  * reopen both journals and reconcile through a new authenticated TPM session.
  */
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE
+#endif
 #include "nv_esys.h"
 #include <errno.h>
 #include <fcntl.h>
