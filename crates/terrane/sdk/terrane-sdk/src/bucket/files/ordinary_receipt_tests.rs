@@ -151,3 +151,72 @@ async fn ordinary_receipt_cannot_supply_protected_effect_inputs() {
         &StoreErrorKind::Unsupported
     );
 }
+
+#[tokio::test]
+async fn ordinary_body_batch_preserves_each_original_and_stops_at_missing_suffix() {
+    let bucket = tests::fixture().await;
+    let first = BucketKey::parse("objects/index/2/0.idx").unwrap();
+    let second = BucketKey::parse("objects/index/2/1.idx").unwrap();
+    let missing = BucketKey::parse("objects/index/2/2.idx").unwrap();
+    let later = BucketKey::parse("objects/index/2/3.idx").unwrap();
+    let path = bucket.path(&first);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, b"original first body").unwrap();
+    std::fs::write(bucket.path(&second), b"original second body").unwrap();
+    std::fs::write(bucket.path(&later), b"later body must not be consumed").unwrap();
+    std::fs::hard_link(&path, path.with_file_name("alias")).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o666)).unwrap();
+
+    let mut rows = bucket
+        .read_optional_ordinary_batch(&[first.clone(), second, missing, later])
+        .await
+        .unwrap()
+        .unwrap()
+        .into_iter();
+    let first = rows.next().unwrap().unwrap();
+    let second = rows.next().unwrap().unwrap();
+    let absent = rows.next().unwrap().unwrap();
+    assert!(rows.next().is_none());
+    assert_eq!(first.bytes(), Some(b"original first body".as_slice()));
+    assert_eq!(second.bytes(), Some(b"original second body".as_slice()));
+    assert!(absent.bytes().is_none());
+    assert!(!absent.is_ordinary_retained());
+    assert_eq!(first.metadata().unwrap().nlink(), 2);
+    assert_eq!(first.metadata().unwrap().mode() & 0o777, 0o666);
+    first.revalidate_retained(&bucket.inner.fs).await.unwrap();
+    second.revalidate_retained(&bucket.inner.fs).await.unwrap();
+
+    std::fs::rename(&path, path.with_file_name("original-first")).unwrap();
+    std::fs::write(&path, b"original first body").unwrap();
+    assert!(first.revalidate_retained(&bucket.inner.fs).await.is_err());
+    second.revalidate_retained(&bucket.inner.fs).await.unwrap();
+}
+
+#[tokio::test]
+async fn ordinary_body_batch_refuses_symlinked_leaf_before_later_body_reads() {
+    let bucket = tests::fixture().await;
+    let first = BucketKey::parse("objects/index/2/0.idx").unwrap();
+    let second = BucketKey::parse("objects/index/2/1.idx").unwrap();
+    let later = BucketKey::parse("objects/index/2/2.idx").unwrap();
+    let path = bucket.path(&first);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, b"independent ordinary first").unwrap();
+    std::os::unix::fs::symlink(&path, bucket.path(&second)).unwrap();
+    std::fs::write(bucket.path(&later), b"unread later body").unwrap();
+
+    let mut rows = bucket
+        .read_optional_ordinary_batch(&[first, second, later])
+        .await
+        .unwrap()
+        .unwrap()
+        .into_iter();
+    assert_eq!(
+        rows.next().unwrap().unwrap().bytes(),
+        Some(b"independent ordinary first".as_slice())
+    );
+    assert_eq!(
+        rows.next().unwrap().err().unwrap().kind(),
+        &StoreErrorKind::Corrupt(CorruptSubject::RefName("CAPABILITIES".into()))
+    );
+    assert!(rows.next().is_none());
+}

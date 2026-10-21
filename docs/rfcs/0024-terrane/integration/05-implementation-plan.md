@@ -11557,3 +11557,26 @@ exactly one new bootstrap allowance and preserves all original non-consumer
 holds. Durable rows remain comparison data, with actual native recovery and
 physical sealed custody checked separately. The full expanded VM remains
 pending; the failed run provides no T2 completion credit.
+
+
+#### Bounded original catalog body-read dispatch
+
+Selected native content reads prefetch at most sixteen manifest shard entries
+(thirty-two index/filter artifacts) in one ordinary body-read worker turn. Every
+row repeats the scalar namespace checks, actual nofollow descriptor capture and
+complete original-body read. Physical execution stops at its first missing,
+invalid or unavailable row. The caller still verifies every consumed artifact's
+size, identity and canonical shard format in manifest order, then freshly closes
+all original physical recipes between the existing selection fences. No state
+survives the request and no prefetched row may remain unconsumed on success.
+
+A distinct optional LocalFs hook defaults to unsupported without I/O, preserving
+existing wrapper fault interception and scalar behavior. Supported worker errors
+never trigger scalar retry. Actual-filesystem controls cover ordered early
+refusal, public hardlinked ordinary data and equal-byte inode replacement; the
+existing optional-retention control checks the new hook's no-I/O default. Local
+checks passed: both new filesystem controls and the optional-retention and scalar
+fault-boundary controls executed with nonzero passing counts. Strict native
+and portable Clippy and formatting passed. The complete frozen store/index
+and application-target qualification remain pending. The earlier
+4096-entry timeouts retain their original 1800-second limit and no acceptance.

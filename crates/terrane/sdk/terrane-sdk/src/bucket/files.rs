@@ -367,6 +367,63 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         )
     }
 
+    /// Reads an ordered ordinary artifact prefix in one bounded physical turn.
+    ///
+    /// Each present row retains its actual original body and closing recipe.
+    /// Unsupported bindings perform no I/O, preserving scalar fault boundaries.
+    ///
+    /// # Errors
+    /// Refuses invalid batches, unavailable workers and malformed result shapes.
+    /// Individual read errors retain their original positions for the caller.
+    #[cfg(all(feature = "tokio", unix))]
+    pub(crate) async fn read_optional_ordinary_batch(
+        &self,
+        keys: &[BucketKey],
+    ) -> Result<Option<Vec<Result<RecordRead, StoreFailure>>>, StoreFailure> {
+        use crate::store::native_publication_effects::{BodyRead, PayloadRangeCapture};
+
+        let paths = keys
+            .iter()
+            .map(|key| PathBuf::from(key.as_str()))
+            .collect::<Vec<_>>();
+        let Some(rows) = PayloadRangeCapture::read_ordinary_bodies(
+            &self.inner.fs,
+            &self.inner.config.root,
+            &paths,
+        )
+        .await?
+        else {
+            return Ok(None);
+        };
+        if rows.is_empty() || rows.len() > keys.len() {
+            return Err(layout_corrupt());
+        }
+        let count = rows.len();
+        let mut records = Vec::with_capacity(count);
+        for (index, row) in rows.into_iter().enumerate() {
+            let path = self.path(&keys[index]);
+            let present = matches!(row, Ok(BodyRead::Present { .. }));
+            if !present && index + 1 != count {
+                return Err(layout_corrupt());
+            }
+            if present && index + 1 == count && count != keys.len() {
+                return Err(layout_corrupt());
+            }
+            records.push(match row {
+                Ok(BodyRead::Absent) => Ok(RecordRead::observed(path, None, None)),
+                Ok(BodyRead::InvalidLayout) => Err(layout_corrupt()),
+                Ok(BodyRead::Present {
+                    bytes,
+                    metadata,
+                    retained,
+                }) => Ok(RecordRead::observed(path, Some(bytes), Some(*metadata))
+                    .with_ordinary_retained(retained)),
+                Err(error) => Err(io_failure(error)),
+            });
+        }
+        Ok(Some(records))
+    }
+
     /// Reads a registered regular file while rejecting symlinked layout nodes.
     ///
     /// # Errors

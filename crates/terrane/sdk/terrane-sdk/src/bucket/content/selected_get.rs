@@ -14,13 +14,14 @@ use super::*;
 use crate::bucket::held::SingleHeld;
 use crate::bucket::publication::SelectedObservation;
 use crate::bucket::publication::receipts::RecordRead;
-use std::sync::Mutex;
+use std::{collections::BTreeMap, sync::Mutex};
 use terrane_format::bucket::BucketKey;
 
 /// Keeps actual original reads until this single request's closing boundary.
 struct RequestReads<'request, F, C, V> {
     bucket: &'request FileBucket<F, C, V>,
     records: Mutex<Vec<RecordRead>>,
+    prefetched: Mutex<BTreeMap<String, Result<RecordRead, StoreFailure>>>,
     members: Mutex<Vec<RetainedMemberRanges>>,
     bounded: bool,
     mode: super::ranged_pack::MemberReadMode,
@@ -41,12 +42,44 @@ where
     V: ContentValidator + BucketBinding,
 {
     async fn read_artifact(&self, key: &BucketKey) -> Result<RecordRead, StoreFailure> {
-        let record = self.bucket.read_optional_ordinary_retained(key).await?;
+        let prefetched = self
+            .prefetched
+            .lock()
+            .map_err(|_| files::layout_corrupt())?
+            .remove(key.as_str());
+        let record = match prefetched {
+            Some(record) => record?,
+            None => self.bucket.read_optional_ordinary_retained(key).await?,
+        };
         self.records
             .lock()
             .map_err(|_| files::layout_corrupt())?
             .push(record.clone());
         Ok(record)
+    }
+
+    async fn prefetch_artifacts(&self, keys: &[BucketKey]) -> Result<(), StoreFailure> {
+        if !self
+            .prefetched
+            .lock()
+            .map_err(|_| files::layout_corrupt())?
+            .is_empty()
+        {
+            return Err(files::layout_corrupt());
+        }
+        let Some(rows) = self.bucket.read_optional_ordinary_batch(keys).await? else {
+            return Ok(());
+        };
+        let mut prefetched = self
+            .prefetched
+            .lock()
+            .map_err(|_| files::layout_corrupt())?;
+        for (key, row) in keys.iter().zip(rows) {
+            if prefetched.insert(key.as_str().to_owned(), row).is_some() {
+                return Err(files::layout_corrupt());
+            }
+        }
+        Ok(())
     }
 
     async fn read_member(
@@ -104,6 +137,14 @@ where
         catalog: &Catalog,
     ) -> Result<(), StoreFailure> {
         observed.revalidate().await?;
+        if !self
+            .prefetched
+            .into_inner()
+            .map_err(|_| files::layout_corrupt())?
+            .is_empty()
+        {
+            return Err(files::layout_corrupt());
+        }
 
         // These are the SAME recipes captured before their original bodies.
         // Only their native queue handoff is grouped; every original physical
@@ -234,6 +275,7 @@ where
         let reads = RequestReads {
             bucket: self,
             records: Mutex::new(Vec::new()),
+            prefetched: Mutex::new(BTreeMap::new()),
             members: Mutex::new(Vec::new()),
             bounded: range.is_some() && identity.kind() == IdentityKind::Chunk,
             mode,
@@ -338,6 +380,7 @@ where
         let reads = RequestReads {
             bucket,
             records: Mutex::new(Vec::new()),
+            prefetched: Mutex::new(BTreeMap::new()),
             members: Mutex::new(Vec::new()),
             bounded: false,
             mode: super::ranged_pack::MemberReadMode::Ordinary,

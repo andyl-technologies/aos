@@ -24,6 +24,13 @@ use std::{
     sync::{Arc, Mutex, OnceLock, Weak},
 };
 
+#[cfg(all(feature = "tokio", unix))]
+#[path = "payload_ranges/bodies.rs"]
+mod bodies;
+
+#[cfg(all(feature = "tokio", unix))]
+pub(crate) use bodies::BodyRead;
+
 /// Carries a sealed original-descriptor capture, bounded read or physical check.
 ///
 /// Only the actual payload reader constructs these recipes. Native execution
@@ -74,6 +81,10 @@ pub(crate) struct RetainedPayloadRanges {
 #[cfg(all(feature = "tokio", unix))]
 enum Recipe {
     Probe,
+    Bodies {
+        root: PathBuf,
+        relative: Vec<PathBuf>,
+    },
     Capture {
         path: PathBuf,
     },
@@ -88,6 +99,7 @@ enum Recipe {
 #[cfg(all(feature = "tokio", unix))]
 enum Outcome {
     Supported,
+    Bodies(Vec<io::Result<BodyRead>>),
     Captured(Arc<OriginalPayload>),
     Bytes(Vec<u8>),
     Checked,
@@ -329,6 +341,38 @@ impl PayloadRangeCapture {
         })
     }
 
+    /// Reads a bounded ordered ordinary batch through independently retained originals.
+    ///
+    /// Unsupported bindings perform no I/O and retain their scalar path. Each
+    /// result belongs to its actual input row; execution stops at the first
+    /// absence, layout refusal or I/O error before reading any later payload.
+    ///
+    /// # Errors
+    /// Refuses empty/overlarge batches, unavailable workers and invalid outcomes.
+    /// Individual physical failures remain ordered data for caller classification.
+    pub(crate) async fn read_ordinary_bodies<F: LocalFs + BucketBinding>(
+        fs: &F,
+        root: &Path,
+        relative: &[PathBuf],
+    ) -> Result<Option<Vec<io::Result<BodyRead>>>, StoreFailure> {
+        if relative.is_empty() || relative.len() > 32 {
+            return Err(StoreFailure::new(StoreErrorKind::Invalid(
+                InvalidReason::MalformedRequest,
+            )));
+        }
+        let request = NativePayloadRangeRead::new(Recipe::Bodies {
+            root: root.to_owned(),
+            relative: relative.to_vec(),
+        });
+        let Some(record) = fs.read_payload_bodies(request).await.map_err(io_failure)? else {
+            return Ok(None);
+        };
+        match record.outcome {
+            Outcome::Bodies(rows) => Ok(Some(rows)),
+            _ => Err(io_failure(unexpected_outcome())),
+        }
+    }
+
     /// Returns the actual size bound to the retained descriptor.
     pub(crate) fn len(&self) -> u64 {
         self.retained.length
@@ -567,6 +611,7 @@ impl NativePayloadRangeRead {
     pub(in crate::store) fn execute(self) -> io::Result<NativePayloadRangeRecord> {
         let outcome = match self.recipe {
             Recipe::Probe => Outcome::Supported,
+            Recipe::Bodies { root, relative } => Outcome::Bodies(bodies::read(root, relative)),
             Recipe::Capture { path } => Outcome::Captured(Arc::new(OriginalPayload::capture(
                 path,
                 #[cfg(test)]

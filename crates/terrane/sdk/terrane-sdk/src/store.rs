@@ -1079,6 +1079,25 @@ pub trait LocalFs {
         Ok(None)
     }
 
+    /// Reads a fixed bounded batch of ordinary bodies through their original descriptors.
+    ///
+    /// Every row retains independent ordered namespace, descriptor and exact-byte
+    /// checks. Execution stops at the first unsuccessful row and preserves its
+    /// position. The result supplies ordinary DATA, never publication authority.
+    /// The default returns `None` without I/O; fault-intercepting wrappers keep
+    /// the scalar path unless they explicitly support these batch boundaries.
+    /// A supported failure must never trigger scalar retry.
+    ///
+    /// # Errors
+    /// Returns runtime or worker failures. Ordered individual read failures
+    /// remain in the sealed outcome for their original caller to classify.
+    async fn read_payload_bodies(
+        &self,
+        _read: NativePayloadRangeRead,
+    ) -> std::io::Result<Option<NativePayloadRangeRecord>> {
+        Ok(None)
+    }
+
     /// Executes a sealed payload range recipe without mutation or authority.
     ///
     /// Supported bindings retain the original leaf and ancestor descriptors

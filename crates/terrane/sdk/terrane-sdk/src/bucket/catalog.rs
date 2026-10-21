@@ -28,6 +28,17 @@ pub(in crate::bucket) trait CatalogReads: BucketBinding {
         key: &BucketKey,
     ) -> Result<super::publication::receipts::RecordRead, StoreFailure>;
 
+    /// Prefetches ordinary DATA only, retaining each original error and recipe.
+    ///
+    /// The default performs no I/O. Each subsequent artifact read still checks
+    /// its independent presence, size and identity in manifest order.
+    ///
+    /// # Errors
+    /// Preserves supported native worker and result-shape failures.
+    async fn prefetch_artifacts(&self, _keys: &[BucketKey]) -> Result<(), StoreFailure> {
+        Ok(())
+    }
+
     /// Supplies a bounded member only for an explicitly ranged chunk request.
     ///
     /// Returning `None` preserves complete container verification for ordinary
@@ -277,41 +288,57 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             if manifest.generation != generation {
                 return Err(files::layout_corrupt());
             }
-            for entry in &manifest.shards {
-                let shard = u8::try_from(entry.shard).map_err(|_| files::layout_corrupt())?;
-                let bytes = Self::verified_artifact(
-                    generation,
-                    entry.shard,
-                    "idx",
-                    IdentityKind::Index,
-                    entry.index_hash,
-                    entry.index_size,
-                    reads,
-                )
-                .await?;
-                if let Some((hash, size)) = entry.filter {
-                    Self::verified_artifact(
+            for group in manifest.shards.chunks(16) {
+                let mut keys = Vec::with_capacity(group.len() * 2);
+                for entry in group {
+                    keys.push(registered(&format!(
+                        "objects/index/{generation}/{}.idx",
+                        entry.shard
+                    ))?);
+                    if entry.filter.is_some() {
+                        keys.push(registered(&format!(
+                            "objects/index/{generation}/{}.flt",
+                            entry.shard
+                        ))?);
+                    }
+                }
+                reads.prefetch_artifacts(&keys).await?;
+                for entry in group {
+                    let shard = u8::try_from(entry.shard).map_err(|_| files::layout_corrupt())?;
+                    let bytes = Self::verified_artifact(
                         generation,
                         entry.shard,
-                        "flt",
-                        IdentityKind::Filter,
-                        hash,
-                        size,
+                        "idx",
+                        IdentityKind::Index,
+                        entry.index_hash,
+                        entry.index_size,
                         reads,
                     )
                     .await?;
+                    if let Some((hash, size)) = entry.filter {
+                        Self::verified_artifact(
+                            generation,
+                            entry.shard,
+                            "flt",
+                            IdentityKind::Filter,
+                            hash,
+                            size,
+                            reads,
+                        )
+                        .await?;
+                    }
+                    #[cfg(all(test, feature = "std", feature = "tokio"))]
+                    let mut decode = crate::diagnostic_clock::span(
+                        crate::diagnostic_clock::Group::CatalogShardDecode,
+                    );
+                    let decoded = MergedShard::decode(&bytes, generation, shard)
+                        .map_err(|_| files::layout_corrupt());
+                    #[cfg(all(test, feature = "std", feature = "tokio"))]
+                    decode.finish_result(&decoded);
+                    #[cfg(all(test, feature = "std", feature = "tokio"))]
+                    drop(decode);
+                    shards.push(decoded?);
                 }
-                #[cfg(all(test, feature = "std", feature = "tokio"))]
-                let mut decode = crate::diagnostic_clock::span(
-                    crate::diagnostic_clock::Group::CatalogShardDecode,
-                );
-                let decoded = MergedShard::decode(&bytes, generation, shard)
-                    .map_err(|_| files::layout_corrupt());
-                #[cfg(all(test, feature = "std", feature = "tokio"))]
-                decode.finish_result(&decoded);
-                #[cfg(all(test, feature = "std", feature = "tokio"))]
-                drop(decode);
-                shards.push(decoded?);
             }
         }
         Ok(Catalog {

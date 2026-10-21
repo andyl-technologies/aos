@@ -142,6 +142,19 @@ pub(super) async fn check() -> TestResult {
         supported: Arc::new(AtomicBool::new(true)),
         mutations: Arc::default(),
     };
+    // This binding has not opted into body batches. It must perform no I/O,
+    // even for an absent path, and preserve its original scalar fault boundary.
+    assert!(
+        crate::store::native_publication_effects::PayloadRangeCapture::read_ordinary_bodies(
+            &fs,
+            fixture.bucket.root(),
+            &[PathBuf::from("objects/index/0/MANIFEST")],
+        )
+        .await?
+        .is_none()
+    );
+    assert_eq!(fs.mutations.load(Ordering::SeqCst), 0);
+
     let configuration = fixture.bucket.inner.config.clone();
     let ordinary =
         FileBucket::open(configuration.clone(), fs.clone(), TokioClock, Validator).await?;

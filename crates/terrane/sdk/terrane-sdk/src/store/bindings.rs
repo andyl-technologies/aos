@@ -483,6 +483,13 @@ impl LocalFs for TokioLocalFs {
         }
     }
 
+    async fn read_payload_bodies(
+        &self,
+        read: super::NativePayloadRangeRead,
+    ) -> std::io::Result<Option<super::NativePayloadRangeRecord>> {
+        self.read_payload_ranges(read).await
+    }
+
     async fn read_payload_ranges(
         &self,
         read: super::NativePayloadRangeRead,

@@ -126,6 +126,7 @@ impl RecordRead {
     /// # Errors
     /// Refuses missing retained evidence, unavailable native execution or any
     /// changed original ancestry, inode, metadata, absence or consumed bytes.
+    #[cfg(all(feature = "tokio", unix))]
     pub(crate) async fn revalidate_all_retained<F>(
         fs: &F,
         selected: &[Self],
