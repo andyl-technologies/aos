@@ -27,6 +27,9 @@ use crate::protocol_snapshot::restored_settled17::{
 };
 use std::mem::size_of;
 
+#[path = "prebirth_recipe/decoder_partials.rs"]
+mod decoder_partials;
+
 /// Names the distinct closed recipe DATA, independently of wrapper9 framing.
 pub const NATIVE_IMPORT18_PREBIRTH_RECIPE_SCHEMA: &str =
     "source-private.native-import-prebirth-recipe/18";

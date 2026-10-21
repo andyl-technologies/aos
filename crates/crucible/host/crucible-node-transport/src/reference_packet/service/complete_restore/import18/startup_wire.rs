@@ -27,6 +27,20 @@ use std::mem::size_of;
 #[path = "startup_wire/allocation_partials.rs"]
 mod allocation_partials;
 
+#[path = "startup_wire/decoder_partials.rs"]
+mod decoder_partials;
+
+pub(in crate::reference_packet) use decoder_partials::{
+    private_body_typed_geometry_data, private_body_typed_partials_data,
+};
+
+#[path = "startup_wire/decoding.rs"]
+mod decoding;
+
+pub(in crate::reference_packet) use decoding::{
+    private_body_decode_backing_data, private_body_decode_counter_scratch_data,
+};
+
 #[path = "startup_wire/source_declaration.rs"]
 mod source_declaration;
 

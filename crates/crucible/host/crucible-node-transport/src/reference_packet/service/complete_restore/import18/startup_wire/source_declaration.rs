@@ -18,6 +18,9 @@ use serde::ser::SerializeStruct;
 #[path = "source_declaration/projection.rs"]
 mod projection;
 
+#[path = "source_declaration/decoder_partials.rs"]
+mod decoder_partials;
+
 pub use projection::{
     native_import18_source_declaration_encoding_construction_data,
     native_import18_source_declaration_encoding_counter_scratch_data,

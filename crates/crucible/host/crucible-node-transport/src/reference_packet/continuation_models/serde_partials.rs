@@ -50,6 +50,9 @@ pub(in crate::reference_packet) trait DecoderPartial:
     /// Names actual typed slot/alignment and map K+V/alignment maxima.
     const TYPED_LAYOUT: (usize, usize, usize, usize) = slot_layout_data::<Self>();
 
+    /// Names actual heap element/map layouts, excluding inline-only root headers.
+    const HEAP_LAYOUT: (usize, usize, usize, usize) = (0, 1, 0, 1);
+
     /// Counts simultaneously buffered tagged-enum levels in this actual DAG.
     const BUFFERED_TAG_LEVELS: usize = 0;
 
@@ -85,6 +88,13 @@ pub(in crate::reference_packet) const fn field_typed_layout_data<S, T: DecoderPa
     _: fn(&S) -> &T,
 ) -> (usize, usize, usize, usize) {
     T::TYPED_LAYOUT
+}
+
+/// Resolves only allocating descendants of a real field's type.
+pub(in crate::reference_packet) const fn field_heap_layout_data<S, T: DecoderPartial>(
+    _: fn(&S) -> &T,
+) -> (usize, usize, usize, usize) {
+    T::HEAP_LAYOUT
 }
 
 /// Resolves the actual child type's buffered-tag depth.
@@ -195,6 +205,21 @@ macro_rules! decoder_struct {
                 layout
             };
 
+            const HEAP_LAYOUT: (usize, usize, usize, usize) = {
+                let mut layout = (0, 1, 0, 1);
+
+                $(
+                    layout = $crate::reference_packet::continuation_models::serde_partials::maximum_typed_layout_data(
+                        layout,
+                        $crate::reference_packet::continuation_models::serde_partials::field_heap_layout_data(
+                            |value: &Self| &value.$field,
+                        ),
+                    );
+                )+
+
+                layout
+            };
+
             const BUFFERED_TAG_LEVELS: usize = {
                 let mut levels = 0usize;
 
@@ -279,7 +304,6 @@ scalar!(
     u64,
     usize,
     i64,
-    String,
     Phase,
     Direction,
     OperatingMode,
@@ -298,7 +322,17 @@ scalar!(
     PacketNative5CaptureAllocationSelection
 );
 
+impl DecoderPartial for String {
+    const HEAP_LAYOUT: (usize, usize, usize, usize) = slot_layout_data::<u8>();
+
+    fn partial_counter_data() -> usize {
+        size_of::<Self>() + size_of::<Result<Self, Error>>()
+    }
+}
+
 impl DecoderPartial for Id {
+    const HEAP_LAYOUT: (usize, usize, usize, usize) = String::HEAP_LAYOUT;
+
     fn partial_counter_data() -> usize {
         size_of::<Self>()
             + size_of::<Result<Self, Error>>()
@@ -312,6 +346,8 @@ impl DecoderPartial for Id {
 }
 
 impl DecoderPartial for U64 {
+    const HEAP_LAYOUT: (usize, usize, usize, usize) = String::HEAP_LAYOUT;
+
     fn partial_counter_data() -> usize {
         size_of::<Self>()
             + size_of::<Result<Self, Error>>()
@@ -325,6 +361,7 @@ impl DecoderPartial for U64 {
 
 impl<T: DecoderPartial> DecoderPartial for Option<T> {
     const EMITTED_FIELDS: (usize, usize) = T::EMITTED_FIELDS;
+    const HEAP_LAYOUT: (usize, usize, usize, usize) = T::HEAP_LAYOUT;
 
     const TYPED_LAYOUT: (usize, usize, usize, usize) =
         maximum_typed_layout_data(slot_layout_data::<Self>(), T::TYPED_LAYOUT);
@@ -339,6 +376,8 @@ impl<T: DecoderPartial> DecoderPartial for Option<T> {
 
 impl<T: DecoderPartial> DecoderPartial for Nullable<T> {
     const EMITTED_FIELDS: (usize, usize) = T::EMITTED_FIELDS;
+    const HEAP_LAYOUT: (usize, usize, usize, usize) =
+        maximum_typed_layout_data(Value::HEAP_LAYOUT, T::HEAP_LAYOUT);
 
     const TYPED_LAYOUT: (usize, usize, usize, usize) =
         maximum_typed_layout_data(slot_layout_data::<Self>(), T::TYPED_LAYOUT);
@@ -360,6 +399,8 @@ impl<T: DecoderPartial> DecoderPartial for Nullable<T> {
 
 impl<T: DecoderPartial> DecoderPartial for Vec<T> {
     const EMITTED_FIELDS: (usize, usize) = T::EMITTED_FIELDS;
+    const HEAP_LAYOUT: (usize, usize, usize, usize) =
+        maximum_typed_layout_data(slot_layout_data::<T>(), T::HEAP_LAYOUT);
 
     const TYPED_LAYOUT: (usize, usize, usize, usize) =
         maximum_typed_layout_data(slot_layout_data::<Self>(), T::TYPED_LAYOUT);
@@ -380,6 +421,10 @@ impl<T: DecoderPartial> DecoderPartial for Vec<T> {
 impl<K: DecoderPartial, V: DecoderPartial> DecoderPartial for BTreeMap<K, V> {
     const EMITTED_FIELDS: (usize, usize) =
         maximum_fields_data(K::EMITTED_FIELDS, V::EMITTED_FIELDS);
+    const HEAP_LAYOUT: (usize, usize, usize, usize) = maximum_typed_layout_data(
+        map_layout_data::<K, V>(),
+        maximum_typed_layout_data(K::HEAP_LAYOUT, V::HEAP_LAYOUT),
+    );
 
     const TYPED_LAYOUT: (usize, usize, usize, usize) = maximum_typed_layout_data(
         maximum_typed_layout_data(slot_layout_data::<Self>(), map_layout_data::<K, V>()),
@@ -410,6 +455,8 @@ impl<K: DecoderPartial, V: DecoderPartial> DecoderPartial for BTreeMap<K, V> {
 impl<A: DecoderPartial, B: DecoderPartial> DecoderPartial for (A, B) {
     const EMITTED_FIELDS: (usize, usize) =
         maximum_fields_data(A::EMITTED_FIELDS, B::EMITTED_FIELDS);
+    const HEAP_LAYOUT: (usize, usize, usize, usize) =
+        maximum_typed_layout_data(A::HEAP_LAYOUT, B::HEAP_LAYOUT);
 
     const TYPED_LAYOUT: (usize, usize, usize, usize) = maximum_typed_layout_data(
         slot_layout_data::<Self>(),
@@ -438,6 +485,10 @@ impl<A: DecoderPartial, B: DecoderPartial> DecoderPartial for (A, B) {
 }
 
 impl DecoderPartial for Value {
+    const HEAP_LAYOUT: (usize, usize, usize, usize) = maximum_typed_layout_data(
+        slot_layout_data::<Self>(),
+        map_layout_data::<String, Value>(),
+    );
     // Dynamic JSON traversal is independently bounded by actual raw/expanded
     // facts; it does not introduce another schema-specific tagged DTO level.
     const TYPED_LAYOUT: (usize, usize, usize, usize) = maximum_typed_layout_data(
@@ -451,6 +502,7 @@ impl DecoderPartial for Value {
 }
 
 impl DecoderPartial for serde_json::Map<String, Value> {
+    const HEAP_LAYOUT: (usize, usize, usize, usize) = Value::HEAP_LAYOUT;
     const TYPED_LAYOUT: (usize, usize, usize, usize) = maximum_typed_layout_data(
         slot_layout_data::<Self>(),
         map_layout_data::<String, Value>(),
@@ -904,6 +956,7 @@ decoder_struct!(Position {
 });
 
 impl DecoderPartial for PacketNative5CaptureProfile {
+    const HEAP_LAYOUT: (usize, usize, usize, usize) = U64::HEAP_LAYOUT;
     const EMITTED_FIELDS: (usize, usize) = (
         4,
         "encoding".len()
@@ -953,6 +1006,10 @@ const _: fn(&PacketNative5CaptureProfile) = |value| match value {
 };
 
 impl DecoderPartial for ResponseShape {
+    const HEAP_LAYOUT: (usize, usize, usize, usize) = maximum_typed_layout_data(
+        Map::<String, Value>::HEAP_LAYOUT,
+        maximum_typed_layout_data(ErrorRecord::HEAP_LAYOUT, Extensions::HEAP_LAYOUT),
+    );
     const EMITTED_FIELDS: (usize, usize) = maximum_fields_data(
         (
             4,
@@ -1039,6 +1096,18 @@ const _: fn(&ResponseShape) = |value| match value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn heap_layouts_distinguish_inline_roots_from_real_container_elements() {
+        assert_eq!(Option::<ContentRef>::HEAP_LAYOUT.0, size_of::<u8>());
+        assert!(Option::<ContentRef>::TYPED_LAYOUT.0 >= size_of::<ContentRef>());
+        assert_eq!(Vec::<ContentRef>::HEAP_LAYOUT.0, size_of::<ContentRef>());
+
+        let tree = BTreeMap::<Id, ContentRef>::HEAP_LAYOUT;
+        assert_eq!(tree.0, size_of::<u8>());
+        assert_eq!(tree.2, size_of::<Id>() + size_of::<ContentRef>());
+        assert_eq!(Vec::<BTreeMap<Id, ContentRef>>::HEAP_LAYOUT.2, tree.2);
+    }
 
     fn actual_emitted_fields<T: DecoderPartial + serde::Serialize>(value: &T) {
         let encoded = serde_json::to_value(value).unwrap();

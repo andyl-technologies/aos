@@ -391,8 +391,13 @@ architecture gates pass. The funded Source VM passes both actual consumers,
 all three encoded declarations/private Births, spent credit, retry and cleanup
 controls. That VM and the complete library snapshot precede the final explicit
 Vec/Option constructor-header additions to the encoding row; final-source
-qualification remains pending. The complete configured Daemon run and required
-application compilation gate are also still in progress at this checkpoint.
+qualification remains pending. The complete configured Daemon library passes
+1,837 tests, with zero failures, no filtering and 166 ignores. The required
+application compilation gate passes for the earlier encoder snapshot: 180 test
+executables across 58 package IDs, including 71 integration targets. Ninety-two
+of 93 owned Rust paths at `27c9fdd9b2` match that capture; the final explicit
+Vec/Option constructor-header additions are the one excluded path. This gate
+does not run the tests or compile a Crucible runtime unit-test executable.
 No Initial, complete Recipe, native startup, Ready or preservation is claimed.
 
 ## Immediate spent preparation submission refusal
@@ -461,6 +466,39 @@ their independent Initial producer remain unfinished. No model, native Boot,
 startup finalizer, common Ready or full-RFC qualification follows. All six
 architecture checks pass for the final EOF source. Application compilation still
 needs that refinement; the passing funded VM snapshot predates it.
+
+## Original bootstrap typed decoder accounting
+
+The three new inert body DTOs now have exhaustive decoder field rosters. Their
+counter DAG follows the pinned serde visitors, fixed arrays, tagged program
+buffers, Bytes/base64 codec and error formatting. Heap geometry distinguishes
+inline root headers from actual allocating Vec elements and map entries. No
+Wire DTO is converted into an opaque Initial or Recipe by these declarations.
+
+An allocation-free quote examines the original raw banks before strict Value
+parsing and the actual owned DTO decoders. Separate terms cover lexical Value
+backing, canonical work, typed backing, nested tagged buffers, RawValue resets,
+failed diagnostics and concrete parser controls. The quote excludes the physical
+receiver, raw banks, inline output slots and later semantic/native constructors;
+the independent complete Initial producer must combine their simultaneous
+ownership before granting any parser admission.
+
+Four decoder controls exercise actual producer/reactive Launch5 fields, opaque
+Source bytes, Bytes growth boundaries, malformed codec/schema prefixes, exact
+and one-byte-short complete work, and RawValue behavior. A fifth control checks
+inline versus actual allocating container geometry. The complete standard and RawValue
+Transport libraries each pass 1,760 tests with no failures, no filtering and
+sixteen existing ignores. All-feature/all-target checking passes. Current
+architecture checks remain pending at this checkpoint. These are inert parser/accounting controls; physical
+typed receipt and complete Initial/Recipe production remain unfinished.
+
+The funded Source VM also passes on the later source containing the final
+Vec/Option declaration-encoder headers and seven empty physical receiving-bank
+headers. Both actual consumers, spent credit and namespace cleanup pass. The
+production application-target gate emits
+`zsj7xsyixc3nhhirm5zvwmdax440smrr-aos-test-targets-0.1.0`; its capture predates
+the later base64-counter, heap-geometry and complete parser-quote additions.
+Neither result qualifies those later additions or full native startup.
 
 ## Original launch custody and shared startup geometry
 

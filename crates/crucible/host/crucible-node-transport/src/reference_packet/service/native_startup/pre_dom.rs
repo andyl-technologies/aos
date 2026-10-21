@@ -110,13 +110,18 @@ impl<'a> OriginalNativeFramePreflight<'a> {
     }
 }
 
-pub(super) fn raw_extent_data(
+pub(in crate::reference_packet) fn raw_extent_data(
     raw: &[u8],
 ) -> Result<
     crate::retained_metadata::serialization_storage::OriginalJsonValueStorageExtentData,
     ProviderError,
 > {
     raw_shape::extent(raw)
+}
+
+/// Names the shared lexical census without private-frame or native-owner terms.
+pub(in crate::reference_packet) fn raw_extent_counter_scratch_data() -> usize {
+    raw_shape::counter_scratch_data()
 }
 
 pub(super) fn counter_scratch_data() -> usize {
