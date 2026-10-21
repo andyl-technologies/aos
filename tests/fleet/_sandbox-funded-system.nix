@@ -224,7 +224,9 @@ systems.server-secureboot-lockdown.extendModules {
             networkSender = envelope (128 * mib) 1000 1 128;
             networkReceiving = envelope (256 * mib) 25000 8 256;
             managerOpenFilesPerProcess = 1024;
-            fixedOpenFilesPerProcess = 1024;
+            # Each receiver has 256 descriptors total, including the actual
+            # inherited pre-exec peak as well as this new process table.
+            fixedOpenFilesPerProcess = 128;
             journal = {
               systemMaxUse = 64 * mib;
               systemMaxFileSize = 8 * mib;
