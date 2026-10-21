@@ -375,12 +375,7 @@ impl SourcePublisher {
         }
         crucible_qemu_protocol::source_supervision::decode_source_supervision_payload(&payload)
             .map_err(|_| HostSupervisionError::InvalidBudget)?;
-        let sequence = state
-            .sequence
-            .checked_add(2)
-            .filter(|value| *value < u64::MAX)
-            .ok_or(HostSupervisionError::IdentityExhausted)?;
-        self.mapping.publish(state.sequence, sequence, &payload)?;
+        let sequence = publish_payload_if_changed(self.mapping.words(), state.sequence, &payload)?;
         state.sequence = sequence;
         state.origin = Some(snapshot.outer.original_monotonic_ns);
         state.outer_revision = snapshot.outer.revision;
@@ -463,27 +458,58 @@ impl AtomicPublication {
         unsafe { &*self.words.as_ptr().cast::<[AtomicU64; WORDS]>() }
     }
 
-    fn publish(
-        &self,
-        expected: u64,
-        sequence: u64,
-        payload: &[u8; SOURCE_PAYLOAD_BYTES],
-    ) -> Result<(), HostSupervisionError> {
-        let words = self.words();
-        // Invalidation can win before entry or during the bounded payload walk.
-        // Neither transition may replace its terminal sequence with a live one.
-        transition_sequence(&words[0], expected, sequence - 1)?;
-        for (word, bytes) in words[1..].iter().zip(payload.chunks_exact(8)) {
-            let mut value = [0; 8];
-            value.copy_from_slice(bytes);
-            word.store(u64::from_be_bytes(value).to_be(), Ordering::SeqCst);
-        }
-        transition_sequence(&words[0], sequence - 1, sequence)
-    }
-
     fn invalidate(&self) {
         self.words()[0].store(u64::MAX.to_be(), Ordering::SeqCst);
     }
+}
+
+/// Keeps a live standing sequence stable until its complete payload changes.
+///
+/// Actual publisher serialization still surrounds the whole call. Repeated
+/// polling of unchanged facts must not invalidate a retained Native action;
+/// every changed field still publishes a new epoch. All reads stay atomic so a
+/// concurrent terminal invalidation cannot be overwritten or hidden as a no-op.
+fn publish_payload_if_changed(
+    words: &[AtomicU64; WORDS],
+    expected: u64,
+    payload: &[u8; SOURCE_PAYLOAD_BYTES],
+) -> Result<u64, HostSupervisionError> {
+    if expected == u64::MAX
+        || expected & 1 != 0
+        || u64::from_be(words[0].load(Ordering::SeqCst)) != expected
+    {
+        return Err(HostSupervisionError::Unavailable);
+    }
+
+    let mut unchanged = expected != 0;
+    for (word, bytes) in words[1..].iter().zip(payload.chunks_exact(8)) {
+        let mut value = [0; 8];
+        value.copy_from_slice(bytes);
+        unchanged &= word.load(Ordering::SeqCst) == u64::from_be_bytes(value).to_be();
+    }
+
+    if u64::from_be(words[0].load(Ordering::SeqCst)) != expected {
+        return Err(HostSupervisionError::Unavailable);
+    }
+    if unchanged {
+        return Ok(expected);
+    }
+
+    let sequence = expected
+        .checked_add(2)
+        .filter(|value| *value < u64::MAX)
+        .ok_or(HostSupervisionError::IdentityExhausted)?;
+
+    // Invalidation can win before entry or during the bounded payload walk.
+    // Neither transition may replace its terminal sequence with a live one.
+    transition_sequence(&words[0], expected, sequence - 1)?;
+    for (word, bytes) in words[1..].iter().zip(payload.chunks_exact(8)) {
+        let mut value = [0; 8];
+        value.copy_from_slice(bytes);
+        word.store(u64::from_be_bytes(value).to_be(), Ordering::SeqCst);
+    }
+    transition_sequence(&words[0], sequence - 1, sequence)?;
+    Ok(sequence)
 }
 
 /// Changes the actual shared sequence only while the expected epoch still owns it.
@@ -581,5 +607,66 @@ mod sequence_tests {
 
         assert!(transition_sequence(&sequence, 2, 3).is_err());
         assert_eq!(u64::from_be(sequence.load(Ordering::SeqCst)), u64::MAX);
+    }
+
+    #[test]
+    fn identical_full_payload_preserves_the_actual_published_epoch() {
+        let words = std::array::from_fn(|_| AtomicU64::new(0));
+        let payload = [0; SOURCE_PAYLOAD_BYTES];
+
+        assert_eq!(publish_payload_if_changed(&words, 0, &payload), Ok(2));
+        assert_eq!(publish_payload_if_changed(&words, 2, &payload), Ok(2));
+        assert_eq!(u64::from_be(words[0].load(Ordering::SeqCst)), 2);
+    }
+
+    #[test]
+    fn each_actual_payload_word_change_publishes_a_new_epoch() {
+        let words = std::array::from_fn(|_| AtomicU64::new(0));
+        let mut payload = [0; SOURCE_PAYLOAD_BYTES];
+        let mut sequence = publish_payload_if_changed(&words, 0, &payload).unwrap();
+
+        for index in 0..WORDS - 1 {
+            payload[index * 8 + 7] = 1;
+            let next = publish_payload_if_changed(&words, sequence, &payload).unwrap();
+
+            assert_eq!(next, sequence + 2);
+            assert_eq!(u64::from_be(words[index + 1].load(Ordering::SeqCst)), 1);
+            assert_eq!(publish_payload_if_changed(&words, next, &payload), Ok(next));
+            sequence = next;
+        }
+    }
+
+    #[test]
+    fn unchanged_payload_cannot_hide_foreign_odd_or_terminal_sequence() {
+        let words = std::array::from_fn(|_| AtomicU64::new(0));
+        let payload = [0; SOURCE_PAYLOAD_BYTES];
+        publish_payload_if_changed(&words, 0, &payload).unwrap();
+
+        for actual in [0_u64, 3, 4, u64::MAX] {
+            words[0].store(actual.to_be(), Ordering::SeqCst);
+
+            assert_eq!(
+                publish_payload_if_changed(&words, 2, &payload),
+                Err(HostSupervisionError::Unavailable),
+            );
+            assert_eq!(u64::from_be(words[0].load(Ordering::SeqCst)), actual);
+        }
+    }
+
+    #[test]
+    fn final_even_epoch_can_repeat_but_never_wrap_on_changed_facts() {
+        let words = std::array::from_fn(|_| AtomicU64::new(0));
+        let mut payload = [0; SOURCE_PAYLOAD_BYTES];
+        let last = u64::MAX - 1;
+        words[0].store(last.to_be(), Ordering::SeqCst);
+
+        assert_eq!(publish_payload_if_changed(&words, last, &payload), Ok(last));
+        payload[0] = 1;
+        assert_eq!(
+            publish_payload_if_changed(&words, last, &payload),
+            Err(HostSupervisionError::IdentityExhausted),
+        );
+        assert_eq!(u64::from_be(words[0].load(Ordering::SeqCst)), last);
+        assert_eq!(words[1].load(Ordering::SeqCst), 0);
     }
 }
