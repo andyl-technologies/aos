@@ -4,6 +4,7 @@
   tpm2-tss,
   openssl,
   coreutils,
+  buildPackages,
   stdenv,
 }: let
   contract = builtins.toJSON {
@@ -74,8 +75,9 @@ in
       version = "5";
       src = ./aos-method46-tpm-helper;
       dontStrip = true;
+      dontPatchELF = true;
 
-      buildDeps = [coreutils];
+      buildDeps = [coreutils buildPackages.patchelf];
       runtimeDeps = [tpm2-tss openssl];
       propagatedDeps = [];
       offlineContract = contract;
@@ -107,6 +109,8 @@ in
             mkdir -p "$out/libexec"
             cp aos-nix-offline-tpm-helper "$out/libexec/"
             $STRIP -s "$out/libexec/aos-nix-offline-tpm-helper"
+            # Remove unused compiler search paths before sealing the image pin.
+            ${buildPackages.patchelf}/bin/patchelf --shrink-rpath "$out/libexec/aos-nix-offline-tpm-helper"
             chmod 0555 "$out/libexec/aos-nix-offline-tpm-helper"
             sha256sum "$out/libexec/aos-nix-offline-tpm-helper" | cut -d ' ' -f 1 \
               > "$out/libexec/aos-nix-offline-tpm-helper.sha256"

@@ -4,6 +4,7 @@
   tpm2-tss,
   openssl,
   coreutils,
+  buildPackages,
   stdenv,
 }: let
   pinnedTssVersion = "4.2.0";
@@ -34,8 +35,9 @@ in
       src = ./aos-method46-tpm-helper;
       # The pin must cover the final stripped executable, not a pre-fixup image.
       dontStrip = true;
+      dontPatchELF = true;
 
-      buildDeps = [coreutils];
+      buildDeps = [coreutils buildPackages.patchelf];
       runtimeDeps = [tpm2-tss openssl];
       propagatedDeps = [];
 
@@ -83,6 +85,8 @@ in
             mkdir -p $out/libexec
             cp aos-method46-tpm-helper $out/libexec/
             $STRIP -s $out/libexec/aos-method46-tpm-helper
+            # Remove unused compiler search paths before sealing the image pin.
+            ${buildPackages.patchelf}/bin/patchelf --shrink-rpath $out/libexec/aos-method46-tpm-helper
             chmod 0555 $out/libexec/aos-method46-tpm-helper
             sha256sum $out/libexec/aos-method46-tpm-helper | cut -d ' ' -f 1 \
               > $out/libexec/aos-method46-tpm-helper.sha256

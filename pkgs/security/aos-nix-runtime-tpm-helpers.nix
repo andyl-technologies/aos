@@ -4,6 +4,7 @@
   tpm2-tss,
   openssl,
   coreutils,
+  buildPackages,
   stdenv,
 }: let
   helperSource = ./aos-method46-tpm-helper;
@@ -31,7 +32,7 @@ in
       pname = "aos-nix-runtime-tpm-helpers";
       version = "1";
       src = helperSource;
-      buildDeps = [coreutils];
+      buildDeps = [coreutils buildPackages.patchelf];
       runtimeDeps = [tpm2-tss openssl];
       propagatedDeps = [];
 

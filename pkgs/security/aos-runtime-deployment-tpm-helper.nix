@@ -4,6 +4,7 @@
   tpm2-tss,
   openssl,
   coreutils,
+  buildPackages,
   stdenv,
 }: let
   pinnedTssVersion = "4.2.0";
@@ -31,8 +32,9 @@ in
       version = "0.1.0";
       src = ./aos-method46-tpm-helper;
       dontStrip = true;
+      dontPatchELF = true;
 
-      buildDeps = [coreutils];
+      buildDeps = [coreutils buildPackages.patchelf];
       runtimeDeps = [tpm2-tss openssl];
       propagatedDeps = [];
 
@@ -61,6 +63,8 @@ in
             mkdir -p $out/libexec
             cp aos-runtime-deployment-tpm-helper $out/libexec/
             $STRIP -s $out/libexec/aos-runtime-deployment-tpm-helper
+            # Remove unused compiler search paths before sealing the image pin.
+            ${buildPackages.patchelf}/bin/patchelf --shrink-rpath $out/libexec/aos-runtime-deployment-tpm-helper
             chmod 0555 $out/libexec/aos-runtime-deployment-tpm-helper
             sha256sum $out/libexec/aos-runtime-deployment-tpm-helper | cut -d ' ' -f 1 \
               > $out/libexec/aos-runtime-deployment-tpm-helper.sha256
