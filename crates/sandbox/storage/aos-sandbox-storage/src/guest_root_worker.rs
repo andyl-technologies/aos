@@ -312,13 +312,22 @@ fn run_inherited_guest_root_publisher_inner_v2(
     let mut socket = DescriptorSubjectSocket::from_owned(descriptor)?;
 
     let ready_deadline = transfer_deadline()?;
-    send_packet_before(
-        &mut socket,
-        &crate::pin_worker_runtime::encode_selected_ready_v1(
-            &current_cgroup()?, crate::pin_worker_runtime::WorkspacePinServiceRole::GuestRootPublication31,
-        )?,
-        ready_deadline,
-    )?;
+    // Match the actual activation layout. Only the receiving aggregate
+    // delivers an aggregate original; ordinary startup health remains in
+    // the fixed control-slice service, like the observer and pin worker.
+    let ready = if aggregate.is_some() {
+        crate::pin_worker_runtime::encode_selected_ready_v1(
+            &current_cgroup()?,
+            crate::pin_worker_runtime::WorkspacePinServiceRole::GuestRootPublication31,
+        )?
+    } else {
+        crate::pin_worker_runtime::encode_ready(
+            &current_cgroup()?,
+            crate::pin_worker_runtime::WorkspacePinServiceRole::GuestRootPublication31,
+        )?
+    };
+    send_packet_before(&mut socket, &ready, ready_deadline)?;
+    drop(ready);
     let received = receive_packet_before(&mut socket, MAXIMUM_PACKET_BYTES, ready_deadline)?;
     verify_storaged_subject(received.subject(), &storaged)?;
     if !received.descriptors().is_empty() {
