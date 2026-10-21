@@ -195,6 +195,13 @@
       ))
       {
         aos.image.erofsCompressionLevel = 1;
+        # The enforcing policy and complete runtime produce an 822 MiB root at
+        # the fixture's fast compression level. Keep the 1 GiB root partitions
+        # and bound the additional signed image payload separately from the base.
+        aos.image.budgets = {
+          maxRootMiB = 896;
+          maxDownloadMiB = 1024;
+        };
 
         # The production hold remains declared and unchanged. This signed test
         # image selects the normal initrd target through its qualification-only
