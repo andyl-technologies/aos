@@ -191,6 +191,17 @@ pub(super) struct ManifestInput {
 }
 
 impl ManifestInput {
+    /// Relinquishes private copy inputs after cache handoff has retained their grace.
+    ///
+    /// The completed plan has already closed its reads. Durable release pins
+    /// protect the original bodies independently; keeping these descriptions
+    /// would retain their quota after those pins expire and final unlink succeeds.
+    pub(super) fn take_resident_inputs(
+        &mut self,
+    ) -> Vec<Arc<crate::host_cache::NativeResidentChunkSource>> {
+        std::mem::take(&mut self.residents)
+    }
+
     /// Derives distinct backing hashes only from original verified resident sources.
     ///
     /// # Errors

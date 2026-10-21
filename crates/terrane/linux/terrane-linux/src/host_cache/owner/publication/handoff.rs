@@ -343,7 +343,7 @@ pub(in crate::host_cache::owner) async fn execute(
     snapshot::persist(executor, write).await?;
     running.check_current().map_err(io::Error::other)?;
     let expires = grace.expires;
-    {
+    let resident_inputs = {
         let mut job = resource
             .lock()
             .map_err(|_| invalid("handoff publication poisoned"))?;
@@ -364,7 +364,13 @@ pub(in crate::host_cache::owner) async fn execute(
         job.encoded.clear();
         job.encoded.shrink_to_fit();
         job.dictionary = None;
-    }
+        job.manifest
+            .as_mut()
+            .map(|manifest| manifest.take_resident_inputs())
+    };
+    // Private copy inputs no longer serve the completed body. Drop their actual
+    // descriptions outside both locks while durable grace still protects them.
+    drop(resident_inputs);
     // Actual descriptor and input release precedes the fresh complete-project
     // query. No logical funding decrement is presented as measured reclamation.
     executor.release_transferred_admissions(&sources)?;
