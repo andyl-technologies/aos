@@ -68,10 +68,8 @@ fn authenticate_formats(
 ) -> Result<(), ProviderError> {
     let mut matched = None;
     for schema in formats {
-        if schema.id.as_str() == feature {
-            if matched.replace(schema).is_some() {
-                return Err(invalid());
-            }
+        if schema.id.as_str() == feature && matched.replace(schema).is_some() {
+            return Err(invalid());
         }
     }
     let schema = matched.ok_or_else(invalid)?;

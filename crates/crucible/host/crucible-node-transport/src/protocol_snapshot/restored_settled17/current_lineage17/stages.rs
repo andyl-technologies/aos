@@ -341,22 +341,20 @@ pub(super) fn read<'body, 'rows>(
         }
     }
     for (index, stage) in uploads.iter().enumerate() {
-        if let Some(stage) = stage {
-            if stage.ordinal != index
+        if let Some(stage) = stage
+            && (stage.ordinal != index
                 || stage.complete && !stage.begun
-                || stage.begun && !stage.verified
-            {
-                return Err(invalid());
-            }
-        }
-    }
-    if let Some(stage) = &first_observation {
-        if stage.verified && !stage.received
-            || stage.dispatched && !stage.verified
-            || stage.published && !stage.dispatched
+                || stage.begun && !stage.verified)
         {
             return Err(invalid());
         }
+    }
+    if let Some(stage) = &first_observation
+        && (stage.verified && !stage.received
+            || stage.dispatched && !stage.verified
+            || stage.published && !stage.dispatched)
+    {
+        return Err(invalid());
     }
     Ok(BorrowedStagesLineage17 {
         activation,

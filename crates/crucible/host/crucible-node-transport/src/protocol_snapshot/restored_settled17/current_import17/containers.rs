@@ -293,10 +293,10 @@ impl<K: ImportKey17, V: Import17> Import17 for BTreeMap<K, V> {
             let key = pair.next_value()?.ok_or_else(invalid)?;
             let value = pair.next_value()?.ok_or_else(invalid)?;
             pair.finish()?;
-            if let Some(prior) = previous {
-                if K::compare_encoded(prior, key)? != std::cmp::Ordering::Less {
-                    return Err(invalid());
-                }
+            if let Some(prior) = previous
+                && K::compare_encoded(prior, key)? != std::cmp::Ordering::Less
+            {
+                return Err(invalid());
             }
             previous = Some(key);
             let key = K::read_current(key, l, build)?;
@@ -355,10 +355,10 @@ impl<T: ImportKey17> Import17 for BTreeSet<T> {
             if length > count {
                 return Err(invalid());
             }
-            if let Some(p) = prior {
-                if T::compare_encoded(p, raw)? != std::cmp::Ordering::Less {
-                    return Err(invalid());
-                }
+            if let Some(p) = prior
+                && T::compare_encoded(p, raw)? != std::cmp::Ordering::Less
+            {
+                return Err(invalid());
             }
             prior = Some(raw);
             if let Some(v) = T::read_current(raw, l, build)? {

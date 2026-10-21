@@ -108,6 +108,14 @@ array check. Complete standard and raw-JSON Transport library runs each pass
 Clippy reports 126 errors and 1,426 warnings; strict acceptance still fails.
 No wire, check-order, accounting or lint-policy change follows.
 
+A subsequent twelve guard simplifications flatten nested conditions across nine
+small modules while retaining the same short-circuit order, borrow lifetimes,
+refusal points and accounting terms. Complete standard and raw-JSON Transport
+runs each pass 1,747 tests with zero failures, no filtering and 15 ignores.
+Formatting and all six architecture gates pass. Production-library Clippy falls
+to 114 errors with 1,426 warnings; strict acceptance remains failed. The earlier
+application compilation snapshot excludes this later cleanup.
+
 Commit `e50b1042c1` adds a fixed test-observer diagnostic from the actor's retained
 first failure. Its actual VM run identifies the installed-mechanism refusal;
 the public command continues to return its existing refusal. Subsequent verifier

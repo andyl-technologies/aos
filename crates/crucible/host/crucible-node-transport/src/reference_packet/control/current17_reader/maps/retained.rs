@@ -225,10 +225,10 @@ impl CurrentContent17ReadAttempt {
             let mut fields = Fields::array(row)?;
             let reference = fields.next_value()?.ok_or_else(invalid)?;
             let key = ContentKey::read(reference)?;
-            if let Some(previous) = previous {
-                if key.compare(previous)? != Ordering::Greater {
-                    return Err(invalid());
-                }
+            if let Some(previous) = previous
+                && key.compare(previous)? != Ordering::Greater
+            {
+                return Err(invalid());
             }
             previous = Some(key);
             if build {

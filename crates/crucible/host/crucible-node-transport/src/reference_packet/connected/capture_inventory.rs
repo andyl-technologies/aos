@@ -196,10 +196,10 @@ impl PacketConnectedProgram {
 
         let mut expected_commits = commits.iter();
         for stage in &self.stages {
-            if let Some(commit) = &stage.commit {
-                if expected_commits.next() != Some(&commit.record_ref) {
-                    return Err(settled_inventory_mismatch());
-                }
+            if let Some(commit) = &stage.commit
+                && expected_commits.next() != Some(&commit.record_ref)
+            {
+                return Err(settled_inventory_mismatch());
             }
         }
         if expected_commits.next().is_some() {

@@ -22,10 +22,10 @@ impl<'a> BorrowedExchange17<'a> {
         if count(canonical)? != length || count(slots)? != length || sent != length {
             return Err(invalid());
         }
-        if field(input, "original_actor")? == b"null" {
-            if sent != 0 || count(acknowledgements)? != 0 {
-                return Err(invalid());
-            }
+        if field(input, "original_actor")? == b"null"
+            && (sent != 0 || count(acknowledgements)? != 0)
+        {
+            return Err(invalid());
         }
         let mut ack_index = 0usize;
         for index in 0..length {

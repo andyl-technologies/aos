@@ -60,10 +60,10 @@ impl HistoricalCurrentNativeConnection17 {
         {
             return Err(invalid());
         }
-        if let Some(slot) = self.reader.last_original_slot {
-            if self.frames.frames.frame(slot).is_none() {
-                return Err(invalid());
-            }
+        if let Some(slot) = self.reader.last_original_slot
+            && self.frames.frames.frame(slot).is_none()
+        {
+            return Err(invalid());
         }
         if let Some(token) = &self.canonical_ack_admission {
             token.identity.authenticate_frames_data(&self.frames)?;
@@ -120,10 +120,10 @@ impl HistoricalCurrentNativeConnection17 {
         }
         for response in self.restore_responses.iter().flatten() {
             response.authenticate_frames_data(&self.frames)?;
-            if let Some(proof) = &response.completed_proof {
-                if (proof.actor_group, proof.frames_group) != (groups.actor, groups.frames) {
-                    return Err(invalid());
-                }
+            if let Some(proof) = &response.completed_proof
+                && (proof.actor_group, proof.frames_group) != (groups.actor, groups.frames)
+            {
+                return Err(invalid());
             }
         }
         Ok(())

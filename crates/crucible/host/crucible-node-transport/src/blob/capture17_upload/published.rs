@@ -124,10 +124,10 @@ impl NativeCapture17UploadAttempt {
             return Err(refused());
         }
         let result = self.result.as_ref().ok_or_else(refused)?;
-        if let UploadResult::Verified(verified) = result {
-            if !Rc::ptr_eq(&verified.receiver, &self.owner) {
-                return Err(refused());
-            }
+        if let UploadResult::Verified(verified) = result
+            && !Rc::ptr_eq(&verified.receiver, &self.owner)
+        {
+            return Err(refused());
         }
         authenticate_reply(self.reply_data()?, input, result)
     }

@@ -314,10 +314,10 @@ impl HistoricalRestoreCommitFlight17 {
             )?)
         };
         fields.finish()?;
-        if let Some((_, held_mapping, _, _)) = held_groups {
-            if mapping != Some(held_mapping) {
-                return Err(invalid());
-            }
+        if let Some((_, held_mapping, _, _)) = held_groups
+            && mapping != Some(held_mapping)
+        {
+            return Err(invalid());
         }
         if admission_groups.is_some() && mapping.is_none() {
             return Err(invalid());
