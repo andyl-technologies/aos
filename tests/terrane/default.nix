@@ -493,6 +493,8 @@ in {
   integration.wire-status = import ./wire-status.nix {inherit sourceGate;};
   integration.wire-contract = import ./wire-contract.nix {inherit sourceGate;};
   integration.streaming-http = import ./streaming-http.nix {inherit sourceGate;};
+
+  integration.distribution-transport = import ./distribution-transport.nix {inherit sourceGate;};
   integration.native-index-populations = import ./native-index-populations.nix {
     sourceGate = nativeSdkGateWithInputs {extraBuildDeps = [pkgs.coreutils];};
     coreutils = pkgs.coreutils;

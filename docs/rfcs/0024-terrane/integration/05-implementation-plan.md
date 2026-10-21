@@ -11817,3 +11817,29 @@ request authorization, retry scheduling or the complete proto-errors gate.
 The canonical-ref check at `147d56388a` passes independently reviewed frozen
 qualification: 7,878 immutable files, 5,204 crate inputs and all 15 exact cases
 match the actual no-default-feature Cargo artifact.
+
+
+#### Native Distribution transport binding
+
+The native SDK now binds complete generated Content, Ref and Tier service
+implementations to one bounded listener. It registers all 18 methods, accepts
+plaintext only on the listener's actual loopback address, and constructs a
+TLS-1.3-only identity advertising HTTP/2 and HTTP/1.1. Callers supply finite
+codec, concurrency, header, handshake and complete-stream deadline limits.
+The service implementations retain ownership of authentication, authorization,
+backend verification and acknowledgement.
+
+Six real-socket integration cases pass: HTTP/1.1 ProtoJSON, HTTP/2 Connect and
+gRPC binary frames, gRPC-Web frames and success trailers, both HTTP versions
+over TLS 1.3 with TLS 1.2 rejected, invalid listener/resource/identity rejection,
+and a pending response source released by its whole-stream deadline. The new
+`integration.distribution-transport` check binds these cases to the actual
+Cargo artifact and immutable source. This component does not close
+T-PROTO-1 or establish full service policy or transport-error conformance.
+
+Both wire checks at `2d4cd51b98` pass independent frozen-source review:
+7,881 immutable files, 5,206 crate inputs and all 20 exact cases match each
+actual portable/native Cargo artifact. Application-target compilation remains
+pending. The earlier schema change at `696dcc900d` also passes the required
+application-target compilation: 184 test executables across 59 packages,
+bound to 7,875 immutable source files; this is compilation evidence only.

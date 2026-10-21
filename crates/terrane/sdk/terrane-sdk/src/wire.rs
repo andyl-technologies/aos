@@ -12,6 +12,10 @@ pub mod refs;
 /// Maps classified service outcomes to structured protocol errors.
 pub mod status;
 
+/// Binds complete native services to bounded loopback or TLS 1.3 listeners.
+#[cfg(feature = "tokio")]
+pub mod transport;
+
 /// Contains generated `terrane.v1` protobuf and ProtoJSON data contracts.
 #[allow(
     clippy::derivable_impls,
