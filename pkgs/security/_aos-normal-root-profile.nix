@@ -36,7 +36,6 @@ in
       then ""
       else toString environmentProvision;
     identitiesJson = builtins.toJSON identities;
-    passAsFile = ["unitContract" "identitiesJson"];
     exportReferencesGraph.normalRootRuntimeClosure = [aos-sandboxd];
     nukeRefsKeep =
       [aos-sandboxd systemd aos-selinux-production-policy aos-selinux-kernel-policy-readback]
@@ -71,6 +70,17 @@ in
           # as a read-only profile evidence file; do not weaken shared immutable
           # measurement or grant Root generic access to other policy packages.
           install -m 0444 ${sourcePolicy} "$out/source-policy.33"
+          # Structured attributes retain these strings in JSON rather than
+          # creating the passAsFile environment variables.
+          ${buildPackages.python3}/bin/python3 -B - "$NIX_ATTRS_JSON_FILE" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          attrs = json.loads(Path(sys.argv[1]).read_text())
+          Path("unit-contract").write_text(attrs["unitContract"])
+          Path("identities.json").write_text(attrs["identitiesJson"])
+          PY
           if test -n "$environmentProvisionRoot"; then
             set -- --environment-provision-root "$environmentProvisionRoot"
           else
@@ -84,7 +94,7 @@ in
             --canonical-policy ${aos-selinux-kernel-policy-readback}/policy.33 \
             --source-policy "$out/source-policy.33" \
             --effective-matrix "$out/effective-policy.tsv" \
-            --unit-contract "$unitContractPath" --identities "$identitiesJsonPath" \
+            --unit-contract unit-contract --identities identities.json \
             --cache-signer-gid ${toString cacheSignerGid} \
             --patchelf ${buildPackages.patchelf}/bin/patchelf \
             --readelf ${buildPackages.binutils}/bin/readelf \

@@ -61,7 +61,6 @@
         if storageOnly
         then builtins.toJSON storageArguments
         else "[]";
-      passAsFile = ["unitContract"];
       exportReferencesGraph.runtimeDeploymentClosure =
         if storageOnly
         then [storage]
@@ -108,7 +107,7 @@
               else "aos-storaged"
             } ${systemd}/lib/systemd/systemd \
               ${canonicalPolicy}/policy.33 "$out/source-policy.33" \
-              "$out/effective-policy.tsv" "$unitContractPath" \
+              "$out/effective-policy.tsv" \
               ${pkgs.buildPackages.patchelf}/bin/patchelf \
               ${pkgs.buildPackages.binutils}/bin/readelf "$out" <<'PY'
             import hashlib
@@ -119,7 +118,7 @@
             from pathlib import Path
 
             (source, helper_source, attrs, publisher, helper, storage, pid1,
-             canonical, source_policy, matrix, contract, patchelf, readelf,
+             canonical, source_policy, matrix, patchelf, readelf,
              output) = map(Path, sys.argv[1:])
             spec = importlib.util.spec_from_file_location("aos_original_image_primitives", source)
             if spec is None or spec.loader is None:
@@ -155,7 +154,7 @@
                 raise ValueError("canonical policy has a different source")
             if provenance.get("readback_sha256") != bytes(canonical_pin["sha256"]).hex():
                 raise ValueError("canonical policy readback differs from its producer")
-            unit_bytes = contract.read_bytes()
+            unit_bytes = json.loads(attrs.read_text())["unitContract"].encode("utf-8")
             if not unit_bytes or len(unit_bytes) > 65536:
                 raise ValueError("selected fixed unit exceeds its bound")
 

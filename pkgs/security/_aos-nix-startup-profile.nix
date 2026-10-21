@@ -65,7 +65,6 @@ in
       outputChecks = {};
       inherit unitContract role unit context profileName;
       identityJson = builtins.toJSON identities;
-      passAsFile = ["unitContract"];
       exportReferencesGraph.nixOnlineRuntimeClosure = [aos-sandboxd aos-nix-runtime-tpm-helpers reader];
       nukeRefsKeep = [aos-sandboxd aos-nix-runtime-tpm-helpers reader systemd aos-selinux-production-policy aos-selinux-kernel-policy-readback];
 
@@ -88,7 +87,7 @@ in
               "$src" ${./aos-selinux-runtime-manifest.py} "$NIX_ATTRS_JSON_FILE" \
               ${executable} ${helper} ${reader}/libexec/aos-nix-online-store-reader \
               ${systemd}/lib/systemd/systemd ${aos-selinux-kernel-policy-readback}/policy.33 \
-              "$out/source-policy.33" "$out/effective-policy.tsv" "$unitContractPath" \
+              "$out/source-policy.33" "$out/effective-policy.tsv" \
               ${buildPackages.patchelf}/bin/patchelf ${buildPackages.binutils}/bin/readelf \
               "$out/${profileBasename}" <<'PY'
             import hashlib
@@ -99,7 +98,7 @@ in
             from pathlib import Path
 
             (source, helpers_path, attrs, executable, helper, reader, pid1,
-             canonical, source_policy, matrix, contract, patchelf, readelf,
+             canonical, source_policy, matrix, patchelf, readelf,
              output) = map(Path, sys.argv[1:])
             spec = importlib.util.spec_from_file_location("aos_original_image_primitives", source)
             if spec is None or spec.loader is None:
@@ -137,7 +136,7 @@ in
             if matrix.stat().st_size == 0:
                 raise ValueError("effective-policy comparison is empty")
 
-            unit_bytes = contract.read_bytes()
+            unit_bytes = json.loads(attrs.read_text())["unitContract"].encode("utf-8")
             placeholder = ("OpenFile=@AOS_NIX_PROFILE@:" + os.environ["profileName"]
                            + ":read-only\n").encode()
             if len(unit_bytes) > 65536 or unit_bytes.splitlines(keepends=True).count(placeholder) != 1:
