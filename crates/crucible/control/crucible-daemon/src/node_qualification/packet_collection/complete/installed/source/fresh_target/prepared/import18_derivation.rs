@@ -247,7 +247,16 @@ impl PreparedCompleteRestoration {
         for member in &mut self.import18_templates.members {
             if let Some(job) = &mut member.job {
                 job.cancel();
-                match job.poll_cleanup() {
+                #[cfg(feature = "test-support")]
+                let outcome_already_retained = job.failed_outcome_data().is_some();
+
+                let cleanup = job.poll_cleanup();
+                #[cfg(feature = "test-support")]
+                if !outcome_already_retained {
+                    observe_terminal_worker_outcome(job);
+                }
+
+                match cleanup {
                     Ok(complete) => pending |= !complete,
                     Err(error) => {
                         pending = true;
@@ -285,4 +294,26 @@ impl PreparedCompleteRestoration {
         }
         Ok(!pending)
     }
+}
+
+#[cfg(feature = "test-support")]
+fn observe_terminal_worker_outcome(job: &SourceBirthDerivationJob) {
+    let Some(outcome) = job.failed_outcome_data() else {
+        return;
+    };
+
+    // Observe this original terminal transfer once. Stdout contains candidate
+    // banks and is never rendered; stderr retains the worker's original bound.
+    use std::io::Write;
+    let mut diagnostic = std::io::stderr().lock();
+    let _ = writeln!(
+        diagnostic,
+        "funded worker terminal outcome: failure={:?}, status={:?}, oom_kills={:?}, stdout_bytes={}, stderr_bytes={}",
+        outcome.failure,
+        outcome.status,
+        outcome.memory_oom_kills,
+        outcome.stdout.len(),
+        outcome.stderr.len(),
+    );
+    let _ = diagnostic.write_all(&outcome.stderr);
 }

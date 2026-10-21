@@ -81,6 +81,16 @@ formatting passes. The production-library Clippy diagnostic count falls from
 163 to 152 errors; it still emits 1,426 warnings. No lint setting, constructor,
 field layout or accounting term changes. Strict Clippy remains unqualified.
 
+A separate cleanup removes terminal returns and automatic dereferences, elides
+two equivalent reference lifetimes and uses a Copy fieldless controller grammar
+selector. Wire encodings, object fields, check order and accounting rows remain
+unchanged. Complete standard and raw-JSON Transport library runs each pass all
+1,747 tests with zero failures, no filtering and 15 ignores. Production-library
+Clippy reports 131 errors and 1,426 warnings; its earlier 152-error checkpoint
+remains a failure. No lint allowance or strict acceptance criterion changes.
+The edited restored-suffix module's existing content-bound source review is
+refreshed after a full source read; the six architecture gates pass.
+
 Commit `e50b1042c1` adds a fixed test-observer diagnostic from the actor's retained
 first failure. Its actual VM run identifies the installed-mechanism refusal;
 the public command continues to return its existing refusal. Subsequent verifier
@@ -238,6 +248,21 @@ its registered source capture. This gate does not run tests or emit Crucible
 runtime unit-test executables. The rebuilt funded VM must still establish the
 subsequent actual worker/private Birth path. Native startup,
 Initial/Recipe production, common Ready and full preservation remain unqualified.
+
+The rebuilt VM passes both independent small-policy consumers: all three actual
+launches bind, the derivation attempt fails under that policy, duplicate credit
+remains spent, and terminal retirement reclaims its namespace. Its first positive
+consumer starts the original isolated derivation but refuses during polling.
+The VM therefore fails before any accepted worker result or private Birth. A
+separate test-only observer now lends the original failed outcome after actual
+waited cleanup and reports its failure class, exit status, OOM delta and bounded
+stderr once. Candidate-bank stdout is never rendered. It issues no completion
+or acceptance permission. The new diagnostic flight is pending; Engine/Daemon
+all-feature/all-target checking and all six architecture gates pass.
+The required application test-target gate passes for the observer and expression
+cleanup, compiling 180 test executables across 58 package IDs with 71 integration
+targets. All 66 owned changed Rust paths match its registered source capture.
+Its compilation-only scope does not qualify the pending native diagnostic flight.
 
 The ordinary Authority currentness check now measures all original files at
 entry and exit around its closed retained-data body. It preserves all four

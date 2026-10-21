@@ -351,6 +351,15 @@ impl SourceBirthDerivationJob {
         self.failure.as_ref()
     }
 
+    /// Borrows original failed output only after waited physical cleanup.
+    ///
+    /// This test observer retains no copy and grants no completion or result
+    /// acceptance. Pending cleanup has no outcome to lend.
+    #[cfg(feature = "test-support")]
+    pub fn failed_outcome_data(&self) -> Option<&LinuxPureWorkerOutcome> {
+        self.failed_outcome.as_ref()
+    }
+
     pub(in crate::node_adapters::cnp) fn associate(
         &mut self,
         source: &PacketCompleteSemanticSource,
