@@ -175,6 +175,10 @@ fn continuation_waits_require_original_posts_and_physical_custody()
                     "WATCHER_WAIT_POLL_INTERVAL",
                 )
                 .replace(
+                    "GUARDED_IMAGE_TOOL_POLL_INTERVAL.min(remaining)",
+                    "GUARDED_IMAGE_TOOL_POLL_INTERVAL",
+                )
+                .replace(
                     "retry_reserved_publication()",
                     "retry_reserved_publication(altered)",
                 )

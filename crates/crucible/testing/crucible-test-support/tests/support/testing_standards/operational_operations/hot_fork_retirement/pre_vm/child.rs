@@ -11,7 +11,10 @@ pub(super) const CALLER: Companion = Companion {
     &self,
     command: Command,
     operation: &'static str,
-    body: impl FnOnce(&mut QemuNodeChild) -> Result<T, QemuSpawnError>,
+    body: impl FnOnce(
+        &mut QemuNodeChild,
+        &crucible_host_resources::host_supervision::HostOperationGuard,
+    ) -> Result<T, QemuSpawnError>,
 ) -> Result<T, QemuGuardedImagePreparationError> {
     #[cfg(target_os = "linux")]
     {
@@ -63,7 +66,10 @@ fn save_first(&mut self, first: crate::QemuSpawnError) {
     receiver: &crate::linux_attempt_host::SourceCleanupLender,
     mut command: Command,
     operation: &'static str,
-    body: impl FnOnce(&mut crate::QemuNodeChild) -> Result<T, crate::QemuSpawnError>,
+    body: impl FnOnce(
+        &mut crate::QemuNodeChild,
+        &HostOperationGuard,
+    ) -> Result<T, crate::QemuSpawnError>,
 ) -> Result<T, crate::spawn::QemuGuardedImagePreparationError> {
     let refused = || {
         crate::spawn::QemuGuardedImagePreparationError::issued(
@@ -94,7 +100,7 @@ fn save_first(&mut self, first: crate::QemuSpawnError) {
                 let result = match post.slot.child.as_mut()
                     .and_then(crate::node::RetainedChild::direct_child_mut)
                 {
-                    Some(child) => body(child),
+                    Some(child) => body(child, &self.origin),
                     None => Err(crate::spawn::helper_receiver::helper_custody_refusal()),
                 };
                 match result {

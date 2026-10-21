@@ -2091,102 +2091,107 @@ fn run_guarded_qemu_setup_probe_inner(
         .freeze_for_launch()
         .map_err(|source| QemuGuardedImagePreparationError::local(source))?;
 
-    process_contract.with_spawned_helper(command, "spawn guarded QEMU setup probe", |child| {
-        let (child_stdin, child_stdout, child_stderr) = child.take_guarded_probe_pipes()?;
-        nonblocking_probe_pipe(&child_stdin)
-            .and_then(|()| nonblocking_probe_pipe(&child_stdout))
-            .and_then(|()| nonblocking_probe_pipe(&child_stderr))?;
-        let mut stdin = (!input.is_empty()).then_some(child_stdin);
-        let mut stdout = child_stdout;
-        let mut stderr = child_stderr;
-        let mut written = 0;
-        let mut stdout_capture = ProbeCapture::new(maximum_output_bytes);
-        let mut stderr_capture = ProbeCapture::new(maximum_output_bytes);
-        let mut status = None;
+    process_contract.with_spawned_helper(
+        command,
+        "spawn guarded QEMU setup probe",
+        |child, original| {
+            let (child_stdin, child_stdout, child_stderr) = child.take_guarded_probe_pipes()?;
+            nonblocking_probe_pipe(&child_stdin)
+                .and_then(|()| nonblocking_probe_pipe(&child_stdout))
+                .and_then(|()| nonblocking_probe_pipe(&child_stderr))?;
+            let mut stdin = (!input.is_empty()).then_some(child_stdin);
+            let mut stdout = child_stdout;
+            let mut stderr = child_stderr;
+            let mut written = 0;
+            let mut stdout_capture = ProbeCapture::new(maximum_output_bytes);
+            let mut stderr_capture = ProbeCapture::new(maximum_output_bytes);
+            let mut status = None;
 
-        loop {
-            if !deadline.has_time_remaining() {
-                return Err(QemuSpawnError::GuardedQemuProbeTimeout);
-            }
+            loop {
+                let remaining = helper_receiver::wait_slice(original)?;
+                if !deadline.has_time_remaining() {
+                    return Err(QemuSpawnError::GuardedQemuProbeTimeout);
+                }
 
-            let mut progressed = false;
-            if let Some(pipe) = stdin.as_mut() {
-                match pipe.write(&input[written..]) {
-                    Ok(0) => {
-                        return Err(QemuSpawnError::Io {
-                            operation: "write guarded QEMU setup probe input",
-                            source: io::ErrorKind::WriteZero.into(),
-                        });
-                    }
-                    Ok(count) => {
-                        written += count;
-                        progressed = true;
-                        if written == input.len() {
-                            stdin = None;
+                let mut progressed = false;
+                if let Some(pipe) = stdin.as_mut() {
+                    match pipe.write(&input[written..]) {
+                        Ok(0) => {
+                            return Err(QemuSpawnError::Io {
+                                operation: "write guarded QEMU setup probe input",
+                                source: io::ErrorKind::WriteZero.into(),
+                            });
+                        }
+                        Ok(count) => {
+                            written += count;
+                            progressed = true;
+                            if written == input.len() {
+                                stdin = None;
+                            }
+                        }
+                        Err(error) if retryable_probe_io(&error) => {}
+                        Err(source) => {
+                            return Err(QemuSpawnError::Io {
+                                operation: "write guarded QEMU setup probe input",
+                                source,
+                            });
                         }
                     }
-                    Err(error) if retryable_probe_io(&error) => {}
+                }
+
+                match stdout_capture.read_once(&mut stdout) {
+                    Ok(read_progressed) => progressed |= read_progressed,
                     Err(source) => {
                         return Err(QemuSpawnError::Io {
-                            operation: "write guarded QEMU setup probe input",
+                            operation: "read guarded QEMU setup probe stdout",
                             source,
                         });
                     }
                 }
-            }
-
-            match stdout_capture.read_once(&mut stdout) {
-                Ok(read_progressed) => progressed |= read_progressed,
-                Err(source) => {
-                    return Err(QemuSpawnError::Io {
-                        operation: "read guarded QEMU setup probe stdout",
-                        source,
-                    });
-                }
-            }
-            match stderr_capture.read_once(&mut stderr) {
-                Ok(read_progressed) => progressed |= read_progressed,
-                Err(source) => {
-                    return Err(QemuSpawnError::Io {
-                        operation: "read guarded QEMU setup probe stderr",
-                        source,
-                    });
-                }
-            }
-            if stdout_capture.exceeded || stderr_capture.exceeded {
-                return Err(QemuSpawnError::GuardedQemuProbeOutputLimit {
-                    maximum_bytes: maximum_output_bytes,
-                });
-            }
-
-            if status.is_none() {
-                match child.try_wait_natural_exit_raw() {
-                    Ok(observed) => status = observed,
-                    Err(error) => {
-                        return Err(QemuSpawnError::from_helper_wait(
-                            "poll guarded QEMU setup probe",
-                            error,
-                        ));
+                match stderr_capture.read_once(&mut stderr) {
+                    Ok(read_progressed) => progressed |= read_progressed,
+                    Err(source) => {
+                        return Err(QemuSpawnError::Io {
+                            operation: "read guarded QEMU setup probe stderr",
+                            source,
+                        });
                     }
                 }
-            }
-            if stdout_capture.eof
-                && stderr_capture.eof
-                && stdin.is_none()
-                && let Some(status) = status
-            {
-                return Ok(Output {
-                    status,
-                    stdout: stdout_capture.bytes,
-                    stderr: stderr_capture.bytes,
-                });
-            }
+                if stdout_capture.exceeded || stderr_capture.exceeded {
+                    return Err(QemuSpawnError::GuardedQemuProbeOutputLimit {
+                        maximum_bytes: maximum_output_bytes,
+                    });
+                }
 
-            if !progressed {
-                thread::sleep(GUARDED_IMAGE_TOOL_POLL_INTERVAL);
+                if status.is_none() {
+                    match child.try_wait_natural_exit_raw() {
+                        Ok(observed) => status = observed,
+                        Err(error) => {
+                            return Err(QemuSpawnError::from_helper_wait(
+                                "poll guarded QEMU setup probe",
+                                error,
+                            ));
+                        }
+                    }
+                }
+                if stdout_capture.eof
+                    && stderr_capture.eof
+                    && stdin.is_none()
+                    && let Some(status) = status
+                {
+                    return Ok(Output {
+                        status,
+                        stdout: stdout_capture.bytes,
+                        stderr: stderr_capture.bytes,
+                    });
+                }
+
+                if !progressed {
+                    thread::sleep(GUARDED_IMAGE_TOOL_POLL_INTERVAL.min(remaining));
+                }
             }
-        }
-    })
+        },
+    )
 }
 
 fn install_guarded_helper_authority(
@@ -2351,25 +2356,8 @@ fn run_guarded_image_tool_for_purpose(
         .freeze_for_launch()
         .map_err(|source| QemuGuardedImagePreparationError::local(source))?;
 
-    process_contract.with_spawned_helper(command, operation, |child| {
-        let deadline = HostSupervisionDeadline::start(GUARDED_IMAGE_TOOL_TIMEOUT);
-        loop {
-            match child.try_wait_natural_exit_raw() {
-                Ok(Some(status)) if status.success() => return Ok(()),
-                Ok(Some(status)) => {
-                    return Err(QemuSpawnError::GuardedImageTool { operation, status });
-                }
-                Ok(None) if deadline.has_time_remaining() => {
-                    thread::sleep(GUARDED_IMAGE_TOOL_POLL_INTERVAL)
-                }
-                Ok(None) => {
-                    return Err(QemuSpawnError::GuardedImageToolTimeout { operation });
-                }
-                Err(error) => {
-                    return Err(QemuSpawnError::from_helper_wait(operation, error));
-                }
-            }
-        }
+    process_contract.with_spawned_helper(command, operation, |child, original| {
+        helper_receiver::wait_image_tool(child, original, operation)
     })
 }
 

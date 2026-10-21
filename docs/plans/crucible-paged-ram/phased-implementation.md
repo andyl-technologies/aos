@@ -74,6 +74,36 @@ Passing historical results do not qualify the later ownership changes.
 | Earlier worker and diagnostic cutovers | Before whole-node RAM changes: 2,716 passes across 43 host-resource, QEMU-host and plugin targets; campaign 448 passes; twelve owned-process diagnostic controls pass in both CLI targets. | Later host/daemon integration failures supersede the historical host-runtime pass claim. |
 | Native settlement fixture | All 112 publication cases, 16 intentional waits and the control boundary pass with genuine QOM/support linkage. Exact guard deletion aborts at its blocked-count assertion. | Component success does not qualify Source or CPU activation. |
 
+The subsequent helper-polling increment passes 1,233 QEMU host library tests,
+with the same eight missing-receiver failures and four ignored probes as its
+1,230-pass baseline. All host integration targets pass. Both image and setup
+probe loops now borrow the actual creation Original on every iteration and cap
+their sleep to its remaining slice. The receiver still saves output and the
+independent post before interpreting the result. A real component child proves
+successful completion under the same operation and cancellation after birth
+while the live child remains owned for containment. These controls issue no
+native Source, recipient or funding.
+
+All 70 specific source-policy controls pass after that increment; the broad
+gate still reports the same 21 unfinished owning paths. Its new exact contract
+binds the borrowed Original through the receiver and both polling loops, and
+the existing mutation runner rejects omission of those obligations or removal
+of the sleep bound. All five hygiene controls, both rustdoc controls, eighteen
+ABI controls and four license controls pass. This targeted run does not replace
+complete workspace or native lifecycle qualification. The required application
+`checks.rust.aos-test-targets` derivation also builds successfully.
+
+The RAM gate inventory now selects the current Cargo packages from their owning
+manifests. HTTP operational cases belong to `crucible-control-server`; the dense
+capture case binds the current sticky original-admission control. Failed Cargo
+listing and case execution print their saved diagnostics, and absent exact cases
+identify the selected package, target and name. Coverage evidence paths and
+component owners follow the current crate layout. The repaired store-transfer
+and runtime-policy gates pass, as does the expanded supervision gate. The two
+new helper controls bring the component inventory to 105 cases. The inventory
+still has 149 requirements without named cases and no qualified requirements;
+named cases remain distinct from native qualification.
+
 Whole-node shutdown now keeps one continuation through process reap, RAM service
 return and controller retirement. Physical closure, initiating failure and
 independent boundary checks remain separate facts. Failed construction retains

@@ -121,7 +121,10 @@ impl OriginalNativeFreshLaunchError {
         receiver: &crate::linux_attempt_host::SourceCleanupLender,
         mut command: Command,
         operation: &'static str,
-        body: impl FnOnce(&mut crate::QemuNodeChild) -> Result<T, crate::QemuSpawnError>,
+        body: impl FnOnce(
+            &mut crate::QemuNodeChild,
+            &HostOperationGuard,
+        ) -> Result<T, crate::QemuSpawnError>,
     ) -> Result<T, crate::spawn::QemuGuardedImagePreparationError> {
         let refused = || {
             crate::spawn::QemuGuardedImagePreparationError::issued(
@@ -177,7 +180,7 @@ impl OriginalNativeFreshLaunchError {
                         .as_mut()
                         .and_then(crate::node::RetainedChild::direct_child_mut)
                     {
-                        Some(child) => body(child),
+                        Some(child) => body(child, &self.origin),
                         None => Err(crate::spawn::helper_receiver::helper_custody_refusal()),
                     };
                     match result {

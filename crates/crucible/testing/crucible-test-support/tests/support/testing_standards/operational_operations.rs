@@ -20,6 +20,8 @@ mod construction_endpoint;
 mod constructor_continuations;
 #[path = "operational_operations/generic_mutations.rs"]
 mod generic_mutations;
+#[path = "operational_operations/helper_wait.rs"]
+mod helper_wait;
 #[path = "operational_operations/hot_fork_retirement.rs"]
 mod hot_fork_retirement;
 #[path = "operational_operations/imported_replay.rs"]
@@ -149,6 +151,7 @@ const CONTRACTS: &[Contract] = &[
         ],
     },
     ram_source_cleanup::CONTRACT,
+    helper_wait::CONTRACT,
     Contract {
         package: "crucible-qemu-plugin",
         target: "src/paged_ram/engine/ordinary_capture",

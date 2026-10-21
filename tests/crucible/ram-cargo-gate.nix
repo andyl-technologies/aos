@@ -65,17 +65,32 @@
     cargoArguments = lib.escapeShellArgs arguments;
     logPrefix = "group-${toString index}";
     runCase = caseIndex: case: ''
-      test "$(grep -Fxc ${lib.escapeShellArg "${case.name}: test"} "$out/evidence/${logPrefix}.list")" -eq 1
-      cargo test ${cargoArguments} --target-dir "$TMPDIR/ram-cargo-target" \
+      if ! test "$(grep -Fxc ${lib.escapeShellArg "${case.name}: test"} "$out/evidence/${logPrefix}.list")" -eq 1; then
+        printf 'Missing or ambiguous exact case: %s\n' ${lib.escapeShellArg "${group.package}::${group.target}::${case.name}"} >&2
+        exit 1
+      fi
+      if cargo test ${cargoArguments} --target-dir "$TMPDIR/ram-cargo-target" \
         -- ${lib.escapeShellArg case.name} --exact --test-threads=1 \
-        > "$out/evidence/${logPrefix}-case-${toString caseIndex}.log" 2>&1
+        > "$out/evidence/${logPrefix}-case-${toString caseIndex}.log" 2>&1; then
+        :
+      else
+        case_status=$?
+        cat "$out/evidence/${logPrefix}-case-${toString caseIndex}.log" >&2
+        exit "$case_status"
+      fi
       cat "$out/evidence/${logPrefix}-case-${toString caseIndex}.log"
       grep -Eq '^test result: ok\. 1 passed; 0 failed; 0 ignored;' \
         "$out/evidence/${logPrefix}-case-${toString caseIndex}.log"
     '';
   in ''
-    cargo test ${cargoArguments} --target-dir "$TMPDIR/ram-cargo-target" \
-      -- --list > "$out/evidence/${logPrefix}.list" 2>&1
+    if cargo test ${cargoArguments} --target-dir "$TMPDIR/ram-cargo-target" \
+      -- --list > "$out/evidence/${logPrefix}.list" 2>&1; then
+      :
+    else
+      group_status=$?
+      cat "$out/evidence/${logPrefix}.list" >&2
+      exit "$group_status"
+    fi
     ${lib.concatStringsSep "\n" (indexedMap runCase group.cases)}
   '';
 in

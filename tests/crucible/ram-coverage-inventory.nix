@@ -9,19 +9,19 @@
     path = ../../docs/rfcs/0021-crucible-paged-ram + "/${file}";
   };
   chapters = [
-    (chapter "00-goals-and-invariants.md" "crucible-harness" ["gate:ram-guest-transparency" "gate:ram-determinism"])
+    (chapter "00-goals-and-invariants.md" "crucible-test-support" ["gate:ram-guest-transparency" "gate:ram-determinism"])
     (chapter "02-logical-ram-and-merkle-format.md" "crucible-ram" ["gate:ram-format" "gate:ram-merkle-oracle"])
-    (chapter "03-write-tracking-and-fingerprints.md" "crucible-qemu" ["gate:ram-dirty-epochs" "gate:ram-merkle-oracle" "gate:ram-determinism"])
+    (chapter "03-write-tracking-and-fingerprints.md" "crucible-qemu-host" ["gate:ram-dirty-epochs" "gate:ram-merkle-oracle" "gate:ram-determinism"])
     (chapter "04-host-paging.md" "crucible-qemu-plugin" ["gate:ram-paging" "gate:ram-fault-progress" "gate:ram-guest-transparency"])
-    (chapter "05-runtime-policy-and-supervision.md" "crucible-qemu" ["gate:ram-runtime-policy" "gate:ram-policy-history" "gate:ram-supervision"])
-    (chapter "06-hot-fork-and-lifecycle.md" "crucible-qemu" ["gate:ram-continuation" "gate:ram-fork-residency"])
-    (chapter "07-checkpoints-and-storage.md" "crucible-cas" ["gate:ram-continuation" "gate:ram-store-transfer"])
-    (chapter "08-state-transfer.md" "crucible-cas" ["gate:ram-store-transfer" "gate:ram-continuation"])
-    (chapter "09-security-and-cutover.md" "crucible-harness" ["gate:ram-cutover" "gate:ram-store-transfer" "gate:ram-paging"])
-    (chapter "10-validation-and-performance.md" "crucible-harness" ["gate:ram-performance"])
-    (chapter "11-implementation-plan.md" "crucible-harness" [])
+    (chapter "05-runtime-policy-and-supervision.md" "crucible-qemu-host" ["gate:ram-runtime-policy" "gate:ram-policy-history" "gate:ram-supervision"])
+    (chapter "06-hot-fork-and-lifecycle.md" "crucible-qemu-host" ["gate:ram-continuation" "gate:ram-fork-residency"])
+    (chapter "07-checkpoints-and-storage.md" "crucible-store" ["gate:ram-continuation" "gate:ram-store-transfer"])
+    (chapter "08-state-transfer.md" "crucible-store" ["gate:ram-store-transfer" "gate:ram-continuation"])
+    (chapter "09-security-and-cutover.md" "crucible-test-support" ["gate:ram-cutover" "gate:ram-store-transfer" "gate:ram-paging"])
+    (chapter "10-validation-and-performance.md" "crucible-test-support" ["gate:ram-performance"])
+    (chapter "11-implementation-plan.md" "crucible-test-support" [])
     (chapter "12-decisions-and-open-questions.md" "crucible-ram" ["gate:ram-performance"])
-    (chapter "14-implementation-profiles.md" "crucible-harness" [])
+    (chapter "14-implementation-profiles.md" "crucible-test-support" [])
   ];
   discover = entry: let
     lines = lib.splitString "\n" (builtins.readFile entry.path);
@@ -78,8 +78,8 @@
         features = ["test-support"];
       };
       evidenceFiles = map evidenceFile [
-        "crates/crucible-ram/examples/ram_hash_benchmark.rs"
-        "crates/crucible-ram/Cargo.toml"
+        "crates/crucible/protocol/crucible-ram/examples/ram_hash_benchmark.rs"
+        "crates/crucible/protocol/crucible-ram/Cargo.toml"
         "docs/rfcs/0021-crucible-paged-ram/measurements/host-hashing/README.md"
         "docs/rfcs/0021-crucible-paged-ram/measurements/host-hashing/receipt.json"
         "docs/rfcs/0021-crucible-paged-ram/measurements/host-hashing/measurements.csv"
