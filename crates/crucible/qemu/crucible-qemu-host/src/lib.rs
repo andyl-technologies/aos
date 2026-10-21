@@ -282,7 +282,8 @@ pub use node::{
     QemuLogicalTimeCalibration, QemuNode, QemuNodeChannelError, QemuNodeChannelPlane,
     QemuNodeChannels, QemuNodeChild, QemuNodeEmittedFrame, QemuNodeError,
     QemuNodeExternalProcessControl, QemuNodeIdleState, QemuNodeLifecycleState,
-    QemuNodePendingQuantum, QemuPluginIpcControlChannel, QemuShmemHotPathChannel,
+    QemuNodePendingQuantum, QemuPendingQuantumReport, QemuPluginIpcControlChannel,
+    QemuShmemHotPathChannel,
 };
 #[cfg(target_os = "linux")]
 #[cfg(unix)]

@@ -98,6 +98,21 @@ pub struct QemuNodeChannelError {
     detail: ChannelFailureDetail,
 }
 
+/// Retains the coordinates of a quantum whose next report is not visible yet.
+///
+/// This is an observation of the same pending request. It grants no permission
+/// to publish another command, renew the operation or wake the plugin again.
+#[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
+#[error(
+    "QEMU quantum plugin report is not yet visible at icount {current_icount} before ceiling {ceiling}"
+)]
+pub struct QemuPendingQuantumReport {
+    /// Current icount in the actual still-stale node report.
+    pub current_icount: u64,
+    /// Ceiling retained by the existing pending quantum.
+    pub ceiling: u64,
+}
+
 /// Retains typed causes inline; shared decode refusals keep their original allocation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum ChannelFailureDetail {
@@ -110,6 +125,7 @@ enum ChannelFailureDetail {
         operation: &'static str,
         source: crucible_qemu_shmem::NodeSlotError,
     },
+    QuantumReportPending(QemuPendingQuantumReport),
 }
 
 impl QemuNodeChannelError {
@@ -289,6 +305,28 @@ impl QemuNodeChannelError {
         }
     }
 
+    pub(crate) fn quantum_report_pending(current_icount: u64, ceiling: u64) -> Self {
+        Self {
+            operation: "qemu_quantum_shmem_hot_path",
+            message: Cow::Borrowed(""),
+            timeout: None,
+            retryable: true,
+            detail: ChannelFailureDetail::QuantumReportPending(QemuPendingQuantumReport {
+                current_icount,
+                ceiling,
+            }),
+        }
+    }
+
+    /// Returns the unchanged pending report coordinates without formatting.
+    #[must_use]
+    pub const fn pending_quantum_report(&self) -> Option<&QemuPendingQuantumReport> {
+        match &self.detail {
+            ChannelFailureDetail::QuantumReportPending(source) => Some(source),
+            _ => None,
+        }
+    }
+
     /// Returns the bounded await timeout that caused this channel failure.
     #[must_use]
     pub const fn bounded_timeout(&self) -> Option<Duration> {
@@ -329,6 +367,9 @@ impl fmt::Display for QemuNodeChannelError {
                         self.operation
                     );
                 }
+                ChannelFailureDetail::QuantumReportPending(source) => {
+                    return write!(formatter, "{} failed: {source}", self.operation);
+                }
                 ChannelFailureDetail::Message => {}
             }
         }
@@ -344,6 +385,7 @@ impl std::error::Error for QemuNodeChannelError {
             ChannelFailureDetail::FingerprintSample(source) => Some(source),
             ChannelFailureDetail::MappedRegionAccess(source) => Some(source),
             ChannelFailureDetail::QuantumNodeSlot { source, .. } => Some(source),
+            ChannelFailureDetail::QuantumReportPending(source) => Some(source),
             ChannelFailureDetail::Message => None,
         }
     }
@@ -446,6 +488,15 @@ pub enum QemuNodeError {
         /// Original slot failure, including its observed generation coordinates.
         #[source]
         source: crucible_qemu_shmem::NodeSlotError,
+    },
+    /// A quantum channel observed the same request before its next report.
+    #[error("{plane} channel operation qemu_quantum_shmem_hot_path failed: {source}")]
+    ChannelQuantumReportPending {
+        /// Channel role observing the existing pending quantum.
+        plane: QemuNodeChannelPlane,
+        /// Actual report and retained ceiling coordinates.
+        #[source]
+        source: QemuPendingQuantumReport,
     },
     /// RAM source cleanup failed while its service remains retained.
     #[error("{operation} failed: {source}")]
@@ -749,6 +800,9 @@ impl QemuNodeError {
                     source,
                 }
             }
+            ChannelFailureDetail::QuantumReportPending(source) => {
+                Self::ChannelQuantumReportPending { plane, source }
+            }
             ChannelFailureDetail::Message => Self::Channel {
                 plane,
                 operation: source.operation,
@@ -948,6 +1002,7 @@ impl From<QemuNodeError> for BackendError {
             error @ (QemuNodeError::ChannelSupervision { .. }
             | QemuNodeError::ChannelDecodeAdmission { .. }
             | QemuNodeError::ChannelQuantumNodeSlot { .. }
+            | QemuNodeError::ChannelQuantumReportPending { .. }
             | QemuNodeError::Shutdown { .. }
             | QemuNodeError::ShutdownAfterChannelFailure { .. }
             | QemuNodeError::RamCleanupLender { .. }

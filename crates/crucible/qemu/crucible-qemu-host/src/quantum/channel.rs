@@ -303,9 +303,10 @@ impl From<QemuQuantumError> for QemuNodeChannelError {
             QemuQuantumError::NodeSlot { operation, source } => {
                 Self::quantum_node_slot(operation, source)
             }
-            error @ QemuQuantumError::PluginReportNotPublished { .. } => {
-                Self::retryable("qemu_quantum_shmem_hot_path", error.to_string())
-            }
+            QemuQuantumError::PluginReportNotPublished {
+                current_icount,
+                ceiling,
+            } => Self::quantum_report_pending(current_icount, ceiling),
             error => Self::new("qemu_quantum_shmem_hot_path", error.to_string()),
         }
     }

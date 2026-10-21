@@ -121,6 +121,118 @@ fn completion_refusal_retains_same_pending_without_republication_or_allocation()
 }
 
 #[test]
+fn unpublished_report_poll_preserves_coordinates_without_allocation_or_republication() {
+    let slot = NodeSlot::default();
+    let inbound_ring = RingHeader::new();
+    let outbound_ring = RingHeader::new();
+    let mut inbound_entries = frame_entries(8);
+    let mut outbound_entries = frame_entries(8);
+    let mut pending = {
+        let mut hot_path = hot_path(
+            &slot,
+            &inbound_ring,
+            &mut inbound_entries,
+            &outbound_ring,
+            &mut outbound_entries,
+        );
+        QemuShmemHotPathChannel::start_quantum(
+            &mut hot_path,
+            horizon(10),
+            crate::QemuQuantumStopCondition::Ceiling,
+        )
+        .unwrap()
+    };
+    let published = slot.snapshot();
+    let expected = crate::QemuPendingQuantumReport {
+        current_icount: 0,
+        ceiling: 10,
+    };
+    let old_message = QemuQuantumError::PluginReportNotPublished {
+        current_icount: 0,
+        ceiling: 10,
+    }
+    .to_string();
+
+    for _ in 0..3 {
+        let mut hot_path = hot_path(
+            &slot,
+            &inbound_ring,
+            &mut inbound_entries,
+            &outbound_ring,
+            &mut outbound_entries,
+        );
+        let (channel, counts) = TestAllocationObserver::count(|| {
+            QemuShmemHotPathChannel::poll_quantum(&mut hot_path, &mut pending).unwrap_err()
+        });
+
+        assert_eq!(counts.allocations, 0);
+        assert_eq!(counts.reallocations, 0);
+        assert!(!counts.overflow);
+        assert!(channel.is_retryable());
+        assert_eq!(channel.pending_quantum_report(), Some(&expected));
+        assert_eq!(
+            channel.to_string(),
+            format!("qemu_quantum_shmem_hot_path failed: {old_message}")
+        );
+        assert_eq!(
+            std::error::Error::source(&channel)
+                .and_then(|source| source.downcast_ref::<crate::QemuPendingQuantumReport>()),
+            Some(&expected)
+        );
+        assert_eq!(slot.snapshot(), published);
+        assert_eq!(
+            hot_path.operation_log(),
+            &[QemuQuantumOperation::ObservePluginReport]
+        );
+
+        let (node, counts) = TestAllocationObserver::count(|| {
+            crate::QemuNodeError::from_channel(crate::QemuNodeChannelPlane::ShmemHotPath, channel)
+        });
+        assert_eq!(counts.allocations, 0);
+        assert_eq!(counts.reallocations, 0);
+        assert!(!counts.overflow);
+        assert_eq!(
+            std::error::Error::source(&node)
+                .and_then(|source| source.downcast_ref::<crate::QemuPendingQuantumReport>()),
+            Some(&expected)
+        );
+        let scheduler = crucible_engine::BackendError::from(node);
+        assert!(matches!(
+            scheduler,
+            crucible_engine::BackendError::RetainedOperationalFailure { .. }
+        ));
+        let mut cause: &(dyn std::error::Error + 'static) = &scheduler;
+        let retained = loop {
+            if let Some(report) = cause.downcast_ref::<crate::QemuPendingQuantumReport>() {
+                break Some(report);
+            }
+            match cause.source() {
+                Some(source) => cause = source,
+                None => break None,
+            }
+        };
+        assert_eq!(retained, Some(&expected));
+    }
+
+    slot.publish_reached_icount(10).unwrap();
+    let mut hot_path = hot_path(
+        &slot,
+        &inbound_ring,
+        &mut inbound_entries,
+        &outbound_ring,
+        &mut outbound_entries,
+    );
+    let report = QemuShmemHotPathChannel::poll_quantum(&mut hot_path, &mut pending).unwrap();
+    assert_eq!(report.outcome, AdvanceOutcome::ReachedHorizon);
+    let completed = slot.snapshot();
+    assert_eq!(completed.wake_signal, published.wake_signal);
+    assert_eq!(
+        completed.advance_publication_sequence,
+        published.advance_publication_sequence
+    );
+}
+
+#[test]
 fn actual_terminal_slot_failure_keeps_diagnostic_and_cannot_request_retry() {
     let slot = NodeSlot::default();
     let source = slot.publish_reached_icount(1).unwrap_err();
