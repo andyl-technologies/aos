@@ -3,6 +3,7 @@
   lib,
   mkSystem,
   pkgs,
+  seedInPrivateMountNamespace ? false,
   ...
 }: let
   selectedFixture = "broker::tests::systemd_storage_rpc_vm_fixture";
@@ -190,7 +191,10 @@
     })
   ];
 in {
-  name = "sandbox-storage-rpc";
+  name =
+    if seedInPrivateMountNamespace
+    then "sandbox-storage-rpc-stale-scope"
+    else "sandbox-storage-rpc";
   timeout = 420;
   bootTimeout = 180;
 
@@ -201,6 +205,11 @@ in {
     FINDMNT = "${pkgs.util-linux}/bin/findmnt"
     PIN_ROOT = "/run/aos/sandbox-pins/workspaces"
     SECCOMP_PROBE = "${stateDirectory}/seccomp-probe"
+    SEED_IN_PRIVATE_SCOPE = ${
+      if seedInPrivateMountNamespace
+      then "True"
+      else "False"
+    }
     SECCOMP_PROBE_MARKER = (
         "AOS_STORAGE_BROKER_SECCOMP_PROBE_PASS "
         "no-setid io-uring-denied openat2-setid-denied "
@@ -385,7 +394,13 @@ in {
         "${fixture}/bin/aos-sandbox-storage-rpc-tests "
         "--ignored --exact '${selectedFixture}' --test-threads=1 --nocapture"
     )
-    machine.succeed(seed_command, timeout=60)
+    # The alternate case retains a real now-dead mount namespace in the
+    # authenticated ambiguous attempt. No boot ID or namespace inode is forged.
+    seed_prefix = (
+        "${pkgs.util-linux}/bin/unshare --mount --propagation private -- "
+        if SEED_IN_PRIVATE_SCOPE else ""
+    )
+    machine.succeed(seed_prefix + seed_command, timeout=60)
     audit_command = seed_command.replace(
         "AOS_STORAGE_RPC_ROLE=seed", "AOS_STORAGE_RPC_ROLE=audit"
     )
@@ -414,7 +429,10 @@ in {
     start_storaged("inventory-empty", "inventory-empty", 1)
     observer_started = socket_sample("aos-sandbox-workspace-pin-observer.socket")
     worker_started = socket_sample("aos-sandbox-workspace-pin-worker.socket")
-    assert observer_started == (observer_before[0] + 1, observer_before[1]), (
+    # Historical scope cannot be probed through the current namespace. It
+    # stays pending until the explicit fresh repair, with no ordinary observer.
+    initial_observations = 0 if SEED_IN_PRIVATE_SCOPE else 1
+    assert observer_started == (observer_before[0] + initial_observations, observer_before[1]), (
         observer_before,
         observer_started,
     )

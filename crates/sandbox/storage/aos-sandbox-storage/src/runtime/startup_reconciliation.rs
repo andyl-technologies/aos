@@ -284,11 +284,24 @@ impl ReconciliationPartsV1<'_> {
             Some(receiving) => original.transactions.run(self.coordinator, self.helper, Some(receiving))?,
             None => reconcile_transaction_recovery(self.coordinator, self.helper)?,
         };
+        let current_host_scope = original.worker_result_v1(self.pin_io.host_scope(), selected)?;
         for dispatch in self
             .coordinator
             .workspace_pin_observation_dispatches()
             .map_err(|_| StorageRuntimeError::Recovery)?
         {
+            let attempt = dispatch.attempt();
+            if attempt.host_boot_id() != current_host_scope.kernel_boot_id()
+                || attempt.host_mount_namespace_device() != current_host_scope.mount_namespace_device()
+                || attempt.host_mount_namespace_inode() != current_host_scope.mount_namespace_inode()
+            {
+                // A new host scope cannot observe absence in a historical one.
+                // Keep the exact ambiguous attempt pending without dispatch or
+                // journal mutation. Only an authenticated fresh repair below
+                // can reconcile its separately bound historical/current scopes.
+                pending += 1;
+                continue;
+            }
             let request = match receiving.as_deref_mut() {
                 Some(receiving) => dispatch.request_bytes_receiving_v1(self.pin_contract, receiving),
                 None => dispatch.request_bytes(self.pin_contract),
@@ -318,7 +331,6 @@ impl ReconciliationPartsV1<'_> {
                 _ => pending += 1,
             }
         }
-        let current_host_scope = original.worker_result_v1(self.pin_io.host_scope(), selected)?;
         for dispatch in self
             .coordinator
             .workspace_pin_repair_observation_dispatches(&self.pin_contract, current_host_scope)
