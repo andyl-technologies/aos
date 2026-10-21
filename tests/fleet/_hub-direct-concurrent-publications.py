@@ -166,8 +166,11 @@ def start_direct_publication(client, tools, registry_slug, signed, token, label,
             os.chmod(root / 'stdout', 0o600)
             os.chmod(root / 'stderr', 0o600)
             try:
+                # This covers the full content transfer, visibility staging and
+                # final completion. Each production completion barrier alone
+                # already has a one-hour bound for this source-sized corpus.
                 result = subprocess.run(selected['arguments'], stdin=subprocess.DEVNULL,
-                    stdout=stdout, stderr=stderr, env=environment, check=False, timeout=1800)
+                    stdout=stdout, stderr=stderr, env=environment, check=False, timeout=3600)
                 outcome = {'exitCode': result.returncode, 'timedOut': False}
             except subprocess.TimeoutExpired:
                 outcome = {'exitCode': None, 'timedOut': True}
@@ -346,6 +349,8 @@ def run_direct_concurrent_publications(client, worker, tools, sources, registrie
             retain_direct_flow(prefix + ".stdout.json", stdout)
             retain_direct_flow(prefix + ".stderr.log", stderr)
             retain_direct_flow(prefix + ".invocation.json", result)
+            if result["timedOut"]:
+                raise RuntimeError("actual concurrent publisher exceeded its retained invocation budget")
             reply = json.loads(stdout)
             invocations.append({"label": label, "result": result, "stderr": stderr.decode(),
                 "terminalCountersAvailable": True,
