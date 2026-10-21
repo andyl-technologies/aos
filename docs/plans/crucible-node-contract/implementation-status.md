@@ -950,7 +950,12 @@ backing census, and rejects swapping equal-length after/Control references.
 The focused standard/raw-value controls and both full Transport configurations
 pass: 1,802 tests each, zero failures, no filtering and sixteen existing ignores.
 The affected all-feature/all-target check and all six architecture gates pass.
-The required application check is running.
+The required application output is
+`/nix/store/vr371g2rplx0xl4gz0f0i64m15vm4gbh-aos-test-targets-0.1.0`, with
+180 test executables, 58 package identities and 71 integration targets. Its
+registered source at
+`/nix/store/z126c4ikb57xc9ssyl76nh6lsr49g6wx-aos-workspace-src` matches all
+143 Rust paths changed through `f6b003f84d` byte for byte.
 These checks do not issue native Prepare custody, an opaque Recipe/Initial,
 model installation or readiness; actual semantic body validation and independent
 complete recipe reconstruction remain required.
@@ -975,10 +980,45 @@ exercise unchanged bank pointers/census, equal-length role substitution,
 incomplete transfer, absent initial completion, foreign thread, expired cut,
 expiry during a real callback and callback refusal. Both full Transport suites
 pass 1,803 tests, zero failures, no filtering and sixteen existing ignores.
-Affected-crate, architecture and required application checks are running.
+The affected all-feature/all-target check and all six architecture gates pass.
+The required application check is running against the immutable source at
+`/nix/store/vlvwkxnx6pj2nywxncvnz5k9jn42zyns-aos-workspace-src`, with all
+145 Rust paths byte-exact to `7d46895ce4`.
 This is a guarded DATA inspection boundary; native signed Prepare custody,
 semantic decoding, complete recipe reconstruction and model adoption remain
 separate required transitions.
+
+## Native input framing under the original loan
+
+The original bootstrap can now run the existing bounded nonowning Snapshot17
+framing reader over its actual completed input banks. The same guarded loan
+selects Snapshot17 explicitly and reconstructs announced reader limits as DATA;
+Snapshot18 cannot enter this older reader. Five native roles are projected from
+the exact seven-bank upload order without copying references or bodies.
+
+The reader checks full body hashes, Snapshot framing, embedded Control/before
+correspondence and the final Journal role roster. Its existing cold admission
+receives the actual begin, construct and finish boundaries. The independent
+whole-owner caller must admit both the separate wrapper controls and concrete
+reader work before entering. Initial-only construction and layouts are unchanged.
+
+All five focused inherited-socket tests pass in standard and raw-value builds,
+covering forty-five flights. Ten new framing cases include actual structured
+roles, rehashed changed Control/before dependencies, incomplete Journal roles,
+a different Snapshot edition, an unsupported selected native family, refusal
+at each of the three admission boundaries and one-byte-short counter funding.
+Refusal retains the original completed banks and unchanged backing census.
+These fixtures establish framing only: their inert model/lineage objects cannot
+produce a sealed native graph or installation.
+
+Both full Transport configurations pass 1,804 tests, zero failures, no filtering
+and sixteen existing ignores. The affected all-feature/all-target check and
+all six architecture gates pass. Required application compilation is running
+against `/nix/store/il5xn75s7xyw180ryl4p9fd48bgj24qr-aos-workspace-src`, whose
+147 changed Rust paths match this checkpoint's implementation byte for byte.
+Full graph/Controller/Source proof conjunction, semantic-spend and normalization
+validation, independent complete recipe reconstruction and native model adoption
+remain required before readiness.
 
 ## Original launch custody and shared startup geometry
 

@@ -363,6 +363,23 @@ impl PacketNativeImport18PrebirthRecipeWireData {
         )
     }
 
+    /// Reconstructs the announced Snapshot17 reader limits as inert DATA.
+    ///
+    /// This projection cannot establish geometry, authorize a decoder or create
+    /// an opaque recipe. The native reader separately admits its actual work.
+    ///
+    /// # Errors
+    /// Refuses another native family or malformed announced recipe structure.
+    pub fn native17_decoder_limits_data(
+        &self,
+    ) -> Result<RestoredSettledNative17Limits, ProviderError> {
+        self.validate_data()?;
+        if self.fields.native_family != PacketNativeImport18NativeFamily::Snapshot17 {
+            return Err(invalid());
+        }
+        limits(&self.fields)
+    }
+
     /// Checks only finite announced structure without admitting any byte of work.
     ///
     /// # Errors

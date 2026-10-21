@@ -38,6 +38,9 @@ mod initial_reconstruction;
 #[path = "bootstrap_import18/completed_inputs.rs"]
 mod completed_inputs;
 
+#[path = "bootstrap_import18/native_framing.rs"]
+mod native_framing;
+
 #[path = "bootstrap_import18/controller_measurement.rs"]
 mod controller_measurement;
 
