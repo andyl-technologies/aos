@@ -5,7 +5,8 @@ import tomllib
 
 
 CASES = ["encoded-recovery", "encoded-cold", "encoded-corrupt", "encoded-duplicate",
-         "encoded-missing-dictionary", "encoded-unknown", "encoded-sealed", "encoded-old-range"]
+         "encoded-missing-dictionary", "encoded-unknown", "encoded-sealed", "encoded-old-range",
+         "encoded-metadata", "encoded-metadata-only", "encoded-data-pack"]
 
 
 def seed(vm, uuid):
@@ -46,13 +47,16 @@ def seed(vm, uuid):
 def run(vm, uuid):
     """Checks real consumer reads, unchanged source inodes and retained cold promises."""
     for case in CASES:
-        recovers = case in {"encoded-recovery", "encoded-cold", "encoded-sealed"}
+        recovers = case in {"encoded-recovery", "encoded-cold", "encoded-sealed", "encoded-metadata", "encoded-metadata-only"}
+        sources = list((vm.root(case) / "chunks").glob("*/*")) + list((vm.root(case) / "objects/pack").glob("*/*"))
         before = {path: (path.stat().st_dev, path.stat().st_ino, path.read_bytes())
-                  for path in (vm.root(case) / "chunks").glob("*/*") if path.is_file()}
+                  for path in sources if path.is_file()}
         policy = vm.root(case) / "state/cache/records.toml"
         old = tomllib.loads(policy.read_text()) if policy.exists() else None
         output = vm.actor(case, "recover-encoded" if recovers else "refuse-encoded", uuid)
-        vm.require(("original inodes served under durable consumer pins" in output) if recovers
+        witness = ("original pair registered after Resume" if case == "encoded-metadata-only"
+                   else "original inodes served under durable consumer pins")
+        vm.require((witness in output) if recovers
                    else ("unresolved cold encoding refused; no Resume" in output),
                    "cold encoding recovery witness missing: " + case)
         vm.require(all(path.exists() and (path.stat().st_dev, path.stat().st_ino, path.read_bytes()) == original

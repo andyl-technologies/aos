@@ -14,7 +14,7 @@ pub(in crate::host_cache::owner) mod eviction;
 pub(super) mod handoff;
 mod io;
 mod memory;
-mod metadata;
+pub(in crate::host_cache::owner) mod metadata;
 mod pressure;
 pub(in crate::host_cache::owner) mod reads;
 mod reconcile;

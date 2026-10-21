@@ -23,6 +23,7 @@ mod recovery_indexes;
 mod recovery_inline;
 mod recovery_manifest_state;
 mod recovery_manifests;
+mod recovery_metadata;
 mod recovery_namespace;
 mod recovery_pending;
 mod recovery_residences;

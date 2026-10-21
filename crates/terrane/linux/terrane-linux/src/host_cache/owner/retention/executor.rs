@@ -30,6 +30,7 @@ pub(in crate::host_cache::owner) struct NativeOwnerExecutor {
     running: Option<Arc<PublisherRunningContext>>,
     failed_resume: Option<(ResumeFailureStage, Box<CompletedRecovery>)>,
     recovered_chunks: Vec<Arc<crate::host_cache::VerifiedStandaloneChunk>>,
+    recovered_metadata: Vec<Arc<crate::host_cache::DerivedIndexRepair>>,
     admission_jobs: Vec<Arc<Mutex<super::super::admission::AdmissionJob>>>,
     publications: Vec<Arc<Mutex<super::super::publication::PublicationJob>>>,
     allocation_order: u64,
@@ -76,6 +77,7 @@ impl NativeOwnerExecutor {
             running: None,
             failed_resume: None,
             recovered_chunks: Vec::new(),
+            recovered_metadata: Vec::new(),
             admission_jobs: Vec::new(),
             publications: Vec::new(),
             allocation_order: 0,
@@ -737,21 +739,32 @@ impl NativeOwnerExecutor {
             Ok(mut context) => {
                 self.recovered_chunks = context.take_encoded_sources();
                 self.recovered_chunks.reverse();
+                self.recovered_metadata = context.take_metadata_sources();
+                self.recovered_metadata.reverse();
                 self.running = Some(Arc::new(context));
-                while let Some(source) = self.recovered_chunks.last().cloned() {
-                    if let Err(error) =
-                        super::super::admission::recovery::import(self, &source).await
-                    {
-                        let mut custody = self
-                            .custody
-                            .lock()
-                            .map_err(|_| io::Error::other("metadata custody poisoned"))?;
-                        custody.faulted = true;
-                        custody.recovery_required = true;
-                        custody.recovery_id = None;
-                        return Err(error);
+                // Transfer all original sources before the first fallible import.
+                // A failed job and every unimported source remain physically owned.
+                let imported: io::Result<()> = async {
+                    while let Some(source) = self.recovered_metadata.last().cloned() {
+                        super::super::admission::recovery::import_metadata(self, &source).await?;
+                        self.recovered_metadata.pop();
                     }
-                    self.recovered_chunks.pop();
+                    while let Some(source) = self.recovered_chunks.last().cloned() {
+                        super::super::admission::recovery::import(self, &source).await?;
+                        self.recovered_chunks.pop();
+                    }
+                    Ok(())
+                }
+                .await;
+                if let Err(error) = imported {
+                    let mut custody = self
+                        .custody
+                        .lock()
+                        .map_err(|_| io::Error::other("metadata custody poisoned"))?;
+                    custody.faulted = true;
+                    custody.recovery_required = true;
+                    custody.recovery_id = None;
+                    return Err(error);
                 }
                 Ok(())
             }

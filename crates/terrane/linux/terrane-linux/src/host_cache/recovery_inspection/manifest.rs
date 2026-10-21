@@ -270,7 +270,8 @@ fn metadata_source(
     }
     let id = PackId::from_random_bytes(*header.id());
     let metadata = match verification::pack(context, id, Some(file), &[])? {
-        VerifiedEncodedBody::Pack(metadata) => *metadata,
+        VerifiedEncodedBody::Pack(metadata) => Arc::try_unwrap(metadata)
+            .map_err(|_| invalid("fresh metadata inspection is unexpectedly shared"))?,
         VerifiedEncodedBody::Chunk(_) => {
             return Err(invalid("metadata inspection returned a chunk"));
         }

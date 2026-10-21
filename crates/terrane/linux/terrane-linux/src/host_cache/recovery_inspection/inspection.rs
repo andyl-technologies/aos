@@ -65,7 +65,13 @@ impl NativeRecoveryCandidate {
         if matches!(&self.verified, Some(VerifiedEncodedBody::Pack(plan)) if plan.detached_index_status() != DetachedIndexStatus::Matches)
         {
             match self.verified.take() {
-                Some(VerifiedEncodedBody::Pack(plan)) => Some(*plan),
+                Some(VerifiedEncodedBody::Pack(plan)) => match std::sync::Arc::try_unwrap(plan) {
+                    Ok(plan) => Some(plan),
+                    Err(plan) => {
+                        self.verified = Some(VerifiedEncodedBody::Pack(plan));
+                        None
+                    }
+                },
                 _ => None,
             }
         } else {
@@ -268,7 +274,10 @@ impl NativeRecoveryInspector {
                             )
                         })?;
                     repairs.try_reserve(1).map_err(io::Error::other)?;
-                    repairs.push(*plan);
+                    repairs
+                        .push(std::sync::Arc::try_unwrap(plan).map_err(|_| {
+                            invalid("startup repair source is unexpectedly shared")
+                        })?);
                 }
             }
         }

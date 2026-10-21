@@ -107,7 +107,7 @@ pub(super) async fn run(
 }
 
 /// Verifies bounded real bytes without minting filesystem or retention authority.
-fn verify(
+pub(in crate::host_cache::owner) fn verify(
     pack: &[u8],
     index: &[u8],
     expected_id: terrane_sdk::pack::PackId,

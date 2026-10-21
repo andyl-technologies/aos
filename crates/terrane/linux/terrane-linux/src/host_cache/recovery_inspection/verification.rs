@@ -89,6 +89,42 @@ impl DerivedIndexRepair {
         self.index.as_ref().map(RetainedFile::file)
     }
 
+    /// Reads the original verified metadata pair within its inspection budget.
+    ///
+    /// # Errors
+    /// Refuses data packs, changed sources, missing or mismatching indexes and
+    /// an actual pair larger than the configured bounded read window.
+    pub(in crate::host_cache) fn metadata_bytes(&self) -> io::Result<(Vec<u8>, Vec<u8>)> {
+        self.check_current()?;
+        if self.status != DetachedIndexStatus::Matches {
+            return Err(invalid(
+                "recovered metadata requires a matching actual index",
+            ));
+        }
+        let limit = self.pack.context().reads.max_allocation_bytes;
+        let pack = self.pack.read(limit)?;
+        TERRANE_V1
+            .verify(self.pack_identity(), &pack)
+            .map_err(invalid)?;
+        let reader = bounded_pack(&pack, self.pack.context().reads)?;
+        if reader.header().class() != terrane_sdk::pack::PackClass::Meta {
+            return Err(invalid("native metadata recovery refuses a data pack"));
+        }
+        let index = self
+            .index
+            .as_ref()
+            .ok_or_else(|| invalid("matched index is absent"))?;
+        let remaining = limit
+            .checked_sub(pack.len())
+            .ok_or_else(|| invalid("metadata pair exceeds read window"))?;
+        let index = index.read(remaining)?;
+        if index != self.index_bytes() {
+            return Err(invalid("recovered detached index changed"));
+        }
+        self.check_current()?;
+        Ok((pack, index))
+    }
+
     /// Rechecks source paths, project/root custody, dependencies and full pack hash.
     ///
     /// An originally missing index may now exist. The owner must use no-replace
@@ -139,7 +175,7 @@ pub enum VerifiedEncodedBody {
     /// Contains a verified standalone chunk and its actual retained dependencies.
     Chunk(Arc<VerifiedStandaloneChunk>),
     /// Contains a complete verified pack and its captured detached-index state.
-    Pack(Box<DerivedIndexRepair>),
+    Pack(Arc<DerivedIndexRepair>),
 }
 
 /// Retains a verified actual standalone chunk, without manifest boundary context.
@@ -409,7 +445,7 @@ pub(super) fn pack(
         index_hash,
     };
     plan.check_current()?;
-    Ok(VerifiedEncodedBody::Pack(Box::new(plan)))
+    Ok(VerifiedEncodedBody::Pack(Arc::new(plan)))
 }
 
 fn dictionary(

@@ -78,6 +78,7 @@ CASES += ["encoded-eviction", "encoded-recovery", "encoded-cold", "encoded-corru
           "encoded-duplicate", "encoded-missing-dictionary", "encoded-unknown"]
 CASES += ["shared-reextract"]
 CASES += ["encoded-sealed", "encoded-old-range"]
+CASES += ["encoded-metadata", "encoded-metadata-only", "encoded-data-pack"]
 BUDGET = HARD * len(CASES)
 PROVISION_CAPS = "-all,+sys_admin,+dac_read_search,+fowner,+chown,+fsetid"
 QUERY_CAPS = "-all,+sys_admin,+dac_read_search"

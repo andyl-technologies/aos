@@ -32,6 +32,13 @@ pub(crate) struct PublisherRunningContext {
 }
 
 impl PublisherRunningContext {
+    /// Transfers original matched metadata pairs to the actual physical executor.
+    pub(crate) fn take_metadata_sources(
+        &mut self,
+    ) -> Vec<Arc<crate::host_cache::DerivedIndexRepair>> {
+        self._recovery.take_metadata_sources()
+    }
+
     /// Transfers original encoded source custody to the actual physical executor.
     pub(crate) fn take_encoded_sources(&mut self) -> Vec<Arc<VerifiedStandaloneChunk>> {
         self._recovery.take_encoded_sources()

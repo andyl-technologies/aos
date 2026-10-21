@@ -15,7 +15,7 @@ use super::{
     recovery_accounting::{self, SynchronizedAllocation},
     recovery_candidates, recovery_encoded, recovery_indexes,
     recovery_inline::{self, AdoptedInline},
-    recovery_manifest_state, recovery_manifests,
+    recovery_manifest_state, recovery_manifests, recovery_metadata,
     recovery_namespace::SharedNamespaceObservation,
     recovery_pending, recovery_state,
     recovery_state_parent::StateParentObservation,
@@ -72,6 +72,8 @@ pub struct CompletedRecovery {
     pub(super) metadata_sources: Vec<Arc<crate::host_cache::NativeManifestSource>>,
     /// Retains actual independently verified standalone source inodes.
     pub(super) encoded_chunks: Vec<Arc<crate::host_cache::VerifiedStandaloneChunk>>,
+    /// Retains verified pairs admitted before any sealed manifest publication.
+    pub(super) metadata_pairs: Vec<Arc<crate::host_cache::DerivedIndexRepair>>,
     /// Retains exact reconstructed and preserved policy for a manifest case.
     pub(super) expected_policy: Option<terrane_sdk::host::cache::CacheState>,
 }
@@ -85,9 +87,17 @@ pub(crate) struct RunningRecovery {
     _custody: Arc<Mutex<Custody>>,
     bootstrap_id: [u8; 16],
     encoded_chunks: Vec<Arc<crate::host_cache::VerifiedStandaloneChunk>>,
+    metadata_pairs: Vec<Arc<crate::host_cache::DerivedIndexRepair>>,
 }
 
 impl RunningRecovery {
+    /// Transfers original matched pairs to the sole physical executor.
+    pub(crate) fn take_metadata_sources(
+        &mut self,
+    ) -> Vec<Arc<crate::host_cache::DerivedIndexRepair>> {
+        std::mem::take(&mut self.metadata_pairs)
+    }
+
     /// Borrows the actual bootstrap registration retained after Resume.
     pub(crate) fn retained_bootstrap_id(&self) -> &[u8; 16] {
         &self.bootstrap_id
@@ -127,6 +137,7 @@ impl CompletedRecovery {
             _custody: self.custody,
             bootstrap_id: self.recovery_id,
             encoded_chunks: self.encoded_chunks,
+            metadata_pairs: self.metadata_pairs,
         }
     }
 
@@ -185,8 +196,11 @@ impl CompletedRecovery {
         if let Some(expected) = &self.expected_policy {
             recovery_manifest_state::require_same(&owner.state, expected)?;
             recovery_encoded::check(&self.inventory, &self.encoded_chunks, &expected.residences)?;
-            self.shared
-                .require_sources(&self.metadata_sources, &self.encoded_chunks)?;
+            self.shared.require_sources(
+                &self.metadata_sources,
+                &self.encoded_chunks,
+                &self.metadata_pairs,
+            )?;
             self.state_parent.check_current()?;
             self.inventory.check_current()?;
             recovery_manifests::check_inventory(
@@ -206,6 +220,8 @@ impl CompletedRecovery {
                 .check_recovery_context(&self.context)
                 .map_err(io::Error::other);
         }
+        let mut verified_hashes = recovery_encoded::hashes(&self.encoded_chunks);
+        verified_hashes.extend(recovery_metadata::hashes(&self.metadata_pairs)?);
         let claims = recovery_inline::selected_claims(&self.inventory, owner.preparation.layout())?;
         recovery_state::check_reconciled(
             &owner.preparation.config,
@@ -219,14 +235,16 @@ impl CompletedRecovery {
                 recovery_inline::residences(&claims),
                 &self.encoded_chunks,
             )?,
-            &recovery_encoded::hashes(&self.encoded_chunks),
+            &verified_hashes,
         )?;
         recovery_encoded::check(
             &self.inventory,
             &self.encoded_chunks,
             &owner.state.residences,
         )?;
-        self.shared.require_sources(&[], &self.encoded_chunks)?;
+        self.shared
+            .require_sources(&[], &self.encoded_chunks, &self.metadata_pairs)?;
+        recovery_metadata::check(&self.inventory, &self.metadata_pairs)?;
         self.state_parent.check_current()?;
         self.inventory.check_current()?;
         recovery_inline::check_subset(
@@ -406,7 +424,10 @@ pub(super) async fn run(executor: &mut NativeOwnerExecutor) -> io::Result<Comple
         .await;
     }
     let encoded_chunks = recovery_encoded::select(&initial_inventory)?;
-    shared.require_sources(&[], &encoded_chunks)?;
+    let metadata_pairs = recovery_metadata::select(&initial_inventory)?;
+    let mut verified_hashes = recovery_encoded::hashes(&encoded_chunks);
+    verified_hashes.extend(recovery_metadata::hashes(&metadata_pairs)?);
+    shared.require_sources(&[], &encoded_chunks, &metadata_pairs)?;
     let claims = {
         let mut owner = custody
             .lock()
@@ -467,7 +488,8 @@ pub(super) async fn run(executor: &mut NativeOwnerExecutor) -> io::Result<Comple
             &encoded_chunks,
         )?;
         recovery_encoded::check(&inventory, &encoded_chunks, &residences)?;
-        cold.reconcile(&residences, &recovery_encoded::hashes(&encoded_chunks))?;
+        recovery_metadata::check(&inventory, &metadata_pairs)?;
+        cold.reconcile(&residences, &verified_hashes)?;
         owner.state.residences = residences;
         super::snapshot::prepare(executor, &mut owner)?
     };
@@ -513,10 +535,11 @@ pub(super) async fn run(executor: &mut NativeOwnerExecutor) -> io::Result<Comple
                 recovery_inline::residences(&expected),
                 &encoded_chunks,
             )?,
-            &recovery_encoded::hashes(&encoded_chunks),
+            &verified_hashes,
         )?;
         recovery_encoded::check(&inventory, &encoded_chunks, &owner.state.residences)?;
-        shared.require_sources(&[], &encoded_chunks)?;
+        shared.require_sources(&[], &encoded_chunks, &metadata_pairs)?;
+        recovery_metadata::check(&inventory, &metadata_pairs)?;
         owner.recovery_id = Some(id);
         owner.recovery_required = false;
         owner.faulted = false;
@@ -564,6 +587,7 @@ pub(super) async fn run(executor: &mut NativeOwnerExecutor) -> io::Result<Comple
         manifest_results: Vec::new(),
         metadata_sources: Vec::new(),
         encoded_chunks,
+        metadata_pairs,
         expected_policy: None,
     })
 }

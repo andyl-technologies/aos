@@ -327,6 +327,7 @@ impl SharedNamespaceObservation {
         &self,
         sources: &[Arc<NativeManifestSource>],
         chunks: &[Arc<VerifiedStandaloneChunk>],
+        metadata: &[Arc<crate::host_cache::DerivedIndexRepair>],
     ) -> io::Result<()> {
         self.check_current()?;
         let mut expected = BTreeMap::<PathBuf, Metadata>::new();
@@ -364,6 +365,40 @@ impl SharedNamespaceObservation {
                     ));
                 }
                 expected.insert(path, metadata);
+            }
+        }
+        for source in metadata {
+            if !Arc::ptr_eq(&self.layout, source.layout()) {
+                return Err(invalid(
+                    "metadata pair belongs to another retained domain root",
+                ));
+            }
+            source.metadata_bytes()?;
+            let id = source.pack_id();
+            let base = PathBuf::from("objects/pack").join(format!("{:02x}", id.as_bytes()[0]));
+            let index = source
+                .present_index_file()
+                .ok_or_else(|| invalid("verified metadata index absent"))?;
+            for (suffix, file) in [("pack", source.pack_file()), ("idx", index)] {
+                let metadata = file.metadata()?;
+                let project = NativeProject::inspect(file)?;
+                if !metadata.is_file()
+                    || metadata.uid() != self.uid
+                    || metadata.gid() != self.gid
+                    || metadata.mode() & 0o7777 != 0o640
+                    || metadata.nlink() != 1
+                    || project.project_id != self.project_id
+                    || project.device != self.layout.directory_binding("layout-root")?.0
+                    || (project.device, project.inode) != (metadata.dev(), metadata.ino())
+                {
+                    return Err(invalid(
+                        "metadata pair differs from configured shared custody",
+                    ));
+                }
+                let path = base.join(format!("{id}.{suffix}"));
+                if expected.insert(path, metadata).is_some() {
+                    return Err(invalid("duplicate metadata source in verified closure"));
+                }
             }
         }
         for chunk in chunks {

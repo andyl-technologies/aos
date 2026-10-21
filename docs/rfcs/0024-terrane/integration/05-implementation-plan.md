@@ -8694,6 +8694,18 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
 
 ### T2 — Host tier
 
+Metadata recovery preparation (2026-10-20): independently verified matched
+metadata pack/index pairs can recover before their sealed object is published,
+alone or beside standalone chunks. The original verified pair enters physical
+cache custody only after acknowledged Resume, under a fresh synchronized
+metadata hold; existing payload stays charged. Cold pins must match actual
+verified pack entries, and every old lease and reservation survives. Controls
+check original inode identity, absence of hidden cold descriptors, duplicate
+registry protection without new funding, and refusal of data packs. Manifest
+recovery with additional unrelated pairs remains unresolved. Strict native
+all-target lint passes; native VM and final application-target qualification
+remain pending. No T2 task is accepted.
+
 Encoded recovery preparation (2026-10-20): retain independently verified
 canonical raw, Zstd and standalone one-hop dictionary chunks across exhaustive
 recovery scans. Acknowledged Resume imports the original inodes into the

@@ -207,7 +207,7 @@ pub(super) async fn run(
             &encoded_chunks,
         )?)?;
     }
-    shared.require_sources(executor.manifest_sources(), &encoded_chunks)?;
+    shared.require_sources(executor.manifest_sources(), &encoded_chunks, &[])?;
     let final_inventory = inspector.inspect()?;
     check_inventory(
         &final_inventory,
@@ -272,7 +272,7 @@ pub(super) async fn run(
         owner.preparation.recheck()?;
         recovery::check_charge(&owner, 0)?;
         recovery_manifest_state::require_same(&owner.state, &expected)?;
-        shared.require_sources(executor.manifest_sources(), &encoded_chunks)?;
+        shared.require_sources(executor.manifest_sources(), &encoded_chunks, &[])?;
         state_parent.check_current()?;
         let future = owner
             .state
@@ -330,6 +330,7 @@ pub(super) async fn run(
         manifest_results: verified,
         metadata_sources: executor.manifest_sources().to_vec(),
         encoded_chunks,
+        metadata_pairs: Vec::new(),
         expected_policy: Some(expected),
     })
 }
