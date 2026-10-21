@@ -11791,3 +11791,29 @@ The three routed owning gates pass at `0d5a81b6e8`. Independent review matches
 7,876 immutable source files, 5,202 bound crate inputs and all 12 exact public
 API cases against the actual Cargo artifact. Expression loading and the other
 T-STORE-2 implementations remain open.
+
+
+#### Structured protocol status mapping
+
+The portable wire adapter now classifies all 27 nonlocal failure outcomes
+from the normative errno table into exact gRPC/Connect codes and required
+typed details. Every produced error includes `terrane.v1.ErrorInfo`, fixed
+public text and retained trace context. Only the table's explicitly retryable
+outcomes permit automatic retries; retry minima retain subsecond precision
+and reject unrepresentable durations. Fenced outcomes always set the returned
+ref state's fence bit. The adapter accepts explicit service outcomes rather
+than inferring disclosure policy from raw backend errors.
+
+The native conversion preserves the generated protobuf details in actual
+Connect errors. Twenty public wire cases pass in the native profile, including
+the complete outcome table, retry bounds, fenced state, a fixed NOT_FOUND wire
+value and every typed detail's serialized content. Runtime-free wire tests
+and the std/wasm build also pass. The separate `integration.wire-status` check
+binds native features and actual execution; portable qualification remains
+`integration.wire-contract`. Their frozen runs and required application-target
+compilation remain pending. This component does not qualify service dispatch,
+request authorization, retry scheduling or the complete proto-errors gate.
+
+The canonical-ref check at `147d56388a` passes independently reviewed frozen
+qualification: 7,878 immutable files, 5,204 crate inputs and all 15 exact cases
+match the actual no-default-feature Cargo artifact.

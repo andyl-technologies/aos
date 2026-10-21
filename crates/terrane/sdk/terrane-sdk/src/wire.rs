@@ -9,6 +9,9 @@
 /// Checks complete canonical ref records against their redundant wire summaries.
 pub mod refs;
 
+/// Maps classified service outcomes to structured protocol errors.
+pub mod status;
+
 /// Contains generated `terrane.v1` protobuf and ProtoJSON data contracts.
 #[allow(
     clippy::derivable_impls,

@@ -6,6 +6,8 @@
 
 #[path = "wire_contract/refs.rs"]
 mod refs;
+#[path = "wire_contract/status.rs"]
+mod status;
 
 use buffa::Message;
 use serde_json::json;

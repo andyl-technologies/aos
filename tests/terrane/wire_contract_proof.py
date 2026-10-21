@@ -12,6 +12,11 @@ from native_sdk_test_image import source_hashes
 
 
 CASES = [
+    "status::outcome_table_has_exact_status_required_detail_and_retry_policy",
+    "status::retry_minimum_preserves_subseconds_and_refuses_overflow",
+    "status::fenced_outcomes_always_retain_fenced_state_and_never_enable_retry",
+    "status::not_found_status_has_only_the_public_error_info_detail",
+    "status::native_conversion_retains_error_info_and_every_required_protobuf_detail",
     "refs::complete_reflogs_keep_exact_expectations_and_ref_values",
     "refs::reflog_limits_timestamp_bounds_and_incomplete_candidates_are_rejected",
     "refs::whole_records_preserve_policy_home_and_candidate_through_wire_roundtrip",
@@ -72,8 +77,12 @@ def main():
     compiler = Path(os.environ["PROTOC"])
     require(str(compiler).startswith("/nix/store/"), "protobuf compiler lacks an AOS store binding")
     compiler_version = subprocess.check_output([str(compiler), "--version"], text=True).strip()
+    mode = os.environ.get("TERRANE_WIRE_NATIVE", "")
+    require(mode in ["", "1"], "unknown wire qualification feature mode")
+    native = mode == "1"
+    features = ["--features", "tokio"] if native else ["--no-default-features"]
     command = ["cargo", "test", "--frozen", "--offline", "-p", "terrane-sdk",
-               "--no-default-features", "--test", "wire_contract"]
+               *features, "--test", "wire_contract"]
     rows = [json.loads(line) for line in (output / "build.jsonl").read_text().splitlines()]
     artifacts = [row for row in rows if row.get("reason") == "compiler-artifact"
                  and row.get("target", {}).get("name") == "wire_contract"
@@ -85,7 +94,7 @@ def main():
     require(target["kind"] == ["test"] and target["crate_types"] == ["bin"]
             and Path(target["src_path"]) == workspace / "terrane/sdk/terrane-sdk/tests/wire_contract.rs"
             and artifact["package_id"].startswith("path+file://" + str(workspace / "terrane/sdk/terrane-sdk"))
-            and artifact["features"] == []
+            and artifact["features"] == (["default", "send", "std", "tokio"] if native else [])
             and profile["test"] is True and profile["opt_level"] == "s"
             and profile["debuginfo"] == 0 and profile["debug_assertions"] is True,
             "wire codec integration source, profile or feature mismatch")
@@ -115,7 +124,8 @@ def main():
         "reference_sha256": hashlib.sha256(reference.read_bytes()).hexdigest(),
         "schema_sha256": hashlib.sha256(schema.read_bytes()).hexdigest(),
         "compiler": str(compiler), "compiler_version": compiler_version, "artifact": artifact, "executable_sha256": digest,
-        "executed_cases": CASES, "scope": "Portable generated wire encoding; no service implementation or authorization claim",
+        "executed_cases": CASES, "native_status_serialization": native,
+        "scope": "Generated encoding and classified status mapping; no service implementation or authorization claim",
     }, indent=2) + "\n")
 
 
