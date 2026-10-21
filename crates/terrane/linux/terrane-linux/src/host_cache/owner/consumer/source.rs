@@ -29,7 +29,10 @@ use terrane_sdk::{
 };
 
 /// Retains one actual immutable backing and its exact durable protection set.
-pub(super) struct ConsumerSource {
+///
+/// The physical publisher may borrow this source within its own executor turn
+/// under original producer custody. This source alone grants no consumer lease.
+pub(in crate::host_cache::owner) struct ConsumerSource {
     backing: Backing,
     hashes: Vec<String>,
 }
@@ -84,7 +87,7 @@ impl ConsumerSource {
     ///
     /// # Errors
     /// Refuses changed sealed custody, absent actual cache admission or native errors.
-    pub(super) async fn prepare(
+    pub(in crate::host_cache::owner) async fn prepare(
         executor: &mut NativeOwnerExecutor,
         identity: Identity,
     ) -> io::Result<Self> {
@@ -157,7 +160,7 @@ impl ConsumerSource {
     ///
     /// # Errors
     /// Refuses changed bytes/backing, revoked sealed views or bounded read failures.
-    pub(super) fn read_verified(&self) -> io::Result<Vec<u8>> {
+    pub(in crate::host_cache::owner) fn read_verified(&self) -> io::Result<Vec<u8>> {
         match &self.backing {
             Backing::Sealed(source) => source.read_verified(),
             Backing::Encoded { source, activity } => {
@@ -173,7 +176,7 @@ impl ConsumerSource {
     /// # Errors
     /// Refuses changed/revoked backing, codec/identity/boundary failures and
     /// exhausted allocation bounds. Encoded reads record actual cache activity.
-    pub(super) fn read_encoded(&self) -> io::Result<Vec<u8>> {
+    pub(in crate::host_cache::owner) fn read_encoded(&self) -> io::Result<Vec<u8>> {
         match &self.backing {
             Backing::Sealed(source) => source.read_encoded(),
             Backing::Encoded { source, activity } => {

@@ -122,6 +122,11 @@ pub(super) enum Command {
         encoded: Vec<u8>,
         response: oneshot::Sender<io::Result<super::NativeInlinePublication>>,
     },
+    /// Selects and publishes verified inline bytes under original physical custody.
+    PublishResidentInline {
+        identity: Identity,
+        response: oneshot::Sender<io::Result<super::NativeInlinePublication>>,
+    },
     /// Transfers bounded untrusted chunk input to actual running admission.
     AdmitChunk {
         descriptor: terrane_format::identity::Descriptor,
@@ -422,6 +427,13 @@ impl NativeMetadataOwner {
                                 &mut executor,
                                 descriptor,
                                 encoded,
+                            ));
+                            let _ = response.send(result);
+                        }
+                        Command::PublishResidentInline { identity, response } => {
+                            let result = runtime.block_on(super::publication::run_resident_inline(
+                                &mut executor,
+                                identity,
                             ));
                             let _ = response.send(result);
                         }

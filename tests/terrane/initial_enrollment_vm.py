@@ -214,16 +214,16 @@ def configured_publication():
                     "manifest reassembly changed an original sealed inode")
             files = [row for key, row in current.items() if key not in prior
                      and (row[4] & 0o170000) == 0o100000]
-            require(len(files) == 4, "manifest reassembly lacks four actual sealed inodes")
+            require(len(files) == 6, "reassembly lacks six actual sealed inodes")
             sizes = []
             for domain in ["public", "private"]:
                 domain_files = [row for row in files if row[0] == domain]
                 lengths = sorted(row[5] for row in domain_files)
-                require(len(domain_files) == 2 and lengths[0] == 262145 and lengths[1] > lengths[0],
-                        "domain lacks actual single and multi-chunk sealed objects")
+                require(len(domain_files) == 3 and lengths[:2] == [1337, 262145] and lengths[2] > lengths[1],
+                        "domain lacks actual inline, single and multi-chunk sealed objects")
                 sizes.append(lengths)
             require(sizes[0] == sizes[1], "domain reassembly plaintext lengths differ")
-            print("PASS root observed four distinct single and multi-chunk sealed inodes across both native domains", flush=True)
+            print("PASS root observed six distinct inline, single and multi-chunk sealed inodes across both native domains", flush=True)
         else:
             before_ready = sealed_snapshot()
             run_case("ready-public-private", role_command("ready-public-private", 840, [844, 845]))

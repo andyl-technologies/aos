@@ -19,6 +19,9 @@ use terrane_sdk::{
     },
 };
 
+#[path = "reassembly_inline.rs"]
+mod inline;
+
 pub(super) async fn exercise(
     cache: &terrane_linux::configured::NativeConfiguredCache,
     profile: &ChunkProfile,
@@ -115,7 +118,7 @@ pub(super) async fn exercise(
             report.released_source_admissions,
         );
     }
-    Ok(())
+    inline::exercise(store, profile).await
 }
 
 async fn admit_manifest(

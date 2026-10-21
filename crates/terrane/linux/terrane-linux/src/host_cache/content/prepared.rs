@@ -7,8 +7,7 @@
 
 use super::{NativeChunkedObject, NativeContentStore, native_failure};
 use crate::host_cache::{
-    NativeCacheHandoffReport, NativeChunkAdmissionError, NativeInlinePublication,
-    NativeManifestPublication,
+    NativeCacheHandoffReport, NativeInlinePublication, NativeManifestPublication,
 };
 use std::{fs::File, io};
 use terrane_format::identity::{Descriptor, Identity, IdentityKind, TERRANE_V1};
@@ -70,19 +69,12 @@ impl NativeContentStore {
         }
         let publication = match identity.kind() {
             IdentityKind::Chunk => {
-                let (descriptor, encoded) = self.inline_input(identity).await?;
                 let publication = self
                     .ready
                     .owner()
-                    .publish_inline(descriptor, encoded)
+                    .publish_resident_inline(identity.clone())
                     .await
-                    .map_err(|error| {
-                        let error = match error {
-                            NativeChunkAdmissionError::Accepted(error)
-                            | NativeChunkAdmissionError::Unsubmitted { error, .. } => error,
-                        };
-                        native_failure(error, identity)
-                    })?;
+                    .map_err(|error| native_failure(error, identity))?;
                 Publication::Inline(publication)
             }
             IdentityKind::Manifest => {
@@ -121,34 +113,6 @@ impl NativeContentStore {
             identity: identity.clone(),
             publication,
         }))
-    }
-
-    async fn inline_input(
-        &self,
-        identity: &Identity,
-    ) -> Result<(Descriptor, Vec<u8>), StoreFailure> {
-        if identity == &super::validation::empty_chunk()? {
-            let descriptor =
-                Descriptor::from_identity(&TERRANE_V1, identity, &[]).map_err(|error| {
-                    native_failure(io::Error::new(io::ErrorKind::InvalidData, error), identity)
-                })?;
-            return Ok((descriptor, vec![0]));
-        }
-        let lease = self.pin(identity).await?;
-        let result = (|| {
-            let plaintext = lease
-                .read_verified()
-                .map_err(|error| native_failure(error, identity))?;
-            let descriptor =
-                Descriptor::from_identity(&TERRANE_V1, identity, &plaintext).map_err(|error| {
-                    native_failure(io::Error::new(io::ErrorKind::InvalidData, error), identity)
-                })?;
-            let encoded = lease
-                .read_encoded()
-                .map_err(|error| native_failure(error, identity))?;
-            Ok((descriptor, encoded))
-        })();
-        self.finish(result, vec![lease]).await
     }
 }
 

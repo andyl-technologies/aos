@@ -14,6 +14,7 @@ mod io;
 mod manifest;
 mod producer_reads;
 pub(super) mod residence;
+mod resident;
 pub(super) mod retirement;
 mod settle;
 mod state;
@@ -26,6 +27,7 @@ pub(in crate::host_cache::owner) use producer_reads::execute as close_producer_r
 pub(super) use residence::RecoveredInlineJob;
 pub(super) use residence::retain as retain_resident_chunk;
 pub use residence::{NativeProducerReadClosure, NativeResidentChunkSource};
+pub(super) use resident::run as run_resident_inline;
 pub use retirement::NativeSourceCleanupReport;
 
 use super::{
