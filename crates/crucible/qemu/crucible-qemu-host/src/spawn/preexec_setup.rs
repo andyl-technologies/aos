@@ -13,7 +13,7 @@
 //! ```
 // SPDX-License-Identifier: Apache-2.0
 
-use std::os::fd::{AsRawFd, IntoRawFd, OwnedFd};
+use std::os::fd::{AsRawFd, BorrowedFd, IntoRawFd, OwnedFd};
 
 use crucible_host_resources::host_services::process_birth::SourceHostControlLease;
 use crucible_host_resources::host_supervision::{HostOperationSupervisor, HostSupervisionError};
@@ -307,13 +307,16 @@ impl PreparedPreexecSetup {
                         .map_err(PreexecSetupCause::Kernel)?,
                 );
             }
-            let [publication, cancellation] = startup
-                .standing()
-                .map_err(PreexecSetupCause::Startup)?
-                .duplicate_roles()
-                .map_err(PreexecSetupCause::Kernel)?;
-            self.aliases[3] = Some(publication);
-            self.aliases[4] = Some(cancellation);
+            let standing = startup.standing().map_err(PreexecSetupCause::Startup)?;
+            retain_standing_aliases(
+                &mut self.aliases,
+                [standing.publication_role(), standing.cancellation_role()],
+                |role| {
+                    startup.check().map_err(PreexecSetupCause::Original)?;
+                    rustix::io::fcntl_dupfd_cloexec(role, super::CHILD_SOURCE_FD_MIN)
+                        .map_err(PreexecSetupCause::Kernel)
+                },
+            )?;
             if let Some(workspace) = workspace.as_ref() {
                 startup.check().map_err(PreexecSetupCause::Original)?;
                 self.aliases[5] = Some(
@@ -403,6 +406,23 @@ impl PreparedPreexecSetup {
     }
 }
 
+/// Records each physical alias before checking or duplicating the next role.
+fn retain_standing_aliases(
+    aliases: &mut [Option<OwnedFd>; 6],
+    roles: [BorrowedFd<'_>; 2],
+    mut duplicate: impl FnMut(BorrowedFd<'_>) -> Result<OwnedFd, PreexecSetupCause>,
+) -> Result<(), PreexecSetupCause> {
+    if aliases[3].is_some() || aliases[4].is_some() {
+        return Err(PreexecSetupCause::Geometry);
+    }
+
+    // A later refusal leaves every earlier alias in the paid cleanup journal.
+    for (index, role) in [(3, roles[0]), (4, roles[1])] {
+        aliases[index] = Some(duplicate(role)?);
+    }
+    Ok(())
+}
+
 fn encode_plan(
     plan: &PluginSetupPlan,
     purpose: &[u8; PURPOSE_BYTES],
@@ -439,3 +459,6 @@ impl Drop for PreparedPreexecSetup {
         // whose final drop is later than receiver closure and verified reap.
     }
 }
+
+#[cfg(test)]
+mod tests;

@@ -8,7 +8,7 @@
 //! the distinct standing cancellation event, never Setup's amendment wake.
 // SPDX-License-Identifier: Apache-2.0
 
-use std::os::fd::{AsRawFd, OwnedFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -176,14 +176,14 @@ impl OriginalSourceSupervision {
         Ok(bytes)
     }
 
-    pub(crate) fn duplicate_roles(&self) -> Result<[OwnedFd; 2], rustix::io::Errno> {
-        Ok([
-            rustix::io::fcntl_dupfd_cloexec(&self.publisher.reader, super::CHILD_SOURCE_FD_MIN)?,
-            rustix::io::fcntl_dupfd_cloexec(
-                &self.publisher.cancellation,
-                super::CHILD_SOURCE_FD_MIN,
-            )?,
-        ])
+    /// Borrows the standing publication from its retained funded owner.
+    pub(crate) fn publication_role(&self) -> BorrowedFd<'_> {
+        self.publisher.reader.as_fd()
+    }
+
+    /// Borrows the standing cancellation event from its retained funded owner.
+    pub(crate) fn cancellation_role(&self) -> BorrowedFd<'_> {
+        self.publisher.cancellation.as_fd()
     }
 }
 
