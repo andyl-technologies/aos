@@ -2784,6 +2784,25 @@ is added rather than editing history.
     any pending task complete.
   - **Affects:** CRATE-1 through CRATE-21, ARCH-1/4 and their existing gates.
 
+- **[D-128] Reject zero-wipe on permanently sealed tiers.**
+  - **Status:** Decided (2026-10-20)
+  - **Decision:** Preserve HOST-3's kernel-enforced immutable sealed inodes.
+    Reject `wipe=zero` during sealed-tier configuration validation, before
+    opening a domain or admitting content. Backends that can actually overwrite
+    data may implement zero-wipe. Private domains retain their `zero` default;
+    unsupported policies never silently become `none`.
+  - **Rationale:** Permanent kernel sealing prevents overwriting the same inode,
+    including by its owner. Replacing or unlinking that inode cannot establish
+    that its original data was overwritten.
+  - **Alternatives considered:** Weaken sealing (rejected: breaks the immutable
+    backing guarantee); equate unlinking with wiping (rejected: does not honor
+    the requested strategy); require both operations on the same sealed inode
+    (rejected: impossible for the selected kernel mechanism).
+  - **Compatibility:** Clarifies capability refusal under PROP-15. No identity,
+    encoding, bucket key, Store/LocalFs trait, wire field, token, requirement ID
+    or gate name changes. This decision does not complete a host task.
+  - **Affects:** HOST-3, HOST-25, DOM-18 and PROP-15.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**

@@ -272,14 +272,19 @@ host once no consumer holds it. The `wipe` property selects the strategy.
 | Strategy | Behavior on last release |
 | --- | --- |
 | `none` | Ordinary eviction: the file is unlinked and its bytes remain until reused. |
-| `zero` | Overwrite the file's blocks with zeros before unlinking. |
+| `zero` | Overwrite the file's blocks with zeros before unlinking; unavailable for kernel-sealed tiers. |
 | `discard` | Issue a discard (trim, unmap) for the file's extents, then unlink. |
 | `volatile` | Content for this domain is held on a memory-backed filesystem and never touches persistent storage. |
 
 - **[HOST-25]** Content in a domain with `wipe` other than `none` MUST
   bypass the eviction queues and MUST be wiped as soon as its last pin is
   released and the release grace has elapsed; it MUST NOT be retained as an
-  unpinned cache entry. *Gate:* `gate:host-wipe-on-release`.
+  unpinned cache entry. A tier using HOST-3's permanent kernel seal MUST reject
+  `wipe=zero` during configuration validation, before opening the domain or
+  admitting its content. Unlinking or replacing the sealed inode MUST NOT be
+  reported as overwriting it. Zero-wipe is available only on a backend that
+  can actually overwrite the protected data; it does not relax HOST-3 for
+  `sealed/`. *Gate:* `gate:host-wipe-on-release`.
 - **[HOST-26]** In `volatile` mode the tier MUST place `chunks/` and `sealed/`
   for that domain on a memory-backed filesystem that supports the seal
   primitive, and MUST refuse the domain if none is available.

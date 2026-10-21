@@ -68,7 +68,7 @@ pub enum Reassembly {
 pub struct DomainDirectory {
     /// Absolute directory dedicated to this domain.
     pub path: String,
-    /// Requested wipe policy; parsing grants no runtime qualification.
+    /// Requested wipe policy, validated against the sealed tier's capabilities.
     pub wipe: Wipe,
     /// Optional explicit publication policy for this domain.
     pub publisher: Option<DomainPublisher>,
@@ -82,7 +82,7 @@ pub struct DomainDirectory {
 pub enum Wipe {
     /// Deletes without overwriting.
     None,
-    /// Requests overwrite before deletion; availability is checked at runtime.
+    /// Requests overwrite before deletion; sealed host-tier configuration rejects it.
     Zero,
 }
 
@@ -110,6 +110,15 @@ impl HostTier {
                     "invalid or duplicate domain directory",
                 ));
             }
+
+            // Kernel-sealed inodes cannot be overwritten, even by their owner.
+            // Refuse the policy before startup instead of weakening erasure.
+            if directory.wipe == Wipe::Zero {
+                return Err(ConfigError::Invalid(
+                    "sealed host tiers cannot honor wipe=zero",
+                ));
+            }
+
             if let Some(publisher) = &directory.publisher {
                 publisher.validate()?;
             }

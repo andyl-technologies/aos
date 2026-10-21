@@ -174,7 +174,11 @@ never leak a private byte.
   is reused: `none` unlinks the file without overwriting it, `zero`
   overwrites it before removal, `discard` issues a discard to the device
   before removal, and `volatile` requires that the content was never
-  written to persistent storage (memory-backed tier only). *Gate:*
+  written to persistent storage (memory-backed tier only). A tier that cannot
+  perform the selected strategy MUST refuse it rather than substitute another
+  strategy. In particular, a kernel-sealed host tier MUST reject `zero` during
+  configuration validation (HOST-25). The private-domain default remains
+  `zero`; it does not implicitly become `none` on such a tier. *Gate:*
   `gate:dom-wipe`.
 - **[DOM-19]** Content under a `volatile` wipe policy MUST NOT be admitted
   to a persistent tier at any point, including packs written by a

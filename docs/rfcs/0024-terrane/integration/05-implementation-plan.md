@@ -8694,6 +8694,14 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
 
 ### T2 — Host tier
 
+Zero-wipe resolution (2026-10-20): D-128 resolves the HOST-3/HOST-25/DOM-18
+conflict by preserving permanent kernel sealing and requiring configuration-time
+refusal of `wipe=zero` on sealed tiers. Backends that can overwrite data may
+implement zero-wipe; private-domain defaults are never silently weakened.
+The configuration regression and complete current-trunk qualification remain
+required before task acceptance. Historical stopped-path records below describe
+the requirements before this decision; all five T2 tasks remain open.
+
 Upstream integration (2026-10-19): merge `origin/master` at `68851a3bf1`
 into the existing RFC branch and apply its explicit PR #420 package mapping.
 Current packages are `terrane-format`, `terrane-sdk`, `terrane-linux`,
@@ -9857,7 +9865,8 @@ Resumed qualification:
 All five T2 task checkboxes remain open. The transport and cache results above
 accept components only. Complete manifest reuse and retirement, full host
 isolation, NativeReady, BKT-15 and actual four-role deployment remain unqualified.
-The zero-wipe requirement conflict remains stopped; T3 and branch work stay deferred.
+The zero-wipe conflict is resolved by D-128's mandatory sealed-tier refusal;
+its implementation requires qualification. T3 and branch work stay deferred.
 
 The shared glue dependency now names
 the existing Core types directly, and the crate-graph audit includes the current
@@ -9877,7 +9886,8 @@ Exit gates: `checks.terrane.gates.host-crash-recovery`,
 
 - [ ] **T-HOST-1** `disk` tier layout, verify-before-admit, quarantine,
   reassembly modes `never` and `always`, S3-FIFO eviction, pins,
-  reservations, exact quotas, wipe modes `none` and `zero`, two-phase
+  reservations, exact quotas, `wipe=none` and configuration-time refusal of
+  `wipe=zero` on sealed tiers (D-128), two-phase
   delete, embedded state scope, crash recovery, circuit breaker toward
   lower tiers. Narrowed to trunk scope: `smart` reassembly and the
   `discard` and `volatile` wipe modes are T-HOST-3 on B-consistency. —

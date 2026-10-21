@@ -36,7 +36,7 @@ fn shared_role_configuration_requires_explicit_invocation_selection() {
 
 #[test]
 fn shared_host_configuration_preserves_requested_policy_without_runtime_claims() {
-    let config = Config::parse("store='disk(/var/lib/terrane)'\n[locality]\nregion='west'\n[host_tier]\npath='/var/lib/terrane'\nsize_bytes=4096\nreassembly='always'\n[host_tier.domains.'private:東京']\npath='/var/lib/terrane/domain'\nwipe='zero'\n[tokens]\nissuer_public_keys=['file:/etc/terrane/issuer.pub']\nhost_token='file:/etc/terrane/host.token'\n").unwrap();
+    let config = Config::parse("store='disk(/var/lib/terrane)'\n[locality]\nregion='west'\n[host_tier]\npath='/var/lib/terrane'\nsize_bytes=4096\nreassembly='always'\n[host_tier.domains.'private:東京']\npath='/var/lib/terrane/domain'\nwipe='none'\n[tokens]\nissuer_public_keys=['file:/etc/terrane/issuer.pub']\nhost_token='file:/etc/terrane/host.token'\n").unwrap();
     assert_eq!(config.locality().region, "west");
     assert_eq!(config.host_tier().unwrap().size_bytes, 4096);
     assert_eq!(config.tokens().issuer_public_keys.len(), 1);

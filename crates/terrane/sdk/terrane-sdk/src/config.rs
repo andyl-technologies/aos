@@ -43,7 +43,8 @@ impl Config {
     /// # Errors
     ///
     /// Returns a typed error for malformed TOML, unknown keys or roles, invalid
-    /// store syntax, or any exposure naming a missing surface.
+    /// store syntax, unsupported host-tier wipe policies, or any exposure naming
+    /// a missing surface.
     pub fn parse(input: &str) -> Result<Self, ConfigError> {
         let raw: RawConfig = toml::from_str(input).map_err(ConfigError::Toml)?;
         let store = expression::StoreExpression::parse(&raw.store).map_err(ConfigError::Store)?;
@@ -219,5 +220,38 @@ mod tests {
         assert!(
             matches!(Config::parse(input), Err(ConfigError::UnavailableSurface(name)) if name == "fuse")
         );
+    }
+
+    #[test]
+    fn sealed_host_tiers_reject_zero_wipe_for_every_role() {
+        for role in Role::ALL {
+            for domain in ["public", "private:owner"] {
+                let input = format!(
+                    "role = '{role}'\n\
+                     store = 'disk(/var/lib/terrane)'\n\
+                     [host_tier]\n\
+                     path = '/var/lib/terrane'\n\
+                     size_bytes = 1048576\n\
+                     reassembly = 'never'\n\
+                     [host_tier.domains.'{domain}']\n\
+                     path = '/var/lib/terrane/domain'\n\
+                     wipe = 'zero'\n"
+                );
+
+                assert!(
+                    matches!(
+                        Config::parse(&input),
+                        Err(ConfigError::Invalid("sealed host tiers cannot honor wipe=zero"))
+                    ),
+                    "role {role} must refuse zero-wipe for {domain}"
+                );
+
+                let supported = input.replace("wipe = 'zero'", "wipe = 'none'");
+                assert!(
+                    Config::parse(&supported).is_ok(),
+                    "role {role} must accept explicit no-wipe for {domain}"
+                );
+            }
+        }
     }
 }
