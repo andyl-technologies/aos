@@ -67,7 +67,28 @@ failed attempts appear in the dated entries below.
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | Latest focused checks pass all 73 policy and five hygiene controls; the broad gate retains thirteen daemon paths. | The fresh canonical license-boundary check is blocked by strict controller Clippy (1,189 host-library and 1,262 host-test errors); its boundary assertions did not run. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 354 committed bindings: 335 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
+| Requirements | 359 committed bindings: 340 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
+
+#### Independent channel refusal and Quantum post
+
+`23c1def9c3` observes the same retained operation after every quantum start,
+post-publication hook and completion result, including failed channel returns.
+The initiating channel cause and independent negative Original post remain
+inline and both survive scheduler conversion. An initiating typed operational
+category takes precedence while the complete pair remains downcastable. A
+retryable completion failure cannot trigger another poll after that Original
+has refused; neither failure completes work or proves physical return.
+
+All eleven focused postcheck tests and all thirty async-driver tests pass,
+including the thirty-test private-measurement configuration. Engineering hygiene
+and mandatory application test-target compilation pass at
+`9d0j3iacz3app1icsza2gkx1n8wsmvnd`. All 5,279 committed Rust/TOML inputs match
+immutable source `93shk08abmwj6jz5cd60azydg35m8w5m`; the comparison record has
+SHA-256 `505fd3bb41455ee99f94dc3793844d81161988253e10db0529121556bb5ddd6a`.
+The first missing-test-import failure remains recorded separately from this
+final stable-source run. Five exact component bindings bring the committed
+inventory to 359. The actual command producer, Native Advance and selected
+physical lifecycle remain unqualified.
 
 #### Bounded command observations and scheduler wake receipts
 
