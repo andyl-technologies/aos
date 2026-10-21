@@ -82,7 +82,26 @@ label reaches that observer. Their all-feature/all-target Engine/Daemon check,
 formatting and all six architecture gates pass. The required application gate
 again compiles 180 test executables across 58 package IDs, including 71 integration
 targets, and all 27 owned changed Rust paths match its captured source. Its
-compilation-only scope is unchanged. The fresh VM run remains in progress.
+compilation-only scope is unchanged. The fresh VM reaches the runtime-inventory
+and loader-edge check, then refuses before Source preparation. Nine focused
+installation/loader controls pass. The separate pure-worker owner VM also passes
+actual resource-limit refusals, sticky cancellation and waited cleanup; it does
+not perform the installed artifact/loader verification.
+
+The actual AOS libc contains PT_INTERP for direct execution. The loader verifier
+incorrectly rejected that unused header when libc was mapped as a DT_NEEDED
+library. Its correction preserves authentication of the exec image's real
+interpreter and every selected dependency. A regression uses actual encoded ELF
+files and confirms that a library's unused interpreter is never opened, while an
+unresolved exec interpreter still refuses. All eleven focused installation
+controls pass, including an explicitly run readonly installed launcher/worker ELF
+graph check as DATA. The full configured Engine library passes 2,035 tests with
+zero failures, no filtering and 34 ignores; the additional ignored control needs
+that explicit installed artifact. Engine/Daemon all-feature/all-target checking,
+formatting and all six architecture gates pass. The required application gate
+compiles the same 180 test executables across 58 package IDs and 71 integration
+targets; all 29 owned changed Rust paths match its capture. The confined installed
+VM flight remains pending for this correction.
 
 ## Original launch custody and shared startup geometry
 

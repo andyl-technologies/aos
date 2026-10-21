@@ -237,3 +237,109 @@ fn search_refuses_cross_root_hardware_capability_directory_aliases() {
         Ok(Some(library))
     );
 }
+
+/// Adds a real PT_INTERP segment to the already written synthetic ELF.
+fn with_interpreter(file: &File, interpreter: &Path) {
+    let count = 3u16;
+    let mut header = [0; 56];
+    let mut bytes = interpreter.as_os_str().as_encoded_bytes().to_vec();
+    bytes.push(0);
+    assert!(bytes.len() <= 128);
+    header[..4].copy_from_slice(&3u32.to_le_bytes());
+    header[8..16].copy_from_slice(&256u64.to_le_bytes());
+    header[32..40].copy_from_slice(&(bytes.len() as u64).to_le_bytes());
+
+    file.write_all_at(&count.to_le_bytes(), 56).unwrap();
+    file.write_all_at(&header, 176).unwrap();
+    file.write_all_at(&bytes, 256).unwrap();
+}
+
+#[test]
+fn dependency_interpreter_is_inert_but_the_exec_interpreter_must_resolve() {
+    let root = PathBuf::from("/nix/store/00000000000000000000000000000000-runtime");
+    let main_path = root.join("bin/main");
+    let loader_path = root.join("lib/ld.so");
+    let library_path = root.join("lib/libborrow.so");
+    let main = executable(true);
+    let loader = executable(false);
+    let library = executable(true);
+    with_interpreter(&main, &loader_path);
+    // This unselected path must neither become a loader edge nor be opened.
+    with_interpreter(&library, Path::new("/outside/unused-interpreter"));
+
+    let content =
+        crucible_node_format::canonical::content_ref(b"fixture", "application/octet-stream")
+            .unwrap();
+    let mut entries = vec![
+        TreeEntry::Directory {
+            path: root.clone(),
+            mode: 0o555,
+        },
+        TreeEntry::Directory {
+            path: root.join("bin"),
+            mode: 0o555,
+        },
+        TreeEntry::Directory {
+            path: root.join("lib"),
+            mode: 0o555,
+        },
+    ];
+    for path in [&main_path, &loader_path, &library_path] {
+        entries.push(TreeEntry::File {
+            path: path.clone(),
+            mode: 0o555,
+            content: content.clone(),
+        });
+    }
+    let roster = entries
+        .iter()
+        .map(|entry| (entry.path().to_path_buf(), entry))
+        .collect();
+    let roots = [root];
+    let opened = std::cell::RefCell::new(Vec::new());
+    let open_dependency = |path: &Path| {
+        opened.borrow_mut().push(path.to_path_buf());
+        let file = if path == loader_path {
+            &loader
+        } else if path == library_path {
+            &library
+        } else {
+            return Err(RuntimeError::ForeignAuthority);
+        };
+        file.try_clone().map_err(|_| RuntimeError::OwnerUnavailable)
+    };
+
+    check_image(&main_path, &main, &roster, &roots, &open_dependency).unwrap();
+    assert_eq!(
+        *opened.borrow(),
+        [loader_path.clone(), library_path.clone()]
+    );
+
+    // The same header on the exec image remains an authenticated real edge.
+    with_interpreter(&main, Path::new("/outside/unused-interpreter"));
+    assert!(check_image(&main_path, &main, &roster, &roots, &open_dependency).is_err());
+    assert_eq!(opened.borrow().len(), 2);
+}
+
+/// Exercises the actual installed ELF graph as DATA, without making a program guard.
+#[test]
+#[ignore = "requires an explicit installed worker manifest on readonly store mounts"]
+fn actual_installed_elf_closure_data() {
+    let path = std::env::var_os("CRUCIBLE_SOURCE_BIRTH_WORKER_DATA_MANIFEST")
+        .expect("set CRUCIBLE_SOURCE_BIRTH_WORKER_DATA_MANIFEST to the installed manifest");
+    let installed: Installation = decode(&read_metadata(Path::new(&path)).unwrap()).unwrap();
+    let closure: RuntimeClosure =
+        decode(&artifact_metadata(&installed.runtime_closure, &mut 0).unwrap()).unwrap();
+    let entries = closure
+        .entries
+        .iter()
+        .map(|entry| (entry.path().to_path_buf(), entry))
+        .collect();
+
+    for path in [&installed.launcher.path, &installed.worker.path] {
+        let file = open_regular(path).unwrap();
+        check_image(path, &file, &entries, &closure.store_paths, open_regular).unwrap_or_else(
+            |error| panic!("actual installed ELF graph refused at {path:?}: {error}"),
+        );
+    }
+}

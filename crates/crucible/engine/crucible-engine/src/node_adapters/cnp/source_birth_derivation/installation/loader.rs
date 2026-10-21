@@ -30,82 +30,97 @@ pub(super) fn check_program(
         (&installed.launcher.path, program.launcher_file()),
         (&installed.worker.path, program.worker_file()),
     ] {
-        let main = parse(original, path)?;
-        let mut loaded = BTreeMap::<String, PathBuf>::new();
-        let mut visited = BTreeSet::new();
-        let mut originals = BTreeMap::new();
-        let main_metadata = original
+        check_image(path, original, entries, roots, open_regular)?;
+    }
+
+    Ok(())
+}
+
+/// Checks one exec image with its own loaded names and RPATH ancestry.
+fn check_image(
+    path: &Path,
+    original: &File,
+    entries: &BTreeMap<PathBuf, &TreeEntry>,
+    roots: &[PathBuf],
+    open_dependency: impl Fn(&Path) -> Result<File, Failure>,
+) -> Result<(), Failure> {
+    let main = parse(original, path)?;
+    let mut loaded = BTreeMap::<String, PathBuf>::new();
+    let mut visited = BTreeSet::new();
+    let mut originals = BTreeMap::new();
+    let main_metadata = original
+        .metadata()
+        .map_err(|_| RuntimeError::OwnerUnavailable)?;
+    originals.insert(
+        (main_metadata.dev(), main_metadata.ino()),
+        path.to_path_buf(),
+    );
+    let mut queue = VecDeque::new();
+    if let Some(interpreter) = &main.interpreter {
+        let resolved = resolve(interpreter, entries, roots)?;
+        let file = open_dependency(&resolved)?;
+        let dynamic = parse(&file, &resolved)?;
+        if dynamic.interpreter.is_some() || !dynamic.needed.is_empty() {
+            return Err(RuntimeError::UnsupportedFacet);
+        }
+        let metadata = file
             .metadata()
             .map_err(|_| RuntimeError::OwnerUnavailable)?;
-        originals.insert(
-            (main_metadata.dev(), main_metadata.ino()),
-            path.to_path_buf(),
-        );
-        let mut queue = VecDeque::new();
-        if let Some(interpreter) = &main.interpreter {
-            let resolved = resolve(interpreter, entries, roots)?;
-            let file = open_regular(&resolved)?;
-            let dynamic = parse(&file, &resolved)?;
-            if dynamic.interpreter.is_some() || !dynamic.needed.is_empty() {
+        originals.insert((metadata.dev(), metadata.ino()), resolved.clone());
+        remember(&mut loaded, &resolved, &dynamic);
+        queue.push_back((resolved, dynamic, Vec::<PathBuf>::new()));
+    }
+    remember(&mut loaded, path, &main);
+    queue.push_back((path.to_path_buf(), main, Vec::<PathBuf>::new()));
+
+    // Resolve a whole object's DT_NEEDED list before visiting children, as
+    // the loader link-map establishes direct dependencies breadth first.
+    while let Some((path, dynamic, ancestry)) = queue.pop_front() {
+        if !visited.insert(path.clone()) {
+            continue;
+        }
+        if visited.len() + queue.len() > MAXIMUM_OBJECTS {
+            return Err(RuntimeError::ResourceLimit);
+        }
+        let mut inherited = if dynamic.runpath.is_empty() {
+            dynamic.rpath.clone()
+        } else {
+            Vec::new()
+        };
+        inherited.extend(ancestry);
+        for needed in &dynamic.needed {
+            // RUNPATH suppresses the RPATH ancestry for this lookup;
+            // descendants without RUNPATH still receive the ancestry.
+            let paths = if dynamic.runpath.is_empty() {
+                &inherited
+            } else {
+                &dynamic.runpath
+            };
+            let Some(candidate) = select_needed(needed, &path, &loaded, paths, entries, roots)?
+            else {
+                continue;
+            };
+            if !matches!(entries.get(&candidate), Some(TreeEntry::File { .. })) {
                 return Err(RuntimeError::UnsupportedFacet);
             }
+            let file = open_dependency(&candidate)?;
             let metadata = file
                 .metadata()
                 .map_err(|_| RuntimeError::OwnerUnavailable)?;
-            originals.insert((metadata.dev(), metadata.ino()), resolved.clone());
-            remember(&mut loaded, &resolved, &dynamic);
-            queue.push_back((resolved, dynamic, Vec::<PathBuf>::new()));
-        }
-        remember(&mut loaded, path, &main);
-        queue.push_back((path.to_path_buf(), main, Vec::<PathBuf>::new()));
-        // Resolve a whole object's DT_NEEDED list before visiting children, as
-        // the loader link-map establishes direct dependencies breadth first.
-        while let Some((path, dynamic, ancestry)) = queue.pop_front() {
-            if !visited.insert(path.clone()) {
+            let identity = (metadata.dev(), metadata.ino());
+            if let Some(original) = originals.get(&identity) {
+                loaded.insert(needed.clone(), original.clone());
                 continue;
             }
-            if visited.len() + queue.len() > MAXIMUM_OBJECTS {
-                return Err(RuntimeError::ResourceLimit);
-            }
-            let mut inherited = if dynamic.runpath.is_empty() {
-                dynamic.rpath.clone()
-            } else {
-                Vec::new()
-            };
-            inherited.extend(ancestry);
-            for needed in &dynamic.needed {
-                // RUNPATH suppresses the RPATH ancestry for this lookup;
-                // descendants without RUNPATH still receive the ancestry.
-                let paths = if dynamic.runpath.is_empty() {
-                    &inherited
-                } else {
-                    &dynamic.runpath
-                };
-                let Some(candidate) = select_needed(needed, &path, &loaded, paths, entries, roots)?
-                else {
-                    continue;
-                };
-                if !matches!(entries.get(&candidate), Some(TreeEntry::File { .. })) {
-                    return Err(RuntimeError::UnsupportedFacet);
-                }
-                let file = open_regular(&candidate)?;
-                let metadata = file
-                    .metadata()
-                    .map_err(|_| RuntimeError::OwnerUnavailable)?;
-                let identity = (metadata.dev(), metadata.ino());
-                if let Some(original) = originals.get(&identity) {
-                    loaded.insert(needed.clone(), original.clone());
-                    continue;
-                }
-                let child = parse(&file, &candidate)?;
-                originals.insert(identity, candidate.clone());
-                if child.interpreter.is_some() {
-                    return Err(RuntimeError::UnsupportedFacet);
-                }
-                loaded.insert(needed.clone(), candidate.clone());
-                remember(&mut loaded, &candidate, &child);
-                queue.push_back((candidate, child, inherited.clone()));
-            }
+            let child = parse(&file, &candidate)?;
+            originals.insert(identity, candidate.clone());
+            // PT_INTERP belongs to an exec image, not a DT_NEEDED mapping.
+            // Glibc's libc carries one for direct execution; the loader ignores
+            // it when mapping libc as a dependency. Only the main interpreter
+            // above is an actual edge that must resolve inside this closure.
+            loaded.insert(needed.clone(), candidate.clone());
+            remember(&mut loaded, &candidate, &child);
+            queue.push_back((candidate, child, inherited.clone()));
         }
     }
     Ok(())
