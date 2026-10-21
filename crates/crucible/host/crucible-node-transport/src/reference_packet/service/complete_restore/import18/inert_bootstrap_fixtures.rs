@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 
 /// Builds matching Source fields for DATA checks without validating a program.
 pub(in crate::reference_packet) fn source_birth(launch: &PacketNative5SourceLaunch) -> Value {
-    json!({
+    let mut source = json!({
         "schema": "source-owned.packet-canonical-ack-source-binding/6",
         "selection": launch.selection,
         "program": launch.program,
@@ -20,7 +20,13 @@ pub(in crate::reference_packet) fn source_birth(launch: &PacketNative5SourceLaun
         "confirmation_selection": launch.confirmation_selection,
         "ack_emitter_selection": launch.ack_emitter_selection,
         "codec_metadata_extent": "CanonicalAck512KiB",
-    })
+    });
+    if let Some(metadata) = launch.protocol_metadata_limits {
+        source["schema"] = json!("source-owned.packet-canonical-ack-source-binding/8");
+        source["native_codec_metadata_extent"] = json!(launch.native_codec_metadata_extent);
+        source["protocol_metadata_limits"] = json!(metadata);
+    }
+    source
 }
 
 pub(in crate::reference_packet) fn recipe() -> Value {
@@ -180,4 +186,27 @@ pub(in crate::reference_packet) fn selected_launch(reactive: bool) -> Value {
             "effects": "/not-opened-by-bootstrap-layout-control",
         },
     })
+}
+
+/// Builds inert initial selectors accepted by the fixed Hello declaration.
+///
+/// The program and coordinator remain DATA fixtures, not a validated launch.
+pub(in crate::reference_packet) fn initial_selected_launch(reactive: bool) -> Value {
+    let mut selected = selected_launch(reactive);
+    selected["launch"]["confirmation_selection"] = json!(
+        crate::reference_packet::service::PacketNative5ConfirmationSelection::AfterProtocolPoll5
+    );
+    selected["launch"]["ack_emitter_selection"] = json!(
+        crate::reference_packet::service::PacketNative5AckEmitterSelection::CanonicalSdkBlob5
+    );
+    selected["launch"]["native_codec_metadata_extent"] =
+        json!(crate::client::CanonicalAckCodecMetadataExtent::CanonicalAck512KiB);
+    selected["launch"]["capture_profile"] = json!({
+        "encoding": "owned_protocol11", "native_before_protocol_bytes": "65536",
+        "native_after_protocol_bytes": "65536", "host_protocol_bytes": "65536",
+    });
+    selected["launch"]["protocol_metadata_limits"] = json!({
+        "native_before_rows": "128", "native_after_rows": "256",
+    });
+    selected
 }

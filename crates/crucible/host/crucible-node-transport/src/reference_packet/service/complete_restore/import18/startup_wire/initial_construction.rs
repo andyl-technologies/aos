@@ -9,6 +9,8 @@ use super::prospective::{PrivateOperands, ProspectiveBodyConstructionData};
 use super::*;
 use crate::reference_packet::service::ack_emitter::native_boot::{
     original_import18_controller_measurement_construction_data,
+    original_import18_hello_selection_construction_data,
+    original_import18_hello_selection_counter_scratch_data,
     original_import18_raw_bootstrap_storage_data,
 };
 
@@ -81,6 +83,7 @@ pub(in crate::reference_packet) fn initial_construction_projection_data<H: Seria
         source,
         initial_quote_formatter_data(launch)?,
         native_import18_launch_identity_construction_data(launch, maximum)?,
+        original_import18_hello_selection_construction_data(launch)?,
         maximum,
     )
 }
@@ -120,6 +123,7 @@ pub(in crate::reference_packet) fn initial_construction_from_wire_data(
         source,
         initial_quote_formatter_data(launch)?,
         native_import18_launch_identity_construction_data(launch, maximum)?,
+        original_import18_hello_selection_construction_data(launch)?,
         maximum,
     )
 }
@@ -129,6 +133,7 @@ fn combine(
     source: [usize; 3],
     formatter: [usize; 3],
     launch_identity: (usize, usize),
+    hello: [usize; 3],
     maximum: usize,
 ) -> Result<InitialConstructionData, ProviderError> {
     // Future U64 decimal widths are fixed before a row exists. Raw and typed
@@ -153,6 +158,11 @@ fn combine(
     let measurement = original_import18_controller_measurement_construction_data();
     row[1] = row[1].max(measurement[1]);
     row[2] = row[2].max(add(raw[2], measurement[2])?);
+    // Native Hello selection follows initial correspondence while all original
+    // raw/typed owners remain live. Only its actual feature/key backing is new.
+    row[0] = add(row[0], hello[0])?;
+    row[1] = row[1].max(hello[1]);
+    row[2] = row[2].max(add(raw[2], hello[2])?);
     if add(add(row[0], row[1])?, row[2])? > maximum {
         return Err(exhausted());
     }
@@ -188,6 +198,8 @@ pub fn native_import18_initial_construction_counter_scratch_data() -> usize {
         + native_import18_startup_wire_counter_scratch_data()
         + native_import18_launch_identity_counter_scratch_data()
         + native_import18_recipe_identity_counter_scratch_data()
+        + original_import18_hello_selection_counter_scratch_data()
+        + size_of::<[usize; 3]>() // The separate native Hello constructor row.
         + size_of::<PacketNativeImport18LaunchIdentityData>()
         + size_of::<Result<PacketNativeImport18LaunchIdentityData, ProviderError>>()
         + size_of::<(usize, usize)>() * 3

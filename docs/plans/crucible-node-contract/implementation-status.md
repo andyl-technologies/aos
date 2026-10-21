@@ -1093,10 +1093,15 @@ architecture gates pass. Required application compilation passes at
 180 test executables across 58 package identities, including 71 integration
 targets. Its source at
 `/nix/store/33wsbwgiga6sf66qqcqn1llfpv7gz04x-aos-workspace-src` matches all
-152 owned changed Rust paths through `54ef51558a` byte for byte. A funded-Source
-VM qualification of the same final contract definition is running; it supplies
-no result yet. Full signed Prepare custody, complete native
-proof/semantic-spend validation, recipe production/reconstruction and model
+152 owned changed Rust paths through `54ef51558a` byte for byte. The funded-Source
+VM passes at
+`/nix/store/2k49rzc91yxf6xvcfs35v9chy91qq624-aos-vm-test-crucible-funded-source-templates-0`.
+All three component captures use
+`/nix/store/3k0kq6hmlpv4yhb3mbd0ad9995dakapj-crucible-workspace-src`, with
+all 152 owned changed Rust paths byte-exact to `54ef51558a`. Both independent
+consumers, three actual Birth/declaration/projection/launch results, refusal
+controls and terminal namespace/credit release pass. Full signed Prepare custody,
+complete native proof/semantic-spend validation, recipe production/reconstruction and model
 installation remain unfinished.
 
 ## Normalization and native framing share the original input loan
@@ -1120,14 +1125,48 @@ control. Both complete Transport suites pass 1,807 tests, zero failures, no
 filtering and sixteen existing ignores. Affected all-feature/all-target checking,
 scoped formatting and all six architecture gates pass.
 
-Required application compilation is running against
-`/nix/store/z1ll67jfr386mifp4qhlclhbsh8p8xp6-aos-workspace-src`; its capture
-matches all 154 owned changed Rust paths byte for byte. It supplies no completed
-result yet. The original initial row, physical bootstrap fields and contract
-bytes are unchanged by this later input-validation pass. Genuine signed
+Required application compilation passes at
+`/nix/store/51n008mx7zjxxlj9xzan8mzd9s428s83-aos-test-targets-0.1.0`, with
+180 test executables across 58 package identities, including 71 integration
+targets. Its capture at
+`/nix/store/z1ll67jfr386mifp4qhlclhbsh8p8xp6-aos-workspace-src` matches all
+154 owned changed Rust paths through `8a06469476` byte for byte. The original
+initial row, physical bootstrap fields and contract bytes are unchanged by this later input-validation pass. Genuine signed
 Controller/SDK/Source proof conjunction, complete native model/semantic-spend
 validation and independent recipe reconstruction remain mandatory before fresh
 native installation or Hold effects.
+
+## Native Hello roster retained by the original bootstrap
+
+The original physical bootstrap now retains the actual native Hello declaration,
+feature vector and envelope-key map. Its one-shot constructor installs every
+partial selection in that same owner before fallible work. Independent admission
+precedes allocation and observes the whole surviving owner after either result.
+Original raw/typed correspondence and the nonrenewing inherited-channel cut
+surround construction and every completed roster loan. Callback refusal or expiry
+preserves the actual roster and all original input pointers.
+
+Both parent and native initial calculations price the same defining roster
+constructor before receipt of the private bodies. The original physical floor
+includes its inline partial fields; its terminal census includes the actual
+selection backing. Initial projection refuses missing required selectors or a
+changed sole binding. Inert test launches now carry the genuine required selector
+tuple and matching Source8 fields; their programs remain unvalidated DATA.
+
+All nine focused reconstruction tests pass, covering 114 inherited-socket flights
+and the separate quote control. The fourteen new Hello flights include both
+program families, occupied partial output, each one-byte-short constructor axis,
+admission refusal, incomplete initial custody and expiry before, during and after
+construction/loan. Both complete Transport suites pass 1,809 tests with zero
+failures and sixteen existing ignores. Affected all-feature/all-target checking, scoped formatting
+and all six architecture gates pass. Required application compilation and the
+funded-Source VM are still running; their immutable captures already
+match all 156 owned changed Rust paths byte for byte. These pending builds are
+not qualification results.
+
+A retained roster is not a completed native Hello, model-absent policy,
+bootstrap ACK, opaque Initial/Recipe or restoration permission. Those actual
+constructors and the complete native/Source proof conjunction remain required.
 
 ## Original launch custody and shared startup geometry
 

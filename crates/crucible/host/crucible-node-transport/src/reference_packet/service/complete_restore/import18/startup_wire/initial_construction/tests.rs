@@ -6,7 +6,7 @@ use serde_json::json;
 
 fn bodies(reactive: bool, decimal: u64) -> [Vec<u8>; 3] {
     let recipe = inert_bootstrap_fixtures::recipe();
-    let mut selected = inert_bootstrap_fixtures::selected_launch(reactive);
+    let mut selected = inert_bootstrap_fixtures::initial_selected_launch(reactive);
     let launch: PacketNativeImport18SelectedLaunchWireData =
         serde_json::from_value(selected.clone()).unwrap();
     let source = inert_bootstrap_fixtures::source_birth(launch.launch_data());
@@ -132,11 +132,51 @@ fn complete_initial_population_and_policy_refuse_overflow() {
         maximum_encoded_bytes: [1; 3],
         parser_rows: [[1; 3]; 3],
     };
-    assert!(combine(bodies(), [usize::MAX, 1, 1], [0; 3], (0, 0), usize::MAX).is_err());
-    assert!(combine(bodies(), [1, 1, usize::MAX], [0; 3], (0, 0), usize::MAX).is_err());
-    assert!(combine(bodies(), [1; 3], [0; 3], (0, 0), 1).is_err());
-    assert!(combine(bodies(), [1; 3], [0; 3], (usize::MAX, 1), usize::MAX).is_err());
-    assert!(combine(bodies(), [1; 3], [0; 3], (1, usize::MAX), usize::MAX).is_err());
+    assert!(
+        combine(
+            bodies(),
+            [usize::MAX, 1, 1],
+            [0; 3],
+            (0, 0),
+            [0; 3],
+            usize::MAX
+        )
+        .is_err()
+    );
+    assert!(
+        combine(
+            bodies(),
+            [1, 1, usize::MAX],
+            [0; 3],
+            (0, 0),
+            [0; 3],
+            usize::MAX
+        )
+        .is_err()
+    );
+    assert!(combine(bodies(), [1; 3], [0; 3], (0, 0), [0; 3], 1).is_err());
+    assert!(
+        combine(
+            bodies(),
+            [1; 3],
+            [0; 3],
+            (usize::MAX, 1),
+            [0; 3],
+            usize::MAX
+        )
+        .is_err()
+    );
+    assert!(
+        combine(
+            bodies(),
+            [1; 3],
+            [0; 3],
+            (1, usize::MAX),
+            [0; 3],
+            usize::MAX
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -204,5 +244,40 @@ fn original_typed_host_projection_matches_native_value_without_secret_operands()
         let short: PacketNativeImport18PrivateBootWireData =
             serde_json::from_value(changed).unwrap();
         assert!(initial_construction_from_wire_data(typed.launch, &short, usize::MAX / 4).is_err());
+    }
+}
+
+#[test]
+fn initial_projection_requires_the_actual_closed_native_hello_selectors() {
+    let raw = bodies(false, 1);
+    for changed in [
+        "ack_emitter_selection",
+        "confirmation_selection",
+        "protocol_metadata_limits",
+        "missing_binding",
+        "duplicate_binding",
+    ] {
+        let mut selected = canonical::parse_json(&raw[1], usize::MAX).unwrap();
+        match changed {
+            "missing_binding" => {
+                selected["launch"]["selection"]["realization"]["bindings"] = json!([])
+            }
+            "duplicate_binding" => {
+                let binding = selected["launch"]["selection"]["realization"]["bindings"][0].clone();
+                selected["launch"]["selection"]["realization"]["bindings"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(binding);
+            }
+            field => selected["launch"][field] = json!(null),
+        }
+        let mut changed = raw.clone();
+        changed[1] = canonical::canonical_json(&selected).unwrap();
+        let slots = decoded(&changed);
+        let borrowed = slots.bodies_data().unwrap();
+        assert!(
+            initial_construction_from_wire_data(borrowed.launch, borrowed.boot, usize::MAX / 4)
+                .is_err()
+        );
     }
 }

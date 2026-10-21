@@ -13,6 +13,9 @@
 
 use crate::ProviderError;
 use crate::operational_time::OperationalDeadline;
+use crate::reference_packet::service::complete_restore::import18::hello::{
+    PacketNativeImport18HelloDeclarationData, PacketNativeImport18HelloSelectionData,
+};
 use crate::reference_packet::service::complete_restore::import18::{
     InitialConstructionData, NATIVE_IMPORT18_PRIVATE_PREFIX_BYTES, OriginalImport18DecodedBodies,
     PacketNativeImport18PrivatePrefixData, decode_native_import18_private_prefix_data,
@@ -44,6 +47,13 @@ mod native_framing;
 #[path = "bootstrap_import18/normalization.rs"]
 mod normalization;
 
+#[path = "bootstrap_import18/hello_selection.rs"]
+mod hello_selection;
+pub(in crate::reference_packet::service) use hello_selection::{
+    construction_data as hello_selection_construction_data,
+    counter_scratch_data as hello_selection_counter_scratch_data,
+};
+
 #[path = "bootstrap_import18/controller_measurement.rs"]
 mod controller_measurement;
 
@@ -71,6 +81,11 @@ pub(super) struct OriginalImport18RawBootstrap {
     bodies: [Vec<u8>; 3],
     inputs: OriginalImport18ReceivingBanks,
     parsed: OriginalImport18DecodedBodies,
+    hello_declaration: Option<PacketNativeImport18HelloDeclarationData>,
+    hello_selection: Option<PacketNativeImport18HelloSelectionData>,
+    hello_construction_row: Option<[usize; 3]>,
+    hello_started: bool,
+    hello_complete: bool,
     decoding_row: Option<[usize; 3]>,
     decode_started: bool,
     decoded: bool,
@@ -108,6 +123,11 @@ impl OriginalImport18RawBootstrap {
             bodies: std::array::from_fn(|_| Vec::new()),
             inputs: OriginalImport18ReceivingBanks::empty(),
             parsed: OriginalImport18DecodedBodies::empty(),
+            hello_declaration: None,
+            hello_selection: None,
+            hello_construction_row: None,
+            hello_started: false,
+            hello_complete: false,
             decoding_row: None,
             decode_started: false,
             decoded: false,
@@ -225,9 +245,11 @@ impl OriginalImport18RawBootstrap {
             })?;
         let input_backing = self.inputs.retained_backing_data()?;
         let typed_backing = self.parsed.retained_backing_data()?;
+        let hello_backing = self.hello_selection_backing_data()?;
         retained
             .checked_add(input_backing)
             .and_then(|n| n.checked_add(typed_backing))
+            .and_then(|n| n.checked_add(hello_backing))
             .ok_or_else(exhausted)
     }
 
