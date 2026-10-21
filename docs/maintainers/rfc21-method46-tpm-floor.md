@@ -688,9 +688,10 @@ enter the Nix store. The probe compiles the production private ESYS source,
 then exercises its device identity checks, cached initial salt-public check,
 salted HMAC session, exact NV attributes, encrypted read and encrypted extend.
 It checks wrong credentials and changed salt pins, endpoint isolation, stale
-checkpoint rejection, and exact retained-target readback after a fresh process,
-an orderly reboot and an unclean SysRq guest reset. Clearing the TPM must make
-both retained endpoint fixtures fail.
+checkpoint rejection, and exact retained-target readback after process exit
+without application cleanup, an orderly reboot and an unclean SysRq guest
+reset. Repeated recovery must refuse without another extend. Clearing and
+reprovisioning the TPM must leave both old endpoint fixtures invalid.
 
 This test qualifies the emulated transport component only after execution
 passes. Its small retained checkpoint fixture is not the production durable

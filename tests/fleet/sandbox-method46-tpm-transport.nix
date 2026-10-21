@@ -36,7 +36,8 @@ in {
         vm.succeed(f"${command} wrong-auth {role} {state}")
         vm.fail(f"${command} read {1 - role} {state}")
         vm.succeed(f"cp {state} {state}.old")
-        vm.succeed(f"${command} advance {role} {state}")
+        status, _, _ = vm.execute(f"${command} advance {role} {state}")
+        assert status == 77, (role, status)
         vm.fail(f"${command} read {role} {state}.old")
 
     # A new guest boot creates new device connections and salted sessions.
@@ -46,12 +47,14 @@ in {
     for role in (0, 1):
         state = f"/var/lib/method46-transport/endpoint-{role}"
         vm.succeed(f"${command} recover {role} {state}")
+        vm.fail(f"${command} recover {role} {state}")
         vm.succeed(f"${command} read {role} {state}")
         vm.fail(f"${command} read {role} {state}.old")
 
     for role in (0, 1):
         state = f"/var/lib/method46-transport/endpoint-{role}"
-        vm.succeed(f"${command} advance {role} {state}")
+        status, _, _ = vm.execute(f"${command} advance {role} {state}")
+        assert status == 77, (role, status)
 
     # SysRq resets the guest without syncing or stopping services. The vTPM
     # stays independent of the guest disk and retains the advanced indices.
@@ -64,12 +67,16 @@ in {
     for role in (0, 1):
         state = f"/var/lib/method46-transport/endpoint-{role}"
         vm.succeed(f"${command} recover {role} {state}")
+        vm.fail(f"${command} recover {role} {state}")
         vm.succeed(f"${command} read {role} {state}")
 
     # Only the external test provisioner has hierarchy reset authority.
     vm.succeed("${pkgs.tpm2-tools}/bin/tpm2_clear -T device:/dev/tpmrm0")
     for role in (0, 1):
         state = f"/var/lib/method46-transport/endpoint-{role}"
+        vm.fail(f"${command} read {role} {state}")
+        vm.succeed(f"${command} provision {role} {state}.new")
+        vm.succeed(f"${command} read {role} {state}.new")
         vm.fail(f"${command} read {role} {state}")
   '';
 }

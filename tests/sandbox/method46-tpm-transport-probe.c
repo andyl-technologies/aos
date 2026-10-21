@@ -115,7 +115,7 @@ static int authenticate(struct floor_context *context, unsigned role,
     if (Esys_StartAuthSession(context->esys, context->salt, ESYS_TR_NONE,
             ESYS_TR_NONE, ESYS_TR_NONE, ESYS_TR_NONE, NULL, TPM2_SE_HMAC,
             &symmetric, TPM2_ALG_SHA256, &context->session) != TSS2_RC_SUCCESS
-        || session_attributes(context, 0) != TSS2_RC_SUCCESS
+        || session_attributes(context, TPMA_SESSION_ENCRYPT) != TSS2_RC_SUCCESS
         || check_salt(context, context->session) != 0
         || Esys_TR_FromTPMPublic(context->esys, context->index_handle,
             context->session, ESYS_TR_NONE, ESYS_TR_NONE, &context->index)
@@ -175,7 +175,10 @@ int main(int argc, char **argv)
                 require(extend_index(&context, fixture.pending) == 0,
                     "production encrypted NV extend");
                 /* Deliberately leave the checkpoint behind the TPM, as when
-                 * a process loses its reply after the authenticated command. */
+                 * a process loses its reply after the authenticated command.
+                 * Skip application cleanup so kernel RM teardown, rather
+                 * than close_context, retires this process's device session. */
+                _exit(77);
             } else if (strcmp(argv[1], "recover") == 0) {
                 require(nonzero(fixture.pending, sizeof(fixture.pending)),
                     "retain exact pending input");

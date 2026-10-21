@@ -527,7 +527,10 @@ static int open_context(struct floor_context *context, const uint8_t hello[HELLO
     if (Esys_StartAuthSession(context->esys, context->salt, ESYS_TR_NONE,
             ESYS_TR_NONE, ESYS_TR_NONE, ESYS_TR_NONE, NULL, TPM2_SE_HMAC,
             &symmetric, TPM2_ALG_SHA256, &context->session) != TSS2_RC_SUCCESS
-        || session_attributes(context, 0) != TSS2_RC_SUCCESS
+        /* Public reads have no authorization handle. Assign the session its
+         * response-encryption role so the TPM admits it and authenticates the
+         * response HMAC; CONTINUESESSION alone is rejected with RC_ATTRIBUTES. */
+        || session_attributes(context, TPMA_SESSION_ENCRYPT) != TSS2_RC_SUCCESS
         || check_salt(context, context->session) != 0
         || Esys_TR_FromTPMPublic(context->esys, index, context->session,
             ESYS_TR_NONE, ESYS_TR_NONE, &context->index) != TSS2_RC_SUCCESS)
@@ -547,7 +550,7 @@ static int read_observation(struct floor_context *context, uint8_t reply[RESPONS
     TPM2B_MAX_NV_BUFFER *value = NULL;
     int valid = 0;
     if (same_device(context) != 0
-        || session_attributes(context, 0) != TSS2_RC_SUCCESS
+        || session_attributes(context, TPMA_SESSION_ENCRYPT) != TSS2_RC_SUCCESS
         || check_salt(context, context->session) != 0
         || Esys_NV_ReadPublic(context->esys, context->index, context->session,
             ESYS_TR_NONE, ESYS_TR_NONE, &public, &name) != TSS2_RC_SUCCESS
@@ -867,7 +870,8 @@ static int offline_primary(struct offline_context *context)
 static int offline_read_salt(struct offline_context *context, ESYS_TR handle,
     size_t public_slot, size_t name_slot)
 {
-    if (offline_status(context, session_attributes(&context->floor, 0)) != 0)
+    if (offline_status(context, session_attributes(&context->floor,
+            TPMA_SESSION_ENCRYPT)) != 0)
         return -1;
     OFFLINE_ASYNC(context, Esys_ReadPublic_Async(context->floor.esys, handle,
         context->floor.session, ESYS_TR_NONE, ESYS_TR_NONE));
@@ -880,6 +884,9 @@ static int offline_read_salt(struct offline_context *context, ESYS_TR handle,
 static int offline_import(struct offline_context *context, uint32_t handle,
     ESYS_TR *destination, TSS2_RC *absence)
 {
+    if (offline_status(context, session_attributes(&context->floor,
+            TPMA_SESSION_ENCRYPT)) != 0)
+        return -1;
     OFFLINE_ASYNC(context, Esys_TR_FromTPMPublic_Async(context->floor.esys, handle,
         context->floor.session, ESYS_TR_NONE, ESYS_TR_NONE));
     TSS2_RC status;
@@ -913,7 +920,8 @@ static int offline_observe(struct offline_context *context, size_t *length)
         put_u32(body + 80, 284);
     }
     if (context->absent_nv == 0) {
-        if (offline_status(context, session_attributes(&context->floor, 0)) != 0)
+        if (offline_status(context, session_attributes(&context->floor,
+                TPMA_SESSION_ENCRYPT)) != 0)
             return -1;
         OFFLINE_ASYNC(context, Esys_NV_ReadPublic_Async(context->floor.esys,
             context->floor.index, context->floor.session, ESYS_TR_NONE, ESYS_TR_NONE));
@@ -1089,7 +1097,8 @@ static int offline_define(struct offline_context *context, size_t *length)
         return -1;
     OFFLINE_FINISH(context, Esys_NV_DefineSpace_Finish(context->floor.esys,
         &context->floor.index));
-    if (offline_status(context, session_attributes(&context->floor, 0)) != 0)
+    if (offline_status(context, session_attributes(&context->floor,
+            TPMA_SESSION_ENCRYPT)) != 0)
         return -1;
     OFFLINE_ASYNC(context, Esys_NV_ReadPublic_Async(context->floor.esys,
         context->floor.index, context->floor.session, ESYS_TR_NONE, ESYS_TR_NONE));
