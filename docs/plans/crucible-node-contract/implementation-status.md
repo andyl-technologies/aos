@@ -1467,6 +1467,50 @@ Parsing supplies DATA only.
 Complete Hello authentication, the model-absent native policy, bootstrap ACK,
 genuine Recipe/Initial producers and native adoption/restoration remain required.
 
+## Original initial Hello request and typed offer
+
+The retained bootstrap now owns a separate request attempt before its first
+private read. Fixed quote admission precedes inspection, and a stored concrete
+row precedes the actual borrowed-Value offer decoder. Initial-only envelope and
+body fields, sequence, identifiers, session, canonical token/nonce, feature
+rosters and receiving limits are checked against the same original launch,
+retained native roster and nonrenewing cut. Limits use the defining validation
+predicate without allocating a diagnostic; token decoding writes into a fixed
+caller-owned slice. Neither operation copies the original envelope or body.
+
+The actual closed Offer1 decoder is priced through its concrete field partials,
+root vectors, String leaves, pinned serde error layout and actual validation
+reasons. Aggregate cardinality is checked before typed allocation. Both initial
+calculations independently include this output alongside the original strict
+tree. The declared typed registry is empty: valid optional definitions remain
+unselected, and required definitions refuse. This does not install a live
+registry, issue a connection, publish Hello or admit native execution.
+
+Actual typed outputs and validation reasons survive refusal; syntax failures
+retain scalar coordinates beside the unchanged original tree. Original input
+and terminal guards surround inspection and Copy-only loans, including callback
+failure and expiration. Retry remains spent. Eight lower controls cover both
+families, every closed request field, canonical base64, actual validator reasons,
+required/optional definitions, failed partials and the real 256-definition bound.
+Nineteen inherited-socket flights additionally cover all admission boundaries,
+expiration, foreign claims and original allocation/pointer custody without replies.
+
+Both final unfiltered standard and raw-value Transport libraries pass 1,845
+tests with zero failures and sixteen existing ignores. Format passes 33 tests
+with one existing ignore; Source-birth passes all 62 tests. All six architecture
+checks pass. The first raw-value run passed 1,844 tests and failed the prior
+initial peak fixture; its isolated rerun passed. That fixture regenerated a
+child-local launch/PID and commitments instead of pricing the parent's received
+operands. The corrected control prices those actual inputs and sets its ceiling
+one byte below their independent row; both final full libraries include it.
+Production checks and ceilings are unchanged.
+
+Affected all-feature/all-target checking and scoped formatting also pass. The
+required application gate and funded-Source VM are running for the final frozen
+source. Full live Hello
+authentication, model-absent policy, bootstrap ACK and the remaining RFC
+acceptance exits are still required.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.

@@ -28,6 +28,13 @@ mod normalized_framing;
 #[path = "initial_reconstruction/hello_selection.rs"]
 mod hello_selection;
 
+#[path = "initial_reconstruction/hello_request.rs"]
+mod hello_request;
+
+pub(super) fn hello_request_body_data(case: &str) -> Vec<u8> {
+    hello_request::body_data(case)
+}
+
 #[path = "initial_reconstruction/hello_value.rs"]
 mod hello_value;
 
@@ -103,6 +110,7 @@ fn operands(case: &str) -> [Value; 3] {
             | "initial_hello_exchange_reactive"
             | "initial_hello_literal_reactive"
             | "initial_hello_value_reactive"
+            | "initial_hello_request_reactive"
     ));
     if case.starts_with("initial_selection_") || case.starts_with("initial_hello_") {
         selection::prepare_selected(case, &mut selected);
@@ -190,10 +198,6 @@ fn required(values: &[Value; 3]) -> [usize; 3] {
         .row
 }
 
-pub(super) fn required_peak(case: &str) -> usize {
-    required(&operands(case)).iter().sum()
-}
-
 fn flight(case: &str) {
     let mut values = operands(case);
     let mut row = required(&values);
@@ -253,6 +257,19 @@ pub(super) fn assert_child(
         owner.authenticate_source_data().unwrap();
     }
     let retained = owner.retained_requested_bytes().unwrap();
+    if case == "initial_independent_peak" {
+        // The child must price the actual parent's received launch. Regenerating
+        // operands here substitutes the child's PID and derived commitments.
+        let bodies = owner.typed_bodies_data().unwrap();
+        let row = initial_construction_from_wire_data(
+            bodies.launch,
+            bodies.boot,
+            typed::bounds().requested_peak,
+        )
+        .unwrap()
+        .row;
+        owner.bounds.requested_peak = row.into_iter().sum::<usize>() - 1;
+    }
     if case == "initial_expired" {
         owner.cut = OperationalDeadline::expired_fixture();
     }
@@ -344,12 +361,19 @@ pub(super) fn assert_child(
             assert!(owner.initial_reconstructed);
             assert!(owner.initial_construction.is_some());
         } else {
-            assert!(result.is_err());
+            assert!(
+                result.is_err(),
+                "{case}: initial reconstruction unexpectedly accepted"
+            );
             assert!(!owner.initial_reconstructed);
         }
     }
     if case.starts_with("initial_selection_") {
         selection::assert_child(case, &mut owner);
+        return;
+    }
+    if case.starts_with("initial_hello_request_") {
+        hello_request::assert_child(case, &mut owner);
         return;
     }
     if case.starts_with("initial_hello_value_") {

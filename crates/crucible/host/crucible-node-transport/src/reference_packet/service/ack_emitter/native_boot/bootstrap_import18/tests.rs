@@ -85,6 +85,7 @@ fn child(case: &str, wire: &[u8]) {
         || case.starts_with("initial_hello_exchange_")
         || case.starts_with("initial_hello_literal_")
         || case.starts_with("initial_hello_value_")
+        || case.starts_with("initial_hello_request_")
     {
         let (peer, inherited) = UnixStream::pair().unwrap();
         command.stderr(Stdio::from(std::os::fd::OwnedFd::from(inherited)));
@@ -95,7 +96,12 @@ fn child(case: &str, wire: &[u8]) {
     let process = command.spawn().unwrap();
     drop(command);
     if let Some(peer) = &mut public_peer {
-        if case.starts_with("initial_hello_value_") {
+        if case.starts_with("initial_hello_request_") {
+            let body = initial_reconstruction::hello_request_body_data(case);
+            peer.write_all(&(body.len() as u32).to_be_bytes()).unwrap();
+            peer.write_all(&body).unwrap();
+            peer.write_all(b"literal suffix").unwrap();
+        } else if case.starts_with("initial_hello_value_") {
             let body = initial_reconstruction::hello_value_body_data(case);
             peer.write_all(&(body.len() as u32).to_be_bytes()).unwrap();
             peer.write_all(&body).unwrap();
@@ -170,9 +176,6 @@ fn inherited_raw_bootstrap_child() {
     if case == "source_independent_peak" {
         selected_bounds.requested_peak = source_authentication::required_peak(&case) - 1;
     }
-    if case == "initial_independent_peak" {
-        selected_bounds.requested_peak = initial_reconstruction::required_peak(&case) - 1;
-    }
     if case == "independent_peak" {
         selected_bounds.requested_peak = 1;
     }
@@ -183,6 +186,7 @@ fn inherited_raw_bootstrap_child() {
         || case.starts_with("initial_hello_exchange_")
         || case.starts_with("initial_hello_literal_")
         || case.starts_with("initial_hello_value_")
+        || case.starts_with("initial_hello_request_")
     {
         initial_reconstruction::retain_public_before_read(&case, &mut owner);
     }

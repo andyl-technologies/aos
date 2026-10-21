@@ -149,7 +149,7 @@ impl Attempt {
     ///
     /// # Errors
     /// Refuses stale custody or an incomplete/refused parser occurrence.
-    pub(super) fn value_data(&self) -> Result<&Value, ProviderError> {
+    pub(in super::super) fn value_data(&self) -> Result<&Value, ProviderError> {
         self.owner.ensure_current()?;
         if self.stage != Stage::Complete {
             return Err(refused());

@@ -96,6 +96,18 @@ impl OriginalImport18HelloValueAdmission for Admission<'_> {
     }
 }
 
+pub(super) fn construct_for_request(owner: &mut OriginalImport18RawBootstrap) {
+    super::hello_literal::construct_for_value(owner);
+    let admission = Admission {
+        case: "initial_hello_value_complete",
+        calls: Cell::new(0),
+        before: owner.retained_requested_bytes().unwrap(),
+        row: Cell::new(None),
+    };
+    owner.decode_hello_value_data(&admission).unwrap();
+    assert_eq!(admission.calls.get(), 3);
+}
+
 pub(super) fn assert_child(case: &str, owner: &mut OriginalImport18RawBootstrap) {
     if case != "initial_hello_value_unchecked_literal" {
         super::hello_literal::construct_for_value(owner);

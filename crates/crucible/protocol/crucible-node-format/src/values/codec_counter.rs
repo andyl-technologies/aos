@@ -78,6 +78,33 @@ struct DecodeControls<'a> {
     quad_chunks: std::iter::Enumerate<slice::ChunksExact<'a, u8>>,
 }
 
+// Engine::decode_slice uses a caller-owned destination. It has no Vec bank or
+// owned Bytes result; its actual helper controls are shared with decode().
+#[allow(dead_code)]
+struct SliceDecodeControls<'a> {
+    engine: &'a GeneralPurpose,
+    input: &'a [u8],
+    output: &'a mut [u8],
+    estimate: Estimate,
+    metadata: DecodeMetadata,
+    metadata_result: Result<DecodeMetadata, DecodeSliceError>,
+    result: Result<usize, DecodeSliceError>,
+    table: &'a [u8; 256],
+    trailing_bits: bool,
+    padding_mode: DecodePaddingMode,
+    complete_nonterminal: usize,
+    after_unrolled_chunks: usize,
+    unrolled_input: usize,
+    unrolled_output: usize,
+    complete_output: usize,
+    chunk_index: usize,
+    chunk: &'a [u8],
+    chunk_output: &'a mut [u8],
+    output_after_unroll: &'a mut [u8],
+    chunks: std::iter::Enumerate<slice::ChunksExact<'a, u8>>,
+    quad_chunks: std::iter::Enumerate<slice::ChunksExact<'a, u8>>,
+}
+
 #[allow(dead_code)]
 struct CompleteQuadsControls<'a> {
     input: &'a [u8],
@@ -145,6 +172,20 @@ impl Bytes {
             + size_of::<String>()
             + size_of::<Result<String, std::string::FromUtf8Error>>()
             + size_of::<Option<usize>>()
+    }
+
+    /// Names fixed controls for base64url decoding into a caller-owned slice.
+    ///
+    /// The input and destination remain separately funded by the caller. This
+    /// names the pinned slice decoder and its actual helper families without
+    /// charging an allocating Vec decoder or granting a construction admission.
+    pub fn slice_decoding_counter_scratch_data() -> usize {
+        size_of::<GeneralPurpose>()
+            + size_of::<SliceDecodeControls<'static>>()
+            + size_of::<CompleteQuadsControls<'static>>()
+            + size_of::<ChunkControls<'static, u64, 8>>()
+            + size_of::<ChunkControls<'static, u32, 4>>()
+            + size_of::<SuffixControls<'static>>()
     }
 
     /// Names the actual base64url decoder's fixed constructor controls.

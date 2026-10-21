@@ -22,25 +22,42 @@ pub struct Limits {
 
 impl Validate for Limits {
     fn validate(&self) -> Result<(), ContractError> {
-        for (value, maximum) in [
-            (self.frame_bytes, 16_777_216),
-            (self.nesting, 64),
-            (self.requests, 256),
-            (self.journal_entries, 4096),
-            (self.blob_chunk_bytes, 1_048_576),
-        ] {
-            if value.get() == 0 || value.get() > maximum {
-                return Err(invalid(
-                    "limits",
-                    "require positive receiving ceilings within baseline hard caps",
-                ));
-            }
+        if !self.is_valid_data() {
+            return Err(invalid(
+                "limits",
+                "require positive receiving ceilings within baseline hard caps",
+            ));
         }
         Ok(())
     }
 }
 
 impl Limits {
+    /// Checks the receiving ceilings without constructing an owned diagnostic.
+    ///
+    /// This is the same predicate used by [`Validate::validate`]. The result is
+    /// ordinary negotiation DATA and supplies no storage admission or authority.
+    pub fn is_valid_data(&self) -> bool {
+        [
+            (self.frame_bytes, 16_777_216),
+            (self.nesting, 64),
+            (self.requests, 256),
+            (self.journal_entries, 4096),
+            (self.blob_chunk_bytes, 1_048_576),
+        ]
+        .into_iter()
+        .all(|(value, maximum)| value.get() != 0 && value.get() <= maximum)
+    }
+
+    /// Names the fixed controls of the allocation-free ceiling predicate.
+    pub fn validation_counter_scratch_data() -> usize {
+        std::mem::size_of::<&Self>()
+            + std::mem::size_of::<[(U64, u64); 5]>()
+            + std::mem::size_of::<std::array::IntoIter<(U64, u64), 5>>()
+            + std::mem::size_of::<(U64, u64)>()
+            + std::mem::size_of::<bool>()
+    }
+
     /// Selects each smaller advertised positive receiving limit.
     ///
     /// # Errors
@@ -60,3 +77,36 @@ impl Limits {
 
 /// Names the opt-in wire contract and required transport feature.
 pub const EXTENSION_NEGOTIATION_V1: &str = "cnp.extension-negotiation/1";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn allocation_free_limits_check_matches_every_validation_boundary() {
+        let caps = [16_777_216, 64, 256, 4096, 1_048_576];
+        for field in 0..caps.len() {
+            for value in [0, 1, caps[field], caps[field] + 1, u64::MAX] {
+                let mut values = caps;
+                values[field] = value;
+                let [
+                    frame_bytes,
+                    nesting,
+                    requests,
+                    journal_entries,
+                    blob_chunk_bytes,
+                ] = values.map(U64::new);
+                let limits = Limits {
+                    frame_bytes,
+                    nesting,
+                    requests,
+                    journal_entries,
+                    blob_chunk_bytes,
+                };
+
+                assert_eq!(limits.is_valid_data(), value > 0 && value <= caps[field]);
+                assert_eq!(limits.is_valid_data(), limits.validate().is_ok());
+            }
+        }
+    }
+}
