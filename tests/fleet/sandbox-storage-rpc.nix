@@ -280,6 +280,15 @@ in {
             machine.succeed("systemctl start aos-storaged.service", timeout=150)
             controller(inventory_action, inventory_expected)
             machine.succeed("systemctl is-active --quiet aos-storaged.service")
+            broker_pid = int(machine.succeed(
+                "systemctl show aos-storaged.service -p MainPID --value"
+            ).strip())
+            assert broker_pid > 1
+            # The durable host pins must survive replacement of the broker's
+            # confined namespace, rather than depending on that namespace.
+            assert machine.succeed(f"readlink /proc/{broker_pid}/ns/mnt").strip() != (
+                machine.succeed("readlink /proc/1/ns/mnt").strip()
+            )
             assert seccomp_probe_passes() == expected_probe_passes
         except Exception:
             try:

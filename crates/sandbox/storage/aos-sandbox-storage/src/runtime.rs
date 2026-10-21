@@ -2035,9 +2035,10 @@ impl StorageBrokerRuntime {
         mut original: Option<(&mut StorageOriginalNativeConstructionV1, OriginalStartupProfileV1<'_>)>,
     ) -> Result<StorageStartupOutcomeV4, StorageRuntimeError> {
         let operator_credentials = selection.credentials();
-        // Retain the host mount namespace before constructing any subsystem
-        // that may later acquire a namespace-scoped helper.
-        assembly.pin_custody = Some(WorkspacePinHostCustody::retain_initial_root_owned()
+        // Pin authority survives replacement of this service's private mount
+        // namespace. Retain the fixed PID 1 scope with the same descriptor
+        // footprint before constructing namespace-scoped helpers.
+        assembly.pin_custody = Some(WorkspacePinHostCustody::retain_pid1_root_owned()
             .map_err(|_| StorageRuntimeError::WorkspacePinScope)?);
         let selected_receiver = original.as_ref().is_some_and(|(attempt, _)|
             attempt.has_storage_service_receiving_original_v1());

@@ -122,6 +122,43 @@ impl WorkspacePinHostCustody {
         })
     }
 
+    /// Retains PID 1's stable host scope before entering a confined service scope.
+    ///
+    /// The broker's private mount namespace is replaced on every service
+    /// restart. Durable workspace pins belong to PID 1's host namespace instead.
+    /// These fixed procfs sources select that namespace and its root; the
+    /// observer still enters the retained namespace and reopens the exact pin
+    /// root before accepting any observation or effect.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the boot ID, PID 1 mount namespace, or root-owned
+    /// fixed pin directory cannot be retained. It never falls back to the
+    /// calling service's private namespace.
+    pub(crate) fn retain_pid1_root_owned() -> Result<Self, WorkspacePinObserverError> {
+        let kernel_boot_id = KernelBootId::current()?.into_bytes();
+        let descriptor = rustix::fs::open(
+            "/proc/1/ns/mnt",
+            OFlags::RDONLY | OFlags::CLOEXEC,
+            Mode::empty(),
+        )?;
+        let mount_namespace = NamespaceFd::from_owned(descriptor, NamespaceKind::Mount)?;
+        // Following this fixed kernel procfs link is intentional: opening `/`
+        // here would retain the service's private root and mount identities.
+        let system_root = rustix::fs::open(
+            "/proc/1/root",
+            OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
+            Mode::empty(),
+        )?;
+        let pin_root = open_pin_root_beneath(BeneathRoot::from_owned(system_root)?)?;
+
+        Ok(Self {
+            kernel_boot_id,
+            mount_namespace,
+            pin_root,
+        })
+    }
+
     /// Returns the exact host scope bound into a fresh durable pin attempt.
     pub(crate) fn host_scope(&self) -> Result<WorkspacePinHostScopeV1, StorageStateError> {
         let identity = self.mount_namespace.identity();
@@ -582,14 +619,26 @@ fn validate_expected_host_scope(
     retained_pin_root: &ResolvedPath,
 ) -> Result<(), WorkspacePinObserverError> {
     let namespace = mount_namespace.identity();
-    if mount_namespace.kind() != NamespaceKind::Mount
-        || KernelBootId::current()?.into_bytes() != expected.kernel_boot_id()
-        || namespace.device != expected.mount_namespace_device()
+    if mount_namespace.kind() != NamespaceKind::Mount {
+        return Err(WorkspacePinObserverError::HostScopeObservation(
+            "retained descriptor is not a mount namespace",
+        ));
+    }
+    if KernelBootId::current()?.into_bytes() != expected.kernel_boot_id() {
+        return Err(WorkspacePinObserverError::HostScopeObservation(
+            "current boot differs from durable host scope",
+        ));
+    }
+    if namespace.device != expected.mount_namespace_device()
         || namespace.inode != expected.mount_namespace_inode()
-        || open_current_mount_namespace()?.identity() != namespace
     {
         return Err(WorkspacePinObserverError::HostScopeObservation(
-            "current boot or mount namespace differs from retained namespace",
+            "retained namespace differs from durable host scope",
+        ));
+    }
+    if open_current_mount_namespace()?.identity() != namespace {
+        return Err(WorkspacePinObserverError::HostScopeObservation(
+            "observer has not entered the retained namespace",
         ));
     }
 
@@ -687,7 +736,12 @@ fn open_fixed_pin_root() -> Result<ResolvedPath, WorkspacePinObserverError> {
         OFlags::PATH | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
         Mode::empty(),
     )?;
-    let system_root = BeneathRoot::from_owned(system_root)?;
+    open_pin_root_beneath(BeneathRoot::from_owned(system_root)?)
+}
+
+fn open_pin_root_beneath(
+    system_root: BeneathRoot,
+) -> Result<ResolvedPath, WorkspacePinObserverError> {
     if !controlled_directory(&rustix::fs::fstat(system_root.as_fd())?) {
         return Err(WorkspacePinObserverError::HostScopeMismatch);
     }
