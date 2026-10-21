@@ -67,7 +67,26 @@ failed attempts appear in the dated entries below.
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | Latest focused checks pass all 73 policy and five hygiene controls; the broad gate retains thirteen daemon paths. | The fresh canonical license-boundary check is blocked by strict controller Clippy (1,189 host-library and 1,262 host-test errors); its boundary assertions did not run. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 362 committed bindings: 343 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
+| Requirements | 365 committed bindings: 346 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
+
+#### Independent health and Quantum posts
+
+`6e18b93b75` checks the same entered operation after every quantum health
+return, including successful health observations and Source refusals. The
+initiating Source owner and operational category remain intact; its independent
+negative Original post stays inline through driver and scheduler propagation.
+A runtime refusal already paired with a negative Original post returns before
+later health can replace it. Ordinary Source-health priority over an unpaired
+transport failure remains unchanged.
+
+All 33 driver tests pass in both default and private-measurement configurations,
+along with eleven worker-failure and nine node-error tests. Engineering hygiene
+passes. Mandatory application compilation and the expanded supervision run
+remain pending. The helper's first/post join allocates nothing; this does not
+prove complete diagnostic-carrier funding. In particular, scheduler conversion
+of a worker failure with a newly retained post needs the complete paired
+carrier, rather than the worker-only shared-control shortcut. Genuine Native
+execution and physical return remain unqualified.
 
 #### Bounded completion and typed channel observations
 
@@ -87,8 +106,8 @@ immutable source `y4mqafwvaryc96fk21j25f1n913wgdaz`; the comparison record has
 SHA-256 `fac5f7071a7943667325e0424cc5398d2e83f0d79c916fbd182ce6400650895a`.
 The initial missing-match compilation failure and the test's repeated-view
 log-spill allocation failure remain recorded separately from the corrected
-final run. The expanded supervision run remains pending. These component
-checks establish neither the actual publisher command join nor Native Advance
+final run. All 245 exact supervision cases pass at
+`j8rnm0wb98h2xw1qr2zxw3imc0i3j3j9`. These component checks establish neither the actual publisher command join nor Native Advance
 admission, complete diagnostic funding or physical return.
 
 #### Independent channel refusal and Quantum post
