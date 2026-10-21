@@ -216,18 +216,21 @@ class PlanSemanticsTest(unittest.TestCase):
             for pattern, kind, _ in rows
         ))
 
-    def test_storage_delivery_labels_only_exact_service_and_three_leaves(self) -> None:
+    def test_storage_delivery_labels_only_exact_service_and_six_leaves(self) -> None:
         source = Path(__file__).with_name("aos_sandbox.fc").read_text()
         rows = [
             row.split() for row in source.splitlines()
             if row.startswith("/run/credentials/aos-storaged")
         ]
-        self.assertEqual(len(rows), 2)
+        self.assertEqual(len(rows), 3)
         root = "/run/credentials/aos-storaged.service"
         names = (
             "storage-zfs-hold-key-v1",
             "operator-recovery-controller-public-key-v1",
             "operator-recovery-storage-owner-key-v1",
+            "runtime-deployment-genesis-v1",
+            "runtime-deployment-provisioner-pin-v1",
+            "runtime-deployment-canary-purpose-v2",
         )
         for path, marker in ((root, "-d"), *((root + "/" + name, "--") for name in names)):
             matches = [
@@ -397,10 +400,12 @@ class PlanSemanticsTest(unittest.TestCase):
 
         class Resolver:
             def lookup(
-                self, path: str, _kind: context_plan.InodeKind
+                self, path: str, kind: context_plan.InodeKind
             ) -> str | None:
                 if path == logical:
                     return "system_u:object_r:selected_component_exec_t"
+                if kind is not context_plan.InodeKind.regular:
+                    return "system_u:object_r:usr_t"
                 return "system_u:object_r:default_t"
 
         with tempfile.TemporaryDirectory() as temporary:
@@ -426,6 +431,50 @@ class PlanSemanticsTest(unittest.TestCase):
             self.assertEqual(
                 by_path[physical], "system_u:object_r:selected_component_exec_t"
             )
+
+    def test_immutable_seed_descendants_use_runtime_profile_policy(self) -> None:
+        class Resolver:
+            def lookup(
+                self, path: str, kind: context_plan.InodeKind
+            ) -> str | None:
+                if path.startswith("/run/current-system/"):
+                    return None
+                if path == "/usr/lib/aos/toplevel":
+                    return "system_u:object_r:etc_t"
+                if kind is not context_plan.InodeKind.regular:
+                    return "system_u:object_r:usr_t"
+                if path.startswith("/usr/lib/"):
+                    return "system_u:object_r:lib_t"
+                if path.startswith("/usr/bin/"):
+                    return "system_u:object_r:bin_t"
+                return "system_u:object_r:default_t"
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            program = root / "nix/store/hash-coreutils/bin/coreutils"
+            program.parent.mkdir(parents=True)
+            program.write_bytes(elf64(context_plan.ET_EXEC))
+            program.chmod(0o755)
+
+            profile = root / "nix/store/hash-toplevel/bin"
+            profile.mkdir(parents=True)
+            (profile / "cat").symlink_to("/nix/store/hash-coreutils/bin/coreutils")
+            seed = root / "usr/lib/aos/toplevel"
+            seed.parent.mkdir(parents=True)
+            seed.symlink_to("/nix/store/hash-toplevel")
+            command = root / "usr/bin/cat"
+            command.parent.mkdir(parents=True)
+            command.symlink_to("/nix/store/hash-coreutils/bin/coreutils")
+
+            labels = context_plan.plan_labels(
+                context_plan.inventory_tree(root), Resolver()
+            )
+            by_path = {label.path: label.context for label in labels}
+            self.assertEqual(
+                by_path["/nix/store/hash-coreutils/bin/coreutils"],
+                "system_u:object_r:bin_t",
+            )
+            self.assertEqual(by_path["/usr/lib/aos/toplevel"], "system_u:object_r:etc_t")
 
     def test_specific_alias_overrides_dual_use_libc_fallback(self) -> None:
         class Resolver:

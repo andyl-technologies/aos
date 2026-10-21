@@ -794,6 +794,12 @@ def plan_labels(
         physical_root = "/usr/lib/aos/nix"
         if path == physical_root or path.startswith(physical_root + "/"):
             return "/nix" + path[len(physical_root):]
+        # The immutable seed is the same toplevel as the runtime profile.
+        # Its descendants must not gain generic /usr/lib library authority.
+        # Keep the seed symlink itself under its explicit physical-path rule.
+        seed = "/usr/lib/aos/toplevel"
+        if path.startswith(seed + "/"):
+            return "/run/current-system" + path[len(seed):]
         return path
 
     direct_contexts = {
