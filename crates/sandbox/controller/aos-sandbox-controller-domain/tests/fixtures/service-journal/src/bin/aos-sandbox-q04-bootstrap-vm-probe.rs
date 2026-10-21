@@ -76,6 +76,10 @@ fn run() -> Result<(), Box<dyn Error>> {
             require_uid(0)?;
             bootstrap_credentials()?;
         }
+        "external-source-credentials-bootstrap" => {
+            require_uid(0)?;
+            bootstrap_external_source_credentials()?;
+        }
         "credentials-replay" => {
             require_uid(0)?;
             replay_credentials()?;
@@ -318,6 +322,19 @@ fn bootstrap_credentials() -> Result<(), Box<dyn Error>> {
         create_credential("aos-sandbox-policy-authorityd.service", name, pin)?;
     }
     replay_credentials()
+}
+
+/// Provisions fixture inputs for PID 1's real Source credential delivery.
+///
+/// These test-only keys establish no Source hold or admitted startup. The
+/// installed signer independently captures its original and validates its pin.
+fn bootstrap_external_source_credentials() -> Result<(), Box<dyn Error>> {
+    let source = SigningKey::from_bytes(&[8; 32]);
+    let pin = encode_source_hold_readback_signer_credential_v1(8, &source.verifying_key())?;
+
+    create_credential("@system", "qualification-source-private-seed", &[8; 32])?;
+    create_credential("@system", "qualification-source-hold-public-key", &pin)?;
+    Ok(())
 }
 
 fn signed_packet(magic: &[u8; 8], domain: &[u8], payload: &[u8], key: &SigningKey) -> Vec<u8> {
