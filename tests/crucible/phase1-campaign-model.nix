@@ -29,56 +29,17 @@ in
             set -euo pipefail
             : "$DEPENDENCY_PATHS"
 
-            run_exact_lib_test() {
-              gate_package=$1
-              gate_test=$2
-              gate_list_log="$TMPDIR/campaign-model-list.log"
-              gate_test_log="$TMPDIR/campaign-model-test.log"
-
-              printf 'listing library tests for %s\n' "$gate_package"
-              if crucible-cargo test \
-                -p "$gate_package" --lib -- --list 2>&1 \
-                | "${pkgs.coreutils}/bin/tee" "$gate_list_log"; then
-                :
-              else
-                status="''${PIPESTATUS[0]}"
-                [ "$status" -ne 0 ] || status=1
-                exit "$status"
-              fi
-              match_count=$(grep -Fxc "$gate_test: test" "$gate_list_log" || true)
-              if [ "$match_count" -ne 1 ]; then
-                printf 'expected exactly one listed test named %s; found %s\n' \
-                  "$gate_test" "$match_count" >&2
-                exit 1
-              fi
-
-              printf 'running exact test %s::%s\n' "$gate_package" "$gate_test"
-              if crucible-cargo test \
-                -p "$gate_package" --lib -- --exact "$gate_test" --test-threads=1 2>&1 \
-                | "${pkgs.coreutils}/bin/tee" "$gate_test_log"; then
-                :
-              else
-                status="''${PIPESTATUS[0]}"
-                [ "$status" -ne 0 ] || status=1
-                exit "$status"
-              fi
-              if ! grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' "$gate_test_log"; then
-                printf 'required test did not produce the exact pass count: %s\n' \
-                  "$gate_test" >&2
-                exit 1
-              fi
-            }
-
-            crucible-cargo test -p crucible-campaign --lib -- --test-threads=1
-            crucible-cargo test -p crucible-campaign --test gate_campaign_model -- --test-threads=1
-            run_exact_lib_test \
-              crucible \
+            # The suites run on libtest's thread pool: crucible-campaign's
+            # tests share no process-global state (environment, working
+            # directory, or statics), and one serial run of the library
+            # suite was most of this gate's time. The individually required
+            # tests run in one exact invocation per test executable.
+            crucible-cargo test -p crucible-campaign --lib
+            crucible-cargo test -p crucible-campaign --test gate_campaign_model
+            crucible-exact-tests -p crucible --lib -- \
               model::measurement::runtime::tests::model_sources_project_exact_replay_samples
-            run_exact_lib_test \
-              crucible-daemon \
-              crucible_measurement::evidence::tests::v3_publication_round_trips_and_rederives_guest_and_model_samples
-            run_exact_lib_test \
-              crucible-daemon \
+            crucible-exact-tests -p crucible-daemon --lib -- \
+              crucible_measurement::evidence::tests::v3_publication_round_trips_and_rederives_guest_and_model_samples \
               crucible_measurement::tests::verified_crucible_aggregate_drives_exact_campaign_objective
           '';
         }

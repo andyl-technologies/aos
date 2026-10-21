@@ -478,6 +478,29 @@
     ];
     meta.description = "Runs prebuilt Crucible workspace tests with Cargo's command line";
   };
+
+  # Kept apart from the runner so that VM runtimes, which carry the runner
+  # but never run exact test sets, keep their identities when it changes.
+  exactTests = mkDerivation {
+    pname = "crucible-exact-tests";
+    inherit version;
+    src = null;
+    runtimeDeps = [bash coreutils gawk grep runner];
+    phases = [
+      {
+        name = "install";
+        script = ''
+          mkdir -p "$out/bin"
+          sed \
+            -e 's|@bash@|${bash}/bin/bash|' \
+            -e 's|@path@|${lib.makeBinPath [runner coreutils gawk grep]}|' \
+            ${./crucible-exact-tests.sh} > "$out/bin/crucible-exact-tests"
+          chmod +x "$out/bin/crucible-exact-tests"
+        '';
+      }
+    ];
+    meta.description = "Runs a gate's required Crucible tests by exact name in one process per executable";
+  };
 in {
-  inherit apacheTests gplTests apacheRelease gplRelease runner buildSource selections;
+  inherit apacheTests gplTests apacheRelease gplRelease runner exactTests buildSource selections;
 }

@@ -69,6 +69,11 @@
 ##! }
 ##! ```
 ##!
+##! Gates that require individually named tests call `crucible-exact-tests`
+##! (`pkgs/tools/crucible/crucible-exact-tests.sh`), which checks that each
+##! name is listed once and runs them all with `--exact` in one process per
+##! executable, instead of one listing and one test process per name.
+##!
 ##! `builds` selects families; the default is both debug test families.
 ##! `mkCrucibleBinaries` copies named executables into a small output for VM
 ##! root filesystems, so a flight closure never retains a whole family.
@@ -77,7 +82,7 @@
   lib,
 }: let
   workspaceTests = pkgs.crucible-controller.passthru.workspaceTests;
-  inherit (workspaceTests) runner;
+  inherit (workspaceTests) runner exactTests;
   cargoDeps = pkgs.crucible-controller.passthru.cargoDeps;
   defaultSource = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
 
@@ -124,7 +129,7 @@ in {
       // {
         inherit src;
         version = args.version or "0";
-        buildDeps = [runner pkgs.coreutils] ++ builds ++ buildDeps;
+        buildDeps = [runner exactTests pkgs.coreutils] ++ builds ++ buildDeps;
         CRUCIBLE_CARGO_BUILDS = buildsPath builds;
         phases = [unpackPhase configurePhase] ++ phases;
       }
