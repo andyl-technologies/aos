@@ -27,6 +27,7 @@ mod recovery_metadata;
 mod recovery_namespace;
 mod recovery_pending;
 mod recovery_residences;
+mod recovery_restore;
 mod recovery_state;
 mod recovery_state_parent;
 mod resume_error;
@@ -62,6 +63,7 @@ pub use publication::{
 pub use recovery::CompletedRecovery;
 pub(crate) use recovery::RunningRecovery;
 pub(crate) use recovery_pending::PublisherRecoveryRetirementTurn;
+pub(crate) use recovery_restore::PublisherRecoveryRestoreTurn;
 pub use resume_error::NativeResumeError;
 pub(crate) use retention::{
     AcceptedRecoveryManifestEffect, PublisherCacheRetirementTurn, PublisherCleanupTurn,

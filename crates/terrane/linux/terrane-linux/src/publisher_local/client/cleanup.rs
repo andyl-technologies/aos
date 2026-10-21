@@ -11,7 +11,9 @@ use super::{
     invalidate,
 };
 use crate::{
-    host_cache::{PublisherCleanupTurn, PublisherRecoveryRetirementTurn},
+    host_cache::{
+        PublisherCleanupTurn, PublisherRecoveryRestoreTurn, PublisherRecoveryRetirementTurn,
+    },
     publisher_local::wire::Operation,
 };
 use std::{io, sync::Arc};
@@ -47,6 +49,30 @@ impl AcknowledgedSourceRetirement {
 }
 
 impl Client<HostDomainLocation> {
+    /// Restores an original pending body under funded physical recovery custody.
+    ///
+    /// This acknowledges namespace effects only. Returned native descriptors are
+    /// dropped; canonical inspection and adoption must establish content custody.
+    ///
+    /// # Errors
+    /// Refuses stale physical funding, another Drain or original incarnation,
+    /// canonical collisions and failed or uncertain native exchanges.
+    pub(crate) fn restore_recovery_body(
+        self: &Arc<Self>,
+        context: &PublisherRecoveryContext<HostDomainLocation>,
+        turn: &mut PublisherRecoveryRestoreTurn<'_>,
+    ) -> Result<(), Error> {
+        let observation = turn.observation(self, context).map_err(Error::Io)?;
+        let mut state = self.lock()?;
+        self.require_recovery_context(&state, context)?;
+        let payload = observation.checked_payload(self, &state, observation.key())?;
+        if let Err(error) = self.exchange_payload(&mut state, Operation::Restore, payload) {
+            invalidate(&mut state);
+            return Err(error);
+        }
+        Ok(())
+    }
+
     /// Finishes an expired pending chunk under the funded physical recovery turn.
     ///
     /// The publisher reconstructs missing retirement deadlines conservatively

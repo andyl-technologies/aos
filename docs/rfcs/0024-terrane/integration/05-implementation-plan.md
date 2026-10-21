@@ -8694,6 +8694,19 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
 
 ### T2 — Host tier
 
+Pending restoration preparation (2026-10-20): populated recovery restores
+supported original pending incarnations under the synchronized bootstrap and
+original Drain context before rebuilding content custody. The acknowledgment
+grants namespace effects only; fresh exhaustive shared and publisher scans,
+ordinary verification, adoption and cold-policy reconciliation remain required.
+This preserves backing potentially required by surviving cold consumers instead
+of deleting it before reconstruction. Two native controls move a genuinely
+sealed manifest into pending custody, with and without an original cold pin,
+lease and hold, and require the same canonical inode and bytes after recovery.
+Empty unpinned expired-retirement controls retain their existing behavior.
+Strict all-target lint passes; native runtime and final application qualification
+remain pending. No T2 task is accepted.
+
 Mixed metadata recovery preparation (2026-10-20): after actual manifest
 adoption, matched metadata pairs outside its retained reconstruction closure
 transfer into the same physical cache registry after Resume. Exclusion from

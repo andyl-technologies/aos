@@ -533,7 +533,7 @@ pub(super) fn run(
     println!(
         "PASS actual recovered ranges survived a new Running admission; original metadata retained"
     );
-    if case == FixtureCase::Verified && inputs.domain != metadata::DOMAIN {
+    if case == FixtureCase::Verified && inputs.domain == case.domain() {
         reuse::run(owner, runtime, inputs)?;
     } else if case == FixtureCase::MixedVerified {
         inline::run(owner, runtime, inputs)?;
@@ -839,7 +839,13 @@ fn metadata_pack_hash(inputs: &Inputs) -> io::Result<String> {
 
 fn require_domain(inputs: &Inputs, case: FixtureCase) -> io::Result<()> {
     if inputs.domain != case.domain()
-        && !(case == FixtureCase::Verified && inputs.domain == metadata::DOMAIN)
+        && !(case == FixtureCase::Verified
+            && matches!(
+                inputs.domain.as_str(),
+                metadata::DOMAIN | "tenant:manifest-pending"
+            ))
+        && !(case == FixtureCase::WritableVerified
+            && inputs.domain == "tenant:manifest-pending-cold")
     {
         return Err(invalid("manifest fixture requires its dedicated domain"));
     }

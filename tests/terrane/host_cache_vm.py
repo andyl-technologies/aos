@@ -81,6 +81,11 @@ CASES += ["encoded-sealed", "encoded-old-range"]
 CASES += ["encoded-metadata", "encoded-metadata-only", "encoded-data-pack"]
 MANIFEST_CASES.append(("manifest-extra-metadata", "seed-manifest", "recover-manifest", True, "valid manifest"))
 CASES += ["manifest-extra-metadata"]
+MANIFEST_CASES += [
+    ("manifest-pending", "seed-manifest", "recover-manifest", True, "valid manifest"),
+    ("manifest-pending-cold", "seed-writable-manifest", "recover-writable-manifest", True, "valid manifest"),
+]
+CASES += ["manifest-pending", "manifest-pending-cold"]
 BUDGET = HARD * len(CASES)
 PROVISION_CAPS = "-all,+sys_admin,+dac_read_search,+fowner,+chown,+fsetid"
 QUERY_CAPS = "-all,+sys_admin,+dac_read_search"
@@ -399,6 +404,24 @@ def seed_manifests(uuid):
                         "companions": [(path, path.stat().st_ino) for path in companions],
                         "packs": {str(path): hashlib.sha256(path.read_bytes()).hexdigest() for path in packs},
                         "conflicting_binding": conflict}
+        if case in {"manifest-pending", "manifest-pending-cold"}:
+            # Root administration models the durable rename left by a crash.
+            # The publisher must issue its own incarnation and Restore; the
+            # original seal, inode and any cold policy remain independently held.
+            pending = root(case) / "pending-delete" / body.name
+            require(not pending.exists(), "pending seed collides with another inode")
+            body.rename(pending)
+            for parent in [body.parent, pending.parent]:
+                descriptor = os.open(parent, os.O_RDONLY | os.O_DIRECTORY)
+                try:
+                    os.fsync(descriptor)
+                finally:
+                    os.close(descriptor)
+            require(not body.exists() and pending.stat().st_ino == seeded[case]["inode"]
+                    and hashlib.sha256(pending.read_bytes()).hexdigest() == seeded[case]["hash"]
+                    and kernel_seal(pending) is not None,
+                    "pending setup changed the original sealed incarnation")
+            seeded[case]["pending"] = pending
     return seeded
 
 
@@ -452,6 +475,11 @@ def manifest_recovery_cases(uuid, seeded, helper):
         for name, digest in original["packs"].items():
             require(hashlib.sha256(pathlib.Path(name).read_bytes()).hexdigest() == digest,
                     "manifest recovery changed retained metadata bytes")
+        if "pending" in original:
+            require(not original["pending"].exists(),
+                    "acknowledged recovery retained the original pending name")
+            print("PASS pending sealed manifest restored to the original canonical inode before verified recovery: " + case,
+                  flush=True)
         if recovers:
             retained = original["body"]
             require(retained.stat().st_ino == original["inode"]

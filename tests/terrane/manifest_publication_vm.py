@@ -11,10 +11,10 @@ import tomllib
 
 def seed_cold_policy(driver, case, body, companions):
     """Seeds durable policy candidates; actual roles must verify their backing."""
-    if case not in {"manifest-sealed-writable", "manifest-mixed"}:
+    if case not in {"manifest-sealed-writable", "manifest-mixed", "manifest-pending-cold"}:
         return None
 
-    pinned = body if case == "manifest-sealed-writable" else companions[0]
+    pinned = body if case in {"manifest-sealed-writable", "manifest-pending-cold"} else companions[0]
     cold = {
         "pins": [{"owner": "fixture-cold-consumer", "hash": pinned.name,
                   "expires": 9223372036854775807}],
@@ -22,7 +22,7 @@ def seed_cold_policy(driver, case, body, companions):
         "reservations": [],
         "residences": [],
     }
-    if case == "manifest-sealed-writable":
+    if case in {"manifest-sealed-writable", "manifest-pending-cold"}:
         cold["reservations"] = [{"id": "fixture-cold-hold", "owner": driver.owner(case),
                                  "bytes": 262144}]
     else:

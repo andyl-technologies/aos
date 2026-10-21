@@ -17,7 +17,7 @@ use super::{
     recovery_inline::{self, AdoptedInline},
     recovery_manifest_state, recovery_manifests, recovery_metadata,
     recovery_namespace::SharedNamespaceObservation,
-    recovery_pending, recovery_state,
+    recovery_pending, recovery_restore, recovery_state,
     recovery_state_parent::StateParentObservation,
     retention::{Command, Custody, NativeMetadataOwner, NativeOwnerExecutor},
 };
@@ -393,6 +393,19 @@ pub(super) async fn run(executor: &mut NativeOwnerExecutor) -> io::Result<Comple
     // Publisher inventory may need the repaired metadata index to describe a
     // sealed manifest. Only this fresh complete scan can authorize adoption.
     let initial_inventory = inspector.inspect()?;
+    let initial_inventory =
+        if recovery_restore::run(executor, &initial_inventory, &shared, &id, &context)? {
+            // Restore acknowledges only original namespace transitions. Refresh
+            // both observations before any content or policy reconciliation.
+            let owner = custody
+                .lock()
+                .map_err(|_| io::Error::other("recovery custody poisoned"))?;
+            shared = SharedNamespaceObservation::inspect(&owner.preparation)?;
+            drop(owner);
+            inspector.inspect()?
+        } else {
+            initial_inventory
+        };
     let initial_inventory =
         if recovery_pending::run(executor, &initial_inventory, &shared, &id, &context)? {
             // Removal acknowledgements prove only namespace effects. Every later
