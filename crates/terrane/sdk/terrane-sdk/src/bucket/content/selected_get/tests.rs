@@ -5,6 +5,7 @@
 //! construct no selected observation, retained recipe or acknowledgment.
 
 mod fallback;
+mod grouped;
 mod history;
 
 use super::*;

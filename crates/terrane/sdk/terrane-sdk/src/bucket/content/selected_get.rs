@@ -17,6 +17,8 @@ use crate::bucket::publication::receipts::RecordRead;
 use std::{collections::BTreeMap, sync::Mutex};
 use terrane_format::bucket::BucketKey;
 
+mod grouped;
+
 /// Keeps actual original reads until this single request's closing boundary.
 struct RequestReads<'request, F, C, V> {
     bucket: &'request FileBucket<F, C, V>,

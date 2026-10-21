@@ -20,6 +20,9 @@
   ];
 
   selectedGetTests = [
+    "content::selected_get::tests::grouped::ordinary_get_many_preserves_order_duplicates_and_group_boundaries"
+    "content::selected_get::tests::grouped::ordinary_get_many_refuses_absent_suffix_and_avoids_empty_backend_access"
+    "content::selected_get::tests::grouped::ordinary_get_many_closes_every_payload_and_complete_selected_catalog"
     "content::selected_get::tests::ordinary_get_closes_selected_and_consumed_artifacts"
     "content::selected_get::tests::ordinary_get_refuses_changed_selection_before_return"
     "content::selected_get::tests::ordinary_get_refuses_equal_byte_selected_reincarnation"

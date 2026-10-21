@@ -12177,3 +12177,52 @@ and two 2,048 cases pass, but the 4,096 adversarial case is not reached.
 All six must pass before the index qualification blocker can be removed.
 Original logs and the failed build directory are retained for diagnosis;
 no population, work assertion, current shard check or deadline is weakened.
+
+Frozen `78ca820b84` passes the five-case GC grace gate. Independent review
+verifies all 7,922 immutable source files, 5,229 crate inputs, the retained
+optimized SDK artifact and the five actual executions. Required application
+target compilation also passes with 184 test executables from 59 packages.
+The six focused local retirement controls pass. The overlay case first reaches
+its original 180-second limit; a subsequent diagnostic with the same executable,
+assertions and bound passes in 158.31 seconds. Both outcomes remain recorded:
+this variation does not qualify the full aggregate.
+
+Frozen `a6b498888d` passes actual WebAssembly host-profile qualification.
+Independent review verifies 7,924 immutable source files, 5,229 crate inputs
+and all 32 WebAssembly objects in the two retained release archives. This is
+compilation evidence only. The native host forwarding case also passes;
+the `std,wasm` filesystem-profile cross-build remains unqualified.
+
+Complete-body retrieval now has an ordered `ContentStore::get_many` helper.
+Its default uses verified scalar reads. Native file buckets share one fresh,
+complete selected catalog within groups of at most 64 identities, retain every
+consumed artifact and close all original inputs between fresh selection checks.
+Empty input performs no backend access; duplicate identities preserve duplicate
+outputs; a failure returns no partial result. Unsupported-retention and legacy
+bindings retain scalar verification, and no operation gains repair or mutation
+authority. The independent index output checks use this production helper
+outside the writer-work measurement, preserving every expected byte assertion.
+Three new native controls cover ordered group boundaries, absence and empty
+input, and changed first/last payloads, detached index, unrelated catalog shard
+and publication record. Strict all-target SDK/Linux/CLI Clippy passes; runtime
+and frozen qualification remain pending. No task is newly accepted.
+
+Frozen `78ca820b84` also passes all 27 GC reachability cases. Independent
+source/artifact review verifies the same 7,922 files and 5,229 crate inputs.
+Its actual overlay ancestry case completes in 164.36 seconds, below the full
+package's existing 180-second limit, with deletion and reopen assertions intact.
+The full package aggregate still requires a new successful run.
+
+Frozen `a6b498888d` passes the owning runtime-agnostic gate and crate graph.
+Independent review verifies all 7,924 immutable source files, the 32 exact
+native runtime cases, declared feature-check commands and the matching actual
+WebAssembly compilation prerequisite. Native runtime Cargo artifacts are not
+retained by this gate; the separately retained WebAssembly archives remain
+compilation evidence. Required application-target qualification is still running.
+
+The initial grouped-read candidate passes all twelve local scalar and grouped
+closing controls, each under its original 240-second execution bound. The final
+fixture selects its unrelated shard from the actual catalog rather than assuming
+a materialized shard exists. Final strict all-target Clippy, formatting, native
+`std,wasm` and actual WebAssembly host-target checks pass. Both 4,096-record
+diagnostics and frozen source-bound qualification remain pending.

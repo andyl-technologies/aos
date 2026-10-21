@@ -172,6 +172,12 @@ pub(super) async fn check() -> TestResult {
         ordinary.get(&fixture.identity, Some(range)).await?,
         fixture.encoded[1..6]
     );
+    assert_eq!(
+        ordinary
+            .get_many(&[fixture.identity.clone(), fixture.identity.clone()])
+            .await?,
+        vec![fixture.encoded.clone(), fixture.encoded.clone()]
+    );
     assert_eq!(fs.mutations.load(Ordering::SeqCst), before);
 
     // Produce the explicit legacy fixture from real durable payload files.
@@ -189,6 +195,12 @@ pub(super) async fn check() -> TestResult {
     assert_eq!(
         legacy.get(&fixture.identity, Some(range)).await?,
         fixture.encoded[1..6]
+    );
+    assert_eq!(
+        legacy
+            .get_many(&[fixture.identity.clone(), fixture.identity.clone()])
+            .await?,
+        vec![fixture.encoded.clone(), fixture.encoded.clone()]
     );
     assert_eq!(fs.mutations.load(Ordering::SeqCst), before);
     assert!(!control_path(fixture.bucket.root()).exists());

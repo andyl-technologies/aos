@@ -867,24 +867,32 @@ fn assert_work(
 }
 
 async fn assert_immutable(repository: &NativeRepository, expected: &Model) -> TestResult {
-    for (entry, (digest, bytes)) in expected
+    let entries: Vec<_> = expected
         .published_sources
         .iter()
         .chain(expected.indexes.values().flat_map(|data| data.nodes.iter()))
-        .enumerate()
-    {
-        assert_eq!(
-            repository
-                .coordinator()
-                .store()
-                .get(&TERRANE_V1.from_digest(IdentityKind::Node, digest)?, None)
-                .await?,
-            *bytes
-        );
-        if (entry + 1) % 64 == 0 && std::env::var_os("TERRANE_INDEX_REBUILD_TRACE").is_some() {
+        .collect();
+    let mut completed = 0;
+    for group in entries.chunks(64) {
+        let identities = group
+            .iter()
+            .map(|(digest, _)| TERRANE_V1.from_digest(IdentityKind::Node, *digest))
+            .collect::<Result<Vec<_>, _>>()?;
+        let values = repository
+            .coordinator()
+            .store()
+            .get_many(&identities)
+            .await?;
+        assert_eq!(values.len(), group.len());
+        for ((_, expected), actual) in group.iter().zip(values) {
+            assert_eq!(actual, **expected);
+        }
+
+        completed += group.len();
+        if std::env::var_os("TERRANE_INDEX_REBUILD_TRACE").is_some() {
             eprintln!(
                 "multi-edit-subphase immutable-map-entries-completed={}",
-                entry + 1
+                completed
             );
         }
     }

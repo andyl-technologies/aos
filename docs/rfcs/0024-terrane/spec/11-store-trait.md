@@ -53,6 +53,14 @@ RefStore
 Store = ContentStore + RefStore
 ```
 
+The SDK also exposes `get_many(ids)` as a complete-body retrieval convenience.
+It preserves input order and duplicates, applies the same verification rules
+as `get` to every returned body, and returns an error without partial results
+if any retrieval fails. Empty input performs no backend access. This helper
+does not promise a cross-object snapshot: a backend may execute scalar reads
+or split the input into bounded groups, each with its own fresh observation.
+It adds no ref operation or authorization bypass and is not another wire RPC.
+
 - **[STORE-32]** `ContentStore` and `RefStore` MUST be distinct interfaces.
   A backend or combinator MUST declare which it implements, and a caller
   MUST be able to hold a `ContentStore` without any ref operation being

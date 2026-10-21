@@ -472,6 +472,26 @@ pub trait ContentStore: CapabilityReport {
         range: Option<ByteRange>,
     ) -> Result<Vec<u8>, StoreFailure>;
 
+    /// Returns verified complete encodings in input order, including duplicates.
+    ///
+    /// The default implementation calls [`Self::get`] for each identity. A
+    /// backend may share retrieval work within a call, but must verify every
+    /// result before returning it. This operation promises no cross-object
+    /// snapshot; implementations may split the input into bounded groups.
+    /// An empty input returns an empty result without accessing the backend.
+    ///
+    /// # Errors
+    ///
+    /// Returns a retrieval failure from any identity. No partial result is
+    /// returned when a body or its closing validation fails.
+    async fn get_many(&self, identities: &[Identity]) -> Result<Vec<Vec<u8>>, StoreFailure> {
+        let mut values = Vec::with_capacity(identities.len());
+        for identity in identities {
+            values.push(self.get(identity, None).await?);
+        }
+        Ok(values)
+    }
+
     /// Tests many identities, preserving their input order.
     ///
     /// # Errors

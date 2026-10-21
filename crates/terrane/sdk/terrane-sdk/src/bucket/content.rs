@@ -999,6 +999,29 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         Ok(value)
     }
 
+    async fn get_many(&self, identities: &[Identity]) -> Result<Vec<Vec<u8>>, StoreFailure> {
+        let mut values = Vec::with_capacity(identities.len());
+        if identities.is_empty() {
+            return Ok(values);
+        }
+
+        #[cfg(all(feature = "tokio", unix))]
+        if !self.inner.access.read_only() {
+            let mode = member_reads::mode(self.fs()).await?;
+            // Limit retained physical inputs per closing boundary. Selection is
+            // freshly observed for every group and never cached across calls.
+            for group in identities.chunks(64) {
+                values.extend(self.get_selected_group(group, mode).await?);
+            }
+            return Ok(values);
+        }
+
+        for identity in identities {
+            values.push(self.get(identity, None).await?);
+        }
+        Ok(values)
+    }
+
     async fn has(&self, identities: &[Identity]) -> Result<Vec<bool>, StoreFailure> {
         let _guard = self.read_exclusion().await?;
         let value = self.has_locked(identities).await?;
