@@ -764,7 +764,20 @@ identity is rejected by the canonical artifact validator. The change at
 `f203545598` passes the ordinary Protocol (1,097), Mount (212, one installed test
 ignored), and SourceProvider Security (80, one installed test ignored) unit
 suites with locked offline dependencies, a 32 MiB stack and serial execution.
-Those ignored installed cuts still require VM execution.
+The installed SourceProvider/Mount no-dispatch cut now passes through
+`aos-dev --release build check fleet.sandbox-source-provider-native-recovery`.
+Its passing artifact is
+`/nix/store/3033x910li0fi2fpa1a3zd5zpfczwdjm-aos-fleet-test-sandbox-source-provider-native-recovery-0`.
+The AOS QEMU guest runs the actual fixed owners and authenticated carriers,
+settles Provider's reserved attempt, loses the first verified terminal reply,
+replaces the dead carrier, commits Mount's terminal CAS, and cold-replays the
+seven-record graph, including all three authenticated session records.
+
+The debug-only seeder constructs the simulated pre-cut Applying/Reserved
+journal DATA from the live handshake's verified first Acquire projection.
+Its feature is rejected in release builds. It neither admits a fresh Acquire
+nor supplies a backend effect, signature, or readiness witness. This fixture
+does not qualify normal Controller Create or installed method-46 TPM hooks.
 
 Existing native Journal commits use one mutation funnel, including archive
 retention/retirement and terminal process rollover. Schema-only validation is
