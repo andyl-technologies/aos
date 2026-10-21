@@ -1,8 +1,7 @@
-From 86918f82ecf10b631171e1383185c63d95c018be Mon Sep 17 00:00:00 2001
+From 39fa2c7e87f1a72959638d3c443e182aa204c4b7 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:00 +0000
-Subject: [PATCH] crucible: retain local module payload borrows under actual
- Main custody
+Subject: [PATCH] crucible: require standing producer retention edition1
 
 Retain the complete Crucible integration on the sole pinned QEMU base.
 Supply required run and teardown rows with real compiled fixture layouts
@@ -148,6 +147,26 @@ Preserve existing scenarios and limits. Local opaque lifetime borrowing exports
 no payload reference, action/class, entered Original, publisher membership, CPU
 operation permission, activation, ACK, ActionReturn or physical peer return.
 It does not qualify the actual module/QEMU pairing or launched lifecycle.
+
+Require CRUCSRV4/schema4 standing records with big-endian producer-retention
+edition1 at offset196. Preserve the 1496/1504/1520 publication extents and
+process-purpose8 envelope. Bind the declaration in the sealed initial record,
+require it on subsequent observations and reject every predecessor, zero and
+unknown edition before producing output. Rename every actual decoder caller,
+including the preinit literal closure, and refresh exact fixture fingerprints.
+
+Document the producer promise: every born row, including dirty/unprojected
+rows, stays retained; exposed matching actions are irrevocably pending before
+request publication and cannot race unpublished abandonment. Exact action birth
+cannot be replaced until authenticated assigned-peer local closure. Local
+subscriber closure never retires publisher-owned rows, and producer death or
+unknown cleanup does not certify physical return. This compatibility cut does
+not yet construct a Source subscription or issue operation/action authority.
+
+Exercise current syntax plus predecessor, edition, byte-order and unchanged
+output refusals. Retain prior native causal timeout and launched lifecycle
+failures as unresolved observations; no decoder or component result qualifies
+activation, Original, publisher membership, ACK or ActionReturn.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -16565,10 +16584,10 @@ index adb76b3a786c06d08ae89c5623d26bf75755d432..406f8f6fcfc4e6ff97dc95057e383528
  /* Return true if PC matches an installed breakpoint.  */
 diff --git a/docs/devel/crucible-parent-park.rst b/docs/devel/crucible-parent-park.rst
 new file mode 100644
-index 0000000000000000000000000000000000000000..20fd4598e246a2ae4c27aaf0b28f88155b909ad7
+index 0000000000000000000000000000000000000000..25bf5c2abee0d993355e54ac9b985e61143d4f1b
 --- /dev/null
 +++ b/docs/devel/crucible-parent-park.rst
-@@ -0,0 +1,322 @@
+@@ -0,0 +1,344 @@
 +.. SPDX-License-Identifier: GPL-2.0-or-later
 +
 +Crucible paired parent Park
@@ -16659,12 +16678,34 @@ index 0000000000000000000000000000000000000000..20fd4598e246a2ae4c27aaf0b28f8815
 +Source publication and terminal record
 +-------------------------------------
 +
-+The Source standing record cuts over to CRUCSRV3/schema3. Its extent remains
++The Source standing record cuts over to CRUCSRV4/schema4. Its extent remains
 +1496 bytes; the 896-byte tail at offset600 is absent, Control2, or the distinct
 +CRUCPRK1/schema1 Park publication. Park is not an ordinary control receipt.
 +The checked preinit decoder generator consumes the same actual decoder bodies.
 +This format change requires the external publisher to update; it does not
 +change or qualify the shared-region ABI.
++
++The big-endian word at offset196 is producer-retention edition1. Zero and
++unknown editions refuse, as do all predecessor standing schemas. The nested
++standing schema supplies this compatibility boundary inside process-purpose8;
++the standing payload/mapping/carrier extents remain1496/1504/1520 bytes. The
++sealed initial standing record binds the declaration to its installed owner,
++and subsequent records must preserve that edition.
++
++Edition1 promises that the producer retains every born action row, including
++dirty and unprojected rows. An exposed action is irrevocably pending before it
++can match a receiver: unpublished abandonment cannot race a matching request.
++After request publication the exact action birth cannot be replaced until
++its assigned peer authenticates actual local subscription closure. Producer
++death or unknown cleanup does not certify return. Local subscriber closure
++never retires publisher-owned rows; that is a separate producer operation.
++
++This declaration is a prerequisite for a nominal Source subscription, not a
++subscription constructor. Decoded equality, a clean cohort bit and ACK grant
++no membership, operation authority, action Original or physical peer return.
++Ready-stage acquisition and an exact retained Main borrower remain separate
++ownership transitions; Main's BQL-held control boundary cannot take a fresh
++outside-BQL standing snapshot.
 +
 +Only Source produces CRUCPRR2/schema2/184 terminal bytes. All integer fields
 +are big endian; statuses are signed 32-bit errno values. No native pointer or
@@ -74716,10 +74757,10 @@ index 0000000000000000000000000000000000000000..b6c7f0e3a60c692b46fb0e0239fea48a
 +#endif /* QEMU_CRUCIBLE_PREEXEC_SETUP_H */
 diff --git a/include/qemu/crucible-process-purpose.h b/include/qemu/crucible-process-purpose.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..49e87a6ca9d8e34c62170828d049cb937a21aaac
+index 0000000000000000000000000000000000000000..6391a3b046fdfea3cd57c9c513e2f032d900787b
 --- /dev/null
 +++ b/include/qemu/crucible-process-purpose.h
-@@ -0,0 +1,739 @@
+@@ -0,0 +1,743 @@
 +/*
 + * Fixed process-purpose carrier syntax and selected Setup edition
 + *
@@ -75137,6 +75178,8 @@ index 0000000000000000000000000000000000000000..49e87a6ca9d8e34c62170828d049cb93
 +int qemu_crucible_parent_park_pair_decode_v1(
 +    const uint8_t *wire, size_t length, QemuCrucibleParkPairRecord *out);
 +
++#define QEMU_CRUCIBLE_PRODUCER_RETENTION_EDITION 1U
++
 +typedef struct QemuCrucibleStandingRecord {
 +    uint8_t supervisor_capability[32];
 +    uint64_t origin_ns;
@@ -75154,14 +75197,16 @@ index 0000000000000000000000000000000000000000..49e87a6ca9d8e34c62170828d049cb93
 +    uint64_t cancellation_event_token;
 +    uint8_t artifact_digest[32];
 +    uint32_t roster_bytes;
++    uint32_t producer_retention_edition;
 +    QemuCrucibleStandingBudget budgets[QEMU_CRUCIBLE_STANDING_CLASS_COUNT];
 +    QemuCrucibleBoundaryActionRecord action;
 +    QemuCrucibleBoundaryParkRecord park;
 +} QemuCrucibleStandingRecord;
 +
-+/* Immediate schema3 accepts an absent, Control2 or typed Park1 tail. The
-+ * physical publication extent is unchanged; older immediate schemas refuse. */
-+int qemu_crucible_standing_record_decode_v3(
++/* Schema4 requires producer retention edition1 and accepts an absent,
++ * Control2 or typed Park1 tail. Decoding is syntax, not a subscription.
++ * The physical extent is unchanged; every predecessor/unknown edition refuses. */
++int qemu_crucible_standing_record_decode_v4(
 +    const uint8_t *wire, size_t length, QemuCrucibleStandingRecord *out);
 +
 +typedef struct QemuCrucibleProcessPurposeRecord {
@@ -150066,7 +150111,7 @@ index 0000000000000000000000000000000000000000..69dba27cb08fa26f74d985c06994aef4
 +type_init(crucible_fault_register_abi_handlers)
 diff --git a/plugins/crucible-fingerprint-worker.inc.h b/plugins/crucible-fingerprint-worker.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..a0211bc0424e00097ffcee2ad42febebafdd9d8b
+index 0000000000000000000000000000000000000000..ec5b6eaf3d4c8e84e915614b8c019968c01e3765
 --- /dev/null
 +++ b/plugins/crucible-fingerprint-worker.inc.h
 @@ -0,0 +1,1456 @@
@@ -150597,7 +150642,7 @@ index 0000000000000000000000000000000000000000..a0211bc0424e00097ffcee2ad42febeb
 +            startup_source.standing.lender, observer->snapshot, &sequence);
 +    }
 +    if (!status) {
-+        status = qemu_crucible_standing_record_decode_v3(
++        status = qemu_crucible_standing_record_decode_v4(
 +            observer->snapshot, sizeof(observer->snapshot), &observed);
 +    }
 +    if (!status) {
@@ -165242,10 +165287,10 @@ index 0000000000000000000000000000000000000000..285bcb3d2bfe4f61b54d877cbb931c98
 +#endif
 diff --git a/plugins/crucible-process-purpose.c b/plugins/crucible-process-purpose.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..c84918de7c3a8e5930b11329d79a40eef750ff5c
+index 0000000000000000000000000000000000000000..bfad5fcc580320341bf5617ec09bcaeab623eae0
 --- /dev/null
 +++ b/plugins/crucible-process-purpose.c
-@@ -0,0 +1,988 @@
+@@ -0,0 +1,991 @@
 +/*
 + * Fixed process-purpose evidence and bounded borrowed sealed-plan reader
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -165516,7 +165561,7 @@ index 0000000000000000000000000000000000000000..c84918de7c3a8e5930b11329d79a40ee
 +    return 0;
 +}
 +
-+int qemu_crucible_standing_record_decode_v3(
++int qemu_crucible_standing_record_decode_v4(
 +    const uint8_t *wire, size_t length, QemuCrucibleStandingRecord *out)
 +{
 +    QemuCrucibleStandingRecord decoded = { 0 };
@@ -165527,12 +165572,14 @@ index 0000000000000000000000000000000000000000..c84918de7c3a8e5930b11329d79a40ee
 +    if (!wire || !out || length != QEMU_CRUCIBLE_STANDING_PAYLOAD_BYTES) {
 +        return -EINVAL;
 +    }
-+    if (memcmp(wire, "CRUCSRV3", 8) || ldl_be_p(wire + 8) != 3 ||
-+        ldl_be_p(wire + 12) != QEMU_CRUCIBLE_STANDING_PAYLOAD_BYTES) {
++    if (memcmp(wire, "CRUCSRV4", 8) || ldl_be_p(wire + 8) != 4 ||
++        ldl_be_p(wire + 12) != QEMU_CRUCIBLE_STANDING_PAYLOAD_BYTES ||
++        ldl_be_p(wire + 196) !=
++            QEMU_CRUCIBLE_PRODUCER_RETENTION_EDITION) {
 +        return -EPROTONOSUPPORT;
 +    }
 +    if (!purpose_nonzero(wire + 16, 32) || wire[64] > 1 || wire[65] > 3 ||
-+        purpose_nonzero(wire + 66, 6) || ldl_be_p(wire + 196)) {
++        purpose_nonzero(wire + 66, 6)) {
 +        return -EINVAL;
 +    }
 +    memcpy(decoded.supervisor_capability, wire + 16, 32);
@@ -165550,6 +165597,7 @@ index 0000000000000000000000000000000000000000..c84918de7c3a8e5930b11329d79a40ee
 +    decoded.cancellation_event_token = ldq_be_p(wire + 176);
 +    decoded.outer_allowance_ns = ldq_be_p(wire + 184);
 +    decoded.roster_bytes = ldl_be_p(wire + 192);
++    decoded.producer_retention_edition = ldl_be_p(wire + 196);
 +    memcpy(decoded.artifact_digest, wire + 200, 32);
 +    if (!decoded.account_generation || !decoded.process_generation ||
 +        !purpose_nonzero(decoded.family_capability, 32) ||
@@ -165948,7 +165996,7 @@ index 0000000000000000000000000000000000000000..c84918de7c3a8e5930b11329d79a40ee
 +        return -EINVAL;
 +    }
 +    memcpy(decoded.standing_initial, wire + 1024, sizeof(decoded.standing_initial));
-+    standing_status = qemu_crucible_standing_record_decode_v3(
++    standing_status = qemu_crucible_standing_record_decode_v4(
 +        decoded.standing_initial, sizeof(decoded.standing_initial), &decoded.standing);
 +
 +    if (standing_status) {
@@ -173583,10 +173631,10 @@ index 0000000000000000000000000000000000000000..f33911c6d93010f8c345aa392c9b7974
 +}
 diff --git a/plugins/crucible-startup-source.c b/plugins/crucible-startup-source.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..f6273687b5f5f3bc2e4ceb67c140038d9a724934
+index 0000000000000000000000000000000000000000..da23860f4ba36201ac28169929ebf9188dde4a7a
 --- /dev/null
 +++ b/plugins/crucible-startup-source.c
-@@ -0,0 +1,7983 @@
+@@ -0,0 +1,7987 @@
 +/*
 + * Original installer startup source custody
 + *
@@ -176804,6 +176852,10 @@ index 0000000000000000000000000000000000000000..f6273687b5f5f3bc2e4ceb67c140038d
 +
 +    if (memcmp(record->supervisor_capability, initial->supervisor_capability, 32) ||
 +        record->origin_ns != initial->origin_ns ||
++        record->producer_retention_edition !=
++            QEMU_CRUCIBLE_PRODUCER_RETENTION_EDITION ||
++        record->producer_retention_edition !=
++            initial->producer_retention_edition ||
 +        record->account_generation != initial->account_generation ||
 +        record->process_generation != initial->process_generation ||
 +        memcmp(record->family_capability, initial->family_capability, 32) ||
@@ -176989,7 +177041,7 @@ index 0000000000000000000000000000000000000000..f6273687b5f5f3bc2e4ceb67c140038d
 +    status = qemu_crucible_preexec_standing_snapshot_v1(
 +        purpose->lender, purpose->snapshot, &sequence);
 +    if (!status) {
-+        status = qemu_crucible_standing_record_decode_v3(
++        status = qemu_crucible_standing_record_decode_v4(
 +            purpose->snapshot, sizeof(purpose->snapshot), &current);
 +    }
 +    if (!status) {
@@ -194991,7 +195043,7 @@ index f8e17dcf1ce91d8aefb8d82cafd3196a4fd9edf6..f24121d2d3c66f1436ba73c976a7bd76
      return true;
 diff --git a/scripts/extract-crucible-preexec-purpose.py b/scripts/extract-crucible-preexec-purpose.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..4b6a1c9a4d17a8100c1e67ef937d9052101f1ecd
+index 0000000000000000000000000000000000000000..74ed5d19b2f31e5e12a794601ff6661f3dc7deca
 --- /dev/null
 +++ b/scripts/extract-crucible-preexec-purpose.py
 @@ -0,0 +1,87 @@
@@ -195005,13 +195057,13 @@ index 0000000000000000000000000000000000000000..4b6a1c9a4d17a8100c1e67ef937d9052
 +
 +SOURCE_HASHES = {
 +    'system/crucible-preexec-setup.c':
-+        '31fe7954bad28c4bcbae3c737ecd6c8711bb08fcfe24c66e4c4e33d6b5792824',
++        'a49fe269e95da2aa36121a4edc42dbe6bf84a92e54a7052b5d4bf79ea62fd4ad',
 +    'system/crucible-preexec-workspace.inc.h':
 +        '2c7e8965e8585b9ce3988f1068f7c5c68c2f447669200ee76450f998028e60ca',
 +    'plugins/crucible-process-purpose.c':
-+        '514f3d0e678d947fb35ad0ab92f808f1f2d06dbcdddefac01d0624c7a6ee9d23',
++        '64259225673f964f4fa063c73fc07afa5c4af4154e7fcad7871f7aa67ff9f6b5',
 +    'include/qemu/crucible-process-purpose.h':
-+        '9d1ef70162bb666a8e98c865b71d3a10973f058ddf968ffcf7f2f2408fb9fd7c',
++        'c9f09084526a14e5e3f3d08ab5c1dd8aff4d0fc3943a0651813363c65d19b070',
 +    'plugins/crucible-device-workspace.c':
 +        '3dd77a2ad8d4688fb57ccc94618763485d36b9460e3461ac5ff4bc6fa25c558d',
 +    'include/qemu/crucible-device-workspace.h':
@@ -195019,7 +195071,7 @@ index 0000000000000000000000000000000000000000..4b6a1c9a4d17a8100c1e67ef937d9052
 +    'include/plugins/qemu-plugin.h':
 +        '4b60a5c32e0170f953a54d158fff3d8ce7e38f393043db6752260b37924f8d67',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '24ed466f8573f14f541f02f387243bc6f712c8e79fd9bdb16d0a900110bc4231',
++        '2a6013abb7dc6006b73bc6d497908dfe3db977ec972f95a0b21cce037c5d6c4c',
 +}
 +
 +PURPOSE_FUNCTIONS = (
@@ -195029,7 +195081,7 @@ index 0000000000000000000000000000000000000000..4b6a1c9a4d17a8100c1e67ef937d9052
 +    "int qemu_crucible_boundary_park_decode_v1(",
 +    "static bool purpose_add(",
 +    "static int standing_optional_ns(",
-+    "int qemu_crucible_standing_record_decode_v3(",
++    "int qemu_crucible_standing_record_decode_v4(",
 +    "int qemu_crucible_process_control_layout_decode_v1(",
 +    "int qemu_crucible_process_purpose_decode_v8(",
 +    "int qemu_crucible_process_workspace_purpose_decode_v2(",
@@ -195061,7 +195113,7 @@ index 0000000000000000000000000000000000000000..4b6a1c9a4d17a8100c1e67ef937d9052
 +        "boundary_publication_rows_decode",
 +        "qemu_crucible_boundary_action_decode_v2",
 +        "qemu_crucible_boundary_park_decode_v1",
-+        "standing_optional_ns", "qemu_crucible_standing_record_decode_v3",
++        "standing_optional_ns", "qemu_crucible_standing_record_decode_v4",
 +        "qemu_crucible_process_control_layout_decode_v1",
 +        "qemu_crucible_process_purpose_decode_v8",
 +        "qemu_crucible_process_workspace_purpose_decode_v2",
@@ -207544,7 +207596,7 @@ index 0000000000000000000000000000000000000000..e1eda5efbd1c2db8ce485fce38f76bbe
 +}
 diff --git a/system/crucible-preexec-setup.c b/system/crucible-preexec-setup.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..4bbd92d9353c2ce2b6131c04d498ef721455871b
+index 0000000000000000000000000000000000000000..6e0bfbd99414ae361502185c714388b35421d16f
 --- /dev/null
 +++ b/system/crucible-preexec-setup.c
 @@ -0,0 +1,2684 @@
@@ -209695,7 +209747,7 @@ index 0000000000000000000000000000000000000000..4bbd92d9353c2ce2b6131c04d498ef72
 +        QemuCrucibleStandingRecord observed;
 +        const QemuCrucibleStandingRecord *initial = &owner->plan.purpose.standing;
 +
-+        status = preexec_literal_qemu_crucible_standing_record_decode_v3(
++        status = preexec_literal_qemu_crucible_standing_record_decode_v4(
 +            standing->snapshot, sizeof(standing->snapshot), &observed);
 +        if (!status &&
 +            (preexec_setup_compare(standing->snapshot + 16,
@@ -237673,10 +237725,10 @@ index 0000000000000000000000000000000000000000..b0a6ceda6d413ce2cc91ed4153408ba7
 +    )]
 diff --git a/tests/unit/crucible-startup-source-fixture.inc.h b/tests/unit/crucible-startup-source-fixture.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..17f2832e49f0aa4ba96428cb947bcdbeec5c9b1c
+index 0000000000000000000000000000000000000000..776dee15d7d3b0028ec9182cbab2bf20df5bd550
 --- /dev/null
 +++ b/tests/unit/crucible-startup-source-fixture.inc.h
-@@ -0,0 +1,829 @@
+@@ -0,0 +1,830 @@
 +/*
 + * Actual-body controls for original installer startup source
 + *
@@ -238242,9 +238294,10 @@ index 0000000000000000000000000000000000000000..17f2832e49f0aa4ba96428cb947bcdbe
 +        stq_be_p(row + 88, 1);
 +    }
 +    stq_be_p(purpose + 1016, QEMU_CRUCIBLE_STANDING_MAPPING_BYTES);
-+    memcpy(standing, "CRUCSRV3", 8);
-+    stl_be_p(standing + 8, 3);
++    memcpy(standing, "CRUCSRV4", 8);
++    stl_be_p(standing + 8, 4);
 +    stl_be_p(standing + 12, QEMU_CRUCIBLE_STANDING_PAYLOAD_BYTES);
++    stl_be_p(standing + 196, QEMU_CRUCIBLE_PRODUCER_RETENTION_EDITION);
 +    memcpy(standing + 16, original + 16, 32);
 +    stq_be_p(standing + 48, ldq_be_p(original + 56));
 +    stq_be_p(standing + 72, 1);
@@ -239160,7 +239213,7 @@ index 0000000000000000000000000000000000000000..2617c754aa1ea8587f6eaabe5a8bdf68
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-placement.py b/tests/unit/extract-crucible-checkpoint-placement.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..6077b7c31d02bdccfe4676dd00a824019805a368
+index 0000000000000000000000000000000000000000..7bcaa2a47b76634aa3d0a74df15a786129ebf0cd
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-placement.py
 @@ -0,0 +1,100 @@
@@ -239178,7 +239231,7 @@ index 0000000000000000000000000000000000000000..6077b7c31d02bdccfe4676dd00a82401
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '24ed466f8573f14f541f02f387243bc6f712c8e79fd9bdb16d0a900110bc4231',
++        '2a6013abb7dc6006b73bc6d497908dfe3db977ec972f95a0b21cce037c5d6c4c',
 +}
 +
 +FUNCTIONS = (
@@ -239266,7 +239319,7 @@ index 0000000000000000000000000000000000000000..6077b7c31d02bdccfe4676dd00a82401
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-receiving.py b/tests/unit/extract-crucible-checkpoint-receiving.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..9e3a48451a45e0b74603c66d920b5d6391573f58
+index 0000000000000000000000000000000000000000..82bd807ebe3f975e9e9e31730c1e989737f02514
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-receiving.py
 @@ -0,0 +1,241 @@
@@ -239287,7 +239340,7 @@ index 0000000000000000000000000000000000000000..9e3a48451a45e0b74603c66d920b5d63
 +    'plugins/crucible-checkpoint-finalizer.inc.h':
 +        '6616d8f61ceaa17d668033d824d0fd6dc37ff4fafe76fc7665582a80447c7303',
 +    'plugins/crucible-startup-source.c':
-+        'f607cee9c94e9483e426d6f75520e183783c8a6309745bd4761e5ce09193552d',
++        'bcef8c8fbfb2c4ff99bdeb553a5d92c397675d5cfedcb5ad15f8ad38014384f2',
 +    'plugins/crucible-startup-source.h':
 +        'bb7336812d733aad6065cfac57c929d02abe3c4ad01360c646cf347bdfb91327',
 +    'include/plugins/qemu-plugin.h':
@@ -239297,7 +239350,7 @@ index 0000000000000000000000000000000000000000..9e3a48451a45e0b74603c66d920b5d63
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '24ed466f8573f14f541f02f387243bc6f712c8e79fd9bdb16d0a900110bc4231',
++        '2a6013abb7dc6006b73bc6d497908dfe3db977ec972f95a0b21cce037c5d6c4c',
 +}
 +
 +FUNCTIONS = (
@@ -239513,7 +239566,7 @@ index 0000000000000000000000000000000000000000..9e3a48451a45e0b74603c66d920b5d63
 +    main()
 diff --git a/tests/unit/extract-crucible-monitor-fd-loans.py b/tests/unit/extract-crucible-monitor-fd-loans.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..6b4b448b87c9d485f053a926d08693a81ec9b9c2
+index 0000000000000000000000000000000000000000..904225ee67cab2bb451e27773146ba8847a78e18
 --- /dev/null
 +++ b/tests/unit/extract-crucible-monitor-fd-loans.py
 @@ -0,0 +1,112 @@
@@ -239537,7 +239590,7 @@ index 0000000000000000000000000000000000000000..6b4b448b87c9d485f053a926d08693a8
 +    'monitor/monitor.c':
 +        '6773b71937e9c0058143070560f3ce3bb114a966d6d4224c7a60d8862fb8d05b',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '24ed466f8573f14f541f02f387243bc6f712c8e79fd9bdb16d0a900110bc4231',
++        '2a6013abb7dc6006b73bc6d497908dfe3db977ec972f95a0b21cce037c5d6c4c',
 +}
 +
 +FUNCTIONS = (
@@ -239631,7 +239684,7 @@ index 0000000000000000000000000000000000000000..6b4b448b87c9d485f053a926d08693a8
 +    main()
 diff --git a/tests/unit/extract-crucible-preexec-setup.py b/tests/unit/extract-crucible-preexec-setup.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..60d2bc77ed527efcda8627b3b3c163bfe836d571
+index 0000000000000000000000000000000000000000..5b0be5e3e138d336c1501270a8fa82acbe8c3da1
 --- /dev/null
 +++ b/tests/unit/extract-crucible-preexec-setup.py
 @@ -0,0 +1,173 @@
@@ -239648,7 +239701,7 @@ index 0000000000000000000000000000000000000000..60d2bc77ed527efcda8627b3b3c163bf
 +
 +SOURCE_HASHES = {
 +    'system/crucible-preexec-setup.c':
-+        '31fe7954bad28c4bcbae3c737ecd6c8711bb08fcfe24c66e4c4e33d6b5792824',
++        'a49fe269e95da2aa36121a4edc42dbe6bf84a92e54a7052b5d4bf79ea62fd4ad',
 +    'system/crucible-preexec-family.inc.h':
 +        '6d055fe2604fc3d7b2977b98d4b5843d65ba5df00c7efe34770d375fe05e6d59',
 +    'system/crucible-preexec-contract.inc.h':
@@ -239662,19 +239715,19 @@ index 0000000000000000000000000000000000000000..60d2bc77ed527efcda8627b3b3c163bf
 +    'include/qemu/crucible-preexec-setup.h':
 +        'de8431764837688e06e29bdd4c5c4298d6d934b03b4f24b66907a327f69b5493',
 +    'include/qemu/crucible-process-purpose.h':
-+        '9d1ef70162bb666a8e98c865b71d3a10973f058ddf968ffcf7f2f2408fb9fd7c',
++        'c9f09084526a14e5e3f3d08ab5c1dd8aff4d0fc3943a0651813363c65d19b070',
 +    'include/qemu/crucible-device-workspace.h':
 +        '5710b0cc44f68508cecd4186cca2e10c6aa32eceed1b81f2250ca9faf9028a4b',
 +    'include/plugins/qemu-plugin.h':
 +        '4b60a5c32e0170f953a54d158fff3d8ce7e38f393043db6752260b37924f8d67',
 +    'plugins/crucible-process-purpose.c':
-+        '514f3d0e678d947fb35ad0ab92f808f1f2d06dbcdddefac01d0624c7a6ee9d23',
++        '64259225673f964f4fa063c73fc07afa5c4af4154e7fcad7871f7aa67ff9f6b5',
 +    'plugins/crucible-device-workspace.c':
 +        '3dd77a2ad8d4688fb57ccc94618763485d36b9460e3461ac5ff4bc6fa25c558d',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '24ed466f8573f14f541f02f387243bc6f712c8e79fd9bdb16d0a900110bc4231',
++        '2a6013abb7dc6006b73bc6d497908dfe3db977ec972f95a0b21cce037c5d6c4c',
 +    'scripts/extract-crucible-preexec-purpose.py':
-+        'c0de1571cb90f726480d08eb41ccb30e5cb29ebfb3a9061e49e5970a71c5c7b4',
++        'c51fe20a199194846f98652efe9edfae11ee2d91e967d193979ff82c6ee23496',
 +    'meson.build':
 +        '7eef2c0d1494dfdeed66f56c77f092382cd63d3fd5ad7c0b7c7ac85ca599e39e',
 +    'tests/unit/test-crucible-preexec-setup.c':
@@ -239810,7 +239863,7 @@ index 0000000000000000000000000000000000000000..60d2bc77ed527efcda8627b3b3c163bf
 +        main()
 diff --git a/tests/unit/extract-crucible-startup-source-controls.py b/tests/unit/extract-crucible-startup-source-controls.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..17392d8f865942f1ef0d4a0553d724d67854faa2
+index 0000000000000000000000000000000000000000..fbb12eb382c97ac2e126a27112d6b46959e6f371
 --- /dev/null
 +++ b/tests/unit/extract-crucible-startup-source-controls.py
 @@ -0,0 +1,1082 @@
@@ -239876,7 +239929,7 @@ index 0000000000000000000000000000000000000000..17392d8f865942f1ef0d4a0553d724d6
 +    'plugins/crucible-device-workspace.inc.h':
 +        '46a3bf873eac5d3f3e6fce4c344416c13749f6a24f1b098605dd214c684e56c7',
 +    'system/crucible-preexec-setup.c':
-+        '31fe7954bad28c4bcbae3c737ecd6c8711bb08fcfe24c66e4c4e33d6b5792824',
++        'a49fe269e95da2aa36121a4edc42dbe6bf84a92e54a7052b5d4bf79ea62fd4ad',
 +    'system/crucible-preexec-workspace.inc.h':
 +        '2c7e8965e8585b9ce3988f1068f7c5c68c2f447669200ee76450f998028e60ca',
 +    'plugins/crucible-control-invocation.inc.h':
@@ -239888,7 +239941,7 @@ index 0000000000000000000000000000000000000000..17392d8f865942f1ef0d4a0553d724d6
 +    'tests/unit/test-crucible-startup-source.c':
 +        'b415b88ba69653bc7dc3fac942b721ed1ea26ae0d46d3b632628cd27e23bdb85',
 +    'tests/unit/crucible-startup-source-fixture.inc.h':
-+        'f1187d05871b5a8111f1f5506ac2e8a804596d69506b8897fa1877a0cdd1cb7a',
++        '7677ffe3bf88253a8753e8e2da98899c9dc26bf406e9fac5a41a83ec1f386e3e',
 +    'system/physmem.c':
 +        '5e94841fd7bc9f7c70e7023e97ce87dd2c2144f8d63039c4c2f42aac640ad522',
 +    'include/system/ramlist.h':
@@ -239914,7 +239967,7 @@ index 0000000000000000000000000000000000000000..17392d8f865942f1ef0d4a0553d724d6
 +    'system/crucible-hot-fork-coordinator.c':
 +        'a8db45cdd7a6aebebe44990565c08eed6a833a05ea7f77958ffa12bd2017b65b',
 +    'plugins/crucible-startup-source.c':
-+        'f607cee9c94e9483e426d6f75520e183783c8a6309745bd4761e5ce09193552d',
++        'bcef8c8fbfb2c4ff99bdeb553a5d92c397675d5cfedcb5ad15f8ad38014384f2',
 +    'plugins/crucible-startup-source.h':
 +        'bb7336812d733aad6065cfac57c929d02abe3c4ad01360c646cf347bdfb91327',
 +    'plugins/crucible-device-workspace.c':
@@ -239936,7 +239989,7 @@ index 0000000000000000000000000000000000000000..17392d8f865942f1ef0d4a0553d724d6
 +    'plugins/crucible-required-workers.inc.h':
 +        '7416b21879fe77c2eeaaf91f935fdaf77187b35a4d3c844fb871db764e46b3b2',
 +    'plugins/crucible-fingerprint-worker.inc.h':
-+        '2938b67c33735cbe7dc3c71570e3a43a6a3b0847adb321a0ae37c92d06a94407',
++        '990beb17337841b976ebb54af8389917ea93b0b0973fe194f8f20ae4568af3b1',
 +    'plugins/crucible-ram-control.inc.h':
 +        'ba7241bb6b513368086dfb489983181ec976e4baac90654e4ffec6d44fe481f3',
 +    'plugins/crucible-ram-record.inc.h':
@@ -240000,7 +240053,7 @@ index 0000000000000000000000000000000000000000..17392d8f865942f1ef0d4a0553d724d6
 +    'util/qemu-thread-posix.c':
 +        '51e5c80f326eff7c390aa8ea491f7e36e22bde5af9214a1e8099fd38d1ddd7f1',
 +    'include/qemu/crucible-process-purpose.h':
-+        '9d1ef70162bb666a8e98c865b71d3a10973f058ddf968ffcf7f2f2408fb9fd7c',
++        'c9f09084526a14e5e3f3d08ab5c1dd8aff4d0fc3943a0651813363c65d19b070',
 +    'include/qemu/crucible-paged-ram.h':
 +        '388bdd0f63b1a7ed67105b224390298f1aba6ff54b4653dab95387427c216c71',
 +    'include/qom/object.h':
@@ -282081,10 +282134,10 @@ index 0000000000000000000000000000000000000000..e6e26a331afba733c60474399a0bf44e
 +}
 diff --git a/tests/unit/test-crucible-process-purpose.c b/tests/unit/test-crucible-process-purpose.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..c3701c201287bc1cfbb50e98da055eac2492d180
+index 0000000000000000000000000000000000000000..fecd045e73b972d16992b67fcb0c58273db18c3d
 --- /dev/null
 +++ b/tests/unit/test-crucible-process-purpose.c
-@@ -0,0 +1,782 @@
+@@ -0,0 +1,825 @@
 +/*
 + * Fixed process-purpose syntax and real borrowed descriptor controls
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -282194,9 +282247,10 @@ index 0000000000000000000000000000000000000000..c3701c201287bc1cfbb50e98da055eac
 +    stq_be_p(wire + STANDING_DEVICE, 13);
 +    stq_be_p(wire + STANDING_INODE, 17);
 +    stq_be_p(wire + STANDING_EXTENT, QEMU_CRUCIBLE_STANDING_MAPPING_BYTES);
-+    memcpy(standing, "CRUCSRV3", 8);
-+    stl_be_p(standing + 8, 3);
++    memcpy(standing, "CRUCSRV4", 8);
++    stl_be_p(standing + 8, 4);
 +    stl_be_p(standing + 12, QEMU_CRUCIBLE_STANDING_PAYLOAD_BYTES);
++    stl_be_p(standing + 196, QEMU_CRUCIBLE_PRODUCER_RETENTION_EDITION);
 +    memcpy(standing + 16,
 +           wire + QEMU_CRUCIBLE_PROCESS_PURPOSE_CONTAINING_CAPABILITY_OFFSET, 32);
 +    stq_be_p(standing + 48, 100);
@@ -282608,6 +282662,46 @@ index 0000000000000000000000000000000000000000..c3701c201287bc1cfbb50e98da055eac
 +    assert_refusal(wire, sizeof(wire), -EPROTONOSUPPORT);
 +}
 +
++/* Current syntax does not issue the retained publisher subscription. */
++static void test_standing_retention_edition(void)
++{
++    uint8_t wire[QEMU_CRUCIBLE_PROCESS_PURPOSE_BYTES];
++    QemuCrucibleStandingRecord out;
++    QemuCrucibleStandingRecord sentinel;
++    static const uint32_t unsupported[] = { 0, 2, UINT32_MAX };
++    uint8_t *standing = wire + STANDING_PAYLOAD;
++
++    fixture_purpose(wire);
++    g_assert_cmpint(qemu_crucible_standing_record_decode_v4(
++                       standing, QEMU_CRUCIBLE_STANDING_PAYLOAD_BYTES, &out), ==, 0);
++    g_assert_cmpuint(out.producer_retention_edition, ==, 1);
++    g_assert_cmpuint(QEMU_CRUCIBLE_STANDING_PAYLOAD_BYTES, ==, 1496);
++    g_assert_cmpuint(QEMU_CRUCIBLE_STANDING_MAPPING_BYTES, ==, 1504);
++
++    for (uint32_t version = 1; version < 4; version++) {
++        fixture_purpose(wire);
++        standing[7] = '0' + version;
++        stl_be_p(standing + 8, version);
++        assert_refusal(wire, sizeof(wire), -EPROTONOSUPPORT);
++    }
++    for (size_t index = 0; index < G_N_ELEMENTS(unsupported); index++) {
++        fixture_purpose(wire);
++        stl_be_p(standing + 196, unsupported[index]);
++        memset(&out, 0xa5, sizeof(out));
++        sentinel = out;
++        g_assert_cmpint(qemu_crucible_standing_record_decode_v4(
++                           standing, QEMU_CRUCIBLE_STANDING_PAYLOAD_BYTES,
++                           &out), ==, -EPROTONOSUPPORT);
++        g_assert_cmpmem(&out, sizeof(out), &sentinel, sizeof(sentinel));
++        assert_refusal(wire, sizeof(wire), -EPROTONOSUPPORT);
++    }
++    fixture_purpose(wire);
++    /* The declaration is BE32, not a native-endian one-byte flag. */
++    memset(standing + 196, 0, 4);
++    standing[196] = 1;
++    assert_refusal(wire, sizeof(wire), -EPROTONOSUPPORT);
++}
++
 +static void test_ram(void)
 +{
 +    uint8_t wire[QEMU_CRUCIBLE_PROCESS_PURPOSE_BYTES];
@@ -282858,6 +282952,8 @@ index 0000000000000000000000000000000000000000..c3701c201287bc1cfbb50e98da055eac
 +    g_test_add_func("/purpose/conservation", test_conservation);
 +    g_test_add_func("/purpose/family", test_family);
 +    g_test_add_func("/purpose/standing", test_standing);
++    g_test_add_func("/purpose/standing-retention-edition",
++                    test_standing_retention_edition);
 +    g_test_add_func("/purpose/ram", test_ram);
 +#ifdef CONFIG_LINUX
 +    g_test_add_func("/purpose/descriptor", test_descriptor);
