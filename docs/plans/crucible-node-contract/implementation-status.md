@@ -1671,9 +1671,23 @@ actual kernel result construction, complete profile/facet/extension cloning,
 spare-capacity independence, partial reads, interruption, unavailable entropy,
 both program families, all admissions, expiry and retained error-callback
 custody. All 76 bootstrap controls pass with zero failures and one existing
-ignored private child. Full qualification remains pending. This component does
-not perform live SDK authentication, publish Hello/ACK, construct Native18
-policy, adopt a model or supply opaque Initial/Recipe authority.
+ignored private child.
+
+For `094ae8e7b9`, both complete standard and raw-value Transport libraries pass
+1,874 tests each, with zero failures, no filtering and sixteen existing ignores.
+Affected Transport/Engine/Daemon all-feature/all-target checking, scoped
+formatting and all six architecture gates pass. Required application compilation
+passes with 180 test executables across 58 package identities, including 71
+integration targets. The funded-Source VM passes both independent three-Birth
+consumer flights, refusal controls, cleanup and default-feature CLI refusal.
+All 217 owned changed Rust paths and the Transport manifest match that committed
+checkpoint in the application and all three actual VM component captures.
+These captures come from the exact build derivations.
+
+Full Engine and Daemon library runtime qualification remains at `f2150ce5c7`.
+Subsequent envelope construction is excluded from this qualification. This
+component does not perform live SDK authentication, publish Hello/ACK, construct
+Native18 policy, adopt a model or supply opaque Initial/Recipe authority.
 
 ## Original launch custody and shared startup geometry
 
