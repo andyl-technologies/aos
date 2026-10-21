@@ -408,6 +408,8 @@ pub struct GuardianConfig {
     executable: GuardianExecutableDescriptor,
     executable_path: String,
     timeout_start: Duration,
+    #[cfg(test)]
+    _fixture_directory: Option<Arc<tempfile::TempDir>>,
 }
 
 impl GuardianConfig {
@@ -442,6 +444,8 @@ impl GuardianConfig {
             executable,
             executable_path: path.to_owned(),
             timeout_start,
+            #[cfg(test)]
+            _fixture_directory: None,
         })
     }
 
@@ -458,7 +462,11 @@ impl GuardianConfig {
             .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
         let descriptor = std::fs::File::open(&path)
             .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
-        Self::for_test_descriptor(descriptor.as_fd())
+        let mut config = Self::for_test_descriptor(descriptor.as_fd())?;
+        // Removing the temporary name changes the pinned inode's ctime.
+        // Cloned profiles must retain it until their last executable pin drops.
+        config._fixture_directory = Some(Arc::new(directory));
+        Ok(config)
     }
 
     #[cfg(test)]
@@ -469,6 +477,7 @@ impl GuardianConfig {
             executable,
             executable_path: "/invalid-test-guardian".to_owned(),
             timeout_start: Duration::from_secs(30),
+            _fixture_directory: None,
         })
     }
 
@@ -1083,6 +1092,25 @@ mod tests {
     use aos_sandbox_linux::pidfd::{NamespaceFd, NamespaceKind};
 
     use super::*;
+
+    #[test]
+    fn guardian_fixture_retains_its_named_inode_through_profile_clones() {
+        let profile = GuardianConfig::for_tests().unwrap();
+        let directory = profile
+            ._fixture_directory
+            .as_ref()
+            .unwrap()
+            .path()
+            .to_path_buf();
+        profile.revalidate().unwrap();
+
+        let retained = profile.clone();
+        drop(profile);
+        retained.revalidate().unwrap();
+
+        drop(retained);
+        assert!(!directory.exists());
+    }
 
     fn readiness_with_pin(executable_pin: OwnedFd) -> BackendReadiness {
         readiness_with_path_and_pin(TEST_NSPAWN_PATH, executable_pin)
