@@ -1,8 +1,8 @@
 //! Reuses bounded derived SQL fences while retaining transactional verification.
 //!
 //! Building a pointer's provenance plan validates every immutable dependency.
-//! New Native control requests can reuse one publication's plan for thirty
-//! seconds after its creation. In-flight requests retain their selected plan,
+//! New Native control requests can reuse two publications' plans for thirty
+//! seconds after their creation. In-flight requests retain their selected plan,
 //! while every transaction still executes the exact source, receipt, copy and
 //! cardinality fences. No authentication decision or successful mutation is
 //! cached. A failed direct transaction discards the shared plan.
@@ -23,11 +23,11 @@ use std::{
 #[cfg(not(target_arch = "wasm32"))]
 type PlanCell = Arc<tokio::sync::OnceCell<Vec<CheckedStatement>>>;
 
-/// Retains one bounded, derived SQL plan, never a permission or mutation result.
+/// Retains two bounded derived SQL plans, never a permission or mutation result.
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Default)]
 pub(in crate::db) struct PublicationPlanCache {
-    selected: Mutex<Option<CachedPlan>>,
+    selected: Mutex<Vec<CachedPlan>>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -43,16 +43,24 @@ impl PublicationPlanCache {
         let Ok(mut selected) = self.selected.lock() else {
             return Arc::new(tokio::sync::OnceCell::new());
         };
-        if let Some(plan) = selected.as_ref() {
-            if plan.publication == publication
-                && plan.created.elapsed() < std::time::Duration::from_secs(30)
-            {
-                return Arc::clone(&plan.statements);
-            }
+        selected.retain(|plan| plan.created.elapsed() < std::time::Duration::from_secs(30));
+        if let Some(index) = selected
+            .iter()
+            .position(|plan| plan.publication == publication)
+        {
+            let plan = selected.remove(index);
+            let statements = Arc::clone(&plan.statements);
+            selected.push(plan);
+            return statements;
         }
 
+        // Concurrent publications must not evict one another on every request.
+        // A third publication replaces the least recently selected plan.
+        if selected.len() == 2 {
+            selected.remove(0);
+        }
         let statements = Arc::new(tokio::sync::OnceCell::new());
-        *selected = Some(CachedPlan {
+        selected.push(CachedPlan {
             publication: publication.to_owned(),
             created: tokio::time::Instant::now(),
             statements: Arc::clone(&statements),
@@ -62,7 +70,7 @@ impl PublicationPlanCache {
 
     fn invalidate(&self) {
         if let Ok(mut selected) = self.selected.lock() {
-            *selected = None;
+            selected.clear();
         }
     }
 }
@@ -90,7 +98,7 @@ impl Database {
     ///
     /// The scope retains at most one publication and database identity. Other
     /// publications use ordinary uncached reads. Native requests may reuse the
-    /// database handle's most recent plan for thirty seconds. This only avoids
+    /// database handle's two most recent plans for thirty seconds. This only avoids
     /// reloading immutable terminal originals: every transaction still locks and
     /// checks the exact source, receipt, copy and cardinality pins. Errors pass
     /// through unchanged. Spawned tasks do not inherit the scope. Wasm keeps its

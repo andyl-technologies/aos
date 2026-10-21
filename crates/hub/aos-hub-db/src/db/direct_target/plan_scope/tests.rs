@@ -20,7 +20,15 @@ async fn database() -> Database {
 }
 
 async fn plan(db: &Database, calls: &AtomicUsize) -> Result<Vec<CheckedStatement>> {
-    publication_plan(db, "publication", || async {
+    plan_for(db, "publication", calls).await
+}
+
+async fn plan_for(
+    db: &Database,
+    publication: &str,
+    calls: &AtomicUsize,
+) -> Result<Vec<CheckedStatement>> {
+    publication_plan(db, publication, || async {
         calls.fetch_add(1, Ordering::SeqCst);
         tokio::task::yield_now().await;
         let version = db
@@ -98,7 +106,7 @@ async fn concurrent_requests_share_one_build_and_expired_plans_rebuild() {
         .selected
         .lock()
         .unwrap()
-        .as_mut()
+        .first_mut()
         .unwrap()
         .created = tokio::time::Instant::now() - std::time::Duration::from_secs(30);
     Database::with_direct_dependency_plan_scope(plan(&db, &calls))
@@ -108,24 +116,38 @@ async fn concurrent_requests_share_one_build_and_expired_plans_rebuild() {
 }
 
 #[tokio::test]
-async fn a_different_publication_evicts_the_single_retained_plan() {
+async fn interleaved_publications_share_independent_plans_and_evict_the_least_recent() {
     let db = database().await;
     let calls = AtomicUsize::new(0);
-    Database::with_direct_dependency_plan_scope(plan(&db, &calls))
+    for _ in 0..8 {
+        let plans = join_all(["first", "second"].map(|publication| {
+            Database::with_direct_dependency_plan_scope(plan_for(&db, publication, &calls))
+        }))
+        .await;
+        for statements in plans {
+            db.backend
+                .checked_batch(&statements.unwrap())
+                .await
+                .unwrap();
+        }
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+
+    Database::with_direct_dependency_plan_scope(plan_for(&db, "first", &calls))
         .await
         .unwrap();
-
-    Database::with_direct_dependency_plan_scope(publication_plan(&db, "other", || async {
-        calls.fetch_add(1, Ordering::SeqCst);
-        Ok(Vec::new())
-    }))
-    .await
-    .unwrap();
-
-    Database::with_direct_dependency_plan_scope(plan(&db, &calls))
+    Database::with_direct_dependency_plan_scope(plan_for(&db, "third", &calls))
         .await
         .unwrap();
     assert_eq!(calls.load(Ordering::SeqCst), 3);
+    Database::with_direct_dependency_plan_scope(plan_for(&db, "first", &calls))
+        .await
+        .unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 3);
+    Database::with_direct_dependency_plan_scope(plan_for(&db, "second", &calls))
+        .await
+        .unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 4);
 }
 
 #[tokio::test]
