@@ -9,6 +9,10 @@ use super::*;
 use crate::ProviderError;
 use crate::protocol_snapshot::ProtocolCaptureOwner;
 
+#[path = "native5_birth_cut/retained_channel.rs"]
+mod retained_channel;
+pub(crate) use retained_channel::OriginalNativePublicBirthChannel;
+
 #[derive(Clone, Copy)]
 enum Refusal {
     Expired,

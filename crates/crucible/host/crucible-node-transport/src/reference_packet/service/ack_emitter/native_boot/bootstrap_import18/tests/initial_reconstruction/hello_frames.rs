@@ -53,6 +53,19 @@ impl OriginalImport18HelloFramesAdmission for Admission<'_> {
     }
 }
 
+pub(super) fn construct_for_channel(owner: &mut OriginalImport18RawBootstrap) {
+    super::hello_selection::construct_for_frames(owner);
+    let admission = Admission {
+        case: "initial_hello_frames_complete",
+        calls: Cell::new(0),
+        before: owner.retained_requested_bytes().unwrap(),
+        row: Cell::new(None),
+    };
+    owner.construct_hello_frames_data(&admission).unwrap();
+    assert!(owner.hello_frames_complete);
+    assert_eq!(admission.calls.get(), 2);
+}
+
 pub(super) fn assert_child(case: &str, owner: &mut OriginalImport18RawBootstrap) {
     if case != "initial_hello_frames_unchecked_roster" {
         super::hello_selection::construct_for_frames(owner);

@@ -1248,14 +1248,68 @@ All eight retained-reservation tests pass, including three new actual Hello
 constructor/census controls. Both complete Transport builds pass 1,815 tests,
 zero failures, no filtering and sixteen existing ignores. Affected
 all-feature/all-target checking, scoped formatting and all six architecture
-gates pass. Required application compilation, the funded-Source VM and the
-broader Engine/Daemon libraries are running. The immutable application and three
-VM component captures match all 162 owned changed Rust paths byte for byte;
-pending builds are not passing qualification results.
+gates pass. Commit `99dc0fdb5e` also passes the required application compilation
+and funded-Source VM gates. The application gate emits 180 test executables
+across 58 package identities, including 71 integration targets, at
+`/nix/store/24niahf6mszds4jj4rv7kk6sxlbbaqjx-aos-test-targets-0.1.0`.
+Its source capture and all three VM component source captures match the
+checkpoint's 162 owned changed Rust paths byte for byte. The VM at
+`/nix/store/6wv60ywi6464h3ymg99m4krs33058c7l-aos-vm-test-crucible-funded-source-templates-0`
+passes both independent consumer flights, three real retained private
+Birth/declaration/projection/launch results, refusal controls and terminal
+namespace/credit release. The configured full Engine library passes 2,036 tests
+with zero failures, no filtering and 34 existing ignores; the configured full
+Daemon library passes 1,826 tests with zero failures, no filtering and 165
+existing ignores. These results qualify this immutable checkpoint, including
+the retained Hello storage, without selecting the NativeImport18 startup route.
 
 This constructs physical journal storage, not an authenticated Hello exchange,
 model-absent native policy, bootstrap ACK or opaque Initial/Recipe. Those actual
 constructors and complete native/Source restoration remain required.
+
+## Original public descriptor and unchanged private startup cut
+
+The physical bootstrap can now retain its actual public descriptor before the
+first private read. Retention performs no allocation, credential query or I/O.
+An occupied or late destination preserves the caller's incoming descriptor.
+The socket stays in the original root after every later refusal.
+
+After completed initial correspondence, immutable definitions, Hello roster and
+literal storage, a separately admitted constructor checks the public socket's
+actual parent PID/UID and binds it to the unchanged opaque pre-parser deadline.
+It retains both real shared allocations and moves the same descriptor into its
+bounded stream. No new duration renews the cut. The backing census discounts
+only actual cut/deadline pointer equality, counts distinct allocations and keeps
+surviving backing visible after expiration. Deadline reset remains sticky even
+if its previous value is restored. Outer typed guards and whole-owner terminal
+admission run after either constructor outcome.
+
+The physical raw floor includes the inline capsule and its allocation-free
+retention moves/controls. Both independent initial calculations include the
+actual two shared deadline allocations and binding work beside every retained
+raw/typed/Hello owner. No announced row supplies these terms.
+
+Three physical channel controls and all twelve initial-reconstruction tests
+pass. The latter cover 162 inherited parent/child flights and the separate quote
+control, including thirteen new public-channel flights for both program
+families, occupied/missing/late descriptors, wrong peer, unchecked prior work,
+constructor/terminal refusals and actual expiration. Queued public bytes remain
+unread, no public bytes are emitted and the same descriptor/raw bank pointers
+survive every outcome. A reused schema-fixture helper now limits requested
+schema mutations to its own cases instead of treating a missing socket as a
+missing schema.
+
+Both complete Transport configurations pass 1,819 tests with zero failures,
+no filtering and sixteen existing ignores. Affected all-feature/all-target
+checking, scoped formatting and all six architecture gates pass. The required
+application compilation and funded-Source VM are running against immutable
+captures that match all 168 owned changed Rust paths byte for byte. They are
+not completed qualifications. The full Engine/Daemon results above remain tied
+to `99dc0fdb5e`.
+
+This transition binds physical custody only. The native Hello exchange,
+model-absent immutable policy, bootstrap ACK, full five-phase Recipe/Initial
+producers and complete Native/Source restoration remain required.
 
 ## Original launch custody and shared startup geometry
 

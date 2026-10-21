@@ -81,18 +81,41 @@ fn child(case: &str, wire: &[u8]) {
         .stdin(Stdio::from(std::os::fd::OwnedFd::from(inherited)))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    let mut public_peer = if case.starts_with("initial_hello_channel_") {
+        let (peer, inherited) = UnixStream::pair().unwrap();
+        command.stderr(Stdio::from(std::os::fd::OwnedFd::from(inherited)));
+        Some(peer)
+    } else {
+        None
+    };
     let process = command.spawn().unwrap();
     drop(command);
+    if let Some(peer) = &mut public_peer {
+        peer.write_all(b"unconsumed public Hello DATA").unwrap();
+    }
     parent.write_all(wire).unwrap();
     if case != "open_writer" {
         parent.shutdown(Shutdown::Write).unwrap();
     }
     let output = process.wait_with_output().unwrap();
+    let mut diagnostics = output.stderr;
+    if let Some(peer) = &mut public_peer {
+        use std::io::Read;
+        if let Err(error) = peer.read_to_end(&mut diagnostics) {
+            assert_eq!(error.kind(), std::io::ErrorKind::ConnectionReset);
+        }
+    }
     assert!(
         output.status.success(),
         "{}",
-        String::from_utf8_lossy(&output.stderr)
+        String::from_utf8_lossy(&diagnostics)
     );
+    if public_peer.is_some() {
+        assert!(
+            diagnostics.is_empty(),
+            "public birth constructor wrote bytes"
+        );
+    }
     assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
 }
 
@@ -124,6 +147,9 @@ fn inherited_raw_bootstrap_child() {
     let mut owner =
         OriginalImport18RawBootstrap::retain(UnixStream::from(original), selected_bounds).unwrap();
     assert!(owner.inputs.is_empty_data());
+    if case.starts_with("initial_hello_channel_") {
+        initial_reconstruction::retain_public_before_read(&case, &mut owner);
+    }
     let result = owner.receive();
     assert!(owner.inputs.is_empty_data());
     if case.starts_with("typed_") {

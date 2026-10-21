@@ -19,6 +19,11 @@ pub(super) fn prepare_selected(case: &str, selected: &mut Value) {
     selected["launch"]["selection"]["realization"]["bindings"][0]["compatibility"]["implementation"]
         ["formats"] = schemas;
 
+    // Other suites reuse this complete roster without requesting a schema
+    // mutation merely because their own physical case ends in "missing".
+    if !case.starts_with("initial_selection_") {
+        return;
+    }
     let launch = &mut selected["launch"]["selection"];
     let formats = if case.contains("_binding_") {
         &mut launch["realization"]["bindings"][0]["compatibility"]["implementation"]["formats"]

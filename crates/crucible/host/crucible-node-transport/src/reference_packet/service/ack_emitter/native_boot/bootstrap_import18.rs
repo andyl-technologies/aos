@@ -54,6 +54,13 @@ pub(in crate::reference_packet::service) use selection::{
     counter_scratch_data as selection_counter_scratch_data,
 };
 
+#[path = "bootstrap_import18/public_channel.rs"]
+mod public_channel;
+pub(in crate::reference_packet::service) use public_channel::{
+    construction_data as public_channel_construction_data,
+    counter_scratch_data as public_channel_counter_scratch_data,
+};
+
 #[path = "bootstrap_import18/hello_frames.rs"]
 mod hello_frames;
 pub(in crate::reference_packet::service) use hello_frames::{
@@ -107,6 +114,10 @@ pub(super) struct OriginalImport18RawBootstrap {
     hello_frames_row: Option<[usize; 3]>,
     hello_frames_started: bool,
     hello_frames_complete: bool,
+    public_channel: Option<crate::client::OriginalNativePublicBirthChannel>,
+    public_channel_row: Option<[usize; 3]>,
+    public_channel_started: bool,
+    public_channel_complete: bool,
     decoding_row: Option<[usize; 3]>,
     decode_started: bool,
     decoded: bool,
@@ -156,6 +167,10 @@ impl OriginalImport18RawBootstrap {
             hello_frames_row: None,
             hello_frames_started: false,
             hello_frames_complete: false,
+            public_channel: None,
+            public_channel_row: None,
+            public_channel_started: false,
+            public_channel_complete: false,
             decoding_row: None,
             decode_started: false,
             decoded: false,
@@ -275,11 +290,13 @@ impl OriginalImport18RawBootstrap {
         let typed_backing = self.parsed.retained_backing_data()?;
         let hello_backing = self.hello_selection_backing_data()?;
         let hello_frames_backing = self.hello_frames_backing_data()?;
+        let public_channel_backing = self.public_channel_backing_data()?;
         retained
             .checked_add(input_backing)
             .and_then(|n| n.checked_add(typed_backing))
             .and_then(|n| n.checked_add(hello_backing))
             .and_then(|n| n.checked_add(hello_frames_backing))
+            .and_then(|n| n.checked_add(public_channel_backing))
             .ok_or_else(exhausted)
     }
 
@@ -336,11 +353,13 @@ pub(in crate::reference_packet::service) fn raw_storage_floor(
         + size_of::<Result<OriginalImport18RawBootstrap, ProviderError>>()
         + size_of::<Result<(), ProviderError>>()
         + OriginalImport18ReceivingBanks::construction_transient_data()
-        + size_of::<OriginalImport18DecodedBodies>();
+        + size_of::<OriginalImport18DecodedBodies>()
+        + crate::client::OriginalNativePublicBirthChannel::retention_construction_transient_data();
     let scratch = native_import18_private_prefix_counter_scratch_data()
         + OriginalImport18ReceivingBanks::counter_scratch_data()
         + private_body_decode_counter_scratch_data()
         + private_body_owner_counter_scratch_data()
+        + crate::client::OriginalNativePublicBirthChannel::retention_counter_scratch_data()
         + decoding::counter_scratch_data()
         + source_authentication::counter_scratch_data()
         + initial_construction_counter_scratch_data()

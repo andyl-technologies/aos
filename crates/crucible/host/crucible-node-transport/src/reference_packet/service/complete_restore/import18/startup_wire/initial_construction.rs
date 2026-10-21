@@ -13,6 +13,8 @@ use crate::reference_packet::service::ack_emitter::native_boot::{
     original_import18_hello_frames_counter_scratch_data,
     original_import18_hello_selection_construction_data,
     original_import18_hello_selection_counter_scratch_data,
+    original_import18_public_channel_construction_data,
+    original_import18_public_channel_counter_scratch_data,
     original_import18_raw_bootstrap_storage_data, original_import18_selection_construction_data,
     original_import18_selection_counter_scratch_data,
 };
@@ -179,6 +181,12 @@ fn combine(
     row[0] = add(row[0], hello_frames[0])?;
     row[1] = row[1].max(hello_frames[1]);
     row[2] = row[2].max(add(raw[2], hello_frames[2])?);
+    // Public deadline binding coexists with every retained original owner. It
+    // uses the pre-parser cut and performs no protocol read or publication.
+    let public_channel = original_import18_public_channel_construction_data()?;
+    row[0] = add(row[0], public_channel[0])?;
+    row[1] = row[1].max(public_channel[1]);
+    row[2] = row[2].max(add(raw[2], public_channel[2])?);
     if add(add(row[0], row[1])?, row[2])? > maximum {
         return Err(exhausted());
     }
@@ -217,6 +225,8 @@ pub fn native_import18_initial_construction_counter_scratch_data() -> usize {
         + original_import18_hello_selection_counter_scratch_data()
         + original_import18_hello_frames_counter_scratch_data()
         + size_of::<[usize; 3]>() // The retained physical Hello constructor row.
+        + original_import18_public_channel_counter_scratch_data()
+        + size_of::<[usize; 3]>() // The retained physical public-channel row.
         + original_import18_selection_counter_scratch_data()
         + size_of::<[usize; 3]>() // The sequential compiled-definition row.
         + size_of::<[usize; 3]>() // The separate native Hello constructor row.

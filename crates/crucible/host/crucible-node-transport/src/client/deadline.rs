@@ -291,6 +291,7 @@ mod tests {
 }
 
 mod native5_birth_cut;
+pub(crate) use native5_birth_cut::OriginalNativePublicBirthChannel;
 pub use native5_birth_cut::{
     OriginalNative5BirthCut, OriginalNative5BirthStream, OriginalNative5BirthStreamRefusal,
 };

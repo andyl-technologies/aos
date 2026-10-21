@@ -28,6 +28,10 @@ mod normalized_framing;
 #[path = "initial_reconstruction/hello_selection.rs"]
 mod hello_selection;
 
+#[path = "initial_reconstruction/public_channel.rs"]
+mod public_channel;
+pub(super) use public_channel::retain_before_read as retain_public_before_read;
+
 #[path = "initial_reconstruction/hello_frames.rs"]
 mod hello_frames;
 
@@ -82,6 +86,7 @@ fn operands(case: &str) -> [Value; 3] {
             | "initial_hello_reactive"
             | "initial_selection_reactive"
             | "initial_hello_frames_reactive"
+            | "initial_hello_channel_reactive"
     ));
     if case.starts_with("initial_selection_") || case.starts_with("initial_hello_") {
         selection::prepare_selected(case, &mut selected);
@@ -329,6 +334,10 @@ pub(super) fn assert_child(
     }
     if case.starts_with("initial_selection_") {
         selection::assert_child(case, &mut owner);
+        return;
+    }
+    if case.starts_with("initial_hello_channel_") {
+        public_channel::assert_child(case, &mut owner);
         return;
     }
     if case.starts_with("initial_hello_frames_") {
