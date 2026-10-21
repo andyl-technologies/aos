@@ -34,6 +34,7 @@ mod runtime;
 pub use runtime::ControlBoundaryPublicationError;
 #[path = "frame_node/scheduler_publication.rs"]
 mod scheduler_publication;
+pub use scheduler_publication::{CommittedSchedulerAdvance, SchedulerAdvancePublication};
 #[path = "frame_node/snapshot.rs"]
 mod snapshot;
 

@@ -8,15 +8,34 @@
 use super::*;
 
 /// Retains the exact slot and fresh sequence through a scheduler handoff.
-pub(crate) struct SchedulerAdvancePublication<'a> {
+///
+/// This physical writer reservation supplies no operation, deadline or execution
+/// authority. Its owner must retain those independently before publishing. Drop
+/// consumes its fresh generation even when no tuple was committed.
+#[must_use]
+pub struct SchedulerAdvancePublication<'a> {
     slot: &'a NodeSlot,
     completed_sequence: u64,
     closed: bool,
 }
 
+/// Retains one committed scheduler tuple before its once-only wake attempt.
+///
+/// The producer can publish its actual immutable command and operation borrower
+/// after tuple commit and before waking the executor. This receipt corroborates
+/// that physical ordering; it grants no permission to execute or renew work.
+#[must_use]
+pub struct CommittedSchedulerAdvance<'a> {
+    slot: &'a NodeSlot,
+    sequence: u64,
+}
+
 impl NodeSlot {
     /// Reserves one exact generation without waiting for another writer.
-    pub(crate) fn reserve_scheduler_advance(
+    ///
+    /// # Errors
+    /// Refuses an occupied writer or exhausted generation before mutation.
+    pub fn reserve_scheduler_advance(
         &self,
     ) -> Result<SchedulerAdvancePublication<'_>, NodeSlotError> {
         let observed = self.advance_publication_sequence.load(Ordering::Acquire);
@@ -46,6 +65,18 @@ impl NodeSlot {
 }
 
 impl SchedulerAdvancePublication<'_> {
+    /// Returns the actual fresh generation reserved by this writer.
+    #[must_use]
+    pub const fn generation(&self) -> u64 {
+        self.completed_sequence
+    }
+
+    /// Observes whether this reservation belongs to the exact supplied slot.
+    #[must_use]
+    pub fn belongs_to(&self, slot: &NodeSlot) -> bool {
+        std::ptr::eq(self.slot, slot)
+    }
+
     /// Commits the tuple before incrementing and ringing its existing wake.
     pub(crate) fn publish(
         self,
@@ -92,6 +123,71 @@ impl SchedulerAdvancePublication<'_> {
     }
 }
 
+impl<'slot> SchedulerAdvancePublication<'slot> {
+    /// Commits the validated tuple while retaining its separate wake attempt.
+    ///
+    /// A caller can retain its real publisher memberships and immutable command
+    /// before this mutation, then publish their offer before consuming the wake
+    /// receipt. A refused later operation does not undo this committed tuple.
+    ///
+    /// # Errors
+    /// Refuses a ceiling incompatible with the actual slot. The reservation's
+    /// fresh generation is still consumed, without changing the tuple or wake.
+    pub fn commit(
+        self,
+        ceiling: AdvanceCeiling,
+        stop_condition: AdvanceStopCondition,
+    ) -> Result<CommittedSchedulerAdvance<'slot>, NodeSlotError> {
+        self.slot.validate_scheduler_ceiling(ceiling)?;
+        let committed = CommittedSchedulerAdvance {
+            slot: self.slot,
+            sequence: self.completed_sequence,
+        };
+        self.publish_without_wake(ceiling.max_advance_icount, stop_condition);
+
+        Ok(committed)
+    }
+}
+
+impl CommittedSchedulerAdvance<'_> {
+    /// Returns the actual committed generation, independently of any wake.
+    #[must_use]
+    pub const fn generation(&self) -> u64 {
+        self.sequence
+    }
+
+    /// Observes whether this commit belongs to the exact supplied slot.
+    #[must_use]
+    pub fn belongs_to(&self, slot: &NodeSlot) -> bool {
+        std::ptr::eq(self.slot, slot)
+    }
+
+    /// Attempts this committed tuple's wake once, consuming its receipt.
+    ///
+    /// # Errors
+    /// Refuses a replaced publication before changing the wake word. A futex
+    /// failure preserves its typed cause after the signal increment; it does
+    /// not permit another attempt through this consumed receipt.
+    /// A wake remains advisory: another writer can replace the tuple after
+    /// this observation. Consumers must authenticate their retained command.
+    pub fn wake(self) -> Result<WakeAction, NodeSlotError> {
+        let observed = self
+            .slot
+            .advance_publication_sequence
+            .load(Ordering::Acquire);
+        if observed != self.sequence {
+            return Err(NodeSlotError::AdvancePublicationOccupied {
+                expected: self.sequence,
+                observed,
+            });
+        }
+
+        self.slot
+            .wake_after_signal_increment()
+            .map_err(|source| NodeSlotError::FutexWake { source })
+    }
+}
+
 impl Drop for SchedulerAdvancePublication<'_> {
     fn drop(&mut self) {
         if !self.closed {
@@ -111,6 +207,93 @@ mod tests {
 
     fn ceiling() -> AdvanceCeiling {
         authorize_advance_ceiling(0, 12, None).unwrap()
+    }
+
+    #[test]
+    fn committed_tuple_retains_a_separate_once_wake_receipt() {
+        let slot = NodeSlot::new(KIND_VM);
+        let foreign = NodeSlot::new(KIND_VM);
+        let reservation = slot.reserve_scheduler_advance().unwrap();
+        assert_eq!(reservation.generation(), 2);
+        assert!(reservation.belongs_to(&slot));
+        assert!(!reservation.belongs_to(&foreign));
+
+        let committed = reservation
+            .commit(ceiling(), AdvanceStopCondition::NextAuthenticatedIdle)
+            .unwrap();
+
+        assert_eq!(committed.generation(), 2);
+        assert!(committed.belongs_to(&slot));
+        assert!(!committed.belongs_to(&foreign));
+        let before_wake = slot.snapshot();
+        assert_eq!(before_wake.advance_publication_sequence, 2);
+        assert_eq!(before_wake.max_advance_icount, 12);
+        assert_eq!(before_wake.wake_signal, 0);
+
+        committed.wake().unwrap();
+
+        assert_eq!(slot.snapshot().wake_signal, 1);
+    }
+
+    #[test]
+    fn replaced_commit_refuses_before_an_extra_wake() {
+        let slot = NodeSlot::new(KIND_VM);
+        let committed = slot
+            .reserve_scheduler_advance()
+            .unwrap()
+            .commit(ceiling(), AdvanceStopCondition::Ceiling)
+            .unwrap();
+        slot.publish_scheduler_advance(ceiling(), AdvanceStopCondition::NextAuthenticatedIdle)
+            .unwrap();
+        let before = slot.snapshot();
+
+        assert_eq!(
+            committed.wake(),
+            Err(NodeSlotError::AdvancePublicationOccupied {
+                expected: 2,
+                observed: 4,
+            })
+        );
+        assert_eq!(slot.snapshot(), before);
+    }
+
+    #[test]
+    fn refused_commit_consumes_only_its_fresh_generation() {
+        let slot = NodeSlot::new(KIND_VM);
+        slot.current_icount.store(13, Ordering::Release);
+        let before = slot.snapshot();
+        let reservation = slot.reserve_scheduler_advance().unwrap();
+
+        assert!(matches!(
+            reservation.commit(ceiling(), AdvanceStopCondition::Ceiling),
+            Err(NodeSlotError::CeilingBeforePublishedCurrent {
+                current_icount: 13,
+                max_advance_icount: 12,
+            })
+        ));
+
+        let after = slot.snapshot();
+        assert_eq!(after.advance_publication_sequence, 2);
+        assert_eq!(after.max_advance_icount, before.max_advance_icount);
+        assert_eq!(after.advance_stop_condition, before.advance_stop_condition);
+        assert_eq!(after.wake_signal, before.wake_signal);
+    }
+
+    #[test]
+    fn discarded_commit_does_not_ring_or_reuse_its_generation() {
+        let slot = NodeSlot::new(KIND_VM);
+        {
+            let committed = slot
+                .reserve_scheduler_advance()
+                .unwrap()
+                .commit(ceiling(), AdvanceStopCondition::Ceiling)
+                .unwrap();
+            assert_eq!(committed.generation(), 2);
+        }
+
+        assert_eq!(slot.snapshot().wake_signal, 0);
+        let next = slot.reserve_scheduler_advance().unwrap();
+        assert_eq!(next.generation(), 4);
     }
 
     #[test]
