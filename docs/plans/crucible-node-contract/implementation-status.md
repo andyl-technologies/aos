@@ -1958,8 +1958,20 @@ state, actual retained error, unchanged census for nonowning cases, preserved
 custom diagnostic pointer/capacity on census refusal, and spent retries.
 The existing exact encoded-credit control also passes after replacing discarded
 preflight error text with a nonowning simple kind; its public resource refusal
-is unchanged. Complete qualification remains pending. This establishes no
-Native18 process, SDK constructor funding, verifier, policy, ACK or model grant.
+is unchanged.
+
+For `3e19413bc5`, both complete standard and raw-value Transport libraries pass
+1,909 tests each, with zero failures, no filtering and 16 existing ignores.
+Affected Transport/Engine/Daemon all-feature/all-target checking, scoped
+formatting and all six architecture gates pass. Required application compilation
+passes with 180 test executables across 58 package identities, including 71
+integration targets. All 238 owned changed Rust paths and the Transport manifest
+match that committed checkpoint in its exact application source capture. This
+standalone I/O census checkpoint has no separate VM rerun; the preceding initial
+SDK backing checkpoint retains the VM qualification above. Later borrowed
+manifest ordering work is excluded. Full Engine and Daemon library runtime
+qualification remains at `f2150ce5c7`. This establishes no Native18 process,
+SDK constructor funding, verifier, policy, ACK or model grant.
 
 ## Original launch custody and shared startup geometry
 
