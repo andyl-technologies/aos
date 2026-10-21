@@ -1,8 +1,8 @@
-From d9062af859073b531c3733bc05b118d29a8d7a5a Mon Sep 17 00:00:00 2001
+From 3781e9719d792930a5dfdf5803224fcf6db9ae30 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:00 +0000
-Subject: [PATCH] crucible: retain bounded hardware storage and inactive
- constructor debt
+Subject: [PATCH] crucible: bound interrupt catalogue with actual charged
+ storage
 
 Retain the complete Crucible integration on the sole pinned QEMU base.
 Supply required run and teardown rows with real compiled fixture layouts
@@ -283,6 +283,27 @@ Add two explicitly GPL-2.0-or-later focused tests and preserve every existing
 file license, assertion and resource limit. Initial callback and lease assertion
 hooks remain unexecuted; retain all prior failed attempts and the mandatory
 launched Source/Root lifecycle refusal.
+
+Replace the interrupt manifest, bindings and target arrays with the actual
+bounded typed 13-row, 13-binding and 4096-target catalogue. Preserve ordinary
+architecture templates, ordering and realized-device evidence requirements;
+refuse sticky row/target overflow before publication. Charge the exact image
+storage once in the real fixed Native floor, without paying device strings,
+registrations, handlers or future constructors by implication.
+
+Keep selected SDK and internal prebirth refusals unchanged. Exercise actual
+register_family, builder, binding and sealing bodies with explicit CPU and
+realized-capability inputs; independently rebuild missing-evidence, selected
+refusal and target-overflow defects. Preserve the earlier register/interrupt
+refusal controls under the actual typed layout. These facts issue no Source
+payer, accepted lease, entered callback, operation or activation authority.
+
+Extract the actual typed declaration and getter, guard every new source input,
+and run the new GPL-2.0-or-later focused test from the existing native driver.
+Retain its actual GLib link dependency from configured QEMU provider metadata.
+Preserve every earlier assertion, resource ceiling, failed attempt and mandatory
+launched Source/Root lifecycle refusal; initial callback and lease hooks remain
+unexecuted.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -72118,10 +72139,10 @@ index 0000000000000000000000000000000000000000..ae015acf95d98a9b3b88541600b9b4fe
 +#endif /* QEMU_CRUCIBLE_DEVICE_WORKSPACE_H */
 diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..4a08497e59fc3a4bd6ab112e840945ab5b8d016f
+index 0000000000000000000000000000000000000000..861f4e0180bf82fd2586ee90ba29143f703ad150
 --- /dev/null
 +++ b/include/qemu/crucible-fault.h
-@@ -0,0 +1,826 @@
+@@ -0,0 +1,827 @@
 +/*
 + * Crucible deterministic fault command registry
 + *
@@ -72140,6 +72161,7 @@ index 0000000000000000000000000000000000000000..4a08497e59fc3a4bd6ab112e840945ab
 +
 +/* Exact typed catalogue backing, retained for the native image lifetime. */
 +uint64_t qemu_crucible_fault_hardware_catalogue_fixed_storage_bytes_v1(void);
++uint64_t qemu_crucible_fault_interrupt_catalogue_fixed_storage_bytes_v1(void);
 +
 +typedef struct QemuCrucibleInitialHardwareCatalogueLease
 +    QemuCrucibleInitialHardwareCatalogueLease;
@@ -125885,10 +125907,10 @@ index 0000000000000000000000000000000000000000..0bd2e3a64c7e84c748b1ad6ab42ef934
 +}
 diff --git a/plugins/crucible-fault-interrupt.c b/plugins/crucible-fault-interrupt.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..31045362c04a2d0ac77a6761872422f6247fb48c
+index 0000000000000000000000000000000000000000..9c820878b1abfb93b6347178450dffef6ca17e03
 --- /dev/null
 +++ b/plugins/crucible-fault-interrupt.c
-@@ -0,0 +1,2899 @@
+@@ -0,0 +1,2932 @@
 +/*
 + * Crucible architecture interrupt fault targets
 + *
@@ -125998,11 +126020,42 @@ index 0000000000000000000000000000000000000000..31045362c04a2d0ac77a6761872422f6
 +      13, 2, 1, 2, 16, 31, 16, 31, 128 },
 +};
 +
-+static GArray *crucible_interrupt_manifest;
-+static GArray *crucible_interrupt_bindings;
-+static uint32_t *crucible_interrupt_targets;
-+static uint32_t crucible_interrupt_boot_target;
-+static size_t crucible_interrupt_target_count;
++/* These are the existing accepted architecture/cohort bounds, not an
++ * allocation budget for device strings, rule state or handler registrations.
++ * The fixed image backing stays charged after any logical view closes. */
++#define CRUCIBLE_INTERRUPT_MANIFEST_CAPACITY 13
++#define CRUCIBLE_INTERRUPT_CPU_CAPACITY 4096
++
++typedef struct CrucibleInterruptCatalogue {
++    CrucibleInterruptCapability rows[CRUCIBLE_INTERRUPT_MANIFEST_CAPACITY];
++    CrucibleInterruptBinding bindings[CRUCIBLE_INTERRUPT_MANIFEST_CAPACITY];
++    uint32_t targets[CRUCIBLE_INTERRUPT_CPU_CAPACITY];
++    size_t count;
++    size_t target_count;
++    uint32_t boot_target;
++    bool initialized;
++    bool overflow;
++} CrucibleInterruptCatalogue;
++
++static CrucibleInterruptCatalogue crucible_interrupt_catalogue;
++
++uint64_t qemu_crucible_fault_interrupt_catalogue_fixed_storage_bytes_v1(void)
++{
++    return sizeof(crucible_interrupt_catalogue);
++}
++
++static bool crucible_interrupt_catalogue_append(
++    const CrucibleInterruptCapability *row)
++{
++    if (crucible_interrupt_catalogue.overflow ||
++        crucible_interrupt_catalogue.count >= CRUCIBLE_INTERRUPT_MANIFEST_CAPACITY) {
++        crucible_interrupt_catalogue.overflow = true;
++        return false;
++    }
++    crucible_interrupt_catalogue.rows[crucible_interrupt_catalogue.count++] = *row;
++    return true;
++}
++
 +static uint16_t crucible_interrupt_scope;
 +static const CrucibleInterruptTemplate *crucible_interrupt_templates;
 +static size_t crucible_interrupt_template_count;
@@ -126032,7 +126085,7 @@ index 0000000000000000000000000000000000000000..31045362c04a2d0ac77a6761872422f6
 +        !g_str_is_ascii(controller_version)) {
 +        return false;
 +    }
-+    if (crucible_interrupt_manifest) {
++    if (crucible_interrupt_catalogue.initialized) {
 +        return false;
 +    }
 +    realized = &crucible_interrupt_realized[family];
@@ -126470,8 +126523,12 @@ index 0000000000000000000000000000000000000000..31045362c04a2d0ac77a6761872422f6
 +    if (qemu_plugin_crucible_startup_source_retained()) {
 +        return false;
 +    }
-+    if (crucible_interrupt_manifest) {
-+        return true;
++    if (crucible_interrupt_catalogue.overflow) {
++        return false;
++    }
++    if (crucible_interrupt_catalogue.initialized) {
++        /* A cached empty view still supplies no realized family evidence. */
++        return crucible_interrupt_catalogue.count != 0;
 +    }
 +    cpu = qemu_get_cpu(0);
 +    if (!cpu) {
@@ -126494,28 +126551,36 @@ index 0000000000000000000000000000000000000000..31045362c04a2d0ac77a6761872422f6
 +    if (crucible_interrupt_template_count == 0) {
 +        return false;
 +    }
-+    CPU_FOREACH(cpu) {
-+        count++;
-+    }
-+    if (count == 0 || count > 4096) {
++    if (crucible_interrupt_template_count > CRUCIBLE_INTERRUPT_MANIFEST_CAPACITY) {
++        crucible_interrupt_catalogue.overflow = true;
 +        return false;
 +    }
-+    crucible_interrupt_targets = g_new(uint32_t, count);
-+    crucible_interrupt_target_count = count;
++    CPU_FOREACH(cpu) {
++        if (count == CRUCIBLE_INTERRUPT_CPU_CAPACITY) {
++            crucible_interrupt_catalogue.overflow = true;
++            return false;
++        }
++        count++;
++    }
++    if (count == 0) {
++        return false;
++    }
++    crucible_interrupt_catalogue.target_count = count;
 +    count = 0;
 +    CPU_FOREACH(cpu) {
-+        crucible_interrupt_targets[count++] = cpu->cpu_index;
++        if (count >= crucible_interrupt_catalogue.target_count) {
++            crucible_interrupt_catalogue.overflow = true;
++            return false;
++        }
++        crucible_interrupt_catalogue.targets[count++] = cpu->cpu_index;
 +    }
-+    qsort(crucible_interrupt_targets, count,
-+          sizeof(*crucible_interrupt_targets),
++    if (count != crucible_interrupt_catalogue.target_count) {
++        return false;
++    }
++    qsort(crucible_interrupt_catalogue.targets, count,
++          sizeof(*crucible_interrupt_catalogue.targets),
 +          crucible_interrupt_target_compare);
-+    crucible_interrupt_boot_target = crucible_interrupt_targets[0];
-+    crucible_interrupt_manifest = g_array_sized_new(
-+        false, true, sizeof(CrucibleInterruptCapability),
-+        crucible_interrupt_template_count);
-+    crucible_interrupt_bindings = g_array_sized_new(
-+        false, true, sizeof(CrucibleInterruptBinding),
-+        crucible_interrupt_template_count);
++    crucible_interrupt_catalogue.boot_target = crucible_interrupt_catalogue.targets[0];
 +    for (size_t i = 0; i < crucible_interrupt_template_count; i++) {
 +        const CrucibleInterruptTemplate *template =
 +            &crucible_interrupt_templates[i];
@@ -126544,23 +126609,24 @@ index 0000000000000000000000000000000000000000..31045362c04a2d0ac77a6761872422f6
 +            .controller_version = realized->controller_version,
 +            .target_vcpus = template->family ==
 +                    QEMU_CRUCIBLE_INTERRUPT_X86_PIC ?
-+                &crucible_interrupt_boot_target :
-+                crucible_interrupt_targets,
++                &crucible_interrupt_catalogue.boot_target :
++                crucible_interrupt_catalogue.targets,
 +            .target_vcpu_count = template->family ==
 +                    QEMU_CRUCIBLE_INTERRUPT_X86_PIC ?
-+                1 : MIN(crucible_interrupt_target_count,
++                1 : MIN(crucible_interrupt_catalogue.target_count,
 +                        realized->target_vcpu_count),
 +        };
-+        CrucibleInterruptBinding binding = { 0 };
 +
 +        if (row.vector_end < row.vector_start ||
 +            row.target_vcpu_count == 0) {
 +            continue;
 +        }
-+        g_array_append_val(crucible_interrupt_manifest, row);
-+        g_array_append_val(crucible_interrupt_bindings, binding);
++        if (!crucible_interrupt_catalogue_append(&row)) {
++            return false;
++        }
 +    }
-+    return crucible_interrupt_manifest->len != 0;
++    crucible_interrupt_catalogue.initialized = true;
++    return crucible_interrupt_catalogue.count != 0;
 +}
 +
 +static size_t crucible_fault_interrupt_manifest_body(
@@ -126571,11 +126637,11 @@ index 0000000000000000000000000000000000000000..31045362c04a2d0ac77a6761872422f6
 +        return 0;
 +    }
 +    *architecture = crucible_interrupt_scope;
-+    if (out && capacity >= crucible_interrupt_manifest->len) {
-+        memcpy(out, crucible_interrupt_manifest->data,
-+               crucible_interrupt_manifest->len * sizeof(*out));
++    if (out && capacity >= crucible_interrupt_catalogue.count) {
++        memcpy(out, crucible_interrupt_catalogue.rows,
++               crucible_interrupt_catalogue.count * sizeof(*out));
 +    }
-+    return crucible_interrupt_manifest->len;
++    return crucible_interrupt_catalogue.count;
 +}
 +
 +size_t qemu_plugin_crucible_fault_interrupt_manifest(
@@ -126602,19 +126668,18 @@ index 0000000000000000000000000000000000000000..31045362c04a2d0ac77a6761872422f6
 +
 +    if (!id || !controller || !source || crucible_interrupt_bindings_sealed ||
 +        !crucible_interrupt_manifest_init() ||
-+        row_index >= crucible_interrupt_bindings->len ||
++        row_index >= crucible_interrupt_catalogue.count ||
 +        memcmp(id, zero, 32) == 0 || memcmp(controller, zero, 32) == 0 ||
 +        memcmp(source, zero, 32) == 0) {
 +        return -EINVAL;
 +    }
-+    binding = &g_array_index(crucible_interrupt_bindings,
-+                             CrucibleInterruptBinding, row_index);
++    binding = &crucible_interrupt_catalogue.bindings[row_index];
 +    if (binding->bound) {
 +        return -EEXIST;
 +    }
-+    for (guint i = 0; i < crucible_interrupt_bindings->len; i++) {
-+        CrucibleInterruptBinding *other = &g_array_index(
-+            crucible_interrupt_bindings, CrucibleInterruptBinding, i);
++    for (guint i = 0; i < crucible_interrupt_catalogue.count; i++) {
++        CrucibleInterruptBinding *other =
++            &crucible_interrupt_catalogue.bindings[i];
 +
 +        if (other->bound && memcmp(other->id, id, 32) == 0) {
 +            return -EEXIST;
@@ -126645,13 +126710,13 @@ index 0000000000000000000000000000000000000000..31045362c04a2d0ac77a6761872422f6
 +static int crucible_fault_interrupt_bindings_seal_body(void)
 +{
 +    if (crucible_interrupt_bindings_sealed ||
-+        !crucible_interrupt_bindings ||
-+        crucible_interrupt_bindings->len != crucible_interrupt_manifest->len) {
++        !crucible_interrupt_catalogue.initialized ||
++        crucible_interrupt_catalogue.overflow ||
++        !crucible_interrupt_catalogue.count) {
 +        return -EINVAL;
 +    }
-+    for (guint i = 0; i < crucible_interrupt_bindings->len; i++) {
-+        if (!g_array_index(crucible_interrupt_bindings,
-+                           CrucibleInterruptBinding, i).bound) {
++    for (guint i = 0; i < crucible_interrupt_catalogue.count; i++) {
++        if (!crucible_interrupt_catalogue.bindings[i].bound) {
 +            return -EINVAL;
 +        }
 +    }
@@ -126918,11 +126983,11 @@ index 0000000000000000000000000000000000000000..31045362c04a2d0ac77a6761872422f6
 +    }
 +    vector = ldl_le_p(data);
 +    model_phase = qemu_crucible_fault_rule_model_phase(rule);
-+    for (guint i = 0; i < crucible_interrupt_manifest->len; i++) {
-+        const CrucibleInterruptCapability *row = &g_array_index(
-+            crucible_interrupt_manifest, CrucibleInterruptCapability, i);
-+        const CrucibleInterruptBinding *binding = &g_array_index(
-+            crucible_interrupt_bindings, CrucibleInterruptBinding, i);
++    for (guint i = 0; i < crucible_interrupt_catalogue.count; i++) {
++        const CrucibleInterruptCapability *row =
++            &crucible_interrupt_catalogue.rows[i];
++        const CrucibleInterruptBinding *binding =
++            &crucible_interrupt_catalogue.bindings[i];
 +
 +        if (controller_len != 32 || source_len != 32 ||
 +            memcmp(binding->controller, controller, 32) != 0 ||
@@ -127058,9 +127123,9 @@ index 0000000000000000000000000000000000000000..31045362c04a2d0ac77a6761872422f6
 +static const CrucibleInterruptCapability *crucible_interrupt_event_row(
 +    const QemuCrucibleInterruptEvent *event, guint *row_index)
 +{
-+    for (guint i = 0; i < crucible_interrupt_manifest->len; i++) {
-+        const CrucibleInterruptCapability *row = &g_array_index(
-+            crucible_interrupt_manifest, CrucibleInterruptCapability, i);
++    for (guint i = 0; i < crucible_interrupt_catalogue.count; i++) {
++        const CrucibleInterruptCapability *row =
++            &crucible_interrupt_catalogue.rows[i];
 +
 +        if (row->family == event->family && row->trigger == event->trigger &&
 +            event->vector >= row->vector_start &&
@@ -127387,8 +127452,7 @@ index 0000000000000000000000000000000000000000..31045362c04a2d0ac77a6761872422f6
 +    if (!match.row) {
 +        return true;
 +    }
-+    match.binding = &g_array_index(
-+        crucible_interrupt_bindings, CrucibleInterruptBinding, row_index);
++    match.binding = &crucible_interrupt_catalogue.bindings[row_index];
 +    qemu_crucible_fault_rule_foreach(
 +        CRUCIBLE_FAULT_COMMAND_INTERRUPT_DISPOSITION,
 +        crucible_interrupt_match_visit, &match);
@@ -127601,7 +127665,7 @@ index 0000000000000000000000000000000000000000..31045362c04a2d0ac77a6761872422f6
 +                .vector = storm->vector,
 +                .controller_source = storm->row->family ==
 +                        QEMU_CRUCIBLE_INTERRUPT_ARM_GIC_SGI ?
-+                    crucible_interrupt_boot_target : UINT32_MAX,
++                    crucible_interrupt_catalogue.boot_target : UINT32_MAX,
 +                .priority = storm->priority,
 +                .retain_pending = storm->retain_pending,
 +                .source_sequence = source_sequence,
@@ -127810,40 +127874,35 @@ index 0000000000000000000000000000000000000000..31045362c04a2d0ac77a6761872422f6
 +        crucible_interrupt_terminal_error(rule, 5);
 +        return;
 +    }
-+    for (; row_index < crucible_interrupt_bindings->len; row_index++) {
-+        const CrucibleInterruptBinding *binding = &g_array_index(
-+            crucible_interrupt_bindings, CrucibleInterruptBinding,
-+            row_index);
++    for (; row_index < crucible_interrupt_catalogue.count; row_index++) {
++        const CrucibleInterruptBinding *binding =
++            &crucible_interrupt_catalogue.bindings[row_index];
 +
 +        if (memcmp(binding->controller, controller, 32) == 0 &&
 +            memcmp(binding->source, source, 32) == 0) {
 +            break;
 +        }
 +    }
-+    if (row_index == crucible_interrupt_bindings->len) {
++    if (row_index == crucible_interrupt_catalogue.count) {
 +        crucible_interrupt_terminal_error(rule, 6);
 +        return;
 +    }
 +    if (!crucible_interrupt_injectors[
-+            g_array_index(crucible_interrupt_manifest,
-+                          CrucibleInterruptCapability, row_index).family]
++            crucible_interrupt_catalogue.rows[row_index].family]
 +             .inject) {
 +        crucible_interrupt_terminal_error(rule, 7);
 +        return;
 +    }
 +    if (!crucible_interrupt_storm_routing(
 +            rule,
-+            &g_array_index(crucible_interrupt_manifest,
-+                           CrucibleInterruptCapability, row_index),
++            &crucible_interrupt_catalogue.rows[row_index],
 +            target_vcpu, vector, &priority, &retain_pending)) {
 +        crucible_interrupt_terminal_error(rule, 8);
 +        return;
 +    }
 +    storm = g_new0(CrucibleInterruptStorm, 1);
 +    storm->rule = qemu_crucible_fault_rule_copy(rule);
-+    storm->row = &g_array_index(
-+        crucible_interrupt_manifest, CrucibleInterruptCapability,
-+        row_index);
++    storm->row = &crucible_interrupt_catalogue.rows[row_index];
 +    if (!crucible_interrupt_storm_targets_copy(
 +            rule, &storm->target_vcpus, &storm->target_vcpu_count)) {
 +        qemu_crucible_fault_rule_unref(storm->rule);
@@ -127994,9 +128053,9 @@ index 0000000000000000000000000000000000000000..31045362c04a2d0ac77a6761872422f6
 +static bool crucible_interrupt_vmstate_event_valid(
 +    const QemuCrucibleInterruptEvent *event, guint *row_index_out)
 +{
-+    for (guint i = 0; i < crucible_interrupt_manifest->len; i++) {
-+        const CrucibleInterruptCapability *row = &g_array_index(
-+            crucible_interrupt_manifest, CrucibleInterruptCapability, i);
++    for (guint i = 0; i < crucible_interrupt_catalogue.count; i++) {
++        const CrucibleInterruptCapability *row =
++            &crucible_interrupt_catalogue.rows[i];
 +
 +        if (row->family == event->family &&
 +            row->trigger == event->trigger &&
@@ -128023,21 +128082,23 @@ index 0000000000000000000000000000000000000000..31045362c04a2d0ac77a6761872422f6
 +    g_autoptr(GByteArray) encoded = g_byte_array_new();
 +
 +    if (!(initialize ? crucible_interrupt_manifest_init() :
-+          crucible_interrupt_manifest != NULL) ||
++          crucible_interrupt_catalogue.initialized &&
++          !crucible_interrupt_catalogue.overflow &&
++          crucible_interrupt_catalogue.count != 0) ||
 +        !crucible_interrupt_bindings_sealed ||
-+        crucible_interrupt_manifest->len != crucible_interrupt_bindings->len) {
++        !crucible_interrupt_catalogue.count) {
 +        return false;
 +    }
 +    qemu_crucible_fault_vmstate_put_bytes(encoded, "CRUCIMI1", 8);
 +    qemu_crucible_fault_vmstate_put_u16(encoded, crucible_interrupt_scope);
 +    qemu_crucible_fault_vmstate_put_u16(encoded, 0);
 +    qemu_crucible_fault_vmstate_put_u32(
-+        encoded, crucible_interrupt_manifest->len);
-+    for (guint i = 0; i < crucible_interrupt_manifest->len; i++) {
-+        const CrucibleInterruptCapability *row = &g_array_index(
-+            crucible_interrupt_manifest, CrucibleInterruptCapability, i);
-+        const CrucibleInterruptBinding *binding = &g_array_index(
-+            crucible_interrupt_bindings, CrucibleInterruptBinding, i);
++        encoded, crucible_interrupt_catalogue.count);
++    for (guint i = 0; i < crucible_interrupt_catalogue.count; i++) {
++        const CrucibleInterruptCapability *row =
++            &crucible_interrupt_catalogue.rows[i];
++        const CrucibleInterruptBinding *binding =
++            &crucible_interrupt_catalogue.bindings[i];
 +        const char *strings[] = {
 +            row->id, row->controller, row->source, row->controller_version,
 +        };
@@ -128263,15 +128324,13 @@ index 0000000000000000000000000000000000000000..31045362c04a2d0ac77a6761872422f6
 +            crucible_interrupt_storms, i);
 +        guint row_index;
 +
-+        for (row_index = 0; row_index < crucible_interrupt_manifest->len;
++        for (row_index = 0; row_index < crucible_interrupt_catalogue.count;
 +             row_index++) {
-+            if (storm->row == &g_array_index(
-+                    crucible_interrupt_manifest,
-+                    CrucibleInterruptCapability, row_index)) {
++            if (storm->row == &crucible_interrupt_catalogue.rows[row_index]) {
 +                break;
 +            }
 +        }
-+        if (row_index == crucible_interrupt_manifest->len || storm->firing ||
++        if (row_index == crucible_interrupt_catalogue.count || storm->firing ||
 +            storm->target_vcpu_count > UINT32_MAX ||
 +            (storm->completed != (storm->emitted == storm->total)) ||
 +            storm->next_deadline_tick > INT64_MAX) {
@@ -128465,10 +128524,10 @@ index 0000000000000000000000000000000000000000..31045362c04a2d0ac77a6761872422f6
 +            qemu_crucible_fault_interrupt_validate(storm->rule) != 0 ||
 +            !qemu_crucible_fault_vmstate_get_u32(
 +                &reader, &storm->row_index) ||
-+            storm->row_index >= crucible_interrupt_manifest->len ||
++            storm->row_index >= crucible_interrupt_catalogue.count ||
 +            !qemu_crucible_fault_vmstate_get_u32(
 +                &reader, &storm->target_vcpu_count) ||
-+            storm->target_vcpu_count > crucible_interrupt_target_count) {
++            storm->target_vcpu_count > crucible_interrupt_catalogue.target_count) {
 +            crucible_interrupt_vmstate_storm_free(storm);
 +            goto fail;
 +        }
@@ -128537,9 +128596,7 @@ index 0000000000000000000000000000000000000000..31045362c04a2d0ac77a6761872422f6
 +                     expected_count * sizeof(*expected_targets)) != 0)) ||
 +            !crucible_interrupt_storm_routing(
 +                storm->rule,
-+                &g_array_index(crucible_interrupt_manifest,
-+                               CrucibleInterruptCapability,
-+                               storm->row_index),
++                &crucible_interrupt_catalogue.rows[storm->row_index],
 +                expected_targets[0], storm->vector,
 +                &expected_priority, &expected_retain) ||
 +            expected_priority != storm->priority ||
@@ -128639,9 +128696,7 @@ index 0000000000000000000000000000000000000000..31045362c04a2d0ac77a6761872422f6
 +
 +        storm->rule = source->rule;
 +        source->rule = NULL;
-+        storm->row = &g_array_index(
-+            crucible_interrupt_manifest, CrucibleInterruptCapability,
-+            source->row_index);
++        storm->row = &crucible_interrupt_catalogue.rows[source->row_index];
 +        storm->target_vcpus = g_steal_pointer(&source->target_vcpus);
 +        storm->target_vcpu_count = source->target_vcpu_count;
 +        storm->vector = source->vector;
@@ -176846,10 +176901,10 @@ index 0000000000000000000000000000000000000000..f33911c6d93010f8c345aa392c9b7974
 +}
 diff --git a/plugins/crucible-startup-source.c b/plugins/crucible-startup-source.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..991393427bbcdfc5ce62fe6d514884e6098ad90b
+index 0000000000000000000000000000000000000000..90e0d69e19540ee72f3a40bdbd082989badd37b1
 --- /dev/null
 +++ b/plugins/crucible-startup-source.c
-@@ -0,0 +1,8112 @@
+@@ -0,0 +1,8113 @@
 +/*
 + * Original installer startup source custody
 + *
@@ -177047,6 +177102,7 @@ index 0000000000000000000000000000000000000000..991393427bbcdfc5ce62fe6d514884e6
 +    uint64_t ram_metadata = qemu_crucible_ram_metadata_fixed_storage_bytes();
 +    const uint64_t descriptor_storage[] = {
 +        qemu_crucible_fault_hardware_catalogue_fixed_storage_bytes_v1(),
++        qemu_crucible_fault_interrupt_catalogue_fixed_storage_bytes_v1(),
 +        qemu_plugin_crucible_initial_cpu_dispatch_storage_bytes_v1(),
 +        qemu_thread_bounded_registry_fixed_storage_bytes(),
 +        qemu_plugin_crucible_native_shmem_dispatch_descriptor_storage_bytes_v1(),
@@ -198635,7 +198691,7 @@ index f8e17dcf1ce91d8aefb8d82cafd3196a4fd9edf6..f24121d2d3c66f1436ba73c976a7bd76
      return true;
 diff --git a/scripts/extract-crucible-preexec-purpose.py b/scripts/extract-crucible-preexec-purpose.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..6c00e868557c63a6c7ddcea29aa37b2759775e0d
+index 0000000000000000000000000000000000000000..340dd3e790d1b4adae7be717bcc778eb88d80800
 --- /dev/null
 +++ b/scripts/extract-crucible-preexec-purpose.py
 @@ -0,0 +1,87 @@
@@ -198663,7 +198719,7 @@ index 0000000000000000000000000000000000000000..6c00e868557c63a6c7ddcea29aa37b27
 +    'include/plugins/qemu-plugin.h':
 +        '09e87de330a40af07b68d9803b4fe99d0e730ddf289dc386f634656f69e4e111',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '95ac7c0a5aea66a39813052c91ba484324192c2eb1ec9f1077bbae25116c198e',
++        'b2d3c2b53c038cf72c86c0e4ff6b6338c6e2c59fdad2d3c8a1f34fad8c933e22',
 +}
 +
 +PURPOSE_FUNCTIONS = (
@@ -240765,10 +240821,10 @@ index 0000000000000000000000000000000000000000..fa83127f268e7c87e3d134ada76cb747
 +PRIMITIVE(q, uint64_t, 8)
 diff --git a/tests/unit/crucible-dirty-iterator.rst b/tests/unit/crucible-dirty-iterator.rst
 new file mode 100644
-index 0000000000000000000000000000000000000000..9ba797469403a8bcd590b21199303772219737de
+index 0000000000000000000000000000000000000000..e45922cca81ea5ce7115a03ba1371f34c530956d
 --- /dev/null
 +++ b/tests/unit/crucible-dirty-iterator.rst
-@@ -0,0 +1,218 @@
+@@ -0,0 +1,229 @@
 +.. SPDX-License-Identifier: GPL-2.0-or-later
 +
 +Dirty selection and capture lifecycle qualification
@@ -240987,6 +241043,17 @@ index 0000000000000000000000000000000000000000..9ba797469403a8bcd590b21199303772
 +Until all invoked factories have real paired payers and that installed path is
 +exercised, selected SDK calls remain ``-ENOKEY`` and activation remains
 +unavailable.
++
++The interrupt catalogue now uses fixed typed storage for thirteen rows, their
++bindings and 4,096 CPU target indices. Its exact declaration is charged once in
++the installation floor and remains image backing for the process lifetime.
++Capacity overflow is sticky and blocks publication; an empty cached view still
++refuses registration without realized evidence. This removes only the three
++outer lazy allocations. Actual controller strings, family-producing device
++owners, handlers, VMState and rule storage still need their own retained
++accounts. The selected constructor guards remain unchanged. Literal tests of
++realized evidence, target bounds and binding behavior do not qualify those
++accounts or the initial callback.
 diff --git a/tests/unit/crucible-initial-cpu-fixture.inc.h b/tests/unit/crucible-initial-cpu-fixture.inc.h
 new file mode 100644
 index 0000000000000000000000000000000000000000..fb5e250cd9af288181bfddfb39b110a2dc148fe4
@@ -243551,7 +243618,7 @@ index 0000000000000000000000000000000000000000..5278f261c25f36176259f4749fc0e1b2
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-placement.py b/tests/unit/extract-crucible-checkpoint-placement.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..c7a5a133ce6c1c587b8e260e050379ea3ff23b1b
+index 0000000000000000000000000000000000000000..23272821ce2376982407a5227ad7282c8b1a0351
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-placement.py
 @@ -0,0 +1,100 @@
@@ -243569,7 +243636,7 @@ index 0000000000000000000000000000000000000000..c7a5a133ce6c1c587b8e260e050379ea
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '95ac7c0a5aea66a39813052c91ba484324192c2eb1ec9f1077bbae25116c198e',
++        'b2d3c2b53c038cf72c86c0e4ff6b6338c6e2c59fdad2d3c8a1f34fad8c933e22',
 +}
 +
 +FUNCTIONS = (
@@ -243657,7 +243724,7 @@ index 0000000000000000000000000000000000000000..c7a5a133ce6c1c587b8e260e050379ea
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-receiving.py b/tests/unit/extract-crucible-checkpoint-receiving.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..1098d64036b20333aae597141a40b17c567b4880
+index 0000000000000000000000000000000000000000..24015b7839032eb513ec9e6a0edd46a1676645d5
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-receiving.py
 @@ -0,0 +1,241 @@
@@ -243678,7 +243745,7 @@ index 0000000000000000000000000000000000000000..1098d64036b20333aae597141a40b17c
 +    'plugins/crucible-checkpoint-finalizer.inc.h':
 +        '6616d8f61ceaa17d668033d824d0fd6dc37ff4fafe76fc7665582a80447c7303',
 +    'plugins/crucible-startup-source.c':
-+        'a221c6f63f3687f2d370280aed158cfa03ad91fb80712a7c7ee21ccb1ed9a0f0',
++        '06f53ed05f2f8cfd19c981e937cc01e1f6b6c4bba1dc8a4244e24d06b95afee1',
 +    'plugins/crucible-startup-source.h':
 +        'af3840cdcc1b88bd9f6e70d0f6a7ac911b77dee0845a2c426e6e709f6752d94b',
 +    'include/plugins/qemu-plugin.h':
@@ -243688,7 +243755,7 @@ index 0000000000000000000000000000000000000000..1098d64036b20333aae597141a40b17c
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '95ac7c0a5aea66a39813052c91ba484324192c2eb1ec9f1077bbae25116c198e',
++        'b2d3c2b53c038cf72c86c0e4ff6b6338c6e2c59fdad2d3c8a1f34fad8c933e22',
 +}
 +
 +FUNCTIONS = (
@@ -243904,7 +243971,7 @@ index 0000000000000000000000000000000000000000..1098d64036b20333aae597141a40b17c
 +    main()
 diff --git a/tests/unit/extract-crucible-monitor-fd-loans.py b/tests/unit/extract-crucible-monitor-fd-loans.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..bdff6609fea5a25a97fb96b43b0050f81af1ef4a
+index 0000000000000000000000000000000000000000..ec1f8caa2b0484437d9741b50b1013804bfb2d2d
 --- /dev/null
 +++ b/tests/unit/extract-crucible-monitor-fd-loans.py
 @@ -0,0 +1,112 @@
@@ -243928,7 +243995,7 @@ index 0000000000000000000000000000000000000000..bdff6609fea5a25a97fb96b43b0050f8
 +    'monitor/monitor.c':
 +        '6773b71937e9c0058143070560f3ce3bb114a966d6d4224c7a60d8862fb8d05b',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '95ac7c0a5aea66a39813052c91ba484324192c2eb1ec9f1077bbae25116c198e',
++        'b2d3c2b53c038cf72c86c0e4ff6b6338c6e2c59fdad2d3c8a1f34fad8c933e22',
 +}
 +
 +FUNCTIONS = (
@@ -244022,7 +244089,7 @@ index 0000000000000000000000000000000000000000..bdff6609fea5a25a97fb96b43b0050f8
 +    main()
 diff --git a/tests/unit/extract-crucible-preexec-setup.py b/tests/unit/extract-crucible-preexec-setup.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..00fdd7f855056a9f2bbf8a6089995a3eab13cc72
+index 0000000000000000000000000000000000000000..01caf32e9afebdb3d9f69c8dd83087fc2679ad99
 --- /dev/null
 +++ b/tests/unit/extract-crucible-preexec-setup.py
 @@ -0,0 +1,173 @@
@@ -244063,15 +244130,15 @@ index 0000000000000000000000000000000000000000..00fdd7f855056a9f2bbf8a6089995a3e
 +    'plugins/crucible-device-workspace.c':
 +        '3dd77a2ad8d4688fb57ccc94618763485d36b9460e3461ac5ff4bc6fa25c558d',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '95ac7c0a5aea66a39813052c91ba484324192c2eb1ec9f1077bbae25116c198e',
++        'b2d3c2b53c038cf72c86c0e4ff6b6338c6e2c59fdad2d3c8a1f34fad8c933e22',
 +    'scripts/extract-crucible-preexec-purpose.py':
-+        '7f92a25e3426ed9d78a79cb25d48283ff0af82f7b87277f3f270b30ccf465fbc',
++        'cf314906b630780d4d287308bedd8dbf0be6a9df4aa8c136927e654d93c39d47',
 +    'meson.build':
 +        '7eef2c0d1494dfdeed66f56c77f092382cd63d3fd5ad7c0b7c7ac85ca599e39e',
 +    'tests/unit/test-crucible-preexec-setup.c':
 +        'd26871f569f6be81b3b6189a373f2937b4b2e705a5f06c93120a6a18e0416a6c',
 +    'tests/unit/meson.build':
-+        '8296c666f959736cab8abc9466fc46c9bed9d690a3d741b6ded80f87d3e04411',
++        '478e87ef68154d99a2d5c14c0b0ef95bd67da2092723846e8bab2a2315f640b5',
 +}
 +
 +PRIVATE_INCLUDES = ('family', 'contract', 'artifact', 'ram', 'workspace')
@@ -244201,10 +244268,10 @@ index 0000000000000000000000000000000000000000..00fdd7f855056a9f2bbf8a6089995a3e
 +        main()
 diff --git a/tests/unit/extract-crucible-startup-source-controls.py b/tests/unit/extract-crucible-startup-source-controls.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..db758e6156c8d80f3a1854f93f2f45b950ba9913
+index 0000000000000000000000000000000000000000..cd5de28ad170ac19f95ba296759b16fd0cb89c72
 --- /dev/null
 +++ b/tests/unit/extract-crucible-startup-source-controls.py
-@@ -0,0 +1,1151 @@
+@@ -0,0 +1,1161 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Extract literal startup integration control cuts, never an issuer fixture."""
 +
@@ -244214,18 +244281,20 @@ index 0000000000000000000000000000000000000000..db758e6156c8d80f3a1854f93f2f45b9
 +from pathlib import Path
 +
 +SOURCE_HASHES = {
++    'tests/unit/test-crucible-interrupt-catalogue.py':
++        '09f520629493decdee77289e9ebc22bc2887a4e9dd4d646f0ba21606a53a1b83',
 +    'plugins/crucible-fault-hardware-error.c':
 +        '9f96087f298a38e4be82a40a4f350c061ce5a9e5f5fd76048f9f668aa5304a2e',
 +    'plugins/crucible-fault-register.c':
 +        'b0da57af6c4e4b7285cac70de0d7c64126a19b40cc6b2266e7897d566a43fa1a',
 +    'plugins/crucible-fault-interrupt.c':
-+        'afd462788c8362f42cdd5064567fd0650410b6735cfa1decfed2db48a845483c',
++        '827c633bca98e55faf97b1c8dea00c2a64370fc34c04b1ddc7dca3335cb25e4a',
 +    'include/qemu/crucible-fault.h':
-+        'dcabd43e6b7df83913e4dd91a27dc9d57882f7e439a38583a4e011c7d4280963',
++        '37ccc2e0fe4067508f46473463116477527260053377a32db1fbbb530aa611d0',
 +    'tests/unit/test-crucible-hardware-catalogue.py':
 +        '120ad28c8e65d2fa616c3d4c7d65806c45ab04d2e10adc80f51ee15d6702e1a6',
 +    'tests/unit/test-crucible-initial-manifest-refusal.py':
-+        '586e02a98be63bb264f60bc4999c287ea7ddb09ca8bb1fc4348d0cea9dea4f99',
++        '8f62f8256b7e77b68b914b6cf09c61a9a1ccf201821540d645f8e362940e8211',
 +    'tests/unit/crucible-initial-cpu-fixture.inc.h':
 +        'ea606e8912dcc16a05804b01626f9436b6dddc51f3f2b1dbddf96b588aa30f7f',
 +    'plugins/crucible-initial-cpu.inc.h':
@@ -244321,7 +244390,7 @@ index 0000000000000000000000000000000000000000..db758e6156c8d80f3a1854f93f2f45b9
 +    'system/crucible-hot-fork-coordinator.c':
 +        'a8db45cdd7a6aebebe44990565c08eed6a833a05ea7f77958ffa12bd2017b65b',
 +    'plugins/crucible-startup-source.c':
-+        'a221c6f63f3687f2d370280aed158cfa03ad91fb80712a7c7ee21ccb1ed9a0f0',
++        '06f53ed05f2f8cfd19c981e937cc01e1f6b6c4bba1dc8a4244e24d06b95afee1',
 +    'plugins/crucible-startup-source.h':
 +        'af3840cdcc1b88bd9f6e70d0f6a7ac911b77dee0845a2c426e6e709f6752d94b',
 +    'plugins/crucible-device-workspace.c':
@@ -245065,6 +245134,12 @@ index 0000000000000000000000000000000000000000..db758e6156c8d80f3a1854f93f2f45b9
 +              '#include "system/crucible-ram-quiescence.h"',
 +              '#include "monitor/monitor-internal.h"']
 +    blocks = (
++        ("plugins/crucible-fault-interrupt.c",
++         "typedef struct qemu_plugin_crucible_fault_interrupt_capability\n",
++         "typedef struct CrucibleInterruptTemplate {"),
++        ("plugins/crucible-fault-interrupt.c",
++         "#define CRUCIBLE_INTERRUPT_MANIFEST_CAPACITY",
++         "uint64_t qemu_crucible_fault_interrupt_catalogue_fixed_storage_bytes_v1("),
 +        ("plugins/crucible-fault-hardware-error.c",
 +         "typedef struct CrucibleHardwareBinding {",
 +         "typedef struct CrucibleHardwarePending {"),
@@ -245145,6 +245220,8 @@ index 0000000000000000000000000000000000000000..db758e6156c8d80f3a1854f93f2f45b9
 +        output.extend((notice, declaration[0], body))
 +
 +    getters = {
++        "plugins/crucible-fault-interrupt.c": (
++            "qemu_crucible_fault_interrupt_catalogue_fixed_storage_bytes_v1",),
 +        "plugins/crucible-fault-hardware-error.c": (
 +            "qemu_crucible_fault_hardware_catalogue_fixed_storage_bytes_v1",),
 +        "plugins/core.c": ("qemu_plugin_crucible_initial_cpu_dispatch_storage_bytes_v1",),
@@ -245455,7 +245532,7 @@ index 0000000000000000000000000000000000000000..228f5bfb67fb64768c9806c3617cc308
 +if __name__ == "__main__":
 +    main()
 diff --git a/tests/unit/meson.build b/tests/unit/meson.build
-index dc3fb954c03a02a82f09b38521e2d85ede2549f5..d1deb54271bfecbff167fa589914ddb49be0f65f 100644
+index dc3fb954c03a02a82f09b38521e2d85ede2549f5..10d277918864a6d8b4c98f8f397619626035a312 100644
 --- a/tests/unit/meson.build
 +++ b/tests/unit/meson.build
 @@ -21,6 +21,8 @@ tests = {
@@ -245530,7 +245607,7 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..d1deb54271bfecbff167fa589914ddb4
  foreach test_name, extra: tests
    src = [test_name + '.c']
    deps = [qemuutil]
-@@ -207,3 +251,1181 @@ foreach test_name, extra: tests
+@@ -207,3 +251,1182 @@ foreach test_name, extra: tests
         priority: slow_tests.get(test_name, 30),
         suite: ['unit'])
  endforeach
@@ -246347,6 +246424,7 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..d1deb54271bfecbff167fa589914ddb4
 +                        '../../plugins/crucible-fault-interrupt.c',
 +                        '../../include/qemu/crucible-fault.h',
 +                        'test-crucible-hardware-catalogue.py',
++                        'test-crucible-interrupt-catalogue.py',
 +                        'test-crucible-initial-manifest-refusal.py',
 +                        '../../plugins/crucible-publisher-subscription.inc.h',
 +                        '../../accel/tcg/tcg-accel-ops-sim-shmem.c',
@@ -260882,10 +260960,10 @@ index 0000000000000000000000000000000000000000..56cf35bafbbcf125b0f992c22fd2d780
 +    main()
 diff --git a/tests/unit/test-crucible-control-delivery.py b/tests/unit/test-crucible-control-delivery.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..132eb10a2a9c08fee8c6f9e5fcf8a02c5c751f51
+index 0000000000000000000000000000000000000000..24ac7764649c49d5e6e754429a7adf9ddc3a5e28
 --- /dev/null
 +++ b/tests/unit/test-crucible-control-delivery.py
-@@ -0,0 +1,2345 @@
+@@ -0,0 +1,2355 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Check the actual delivery witness and registered-callback wrapper bodies.
 +
@@ -263219,13 +263297,23 @@ index 0000000000000000000000000000000000000000..132eb10a2a9c08fee8c6f9e5fcf8a02c
 +    subprocess.run([sys.executable, str(ROOT / "tests/unit/test-crucible-action-original.py"),
 +                    "--source-root", str(ROOT), "--output-dir",
 +                    str(arguments.output_dir / "action-evidence")], check=True)
++    # Literal manifest controls use the real configured GLib dependency, even
++    # when an outer component runner has no additional linker flags.
++    focused_environment = os.environ.copy()
++    glib, = [argument for argument in SUPPORT["native_link_arguments"]()
++             if Path(argument).name.startswith("libglib-2.0.so")]
++    focused_environment["LDFLAGS"] = shlex.join([
++        *shlex.split(os.environ.get("LDFLAGS", "")), glib, "-pthread",
++    ])
 +    for script, directory in (
 +        ("test-crucible-hardware-catalogue.py", "hardware-catalogue"),
++        ("test-crucible-interrupt-catalogue.py", "interrupt-catalogue"),
 +        ("test-crucible-initial-manifest-refusal.py", "initial-manifest-refusal"),
 +    ):
 +        subprocess.run([sys.executable, str(ROOT / "tests/unit" / script),
 +                        "--source-root", str(ROOT), "--output-dir",
-+                        str(arguments.output_dir / directory)], check=True)
++                        str(arguments.output_dir / directory)],
++                       env=focused_environment, check=True)
 +
 +
 +
@@ -275621,10 +275709,10 @@ index 0000000000000000000000000000000000000000..ee2bb16e87d73feab53496231bcb3f46
 +}
 diff --git a/tests/unit/test-crucible-initial-manifest-refusal.py b/tests/unit/test-crucible-initial-manifest-refusal.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..f9cfa8a0bc0bf3202a5a58b998d61e473dd916ba
+index 0000000000000000000000000000000000000000..00ae1c78c5ccb8fc120e0dac6126fc35548f9222
 --- /dev/null
 +++ b/tests/unit/test-crucible-initial-manifest-refusal.py
-@@ -0,0 +1,146 @@
+@@ -0,0 +1,162 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Check literal internal register/interrupt factories before selected birth.
 +
@@ -275663,42 +275751,58 @@ index 0000000000000000000000000000000000000000..f9cfa8a0bc0bf3202a5a58b998d61e47
 +"""
 +
 +CHECKS = r"""
-+static void check_factory(bool (*factory)(void), GArray **cache,
++static GArray retained_rows;
++
++static void set_cached_rows(bool interrupt, bool present)
++{
++    if (interrupt) {
++        crucible_interrupt_catalogue.initialized = present;
++        crucible_interrupt_catalogue.count = present ? 1 : 0;
++    } else {
++        crucible_register_manifest = present ? &retained_rows : NULL;
++    }
++}
++
++static bool cached_rows_present(bool interrupt)
++{
++    return interrupt ? crucible_interrupt_catalogue.initialized :
++        crucible_register_manifest == &retained_rows;
++}
++
++static void check_factory(bool (*factory)(void), bool interrupt,
 +                          unsigned cached_lookups)
 +{
-+    GArray retained = { 0 };
-+
 +    selected = true;
 +    cpu_present = true;
 +    lookups = 0;
-+    assert(!*cache);
++    assert(!cached_rows_present(interrupt));
 +    assert(!factory());
-+    assert(!*cache);
++    assert(!cached_rows_present(interrupt));
 +    assert(lookups == 0);
 +
-+    /* An address containing rows is not an authenticated later borrower. */
-+    *cache = &retained;
++    /* Storage containing rows is not an authenticated later borrower. */
++    set_cached_rows(interrupt, true);
 +    assert(!factory());
-+    assert(*cache == &retained);
++    assert(cached_rows_present(interrupt));
 +    assert(lookups == 0);
 +
 +    selected = false;
 +    assert(factory());
-+    assert(*cache == &retained);
++    assert(cached_rows_present(interrupt));
 +    assert(lookups == cached_lookups);
 +
-+    *cache = NULL;
++    set_cached_rows(interrupt, false);
 +    lookups = 0;
 +    cpu_present = false;
 +    assert(!factory());
-+    assert(!*cache);
++    assert(!cached_rows_present(interrupt));
 +    assert(lookups == 1);
 +}
 +
 +int main(void)
 +{
-+    check_factory(crucible_register_manifest_init, &crucible_register_manifest, 1);
-+    check_factory(crucible_interrupt_manifest_init, &crucible_interrupt_manifest, 0);
++    check_factory(crucible_register_manifest_init, false, 1);
++    check_factory(crucible_interrupt_manifest_init, true, 0);
 +    puts("PASS literal register/interrupt selected prebirth and cache refusal; unselected preconditions preserved");
 +    return 0;
 +}
@@ -275767,6 +275871,259 @@ index 0000000000000000000000000000000000000000..f9cfa8a0bc0bf3202a5a58b998d61e47
 +    (output / "proof.json").write_text(json.dumps(proof, indent=2) + "\n")
 +    print(proof["positive"]["output"], end="")
 +    print("PASS both internal-refusal omission controls reached assertions")
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/tests/unit/test-crucible-interrupt-catalogue.py b/tests/unit/test-crucible-interrupt-catalogue.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..8d6c941a32835d17e8c53ace624bf9bb644dba88
+--- /dev/null
++++ b/tests/unit/test-crucible-interrupt-catalogue.py
+@@ -0,0 +1,247 @@
++# SPDX-License-Identifier: GPL-2.0-or-later
++"""Exercise literal interrupt rows, actual family registration and typed bounds.
++
++CPU/cohort and realized device evidence are component inputs. They do not issue
++Source constructor ownership, fund producer allocations or qualify activation.
++"""
++
++import argparse
++import json
++import os
++from pathlib import Path
++import runpy
++import shlex
++import subprocess
++
++
++INPUTS = r"""
++static CPUState input_cpus[CRUCIBLE_INTERRUPT_CPU_CAPACITY + 1];
++static CPUClass input_class;
++static bool selected, present;
++CPUTailQ cpus_queue = QTAILQ_HEAD_INITIALIZER(cpus_queue);
++
++static CPUState *input_lookup(int index)
++{
++    assert(index == 0);
++    return present ? &input_cpus[0] : NULL;
++}
++
++#undef CPU_GET_CLASS
++#define CPU_GET_CLASS(cpu) (&input_class)
++#define qemu_get_cpu input_lookup
++#define qemu_plugin_crucible_startup_source_retained() selected
++"""
++
++CHECKS = r"""
++static void reset(uint16_t architecture, size_t cpus)
++{
++    for (size_t family = 0; family < G_N_ELEMENTS(crucible_interrupt_realized); family++) {
++        g_free(crucible_interrupt_realized[family].controller_version);
++    }
++    memset(crucible_interrupt_realized, 0, sizeof(crucible_interrupt_realized));
++    memset(&crucible_interrupt_catalogue, 0, sizeof(crucible_interrupt_catalogue));
++    crucible_interrupt_bindings_sealed = false;
++    selected = false;
++    present = true;
++    input_class.crucible_register_scope = architecture;
++    QTAILQ_INIT(&cpus_queue);
++    assert(cpus <= G_N_ELEMENTS(input_cpus));
++    for (size_t index = 0; index < cpus; index++) {
++        input_cpus[index].cpu_index = cpus - index - 1;
++        QTAILQ_INSERT_TAIL(&cpus_queue, &input_cpus[index], node);
++    }
++}
++
++static void register_families(void)
++{
++    for (size_t family = 1; family < G_N_ELEMENTS(crucible_interrupt_realized); family++) {
++        assert(qemu_crucible_fault_interrupt_register_family(
++            family, UINT64_C(1) << family, "realized-controller-v1", 16777215, 4096));
++    }
++}
++
++static void check_architecture(uint16_t architecture, size_t cpus, size_t expected)
++{
++    CrucibleInterruptCapability rows[CRUCIBLE_INTERRUPT_MANIFEST_CAPACITY] = { 0 };
++    uint16_t observed = 0;
++
++    reset(architecture, cpus);
++    register_families();
++    assert(crucible_fault_interrupt_manifest_body(rows, G_N_ELEMENTS(rows), &observed) == expected);
++    assert(observed == architecture);
++    assert(crucible_interrupt_catalogue.initialized);
++    assert(!crucible_interrupt_catalogue.overflow);
++    assert(crucible_interrupt_catalogue.target_count == cpus);
++    for (size_t index = 0; index < cpus; index++) {
++        assert(crucible_interrupt_catalogue.targets[index] == index);
++    }
++    assert(crucible_fault_interrupt_bindings_seal_body() == -EINVAL);
++    for (size_t index = 0; index < expected; index++) {
++        const CrucibleInterruptCapability *row = &rows[index];
++        const CrucibleInterruptRealizedFamily *realized = &crucible_interrupt_realized[row->family];
++        uint8_t id[32] = { index + 1 };
++
++        assert(row->controller_version == realized->controller_version);
++        assert(row->model_phase_mask == realized->model_phase_mask);
++        assert(row->vector_end <= realized->vector_end);
++        assert(row->vector_start <= row->vector_end);
++        if (row->family == QEMU_CRUCIBLE_INTERRUPT_X86_PIC) {
++            assert(row->target_vcpu_count == 1);
++            assert(row->target_vcpus == &crucible_interrupt_catalogue.boot_target);
++        } else {
++            assert(row->target_vcpu_count == cpus);
++            assert(row->target_vcpus == crucible_interrupt_catalogue.targets);
++        }
++        assert(crucible_fault_interrupt_bind_body(index, id, id, id) == 0);
++        assert(crucible_fault_interrupt_bind_body(index, id, id, id) == -EEXIST);
++    }
++    uint8_t id[32] = { 1 };
++    assert(crucible_fault_interrupt_bind_body(expected, id, id, id) == -EINVAL);
++    assert(crucible_fault_interrupt_bindings_seal_body() == 0);
++    assert(crucible_fault_interrupt_bindings_seal_body() == -EINVAL);
++
++    CrucibleInterruptCatalogue before = crucible_interrupt_catalogue;
++    selected = true;
++    observed = UINT16_MAX;
++    assert(crucible_fault_interrupt_manifest_body(NULL, 0, &observed) == 0);
++    assert(observed == UINT16_MAX);
++    assert(memcmp(&before, &crucible_interrupt_catalogue, sizeof(before)) == 0);
++}
++
++int main(void)
++{
++    uint16_t observed = UINT16_MAX;
++
++    reset(CRUCIBLE_INTERRUPT_SCOPE_X86_64, 1);
++    assert(!qemu_crucible_fault_interrupt_register_family(0, 1, "v1", 255, 1));
++    assert(!qemu_crucible_fault_interrupt_register_family(3, 0, "v1", 255, 1));
++    assert(!qemu_crucible_fault_interrupt_register_family(3, 1, "v1", 255, 0));
++    assert(crucible_fault_interrupt_manifest_body(NULL, 0, &observed) == 0);
++    assert(observed == UINT16_MAX);
++    assert(crucible_fault_interrupt_manifest_body(NULL, 0, &observed) == 0);
++    assert(!crucible_interrupt_catalogue.count);
++
++    reset(CRUCIBLE_INTERRUPT_SCOPE_X86_64, 2);
++    assert(qemu_crucible_fault_interrupt_register_family(3, 1, "ioapic-v1", 15, 2));
++    assert(!crucible_interrupt_manifest_init());
++    assert(!crucible_interrupt_catalogue.count);
++    reset(CRUCIBLE_INTERRUPT_SCOPE_X86_64, 2);
++    assert(qemu_crucible_fault_interrupt_register_family(3, 1, "ioapic-v1", 31, 1));
++    assert(crucible_interrupt_manifest_init());
++    assert(crucible_interrupt_catalogue.count == 4);
++    for (size_t index = 0; index < 4; index++) {
++        assert(crucible_interrupt_catalogue.rows[index].vector_end == 31);
++        assert(crucible_interrupt_catalogue.rows[index].target_vcpu_count == 1);
++    }
++
++    reset(CRUCIBLE_INTERRUPT_SCOPE_AARCH64, 1);
++    assert(qemu_crucible_fault_interrupt_register_family(12, 1, "its-v1", 255, 1));
++    assert(!crucible_interrupt_manifest_init());
++    assert(!crucible_interrupt_catalogue.count);
++    reset(CRUCIBLE_INTERRUPT_SCOPE_AARCH64, 1);
++    assert(qemu_crucible_fault_interrupt_register_family(12, 1, "its-v1", 8192, 1));
++    assert(crucible_interrupt_manifest_init());
++    assert(crucible_interrupt_catalogue.count == 1);
++    assert(crucible_interrupt_catalogue.rows[0].vector_end == 8192);
++
++    check_architecture(CRUCIBLE_INTERRUPT_SCOPE_X86_64, 1, 13);
++    check_architecture(CRUCIBLE_INTERRUPT_SCOPE_X86_64, 4096, 13);
++    check_architecture(CRUCIBLE_INTERRUPT_SCOPE_AARCH64, 3, 8);
++    selected = false;
++
++    reset(CRUCIBLE_INTERRUPT_SCOPE_X86_64, 4097);
++    register_families();
++    assert(!crucible_interrupt_manifest_init());
++    assert(crucible_interrupt_catalogue.overflow);
++    assert(!crucible_interrupt_catalogue.initialized);
++    assert(!crucible_interrupt_catalogue.count);
++    assert(!crucible_interrupt_catalogue.target_count);
++    assert(!crucible_interrupt_manifest_init());
++
++    reset(CRUCIBLE_INTERRUPT_SCOPE_X86_64, 1);
++    register_families();
++    assert(crucible_interrupt_manifest_init());
++    CrucibleInterruptCatalogue before = crucible_interrupt_catalogue;
++    CrucibleInterruptCapability extra = { .id = "overflow" };
++    assert(!crucible_interrupt_catalogue_append(&extra));
++    assert(crucible_interrupt_catalogue.overflow);
++    assert(crucible_interrupt_catalogue.count == 13);
++    assert(memcmp(before.rows, crucible_interrupt_catalogue.rows, sizeof(before.rows)) == 0);
++    observed = UINT16_MAX;
++    assert(crucible_fault_interrupt_manifest_body(NULL, 0, &observed) == 0);
++    assert(observed == UINT16_MAX);
++    assert(crucible_fault_interrupt_bindings_seal_body() == -EINVAL);
++    assert(qemu_crucible_fault_interrupt_catalogue_fixed_storage_bytes_v1() ==
++           sizeof(crucible_interrupt_catalogue));
++    puts("PASS literal interrupt typed catalogue, realized evidence, bindings and sticky bounds; no lifecycle authority");
++    return 0;
++}
++"""
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--source-root", type=Path,
++                        default=Path(__file__).resolve().parents[2])
++    parser.add_argument("--output-dir", type=Path, required=True)
++    arguments = parser.parse_args()
++    source = arguments.source_root.resolve()
++    output = arguments.output_dir.resolve()
++    output.mkdir(parents=True, exist_ok=True)
++
++    extract = runpy.run_path(str(source / "tests/unit/extract-crucible-startup-source-controls.py"))
++    body = (source / "plugins/crucible-fault-interrupt.c").read_text()
++    literal = body[body.index("#define CRUCIBLE_INTERRUPT_SCOPE_X86_64"):
++                   body.index("bool qemu_crucible_fault_interrupt_register_family(")]
++    for signature in (
++        "bool qemu_crucible_fault_interrupt_register_family(",
++        "static int crucible_interrupt_target_compare(",
++        "static bool crucible_interrupt_manifest_init(",
++        "static size_t crucible_fault_interrupt_manifest_body(",
++        "static int crucible_fault_interrupt_bind_body(",
++        "static int crucible_fault_interrupt_bindings_seal_body(",
++    ):
++        literal += "\n\n" + extract["function"](body, signature)
++    # Keep the input cohort one CPU beyond the independently checked public
++    # bound. Its macros do not replace any catalogue logic.
++    split = literal.index("typedef struct qemu_plugin_crucible_fault_interrupt_capability")
++    inputs = INPUTS.replace("CRUCIBLE_INTERRUPT_CPU_CAPACITY + 1", "4097")
++    literal = literal[:split] + inputs + literal[split:]
++    variants = {
++        "positive": literal,
++        "permit-selected-lazy-birth": literal.replace(
++            "if (qemu_plugin_crucible_startup_source_retained())", "if (false)"),
++        "permit-overflow-publication": literal.replace(
++            "if (crucible_interrupt_catalogue.overflow)", "if (false)"),
++        "omit-realized-controller": literal.replace(
++            "if (!realized->controller_version)", "if (false)"),
++    }
++    proof = {}
++    for name, definitions in variants.items():
++        if name != "positive" and definitions == literal:
++            raise ValueError(f"negative control did not change the literal builder: {name}")
++        generated = output / f"{name}.c"
++        generated.write_text('#include "qemu/osdep.h"\n#include <assert.h>\n'
++                             '#include "hw/core/cpu.h"\n#include "qemu/crucible-fault.h"\n' +
++                             definitions + CHECKS)
++        binary = output / name
++        command = [*shlex.split(os.environ.get("CC", "cc")),
++                   *shlex.split(os.environ.get("CFLAGS", "")),
++                   str(generated), "-o", str(binary),
++                   *shlex.split(os.environ.get("LDFLAGS", ""))]
++        (output / f"{name}.compile-command.json").write_text(json.dumps(command, indent=2) + "\n")
++        subprocess.run(command, check=True)
++        result = subprocess.run([str(binary)], text=True, stdout=subprocess.PIPE,
++                                stderr=subprocess.STDOUT, timeout=30, cwd=output)
++        (output / f"{name}.log").write_text(result.stdout)
++        expected = 0 if name == "positive" else -6
++        if result.returncode != expected:
++            raise RuntimeError(f"unexpected {name} outcome: {result.returncode}\n{result.stdout}")
++        proof[name] = {"returncode": result.returncode, "output": result.stdout}
++    (output / "proof.json").write_text(json.dumps(proof, indent=2) + "\n")
++    print(proof["positive"]["output"], end="")
++    print("PASS selected-birth, overflow-publication and realized-evidence omissions reached assertions")
 +
 +
 +if __name__ == "__main__":
