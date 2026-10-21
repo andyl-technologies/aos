@@ -52,7 +52,11 @@ impl LiveVcpuTimeCallbackState {
     ///
     /// When a device-I/O request is in flight, the budget freezes at the current
     /// coordinate until the host publishes the deterministic completion
-    /// deadline, then advances at most to that deadline. This closes the
+    /// deadline, then advances at most to the first instruction boundary at or
+    /// after that deadline. A running vCPU never moves its clock without a
+    /// retirement, so a deadline between two boundaries is met at the later
+    /// one (TIME-30); stopping at the earlier one would leave the guest short
+    /// of its completion with no budget left to reach it. This closes the
     /// request-observation race: host wall time may delay publication, but the
     /// guest cannot retire instructions between the request callback and the
     /// publication that pins its completion. A past deadline likewise
@@ -72,6 +76,39 @@ impl LiveVcpuTimeCallbackState {
             Some(raw_ceiling),
         );
         Ok(raw_ceiling)
+    }
+
+    /// Publishes the current boundary once for an advance that ends where the
+    /// node already is.
+    ///
+    /// A zero-length advance gives no retirement and no time to move, so no
+    /// later publication would answer it, yet the host waits for one. An event
+    /// due at the current coordinate, such as a frame delivered there, is taken
+    /// at this boundary: the publication injects it without moving the clock.
+    /// Each advance publication is answered at most once.
+    fn answer_zero_length_advance(
+        &self,
+        raw_icount: u64,
+        current_icount: u64,
+    ) -> Result<(), LiveVcpuTimeCallbackError> {
+        let advance = self
+            .slot
+            .get()
+            .load_scheduler_advance_publication()
+            .map_err(|source| LiveVcpuTimeCallbackError::IdleHotLoop {
+                source: IdleHotLoopError::AdvanceStopCondition { source },
+            })?;
+        // Sequence zero is the slot's initial state, not a host advance.
+        let marker = advance.sequence().wrapping_add(1);
+        if advance.sequence() == 0
+            || advance.ceiling() != current_icount
+            || self.answered_zero_length_advance.load(Ordering::Acquire) == marker
+        {
+            return Ok(());
+        }
+        self.answered_zero_length_advance
+            .store(marker, Ordering::Release);
+        self.publish_boundary_icount(raw_icount, true, "zero-length-advance", None)
     }
 
     // The ordinary path retains its original scheduler read and ordering.
@@ -127,7 +164,7 @@ impl LiveVcpuTimeCallbackState {
         let effective_ceiling = if PluginShmemOrdering::device_io_active(self.slot.get()) {
             match PluginShmemOrdering::device_completion_deadline_tick(self.slot.get()) {
                 0 => ceiling.min(self.last_icount.load(Ordering::Acquire)),
-                deadline => ceiling.min(deadline),
+                deadline => ceiling.min(first_boundary_at_or_after(current_icount, deadline)),
             }
         } else {
             ceiling
@@ -151,6 +188,7 @@ impl LiveVcpuTimeCallbackState {
             // owner and its still-pending mailbox command untouched.
             return Ok((raw_ceiling, effective_ceiling));
         }
+        self.answer_zero_length_advance(raw_icount, current_icount)?;
         if !self.slot.get().has_pending_preemption_command() {
             // The host publishes a command before its owning RUN grant. An
             // empty acquire observation leaves later publication pending for
@@ -289,4 +327,19 @@ pub(in crate::runtime) unsafe extern "C" fn crucible_qemu_plugin_live_console_di
         Ok(()) => true,
         Err(error) => super::abort_live_callback(error),
     }
+}
+
+/// Returns the first instruction boundary at or after `tick`.
+///
+/// Retirements move the logical clock in steps of
+/// [`crucible_shmem::TICKS_PER_INSTRUCTION`] from `current_icount`, so the
+/// boundaries are exactly `current_icount + k * step`. A tick at or below the
+/// clock is returned unchanged: it is already due and leaves no budget.
+pub(super) fn first_boundary_at_or_after(current_icount: u64, tick: u64) -> u64 {
+    if tick <= current_icount {
+        return tick;
+    }
+    let step = crucible_shmem::TICKS_PER_INSTRUCTION;
+    let instructions = (tick - current_icount).div_ceil(step);
+    current_icount.saturating_add(instructions.saturating_mul(step))
 }

@@ -14,6 +14,7 @@ use crucible_shmem::{
     SchedulerPreemptionKind, authorize_advance_ceiling,
 };
 
+mod between_boundaries;
 mod block_wait;
 mod block_wait_dispatch;
 mod device_wait_observations;

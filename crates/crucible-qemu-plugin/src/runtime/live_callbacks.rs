@@ -888,6 +888,9 @@ pub(crate) struct LiveVcpuTimeCallbackState {
     /// callback. Device waits use it to tell an I/O-blocked RR thread from
     /// QEMU's main loop.
     rr_vcpu_thread: AtomicU64,
+    /// One plus the sequence of the last zero-length advance this plugin
+    /// answered with a boundary publication, or zero before any.
+    answered_zero_length_advance: AtomicU64,
     pending_idle_advance_target_icount: AtomicU64,
     idle_advance_generation: AtomicU64,
     pending_idle_advance: Mutex<Option<LivePendingIdleAdvance>>,
@@ -1110,6 +1113,7 @@ impl LiveVcpuTimeCallbackState {
             pending_idle_advance_active: AtomicBool::new(false),
             pending_idle_advance_raw_icount: AtomicU64::new(0),
             rr_vcpu_thread: AtomicU64::new(0),
+            answered_zero_length_advance: AtomicU64::new(0),
             pending_idle_advance_target_icount: AtomicU64::new(0),
             idle_advance_generation: AtomicU64::new(0),
             pending_idle_advance: Mutex::new(None),

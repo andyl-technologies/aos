@@ -631,10 +631,12 @@ fn native_joined_budget_preserves_original_device_and_fractional_clamps()
         })
     })?;
 
-    assert_eq!(result.raw_ceiling, 30);
-    assert_eq!(result.logical_ceiling, 1501);
+    // The deadline lies 1 ps past the boundary at 1500, so the running guest
+    // meets it at its next boundary, 1550 (TIME-30).
+    assert_eq!(result.raw_ceiling, 31);
+    assert_eq!(result.logical_ceiling, 1550);
     assert_eq!(result.authorization, original_body);
-    assert_eq!(state.max_advance_icount()?, 30);
+    assert_eq!(state.max_advance_icount()?, 31);
     Ok(())
 }
 
