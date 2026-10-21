@@ -179,10 +179,7 @@ impl QemuChildProcessContract {
 }
 
 pub(crate) fn helper_custody_refusal() -> QemuSpawnError {
-    invalid_input(
-        "retain guarded helper",
-        "issued helper custody is unavailable or still occupied",
-    )
+    QemuSpawnError::HelperCustodyUnavailable
 }
 
 /// Borrows the creation Original's remaining slice without entering new work.
@@ -492,6 +489,39 @@ mod tests {
     const CHILD_PROBE: &str = "CRUCIBLE_HELPER_PARTIAL_PROBE_COMPONENT";
     const CHILD_WAIT: &str = "CRUCIBLE_HELPER_ORIGINAL_WAIT_COMPONENT";
     const CHILD_CASE: &str = "spawn::helper_receiver::tests::image_wait_component_child";
+
+    #[test]
+    fn missing_helper_custody_refuses_without_allocating_or_binding()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crucible_host_resources::test_support::TestAllocationObserver;
+
+        // These unvalidated component descriptors issue no Source or helper.
+        let contract = QemuChildProcessContract::for_test(
+            tempfile::tempfile()?.into(),
+            tempfile::tempfile()?.into(),
+            4096,
+        );
+
+        let (results, counts) = TestAllocationObserver::count(|| {
+            [
+                contract.require_issued_helper_receiver(),
+                contract.retained_source_helper_lender().map(|_| ()),
+            ]
+        });
+
+        assert!(results.iter().all(Result::is_err));
+        assert!(
+            results
+                .iter()
+                .all(|result| matches!(result, Err(QemuSpawnError::HelperCustodyUnavailable)))
+        );
+        assert_eq!(counts.allocations, 0);
+        assert_eq!(counts.reallocations, 0);
+        assert!(!counts.overflow);
+        assert!(contract.attempt_binding.helper_receiver.get().is_none());
+        assert!(contract.issued_helper_receiver().is_none());
+        Ok(())
+    }
 
     // These controls exercise the production wait with a real process and a
     // component Original. They issue no native Source, receiver or funding.

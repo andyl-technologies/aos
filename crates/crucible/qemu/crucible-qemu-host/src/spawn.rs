@@ -1015,6 +1015,11 @@ impl QemuSpawnedChild {
 /// Errors returned while preparing or spawning a QEMU child.
 #[derive(Debug, Error)]
 pub enum QemuSpawnError {
+    /// The constructor-bound helper recipient is unavailable or occupied.
+    ///
+    /// This custody refusal retains no boxed I/O error or diagnostic allocation.
+    #[error("retain guarded helper failed: issued helper custody is unavailable or still occupied")]
+    HelperCustodyUnavailable,
     /// Shares the actual first helper error with its issued physical recipient.
     #[error("issued helper failed: {first:?}")]
     HelperFailure {
