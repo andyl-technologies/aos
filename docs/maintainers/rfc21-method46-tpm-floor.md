@@ -674,6 +674,35 @@ guaranteed to yield only old/target; recovery treats that as unavailable.
 
 ## Remaining qualification
 
+### Automated QEMU qualification
+
+Run the AOS Nix fleet test with its AOS-built QEMU, swtpm, kernel and TSS:
+
+```sh
+bash tools/dev/aos-dev --release build check fleet.sandbox-method46-tpm-transport --no-out-link
+```
+
+The test-only provisioner creates both fixed endpoint indices and persistent
+salt keys inside the guest. Credentials come from guest entropy and never
+enter the Nix store. The probe compiles the production private ESYS source,
+then exercises its device identity checks, cached initial salt-public check,
+salted HMAC session, exact NV attributes, encrypted read and encrypted extend.
+It checks wrong credentials and changed salt pins, endpoint isolation, stale
+checkpoint rejection, and exact retained-target readback after a fresh process,
+an orderly reboot and an unclean SysRq guest reset. Clearing the TPM must make
+both retained endpoint fixtures fail.
+
+This test qualifies the emulated transport component only after execution
+passes. Its small retained checkpoint fixture is not the production durable
+coordinator or either daemon's journal. It does not exercise the helper's
+private carrier, SELinux transition, PID1 ownership, installed daemon restart,
+or public lifecycle. SysRq leaves swtpm running; it does not model interrupted
+TPM media writes or swtpm power loss. Snapshotting the virtual TPM together
+with the guest still permits whole-machine rollback. Neither building the
+probe nor passing this component test enables installed method 46.
+
+### Installed owners
+
 The durable coordinator, sealed physical producer, image/credential wiring and
 actual owner hooks remain installed-unqualified. The selected combined native
 library run on `0aba3a682b64f0c67dc495b4a02532b9cc8df398` exits successfully:
