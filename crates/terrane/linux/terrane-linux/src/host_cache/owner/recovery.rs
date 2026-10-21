@@ -2,6 +2,8 @@
 //!
 //! Supported cases preserve cold policy and reconcile empty, inline
 //! and manifest content using actual verified metadata and native bindings.
+//! Standalone encoded chunks retain their verified original native sources;
+//! acknowledged Resume imports those sources into actual cache custody.
 //! Unknown names, unhandled private publication state, temporary files,
 //! unhandled pending bodies and every other unhandled candidate remain non-ready.
 //! Expired, unpinned pending chunks can be removed under funded recovery.
@@ -11,7 +13,7 @@
 
 use super::{
     recovery_accounting::{self, SynchronizedAllocation},
-    recovery_candidates, recovery_indexes,
+    recovery_candidates, recovery_encoded, recovery_indexes,
     recovery_inline::{self, AdoptedInline},
     recovery_manifest_state, recovery_manifests,
     recovery_namespace::SharedNamespaceObservation,
@@ -68,8 +70,35 @@ pub struct CompletedRecovery {
         Vec<Arc<crate::host_cache::recovery_inspection::VerifiedRecoveryManifest>>,
     /// Retains the exact verified full-pack/index source closure.
     pub(super) metadata_sources: Vec<Arc<crate::host_cache::NativeManifestSource>>,
+    /// Retains actual independently verified standalone source inodes.
+    pub(super) encoded_chunks: Vec<Arc<crate::host_cache::VerifiedStandaloneChunk>>,
     /// Retains exact reconstructed and preserved policy for a manifest case.
     pub(super) expected_policy: Option<terrane_sdk::host::cache::CacheState>,
+}
+
+/// Retains original owner and funding provenance after acknowledged Resume.
+///
+/// Cold inventory descriptors must not survive as hidden references to later
+/// unlinked cache inodes. Actual adopted sources already belong to the physical
+/// executor; standalone sources transfer there before any fallible import.
+pub(crate) struct RunningRecovery {
+    _custody: Arc<Mutex<Custody>>,
+    bootstrap_id: [u8; 16],
+    encoded_chunks: Vec<Arc<crate::host_cache::VerifiedStandaloneChunk>>,
+}
+
+impl RunningRecovery {
+    /// Borrows the actual bootstrap registration retained after Resume.
+    pub(crate) fn retained_bootstrap_id(&self) -> &[u8; 16] {
+        &self.bootstrap_id
+    }
+
+    /// Transfers original standalone sources to the sole physical executor.
+    pub(crate) fn take_encoded_sources(
+        &mut self,
+    ) -> Vec<Arc<crate::host_cache::VerifiedStandaloneChunk>> {
+        std::mem::take(&mut self.encoded_chunks)
+    }
 }
 
 impl CompletedRecovery {
@@ -88,12 +117,17 @@ impl CompletedRecovery {
         &self.context
     }
 
-    /// Borrows the original bootstrap registration retained after acknowledged Resume.
+    /// Consumes cold observations only after the actual publisher acknowledges Resume.
     ///
-    /// This identifies actual durable resources; it does not assert that the
-    /// original completion generation remains current after Running mutations.
-    pub(crate) fn retained_bootstrap_id(&self) -> &[u8; 16] {
-        &self.recovery_id
+    /// The owner already retains all adopted inline and manifest resources.
+    /// Dropping exhaustive cold observations releases their duplicate handles;
+    /// they cannot keep later retired sources charged outside the registry.
+    pub(crate) fn into_running(self) -> RunningRecovery {
+        RunningRecovery {
+            _custody: self.custody,
+            bootstrap_id: self.recovery_id,
+            encoded_chunks: self.encoded_chunks,
+        }
     }
 
     /// Returns synchronized allocation of the explicitly retained native inodes.
@@ -150,8 +184,9 @@ impl CompletedRecovery {
         }
         if let Some(expected) = &self.expected_policy {
             recovery_manifest_state::require_same(&owner.state, expected)?;
+            recovery_encoded::check(&self.inventory, &self.encoded_chunks, &expected.residences)?;
             self.shared
-                .require_metadata_sources(&self.metadata_sources)?;
+                .require_sources(&self.metadata_sources, &self.encoded_chunks)?;
             self.state_parent.check_current()?;
             self.inventory.check_current()?;
             recovery_manifests::check_inventory(
@@ -160,6 +195,7 @@ impl CompletedRecovery {
                 &self.metadata_sources,
                 owner.preparation.layout(),
                 &self.adopted_inline,
+                &self.encoded_chunks,
             )?;
             drop(owner);
             for body in &self.manifest_results {
@@ -170,7 +206,7 @@ impl CompletedRecovery {
                 .check_recovery_context(&self.context)
                 .map_err(io::Error::other);
         }
-        let claims = recovery_inline::claims(&self.inventory, owner.preparation.layout())?;
+        let claims = recovery_inline::selected_claims(&self.inventory, owner.preparation.layout())?;
         recovery_state::check_reconciled(
             &owner.preparation.config,
             &owner.state,
@@ -180,11 +216,17 @@ impl CompletedRecovery {
                 .as_ref()
                 .ok_or_else(|| invalid("recovery lost original cold policy candidates"))?,
             &recovery_inline::residences(&claims),
+            &recovery_encoded::hashes(&self.encoded_chunks),
         )?;
-        self.shared.check_current()?;
+        recovery_encoded::check(
+            &self.inventory,
+            &self.encoded_chunks,
+            &owner.state.residences,
+        )?;
+        self.shared.require_sources(&[], &self.encoded_chunks)?;
         self.state_parent.check_current()?;
         self.inventory.check_current()?;
-        recovery_inline::check(
+        recovery_inline::check_subset(
             &self.inventory,
             owner.preparation.layout(),
             &self.adopted_inline,
@@ -360,16 +402,14 @@ pub(super) async fn run(executor: &mut NativeOwnerExecutor) -> io::Result<Comple
         )
         .await;
     }
-    if !shared.only_empty_scaffolds() {
-        return Err(unresolved(
-            "unsupported shared namespace without retained manifest closure",
-        ));
-    }
+    let encoded_chunks = recovery_encoded::select(&initial_inventory)?;
+    shared.require_sources(&[], &encoded_chunks)?;
     let claims = {
         let mut owner = custody
             .lock()
             .map_err(|_| io::Error::other("recovery custody poisoned"))?;
-        let claims = recovery_inline::claims(&initial_inventory, owner.preparation.layout())?;
+        let claims =
+            recovery_inline::selected_claims(&initial_inventory, owner.preparation.layout())?;
         let mut candidate = owner.state.clone();
         candidate.residences = recovery_inline::residences(&claims);
         candidate
@@ -394,7 +434,7 @@ pub(super) async fn run(executor: &mut NativeOwnerExecutor) -> io::Result<Comple
         let owner = custody
             .lock()
             .map_err(|_| io::Error::other("recovery custody poisoned"))?;
-        recovery_inline::check(
+        recovery_inline::check_subset(
             &inventory,
             owner.preparation.layout(),
             executor.inline_registry(),
@@ -415,9 +455,10 @@ pub(super) async fn run(executor: &mut NativeOwnerExecutor) -> io::Result<Comple
             .as_ref()
             .ok_or_else(|| invalid("recovery lost original cold policy candidates"))?;
         cold.check_bootstrap(&owner.preparation.config, &owner.state, &id)?;
-        let claims = recovery_inline::claims(&inventory, owner.preparation.layout())?;
+        let claims = recovery_inline::selected_claims(&inventory, owner.preparation.layout())?;
         let residences = recovery_inline::residences(&claims);
-        cold.reconcile(&residences, &[])?;
+        recovery_encoded::check(&inventory, &encoded_chunks, &residences)?;
+        cold.reconcile(&residences, &recovery_encoded::hashes(&encoded_chunks))?;
         owner.state.residences = residences;
         super::snapshot::prepare(executor, &mut owner)?
     };
@@ -445,12 +486,12 @@ pub(super) async fn run(executor: &mut NativeOwnerExecutor) -> io::Result<Comple
         shared.check_current()?;
         state_parent.check_current()?;
         owner.check_current()?;
-        recovery_inline::check(
+        recovery_inline::check_subset(
             &inventory,
             owner.preparation.layout(),
             executor.inline_registry(),
         )?;
-        let expected = recovery_inline::claims(&inventory, owner.preparation.layout())?;
+        let expected = recovery_inline::selected_claims(&inventory, owner.preparation.layout())?;
         recovery_state::check_reconciled(
             &owner.preparation.config,
             &owner.state,
@@ -460,7 +501,10 @@ pub(super) async fn run(executor: &mut NativeOwnerExecutor) -> io::Result<Comple
                 .as_ref()
                 .ok_or_else(|| invalid("recovery lost original cold policy candidates"))?,
             &recovery_inline::residences(&expected),
+            &recovery_encoded::hashes(&encoded_chunks),
         )?;
+        recovery_encoded::check(&inventory, &encoded_chunks, &owner.state.residences)?;
+        shared.require_sources(&[], &encoded_chunks)?;
         owner.recovery_id = Some(id);
         owner.recovery_required = false;
         owner.faulted = false;
@@ -507,6 +551,7 @@ pub(super) async fn run(executor: &mut NativeOwnerExecutor) -> io::Result<Comple
         adopted_inline: executor.inline_registry().to_vec(),
         manifest_results: Vec::new(),
         metadata_sources: Vec::new(),
+        encoded_chunks,
         expected_policy: None,
     })
 }

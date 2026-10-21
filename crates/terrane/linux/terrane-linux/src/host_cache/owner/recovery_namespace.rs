@@ -17,7 +17,7 @@
 
 use super::NativeCachePreparation;
 use crate::{
-    host_cache::{NativeHostLayout, NativeManifestSource},
+    host_cache::{NativeHostLayout, NativeManifestSource, VerifiedStandaloneChunk},
     host_quota::NativeProject,
     quota_confinement::Installed,
 };
@@ -322,10 +322,11 @@ impl SharedNamespaceObservation {
     ///
     /// # Errors
     /// Refuses another domain/root/project, changed source, an absent closure
-    /// member or any loose, temporary, unrelated or nonregular shared entry.
-    pub(super) fn require_metadata_sources(
+    /// member or any unverified, temporary, unrelated or nonregular shared entry.
+    pub(super) fn require_sources(
         &self,
         sources: &[Arc<NativeManifestSource>],
+        chunks: &[Arc<VerifiedStandaloneChunk>],
     ) -> io::Result<()> {
         self.check_current()?;
         let mut expected = BTreeMap::<PathBuf, Metadata>::new();
@@ -365,13 +366,48 @@ impl SharedNamespaceObservation {
                 expected.insert(path, metadata);
             }
         }
+        for chunk in chunks {
+            if !Arc::ptr_eq(&self.layout, chunk.layout()) {
+                return Err(invalid(
+                    "standalone source belongs to another retained root",
+                ));
+            }
+            chunk.check_current()?;
+            let metadata = chunk.file().metadata()?;
+            let project = NativeProject::inspect(chunk.file())?;
+            if !metadata.is_file()
+                || metadata.uid() != self.uid
+                || metadata.gid() != self.gid
+                || metadata.mode() & 0o7777 != 0o640
+                || metadata.nlink() != 1
+                || project.project_id != self.project_id
+                || project.device != self.layout.directory_binding("layout-root")?.0
+                || (project.device, project.inode) != (metadata.dev(), metadata.ino())
+            {
+                return Err(invalid(
+                    "standalone source differs from shared charge custody",
+                ));
+            }
+            let hash: String = chunk
+                .identity()
+                .digest()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect();
+            let path = PathBuf::from("chunks")
+                .join(&hash[..2])
+                .join(format!("{hash}.{}", chunk.codec()));
+            if expected.insert(path, metadata).is_some() {
+                return Err(invalid("duplicate standalone source in verified closure"));
+            }
+        }
         for entry in &self.entries {
             if empty_scaffold(entry) {
                 continue;
             }
             let Some(source) = expected.remove(&entry.relative) else {
                 return Err(invalid(
-                    "unsupported shared namespace entry outside verified metadata closure",
+                    "unsupported shared namespace entry outside verified source closure",
                 ));
             };
             if !entry.metadata.is_file()
@@ -379,13 +415,13 @@ impl SharedNamespaceObservation {
                 || !same_inode(&source, &entry.inode.metadata()?)
             {
                 return Err(invalid(
-                    "observed metadata member differs from verified source inode",
+                    "observed shared member differs from verified source inode",
                 ));
             }
         }
         if !expected.is_empty() {
             return Err(invalid(
-                "verified metadata closure was absent from exhaustive shared scan",
+                "verified source closure was absent from exhaustive shared scan",
             ));
         }
         Ok(())

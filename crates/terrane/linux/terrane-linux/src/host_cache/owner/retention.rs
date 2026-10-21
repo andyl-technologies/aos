@@ -457,7 +457,7 @@ impl NativeMetadataOwner {
                             completed,
                             response,
                         } => {
-                            let result = executor.resume(completed);
+                            let result = runtime.block_on(executor.resume(completed));
                             // The executor retains the physical outcome before reply.
                             let _ = response.send(result);
                         }

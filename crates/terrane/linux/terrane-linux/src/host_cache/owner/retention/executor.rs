@@ -29,6 +29,7 @@ pub(in crate::host_cache::owner) struct NativeOwnerExecutor {
     worker: ThreadId,
     running: Option<Arc<PublisherRunningContext>>,
     failed_resume: Option<(ResumeFailureStage, Box<CompletedRecovery>)>,
+    recovered_chunks: Vec<Arc<crate::host_cache::VerifiedStandaloneChunk>>,
     admission_jobs: Vec<Arc<Mutex<super::super::admission::AdmissionJob>>>,
     publications: Vec<Arc<Mutex<super::super::publication::PublicationJob>>>,
     allocation_order: u64,
@@ -74,6 +75,7 @@ impl NativeOwnerExecutor {
             worker: thread::current().id(),
             running: None,
             failed_resume: None,
+            recovered_chunks: Vec::new(),
             admission_jobs: Vec::new(),
             publications: Vec::new(),
             allocation_order: 0,
@@ -725,15 +727,32 @@ impl NativeOwnerExecutor {
     /// # Errors
     /// Refuses repeated handoffs, stale completion, failed or uncertain RPCs,
     /// and poisoned custody while retaining the accepted physical outcome.
-    pub(super) fn resume(&mut self, completed: Box<CompletedRecovery>) -> io::Result<()> {
+    pub(super) async fn resume(&mut self, completed: Box<CompletedRecovery>) -> io::Result<()> {
         if self.running.is_some() || self.failed_resume.is_some() {
             return Err(io::Error::other("owner already retained a Resume outcome"));
         }
         let session = completed.publisher_session();
         let result = session.resume_completed(completed, &mut self.resume_turn());
         match result {
-            Ok(context) => {
+            Ok(mut context) => {
+                self.recovered_chunks = context.take_encoded_sources();
+                self.recovered_chunks.reverse();
                 self.running = Some(Arc::new(context));
+                while let Some(source) = self.recovered_chunks.last().cloned() {
+                    if let Err(error) =
+                        super::super::admission::recovery::import(self, &source).await
+                    {
+                        let mut custody = self
+                            .custody
+                            .lock()
+                            .map_err(|_| io::Error::other("metadata custody poisoned"))?;
+                        custody.faulted = true;
+                        custody.recovery_required = true;
+                        custody.recovery_id = None;
+                        return Err(error);
+                    }
+                    self.recovered_chunks.pop();
+                }
                 Ok(())
             }
             Err(failure) => {

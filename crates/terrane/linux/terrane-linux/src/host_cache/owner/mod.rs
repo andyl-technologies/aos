@@ -18,6 +18,7 @@ mod recovery;
 mod recovery_accounting;
 mod recovery_candidates;
 mod recovery_cold;
+mod recovery_encoded;
 mod recovery_indexes;
 mod recovery_inline;
 mod recovery_manifest_state;
@@ -58,6 +59,7 @@ pub use publication::{
     NativeResidentChunkSource, NativeSourceCleanupReport,
 };
 pub use recovery::CompletedRecovery;
+pub(crate) use recovery::RunningRecovery;
 pub(crate) use recovery_pending::PublisherRecoveryRetirementTurn;
 pub use resume_error::NativeResumeError;
 pub(crate) use retention::{

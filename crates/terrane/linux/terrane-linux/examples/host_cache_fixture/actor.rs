@@ -41,6 +41,8 @@ pub(super) fn run(mode: &str) -> io::Result<()> {
             | "cache-admission-handoff"
             | "dictionary-custody"
             | "encoded-eviction"
+            | "recover-encoded"
+            | "refuse-encoded"
             | "recover-manifest"
             | "recover-index-recovery"
             | "refuse-index-disabled"
@@ -114,6 +116,9 @@ pub(super) fn run(mode: &str) -> io::Result<()> {
         .enable_all()
         .build()?;
     match mode {
+        "recover-encoded" | "refuse-encoded" => {
+            super::recovery::encoded::run(mode, &owner, &runtime, &inputs)?;
+        }
         "refuse-pending-inline"
         | "recover-pending-inline"
         | "refuse-pending-chunk"

@@ -47,8 +47,9 @@ pub(super) fn check_reconciled(
     id: &[u8; 16],
     cold: &ColdPolicy,
     residences: &[ResidenceRecord],
+    verified_hashes: &[String],
 ) -> io::Result<()> {
-    cold.reconcile(residences, &[])?;
+    cold.reconcile(residences, verified_hashes)?;
     let mut expected = cold.bootstrap(config, id)?;
     expected.residences = residences.to_vec();
     recovery_manifest_state::require_same(state, &expected)?;

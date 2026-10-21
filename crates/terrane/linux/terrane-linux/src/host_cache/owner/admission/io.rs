@@ -342,6 +342,43 @@ pub(super) fn pending(parent: Parent, canonical: String) -> io::Result<PendingFi
     })
 }
 
+/// Retains an existing verified canonical inode without rewriting its payload.
+///
+/// The caller supplies the inspector's original readonly source, not an inode
+/// inferred from a policy row. Actual bytes, project custody, canonical binding
+/// and synchronization are checked before recording completed native custody.
+///
+/// # Errors
+/// Refuses a writable source, replaced canonical inode, changed payload or
+/// native custody, and failed file or parent synchronization.
+pub(super) fn recover(
+    owner: &Custody,
+    parent: Parent,
+    canonical: String,
+    source: &File,
+    bytes: &[u8],
+) -> io::Result<PendingFile> {
+    parent.recheck(owner)?;
+    if fs::fcntl_getfl(source)?.intersects(OFlags::WRONLY | OFlags::RDWR | OFlags::PATH) {
+        return Err(io::Error::other("recovery source is not readonly"));
+    }
+    let named = open_regular_at(&parent.file, &canonical)?;
+    same_inode(source, &named)?;
+    verify_custodied_bytes(owner, source, bytes)?;
+    let stamp = FileStamp::capture(source)?;
+    source.sync_all()?;
+    parent.file.sync_all()?;
+    stamp.check(source)?;
+    stamp.check(&named)?;
+    let mut recovered = pending(parent, canonical)?;
+    recovered.readonly = Some(source.try_clone()?);
+    recovered.published = true;
+    recovered.closed = Some(stamp.clone());
+    recovered.canonical_stamp = Some(stamp);
+    check_current(owner, &recovered, bytes)?;
+    Ok(recovered)
+}
+
 /// Refuses every existing canonical inode without opening its readable side.
 ///
 /// # Errors

@@ -18,6 +18,7 @@ mod metadata;
 mod pressure;
 pub(in crate::host_cache::owner) mod reads;
 mod reconcile;
+pub(in crate::host_cache::owner) mod recovery;
 mod state;
 mod ticket;
 mod transfer;

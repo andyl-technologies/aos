@@ -22,6 +22,8 @@ pub(super) enum RecoveryCase {
     Manifest(Identity),
     /// Retains a verified container provisionally until exact source closure matching.
     Pack,
+    /// Retains a verified canonical standalone encoding, without serving authority.
+    Chunk,
 }
 
 /// Classifies every bounded candidate before any adoption effect.
@@ -43,13 +45,24 @@ pub(super) fn preflight(inventory: &NativeRecoveryInspection) -> io::Result<()> 
 /// Classifies a genuine candidate while preserving all unresolved observations.
 ///
 /// # Errors
-/// Refuses pending bodies, loose chunks, broken/missing indexes, unsupported key
+/// Refuses pending bodies, broken/missing indexes, unsupported key
 /// fields and any issue beyond the sealed witness supplied by actual adoption.
 pub(super) fn classify(candidate: &NativeRecoveryCandidate) -> io::Result<RecoveryCase> {
     if candidate.pending_observation().is_some() {
         return Err(unresolved("pending recovery body is not yet supported"));
     }
     let key = candidate.key();
+    if key.kind == BodyKind::Chunk as i32
+        && key.codec <= 2
+        && key.pack_id.is_empty()
+        && candidate.issues().is_empty()
+        && let Some(VerifiedEncodedBody::Chunk(chunk)) = candidate.verified()
+        && key.codec == chunk.codec()
+        && Descriptor::decode(&TERRANE_V1, &key.descriptor).map_err(io::Error::other)?
+            == *chunk.descriptor()
+    {
+        return Ok(RecoveryCase::Chunk);
+    }
     if key.kind == BodyKind::Sealed as i32 {
         if key.codec != 0
             || !key.pack_id.is_empty()

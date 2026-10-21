@@ -33,6 +33,7 @@ pub(crate) use owner::{
     PublisherEncodedCacheTurn, PublisherRecoveryRetirementTurn, PublisherResumeTurn,
     PublisherRunningTurn, RecoveryManifestBodyFailure, RecoveryManifestBodyRetention,
     RecoveryManifestEffect, RecoveryManifestEffectFailure, RecoveryRetainedManifest,
+    RunningRecovery,
 };
 #[cfg(feature = "tokio")]
 pub use owner::{

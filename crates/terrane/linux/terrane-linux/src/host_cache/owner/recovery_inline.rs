@@ -22,25 +22,6 @@ use terrane_sdk::host::{
 /// Retains adopted immutable bodies independently of embedded state and waiters.
 pub(super) type AdoptedInline = Arc<PeerPublishedObject<HostDomainLocation>>;
 
-/// Classifies the entire bounded inventory before any inline adoption effect.
-///
-/// # Errors
-/// Refuses all failures, pending observations, nonsealed/nonchunk descriptors
-/// and issue categories other than the intentionally unresolved sealed witness.
-pub(super) fn claims(
-    inventory: &NativeRecoveryInspection,
-    layout: &Arc<NativeHostLayout<HostDomainLocation>>,
-) -> io::Result<Vec<PublicationClaim>> {
-    if inventory.inventory_failure().is_some() || inventory.namespace_failure().is_some() {
-        return Err(unresolved("inventory failed before inline reconciliation"));
-    }
-    let mut claims = Vec::with_capacity(inventory.candidates().len());
-    for candidate in inventory.candidates() {
-        claims.push(claim(candidate, layout)?);
-    }
-    Ok(claims)
-}
-
 /// Selects inline claims after validating every mixed-inventory candidate.
 ///
 /// # Errors
@@ -109,20 +90,6 @@ pub(super) fn residences(claims: &[PublicationClaim]) -> Vec<ResidenceRecord> {
             }
         })
         .collect()
-}
-
-/// Checks final inventory against the exact independently adopted handles.
-///
-/// # Errors
-/// Refuses changed candidate sets, root custody or immutable handle size/type.
-/// This rechecks no embedded state and performs no serving read callbacks.
-pub(super) fn check(
-    inventory: &NativeRecoveryInspection,
-    layout: &Arc<NativeHostLayout<HostDomainLocation>>,
-    adopted: &[AdoptedInline],
-) -> io::Result<()> {
-    let claims = claims(inventory, layout)?;
-    check_claims(&claims, layout, adopted)
 }
 
 /// Checks the exact adopted inline subset without ignoring other candidate issues.

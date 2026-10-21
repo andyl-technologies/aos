@@ -108,12 +108,17 @@ fn main() -> std::process::ExitCode {
             "seed-bound-unsealed",
             "refuse-bound-unsealed",
             "encoded-eviction",
+            "seed-encoded",
+            "recover-encoded",
+            "refuse-encoded",
         ] {
             println!("host-cache:{selector}");
         }
         return std::process::ExitCode::SUCCESS;
     }
-    let result = if mode == "seed-pending-pack" {
+    let result = if mode == "seed-encoded" {
+        recovery::encoded::seed()
+    } else if mode == "seed-pending-pack" {
         recovery::pending_packs::seed()
     } else if mode == "seed-pending-inline" {
         recovery::pending::seed()

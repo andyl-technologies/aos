@@ -6,6 +6,8 @@
 //! actor invokes the genuine owner, Inspector and publisher channel; only their
 //! actual result permits Resume.
 
+#[path = "recovery/encoded.rs"]
+pub(super) mod encoded;
 #[path = "recovery/indexes.rs"]
 mod indexes;
 #[path = "recovery/inline.rs"]

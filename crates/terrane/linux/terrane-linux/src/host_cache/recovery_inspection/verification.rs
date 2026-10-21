@@ -137,7 +137,7 @@ impl DerivedIndexRepair {
 /// Retains independently verified bytes without granting adoption or service.
 pub enum VerifiedEncodedBody {
     /// Contains a verified standalone chunk and its actual retained dependencies.
-    Chunk(Box<VerifiedStandaloneChunk>),
+    Chunk(Arc<VerifiedStandaloneChunk>),
     /// Contains a complete verified pack and its captured detached-index state.
     Pack(Box<DerivedIndexRepair>),
 }
@@ -152,9 +152,42 @@ pub struct VerifiedStandaloneChunk {
     identity: Identity,
     length: usize,
     encoded_hash: blake3::Hash,
+    descriptor: Descriptor,
+    codec: u32,
 }
 
 impl VerifiedStandaloneChunk {
+    /// Borrows the descriptor checked against actual decoded bytes.
+    pub(in crate::host_cache) fn descriptor(&self) -> &Descriptor {
+        &self.descriptor
+    }
+
+    /// Returns the codec checked against the canonical name and envelope.
+    pub(in crate::host_cache) fn codec(&self) -> u32 {
+        self.codec
+    }
+
+    /// Borrows the original native domain roots retained during inspection.
+    pub(in crate::host_cache) fn layout(&self) -> &Arc<NativeHostLayout<HostDomainLocation>> {
+        &self.source.context().layout
+    }
+
+    /// Reads the original bounded bytes without treating a later filename as proof.
+    ///
+    /// # Errors
+    /// Refuses changed original custody, bytes or dependency inodes.
+    pub(in crate::host_cache) fn encoded(&self) -> io::Result<Vec<u8>> {
+        self.check_current()?;
+        let bytes = self
+            .source
+            .read(self.source.context().reads.max_allocation_bytes)?;
+        if blake3::hash(&bytes) != self.encoded_hash {
+            return Err(invalid("verified standalone bytes changed during recovery"));
+        }
+        self.check_current()?;
+        Ok(bytes)
+    }
+
     /// Borrows the verified plaintext identity.
     pub fn identity(&self) -> &Identity {
         &self.identity
@@ -270,9 +303,11 @@ pub(super) fn chunk(
         identity,
         length,
         encoded_hash: blake3::hash(&encoded),
+        descriptor,
+        codec: key.codec,
     };
     chunk.check_current()?;
-    Ok(VerifiedEncodedBody::Chunk(Box::new(chunk)))
+    Ok(VerifiedEncodedBody::Chunk(Arc::new(chunk)))
 }
 
 pub(super) fn pack(

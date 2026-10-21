@@ -1,6 +1,8 @@
 //! Hands genuine recovery completion to the publisher under one physical turn.
 //!
-//! A successful Resume retains completion by value with the original session.
+//! A successful Resume consumes cold observations into original owner/funding
+//! provenance. Adopted resources remain registered on the physical executor;
+//! standalone sources transfer there before any fallible import.
 //! This context is provenance for the concrete native owner, not BKT-15 bucket
 //! readiness or publication-allocation authority. Running RPCs additionally
 //! require the owner's actual serialized command and synchronized funding.
@@ -11,7 +13,9 @@ use terrane_sdk::host::cache::HostDomainLocation;
 
 use super::{Client, Error, Phase, State, invalidate};
 use crate::{
-    host_cache::{CompletedRecovery, PublisherResumeTurn},
+    host_cache::{
+        CompletedRecovery, PublisherResumeTurn, RunningRecovery, VerifiedStandaloneChunk,
+    },
     publisher_local::wire::Operation,
 };
 
@@ -24,10 +28,15 @@ use crate::{
 pub(crate) struct PublisherRunningContext {
     session: Arc<Client<HostDomainLocation>>,
     epoch: u64,
-    _completed: Box<CompletedRecovery>,
+    _recovery: RunningRecovery,
 }
 
 impl PublisherRunningContext {
+    /// Transfers original encoded source custody to the actual physical executor.
+    pub(crate) fn take_encoded_sources(&mut self) -> Vec<Arc<VerifiedStandaloneChunk>> {
+        self._recovery.take_encoded_sources()
+    }
+
     /// Borrows the actual original session for concrete executor integration.
     pub(crate) fn publisher_session(&self) -> &Arc<Client<HostDomainLocation>> {
         &self.session
@@ -38,7 +47,7 @@ impl PublisherRunningContext {
     /// The registration survives legitimate Running writes, which invalidate
     /// the old completion-generation predicate. This grants no live owner turn.
     pub(crate) fn retained_bootstrap_id(&self) -> &[u8; 16] {
-        self._completed.retained_bootstrap_id()
+        self._recovery.retained_bootstrap_id()
     }
 
     /// Rechecks the actual acknowledged session phase without embedded-state locks.
@@ -162,7 +171,7 @@ impl Client<HostDomainLocation> {
             Ok(epoch) => Ok(PublisherRunningContext {
                 session,
                 epoch,
-                _completed: completed,
+                _recovery: completed.into_running(),
             }),
             Err(error) => Err(ResumeFailure {
                 error,

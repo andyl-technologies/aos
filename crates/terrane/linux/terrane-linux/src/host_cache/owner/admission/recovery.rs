@@ -1,0 +1,106 @@
+//! Imports original verified recovery inodes into the running admission registry.
+//!
+//! Import follows acknowledged Resume on the sole physical executor. A new
+//! synchronized metadata hold funds the state transition; existing payload is
+//! already charged. Cold promises survive, and every started job remains owned
+//! if a later step fails or the Resume waiter's reply is cancelled.
+
+use super::{AdmissionBounds, Input, backing, chunk, handoff, io as native, reconcile, state};
+use crate::host_cache::{VerifiedStandaloneChunk, owner::retention::NativeOwnerExecutor};
+use std::{io, sync::Arc};
+use terrane_format::codec::Codec;
+use terrane_sdk::store::ChunkPosition;
+
+/// Registers and synchronizes one original independently verified canonical inode.
+///
+/// # Errors
+/// Refuses changed native bytes, absent one-hop dictionaries, exhausted registry
+/// or state capacity, insufficient quota and failed durable synchronization.
+pub(in crate::host_cache::owner) async fn import(
+    executor: &mut NativeOwnerExecutor,
+    source: &VerifiedStandaloneChunk,
+) -> io::Result<()> {
+    executor
+        .admission_context()?
+        .check_current()
+        .map_err(io::Error::other)?;
+    source.check_current()?;
+    let custody = Arc::clone(executor.custody());
+    let encoded = Arc::new(source.encoded()?);
+    {
+        let owner = custody
+            .lock()
+            .map_err(|_| io::Error::other("recovery custody poisoned"))?;
+        if !Arc::ptr_eq(source.layout(), owner.preparation.layout()) {
+            return Err(io::Error::other(
+                "recovered chunk belongs to another native domain",
+            ));
+        }
+        let bounds = AdmissionBounds::new(&owner.preparation.config)?;
+        bounds.check(encoded.len(), 0)?;
+        bounds.check(encoded.capacity(), 0)?;
+    }
+    let resource = executor.register_admission(Input::Chunk {
+        descriptor: source.descriptor().clone(),
+        position: ChunkPosition::Final,
+        encoded: Arc::clone(&encoded),
+    })?;
+    let result = async {
+        let reservation = {
+            let mut job = backing::lock(&resource)?;
+            let mut owner = custody
+                .lock()
+                .map_err(|_| io::Error::other("recovery custody poisoned"))?;
+            super::refuse_completed(executor, &owner, &resource, &job.input)?;
+            let mut hashes = vec![state::hex(source.identity().digest())];
+            if let Codec::ZstdDictionary(digest) = terrane_format::codec::parse_envelope(&encoded)
+                .map_err(io::Error::other)?
+                .codec
+            {
+                let (_, dependency) =
+                    chunk::dictionary(executor, Some(&resource), &owner, &digest)?;
+                hashes.push(state::hex(&digest));
+                job.dependencies.push(dependency);
+            }
+            source.check_current()?;
+            state::begin(executor, &mut owner, &mut job, 0, &hashes)?
+        };
+        super::super::snapshot::persist(executor, reservation).await?;
+        let completion = {
+            let mut job = backing::lock(&resource)?;
+            let mut owner = custody
+                .lock()
+                .map_err(|_| io::Error::other("recovery custody poisoned"))?;
+            state::check_registration(&owner, &job)?;
+            source.check_current()?;
+            let hash = state::hex(source.identity().digest());
+            let parent =
+                native::parent(&owner, "chunks", &[&hash[..2]], &mut job.directory_progress)?;
+            let name = format!("{hash}.{}", source.codec());
+            job.files.push(native::recover(
+                &owner,
+                parent,
+                name,
+                source.file(),
+                &encoded,
+            )?);
+            super::super::snapshot::prepare(executor, &mut owner)?
+        };
+        super::super::snapshot::persist(executor, completion).await?;
+        {
+            let mut job = backing::lock(&resource)?;
+            let mut owner = custody
+                .lock()
+                .map_err(|_| io::Error::other("recovery custody poisoned"))?;
+            source.check_current()?;
+            reconcile::finish(&mut owner, &mut job)?;
+        }
+        handoff::execute(executor, &resource).await?;
+        Ok(())
+    }
+    .await;
+    if result.is_err() {
+        executor.reclaim_rejected_admission(&resource)?;
+    }
+    result
+}

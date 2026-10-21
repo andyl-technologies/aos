@@ -92,7 +92,7 @@ impl ColdPolicy {
 
     /// Checks every original residence and pin against verified recovery outputs.
     ///
-    /// Metadata hashes must come from actual retained and verified source packs.
+    /// Additional hashes must come from actual retained verified packs or chunks.
     /// A filename, old row or digest alone is insufficient input at the caller.
     /// This comparison issues no native completion or read capability.
     ///
@@ -101,7 +101,7 @@ impl ColdPolicy {
     pub(super) fn reconcile(
         &self,
         residences: &[ResidenceRecord],
-        metadata_hashes: &[String],
+        verified_hashes: &[String],
     ) -> io::Result<()> {
         if self.state.residences.iter().any(|old| {
             !residences.iter().any(|new| {
@@ -118,7 +118,7 @@ impl ColdPolicy {
         let hashes: BTreeSet<&str> = residences
             .iter()
             .flat_map(|row| [row.chunk.as_str(), row.object.as_str()])
-            .chain(metadata_hashes.iter().map(String::as_str))
+            .chain(verified_hashes.iter().map(String::as_str))
             .collect();
         if self
             .state

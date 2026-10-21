@@ -10,7 +10,7 @@ use super::{
     recovery::{self, CompletedRecovery},
     recovery_accounting,
     recovery_candidates::{self, RecoveryCase},
-    recovery_inline, recovery_manifest_state,
+    recovery_encoded, recovery_inline, recovery_manifest_state,
     recovery_namespace::SharedNamespaceObservation,
     recovery_residences::ResidenceSelection,
     recovery_state_parent::StateParentObservation,
@@ -97,6 +97,7 @@ pub(super) async fn run(
             .map_err(|_| io::Error::other("recovery custody poisoned"))?;
         Arc::clone(owner.preparation.layout())
     };
+    let encoded_chunks = recovery_encoded::select(&inventory)?;
     let inline_claims = recovery_inline::selected_claims(&inventory, &layout)?;
     executor
         .inline_registry_mut()
@@ -130,7 +131,7 @@ pub(super) async fn run(
         for candidate in candidates {
             let identity = match recovery_candidates::classify(&candidate)? {
                 RecoveryCase::Manifest(identity) => identity,
-                RecoveryCase::Pack | RecoveryCase::Inline => continue,
+                RecoveryCase::Pack | RecoveryCase::Inline | RecoveryCase::Chunk => continue,
             };
             // Reserve actual success/failure registry slots before source/publisher
             // effects. No fallible step precedes retaining an accepted result.
@@ -200,7 +201,7 @@ pub(super) async fn run(
         body.check_current(&original)?;
         selected.extend(body.residences()?)?;
     }
-    shared.require_metadata_sources(executor.manifest_sources())?;
+    shared.require_sources(executor.manifest_sources(), &encoded_chunks)?;
     let final_inventory = inspector.inspect()?;
     check_inventory(
         &final_inventory,
@@ -208,6 +209,7 @@ pub(super) async fn run(
         executor.manifest_sources(),
         &layout,
         executor.inline_registry(),
+        &encoded_chunks,
     )?;
     for body in &verified {
         body.check_current(&original)?;
@@ -234,7 +236,9 @@ pub(super) async fn run(
             &bootstrap_id,
             &resources,
             selected.finish(),
+            &recovery_encoded::hashes(&encoded_chunks),
         )?;
+        recovery_encoded::check(&final_inventory, &encoded_chunks, &expected.residences)?;
         owner.begin_mutation()?;
         owner.state = expected.clone();
         let write = super::snapshot::prepare(executor, &mut owner)?;
@@ -262,7 +266,7 @@ pub(super) async fn run(
         owner.preparation.recheck()?;
         recovery::check_charge(&owner, 0)?;
         recovery_manifest_state::require_same(&owner.state, &expected)?;
-        shared.require_metadata_sources(executor.manifest_sources())?;
+        shared.require_sources(executor.manifest_sources(), &encoded_chunks)?;
         state_parent.check_current()?;
         let future = owner
             .state
@@ -319,6 +323,7 @@ pub(super) async fn run(
         adopted_inline: executor.inline_registry().to_vec(),
         manifest_results: verified,
         metadata_sources: executor.manifest_sources().to_vec(),
+        encoded_chunks,
         expected_policy: Some(expected),
     })
 }
@@ -333,9 +338,11 @@ pub(super) fn check_inventory(
     sources: &[Arc<crate::host_cache::NativeManifestSource>],
     layout: &Arc<crate::host_cache::NativeHostLayout<HostDomainLocation>>,
     inline: &[recovery_inline::AdoptedInline],
+    chunks: &[Arc<crate::host_cache::VerifiedStandaloneChunk>],
 ) -> io::Result<()> {
     recovery_candidates::preflight(inventory)?;
     recovery_inline::check_subset(inventory, layout, inline)?;
+    recovery_encoded::check(inventory, chunks, &[])?;
     let mut sealed = 0usize;
     for candidate in inventory.candidates() {
         match recovery_candidates::classify(candidate)? {
@@ -358,7 +365,7 @@ pub(super) fn check_inventory(
                     return Err(unresolved("final inventory contains unrelated shared pack"));
                 }
             }
-            RecoveryCase::Inline => {}
+            RecoveryCase::Inline | RecoveryCase::Chunk => {}
         }
     }
     if sealed != verified.len() {

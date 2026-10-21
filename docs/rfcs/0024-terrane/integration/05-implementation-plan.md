@@ -8694,6 +8694,19 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
 
 ### T2 — Host tier
 
+Encoded recovery preparation (2026-10-20): retain independently verified
+canonical raw, Zstd and standalone one-hop dictionary chunks across exhaustive
+recovery scans. Acknowledged Resume imports the original inodes into the
+physical admission registry under synchronized metadata funding and cache
+handoff; cold pins, leases and reservations remain unchanged. Duplicate
+encodings, changed sources, missing standalone dictionaries, unrelated names
+and collisions with sealed residences remain unresolved. Native fixture
+controls cover post-Resume consumer reads and cold-policy preservation; VM
+qualification is pending. Pack-only dictionaries, shared-chunk re-extraction
+and complete readiness remain outstanding. The existing unique-descriptor
+close operation in admission IO was reviewed unchanged; recovery adds only
+safe readonly descriptor operations. No complete T2 task is accepted.
+
 Host integration checkpoint (2026-10-20): combine native cache source
 `428cc305ad` and configured surface/module source `d4af629791`, retaining
 D-128's configuration-time sealed-tier refusal. The module preserves DOM-18's

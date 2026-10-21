@@ -74,7 +74,8 @@ CASES = [
 LABELS = ["layout-root", "chunks", "objects", "sealed", "staging", "quarantine",
           "pending-delete", "state"]
 # Append new cases so every previously qualified project assignment stays fixed.
-CASES += ["encoded-eviction"]
+CASES += ["encoded-eviction", "encoded-recovery", "encoded-cold", "encoded-corrupt",
+          "encoded-duplicate", "encoded-missing-dictionary", "encoded-unknown"]
 BUDGET = HARD * len(CASES)
 PROVISION_CAPS = "-all,+sys_admin,+dac_read_search,+fowner,+chown,+fsetid"
 QUERY_CAPS = "-all,+sys_admin,+dac_read_search"
@@ -1114,6 +1115,7 @@ def main():
     uuid = subprocess.check_output(["blkid", "-s", "UUID", "-o", "value",
                                     os.environ["TERRANE_CACHE_VM_IMAGE"]], text=True, timeout=5).strip().replace("-", "")
     require(len(uuid) == 32, "actual ext4 UUID unavailable")
+    runpy.run_path(str(IMAGE / "share/host_cache_encoded_recovery_vm.py"))["seed"](sys.modules[__name__], uuid)
     manifest_candidates = seed_manifests(uuid)
     index_candidates = runpy.run_path(str(IMAGE / "share/host_cache_index_recovery_vm.py"))[
         "seed"](sys.modules[__name__], uuid)
@@ -1226,6 +1228,7 @@ def main():
             print("PUBLISHER_PREPARATION_RESOURCES unavailable: " + str(error), flush=True)
         running_retention_cases(helper, uuid)
         runpy.run_path(str(IMAGE / "share/manifest_publication_vm.py"))["run"](sys.modules[__name__], publisher, uuid)
+        runpy.run_path(str(IMAGE / "share/host_cache_encoded_recovery_vm.py"))["run"](sys.modules[__name__], uuid)
         manifest_recovery_cases(uuid, manifest_candidates, helper)
         runpy.run_path(str(IMAGE / "share/host_cache_index_recovery_vm.py"))[
             "run"](sys.modules[__name__], uuid, index_candidates)

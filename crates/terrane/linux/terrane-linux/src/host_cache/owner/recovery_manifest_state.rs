@@ -21,6 +21,7 @@ pub(super) fn reconstruct(
     bootstrap_id: &[u8; 16],
     bodies: &[RecoveryManifestBodyRetention],
     residences: Vec<ResidenceRecord>,
+    verified_hashes: &[String],
 ) -> io::Result<CacheState> {
     let config = &owner.preparation.config;
     let cold = owner
@@ -28,7 +29,7 @@ pub(super) fn reconstruct(
         .as_ref()
         .ok_or_else(|| invalid("manifest recovery lost original cold policy candidates"))?;
     let mut expected = cold.bootstrap(config, bootstrap_id)?;
-    let mut metadata_hashes = Vec::new();
+    let mut metadata_hashes = verified_hashes.to_vec();
     for body in bodies {
         let backing = body.backing();
         backing.check_recovery_registration(owner)?;
