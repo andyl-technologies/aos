@@ -67,7 +67,28 @@ failed attempts appear in the dated entries below.
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | Latest focused checks pass all 73 policy and five hygiene controls; the broad gate retains thirteen daemon paths. | The fresh canonical license-boundary check is blocked by strict controller Clippy (1,189 host-library and 1,262 host-test errors); its boundary assertions did not run. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 365 committed bindings: 346 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
+| Requirements | 371 committed bindings: 352 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
+
+#### Observed scheduler command reservations
+
+`774e1287b0` retains the actual bounded node snapshot in a move-only receipt,
+reserves that exact observed scheduler generation with one CAS, and checks the
+report before and after reservation and before commitment. Quantum start uses
+this receipt after computing its effective ceiling once. Input preflight precedes
+ring effects; tuple commitment retains its separate once-only wake. An abandoned
+writer consumes its fresh generation without changing the previous tuple or wake.
+Inputs already published before a later refusal remain actual caller debt.
+
+All six physical receipt controls, 62 quantum/mapped cases, strict shared-memory
+Clippy and engineering hygiene pass. Mandatory application test-target compilation
+passes at `s92bz19y9f49ghr4kdnz556jp508qa5b`; all 5,283 committed Rust/TOML files
+match immutable source `9pdm4gqad3ww1n784a4n56yhh76n3l96`. The comparison record
+has SHA-256 `5ef090e653efb784db1c6739af38845c5b90bd945a5206c96f590a2ac104cd84`.
+The initial module-path compilation failure, moved-test-input failure and stale
+source-order assertion remain separate from this corrected final run. The
+expanded supervision cohort is pending. These physical checks issue no semantic
+Original, Source lender, deadline or Native execution authority, and do not replace
+independent control/restore validation or actual immutable command publication.
 
 #### Independent health and Quantum posts
 
@@ -81,8 +102,11 @@ transport failure remains unchanged.
 
 All 33 driver tests pass in both default and private-measurement configurations,
 along with eleven worker-failure and nine node-error tests. Engineering hygiene
-passes. Mandatory application compilation and the expanded supervision run
-remain pending. The helper's first/post join allocates nothing; this does not
+passes. Mandatory application compilation passes at
+`37vd3x9nskvvh2ppjyrv6rkwz3zzf4yv`; all 5,281 committed Rust/TOML files match
+immutable source `n1rqh4clizyjpr6dx6aqh3dddnjlg3a5`. The comparison record has
+SHA-256 `f674716588f0c3a337b1ab44381e60e880f73987070508b9432dd4ee6e6c293e`.
+All 248 exact supervision cases pass at `qs376ksdwzfk87r71pwmfpnbg7az22r2`. The helper's first/post join allocates nothing; this does not
 prove complete diagnostic-carrier funding. In particular, scheduler conversion
 of a worker failure with a newly retained post needs the complete paired
 carrier, rather than the worker-only shared-control shortcut. Genuine Native
