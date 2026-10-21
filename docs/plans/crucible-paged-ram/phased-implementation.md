@@ -1880,13 +1880,50 @@ controls, 73 policy checks and five hygiene checks pass. Mandatory application
 compilation passes at
 `/nix/store/azp25i78kgl1rccwmhqa9hfvyffhvcvp-aos-test-targets-0.1.0`.
 All 5,258 tracked crate Rust/TOML files match `905cdf8c32` and immutable
-`p3xc865bcq6pa989n4h2crpsrjba1q29-aos-workspace-src`. The expanded 153-case
-supervision run is pending. The initial test that completed the actual guard
+`p3xc865bcq6pa989n4h2crpsrjba1q29-aos-workspace-src`. All 153 expanded exact
+hermetic supervision cases pass at
+`/nix/store/hc6yr8hmcg5906km9j2mx0vppzmaij48-crucible-gate-ram-supervision-0`. The initial test that completed the actual guard
 inside its counted effect exposed one deadline-report allocation and failed;
 the corrected diagnostic-specific control amends the real budget after entry,
 preserving the actual expired post without concealing that separate reporting
 allocation. Dynamic diagnostics, complete cleanup funding and genuine selected
 Source execution remain unfinished.
+
+### 2026-10-21 inline deadline reporting and entered Cleanup completion
+
+Commit `cd64c5ce24` keeps at most three tied deadline sources inline. Actual
+status and completion preserve ordered progress/total/outer provenance without
+a heap allocation. The codec reads the same bounded wire records directly into
+that storage and retains existing count, tag, order and canonical-envelope
+refusals. Snapshot admission includes the enlarged actual status extent and
+keeps its previous conservative additional allowance.
+
+All 194 host-resource tests, 24 operational codec tests, 73 policy checks and
+five hygiene checks pass. The pre-change status control failed with one
+allocation. Corrected actual status and completion allocate nothing across all
+14 classes, and all deadline ties preserve their original ordering without
+allocating. Initial stale codec review digest/count and incorrect review-marker
+failures remain recorded; no threshold or rule changes. Mandatory application
+compilation passes at
+`/nix/store/lr8mn0qsjkffiq9s9q9ky7nragp54z6r-aos-test-targets-0.1.0`.
+All 5,259 tracked crate Rust/TOML files match `cd64c5ce24` and immutable
+`p0c0bgcb2hb2mnyhj9sb7z942w9pbb7p-aos-workspace-src`. Its expanded 155-case
+exact supervision run is pending.
+
+Commit `8fe4c8d231` returns to the actual Cleanup completion path that originally
+exposed the allocation. Completing the real guard inside an entered rung now
+allocates nothing; successful work retains its returned output, and refused
+work retains its initiating cause separately from that same completed
+Original's independent post. The prior actual deadline-expiry control remains.
+Nine focused controls, 217 Node tests (one existing ignored), 73 policy checks
+and five hygiene checks pass. Mandatory application compilation passes at
+`/nix/store/45ck89h9bk4ndzrx3prr2vrsdq9ax512-aos-test-targets-0.1.0`;
+all 5,259 tracked crate Rust/TOML files match `8fe4c8d231` and immutable
+`mqda8wz5gmxirrl5q6gsa3r6h9h45649-aos-workspace-src`. Its expanded 156-case
+exact supervision run is pending. The broad source-policy check still fails
+its same 13 daemon paths. No source mask, rename or exception is added. These
+component controls issue no Source, selected operation or child-return receipt;
+dynamic diagnostics and complete cleanup funding remain unfinished.
 
 ### 2026-10-21 native rule and reservation storage custody
 
