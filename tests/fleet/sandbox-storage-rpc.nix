@@ -573,7 +573,7 @@ in {
         dependencies = machine.succeed(
             f"systemctl show aos-storaged.socket --property={property_name} --value"
         ).split()
-        assert "aos-ability-host-controller.service" in dependencies, dependencies
+        assert "aos-activate.service" in dependencies, dependencies
     assert machine.succeed(
         f"{COREUTILS}/stat -c '%u:%g:%a' /run/aos/sandbox-storage"
     ).strip() == "0:811:710"
