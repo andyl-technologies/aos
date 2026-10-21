@@ -4,13 +4,17 @@
 //! hash before exposing a reader. Later readers verify each original chunk again
 //! and enforce live grants while copying even already buffered plaintext. This
 //! supplies the chunk-serving path; it creates no sealed file or kernel handle.
+//!
+//! Bounded plaintext ranges also implement the SDK's
+//! [`terrane_sdk::derived::PlaintextObject`] interface under the same original
+//! grants, allowing derived-attribute readers to consume this native object view.
 
 use super::{NativeConsumerLease, NativeContentStore, native_failure};
 use std::io::{self, Cursor, Read};
-use terrane_format::identity::{Descriptor, Identity, IdentityKind, TERRANE_V1};
+use terrane_format::identity::{Descriptor, Digest, Identity, IdentityKind, TERRANE_V1};
 use terrane_sdk::{
     host::publication::{PublicationClaim, PublicationRecipe},
-    store::{ChunkPosition, ContentStore, StoreErrorKind, StoreFailure},
+    store::{ByteRange, ChunkPosition, ContentStore, InvalidReason, StoreErrorKind, StoreFailure},
 };
 
 /// Retains a fully verified manifest object under its original finite native grants.
@@ -22,6 +26,7 @@ use terrane_sdk::{
 pub struct NativeChunkedObject<'store> {
     store: &'store NativeContentStore,
     identity: Identity,
+    digest: Digest,
     claim: PublicationClaim,
     leases: Vec<NativeConsumerLease>,
     sequence: Vec<Occurrence>,
@@ -56,6 +61,9 @@ impl NativeContentStore {
         if identity.kind() != IdentityKind::Manifest {
             return Err(StoreFailure::new(StoreErrorKind::Unsupported));
         }
+        let digest = identity
+            .terrane_v1_digest()
+            .map_err(|_| StoreFailure::new(StoreErrorKind::Unsupported))?;
         let canonical = self.get(identity, None).await?;
         let descriptor =
             Descriptor::from_identity(&TERRANE_V1, identity, &canonical).map_err(|error| {
@@ -86,6 +94,7 @@ impl NativeContentStore {
         let object = NativeChunkedObject {
             store: self,
             identity: identity.clone(),
+            digest,
             claim,
             leases,
             sequence,
@@ -173,6 +182,79 @@ impl<'store> NativeChunkedObject<'store> {
             next: 0,
             current: None,
         }
+    }
+
+    /// Reads an exact bounded plaintext range under the original live grants.
+    ///
+    /// Only overlapping chunks are read, and each retains its own declared CDC
+    /// position and identity checks. The output and each chunk buffer fit the
+    /// store's configured allocation window. This performs no queue or quota RPC.
+    ///
+    /// # Errors
+    /// Refuses out-of-bounds or overflowing ranges, configured allocation limits,
+    /// expired or revoked grants, changed chunk content and native read failures.
+    pub fn read_range(&self, range: ByteRange) -> Result<Vec<u8>, StoreFailure> {
+        let end = range
+            .start
+            .checked_add(range.length)
+            .filter(|end| *end <= self.plaintext_size())
+            .ok_or_else(|| {
+                StoreFailure::new(StoreErrorKind::Invalid(InvalidReason::Range(range)))
+            })?;
+        let length = usize::try_from(range.length)
+            .ok()
+            .filter(|length| *length <= self.store.max_allocation_bytes)
+            .ok_or_else(|| StoreFailure::new(StoreErrorKind::Capacity))?;
+        self.expires_at()?;
+
+        let mut output = Vec::new();
+        output
+            .try_reserve_exact(length)
+            .map_err(|error| StoreFailure::with_source(StoreErrorKind::Capacity, error))?;
+        if output.capacity() > self.store.max_allocation_bytes {
+            return Err(StoreFailure::new(StoreErrorKind::Capacity));
+        }
+        let mut chunk_start = 0_u64;
+        for occurrence in &self.sequence {
+            if chunk_start >= end || length == 0 {
+                break;
+            }
+            let chunk_end = chunk_start
+                .checked_add(occurrence.length as u64)
+                .ok_or_else(|| native_failure(invalid_range_layout(), &self.identity))?;
+            if chunk_end > range.start {
+                let bytes = self
+                    .read_occurrence(occurrence)
+                    .map_err(|error| native_failure(error, &self.identity))?;
+                let start = usize::try_from(range.start.saturating_sub(chunk_start))
+                    .map_err(|_| native_failure(invalid_range_layout(), &self.identity))?;
+                let stop = usize::try_from(end.min(chunk_end) - chunk_start)
+                    .map_err(|_| native_failure(invalid_range_layout(), &self.identity))?;
+                let selected = bytes
+                    .get(start..stop)
+                    .ok_or_else(|| native_failure(invalid_range_layout(), &self.identity))?;
+                output.extend_from_slice(selected);
+            }
+            chunk_start = chunk_end;
+        }
+        if output.len() != length {
+            return Err(native_failure(invalid_range_layout(), &self.identity));
+        }
+        self.expires_at()?;
+        Ok(output)
+    }
+
+    fn read_occurrence(&self, occurrence: &Occurrence) -> io::Result<Vec<u8>> {
+        let bytes = self.leases[occurrence.lease].read_verified()?;
+        let profile = self.store.ready.layout().layout().chunk_profile();
+        let boundary_valid = match occurrence.position {
+            ChunkPosition::Final => profile.first_boundary(&bytes) == bytes.len(),
+            ChunkPosition::NonFinal => profile.valid_nonfinal_chunk(&bytes),
+        };
+        if bytes.len() != occurrence.length || !boundary_valid {
+            return Err(invalid_range_layout());
+        }
+        Ok(bytes)
     }
 
     /// Returns the earliest acknowledged live Unix-second expiry among the grants.
@@ -266,21 +348,51 @@ impl Read for NativeChunkedReader<'_, '_> {
             let Some(occurrence) = self.object.sequence.get(self.next) else {
                 return Ok(0);
             };
-            let lease = &self.object.leases[occurrence.lease];
-            let bytes = lease.read_verified()?;
-            let profile = self.object.store.ready.layout().layout().chunk_profile();
-            let boundary_valid = match occurrence.position {
-                ChunkPosition::Final => profile.first_boundary(&bytes) == bytes.len(),
-                ChunkPosition::NonFinal => profile.valid_nonfinal_chunk(&bytes),
-            };
-            if bytes.len() != occurrence.length || !boundary_valid {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "native object chunk differs from manifest context",
-                ));
-            }
+            let bytes = self.object.read_occurrence(occurrence)?;
             self.current = Some((occurrence.lease, Cursor::new(bytes)));
             self.next += 1;
         }
     }
+}
+
+#[async_trait::async_trait]
+impl terrane_sdk::derived::PlaintextObject for NativeChunkedObject<'_> {
+    fn digest(&self) -> Digest {
+        self.digest
+    }
+
+    fn size(&self) -> u64 {
+        self.plaintext_size()
+    }
+
+    async fn read_range(
+        &self,
+        offset: u64,
+        length: usize,
+    ) -> Result<Vec<u8>, terrane_sdk::derived::Error> {
+        if offset
+            .checked_add(length as u64)
+            .is_none_or(|end| end > self.plaintext_size())
+        {
+            return Err(terrane_sdk::derived::Error::InvalidRead);
+        }
+        if length > terrane_format::derived::MAGIC_PREFIX_LIMIT {
+            return Err(terrane_format::derived::Error::Limit.into());
+        }
+        NativeChunkedObject::read_range(
+            self,
+            ByteRange {
+                start: offset,
+                length: length as u64,
+            },
+        )
+        .map_err(Into::into)
+    }
+}
+
+fn invalid_range_layout() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        "native object chunks differ from the verified manifest layout",
+    )
 }

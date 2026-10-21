@@ -11,8 +11,8 @@ use terrane_format::{
 };
 use terrane_linux::host_cache::NativeContentStore;
 use terrane_sdk::store::{
-    ChunkPosition, ChunkUpload, Clock, ContentStore, ContentUpload, MetaUpload, StoreErrorKind,
-    TokioClock,
+    ByteRange, ChunkPosition, ChunkUpload, Clock, ContentStore, ContentUpload, MetaUpload,
+    StoreErrorKind, TokioClock,
 };
 
 pub(super) async fn exercise(store: &NativeContentStore, profile: &ChunkProfile) -> io::Result<()> {
@@ -96,6 +96,58 @@ pub(super) async fn exercise(store: &NativeContentStore, profile: &ChunkProfile)
         .map_err(io::Error::other)?;
     assert_eq!(object.identity(), &identity);
     assert_eq!(object.plaintext_size(), expected.len() as u64);
+
+    let boundary = plaintext.len() - 13;
+    let range = ByteRange {
+        start: boundary as u64,
+        length: 29,
+    };
+    assert_eq!(
+        object.read_range(range).map_err(io::Error::other)?,
+        expected[boundary..boundary + 29]
+    );
+    assert_eq!(
+        terrane_sdk::derived::PlaintextObject::read_range(&object, boundary as u64, 29)
+            .await
+            .map_err(io::Error::other)?,
+        expected[boundary..boundary + 29]
+    );
+    assert_eq!(
+        terrane_sdk::derived::PlaintextObject::digest(&object),
+        identity.terrane_v1_digest().map_err(io::Error::other)?
+    );
+    assert_eq!(
+        terrane_sdk::derived::PlaintextObject::size(&object),
+        expected.len() as u64
+    );
+    assert!(
+        object
+            .read_range(ByteRange {
+                start: expected.len() as u64,
+                length: 0
+            })
+            .map_err(io::Error::other)?
+            .is_empty()
+    );
+    assert!(matches!(
+        object.read_range(ByteRange { start: u64::MAX, length: 1 }),
+        Err(error) if matches!(error.kind(), StoreErrorKind::Invalid(_))
+    ));
+    assert!(matches!(
+        terrane_sdk::derived::PlaintextObject::read_range(
+            &object,
+            0,
+            terrane_format::derived::MAGIC_PREFIX_LIMIT + 1
+        )
+        .await,
+        Err(terrane_sdk::derived::Error::Derived(
+            terrane_format::derived::Error::Limit
+        ))
+    ));
+    println!(
+        "PASS actual native SDK plaintext object ranges cross chunk boundaries and preserve read limits"
+    );
+
     let mut actual = Vec::new();
     object.reader().read_to_end(&mut actual)?;
     assert_eq!(actual, expected);
