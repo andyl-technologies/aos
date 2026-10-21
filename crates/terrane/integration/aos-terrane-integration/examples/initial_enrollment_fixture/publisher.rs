@@ -16,7 +16,12 @@ pub(super) fn socket() -> PathBuf {
 pub(super) fn run() -> io::Result<()> {
     super::reader::actual_identity(841, &[845])?;
     let case = Case::existing("positive")?;
-    let host = HostTier {
+    let host = configuration(&case);
+    terrane_linux::configured::run_configured_publisher(&host)
+}
+
+fn configuration(case: &Case) -> HostTier {
+    HostTier {
         path: case.path.to_string_lossy().into_owned(),
         size_bytes: 2 * LIMIT,
         reassembly: Reassembly::Never,
@@ -52,8 +57,7 @@ pub(super) fn run() -> io::Result<()> {
             socket_path: case.socket().to_string_lossy().into_owned(),
             configuration_epoch: 1u128.to_be_bytes(),
         }),
-    };
-    terrane_linux::configured::run_configured_publisher(&host)
+    }
 }
 
 pub(super) fn prepare() -> io::Result<()> {
@@ -74,86 +78,70 @@ fn prepare_with(preparation: Preparation) -> io::Result<()> {
     super::reader::actual_identity(840, &[844, 845])?;
     use std::time::Duration;
     use terrane_format::chunking::ChunkProfile;
-    use terrane_linux::{
-        host_cache::{NativeCacheOwnerConfig, NativeContentStore, NativeReady},
-        host_quota::{filesystem_uuid, open_host_path},
-        publisher_local::{client::ClientConfig, socket::RoleIdentities},
-    };
+    use terrane_linux::configured::{NativeCacheDomainSettings, NativeCachePlan};
     use terrane_sdk::bucket::portable_reader::PortableReadLimits;
-    use terrane_sdk::host::cache::{HostDomainLocation, HostReadLimits, PolicyConfig, StateLimits};
+    use terrane_sdk::host::cache::{HostReadLimits, PolicyConfig, StateLimits};
 
     let case = Case::existing("positive")?;
-    let confinement = Arc::new(terrane_linux::quota_confinement::install()?);
-    for owner in 0..2 {
-        let config = NativeCacheOwnerConfig {
-            location: HostDomainLocation::new(
-                case.root(owner),
+    let settings = (0..2)
+        .map(|owner| {
+            (
                 DOMAINS[owner].to_owned(),
-                ChunkProfile::cdc_1m(SEED),
-            )
-            .map_err(super::source_error)?,
-            administrative_root: Some(case.administrative(owner)),
-            publisher: ClientConfig {
-                socket_path: socket(),
-                identities: RoleIdentities {
-                    serve_uid: 840,
-                    publish_uid: 841,
+                NativeCacheDomainSettings {
+                    portable: case.bucket(owner, SEED),
+                    portable_limits: PortableReadLimits::default(),
+                    state_gid: 844,
+                    policy: PolicyConfig {
+                        capacity: 24 * 1024 * 1024,
+                        low_watermark: 16 * 1024 * 1024,
+                        probation_bytes: 65536,
+                        release_grace: Duration::from_secs(30),
+                        scan_limit: 64,
+                    },
+                    reads: HostReadLimits {
+                        max_allocation_bytes: 2 * 1024 * 1024,
+                    },
+                    state: StateLimits {
+                        bytes: 65536,
+                        records: 64,
+                    },
+                    inventory_entries: 128,
+                    queued_commands: 4,
+                    metadata_sync_hold_bytes: 256 * 1024,
+                    index_repair: None,
+                    publisher_wait_budget_ms: 10_000,
+                    consumer_lease_duration: Duration::from_secs(30),
                 },
-                chunk_profile_name: "cdc-1m".to_owned(),
-                wait_budget_ms: 10_000,
-            },
-            quota_socket: case.socket(),
-            quota_epoch: 1u128.to_be_bytes(),
-            quota_owner: OWNERS[owner].to_owned(),
-            filesystem_uuid: filesystem_uuid(&open_host_path(&case.root(owner), true)?)?,
-            project_id: case.project(owner),
-            project_hard_limit_bytes: LIMIT,
-            project_hard_inode_limit: 0,
-            content_uid: 840,
-            content_gid: 845,
-            state_gid: 844,
-            tier_charge_budget_bytes: 2 * LIMIT,
-            policy: PolicyConfig {
-                capacity: 24 * 1024 * 1024,
-                low_watermark: 16 * 1024 * 1024,
-                probation_bytes: 65536,
-                release_grace: Duration::from_secs(30),
-                scan_limit: 64,
-            },
-            retirement_interval: Duration::from_secs(30),
-            reads: HostReadLimits {
-                max_allocation_bytes: 2 * 1024 * 1024,
-            },
-            state: StateLimits {
-                bytes: 65536,
-                records: 64,
-            },
-            inventory_entries: 128,
-            queued_commands: 4,
-            metadata_sync_hold_bytes: 256 * 1024,
-            index_repair: None,
-        };
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()?;
-        let ready = runtime.block_on(NativeReady::open(
-            config,
-            case.bucket(owner, SEED),
-            PortableReadLimits::default(),
-            confinement.clone(),
-        ))?;
-        runtime.block_on(ready.validate_portable())?;
-        assert_eq!(ready.layout().directory_binding("administrative-root")?, {
-            use std::os::unix::fs::MetadataExt;
-            let original = std::fs::metadata(case.administrative(owner))?;
-            (original.dev(), original.ino())
-        });
+            )
+        })
+        .collect();
+    let plan = NativeCachePlan::new(&configuration(&case), settings)?;
+    let confinement = Arc::new(terrane_linux::quota_confinement::install()?);
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let mut stores = runtime.block_on(plan.open(Arc::clone(&confinement)))?;
+    assert_eq!(stores.len(), DOMAINS.len());
+    for (owner, domain) in DOMAINS.iter().enumerate() {
+        let store = stores
+            .remove(*domain)
+            .ok_or_else(|| io::Error::other("configured native domain missing"))?;
+        runtime.block_on(store.ready().validate_portable())?;
+        assert_eq!(
+            store
+                .ready()
+                .layout()
+                .directory_binding("administrative-root")?,
+            {
+                use std::os::unix::fs::MetadataExt;
+                let original = std::fs::metadata(case.administrative(owner))?;
+                (original.dev(), original.ino())
+            }
+        );
         println!(
             "PASS actual portable validation, native recovery and publisher Resume for {} with private distinct administrative custody",
-            DOMAINS[owner]
+            domain
         );
-        let store =
-            NativeContentStore::new(ready, Duration::from_secs(30)).map_err(super::source_error)?;
         let profile = ChunkProfile::cdc_1m(SEED);
         match preparation {
             Preparation::Objects => {
@@ -171,12 +159,12 @@ fn prepare_with(preparation: Preparation) -> io::Result<()> {
         if matches!(preparation, Preparation::Objects) {
             println!(
                 "PASS actual reopened native chunked object reads and original grant renewal for {}",
-                DOMAINS[owner]
+                domain
             );
         } else if matches!(preparation, Preparation::Content) {
             println!(
                 "PASS actual native ContentStore chunk and metadata admission, verified reads, ranges, membership and invalid deduplication context for {}",
-                DOMAINS[owner]
+                domain
             );
         }
     }

@@ -1,13 +1,17 @@
-//! Composes the native publisher from explicit host configuration and kernel facts.
+//! Composes native publication and cache owners from explicit host configuration.
 //!
 //! Configuration is checked for every domain before confinement or filesystem
 //! effects. Authenticated quota observations are then bound to retained native
 //! roots before publication startup can allocate. No repository credentials or
-//! read tokens participate in the publisher role.
+//! read tokens participate in the publisher role. [`NativeCachePlan`] shares the
+//! configured domain partition but obtains its own actual recovered cache custody.
 
 #![cfg(feature = "tokio")]
 
 mod administrative;
+mod cache;
+
+pub use cache::{NativeCacheDomainSettings, NativeCachePlan};
 
 use administrative::AdministrativeRoot;
 use std::{
@@ -255,6 +259,16 @@ fn invalid(message: &'static str) -> io::Error {
 }
 
 fn preflight(host: &HostTier) -> io::Result<Preflight> {
+    preflight_role(host, ProcessRole::Publish)
+}
+
+#[derive(Clone, Copy)]
+enum ProcessRole {
+    Publish,
+    Serve,
+}
+
+fn preflight_role(host: &HostTier, role: ProcessRole) -> io::Result<Preflight> {
     let publisher = host
         .publisher
         .as_ref()
@@ -280,10 +294,14 @@ fn preflight(host: &HostTier) -> io::Result<Preflight> {
             "invalid publisher identities, domains or resource policy",
         ));
     }
-    if rustix::process::geteuid().as_raw() != publisher.publish_uid {
+    let expected_uid = match role {
+        ProcessRole::Publish => publisher.publish_uid,
+        ProcessRole::Serve => publisher.serve_uid,
+    };
+    if rustix::process::geteuid().as_raw() != expected_uid {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
-            "publisher role identity mismatch",
+            "configured native role identity mismatch",
         ));
     }
     normalized_path(&host.path)?;
@@ -713,5 +731,128 @@ mod tests {
         let mut config = configuration();
         config.publisher.as_mut().unwrap().socket_path = format!("/run/{}", "x".repeat(128));
         assert!(preflight(&config).is_err());
+    }
+
+    fn cache_configuration() -> (
+        HostTier,
+        std::collections::BTreeMap<String, NativeCacheDomainSettings>,
+    ) {
+        use terrane_sdk::{
+            bucket::{FileBucketConfig, portable_reader::PortableReadLimits},
+            host::cache::{HostReadLimits, PolicyConfig, StateLimits},
+        };
+
+        let mut host = configuration();
+        let publisher = host.publisher.as_mut().unwrap();
+        std::mem::swap(&mut publisher.serve_uid, &mut publisher.publish_uid);
+        publisher.content_uid = publisher.serve_uid;
+        let domains = host
+            .domains
+            .iter()
+            .map(|(label, domain)| {
+                (
+                    label.clone(),
+                    NativeCacheDomainSettings {
+                        portable: FileBucketConfig {
+                            root: domain.path.clone().into(),
+                            chunk_profile_name: "cdc-1m".into(),
+                            chunk_profile: domain.publisher.as_ref().unwrap().profile().unwrap(),
+                            locality: terrane_format::refs::Locality::default(),
+                            publication_control: None,
+                        },
+                        portable_limits: PortableReadLimits::default(),
+                        state_gid: 1004,
+                        policy: PolicyConfig {
+                            capacity: 64 * 1024 * 1024,
+                            low_watermark: 32 * 1024 * 1024,
+                            probation_bytes: 1024 * 1024,
+                            release_grace: Duration::from_secs(30),
+                            scan_limit: 64,
+                        },
+                        reads: HostReadLimits {
+                            max_allocation_bytes: 2 * 1024 * 1024,
+                        },
+                        state: StateLimits {
+                            bytes: 65536,
+                            records: 64,
+                        },
+                        inventory_entries: 128,
+                        queued_commands: 4,
+                        metadata_sync_hold_bytes: 256 * 1024,
+                        index_repair: None,
+                        publisher_wait_budget_ms: 10_000,
+                        consumer_lease_duration: Duration::from_secs(30),
+                    },
+                )
+            })
+            .collect();
+        (host, domains)
+    }
+
+    #[test]
+    fn configured_cache_plan_checks_all_domains_without_opening_missing_helper() {
+        let (host, domains) = cache_configuration();
+        assert!(NativeCachePlan::new(&host, domains).is_ok());
+
+        let (host, mut domains) = cache_configuration();
+        domains.get_mut("public").unwrap().portable.root = "/another/domain".into();
+        assert_eq!(
+            NativeCachePlan::new(&host, domains).err().unwrap().kind(),
+            io::ErrorKind::InvalidInput
+        );
+
+        let (host, mut domains) = cache_configuration();
+        domains.get_mut("public").unwrap().portable.chunk_profile =
+            terrane_format::chunking::ChunkProfile::cdc_1m([99; 32]);
+        assert_eq!(
+            NativeCachePlan::new(&host, domains).err().unwrap().kind(),
+            io::ErrorKind::InvalidInput
+        );
+    }
+
+    #[test]
+    fn configured_cache_plan_requires_exact_resource_domain_coverage() {
+        let (host, mut domains) = cache_configuration();
+        domains.remove("public");
+        assert_eq!(
+            NativeCachePlan::new(&host, domains).err().unwrap().kind(),
+            io::ErrorKind::InvalidInput
+        );
+
+        let (host, mut domains) = cache_configuration();
+        let resources = domains.remove("public").unwrap();
+        domains.insert("private:other".into(), resources);
+        assert_eq!(
+            NativeCachePlan::new(&host, domains).err().unwrap().kind(),
+            io::ErrorKind::InvalidInput
+        );
+    }
+
+    #[test]
+    fn configured_cache_plan_refuses_later_invalid_resources_before_native_startup() {
+        let (host, mut domains) = cache_configuration();
+        domains.get_mut("public").unwrap().consumer_lease_duration = Duration::from_millis(1500);
+        assert_eq!(
+            NativeCachePlan::new(&host, domains).err().unwrap().kind(),
+            io::ErrorKind::InvalidInput
+        );
+
+        let (host, mut domains) = cache_configuration();
+        domains.get_mut("public").unwrap().state_gid = host.publisher.as_ref().unwrap().content_gid;
+        assert_eq!(
+            NativeCachePlan::new(&host, domains).err().unwrap().kind(),
+            io::ErrorKind::InvalidInput
+        );
+
+        let (host, mut domains) = cache_configuration();
+        domains.get_mut("public").unwrap().index_repair =
+            Some(crate::host_cache::IndexRepairPolicy {
+                max_index_bytes: 65536,
+                future_hold_bytes: 1,
+            });
+        assert_eq!(
+            NativeCachePlan::new(&host, domains).err().unwrap().kind(),
+            io::ErrorKind::InvalidInput
+        );
     }
 }

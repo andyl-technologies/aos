@@ -26,7 +26,7 @@ pub struct IndexRepairPolicy {
 }
 
 impl IndexRepairPolicy {
-    fn validate(self, snapshot_hold: u64, capacity: u64) -> io::Result<()> {
+    pub(crate) fn validate(self, snapshot_hold: u64, capacity: u64) -> io::Result<()> {
         let payload = u64::try_from(self.max_index_bytes)
             .map_err(|_| invalid("index repair payload budget exceeds native accounting"))?;
         let floor = snapshot_hold
