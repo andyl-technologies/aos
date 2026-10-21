@@ -157,7 +157,8 @@
           ProtectKernelLogs = true;
           ProtectKernelModules = true;
           ProtectKernelTunables = true;
-          ProtectProc = "invisible";
+          # Signed handshakes compare the peer pidfd with its real proc stat.
+          ProtectProc = "default";
           ProtectSystem = "strict";
           RestrictAddressFamilies = ["AF_UNIX"];
           RestrictNamespaces = true;
