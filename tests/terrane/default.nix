@@ -379,6 +379,7 @@
   moduleEval = import ./module-eval.nix {inherit pkgs lib mkSystem;};
   localSdkCheckout = import ./local-sdk-checkout.nix {inherit sourceGate;};
   localCliWorkflow = import ./local-cli-workflow.nix {inherit sourceGate;};
+  planCoverage = import ./plan-coverage.nix {inherit pkgs;};
 
   # These T1 obligations remain in the current floor even before their task
   # files are adopted. AD-11 makes Memo and index maintenance trunk work.
@@ -398,7 +399,7 @@
     pname = "terrane-current-gates";
     version = "0.1.0";
     src = null;
-    buildDeps = map (name: registeredGates.${name}) currentTrunkGateNames ++ [localWorkflow localSdkCheckout localCliWorkflow];
+    buildDeps = map (name: registeredGates.${name}) currentTrunkGateNames ++ [localWorkflow localSdkCheckout localCliWorkflow planCoverage];
     phases = [
       {
         name = "check";
@@ -414,6 +415,7 @@
 in {
   package = pkgs.terrane;
   module-eval = moduleEval;
+  plan-coverage = planCoverage;
   gates = aggregate // registeredGates;
   activeGates = implementedGates;
   integration.bucket-sdk-test-image = bucketSdkTestImage;

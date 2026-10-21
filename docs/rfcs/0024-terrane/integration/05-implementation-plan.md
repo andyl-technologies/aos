@@ -10605,7 +10605,8 @@ Exit gates: `checks.terrane.gates.host-crash-recovery`,
   `discard` and `volatile` wipe modes are T-HOST-3 on B-consistency. —
   satisfies OBJ-5 jointly with T-BKT-1, HOST-1 to HOST-5, HOST-11 to
   HOST-25, HOST-27 to HOST-36,
-  BKT-15, PROTO-60; `checks.terrane.gates.host-layout`,
+  BKT-15, PROTO-60, DOM-18 (the sealed-tier refusal and `none` clauses);
+  `checks.terrane.gates.host-layout`,
   `checks.terrane.gates.host-eviction-s3fifo`,
   `checks.terrane.gates.host-verify-before-admit`,
   `checks.terrane.gates.host-crash-recovery`.
@@ -10621,7 +10622,7 @@ Exit gates: `checks.terrane.gates.host-crash-recovery`,
 - [ ] **T-SURF-1** Surface interface, exposure records, schema validation,
   TOML configuration, status reporting, in-process registry, ownership and
   timestamp presentation, and privileged xattr filtering. — satisfies
-  TREE-9, TREE-10, TREE-15, SURF-1 to SURF-32, CRATE-17, and the SDK
+  TREE-9, TREE-10, TREE-15, SURF-1 to SURF-32, ARCH-6, CRATE-17, and the SDK
   component of CRATE-28, jointly with the surface tasks below;
   `checks.terrane.gates.surface-interface`,
   `checks.terrane.gates.surface-schema`,
@@ -10711,7 +10712,7 @@ Garage.
   Narrowed to trunk scope: cost vectors, peers, residency, warming,
   promisor-style misses, replication, and partition behavior are T-TOPO-2
   on B-topology. — satisfies TOPO-1 to TOPO-3, TOPO-7, TOPO-9 to TOPO-14,
-  TOPO-26, TOPO-27; `checks.terrane.gates.topo-labels`,
+  TOPO-26, TOPO-27, INV-4; `checks.terrane.gates.topo-labels`,
   `checks.terrane.gates.topo-hops`, `checks.terrane.gates.topo-breaker`,
   `checks.terrane.gates.topo-home`.
 - [ ] **T-BW-1** Ancestry and Merkle negotiation, chunk negotiation
@@ -10754,7 +10755,8 @@ Garage.
 - [ ] **T-TEST-2** Protocol conformance client and server and the security
   suite. Narrowed to trunk scope: tier chaos beyond corrupt and slow
   children is T-TEST-4 at T6 and T-TEST-5 on B-topology. — satisfies
-  TEST-6, TEST-13, TEST-14; `checks.terrane.gates.proto-conformance`.
+  TEST-6, TEST-13, TEST-14, THREAT-1 to THREAT-6;
+  `checks.terrane.gates.proto-conformance`.
 
 ### T4 — CI caches
 
@@ -10847,7 +10849,7 @@ conformance tests passing over Terrane.
   Narrowed to trunk scope: `fsync` binding in `sync` mode and redirections
   are T-FUSE-4 on B-consistency. — satisfies FUSE-32 to FUSE-35, FUSE-40
   to FUSE-42, CONS-1 to CONS-3, CONS-10 (the `manual` and `periodic`
-  clauses), CONS-13, CONS-24 to CONS-27, CONS-34 to CONS-37, TEST-5;
+  clauses), CONS-13, CONS-24 to CONS-27, CONS-34 to CONS-38, TEST-5;
   `checks.terrane.gates.merge-native-parity`,
   `checks.terrane.gates.fuse-upper-isolation`,
   `checks.terrane.gates.cons-fsync-sticky`,
@@ -10906,8 +10908,14 @@ Exit gates: `checks.terrane.gates.host-crash-recovery`,
 - [ ] **T-TEST-3** The MVP conformance claim for Core, Distribution
   (fixed-order routing), Security (workload issuers), Host, and the `fuse`,
   `sdk`, `nix-cache`, `reapi`, and `gha-cache` surfaces, with the partial
-  files and their completing branches listed; the plan-coverage lint. —
-  satisfies TEST-16 to TEST-18, PERF-13, PLAN-2, PLAN-3;
+  files and their completing branches listed; the plan-coverage lint and
+  cross-cutting architecture, identity and engineering audit. Goal clauses
+  supplied by optional worklines remain explicitly partial in the MVP claim.
+  The audit verifies the encryption slot's refusal of unregistered schemes;
+  it does not introduce an encryption scheme. — satisfies TEST-16 to TEST-18,
+  PERF-13, PLAN-2, PLAN-3, G-1 to G-12, ARCH-1 to ARCH-4, ARCH-9, ARCH-10,
+  OBJ-19, OBJ-20, OBJ-23, CRATE-18 to CRATE-21, CRATE-31 to CRATE-33,
+  CRATE-37 to CRATE-44, DOM-21 to DOM-23;
   `checks.terrane.gates.registry-complete`,
   `checks.terrane.plan-coverage`.
 - [ ] **T-PKG-5** Operator documentation under `docs/`: warehouse and host
@@ -10954,7 +10962,7 @@ Forks from T1. Merge gates:
   `checks.terrane.gates.redundancy-quorum-refs`.
 - [ ] **T-BLK-1** `blockdev` backend: superblocks, slab log, index region,
   compaction, recovery scan, hybrid with a `disk` tier. — satisfies BLK-1 to
-  BLK-19, HOST-37, CRATE-9; `checks.terrane.gates.blockdev-format-roundtrip`,
+  BLK-19, HOST-37, CRATE-9, TEST-10; `checks.terrane.gates.blockdev-format-roundtrip`,
   `checks.terrane.gates.blockdev-ref-cas`,
   `checks.terrane.gates.blockdev-crash-recovery`.
 
@@ -10965,7 +10973,7 @@ Forks from T1 and B-derive. Merge gates: `checks.terrane.gates.job-resume`,
 
 - [ ] **T-JOB-1** Tree job primitive: shards, cursors, checkpoints, fold,
   follow, status, cancellation, in-exposure access. — satisfies JOB-1 to
-  JOB-33, DRV-11, PROP-25; `checks.terrane.gates.job-ref-lifecycle`,
+  JOB-33, DRV-11, PROP-25, TEST-11; `checks.terrane.gates.job-ref-lifecycle`,
   `checks.terrane.gates.job-resume`, `checks.terrane.gates.job-fold`,
   `checks.terrane.gates.job-follow`.
 - [ ] **T-GC-2** Pack compaction under the utilization threshold, tree-order
@@ -10988,7 +10996,8 @@ Forks from T2. Merge gates: `checks.terrane.gates.erofs-image-determinism`,
 
 - [ ] **T-EROFS-1** Deterministic EROFS image generation, overlay with
   data-only lower and `verity=require`, lazy mode, `follow` replacement. —
-  satisfies EROFS-1 to EROFS-15; `checks.terrane.gates.erofs-image-determinism`,
+  satisfies EROFS-1 to EROFS-15, TEST-12 (the image clause);
+  `checks.terrane.gates.erofs-image-determinism`,
   `checks.terrane.gates.erofs-verity`.
 - [ ] **T-VM-1** virtiofs export with DAX, virtio-pmem option, nested
   instances in guests, guest token attenuation. — satisfies VM-1 to VM-18;
@@ -10996,7 +11005,8 @@ Forks from T2. Merge gates: `checks.terrane.gates.erofs-image-determinism`,
   `checks.terrane.gates.vm-no-duplication`.
 - [ ] **T-VBLK-1** Block surface: deterministic layout, extent map, lazy
   block reads over `vhost-user-blk`, `ublk`, or NBD, read-only. —
-  satisfies VBLK-1 to VBLK-13; `checks.terrane.gates.block-layout-determinism`.
+  satisfies VBLK-1 to VBLK-13, TEST-12 (the block-layout clause);
+  `checks.terrane.gates.block-layout-determinism`.
 - [ ] **T-CRU-1** `DagStore` adapter, shared store, content-id indexing,
   closure trees, block surface for scenario disks, license-boundary scan.
   — satisfies CRU-1 to CRU-11; `checks.terrane.integration.crucible-dagstore`,
@@ -11120,7 +11130,8 @@ Forks from T5. Merge gates: `checks.terrane.gates.cons-sync-fsync`,
   `checks.terrane.gates.cons-sync-fsync`.
 - [ ] **T-HOST-3** `smart` reassembly heuristic and the `discard` and
   `volatile` wipe modes. Deferred from T-HOST-1. — satisfies HOST-10,
-  HOST-26; `checks.terrane.gates.host-reassembly-heuristic`,
+  HOST-26, DOM-18 (the deferred wipe strategies), DOM-19;
+  `checks.terrane.gates.host-reassembly-heuristic`,
   `checks.terrane.gates.host-wipe-on-release`.
 - [ ] **T-REAPI-3** `sync` writer mode for `reapi` and `gha-cache`
   exposures once T-CONS-2 lands (REAPI-7, GHA-7 `SHOULD`). — satisfies
