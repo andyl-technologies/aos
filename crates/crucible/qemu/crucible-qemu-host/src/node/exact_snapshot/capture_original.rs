@@ -32,6 +32,9 @@ pub enum CheckpointOriginalCause {
     /// The actual node lacks its registered supervisor, account or event owner.
     #[error("registered checkpoint original owner is absent")]
     MissingOwner,
+    /// The borrowing node cannot lend its genuine current installed Source.
+    #[error("checkpoint original installed Source binding is unavailable")]
+    SourceBindingUnavailable,
     /// This registration has no genuine held native checkpoint request receiver.
     #[error("checkpoint original native receiving transaction is unavailable")]
     NativeReceiverUnavailable,

@@ -1062,6 +1062,7 @@ impl ProductionVmNodeLease for QemuLifecycleGenerationLease {
 
     fn prepare_hot_fork_detached_root_overlay(
         &mut self,
+        original: &crucible_qemu_host::QemuHotForkSourceOriginal,
         graph_generation: u64,
         virtual_size: u64,
     ) -> Result<(std::fs::File, std::path::PathBuf), LifecycleApiError> {
@@ -1089,6 +1090,7 @@ impl ProductionVmNodeLease for QemuLifecycleGenerationLease {
         match directory.prepare_hot_fork_detached_root_overlay_guarded(
             &self.qemu_executable,
             &self.process_contract,
+            original,
             graph_generation,
             virtual_size,
         ) {

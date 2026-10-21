@@ -123,6 +123,7 @@ impl QemuChildProcessContract {
 
     pub(super) fn with_spawned_retained_source_helper<T: HelperOutput>(
         &self,
+        effect_original: &crate::QemuHotForkSourceOriginal,
         command: Command,
         operation: &'static str,
         body: impl FnOnce(
@@ -137,7 +138,13 @@ impl QemuChildProcessContract {
         let controller = receiver
             .controller()
             .map_err(|_| QemuGuardedImagePreparationError::local(helper_custody_refusal()))?;
-        controller.with_spawned_helper(&receiver, command, operation, body)
+        controller.with_spawned_helper_original(
+            &receiver,
+            Some(effect_original),
+            command,
+            operation,
+            body,
+        )
     }
 
     pub(super) fn with_spawned_helper<T: HelperOutput>(
@@ -202,11 +209,23 @@ pub(super) fn wait_image_tool(
     original: &crucible_host_resources::host_supervision::HostOperationGuard,
     operation: &'static str,
 ) -> Result<(), QemuSpawnError> {
+    wait_image_tool_checked(child, operation, || wait_slice(original))
+}
+
+/// Polls only while the caller's actual retained Original authorizes the wait.
+///
+/// # Errors
+/// Preserves the actual Original refusal, helper exit, wait I/O or command limit.
+pub(super) fn wait_image_tool_checked(
+    child: &mut QemuNodeChild,
+    operation: &'static str,
+    mut remaining: impl FnMut() -> Result<Duration, QemuSpawnError>,
+) -> Result<(), QemuSpawnError> {
     let deadline = HostSupervisionDeadline::start(GUARDED_IMAGE_TOOL_TIMEOUT);
     loop {
         // The command limit can only tighten the saved Original. A local
         // timeout never permits polling or waiting after that Original refuses.
-        let remaining = wait_slice(original)?;
+        let remaining = remaining()?;
         match child.try_wait_natural_exit_raw() {
             Ok(Some(status)) if status.success() => return Ok(()),
             Ok(Some(status)) => {
@@ -529,6 +548,45 @@ mod tests {
 
         assert_eq!(original.status()?.operation_id, operation_id);
         original.complete()?;
+        Ok(())
+    }
+
+    #[test]
+    fn checkpoint_event_refuses_late_image_wait_without_replacing_original()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (mut owner, loan, supervisor, event, _account) =
+            crate::node::checkpoint_original_loan_fixture();
+        let operation_id = loan.guard().status()?.operation_id;
+        let child = Command::new(std::env::current_exe()?)
+            .args(["--exact", CHILD_CASE])
+            .env(CHILD_WAIT, "1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()?;
+        let mut child = QemuNodeChild::new(child);
+        loan.check()?;
+        rustix::io::write(&event, &1_u64.to_ne_bytes())?;
+
+        // This component borrows the real checkpoint event and production
+        // polling body. It does not authenticate a Native Source or Main.
+        let result = wait_image_tool_checked(&mut child, "late image wait component", || {
+            loan.check()
+                .map_err(|source| QemuSpawnError::SourceAdmission {
+                    source: source.into(),
+                })?;
+            wait_slice(loan.guard())
+        });
+
+        assert!(matches!(
+            result,
+            Err(QemuSpawnError::SourceAdmission { .. })
+        ));
+        assert_eq!(loan.guard().status()?.operation_id, operation_id);
+        assert_eq!(supervisor.operation_statuses()?.len(), 1);
+        assert!(child.try_wait_natural_exit_raw().unwrap().is_none());
+        drop(child);
+        owner.retire_after_reap();
         Ok(())
     }
 

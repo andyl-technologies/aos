@@ -46,6 +46,35 @@ impl InstalledIncarnationRetirement {
     }
 }
 
+impl OriginalNativeNodeBinding {
+    /// Borrows the live Source share actually retained by this installed node.
+    ///
+    /// # Errors
+    /// Refuses absent, foreign, non-Source or no longer current installed custody.
+    pub(crate) fn source_helper_lender(
+        &self,
+    ) -> Result<SourceCleanupLender, OriginalActorAccountError> {
+        let installed = self
+            .installed_process
+            .as_ref()
+            .filter(|installed| {
+                installed.subdivision_index == 0
+                    && installed.index == self.index
+                    && installed.generation == self.generation
+                    && RosterWeak::ptr_eq(&installed.roster, &self.roster)
+            })
+            .ok_or(OriginalActorAccountError::Unavailable)?;
+        let lender = SourceCleanupLender {
+            roster: RosterWeak::clone(&installed.roster),
+            index: installed.index,
+            generation: installed.generation,
+            process_generation: Some(installed.process_generation),
+        };
+        lender.controller()?;
+        Ok(lender)
+    }
+}
+
 impl SourceCleanupLender {
     /// Binds a late helper to the actual still-installed Source incarnation.
     ///

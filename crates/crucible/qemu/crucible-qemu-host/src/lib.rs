@@ -248,6 +248,8 @@ pub use mapped_quantum::{QemuMappedQuantumShmemHotPath, QemuMappedQuantumShmemHo
 pub(crate) use node::QemuQmpMachineControlChannel;
 #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
 pub use node::QemuReadOnlyBackingError;
+#[cfg(target_os = "linux")]
+pub use node::QemuHotForkSourceOriginal;
 pub use node::operational_health::native_actor::{
     QemuNativeFaultActorFailure, QemuNativeOperationFailure,
 };

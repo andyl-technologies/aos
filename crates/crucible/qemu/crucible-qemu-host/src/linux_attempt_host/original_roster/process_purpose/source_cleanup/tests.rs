@@ -34,6 +34,29 @@ fn nominal_helper_receiver_cannot_promote_an_unissued_source() {
     assert!(lender.clone().retained_original().is_err());
     assert!(lender.current_incarnation().is_err());
 
+    let mut node_binding = OriginalNativeNodeBinding {
+        roster: RosterWeak::clone(&attempt.roster),
+        index: attempt.index,
+        generation: attempt.generation,
+        installed_process: None,
+        issued_process_record: None,
+        source_host: None,
+    };
+    assert!(node_binding.source_helper_lender().is_err());
+
+    // Copied fields cannot turn this explicitly unissued component into the
+    // installed Source that the node's late-helper constructor requires.
+    node_binding.installed_process = Some(InstalledProcessPurposeLoan {
+        roster: RosterWeak::clone(&attempt.roster),
+        index: attempt.index,
+        generation: attempt.generation,
+        process_generation: 1,
+        subdivision_index: 0,
+    });
+    assert!(node_binding.source_helper_lender().is_err());
+    node_binding.installed_process = None;
+    drop(node_binding);
+
     // Scalar edits only form negative observers; they cannot issue custody.
     for changed in [
         SourceCleanupLender {

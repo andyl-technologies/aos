@@ -1736,6 +1736,7 @@ pub trait ProductionVmNodeLease: Send {
     /// authenticate the resulting file, or if a prior attempt still owes cleanup.
     fn prepare_hot_fork_detached_root_overlay(
         &mut self,
+        _original: &crucible_qemu_host::QemuHotForkSourceOriginal,
         _graph_generation: u64,
         _virtual_size: u64,
     ) -> Result<(std::fs::File, PathBuf), LifecycleApiError> {

@@ -253,7 +253,7 @@ fn pre_vm_owning_contracts_require_actual_source_and_registry_dispositions()
         ),
         (
             "original_node/helper_receiver.rs",
-            "self.slot.after = self.original.wait_slice().err();",
+            "self.slot.after = post.err();",
             "self.slot.after = None;",
             "independent creation post lost",
         ),

@@ -437,10 +437,32 @@ the same entered operation without allocating or renewing it. Twenty active
 checkpoint Original controls pass, with one existing ignored case. Two new
 controls observe real credit immediately before and after actual deallocation,
 including unwinding after parent retirement. Focused custody source policy and
-engineering hygiene pass. Required application compilation is running for this
-increment. Coverage names 159 component cases and nineteen native cases;
+engineering hygiene pass. Required hermetic application test-target compilation
+passes for both the Source-incarnation and closed checkpoint-loan increments.
+Coverage names 159 component cases and nineteen native cases;
 149 requirements remain uncovered and none qualified. These component controls
 do not authenticate native receiving or supply a late helper's action Original.
+
+
+Late detached-overlay helpers now receive a closed context constructed only
+from the actual node's installed Source and its already entered checkpoint
+Quiescence Original. The disk-seal transaction retains that same context through
+materialization; every helper wait checks its original event, deadline and
+current Source incarnation. It neither enters a replacement operation nor falls
+back to launch Preparation. The paid helper journal retains this context before
+birth and keeps it on uncertain physical return. Source/event and guard posts
+are sampled independently and saved in distinct fields, preserving simultaneous
+refusals. The actual Source cleanup recipient remains separately authenticated.
+
+All fifteen focused helper controls, 53 roster controls and 71 focused
+custody source-policy controls pass. The new event control cancels the actual
+checkpoint Original after a real child is born, observes refusal in the actual
+helper wait, and proves the operation identity and entry count remain unchanged.
+It supplies no native Source or Main authority. Required application compilation
+and the 62-case hermetic supervision gate are running for this increment.
+Coverage names 160 component cases and nineteen native cases; 149 requirements
+remain uncovered and none qualified. Genuine native ingress, activation and
+successful detached-overlay lifecycle qualification remain unfinished.
 
 
 Whole-node shutdown now keeps one continuation through process reap, RAM service

@@ -9,6 +9,8 @@ use super::{Companion, Contract};
 mod funding;
 #[path = "helper_wait/incarnation.rs"]
 mod incarnation;
+#[path = "helper_wait/original.rs"]
+mod original;
 #[path = "helper_wait/probe_output.rs"]
 mod probe_output;
 
@@ -38,7 +40,7 @@ pub(super) const CONTRACT: Contract = Contract {
         (
             r#"let deadline = HostSupervisionDeadline::start(GUARDED_IMAGE_TOOL_TIMEOUT);
 loop {
-    let remaining = wait_slice(original)?;
+    let remaining = remaining()?;
     match child.try_wait_natural_exit_raw()"#,
             1,
         ),
@@ -104,6 +106,10 @@ loop {
         incarnation::SOURCE,
         incarnation::RECEIVER,
         incarnation::CALLER,
+        original::OWNER,
+        original::SOURCE,
+        original::PAUSE,
+        original::MATERIALIZATION,
         probe_output::OWNER,
         probe_output::RECEIVER,
         probe_output::HANDOFF,
@@ -282,17 +288,18 @@ if !host.belongs_to(normal) || slot.source_control_payer.is_none() {
         Companion {
             path: "crates/crucible/qemu/crucible-qemu-host/src/linux_attempt_host/original_node/helper_receiver.rs",
             required: &[
-                ("let before = self.origin.wait_slice();", 1),
                 (
-                    "let post = HelperPost { original: &self.origin, slot: &mut slot, };",
+                    r#"let before = effect.as_ref().map_or(Ok(()), |effect| effect.check(receiver))
+    .and_then(|()| original.wait_slice());"#,
                     1,
                 ),
                 (
-                    "Some(child) => body(child, &self.origin, &mut slot.output),",
+                    "let post = HelperPost { original, effect: effect.as_ref().map(|effect| (effect, receiver)), slot: &mut slot, };",
                     1,
                 ),
+                ("Some(child) => body(child, original, &mut slot.output),", 1),
                 (
-                    r#"let controls = match self.reserve_helper_controls() {
+                    r#"let controls = match self.reserve_helper_controls(original) {
     Ok(controls) => controls,
     Err(source) => {
         slot.save_first(crate::QemuSpawnError::SourceAdmission { source });
@@ -309,11 +316,14 @@ let child = match command.spawn()"#,
                     r#"let controls = self.retained_source_host()?
     .reserve_controls(crate::spawn::helper_receiver::DESCRIPTOR_PEAK, bytes)?;
 controls.verify_original_capacity(
-    &self.origin, crate::spawn::helper_receiver::DESCRIPTOR_PEAK, bytes,
+    original, crate::spawn::helper_receiver::DESCRIPTOR_PEAK, bytes,
 )?;"#,
                     1,
                 ),
-                ("self.slot.after = self.original.wait_slice().err();", 1),
+                (
+                    "self.slot.source_after = boundary.err(); self.slot.after = post.err();",
+                    1,
+                ),
             ],
         },
     ],

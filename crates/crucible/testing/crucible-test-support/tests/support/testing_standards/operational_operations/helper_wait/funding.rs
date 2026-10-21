@@ -428,10 +428,12 @@ pub(super) const JOURNAL: Companion = Companion {
     first_funding:
         Option<crucible_host_resources::host_services::process_birth::SourceHostControlLease>,
     before: Option<HostSupervisionError>,
+    source_after: Option<HostSupervisionError>,
     after: Option<HostSupervisionError>,
     output: Option<RetainedHelperOutput>,
     panicked: bool,
     probe_prepared: bool,
+    effect_original: Option<crate::QemuHotForkSourceOriginal>,
     // This borrower outlives both the actual child and its retained captures.
     controls: Option<crucible_host_resources::host_services::process_birth::SourceHostControlLease>,
     first_cleanup: Option<crate::QemuNodeError>,

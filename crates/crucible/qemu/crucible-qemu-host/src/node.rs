@@ -146,6 +146,11 @@ mod hot_fork_ring_image;
 #[cfg(target_os = "linux")]
 #[path = "node/hot_fork_scheduler_continuation.rs"]
 mod hot_fork_scheduler_continuation;
+#[cfg(target_os = "linux")]
+#[path = "node/hot_fork_source_original.rs"]
+mod hot_fork_source_original;
+#[cfg(target_os = "linux")]
+pub use hot_fork_source_original::QemuHotForkSourceOriginal;
 #[path = "node/process_control.rs"]
 mod process_control;
 #[cfg(target_os = "linux")]

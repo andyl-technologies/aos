@@ -57,6 +57,7 @@ pub(super) const HANDOFF: Companion = Companion {
     let controls = slot.controls.take().ok_or_else(refused)?;
     let output = slot.output.take().ok_or_else(refused)?;
     let output = T::take(output).ok_or_else(refused)?;
+    drop(slot.effect_original.take());
     return Ok(output.receive(controls));
 }"#,
         1,

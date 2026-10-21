@@ -18,10 +18,12 @@ pub(super) struct HelperDebt {
     first_funding:
         Option<crucible_host_resources::host_services::process_birth::SourceHostControlLease>,
     before: Option<HostSupervisionError>,
+    source_after: Option<HostSupervisionError>,
     after: Option<HostSupervisionError>,
     output: Option<RetainedHelperOutput>,
     panicked: bool,
     probe_prepared: bool,
+    effect_original: Option<crate::QemuHotForkSourceOriginal>,
     // This borrower outlives both the actual child and its retained captures.
     controls: Option<crucible_host_resources::host_services::process_birth::SourceHostControlLease>,
     first_cleanup: Option<crate::QemuNodeError>,
@@ -34,9 +36,11 @@ pub(super) struct HelperDebt {
 pub struct QemuIssuedHelperHistory<'a> {
     /// Actual initiating typed error, shared with the original controller.
     pub first: Option<&'a crate::QemuSpawnError>,
-    /// Same saved creation Original's actual entry refusal.
+    /// Same saved effect Original's actual entry refusal.
     pub before: Option<HostSupervisionError>,
-    /// Independently observed creation Original post, including on unwind.
+    /// Independent retained Source/event post, distinct from the guard post.
+    pub source_after: Option<HostSupervisionError>,
+    /// Independently observed effect Original post, including on unwind.
     pub after: Option<HostSupervisionError>,
     /// First typed physical cleanup refusal.
     pub first_cleanup: Option<&'a crate::QemuNodeError>,
@@ -85,6 +89,7 @@ impl HelperDebt {
         QemuIssuedHelperHistory {
             first: self.first_cause(),
             before: self.before,
+            source_after: self.source_after,
             after: self.after,
             first_cleanup: self.first_cleanup.as_ref(),
             latest_cleanup: self.latest_cleanup.as_ref(),
@@ -136,18 +141,32 @@ impl Drop for HelperDebt {
             if let Some(controls) = self.controls.take() {
                 std::mem::forget(controls);
             }
+            if let Some(original) = self.effect_original.take() {
+                std::mem::forget(original);
+            }
         }
     }
 }
 
 struct HelperPost<'a> {
     original: &'a HostOperationGuard,
+    effect: Option<(
+        &'a crate::QemuHotForkSourceOriginal,
+        &'a crate::linux_attempt_host::SourceCleanupLender,
+    )>,
     slot: &'a mut HelperDebt,
 }
 
 impl Drop for HelperPost<'_> {
     fn drop(&mut self) {
-        self.slot.after = self.original.wait_slice().err();
+        // Authenticate the retained action and sample its independent post even
+        // when the helper body or its preceding check already refused.
+        let boundary = self
+            .effect
+            .map_or(Ok(()), |(effect, receiver)| effect.check(receiver));
+        let post = self.original.wait_slice();
+        self.slot.source_after = boundary.err();
+        self.slot.after = post.err();
         self.slot.panicked |= std::thread::panicking();
     }
 }
@@ -176,6 +195,7 @@ impl OriginalNativeFreshLaunchError {
 
     fn reserve_helper_controls(
         &self,
+        original: &HostOperationGuard,
     ) -> Result<
         crucible_host_resources::host_services::process_birth::SourceHostControlLease,
         OriginalActorAccountError,
@@ -186,7 +206,7 @@ impl OriginalNativeFreshLaunchError {
             .retained_source_host()?
             .reserve_controls(crate::spawn::helper_receiver::DESCRIPTOR_PEAK, bytes)?;
         controls.verify_original_capacity(
-            &self.origin,
+            original,
             crate::spawn::helper_receiver::DESCRIPTOR_PEAK,
             bytes,
         )?;
@@ -196,6 +216,29 @@ impl OriginalNativeFreshLaunchError {
     pub(crate) fn with_spawned_helper<T: HelperOutput>(
         &self,
         receiver: &crate::linux_attempt_host::SourceCleanupLender,
+        command: Command,
+        operation: &'static str,
+        body: impl FnOnce(
+            &mut crate::QemuNodeChild,
+            &HostOperationGuard,
+            &mut Option<RetainedHelperOutput>,
+        ) -> Result<T, crate::QemuSpawnError>,
+    ) -> Result<T::Received, crate::spawn::QemuGuardedImagePreparationError> {
+        self.with_spawned_helper_original(receiver, None, command, operation, body)
+    }
+
+    /// Retains the exact helper effect Original before entry, birth and post.
+    ///
+    /// # Errors
+    /// Refuses changed custody, unavailable funding, Original refusal, helper
+    /// failure or unresolved physical return, preserving the issued recipient.
+    ///
+    /// # Panics
+    /// Propagates a body panic while retaining uncertain helper and Original debt.
+    pub(crate) fn with_spawned_helper_original<T: HelperOutput>(
+        &self,
+        receiver: &crate::linux_attempt_host::SourceCleanupLender,
+        effect_original: Option<&crate::QemuHotForkSourceOriginal>,
         command: Command,
         operation: &'static str,
         body: impl FnOnce(
@@ -235,6 +278,7 @@ impl OriginalNativeFreshLaunchError {
             || slot.child.is_some()
             || slot.output.is_some()
             || slot.before.is_some()
+            || slot.source_after.is_some()
             || slot.after.is_some()
             || slot.first_cleanup.is_some()
         {
@@ -242,10 +286,19 @@ impl OriginalNativeFreshLaunchError {
         }
 
         slot.lender = Some(receiver.clone());
-        let before = self.origin.wait_slice();
+        slot.effect_original = effect_original.cloned();
+        let effect = slot.effect_original.clone();
+        let original = effect
+            .as_ref()
+            .map_or(self.origin.as_ref(), |effect| effect.guard());
+        let before = effect
+            .as_ref()
+            .map_or(Ok(()), |effect| effect.check(receiver))
+            .and_then(|()| original.wait_slice());
         slot.before = before.as_ref().err().copied();
         let post = HelperPost {
-            original: &self.origin,
+            original,
+            effect: effect.as_ref().map(|effect| (effect, receiver)),
             slot: &mut slot,
         };
         match before {
@@ -254,10 +307,10 @@ impl OriginalNativeFreshLaunchError {
                 .save_first(crate::QemuSpawnError::SourceAdmission {
                     source: first.into(),
                 }),
-            Ok(_) => self.run_helper(post.slot, command, operation, body),
+            Ok(_) => self.run_helper(post.slot, original, command, operation, body),
         }
         drop(post);
-        if let Some(first) = slot.after {
+        for first in [slot.source_after, slot.after].into_iter().flatten() {
             slot.save_first(crate::QemuSpawnError::SourceAdmission {
                 source: first.into(),
             });
@@ -280,6 +333,7 @@ impl OriginalNativeFreshLaunchError {
             let controls = slot.controls.take().ok_or_else(refused)?;
             let output = slot.output.take().ok_or_else(refused)?;
             let output = T::take(output).ok_or_else(refused)?;
+            drop(slot.effect_original.take());
             return Ok(output.receive(controls));
         }
         Err(refused())
@@ -289,6 +343,7 @@ impl OriginalNativeFreshLaunchError {
     fn run_helper<T: HelperOutput>(
         &self,
         slot: &mut HelperDebt,
+        original: &HostOperationGuard,
         mut command: Command,
         operation: &'static str,
         body: impl FnOnce(
@@ -297,7 +352,7 @@ impl OriginalNativeFreshLaunchError {
             &mut Option<RetainedHelperOutput>,
         ) -> Result<T, crate::QemuSpawnError>,
     ) {
-        let controls = match self.reserve_helper_controls() {
+        let controls = match self.reserve_helper_controls(original) {
             Ok(controls) => controls,
             Err(source) => {
                 slot.save_first(crate::QemuSpawnError::SourceAdmission { source });
@@ -326,7 +381,7 @@ impl OriginalNativeFreshLaunchError {
             .as_mut()
             .and_then(crate::node::RetainedChild::direct_child_mut)
         {
-            Some(child) => body(child, &self.origin, &mut slot.output),
+            Some(child) => body(child, original, &mut slot.output),
             None => Err(crate::spawn::helper_receiver::helper_custody_refusal()),
         };
         match result {
@@ -420,6 +475,7 @@ mod tests {
 
         controller.run_helper::<std::process::Output>(
             &mut slot,
+            &original,
             Command::new("/nonexistent-unfunded-helper"),
             "unfunded helper",
             |_, _, _| {
@@ -454,6 +510,7 @@ mod tests {
         {
             let _post = HelperPost {
                 original: &original,
+                effect: None,
                 slot: &mut slot,
             };
             if !refused {
@@ -474,6 +531,7 @@ mod tests {
         let actual = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _post = HelperPost {
                 original: &original,
+                effect: None,
                 slot: &mut slot,
             };
             supervisor.cancel().unwrap();
@@ -515,6 +573,7 @@ mod tests {
             source: std::io::Error::from_raw_os_error(libc::EIO),
         });
         slot.before = Some(HostSupervisionError::Unavailable);
+        slot.source_after = Some(HostSupervisionError::Unavailable);
         slot.after = Some(HostSupervisionError::CapacityExhausted);
         slot.observe(crate::QemuNodeError::RamCleanupPending);
         slot.observe(crate::QemuNodeError::RamCleanupLender {
@@ -530,6 +589,10 @@ mod tests {
             if source.raw_os_error() == Some(libc::EIO))
         );
         assert_eq!(history.before, Some(HostSupervisionError::Unavailable));
+        assert_eq!(
+            history.source_after,
+            Some(HostSupervisionError::Unavailable)
+        );
         assert_eq!(history.after, Some(HostSupervisionError::CapacityExhausted));
         assert!(matches!(
             history.first_cleanup,

@@ -2268,15 +2268,39 @@ fn run_guarded_image_tool_for_purpose(
     process_contract: &QemuChildProcessContract,
     purpose: GuardedImageToolPurpose,
 ) -> Result<(), QemuGuardedImagePreparationError> {
+    run_guarded_image_tool_with_original(
+        executable,
+        args,
+        operation,
+        run_directory,
+        process_contract,
+        purpose,
+        None,
+    )
+}
+
+fn run_guarded_image_tool_with_original(
+    executable: &Path,
+    args: &[std::ffi::OsString],
+    operation: &'static str,
+    run_directory: &QemuPreparedRunDirectory,
+    process_contract: &QemuChildProcessContract,
+    purpose: GuardedImageToolPurpose,
+    effect_original: Option<&crate::QemuHotForkSourceOriginal>,
+) -> Result<(), QemuGuardedImagePreparationError> {
     let admission = match purpose {
         GuardedImageToolPurpose::FreshLaunch => {
             run_directory.validate_helper_basis(process_contract)
         }
-        GuardedImageToolPurpose::RetainedHotForkSource => {
-            run_directory
-                .validate_retained_source_helper_basis(process_contract)
-                .and_then(|()| process_contract.retained_source_helper_lender().map(|_| ()))
-        }
+        GuardedImageToolPurpose::RetainedHotForkSource => run_directory
+            .validate_retained_source_helper_basis(process_contract)
+            .and_then(|()| {
+                let receiver = process_contract.retained_source_helper_lender()?;
+                effect_original
+                    .ok_or_else(helper_receiver::helper_custody_refusal)?
+                    .checked_original(&receiver)
+                    .map(|_| ())
+            }),
     };
     if let Err(source) = admission {
         return Err(QemuGuardedImagePreparationError::local(source));
@@ -2301,11 +2325,21 @@ fn run_guarded_image_tool_for_purpose(
             })
         }
         GuardedImageToolPurpose::RetainedHotForkSource => {
+            let effect_original = effect_original.ok_or_else(|| {
+                QemuGuardedImagePreparationError::local(helper_receiver::helper_custody_refusal())
+            })?;
+            let receiver = process_contract
+                .retained_source_helper_lender()
+                .map_err(QemuGuardedImagePreparationError::local)?;
             process_contract.with_spawned_retained_source_helper(
+                effect_original,
                 command,
                 operation,
-                |child, original, _output| {
-                    helper_receiver::wait_image_tool(child, original, operation)
+                |child, _original, _output| {
+                    helper_receiver::wait_image_tool_checked(child, operation, || {
+                        let original = effect_original.checked_original(&receiver)?;
+                        helper_receiver::wait_slice(original)
+                    })
                 },
             )
         }

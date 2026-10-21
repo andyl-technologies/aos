@@ -69,7 +69,9 @@ impl QemuNode {
     }
 
     #[cfg(target_os = "linux")]
-    fn checkpoint_original_loan(&self) -> Result<CheckpointOriginalLoan, QemuNodeError> {
+    pub(in crate::node) fn checkpoint_original_loan(
+        &self,
+    ) -> Result<CheckpointOriginalLoan, QemuNodeError> {
         let missing = || QemuNodeError::CheckpointOriginal {
             source: capture_original::CheckpointOriginalError::before(
                 capture_original::CheckpointOriginalCause::MissingOwner,

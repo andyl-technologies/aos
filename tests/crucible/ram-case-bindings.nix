@@ -217,6 +217,7 @@
         (case "spawn::helper_receiver::tests::probe_capture_never_grows_beyond_its_prepaid_capacity" "adversarial" ["TIME-9"] "A capture refuses excess bytes without growing its admitted allocation; this allocation-bound control issues no native resource credit.")
         (case "spawn::helper_receiver::tests::image_wait_observes_success_under_the_existing_original" "positive" ["TIME-2" "TIME-9"] "A real component child completes under the same retained operation identity; no native Source, helper recipient or funding qualification.")
         (case "spawn::helper_receiver::tests::image_wait_retains_the_live_child_when_its_same_original_is_canceled" "adversarial" ["TIME-2" "TIME-7" "TIME-9"] "Cancellation after process birth refuses the production image wait with the same typed operation cause while the component retains the live child for containment; no native cleanup-return or funding qualification.")
+        (case "spawn::helper_receiver::tests::checkpoint_event_refuses_late_image_wait_without_replacing_original" "adversarial" ["TIME-2" "TIME-7" "TIME-9"] "The actual retained checkpoint event refuses the production late image polling loop after a real component child is born; the operation identity and sole entered Quiescence remain unchanged and the child stays retained for containment. No Native Source, Main or late-helper admission is issued.")
       ])
     ];
     resources = component "gate:ram-runtime-policy" "model" [
