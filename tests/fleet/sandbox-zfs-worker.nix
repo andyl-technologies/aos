@@ -47,14 +47,21 @@
     cargoEnv.PROTOC = "${pkgs.protobuf}/bin/protoc";
     postBuild = ''
       mkdir worker-fixture
+      cargo_target_dir="''${CARGO_TARGET_DIR:-target}"
+      if [ -n "''${CARGO_BUILD_TARGET:-}" ]; then
+        cargo_target_dir="$cargo_target_dir/$CARGO_BUILD_TARGET"
+      fi
       count=0
-      for candidate in target/debug/deps/aos_sandbox_storage-*; do
+      for candidate in "$cargo_target_dir"/debug/deps/aos_sandbox_storage-*; do
         if [ -f "$candidate" ] && [ -x "$candidate" ]; then
           install -m 0755 "$candidate" worker-fixture/aos-sandbox-zfs-worker-tests
           count=$((count + 1))
         fi
       done
-      test "$count" -eq 1
+      if [ "$count" -ne 1 ]; then
+        echo "expected one Storage unit-test executable under $cargo_target_dir/debug/deps, found $count" >&2
+        exit 1
+      fi
     '';
     postInstall = ''
       mkdir -p "$out/bin"

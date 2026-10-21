@@ -63,7 +63,7 @@
     postBuild = ''
       mkdir worker-fixture
 
-      cargo_target_dir=target
+      cargo_target_dir="''${CARGO_TARGET_DIR:-target}"
       if [ -n "''${CARGO_BUILD_TARGET:-}" ]; then
         cargo_target_dir="$cargo_target_dir/$CARGO_BUILD_TARGET"
       fi
