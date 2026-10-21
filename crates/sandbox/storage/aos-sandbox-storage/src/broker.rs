@@ -11377,7 +11377,7 @@ mod tests {
             let recovered = coordinator(&directory, &fixture);
             assert!(matches!(
                 crate::runtime::authenticate_startup_authority(&recovered),
-                Err(crate::StorageRuntimeError::Recovery)
+                Err(crate::StorageRuntimeError::StartupAuthority(_))
             ));
         }
     }
@@ -11425,7 +11425,7 @@ mod tests {
         let recovered = coordinator(&inconsistent_directory, &fixture);
         assert!(matches!(
             crate::runtime::authenticate_startup_authority(&recovered),
-            Err(crate::StorageRuntimeError::Recovery)
+            Err(crate::StorageRuntimeError::StartupAuthority(_))
         ));
 
         let missing_history_directory = TempDir::new().unwrap();
@@ -11457,7 +11457,7 @@ mod tests {
         let recovered = coordinator(&missing_history_directory, &fixture);
         assert!(matches!(
             crate::runtime::authenticate_startup_authority(&recovered),
-            Err(crate::StorageRuntimeError::Recovery)
+            Err(crate::StorageRuntimeError::StartupAuthority(_))
         ));
     }
 

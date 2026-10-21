@@ -212,6 +212,12 @@ pub enum StorageRuntimeError {
     /// The fixed ZFS executable contract was invalid.
     #[error("fixed Storage transaction contract was rejected: {0}")]
     Transaction(#[from] ZfsTransactionError),
+    /// An authenticated startup pin attempt or its authority link was rejected.
+    #[error("Storage startup pin authority was rejected: {0}")]
+    StartupPinAuthority(#[source] crate::helper::ZfsHelperError),
+    /// An authenticated startup preparation or snapshot record was rejected.
+    #[error("Storage startup authority was rejected: {0}")]
+    StartupAuthority(#[source] StorageBrokerError),
     /// Observation-only recovery or authorized execution failed closed.
     #[error("Storage observation or execution failed closed")]
     Recovery,
@@ -4752,18 +4758,25 @@ fn build_catalog_observation_request(
     .map_err(Into::into)
 }
 
+/// Authenticates retained pin, catalog preparation, and atomic snapshot authority.
+///
+/// # Errors
+///
+/// Returns [`StorageRuntimeError::StartupPinAuthority`] or
+/// [`StorageRuntimeError::StartupAuthority`] with the first rejected record's
+/// original error; later authority checks are not attempted.
 pub(crate) fn authenticate_startup_authority(
     coordinator: &StorageAdmissionCoordinator,
 ) -> Result<(), StorageRuntimeError> {
     coordinator
         .authenticate_workspace_pin_attempts()
-        .map_err(|_| StorageRuntimeError::Recovery)?;
+        .map_err(StorageRuntimeError::StartupPinAuthority)?;
     coordinator
         .authenticate_catalog_preparations()
-        .map_err(|_| StorageRuntimeError::Recovery)?;
+        .map_err(StorageRuntimeError::StartupAuthority)?;
     coordinator
         .authenticate_atomic_snapshot_records()
-        .map_err(|_| StorageRuntimeError::Recovery)
+        .map_err(StorageRuntimeError::StartupAuthority)
 }
 
 fn configure_resolver_policy(

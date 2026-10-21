@@ -69,6 +69,8 @@ fn encode_runtime_error(
         ),
         StorageRuntimeError::Worker(_)
         | StorageRuntimeError::Transaction(_)
+        | StorageRuntimeError::StartupPinAuthority(_)
+        | StorageRuntimeError::StartupAuthority(_)
         | StorageRuntimeError::Recovery
         | StorageRuntimeError::Receiving
         | StorageRuntimeError::ReopenRequired
