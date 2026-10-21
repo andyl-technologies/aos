@@ -161,6 +161,8 @@ in
         ++ map (role: "${roleTestFlags role} ${roleTestPackages role}")
         (lib.filter (role: role != "controller") serviceRoles);
       cargoNextest = true;
+      # Protected native ancestry cases run outside the Nix build sandbox.
+      cargoNextestProfile = "nix-sandbox";
       # Match the workspace native test runner; installed stack limits stay fixed.
       RUST_MIN_STACK = "33554432";
       doCheck = true;
