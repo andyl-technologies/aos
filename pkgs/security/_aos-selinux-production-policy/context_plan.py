@@ -787,19 +787,33 @@ def plan_labels(
     if len(entries_by_path) != len(entries):
         raise PlanError("inventory contains duplicate image paths")
     loader_paths = frozenset(dynamic_loaders)
+
+    # Merged-/usr exposes the physical image store through /lib and /lib64 too.
+    # Normalize only the image's known custody paths, and only when the actual
+    # alias resolves to /usr/lib. Other library aliases retain their own policy.
+    image_library_prefixes = ["/usr/lib/aos"]
+    image_prefix = lookup_prefix.rstrip("/")
+    for alias_path in ("/lib", "/lib64"):
+        alias = entries_by_path.get(image_prefix + alias_path)
+        if alias is None or alias.kind is not InodeKind.symlink:
+            continue
+        target = _resolve_symlink_target(alias, entries_by_path, lookup_prefix)
+        if target is not None and target.path == image_prefix + "/usr/lib":
+            image_library_prefixes.append(alias_path + "/aos")
+
     def policy_lookup_path(path: str) -> str:
         # The physical image store contains the exact logical package inodes.
         # Apply the same package-specific policy, retaining physical map keys
         # for the label writer and image verification.
-        physical_root = "/usr/lib/aos/nix"
-        if path == physical_root or path.startswith(physical_root + "/"):
-            return "/nix" + path[len(physical_root):]
-        # The immutable seed is the same toplevel as the runtime profile.
-        # Its descendants must not gain generic /usr/lib library authority.
-        # Keep the seed symlink itself under its explicit physical-path rule.
-        seed = "/usr/lib/aos/toplevel"
-        if path.startswith(seed + "/"):
-            return "/run/current-system" + path[len(seed):]
+        for prefix in image_library_prefixes:
+            physical_root = prefix + "/nix"
+            if path == physical_root or path.startswith(physical_root + "/"):
+                return "/nix" + path[len(physical_root):]
+            # The immutable seed is the runtime profile's exact toplevel.
+            # Keep the seed symlink itself under its physical-path rule.
+            seed = prefix + "/toplevel"
+            if path.startswith(seed + "/"):
+                return "/run/current-system" + path[len(seed):]
         return path
 
     direct_contexts = {

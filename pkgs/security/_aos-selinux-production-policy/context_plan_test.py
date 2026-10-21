@@ -432,6 +432,56 @@ class PlanSemanticsTest(unittest.TestCase):
                 by_path[physical], "system_u:object_r:selected_component_exec_t"
             )
 
+    def test_merged_usr_image_store_aliases_preserve_executable_policy(self) -> None:
+        class Resolver:
+            def lookup(
+                self, path: str, kind: context_plan.InodeKind
+            ) -> str | None:
+                if kind is not context_plan.InodeKind.regular:
+                    return "system_u:object_r:usr_t"
+                if path.startswith("/usr/bin/"):
+                    return "system_u:object_r:bin_t"
+                if path.startswith(("/usr/lib/", "/lib/", "/lib64/")):
+                    return "system_u:object_r:lib_t"
+                return None
+
+        for merged in (True, False):
+            with (
+                self.subTest(merged=merged),
+                tempfile.TemporaryDirectory() as temporary,
+            ):
+                root = Path(temporary)
+                program = root / "usr/lib/aos/nix/store/hash-coreutils/bin/coreutils"
+                program.parent.mkdir(parents=True)
+                program.write_bytes(elf64(context_plan.ET_EXEC))
+                program.chmod(0o755)
+                (program.parent / "cat").symlink_to("coreutils")
+
+                command = root / "usr/bin/cat"
+                command.parent.mkdir(parents=True)
+                command.symlink_to("/nix/store/hash-coreutils/bin/coreutils")
+                if merged:
+                    (root / "lib").symlink_to("usr/lib")
+                    (root / "lib64").symlink_to("usr/lib")
+                else:
+                    # A different layout does not gain the known image rewrite.
+                    (root / "lib/aos").mkdir(parents=True)
+                    (root / "lib/aos/nix").symlink_to("/usr/lib/aos/nix")
+
+                entries = context_plan.inventory_tree(root)
+                if merged:
+                    labels = context_plan.plan_labels(entries, Resolver())
+                    by_path = {label.path: label.context for label in labels}
+                    self.assertEqual(
+                        by_path["/usr/lib/aos/nix/store/hash-coreutils/bin/coreutils"],
+                        "system_u:object_r:bin_t",
+                    )
+                else:
+                    with self.assertRaisesRegex(
+                        context_plan.PlanError, "conflicting generic alias labels"
+                    ):
+                        context_plan.plan_labels(entries, Resolver())
+
     def test_immutable_seed_descendants_use_runtime_profile_policy(self) -> None:
         class Resolver:
             def lookup(
@@ -462,6 +512,8 @@ class PlanSemanticsTest(unittest.TestCase):
             seed = root / "usr/lib/aos/toplevel"
             seed.parent.mkdir(parents=True)
             seed.symlink_to("/nix/store/hash-toplevel")
+            (root / "lib").symlink_to("usr/lib")
+            (root / "lib64").symlink_to("usr/lib")
             command = root / "usr/bin/cat"
             command.parent.mkdir(parents=True)
             command.symlink_to("/nix/store/hash-coreutils/bin/coreutils")
