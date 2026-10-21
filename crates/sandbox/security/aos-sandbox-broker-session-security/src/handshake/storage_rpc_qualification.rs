@@ -351,6 +351,23 @@ fn installed_storage_rpc_client() {
             ));
             b"unavailable-method-rejected-v1".to_vec()
         }
+        "reject-wrong-cgroup" => {
+            // The caller has the Controller's UID and protected key custody,
+            // but runs in a different systemd service. A transport publication
+            // alone is not an authenticated session or evidence of admission.
+            let error = connect(method, None)
+                .err()
+                .expect("wrong-cgroup peer completed a session");
+            assert!(
+                matches!(
+                    error.downcast_ref::<crate::DormantBrokerSessionHandshakeErrorV1>(),
+                    Some(crate::DormantBrokerSessionHandshakeErrorV1::RemoteInvalid)
+                        | Some(crate::DormantBrokerSessionHandshakeErrorV1::Transport)
+                ),
+                "unexpected wrong-cgroup rejection: {error}"
+            );
+            b"wrong-cgroup-rejected-v1".to_vec()
+        }
         "reject-downgrade" => {
             let error = connect(method, Some(2)).err().unwrap();
             assert!(

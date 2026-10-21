@@ -263,6 +263,20 @@ fn verify_storage_connection_peer(
     Ok(())
 }
 
+/// Refuses an ordinary Storage connection outside the fixed Controller unit.
+pub(super) fn verify_controller_connection_peer(
+    peer: &ConnectionPeerIdentity,
+) -> Result<(), ProductionBrokerSessionActivationErrorV1> {
+    ControllerPeerVerifier::new(storage_cgroup_root()?)
+        .verify(peer)
+        .map_err(|_| {
+            ProductionBrokerSessionActivationErrorV1::Activation(
+                "Storage Controller peer is not current",
+            )
+        })?;
+    Ok(())
+}
+
 pub(crate) fn verify_storage_session_peer(
     session: &mut DormantAuthenticatedBrokerSessionV1,
 ) -> Result<(), ProductionBrokerSessionActivationErrorV1> {

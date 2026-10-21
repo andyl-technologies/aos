@@ -63,6 +63,17 @@ pub(super) fn exchange(
     outcome
 }
 
+pub(super) fn reject_wrong_cgroup() {
+    assert_eq!(
+        invoke(
+            "reject-wrong-cgroup",
+            BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN,
+            &[],
+        ),
+        b"wrong-cgroup-rejected-v1",
+    );
+}
+
 pub(super) fn reject_downgrade(method: BrokerMethod) {
     assert_eq!(
         invoke("reject-downgrade", method, &[]),

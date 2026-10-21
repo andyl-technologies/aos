@@ -9650,26 +9650,7 @@ mod tests {
     }
 
     fn storage_rpc_decoy() {
-        let mut socket =
-            aos_sandbox_linux::seqpacket::SeqpacketSocket::connect(Path::new(STORAGE_RPC_SOCKET))
-                .unwrap();
-        let deadline = crate::transport::boottime()
-            .unwrap()
-            .checked_add(crate::transport::EXCHANGE_NANOSECONDS)
-            .unwrap();
-        let hello =
-            storage_rpc_client_hello(BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES);
-
-        if crate::transport::send(&mut socket, &hello.encode_to_vec(), deadline).is_ok() {
-            assert!(
-                crate::transport::receive(
-                    &mut socket,
-                    aos_sandbox_protocol::MAXIMUM_HANDSHAKE_BYTES,
-                    deadline,
-                )
-                .is_err()
-            );
-        }
+        storage_rpc_session::reject_wrong_cgroup();
     }
 
     fn storage_rpc_missing_authority() {

@@ -194,7 +194,8 @@
           PrivateDevices = true;
           PrivateNetwork = true;
           PrivateTmp = true;
-          ProcSubset = "pid";
+          ProcSubset = "all";
+          ProtectProc = "default";
           ProtectControlGroups = true;
           ProtectSystem = "strict";
           RestrictAddressFamilies = ["AF_UNIX"];
@@ -786,12 +787,6 @@ in {
       observer_current = observer_after(observer_current, 1)
       assert journal_hash() == stable_hash
 
-      machine.succeed("systemctl start aos-storage-rpc-decoy.service", timeout=20)
-      assert journal_hash() == stable_hash
-      assert socket_sample("aos-sandbox-workspace-pin-observer.socket") == observer_current
-      assert socket_sample("aos-sandbox-workspace-pin-worker.socket") == worker_repaired
-      assert replay_claims() == 1
-
       machine.succeed("systemctl stop aos-storaged.service")
       machine.succeed(audit_command, timeout=60)
       assert journal_hash() == stable_hash
@@ -818,7 +813,7 @@ in {
       assert socket_sample("aos-sandbox-workspace-pin-worker.socket") == worker_repaired
       assert replay_claims() == 1
 
-      # The rejected 1.2 HELLO closes the broker's accept loop. PID 1 may then
+      # Peer and HELLO refusal can close the broker's accept loop. PID 1 may then
       # reconcile a restarted broker and invoke the read-only observer again.
       # Run this denial after the ordinary Prepare and restart assertions, and
       # check both retained session journals after the owners have stopped.
@@ -827,7 +822,13 @@ in {
           "/var/lib/aos/sandbox-storage/broker-session/session.journal"
       )
       before_downgrade = machine.succeed(f"{COREUTILS}/sha256sum {session_journals}")
+      machine.succeed("systemctl start aos-storage-rpc-decoy.service", timeout=20)
+      machine.succeed("systemctl start aos-storaged.service", timeout=150)
       controller("prepare-one-two-unavailable", "prepare-one-two-unavailable")
+      assert socket_sample("aos-sandbox-workspace-pin-worker.socket") == worker_repaired
+      assert socket_sample("aos-sandbox-zfs-worker.socket") == prepare_zfs_worker
+      assert replay_claims() == 1
+      assert dataset_snapshot() == prepare_datasets
       finish()
       assert journal_hash() == stable_hash
       assert machine.succeed(f"{COREUTILS}/sha256sum {session_journals}") == before_downgrade

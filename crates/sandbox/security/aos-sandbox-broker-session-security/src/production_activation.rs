@@ -902,6 +902,14 @@ impl ProductionBrokerSessionActivationV1 {
                     Err(SeqpacketError::WouldBlock | SeqpacketError::Interrupted) => continue,
                     Err(error) => return Err(error.into()),
                 };
+                if fixed.endpoint == ProtectedBrokerSessionFixedEndpointV1::StorageBroker
+                    && self.launch_image.is_none()
+                {
+                    // Stable peer evidence alone does not select the Controller
+                    // service. Check its exact unit before opening protected
+                    // custody or publishing any ordinary handshake flight.
+                    host::verify_controller_connection_peer(socket.peer())?;
+                }
                 let custody =
                     ProtectedBrokerSessionFixedCustodyV1::open_fixed_protected(fixed.endpoint)
                         .map_err(DormantBrokerSessionHandshakeErrorV1::Protected)?;
