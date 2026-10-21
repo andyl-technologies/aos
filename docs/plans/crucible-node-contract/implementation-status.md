@@ -1626,9 +1626,23 @@ fixed rows. Earlier runs exposed that summed controls exceeded the unchanged
 All seventy bootstrap controls pass with zero failures and one existing ignored
 private child. Seven new controls include seventeen inherited-socket flights across
 both program families, admission refusals, expiry, substituted cuts, surviving
-allocation identity and spent retries. Full qualification of the corrected
-accounting remains pending. This transition issues no connection,
-reply, bootstrap ACK, native policy, model or opaque Initial/Recipe.
+allocation identity and spent retries.
+
+For `5c3ed76904`, both complete standard and raw-value Transport libraries pass
+1,868 tests each, with zero failures, no filtering and sixteen existing ignores.
+Affected Transport/Engine/Daemon all-feature/all-target checking, scoped
+formatting and all six architecture gates pass. The required application gate
+passes with 180 test executables across 58 package identities, including 71
+integration targets. The funded-Source VM passes both independent three-Birth
+consumer flights, refusal controls, cleanup and default-feature CLI refusal
+with normal shutdown. All 211 owned changed Rust paths match this committed
+checkpoint in the application capture and all three actual VM component source
+captures. These captures come from the exact running build derivations.
+
+Subsequent HelloResult and provider-challenge work is excluded from this
+qualification. Full Engine and Daemon library runtime qualification remains at
+`f2150ce5c7`. This transition issues no connection, reply, bootstrap ACK, native
+policy, model or opaque Initial/Recipe; remaining RFC exits stay unfinished.
 
 ## Original launch custody and shared startup geometry
 
