@@ -67,7 +67,17 @@ async fn validate(
 }
 
 #[tokio::test]
+#[ignore = "requires real setgid directories; executed by gate:shared-dir-read-only in the ext4 VM"]
 async fn portable_reader_validates_shared_modes_without_original_control_or_effects() {
+    validate_shared_modes(0o2770).await;
+}
+
+#[tokio::test]
+async fn portable_reader_validates_group_writable_modes_without_original_control_or_effects() {
+    validate_shared_modes(0o770).await;
+}
+
+async fn validate_shared_modes(directory_mode: u32) {
     let native = fixture().await;
     let root = native.store().root();
     let _cleanup = Cleanup::new(root);
@@ -91,10 +101,19 @@ async fn portable_reader_validates_shared_modes_without_original_control_or_effe
     // this read-only observation. Shared ancestor modes remain ordinary data.
     tokio::fs::set_permissions(
         root.join("objects"),
-        std::fs::Permissions::from_mode(0o2770),
+        std::fs::Permissions::from_mode(directory_mode),
     )
     .await
     .unwrap();
+    assert_eq!(
+        tokio::fs::metadata(root.join("objects"))
+            .await
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o7777,
+        directory_mode,
+    );
     tokio::fs::write(root.join("CAPABILITIES"), b"stale physical cache")
         .await
         .unwrap();

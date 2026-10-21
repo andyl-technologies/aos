@@ -1,4 +1,8 @@
-{nativeSdkGate, ...}: let
+{
+  nativeSdkGate,
+  portableSharedModes,
+  ...
+}: let
   native = label: names:
     import ../_native-cases.nix {
       inherit label;
@@ -15,6 +19,9 @@ in {
       "residence_composition::portable_composition_recovers_encoded_chunk_after_ordinary_body_removal"
       "residence_composition::portable_residence_never_masks_corruption_or_substitutes_manifest_plaintext"
     ]}
+    test "$(cat ${portableSharedModes}/result)" = PASS
+    mkdir -p "$out/nix-support"
+    printf '%s\n' ${portableSharedModes} > "$out/nix-support/shared-modes-proof"
     printf 'PASS: actual existing host reads preserve encoded bytes and never write\n' > "$out/result"
   '';
 

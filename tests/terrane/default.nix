@@ -159,6 +159,10 @@
       extraBuildDeps = [pkgs.binutils];
     };
   };
+  portableSharedModes = import ./portable-shared-modes.nix {
+    inherit pkgs lib;
+    image = bucketSdkTestImage;
+  };
   # Pack gates retain their original default features without selecting Tokio.
   defaultSdkTestImage = import ./native-sdk-test-image.nix {
     variant = "default";
@@ -348,6 +352,7 @@
           // lib.optionalAttrs (file == "gc.nix") {inherit localTwoPhaseGc;}
           // lib.optionalAttrs (builtins.elem file ["host-publish.nix" "surfaces.nix"]) {inherit sourceGateWithInputs;}
           // lib.optionalAttrs (builtins.elem file ["bucket.nix" "ref_advance.nix"]) {inherit bucketSdkGate;}
+          // lib.optionalAttrs (file == "shared-dir.nix") {inherit portableSharedModes;}
           // lib.optionalAttrs (file == "pack.nix") {inherit defaultSdkGate;}
           // lib.optionalAttrs (file == "host-publish.nix") {inherit publisherLocalProof hostCacheProof initialEnrollmentProof moduleEval;}
           // lib.optionalAttrs (file == "host-cache.nix") {inherit hostCacheProof initialEnrollmentProof;}

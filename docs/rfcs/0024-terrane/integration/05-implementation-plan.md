@@ -11650,3 +11650,18 @@ selector bounds. Frozen gate, application-target and portable feature
 qualification remain pending. This component does not complete T-STORE-2:
 expression opening/validation, guard/cache/remote composition and the rest of
 T3 remain pending. T2 task acceptance still requires its full passing aggregate.
+
+
+#### Real shared-directory mode qualification
+
+The frozen package run refused the portable reader's `chmod(2770)` fixture:
+Nix forbids setting setgid bits. The complete original setgid test now belongs
+to an explicit ext4 guest prerequisite of `shared-dir-read-only`, with exact
+discovery and actual one-pass execution under UID/GID 840 and empty groups and
+capabilities. Its complete compiled source and original default/Tokio feature
+selection are checked again in the guest. A second ordinary package case runs
+the same assertions with genuine group-writable mode 0770. Both paths assert
+the actual resulting directory mode before reading. The native case is ignored
+by ordinary package runners only because its owning gate must execute it in
+the real guest. No test body or Original isolation assertion is removed; frozen
+VM, package and application-target qualification remain pending.
