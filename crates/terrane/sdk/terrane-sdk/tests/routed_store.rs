@@ -29,6 +29,9 @@ use terrane_sdk::store::{
     routed::{Routed, RoutingPolicy},
 };
 
+#[path = "routed_store/cache_only.rs"]
+mod cache_only;
+
 #[derive(Clone, Default)]
 struct TestClock(Arc<AtomicU64>);
 

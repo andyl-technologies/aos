@@ -1,4 +1,4 @@
-//! Routes verified content in configured order while retaining one ref authority.
+//! Routes verified content in configured order with at most one ref authority.
 //!
 //! [`Routed`] borrows no tokens and performs no authorization. Its children
 //! remain responsible for verifying their returned encodings and validating
@@ -44,7 +44,7 @@ pub struct RoutingPolicy {
     pub max_membership: usize,
 }
 
-/// Retains ordered content caches and one independently opened ref authority.
+/// Retains ordered content caches and an optional independently opened ref authority.
 ///
 /// All bindings belong to the same disclosure domain and immutable profile;
 /// their trusted opener must establish that relationship. This raw combinator
@@ -56,7 +56,7 @@ pub struct Routed<C, A, K> {
 
 struct Inner<C, A, K> {
     caches: Vec<C>,
-    authority: A,
+    authority: Option<A>,
     authority_position: usize,
     clock: K,
     policy: RoutingPolicy,
@@ -96,19 +96,11 @@ where
         clock: K,
         policy: RoutingPolicy,
     ) -> Result<Self, StoreFailure> {
-        let count = caches.len().checked_add(1).ok_or_else(invalid)?;
         if authority.capabilities().refs == RefCapability::None
             || caches
                 .iter()
                 .any(|cache| cache.capabilities().refs != RefCapability::None)
             || authority_position > caches.len()
-            || policy.read_budget.is_zero()
-            || policy.child_budget.is_zero()
-            || policy.child_budget > policy.read_budget
-            || policy.failure_threshold == 0
-            || policy.probe_interval.is_zero()
-            || policy.max_membership == 0
-            || count > policy.max_children
         {
             return Err(invalid());
         }
@@ -121,6 +113,88 @@ where
             .any(|cache| cache.capabilities().ranges == RangeCapability::WholeObjectOnly)
         {
             capabilities.ranges = RangeCapability::WholeObjectOnly;
+        }
+        Self::bind(
+            caches,
+            Some(authority),
+            authority_position,
+            clock,
+            policy,
+            capabilities,
+        )
+    }
+}
+
+impl<C, K> Routed<C, C, K>
+where
+    C: ContentStore + BucketBinding,
+    K: Clock + BucketBinding,
+{
+    /// Binds an ordered read route containing no ref authority.
+    ///
+    /// The concrete child type need not implement [`RefStore`]. Uploads and
+    /// advisory listing are unsupported; no cache is selected as an implicit
+    /// write destination. Read budgets and shared circuits match authority-backed
+    /// routes. A successful read still requires a successful actual child read.
+    ///
+    /// # Errors
+    /// Rejects an empty route, any child claiming refs, and zero, inconsistent
+    /// or exceeded resource bounds.
+    pub fn cache_only(
+        caches: Vec<C>,
+        locality: Locality,
+        clock: K,
+        policy: RoutingPolicy,
+    ) -> Result<Self, StoreFailure> {
+        let first = caches.first().ok_or_else(invalid)?;
+        if caches
+            .iter()
+            .any(|cache| cache.capabilities().refs != RefCapability::None)
+        {
+            return Err(invalid());
+        }
+        let mut capabilities = first.capabilities().clone();
+        capabilities.locality = locality;
+        capabilities.presign = false;
+        capabilities.sealed = false;
+        if caches
+            .iter()
+            .any(|cache| cache.capabilities().ranges == RangeCapability::WholeObjectOnly)
+        {
+            capabilities.ranges = RangeCapability::WholeObjectOnly;
+        }
+        Self::bind(caches, None, 0, clock, policy, capabilities)
+    }
+}
+
+impl<C, A, K> Routed<C, A, K>
+where
+    C: ContentStore + BucketBinding,
+    A: ContentStore + BucketBinding,
+    K: Clock + BucketBinding,
+{
+    fn bind(
+        caches: Vec<C>,
+        authority: Option<A>,
+        authority_position: usize,
+        clock: K,
+        policy: RoutingPolicy,
+        capabilities: Capabilities,
+    ) -> Result<Self, StoreFailure> {
+        let count = caches
+            .len()
+            .checked_add(usize::from(authority.is_some()))
+            .ok_or_else(invalid)?;
+        if count == 0
+            || policy.read_budget.is_zero()
+            || policy.child_budget.is_zero()
+            || policy.child_budget > policy.read_budget
+            || policy.failure_threshold == 0
+            || policy.probe_interval.is_zero()
+            || policy.max_membership == 0
+            || count > policy.max_children
+        {
+            return Err(invalid());
         }
         let circuits = (0..count)
             .map(|_| CircuitBreaker::new(policy.failure_threshold, policy.probe_interval))
@@ -139,11 +213,25 @@ where
         })
     }
 
+    fn authority(&self) -> Result<&A, StoreFailure> {
+        self.inner
+            .authority
+            .as_ref()
+            .ok_or_else(|| StoreFailure::new(StoreErrorKind::Unsupported))
+    }
+
+    fn child_count(&self) -> usize {
+        // Construction checked this sum before allocating the circuit vector.
+        self.inner.caches.len() + usize::from(self.inner.authority.is_some())
+    }
+
     fn child(&self, position: usize) -> Result<Child<'_>, StoreFailure> {
-        if position == self.inner.authority_position {
-            return Ok(&self.inner.authority);
+        if let Some(authority) = &self.inner.authority
+            && position == self.inner.authority_position
+        {
+            return Ok(authority);
         }
-        let index = if position > self.inner.authority_position {
+        let index = if self.inner.authority.is_some() && position > self.inner.authority_position {
             position - 1
         } else {
             position
@@ -189,12 +277,12 @@ impl<C, A, K> CapabilityReport for Routed<C, A, K> {
 impl<C, A, K> ContentStore for Routed<C, A, K>
 where
     C: ContentStore + BucketBinding,
-    A: ContentStore + RefStore + BucketBinding,
+    A: ContentStore + BucketBinding,
     K: Clock + BucketBinding,
 {
     async fn put(&self, upload: ContentUpload<'_>) -> Result<Identity, StoreFailure> {
         // The exact authority owns upload validation, admission and durability.
-        self.inner.authority.put(upload).await
+        self.authority()?.put(upload).await
     }
 
     async fn get(
@@ -207,7 +295,7 @@ where
         }
         let started = self.inner.clock.monotonic();
         let mut problem = None;
-        for position in 0..=self.inner.caches.len() {
+        for position in 0..self.child_count() {
             if let Err(error) = deadline::remaining(&self.inner.clock, &self.inner.policy, started)
             {
                 retain_problem(&mut problem, error);
@@ -242,7 +330,7 @@ where
         let started = self.inner.clock.monotonic();
         let mut present = vec![false; identities.len()];
         let mut problem = None;
-        for position in 0..=self.inner.caches.len() {
+        for position in 0..self.child_count() {
             let missing = identities
                 .iter()
                 .zip(&present)
@@ -300,7 +388,7 @@ where
 
     async fn list(&self, prefix: &IdentityPrefix) -> Result<Vec<Identity>, StoreFailure> {
         // Listing remains an advisory authority candidate set, never a read hint.
-        self.inner.authority.list(prefix).await
+        self.authority()?.list(prefix).await
     }
 }
 
@@ -315,7 +403,7 @@ where
     type Watch = A::Watch;
 
     async fn ref_get(&self, name: &str) -> Result<Option<RefRecord>, StoreFailure> {
-        self.inner.authority.ref_get(name).await
+        self.authority()?.ref_get(name).await
     }
 
     async fn ref_cas(
@@ -324,7 +412,7 @@ where
         expect: Option<&RefRecord>,
         new: &RefRecord,
     ) -> Result<RefCasOutcome, StoreFailure> {
-        self.inner.authority.ref_cas(name, expect, new).await
+        self.authority()?.ref_cas(name, expect, new).await
     }
 
     async fn ref_log_append(
@@ -333,7 +421,7 @@ where
         seq: u64,
         record: &RefLogRecord,
     ) -> Result<RefLogAppendOutcome, StoreFailure> {
-        self.inner.authority.ref_log_append(name, seq, record).await
+        self.authority()?.ref_log_append(name, seq, record).await
     }
 
     async fn ref_log_read(
@@ -341,11 +429,11 @@ where
         name: &str,
         from_seq: u64,
     ) -> Result<Vec<RefLogRecord>, StoreFailure> {
-        self.inner.authority.ref_log_read(name, from_seq).await
+        self.authority()?.ref_log_read(name, from_seq).await
     }
 
     async fn ref_watch(&self, name: &str, from_seq: u64) -> Result<Self::Watch, StoreFailure> {
-        self.inner.authority.ref_watch(name, from_seq).await
+        self.authority()?.ref_watch(name, from_seq).await
     }
 }
 

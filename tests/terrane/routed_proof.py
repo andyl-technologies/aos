@@ -11,6 +11,9 @@ from native_sdk_test_image import source_hashes
 
 
 CASES = [
+    "cache_only::content_only_route_preserves_order_without_any_write_destination",
+    "cache_only::content_only_route_never_converts_failed_or_unqueried_children_into_absence",
+    "cache_only::content_only_route_rejects_authority_claims_empty_routes_and_invalid_resources",
     "routes_in_configured_order_and_preserves_exact_ranges",
     "corrupt_and_pending_children_fall_through_under_real_timers",
     "clones_share_open_circuits_and_one_scheduled_probe",

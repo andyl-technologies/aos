@@ -11744,3 +11744,27 @@ test executables across 59 packages. A later catalog-batch population run at
 its earlier four cases pass. This failed result remains retained and does not
 replace the separately passing six-case `af82dc0c49` evidence or close the
 current-source qualification requirement.
+
+
+#### Content-only routed expressions
+
+The public routing combinator now supports STORE-27's zero-authority case
+with actual content-only child types. It neither requires a fabricated ref
+backend nor chooses a cache as an implicit write destination. Ordered reads,
+exact membership, finite budgets and clone-shared circuits retain their
+existing behavior; uploads and listing reject unsupported operations before
+child effects. Empty routes, ref-capable cache children and invalid resource
+bounds are rejected at construction.
+
+All 12 public routing tests pass, including three new content-only cases with
+actual failed, unqueried and absent children. Frozen qualification and the
+required application-target compilation remain pending. This combinator does
+not complete expression loading, authenticated remote stores or T-STORE-2.
+
+The generated-wire frozen check at `696dcc900d` passes. Independent review
+matches 7,875 immutable source files, 5,201 crate inputs, the actual no-default
+Cargo integration artifact, all seven exact passing cases, all five normative
+Distribution schema blocks and the recorded AOS protobuf compiler. The
+packaged host broker builds successfully from that same frozen source. These
+results establish component compilation and wire encoding, without service
+policy or Distribution conformance acceptance.
