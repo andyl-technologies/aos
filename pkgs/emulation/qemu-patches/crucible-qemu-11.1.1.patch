@@ -1,6 +1,6 @@
-From f5ef71914d35c55a1e1e8c78dec2c84544e4f352 Mon Sep 17 00:00:00 2001
+From ee39b24d91681ea0511a9d8d63b7ea9c537e94f7 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Wed, 21 Oct 2026 12:31:30 -0700
+Date: Wed, 21 Oct 2026 20:14:32 +0000
 Subject: [PATCH] Re-deliver coalesced RR control wakes and claim them before
  idle waits
 
@@ -17,6 +17,8 @@ test-crucible-control-deferred runs the production arm and bridge over one halte
 test-crucible-rr-sim-barriers now also extracts the RR wake boundary, the claim settlement and the outer loop's claim statement, and takes the wake state machine from its header. A request is published with its own IDLE or ACTIVE kick while every vCPU is halted and the idle callback provider aborts. The wait returns at IDLE without a callback, and the outer claim acknowledges the request; a runnable vCPU keeps its wake. Without the settlement the wait reaches the idle callback and the outer loop never claims, which the new unsettled-control-claim negative control reproduces.
 
 A published logical ceiling is now an upper bound rather than a stop. The RR loop crossed the final partial instruction to MIN(deadline, ceiling), crediting the gap below the ceiling to the guest, and a stalled node jumped to the ceiling, so guest time depended on where the host split quanta. qemu_plugin_register_sim_shmem_settlement_cb registers a settled-publication callback and a callback that reports the plugin's next exact event: an inbound delivery, a device completion, or a ceiling the host declared exact. The partial-instruction advance now targets only a timer or fault deadline at or before the ceiling. A runnable vCPU never moves its clock without a retirement, so it never crosses to a plugin event: it takes the event at its first boundary at or after it, and the event does not hold a boundary unsettled. A dispatch boundary whose next retirement would cross the ceiling, with no timer or fault deadline before it, is published as settled through the ceiling QEMU sampled, including an exact-event ceiling it cannot land on, and the final post-execution ceiling completion defers to the advance while such a deadline is pending. A stalled node advances only to events at or before the ceiling, publishing each one, and otherwise settles at its current clock. A sim node whose plugin dispatches ceilings without registering the callbacks is refused before its first guest instruction, and no fallback treats its ceiling as an exact stop or publishes a plain boundary as settled. The in-tree sim test plugins register the callbacks and declare their own ceilings exact events. The timer/icount migration section moves to version 6, so streams that may carry credited bias are refused, and the shared-memory ABI headers move to version 32. test-crucible-net-stop-chain stubs the boundary publication. The new test-crucible-rr-bound-ceiling extracts the production advance, stalled-deadline, publication, launch-refusal and predicate bodies; six negative controls restore the old ceiling credits, the crossing to a plugin event, or the fallbacks and fail. An exact-event ceiling and an inbound delivery inside the final gap settle the boundary with the clock at its last retirement. Its cases include host ceilings one and 49 ticks ahead of the clock, which leave a zero raw budget: the clock stays at its last retirement and the boundary settles through the ceiling, while a timer inside a one-tick gap is reached before the boundary settles. The new test-crucible-icount-vmstate-version runs the production subsection loader and version gate over the production timer/icount descriptor: version 5 and older streams are refused before any hook runs, and two negative controls that accept them fail.
+
+A vCPU's synchronous block I/O polls the main loop on the RR thread itself, mid-instruction, so a queued time advance runs and completes there. Completion left the advance in SETTLE_READY for the outer RR loop, which cannot run again until the guest access returns. When the blocked access needed a second advance, because the first stopped at a virtual timer below the device deadline, every later enqueue found the first advance outstanding and returned -EBUSY. The waiter retried for ever and the node stopped advancing. A completion that runs nested inside RR guest execution now releases the advance barrier itself, after the plugin committed the advance and before the device waiters are re-entered, so the waiter can enqueue the advance to its deadline. The RR thread is executing rather than parked, so this path publishes no durable idle wake; completions on the main loop still settle at the outer RR idle boundary. test-crucible-control-deferred adds a nested-io case: a waiter re-entered by the first completion enqueues a second advance, which is accepted and completes, and no idle wake is published. The nested-settle negative control leaves the completion to the outer loop and reproduces the -EBUSY refusal.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -4221,10 +4223,10 @@ index 0000000000000000000000000000000000000000..76140d303d1b89512472ebc4f0d0577a
 +    }
 +}
 diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
-index cdaa3e118082d7f100dd7655e57e28b55418d294..6e566b390915d6ae21c695d4b256c14dba548676 100644
+index cdaa3e118082d7f100dd7655e57e28b55418d294..a2d378d752eeff8084912ca53a86d9d644114241 100644
 --- a/accel/tcg/tcg-accel-ops-rr.c
 +++ b/accel/tcg/tcg-accel-ops-rr.c
-@@ -27,45 +27,2103 @@
+@@ -27,45 +27,2116 @@
  #include "qemu/lockable.h"
  #include "system/tcg.h"
  #include "system/replay.h"
@@ -4762,6 +4764,19 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..6e566b390915d6ae21c695d4b256c14d
 +
 +    qemu_cond_broadcast(first_cpu->halt_cond);
 +    rr_crucible_sim_notify_dispatch_ceiling();
++}
++
++bool rr_crucible_sim_guest_execution_nested(void)
++{
++    /*
++     * Main-loop work normally runs on the I/O thread. It reaches the RR vCPU
++     * thread only when a guest access blocks inside cpu_exec on synchronous
++     * device I/O and that thread polls the main AioContext under the BQL. The
++     * outer RR loop cannot run again until that access returns.
++     */
++    return rr_crucible_sim_mode() && first_cpu &&
++           qemu_cpu_is_self(first_cpu) && current_cpu &&
++           qatomic_read(&current_cpu->running);
 +}
 +
 +bool rr_crucible_sim_timer_notify_needs_vcpu_work(void)
@@ -6347,7 +6362,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..6e566b390915d6ae21c695d4b256c14d
  }
  
  /* Kick the currently round-robin scheduled vCPU to next */
-@@ -84,18 +2142,30 @@ static void rr_kick_next_cpu(void)
+@@ -84,18 +2155,30 @@ static void rr_kick_next_cpu(void)
  
  static void rr_kick_thread(void *opaque)
  {
@@ -6380,7 +6395,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..6e566b390915d6ae21c695d4b256c14d
      }
  }
  
-@@ -110,15 +2180,138 @@ static void rr_wait_io_event(void)
+@@ -110,15 +2193,138 @@ static void rr_wait_io_event(void)
  {
      CPUState *cpu;
  
@@ -6521,7 +6536,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..6e566b390915d6ae21c695d4b256c14d
      }
  }
  
-@@ -140,6 +2333,18 @@ static void rr_deal_with_unplugged_cpus(void)
+@@ -140,6 +2346,18 @@ static void rr_deal_with_unplugged_cpus(void)
  
  static void rr_force_rcu(Notifier *notify, void *data)
  {
@@ -6540,7 +6555,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..6e566b390915d6ae21c695d4b256c14d
      rr_kick_next_cpu();
  }
  
-@@ -184,6 +2389,8 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -184,6 +2402,8 @@ static void *rr_cpu_thread_fn(void *arg)
      CPUState *cpu = arg;
  
      assert(tcg_enabled());
@@ -6549,7 +6564,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..6e566b390915d6ae21c695d4b256c14d
      rcu_register_thread();
      force_rcu.notify = rr_force_rcu;
      rcu_add_force_rcu_notifier(&force_rcu);
-@@ -204,41 +2411,203 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -204,41 +2424,203 @@ static void *rr_cpu_thread_fn(void *arg)
          /* process any pending work */
          CPU_FOREACH(cpu) {
              current_cpu = cpu;
@@ -6771,7 +6786,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..6e566b390915d6ae21c695d4b256c14d
  
          if (icount_enabled()) {
              int cpu_count = rr_cpu_count();
-@@ -254,11 +2623,31 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -254,11 +2636,31 @@ static void *rr_cpu_thread_fn(void *arg)
              cpu_budget = icount_percpu_budget(cpu_count);
          }
  
@@ -6804,7 +6819,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..6e566b390915d6ae21c695d4b256c14d
  
          while (cpu && cpu_work_list_empty(cpu)) {
              /*
-@@ -276,28 +2665,141 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -276,28 +2678,141 @@ static void *rr_cpu_thread_fn(void *arg)
              qemu_clock_enable(QEMU_CLOCK_VIRTUAL,
                                (cpu->singlestep_flags & SSTEP_NOTIMER) == 0);
  
@@ -6961,7 +6976,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..6e566b390915d6ae21c695d4b256c14d
              } else if (cpu->stop) {
                  if (cpu->unplug) {
                      cpu = CPU_NEXT(cpu);
-@@ -305,11 +2807,137 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -305,11 +2820,137 @@ static void *rr_cpu_thread_fn(void *arg)
                  break;
              }
  
@@ -7101,7 +7116,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..6e566b390915d6ae21c695d4b256c14d
      }
  
      g_assert_not_reached();
-@@ -318,13 +2946,34 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -318,13 +2959,34 @@ static void *rr_cpu_thread_fn(void *arg)
  void rr_start_vcpu_thread(CPUState *cpu)
  {
      char thread_name[VCPU_THREAD_NAME_SIZE];
@@ -7139,10 +7154,10 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..6e566b390915d6ae21c695d4b256c14d
          single_tcg_cpu_thread = cpu->thread;
  
 diff --git a/accel/tcg/tcg-accel-ops-rr.h b/accel/tcg/tcg-accel-ops-rr.h
-index 2a76a296127e81edc61f45a59785a89705daae90..f2fab3a43b284b77f916e832ea1c7e65f5c3da48 100644
+index 2a76a296127e81edc61f45a59785a89705daae90..2d5ae11b4c79e17563482f759949ae7e42f35161 100644
 --- a/accel/tcg/tcg-accel-ops-rr.h
 +++ b/accel/tcg/tcg-accel-ops-rr.h
-@@ -10,12 +10,250 @@
+@@ -10,12 +10,252 @@
  #ifndef TCG_ACCEL_OPS_RR_H
  #define TCG_ACCEL_OPS_RR_H
  
@@ -7354,6 +7369,8 @@ index 2a76a296127e81edc61f45a59785a89705daae90..f2fab3a43b284b77f916e832ea1c7e65
 +void rr_crucible_sim_publish_time_advance_wake(void);
 +/* Signal every RR wait object after the completed advance is released. */
 +void rr_crucible_sim_signal_time_advance_wake(void);
++/* Report whether this main-loop work runs nested inside RR guest execution. */
++bool rr_crucible_sim_guest_execution_nested(void);
 +/* Report whether virtual timer notification must queue a vCPU work item. */
 +bool rr_crucible_sim_timer_notify_needs_vcpu_work(void);
 +/* Trace one internal RR control-boundary generation transition. */
@@ -83725,7 +83742,7 @@ index 9e9941fe73e77a7b3bcc3ca1ab7ad4bec58f0151..66e2d8cd64d01e2304aa51675bfe4959
  
  static int net_slirp_init(NetClientState *peer, const char *model,
 diff --git a/plugins/api-system.c b/plugins/api-system.c
-index fbf905cd63e4cc109748b379f4209f6ad6547c2c..8fae4be8f3f8ddcf00616b33fab0d2f15cddd0b5 100644
+index fbf905cd63e4cc109748b379f4209f6ad6547c2c..6024c1903a0c98898e76ab90d6825aacfb96bbb1 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
 @@ -11,12 +11,43 @@
@@ -84737,7 +84754,7 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..8fae4be8f3f8ddcf00616b33fab0d2f1
          return &has_control;
      }
      return NULL;
-@@ -123,9 +1101,2064 @@ static void advance_virtual_time__async(CPUState *cpu, run_on_cpu_data data)
+@@ -123,9 +1101,2099 @@ static void advance_virtual_time__async(CPUState *cpu, run_on_cpu_data data)
  void qemu_plugin_update_ns(const void *handle, int64_t new_time)
  {
      if (handle == &has_control) {
@@ -84933,6 +84950,41 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..8fae4be8f3f8ddcf00616b33fab0d2f1
 +        rr_crucible_sim_trace_idle_stage("bh-after-completion", target);
 +        qemu_plugin_crucible_exact_boundary_leave();
 +        qemu_plugin_time_advance_callback_active = false;
++    }
++    if (rr_crucible_sim_guest_execution_nested()) {
++        /*
++         * A guest access blocked in synchronous device I/O polls the main
++         * loop on the RR thread, so the outer RR idle settlement cannot run
++         * until that access returns. The access may need a further advance:
++         * an advance that stopped at a timer below the device deadline. Leave
++         * SETTLE_READY for the outer loop and every later enqueue would see
++         * this advance outstanding and return -EBUSY for ever. The RR thread
++         * is executing rather than parked, so it needs no durable idle wake;
++         * release the barrier here, after the plugin committed the advance and
++         * before the waiters below can request the next one.
++         */
++        g_assert(qatomic_cmpxchg(&qemu_plugin_time_advance_timer_state,
++                                QEMU_PLUGIN_TIME_ADVANCE_TIMERS_COMPLETING,
++                                QEMU_PLUGIN_TIME_ADVANCE_TIMERS_NOT_READY) ==
++                 QEMU_PLUGIN_TIME_ADVANCE_TIMERS_COMPLETING);
++        if (rr_crucible_sim_control_boundary_needs_rearm(
++                qatomic_load_acquire(
++                    &qemu_plugin_rr_control_request_generation),
++                qatomic_load_acquire(&qemu_plugin_rr_control_ack_generation),
++                qatomic_load_acquire(
++                    &qemu_plugin_rr_control_complete_generation),
++                qatomic_load_acquire(
++                    &qemu_plugin_control_boundary_scheduled) != 0)) {
++            qemu_plugin_schedule_control_boundary();
++        }
++        rr_crucible_sim_trace_idle_advance("complete-nested", target);
++        qatomic_store_release(&qemu_plugin_time_advance_pending, 0);
++        qemu_plugin_rearm_deferred_control_boundary();
++        qemu_plugin_trace_control_delivery("advance-settled");
++        qemu_plugin_control_drain_notify();
++        notifier_list_notify(&qemu_plugin_wake_notifiers,
++                             (void *)(intptr_t)QEMU_PLUGIN_WAKE_EVENT_DRAINED);
++        return;
 +    }
 +    /*
 +     * A Crucible block coroutine can be parked because the guest itself cannot
@@ -167708,10 +167760,10 @@ index 0000000000000000000000000000000000000000..5e134d2f87529bf0a76c60f777f7bfc6
 +    main()
 diff --git a/tests/unit/test-crucible-control-deferred.py b/tests/unit/test-crucible-control-deferred.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..b5bb6c497e55907ee2d5fc61905bde7f3cfb22ce
+index 0000000000000000000000000000000000000000..63cef714b214f12aa5f24701f446e52fbb2b2551
 --- /dev/null
 +++ b/tests/unit/test-crucible-control-deferred.py
-@@ -0,0 +1,694 @@
+@@ -0,0 +1,762 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercise control ownership across production TX stop and advance settlement.
 +
@@ -168107,6 +168159,9 @@ index 0000000000000000000000000000000000000000..b5bb6c497e55907ee2d5fc61905bde7f
 +    if (argc == 1 || strcmp(argv[1], "paused-fork") == 0) {
 +        test_paused_fork_control();
 +    }
++    if (argc == 1 || strcmp(argv[1], "nested-io") == 0) {
++        test_nested_io_advance_releases_its_barrier();
++    }
 +    if (argc == 1) {
 +        test_committed_completion_stop();
 +        test_stale_token_and_admission();
@@ -168123,6 +168178,53 @@ index 0000000000000000000000000000000000000000..b5bb6c497e55907ee2d5fc61905bde7f
 +}
 +"""
 +
++
++# The nested-I/O case needs the drained-wake waiter hook that main() installs
++# in this harness's prelude, so it also stays out of CHECKS.
++NESTED_IO_CHECKS = r"""
++/*
++ * A guest access blocked in synchronous device I/O polls the main loop on the
++ * RR thread, so the outer RR idle settlement cannot run until it returns. Its
++ * first advance stops at a timer below the device deadline; the re-entered
++ * waiter must be able to enqueue the advance to the deadline at once.
++ */
++static int nested_retry_status;
++static unsigned nested_retries;
++
++static void retry_blocked_device_wait(void)
++{
++    if (nested_retries++ == 0) {
++        nested_retry_status = qemu_plugin_advance_time_ticks(23000);
++    }
++}
++
++static void test_nested_io_advance_releases_its_barrier(void)
++{
++    reset_control();
++    fixture_guest_execution_nested = true;
++    fixture_drained_waiter = retry_blocked_device_wait;
++    nested_retries = 0;
++    nested_retry_status = 1;
++
++    g_assert_cmpint(qemu_plugin_advance_time_ticks(19000), ==, 0);
++    service_events();
++
++    g_assert_cmpint(nested_retry_status, ==, 0);
++    g_assert_cmpuint(nested_retries, ==, 2);
++    g_assert_cmpuint(completion_calls, ==, 2);
++    g_assert_cmpint(observed_completion_status, ==, 0);
++    g_assert_cmpint(observed_completion_target, ==, 23000);
++    g_assert_cmpint(timers_state.crucible_sim_tick_bias, ==, 6000);
++    g_assert_cmpint(qemu_plugin_time_advance_pending, ==, 0);
++    g_assert_false(qemu_plugin_time_advance_settle_is_pending());
++    /* The executing RR thread is not parked and takes no durable idle wake. */
++    g_assert_cmpuint(wake_publications, ==, 0);
++
++    fixture_drained_waiter = NULL;
++    fixture_guest_execution_nested = false;
++}
++
++"""
 +
 +# The idle bridge and arm cases run the production bodies over one halted CPU.
 +# They stay out of EXTRA, CHECKS, and production_bodies(), which other
@@ -168333,8 +168435,10 @@ index 0000000000000000000000000000000000000000..b5bb6c497e55907ee2d5fc61905bde7f
 +def main():
 +    parser = argparse.ArgumentParser()
 +    parser.add_argument("--output-dir", type=Path, required=True)
-+    parser.add_argument("--case", choices=["advance", "admitted", "resume", "paused-fork"])
-+    parser.add_argument("--negative-control", choices=["settle-rearm", "stop-transfer"])
++    parser.add_argument("--case", choices=["advance", "admitted", "resume", "paused-fork",
++                                           "nested-io"])
++    parser.add_argument("--negative-control", choices=["settle-rearm", "stop-transfer",
++                                                       "nested-settle"])
 +    arguments = parser.parse_args()
 +    arguments.output_dir.mkdir(parents=True, exist_ok=True)
 +
@@ -168356,6 +168460,16 @@ index 0000000000000000000000000000000000000000..b5bb6c497e55907ee2d5fc61905bde7f
 +         "{ return fixture_dispatch_registered; }\n"
 +         "static uint64_t crucible_sim_shmem_max_advance_icount(void)\n"
 +         "{ return fixture_max_advance_icount; }\n"),
++        # A drained wake re-enters a parked device waiter, as the block driver does.
++        ("static void notifier_list_notify(int *list, void *event) { }\n",
++         "static void (*fixture_drained_waiter)(void);\n"
++         "static void notifier_list_notify(int *list, void *event)\n"
++         "{\n"
++         "    if (fixture_drained_waiter &&\n"
++         "        (intptr_t)event == QEMU_PLUGIN_WAKE_EVENT_DRAINED) {\n"
++         "        fixture_drained_waiter();\n"
++         "    }\n"
++         "}\n"),
 +    )
 +    for original, replacement in replacements:
 +        assert prelude.count(original) == 1, original
@@ -168369,6 +168483,12 @@ index 0000000000000000000000000000000000000000..b5bb6c497e55907ee2d5fc61905bde7f
 +        changed = body.replace("    qemu_plugin_rearm_deferred_control_boundary();\n", "")
 +        assert body != changed
 +        bodies = bodies.replace(body, changed)
++    elif arguments.negative_control == "nested-settle":
++        # Leave a nested completion to the unreachable outer RR settlement.
++        guard = "    if (rr_crucible_sim_guest_execution_nested()) {\n"
++        assert bodies.count(guard) == 1
++        bodies = bodies.replace(
++            guard, "    if (false && rr_crucible_sim_guest_execution_nested()) {\n")
 +    elif arguments.negative_control == "stop-transfer":
 +        body = definition(bodies,
 +                          "void qemu_plugin_crucible_rr_control_boundary_defer(void)")
@@ -168388,7 +168508,7 @@ index 0000000000000000000000000000000000000000..b5bb6c497e55907ee2d5fc61905bde7f
 +    extra = EXTRA.replace(wait_stub, BRIDGE_WAIT) + IDLE_EXTRA
 +    main_anchor = "\nint main(int argc, char **argv)"
 +    assert CHECKS.count(main_anchor) == 1
-+    checks = CHECKS.replace(main_anchor, IDLE_CHECKS + main_anchor, 1)
++    checks = CHECKS.replace(main_anchor, IDLE_CHECKS + NESTED_IO_CHECKS + main_anchor, 1)
 +    generated.write_text(prelude + extra + dependencies + bodies + "\n\n" +
 +                         idle_bridge_bodies() + support + checks)
 +    binary = arguments.output_dir / "control-deferred"
@@ -183006,10 +183126,10 @@ index 0000000000000000000000000000000000000000..7c0e740270c5f06ea7e1dde755888dfe
 +    main()
 diff --git a/tests/unit/test-crucible-net-output-stop.py b/tests/unit/test-crucible-net-output-stop.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..24ee64fed7ea7a857062cf4113aac8b4519a2e6a
+index 0000000000000000000000000000000000000000..211f74bab0ab1e121a4e4418b7d3e3fcfb752db4
 --- /dev/null
 +++ b/tests/unit/test-crucible-net-output-stop.py
-@@ -0,0 +1,929 @@
+@@ -0,0 +1,936 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercise production TX, VM-stop, clock completion, and RR parking bodies.
 +
@@ -183471,6 +183591,12 @@ index 0000000000000000000000000000000000000000..24ee64fed7ea7a857062cf4113aac8b4
 +    wake_publications++;
 +}
 +static void rr_crucible_sim_signal_time_advance_wake(void) { }
++/* Main-loop work runs outside guest execution unless a case nests it. */
++static bool fixture_guest_execution_nested;
++static bool rr_crucible_sim_guest_execution_nested(void)
++{
++    return fixture_guest_execution_nested;
++}
 +static void notifier_list_notify(int *list, void *event) { }
 +/* This fixture does not enroll a template continuation. */
 +static void qemu_plugin_control_drain_notify(void) { }
@@ -183662,6 +183788,7 @@ index 0000000000000000000000000000000000000000..24ee64fed7ea7a857062cf4113aac8b4
 +    device_effects = 0;
 +    device_event_scheduled = false;
 +    stop_in_completion = stop_in_timer = retry_on_resume = false;
++    fixture_guest_execution_nested = false;
 +    crucible_net_tx_cb = output_callback;
 +    qemu_plugin_time_advance_cb = completion_callback;
 +    qemu_plugin_control_boundary_cb = control_callback;
@@ -192230,10 +192357,10 @@ index 0000000000000000000000000000000000000000..2959d327c93b23a69e0ce12dbe31dd19
 +}
 diff --git a/tests/unit/test-crucible-settle-prepark.py b/tests/unit/test-crucible-settle-prepark.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..82d31b2f973addf89d1c3b9bb291be1fafc98dea
+index 0000000000000000000000000000000000000000..20b77613995c55246a54c23fe4f1fafb2d1ca681
 --- /dev/null
 +++ b/tests/unit/test-crucible-settle-prepark.py
-@@ -0,0 +1,490 @@
+@@ -0,0 +1,492 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercise production RR prepark, completion, settlement and futex event bodies.
 +
@@ -192499,6 +192626,8 @@ index 0000000000000000000000000000000000000000..82d31b2f973addf89d1c3b9bb291be1f
 +{
 +    g_assert_false(qemu_plugin_time_advance_is_pending());
 +}
++/* This fixture settles at the outer RR idle loop, never nested in I/O. */
++bool rr_crucible_sim_guest_execution_nested(void) { return false; }
 +static void qemu_plugin_control_drain_notify(void) { }
 +static void qemu_plugin_crucible_rr_control_boundary_acknowledge(void)
 +{

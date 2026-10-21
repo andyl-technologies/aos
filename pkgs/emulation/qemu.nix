@@ -2615,8 +2615,31 @@ in
                   plugin.index("int qemu_plugin_advance_time_ticks"):
                   plugin.index("uint64_t qemu_plugin_icount_raw")
               ]
+              # A completion nested in RR guest execution, during synchronous
+              # device I/O, releases its own barrier before re-entering the
+              # waiters. Check that branch separately so the main-loop
+              # completion keeps its exact ordering contract.
+              time_advance_nested_marker = (
+                  "    if (rr_crucible_sim_guest_execution_nested()) {\n"
+              )
+              time_advance_nested_start = time_advance_complete.index(
+                  time_advance_nested_marker
+              )
+              time_advance_nested_end = time_advance_complete.index(
+                  "        return;\n    }\n", time_advance_nested_start
+              ) + len("        return;\n    }\n")
+              time_advance_nested_complete_code = re.sub(
+                  r"/\*.*?\*/", "",
+                  time_advance_complete[
+                      time_advance_nested_start:time_advance_nested_end
+                  ],
+                  flags=re.DOTALL,
+              )
               time_advance_complete_code = re.sub(
-                  r"/\*.*?\*/", "", time_advance_complete, flags=re.DOTALL
+                  r"/\*.*?\*/", "",
+                  time_advance_complete[:time_advance_nested_start] +
+                  time_advance_complete[time_advance_nested_end:],
+                  flags=re.DOTALL,
               )
               time_advance_settle_start = plugin.index(
                   "void qemu_plugin_time_advance_settle_at_rr_idle"
@@ -3487,6 +3510,18 @@ in
                    r"qatomic_store_release\("
                    r"&qemu_plugin_time_advance_pending, 0\);.*?"
                    r"notifier_list_notify\(&qemu_plugin_wake_notifiers", 0),
+                  ("nested time advance completion releases before waiters",
+                   time_advance_nested_complete_code,
+                   r"QEMU_PLUGIN_TIME_ADVANCE_TIMERS_COMPLETING,\s*"
+                   r"QEMU_PLUGIN_TIME_ADVANCE_TIMERS_NOT_READY\).*?"
+                   r"qatomic_store_release\("
+                   r"&qemu_plugin_time_advance_pending, 0\);.*?"
+                   r"notifier_list_notify\(&qemu_plugin_wake_notifiers,.*?"
+                   r"return;", 1),
+                  ("nested time advance completion publishes no RR idle wake",
+                   time_advance_nested_complete_code,
+                   r"rr_crucible_sim_publish_time_advance_wake|"
+                   r"rr_crucible_sim_signal_time_advance_wake", 0),
                   ("stale unconditional time advance generic boundary",
                    time_advance_complete_code,
                    r"qatomic_store_release\("
@@ -3937,8 +3972,12 @@ in
                   ("determinism idle complete phase", plugin,
                    r'rr_crucible_sim_trace_idle_advance\("complete", target\);',
                    1),
+                  ("determinism idle nested complete phase",
+                   time_advance_nested_complete_code,
+                   r'rr_crucible_sim_trace_idle_advance\("complete-nested", target\);',
+                   1),
                   ("determinism idle trace phase cardinality", plugin,
-                   r"rr_crucible_sim_trace_idle_advance\(", 2),
+                   r"rr_crucible_sim_trace_idle_advance\(", 3),
                   ("ack generation trace", acknowledge_boundary,
                    r"schedule_token = qemu_plugin_schedule_control_boundary\(\);"
                    r"\s*qatomic_store_release\("
