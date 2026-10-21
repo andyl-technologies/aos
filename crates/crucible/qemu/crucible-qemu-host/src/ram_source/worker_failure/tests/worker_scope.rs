@@ -12,6 +12,48 @@ use crucible_qemu_protocol::ram_page::RamPageBinding;
 use crucible_ram::RootRecord;
 use std::os::unix::net::UnixStream;
 
+#[test]
+fn incomplete_worker_journal_admission_preserves_actual_input_without_allocation() {
+    let _serial = TEST_LOCK.lock().unwrap();
+    let backing = Arc::new(ImmutableBacking::new(2).unwrap());
+    let binding = RamPageBinding {
+        session: [1; 16],
+        owner_incarnation: [2; 16],
+        source_generation: 1,
+        root_digest: *backing.root_record().digest().as_bytes(),
+    };
+    // Admit the actual other controls and exactly one journal. This independent
+    // allowance must refuse the production preparation's two real journals.
+    let single_journal = QemuRamWorkerFailure::allocation_bytes().unwrap()
+        + HostServiceLease::metadata_bytes()
+        - std::mem::size_of::<HostServiceLease>() as u64
+        + shared_allocation_bytes::<AtomicBool>().unwrap()
+        + crate::ram_source::worker_outcome::WorkerOutcome::allocation_bytes().unwrap();
+    let peak = crate::ram_source::SOURCE_STACK_BYTES as u64
+        + 3 * crucible_qemu_protocol::ram_page::RAM_PAGE_MAX_RESPONSE_BYTES as u64
+        + single_journal;
+    let account = HostServiceAllocator::new(1, 2, peak).unwrap();
+    let supervisor = HostOperationSupervisor::new(HostOperationBudgets::default(), None).unwrap();
+    let (socket, _peer) = UnixStream::pair().unwrap();
+    let mut input = Some(crate::ram_source::SourceInput::new(
+        socket, backing, binding,
+    ));
+
+    let (result, counts) = TestAllocationObserver::count(|| {
+        QemuRamSourceService::prepare(&mut input, supervisor, account)
+    });
+
+    assert!(matches!(
+        result,
+        Err(QemuRamSourceError::Services(
+            HostServiceError::CapacityExhausted
+        ))
+    ));
+    assert!(input.is_some());
+    assert_eq!(counts.allocations, 0);
+    assert_eq!(counts.reallocations, 0);
+}
+
 struct ExitGate {
     entered: Barrier,
     released: Barrier,

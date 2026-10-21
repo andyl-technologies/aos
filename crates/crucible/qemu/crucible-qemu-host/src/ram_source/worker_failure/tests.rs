@@ -104,6 +104,44 @@ fn actual_worker_allocation_closes_before_original_credit_refund() {
 }
 
 #[test]
+fn prepaid_worker_failure_records_without_allocating_or_refunding_early() {
+    let _serial = TEST_LOCK.lock().unwrap();
+    let account = HostServiceAllocator::new(1, 1, 4096).unwrap();
+    let loan = account.reserve_resources(1, 1, 4096).unwrap();
+    let expected = usize::try_from(QemuRamWorkerFailure::allocation_bytes().unwrap()).unwrap();
+    let layout = Layout::from_size_align(expected, 8).unwrap();
+    let (journal, identity, birth) =
+        TestAllocationObserver::capture_layout_and_count(layout, || {
+            WorkerFailureJournal::new(loan)
+        });
+    assert_eq!(birth.allocations, 1);
+    assert_eq!(birth.reallocations, 0);
+    let scope = WorkerScope::new(journal, None);
+
+    let (result, recorded) =
+        TestAllocationObserver::count(|| scope.finish(Err(QemuRamSourceError::Ownership)));
+
+    let failure = result.expect_err("actual worker finish retains its typed failure");
+    assert!(matches!(failure.as_ref(), QemuRamSourceError::Ownership));
+    assert_eq!(recorded.allocations, 0);
+    assert_eq!(recorded.reallocations, 0);
+    let clone = failure.clone();
+    drop(failure);
+    assert!(matches!(
+        account.reserve_resources(0, 0, 1),
+        Err(HostServiceError::CapacityExhausted)
+    ));
+
+    let (_, report) =
+        TestAllocationObserver::observe_resident_after_free(&account, identity.unwrap(), || {
+            drop(clone.into_backend_cause())
+        })
+        .unwrap();
+    verify_original_refusal(report);
+    verify_closed(&account);
+}
+
+#[test]
 fn simultaneous_worker_observers_release_original_credit_once_after_close() {
     let _serial = TEST_LOCK.lock().unwrap();
     let account = HostServiceAllocator::new(1, 1, 4096).unwrap();

@@ -29,7 +29,10 @@ fn backend_observers_share_original_worker_allocation_through_final_close() {
         left, right,
         "repeated observation must reuse the original control"
     );
-    assert!(matches!(body.error, QemuRamSourceError::Ownership));
+    assert!(matches!(
+        body.error.get(),
+        Some(QemuRamSourceError::Ownership)
+    ));
 
     drop(health);
     drop(left);
@@ -61,7 +64,7 @@ fn scheduler_retains_first_boundary_and_complete_typed_ram_error() {
         )),
     };
     let (failure, target) = failure_with_error(&account, error);
-    let original = &failure.shared.source_ref().error as *const QemuRamSourceError;
+    let original = failure.as_ref() as *const QemuRamSourceError;
     let health = QemuAsyncDriverHealthError::ram_source(QemuRamSourceError::WorkerFailed(failure));
     let node = QemuNodeError::from_async_driver(QemuAsyncDriverError::OperationalHealth(health));
     let scheduler = SchedulerError::from(BackendError::from(node));
@@ -176,7 +179,7 @@ fn cleanup_scheduler_reuses_worker_allocation_and_original_lease() {
         )),
     };
     let (failure, target) = failure_with_error(&account, error);
-    let original = &failure.shared.source_ref().error as *const QemuRamSourceError;
+    let original = failure.as_ref() as *const QemuRamSourceError;
     let layout = Layout::from_size_align(
         usize::try_from(QemuRamWorkerFailure::allocation_bytes().unwrap()).unwrap(),
         8,

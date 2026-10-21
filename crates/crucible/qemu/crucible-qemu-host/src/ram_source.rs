@@ -231,6 +231,8 @@ pub struct QemuRamSourceService {
     birth_after: Option<HostSupervisionError>,
     supervisor: HostOperationSupervisor,
     failure: worker_outcome::WorkerOutcome,
+    launch_failure: Option<worker_failure::WorkerFailureJournal>,
+    worker_failure: Option<worker_failure::WorkerFailureJournal>,
     service_lease: crucible_host_resources::host_services::HostServiceLease,
     launch_join: Option<crate::launch_cleanup::LaunchSourceJoin>,
 }
@@ -343,6 +345,8 @@ impl QemuRamSourceService {
             let wake = pending.socket.try_clone()?;
             let cancellation = Arc::new(AtomicBool::new(false));
             let failure = worker_outcome::WorkerOutcome::new(service_lease.clone());
+            let launch_failure = worker_failure::WorkerFailureJournal::new(service_lease.clone());
+            let worker_failure = worker_failure::WorkerFailureJournal::new(service_lease.clone());
             // All fallible work leaves the caller's SAME input untouched.
             // The final transfer into its retained Service is a pure move.
             let SourceInput {
@@ -365,6 +369,8 @@ impl QemuRamSourceService {
                 birth_after: None,
                 supervisor,
                 failure,
+                launch_failure: Some(launch_failure),
+                worker_failure: Some(worker_failure),
                 service_lease,
                 launch_join: None,
             })
@@ -394,9 +400,19 @@ impl QemuRamSourceService {
                 // An error before Builder returned has no born task. Retain
                 // its actual typed cause in the same paid result allocation.
                 self.spawn_returned = true;
-                let first = QemuRamWorkerFailure::new(first, self.service_lease.clone());
-                self.failure.no_birth(Some(first.clone()));
-                Err(QemuRamSourceError::WorkerFailed(first))
+                match self.launch_failure.take() {
+                    Some(journal) => {
+                        let first = journal.record(first);
+                        self.failure.no_birth(Some(first.clone()));
+                        Err(QemuRamSourceError::WorkerFailed(first))
+                    }
+                    None => {
+                        // A missing journal cannot replace the actual first
+                        // cause or bypass the independent birth post below.
+                        self.failure.no_birth(None);
+                        Err(first)
+                    }
+                }
             }
             result => result,
         };
@@ -437,7 +453,11 @@ impl QemuRamSourceService {
         let worker_supervisor = self.supervisor.clone();
         let binding = self.binding;
         let worker_outcome = self.failure.clone();
-        let worker_scope = worker_failure::WorkerScope::new(self.service_lease.clone(), cleanup);
+        let journal = self
+            .worker_failure
+            .take()
+            .ok_or(QemuRamSourceError::Ownership)?;
+        let worker_scope = worker_failure::WorkerScope::new(journal, cleanup);
         let worker = thread::Builder::new()
             .name("crucible-ram-source".to_owned())
             .stack_size(SOURCE_STACK_BYTES)
@@ -462,6 +482,7 @@ impl QemuRamSourceService {
                 });
                 self.worker_started = true;
                 self.spawn_returned = true;
+                drop(self.launch_failure.take());
                 Ok(())
             }
             Err(first) => {
@@ -469,9 +490,17 @@ impl QemuRamSourceService {
                     join.joined();
                 }
                 self.spawn_returned = true;
-                let first = QemuRamWorkerFailure::new(first.into(), self.service_lease.clone());
-                self.failure.no_birth(Some(first.clone()));
-                Err(QemuRamSourceError::WorkerFailed(first))
+                match self.launch_failure.take() {
+                    Some(journal) => {
+                        let first = journal.record(first.into());
+                        self.failure.no_birth(Some(first.clone()));
+                        Err(QemuRamSourceError::WorkerFailed(first))
+                    }
+                    None => {
+                        self.failure.no_birth(None);
+                        Err(first.into())
+                    }
+                }
             }
         }
     }

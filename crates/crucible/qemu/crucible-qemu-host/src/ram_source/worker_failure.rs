@@ -9,6 +9,7 @@ use std::error::Error;
 use std::fmt;
 use std::ops::Deref;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
+use std::sync::OnceLock;
 #[cfg(test)]
 use std::sync::{Arc, Mutex};
 
@@ -19,17 +20,17 @@ use super::QemuRamSourceError;
 
 /// Keeps the original loan until the worker's remaining shared controls close.
 pub(super) struct WorkerScope {
-    service_lease: HostServiceLease,
+    failure: WorkerFailureJournal,
     _cleanup: Option<crate::launch_cleanup::LaunchCleanup>,
 }
 
 impl WorkerScope {
     pub(super) fn new(
-        service_lease: HostServiceLease,
+        failure: WorkerFailureJournal,
         cleanup: Option<crate::launch_cleanup::LaunchCleanup>,
     ) -> Self {
         Self {
-            service_lease,
+            failure,
             _cleanup: cleanup,
         }
     }
@@ -41,26 +42,61 @@ impl WorkerScope {
         let Err(error) = result else {
             return Ok(());
         };
-        let error = QemuRamWorkerFailure::new(error, self.service_lease);
+        let error = self.failure.record(error);
         Err(error)
     }
 }
 
 #[derive(Debug)]
 struct WorkerFailureBody {
-    error: QemuRamSourceError,
+    error: OnceLock<QemuRamSourceError>,
     _service_lease: HostServiceLease,
 }
 
 impl fmt::Display for WorkerFailureBody {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.error.fmt(formatter)
+        match self.error.get() {
+            Some(error) => error.fmt(formatter),
+            None => formatter.write_str("RAM source failure is not recorded"),
+        }
     }
 }
 
 impl Error for WorkerFailureBody {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
-        Some(&self.error)
+        self.error.get().map(|error| error as _)
+    }
+}
+
+/// Owns one prepaid, unpublished failure control before a worker can be born.
+///
+/// This owner is never cloned. Recording consumes its sole handle, so every
+/// published worker failure has exactly one initialized typed cause. Separate
+/// launch and worker journals are necessary because a failed thread spawn
+/// destroys the closure and its actual worker journal before returning.
+pub(super) struct WorkerFailureJournal {
+    shared: SharedOperationalCause<WorkerFailureBody>,
+}
+
+impl WorkerFailureJournal {
+    pub(super) fn new(service_lease: HostServiceLease) -> Self {
+        Self {
+            shared: SharedOperationalCause::new(WorkerFailureBody {
+                error: OnceLock::new(),
+                _service_lease: service_lease,
+            }),
+        }
+    }
+
+    pub(super) fn record(self, error: QemuRamSourceError) -> QemuRamWorkerFailure {
+        // Only this consuming method can initialize the private journal, and
+        // no shared observer exists before the completed failure is returned.
+        if self.shared.source_ref().error.set(error).is_err() {
+            unreachable!("a linear unpublished worker journal is recorded once");
+        }
+        QemuRamWorkerFailure {
+            shared: self.shared,
+        }
     }
 }
 
@@ -88,6 +124,8 @@ impl QemuRamWorkerFailure {
             .checked_sub(std::mem::size_of::<HostServiceLease>() as u64)
             .ok_or(QemuRamSourceError::Ownership)?;
         Self::allocation_bytes()?
+            .checked_mul(2)
+            .ok_or(QemuRamSourceError::Ownership)?
             .checked_add(lease_control)
             .and_then(|bytes| bytes.checked_add(shared_allocation_bytes::<AtomicBool>().ok()?))
             .and_then(|bytes| {
@@ -96,13 +134,9 @@ impl QemuRamWorkerFailure {
             .ok_or(QemuRamSourceError::Ownership)
     }
 
+    #[cfg(test)]
     pub(super) fn new(error: QemuRamSourceError, service_lease: HostServiceLease) -> Self {
-        Self {
-            shared: SharedOperationalCause::new(WorkerFailureBody {
-                error,
-                _service_lease: service_lease,
-            }),
-        }
+        WorkerFailureJournal::new(service_lease).record(error)
     }
 
     pub(crate) fn into_backend_cause(self) -> BackendOperationalCause {
@@ -114,7 +148,10 @@ impl Deref for QemuRamWorkerFailure {
     type Target = QemuRamSourceError;
 
     fn deref(&self) -> &Self::Target {
-        &self.shared.source_ref().error
+        match self.shared.source_ref().error.get() {
+            Some(error) => error,
+            None => unreachable!("only a recorded journal publishes a worker failure"),
+        }
     }
 }
 
