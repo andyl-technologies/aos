@@ -78,6 +78,8 @@ in
     cargoTestFlags = "--no-default-features --features aos-sandbox-services/mount -p aos-sandbox-services -p aos-sandbox-mount -p aos-sandbox-mount-native";
     cargoNextest = true;
     cargoNextestProfile = "nix-sandbox";
+    # Match the workspace native test runner; installed stack limits stay fixed.
+    RUST_MIN_STACK = "33554432";
     doCheck = true;
     buildDeps = [buildProtobuf elfutils];
     runtimeDeps = [];
