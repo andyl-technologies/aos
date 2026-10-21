@@ -439,6 +439,96 @@ async fn gc_initial_retirement_native_selects_exact_exclusion_then_committed_tra
 }
 
 #[tokio::test]
+async fn gc_requested_retirement_preserves_marking_grace_and_exact_candidate_scope() {
+    let fixture = Fixture::new().await;
+    let (id, upper) = orphan(&fixture).await;
+    let base = upper.checked_add(windows().grace()).unwrap();
+    let mut collection = completed(&fixture, base, windows()).await;
+    let before = image(&fixture).await;
+    let progress = collection.state().clone();
+
+    let mut rooted = None;
+    for row in before.manifest.inventory.as_ref().unwrap() {
+        let pack = PackId::from_random_bytes(row.pack_id);
+        let bytes = std::fs::read(fixture.config.root.join(pack.index_key())).unwrap();
+        assert_eq!(
+            TERRANE_V1
+                .calculate(IdentityKind::Index, &bytes)
+                .unwrap()
+                .terrane_v1_digest()
+                .unwrap(),
+            row.index_hash
+        );
+        let index = PackIndexSnapshot::decode(&bytes, before.manifest.generation).unwrap();
+        if index
+            .entries()
+            .iter()
+            .any(|entry| entry.hash() == &fixture.head.commit)
+        {
+            rooted = Some(pack);
+        }
+    }
+    let rooted = rooted.unwrap();
+    assert_ne!(rooted, id);
+    let missing = PackId::from_random_bytes([0; 16]);
+    assert!(
+        before
+            .manifest
+            .inventory
+            .as_ref()
+            .unwrap()
+            .iter()
+            .all(|row| row.pack_id != *missing.as_bytes())
+    );
+
+    // A caller-chosen ID cannot exempt a marked pack, create an absent pair,
+    // or shorten the strict grace boundary for a real unmarked orphan.
+    for requested in [rooted, missing, id] {
+        assert!(
+            collection
+                .retire_pack(fixture.repository.coordinator(), requested)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_preserved(&fixture, &before, id, 51, false).await;
+        assert_eq!(collection.state(), &progress);
+    }
+
+    fixture
+        .clock
+        .set(base.checked_add(1).unwrap(), base.checked_sub(99).unwrap());
+    assert!(
+        collection
+            .retire_pack(fixture.repository.coordinator(), rooted)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let retired = collection
+        .retire_pack(fixture.repository.coordinator(), id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(retired.pack, *id.as_bytes());
+    assert_preserved(&fixture, &before, id, 51, true).await;
+    assert_eq!(collection.state(), &progress);
+
+    let after = image(&fixture).await;
+    assert!(
+        collection
+            .retire_pack(fixture.repository.coordinator(), id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_preserved(&fixture, &after, id, 51, false).await;
+    assert_eq!(fixture.fs.data_body_read_attempts(), 0);
+    drop(collection);
+    fixture.cleanup();
+}
+
+#[tokio::test]
 async fn gc_initial_retirement_native_grace_uses_pair_backend_upper_bound() {
     for offset in [0, 60, 61] {
         let fixture = Fixture::new().await;
@@ -483,7 +573,7 @@ async fn gc_initial_retirement_native_refuses_unenforced_commit_window_before_ef
 
 #[tokio::test]
 async fn gc_initial_retirement_native_unknown_creator_never_mints_trash() {
-    for member in [false, true] {
+    for (member, requested) in [(false, false), (true, false), (false, true), (true, true)] {
         let fixture = Fixture::new().await;
         let (id, upper) = orphan(&fixture).await;
         let mut collection = completed(&fixture, upper.checked_add(61).unwrap(), windows()).await;
@@ -496,10 +586,16 @@ async fn gc_initial_retirement_native_unknown_creator_never_mints_trash() {
         tokio::fs::remove_file(journal(&fixture, &key))
             .await
             .unwrap();
-        let error = collection
-            .retire_one(fixture.repository.coordinator())
-            .await
-            .unwrap_err();
+        let error = if requested {
+            collection
+                .retire_pack(fixture.repository.coordinator(), id)
+                .await
+        } else {
+            collection
+                .retire_one(fixture.repository.coordinator())
+                .await
+        }
+        .unwrap_err();
         assert_eq!(failure_kind(&error), &StoreErrorKind::Unsupported);
         assert_preserved(&fixture, &before, id, 51, false).await;
         assert!(!fixture.config.root.join(format!("trash/51/{id}")).exists());

@@ -306,6 +306,34 @@ where
         &mut self,
         coordinator: &crate::ref_advance::Coordinator<FileBucket<F, B, V>, C, F>,
     ) -> Result<Option<terrane_format::gc::Tombstone>, CollectionError> {
+        self.retire(coordinator, None).await
+    }
+
+    /// Retires one requested pack only when fresh native qualification permits it.
+    ///
+    /// The pack identifier narrows candidate selection; it supplies no authority,
+    /// age, marking result or deletion permission. Every lease, complete current
+    /// root, catalog, incarnation, grace and durable Trash check is identical to
+    /// [`Self::retire_one`]. Other eligible packs are left unchanged. Returns
+    /// `None` when the requested pack is absent or ineligible in this observation.
+    ///
+    /// # Errors
+    /// Preserves every qualification, cancellation, lease, timing and native
+    /// durability failure from [`Self::retire_one`], including unknown creation
+    /// history. A selected exclusion can remain without acknowledged Trash.
+    pub async fn retire_pack(
+        &mut self,
+        coordinator: &crate::ref_advance::Coordinator<FileBucket<F, B, V>, C, F>,
+        pack: crate::pack::PackId,
+    ) -> Result<Option<terrane_format::gc::Tombstone>, CollectionError> {
+        self.retire(coordinator, Some(pack)).await
+    }
+
+    async fn retire(
+        &mut self,
+        coordinator: &crate::ref_advance::Coordinator<FileBucket<F, B, V>, C, F>,
+        requested: Option<crate::pack::PackId>,
+    ) -> Result<Option<terrane_format::gc::Tombstone>, CollectionError> {
         if !std::ptr::eq(self.guard, coordinator.guard()) {
             return Err(denied().into());
         }
@@ -330,6 +358,7 @@ where
             &self.session,
             (&self.roots, &self.state),
             self.windows,
+            requested,
         )
         .await?;
         operation.complete();

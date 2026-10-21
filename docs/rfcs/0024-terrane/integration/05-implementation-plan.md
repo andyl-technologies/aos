@@ -12120,3 +12120,36 @@ negative identity controls, now use this configured opening path. Two additional
 cases cover whole-map preflight and role/name/actual signing-file refusal.
 All ten GCP cases, four static configuration cases and ten configured-repository
 cases pass locally. Frozen qualification and deployed issuance remain pending.
+
+Frozen `e83a19b600` required application-target compilation also passes:
+independent review verifies 7,916 immutable source files, 184 test executables
+and 59 packages. This is compilation evidence, separate from the ten history
+and four CLI cases executed above.
+
+Frozen `9aa1f36b9e` passes the owning AUTH-3 gate after configured GCP opening.
+Independent review verifies 7,922 immutable source files, 5,229 crate inputs
+and all 22 actual issuer cases: eight static, ten GCP and four configured
+static-file cases. Required application-target compilation remains running.
+This qualifies these configured issuer components; it does not qualify a
+deployed issuance endpoint or accept another whole task.
+
+The `147d56388a` full package aggregate records an overlay ancestry timeout
+at its unchanged 180-second limit. An isolated diagnostic using its exact
+retained executable reproduces exit 124 at 180.005 seconds. The trace shows
+three eligible pack retirements, selected by random pack-ID ordering, before
+the fixture reaches its particular orphan and mandatory deletion wait.
+This diagnostic identifies unnecessary preceding retirements; it does not
+qualify the aggregate. The original failed logs and executable are retained.
+
+Targeted pack retirement now narrows the existing candidate selection through
+`Collection::retire_pack`. The identifier supplies no authority or eligibility;
+the same complete current roots, catalog, lease, native incarnation, strict
+grace, exclusion and durable Trash checks apply. The overlay fixture selects
+its actual orphan through this operation and retains the full deletion wait,
+physical removal, reopen and layer-content assertions. New native controls
+cover marked, missing, young and already excluded candidates, and extend
+unknown-creation refusal to both retirement APIs. Strict all-target SDK,
+Linux and CLI Clippy, formatting, owning derivation evaluation and native
+no-default and `std,wasm` feature checks pass. The latter is not a wasm32
+cross-build. Local runtime and frozen gate qualification remain pending. No
+deadline or safety window is increased, and no additional task is accepted.

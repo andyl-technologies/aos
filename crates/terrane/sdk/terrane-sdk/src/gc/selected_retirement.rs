@@ -424,6 +424,8 @@ where
 /// The caller renews before acquiring the holder and keeps an actual Session
 /// operation alive. A None result means this listing contains no new eligible
 /// candidate; imported Unknown, unsafe incarnations and failures remain typed.
+/// A requested identifier only narrows the candidates after full current proof;
+/// it never supplies eligibility, native age or publication permission.
 ///
 /// # Errors
 /// Refuses incomplete catalog/current proof, lost lease, young or changed native
@@ -435,6 +437,7 @@ pub(crate) async fn retire_one<F, B, V, C>(
     session: &Session,
     checkpoint: (&GcRoots, &GcState),
     windows: Windows,
+    requested: Option<PackId>,
 ) -> Result<Option<Tombstone>, CollectionError>
 where
     F: LocalFs + BucketBinding,
@@ -467,6 +470,9 @@ where
     retirement_stage("candidate-selection", None);
     for row in catalog.inventory()? {
         let pack = PackId::from_random_bytes(row.pack_id);
+        if requested.is_some_and(|requested| requested != pack) {
+            continue;
+        }
         if !listed.contains(&held.root().join(pack.pack_key()))
             || catalog.burns()?.binary_search(&row.pack_id).is_ok()
             || catalog

@@ -40,6 +40,7 @@
   ];
 
   graceTests = [
+    "gc::runner::tests::retirement::gc_requested_retirement_preserves_marking_grace_and_exact_candidate_scope"
     "gc::runner::tests::retirement::gc_initial_retirement_native_grace_uses_pair_backend_upper_bound"
     "gc::runner::tests::retirement::gc_initial_retirement_native_newer_index_controls_pair_grace"
     "gc::runner::tests::retirement::gc_initial_retirement_native_refuses_unenforced_commit_window_before_effects"
@@ -107,7 +108,7 @@ in {
   gc-grace-window = nativeSdkGate "gc-grace-window" ''
     cd crates
     ${nativeFocusedTests "gc-grace-window" graceTests}
-    printf 'PASS: actual pack/index timestamps, strict grace boundary and enforced commit window (4 exact cases)\n' \
+    printf 'PASS: actual pack/index timestamps, requested candidate scope, strict grace boundary and enforced commit window (5 exact cases)\n' \
       > "$out/result"
   '';
 

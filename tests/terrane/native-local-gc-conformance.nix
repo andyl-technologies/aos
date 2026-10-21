@@ -3,6 +3,7 @@
   prerequisites,
 }: let
   selectors = [
+    "gc::runner::tests::retirement::gc_requested_retirement_preserves_marking_grace_and_exact_candidate_scope"
     "gc::runner::tests::retirement::gc_initial_retirement_native_selects_exact_exclusion_then_committed_trash"
     "gc::runner::tests::retirement::gc_initial_retirement_native_grace_uses_pair_backend_upper_bound"
     "gc::runner::tests::retirement::gc_initial_retirement_native_refuses_unenforced_commit_window_before_effects"
@@ -31,6 +32,6 @@ in
       test -s "$prerequisite/result"
     done
     ${runCases}
-    printf 'PASS: ordinary local-v1 retirement and post-Done reuse (15 exact cases), with physical recovery and current qualification prerequisites\n' \
+    printf 'PASS: ordinary local-v1 retirement and post-Done reuse (16 exact cases), with physical recovery and current qualification prerequisites\n' \
       > "$out/result"
   ''

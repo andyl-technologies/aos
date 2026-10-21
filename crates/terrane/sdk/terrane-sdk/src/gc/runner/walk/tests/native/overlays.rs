@@ -374,32 +374,23 @@ async fn signed_overlay_layer_ancestry_survives_collection_and_reopen() {
     };
     assert!(inventory.contains_key(orphan.as_bytes()));
 
-    // Expired baseline content is unmarked even though its signed metadata is
-    // retained. Eligible packs have no ordering guarantee relative to the orphan.
-    let mut retired_packs = BTreeSet::new();
-    let mut orphan_retirement = None;
+    // Exercise this orphan without first retiring unrelated expired baseline
+    // packs in random identifier order. The requested ID still undergoes every
+    // actual current-root, marking, grace and native publication check.
     indexed_replay_stage("ancestry.retire-packs");
-    for _ in 0..inventory.len() {
-        let candidate = resumed
-            .retire_one(reopened.coordinator())
-            .await
-            .assert_success()
-            .assert_success();
-        assert!(retired_packs.insert(candidate.pack));
-        let index = inventory.get(&candidate.pack).assert_success();
-        assert!(
-            index
-                .entries()
-                .iter()
-                .all(|entry| !marked.contains(entry.hash()))
-        );
-        if candidate.pack == *orphan.as_bytes() {
-            orphan_retirement = Some(candidate);
-            break;
-        }
-    }
-    let retired = orphan_retirement.assert_success();
+    let retired = resumed
+        .retire_pack(reopened.coordinator(), orphan)
+        .await
+        .assert_success()
+        .assert_success();
     assert_eq!(retired.pack, *orphan.as_bytes());
+    let index = inventory.get(&retired.pack).assert_success();
+    assert!(
+        index
+            .entries()
+            .iter()
+            .all(|entry| !marked.contains(entry.hash()))
+    );
     indexed_replay_stage("ancestry.delete-pack");
     fixture.clock.enable_timer();
     let done = resumed
