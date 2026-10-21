@@ -1263,7 +1263,10 @@ fn preexec_socket_identity(socket: RawFd) -> Result<(u64, u64), DescriptorHandov
             reason: "pre-exec handover requires its retained socket",
         });
     }
-    Ok((status.st_dev as u64, status.st_ino as u64))
+    // Native stat scalar widths differ across the supported Unix targets.
+    #[allow(clippy::unnecessary_cast)]
+    let identity = (status.st_dev as u64, status.st_ino as u64);
+    Ok(identity)
 }
 
 /// Sends the fixed selected pre-exec edition without changing lifecycle state.

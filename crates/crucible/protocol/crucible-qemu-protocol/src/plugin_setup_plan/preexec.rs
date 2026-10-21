@@ -123,8 +123,8 @@ pub(super) fn validate_binding(
     family::validate(purpose)?;
     validate_standing_source(purpose)?;
 
-    if let Some(workspace) = workspace {
-        if workspace[..8] != *b"CRUCWSP2"
+    if let Some(workspace) = workspace
+        && (workspace[..8] != *b"CRUCWSP2"
             || read_u32(workspace, 8)? != 2
             || read_u32(workspace, 12)? != 1
             || workspace[16..48] != purpose[184..216]
@@ -133,10 +133,9 @@ pub(super) fn validate_binding(
             || workspace[80..88] != purpose[88..96]
             || workspace[64..72] != crate::DEVICE_DIGEST_WORKSPACE_BYTES.to_be_bytes()
             || workspace[112..120] != [0; 8]
-            || workspace[120..128] != workspace[64..72]
-        {
-            return Err(invalid("workspace"));
-        }
+            || workspace[120..128] != workspace[64..72])
+    {
+        return Err(invalid("workspace"));
     }
 
     Ok(())
