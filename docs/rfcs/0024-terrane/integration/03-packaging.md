@@ -132,7 +132,7 @@ options.aos.terrane = {
     path = lib.mkOption { default = "/var/lib/terrane"; };
     sizeBytes = lib.mkOption { type = lib.types.int; };
     domains = lib.mkOption {
-      # domain -> { filesystem = "/var/lib/terrane-private"; wipe = "zero"; }
+      # domain -> { path = "/var/lib/terrane-tenant"; wipe = "none"; }
       type = lib.types.attrsOf (lib.types.submodule { ... });
     };
   };
@@ -156,6 +156,10 @@ options.aos.terrane = {
   };
 };
 ```
+
+Kernel-sealed host tiers reject `wipe = "zero"` during configuration validation
+(D-128). Private domains retain their `zero` default, so an omitted private
+policy is also rejected; the module never substitutes `none` for that default.
 
 - **[PKG-10]** The module MUST render one `terrane.toml` from these options
   and MUST NOT accept free-form configuration text, so that spec CRATE-17's

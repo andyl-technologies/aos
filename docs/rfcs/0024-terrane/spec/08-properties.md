@@ -40,6 +40,9 @@ private workspace, a tenant-scoped build cache, and a signed action cache:
 Each line is a root. `/nix/store` inherits everything and adds one value;
 `/workspace` overrides four.
 
+The zero-wipe workspace requires a backend that can overwrite its data.
+A permanently sealed host tier refuses that policy under HOST-25 (D-128).
+
 ## Resolution
 
 - **[PROP-1]** The effective value of property `p` at root `R` MUST be

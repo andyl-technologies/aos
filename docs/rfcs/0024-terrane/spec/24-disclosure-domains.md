@@ -253,3 +253,7 @@ every other sandbox; its reads of `/workspace` come from a per-sandbox
 directory that is zeroed when the sandbox ends. A commit that tried to
 symlink or `tree`-reference `/workspace` content from beneath `/` would be
 rejected at commit by DOM-5.
+
+The zero-wipe workspace requires an overwrite-capable backend. A host tier
+using permanent kernel seals rejects that policy during configuration
+validation under HOST-25 (D-128), including its private-domain default.
