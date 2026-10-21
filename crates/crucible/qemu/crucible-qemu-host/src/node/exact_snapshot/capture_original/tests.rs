@@ -3,6 +3,7 @@
 use super::*;
 use crucible_host_resources::host_services::HostServiceAllocator;
 use crucible_host_resources::host_supervision::{HostOperationBudgets, HostOperationState};
+use crucible_host_resources::test_support::{AllocationIdentity, TestAllocationObserver};
 use std::time::Duration;
 
 fn target() -> HostRamTarget {
@@ -30,6 +31,82 @@ fn event() -> OwnedFd {
         rustix::event::EventfdFlags::CLOEXEC | rustix::event::EventfdFlags::NONBLOCK,
     )
     .unwrap()
+}
+
+fn observed_loan() -> (
+    CheckpointOriginalLoan,
+    HostServiceAllocator,
+    AllocationIdentity,
+) {
+    let supervisor = supervisor();
+    let account = HostServiceAllocator::new(1, 2, 16384).unwrap();
+    let event = event();
+    let mut owner =
+        CheckpointOriginal::allocate_registered_owner(&supervisor, &account, target()).unwrap();
+    let (layout, _) = Layout::new::<[AtomicUsize; 2]>()
+        .extend(Layout::new::<LoanBody>())
+        .unwrap();
+    let (entered, allocation, counts) =
+        TestAllocationObserver::capture_layout_and_count(layout.pad_to_align(), || {
+            owner.enter(&event)
+        });
+    entered.unwrap();
+    assert!(!counts.overflow);
+    let loan = owner.loan(target()).unwrap();
+
+    // This is actual parent-observed retirement, while the separate transport
+    // borrower still owns the already entered original and its subscriber.
+    owner.retire_after_reap();
+    (loan, account, allocation.unwrap())
+}
+
+#[test]
+fn final_checkpoint_loan_frees_actual_allocation_before_original_credit() {
+    let (loan, account, allocation) = observed_loan();
+    let (last, counts) = TestAllocationObserver::count(|| loan.clone());
+    assert_eq!(counts.allocations, 0);
+    assert_eq!(counts.reallocations, 0);
+    assert!(!counts.overflow);
+    assert!(loan.same_owner(&last));
+    drop(loan);
+    assert!(account.reserve_resources(0, 0, 16384).is_err());
+
+    let ((), observations) = TestAllocationObserver::observe_controls(
+        [&account, &account],
+        None,
+        [Some(allocation), None, None],
+        || drop(last),
+    );
+
+    let observed = observations[0].unwrap();
+    let bytes = observed.before.original_bytes[0].unwrap();
+    assert!(bytes >= CheckpointOriginalLoan::allocation_bytes().unwrap());
+    assert_eq!(observed.after.original_bytes, [Some(bytes); 2]);
+    assert!(account.reserve_resources(0, 0, 16384).is_ok());
+}
+
+#[test]
+fn checkpoint_loan_unwind_keeps_credit_through_actual_allocation_free() {
+    let (loan, account, allocation) = observed_loan();
+
+    let (result, observations) = TestAllocationObserver::observe_controls(
+        [&account, &account],
+        None,
+        [Some(allocation), None, None],
+        || {
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+                let _loan = loan;
+                panic!("intentional checkpoint loan unwind");
+            }))
+        },
+    );
+
+    assert!(result.is_err());
+    let observed = observations[0].unwrap();
+    let bytes = observed.before.original_bytes[0].unwrap();
+    assert!(bytes >= CheckpointOriginalLoan::allocation_bytes().unwrap());
+    assert_eq!(observed.after.original_bytes, [Some(bytes); 2]);
+    assert!(account.reserve_resources(0, 0, 16384).is_ok());
 }
 
 #[test]

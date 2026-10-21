@@ -429,6 +429,19 @@ controls and engineering hygiene pass. This is physical cleanup identity only:
 the late helper still requires its genuine action Original instead of the
 launch Preparation clock, and detached-overlay preparation is not qualified.
 
+The paired roster/Ready hermetic supervision gate passes all 59 exact cases.
+Checkpoint Original loans now use a closed strong owner: the final borrower
+extracts the value only after freeing the actual shared allocation, so its
+existing service credit cannot return ahead of that allocation. Cloning keeps
+the same entered operation without allocating or renewing it. Twenty active
+checkpoint Original controls pass, with one existing ignored case. Two new
+controls observe real credit immediately before and after actual deallocation,
+including unwinding after parent retirement. Focused custody source policy and
+engineering hygiene pass. Required application compilation is running for this
+increment. Coverage names 159 component cases and nineteen native cases;
+149 requirements remain uncovered and none qualified. These component controls
+do not authenticate native receiving or supply a late helper's action Original.
+
 
 Whole-node shutdown now keeps one continuation through process reap, RAM service
 return and controller retirement. Physical closure, initiating failure and

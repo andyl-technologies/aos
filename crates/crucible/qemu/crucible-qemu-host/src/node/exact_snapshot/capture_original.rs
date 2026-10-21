@@ -135,9 +135,11 @@ struct NativeTransfer {
 ///
 /// The private owner admits this allocation in the same service account before
 /// operation birth. Cloning the loan neither enters nor renews an operation.
+/// The final loan frees the shared allocation before returning its original
+/// service credit. Raw strong and weak references never leave this owner.
 #[derive(Clone, Debug)]
 pub struct CheckpointOriginalLoan {
-    body: Arc<LoanBody>,
+    body: Option<Arc<LoanBody>>,
 }
 
 #[derive(Debug)]
@@ -148,7 +150,7 @@ struct LoanBody {
 
 impl CheckpointOriginalLoan {
     pub(crate) fn guard(&self) -> &HostOperationGuard {
-        &self.body.original
+        &self.shared().original
     }
 
     /// Rechecks the entered original and its retained cancellation subscriber.
@@ -162,7 +164,14 @@ impl CheckpointOriginalLoan {
     }
 
     pub(crate) fn same_owner(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.body, &other.body)
+        Arc::ptr_eq(self.shared(), other.shared())
+    }
+
+    fn shared(&self) -> &Arc<LoanBody> {
+        match &self.body {
+            Some(body) => body,
+            None => unreachable!("a live checkpoint loan retains its original allocation"),
+        }
     }
 
     fn allocation_bytes() -> Result<u64, CheckpointOriginalError> {
@@ -173,6 +182,16 @@ impl CheckpointOriginalLoan {
             .ok()
             .and_then(|bytes| bytes.checked_add(HostServiceLease::metadata_bytes()))
             .ok_or_else(|| CheckpointOriginalError::before(CheckpointOriginalCause::Geometry))
+    }
+}
+
+impl Drop for CheckpointOriginalLoan {
+    fn drop(&mut self) {
+        if let Some(body) = self.body.take() {
+            // All aliases use this closed owner. Even concurrent final drops
+            // extract exactly one body after the actual Arc header is freed.
+            drop(Arc::into_inner(body));
+        }
     }
 }
 
@@ -360,10 +379,10 @@ impl CheckpointOriginal {
                 CheckpointOriginalError::before(CheckpointOriginalCause::Original(source))
             })?;
         body.original = Some(CheckpointOriginalLoan {
-            body: Arc::new(LoanBody {
+            body: Some(Arc::new(LoanBody {
                 original,
                 _credit: credit,
-            }),
+            })),
         });
         let original = body.original.as_ref().ok_or_else(|| {
             CheckpointOriginalError::before(CheckpointOriginalCause::MissingOwner)
