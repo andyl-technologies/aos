@@ -102,9 +102,11 @@ in
             exit 1
           }
 
+          # Drain the entire object even after its header. Large signed commit
+          # messages otherwise SIGPIPE git under the builder's pipefail policy.
           signature_header_count() {
             git --git-dir="$1" cat-file commit "$2" \
-              | gawk '/^$/ { exit } /^gpgsig / { count++ } END { print count + 0 }'
+              | gawk '/^$/ { body = 1 } !body && /^gpgsig / { count++ } END { print count + 0 }'
           }
 
           has_pinned_sole_parent() {
