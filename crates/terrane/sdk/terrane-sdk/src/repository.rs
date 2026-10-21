@@ -23,6 +23,7 @@ mod local;
 #[cfg(all(feature = "std", unix))]
 /// Persists protected local signing and retained original-authority evidence.
 pub(crate) mod local_authority;
+mod object;
 #[cfg(all(feature = "std", unix))]
 mod overlay;
 mod path;
@@ -41,6 +42,7 @@ pub use import::import_directory;
 pub use local::{CommitMetadata, LocalRepositoryLocation, LocalRepositoryPolicy};
 #[cfg(all(feature = "std", unix))]
 pub use local_authority::{LocalAuthority, LocalAuthorityIdentity, LocalAuthorityParameters};
+pub use object::ObjectPresentation;
 #[cfg(all(feature = "std", unix))]
 pub use overlay::PublishedOverlayLayer;
 pub use prepared::PreparedTree;
@@ -61,6 +63,7 @@ use crate::{
 pub struct Repository<S: Store, C: Clock, F: LocalFs> {
     coordinator: Coordinator<S, C, F>,
     local_backend_root: Option<std::path::PathBuf>,
+    object_presentation: Option<std::sync::Arc<dyn ObjectPresentation>>,
     #[cfg(unix)]
     local_retention: Option<local_authority::NativeRetention>,
 }
@@ -85,6 +88,7 @@ impl<S: Store, C: Clock, F: LocalFs> Repository<S, C, F> {
         Self {
             coordinator,
             local_backend_root: None,
+            object_presentation: None,
             #[cfg(unix)]
             local_retention: None,
         }
@@ -120,6 +124,7 @@ where
         Repository {
             coordinator: self.coordinator.with_read_cache(local),
             local_backend_root: None,
+            object_presentation: None,
             #[cfg(unix)]
             local_retention: None,
         }
@@ -151,6 +156,7 @@ where
         Repository {
             coordinator: self.coordinator.with_read_driver(build),
             local_backend_root: None,
+            object_presentation: None,
             #[cfg(unix)]
             local_retention: None,
         }

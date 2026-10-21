@@ -9,11 +9,13 @@
 mod driver;
 mod object;
 mod prepared;
+mod presentation;
 mod validation;
 
 pub use driver::{NativeReadDriver, NativeReadPolicy};
 pub use object::{NativeChunkedObject, NativeChunkedReader};
 pub use prepared::{NativePreparedObject, NativeSealedObject};
+pub use presentation::NativeObjectPresentation;
 
 use super::{NativeConsumerLease, NativeReady};
 use std::{

@@ -159,7 +159,9 @@ def run(driver, image):
             driver.require(len(added) == 1 and added[0]["bytes"] == 262144
                            and added[0]["owner"] == "fixture-" + directory
                            and all(row in state["reservations"] for row in old["reservations"]),
-                           "native SDK lacks exact newly funded recovery of each original owner")
+                           "native SDK lacks exact newly funded recovery of each original owner: "
+                           + repr({"domain": directory, "added": added, "before": old["reservations"],
+                                   "after": state["reservations"]}))
         for item in ["first", "second"]:
             path = root / ("snapshot-" + item) / "file"
             driver.require(path.read_bytes() == PAYLOAD and path.stat().st_uid == 840,

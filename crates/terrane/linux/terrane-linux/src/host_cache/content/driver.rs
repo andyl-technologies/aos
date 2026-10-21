@@ -7,7 +7,7 @@
 //! bytes and never releases rejected original custody or funding.
 
 use super::NativeContentStore;
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 use terrane_format::{
     codec::{Codec, parse_envelope},
     identity::{Identity, IdentityKind, TERRANE_V1},
@@ -60,11 +60,24 @@ impl NativeReadPolicy {
 /// total deadline, including the circuit wait, dictionary fetch and optional
 /// native admission. Every lower body is verified before a successful circuit
 /// result or admission. Complete repository guards still authorize each request.
+/// Clones share the same physical owner, lower store and circuit state; cloning
+/// never restarts recovery, creates custody or resets a failed lower circuit.
 pub struct NativeReadDriver<S> {
-    native: NativeContentStore,
-    lower: S,
-    circuit: Mutex<CircuitBreaker>,
+    native: Arc<NativeContentStore>,
+    lower: Arc<S>,
+    circuit: Arc<Mutex<CircuitBreaker>>,
     budget: Duration,
+}
+
+impl<S> Clone for NativeReadDriver<S> {
+    fn clone(&self) -> Self {
+        Self {
+            native: Arc::clone(&self.native),
+            lower: Arc::clone(&self.lower),
+            circuit: Arc::clone(&self.circuit),
+            budget: self.budget,
+        }
+    }
 }
 
 impl NativeContentStore {
@@ -75,9 +88,9 @@ impl NativeContentStore {
     /// inferred from the lower store, its bytes or this configuration.
     pub fn with_lower<S>(self, lower: S, policy: NativeReadPolicy) -> NativeReadDriver<S> {
         NativeReadDriver {
-            native: self,
-            lower,
-            circuit: Mutex::new(policy.circuit),
+            native: Arc::new(self),
+            lower: Arc::new(lower),
+            circuit: Arc::new(Mutex::new(policy.circuit)),
             budget: policy.budget,
         }
     }
@@ -136,7 +149,12 @@ impl<S: ContentStore + BucketBinding> NativeReadDriver<S> {
 
         // Cache admission is separate from the verified lower result. Timeout
         // or cancellation leaves accepted native work with its physical owner.
-        if Instant::now() >= deadline {
+        if Instant::now() >= deadline
+            || (fetched.length.is_none() && identity.kind() != IdentityKind::Manifest)
+        {
+            // Control/history metadata remains verified lower content. Warming
+            // arbitrary graph records would consume bounded durable consumer
+            // state before this request's object chunks can enter custody.
             return Ok(fetched.encoded);
         }
         if let Some(dictionary) = &fetched.dictionary {

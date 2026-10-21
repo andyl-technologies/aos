@@ -555,3 +555,105 @@ async fn configured_complete_content_driver_preserves_authority_and_is_not_bypas
     assert!(calls.load(Ordering::Relaxed) > 0);
     Ok(())
 }
+
+struct ControlledPresentation {
+    output: Option<Vec<u8>>,
+    calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl terrane_sdk::repository::ObjectPresentation for ControlledPresentation {
+    async fn read(
+        &self,
+        _: &terrane_format::identity::Identity,
+        _: usize,
+    ) -> Result<Vec<u8>, terrane_sdk::store::StoreFailure> {
+        self.calls
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.output.clone().ok_or_else(|| {
+            terrane_sdk::store::StoreFailure::new(terrane_sdk::store::StoreErrorKind::Unavailable {
+                retry_after: None,
+            })
+        })
+    }
+}
+
+#[tokio::test]
+async fn object_presentation_cannot_replace_verified_bytes_or_bypass_authorization() -> TestResult {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    use terrane_sdk::surface::View;
+
+    let fixture = Fixture::new().await?;
+    let commit = fixture.commit_bytes(OLD).await?;
+    let config = Config::parse(&configuration(&fixture))?;
+    let view = View::parse(MAIN)?;
+    for output in [
+        Some(OLD.to_vec()),
+        Some(b"substituted plaintext".to_vec()),
+        None,
+    ] {
+        let succeeds = output.as_deref() == Some(OLD);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let repository = config
+            .open_local_repository(Role::Serve, TokioLocalFs, TokioClock)
+            .await?
+            .with_object_presentation(Arc::new(ControlledPresentation {
+                output,
+                calls: Arc::clone(&calls),
+            }));
+
+        assert!(
+            repository
+                .read_file(&view, b"file", b"invalid token", "sdk")
+                .await
+                .is_err()
+        );
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
+        let result = repository
+            .read_file(&view, b"file", fixture.authority.token(), "sdk")
+            .await;
+
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+        if succeeds {
+            assert_eq!(result?, (commit, OLD.to_vec()));
+        } else {
+            assert!(
+                result.is_err(),
+                "presentation failure or substitution was bypassed"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn sdk_schema_preparation_never_calls_object_presentation() -> TestResult {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    let fixture = Fixture::new().await?;
+    fixture.commit_bytes(OLD).await?;
+    write_read_capability(&fixture).await?;
+    let config = Config::parse(&configuration(&fixture))?;
+    let calls = Arc::new(AtomicUsize::new(0));
+    let repository = config
+        .open_local_repository(Role::Serve, TokioLocalFs, TokioClock)
+        .await?
+        .with_object_presentation(Arc::new(ControlledPresentation {
+            output: Some(b"substituted plaintext".to_vec()),
+            calls: Arc::clone(&calls),
+        }));
+
+    let prepared =
+        PreparedExposures::prepare(&repository, config.exposures(), &ExplicitFileToken).await?;
+    assert_eq!(calls.load(Ordering::Relaxed), 0);
+    assert!(prepared.start(&repository).await.is_err());
+
+    assert_eq!(calls.load(Ordering::Relaxed), 1);
+    assert!(!fixture.parent.join("configured").exists());
+    Ok(())
+}

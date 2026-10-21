@@ -11455,3 +11455,28 @@ controls and the native publication/enrollment/reassembly gate pass. Independent
 reviews bind the actual immutable sources, Cargo executables and executed kernel
 witnesses. All application test targets also compile on that revision and on
 `a8c60c1abd`; these compile-only checks do not establish runtime readiness.
+
+
+#### Guarded native object-presentation foundation
+
+Repository reads can now bind a trusted object-presentation provider without
+changing the frozen Store interface. The original guard verifies and authorizes
+content before any provider call. Provider plaintext must equal those verified
+bytes, and current path authority is rechecked before returning it. Two actual
+signed-repository integration controls cover unauthorized callers, substituted
+bytes, terminal provider failure, and schema preparation that never opens object
+plaintext. All nine configured-repository integration tests pass.
+
+The native provider retains the original read driver's owner, lower backend and
+circuit. It reads the actual policy-selected chunked object or read-only sealed
+inode, then completes original grant release or source cleanup/cache handoff.
+Configured startup has not enabled this provider yet; whole-object VM
+qualification remains required.
+
+The first read-through VM on `4b8f2cea9a` completed both authorized snapshots but
+failed its exact startup-funding assertion before the cold-reopen control. The
+observer now reports its precise before/after reservation rows on failure.
+Read-through admission is restricted to object chunks and manifests: verified
+control/history metadata stays lower content, preserving the finite durable
+consumer budget for the requested payload. No records, holds or grace periods
+are erased to make room. The repeated VM remains pending and T2 remains open.

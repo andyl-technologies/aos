@@ -273,6 +273,8 @@ where
         let bytes = guard
             .read_content(&snapshot, &absolute, content, size)
             .await?;
+        let bytes = self.present_object(content, bytes).await?;
+        guard.authorize_snapshot_path(&snapshot, &absolute).await?;
         Ok((snapshot.commit.identity(), bytes))
     }
 
@@ -315,11 +317,11 @@ where
             let full_path = absolute_path(&snapshot.scope, &item.key);
             let entry = tree_format::decode_entry_bytes(&item.encoded, minimum)?;
             if let EntryKind::File { content, size, .. } = entry.kind {
-                item.plaintext = Some(
-                    guard
-                        .read_content(&snapshot, &full_path, content, size)
-                        .await?,
-                );
+                let verified = guard
+                    .read_content(&snapshot, &full_path, content, size)
+                    .await?;
+                item.plaintext = Some(self.present_object(content, verified).await?);
+                guard.authorize_snapshot_path(&snapshot, &full_path).await?;
             }
         }
         // An empty tree still requires a fresh current-authority check.
