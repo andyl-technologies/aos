@@ -61,11 +61,17 @@ pub(super) struct Observation {
 }
 
 fn now() -> io::Result<u64> {
-    terrane_sdk::store::TokioClock
+    let elapsed = terrane_sdk::store::TokioClock
         .now()
         .duration_since(UNIX_EPOCH)
-        .map(|time| time.as_secs())
-        .map_err(io::Error::other)
+        .map_err(io::Error::other)?;
+    // The physical handoff rounds its 30-second grace up to durable Unix
+    // seconds. Bracket that same rounding at both observations; truncating the
+    // upper observation wrongly rejects every subsecond handoff in that tick.
+    elapsed
+        .as_secs()
+        .checked_add(u64::from(elapsed.subsec_nanos() != 0))
+        .ok_or_else(|| invalid("metadata observation clock overflows"))
 }
 
 fn policy(runtime: &tokio::runtime::Runtime, inputs: &Inputs) -> io::Result<CacheState> {
