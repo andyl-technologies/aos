@@ -1884,9 +1884,20 @@ The complete installed policy still determines every retained selected name.
 Three focused controls pass: all 32 small advertised/selected feature
 combinations against an independent union oracle, invalid order/duplicate
 refusal before callbacks, and all four feature combinations against the complete
-installed envelope-name projection. Complete qualification remains pending.
-This change grants no native authority and does not supply the remaining SDK
-constructor funding row or Native18 verifier.
+installed envelope-name projection. This change grants no native authority and
+does not supply the remaining SDK constructor funding row or Native18 verifier.
+
+For `741fc2442b`, both complete standard and raw-value Transport libraries pass
+1,907 tests each, with zero failures, no filtering and 16 existing ignores.
+Affected Transport/Engine/Daemon all-feature/all-target checking, scoped
+formatting and all six architecture gates pass. Required application compilation
+passes with 180 test executables across 58 package identities, including 71
+integration targets. All 236 owned changed Rust paths and the Transport manifest
+match the committed checkpoint in that exact application source capture. This
+standalone lookup checkpoint has no separate VM rerun; its preceding SDK
+ownership checkpoint retains the VM qualification above. Subsequent initial SDK
+backing projection work is excluded. Full Engine and Daemon library runtime
+qualification remains at `f2150ce5c7`.
 
 ## Prospective initial SDK retained backing
 
