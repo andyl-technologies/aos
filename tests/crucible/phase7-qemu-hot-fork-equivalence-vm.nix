@@ -88,6 +88,12 @@ assert builtins.elem caseProfile ["full" "single-guest"]; let
       cp "$binary" "$out/bin/crucible-daemon-hot-fork-equivalence-flight"
     '';
   };
+  # Device-wait and idle-plan witness rows start just before the hot-fork
+  # child's deterministic block-wait stall. Earlier waits would otherwise spend
+  # each process's 256-row allowance during boot. The rows are advisory and
+  # change no control decision.
+  diagnosticFloorPs = "663100000000";
+
   cgroupRoot =
     if campaignComposition == null
     then "/sys/fs/cgroup/crucible"
@@ -152,6 +158,9 @@ assert builtins.elem caseProfile ["full" "single-guest"]; let
     export CRUCIBLE_ATOMIC_WORLD_UID=65534
     export CRUCIBLE_ATOMIC_WORLD_GID=65534
     export CRUCIBLE_MATERIALIZATION_DIAGNOSTIC_MAX_EVENTS=256
+    export CRUCIBLE_DEVICE_WAIT_DIAGNOSTIC_MIN_PS=${diagnosticFloorPs}
+    export CRUCIBLE_OUT_RESUME_RUNTIME_TRACE=1
+    export CRUCIBLE_IDLE_PLAN_DIAGNOSTIC_MIN_PS=${diagnosticFloorPs}
 
     run_case() {
       name="$1"
@@ -171,15 +180,30 @@ assert builtins.elem caseProfile ["full" "single-guest"]; let
         exit 1
       fi
 
+      # QEMU runs as an unprivileged user and its witnesses cannot reopen an
+      # inherited root-owned pipe, so stderr goes to a regular file. A
+      # follower streams that file live; on failure the witness rows are
+      # printed again from the file, complete.
+      stderr_log="/tmp/$name.stderr"
+      : > "$stderr_log"
+      ${pkgs.coreutils}/bin/tail -n +1 -f "$stderr_log" >&2 &
+      stderr_follower=$!
+
       # Preserve the test's status while streaming its original captured output.
       set +e
       ${pkgs.coreutils}/bin/timeout -k 30 1800 \
         ${flight}/bin/crucible-daemon-hot-fork-equivalence-flight \
-        --ignored --exact "$name" --nocapture 2>&1 \
+        --ignored --exact "$name" --nocapture 2>"$stderr_log" \
         | ${pkgs.coreutils}/bin/tee "$log"
       case_status=("''${PIPESTATUS[@]}")
+      ${pkgs.coreutils}/bin/sleep 1
+      kill "$stderr_follower" 2>/dev/null
+      wait "$stderr_follower" 2>/dev/null
       set -e
       if [ "''${case_status[0]}" -ne 0 ] || [ "''${case_status[1]}" -ne 0 ]; then
+        echo "witness rows for $name:" >&2
+        ${pkgs.grep}/bin/grep -E \
+          '^CRUCIBLE-(DEVICE-WAIT|IDLE-PLAN)-V1 ' "$stderr_log" >&2 || true
         ${pkgs.util-linux}/bin/dmesg | tail -n 60
         exit 1
       fi
