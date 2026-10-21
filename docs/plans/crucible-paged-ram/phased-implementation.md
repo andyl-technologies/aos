@@ -1806,11 +1806,28 @@ and five hygiene checks pass. Final mandatory application compilation passes at
 `/nix/store/iyk3b5g2csi8il2k588niw6pgylam81r-aos-test-targets-0.1.0`;
 all 5,258 tracked crate Rust/TOML files match immutable
 `j46f3yw6ycfiryiyj26slh3an53nj64q-aos-workspace-src`.
-The 149-case exact supervision run is pending. The initial conversion/wrapper
+All 149 exact hermetic supervision cases pass at
+`/nix/store/7nr3riljb0yqba519g32m9sjc8d8rghg-crucible-gate-ram-supervision-0`.
+The initial conversion/wrapper
 compile failure and stale reviewed hygiene digest failure remain recorded.
 Dynamic payload funding and broader independent channel/target/health failure
 history remain unfinished. The inventory has 266 bindings: 247 component and
 19 native; 243 requirements, 149 uncovered and zero qualified requirements.
+
+Commit `ef729ddf7f` replaces missing helper custody's boxed fixed-text I/O
+error with an inline typed cause, preserving the displayed refusal. Both actual
+missing-recipient checks allocate nothing and bind no recipient; their
+pre-change control counted six allocations and failed. Eight receiver tests,
+ten retained-controller tests, 73 policy checks and five hygiene checks pass.
+The final assertion has only rustfmt paragraph changes after those local runs.
+Final mandatory application compilation passes at
+`/nix/store/2nlh4dxpjb5hlyqiaxn96nkngkwv45hy-aos-test-targets-0.1.0`;
+all 5,258 tracked crate Rust/TOML files byte-match `ef729ddf7f` and immutable
+`am0rrwdvwl19l794hlzvfwbwdkr7s83j-aos-workspace-src`.
+The corrected 150-case supervision run is pending. The first binding placed the
+control in continuation rather than supervision, so that snapshot cannot
+qualify 150 supervision cases. Other invalid-input I/O payloads, dynamic
+funding and genuine selected helper admission remain unfinished.
 
 ### 2026-10-21 native pending-command custody
 
