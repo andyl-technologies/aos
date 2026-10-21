@@ -1717,6 +1717,8 @@
       "placement promote registry:fleet/metadata primary "
       f"--if-version {shlex.quote(metadata_placement['resource_version'])}",
   )
+  # Metadata-only fixtures still evaluate and export the source-built package
+  # before signing. Give authoring its own budget under concurrent fleet load.
   client.succeed(textwrap.dedent(f"""
       set -eu
       export HOME=/var/lib/hybrid-apr-home
@@ -1737,7 +1739,7 @@
         --cache-url https://aos.fleet.test/fleet/objects \\
         --upload-url file:///tmp/hybrid-metadata-surface
       {APR} verify --registry metadata
-  """), timeout=180)
+  """), timeout=600)
   session_token = refresh_session_token()
   metadata_publication, session_token = publish_signed_surface(
       client,
