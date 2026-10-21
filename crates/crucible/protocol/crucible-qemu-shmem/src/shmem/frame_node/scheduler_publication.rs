@@ -297,6 +297,45 @@ mod tests {
     }
 
     #[test]
+    fn bounded_snapshot_refuses_the_actual_held_writer_without_waiting() {
+        let slot = NodeSlot::new(KIND_VM);
+        let before = slot.snapshot();
+        let reservation = slot.reserve_scheduler_advance().unwrap();
+
+        assert_eq!(
+            slot.try_snapshot(),
+            Err(NodeSlotError::AdvancePublicationOccupied {
+                expected: 1,
+                observed: 1,
+            })
+        );
+        assert_eq!(slot.wake_signal.load(Ordering::Acquire), before.wake_signal);
+        assert_eq!(slot.max_advance_icount.load(Ordering::Acquire), 0);
+        assert_eq!(reservation.generation(), 2);
+
+        drop(reservation);
+        assert_eq!(slot.try_snapshot(), Ok(slot.snapshot()));
+    }
+
+    #[test]
+    fn bounded_snapshot_refuses_an_incomplete_node_report_without_mutation() {
+        let slot = NodeSlot::new(KIND_VM);
+        slot.publish_gen.store(3, Ordering::Release);
+
+        assert_eq!(
+            slot.try_snapshot(),
+            Err(NodeSlotError::NodeReportChanged {
+                expected: 3,
+                observed: 3,
+            })
+        );
+
+        assert_eq!(slot.publish_gen.load(Ordering::Acquire), 3);
+        assert_eq!(slot.advance_publication_sequence.load(Ordering::Acquire), 0);
+        assert_eq!(slot.wake_signal.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
     fn final_even_publication_refuses_reuse_without_tuple_or_wake_changes() {
         let slot = NodeSlot::new(KIND_VM);
         slot.advance_publication_sequence

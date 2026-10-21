@@ -531,7 +531,14 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
     ) -> Result<QemuPendingQuantum, QemuQuantumError> {
         let operation_start = self.operation_log.as_slice().len();
         self.record(QemuQuantumOperation::ReadNodeReport);
-        let initial_snapshot = self.view.node_slot.snapshot();
+        let initial_snapshot =
+            self.view
+                .node_slot
+                .try_snapshot()
+                .map_err(|source| QemuQuantumError::NodeSlot {
+                    operation: "observe initial scheduler command coordinates",
+                    source,
+                })?;
         let initial_state = idle_state_from_snapshot(initial_snapshot);
         let initial_device_io_freeze = device_io_freeze_from_snapshot(initial_snapshot);
         let inbound_consumption = self.snapshot_inbound_consumption()?;

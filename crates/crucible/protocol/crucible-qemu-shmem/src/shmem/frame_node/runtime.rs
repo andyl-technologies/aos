@@ -456,74 +456,92 @@ impl NodeSlot {
     }
 
     /// Returns a stable snapshot of the slot's published fields.
+    ///
+    /// This compatibility reader waits until both writers are quiescent. A
+    /// caller retaining a scheduler reservation must not enter it. Supervised
+    /// operations should use [`Self::try_snapshot`] and check their same Original
+    /// before deciding whether to attempt another observation.
     #[must_use]
     pub fn snapshot(&self) -> NodeSlotSnapshot {
         loop {
-            let before = self.publish_gen.load(Ordering::Acquire);
-            if !before.is_multiple_of(2) {
-                continue;
-            }
-            // Read the independently published control acknowledgement before
-            // the fields it orders. Its acquire pairs with the plugin's release
-            // only for operations that follow this load; reading it later could
-            // return a new acknowledgement beside slot fields fetched before
-            // the corresponding control callback published them.
-            let control_boundary_ack = self.control_boundary_ack.load(Ordering::Acquire);
-            let (max_advance_icount, advance_stop_condition, advance_publication_sequence) =
-                self.load_scheduler_advance_raw();
-            let snapshot = NodeSlotSnapshot {
-                current_icount: self.current_icount.load(Ordering::Acquire),
-                current_ns: self.current_ns.load(Ordering::Acquire),
-                max_advance_icount,
-                idle_wake_icount: self.idle_wake_icount.load(Ordering::Acquire),
-                wake_signal: self.wake_signal.load(Ordering::Acquire),
-                status: self.status.load(Ordering::Acquire),
-                kind: self.kind.load(Ordering::Acquire),
-                device_io_active: self.device_io_active.load(Ordering::Acquire),
-                advance_stop_condition,
-                advance_publication_sequence,
-                publish_gen: before,
-                control_boundary_ack,
-                control_boundary_fault_command_frontier: self
-                    .control_boundary_fault_command_frontier
-                    .load(Ordering::Acquire),
-                control_boundary_capture_request: self
-                    .control_boundary_capture_request
-                    .load(Ordering::Acquire),
-                logical_time_raw_icount: self.logical_time_raw_icount.load(Ordering::Acquire),
-                logical_time_restore_target: self
-                    .logical_time_restore_target
-                    .load(Ordering::Acquire),
-                logical_time_restore_request: self
-                    .logical_time_restore_request
-                    .load(Ordering::Acquire),
-                logical_time_restore_ack: self.logical_time_restore_ack.load(Ordering::Acquire),
-                virtual_timer_witness: match self.timer_witness_generation.load(Ordering::Acquire) {
-                    0 => None,
-                    generation => Some(VirtualTimerFireWitness {
-                        generation,
-                        deadline_ps: self.timer_witness_deadline_ps.load(Ordering::Acquire),
-                        deadline_tick: self.timer_witness_deadline_tick.load(Ordering::Acquire),
-                        armed_raw_icount: self
-                            .timer_witness_armed_raw_icount
-                            .load(Ordering::Acquire),
-                        fired_expire_ps: self.timer_witness_fired_expire_ps.load(Ordering::Acquire),
-                        fired_virtual_ps: self
-                            .timer_witness_fired_virtual_ps
-                            .load(Ordering::Acquire),
-                        fired_raw_icount: self
-                            .timer_witness_fired_raw_icount
-                            .load(Ordering::Acquire),
-                        completed: self.timer_witness_completed.load(Ordering::Acquire),
-                        reserved: self.timer_witness_reserved.load(Ordering::Acquire),
-                    }),
-                },
-            };
-            let after = self.publish_gen.load(Ordering::Acquire);
-            if before == after && after.is_multiple_of(2) {
+            if let Ok(snapshot) = self.try_snapshot() {
                 return snapshot;
             }
+            core::hint::spin_loop();
         }
+    }
+
+    /// Attempts one coherent slot observation without waiting for either writer.
+    ///
+    /// The result corroborates physical publication only; it grants no operation
+    /// or execution authority. No slot, inbox or wake word changes on refusal.
+    ///
+    /// # Errors
+    /// Refuses an odd or changed node report or scheduler tuple. The caller
+    /// retains its operation and any existing publication debt independently.
+    pub fn try_snapshot(&self) -> Result<NodeSlotSnapshot, NodeSlotError> {
+        let before = self.publish_gen.load(Ordering::Acquire);
+        if !before.is_multiple_of(2) {
+            return Err(NodeSlotError::NodeReportChanged {
+                expected: before,
+                observed: before,
+            });
+        }
+        // Read the independently published control acknowledgement before
+        // the fields it orders. Its acquire pairs with the plugin's release
+        // only for operations that follow this load; reading it later could
+        // return a new acknowledgement beside slot fields fetched before
+        // the corresponding control callback published them.
+        let control_boundary_ack = self.control_boundary_ack.load(Ordering::Acquire);
+        let (max_advance_icount, advance_stop_condition, advance_publication_sequence) =
+            self.try_load_scheduler_advance_raw()?;
+        let snapshot = NodeSlotSnapshot {
+            current_icount: self.current_icount.load(Ordering::Acquire),
+            current_ns: self.current_ns.load(Ordering::Acquire),
+            max_advance_icount,
+            idle_wake_icount: self.idle_wake_icount.load(Ordering::Acquire),
+            wake_signal: self.wake_signal.load(Ordering::Acquire),
+            status: self.status.load(Ordering::Acquire),
+            kind: self.kind.load(Ordering::Acquire),
+            device_io_active: self.device_io_active.load(Ordering::Acquire),
+            advance_stop_condition,
+            advance_publication_sequence,
+            publish_gen: before,
+            control_boundary_ack,
+            control_boundary_fault_command_frontier: self
+                .control_boundary_fault_command_frontier
+                .load(Ordering::Acquire),
+            control_boundary_capture_request: self
+                .control_boundary_capture_request
+                .load(Ordering::Acquire),
+            logical_time_raw_icount: self.logical_time_raw_icount.load(Ordering::Acquire),
+            logical_time_restore_target: self.logical_time_restore_target.load(Ordering::Acquire),
+            logical_time_restore_request: self.logical_time_restore_request.load(Ordering::Acquire),
+            logical_time_restore_ack: self.logical_time_restore_ack.load(Ordering::Acquire),
+            virtual_timer_witness: match self.timer_witness_generation.load(Ordering::Acquire) {
+                0 => None,
+                generation => Some(VirtualTimerFireWitness {
+                    generation,
+                    deadline_ps: self.timer_witness_deadline_ps.load(Ordering::Acquire),
+                    deadline_tick: self.timer_witness_deadline_tick.load(Ordering::Acquire),
+                    armed_raw_icount: self.timer_witness_armed_raw_icount.load(Ordering::Acquire),
+                    fired_expire_ps: self.timer_witness_fired_expire_ps.load(Ordering::Acquire),
+                    fired_virtual_ps: self.timer_witness_fired_virtual_ps.load(Ordering::Acquire),
+                    fired_raw_icount: self.timer_witness_fired_raw_icount.load(Ordering::Acquire),
+                    completed: self.timer_witness_completed.load(Ordering::Acquire),
+                    reserved: self.timer_witness_reserved.load(Ordering::Acquire),
+                }),
+            },
+        };
+        let after = self.publish_gen.load(Ordering::Acquire);
+        if before != after || !after.is_multiple_of(2) {
+            return Err(NodeSlotError::NodeReportChanged {
+                expected: before,
+                observed: after,
+            });
+        }
+
+        Ok(snapshot)
     }
 
     /// Returns `true` when all forward-compatible reserved slot bytes are zero.
@@ -769,18 +787,32 @@ impl NodeSlot {
 
     pub(crate) fn load_scheduler_advance_raw(&self) -> (u64, u8, u64) {
         loop {
-            let before = self.advance_publication_sequence.load(Ordering::Acquire);
-            if !before.is_multiple_of(2) {
-                core::hint::spin_loop();
-                continue;
+            if let Ok(tuple) = self.try_load_scheduler_advance_raw() {
+                return tuple;
             }
-            let stop_condition = self.advance_stop_condition.load(Ordering::Acquire);
-            let max_advance_icount = self.max_advance_icount.load(Ordering::Acquire);
-            let after = self.advance_publication_sequence.load(Ordering::Acquire);
-            if before == after && after.is_multiple_of(2) {
-                return (max_advance_icount, stop_condition, after);
-            }
+            core::hint::spin_loop();
         }
+    }
+
+    fn try_load_scheduler_advance_raw(&self) -> Result<(u64, u8, u64), NodeSlotError> {
+        let before = self.advance_publication_sequence.load(Ordering::Acquire);
+        if !before.is_multiple_of(2) {
+            return Err(NodeSlotError::AdvancePublicationOccupied {
+                expected: before,
+                observed: before,
+            });
+        }
+        let stop_condition = self.advance_stop_condition.load(Ordering::Acquire);
+        let max_advance_icount = self.max_advance_icount.load(Ordering::Acquire);
+        let after = self.advance_publication_sequence.load(Ordering::Acquire);
+        if before != after || !after.is_multiple_of(2) {
+            return Err(NodeSlotError::AdvancePublicationOccupied {
+                expected: before,
+                observed: after,
+            });
+        }
+
+        Ok((max_advance_icount, stop_condition, after))
     }
 
     pub(super) fn is_runnable_after_idle_publish(&self) -> bool {

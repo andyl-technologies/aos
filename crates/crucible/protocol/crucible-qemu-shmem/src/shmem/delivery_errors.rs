@@ -451,6 +451,14 @@ pub(super) fn live_count(
 /// An error produced by the per-node advance-ceiling slot.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum NodeSlotError {
+    /// The node report is being written or changed during a bounded observation.
+    #[error("node report generation changed from {expected} to {observed}")]
+    NodeReportChanged {
+        /// Node report generation observed before reading its fields.
+        expected: u32,
+        /// Actual node report generation that refused the observation.
+        observed: u32,
+    },
     /// The scheduler publication has no fresh complete even successor.
     #[error("scheduler advance generation {sequence} is exhausted")]
     AdvanceGenerationExhausted {
