@@ -148,7 +148,8 @@ fn await_phase(
             Duration::from_secs(1)
         };
     loop {
-        let observed = observer.snapshot().map_err(|e| e.to_string())?.phase();
+        let snapshot = observer.snapshot().map_err(|e| e.to_string())?;
+        let observed = snapshot.phase();
         if observed == phase
             || (phase == FundedTemplatePhase::TemplatesRetained
                 && matches!(
@@ -159,13 +160,21 @@ fn await_phase(
         {
             return Ok(());
         }
-        if phase == FundedTemplatePhase::PrivateBirthsRetained
-            && observed == FundedTemplatePhase::DerivationFailed
-        {
-            return Err("original funded worker or private Birth construction failed".into());
+        if matches!(
+            observed,
+            FundedTemplatePhase::AttemptFailed | FundedTemplatePhase::DerivationFailed
+        ) {
+            return Err(format!(
+                "funded preparation failed at {observed:?}: {}",
+                snapshot
+                    .failure_reason()
+                    .unwrap_or("retained cause unavailable"),
+            ));
         }
         if Instant::now() >= deadline {
-            return Err("actor did not publish the actual expected foundation outcome".into());
+            return Err(format!(
+                "actor did not publish {phase:?}; retained phase is {observed:?}"
+            ));
         }
         thread::sleep(Duration::from_millis(1));
     }

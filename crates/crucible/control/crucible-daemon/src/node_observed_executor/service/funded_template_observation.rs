@@ -30,13 +30,19 @@ pub enum FundedTemplatePhase {
 pub struct FundedTemplateObservation {
     phase: FundedTemplatePhase,
     retained_worlds: usize,
+    failure_reason: Option<&'static str>,
 }
 
 impl FundedTemplateObservation {
-    pub(crate) fn from_actor(phase: FundedTemplatePhase, retained_worlds: usize) -> Self {
+    pub(crate) fn from_actor(
+        phase: FundedTemplatePhase,
+        retained_worlds: usize,
+        failure_reason: Option<&'static str>,
+    ) -> Self {
         Self {
             phase,
             retained_worlds,
+            failure_reason,
         }
     }
 
@@ -50,6 +56,15 @@ impl FundedTemplateObservation {
     #[must_use]
     pub fn retained_worlds(self) -> usize {
         self.retained_worlds
+    }
+
+    /// Reads a fixed diagnostic from the actor's retained first failure.
+    ///
+    /// Dynamic evidence and schema contents are replaced by fixed categories.
+    /// This observation carries no input bytes or preparation authority.
+    #[must_use]
+    pub fn failure_reason(self) -> Option<&'static str> {
+        self.failure_reason
     }
 }
 
@@ -80,6 +95,7 @@ pub(super) fn channel() -> (Publisher, FundedTemplateObserver) {
     let snapshot = Arc::new(Mutex::new(FundedTemplateObservation::from_actor(
         FundedTemplatePhase::Absent,
         0,
+        None,
     )));
     (
         Publisher {

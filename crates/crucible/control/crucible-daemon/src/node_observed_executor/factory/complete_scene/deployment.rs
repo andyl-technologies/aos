@@ -103,6 +103,15 @@ impl FundedTemplateCapsule {
         }
     }
 
+    #[cfg(feature = "test-support")]
+    pub(super) fn observed_failure_reason(&self) -> Option<&'static str> {
+        self.failure.as_ref().map(|error| match error {
+            QualificationError::Refused(reason) => *reason,
+            QualificationError::Contract(_) => "funded preparation schema validation failed",
+            QualificationError::Evidence(_) => "funded preparation evidence validation failed",
+        })
+    }
+
     pub(super) fn poll_derivation(&mut self) -> Result<(), NodeObservedError> {
         if self.retired {
             return Ok(());

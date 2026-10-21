@@ -66,7 +66,15 @@ impl InstalledNodeCatalog {
             .map_or(FundedTemplatePhase::Absent, |original| {
                 original.observed_phase()
             });
-        FundedTemplateObservation::from_actor(phase, self.complete_scene_world_count())
+        let failure_reason = self
+            .funded_templates
+            .as_ref()
+            .and_then(|original| original.observed_failure_reason());
+        FundedTemplateObservation::from_actor(
+            phase,
+            self.complete_scene_world_count(),
+            failure_reason,
+        )
     }
 
     pub(crate) fn poll_complete_scene_reclamation(
