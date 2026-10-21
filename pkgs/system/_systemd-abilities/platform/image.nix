@@ -75,6 +75,8 @@
   }: let
     imagePackages = {
       inherit mkDerivation writeTextFile;
+      # Root construction executes native tools even for a cross-built image.
+      inherit (pkgs) buildPackages;
       aos-uki = import ./_uki-builder.nix {
         inherit mkDerivation targetPlatform;
         binutils = artifactFor "binutils";

@@ -11,7 +11,9 @@
     timeout = 1800;
 
     machines.enroller = {
-      system = systems.server-secureboot;
+      system = systems.server-secureboot.extendModules {
+        modules = [../../systems/_server-test-packages.nix];
+      };
       bootMode = "image";
       imageDiskMiB = 16384;
       packages = ["aos-test-agent"];

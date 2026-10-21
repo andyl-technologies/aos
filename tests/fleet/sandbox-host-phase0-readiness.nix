@@ -39,6 +39,7 @@
 
   system = systems.server-secureboot-lockdown.extendModules {
     modules = [
+      ../../systems/_server-test-packages.nix
       ({config, ...}: {
         aos.security.selinux = {
           enable = true;
@@ -88,7 +89,7 @@
         aos.image.budgets = {
           # This fixture carries a test-only credential harness alongside the
           # full sandbox closure; production runtime limits are unchanged.
-          maxRuntimeClosureMiB = 1152;
+          maxRuntimeClosureMiB = lib.mkForce 1152;
           # The measured 844.9 MiB EROFS root carries the fixed Host services,
           # credential fixture, and full guest template in one image.
           maxRootMiB = 896;
