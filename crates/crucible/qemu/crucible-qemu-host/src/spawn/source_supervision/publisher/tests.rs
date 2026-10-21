@@ -6,7 +6,7 @@
 
 use super::*;
 
-fn physical_fixture() -> SessionBody<()> {
+pub(super) fn physical_fixture() -> SessionBody<()> {
     SessionBody {
         roles: std::array::from_fn(|_| None),
         closing_roles: [None; 3],
@@ -18,11 +18,12 @@ fn physical_fixture() -> SessionBody<()> {
         purpose: None,
         failure: None,
         original_after: None,
+        command: command::CommandJournal::default(),
         _custody: (),
     }
 }
 
-fn header() -> PublisherHeader {
+pub(super) fn header() -> PublisherHeader {
     PublisherHeader {
         lender_generation: 1,
         account_generation: 3,

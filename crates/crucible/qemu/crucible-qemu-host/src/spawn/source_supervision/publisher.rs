@@ -21,6 +21,8 @@ use crate::spawn::OriginalPluginStartup;
 
 const FDINFO_SCRATCH_BYTES: usize = 4097;
 
+mod command;
+
 /// Keeps the containing Source's unique session and its once-attempt history.
 #[derive(Debug, Default)]
 pub(super) struct PublisherSession {
@@ -40,6 +42,7 @@ struct SessionBody<Custody = SessionCustody> {
     purpose: Option<PublisherPurpose>,
     failure: Option<OperationFailure>,
     original_after: Option<HostSupervisionError>,
+    command: command::CommandJournal,
     _custody: Custody,
 }
 
@@ -94,7 +97,8 @@ impl PublisherSession {
             .checked_add(size_of::<PublisherSessionError>())?
             .checked_add(size_of::<PublisherHeader>())?
             .checked_add(PUBLISHER_HEADER_BYTES)?
-            .checked_add(FDINFO_SCRATCH_BYTES)?;
+            .checked_add(FDINFO_SCRATCH_BYTES)?
+            .checked_add(command::CommandJournal::encoding_extent()?)?;
         (fixed as u64).checked_add(backing_bytes()?)
     }
 
@@ -152,6 +156,7 @@ impl PublisherSession {
             purpose: None,
             failure: None,
             original_after: None,
+            command: command::CommandJournal::default(),
             _custody: SessionCustody {
                 cleanup,
                 _control: control,
