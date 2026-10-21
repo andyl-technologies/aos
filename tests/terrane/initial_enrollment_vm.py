@@ -21,7 +21,8 @@ ROOT = pathlib.Path(os.environ["TERRANE_INITIAL_FIXTURE_ROOT"])
 EXECUTABLE = IMAGE / "bin/initial_enrollment_fixture"
 MAX_OUTPUT = 256 * 1024
 ADMIN_CASES = ["positive", "unknown", "wrong-profile", "incomplete", "preexisting",
-               "reused-project", "partial-quota"]
+               "reused-project", "partial-quota", "initialize-positive", "initialize-existing",
+               "initialize-unsafe-parent"]
 ADMIN_CAPS = "-all,+sys_admin,+dac_read_search,+fowner,+chown,+fsetid"
 QUERY_CAPS = "-all,+sys_admin,+dac_read_search"
 DEADLINE = time.monotonic() + 240

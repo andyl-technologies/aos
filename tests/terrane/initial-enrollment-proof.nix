@@ -69,7 +69,7 @@
         rmdir "$TERRANE_INITIAL_FIXTURE_ROOT" /var/lib/terrane-enrollment-proof
       }
       trap cleanup EXIT
-      # Seven independent two-owner partitions plus the genuine reused-project
+      # Ten independent two-owner partitions plus the genuine reused-project
       # preclaim fit with explicit journal/metadata headroom; this is guest disk.
       truncate -s 768M "$proof_disk"
       mkfs.ext4 -F -b 4096 -O project,quota,verity -E quotatype=prjquota "$proof_disk"

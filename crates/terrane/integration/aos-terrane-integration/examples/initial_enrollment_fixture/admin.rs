@@ -25,6 +25,9 @@ pub(super) async fn run(selector: &str) -> io::Result<()> {
     stage("write-intent before");
     case.write_intent(selector == "partial-quota")?;
     stage("write-intent after");
+    if selector.starts_with("initialize-") {
+        return initialize(&case, selector).await;
+    }
     if selector == "preexisting" {
         let claims = Claims::capture()?;
         fs::create_dir(case.root(0))?;
@@ -170,6 +173,87 @@ pub(super) async fn run(selector: &str) -> io::Result<()> {
         }
         _ => return Err(io::Error::other("invalid administrative selector")),
     }
+    Ok(())
+}
+
+async fn initialize(case: &Case, selector: &str) -> io::Result<()> {
+    for owner in 0..2 {
+        fs::set_permissions(
+            case.administrative(owner),
+            fs::Permissions::from_mode(0o700),
+        )?;
+    }
+    let claims = Claims::capture()?;
+    if selector == "initialize-existing" {
+        fs::create_dir(case.root(1))?;
+    } else if selector == "initialize-unsafe-parent" {
+        fs::set_permissions(&case.path, fs::Permissions::from_mode(0o755))?;
+    }
+    let result = aos_terrane_integration::host::initial_enrollment::initialize(
+        &case.config(),
+        &case.ledger(),
+        &case.roles(),
+    )
+    .await;
+
+    if selector != "initialize-positive" {
+        let error = result.err().ok_or_else(|| {
+            io::Error::other("fresh partition initialization unexpectedly accepted unsafe input")
+        })?;
+        assert_eq!(
+            error.kind(),
+            if selector == "initialize-existing" {
+                io::ErrorKind::AlreadyExists
+            } else {
+                io::ErrorKind::PermissionDenied
+            }
+        );
+        assert!(
+            !case.root(0).exists(),
+            "complete preflight must precede the first creator"
+        );
+        case.assert_unassigned()?;
+        claims.assert_unchanged()?;
+        println!("PASS actual {selector} refuses the complete partition before creator effects");
+        return Ok(());
+    }
+
+    result?;
+    assert_eq!(observations::ledger_phase(&case.ledger())?, "ready");
+    observations::verify_initial_claims(case)?;
+    let ledger = fs::read(case.ledger())?;
+    let retained_claims = Claims::capture()?;
+    let roots = [fs::metadata(case.root(0))?, fs::metadata(case.root(1))?];
+    assert!(
+        aos_terrane_integration::host::initial_enrollment::initialize(
+            &case.config(),
+            &case.ledger(),
+            &case.roles(),
+        )
+        .await
+        .is_err(),
+        "a completed initialization must never replay"
+    );
+    assert_eq!(fs::read(case.ledger())?, ledger);
+    retained_claims.assert_unchanged()?;
+    for (owner, original) in roots.iter().enumerate() {
+        let current = fs::metadata(case.root(owner))?;
+        assert_eq!(
+            (current.dev(), current.ino()),
+            (original.dev(), original.ino())
+        );
+        let project =
+            terrane_linux::host_quota::NativeProject::inspect(&File::open(case.root(owner))?)?;
+        assert_eq!(project.project_id, case.project(owner));
+        assert_eq!(current.uid(), 0);
+        assert_eq!(
+            current.mode() & 0o7777,
+            if owner == 0 { 0o755 } else { 0o750 }
+        );
+    }
+    println!(
+        "PASS actual complete fresh initialization creates genuine public/private buckets and refuses replay without mutation"
+    );
     Ok(())
 }
 

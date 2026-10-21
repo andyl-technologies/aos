@@ -9,6 +9,7 @@
 
 mod administrative;
 mod capture;
+mod initialize;
 pub(super) mod model;
 mod plan;
 mod preflight;
@@ -25,6 +26,7 @@ mod validation;
 )]
 mod tests;
 
+pub use initialize::initialize;
 pub(super) use model::{InitialLedger, VERSION};
 pub use provision::provision;
 pub(super) use ready::bind as bind_ready;

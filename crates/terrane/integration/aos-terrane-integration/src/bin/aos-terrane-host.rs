@@ -9,6 +9,23 @@ use std::path::PathBuf;
 fn run() -> io::Result<()> {
     let arguments: Vec<_> = std::env::args_os().skip(1).collect();
     if arguments.len() == 7
+        && arguments[0] == "initialize"
+        && arguments[1] == "--config"
+        && arguments[3] == "--ledger"
+        && arguments[5] == "--roles"
+    {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        return runtime.block_on(
+            aos_terrane_integration::host::initial_enrollment::initialize(
+                &PathBuf::from(&arguments[2]),
+                &PathBuf::from(&arguments[4]),
+                &PathBuf::from(&arguments[6]),
+            ),
+        );
+    }
+    if arguments.len() == 7
         && arguments[0] == "query"
         && arguments[1] == "--config"
         && arguments[3] == "--owner"
@@ -34,7 +51,8 @@ fn run() -> io::Result<()> {
     }
     if arguments.len() != 5 || arguments[1] != "--config" || arguments[3] != "--ledger" {
         return Err(io::Error::other(
-            "usage: aos-terrane-host <provision|serve> --config PATH --ledger PATH",
+            "usage: aos-terrane-host <provision|serve> --config PATH --ledger PATH; \
+             aos-terrane-host initialize --config PATH --ledger PATH --roles PATH",
         ));
     }
     let config = PathBuf::from(&arguments[2]);

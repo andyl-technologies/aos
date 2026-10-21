@@ -54,6 +54,9 @@ impl Case {
             "preexisting" => 4,
             "reused-project" => 5,
             "partial-quota" => 6,
+            "initialize-positive" => 7,
+            "initialize-existing" => 8,
+            "initialize-unsafe-parent" => 9,
             _ => return Err(io::Error::other("unknown case")),
         };
         let root = PathBuf::from(

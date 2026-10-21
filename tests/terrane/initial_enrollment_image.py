@@ -24,7 +24,8 @@ PACKAGE_PATH = pathlib.Path("terrane/integration/aos-terrane-integration")
 PROFILE = {"opt_level": "0", "debuginfo": 2, "debug_assertions": True,
            "overflow_checks": True, "test": False}
 SELECTORS = ["positive", "unknown", "wrong-profile", "incomplete", "preexisting",
-             "reused-project", "partial-quota", "serve-positive", "verify-positive",
+             "reused-project", "partial-quota", "initialize-positive", "initialize-existing",
+             "initialize-unsafe-parent", "serve-positive", "verify-positive",
              "read-public", "read-private", "read-publisher", "foreign-private",
              "capabilities-update"]
 HELPERS = ["initial-enrollment-proof.nix", "initial_enrollment_image.py",
