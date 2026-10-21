@@ -325,23 +325,39 @@
             -D warnings
         ''
       }
+      # rustdoc flags differ from the build's, so documentation and
+      # doctests keep their own target directories. Nesting them in the
+      # build's target directory lets aos-dev's persistent target keep them
+      # warm too, instead of rechecking every dependency on each edit.
+      crucibleQualificationTargets="''${CARGO_TARGET_DIR:-target}"
       export RUSTDOCFLAGS="-D warnings -D missing_docs"
-      cargo doc \
-        --no-deps \
-        --frozen \
-        --offline \
-        -j$NIX_BUILD_CORES \
-        --target-dir target/crucible-doc-libs \
-        ${docPackageFlags}
-      cargo doc \
-        --no-deps \
-        --frozen \
-        --offline \
-        -j$NIX_BUILD_CORES \
-        --target-dir target/crucible-doc-cli \
-        -p crucible-cli \
-        --bin crucible
-      ${
+      (
+        # rustdoc creates each documentation directory's lock readable only
+        # by this build user. The next build user of a persistent target
+        # must read it, so share the locks even when a command fails.
+        shareDocumentationLocks() {
+          find "$crucibleQualificationTargets" -mindepth 3 -maxdepth 3 \
+            -path '*/crucible-doc*/doc/.lock' -type f -user "$(id -u)" \
+            -exec chmod a+rw {} +
+        }
+        trap shareDocumentationLocks EXIT
+
+        cargo doc \
+          --no-deps \
+          --frozen \
+          --offline \
+          -j$NIX_BUILD_CORES \
+          --target-dir "$crucibleQualificationTargets/crucible-doc-libs" \
+          ${docPackageFlags}
+        cargo doc \
+          --no-deps \
+          --frozen \
+          --offline \
+          -j$NIX_BUILD_CORES \
+          --target-dir "$crucibleQualificationTargets/crucible-doc-cli" \
+          -p crucible-cli \
+          --bin crucible
+        ${
         if stdenv.isCross
         then ''
           echo "skipping target doctest execution while cross-compiling"
@@ -352,10 +368,11 @@
             --frozen \
             --offline \
             -j$NIX_BUILD_CORES \
-            --target-dir target/crucible-doctest-libs \
+            --target-dir "$crucibleQualificationTargets/crucible-doctest-libs" \
             ${doctestPackageFlags}
         ''
       }
+      )
     '';
 
     # The check phase enables the test-only backend. Rebuild the installed CLI
