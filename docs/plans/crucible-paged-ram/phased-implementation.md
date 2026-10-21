@@ -1449,6 +1449,51 @@ cases to 243 requirements, with 149 uncovered and none fully qualified.
 Activation, general low-residency progress, complete fork/rearm and performance
 parity remain unqualified.
 
+### 2026-10-21 control and scheduler publication checkpoint
+
+Fresh control publication now checks the final unsigned generation before
+calling its producer or touching mapped state. A producer is entered at most
+once; an intervening generation change refuses the exact publication rather
+than retrying against another boundary. The host independently rejects a
+wrapped request and authenticates the unchanged acknowledgement tuple. These
+changes pass 111 shared-memory tests, six host capture controls, nineteen
+Source-action controls, two acknowledgement controls, and all 119 exact
+hermetic supervision cases at
+`/nix/store/px1v5wz4af7ax2zy4kpmy3x9miiq0m7q-crucible-gate-ram-supervision-0`.
+
+Scheduler publication separately reserves one checked even-to-odd generation
+before either inbox adapter enqueues frames. An occupied writer refuses
+without waiting. Abandoning the reservation consumes its epoch while preserving
+the prior tuple and wake value; it does not authorize replay of already-enqueued
+frames. Restore publication uses its own boundary and grants no Quantum role.
+All 116 shared-memory tests and 21 scheduler handoff integration tests pass.
+Mandatory application unit/integration target compilation passes at
+`/nix/store/6v4x5bk17ihhi1clx510a03k31wfxxxw-aos-test-targets-0.1.0`.
+The matched 124-case hermetic supervision gate passes at
+`/nix/store/kmxdx9dhs4szr2njbpbydwk2laajdafm-crucible-gate-ram-supervision-0`,
+and raw ABI conformance passes at
+`/nix/store/wi9cc5c8arhiiv00zqwdw3asp692wmyc-crucible-phase2-abi-conformance-0`.
+These results precede the subsequent issued-owner restore changes.
+
+The signed initial CPU checkpoint is atomic commit
+`7db67fefae5063ec0b738404da06e86f1213ad34`, tree
+`dd5d400b62ab0a9eb8f5fbc9f65968e8d0f34b43`. It retains actual class-0
+construction receipts and QOM ownership through deferred FIFO callbacks and
+independent postcuts. Selected SDK factories refuse missing allocation payers
+before creating output. All 187 owning scenarios and the complete 34-defect
+causal sweep pass under unchanged limits, as do signed reconstruction and the
+264-file license ledger. Actual initial CPU assertion hooks remain unexecuted.
+Full native compilation completes all 3,863 targets, with 25 of 26 fixtures
+passing; the required launched lifecycle still fails.
+
+The full license gate on the scheduler snapshot fails at its strict controller
+prerequisite with 944 host test-target lint errors, before boundary checks.
+Its direct ABI result is not a substitute for that failed gate. Published
+coverage now binds 222 component and nineteen native cases; the 243 requirements
+still have 149 uncovered and none fully qualified. Genuine Quantum issuance,
+manifest allocation payers, activation, eight helper integrations, general
+low-residency progress, full fork/rearm and performance remain unresolved.
+
 ### Canonical native observation gate cutover (required)
 
 The supplemental service flights do not yet replace the canonical plugin gate.
