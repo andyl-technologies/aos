@@ -1954,7 +1954,7 @@ fn spawn_process_with_resources(
 
     let mut command = guarded_qemu_process_command(executable, args, envs);
     if selected_preexec {
-        command.env("QEMU_CRUCIBLE_PREEXEC_SETUP", "5");
+        command.env("QEMU_CRUCIBLE_PREEXEC_SETUP", "6");
     }
 
     // SAFETY: the closure only calls async-signal-safe syscalls between fork

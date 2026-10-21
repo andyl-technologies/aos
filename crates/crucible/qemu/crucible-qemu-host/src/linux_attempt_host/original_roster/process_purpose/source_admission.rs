@@ -359,7 +359,8 @@ pub(in crate::linux_attempt_host) fn source_host_peak()
     Ok((
         source_extent,
         peak,
-        22 + crate::spawn::preexec_setup::PreparedPreexecSetup::descriptor_peak()
+        22 + crate::spawn::source_supervision::PUBLISHER_DESCRIPTOR_PEAK
+            + crate::spawn::preexec_setup::PreparedPreexecSetup::descriptor_peak()
             + crate::spawn::helper_receiver::DESCRIPTOR_PEAK,
     ))
 }

@@ -13,6 +13,10 @@
   pluginMapping = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/setup/mapping.rs;
   pluginRegistration = import ./_qemu-plugin-registration-source.nix {inherit lib;};
   pluginHandshake = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/handshake.rs;
+  publisherBorrow = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/startup_source/native_setup/publisher.rs;
+  publisherService = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/runtime/publisher_service.rs;
+  hostPreexec = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-host/src/spawn/preexec_setup.rs;
+  hostPublisher = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-host/src/spawn/source_supervision/publisher.rs;
   protocol = builtins.concatStringsSep "\n" (map builtins.readFile [
     ../../crates/crucible/protocol/crucible-qemu-protocol/src/lib.rs
     ../../crates/crucible/protocol/crucible-qemu-protocol/src/plugin_observation.rs
@@ -29,7 +33,8 @@
     };
   # RFC-0010 describes the original three-role exchange. The executable checks
   # below also cover the later Source publication/cancellation roles and the
-  # optional digest workspace; the historical prose is not the current roster.
+  # optional digest workspace. Selected Setup6 additionally carries three
+  # publisher roles; the historical prose is not the selected roster.
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
   protocolSpec = builtins.readFile ../../docs/rfcs/0010-crucible/14-protocol.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -94,6 +99,58 @@
       {
         label = "ready setup ack sender";
         needle = "pub fn plugin_send_setup_ack";
+      }
+    ]
+    ++ failuresFor "Setup6 Native borrow" publisherBorrow [
+      {
+        label = "matched publisher borrow";
+        needle = "qemu_plugin_crucible_startup_setup_borrow_v4";
+      }
+      {
+        label = "matched publisher current view";
+        needle = "qemu_plugin_crucible_startup_setup_current_v4";
+      }
+      {
+        label = "exact publisher frame validation";
+        needle = "PublisherSetup::decode(&frame)";
+      }
+    ]
+    ++ failuresFor "Setup6 Runtime service" publisherService [
+      {
+        label = "canonical foreign-managed field";
+        needle = "holder: UnsafeCell<*mut ModuleService>";
+      }
+      {
+        label = "actual Native Runtime transfer";
+        needle = "qemu_plugin_crucible_startup_setup_transfer_v4";
+      }
+    ]
+    ++ failuresFor "Setup6 host handover" hostPreexec [
+      {
+        label = "retained physical publisher preparation";
+        needle = ".prepare_publisher_session(";
+      }
+      {
+        label = "strict plan-nine producer";
+        needle = ".encode_preexec_publisher(";
+      }
+      {
+        label = "eight/nine descriptor producer";
+        needle = "send_publisher_setup_frame_with_descriptors(";
+      }
+    ]
+    ++ failuresFor "Setup6 host custody" hostPublisher [
+      {
+        label = "preborn complete physical journal";
+        needle = "body: Option<ManuallyDrop<Box<SessionBody>>>";
+      }
+      {
+        label = "actual Main Source payer";
+        needle = "reserve_controls(super::PUBLISHER_DESCRIPTOR_PEAK, bytes)";
+      }
+      {
+        label = "uncertain physical return retains whole body";
+        needle = "if body.return_physical(cleanup_proven)";
       }
     ]
     ++ failuresFor "crates/crucible/protocol/crucible-qemu-shmem/src/lib.rs" shmem [
@@ -377,7 +434,11 @@ in
             rust_tests=crucible-qemu-plugin::setup
             qualification=component-tests-and-source-contracts
             native_source_positive=unexecuted
-            setup_descriptors=five-SCM_RIGHTS-or-six-with-digest-workspace
+            setup_descriptors=selected-eight-SCM_RIGHTS-or-nine-with-digest-workspace
+            ordinary_setup_fixture_descriptors=five-or-six-with-digest-workspace
+            publisher_service=retained-Native-owner-in-paid-Runtime
+            publisher_host=once-holder-retains-paid-physical-journal
+            publisher_genuine_lifecycle=unexecuted
             setup_region=native-Source-owned-mapping-with-backing-identity-and-ABI-validation
             standalone_owned_mapping=test-fixture-only
             setup_cross_check=handshake-slot-and-node-count

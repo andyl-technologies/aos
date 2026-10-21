@@ -25,6 +25,8 @@ use crate::linux_attempt_host::{InstalledSourceAdmission, InstalledSourceSubject
 mod action;
 pub(crate) use action::ActionSourceProducer;
 mod parent_park_return;
+mod publisher;
+pub(crate) use publisher::PublisherSessionError;
 
 pub(crate) const SOURCE_PUBLICATION_BYTES: usize = 1504;
 pub(crate) const SOURCE_PAYLOAD_BYTES: usize = 1496;
@@ -32,6 +34,8 @@ pub(crate) const SOURCE_CORROBORATION_BYTES: usize = 1520;
 const WORDS: usize = SOURCE_PUBLICATION_BYTES / 8;
 const HEADER_BYTES: usize = 232;
 const BACKING_PAGE_BYTES: u64 = 4096;
+/// Counts three retained publisher roles and one concurrent fdinfo descriptor.
+pub(crate) const PUBLISHER_DESCRIPTOR_PEAK: u64 = 4;
 
 /// Retains the same physical Source publication through startup and runtime.
 #[derive(Clone, Debug)]
@@ -50,6 +54,7 @@ struct SourcePublisher {
     retained_mapping: Mutex<Option<crucible_qemu_shmem::MappedSetupRegion>>,
     action_mapping: Mutex<Option<(crucible_qemu_shmem::SetupRegionBackingIdentity, u32)>>,
     action_wake: Mutex<Option<Arc<std::fs::File>>>,
+    publisher_session: Mutex<publisher::PublisherSession>,
     _admission: InstalledSourceAdmission,
 }
 
@@ -92,6 +97,7 @@ unsafe impl Sync for AtomicPublication {}
 impl OriginalSourceSupervision {
     pub(crate) fn host_allocation_extent() -> Option<u64> {
         Self::publication_allocation_extent()?
+            .checked_add(publisher::PublisherSession::host_allocation_extent()?)?
             .checked_add(
                 u64::try_from(FundedSourcePublisher::<SourcePublisher>::allocation_bytes().ok()?)
                     .ok()?,
@@ -185,6 +191,41 @@ impl OriginalSourceSupervision {
     pub(crate) fn cancellation_role(&self) -> BorrowedFd<'_> {
         self.publisher.cancellation.as_fd()
     }
+
+    /// Creates and exports the real once publisher under this same Source payer.
+    ///
+    /// # Errors
+    /// Preserves physical construction, alias and independent Original failures.
+    /// The complete canonical session remains beneath the funded publisher.
+    pub(crate) fn prepare_publisher_session(
+        &self,
+        startup: &super::OriginalPluginStartup,
+        cleanup: crate::launch_cleanup::LaunchCleanup,
+        node_index: u32,
+        node_count: u32,
+        aliases: &mut [Option<OwnedFd>],
+    ) -> Result<
+        crucible_qemu_protocol::publisher_subscription::PublisherPurpose,
+        PublisherSessionError,
+    > {
+        let admission = startup.admission().map_err(publisher::startup_refusal)?;
+        if !self.belongs_to(admission) {
+            return Err(publisher::unavailable());
+        }
+        let mut session = self
+            .publisher
+            .publisher_session
+            .try_lock()
+            .map_err(|_| publisher::unavailable())?;
+        session.prepare(
+            &self.publisher._admission,
+            startup,
+            cleanup,
+            node_index,
+            node_count,
+        )?;
+        session.export(startup, aliases)
+    }
 }
 
 /// Enters physical/candidate construction only after its same Main peak is held.
@@ -253,6 +294,7 @@ fn construct_source_publication(
             retained_mapping: Mutex::new(None),
             action_mapping: Mutex::new(None),
             action_wake: Mutex::new(None),
+            publisher_session: Mutex::new(publisher::PublisherSession::default()),
             _admission: admission.clone(),
         },
         allocation,

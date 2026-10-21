@@ -526,12 +526,8 @@ fn invalid_event() -> io::Error {
 }
 
 pub(super) fn event_identity(descriptor: i32) -> io::Result<u64> {
-    let mut path = DescriptorPath {
-        bytes: [0; 40],
-        len: 0,
-    };
-    write!(path, "/proc/self/fdinfo/{descriptor}").map_err(|_| invalid_event())?;
-    let path = std::str::from_utf8(&path.bytes[..path.len]).map_err(|_| invalid_event())?;
+    let (path, length) = event_identity_path(descriptor)?;
+    let path = std::str::from_utf8(&path[..length]).map_err(|_| invalid_event())?;
     let mut file = File::open(path)?;
     let mut bytes = [0; FDINFO_BYTES + 1];
     let mut length = 0;
@@ -546,7 +542,20 @@ pub(super) fn event_identity(descriptor: i32) -> io::Result<u64> {
     if length > FDINFO_BYTES {
         return Err(invalid_event());
     }
-    let text = std::str::from_utf8(&bytes[..length]).map_err(|_| invalid_event())?;
+    decode_event_identity(&bytes[..length])
+}
+
+pub(super) fn event_identity_path(descriptor: i32) -> io::Result<([u8; 40], usize)> {
+    let mut path = DescriptorPath {
+        bytes: [0; 40],
+        len: 0,
+    };
+    write!(path, "/proc/self/fdinfo/{descriptor}").map_err(|_| invalid_event())?;
+    Ok((path.bytes, path.len))
+}
+
+pub(super) fn decode_event_identity(bytes: &[u8]) -> io::Result<u64> {
+    let text = std::str::from_utf8(bytes).map_err(|_| invalid_event())?;
     let mut event_id = None;
     for line in text.lines() {
         if let Some(value) = line.strip_prefix("eventfd-id:") {

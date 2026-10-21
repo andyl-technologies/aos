@@ -6,10 +6,11 @@
 //! launch cleanup owner until actual child and transport retirement.
 //!
 //! ```text
-//! sealed plan: CRUCSUP8, schema 8, header 40, unchanged aggregate byte cap
+//! sealed plan: CRUCSUP9, schema 9, header 40, unchanged aggregate byte cap
 //! nested purpose: CRUCPUR8, schema 8, 2520 bytes
-//! frame: BEu32(57), tag 0x15, 56-byte selected Setup payload
-//! SCM roles: shared memory, wake event, sealed plan, standing publication, standing cancellation, optional workspace
+//! frame: BEu32(121), tag 0x16, selected Setup6 and publisher binding
+//! SCM roles: shared memory, wake event, sealed plan, standing publication,
+//! standing cancellation, optional workspace, publisher region and two events
 //! ```
 // SPDX-License-Identifier: Apache-2.0
 
@@ -25,7 +26,7 @@ use super::{OriginalPluginStartup, QemuChildProcessContract};
 use crate::linux_attempt_host::OriginalNativeNodeBinding;
 use crate::ram_control::RamControlRegistration;
 
-const FRAME_BYTES: usize = 61;
+const FRAME_BYTES: usize = 125;
 const PURPOSE_BYTES: usize = PROCESS_PURPOSE_BYTES;
 const READBACK_BYTES: usize = 4096;
 
@@ -41,7 +42,7 @@ pub(crate) struct BorrowedPreexecSetup<'a> {
 /// Owns the actual local and queued descriptor history before its credit.
 #[derive(Debug)]
 pub(crate) struct PreparedPreexecSetup {
-    aliases: [Option<OwnedFd>; 6],
+    aliases: [Option<OwnedFd>; 9],
     frame: [u8; FRAME_BYTES],
     queued: bool,
     receipt: Option<crucible_qemu_protocol::PreexecSetupHandover>,
@@ -81,6 +82,8 @@ enum PreexecSetupCause {
     Geometry,
     #[error("the allocation-purpose workspace handover is unavailable")]
     WorkspaceUnavailable,
+    #[error("the actual publisher session refused: {0}")]
+    Publisher(#[source] super::source_supervision::PublisherSessionError),
 }
 
 impl PreparedPreexecSetup {
@@ -116,9 +119,9 @@ impl PreparedPreexecSetup {
             .checked_add(std::mem::size_of::<SourceHostControlLease>() as u64)
     }
 
-    /// Counts both six local aliases and their independently retained queue copies.
+    /// Counts nine local aliases and their independently retained queue copies.
     pub(crate) const fn descriptor_peak() -> u64 {
-        12
+        18
     }
 
     /// Admits one physical owner before socket, endpoint borrower, or plan birth.
@@ -244,7 +247,22 @@ impl PreparedPreexecSetup {
                     |record| *record,
                 )
                 .map_err(PreexecSetupCause::Purpose)?;
-            let encoded = encode_plan(plan, &record, workspace_record.as_ref())?;
+            let standing = startup.standing().map_err(PreexecSetupCause::Startup)?;
+            let publisher = standing
+                .prepare_publisher_session(
+                    startup,
+                    self.cleanup
+                        .as_ref()
+                        .ok_or(PreexecSetupCause::Geometry)?
+                        .clone(),
+                    0,
+                    region_config.vm_node_count,
+                    &mut self.aliases[6..],
+                )
+                .map_err(PreexecSetupCause::Publisher)?;
+            let encoded = plan
+                .encode_preexec_publisher(&record, workspace_record.as_ref(), &publisher)
+                .map_err(PreexecSetupCause::Plan)?;
             startup.check().map_err(PreexecSetupCause::Original)?;
             self.aliases[2] = Some(
                 rustix::fs::memfd_create(
@@ -324,25 +342,24 @@ impl PreparedPreexecSetup {
                         .duplicate_for_preexec()
                         .map_err(|_| PreexecSetupCause::WorkspaceUnavailable)?,
                 );
-                let descriptor = workspace
-                    .descriptor()
-                    .map_err(|_| PreexecSetupCause::WorkspaceUnavailable)?;
-                self.frame[13..17].copy_from_slice(&1_u32.to_be_bytes());
-                self.frame[17..21].copy_from_slice(&2_u32.to_be_bytes());
-                for (offset, value) in [
-                    (29, descriptor.binding.account_generation),
-                    (37, descriptor.binding.workspace_generation),
-                    (45, descriptor.binding.device),
-                    (53, descriptor.binding.inode),
-                ] {
-                    self.frame[offset..offset + 8].copy_from_slice(&value.to_be_bytes());
-                }
             }
-            self.frame[..4].copy_from_slice(&57_u32.to_be_bytes());
-            self.frame[4] = crucible_qemu_protocol::TAG_SETUP;
-            self.frame[5..13].copy_from_slice(&region_len.to_be_bytes());
-            self.frame[21..29]
-                .copy_from_slice(&startup_record.fields().process_generation.to_be_bytes());
+            self.frame = crucible_qemu_protocol::publisher_subscription::PublisherSetup {
+                region_len,
+                process_generation: startup_record.fields().process_generation,
+                device_digest_workspace: workspace
+                    .as_ref()
+                    .map(|workspace| workspace.descriptor())
+                    .transpose()
+                    .map_err(|_| PreexecSetupCause::WorkspaceUnavailable)?
+                    .map(|descriptor| descriptor.binding),
+                lender_generation: publisher.lender_generation,
+                device: publisher.device,
+                inode: publisher.inode,
+                producer_event: publisher.producer_event,
+                receiver_event: publisher.receiver_event,
+            }
+            .encode()
+            .map_err(|_| PreexecSetupCause::Geometry)?;
             Ok(())
         })();
         self.finish(startup, prepared)
@@ -361,16 +378,16 @@ impl PreparedPreexecSetup {
             }
             // A failing or partial syscall may still retain queue aliases.
             self.queued = true;
-            let mut descriptors = [-1; 6];
-            for (index, alias) in self.aliases.iter().enumerate() {
-                if let Some(alias) = alias {
-                    descriptors[index] = alias.as_raw_fd();
-                }
+            let mut descriptors = [-1; 9];
+            let mut count = 0;
+            for alias in self.aliases.iter().flatten() {
+                descriptors[count] = alias.as_raw_fd();
+                count += 1;
             }
-            let receipt = crucible_qemu_protocol::send_preexec_setup_frame_with_descriptors(
+            let receipt = crucible_qemu_protocol::publisher_subscription::send_publisher_setup_frame_with_descriptors(
                 socket.as_raw_fd(),
                 &self.frame,
-                &descriptors[..if self.aliases[5].is_some() { 6 } else { 5 }],
+                &descriptors[..count],
             )
             .map_err(PreexecSetupCause::Handover)?;
             self.receipt = Some(receipt);
@@ -408,7 +425,7 @@ impl PreparedPreexecSetup {
 
 /// Records each physical alias before checking or duplicating the next role.
 fn retain_standing_aliases(
-    aliases: &mut [Option<OwnedFd>; 6],
+    aliases: &mut [Option<OwnedFd>; 9],
     roles: [BorrowedFd<'_>; 2],
     mut duplicate: impl FnMut(BorrowedFd<'_>) -> Result<OwnedFd, PreexecSetupCause>,
 ) -> Result<(), PreexecSetupCause> {
@@ -421,15 +438,6 @@ fn retain_standing_aliases(
         aliases[index] = Some(duplicate(role)?);
     }
     Ok(())
-}
-
-fn encode_plan(
-    plan: &PluginSetupPlan,
-    purpose: &[u8; PURPOSE_BYTES],
-    workspace: Option<&[u8; 128]>,
-) -> Result<Vec<u8>, PreexecSetupCause> {
-    plan.encode_preexec(purpose, workspace)
-        .map_err(PreexecSetupCause::Plan)
 }
 
 impl Drop for PreparedPreexecSetup {
