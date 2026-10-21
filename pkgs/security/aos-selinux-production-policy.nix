@@ -860,6 +860,8 @@ in
 
     passthru =
       {
+        # Profile producers rerun this policy's exact selected checks.
+        effectivePolicyCheckerArguments = gitReadCheckerArgument;
         evidenceSources = [
           policySupport
           refpolicy-production.src
@@ -867,7 +869,7 @@ in
         ];
       }
       // (
-        if onlineNix || runtimeDeploymentPublisher || resourceBankEnrollment || hostComponentControl || environmentProvision != null
+        if sourceProviderMount || onlineNix || runtimeDeploymentPublisher || resourceBankEnrollment || hostComponentControl || environmentProvision != null
         then {
           effectivePolicyCheckerRelative = "share/aos/selected-policy-checker/effective_policy.py";
         }

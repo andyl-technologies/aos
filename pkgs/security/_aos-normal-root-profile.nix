@@ -14,9 +14,10 @@
   support = ./_aos-selinux-production-policy;
   sourcePolicy = "${aos-selinux-production-policy}/etc/selinux/aos/policy/policy.33";
   effectivePolicyChecker =
-    if aos-selinux-production-policy ? effectivePolicyCheckerRelative
-    then "${aos-selinux-production-policy}/${aos-selinux-production-policy.effectivePolicyCheckerRelative}"
+    if aos-selinux-production-policy.passthru ? effectivePolicyCheckerRelative
+    then "${aos-selinux-production-policy}/${aos-selinux-production-policy.passthru.effectivePolicyCheckerRelative}"
     else "${support}/effective_policy.py";
+  effectivePolicyCheckerArguments = aos-selinux-production-policy.passthru.effectivePolicyCheckerArguments or "";
 in
   mkDerivation {
     pname = "aos-normal-root-startup-profile";
@@ -62,7 +63,7 @@ in
           # Rerun the same attribute-expanded checker on the selected final
           # binary. A marker or nonempty archived TSV alone is not success.
           ${buildPackages.python3}/bin/python3 -B ${effectivePolicyChecker} \
-            ${sourcePolicy} > effective-policy.tsv
+            ${effectivePolicyCheckerArguments} ${sourcePolicy} > effective-policy.tsv
           test -s effective-policy.tsv
           mkdir -p "$out"
           install -m 0444 effective-policy.tsv "$out/effective-policy.tsv"

@@ -12,6 +12,11 @@
 }: let
   support = ./_aos-selinux-production-policy;
   sourcePolicy = "${aos-selinux-production-policy}/etc/selinux/aos/policy/policy.33";
+  effectivePolicyChecker =
+    if aos-selinux-production-policy.passthru ? effectivePolicyCheckerRelative
+    then "${aos-selinux-production-policy}/${aos-selinux-production-policy.passthru.effectivePolicyCheckerRelative}"
+    else "${support}/effective_policy.py";
+  effectivePolicyCheckerArguments = aos-selinux-production-policy.passthru.effectivePolicyCheckerArguments or "";
 in
   mkDerivation {
     pname = "aos-nix-offline-startup-profile";
@@ -52,8 +57,8 @@ in
         script = ''
           set -eu
           export PYTHONPATH=${buildPackages.setools}/lib/python3/site-packages
-          ${buildPackages.python3}/bin/python3 -B ${support}/effective_policy.py \
-            ${sourcePolicy} > effective-policy.tsv
+          ${buildPackages.python3}/bin/python3 -B ${effectivePolicyChecker} \
+            ${effectivePolicyCheckerArguments} ${sourcePolicy} > effective-policy.tsv
           test -s effective-policy.tsv
           mkdir -p "$out"
           install -m 0444 effective-policy.tsv "$out/effective-policy.tsv"
