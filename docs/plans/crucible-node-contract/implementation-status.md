@@ -1779,6 +1779,25 @@ Live SDK admission, response publication, bootstrap ACK, Native18 policy, model
 adoption and opaque Initial/Recipe construction remain separate unfinished
 transitions.
 
+## Selected and retired original SDK census
+
+A separate empty-registry state census now covers the actual SDK wrapper and
+its supplied retained lease through selection, failed authentication, containment
+and supersession. The original unselected-only census keeps its phase contract.
+Both registrar allocations must match before their shared backing is discounted;
+equal epochs, connection claims or selected contents cannot establish aliases.
+Actual lease-owned capacities are counted under an exhaustive field roster.
+The selected slice is counted once only when its Arc matches. Resumption leaves
+an older lease's distinct empty allocation charged after revocation.
+
+Eight new controls cover genuine admissions, retained spare capacity, rejected
+authentication and contract checks, containment, supersession, equal-looking
+foreign owners, missing/nonempty selections and each independently substituted
+registrar allocation. The complete standard Transport library passes 1,896 tests
+with zero failures, no filtering and sixteen existing ignores. Raw-value and
+application qualification remain pending. This census grants no currentness or
+native authority and does not yet perform original Native18 SDK admission.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.

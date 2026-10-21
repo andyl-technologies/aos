@@ -108,6 +108,33 @@ impl OriginalNegotiationView<'_> {
 }
 
 impl Handshake {
+    /// Counts an issuer and its retained lease after proving shared backing.
+    ///
+    /// This historical census deliberately accepts revoked or superseded leases.
+    /// The enclosing extension owner must separately prove and count the lease's
+    /// selected-extension allocations before omitting those shared edges here.
+    ///
+    /// # Errors
+    /// Refuses either foreign registrar allocation or checked metadata overflow.
+    pub(in crate::handshake) fn observe_retained_authority_pair_data(
+        &self,
+        authority: &ConnectionAuthority,
+        observer: &mut crate::retained_metadata::MetadataObserver,
+    ) -> Result<(), ProviderError> {
+        if !Arc::ptr_eq(&self.shared_epoch, &authority.shared_epoch)
+            || !Arc::ptr_eq(&self.registration_gate, &authority.registration_gate)
+        {
+            return Err(ProviderError::Correlation(
+                "retained authority registrar backing differs",
+            ));
+        }
+
+        self.observe_retained_metadata_data(observer)?;
+        // The exhaustive lease roster visits its actual owned capacities. The
+        // proven registrar aliases and separately counted selections stay above.
+        authority.observe_prospective_clone_metadata(observer)
+    }
+
     /// Reports actual retained negotiation allocations as historical data.
     ///
     /// The owning process capsule must check its original creator/thread before
@@ -246,5 +273,35 @@ impl Handshake {
             registration_gate.as_ref(),
         )?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod retained_pair_tests {
+    use super::*;
+    use crate::retained_metadata::{MetadataObserver, RetainedProtocolMetadataFacts};
+
+    #[test]
+    fn each_registrar_allocation_must_match_before_any_alias_is_discounted() {
+        for replace_epoch in [false, true] {
+            let (issuer, mut authority) = crate::handshake::tests::authority();
+            let (_foreign_issuer, foreign) = crate::handshake::tests::authority();
+            assert_eq!(authority.epoch(), foreign.epoch());
+            assert_eq!(authority.connection_id(), foreign.connection_id());
+            if replace_epoch {
+                authority.shared_epoch = foreign.shared_epoch.clone();
+            } else {
+                authority.registration_gate = foreign.registration_gate.clone();
+            }
+            let mut observer = MetadataObserver::new();
+
+            assert!(
+                issuer
+                    .observe_retained_authority_pair_data(&authority, &mut observer)
+                    .is_err()
+            );
+
+            assert_eq!(observer.finish(), RetainedProtocolMetadataFacts::default());
+        }
     }
 }

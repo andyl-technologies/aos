@@ -16,6 +16,9 @@ use super::{
 use crate::ProviderError;
 use crate::envelope::Envelope;
 
+#[path = "empty_registry_state.rs"]
+mod empty_registry_state;
+
 /// Owns an opt-in installed contract and the same revocable Hello registration gate.
 ///
 /// The transport policy must explicitly map the version1 envelope key to its

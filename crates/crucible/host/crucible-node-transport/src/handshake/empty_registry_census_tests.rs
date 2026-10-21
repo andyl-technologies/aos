@@ -117,3 +117,6 @@ fn historical_registry_owner_variant_cannot_use_empty_wrapper_census() {
             .is_err()
     );
 }
+
+#[path = "empty_registry_state_tests.rs"]
+mod empty_registry_state_tests;
