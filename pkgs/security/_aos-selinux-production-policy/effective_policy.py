@@ -52,7 +52,7 @@ NO_CONTEXT_TRANSLATION_DOMAINS = (
     *owner_policy.HELPER_DOMAINS,
     *view_policy.SIGNER_DOMAINS,
     *owner_policy.SELECTED_MOUNT_SOURCE_DOMAINS,
-    *owner_policy.ONLINE_NIX_HELPERS,
+    *owner_policy.ONLINE_NIX_DOMAINS[1:],
     *owner_policy.RUNTIME_DOMAINS[1:],
 )
 PRIVATE_ROOT_CUSTODY_ATTRIBUTE = "aos_private_root_custody_domain"

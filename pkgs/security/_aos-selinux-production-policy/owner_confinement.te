@@ -755,6 +755,8 @@ allow init_t { aos_nix_controller_floor_helper_t aos_nix_owner_floor_helper_t }:
 # inherited cap0xc0 is the existing PATH behavior, not a new capability grant.
 type aos_nix_online_store_reader_t;
 typeattribute aos_nix_online_store_reader_t domain;
+# The read-only PATH child uses no context translator or socket transport.
+typeattribute aos_nix_online_store_reader_t aos_no_context_translation_domain;
 typeattribute aos_nix_online_store_reader_t aos_private_root_custody_domain;
 role system_r types aos_nix_online_store_reader_t;
 type aos_nix_online_store_reader_exec_t;
