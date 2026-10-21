@@ -204,7 +204,7 @@ in
       run_tests ${fixtures}/bin/aos_sandbox runtime_scope::kernel_tests::
       # Mutual TLS and pinned credentials replaced the retired local-holder
       # provisioning API. Publisher registration retains its real kernel peers.
-      run_tests ${fixtures}/bin/aos_sandbox public_api_session::tests::
+      run_tests ${fixtures}/bin/aos_sandbox public_api_session::handshake_tests::
       run_tests ${fixtures}/bin/aos_sandbox public_api_session::credentials::tests::
       run_tests ${fixtures}/bin/aos_sandbox_publisher publisher_sessions::kernel_tests::
       run_tests ${fixtures}/bin/aos_sandbox publisher_admin::registration::tests::
