@@ -414,3 +414,62 @@ fn canonical_cbor_refuses_indefinite_text_without_changing_the_ordinary_parser()
 
 #[path = "json_diagnostic_tests.rs"]
 mod closed_json;
+
+#[test]
+fn canonical_display_hash_admits_scratch_before_formatting() -> Result<(), Box<dyn Error>> {
+    struct Borrowed<'a> {
+        calls: &'a AtomicU64,
+        peak: &'a AtomicU64,
+        authority: &'a Authority,
+    }
+
+    impl std::fmt::Display for Borrowed<'_> {
+        fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.peak
+                .fetch_max(self.authority.used.load(Ordering::SeqCst), Ordering::SeqCst);
+            formatter.write_str("é水canonical")
+        }
+    }
+
+    let authority = authority(512);
+    let budget = DecodeBudget::new(authority.clone(), 512)?;
+    let initial = authority.used.load(Ordering::SeqCst);
+    let calls = AtomicU64::new(0);
+    let peak = AtomicU64::new(0);
+    let material = Borrowed {
+        calls: &calls,
+        peak: &peak,
+        authority: &authority,
+    };
+    let scope = budget.enter();
+
+    let hash = crate::ContentHash::from_canonical_display("display-test", &material)?;
+
+    assert_eq!(
+        hash,
+        crate::ContentHash::from_canonical_material("display-test", "é水canonical")
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    assert!(peak.load(Ordering::SeqCst) > initial);
+    assert_eq!(authority.used.load(Ordering::SeqCst), initial);
+    assert!(budget.failure()?.is_none());
+
+    let held = budget.reserve_scratch_bytes(512 - initial)?;
+    let result = crate::ContentHash::from_canonical_display("display-test", &material);
+
+    assert!(matches!(
+        result,
+        Err(crate::EngineError::ArtifactDecodeAdmission { .. })
+    ));
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    assert!(budget.failure()?.is_some());
+    assert_eq!(authority.used.load(Ordering::SeqCst), 512);
+
+    drop(scope);
+    drop(held);
+    assert_eq!(authority.used.load(Ordering::SeqCst), initial);
+    drop(budget);
+    assert_eq!(authority.used.load(Ordering::SeqCst), 0);
+    Ok(())
+}

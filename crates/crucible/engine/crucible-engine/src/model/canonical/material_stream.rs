@@ -135,10 +135,64 @@ mod tests {
     }
 
     #[test]
+    fn public_display_hash_refuses_changed_length_and_formatter_failure() {
+        struct Changed {
+            first: &'static str,
+            second: &'static str,
+            rendered: std::cell::Cell<bool>,
+        }
+
+        impl Display for Changed {
+            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str(if self.rendered.replace(true) {
+                    self.second
+                } else {
+                    self.first
+                })
+            }
+        }
+
+        struct Failed {
+            calls: std::cell::Cell<u8>,
+            failed_pass: u8,
+        }
+
+        impl Display for Failed {
+            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                let pass = self.calls.get() + 1;
+                self.calls.set(pass);
+                if pass == self.failed_pass {
+                    Err(fmt::Error)
+                } else {
+                    formatter.write_str("x")
+                }
+            }
+        }
+
+        for (first, second) in [("x", "longer"), ("longer", "x")] {
+            let material = Changed {
+                first,
+                second,
+                rendered: false.into(),
+            };
+            assert!(ContentHash::from_canonical_display("stream-test", &material).is_err());
+        }
+
+        for failed_pass in [1, 2] {
+            let material = Failed {
+                calls: 0.into(),
+                failed_pass,
+            };
+            assert!(ContentHash::from_canonical_display("stream-test", &material).is_err());
+            assert_eq!(material.calls.get(), failed_pass);
+        }
+    }
+
+    #[test]
     fn streaming_preserves_length_prefix_and_partial_words() {
         for text in ["", "x", "1234567", "12345678", "123456789", "xé水abcdefgh"] {
             let expected = ContentHash::from_canonical_material("stream-test", text);
-            let actual = hash_material("stream-test", &Fragmented(text))
+            let actual = ContentHash::from_canonical_display("stream-test", &Fragmented(text))
                 .unwrap_or_else(|error| panic!("stream borrowed material: {error}"));
             assert_eq!(actual, expected);
         }

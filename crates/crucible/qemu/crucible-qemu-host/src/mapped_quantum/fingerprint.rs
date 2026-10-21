@@ -54,6 +54,107 @@ pub(crate) fn black_box_execution_fingerprint(
 ) -> Result<ExecutionFingerprint, QemuNodeChannelError> {
     validate_black_box_fingerprint_sample(sample)?;
 
+    let fingerprint = ExecutionFingerprint {
+        hash: hash_black_box_material(node, sample)?,
+    };
+    report_fingerprint_components(node, sample, &fingerprint);
+    Ok(fingerprint)
+}
+
+fn hash_black_box_material(
+    node: &crucible_engine::NodeId,
+    sample: &FingerprintSample,
+) -> Result<crucible_engine::ContentHash, QemuNodeChannelError> {
+    crucible_engine::ContentHash::from_canonical_display(
+        BLACK_BOX_EXECUTION_FINGERPRINT_DOMAIN,
+        &FingerprintMaterial { node, sample },
+    )
+    .map_err(|source| match source {
+        crucible_engine::EngineError::ArtifactDecodeAdmission { source } => {
+            QemuNodeChannelError::artifact_decode_admission("execution_fingerprint", source)
+        }
+        source => QemuNodeChannelError::new("execution_fingerprint", source.to_string()),
+    })
+}
+
+/// Borrows the already validated sample and emits its existing canonical recipe.
+struct FingerprintMaterial<'a> {
+    node: &'a crucible_engine::NodeId,
+    sample: &'a FingerprintSample,
+}
+
+impl std::fmt::Display for FingerprintMaterial<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let sample = self.sample;
+        write!(
+            formatter,
+            concat!(
+                "node={}\nsample_icount={}\nvcpu_count={}",
+                "\nrr_current_vcpu={}\nrr_position_in_quantum={}",
+                "\nrr_switch_quantum={}",
+            ),
+            self.node.name,
+            sample.sample_icount,
+            sample.vcpu_count,
+            sample.rr_current_vcpu,
+            sample.rr_position_in_quantum,
+            sample.rr_switch_quantum,
+        )?;
+
+        for (index, vcpu) in sample
+            .vcpus
+            .iter()
+            .take(sample.vcpu_count as usize)
+            .enumerate()
+        {
+            write!(
+                formatter,
+                concat!(
+                    "\nvcpu[{}].register_digest={}",
+                    "\nvcpu[{}].register_file_bytes={}",
+                    "\nvcpu[{}].retired_instruction_count={}",
+                ),
+                index,
+                LowercaseHex(&vcpu.register_digest),
+                index,
+                vcpu.register_file_bytes,
+                index,
+                vcpu.retired_instruction_count,
+            )?;
+        }
+
+        write!(
+            formatter,
+            concat!(
+                "\nram_bytes={}\nram_digest={}",
+                "\ndevice_state_bytes={}\ndevice_state_sections={}",
+                "\ndevice_state_digest={}\ndevice_state_schema_digest={}",
+            ),
+            sample.ram_bytes,
+            LowercaseHex(&sample.ram_digest),
+            sample.device_state_bytes,
+            sample.device_state_sections,
+            LowercaseHex(&sample.device_state_digest),
+            LowercaseHex(&sample.device_state_schema_digest),
+        )
+    }
+}
+
+struct LowercaseHex<'a>(&'a [u8]);
+
+impl std::fmt::Display for LowercaseHex<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for byte in self.0 {
+            write!(formatter, "{byte:02x}")?;
+        }
+        Ok(())
+    }
+}
+
+fn owned_component_material(
+    node: &crucible_engine::NodeId,
+    sample: &FingerprintSample,
+) -> Vec<String> {
     let mut material = vec![
         format!("node={}", node.name),
         format!("sample_icount={}", sample.sample_icount),
@@ -95,22 +196,15 @@ pub(crate) fn black_box_execution_fingerprint(
             lowercase_hex(&sample.device_state_schema_digest)
         ),
     ]);
-    let fingerprint = ExecutionFingerprint {
-        hash: crucible_engine::ContentHash::from_canonical_material(
-            BLACK_BOX_EXECUTION_FINGERPRINT_DOMAIN,
-            &material.join("\n"),
-        ),
-    };
-    report_fingerprint_components(node, &fingerprint, &material);
-    Ok(fingerprint)
+    material
 }
 
 // Sampling already owns these validated components. Diagnostics issue no
 // control request and never alter the fingerprint or checkpoint envelope.
 fn report_fingerprint_components(
     node: &crucible_engine::NodeId,
+    sample: &FingerprintSample,
     fingerprint: &ExecutionFingerprint,
-    material: &[String],
 ) {
     static REMAINING: OnceLock<AtomicU16> = OnceLock::new();
     let remaining = REMAINING.get_or_init(|| {
@@ -129,10 +223,11 @@ fn report_fingerprint_components(
     {
         return;
     }
+    let material = owned_component_material(node, sample);
     let _ = writeln!(
         std::io::stderr().lock(),
         "{}",
-        fingerprint_component_diagnostic(node, fingerprint, material)
+        fingerprint_component_diagnostic(node, fingerprint, &material)
     );
 }
 
@@ -165,6 +260,142 @@ fn lowercase_hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod diagnostic_tests {
     use super::*;
+
+    #[test]
+    fn borrowed_fingerprint_hash_matches_owned_recipe_without_material_allocations()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crucible_host_resources::test_support::TestAllocationObserver;
+
+        for name in [
+            "",
+            "vm-a",
+            "é水\nquoted\"node",
+            "1234567",
+            "12345678",
+            "123456789",
+        ] {
+            let node = crucible_engine::NodeId { name: name.into() };
+            for count in 1..=crucible_qemu_shmem::FINGERPRINT_SAMPLE_MAX_VCPUS {
+                let mut sample = FingerprintSample {
+                    sample_icount: u64::MAX,
+                    vcpu_count: count as u32,
+                    rr_current_vcpu: (count - 1) as u32,
+                    rr_position_in_quantum: u64::MAX - 1,
+                    rr_switch_quantum: u64::MAX,
+                    ram_bytes: u64::MAX,
+                    ram_digest: [0; 32],
+                    device_state_bytes: u64::MAX,
+                    device_state_sections: u64::MAX,
+                    device_state_digest: [0xff; 32],
+                    device_state_schema_digest: [0x9a; 32],
+                    ..FingerprintSample::default()
+                };
+                for (index, vcpu) in sample.vcpus.iter_mut().enumerate() {
+                    *vcpu = crucible_qemu_shmem::FingerprintSampleVcpu {
+                        register_digest: [index as u8; 32],
+                        register_file_bytes: u64::MAX - index as u64,
+                        retired_instruction_count: 0,
+                    };
+                }
+                validate_black_box_fingerprint_sample(&sample)?;
+                let owned = owned_component_material(&node, &sample).join("\n");
+                let expected = crucible_engine::ContentHash::from_canonical_material(
+                    BLACK_BOX_EXECUTION_FINGERPRINT_DOMAIN,
+                    &owned,
+                );
+
+                let (actual, counts) =
+                    TestAllocationObserver::count(|| hash_black_box_material(&node, &sample));
+
+                assert_eq!(actual?, expected);
+                assert_eq!(counts.allocations, 0);
+                assert_eq!(counts.reallocations, 0);
+                assert!(!counts.overflow);
+                assert_eq!(
+                    FingerprintMaterial {
+                        node: &node,
+                        sample: &sample
+                    }
+                    .to_string(),
+                    owned
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn sticky_fingerprint_admission_retains_its_actual_cause_without_formatting()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crucible_engine::owned_decode::DecodeAdmissionError;
+        use crucible_host_resources::test_support::TestAllocationObserver;
+        use std::error::Error;
+
+        let node = crucible_engine::NodeId {
+            name: "finite-node".into(),
+        };
+        let mut sample = FingerprintSample {
+            vcpu_count: 1,
+            rr_switch_quantum: 4096,
+            ram_bytes: 4096,
+            device_state_bytes: 512,
+            device_state_sections: 1,
+            device_state_schema_digest: [1; 32],
+            ..FingerprintSample::default()
+        };
+        sample.vcpus[0].register_file_bytes = 256;
+        validate_black_box_fingerprint_sample(&sample)?;
+        let scope = crucible_engine::test_support::fixture_decode_scope(512)?;
+        assert!(crucible_engine::owned_decode::charge_bytes(1024).is_err());
+        let expected = scope
+            .check()
+            .expect_err("the same actual finite account refused");
+
+        let (result, counts) = TestAllocationObserver::count(|| {
+            hash_black_box_material(&node, &sample).map_err(|channel| {
+                let node = crate::QemuNodeError::from_channel(
+                    crate::QemuNodeChannelPlane::ShmemHotPath,
+                    channel.clone(),
+                );
+                (channel, node)
+            })
+        });
+
+        let (channel, node) = result.expect_err("sticky admission must remain refused");
+        assert_eq!(counts.allocations, 0);
+        assert_eq!(counts.reallocations, 0);
+        assert!(!counts.overflow);
+        assert_eq!(channel.artifact_decode_admission_source(), Some(&expected));
+        assert_eq!(
+            node.source()
+                .and_then(|source| source.downcast_ref::<DecodeAdmissionError>()),
+            Some(&expected)
+        );
+        assert!(!channel.is_retryable());
+        assert!(channel.bounded_timeout().is_none());
+
+        // Scheduler retention still uses its existing shared carrier; its birth
+        // is outside this conversion-only allocation measurement.
+        let scheduler = crucible_engine::BackendError::from(node);
+        assert_eq!(
+            scheduler.operational_kind(),
+            Some(crucible_engine::BackendOperationalFailureKind::Unavailable)
+        );
+        match scheduler {
+            crucible_engine::BackendError::RetainedOperationalFailure { source, .. } => {
+                let original = source
+                    .source()
+                    .and_then(|cause| cause.downcast_ref::<crate::QemuNodeError>());
+                assert!(matches!(
+                    original,
+                    Some(crate::QemuNodeError::ChannelDecodeAdmission { source, .. })
+                        if source == &expected
+                ));
+            }
+            other => panic!("actual operational cause was erased: {other:?}"),
+        }
+        Ok(())
+    }
 
     #[test]
     fn component_diagnostic_bounds_and_escapes_node_names() {

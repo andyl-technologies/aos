@@ -56,6 +56,26 @@ impl ContentHash {
         canonical::content_hash_from_canonical_material(domain, material)
     }
 
+    /// Computes a canonical-material hash from a borrowed display representation.
+    ///
+    /// Counts UTF-8 bytes before hashing the same representation, preserving the
+    /// length prefix and word boundaries of [`Self::from_canonical_material`]
+    /// without constructing an owned material buffer. The formatter must emit
+    /// the same bytes on both passes. An active decode budget admits the bounded
+    /// hashing scratch before either pass.
+    ///
+    /// # Errors
+    ///
+    /// Returns an admission error when the active decode budget cannot fund
+    /// scratch, or a serialization error if formatting fails, overflows the
+    /// length counter, or changes length between passes.
+    pub fn from_canonical_display(
+        domain: &str,
+        material: &impl std::fmt::Display,
+    ) -> Result<Self, EngineError> {
+        canonical::hash_material(domain, material)
+    }
+
     /// Computes a stable content hash from already encoded canonical bytes.
     ///
     /// This is byte-for-byte equivalent to interpreting `material` as UTF-8

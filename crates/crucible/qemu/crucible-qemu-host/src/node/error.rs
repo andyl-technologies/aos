@@ -4,6 +4,7 @@ use std::borrow::Cow;
 use std::fmt;
 use std::time::Duration;
 
+use crucible_engine::owned_decode::DecodeAdmissionError;
 use crucible_engine::{BackendError, BackendOperationalCause, BackendOperationalFailureKind};
 use crucible_host_resources::host_supervision::{HostOperationState, HostSupervisionError};
 use thiserror::Error;
@@ -56,7 +57,15 @@ pub struct QemuNodeChannelError {
     pub timeout: Option<Duration>,
     /// Whether the operation may be retried without republishing its request.
     pub retryable: bool,
-    supervision: Option<HostSupervisionError>,
+    detail: ChannelFailureDetail,
+}
+
+/// Retains operational causes inline; shared decode refusals keep their original allocation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ChannelFailureDetail {
+    Message,
+    Supervision(HostSupervisionError),
+    DecodeAdmission(DecodeAdmissionError),
 }
 
 impl QemuNodeChannelError {
@@ -71,7 +80,7 @@ impl QemuNodeChannelError {
             message: message.into(),
             timeout: None,
             retryable: false,
-            supervision: None,
+            detail: ChannelFailureDetail::Message,
         }
     }
 
@@ -83,7 +92,7 @@ impl QemuNodeChannelError {
             message: message.into(),
             timeout: None,
             retryable: true,
-            supervision: None,
+            detail: ChannelFailureDetail::Message,
         }
     }
 
@@ -99,7 +108,7 @@ impl QemuNodeChannelError {
             message: message.into(),
             timeout: Some(timeout),
             retryable: false,
-            supervision: None,
+            detail: ChannelFailureDetail::Message,
         }
     }
 
@@ -113,14 +122,44 @@ impl QemuNodeChannelError {
             message: Cow::Borrowed(""),
             timeout: None,
             retryable: false,
-            supervision: Some(source),
+            detail: ChannelFailureDetail::Supervision(source),
         }
     }
 
     /// Returns the original typed supervision refusal, when present.
     #[must_use]
     pub const fn operational_supervision_source(&self) -> Option<HostSupervisionError> {
-        self.supervision
+        match self.detail {
+            ChannelFailureDetail::Supervision(source) => Some(source),
+            _ => None,
+        }
+    }
+
+    /// Retains the actual finite decode-account refusal without formatting it.
+    ///
+    /// The existing shared cause keeps its original allocation. This grants no
+    /// replacement capacity or operation authority.
+    #[must_use]
+    pub fn artifact_decode_admission(
+        operation: &'static str,
+        source: DecodeAdmissionError,
+    ) -> Self {
+        Self {
+            operation,
+            message: Cow::Borrowed(""),
+            timeout: None,
+            retryable: false,
+            detail: ChannelFailureDetail::DecodeAdmission(source),
+        }
+    }
+
+    /// Returns the original shared decode-account refusal, when present.
+    #[must_use]
+    pub const fn artifact_decode_admission_source(&self) -> Option<&DecodeAdmissionError> {
+        match &self.detail {
+            ChannelFailureDetail::DecodeAdmission(source) => Some(source),
+            _ => None,
+        }
     }
 
     /// Returns the bounded await timeout that caused this channel failure.
@@ -138,18 +177,28 @@ impl QemuNodeChannelError {
 
 impl fmt::Display for QemuNodeChannelError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.supervision {
-            Some(source) if self.message.is_empty() => {
-                write!(formatter, "{} failed: {source}", self.operation)
+        if self.message.is_empty() {
+            match &self.detail {
+                ChannelFailureDetail::Supervision(source) => {
+                    return write!(formatter, "{} failed: {source}", self.operation);
+                }
+                ChannelFailureDetail::DecodeAdmission(source) => {
+                    return write!(formatter, "{} failed: {source}", self.operation);
+                }
+                ChannelFailureDetail::Message => {}
             }
-            _ => write!(formatter, "{} failed: {}", self.operation, self.message),
         }
+        write!(formatter, "{} failed: {}", self.operation, self.message)
     }
 }
 
 impl std::error::Error for QemuNodeChannelError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.supervision.as_ref().map(|source| source as _)
+        match &self.detail {
+            ChannelFailureDetail::Supervision(source) => Some(source),
+            ChannelFailureDetail::DecodeAdmission(source) => Some(source),
+            ChannelFailureDetail::Message => None,
+        }
     }
 }
 
@@ -202,6 +251,17 @@ pub enum QemuNodeError {
         /// Actual typed original cause, without diagnostic replacement.
         #[source]
         source: HostSupervisionError,
+    },
+    /// A channel retained its actual artifact decode-account refusal.
+    #[error("{plane} channel operation {operation} failed: {source}")]
+    ChannelDecodeAdmission {
+        /// Channel role whose active decode account refused admission.
+        plane: QemuNodeChannelPlane,
+        /// Operation attempted under the same finite decode account.
+        operation: &'static str,
+        /// Actual shared refusal without a replacement diagnostic allocation.
+        #[source]
+        source: DecodeAdmissionError,
     },
     /// RAM source cleanup failed while its service remains retained.
     #[error("{operation} failed: {source}")]
@@ -475,13 +535,18 @@ impl QemuNodeError {
     /// Attaches a node channel role while preserving its typed cause or text.
     #[must_use]
     pub fn from_channel(plane: QemuNodeChannelPlane, source: QemuNodeChannelError) -> Self {
-        match source.supervision {
-            Some(supervision) => Self::ChannelSupervision {
+        match source.detail {
+            ChannelFailureDetail::Supervision(supervision) => Self::ChannelSupervision {
                 plane,
                 operation: source.operation,
                 source: supervision,
             },
-            None => Self::Channel {
+            ChannelFailureDetail::DecodeAdmission(admission) => Self::ChannelDecodeAdmission {
+                plane,
+                operation: source.operation,
+                source: admission,
+            },
+            ChannelFailureDetail::Message => Self::Channel {
                 plane,
                 operation: source.operation,
                 message: source.message,
@@ -678,6 +743,7 @@ impl From<QemuNodeError> for BackendError {
                 };
             }
             error @ (QemuNodeError::ChannelSupervision { .. }
+            | QemuNodeError::ChannelDecodeAdmission { .. }
             | QemuNodeError::Shutdown { .. }
             | QemuNodeError::ShutdownAfterChannelFailure { .. }
             | QemuNodeError::RamCleanupLender { .. }
