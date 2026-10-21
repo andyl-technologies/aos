@@ -28,6 +28,13 @@ mod normalized_framing;
 #[path = "initial_reconstruction/hello_selection.rs"]
 mod hello_selection;
 
+#[path = "initial_reconstruction/hello_value.rs"]
+mod hello_value;
+
+pub(super) fn hello_value_body_data(case: &str) -> Vec<u8> {
+    hello_value::body_data(case)
+}
+
 #[path = "initial_reconstruction/hello_literal.rs"]
 mod hello_literal;
 
@@ -48,15 +55,15 @@ fn operands(case: &str) -> [Value; 3] {
     let mut recipe = inert_bootstrap_fixtures::recipe();
     recipe["decoder_limits"][9] = json!("268435456");
     // Prepare owns the independently derived initial retained population. The
-    // later inert rows share the remaining eight MiB of the same fifty-MiB sum.
+    // later inert rows share the remaining eight MiB of the same eighty-eight-MiB sum.
     recipe["phases"] = json!([
-        ["44040192", "167772160", "4194304"],
+        ["83886080", "167772160", "4194304"],
         ["2097152", "167772160", "4194304"],
         ["2097152", "167772160", "4194304"],
         ["2097152", "167772160", "4194304"],
         ["2097152", "167772160", "4194304"]
     ]);
-    recipe["escrow"] = json!(["52428800", "167772160", "4194304"]);
+    recipe["escrow"] = json!(["92274688", "167772160", "4194304"]);
     if case == "initial_small_escrow" {
         recipe["phases"] = json!(([["1", "1", "1"]; 5]));
         recipe["escrow"] = json!(["5", "1", "1"]);
@@ -71,7 +78,7 @@ fn operands(case: &str) -> [Value; 3] {
         if axis == 0 {
             // Move exactly the missing retained partition to Commit. The sum
             // and all whole-escrow axes still match the ordinary positive case.
-            recipe["phases"][1][0] = json!("46137343");
+            recipe["phases"][1][0] = json!("85983231");
         }
     }
     if case.starts_with("initial_context_") {
@@ -95,6 +102,7 @@ fn operands(case: &str) -> [Value; 3] {
             | "initial_hello_channel_reactive"
             | "initial_hello_exchange_reactive"
             | "initial_hello_literal_reactive"
+            | "initial_hello_value_reactive"
     ));
     if case.starts_with("initial_selection_") || case.starts_with("initial_hello_") {
         selection::prepare_selected(case, &mut selected);
@@ -344,6 +352,10 @@ pub(super) fn assert_child(
         selection::assert_child(case, &mut owner);
         return;
     }
+    if case.starts_with("initial_hello_value_") {
+        hello_value::assert_child(case, &mut owner);
+        return;
+    }
     if case.starts_with("initial_hello_literal_") {
         hello_literal::assert_child(case, &mut owner);
         return;
@@ -436,4 +448,18 @@ fn initial_reconstruction_requires_original_source_cut_and_custody() {
     ] {
         flight(case);
     }
+}
+
+#[test]
+fn strict_hello_population_is_funded_inside_the_original_independent_peak() {
+    let row = required(&operands("initial_hello_value_complete"));
+    assert!(
+        row[0] > 44_040_192,
+        "the actual strict tree exceeds the prior inert Prepare row: {row:?}"
+    );
+    assert!(
+        row[0] <= 83_886_080,
+        "the enlarged inert Prepare row must fund the actual tree: {row:?}"
+    );
+    assert!(row.iter().sum::<usize>() <= 268_435_456);
 }

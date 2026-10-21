@@ -84,6 +84,7 @@ fn child(case: &str, wire: &[u8]) {
     let mut public_peer = if case.starts_with("initial_hello_channel_")
         || case.starts_with("initial_hello_exchange_")
         || case.starts_with("initial_hello_literal_")
+        || case.starts_with("initial_hello_value_")
     {
         let (peer, inherited) = UnixStream::pair().unwrap();
         command.stderr(Stdio::from(std::os::fd::OwnedFd::from(inherited)));
@@ -94,7 +95,12 @@ fn child(case: &str, wire: &[u8]) {
     let process = command.spawn().unwrap();
     drop(command);
     if let Some(peer) = &mut public_peer {
-        if case.starts_with("initial_hello_literal_") {
+        if case.starts_with("initial_hello_value_") {
+            let body = initial_reconstruction::hello_value_body_data(case);
+            peer.write_all(&(body.len() as u32).to_be_bytes()).unwrap();
+            peer.write_all(&body).unwrap();
+            peer.write_all(b"literal suffix").unwrap();
+        } else if case.starts_with("initial_hello_literal_") {
             let body = b"{unparsed public Hello DATA";
             let length = match case {
                 "initial_hello_literal_zero" => 0,
@@ -176,6 +182,7 @@ fn inherited_raw_bootstrap_child() {
     if case.starts_with("initial_hello_channel_")
         || case.starts_with("initial_hello_exchange_")
         || case.starts_with("initial_hello_literal_")
+        || case.starts_with("initial_hello_value_")
     {
         initial_reconstruction::retain_public_before_read(&case, &mut owner);
     }

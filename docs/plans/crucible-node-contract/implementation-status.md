@@ -1407,15 +1407,58 @@ public reply is emitted, no retry is accepted and actual allocations survive.
 Both complete standard and raw-value Transport libraries pass 1,831 tests,
 zero failures, no filtering and sixteen existing ignores. Affected
 all-feature/all-target checks, scoped formatting and all six architecture gates
-pass for the final source. Application compilation and funded-Source VM
-qualification are still running; their application capture and all three VM
-component captures match all 175 owned changed Rust paths byte for byte. These
-pending builds are not completed qualification. Engine/Daemon full library
-execution remains qualified at `99dc0fdb5e`.
+pass for `eed8d27107`. The required application gate also passes, compiling
+180 test executables across 58 package IDs, including 71 integration targets.
+All 175 owned changed Rust paths match its immutable source capture byte for
+byte. The funded-Source VM passes with three independently checked component
+captures matching the same 175 paths. Both consumers complete all three private
+Births, declaration and launch projections, refusal controls and cleanup. The
+default-feature CLI refusal also passes. Engine/Daemon full library execution
+remains qualified at `99dc0fdb5e`.
 
 A complete literal deliberately leaves response publication disabled. Strict
 Hello parsing and authentication, complete model-absent policy, bootstrap ACK,
 genuine Recipe/Initial producers, native adoption and restoration remain open.
+
+## Strict original public Hello Value
+
+The same original literal now has a separately admitted strict JSON parser
+occurrence. Its empty owner exists before the first private read. A fixed quote
+admission precedes the lexical census, and a separate constructor admission
+precedes Value allocation. The actual Value or owned grammar diagnostic is
+installed before terminal follow-up. Quoted-string errors retain fixed
+category/line/column DATA while their unchanged raw token remains in the body
+and journal. Failed admission, parsing, terminal correspondence and expiration
+leave the occurrence spent and every surviving owner in the whole census.
+
+Both prospective initial calculations price this same parser from the bounded
+future literal population. The actual quote uses its immutable lexical counts
+and the same population-to-layout function. The diagnostic text bound comes
+from one closed roster used by the actual strict parser; accepted grammar and
+error text remain unchanged. The strict tree census admits its own lexical
+work and 64-container/terminal-scalar depth, without DTO or RawValue expansion
+or an SDK response-forest allowance. Parser outputs, diagnostic growth,
+temporary serde error layout, lookup and actual guard controls remain separate
+terms under the unchanged independent peak restriction.
+
+Three lower controls cover retained success and failure, a real depth-64 leaf,
+and actual/future row correspondence. Nineteen new inherited-socket flights
+cover both families, malformed grammar, duplicate keys, nonfinite numbers,
+Unicode errors, depth limits, ordinary RawValue-named keys, each admission,
+expiration, callbacks and retries. Existing original-body pointers, seven empty
+input banks, the same queued suffix and absence of public replies are checked.
+The finite inert Prepare fixture is enlarged to fund its actual new tree;
+production ceilings and the independent 256 MiB restriction are unchanged.
+
+Both unfiltered standard and raw-value Transport libraries pass 1,836 tests
+with zero failures and sixteen existing ignores. The Format library passes
+33 tests with one existing ignore. Scoped formatting and all six architecture
+gates pass. Affected-target checking, the required application gate and the
+funded-Source VM are still running. All 183 owned changed Rust paths match
+the application capture and each of the three VM component captures; matching
+inputs alone do not complete those pending checks. Parsing supplies DATA only.
+Complete Hello authentication, the model-absent native policy, bootstrap ACK,
+genuine Recipe/Initial producers and native adoption/restoration remain required.
 
 ## Original launch custody and shared startup geometry
 

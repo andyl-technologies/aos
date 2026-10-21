@@ -45,6 +45,29 @@ impl BootstrapBodyMetadataProfileData {
         Ok(Self { depth, work })
     }
 
+    /// Bounds one strict Value tree without DTO wrappers or RawValue expansion.
+    ///
+    /// A Value needs at most two visits per syntax value/key plus one map-key
+    /// visit. Strict parsing admits at most 64 containers and a terminal scalar.
+    /// Callers supply separately established lexical populations and admit this
+    /// walk; the profile itself grants no parser or constructor allowance.
+    ///
+    /// # Errors
+    /// Refuses an empty population or checked work overflow.
+    pub(crate) fn from_strict_value_populations_data(
+        nodes: usize,
+        members: usize,
+    ) -> Result<Self, ProviderError> {
+        if nodes == 0 || members > nodes {
+            return Err(overflow());
+        }
+        let work = nodes
+            .checked_mul(2)
+            .and_then(|work| work.checked_add(members))
+            .ok_or_else(overflow)?;
+        Ok(Self { depth: 65, work })
+    }
+
     /// Counts the recursive Value census frames for this actual population.
     ///
     /// # Errors

@@ -141,7 +141,8 @@ fn complete_initial_population_and_policy_refuse_overflow() {
             HelloConstructionData {
                 roster: [0; 3],
                 frames: [0; 3],
-                literal: [0; 3]
+                literal: [0; 3],
+                value: [0; 3],
             },
             usize::MAX
         )
@@ -156,7 +157,8 @@ fn complete_initial_population_and_policy_refuse_overflow() {
             HelloConstructionData {
                 roster: [0; 3],
                 frames: [0; 3],
-                literal: [0; 3]
+                literal: [0; 3],
+                value: [0; 3],
             },
             usize::MAX
         )
@@ -171,7 +173,8 @@ fn complete_initial_population_and_policy_refuse_overflow() {
             HelloConstructionData {
                 roster: [0; 3],
                 frames: [0; 3],
-                literal: [0; 3]
+                literal: [0; 3],
+                value: [0; 3],
             },
             1
         )
@@ -186,7 +189,8 @@ fn complete_initial_population_and_policy_refuse_overflow() {
             HelloConstructionData {
                 roster: [0; 3],
                 frames: [0; 3],
-                literal: [0; 3]
+                literal: [0; 3],
+                value: [0; 3],
             },
             usize::MAX
         )
@@ -201,7 +205,8 @@ fn complete_initial_population_and_policy_refuse_overflow() {
             HelloConstructionData {
                 roster: [0; 3],
                 frames: [0; 3],
-                literal: [0; 3]
+                literal: [0; 3],
+                value: [0; 3],
             },
             usize::MAX
         )

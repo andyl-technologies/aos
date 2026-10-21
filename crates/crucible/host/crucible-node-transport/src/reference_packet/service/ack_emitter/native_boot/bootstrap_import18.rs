@@ -54,6 +54,13 @@ pub(in crate::reference_packet::service) use selection::{
     counter_scratch_data as selection_counter_scratch_data,
 };
 
+#[path = "bootstrap_import18/hello_value.rs"]
+mod hello_value;
+pub(in crate::reference_packet::service) use hello_value::{
+    construction_bound_data as hello_value_construction_bound_data,
+    counter_scratch_data as hello_value_counter_scratch_data,
+};
+
 #[path = "bootstrap_import18/hello_literal.rs"]
 mod hello_literal;
 pub(in crate::reference_packet::service) use hello_literal::{
@@ -137,6 +144,7 @@ pub(super) struct OriginalImport18RawBootstrap {
             crate::client::OriginalNativePublicBirthChannel,
         >,
     >,
+    hello_value: hello_value::Attempt,
     hello_literal: Option<crate::native_hello::OriginalNativeHelloLiteral>,
     hello_literal_row: Option<[usize; 3]>,
     hello_literal_started: bool,
@@ -198,6 +206,7 @@ impl OriginalImport18RawBootstrap {
             public_channel_started: false,
             public_channel_complete: false,
             hello_exchange: None,
+            hello_value: hello_value::Attempt::empty_data(),
             hello_literal: None,
             hello_literal_row: None,
             hello_literal_started: false,
@@ -327,8 +336,10 @@ impl OriginalImport18RawBootstrap {
         let public_channel_backing = self.public_channel_backing_data()?;
         let hello_exchange_backing = self.hello_exchange_backing_data()?;
         let hello_literal_backing = self.hello_literal_backing_data()?;
+        let hello_value_backing = self.hello_value.retained_backing_data()?;
         retained
-            .checked_add(hello_literal_backing)
+            .checked_add(hello_value_backing)
+            .and_then(|n| n.checked_add(hello_literal_backing))
             .and_then(|n| n.checked_add(input_backing))
             .and_then(|n| n.checked_add(typed_backing))
             .and_then(|n| n.checked_add(hello_backing))
@@ -392,6 +403,7 @@ pub(in crate::reference_packet::service) fn raw_storage_floor(
         + size_of::<Result<(), ProviderError>>()
         + OriginalImport18ReceivingBanks::construction_transient_data()
         + size_of::<OriginalImport18DecodedBodies>()
+        + size_of::<hello_value::Attempt>()
         + crate::client::OriginalNativePublicBirthChannel::retention_construction_transient_data();
     let scratch = native_import18_private_prefix_counter_scratch_data()
         + OriginalImport18ReceivingBanks::counter_scratch_data()

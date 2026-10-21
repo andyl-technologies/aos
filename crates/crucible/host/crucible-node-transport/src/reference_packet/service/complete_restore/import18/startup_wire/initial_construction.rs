@@ -17,6 +17,8 @@ use crate::reference_packet::service::ack_emitter::native_boot::{
     original_import18_hello_literal_counter_scratch_data,
     original_import18_hello_selection_construction_data,
     original_import18_hello_selection_counter_scratch_data,
+    original_import18_hello_value_construction_bound_data,
+    original_import18_hello_value_counter_scratch_data,
     original_import18_public_channel_construction_data,
     original_import18_public_channel_counter_scratch_data,
     original_import18_raw_bootstrap_storage_data, original_import18_selection_construction_data,
@@ -96,6 +98,7 @@ pub(in crate::reference_packet) fn initial_construction_projection_data<H: Seria
             roster: original_import18_hello_selection_construction_data(launch)?,
             frames: original_import18_hello_frames_construction_data(launch)?,
             literal: original_import18_hello_literal_construction_data(launch)?,
+            value: original_import18_hello_value_construction_bound_data(launch, maximum)?,
         },
         maximum,
     )
@@ -140,6 +143,7 @@ pub(in crate::reference_packet) fn initial_construction_from_wire_data(
             roster: original_import18_hello_selection_construction_data(launch)?,
             frames: original_import18_hello_frames_construction_data(launch)?,
             literal: original_import18_hello_literal_construction_data(launch)?,
+            value: original_import18_hello_value_construction_bound_data(launch, maximum)?,
         },
         maximum,
     )
@@ -150,6 +154,7 @@ struct HelloConstructionData {
     roster: [usize; 3],
     frames: [usize; 3],
     literal: [usize; 3],
+    value: [usize; 3],
 }
 
 fn combine(
@@ -164,6 +169,7 @@ fn combine(
         roster: hello,
         frames: hello_frames,
         literal: hello_literal,
+        value: hello_value,
     } = hello;
     // Future U64 decimal widths are fixed before a row exists. Raw and typed
     // outputs coexist; the three body parsers and Source check run sequentially.
@@ -219,6 +225,11 @@ fn combine(
     row[0] = add(row[0], hello_literal[0])?;
     row[1] = row[1].max(hello_literal[1]);
     row[2] = row[2].max(add(raw[2], hello_literal[2])?);
+    // Strict parsing follows the literal read and retains its actual Value or
+    // owned reason beside every original body, journal and typed bootstrap.
+    row[0] = add(row[0], hello_value[0])?;
+    row[1] = row[1].max(hello_value[1]);
+    row[2] = row[2].max(add(raw[2], hello_value[2])?);
     if add(add(row[0], row[1])?, row[2])? > maximum {
         return Err(exhausted());
     }
@@ -257,6 +268,8 @@ pub fn native_import18_initial_construction_counter_scratch_data() -> usize {
         + original_import18_hello_selection_counter_scratch_data()
         + original_import18_hello_frames_counter_scratch_data()
         + size_of::<[usize; 3]>() // The retained physical Hello constructor row.
+        + original_import18_hello_value_counter_scratch_data()
+        + size_of::<[usize; 3]>()
         + original_import18_hello_literal_counter_scratch_data()
         + size_of::<[usize; 3]>() // The retained literal-read constructor row.
         + original_import18_hello_exchange_counter_scratch_data()

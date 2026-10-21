@@ -45,7 +45,7 @@ pub fn parse_json_with_depth(
     let value = parser.value(0)?;
     parser.whitespace();
     if parser.state.cursor != bytes.len() {
-        return Err(parser.error("trailing JSON content"));
+        return Err(parser.error(strict_parser::Reason::TrailingContent));
     }
     Ok(value)
 }
@@ -66,8 +66,10 @@ pub fn decode<T: DeserializeOwned + Validate>(
 
 #[path = "canonical/strict_parser.rs"]
 mod strict_parser;
-pub use strict_parser::STRICT_JSON_KEY_LOOKUP_STORAGE_DATA;
 use strict_parser::{CursorState, Parser};
+pub use strict_parser::{
+    STRICT_JSON_DIAGNOSTIC_TEXT_BYTES_DATA, STRICT_JSON_KEY_LOOKUP_STORAGE_DATA,
+};
 
 /// Encodes RFC 8785 JSON without changing Unicode string values.
 ///
@@ -270,6 +272,7 @@ pub fn json_parse_counter_scratch_bytes_data() -> usize {
     let returned_value = size_of::<Value>() + size_of::<Result<Value, ContractError>>();
 
     strict_parser::TRANSITION_COUNTER_SCRATCH_BYTES
+        + strict_parser::diagnostics::counter_scratch_data()
         + size_of::<CursorState>() // actual source-free cursor local
         + size_of::<Parser<'static, 'static>>()
         + 64 * container

@@ -5,7 +5,7 @@
 //! Result propagation. They supply no String/Vec/Map/error backing, allocator
 //! permission, retained owner, constructor extent or physical stack bound.
 
-use super::{ContainerKind, ContractError, CursorState, Map, Parser, Value, ValueStart};
+use super::{ContainerKind, ContractError, CursorState, Map, Parser, Reason, Value, ValueStart};
 use std::{convert::Infallible, mem::size_of, ops::ControlFlow};
 
 // A const item describes each actual Result ? operation without creating a
@@ -108,10 +108,10 @@ const OBJECT_BEFORE_CHILD: usize = size_of::<&mut Parser<'static, 'static>>()
 
 const AFTER_CHILD: usize = size_of::<&mut Parser<'static, 'static>>()
     + size_of::<ContainerKind>() // actual container argument/match input
-    + size_of::<(u8, &str)>() // selected match arm tuple initializer
-    + size_of::<(u8, &str)>() // match return/destructure input
+    + size_of::<(u8, Reason)>() // selected match arm tuple initializer
+    + size_of::<(u8, Reason)>() // match return/destructure input
     + size_of::<u8>() // selected close delimiter binding
-    + size_of::<&str>() // original static refusal binding
+    + size_of::<Reason>() // original closed refusal binding
     + size_of::<bool>() // original take-close outcome
     + size_of::<bool>() // original take-comma outcome
     + size_of::<bool>() // helper's close/continue return operand

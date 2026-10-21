@@ -9,6 +9,11 @@
 use crate::{ContractError, MAX_ARRAY_ELEMENTS, invalid};
 use serde_json::{Map, Number, Value};
 
+#[path = "strict_parser/diagnostics.rs"]
+pub(super) mod diagnostics;
+pub(super) use diagnostics::Reason;
+pub use diagnostics::STRICT_JSON_DIAGNOSTIC_TEXT_BYTES_DATA;
+
 /// Checks the original depth restriction before the original byte restriction.
 ///
 /// # Errors
@@ -19,13 +24,10 @@ pub(super) fn check_limits(
     maximum_depth: usize,
 ) -> Result<(), ContractError> {
     if maximum_depth == 0 || maximum_depth > 64 {
-        return Err(invalid(
-            "json_depth",
-            "require a nesting limit between 1 and 64",
-        ));
+        return Err(invalid("json_depth", Reason::DepthRestriction.text()));
     }
     if bytes.len() > maximum_bytes {
-        return Err(invalid("json", "frame exceeds admitted byte limit"));
+        return Err(invalid("json", Reason::ByteRestriction.text()));
     }
     Ok(())
 }
@@ -93,7 +95,7 @@ impl Parser<'_, '_> {
                 .map(ValueStart::Scalar),
             Some(b'n') => self.literal(b"null", Value::Null).map(ValueStart::Scalar),
             Some(b'-' | b'0'..=b'9') => self.number().map(ValueStart::Scalar),
-            _ => Err(self.error("expected JSON value")),
+            _ => Err(self.error(Reason::ExpectedValue)),
         }
     }
 
@@ -134,7 +136,7 @@ impl Parser<'_, '_> {
     /// Refuses a container at the original maximum nesting depth.
     pub(super) fn begin_container(&mut self, depth: usize) -> Result<(), ContractError> {
         if depth >= self.state.maximum_depth {
-            return Err(self.error("JSON nesting limit exceeded"));
+            return Err(self.error(Reason::NestingLimit));
         }
         self.state.cursor += 1;
         self.whitespace();
@@ -147,7 +149,7 @@ impl Parser<'_, '_> {
     /// Refuses the next element after 65536 actual initialized elements.
     pub(super) fn array_before_child(&self, length: usize) -> Result<(), ContractError> {
         if length == MAX_ARRAY_ELEMENTS {
-            return Err(self.error("array exceeds 65536 elements"));
+            return Err(self.error(Reason::ArrayLimit));
         }
         Ok(())
     }
@@ -174,11 +176,11 @@ impl Parser<'_, '_> {
         key: &String,
     ) -> Result<(), ContractError> {
         if values.contains_key(key) {
-            return Err(self.error("duplicate object key"));
+            return Err(self.error(Reason::DuplicateKey));
         }
         self.whitespace();
         if !self.take(b':') {
-            return Err(self.error("expected object colon"));
+            return Err(self.error(Reason::ExpectedColon));
         }
         Ok(())
     }
@@ -192,8 +194,8 @@ impl Parser<'_, '_> {
         kind: ContainerKind,
     ) -> Result<bool, ContractError> {
         let (close, refusal) = match kind {
-            ContainerKind::Array => (b']', "expected array comma or close"),
-            ContainerKind::Object => (b'}', "expected object comma or close"),
+            ContainerKind::Array => (b']', Reason::ArrayPunctuation),
+            ContainerKind::Object => (b'}', Reason::ObjectPunctuation),
         };
         self.whitespace();
         if self.take(close) {
@@ -206,7 +208,8 @@ impl Parser<'_, '_> {
     }
 
     /// Constructs the unchanged strict diagnostic at the current byte cursor.
-    pub(super) fn error(&self, reason: &str) -> ContractError {
+    pub(super) fn error(&self, reason: Reason) -> ContractError {
+        let reason = reason.text();
         invalid("json", format!("{reason} at byte {}", self.state.cursor))
     }
 
@@ -233,7 +236,7 @@ impl Parser<'_, '_> {
 
     fn literal(&mut self, literal: &[u8], value: Value) -> Result<Value, ContractError> {
         if !self.bytes[self.state.cursor..].starts_with(literal) {
-            return Err(self.error("invalid JSON literal"));
+            return Err(self.error(Reason::InvalidLiteral));
         }
         self.state.cursor += literal.len();
         Ok(value)
@@ -242,7 +245,7 @@ impl Parser<'_, '_> {
     fn string(&mut self) -> Result<String, ContractError> {
         let start = self.state.cursor;
         if !self.take(b'"') {
-            return Err(self.error("expected JSON string"));
+            return Err(self.error(Reason::ExpectedString));
         }
         while let Some(byte) = self.bytes.get(self.state.cursor).copied() {
             self.state.cursor += 1;
@@ -263,7 +266,7 @@ impl Parser<'_, '_> {
                 _ => {}
             }
         }
-        Err(self.error("unterminated JSON string"))
+        Err(self.error(Reason::UnterminatedString))
     }
 
     fn digits(&mut self) -> bool {
@@ -288,13 +291,13 @@ impl Parser<'_, '_> {
             Some(b'1'..=b'9') => {
                 self.digits();
             }
-            _ => return Err(self.error("invalid integer part")),
+            _ => return Err(self.error(Reason::IntegerPart)),
         }
         let mut fractional = false;
         if self.take(b'.') {
             fractional = true;
             if !self.digits() {
-                return Err(self.error("missing fractional digits"));
+                return Err(self.error(Reason::FractionDigits));
             }
         }
         if self.take(b'e') || self.take(b'E') {
@@ -303,11 +306,11 @@ impl Parser<'_, '_> {
                 self.take(b'-');
             }
             if !self.digits() {
-                return Err(self.error("missing exponent digits"));
+                return Err(self.error(Reason::ExponentDigits));
             }
         }
         let token = std::str::from_utf8(&self.bytes[start..self.state.cursor])
-            .map_err(|_| self.error("invalid number encoding"))?;
+            .map_err(|_| self.error(Reason::NumberEncoding))?;
         if !fractional {
             if negative {
                 if let Ok(value) = token.parse::<i64>() {
@@ -319,7 +322,7 @@ impl Parser<'_, '_> {
         }
         let float = token
             .parse::<f64>()
-            .map_err(|_| self.error("invalid finite number"))?;
+            .map_err(|_| self.error(Reason::FiniteNumber))?;
         // JSON Schema integer fields accept integral decimal/exponent tokens.
         // Normalize their correctly rounded value locally; enabling a global
         // serde feature would change legacy formats outside the CNP boundary.
@@ -335,7 +338,7 @@ impl Parser<'_, '_> {
         }
         Number::from_f64(float)
             .map(Value::Number)
-            .ok_or_else(|| self.error("nonfinite number"))
+            .ok_or_else(|| self.error(Reason::NonfiniteNumber))
     }
 }
 
