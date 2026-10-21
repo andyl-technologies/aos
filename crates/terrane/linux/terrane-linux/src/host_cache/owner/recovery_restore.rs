@@ -67,8 +67,9 @@ impl PublisherRecoveryRestoreTurn<'_> {
 /// Restores supported original pending bodies alongside existing cache content.
 ///
 /// An otherwise empty, unpinned cache retains the separate expired-retirement
-/// path for inline and encoded bodies. A pending sealed manifest instead restores
-/// together with its reconstruction metadata, even when all of them are pending.
+/// path for inline and encoded bodies. A sealed manifest instead requires
+/// restoration of its pending body or reconstruction metadata, including when
+/// the manifest itself is canonical and its complete metadata pair is pending.
 /// Populated recovery also restores before reconstructing policy: deleting an
 /// expired body first could destroy backing required by a surviving cold pin.
 ///
@@ -83,14 +84,14 @@ pub(super) fn run(
     bootstrap_id: &[u8; 16],
     context: &PublisherRecoveryContext<HostDomainLocation>,
 ) -> io::Result<bool> {
-    let pending_manifest = has_pending_manifest(inventory)?;
+    let manifest_present = has_manifest(inventory)?;
     let session = {
         let owner = executor
             .custody()
             .lock()
             .map_err(|_| io::Error::other("recovery custody poisoned"))?;
         if shared.only_empty_scaffolds()
-            && !pending_manifest
+            && !manifest_present
             && owner.state.pins.is_empty()
             && owner.state.leases.is_empty()
             && owner.state.residences.is_empty()
@@ -144,12 +145,13 @@ pub(super) fn run(
 /// Selects restoration without treating a descriptor as verified backing.
 ///
 /// Full candidate validation still precedes every namespace effect. In
-/// particular, a manifest whose complete metadata pair is pending cannot be
-/// classified as an empty cache merely because no canonical names remain.
-fn has_pending_manifest(inventory: &NativeRecoveryInspection) -> io::Result<bool> {
+/// particular, canonical sealed names are outside the shared content namespace.
+/// A canonical manifest with a pending metadata pair therefore cannot select
+/// empty-cache retirement merely because no shared canonical names remain.
+fn has_manifest(inventory: &NativeRecoveryInspection) -> io::Result<bool> {
     for candidate in inventory.candidates() {
         let key = candidate.key();
-        if key.kind != BodyKind::Sealed as i32 || candidate.pending_observation().is_none() {
+        if key.kind != BodyKind::Sealed as i32 {
             continue;
         }
         let descriptor =
