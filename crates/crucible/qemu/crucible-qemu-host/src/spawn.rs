@@ -6,7 +6,6 @@
 //! plugin fd numbers, clears the inherited host environment, and sets
 //! `PR_SET_PDEATHSIG=SIGKILL` in the child.
 
-use std::ffi::CString;
 use std::fs;
 use std::io::{self, Read, Write as _};
 use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd, RawFd};
@@ -2705,35 +2704,29 @@ fn socket_pair() -> Result<(OwnedFd, OwnedFd), QemuSpawnError> {
 /// Returns [`QemuSpawnError`] when the length is not representable or the
 /// memfd cannot be created, sized, or sealed.
 pub(crate) fn memfd_region(region_len: u64) -> Result<OwnedFd, QemuSpawnError> {
-    let region_len = libc::off_t::try_from(region_len)
+    libc::off_t::try_from(region_len)
         .map_err(|_| QemuSpawnError::RegionLengthTooLarge { region_len })?;
-    let name = CString::new("crucible-qemu-shmem").map_err(|source| QemuSpawnError::Io {
-        operation: "build memfd name",
-        source: io::Error::new(io::ErrorKind::InvalidInput, source),
+
+    let fd = rustix::fs::memfd_create(
+        c"crucible-qemu-shmem",
+        rustix::fs::MemfdFlags::CLOEXEC | rustix::fs::MemfdFlags::ALLOW_SEALING,
+    )
+    .map_err(|source| QemuSpawnError::Io {
+        operation: "create shmem memfd",
+        source: source.into(),
     })?;
-    let fd = unsafe {
-        // SAFETY: `name` is a valid NUL-terminated C string.
-        libc::memfd_create(name.as_ptr(), libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING)
-    };
-    if fd < 0 {
-        return Err(last_io_error("create shmem memfd"));
-    }
-    let fd = owned_fd_from_raw(fd);
-    let truncate = unsafe {
-        // SAFETY: `fd` is a live memfd, and `region_len` was range-checked.
-        libc::ftruncate(fd.as_raw_fd(), region_len)
-    };
-    if truncate != 0 {
-        return Err(last_io_error("size shmem memfd"));
-    }
-    let seal = unsafe {
-        // SAFETY: `fd` is a live sealable memfd. The shrink seal preserves the
-        // mapping length while still permitting shared-memory writes.
-        libc::fcntl(fd.as_raw_fd(), libc::F_ADD_SEALS, libc::F_SEAL_SHRINK)
-    };
-    if seal != 0 {
-        return Err(last_io_error("seal shmem memfd against shrink"));
-    }
+    rustix::fs::ftruncate(&fd, region_len).map_err(|source| QemuSpawnError::Io {
+        operation: "size shmem memfd",
+        source: source.into(),
+    })?;
+
+    // The shrink seal preserves mapping length while allowing shared writes.
+    rustix::fs::fcntl_add_seals(&fd, rustix::fs::SealFlags::SHRINK).map_err(|source| {
+        QemuSpawnError::Io {
+            operation: "seal shmem memfd against shrink",
+            source: source.into(),
+        }
+    })?;
     Ok(fd)
 }
 
@@ -2832,6 +2825,10 @@ fn last_io_error(operation: &'static str) -> QemuSpawnError {
         source: io::Error::last_os_error(),
     }
 }
+
+#[cfg(test)]
+#[path = "spawn/memfd_tests.rs"]
+mod memfd_tests;
 
 #[cfg(test)]
 #[path = "spawn_test.rs"]
