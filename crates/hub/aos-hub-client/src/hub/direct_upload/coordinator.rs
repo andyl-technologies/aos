@@ -248,9 +248,12 @@ impl DirectUploadCoordinator {
                 remaining.push_back(object);
             }
         }
-        let metadata_only = remaining
-            .iter()
-            .all(|object| object.intent.dependency_phase != DirectDependencyPhase::Content);
+        // Dependency ordering does not determine transfer geometry. Multipart
+        // metadata retains serial batch admission and its original bulk limits.
+        let metadata_only = remaining.iter().all(|object| {
+            object.intent.dependency_phase != DirectDependencyPhase::Content
+                && object.intent.byte_size.get() <= object.intent.part_size.get()
+        });
         let mut objects = remaining;
         let mut batches = Vec::new();
         while !objects.is_empty() {
