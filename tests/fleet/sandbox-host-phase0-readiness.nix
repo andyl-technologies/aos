@@ -41,6 +41,13 @@
     modules = [
       ../../systems/_server-test-packages.nix
       ({config, ...}: {
+        # Replay the fixture account through native host identity activation.
+        aos.activation.stages.host.configuration = [
+          (builtins.path {
+            path = ./_sandbox-controller-identity.nix;
+            name = "aos-sandbox-controller-identity.nix";
+          })
+        ];
         aos.security.selinux = {
           enable = true;
           bootMode = "immutable-stage0";

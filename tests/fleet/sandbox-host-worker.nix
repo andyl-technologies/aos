@@ -49,11 +49,17 @@
       "test --no-run --lib --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-host --features kernel-tests"
     ];
     doCheck = true;
+    cargoNextest = true;
+    cargoNextestProfile = "nix-sandbox";
     cargoTestFlags = "-p aos-sandbox-host --lib";
     installBins = false;
     buildDeps = [pkgs.protobuf];
     runtimeDeps = [];
-    cargoEnv.PROTOC = "${pkgs.protobuf}/bin/protoc";
+    cargoEnv = {
+      PROTOC = "${pkgs.protobuf}/bin/protoc";
+      RUST_MIN_STACK = "33554432";
+      RUST_TEST_THREADS = "1";
+    };
     postBuild = ''
       mkdir worker-fixture
 
@@ -191,6 +197,8 @@
           Type = "oneshot";
           TimeoutStartSec = 240;
           Environment = [
+            "RUST_MIN_STACK=33554432"
+            "RUST_TEST_THREADS=1"
             "AOS_SANDBOX_WORKER_QUALIFICATION=1"
             "AOS_SANDBOX_QUALIFICATION_NSPAWN=${pkgs.systemd}/bin/systemd-nspawn"
             "AOS_SANDBOX_QUALIFICATION_GUARDIAN=${pkgs.aos-sandbox-guardian}/bin/aos-sandbox-guardian"

@@ -86,8 +86,12 @@
       # Retain the same identity in the native host activation input as well.
       aos.activation.stages.host.configuration = [
         (builtins.path {
-          path = ./_sandbox-storage-rpc-identity.nix;
-          name = "aos-sandbox-storage-rpc-identity.nix";
+          path = ./_sandbox-controller-identity.nix;
+          name = "aos-sandbox-controller-identity.nix";
+        })
+        (builtins.path {
+          path = ./_sandbox-storage-worker-identity.nix;
+          name = "aos-sandbox-storage-worker-identity.nix";
         })
       ];
       aos.sandbox.storageWorker = {
@@ -255,6 +259,9 @@ in {
             "-p ExecMainCode -p ExecMainStatus -p NRestarts",
             "systemctl status aos-storaged.service --no-pager -l",
             "journalctl -u aos-storaged.service --no-pager -n 200",
+            "journalctl -b -u 'aos-sandbox-zfs-worker@*' "
+            "-u 'aos-sandbox-workspace-pin-observer@*' "
+            "-u 'aos-sandbox-workspace-pin-worker@*' --no-pager -n 200",
         ):
             status, stdout, stderr = machine.execute(command)
             print(f"storaged diagnostic ({status}): {command}")
@@ -432,6 +439,7 @@ in {
         "RestrictAddressFamilies=AF_UNIX",
         "SystemCallArchitectures=native",
         "SystemCallErrorNumber=EPERM",
+        "LimitSTACK=32M",
         "SystemCallFilter=~chmod",
         "SystemCallFilter=~fchmod",
         "SystemCallFilter=~fchmodat",

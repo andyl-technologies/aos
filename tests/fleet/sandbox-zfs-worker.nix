@@ -95,6 +95,7 @@
           IFS=$previous_ifs
           test "$#" -eq 3
           exec ${pkgs.coreutils}/bin/env \
+            RUST_MIN_STACK=33554432 \
             AOS_ZFS_EXECUTABLE=${zfsPackage}/sbin/zfs \
             AOS_SYSTEMCTL_EXECUTABLE=${pkgs.systemd}/bin/systemctl \
             AOS_STORAGE_AUTHORITY_DIRECTORY=${authorityDirectory} \
@@ -106,6 +107,7 @@
       esac
 
       exec ${pkgs.coreutils}/bin/env \
+        RUST_MIN_STACK=33554432 \
         AOS_ZFS_EXECUTABLE=${zfsPackage}/sbin/zfs \
         AOS_ZFS_WORKER_CASE="$worker_case" \
         ${fixture}/bin/aos-sandbox-zfs-worker-tests \
@@ -123,6 +125,13 @@
           else zfs;
         runner = clientRunner selectedZfs;
       in {
+        # The selection-time worker module is not operator policy replay.
+        aos.activation.stages.host.configuration = [
+          (builtins.path {
+            path = ./_sandbox-storage-worker-identity.nix;
+            name = "aos-sandbox-storage-worker-identity.nix";
+          })
+        ];
         aos.sandbox.storageWorker =
           {
             enable = true;
@@ -718,6 +727,14 @@ in {
         f"LISTEN_PID=$$ LISTEN_FDS=1 "
         f"LISTEN_FDNAMES=host-mount-namespace {BOUNDARY_PROBE}",
         "mount namespace descriptor is not on nsfs",
+    )
+
+    # A genuine namespace descriptor does not substitute for the service guard.
+    require_probe_failure(
+        f"exec 3</proc/self/ns/mnt; exec {COREUTILS}/env "
+        f"LISTEN_PID=$$ LISTEN_FDS=1 "
+        f"LISTEN_FDNAMES=host-mount-namespace {BOUNDARY_PROBE}",
+        "Storage worker did not inherit the no-setid guard",
     )
 
     try:

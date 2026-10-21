@@ -87,6 +87,13 @@
       lib,
       ...
     }: {
+      # Replay the fixture account through native host identity activation.
+      aos.activation.stages.host.configuration = [
+        (builtins.path {
+          path = ./_sandbox-controller-identity.nix;
+          name = "aos-sandbox-controller-identity.nix";
+        })
+      ];
       aos.firewall.enable = lib.mkForce false;
       aos.sandbox.networkBroker = {
         enable = true;
@@ -162,7 +169,9 @@ in {
 
   machines.vm = {
     inherit system;
-    memoryMiB = 1280;
+    # Native host configuration evaluates the complete installed package set.
+    # Match the other Sandbox worker VMs while retaining the service limits.
+    memoryMiB = 2048;
   };
 
   testScript = ''
@@ -174,7 +183,19 @@ in {
     SENTINEL_PID_FILE = "${sentinelPidFile}"
     SYSTEMD_RUN = "${pkgs.systemd}/bin/systemd-run"
 
-    vm.wait_for_unit("multi-user.target", timeout=120)
+    try:
+        vm.wait_for_unit("multi-user.target", timeout=120)
+    except Exception:
+        for command in (
+            "systemctl status aos-activate.service --no-pager -l",
+            "journalctl -b -u aos-activate.service --no-pager -n 100",
+            "cat /proc/meminfo /proc/pressure/memory",
+        ):
+            status, stdout, stderr = vm.execute(command)
+            print(f"host configuration diagnostic ({status}): {command}")
+            print(stdout.decode("utf-8", errors="replace"))
+            print(stderr.decode("utf-8", errors="replace"))
+        raise
     vm.wait_for_unit("aos-sandbox-network-worker-ready.service", timeout=30)
 
     guarded_units = (

@@ -208,6 +208,10 @@ int main(int argc, char **argv)
         return 64;
     }
     (void)argv;
+    /* Reject forged descriptors before testing the inherited confinement.
+     * No namespace entry or mutation occurs until both checks pass. */
+    if (authenticate_passed_namespace(&host_namespace_identity) != 0)
+        return 1;
     if (prctl(PR_GET_AOS_NO_SETID, 0UL, 0UL, 0UL, 0UL) != 1) {
         fprintf(stderr, "Storage worker did not inherit the no-setid guard\n");
         return 1;
@@ -231,8 +235,6 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    if (authenticate_passed_namespace(&host_namespace_identity) != 0)
-        return 1;
     cgroup = open_probe_cgroup();
     if (cgroup < 0
         || enter_host_mount_namespace(&host_namespace_identity) != 0
