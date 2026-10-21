@@ -171,6 +171,7 @@ pub use stage_contract::{
 };
 
 pub(in crate::reference_packet) use prebirth_recipe::projection::{
+    digest as native_import18_recipe_identity_projection_data,
     native_import18_initial_row_projection_data, native_import18_prebirth_recipe_projection_data,
     native_import18_prebirth_recipe_serialization_data,
     native_import18_recipe_projection_counter_scratch_data,

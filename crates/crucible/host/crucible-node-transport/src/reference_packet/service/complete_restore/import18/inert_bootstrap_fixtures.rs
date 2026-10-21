@@ -52,6 +52,51 @@ pub(in crate::reference_packet) fn recipe() -> Value {
     })
 }
 
+/// Builds maximum-width wire fields without validating a recipe or its sums.
+pub(in crate::reference_packet) fn maximum_recipe() -> Value {
+    let mut wire = recipe();
+    for field in ["native_family", "source_family"] {
+        wire[field] = json!(if field == "native_family" {
+            "snapshot18"
+        } else {
+            "captured18"
+        });
+    }
+    for field in [
+        "geometry_identity",
+        "historical_shape_identity",
+        "selected_launch_identity",
+        "private_launch_identity",
+        "lease_identity",
+        "nonce",
+        "semantic_reference_identity",
+        "identity",
+    ] {
+        wire[field] = json!(([255u8; 32]));
+    }
+    wire["archived_reference_identities"] = json!(([[255u8; 32]; 5]));
+    for field in [
+        "generation",
+        "semantic_length",
+        "maximum_target_requested_bytes",
+        "maximum_before_bytes",
+        "normalization_projection_bytes",
+        "normalization_maximum",
+        "semantic_spend_maximum",
+    ] {
+        wire[field] = json!(u64::MAX.to_string());
+    }
+    for (field, length) in [
+        ("archived_lengths", 5),
+        ("decoder_limits", 10),
+        ("escrow", 3),
+    ] {
+        wire[field] = json!(vec![u64::MAX.to_string(); length]);
+    }
+    wire["phases"] = json!(vec![vec![u64::MAX.to_string(); 3]; 5]);
+    wire
+}
+
 pub(in crate::reference_packet) fn boot(source_bytes: usize, registration: Value) -> Value {
     json!({
         "schema": NATIVE_IMPORT18_PRIVATE_BOOT_SCHEMA,

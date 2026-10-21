@@ -1,7 +1,8 @@
 //! Combines physical receiver, prospective decoders and Source checks as DATA.
 //!
 //! The same future-decimal-width formula is evaluated from actual parent or
-//! received operands. An announced row is never an input. These calculations
+//! received operands before recipe rows and commitment exist. An announced row
+//! or recipe is never an input. These calculations
 //! cannot construct the opaque Initial result, Recipe, native model or escrow.
 
 use super::prospective::{PrivateOperands, ProspectiveBodyConstructionData};
@@ -24,12 +25,11 @@ pub(in crate::reference_packet) struct InitialConstructionData {
 /// # Errors
 /// Refuses actual operand geometry, checked overflow or independent restriction.
 pub(in crate::reference_packet) fn initial_construction_projection_data(
-    recipe: &PacketNativeImport18PrebirthRecipeData,
     launch: &PacketNative5SourceLaunch,
     private: &PrivateOperands<'_>,
     maximum: usize,
 ) -> Result<InitialConstructionData, ProviderError> {
-    let bodies = prospective::construction_data(recipe, launch, private, maximum)?;
+    let bodies = prospective::construction_data(launch, private, maximum)?;
     let source = source_authentication_projection_data(&private.declaration, launch, maximum)?;
     combine(
         bodies,
@@ -47,7 +47,6 @@ pub(in crate::reference_packet) fn initial_construction_projection_data(
 /// # Errors
 /// Refuses actual body geometry, overflow or the independent restriction.
 pub(in crate::reference_packet) fn initial_construction_from_wire_data(
-    recipe: &PacketNativeImport18PrebirthRecipeWireData,
     selected: &PacketNativeImport18SelectedLaunchWireData,
     boot: &PacketNativeImport18PrivateBootWireData,
     maximum: usize,
@@ -65,13 +64,7 @@ pub(in crate::reference_packet) fn initial_construction_from_wire_data(
         private_launch: &boot.private_launch,
         host_executable: &boot.host_executable,
     };
-    let bodies = prospective::quote(
-        recipe,
-        recipe.announced_identity_data(),
-        launch,
-        &private,
-        maximum,
-    )?;
+    let bodies = prospective::construction_data(launch, &private, maximum)?;
     let source = source_authentication_projection_data(&private.declaration, launch, maximum)?;
     combine(
         bodies,

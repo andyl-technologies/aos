@@ -49,14 +49,9 @@ fn required(values: &[Value; 3]) -> [usize; 3] {
     slots.decode_launch(&raw[1]).unwrap();
     slots.decode_boot(&raw[2]).unwrap();
     let typed = slots.bodies_data().unwrap();
-    initial_construction_from_wire_data(
-        typed.recipe,
-        typed.launch,
-        typed.boot,
-        typed::bounds().requested_peak,
-    )
-    .unwrap()
-    .row
+    initial_construction_from_wire_data(typed.launch, typed.boot, typed::bounds().requested_peak)
+        .unwrap()
+        .row
 }
 
 pub(super) fn required_peak(case: &str) -> usize {

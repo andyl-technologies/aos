@@ -644,6 +644,25 @@ the six architecture checks pass. Required application compilation is running.
 Genuine full five-phase Recipe/Initial production and native startup remain
 unfinished. These fixtures contain inert Wire DATA throughout.
 
+## Initial projection before recipe construction
+
+The shared Initial DATA formula now projects the entire fixed Recipe grammar,
+recipe commitments and Initial decimals at their defining maximum widths. It
+borrows actual launch/private operands without requiring a recipe, recipe hash
+or provisional row. The native path repeats this same recipe-independent
+calculation before joining the actual received recipe and announcements. The
+existing exhaustive recipe and allocation-row field witnesses remain in force;
+closed enum witnesses also require new variants to revisit maximum spellings.
+
+Both program families cover short and maximum-width recipe numbers/commitments,
+multiple Bytes lengths and actual decoded ownership. Parent/native derived rows
+and body maxima agree without passing a recipe to either calculation. These
+are inert parser DATA controls, with no opaque Recipe/Initial construction or
+native startup selection. Both full Transport configurations pass 1,788 tests,
+zero failures, no filtering and sixteen existing ignores. All-feature/all-target
+checking and the six architecture checks pass. The captured required application
+compilation gate is running independently of the preceding checkpoint's capture.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.

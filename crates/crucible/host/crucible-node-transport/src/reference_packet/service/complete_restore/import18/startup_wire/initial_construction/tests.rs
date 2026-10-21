@@ -51,13 +51,36 @@ fn reconstructed_initial_uses_no_announced_row_and_covers_actual_overlapping_own
                 .construction_data(raw.each_ref().map(Vec::as_slice), usize::MAX / 4)
                 .unwrap();
             let typed = slots.bodies_data().unwrap();
-            let actual = initial_construction_from_wire_data(
-                typed.recipe,
-                typed.launch,
-                typed.boot,
+            let actual =
+                initial_construction_from_wire_data(typed.launch, typed.boot, usize::MAX / 4)
+                    .unwrap();
+            // Parent construction has no Recipe or announced-row operand. Its
+            // private fields remain borrowed and the Source bank stays opaque.
+            let private = PrivateOperands {
+                declaration: native_import18_source_declaration_bank_view_data(
+                    typed
+                        .boot
+                        .source_birth
+                        .declaration
+                        .source_birth_data()
+                        .as_slice(),
+                    typed.launch.launch_data(),
+                )
+                .unwrap(),
+                private_key: &typed.boot.private_key,
+                birth_id: &typed.boot.birth_id,
+                expected_host_registration: &typed.boot.expected_host_registration,
+                private_launch: &typed.boot.private_launch,
+                host_executable: &typed.boot.host_executable,
+            };
+            let parent = initial_construction_projection_data(
+                typed.launch.launch_data(),
+                &private,
                 usize::MAX / 4,
             )
             .unwrap();
+            assert_eq!(parent.row, actual.row);
+            assert_eq!(parent.maximum_encoded_bytes, actual.maximum_encoded_bytes);
             let source = source_authentication_construction_data(
                 typed.boot.source_binding_data().declaration_data(),
                 typed.launch.launch_data(),
@@ -88,19 +111,13 @@ fn reconstructed_initial_uses_no_announced_row_and_covers_actual_overlapping_own
             assert!(actual.row[2] >= quote[2]);
             let exact = actual.row.iter().sum();
             assert_eq!(
-                initial_construction_from_wire_data(typed.recipe, typed.launch, typed.boot, exact)
+                initial_construction_from_wire_data(typed.launch, typed.boot, exact)
                     .unwrap()
                     .row,
                 actual.row
             );
             assert!(
-                initial_construction_from_wire_data(
-                    typed.recipe,
-                    typed.launch,
-                    typed.boot,
-                    exact - 1
-                )
-                .is_err()
+                initial_construction_from_wire_data(typed.launch, typed.boot, exact - 1).is_err()
             );
             if let Some((row, maximum)) = prior {
                 assert_eq!(actual.row, row);

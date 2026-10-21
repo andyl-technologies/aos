@@ -1,9 +1,10 @@
 //! Projects real bootstrap operands before the Initial row exists.
 //!
-//! The three future Initial decimal strings use U64's actual maximum width,
-//! independently of their future values. No row, recipe, digest or permission
-//! is invented to break that encoding dependency. Actual immutable recipe and
-//! Source operands remain borrowed; custom serializer formatting is separately
+//! The complete fixed recipe grammar, future commitments and Initial decimals
+//! use their defining maximum widths before any of those values exist. No row,
+//! recipe, digest or permission is invented to break that encoding dependency.
+//! Actual launch and Source
+//! operands remain borrowed; custom serializer formatting is separately
 //! admitted before these walks.
 
 use super::*;
@@ -45,23 +46,6 @@ pub(super) struct ProspectiveBodyConstructionData {
 /// Refuses invalid key/birth lengths, unsupported actual serializer populations,
 /// arithmetic overflow or complete parser demand above the restriction.
 pub(super) fn construction_data(
-    recipe: &PacketNativeImport18PrebirthRecipeData,
-    launch: &PacketNative5SourceLaunch,
-    private: &PrivateOperands<'_>,
-    maximum: usize,
-) -> Result<ProspectiveBodyConstructionData, ProviderError> {
-    quote(
-        &recipe.borrowed_wire_data(),
-        &recipe.identity_data(),
-        launch,
-        private,
-        maximum,
-    )
-}
-
-pub(super) fn quote(
-    recipe: &impl Serialize,
-    recipe_identity: &[u8; 32],
     launch: &PacketNative5SourceLaunch,
     private: &PrivateOperands<'_>,
     maximum: usize,
@@ -70,7 +54,7 @@ pub(super) fn quote(
         return Err(invalid());
     }
     let mut recipe_shape = Projection::new(maximum)?;
-    recipe_shape.add_value(recipe)?;
+    native_import18_prebirth_recipe_projection_data(&mut recipe_shape)?;
     let recipe_shape = recipe_shape.finish(maximum)?;
 
     let mut selected = Projection::new(maximum)?;
@@ -87,8 +71,8 @@ pub(super) fn quote(
     selected.add_value(&9u16)?;
     selected.add_value(&PacketNativeImport18Selection::SourceSignedImport18)?;
     selected.add_value(launch)?;
-    selected.add_value(recipe_identity)?;
-    initial_row(&mut selected)?;
+    native_import18_recipe_identity_projection_data(&mut selected)?;
+    native_import18_initial_row_projection_data(&mut selected)?;
     let selected = selected.finish(maximum)?;
 
     let mut boot = Projection::new(maximum)?;
@@ -107,51 +91,30 @@ pub(super) fn quote(
     boot.add_string(NATIVE_IMPORT18_PRIVATE_BOOT_SCHEMA)?;
     boot.add_value(private.private_key)?;
     boot.add_value(private.birth_id)?;
-    source_binding(&mut boot, recipe, &private.declaration)?;
+    source_binding(&mut boot, &private.declaration)?;
     boot.add_value(private.expected_host_registration)?;
     boot.add_value(private.private_launch)?;
     boot.add_value(private.host_executable)?;
     let boot = boot.finish(maximum)?;
 
-    // Closed wrapper/Initial fields cannot introduce a reserved key. The
-    // original Source is an opaque Bytes string. Walk the actual typed recipe,
-    // launch and Host Value independently, without constructing an outer DOM.
-    let recipe_resets = raw_value_reparse::quote_serialized_raw_bound_data(recipe, 0, maximum)?;
+    // The exhaustive fixed recipe grammar contains no Value/RawValue leaves.
+    // Only the actual Launch and Host Value can introduce reserved keys. The
+    // original Source remains an opaque Bytes leaf throughout this projection.
     let launch_resets = raw_value_reparse::quote_serialized_raw_bound_data(launch, 1, maximum)?;
-    let mut boot_resets = raw_value_reparse::quote_serialized_raw_bound_data(recipe, 2, maximum)?;
-    boot_resets.include_data(
-        raw_value_reparse::quote_serialized_raw_bound_data(
-            private.expected_host_registration,
-            1,
-            maximum,
-        )?,
+    let boot_resets = raw_value_reparse::quote_serialized_raw_bound_data(
+        private.expected_host_registration,
+        1,
         maximum,
     )?;
     from_shapes(
         [recipe_shape, selected, boot],
-        [recipe_resets, launch_resets, boot_resets],
+        [Resets::default(), launch_resets, boot_resets],
         maximum,
     )
 }
 
-fn initial_row(out: &mut Projection) -> Result<(), ProviderError> {
-    out.add_object()?;
-    for name in [
-        "retained_requested_bytes",
-        "maximum_simultaneous_transient_bytes",
-        "declared_counter_scratch_bytes",
-    ] {
-        out.add_field(name)?;
-        // Decimal U64 is a JSON string. Only its defining maximum width is
-        // projected; no future number or serialized Initial is constructed.
-        out.add_unescaped_ascii_extent(u64::MAX.ilog10() as usize + 1)?;
-    }
-    Ok(())
-}
-
 fn source_binding(
     out: &mut Projection,
-    recipe: &impl Serialize,
     declaration: &PacketNativeImport18SourceDeclarationView<'_>,
 ) -> Result<(), ProviderError> {
     out.add_object()?;
@@ -167,8 +130,8 @@ fn source_binding(
     out.add_string(NATIVE_IMPORT18_SOURCE_BINDING_SCHEMA)?;
     native_import18_source_declaration_projection_data(out, declaration)?;
     out.add_value(&PacketNativeImport18Selection::SourceSignedImport18)?;
-    out.add_value(recipe)?;
-    initial_row(out)
+    native_import18_prebirth_recipe_projection_data(out)?;
+    native_import18_initial_row_projection_data(out)
 }
 
 fn from_shapes(
@@ -229,6 +192,7 @@ fn from_shapes(
 /// Names the actual borrowed projections, reset scans and returned DATA views.
 pub(super) fn counter_scratch_data() -> usize {
     original_serialization_counter_scratch_data()
+        + native_import18_recipe_projection_counter_scratch_data()
         + raw_value_reparse::serialized_scanner_counter_scratch_data()
         + raw_value_reparse::value_scanner_counter_scratch_data()
         + private_body_decode_counter_scratch_data()

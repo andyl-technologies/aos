@@ -47,6 +47,23 @@ const _: fn(PacketNativeStartupAllocationRow) =
          declared_counter_scratch_bytes: _,
      }| {};
 
+// New variants require reviewing the finite maximum spellings below.
+const _: fn(PacketNativeImport18NativeFamily) = |family| match family {
+    PacketNativeImport18NativeFamily::Snapshot17 | PacketNativeImport18NativeFamily::Snapshot18 => {
+    }
+};
+
+const _: fn(PacketNativeImport18SourceFamily) = |family| match family {
+    PacketNativeImport18SourceFamily::Captured17
+    | PacketNativeImport18SourceFamily::Captured18
+    | PacketNativeImport18SourceFamily::Imported18 => {}
+};
+
+const _: fn(PacketNativeImport18SemanticSpendFamily) = |family| match family {
+    PacketNativeImport18SemanticSpendFamily::Legacy17
+    | PacketNativeImport18SemanticSpendFamily::Complete18 => {}
+};
+
 const RECIPE_FIELDS: [&str; 24] = [
     "schema",
     "native_family",
@@ -88,7 +105,11 @@ fn object(out: &mut Projection, fields: &[&str]) -> Result<(), ProviderError> {
     Ok(())
 }
 
-fn digest(out: &mut Projection) -> Result<(), ProviderError> {
+/// Adds the defining digest width before its actual commitment exists.
+///
+/// # Errors
+/// Refuses checked projection overflow or insufficient independent restriction.
+pub(in crate::reference_packet) fn digest(out: &mut Projection) -> Result<(), ProviderError> {
     out.add_array_extent(32)?;
     for _ in 0..32 {
         // The defining digest is [u8;32], serialized as JSON numbers.

@@ -48,7 +48,6 @@ impl OriginalImport18RawBootstrap {
 
         let bodies = self.typed_bodies_data()?;
         let derived = initial_construction_from_wire_data(
-            bodies.recipe,
             bodies.launch,
             bodies.boot,
             self.bounds.requested_peak,

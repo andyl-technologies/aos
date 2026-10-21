@@ -10,13 +10,15 @@ use serde_json::json;
 fn prospective_actual_fields_cover_each_native_parser_axis_and_future_decimal_width() {
     for reactive in [false, true] {
         for length in [1, 2, 3, 32, 2049] {
-            for decimal in [1u64, u64::MAX] {
+            for (decimal, mut recipe) in [
+                (1u64, inert_bootstrap_fixtures::recipe()),
+                (u64::MAX, inert_bootstrap_fixtures::maximum_recipe()),
+            ] {
                 let mut selected = inert_bootstrap_fixtures::selected_launch(reactive);
                 selected["launch"]["fresh_restore_allocation_selection"] =
                     json!("completed_admit13");
                 let registration = json!({"nested": [{"$serde_json::private::RawValue": "[0]"}]});
                 let mut boot = inert_bootstrap_fixtures::boot(length, registration.clone());
-                let mut recipe = inert_bootstrap_fixtures::recipe();
                 // These remain unvalidated announcements. Choosing a decimal
                 // width exercises geometry, never a producer recipe factory.
                 recipe["generation"] = json!(decimal.to_string());
@@ -31,8 +33,7 @@ fn prospective_actual_fields_cover_each_native_parser_axis_and_future_decimal_wi
                     });
                 }
                 boot["source_birth"]["prebirth_recipe"] = recipe.clone();
-                let parsed_recipe: PacketNativeImport18PrebirthRecipeWireData =
-                    serde_json::from_value(recipe.clone()).unwrap();
+                selected["prebirth_recipe_identity"] = recipe["identity"].clone();
                 let parsed_selected: PacketNativeImport18SelectedLaunchWireData =
                     serde_json::from_value(selected.clone()).unwrap();
                 let key = Bytes::new(vec![23; 32]);
@@ -53,14 +54,7 @@ fn prospective_actual_fields_cover_each_native_parser_axis_and_future_decimal_wi
                     private_launch: &private_launch,
                     host_executable: &executable,
                 };
-                let quote = quote(
-                    &parsed_recipe,
-                    &[0; 32],
-                    selected_launch,
-                    &operands,
-                    usize::MAX / 4,
-                )
-                .unwrap();
+                let quote = construction_data(selected_launch, &operands, usize::MAX / 4).unwrap();
                 let banks = [&recipe, &selected, &boot]
                     .map(|value| canonical::canonical_json(value).unwrap());
                 let actual = private_body_decode_backing_data(
@@ -94,8 +88,6 @@ fn prospective_actual_fields_cover_each_native_parser_axis_and_future_decimal_wi
 fn invalid_actual_private_widths_and_small_complete_restrictions_refuse() {
     let selected: PacketNativeImport18SelectedLaunchWireData =
         serde_json::from_value(inert_bootstrap_fixtures::selected_launch(false)).unwrap();
-    let recipe: PacketNativeImport18PrebirthRecipeWireData =
-        serde_json::from_value(inert_bootstrap_fixtures::recipe()).unwrap();
     let source = [255; 32];
     let short_key = Bytes::new(vec![23; 31]);
     let key = Bytes::new(vec![23; 32]);
@@ -112,16 +104,7 @@ fn invalid_actual_private_widths_and_small_complete_restrictions_refuse() {
         private_launch: &private_launch,
         host_executable: &executable,
     };
-    assert!(
-        quote(
-            &recipe,
-            &[0; 32],
-            &selected.launch,
-            &operands,
-            usize::MAX / 4
-        )
-        .is_err()
-    );
+    assert!(construction_data(&selected.launch, &operands, usize::MAX / 4).is_err());
     operands.private_key = &key;
-    assert!(quote(&recipe, &[0; 32], &selected.launch, &operands, 1).is_err());
+    assert!(construction_data(&selected.launch, &operands, 1).is_err());
 }
