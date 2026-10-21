@@ -2119,10 +2119,39 @@ Mandatory application test-target compilation passes at
 `/nix/store/fv48451wa2g00gg8qphwanrw9y93dx2c-aos-test-targets-0.1.0`.
 All 5,261 tracked crate Rust/TOML files match immutable
 `1z9hpph4lch7rk00n3ja9sa1av6xhp07-aos-workspace-src`. The expanded 173-case
-supervision gate is running. Coverage now binds 271 component and 19 native
+supervision gate passes at
+`/nix/store/68ajwvymmvf7pvnrxz8s1cqc87ghpsj1-crucible-gate-ram-supervision-0`. Coverage now binds 271 component and 19 native
 cases; 243 requirements, 149 uncovered and none fully qualified remain.
 Complete carrier funding, final scheduler diagnostics, reader supervision and
 selected Source admission remain unfinished.
+
+### 2026-10-21 inline single-operation quantum observations
+
+Commit `d40015bc99` retains the first operation inline for the mapped channel's
+current-icount, logical calibration, virtual-timer witness and idle-state reads.
+Each call creates a temporary adapter and records one operation. A second event
+spills both events to growable storage, preserving the public operation slice
+and complete quantum reports. No event is suppressed or truncated; report/frame
+vectors and longer log allocation funding remain separate obligations.
+
+The pre-change actual four-call control measured four allocations and zero
+reallocations. Repeated corrected calls allocate and reallocate nothing,
+preserve exact reports, and leave the producer slot unchanged. The owned
+adapter control exceeds inline and vector capacity, then finishes a shared-slot
+quantum with every earlier event retained and the exact eight-event report
+sequence. Its first assertion incorrectly expected completion to be last;
+actual inbound-consumption observation follows it. The corrected assertion
+checks the entire existing sequence without changing execution behavior.
+All 83 quantum-related controls, 73 policy checks and five hygiene checks pass.
+Mandatory application test-target compilation passes at
+`/nix/store/68nmi1vfk55brh90s3scn4nv9x4mg7an-aos-test-targets-0.1.0`.
+The expanded 175-case supervision gate is running. All 5,261 tracked crate Rust/TOML files match immutable application
+source `4b49zz7l0hzh93aydjyw46dshrsj20ja-aos-workspace-src`.
+
+Coverage binds 273 component and 19 native cases; 243 requirements, 149 uncovered
+and none fully qualified remain. This narrow observation improvement establishes
+neither complete quantum allocation funding, bounded reader supervision,
+performance parity nor selected Source admission.
 
 ### 2026-10-21 independent native action-current post
 
