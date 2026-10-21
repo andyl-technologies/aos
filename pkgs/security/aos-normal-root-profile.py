@@ -11,6 +11,7 @@ unit bytes. Runtime equality is a prerequisite, not client/read authority.
 from __future__ import annotations
 
 import argparse
+from collections import deque
 import hashlib
 import importlib.util
 import json
@@ -46,14 +47,27 @@ def runtime_files(helpers, paths, executable, patchelf, readelf):
     closure = {str(path) for path in paths}
     inventory = helpers.validate_dlopen_inventory(paths, patchelf, [])
     loader = Path(helpers.validate_elf_closure(paths, executable, patchelf, readelf))
-    pending = [(executable.resolve(strict=True), ())]
+    loader_sonames = helpers.run_patchelf(patchelf, "--print-soname", loader)
+    if loader_sonames is None or len(loader_sonames) > 1:
+        raise ValueError("normal Root interpreter identity cannot be inspected")
+    loader_soname = loader_sonames[0] if loader_sonames else None
+    loaded = {}
+    if loader_soname:
+        expected = inventory.get(loader_soname)
+        if expected is None or expected.resolve(strict=True) != loader:
+            raise ValueError("normal Root interpreter differs from the unique inventory")
+        loaded[loader_soname] = loader
+
+    # glibc maps each object's immediate dependencies before walking their
+    # children. Later edges reuse already mapped SONAMEs before searching.
+    pending = deque([(executable.resolve(strict=True), ())])
     visited = set()
     files = {loader}
     while pending:
-        elf, inherited = pending.pop()
-        if (elf, inherited) in visited:
+        elf, inherited = pending.popleft()
+        if elf in visited:
             continue
-        visited.add((elf, inherited))
+        visited.add(elf)
         files.add(elf)
         if len(files) > MAXIMUM_RUNTIME_FILES:
             raise ValueError("normal Root runtime exceeds the fixed file bound")
@@ -67,10 +81,22 @@ def runtime_files(helpers, paths, executable, patchelf, readelf):
         own = helpers.validate_search_directories(
             rpath[0].split(":") if rpath and rpath[0] else [], elf, closure
         )
-        search = list(dict.fromkeys([*own, *inherited]))
+        search = list(dict.fromkeys(own if has_runpath else [*own, *inherited]))
         child = tuple(search) if has_rpath else inherited
         for soname in needed:
+            if soname in loaded:
+                continue
             resolved = helpers.resolve_needed_dso(elf, soname, search, closure, inventory)
+            loaded[soname] = resolved
+            resolved_sonames = helpers.run_patchelf(patchelf, "--print-soname", resolved)
+            if resolved_sonames is None or len(resolved_sonames) > 1:
+                raise ValueError("normal Root dependency identity cannot be inspected")
+            if resolved_sonames and resolved_sonames[0]:
+                resolved_soname = resolved_sonames[0]
+                expected = inventory.get(resolved_soname)
+                if expected is None or expected.resolve(strict=True) != resolved:
+                    raise ValueError("normal Root dependency differs from the unique inventory")
+                loaded[resolved_soname] = resolved
             pending.append((resolved, child))
     return loader, [pin(path) for path in sorted(files)]
 

@@ -211,6 +211,34 @@ class DlopenInventoryTests(unittest.TestCase):
                 inventory,
             )
 
+    def test_absolute_needed_path_pins_the_actual_file_without_a_soname(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "closure"
+            library = root / "lib/libsqlite3.so"
+            library.parent.mkdir(parents=True)
+            library.write_bytes(b"\x7fELF")
+            foreign = Path(directory) / "outside.so"
+            foreign.write_bytes(b"\x7fELF")
+            alias = root / "foreign.so"
+            alias.symlink_to(foreign)
+
+            def owner(path: str, _closure: set[str]) -> str | None:
+                return str(root) if Path(path).is_relative_to(root) else None
+
+            with mock.patch.object(manifest, "closure_owner", side_effect=owner):
+                self.assertEqual(
+                    manifest.resolve_needed_dso(root / "caller", str(library), [], {str(root)}, {}),
+                    library,
+                )
+                for target in (
+                    str(foreign), str(alias), str(root / "absent.so"),
+                    str(library.parent), "lib/libsqlite3.so",
+                    str(root) + "/lib/../lib/libsqlite3.so",
+                    str(root) + "//lib/libsqlite3.so",
+                ):
+                    with self.subTest(target=target), self.assertRaises(SystemExit):
+                        manifest.resolve_needed_dso(root / "caller", target, [], {str(root)}, {})
+
     def test_needed_resolution_checks_canonical_symlink_target_owner(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

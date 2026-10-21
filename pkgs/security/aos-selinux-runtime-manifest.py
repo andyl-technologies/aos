@@ -270,6 +270,25 @@ def resolve_needed_dso(
 ) -> Path:
     """Resolves the first matching DT_NEEDED target to its closure-owned file."""
 
+    if "/" in soname:
+        # DSOs without a SONAME can be linked by absolute store path. The
+        # loader bypasses search directories, but both names must stay owned.
+        candidate = Path(soname)
+        if (
+            not candidate.is_absolute()
+            or str(candidate) != soname
+            or ".." in candidate.parts
+            or closure_owner(soname, closure) is None
+        ):
+            fail(f"{caller} requests a noncanonical or unowned DT_NEEDED path: {soname}")
+        try:
+            resolved = candidate.resolve(strict=True)
+        except OSError as error:
+            fail(f"{caller} cannot resolve DT_NEEDED path {soname}: {error}")
+        if not resolved.is_file() or closure_owner(str(resolved), closure) is None:
+            fail(f"{caller} resolves DT_NEEDED path {soname} outside the runtime closure")
+        return resolved
+
     expected = inventory.get(soname)
     if expected is None:
         fail(f"{caller} requests DT_NEEDED entry with no unique inventory target: {soname}")

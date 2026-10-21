@@ -5,6 +5,7 @@ import importlib.util
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 
 def load(name):
@@ -85,6 +86,71 @@ class ProducerTests(unittest.TestCase):
         # No alternate serializer or wrapper validator is introduced.
         root = "00000000000000000000000000000000-image"
         self.assertEqual(helpers.physical_lower_path(f"/nix/store/{root}/bin/root"), f"/usr/lib/aos/nix/store/{root}/bin/root")
+
+    def test_runpath_graph_reuses_mapped_libraries_and_the_exact_selected_interpreter(self):
+        helpers = PROFILE.load_runtime_helpers(Path(__file__).with_name("aos-selinux-runtime-manifest.py"))
+        with tempfile.TemporaryDirectory(prefix="aos-runtime-loader-") as directory:
+            root = Path(directory)
+            executable = root / "bin/program"
+            libc = root / "lib/libc.so.6"
+            libm = root / "lib/libm.so.6"
+            loader = root / "lib/ld-linux.so.2"
+            foreign = root / "lib/libforeign.so.1"
+            restricted_search = root / "restricted"
+            restricted_search.mkdir()
+            for path in (executable, libc, libm, loader, foreign):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"\x7fELF" + path.name.encode())
+
+            inventory = {"libc.so.6": libc, "libm.so.6": libm, "ld-linux.so.2": loader}
+            needed = {
+                executable: ["libm.so.6", "libc.so.6"],
+                libc: ["ld-linux.so.2"],
+                libm: ["libc.so.6"],
+            }
+            search_tags = {executable: (False, True)}
+            search_paths = {executable: str(libc.parent)}
+
+            def patchelf_output(_tool, option, elf):
+                if option == "--print-needed":
+                    return needed[elf]
+                if option == "--print-rpath":
+                    return [search_paths[elf]] if elf in search_paths else []
+                if option == "--print-soname" and elf == loader:
+                    return ["ld-linux.so.2"]
+                if option == "--print-soname":
+                    return [elf.name]
+                raise AssertionError((option, elf))
+
+            with (
+                mock.patch.object(helpers, "validate_dlopen_inventory", return_value=inventory),
+                mock.patch.object(helpers, "validate_elf_closure", return_value=str(loader)),
+                mock.patch.object(helpers, "run_patchelf", side_effect=patchelf_output),
+                mock.patch.object(helpers, "dynamic_search_tags", side_effect=lambda _tool, elf: search_tags.get(elf, (False, False))),
+                mock.patch.object(helpers, "validate_search_directories", side_effect=lambda entries, *_: list(map(Path, entries))),
+                mock.patch.object(helpers, "closure_owner", return_value=str(root)),
+            ):
+                selected_loader, files = PROFILE.runtime_files(helpers, [root], executable, Path("patchelf"), Path("readelf"))
+                self.assertEqual(selected_loader, loader)
+                self.assertEqual({entry["path"] for entry in files}, set(map(str, (executable, libc, libm, loader))))
+
+                inventory["ld-linux.so.2"] = foreign
+                with self.assertRaisesRegex(ValueError, "interpreter differs"):
+                    PROFILE.runtime_files(helpers, [root], executable, Path("patchelf"), Path("readelf"))
+
+                inventory["ld-linux.so.2"] = loader
+                inventory["libforeign.so.1"] = foreign
+                needed[libc].append("libforeign.so.1")
+                with self.assertRaises(SystemExit):
+                    PROFILE.runtime_files(helpers, [root], executable, Path("patchelf"), Path("readelf"))
+
+                # A child's RUNPATH suppresses the ancestor's RPATH for its
+                # own fresh lookup, even when the ancestor contains the DSO.
+                search_tags[executable] = (True, False)
+                search_tags[libc] = (False, True)
+                search_paths[libc] = str(restricted_search)
+                with self.assertRaises(SystemExit):
+                    PROFILE.runtime_files(helpers, [root], executable, Path("patchelf"), Path("readelf"))
 
 
 if __name__ == "__main__":
