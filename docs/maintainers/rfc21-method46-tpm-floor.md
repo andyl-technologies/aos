@@ -736,6 +736,25 @@ and
 This includes the protected-ancestry cases excluded from the Nix build
 sandbox; it supplies no installed Controller admission or TPM floor authority.
 
+The AOS Nix QEMU check `fleet.sandbox-publisher-native-sessions` passes the
+complete seven-test Publisher suite with `kernel-tests`, including all five
+process/cgroup cases assigned to native execution by the Nix-sandbox profile.
+It runs as UID 1000 with cleared supplementary groups, a 32 MiB libtest stack,
+serial execution and zero filtered tests. Its passing artifact is
+`/nix/store/y5k3bzfrxjxjijc4mkhawh0dqgl9lzqd-aos-fleet-test-sandbox-publisher-native-sessions-0`.
+This qualifies those component cases, including original-process retirement
+and delegated-writer rejection; it does not establish installed execution
+creation or publication through the Controller.
+
+Native recovery queries now bind the separately allocated Provider acquisition
+retained in the protected Mount row. The local Mount acquisition still selects
+that exact row. A fully signed and resealed graph that substitutes the local
+identity is rejected by the canonical artifact validator. The change at
+`f203545598` passes the ordinary Protocol (1,097), Mount (212, one installed test
+ignored), and SourceProvider Security (80, one installed test ignored) unit
+suites with locked offline dependencies, a 32 MiB stack and serial execution.
+Those ignored installed cuts still require VM execution.
+
 Existing native Journal commits use one mutation funnel, including archive
 retention/retirement and terminal process rollover. Schema-only validation is
 private to the opaque retained reconciliation borrow; ordinary reads cannot
