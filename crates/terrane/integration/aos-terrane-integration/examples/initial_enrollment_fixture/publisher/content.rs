@@ -130,12 +130,52 @@ pub(super) async fn exercise(store: &NativeContentStore, profile: &ChunkProfile)
         store.get(&metadata, None).await.map_err(io::Error::other)?,
         manifest
     );
+    let before = metadata_policy(store).await?;
     assert_eq!(
         store
             .put(ContentUpload::Meta(upload))
             .await
             .map_err(io::Error::other)?,
         metadata
+    );
+    let after = metadata_policy(store).await?;
+    let added = after
+        .leases
+        .iter()
+        .filter(|lease| !before.leases.iter().any(|old| old.owner == lease.owner))
+        .collect::<Vec<_>>();
+    // A duplicate manifest still verifies its chunk dependency and acquires an
+    // independent original pack/index grant before reporting an existing copy.
+    assert_eq!(added.len(), 2);
+    let metadata_hash: String = metadata
+        .digest()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    assert_eq!(
+        added
+            .iter()
+            .filter(|lease| {
+                let pins = after
+                    .pins
+                    .iter()
+                    .filter(|pin| pin.owner == lease.owner)
+                    .collect::<Vec<_>>();
+                pins.len() == 2 && pins.iter().any(|pin| pin.hash == metadata_hash)
+            })
+            .count(),
+        1
+    );
+    assert_eq!(after.pins.len(), before.pins.len() + 3);
+    assert_eq!(after.reservations.len(), before.reservations.len() + 2);
+    assert_eq!(after.residences.len(), before.residences.len());
+    for old in &before.pins {
+        assert!(after.pins.iter().any(|pin| pin.owner == old.owner
+            && pin.hash == old.hash
+            && pin.expires == old.expires));
+    }
+    println!(
+        "PASS actual duplicate metadata upload retains independent original pair consumer grace and verifies dependency before deduplication"
     );
     assert_eq!(
         store
@@ -254,4 +294,21 @@ async fn assert_cache_grace(
             })
     }));
     Ok(())
+}
+
+/// Reads the actual synchronized policy without constructing consumer authority.
+async fn metadata_policy(
+    store: &NativeContentStore,
+) -> io::Result<terrane_sdk::host::cache::CacheState> {
+    terrane_sdk::host::cache::CacheState::load(
+        &terrane_sdk::store::TokioLocalFs,
+        &store.ready().layout().layout().root().join("state/cache"),
+        terrane_sdk::host::cache::StateLimits {
+            bytes: 65536,
+            records: 64,
+        },
+    )
+    .await
+    .map_err(io::Error::other)?
+    .ok_or_else(|| io::Error::other("metadata deduplication lost original durable policy"))
 }

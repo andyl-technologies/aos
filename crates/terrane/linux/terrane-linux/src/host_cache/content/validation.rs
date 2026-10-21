@@ -182,7 +182,7 @@ impl NativeContentStore {
                     return Err(invalid("CDC-16"));
                 }
             }
-            match self.ready.metadata().get(&identity).await {
+            match self.get(&identity, None).await {
                 Ok(existing) if existing == upload.bytes() => return Ok(identity.clone()),
                 Ok(_) => {
                     return Err(StoreFailure::new(StoreErrorKind::Corrupt(

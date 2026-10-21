@@ -8694,6 +8694,13 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
 
 ### T2 — Host tier
 
+Metadata deduplication preparation (2026-10-21): an existing metadata upload
+uses the same original pack/index consumer grant as ordinary ContentStore reads
+before returning its identity. The upload still verifies every chunk dependency
+first. The public/private native enrollment witness checks the exact additional
+consumer grace, three pins and two retained synchronization holds. Runtime and
+application qualification remain pending; no T2 task is accepted.
+
 Cold reconstruction read preparation (2026-10-21): after actual acknowledged
 Resume, every referenced verified metadata pair transfers from the completed
 inventory into the physical admission registry, using Arc capacity reserved
