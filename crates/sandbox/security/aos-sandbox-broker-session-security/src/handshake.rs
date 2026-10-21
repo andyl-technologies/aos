@@ -1046,7 +1046,7 @@ impl BrokerHelloSelectionV5 {
     fn after_verified_client_v1(&self, client: &aos_sandbox_broker_session_protocol::CanonicalBrokerClientHelloV1)
         -> Result<BrokerServerHello, HandshakeError> {
         let methods = &client.message().required_methods;
-        match self {
+        let mut hello = match self {
             Self::Provided(hello) => Ok(hello.clone()),
             Self::HostCleanupDeferred => {
                 let selected = if methods.len() == 2
@@ -1067,7 +1067,13 @@ impl BrokerHelloSelectionV5 {
                 };
                 selected.map_err(|_| HandshakeError::RemoteInvalid)
             }
-        }
+        }?;
+
+        // Select the response ceiling before signing the server hello. The
+        // authenticated client offer bounds what its receiver can accept.
+        hello.maximum_response_bytes = hello.maximum_response_bytes
+            .min(client.message().maximum_response_bytes);
+        Ok(hello)
     }
 
     fn require_transcript_v1(&self, transcript: &VerifiedBrokerSessionTranscriptV1) -> Result<(), HandshakeError> {

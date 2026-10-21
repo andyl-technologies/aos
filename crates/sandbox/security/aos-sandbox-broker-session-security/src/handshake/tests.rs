@@ -99,6 +99,22 @@ fn finish_handshake(
     client_carrier: HandshakeCarrier,
     broker_carrier: HandshakeCarrier,
 ) -> (InertProvisionalClientSession, InertProvisionalBrokerSession) {
+    finish_handshake_with_hellos(
+        fixture,
+        client_carrier,
+        broker_carrier,
+        client_hello(),
+        broker_hello(),
+    )
+}
+
+fn finish_handshake_with_hellos(
+    fixture: &Fixture,
+    client_carrier: HandshakeCarrier,
+    broker_carrier: HandshakeCarrier,
+    client_hello: BrokerClientHello,
+    broker_hello: BrokerServerHello,
+) -> (InertProvisionalClientSession, InertProvisionalBrokerSession) {
     let client_custody = load_client_for_handshake_test(&fixture.client, 0x21)
         .unwrap_or_else(|error| panic!("client custody failed: {error}"));
     let broker_custody = load_broker_for_handshake_test(&fixture.broker, 0x31)
@@ -106,14 +122,14 @@ fn finish_handshake(
     let broker = BrokerPublicationFlight::begin(
         BrokerHandshakeCustodyV1::Fresh(broker_custody),
         broker_carrier,
-        broker_hello(),
+        broker_hello,
     )
         .unwrap_or_else(|error| panic!("broker begin failed: {error:?}"));
     let broker = match broker.send() {
         Transition::Complete(state) => state,
         other => panic_transition("publication send", other),
     };
-    let client = ClientAwaitPublication::begin(ClientHandshakeCustodyV1::Fresh(client_custody), client_carrier, client_hello())
+    let client = ClientAwaitPublication::begin(ClientHandshakeCustodyV1::Fresh(client_custody), client_carrier, client_hello)
         .unwrap_or_else(|error| panic!("client begin failed: {error:?}"));
     let client = match client.receive() {
         Transition::Complete(state) => state,
@@ -136,6 +152,30 @@ fn finish_handshake(
         other => panic_transition("broker hello receive", other),
     };
     (client, broker)
+}
+
+#[test]
+fn signed_handshake_selects_the_smaller_response_ceiling() {
+    let maximum = aos_sandbox_broker_session_protocol::AUTHENTICATED_RESPONSE_MAXIMUM_BYTES as u32;
+    for (client_limit, broker_limit) in [(1_048_576, maximum), (maximum, 1_048_576)] {
+        let fixture = Fixture::new();
+        let (client_carrier, broker_carrier) = carrier_pair(false);
+        let mut client_hello = client_hello();
+        client_hello.maximum_response_bytes = client_limit;
+        let mut broker_hello = broker_hello();
+        broker_hello.maximum_response_bytes = broker_limit;
+
+        let (client, broker) = finish_handshake_with_hellos(
+            &fixture,
+            client_carrier,
+            broker_carrier,
+            client_hello,
+            broker_hello,
+        );
+
+        assert_eq!(client._transcript.negotiated_maximum_response_bytes(), 1_048_576);
+        assert_eq!(broker._transcript.negotiated_maximum_response_bytes(), 1_048_576);
+    }
 }
 
 fn local_peer_expectation() -> RemotePeerExpectation {
