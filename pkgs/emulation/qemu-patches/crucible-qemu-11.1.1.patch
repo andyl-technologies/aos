@@ -1,7 +1,7 @@
-From 857b67d8204fb170e4faa5a0b232afe541e6857b Mon Sep 17 00:00:00 2001
+From 40ce1399fbf7eebdf501a0c238997d23d8431dba Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:00 +0000
-Subject: [PATCH] crucible: execute ordinary registered node custody
+Subject: [PATCH] crucible: decode the actual NODE_HANG ARM event
 
 Retain the complete Crucible integration on the sole pinned QEMU base.
 Supply required run and teardown rows with real compiled fixture layouts
@@ -473,6 +473,16 @@ The preceding ordinary causal positive timed out at its original 60-second
 bound before any defect; retain that failure independently of diagnostic costs
 and subsequent qualification. No assertion, resource ceiling or selected
 admission is changed.
+
+Decode the actual NODE_HANG ARM event model phase separately from its command
+boundary. Require precisely the produced ARM phase for NODE_HANG and retain
+the existing range checks for every other producer and all envelope identity
+checks. Extend the real initialized ordinary-system fixture with its genuine
+unconsumed event round-trip and independently compiled ARM-omission,
+unknown-phase and wrong-producer controls. Preserve the existing ordinary
+registration, pending and storage assertions and their omission controls.
+This is an ordinary event-codec correction, not aggregate restore, selected
+Source admission or launched lifecycle qualification.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -134335,10 +134345,10 @@ index 0000000000000000000000000000000000000000..542ce0a4b1bbcff09a1302f99768a96c
 +}
 diff --git a/plugins/crucible-fault-node.c b/plugins/crucible-fault-node.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..d7826555fe7e4969eb4f3de18e4d8271b13b4a10
+index 0000000000000000000000000000000000000000..4cf657b828babe6f6fc26279f8325c5eb00acfb0
 --- /dev/null
 +++ b/plugins/crucible-fault-node.c
-@@ -0,0 +1,13592 @@
+@@ -0,0 +1,13605 @@
 +/*
 + * Crucible closed-schema node fault rules and lossless occurrence transport
 + *
@@ -146668,6 +146678,19 @@ index 0000000000000000000000000000000000000000..d7826555fe7e4969eb4f3de18e4d8271
 +                  event->target_hash, 32) == 0;
 +}
 +
++/* NODE_HANG stores the model's ARM phase, independently of the command
++ * boundary at which the rule was installed. Other producers retain their
++ * existing validation until their own model-phase contracts are joined. */
++static bool crucible_node_vmstate_event_phase_valid(uint16_t command_kind,
++                                                   uint16_t model_phase)
++{
++    if (command_kind == CRUCIBLE_FAULT_COMMAND_NODE_HANG) {
++        return model_phase == QEMU_CRUCIBLE_MODEL_PHASE_ARM;
++    }
++    return model_phase >= CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY &&
++           model_phase <= CRUCIBLE_FAULT_PHASE_DEVICE;
++}
++
 +static bool crucible_node_vmstate_get_event(
 +    QemuCrucibleFaultVmstateReader *reader, CrucibleNodeEvent *queued)
 +{
@@ -146718,8 +146741,8 @@ index 0000000000000000000000000000000000000000..d7826555fe7e4969eb4f3de18e4d8271
 +        event->rule_command_sequence == 0 || event->generation == 0 ||
 +        event->outcome < CRUCIBLE_FAULT_EVENT_OUTCOME_APPLIED ||
 +        event->outcome > CRUCIBLE_FAULT_EVENT_OUTCOME_RECOVERED ||
-+        event->model_phase < CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY ||
-+        event->model_phase > CRUCIBLE_FAULT_PHASE_DEVICE ||
++        !crucible_node_vmstate_event_phase_valid(
++            event->command_kind, event->model_phase) ||
 +        !node_schema_for(event->command_kind, &schema, &schema_count) ||
 +        !node_target_schema_for(event->target_kind,
 +                                &schema, &schema_count)) {
@@ -202517,7 +202540,7 @@ index f8e17dcf1ce91d8aefb8d82cafd3196a4fd9edf6..f24121d2d3c66f1436ba73c976a7bd76
      return true;
 diff --git a/scripts/extract-crucible-preexec-purpose.py b/scripts/extract-crucible-preexec-purpose.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..722e7aa4fbf5767d8bc0c6526554816e306b2cf5
+index 0000000000000000000000000000000000000000..2d0b40d6a791e778ddc0bdff14ced1a333a9432a
 --- /dev/null
 +++ b/scripts/extract-crucible-preexec-purpose.py
 @@ -0,0 +1,87 @@
@@ -202545,7 +202568,7 @@ index 0000000000000000000000000000000000000000..722e7aa4fbf5767d8bc0c6526554816e
 +    'include/plugins/qemu-plugin.h':
 +        '09e87de330a40af07b68d9803b4fe99d0e730ddf289dc386f634656f69e4e111',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'eea154463fe50cd50d343755787ff1e1ac85f02a29c3d255ee92cadf4b1fa56b',
++        '106fd53356b710032c228adc5002fc2a67fa4b7ce49dcb1d30033d8fdd83f7f7',
 +}
 +
 +PURPOSE_FUNCTIONS = (
@@ -245201,10 +245224,10 @@ index 0000000000000000000000000000000000000000..fa83127f268e7c87e3d134ada76cb747
 +PRIMITIVE(q, uint64_t, 8)
 diff --git a/tests/unit/crucible-dirty-iterator.rst b/tests/unit/crucible-dirty-iterator.rst
 new file mode 100644
-index 0000000000000000000000000000000000000000..9fdaeefc62617f50fa36a082a98c7643176584d2
+index 0000000000000000000000000000000000000000..3c3e76d438e1f727a8392256d072b667753f3314
 --- /dev/null
 +++ b/tests/unit/crucible-dirty-iterator.rst
-@@ -0,0 +1,560 @@
+@@ -0,0 +1,590 @@
 +.. SPDX-License-Identifier: GPL-2.0-or-later
 +
 +Dirty selection and capture lifecycle qualification
@@ -245765,12 +245788,96 @@ index 0000000000000000000000000000000000000000..9fdaeefc62617f50fa36a082a98c7643
 +VMState restore, deferred hang execution, CPU consumers and selected constructor
 +funding remain outside this component. Selected ENOKEY and activation availability
 +are unchanged.
++
++NODE_HANG event model phase
++--------------------------
++
++The actual NODE_HANG producer stores the model ARM phase in its occurrence;
++that phase is distinct from the command boundary used to install its rule.
++The VMState decoder previously checked every event against command-boundary
++values and rejected its own unconsumed ARM event. It now accepts precisely
++NODE_HANG/ARM in that branch. Other producers retain their existing validation;
++this is not a complete correction of every producer's model-phase contract.
++Request/envelope phase agreement, hashes, target pairing and other decode checks
++remain mandatory. Unknown NODE_HANG phases and ARM borrowed by another producer
++continue to refuse.
++
++The ordinary executable's ``--event-roundtrip`` mode retains its genuinely
++produced event in the live queue, serializes it with the actual VMState writer
++and reads those unchanged bytes with the actual decoder. It compares the decoded
++event identity and complete evidence envelope without consuming the live event.
++The caller's output retains the exact event stream and its SHA-256 identity.
++Three independently rebuilt production-predicate controls remove ARM support,
++permit unknown phases or permit ARM for another producer, and must reach their
++respective assertions. This codec component creates no registration, pending
++owner, Source or selected allocation grant from the decoded record.
++
++Actual aggregate attempts also retain their refusals: machine-none has no fw_cfg
++restore target; the ordinary PC configuration without lifecycle process binding
++selects the narrower host-memory-service profile, which omits the owner of the
++live hang recovery reservation and refuses its reservation census. The focused
++event correction does not override those installation/profile dependencies or
++qualify aggregate restore, deferred work, CPU borrowers or Source closure.
+diff --git a/tests/unit/crucible-fault-node-event-fixture.inc.h b/tests/unit/crucible-fault-node-event-fixture.inc.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..580c8847b0d3ddd5f2183d581e3c8ace9f1ed089
+--- /dev/null
++++ b/tests/unit/crucible-fault-node-event-fixture.inc.h
+@@ -0,0 +1,48 @@
++/*
++ * Round-trip the actual produced NODE_HANG ARM event through its VMState codec.
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++static void live_node_event_roundtrip(void)
++{
++    CrucibleNodeEvent *actual = QTAILQ_FIRST(&crucible_node_events);
++    CrucibleNodeEvent decoded = { 0 };
++    g_autoptr(GByteArray) encoded = g_byte_array_new();
++    QemuCrucibleFaultVmstateReader reader;
++    GError *error = NULL;
++
++    assert(actual && actual->event.command_kind == CRUCIBLE_FAULT_COMMAND_NODE_HANG);
++    assert(actual->event.model_phase == QEMU_CRUCIBLE_MODEL_PHASE_ARM);
++
++    crucible_node_vmstate_put_event(encoded, actual);
++    assert(g_file_set_contents("node-event-stream.bin", (char *)encoded->data,
++                               encoded->len, &error));
++    assert(!error);
++    reader = (QemuCrucibleFaultVmstateReader) {
++        .data = encoded->data, .length = encoded->len,
++    };
++    assert(crucible_node_vmstate_get_event(&reader, &decoded));
++    assert(qemu_crucible_fault_vmstate_reader_finished(&reader));
++    assert(decoded.event.command_kind == actual->event.command_kind);
++    assert(decoded.event.model_phase == actual->event.model_phase);
++    assert(decoded.event.event_sequence == actual->event.event_sequence);
++    assert(decoded.event.rule_command_sequence == actual->event.rule_command_sequence);
++    assert(decoded.payload_length == actual->payload_length);
++    assert(!memcmp(decoded.payload ? decoded.payload->data : decoded.inline_payload,
++                   actual->payload ? actual->payload->data : actual->inline_payload,
++                   actual->payload_length));
++    assert(!crucible_node_vmstate_event_phase_valid(
++        CRUCIBLE_FAULT_COMMAND_NODE_HANG, 0));
++    assert(!crucible_node_vmstate_event_phase_valid(
++        CRUCIBLE_FAULT_COMMAND_NODE_HANG, 37));
++    assert(!crucible_node_vmstate_event_phase_valid(
++        CRUCIBLE_FAULT_COMMAND_NODE_HANG, UINT16_MAX));
++    assert(!crucible_node_vmstate_event_phase_valid(
++        CRUCIBLE_FAULT_COMMAND_NODE_HANG, CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY));
++    assert(!crucible_node_vmstate_event_phase_valid(
++        CRUCIBLE_FAULT_COMMAND_NODE_LIFECYCLE, QEMU_CRUCIBLE_MODEL_PHASE_ARM));
++    assert(crucible_node_vmstate_event_phase_valid(
++        CRUCIBLE_FAULT_COMMAND_NODE_LIFECYCLE, CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY));
++
++    g_clear_pointer(&decoded.payload, g_byte_array_unref);
++    puts("PASS actual unconsumed NODE_HANG ARM event VMState round-trip");
++}
 diff --git a/tests/unit/crucible-fault-node-live-fixture.inc.h b/tests/unit/crucible-fault-node-live-fixture.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..bfffdf2e7d7ad585a8f5bac342f95fbf3fb675b5
+index 0000000000000000000000000000000000000000..99eedc182e24105bfd7079655564bf7d9d457278
 --- /dev/null
 +++ b/tests/unit/crucible-fault-node-live-fixture.inc.h
-@@ -0,0 +1,211 @@
+@@ -0,0 +1,218 @@
 +/*
 + * Ordinary node producer exercise in a real initialized system executable.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -245796,6 +245903,10 @@ index 0000000000000000000000000000000000000000..bfffdf2e7d7ad585a8f5bac342f95fbf
 +    }
 +    return NULL;
 +}
++
++#ifdef CRUCIBLE_NODE_LIVE_EVENT_ROUNDTRIP
++#include "crucible-fault-node-event-fixture.inc.h"
++#endif
 +
 +static void live_node_field(GByteArray *payload, uint16_t tag, uint16_t type,
 +                            const void *data, uint32_t length)
@@ -245950,6 +246061,9 @@ index 0000000000000000000000000000000000000000..bfffdf2e7d7ad585a8f5bac342f95fbf
 +        assert(!hang->pending_retirement.callback_post[callback]);
 +    }
 +    assert(node_find_rule(command.command_kind, command.binding_hash, NULL));
++#ifdef CRUCIBLE_NODE_LIVE_EVENT_ROUNDTRIP
++    live_node_event_roundtrip();
++#endif
 +    memcpy(command.expected_precondition_hash, result.after_hash, 32);
 +    g_clear_pointer(&payload, g_byte_array_unref);
 +
@@ -248568,7 +248682,7 @@ index 0000000000000000000000000000000000000000..5278f261c25f36176259f4749fc0e1b2
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-placement.py b/tests/unit/extract-crucible-checkpoint-placement.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..b838af1541814fae1624440397c86328165d367c
+index 0000000000000000000000000000000000000000..960987c1b44ff2a800b339cd9b19c61bce4d6ca1
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-placement.py
 @@ -0,0 +1,100 @@
@@ -248586,7 +248700,7 @@ index 0000000000000000000000000000000000000000..b838af1541814fae1624440397c86328
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'eea154463fe50cd50d343755787ff1e1ac85f02a29c3d255ee92cadf4b1fa56b',
++        '106fd53356b710032c228adc5002fc2a67fa4b7ce49dcb1d30033d8fdd83f7f7',
 +}
 +
 +FUNCTIONS = (
@@ -248674,7 +248788,7 @@ index 0000000000000000000000000000000000000000..b838af1541814fae1624440397c86328
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-receiving.py b/tests/unit/extract-crucible-checkpoint-receiving.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..5a0cdf01d9f4438e5d5a10fee49023f67fff1228
+index 0000000000000000000000000000000000000000..c59886d6e2a3efd12aa8ddef87b201851a17e2a4
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-receiving.py
 @@ -0,0 +1,241 @@
@@ -248705,7 +248819,7 @@ index 0000000000000000000000000000000000000000..5a0cdf01d9f4438e5d5a10fee49023f6
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'eea154463fe50cd50d343755787ff1e1ac85f02a29c3d255ee92cadf4b1fa56b',
++        '106fd53356b710032c228adc5002fc2a67fa4b7ce49dcb1d30033d8fdd83f7f7',
 +}
 +
 +FUNCTIONS = (
@@ -248921,7 +249035,7 @@ index 0000000000000000000000000000000000000000..5a0cdf01d9f4438e5d5a10fee49023f6
 +    main()
 diff --git a/tests/unit/extract-crucible-monitor-fd-loans.py b/tests/unit/extract-crucible-monitor-fd-loans.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..94e1d6b107ef6f636804c61b25f8c4764139a2f4
+index 0000000000000000000000000000000000000000..129562abe4f31f6dfb092bfb30bdd6f0180e6e9d
 --- /dev/null
 +++ b/tests/unit/extract-crucible-monitor-fd-loans.py
 @@ -0,0 +1,112 @@
@@ -248945,7 +249059,7 @@ index 0000000000000000000000000000000000000000..94e1d6b107ef6f636804c61b25f8c476
 +    'monitor/monitor.c':
 +        '6773b71937e9c0058143070560f3ce3bb114a966d6d4224c7a60d8862fb8d05b',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'eea154463fe50cd50d343755787ff1e1ac85f02a29c3d255ee92cadf4b1fa56b',
++        '106fd53356b710032c228adc5002fc2a67fa4b7ce49dcb1d30033d8fdd83f7f7',
 +}
 +
 +FUNCTIONS = (
@@ -249039,7 +249153,7 @@ index 0000000000000000000000000000000000000000..94e1d6b107ef6f636804c61b25f8c476
 +    main()
 diff --git a/tests/unit/extract-crucible-preexec-setup.py b/tests/unit/extract-crucible-preexec-setup.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..89f1f5ddb3f3db17c166b88fc6d36ac77e68d00a
+index 0000000000000000000000000000000000000000..08303d829baaa39baa26c289d8a6d21efb7db728
 --- /dev/null
 +++ b/tests/unit/extract-crucible-preexec-setup.py
 @@ -0,0 +1,173 @@
@@ -249080,9 +249194,9 @@ index 0000000000000000000000000000000000000000..89f1f5ddb3f3db17c166b88fc6d36ac7
 +    'plugins/crucible-device-workspace.c':
 +        '3dd77a2ad8d4688fb57ccc94618763485d36b9460e3461ac5ff4bc6fa25c558d',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'eea154463fe50cd50d343755787ff1e1ac85f02a29c3d255ee92cadf4b1fa56b',
++        '106fd53356b710032c228adc5002fc2a67fa4b7ce49dcb1d30033d8fdd83f7f7',
 +    'scripts/extract-crucible-preexec-purpose.py':
-+        '06299297075b8fe42e034d718c8c53a6d6909c28ea055fccb4c53ad6ea0f16dc',
++        '6054bf12a7e081ba8426440c4c79f9088e915f360c91b9aa0d9502963a56452a',
 +    'meson.build':
 +        '7eef2c0d1494dfdeed66f56c77f092382cd63d3fd5ad7c0b7c7ac85ca599e39e',
 +    'tests/unit/test-crucible-preexec-setup.c':
@@ -249218,7 +249332,7 @@ index 0000000000000000000000000000000000000000..89f1f5ddb3f3db17c166b88fc6d36ac7
 +        main()
 diff --git a/tests/unit/extract-crucible-startup-source-controls.py b/tests/unit/extract-crucible-startup-source-controls.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..64817fd79736c458ac4d0e4e383d74ef2d40f87e
+index 0000000000000000000000000000000000000000..ad9575b0c910c8eb57bcd828851a7abcb73d1498
 --- /dev/null
 +++ b/tests/unit/extract-crucible-startup-source-controls.py
 @@ -0,0 +1,1240 @@
@@ -249244,7 +249358,7 @@ index 0000000000000000000000000000000000000000..64817fd79736c458ac4d0e4e383d74ef
 +    'plugins/crucible-fault.c':
 +        '0b6efd439e8bc7f04cd48ba7d810c76abe9acce1809656a74007656044d7171b',
 +    'plugins/crucible-fault-node.c':
-+        'bf9636ef5ee4db045372e78485fb39f3b9b7bd1527c128e0d2568755e7269662',
++        'e31d21759842f1da9fd9cdaa458962c52ce09da98b8f8c63229e7eee8ce1839b',
 +    'tests/unit/test-crucible-fault-registration.py':
 +        '9fbacbdd1b86520e7c4659b9533eb70422348ef59e20f46f40d6276a9e3128fd',
 +
@@ -271587,10 +271701,10 @@ index 0000000000000000000000000000000000000000..a56f97cc637d959e34eacb00cb73c9e4
 +}
 diff --git a/tests/unit/test-crucible-fault-node-live.py b/tests/unit/test-crucible-fault-node-live.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..61c064751aeed6d8ddf20da6f007a111549060b7
+index 0000000000000000000000000000000000000000..826789d04773e19fe5cdae4d21918833f85c9239
 --- /dev/null
 +++ b/tests/unit/test-crucible-fault-node-live.py
-@@ -0,0 +1,236 @@
+@@ -0,0 +1,265 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Link ordinary fault custody into a matched, actual system executable.
 +
@@ -271632,8 +271746,10 @@ index 0000000000000000000000000000000000000000..61c064751aeed6d8ddf20da6f007a111
 +    parser.add_argument("--compile-commands", type=Path)
 +    parser.add_argument("--resident-plugin", type=Path, required=True)
 +    parser.add_argument("--output-dir", type=Path, required=True)
++    parser.add_argument("--event-roundtrip", action="store_true")
 +    parser.add_argument("--defect", choices=("validation-return", "pending-return",
-+                                           "storage-return"))
++                                           "storage-return", "event-arm",
++                                           "event-unknown", "event-producer"))
 +    args = parser.parse_args()
 +    root = args.source_root.resolve()
 +    build = args.build_root.resolve()
@@ -271698,7 +271814,7 @@ index 0000000000000000000000000000000000000000..61c064751aeed6d8ddf20da6f007a111
 +    body = (root / "plugins/crucible-fault-node.c").read_text()
 +    for name in ("crucible-fault-registration.inc.h", "crucible-fault-storage.inc.h"):
 +        contents = (root / "plugins" / name).read_text()
-+        if args.defect and defects[args.defect][0] == name:
++        if args.defect in defects and defects[args.defect][0] == name:
 +            needle = defects[args.defect][1]
 +            if contents.count(needle) != 1:
 +                raise RuntimeError("physical journal defect requires one exact real write")
@@ -271706,6 +271822,21 @@ index 0000000000000000000000000000000000000000..61c064751aeed6d8ddf20da6f007a111
 +        included = output / name
 +        included.write_text(contents)
 +        body = body.replace('"' + name + '"', '"' + str(included) + '"')
++    if args.defect in ("event-arm", "event-unknown", "event-producer"):
++        needle = "return model_phase == QEMU_CRUCIBLE_MODEL_PHASE_ARM;"
++        replacement = {
++            "event-arm": "return model_phase >= CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY && "
++                         "model_phase <= CRUCIBLE_FAULT_PHASE_DEVICE;",
++            "event-unknown": "return true;",
++            "event-producer": "return model_phase == QEMU_CRUCIBLE_MODEL_PHASE_ARM;",
++        }[args.defect]
++        if args.defect == "event-producer":
++            needle = "return model_phase >= CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY &&"
++            replacement = ("return model_phase == QEMU_CRUCIBLE_MODEL_PHASE_ARM || "
++                           "model_phase >= CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY &&")
++        if body.count(needle) != 1:
++            raise RuntimeError("event phase defect requires its exact real predicate")
++        body = body.replace(needle, replacement)
 +    node = output / "actual-node-with-observations.c"
 +    node.write_text(body + '\n#include "' + str(
 +        root / "tests/unit/crucible-fault-node-live-fixture.inc.h") + '"\n')
@@ -271730,6 +271861,8 @@ index 0000000000000000000000000000000000000000..61c064751aeed6d8ddf20da6f007a111
 +        if not Path(raw[0]).is_absolute():
 +            raise RuntimeError("an explicit source-built compiler is required")
 +        command = [raw[0], "-iquote", str(root / "plugins")]
++        if args.event_roundtrip:
++            command.append("-DCRUCIBLE_NODE_LIVE_EVENT_ROUNDTRIP")
 +        index = 1
 +        while index < len(raw):
 +            value = raw[index]
@@ -271792,7 +271925,7 @@ index 0000000000000000000000000000000000000000..61c064751aeed6d8ddf20da6f007a111
 +        "build_ninja": digest(build / "build.ninja"),
 +        "compile_commands": digest(database),
 +        "scope": "ordinary component; no selected Source ownership qualification",
-+        "defect": args.defect,
++        "defect": args.defect, "event_roundtrip": args.event_roundtrip,
 +    }, indent=2) + "\n")
 +    command = [str(binary), "-machine", "none", "-m", "1M", "-accel", "sim",
 +               "-icount", "shift=0,align=off,sleep=off", "-nodefaults",
@@ -271812,6 +271945,9 @@ index 0000000000000000000000000000000000000000..61c064751aeed6d8ddf20da6f007a111
 +            "validation-return": "hang->validation.physically_returned",
 +            "pending-return": "hang->pending_retirement.physically_returned",
 +            "storage-return": "hang->pending_retirement.physically_returned",
++            "event-arm": "crucible_node_vmstate_get_event(&reader, &decoded)",
++            "event-unknown": "!crucible_node_vmstate_event_phase_valid",
++            "event-producer": "!crucible_node_vmstate_event_phase_valid",
 +        }[args.defect]
 +        if result.returncode != -6 or expected not in transcript:
 +            raise RuntimeError(
@@ -271822,6 +271958,13 @@ index 0000000000000000000000000000000000000000..61c064751aeed6d8ddf20da6f007a111
 +    if result.returncode or "PASS actual ordinary registration" not in transcript:
 +        raise RuntimeError(
 +            f"ordinary production fixture refused: {result.returncode}\n{transcript}")
++    if args.event_roundtrip:
++        if "PASS actual unconsumed NODE_HANG ARM event" not in transcript:
++            raise RuntimeError("actual produced event round-trip was not reached")
++        (output / "event-identity.json").write_text(json.dumps({
++            "bytes": (output / "node-event-stream.bin").stat().st_size,
++            "sha256": digest(output / "node-event-stream.bin"),
++        }, indent=2) + "\n")
 +    print(transcript, end="")
 +
 +
