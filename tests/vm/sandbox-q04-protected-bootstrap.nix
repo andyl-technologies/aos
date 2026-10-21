@@ -203,7 +203,7 @@ in
       test -S /run/aos/sandbox-source-signerd.sock
       start_root() {
         ${pkgs.util-linux}/bin/setpriv --regid 811 --clear-groups \
-          ${pkgs.aos-sandboxd}/bin/aos-sandbox-policy-authorityd 811 811 813 814 &
+          ${pkgs.aos-sandboxd}/bin/aos-sandbox-policy-authorityd 811 811 813 814 813 &
         root_pid=$!
         for attempt in 1 2 3 4 5; do
           test -S /run/aos/sandbox-policy-authority/current-head.sock && break
