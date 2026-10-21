@@ -147,7 +147,10 @@ impl DirectUploadTransport {
                     i64::try_from(latest).map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?,
                 )
                 .await
-                .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
+                .map_err(|error| {
+                    tracing::warn!(error = ?error, "direct upload capability discovery failed");
+                    StatusCode::SERVICE_UNAVAILABLE
+                })?;
             let encoded = encode_direct_control(&capabilities)
                 .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
             let evidence = aos_hub_db::application_body_observation::produced_evidence(

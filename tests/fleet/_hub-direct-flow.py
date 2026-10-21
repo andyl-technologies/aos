@@ -873,6 +873,11 @@ def run_external_direct_publication(client, native, worker, s3, tools, controls,
             if workload_error is not None:
                 # Export diagnostics before teardown: a stopped guest's last
                 # filesystem metadata may omit the provider's final error.
+                native_warnings = native.succeed(
+                    "journalctl -u aos-hub.service -p warning --no-pager -n 100",
+                    timeout=30,
+                )
+                retain_direct_flow("publication-native-warnings.private.log", native_warnings.encode())
                 for path, name in (
                         ("/var/lib/hybrid-s3/garage.log", "publication-garage.private.log"),
                         ("/var/lib/hybrid-s3/nginx-error.log", "publication-s3-proxy.private.log")):
