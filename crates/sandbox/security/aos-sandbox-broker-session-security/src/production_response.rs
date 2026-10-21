@@ -391,6 +391,12 @@ pub enum ProductionBrokerResponseErrorV1 {
     /// An effect began without a sealed observation that was safe to recommit.
     #[error("broker effect outcome requires reconnect and exact replay")]
     OutcomeRecovery,
+    /// A Storage effect remains indeterminate with its concrete cause retained.
+    #[error("Storage effect requires reconnect and exact replay: {0}")]
+    StorageOutcomeRecovery(
+        #[source]
+        crate::DormantBrokerExecutionErrorV1<crate::ProductionStorageBrokerDispatchErrorV1>,
+    ),
     /// A pre-effect rejection could not be signed and committed exactly.
     #[error("broker rejection could not be committed: {0}")]
     Terminalization(#[from] crate::BrokerSessionSecurityError),
@@ -525,6 +531,36 @@ impl DormantAuthenticatedBrokerSessionV1 {
             let _ = host.abort_accepted_execution(association.1, association.2, association.3);
         }
         result
+    }
+
+    pub(crate) fn finish_storage_dispatch_with_coverage_v1(
+        mut self,
+        dispatched: Result<
+            ProtectedBrokerOutcomeCommitResultV1,
+            DormantBrokerExecutionFailureV1<crate::ProductionStorageBrokerDispatchErrorV1>,
+        >,
+        deadline_boottime_nanoseconds: u64,
+        owner: Option<GitCoverageResponseOwnerV1<'_>>,
+    ) -> Result<Self, ProductionBrokerResponseErrorV1> {
+        match dispatched {
+            Err(DormantBrokerExecutionFailureV1::OutcomeUnknown { error, custody }) => {
+                // Retry only the already sealed observation, as in the common
+                // recipe. Keep the original domain cause if it cannot recover.
+                let committed = self
+                    .retry_observed_success_and_commit(custody)
+                    .map_err(|_| ProductionBrokerResponseErrorV1::StorageOutcomeRecovery(error))?;
+                self.finish_response_with_coverage_v1(
+                    committed,
+                    deadline_boottime_nanoseconds,
+                    owner,
+                )
+            }
+            other => self.finish_dispatch_with_coverage_v1(
+                other,
+                deadline_boottime_nanoseconds,
+                owner,
+            ),
+        }
     }
 
     fn finish_response_with_coverage_v1(

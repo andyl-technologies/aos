@@ -453,14 +453,14 @@ impl DormantAuthenticatedBrokerSessionV1 {
         let dispatched = self.dispatch_storage_with_coverage_v1(request, storage, output);
         if coverage {
             let output = output.ok_or(ProductionBrokerResponseErrorV1::CoverageOwnerMissing)?;
-            return self.finish_dispatch_with_coverage_v1(
+            return self.finish_storage_dispatch_with_coverage_v1(
                 dispatched, deadline_boottime_nanoseconds,
                 Some(crate::production_response::GitCoverageResponseOwnerV1::Storage {
                     storage, output,
                 }),
             );
         }
-        self.finish_ordinary_dispatch(dispatched, deadline_boottime_nanoseconds)
+        self.finish_storage_dispatch_with_coverage_v1(dispatched, deadline_boottime_nanoseconds, None)
     }
 
     /// Dispatches and completes one Mount request on the authenticated session.
