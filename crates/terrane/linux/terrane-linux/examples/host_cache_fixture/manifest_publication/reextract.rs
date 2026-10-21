@@ -116,16 +116,41 @@ pub(crate) fn run(
         .join(format!("{chunk}.0"));
     let after = load(runtime, inputs)?;
     let object = hex(first.identity.digest());
-    if extracted.retired_allocations != 0
-        || extracted.target_met
-        || extracted.charged_reserved_bytes <= before.charged_reserved_bytes
-        || extracted.future_hold_bytes != before.future_hold_bytes
-        || fs::read(&standalone)? != [vec![0], first.first.clone()].concat()
-        || after.residences.iter().any(|row| row.chunk == chunk)
-        || !after.residences.iter().any(|row| row.object == object)
-    {
+    emit(&format!(
+        "SHARED_EXTRACTION_MEASUREMENT retired={} target_met={} charged_before={} charged_after={} future_before={} future_after={}",
+        extracted.retired_allocations,
+        extracted.target_met,
+        before.charged_reserved_bytes,
+        extracted.charged_reserved_bytes,
+        before.future_hold_bytes,
+        extracted.future_hold_bytes,
+    ))?;
+    if extracted.retired_allocations != 0 || extracted.target_met {
         return Err(invalid(
-            "shared extraction lost its durable copy-before-delete ordering",
+            "shared extraction retired an allocation or claimed its pressure target",
+        ));
+    }
+    if extracted.charged_reserved_bytes <= before.charged_reserved_bytes {
+        return Err(invalid(
+            "shared extraction lacks measured replacement allocation",
+        ));
+    }
+    if extracted.future_hold_bytes != before.future_hold_bytes {
+        return Err(invalid("shared extraction changed retained future holds"));
+    }
+    if fs::read(&standalone)? != [vec![0], first.first.clone()].concat() {
+        return Err(invalid(
+            "shared extraction replacement differs from verified original bytes",
+        ));
+    }
+    if after.residences.iter().any(|row| row.chunk == chunk) {
+        return Err(invalid(
+            "shared extraction retained a duplicate sealed residence",
+        ));
+    }
+    if !after.residences.iter().any(|row| row.object == object) {
+        return Err(invalid(
+            "shared extraction lost the original body's other residence",
         ));
     }
     let replacement = pin(owner, runtime, &first.first, expires)?;

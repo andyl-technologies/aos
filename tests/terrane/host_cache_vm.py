@@ -531,13 +531,13 @@ class Lines:
     def until(self, expected, timeout=10):
         deadline = time.monotonic() + timeout
         while expected.encode() not in self.bytes:
-            require(self.process.poll() is None, "actor exited before handshake: " + expected)
+            # Drain readable output even after exit so a final error is retained.
             remaining = deadline - time.monotonic()
             require(remaining > 0, "actor handshake deadline: " + expected)
             ready, _, _ = select.select([self.process.stdout], [], [], remaining)
             require(ready, "actor handshake timeout: " + expected)
             chunk = os.read(self.process.stdout.fileno(), 4096)
-            require(chunk, "actor stdout closed before handshake")
+            require(chunk, "actor stdout closed before handshake: " + expected)
             self.bytes += chunk
             # Preserve the actual actor error even if it exits before producing
             # the requested handshake. Buffered diagnostics must survive refusal.
