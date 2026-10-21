@@ -108,6 +108,9 @@ fn main() -> std::process::ExitCode {
             "seed-bound-unsealed",
             "refuse-bound-unsealed",
             "inspect-quarantine",
+            "seed-quarantine",
+            "recover-quarantine",
+            "refuse-quarantine",
             "encoded-eviction",
             "seed-encoded",
             "recover-encoded",
@@ -118,7 +121,9 @@ fn main() -> std::process::ExitCode {
         }
         return std::process::ExitCode::SUCCESS;
     }
-    let result = if mode == "seed-encoded" {
+    let result = if mode == "seed-quarantine" {
+        recovery::quarantine::seed()
+    } else if mode == "seed-encoded" {
         recovery::encoded::seed()
     } else if mode == "seed-pending-pack" {
         recovery::pending_packs::seed()

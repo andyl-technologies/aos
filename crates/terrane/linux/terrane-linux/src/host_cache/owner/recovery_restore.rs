@@ -90,7 +90,7 @@ pub(super) fn run(
             .custody()
             .lock()
             .map_err(|_| io::Error::other("recovery custody poisoned"))?;
-        if shared.only_empty_scaffolds()
+        if shared.only_nonresident_entries()
             && !manifest_present
             && owner.state.pins.is_empty()
             && owner.state.leases.is_empty()

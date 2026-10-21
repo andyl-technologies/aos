@@ -7,6 +7,8 @@
 //! Unknown names, unhandled private publication state, temporary files,
 //! unhandled pending bodies and every other unhandled candidate remain non-ready.
 //! Expired, unpinned pending chunks can be removed under funded recovery.
+//! Authenticated quarantine inodes remain charged, unserved and outside the
+//! verified source closure; their presence never reconciles a cold pin.
 //! A receipt requires real shared/private scans, durable state, synchronized allocation,
 //! fresh authenticated quota charges and the original successful drain epoch.
 //! No Resume or file-bucket readiness is granted by this module.
@@ -152,6 +154,19 @@ impl CompletedRecovery {
     /// Returns the number of distinct inodes in that synchronized observation.
     pub fn synchronized_retained_inodes(&self) -> usize {
         self.allocation.retained_inodes
+    }
+
+    /// Returns synchronized allocation retained solely as opaque quarantine.
+    ///
+    /// This is a subset of [`Self::synchronized_retained_inode_bytes`], not an
+    /// additional charge, verified content, reclaimed capacity or a future hold.
+    pub fn synchronized_quarantined_inode_bytes(&self) -> u64 {
+        self.allocation.quarantined_inode_bytes
+    }
+
+    /// Returns the distinct quarantined inode count in the synchronized census.
+    pub fn synchronized_quarantined_inodes(&self) -> usize {
+        self.allocation.quarantined_inodes
     }
 
     /// Returns authenticated charged-and-reserved project usage at completion.
@@ -329,6 +344,7 @@ pub(super) async fn run(executor: &mut NativeOwnerExecutor) -> io::Result<Comple
             requires_cold_backing,
         )
     };
+    shared.inspect_quarantine(&inspector)?;
     // No embedded guard is held while acquiring the actual client RPC mutex.
     let context = session.recovery_context().map_err(io::Error::other)?;
     session
@@ -344,6 +360,8 @@ pub(super) async fn run(executor: &mut NativeOwnerExecutor) -> io::Result<Comple
             .map_err(|_| io::Error::other("recovery custody poisoned"))?;
         owner.check_current()?;
         shared = SharedNamespaceObservation::inspect(&owner.preparation)?;
+        drop(owner);
+        shared.inspect_quarantine(&inspector)?;
     }
     session
         .check_recovery_context(&context)
@@ -389,6 +407,8 @@ pub(super) async fn run(executor: &mut NativeOwnerExecutor) -> io::Result<Comple
         // Repair and pending-pair reconciliation both change actual names. The
         // previous observation cannot supply final source-closure proof.
         shared = SharedNamespaceObservation::inspect(&owner.preparation)?;
+        drop(owner);
+        shared.inspect_quarantine(&inspector)?;
     }
     // Publisher inventory may need the repaired metadata index to describe a
     // sealed manifest. Only this fresh complete scan can authorize adoption.
@@ -402,6 +422,7 @@ pub(super) async fn run(executor: &mut NativeOwnerExecutor) -> io::Result<Comple
                 .map_err(|_| io::Error::other("recovery custody poisoned"))?;
             shared = SharedNamespaceObservation::inspect(&owner.preparation)?;
             drop(owner);
+            shared.inspect_quarantine(&inspector)?;
             inspector.inspect()?
         } else {
             initial_inventory

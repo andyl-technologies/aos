@@ -15,6 +15,8 @@
 //! Cleanup precedes native adoption and retains original readonly inode custody.
 //! Canonical names and unrelated files are never classified as scratch.
 
+mod quarantine;
+
 use super::NativeCachePreparation;
 use crate::{
     host_cache::{NativeHostLayout, NativeManifestSource, VerifiedStandaloneChunk},
@@ -66,6 +68,8 @@ pub(super) struct SharedNamespaceObservation {
     directories: Vec<DirectoryObservation>,
     entries: Vec<EntryObservation>,
     portable: Option<Arc<super::recovery_portable::PortableCatalog>>,
+    // Opaque native custody is separate from every verified content source.
+    quarantine: BTreeMap<PathBuf, crate::host_cache::NativeQuarantinedInode>,
 }
 
 impl SharedNamespaceObservation {
@@ -99,6 +103,7 @@ impl SharedNamespaceObservation {
             directories: Vec::new(),
             entries: Vec::new(),
             portable: preparation.portable.clone(),
+            quarantine: BTreeMap::new(),
         };
         let mut pending = Vec::new();
         for label in ["chunks", "objects", "quarantine"] {
@@ -199,6 +204,9 @@ impl SharedNamespaceObservation {
             {
                 return Err(invalid("shared namespace changed after observation"));
             }
+        }
+        for observation in self.quarantine.values() {
+            observation.check_current()?;
         }
         for entry in &self.entries {
             let current = File::from(openat(
@@ -334,13 +342,14 @@ impl SharedNamespaceObservation {
         Ok(())
     }
 
-    /// Reports whether entries contain only scaffolds and checked portable metadata.
+    /// Reports whether entries contain only checked non-serving namespace members.
     ///
-    /// This is shared-name absence only, never complete recovery evidence.
-    pub(super) fn only_empty_scaffolds(&self) -> bool {
-        self.entries
-            .iter()
-            .all(|entry| self.is_nonresident_metadata(entry))
+    /// Scaffolds, portable metadata and authenticated quarantine custody supply no
+    /// content or complete recovery evidence. Quarantine remains physically charged.
+    pub(super) fn only_nonresident_entries(&self) -> bool {
+        self.entries.iter().all(|entry| {
+            self.is_nonresident_metadata(entry) || self.quarantine.contains_key(&entry.relative)
+        })
     }
 
     /// Requires every ordinary shared file to be in an actual verified source closure.
@@ -353,7 +362,8 @@ impl SharedNamespaceObservation {
     ///
     /// # Errors
     /// Refuses another domain/root/project, changed source, an absent closure
-    /// member or any unverified, temporary, unrelated or nonregular shared entry.
+    /// member or any unaccounted, temporary, unrelated or nonregular shared entry.
+    /// Checked opaque quarantine entries remain outside the content closure.
     pub(super) fn require_sources(
         &self,
         sources: &[Arc<NativeManifestSource>],
@@ -468,7 +478,8 @@ impl SharedNamespaceObservation {
             }
         }
         for entry in &self.entries {
-            if self.is_nonresident_metadata(entry) {
+            if self.is_nonresident_metadata(entry) || self.quarantine.contains_key(&entry.relative)
+            {
                 continue;
             }
             let Some(source) = expected.remove(&entry.relative) else {

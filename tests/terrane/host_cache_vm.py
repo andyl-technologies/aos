@@ -92,6 +92,7 @@ MANIFEST_CASES += [
     ("manifest-pending-metadata-cold", "seed-writable-manifest", "recover-writable-manifest", True, "valid manifest"),
 ]
 CASES += ["manifest-pending-metadata", "manifest-pending-metadata-cold"]
+CASES += ["quarantine-only", "quarantine-unknown", "quarantine-foreign"]
 BUDGET = HARD * len(CASES)
 PROVISION_CAPS = "-all,+sys_admin,+dac_read_search,+fowner,+chown,+fsetid"
 QUERY_CAPS = "-all,+sys_admin,+dac_read_search"
@@ -1208,6 +1209,11 @@ def main():
                                     os.environ["TERRANE_CACHE_VM_IMAGE"]], text=True, timeout=5).strip().replace("-", "")
     require(len(uuid) == 32, "actual ext4 UUID unavailable")
     runpy.run_path(str(IMAGE / "share/host_cache_encoded_recovery_vm.py"))["seed"](sys.modules[__name__], uuid)
+    for case in ["quarantine-only", "quarantine-unknown", "quarantine-foreign"]:
+        result = run(admin_command(SEED_CAPS, [IMAGE / "bin/host_cache_fixture", "seed-quarantine"]),
+                     env=actor_environment(case, uuid), text=True, capture_output=True)
+        require(result.stdout.splitlines() == ["SEEDED opaque quarantine candidate; no content or recovery authority"],
+                "missing quarantine seed witness")
     manifest_candidates = seed_manifests(uuid)
     index_candidates = runpy.run_path(str(IMAGE / "share/host_cache_index_recovery_vm.py"))[
         "seed"](sys.modules[__name__], uuid)
@@ -1298,6 +1304,22 @@ def main():
                 path = root(case) / "state/old-policy"
                 require(path.is_dir() and path.stat().st_ino == directory_identity and list(path.iterdir()) == [],
                         "unknown state directory changed or disappeared")
+        for case in ["quarantine-only", "quarantine-unknown", "quarantine-foreign"]:
+            entries = list((root(case) / "quarantine").iterdir())
+            require(len(entries) == 1, "quarantine seed inventory changed")
+            path = entries[0]
+            original = (path.stat().st_dev, path.stat().st_ino, path.read_bytes(), path.stat().st_uid)
+            mode = "recover-quarantine" if case == "quarantine-only" else "refuse-quarantine"
+            output = actor(case, mode, uuid)
+            require((path.stat().st_dev, path.stat().st_ino, path.read_bytes(), path.stat().st_uid) == original,
+                    "cold recovery changed or removed original opaque quarantine")
+            require(not list((root(case) / "sealed").iterdir())
+                    and not list((root(case) / "state/publication").iterdir()),
+                    "opaque quarantine gained sealed publication authority")
+            expected = ("PASS actual cold quarantine retained charged original inode across recovery and Resume without content, pins or residences"
+                        if case == "quarantine-only" else "PASS unsafe original quarantine refused before funding or Resume:")
+            require(any(line.startswith(expected) for line in output.splitlines()),
+                    "missing actual cold quarantine result: " + case)
         cancel_case(helper, uuid)
         exclusive_case(uuid)
         actor("edquot", "edquot", uuid)

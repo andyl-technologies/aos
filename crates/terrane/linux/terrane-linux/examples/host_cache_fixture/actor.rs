@@ -66,6 +66,8 @@ pub(super) fn run(mode: &str) -> io::Result<()> {
             | "refuse-conflicting-binding"
             | "refuse-bound-unsealed"
             | "inspect-quarantine"
+            | "recover-quarantine"
+            | "refuse-quarantine"
             | "publish-inline"
             | "publish-inline-cancel"
             | "publish-inline-transfer"
@@ -122,6 +124,9 @@ pub(super) fn run(mode: &str) -> io::Result<()> {
         .enable_all()
         .build()?;
     match mode {
+        "recover-quarantine" | "refuse-quarantine" => {
+            super::recovery::quarantine::run(mode, &owner, &runtime, &inputs, original)?;
+        }
         "shared-reextract" => {
             super::manifest_publication::reextract::run(&owner, &runtime, &inputs)?;
         }

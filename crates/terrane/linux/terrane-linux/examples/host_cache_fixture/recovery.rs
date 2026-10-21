@@ -18,6 +18,8 @@ mod metadata;
 pub(super) mod pending;
 #[path = "recovery/pending_packs.rs"]
 pub(super) mod pending_packs;
+#[path = "recovery/quarantine.rs"]
+pub(super) mod quarantine;
 #[path = "recovery/reuse.rs"]
 mod reuse;
 

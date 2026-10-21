@@ -92,7 +92,7 @@ pub(super) fn run(
     }
     if inventory.inventory_failure().is_some()
         || inventory.namespace_failure().is_some()
-        || !shared.only_empty_scaffolds()
+        || !shared.only_nonresident_entries()
     {
         return Err(unresolved(
             "pending cleanup requires exhaustive chunk custody",

@@ -20,6 +20,10 @@ pub(super) struct SynchronizedAllocation {
     pub(super) retained_inode_bytes: u64,
     /// Number of distinct device/inode pairs included in that scoped sum.
     pub(super) retained_inodes: usize,
+    /// Actual opaque quarantine subset, already included in retained_inode_bytes.
+    pub(super) quarantined_inode_bytes: u64,
+    /// Number of distinct quarantined inodes included in the synchronized census.
+    pub(super) quarantined_inodes: usize,
 }
 
 /// Synchronizes the genuine filesystem and measures each retained inode once.
@@ -89,10 +93,13 @@ pub(super) fn observe(
             .checked_add(*bytes)
             .ok_or_else(|| invalid("synchronized allocation sum overflow"))
     })?;
+    let (quarantined_inode_bytes, quarantined_inodes) = shared.quarantine_allocation(&measured)?;
     owner.check_current()?;
     Ok(SynchronizedAllocation {
         retained_inode_bytes,
         retained_inodes: measured.len(),
+        quarantined_inode_bytes,
+        quarantined_inodes,
     })
 }
 
