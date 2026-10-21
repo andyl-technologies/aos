@@ -8694,6 +8694,21 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
 
 ### T2 — Host tier
 
+Metadata adapter preparation (2026-10-21): ContentStore metadata reads select
+an actual cached pair consumer grant before using the retained-source reader.
+Only a typed exhausted physical registry lookup permits that fallback; native
+ENOENT, changed source custody, corrupt bytes and publisher failures propagate.
+Metadata producer completion captures its original healthy publisher observation
+before exposing a receipt. Running reconstruction retention verifies original
+admitted bytes before lookup and binds both actual pair descriptors to that
+same observation before native synchronization. Reconstruction and independent
+consumer aliases therefore share permanent denial and original-pair quarantine.
+Native cases report pack damage first through retained reconstruction and index
+damage first through a consumer, restore the bytes, and verify that neither
+reader revives or releases the pair's funding. Cold retained pairs outside the
+admission registry still require the corresponding read-observation integration.
+Runtime/application qualification remains pending; no T2 task is accepted.
+
 Metadata consumer preparation (2026-10-21): independent consumer grants now
 retain the original completed cached metadata admission, both original read-only
 pack/index descriptors and their pre-failure publisher observation. Reads check

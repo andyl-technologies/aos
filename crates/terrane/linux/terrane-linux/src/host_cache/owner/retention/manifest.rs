@@ -25,6 +25,16 @@ pub(super) async fn retain_running(
     identity: Identity,
 ) -> io::Result<RetainedManifest> {
     let context = executor.admission_context()?;
+    match super::super::admission::metadata_reads::AdmittedMetadataRead::prepare_retention(
+        executor,
+        identity.clone(),
+    ) {
+        Ok(source) => {
+            source.read_verified()?;
+        }
+        Err(error) if super::super::admission::metadata_reads::cache_absent(&error) => {}
+        Err(error) => return Err(error),
+    }
     retain_with_authority(identity, Authority::Running { executor, context }).await
 }
 
@@ -164,6 +174,12 @@ async fn retain_with_authority(
         .map_err(io::Error::other)?;
     let source = Arc::new(NativeManifestSource::open(&reader, &identity, limits).await?);
     authority.check_context()?;
+    if let Authority::Running { executor, .. } = &authority {
+        let owner = custody
+            .lock()
+            .map_err(|_| invalid("metadata binding custody poisoned"))?;
+        super::super::admission::reads::metadata_activity_order(executor, &owner, &source)?;
+    }
     let (pinned, retention_id, future, registered_generation, reservation_write) = {
         let mut owner = custody
             .lock()

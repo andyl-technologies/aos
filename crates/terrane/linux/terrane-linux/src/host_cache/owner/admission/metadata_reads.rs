@@ -59,6 +59,25 @@ impl AdmittedMetadataRead {
         executor: &NativeOwnerExecutor,
         identity: Identity,
     ) -> io::Result<Self> {
+        Self::prepare_owned(executor, identity, true)
+    }
+
+    /// Borrows original producer protection only within the physical retention turn.
+    ///
+    /// # Errors
+    /// Refuses absent original custody or any invalid native/publisher binding.
+    pub(in crate::host_cache::owner) fn prepare_retention(
+        executor: &NativeOwnerExecutor,
+        identity: Identity,
+    ) -> io::Result<Self> {
+        Self::prepare_owned(executor, identity, false)
+    }
+
+    fn prepare_owned(
+        executor: &NativeOwnerExecutor,
+        identity: Identity,
+        require_cached: bool,
+    ) -> io::Result<Self> {
         executor.check_physical_worker()?;
         let context = executor.admission_context()?;
         context.check_current().map_err(io::Error::other)?;
@@ -89,7 +108,7 @@ impl AdmittedMetadataRead {
             }) else {
                 continue;
             };
-            if job.cached.is_none() {
+            if require_cached && job.cached.is_none() {
                 return Err(io::Error::new(
                     io::ErrorKind::WouldBlock,
                     "metadata consumer source has not entered cache custody",
@@ -157,7 +176,7 @@ impl AdmittedMetadataRead {
         }
         Err(io::Error::new(
             io::ErrorKind::NotFound,
-            "actual cached metadata admission absent",
+            MissingCachedMetadata,
         ))
     }
 
@@ -340,4 +359,49 @@ impl AdmittedMetadataRead {
 
 fn invalid(message: &'static str) -> io::Error {
     io::Error::other(message)
+}
+
+/// Distinguishes an exhausted actual registry from missing or damaged backing.
+#[derive(Debug)]
+struct MissingCachedMetadata;
+
+impl std::fmt::Display for MissingCachedMetadata {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("actual cached metadata admission absent")
+    }
+}
+
+impl std::error::Error for MissingCachedMetadata {}
+
+/// Recognizes only absence established by a complete actual admission lookup.
+pub(in crate::host_cache::owner) fn cache_absent(error: &io::Error) -> bool {
+    error
+        .get_ref()
+        .is_some_and(|source| source.is::<MissingCachedMetadata>())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn registry_absence_never_masks_native_missing_or_corrupt_backing() {
+        let absent = io::Error::new(io::ErrorKind::NotFound, MissingCachedMetadata);
+        assert!(cache_absent(&absent));
+
+        for error in [
+            io::Error::from_raw_os_error(2),
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "original metadata descriptor disappeared",
+            ),
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "original metadata index changed",
+            ),
+            io::Error::other(absent),
+        ] {
+            assert!(!cache_absent(&error));
+        }
+    }
 }

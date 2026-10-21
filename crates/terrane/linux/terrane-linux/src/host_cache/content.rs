@@ -147,7 +147,9 @@ impl ContentStore for NativeContentStore {
         identity: &Identity,
         range: Option<ByteRange>,
     ) -> Result<Vec<u8>, StoreFailure> {
-        if identity.profile() != terrane_format::identity::TERRANE_V1.name() {
+        if identity.profile() != terrane_format::identity::TERRANE_V1.name()
+            || identity.kind() == IdentityKind::Pack
+        {
             return Err(StoreFailure::new(StoreErrorKind::Unsupported));
         }
         let bytes = if identity == &validation::empty_chunk()? {
@@ -159,7 +161,23 @@ impl ContentStore for NativeContentStore {
                 .map_err(|error| native_failure(error, identity));
             self.finish(result, vec![lease]).await?
         } else {
-            self.ready.metadata().get(identity).await?
+            let lease = self
+                .ready
+                .owner()
+                .pin_cached_metadata(identity.clone(), self.consumer_deadline()?)
+                .await
+                .map_err(|error| native_failure(error, identity))?;
+            match lease {
+                Some(lease) => {
+                    let result = lease
+                        .read_encoded()
+                        .map_err(|error| native_failure(error, identity));
+                    self.finish(result, vec![lease]).await?
+                }
+                // Only an exhausted actual registry permits the retained-source
+                // reader. Native ENOENT, corruption or stale custody never does.
+                None => self.ready.metadata().get(identity).await?,
+            }
         };
         match range {
             None => Ok(bytes),

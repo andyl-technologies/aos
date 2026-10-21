@@ -416,7 +416,6 @@ pub(in crate::host_cache::owner) fn metadata_activity_order(
     if !Arc::ptr_eq(source.layout(), owner.preparation.layout()) {
         return Err(invalid("metadata activity has another native root"));
     }
-    source.recheck()?;
     for resource in executor.admission_jobs() {
         let job = super::backing::lock(resource)?;
         let Input::Metadata { expected_id, .. } = &job.input else {
@@ -430,7 +429,6 @@ pub(in crate::host_cache::owner) fn metadata_activity_order(
                 "metadata activity changed original admission custody",
             ));
         }
-        super::reconcile::verify(owner, &job)?;
         for (file, original) in [source.files().1, source.files().0]
             .into_iter()
             .zip(&job.files)
@@ -447,8 +445,14 @@ pub(in crate::host_cache::owner) fn metadata_activity_order(
                 ));
             }
         }
+        if let Some(observation) = &job.read_observation {
+            source.bind_read_observation(Arc::clone(observation))?;
+        }
+        super::reconcile::verify(owner, &job)?;
+        source.recheck()?;
         return Ok(Some(job.order));
     }
+    source.recheck()?;
     Ok(None)
 }
 

@@ -12,7 +12,7 @@ use std::{
     fs::{File, Metadata},
     io::{self, Read},
     os::unix::fs::MetadataExt,
-    sync::Arc,
+    sync::{Arc, OnceLock},
 };
 use terrane_format::identity::{Descriptor, Identity, IdentityKind, TERRANE_V1};
 use terrane_sdk::{
@@ -42,6 +42,7 @@ pub struct NativeManifestSource {
     index_metadata: Metadata,
     pack_directory: File,
     shard_directory: File,
+    read_observation: OnceLock<Arc<crate::publisher_local::client::EncodedReadObservation>>,
 }
 
 impl NativeManifestSource {
@@ -173,6 +174,7 @@ impl NativeManifestSource {
             index_metadata,
             pack_directory: File::from(packs),
             shard_directory: shard_file,
+            read_observation: OnceLock::new(),
         };
         source.recheck()?;
         Ok(source)
@@ -203,6 +205,44 @@ impl NativeManifestSource {
     /// # Errors
     /// Returns native errors or refuses modified source metadata or replaced roots.
     pub fn recheck(&self) -> io::Result<()> {
+        if let Some(observation) = self.read_observation.get() {
+            observation.check_readable()?;
+        }
+        self.recheck_backing().inspect_err(|_| {
+            if let Some(observation) = self.read_observation.get() {
+                observation.reject(1);
+            }
+        })?;
+        if let Some(observation) = self.read_observation.get() {
+            observation.check_readable()?;
+        }
+        Ok(())
+    }
+
+    /// Shares rejection only after the physical owner binds both actual members.
+    ///
+    /// # Errors
+    /// Refuses substitution of an already bound original publisher observation.
+    pub(crate) fn bind_read_observation(
+        &self,
+        observation: Arc<crate::publisher_local::client::EncodedReadObservation>,
+    ) -> io::Result<()> {
+        if self.read_observation.get().is_none() {
+            // Only the physical executor binds this once; public readers cannot
+            // construct observations or supply native registration authority.
+            let _ = self.read_observation.set(Arc::clone(&observation));
+        }
+        if !self
+            .read_observation
+            .get()
+            .is_some_and(|actual| Arc::ptr_eq(actual, &observation))
+        {
+            return Err(invalid("metadata source changed original read observation"));
+        }
+        self.recheck()
+    }
+
+    fn recheck_backing(&self) -> io::Result<()> {
         self.layout.recheck()?;
         if !same_file(&self.pack_metadata, &self.pack.metadata()?)
             || !same_file(&self.index_metadata, &self.index.metadata()?)

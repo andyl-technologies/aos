@@ -207,6 +207,22 @@ impl NativeMetadataOwner {
         self.pin_resident_content(identity, expires).await
     }
 
+    /// Selects cached metadata without masking failures of a selected original pair.
+    ///
+    /// # Errors
+    /// Propagates every failure except a completed physical lookup finding no job.
+    pub(in crate::host_cache) async fn pin_cached_metadata(
+        &self,
+        identity: Identity,
+        expires: u64,
+    ) -> io::Result<Option<NativeConsumerLease>> {
+        match self.pin_resident_metadata(identity, expires).await {
+            Ok(lease) => Ok(Some(lease)),
+            Err(error) if super::admission::metadata_reads::cache_absent(&error) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
     async fn pin_resident_content(
         &self,
         identity: Identity,

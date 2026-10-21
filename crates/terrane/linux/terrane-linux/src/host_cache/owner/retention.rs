@@ -736,6 +736,18 @@ impl RetainedManifest {
             .ok_or_else(|| invalid("policy allocation sum overflow"))
     }
 
+    /// Rechecks original native pair custody without taking the policy lock.
+    ///
+    /// This retains the original reconstruction source and its shared corruption
+    /// observation. Publication additionally checks durable pin registration
+    /// through [`Self::check_current`].
+    ///
+    /// # Errors
+    /// Refuses changed or permanently rejected original metadata backing.
+    pub fn check_native_backing(&self) -> io::Result<()> {
+        self.source.recheck()
+    }
+
     /// Checks current native source and the actual durable pin-owner custody.
     ///
     /// This checks pin state before publication, never on an already sealed read.

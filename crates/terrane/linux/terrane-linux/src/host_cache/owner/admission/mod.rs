@@ -379,6 +379,9 @@ pub(in crate::host_cache::owner) async fn metadata(
             return Err(error);
         }
     };
+    // A producer may retain this pair for reconstruction before cache handoff.
+    // Capture its healthy incarnation before exposing that first read authority.
+    read_custody::observe(executor, &job)?;
     context.check_current().map_err(std_io::Error::other)?;
     let (future_hold, directory_allocated) = {
         let actual = backing::lock(&job)?;

@@ -67,6 +67,8 @@ pub(super) fn run(
         .as_secs()
         .checked_add(90)
         .ok_or_else(|| invalid("metadata failure deadline overflow"))?;
+    let retained = runtime.block_on(owner.retain_manifest(identity.clone()))?;
+    retained.check_current()?;
     let first = runtime.block_on(owner.pin_resident_metadata(identity.clone(), expires))?;
     let alias = runtime.block_on(owner.pin_resident_metadata(identity, expires))?;
     if first.read_verified()? != expected || alias.read_encoded()? != expected {
@@ -77,7 +79,18 @@ pub(super) fn run(
     let stalled = runtime.block_on(owner.stall_policy_for_fixture())?;
     emit("READY genuine metadata consumers verified with physical policy held")?;
     control("damaged")?;
-    if first.read_verified().is_ok() || fs::read(&policy)? != records {
+    // Exercise both reporting directions: reconstruction first for the pack,
+    // consumer first for the detached index. They share the original observation.
+    let served = if inputs.domain == "tenant:metadata-pack-read-failure" {
+        retained.check_native_backing().is_ok()
+    } else {
+        first.read_verified().is_ok()
+    };
+    if served
+        || first.read_verified().is_ok()
+        || retained.check_native_backing().is_ok()
+        || fs::read(&policy)? != records
+    {
         return Err(invalid(
             "damaged metadata original served or funding changed",
         ));
@@ -87,6 +100,7 @@ pub(super) fn run(
     if first.read_verified().is_ok()
         || alias.read_verified().is_ok()
         || alias.read_encoded().is_ok()
+        || retained.check_native_backing().is_ok()
     {
         return Err(invalid("restored bytes revived original metadata aliases"));
     }
@@ -96,6 +110,9 @@ pub(super) fn run(
     }
     emit("READY actual metadata failed-read quarantine completed with original funding retained")?;
     control("finish")?;
+    emit(
+        "PASS actual retained reconstruction and independent consumers share permanent denial and original pair quarantine after either reader reports corruption",
+    )?;
     emit(
         "PASS actual metadata consumer failure denies all original aliases after byte restoration and quarantines both original pack and index without funding release",
     )

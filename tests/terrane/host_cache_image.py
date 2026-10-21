@@ -55,6 +55,7 @@ UNIT_TESTS = (
     'host_cache::owner::admission::io::tests::actual_admission_byte_check_is_positioned_and_rejects_modified_inode_bytes',
     'host_cache::owner::admission::memory::tests::simultaneous_active_copies_and_state_headers_are_checked',
     'host_cache::owner::admission::metadata::tests::actual_metadata_pair_rejects_wrong_index_key_class_and_window',
+    'host_cache::owner::admission::metadata_reads::tests::registry_absence_never_masks_native_missing_or_corrupt_backing',
     'host_cache::owner::admission::tests::cancelled_started_phase_faults_without_native_authority_or_mutexes',
     'host_cache::owner::admission::tests::untrusted_pair_input_is_bounded_with_checked_addition',
     'host_cache::owner::snapshot::tests::actual_snapshot_io_retains_readback_and_rejects_replaced_inode',
