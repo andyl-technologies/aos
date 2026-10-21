@@ -41,6 +41,9 @@ mod completed_inputs;
 #[path = "bootstrap_import18/native_framing.rs"]
 mod native_framing;
 
+#[path = "bootstrap_import18/normalization.rs"]
+mod normalization;
+
 #[path = "bootstrap_import18/controller_measurement.rs"]
 mod controller_measurement;
 

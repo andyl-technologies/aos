@@ -1048,12 +1048,53 @@ All five focused tests pass in standard and raw-value builds, covering
 forty-eight inherited-socket flights. Both full Transport suites pass 1,804 tests,
 zero failures, no filtering and sixteen existing ignores. The added fixed
 comparison controls also enter the shared initial counter calculation. Affected
-all-feature/all-target checking and all six architecture gates pass. Application
-and funded-Source VM checks are running. The application capture at
+all-feature/all-target checking and all six architecture gates pass. Required
+application compilation passes at
+`/nix/store/s0iq62b766n4j89mm2pqsywcmn6n6pbq-aos-test-targets-0.1.0`, with
+180 test executables across 58 package identities, including 71 integration
+targets. Its capture at
 `/nix/store/d5m7plgzv9dfpx928pgklwygf0ywzdn1-aos-workspace-src` matches all
-147 changed Rust paths byte for byte. Full native phase custody, complete recipe
-production/reconstruction, model installation and RFC qualification remain
-unfinished.
+147 Rust paths changed through `935a278725` byte for byte.
+
+The funded-Source VM passes at
+`/nix/store/kknsipcsdns57a31mq7nsppn1i2mq4yb-aos-vm-test-crucible-funded-source-templates-0`.
+All three components use
+`/nix/store/im1hi2pd34vx0k592zmp9sx39vcni87w-crucible-workspace-src`, with
+all 147 changed Rust paths byte-exact to `935a278725`. The two independent
+consumers, three actual Birth/declaration/projection/launch results, failure
+controls and terminal namespace/credit release pass. Full native phase custody,
+complete recipe production/reconstruction, model installation and RFC
+qualification remain unfinished.
+
+## Normalization decoding under original completed-input custody
+
+The actual sixth input bank now has a separately retained, one-shot strict
+normalization decoder. Its quote uses the shared concrete serde partial DAG,
+raw JSON extent and RawValue reset accounting. Independent whole-owner admission
+precedes parsing and observes actual typed backing after success or refusal.
+Decoded DATA and formatted failure diagnostics survive later correspondence,
+admission or original-cut failures. The attempt binds its quote to the exact raw
+bytes and cannot retry after a refused quote, substituted input or terminal guard.
+
+The decoder runs inside the original seven-bank loan. It checks all selected
+families, nonce/generation, twelve native reader/constructor limits, five archived
+full references, the seventh semantic reference and maximum, the normalization
+projection and sixty-four-KiB ceiling, and the original complete Host registration.
+The Import18 contract explicitly lists the actual thirty-five normalization
+fields. Actual signed Prepare authentication remains a separate required join
+for the complete archive and fresh target bindings.
+
+Seven focused tests pass in standard and raw-value builds, covering eighty
+inherited-socket flights and exact/one-byte-short quote controls. Both unfiltered
+Transport suites pass 1,806 tests with zero failures and sixteen existing ignores.
+Affected all-feature/all-target checking, scoped formatting and all six
+architecture gates pass. The required application gate is running against
+`/nix/store/33wsbwgiga6sf66qqcqn1llfpv7gz04x-aos-workspace-src`; all 152 owned
+changed Rust paths match this captured input byte for byte. A funded-Source VM
+qualification of the same final contract definition is also running. These
+pending runs supply no result yet. Full signed Prepare custody, complete native
+proof/semantic-spend validation, recipe production/reconstruction and model
+installation remain unfinished.
 
 ## Original launch custody and shared startup geometry
 

@@ -38,7 +38,7 @@ pub(in crate::reference_packet) fn private_body_decode_backing_data(
     Ok(rows)
 }
 
-fn body(
+pub(super) fn body(
     bytes: &[u8],
     geometry: PrivateBodyTypedGeometryData,
     partials: usize,

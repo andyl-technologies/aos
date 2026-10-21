@@ -27,6 +27,9 @@ use crucible_node_format::{Bytes, ContentRef, HashRef, Id, Position, SchemaRef, 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+mod decoding;
+pub(in crate::reference_packet) use decoding::OriginalImport18NormalizationAttempt;
+
 /// Names the distinct complete normalization grammar without a live permission.
 pub const NATIVE_IMPORT18_NORMALIZATION_SCHEMA: &str =
     "source-private.native-import-normalization/18";

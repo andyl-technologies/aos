@@ -62,6 +62,7 @@ pub use families::{
     PacketNativeImport18SourceFamily,
 };
 pub use input::{PacketNativeImport18InputRole, native_import18_input_roster_digest_data};
+pub(in crate::reference_packet) use normalization::OriginalImport18NormalizationAttempt;
 pub use normalization::{NATIVE_IMPORT18_NORMALIZATION_SCHEMA, PacketNativeImport18Normalization};
 pub use phase::PacketNativeImport18Phase;
 pub use prebirth_recipe::{

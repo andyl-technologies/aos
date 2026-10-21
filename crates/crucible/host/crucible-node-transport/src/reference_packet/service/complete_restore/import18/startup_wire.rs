@@ -37,6 +37,41 @@ pub(in crate::reference_packet) use decoder_partials::{
 #[path = "startup_wire/decoding.rs"]
 mod decoding;
 
+/// Quotes the actual normalization decoder with the shared strict-body formula.
+///
+/// # Errors
+/// Refuses unsupported raw populations, checked overflow or short restriction.
+pub(super) fn normalization_decode_backing_data(
+    bytes: &[u8],
+    maximum: usize,
+) -> Result<[usize; 3], ProviderError> {
+    use crate::reference_packet::continuation_models::serde_partials::DecoderPartial;
+
+    let mut geometry =
+        decoder_partials::PrivateBodyTypedGeometryData::of::<PacketNativeImport18Normalization>();
+    geometry.diagnostic_names_bytes = geometry
+        .diagnostic_names_bytes
+        .checked_add("invalid provider data: invalid contract JSON: ".len())
+        .ok_or_else(invalid)?;
+    let mut row = decoding::body(
+        bytes,
+        geometry,
+        PacketNativeImport18Normalization::partial_counter_data(),
+        maximum,
+    )?;
+    let reset = crate::protocol_snapshot::raw_value_reparse::quote_raw_json_data(bytes, maximum)?;
+    let (_, _, expanded_text) = reset.expanded_json_extents_data();
+    let diagnostic = decoding::diagnostic_storage_data(
+        bytes.len().checked_add(expanded_text).ok_or_else(invalid)?,
+        geometry,
+    )?;
+    // Formatting the saved diagnostic overlaps the original parser error. Its
+    // final String replaces that error in retained storage, rather than adding
+    // another surviving diagnostic population.
+    row[1] = row[1].checked_add(diagnostic).ok_or_else(invalid)?;
+    Ok(row)
+}
+
 pub(in crate::reference_packet) use decoding::{
     private_body_decode_backing_data, private_body_decode_counter_scratch_data,
 };
@@ -398,6 +433,11 @@ impl PacketNativeImport18SourceBindingWireData {
 }
 
 impl PacketNativeImport18PrivateBootWireData {
+    /// Borrows the original full Host registration without creating authority.
+    pub(in crate::reference_packet) fn expected_host_registration_data(&self) -> &Value {
+        &self.expected_host_registration
+    }
+
     /// Borrows the actual parsed Source wrapper without creating Source authority.
     pub fn source_binding_data(&self) -> &PacketNativeImport18SourceBindingWireData {
         &self.source_birth

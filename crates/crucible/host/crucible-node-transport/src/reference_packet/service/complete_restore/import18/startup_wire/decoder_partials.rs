@@ -112,7 +112,7 @@ pub(in crate::reference_packet) struct PrivateBodyTypedGeometryData {
 }
 
 impl PrivateBodyTypedGeometryData {
-    const fn of<T: DecoderPartial>() -> Self {
+    pub(super) const fn of<T: DecoderPartial>() -> Self {
         let (slot_bytes, slot_alignment, map_entry_bytes, map_entry_alignment) = T::HEAP_LAYOUT;
         Self {
             slot_bytes,

@@ -19,6 +19,9 @@ mod completed_inputs;
 #[path = "initial_reconstruction/native_framing.rs"]
 mod native_framing;
 
+#[path = "initial_reconstruction/normalization.rs"]
+mod normalization;
+
 fn operands(case: &str) -> [Value; 3] {
     let mut recipe = inert_bootstrap_fixtures::recipe();
     recipe["decoder_limits"][9] = json!("268435456");
@@ -54,6 +57,9 @@ fn operands(case: &str) -> [Value; 3] {
     }
     if case.starts_with("initial_framing_") {
         native_framing::commit_recipe(case, &mut recipe);
+    }
+    if case.starts_with("initial_normalization_") {
+        normalization::commit_recipe(case, &mut recipe);
     }
     let mut selected = inert_bootstrap_fixtures::selected_launch(case == "initial_reactive");
     let executable = measure_original_restore_current_executable().unwrap();
@@ -287,6 +293,7 @@ pub(super) fn assert_child(
         if matches!(case, "initial_producer" | "initial_reactive")
             || case.starts_with("initial_inputs_")
             || case.starts_with("initial_framing_")
+            || case.starts_with("initial_normalization_")
         {
             result.unwrap();
             assert!(owner.initial_reconstructed);
@@ -302,6 +309,11 @@ pub(super) fn assert_child(
     }
     if case.starts_with("initial_framing_") {
         native_framing::assert_child(case, &mut owner);
+        return;
+    }
+    if case.starts_with("initial_normalization_") {
+        normalization::fill_child(case, &mut owner);
+        normalization::assert_child(case, &owner);
         return;
     }
     assert!(owner.initial_reconstruction_started);

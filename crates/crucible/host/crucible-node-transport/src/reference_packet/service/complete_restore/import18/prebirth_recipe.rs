@@ -31,6 +31,10 @@ use std::mem::size_of;
 mod input_references;
 pub use input_references::native_import18_recipe_inputs_counter_scratch_data;
 
+#[path = "prebirth_recipe/normalization.rs"]
+mod normalization;
+pub(in crate::reference_packet) use normalization::normalization_counter_scratch_data;
+
 #[path = "prebirth_recipe/identity.rs"]
 mod identity;
 pub use identity::{
