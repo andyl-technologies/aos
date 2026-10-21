@@ -1164,9 +1164,16 @@ def run_external_direct_fleet(client, native, worker, s3, database_machine, tool
     hydration = hydrate_external_authority(worker, tools["python"], tools["authorityBootstrap"],
         authority["exported"], tools["workerUrl"], tools["storageWorkKeyFile"],
         credentials["operatorVersions"]["manifestFile"])
-    synchronized = reconcile_external_authority(native, tools["hub"], tools["nativeDatabaseUrlFile"],
-        tools["nativeStorageWorkKeyFile"], authority["exported"], tools["workerUrl"],
-        python=tools["python"])
+    try:
+        synchronized = reconcile_external_authority(native, tools["hub"], tools["nativeDatabaseUrlFile"],
+            tools["nativeStorageWorkKeyFile"], authority["exported"], tools["workerUrl"],
+            python=tools["python"])
+    except BaseException as error:
+        with preserve_direct_workload_failure(error):
+            position = direct_log_position(worker, tools["python"], process["logFile"])
+            retain_direct_log_window(worker, tools["python"], {**position, "byteSize": 0},
+                "authority-synchronization-worker.private.log", after=position)
+        raise
     identity = inspect_direct_external_deployment(worker, tools["python"], tools["hub"],
         authority["exported"], tools["workerUrl"], tools["nativeOriginUrl"], "hub-hybrid-fleet",
         "hybrid-fleet-r2", worker_controls["keyFiles"]["HUB_DIRECT_UPLOAD_GUARD_KEY"])

@@ -205,14 +205,21 @@ pub(crate) async fn control(mut request: Request, env: &Env) -> worker::Result<R
         return Response::error("authority request is invalid", 400);
     };
     let deployment = env.var("HUB_DEPLOYMENT_ID")?.to_string();
+    let observed_at = aos_hub_model::clock::now_unix_secs();
     if control
-        .validate(
-            &deployment,
-            &namespace,
-            aos_hub_model::clock::now_unix_secs(),
-        )
+        .validate(&deployment, &namespace, observed_at)
         .is_err()
     {
+        #[cfg(feature = "do-e2e")]
+        worker::console_error!(
+            "authority_control_request_refused deployment_matches={} namespace_matches={} version={} issued_at={} expires_at={} observed_at={}",
+            control.deployment_id == deployment,
+            control.guard_namespace_id == namespace,
+            control.version,
+            control.issued_at,
+            control.expires_at,
+            observed_at,
+        );
         return Response::error("authority request is outside configured domain", 400);
     }
     let headers = Headers::new();
