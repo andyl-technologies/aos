@@ -235,12 +235,26 @@ impl InstalledPacketCompleteCollectionAuthority {
             // same-body bounded file/kernel/Source callback phase.
             return self.current_for_original_initial_callback();
         }
-        self.graph_policy.authenticate_scope(
+        self.graph_policy.read_current()?;
+
+        // This concrete interval reads only retained scope, kernel and audit
+        // data. Keep all four original parent guards and both scope matches;
+        // complete entry/exit file measurements cover the whole closed body.
+        // No SDK, transport, vendor or evidence callback runs inside it.
+        let checked = self.current_retained_body();
+        let terminal = self.graph_policy.read_current();
+        checked.and(terminal)
+    }
+
+    fn current_retained_body(&self) -> Result<(), QualificationError> {
+        self.graph_policy.authenticate_scope_roster_data(
             &self.roster,
             &self.host,
             &self.world,
             &self.requirements,
         )?;
+        self.graph_policy.read_current_parents()?;
+
         if super::super::fixture::world_fixture_kernel()? != self.kernel {
             return Err(refused());
         }
@@ -252,7 +266,8 @@ impl InstalledPacketCompleteCollectionAuthority {
             return Err(refused());
         }
 
-        self.graph_policy.authenticate_scope(
+        self.graph_policy.read_current_parents()?;
+        self.graph_policy.authenticate_scope_roster_data(
             &self.roster,
             &self.host,
             &self.world,

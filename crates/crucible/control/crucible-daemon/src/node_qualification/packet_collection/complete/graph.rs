@@ -242,16 +242,7 @@ impl InstalledPacketCompleteGraphPolicy {
     }
 
     pub(super) fn read_current(&self) -> Result<(), QualificationError> {
-        if self.process != std::process::id()
-            || self.thread != std::thread::current().id()
-            || !self.revision.get()
-        {
-            return Err(refused());
-        }
-        self.roster.current_scope()?;
-        self.host
-            .authenticate_dispatch_source()
-            .map_err(|error| QualificationError::Evidence(error.reason))?;
+        self.read_current_parents()?;
         for (index, files) in self.files.iter().enumerate() {
             // Deduplication is local to this current read. No earlier read
             // supplies permission for later native dispatch or publication.
@@ -262,6 +253,27 @@ impl InstalledPacketCompleteGraphPolicy {
                 files.current()?;
             }
         }
+        Ok(())
+    }
+
+    /// Checks original parents without establishing measured file currency.
+    ///
+    /// Only a closed retained-data read may use this between its own complete
+    /// entry and exit measurements. It supplies no native or callback permission.
+    ///
+    /// # Errors
+    /// Refuses foreign origin, a revoked graph, stale Sources or Host custody.
+    pub(super) fn read_current_parents(&self) -> Result<(), QualificationError> {
+        if self.process != std::process::id()
+            || self.thread != std::thread::current().id()
+            || !self.revision.get()
+        {
+            return Err(refused());
+        }
+        self.roster.current_scope()?;
+        self.host
+            .authenticate_dispatch_source()
+            .map_err(|error| QualificationError::Evidence(error.reason))?;
         Ok(())
     }
 
@@ -499,7 +511,7 @@ fn denied() -> EvidenceError {
 
 impl InstalledPacketCompleteGraphPolicy {
     // Both callback representations retain the same complete original scope.
-    fn authenticate_scope_roster_data(
+    pub(super) fn authenticate_scope_roster_data(
         &self,
         roster: &PacketCompleteRoster,
         host: &Rc<HostSchedulingSource>,
