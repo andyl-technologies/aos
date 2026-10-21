@@ -910,6 +910,26 @@ impl From<QemuNodeError> for BackendError {
                 };
             }
             QemuNodeError::AsyncDriver {
+                source:
+                    QemuAsyncDriverError::ChannelOriginalPost {
+                        source,
+                        original_after,
+                    },
+            } => {
+                let kind = source
+                    .operational_supervision_source()
+                    .unwrap_or(original_after);
+                return Self::RetainedOperationalFailure {
+                    kind: operational_failure_kind(kind),
+                    source: BackendOperationalCause::new(
+                        QemuAsyncDriverError::ChannelOriginalPost {
+                            source,
+                            original_after,
+                        },
+                    ),
+                };
+            }
+            QemuNodeError::AsyncDriver {
                 source: QemuAsyncDriverError::Runtime(runtime),
             } => {
                 let kind = runtime

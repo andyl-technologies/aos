@@ -129,6 +129,26 @@ fn observe_runtime_return<T>(
     }
 }
 
+/// Keeps channel refusal and its independent same-Original post inline.
+/// Even a failed start can leave physical publication debt; this observation
+/// neither retries the channel nor completes or returns the pending operation.
+fn observe_channel_return<T>(
+    result: Result<T, QemuNodeChannelError>,
+    original: Option<&crucible_host_resources::host_supervision::HostOperationGuard>,
+) -> Result<T, QemuAsyncDriverError> {
+    let post = original.and_then(|operation| operation.wait_slice().err());
+
+    match (result, post) {
+        (Ok(value), None) => Ok(value),
+        (Ok(_), Some(source)) => Err(supervision_error(source)),
+        (Err(source), None) => Err(QemuAsyncDriverError::Channel(source)),
+        (Err(source), Some(original_after)) => Err(QemuAsyncDriverError::ChannelOriginalPost {
+            source,
+            original_after,
+        }),
+    }
+}
+
 fn run_node_step_with_operation<T, R, F>(
     target: &mut T,
     runtime: &mut R,
@@ -169,12 +189,8 @@ where
     async_operations.push(QemuAsyncDriverOperation::YieldToControlPlane);
 
     check_original(active_operation)?;
-    let mut pending = target
-        .start_quantum(horizon)
-        .map_err(QemuAsyncDriverError::Channel)?;
-    check_original(active_operation)?;
-    after_start(target, &mut pending).map_err(QemuAsyncDriverError::Channel)?;
-    check_original(active_operation)?;
+    let mut pending = observe_channel_return(target.start_quantum(horizon), active_operation)?;
+    observe_channel_return(after_start(target, &mut pending), active_operation)?;
     observe_runtime_return(
         runtime.arm_advance_completion_fence(target.advance_completion_fence(&pending)),
         active_operation,
@@ -293,7 +309,7 @@ where
             continue;
         }
         check_original(active_operation)?;
-        match target.finish_quantum(&mut pending) {
+        match observe_channel_return(target.finish_quantum(&mut pending), active_operation) {
             Ok(completion) => {
                 target
                     .operational_health()
@@ -301,7 +317,7 @@ where
                 check_original(active_operation)?;
                 break Some(completion);
             }
-            Err(error) => {
+            Err(QemuAsyncDriverError::Channel(error)) => {
                 target
                     .operational_health()
                     .map_err(QemuAsyncDriverError::OperationalHealth)?;
@@ -310,6 +326,7 @@ where
                 }
                 return Err(QemuAsyncDriverError::Channel(error));
             }
+            Err(error) => return Err(error),
         }
     };
     let Some(completion) = completion else {
@@ -443,6 +460,43 @@ mod tests {
     use super::*;
     use crucible_host_resources::host_supervision::{HostOperationBudgets, HostOperationSupervisor};
     use crucible_host_resources::test_support::TestAllocationObserver;
+
+    #[test]
+    fn actual_original_channel_post_retains_first_without_allocating()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let supervisor = HostOperationSupervisor::new(HostOperationBudgets::default(), None)?;
+        let original = supervisor.begin(HostOperationClass::Quantum)?;
+        supervisor.cancel()?;
+        let expected = original
+            .wait_slice()
+            .expect_err("actual Original is canceled");
+
+        let (result, counts) = TestAllocationObserver::count(|| {
+            observe_channel_return::<()>(
+                Err(QemuNodeChannelError::new(
+                    "start quantum",
+                    "initiating refusal",
+                )),
+                Some(&original),
+            )
+        });
+
+        let QemuAsyncDriverError::ChannelOriginalPost {
+            source,
+            original_after,
+        } = result.expect_err("channel and Original refuse")
+        else {
+            panic!("both independent observations must survive");
+        };
+        assert_eq!(counts.allocations, 0);
+        assert_eq!(counts.reallocations, 0);
+        assert!(!counts.overflow);
+        assert_eq!(source.operation, "start quantum");
+        assert_eq!(source.message, "initiating refusal");
+        assert_eq!(original_after, expected);
+        assert!(original.wait_slice().is_err());
+        Ok(())
+    }
 
     #[test]
     fn actual_original_runtime_post_retains_first_without_allocating()

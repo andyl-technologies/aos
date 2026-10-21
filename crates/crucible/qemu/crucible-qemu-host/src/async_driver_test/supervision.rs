@@ -5,7 +5,7 @@
 use super::*;
 use crucible_host_resources::host_supervision::{
     HostOperationBudgets, HostOperationClass, HostOperationState, HostOperationStatus,
-    HostOperationSupervisor,
+    HostOperationSupervisor, HostSupervisionError,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -185,6 +185,108 @@ fn issued_quantum_cancelled_after_publication_cannot_arm_wait()
     assert!(runtime.scripted.armed_fences.is_empty());
     assert_eq!(runtime.scripted.awaits, 0);
     Ok(())
+}
+
+#[test]
+fn issued_quantum_start_refusal_preserves_independent_original_post()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut target = ScriptedTarget::completed();
+    let mut runtime = SupervisedRuntime::new()?;
+    target.refuse_start = Some(runtime.supervisor.clone());
+
+    let result = run(&mut target, &mut runtime);
+
+    assert_channel_original_post(result.expect_err("actual start and Original refuse"));
+    assert_eq!(target.started, vec![12]);
+    assert_eq!(target.finished, 0);
+    assert_eq!(target.shutdowns, 0);
+    assert!(runtime.scripted.armed_fences.is_empty());
+    assert_eq!(runtime.scripted.awaits, 0);
+    Ok(())
+}
+
+#[test]
+fn issued_quantum_start_hook_refusal_preserves_independent_original_post()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut target = ScriptedTarget::completed();
+    let mut runtime = SupervisedRuntime::new()?;
+    let cancellation = runtime.supervisor.clone();
+
+    let result = run_bounded_qemu_node_step_with_start_hook(
+        &mut target,
+        &mut runtime,
+        QemuAsyncDriverPolicy::fast_test(),
+        &QemuCrashDetector::new("vm-a"),
+        horizon(12),
+        |_target, _pending| {
+            cancellation.cancel().unwrap();
+            Err(QemuNodeChannelError::new(
+                "actual start refusal",
+                "first channel cause",
+            ))
+        },
+    );
+
+    assert_channel_original_post(result.expect_err("actual hook and Original refuse"));
+    assert_eq!(target.started, vec![12]);
+    assert_eq!(target.finished, 0);
+    assert_eq!(target.shutdowns, 0);
+    assert!(runtime.scripted.armed_fences.is_empty());
+    assert_eq!(runtime.scripted.awaits, 0);
+    Ok(())
+}
+
+#[test]
+fn issued_quantum_finish_refusal_preserves_post_and_cannot_retry()
+-> Result<(), Box<dyn std::error::Error>> {
+    for retryable in [false, true] {
+        let mut target = ScriptedTarget::completed();
+        let mut runtime = SupervisedRuntime::new()?;
+        target.refuse_finish = Some((runtime.supervisor.clone(), retryable));
+
+        let result = run(&mut target, &mut runtime);
+
+        let QemuAsyncDriverError::ChannelOriginalPost {
+            source,
+            original_after,
+        } = result.expect_err("actual finish and Original refuse")
+        else {
+            panic!("finish first cause and independent Original must survive");
+        };
+        assert_eq!(source.operation, "actual finish refusal");
+        assert_eq!(source.message, "first channel cause");
+        assert_eq!(source.is_retryable(), retryable);
+        assert!(matches!(
+            original_after,
+            HostSupervisionError::Terminal {
+                state: HostOperationState::Canceled,
+            }
+        ));
+        assert_eq!(target.started, vec![12]);
+        assert_eq!(target.finished, 1);
+        assert_eq!(target.shutdowns, 0);
+        assert_eq!(runtime.scripted.awaits, 1);
+        assert_eq!(runtime.scripted.yields, 1);
+    }
+    Ok(())
+}
+
+fn assert_channel_original_post(error: QemuAsyncDriverError) {
+    let QemuAsyncDriverError::ChannelOriginalPost {
+        source,
+        original_after,
+    } = error
+    else {
+        panic!("first channel cause and independent Original must both survive");
+    };
+    assert_eq!(source.operation, "actual start refusal");
+    assert_eq!(source.message, "first channel cause");
+    assert!(matches!(
+        original_after,
+        HostSupervisionError::Terminal {
+            state: HostOperationState::Canceled,
+        }
+    ));
 }
 
 #[test]

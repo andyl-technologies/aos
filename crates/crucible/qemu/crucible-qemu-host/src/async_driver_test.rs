@@ -547,6 +547,11 @@ struct ScriptedTarget {
     completion_fence: Option<QemuAdvanceCompletionFence>,
     child_exit_status: Option<std::process::ExitStatus>,
     health_forbidden: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    refuse_start: Option<crucible_host_resources::host_supervision::HostOperationSupervisor>,
+    refuse_finish: Option<(
+        crucible_host_resources::host_supervision::HostOperationSupervisor,
+        bool,
+    )>,
 }
 
 impl ScriptedTarget {
@@ -574,6 +579,8 @@ impl ScriptedTarget {
             completion_fence: None,
             child_exit_status: None,
             health_forbidden: None,
+            refuse_start: None,
+            refuse_finish: None,
         }
     }
 
@@ -625,6 +632,13 @@ impl QemuAsyncNodeStepTarget for ScriptedTarget {
         horizon: ExecutionHorizon,
     ) -> Result<Self::PendingQuantum, QemuNodeChannelError> {
         self.started.push(horizon.icount.retired);
+        if let Some(supervisor) = &self.refuse_start {
+            supervisor.cancel().unwrap();
+            return Err(QemuNodeChannelError::new(
+                "actual start refusal",
+                "first channel cause",
+            ));
+        }
         Ok(horizon.icount.retired)
     }
 
@@ -640,6 +654,14 @@ impl QemuAsyncNodeStepTarget for ScriptedTarget {
         _pending: &mut Self::PendingQuantum,
     ) -> Result<QemuAsyncQuantumCompletion, QemuNodeChannelError> {
         self.finished += 1;
+        if let Some((supervisor, retryable)) = &self.refuse_finish {
+            supervisor.cancel().unwrap();
+            return Err(if *retryable {
+                QemuNodeChannelError::retryable("actual finish refusal", "first channel cause")
+            } else {
+                QemuNodeChannelError::new("actual finish refusal", "first channel cause")
+            });
+        }
         if self.pending_finishes > 0 {
             self.pending_finishes -= 1;
             return Err(QemuNodeChannelError::retryable(

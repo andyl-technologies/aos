@@ -384,3 +384,50 @@ fn cleanup_refusals_keep_operational_category_and_typed_cause() {
         assert_eq!(retained, &observer);
     }
 }
+
+#[test]
+fn channel_original_post_preserves_both_causes_through_scheduler_conversion()
+-> Result<(), Box<dyn Error>> {
+    use crucible_host_resources::host_supervision::{
+        HostOperationBudgets, HostOperationClass, HostOperationSupervisor,
+    };
+    let supervisor = HostOperationSupervisor::new(HostOperationBudgets::default(), None)?;
+    let original = supervisor.begin(HostOperationClass::Quantum)?;
+    supervisor.cancel()?;
+    let post = original
+        .wait_slice()
+        .expect_err("actual Original is canceled");
+
+    for (first, expected_kind) in [
+        (
+            QemuNodeChannelError::new("start quantum", "initiating transport refusal"),
+            BackendOperationalFailureKind::Canceled,
+        ),
+        (
+            QemuNodeChannelError::operational_supervision(
+                "start quantum",
+                HostSupervisionError::CapacityExhausted,
+            ),
+            BackendOperationalFailureKind::CapacityExhausted,
+        ),
+    ] {
+        let expected = QemuAsyncDriverError::ChannelOriginalPost {
+            source: first,
+            original_after: post,
+        };
+        let node = QemuNodeError::from_async_driver(expected.clone());
+
+        let scheduler = SchedulerError::from(BackendError::from(node));
+
+        assert!(matches!(scheduler, SchedulerError::Backend(ref backend)
+            if backend.operational_kind() == Some(expected_kind)));
+        let retained = scheduler
+            .source()
+            .and_then(Error::source)
+            .and_then(Error::source)
+            .and_then(|source| source.downcast_ref::<QemuAsyncDriverError>())
+            .expect("complete channel first and Original post remain downcastable");
+        assert_eq!(retained, &expected);
+    }
+    Ok(())
+}

@@ -255,6 +255,17 @@ pub enum QemuAsyncDriverError {
     /// A shared-memory channel operation failed.
     #[error("QEMU async shared-memory channel failed: {0}")]
     Channel(QemuNodeChannelError),
+    /// A channel refused before the same retained Original independently refused.
+    #[error(
+        "QEMU async shared-memory channel failed: {source}; independent Original post: {original_after}"
+    )]
+    ChannelOriginalPost {
+        /// Initiating channel failure, retaining its original diagnostic storage.
+        #[source]
+        source: QemuNodeChannelError,
+        /// Independent observation of the same entered operation after return.
+        original_after: crucible_host_resources::host_supervision::HostSupervisionError,
+    },
     /// Lifecycle helper was asked to run the per-quantum completion wait.
     #[error("QEMU async lifecycle helper cannot await quantum completion")]
     LifecycleAdvanceWait,
