@@ -8,6 +8,8 @@
 #[path = "local_sdk/fixture.rs"]
 mod fixture;
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use fixture::{Fixture, MAIN, NEW, OLD, TestResult};
 use terrane_sdk::{
     config::Config,
@@ -18,11 +20,13 @@ use terrane_sdk::{
 struct Resolver {
     token: Vec<u8>,
     deny_second: bool,
+    resolutions: AtomicUsize,
 }
 
 #[async_trait::async_trait]
 impl TokenResolver for Resolver {
     async fn resolve(&self, reference: &str) -> Result<Vec<u8>, Error> {
+        self.resolutions.fetch_add(1, Ordering::Relaxed);
         if self.deny_second && reference.ends_with("second") {
             return Err(Error::Denied);
         }
@@ -46,7 +50,21 @@ async fn preparation_refuses_entire_list_before_any_endpoint_starts() -> TestRes
     let resolver = Resolver {
         token: fixture.authority.token().to_vec(),
         deny_second: true,
+        resolutions: Default::default(),
     };
+
+    let mut unknown_policy = config.exposures().to_vec();
+    unknown_policy[1].view.policy = Some("unregistered".to_owned());
+    assert!(matches!(
+        PreparedExposures::prepare(&fixture.repository, &unknown_policy, &resolver).await,
+        Err(Error::UnavailableOperation("unregistered view policy"))
+    ));
+    assert_eq!(
+        resolver.resolutions.load(Ordering::Relaxed),
+        0,
+        "the whole list must reject an unknown policy before resolving any token"
+    );
+
     assert!(
         PreparedExposures::prepare(&fixture.repository, config.exposures(), &resolver)
             .await
@@ -65,6 +83,7 @@ async fn prepared_snapshots_keep_validated_commit_and_report_complete_status() -
     let resolver = Resolver {
         token: fixture.authority.token().to_vec(),
         deny_second: false,
+        resolutions: Default::default(),
     };
     let prepared =
         PreparedExposures::prepare(&fixture.repository, config.exposures(), &resolver).await?;
@@ -135,6 +154,7 @@ async fn prepared_snapshots_recheck_current_authority_before_startup() -> TestRe
     let resolver = Resolver {
         token: fixture.authority.token().to_vec(),
         deny_second: false,
+        resolutions: Default::default(),
     };
     let prepared =
         PreparedExposures::prepare(&fixture.repository, config.exposures(), &resolver).await?;
@@ -188,6 +208,7 @@ async fn prepared_snapshots_recheck_current_authority_before_startup() -> TestRe
 }
 
 #[tokio::test]
+#[ignore = "Requires native ext4 xattrs; executed by gate:surface-status"]
 async fn sdk_presents_attribute_ownership_canonical_times_and_filtered_xattrs() -> TestResult {
     use std::os::unix::fs::MetadataExt;
     use terrane_format::{
@@ -358,6 +379,7 @@ async fn readonly_sdk_refuses_writer_mode_before_any_endpoint_or_mutation() -> T
     let resolver = Resolver {
         token: fixture.authority.token().to_vec(),
         deny_second: false,
+        resolutions: Default::default(),
     };
 
     assert!(

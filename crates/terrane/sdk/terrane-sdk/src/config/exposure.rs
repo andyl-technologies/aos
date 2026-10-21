@@ -48,6 +48,11 @@ pub(super) fn parse(raw: Vec<RawExposure>) -> Result<Vec<ConfiguredExposure>, Co
             return Err(ConfigError::Invalid("empty or duplicate exposure id"));
         }
         let view = View::parse(&raw.view).map_err(ConfigError::View)?;
+        // The compiled policy registry is empty. Reject named policies while
+        // loading the whole configuration, before native startup has effects.
+        if view.policy.is_some() {
+            return Err(ConfigError::Invalid("unknown view policy"));
+        }
         let registered = surface::registration(&raw.surface)
             .ok_or_else(|| ConfigError::UnavailableSurface(raw.surface.clone()))?;
         token::validate_reference(&raw.token)?;

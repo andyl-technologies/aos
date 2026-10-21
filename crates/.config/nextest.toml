@@ -25,6 +25,23 @@ threads-required = "num-test-threads"
 filter = 'package(terrane-sdk) & (test(gc::runner::copied_retirement_tests::) | test(gc::runner::permanent_local_tests::))'
 threads-required = "num-test-threads"
 
+# These exact cases retain their real sixty-second ownership barrier before
+# recovery, fresh nonces and closing assertions. Unchanged memo executions take
+# 121-130 seconds; the two fault cases finish in 103-108 seconds alone but reach
+# the 120-second package cap. Give each process a finite third minute. This
+# changes no case body, publication policy, C/G/D, token or whole-lease deadline.
+[[profile.default.overrides]]
+filter = 'package(=terrane-sdk) & test(=gc::runner::copied_retirement_tests::gc_copied_retirement_native_unused_memo_sharing_live_index_result_keeps_actual_context)'
+slow-timeout = { period = "60s", terminate-after = 3 }
+
+[[profile.default.overrides]]
+filter = 'package(=terrane-sdk) & test(=gc::runner::permanent_local_tests::faults::permanent_local_directory_sync_failure_keeps_selected_recovery_duties)'
+slow-timeout = { period = "60s", terminate-after = 3 }
+
+[[profile.default.overrides]]
+filter = 'package(=terrane-sdk) & test(=gc::runner::permanent_local_tests::faults::permanent_local_progress_conflict_retains_owner_and_uses_fresh_event_nonce)'
+slow-timeout = { period = "60s", terminate-after = 3 }
+
 # This recovery stress case discovers 4,100 canonical trash families and selects
 # at least 33 durable events after a genuine sixty-second barrier. Its complete
 # nontraced release run passes in 801 seconds; separate attempts reach the

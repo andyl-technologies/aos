@@ -1,5 +1,6 @@
 {
   pkgs,
+  lib,
   sourceGateWithInputs,
   nativeSdkGate,
   ...
@@ -22,6 +23,9 @@
     '';
   surfaceGate = withImage (sourceGateWithInputs {});
   surfaceSchemaGate = withImage nativeSdkGate;
+  presentationVm = import ../surface-presentation-ext4.nix {
+    inherit pkgs lib testImage;
+  };
   runTests = target: cases: ''
     surface_binary="$TERRANE_SURFACE_TEST_IMAGE/targets/${target}/bin/terrane-native-sdk-tests"
     "$surface_binary" --list > "$TMPDIR/${target}-tests.txt"
@@ -66,8 +70,9 @@ in {
     printf 'PASS: metadata schemas refuse invalid SDK roots before presentation\n' > "$out/result"
   '';
   surface-status = surfaceGate "surface-status" ''
-    ${runTests "surface_runtime" ["prepared_snapshots_keep_validated_commit_and_report_complete_status" "sdk_presents_attribute_ownership_canonical_times_and_filtered_xattrs"]}
+    ${runTests "surface_runtime" ["prepared_snapshots_keep_validated_commit_and_report_complete_status"]}
     ${runTests "local_sdk" ["lifecycle::sdk_checkout_public_api_lifecycle_preserves_completed_directory"]}
+    test "$(cat ${presentationVm}/result)" = PASS
     printf 'PASS: pinned SDK identity, status and monotonic lifecycle\n' > "$out/result"
   '';
 }

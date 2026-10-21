@@ -165,12 +165,12 @@ options.aos.terrane = {
 ## `aos-dev` targets
 
 ```sh
-bash ./aos-dev build package terrane
-bash ./aos-dev build package terrane-edge
-bash ./aos-dev list checks terrane.gates
-bash ./aos-dev build check terrane.gates.tree-history-independence
-bash ./aos-dev build check terrane.integration.viewd-role
-bash ./aos-dev all checks
+bash tools/dev/aos-dev build package terrane
+bash tools/dev/aos-dev build package terrane-edge
+bash tools/dev/aos-dev list checks terrane.gates
+bash tools/dev/aos-dev build check terrane.gates.tree-history-independence
+bash tools/dev/aos-dev build check terrane.integration.viewd-role
+bash tools/dev/aos-dev all checks
 ```
 
 - **[PKG-11]** `aos-dev list checks terrane` MUST enumerate every gate and

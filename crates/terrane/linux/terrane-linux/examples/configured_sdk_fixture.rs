@@ -1,6 +1,6 @@
 //! Runs configured SDK completion in an explicitly invoked fresh process.
 //!
-//! Build with `--features tokio,terrane/surface-sdk`. Run `setup ROOT UID` in
+//! Build with `--features tokio,terrane-sdk/surface-sdk`. Run `setup ROOT UID` in
 //! a separate fixture process before `run ROOT UID` or `deny-late ROOT UID`.
 //! Setup exclusively creates the named directory and genuine signed repository;
 //! it never runs in the confined actor. The actor must already have the supplied
@@ -10,6 +10,11 @@
 //! For the late-denial witness, the external fixture driver removes only
 //! `second.cap` after setup. Private authority remains present, so successful
 //! refusal also witnesses the absence of an instance-token fallback.
+//!
+//! `verify-cli ROOT UID` independently checks the actual CLI completion receipts
+//! in sibling `ROOT.stdout` and `ROOT.stderr` files against the setup commit and
+//! durable payloads. `verify-cli-denial ROOT UID` checks its late-token refusal.
+//! Neither verification mode invokes configured startup or installs confinement.
 
 use std::{
     fs::{self, OpenOptions},
@@ -60,7 +65,7 @@ fn main() -> ExitCode {
 fn dispatch() -> FixtureResult<&'static str> {
     let arguments: Vec<_> = std::env::args().skip(1).collect();
     let [command, root, owner] = arguments.as_slice() else {
-        return Err("expected setup|run|deny-late ROOT OWNER_UID".into());
+        return Err("expected a fixture command followed by ROOT OWNER_UID".into());
     };
     let owner: u32 = owner.parse()?;
     if owner == u32::MAX
@@ -95,6 +100,14 @@ fn dispatch() -> FixtureResult<&'static str> {
         "deny-late" => {
             deny_late(root, owner)?;
             Ok("PASS: late exposure denial started no endpoint and used no authority fallback")
+        }
+        "verify-cli" => {
+            verify_cli(root, owner)?;
+            Ok("PASS: actual CLI receipts match the setup commit and durable SDK payloads")
+        }
+        "verify-cli-denial" => {
+            verify_cli_denial(root, owner)?;
+            Ok("PASS: actual CLI late-token refusal left no snapshots or authority fallback")
         }
         _ => Err("unsupported fixture command".into()),
     }
@@ -235,9 +248,7 @@ margin_ms = 10000
 fn run(root: &Path, owner: u32) -> FixtureResult<()> {
     check_owner(root, owner)?;
     let config = Config::parse(&fs::read_to_string(root.join("config.toml"))?)?;
-    let expected: [u8; 32] = fs::read(root.join("expected.commit"))?
-        .try_into()
-        .map_err(|_| "unexpected fixture commit length")?;
+    let expected = expected_commit(root)?;
     let completed = configured_sdk::run(&config, Role::Serve)?;
     let snapshots = completed.snapshots()?;
     if snapshots.len() != 2 {
@@ -262,9 +273,66 @@ fn run(root: &Path, owner: u32) -> FixtureResult<()> {
         }
     }
     drop(completed);
+    verify_payloads(root)
+}
+
+fn expected_commit(root: &Path) -> FixtureResult<[u8; 32]> {
+    fs::read(root.join("expected.commit"))?
+        .try_into()
+        .map_err(|_| "unexpected fixture commit length".into())
+}
+
+fn verify_payloads(root: &Path) -> FixtureResult<()> {
     for id in ["first", "second"] {
         if fs::read(root.join(format!("snapshot-{id}/file")))? != PAYLOAD {
             return Err("stopping SDK presentation removed its durable snapshot".into());
+        }
+    }
+    Ok(())
+}
+
+fn verify_cli(root: &Path, owner: u32) -> FixtureResult<()> {
+    check_owner(root, owner)?;
+    let commit: String = expected_commit(root)?
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let expected: String = ["first", "second"]
+        .iter()
+        .map(|id| {
+            let endpoint = root.join(format!("snapshot-{id}"));
+            format!(
+                "completed SDK snapshot {id:?}: commit {commit}, state Stopped, endpoint {endpoint:?}\n"
+            )
+        })
+        .collect();
+
+    if fs::read(root.with_extension("stdout"))? != expected.as_bytes()
+        || !fs::read(root.with_extension("stderr"))?.is_empty()
+    {
+        return Err("actual CLI completion did not match the independent fixture".into());
+    }
+    verify_payloads(root)
+}
+
+fn verify_cli_denial(root: &Path, owner: u32) -> FixtureResult<()> {
+    check_owner(root, owner)?;
+    if !fs::read(root.with_extension("stdout"))?.is_empty()
+        || fs::read(root.with_extension("stderr"))?
+            != b"terrane: configured SDK exposure preparation failed\n"
+        || !absent(&root.join("second.cap"))?
+        || fs::read(root.join("first.cap"))?.is_empty()
+    {
+        return Err("actual CLI did not preserve the expected late-token refusal".into());
+    }
+    for name in ["issuer.seed", "terminal.seed", "token.cbor"] {
+        if fs::metadata(root.join("authority").join(name))?.len() == 0 {
+            return Err("late-token refusal lost its existing authority witness".into());
+        }
+    }
+    for id in ["first", "second"] {
+        if !absent(&root.join(format!("snapshot-{id}")))? {
+            return Err("actual CLI late-token refusal started an endpoint".into());
         }
     }
     Ok(())

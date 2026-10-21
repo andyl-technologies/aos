@@ -8694,6 +8694,17 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
 
 ### T2 — Host tier
 
+Host integration checkpoint (2026-10-20): combine native cache source
+`428cc305ad` and configured surface/module source `d4af629791`, retaining
+D-128's configuration-time sealed-tier refusal. The module preserves DOM-18's
+private `zero` default and rejects it; an explicit `none` remains an operator
+choice. All 89 module assertions and the combined crate-graph check pass.
+The SDK configuration regression passes for all selectable roles with and
+without runtime features, and all 11 surface-contract cases pass on the
+isolated wipe-refusal source. These component results do not qualify the
+combined runtime, native readiness, or any complete T2 task. Full current-source
+qualification remains required.
+
 Zero-wipe resolution (2026-10-20): D-128 resolves the HOST-3/HOST-25/DOM-18
 conflict by preserving permanent kernel sealing and requiring configuration-time
 refusal of `wipe=zero` on sealed tiers. Backends that can overwrite data may
@@ -8724,14 +8735,20 @@ passes. Repository-wide Rust and Nix format checks pass after a separate mechani
 Nix baseline commit: all 413 formatted files have identical normalized parsed
 expressions before and after formatting. The independent namespace reference-model
 gate passes; all 15 copied witness input/module paths are audited against their
-nested installation locations. Control/prefix runtime gates on the final source
-and full trunk qualification remain pending. No T2 task is accepted by these
-workspace corrections.
+nested installation locations. On guarded `7a98b7978f`, the prefix reference-model
+gate passes in 94.73 seconds and the control reference-model gate in 59.97 seconds.
+A subsequent documentation-only correction preserves PKG-4's original rejected
+program name while applying the crate rename. Full trunk qualification remains
+pending. No T2 task is accepted by these workspace corrections.
 
 Integration checks: Cargo metadata, all five renamed packages' all-target
 compilation, crate graph, the reviewed native unsafe-binding audit, the Nix
 registry-complete gate and complete gate listing pass. All 638 external upstream
-dependency versions and checksums remain unchanged. The combined lockfile's
+dependency versions and checksums remain unchanged. The format-property
+coverage catalog now names `terrane-format` and its relocated source paths;
+all 64 source references resolve to 15 existing files. Inverse mapping preserves
+the complete original catalog, including requirements, entries and ordering.
+The combined lockfile's
 measured shared vendor hash is updated to
 `sha256-GoGnyiyY6gp+gaIlunRCPeTvo58B2D/m7o7mUp/skDA=`. On the initial
 integration source, the required workspace Rust formatter encountered upstream's
@@ -8740,9 +8757,259 @@ declared but absent
 and absence are both present in `origin/master`. Its all-format check also
 reported 414 Nix files needing formatting. Those original failures are retained;
 the follow-up above resolves the missing source and formatting without claiming
-the initial check succeeded. Source-specific build and gate checks continue. The earlier `bf3c74517e` surface feature-matrix run
-finished with 1,157 passed and two publication-timing failures; its aggregate
-successor did not run.
+the initial check succeeded. On guarded pushed source `0e8801389f`, the required
+`checks.rust.aos-test-targets` compilation passes in 2,549.46 seconds: 181 declared
+test targets across 59 application packages, independently matched against the
+current workspace metadata and actual Cargo artifacts. This is compilation
+coverage; it does not claim test execution. The current-trunk aggregate is still
+running its 1,933 Terrane tests on that unchanged source. The earlier
+`bf3c74517e` surface feature-matrix run finished with 1,157 passed and two
+publication-timing failures; its aggregate successor did not run.
+
+Native cache component checkpoint `99447f30cd` passes the complete local native
+witness in 671.10 seconds, including 356.69 guest seconds within the unchanged
+390-second limit. Independent review verifies 5,086 source inputs, four original
+Cargo executables, all 55 actual selected unit cases under UID/GID 842 with empty
+capabilities, and 48 runtime selectors. A genuine dictionary and its distinct
+admitted dependent retain their original inodes through producer handoff, real
+release grace and an actual dictionary-retirement refusal; measured Q is
+339,968 bytes and the sole bootstrap H is 262,144 bytes. The corrected fixture
+uses a dictionary below the inline size ceiling so the refusal reaches the
+physical dependency guard. Earlier invalid-fixture failures remain retained.
+This is component evidence on the preserved task branch. Encoded consumer grants,
+encoded eviction, shared-chunk re-extraction, full recovery/readiness and complete
+T2 task acceptance remain unqualified.
+
+Post-merge qualification (2026-10-19): workspace follow-up `d8a32a97df`
+restores the relocated upstream executor module and copied test-template paths,
+then passes the complete Rust/Nix formatter pair. Its required application
+compilation passes with all 181 test artifacts from 59 application packages
+independently matched to Cargo metadata; this is compilation, not execution.
+Its full implemented-trunk aggregate remains running. The migrated module
+source `f3390be8fb` passes all 88 declarative assertions and the formatter pair;
+its own full aggregate also remains running. Neither aggregate is credited
+before completion.
+
+The encoded consumer component at `2c86ea4e3a` passes the complete native VM
+witness: 55 selected restricted-identity unit cases and 48 actual fixture
+selectors, with original body/dictionary inodes, independent lease funding,
+policy-held concurrent reads, real grace and same-bytes rewrite refusal
+independently checked. Its migrated publisher check subsequently finds a stale
+`terrane_fs` guest launcher; `e5e09630a9` fixes it to the actual
+`terrane_linux` Cargo artifact, retaining all three native socket controls.
+That publisher requalification passes, including the three actual native
+socket cases and the publication/cache VM prerequisites. Its required
+application compilation also passes: all 183 artifacts from 59 application
+packages match the exact Cargo target inventory. This host branch includes
+the host helper and quota configuration test in addition to the upstream
+181-target baseline; the stale review-helper count is corrected, with exact
+set equality and the original failed review retained. Its complete native
+filesystem run passes all 126 nonignored cases across 11 binaries. Independent
+review verifies all 5,082 source inputs and the original six privileged cases
+remain separate native-VM obligations; no full task or aggregate is accepted.
+Surface source `7f7e886dd5` passes eight focused regressions, its strict
+profiles, the formatter pair, crate graph and exact reviewed unsafe audit.
+All six owning surface and GC gates subsequently pass. Its quota VM stops at
+the original fs-verity fixture's enable ioctl; no aggregate is reached.
+The corrected 4 KiB fixture is carried into the combined candidate below.
+The module aggregate records three 120-second outer process
+limits in genuine copied/permanent GC recovery cases. Its 88 module assertions
+remain green, but no aggregate or task acceptance is credited. A separate
+current-source SDK test image is building for bounded diagnosis of those three
+cases. Its six-minute outer diagnostic bounds preserve the original test logic,
+operation deadlines and assertions; it cannot substitute for the affected
+aggregate or establish an aggregate pass. The workspace aggregate additionally
+records `native_index_backfill_updates_existing_required_binding_in_real_commit`
+failing with `Denied(commit)` in 61.182 seconds. The module aggregate records
+`foreign_used_view_and_original_survive_done_reopen_and_zero_node_cold_fork`
+failing with `Denied(fork)` in 179.580 seconds. Their fixture authorities use
+`not_after = u64::MAX`; a cause is not inferred from the elapsed times. Bounded
+current-source diagnostics for both are prepared to run after the three-case
+diagnostic. All actual guards, policies, operation clocks and assertions remain
+unchanged. Both full aggregates remain running and unaccepted.
+
+Further component review (2026-10-20): the shared-directory source
+`86fb63e127` passes both owning gates with all thirteen exact nonignored
+executions and all 5,087 input hashes independently checked against the
+checkout and immutable build source. Its required application compilation
+passes with the exact 183 artifacts from 59 packages; its aggregate remains
+unaccepted. Native descendants `9dfae564f0` and `2fd26aa7cf` also pass both
+owning gates, with their own source and artifact bindings independently
+reviewed. The former additionally passes application compilation and all 126
+nonignored filesystem cases on ext4, with the original six privileged cases
+unchanged. A stale expected source guard in the external review helper is
+corrected against the actual reviewed head and full-source receipt; its
+original failed review is preserved. This does not qualify an aggregate.
+
+The shared-directory aggregate discovers five Linux fixture failures before
+its long repository cases finish: one raw non-UTF-8 filename creation and
+four exact setgid directory setups. A local AOS-built probe reproduces
+`EILSEQ` and `EPERM` inside the original protected package namespace, including
+fresh scratch under both `/build` and `/tmp`. Corrective candidate
+`65a2ee3152` retains all five test bodies and assertions and enables their
+normal execution with the existing `native-test-fixtures` feature. The generic
+package inventory reports their explicit native-fixture requirement instead.
+The mandatory ext4 VM inventory expands from 55 to 67 exact cases, adding all
+twelve socket cases; the existing `publisher-sole-writer` aggregate dependency
+requires this VM, including actual nonignored execution of the five affected
+cases. The formatter pair, crate graph, exact unsafe audit, three strict Linux
+profiles and private documentation checks pass. Native runtime qualification
+is pending; no fixture relocation or task acceptance is credited yet.
+
+The current-source SDK diagnostic verifies all 4,886 inputs and retains its
+actual test-profile executable. Its unchanged memo-context case passes in
+129.932 seconds, directory-sync case in 105.155 seconds and progress-conflict
+case in 104.823 seconds. All three exact nonignored executions pass. The first
+observation exceeds the failed aggregate's
+120-second outer limit, but this test-profile diagnostic is not the failed
+release executable or a passing aggregate. Production clocks, authorities,
+publication windows and test assertions remain unchanged.
+The two current-source authorization diagnostics also pass, in 17.699 seconds
+and 154.515 seconds respectively, using the same verified executable and its
+existing test-only denial callsite trace. Neither produces a denial. These
+observations do not establish the release aggregate's failure cause.
+
+The corrected `65a2ee3152` native VM subsequently passes in 434.452 seconds.
+Independent review verifies all 67 exact nonignored unit cases, including all
+five filesystem-specific cases and twelve socket cases, all 5,097 inputs and
+the four original Cargo executables. Every prior host lifecycle control and
+48 fixture selectors remain intact. Its required compilation passes with all
+183 artifacts from 59 application packages; its complete ext4 filesystem suite
+passes all 126 nonignored cases, retaining the original six privileged cases.
+The older `2fd26aa7cf` and `8956e89150`
+checkpoints both finish their exact 183-artifact compilation and all 126
+nonignored ext4 filesystem cases, retaining the original six privileged cases.
+Their unstarted duplicate aggregates are explicitly deferred because those
+sources predate the known fixture correction; no aggregate run or success is
+credited for that deferral.
+
+Current-read candidate `acac8818aa` removes repeated parsing and signature
+verification of the same immutable token inside one authorization invocation.
+Its private carrier is constructed only after real full verification, retains
+the selected issuer key and rechecks the complete authenticated time interval
+and unique active issuer at every original boundary. The original paired
+transition, request, ACL, physical and Original checks remain required; no
+authority is shared across invocations. The pure time predicate is exactly the
+previous inclusive authorization comparison. The new core parity case passes
+locally and is added to both owning chain/pure-verification gates, preserving
+every original witness. Two additional native comparisons cover attenuation,
+retirement and duplicate-key clock rollback. All six hermetic Clippy profiles,
+both private documentation builds, the formatter pair, crate graph, exact unsafe
+audit and `no_std` gate pass. Owning gates and an exact source-bound twenty-case
+native run are underway; a separate
+five-case baseline retains the original executable and policies. No performance
+improvement or aggregate success is claimed before those results. No frozen
+identity, encoding, key, store trait, token bytes, dependency or operating
+deadline changes.
+
+The four owning authentication gates subsequently pass all 21 exact
+nonignored executions, independently checked against their unchanged source
+receipts and immutable inputs. The predecessor baseline also passes all five
+original cases, measuring 13.027, 147.526, 120.704, 102.703 and 108.243 seconds.
+The updated image also passes all twenty exact nonignored cases. Independent
+review verifies all 5,090 source inputs, its actual executable, test profile
+and 1,206-case inventory. These results establish neither a performance
+improvement nor a release aggregate pass. Maintenance source
+`60bfe35963` isolates the five authentication files from the unfinished host
+prototype and adds finite 180-second outer process limits for the three
+measured recovery cases only. Every other parsed nextest setting, case body,
+operating clock and lease policy stays unchanged; the actual nextest parser
+accepts the configuration. Its strict run exposes sixteen unused test-helper
+findings under Tokio without `surface-sdk`. Follow-up `db7fec8fec` applies the
+six already reviewed feature guards matching those helpers' callers, including
+matching conditional diagnostic labels to enum indexes. It introduces no lint
+suppression or production-path change. Its full SDK profile then exposes the
+unused checkout effects whose production caller belongs to T-SURF-1; that
+failure remains recorded. The preceding maintenance source independently
+passes exact compilation of all 181 artifacts from 59 application packages.
+
+Combined source `65d5916d94` supplies the genuine surface caller alongside
+those maintenance fixes and the reviewed quota fixture. Full source review
+covers the 47-file surface diff against the maintenance parent. All six strict
+Clippy profiles, both private documentation builds, formatting, crate graph,
+unsafe audit, core no-std and all four authentication gates pass. Surface
+interface and read-only commit-path gates also pass. Remaining surface, native
+configuration, feature-matrix, application and aggregate qualification continues;
+no task checkbox or milestone freeze advances. Before merging, preserve the
+trunk's renamed format-coverage labels and correct the CLI's stale crate-name
+comment after source-guarded execution finishes.
+
+Shared-directory source `744aa55567` restores its preserved SDK adapter in the
+new layout. Its all-target compilation passes, while local Nextest explicitly
+fails with zero selected cases: the shared target's dependency record contains
+only the old stub, omitting the five actual child modules. The failed result is
+retained. Source `6df6fcd73a` incorporates the reviewed host prerequisites and
+forces a fresh test build by refreshing only this checkout's source mtimes;
+source bytes remain unchanged and no shared cache entries are removed. Its
+fresh runtime executes all 15 original shared-directory cases successfully.
+Strict SDK qualification then rejects test-only unwraps and cloned singleton
+slices. `86fb63e127` permits intentional assertion panics only inside the test
+modules and borrows those singleton slices; fresh std and Tokio all-target
+Clippy and private documentation pass with production lints unchanged. Its
+owning `shared-dir-read-only` and `dom-host-isolation` gates now pass. Independent
+review verifies all 13 exact nonignored case executions, the retained test
+executable and all 5,087 input hashes against both the immutable build source
+and the frozen checkout. Required application compilation and complete trunk
+qualification continue; the task checkbox remains open.
+
+`4408bbc7c4` additionally connects genuine sealed consumer leases to residence
+fallback. After the confinement ABI and exact source audit, `0e3c3b1528` passes
+all three strict Clippy profiles and private documentation. Its native quota
+prerequisite reproduces the old zero-Merkle-block fixture failure on 1 KiB
+ext4. `ff9f9f2ef7` and `856aedb03a` restore the preserved 4096-byte fixture and
+guest artifact checksum checks in the relocated paths. The corrected native
+quota VM passes; independent review matches all 5,089 source inputs and six
+guest artifact checksums. The complete host-cache component VM also passes in
+450.347 seconds. Independent review matches 5,096 source inputs, four original
+Cargo executables, all 55 selected native unit cases and the original 48
+selectors. Genuine shared-directory fallback verifies the original sealed
+consumer grant, finite inventory, domain/profile refusal, reads with policy
+held and refusal after release, alongside every earlier cache lifecycle
+control. This component result grants no tier readiness or task acceptance.
+Its following owning-gate client is deliberately stopped with an intact source
+guard before applying the known test-lint correction. Successor `9dfae564f0`
+changes only those same three test files and restarts qualification; the
+cancelled owning gate is not credited as passing. Its SDK and Linux strict
+profiles, formatter pair, crate graph, exact unsafe audit and native quota VM
+pass. The next residence witness at `ffe88bf85e` exercises three genuine grants
+over the shared repeated chunk and two nonzero tails of two actual sealed
+manifests. It checks policy-held reads and independent release revocation;
+the supervisor additionally requires the original backing hashes, three real
+grace promises and separate future holds. Original cases, selectors and
+runtime bounds remain unchanged. Its SDK strict profiles, formatter pair,
+crate graph and exact unsafe audit pass. Native strict qualification rejects a
+direct wall-clock call in the new fixture; `2fd26aa7cf` routes that same real
+90-second deadline through the existing `Clock` provider without suppressing
+the lint. The failed receipt is retained. Corrected qualification passes all
+three strict Linux profiles and private docs, then the complete native VM in
+447.057 seconds. Independent review matches all 5,097 source inputs, four
+original Cargo executables, 55 selected native unit cases and the original 48
+selectors. The actual manifest-range, held-policy, independent release and
+supervisor grace/funding controls all pass. Owning and complete trunk gates
+remain pending; this component result accepts no T2 task.
+
+HOST-32 implementation `977ebe2108`, under qualification at `8956e89150`, adds startup
+cleanup for the existing generated chunk scratch names. It preflights every
+candidate's grammar, original inode, owner, mode and project before any unlink,
+then checks each actual link-count change and synchronized parent removal.
+Multiple temporary links to the same inode preserve surviving aliases; the
+post-cleanup namespace is observed before any content adoption. The physical
+owner retains the same publisher Drain context across these effects. Its
+formatter pair, crate graph, exact unsafe audit, three strict Linux profiles
+and private docs pass. The required Cargo example build also passes after
+waiting for the shared target lock. The independently compiled native VM passes
+in 449.275 seconds, with all 5,097 source inputs, four original Cargo executables,
+55 selected native unit cases and the original 48 selectors independently
+verified. It proves malformed-name and symlink refusal without deleting valid
+scratch, plus actual removal of both generated modes and multiple original
+inode links while independently retained descriptors preserve the original
+partial bytes. The parallel and original check clients consume the same single
+native derivation result. This is a chunk scratch recovery component; complete
+recovery, readiness and host-task acceptance remain open.
+All five T2 task checkboxes remain open. Encoded eviction, shared-chunk
+re-extraction, complete recovery/readiness and the stopped
+HOST-3/HOST-25/DOM-18 zero-wipe conflict remain outstanding; T3 and branch
+worklines remain unopened.
 
 Status: in progress, resumed without sub-agents (2026-10-17). T1's 22 tasks and
 89 current gates are complete; its identity, encoding, bucket-key and Store-trait

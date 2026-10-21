@@ -1457,7 +1457,9 @@ async fn ref_advance_ordering_cancelled_held_publication_releases_independent_wr
             .advance(&mut session, request(vec![first.commit]))
             .await
     });
-    tokio::time::timeout(Duration::from_secs(2), barrier.entered.notified())
+    // Authenticated preparation and real metadata IO precede this hook. Keep
+    // its arrival budget distinct from the exclusion and cancellation bounds.
+    tokio::time::timeout(Duration::from_secs(30), barrier.entered.notified())
         .await
         .unwrap();
     let mut competitor = tokio::spawn(async move {
