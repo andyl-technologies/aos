@@ -41,6 +41,14 @@ pub(super) enum Operation {
         native_reply_signature: String,
     },
     ExternalFinalize,
+    AcknowledgeCopyProgress {
+        after: u32,
+        through: u32,
+    },
+    ReadCopiedParts {
+        after: u32,
+        through: u32,
+    },
     NativeCommit {
         record: DirectFinalGuardRecord,
         public_body: String,
@@ -61,6 +69,14 @@ pub(super) enum Reply {
         record: DirectFinalGuardRecord,
     },
     Acknowledged,
+    // Older executors reject these variants before provider dispatch. A missing
+    // progress journal starts at zero and reuses only exact positive receipts.
+    CopyProgress {
+        copied_through: u32,
+    },
+    CopiedParts {
+        parts: Vec<DirectManifestPart>,
+    },
     Unsettled,
 }
 
@@ -285,7 +301,7 @@ pub(crate) async fn promote_external(
     native_reply_body: &[u8],
     native_reply_signature: &str,
     signal: Option<worker::web_sys::AbortSignal>,
-) -> Result<(DirectPlacementEvidence, DirectFinalGuardRecord)> {
+) -> Result<Option<(DirectPlacementEvidence, DirectFinalGuardRecord)>> {
     use crate::direct_upload::verification;
     use aos_hub_db::storage_authority::external_object::stage::ExternalStageOperation as Action;
     use aos_hub_db::storage_authority::external_object::stage::ExternalStageOutcome as Outcome;
@@ -304,11 +320,11 @@ pub(crate) async fn promote_external(
             native_reply_signature: native_reply_signature.into(),
         },
     };
-    match call(env, &turn).await? {
-        Reply::Final { evidence, record } => return Ok((evidence, record)),
-        Reply::Acknowledged => {}
+    let copied_through = match call(env, &turn).await? {
+        Reply::Final { evidence, record } => return Ok(Some((evidence, record))),
+        Reply::CopyProgress { copied_through } => copied_through,
         _ => anyhow::bail!("direct external publication authorization differs"),
-    }
+    };
     let verified = verification::retained(env, admission, complete, placement_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("direct external verified source absent"))?;
@@ -343,35 +359,81 @@ pub(crate) async fn promote_external(
             // A large object must not serialize hundreds of independent SDK
             // copies inside one foreground window. Each wave still uses the
             // shared provider pool and the original signed permission.
-            let copied = super::copy_parts::copy_parts(&parts, |original| {
-                let upload_id = upload_id.clone();
-                let receipt_digest = receipt_digest.clone();
-                let signal = signal.clone();
-                let operation_id = step(&format!("final-copy:{}", original.part.part_number));
+            let wave = super::copy_progress::next_wave(parts.len(), copied_through)?;
+            let start = wave.start;
+            let end = wave.end;
+            if start < end {
+                super::copy_parts::copy_parts(&parts[start..end], |original| {
+                    let upload_id = upload_id.clone();
+                    let receipt_digest = receipt_digest.clone();
+                    let signal = signal.clone();
+                    let operation_id = step(&format!("final-copy:{}", original.part.part_number));
 
-                async move {
-                    let work = crate::external_object::prepare_stage_request(
-                        env,
-                        admission,
-                        placement_id,
-                        operation_id?,
-                        Action::CopyDestinationPart {
-                            upload_id,
-                            verified_stage_receipt_digest: receipt_digest,
-                            part: original.part.clone(),
-                        },
-                    )
-                    .await?;
-                    let receipt =
-                        crate::external_object::execute_stage_with_signal(env, &work, signal)
-                            .await?;
-                    let Outcome::Copied { part, etag } = receipt.outcome else {
-                        anyhow::bail!("direct external copied part acknowledgement differs");
-                    };
-                    Ok(DirectManifestPart { part, etag })
+                    async move {
+                        let work = crate::external_object::prepare_stage_request(
+                            env,
+                            admission,
+                            placement_id,
+                            operation_id?,
+                            Action::CopyDestinationPart {
+                                upload_id,
+                                verified_stage_receipt_digest: receipt_digest,
+                                part: original.part.clone(),
+                            },
+                        )
+                        .await?;
+                        let receipt =
+                            crate::external_object::execute_stage_with_signal(env, &work, signal)
+                                .await?;
+                        let Outcome::Copied { part, etag } = receipt.outcome else {
+                            anyhow::bail!("direct external copied part acknowledgement differs");
+                        };
+                        Ok(DirectManifestPart { part, etag })
+                    }
+                })
+                .await?;
+                turn.operation = Operation::AcknowledgeCopyProgress {
+                    after: copied_through,
+                    through: u32::try_from(end)?,
+                };
+                ensure!(
+                    matches!(call(env, &turn).await?, Reply::CopyProgress { copied_through }
+                        if usize::try_from(copied_through).ok() == Some(end)),
+                    "direct copied prefix acknowledgement differs"
+                );
+                // A drained wave has no outstanding mutations. A later exact
+                // Complete renews authorization for the same retained owner.
+                // Keep final closure separate after a large copy wave.
+                if end < parts.len()
+                    || parts.len() > super::copy_progress::MAX_COPY_PARTS_PER_INVOCATION
+                {
+                    return Ok(None);
                 }
-            })
-            .await?;
+            }
+            let mut copied = Vec::with_capacity(parts.len());
+            for page_start in
+                (0..parts.len()).step_by(crate::external_object::MAX_PENDING_DESTINATION_PARTS)
+            {
+                let page_end = page_start
+                    .saturating_add(crate::external_object::MAX_PENDING_DESTINATION_PARTS)
+                    .min(parts.len());
+                turn.operation = Operation::ReadCopiedParts {
+                    after: u32::try_from(page_start)?,
+                    through: u32::try_from(page_end)?,
+                };
+                let Reply::CopiedParts { parts: page } = call(env, &turn).await? else {
+                    anyhow::bail!("direct copied part page acknowledgement differs");
+                };
+                ensure!(
+                    page.len() == page_end - page_start
+                        && page
+                            .iter()
+                            .zip(&parts[page_start..page_end])
+                            .all(|(actual, original)| actual.part == original.part),
+                    "direct copied part page geometry changed"
+                );
+                copied.extend(page);
+            }
             let final_manifest = DirectManifestCommitment {
                 placement: manifest.placement.clone(),
                 manifest_digest: canonical_manifest_digest(
@@ -399,7 +461,7 @@ pub(crate) async fn promote_external(
     }
     turn.operation = Operation::ExternalFinalize;
     match call(env, &turn).await? {
-        Reply::Final { evidence, record } => Ok((evidence, record)),
+        Reply::Final { evidence, record } => Ok(Some((evidence, record))),
         _ => anyhow::bail!("direct external independently retained publication differs"),
     }
 }

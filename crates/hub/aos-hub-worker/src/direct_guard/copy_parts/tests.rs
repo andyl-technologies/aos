@@ -8,6 +8,62 @@ use super::copy_parts;
 use crate::direct_upload::provider_capacity::{self, Class};
 use crate::external_object::MAX_PENDING_DESTINATION_PARTS;
 
+#[tokio::test]
+async fn acknowledged_copy_waves_resume_without_repeating_provider_effects() {
+    let originals = parts(256);
+    let mut cursor = 0;
+    let mut retained = Vec::new();
+    let dispatched = &std::cell::RefCell::new(Vec::new());
+
+    for _ in 0..8 {
+        let wave = crate::direct_guard::copy_progress::next_wave(originals.len(), cursor).unwrap();
+        let through = u32::try_from(wave.end).unwrap();
+        let copied = copy_parts(&originals[wave], |part| async move {
+            dispatched.borrow_mut().push(part.part.part_number);
+            tokio::task::yield_now().await;
+            Ok(DirectManifestPart {
+                part: part.part.clone(),
+                etag: format!("\"acknowledged-{}\"", part.part.part_number),
+            })
+        })
+        .await
+        .unwrap();
+
+        crate::direct_guard::copy_progress::validate_advance(cursor, cursor, through, 256).unwrap();
+        retained.extend(copied);
+        cursor = through;
+    }
+
+    assert_eq!(cursor, 256);
+    assert!(
+        crate::direct_guard::copy_progress::next_wave(originals.len(), cursor)
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(*dispatched.borrow(), (1..=256).collect::<Vec<_>>());
+    assert_eq!(retained.len(), originals.len());
+    for (original, acknowledged) in originals.iter().zip(retained) {
+        assert_eq!(original.part, acknowledged.part);
+        assert_eq!(
+            acknowledged.etag,
+            format!("\"acknowledged-{}\"", original.part.part_number)
+        );
+    }
+}
+
+#[test]
+fn copy_progress_rejects_skipped_changed_and_oversized_waves() {
+    use crate::direct_guard::copy_progress::{next_wave, validate_advance};
+
+    validate_advance(0, 0, 64, 256).unwrap();
+    validate_advance(64, 0, 64, 256).unwrap();
+    assert!(validate_advance(0, 64, 128, 256).is_err());
+    assert!(validate_advance(64, 0, 32, 256).is_err());
+    assert!(validate_advance(0, 0, 65, 256).is_err());
+    assert!(validate_advance(256, 256, 257, 256).is_err());
+    assert!(next_wave(256, 257).is_err());
+}
+
 fn parts(count: u32) -> Vec<DirectManifestPart> {
     (1..=count)
         .map(|number| DirectManifestPart {

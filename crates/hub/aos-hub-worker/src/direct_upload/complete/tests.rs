@@ -367,7 +367,7 @@ impl Runtime for PhysicalFixture {
         &self,
         mut reserved: Reserved,
         permission: &LogicalReply,
-    ) -> Result<Published> {
+    ) -> Result<Option<Published>> {
         ensure!(!self.metadata_only, "historical provider promotion refused");
         let baseline = &reserved.baselines[0];
         let allowed = permission
@@ -398,7 +398,7 @@ impl Runtime for PhysicalFixture {
         self.promotion_inflight
             .set(self.promotion_inflight.get() - 1);
         reserved.ready.settled.push(original.settled);
-        finish(reserved.ready, &permission.context)
+        finish(reserved.ready, &permission.context).map(Some)
     }
 
     async fn acknowledge(
@@ -554,6 +554,86 @@ async fn batches_use_four_actual_http_phase_calls_and_keep_partial_errors() {
 }
 
 #[tokio::test]
+async fn bounded_publications_resume_unselected_originals_without_repeating_effects() {
+    let fixtures = (0..super::MAX_FOREGROUND_COPY_PARTS * 2)
+        .map(fixture)
+        .collect::<Vec<_>>();
+    let (context, public_bytes) = public(&fixtures);
+    let server = http::Server::start(fixtures.clone(), None, false).await;
+    let runtime = PhysicalFixture::new(fixtures.clone(), server.transport());
+    let originals = fixtures
+        .iter()
+        .map(|item| item.complete.clone())
+        .collect::<Vec<_>>();
+    let mut first = response();
+
+    run(
+        &runtime,
+        &context,
+        &public_bytes,
+        originals.clone(),
+        &mut first,
+    )
+    .await;
+
+    first.validate().unwrap();
+    assert!(first.errors.is_empty());
+    assert_eq!(runtime.store.count(), super::MAX_FOREGROUND_COPY_PARTS);
+    assert_eq!(
+        first
+            .sessions
+            .iter()
+            .filter(|status| status.state == DirectSessionState::Committed)
+            .count(),
+        super::MAX_FOREGROUND_COPY_PARTS
+    );
+    assert!(first.sessions.iter().all(|status| matches!(
+        status.state,
+        DirectSessionState::Committed | DirectSessionState::Freezing
+    )));
+
+    let mut next = context.clone();
+    next.request_nonce = digest("next-bounded-completion-request");
+    next.foreground.invocation_id = digest("next-bounded-foreground-invocation");
+    let mut second = response();
+
+    run(
+        &runtime,
+        &next,
+        &public_bytes,
+        originals.clone(),
+        &mut second,
+    )
+    .await;
+
+    second.validate().unwrap();
+    assert!(second.errors.is_empty());
+    assert_eq!(runtime.store.count(), originals.len());
+    assert_eq!(runtime.promotion_order.borrow().len(), originals.len());
+    assert_eq!(
+        runtime
+            .promotion_order
+            .borrow()
+            .iter()
+            .collect::<BTreeSet<_>>()
+            .len(),
+        originals.len()
+    );
+    assert!(second
+        .sessions
+        .iter()
+        .all(|status| status.state == DirectSessionState::Committed));
+    for envelope in server.captured().requests {
+        if let DirectUploadLogicalRequest::Authorize { sessions, .. } = envelope.request {
+            for session in sessions {
+                assert!(originals.contains(session.complete_intent.as_ref().unwrap()));
+            }
+        }
+    }
+    server.stop().await;
+}
+
+#[tokio::test]
 async fn lost_http_commit_reply_holds_guards_and_replays_exact_old_complete() {
     let fixtures = (0..4).map(fixture).collect::<Vec<_>>();
     let (context, public_bytes) = public(&fixtures);
@@ -649,7 +729,7 @@ async fn historical_complete_missing_positive_never_enters_provider_phases() {
 }
 
 #[tokio::test]
-async fn full_metadata_batch_keeps_four_bounded_http_calls() {
+async fn full_metadata_batch_keeps_four_bounded_http_calls_for_one_copy_budget() {
     let _ = crate::direct_upload::observation::take_events();
     let fixtures = (0..MAX_DIRECT_BATCH_ITEMS).map(fixture).collect::<Vec<_>>();
     let (context, public_bytes) = public(&fixtures);
@@ -678,7 +758,19 @@ async fn full_metadata_batch_keeps_four_bounded_http_calls() {
         output.errors.len(),
         server.captured().requests.len()
     );
-    assert_eq!(runtime.acknowledged.borrow().len(), MAX_DIRECT_BATCH_ITEMS);
+    assert_eq!(
+        runtime.acknowledged.borrow().len(),
+        super::MAX_FOREGROUND_COPY_PARTS
+    );
+    assert_eq!(output.sessions.len(), MAX_DIRECT_BATCH_ITEMS);
+    assert_eq!(
+        output
+            .sessions
+            .iter()
+            .filter(|status| status.state == DirectSessionState::Freezing)
+            .count(),
+        MAX_DIRECT_BATCH_ITEMS - super::MAX_FOREGROUND_COPY_PARTS
+    );
     assert_eq!(capture.requests.len(), 4);
     assert_eq!(capture.reply_bytes.len(), 4);
     assert!(capture
@@ -723,7 +815,11 @@ async fn full_metadata_batch_keeps_four_bounded_http_calls() {
         assert_eq!(request.control.as_ref().unwrap().step, steps[index]);
         assert_eq!(
             request.control.as_ref().unwrap().sessions.len(),
-            MAX_DIRECT_BATCH_ITEMS
+            if index == 0 {
+                MAX_DIRECT_BATCH_ITEMS
+            } else {
+                super::MAX_FOREGROUND_COPY_PARTS
+            }
         );
         assert_eq!(request.attempt_digest, reply.attempt_digest);
         assert!(reply.control.as_ref().unwrap().reply_body_digest.is_some());

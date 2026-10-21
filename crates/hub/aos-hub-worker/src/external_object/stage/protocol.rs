@@ -70,6 +70,44 @@ pub(super) struct Receipt {
 }
 
 impl Receipt {
+    /// Projects an independently retained acknowledgement for one exact copy.
+    ///
+    /// # Errors
+    /// Refuses a malformed receipt or a different original, source, upload or part.
+    pub(super) fn copied_part_for(
+        &self,
+        context: &ExternalStageContext,
+        operation_id: &str,
+        source_receipt_digest: &str,
+        upload_id: &str,
+        number: u32,
+    ) -> Result<DirectManifestPart> {
+        self.validate()?;
+        let ExternalStageOperation::CopyDestinationPart {
+            upload_id: actual_upload,
+            part,
+            verified_stage_receipt_digest,
+        } = &self.turn.intent.operation
+        else {
+            anyhow::bail!("direct destination copy effect differs");
+        };
+        ensure!(
+            self.turn.intent.context == *context
+                && self.turn.intent.operation_id == operation_id
+                && actual_upload == upload_id
+                && part.part_number == number
+                && verified_stage_receipt_digest == source_receipt_digest,
+            "direct destination positive copy original changed"
+        );
+        let ExternalStageOutcome::Copied { part, etag } = &self.outcome else {
+            anyhow::bail!("direct destination positive copy outcome differs");
+        };
+        Ok(DirectManifestPart {
+            part: part.clone(),
+            etag: etag.clone(),
+        })
+    }
+
     pub(super) fn validate(&self) -> Result<()> {
         self.turn.intent.validate()?;
         ensure!(

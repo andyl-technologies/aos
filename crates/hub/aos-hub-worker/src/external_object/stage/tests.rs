@@ -1,5 +1,7 @@
 //! Signed issuer fixtures for private staging, concurrent parts and closure.
 
+mod copy_receipts;
+
 use std::cell::RefCell;
 
 use aos_hub_db::storage_authority::control::StorageAuthorityPublication;

@@ -32,8 +32,8 @@ mod storage;
 
 #[cfg(target_arch = "wasm32")]
 pub(crate) use direct_guard::{
-    check_direct_available, direct_abort, direct_baseline, direct_final, direct_source,
-    prepare_direct_destination,
+    acknowledged_destination_parts, check_direct_available, direct_abort, direct_baseline,
+    direct_final, direct_source, prepare_direct_destination,
 };
 
 #[cfg(target_arch = "wasm32")]

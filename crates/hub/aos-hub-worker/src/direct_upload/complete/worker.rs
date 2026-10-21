@@ -80,7 +80,11 @@ impl Runtime for WorkerRuntime<'_> {
         .await
     }
 
-    async fn promote(&self, reserved: Reserved, permission: &LogicalReply) -> Result<Published> {
+    async fn promote(
+        &self,
+        reserved: Reserved,
+        permission: &LogicalReply,
+    ) -> Result<Option<Published>> {
         let qualified = self
             .qualified
             .ok_or_else(|| anyhow::anyhow!("direct historical promotion refused"))?;
@@ -278,7 +282,7 @@ async fn promote(
     reserved: Reserved,
     permission: &LogicalReply,
     signal: worker::web_sys::AbortSignal,
-) -> Result<Published> {
+) -> Result<Option<Published>> {
     let Reserved {
         mut ready,
         baselines,
@@ -315,7 +319,7 @@ async fn promote(
                 .await?
             }
             DirectPhysicalContext::External { .. } => {
-                crate::direct_guard::promote_external(
+                let Some(published) = crate::direct_guard::promote_external(
                     env,
                     &ready.admission,
                     &ready.complete,
@@ -330,6 +334,10 @@ async fn promote(
                     Some(signal.clone()),
                 )
                 .await?
+                else {
+                    return Ok(None);
+                };
+                published
             }
         };
         guard.validate_placement_for(
@@ -341,6 +349,11 @@ async fn promote(
         ready
             .settled
             .push(DirectSettledPlacement { evidence, guard });
+        // One selected original charges one placement's bounded copy work.
+        // Other placements resume from their independently retained receipts.
+        if ready.settled.len() != ready.admission.placements.len() {
+            return Ok(None);
+        }
     }
-    finish(ready, &permission.context)
+    finish(ready, &permission.context).map(Some)
 }

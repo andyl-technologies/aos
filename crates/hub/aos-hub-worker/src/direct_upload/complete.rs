@@ -36,7 +36,11 @@ trait Runtime {
         complete: DirectCompleteRequest,
     ) -> Result<Option<Ready>>;
     async fn reserve(&self, context: &DirectRequestContext, ready: Ready) -> Result<Reserved>;
-    async fn promote(&self, reserved: Reserved, permission: &LogicalReply) -> Result<Published>;
+    async fn promote(
+        &self,
+        reserved: Reserved,
+        permission: &LogicalReply,
+    ) -> Result<Option<Published>>;
     async fn acknowledge(
         &self,
         item: &Published,
@@ -54,6 +58,12 @@ async fn fresh_logical<R: Runtime>(
         .logical(&runtime.fresh_context(context)?, value)
         .await
 }
+
+// A public batch bounds control bytes, not the number of physical publications
+// that fit inside one original foreground window. Unselected originals remain
+// frozen and are reconsidered by the next exact Complete request.
+const MAX_FOREGROUND_COPY_PARTS: usize =
+    crate::direct_guard::copy_progress::MAX_COPY_PARTS_PER_INVOCATION;
 
 #[cfg(target_arch = "wasm32")]
 pub(super) async fn execute(
@@ -267,6 +277,29 @@ async fn run<R: Runtime>(
         }
     }
 
+    let mut remaining_copies = MAX_FOREGROUND_COPY_PARTS;
+    pending.retain(|ready| {
+        let cost = ready
+            .admission
+            .intent
+            .part_count()
+            .map(|parts| parts.clamp(1, MAX_FOREGROUND_COPY_PARTS as u32) as usize);
+        match cost {
+            Ok(cost) if cost <= remaining_copies => {
+                remaining_copies -= cost;
+                true
+            }
+            Ok(_) => false,
+            Err(error) => {
+                let error = anyhow::Error::from(error);
+                response
+                    .errors
+                    .push(item_error(&ready.complete.operation_id, &error));
+                false
+            }
+        }
+    });
+
     if !pending.is_empty() {
         let value = phase(
             &pending,
@@ -350,7 +383,8 @@ async fn run<R: Runtime>(
                 merge_reply(response, reply.reply);
                 for (identity, result) in promoted {
                     match result {
-                        Ok(item) => published.push(item),
+                        Ok(Some(item)) => published.push(item),
+                        Ok(None) => {}
                         Err(error) => response.errors.push(item_error(&identity, &error)),
                     }
                 }

@@ -184,9 +184,35 @@ async fn handle(request: &mut Request, env: &Env, state: &State) -> Result<Reply
                     &authorization,
                 )
                 .await?;
-                Ok(Reply::Acknowledged)
+                Ok(Reply::CopyProgress {
+                    copied_through: super::copy_progress::journal::read(&storage, &owner).await?,
+                })
             } else {
                 managed_promote(env, &storage, &turn, owner, source, &qualified, permission).await
+            }
+        }
+        Operation::AcknowledgeCopyProgress { after, through }
+        | Operation::ReadCopiedParts { after, through } => {
+            let owner = retained(&storage).await?;
+            check_originals(&owner, &turn, &selected)?;
+            ensure!(
+                matches!(placement.physical, DirectPhysicalContext::External { .. })
+                    && owner.final_record.is_none()
+                    && !owner.native_committed,
+                "direct copy progress requires its held external owner"
+            );
+            if matches!(turn.operation, Operation::AcknowledgeCopyProgress { .. }) {
+                let copied_through = super::copy_progress::journal::acknowledge(
+                    env, &storage, &turn, &owner, *after, *through,
+                )
+                .await?;
+                Ok(Reply::CopyProgress { copied_through })
+            } else {
+                let parts = super::copy_progress::journal::parts(
+                    env, &storage, &turn, &owner, *after, *through,
+                )
+                .await?;
+                Ok(Reply::CopiedParts { parts })
             }
         }
         Operation::ExternalFinalize => {

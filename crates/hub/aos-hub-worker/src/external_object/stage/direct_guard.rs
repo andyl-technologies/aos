@@ -26,6 +26,72 @@ use super::{
     storage::load_receipt,
 };
 
+/// Checks a contiguous destination prefix against actual retained copy receipts.
+///
+/// # Errors
+/// Refuses an unresolved effect, changed destination owner or upload, missing
+/// positive copy receipt, or different original part geometry.
+pub(crate) async fn acknowledged_destination_parts(
+    env: &Env,
+    storage: &Storage,
+    admission: &DirectUploadAdmission,
+    complete: &DirectCompleteRequest,
+    placement_id: WireInteger,
+    after: u32,
+    through: u32,
+) -> Result<Vec<DirectManifestPart>> {
+    ensure!(
+        through > after
+            && through - after <= super::state::MAX_PENDING_DESTINATION_PARTS as u32
+            && through <= admission.intent.part_count()?,
+        "direct destination copy progress range differs"
+    );
+    check_direct_available(env, storage, admission, placement_id).await?;
+    let deployment = env.var("HUB_DEPLOYMENT_ID")?.to_string();
+    let context = ExternalStageContext::from_admission(admission, placement_id, &deployment)?;
+    let head = load_head(storage)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("direct destination copy head absent"))?;
+    let stage = head
+        .stage
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("direct destination copy session absent"))?;
+    ensure!(
+        stage.context == context && stage.phase == super::state::Phase::DestinationActive,
+        "direct destination copy session changed"
+    );
+    let source = stage
+        .source
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("direct destination immutable source absent"))?;
+    let source_receipt_digest = digest(&source.verified)?;
+    source.validate(&context, &source_receipt_digest)?;
+    let upload_id = stage
+        .upload_id
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("direct destination provider upload absent"))?;
+    let mut parts = Vec::new();
+    for number in after + 1..=through {
+        let operation = crate::direct_upload::verification::step_id(
+            admission,
+            placement_id,
+            &complete.operation_id,
+            &format!("final-copy:{number}"),
+        )?;
+        let receipt = load_receipt(storage, &operation)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("direct destination positive copy absent"))?;
+        parts.push(receipt.copied_part_for(
+            &context,
+            &operation,
+            &source_receipt_digest,
+            upload_id,
+            number,
+        )?);
+    }
+    Ok(parts)
+}
+
 /// Checks old physical uncertainty before a new direct reservation is admitted.
 ///
 /// # Errors

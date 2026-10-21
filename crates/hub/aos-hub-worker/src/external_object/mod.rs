@@ -94,12 +94,12 @@ pub(crate) fn projection_guard_key(
 #[cfg(target_arch = "wasm32")]
 pub(crate) use stage::resolve_external_profiles;
 #[cfg(target_arch = "wasm32")]
-pub(crate) use stage::{admit_stage_read, read_stage_metadata};
-#[cfg(target_arch = "wasm32")]
 pub(crate) use stage::{
-    check_direct_available, direct_abort, direct_baseline, direct_final, direct_source,
-    prepare_direct_destination,
+    acknowledged_destination_parts, check_direct_available, direct_abort, direct_baseline,
+    direct_final, direct_source, prepare_direct_destination,
 };
+#[cfg(target_arch = "wasm32")]
+pub(crate) use stage::{admit_stage_read, read_stage_metadata};
 #[cfg(target_arch = "wasm32")]
 pub(crate) use stage::{
     execute_stage, execute_stage_observed, execute_stage_with_signal, fetch as fetch_stage,
