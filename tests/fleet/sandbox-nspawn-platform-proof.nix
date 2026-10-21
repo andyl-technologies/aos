@@ -184,7 +184,7 @@
     ../../systems/server-test.nix
     {
       environment.systemPackages = [
-        pkgs.glibc.bin
+        pkgs.glibc-tools
         pkgs.iproute2
         pkgs.jq
         pkgs.nftables
@@ -354,7 +354,7 @@ in {
 
     version = vm.succeed("${pkgs.systemd}/bin/systemd-nspawn --version")
     assert version.splitlines()[0] == "systemd 261 (261.2)", version
-    assert vm.succeed("${pkgs.glibc.bin}/bin/getconf PAGE_SIZE").strip() == "${toString pkgs.stdenv.hostPlatform.pageSize}"
+    assert vm.succeed("${pkgs.glibc-tools}/bin/getconf PAGE_SIZE").strip() == "${toString pkgs.stdenv.hostPlatform.pageSize}"
     assert "${passtVersion}" in vm.succeed("${pkgs.passt}/bin/passt --version 2>&1")
     assert "${passtVersion}" in vm.succeed("${pkgs.passt}/bin/pasta --version 2>&1")
     vm.fail("test -e /run/systemd/machines/aos-proof")
