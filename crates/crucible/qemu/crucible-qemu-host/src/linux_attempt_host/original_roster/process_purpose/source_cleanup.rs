@@ -50,7 +50,7 @@ impl SourceCleanupLender {
     pub(crate) fn controller(
         &self,
     ) -> Result<
-        Arc<crate::linux_attempt_host::original_node::OriginalNativeFreshLaunchError>,
+        crate::linux_attempt_host::original_node::RetainedNativeFreshLaunchError,
         OriginalActorAccountError,
     > {
         let roster = self
@@ -80,7 +80,7 @@ impl SourceCleanupLender {
         }
         slot.source_controller
             .as_ref()
-            .map(Arc::clone)
+            .cloned()
             .ok_or(OriginalActorAccountError::Unavailable)
     }
 
@@ -97,7 +97,7 @@ impl SourceCleanupLender {
         };
         let original = attempt.cleanup_entry()?;
         let current = self.controller()?;
-        if !Arc::ptr_eq(&controller, &current) || !controller.cleanup_matches(&original) {
+        if !controller.same_owner(&current) || !controller.cleanup_matches(&original) {
             return Err(OriginalActorAccountError::Unavailable);
         }
         Ok(SourceCleanupOriginal {

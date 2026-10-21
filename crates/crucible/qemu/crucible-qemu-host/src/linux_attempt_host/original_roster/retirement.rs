@@ -67,7 +67,7 @@ impl OriginalNativeAccountRoster {
                     .slots
                     .get(index)
                     .and_then(|slot| slot.source_controller.as_ref())
-                    .map(Arc::clone)
+                    .cloned()
             };
             // No roster lock crosses process/RAM work or destroys its aliases.
             if let Some(retained) = retained {

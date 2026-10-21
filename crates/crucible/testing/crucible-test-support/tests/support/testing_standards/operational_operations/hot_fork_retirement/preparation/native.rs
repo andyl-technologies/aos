@@ -160,7 +160,7 @@ impl RetainedFreshPreparation {
     #[cfg(target_os = "linux")]
     pub(super) fn record_native_failure(
         &mut self,
-        receiver: &Arc<crucible_qemu_host::OriginalNativeFreshLaunchError>,
+        receiver: &crucible_qemu_host::RetainedNativeFreshLaunchError,
     ) {
         let matches = self.native == NativeLaunchProgress::Returned
             && self.receiver.as_ref().is_some_and(|saved| saved.matches_controller(receiver));
@@ -435,8 +435,8 @@ pub(super) const BIRTH: Companion = Companion {
         if let Err(error) = preparation {
             if let Some(source) = error.retained_receiver() {
                 return Err(LifecycleApiError::BackendConstruction {
-                    source: crucible_control_api::LifecycleBackendConstructionError::from_shared(
-                        source,
+                    source: crucible_control_api::LifecycleBackendConstructionError::from_operational(
+                        source.backend_cause(),
                     ),
                 });
             }
@@ -517,8 +517,8 @@ pub(super) const BIRTH: Companion = Companion {
                 preparation.record_native_failure(&source);
                 self.owner.quarantine_original_launch();
                 return Err(LifecycleApiError::BackendConstruction {
-                    source: crucible_control_api::LifecycleBackendConstructionError::from_shared(
-                        source,
+                    source: crucible_control_api::LifecycleBackendConstructionError::from_operational(
+                        source.backend_cause(),
                     ),
                 });
             }
@@ -575,23 +575,35 @@ pub(super) const NATIVE_RETURN: Companion = Companion {
         ),
         (
             r#"pub(crate) fn reserve_child_owner(
-    self: &Arc<Self>,
+    &self,
     lender: super::SourceCleanupLender,
     supervisor: crucible_host_resources::host_supervision::HostOperationSupervisor,
 ) -> Result<crate::node::SourceLaunchReservation, OriginalActorAccountError> {
     let current = lender.controller()?;
-    if !Arc::ptr_eq(self, &current) || self.primary.get().is_some() {
+    if !std::ptr::eq(self, current.as_ref()) || self.primary.get().is_some() {
         return Err(OriginalActorAccountError::Unavailable);
     }
-    let retained = self.node.try_lock().map_err(|_| OriginalActorAccountError::Unavailable)?;
+    let retained = self
+        .node
+        .try_lock()
+        .map_err(|_| OriginalActorAccountError::Unavailable)?;
     if retained.owner.is_some()
-        || self.child_borrowed.compare_exchange(
-            false, true, std::sync::atomic::Ordering::AcqRel,
-            std::sync::atomic::Ordering::Acquire,
-        ).is_err()
-    { return Err(OriginalActorAccountError::Unavailable); }
+        || self
+            .child_borrowed
+            .compare_exchange(
+                false,
+                true,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+            )
+            .is_err()
+    {
+        return Err(OriginalActorAccountError::Unavailable);
+    }
     drop(retained);
-    Ok(crate::node::SourceLaunchReservation::new(Arc::clone(self), lender, supervisor,))
+    Ok(crate::node::SourceLaunchReservation::new(
+        current, lender, supervisor,
+    ))
 }"#,
             1,
         ),
@@ -732,7 +744,7 @@ pub(super) const ISSUED_RETURN: Companion = Companion {
     required: &[
         (
             r#"pub(crate) fn new(
-    receiver: Arc<crate::linux_attempt_host::OriginalNativeFreshLaunchError>,
+    receiver: crate::linux_attempt_host::RetainedNativeFreshLaunchError,
     lender: crate::linux_attempt_host::SourceCleanupLender,
     supervisor: HostOperationSupervisor,
 ) -> Self { Self { receiver, lender, supervisor, armed: true, } }"#,
@@ -753,7 +765,7 @@ pub(super) const ISSUED_RETURN: Companion = Companion {
     let process_id = child.process_id();
     let body = FailedBody::Child(RetainedChild::new(child, Some(&self.supervisor)));
     let owner = IssuedLaunchOwner {
-        body: Some(body), receiver: Some(Arc::clone(&self.receiver)),
+        body: Some(body), receiver: Some(self.receiver.clone()),
         lender: Some(self.lender.clone()), process_id,
     };
     self.armed = false;
@@ -870,7 +882,7 @@ pub(super) const NATIVE_ISSUER: Companion = Companion {
         .map_err(|source| QemuLiveNodeStepGateError::OriginalNativeAccount { source })?;
     preparation.enter();
     let result = self.launch_original_node(
-        config, contract, &preparation.original, Arc::clone(&preparation.failure),
+        config, contract, &preparation.original, preparation.failure.clone(),
         complete, retain_refusal,
     );
     match result {

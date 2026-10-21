@@ -214,7 +214,7 @@ pub use linux_attempt_host::{
     OriginalNativeFreshLaunchError, OriginalNativeControlRetirement,
     OriginalNativePhysicalRetirement, QemuForkTargetConstructionError,
     QemuForkTargetConstructionLoan, QemuForkTargetLogicalReservation, QemuForkTargetPreparation,
-    QemuForkTargetRamAdmission, QemuIssuedHelperHistory,
+    QemuForkTargetRamAdmission, QemuIssuedHelperHistory, RetainedNativeFreshLaunchError,
 };
 #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
 #[doc(hidden)]

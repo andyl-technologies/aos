@@ -9,6 +9,7 @@ use crucible_host_resources::host_services::process_birth::AuthenticatedSourceHo
 use crucible_host_resources::ram_policy::HostResourceVector;
 
 use super::*;
+use crate::linux_attempt_host::original_node::retained_error::controller_peak_bytes;
 
 /// Names an actual retained Source reservation and execution incarnation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -342,6 +343,9 @@ pub(in crate::linux_attempt_host) fn source_host_peak()
             bytes.checked_add(crate::launch_cleanup::LaunchCleanup::retained_control_bytes()?)
         })
         .and_then(|bytes| bytes.checked_add(qmp_extent))
+        .and_then(|bytes| {
+            bytes.checked_add(controller_peak_bytes().ok()?)
+        })
         .and_then(|bytes| bytes.checked_add(source_extent))
         .and_then(|bytes| bytes.checked_add(crate::spawn::helper_receiver::retained_control_bytes()?))
         .and_then(|bytes| {

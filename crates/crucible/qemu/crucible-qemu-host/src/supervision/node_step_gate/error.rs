@@ -32,7 +32,7 @@ pub enum QemuLiveNodeStepGateError {
     OriginalNativeLaunch {
         /// The same existing shared control retained by the external slot.
         #[source]
-        source: std::sync::Arc<crate::linux_attempt_host::OriginalNativeFreshLaunchError>,
+        source: crate::linux_attempt_host::RetainedNativeFreshLaunchError,
     },
     /// The original prebirth startup owner or cancellation role refused.
     #[error(transparent)]

@@ -1,0 +1,349 @@
+//! Binds controller birth and typed/erased deallocation to the same Main loan.
+//!
+//! Every alias closes through the existing shared owner; nominal identity and
+//! allocation closure never substitute for actual child or Source return.
+
+use super::super::Companion;
+
+pub(super) const MAIN: Companion = Companion {
+    path: "crates/crucible/qemu/crucible-qemu-host/src/linux_attempt_host/native_account.rs",
+    required: &[(
+        r#"pub(super) fn prepare_launch_controller(
+        &self,
+    ) -> Result<RetainedNativeFreshLaunchError, OriginalActorAccountError> {
+        let origin = self
+            .original
+            .as_ref()
+            .ok_or(OriginalActorAccountError::Unavailable)?;
+        let Some(normal) = origin.normal.as_ref() else {
+            #[cfg(test)]
+            return Ok(OriginalNativeFreshLaunchError::prepare_unissued(
+                &origin.preparation,
+            ));
+            #[cfg(not(test))]
+            return Err(OriginalActorAccountError::Unavailable);
+        };
+        let (_, peak, descriptors) =
+            source_host_peak().map_err(|_| OriginalActorAccountError::Unavailable)?;
+        let host = normal.reserve_source_host_purpose(peak, descriptors, &origin.preparation)?;
+        let funding = LaunchControllerFunding::reserve(host, &origin.preparation)?;
+
+        Ok(OriginalNativeFreshLaunchError::prepare(
+            &origin.preparation,
+            funding,
+        ))
+    }"#,
+        1,
+    )],
+};
+
+pub(super) const CONTROLLER: Companion = Companion {
+    path: "crates/crucible/qemu/crucible-qemu-host/src/linux_attempt_host/original_node/retained_error.rs",
+    required: &[
+        (
+            r#"pub(in crate::linux_attempt_host) struct LaunchControllerFunding {
+    pub(in crate::linux_attempt_host) host: AuthenticatedSourceHostPurpose,
+    _control: SourceHostControlLease,
+}"#,
+            1,
+        ),
+        (
+            r#"impl LaunchControllerFunding {
+    /// Reserves the controller's actual Main loan before its shared allocation.
+    ///
+    /// # Errors
+    /// Refuses exhausted Main capacity or a different, expired Original.
+    pub(in crate::linux_attempt_host) fn reserve(
+        host: AuthenticatedSourceHostPurpose,
+        original: &HostOperationGuard,
+    ) -> Result<Self, OriginalActorAccountError> {
+        let bytes = controller_peak_bytes()?;
+        let control = host.reserve_controls(0, bytes)?;
+        control.verify_original_capacity(original, 0, bytes)?;
+
+        Ok(Self {
+            host,
+            _control: control,
+        })
+    }
+}"#,
+            1,
+        ),
+        (
+            r#"pub(in crate::linux_attempt_host) fn controller_peak_bytes()
+-> Result<u64, OriginalActorAccountError> {
+    SharedOperationalCause::<OriginalNativeFreshLaunchError>::allocation_bytes()
+        .ok()
+        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<OriginalNativeFreshLaunchError>()))
+        .and_then(|bytes| u64::try_from(bytes).ok())
+        .ok_or(OriginalActorAccountError::Unavailable)
+}"#,
+            1,
+        ),
+        (
+            r#"pub struct RetainedNativeFreshLaunchError {
+    source: SharedOperationalCause<OriginalNativeFreshLaunchError>,
+}"#,
+            1,
+        ),
+        (
+            r#"impl RetainedNativeFreshLaunchError {
+    pub(super) fn new(source: OriginalNativeFreshLaunchError) -> Self {
+        Self {
+            source: SharedOperationalCause::new(source),
+        }
+    }
+
+    /// Shares the same concrete original through the portable backend boundary.
+    ///
+    /// This observer allocates no new body and retains the original error's
+    /// downcast identity. It grants no operation, cleanup or return authority.
+    #[must_use]
+    pub fn backend_cause(&self) -> BackendOperationalCause {
+        self.source.backend_cause()
+    }
+
+    /// Compares existing controller allocations without authorizing their use.
+    #[must_use]
+    pub fn same_owner(&self, other: &Self) -> bool {
+        self.source == other.source
+    }
+}"#,
+            1,
+        ),
+        (
+            r#"impl Deref for RetainedNativeFreshLaunchError {
+    type Target = OriginalNativeFreshLaunchError;
+
+    fn deref(&self) -> &Self::Target {
+        self.source.source_ref()
+    }
+}"#,
+            1,
+        ),
+        (
+            r#"impl AsRef<OriginalNativeFreshLaunchError> for RetainedNativeFreshLaunchError {
+    fn as_ref(&self) -> &OriginalNativeFreshLaunchError {
+        self.source.source_ref()
+    }
+}"#,
+            1,
+        ),
+        (
+            r#"impl Error for RetainedNativeFreshLaunchError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(self.source.source_ref())
+    }
+}"#,
+            1,
+        ),
+    ],
+};
+pub(super) const ORIGINAL: Companion = Companion {
+    path: "crates/crucible/qemu/crucible-qemu-host/src/linux_attempt_host/original_node.rs",
+    required: &[
+        (
+            r#"pub struct OriginalNativeFreshLaunchError {
+    origin: Arc<HostOperationGuard>,
+    cleanup: OnceLock<Result<Arc<HostOperationGuard>, HostSupervisionError>>,
+    primary: OnceLock<FreshLaunchCause>,
+    original_after: OnceLock<HostSupervisionError>,
+    node: Mutex<RetainedLaunch>,
+    child_borrowed: std::sync::atomic::AtomicBool,
+    helper: Mutex<helper_receiver::HelperDebt>,
+    source_host: Option<retained_error::LaunchControllerFunding>,
+    helper_first: OnceLock<crucible_engine::SharedOperationalCause<crate::QemuSpawnError>>,
+    exact_launch: Mutex<Option<crate::QemuProductionExactRestoreLaunch>>,
+    workspace: Mutex<Option<crate::spawn::OriginalDeviceDigestWorkspace>>,
+}"#,
+            1,
+        ),
+        (
+            r#"pub(super) fn prepare(
+        origin: &Arc<HostOperationGuard>,
+        funding: retained_error::LaunchControllerFunding,
+    ) -> RetainedNativeFreshLaunchError {
+        Self::prepare_body(origin, Some(funding))
+    }"#,
+            1,
+        ),
+        (
+            r#"fn prepare_body(
+        origin: &Arc<HostOperationGuard>,
+        funding: Option<retained_error::LaunchControllerFunding>,
+    ) -> RetainedNativeFreshLaunchError {
+        RetainedNativeFreshLaunchError::new(Self {
+            origin: Arc::clone(origin),
+            cleanup: OnceLock::new(),
+            primary: OnceLock::new(),
+            original_after: OnceLock::new(),
+            node: Mutex::new(RetainedLaunch::default()),
+            child_borrowed: std::sync::atomic::AtomicBool::new(false),
+            helper: Mutex::new(helper_receiver::HelperDebt::default()),
+            source_host: funding,
+            helper_first: OnceLock::new(),
+            exact_launch: Mutex::new(None),
+            workspace: Mutex::new(None),
+        })
+    }"#,
+            1,
+        ),
+        (
+            r#"pub(super) fn retained_source_host(
+        &self,
+    ) -> Result<
+        &crucible_host_resources::host_services::process_birth::AuthenticatedSourceHostPurpose,
+        OriginalActorAccountError,
+    > {
+        self.source_host
+            .as_ref()
+            .map(|funding| &funding.host)
+            .ok_or(OriginalActorAccountError::Unavailable)
+    }"#,
+            1,
+        ),
+    ],
+};
+
+pub(super) const SHARED: Companion = Companion {
+    path: "crates/crucible/engine/crucible-engine/src/backend/shared_cause.rs",
+    required: &[
+        (
+            r#"pub struct SharedOperationalCause<E: Error + Send + Sync + 'static> {
+    shared: Option<Arc<E>>,
+}"#,
+            1,
+        ),
+        (
+            r#"pub fn new(source: E) -> Self {
+        Self {
+            shared: Some(Arc::new(source)),
+        }
+    }"#,
+            1,
+        ),
+        (
+            r#"pub fn backend_cause(&self) -> BackendOperationalCause {
+        BackendOperationalCause::from_shared(Arc::clone(self.shared()))
+    }"#,
+            1,
+        ),
+        (
+            r#"impl<E: Error + Send + Sync + 'static> Clone for SharedOperationalCause<E> {
+    fn clone(&self) -> Self {
+        Self {
+            shared: self.shared.clone(),
+        }
+    }
+}"#,
+            1,
+        ),
+        (
+            r#"impl<E: Error + Send + Sync + 'static> Drop for SharedOperationalCause<E> {
+    fn drop(&mut self) {
+        if let Some(shared) = self.shared.take() {
+            drop(Arc::into_inner(shared));
+        }
+    }
+}"#,
+            1,
+        ),
+        (
+            r#"impl<E: Error + Send + Sync + 'static> ClosedOperationalCause for E {
+    fn close(self: Arc<Self>) {
+        drop(Arc::into_inner(self));
+    }
+}"#,
+            1,
+        ),
+    ],
+};
+pub(super) const ERASED: Companion = Companion {
+    path: "crates/crucible/engine/crucible-engine/src/backend/error.rs",
+    required: &[
+        (
+            r#"impl Clone for BackendOperationalCause {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}"#,
+            1,
+        ),
+        (
+            r#"impl Drop for BackendOperationalCause {
+    fn drop(&mut self) {
+        if let Some(shared) = self.0.take() {
+            shared.close();
+        }
+    }
+}"#,
+            1,
+        ),
+        (
+            r#"pub(super) fn from_shared<E: Error + Send + Sync + 'static>(source: Arc<E>) -> Self {
+        Self(Some(source))
+    }"#,
+            1,
+        ),
+    ],
+};
+pub(super) const API: Companion = Companion {
+    path: "crates/crucible/control/crucible-control-api/src/lifecycle/backend_error.rs",
+    required: &[
+        (
+            r#"pub struct LifecycleBackendConstructionError {
+    source: BackendOperationalCause,
+}"#,
+            1,
+        ),
+        (
+            r#"pub fn from_operational(source: BackendOperationalCause) -> Self {
+        Self { source }
+    }"#,
+            1,
+        ),
+        (
+            r#"pub fn new(source: impl Error + Send + Sync + 'static) -> Self {
+        Self {
+            source: BackendOperationalCause::new(source),
+        }
+    }"#,
+            1,
+        ),
+        (
+            r#"impl Error for LifecycleBackendConstructionError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        self.source.source()
+    }
+}"#,
+            1,
+        ),
+    ],
+};
+
+pub(super) const CLAIM: Companion = Companion {
+    path: "crates/crucible/qemu/crucible-qemu-host/src/linux_attempt_host/original_roster.rs",
+    required: &[(
+        r#"let controller = slot
+            .credit
+            .as_ref()
+            .ok_or(OriginalActorAccountError::Unavailable)?
+            .prepare_launch_controller()?;
+        slot.source_controller = Some(controller);
+        slot.source_cleanup_assigned = false;
+        state.next_generation = next_generation;
+        state.slots[index].active = Some(generation);
+        // Publish the funded controller before the independent Original post.
+        // A refused post retains the same allocation and excludes slot reuse.
+        if let Err(error) = state.slots[index]
+            .credit
+            .as_ref()
+            .ok_or(OriginalActorAccountError::Unavailable)?
+            .require_original()
+        {
+            state.slots[index].launch_abandoned = true;
+            return Err(error);
+        }"#,
+        1,
+    )],
+};

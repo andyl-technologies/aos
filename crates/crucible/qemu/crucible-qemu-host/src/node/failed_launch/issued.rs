@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 /// Reserves the exact existing receiver before any native child effect.
 pub(crate) struct SourceLaunchReservation {
-    receiver: Arc<crate::linux_attempt_host::OriginalNativeFreshLaunchError>,
+    receiver: crate::linux_attempt_host::RetainedNativeFreshLaunchError,
     lender: crate::linux_attempt_host::SourceCleanupLender,
     supervisor: HostOperationSupervisor,
     armed: bool,
@@ -17,7 +17,7 @@ pub(crate) struct SourceLaunchReservation {
 
 impl SourceLaunchReservation {
     pub(crate) fn new(
-        receiver: Arc<crate::linux_attempt_host::OriginalNativeFreshLaunchError>,
+        receiver: crate::linux_attempt_host::RetainedNativeFreshLaunchError,
         lender: crate::linux_attempt_host::SourceCleanupLender,
         supervisor: HostOperationSupervisor,
     ) -> Self {
@@ -47,7 +47,7 @@ impl SourceLaunchReservation {
         let body = FailedBody::Child(RetainedChild::new(child, Some(&self.supervisor)));
         let owner = IssuedLaunchOwner {
             body: Some(body),
-            receiver: Some(Arc::clone(&self.receiver)),
+            receiver: Some(self.receiver.clone()),
             lender: Some(self.lender.clone()),
             process_id,
         };
@@ -67,7 +67,7 @@ impl Drop for SourceLaunchReservation {
 /// Keeps the actual child or full Node with its unique issued return route.
 pub(crate) struct IssuedLaunchOwner {
     body: Option<FailedBody>,
-    receiver: Option<Arc<crate::linux_attempt_host::OriginalNativeFreshLaunchError>>,
+    receiver: Option<crate::linux_attempt_host::RetainedNativeFreshLaunchError>,
     lender: Option<crate::linux_attempt_host::SourceCleanupLender>,
     process_id: u32,
 }
@@ -122,7 +122,7 @@ impl IssuedLaunchOwner {
             .ok_or(crate::ram_source::QemuRamSourceError::Ownership)?
             .controller()
             .map_err(|_| crate::ram_source::QemuRamSourceError::Ownership)?;
-        if !Arc::ptr_eq(receiver, &current) {
+        if !receiver.same_owner(&current) {
             return Err(crate::ram_source::QemuRamSourceError::Ownership);
         }
         let original = receiver.launch_original();

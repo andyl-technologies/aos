@@ -114,8 +114,8 @@ where
         if let Err(error) = preparation {
             if let Some(source) = error.retained_receiver() {
                 return Err(LifecycleApiError::BackendConstruction {
-                    source: crucible_control_api::LifecycleBackendConstructionError::from_shared(
-                        source,
+                    source: crucible_control_api::LifecycleBackendConstructionError::from_operational(
+                        source.backend_cause(),
                     ),
                 });
             }
@@ -195,8 +195,8 @@ where
                 preparation.record_native_failure(&source);
                 self.owner.quarantine_original_launch();
                 return Err(LifecycleApiError::BackendConstruction {
-                    source: crucible_control_api::LifecycleBackendConstructionError::from_shared(
-                        source,
+                    source: crucible_control_api::LifecycleBackendConstructionError::from_operational(
+                        source.backend_cause(),
                     ),
                 });
             }

@@ -4,24 +4,25 @@
 //! render a diagnostic, while the in-process error keeps native failure and
 //! launch-input custody until its final owner drops.
 
+use crucible_engine::BackendOperationalCause;
 use std::error::Error;
 use std::fmt;
-use std::sync::Arc;
 
 /// A shared backend construction failure with its original typed cause.
 #[derive(Clone, Debug)]
 pub struct LifecycleBackendConstructionError {
-    source: Arc<dyn Error + Send + Sync>,
+    source: BackendOperationalCause,
 }
 
 impl LifecycleBackendConstructionError {
-    /// Retains an already owned shared backend cause without another allocation.
+    /// Retains an existing closed backend cause without another allocation.
     ///
-    /// The caller retains the original purpose outside this existing control
-    /// through its final alias and physical cleanup. This method issues no
-    /// resource entitlement and performs no backend operation.
+    /// The final observer frees its shared control before destroying the
+    /// concrete error and any original loans it retains. The original payer
+    /// still covers every owned payload and physical cleanup obligation; this
+    /// method creates no resource entitlement or backend operation.
     #[must_use]
-    pub fn from_shared(source: Arc<dyn Error + Send + Sync>) -> Self {
+    pub fn from_operational(source: BackendOperationalCause) -> Self {
         Self { source }
     }
 
@@ -31,14 +32,14 @@ impl LifecycleBackendConstructionError {
     #[must_use]
     pub fn new(source: impl Error + Send + Sync + 'static) -> Self {
         Self {
-            source: Arc::new(source),
+            source: BackendOperationalCause::new(source),
         }
     }
 }
 
 impl PartialEq for LifecycleBackendConstructionError {
     fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.source, &other.source)
+        self.source == other.source
     }
 }
 
@@ -52,6 +53,6 @@ impl fmt::Display for LifecycleBackendConstructionError {
 
 impl Error for LifecycleBackendConstructionError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
-        Some(self.source.as_ref())
+        self.source.source()
     }
 }

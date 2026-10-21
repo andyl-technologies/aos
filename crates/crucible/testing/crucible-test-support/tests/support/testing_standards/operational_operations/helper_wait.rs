@@ -5,6 +5,9 @@
 
 use super::{Companion, Contract};
 
+#[path = "helper_wait/funding.rs"]
+mod funding;
+
 pub(super) const CONTRACT: Contract = Contract {
     package: "crucible-qemu-host",
     target: "src/spawn/helper_receiver",
@@ -93,6 +96,13 @@ loop {
     )],
     identifiers: &[],
     companions: &[
+        funding::MAIN,
+        funding::CONTROLLER,
+        funding::ORIGINAL,
+        funding::SHARED,
+        funding::ERASED,
+        funding::API,
+        funding::CLAIM,
         Companion {
             path: "crates/crucible/host/crucible-host-resources/src/host_services/process_birth/executor_purpose/source_host.rs",
             required: &[
@@ -182,12 +192,13 @@ impl SourceHostControlPayer {
                     1,
                 ),
                 (
-                    r#"let (_, peak, descriptors) = source_admission::source_host_peak()?;
-let host = normal.reserve_source_host_purpose(peak, descriptors, &original)
-    .map_err(|source| InstalledProcessPurposeError::Original(source.into()))?;
-let payer = host.retain_control_payer();
-controller.retain_source_host(host)?;
-slot.source_control_payer = Some(payer);
+                    r#"let host = slot.source_controller.as_ref()
+    .ok_or(InstalledProcessPurposeError::Identity)?
+    .retained_source_host()?;
+if !host.belongs_to(normal) {
+    return Err(InstalledProcessPurposeError::Identity);
+}
+slot.source_control_payer = Some(host.retain_control_payer());
 purpose.ready = true;"#,
                     1,
                 ),
@@ -196,6 +207,10 @@ purpose.ready = true;"#,
         Companion {
             path: "crates/crucible/qemu/crucible-qemu-host/src/linux_attempt_host/original_roster/process_purpose/source_admission.rs",
             required: &[
+                (
+                    ".and_then(|bytes| { bytes.checked_add(controller_peak_bytes().ok()?) })",
+                    1,
+                ),
                 (
                     r#"let host = slot.source_controller.as_ref()
     .ok_or(InstalledProcessPurposeError::Identity)?

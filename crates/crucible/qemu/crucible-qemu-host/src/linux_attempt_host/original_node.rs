@@ -9,6 +9,8 @@ use std::io;
 
 mod helper_receiver;
 pub use helper_receiver::QemuIssuedHelperHistory;
+pub(super) mod retained_error;
+pub use retained_error::RetainedNativeFreshLaunchError;
 mod issuer;
 pub use issuer::InstalledNodeLaunchIssuer;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -61,9 +63,7 @@ pub struct OriginalNativeFreshLaunchError {
     node: Mutex<RetainedLaunch>,
     child_borrowed: std::sync::atomic::AtomicBool,
     helper: Mutex<helper_receiver::HelperDebt>,
-    source_host: OnceLock<
-        crucible_host_resources::host_services::process_birth::AuthenticatedSourceHostPurpose,
-    >,
+    source_host: Option<retained_error::LaunchControllerFunding>,
     helper_first: OnceLock<crucible_engine::SharedOperationalCause<crate::QemuSpawnError>>,
     exact_launch: Mutex<Option<crate::QemuProductionExactRestoreLaunch>>,
     workspace: Mutex<Option<crate::spawn::OriginalDeviceDigestWorkspace>>,
@@ -77,8 +77,25 @@ struct RetainedLaunch {
 }
 
 impl OriginalNativeFreshLaunchError {
-    pub(super) fn prepare(origin: &Arc<HostOperationGuard>) -> Arc<Self> {
-        Arc::new(Self {
+    pub(super) fn prepare(
+        origin: &Arc<HostOperationGuard>,
+        funding: retained_error::LaunchControllerFunding,
+    ) -> RetainedNativeFreshLaunchError {
+        Self::prepare_body(origin, Some(funding))
+    }
+
+    #[cfg(test)]
+    pub(super) fn prepare_unissued(
+        origin: &Arc<HostOperationGuard>,
+    ) -> RetainedNativeFreshLaunchError {
+        Self::prepare_body(origin, None)
+    }
+
+    fn prepare_body(
+        origin: &Arc<HostOperationGuard>,
+        funding: Option<retained_error::LaunchControllerFunding>,
+    ) -> RetainedNativeFreshLaunchError {
+        RetainedNativeFreshLaunchError::new(Self {
             origin: Arc::clone(origin),
             cleanup: OnceLock::new(),
             primary: OnceLock::new(),
@@ -86,24 +103,11 @@ impl OriginalNativeFreshLaunchError {
             node: Mutex::new(RetainedLaunch::default()),
             child_borrowed: std::sync::atomic::AtomicBool::new(false),
             helper: Mutex::new(helper_receiver::HelperDebt::default()),
-            source_host: OnceLock::new(),
+            source_host: funding,
             helper_first: OnceLock::new(),
             exact_launch: Mutex::new(None),
             workspace: Mutex::new(None),
         })
-    }
-
-    /// Retains the authentic Main Source payer before binding any helper route.
-    ///
-    /// # Errors
-    /// Refuses a second payer; matching numeric limits never replace this owner.
-    pub(super) fn retain_source_host(
-        &self,
-        host: crucible_host_resources::host_services::process_birth::AuthenticatedSourceHostPurpose,
-    ) -> Result<(), OriginalActorAccountError> {
-        self.source_host
-            .set(host)
-            .map_err(|_| OriginalActorAccountError::Unavailable)
     }
 
     /// Borrows the same prepaid Main Source purpose for later native startup.
@@ -117,17 +121,18 @@ impl OriginalNativeFreshLaunchError {
         OriginalActorAccountError,
     > {
         self.source_host
-            .get()
+            .as_ref()
+            .map(|funding| &funding.host)
             .ok_or(OriginalActorAccountError::Unavailable)
     }
 
     pub(crate) fn reserve_child_owner(
-        self: &Arc<Self>,
+        &self,
         lender: super::SourceCleanupLender,
         supervisor: crucible_host_resources::host_supervision::HostOperationSupervisor,
     ) -> Result<crate::node::SourceLaunchReservation, OriginalActorAccountError> {
         let current = lender.controller()?;
-        if !Arc::ptr_eq(self, &current) || self.primary.get().is_some() {
+        if !std::ptr::eq(self, current.as_ref()) || self.primary.get().is_some() {
             return Err(OriginalActorAccountError::Unavailable);
         }
         let retained = self
@@ -149,9 +154,7 @@ impl OriginalNativeFreshLaunchError {
         }
         drop(retained);
         Ok(crate::node::SourceLaunchReservation::new(
-            Arc::clone(self),
-            lender,
-            supervisor,
+            current, lender, supervisor,
         ))
     }
 
@@ -378,7 +381,7 @@ impl Drop for OriginalNativeFreshLaunchError {
 
 pub(super) struct OriginalNativeFreshPreparation {
     // Physical failure storage closes before the final in-flight lease.
-    failure: Arc<OriginalNativeFreshLaunchError>,
+    failure: RetainedNativeFreshLaunchError,
     original: Arc<HostOperationGuard>,
     lease: FreshLaunchLease,
 }
@@ -387,7 +390,7 @@ impl OriginalNativeFreshPreparation {
     pub(super) fn retain(
         original: &Arc<HostOperationGuard>,
         attempt: super::NativeAccountAttempt,
-        controller: Arc<OriginalNativeFreshLaunchError>,
+        controller: RetainedNativeFreshLaunchError,
     ) -> Self {
         Self {
             failure: controller,
@@ -414,10 +417,10 @@ impl OriginalNativeFreshPreparation {
         &mut self,
         source: OriginalActorAccountError,
         after: HostSupervisionError,
-    ) -> Arc<OriginalNativeFreshLaunchError> {
+    ) -> RetainedNativeFreshLaunchError {
         self.failure
             .record(FreshLaunchCause::Binding(source), Some(after));
-        Arc::clone(&self.failure)
+        self.failure.clone()
     }
 
     pub(super) fn launch<'a, T>(
@@ -432,7 +435,7 @@ impl OriginalNativeFreshPreparation {
             Option<crate::spawn::OriginalDeviceDigestWorkspace>,
         ) -> Result<T, QemuLiveNodeStepGateError>,
         retain_refusal: impl FnOnce(T, &OriginalNativeFreshLaunchError, HostSupervisionError),
-    ) -> Result<T, Arc<OriginalNativeFreshLaunchError>> {
+    ) -> Result<T, RetainedNativeFreshLaunchError> {
         let (directory, identity) = admission.original_node_basis();
         self.launch_bound(
             host,
@@ -457,9 +460,9 @@ impl OriginalNativeFreshPreparation {
             &'a crate::QemuChildProcessContract,
         ) -> Result<T, QemuLiveNodeStepGateError>,
         retain_refusal: impl FnOnce(T, &OriginalNativeFreshLaunchError, HostSupervisionError),
-    ) -> Result<T, Arc<OriginalNativeFreshLaunchError>> {
+    ) -> Result<T, RetainedNativeFreshLaunchError> {
         self.enter();
-        let failure = Arc::clone(&self.failure);
+        let failure = self.failure.clone();
         let launch =
             host.launch_original_node(config, &self.original, failure, complete, retain_refusal);
         if launch.is_ok() {
@@ -633,14 +636,14 @@ impl LinuxQemuAttemptHostOwner {
         &'a self,
         config: &'a QemuLiveNodeStepGateConfig,
         original: &Arc<HostOperationGuard>,
-        failure: Arc<OriginalNativeFreshLaunchError>,
+        failure: RetainedNativeFreshLaunchError,
         complete: impl FnOnce(
             OriginalNativeNodeBinding,
             Option<crate::spawn::OriginalDeviceDigestWorkspace>,
             &'a crate::QemuChildProcessContract,
         ) -> Result<T, QemuLiveNodeStepGateError>,
         retain_refusal: impl FnOnce(T, &OriginalNativeFreshLaunchError, HostSupervisionError),
-    ) -> Result<T, Arc<OriginalNativeFreshLaunchError>> {
+    ) -> Result<T, RetainedNativeFreshLaunchError> {
         let issuer = match self.lend_installed_node_issuer() {
             Ok(issuer) => issuer,
             Err(source) => {

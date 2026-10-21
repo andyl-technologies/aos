@@ -26,7 +26,7 @@ impl QemuIssuedHelperReceiver {
     /// Missing, contended or retired custody returns `None`; it never proves
     /// that the helper or its diagnostic allocations have returned.
     #[must_use]
-    pub fn upgrade(&self) -> Option<std::sync::Arc<crate::OriginalNativeFreshLaunchError>> {
+    pub fn upgrade(&self) -> Option<crate::RetainedNativeFreshLaunchError> {
         self.lender.controller().ok()
     }
 
@@ -42,10 +42,10 @@ impl QemuIssuedHelperReceiver {
     #[must_use]
     pub fn matches_controller(
         &self,
-        controller: &std::sync::Arc<crate::OriginalNativeFreshLaunchError>,
+        controller: &crate::RetainedNativeFreshLaunchError,
     ) -> bool {
         self.upgrade()
-            .is_some_and(|current| std::sync::Arc::ptr_eq(&current, controller))
+            .is_some_and(|current| current.same_owner(controller))
     }
 }
 

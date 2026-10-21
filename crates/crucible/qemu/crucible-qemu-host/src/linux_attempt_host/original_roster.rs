@@ -740,8 +740,7 @@ mod tests {
         );
         assert_eq!(retained.original_after(), Some(&after));
         assert!(std::error::Error::source(retained.as_ref()).is_some());
-        assert!(Arc::ptr_eq(
-            &retained,
+        assert!(retained.same_owner(
             held.lock().unwrap().slots[0]
                 .launch_refusal
                 .as_ref()
@@ -950,8 +949,8 @@ struct NativeSlot {
         Option<crucible_host_resources::host_services::process_birth::SourceHostControlPayer>,
     launch_in_flight: bool,
     launch_abandoned: bool,
-    launch_refusal: Option<Arc<super::original_node::OriginalNativeFreshLaunchError>>,
-    source_controller: Option<Arc<super::original_node::OriginalNativeFreshLaunchError>>,
+    launch_refusal: Option<super::original_node::RetainedNativeFreshLaunchError>,
+    source_controller: Option<super::original_node::RetainedNativeFreshLaunchError>,
     source_cleanup_assigned: bool,
     control: Option<OriginalNativeControlRetirement>,
     cleanup: Option<Arc<HostOperationGuard>>,
@@ -1405,6 +1404,17 @@ impl OriginalNativeAccountFactoryBinding {
         slot.source_cleanup_assigned = false;
         state.next_generation = next_generation;
         state.slots[index].active = Some(generation);
+        // Publish the funded controller before the independent Original post.
+        // A refused post retains the same allocation and excludes slot reuse.
+        if let Err(error) = state.slots[index]
+            .credit
+            .as_ref()
+            .ok_or(OriginalActorAccountError::Unavailable)?
+            .require_original()
+        {
+            state.slots[index].launch_abandoned = true;
+            return Err(error);
+        }
         Ok(NativeAccountAttempt {
             roster: Weak::clone(&self.roster),
             index,
@@ -1498,7 +1508,7 @@ impl NativeAccountAttempt {
             assign_source_cleanup(slot)?;
             slot.source_controller
                 .as_ref()
-                .map(Arc::clone)
+                .cloned()
                 .ok_or(OriginalActorAccountError::Unavailable)?
         };
         // The real preborn controller owns the cache across unwind/refusal.
@@ -1515,7 +1525,7 @@ impl NativeAccountAttempt {
                     && slot
                         .source_controller
                         .as_ref()
-                        .is_some_and(|saved| Arc::ptr_eq(saved, &controller))
+                        .is_some_and(|saved| saved.same_owner(&controller))
             })
             .ok_or(OriginalActorAccountError::Unavailable)?;
         if slot.cleanup.is_none() {
@@ -1610,7 +1620,7 @@ impl NativeAccountAttempt {
         let controller = slot
             .source_controller
             .as_ref()
-            .map(Arc::clone)
+            .cloned()
             .ok_or(OriginalActorAccountError::Unavailable)?;
         let preparation = credit.prepare_fresh_launch(
             NativeAccountAttempt {
@@ -1648,17 +1658,17 @@ impl NativeAccountAttempt {
 
     pub(super) fn retain_launch_refusal(
         &self,
-        retained: Arc<super::original_node::OriginalNativeFreshLaunchError>,
-    ) -> Arc<super::original_node::OriginalNativeFreshLaunchError> {
+        retained: super::original_node::RetainedNativeFreshLaunchError,
+    ) -> super::original_node::RetainedNativeFreshLaunchError {
         // Only a successful fixed-purpose preparation calls this method. The
         // external slot already holds its complete error-control assignment;
         // preserve the actual cause even if later publication itself is unsure.
         let Some(roster) = self.roster.upgrade() else {
-            std::mem::forget(Arc::clone(&retained));
+            std::mem::forget(retained.clone());
             return retained;
         };
         let Ok(mut state) = roster.lock() else {
-            std::mem::forget(Arc::clone(&retained));
+            std::mem::forget(retained.clone());
             return retained;
         };
         let Some(slot) = state.slots.get_mut(self.index).filter(|slot| {
@@ -1668,10 +1678,10 @@ impl NativeAccountAttempt {
                 && slot.launch_refusal.is_none()
                 && !slot.launch_abandoned
         }) else {
-            std::mem::forget(Arc::clone(&retained));
+            std::mem::forget(retained.clone());
             return retained;
         };
-        slot.launch_refusal = Some(Arc::clone(&retained));
+        slot.launch_refusal = Some(retained.clone());
         retained
     }
 

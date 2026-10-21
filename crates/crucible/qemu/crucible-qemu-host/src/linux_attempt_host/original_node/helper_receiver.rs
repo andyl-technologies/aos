@@ -168,7 +168,7 @@ impl OriginalNativeFreshLaunchError {
     }
 
     pub(crate) fn with_spawned_helper<T: HelperOutput>(
-        self: &Arc<Self>,
+        &self,
         receiver: &crate::linux_attempt_host::SourceCleanupLender,
         command: Command,
         operation: &'static str,
@@ -186,7 +186,7 @@ impl OriginalNativeFreshLaunchError {
         };
         if !receiver
             .controller()
-            .is_ok_and(|current| Arc::ptr_eq(self, &current))
+            .is_ok_and(|current| std::ptr::eq(self, current.as_ref()))
         {
             return Err(crate::spawn::QemuGuardedImagePreparationError::local(
                 crate::spawn::helper_receiver::helper_custody_refusal(),
@@ -389,7 +389,7 @@ mod tests {
         let supervisor =
             HostOperationSupervisor::new(HostOperationBudgets::default(), None).unwrap();
         let original = Arc::new(supervisor.begin(HostOperationClass::Preparation).unwrap());
-        let controller = OriginalNativeFreshLaunchError::prepare(&original);
+        let controller = OriginalNativeFreshLaunchError::prepare_unissued(&original);
         let mut slot = HelperDebt::default();
         let effects = std::sync::atomic::AtomicUsize::new(0);
 

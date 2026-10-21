@@ -280,12 +280,12 @@ fn pre_vm_retirement_keeps_the_same_preborn_body_and_borrowed_abort()
             "let current = Arc::clone(&controller);",
         ),
         (
-            "!Arc::ptr_eq(&controller, &current) || !controller.cleanup_matches(&original)",
+            "!controller.same_owner(&current) || !controller.cleanup_matches(&original)",
             "!controller.cleanup_matches(&original)",
         ),
         (
-            "!Arc::ptr_eq(&controller, &current) || !controller.cleanup_matches(&original)",
-            "!Arc::ptr_eq(&controller, &current)",
+            "!controller.same_owner(&current) || !controller.cleanup_matches(&original)",
+            "!controller.same_owner(&current)",
         ),
         (
             "current.cleanup_matches(&self.original)",

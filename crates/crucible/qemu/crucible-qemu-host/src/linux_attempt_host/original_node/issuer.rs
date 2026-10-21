@@ -125,7 +125,7 @@ impl InstalledNodeLaunchIssuer {
             config,
             contract,
             &preparation.original,
-            Arc::clone(&preparation.failure),
+            preparation.failure.clone(),
             complete,
             retain_refusal,
         );
@@ -145,14 +145,14 @@ impl InstalledNodeLaunchIssuer {
         config: &'a QemuLiveNodeStepGateConfig,
         contract: &'a crate::QemuChildProcessContract,
         original: &Arc<HostOperationGuard>,
-        failure: Arc<OriginalNativeFreshLaunchError>,
+        failure: RetainedNativeFreshLaunchError,
         complete: impl FnOnce(
             OriginalNativeNodeBinding,
             Option<crate::spawn::OriginalDeviceDigestWorkspace>,
             &'a crate::QemuChildProcessContract,
         ) -> Result<T, QemuLiveNodeStepGateError>,
         retain_refusal: impl FnOnce(T, &OriginalNativeFreshLaunchError, HostSupervisionError),
-    ) -> Result<T, Arc<OriginalNativeFreshLaunchError>> {
+    ) -> Result<T, RetainedNativeFreshLaunchError> {
         let attempt = &self.attempt;
         let launch = (|| {
             attempt

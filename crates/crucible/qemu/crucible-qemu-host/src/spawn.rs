@@ -959,7 +959,7 @@ impl QemuGuardedImagePreparationError {
     #[must_use]
     pub fn retained_receiver(
         &self,
-    ) -> Option<std::sync::Arc<crate::linux_attempt_host::OriginalNativeFreshLaunchError>> {
+    ) -> Option<crate::linux_attempt_host::RetainedNativeFreshLaunchError> {
         self.receiver
             .as_ref()
             .and_then(QemuIssuedHelperReceiver::upgrade)

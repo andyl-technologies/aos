@@ -869,7 +869,7 @@ fn runtime_from_scheduled_checkpoint_material(
 
 fn retain_profile_restore_result(
     result: Result<QemuNode, QemuLiveNodeStepGateError>,
-    launch_refusal: &mut Option<Arc<crate::linux_attempt_host::OriginalNativeFreshLaunchError>>,
+    launch_refusal: &mut Option<crate::linux_attempt_host::RetainedNativeFreshLaunchError>,
     config: &Configuration,
 ) -> Result<QemuNode, QemuVmRealizationError> {
     match result {
@@ -879,7 +879,7 @@ fn retain_profile_restore_result(
                 // The installed issuer already owns the complete failure body.
                 // Retain its same report before any diagnostic construction;
                 // never extract a child or duplicate its cleanup destination.
-                *launch_refusal = Some(Arc::clone(retained));
+                *launch_refusal = Some(retained.clone());
             }
             let mut detail = source.to_string();
             let mut cause = source.source();
@@ -898,7 +898,7 @@ fn retain_profile_restore_result(
 }
 
 fn require_no_issued_launch_refusal(
-    launch_refusal: &Option<Arc<crate::linux_attempt_host::OriginalNativeFreshLaunchError>>,
+    launch_refusal: &Option<crate::linux_attempt_host::RetainedNativeFreshLaunchError>,
 ) -> Result<(), QemuVmRealizationError> {
     if launch_refusal.is_some() {
         return Err(QemuVmRealizationError::ReapQuarantined {

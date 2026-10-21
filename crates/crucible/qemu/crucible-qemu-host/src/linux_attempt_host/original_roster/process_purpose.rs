@@ -486,27 +486,22 @@ impl NativeAccountAttempt {
             purpose.process_bytes,
             &purpose.envelope,
         )?);
-        // Fresh artifact helpers precede installed-ELF verification. Their
-        // actual Main payer must already exist before the route becomes ready;
-        // later Source admission borrows this exact purpose rather than opening
-        // another Source window after those effects.
+        // The controller's genuine Main payer predates its own allocation.
+        // Binding a helper route borrows that same purpose and opens no window.
         let normal = credit
             .original
             .as_ref()
             .and_then(|retained| retained.normal.as_ref())
             .ok_or(InstalledProcessPurposeError::Identity)?;
-        let controller = slot
+        let host = slot
             .source_controller
             .as_ref()
-            .ok_or(InstalledProcessPurposeError::Identity)?;
-        let original = controller.launch_original();
-        let (_, peak, descriptors) = source_admission::source_host_peak()?;
-        let host = normal
-            .reserve_source_host_purpose(peak, descriptors, &original)
-            .map_err(|source| InstalledProcessPurposeError::Original(source.into()))?;
-        let payer = host.retain_control_payer();
-        controller.retain_source_host(host)?;
-        slot.source_control_payer = Some(payer);
+            .ok_or(InstalledProcessPurposeError::Identity)?
+            .retained_source_host()?;
+        if !host.belongs_to(normal) {
+            return Err(InstalledProcessPurposeError::Identity);
+        }
+        slot.source_control_payer = Some(host.retain_control_payer());
         purpose.ready = true;
         drop(state);
         contract
@@ -1132,7 +1127,7 @@ pub(super) fn fresh_launch_control_extent() -> Result<u64, OriginalActorAccountE
         })
         .and_then(|bytes| {
             bytes.checked_add(std::mem::size_of::<
-                Arc<crate::linux_attempt_host::original_node::OriginalNativeFreshLaunchError>,
+                crate::linux_attempt_host::original_node::RetainedNativeFreshLaunchError,
             >())
         })
         .and_then(|bytes| u64::try_from(bytes).ok())

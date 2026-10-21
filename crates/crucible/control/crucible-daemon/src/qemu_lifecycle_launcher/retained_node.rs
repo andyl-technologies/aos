@@ -158,7 +158,7 @@ impl RetainedFreshPreparation {
     #[cfg(target_os = "linux")]
     pub(super) fn record_native_failure(
         &mut self,
-        receiver: &Arc<crucible_qemu_host::OriginalNativeFreshLaunchError>,
+        receiver: &crucible_qemu_host::RetainedNativeFreshLaunchError,
     ) {
         let matches = self.native == NativeLaunchProgress::Returned
             && self

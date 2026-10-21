@@ -393,7 +393,7 @@ fn constructor_continuations_reject_foreign_native_loans_and_missing_postcuts()
         (
             4,
             r#"original_roster.rs"#,
-            r#"slot.active == Some(self.generation) && slot.source_controller.as_ref().is_some_and(|saved| Arc::ptr_eq(saved, &controller))"#,
+            r#"slot.active == Some(self.generation) && slot.source_controller.as_ref().is_some_and(|saved| saved.same_owner(&controller))"#,
             r#"slot.active == Some(self.generation)"#,
         ),
         (

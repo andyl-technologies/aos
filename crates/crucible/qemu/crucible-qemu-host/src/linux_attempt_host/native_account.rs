@@ -9,6 +9,10 @@
 use crucible_host_resources::host_services::HostServiceAllocator;
 use std::sync::Arc;
 
+use super::original_node::retained_error::LaunchControllerFunding;
+use super::original_node::{OriginalNativeFreshLaunchError, RetainedNativeFreshLaunchError};
+use super::original_roster::process_purpose::source_admission::source_host_peak;
+
 use crucible_host_resources::host_services::process_birth::{
     AuthenticatedNativeSubdivision, NativePoolRefusal, ServiceBirthError,
 };
@@ -310,7 +314,7 @@ impl OriginalNativeAccountCredit {
     pub(super) fn prepare_fresh_launch(
         &self,
         attempt: super::NativeAccountAttempt,
-        controller: Arc<super::original_node::OriginalNativeFreshLaunchError>,
+        controller: RetainedNativeFreshLaunchError,
     ) -> Result<super::original_node::OriginalNativeFreshPreparation, OriginalActorAccountError>
     {
         self.require_original()?;
@@ -329,13 +333,28 @@ impl OriginalNativeAccountCredit {
 
     pub(super) fn prepare_launch_controller(
         &self,
-    ) -> Result<Arc<super::original_node::OriginalNativeFreshLaunchError>, OriginalActorAccountError>
-    {
+    ) -> Result<RetainedNativeFreshLaunchError, OriginalActorAccountError> {
         let origin = self
             .original
             .as_ref()
             .ok_or(OriginalActorAccountError::Unavailable)?;
-        Ok(super::original_node::OriginalNativeFreshLaunchError::prepare(&origin.preparation))
+        let Some(normal) = origin.normal.as_ref() else {
+            #[cfg(test)]
+            return Ok(OriginalNativeFreshLaunchError::prepare_unissued(
+                &origin.preparation,
+            ));
+            #[cfg(not(test))]
+            return Err(OriginalActorAccountError::Unavailable);
+        };
+        let (_, peak, descriptors) =
+            source_host_peak().map_err(|_| OriginalActorAccountError::Unavailable)?;
+        let host = normal.reserve_source_host_purpose(peak, descriptors, &origin.preparation)?;
+        let funding = LaunchControllerFunding::reserve(host, &origin.preparation)?;
+
+        Ok(OriginalNativeFreshLaunchError::prepare(
+            &origin.preparation,
+            funding,
+        ))
     }
 
     pub(super) fn enter_normal_preparation(&mut self) -> Result<(), OriginalActorAccountError> {

@@ -199,6 +199,33 @@ passes all fourteen exact cases, and coverage names 112 component cases with
 formatting; the whole-tree format check separately reports 405 unrelated files.
 
 
+The launch controller now reserves its actual Main Source purpose and controller
+loan before allocating its shared body. Family binding borrows that same purpose;
+it no longer creates the controller's payer after controller birth. The roster
+publishes the funded controller before its independent preparation postcheck,
+retaining it and excluding slot reuse if that post refuses. Production cannot
+construct an unfunded controller; mechanism-only constructors remain test-only.
+
+Typed original-error observers and the portable lifecycle construction error use
+the existing closed operational owner. The last typed or erased observer frees
+that shared allocation before destroying the concrete cause and its loans. The
+portable error preserves the actual concrete cause's downcast identity without
+allocating a second shared control. This closes the controller allocation's
+strong-observer lifetime; separately allocated diagnostics, helper first-error
+controls and weak roster headers still need their own funding and closure.
+
+Two allocator controls observe both original service charges before and after
+physical deallocation, including eight concurrent typed and lifecycle observers.
+Restoring ordinary Arc destruction makes the deallocation control fail: both
+charges have already returned. The complete control API targets pass. The host
+passes 1,238 library tests and all integration targets, retaining the same eight
+missing-receiver failures and four ignored probes. Seventy specific source-policy
+controls, five hygiene, two rustdoc, eighteen ABI and four license controls pass;
+the broad source gate retains its same 21 unfinished paths. The hermetic
+supervision gate passes sixteen exact cases. Coverage names 114 component cases,
+with 149 uncovered and zero qualified requirements.
+
+
 Whole-node shutdown now keeps one continuation through process reap, RAM service
 return and controller retirement. Physical closure, initiating failure and
 independent boundary checks remain separate facts. Failed construction retains

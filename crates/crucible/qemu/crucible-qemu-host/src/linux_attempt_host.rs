@@ -62,6 +62,7 @@ pub use original_node::OriginalBackingObservationError;
 pub use original_node::OriginalBoundBackingObservation;
 pub use original_node::{
     InstalledNodeLaunchIssuer, OriginalNativeFreshLaunchError, QemuIssuedHelperHistory,
+    RetainedNativeFreshLaunchError,
 };
 #[cfg(feature = "private-measurement-domain")]
 pub use original_roster::OriginalParentParkCleanup;

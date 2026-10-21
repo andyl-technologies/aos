@@ -168,7 +168,7 @@ pub(in super::super::super) const FAILED_BODIES: &str = r#"pub(super) fn retry_f
     for index in 0..count {
         let retained = {
             let state = held.try_lock().map_err(|_| OriginalActorAccountError::Unavailable)?;
-            state.slots.get(index).and_then(|slot| slot.source_controller.as_ref()).map(Arc::clone)
+            state.slots.get(index).and_then(|slot| slot.source_controller.as_ref()).cloned()
         };
         if let Some(retained) = retained {
             returned &= retained.retry_physical_cleanup();
@@ -296,14 +296,14 @@ pub(super) const CONTRACT: Contract = Contract {
             .filter(|slot| slot.active == Some(self.generation))
             .ok_or(OriginalActorAccountError::Unavailable)?;
         assign_source_cleanup(slot)?;
-        slot.source_controller.as_ref().map(Arc::clone)
+        slot.source_controller.as_ref().cloned()
             .ok_or(OriginalActorAccountError::Unavailable)?
     };
     let original = controller.retained_cleanup()?;
     let mut state = roster.try_lock().map_err(|_| OriginalActorAccountError::Unavailable)?;
     let slot = state.slots.get_mut(self.index).filter(|slot| {
         slot.active == Some(self.generation)
-            && slot.source_controller.as_ref().is_some_and(|saved| Arc::ptr_eq(saved, &controller))
+            && slot.source_controller.as_ref().is_some_and(|saved| saved.same_owner(&controller))
     }).ok_or(OriginalActorAccountError::Unavailable)?;
     if slot.cleanup.is_none() { slot.cleanup = Some(Arc::clone(&original)); }
     if !slot.cleanup.as_ref().is_some_and(|saved| Arc::ptr_eq(saved, &original)) {

@@ -30,3 +30,4 @@ serde_json = { workspace = true }
 
 [dev-dependencies]
 crucible-engine = { path = "../../engine/crucible-engine", features = ["test-support"] }
+crucible-host-resources = { workspace = true, features = ["test-support"] }

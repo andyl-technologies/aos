@@ -229,7 +229,7 @@ pub(super) const RECEIVER: Companion = Companion {
     /// Missing, contended or retired custody returns `None`; it never proves
     /// that the helper or its diagnostic allocations have returned.
     #[must_use]
-    pub fn upgrade(&self) -> Option<std::sync::Arc<crate::OriginalNativeFreshLaunchError>> {
+    pub fn upgrade(&self) -> Option<crate::RetainedNativeFreshLaunchError> {
         self.lender.controller().ok()
     }
 
@@ -245,10 +245,10 @@ pub(super) const RECEIVER: Companion = Companion {
     #[must_use]
     pub fn matches_controller(
         &self,
-        controller: &std::sync::Arc<crate::OriginalNativeFreshLaunchError>,
+        controller: &crate::RetainedNativeFreshLaunchError,
     ) -> bool {
         self.upgrade()
-            .is_some_and(|current| std::sync::Arc::ptr_eq(&current, controller))
+            .is_some_and(|current| current.same_owner(controller))
     }
 }"#,
             1,
@@ -375,7 +375,7 @@ pub(super) const LENDER: Companion = Companion {
             r#"pub(crate) fn controller(
     &self,
 ) -> Result<
-    Arc<crate::linux_attempt_host::original_node::OriginalNativeFreshLaunchError>,
+    crate::linux_attempt_host::original_node::RetainedNativeFreshLaunchError,
     OriginalActorAccountError,
 > {
     let roster = self.roster.upgrade().ok_or(OriginalActorAccountError::Unavailable)?;
@@ -393,7 +393,7 @@ pub(super) const LENDER: Companion = Companion {
             return Err(OriginalActorAccountError::Unavailable);
         }
     }
-    slot.source_controller.as_ref().map(Arc::clone)
+    slot.source_controller.as_ref().cloned()
         .ok_or(OriginalActorAccountError::Unavailable)
 }"#,
             1,
@@ -408,7 +408,7 @@ pub(super) const LENDER: Companion = Companion {
     };
     let original = attempt.cleanup_entry()?;
     let current = self.controller()?;
-    if !Arc::ptr_eq(&controller, &current) || !controller.cleanup_matches(&original) {
+    if !controller.same_owner(&current) || !controller.cleanup_matches(&original) {
         return Err(OriginalActorAccountError::Unavailable);
     }
     Ok(SourceCleanupOriginal {

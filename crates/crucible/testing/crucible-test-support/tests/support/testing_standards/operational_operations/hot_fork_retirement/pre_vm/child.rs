@@ -63,7 +63,7 @@ fn save_first(&mut self, first: crate::QemuSpawnError) {
         ),
         (
             r#"pub(crate) fn with_spawned_helper<T: HelperOutput>(
-    self: &Arc<Self>,
+    &self,
     receiver: &crate::linux_attempt_host::SourceCleanupLender,
     command: Command,
     operation: &'static str,
@@ -81,7 +81,7 @@ fn save_first(&mut self, first: crate::QemuSpawnError) {
     };
     if !receiver
         .controller()
-        .is_ok_and(|current| Arc::ptr_eq(self, &current))
+        .is_ok_and(|current| std::ptr::eq(self, current.as_ref()))
     {
         return Err(crate::spawn::QemuGuardedImagePreparationError::local(
             crate::spawn::helper_receiver::helper_custody_refusal(),

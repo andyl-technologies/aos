@@ -235,7 +235,7 @@ fn pre_vm_owning_contracts_require_actual_source_and_registry_dispositions()
         ),
         (
             "source_cleanup.rs",
-            "!Arc::ptr_eq(&controller, &current) || !controller.cleanup_matches(&original)",
+            "!controller.same_owner(&current) || !controller.cleanup_matches(&original)",
             "false",
             "foreign incarnation or Original accepted",
         ),
@@ -679,7 +679,7 @@ fn fresh_native_continuation_requires_actual_return_and_same_saved_cleanup()
         ),
         (
             "original_node.rs",
-            "!Arc::ptr_eq(self, &current) || self.primary.get().is_some()",
+            "!std::ptr::eq(self, current.as_ref()) || self.primary.get().is_some()",
             "self.primary.get().is_some()",
             "birth lender controller not authenticated",
         ),

@@ -156,6 +156,10 @@
         (case "final_control_header_closes_before_original_paired_credit_returns" "positive" ["TIME-9"] "The production Source control owner closes its actual shared allocation while both original service loans remain charged; this component creates no Native Source or physical-return proof.")
         (case "concurrent_control_observers_close_before_one_paired_refund" "adversarial" ["TIME-9"] "Concurrent observers perform one actual control close before either paired account refunds; this control proves no native worker, process-family or complete diagnostic lifetime.")
       ])
+      (group "control/crucible-control-api" "backend_error_terminal" [] [
+        (case "lifecycle_error_frees_its_control_before_returning_original_paired_credit" "positive" ["TIME-9"] "The production lifecycle error frees its actual shared allocation with both original service loans still charged; no native process or full diagnostic payload qualification.")
+        (case "mixed_typed_and_lifecycle_observers_close_once_before_the_paired_refund" "adversarial" ["TIME-9"] "Concurrent typed and lifecycle observers preserve the same downcastable error and one allocation, then observe one physical control close before either paired loan refunds; no Native Source is issued.")
+      ])
       (group "qemu/crucible-qemu-host" "lib" [] [
         (case "spawn::helper_receiver::tests::probe_timeout_retains_both_partial_streams_and_the_live_child" "adversarial" ["TIME-7" "TIME-9"] "A real component probe times out with both actual partial diagnostic streams retained in its receiving slot and its child still owned for cleanup; no native Source, funding transfer or full-owner return qualification.")
         (case "spawn::helper_receiver::tests::probe_output_limit_keeps_the_first_bounded_bytes_and_child_custody" "adversarial" ["TIME-7" "TIME-9"] "The production probe rejects excess real output while preserving each bounded prefix and actual process custody; no native Source or final diagnostic funding qualification.")

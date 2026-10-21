@@ -65,7 +65,7 @@ pub struct QemuReplayValidationExactAdmission {
     request: Option<QemuProductionExactRestoreRequest>,
     #[cfg(target_os = "linux")]
     target: Option<crucible_engine::exact_checkpoint::ExactCheckpointVerifiedNode>,
-    launch_refusal: Option<Arc<crate::linux_attempt_host::OriginalNativeFreshLaunchError>>,
+    launch_refusal: Option<crate::linux_attempt_host::RetainedNativeFreshLaunchError>,
     registration_preparation: Option<Arc<dyn QemuReplayValidationRegistrationPreparation>>,
 }
 
@@ -77,7 +77,7 @@ pub struct QemuReplayValidationThinAdmission {
     snapshot: ContentHash,
     modeled_node: NodeId,
     identity: OwnedLiveNodeIdentity,
-    launch_refusal: Option<Arc<crate::linux_attempt_host::OriginalNativeFreshLaunchError>>,
+    launch_refusal: Option<crate::linux_attempt_host::RetainedNativeFreshLaunchError>,
     registration_preparation: Option<Arc<dyn QemuReplayValidationRegistrationPreparation>>,
 }
 
