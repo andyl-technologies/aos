@@ -16,6 +16,24 @@ use terrane_sdk::store::{
 };
 
 pub(super) async fn exercise(store: &NativeContentStore, profile: &ChunkProfile) -> io::Result<()> {
+    let state = terrane_sdk::host::cache::CacheState::load(
+        &terrane_sdk::store::TokioLocalFs,
+        &store.ready().layout().layout().root().join("state/cache"),
+        terrane_sdk::host::cache::StateLimits {
+            bytes: 65536,
+            records: 64,
+        },
+    )
+    .await
+    .map_err(io::Error::other)?
+    .ok_or_else(|| io::Error::other("reopened cache state absent"))?;
+    println!(
+        "OBJECT_OPEN_REOPENED_STATE pins={} leases={} reservations={} residences={}",
+        state.pins.len(),
+        state.leases.len(),
+        state.reservations.len(),
+        state.residences.len()
+    );
     let plaintext = super::repeated::natural_chunk(profile)?;
     let final_bytes = vec![41; 33];
     let mut references = Vec::new();
@@ -24,6 +42,10 @@ pub(super) async fn exercise(store: &NativeContentStore, profile: &ChunkProfile)
         (plaintext.as_slice(), ChunkPosition::NonFinal),
         (final_bytes.as_slice(), ChunkPosition::Final),
     ] {
+        println!(
+            "OBJECT_OPEN_STAGE admit-chunk position={position:?} bytes={}",
+            bytes.len()
+        );
         let identity = TERRANE_V1
             .calculate(IdentityKind::Chunk, bytes)
             .map_err(io::Error::other)?;
@@ -55,6 +77,7 @@ pub(super) async fn exercise(store: &NativeContentStore, profile: &ChunkProfile)
         media_type: None,
     };
     let canonical = manifest.encode(profile).map_err(io::Error::other)?;
+    println!("OBJECT_OPEN_STAGE admit-manifest");
     let identity = store
         .put(ContentUpload::Meta(
             MetaUpload::new(IdentityKind::Manifest, &canonical).map_err(io::Error::other)?,
@@ -66,6 +89,7 @@ pub(super) async fn exercise(store: &NativeContentStore, profile: &ChunkProfile)
         .collect::<Result<Vec<_>, _>>()?
         .len();
 
+    println!("OBJECT_OPEN_STAGE open-manifest");
     let object = store
         .open_manifest_chunks(&identity)
         .await

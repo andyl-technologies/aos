@@ -206,6 +206,15 @@ impl ContentStore for NativeContentStore {
 }
 
 fn native_failure(error: io::Error, identity: &Identity) -> StoreFailure {
+    // Native policy preserves its typed store refusal inside the I/O boundary.
+    // In particular, an exhausted durable-state budget is still Capacity.
+    if let Some(failure) = error
+        .get_ref()
+        .and_then(|source| source.downcast_ref::<StoreFailure>())
+    {
+        return StoreFailure::with_source(failure.kind().clone(), error);
+    }
+
     let kind = match error.kind() {
         io::ErrorKind::NotFound => StoreErrorKind::Absent(identity.clone()),
         io::ErrorKind::InvalidData => StoreErrorKind::Corrupt(
