@@ -690,6 +690,7 @@ fn require_embedded_component(
 
 fn command() -> Command {
     let binary = std::env::var_os("CRUCIBLE_PROCESS_FLIGHT_BINARY")
+        .or_else(|| std::env::var_os("CARGO_BIN_EXE_crucible"))
         .unwrap_or_else(|| env!("CARGO_BIN_EXE_crucible").into());
     Command::new(binary)
 }

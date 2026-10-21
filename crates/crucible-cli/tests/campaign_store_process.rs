@@ -1502,6 +1502,7 @@ fn command(arguments: &[&str]) -> Command {
     // The hermetic VM copies both built executables into its store closure;
     // the build-time Cargo target path itself is not available in the guest.
     let binary = std::env::var_os("CRUCIBLE_PROCESS_FLIGHT_BINARY")
+        .or_else(|| std::env::var_os("CARGO_BIN_EXE_crucible"))
         .unwrap_or_else(|| env!("CARGO_BIN_EXE_crucible").into());
     let mut command = Command::new(binary);
     command.args(arguments);

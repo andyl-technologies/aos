@@ -182,7 +182,7 @@ target_pack_bytes = {TARGET_PACK_BYTES}
     }
 
     fn transform_command(&self, operation: &str, journal: &Path) -> Command {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_crucible"));
+        let mut command = Command::new(crucible_executable());
         command
             .args([
                 "--format",
@@ -261,4 +261,16 @@ fn parse_json_output(output: Output, operation: &str) -> Result<Value, Box<dyn E
         );
     }
     Ok(serde_json::from_str(line)?)
+}
+
+/// Returns the `crucible` executable under test.
+///
+/// Cargo records the executable path at compile time. A prebuilt test binary
+/// that runs outside its Cargo target directory receives the relocated path
+/// through the same variable at run time, following the cargo-nextest
+/// archive convention.
+fn crucible_executable() -> PathBuf {
+    std::env::var_os("CARGO_BIN_EXE_crucible")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_crucible")))
 }

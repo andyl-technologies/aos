@@ -12,7 +12,7 @@ use crucible_api::DebugGatewayProcess;
 
 #[test]
 fn apache_client_launches_negotiates_queries_and_reaps_gateway() {
-    let executable = Path::new(env!("CARGO_BIN_EXE_crucible-debug-gateway"));
+    let executable = gateway_executable();
     let mut process = DebugGatewayProcess::launch(executable)
         .unwrap_or_else(|error| panic!("gateway should launch: {error}"));
     assert!(process.control_socket().is_absolute());
@@ -35,7 +35,7 @@ fn apache_client_launches_negotiates_queries_and_reaps_gateway() {
 
 #[test]
 fn owner_unix_operator_rejects_direct_writes_before_branch_fork() {
-    let executable = Path::new(env!("CARGO_BIN_EXE_crucible-debug-gateway"));
+    let executable = gateway_executable();
     let process =
         DebugGatewayProcess::launch_with_owner_unix(executable).expect("private gateway launch");
     assert!(
@@ -83,7 +83,7 @@ fn owner_unix_operator_rejects_direct_writes_before_branch_fork() {
 
 #[test]
 fn stable_gdb_connection_survives_backend_replacement() {
-    let executable = Path::new(env!("CARGO_BIN_EXE_crucible-debug-gateway"));
+    let executable = gateway_executable();
     let directory = tempfile::tempdir()
         .unwrap_or_else(|error| panic!("temporary backend directory should open: {error}"));
     let first_path = directory.path().join("first.sock");
@@ -143,7 +143,7 @@ fn stable_gdb_connection_survives_backend_replacement() {
 
 #[test]
 fn operator_reconnect_restores_the_active_qemu_backend() {
-    let executable = Path::new(env!("CARGO_BIN_EXE_crucible-debug-gateway"));
+    let executable = gateway_executable();
     let directory = tempfile::tempdir()
         .unwrap_or_else(|error| panic!("temporary backend directory should open: {error}"));
     let backend_path = directory.path().join("reconnecting.sock");
@@ -342,4 +342,16 @@ fn read_rsp_payload(stream: &mut impl Read) -> Vec<u8> {
         .read_exact(&mut checksum)
         .unwrap_or_else(|error| panic!("RSP checksum should read: {error}"));
     payload
+}
+
+/// Returns the gateway executable under test.
+///
+/// Cargo records the executable path at compile time. A prebuilt test binary
+/// that runs outside its Cargo target directory receives the relocated path
+/// through the same variable at run time, following the cargo-nextest
+/// archive convention.
+fn gateway_executable() -> PathBuf {
+    std::env::var_os("CARGO_BIN_EXE_crucible-debug-gateway")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_crucible-debug-gateway")))
 }
