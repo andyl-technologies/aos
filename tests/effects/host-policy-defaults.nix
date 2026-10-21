@@ -76,6 +76,12 @@ let
   evaluate = evaluateWithHostPolicy true;
   primitive = evaluateWithHostPolicy false {};
   defaults = evaluate {};
+  initrd = evaluate ({lib, ...}: {
+    options.aos.boot.stage = lib.mkOption {
+      type = lib.types.enum ["initrd" "host"];
+      default = "initrd";
+    };
+  });
   disabled = evaluate {
     aos.security.audit.enable = false;
     aos.networkPolicy.enable = false;
@@ -164,6 +170,14 @@ let
   explicitLink = builtins.head (links explicit);
   graph = defaults.config.aos.activation.graph;
 in {
+  initrdPreservesKernelHardeningWithoutHostFileMutation =
+    builtins.all (
+      name: (initrd.config.aos.kernel.sysctl.${name} or null) == defaults.config.aos.security.hardening.sysctl.${name}
+    ) (builtins.attrNames defaults.config.aos.security.hardening.sysctl)
+    && !(initrd.config.aos.security.hardening.files ? "security/limits.d/aos-hardening.conf")
+    && !(initrd.config.aos.abilities.configuration.operations.file.effects ? hardening-limits)
+    && builtins.deepSeq initrd.config.aos.activation.graph true;
+
   hostIdentityDefaultsUnchanged =
     builtins.attrNames defaults.config.aos.users.users
     == ["nobody" "root"]
