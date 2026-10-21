@@ -44,7 +44,8 @@ impl OriginalImport18RawBootstrap {
     /// ordinary Realize/Admit/Ready flag is initialized here.
     ///
     /// # Errors
-    /// Refuses re-entry, incomplete/stale original initial custody, declaration
+    /// Refuses re-entry, unchecked full definitions, incomplete/stale original
+    /// initial custody, declaration
     /// or quote failure, short original credit/admission, allocation or terminal
     /// guard failure. Initialized declaration and roster partials stay retained.
     pub(in super::super) fn construct_hello_selection_data(
@@ -67,7 +68,7 @@ impl OriginalImport18RawBootstrap {
         &mut self,
         admission: &dyn OriginalImport18HelloSelectionAdmission,
     ) -> Result<(), ProviderError> {
-        if !self.initial_reconstructed {
+        if !self.initial_reconstructed || !self.selection_authenticated {
             return Err(refused());
         }
         // Existing independent initial funding admits fixed quote controls.

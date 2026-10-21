@@ -41,6 +41,8 @@ pub(in crate::reference_packet::service) use bootstrap_import18::raw_storage_flo
 pub(in crate::reference_packet::service) use bootstrap_import18::{
     hello_selection_construction_data as original_import18_hello_selection_construction_data,
     hello_selection_counter_scratch_data as original_import18_hello_selection_counter_scratch_data,
+    selection_construction_data as original_import18_selection_construction_data,
+    selection_counter_scratch_data as original_import18_selection_counter_scratch_data,
 };
 
 pub(crate) use boot::{

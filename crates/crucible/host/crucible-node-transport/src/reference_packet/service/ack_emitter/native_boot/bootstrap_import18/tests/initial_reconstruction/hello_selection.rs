@@ -73,6 +73,9 @@ impl OriginalImport18HelloSelectionAdmission for Admission<'_> {
 }
 
 pub(super) fn assert_child(case: &str, owner: &mut OriginalImport18RawBootstrap) {
+    if case != "initial_hello_unchecked_selection" {
+        super::selection::authenticate_for_hello(owner);
+    }
     let before = owner.retained_requested_bytes().unwrap();
     let pointers = owner.bodies.each_ref().map(|body| body.as_ptr());
     let admission = Admission {
@@ -104,7 +107,9 @@ pub(super) fn assert_child(case: &str, owner: &mut OriginalImport18RawBootstrap)
     assert_eq!(
         admission.calls.get(),
         match case {
-            "initial_hello_incomplete" | "initial_hello_before_expired" => 0,
+            "initial_hello_incomplete"
+            | "initial_hello_before_expired"
+            | "initial_hello_unchecked_selection" => 0,
             "initial_hello_construct_refused" | "initial_hello_construct_expired" => 1,
             _ if case.starts_with("initial_hello_short_") => 1,
             _ => 2,
@@ -172,6 +177,7 @@ fn native_hello_roster_stays_in_original_initial_custody_on_every_outcome() {
         "initial_hello_complete",
         "initial_hello_reactive",
         "initial_hello_incomplete",
+        "initial_hello_unchecked_selection",
         "initial_hello_before_expired",
         "initial_hello_construct_refused",
         "initial_hello_finish_refused",

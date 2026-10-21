@@ -1168,6 +1168,39 @@ A retained roster is not a completed native Hello, model-absent policy,
 bootstrap ACK, opaque Initial/Recipe or restoration permission. Those actual
 constructors and the complete native/Source proof conjunction remain required.
 
+## Native full-definition checks precede Hello roster construction
+
+The same original bootstrap now checks the compiled Import18 and Stage18
+SchemaRefs against the complete provider and target-binding rosters. Exact
+feature membership is mandatory. The attempt checks original initial custody,
+admits the defining sequential factory quote before allocation and observes
+terminal custody after success or refusal. Failed checks remain spent and retain
+all original raw/typed bodies. The Hello roster constructor now requires this
+completed correspondence check; skipping it refuses before roster allocation.
+
+The shared initial calculation independently includes these same compiled
+factory windows and their fixed controls before any private receipt. No old
+native policy constructor, coordinator/model installation or Ready conversion
+is used. The result is definition correspondence, not a native policy issuer.
+
+Twenty-three new inherited-socket flights exercise complete provider and binding
+references, missing/duplicated formats, changed schema IDs, versions, media,
+digests, lengths, hash domains and extensions, missing/duplicated features,
+incomplete initial custody, both admission boundaries and real cut expiration.
+Both inert program families pass. A separate Hello flight refuses an unchecked
+selection. All ten focused tests pass, covering 138 inherited-socket flights and
+the separate quote control. Both complete Transport builds pass 1,810 tests,
+zero failures and sixteen existing ignores. All six architecture gates pass.
+Affected all-feature/all-target checking and scoped formatting pass. Full
+Engine/Daemon libraries, required application compilation and the funded-Source
+VM are still running. Their
+application and three VM source captures already match all 158 owned changed
+Rust paths byte for byte; pending builds are not passing qualification results.
+
+The complete native model-absent policy, physical Hello/ACK custody, opaque
+Initial/full Recipe producers and actual signed native/Source restoration
+conjunction remain unfinished.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.

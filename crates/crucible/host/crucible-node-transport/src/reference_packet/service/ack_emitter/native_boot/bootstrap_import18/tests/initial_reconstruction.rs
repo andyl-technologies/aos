@@ -28,6 +28,9 @@ mod normalized_framing;
 #[path = "initial_reconstruction/hello_selection.rs"]
 mod hello_selection;
 
+#[path = "initial_reconstruction/selection.rs"]
+mod selection;
+
 fn operands(case: &str) -> [Value; 3] {
     let mut recipe = inert_bootstrap_fixtures::recipe();
     recipe["decoder_limits"][9] = json!("268435456");
@@ -72,8 +75,11 @@ fn operands(case: &str) -> [Value; 3] {
     }
     let mut selected = inert_bootstrap_fixtures::initial_selected_launch(matches!(
         case,
-        "initial_reactive" | "initial_hello_reactive"
+        "initial_reactive" | "initial_hello_reactive" | "initial_selection_reactive"
     ));
+    if case.starts_with("initial_selection_") || case.starts_with("initial_hello_") {
+        selection::prepare_selected(case, &mut selected);
+    }
     let executable = measure_original_restore_current_executable().unwrap();
     selected["launch"]["controller_executable"] = json!(executable);
     if case == "initial_unmeasured_controller_executable" {
@@ -308,6 +314,7 @@ pub(super) fn assert_child(
             || case.starts_with("initial_normalization_")
             || case.starts_with("initial_context_")
             || case.starts_with("initial_hello_")
+            || case.starts_with("initial_selection_")
         {
             result.unwrap();
             assert!(owner.initial_reconstructed);
@@ -316,6 +323,10 @@ pub(super) fn assert_child(
             assert!(result.is_err());
             assert!(!owner.initial_reconstructed);
         }
+    }
+    if case.starts_with("initial_selection_") {
+        selection::assert_child(case, &mut owner);
+        return;
     }
     if case.starts_with("initial_hello_") {
         hello_selection::assert_child(case, &mut owner);

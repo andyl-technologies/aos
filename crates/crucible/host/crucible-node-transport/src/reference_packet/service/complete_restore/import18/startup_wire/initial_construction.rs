@@ -11,7 +11,8 @@ use crate::reference_packet::service::ack_emitter::native_boot::{
     original_import18_controller_measurement_construction_data,
     original_import18_hello_selection_construction_data,
     original_import18_hello_selection_counter_scratch_data,
-    original_import18_raw_bootstrap_storage_data,
+    original_import18_raw_bootstrap_storage_data, original_import18_selection_construction_data,
+    original_import18_selection_counter_scratch_data,
 };
 
 /// Retains a numeric construction observation without creating opaque funding.
@@ -158,6 +159,11 @@ fn combine(
     let measurement = original_import18_controller_measurement_construction_data();
     row[1] = row[1].max(measurement[1]);
     row[2] = row[2].max(add(raw[2], measurement[2])?);
+    // Complete immutable definition checks run sequentially without retaining
+    // their temporary compiled schemas. All original raw/typed owners coexist.
+    let selection = original_import18_selection_construction_data(maximum)?;
+    row[1] = row[1].max(selection[1]);
+    row[2] = row[2].max(add(raw[2], selection[2])?);
     // Native Hello selection follows initial correspondence while all original
     // raw/typed owners remain live. Only its actual feature/key backing is new.
     row[0] = add(row[0], hello[0])?;
@@ -199,6 +205,8 @@ pub fn native_import18_initial_construction_counter_scratch_data() -> usize {
         + native_import18_launch_identity_counter_scratch_data()
         + native_import18_recipe_identity_counter_scratch_data()
         + original_import18_hello_selection_counter_scratch_data()
+        + original_import18_selection_counter_scratch_data()
+        + size_of::<[usize; 3]>() // The sequential compiled-definition row.
         + size_of::<[usize; 3]>() // The separate native Hello constructor row.
         + size_of::<PacketNativeImport18LaunchIdentityData>()
         + size_of::<Result<PacketNativeImport18LaunchIdentityData, ProviderError>>()
