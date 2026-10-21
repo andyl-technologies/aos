@@ -17,6 +17,9 @@
 mod state;
 
 #[cfg(any(test, target_arch = "wasm32"))]
+mod diagnostics;
+
+#[cfg(any(test, target_arch = "wasm32"))]
 mod copy_parts;
 
 #[cfg(target_arch = "wasm32")]

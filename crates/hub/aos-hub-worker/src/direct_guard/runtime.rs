@@ -42,7 +42,14 @@ pub(crate) async fn physical_fetch(
             headers.set("cache-control", "private, no-store")?;
             Ok(Response::ok(String::from_utf8(body).map_err(error)?)?.with_headers(headers))
         }
-        Err(_) => Response::error("direct physical guard refused", 409),
+        Err(error) => {
+            worker::console_error!(
+                "direct_physical_guard_refused phase={} reason={}",
+                super::diagnostics::refusal_phase(&error),
+                super::diagnostics::refusal_reason(&error)
+            );
+            Response::error("direct physical guard refused", 409)
+        }
     }
 }
 

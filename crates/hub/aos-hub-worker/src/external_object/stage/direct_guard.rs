@@ -4,7 +4,7 @@
 //! creates no stamp for legacy objects, and never interprets HEAD or absence as
 //! settlement of a pending provider turn.
 
-use anyhow::{ensure, Result};
+use anyhow::{ensure, Context as _, Result};
 use aos_hub_db::direct_upload::*;
 use aos_hub_db::storage_authority::external_object::stage::ExternalStageContext;
 use aos_hub_db::storage_authority::external_object::stage::ExternalStageOperation;
@@ -96,7 +96,8 @@ pub(crate) async fn direct_baseline(
         i64::try_from(context.placement.binding_id.get())?,
         i64::try_from(context.placement.binding_resource_version.get())?,
     )
-    .await?;
+    .await
+    .context("direct baseline: binding")?;
     validate_domain_publication(
         domain,
         &publication,
@@ -113,10 +114,13 @@ pub(crate) async fn direct_baseline(
             presign_credential: domain.presign_credential.clone(),
         }],
     )
-    .await?
+    .await
+    .context("direct baseline: profile")?
     .pop()
     .ok_or_else(|| anyhow::anyhow!("external baseline protected profile absent"))?;
-    let lease = prepare_observation_read_lease(env, &object, &profile).await?;
+    let lease = prepare_observation_read_lease(env, &object, &profile)
+        .await
+        .context("direct baseline: lease")?;
     let mut head = match load_head(storage).await? {
         Some(head) => head,
         None => {
@@ -127,7 +131,8 @@ pub(crate) async fn direct_baseline(
                 cohort_digest: digest(&domain.read_cohort)?,
                 effect: Effect::Head,
             };
-            Head::initialize(&object, &intent, object.clock())?
+            Head::initialize(&object, &intent, object.clock())
+                .context("direct baseline: initialize floor")?
         }
     };
     head.validate(&object, &scope)?;
@@ -169,17 +174,23 @@ pub(crate) async fn direct_baseline(
     init.with_method(Method::Get)
         .with_redirect(RequestRedirect::Manual);
     let provider = Request::new_with_init(&url, &init)?;
-    let validated = object.verifier()?.validate_lease(
-        lease.as_bytes(),
-        &domain.read_cohort,
-        &object.timing_profile,
-        &head.floor,
-        &scope.full_key,
-        LeaseEffect::Read,
-        object.clock(),
-    )?;
+    let validated = object
+        .verifier()?
+        .validate_lease(
+            lease.as_bytes(),
+            &domain.read_cohort,
+            &object.timing_profile,
+            &head.floor,
+            &scope.full_key,
+            LeaseEffect::Read,
+            object.clock(),
+        )
+        .context("direct baseline: validate floor")?;
     head.floor = validated.next_floor;
-    storage.put(HEAD, serde_json::to_string(&head)?).await?;
+    storage
+        .put(HEAD, serde_json::to_string(&head)?)
+        .await
+        .context("direct baseline: persist floor")?;
     // Floor advancement remains durable before request admission.
     let validated = object.verifier()?.validate_lease(
         lease.as_bytes(),
@@ -269,6 +280,7 @@ pub(crate) async fn direct_baseline(
         },
     )
     .await
+    .context("direct baseline: provider")
 }
 
 /// Reads the exact retained terminal destination receipt without provider I/O.
