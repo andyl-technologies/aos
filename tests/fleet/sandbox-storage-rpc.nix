@@ -148,7 +148,8 @@
           PrivateDevices = true;
           PrivateNetwork = true;
           PrivateTmp = true;
-          ProcSubset = "pid";
+          # Match the production Controller: currentness reads the real boot ID.
+          ProcSubset = "all";
           ProtectClock = true;
           ProtectControlGroups = true;
           ProtectHome = true;
