@@ -489,6 +489,7 @@ in {
   integration.native-index-rebuild = import ./native-index-rebuild.nix {sourceGate = nativeSdkGate;};
   integration.native-index-backfill = import ./native-index-backfill.nix {sourceGate = nativeSdkGate;};
   integration.native-index-locality = import ./native-index-locality.nix {sourceGate = nativeSdkGate;};
+  integration.streaming-http = import ./streaming-http.nix {inherit sourceGate;};
   integration.native-index-populations = import ./native-index-populations.nix {
     sourceGate = nativeSdkGateWithInputs {extraBuildDeps = [pkgs.coreutils];};
     coreutils = pkgs.coreutils;

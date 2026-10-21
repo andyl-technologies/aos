@@ -7044,6 +7044,8 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "blake3",
+ "bytes",
+ "futures-util",
  "libc",
  "reqwest",
  "rustix 1.1.4",

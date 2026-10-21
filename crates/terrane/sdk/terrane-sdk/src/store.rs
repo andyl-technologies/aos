@@ -71,6 +71,9 @@ pub use ordinary_read::{NativeOrdinaryRead, NativeOrdinaryRecord};
 #[cfg(feature = "std")]
 pub use protected_read::{NativeProtectedRead, NativeProtectedRecord};
 
+/// Streams bounded HTTP bodies without selecting a runtime.
+pub mod http_stream;
+
 use std::error::Error;
 use std::fmt;
 use std::num::NonZeroU8;

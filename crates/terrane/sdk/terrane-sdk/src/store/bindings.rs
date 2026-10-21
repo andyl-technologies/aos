@@ -59,6 +59,21 @@ impl HttpClient for TokioHttpClient {
     }
 }
 
+#[cfg(feature = "tokio")]
+#[async_trait::async_trait]
+impl super::http_stream::StreamingHttpClient for TokioHttpClient {
+    async fn send_stream(
+        &self,
+        request: super::http_stream::StreamingHttpRequest,
+        request_limits: super::http_stream::HttpStreamLimits,
+        response_limits: super::http_stream::HttpStreamLimits,
+    ) -> Result<super::http_stream::StreamingHttpResponse, super::http_stream::HttpStreamError>
+    {
+        super::http_stream::native::send(&self.client, request, request_limits, response_limits)
+            .await
+    }
+}
+
 /// Binds portable wall-clock reads to the native host (CRATE-8).
 #[cfg(feature = "tokio")]
 #[derive(Clone, Copy, Debug, Default)]

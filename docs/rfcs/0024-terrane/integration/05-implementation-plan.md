@@ -11679,3 +11679,23 @@ Role selection requires this native proof and retains its path. No injected
 identity or nested namespace substitutes for the guest identity witness.
 All eight cases pass locally under the AOS toolchain. Fresh native and
 application-target qualification remain pending.
+
+
+#### Bounded incremental HTTP transport
+
+The SDK now exposes owned, runtime-independent HTTP body streams with explicit
+chunk and total-byte limits. The native binding delivers response headers and
+chunks incrementally, preserves repeated headers and producer error chains,
+and distinguishes actual EOF from truncation, transport failure and refusal.
+Refused streams remain failed on later reads. Dropping a body releases its
+source; cancellation establishes no remote effect or durability outcome.
+
+Eight public-API cases pass with real loopback sockets, including withheld
+response tails, uploads observed before the producer finishes, declared and
+actual byte overflow, truncated responses and refused upload bytes. Strict
+native SDK/Linux all-target Clippy and the runtime-free std/wasm check pass.
+The source-bound `integration.streaming-http` check retains actual Cargo
+metadata and exact executions; its frozen qualification and the required
+application-target compilation remain pending. This byte transport component
+does not qualify Distribution framing, generated schemas, authorization or
+T-PROTO-1. Protocol callers must still enforce injected-clock deadlines.
