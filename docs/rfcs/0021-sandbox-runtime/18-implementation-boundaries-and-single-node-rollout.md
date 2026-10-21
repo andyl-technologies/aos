@@ -275,12 +275,16 @@ The four Source-provider crates retain distinct responsibilities:
 owns durable acquisition/effect/recovery orchestration. Common mechanics are
 shared without merging those authority boundaries.
 
-`aos-filesystem-view-core` owns portable view semantics;
-`aos-filesystem-view` owns realization/metadata state; and
-`aos-filesystem-fuse` owns its narrow FUSE ABI and worker behavior. Git/Nix/OCI
-adapters are source-specific modules behind view/publisher contracts, not
-special cases in the Controller or mount broker. Filesystem consumers may
-depend on narrow authenticated outcome APIs, never application assembly.
+The existing `aos-sandbox-filesystem-format`, `aos-sandbox-filesystem-view`, and
+`aos-sandbox-filesystem-fuse` crates retain portable semantics, metadata state,
+and the narrow FUSE ABI and qualification work already implemented. Their
+presence does not establish a production view service. The subsequent Terrane
+integration supplies the view service, immutable cache, view publisher, and
+FUSE workers; it must reuse the sandbox contracts and conformance requirements
+rather than introduce a second storage engine here. Git/Nix/OCI adapters remain
+behind view/publisher contracts, not special cases in the Controller or Mount
+broker. Filesystem consumers may depend on narrow authenticated outcome APIs,
+never application assembly.
 
 `aos-sandbox-services` (**new**) is a thin application package for daemon
 entry points, configuration, listener ownership, service registration and

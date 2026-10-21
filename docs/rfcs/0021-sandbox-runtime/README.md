@@ -46,8 +46,8 @@ afterthought. A source-neutral **filesystem view** abstraction selects among:
 
 - native detached, idmapped mounts for same-node live datasets;
 - native snapshots or clones for local copy-on-write state;
-- a new AOS FUSE service for immutable, synthesized, filtered, or remotely
-  backed trees; and
+- a Terrane FUSE surface for immutable, synthesized, filtered, or remotely
+  backed trees, integrated after Terrane settles; and
 - explicitly materialized trees when neither native mounting nor FUSE can
   satisfy the requested semantics.
 
