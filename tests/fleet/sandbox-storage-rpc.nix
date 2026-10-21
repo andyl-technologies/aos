@@ -247,6 +247,13 @@ in {
         assert values["InvocationID"], values
         return int(values["NAccepted"]), values["InvocationID"]
 
+    def observer_after(previous, additional_calls):
+        current = socket_sample("aos-sandbox-workspace-pin-observer.socket")
+        assert current == (previous[0] + additional_calls, previous[1]), (
+            previous, current, additional_calls,
+        )
+        return current
+
     def replay_claims():
         return int(machine.succeed(
             "find /var/lib/aos-sandbox-workspace-pin-worker "
@@ -638,6 +645,8 @@ in {
         f"{FINDMNT} --raw --noheadings --mountpoint '{pin}' --output TARGET"
     ).splitlines() == [pin]
     controller("inventory-live", "inventory-live")
+    # Inventory reobserves physical custody; it does not mutate workspace state.
+    observer_current = observer_after(observer_repaired, 1)
 
     repair_hash = journal_hash()
     stable_parent_identity = machine.succeed(
@@ -650,6 +659,8 @@ in {
     machine.succeed(f"test -d '{PIN_ROOT}'")
     machine.succeed(f"test -d '{pin}'")
     start_storaged("inventory-restarted", "inventory-live", 2)
+    # Startup reconciliation and the subsequent Inventory each observe once.
+    observer_current = observer_after(observer_current, 2)
     assert journal_hash() == repair_hash
     assert machine.succeed(
         f"{COREUTILS}/stat -c '%d:%i' '{PIN_ROOT}'"
@@ -657,18 +668,20 @@ in {
     assert machine.succeed(
         f"{COREUTILS}/stat -c '%d:%i' '{pin}'"
     ).strip() == stable_pin_identity
-    assert socket_sample("aos-sandbox-workspace-pin-observer.socket") == observer_repaired
+    assert socket_sample("aos-sandbox-workspace-pin-observer.socket") == observer_current
     assert socket_sample("aos-sandbox-workspace-pin-worker.socket") == worker_repaired
     assert replay_claims() == 1
 
     controller("retry", "retry-conflict")
+    assert socket_sample("aos-sandbox-workspace-pin-observer.socket") == observer_current
     controller("inventory-live", "inventory-live")
+    observer_current = observer_after(observer_current, 1)
     assert journal_hash() == repair_hash
-    assert socket_sample("aos-sandbox-workspace-pin-observer.socket") == observer_repaired
+    assert socket_sample("aos-sandbox-workspace-pin-observer.socket") == observer_current
     assert socket_sample("aos-sandbox-workspace-pin-worker.socket") == worker_repaired
     assert replay_claims() == 1
 
-    prepare_observer = socket_sample("aos-sandbox-workspace-pin-observer.socket")
+    prepare_observer = observer_current
     prepare_worker = socket_sample("aos-sandbox-workspace-pin-worker.socket")
     prepare_zfs_worker = socket_sample("aos-sandbox-zfs-worker.socket")
     prepare_claims = replay_claims()
@@ -699,6 +712,7 @@ in {
     ).strip() == stable_pin_identity
 
     start_storaged("inventory-restarted", "inventory-live", 3)
+    observer_current = observer_after(observer_current, 2)
     assert machine.succeed(
         f"{COREUTILS}/stat -c '%d:%i' '{PIN_ROOT}'"
     ).strip() == stable_parent_identity
@@ -706,7 +720,7 @@ in {
         f"{COREUTILS}/stat -c '%d:%i' '{pin}'"
     ).strip() == stable_pin_identity
     assert journal_hash() == stable_hash
-    assert socket_sample("aos-sandbox-workspace-pin-observer.socket") == observer_repaired
+    assert socket_sample("aos-sandbox-workspace-pin-observer.socket") == observer_current
     assert socket_sample("aos-sandbox-workspace-pin-worker.socket") == worker_repaired
     assert socket_sample("aos-sandbox-zfs-worker.socket") == prepare_zfs_worker
     assert replay_claims() == 1
@@ -714,18 +728,19 @@ in {
 
     controller("prepare-replay", "prepare-replay")
     assert journal_hash() == stable_hash
-    assert socket_sample("aos-sandbox-workspace-pin-observer.socket") == observer_repaired
+    assert socket_sample("aos-sandbox-workspace-pin-observer.socket") == observer_current
     assert socket_sample("aos-sandbox-workspace-pin-worker.socket") == worker_repaired
     assert socket_sample("aos-sandbox-zfs-worker.socket") == prepare_zfs_worker
     assert replay_claims() == 1
     assert dataset_snapshot() == prepare_datasets
 
     controller("inventory-live", "inventory-live")
+    observer_current = observer_after(observer_current, 1)
     assert journal_hash() == stable_hash
 
     machine.succeed("systemctl start aos-storage-rpc-decoy.service", timeout=20)
     assert journal_hash() == stable_hash
-    assert socket_sample("aos-sandbox-workspace-pin-observer.socket") == observer_repaired
+    assert socket_sample("aos-sandbox-workspace-pin-observer.socket") == observer_current
     assert socket_sample("aos-sandbox-workspace-pin-worker.socket") == worker_repaired
     assert replay_claims() == 1
 
@@ -737,6 +752,7 @@ in {
         "${resolverPolicyDirectory}.missing"
     )
     start_storaged("inventory-restarted", "inventory-live", 4)
+    observer_current = observer_after(observer_current, 2)
     machine.wait_until_succeeds(
         "journalctl -u aos-storaged.service --no-pager "
         "| grep -F 'Storage Prepare disabled: resolver policy is invalid'",
@@ -744,9 +760,11 @@ in {
     )
     assert journal_hash() == stable_hash
     controller("prepare-unavailable", "prepare-unavailable")
+    assert socket_sample("aos-sandbox-workspace-pin-observer.socket") == observer_current
     controller("inventory-live", "inventory-live")
+    observer_current = observer_after(observer_current, 1)
     assert journal_hash() == stable_hash
-    assert socket_sample("aos-sandbox-workspace-pin-observer.socket") == observer_repaired
+    assert socket_sample("aos-sandbox-workspace-pin-observer.socket") == observer_current
     assert socket_sample("aos-sandbox-workspace-pin-worker.socket") == worker_repaired
     assert replay_claims() == 1
 
