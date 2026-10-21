@@ -289,6 +289,25 @@ funding, while separately allocated parser diagnostics, command construction,
 weak roster headers and genuine native activation remain unfinished.
 
 
+The module now deposits each received request payload in its complete child's
+paid inline journal before the independent read postcheck. Ending the local read
+does not destroy or replace that payload. A mapped ACK and later tuple cannot
+replace it, and a local receiver borrows the same journal until it returns.
+Post refusal preserves the received tuple; unwind poisons the journal and keeps
+uncertain custody. An empty read creates no payload owner.
+
+All 1,093 plugin unit tests and every integration target pass. Five new controls
+exercise these lifetimes, and independently rebuilt deposit/reuse omissions
+fail at their intended assertions. All 71 specific source-policy controls pass,
+with the same twenty unfinished broad paths; hygiene, rustdoc, ABI and license
+controls pass. Required application test-target compilation passes. Coverage
+names 124 component cases, with 149 uncovered and zero qualified requirements.
+This owner retains module payload bytes only. Native delivery ownership, actual
+module holder transfer/return, Host publisher loans, action Originals and
+callback activation remain separate unfinished cuts. There is no payload
+retirement route until the genuine module/native lifetime integration exists.
+
+
 Whole-node shutdown now keeps one continuation through process reap, RAM service
 return and controller retirement. Physical closure, initiating failure and
 independent boundary checks remain separate facts. Failed construction retains

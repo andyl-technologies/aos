@@ -145,6 +145,13 @@
       ])
     ];
     supervision = component "gate:ram-supervision" "model" [
+      (group "qemu/crucible-qemu-plugin" "lib" [] [
+        (case "runtime::live_callbacks::control_facts::protected_read::tests::received_payload_excludes_replacement_after_local_read_and_mapped_ack" "adversarial" ["TIME-9"] "The actual paid child retains its received payload after local read release and refuses replacement after a mapped ACK; no Host publisher loan, Native Original or physical-return qualification.")
+        (case "runtime::live_callbacks::control_facts::protected_read::tests::pending_payload_borrow_retains_the_actual_journal_until_receiver_returns" "positive" ["TIME-9"] "A bounded receiver borrows the actual retained payload under its owning journal lock; ending that borrower neither retires the payload nor ACKs the mapped request.")
+        (case "runtime::live_callbacks::control_facts::protected_read::tests::negative_post_retains_the_owned_payload_before_the_signed_result" "adversarial" ["TIME-9"] "Independent post refusal preserves the actual received tuple in the child owner and excludes reuse; no Native delivery or peer return claim.")
+        (case "runtime::live_callbacks::control_facts::protected_read::tests::unwind_after_payload_deposit_retains_uncertain_custody_and_refuses_reuse" "adversarial" ["TIME-9"] "Unwind after actual payload deposit poisons the owning journal, retains the original tuple and blocks reuse without publishing reader completion or ACK.")
+        (case "runtime::live_callbacks::control_facts::protected_read::tests::empty_read_does_not_create_a_pending_payload" "adversarial" ["TIME-9"] "An actual empty slot creates no payload owner and a subsequent genuine pending tuple can be received once; no semantic action authority.")
+      ])
       (group "host/crucible-host-resources" "lib" [] [
         (case "host_supervision::tests::native_cap_bindings_preserve_kernel_origin_across_owners_and_amendments" "positive" ["TIME-5" "TIME-10"] "Shared operational owners retain the original kernel monotonic anchor after amendment; no live native watcher or journal recovery qualification.")
         (case "host_supervision::tests::live_budget_updates_retain_original_operation_and_progress_coordinates" "positive" ["TIME-4"] "Class budget amendments retain the modeled operational start and progress coordinates; no guest fault-blocked control response claim.")
