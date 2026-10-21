@@ -284,6 +284,7 @@ pub(crate) async fn promote_external(
     context: &DirectRequestContext,
     native_reply_body: &[u8],
     native_reply_signature: &str,
+    maximum_parallel_parts: usize,
     signal: Option<worker::web_sys::AbortSignal>,
 ) -> Result<(DirectPlacementEvidence, DirectFinalGuardRecord)> {
     use crate::direct_upload::verification;
@@ -340,32 +341,39 @@ pub(crate) async fn promote_external(
                 .ok_or_else(|| anyhow::anyhow!("direct external original manifest absent"))?;
             let parts =
                 verification::load_parts(env, admission, placement_id, Some(manifest)).await?;
-            let mut copied = Vec::with_capacity(parts.len());
-            for original in &parts {
-                let work = crate::external_object::prepare_stage_request(
-                    env,
-                    admission,
-                    placement_id,
-                    step(&format!("final-copy:{}", original.part.part_number))?,
-                    Action::CopyDestinationPart {
-                        upload_id: upload_id.clone(),
-                        verified_stage_receipt_digest: receipt_digest.clone(),
-                        part: original.part.clone(),
-                    },
-                )
-                .await?;
-                let receipt =
-                    crate::external_object::execute_stage_with_signal(env, &work, signal.clone())
+            // A large object must not serialize hundreds of independent SDK
+            // copies inside one foreground window. Each wave still uses the
+            // shared provider pool and the original signed permission.
+            let copied =
+                super::copy_parts::copy_parts(&parts, maximum_parallel_parts, |original| {
+                    let upload_id = upload_id.clone();
+                    let receipt_digest = receipt_digest.clone();
+                    let signal = signal.clone();
+                    let operation_id = step(&format!("final-copy:{}", original.part.part_number));
+
+                    async move {
+                        let work = crate::external_object::prepare_stage_request(
+                            env,
+                            admission,
+                            placement_id,
+                            operation_id?,
+                            Action::CopyDestinationPart {
+                                upload_id,
+                                verified_stage_receipt_digest: receipt_digest,
+                                part: original.part.clone(),
+                            },
+                        )
                         .await?;
-                let Outcome::Copied { part, etag } = receipt.outcome else {
-                    anyhow::bail!("direct external copied part acknowledgement differs");
-                };
-                ensure!(
-                    part == original.part,
-                    "direct external copied original descriptor changed"
-                );
-                copied.push(DirectManifestPart { part, etag });
-            }
+                        let receipt =
+                            crate::external_object::execute_stage_with_signal(env, &work, signal)
+                                .await?;
+                        let Outcome::Copied { part, etag } = receipt.outcome else {
+                            anyhow::bail!("direct external copied part acknowledgement differs");
+                        };
+                        Ok(DirectManifestPart { part, etag })
+                    }
+                })
+                .await?;
             let final_manifest = DirectManifestCommitment {
                 placement: manifest.placement.clone(),
                 manifest_digest: canonical_manifest_digest(

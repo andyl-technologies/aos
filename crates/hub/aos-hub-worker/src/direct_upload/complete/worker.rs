@@ -327,6 +327,7 @@ async fn promote(
                     &permission.context,
                     &permission.signed.body,
                     &permission.signed.signature,
+                    parallelism(qualified).min(64),
                     Some(signal.clone()),
                 )
                 .await?

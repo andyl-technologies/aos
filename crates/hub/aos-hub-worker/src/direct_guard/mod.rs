@@ -16,6 +16,9 @@
 
 mod state;
 
+#[cfg(any(test, target_arch = "wasm32"))]
+mod copy_parts;
+
 #[cfg(target_arch = "wasm32")]
 mod effects;
 #[cfg(target_arch = "wasm32")]
