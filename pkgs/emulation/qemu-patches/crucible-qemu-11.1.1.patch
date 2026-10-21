@@ -1,7 +1,7 @@
-From 3516a7359c20041332cc2d17777125f393006b6f Mon Sep 17 00:00:00 2001
+From e12c9a8c00e894e9ef7c329210f77b951f6d7da6 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:00 +0000
-Subject: [PATCH] crucible: retain inactive register workspace custody
+Subject: [PATCH] crucible: retain nominal fault registration custody
 
 Retain the complete Crucible integration on the sole pinned QEMU base.
 Supply required run and teardown rows with real compiled fixture layouts
@@ -361,6 +361,40 @@ Actual installed mapping, unmap, QOM-return and initial callback paths remain
 unexecuted. No accepted manifest, operation, activation, ACK or physical peer
 return is qualified; retain all historical failures and mandatory launched
 Source/Root lifecycle refusal.
+
+Embed a canonical permanent registration owner in the actual Node handler
+allocation. Authenticate actual producer membership, exact holder, process and
+synchronous construction before append. Bind impulse publication to the real
+entered append interval, reject duplicate/sealed registration before changing
+existing edges, and propagate actual refusal before manifest registered flags.
+Keep non-Node legacy behavior and selected preallocation refusal unchanged.
+
+Authenticate process and nominal identity before inherited mutexes, repeat
+identity under the fault lock, and observe only real registry/pending edges.
+Retirement stays refused while callback, restore, rule, CPU and module closure
+is unjoined. Add the actual Submit/VMState-prepare validation dispatch frame and
+inline child with exact identity, nonwrapping issuance, copied command, saved
+first/post and actual call return; no selected payer is supplied.
+
+Charge both real fixed registry/append/validation declarations through their
+actual getters. Extract those literal declarations with their owning header,
+guard exact sources and run foreign/copy/locked-fork/missing-interval refusal
+controls from the native driver with its configured GLib provider. These tests
+keep the real producer registry empty and cannot create an owner. Add three
+explicitly GPL-2.0-or-later files, preserving licenses, ceilings and assertions.
+Genuine born construction, duplicate registration, callback and retirement
+remain unexecuted; no selected availability, operation, activation, ACK or
+physical peer return is qualified. Preserve historical failed attempts and
+mandatory launched Source/Root lifecycle refusal.
+
+Close the legacy TCG queue fixture's new dependencies with actual empty Node
+producer declarations, registry/observer and thread helper bodies. Keep its
+non-Node bounded handler and every queue/completion/restore assertion. An
+unexpected Source selection query aborts instead of creating admission; no
+nominal owner or selected provider is supplied. Independently rebuild all
+three original queue/completion/restore omissions to their intended assertions.
+Retain the earlier broad-prefix compilation failure as a failed full sweep,
+separate from the unchanged mandatory launched Source/Root refusal.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -72452,12 +72486,77 @@ index 0000000000000000000000000000000000000000..ae015acf95d98a9b3b88541600b9b4fe
 +    const struct qemu_plugin_crucible_hot_fork_child_status *status);
 +
 +#endif /* QEMU_CRUCIBLE_DEVICE_WORKSPACE_H */
+diff --git a/include/qemu/crucible-fault-registration.h b/include/qemu/crucible-fault-registration.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..f1559fba7c7de74f299c697b5c5d762ba013494b
+--- /dev/null
++++ b/include/qemu/crucible-fault-registration.h
+@@ -0,0 +1,59 @@
++/*
++ * Process-private native fault registration custody
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++#ifndef QEMU_CRUCIBLE_FAULT_REGISTRATION_H
++#define QEMU_CRUCIBLE_FAULT_REGISTRATION_H
++
++#include "qemu/crucible-fault.h"
++
++typedef struct QemuCrucibleFaultRegistration QemuCrucibleFaultRegistration;
++
++/* These are observations of real registry edges, not a complete child census
++ * or permission to unregister. Detached prepare/commit callbacks and
++ * staged/restore/rule/CPU dependencies remain unjoined. */
++typedef struct QemuCrucibleFaultRegistrationObservation {
++    size_t registry_memberships;
++    size_t queued_pending;
++    bool registry_sealed;
++} QemuCrucibleFaultRegistrationObservation;
++
++uint64_t qemu_crucible_fault_node_registration_fixed_storage_bytes_v1(void);
++uint64_t qemu_crucible_fault_registration_fixed_storage_bytes_v1(void);
++int qemu_crucible_fault_registration_append_current_v1(
++    QemuCrucibleFaultRegistration *registration,
++    QemuCrucibleFaultRegistration **holder,
++    const QemuCrucibleFaultHandler *handler);
++int qemu_crucible_fault_node_registration_identity_v1(
++    QemuCrucibleFaultRegistration *registration,
++    QemuCrucibleFaultRegistration **holder, bool issuing,
++    const QemuCrucibleFaultHandler **handler);
++int qemu_crucible_fault_node_registration_publish_v1(
++    QemuCrucibleFaultRegistration *registration,
++    QemuCrucibleFaultRegistration **holder,
++    const QemuCrucibleFaultHandler *handler);
++int qemu_crucible_fault_register_node_owned_v1(
++    QemuCrucibleFaultRegistration *registration,
++    QemuCrucibleFaultRegistration **holder);
++int qemu_crucible_fault_registration_observe_v1(
++    QemuCrucibleFaultRegistration *registration,
++    QemuCrucibleFaultRegistration **holder,
++    QemuCrucibleFaultRegistrationObservation *out);
++int qemu_crucible_fault_node_validation_owned_v1(
++    const QemuCrucibleFaultHandler *handler);
++/* Only the actual Submit/restore dispatch interval permits node validation.
++ * These process-private helpers issue no allocation or registration grant. */
++int qemu_crucible_fault_validation_current_v1(
++    const QemuCrucibleFaultHandler *handler,
++    const struct qemu_plugin_crucible_fault_command *command,
++    const uint8_t *payload, size_t payload_len);
++int qemu_crucible_fault_node_validate_v1(
++    const QemuCrucibleFaultHandler *handler,
++    const struct qemu_plugin_crucible_fault_command *command,
++    const uint8_t *payload, size_t payload_len);
++/* Unsupported until every actual entrant/child and destruction is joined.
++ * Refusal never consumes the canonical producer holder or removes an edge. */
++int qemu_crucible_fault_node_registration_return_v1(
++    QemuCrucibleFaultRegistration **holder);
++
++#endif
 diff --git a/include/qemu/crucible-fault.h b/include/qemu/crucible-fault.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..861f4e0180bf82fd2586ee90ba29143f703ad150
+index 0000000000000000000000000000000000000000..9ec7007089258c6dfe09987d6aeef35f19d1b352
 --- /dev/null
 +++ b/include/qemu/crucible-fault.h
-@@ -0,0 +1,827 @@
+@@ -0,0 +1,829 @@
 +/*
 + * Crucible deterministic fault command registry
 + *
@@ -72685,7 +72784,9 @@ index 0000000000000000000000000000000000000000..861f4e0180bf82fd2586ee90ba29143f
 +    uint16_t phase, uint64_t observed_icount);
 +typedef uint64_t (*QemuCrucibleFaultBoundaryDeadlineFn)(uint16_t phase);
 +
-+void qemu_crucible_fault_node_register(uint16_t command_kind, uint16_t scope,
++/* False preserves any existing registration and records no successful
++ * handler flag. Selected allocation has no payer and refuses before birth. */
++bool qemu_crucible_fault_node_register(uint16_t command_kind, uint16_t scope,
 +                                       uint32_t phase_mask, const char *name,
 +                                       QemuCrucibleFaultImpulseFn impulse);
 +void qemu_crucible_fault_rule_foreach(uint16_t command_kind,
@@ -116324,10 +116425,10 @@ index 0000000000000000000000000000000000000000..3276196fdbd7a9ba8b926dab19d9f340
 +}
 diff --git a/plugins/crucible-fault-clock.c b/plugins/crucible-fault-clock.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..a1fca035b4f5ec815220675362d89db53c690e3e
+index 0000000000000000000000000000000000000000..5831a743b0ea396f8e06fd85da01dd87643ff937
 --- /dev/null
 +++ b/plugins/crucible-fault-clock.c
-@@ -0,0 +1,4706 @@
+@@ -0,0 +1,4710 @@
 +/*
 + * Crucible deterministic guest-clock fault transforms
 + *
@@ -121021,14 +121122,18 @@ index 0000000000000000000000000000000000000000..a1fca035b4f5ec815220675362d89db5
 +    const uint32_t boundary =
 +        1U << (CRUCIBLE_FAULT_PHASE_NODE_BOUNDARY - 1);
 +
-+    qemu_crucible_fault_node_register(
-+        CRUCIBLE_FAULT_COMMAND_CLOCK_TRANSFORM,
-+        QEMU_PLUGIN_CRUCIBLE_FAULT_SCOPE_ALL, boundary,
-+        "qemu.clock.transform.v1", qemu_crucible_fault_clock_impulse);
-+    qemu_crucible_fault_node_register(
-+        CRUCIBLE_FAULT_COMMAND_CLOCK_SOURCE_STATE,
-+        QEMU_PLUGIN_CRUCIBLE_FAULT_SCOPE_ALL, boundary,
-+        "qemu.clock.source-state.v1", NULL);
++    if (!qemu_crucible_fault_node_register(
++            CRUCIBLE_FAULT_COMMAND_CLOCK_TRANSFORM,
++            QEMU_PLUGIN_CRUCIBLE_FAULT_SCOPE_ALL, boundary,
++            "qemu.clock.transform.v1", qemu_crucible_fault_clock_impulse)) {
++        return;
++    }
++    if (!qemu_crucible_fault_node_register(
++            CRUCIBLE_FAULT_COMMAND_CLOCK_SOURCE_STATE,
++            QEMU_PLUGIN_CRUCIBLE_FAULT_SCOPE_ALL, boundary,
++            "qemu.clock.source-state.v1", NULL)) {
++        return;
++    }
 +    qemu_crucible_fault_vmstate_register(&crucible_clock_vmstate_section);
 +    crucible_clock_registered = true;
 +}
@@ -121036,10 +121141,10 @@ index 0000000000000000000000000000000000000000..a1fca035b4f5ec815220675362d89db5
 +type_init(crucible_clock_register)
 diff --git a/plugins/crucible-fault-hardware-error.c b/plugins/crucible-fault-hardware-error.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..92f1e5e75a6ef73ae676a2880977f50866d8452c
+index 0000000000000000000000000000000000000000..cd90a53e696cbc7c455e3552ff7e91f737222cf8
 --- /dev/null
 +++ b/plugins/crucible-fault-hardware-error.c
-@@ -0,0 +1,2075 @@
+@@ -0,0 +1,2077 @@
 +/*
 + * Crucible architecture and platform hardware-error injection
 + *
@@ -123105,10 +123210,12 @@ index 0000000000000000000000000000000000000000..92f1e5e75a6ef73ae676a2880977f508
 +            &crucible_hardware_catalogue.rows[i];
 +
 +        if (row->record_kind == CRUCIBLE_HWERR_RECORD_MEMORY_ECC) {
-+            qemu_crucible_fault_node_register(
-+                CRUCIBLE_FAULT_COMMAND_MEMORY_ECC_EVENT,
-+                CPU_GET_CLASS(cpu)->crucible_register_scope, phases,
-+                "qemu.memory.ecc-event.v1", crucible_hardware_ecc_impulse);
++            if (!qemu_crucible_fault_node_register(
++                    CRUCIBLE_FAULT_COMMAND_MEMORY_ECC_EVENT,
++                    CPU_GET_CLASS(cpu)->crucible_register_scope, phases,
++                    "qemu.memory.ecc-event.v1", crucible_hardware_ecc_impulse)) {
++                return false;
++            }
 +            break;
 +        }
 +    }
@@ -123117,10 +123224,10 @@ index 0000000000000000000000000000000000000000..92f1e5e75a6ef73ae676a2880977f508
 +}
 diff --git a/plugins/crucible-fault-instruction.c b/plugins/crucible-fault-instruction.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..0bd2e3a64c7e84c748b1ad6ab42ef93479156d97
+index 0000000000000000000000000000000000000000..0b50637171de8a292272ac9b5659c495d0d732aa
 --- /dev/null
 +++ b/plugins/crucible-fault-instruction.c
-@@ -0,0 +1,3327 @@
+@@ -0,0 +1,3331 @@
 +/*
 + * Crucible architecture instruction faults
 + *
@@ -126435,25 +126542,29 @@ index 0000000000000000000000000000000000000000..0bd2e3a64c7e84c748b1ad6ab42ef934
 +    if (!cpu || !qemu_crucible_fault_register_ensure_registered()) {
 +        return false;
 +    }
-+    qemu_crucible_fault_node_register(
-+        CRUCIBLE_FAULT_COMMAND_CPU_INSTRUCTION_TRANSFORM,
-+        CPU_GET_CLASS(cpu)->crucible_register_scope,
-+        instruction_boundaries, "qemu.cpu.instruction-transform.v1",
-+        crucible_instruction_transform_impulse);
-+    qemu_crucible_fault_node_register(
-+        CRUCIBLE_FAULT_COMMAND_CPU_EXCEPTION,
-+        CPU_GET_CLASS(cpu)->crucible_register_scope,
-+        instruction_boundaries, "qemu.cpu.exception.v1",
-+        crucible_instruction_exception_impulse);
++    if (!qemu_crucible_fault_node_register(
++            CRUCIBLE_FAULT_COMMAND_CPU_INSTRUCTION_TRANSFORM,
++            CPU_GET_CLASS(cpu)->crucible_register_scope,
++            instruction_boundaries, "qemu.cpu.instruction-transform.v1",
++            crucible_instruction_transform_impulse)) {
++        return false;
++    }
++    if (!qemu_crucible_fault_node_register(
++            CRUCIBLE_FAULT_COMMAND_CPU_EXCEPTION,
++            CPU_GET_CLASS(cpu)->crucible_register_scope,
++            instruction_boundaries, "qemu.cpu.exception.v1",
++            crucible_instruction_exception_impulse)) {
++        return false;
++    }
 +    crucible_instruction_registered = true;
 +    return true;
 +}
 diff --git a/plugins/crucible-fault-interrupt.c b/plugins/crucible-fault-interrupt.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..9c820878b1abfb93b6347178450dffef6ca17e03
+index 0000000000000000000000000000000000000000..8864862cc74aebfef76b0036ef4d2b6eb194c56f
 --- /dev/null
 +++ b/plugins/crucible-fault-interrupt.c
-@@ -0,0 +1,2932 @@
+@@ -0,0 +1,2936 @@
 +/*
 + * Crucible architecture interrupt fault targets
 + *
@@ -129376,13 +129487,17 @@ index 0000000000000000000000000000000000000000..9c820878b1abfb93b6347178450dffef
 +    storm_name = crucible_interrupt_scope == CRUCIBLE_INTERRUPT_SCOPE_X86_64 ?
 +        "qemu.interrupt.storm.x86_64.v1" :
 +        "qemu.interrupt.storm.aarch64.v1";
-+    qemu_crucible_fault_node_register(
-+        CRUCIBLE_FAULT_COMMAND_INTERRUPT_DISPOSITION,
-+        crucible_interrupt_scope, boundary, control_name,
-+        crucible_interrupt_disposition_impulse);
-+    qemu_crucible_fault_node_register(
-+        CRUCIBLE_FAULT_COMMAND_INTERRUPT_STORM,
-+        crucible_interrupt_scope, boundary, storm_name, NULL);
++    if (!qemu_crucible_fault_node_register(
++            CRUCIBLE_FAULT_COMMAND_INTERRUPT_DISPOSITION,
++            crucible_interrupt_scope, boundary, control_name,
++            crucible_interrupt_disposition_impulse)) {
++        return false;
++    }
++    if (!qemu_crucible_fault_node_register(
++            CRUCIBLE_FAULT_COMMAND_INTERRUPT_STORM,
++            crucible_interrupt_scope, boundary, storm_name, NULL)) {
++        return false;
++    }
 +    crucible_interrupt_handlers_registered = true;
 +    return true;
 +}
@@ -134056,10 +134171,10 @@ index 0000000000000000000000000000000000000000..542ce0a4b1bbcff09a1302f99768a96c
 +}
 diff --git a/plugins/crucible-fault-node.c b/plugins/crucible-fault-node.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..9106a118974a554e63561e4fb20eaaa6f8f4c50f
+index 0000000000000000000000000000000000000000..12994b55b1edac9918ad41ed96e5381793b4fe16
 --- /dev/null
 +++ b/plugins/crucible-fault-node.c
-@@ -0,0 +1,13219 @@
+@@ -0,0 +1,13257 @@
 +/*
 + * Crucible closed-schema node fault rules and lossless occurrence transport
 + *
@@ -134071,6 +134186,9 @@ index 0000000000000000000000000000000000000000..9106a118974a554e63561e4fb20eaaa6
 +#include "qemu/osdep.h"
 +#include "accel/tcg/tcg-accel-ops-sim-shmem.h"
 +#include "qemu/crucible-fault.h"
++#include "qemu/crucible-fault-registration.h"
++#include "qemu/thread.h"
++#include "qemu/plugin.h"
 +#include "qemu/error-report.h"
 +#include "qemu/host-utils.h"
 +#include "qemu/module.h"
@@ -134269,6 +134387,8 @@ index 0000000000000000000000000000000000000000..9106a118974a554e63561e4fb20eaaa6
 +
 +static GPtrArray *crucible_node_rules;
 +static QemuCrucibleFaultImpulseFn crucible_node_impulses[UINT16_MAX + 1];
++
++#include "crucible-fault-registration.inc.h"
 +static QTAILQ_HEAD(, CrucibleNodeEvent) crucible_node_events =
 +    QTAILQ_HEAD_INITIALIZER(crucible_node_events);
 +static QTAILQ_HEAD(, CrucibleNodeEvent) crucible_node_free_events =
@@ -138098,11 +138218,28 @@ index 0000000000000000000000000000000000000000..9106a118974a554e63561e4fb20eaaa6
 +    result->applied_icount = result->observed_icount;
 +}
 +
-+void qemu_crucible_fault_node_register(uint16_t command_kind, uint16_t scope,
++bool qemu_crucible_fault_node_register(uint16_t command_kind, uint16_t scope,
 +                                       uint32_t phase_mask, const char *name,
 +                                       QemuCrucibleFaultImpulseFn impulse)
 +{
-+    QemuCrucibleFaultHandler *handler = g_new0(QemuCrucibleFaultHandler, 1);
++    CrucibleNodeOwnedHandler *producer;
++    QemuCrucibleFaultRegistration *registration;
++    QemuCrucibleFaultHandler *handler;
++    int status;
++
++    /* No actual selected producer pays this allocation or registry storage.
++     * Refuse before the unselected allocator, not after a nominal owner birth. */
++    if (qemu_plugin_crucible_startup_source_retained() ||
++        !node_registration_process_current()) {
++        return false;
++    }
++    producer = g_new0(CrucibleNodeOwnedHandler, 1);
++    registration = &producer->registration;
++    handler = &producer->handler;
++    registration->holder = registration;
++    registration->impulse = impulse;
++    registration->process = getpid();
++    qemu_thread_get_self(&registration->creator);
 +
 +    handler->capability.command_kind = command_kind;
 +    handler->capability.scope = scope;
@@ -138219,9 +138356,25 @@ index 0000000000000000000000000000000000000000..9106a118974a554e63561e4fb20eaaa6
 +    handler->prepare = node_prepare;
 +    handler->commit = node_commit;
 +    handler->free_state = (QemuCrucibleFaultFreeFn)node_staging_clear;
-+    g_assert(!crucible_node_impulses[command_kind]);
-+    crucible_node_impulses[command_kind] = impulse;
-+    qemu_crucible_fault_register(handler);
++    g_mutex_lock(&crucible_node_registrations.lock);
++    registration->next = crucible_node_registrations.head;
++    crucible_node_registrations.head = registration;
++    registration->issuing = true;
++    g_mutex_unlock(&crucible_node_registrations.lock);
++
++    status = qemu_crucible_fault_register_node_owned_v1(
++        registration, &registration->holder);
++    g_mutex_lock(&crucible_node_registrations.lock);
++    registration->first_status = status;
++    if (!status) {
++        registration->registry_published = true;
++    }
++    registration->attempt_returned = true;
++    registration->issuing = false;
++    g_mutex_unlock(&crucible_node_registrations.lock);
++    /* The real producer/handler/impulse and registry edge remain permanently
++     * retained. This result is not a byte grant or a physical return receipt. */
++    return !status;
 +}
 +
 +void qemu_crucible_fault_rule_foreach(uint16_t command_kind,
@@ -147281,10 +147434,10 @@ index 0000000000000000000000000000000000000000..9106a118974a554e63561e4fb20eaaa6
 +type_init(crucible_memory_access_faults_register)
 diff --git a/plugins/crucible-fault-register.c b/plugins/crucible-fault-register.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..d38f5dec944c7298194bb9f651eb4ce4607e2f2f
+index 0000000000000000000000000000000000000000..b5cc681df070baf9016072c4ce1223f1d86c614d
 --- /dev/null
 +++ b/plugins/crucible-fault-register.c
-@@ -0,0 +1,1402 @@
+@@ -0,0 +1,1404 @@
 +/*
 + * Crucible architecture register fault targets
 + *
@@ -148679,13 +148832,311 @@ index 0000000000000000000000000000000000000000..d38f5dec944c7298194bb9f651eb4ce4
 +    if (!crucible_register_manifest_init()) {
 +        return false;
 +    }
-+    qemu_crucible_fault_node_register(
-+        CRUCIBLE_FAULT_COMMAND_CPU_REGISTER_TRANSFORM,
-+        crucible_register_scope, boundary,
-+        "qemu.register.mutate.v1",
-+        crucible_register_impulse);
++    if (!qemu_crucible_fault_node_register(
++            CRUCIBLE_FAULT_COMMAND_CPU_REGISTER_TRANSFORM,
++            crucible_register_scope, boundary,
++            "qemu.register.mutate.v1",
++            crucible_register_impulse)) {
++        return false;
++    }
 +    crucible_register_handler_registered = true;
 +    return true;
++}
+diff --git a/plugins/crucible-fault-registration.inc.h b/plugins/crucible-fault-registration.inc.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..ff3811102c4fb15f039a535d3575cf8c9fd64e19
+--- /dev/null
++++ b/plugins/crucible-fault-registration.inc.h
+@@ -0,0 +1,290 @@
++/*
++ * Actual node producer registration owner; no selected allocation payer
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++typedef struct CrucibleNodeValidationChild {
++    struct CrucibleNodeValidationChild *holder;
++    struct qemu_plugin_crucible_fault_command command;
++    const QemuCrucibleFaultHandler *handler;
++    const uint8_t *payload;
++    size_t payload_len;
++    QemuThread thread;
++    pid_t process;
++    uint64_t issuance;
++    int first_status;
++    int post_status;
++    bool entered;
++    bool physically_returned;
++} CrucibleNodeValidationChild;
++
++struct QemuCrucibleFaultRegistration {
++    QemuCrucibleFaultRegistration *next;
++    QemuCrucibleFaultRegistration *holder;
++    QemuCrucibleFaultImpulseFn impulse;
++    QemuThread creator;
++    pid_t process;
++    int first_status;
++    bool issuing;
++    bool attempt_returned;
++    bool registry_published;
++    bool impulse_published;
++    CrucibleNodeValidationChild validation;
++};
++
++typedef struct CrucibleNodeOwnedHandler {
++    QemuCrucibleFaultHandler handler;
++    QemuCrucibleFaultRegistration registration;
++} CrucibleNodeOwnedHandler;
++
++static struct {
++    GMutex lock;
++    QemuCrucibleFaultRegistration *head;
++    pid_t process;
++} crucible_node_registrations;
++
++uint64_t qemu_crucible_fault_node_registration_fixed_storage_bytes_v1(void)
++{
++    return sizeof(crucible_node_registrations);
++}
++
++/* Record only the real current process, never an issuer or allocation grant.
++ * Once set, copied registries refuse before touching an inherited mutex. */
++static bool node_registration_process_current(void)
++{
++    pid_t process = qatomic_load_acquire(&crucible_node_registrations.process);
++
++    if (!process) {
++        process = qatomic_cmpxchg(&crucible_node_registrations.process, 0, getpid());
++        if (!process) {
++            process = getpid();
++        }
++    }
++    return process == getpid();
++}
++
++/* The returned owner is usable only while holding the real producer mutex. */
++static QemuCrucibleFaultRegistration *node_validation_owner_locked(
++    const QemuCrucibleFaultHandler *handler)
++{
++    QemuCrucibleFaultRegistration *actual;
++
++    for (actual = crucible_node_registrations.head; actual; actual = actual->next) {
++        CrucibleNodeOwnedHandler *producer = container_of(
++            actual, CrucibleNodeOwnedHandler, registration);
++
++        if (&producer->handler == handler) {
++            return actual;
++        }
++    }
++    return NULL;
++}
++
++int qemu_crucible_fault_node_validation_owned_v1(
++    const QemuCrucibleFaultHandler *handler)
++{
++    bool owned;
++
++    if (!node_registration_process_current()) {
++        return -EPERM;
++    }
++    g_mutex_lock(&crucible_node_registrations.lock);
++    owned = node_validation_owner_locked(handler) != NULL;
++    g_mutex_unlock(&crucible_node_registrations.lock);
++    return owned ? 0 : -ENOENT;
++}
++
++int qemu_crucible_fault_node_validate_v1(
++    const QemuCrucibleFaultHandler *handler,
++    const struct qemu_plugin_crucible_fault_command *command,
++    const uint8_t *payload, size_t payload_len)
++{
++    QemuCrucibleFaultRegistration *owner;
++    CrucibleNodeValidationChild *child;
++    uint64_t issuance;
++    int first;
++    int post;
++
++    if (qemu_plugin_crucible_startup_source_retained()) {
++        return -ENOKEY;
++    }
++    if (!command || (payload_len && !payload) ||
++        !node_registration_process_current()) {
++        return -EPERM;
++    }
++    post = qemu_crucible_fault_validation_current_v1(
++        handler, command, payload, payload_len);
++    if (post) {
++        return post;
++    }
++    g_mutex_lock(&crucible_node_registrations.lock);
++    owner = node_validation_owner_locked(handler);
++    if (!owner || owner->holder != owner || owner->process != getpid() ||
++        owner->issuing || !owner->attempt_returned ||
++        !owner->registry_published || !owner->impulse_published ||
++        !handler->validate ||
++        command->command_kind != handler->capability.command_kind ||
++        command->semantic_version != handler->capability.semantic_version) {
++        g_mutex_unlock(&crucible_node_registrations.lock);
++        return -EPERM;
++    }
++    child = &owner->validation;
++    if (child->holder || child->issuance == UINT64_MAX) {
++        g_mutex_unlock(&crucible_node_registrations.lock);
++        return -EBUSY;
++    }
++    issuance = ++child->issuance;
++    child->holder = child;
++    memcpy(&child->command, command, sizeof(*command));
++    child->handler = handler;
++    child->payload = payload;
++    child->payload_len = payload_len;
++    child->process = getpid();
++    qemu_thread_get_self(&child->thread);
++    child->first_status = 0;
++    child->post_status = 0;
++    child->entered = true;
++    child->physically_returned = false;
++    g_mutex_unlock(&crucible_node_registrations.lock);
++
++    first = handler->validate(command, payload, payload_len);
++
++    /* Save the actual call's return before independent post authentication.
++     * A nonlocal exit never reaches this journal and retains the born child. */
++    if (!node_registration_process_current()) {
++        return first ? first : -EPERM;
++    }
++    g_mutex_lock(&crucible_node_registrations.lock);
++    child->first_status = first;
++    child->physically_returned = true;
++    post = node_validation_owner_locked(handler) == owner &&
++        owner->holder == owner && owner->process == getpid() &&
++        owner->registry_published && owner->impulse_published &&
++        !owner->issuing && owner->attempt_returned &&
++        child->holder == child && child->issuance == issuance &&
++        child->entered && child->handler == handler &&
++        child->process == getpid() && qemu_thread_is_self(&child->thread) &&
++        !memcmp(&child->command, command, sizeof(*command)) &&
++        child->payload == payload && child->payload_len == payload_len ? 0 : -EPERM;
++    g_mutex_unlock(&crucible_node_registrations.lock);
++    if (!post) {
++        post = qemu_crucible_fault_validation_current_v1(
++            handler, command, payload, payload_len);
++    }
++    g_mutex_lock(&crucible_node_registrations.lock);
++    child->post_status = post;
++    if (!post) {
++        child->holder = NULL;
++    }
++    g_mutex_unlock(&crucible_node_registrations.lock);
++    return first ? first : post;
++}
++
++int qemu_crucible_fault_node_registration_identity_v1(
++    QemuCrucibleFaultRegistration *registration,
++    QemuCrucibleFaultRegistration **holder, bool issuing,
++    const QemuCrucibleFaultHandler **handler)
++{
++    QemuCrucibleFaultRegistration *actual;
++    int status = -EPERM;
++
++    if (!handler || *handler) {
++        return -EINVAL;
++    }
++    if (!node_registration_process_current()) {
++        return -EPERM;
++    }
++    g_mutex_lock(&crucible_node_registrations.lock);
++    for (actual = crucible_node_registrations.head; actual; actual = actual->next) {
++        if (actual == registration) {
++            CrucibleNodeOwnedHandler *producer = container_of(
++                actual, CrucibleNodeOwnedHandler, registration);
++
++            if (actual->process == getpid() &&
++                holder == &actual->holder && *holder == actual &&
++                actual->issuing == issuing &&
++                (issuing || actual->attempt_returned) &&
++                (!issuing || (!actual->attempt_returned &&
++                    qemu_thread_is_self(&actual->creator))) &&
++                (!actual->impulse_published ||
++                    crucible_node_impulses[producer->handler.capability.command_kind] ==
++                        actual->impulse)) {
++                *handler = &producer->handler;
++                status = 0;
++            }
++            break;
++        }
++    }
++    g_mutex_unlock(&crucible_node_registrations.lock);
++    return status;
++}
++
++int qemu_crucible_fault_node_registration_publish_v1(
++    QemuCrucibleFaultRegistration *registration,
++    QemuCrucibleFaultRegistration **holder,
++    const QemuCrucibleFaultHandler *handler)
++{
++    const QemuCrucibleFaultHandler *actual_handler = NULL;
++    QemuCrucibleFaultRegistration *existing;
++    int status = qemu_crucible_fault_node_registration_identity_v1(
++        registration, holder, true, &actual_handler);
++
++    if (status || actual_handler != handler) {
++        return status ? status : -EPERM;
++    }
++    status = qemu_crucible_fault_registration_append_current_v1(
++        registration, holder, handler);
++    if (status) {
++        return status;
++    }
++    /* The real fault mutex excludes duplicate/seal/append races at this call.
++     * The producer mutex serializes actual impulse-table publication. */
++    g_mutex_lock(&crucible_node_registrations.lock);
++    if (registration->impulse_published) {
++        status = -EALREADY;
++    }
++    for (existing = crucible_node_registrations.head; !status && existing;
++         existing = existing->next) {
++        CrucibleNodeOwnedHandler *producer = container_of(
++            existing, CrucibleNodeOwnedHandler, registration);
++
++        if (existing->impulse_published &&
++            producer->handler.capability.command_kind == handler->capability.command_kind) {
++            status = -EEXIST;
++        }
++    }
++    if (!status) {
++        crucible_node_impulses[handler->capability.command_kind] = registration->impulse;
++        registration->impulse_published = true;
++    }
++    g_mutex_unlock(&crucible_node_registrations.lock);
++    return status;
++}
++
++int qemu_crucible_fault_node_registration_return_v1(
++    QemuCrucibleFaultRegistration **holder)
++{
++    QemuCrucibleFaultRegistrationObservation observation;
++    QemuCrucibleFaultRegistration *actual;
++    int status;
++
++    /* The canonical field is authenticated by actual producer membership before
++     * any owner fields are read. Even an empty observed queue cannot authorize
++     * removal: detached callbacks, restore, rules and CPU entrants are unjoined.
++     */
++    if (!node_registration_process_current()) {
++        return -EPERM;
++    }
++    g_mutex_lock(&crucible_node_registrations.lock);
++    for (actual = crucible_node_registrations.head; actual; actual = actual->next) {
++        if (holder == &actual->holder && actual->holder == actual) {
++            break;
++        }
++    }
++    g_mutex_unlock(&crucible_node_registrations.lock);
++    if (!actual) {
++        return -EPERM;
++    }
++    status = qemu_crucible_fault_registration_observe_v1(actual, holder,
++                                                        &observation);
++    return status ? status : -ENOTSUP;
 +}
 diff --git a/plugins/crucible-fault-vcpu-service.c b/plugins/crucible-fault-vcpu-service.c
 new file mode 100644
@@ -150968,10 +151419,10 @@ index 0000000000000000000000000000000000000000..d035f6c68a7d8e4bff25b4d76130f01f
 +}
 diff --git a/plugins/crucible-fault.c b/plugins/crucible-fault.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..0930f31f35512b0ab0d57a3a6b8c9eca5adf7bc6
+index 0000000000000000000000000000000000000000..cb3dda1798d5b2203e98b0ba667bd507f32dcb30
 --- /dev/null
 +++ b/plugins/crucible-fault.c
-@@ -0,0 +1,1658 @@
+@@ -0,0 +1,1895 @@
 +/*
 + * Crucible deterministic fault command registry and dispatcher
 + *
@@ -150987,6 +151438,8 @@ index 0000000000000000000000000000000000000000..0930f31f35512b0ab0d57a3a6b8c9eca
 +#include "hw/core/cpu.h"
 +#include "qemu/atomic.h"
 +#include "qemu/crucible-fault.h"
++#include "qemu/crucible-fault-registration.h"
++#include "qemu/thread.h"
 +#include "qemu/error-report.h"
 +#include "qemu/module.h"
 +#include "qemu/plugin.h"
@@ -151046,6 +151499,129 @@ index 0000000000000000000000000000000000000000..0930f31f35512b0ab0d57a3a6b8c9eca
 +static GPtrArray *crucible_boundary_observers;
 +static GPtrArray *crucible_boundary_deadlines;
 +static uint64_t crucible_max_command_sequence;
++
++/* Actual owned append interval, serialized by the existing fault mutex. */
++static struct {
++    GMutex lock;
++    QemuCrucibleFaultRegistration *registration;
++    QemuCrucibleFaultRegistration **holder;
++    const QemuCrucibleFaultHandler *handler;
++    QemuThread thread;
++    pid_t process;
++    bool calling;
++} crucible_fault_registration_append;
++
++static struct {
++    GMutex lock;
++    const QemuCrucibleFaultHandler *handler;
++    const struct qemu_plugin_crucible_fault_command *command;
++    const uint8_t *payload;
++    size_t payload_len;
++    QemuThread thread;
++    pid_t process;
++    uint64_t issuance;
++    bool calling;
++} crucible_fault_validation;
++
++uint64_t qemu_crucible_fault_registration_fixed_storage_bytes_v1(void)
++{
++    return sizeof(crucible_fault_registration_append) +
++        sizeof(crucible_fault_validation);
++}
++
++int qemu_crucible_fault_validation_current_v1(
++    const QemuCrucibleFaultHandler *handler,
++    const struct qemu_plugin_crucible_fault_command *command,
++    const uint8_t *payload, size_t payload_len)
++{
++    int status;
++
++    if (qatomic_load_acquire(&crucible_fault_validation.process) != getpid()) {
++        return -EPERM;
++    }
++    g_mutex_lock(&crucible_fault_validation.lock);
++    status = crucible_fault_validation.calling &&
++        crucible_fault_validation.handler == handler &&
++        crucible_fault_validation.command == command &&
++        crucible_fault_validation.payload == payload &&
++        crucible_fault_validation.payload_len == payload_len &&
++        qemu_thread_is_self(&crucible_fault_validation.thread) ? 0 : -EPERM;
++    g_mutex_unlock(&crucible_fault_validation.lock);
++    return status;
++}
++
++static int crucible_fault_validate_command(
++    const QemuCrucibleFaultHandler *handler,
++    const struct qemu_plugin_crucible_fault_command *command,
++    const uint8_t *payload, size_t payload_len)
++{
++    int status;
++    pid_t process;
++
++    if (!handler->validate) {
++        return 0;
++    }
++    status = qemu_crucible_fault_node_validation_owned_v1(handler);
++    if (status == -ENOENT) {
++        return handler->validate(command, payload, payload_len);
++    }
++    if (status) {
++        return status;
++    }
++    process = qatomic_load_acquire(&crucible_fault_validation.process);
++    if (process && process != getpid()) {
++        return -EPERM;
++    }
++    g_mutex_lock(&crucible_fault_validation.lock);
++    if (crucible_fault_validation.calling ||
++        crucible_fault_validation.issuance == UINT64_MAX) {
++        g_mutex_unlock(&crucible_fault_validation.lock);
++        return -EBUSY;
++    }
++    crucible_fault_validation.issuance++;
++    crucible_fault_validation.handler = handler;
++    crucible_fault_validation.command = command;
++    crucible_fault_validation.payload = payload;
++    crucible_fault_validation.payload_len = payload_len;
++    qemu_thread_get_self(&crucible_fault_validation.thread);
++    qatomic_store_release(&crucible_fault_validation.process, getpid());
++    crucible_fault_validation.calling = true;
++    g_mutex_unlock(&crucible_fault_validation.lock);
++
++    status = qemu_crucible_fault_node_validate_v1(
++        handler, command, payload, payload_len);
++
++    /* This actual helper return closes only its dispatch interval. The child
++     * keeps failed post debt, and nonlocal exits leave this interval occupied. */
++    if (qatomic_load_acquire(&crucible_fault_validation.process) != getpid()) {
++        return status ? status : -EPERM;
++    }
++    g_mutex_lock(&crucible_fault_validation.lock);
++    crucible_fault_validation.calling = false;
++    g_mutex_unlock(&crucible_fault_validation.lock);
++    return status;
++}
++
++int qemu_crucible_fault_registration_append_current_v1(
++    QemuCrucibleFaultRegistration *registration,
++    QemuCrucibleFaultRegistration **holder,
++    const QemuCrucibleFaultHandler *handler)
++{
++    int status;
++
++    /* A fork cannot inherit permission or wait on another process's mutex. */
++    if (qatomic_load_acquire(&crucible_fault_registration_append.process) != getpid()) {
++        return -EPERM;
++    }
++    g_mutex_lock(&crucible_fault_registration_append.lock);
++    status = crucible_fault_registration_append.calling &&
++        crucible_fault_registration_append.registration == registration &&
++        crucible_fault_registration_append.holder == holder &&
++        crucible_fault_registration_append.handler == handler &&
++        qemu_thread_is_self(&crucible_fault_registration_append.thread) ? 0 : -EPERM;
++    g_mutex_unlock(&crucible_fault_registration_append.lock);
++    return status;
++}
 +
 +static void crucible_fault_flush_complete_on_cpu(
 +    CPUState *cpu, run_on_cpu_data unused)
@@ -151258,10 +151834,8 @@ index 0000000000000000000000000000000000000000..0930f31f35512b0ab0d57a3a6b8c9eca
 +    return 0;
 +}
 +
-+void qemu_crucible_fault_register(const QemuCrucibleFaultHandler *handler)
++static void crucible_fault_handler_validate(const QemuCrucibleFaultHandler *handler)
 +{
-+    size_t i;
-+
 +    g_assert(handler);
 +    g_assert(handler->capability.command_kind != 0);
 +    g_assert(handler->capability.semantic_version != 0);
@@ -151277,7 +151851,13 @@ index 0000000000000000000000000000000000000000..0930f31f35512b0ab0d57a3a6b8c9eca
 +               ~CRUCIBLE_FAULT_CAPABILITY_FEATURES_V1_MASK));
 +    g_assert(handler->prepare);
 +    g_assert(handler->commit);
++}
 +
++void qemu_crucible_fault_register(const QemuCrucibleFaultHandler *handler)
++{
++    size_t i;
++
++    crucible_fault_handler_validate(handler);
 +    g_mutex_lock(&crucible_fault_lock);
 +    crucible_fault_ensure_registry();
 +    g_assert(!crucible_registry_sealed);
@@ -151294,6 +151874,112 @@ index 0000000000000000000000000000000000000000..0930f31f35512b0ab0d57a3a6b8c9eca
 +    }
 +    g_ptr_array_add(crucible_fault_handlers, (void *)handler);
 +    g_mutex_unlock(&crucible_fault_lock);
++}
++
++int qemu_crucible_fault_register_node_owned_v1(
++    QemuCrucibleFaultRegistration *registration,
++    QemuCrucibleFaultRegistration **holder)
++{
++    const QemuCrucibleFaultHandler *handler = NULL;
++    int status;
++
++    if (qemu_plugin_crucible_startup_source_retained()) {
++#ifdef ENOKEY
++        return -ENOKEY;
++#else
++        return -ENOTSUP;
++#endif
++    }
++    status = qemu_crucible_fault_node_registration_identity_v1(
++        registration, holder, true, &handler);
++    if (status) {
++        return status;
++    }
++    crucible_fault_handler_validate(handler);
++    g_mutex_lock(&crucible_fault_lock);
++    crucible_fault_ensure_registry();
++    g_mutex_lock(&crucible_fault_registration_append.lock);
++    if (crucible_registry_sealed || crucible_fault_registration_append.calling) {
++        status = -EPERM;
++    }
++    g_mutex_unlock(&crucible_fault_registration_append.lock);
++    for (size_t index = 0; !status && index < crucible_fault_handlers->len; index++) {
++        const QemuCrucibleFaultHandler *existing =
++            g_ptr_array_index(crucible_fault_handlers, index);
++
++        if (existing->capability.command_kind == handler->capability.command_kind &&
++            existing->capability.semantic_version == handler->capability.semantic_version) {
++            status = -EEXIST;
++        }
++    }
++    if (!status) {
++        g_mutex_lock(&crucible_fault_registration_append.lock);
++        crucible_fault_registration_append.registration = registration;
++        crucible_fault_registration_append.holder = holder;
++        crucible_fault_registration_append.handler = handler;
++        qatomic_store_release(&crucible_fault_registration_append.process, getpid());
++        qemu_thread_get_self(&crucible_fault_registration_append.thread);
++        crucible_fault_registration_append.calling = true;
++        g_mutex_unlock(&crucible_fault_registration_append.lock);
++        status = qemu_crucible_fault_node_registration_publish_v1(
++            registration, holder, handler);
++        if (!status) {
++            /* Actual publication and append share the real fault lock.
++             * A refused append never replaces the original live edges. */
++            g_ptr_array_add(crucible_fault_handlers, (void *)handler);
++        }
++        g_mutex_lock(&crucible_fault_registration_append.lock);
++        crucible_fault_registration_append.calling = false;
++        g_mutex_unlock(&crucible_fault_registration_append.lock);
++    }
++    g_mutex_unlock(&crucible_fault_lock);
++    return status;
++}
++
++int qemu_crucible_fault_registration_observe_v1(
++    QemuCrucibleFaultRegistration *registration,
++    QemuCrucibleFaultRegistration **holder,
++    QemuCrucibleFaultRegistrationObservation *out)
++{
++    const QemuCrucibleFaultHandler *handler = NULL;
++    QemuCrucibleFaultRegistrationObservation observation = { 0 };
++    CruciblePendingFault *pending;
++    int status;
++
++    if (!out) {
++        return -EINVAL;
++    }
++    /* A foreign process must refuse before touching an inherited fault mutex.
++     * Repeat nominal authentication under the registry lock for observation. */
++    status = qemu_crucible_fault_node_registration_identity_v1(
++        registration, holder, false, &handler);
++    if (status) {
++        return status;
++    }
++    handler = NULL;
++    g_mutex_lock(&crucible_fault_lock);
++    status = qemu_crucible_fault_node_registration_identity_v1(
++        registration, holder, false, &handler);
++    if (status) {
++        g_mutex_unlock(&crucible_fault_lock);
++        return status;
++    }
++    if (crucible_fault_handlers) {
++        for (size_t index = 0; index < crucible_fault_handlers->len; index++) {
++            if (g_ptr_array_index(crucible_fault_handlers, index) == handler) {
++                observation.registry_memberships++;
++            }
++        }
++    }
++    QTAILQ_FOREACH(pending, &crucible_pending_faults, link) {
++        if (pending->handler == handler) {
++            observation.queued_pending++;
++        }
++    }
++    observation.registry_sealed = crucible_registry_sealed;
++    g_mutex_unlock(&crucible_fault_lock);
++    *out = observation;
++    return 0;
 +}
 +
 +void qemu_crucible_fault_boundary_observer_register(
@@ -151708,7 +152394,8 @@ index 0000000000000000000000000000000000000000..0930f31f35512b0ab0d57a3a6b8c9eca
 +            command, CRUCIBLE_FAULT_STATUS_RESOURCE_LIMIT);
 +    }
 +    if (handler->validate) {
-+        status = handler->validate(command, payload, payload_len);
++        status = crucible_fault_validate_command(
++            handler, command, payload, payload_len);
 +        if (status != 0) {
 +            return crucible_fault_complete_rejected_submit(
 +                command, CRUCIBLE_FAULT_STATUS_MALFORMED_COMMAND);
@@ -152453,7 +153140,8 @@ index 0000000000000000000000000000000000000000..0930f31f35512b0ab0d57a3a6b8c9eca
 +              (1U << (pending->command.phase - 1))) ||
 +            length > pending->handler->capability.maximum_payload_bytes ||
 +            (pending->handler->validate &&
-+             pending->handler->validate(&pending->command, bytes, length))) {
++             crucible_fault_validate_command(pending->handler,
++                                            &pending->command, bytes, length))) {
 +            g_free(pending);
 +            goto fail;
 +        }
@@ -178113,10 +178801,10 @@ index 0000000000000000000000000000000000000000..f33911c6d93010f8c345aa392c9b7974
 +}
 diff --git a/plugins/crucible-startup-source.c b/plugins/crucible-startup-source.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..bfe08b9251d9fbc33fcc8a87ef4040808b0d7b21
+index 0000000000000000000000000000000000000000..9b3e655a40ecb97e723fd198df2a744f1a6635fa
 --- /dev/null
 +++ b/plugins/crucible-startup-source.c
-@@ -0,0 +1,8128 @@
+@@ -0,0 +1,8131 @@
 +/*
 + * Original installer startup source custody
 + *
@@ -178124,6 +178812,7 @@ index 0000000000000000000000000000000000000000..bfe08b9251d9fbc33fcc8a87ef404080
 + */
 +
 +#include "qemu/osdep.h"
++#include "qemu/crucible-fault-registration.h"
 +#include "qemu/crucible-descriptor-table.h"
 +#include "qemu/atomic.h"
 +#include "qemu/bswap.h"
@@ -178315,6 +179004,8 @@ index 0000000000000000000000000000000000000000..bfe08b9251d9fbc33fcc8a87ef404080
 +    const uint64_t descriptor_storage[] = {
 +        qemu_crucible_fault_hardware_catalogue_fixed_storage_bytes_v1(),
 +        qemu_crucible_fault_register_workspace_fixed_storage_bytes_v1(),
++        qemu_crucible_fault_node_registration_fixed_storage_bytes_v1(),
++        qemu_crucible_fault_registration_fixed_storage_bytes_v1(),
 +        qemu_crucible_fault_interrupt_catalogue_fixed_storage_bytes_v1(),
 +        qemu_plugin_crucible_initial_cpu_dispatch_storage_bytes_v1(),
 +        qemu_thread_bounded_registry_fixed_storage_bytes(),
@@ -199967,7 +200658,7 @@ index f8e17dcf1ce91d8aefb8d82cafd3196a4fd9edf6..f24121d2d3c66f1436ba73c976a7bd76
      return true;
 diff --git a/scripts/extract-crucible-preexec-purpose.py b/scripts/extract-crucible-preexec-purpose.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..605452c773b39299c547ca5671a37d51fb3638dc
+index 0000000000000000000000000000000000000000..6878a7473135bf467cecfb79729d8c5f565fde8a
 --- /dev/null
 +++ b/scripts/extract-crucible-preexec-purpose.py
 @@ -0,0 +1,87 @@
@@ -199995,7 +200686,7 @@ index 0000000000000000000000000000000000000000..605452c773b39299c547ca5671a37d51
 +    'include/plugins/qemu-plugin.h':
 +        '09e87de330a40af07b68d9803b4fe99d0e730ddf289dc386f634656f69e4e111',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '19b313f113e57521007b5efe0aa6985b3989ae9171b591bae67aa4767f1535c0',
++        '66a44b044115dd2a70687f2f807b28d99c3c0e56b5a37082da01691348d5c8ba',
 +}
 +
 +PURPOSE_FUNCTIONS = (
@@ -242651,10 +243342,10 @@ index 0000000000000000000000000000000000000000..fa83127f268e7c87e3d134ada76cb747
 +PRIMITIVE(q, uint64_t, 8)
 diff --git a/tests/unit/crucible-dirty-iterator.rst b/tests/unit/crucible-dirty-iterator.rst
 new file mode 100644
-index 0000000000000000000000000000000000000000..96fd9a5ff2bdb9c855a11b73f3d9f916de4cde75
+index 0000000000000000000000000000000000000000..dbac8563226b38c95679048bbd43e66d53b09a22
 --- /dev/null
 +++ b/tests/unit/crucible-dirty-iterator.rst
-@@ -0,0 +1,322 @@
+@@ -0,0 +1,401 @@
 +.. SPDX-License-Identifier: GPL-2.0-or-later
 +
 +Dirty selection and capture lifecycle qualification
@@ -242977,6 +243668,85 @@ index 0000000000000000000000000000000000000000..96fd9a5ff2bdb9c855a11b73f3d9f916
 +The genuine provider-backed mapping, failed-unmap and initial callback paths are
 +unexecuted until production installation can supply their real owners. They are
 +not qualified by the layout component or by compilation.
++
++Native fault registration ownership
++~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
++
++The real node-handler producer now embeds a nominal registration owner beside
++its actual handler allocation. An intrusive producer registry retains that
++allocation, its canonical holder, creating process/thread, actual impulse and
++construction outcome. The fault registry accepts this owned node route only
++while that exact producer is synchronously issuing it. Impulse publication also
++requires the actual entered, process/thread-bound fault append interval, with its
++fields protected by a separate mutex. A real process observation refuses copied
++registries before touching inherited locks; it grants no registration or bytes.
++Foreign records or copied holders cannot substitute for producer membership. Non-node registrations retain
++their existing route and behavior.
++
++This owner is not a selected allocation payer. Selected Source refuses before
++the node producer enters ``g_new0``; selected SDK ``-ENOKEY`` guards remain in
++place. Unselected construction uses its existing ordinary allocator, now for
++the full typed handler/owner extent. The fixed producer-list/mutex and actual append-frame declarations
++are included once in the authenticated Native floor, without pricing a dynamic
++handler or any GLib registry allocation. Node registration reports its actual
++result so manifest factories cannot set their registered flags after refusal.
++Duplicate and sealed-registry checks precede impulse publication and append
++under the same real fault mutex. A refusal leaves the original handler and
++impulse untouched, including an originally null impulse; failed new owners
++remain retained without successful registration flags.
++
++The owner permanently retains the actual handler, impulse-table edge and fault
++registry entry. Its observation API counts only exact handler membership and
++queued pending rows under the real fault mutex and records actual seal state.
++Those observations are deliberately incomplete. In particular:
++
++* Dispatch removes a pending row from the queue before invoking its prepare and
++  commit callbacks outside the mutex. An empty queue does not close that frame.
++* Pending rows, handler staging and separately prepared command VMState can
++  retain handler/state pointers, including after restore preparation. Their
++  physical children are not yet joined to this registration owner.
++* Node rules, staged rule replacement, deferred work, register instruction
++  boundaries and per-CPU state can still reach registered impulses and manifests.
++* The separate global fault-completion callback/userdata and boundary observer,
++  deadline and VMState registries have their own module/handler lifetime edges.
++  Native plugin callback-registry retirement does not retire those edges.
++
++Return therefore always refuses for a genuine owner until actual entrant
++closure, all of those child returns, registry/impulse removal and handler
++allocation destruction are implemented together. No empty count, published flag,
++seal observation or nominal holder is a destruction receipt. The current seam
++consumes no holder and removes no edge, including after failed construction.
++
++The focused negative component uses the actual empty producer registry, actual
++identity/observation/return code and real fault-registry append implementation.
++It never populates the producer list or supplies a Source payer. Matching foreign
++storage and copied holders refuse, including an actual foreign process with the
++inherited producer mutex held; a compiled membership-bypass defect reaches
++that exact assertion. Genuine owner construction, callback/child accounting and
++physical retirement remain unexecuted by this component and unqualified for
++selected activation or the mandatory launched lifecycle.
++
++The actual Submit and command-VMState preparation paths now dispatch node
++validation through an entered interval bound to the real handler, command and
++payload addresses, process and thread. Both that interval and the retained
++owner's inline validation child refuse reentry and exhausted issuance before
++callback entry. Non-node handlers keep their existing direct validation route.
++The child copies the exact command and retains its canonical holder before the
++real callback. Its actual first status and physical callback return are saved
++before independent post authentication. A nonlocal exit leaves both interval
++and child occupied; failed post retains the child even when the call physically
++returned. Successful post consumes only this validation child, including after
++a negative callback status, and does not retire the registration or temporary
++rule, pending, CPU, registry or impulse dependencies.
++
++Selected validation remains ``-ENOKEY`` before child or callback birth: the
++real node parser's temporary allocations still have no selected producer payer.
++The fixed interval is included in the existing exact Native inventory getter;
++the inline child belongs to the actual unselected handler allocation. The empty
++producer component exercises only missing-entry, foreign/copy and fork refusal,
++with compiled membership and validation-interval defects. Genuine owned callback
++entry, reentry, issuance exhaustion, callback failure/nonlocal exit and physical
++child return remain unexecuted until an actual installed producer can run.
 diff --git a/tests/unit/crucible-initial-cpu-fixture.inc.h b/tests/unit/crucible-initial-cpu-fixture.inc.h
 new file mode 100644
 index 0000000000000000000000000000000000000000..fb5e250cd9af288181bfddfb39b110a2dc148fe4
@@ -245541,7 +246311,7 @@ index 0000000000000000000000000000000000000000..5278f261c25f36176259f4749fc0e1b2
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-placement.py b/tests/unit/extract-crucible-checkpoint-placement.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..5ba7e9974d07b9e327fab634b08e20c3b01590e0
+index 0000000000000000000000000000000000000000..88af9023e89bacb52f327b9a029a308951e86c87
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-placement.py
 @@ -0,0 +1,100 @@
@@ -245559,7 +246329,7 @@ index 0000000000000000000000000000000000000000..5ba7e9974d07b9e327fab634b08e20c3
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '19b313f113e57521007b5efe0aa6985b3989ae9171b591bae67aa4767f1535c0',
++        '66a44b044115dd2a70687f2f807b28d99c3c0e56b5a37082da01691348d5c8ba',
 +}
 +
 +FUNCTIONS = (
@@ -245647,7 +246417,7 @@ index 0000000000000000000000000000000000000000..5ba7e9974d07b9e327fab634b08e20c3
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-receiving.py b/tests/unit/extract-crucible-checkpoint-receiving.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..796a92866b13ae070fcbd2c7bc3ce25fb9ba5cdc
+index 0000000000000000000000000000000000000000..ee0416da655c9758433d23155052649eb44fd95a
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-receiving.py
 @@ -0,0 +1,241 @@
@@ -245668,7 +246438,7 @@ index 0000000000000000000000000000000000000000..796a92866b13ae070fcbd2c7bc3ce25f
 +    'plugins/crucible-checkpoint-finalizer.inc.h':
 +        '6616d8f61ceaa17d668033d824d0fd6dc37ff4fafe76fc7665582a80447c7303',
 +    'plugins/crucible-startup-source.c':
-+        '799052e83a13d89c14fecc1f01d2f113ea0c157aa119cc18e4330753900d0d70',
++        'c22d5b06891c63ea52fc3debb272708434aa8a0a86b74e5ed13913b3e0aaf39b',
 +    'plugins/crucible-startup-source.h':
 +        'f80878ed9e4bcc5fa4a0b1cee7d2ac619c20344cf1244c30d7397bcb10b2f0da',
 +    'include/plugins/qemu-plugin.h':
@@ -245678,7 +246448,7 @@ index 0000000000000000000000000000000000000000..796a92866b13ae070fcbd2c7bc3ce25f
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '19b313f113e57521007b5efe0aa6985b3989ae9171b591bae67aa4767f1535c0',
++        '66a44b044115dd2a70687f2f807b28d99c3c0e56b5a37082da01691348d5c8ba',
 +}
 +
 +FUNCTIONS = (
@@ -245894,7 +246664,7 @@ index 0000000000000000000000000000000000000000..796a92866b13ae070fcbd2c7bc3ce25f
 +    main()
 diff --git a/tests/unit/extract-crucible-monitor-fd-loans.py b/tests/unit/extract-crucible-monitor-fd-loans.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..f7d0702242305c0c091188bcd03d61262f0d46fd
+index 0000000000000000000000000000000000000000..ddbd029b85fdf998c6adadcaa0a2a68e468a3558
 --- /dev/null
 +++ b/tests/unit/extract-crucible-monitor-fd-loans.py
 @@ -0,0 +1,112 @@
@@ -245918,7 +246688,7 @@ index 0000000000000000000000000000000000000000..f7d0702242305c0c091188bcd03d6126
 +    'monitor/monitor.c':
 +        '6773b71937e9c0058143070560f3ce3bb114a966d6d4224c7a60d8862fb8d05b',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '19b313f113e57521007b5efe0aa6985b3989ae9171b591bae67aa4767f1535c0',
++        '66a44b044115dd2a70687f2f807b28d99c3c0e56b5a37082da01691348d5c8ba',
 +}
 +
 +FUNCTIONS = (
@@ -246012,7 +246782,7 @@ index 0000000000000000000000000000000000000000..f7d0702242305c0c091188bcd03d6126
 +    main()
 diff --git a/tests/unit/extract-crucible-preexec-setup.py b/tests/unit/extract-crucible-preexec-setup.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..49408407b3d02f92fd450257f0124370217a8ed4
+index 0000000000000000000000000000000000000000..b1d4c4a6bc76d152d960437eb7217d923d18d5e1
 --- /dev/null
 +++ b/tests/unit/extract-crucible-preexec-setup.py
 @@ -0,0 +1,173 @@
@@ -246053,15 +246823,15 @@ index 0000000000000000000000000000000000000000..49408407b3d02f92fd450257f0124370
 +    'plugins/crucible-device-workspace.c':
 +        '3dd77a2ad8d4688fb57ccc94618763485d36b9460e3461ac5ff4bc6fa25c558d',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '19b313f113e57521007b5efe0aa6985b3989ae9171b591bae67aa4767f1535c0',
++        '66a44b044115dd2a70687f2f807b28d99c3c0e56b5a37082da01691348d5c8ba',
 +    'scripts/extract-crucible-preexec-purpose.py':
-+        '24455eeb35f56fb587ad78bfe652c00ef2a8a12778d169b8eff710fef8646137',
++        'fcbb6d3fa2a7116ce8f472d560dd648d0b16a53759eead9675cc7eff39a78b9d',
 +    'meson.build':
 +        '7eef2c0d1494dfdeed66f56c77f092382cd63d3fd5ad7c0b7c7ac85ca599e39e',
 +    'tests/unit/test-crucible-preexec-setup.c':
 +        'd26871f569f6be81b3b6189a373f2937b4b2e705a5f06c93120a6a18e0416a6c',
 +    'tests/unit/meson.build':
-+        'a51642b74017bbee28a909c505d66971c6a420a323401ee5531fa19390113488',
++        'e43de5921f702cb1aa31532a2198fcd8f41bfcc2ed32c917f9fa5f3e82218f39',
 +}
 +
 +PRIVATE_INCLUDES = ('family', 'contract', 'artifact', 'ram', 'workspace')
@@ -246191,10 +246961,10 @@ index 0000000000000000000000000000000000000000..49408407b3d02f92fd450257f0124370
 +        main()
 diff --git a/tests/unit/extract-crucible-startup-source-controls.py b/tests/unit/extract-crucible-startup-source-controls.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..ddab48cdf794286b6caf3309eed87ddd1631794c
+index 0000000000000000000000000000000000000000..f4cb46f1621e5b8d67f80b81c4d66cdc0ef79ec1
 --- /dev/null
 +++ b/tests/unit/extract-crucible-startup-source-controls.py
-@@ -0,0 +1,1199 @@
+@@ -0,0 +1,1222 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Extract literal startup integration control cuts, never an issuer fixture."""
 +
@@ -246204,6 +246974,17 @@ index 0000000000000000000000000000000000000000..ddab48cdf794286b6caf3309eed87ddd
 +from pathlib import Path
 +
 +SOURCE_HASHES = {
++    'include/qemu/crucible-fault-registration.h':
++        '22f71c02969f43f10d6e776d4a259cab0cfec5010b4abaa6314eaafa5b26e77f',
++    'plugins/crucible-fault-registration.inc.h':
++        'ff4d8bcc4812e84ab55f69da5650db86b0006136cfa7cd6a67dadda716440743',
++    'plugins/crucible-fault.c':
++        '840a9f6e67ef25cdbb3d0a9c6f1aefe8ead55f3ae54c558945a260934d906813',
++    'plugins/crucible-fault-node.c':
++        '302b62a1e4961e1419a6afa42e69ec325c075171eb81e597e9edd8c5b50904ea',
++    'tests/unit/test-crucible-fault-registration.py':
++        '2bcc47216afc493fc28ba4ef00fb89253878ef0d47d75fa9fd6cf296596d0386',
++
 +    'include/qemu/crucible-register-workspace.h':
 +        '8540f0cd48acf6e6d5cfe4154ab72f5b73b2b3435be283a79bfafee4d95d5337',
 +    'plugins/crucible-initial-register.inc.h':
@@ -246240,13 +247021,13 @@ index 0000000000000000000000000000000000000000..ddab48cdf794286b6caf3309eed87ddd
 +    'tests/unit/test-crucible-interrupt-catalogue.py':
 +        '09f520629493decdee77289e9ebc22bc2887a4e9dd4d646f0ba21606a53a1b83',
 +    'plugins/crucible-fault-hardware-error.c':
-+        '9f96087f298a38e4be82a40a4f350c061ce5a9e5f5fd76048f9f668aa5304a2e',
++        'dec13141476d4b9f26f118f8d51ca017196640224275e0550a42007ce6faea86',
 +    'plugins/crucible-fault-register.c':
-+        '780543f10b9536ff72449481bc7c20ec38ca220731a1ccf1cc205f3474213c58',
++        'c11f809eb010c3996a56392e2a6e13f7582628b0fe634b20a0e4fe2ac6233d03',
 +    'plugins/crucible-fault-interrupt.c':
-+        '827c633bca98e55faf97b1c8dea00c2a64370fc34c04b1ddc7dca3335cb25e4a',
++        '3f5c357c92667a0b4313c6a360c52d5d07bea69cc1450706fdd259571aead152',
 +    'include/qemu/crucible-fault.h':
-+        '37ccc2e0fe4067508f46473463116477527260053377a32db1fbbb530aa611d0',
++        'f9a5b62e2befe912d8eba94b8582b8b58849b4fff4d65f95f1b51a244832ff69',
 +    'tests/unit/test-crucible-hardware-catalogue.py':
 +        '120ad28c8e65d2fa616c3d4c7d65806c45ab04d2e10adc80f51ee15d6702e1a6',
 +    'tests/unit/test-crucible-initial-manifest-refusal.py':
@@ -246346,7 +247127,7 @@ index 0000000000000000000000000000000000000000..ddab48cdf794286b6caf3309eed87ddd
 +    'system/crucible-hot-fork-coordinator.c':
 +        'a8db45cdd7a6aebebe44990565c08eed6a833a05ea7f77958ffa12bd2017b65b',
 +    'plugins/crucible-startup-source.c':
-+        '799052e83a13d89c14fecc1f01d2f113ea0c157aa119cc18e4330753900d0d70',
++        'c22d5b06891c63ea52fc3debb272708434aa8a0a86b74e5ed13913b3e0aaf39b',
 +    'plugins/crucible-startup-source.h':
 +        'f80878ed9e4bcc5fa4a0b1cee7d2ac619c20344cf1244c30d7397bcb10b2f0da',
 +    'plugins/crucible-device-workspace.c':
@@ -247008,7 +247789,8 @@ index 0000000000000000000000000000000000000000..ddab48cdf794286b6caf3309eed87ddd
 +              '#include "system/memory.h"',
 +              '#include "system/ramblock.h"',
 +              '#include "system/ramlist.h"',
-+              '#include "qemu/rcu.h"', '#include "qemu/crucible-fault.h"',
++              '#include "qemu/rcu.h"',
++              '#include "qemu/crucible-fault.h"',
 +              ram[:ram.index("*/") + 2],
 +              body_cut(ram, "typedef struct CrucibleRamRegion {",
 +                       "static int arena_placement_authority("),
@@ -247077,6 +247859,7 @@ index 0000000000000000000000000000000000000000..ddab48cdf794286b6caf3309eed87ddd
 +              '#include "qom/object.h"', '#include "system/memory.h"',
 +              '#include "qemu/notify.h"', '#include "qemu/event_notifier.h"',
 +              '#include "qemu/rcu.h"',
++              '#include "qemu/crucible-fault-registration.h"',
 +              '#include "qemu/crucible-hot-fork-async.h"',
 +              '#include "system/block-backend-global-state.h"',
 +              '#include "qemu/crucible-paged-ram.h"',
@@ -247090,6 +247873,12 @@ index 0000000000000000000000000000000000000000..ddab48cdf794286b6caf3309eed87ddd
 +              '#include "system/crucible-ram-quiescence.h"',
 +              '#include "monitor/monitor-internal.h"']
 +    blocks = (
++        ("plugins/crucible-fault-registration.inc.h",
++         "static struct {",
++         "uint64_t qemu_crucible_fault_node_registration_fixed_storage_bytes_v1("),
++        ("plugins/crucible-fault.c",
++         "/* Actual owned append interval, serialized by the existing fault mutex. */",
++         "uint64_t qemu_crucible_fault_registration_fixed_storage_bytes_v1("),
 +        ("plugins/crucible-register-workspace.inc.h",
 +         "static struct {",
 +         "uint64_t qemu_crucible_fault_register_workspace_fixed_storage_bytes_v1("),
@@ -247179,6 +247968,10 @@ index 0000000000000000000000000000000000000000..ddab48cdf794286b6caf3309eed87ddd
 +        output.extend((notice, declaration[0], body))
 +
 +    getters = {
++        "plugins/crucible-fault-registration.inc.h": (
++            "qemu_crucible_fault_node_registration_fixed_storage_bytes_v1",),
++        "plugins/crucible-fault.c": (
++            "qemu_crucible_fault_registration_fixed_storage_bytes_v1",),
 +        "plugins/crucible-register-workspace.inc.h": (
 +            "qemu_crucible_fault_register_workspace_fixed_storage_bytes_v1",),
 +        "plugins/crucible-fault-interrupt.c": (
@@ -247493,7 +248286,7 @@ index 0000000000000000000000000000000000000000..228f5bfb67fb64768c9806c3617cc308
 +if __name__ == "__main__":
 +    main()
 diff --git a/tests/unit/meson.build b/tests/unit/meson.build
-index dc3fb954c03a02a82f09b38521e2d85ede2549f5..6eb5c89a2f1750549f294811ad3c4545dbd896d1 100644
+index dc3fb954c03a02a82f09b38521e2d85ede2549f5..ed105b946eeb66425e254a82a9be165c0f0c2519 100644
 --- a/tests/unit/meson.build
 +++ b/tests/unit/meson.build
 @@ -21,6 +21,8 @@ tests = {
@@ -247568,7 +248361,7 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..6eb5c89a2f1750549f294811ad3c4545
  foreach test_name, extra: tests
    src = [test_name + '.c']
    deps = [qemuutil]
-@@ -207,3 +251,1198 @@ foreach test_name, extra: tests
+@@ -207,3 +251,1203 @@ foreach test_name, extra: tests
         priority: slow_tests.get(test_name, 30),
         suite: ['unit'])
  endforeach
@@ -248389,6 +249182,11 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..6eb5c89a2f1750549f294811ad3c4545
 +                        'test-crucible-arm-register-preflight.py',
 +                        'test-crucible-register-description.py',
 +                        'test-crucible-register-workspace.py',
++                        'test-crucible-fault-registration.py',
++                        '../../include/qemu/crucible-fault-registration.h',
++                        '../../plugins/crucible-fault-registration.inc.h',
++                        '../../plugins/crucible-fault.c',
++                        '../../plugins/crucible-fault-node.c',
 +                        '../../include/qemu/crucible-register-workspace.h',
 +                        '../../plugins/crucible-initial-register.inc.h',
 +                        '../../plugins/crucible-register-workspace.inc.h',
@@ -263143,10 +263941,10 @@ index 0000000000000000000000000000000000000000..56cf35bafbbcf125b0f992c22fd2d780
 +    main()
 diff --git a/tests/unit/test-crucible-control-delivery.py b/tests/unit/test-crucible-control-delivery.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..bc2f3c06b0d04345feacd320f086bf8540c176fa
+index 0000000000000000000000000000000000000000..a44596fc25380c2514a1b933dc083ec7d4cd46b7
 --- /dev/null
 +++ b/tests/unit/test-crucible-control-delivery.py
-@@ -0,0 +1,2358 @@
+@@ -0,0 +1,2359 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Check the actual delivery witness and registered-callback wrapper bodies.
 +
@@ -265494,6 +266292,7 @@ index 0000000000000000000000000000000000000000..bc2f3c06b0d04345feacd320f086bf85
 +        ("test-crucible-arm-register-preflight.py", "arm-register-preflight"),
 +        ("test-crucible-register-description.py", "register-description"),
 +        ("test-crucible-register-workspace.py", "register-workspace"),
++        ("test-crucible-fault-registration.py", "fault-registration"),
 +        ("test-crucible-initial-manifest-refusal.py", "initial-manifest-refusal"),
 +    ):
 +        subprocess.run([sys.executable, str(ROOT / "tests/unit" / script),
@@ -268507,6 +269306,197 @@ index 0000000000000000000000000000000000000000..a56f97cc637d959e34eacb00cb73c9e4
 +                    test_e1000_rejects_incomplete_state);
 +    return g_test_run();
 +}
+diff --git a/tests/unit/test-crucible-fault-registration.py b/tests/unit/test-crucible-fault-registration.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..e6c894085a359cce365b08fff455a767299c785d
+--- /dev/null
++++ b/tests/unit/test-crucible-fault-registration.py
+@@ -0,0 +1,185 @@
++# SPDX-License-Identifier: GPL-2.0-or-later
++"""Exercise real empty-provider refusals without constructing an issuer.
++
++The actual producer registry stays empty. Matching foreign storage, holder and
++process fields cannot create membership. No registration, Source payer, callback
++child or physical-return success is supplied by this component.
++"""
++
++import argparse
++import json
++import os
++from pathlib import Path
++import runpy
++import shlex
++import subprocess
++
++
++CHECKS = r"""
++int main(void)
++{
++    CrucibleNodeOwnedHandler foreign = { 0 };
++    QemuCrucibleFaultRegistration *copy;
++    QemuCrucibleFaultRegistrationObservation observed, saved;
++    const QemuCrucibleFaultHandler *handler = NULL;
++    struct qemu_plugin_crucible_fault_command command = { 0 };
++
++    foreign.handler.capability.command_kind = 11;
++    foreign.registration.holder = &foreign.registration;
++    foreign.registration.process = getpid();
++    foreign.registration.attempt_returned = true;
++    foreign.registration.registry_published = true;
++    copy = &foreign.registration;
++    assert(!crucible_node_registrations.head);
++    assert(qemu_crucible_fault_node_validation_owned_v1(&foreign.handler) == -ENOENT);
++    assert(qemu_crucible_fault_validation_current_v1(
++        &foreign.handler, &command, NULL, 0) == -EPERM);
++    assert(qemu_crucible_fault_node_validate_v1(
++        &foreign.handler, &command, NULL, 0) == -EPERM);
++    assert(qemu_crucible_fault_registration_append_current_v1(
++        &foreign.registration, &foreign.registration.holder, &foreign.handler) == -EPERM);
++    assert(qemu_crucible_fault_node_registration_fixed_storage_bytes_v1() ==
++           sizeof(crucible_node_registrations));
++    assert(qemu_crucible_fault_node_registration_identity_v1(
++        &foreign.registration, &foreign.registration.holder, false, &handler) == -EPERM);
++    assert(!handler);
++    assert(qemu_crucible_fault_node_registration_identity_v1(
++        &foreign.registration, &copy, false, &handler) == -EPERM);
++    assert(!handler);
++    assert(qemu_crucible_fault_node_registration_return_v1(&copy) == -EPERM);
++    assert(copy == &foreign.registration);
++    assert(qemu_crucible_fault_node_registration_return_v1(
++        &foreign.registration.holder) == -EPERM);
++    assert(foreign.registration.holder == &foreign.registration);
++    memset(&observed, 0xa5, sizeof(observed));
++    saved = observed;
++    assert(qemu_crucible_fault_registration_observe_v1(
++        &foreign.registration, &foreign.registration.holder, &observed) == -EPERM);
++    assert(!memcmp(&observed, &saved, sizeof(saved)));
++    assert(qemu_crucible_fault_register_node_owned_v1(
++        &foreign.registration, &foreign.registration.holder) == -EPERM);
++    /* This component creates no QEMU threads or RCU readers. Keep the actual
++     * provider mutex locked across fork: the copied process must refuse before
++     * touching that inherited mutex, without any synthetic issuer. */
++    g_mutex_lock(&crucible_fault_lock);
++    g_mutex_lock(&crucible_node_registrations.lock);
++    pid_t child = fork();
++    int child_status;
++
++    assert(child >= 0);
++    if (!child) {
++        const QemuCrucibleFaultHandler *child_handler = NULL;
++
++        assert(qemu_crucible_fault_node_registration_identity_v1(
++            &foreign.registration, &foreign.registration.holder, false,
++            &child_handler) == -EPERM);
++        assert(!child_handler);
++        assert(qemu_crucible_fault_node_validation_owned_v1(&foreign.handler) == -EPERM);
++        assert(qemu_crucible_fault_node_validate_v1(
++            &foreign.handler, &command, NULL, 0) == -EPERM);
++        assert(qemu_crucible_fault_node_registration_return_v1(&copy) == -EPERM);
++        assert(qemu_crucible_fault_registration_observe_v1(
++            &foreign.registration, &foreign.registration.holder,
++            &observed) == -EPERM);
++        assert(!memcmp(&observed, &saved, sizeof(saved)));
++        _exit(0);
++    }
++    assert(waitpid(child, &child_status, 0) == child);
++    g_mutex_unlock(&crucible_node_registrations.lock);
++    g_mutex_unlock(&crucible_fault_lock);
++    assert(WIFEXITED(child_status) && !WEXITSTATUS(child_status));
++    selected = true;
++    assert(qemu_crucible_fault_node_validate_v1(
++        &foreign.handler, &command, NULL, 0) == -ENOKEY);
++    assert(qemu_crucible_fault_register_node_owned_v1(
++        &foreign.registration, &foreign.registration.holder) == -ENOKEY);
++    assert(!crucible_fault_handlers && !crucible_node_registrations.head);
++    puts("PASS real empty producer refuses foreign membership and copied holder; no issuance");
++    return 0;
++}
++"""
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--source-root", type=Path,
++                        default=Path(__file__).resolve().parents[2])
++    parser.add_argument("--output-dir", type=Path, required=True)
++    arguments = parser.parse_args()
++    root = arguments.source_root.resolve()
++    output = arguments.output_dir.resolve()
++    output.mkdir(parents=True, exist_ok=True)
++    extract = runpy.run_path(str(root / "tests/unit/extract-crucible-startup-source-controls.py"))
++    fault = (root / "plugins/crucible-fault.c").read_text()
++    node = (root / "plugins/crucible-fault-node.c").read_text()
++    owner = (root / "plugins/crucible-fault-registration.inc.h").read_text()
++    thread = (root / "util/qemu-thread-posix.c").read_text()
++    declarations = fault[fault.index("#define CRUCIBLE_FAULT_RESULT_QUEUE_CAPACITY"):
++                         fault.index("static void crucible_fault_flush_complete_on_cpu(")]
++    impulse = "static QemuCrucibleFaultImpulseFn crucible_node_impulses[UINT16_MAX + 1];"
++    if node.count(impulse) != 1:
++        raise ValueError("actual node impulse declaration changed")
++    methods = "\n\n".join(extract["function"](fault, name) for name in (
++        "static void crucible_fault_ensure_registry(",
++        "static void crucible_fault_handler_validate(",
++        "void qemu_crucible_fault_register(",
++        "int qemu_crucible_fault_register_node_owned_v1(",
++        "int qemu_crucible_fault_registration_observe_v1(",
++    ))
++    before = "for (actual = crucible_node_registrations.head; actual; actual = actual->next)"
++    if owner.count(before) != 3:
++        raise ValueError("reviewed actual producer membership loops changed")
++    identity_offset = owner.index("int qemu_crucible_fault_node_registration_identity_v1(")
++    bypass_identity = owner[:identity_offset] + owner[identity_offset:].replace(
++        before, "for (actual = registration; actual; actual = actual->next)", 1)
++    variants = {
++        "positive": owner,
++        "replace-membership-with-foreign-record": bypass_identity,
++        "bypass-validation-interval": owner,
++    }
++    current = extract["function"](fault, "int qemu_crucible_fault_validation_current_v1(")
++    bypass_current = current[:current.index("{")] + "{ return 0; }"
++    proof = {}
++    for name, literal in variants.items():
++        generated = output / f"{name}.c"
++        generated.write_text(
++            '#include "qemu/osdep.h"\n#include <assert.h>\n'
++            '#include <sys/wait.h>\n'
++            '#include "qemu/thread.h"\n#include "qemu/queue.h"\n'
++            '#include "qemu/atomic.h"\n'
++            '#include "qemu/crucible-fault-registration.h"\n'
++            'static bool selected;\n'
++            '#define qemu_plugin_crucible_startup_source_retained() selected\n' +
++            extract["function"](thread, "void qemu_thread_get_self(") + "\n" +
++            extract["function"](thread, "bool qemu_thread_is_self(") + "\n" +
++            (declarations.replace(current, bypass_current)
++             if name == "bypass-validation-interval" else declarations) +
++            "\n" + impulse + "\n" +
++            literal + "\n" + methods + CHECKS)
++        binary = output / name
++        command = [*shlex.split(os.environ.get("CC", "cc")),
++                   *shlex.split(os.environ.get("CFLAGS", "")), str(generated),
++                   "-o", str(binary), *shlex.split(os.environ.get("LDFLAGS", ""))]
++        (output / f"{name}.compile-command.json").write_text(json.dumps(command, indent=2) + "\n")
++        subprocess.run(command, check=True)
++        result = subprocess.run([str(binary)], stdout=subprocess.PIPE,
++                                stderr=subprocess.STDOUT, text=True, timeout=30,
++                                cwd=output)
++        (output / f"{name}.log").write_text(result.stdout)
++        expected = 0 if name == "positive" else -6
++        if result.returncode != expected:
++            raise RuntimeError(f"unexpected {name}: {result.returncode}\n{result.stdout}")
++        assertion = ("qemu_crucible_fault_validation_current_v1"
++                     if name == "bypass-validation-interval" else
++                     "qemu_crucible_fault_node_registration_identity_v1")
++        if name != "positive" and assertion not in result.stdout:
++            raise RuntimeError("control missed its exact refusal assertion")
++        proof[name] = {"returncode": result.returncode, "output": result.stdout}
++    (output / "proof.json").write_text(json.dumps(proof, indent=2) + "\n")
++    print(proof["positive"]["output"], end="")
++    print("PASS foreign-record membership defect reached the nominal refusal assertion")
++    print("PASS validation-interval defect reached the missing-entry refusal assertion")
++
++
++if __name__ == "__main__":
++    main()
 diff --git a/tests/unit/test-crucible-fault-rule-presence.py b/tests/unit/test-crucible-fault-rule-presence.py
 new file mode 100644
 index 0000000000000000000000000000000000000000..26a65d793ef136b1631383a1be9380d72352cf24
@@ -307874,10 +308864,10 @@ index 0000000000000000000000000000000000000000..4cfe85bd0dffb73724aab8bc15eb6f83
 +    main()
 diff --git a/tests/unit/test-crucible-tcg-fast-paths.py b/tests/unit/test-crucible-tcg-fast-paths.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..13ca7573b80183e1f73489c4b268a2e07b767cb3
+index 0000000000000000000000000000000000000000..99aa638662f4d0cf0408e2ef4ce4ec5c738de666
 --- /dev/null
 +++ b/tests/unit/test-crucible-tcg-fast-paths.py
-@@ -0,0 +1,797 @@
+@@ -0,0 +1,829 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercise queue and instruction-completion production bodies.
 +
@@ -307900,6 +308890,8 @@ index 0000000000000000000000000000000000000000..13ca7573b80183e1f73489c4b268a2e0
 +    "test-crucible-net-output-stop.py")))["definition"]
 +
 +PRELUDE = r"""
++#include "qemu/osdep.h"
++#include "qemu/thread.h"
 +#include <errno.h>
 +#include <limits.h>
 +#include <stdbool.h>
@@ -307908,7 +308900,6 @@ index 0000000000000000000000000000000000000000..13ca7573b80183e1f73489c4b268a2e0
 +#include <string.h>
 +#include <glib.h>
 +#include "qemu/typedefs.h"
-+#define qemu_build_assert(condition) _Static_assert(condition, #condition)
 +#include "qemu/atomic.h"
 +#include "qemu/queue.h"
 +#include "plugins/qemu-plugin.h"
@@ -308604,6 +309595,36 @@ index 0000000000000000000000000000000000000000..13ca7573b80183e1f73489c4b268a2e0
 +    instruction = (ROOT / "plugins/crucible-fault-instruction.c").read_text()
 +    handlers = header[header.index("typedef int (*QemuCrucibleFaultValidateFn)"):
 +                      header.index("void qemu_crucible_fault_register(")]
++    registration_header = (ROOT / "include/qemu/crucible-fault-registration.h").read_text()
++    registration = (ROOT / "plugins/crucible-fault-registration.inc.h").read_text()
++    node = (ROOT / "plugins/crucible-fault-node.c").read_text()
++    thread = (ROOT / "util/qemu-thread-posix.c").read_text()
++    # These are the actual empty producer and thread providers, not an owner
++    # fixture. This non-Node queue never enters selected Source construction.
++    # An unexpected selection query aborts rather than granting admission.
++    registration_types = (
++        "typedef struct QemuCrucibleFaultEventReservation "
++        "QemuCrucibleFaultEventReservation;\n" +
++        header[header.index("typedef int (*QemuCrucibleFaultImpulseFn)"):
++               header.index("#define QEMU_CRUCIBLE_FAULT_IMPULSE_DEFERRED")] +
++        registration_header[registration_header.index(
++            "typedef struct QemuCrucibleFaultRegistration"):
++            registration_header.rindex("#endif")])
++    unavailable_source = r"""
++static bool unavailable_source_selection(void)
++{
++    g_assert_not_reached();
++}
++#define qemu_plugin_crucible_startup_source_retained() unavailable_source_selection()
++"""
++    impulse = "static QemuCrucibleFaultImpulseFn crucible_node_impulses[UINT16_MAX + 1];"
++    if node.count(impulse) != 1:
++        raise ValueError("actual node impulse declaration changed")
++    registration_provider = (
++        definition(thread, "void qemu_thread_get_self(") + "\n" +
++        definition(thread, "bool qemu_thread_is_self(") + "\n" +
++        impulse + "\n" + registration + "\n" +
++        definition(queue, "int qemu_crucible_fault_registration_observe_v1("))
 +    globals_ = queue[queue.index("#define CRUCIBLE_FAULT_RESULT_QUEUE_CAPACITY"):
 +                     queue.index("static void crucible_fault_flush_complete_on_cpu(")]
 +    signatures = [
@@ -308660,7 +309681,8 @@ index 0000000000000000000000000000000000000000..13ca7573b80183e1f73489c4b268a2e0
 +        assert bodies.count(statement) == 1
 +        bodies = bodies.replace(statement, "")
 +    generated = arguments.output_dir / "tcg-fast-paths.c"
-+    generated.write_text(PRELUDE + handlers + globals_ + QUEUE_PROVIDERS + bodies +
++    generated.write_text(PRELUDE + handlers + registration_types + unavailable_source +
++                         globals_ + registration_provider + QUEUE_PROVIDERS + bodies +
 +                         types + INSTRUCTION_PROVIDERS + completion + CHECKS)
 +    binary = arguments.output_dir / "tcg-fast-paths"
 +    command = [os.environ.get("CC", "cc"),
