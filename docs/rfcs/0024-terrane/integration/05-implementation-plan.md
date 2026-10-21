@@ -11517,3 +11517,19 @@ completion. Original non-consumer holds remain unchanged; removed old consumer
 holds must have passed their original grace deadline. State rows remain ordinary
 comparison data, with actual native custody checked separately by the fresh
 recovery reader. The earlier failed VMs provide no completion credit for T2.
+
+
+#### Native lower deadline and shared-circuit qualification
+
+The cold-recovery SDK actor now retains a clone of the actual native read driver
+used by both signed repository reads. After proving resident reads make zero
+lower chunk attempts, it submits an absent identity to a lower read that stays
+pending indefinitely. Only the driver's original ten-second budget may end that
+attempt; a separate twelve-second outer check fails the actor if it does not.
+Two genuine unavailable lower attempts then reach the configured failure
+threshold. A clone must reject the next miss without calling lower, while an
+actual resident read still returns exactly its previously verified encoded body.
+After the original five-second interval, exactly one genuine lower probe is
+permitted; its failure must reopen the same shared circuit. The actor and VM
+bounds remain unchanged. These runtime controls require a passing source-bound
+native VM before granting HOST-35/HOST-36 evidence; qualification is pending.

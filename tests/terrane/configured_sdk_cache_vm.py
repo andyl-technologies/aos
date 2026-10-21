@@ -252,6 +252,13 @@ def run(driver, image):
             driver.require(algorithm == 1 and digest_size == 32,
                            "native SDK whole object lacks actual SHA-256 fs-verity")
             print("PASS actual configured SDK " + mode + " policy reads genuine fs-verity object and completes cache handoff", flush=True)
-        actor(driver, image, name + "-offline",
-              ["configured-sdk-cache-example", "read-cache-offline", root, 840])
+        offline, _ = actor(driver, image, name + "-offline",
+                           ["configured-sdk-cache-example", "read-cache-offline", root, 840])
+        for witness in [
+                b"PASS: actual native driver bounds an indefinitely pending lower read",
+                b"PASS: actual shared native circuit blocks lower misses while resident content remains readable",
+                b"PASS: actual native circuit permits one bounded scheduled lower probe and reopens on failure",
+                b"PASS: actual confined SDK reads recovered native residents while original lower chunks are unavailable"]:
+            driver.require(offline.splitlines().count(witness) == 1,
+                           "native SDK actor omitted or repeated a lower failure control")
         print("PASS actual configured CLI recovers both native cache owners and materializes signed original-authority SDK snapshots", flush=True)
