@@ -104,6 +104,11 @@ impl FundedTemplateCapsule {
     }
 
     #[cfg(feature = "test-support")]
+    pub(super) fn observed_operation_stage(&self) -> Option<&'static str> {
+        self.deployment.operation_stage_data()
+    }
+
+    #[cfg(feature = "test-support")]
     pub(super) fn observed_failure_reason(&self) -> Option<&'static str> {
         self.failure.as_ref().map(|error| match error {
             QualificationError::Refused(reason) => *reason,

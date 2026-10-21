@@ -101,7 +101,15 @@ that explicit installed artifact. Engine/Daemon all-feature/all-target checking,
 formatting and all six architecture gates pass. The required application gate
 compiles the same 180 test executables across 58 package IDs and 71 integration
 targets; all 29 owned changed Rust paths match its capture. The confined installed
-VM flight remains pending for this correction.
+VM flight now passes installed worker verification and refuses during Source
+preparation, before any worker or private Birth success. Test-only fixed
+operation labels identify the actual preparation operation entered while
+preserving the original typed failure and custody. Their all-feature/all-target
+Daemon check, formatting and six architecture gates pass. The required
+application compile gate again emits 180 test executables across 58 package IDs,
+including 71 integration targets; all 31 owned changed Rust paths match its
+captured source. The refreshed operation-stage VM and full configured Daemon
+library run remain pending.
 
 ## Original launch custody and shared startup geometry
 

@@ -64,6 +64,7 @@ impl PreparedCompleteRestoration {
         for selected in 0..3 {
             match self.import18_templates.members[selected].stage {
                 Stage::FundedTemplate => {
+                    self.note_funded_operation_stage("starting original isolated derivation");
                     if let Err(error) = self.start_funded_derivation_member(selected) {
                         self.import18_templates.members[selected].stage = Stage::DerivationFailed;
                         self.import18_templates.failed = true;
@@ -72,6 +73,7 @@ impl PreparedCompleteRestoration {
                     return Ok(false);
                 }
                 Stage::DerivationRunning => {
+                    self.note_funded_operation_stage("polling original isolated derivation");
                     let polled = self.import18_templates.members[selected]
                         .job
                         .as_mut()
@@ -87,6 +89,7 @@ impl PreparedCompleteRestoration {
                         }
                         Ok(true) => {}
                     }
+                    self.note_funded_operation_stage("retaining original worker result");
                     let result = {
                         let member = &mut self.import18_templates.members[selected];
                         member
@@ -117,6 +120,7 @@ impl PreparedCompleteRestoration {
     }
 
     fn prepare_funded_private_seed(&mut self, selected: usize) -> Result<(), RuntimeError> {
+        self.note_funded_operation_stage("constructing private Birth seed");
         self.observe_import18_templates_data([
             0,
             0,
@@ -143,6 +147,7 @@ impl PreparedCompleteRestoration {
     }
 
     fn prepare_funded_private_birth(&mut self, selected: usize) -> Result<(), RuntimeError> {
+        self.note_funded_operation_stage("constructing private Birth");
         self.observe_import18_templates_data([
             0,
             0,

@@ -31,6 +31,7 @@ pub struct FundedTemplateObservation {
     phase: FundedTemplatePhase,
     retained_worlds: usize,
     failure_reason: Option<&'static str>,
+    operation_stage: Option<&'static str>,
 }
 
 impl FundedTemplateObservation {
@@ -38,11 +39,13 @@ impl FundedTemplateObservation {
         phase: FundedTemplatePhase,
         retained_worlds: usize,
         failure_reason: Option<&'static str>,
+        operation_stage: Option<&'static str>,
     ) -> Self {
         Self {
             phase,
             retained_worlds,
             failure_reason,
+            operation_stage,
         }
     }
 
@@ -56,6 +59,14 @@ impl FundedTemplateObservation {
     #[must_use]
     pub fn retained_worlds(self) -> usize {
         self.retained_worlds
+    }
+
+    /// Reads the last actual operation entered by the owning preparation.
+    ///
+    /// This fixed diagnostic does not certify completion of that operation.
+    #[must_use]
+    pub fn operation_stage(self) -> Option<&'static str> {
+        self.operation_stage
     }
 
     /// Reads a fixed diagnostic from the actor's retained first failure.
@@ -95,6 +106,7 @@ pub(super) fn channel() -> (Publisher, FundedTemplateObserver) {
     let snapshot = Arc::new(Mutex::new(FundedTemplateObservation::from_actor(
         FundedTemplatePhase::Absent,
         0,
+        None,
         None,
     )));
     (

@@ -444,6 +444,7 @@ impl PreparedCompleteRestoration {
             return Err(RuntimeError::DuplicateOperation);
         }
         // Spend the real setup before the first quote, including unwind.
+        self.note_funded_operation_stage("authenticating original template scope");
         self.import18_templates.started = true;
         self.import18_templates.failed = true;
         self.authenticate_import18_template_scope_data()?;
@@ -451,6 +452,7 @@ impl PreparedCompleteRestoration {
             .map_err(|_| RuntimeError::ResourceLimit)?;
 
         if self.import18_templates.deployment.is_some() {
+            self.note_funded_operation_stage("retaining fresh original launches");
             self.retain_fresh_original_launches_data()?;
         }
         for selected in 0..3 {
@@ -478,6 +480,7 @@ impl PreparedCompleteRestoration {
             .ok_or(RuntimeError::OwnerUnavailable)?;
         // Build the actual planned inputs before a fresh Source exists. This
         // is DATA only; the strict later import18 prebirth refusal stays closed.
+        self.note_funded_operation_stage("constructing fresh registration plan");
         self.import18_templates.members[selected].stage = Stage::RegistrationPlan;
         self.import18_templates.members[selected]
             .registration
@@ -504,6 +507,7 @@ impl PreparedCompleteRestoration {
         // Prepared retains its original code_authority Rc throughout this
         // private synchronous quote/constructor interval and later censuses.
         // The raw code address inside ConstructionData is never an epoch.
+        self.note_funded_operation_stage("quoting and constructing isolated Source template");
         if let Some(deployment) = self.import18_templates.deployment.clone() {
             let row = self
                 .code_authority
@@ -552,6 +556,7 @@ impl PreparedCompleteRestoration {
         }
 
         self.observe_import18_templates_data([0; 3])?;
+        self.note_funded_operation_stage("binding isolated Source declaration");
         let declaration =
             PacketCompleteSemanticSource::native_import18_declaration_construction_storage_data(
                 maximum,

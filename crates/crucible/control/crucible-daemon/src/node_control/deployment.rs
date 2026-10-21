@@ -252,6 +252,8 @@ pub(crate) struct InstalledDeployment {
     mechanism: std::cell::OnceCell<Rc<VerifiedSourceBirthMechanism>>,
     attempted: std::cell::Cell<bool>,
     namespace: std::cell::RefCell<Option<namespace::FundedNamespace>>,
+    #[cfg(feature = "test-support")]
+    operation_stage: std::cell::Cell<Option<&'static str>>,
 }
 
 impl InstalledDeployment {
@@ -261,7 +263,22 @@ impl InstalledDeployment {
             mechanism: std::cell::OnceCell::new(),
             attempted: std::cell::Cell::new(false),
             namespace: std::cell::RefCell::new(None),
+            #[cfg(feature = "test-support")]
+            operation_stage: std::cell::Cell::new(None),
         })
+    }
+
+    /// Records a fixed diagnostic without changing the original failure or custody.
+    pub(crate) fn note_operation_stage(&self, stage: &'static str) {
+        #[cfg(feature = "test-support")]
+        self.operation_stage.set(Some(stage));
+        #[cfg(not(feature = "test-support"))]
+        let _ = stage;
+    }
+
+    #[cfg(feature = "test-support")]
+    pub(crate) fn operation_stage_data(&self) -> Option<&'static str> {
+        self.operation_stage.get()
     }
 
     pub(crate) fn initialize(&self) -> Result<(), crate::node_qualification::QualificationError> {

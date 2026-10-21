@@ -29,6 +29,7 @@ impl PreparedCompleteRestoration {
         }
         deployment.authenticate().map_err(|_| refused())?;
         use super::super::super::super::manifest::{FundedSelection, load_funded};
+        deployment.note_operation_stage("loading funded configuration");
         match load_funded(&manifest)? {
             FundedSelection::Installation(selected, selection) => Self::prepare_selected_into(
                 selected,
@@ -39,6 +40,7 @@ impl PreparedCompleteRestoration {
                 output,
             ),
             FundedSelection::Configuration(configuration) => {
+                deployment.note_operation_stage("materializing funded configuration");
                 let (selected, host, selection) = configuration.materialize()?;
                 Self::prepare_with_code_host_into(
                     selected,
@@ -53,7 +55,14 @@ impl PreparedCompleteRestoration {
         }
     }
 
+    pub(super) fn note_funded_operation_stage(&self, stage: &'static str) {
+        if let Some(deployment) = &self.import18_templates.deployment {
+            deployment.note_operation_stage(stage);
+        }
+    }
+
     pub(crate) fn authenticate_funded_templates_data(&self) -> Result<(), QualificationError> {
+        self.note_funded_operation_stage("authenticating funded templates");
         if !self.import18_templates.funded_complete
             || self.import18_templates.complete
             || self.import18_templates.failed

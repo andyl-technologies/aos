@@ -165,7 +165,8 @@ fn await_phase(
             FundedTemplatePhase::AttemptFailed | FundedTemplatePhase::DerivationFailed
         ) {
             return Err(format!(
-                "funded preparation failed at {observed:?}: {}",
+                "funded preparation failed at {observed:?} during {}: {}",
+                snapshot.operation_stage().unwrap_or("unobserved operation"),
                 snapshot
                     .failure_reason()
                     .unwrap_or("retained cause unavailable"),

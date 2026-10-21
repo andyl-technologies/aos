@@ -159,6 +159,7 @@ impl PreparedCompleteRestoration {
         limits: NativeArchiveLimits,
         output: &mut Option<Self>,
     ) -> Result<(), QualificationError> {
+        note_funded_setup_stage(&deployment, "checking prepared source edition");
         if !matches!(
             selected.schema.as_str(),
             "crucible.complete-scene.installation/6" | "crucible.complete-scene.installation/7"
@@ -174,10 +175,12 @@ impl PreparedCompleteRestoration {
                 host: one.host.clone(),
                 sources: one.sources.iter().cloned().map(artifact).collect(),
             });
+        note_funded_setup_stage(&deployment, "authenticating source setup measurements");
         for measurement in &measurements {
             measurement.authenticate()?;
         }
 
+        note_funded_setup_stage(&deployment, "loading source setup content");
         let content = Rc::new(super::super::super::manifest::content(std::mem::take(
             &mut selected.content,
         ))?);
@@ -193,11 +196,13 @@ impl PreparedCompleteRestoration {
             ),
         };
 
+        note_funded_setup_stage(&deployment, "encoding initial coordinator");
         let initial_bytes = encoded(&selected.coordinator)?;
         let initial = InstalledContent {
             reference: canonical::content_ref(&initial_bytes, "application/json")?,
             bytes: Bytes::new(initial_bytes),
         };
+        note_funded_setup_stage(&deployment, "constructing neverborn code Sources");
         let (sources, declarations) = if selected.schema == "crucible.complete-scene.installation/7"
         {
             prepare_restored_settled_sources(
@@ -224,6 +229,7 @@ impl PreparedCompleteRestoration {
             )?
         };
 
+        note_funded_setup_stage(&deployment, "creating funded namespace");
         let mut namespace = if let Some(owner) = &deployment {
             // The real parent/root namespace obligation is retained before
             // peer directories, socket binding or any fresh Source effects.
@@ -236,6 +242,7 @@ impl PreparedCompleteRestoration {
         } else {
             Namespace::create(directory)?
         };
+        note_funded_setup_stage(&deployment, "creating peer directories and receivers");
         let directories = namespace.peer_directories()?;
         let paths: [PathBuf; 3] =
             std::array::from_fn(|member| namespace.path.join(format!("effect-{member}.sock")));
@@ -245,6 +252,7 @@ impl PreparedCompleteRestoration {
         let [a, b, c] = receivers;
         let (receiver_group, receiver_reader) =
             PacketCompleteEffectReceiverGroup::from_original_receivers([a?, b?, c?]);
+        note_funded_setup_stage(&deployment, "constructing original launch declarations");
         let launches = launch_declarations(
             declarations,
             &selected.coordinator,
@@ -255,6 +263,7 @@ impl PreparedCompleteRestoration {
 
         // These separate code allocations remain neverborn for their entire
         // lifetime. Only the later ticketed target calls ready_sources.
+        note_funded_setup_stage(&deployment, "installing code authority and plan");
         let (graph, code_authority, code_plan) = install_authority(
             &selected,
             &measurements,
@@ -264,6 +273,7 @@ impl PreparedCompleteRestoration {
             duplicate_launch_data(&launches)?,
             directories.clone(),
         )?;
+        note_funded_setup_stage(&deployment, "installing code archive factory");
         let code_factory = PacketCompleteArchiveCodeFactory::install(
             Rc::clone(&code_authority),
             Rc::clone(&code_plan),
@@ -303,6 +313,7 @@ impl PreparedCompleteRestoration {
         });
 
         let prepared = output.as_mut().ok_or_else(refused)?;
+        prepared.note_funded_operation_stage("admitting neverborn code graph");
         prepared.admit_code_graph(limits)?;
         if prepared.import18_selection.is_some() {
             prepared
@@ -904,5 +915,15 @@ mod tests {
         );
         assert!(!occupied.exists());
         drop((target_plan, target_authority, target_graph, prepared));
+    }
+}
+
+/// Copies only a fixed stage while the original deployment remains in its input slot.
+fn note_funded_setup_stage(
+    deployment: &Option<Rc<crate::node_control::deployment::InstalledDeployment>>,
+    stage: &'static str,
+) {
+    if let Some(deployment) = deployment {
+        deployment.note_operation_stage(stage);
     }
 }

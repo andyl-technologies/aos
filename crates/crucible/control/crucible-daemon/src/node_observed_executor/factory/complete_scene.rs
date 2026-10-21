@@ -70,10 +70,15 @@ impl InstalledNodeCatalog {
             .funded_templates
             .as_ref()
             .and_then(|original| original.observed_failure_reason());
+        let operation_stage = self
+            .funded_templates
+            .as_ref()
+            .and_then(|original| original.observed_operation_stage());
         FundedTemplateObservation::from_actor(
             phase,
             self.complete_scene_world_count(),
             failure_reason,
+            operation_stage,
         )
     }
 
