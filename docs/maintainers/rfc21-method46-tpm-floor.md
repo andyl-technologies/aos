@@ -725,6 +725,17 @@ and serial test execution. Ignored kernel/installed prerequisites remain
 unqualified. This is component and compilation evidence; it does not qualify
 the full package, daemon or installed RFC.
 
+The AOS Nix QEMU checks `fleet.sandbox-domain-native-journal` and
+`fleet.sandbox-policy-native-journal` also execute the complete ordinary Domain
+and native Policy unit suites, respectively, with zero filtered tests. They
+run as UID 1000 beneath real root-owned guest ancestry, with a 32 MiB libtest
+stack and serial execution. Their passing artifacts are
+`/nix/store/q4rijnjq0f8n8h266m6pq0k30p7n3mpc-aos-fleet-test-sandbox-domain-native-journal-0`
+and
+`/nix/store/j4dssy0j5wh62w82xkblhlnshsz35l0y-aos-fleet-test-sandbox-policy-native-journal-0`.
+This includes the protected-ancestry cases excluded from the Nix build
+sandbox; it supplies no installed Controller admission or TPM floor authority.
+
 Existing native Journal commits use one mutation funnel, including archive
 retention/retirement and terminal process rollover. Schema-only validation is
 private to the opaque retained reconciliation borrow; ordinary reads cannot
