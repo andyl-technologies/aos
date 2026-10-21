@@ -74,6 +74,7 @@ impl LiveVcpuTimeCallbackState {
         raw_icount: u64,
         joined_ceiling: Option<(u64, u64, &[u8; 128])>,
     ) -> Result<(u64, u64), LiveVcpuTimeCallbackError> {
+        self.record_rr_vcpu_thread();
         if self.publish_pause_for_boundary(raw_icount, true, false, None, "max-advance")? {
             return Ok((
                 raw_icount,

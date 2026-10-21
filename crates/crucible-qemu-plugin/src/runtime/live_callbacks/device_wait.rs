@@ -25,7 +25,8 @@ impl LiveVcpuTimeCallbackState {
                 );
                 return Ok(());
             }
-            if !self.all_vcpus_halted_for_device_wait()? {
+            let dispatch = self.device_wait_dispatch()?;
+            if dispatch == DeviceWaitDispatch::Dispatchable {
                 self.device_wait_witness.emit(
                     observation,
                     "vcpu-running",
@@ -74,6 +75,7 @@ impl LiveVcpuTimeCallbackState {
             if let Some(observation) = observation.as_mut() {
                 observation.exact_deadline = Some(exact_deadline);
             }
+            let exact_deadline = dispatch.serviceable_timer(exact_deadline, current_icount);
             let plan = compute_idle_wake_plan(
                 current_icount,
                 exact_deadline,
@@ -148,23 +150,96 @@ impl LiveVcpuTimeCallbackState {
         result
     }
 
-    /// Reports whether every vCPU is halted and parked, so an idle jump may move time.
+    /// Records the calling thread as the RR vCPU thread.
     ///
-    /// The block coroutine runs on QEMU's main loop, while the RR thread
-    /// executes guest code with the BQL released. An idle advance armed while
-    /// a vCPU can run pins a raw coordinate that the vCPU keeps retiring past,
-    /// which breaks the queued jump's invariant. A vCPU whose resume deferred
-    /// its wake publication keeps its halt bit but is dispatchable, so the
-    /// predicate requires parked vCPUs, not just halt bits. Halt tracking
-    /// changes only in BQL-held RR callbacks and this callback holds the BQL,
-    /// so the answer stays true until QEMU's advance barrier freezes dispatch.
-    /// A borrowed tracker counts as not parked: the waiter retries and no time
-    /// moves.
-    fn all_vcpus_halted_for_device_wait(&self) -> Result<bool, LiveVcpuTimeCallbackError> {
-        match self.try_halted_vcpus() {
-            Ok(halted_vcpus) => Ok(halted_vcpus.all_halted_and_parked()),
-            Err(LiveVcpuTimeCallbackError::HaltStateBorrowed) => Ok(false),
-            Err(error) => Err(error),
+    /// Crucible requires single-threaded RR, so every vCPU callback runs on
+    /// one thread. Recording on each vCPU callback, not only at init, keeps
+    /// the identity current in a forked hot-fork child.
+    pub(super) fn record_rr_vcpu_thread(&self) {
+        self.rr_vcpu_thread
+            .store(current_thread_identity(), Ordering::Release);
+    }
+
+    /// Classifies whether QEMU can dispatch guest code while this wait runs.
+    ///
+    /// An unrecorded RR identity never matches, so it falls back to the
+    /// parked check. A borrowed halt tracker counts as dispatchable: the
+    /// waiter retries and no time moves.
+    fn device_wait_dispatch(&self) -> Result<DeviceWaitDispatch, LiveVcpuTimeCallbackError> {
+        let rr_vcpu_thread = self.rr_vcpu_thread.load(Ordering::Acquire);
+        if rr_vcpu_thread != 0 && rr_vcpu_thread == current_thread_identity() {
+            return Ok(DeviceWaitDispatch::IoBlockedOnRrThread);
+        }
+        let parked = match self.try_halted_vcpus() {
+            Ok(halted_vcpus) => halted_vcpus.all_halted_and_parked(),
+            Err(LiveVcpuTimeCallbackError::HaltStateBorrowed) => false,
+            Err(error) => return Err(error),
+        };
+        Ok(if parked {
+            DeviceWaitDispatch::AllParked
+        } else {
+            DeviceWaitDispatch::Dispatchable
+        })
+    }
+}
+
+/// Whether guest dispatch is frozen while a block wait runs, and why.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DeviceWaitDispatch {
+    /// The wait runs on the RR vCPU thread itself.
+    ///
+    /// A vCPU's synchronous block I/O parks the coroutine there
+    /// mid-instruction. That vCPU is not halted, but the single RR thread
+    /// that runs every vCPU is blocked, so no guest code can run.
+    IoBlockedOnRrThread,
+    /// The wait runs on QEMU's main loop and every vCPU is halted and parked.
+    ///
+    /// The RR thread executes guest code with the BQL released, so an idle
+    /// advance armed while a vCPU can run pins a raw coordinate the vCPU
+    /// keeps retiring past. A vCPU whose resume deferred its wake publication
+    /// keeps its halt bit but is dispatchable, so halt bits alone are not
+    /// enough. Halt tracking changes only in BQL-held RR callbacks and this
+    /// callback holds the BQL, so the answer stays true until QEMU's advance
+    /// barrier freezes dispatch.
+    AllParked,
+    /// A vCPU can still execute guest code; the wait must not move time.
+    Dispatchable,
+}
+
+impl DeviceWaitDispatch {
+    /// Drops a timer that only an idle advance can no longer service.
+    ///
+    /// On the main loop an already-due timer belongs to the RR idle path,
+    /// which dispatches it at the current coordinate, so the wait retries.
+    /// On a blocked RR thread nothing else can run it: QEMU services virtual
+    /// timers on that same thread, so a plan that retried on it would park
+    /// forever. The device deadline is then the next real event, and the
+    /// advance to it runs the overdue timer. A timer still ahead of the
+    /// current coordinate remains a real wake in both cases.
+    fn serviceable_timer(
+        self,
+        exact_deadline: ExactDeadlineReport,
+        current_icount: u64,
+    ) -> ExactDeadlineReport {
+        match (self, exact_deadline) {
+            (Self::IoBlockedOnRrThread, ExactDeadlineReport::Armed { deadline_ps })
+                if deadline_ps <= current_icount =>
+            {
+                ExactDeadlineReport::NoArmedTimer
+            }
+            _ => exact_deadline,
         }
     }
+}
+
+/// Returns a process-unique, nonzero identity for the calling thread.
+///
+/// Zero is reserved for "unrecorded". A forked child keeps the forking
+/// thread's identity, as it keeps that thread.
+pub(super) fn current_thread_identity() -> u64 {
+    static NEXT_THREAD_IDENTITY: AtomicU64 = AtomicU64::new(1);
+    thread_local! {
+        static THREAD_IDENTITY: u64 = NEXT_THREAD_IDENTITY.fetch_add(1, Ordering::Relaxed);
+    }
+    THREAD_IDENTITY.with(|identity| *identity)
 }

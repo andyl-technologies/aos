@@ -24,6 +24,7 @@ impl LiveVcpuTimeCallbackState {
         vcpu_index: u32,
         raw_icount: u64,
     ) -> Result<(), LiveVcpuTimeCallbackError> {
+        self.record_rr_vcpu_thread();
         self.require_initialized_vcpu(vcpu_index)?;
         observe_selectable_resume(
             SelectableResumePhase::RustEntry,

@@ -877,6 +877,10 @@ pub(crate) struct LiveVcpuTimeCallbackState {
     // borrowing the mutex-owned QEMU token or buffered network payloads.
     pending_idle_advance_active: AtomicBool,
     pending_idle_advance_raw_icount: AtomicU64,
+    /// `pthread_self` of the single RR vCPU thread, or zero before any vCPU
+    /// callback. Device waits use it to tell an I/O-blocked RR thread from
+    /// QEMU's main loop.
+    rr_vcpu_thread: AtomicU64,
     pending_idle_advance_target_icount: AtomicU64,
     idle_advance_generation: AtomicU64,
     pending_idle_advance: Mutex<Option<LivePendingIdleAdvance>>,
@@ -1328,6 +1332,7 @@ impl LiveVcpuTimeCallbackState {
             logical_restore_continuation_generation: AtomicU32::new(0),
             pending_idle_advance_active: AtomicBool::new(false),
             pending_idle_advance_raw_icount: AtomicU64::new(0),
+            rr_vcpu_thread: AtomicU64::new(0),
             pending_idle_advance_target_icount: AtomicU64::new(0),
             idle_advance_generation: AtomicU64::new(0),
             pending_idle_advance: Mutex::new(None),
@@ -1538,6 +1543,7 @@ impl LiveVcpuTimeCallbackState {
     }
 
     fn on_vcpu_init(&self, vcpu_index: u32) -> Result<(), LiveVcpuTimeCallbackError> {
+        self.record_rr_vcpu_thread();
         self.initialize_fault_commands()?;
         let initialized = self.vcpu_flag(vcpu_index)?;
         initialized.store(true, Ordering::Release);
@@ -1549,6 +1555,7 @@ impl LiveVcpuTimeCallbackState {
         vcpu_index: u32,
         raw_icount: u64,
     ) -> Result<(), LiveVcpuTimeCallbackError> {
+        self.record_rr_vcpu_thread();
         self.require_initialized_vcpu(vcpu_index)?;
         let all_halted = {
             let mut halted_vcpus = self.try_halted_vcpus()?;

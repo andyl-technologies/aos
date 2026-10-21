@@ -166,6 +166,7 @@ fn network_output_deferred_resume_keeps_device_waits_from_arming()
     }
 
     fixture.slot.store_device_completion_deadline_tick(1_050);
+    super::block_wait_dispatch::run_rr_vcpu_thread_elsewhere(&state);
     state.on_block_wait(1)?;
     assert_eq!(LAST_QUEUED_ADVANCE_TICK.get(), -1);
     assert!(!state.idle_advance_is_pending());
