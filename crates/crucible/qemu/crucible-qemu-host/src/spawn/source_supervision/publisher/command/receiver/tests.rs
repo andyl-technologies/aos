@@ -189,3 +189,54 @@ fn independent_final_sequence_and_ticket_cuts_refuse_actual_changes_after_copy()
         assert!(body.return_physical(true));
     }
 }
+
+#[test]
+fn revocation_and_return_observation_run_independently_after_either_refusal() {
+    for refuse_revocation in [false, true] {
+        for refuse_observation in [false, true] {
+            let mut body = ready_session();
+            body.publish_command_offer(publication()).unwrap();
+            let expected = returned();
+            write_return(&body, &expected.encode().unwrap());
+            replace_ticket(&body, 1, PublisherTicketPhase::ReturnRequested);
+            if refuse_revocation {
+                body.command_words().unwrap()[PUBLICATION_WORD]
+                    .store(3_u64.to_be(), Ordering::SeqCst);
+            }
+            if refuse_observation {
+                body.command_words().unwrap()[RETURN_WORD].store(3_u64.to_be(), Ordering::SeqCst);
+            }
+            let before = region_bytes(&body);
+            body.command.first = Some(OperationFailure::Kernel(rustix::io::Errno::IO));
+
+            let (result, allocations) =
+                TestAllocationObserver::count(|| body.revoke_command_and_observe_return());
+
+            assert_eq!(result.is_err(), refuse_revocation || refuse_observation);
+            assert_eq!(allocations.allocations, 0);
+            assert_eq!(allocations.reallocations, 0);
+            assert!(!allocations.overflow);
+            assert_eq!(
+                body.command.offer.as_ref().unwrap().revoked,
+                !refuse_revocation
+            );
+            assert_eq!(body.command.receiver.is_some(), !refuse_observation);
+            if let Some(retained) = &body.command.receiver {
+                assert_eq!(retained.record, expected);
+            }
+            assert!(matches!(
+                body.command.first,
+                Some(OperationFailure::Kernel(rustix::io::Errno::IO))
+            ));
+            assert_eq!(ticket(&body).phase, PublisherTicketPhase::ReturnRequested);
+            let after = region_bytes(&body);
+            if refuse_revocation {
+                assert_eq!(after, before);
+            } else {
+                assert_eq!(&after[TICKET_WORD * 8..], &before[TICKET_WORD * 8..]);
+            }
+            assert!(!body.return_physical(false));
+            assert!(body.return_physical(true));
+        }
+    }
+}

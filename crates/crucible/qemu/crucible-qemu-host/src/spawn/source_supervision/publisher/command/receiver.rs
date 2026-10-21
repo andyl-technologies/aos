@@ -21,6 +21,16 @@ pub(super) fn observation_scratch_bytes() -> Option<usize> {
 }
 
 impl<Custody> SessionBody<Custody> {
+    /// Attempts both independent physical cuts before returning either refusal.
+    pub(in super::super) fn revoke_command_and_observe_return(
+        &mut self,
+    ) -> Result<(), OperationFailure> {
+        let revocation = self.revoke_command_offer();
+        let observation = self.observe_command_return();
+
+        revocation.and(observation.map(|_| ()))
+    }
+
     /// Retains one bounded return observation from this actual session.
     ///
     /// Negative semantic statuses and partial masks remain factual metadata.

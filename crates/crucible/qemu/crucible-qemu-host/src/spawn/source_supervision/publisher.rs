@@ -246,7 +246,9 @@ impl PublisherSession {
         if !body.command.has_offer() {
             return Ok(());
         }
-        body.revoke_command_offer()
+        // A negative revocation cannot suppress the independent physical
+        // return observation. Neither cut consumes any retained Source loan.
+        body.revoke_command_and_observe_return()
             .map_err(|_| HostSupervisionError::Unavailable)
     }
 
