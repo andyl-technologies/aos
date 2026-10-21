@@ -111,6 +111,7 @@ fn main() -> std::process::ExitCode {
             "seed-encoded",
             "recover-encoded",
             "refuse-encoded",
+            "shared-reextract",
         ] {
             println!("host-cache:{selector}");
         }

@@ -215,7 +215,10 @@ impl CompletedRecovery {
                 .recovery_cold
                 .as_ref()
                 .ok_or_else(|| invalid("recovery lost original cold policy candidates"))?,
-            &recovery_inline::residences(&claims),
+            &recovery_encoded::sealed_residences(
+                recovery_inline::residences(&claims),
+                &self.encoded_chunks,
+            )?,
             &recovery_encoded::hashes(&self.encoded_chunks),
         )?;
         recovery_encoded::check(
@@ -411,7 +414,10 @@ pub(super) async fn run(executor: &mut NativeOwnerExecutor) -> io::Result<Comple
         let claims =
             recovery_inline::selected_claims(&initial_inventory, owner.preparation.layout())?;
         let mut candidate = owner.state.clone();
-        candidate.residences = recovery_inline::residences(&claims);
+        candidate.residences = recovery_encoded::sealed_residences(
+            recovery_inline::residences(&claims),
+            &encoded_chunks,
+        )?;
         candidate
             .encoded_len(owner.preparation.config.state)
             .map_err(io::Error::other)?;
@@ -456,7 +462,10 @@ pub(super) async fn run(executor: &mut NativeOwnerExecutor) -> io::Result<Comple
             .ok_or_else(|| invalid("recovery lost original cold policy candidates"))?;
         cold.check_bootstrap(&owner.preparation.config, &owner.state, &id)?;
         let claims = recovery_inline::selected_claims(&inventory, owner.preparation.layout())?;
-        let residences = recovery_inline::residences(&claims);
+        let residences = recovery_encoded::sealed_residences(
+            recovery_inline::residences(&claims),
+            &encoded_chunks,
+        )?;
         recovery_encoded::check(&inventory, &encoded_chunks, &residences)?;
         cold.reconcile(&residences, &recovery_encoded::hashes(&encoded_chunks))?;
         owner.state.residences = residences;
@@ -500,7 +509,10 @@ pub(super) async fn run(executor: &mut NativeOwnerExecutor) -> io::Result<Comple
                 .recovery_cold
                 .as_ref()
                 .ok_or_else(|| invalid("recovery lost original cold policy candidates"))?,
-            &recovery_inline::residences(&expected),
+            &recovery_encoded::sealed_residences(
+                recovery_inline::residences(&expected),
+                &encoded_chunks,
+            )?,
             &recovery_encoded::hashes(&encoded_chunks),
         )?;
         recovery_encoded::check(&inventory, &encoded_chunks, &owner.state.residences)?;

@@ -9,6 +9,7 @@ use super::{
     graph::{self, Unit},
     permit::{CachePermit, Transition},
     queue::Queue,
+    reextract,
 };
 use crate::{
     host_cache::owner::{
@@ -214,7 +215,48 @@ pub(in crate::host_cache::owner) async fn run(
         if executor.cache.pending.contains_key(&key) || encoded::contains_key(executor, &key) {
             continue;
         }
-        if let Some(unit) = units.remove(&key) {
+        if units.remove(&key).is_some() {
+            // An earlier extraction in this command can change residences and
+            // durable protection. Never retire using the initial census.
+            let fresh = graph::capture(executor)?;
+            let unit = fresh
+                .iter()
+                .find(|unit| unit.key == key)
+                .ok_or_else(|| invalid("FIFO candidate lost original sealed allocation"))?;
+            if unit.protected || !unit.shared_chunks.is_empty() {
+                if !unit.protected {
+                    reextract::run(executor, unit).await?;
+                }
+                // Copy handoff adds ordinary release grace to the original
+                // object. Refresh cancels this scheduling proposal; retirement
+                // must wait for a later, independently eligible command.
+                let fresh = graph::capture(executor)?;
+                let encoded = encoded::capture(executor)?;
+                let pending = executor
+                    .cache
+                    .pending
+                    .keys()
+                    .map(String::as_str)
+                    .chain(encoded::pending_keys(executor))
+                    .map(str::to_owned)
+                    .collect();
+                let mut activities = executor
+                    .cache
+                    .activities
+                    .lock()
+                    .map_err(|_| invalid("FIFO activity poisoned"))?;
+                executor
+                    .cache
+                    .queue
+                    .as_mut()
+                    .ok_or_else(|| invalid("native FIFO absent"))?
+                    .refresh(&fresh, &encoded, &pending, &mut activities)?;
+                continue;
+            }
+            let unit = fresh
+                .into_iter()
+                .find(|unit| unit.key == key)
+                .ok_or_else(|| invalid("FIFO candidate lost original sealed allocation"))?;
             retire(executor, Arc::new(unit)).await?;
         } else {
             let unit = encoded_units

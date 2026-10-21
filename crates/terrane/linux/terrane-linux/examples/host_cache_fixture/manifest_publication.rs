@@ -3,6 +3,8 @@
 //! Pure byte fixtures establish no native authority. Every admission, metadata
 //! pin, anonymous output, publisher reply and residence comes from the real owner.
 
+#[path = "manifest_publication/reextract.rs"]
+pub(super) mod reextract;
 #[path = "manifest_publication/reuse.rs"]
 mod reuse;
 

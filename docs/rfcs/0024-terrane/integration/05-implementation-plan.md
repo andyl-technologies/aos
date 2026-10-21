@@ -8707,6 +8707,18 @@ and complete readiness remain outstanding. The existing unique-descriptor
 close operation in admission IO was reviewed unchanged; recovery adds only
 safe readonly descriptor operations. No complete T2 task is accepted.
 
+Shared extraction preparation (2026-10-20): the physical eviction worker can
+select an unprotected shared body for bounded re-extraction. Each independently
+verified range receives actual admission funding before its sealed residence
+row is durably removed, and that removal precedes publishing the canonical raw
+chunk. Cache handoff preserves ordinary release grace for the original object;
+a fresh native census precedes its later retirement. Recovery selects verified
+standalone chunks over matching sealed occurrences only when original cold
+range assertions also reconcile. Native controls cover the overlapping cold
+files, refusal to erase an old range, pinned eviction refusal, live consumer
+reads and final original descriptor closure. Their runtime qualification is
+pending; this preparation accepts no T2 task or readiness claim.
+
 Host integration checkpoint (2026-10-20): combine native cache source
 `428cc305ad` and configured surface/module source `d4af629791`, retaining
 D-128's configuration-time sealed-tier refusal. The module preserves DOM-18's

@@ -62,7 +62,7 @@ impl Queue {
                     unit.order,
                     unit.key.as_str(),
                     unit.allocated,
-                    unit.protected || !unit.shared_chunks.is_empty(),
+                    unit.protected,
                     ReadOrigin::Sealed(*unit.body.incarnation()),
                 )
             })
@@ -130,8 +130,8 @@ impl Queue {
             if entry.allocated != allocated {
                 return Err(invalid("native FIFO immutable allocation changed"));
             }
-            // Shared residence must be transferred before physical retirement.
-            // Its extraction is a separate prerequisite, never a guessed delete.
+            // Shared bodies can be selected for extraction. Actual retirement
+            // separately refuses them until their residence transfer completes.
             if protected && !entry.pinned {
                 self.policy.pin(key).map_err(io::Error::other)?;
             } else if !protected && entry.pinned {

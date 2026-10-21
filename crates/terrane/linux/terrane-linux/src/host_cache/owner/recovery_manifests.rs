@@ -196,10 +196,16 @@ pub(super) async fn run(
             .ok_or_else(|| invalid("manifest recovery lost original cold policy candidates"))?;
         ResidenceSelection::new(custody.preparation.config.state.records, cold.residences())?
     };
-    selected.extend(recovery_inline::residences(&inline_claims))?;
+    selected.extend(recovery_encoded::sealed_residences(
+        recovery_inline::residences(&inline_claims),
+        &encoded_chunks,
+    )?)?;
     for body in &verified {
         body.check_current(&original)?;
-        selected.extend(body.residences()?)?;
+        selected.extend(recovery_encoded::sealed_residences(
+            body.residences()?,
+            &encoded_chunks,
+        )?)?;
     }
     shared.require_sources(executor.manifest_sources(), &encoded_chunks)?;
     let final_inventory = inspector.inspect()?;

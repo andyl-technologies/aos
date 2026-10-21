@@ -53,13 +53,11 @@ pub(super) fn select(
         if let Codec::ZstdDictionary(digest) = terrane_format::codec::parse_envelope(&bytes)
             .map_err(io::Error::other)?
             .codec
-        {
-            if identities
+            && identities
                 .get(digest.as_slice())
                 .is_none_or(|codec| *codec == 2)
-            {
-                return Err(invalid("recovery requires a standalone one-hop dictionary"));
-            }
+        {
+            return Err(invalid("recovery requires a standalone one-hop dictionary"));
         }
     }
     // Raw and plain Zstd dictionaries enter the actual owner before dependents.
@@ -112,10 +110,94 @@ pub(super) fn hashes(chunks: &[Arc<VerifiedStandaloneChunk>]) -> Vec<String> {
         .collect()
 }
 
+/// Selects sealed ranges whose chunks have no verified standalone residence.
+///
+/// Re-extraction removes the durable range before publishing its replacement
+/// chunk. A crash can therefore leave both the original sealed body and the
+/// replacement encoding. The complete native inventory, rather than either
+/// filename alone, determines which source owns the chunk. Original cold rows
+/// still have to reconcile separately; this never clears an old assertion.
+///
+/// # Errors
+/// Refuses overflowing ranges or a plaintext length conflicting with the actual
+/// independently verified standalone descriptor.
+pub(super) fn sealed_residences(
+    records: impl IntoIterator<Item = ResidenceRecord>,
+    chunks: &[Arc<VerifiedStandaloneChunk>],
+) -> io::Result<Vec<ResidenceRecord>> {
+    let standalone = chunks
+        .iter()
+        .map(|chunk| (hex(chunk.identity().digest()), chunk.descriptor().size()))
+        .collect();
+    select_residences(records, &standalone)
+}
+
+fn select_residences(
+    records: impl IntoIterator<Item = ResidenceRecord>,
+    standalone: &BTreeMap<String, u64>,
+) -> io::Result<Vec<ResidenceRecord>> {
+    let mut selected = Vec::new();
+    for record in records {
+        record
+            .offset
+            .checked_add(record.length)
+            .ok_or_else(|| invalid("recovered residence range overflows"))?;
+        match standalone.get(&record.chunk) {
+            Some(length) if *length != record.length => {
+                return Err(invalid(
+                    "sealed range conflicts with verified standalone plaintext length",
+                ));
+            }
+            Some(_) => {}
+            None => selected.push(record),
+        }
+    }
+    Ok(selected)
+}
+
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::WouldBlock, message)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    fn range(chunk: &str, offset: u64, length: u64) -> ResidenceRecord {
+        ResidenceRecord {
+            chunk: chunk.into(),
+            object: "sealed-body".into(),
+            offset,
+            length,
+        }
+    }
+
+    #[test]
+    fn extraction_crash_selection_keeps_one_residence_and_checks_both_lengths() {
+        // Pure selection data supplies no adoption, recovery or read capability.
+        let standalone = BTreeMap::from([("shared".into(), 3)]);
+        let selected = select_residences(
+            [range("shared", 7, 3), range("unextracted", 10, 5)],
+            &standalone,
+        )
+        .unwrap();
+
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].chunk, "unextracted");
+        assert!(select_residences([range("shared", 7, 4)], &standalone).is_err());
+        assert!(select_residences([range("shared", u64::MAX, 3)], &standalone).is_err());
+    }
+
+    #[test]
+    fn before_canonical_publish_the_verified_original_range_remains_selected() {
+        let selected = select_residences([range("shared", 7, 3)], &BTreeMap::new()).unwrap();
+
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].offset, 7);
+    }
 }

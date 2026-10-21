@@ -19,6 +19,7 @@ mod pressure;
 pub(in crate::host_cache::owner) mod reads;
 mod reconcile;
 pub(in crate::host_cache::owner) mod recovery;
+pub(in crate::host_cache::owner) mod reextract;
 mod state;
 mod ticket;
 mod transfer;

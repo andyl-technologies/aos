@@ -43,6 +43,7 @@ pub(super) fn run(mode: &str) -> io::Result<()> {
             | "encoded-eviction"
             | "recover-encoded"
             | "refuse-encoded"
+            | "shared-reextract"
             | "recover-manifest"
             | "recover-index-recovery"
             | "refuse-index-disabled"
@@ -116,6 +117,9 @@ pub(super) fn run(mode: &str) -> io::Result<()> {
         .enable_all()
         .build()?;
     match mode {
+        "shared-reextract" => {
+            super::manifest_publication::reextract::run(&owner, &runtime, &inputs)?;
+        }
         "recover-encoded" | "refuse-encoded" => {
             super::recovery::encoded::run(mode, &owner, &runtime, &inputs)?;
         }

@@ -1,0 +1,244 @@
+//! Exercises actual shared-chunk extraction, protected eviction and final closure.
+
+use super::*;
+use terrane_linux::host_cache::{NativeCacheEvictionReport, NativeConsumerLease};
+use terrane_sdk::store::{Clock, TokioClock};
+
+/// Keeps one real owner and independent consumers alive through body eviction.
+///
+/// # Errors
+/// Refuses invented residence transitions, lost consumers, premature deletion,
+/// missing original cleanup or accounting that claims early quota reclamation.
+pub(crate) fn run(
+    owner: &NativeMetadataOwner,
+    runtime: &tokio::runtime::Runtime,
+    inputs: &Inputs,
+) -> io::Result<()> {
+    if inputs.domain != "tenant:shared-reextract" {
+        return Err(invalid("shared extraction requires its dedicated domain"));
+    }
+    let first = data(false, false)?;
+    let second = data_with_tail(false, false, 100)?;
+    let completed = runtime.block_on(owner.recover())?;
+    runtime
+        .block_on(owner.resume_recovered(completed))
+        .map_err(io::Error::other)?;
+    admit(
+        owner,
+        runtime,
+        &first.first,
+        ChunkPosition::NonFinal,
+        first.encoded_first.clone(),
+    )?;
+    admit(
+        owner,
+        runtime,
+        &first.tail,
+        ChunkPosition::Final,
+        [vec![0], first.tail.clone()].concat(),
+    )?;
+    admit_manifest(owner, runtime, &first)?;
+    let original = runtime.block_on(owner.publish_manifest(first.identity.clone()))?;
+    admit(
+        owner,
+        runtime,
+        &second.tail,
+        ChunkPosition::Final,
+        [vec![0], second.tail.clone()].concat(),
+    )?;
+    admit_manifest(owner, runtime, &second)?;
+    let other = runtime.block_on(owner.publish_manifest(second.identity.clone()))?;
+    let inode = original.handle().metadata()?;
+    emit(&format!(
+        "SHARED_EXTRACTION_ORIGINAL object={} inode={} bytes={}",
+        hex(first.identity.digest()),
+        inode.ino(),
+        inode.blocks() * 512
+    ))?;
+    emit("READY shared extraction originals published; wait for source retirement grace")?;
+    control("cleanup")?;
+    if runtime
+        .block_on(original.finish_retired_sources(owner))?
+        .completed_sources
+        != 2
+        || runtime
+            .block_on(other.finish_retired_sources(owner))?
+            .completed_sources
+            != 1
+    {
+        return Err(invalid("shared extraction lost original source cleanup"));
+    }
+    let expires = TokioClock
+        .now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(io::Error::other)?
+        .as_secs()
+        .checked_add(300)
+        .ok_or_else(|| invalid("shared extraction consumer expiry overflows"))?;
+    let protected = pin(owner, runtime, &first.first, expires)?;
+    let independent = pin(owner, runtime, &second.tail, expires)?;
+    let first_handoff = runtime
+        .block_on(original.into_cache(owner))
+        .map_err(io::Error::other)?;
+    let other_handoff = runtime
+        .block_on(other.into_cache(owner))
+        .map_err(io::Error::other)?;
+    let before = fs::read(policy(inputs))?;
+    let refused = pressure(owner, runtime, inputs)?;
+    if refused.retired_allocations != 0 || refused.target_met || fs::read(policy(inputs))? != before
+    {
+        return Err(invalid("pinned shared body changed its actual residence"));
+    }
+    runtime.block_on(owner.release_consumer_lease(&protected))?;
+    let state = load(runtime, inputs)?;
+    let grace = state
+        .pins
+        .iter()
+        .filter(|pin| pin.owner.starts_with("consumer-grace:"))
+        .map(|pin| pin.expires)
+        .max()
+        .unwrap_or(0)
+        .max(first_handoff.release_grace_ends_at)
+        .max(other_handoff.release_grace_ends_at);
+    emit(&format!("SHARED_EXTRACTION_GRACE expires={grace}"))?;
+    emit("READY pinned shared eviction refused; original body and range retained")?;
+    control("extract")?;
+    let before = runtime.block_on(owner.evict_cached(0))?;
+    let extracted = pressure(owner, runtime, inputs)?;
+    let chunk = hex(TERRANE_V1
+        .calculate(IdentityKind::Chunk, &first.first)
+        .map_err(io::Error::other)?
+        .digest());
+    let standalone = inputs
+        .root
+        .join("chunks")
+        .join(&chunk[..2])
+        .join(format!("{chunk}.0"));
+    let after = load(runtime, inputs)?;
+    let object = hex(first.identity.digest());
+    if extracted.retired_allocations != 0
+        || extracted.target_met
+        || extracted.charged_reserved_bytes <= before.charged_reserved_bytes
+        || extracted.future_hold_bytes != before.future_hold_bytes
+        || fs::read(&standalone)? != [vec![0], first.first.clone()].concat()
+        || after.residences.iter().any(|row| row.chunk == chunk)
+        || !after.residences.iter().any(|row| row.object == object)
+    {
+        return Err(invalid(
+            "shared extraction lost its durable copy-before-delete ordering",
+        ));
+    }
+    let replacement = pin(owner, runtime, &first.first, expires)?;
+    check_reads(owner, runtime, &replacement, &independent, &first, &second)?;
+    let deadline = after
+        .pins
+        .iter()
+        .filter(|pin| pin.hash == object)
+        .map(|pin| pin.expires)
+        .max()
+        .ok_or_else(|| invalid("extraction lost original object's release grace"))?;
+    emit(&format!(
+        "SHARED_EXTRACTION_COPY chunk={chunk} object={object} expires={deadline}"
+    ))?;
+    emit(
+        "READY verified standalone replacement and independent consumers; original body still charged",
+    )?;
+    control("retire")?;
+    let retired = pressure(owner, runtime, inputs)?;
+    if retired.retired_allocations != 1 || retired.target_met {
+        return Err(invalid(
+            "shared extraction did not retire exactly its original body",
+        ));
+    }
+    emit(
+        "READY original shared body pending deletion; replacement and independent consumer retained",
+    )?;
+    control("deleted")?;
+    runtime.block_on(owner.evict_cached(0))?;
+    let state = load(runtime, inputs)?;
+    if inputs
+        .root
+        .join("sealed")
+        .join(&object[..2])
+        .join(&object)
+        .exists()
+        || state.residences.iter().any(|row| row.object == object)
+    {
+        return Err(invalid(
+            "retired shared body retains its original canonical residence",
+        ));
+    }
+    check_reads(owner, runtime, &replacement, &independent, &first, &second)?;
+    emit("READY original shared body removed; real consumers remain readable with policy held")?;
+    control("finish")?;
+    runtime.block_on(owner.release_consumer_lease(&replacement))?;
+    runtime.block_on(owner.release_consumer_lease(&independent))?;
+    emit(
+        "PASS actual shared-chunk re-extraction preserves one residence, durable grace, independent consumers and final original descriptor closure; no Ready",
+    )
+}
+
+fn pin(
+    owner: &NativeMetadataOwner,
+    runtime: &tokio::runtime::Runtime,
+    bytes: &[u8],
+    expires: u64,
+) -> io::Result<NativeConsumerLease> {
+    let identity = TERRANE_V1
+        .calculate(IdentityKind::Chunk, bytes)
+        .map_err(io::Error::other)?;
+    runtime.block_on(owner.pin_resident_chunk(identity, expires))
+}
+
+fn check_reads(
+    owner: &NativeMetadataOwner,
+    runtime: &tokio::runtime::Runtime,
+    replacement: &NativeConsumerLease,
+    independent: &NativeConsumerLease,
+    first: &Data,
+    second: &Data,
+) -> io::Result<()> {
+    let stalled = runtime.block_on(owner.stall_policy_for_fixture())?;
+    if replacement.read_verified()? != first.first || independent.read_verified()? != second.tail {
+        return Err(invalid(
+            "shared extraction invalidated an independent consumer",
+        ));
+    }
+    drop(stalled);
+    Ok(())
+}
+
+fn pressure(
+    owner: &NativeMetadataOwner,
+    runtime: &tokio::runtime::Runtime,
+    inputs: &Inputs,
+) -> io::Result<NativeCacheEvictionReport> {
+    let actual = runtime.block_on(owner.evict_cached(0))?;
+    let total = actual
+        .charged_reserved_bytes
+        .checked_add(actual.future_hold_bytes)
+        .ok_or_else(|| invalid("shared extraction pressure overflows"))?;
+    let incoming = inputs
+        .owner_config()?
+        .policy
+        .capacity
+        .checked_sub(total)
+        .and_then(|free| free.checked_add(1))
+        .ok_or_else(|| invalid("shared extraction already exceeds capacity"))?;
+    runtime.block_on(owner.evict_cached(incoming))
+}
+
+fn policy(inputs: &Inputs) -> std::path::PathBuf {
+    inputs.root.join("state/cache/records.toml")
+}
+
+fn load(runtime: &tokio::runtime::Runtime, inputs: &Inputs) -> io::Result<CacheState> {
+    runtime
+        .block_on(CacheState::load(
+            &TokioLocalFs,
+            &inputs.root.join("state/cache"),
+            STATE,
+        ))
+        .map_err(io::Error::other)?
+        .ok_or_else(|| invalid("shared extraction policy missing"))
+}

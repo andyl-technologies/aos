@@ -107,6 +107,25 @@ pub(crate) fn seed() -> io::Result<()> {
             0o640,
         )?;
     }
+    if matches!(
+        inputs.domain.as_str(),
+        "tenant:encoded-sealed" | "tenant:encoded-old-range"
+    ) {
+        let canonical = path(&inputs, &chunks[0], 0)?;
+        let hash = canonical
+            .file_stem()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| invalid("encoded overlap fixture lacks a canonical hash"))?;
+        let parent = inputs.root.join("sealed").join(&hash[..2]);
+        directory(&parent, 841, 841, 0o755)?;
+        let sealed = parent.join(hash);
+        write(&inputs, &sealed, &chunks[0].bytes, 841, 841, 0o400)?;
+        let file = File::open(sealed)?;
+        terrane_linux::verity::enable(&file)?;
+        file.sync_all()?;
+        File::open(parent)?.sync_all()?;
+        File::open(inputs.root.join("sealed"))?.sync_all()?;
+    }
     File::open(inputs.root.join("chunks"))?.sync_all()?;
     println!("SEEDED cold encoded candidates; no recovery or serving authority");
     Ok(())

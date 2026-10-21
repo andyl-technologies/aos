@@ -105,6 +105,7 @@ impl Inputs {
                     self.domain.as_str(),
                     "tenant:publication-manifest-reuse"
                         | "tenant:publication-manifest-reuse-bad-whole"
+                        | "tenant:shared-reextract"
                 ) {
                     HARD_LIMIT
                 } else {

@@ -218,4 +218,19 @@ mod tests {
         assert!(cold.reconcile(&[], &["33".repeat(32)]).is_ok());
         assert_eq!(cold.state.pins[0].hash, "33".repeat(32));
     }
+
+    #[test]
+    fn standalone_replacement_cannot_erase_an_original_cold_range() {
+        let cold = candidates();
+        let hashes = vec!["11".repeat(32), "22".repeat(32)];
+
+        // Both identities can be backed while the original range assertion is
+        // still unresolved. Recovery cannot treat content closure as a durable
+        // acknowledgement of the missing residence transition.
+        assert!(cold.reconcile(&[], &hashes).is_err());
+        assert!(cold.reconcile(&cold.state.residences, &hashes).is_ok());
+        assert_eq!(cold.state.residences.len(), 1);
+        assert_eq!(cold.state.residences[0].offset, 7);
+        assert_eq!(cold.state.reservations[0].bytes, 4096);
+    }
 }

@@ -76,6 +76,8 @@ LABELS = ["layout-root", "chunks", "objects", "sealed", "staging", "quarantine",
 # Append new cases so every previously qualified project assignment stays fixed.
 CASES += ["encoded-eviction", "encoded-recovery", "encoded-cold", "encoded-corrupt",
           "encoded-duplicate", "encoded-missing-dictionary", "encoded-unknown"]
+CASES += ["shared-reextract"]
+CASES += ["encoded-sealed", "encoded-old-range"]
 BUDGET = HARD * len(CASES)
 PROVISION_CAPS = "-all,+sys_admin,+dac_read_search,+fowner,+chown,+fsetid"
 QUERY_CAPS = "-all,+sys_admin,+dac_read_search"
@@ -922,6 +924,7 @@ def verify_image():
         "host_cache_pending_recovery_vm.py",
         "host_cache_pending_packs_vm.py",
         "encoded_eviction_vm.py",
+        "shared_reextract_vm.py",
     ]
     require(set(identity["supervisor_helpers"]) == set(helper_names),
             "native supervisor helper inventory changed")
@@ -1230,6 +1233,7 @@ def main():
         running_retention_cases(helper, uuid)
         runpy.run_path(str(IMAGE / "share/manifest_publication_vm.py"))["run"](sys.modules[__name__], publisher, uuid)
         runpy.run_path(str(IMAGE / "share/host_cache_encoded_recovery_vm.py"))["run"](sys.modules[__name__], uuid)
+        runpy.run_path(str(IMAGE / "share/shared_reextract_vm.py"))["run"](sys.modules[__name__], uuid)
         manifest_recovery_cases(uuid, manifest_candidates, helper)
         runpy.run_path(str(IMAGE / "share/host_cache_index_recovery_vm.py"))[
             "run"](sys.modules[__name__], uuid, index_candidates)

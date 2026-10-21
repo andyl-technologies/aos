@@ -9,6 +9,7 @@ mod graph;
 mod lifecycle;
 mod permit;
 mod queue;
+mod reextract;
 pub(in crate::host_cache::owner) use permit::CachePermit;
 
 use activity::Registry;

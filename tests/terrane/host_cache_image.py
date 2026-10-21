@@ -72,6 +72,9 @@ UNIT_TESTS = (
     'host_cache::owner::recovery_residences::tests::repeated_occurrences_select_one_stable_range_independent_of_scan_order',
     'host_cache::owner::recovery_cold::tests::cold_pins_require_complete_verified_backing_without_erasing_candidates',
     'host_cache::owner::recovery_cold::tests::cold_metadata_pins_require_the_separate_verified_source_closure',
+    'host_cache::owner::recovery_cold::tests::standalone_replacement_cannot_erase_an_original_cold_range',
+    'host_cache::owner::recovery_encoded::tests::extraction_crash_selection_keeps_one_residence_and_checks_both_lengths',
+    'host_cache::owner::recovery_encoded::tests::before_canonical_publish_the_verified_original_range_remains_selected',
     'host_cache::owner::recovery_state_parent::tests::actual_state_parent_scan_refuses_unknown_file_and_directory_siblings',
     'host_cache::owner::retention::recovery_manifest::tests::abandoned_rpc_effect_faults_without_a_state_or_client_lock',
     'host_cache::owner::retention::recovery_manifest::tests::cancelled_in_flight_retention_never_reactivates_the_live_phase',
@@ -263,7 +266,7 @@ def main():
         shared.require(path.read_bytes() == (source / relative).read_bytes(), "executed proof helper differs from source")
     artifacts = selected_artifacts(workspace, temporary, target)
     source_hashes = shared.source_hashes(workspace, source)
-    for name in ["host-cache-proof.nix", "host_cache_image.py", "host_cache_vm.py", "host_cache_temporaries_vm.py", "host_cache_encoded_recovery_vm.py", "host_cache_index_recovery_vm.py", "host_cache_pending_recovery_vm.py", "host_cache_pending_packs_vm.py", "manifest_publication_vm.py", "source_cleanup_vm.py", "admission_cache_vm.py", "encoded_eviction_vm.py", "native_sdk_test_image.py"]:
+    for name in ["host-cache-proof.nix", "host_cache_image.py", "host_cache_vm.py", "host_cache_temporaries_vm.py", "host_cache_encoded_recovery_vm.py", "host_cache_index_recovery_vm.py", "host_cache_pending_recovery_vm.py", "host_cache_pending_packs_vm.py", "manifest_publication_vm.py", "source_cleanup_vm.py", "admission_cache_vm.py", "encoded_eviction_vm.py", "shared_reextract_vm.py", "native_sdk_test_image.py"]:
         path = source / "tests/terrane" / name
         shared.require(path.read_bytes() == (workspace.parent / "tests/terrane" / name).read_bytes(), "mutable proof input: " + name)
         source_hashes["tests/terrane/" + name] = digest(path)
@@ -308,7 +311,7 @@ def main():
                            "installed_path": "share/host_cache_vm.py", "sha256": digest(supervisor)}
     checksums.append(f"{digest(supervisor)}  share/host_cache_vm.py\n")
     supervisor_helpers = {}
-    for helper_name in ["manifest_publication_vm.py", "source_cleanup_vm.py", "admission_cache_vm.py", "host_cache_temporaries_vm.py", "host_cache_encoded_recovery_vm.py", "host_cache_index_recovery_vm.py", "host_cache_pending_recovery_vm.py", "host_cache_pending_packs_vm.py", "encoded_eviction_vm.py"]:
+    for helper_name in ["manifest_publication_vm.py", "source_cleanup_vm.py", "admission_cache_vm.py", "host_cache_temporaries_vm.py", "host_cache_encoded_recovery_vm.py", "host_cache_index_recovery_vm.py", "host_cache_pending_recovery_vm.py", "host_cache_pending_packs_vm.py", "encoded_eviction_vm.py", "shared_reextract_vm.py"]:
         helper_source = source / "tests/terrane" / helper_name
         helper_installed = output / "share" / helper_name
         shutil.copy2(helper_source, helper_installed)
@@ -365,6 +368,7 @@ def main():
         "refuse-bound-unsealed",
         "encoded-eviction",
         "seed-encoded", "recover-encoded", "refuse-encoded",
+        "shared-reextract",
     ]]
     shared.require(listed == expected, "cache fixture exact selector inventory mismatch")
     unit_elf = output / "bin" / UNIT_NAME
