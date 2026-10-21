@@ -27,6 +27,10 @@ use crate::protocol_snapshot::restored_settled17::{
 };
 use std::mem::size_of;
 
+#[path = "prebirth_recipe/input_references.rs"]
+mod input_references;
+pub use input_references::native_import18_recipe_inputs_counter_scratch_data;
+
 #[path = "prebirth_recipe/identity.rs"]
 mod identity;
 pub use identity::{
@@ -336,7 +340,8 @@ impl PacketNativeImport18PrebirthRecipeData {
             || self.fields.semantic_length.get() != length
             || self.fields.semantic_spend_maximum.get() != upper
             || length > upper
-            || reference_identity_data(reference)? != self.fields.semantic_reference_identity
+            || native_import18_reference_identity_data(reference)?
+                != self.fields.semantic_reference_identity
         {
             return Err(invalid());
         }
@@ -438,7 +443,7 @@ fn authenticate_content_body_data(
     reference: &ContentRef,
     body: &[u8],
 ) -> Result<(), ProviderError> {
-    reference_identity_data(reference)?;
+    native_import18_reference_identity_data(reference)?;
     if reference.length.get() != u64::try_from(body.len()).map_err(|_| invalid())? {
         return Err(invalid());
     }
@@ -461,15 +466,31 @@ fn authenticate_content_body_data(
     Ok(())
 }
 
-// The defining producer and both DATA matchers use this exact framed fullref
-// identity; no canonical JSON or separately allocated HashRef is constructed.
-fn reference_identity_data(reference: &ContentRef) -> Result<[u8; 32], ProviderError> {
-    if reference.hash.algorithm != "blake3-256"
-        || reference.hash.domain != "cnp.blob.v1"
-        || reference.hash.digest.len() != 64
-        || !reference
-            .hash
-            .digest
+/// Hashes a full reference under the recipe's exact length-prefixed framing.
+///
+/// This allocation-free DATA projection creates no reference, recipe or phase.
+/// Callers separately authenticate the role, media, body and original custody.
+///
+/// # Errors
+/// Refuses an unsupported hash algorithm/domain, malformed digest or a String
+/// length that cannot be represented by the fixed u64 framing.
+pub fn native_import18_reference_identity_data(
+    reference: &ContentRef,
+) -> Result<[u8; 32], ProviderError> {
+    let ContentRef {
+        hash,
+        length,
+        media_type,
+    } = reference;
+    let crucible_node_format::HashRef {
+        algorithm,
+        domain,
+        digest,
+    } = hash;
+    if algorithm != "blake3-256"
+        || domain != "cnp.blob.v1"
+        || digest.len() != 64
+        || !digest
             .bytes()
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
     {
@@ -477,12 +498,7 @@ fn reference_identity_data(reference: &ContentRef) -> Result<[u8; 32], ProviderE
     }
     let mut hash =
         blake3::Hasher::new_derive_key("source-owned.packet-native-import-fullref-identity/18");
-    for value in [
-        &reference.hash.algorithm,
-        &reference.hash.domain,
-        &reference.hash.digest,
-        &reference.media_type,
-    ] {
+    for value in [algorithm, domain, digest, media_type] {
         hash.update(
             &u64::try_from(value.len())
                 .map_err(|_| invalid())?
@@ -490,7 +506,7 @@ fn reference_identity_data(reference: &ContentRef) -> Result<[u8; 32], ProviderE
         );
         hash.update(value.as_bytes());
     }
-    hash.update(&reference.length.get().to_be_bytes());
+    hash.update(&length.get().to_be_bytes());
     Ok(*hash.finalize().as_bytes())
 }
 

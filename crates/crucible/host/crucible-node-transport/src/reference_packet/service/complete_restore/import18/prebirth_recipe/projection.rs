@@ -47,6 +47,11 @@ const _: fn(PacketNativeStartupAllocationRow) =
          declared_counter_scratch_bytes: _,
      }| {};
 
+// Another schema spelling requires reviewing this finite declaration too.
+const _: fn(RecipeSchema) = |schema| match schema {
+    RecipeSchema::Import18 => {}
+};
+
 // New variants require reviewing the finite maximum spellings below.
 const _: fn(PacketNativeImport18NativeFamily) = |family| match family {
     PacketNativeImport18NativeFamily::Snapshot17 | PacketNativeImport18NativeFamily::Snapshot18 => {

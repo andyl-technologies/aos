@@ -5,7 +5,12 @@
 
 use super::*;
 use crate::bodies::{BlobBeginRequest, BlobChunkRequest, BlobFinishRequest};
+use crate::reference_packet::service::complete_restore::import18::{
+    PacketNativeImport18PrebirthRecipeWireData, PacketNativeImport18SemanticSpendFamily,
+    inert_bootstrap_fixtures, native_import18_reference_identity_data,
+};
 use crucible_node_format::{Bytes, Extensions, Id, U64, canonical};
+use serde_json::json;
 
 fn bodies() -> [Vec<u8>; 7] {
     [
@@ -65,10 +70,41 @@ fn finish(begin: &BlobBeginRequest) -> BlobFinishRequest {
     }
 }
 
+fn recipe_data(references: [&ContentRef; 7]) -> PacketNativeImport18PrebirthRecipeWireData {
+    let [protocol, control, anchor, snapshot, journal, _, semantic] = references;
+    let archived = [snapshot, protocol, control, anchor, journal];
+    let mut recipe = inert_bootstrap_fixtures::recipe();
+    recipe["archived_reference_identities"] = json!(
+        archived.map(|reference| native_import18_reference_identity_data(reference).unwrap())
+    );
+    recipe["archived_lengths"] = json!(archived.map(|reference| reference.length));
+    recipe["semantic_reference_identity"] =
+        json!(native_import18_reference_identity_data(semantic).unwrap());
+    recipe["semantic_length"] = json!(semantic.length);
+    recipe["semantic_spend_maximum"] = json!(semantic.length);
+    recipe["decoder_limits"] = json!([
+        snapshot.length,
+        protocol.length,
+        control.length,
+        anchor.length,
+        journal.length,
+        U64::new(1),
+        U64::new(1),
+        U64::new(1),
+        U64::new(1),
+        U64::new(268435456),
+    ]);
+    recipe["escrow"] = json!(["5", "1", "1"]);
+    serde_json::from_value(recipe).unwrap()
+}
+
 #[test]
 fn seven_distinct_inputs_complete_in_order_without_growing_reserved_backing() {
     let bodies = bodies();
-    let references = references(&bodies);
+    let mut references = references(&bodies);
+    references[6].media_type = PacketNativeImport18SemanticSpendFamily::Complete18
+        .media_type_data()
+        .to_owned();
     let mut owner = reserve(&references);
     let retained = owner.retained_backing_data().unwrap();
     let row = OriginalImport18ReceivingBanks::backing_construction_data(
@@ -81,6 +117,7 @@ fn seven_distinct_inputs_complete_in_order_without_growing_reserved_backing() {
 
     for (ordinal, body) in bodies.iter().enumerate() {
         assert!(owner.bodies_data().is_err());
+        assert!(owner.references_data().is_err());
         let begin = begin(ordinal, &references[ordinal]);
         assert_eq!(owner.begin_data(&begin).unwrap(), 0);
         let mut offset = 0;
@@ -101,6 +138,26 @@ fn seven_distinct_inputs_complete_in_order_without_growing_reserved_backing() {
     assert_eq!(
         owner.bodies_data().unwrap(),
         bodies.each_ref().map(Vec::as_slice)
+    );
+    let completed = owner.references_data().unwrap();
+    assert_eq!(completed, references.each_ref());
+    for (actual, bank) in completed.into_iter().zip(&owner.banks) {
+        assert!(std::ptr::eq(actual, bank.reference.as_ref().unwrap()));
+    }
+    let [protocol, control, anchor, snapshot, journal, _, semantic] = completed;
+    let archived = [snapshot, protocol, control, anchor, journal];
+    let recipe = recipe_data(completed);
+
+    recipe
+        .authenticate_input_references_data(archived, semantic)
+        .unwrap();
+    assert_eq!(protocol.length, control.length);
+    let mut swapped = archived;
+    swapped.swap(1, 2);
+    assert!(
+        recipe
+            .authenticate_input_references_data(swapped, semantic)
+            .is_err()
     );
     assert_eq!(owner.retained_backing_data().unwrap(), retained);
     assert!(

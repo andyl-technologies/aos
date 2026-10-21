@@ -907,9 +907,53 @@ serialization report. The fixed finite declaration is now calculated before
 applying the independent restriction to actual canonicalization owners; no
 parser bank is executed or priced as this constructor's demand. Both full
 Transport configurations pass 1,800 tests, zero failures, no filtering and
-sixteen existing ignores. All-feature/all-target, architecture, required
-application and funded-Source VM qualification are running. Self-consistency supplies no opaque Recipe/Initial or phase grant; independent full recipe reconstruction
-from completed seven-bank inputs remains required before model adoption.
+sixteen existing ignores. The affected all-feature/all-target check and all six
+architecture gates pass. The required application output is
+`/nix/store/07zwh9pywyz12hd7g541494sg7ca1i4z-aos-test-targets-0.1.0`, with
+180 test executables across 58 package identities and 71 integration targets.
+Its registered source at
+`/nix/store/y10197yw7x7fbgisdkqy52zw0vgf2shj-aos-workspace-src` matches all
+141 Rust paths changed through `10790624da` byte for byte.
+
+The funded-Source VM output is
+`/nix/store/8n3d37nmdkyhz105pfpzgaz5655zmdsf-aos-vm-test-crucible-funded-source-templates-0`.
+All three components use
+`/nix/store/3cl9sdf6asfn23kzcmqjy9f9rmpj6hvc-crucible-workspace-src`, with
+all 141 Rust paths byte-exact to `10790624da`. Its genuine Source precursor,
+independent consumers and terminal failure/release controls pass. Self-consistency
+supplies no opaque Recipe/Initial or phase grant; independent full recipe
+reconstruction from completed seven-bank inputs remains required before model
+adoption.
+
+## Completed input reference correspondence
+
+The recipe full-reference commitment now has an explicit Import18 definition:
+length-prefixed algorithm, domain, digest and media strings, followed by the
+u64 body length, under the existing separate full-reference derive-key domain.
+The public projection borrows every actual field without a canonical bank or
+copied HashRef. Exhaustive ContentRef/HashRef and closed schema matches expose
+future field or grammar additions for review.
+
+An allocation-free DATA check binds the five archived roles in Snapshot, after,
+Control, anchor and Journal order and the independent seventh semantic-spend
+reference to the recipe. It checks exact lengths and selected semantic media.
+Normalization stays separately bound by signed Prepare and fresh-target grammar;
+it is not substituted into an archived commitment. Completed receiver reference
+loans point directly into all seven retained original banks and refuse before
+all transfers finish. Their future transfer and comparison counters remain
+separate from initial bootstrap work.
+
+Independent framing controls cover every full-reference operand, thirty field
+mutations and ten equal-length archive-role swaps. The physical receiver control
+uses all seven actual hashed bodies, checks pointer identity and unchanged
+backing census, and rejects swapping equal-length after/Control references.
+The focused standard/raw-value controls and both full Transport configurations
+pass: 1,802 tests each, zero failures, no filtering and sixteen existing ignores.
+The affected all-feature/all-target check and all six architecture gates pass.
+The required application check is running.
+These checks do not issue native Prepare custody, an opaque Recipe/Initial,
+model installation or readiness; actual semantic body validation and independent
+complete recipe reconstruction remain required.
 
 ## Original launch custody and shared startup geometry
 

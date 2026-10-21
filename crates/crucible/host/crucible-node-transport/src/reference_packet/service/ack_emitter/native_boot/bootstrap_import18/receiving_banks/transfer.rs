@@ -165,6 +165,38 @@ impl OriginalImport18ReceivingBanks {
         Ok(self.banks.each_ref().map(|bank| bank.bytes.as_slice()))
     }
 
+    /// Lends exact full references only after all seven physical banks finish.
+    ///
+    /// This borrows the same retained references that Begin matched and Finish
+    /// hashed. It creates no native Prepare token, recipe or adoption right.
+    ///
+    /// # Errors
+    /// Refuses incomplete/failed input custody or any absent full reference.
+    pub(in super::super) fn references_data(&self) -> Result<[&ContentRef; 7], ProviderError> {
+        self.bodies_data()?;
+        let [
+            Some(protocol),
+            Some(control),
+            Some(anchor),
+            Some(snapshot),
+            Some(journal),
+            Some(normalization),
+            Some(semantic),
+        ] = self.banks.each_ref().map(|bank| bank.reference.as_ref())
+        else {
+            return Err(unavailable());
+        };
+        Ok([
+            protocol,
+            control,
+            anchor,
+            snapshot,
+            journal,
+            normalization,
+            semantic,
+        ])
+    }
+
     fn retain_outcome<T>(&mut self, result: Result<T, ProviderError>) -> Result<T, ProviderError> {
         if result.is_err() {
             self.phase = ReceivePhase::Failed;
@@ -224,6 +256,9 @@ pub(super) fn counter_scratch_data() -> usize {
         + size_of::<Result<u64, std::num::TryFromIntError>>()
         + size_of::<Result<usize, ProviderError>>() * 2
         + size_of::<Result<(), ProviderError>>()
+        + size_of::<[Option<&ContentRef>; 7]>()
+        + size_of::<[&ContentRef; 7]>() * 2
+        + size_of::<Result<[&ContentRef; 7], ProviderError>>()
         + size_of::<[&[u8]; 7]>()
         + size_of::<Result<[&[u8]; 7], ProviderError>>()
         + size_of::<[&InputBank; 7]>()

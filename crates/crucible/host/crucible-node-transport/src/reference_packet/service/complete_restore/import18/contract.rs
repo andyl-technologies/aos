@@ -15,6 +15,7 @@ const CONTRACT: &[u8] = br#"{
   "role_order":["snapshot","after","control","anchor5","journal"],
   "input_bank_order":["after","control","anchor5","snapshot","journal","normalization18","explicit_semantic_spend_family"],
   "semantic_spend_families":{"legacy17":"source-private.semantic-spend/17","complete18":"source-private.semantic-spend/18"},
+  "recipe_full_reference_identity":{"domain":"source-owned.packet-native-import-fullref-identity/18","framing":"BLAKE3 derive-key over algorithm, domain, digest and media_type, each UTF-8 string prefixed with its u64 big-endian byte length, followed by content length as u64 big endian","archive_order":["snapshot","after","control","anchor5","journal"],"semantic_reference":"separate seventh-bank full reference; normalization is bound by actual signed Prepare"},
   "input_roster":"canonical seven rows of [role,fullref,maximum] in exact receive order, hashed under source-owned.packet-native-import-input-roster/18; old six-bank roster digest is not substituted",
   "semantic_spend":"separate seventh body; exact Source/Node/Runtime logical used IDs and pending Stage/Commit/ACK relations, never old-session retry authority; native actual semantic consumers required",
   "phase_payload":"unchanged Prepare12 or Commit12 DTO is inert nested vocabulary only",
