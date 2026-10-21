@@ -118,6 +118,10 @@ in {
   };
 
   config = lib.mkIf cfg.enable {
+    # Template instances are created at runtime. Their executable packages must
+    # remain in the image even before an instance contributes a live unit.
+    environment.systemPackages = [cfg.package cfg.zfsPackage];
+
     assertions = [
       {
         assertion =
