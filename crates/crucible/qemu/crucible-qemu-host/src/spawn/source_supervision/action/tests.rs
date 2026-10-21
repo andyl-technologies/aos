@@ -5,7 +5,7 @@
 
 use super::*;
 
-fn current() -> PendingAction {
+pub(super) fn current() -> PendingAction {
     PendingAction::from_observation_for_test(ActionObservation {
         binding: ActionBinding {
             cap: [1; 32],

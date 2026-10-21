@@ -417,6 +417,7 @@ impl SourcePublisher {
         }
         crucible_qemu_protocol::source_supervision::decode_source_supervision_payload(&payload)
             .map_err(|_| HostSupervisionError::InvalidBudget)?;
+        let previous_sequence = state.sequence;
         let sequence = publish_payload_if_changed(self.mapping.words(), state.sequence, &payload)?;
         state.sequence = sequence;
         state.origin = Some(snapshot.outer.original_monotonic_ns);
@@ -426,8 +427,33 @@ impl SourcePublisher {
         if state.initial.is_none() {
             state.initial = Some(payload);
         }
+        let quantum_dirty = state.action.as_ref().is_some_and(|action| {
+            action
+                .quantum
+                .as_ref()
+                .is_some_and(|quantum| quantum.has_publication_attempt())
+                && (!action.observation.cohort_current
+                    || action.refused
+                    || sequence != previous_sequence)
+        });
+        let command_revoked = if quantum_dirty {
+            if let Some(action) = state.action.as_mut() {
+                action.refused = true;
+                action.observation.cohort_current = false;
+            }
+            self.publisher_session
+                .lock()
+                .map_err(|_| HostSupervisionError::Unavailable)
+                .and_then(|mut session| session.revoke_born_command())
+        } else {
+            Ok(())
+        };
         let action_notified = (|| {
-            if state.action.is_some() {
+            if state
+                .action
+                .as_ref()
+                .is_some_and(|action| action.quantum.is_none() || quantum_dirty)
+            {
                 let wake = self
                     .action_wake
                     .lock()
@@ -453,7 +479,9 @@ impl SourcePublisher {
         };
         // A failed action notification cannot suppress real terminal Source
         // cancellation. Preserve the first result after attempting both cuts.
-        action_notified.and(cancellation_notified)
+        command_revoked
+            .and(action_notified)
+            .and(cancellation_notified)
     }
 }
 

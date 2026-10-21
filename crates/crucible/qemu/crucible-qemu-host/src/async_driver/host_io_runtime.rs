@@ -12,6 +12,23 @@ pub trait QemuHostIoRuntime: Send {
         None
     }
 
+    /// Borrows the installed Source and the same entered Quantum for publication.
+    ///
+    /// Scripted runtimes omit the context. An installed live runtime requires its
+    /// actual Original and setup mapping instead of silently taking that path.
+    ///
+    /// # Errors
+    /// Refuses missing actual ownership or an unavailable live mapping.
+    fn quantum_publication<'operation>(
+        &'operation mut self,
+        _original: Option<
+            &'operation crucible_host_resources::host_supervision::HostOperationGuard,
+        >,
+    ) -> Result<Option<crate::QemuQuantumPublication<'operation>>, QemuAsyncDriverRuntimeError>
+    {
+        Ok(None)
+    }
+
     /// Reserves host-resident storage before retaining authenticated manifest copies.
     ///
     /// The caller keeps the returned lease through every derived object's use.

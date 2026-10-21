@@ -232,6 +232,26 @@ pub trait QemuShmemHotPathChannel: Send {
         stop_condition: crate::QemuQuantumStopCondition,
     ) -> Result<QemuNodePendingQuantum, QemuNodeChannelError>;
 
+    /// Starts a split quantum with the live Source's actual retained lenders.
+    ///
+    /// # Errors
+    /// Refuses a supplied live publisher unless the channel implements the real
+    /// handoff, or propagates the channel's actual start failure.
+    fn start_quantum_with_publication(
+        &mut self,
+        horizon: ExecutionHorizon,
+        stop_condition: crate::QemuQuantumStopCondition,
+        publication: Option<crate::QemuQuantumPublication<'_>>,
+    ) -> Result<QemuNodePendingQuantum, QemuNodeChannelError> {
+        if publication.is_some() {
+            return Err(QemuNodeChannelError::operational_supervision(
+                "start Quantum with actual Source",
+                crucible_host_resources::host_supervision::HostSupervisionError::Unavailable,
+            ));
+        }
+        self.start_quantum(horizon, stop_condition)
+    }
+
     /// Polls a split quantum without consuming its pending token.
     ///
     /// # Errors

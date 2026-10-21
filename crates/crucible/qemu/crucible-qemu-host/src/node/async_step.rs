@@ -70,6 +70,18 @@ impl QemuAsyncNodeStepTarget for QemuNodeAsyncStepTarget<'_> {
             .start_quantum(horizon, self.stop_condition)
     }
 
+    fn start_quantum_with_publication(
+        &mut self,
+        horizon: ExecutionHorizon,
+        publication: Option<crate::QemuQuantumPublication<'_>>,
+    ) -> Result<Self::PendingQuantum, QemuNodeChannelError> {
+        self.channels.shmem_hot_path.start_quantum_with_publication(
+            horizon,
+            self.stop_condition,
+            publication,
+        )
+    }
+
     fn advance_completion_fence(
         &self,
         pending: &Self::PendingQuantum,

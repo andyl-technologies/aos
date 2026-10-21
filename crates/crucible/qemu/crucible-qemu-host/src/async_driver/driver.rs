@@ -206,7 +206,14 @@ where
     async_operations.push(QemuAsyncDriverOperation::YieldToControlPlane);
 
     check_original(active_operation)?;
-    let mut pending = observe_channel_return(target.start_quantum(horizon), active_operation)?;
+    let publication = observe_runtime_return(
+        runtime.quantum_publication(active_operation),
+        active_operation,
+    )?;
+    let mut pending = observe_channel_return(
+        target.start_quantum_with_publication(horizon, publication),
+        active_operation,
+    )?;
     observe_channel_return(after_start(target, &mut pending), active_operation)?;
     observe_runtime_return(
         runtime.arm_advance_completion_fence(target.advance_completion_fence(&pending)),

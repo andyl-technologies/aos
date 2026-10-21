@@ -300,6 +300,9 @@ impl QemuShmemHotPathChannel for QemuQuantumShmemHotPath<'_> {
 impl From<QemuQuantumError> for QemuNodeChannelError {
     fn from(error: QemuQuantumError) -> Self {
         match error {
+            QemuQuantumError::OperationalSupervision { operation, source } => {
+                Self::operational_supervision(operation, source)
+            }
             QemuQuantumError::NodeSlot { operation, source } => {
                 Self::quantum_node_slot(operation, source)
             }

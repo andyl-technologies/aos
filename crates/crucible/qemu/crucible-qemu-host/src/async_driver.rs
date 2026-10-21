@@ -140,6 +140,25 @@ pub trait QemuAsyncNodeStepTarget: QemuAsyncCrashEscalationTarget {
         horizon: ExecutionHorizon,
     ) -> Result<Self::PendingQuantum, QemuNodeChannelError>;
 
+    /// Starts a quantum through its actual Source when one is installed.
+    ///
+    /// # Errors
+    /// Refuses a supplied live publisher unless the target supports that handoff,
+    /// or propagates the channel's actual start failure.
+    fn start_quantum_with_publication(
+        &mut self,
+        horizon: ExecutionHorizon,
+        publication: Option<crate::QemuQuantumPublication<'_>>,
+    ) -> Result<Self::PendingQuantum, QemuNodeChannelError> {
+        if publication.is_some() {
+            return Err(QemuNodeChannelError::operational_supervision(
+                "start Quantum with actual Source",
+                crucible_host_resources::host_supervision::HostSupervisionError::Unavailable,
+            ));
+        }
+        self.start_quantum(horizon)
+    }
+
     /// Returns the plugin-publication fence carried by a pending quantum.
     #[must_use]
     fn advance_completion_fence(

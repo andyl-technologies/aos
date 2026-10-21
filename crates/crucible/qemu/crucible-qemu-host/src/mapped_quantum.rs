@@ -755,8 +755,23 @@ impl QemuShmemHotPathChannel for QemuMappedQuantumShmemHotPath {
         horizon: ExecutionHorizon,
         stop_condition: crate::QemuQuantumStopCondition,
     ) -> Result<QemuNodePendingQuantum, QemuNodeChannelError> {
+        self.start_quantum_with_publication(horizon, stop_condition, None)
+    }
+
+    fn start_quantum_with_publication(
+        &mut self,
+        horizon: ExecutionHorizon,
+        stop_condition: crate::QemuQuantumStopCondition,
+        publication: Option<crate::QemuQuantumPublication<'_>>,
+    ) -> Result<QemuNodePendingQuantum, QemuNodeChannelError> {
+        if let Some(publication) = publication.as_ref() {
+            publication
+                .corroborate_mapping(self.region.backing_identity(), self.config.vm_slot)
+                .map_err(QemuNodeChannelError::from)?;
+        }
         self.with_hot_path("start_quantum", |hot_path| {
-            let pending = QemuQuantumShmemHotPath::start_quantum(hot_path, horizon, stop_condition)
+            let pending = hot_path
+                .start_quantum_with_publication(horizon, stop_condition, publication)
                 .map_err(QemuNodeChannelError::from)?;
             let start_operations = hot_path.operation_log().to_vec();
             assert_qemu_quantum_hot_path_is_shmem_only(&start_operations)

@@ -33,6 +33,8 @@ use crate::{
 };
 
 mod channel;
+mod publication;
+pub use publication::QemuQuantumPublication;
 mod support;
 
 pub use support::QemuQuantumError;
@@ -529,6 +531,15 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
         horizon: ExecutionHorizon,
         stop_condition: QemuQuantumStopCondition,
     ) -> Result<QemuPendingQuantum, QemuQuantumError> {
+        self.start_quantum_with_publication(horizon, stop_condition, None)
+    }
+
+    pub(crate) fn start_quantum_with_publication(
+        &mut self,
+        horizon: ExecutionHorizon,
+        stop_condition: QemuQuantumStopCondition,
+        mut publisher: Option<QemuQuantumPublication<'_>>,
+    ) -> Result<QemuPendingQuantum, QemuQuantumError> {
         let operation_start = self.operation_log.as_slice().len();
         self.record(QemuQuantumOperation::ReadNodeReport);
         let observation = self
@@ -565,22 +576,49 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
                 operation: "reserve observed scheduler command generation",
                 source,
             })?;
+        let binding = publisher
+            .as_mut()
+            .map(|publisher| {
+                publisher.retain(
+                    self.view.node_slot,
+                    &publication,
+                    effective_ceiling,
+                    stop_condition,
+                )
+            })
+            .transpose()?;
         self.record(QemuQuantumOperation::StoreSchedulerCeiling);
         self.record(QemuQuantumOperation::FutexWake);
-        publication
-            .publish_inbox_and_advance(
-                self.config.vm_slot,
-                self.config.router_slot,
-                self.view.inbound_ring,
-                self.view.inbound_entries,
-                &[],
-                ceiling,
-                stop_condition,
-            )
-            .map_err(|source| QemuQuantumError::SchedulerWakePublication {
-                operation: "publish scheduler inbox and ceiling",
-                source,
-            })?;
+        if let Some((publisher, binding)) = publisher.as_mut().zip(binding) {
+            let committed = publication
+                .commit(ceiling, stop_condition)
+                .map_err(|source| QemuQuantumError::NodeSlot {
+                    operation: "commit actual Quantum scheduler tuple",
+                    source,
+                })?;
+            publisher.publish(binding, self.view.node_slot, &committed)?;
+            committed
+                .wake()
+                .map_err(|source| QemuQuantumError::NodeSlot {
+                    operation: "wake actual Quantum scheduler tuple",
+                    source,
+                })?;
+        } else {
+            publication
+                .publish_inbox_and_advance(
+                    self.config.vm_slot,
+                    self.config.router_slot,
+                    self.view.inbound_ring,
+                    self.view.inbound_entries,
+                    &[],
+                    ceiling,
+                    stop_condition,
+                )
+                .map_err(|source| QemuQuantumError::SchedulerWakePublication {
+                    operation: "publish scheduler inbox and ceiling",
+                    source,
+                })?;
+        }
 
         Ok(QemuPendingQuantum {
             initial_state,

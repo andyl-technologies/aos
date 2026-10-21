@@ -13,10 +13,14 @@ use crucible_qemu_protocol::boundary_action::{
 };
 
 mod publication;
+mod quantum;
 pub(crate) use publication::ActionSourceProducer;
 use publication::PublicationPhase;
 
 enum RequestIdentity {
+    Quantum {
+        command: crucible_qemu_protocol::publisher_subscription::PublisherCommand,
+    },
     Control {
         token: u32,
         capture: Option<u32>,
@@ -36,6 +40,7 @@ impl RequestIdentity {
     ) -> Result<(), HostSupervisionError> {
         let acknowledged = node.control_boundary_token();
         let token_matches = match self {
+            Self::Quantum { .. } => true,
             Self::Control { token, .. } => acknowledged.checked_add(1) == Some(*token),
             #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
             Self::Park { .. } => true,
@@ -58,6 +63,7 @@ pub(super) struct PendingAction {
     pub(super) park_members_returned_mask: u32,
     publication: PublicationPhase,
     frontier_held: bool,
+    pub(super) quantum: Option<quantum::PendingQuantumCommand>,
 }
 
 impl PendingAction {
@@ -73,6 +79,7 @@ impl PendingAction {
             park_members_returned_mask: 0,
             publication: PublicationPhase::Unpublished,
             frontier_held: false,
+            quantum: None,
         }
     }
 
@@ -166,7 +173,12 @@ impl OriginalSourceSupervision {
         let slot = mapping
             .node_slot(slot)
             .map_err(|_| HostSupervisionError::Unavailable)?;
-        if binding.park_request.is_some() {
+        if binding.park_request.is_some()
+            || state
+                .action
+                .as_ref()
+                .is_some_and(|action| action.quantum.is_some())
+        {
             // The Park record returns local received views, not these standing
             // memberships. Keep them until a real same-owner settlement exists.
             return Err(HostSupervisionError::Unavailable);
@@ -402,7 +414,14 @@ impl ActionSourceProducer {
         request: RequestIdentity,
         primary: [Option<&HostOperationGuard>; 2],
     ) -> Result<ActionBinding, HostSupervisionError> {
+        let quantum = match request {
+            RequestIdentity::Quantum { command } => {
+                Some(quantum::PendingQuantumCommand::new(command))
+            }
+            _ => None,
+        };
         let (token, capture, park_request) = match request {
+            RequestIdentity::Quantum { .. } => (0, None, None),
             RequestIdentity::Control { token, capture } => (token, capture, None),
             #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
             RequestIdentity::Park { correlation } => (0, None, Some(correlation)),
@@ -497,6 +516,7 @@ impl ActionSourceProducer {
                     PublicationPhase::Unpublished
                 },
                 frontier_held: false,
+                quantum,
             });
             binding
         };
@@ -666,7 +686,8 @@ impl OriginalSourceSupervision {
                 .action
                 .as_mut()
                 .ok_or(HostSupervisionError::Unavailable)?;
-            if journal.binding != action.observation.binding
+            if action.quantum.is_some()
+                || journal.binding != action.observation.binding
                 || journal.row_count != action.observation.row_count
                 || journal.borrowed_mask != action.observation.borrowed_mask
                 || !matches!(
@@ -898,10 +919,24 @@ impl HostActionPublisher for SourcePublisher {
         if action.matches_current_cohort(binding, &parents, count) {
             let published = u64::from_be(self.mapping.words()[0].load(Ordering::SeqCst));
             return if published == state.sequence && published != u64::MAX {
-                Ok(())
+                self.publish_ready_quantum(&mut state)
             } else {
                 Err(HostSupervisionError::Unavailable)
             };
+        }
+        if action
+            .quantum
+            .as_ref()
+            .is_some_and(|quantum| quantum.has_publication_attempt())
+        {
+            // An issued command is immutable. A fresh full collector can deny
+            // it, but cannot rebind the existing offer to changed parent facts.
+            action.observation.parents = parents;
+            action.observation.cohort_current = false;
+            action.refused = true;
+            let latest = state.latest.ok_or(HostSupervisionError::Unavailable)?;
+            self.publish_locked(&mut state, latest)?;
+            return Err(HostSupervisionError::Unavailable);
         }
         // These values come from the collector while every real lender lock
         // remains held. An individual row callback never enters this branch.
@@ -912,7 +947,8 @@ impl HostActionPublisher for SourcePublisher {
             .encode()
             .map_err(|_| HostSupervisionError::InvalidBudget)?;
         let latest = state.latest.ok_or(HostSupervisionError::Unavailable)?;
-        self.publish_locked(&mut state, latest)
+        self.publish_locked(&mut state, latest)?;
+        self.publish_ready_quantum(&mut state)
     }
 
     fn action_return(&self, binding: ActionBinding) -> Result<ActionReturn, HostSupervisionError> {
@@ -949,6 +985,9 @@ impl HostActionPublisher for SourcePublisher {
                     action.observation.cohort_current = false;
                 }
             }
+        }
+        if let Ok(mut session) = self.publisher_session.lock() {
+            let _ = session.revoke_born_command();
         }
         // Publication poison denies semantics but retains descriptors and all
         // exact lender slots for the separate identity-only return path.

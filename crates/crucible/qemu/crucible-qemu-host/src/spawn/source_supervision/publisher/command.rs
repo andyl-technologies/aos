@@ -42,6 +42,10 @@ pub(super) struct CommandJournal {
 }
 
 impl CommandJournal {
+    pub(super) fn has_offer(&self) -> bool {
+        self.offer.is_some()
+    }
+
     /// Prices concurrent by-value publication and canonical encoding scratch.
     /// The enclosing body already prices the retained offer and its byte array.
     pub(super) fn encoding_extent() -> Option<usize> {

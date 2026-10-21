@@ -404,9 +404,9 @@ pub use qmp::{
 };
 pub use quantum::{
     QemuDeviceIoFreezeObservation, QemuDeviceIoFreezeReport, QemuInboundFrame, QemuOutboundFrame,
-    QemuPendingQuantum, QemuQuantumError, QemuQuantumOperation, QemuQuantumOperationPlane,
-    QemuQuantumReport, QemuQuantumShmemConfig, QemuQuantumShmemHotPath, QemuQuantumShmemView,
-    assert_qemu_quantum_hot_path_is_shmem_only,
+    QemuPendingQuantum, QemuQuantumPublication, QemuQuantumError, QemuQuantumOperation,
+    QemuQuantumOperationPlane, QemuQuantumReport, QemuQuantumShmemConfig, QemuQuantumShmemHotPath,
+    QemuQuantumShmemView, assert_qemu_quantum_hot_path_is_shmem_only,
 };
 #[cfg(target_os = "linux")]
 pub use realization::QemuTargetDispatcherRetirementError;

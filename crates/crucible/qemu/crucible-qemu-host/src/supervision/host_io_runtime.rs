@@ -712,6 +712,34 @@ fn reader_probe_error(message: impl Into<Cow<'static, str>>) -> crate::QemuNodeC
 }
 
 impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
+    fn quantum_publication<'operation>(
+        &'operation mut self,
+        original: Option<&'operation crucible_host_resources::host_supervision::HostOperationGuard>,
+    ) -> Result<Option<crate::QemuQuantumPublication<'operation>>, QemuAsyncDriverRuntimeError>
+    {
+        let Some(source) = self.source_supervision.as_mut() else {
+            return Ok(None);
+        };
+        let original = original.ok_or_else(|| {
+            QemuAsyncDriverRuntimeError::operational_supervision(
+                "borrow actual Quantum publisher",
+                crucible_host_resources::host_supervision::HostSupervisionError::Unavailable,
+            )
+        })?;
+        let mapping = self.region.as_ref().ok_or_else(|| {
+            QemuAsyncDriverRuntimeError::operational_supervision(
+                "borrow actual Quantum mapping",
+                crucible_host_resources::host_supervision::HostSupervisionError::Unavailable,
+            )
+        })?;
+        Ok(Some(crate::QemuQuantumPublication::new(
+            source,
+            mapping,
+            self.vm_slot,
+            original,
+        )))
+    }
+
     fn ram_control_registration(&self) -> Option<&crate::ram_control::RamControlRegistration> {
         self.ram_control_registration.as_ref()
     }

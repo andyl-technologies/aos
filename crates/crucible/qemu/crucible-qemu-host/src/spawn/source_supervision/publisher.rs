@@ -209,6 +209,33 @@ impl PublisherSession {
         Ok(purpose)
     }
 
+    /// Publishes only while the caller holds the real complete lender cohort.
+    pub(super) fn publish_command_offer(
+        &mut self,
+        publication: crucible_qemu_protocol::publisher_subscription::PublisherPublication,
+    ) -> Result<
+        crucible_qemu_protocol::publisher_subscription::PublisherLoanIdentity,
+        HostSupervisionError,
+    > {
+        self.body
+            .as_mut()
+            .ok_or(HostSupervisionError::Unavailable)?
+            .publish_command_offer(publication)
+            .map_err(|_| HostSupervisionError::Unavailable)
+    }
+
+    /// Revokes a born offer without returning its independent borrowers.
+    pub(super) fn revoke_born_command(&mut self) -> Result<(), HostSupervisionError> {
+        let Some(body) = self.body.as_mut() else {
+            return Ok(());
+        };
+        if !body.command.has_offer() {
+            return Ok(());
+        }
+        body.revoke_command_offer()
+            .map_err(|_| HostSupervisionError::Unavailable)
+    }
+
     fn refusal(&self, fallback: OperationFailure) -> PublisherSessionError {
         let body = self.body.as_ref();
         PublisherSessionError {
