@@ -4,6 +4,11 @@
   pkgs,
   mkSystem,
 }: let
+  evaluate = modules:
+    mkSystem {
+      modules = [../../systems/server.nix] ++ modules;
+      systemName = "sandbox-broker-credential-check";
+    };
   authorityCredentials = prefix: {
     brokerPlanPolicy = "${prefix}-plan-policy";
     brokerPlanPublicKey = "${prefix}-plan-public-key";
@@ -27,20 +32,22 @@
   ];
   expectedHost = prefix:
     ["backend-readiness.json:/run/credentials/@system/${prefix}-backend-readiness"]
-    ++ expectedAuthority prefix;
-  configured = mkSystem [
+    ++ expectedAuthority prefix
+    ++ ["guest-root-package-binding-v1:${pkgs.aos-sandbox-guest-root-template}/package-binding"];
+  configured = evaluate [
     {
       aos.sandbox.hostBroker = {
         enable = true;
         credentials = hostCredentialNames "host";
       };
+      aos.sandbox.storageBroker.enable = true;
       aos.sandbox.mountBroker = {
         enable = true;
         credentials = authorityCredentials "mount";
       };
     }
   ];
-  observationOnly = mkSystem [
+  observationOnly = evaluate [
     {
       aos.sandbox.hostBroker = {
         enable = true;
@@ -49,7 +56,7 @@
     }
   ];
   forceToplevel = modules:
-    builtins.tryEval (builtins.toString (mkSystem modules).config.system.build.toplevel);
+    builtins.tryEval (builtins.toString (evaluate modules).config.system.build.toplevel);
   missingRejected = !(forceToplevel [{aos.sandbox.hostBroker.enable = true;}]).success;
   partialRejected =
     !(forceToplevel [
@@ -94,12 +101,15 @@
   observationOnlyUnit = observationOnly.config.systemd.units."aos-sandbox-hostd.service".text;
   credentialLineCount = unit: builtins.length (lib.splitString "LoadCredential=" unit) - 1;
   passed =
-    hostCredentials
+    configured.config.systemd.services.aos-sandbox-mountd.serviceConfig.ProtectProc
+    == "default"
+    && configured.config.systemd.services.aos-storaged.serviceConfig.ProtectProc == "default"
+    && hostCredentials
     == expectedHost "host"
     && mountCredentials == expectedAuthority "mount"
-    && credentialLineCount hostUnit == 8
+    && credentialLineCount hostUnit == 9
     && credentialLineCount mountUnit == 7
-    && credentialLineCount observationOnlyUnit == 7
+    && credentialLineCount observationOnlyUnit == 8
     && missingRejected
     && partialRejected
     && sharedJournalRejected

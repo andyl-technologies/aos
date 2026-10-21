@@ -303,14 +303,16 @@ in {
           PrivateDevices = true;
           PrivateNetwork = true;
           PrivateTmp = true;
-          ProcSubset = "pid";
+          # Endpoint currentness reads the real kernel boot identity.
+          ProcSubset = "all";
           ProtectClock = true;
           ProtectControlGroups = true;
           ProtectHome = true;
           ProtectKernelLogs = true;
           ProtectKernelModules = true;
           ProtectKernelTunables = true;
-          ProtectProc = "invisible";
+          # Signed peers require exact proc stat observations, without ptrace.
+          ProtectProc = "default";
           ProtectSystem = "strict";
           RestrictAddressFamilies = ["AF_UNIX"];
           RestrictNamespaces = true;

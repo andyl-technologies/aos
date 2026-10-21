@@ -15,7 +15,10 @@
             uid = controllerUid;
             gid = controllerGid;
           };
-          networkBroker.enable = true;
+          networkBroker = {
+            enable = true;
+            maximumRetainedNamespaces = 17;
+          };
         };
       }
     ];
@@ -51,10 +54,16 @@
     && socketConfig.DirectoryMode == "0710"
     && socketConfig.SendBuffer == "4M"
     && serviceConfig.ExecStart
-    == "${pkgs.aos-netd}/bin/aos-netd ${toString controllerUid} ${toString controllerGid}"
-    && serviceConfig.StateDirectory == "aos/sandbox-network"
+    == "${pkgs.aos-netd}/bin/aos-netd 17"
+    && serviceConfig.StateDirectory
+    == [
+      "aos/sandbox-network/broker-state"
+      "aos/sandbox-network/broker-session"
+    ]
     && serviceConfig.RuntimeDirectory == "aos/sandbox-pins/netns"
     && serviceConfig.CapabilityBoundingSet == ""
+    && serviceConfig.ProcSubset == "all"
+    && serviceConfig.ProtectProc == "default"
     && serviceConfig.NoNewPrivileges
     && serviceConfig.PrivateNetwork
     && serviceConfig.ProtectControlGroups

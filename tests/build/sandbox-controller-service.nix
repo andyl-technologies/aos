@@ -308,6 +308,8 @@ in
   assert !(q04PackageAdmitted (q04WrongPackage q04OtherOnlinePackage));
   assert controllerServiceConfig.Type == "notify";
   assert controllerServiceConfig.CapabilityBoundingSet == "";
+  assert controllerServiceConfig.ProcSubset == "all";
+  assert controllerServiceConfig.ProtectProc == "default";
   assert controllerServiceConfig.User == "aos-sandboxd";
   assert controllerServiceConfig.Slice == "aos-control.slice";
   assert controllerServiceConfig.MemoryMax == "512M";
@@ -336,6 +338,8 @@ in
   assert builtins.elem "ownership-lease-public-key:/run/credentials/@system/test-ownership-key" ownershipService.serviceConfig.LoadCredential;
   assert builtins.elem "aos-sandbox-ownershipd.socket" ownershipService.requires;
   assert builtins.elem "aos-sandbox-ownershipd.socket" ownershipService.after;
+  assert hostServiceConfig.ProcSubset == "all";
+  assert hostServiceConfig.ProtectProc == "default";
   assert ! (hostServiceConfig ? Slice);
   assert lib.hasSuffix " ${pkgs.aosSelinuxKernelPolicyReadbackForKernel hostEvaluation.config.system.build.kernel}/policy.33" hostServiceConfig.ExecStart;
   assert !(hostEvaluation.config.systemd.services ? aos-sandbox-host-phase0-inspector);

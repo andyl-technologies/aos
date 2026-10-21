@@ -895,10 +895,10 @@ in {
         ProtectKernelTunables = true;
         # Selected peers need their exact stat/attr observations. MAC still
         # denies generic foreign task contents; this is not ptrace authority.
-        ProtectProc =
-          if cfg.gitReadInspection.enable || onlineNix.enable
-          then "default"
-          else "invisible";
+        # Every signed broker session observes the peer's exact proc stat,
+        # including ordinary inventory. Foreign process contents remain under
+        # DAC, ptrace and MAC checks.
+        ProtectProc = "default";
         ProtectSystem = "strict";
         RestrictAddressFamilies = ["AF_UNIX"];
         RestrictNamespaces = true;

@@ -605,8 +605,8 @@ in {
         PrivateNetwork = true;
         PrivateTmp = true;
         # Workspace pin proofs bind mount identities to the kernel boot ID at
-        # /proc/sys/kernel/random/boot_id. Keep process metadata hidden and
-        # kernel tunables read-only, but do not hide this required procfs ABI.
+        # /proc/sys/kernel/random/boot_id. Kernel tunables remain read-only;
+        # signed Controller peers also require their exact proc stat below.
         ProcSubset = "all";
         ProtectClock = true;
         ProtectControlGroups = true;
@@ -614,7 +614,8 @@ in {
         ProtectKernelLogs = true;
         ProtectKernelModules = true;
         ProtectKernelTunables = true;
-        ProtectProc = "invisible";
+        # No ptrace capability is granted by this peer-metadata visibility.
+        ProtectProc = "default";
         ProtectSystem = "strict";
         ReadOnlyPaths =
           [cfg.authorityDirectory cfg.bootstrapDirectory cfg.guestRootTemplate]

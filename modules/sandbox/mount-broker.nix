@@ -308,10 +308,9 @@ in {
           ProtectKernelLogs = true;
           ProtectKernelModules = true;
           ProtectKernelTunables = true;
-          ProtectProc =
-            if cfg.sourceProviderSession.enable || attachmentSelected
-            then "default"
-            else "invisible";
+          # Signed Controller sessions require the authenticated peer's stat.
+          # This grants no ptrace capability or foreign process-content access.
+          ProtectProc = "default";
           ProtectSystem = "strict";
           RestrictAddressFamilies = ["AF_UNIX"];
           RestrictRealtime = true;
