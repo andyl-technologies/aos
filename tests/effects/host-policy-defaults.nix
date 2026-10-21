@@ -176,6 +176,14 @@ in {
     ) (builtins.attrNames defaults.config.aos.security.hardening.sysctl)
     && !(initrd.config.aos.security.hardening.files ? "security/limits.d/aos-hardening.conf")
     && !(initrd.config.aos.abilities.configuration.operations.file.effects ? hardening-limits)
+    && initrd.config.aos.kernel.sysctl."kernel.core_pattern" == defaults.config.aos.kernel.sysctl."kernel.core_pattern"
+    && initrd.config.aos.security.hardening.crashFiles == {}
+    && !(initrd.config.aos.abilities.configuration.operations.file.effects ? coredump-policy)
+    && !(initrd.config.aos.abilities.configuration.operations.file.effects ? audit-daemon)
+    && !(initrd.config.aos.abilities.configuration.operations.file.effects ? audit-rules)
+    && !initrd.config.aos.services."audit.auditd".enable
+    && !initrd.config.aos.services."audit.audit-rules".enable
+    && initrd.config.aos.kernel.commandLineParts.audit == ["audit=1"]
     && builtins.deepSeq initrd.config.aos.activation.graph true;
 
   hostIdentityDefaultsUnchanged =

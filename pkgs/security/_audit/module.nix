@@ -6,6 +6,7 @@
   ...
 }: let
   cfg = config.aos.security.audit;
+  hostStage = (config.aos.boot.stage or "host") == "host";
   files = config.aos.abilities.configuration.operations.file.effects;
   services = config.aos.abilities.serviceManagement.operations.realize.effects;
 
@@ -156,8 +157,8 @@ in {
   config = lib.mkMerge [
     {
       aos.services = {
-        "audit.auditd" = lib.mkMerge [(lib.mkDefault daemonService) {enable = lib.mkDefault cfg.enable;}];
-        "audit.audit-rules" = lib.mkMerge [(lib.mkDefault rulesService) {enable = lib.mkDefault cfg.enable;}];
+        "audit.auditd" = lib.mkMerge [(lib.mkDefault daemonService) {enable = lib.mkDefault (hostStage && cfg.enable);}];
+        "audit.audit-rules" = lib.mkMerge [(lib.mkDefault rulesService) {enable = lib.mkDefault (hostStage && cfg.enable);}];
       };
     }
     (lib.mkIf cfg.enable {
@@ -176,7 +177,9 @@ in {
       ];
 
       system.checks.audit = import ./runtime-tests.nix {};
-      aos.abilities.configuration.operations.file.effects = {
+      # Audit starts after the host's writable state and /etc lower are ready.
+      # The initrd still requests kernel auditing through the command line.
+      aos.abilities.configuration.operations.file.effects = lib.mkIf hostStage {
         audit-daemon.input = {
           path = "/etc/audit/auditd.conf";
           content = daemonConfigurationText;
