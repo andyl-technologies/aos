@@ -306,8 +306,33 @@ impl<S, C> Guard<S, C> {
         S: crate::store::Store,
         L: crate::store::ContentStore,
     {
+        self.map_read_content(|authority| {
+            crate::store::read_only::ReadOnlyStore::new(local, authority)
+        })
+    }
+
+    /// Binds a complete trusted driver without replacing original reference authority.
+    #[cfg(feature = "std")]
+    pub(crate) fn with_read_driver<L, Build>(
+        self,
+        build: Build,
+    ) -> Guard<crate::store::read_only::ReadOnlyStore<L, S>, C>
+    where
+        S: crate::store::Store,
+        L: crate::store::ContentStore,
+        Build: FnOnce(&S) -> L,
+    {
+        self.map_read_content(|authority| {
+            let driver = build(&authority);
+            crate::store::read_only::ReadOnlyStore::with_driver(driver, authority)
+        })
+    }
+
+    /// Preserves every original verifier while resetting operation-local preparation scopes.
+    #[cfg(feature = "std")]
+    fn map_read_content<T>(self, build: impl FnOnce(S) -> T) -> Guard<T, C> {
         Guard {
-            store: crate::store::read_only::ReadOnlyStore::new(local, self.store),
+            store: build(self.store),
             clock: self.clock,
             keys: self.keys,
             config: self.config,

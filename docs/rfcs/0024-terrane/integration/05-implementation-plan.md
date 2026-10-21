@@ -11403,3 +11403,28 @@ is a nonregressing `probed_at`. Reference, catalog, other capability and
 predecessor changes remain refusals. Three focused verifier controls exercise
 timestamp-only acceptance, altered capability/ref rejection and rebound
 predecessor bytes. The corrected VM requires requalification.
+
+#### Complete content-driver composition
+
+`Repository::with_read_driver` now lets trusted host composition retain the
+actual opened backend inside its content driver while current references and
+protected Original verification remain with the original repository. This
+mode delegates content reads and advisory listing to that driver and never
+retries original content around its failure, circuit or admission policy.
+The existing resident-only cache constructor retains its original fallback
+behavior. Both compositions refuse mutations before child effects and remove
+native authoring, audit and deletion bindings.
+
+All seven configured-local-repository integration tests pass. The new case
+uses a genuine signed commit, original backend clone and actual SDK checkout,
+then verifies that an unavailable complete driver cannot be bypassed. The
+three publication-verifier controls also pass after their synthetic format
+fixture includes the checkpoint's mandatory lease and history rows. Those
+records are parser inputs and grant no native or Original authority.
+
+The `af82dc0c4984` SDK cache VM passes in 442 seconds with both real native
+owners, exact signed snapshots and the unavailable-owner refusal. Independent
+review verifies 7,849 immutable source files, four original Cargo/installed
+executables and all fifteen enrollment/read-role controls across the two
+source-bound images. Native lower admission and whole-object SDK policy
+remain integration work; this checkpoint does not close T2.

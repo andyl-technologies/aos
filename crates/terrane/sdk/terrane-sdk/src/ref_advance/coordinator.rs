@@ -217,6 +217,24 @@ impl<S, C, F> Coordinator<S, C, F> {
         }
     }
 
+    /// Retains the exact authority while a trusted driver owns all content routing.
+    #[cfg(feature = "std")]
+    pub(crate) fn with_read_driver<L, Build>(
+        self,
+        build: Build,
+    ) -> Coordinator<crate::store::read_only::ReadOnlyStore<L, S>, C, F>
+    where
+        S: crate::store::Store,
+        L: crate::store::ContentStore,
+        Build: FnOnce(&S) -> L,
+    {
+        Coordinator {
+            fs: self.fs,
+            guard: self.guard.with_read_driver(build),
+            timing: self.timing,
+        }
+    }
+
     /// Returns the repository's authorization enforcement point.
     pub fn guard(&self) -> &Guard<S, C> {
         &self.guard

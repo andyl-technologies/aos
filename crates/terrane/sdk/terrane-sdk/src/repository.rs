@@ -125,6 +125,37 @@ where
         }
     }
 
+    /// Binds a complete trusted content driver to the original reference authority.
+    ///
+    /// The factory borrows the genuinely opened backend, allowing a native
+    /// driver to retain its actual lower tier. It must preserve this repository's
+    /// disclosure domain and immutable profile. The driver owns every content
+    /// retry, circuit and admission decision; its failures never trigger an
+    /// additional original-backend content read around that policy.
+    ///
+    /// Current references and protected Original verification retain the actual
+    /// original backend. Guard checks still authorize every read. As with
+    /// [`Self::with_read_cache`], mutations are refused and native authoring,
+    /// audit and deletion bindings are removed. The factory is trusted host
+    /// composition, never a configuration-supplied plugin or authorization grant.
+    #[cfg(feature = "std")]
+    pub fn with_read_driver<L, Build>(
+        self,
+        build: Build,
+    ) -> Repository<crate::store::read_only::ReadOnlyStore<L, S>, C, F>
+    where
+        L: crate::store::ContentStore + Sync + crate::bucket::BucketBinding,
+        S: crate::bucket::BucketBinding,
+        Build: FnOnce(&S) -> L,
+    {
+        Repository {
+            coordinator: self.coordinator.with_read_driver(build),
+            local_backend_root: None,
+            #[cfg(unix)]
+            local_retention: None,
+        }
+    }
+
     /// Borrows the composed coordinator for internal authority and state inspection.
     pub(crate) fn coordinator(&self) -> &Coordinator<S, C, F> {
         &self.coordinator

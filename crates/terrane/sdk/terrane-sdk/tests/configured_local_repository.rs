@@ -432,3 +432,126 @@ async fn configured_read_cache_preserves_original_authority_and_refuses_writes()
     );
     Ok(())
 }
+
+struct OriginalDriver<S> {
+    original: S,
+    calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    unavailable: bool,
+}
+
+impl<S: terrane_sdk::store::CapabilityReport> terrane_sdk::store::CapabilityReport
+    for OriginalDriver<S>
+{
+    fn capabilities(&self) -> &terrane_sdk::store::Capabilities {
+        self.original.capabilities()
+    }
+}
+
+#[async_trait::async_trait]
+impl<S: terrane_sdk::store::ContentStore + Sync> terrane_sdk::store::ContentStore
+    for OriginalDriver<S>
+{
+    async fn put(
+        &self,
+        _: terrane_sdk::store::ContentUpload<'_>,
+    ) -> Result<terrane_format::identity::Identity, terrane_sdk::store::StoreFailure> {
+        panic!("read-only driver composition dispatched a content write")
+    }
+
+    async fn get(
+        &self,
+        identity: &terrane_format::identity::Identity,
+        range: Option<terrane_sdk::store::ByteRange>,
+    ) -> Result<Vec<u8>, terrane_sdk::store::StoreFailure> {
+        self.calls
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if self.unavailable {
+            return Err(terrane_sdk::store::StoreFailure::new(
+                terrane_sdk::store::StoreErrorKind::Unavailable { retry_after: None },
+            ));
+        }
+        self.original.get(identity, range).await
+    }
+
+    async fn has(
+        &self,
+        identities: &[terrane_format::identity::Identity],
+    ) -> Result<Vec<bool>, terrane_sdk::store::StoreFailure> {
+        self.original.has(identities).await
+    }
+
+    async fn list(
+        &self,
+        prefix: &terrane_sdk::store::IdentityPrefix,
+    ) -> Result<Vec<terrane_format::identity::Identity>, terrane_sdk::store::StoreFailure> {
+        self.original.list(prefix).await
+    }
+}
+
+#[tokio::test]
+async fn configured_complete_content_driver_preserves_authority_and_is_not_bypassed() -> TestResult
+{
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    use terrane_sdk::surface::View;
+
+    let fixture = Fixture::new().await?;
+    let commit = fixture.commit_bytes(OLD).await?;
+    write_read_capability(&fixture).await?;
+    let config = Config::parse(&configuration(&fixture))?;
+    let calls = Arc::new(AtomicUsize::new(0));
+    let repository = config
+        .open_local_repository(Role::Serve, TokioLocalFs, TokioClock)
+        .await?
+        .with_read_driver(|original| OriginalDriver {
+            original: original.clone(),
+            calls: Arc::clone(&calls),
+            unavailable: false,
+        });
+    let before = std::fs::read(fixture.location.bucket.join("publication/PORTABLE"))?;
+
+    let actual = repository
+        .read_file(
+            &View::parse(MAIN)?,
+            b"file",
+            fixture.authority.token(),
+            "sdk",
+        )
+        .await?;
+    assert_eq!(actual, (commit, OLD.to_vec()));
+    assert!(calls.load(Ordering::Relaxed) > 0);
+    let prepared =
+        PreparedExposures::prepare(&repository, config.exposures(), &ExplicitFileToken).await?;
+    let handles = prepared.start(&repository).await?;
+    assert_eq!(handles[0].status().commit, commit);
+    assert_eq!(std::fs::read(fixture.parent.join("configured/file"))?, OLD);
+    handles[0].stop()?;
+    assert_eq!(
+        std::fs::read(fixture.location.bucket.join("publication/PORTABLE"))?,
+        before
+    );
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let refused = config
+        .open_local_repository(Role::Serve, TokioLocalFs, TokioClock)
+        .await?
+        .with_read_driver(|original| OriginalDriver {
+            original: original.clone(),
+            calls: Arc::clone(&calls),
+            unavailable: true,
+        });
+    let result = refused
+        .read_file(
+            &View::parse(MAIN)?,
+            b"file",
+            fixture.authority.token(),
+            "sdk",
+        )
+        .await;
+    assert!(matches!(result, Err(Error::Store(error))
+                    if matches!(error.kind(), terrane_sdk::store::StoreErrorKind::Unavailable { .. })));
+    assert!(calls.load(Ordering::Relaxed) > 0);
+    Ok(())
+}

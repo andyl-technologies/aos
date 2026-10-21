@@ -1,7 +1,8 @@
 //! Composes a read-only content cache with the original reference authority.
 //!
 //! Reads retain the authority backend rather than copying its ref records.
-//! Resident failures can fall back to that backend's fully verified content.
+//! Resident-only caches can fall back to that backend's verified content.
+//! Complete content drivers instead own all content routing and failure policy.
 //! Mutations are refused before either child is called. This adapter performs
 //! no admission, creates no ref authority and cannot transfer original ownership.
 
@@ -20,8 +21,9 @@ use terrane_format::{
 /// Cache and authority bindings come from trusted composition for the same
 /// disclosure domain. Repository guards must authorize every operation before
 /// invoking this raw store. Every child remains responsible for complete content
-/// verification under its own immutable profile. Missing, corrupt, unavailable
-/// or capacity-limited resident reads may use the original content backend.
+/// verification under its own immutable profile. [`Self::new`] allows eligible
+/// resident failures to use the original content backend. [`Self::with_driver`]
+/// delegates complete content routing and preserves every driver failure.
 ///
 /// Ref reads and watches always reach the original authority. Content writes,
 /// ref CAS and log appends always return `ReadOnly` without child effects.
@@ -29,6 +31,7 @@ pub struct ReadOnlyStore<L, R> {
     local: L,
     authority: R,
     capabilities: Capabilities,
+    retry_authority: bool,
 }
 
 impl<L: ContentStore, R: RefStore> ReadOnlyStore<L, R> {
@@ -41,7 +44,19 @@ impl<L: ContentStore, R: RefStore> ReadOnlyStore<L, R> {
             local,
             authority,
             capabilities,
+            retry_authority: true,
         }
+    }
+
+    /// Retains a complete content driver and the original reference authority.
+    ///
+    /// The trusted driver owns all resident, lower-tier, circuit and admission
+    /// behavior. A failed driver read is returned unchanged; this adapter never
+    /// makes an additional authority-content request around that policy.
+    pub fn with_driver(driver: L, authority: R) -> Self {
+        let mut store = Self::new(driver, authority);
+        store.retry_authority = false;
+        store
     }
 }
 
@@ -70,13 +85,14 @@ where
         match self.local.get(identity, range).await {
             Ok(bytes) => Ok(bytes),
             Err(error)
-                if matches!(
-                    error.kind(),
-                    StoreErrorKind::Absent(_)
-                        | StoreErrorKind::Corrupt(_)
-                        | StoreErrorKind::Unavailable { .. }
-                        | StoreErrorKind::Capacity
-                ) =>
+                if self.retry_authority
+                    && matches!(
+                        error.kind(),
+                        StoreErrorKind::Absent(_)
+                            | StoreErrorKind::Corrupt(_)
+                            | StoreErrorKind::Unavailable { .. }
+                            | StoreErrorKind::Capacity
+                    ) =>
             {
                 self.authority.get(identity, range).await
             }
@@ -99,9 +115,13 @@ where
     }
 
     async fn list(&self, prefix: &IdentityPrefix) -> Result<Vec<Identity>, StoreFailure> {
-        // Listing is advisory; original authority candidates suffice and avoid
-        // treating unreferenced resident bytes as repository reachability.
-        self.authority.list(prefix).await
+        // Listing is advisory. A complete driver's policy also owns this lower
+        // read; a resident-only cache uses original authority candidates.
+        if self.retry_authority {
+            self.authority.list(prefix).await
+        } else {
+            self.local.list(prefix).await
+        }
     }
 }
 
