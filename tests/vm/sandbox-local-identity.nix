@@ -11,6 +11,7 @@
     "aos-sandbox-services"
     "aos-sandbox-linux"
     "aos-sandbox-host"
+    "aos-sandbox-publisher"
     "aos-sandbox-mount"
     "aos-sandbox-network"
   ];
@@ -47,7 +48,7 @@
     # distinct default-feature test binaries into the same Cargo target tree.
     postBuild = ''
       mkdir kernel-fixtures
-      for crate in aos_sandbox aos_sandbox_broker_session_security aos_sandbox_controller_runtime aos_sandbox_services aos_sandbox_linux aos_sandbox_host aos_sandbox_mount aos_sandbox_network; do
+      for crate in aos_sandbox aos_sandbox_broker_session_security aos_sandbox_controller_runtime aos_sandbox_services aos_sandbox_linux aos_sandbox_host aos_sandbox_publisher aos_sandbox_mount aos_sandbox_network; do
         # Keep the guest fixture basename stable across Cargo package moves.
         artifact_prefix=$crate
         if [ "$crate" = aos_sandbox ]; then
@@ -201,13 +202,14 @@ in
       run_tests ${fixtures}/bin/aos_sandbox_linux pidfd::tests::cross_uid_pidfd_liveness_does_not_require_signal_permission
       run_tests ${fixtures}/bin/aos_sandbox_linux seqpacket::descriptor_subject::tests::
       run_tests ${fixtures}/bin/aos_sandbox runtime_scope::kernel_tests::
-      run_tests ${fixtures}/bin/aos_sandbox local_sessions::tests::
-      run_tests ${fixtures}/bin/aos_sandbox local_provisioning::tests::
-      run_tests ${fixtures}/bin/aos_sandbox publisher_sessions::kernel_tests::
-      run_tests ${fixtures}/bin/aos_sandbox publisher_control::tests::
-      run_tests ${fixtures}/bin/aos_sandbox journal::tests::failed_local_issuance_commit_never_activates_a_session
+      # Mutual TLS and pinned credentials replaced the retired local-holder
+      # provisioning API. Publisher registration retains its real kernel peers.
+      run_tests ${fixtures}/bin/aos_sandbox public_api_session::tests::
+      run_tests ${fixtures}/bin/aos_sandbox public_api_session::credentials::tests::
+      run_tests ${fixtures}/bin/aos_sandbox_publisher publisher_sessions::kernel_tests::
+      run_tests ${fixtures}/bin/aos_sandbox publisher_admin::registration::tests::
       run_tests ${fixtures}/bin/aos_sandbox journal::tests::failed_publisher_registration_commit_retires_execution_pin
-      run_tests ${fixtures}/bin/aos_sandbox journal::tests::poisoned_journal_blocks_holder_join_despite_cached_live_state
+      run_tests ${fixtures}/bin/aos_sandbox journal::tests::publisher_registry_rejects_unprotected_or_poisoned_journal
       run_tests ${fixtures}/bin/aos_sandbox_host peer::tests::unregistered_controller_path_rejects_a_live_socket_peer
       cd /
       run_tests ${fixtures}/bin/aos_sandbox_host live_agent::argument_attempt::tests::
