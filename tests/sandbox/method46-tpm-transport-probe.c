@@ -52,6 +52,13 @@ static void provision(struct floor_context *context, unsigned role,
     TPM2B_NV_PUBLIC public = {0};
     TPM2B_NAME *name = NULL;
 
+    /* The negative-auth matrix deliberately exceeds the manufacturer's default
+     * allowance. Only this external fixture holds lockout hierarchy authority;
+     * production helpers neither change these parameters nor reset lockout. */
+    require(Esys_DictionaryAttackParameters(context->esys, ESYS_TR_RH_LOCKOUT,
+        ESYS_TR_PASSWORD, ESYS_TR_NONE, ESYS_TR_NONE, 32, 1000, 1000)
+        == TSS2_RC_SUCCESS, "set bounded test dictionary-attack allowance");
+
     /* Runtime never has these hierarchy privileges. Generate fresh fixture
      * secrets in the guest rather than placing credentials in the Nix store. */
     FILE *random = fopen("/dev/urandom", "rb");

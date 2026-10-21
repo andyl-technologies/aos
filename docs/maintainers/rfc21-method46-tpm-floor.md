@@ -8,9 +8,10 @@ Method 46 remains explicitly closed, including historical replay and effect
 handoff. No readiness or method advertisement is opened. Native helper
 compilation and the seven pinned-TSS cache regressions pass as described below.
 The selected native Rust library suite also passes as described below.
-Authenticated TPM execution, power-cut behavior, installed restart/rollover,
-and installed sender/recipient gates remain incomplete or unqualified. This
-is not completion of the rollback workstream.
+The automated QEMU/vTPM transport component passes as described below.
+Installed power-cut behavior, daemon restart/rollover, and sender/recipient
+gates remain incomplete or unqualified. This is not completion of the rollback
+workstream.
 
 ## Exact scope
 
@@ -691,11 +692,17 @@ It checks wrong credentials and changed salt pins, endpoint isolation, stale
 checkpoint rejection, and exact retained-target readback after process exit
 without application cleanup, an orderly reboot and an unclean SysRq guest
 reset. Repeated recovery must refuse without another extend. Clearing and
-reprovisioning the TPM must leave both old endpoint fixtures invalid.
+reprovisioning the TPM must leave both old endpoint fixtures invalid. The
+external fixture sets a 32-attempt dictionary-attack allowance so the bounded
+wrong-credential matrix does not lock out later positive reads. Runtime has no
+lockout hierarchy credential and cannot change that allowance or clear lockout.
+Occupied persistent handles must refuse a fresh fixture without replacing the
+existing endpoint.
 
-This test qualifies the emulated transport component only after execution
-passes. Its small retained checkpoint fixture is not the production durable
-coordinator or either daemon's journal. It does not exercise the helper's
+The executed component check passes at
+`/nix/store/kfdl50vpc6gg3w2m0lksnfjlwmv89n7p-aos-fleet-test-sandbox-method46-tpm-transport-0`.
+Its small retained checkpoint fixture is not the production durable coordinator
+or either daemon's journal. It does not exercise the helper's
 private carrier, SELinux transition, PID1 ownership, installed daemon restart,
 or public lifecycle. SysRq leaves swtpm running; it does not model interrupted
 TPM media writes or swtpm power loss. Snapshotting the virtual TPM together

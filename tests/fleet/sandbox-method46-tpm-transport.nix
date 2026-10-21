@@ -31,13 +31,15 @@ in {
         state = f"/var/lib/method46-transport/endpoint-{role}"
         vm.succeed(f"${command} provision {role} {state}")
         vm.fail(f"${command} provision {role} {state}")
+        vm.fail(f"${command} provision {role} {state}.occupied")
+        vm.succeed(f"test ! -e {state}.occupied")
         vm.succeed(f"${command} read {role} {state}")
         vm.succeed(f"${command} wrong-pin {role} {state}")
         vm.succeed(f"${command} wrong-auth {role} {state}")
         vm.fail(f"${command} read {1 - role} {state}")
         vm.succeed(f"cp {state} {state}.old")
-        status, _, _ = vm.execute(f"${command} advance {role} {state}")
-        assert status == 77, (role, status)
+        status, stdout, stderr = vm.execute(f"${command} advance {role} {state}")
+        assert status == 77, (role, status, stdout, stderr)
         vm.fail(f"${command} read {role} {state}.old")
 
     # A new guest boot creates new device connections and salted sessions.
@@ -53,8 +55,8 @@ in {
 
     for role in (0, 1):
         state = f"/var/lib/method46-transport/endpoint-{role}"
-        status, _, _ = vm.execute(f"${command} advance {role} {state}")
-        assert status == 77, (role, status)
+        status, stdout, stderr = vm.execute(f"${command} advance {role} {state}")
+        assert status == 77, (role, status, stdout, stderr)
 
     # SysRq resets the guest without syncing or stopping services. The vTPM
     # stays independent of the guest disk and retains the advanced indices.
