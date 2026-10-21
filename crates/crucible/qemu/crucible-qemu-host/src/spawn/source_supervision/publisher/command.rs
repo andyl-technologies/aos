@@ -42,6 +42,9 @@ pub(super) struct CommandJournal {
     offer: Option<RetainedOffer>,
     receiver: Option<receiver::RetainedReceiverReturn>,
     first: Option<OperationFailure>,
+    // Both physical cuts survive when the initiating cause predates either.
+    revocation_first: Option<OperationFailure>,
+    return_observation_first: Option<OperationFailure>,
 }
 
 impl CommandJournal {
@@ -287,6 +290,7 @@ impl<Custody> SessionBody<Custody> {
     pub(super) fn revoke_command_offer(&mut self) -> Result<(), OperationFailure> {
         let result = self.revoke_command_offer_inner();
         if let Err(first) = result {
+            self.command.revocation_first.get_or_insert(first);
             self.command.first.get_or_insert(first);
         }
         result

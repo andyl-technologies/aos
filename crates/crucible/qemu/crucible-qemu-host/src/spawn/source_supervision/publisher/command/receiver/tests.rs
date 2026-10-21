@@ -221,6 +221,11 @@ fn revocation_and_return_observation_run_independently_after_either_refusal() {
                 !refuse_revocation
             );
             assert_eq!(body.command.receiver.is_some(), !refuse_observation);
+            assert_eq!(body.command.revocation_first.is_some(), refuse_revocation);
+            assert_eq!(
+                body.command.return_observation_first.is_some(),
+                refuse_observation
+            );
             if let Some(retained) = &body.command.receiver {
                 assert_eq!(retained.record, expected);
             }

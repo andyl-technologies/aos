@@ -41,6 +41,7 @@ impl<Custody> SessionBody<Custody> {
     ) -> Result<Option<PublisherReturn>, OperationFailure> {
         let result = self.observe_command_return_with(|_| {});
         if let Err(first) = result {
+            self.command.return_observation_first.get_or_insert(first);
             self.command.first.get_or_insert(first);
         }
         result
