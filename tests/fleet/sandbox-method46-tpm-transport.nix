@@ -72,6 +72,22 @@ in {
         vm.fail(f"${command} recover {role} {state}")
         vm.succeed(f"${command} read {role} {state}")
 
+    for role in (0, 1):
+        state = f"/var/lib/method46-transport/endpoint-{role}"
+        status, stdout, stderr = vm.execute(f"${command} advance {role} {state}")
+        assert status == 77, (role, status, stdout, stderr)
+
+    # Kill both QEMU and swtpm without a clean TPM shutdown. The driver must
+    # reuse the same disk and persistent TPM state, rather than a snapshot.
+    vm.power_cycle(timeout=240)
+    vm.wait_for_unit("multi-user.target", timeout=180)
+    for role in (0, 1):
+        state = f"/var/lib/method46-transport/endpoint-{role}"
+        vm.succeed(f"${command} recover {role} {state}")
+        vm.fail(f"${command} recover {role} {state}")
+        vm.succeed(f"${command} read {role} {state}")
+        vm.fail(f"${command} read {role} {state}.old")
+
     # Only the external test provisioner has hierarchy reset authority.
     vm.succeed("${pkgs.tpm2-tools}/bin/tpm2_clear -T device:/dev/tpmrm0")
     for role in (0, 1):

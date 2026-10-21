@@ -690,8 +690,10 @@ then exercises its device identity checks, cached initial salt-public check,
 salted HMAC session, exact NV attributes, encrypted read and encrypted extend.
 It checks wrong credentials and changed salt pins, endpoint isolation, stale
 checkpoint rejection, and exact retained-target readback after process exit
-without application cleanup, an orderly reboot and an unclean SysRq guest
-reset. Repeated recovery must refuse without another extend. Clearing and
+without application cleanup, an orderly reboot, an unclean SysRq guest reset,
+and termination and relaunch of both QEMU and swtpm. The hard-cut phase retains
+the same guest disk and persistent TPM state without restoring a snapshot.
+Repeated recovery must refuse without another extend. Clearing and
 reprovisioning the TPM must leave both old endpoint fixtures invalid. The
 external fixture sets a 32-attempt dictionary-attack allowance so the bounded
 wrong-credential matrix does not lock out later positive reads. Runtime has no
@@ -700,12 +702,13 @@ Occupied persistent handles must refuse a fresh fixture without replacing the
 existing endpoint.
 
 The executed component check passes at
-`/nix/store/kfdl50vpc6gg3w2m0lksnfjlwmv89n7p-aos-fleet-test-sandbox-method46-tpm-transport-0`.
+`/nix/store/vqlvqq3gsmwfpxrmp6alqfcnwvk8whb5-aos-fleet-test-sandbox-method46-tpm-transport-0`.
 Its small retained checkpoint fixture is not the production durable coordinator
 or either daemon's journal. It does not exercise the helper's
 private carrier, SELinux transition, PID1 ownership, installed daemon restart,
-or public lifecycle. SysRq leaves swtpm running; it does not model interrupted
-TPM media writes or swtpm power loss. Snapshotting the virtual TPM together
+or public lifecycle. The hard cut follows an already completed NV command;
+it does not model interruption during an NV media write or loss of host storage.
+Snapshotting the virtual TPM together
 with the guest still permits whole-machine rollback. Neither building the
 probe nor passing this component test enables installed method 46.
 

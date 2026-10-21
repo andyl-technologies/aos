@@ -9,6 +9,7 @@ import glob
 import logging
 import os
 import shutil
+import signal
 import socket
 import subprocess
 import threading
@@ -418,10 +419,9 @@ class QemuMachine(Machine):
 
         Idempotent: reuses a live swtpm (preserving its in-memory TPM), and
         otherwise (re)launches it against the persistent ``--tpmstate`` dir.
-        QEMU tears its control connection down on the reboot leg and swtpm
-        exits with it, so this is called from every ``_launch()`` — the
-        relaunch reloads the persisted NV state and enrolled keys while PCRs
-        reset at power-on, exactly matching real-hardware reboot semantics.
+        In-place guest resets retain the live backend. Explicit power cycling
+        first kills and reaps both processes, then reloads the same persistent
+        state directory. No TPM state is cleared, copied or restored here.
 
         # Raises
 
@@ -663,10 +663,9 @@ class QemuMachine(Machine):
         ]
         # `-no-reboot` makes a guest reboot exit QEMU (the relaunch reboot
         # path, and the SB negative test's rejection signal). A vTPM
-        # machine must instead reset in place so QEMU keeps its swtpm
-        # connection alive — swtpm exits when QEMU disconnects, and a
-        # relaunched swtpm loading the prior boot's state wedges the
-        # measured-boot reboot. So omit -no-reboot when a TPM is attached.
+        # machine instead resets in place and retains its swtpm connection.
+        # Explicit power_cycle() separately kills and reaps both processes
+        # before relaunching against their existing persistent state.
         if not self.tpm:
             argv += ["-no-reboot"]
 
@@ -891,20 +890,22 @@ class QemuMachine(Machine):
 
         The method kills the owned QEMU process with ``SIGKILL`` without
         asking the guest to stop, closes stale transport state, and relaunches
-        against the already prepared per-run artifacts. It is intended for
-        crash-consistency tests that must cross a real unclean power boundary.
+        against the already prepared per-run artifacts. An attached swtpm is
+        stopped before QEMU disconnects, then also killed and reaped, preventing
+        its automatic clean TPM shutdown. Relaunch retains its persistent NV
+        state directory. This models process power loss, not failure of the
+        host storage media containing those artifacts.
 
         Raises:
-            RuntimeError: If the machine is not running, uses a vTPM, QEMU
-                cannot be killed, or the guest agent does not return before
-                the deadline.
+            RuntimeError: If QEMU or its required swtpm is not running, either
+                process cannot be killed and reaped, or the guest agent does
+                not return before the deadline.
         """
-        if self.tpm:
-            raise RuntimeError(
-                f"[{self.name}] hard power cycling a vTPM machine is unsupported"
-            )
         if self.qemu_proc is None or self.qemu_proc.poll() is not None:
             raise RuntimeError(f"[{self.name}] power cycle requires running QEMU")
+        previous_tpm = self.swtpm_proc if self.tpm else None
+        if self.tpm and (previous_tpm is None or previous_tpm.poll() is not None):
+            raise RuntimeError(f"[{self.name}] power cycle requires running swtpm")
 
         deadline = time.monotonic() + timeout
         previous_qemu = self.qemu_proc
@@ -912,14 +913,36 @@ class QemuMachine(Machine):
         log.info("==> Cutting power to machine: %s (QEMU pid %s)", self.name, previous_pid)
 
         self.agent.close()
-        previous_qemu.kill()
-        try:
-            remaining = max(0.0, deadline - time.monotonic())
-            previous_qemu.wait(timeout=min(remaining, 30.0))
-        except subprocess.TimeoutExpired:
+        if previous_tpm is not None:
+            previous_tpm.send_signal(signal.SIGSTOP)
+
+        processes = [(previous_qemu, "QEMU")]
+        if previous_tpm is not None:
+            processes.append((previous_tpm, "swtpm"))
+
+        failures: list[tuple[str, int, OSError | subprocess.TimeoutExpired]] = []
+        for process, description in processes:
+            try:
+                process.kill()
+                remaining = max(0.0, deadline - time.monotonic())
+                process.wait(timeout=min(remaining, 30.0))
+            except (OSError, subprocess.TimeoutExpired) as error:
+                # Still kill the other owned process; in particular, never
+                # strand a stopped swtpm when QEMU cannot be reaped.
+                failures.append((description, process.pid, error))
+
+        if failures:
+            description, pid, error = failures[0]
             raise RuntimeError(
-                f"[{self.name}] QEMU pid {previous_pid} survived SIGKILL"
-            ) from None
+                f"[{self.name}] could not kill and reap {description} pid {pid}"
+            ) from error
+
+        if previous_tpm is not None:
+            log.info(
+                "[%s] unclean vTPM exit recorded (pid %s, code %s)",
+                self.name, previous_tpm.pid, previous_tpm.returncode,
+            )
+            self.swtpm_proc = None
 
         self._stop_serial_bridge()
         if self._qemu_log_fd is not None:
