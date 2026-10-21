@@ -108,7 +108,8 @@
           # Two 256 MiB normal images + three 64 MiB recovery images + 32 MiB
           # of FAT headroom preserve the existing transaction-size formula.
           maxFirmwarePartitionMiB = 736;
-          maxDownloadMiB = 960;
+          # The complete compressed raw image measures 1.05 GiB.
+          maxDownloadMiB = 1152;
           # Bound the converted fixture by root + 736 MiB ESP + 16 MiB hash
           # partition + 16 MiB conversion/GPT overhead; root slots stay 1 GiB.
           maxConvertedDownloadMiB = 1664;
