@@ -5,6 +5,14 @@ edition = "2024"
 license.workspace = true
 publish = false
 
+[features]
+native-recovery-vm-fixture = ["aos-sandbox-source-provider/native-recovery-vm-fixture"]
+
+[[bin]]
+name = "aos-sandbox-source-provider-owner-vm-server"
+path = "src/bin/aos-sandbox-source-provider-owner-vm-server.rs"
+required-features = ["native-recovery-vm-fixture"]
+
 [dependencies]
 aos-sandbox-controller-domain = { workspace = true, features = ["cache-physical-join-vm-fixture", "project-negative-recovery-vm-fixture"] }
 aos-sandbox-model.workspace = true

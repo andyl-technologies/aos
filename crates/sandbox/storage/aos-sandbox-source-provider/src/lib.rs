@@ -19,6 +19,12 @@
 
 #![cfg(target_os = "linux")]
 
+#[cfg(all(feature = "native-recovery-vm-fixture", not(debug_assertions)))]
+compile_error!("native recovery VM fixtures require a debug build");
+
+#[cfg(feature = "native-recovery-vm-fixture")]
+mod native_recovery_vm_fixture;
+
 mod acquire;
 mod admission;
 pub mod backend;

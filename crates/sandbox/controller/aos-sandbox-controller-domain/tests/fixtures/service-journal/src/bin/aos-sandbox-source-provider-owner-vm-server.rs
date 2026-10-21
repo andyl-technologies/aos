@@ -4,11 +4,14 @@
 //! no synthetic Provider response. Both handshakes and the recovery settlement
 //! pass through the production fixed owner. The initial phase holds the old
 //! process alive until Mount captures its authenticated session; the recovery
-//! phase answers exactly one protected AOSSPR01 and exits.
+//! phase answers exactly one protected AOSSPR01 and retains its live process
+//! until Mount finishes verifying the response.
 
 use std::error::Error;
+use std::fmt::Write as _;
 use std::fs::{self, OpenOptions};
 use std::io::Write as _;
+use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -17,10 +20,13 @@ use aos_sandbox_linux::seqpacket::{RecordSubjectListener, SeqpacketError};
 use aos_sandbox_source_provider::{
     FixedProviderIngressProgressV1, FixedProviderOwnerStatusV1, FixedProviderOwnerV1,
 };
+use aos_sandbox_source_provider_protocol::SignedSourceProviderRequestV1;
 
 const SOCKET: &str = "/run/aos/source-provider/control.sock";
 const MAXIMUM_WAIT: Duration = Duration::from_secs(60);
 const RETRY_PAUSE: Duration = Duration::from_millis(2);
+const SIGNED_ACQUIRE: &str = "/var/lib/aos/source-provider/native-vm-signed-acquire";
+const SESSION_DATA: &str = "/var/lib/aos/source-provider/native-vm-session";
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum Phase {
@@ -81,28 +87,53 @@ fn run() -> Result<(), Box<dyn Error>> {
             }
         }
     }
-    write_marker(ready)?;
-
     match phase {
-        Phase::Initial => wait_for_stop(stop, deadline),
-        Phase::Recovery => answer_one_native_recovery(&mut owner, &publication, deadline),
+        Phase::Initial => {
+            let mut head = String::with_capacity(65);
+            for byte in owner.native_recovery_vm_catalog_head()? {
+                write!(&mut head, "{byte:02x}")?;
+            }
+            head.push('\n');
+            write_data(ready, head.as_bytes())?;
+            wait_for_path(Path::new(SIGNED_ACQUIRE), deadline)?;
+            let signed =
+                SignedSourceProviderRequestV1::from_canonical_bytes(&fs::read(SIGNED_ACQUIRE)?)?;
+            let session = owner.native_recovery_vm_session_record(&signed)?;
+            write_data(Path::new(SESSION_DATA), &session)?;
+            wait_for_path(stop, deadline)
+        }
+        Phase::Recovery => {
+            write_data(ready, b"ready\n")?;
+            answer_one_native_recovery(&mut owner, &publication, deadline)?;
+            // Sending does not complete the receiver's peer-currentness check.
+            // Keep the real owner and process alive until Mount drops its carrier.
+            wait_for_path(stop, deadline)
+        }
     }
 }
 
-fn write_marker(path: &Path) -> Result<(), Box<dyn Error>> {
-    let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
-    file.write_all(b"ready\n")?;
+fn write_data(path: &Path, bytes: &[u8]) -> Result<(), Box<dyn Error>> {
+    let pending = path.with_extension("writing");
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&pending)?;
+    file.write_all(bytes)?;
     file.sync_all()?;
+    // Readers wait for the final name, which must expose complete bytes.
+    fs::hard_link(&pending, path)?;
+    fs::remove_file(pending)?;
     Ok(())
 }
 
-fn wait_for_stop(path: &Path, deadline: Instant) -> Result<(), Box<dyn Error>> {
+fn wait_for_path(path: &Path, deadline: Instant) -> Result<(), Box<dyn Error>> {
     loop {
         if path.exists() {
             return Ok(());
         }
         if Instant::now() >= deadline {
-            return Err("initial Provider process was not released".into());
+            return Err("Provider fixture marker did not appear".into());
         }
         std::thread::sleep(RETRY_PAUSE);
     }

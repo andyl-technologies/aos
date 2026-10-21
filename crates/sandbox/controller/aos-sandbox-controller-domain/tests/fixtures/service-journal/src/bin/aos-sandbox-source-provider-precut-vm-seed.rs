@@ -76,12 +76,16 @@ fn run() -> Result<()> {
     let held_path = arguments
         .next()
         .ok_or("missing held-snapshot catalog file")?;
+    let session_path = arguments
+        .next()
+        .ok_or("missing authenticated session DATA file")?;
     if arguments.next().is_some() {
         return Err("unexpected extra argument".into());
     }
     let signed_bytes = fs::read(signed_path)?;
     let publication_bytes = fs::read(publication_path)?;
     let held_bytes = fs::read(held_path)?;
+    let session_bytes = fs::read(session_path)?;
     let (mut journal, _) =
         Journal::open_existing_protected_at(STATE_ROOT, JOURNAL_NAME, JournalLimits::default())?;
     let mut authority = journal.claim_source_provider_native_terminal_authority_v1()?;
@@ -91,8 +95,13 @@ fn run() -> Result<()> {
         .collect();
     checked_ledger(validate_prospective_records(records(&current)))?;
 
-    let (mutated, capacity, changed) =
-        prepare_cut(&current, &signed_bytes, &publication_bytes, &held_bytes)?;
+    let (mutated, capacity, changed) = prepare_cut(
+        &current,
+        &signed_bytes,
+        &publication_bytes,
+        &held_bytes,
+        &session_bytes,
+    )?;
     checked_ledger(validate_prospective_transition(
         records(&current),
         records(&mutated),
@@ -204,6 +213,7 @@ fn prepare_cut(
     signed_bytes: &[u8],
     publication_bytes: &[u8],
     held_bytes: &[u8],
+    session_bytes: &[u8],
 ) -> Result<(
     BTreeMap<Vec<u8>, Vec<u8>>,
     GlobalCapacityReservationRequestV1,
@@ -222,7 +232,6 @@ fn prepare_cut(
 
     let mut authority = None;
     let mut catalog = None;
-    let mut session = None;
     for (key, bytes) in current {
         match checked_ledger(decode_record(key, bytes))? {
             DecodedRecordV1::Authority(value) => unique(&mut authority, value)?,
@@ -233,12 +242,9 @@ fn prepare_cut(
                     catalog = Some(value);
                 }
             }
-            DecodedRecordV1::Session(value)
-                if value.holder.authority_id() == request.holder_authority_id() =>
-            {
-                unique(&mut session, value)?
-            }
-            DecodedRecordV1::Attempt(_)
+            DecodedRecordV1::Session(_)
+            | DecodedRecordV1::SessionHistory(_)
+            | DecodedRecordV1::Attempt(_)
             | DecodedRecordV1::Acquisition(_)
             | DecodedRecordV1::Release(_) => {
                 return Err("pre-cut fixture requires a fresh Provider graph".into());
@@ -248,7 +254,21 @@ fn prepare_cut(
     }
     let authority: AuthorityHeadRecordV1 = authority.ok_or("missing real Provider authority")?;
     let catalog: CatalogHeadRecordV1 = catalog.ok_or("missing authenticated catalog")?;
-    let mut session: HolderSessionHeadRecordV1 = session.ok_or("missing actual holder session")?;
+    // The handshake keeps Session custody in memory until real admission.
+    // This debug VM cut uses DATA exported while that exact Session and peer
+    // were live; it does not invent a missing durable session from journal rows.
+    let session_identity = session_key(
+        authority.provider.authority_id(),
+        request.holder_authority_id(),
+    );
+    let DecodedRecordV1::Session(mut session) =
+        checked_ledger(decode_record(&session_identity, session_bytes))?
+    else {
+        return Err("VM session DATA is not a canonical holder session".into());
+    };
+    if encode_session(&session) != session_bytes {
+        return Err("VM session DATA failed canonical round trip".into());
+    }
     if authority.provider != session.provider
         || catalog.provider != authority.provider
         || catalog.canonical_publication != publication_bytes
@@ -306,6 +326,11 @@ fn prepare_cut(
     let provider_hello =
         SignedSourceProviderHelloV1::from_canonical_bytes(&session.provider_hello)?;
     let negotiated_capabilities = provider_hello.subject();
+    if (request.recursive() && !negotiated_capabilities.supports_recursive())
+        || (request.kernel_coupled() && !negotiated_capabilities.supports_kernel_coupled())
+    {
+        return Err("Acquire exceeds the actual negotiated Provider capabilities".into());
+    }
     let normalized = NormalizedAcquisitionIntentV1::from_acquire_request(
         &request,
         authority.provider.clone(),

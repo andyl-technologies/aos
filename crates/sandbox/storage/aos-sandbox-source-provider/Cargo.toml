@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2024"
 license.workspace = true
 
+[features]
+native-recovery-vm-fixture = []
+
 [target.'cfg(target_os = "linux")'.dependencies]
 aos-sandbox-broker.workspace = true
 aos-sandbox-source.workspace = true

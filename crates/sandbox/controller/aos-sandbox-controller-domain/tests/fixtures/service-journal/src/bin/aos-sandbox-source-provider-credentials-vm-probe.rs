@@ -346,6 +346,7 @@ fn encode_route(cgroup_digest: [u8; 32]) -> [u8; SOURCE_PROVIDER_ROUTE_FILE_BYTE
     output[72..88].copy_from_slice(&[2; 16]);
     output[88..120].copy_from_slice(&[10; 32]);
     output[120] = 0x0f;
+    output[121] = 1;
     output[168..184].copy_from_slice(&[1; 16]);
     output[136..168].copy_from_slice(&cgroup_digest);
     output[192..224].copy_from_slice(&cgroup_digest);
@@ -375,6 +376,7 @@ fn encode_manifest(
     put_u64(&mut output, 156, 1);
     output[164..196].copy_from_slice(&[9; 32]);
     output[196] = 0x0f;
+    output[197] = 1;
     for (index, signer) in signers.iter().enumerate() {
         encode_signer(&mut output[204 + index * 120..324 + index * 120], signer);
     }
@@ -615,6 +617,17 @@ mod tests {
         root_manifest[10] = SourceProviderSecurityRoleV1::RootMount as u8;
         let mut provider_manifest = credentials.manifest;
         provider_manifest[10] = SourceProviderSecurityRoleV1::Provider as u8;
+
+        assert!(
+            SourceProviderSecurityManifestV1::decode(&root_manifest)
+                .unwrap()
+                .allow_recursive()
+        );
+        assert!(
+            SourceProviderSecurityManifestV1::decode(&provider_manifest)
+                .unwrap()
+                .allow_recursive()
+        );
 
         assert_eq!(
             SourceProviderSecurityManifestV1::decode(&root_manifest)

@@ -117,14 +117,18 @@ fn run(program: &Path, arguments: &[&str]) -> String {
 }
 
 fn write_once(path: &Path, bytes: &[u8]) {
+    let pending = path.with_extension("writing");
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
-        .open(path)
+        .open(&pending)
         .expect("new VM fixture file");
     file.write_all(bytes).expect("write VM fixture file");
     file.sync_all().expect("sync VM fixture file");
-    fs::set_permissions(path, fs::Permissions::from_mode(0o440)).expect("private VM fixture file");
+    fs::set_permissions(&pending, fs::Permissions::from_mode(0o440))
+        .expect("private VM fixture file");
+    fs::hard_link(&pending, path).expect("publish complete VM fixture file");
+    fs::remove_file(pending).expect("retire VM fixture staging name");
 }
 
 fn wait_for(path: &Path) {
@@ -160,9 +164,9 @@ fn handshake() -> RootMountSourceProviderOwnerV1 {
     }
 }
 
-fn stop_initial(mut child: Child, stop: &Path) {
+fn stop_provider(mut child: Child, stop: &Path) {
     write_once(stop, b"stop");
-    assert!(child.wait().expect("first Provider child exited").success());
+    assert!(child.wait().expect("Provider child exited").success());
     fs::remove_file(PROVIDER_SOCKET).expect("remove exact retired Provider socket");
 }
 
@@ -283,10 +287,9 @@ fn fixed_owner_native_recovery_vm_cut() {
         .expect("completed old RootMount handshake")
         .expect("authenticated old Mount session projection");
     drop(source);
-    drop(root);
-    stop_initial(first_child, initial_stop);
 
-    let catalog_head = decode_digest(&run(&precut_seeder, &["catalog-head"]));
+    let catalog_head =
+        decode_digest(&fs::read_to_string(initial_ready).expect("actual catalog head"));
     let held_catalog = ProviderHeldSnapshotCatalogV1::from_canonical_bytes(
         &fs::read(&held).expect("held catalog bytes"),
     )
@@ -295,7 +298,7 @@ fn fixed_owner_native_recovery_vm_cut() {
         .duration_since(UNIX_EPOCH)
         .expect("positive Unix time")
         .as_secs();
-    let deadline = i64::try_from(now).expect("Unix time fits i64") + 600;
+    let deadline = i64::try_from(now).expect("Unix time fits i64") + 240;
     let initial = initial_signed_graph_for_session(
         session,
         deadline,
@@ -307,6 +310,11 @@ fn fixed_owner_native_recovery_vm_cut() {
     };
     let signed_request = Path::new(PROVIDER_ROOT).join("native-vm-signed-acquire");
     write_once(&signed_request, &attempt.signed_request);
+    let session_data = Path::new(PROVIDER_ROOT).join("native-vm-session");
+    wait_for(&session_data);
+    drop(root);
+    stop_provider(first_child, initial_stop);
+
     commit_graph_delta(&mut journal, &[], &initial, [91; 16]);
     validate_protected_graph(&journal);
     drop(journal);
@@ -316,12 +324,15 @@ fn fixed_owner_native_recovery_vm_cut() {
             signed_request.to_str().expect("signed request path"),
             publication.to_str().expect("publication path"),
             held.to_str().expect("held path"),
+            session_data
+                .to_str()
+                .expect("authenticated session DATA path"),
         ],
     );
 
     let recovery_ready = Path::new("/run/aos/source-provider/native-recovery.ready");
     let recovery_stop = Path::new("/run/aos/source-provider/native-recovery.stop");
-    let mut recovery_child = Command::new(&provider_child)
+    let recovery_child = Command::new(&provider_child)
         .args([
             "recovery",
             publication.to_str().expect("publication path"),
@@ -340,10 +351,10 @@ fn fixed_owner_native_recovery_vm_cut() {
     )
     .expect("reopen pre-cut fixed Mount journal");
     let mut source =
-        FixedMountSourceAcquisitionOwnerV2::borrow_existing_fixed_journal(&mut journal)
+        FixedMountSourceAcquisitionOwnerV2::borrow_existing_kind5_fixed_journal(&mut journal)
             .expect("cold-replayed old Mount graph");
     source
-        .establish_startup_provider_successor_v2(&mut successor)
+        .establish_cold_dead_successor_v4(&mut successor)
         .expect("production dead-predecessor replacement");
     let StoredRecordV2::Acquisition { value: row } = &initial[2] else {
         panic!("VM initial graph changed acquisition ordering");
@@ -354,19 +365,13 @@ fn fixed_owner_native_recovery_vm_cut() {
     drop(source);
     drop(successor);
     drop(journal);
-    assert!(
-        recovery_child
-            .wait()
-            .expect("first recovery Provider child exited")
-            .success()
-    );
-    fs::remove_file(PROVIDER_SOCKET).expect("remove first recovery socket");
+    stop_provider(recovery_child, recovery_stop);
 
     // Lose the reply before Mount's CAS, then force both owners to replay
     // their protected terminal state through a fresh authenticated carrier.
     let replay_ready = Path::new("/run/aos/source-provider/native-replay.ready");
     let replay_stop = Path::new("/run/aos/source-provider/native-replay.stop");
-    let mut replay_child = Command::new(&provider_child)
+    let replay_child = Command::new(&provider_child)
         .args([
             "recovery",
             publication.to_str().expect("publication path"),
@@ -385,10 +390,10 @@ fn fixed_owner_native_recovery_vm_cut() {
     )
     .expect("cold reopen before Mount terminal CAS");
     let mut source =
-        FixedMountSourceAcquisitionOwnerV2::borrow_existing_fixed_journal(&mut journal)
+        FixedMountSourceAcquisitionOwnerV2::borrow_existing_kind5_fixed_journal(&mut journal)
             .expect("fixed owner replays uncommitted Provider terminal");
     source
-        .establish_startup_provider_successor_v2(&mut successor)
+        .establish_cold_dead_successor_v4(&mut successor)
         .expect("barrier-idle recovery session replacement");
     let proof = query_native(&mut source, &mut successor, acquisition);
     source
@@ -401,12 +406,7 @@ fn fixed_owner_native_recovery_vm_cut() {
     drop(source);
     drop(successor);
     drop(journal);
-    assert!(
-        replay_child
-            .wait()
-            .expect("replay Provider child exited")
-            .success()
-    );
+    stop_provider(replay_child, replay_stop);
 
     let (mut journal, _) = Journal::open_existing_protected_at_uid(
         Path::new(MOUNT_ROOT),
@@ -431,11 +431,17 @@ fn fixed_owner_native_recovery_vm_cut() {
             .map(|attempt| &attempt.state),
         Some(ProviderAttemptStateV2::NativeNoDispatchSettled { .. })
     ));
+    // Both recovery carriers remain as authenticated historical sessions.
+    assert_eq!(graph.provider_sessions.len(), 3);
+    assert_eq!(graph.provider_heads.len(), 1);
+    assert_eq!(graph.provider_attempts.len(), 1);
+    assert_eq!(graph.acquisitions.len(), 1);
+    assert_eq!(graph.holder_sequences.len(), 1);
     assert_eq!(
         journal
             .records(RecordNamespace::MountSourceAcquisition)
             .count(),
-        6
+        7
     );
     FixedMountSourceAcquisitionOwnerV2::borrow_existing_fixed_journal(&mut journal)
         .expect("fixed owner cold replay after terminal CAS");
