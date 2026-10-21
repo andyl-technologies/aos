@@ -56,6 +56,22 @@ pub(super) fn corrupt_inbound_indices(
     }
 }
 
+/// Returns the node's first instruction boundary at or after `delivery_icount`.
+///
+/// A running node moves its clock only by retirements, which advance it in
+/// steps of [`crucible_shmem::TICKS_PER_INSTRUCTION`] from its current
+/// coordinate. A frame delivered between two boundaries is taken at the later
+/// one (TIME-30), so that boundary, not the delivery tick, is where the node
+/// must stop to take it. The result depends only on the current coordinate and
+/// the delivery, never on how quanta were laid out before it. A delivery at or
+/// below the current coordinate is due at the current boundary.
+pub(super) fn delivery_boundary_icount(current_icount: u64, delivery_icount: u64) -> u64 {
+    let gap = delivery_icount.saturating_sub(current_icount);
+    let step = crucible_shmem::TICKS_PER_INSTRUCTION;
+    let instructions = gap.div_ceil(step);
+    current_icount.saturating_add(instructions.saturating_mul(step))
+}
+
 pub(super) fn authorize_qemu_delivery_ceiling(
     current_icount: u64,
     max_advance_icount: u64,

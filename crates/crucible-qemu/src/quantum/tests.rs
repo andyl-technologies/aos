@@ -399,8 +399,46 @@ fn qemu_quantum_publishes_a_scheduler_exact_event_ceiling() {
     );
 }
 
+/// Starts one quantum toward `horizon` with a frame delivered at `delivery`.
+fn delivery_capped_start(
+    horizon_icount: u64,
+    delivery: u64,
+) -> (u64, crate::QemuQuantumStopCondition) {
+    let slot = NodeSlot::default();
+    let inbound_ring = RingHeader::new();
+    let outbound_ring = RingHeader::new();
+    let mut inbound_entries = frame_entries(8);
+    let mut outbound_entries = frame_entries(8);
+    let mut hot_path = hot_path(
+        &slot,
+        &inbound_ring,
+        &mut inbound_entries,
+        &outbound_ring,
+        &mut outbound_entries,
+    );
+    hot_path
+        .enqueue_inbound_frame(QemuInboundFrame {
+            delivery_icount: icount(delivery),
+            src_node: 31,
+            sequence: 7,
+            payload: vec![1, 2, 3],
+        })
+        .unwrap_or_else(|error| panic!("frame should enqueue: {error}"));
+    let pending = hot_path
+        .start_quantum(
+            horizon(horizon_icount),
+            crate::QemuQuantumStopCondition::Ceiling,
+        )
+        .unwrap_or_else(|error| panic!("delivery should cap the quantum: {error}"));
+    let (published, stop) = slot
+        .load_scheduler_advance()
+        .unwrap_or_else(|error| panic!("advance should decode: {error}"));
+    assert_eq!(pending.ceiling, icount(published));
+    (published, stop)
+}
+
 #[test]
-fn qemu_quantum_caps_horizon_at_next_possible_frame_delivery() {
+fn qemu_quantum_caps_a_delivery_between_boundaries_at_the_next_boundary() {
     let slot = NodeSlot::default();
     let inbound_ring = RingHeader::new();
     let outbound_ring = RingHeader::new();
@@ -421,17 +459,18 @@ fn qemu_quantum_caps_horizon_at_next_possible_frame_delivery() {
     });
     assert!(enqueue.is_ok());
 
-    let pending = match hot_path.start_quantum(horizon(6), crate::QemuQuantumStopCondition::Ceiling)
-    {
-        Ok(pending) => pending,
-        Err(error) => panic!("pending delivery should cap the quantum: {error}"),
-    };
-    assert_eq!(pending.requested_horizon, icount(6));
-    assert_eq!(pending.ceiling, icount(5));
-    // The delivery that caps the ceiling is an exact event the node must reach.
+    let pending = hot_path
+        .start_quantum(horizon(60), crate::QemuQuantumStopCondition::Ceiling)
+        .unwrap_or_else(|error| panic!("pending delivery should cap the quantum: {error}"));
+
+    // The frame lands 5 ps after the boundary at 0. A running node takes it
+    // at its next boundary, 50, so the quantum stops there, as a bound: a
+    // halted node still wakes at 5 and is never woken at 50 (TIME-30).
+    assert_eq!(pending.requested_horizon, icount(60));
+    assert_eq!(pending.ceiling, icount(50));
     assert_eq!(
         slot.load_scheduler_advance(),
-        Ok((5, crate::QemuQuantumStopCondition::ExactEvent))
+        Ok((50, crate::QemuQuantumStopCondition::Ceiling))
     );
     assert_eq!(
         pending.completion_fence,
@@ -441,22 +480,61 @@ fn qemu_quantum_caps_horizon_at_next_possible_frame_delivery() {
         })
     );
     let consumed = plugin_consume_inbound(&mut hot_path, 1);
-    if let Err(error) = slot.publish_reached_icount(5) {
-        panic!("plugin should stop at the delivery boundary: {error}");
-    }
-    let report = match hot_path.finish_quantum(pending) {
-        Ok(report) => report,
-        Err(error) => panic!("delivery-capped quantum should finish: {error}"),
-    };
+    slot.publish_reached_icount(50)
+        .unwrap_or_else(|error| panic!("plugin should stop at the delivery boundary: {error}"));
+    let report = hot_path
+        .finish_quantum(pending)
+        .unwrap_or_else(|error| panic!("delivery-capped quantum should finish: {error}"));
 
-    assert_eq!(report.ceiling, icount(5));
-    assert_eq!(report.outcome, AdvanceOutcome::Paused { at: icount(5) });
+    assert_eq!(report.ceiling, icount(50));
+    assert_eq!(report.outcome, AdvanceOutcome::Paused { at: icount(50) });
     assert_eq!(report.inbound_frames_consumed, 1);
     assert_eq!(
         consumed[0].delivery_key(),
         frame(5, 31, 7, &[1, 2, 3]).delivery_key()
     );
     assert_eq!(inbound_ring.read_index(), 1);
+}
+
+#[test]
+fn qemu_quantum_publishes_a_delivery_on_a_boundary_as_an_exact_event() {
+    assert_eq!(
+        delivery_capped_start(200, 100),
+        (100, crate::QemuQuantumStopCondition::ExactEvent)
+    );
+}
+
+#[test]
+fn qemu_quantum_horizon_below_the_delivery_boundary_stays_a_bound() {
+    // The horizon falls between the delivery and its boundary, so the node
+    // settles through the horizon and takes the frame in a later quantum.
+    assert_eq!(
+        delivery_capped_start(6, 5),
+        (6, crate::QemuQuantumStopCondition::Ceiling)
+    );
+}
+
+#[test]
+fn qemu_quantum_horizon_at_an_off_boundary_delivery_is_an_exact_event() {
+    // A running node settles through it at 0; a halted node idles to it.
+    assert_eq!(
+        delivery_capped_start(5, 5),
+        (5, crate::QemuQuantumStopCondition::ExactEvent)
+    );
+}
+
+#[test]
+fn delivery_boundaries_depend_only_on_the_clock_and_the_delivery() {
+    assert_eq!(support::delivery_boundary_icount(0, 0), 0);
+    assert_eq!(support::delivery_boundary_icount(100, 100), 100);
+    assert_eq!(support::delivery_boundary_icount(100, 99), 100);
+    assert_eq!(support::delivery_boundary_icount(100, 101), 150);
+    assert_eq!(support::delivery_boundary_icount(100, 150), 150);
+    assert_eq!(support::delivery_boundary_icount(124, 148), 174);
+    assert_eq!(
+        support::delivery_boundary_icount(u64::MAX - 10, u64::MAX),
+        u64::MAX
+    );
 }
 
 #[test]

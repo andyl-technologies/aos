@@ -39,7 +39,7 @@ mod support;
 pub use support::QemuQuantumError;
 pub(crate) use support::idle_state_from_snapshot;
 use support::{
-    authorize_qemu_delivery_ceiling, completed_quantum_clamp_is_attested,
+    authorize_qemu_delivery_ceiling, completed_quantum_clamp_is_attested, delivery_boundary_icount,
     device_io_freeze_from_snapshot, qemu_scheduler_node, quantum_outcome, validate_queue_capacity,
 };
 
@@ -519,22 +519,29 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
         let inbound_consumption = self.snapshot_inbound_consumption()?;
 
         self.record(QemuQuantumOperation::ComputeSchedulerCeiling);
+        let current_icount = initial_state.current_icount.retired;
         let earliest_delivery = inbound_consumption
             .next_wake_icount
-            .map(|icount| icount.max(initial_state.current_icount.retired));
-        let effective_ceiling = earliest_delivery
-            .map_or(horizon.icount.retired, |delivery_icount| {
-                horizon.icount.retired.min(delivery_icount)
-            });
-        let ceiling = authorize_qemu_delivery_ceiling(
-            initial_state.current_icount.retired,
-            effective_ceiling,
-            earliest_delivery,
-        )
-        .map_err(|source| QemuQuantumError::Lookahead { source })?;
-        // A ceiling is only an upper bound. When an inbound delivery caps it,
-        // the delivery is an exact event the node must reach (TIME-4), so the
-        // capped ceiling is published as one.
+            .map(|icount| icount.max(current_icount));
+        // A running node takes a frame at its first boundary at or after the
+        // delivery (TIME-30), so the quantum stops there rather than at the
+        // delivery tick, which may lie between two boundaries. Capping at the
+        // tick itself would settle the node below it and cap the next quantum
+        // at the same tick again. A halted node still wakes exactly at the
+        // delivery, which lies at or below this cap.
+        let delivery_boundary =
+            earliest_delivery.map(|delivery| delivery_boundary_icount(current_icount, delivery));
+        let effective_ceiling = delivery_boundary.map_or(horizon.icount.retired, |boundary| {
+            horizon.icount.retired.min(boundary)
+        });
+        let ceiling =
+            authorize_qemu_delivery_ceiling(current_icount, effective_ceiling, delivery_boundary)
+                .map_err(|source| QemuQuantumError::Lookahead { source })?;
+        // A ceiling is only an upper bound. When an inbound delivery caps it
+        // exactly, the delivery is an exact event: a halted node idles to it,
+        // and a running node that cannot land on it settles through it at its
+        // last boundary below (TIME-30). A cap at a later boundary is a bound,
+        // so a halted node is never woken there without a real event.
         let published_stop = if stop_condition == QemuQuantumStopCondition::Ceiling
             && earliest_delivery == Some(effective_ceiling)
         {

@@ -65,7 +65,9 @@ fn priming_retries_busy_origin_without_repeating_canary_or_scheduler_publication
     assert_eq!(network.inbound.frames.len(), 1);
     assert_eq!(network.inbound.frames[0].payload()?, payload);
     let authorized = mapped.producer.node_slot(0)?.snapshot();
-    assert_eq!(authorized.max_advance_icount, 1);
+    // The canary frame lands at 1, between the boundaries at 0 and 50, so
+    // the RUN stops at the boundary that takes it.
+    assert_eq!(authorized.max_advance_icount, 50);
     // Canary delivery and the subsequent RUN each publish exactly one
     // scheduler tuple; a refused acquisition publishes neither.
     assert_eq!(authorized.advance_publication_sequence, 4);
@@ -85,10 +87,10 @@ fn priming_retries_busy_origin_without_repeating_canary_or_scheduler_publication
         .ok_or("canary transport was empty")?;
     assert_eq!(canary.payload()?, payload);
     assert_eq!(canary.seq, 0);
-    mapped.producer.node_slot(0)?.publish_reached_icount(1)?;
+    mapped.producer.node_slot(0)?.publish_reached_icount(50)?;
     let completion = mapped.channel.poll_quantum(&mut pending)?;
-    assert_eq!(completion.ceiling.retired, 1);
-    assert_eq!(completion.final_state.current_icount.retired, 1);
+    assert_eq!(completion.ceiling.retired, 50);
+    assert_eq!(completion.final_state.current_icount.retired, 50);
     Ok(())
 }
 
