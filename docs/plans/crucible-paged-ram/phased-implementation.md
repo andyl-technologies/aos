@@ -605,6 +605,33 @@ The duplicate engine `terminal` observation was removed; all fourteen affected
 integration tests pass. This does not resolve the controller's retained-error
 representation or its remaining strict lint prerequisite failures.
 
+All 88 individually selected hermetic supervision cases now pass for the
+schema-4 host checkpoint. The keeper also checks actual consumption of both its
+canonical and failed-transfer creation fields after a zero native lifetime
+return; the two new modeled negative controls preserve custody and all sixteen
+local delivery controls pass. Exact source-policy companions now bind the six
+host cleanup continuations to their complete retained-owner bodies and saved
+lenders. The broad source-policy gate still fails on fourteen daemon paths;
+these local contracts provide no allocation or launched-lifecycle qualification.
+Mandatory application test-target compilation passes for this cleanup
+checkpoint. The separate native fork-readiness checkpoint is signed atomic
+`68ad0c4ef04202b246718a545b74455e2378eb78`, tree
+`10805f2a26de206854a0e0a077a0648a8e8ae9dc`. A real RCU callback drain and
+actual registry census establish zero starts in flight before the real fork;
+the previously hanging unmutated foreign-process prerequisite now completes.
+The complete independently rebuilt 26-defect causal sweep, 187 owning scenarios,
+raw ABI, signed reconstruction and unchanged 257-entry ledger pass. One hundred
+actual foreign-process repetitions, including thirty traced repetitions, pass;
+an independently omitted start-completion fails the intended new inventory
+assertion. Full regeneration still passes only 25 of 26 native fixtures, with
+the same mandatory launched lifecycle refusal. Earlier failed causal attempts
+remain failed observations; these passing component checks do not qualify them.
+
+A fresh complete license-boundary attempt fails before its boundary phase:
+the strict controller prerequisite reports 943 host test-target errors, including
+the retained-error representation. The earlier direct license controls do not
+replace this required gate.
+
 Whole-node shutdown now keeps one continuation through process reap, RAM service
 return and controller retirement. Physical closure, initiating failure and
 independent boundary checks remain separate facts. Failed construction retains

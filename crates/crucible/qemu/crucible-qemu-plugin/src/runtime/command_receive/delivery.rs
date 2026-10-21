@@ -186,7 +186,11 @@ impl Delivery {
             payload?;
             return Err(error);
         }
-        if !canonical && !self.creation.is_null() {
+        // SAFETY: `field` selects this exclusively borrowed keeper's actual
+        // creation or canonical cell. The synchronous pure return entry cannot
+        // retain an access after returning; the cell remains live and aligned.
+        // A zero status alone cannot replace consumption of that exact field.
+        if unsafe { !field.read().is_null() } {
             return Err(status_error(-libc::EPROTO));
         }
 

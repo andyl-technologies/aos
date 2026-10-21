@@ -16,6 +16,7 @@ struct Model {
     create_status: i32,
     transfer_status: i32,
     return_status: i32,
+    omit_return_consumption: bool,
     current_status: i32,
     omit_output: bool,
     transfer_consumes: bool,
@@ -87,7 +88,7 @@ extern "C" fn identity_return(_: u64, field: *mut *mut Owner, _: u64) -> i32 {
     MODEL.with_borrow_mut(|model| {
         model.returns += 1;
         model.returned_field = field as usize;
-        if model.return_status == 0 {
+        if model.return_status == 0 && !model.omit_return_consumption {
             // SAFETY: the wrapper supplies its still-live exact holder field.
             unsafe { field.write(std::ptr::null_mut()) };
         }
@@ -422,5 +423,52 @@ fn malformed_ready_success_reports_protocol_error_after_independent_returns() {
     MODEL.with_borrow(|model| {
         assert_eq!(model.payload_returns, 1);
         assert_eq!(model.returns, 1);
+    });
+}
+
+#[test]
+fn zero_return_without_canonical_field_consumption_retains_actual_custody() {
+    reset(|model| model.omit_return_consumption = true);
+    let mut delivery = Box::pin(Delivery::new());
+    retain(&mut delivery).unwrap();
+    let projection = delivery.projection;
+    let serial = delivery.serial;
+
+    assert_eq!(status(delivery.identity_return(api(), 7)), -libc::EPROTO);
+
+    assert!(!delivery.returned);
+    assert_eq!(delivery.projection, projection);
+    assert_eq!(delivery.serial, serial);
+    // SAFETY: the local model owns this pinned keeper's canonical cell.
+    assert_eq!(unsafe { delivery.holder.get().read() }, projection);
+    MODEL.with_borrow(|model| {
+        assert_eq!(model.returned_field, model.canonical_field);
+        assert_eq!(model.returns, 1);
+        assert_eq!(model.creates, 1);
+    });
+}
+
+#[test]
+fn zero_return_without_creation_field_consumption_retains_failed_transfer() {
+    reset(|model| {
+        model.transfer_status = -libc::EBUSY;
+        model.transfer_consumes = false;
+        model.omit_return_consumption = true;
+    });
+    let mut delivery = Box::pin(Delivery::new());
+    assert_eq!(status(retain(&mut delivery)), -libc::EBUSY);
+    let projection = delivery.projection;
+    let serial = delivery.serial;
+
+    assert_eq!(status(delivery.identity_return(api(), 7)), -libc::EPROTO);
+
+    assert!(!delivery.returned);
+    assert_eq!(delivery.creation, projection);
+    assert_eq!(delivery.projection, projection);
+    assert_eq!(delivery.serial, serial);
+    MODEL.with_borrow(|model| {
+        assert_eq!(model.returned_field, model.creation_field);
+        assert_eq!(model.returns, 1);
+        assert_eq!(model.creates, 1);
     });
 }

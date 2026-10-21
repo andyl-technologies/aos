@@ -12,6 +12,9 @@ use super::{
 #[path = "operational_recovery/delivery.rs"]
 mod delivery;
 
+#[path = "operational_recovery/physical_cleanup.rs"]
+mod physical_cleanup;
+
 struct Contract {
     package: &'static str,
     target: &'static str,
@@ -214,6 +217,78 @@ pub(super) const DISPATCHER_FAILED_STARTUP: &str = r#"fn failed_worker_startup_k
 }"#;
 
 const CONTRACTS: &[Contract] = &[
+    Contract {
+        package: "crucible-qemu-host",
+        target: "src/linux_attempt_host/original_node/helper_receiver",
+        required: &[
+            r#"let Some(receiver) = slot.lender.clone() else { return false; };"#,
+            r#"child.retain_source_original(original);"#,
+            r#"drop(slot.child.take());"#,
+        ],
+        identifiers: &[],
+        expressions: &[
+            (physical_cleanup::HELPER_SETTLEMENT, 1),
+            (physical_cleanup::HELPER_CONTINUATION, 1),
+        ],
+    },
+    Contract {
+        package: "crucible-qemu-host",
+        target: "src/linux_attempt_host/original_node",
+        required: &[
+            r#"if self.child_borrowed.load(std::sync::atomic::Ordering::Acquire) { return false; }"#,
+            r#"retained.first_cleanup = Some(first);"#,
+            r#"retained.latest_cleanup = Some(first);"#,
+        ],
+        identifiers: &[],
+        expressions: &[(physical_cleanup::CONTROLLER_CONTINUATION, 1)],
+    },
+    Contract {
+        package: "crucible-qemu-host",
+        target: "src/node/failed_launch/issued",
+        required: &[
+            r#".map(|lender| lender.clone().retained_original()).transpose()"#,
+            r#"node.child_shutdown.retain_source_original(original);"#,
+            r#"None => Err(QemuNodeError::RamCleanupPending),"#,
+        ],
+        identifiers: &[],
+        expressions: &[(physical_cleanup::ISSUED_CONTINUATION, 1)],
+    },
+    Contract {
+        package: "crucible-qemu-host",
+        target: "src/node/failed_launch",
+        required: &[
+            r#".map_err(|_| QemuNodeError::RamCleanupPending)?;"#,
+            r#"self.retain_source_original(original)?;"#,
+            r#"assert_eq!(owner.process_id(), Some(process_id));"#,
+            r#"assert!(!owner.child_reaped());"#,
+        ],
+        identifiers: &[],
+        expressions: &[
+            (physical_cleanup::CHILD_CONTINUATION, 1),
+            (physical_cleanup::FAILED_CONTINUATION, 1),
+            (physical_cleanup::ABSENT_LENDER_CONTROL, 1),
+        ],
+    },
+    Contract {
+        package: "crucible-qemu-host",
+        target: "src/node_factory/restore_cleanup",
+        required: &[r#"primary: Box::new(primary), cleanup,"#],
+        identifiers: &[],
+        expressions: &[(physical_cleanup::RESTORE_SETTLEMENT, 1)],
+    },
+    Contract {
+        package: "crucible-qemu-host",
+        target: "src/supervision/node_step_gate",
+        required: &[
+            r#"primary: Box::new(primary), cleanup, retained_owner: None,"#,
+            r#"primary: Box::new(primary), cleanup, retained_owner: Some(owner),"#,
+        ],
+        identifiers: &[],
+        expressions: &[
+            (physical_cleanup::ISSUED_FAILURE_SETTLEMENT, 1),
+            (physical_cleanup::FAILED_FAILURE_SETTLEMENT, 1),
+        ],
+    },
     Contract {
         package: "crucible-qemu-plugin",
         target: "src/runtime/command_receive/delivery/tests",
