@@ -15,7 +15,7 @@
     src = crucibleSrc;
     subset = testGate.mkCrucibleTestSubset {
       pname = "crucible-fleet-equivalence-tests";
-      selections = ["crucible"];
+      requests = ["crucible"];
       targets = ["test:gate_fleet_equivalence"];
     };
   };

@@ -12,26 +12,35 @@
 ##! Crucible package (`pkgs/tools/crucible/_workspace-tests.nix`):
 ##!
 ##! ```text
-##! family                       selections                       consumers
-##! apacheTests (debug)          per-package test and dev builds  most gates
-##! gplTests (debug)             qemu plugin, debug gateway       plugin gates
-##! apacheRelease                release examples and harnesses   VM flights
-##! apacheReleaseTestSupport     release examples, test-support   ack-poll flights
+##! family              selections                          consumers
+##! apacheTests         unified debug tests, plus CLI       most gates
+##!                     test-double, recovery faults, and
+##!                     production qemu examples
+##! gplTests            plugin and debug-gateway tests,     plugin gates
+##!                     production plugin cdylib
+##! apacheRelease       unified release harnesses, shipped  VM flights
+##!                     CLI, production examples
+##! gplRelease          plugin release harness              campaign-mode guests
 ##! ```
 ##!
 ##! Each family depends on RFC-0015 dependency artifacts built from a
-##! manifest-only dummy workspace, compiles first-party code once for every
-##! selection, and publishes the executables with a manifest. Development
-##! builds use aos-dev's persistent incremental target directory instead of
-##! the artifact seed. A gate depends on the family outputs and runs tests
-##! through `crucible-cargo`, which accepts the gate's original `cargo test`,
-##! `cargo run`, or `cargo build` command line and never compiles.
+##! manifest-only dummy workspace and compiles first-party code in one
+##! derivation. Development builds use aos-dev's persistent incremental
+##! target directory instead of the artifact seed. A gate depends on the
+##! family outputs and runs tests through `crucible-cargo`, which accepts the
+##! gate's original `cargo test`, `cargo run`, or `cargo build` command line
+##! and never compiles.
 ##!
 ##! A selection is one Cargo feature resolution: package set, features, and
-##! profile (`_workspace-test-selections.nix`). Keeping selections separate
-##! preserves exactly what each former Cargo invocation compiled, including
-##! cfg(feature) differences between `-p crucible` and `-p crucible
-##! --features test-double`.
+##! profile (`_workspace-test-selections.nix`). Cargo recompiles every crate
+##! whose features differ between resolutions, so each family unifies the
+##! features its gates request into one selection per profile. Only
+##! requests whose features change what a test observes, such as the CLI's
+##! test-double surface or the fault-injection builds, get their own
+##! selection; each says why. The runner maps every gate request to its
+##! selection and skips targets whose required-features the request would
+##! not have enabled, so a gate runs the targets its former Cargo command
+##! ran.
 ##!
 ##! A gate keeps its own Cargo invocation only for a genuinely different
 ##! build configuration, such as compile-time environment variables or a
@@ -121,16 +130,17 @@ in {
       }
     );
 
-  # Copies the named selections of each family into a small output with the
-  # same layout, for VM root filesystems that must not retain whole
-  # families. `selections` uses crucible-cargo identities, such as
-  # "crucible-qemu" or "build:crucible-shmem". `targets`, when given, keeps
-  # only those `kind:name` rows (for example "lib:crucible_qemu"), so a gate
-  # that runs `--lib` does not carry every integration-test executable.
+  # Copies the executables that serve the named test requests into a small
+  # output with the family layout, for VM root filesystems that must not
+  # retain whole families. `requests` uses crucible-cargo identities, such
+  # as "crucible-qemu" or "crucible[test-double]". `targets`, when given,
+  # keeps only those `kind:name` rows (for example "lib:crucible_qemu"), so
+  # a gate that runs `--lib` does not carry every integration-test
+  # executable.
   mkCrucibleTestSubset = {
     pname,
     builds ? debugBuilds,
-    selections,
+    requests,
     targets ? [],
   }:
     pkgs.mkDerivation {
@@ -144,14 +154,14 @@ in {
       dontNukeRefs = true;
       dontStrip = true;
       dontPatchELF = true;
-      SELECTIONS = lib.concatStringsSep "\n" selections;
+      REQUESTS = lib.concatStringsSep "\n" requests;
       TARGETS = lib.concatStringsSep "\n" targets;
       phases = [
         {
           name = "install";
           script = ''
             set -eu
-            printf '%s\n' "$SELECTIONS" > "$TMPDIR/selections"
+            printf '%s\n' "$REQUESTS" > "$TMPDIR/requests"
             printf '%s' "$TARGETS" > "$TMPDIR/targets"
             index=0
             for build in ${lib.concatMapStringsSep " " toString builds}; do
@@ -160,28 +170,51 @@ in {
               mkdir -p "$target/libexec" "$target/doctests"
               cp "$build/build-info" "$target/build-info"
               cp -R "$build/packages" "$target/packages"
+
+              # The aliases of the requested tests, and the rows they serve:
+              # harnesses of the requested packages and kinds, plus the
+              # binaries those harnesses run through CARGO_BIN_EXE_*.
               awk -F '\t' '
-                FILENAME == ARGV[1] { wanted[$0] = 1; next }
-                FILENAME == ARGV[2] { targets[$0] = 1; filtered = 1; next }
-                wanted[$1] && (!filtered || targets[$3 ":" $4])
-              ' "$TMPDIR/selections" "$TMPDIR/targets" "$build/manifest.tsv" \
+                FILENAME == ARGV[1] { wanted[$0] = 1 }
+                FILENAME == ARGV[2] && $1 == "test" && wanted[$2]
+              ' "$TMPDIR/requests" "$build/aliases.tsv" > "$target/aliases.tsv"
+              awk -F '\t' '
+                FILENAME == ARGV[1] { targets[$0] = 1; filtered = 1; next }
+                FILENAME == ARGV[2] {
+                  packages = $2
+                  sub(/\[.*/, "", packages)
+                  count = split(packages, names, "+")
+                  kinds = split($3, served, ",")
+                  for (i = 1; i <= count; i++) {
+                    for (k = 1; k <= kinds; k++) harness[$4, names[i], served[k]] = 1
+                    binaries[$4, names[i]] = 1
+                  }
+                  next
+                }
+                ($2 == "harness" && harness[$1, $5, $3]) \
+                  || ($2 == "artifact" && $3 == "bin" && binaries[$1, $5]) {
+                  if (!filtered || targets[$3 ":" $4]) print
+                }
+              ' "$TMPDIR/targets" "$target/aliases.tsv" "$build/manifest.tsv" \
                 > "$target/manifest.tsv"
               cut -f 6 "$target/manifest.tsv" | sort -u | while read -r stored; do
                 cp "$build/$stored" "$target/$stored"
               done
-              while read -r selection; do
-                if [ -e "$build/doctests/$selection.status" ]; then
-                  cp "$build/doctests/$selection".* "$target/doctests/"
-                fi
-              done < "$TMPDIR/selections"
+              if [ -d "$build/doctests" ]; then
+                cut -f 1 "$target/manifest.tsv" | sort -u | while read -r selection; do
+                  [ ! -d "$build/doctests/$selection" ] \
+                    || cp -R "$build/doctests/$selection" "$target/doctests/"
+                done
+              fi
             done
-            # Every requested selection must exist in some family.
-            while read -r selection; do
-              cat "$out"/*/manifest.tsv | cut -f 1 | grep -Fxq "$selection" || {
-                echo "selection '$selection' is not built by the requested families" >&2
+
+            # Every request must be served by some family.
+            while read -r request; do
+              cat "$out"/*/aliases.tsv | cut -f 2 | grep -Fxq "$request" || {
+                echo "request '$request' is not served by the requested families" >&2
                 exit 1
               }
-            done < "$TMPDIR/selections"
+            done < "$TMPDIR/requests"
             ls -d "$out"/* | paste -sd: - > "$TMPDIR/builds"
             mkdir -p "$out/nix-support"
             cp "$TMPDIR/builds" "$out/nix-support/crucible-cargo-builds"

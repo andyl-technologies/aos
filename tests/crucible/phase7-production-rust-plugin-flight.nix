@@ -93,9 +93,7 @@
   };
   flightBinaries = mkCrucibleBinaries {
     pname = "crucible-production-rust-plugin-flight-binaries";
-    builds =
-      [workspaceTests.apacheRelease]
-      ++ lib.optional ackPollExperiment workspaceTests.apacheReleaseTestSupport;
+    builds = [workspaceTests.apacheRelease];
     executables = {
       crucible-qemu-production-plugin-flight = "build --release -p crucible-qemu ${testSupportFlag} --example crucible-qemu-production-plugin-flight";
       crucible-daemon-host-parallel-flight = "test --release -p crucible-daemon --lib";

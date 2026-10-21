@@ -16,22 +16,28 @@
 ##! ```
 ##!
 ##! A family groups selections that share a license scope and Cargo profile:
-##! Apache host tests, GPL-side process tests, Apache release executables,
-##! and so on. `_workspace-test-selections.nix` lists the selections. The
-##! artifacts derivation replays the same Cargo commands on a manifest-only
-##! dummy workspace, so its identity changes only with manifests, the
-##! lockfile, the toolchain, and the selection list. Development builds
-##! replace that seed with aos-dev's persistent incremental target directory.
+##! Apache debug tests, GPL-side debug tests, Apache release executables and
+##! harnesses, and GPL-side release harnesses. Each family compiles one
+##! unified feature resolution plus the few selections whose features would
+##! change test behavior (`_workspace-test-selections.nix`), so a source edit
+##! recompiles each first-party crate about once per profile. The artifacts
+##! derivation replays the same Cargo commands on a manifest-only dummy
+##! workspace, so its identity changes only with manifests, the lockfile,
+##! the toolchain, and the selection list. Development builds replace that
+##! seed with aos-dev's persistent incremental target directory.
 ##!
 ##! Each family output contains:
 ##!
 ##! ```text
-##! build-info            family, profile, and the compile-time source root
-##! manifest.tsv          id, role (harness|artifact), kind, name, package, path
-##! packages/<name>.env   Cargo's run-time package environment
-##! libexec/<sha>-<name>  content-addressed executables (and cdylibs); the
-##!                       build-only store references are removed there
-##! doctests/<id>.*       doctest outcomes, replayed with libtest filters
+##! build-info                 family, profile, and the compile-time source root
+##! aliases.tsv                mode, gate request, target kinds, selection
+##! manifest.tsv               selection, role (harness|artifact), kind, name,
+##!                            package, path, required-features (or -)
+##! packages/<name>.env        Cargo's run-time package environment
+##! libexec/<sha>-<name>       content-addressed executables (and cdylibs); the
+##!                            build-only store references are removed there
+##! doctests/<selection>/<package>.*
+##!                            doctest outcomes, replayed with libtest filters
 ##! ```
 ##!
 ##! Doctests are compiled and run once in the family build because rustdoc
@@ -74,14 +80,8 @@
   nativeBuildDeps = [buildRustDev buildPkgConfig openssl sqlite buildProtobuf];
   nativeRuntimeDeps = [openssl sqlite];
 
-  # Must match crucible-cargo's selection identity.
-  selectionId = selection: let
-    packages = lib.concatStringsSep "+" (lib.sort (a: b: a < b) selection.packages);
-    features = lib.sort (a: b: a < b) (selection.features or []);
-  in
-    if features == []
-    then packages
-    else "${packages}[${lib.concatStringsSep "," features}]";
+  # Every target kind; a `serves` entry without `kinds` answers all of them.
+  allKinds = ["lib" "bin" "test" "bench" "example"];
 
   selectionFlags = profile: selection:
     lib.concatStringsSep " " (
@@ -90,36 +90,67 @@
       ++ map (package: "-p ${package}") selection.packages
       ++ lib.optional ((selection.features or []) != [])
       "--features ${lib.concatStringsSep "," selection.features}"
-      ++ (selection.targets or [])
     );
 
-  # One record per Cargo invocation. `allTargets` adds a second invocation
-  # that compiles examples and benches as test harnesses as well.
-  testInvocations = profile: selection:
-    [
-      {
-        id = selectionId selection;
-        command = "test --no-run ${selectionFlags profile selection}";
-      }
-    ]
-    ++ lib.optional (selection.allTargets or false) {
-      id = selectionId selection;
-      command = "test --no-run ${selectionFlags profile selection} --all-targets";
-    };
-  buildInvocations = profile: selection: [
-    {
-      id = "build:${selectionId selection}";
-      command = "build ${selectionFlags profile selection}";
-    }
-  ];
+  # One record per Cargo invocation. Invocations of one selection share its
+  # feature resolution, so the second compiles only its own targets.
+  selectionInvocations = profile: selection:
+    map (invocation: {
+      inherit (selection) id;
+      collect = selection.collect or selection.packages;
+      command = lib.concatStringsSep " " (
+        [
+          (
+            if invocation.command == "test"
+            then "test --no-run"
+            else "build"
+          )
+          (selectionFlags profile selection)
+        ]
+        ++ invocation.targets
+      );
+    })
+    selection.invocations;
+
+  # Rows of aliases.tsv: mode, request, comma-separated kinds, selection.
+  aliasRows = selection:
+    lib.concatLists (lib.mapAttrsToList (mode: entries:
+      map (entry: let
+        request =
+          if builtins.isString entry
+          then entry
+          else entry.request;
+        kinds =
+          if builtins.isString entry
+          then allKinds
+          else entry.kinds;
+      in {
+        inherit mode request kinds;
+        inherit (selection) id;
+      })
+      entries) (selection.serves or {}));
+
+  # A request answered by two selections for the same target kind would be
+  # ambiguous; reject the selection list at evaluation instead.
+  checkedAliasRows = selections: let
+    rows = lib.concatMap aliasRows selections;
+    claims = lib.concatMap (row: map (kind: "${row.mode} ${row.request} ${kind}") row.kinds) rows;
+    duplicates = lib.subtractLists (lib.unique claims) claims;
+  in
+    if lib.length (lib.unique claims) == lib.length claims
+    then rows
+    else throw "crucible workspace tests: ambiguous selections for ${toString duplicates}";
+
+  aliasesFile = name: selections:
+    builtins.toFile "crucible-${name}-aliases.tsv" (lib.concatMapStrings (row: "${row.mode}\t${row.request}\t${lib.concatStringsSep "," row.kinds}\t${row.id}\n") (checkedAliasRows selections));
 
   shellQuote = value: "'${builtins.replaceStrings ["'"] ["'\"'\"'"] value}'";
 
   # Re-runs each invocation after the build. Every unit is fresh by then, so
-  # Cargo only reports the executables of that exact selection. Cargo also
+  # Cargo only reports the executables of that exact invocation. Cargo also
   # relinks fresh binaries into their uplifted paths, so a binary is copied
   # before the next selection can replace it.
-  collectExecutables = invocations: doctestInvocations: ''
+  collectExecutables = invocations: doctestSelections: ''
     collectRoot="$NIX_BUILD_TOP/crucible-workspace-tests"
     mkdir -p "$collectRoot/libexec" "$collectRoot/packages"
     : > "$collectRoot/manifest.unsorted"
@@ -127,17 +158,30 @@
     cargo metadata --format-version 1 --frozen --offline --no-deps \
       > "$collectRoot/metadata.json"
 
-    collect_selection() {
+    collect_invocation() {
       selection_id=$1
-      shift
+      collect_packages=$2
+      shift 2
       cargo "$@" --message-format=json > "$collectRoot/messages.jsonl"
-      jq -r --slurpfile metadata "$collectRoot/metadata.json" '
+      jq -r --slurpfile metadata "$collectRoot/metadata.json" \
+        --arg collect "$collect_packages" '
         ($metadata[0].packages
           | map({key: .manifest_path, value: .name}) | from_entries) as $names
+        # Cargo applies required-features per request; the runner needs them
+        # to skip targets a narrower request would not have compiled.
+        | ($metadata[0].packages
+          | map(.manifest_path as $manifest | .targets[]
+              | {key: "\($manifest) \(.kind[0]) \(.name)",
+                 value: ((."required-features" // []) | join(","))})
+          | from_entries) as $required
+        | ($collect | split(" ")) as $collected
         | select(.reason == "compiler-artifact")
         # Only workspace targets; build scripts are compiler executables.
         | select($names[.manifest_path] != null)
         | select(.target.kind | index("custom-build") | not)
+        # Dependencies of a selection are compiled, not published.
+        | $names[.manifest_path] as $package
+        | select($collected | index($package))
         # A cdylib, such as the QEMU plugin, is the artifact gates load.
         | (if .executable != null then .executable
            elif (.target.kind | index("cdylib")) and (.profile.test | not)
@@ -150,65 +194,83 @@
               | if . == "bin" or . == "test" or . == "bench" or . == "example"
                 then . else "lib" end),
             .target.name,
-            $names[.manifest_path],
-            $path
+            $package,
+            $path,
+            ($required["\(.manifest_path) \(.target.kind[0]) \(.target.name)"]
+              | if . == null or . == "" then "-" else . end)
           ]
         # A non-whitespace separator keeps empty fields from shifting.
         | join("\u001f")
-      ' "$collectRoot/messages.jsonl" \
-        | while IFS="$(printf '\037')" read -r role kind name package executable; do
-            test -n "$package" && test -f "$executable"
-            digest=$(sha256sum "$executable" | cut -d ' ' -f 1)
-            case $executable in
-              *.so) stored="libexec/$digest-''${executable##*/}" ;;
-              *) stored="libexec/$digest-$name" ;;
-            esac
-            if [ ! -e "$collectRoot/$stored" ]; then
-              cp "$executable" "$collectRoot/$stored"
-              # The workspace test profile asks for no debug info; the DWARF
-              # here comes from prebuilt std and is about 95% of each file.
-              # Symbols stay, so backtraces still name functions.
-              chmod u+w "$collectRoot/$stored"
-              strip --strip-debug "$collectRoot/$stored"
-            fi
-            printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
-              "$selection_id" "$role" "$kind" "$name" "$package" "$stored" \
-              >> "$collectRoot/manifest.unsorted"
-          done
+      ' "$collectRoot/messages.jsonl" > "$collectRoot/artifacts"
+      # A selection that publishes nothing means the filter above is wrong.
+      test -s "$collectRoot/artifacts"
+      while IFS="$(printf '\037')" read -r role kind name package executable required; do
+        test -n "$package" && test -f "$executable"
+        digest=$(sha256sum "$executable" | cut -d ' ' -f 1)
+        case $executable in
+          *.so) stored="libexec/$digest-''${executable##*/}" ;;
+          *) stored="libexec/$digest-$name" ;;
+        esac
+        if [ ! -e "$collectRoot/$stored" ]; then
+          cp "$executable" "$collectRoot/$stored"
+          # The workspace test profile asks for no debug info; the DWARF
+          # here comes from prebuilt std and is about 95% of each file.
+          # Symbols stay, so backtraces still name functions.
+          chmod u+w "$collectRoot/$stored"
+          strip --strip-debug "$collectRoot/$stored"
+        fi
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+          "$selection_id" "$role" "$kind" "$name" "$package" "$stored" "$required" \
+          >> "$collectRoot/manifest.unsorted"
+      done < "$collectRoot/artifacts"
     }
 
-    ${lib.concatMapStringsSep "\n" (invocation: "collect_selection ${shellQuote invocation.id} ${invocation.command}") invocations}
+    ${lib.concatMapStringsSep "\n" (invocation: "collect_invocation ${shellQuote invocation.id} ${shellQuote (toString invocation.collect)} ${invocation.command}") invocations}
 
     LC_ALL=C sort -u "$collectRoot/manifest.unsorted" > "$collectRoot/manifest.tsv"
 
-    ${lib.optionalString (doctestInvocations != []) ''
+    ${lib.optionalString (doctestSelections != []) ''
       # Doctests compile through rustdoc and cannot be published as
-      # executables. Run each doctestable selection once and record the
+      # executables. Run them once per selection and record each package's
       # outcome; the runner replays it with each gate's own filters and fails
-      # exactly where `cargo test` would have failed.
-      mkdir -p "$collectRoot/doctests"
+      # exactly where `cargo test` would have failed. --no-fail-fast keeps one
+      # package's failure from hiding the others' results.
       record_doctests() {
         selection_id=$1
-        package=$2
-        shift 2
-        if ! jq -e --arg package "$package" '
-            .packages[] | select(.name == $package) | .targets
-            | any((.kind | index("lib") or index("rlib") or index("dylib") or index("proc-macro"))
+        shift
+        record="$collectRoot/doctests/$selection_id"
+        mkdir -p "$record"
+        cargo test --doc --no-fail-fast "$@" -- --test-threads=1 \
+          > "$record/all.log" 2>&1 || true
+        cat "$record/all.log"
+
+        # Cargo heads each library's doctests with `Doc-tests <crate>`.
+        jq -r '
+          .packages[] | . as $package | .targets[]
+          | select((.kind | index("lib") or index("rlib") or index("dylib") or index("proc-macro"))
               and .doctest)
-          ' "$collectRoot/metadata.json" > /dev/null; then
-          return 0
-        fi
-        doctest_status=0
-        cargo test --doc "$@" -- --test-threads=1 \
-          > "$collectRoot/doctests/$selection_id.log" 2>&1 || doctest_status=$?
-        cat "$collectRoot/doctests/$selection_id.log"
-        printf '%s\n' "$doctest_status" > "$collectRoot/doctests/$selection_id.status"
-        sed -n 's/^test \(.*\) \.\.\. \(ok\|ignored\|FAILED\)$/\1\t\2/p' \
-          "$collectRoot/doctests/$selection_id.log" \
-          | LC_ALL=C sort > "$collectRoot/doctests/$selection_id.tsv"
+          | "\($package.name) \(.name)"
+        ' "$collectRoot/metadata.json" | while read -r package crate; do
+          case " $* " in *" -p $package "*) ;; *) continue ;; esac
+          awk -v header="   Doc-tests $crate" '
+            $0 == header { inside = 1; next }
+            /^   Doc-tests / { inside = 0 }
+            inside
+          ' "$record/all.log" > "$record/$package.log"
+          if grep -q '^test result: ok\.' "$record/$package.log"; then
+            printf '0\n' > "$record/$package.status"
+          else
+            # A missing section means rustdoc failed before running tests.
+            [ -s "$record/$package.log" ] || cp "$record/all.log" "$record/$package.log"
+            printf '101\n' > "$record/$package.status"
+          fi
+          sed -n 's/^test \(.*\) \.\.\. \(ok\|ignored\|FAILED\)$/\1\t\2/p' \
+            "$record/$package.log" | LC_ALL=C sort > "$record/$package.tsv"
+        done
+        rm "$record/all.log"
       }
 
-      ${lib.concatMapStringsSep "\n" (invocation: "record_doctests ${shellQuote invocation.id} ${shellQuote invocation.package} ${invocation.flags}") doctestInvocations}
+      ${lib.concatMapStringsSep "\n" (selection: "record_doctests ${shellQuote selection.id} ${selection.flags}") doctestSelections}
     ''}
 
     # Cargo's run-time package environment, quoted for the runner's shell.
@@ -247,7 +309,8 @@
         done
   '';
 
-  installCollected = family: profile: ''
+  installCollected = family: profile: aliases: ''
+    cp ${aliases} "$out/aliases.tsv"
     cp -R "$NIX_BUILD_TOP/crucible-workspace-tests/libexec" "$out/libexec"
     cp -R "$NIX_BUILD_TOP/crucible-workspace-tests/packages" "$out/packages"
     cp "$NIX_BUILD_TOP/crucible-workspace-tests/manifest.tsv" "$out/manifest.tsv"
@@ -282,23 +345,22 @@
     done
   '';
 
-  # A family compiles its invocations once against its own dependency
+  # A family compiles its selections once against its own dependency
   # artifacts. The artifacts replay identical commands on the dummy source,
   # which keeps their third-party feature resolution exact.
   mkFamily = {
     name,
     profile,
     licenseScope,
-    invocations,
-    doctestSelections ? [],
+    familySelections,
   }: let
-    doctestInvocations =
+    invocations = lib.concatMap (selectionInvocations profile) familySelections;
+    doctestSelections =
       map (selection: {
-        id = selectionId selection;
-        package = builtins.head selection.packages;
+        inherit (selection) id;
         flags = selectionFlags profile selection;
       })
-      doctestSelections;
+      (lib.filter (selection: selection.doctests or false) familySelections);
     commands = lib.unique (map (invocation: invocation.command) invocations);
     contract = {
       family = "crucible-workspace-tests-${name}";
@@ -334,12 +396,12 @@
       dontPatchELF = true;
       # installCollected removes build-only references itself; see there.
       dontNukeRefs = true;
-      postBuild = collectExecutables invocations doctestInvocations;
-      postInstall = installCollected name profile;
+      postBuild = collectExecutables invocations doctestSelections;
+      postInstall = installCollected name profile (aliasesFile name familySelections);
       passthru = {
         inherit artifacts profile nativeRuntimeDeps;
         family = name;
-        selectionIds = lib.unique (map (invocation: invocation.id) invocations);
+        selectionIds = map (selection: selection.id) familySelections;
       };
       meta.description = "Prebuilt Crucible ${name} workspace test executables";
     };
@@ -348,41 +410,28 @@
     name = "apache-debug";
     profile = "debug";
     licenseScope = "Apache-2.0";
-    invocations =
-      lib.concatMap (testInvocations "debug") selections.apacheTests
-      ++ lib.concatMap (buildInvocations "debug") selections.apacheBuilds;
-    doctestSelections = selections.apacheTests;
+    familySelections = selections.apacheTests;
   };
+
   gplTests = mkFamily {
     name = "gpl-debug";
     profile = "debug";
     licenseScope = "GPL-2.0-only";
-    invocations =
-      lib.concatMap (testInvocations "debug") selections.gplTests
-      ++ lib.concatMap (buildInvocations "debug") selections.gplBuilds;
-    doctestSelections = selections.gplTests;
+    familySelections = selections.gplTests;
   };
+
   apacheRelease = mkFamily {
     name = "apache-release";
     profile = "release";
     licenseScope = "Apache-2.0";
-    invocations =
-      lib.concatMap (buildInvocations "release") selections.apacheReleaseBuilds
-      ++ lib.concatMap (testInvocations "release") selections.apacheReleaseTests;
+    familySelections = selections.apacheRelease;
   };
+
   gplRelease = mkFamily {
     name = "gpl-release";
     profile = "release";
     licenseScope = "GPL-2.0-only";
-    invocations = lib.concatMap (testInvocations "release") selections.gplReleaseTests;
-  };
-  # Test support changes crucible-qemu's dependency features. Keeping it in
-  # its own family leaves the default release executables unaffected.
-  apacheReleaseTestSupport = mkFamily {
-    name = "apache-release-test-support";
-    profile = "release";
-    licenseScope = "Apache-2.0";
-    invocations = lib.concatMap (buildInvocations "release") selections.apacheReleaseTestSupportBuilds;
+    familySelections = selections.gplRelease;
   };
 
   runner = mkDerivation {
@@ -407,5 +456,5 @@
     meta.description = "Runs prebuilt Crucible workspace tests with Cargo's command line";
   };
 in {
-  inherit apacheTests gplTests apacheRelease apacheReleaseTestSupport gplRelease runner buildSource selections selectionId;
+  inherit apacheTests gplTests apacheRelease gplRelease runner buildSource selections;
 }

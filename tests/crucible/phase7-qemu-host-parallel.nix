@@ -15,7 +15,7 @@
     src = source;
     subset = testGate.mkCrucibleTestSubset {
       pname = "crucible-qemu-host-parallel-tests";
-      selections = ["crucible"];
+      requests = ["crucible"];
       targets = ["lib:crucible"];
     };
   };

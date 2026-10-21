@@ -3,12 +3,13 @@
 # Cargo command line that originally built and ran them.
 #
 # The workspace test builds (pkgs/tools/crucible/_workspace-tests.nix) compile
-# every Cargo selection once and publish its executables with a manifest.
+# a few Cargo selections once and publish their executables with a manifest.
 # This tool accepts the same `cargo test`, `cargo run`, and `cargo build`
-# arguments that gates used, resolves them to that manifest, and runs the
-# executables the way Cargo does: one target at a time in Cargo's order, from
-# the package directory, with Cargo's package environment, stopping at the
-# first failing target with exit status 101. It never compiles.
+# arguments that gates used, maps the request to the selection that serves it
+# (aliases.tsv), and runs the executables the way Cargo does: one target at a
+# time in Cargo's order, from the package directory, with Cargo's package
+# environment, stopping at the first failing target with exit status 101. It
+# never compiles.
 #
 # Usage:
 #   crucible-cargo test [CARGO TEST OPTIONS] [TESTNAME] [-- LIBTEST ARGS]
@@ -107,34 +108,52 @@ else
   profile=debug
 fi
 
-# The selection identity matches _workspace-tests.nix: sorted packages joined
-# by `+`, followed by sorted features in brackets.
+# The request identity matches the `serves` entries of
+# _workspace-test-selections.nix: sorted packages joined by `+`, followed by
+# sorted requested features in brackets.
 package_id=$(printf '%s\n' "${packages[@]}" | LC_ALL=C sort -u | paste -sd+ -)
 feature_id=
 if [ "${#features[@]}" -gt 0 ]; then
   feature_id=$(printf '%s\n' "${features[@]}" | LC_ALL=C sort -u | paste -sd, -)
 fi
-selection=$package_id${feature_id:+[$feature_id]}
+request=$package_id${feature_id:+[$feature_id]}
 
 : "${CRUCIBLE_CARGO_BUILDS:?CRUCIBLE_CARGO_BUILDS must name the workspace test builds}"
 
-# Prints manifest rows of this profile as `build<TAB>id<TAB>role<TAB>kind<TAB>
-# name<TAB>package<TAB>path`.
-manifest_rows() {
+# Prints the manifest rows that serve this request in `mode` (test or build)
+# as `build<TAB>selection<TAB>role<TAB>kind<TAB>name<TAB>package<TAB>path<TAB>
+# required-features`. aliases.tsv names the selection answering each request
+# and target kind; only the requested packages' rows qualify.
+resolved_rows() {
+  local mode=$1 role=$2
   local build build_profile
+  local requested=" ${packages[*]} "
   local IFS=:
   for build in $CRUCIBLE_CARGO_BUILDS; do
     build_profile=$(sed -n 's/^profile=//p' "$build/build-info")
     [ "$build_profile" = "$profile" ] || continue
-    awk -v build="$build" -F '\t' 'BEGIN { OFS = "\t" } { print build, $0 }' \
-      "$build/manifest.tsv"
+    awk -F '\t' -v build="$build" -v mode="$mode" -v request="$request" \
+      -v role="$role" -v packages="$requested" -v package="$select_package" '
+      BEGIN { OFS = "\t" }
+      FILENAME == ARGV[1] {
+        if ($1 == mode && $2 == request) {
+          count = split($3, kinds, ",")
+          for (index_ = 1; index_ <= count; index_++) served[$4, kinds[index_]] = 1
+        }
+        next
+      }
+      (($1, $3) in served) && $2 == role && index(packages, " " $5 " ") \
+        && (package == "" || $5 == package) { print build, $0 }
+    ' "$build/aliases.tsv" "$build/manifest.tsv"
   done
 }
 
-rows_for() {
-  local id=$1 role=$2
-  manifest_rows | awk -F '\t' -v id="$id" -v role="$role" -v package="$select_package" \
-    '$2 == id && $3 == role && (package == "" || $6 == package)'
+# Prints the selection of `build` that serves this request's library tests,
+# whose doctests the request replays.
+doctest_selection() {
+  awk -F '\t' -v request="$request" '
+    $1 == "test" && $2 == request && ("," $3 ",") ~ /,lib,/ { print $4; exit }
+  ' "$1/aliases.tsv"
 }
 
 source_root_for() {
@@ -153,8 +172,21 @@ kind_rank() {
   esac
 }
 
-selection_missing() {
-  die "no prebuilt $profile selection '$1'; add it to pkgs/tools/crucible/_workspace-test-selections.nix"
+request_missing() {
+  die "no prebuilt $profile selection serves $1 request '$request'; add it to a selection's serves in pkgs/tools/crucible/_workspace-test-selections.nix"
+}
+
+# Succeeds when the request enables every feature in the comma-separated
+# list for `package`, as Cargo checks a target's required-features.
+features_enabled() {
+  local package=$1 required=$2 feature
+  [ "$required" = - ] && return 0
+  for feature in ${required//,/ }; do
+    case " ${features[*]} " in
+      *" $feature "* | *" $package/$feature "*) ;;
+      *) return 1 ;;
+    esac
+  done
 }
 
 # Selects rows matching target specifications. Each output row keeps the
@@ -186,13 +218,21 @@ select_targets() {
     matched=$(printf '%s\n' "$rows" | awk -F '\t' -v kind="$kind" -v name="$name" \
       '$4 == kind && (name == "" || $5 == name)')
     if [ -z "$matched" ] && [ -n "$name" ]; then
-      die "no $kind target named '$name' in selection '$selection'"
+      die "no $kind target named '$name' serves request '$request'"
     fi
     if [ -z "$matched" ] && [ "$kind" = lib ] && [ "${#target_specs[@]}" -gt 0 ]; then
-      die "no library target in selection '$selection'"
+      die "no library target serves request '$request'"
     fi
     [ -n "$matched" ] || continue
     printf '%s\n' "$matched" | while IFS= read -r row; do
+      # A unified selection also compiles targets whose required-features
+      # this request does not enable. Cargo skips those targets when it
+      # selects by kind and rejects them when they are named.
+      if ! features_enabled "$(printf '%s\n' "$row" | cut -f 6)" \
+          "$(printf '%s\n' "$row" | cut -f 8)"; then
+        [ -z "$name" ] || die "target '$name' requires the features: $(printf '%s\n' "$row" | cut -f 8)"
+        continue
+      fi
       printf '%s\t%s\n' "$(kind_rank "$kind")" "$row"
     done
   done | LC_ALL=C sort -t "$(printf '\t')" -k1,1n -k6,6 -u | cut -f 2-
@@ -215,10 +255,11 @@ writable_copy() {
   printf '%s\n' "$copy"
 }
 
-# Runs one executable with Cargo's run-time package environment.
+# Runs one executable of `selection` with Cargo's run-time package
+# environment.
 run_executable() {
-  local build=$1 package=$2 path=$3 working_directory=$4
-  shift 4
+  local build=$1 selection=$2 package=$3 path=$4 working_directory=$5
+  shift 5
   local env_file="$build/packages/$package.env"
   local source_root bin_row bin_name bin_path
   local -a environment=()
@@ -255,12 +296,12 @@ run_executable() {
   # of the same selection under the same names.
   while IFS= read -r bin_row; do
     [ -n "$bin_row" ] || continue
-    bin_name=$(printf '%s\n' "$bin_row" | cut -f 5)
-    bin_path=$(printf '%s\n' "$bin_row" | cut -f 7)
+    bin_name=$(printf '%s\n' "$bin_row" | cut -f 4)
+    bin_path=$build/$(printf '%s\n' "$bin_row" | cut -f 6)
     environment+=("CARGO_BIN_EXE_$bin_name=$(writable_copy "$bin_path")")
-  done < <(rows_for "$selection" artifact | awk -F '\t' -v package="$package" \
-    -v build="$build" '$1 == build && $4 == "bin" && $6 == package' \
-    | awk -F '\t' 'BEGIN { OFS = "\t" } { $7 = $1 "/" $7; print }')
+  done < <(awk -F '\t' -v selection="$selection" -v package="$package" \
+    '$1 == selection && $2 == "artifact" && $3 == "bin" && $5 == package' \
+    "$build/manifest.tsv")
 
   if [ "$working_directory" = package ]; then
     working_directory=$source_root/$CRUCIBLE_CARGO_PACKAGE_DIR
@@ -314,19 +355,22 @@ name_matches() {
 # select the failing doctest.
 replay_doctests() {
   local build=$1 package=$2
-  local results=$build/doctests/$selection.tsv
-  local status_file=$build/doctests/$selection.status
+  local selection record results status_file
   local name status filter skip selected recorded_status
   local passed=0 ignored=0 filtered=0 failed=0
   local -a lines=()
 
-  [ -f "$status_file" ] || die "no recorded doctests for selection '$selection'"
+  selection=$(doctest_selection "$build")
+  record=$build/doctests/$selection/$package
+  results=$record.tsv
+  status_file=$record.status
+  [ -f "$status_file" ] || die "no recorded doctests serve request '$request'"
   recorded_status=$(cat "$status_file")
 
   printf '   Doc-tests %s\n' "${package//-/_}" >&2
   if [ "$recorded_status" -ne 0 ] && ! grep -q "$(printf '\t')FAILED\$" "$results"; then
-    cat "$build/doctests/$selection.log" >&2
-    die "doctests for selection '$selection' failed to compile"
+    cat "$record.log" >&2
+    die "doctests for request '$request' failed to compile"
   fi
 
   parse_libtest_args "${positional[@]}" "${trailing[@]}"
@@ -379,7 +423,7 @@ replay_doctests() {
     printf 'test %s ... %s\n' "${name%%$'\t'*}" "${name#*$'\t'}"
   done
   if [ "$failed" -gt 0 ]; then
-    cat "$build/doctests/$selection.log" >&2
+    cat "$record.log" >&2
     printf '\ntest result: FAILED. %s passed; %s failed; %s ignored; 0 measured; %s filtered out; finished in 0.00s\n\n' \
       "$passed" "$failed" "$ignored" "$filtered"
     printf 'error: doctest failed, to rerun pass `-p %s --doc`\n' "$package" >&2
@@ -408,13 +452,13 @@ doc_phase_requested() {
 }
 
 run_tests() {
-  local rows selected row build package path kind name status=0
+  local rows selected row build selection package path kind name status=0
   [ "${#packages[@]}" -eq 1 ] || [ "$no_run" = true ] || \
     die "crucible-cargo test runs exactly one package"
   [ "${#positional[@]}" -le 1 ] || die "cargo test accepts one TESTNAME"
 
-  rows=$(rows_for "$selection" harness)
-  [ -n "$rows" ] || selection_missing "$selection"
+  rows=$(resolved_rows test harness)
+  [ -n "$rows" ] || request_missing test
   selected=$(select_targets "$rows" "lib bin test")
 
   [ "$no_run" = false ] || return 0
@@ -422,13 +466,14 @@ run_tests() {
   while IFS= read -r row; do
     [ -n "$row" ] || continue
     build=$(printf '%s\n' "$row" | cut -f 1)
+    selection=$(printf '%s\n' "$row" | cut -f 2)
     kind=$(printf '%s\n' "$row" | cut -f 4)
     name=$(printf '%s\n' "$row" | cut -f 5)
     package=$(printf '%s\n' "$row" | cut -f 6)
     path=$build/$(printf '%s\n' "$row" | cut -f 7)
     printf '     Running %s %s (%s)\n' "$kind" "$name" "$path" >&2
     status=0
-    run_executable "$build" "$package" "$path" package \
+    run_executable "$build" "$selection" "$package" "$path" package \
       "${positional[@]}" "${trailing[@]}" || status=$?
     if [ "$status" -ne 0 ]; then
       printf 'error: test failed, to rerun pass `-p %s --%s %s`\n' \
@@ -448,8 +493,8 @@ run_tests() {
 # use Cargo's test profile and are only a fallback for `executable test`.
 artifact_rows() {
   local rows
-  rows=$(rows_for "build:$selection" artifact)
-  [ -n "$rows" ] || selection_missing "build:$selection"
+  rows=$(resolved_rows build artifact)
+  [ -n "$rows" ] || request_missing build
   # Library rows exist only for cdylibs, which are loadable artifacts.
   select_targets "$rows" "lib bin"
 }
@@ -458,17 +503,17 @@ artifact_row() {
   local selected count
   selected=$(artifact_rows)
   count=$(printf '%s\n' "$selected" | grep -c . || true)
-  [ "$count" -eq 1 ] || die "expected one executable for '$selection', found $count"
+  [ "$count" -eq 1 ] || die "expected one executable for '$request', found $count"
   printf '%s\n' "$selected"
 }
 
 harness_row() {
   local rows selected count
-  rows=$(rows_for "$selection" harness)
-  [ -n "$rows" ] || selection_missing "$selection"
+  rows=$(resolved_rows test harness)
+  [ -n "$rows" ] || request_missing test
   selected=$(select_targets "$rows" "lib bin test")
   count=$(printf '%s\n' "$selected" | grep -c . || true)
-  [ "$count" -eq 1 ] || die "expected one test executable for '$selection', found $count"
+  [ "$count" -eq 1 ] || die "expected one test executable for '$request', found $count"
   printf '%s\n' "$selected"
 }
 
@@ -481,12 +526,13 @@ case $subcommand in
   run)
     row=$(artifact_row)
     run_executable "$(printf '%s\n' "$row" | cut -f 1)" \
-      "$(printf '%s\n' "$row" | cut -f 6)" "$(row_path "$row")" "$PWD" \
+      "$(printf '%s\n' "$row" | cut -f 2)" "$(printf '%s\n' "$row" | cut -f 6)" \
+      "$(row_path "$row")" "$PWD" \
       "${positional[@]}" "${trailing[@]}"
     ;;
   build)
     # Every requested target must exist; building never compiles here.
-    [ -n "$(artifact_rows)" ] || die "no prebuilt executable for '$selection'"
+    [ -n "$(artifact_rows)" ] || die "no prebuilt executable for '$request'"
     ;;
   executable)
     case $executable_mode in

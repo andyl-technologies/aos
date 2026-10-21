@@ -18,7 +18,7 @@
     src = crucibleSrc;
     subset = testGate.mkCrucibleTestSubset {
       pname = "crucible-checkpoint-delta-flight-tests";
-      selections = ["crucible-qemu"];
+      requests = ["crucible-qemu"];
     };
   };
   checkpointPluginSource = builtins.path {

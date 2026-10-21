@@ -15,7 +15,7 @@
     src = source;
     subset = testGate.mkCrucibleTestSubset {
       pname = "crucible-device-host-work-overlap-tests";
-      selections = ["crucible-qemu"];
+      requests = ["crucible-qemu"];
       targets = ["lib:crucible_qemu"];
     };
   };
