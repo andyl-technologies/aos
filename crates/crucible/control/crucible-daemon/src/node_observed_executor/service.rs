@@ -262,6 +262,7 @@ impl NodeObservationRetention {
 /// borrower destruction cannot discard cleanup, inputs, or original operation
 /// commitments. GC inventories [`Self::retention_roots`] under its ref fence.
 pub struct NodeObservationService {
+    complete_scene_submitted: AtomicBool,
     repository: Arc<CampaignRepository>,
     commands: SyncSender<Command>,
     stopping: Arc<AtomicBool>,

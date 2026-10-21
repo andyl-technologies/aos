@@ -129,6 +129,7 @@ impl NodeObservationService {
             .recv()
             .map_err(|_| NodeObservationServiceError::Unavailable)??;
         Ok(Self {
+            complete_scene_submitted: AtomicBool::new(false),
             repository,
             commands,
             stopping,

@@ -143,6 +143,7 @@ fn queued_status_is_immediate_and_full_queue_preserves_original_unavailable_reco
     let ledger = ledger::RootPreparationLedger::new(blobs.clone(), refs.clone()).unwrap();
     let (commands, receiver) = mpsc::sync_channel(1);
     let service = super::super::NodeObservationService {
+        complete_scene_submitted: AtomicBool::new(false),
         repository: Arc::new(crucible_campaign::CampaignRepository::new(
             blobs.clone(),
             refs.clone(),

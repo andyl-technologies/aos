@@ -64,8 +64,28 @@ impl NodeObservationService {
     /// foundation work on the owning actor's next poll. The exchange returns
     /// Refused because the full lifecycle is absent.
     pub fn prepare_complete_scene(&self) -> Result<(), NodeObservationServiceError> {
+        if self.stopping.load(Ordering::Acquire) {
+            return Err(NodeObservationServiceError::Unavailable);
+        }
+        // This reserves submission only. Native once-only custody and every
+        // preparation decision remain on the owning actor. Once admitted, a
+        // retry must not wait behind that actor's potentially long preparation,
+        // even if the original caller lost its reply.
+        if self
+            .complete_scene_submitted
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Err(refused("complete-scene preparation already submitted"));
+        }
+
         let (reply, response) = mpsc::sync_channel(1);
-        self.send(Command::CompleteScenePrepare { reply })?;
+        if let Err(error) = self.send(Command::CompleteScenePrepare { reply }) {
+            // No command entered the queue, so no actor custody was spent.
+            self.complete_scene_submitted
+                .store(false, Ordering::Release);
+            return Err(error);
+        }
         response
             .recv()
             .map_err(|_| NodeObservationServiceError::Unavailable)?

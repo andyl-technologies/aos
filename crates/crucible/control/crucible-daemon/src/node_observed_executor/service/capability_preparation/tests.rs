@@ -144,6 +144,7 @@ fn pending_status_and_exact_retry_do_not_wait_for_actor_and_full_queue_keeps_ori
         ledger::CapabilityPreparationLedger::new(blobs.clone(), refs.clone()).unwrap();
     let (commands, receiver) = mpsc::sync_channel(1);
     let service = super::super::NodeObservationService {
+        complete_scene_submitted: AtomicBool::new(false),
         repository: Arc::new(crucible_campaign::CampaignRepository::new(
             blobs.clone(),
             refs.clone(),

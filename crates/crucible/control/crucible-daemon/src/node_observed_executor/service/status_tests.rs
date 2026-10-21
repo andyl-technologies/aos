@@ -112,6 +112,7 @@ impl Fixture {
 
         let (commands, receiver) = mpsc::sync_channel(1);
         let service = NodeObservationService {
+            complete_scene_submitted: AtomicBool::new(false),
             repository,
             commands,
             stopping: Arc::new(AtomicBool::new(false)),
@@ -209,4 +210,98 @@ fn completed_original_status_reads_current_publication_without_actor_polling() {
         ObservedAttemptState::Completed(result)
     );
     fixture.require_unconsumed_command();
+}
+
+#[test]
+fn complete_scene_submission_retries_bypass_an_unresolved_actor_command() {
+    let fixture = Fixture::new();
+    assert!(matches!(
+        fixture.service.prepare_complete_scene(),
+        Err(NodeObservationServiceError::Capacity)
+    ));
+    assert!(
+        !fixture
+            .service
+            .complete_scene_submitted
+            .load(Ordering::Acquire)
+    );
+    fixture.require_unconsumed_command();
+
+    let service = Arc::new(fixture.service);
+    let original_service = Arc::clone(&service);
+    let original = thread::spawn(move || original_service.prepare_complete_scene());
+    let Command::CompleteScenePrepare { reply } = fixture
+        .receiver
+        .recv_timeout(Duration::from_secs(1))
+        .unwrap()
+    else {
+        panic!("original preparation command missing");
+    };
+
+    // Withhold the original result, modeling an actor occupied by preparation.
+    // A duplicate submission must refuse without consulting the actor queue.
+    let retry_service = Arc::clone(&service);
+    let (retry_reply, retry_result) = mpsc::sync_channel(1);
+    let retry = thread::spawn(move || {
+        retry_reply
+            .send(retry_service.prepare_complete_scene())
+            .unwrap();
+    });
+    let result = retry_result.recv_timeout(Duration::from_secs(1));
+    reply
+        .send(Err(refused("original model preparation refusal")))
+        .unwrap();
+    let queue_empty = matches!(fixture.receiver.try_recv(), Err(mpsc::TryRecvError::Empty));
+    drop(fixture.receiver);
+    retry.join().unwrap();
+
+    assert!(matches!(
+        result.unwrap(),
+        Err(NodeObservationServiceError::Refused(_))
+    ));
+    assert!(queue_empty);
+    assert!(matches!(
+        original.join().unwrap(),
+        Err(NodeObservationServiceError::Refused(_))
+    ));
+    assert!(matches!(
+        service.prepare_complete_scene(),
+        Err(NodeObservationServiceError::Refused(_))
+    ));
+}
+
+#[test]
+fn lost_complete_scene_reply_keeps_original_submission_spent() {
+    let fixture = Fixture::new();
+    fixture.require_unconsumed_command();
+    let service = Arc::new(fixture.service);
+    let original_service = Arc::clone(&service);
+    let original = thread::spawn(move || original_service.prepare_complete_scene());
+    let Command::CompleteScenePrepare { reply } = fixture
+        .receiver
+        .recv_timeout(Duration::from_secs(1))
+        .unwrap()
+    else {
+        panic!("original preparation command missing");
+    };
+    drop(reply);
+
+    assert!(matches!(
+        original.join().unwrap(),
+        Err(NodeObservationServiceError::Unavailable)
+    ));
+    assert!(matches!(
+        service.prepare_complete_scene(),
+        Err(NodeObservationServiceError::Refused(_))
+    ));
+    assert!(matches!(
+        fixture.receiver.try_recv(),
+        Err(mpsc::TryRecvError::Empty)
+    ));
+
+    service.stopping.store(true, Ordering::Release);
+    assert!(matches!(
+        service.prepare_complete_scene(),
+        Err(NodeObservationServiceError::Unavailable)
+    ));
 }

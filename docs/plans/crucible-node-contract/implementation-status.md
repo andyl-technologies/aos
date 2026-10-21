@@ -351,9 +351,36 @@ omitted the required installed packet-provider input and failed five fixture
 setups; the complete configured rerun uses the same actual test executable.
 All 1,747 standard Transport library tests pass, with zero failures, no filtering
 and 15 ignores, including direct equality with the original owned Bytes codec.
-Changed-file formatting passes. The actual funded VM and required application
-compilation refresh are running; this checkpoint does not claim their results
-or qualification of an actual declaration serialization callback.
+Changed-file formatting passes. The rebuilt VM reaches all three genuine
+Source declaration loans in both positive consumers, retains their retry credit
+and completes namespace cleanup. The small-policy and foreign-pin controls also
+pass. The enclosing check then fails in the spent default-feature CLI retry:
+the original prepare returns Refused, but the retry's actor exchange expires
+with EAGAIN. No deadline or assertion is relaxed. This remains a failed full VM
+check and does not qualify an actual declaration serialization callback.
+
+The required application-target gate passes for `b714e6711f`: all 74 owned
+changed Rust files match its registered source capture. It compiles 180 test
+executables across 58 package IDs, including 71 integration targets, without
+running them. The gate excludes the later retained-custody lint cleanup,
+submission guard and raw-bootstrap receiver.
+
+## Immediate spent preparation submission refusal
+
+The service reserves complete-scene submission before queue admission. Once its
+original command enters the actor queue, duplicate submissions return Refused
+without waiting behind the actor's foundation or template work. A full or
+unavailable queue resets this submission reservation because no command entered;
+a lost reply after admission never resets it. Shutdown still returns Unavailable.
+This is an operational submission guard, not Source once authority, a native
+completion cache or permission to construct any model.
+
+All four durable-status model tests pass, including the withheld-original-reply,
+full-queue and lost-reply controls. The six registered architecture checks pass
+with the content-bound actor source review refreshed. Complete configured Daemon
+execution, refreshed application-target compilation and the actual funded VM
+retry control are still running. General bounded actor polling and physical
+native readiness remain unqualified.
 
 ## Original launch custody and shared startup geometry
 
