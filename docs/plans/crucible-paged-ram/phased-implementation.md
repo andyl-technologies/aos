@@ -67,7 +67,35 @@ failed attempts appear in the dated entries below.
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | Latest focused checks pass all 73 policy and five hygiene controls; the broad gate retains thirteen daemon paths. | The fresh canonical license-boundary check is blocked by strict controller Clippy (1,189 host-library and 1,262 host-test errors); its boundary assertions did not run. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 347 bindings: 328 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
+| Requirements | 354 committed bindings: 335 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
+
+#### Bounded command observations and scheduler wake receipts
+
+`a9b46e94e8` exposes the actual scheduler writer reservation, tuple commitment
+and separate once-consumed wake receipt. Real slot identity and the reserved
+generation remain attached to those move-only receipts. Tuple commitment can
+precede the actual producer's command publication; a dropped receipt never
+rings a wake, and replacement refuses another wake. These physical receipts
+issue no Source, lender, deadline or execution authority. All nine focused
+scheduler controls and strict shared-memory Clippy pass. Mandatory application
+compilation passes at `2c4jfg9mnv2vyrc44kchnbzp21nbjjqc`, with all 5,279 committed
+Rust/TOML inputs matching immutable source `gja61qxvs3mx836dfv4nngh8byssi0y4`.
+The comparison record has SHA-256
+`fda75e87f83858c0915af40e3067991051b62d99f02ba199100f01e66ef1d68d`.
+
+`5403c5f04b` adds one bounded node report and scheduler-tuple observation and
+uses it at the actual hot-path quantum start. An odd or changing report returns
+a typed refusal rather than spinning inside a retained operation or scheduler
+reservation. Compatibility readers retain their existing waiting behavior.
+The real held-writer control refuses before inbox, tuple or wake effects.
+All eleven scheduler controls, 36 quantum tests, strict shared-memory Clippy and
+engineering hygiene pass. Mandatory application compilation passes at
+`xdyyhik7xg9hid3d3ckl5cmfq351n2p5`; all 5,279 committed Rust/TOML files match
+immutable source `k3k7blb7ij1nv3bmszs9pr5y094a4j21`. The comparison SHA-256 is
+`279103214b73bdbec4d58945a9a9748d81dda00fc15da8c0068e34235129c9d6`.
+Seven exact component bindings bring the committed inventory to 354; the
+expanded 237-case supervision run remains pending. Neither checkpoint integrates
+the actual immutable command publisher, recipient or asynchronous Advance.
 
 #### Paid host publisher handover and cumulative Native custody
 
@@ -88,7 +116,8 @@ passes at `k68kwnrn96al45149r04jpway1i91mqs`. All 5,279 committed Rust/TOML file
 match immutable source `i01q6vamp0b3q5ymb5k7lpyqyxmdqws6`; the comparison record
 has SHA-256 `e5ae25b46977de09b3777bf8a359621ec44dec1af5606de35713007eacd5d103`.
 The receiver's 224 exact supervision cases pass at
-`c8chba6qq90s5rs7g64nh4aycg4wg8ld`; the expanded host run is still pending.
+`c8chba6qq90s5rs7g64nh4aycg4wg8ld`; all 230 expanded host cases pass at
+`5k9ppsxby5s1wbxpc4pc1acbp9w5i1ig`.
 
 `3811d30684` retains atomic Native commit
 `e1dde9de5750f667487389a80533020641c0b249`, exact tree
