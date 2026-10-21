@@ -1596,6 +1596,49 @@ are outside this ABI verdict. The caller-storage register-writer candidate is
 being checked separately. Actual initial callback and lease assertions remain
 unexecuted, and selected missing-payer refusal remains in force.
 
+### 2026-10-21 caller-storage descriptions and static refusal diagnostics
+
+The architecture description checkpoint at `837e0071ab` installs actual ARM
+and x86 CPUClass caller-storage geometry, key-view and description hooks. It
+checks complete capacities and disjoint spans before writing descriptions;
+legacy allocating wrappers retain their features. Its atomic commit is
+`b8af185116a394543b1741d926e18cb453df0301`, tree
+`e28599baf218544f99baec0a169af96c1ae9abba`. All 187 owning scenarios,
+the complete 34-defect rebuilt causal sweep, signed reconstruction and the
+270-file license ledger pass. Full compilation remains 3,863 targets with
+25/26 fixture drivers passing; the mandatory launched lifecycle still fails.
+Raw ABI conformance passes at
+`/nix/store/pzfw6zllyijf398cdj6c2h9djlf2dcxr-crucible-phase2-abi-conformance-0`
+against immutable source
+`/nix/store/xa49xnr9vqrqz4wb1cp3bfqcc1v6bwj2-crucible-workspace-src`.
+All 5,258 tracked crate Rust/TOML files were byte-matched. This captures the
+Quantum driver and fallible cleanup helpers; later static service diagnostics
+and refusal-owner changes are outside that ABI result. Actual initial
+callbacks, selected constructor payers and native physical return remain
+unqualified.
+
+The service-refusal checkpoint at `95245080b2` borrows fixed policy text while
+preserving ownership of dynamic diagnostics. The real mismatched-capacity
+refusal now observes zero allocations and zero reallocations. All 193
+host-resource tests, 26 daemon history tests, 73 source-policy controls and
+five hygiene controls pass. Mandatory application compilation passes at
+`/nix/store/w8v9pbd01r1rlncjryq4nbipfdn36q0d-aos-test-targets-0.1.0`.
+These results preserve the actual first cause, independent post and retained
+custody. They do not establish complete diagnostic payload funding, passing
+full strict lint, Source activation or smaller physical execution peaks.
+
+The refusal-owner checkpoint at `e81c1724da` expresses the issuer's mutually
+exclusive actual owner as one inline variant. The first cause, independent
+post, delivery failure and receiving-stage failure remain separate. Moving the
+actual World leaves the rest of that same report intact. All 193 host-resource
+tests, 73 source-policy controls and five hygiene controls pass, including
+causal omissions of World and dispatcher retention. Mandatory application
+compilation passes at
+`/nix/store/77r7jh0ji2aw7kd7gb6aiq8h3pq9igxf-aos-test-targets-0.1.0`.
+The measured refusal layout shrinks from 384 to 248 bytes. This introduces no
+failure allocation and claims neither a passing full strict gate nor complete
+funding or native return qualification.
+
 ### Canonical native observation gate cutover (required)
 
 The supplemental service flights do not yet replace the canonical plugin gate.
