@@ -10,7 +10,12 @@
   system = mkSystem [
     ../../systems/server-test.nix
     {
-      environment.systemPackages = [pkgs.aos-configuration-provider pkgs.coreutils];
+      environment.systemPackages = [
+        pkgs.aos-configuration-provider
+        pkgs.coreutils
+        pkgs.erofs-utils
+        pkgs.util-linux
+      ];
       systemd.services.aos-configuration-readonly-test = {
         description = "Qualify immutable configuration reconciliation";
         serviceConfig = {
@@ -54,9 +59,13 @@ in {
         },
     }
     machine.succeed(f"install -d -m 0700 {directory} {state} ${image}")
-    machine.succeed(
-        f"printf %s {shlex.quote(json.dumps(document))} > {directory}/invocation.json"
-    )
+
+    def write_invocation():
+        machine.succeed(
+            f"printf %s {shlex.quote(json.dumps(document))} > {directory}/invocation.json"
+        )
+
+    write_invocation()
     machine.succeed(f"touch {target}")
 
     def restore_image():
@@ -110,6 +119,36 @@ in {
         assert not receipt()["pending"]
         assert (identity(), contents()) == initial
 
-    machine.succeed(f"rm -rf {directory}")
+    # The production initrd uses EROFS, whose native file operations differ
+    # from a read-only bind of a writable filesystem. Exercise both directly.
+    erofs = "/var/lib/aos-configuration-readonly-test"
+    machine.succeed(f"install -d -m 0700 {erofs}")
+    machine.succeed(f"cp -a ${image} {erofs}/root")
+    machine.succeed(f"mkfs.erofs {erofs}/image.erofs {erofs}/root")
+    machine.succeed(f"mount -t erofs -o loop,ro {erofs}/image.erofs ${image}")
+    try:
+        assert machine.succeed(f"stat -f -c %T {target}").strip() == "erofs"
+        immutable_identity = (identity(), contents())
+        apply()
+        assert not receipt()["pending"]
+        apply()
+        assert (identity(), contents()) == immutable_identity
+
+        for field, changed in (("content", "different contents\n"), ("mode", "0600")):
+            original = document["input"][field]
+            document["input"][field] = changed
+            write_invocation()
+            refuse()
+            assert receipt()["pending"]
+
+            document["input"][field] = original
+            write_invocation()
+            apply()
+            assert not receipt()["pending"]
+            assert (identity(), contents()) == immutable_identity
+    finally:
+        machine.succeed("umount ${image}")
+
+    machine.succeed(f"rm -rf {erofs} {directory}")
   '';
 }

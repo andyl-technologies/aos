@@ -691,15 +691,8 @@
           ${lib.optionalString (initrdConfiguration != null) ''
             # Preserve the exact provider-rendered files in the immutable root.
             # Existing platform files cannot be silently replaced by an effect.
-            find ${initrdConfiguration}/etc -type f -print | while IFS= read -r source; do
-              destination="root/''${source#${initrdConfiguration}/}"
-              if [ -e "$destination" ] || [ -L "$destination" ]; then
-                echo "initrd configuration collides with a platform file: $destination" >&2
-                exit 1
-              fi
-              mkdir -p "$(dirname "$destination")"
-              cp -p "$source" "$destination"
-            done
+            "$CONFIG_SHELL" ${./_install-initrd-configuration.sh} \
+              ${initrdConfiguration} root ${jq}/bin/jq
           ''}
 
           # ── 7a. Network configuration rendered from native bootstrap policy.

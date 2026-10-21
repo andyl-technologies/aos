@@ -13,6 +13,7 @@ use rustix::fs::{FlockOperation, Mode, OFlags, flock, openat};
 use sha2::{Digest as _, Sha256};
 
 static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+const EROFS_SUPER_MAGIC: u32 = 0xe0f5_e1e2;
 
 pub(crate) fn digest(contents: &[u8]) -> String {
     format!("{:x}", Sha256::digest(contents))
@@ -118,10 +119,14 @@ pub(crate) fn matches_readonly(
         return Ok(false);
     }
 
-    // A read-only bind can still have writable backing in another namespace.
-    // Preserve publication durability before completing the ownership receipt.
-    file.sync_all()?;
-    synchronize_parent(path)?;
+    // EROFS has no fsync operation: its contents were published by the image
+    // installer, and this filesystem cannot acquire an in-place file write.
+    // Read-only binds of writable filesystems still need durability barriers
+    // because another namespace can write their backing files.
+    if rustix::fs::fstatfs(&file)?.f_type as u32 != EROFS_SUPER_MAGIC {
+        file.sync_all()?;
+        synchronize_parent(path)?;
+    }
     Ok(true)
 }
 

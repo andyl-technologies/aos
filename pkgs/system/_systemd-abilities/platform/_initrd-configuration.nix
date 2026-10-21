@@ -53,6 +53,13 @@ in
         --state-directory "$configuration_state" apply \
         < "$TMPDIR/initrd-configuration-invocation.json" > /dev/null
     done
+    # Even write-only requested files must remain readable to the unprivileged
+    # assembler. The manifest below retains their actual image permissions.
+    chmod -R u+rX "$configuration_root"
     mkdir -p "$out"
     cp -a "$configuration_root/." "$out/"
+    # Store registration canonicalizes modes. Keep the requested image modes
+    # separately so the assembler can restore them before packing the image.
+    ${jq}/bin/jq 'map({key: .input.path, value: .input.mode}) | from_entries' \
+      "$configurationJSONPath" > "$out/modes.json"
   ''
