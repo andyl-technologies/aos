@@ -11324,3 +11324,13 @@ the MVP conformance claim (PLAN-3) says so explicitly.
   task exists in the specification or in this directory, and that every
   `MUST` in the files above is cited by at least one task. The lint runs as
   `checks.terrane.plan-coverage` and MUST be green before status changes.
+
+#### Recovered metadata reassembly oracle correction
+
+The cold-metadata VM executed the exact original-pair import checks, then
+rejected the recovered reassembly's old policy totals. The independent root
+observer now requires the added metadata admission's one grace lease and two
+pins, with unchanged reservation counts. It also requires the actor's exact
+original-pair import checks. All original inode, bytes, producer dependency,
+retirement and residence checks remain. Full VM requalification is pending;
+this correction does not close T2.

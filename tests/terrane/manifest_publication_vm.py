@@ -183,11 +183,18 @@ def check_recovered_reassembly(driver, case, output, original, prior=None):
                    and leases[0]["changed_nanoseconds"] == observed.st_ctime_ns % 1_000_000_000,
                    "new prefix lost actual original-inode retirement registration")
     state = tomllib.loads((root / "state/cache/records.toml").read_text())
-    expected = {"reservations": 7, "leases": 6, "pins": 10} if prior is None else {
+    # Resume now imports the referenced original metadata pair as a real
+    # running admission. Its independent grace adds one lease and the exact
+    # pack/manifest pins; it must not consume another reservation.
+    expected = {"reservations": 7, "leases": 7, "pins": 12} if prior is None else {
         "reservations": len(prior["reservations"]) + 4,
         "leases": len(prior["leases"]) + 4, "pins": len(prior["pins"]) + 7}
     driver.require(all(len(state[group]) == count for group, count in expected.items()),
                    "recovered reassembly lost exact policy closure")
+    if prior is None:
+        driver.require(output.splitlines().count(
+            "PASS actual referenced cold metadata imported original pair with exact cache grace, unchanged reconstruction funding and original modes before serving grants") == 1,
+            "recovered reassembly omitted exact original metadata import checks")
     # Every recovered range in this assembly comes from this actual original
     # sealed inode. Its independent producer pin must survive the copy even
     # when the old recovery owner releases its own protection later.
