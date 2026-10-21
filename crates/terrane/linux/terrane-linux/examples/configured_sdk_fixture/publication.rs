@@ -97,7 +97,7 @@ mod tests {
     use super::*;
     use terrane_format::{
         bucket::StoreProfile,
-        gc::publication::{BackendBinding, ProjectionEntry},
+        gc::publication::{BackendBinding, ProjectionEntry, SelectedHistory},
     };
 
     struct Records {
@@ -127,19 +127,34 @@ mod tests {
                 ref_names: Some(vec!["refs/heads/_/main".into()]),
                 publication_protocol: Some(1),
             };
+            let origin = BackendBinding::Local {
+                root: b"/fixture".to_vec(),
+                root_device: 1,
+                root_inode: 2,
+                coordination_device: 3,
+                coordination_inode: 4,
+            };
+            let history = SelectedHistory {
+                branches: Vec::new(),
+                origin: origin.clone(),
+            };
             let checkpoint = PortableSnapshot {
                 revision: 0,
-                origin: BackendBinding::Local {
-                    root: b"/fixture".to_vec(),
-                    root_device: 1,
-                    root_inode: 2,
-                    coordination_device: 3,
-                    coordination_inode: 4,
-                },
-                projection: vec![ProjectionEntry {
-                    key: "CAPABILITIES".into(),
-                    value: Some(capabilities.encode()?),
-                }],
+                origin,
+                projection: vec![
+                    ProjectionEntry {
+                        key: "CAPABILITIES".into(),
+                        value: Some(capabilities.encode()?),
+                    },
+                    ProjectionEntry {
+                        key: "gc/lease".into(),
+                        value: None,
+                    },
+                    ProjectionEntry {
+                        key: "publication/SELECTED-HISTORY".into(),
+                        value: Some(history.encode()?),
+                    },
+                ],
                 predecessor: None,
             };
             let previous = checkpoint.encode()?;
