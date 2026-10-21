@@ -2046,8 +2046,8 @@ reallocations into already-reserved output. All 73 focused policy and five
 hygiene checks pass. Mandatory application compilation passes at
 `/nix/store/qwd7ldzj523jfgsr9q248sd5flsx060n-aos-test-targets-0.1.0`;
 all 5,261 tracked crate Rust/TOML files match `2db30b57a6` and immutable
-`65v7by54nizzamnjaw31jqsj55ljyryy-aos-workspace-src`. The expanded 168-case
-supervision gate is running. Coverage binds 266 component and 19 native cases;
+`65v7by54nizzamnjaw31jqsj55ljyryy-aos-workspace-src`. All 168 exact supervision cases pass at
+`/nix/store/4kyg7nbziv8yxlwk6idzqkgab1zqhayk-crucible-gate-ram-supervision-0`. Coverage binds 266 component and 19 native cases;
 243 requirements, 149 uncovered and none fully qualified remain unchanged.
 Environment and stderr initialization, output funding and backpressure,
 validation-error formatting and complete selected admission remain unqualified.
@@ -2069,11 +2069,35 @@ with one existing ignored test, 73 focused policy checks and five hygiene checks
 pass. Mandatory application compilation passes at
 `/nix/store/9b988hrvj00x4x8izw8sn1l3l91c67gw-aos-test-targets-0.1.0`.
 All 5,261 tracked crate Rust/TOML files match `b7a51163ba` and immutable
-`bxgb8489vi7fb4l7s5zpfr3pk7dmpsn5-aos-workspace-src`. The expanded 169-case
-supervision gate is running. Coverage binds 267 component and 19 native cases;
+`bxgb8489vi7fb4l7s5zpfr3pk7dmpsn5-aos-workspace-src`. All 169 exact supervision cases pass at
+`/nix/store/k9gdn6imk7icpi75m5x6q520rysbfg3b-crucible-gate-ram-supervision-0`. Coverage binds 267 component and 19 native cases;
 243 requirements, 149 uncovered and none fully qualified remain unchanged.
 Final scheduler diagnostic storage, mapped-channel errors, enabled diagnostic
 initialization and output funding, and selected admission remain unqualified.
+
+### 2026-10-21 mapped quantum views and boundary refusals
+
+Commit `6042516f7b` borrows the existing mapped channel configuration and
+canonical ring topology instead of cloning node/router names and allocating
+ring descriptor vectors for each temporary view. The setup allocator keeps its
+owned vector interface; every supported topology retains its exact descriptor
+order and indices, and overflowing cardinality refuses before allocation.
+Behind/ahead fingerprint samples retain actual coordinates inline with the
+same diagnostics and retry classification, without requesting another sample.
+
+The pre-change actual mapped controls measured four allocations for a snapshot
+and five for a stale sample. Both corrected controls allocate and reallocate
+nothing. All 117 shared-memory tests, 80 quantum-related host tests, 73 policy
+checks and five hygiene checks pass. The initial hygiene failure required a
+reviewed mapped-adapter digest refresh; no size cap or rule changes. Mandatory
+application test-target compilation passes at
+`/nix/store/zxxrj4pqw2wd2p4vk7v96w2zxq16j8zp-aos-test-targets-0.1.0`.
+All 5,261 tracked crate Rust/TOML files match immutable
+`yfsjbh8flx0gjyjxgsqdvclp0mbnfvr1-aos-workspace-src`. The expanded 172-case
+supervision and matched raw ABI gates are running. Coverage now binds 270
+component and 19 native cases; 243 requirements, 149 uncovered and none fully
+qualified remain. Reader supervision, broader diagnostic/payload funding,
+Source activation and selected execution remain unfinished.
 
 ### 2026-10-21 native rule and reservation storage custody
 
@@ -2201,6 +2225,39 @@ targets and passes 25/26 fixtures. Mandatory launched Source/Root remains the
 sole failure. Selected activation, CPU borrowers, full handler retirement and
 physical return remain unqualified. Subsequent CPUState layout changes require
 a fresh complete native object cohort before executable validation.
+
+### 2026-10-21 factual RR execution custody
+
+Commit `4ae7067262` integrates atomic
+`e043d35971c4c33132fbeb6699aa2c9af65d0f32`, tree
+`776d6e49e5a7c9ee498ef6af04390c745d41c523`. The actual prepaid CPUState
+retains its canonical same-process/thread, nonwrapping execution journal and
+QOM reference before RR releases BQL. Physical executor entry/end, cleanup
+revocation and actual QOM return remain distinct. Selected Source authenticates
+its real allocation receipt and generation, then refuses ENOTSUP before unlock;
+no accepting Quantum/Advance child is supplied. The literal predicate positive
+and eight independent omissions exercise modeled local journal inputs only.
+
+All 187 owning scenarios, 34 independently rebuilt causal defects, signed
+reconstruction and the exact 289-file ledger pass. The causal positive takes
+48.011 seconds of the unchanged 60-second bound; the slowest defect takes
+17.888 seconds. Raw ABI passes at
+`/nix/store/ifx3pbf5s7cxza91gvwglb70pip8j1ww-crucible-phase2-abi-conformance-0`.
+All 5,261 tracked crate Rust/TOML files match captured immutable
+`gj6mmrkb6a3kwgkpgfmqihsv2y4xmhjs-crucible-workspace-src`, including typed
+fingerprint validation and excluding later mapped-view edits. The retained
+manifest SHA-256 is
+`1b2e6e4db3bc21d4df14b8ab37c20f9556e2351ea0bc4eaa088676302fd2d453`.
+
+The first candidate built all 3,863 targets but passed only 24/26 fixtures:
+prepark found duplicate ownership of an exact RR source pin. Removing only its
+redundant supplemental entry preserves the primary pin and every assertion.
+The corrected fresh full cohort builds all 3,863 targets and passes 25/26;
+mandatory launched Source/Root remains the sole failure. All 907 patched source
+files match the retained complete build. Later private-layout changes require
+a new complete matched cohort. Genuine selected issuance, activation, owned
+continuation and child/peer return remain unqualified; the license gate remains
+unresolved at controller lint prerequisites.
 
 ### Canonical native observation gate cutover (required)
 
