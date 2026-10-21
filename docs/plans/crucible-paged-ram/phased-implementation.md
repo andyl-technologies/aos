@@ -67,7 +67,27 @@ failed attempts appear in the dated entries below.
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | Latest focused checks pass all 73 policy and five hygiene controls; the broad gate retains thirteen daemon paths. | The fresh canonical license-boundary check is blocked by strict controller Clippy (1,189 host-library and 1,262 host-test errors); its boundary assertions did not run. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 371 committed bindings: 352 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
+| Requirements | 372 committed bindings: 353 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
+
+#### Retained pending Quantum reports
+
+`f8316aa139` retains the actual pending report's current and ceiling coordinates
+inline through the channel and node errors. Repeated polls preserve the same
+pending Quantum, tuple and wake generation without formatting or allocation.
+The diagnostic text is produced only when displayed, and the typed source
+survives scheduler conversion. A later genuine report completes that same
+pending operation; an observation refusal grants no publication or retry
+authority after its actual Original refuses.
+
+All 63 quantum/mapped tests and nine node-error tests pass against the final
+source. Engineering hygiene and mandatory application test-target compilation
+pass at `nx01yx25kxphx01k84bdiarcaryp8a6i`. All 5,283 committed Rust/TOML inputs
+match immutable source `by0p78szxkbvxb21xyp3l843wqi1ry5v`; the comparison record
+has SHA-256 `bcd922d4e1f332df5d1cc6d49432b9ef7f56ad5e0202bddec9b421ad1628d768`.
+The earlier local run was superseded after a final source-chain assertion was
+added. Backend conversion still uses the shared diagnostic carrier, whose
+complete prebirth funding remains unproved. This component establishes no
+Native operation authority or physical-return receipt.
 
 #### Observed scheduler command reservations
 
@@ -86,7 +106,9 @@ match immutable source `9pdm4gqad3ww1n784a4n56yhh76n3l96`. The comparison record
 has SHA-256 `5ef090e653efb784db1c6739af38845c5b90bd945a5206c96f590a2ac104cd84`.
 The initial module-path compilation failure, moved-test-input failure and stale
 source-order assertion remain separate from this corrected final run. The
-expanded supervision cohort is pending. These physical checks issue no semantic
+expanded supervision cohort passes all 254 exact cases at
+`lpqbgxb5dsi2hqa6ch6zfkfcxpmcxk52`. That frozen run predates the pending-report
+checkpoint above. These physical checks issue no semantic
 Original, Source lender, deadline or Native execution authority, and do not replace
 independent control/restore validation or actual immutable command publication.
 
