@@ -172,7 +172,7 @@ pub(super) const MATERIALIZATION: Companion = Companion {
             )
         })?;
         // The directory is already in its issued artifact guard. Retain the
-        // actual relation there before validation, helpers or materialization.
+        // actual relation there before validation or materialization effects.
         self.exact_checkpoint_target = Some(target);
         let target = self.exact_checkpoint_target.as_ref().ok_or_else(|| {
             invalid_input(

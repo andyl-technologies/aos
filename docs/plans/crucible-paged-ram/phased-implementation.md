@@ -1494,6 +1494,67 @@ still have 149 uncovered and none fully qualified. Genuine Quantum issuance,
 manifest allocation payers, activation, eight helper integrations, general
 low-residency progress, full fork/rearm and performance remain unresolved.
 
+### 2026-10-21 exact-restore and native catalogue custody checkpoint
+
+Exact restore now retains the actual issued Node through paused priming,
+deferred resume and final handoff. The existing Source recipient also owns a
+fixed artifact cell for the actual prepared directory, verified target and
+sealed inputs. Reserving that cell before preparation prevents process return
+from publishing complete closure while files are still in flight. A failed
+preparation returns the same artifacts to that recipient; it cannot create a
+replacement controller or cleanup operation. The containing directory drops
+after its sealed inputs. Actual file destruction runs outside the metadata
+mutex, and an unwind or duplicate return leaves closure uncertain.
+
+The completed-launch custody snapshot at `4ad082ed2a` passes all 160 focused
+supervision tests, with two existing ignored cases, 72 source-policy controls,
+five hygiene controls and five actual-file custody tests. Its mandatory
+application unit/integration compilation passes at
+`/nix/store/zlrgjrx2bvr41wjaybbwf2s1qwvl1kba-aos-test-targets-0.1.0`.
+All 131 exact hermetic supervision cases pass at
+`/nix/store/fgmkrza3h102z9q8bd2xxnk2i6jlj014-crucible-gate-ram-supervision-0`.
+The earlier preparation extension at `b3135cd7cd` passes 160 focused supervision
+tests, 73 source-policy controls and five hygiene controls. Its mandatory
+application compilation passes at
+`/nix/store/7vq9k815i6lzycrrxn96yxsr2q55ny4r-aos-test-targets-0.1.0`;
+all 131 matched hermetic supervision cases pass at
+`/nix/store/9bchr266rviajw1z19zz7n6jckdfhjdz-crucible-gate-ram-supervision-0`.
+File and child-process component tests establish custody
+ordering; they do not qualify a genuinely installed Source lifecycle.
+
+The hardware catalogue and interrupt observation checkpoints retain actual
+architecture/device facts in their existing fixed declarations. The interrupt
+snapshot at `8e648ff0ef` is atomic commit
+`3781e9719d792930a5dfdf5803224fcf6db9ae30`, tree
+`12ef299e76a522b6ed58dc9d044aef244b38963a`. Its real owning-storage extractor,
+187 owning scenarios, complete 34-defect causal sweep, signed reconstruction
+and 267-file license ledger pass. Full native compilation completes all 3,863
+targets; 25 of 26 fixtures pass. The required launched lifecycle still fails.
+Raw ABI conformance passes at
+`/nix/store/lmqjsv3rw6ccf3rvzfjk941238vpq5lf-crucible-phase2-abi-conformance-0`
+against the byte-matched completed-launch Rust snapshot. That immutable result
+excludes the subsequent preparation extension and cleanup API changes.
+
+The full license-gate attempt for the completed-launch snapshot still fails
+before boundary checks: strict controller checking reports 949 host test-target
+and 907 host library errors, four control-API type-complexity errors and one
+session test assertion lint. The broad source gate still reports thirteen
+daemon paths. Published coverage binds 229 component and nineteen native cases
+to 243 requirements, with 149 uncovered and none fully qualified. Native
+initial-callback assertion hooks remain unexecuted; selected SDK factories
+still refuse missing payers. Genuine Quantum issuance, allocation coverage,
+activation, eight helper integrations, complete fork/rearm, general low-peak
+progress and performance parity remain unresolved.
+
+The subsequent cleanup API checkpoint at `262ba8203e` names the existing
+boxed reservation, handoff and refusal types without changing allocation or
+custody. Its strict library Clippy check, 73 source-policy controls, five
+hygiene controls and both lifecycle integration tests pass. Mandatory
+application unit/integration compilation passes at
+`/nix/store/g4mzhjbcbnfwqkc5g3a697fjqdjchyaa-aos-test-targets-0.1.0`.
+Strict all-target API checking then reaches nine existing integration-test
+`unwrap()` findings. The full license gate remains unqualified.
+
 ### Canonical native observation gate cutover (required)
 
 The supplemental service flights do not yet replace the canonical plugin gate.
