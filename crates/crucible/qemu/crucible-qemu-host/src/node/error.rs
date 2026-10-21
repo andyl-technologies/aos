@@ -105,6 +105,7 @@ enum ChannelFailureDetail {
     Supervision(HostSupervisionError),
     DecodeAdmission(DecodeAdmissionError),
     FingerprintSample(QemuFingerprintSampleError),
+    MappedRegionAccess(crucible_qemu_shmem::MappedSetupRegionAccessError),
 }
 
 impl QemuNodeChannelError {
@@ -225,6 +226,35 @@ impl QemuNodeChannelError {
         }
     }
 
+    /// Retains the mapped quantum adapter's actual region-access refusal.
+    ///
+    /// The existing adapter diagnostic remains unchanged. The cause retains
+    /// its original coordinates without allocating a replacement message.
+    #[must_use]
+    pub fn mapped_region_access(
+        operation: &'static str,
+        source: crucible_qemu_shmem::MappedSetupRegionAccessError,
+    ) -> Self {
+        Self {
+            operation,
+            message: Cow::Borrowed(""),
+            timeout: None,
+            retryable: false,
+            detail: ChannelFailureDetail::MappedRegionAccess(source),
+        }
+    }
+
+    /// Returns the original mapped-region access failure, when present.
+    #[must_use]
+    pub const fn mapped_region_access_source(
+        &self,
+    ) -> Option<&crucible_qemu_shmem::MappedSetupRegionAccessError> {
+        match &self.detail {
+            ChannelFailureDetail::MappedRegionAccess(source) => Some(source),
+            _ => None,
+        }
+    }
+
     /// Returns the bounded await timeout that caused this channel failure.
     #[must_use]
     pub const fn bounded_timeout(&self) -> Option<Duration> {
@@ -251,6 +281,13 @@ impl fmt::Display for QemuNodeChannelError {
                 ChannelFailureDetail::FingerprintSample(source) => {
                     return write!(formatter, "{} failed: {source}", self.operation);
                 }
+                ChannelFailureDetail::MappedRegionAccess(_) => {
+                    return write!(
+                        formatter,
+                        "{} failed: mapped QEMU quantum shared-memory access failed",
+                        self.operation
+                    );
+                }
                 ChannelFailureDetail::Message => {}
             }
         }
@@ -264,6 +301,7 @@ impl std::error::Error for QemuNodeChannelError {
             ChannelFailureDetail::Supervision(source) => Some(source),
             ChannelFailureDetail::DecodeAdmission(source) => Some(source),
             ChannelFailureDetail::FingerprintSample(source) => Some(source),
+            ChannelFailureDetail::MappedRegionAccess(source) => Some(source),
             ChannelFailureDetail::Message => None,
         }
     }
@@ -340,6 +378,19 @@ pub enum QemuNodeError {
         /// Original protocol failure or complete component-failure bitset.
         #[source]
         source: QemuFingerprintSampleError,
+    },
+    /// A mapped quantum channel retained its actual region-access failure.
+    #[error(
+        "{plane} channel operation {operation} failed: mapped QEMU quantum shared-memory access failed"
+    )]
+    ChannelMappedRegionAccess {
+        /// Channel role whose mapped view refused access.
+        plane: QemuNodeChannelPlane,
+        /// Operation that attempted the mapped access.
+        operation: &'static str,
+        /// Original geometry, topology or segment failure.
+        #[source]
+        source: crucible_qemu_shmem::MappedSetupRegionAccessError,
     },
     /// RAM source cleanup failed while its service remains retained.
     #[error("{operation} failed: {source}")]
@@ -631,6 +682,11 @@ impl QemuNodeError {
                     source: fingerprint,
                 }
             }
+            ChannelFailureDetail::MappedRegionAccess(access) => Self::ChannelMappedRegionAccess {
+                plane,
+                operation: source.operation,
+                source: access,
+            },
             ChannelFailureDetail::Message => Self::Channel {
                 plane,
                 operation: source.operation,

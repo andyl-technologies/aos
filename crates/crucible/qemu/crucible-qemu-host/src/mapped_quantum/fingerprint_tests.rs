@@ -195,3 +195,78 @@ fn mapped_fingerprint_boundary_refusal_retains_coordinates_without_allocating()
     }
     Ok(())
 }
+
+#[test]
+fn mapped_region_refusal_preserves_actual_cause_without_allocating()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::error::Error as _;
+    use crucible_host_resources::test_support::TestAllocationObserver;
+    use crucible_qemu_shmem::MappedSetupRegionAccessError;
+
+    for (vm_slot, router_slot) in [(u32::MAX, 31), (0, 0)] {
+        let (mut channel, producer) = mapped_fingerprint_channel()?;
+        let before = producer.node_slot(0)?.snapshot();
+        channel.config.vm_slot = vm_slot;
+        channel.config.router_slot = router_slot;
+        let expected = MappedSetupRegionAccessError::UnknownDirectedRing {
+            src_slot: router_slot,
+            dst_slot: vm_slot,
+        };
+        let called = std::cell::Cell::new(false);
+
+        let ((result, node), counts) = TestAllocationObserver::count(|| {
+            let result = channel.with_hot_path("mapped observation", |_hot_path| {
+                called.set(true);
+                Ok(())
+            });
+            let node = result.as_ref().err().cloned().map(|source| {
+                crate::QemuNodeError::from_channel(
+                    crate::QemuNodeChannelPlane::ShmemHotPath,
+                    source,
+                )
+            });
+            (result, node)
+        });
+
+        let error = result.expect_err("invalid mapped coordinates must refuse");
+        let node = node.expect("the actual channel refusal must reach the Node");
+        assert_eq!(counts.allocations, 0, "{counts:?}");
+        assert_eq!(counts.reallocations, 0, "{counts:?}");
+        assert!(!counts.overflow);
+        assert!(!called.get());
+        assert_eq!(
+            error.to_string(),
+            "mapped observation failed: mapped QEMU quantum shared-memory access failed"
+        );
+        assert_eq!(
+            node.to_string(),
+            "shmem hot path channel operation mapped observation failed: mapped QEMU quantum shared-memory access failed"
+        );
+        assert_eq!(error.mapped_region_access_source(), Some(&expected));
+        assert_eq!(
+            error
+                .source()
+                .and_then(|source| source.downcast_ref::<MappedSetupRegionAccessError>()),
+            Some(&expected)
+        );
+        assert_eq!(
+            node.source()
+                .and_then(|source| source.downcast_ref::<MappedSetupRegionAccessError>()),
+            Some(&expected)
+        );
+        assert!(
+            matches!(&node, crate::QemuNodeError::ChannelMappedRegionAccess { source, .. } if source == &expected)
+        );
+        assert!(!error.is_retryable());
+        assert!(error.bounded_timeout().is_none());
+        assert_eq!(producer.node_slot(0)?.snapshot(), before);
+
+        // The existing final scheduler diagnostic remains outside this carrier
+        // measurement; no new operational classification or authority is issued.
+        assert!(matches!(
+            crucible_engine::BackendError::from(node),
+            crucible_engine::BackendError::Rejected { .. }
+        ));
+    }
+    Ok(())
+}

@@ -1117,9 +1117,7 @@ impl QemuShmemHotPathChannel for QemuMappedQuantumShmemHotPath {
             Ok(hot_path.node_snapshot().current_icount)
         })?;
         let sample = QemuMappedQuantumShmemHotPath::fingerprint_sample(self)
-            .map_err(|source| {
-                QemuNodeChannelError::new("execution_fingerprint", source.to_string())
-            })?
+            .map_err(|source| source.into_channel_error("execution_fingerprint"))?
             .ok_or_else(|| {
                 QemuNodeChannelError::retryable(
                     "execution_fingerprint",
@@ -1149,7 +1147,7 @@ impl QemuShmemHotPathChannel for QemuMappedQuantumShmemHotPath {
 
     fn fingerprint_sample(&mut self) -> Result<FingerprintSample, QemuNodeChannelError> {
         QemuMappedQuantumShmemHotPath::fingerprint_sample(self)
-            .map_err(|source| QemuNodeChannelError::new("fingerprint_sample", source.to_string()))?
+            .map_err(|source| source.into_channel_error("fingerprint_sample"))?
             .ok_or_else(|| {
                 QemuNodeChannelError::retryable(
                     "fingerprint_sample",
