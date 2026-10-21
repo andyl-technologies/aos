@@ -263,6 +263,18 @@ fn actual_shutdown_bracket_retains_refused_entry_without_diagnostic_allocation()
 #[test]
 fn actual_shutdown_bracket_retains_first_and_post_without_diagnostic_allocation()
 -> Result<(), Box<dyn Error>> {
+    check_shutdown_bracket_without_diagnostic_allocation(false)
+}
+
+#[test]
+fn actual_cleanup_completion_preserves_result_and_post_without_allocating()
+-> Result<(), Box<dyn Error>> {
+    check_shutdown_bracket_without_diagnostic_allocation(true)
+}
+
+fn check_shutdown_bracket_without_diagnostic_allocation(
+    complete_original: bool,
+) -> Result<(), Box<dyn Error>> {
     use crucible_host_resources::test_support::TestAllocationObserver;
 
     for work_refuses in [false, true] {
@@ -285,9 +297,14 @@ fn actual_shutdown_bracket_retains_first_and_post_without_diagnostic_allocation(
 
         let ((output, status), counts) = TestAllocationObserver::count(|| {
             target.under_original_observed(QemuShutdownRung::ControlQuit, |_| {
-                // Amend the real class allowance from its original start
-                // after entry. This effect claims no child return.
-                supervisor.update_budgets(revision, budgets).unwrap();
+                if complete_original {
+                    // Completion reports the real operation before its outer
+                    // bracket observes the same now-terminal Original.
+                    original.complete().unwrap();
+                } else {
+                    // The independent deadline case retains its original start.
+                    supervisor.update_budgets(revision, budgets).unwrap();
+                }
                 if work_refuses {
                     Err(QemuShutdownTargetError::new(
                         "entered effect",
@@ -300,6 +317,16 @@ fn actual_shutdown_bracket_retains_first_and_post_without_diagnostic_allocation(
         });
 
         let post = original.wait_slice().unwrap_err();
+        if complete_original {
+            assert_eq!(
+                post,
+                HostSupervisionError::Terminal {
+                    state: crucible_host_resources::host_supervision::HostOperationState::Completed,
+                },
+            );
+        } else {
+            assert!(matches!(post, HostSupervisionError::DeadlineExpired { .. }));
+        }
         let error = status.unwrap_err();
         assert_eq!(counts.allocations, 0);
         assert_eq!(counts.reallocations, 0);
