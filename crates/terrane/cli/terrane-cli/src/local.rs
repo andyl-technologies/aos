@@ -19,8 +19,18 @@ use terrane_sdk::{
     surface::{Endpoint, EndpointKind, ReaderMode, RealizationHints, View},
 };
 
+mod history;
+
 #[derive(Subcommand)]
 pub(crate) enum Command {
+    /// Show committed reflog entries under current read authorization.
+    Log {
+        #[command(flatten)]
+        repository: LocalArguments,
+        /// Start at this sequence, with zero selecting the beginning.
+        #[arg(long, default_value_t = 0)]
+        from_sequence: u64,
+    },
     /// Initialize a file bucket and its private sibling authority.
     Init {
         #[command(flatten)]
@@ -198,6 +208,22 @@ impl Command {
     /// registered realization, and local filesystem errors.
     pub(crate) async fn run(self) -> Result<(), Error> {
         let commit = match self {
+            Self::Log {
+                repository: arguments,
+                from_sequence,
+            } => {
+                let (repository, authority) = arguments.open().await?;
+                let history = repository
+                    .ref_history(
+                        &arguments.reference,
+                        from_sequence,
+                        authority.token(),
+                        "sdk",
+                    )
+                    .await?;
+                history::write(&history, &mut std::io::stdout().lock())?;
+                return Ok(());
+            }
             Self::Init {
                 repository,
                 not_after,

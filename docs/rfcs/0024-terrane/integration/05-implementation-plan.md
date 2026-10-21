@@ -12039,3 +12039,40 @@ assertion change is used. The no-default-feature and native `std,wasm` feature
 checks pass; the latter does not establish an actual WebAssembly target build.
 The frozen `c86390959e` runtime-agnostic gate also passes independent review
 of 7,904 immutable files and all 32 selected controls.
+
+
+#### Authorized committed history and local log porcelain
+
+`Repository::ref_history` now reads a currently selected branch's committed
+reflog through the existing guard. It checks current read authority before and
+after storage I/O, compares the complete head, validates ordered predecessor
+links and excludes append-first candidates beyond the authorized horizon. A
+changed whole head refuses the attempt for retry. Results retain principals,
+timestamps, reasons, epochs, selectors and exact previous records; they grant
+no authority to read historical content or publish anything. Absent current
+heads return no entries, even when protected retained history exists. Reading
+that retained history requires its separate policy and selection path.
+
+Four integration cases pass with actual initialized repositories, signed
+commits, restricted/expired credentials and durable reopening. Six unit cases
+pass for selected horizons, complete suffixes, duplicate/reordered/missing
+records, contradictory whole predecessors and legacy histories. The new
+`integration.ref-history` check binds both exact inventories to Cargo and
+immutable source. Its frozen qualification remains pending. The underlying
+reflog interface materializes a suffix; this is not a bounded streaming API.
+
+`terrane log` calls that public guarded API and prints sequence, commit, writer
+epoch, timestamp, principal and reason. Principal quoting prevents control
+characters from introducing apparent terminal events. The actual CLI process
+test passes, including sequence filtering, invalid ref-class refusal and
+unchanged signing files. The CLI workflow now discovers and executes all four
+cases and retains Cargo JSON, its inventory and each original execution log.
+Strict all-target SDK/Linux/CLI Clippy, Rust/Nix formatting, Nix evaluation and
+the native `std,wasm` feature check pass. Decoded commit-graph presentation,
+protocol services and the complete observability gates remain open.
+
+Frozen `59066081e0` passes independent review of its ten opened-expression
+cases and the sixteen issuer cases required by the owning AUTH-3 gate: 7,910
+immutable source files and 5,221 crate inputs. Required application-target
+compilation remains running. The larger index populations, feature matrix
+and aggregate trunk checks remain open. No additional task is accepted.

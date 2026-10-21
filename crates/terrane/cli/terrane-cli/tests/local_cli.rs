@@ -1,8 +1,8 @@
 //! Exercises local porcelain in separate processes on private filesystem fixtures.
 //!
 //! These tests verify the shipped parser, persisted local authority, actual
-//! repository publication, and registered SDK checkout. They do not qualify
-//! any particular filesystem implementation or the mandatory ext4 workflow.
+//! repository publication, authorized reflog history and registered SDK checkout.
+//! They do not qualify any particular filesystem implementation or the mandatory ext4 workflow.
 
 #![forbid(unsafe_code)]
 
@@ -17,6 +17,57 @@ use std::{
 use terrane_sdk::store::{Clock, LocalFs, TokioClock, TokioLocalFs};
 
 type Error = Box<dyn std::error::Error>;
+
+#[tokio::test]
+async fn local_log_reports_committed_provenance_and_honors_sequence_filter() -> Result<(), Error> {
+    let fixture = Fixture::new().await?;
+    fixture.initialize()?;
+    let issuer = fs::read(fixture.authority.join("issuer.seed"))?;
+    let terminal = fs::read(fixture.authority.join("terminal.seed"))?;
+    fs::create_dir(fixture.root.join("source"))?;
+    fs::write(fixture.root.join("source/file"), b"history fixture\n")?;
+    let commit = fixture.succeed(
+        "commit",
+        &[
+            &fixture.path_text("source")?,
+            "--message",
+            "Record CLI history",
+        ],
+    )?;
+
+    let history = fixture.succeed("log", &[])?;
+    let lines: Vec<_> = history.lines().collect();
+    assert!(lines.len() >= 2);
+    for (index, line) in lines.iter().enumerate() {
+        assert!(line.starts_with(&format!("sequence={} commit=", index + 1)));
+        assert!(line.contains(" writer_epoch="));
+        assert!(line.contains(" at="));
+        assert!(line.contains(" principal=\"owner\" reason=Commit"));
+    }
+    assert!(
+        lines
+            .last()
+            .ok_or("missing CLI event")?
+            .contains(&format!("commit={commit} "))
+    );
+
+    let last = fixture.succeed("log", &["--from-sequence", &lines.len().to_string()])?;
+    assert_eq!(last, *lines.last().ok_or("missing CLI event")?);
+    assert!(
+        fixture
+            .succeed("log", &["--from-sequence", &u64::MAX.to_string()])?
+            .is_empty()
+    );
+    assert!(
+        !fixture
+            .invoke("log", &["--reference", "refs/tags/release"])?
+            .status
+            .success()
+    );
+    assert_eq!(fs::read(fixture.authority.join("issuer.seed"))?, issuer);
+    assert_eq!(fs::read(fixture.authority.join("terminal.seed"))?, terminal);
+    Ok(())
+}
 
 struct Fixture {
     root: PathBuf,

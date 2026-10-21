@@ -16,6 +16,7 @@ mod disclosure_rotation;
 #[cfg(unix)]
 mod domain_deletion;
 mod error;
+mod history;
 #[cfg(feature = "std")]
 mod import;
 #[cfg(all(feature = "std", unix))]
@@ -36,6 +37,7 @@ mod validator;
 pub use audit::RegisteredDomainAudit;
 pub use diff::Difference;
 pub use error::Error;
+pub use history::RefHistory;
 #[cfg(all(feature = "std", unix))]
 pub use import::import_directory;
 #[cfg(all(feature = "std", unix))]
