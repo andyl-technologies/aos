@@ -36,7 +36,7 @@ use tokio::sync::oneshot;
 /// Source handles remain owned through acknowledged cleanup. This grants no
 /// consumer lease or Store readiness.
 pub struct NativeManifestPublication {
-    completion: PublicationCompletion,
+    pub(super) completion: PublicationCompletion,
 }
 
 impl NativeManifestPublication {

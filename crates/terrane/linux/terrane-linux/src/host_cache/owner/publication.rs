@@ -15,6 +15,7 @@ mod manifest;
 mod producer_reads;
 pub(super) mod residence;
 pub(super) mod retirement;
+mod settle;
 mod state;
 
 pub use eviction::NativeCacheEvictionReport;
@@ -271,6 +272,7 @@ struct PublicationCompletion {
     allocated: u64,
     charged: u64,
     future: u64,
+    cleanup_not_before: std::time::Duration,
 }
 
 /// Owns a completed inline publication and its original physical funding.
@@ -707,6 +709,14 @@ async fn execute(
         .observation()
         .charged_reserved_bytes;
     owner.faulted = false;
+    let cleanup_not_before = settle::cleanup_schedule(
+        owner.preparation.config.retirement_interval,
+        physical.transfer.is_some()
+            || physical
+                .manifest
+                .as_ref()
+                .is_some_and(|input| !input.transfers.is_empty()),
+    )?;
     physical.complete = true;
     physical.plaintext.clear();
     physical.plaintext.shrink_to_fit();
@@ -716,6 +726,7 @@ async fn execute(
         allocated,
         charged,
         future,
+        cleanup_not_before,
     })
 }
 

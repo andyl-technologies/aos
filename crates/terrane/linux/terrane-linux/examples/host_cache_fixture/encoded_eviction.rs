@@ -125,7 +125,7 @@ pub(super) fn run(
         ));
     }
     let sealed_deadline = runtime
-        .block_on(publication.into_cache(owner))
+        .block_on(publication.complete_cache_handoff(owner))
         .map_err(io::Error::other)?
         .release_grace_ends_at;
 

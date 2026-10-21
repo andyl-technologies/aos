@@ -308,9 +308,8 @@ pub(super) fn run(
     drop(first_file);
     drop(tail_file);
     emit("ADMISSION_CACHE_CLEANUP completed_sources=2")?;
-    runtime.block_on(publication.close_resident_reads(owner))?;
     let report = runtime
-        .block_on(publication.into_cache(owner))
+        .block_on(publication.complete_cache_handoff(owner))
         .map_err(|error| io::Error::other(format!("cached publication handoff: {error}")))?;
     let after = load(runtime, inputs)?;
     check_cached(&after, 0, false, 2)?;
