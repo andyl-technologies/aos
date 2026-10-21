@@ -34,6 +34,10 @@ in
       exec > /dev/ttyS0 2>&1
       set -x
       unset LD_LIBRARY_PATH
+      # The fixed owner reservoirs also live on the main thread in this
+      # component fixture. Bound it explicitly as for the native owner suites.
+      ulimit -S -s 32768
+      export RUST_MIN_STACK=33554432
 
       mkdir -p /var/lib/aos/sandbox /var/lib/aos/sandboxd/cache-residency-authority /run/aos
       chmod 0755 /run /var/lib/aos /var/lib/aos/sandbox /run/aos

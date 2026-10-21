@@ -632,6 +632,9 @@ in {
         MemoryMax = lib.mkIf (rootReceiving != null) rootReceiving.memory-bytes;
         TasksMax = lib.mkIf (rootReceiving != null) rootReceiving.pids;
         LimitNOFILE = lib.mkIf (rootReceiving != null) rootReceiving.open-files;
+        # Fixed native owner reservoirs also occupy the initial thread's stack.
+        # Keep its kernel limit finite inside the service's memory enclosure.
+        LimitSTACK = "32M";
         CPUAccounting = lib.mkIf (rootReceiving != null) true;
         CPUQuotaPeriodSec = lib.mkIf (rootReceiving != null) "100ms";
         CPUQuota = lib.mkIf (rootReceiving != null) "${toString (rootReceiving.cpu-micros-per-period / 1000)}%";
