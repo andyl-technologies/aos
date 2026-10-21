@@ -141,6 +141,16 @@ static int worker_syscalls(int worker_fd)
             goto done;
         }
     }
+    /* Rust checks its three inherited standard descriptors before main. Admit
+     * that nonblocking census without allowing a worker-selected wait. The
+     * closed profile already requires all three descriptors to be disk files. */
+    {
+        int number = seccomp_syscall_resolve_name("poll");
+        if (number != __NR_SCMP_ERROR && seccomp_rule_add(filter, SCMP_ACT_ALLOW,
+                number, 2, SCMP_A1(SCMP_CMP_LE, 3), SCMP_A2(SCMP_CMP_EQ, 0))) {
+            goto done;
+        }
+    }
     /* HugeTLB uses accounting outside memory.max. Refuse that alternate
      * allocation population without relying on the host's hugetlb group. */
     for (i = 0; i < 2; i++) {

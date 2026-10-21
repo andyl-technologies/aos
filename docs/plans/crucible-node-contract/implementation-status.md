@@ -277,6 +277,25 @@ descriptor-count failure that passes on a focused recheck; that earlier full
 run is not recorded as passing. The current run changes no test or assertion
 in that QEMU control.
 
+## Confined worker standard-descriptor startup
+
+The diagnostic VM reaches the first positive original worker, which exits on
+SIGSEGV with zero cgroup OOM kills and no stdout or stderr. No result or private
+Birth is accepted. A trace of the same measured ELF shows Rust's pre-main
+three-descriptor, zero-timeout `poll`. Denying that syscall triggers abort;
+denying its subsequent signal delivery reproduces the same silent SIGSEGV.
+The pure-worker profile previously denied both calls.
+
+The profile now admits only `poll` with at most three descriptors and zero
+timeout. Existing network, process, filesystem and signal restrictions remain.
+Every actual kernel probe checks that this census succeeds while a fourth
+descriptor or nonzero timeout refuses. The separate pure-worker owner VM passes
+all existing resource, cancellation, completion-custody and waited-cleanup
+controls with these added checks. This x86_64 startup correction does not qualify
+another architecture's libc syscall mapping. The rebuilt full funded-Source VM
+is still pending; genuine result acceptance, private Birth construction, native
+startup and common Ready remain unqualified.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.

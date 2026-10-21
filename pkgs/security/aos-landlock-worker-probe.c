@@ -3,6 +3,7 @@
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -37,6 +38,24 @@ int main(int argc, char **argv, char **environment)
         || getrlimit(RLIMIT_NOFILE, &nofile) || nofile.rlim_cur != 32
         || nofile.rlim_max != 32) {
         return 3;
+    }
+    /* The measured Rust worker performs this census before reading a request.
+     * Larger descriptor populations and blocking polls remain refused. */
+    {
+        struct pollfd descriptors[4] = {
+            {.fd = STDIN_FILENO}, {.fd = STDOUT_FILENO},
+            {.fd = STDERR_FILENO}, {.fd = -1}
+        };
+
+        if (poll(descriptors, 3, 0) != 0) {
+            return 18;
+        }
+        if (poll(descriptors, 4, 0) != -1 || errno != EPERM) {
+            return 19;
+        }
+        if (poll(descriptors, 3, 1) != -1 || errno != EPERM) {
+            return 20;
+        }
     }
     count = read(STDIN_FILENO, mode, sizeof(mode) - 1);
     if (count == 0 || count >= sizeof(mode)) {
