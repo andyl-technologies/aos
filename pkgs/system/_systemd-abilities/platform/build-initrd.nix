@@ -108,7 +108,6 @@
       lib.packageModuleLibrary
       deploymentBundle
     ]
-    ++ config.aos.boot.initrd.extraPackages
     ++ lib.optional (config.aos.boot.initrd.stage0 != null) config.aos.boot.initrd.stage0
   ));
   closureInfoFor = lib.build.closureInfo {
@@ -163,7 +162,8 @@
     mountExecutableCarrier = config.boot.initrd.systemd.mountExecutableCarrier;
     stage0Init = config.aos.boot.initrd.stage0;
     immutableSelinuxPolicy = config.system.build.immutableSelinuxPolicy;
-    initrdExtraPackages = config.aos.boot.initrd.extraPackages;
+    # These canonical roots already include admitted packages and runtime artifacts.
+    initrdExtraPackages = config.aos.boot.initrd.runtimeRoots;
     nativeErofsUtils = buildContext.packageSet.buildPackages.erofs-utils;
     nativeLibselinux = buildContext.packageSet.buildPackages.libselinux;
     nativePatchelf = buildContext.packageSet.buildPackages.patchelf;
