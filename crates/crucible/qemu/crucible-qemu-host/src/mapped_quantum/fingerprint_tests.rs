@@ -270,3 +270,41 @@ fn mapped_region_refusal_preserves_actual_cause_without_allocating()
     }
     Ok(())
 }
+
+#[test]
+fn mapped_read_observations_preserve_reports_without_allocating()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crucible_host_resources::test_support::TestAllocationObserver;
+
+    let (mut channel, producer) = mapped_fingerprint_channel()?;
+    producer.node_slot(0)?.publish_pause_quiesced(4096, 0)?;
+    let expected = producer.node_slot(0)?.snapshot();
+
+    for _ in 0..2 {
+        let ((current, calibration, witness, idle), counts) = TestAllocationObserver::count(|| {
+            (
+                QemuShmemHotPathChannel::current_icount(&mut channel),
+                QemuShmemHotPathChannel::logical_time_calibration(&mut channel),
+                QemuShmemHotPathChannel::virtual_timer_fire_witness(&mut channel),
+                QemuShmemHotPathChannel::idle_state(&mut channel),
+            )
+        });
+
+        assert_eq!(
+            current?,
+            crucible_engine::Icount {
+                retired: expected.current_icount
+            }
+        );
+        let calibration = calibration?;
+        assert_eq!(calibration.logical_icount, expected.current_icount);
+        assert_eq!(calibration.raw_icount, expected.logical_time_raw_icount);
+        assert_eq!(witness?, expected.virtual_timer_witness);
+        assert_eq!(idle?, crate::quantum::idle_state_from_snapshot(expected));
+        assert_eq!(counts.allocations, 0, "{counts:?}");
+        assert_eq!(counts.reallocations, 0, "{counts:?}");
+        assert!(!counts.overflow);
+        assert_eq!(producer.node_slot(0)?.snapshot(), expected);
+    }
+    Ok(())
+}

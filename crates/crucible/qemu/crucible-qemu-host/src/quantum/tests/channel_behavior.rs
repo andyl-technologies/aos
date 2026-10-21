@@ -361,3 +361,57 @@ fn qemu_quantum_implements_existing_shmem_hot_path_trait() {
             .all(|operation| operation.plane() == QemuQuantumOperationPlane::SharedMemory)
     );
 }
+
+#[test]
+fn qemu_quantum_operation_log_spill_preserves_history_and_report_boundary() {
+    let slot = NodeSlot::default();
+    let inbound_ring = RingHeader::new();
+    let outbound_ring = RingHeader::new();
+    let mut inbound_entries = frame_entries(8);
+    let mut outbound_entries = frame_entries(8);
+    let mut hot_path = hot_path(
+        &slot,
+        &inbound_ring,
+        &mut inbound_entries,
+        &outbound_ring,
+        &mut outbound_entries,
+    );
+
+    assert!(hot_path.operation_log().is_empty());
+    for count in 1..=12 {
+        assert_eq!(
+            QemuShmemHotPathChannel::current_icount(&mut hot_path).unwrap(),
+            icount(0)
+        );
+        assert_eq!(
+            hot_path.operation_log(),
+            vec![QemuQuantumOperation::ReadNodeReport; count]
+        );
+    }
+
+    let pending = hot_path
+        .start_quantum(horizon(10), crate::QemuQuantumStopCondition::Ceiling)
+        .unwrap();
+    slot.publish_reached_icount(10).unwrap();
+    let report = hot_path.finish_quantum(pending).unwrap();
+
+    assert_eq!(report.final_state.current_icount, icount(10));
+    assert_eq!(
+        &hot_path.operation_log()[..12],
+        vec![QemuQuantumOperation::ReadNodeReport; 12].as_slice()
+    );
+    assert_eq!(report.operations, hot_path.operation_log()[12..]);
+    assert_eq!(
+        report.operations,
+        [
+            QemuQuantumOperation::ReadNodeReport,
+            QemuQuantumOperation::ObserveInboundConsumption,
+            QemuQuantumOperation::ComputeSchedulerCeiling,
+            QemuQuantumOperation::StoreSchedulerCeiling,
+            QemuQuantumOperation::FutexWake,
+            QemuQuantumOperation::ObservePluginReport,
+            QemuQuantumOperation::ReadCompletionReport,
+            QemuQuantumOperation::ObserveInboundConsumption,
+        ]
+    );
+}

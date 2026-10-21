@@ -268,6 +268,42 @@ impl QemuQuantumOperation {
     }
 }
 
+// Mapped observations create a temporary view and record exactly one event.
+// Keep that event inline; longer-lived adapters retain every event after spill.
+enum QemuQuantumOperationLog {
+    Inline(Option<QemuQuantumOperation>),
+    Spilled(Vec<QemuQuantumOperation>),
+}
+
+impl QemuQuantumOperationLog {
+    const fn new() -> Self {
+        Self::Inline(None)
+    }
+
+    fn as_slice(&self) -> &[QemuQuantumOperation] {
+        match self {
+            Self::Inline(Some(operation)) => std::slice::from_ref(operation),
+            Self::Inline(None) => &[],
+            Self::Spilled(operations) => operations,
+        }
+    }
+
+    fn push(&mut self, operation: QemuQuantumOperation) {
+        match self {
+            Self::Inline(first) => match first.take() {
+                None => *first = Some(operation),
+                Some(first) => {
+                    let mut operations = Vec::with_capacity(4);
+                    operations.push(first);
+                    operations.push(operation);
+                    *self = Self::Spilled(operations);
+                }
+            },
+            Self::Spilled(operations) => operations.push(operation),
+        }
+    }
+}
+
 /// A published quantum that is waiting for an authorized boundary.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QemuPendingQuantum {
@@ -354,7 +390,7 @@ pub struct QemuQuantumReport {
 pub struct QemuQuantumShmemHotPath<'a> {
     config: Cow<'a, QemuQuantumShmemConfig>,
     view: QemuQuantumShmemView<'a>,
-    operation_log: Vec<QemuQuantumOperation>,
+    operation_log: QemuQuantumOperationLog,
     next_router_inbound_sequence: u64,
     inbound_delivery_ledger: QemuInboundDeliveryLedger<'a>,
     send_authorizer: &'a dyn SchedulerSendAuthorizer,
@@ -376,7 +412,7 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
         Ok(Self {
             config: Cow::Owned(config),
             view,
-            operation_log: Vec::new(),
+            operation_log: QemuQuantumOperationLog::new(),
             next_router_inbound_sequence: 0,
             inbound_delivery_ledger: QemuInboundDeliveryLedger::Owned(inbound_delivery_ledger),
             send_authorizer,
@@ -394,7 +430,7 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
         Ok(Self {
             config: Cow::Borrowed(config),
             view,
-            operation_log: Vec::new(),
+            operation_log: QemuQuantumOperationLog::new(),
             next_router_inbound_sequence: 0,
             inbound_delivery_ledger: QemuInboundDeliveryLedger::Borrowed(inbound_delivery_ledger),
             send_authorizer,
@@ -429,7 +465,7 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
     /// Returns the recorded operation log.
     #[must_use]
     pub fn operation_log(&self) -> &[QemuQuantumOperation] {
-        &self.operation_log
+        self.operation_log.as_slice()
     }
 
     /// Enqueues a deterministic inbound frame through the shared-memory ring.
@@ -493,7 +529,7 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
         horizon: ExecutionHorizon,
         stop_condition: QemuQuantumStopCondition,
     ) -> Result<QemuPendingQuantum, QemuQuantumError> {
-        let operation_start = self.operation_log.len();
+        let operation_start = self.operation_log.as_slice().len();
         self.record(QemuQuantumOperation::ReadNodeReport);
         let initial_snapshot = self.view.node_slot.snapshot();
         let initial_state = idle_state_from_snapshot(initial_snapshot);
@@ -633,7 +669,7 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
         } else {
             quantum_outcome(pending.requested_horizon, pending.ceiling, final_state)?
         };
-        let operations = self.operation_log[pending.operation_start..].to_vec();
+        let operations = self.operation_log.as_slice()[pending.operation_start..].to_vec();
         assert_qemu_quantum_hot_path_is_shmem_only(&operations)?;
 
         Ok(QemuQuantumReport {
