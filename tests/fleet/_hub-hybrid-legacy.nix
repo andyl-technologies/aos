@@ -1412,6 +1412,8 @@
       raise
   assert bootstrap["state"] == "ready", bootstrap
 
+  # Staging prepares the catalog before transferring every NAR and OCI object.
+  # Its bound covers both phases so a progressing transfer can finish.
   private_guest_command(client, textwrap.dedent(f"""
       set -euo pipefail
       export HOME=/var/lib/hybrid-apr-home USER=fleet-publisher
@@ -1433,7 +1435,7 @@
         --token {shlex.quote(publisher_token)}
       {APR} --json stage show hybrid-container --registry containers \\
         > /var/lib/hybrid-container-registry-stage.json
-  """), timeout=900)
+  """), timeout=1800)
   # The agent mirrors stdout to the serial console. Query the asserted fields
   # instead of sending the full retained stage through that slow transport.
   registry_stage = json.loads(client.succeed(
