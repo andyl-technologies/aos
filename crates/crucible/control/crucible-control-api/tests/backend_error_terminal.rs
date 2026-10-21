@@ -72,19 +72,17 @@ fn fixture(
         Option<SharedOperationalCause<PrepaidFailure>>,
         LifecycleBackendConstructionError,
     ),
-) -> Fixture {
+) -> Result<Fixture, Box<dyn Error>> {
     let accounts = [
-        HostServiceAllocator::new(1, 1, 4096).unwrap(),
-        HostServiceAllocator::new(1, 1, 4096).unwrap(),
+        HostServiceAllocator::new(1, 1, 4096)?,
+        HostServiceAllocator::new(1, 1, 4096)?,
     ];
-    let (layout, _) = Layout::new::<[AtomicUsize; 2]>()
-        .extend(Layout::new::<PrepaidFailure>())
-        .unwrap();
+    let (layout, _) = Layout::new::<[AtomicUsize; 2]>().extend(Layout::new::<PrepaidFailure>())?;
     let layout = layout.pad_to_align();
-    let bytes = u64::try_from(layout.size()).unwrap();
+    let bytes = u64::try_from(layout.size())?;
     let credit = HostServiceLeasePair::new(
-        accounts[0].reserve_resources(0, 0, bytes).unwrap(),
-        accounts[1].reserve_resources(0, 0, bytes).unwrap(),
+        accounts[0].reserve_resources(0, 0, bytes)?,
+        accounts[1].reserve_resources(0, 0, bytes)?,
     );
     let returns = Arc::new(AtomicUsize::new(0));
     let payload = PrepaidFailure {
@@ -97,21 +95,27 @@ fn fixture(
     assert_eq!(counts.allocations, 1);
     assert_eq!(counts.reallocations, 0);
     assert!(!counts.overflow);
-    assert!(error.source().unwrap().is::<PrepaidFailure>());
+    assert!(
+        error
+            .source()
+            .ok_or("lifecycle cause is absent")?
+            .is::<PrepaidFailure>()
+    );
     assert_eq!(error.to_string(), "original paired lifecycle failure");
 
-    Fixture {
+    Ok(Fixture {
         accounts,
         returns,
         bytes,
-        allocation: allocation.unwrap(),
+        allocation: allocation.ok_or("lifecycle allocation was not observed")?,
         typed,
         error,
-    }
+    })
 }
 
 #[test]
-fn lifecycle_error_frees_its_control_before_returning_original_paired_credit() {
+fn lifecycle_error_frees_its_control_before_returning_original_paired_credit()
+-> Result<(), Box<dyn Error>> {
     let Fixture {
         accounts,
         returns,
@@ -119,7 +123,7 @@ fn lifecycle_error_frees_its_control_before_returning_original_paired_credit() {
         allocation,
         typed,
         error,
-    } = fixture(|cause| (None, LifecycleBackendConstructionError::new(cause)));
+    } = fixture(|cause| (None, LifecycleBackendConstructionError::new(cause)))?;
     assert!(typed.is_none());
     let last = error.clone();
     assert_eq!(error, last);
@@ -137,11 +141,13 @@ fn lifecycle_error_frees_its_control_before_returning_original_paired_credit() {
     assert_eq!(observed.before.original_bytes, [Some(bytes); 2]);
     assert_eq!(observed.after.original_bytes, [Some(bytes); 2]);
     assert_eq!(returns.load(Ordering::SeqCst), 1);
-    assert_returned(&accounts);
+    assert_returned(&accounts)?;
+    Ok(())
 }
 
 #[test]
-fn mixed_typed_and_lifecycle_observers_close_once_before_the_paired_refund() {
+fn mixed_typed_and_lifecycle_observers_close_once_before_the_paired_refund()
+-> Result<(), Box<dyn Error>> {
     let Fixture {
         accounts,
         returns,
@@ -153,7 +159,7 @@ fn mixed_typed_and_lifecycle_observers_close_once_before_the_paired_refund() {
         let typed = SharedOperationalCause::new(cause);
         let error = LifecycleBackendConstructionError::from_operational(typed.backend_cause());
         (Some(typed), error)
-    });
+    })?;
     let typed = typed.unwrap();
     assert!(std::ptr::eq(
         typed.source_ref(),
@@ -198,15 +204,13 @@ fn mixed_typed_and_lifecycle_observers_close_once_before_the_paired_refund() {
     assert_eq!(observations[0].before.original_bytes, [Some(bytes); 2]);
     assert_eq!(observations[0].after.original_bytes, [Some(bytes); 2]);
     assert_eq!(returns.load(Ordering::SeqCst), 1);
-    assert_returned(&accounts);
+    assert_returned(&accounts)?;
+    Ok(())
 }
 
-fn assert_returned(accounts: &[HostServiceAllocator; 2]) {
+fn assert_returned(accounts: &[HostServiceAllocator; 2]) -> Result<(), Box<dyn Error>> {
     for account in accounts {
-        drop(
-            account
-                .reserve_resources(0, 0, account.maximum_resident_bytes())
-                .unwrap(),
-        );
+        drop(account.reserve_resources(0, 0, account.maximum_resident_bytes())?);
     }
+    Ok(())
 }
