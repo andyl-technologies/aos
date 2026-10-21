@@ -137,7 +137,10 @@ pub(super) fn run(
     )?;
     let released = runtime.block_on(owner.release_consumer_lease(&lease))?;
     shared.revoked(runtime, &lease)?;
-    if lease.read_verified().is_ok() || released.future_hold_bytes != accounting.future_hold_bytes {
+    if lease.read_verified().is_ok()
+        || lease.read_encoded().is_ok()
+        || released.future_hold_bytes != accounting.future_hold_bytes
+    {
         return Err(invalid(
             "release failed revocation or discarded grace funding",
         ));
@@ -203,6 +206,7 @@ pub(super) fn run(
         .block_on(TokioClock.sleep(Duration::from_secs(short_expiry.saturating_sub(now()?) + 1)))?;
     let expired_bytes = fs::read(policy_path(inputs))?;
     if repinned.read_verified().is_ok()
+        || repinned.read_encoded().is_ok()
         || runtime
             .block_on(owner.renew_consumer_lease(&repinned, short_expiry + 90))
             .is_ok()
@@ -383,6 +387,12 @@ fn policy_path(inputs: &Inputs) -> std::path::PathBuf {
 fn check_read(lease: &NativeConsumerLease) -> io::Result<()> {
     if lease.read_verified()? != PLAINTEXT {
         return Err(invalid("consumer read differs from verified source"));
+    }
+    let encoded = lease.read_encoded()?;
+    if encoded.first() != Some(&0) || encoded.get(1..) != Some(PLAINTEXT) {
+        return Err(invalid(
+            "sealed consumer returned another raw chunk envelope",
+        ));
     }
     Ok(())
 }

@@ -113,6 +113,45 @@ impl NativeResidentChunkSource {
         Ok(plaintext)
     }
 
+    /// Returns a verified raw codec envelope for this sealed plaintext residence.
+    ///
+    /// Sealed residences retain no earlier compression encoding. Codec zero
+    /// preserves the chunk identity and supplies the ordinary stored-body form.
+    /// The original read view remains active through encoding and final closure
+    /// checks; this operation creates no standalone file or new durable pin.
+    ///
+    /// # Errors
+    /// Returns the same errors as [`Self::read_verified`], or capacity when the
+    /// raw envelope including its codec byte exceeds the operator read window.
+    pub fn read_encoded(&self) -> io::Result<Vec<u8>> {
+        let read = self.view.begin()?;
+        let plaintext = self.read_verified()?;
+        let length = plaintext
+            .len()
+            .checked_add(1)
+            .filter(|length| *length <= read.source.allocation_limit)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::OutOfMemory,
+                    "resident envelope exceeds operator bound",
+                )
+            })?;
+        let mut encoded = Vec::new();
+        encoded
+            .try_reserve_exact(length)
+            .map_err(|error| io::Error::new(io::ErrorKind::OutOfMemory, error))?;
+        if encoded.capacity() > read.source.allocation_limit {
+            return Err(io::Error::new(
+                io::ErrorKind::OutOfMemory,
+                "resident envelope capacity exceeds operator bound",
+            ));
+        }
+        encoded.push(0);
+        encoded.extend_from_slice(&plaintext);
+        self.view.check_open()?;
+        Ok(encoded)
+    }
+
     /// Permanently closes this view and reports whether its operations have finished.
     ///
     /// New reads and protected reassembly operations are refused immediately. An

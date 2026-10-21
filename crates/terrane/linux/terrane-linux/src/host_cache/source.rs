@@ -294,19 +294,7 @@ impl NativeChunkSource {
         match &self.backing {
             Backing::Encoded { file, dictionary } => {
                 let encoded = read_bounded(file, &self.profile, self.allocation_limit)?;
-                let dictionary = dictionary
-                    .as_ref()
-                    .map(|source| source.read_verified_at())
-                    .transpose()?;
-                let verified = terrane_sdk::codec::decode_verified(
-                    &encoded,
-                    self.length,
-                    &self.profile,
-                    self.final_chunk,
-                    &self.identity,
-                    dictionary.as_deref(),
-                )
-                .map_err(invalid)?;
+                let verified = self.decode_encoded(&encoded, dictionary.as_deref())?;
                 Ok(verified.plaintext().to_vec())
             }
             #[cfg(feature = "tokio")]
@@ -323,6 +311,45 @@ impl NativeChunkSource {
                 Ok(bytes)
             }
         }
+    }
+
+    /// Returns the original verified envelope, or a raw envelope for a sealed source.
+    ///
+    /// # Errors
+    /// Refuses changed native bytes, invalid identities/boundaries, missing
+    /// dictionaries, revoked sealed backing and exceeded allocation bounds.
+    #[cfg(feature = "tokio")]
+    pub(in crate::host_cache) fn read_encoded_at(&self) -> io::Result<Vec<u8>> {
+        match &self.backing {
+            Backing::Encoded { file, dictionary } => {
+                let encoded = read_bounded(file, &self.profile, self.allocation_limit)?;
+                self.decode_encoded(&encoded, dictionary.as_deref())?;
+                Ok(encoded)
+            }
+            #[cfg(feature = "tokio")]
+            Backing::Sealed(source) => {
+                let encoded = source.read_encoded()?;
+                self.decode_encoded(&encoded, None)?;
+                Ok(encoded)
+            }
+        }
+    }
+
+    fn decode_encoded<'a>(
+        &self,
+        encoded: &'a [u8],
+        dictionary: Option<&Self>,
+    ) -> io::Result<terrane_sdk::codec::VerifiedChunk<'a>> {
+        let dictionary = dictionary.map(Self::read_verified_at).transpose()?;
+        terrane_sdk::codec::decode_verified(
+            encoded,
+            self.length,
+            &self.profile,
+            self.final_chunk,
+            &self.identity,
+            dictionary.as_deref(),
+        )
+        .map_err(invalid)
     }
 }
 
@@ -449,6 +476,64 @@ mod tests {
         fn drop(&mut self) {
             std::fs::remove_dir_all(&self.0).unwrap();
         }
+    }
+
+    #[cfg(feature = "tokio")]
+    #[test]
+    fn encoded_consumer_verifies_original_envelope_before_returning_bytes() {
+        // This tests bounded codec verification only. No layout, admission,
+        // quota, consumer pin or serving authority is manufactured here.
+        let fixture = Fixture::new();
+        let plaintext = vec![b'E'; 65536];
+        let profile = ChunkProfile::cdc_1m([0; 32]);
+        let encoded =
+            terrane_sdk::codec::encode_chunk(&plaintext, profile.maximum(), 3, None).unwrap();
+        assert_eq!(encoded[0], 1);
+        let path = fixture.0.join("encoded");
+        std::fs::write(&path, &encoded).unwrap();
+        let mut file = File::open(&path).unwrap();
+        file.seek(SeekFrom::Start(7)).unwrap();
+        let mut source = NativeChunkSource {
+            backing: Backing::Encoded {
+                file,
+                dictionary: None,
+            },
+            domain: "public".into(),
+            identity: TERRANE_V1
+                .calculate(IdentityKind::Chunk, &plaintext)
+                .unwrap(),
+            length: plaintext.len(),
+            final_chunk: true,
+            profile,
+            allocation_limit: plaintext.len(),
+        };
+
+        assert_eq!(source.read_encoded_at().unwrap(), encoded);
+        let Backing::Encoded { file, .. } = &mut source.backing else {
+            panic!("encoded fixture changed class")
+        };
+        assert_eq!(file.stream_position().unwrap(), 7);
+
+        source.allocation_limit = encoded.len() - 1;
+        assert_eq!(
+            source.read_encoded_at().unwrap_err().kind(),
+            io::ErrorKind::OutOfMemory
+        );
+
+        source.allocation_limit = plaintext.len();
+        let different = terrane_sdk::codec::encode_chunk(
+            &vec![b'F'; plaintext.len()],
+            source.profile.maximum(),
+            3,
+            None,
+        )
+        .unwrap();
+        std::fs::write(&path, different).unwrap();
+        assert!(source.read_encoded_at().is_err());
+
+        std::fs::write(&path, &encoded).unwrap();
+        source.final_chunk = false;
+        assert!(source.read_encoded_at().is_err());
     }
 
     #[test]

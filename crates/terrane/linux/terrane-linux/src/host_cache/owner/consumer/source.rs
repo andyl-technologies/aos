@@ -168,6 +168,22 @@ impl ConsumerSource {
         }
     }
 
+    /// Returns verified encoded bytes under the same original backing custody.
+    ///
+    /// # Errors
+    /// Refuses changed/revoked backing, codec/identity/boundary failures and
+    /// exhausted allocation bounds. Encoded reads record actual cache activity.
+    pub(super) fn read_encoded(&self) -> io::Result<Vec<u8>> {
+        match &self.backing {
+            Backing::Sealed(source) => source.read_encoded(),
+            Backing::Encoded { source, activity } => {
+                let encoded = source.read_encoded()?;
+                activity.record()?;
+                Ok(encoded)
+            }
+        }
+    }
+
     /// Synchronizes and measures original backing without an embedded mutex.
     ///
     /// # Errors

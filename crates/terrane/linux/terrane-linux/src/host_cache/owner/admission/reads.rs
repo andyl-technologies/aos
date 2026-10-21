@@ -181,6 +181,18 @@ impl AdmittedRead {
         Ok(bytes)
     }
 
+    /// Returns the original envelope after full native and content verification.
+    ///
+    /// # Errors
+    /// Refuses changed backing or dictionary custody, corrupt bytes, invalid
+    /// boundaries and reads exceeding the configured allocation window.
+    pub(in crate::host_cache::owner) fn read_encoded(&self) -> io::Result<Vec<u8>> {
+        self.check_native()?;
+        let bytes = self.source.read_encoded_at()?;
+        self.check_native()?;
+        Ok(bytes)
+    }
+
     /// Recognizes the actual original job while consumer custody still exists.
     pub(in crate::host_cache::owner) fn retains(&self, job: &Arc<Mutex<AdmissionJob>>) -> bool {
         self.members

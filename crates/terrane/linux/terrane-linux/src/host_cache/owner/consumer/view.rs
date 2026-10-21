@@ -327,6 +327,28 @@ impl NativeConsumerLease {
         self.view.live_deadline()?;
         Ok(bytes)
     }
+
+    /// Returns verified stored encoding under this original live consumer grant.
+    ///
+    /// Encoded admissions preserve their exact codec envelope, including an
+    /// original one-hop dictionary reference. Sealed residences return the raw
+    /// codec envelope. The complete body is verified before any bytes escape.
+    /// Reads retain the same finite read permit and backing until completion,
+    /// use positioned I/O and hold no embedded-store or owner-queue lock.
+    ///
+    /// # Errors
+    /// Refuses expired/revoked grants, exhausted read/allocation budgets, changed
+    /// native backing and codec, dictionary, identity or boundary failures.
+    pub fn read_encoded(&self) -> io::Result<Vec<u8>> {
+        let read = self.view.begin_read()?;
+        let bytes = read
+            .source
+            .as_ref()
+            .ok_or_else(|| io::Error::other("consumer read lost backing"))?
+            .read_encoded()?;
+        self.view.live_deadline()?;
+        Ok(bytes)
+    }
 }
 
 fn shared_error(error: io::Error) -> StoreFailure {

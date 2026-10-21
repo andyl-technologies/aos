@@ -227,6 +227,12 @@ pub(super) fn run(
             "restored raw or genuine dictionary-backed consumer failed",
         ));
     }
+    if raw_lease.read_encoded()? != raw.bytes || dependent_lease.read_encoded()? != dependent.bytes
+    {
+        return Err(invalid(
+            "consumer changed original raw or dictionary codec envelope",
+        ));
+    }
     drop(stalled);
     raw.check(1)?;
 
@@ -323,15 +329,24 @@ pub(super) fn run(
             "unrelated removal invalidated live encoded consumers",
         ));
     }
+    if raw_lease.read_encoded()? != raw.bytes || dependent_lease.read_encoded()? != dependent.bytes
+    {
+        return Err(invalid(
+            "unrelated removal changed original encoded consumer bytes",
+        ));
+    }
     drop(stalled);
     emit("READY independent encoded consumers survive actual pack and sealed removal")?;
 
     control("release-raw")?;
     runtime.block_on(owner.release_consumer_lease(&raw_lease))?;
-    if raw_lease
-        .read_verified()
-        .err()
-        .is_none_or(|error| error.kind() != io::ErrorKind::PermissionDenied)
+    if [raw_lease.read_verified(), raw_lease.read_encoded()]
+        .into_iter()
+        .any(|result| {
+            result
+                .err()
+                .is_none_or(|error| error.kind() != io::ErrorKind::PermissionDenied)
+        })
     {
         return Err(invalid("released raw consumer retained access"));
     }
@@ -379,11 +394,16 @@ pub(super) fn run(
 
     control("release-dependent")?;
     runtime.block_on(owner.release_consumer_lease(&dependent_lease))?;
-    if dependent_lease
-        .read_verified()
-        .err()
-        .is_none_or(|error| error.kind() != io::ErrorKind::PermissionDenied)
-    {
+    if [
+        dependent_lease.read_verified(),
+        dependent_lease.read_encoded(),
+    ]
+    .into_iter()
+    .any(|result| {
+        result
+            .err()
+            .is_none_or(|error| error.kind() != io::ErrorKind::PermissionDenied)
+    }) {
         return Err(invalid(
             "released dictionary-backed consumer retained access",
         ));
@@ -406,10 +426,13 @@ pub(super) fn run(
 
     control("release-unread")?;
     runtime.block_on(owner.release_consumer_lease(&unread_lease))?;
-    if unread_lease
-        .read_verified()
-        .err()
-        .is_none_or(|error| error.kind() != io::ErrorKind::PermissionDenied)
+    if [unread_lease.read_verified(), unread_lease.read_encoded()]
+        .into_iter()
+        .any(|result| {
+            result
+                .err()
+                .is_none_or(|error| error.kind() != io::ErrorKind::PermissionDenied)
+        })
     {
         return Err(invalid(
             "released unread companion retained consumer access",
