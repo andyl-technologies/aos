@@ -15,7 +15,7 @@
     testScript = ''
       set -eu
       mount -o remount,rw /
-      mkdir /var/lib/terrane-shared-modes
+      mkdir -p /var/lib/terrane-shared-modes
       chown 840:840 /var/lib/terrane-shared-modes
       chmod 700 /var/lib/terrane-shared-modes
       trap 'rm -rf /var/lib/terrane-shared-modes' EXIT

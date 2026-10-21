@@ -11699,3 +11699,13 @@ metadata and exact executions; its frozen qualification and the required
 application-target compilation remain pending. This byte transport component
 does not qualify Distribution framing, generated schemas, authorization or
 T-PROTO-1. Protocol callers must still enforce injected-clock deadlines.
+
+
+The frozen streaming component check passes at `ee6cbedec9`: independent
+review matches 7,869 immutable source files, 5,197 bound crate inputs, the
+actual Cargo integration artifact and all eight exact passing/no-ignore
+executions. The earlier `ed6795f606` application-target build also passes;
+its immutable-source review is retained independently. The setgid VM stopped
+before test execution because its minimal rootfs lacks `/var/lib`; scratch
+creation now creates the missing parent. Its failed receipt is retained, and
+the corrected owning proof remains pending.
