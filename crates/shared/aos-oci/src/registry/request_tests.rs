@@ -227,6 +227,123 @@ async fn cancelled_head_dispatches_no_request() {
 }
 
 #[tokio::test]
+async fn immutable_manifest_read_recovers_before_one_exact_put() {
+    let server =
+        FaultServer::start(|_| vec![Reply::Reset, Reply::status(404), Reply::status(201)]).await;
+
+    publish_fixture_manifest(&server.client(), None)
+        .await
+        .expect("manifest published after read recovery");
+
+    let requests = server.requests();
+    assert_eq!(requests.len(), 3);
+    assert_eq!(requests[0], requests[1]);
+    assert!(requests[0].starts_with("HEAD /v2/aos/manifests/sha256:"));
+    assert!(requests[2].starts_with("PUT /v2/aos/manifests/sha256:"));
+    assert!(requests[2].ends_with("\r\n\r\n{\"schemaVersion\":2}"));
+}
+
+#[tokio::test]
+async fn immutable_manifest_reuses_only_an_exact_head_projection() {
+    let digest = aos_oci_types::Sha256Digest::digest(FIXTURE_MANIFEST);
+    let server = FaultServer::start(|_| {
+        vec![Reply::Head {
+            status: 200,
+            headers: format!(
+                "Docker-Content-Digest: {digest}\r\nContent-Type: application/vnd.oci.image.manifest.v1+json\r\n"
+            ),
+            length: FIXTURE_MANIFEST.len(),
+        }]
+    })
+    .await;
+
+    publish_fixture_manifest(&server.client(), None)
+        .await
+        .expect("exact manifest already present");
+
+    assert_eq!(server.requests().len(), 1);
+    assert!(server.requests()[0].starts_with("HEAD "));
+}
+
+#[tokio::test]
+async fn immutable_manifest_rejects_a_changed_head_digest() {
+    let digest = aos_oci_types::Sha256Digest::digest(b"different manifest");
+    let server = FaultServer::start(|_| {
+        vec![Reply::Head {
+            status: 200,
+            headers: format!(
+                "Docker-Content-Digest: {digest}\r\nContent-Type: application/vnd.oci.image.manifest.v1+json\r\n"
+            ),
+            length: FIXTURE_MANIFEST.len(),
+        }]
+    })
+    .await;
+
+    let error = publish_fixture_manifest(&server.client(), None)
+        .await
+        .expect_err("contradictory retained manifest");
+
+    assert!(
+        error
+            .to_string()
+            .contains("registry manifest digest differs")
+    );
+    assert_eq!(server.requests().len(), 1);
+}
+
+#[tokio::test]
+async fn immutable_manifest_unknown_put_is_not_replayed() {
+    let server =
+        FaultServer::start(|_| vec![Reply::status(404), Reply::Reset, Reply::status(201)]).await;
+
+    let error = publish_fixture_manifest(&server.client(), None)
+        .await
+        .expect_err("unknown manifest mutation remains an error");
+
+    assert!(error.downcast_ref::<reqwest::Error>().is_some());
+    let requests = server.requests();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[0].starts_with("HEAD "));
+    assert!(requests[1].starts_with("PUT "));
+}
+
+#[tokio::test]
+async fn manifest_tag_keeps_its_original_put() {
+    let server = FaultServer::start(|_| vec![Reply::status(201)]).await;
+
+    publish_fixture_manifest(&server.client(), Some("latest"))
+        .await
+        .expect("tag published");
+
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].starts_with("PUT /v2/aos/manifests/latest "));
+}
+
+const FIXTURE_MANIFEST: &[u8] = b"{\"schemaVersion\":2}";
+
+async fn publish_fixture_manifest(
+    client: &RegistryClient,
+    manifest_reference: Option<&str>,
+) -> anyhow::Result<()> {
+    let reference =
+        RegistryReference::parse(&format!("{}/aos:latest", client.inner.reference_authority))?;
+    let digest = aos_oci_types::Sha256Digest::digest(FIXTURE_MANIFEST).to_string();
+    super::push::put_manifest(
+        client,
+        #[cfg(unix)]
+        None,
+        &reference,
+        manifest_reference.unwrap_or(&digest),
+        aos_oci_types::MediaType::OciImageManifest,
+        FIXTURE_MANIFEST.to_vec(),
+        "repository:aos:pull,push",
+        None,
+    )
+    .await
+}
+
+#[tokio::test]
 async fn head_cancelled_while_waiting_for_response_is_not_retried() {
     let (consumed, observed) = tokio::sync::oneshot::channel();
     let server = FaultServer::start(|_| vec![Reply::Hold(consumed)]).await;
@@ -472,6 +589,11 @@ enum Reply {
     Reset,
     ResetAfter(Box<dyn FnOnce() + Send>),
     Hold(tokio::sync::oneshot::Sender<()>),
+    Head {
+        status: u16,
+        headers: String,
+        length: usize,
+    },
     Http {
         status: u16,
         headers: String,
@@ -554,6 +676,19 @@ impl FaultServer {
                     Reply::Hold(consumed) => {
                         consumed.send(()).expect("consumed request observer");
                         std::future::pending::<()>().await;
+                    }
+                    Reply::Head {
+                        status,
+                        headers,
+                        length,
+                    } => {
+                        let response = format!(
+                            "HTTP/1.1 {status} Fixture\r\nContent-Length: {length}\r\nConnection: close\r\n{headers}\r\n"
+                        );
+                        stream
+                            .write_all(response.as_bytes())
+                            .await
+                            .expect("HEAD response bytes");
                     }
                     Reply::Http {
                         status,

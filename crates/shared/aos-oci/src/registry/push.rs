@@ -1,5 +1,7 @@
 //! Verified, resumable Distribution push with immutable-before-tag ordering.
 
+mod manifest;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::io::{Read as _, Seek as _, SeekFrom, Write as _};
@@ -955,7 +957,12 @@ async fn query_upload(
     Ok(Some((next, offset)))
 }
 
-async fn put_manifest(
+/// Publishes exact manifest bytes or reuses an identical immutable legacy document.
+///
+/// # Errors
+/// Refuses failed presence checks, publication authority, transport, response
+/// status, or returned digest validation. An unknown PUT is never replayed.
+pub(super) async fn put_manifest(
     client: &RegistryClient,
     #[cfg(unix)] direct: Option<&super::direct::DirectOciAuthority>,
     reference: &RegistryReference,
@@ -973,6 +980,26 @@ async fn put_manifest(
     let cancellation = cancellation.unwrap_or(&commit);
     let expected_digest = Sha256Digest::digest(&bytes);
     let bytes = Bytes::from(bytes);
+    #[cfg(unix)]
+    let legacy = direct.is_none();
+    #[cfg(not(unix))]
+    let legacy = true;
+    if legacy
+        && manifest_reference == expected_digest.to_string()
+        && manifest::already_present(
+            client,
+            url.clone(),
+            scope,
+            media_type,
+            expected_digest,
+            bytes.len(),
+            cancellation,
+        )
+        .await?
+    {
+        return Ok(());
+    }
+
     #[cfg(unix)]
     let response = if let Some(direct) = direct {
         // Hybrid receives this bounded document at the Worker only. Its

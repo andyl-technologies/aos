@@ -871,6 +871,22 @@ async fn duplicate_blobs_are_reused_and_cross_repository_mounts_use_both_grants(
             .any(|event| event.starts_with("PATCH:/v2/aos/blobs/uploads/")),
         "events: {events:?}"
     );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.starts_with("manifest:sha256:"))
+            .count(),
+        2,
+        "the immutable manifest and index are each published once: {events:?}"
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.as_str() == "manifest:latest")
+            .count(),
+        2,
+        "each publication still commits its tag: {events:?}"
+    );
     drop(events);
 
     let scopes = registry.state.token_scopes.lock().expect("token scopes");
@@ -2076,6 +2092,7 @@ fn manifest_response(
         return Response::builder()
             .status(StatusCode::OK)
             .header(CONTENT_TYPE, media_type)
+            .header(CONTENT_LENGTH, bytes.len())
             .header("docker-content-digest", digest.to_string())
             .body(if method == Method::HEAD {
                 Body::empty()
