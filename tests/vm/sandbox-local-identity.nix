@@ -35,6 +35,7 @@
     # Isolate subprocess fixtures from other tests' live journal descriptors.
     # Forked children can otherwise briefly retain another test's flock owner.
     cargoNextest = true;
+    cargoNextestProfile = "nix-sandbox";
     cargoTestFlags = "${packageFlags} --lib";
     installBins = false;
     buildDeps = [pkgs.protobuf];
@@ -84,6 +85,7 @@
     ];
     doCheck = true;
     cargoNextest = true;
+    cargoNextestProfile = "nix-sandbox";
     cargoTestFlags = "-p aos-sandbox-services --lib --no-default-features --features host";
     installBins = false;
     buildDeps = [pkgs.protobuf];
