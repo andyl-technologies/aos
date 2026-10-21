@@ -210,20 +210,8 @@ in
           script = ''
             set -eu
             if [ -d source ] && [ -f source/crates/Cargo.toml ]; then cd source; fi
-            qemu_lib_tests="$TMPDIR/crucible-qemu-lib-tests"
-            crucible-cargo test \
-              -p crucible-qemu --lib \
-              -- --list > "$qemu_lib_tests"
-            run_exact_qemu_test() {
-              test_name="$1"
-              grep -Fqx "$test_name: test" "$qemu_lib_tests"
-              crucible-cargo test \
-                -p crucible-qemu --lib \
-                "$test_name" -- --exact --include-ignored --test-threads=1
-            }
-            run_exact_qemu_test \
-              node::exact_snapshot::capture_admission_tests::capture_admission_rejects_another_modeled_node
-            run_exact_qemu_test \
+            crucible-exact-tests -p crucible-qemu --lib -- --include-ignored --test-threads=1 \
+              node::exact_snapshot::capture_admission_tests::capture_admission_rejects_another_modeled_node \
               node_factory::tests::factory_assembles_node_with_exact_snapshot_qmp_control
 
             grep -Fqx PASS "${checkpointDeltaFlight}/result"

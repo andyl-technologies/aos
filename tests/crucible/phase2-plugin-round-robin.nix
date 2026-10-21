@@ -192,50 +192,15 @@ in
           script = ''
             set -eu
 
-            run_exact_test() {
-              filter="$1"
-              expected="$2"
-              list_file="$TMPDIR/test-list"
-              output_file="$TMPDIR/test-output"
-
-              crucible-cargo test \
-                -p crucible-qemu-plugin \
-                "$filter" \
-                -- --list > "$list_file"
-              if [ "$(grep -Fx "$expected: test" "$list_file" | wc -l | tr -d ' ')" != 1 ]; then
-                echo "expected exactly one listed test: $expected" >&2
-                cat "$list_file" >&2
-                exit 1
-              fi
-
-              crucible-cargo test \
-                -p crucible-qemu-plugin \
-                "$filter" \
-                -- --exact --test-threads=1 > "$output_file"
-              if ! grep -q 'test result: ok. 1 passed;' "$output_file"; then
-                echo "expected exactly one passed test: $expected" >&2
-                cat "$output_file" >&2
-                exit 1
-              fi
-            }
-
-            run_exact_test \
+            # Every required test must be listed exactly once by the plugin's
+            # test targets, and all of them run in one exact libtest
+            # invocation that reports exactly that many passes.
+            crucible-exact-tests -p crucible-qemu-plugin -- --test-threads=1 \
               round_robin::tests::round_robin_run_uses_fixed_quantum_and_ascending_rotation \
-              round_robin::tests::round_robin_run_uses_fixed_quantum_and_ascending_rotation
-            run_exact_test \
               round_robin::tests::round_robin_rejects_wrong_vcpu_and_quantum_overrun \
-              round_robin::tests::round_robin_rejects_wrong_vcpu_and_quantum_overrun
-            run_exact_test \
               round_robin::tests::halted_current_vcpu_yields_to_next_running_vcpu_without_node_idle \
-              round_robin::tests::halted_current_vcpu_yields_to_next_running_vcpu_without_node_idle
-            run_exact_test \
               round_robin::tests::vcpu_halt_tracker_requires_every_vcpu_before_node_idle \
-              round_robin::tests::vcpu_halt_tracker_requires_every_vcpu_before_node_idle
-            run_exact_test \
               round_robin::tests::all_halted_idle_wake_uses_minimum_per_vcpu_deadline \
-              round_robin::tests::all_halted_idle_wake_uses_minimum_per_vcpu_deadline
-            run_exact_test \
-              round_robin::tests::all_halted_idle_wake_validates_complete_deadline_reports \
               round_robin::tests::all_halted_idle_wake_validates_complete_deadline_reports
           '';
         }

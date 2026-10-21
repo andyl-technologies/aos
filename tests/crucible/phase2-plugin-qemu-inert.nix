@@ -183,44 +183,13 @@ in
           script = ''
             set -eu
 
-            run_exact_test() {
-              filter="$1"
-              expected="$2"
-              list_file="$TMPDIR/test-list"
-              output_file="$TMPDIR/test-output"
-
-              crucible-cargo test \
-                -p crucible-qemu-plugin \
-                "$filter" \
-                -- --list > "$list_file"
-              if [ "$(grep -Fx "$expected: test" "$list_file" | wc -l | tr -d ' ')" != 1 ]; then
-                echo "expected exactly one listed test: $expected" >&2
-                cat "$list_file" >&2
-                exit 1
-              fi
-
-              crucible-cargo test \
-                -p crucible-qemu-plugin \
-                "$filter" \
-                -- --exact --test-threads=1 > "$output_file"
-              if ! grep -q 'test result: ok. 1 passed;' "$output_file"; then
-                echo "expected exactly one passed test: $expected" >&2
-                cat "$output_file" >&2
-                exit 1
-              fi
-            }
-
-            run_exact_test \
+            # Every required test must be listed exactly once by the plugin's
+            # test targets, and all of them run in one exact libtest
+            # invocation that reports exactly that many passes.
+            crucible-exact-tests -p crucible-qemu-plugin -- --test-threads=1 \
               inertness::tests::plugin_sim_off_observation_has_no_load_or_effects \
-              inertness::tests::plugin_sim_off_observation_has_no_load_or_effects
-            run_exact_test \
               inertness::tests::plugin_sim_off_rejects_every_load_or_effect_vector \
-              inertness::tests::plugin_sim_off_rejects_every_load_or_effect_vector
-            run_exact_test \
               inertness::tests::plugin_sim_on_observation_records_loaded_plugin_effects \
-              inertness::tests::plugin_sim_on_observation_records_loaded_plugin_effects
-            run_exact_test \
-              gate_qemu_inert_plugin_half_is_backed_by_phase_check \
               gate_qemu_inert_plugin_half_is_backed_by_phase_check
           '';
         }

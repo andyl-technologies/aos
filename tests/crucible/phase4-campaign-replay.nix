@@ -18,70 +18,37 @@ in
         script = ''
           set -eu
 
-          run_gate_test() {
+          # One exact invocation per test executable. Each required test
+          # must be listed once, report its own `ok` line, and count toward
+          # the executable's exact pass total.
+          run_gate_tests() {
             gate_package=$1
             gate_binary=$2
-            gate_test=$3
+            shift 2
+            gate_log="$TMPDIR/campaign-replay-$gate_package-$gate_binary.log"
 
-            if output=$(crucible-cargo test \
-              -p "$gate_package" \
-              --test "$gate_binary" \
-              -- --list 2>&1); then
-              :
-            else
-              status=$?
-              printf '%s\n' "$output" >&2
-              exit "$status"
-            fi
-            printf '%s\n' "$output"
-            if match_count=$(printf '%s\n' "$output" | grep -Fxc "$gate_test: test"); then
-              :
-            else
-              match_count=0
-            fi
-            if [ "$match_count" -ne 1 ]; then
-              printf 'expected exactly one listed test named %s; found %s\n' \
-                "$gate_test" "$match_count" >&2
-              exit 1
-            fi
-
-            if output=$(crucible-cargo test \
-              -p "$gate_package" \
-              --test "$gate_binary" \
-              -- --exact "$gate_test" --test-threads=1 2>&1); then
-              :
-            else
-              status=$?
-              printf '%s\n' "$output" >&2
-              exit "$status"
-            fi
-            printf '%s\n' "$output"
-            if ! printf '%s\n' "$output" | grep -Fqx "test $gate_test ... ok"; then
-              printf 'required test did not report success: %s\n' "$gate_test" >&2
-              exit 1
-            fi
-            if ! printf '%s\n' "$output" \
-              | grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;'; then
-              printf 'required test did not produce the exact pass count: %s\n' "$gate_test" >&2
-              exit 1
-            fi
+            CRUCIBLE_EXACT_TESTS_LOG="$gate_log" crucible-exact-tests \
+              -p "$gate_package" --test "$gate_binary" -- --test-threads=1 "$@"
+            for gate_test in "$@"; do
+              if ! grep -Fqx "test $gate_test ... ok" "$gate_log"; then
+                printf 'required test did not report success: %s\n' "$gate_test" >&2
+                exit 1
+              fi
+            done
           }
 
-          run_gate_test \
+          run_gate_tests \
             crucible-campaign \
             gate_campaign_replay \
             strict_campaign_planner_reproduces_every_accepted_step
-          run_gate_test \
+          run_gate_tests \
             crucible \
             gate_campaign_replay \
             offline_rich_finding_replays_without_campaign_store
-          run_gate_test \
+          run_gate_tests \
             crucible \
             gate_minimization \
-            automatic_minimization_selects_and_authenticates_the_latest_interesting_window
-          run_gate_test \
-            crucible \
-            gate_minimization \
+            automatic_minimization_selects_and_authenticates_the_latest_interesting_window \
             automatic_minimization_uses_the_bounded_terminal_suffix_without_a_campaign_branch
 
           mkdir -p "$out"
