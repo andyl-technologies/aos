@@ -2,10 +2,13 @@
 //!
 //! Fixture bytes confer no authority. Every operation uses actual recovery,
 //! acknowledged Resume, synchronized funding and the native publisher channel.
-//! These component cases establish no consumer lease or bucket readiness.
+//! Producer receipts and fixture bytes alone establish no bucket readiness.
 
 #[path = "publication/transfer.rs"]
 mod transfer;
+
+#[path = "publication/read_failure.rs"]
+mod read_failure;
 
 use super::config::{HARD_LIMIT, HOLD, Inputs, STATE};
 use std::{
@@ -38,6 +41,7 @@ pub(super) fn run(
 ) -> io::Result<()> {
     let case = match mode {
         "publish-inline" => "tenant:publication-inline",
+        "publish-inline-read-failure" => "tenant:publication-read-failure",
         "publish-inline-cancel" => "tenant:publication-cancel",
         "publish-inline-transfer" => "tenant:publication-transfer",
         "publish-inline-transfer-cancel" => "tenant:publication-transfer-cancel",
@@ -62,6 +66,9 @@ pub(super) fn run(
     runtime
         .block_on(owner.resume_recovered(completed))
         .map_err(io::Error::other)?;
+    if mode == "publish-inline-read-failure" {
+        return read_failure::run(owner, runtime, inputs);
+    }
     if mode.starts_with("publish-inline-transfer") {
         return transfer::run(mode, owner, runtime, inputs);
     }

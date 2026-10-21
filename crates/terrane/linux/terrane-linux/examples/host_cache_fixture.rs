@@ -69,6 +69,7 @@ fn main() -> std::process::ExitCode {
             "refuse-mixed-manifest",
             "consumer-leases",
             "publish-inline",
+            "publish-inline-read-failure",
             "publish-inline-cancel",
             "publish-inline-transfer",
             "publish-inline-transfer-cancel",

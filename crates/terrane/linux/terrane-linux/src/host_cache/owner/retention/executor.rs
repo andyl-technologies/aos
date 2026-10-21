@@ -9,6 +9,8 @@
 use super::super::consumer::{ConsumerJob, ReadBudget, ReadView};
 use super::Custody;
 mod cache_activity;
+mod corruption;
+pub(crate) use corruption::PublisherCorruptionTurn;
 mod cache_eviction;
 pub(crate) use cache_eviction::PublisherCacheRetirementTurn;
 mod cache_handoff;
@@ -34,6 +36,7 @@ pub(in crate::host_cache::owner) struct NativeOwnerExecutor {
     admission_jobs: Vec<Arc<Mutex<super::super::admission::AdmissionJob>>>,
     publications: Vec<Arc<Mutex<super::super::publication::PublicationJob>>>,
     allocation_order: u64,
+    corruption: Mutex<super::super::corruption::Registry>,
     producer_reads: super::super::publication::residence::ProducerReadRegistry,
     pub(in crate::host_cache::owner) cache: super::super::publication::eviction::Runtime,
     inline_sources: Vec<Arc<Mutex<super::super::publication::RecoveredInlineJob>>>,
@@ -81,6 +84,7 @@ impl NativeOwnerExecutor {
             admission_jobs: Vec::new(),
             publications: Vec::new(),
             allocation_order: 0,
+            corruption: Mutex::new(super::super::corruption::Registry::default()),
             producer_reads: super::super::publication::residence::ProducerReadRegistry::default(),
             cache: super::super::publication::eviction::Runtime::default(),
             inline_sources: Vec::new(),

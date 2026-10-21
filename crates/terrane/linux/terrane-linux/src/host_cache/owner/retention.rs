@@ -40,7 +40,8 @@ mod manifest;
 mod recovery_manifest;
 pub(super) use executor::NativeOwnerExecutor;
 pub(crate) use executor::{
-    PublisherCacheRetirementTurn, PublisherCleanupTurn, PublisherResumeTurn, PublisherRunningTurn,
+    PublisherCacheRetirementTurn, PublisherCleanupTurn, PublisherCorruptionTurn,
+    PublisherResumeTurn, PublisherRunningTurn,
 };
 pub(crate) use recovery_manifest::{
     AcceptedRecoveryManifestEffect, RecoveryManifestBackingRetention, RecoveryManifestBodyFailure,
@@ -56,7 +57,11 @@ pub(crate) use recovery_manifest::{
 /// use the same physical queue. Durable consumer leases use bounded immutable
 /// read views, renewal, release grace and periodic expiry. Cache maintenance
 /// coordinates original cached-body retirement and restoration; full tier
-/// serving readiness remains separate.
+/// serving readiness remains separate. Sealed read integrity or custody failures
+/// deny every registered alias of that incarnation and report through bounded
+/// original custody, independently of command-queue capacity. The physical
+/// owner quarantines the original inode and faults writes while retaining pins
+/// and reservations for reconciliation.
 /// Cold records remain untrusted candidates until recovery reconciles
 /// them. Dropping an awaiting request does not cancel physical execution.
 pub struct NativeMetadataOwner {
@@ -302,6 +307,11 @@ impl NativeMetadataOwner {
                 let mut maintenance: Option<(super::publication::eviction::DueRetirements, usize)> =
                     None;
                 loop {
+                    if let Err(error) = executor.quarantine_failed_reads() {
+                        eprintln!(
+                            "terrane: failed sealed quarantine retained for recovery: {error}"
+                        );
+                    }
                     if maintenance.is_none()
                         && let Ok(due) = super::publication::eviction::due_retirements(&executor)
                         && !due.is_empty()

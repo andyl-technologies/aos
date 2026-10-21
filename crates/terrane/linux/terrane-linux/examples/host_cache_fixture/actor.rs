@@ -69,6 +69,7 @@ pub(super) fn run(mode: &str) -> io::Result<()> {
             | "recover-quarantine"
             | "refuse-quarantine"
             | "publish-inline"
+            | "publish-inline-read-failure"
             | "publish-inline-cancel"
             | "publish-inline-transfer"
             | "publish-inline-transfer-cancel"
@@ -182,6 +183,7 @@ pub(super) fn run(mode: &str) -> io::Result<()> {
             super::running_retention::run(mode, &owner, &runtime, &inputs, original)?;
         }
         "publish-inline"
+        | "publish-inline-read-failure"
         | "publish-inline-cancel"
         | "publish-inline-transfer"
         | "publish-inline-transfer-cancel"

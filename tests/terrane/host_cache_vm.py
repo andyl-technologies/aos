@@ -93,6 +93,7 @@ MANIFEST_CASES += [
 ]
 CASES += ["manifest-pending-metadata", "manifest-pending-metadata-cold"]
 CASES += ["quarantine-only", "quarantine-unknown", "quarantine-foreign", "quarantine-tagged"]
+CASES += ["publication-read-failure"]
 BUDGET = HARD * len(CASES)
 PROVISION_CAPS = "-all,+sys_admin,+dac_read_search,+fowner,+chown,+fsetid"
 QUERY_CAPS = "-all,+sys_admin,+dac_read_search"
@@ -717,6 +718,49 @@ def admission_cases(helper, uuid):
             process.wait(timeout=5)
 
 
+def failed_read_case(uuid):
+    """Damages actual sealed custody after readers exist; restores mode without authority."""
+    case = "publication-read-failure"
+    process = controlled_actor(case, "publish-inline-read-failure", uuid)
+    try:
+        lines = Lines(process)
+        lines.until("READY original sealed readers verified with policy held and genuine owner queue full")
+        candidates = list((root(case) / "sealed").glob("*/*"))
+        require(len(candidates) == 1, "failed-read original sealed inventory differs")
+        canonical = candidates[0]
+        original = canonical.stat()
+        content = canonical.read_bytes()
+        records = (root(case) / "state/cache/records.toml").read_bytes()
+        canonical.chmod(0o600)
+        process.stdin.write(b"damaged\n")
+        process.stdin.flush()
+        lines.until("READY actual sealed custody failure latched while policy and full queue remain held")
+        require(canonical.stat().st_ino == original.st_ino
+                and (root(case) / "state/cache/records.toml").read_bytes() == records,
+                "stalled failed read changed original physical funding")
+        canonical.chmod(0o400)
+        process.stdin.write(b"restored\n")
+        process.stdin.flush()
+        lines.until("READY physical failed-read quarantine completed with original inode and durable protection retained")
+        quarantine = list((root(case) / "quarantine").iterdir())
+        require(not canonical.exists() and len(quarantine) == 1,
+                "failed read did not move exactly the original canonical inode")
+        moved = quarantine[0]
+        actual = moved.stat()
+        require(moved.name.startswith(canonical.name + ".") and len(moved.name) == 129
+                and (actual.st_dev, actual.st_ino, actual.st_blocks, actual.st_nlink)
+                == (original.st_dev, original.st_ino, original.st_blocks, 1)
+                and actual.st_uid == 841 and actual.st_mode & 0o7777 == 0o400
+                and moved.read_bytes() == content
+                and (root(case) / "state/cache/records.toml").read_bytes() == records,
+                "failed-read quarantine changed original custody, bytes or funding")
+        finish_controlled(process, "finish")
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+
+
 def publication_cases(publisher, uuid):
     """Exercises actual funded publication, no-replace and abandoned waiters."""
     def staging_snapshot(case):
@@ -1331,6 +1375,7 @@ def main():
         runpy.run_path(str(IMAGE / "share/admission_cache_vm.py"))["run_dictionary_custody"](sys.modules[__name__], uuid)
         runpy.run_path(str(IMAGE / "share/encoded_eviction_vm.py"))["run"](sys.modules[__name__], uuid)
         publication_cases(publisher, uuid)
+        failed_read_case(uuid)
         runpy.run_path(str(IMAGE / "share/manifest_publication_vm.py"))["run_consumer_leases"](sys.modules[__name__], helper, uuid)
         inline_transfer_cases(publisher, uuid)
         # Preserve resource facts at the failed preparation boundary without

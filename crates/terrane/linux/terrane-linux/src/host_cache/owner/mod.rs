@@ -8,6 +8,7 @@
 mod admission;
 mod config;
 mod consumer;
+mod corruption;
 mod fetch;
 mod index_io;
 #[cfg(feature = "native-test-fixtures")]
@@ -68,8 +69,8 @@ pub(crate) use recovery_restore::PublisherRecoveryRestoreTurn;
 pub use resume_error::NativeResumeError;
 pub(crate) use retention::{
     AcceptedRecoveryManifestEffect, PublisherCacheRetirementTurn, PublisherCleanupTurn,
-    PublisherResumeTurn, PublisherRunningTurn, RecoveryManifestBodyFailure,
-    RecoveryManifestBodyRetention, RecoveryManifestEffect, RecoveryManifestEffectFailure,
-    RecoveryRetainedManifest,
+    PublisherCorruptionTurn, PublisherResumeTurn, PublisherRunningTurn,
+    RecoveryManifestBodyFailure, RecoveryManifestBodyRetention, RecoveryManifestEffect,
+    RecoveryManifestEffectFailure, RecoveryRetainedManifest,
 };
 pub use retention::{NativeIndexRepairReport, NativeMetadataOwner, RetainedManifest};

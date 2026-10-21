@@ -72,6 +72,9 @@ impl NativeResidentChunkSource {
     /// positioned read, then verifies the actual chunk identity and boundary.
     /// Original physical custody keeps its durable pin and descriptor
     /// alive throughout use. Concurrent readers never share a file cursor.
+    /// Failed native custody or integrity checks permanently deny all registered
+    /// views of that incarnation. The physical owner receives the original
+    /// failure even when its command queue is full or the reader disappears.
     ///
     /// # Errors
     /// Refuses changed native inode, project, root or seal, invalid chunk bytes
@@ -80,7 +83,12 @@ impl NativeResidentChunkSource {
     pub fn read_verified(&self) -> io::Result<Vec<u8>> {
         let read = self.view.begin()?;
         let source = &read.source;
-        check_native(source)?;
+        source.corruption.check_readable()?;
+        check_native(source).inspect_err(|_| {
+            source
+                .corruption
+                .reject(&source.body, super::super::corruption::Failure::Custody)
+        })?;
         let mut plaintext = Vec::new();
         plaintext
             .try_reserve_exact(source.span.length)
@@ -95,19 +103,37 @@ impl NativeResidentChunkSource {
         source
             .body
             .handle()
-            .read_exact_at(&mut plaintext, source.span.offset)?;
+            .read_exact_at(&mut plaintext, source.span.offset)
+            .inspect_err(|_| {
+                source
+                    .corruption
+                    .reject(&source.body, super::super::corruption::Failure::Read)
+            })?;
         TERRANE_V1
             .verify(&self.identity, &plaintext)
+            .inspect_err(|_| {
+                source
+                    .corruption
+                    .reject(&source.body, super::super::corruption::Failure::Identity)
+            })
             .map_err(io::Error::other)?;
         let profile = source.body.layout().layout().chunk_profile();
         if profile.first_boundary(&plaintext) != plaintext.len()
             || (!source.span.final_chunk && !profile.valid_nonfinal_chunk(&plaintext))
         {
+            source
+                .corruption
+                .reject(&source.body, super::super::corruption::Failure::Boundary);
             return Err(invalid(
                 "resident plaintext has another object chunk boundary",
             ));
         }
-        check_native(source)?;
+        source.corruption.check_readable()?;
+        check_native(source).inspect_err(|_| {
+            source
+                .corruption
+                .reject(&source.body, super::super::corruption::Failure::Custody)
+        })?;
         self.view.check_open()?;
         source.activity.record()?;
         Ok(plaintext)
@@ -148,6 +174,7 @@ impl NativeResidentChunkSource {
         }
         encoded.push(0);
         encoded.extend_from_slice(&plaintext);
+        read.source.corruption.check_readable()?;
         self.view.check_open()?;
         Ok(encoded)
     }
@@ -226,6 +253,7 @@ impl NativeMetadataOwner {
 }
 
 struct Source {
+    corruption: Arc<super::super::corruption::Signal>,
     origin: Origin,
     body: Arc<PeerPublishedObject<HostDomainLocation>>,
     activity: Arc<super::eviction::ReadActivity>,
@@ -406,6 +434,7 @@ pub(super) fn header_bytes() -> usize {
     std::mem::size_of::<NativeResidentChunkSource>()
         + std::mem::size_of::<view::ReadView<Source>>()
         + std::mem::size_of::<Source>()
+        + super::super::corruption::storage_bytes()
         + 8 * std::mem::size_of::<usize>()
         + 128
         + TERRANE_V1.digest_len()
@@ -460,6 +489,7 @@ fn select_locked(
                 .ok_or_else(|| invalid("resident body absent"))?,
         );
         return Ok(Source {
+            corruption: executor.sealed_corruption_signal(owner, &body)?,
             activity: executor.body_read_activity(owner, &body)?,
             origin: Origin::Publication(Arc::clone(resource)),
             body,
