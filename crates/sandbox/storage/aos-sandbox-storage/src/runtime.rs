@@ -2912,14 +2912,22 @@ impl StorageBrokerRuntime {
             && self.worker_dispatch.is_open()
     }
 
+    /// Reports whether the generic Apply backend can admit an operation.
+    ///
+    /// Individual requests still require their authenticated catalog, authority
+    /// and operation-specific backend checks before any effect.
+    #[must_use]
+    pub fn is_apply_ready(&self) -> bool {
+        self.apply_readiness == StorageApplyReadiness::ProtectedWorkerReady
+            && self.readiness.permits_catalog_methods()
+            && self.worker_dispatch.is_open()
+    }
+
     fn operation_permits_apply(
         &mut self,
         operation_id: [u8; 16],
     ) -> Result<bool, StorageRuntimeError> {
-        if self.apply_readiness != StorageApplyReadiness::ProtectedWorkerReady
-            || !self.readiness.permits_catalog_methods()
-            || !self.worker_dispatch.is_open()
-        {
+        if !self.is_apply_ready() {
             return Ok(false);
         }
         let catalog = self.coordinator.prepared_catalog_for_apply(operation_id)?;

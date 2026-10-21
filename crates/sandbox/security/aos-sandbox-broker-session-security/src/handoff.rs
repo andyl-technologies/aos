@@ -845,7 +845,10 @@ impl<'adapter> DormantStorageBrokerEffectAdapterV1<'adapter> {
         &self,
         request: &aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodRequestV1,
     ) -> bool {
-        request_artifacts_match(request, self.artifacts)
+        // A known closed backend must reject before protected execution enters
+        // InFlight; it cannot produce an unknown effect or consume a worker.
+        self.callsite.permits_authenticated_method(request.method())
+            && request_artifacts_match(request, self.artifacts)
     }
 
     /// Constructs an explicit source-only Storage adapter.

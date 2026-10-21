@@ -195,6 +195,12 @@ impl DormantStorageBrokerObservationV1 {
 /// public caller cannot replace Storage execution with fabricated success.
 #[doc(hidden)]
 pub trait DormantStorageBrokerCallsiteV1: sealed::Sealed {
+    /// Reports runtime preconditions that are known before operation admission.
+    ///
+    /// A positive result grants no operation authority. The canonical request,
+    /// signed artifacts and operation-specific checks remain mandatory.
+    fn permits_authenticated_method(&self, method: BrokerMethod) -> bool;
+
     /// Compares or permanently fences the same original unused Storage owners.
     ///
     /// Output custody is the actual independently held daemon owner, not a
@@ -1526,6 +1532,17 @@ impl DormantStorageApplyCompositionV1 {
 impl sealed::Sealed for DormantStorageApplyCompositionV1 {}
 
 impl DormantStorageBrokerCallsiteV1 for DormantStorageApplyCompositionV1 {
+    fn permits_authenticated_method(&self, method: BrokerMethod) -> bool {
+        match method {
+            BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG => self.runtime.is_prepare_ready(),
+            BrokerMethod::BROKER_METHOD_STORAGE_APPLY => self.runtime.is_apply_ready(),
+            BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN => {
+                self.runtime.is_repair_ready()
+            }
+            _ => true,
+        }
+    }
+
     #[cfg(target_os = "linux")]
     fn consume_authenticated_git_coverage_v1(
         &mut self,
