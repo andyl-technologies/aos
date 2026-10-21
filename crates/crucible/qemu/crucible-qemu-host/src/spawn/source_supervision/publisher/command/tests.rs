@@ -11,7 +11,7 @@ use crucible_qemu_protocol::publisher_subscription::{PublisherCommand, Publisher
 use super::*;
 use super::super::tests::{header, physical_fixture};
 
-fn publication() -> PublisherPublication {
+pub(super) fn publication() -> PublisherPublication {
     let mut parents = [ActionParent::default(); 4];
     parents[0] = ActionParent {
         cap: [7; 32],
@@ -62,7 +62,7 @@ fn publication() -> PublisherPublication {
     }
 }
 
-fn ready_session() -> SessionBody<()> {
+pub(super) fn ready_session() -> SessionBody<()> {
     let mut body = physical_fixture();
     body.construct_with(|| Ok(()), header()).unwrap();
     // Exercise the physical component after its export cut. This field does
@@ -71,7 +71,7 @@ fn ready_session() -> SessionBody<()> {
     body
 }
 
-fn region_bytes(body: &SessionBody<()>) -> [u8; PUBLISHER_REGION_BYTES] {
+pub(super) fn region_bytes(body: &SessionBody<()>) -> [u8; PUBLISHER_REGION_BYTES] {
     let mut bytes = [0; PUBLISHER_REGION_BYTES];
     assert_eq!(
         rustix::io::pread(body.roles[0].as_ref().unwrap(), &mut bytes, 0).unwrap(),
@@ -80,14 +80,14 @@ fn region_bytes(body: &SessionBody<()>) -> [u8; PUBLISHER_REGION_BYTES] {
     bytes
 }
 
-fn ticket(body: &SessionBody<()>) -> PublisherTicket {
+pub(super) fn ticket(body: &SessionBody<()>) -> PublisherTicket {
     PublisherTicket::decode(u64::from_be(
         body.command_words().unwrap()[TICKET_WORD].load(Ordering::SeqCst),
     ))
     .unwrap()
 }
 
-fn replace_ticket(body: &SessionBody<()>, serial: u64, phase: PublisherTicketPhase) {
+pub(super) fn replace_ticket(body: &SessionBody<()>, serial: u64, phase: PublisherTicketPhase) {
     let encoded = PublisherTicket { serial, phase }.encode().unwrap();
     body.command_words().unwrap()[TICKET_WORD].store(encoded.to_be(), Ordering::SeqCst);
 }

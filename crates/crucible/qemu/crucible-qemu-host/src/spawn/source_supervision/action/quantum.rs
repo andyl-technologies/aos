@@ -240,7 +240,17 @@ impl SourcePublisher {
             return Ok(());
         };
         match quantum.phase {
-            OfferPhase::Retaining | OfferPhase::Offered(_) => return Ok(()),
+            OfferPhase::Retaining => return Ok(()),
+            OfferPhase::Offered(_) => {
+                // The exact session retains peer metadata independently of
+                // real Source consumption. Seeing ReturnRequested cannot
+                // retire a lender or authorize terminal publication here.
+                self.publisher_session
+                    .lock()
+                    .map_err(|_| HostSupervisionError::Unavailable)?
+                    .observe_born_command_return()?;
+                return Ok(());
+            }
             OfferPhase::Attempted => return Err(HostSupervisionError::Unavailable),
             OfferPhase::Ready => {}
         }

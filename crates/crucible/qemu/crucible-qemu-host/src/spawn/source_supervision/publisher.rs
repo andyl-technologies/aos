@@ -224,6 +224,20 @@ impl PublisherSession {
             .map_err(|_| HostSupervisionError::Unavailable)
     }
 
+    /// Observes peer metadata without consuming any real Source borrower.
+    pub(super) fn observe_born_command_return(
+        &mut self,
+    ) -> Result<
+        Option<crucible_qemu_protocol::publisher_subscription::PublisherReturn>,
+        HostSupervisionError,
+    > {
+        self.body
+            .as_mut()
+            .ok_or(HostSupervisionError::Unavailable)?
+            .observe_command_return()
+            .map_err(|_| HostSupervisionError::Unavailable)
+    }
+
     /// Revokes a born offer without returning its independent borrowers.
     pub(super) fn revoke_born_command(&mut self) -> Result<(), HostSupervisionError> {
         let Some(body) = self.body.as_mut() else {

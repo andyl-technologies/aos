@@ -19,6 +19,8 @@ const PUBLICATION_WORD: usize = PUBLISHER_HEADER_BYTES / 8;
 const PUBLICATION_WORDS: usize = PUBLISHER_PUBLICATION_BYTES / 8;
 const TICKET_WORD: usize = PUBLICATION_WORD + PUBLICATION_WORDS;
 
+mod receiver;
+
 /// Retains one physical offer's exact bytes before any shared mutation.
 #[derive(Debug)]
 struct RetainedOffer {
@@ -38,6 +40,7 @@ struct RetainedOffer {
 #[derive(Debug, Default)]
 pub(super) struct CommandJournal {
     offer: Option<RetainedOffer>,
+    receiver: Option<receiver::RetainedReceiverReturn>,
     first: Option<OperationFailure>,
 }
 
@@ -56,7 +59,8 @@ impl CommandJournal {
             .checked_add(
                 crucible_qemu_protocol::publisher_subscription::PUBLISHER_COMMAND_BYTES
                     .checked_mul(2)?,
-            )
+            )?
+            .checked_add(receiver::observation_scratch_bytes()?)
     }
 }
 
