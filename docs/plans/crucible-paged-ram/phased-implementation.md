@@ -2093,11 +2093,35 @@ reviewed mapped-adapter digest refresh; no size cap or rule changes. Mandatory
 application test-target compilation passes at
 `/nix/store/zxxrj4pqw2wd2p4vk7v96w2zxq16j8zp-aos-test-targets-0.1.0`.
 All 5,261 tracked crate Rust/TOML files match immutable
-`yfsjbh8flx0gjyjxgsqdvclp0mbnfvr1-aos-workspace-src`. The expanded 172-case
-supervision and matched raw ABI gates are running. Coverage now binds 270
+`yfsjbh8flx0gjyjxgsqdvclp0mbnfvr1-aos-workspace-src`. Matched raw ABI passes at
+`/nix/store/vq7digm3lxlmi6bb0qxvvsj9rd3dyafj-crucible-phase2-abi-conformance-0`;
+all 5,261 files match `6042516f7b` and immutable
+`x3wck103cim889vwqs642wnd3z0n0i65-crucible-workspace-src`. The expanded
+172-case supervision gate is running. Coverage now binds 270
 component and 19 native cases; 243 requirements, 149 uncovered and none fully
 qualified remain. Reader supervision, broader diagnostic/payload funding,
 Source activation and selected execution remain unfinished.
+
+### 2026-10-21 typed mapped-region channel refusals
+
+Commit `fd021c392d` retains the actual mapped-region access error through channel
+cloning and Node conversion. The fixed adapter diagnostic, nonretryable status,
+absence of timeout and existing scheduler rejection stay unchanged; topology
+coordinates and error source links now survive without replacement formatting.
+Both fingerprint mapping-error call sites use the same typed conversion.
+
+The pre-change actual mapped refusal measured one allocation. Both invalid
+topology controls now allocate and reallocate nothing, never enter the body,
+and leave the actual producer slot unchanged. All 21 mapped tests, 219 Node
+tests (one existing ignored), 73 policy checks and five hygiene checks pass.
+Mandatory application test-target compilation passes at
+`/nix/store/fv48451wa2g00gg8qphwanrw9y93dx2c-aos-test-targets-0.1.0`.
+All 5,261 tracked crate Rust/TOML files match immutable
+`1z9hpph4lch7rk00n3ja9sa1av6xhp07-aos-workspace-src`. The expanded 173-case
+supervision gate is running. Coverage now binds 271 component and 19 native
+cases; 243 requirements, 149 uncovered and none fully qualified remain.
+Complete carrier funding, final scheduler diagnostics, reader supervision and
+selected Source admission remain unfinished.
 
 ### 2026-10-21 native rule and reservation storage custody
 
