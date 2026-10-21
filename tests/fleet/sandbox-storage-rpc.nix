@@ -86,6 +86,7 @@
       zfs = pkgs.zfsForKernel config.system.build.kernel;
       fixtureCommand = role: ''
         ${pkgs.coreutils}/bin/env \
+          RUST_MIN_STACK=33554432 \
           AOS_STORAGE_RPC_ROLE=${role} \
           AOS_STORAGE_RPC_CLIENT=${credentialFixture}/bin/broker-session-credential-fixture \
           ${fixture}/bin/aos-sandbox-storage-rpc-tests \

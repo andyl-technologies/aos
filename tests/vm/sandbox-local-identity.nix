@@ -121,6 +121,8 @@ in
     memory = 512;
     testScript = ''
       unset LD_LIBRARY_PATH
+      # Kernel fixtures run in libtest threads, as in the native-owner VMs.
+      export RUST_MIN_STACK=33554432
       mkdir -p /sys/fs/cgroup
       mount -t cgroup2 none /sys/fs/cgroup
 
