@@ -11370,5 +11370,36 @@ new exact native recovery funding, and refusal of an unenrolled cache before
 presentation. Ordinary SDK launchers retain their empty-group assertion;
 separate source-bound cache launchers require the actual content/state groups.
 All eleven configured SDK unit tests and strict native Clippy pass. The new VM
-and complete Rust compilation are pending. Whole-object policy and
+is pending; complete Rust application-target compilation passes (184 test
+executables across 59 packages). Whole-object policy and
 cache population remain open; this checkpoint does not close T2 or SURF-32.
+
+#### Original ancestor capture batching
+
+Protected publication reads now capture their original physical ancestor stamps
+in one native worker turn. The worker performs the same ordered metadata and
+custody checks, stops before descending through a rejected ancestor, and grants
+no body, selection, mutation or readiness authority. Bindings without the native
+recipe retain the scalar path; supported errors never trigger scalar retry.
+All original closing checks remain required. Two focused native tests exercise
+unsafe-parent error ordering and a replaced parent with the identical original
+leaf inode and bytes. Index-population qualification remains pending.
+
+#### Native cache qualification and SDK reopen observation
+
+The native host-cache VM passes on `54707ba0af99` under the original bounds
+(1,283 seconds total). Independent review checks all 7,845 immutable source
+files, 5,195 bound image inputs, four original Cargo/installed executables and
+the actual recovery, metadata, encoded-read, quarantine and lower-refetch
+witnesses. This qualifies that component; the T2 common-role integration and
+exit gates remain open.
+
+The SDK cache VM actually completed both authorized snapshots, then its
+whole-pointer comparison rejected the existing T1 writable reopen's capability
+probe timestamp publication. Its observer now binds the original fixture
+pointer and capabilities, validates both snapshot digests and the exact single
+predecessor, and accepts only a `CAPABILITIES` delta whose sole field change
+is a nonregressing `probed_at`. Reference, catalog, other capability and
+predecessor changes remain refusals. Three focused verifier controls exercise
+timestamp-only acceptance, altered capability/ref rejection and rebound
+predecessor bytes. The corrected VM requires requalification.

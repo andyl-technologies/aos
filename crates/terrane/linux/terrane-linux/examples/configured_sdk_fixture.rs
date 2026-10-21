@@ -14,7 +14,12 @@
 //! `verify-cli ROOT UID` independently checks the actual CLI completion receipts
 //! in sibling `ROOT.stdout` and `ROOT.stderr` files against the setup commit and
 //! durable payloads. `verify-cli-denial ROOT UID` checks its late-token refusal.
-//! Neither verification mode invokes configured startup or installs confinement.
+//! These verification modes never invoke configured startup or confinement.
+//! `verify-reopen-publication ROOT UID` checks the exact original snapshot
+//! predecessor and permits only the existing capability probe timestamp refresh.
+
+#[path = "configured_sdk_fixture/publication.rs"]
+mod publication;
 
 use std::{
     fs::{self, OpenOptions},
@@ -104,6 +109,10 @@ fn dispatch() -> FixtureResult<&'static str> {
         "verify-cli" => {
             verify_cli(root, owner)?;
             Ok("PASS: actual CLI receipts match the setup commit and durable SDK payloads")
+        }
+        "verify-reopen-publication" => {
+            publication::verify(root, owner)?;
+            Ok("PASS: original publication changed only by the exact reopen probe timestamp")
         }
         "verify-cli-denial" => {
             verify_cli_denial(root, owner)?;
@@ -203,6 +212,7 @@ async fn setup(root: &Path, owner: u32) -> FixtureResult<()> {
         &root.join("config.toml"),
         configuration(root, owner).as_bytes(),
     )?;
+    publication::save(root)?;
     drop(repository);
     drop(authority);
     Ok(())

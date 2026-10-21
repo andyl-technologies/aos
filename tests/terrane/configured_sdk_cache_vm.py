@@ -129,15 +129,13 @@ def run(driver, image):
               ["configured-sdk-cache-example", "setup", root, 840])
         config = root / "config.toml"
         config.write_text(config.read_text() + host_configuration(driver, refused))
-        pointer = root / "bucket/publication/PORTABLE"
-        original = pointer.read_bytes()
         before = cache_states(driver)
         stdout, stderr = actor(driver, image, name + "-cli",
               ["configured-sdk-cache-cli", "--config", config, "--role", "serve"],
               success=not refused)
         after = cache_states(driver)
-        driver.require(pointer.read_bytes() == original,
-                       "native SDK changed original reference authority")
+        actor(driver, image, name + "-publication",
+              ["configured-sdk-cache-example", "verify-reopen-publication", root, 840])
         if refused:
             driver.require(after == before
                            and all(not (root / ("snapshot-" + item)).exists()
