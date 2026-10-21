@@ -248,10 +248,20 @@ def _dump_serial_logs(machines: list[Machine]) -> None:
             continue
         _write_stderr_bytes(f"\n--- {m.name} serial log ---\n".encode())
         try:
-            _write_stderr_bytes(path.read_bytes())
+            _write_stderr_bytes(_plain_serial_log(path.read_bytes()))
         except OSError as e:
             _write_stderr_bytes(f"(could not read {path}: {e})\n".encode())
         _write_stderr_bytes(f"--- end {m.name} serial log ---\n\n".encode())
+
+
+def _plain_serial_log(data: bytes) -> bytes:
+    """Preserves console text when Nix filters terminal control sequences."""
+    # UEFI emits CSI screen controls and DCS terminal-capability queries.
+    # Passing them through Nix's builder logger can swallow the kernel text
+    # following the query, leaving hundreds of apparently empty log lines.
+    data = re.sub(rb"\x1b[P\]_\^].*?(?:\x1b\\|\x07)", b"", data, flags=re.DOTALL)
+    data = re.sub(rb"\x1b\[[0-?]*[ -/]*[@-~]", b"", data)
+    return bytes(byte for byte in data if byte in (9, 10) or byte >= 32 and byte != 127)
 
 
 def _write_stderr_bytes(data: bytes) -> None:
