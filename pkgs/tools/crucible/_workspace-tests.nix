@@ -331,8 +331,11 @@
     # /nix/store/9999...-crucible-qemu-plugin, which the generic reference
     # scrub would rewrite and so change test behavior. Rewrite only paths
     # that exist in this sandbox (real build inputs) and are not runtime
-    # dependencies, matching the scrub's keep list.
-    keep=" $out ''${buildInputs[*]:-} ''${propagatedBuildInputs[*]:-} ''${nukeRefsKeep[*]:-} "
+    # dependencies, matching the scrub's keep list. The linker wrapper also
+    # adds this output's lib directory, which the family does not have, to
+    # every run path; dropping that self-reference keeps subsets and flight
+    # copies from retaining the whole family.
+    keep=" ''${buildInputs[*]:-} ''${propagatedBuildInputs[*]:-} ''${nukeRefsKeep[*]:-} "
     scrub_roots=("$out/libexec")
     [ ! -d "$out/doctests" ] || scrub_roots+=("$out/doctests")
     find "''${scrub_roots[@]}" -type f | while read -r file; do

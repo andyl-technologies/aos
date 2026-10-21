@@ -167,9 +167,12 @@ in {
             for build in ${lib.concatMapStringsSep " " toString builds}; do
               index=$((index + 1))
               target="$out/$index"
-              mkdir -p "$target/libexec" "$target/doctests"
+              mkdir -p "$target/libexec" "$target/doctests" "$target/nix-support"
               cp "$build/build-info" "$target/build-info"
               cp -R "$build/packages" "$target/packages"
+              # The executables are compressed, so their run-time libraries
+              # stay in the closure only through the family's list.
+              cp "$build/nix-support/executable-references" "$target/nix-support/"
 
               # The aliases of the requested tests, and the rows they serve:
               # harnesses of the requested packages and kinds, plus the
