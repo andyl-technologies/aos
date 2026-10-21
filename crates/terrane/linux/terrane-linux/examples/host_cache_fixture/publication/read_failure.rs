@@ -114,3 +114,69 @@ pub(super) fn run(
         "PASS actual sealed read failure survives full queue and cancelled waiters, denies original producer and consumer aliases, and quarantines original inode without funding release",
     )
 }
+
+/// Checks failed preparation without allowing a plaintext read to create the signal.
+///
+/// # Errors
+/// Refuses missing genuine readers, an accepted damaged source, changed funding
+/// or original reader aliases revived by restoring native inode custody.
+pub(super) fn run_preparation(
+    owner: &NativeMetadataOwner,
+    runtime: &tokio::runtime::Runtime,
+    inputs: &Inputs,
+) -> io::Result<()> {
+    let published = runtime
+        .block_on(owner.publish_inline(descriptor()?, encoded()))
+        .map_err(io::Error::other)?;
+    let identity = TERRANE_V1
+        .calculate(IdentityKind::Chunk, PLAINTEXT)
+        .map_err(io::Error::other)?;
+    let producer = runtime.block_on(owner.retain_resident_chunk(identity.clone()))?;
+    let expires = TokioClock
+        .now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(io::Error::other)?
+        .as_secs()
+        .checked_add(30)
+        .ok_or_else(|| invalid("preparation fixture expiry overflow"))?;
+    let consumer = runtime.block_on(owner.pin_resident_chunk(identity.clone(), expires))?;
+    if producer.read_verified()? != PLAINTEXT || consumer.read_verified()? != PLAINTEXT {
+        return Err(invalid(
+            "preparation fixture lacked genuine verified readers",
+        ));
+    }
+    let records = fs::read(inputs.root.join("state/cache/records.toml"))?;
+    emit("READY original verified readers retained before new source preparation damage")?;
+    control("prepare")?;
+    if runtime
+        .block_on(owner.retain_resident_chunk(identity))
+        .is_ok()
+    {
+        return Err(invalid("damaged custody produced a new resident source"));
+    }
+    // This accepted command follows actual source preparation on the physical
+    // owner. Its failure observes the original quarantine turn and fault latch.
+    if runtime.block_on(owner.sweep_consumer_leases()).is_ok()
+        || fs::read(inputs.root.join("state/cache/records.toml"))? != records
+    {
+        return Err(invalid(
+            "failed preparation lost native quarantine or original funding",
+        ));
+    }
+    emit(
+        "READY physical source-preparation quarantine completed without a plaintext read or funding release",
+    )?;
+    control("restored")?;
+    if published.handle().metadata()?.mode() & 0o7777 != 0o400
+        || producer.read_verified().is_ok()
+        || consumer.read_verified().is_ok()
+        || consumer.read_encoded().is_ok()
+    {
+        return Err(invalid(
+            "restoring quarantined inode custody revived original reader aliases",
+        ));
+    }
+    emit(
+        "PASS actual failed source preparation quarantines original inode without reading plaintext, retains original funding and denies producer and consumer aliases after custody restoration",
+    )
+}

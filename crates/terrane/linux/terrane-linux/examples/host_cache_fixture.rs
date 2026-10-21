@@ -70,6 +70,7 @@ fn main() -> std::process::ExitCode {
             "consumer-leases",
             "publish-inline",
             "publish-inline-read-failure",
+            "publish-inline-prepare-failure",
             "publish-inline-cancel",
             "publish-inline-transfer",
             "publish-inline-transfer-cancel",

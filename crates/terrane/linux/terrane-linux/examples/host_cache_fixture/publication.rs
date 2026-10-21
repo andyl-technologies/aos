@@ -42,6 +42,7 @@ pub(super) fn run(
     let case = match mode {
         "publish-inline" => "tenant:publication-inline",
         "publish-inline-read-failure" => "tenant:publication-read-failure",
+        "publish-inline-prepare-failure" => "tenant:publication-prepare-failure",
         "publish-inline-cancel" => "tenant:publication-cancel",
         "publish-inline-transfer" => "tenant:publication-transfer",
         "publish-inline-transfer-cancel" => "tenant:publication-transfer-cancel",
@@ -66,6 +67,9 @@ pub(super) fn run(
     runtime
         .block_on(owner.resume_recovered(completed))
         .map_err(io::Error::other)?;
+    if mode == "publish-inline-prepare-failure" {
+        return read_failure::run_preparation(owner, runtime, inputs);
+    }
     if mode == "publish-inline-read-failure" {
         return read_failure::run(owner, runtime, inputs);
     }

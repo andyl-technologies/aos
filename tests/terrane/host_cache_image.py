@@ -334,7 +334,7 @@ def main():
         "publisher-confinement", "publisher-reject-descriptor", "publisher-reject-stdio",
         "seed-mixed-manifest", "seed-mixed-bad-manifest",
         "recover-mixed-manifest", "refuse-mixed-manifest",
-        "consumer-leases", "publish-inline", "publish-inline-read-failure", "publish-inline-cancel", "publish-inline-transfer",
+        "consumer-leases", "publish-inline", "publish-inline-read-failure", "publish-inline-prepare-failure", "publish-inline-cancel", "publish-inline-transfer",
         "publish-inline-transfer-cancel", "publish-inline-transfer-conflict",
         "retain-running", "retain-running-cancel",
         "publish-manifest", "publish-manifest-cancel", "publish-manifest-bad-whole",

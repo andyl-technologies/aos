@@ -83,12 +83,7 @@ impl NativeResidentChunkSource {
     pub fn read_verified(&self) -> io::Result<Vec<u8>> {
         let read = self.view.begin()?;
         let source = &read.source;
-        source.corruption.check_readable()?;
-        check_native(source).inspect_err(|_| {
-            source
-                .corruption
-                .reject(&source.body, super::super::corruption::Failure::Custody)
-        })?;
+        check_native(source)?;
         let mut plaintext = Vec::new();
         plaintext
             .try_reserve_exact(source.span.length)
@@ -128,12 +123,7 @@ impl NativeResidentChunkSource {
                 "resident plaintext has another object chunk boundary",
             ));
         }
-        source.corruption.check_readable()?;
-        check_native(source).inspect_err(|_| {
-            source
-                .corruption
-                .reject(&source.body, super::super::corruption::Failure::Custody)
-        })?;
+        check_native(source)?;
         self.view.check_open()?;
         source.activity.record()?;
         Ok(plaintext)
@@ -666,7 +656,15 @@ fn claim_span(
 }
 
 fn check_native(source: &Source) -> io::Result<()> {
-    check_native_body(&source.body, source.project, source.publisher_uid)
+    source.corruption.check_readable()?;
+    // Preparation, pin synchronization and later reads all observe the same
+    // original body. A failed preparation must report it even if no plaintext
+    // read starts and no new external source is ever returned.
+    check_native_body(&source.body, source.project, source.publisher_uid).inspect_err(|_| {
+        source
+            .corruption
+            .reject(&source.body, super::super::corruption::Failure::Custody)
+    })
 }
 
 /// Checks the original linked immutable inode and its native root/project seal.

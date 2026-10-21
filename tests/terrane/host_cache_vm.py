@@ -93,7 +93,7 @@ MANIFEST_CASES += [
 ]
 CASES += ["manifest-pending-metadata", "manifest-pending-metadata-cold"]
 CASES += ["quarantine-only", "quarantine-unknown", "quarantine-foreign", "quarantine-tagged"]
-CASES += ["publication-read-failure"]
+CASES += ["publication-read-failure", "publication-prepare-failure"]
 BUDGET = HARD * len(CASES)
 PROVISION_CAPS = "-all,+sys_admin,+dac_read_search,+fowner,+chown,+fsetid"
 QUERY_CAPS = "-all,+sys_admin,+dac_read_search"
@@ -713,6 +713,43 @@ def admission_cases(helper, uuid):
     finally:
         if stopped and helper.poll() is None:
             helper.send_signal(signal.SIGCONT)
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+
+
+def failed_preparation_case(uuid):
+    """Requires source preparation itself to retain a genuine failed-body report."""
+    case = "publication-prepare-failure"
+    process = controlled_actor(case, "publish-inline-prepare-failure", uuid)
+    try:
+        lines = Lines(process)
+        lines.until("READY original verified readers retained before new source preparation damage")
+        candidates = list((root(case) / "sealed").glob("*/*"))
+        require(len(candidates) == 1, "preparation failure original sealed inventory differs")
+        canonical = candidates[0]
+        original = canonical.stat()
+        content = canonical.read_bytes()
+        records = (root(case) / "state/cache/records.toml").read_bytes()
+        canonical.chmod(0o600)
+        process.stdin.write(b"prepare\n")
+        process.stdin.flush()
+        lines.until("READY physical source-preparation quarantine completed without a plaintext read or funding release")
+        entries = list((root(case) / "quarantine").iterdir())
+        require(not canonical.exists() and len(entries) == 1,
+                "failed preparation left the original canonical inode outside quarantine")
+        moved = entries[0]
+        actual = moved.stat()
+        require(moved.name.startswith(canonical.name + ".") and len(moved.name) == 129
+                and (actual.st_dev, actual.st_ino, actual.st_blocks, actual.st_nlink)
+                == (original.st_dev, original.st_ino, original.st_blocks, 1)
+                and actual.st_uid == 841 and actual.st_mode & 0o7777 == 0o600
+                and moved.read_bytes() == content
+                and (root(case) / "state/cache/records.toml").read_bytes() == records,
+                "failed preparation changed original quarantine custody, bytes or funding")
+        moved.chmod(0o400)
+        finish_controlled(process, "restored")
+    finally:
         if process.poll() is None:
             process.kill()
             process.wait(timeout=5)
@@ -1376,6 +1413,7 @@ def main():
         runpy.run_path(str(IMAGE / "share/encoded_eviction_vm.py"))["run"](sys.modules[__name__], uuid)
         publication_cases(publisher, uuid)
         failed_read_case(uuid)
+        failed_preparation_case(uuid)
         runpy.run_path(str(IMAGE / "share/manifest_publication_vm.py"))["run_consumer_leases"](sys.modules[__name__], helper, uuid)
         inline_transfer_cases(publisher, uuid)
         # Preserve resource facts at the failed preparation boundary without

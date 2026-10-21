@@ -70,6 +70,7 @@ pub(super) fn run(mode: &str) -> io::Result<()> {
             | "refuse-quarantine"
             | "publish-inline"
             | "publish-inline-read-failure"
+            | "publish-inline-prepare-failure"
             | "publish-inline-cancel"
             | "publish-inline-transfer"
             | "publish-inline-transfer-cancel"
@@ -184,6 +185,7 @@ pub(super) fn run(mode: &str) -> io::Result<()> {
         }
         "publish-inline"
         | "publish-inline-read-failure"
+        | "publish-inline-prepare-failure"
         | "publish-inline-cancel"
         | "publish-inline-transfer"
         | "publish-inline-transfer-cancel"
