@@ -1,22 +1,21 @@
-{sourceGate, ...}: let
+{bucketSdkGate, ...}: let
   focusedTest = ''
     run_ref_test() {
       test_name=$1
-      cargo test --frozen --offline -p terrane-sdk --features tokio --lib -- --list > "$TMPDIR/ref-tests.txt"
-      python3 - "$TMPDIR/ref-tests.txt" "$test_name" <<'PYTEST'
-    import sys
-
-    with open(sys.argv[1], encoding="utf-8") as test_list:
-        names = {line.strip() for line in test_list}
-
-    if f"{sys.argv[2]}: test" not in names:
-        raise SystemExit(f"required reference test is missing: {sys.argv[2]}")
-    PYTEST
-      cargo test --frozen --offline -p terrane-sdk --features tokio --lib "$test_name" -- --exact
+      "$TERRANE_NATIVE_SDK_TEST_BINARY" --list > "$TMPDIR/ref-tests.txt"
+      python3 ../tests/terrane/check_native_gate.py inventory \
+        "$TMPDIR/ref-tests.txt" "[\"$test_name\"]" > /dev/null
+      if ! "$TERRANE_NATIVE_SDK_TEST_BINARY" "$test_name" --exact \
+        > "$TMPDIR/ref-execution.log" 2>&1; then
+        cat "$TMPDIR/ref-execution.log"
+        return 1
+      fi
+      python3 ../tests/terrane/check_native_gate.py execution \
+        "$TMPDIR/ref-execution.log" "[\"$test_name\"]"
     }
   '';
 in {
-  ref-advance-ordering = sourceGate "ref-advance-ordering" ''
+  ref-advance-ordering = bucketSdkGate "ref-advance-ordering" ''
     cd crates
     ${focusedTest}
     run_ref_test ref_advance::tests::ref_advance_ordering_survives_reopen_with_exact_log_and_commit
@@ -39,7 +38,7 @@ in {
     printf 'PASS: durable publication ordering and explicit indeterminate CAS outcomes\n' > "$out/result"
   '';
 
-  ref-epoch-fencing = sourceGate "ref-epoch-fencing" ''
+  ref-epoch-fencing = bucketSdkGate "ref-epoch-fencing" ''
     cd crates
     ${focusedTest}
     run_ref_test ref_advance::tests::ref_epoch_fencing_requires_a_new_session_after_conflict
@@ -50,7 +49,7 @@ in {
     printf 'PASS: incremented writer epochs and exact-record concurrent CAS fencing\n' > "$out/result"
   '';
 
-  ref-watch = sourceGate "ref-watch" ''
+  ref-watch = bucketSdkGate "ref-watch" ''
     cd crates
     ${focusedTest}
     run_ref_test ref_advance::tests::ref_watch_emits_current_then_waits_and_fills_every_committed_sequence
@@ -59,7 +58,7 @@ in {
     printf 'PASS: current-first live watch and committed reflog gap validation\n' > "$out/result"
   '';
 
-  commit-order = sourceGate "commit-order" ''
+  commit-order = bucketSdkGate "commit-order" ''
     cd crates
     ${focusedTest}
     run_ref_test ref_advance::tests::ref_advance_ordering_survives_reopen_with_exact_log_and_commit

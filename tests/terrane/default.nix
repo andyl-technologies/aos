@@ -347,7 +347,7 @@
           // lib.optionalAttrs (builtins.elem file ["algebra.nix" "properties.nix" "cdc.nix" "gc.nix" "index.nix" "surfaces.nix" "shared-dir.nix" "host-cache.nix" "host-publish.nix"]) {inherit nativeSdkGate;}
           // lib.optionalAttrs (file == "gc.nix") {inherit localTwoPhaseGc;}
           // lib.optionalAttrs (builtins.elem file ["host-publish.nix" "surfaces.nix"]) {inherit sourceGateWithInputs;}
-          // lib.optionalAttrs (file == "bucket.nix") {inherit bucketSdkGate;}
+          // lib.optionalAttrs (builtins.elem file ["bucket.nix" "ref_advance.nix"]) {inherit bucketSdkGate;}
           // lib.optionalAttrs (file == "pack.nix") {inherit defaultSdkGate;}
           // lib.optionalAttrs (file == "host-publish.nix") {inherit publisherLocalProof hostCacheProof moduleEval;}
         );
