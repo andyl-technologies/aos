@@ -108,8 +108,20 @@ preserving the original typed failure and custody. Their all-feature/all-target
 Daemon check, formatting and six architecture gates pass. The required
 application compile gate again emits 180 test executables across 58 package IDs,
 including 71 integration targets; all 31 owned changed Rust paths match its
-captured source. The refreshed operation-stage VM and full configured Daemon
-library run remain pending.
+captured source. The operation-stage VM localizes the next refusal to neverborn
+code Source construction, before namespace or child creation. The full configured
+Daemon library run passes 1,823 tests with zero failures, no filtering and 164
+existing ignores.
+
+The graph validator's expected native roster omitted the eight declared settled17
+definitions. It now authenticates both full immutable rosters and all six features
+before adding those exact compiled bodies; unknown extras still fail the final
+exact comparison. The actual packaged configuration constructs all three
+neverborn code Sources in an explicitly run artifact control. Missing, duplicate
+and changed declarations refuse in a separate control. These constructors confer
+no deployment, native startup or readiness. Formatting and the six architecture
+gates pass; the refreshed application gate, full Daemon run and confined VM are
+pending for this correction.
 
 ## Original launch custody and shared startup geometry
 

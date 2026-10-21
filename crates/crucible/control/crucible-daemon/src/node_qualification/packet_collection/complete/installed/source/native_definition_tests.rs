@@ -408,3 +408,64 @@ fn full_roster_native_report_and_sdk_commitments_admit_before_any_child() {
     scene.retire().unwrap();
     let _ = scene.poll_reclamation().unwrap();
 }
+
+/// Exercises the packaged logical configuration through the real neverborn constructors.
+///
+/// No measured executable, deployment reservation, archive ticket, native child
+/// or runtime permission is claimed by this constructor-only artifact control.
+#[test]
+#[ignore = "requires CRUCIBLE_FUNDED_SOURCE_FIXTURES pointing to built portable fixtures"]
+fn packaged_funded_configuration_constructs_all_neverborn_code_sources() {
+    let directory = std::path::PathBuf::from(
+        std::env::var_os("CRUCIBLE_FUNDED_SOURCE_FIXTURES").expect("explicit fixture artifact"),
+    );
+    let expected = std::fs::read(directory.join("support/expected.json")).unwrap();
+    let reference = serde_json::from_slice(&expected).unwrap();
+    let pin = InstalledCompleteSceneManifest::new(
+        directory.join("support/configuration.json"),
+        reference,
+    )
+    .unwrap();
+    let super::super::manifest::FundedSelection::Configuration(configuration) =
+        super::super::manifest::load_funded(&pin).unwrap()
+    else {
+        panic!("expected the closed logical configuration");
+    };
+    let (selected, host, _) = configuration.materialize().unwrap();
+    let content = super::super::manifest::content(selected.content).unwrap();
+
+    let (sources, _) = prepare_restored_settled_sources(
+        selected.participants,
+        &selected.coordinator,
+        selected.maximum_native_rows,
+        selected.maximum_initial_bytes,
+        selected.mechanism,
+        selected.maximum_coordinator_records.unwrap(),
+        &content,
+    )
+    .unwrap();
+
+    assert_eq!(sources.len(), 3);
+    assert_eq!(
+        host.source().prepared_token(),
+        &selected.coordinator.host.prepared_token
+    );
+    for source in &sources {
+        assert!(
+            source
+                .is_original_restored_settled_capture_declaration_data()
+                .unwrap()
+        );
+        assert!(
+            !source
+                .is_original_native_import18_declaration_data()
+                .unwrap()
+        );
+        assert_eq!(
+            source
+                .original_restored_settled_coordinator_policy17_data()
+                .unwrap(),
+            Some(256)
+        );
+    }
+}
