@@ -8694,6 +8694,17 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
 
 ### T2 — Host tier
 
+Resume expiry ordering correction (2026-10-21): the native publication run
+at a00aa499a1 passed both public/private metadata deduplication controls, then
+failed reopening the populated 64-record owner before object serving with
+Capacity. The completed recovery retained expired cold consumer promises while
+new metadata imports attempted additional protection. After actual acknowledged
+Resume and before imports, the physical worker now runs the existing genuine
+consumer sweep. It reconciles only the original cold consumer ledger's elapsed
+pins, leases and matched metadata holds, preserving all other promises and
+using the retained real bootstrap, synchronized policy and fresh quota checks.
+No record limit or lease bound is raised. Requalification remains pending.
+
 Automatic resident/lower chunk read preparation (2026-10-21): the actual native
 owner now attempts an original durable consumer grant before the existing
 verified, circuit-controlled lower fetch. Resident hits check exact repository

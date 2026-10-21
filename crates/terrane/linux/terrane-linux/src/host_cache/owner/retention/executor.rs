@@ -751,6 +751,11 @@ impl NativeOwnerExecutor {
                 // Transfer all original sources before the first fallible import.
                 // A failed job and every unimported source remain physically owned.
                 let imported: io::Result<()> = async {
+                    // Genuine recovery has reconciled every cold source and
+                    // Running custody now owns the original bootstrap. Expire
+                    // only the original consumer ledger's elapsed promises before
+                    // adding imported cache protection to the bounded snapshot.
+                    super::super::consumer::sweep(self).await?;
                     while let Some(source) = self.recovered_metadata.last().cloned() {
                         super::super::admission::recovery::import_metadata(self, &source).await?;
                         self.recovered_metadata.pop();
