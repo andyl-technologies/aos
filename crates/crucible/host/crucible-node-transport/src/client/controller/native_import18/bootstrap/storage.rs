@@ -222,7 +222,7 @@ impl CnpController {
             + size_of::<std::sync::atomic::Ordering>()
             + size_of::<u32>()
             + size_of::<u64>() * 3
-            + size_of::<usize>() * 8
+            + size_of::<[usize; 8]>()
             + size_of::<bool>() * 4
             + size_of::<Option<usize>>()
             + size_of::<Result<usize, ProviderError>>()

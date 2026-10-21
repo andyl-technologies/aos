@@ -486,5 +486,5 @@ pub(super) fn counter_scratch_data() -> usize {
         + size_of::<Option<&String>>()
         + size_of::<Option<&str>>()
         + size_of::<&str>() * 2
-        + size_of::<usize>() * 8
+        + size_of::<[usize; 8]>()
 }

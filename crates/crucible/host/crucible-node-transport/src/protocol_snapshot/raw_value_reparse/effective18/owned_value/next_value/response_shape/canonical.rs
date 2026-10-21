@@ -185,7 +185,7 @@ pub(super) fn counter_scratch_data() -> usize {
         + size_of::<Result<NativeImport18NextValueInputData<'static>, ProviderError>>()
         + size_of::<&str>() * 2
         + size_of::<Result<usize, ProviderError>>() * 3
-        + size_of::<usize>() * 8
+        + size_of::<[usize; 8]>()
         + reader::counter_data()
         + size_of::<Node<'static>>()
         + size_of::<Option<Node<'static>>>()

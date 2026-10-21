@@ -191,7 +191,7 @@ impl NativeImport18RawSelectionConstructionData<'_> {
             + size_of::<Result<usize, ProviderError>>()
             + size_of::<&Result<usize, ProviderError>>()
             + size_of::<NativeImport18ImmutableRawCensusData>()
-            + size_of::<usize>() * 8
+            + size_of::<[usize; 8]>()
             + observe::counter_scratch_data()
     }
 }

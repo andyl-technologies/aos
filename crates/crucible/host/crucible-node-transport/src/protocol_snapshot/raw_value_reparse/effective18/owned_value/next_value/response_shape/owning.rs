@@ -514,7 +514,7 @@ impl NativeImport18OwningResponseAttemptData {
             + size_of::<Result<crate::bodies::EffectCertainty, ProviderError>>()
             + size_of::<Route>() * 2
             + size_of::<[Option<usize>; 2]>() * 2
-            + size_of::<usize>() * 8
+            + size_of::<[usize; 8]>()
             + size_of::<&str>() * 5
             + size_of::<bool>()
             + schedule::counter_data()

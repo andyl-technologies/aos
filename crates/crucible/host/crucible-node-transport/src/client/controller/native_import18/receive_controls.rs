@@ -15,7 +15,7 @@ use std::mem::size_of;
 pub(super) fn counter_scratch_data() -> usize {
     MetadataObserver::native_import18_json_profile_counter_scratch_data()
         + size_of::<&JsonValueReparseConstructionData>()
-        + size_of::<usize>() * 8
+        + size_of::<[usize; 8]>()
         + size_of::<[usize; 6]>()
         + size_of::<[usize; 7]>()
         + size_of::<&[usize]>()

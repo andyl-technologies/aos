@@ -114,7 +114,7 @@ impl NativeCapture17ReplyAttempt {
             owner: Rc::clone(&control.capture_identity),
             creator: control.capture_creator,
             original: None,
-            admitted: admitted,
+            admitted,
             snapshot: None,
             control: None,
             anchor: None,

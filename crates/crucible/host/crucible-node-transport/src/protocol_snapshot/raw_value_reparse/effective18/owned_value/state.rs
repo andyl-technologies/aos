@@ -152,7 +152,7 @@ impl FirstPassStateData {
             + size_of::<std::alloc::Layout>()
             + size_of::<Result<std::alloc::Layout, std::alloc::LayoutError>>()
             + size_of::<[usize; 5]>()
-            + size_of::<usize>() * 8
+            + size_of::<[usize; 8]>()
             + size_of::<[usize; 2]>()
             + size_of::<&[usize]>()
     }

@@ -224,7 +224,7 @@ impl Native17Build for HistoricalRestoreIdentity17 {
             policy_group,
             authority: attempt.authority.take().ok_or_else(invalid)?,
             request_id: attempt.identity.take().ok_or_else(invalid)?,
-            sequence: sequence,
+            sequence,
             literal_slot: index,
             literal_length: length,
             literal_digest: digest,

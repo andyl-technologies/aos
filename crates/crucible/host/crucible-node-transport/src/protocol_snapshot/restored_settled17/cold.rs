@@ -551,7 +551,7 @@ pub(super) fn counter_scratch_data() -> usize {
         >()
         + size_of::<Result<(), std::collections::TryReserveError>>()
         + size_of::<Result<(), ProviderError>>()
-        + 8 * size_of::<usize>()
+        + size_of::<[usize; 8]>()
 }
 
 #[cfg(test)]

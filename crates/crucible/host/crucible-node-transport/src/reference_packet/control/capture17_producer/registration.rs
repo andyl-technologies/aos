@@ -87,7 +87,7 @@ impl NativeCapture17RegistrationAttempt {
             owner: Rc::clone(&control.capture_identity),
             creator: control.capture_creator,
             original: None,
-            admitted: admitted,
+            admitted,
             hash: None,
             expected_binding: None,
             reservation: None,

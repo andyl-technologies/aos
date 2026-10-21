@@ -261,7 +261,7 @@ impl NativeCapture17ConfirmationAttempt {
             owner: Rc::clone(&control.capture_identity),
             creator: control.capture_creator,
             original: None,
-            admitted: admitted,
+            admitted,
             hash: None,
             capture_request_dom: None,
             capture_request_bytes: Vec::new(),

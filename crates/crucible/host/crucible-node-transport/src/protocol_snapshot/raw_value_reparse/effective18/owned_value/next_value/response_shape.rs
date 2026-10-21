@@ -186,7 +186,7 @@ impl<'a> NativeImport18ResponseShapeCutsPreludeData<'a> {
             + size_of::<&mut std::slice::Iter<'static, usize>>() * 3
             + size_of::<&usize>() * 3
             + size_of::<Result<usize, ProviderError>>() * 3
-            + size_of::<usize>() * 8
+            + size_of::<[usize; 8]>()
             + size_of::<bool>() * 3
             + canonical::counter_scratch_data()
             + schedule::counter_data()
