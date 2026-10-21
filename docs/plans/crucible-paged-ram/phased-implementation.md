@@ -62,10 +62,42 @@ failed attempts appear in the dated entries below.
 | --- | --- | --- |
 | Publisher transport | `28bc78d341`: 165 protocol unit tests, 95 integration tests and strict protocol Clippy pass for preparation-only Setup6 framing. | Actual paid publisher construction and the paired runtime caller remain unfinished. |
 | Host alias custody | `90f00965fa` journals each standing descriptor before the next guarded duplication. Five real-socket controls, 73 focused policy checks and five hygiene checks pass. | Mandatory application compilation passes at `yyiy0g0z5lfdkx3x563k0sgnf1i20d1c`; all 5,272 committed Rust/TOML files match its immutable source. All 211 exact supervision cases pass at `dy2jldwf5dizmsmj0icwwxnlfpf8k45a`. |
+| Installing plan reads | `54caaed474` guards every plan read and retry with the same installing Source and preserves the first validation cause on failed ACK. All 24 focused setup tests, 73 policy controls and five hygiene controls pass. | Mandatory application compilation passes with all 5,274 Rust/TOML files matching the immutable source. The corrected setup gate `edb742a73f` passes 39 tests; all 218 exact supervision cases pass at `7iwxg7vg1r0gxwv39ajixz95n45jg9b4`. Genuine Native admission remains unexecuted. |
 | Native integration | `83ecde0031` retains signed `9770a340c3`, tree `ca1face2`, including bounded registries, real RAM disposal exclusion, receiver lifetime, workspace pairs and fixture corrections. Signed reconstruction, 187 owning scenarios and the 319-file license inventory pass. The configured delivery entry passes in 49.089 seconds. | The full package completes 3,991 compile/link actions and passes 25 of 26 fixtures; mandatory launched capture lifecycle remains the sole failure. Fresh ABI and all twelve prior independent custody suites pass; all thirteen custody suites pass at `sdg49q1ywai7b0nij91wcs18nzlqwj59`. The canonical license-boundary gate is blocked by strict controller Clippy. Later header observation and mapping changes remain outside this artifact. |
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | Latest focused checks pass all 73 policy and five hygiene controls; the broad gate retains thirteen daemon paths. | The canonical license-boundary check is blocked by strict controller Clippy (1,177 host-library and 1,250 host-test errors); its boundary assertions did not run. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
-| Requirements | 328 bindings: 309 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
+| Requirements | 335 bindings: 316 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
+
+#### Installing plan reads and setup gate correction
+
+`54caaed474` keeps every immutable plan `pread`, including an EINTR retry,
+inside checks of the same retained installing Source. It saves the syscall
+result before the independent postcut, refuses another read after a negative
+observation, and preserves an initial plan-validation failure alongside a later
+failure-ACK error. Six read controls use real file reads and injected refusal
+boundaries; a seventh exercises the outer validation/ACK failure path. These
+component controls do not construct an accepting Native Source.
+
+All 24 narrowly selected setup tests, 73 focused policy checks and five local
+hygiene checks pass. The hermetic hygiene check passes at
+`zcvijji792yblcv5r97p578pnwrl3izi`. The first local hygiene attempt refused the
+changed setup source's stale review digest; the final reviewed digest passes
+without changing the scanner or shape limits. Mandatory application test-target
+compilation passes at `hdn3j82dbk4kgckr2nk80rhij8daqccb`. All 5,274 committed
+Rust/TOML files match immutable source `np2iydgssjn4ggn8g0xrb2ny180k115f` and
+the then-current working tree; the retained comparison SHA-256 is
+`5f47fb47b778ed908934e2c7794ab4945723ea4968fe8ad230abd575469c69eb`.
+All 218 exact supervision cases pass at `7iwxg7vg1r0gxwv39ajixz95n45jg9b4`
+with component-only qualification and no advertised capabilities.
+
+The first setup-completion gate evaluation refused three stale source contracts:
+a three-descriptor roster, a direct Rust-owned mapping call and the old wake
+arming call. `edb742a73f` checks the actual five mandatory roles, optional sixth
+workspace role, retained installing Source, corroborated backing identity and
+Source-created Native mapping. The standalone Rust mapping remains confined to
+component fixtures. The gate passes all 39 tests selected by its broader `setup`
+filter at `b190pkxl1afi8alhddxns8sn76zrwa3x`. Its result explicitly records
+component/source-contract coverage and an unexecuted genuine Native positive.
 
 #### Earlier workspace evidence
 
