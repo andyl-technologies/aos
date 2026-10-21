@@ -35,8 +35,8 @@ PROVISIONER_DOMAIN = "aos_sandbox_runtime_roots_t"
 HANDOFF_DOMAIN = "aos_sandbox_runtime_roots_handoff_t"
 HANDOFF_EXECUTABLE = "aos_sandbox_runtime_roots_handoff_exec_t"
 GUEST_OWNER = "aos_sandbox_guest_owner_t"
-HOST_CANARY_NAMESPACE_SUBJECTS = ("aos_sandbox_host_t", GUEST_OWNER)
-HOST_CANARY_NAMESPACE_SELECTOR = 0xb703
+NAMESPACE_KIND_OBSERVATION_SUBJECTS = ("aos_sandbox_host_t", GUEST_OWNER, "aos_sandbox_storage_t")
+NAMESPACE_KIND_OBSERVATION_SELECTOR = 0xb703
 HOST_CANARY_NATIVE_PIDFS_SUBJECTS = ("aos_sandbox_host_t",)
 HOST_CANARY_NATIVE_PIDFS_SELECTOR = 0xff0b
 HOST_CANARY_STATE_TYPE = "aos_sandbox_host_canary_state_t"
@@ -750,8 +750,9 @@ def negative_access() -> tuple[Access, ...]:
     ))
 
     # Read-only kind inspection never delegates namespace entry or mutation.
-    checks.append(Access("aos_sandbox_host_t", "nsfs_t", "file", "open"))
-    for subject in HOST_CANARY_NAMESPACE_SUBJECTS:
+    checks.extend(Access(subject, "nsfs_t", "file", "open")
+                  for subject in ("aos_sandbox_host_t", "aos_sandbox_storage_t"))
+    for subject in NAMESPACE_KIND_OBSERVATION_SUBJECTS:
         checks.extend(accesses(
             subject,
             "nsfs_t",
@@ -1439,12 +1440,12 @@ def _check_online_nix_policy(setools: Any, policy: Any) -> list[str]:
     )
 
 
-def _check_host_canary_namespace_ioctls(setools: Any, policy: Any) -> list[str]:
-    """Checks complete expanded selector sets for the two fixed nsfs cells."""
+def _check_namespace_kind_observation_ioctls(setools: Any, policy: Any) -> list[str]:
+    """Checks complete expanded selector sets for the fixed nsfs observation cells."""
 
     return _check_original_ioctls(
-        setools, policy, HOST_CANARY_NAMESPACE_SUBJECTS, "nsfs_t",
-        HOST_CANARY_NAMESPACE_SELECTOR, "namespace",
+        setools, policy, NAMESPACE_KIND_OBSERVATION_SUBJECTS, "nsfs_t",
+        NAMESPACE_KIND_OBSERVATION_SELECTOR, "namespace",
     )
 
 
@@ -1705,7 +1706,7 @@ def check_policy(setools: Any, policy: Any, *, git_read_delegation: bool = False
             f"{access.object_class}\t{access.permission}"
         )
 
-    evidence.extend(_check_host_canary_namespace_ioctls(setools, policy))
+    evidence.extend(_check_namespace_kind_observation_ioctls(setools, policy))
     evidence.extend(_check_host_canary_native_pidfs_ioctls(setools, policy))
     for target in ("aos_sandbox_source_signer_t", "aos_sandbox_policy_authority_t", "init_t"):
         evidence.extend(_check_original_ioctls(

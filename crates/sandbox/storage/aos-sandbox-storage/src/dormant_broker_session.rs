@@ -1043,6 +1043,7 @@ impl DormantStorageApplyCompositionV1 {
         identity_pool: StorageIdentityPoolV1,
         zfs_executable: PathBuf,
         executor: SystemdZfsExecutor,
+        host_pins: Option<crate::activation::StorageHostPinDescriptorsV1>,
     ) -> Result<Self, StorageRuntimeError> {
         let runtime = StorageBrokerRuntime::open_root_owned_dormant_apply_worker(
             authority_directory,
@@ -1052,6 +1053,7 @@ impl DormantStorageApplyCompositionV1 {
             identity_pool,
             zfs_executable,
             executor,
+            host_pins,
         )?;
         Ok(Self {
             runtime,
@@ -1092,6 +1094,7 @@ impl DormantStorageApplyCompositionV1 {
         zfs_executable: PathBuf,
         executor: SystemdZfsExecutor,
         credentials: &crate::operator_recovery_credentials::StorageOperatorRecoveryCredentialsV1,
+        host_pins: Option<crate::activation::StorageHostPinDescriptorsV1>,
     ) -> Result<
         (Self, crate::operator_recovery::StorageOperatorRecoveryOwnerV1),
         StorageRuntimeError,
@@ -1105,6 +1108,7 @@ impl DormantStorageApplyCompositionV1 {
             zfs_executable,
             executor,
             credentials,
+            host_pins,
         )?;
 
         Ok((Self::from_runtime(runtime), owner))
@@ -1131,6 +1135,7 @@ impl DormantStorageApplyCompositionV1 {
         zfs_executable: PathBuf,
         executor: SystemdZfsExecutor,
         credentials: &crate::operator_recovery_credentials::StorageOperatorRecoveryCredentialsV1,
+        host_pins: Option<crate::activation::StorageHostPinDescriptorsV1>,
     ) -> Result<(), StorageRuntimeError> {
         StorageBrokerRuntime::provision_empty_operator_repair_v4(
             authority_directory,
@@ -1141,6 +1146,7 @@ impl DormantStorageApplyCompositionV1 {
             zfs_executable,
             executor,
             credentials,
+            host_pins,
         )
     }
 

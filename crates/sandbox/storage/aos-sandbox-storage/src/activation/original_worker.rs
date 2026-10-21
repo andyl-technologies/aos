@@ -14,7 +14,7 @@ use aos_sandbox_controller_domain::normal_root::{
     StorageWorkerOriginV3,
 };
 
-use super::{CapturedStorageStartupV1, StorageSystemdListenersV1};
+use super::{CapturedStorageStartupV1, StorageHostPinDescriptorsV1, StorageSystemdListenersV1};
 use crate::service::StorageServiceError;
 
 /// Preserves the first concrete startup failure; it is not a recovery permit.
@@ -193,14 +193,16 @@ pub(super) fn admit_captured(
     (
         StorageSystemdListenersV1,
         Option<OwnedFd>,
+        Option<StorageHostPinDescriptorsV1>,
         Option<StorageOriginalWorkerStartupV3>,
     ),
     StorageOriginalWorkerStartupErrorV3,
 > {
     match captured.original.into_original_worker_parts() {
-        Ok((listeners, image, startup)) => Ok((
+        Ok((listeners, image, host_pins, startup)) => Ok((
             listeners,
             image,
+            host_pins,
             startup.map(|original| StorageOriginalWorkerStartupV3 { original }),
         )),
         Err(error) => {
@@ -217,12 +219,17 @@ pub(super) fn admit_captured(
 pub(super) fn admit_resource_recipient(
     captured: aos_sandbox_controller_domain::normal_root::StorageResourceRecipientCaptureV1,
 ) -> Result<
-    (StorageSystemdListenersV1, Option<OwnedFd>, Option<StorageOriginalWorkerStartupV3>),
+    (
+        StorageSystemdListenersV1,
+        Option<OwnedFd>,
+        Option<StorageHostPinDescriptorsV1>,
+        Option<StorageOriginalWorkerStartupV3>,
+    ),
     StorageOriginalWorkerStartupErrorV3,
 > {
     match captured.into_worker_parts() {
-        Ok((listeners, image, startup)) => Ok((
-            listeners, image,
+        Ok((listeners, image, host_pins, startup)) => Ok((
+            listeners, image, host_pins,
             startup.map(|original| StorageOriginalWorkerStartupV3 { original }),
         )),
         Err(error) => Err(StorageOriginalWorkerStartupErrorV3 {

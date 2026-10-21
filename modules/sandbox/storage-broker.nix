@@ -324,6 +324,8 @@ in {
     # creating it, so boot provisioning establishes that custody first.
     environment.etc."tmpfiles.d/aos-sandbox-storage.conf".text = ''
       d /run/aos/sandbox-storage 0710 root aos-sandboxd - -
+      d /run/aos/sandbox-pins 0700 root root - -
+      d /run/aos/sandbox-pins/workspaces 0700 root root - -
       d /var/lib/aos/sandbox-storage 0700 root root - -
       d /var/lib/aos/sandbox-storage/snapshot-metadata 0700 root root - -
     '';
@@ -511,7 +513,14 @@ in {
         # Source-only delivery reuses the same read-only image and subject;
         # all TPM credentials, devices and lifetime settings remain separate.
         SELinuxContext = lib.mkIf startupImageDelivery "system_u:system_r:aos_sandbox_storage_t";
-        OpenFile = lib.mkIf startupImageDelivery ["/proc/1/exe:aos-method46-pid1-image:read-only"];
+        # PID 1 opens these before applying the service's private namespace and
+        # capability-empty profile. Never deliver a descriptor for the host root.
+        OpenFile =
+          lib.optional startupImageDelivery "/proc/1/exe:aos-method46-pid1-image:read-only"
+          ++ [
+            "/proc/1/ns/mnt:aos-storage-host-mount-namespace:read-only"
+            "/run/aos/sandbox-pins/workspaces:aos-storage-host-pin-root:read-only"
+          ];
         FileDescriptorStoreMax = lib.mkIf startupImageDelivery 0;
         # Required mode uses the stage-0 provisioner's empty custody targets.
         # PID1 supplies readonly credential mounts before applying this service's

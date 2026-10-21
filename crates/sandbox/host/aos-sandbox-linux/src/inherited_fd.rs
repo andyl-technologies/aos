@@ -358,12 +358,12 @@ struct AbortInitialCaptureUnwind;
 
 /// Retains Storage's fixed listener, image and resource-enrollment prefix.
 ///
-/// Construction performs no observation. These nine slots are only descriptor
+/// Construction performs no observation. These eleven slots are only descriptor
 /// DATA; the recipient separately validates each fixed name and original role.
 /// Failed or abandoned attempts retain their prefix until process termination.
 #[must_use]
 pub struct StorageInitialActivationTableV1 {
-    original: FixedInitialActivationTable<9>,
+    original: FixedInitialActivationTable<11>,
 }
 
 impl StorageInitialActivationTableV1 {
@@ -384,7 +384,7 @@ impl StorageInitialActivationTableV1 {
         self.original.observe_once(
             count,
             "Storage initial table",
-            "count exceeds nine slots",
+            "count exceeds eleven slots",
             "observation is closed",
         )
     }
@@ -398,7 +398,7 @@ impl StorageInitialActivationTableV1 {
     ///
     /// The caller parks all returned entries before any fallible continuation.
     #[must_use]
-    pub fn take_completed_entries(&mut self) -> Option<[Option<OwnedFd>; 9]> {
+    pub fn take_completed_entries(&mut self) -> Option<[Option<OwnedFd>; 11]> {
         self.original.take_completed_entries()
     }
 }

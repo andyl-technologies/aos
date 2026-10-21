@@ -169,6 +169,30 @@ pub(super) fn observe_root_resource_with_archive(
     Ok((immutable_observation(parent)?, producer))
 }
 
+// These labels select only three fixed observations. Each descriptor is still
+// independently validated before it can participate in host pin custody.
+fn valid_storage_open_files(open_files: &[Value<'_>]) -> bool {
+    let expected = [
+        ("/proc/1/exe", "aos-method46-pid1-image"),
+        ("/proc/1/ns/mnt", "aos-storage-host-mount-namespace"),
+        ("/run/aos/sandbox-pins/workspaces", "aos-storage-host-pin-root"),
+    ];
+    if open_files.len() != expected.len() {
+        return false;
+    }
+    for (expected_path, expected_name) in expected {
+        let matches = open_files.iter().filter(|value| {
+            let Value::Structure(entry) = value else { return false };
+            matches!(entry.fields(), [Value::Str(path), Value::Str(name), Value::U64(1)]
+                if path.as_str() == expected_path && name.as_str() == expected_name)
+        }).count();
+        if matches != 1 {
+            return false;
+        }
+    }
+    true
+}
+
 fn decode_storage(
     service: &[OwnedValue],
     unit: &[OwnedValue],
@@ -182,12 +206,9 @@ fn decode_storage(
     let Value::Array(open_files) = &**open_files else {
         return Err(NormalRootStartupErrorV1::Service);
     };
-    let [Value::Structure(open_file)] = open_files.inner() else {
+    if !valid_storage_open_files(open_files.inner()) {
         return Err(NormalRootStartupErrorV1::Service);
-    };
-    let [Value::Str(path), Value::Str(name), Value::U64(1)] = open_file.fields() else {
-        return Err(NormalRootStartupErrorV1::Service);
-    };
+    }
     let Value::Array(extras) = &**extras else {
         return Err(NormalRootStartupErrorV1::Service);
     };
@@ -196,8 +217,6 @@ fn decode_storage(
     } else {
         STORAGE_CGROUP
     })
-        || path.as_str() != "/proc/1/exe"
-        || name.as_str() != "aos-method46-pid1-image"
         || !super::client::valid_resource_delivery_names(extras.inner(), resource_delivery)
         || extras.element_signature() != Value::from("").value_signature()
         || u32::try_from(maximum).ok() != Some(0)
@@ -628,6 +647,33 @@ mod property_observer_received_descriptor_tests {
 #[cfg(test)]
 mod storage_main_argument_tests {
     use super::*;
+
+    #[test]
+    fn host_pin_delivery_requires_the_exact_readonly_pair_and_image() {
+        let entries = [
+            ("/proc/1/exe", "aos-method46-pid1-image", 1_u64),
+            ("/proc/1/ns/mnt", "aos-storage-host-mount-namespace", 1),
+            ("/run/aos/sandbox-pins/workspaces", "aos-storage-host-pin-root", 1),
+        ];
+        let values = |entries: &[(&str, &str, u64)]| entries.iter()
+            .map(|(path, name, flags)| Value::from((path.to_string(), name.to_string(), *flags)))
+            .collect::<Vec<_>>();
+        assert!(valid_storage_open_files(&values(&entries)));
+        assert!(valid_storage_open_files(&values(&[entries[2], entries[0], entries[1]])));
+        for index in 0..entries.len() {
+            let mut changed = entries.to_vec();
+            changed.remove(index);
+            assert!(!valid_storage_open_files(&values(&changed)));
+            let mut changed = entries.to_vec();
+            changed[index].2 = 0;
+            assert!(!valid_storage_open_files(&values(&changed)));
+            let mut changed = entries.to_vec();
+            changed[index].0 = "/proc/1/root";
+            assert!(!valid_storage_open_files(&values(&changed)));
+        }
+        assert!(!valid_storage_open_files(&values(&[entries[0], entries[1], entries[1]])));
+        assert!(!valid_storage_open_files(&values(&[entries[0], entries[1], entries[2], entries[2]])));
+    }
 
     #[test]
     fn resource_main_accepts_only_one_existing_fixed_optional_mode() {

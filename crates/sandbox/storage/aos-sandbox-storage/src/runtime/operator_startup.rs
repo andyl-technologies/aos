@@ -90,6 +90,7 @@ impl StorageBrokerRuntime {
         zfs_executable: PathBuf,
         executor: SystemdZfsExecutor,
         credentials: &StorageOperatorRecoveryCredentialsV1,
+        host_pins: Option<crate::activation::StorageHostPinDescriptorsV1>,
     ) -> Result<(), StorageRuntimeError> {
         require_fixed_operator_state_directory(state_directory)?;
         match Self::open_root_owned_selected_v4(
@@ -102,6 +103,7 @@ impl StorageBrokerRuntime {
             executor,
             StorageApplyConstructionV1::DormantProtectedWorker,
             OperatorStartupSelectionV4::ProvisionEmpty(credentials),
+            host_pins,
         )? {
             StorageStartupOutcomeV4::OperatorProvisioned => Ok(()),
             StorageStartupOutcomeV4::Runtime(_, _) => Err(StorageRuntimeError::Recovery),
@@ -118,6 +120,7 @@ impl StorageBrokerRuntime {
         zfs_executable: PathBuf,
         executor: SystemdZfsExecutor,
         credentials: &StorageOperatorRecoveryCredentialsV1,
+        host_pins: Option<crate::activation::StorageHostPinDescriptorsV1>,
     ) -> Result<(Self, StorageOperatorRecoveryOwnerV1), StorageRuntimeError> {
         let (runtime, owner) = Self::open_root_owned_inner(
             authority_directory,
@@ -129,6 +132,7 @@ impl StorageBrokerRuntime {
             executor,
             StorageApplyConstructionV1::DormantProtectedWorker,
             Some(credentials),
+            host_pins,
         )?;
         let owner = owner.ok_or(StorageRuntimeError::Recovery)?;
         Ok((runtime, owner))

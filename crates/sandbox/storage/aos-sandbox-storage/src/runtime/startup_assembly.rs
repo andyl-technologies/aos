@@ -54,6 +54,8 @@ pub(super) struct StorageRuntimeAssemblyV1 {
     pub(super) authority: Option<crate::authorization::StorageAuthorityV1>,
     pub(super) state_key: Option<crate::state::StorageStateKey>,
     pub(super) pin_custody: Option<WorkspacePinHostCustody>,
+    pub(super) pin_capture: crate::pin_observer::WorkspacePinHostCaptureV1,
+    pub(super) pin_capture_result: Option<Result<WorkspacePinHostCustody, crate::pin_observer::WorkspacePinObserverError>>,
 }
 
 impl StorageRuntimeAssemblyV1 {
@@ -101,12 +103,17 @@ impl StorageRuntimeAssemblyV1 {
             authority: None,
             state_key: None,
             pin_custody: None,
+            pin_capture: crate::pin_observer::WorkspacePinHostCaptureV1::default(),
+            pin_capture_result: None,
         }
     }
 
     pub(super) fn initial_pin_failure_v1(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.initial_pin_borrow.as_ref().and_then(|result| result.as_ref().err())
-            .map(|cause| cause as &dyn std::error::Error)
+        self.pin_capture.failure()
+            .or_else(|| self.pin_capture_result.as_ref().and_then(|result| result.as_ref().err())
+                .map(|cause| cause as &dyn std::error::Error))
+            .or_else(|| self.initial_pin_borrow.as_ref().and_then(|result| result.as_ref().err())
+            .map(|cause| cause as &dyn std::error::Error))
             .or_else(|| self.initial_pin_scan.as_ref().and_then(|result| result.as_ref().err())
                 .map(|cause| match cause.physical_native_refusal_v1() {
                     Some(marker) => marker as &dyn std::error::Error,

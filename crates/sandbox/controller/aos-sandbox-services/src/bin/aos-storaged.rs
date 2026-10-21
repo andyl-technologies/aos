@@ -489,6 +489,7 @@ fn run() -> Result<(), StorageStartupRunErrorV3> {
             mut zfs_hold_listener,
             mut operator_listener,
             mut existing_output_listener,
+            mut host_pins,
         ) = startup.into_parts();
         if let Some(original) = original_attempt.as_mut().filter(|_original| resource_receiving_selected) {
             original.observe_guest_root_template_once_v1(&arguments.guest_root_template)?;
@@ -617,6 +618,7 @@ fn run() -> Result<(), StorageStartupRunErrorV3> {
                 arguments.zfs_executable,
                 legacy_executor.take().ok_or(StorageRuntimeError::Receiving)?,
                 credentials,
+                host_pins.take(),
             )?;
 
             credentials.recheck()?;
@@ -658,6 +660,7 @@ fn run() -> Result<(), StorageStartupRunErrorV3> {
                         state_root, arguments.resolver_policy_directory.as_deref(),
                         identity_pool, arguments.zfs_executable, &mut original_executor,
                         key, operator_credentials.as_ref(), template,
+                        host_pins.take(),
                     )?;
                     let (composition, owner, trust, service) = original.ready_service_parts_v1()?;
                     (StorageRunCompositionV1::Original { composition, trust, service: Some(service) }, owner)
@@ -667,6 +670,7 @@ fn run() -> Result<(), StorageStartupRunErrorV3> {
                         state_root, arguments.resolver_policy_directory.as_deref(),
                         identity_pool, arguments.zfs_executable, &mut original_executor,
                         operator_credentials.as_ref(), template,
+                        host_pins.take(),
                     )?;
                     let (composition, owner, service) = original.ordinary_ready_service_parts_v1()?;
                     (StorageRunCompositionV1::OrdinaryOriginal { composition, service }, owner)
@@ -680,6 +684,7 @@ fn run() -> Result<(), StorageStartupRunErrorV3> {
                     zfs_hold_key.as_ref().ok_or(StorageRuntimeError::Recovery)?,
                     operator_credentials.as_ref(),
                     legacy_template.take().ok_or(StorageRuntimeError::Receiving)?,
+                    host_pins.take(),
                 )?;
                 let (composition, owner, trust) = original.ready_parts()?;
                 (StorageRunCompositionV1::Original { composition, trust, service: None }, owner)
@@ -696,6 +701,7 @@ fn run() -> Result<(), StorageStartupRunErrorV3> {
                         arguments.zfs_executable,
                         legacy_executor.take().ok_or(StorageRuntimeError::Receiving)?,
                         credentials,
+                        host_pins.take(),
                     )?;
                     (storage.with_guest_root_template(legacy_template.take().ok_or(StorageRuntimeError::Receiving)?), Some(owner))
                 }
@@ -708,6 +714,7 @@ fn run() -> Result<(), StorageStartupRunErrorV3> {
                         identity_pool,
                         arguments.zfs_executable,
                         legacy_executor.take().ok_or(StorageRuntimeError::Receiving)?,
+                        host_pins.take(),
                     )?.with_guest_root_template(legacy_template.take().ok_or(StorageRuntimeError::Receiving)?),
                     None,
                 ),

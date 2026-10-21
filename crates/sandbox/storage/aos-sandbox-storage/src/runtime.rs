@@ -699,6 +699,7 @@ impl StorageOriginalNativeConstructionV1 {
         key: &crate::storage_zfs_hold_key::StorageZfsHoldKeyV1,
         operator_credentials: Option<&crate::operator_recovery_credentials::StorageOperatorRecoveryCredentialsV1>,
         template: ProtectedGuestRootTemplateV1,
+        host_pins: Option<crate::activation::StorageHostPinDescriptorsV1>,
     ) -> Result<(), StorageOriginalNativeConstructionClosedV1> {
         if self.legacy_executor.is_some() {
             return Err(StorageOriginalNativeConstructionClosedV1);
@@ -708,7 +709,7 @@ impl StorageOriginalNativeConstructionV1 {
         let outcome = self.open_for_once_v1(authority_directory, bootstrap_directory, state_directory,
             resolver_policy_directory, identity_pool, zfs_executable,
             StorageStartupExecutorV1::Legacy(&mut executor), OriginalStartupProfileV1::Held(key),
-            operator_credentials, template);
+            operator_credentials, template, host_pins);
         self.legacy_executor = executor;
         outcome
     }
@@ -725,11 +726,12 @@ impl StorageOriginalNativeConstructionV1 {
         executor: &mut Option<SystemdZfsExecutor>,
         operator_credentials: Option<&crate::operator_recovery_credentials::StorageOperatorRecoveryCredentialsV1>,
         template: ProtectedGuestRootTemplateV1,
+        host_pins: Option<crate::activation::StorageHostPinDescriptorsV1>,
     ) -> Result<(), StorageOriginalNativeConstructionClosedV1> {
         self.open_for_once_v1(authority_directory, bootstrap_directory, state_directory,
             resolver_policy_directory, identity_pool, zfs_executable,
             StorageStartupExecutorV1::Receiving(executor), OriginalStartupProfileV1::Ordinary,
-            operator_credentials, template)
+            operator_credentials, template, host_pins)
     }
 
     /// Opens the measured held receiver using its actual resident executor/key.
@@ -745,11 +747,12 @@ impl StorageOriginalNativeConstructionV1 {
         key: &crate::storage_zfs_hold_key::StorageZfsHoldKeyV1,
         operator_credentials: Option<&crate::operator_recovery_credentials::StorageOperatorRecoveryCredentialsV1>,
         template: ProtectedGuestRootTemplateV1,
+        host_pins: Option<crate::activation::StorageHostPinDescriptorsV1>,
     ) -> Result<(), StorageOriginalNativeConstructionClosedV1> {
         self.open_for_once_v1(authority_directory, bootstrap_directory, state_directory,
             resolver_policy_directory, identity_pool, zfs_executable,
             StorageStartupExecutorV1::Receiving(executor), OriginalStartupProfileV1::Held(key),
-            operator_credentials, template)
+            operator_credentials, template, host_pins)
     }
 
     fn open_for_once_v1(
@@ -764,6 +767,7 @@ impl StorageOriginalNativeConstructionV1 {
         profile: OriginalStartupProfileV1<'_>,
         operator_credentials: Option<&crate::operator_recovery_credentials::StorageOperatorRecoveryCredentialsV1>,
         template: ProtectedGuestRootTemplateV1,
+        host_pins: Option<crate::activation::StorageHostPinDescriptorsV1>,
     ) -> Result<(), StorageOriginalNativeConstructionClosedV1> {
         if self.phase != OriginalNativeConstructionPhaseV1::Captured {
             self.phase = OriginalNativeConstructionPhaseV1::Failed;
@@ -813,6 +817,7 @@ impl StorageOriginalNativeConstructionV1 {
                 resolver_policy_directory, identity_pool, zfs_executable, executor,
                 StorageApplyConstructionV1::DormantProtectedWorker, selection,
                 &mut assembly, Some((&mut *self, profile)),
+                host_pins,
             );
             self.assembly = Some(assembly);
             let outcome = outcome?;
@@ -1869,6 +1874,7 @@ impl StorageBrokerRuntime {
         identity_pool: StorageIdentityPoolV1,
         zfs_executable: PathBuf,
         executor: SystemdZfsExecutor,
+        host_pins: Option<crate::activation::StorageHostPinDescriptorsV1>,
     ) -> Result<Self, StorageRuntimeError> {
         Self::open_root_owned_inner(
             authority_directory,
@@ -1880,6 +1886,7 @@ impl StorageBrokerRuntime {
             executor,
             StorageApplyConstructionV1::Closed,
             None,
+            host_pins,
         )
         .map(|(runtime, _)| runtime)
     }
@@ -1909,6 +1916,7 @@ impl StorageBrokerRuntime {
         identity_pool: StorageIdentityPoolV1,
         zfs_executable: PathBuf,
         executor: SystemdZfsExecutor,
+        host_pins: Option<crate::activation::StorageHostPinDescriptorsV1>,
     ) -> Result<Self, StorageRuntimeError> {
         Self::open_root_owned_inner(
             authority_directory,
@@ -1920,6 +1928,7 @@ impl StorageBrokerRuntime {
             executor,
             StorageApplyConstructionV1::Closed,
             None,
+            host_pins,
         )
         .map(|(runtime, _)| runtime)
     }
@@ -1946,6 +1955,7 @@ impl StorageBrokerRuntime {
         identity_pool: StorageIdentityPoolV1,
         zfs_executable: PathBuf,
         executor: SystemdZfsExecutor,
+        host_pins: Option<crate::activation::StorageHostPinDescriptorsV1>,
     ) -> Result<Self, StorageRuntimeError> {
         Self::open_root_owned_inner(
             authority_directory,
@@ -1957,6 +1967,7 @@ impl StorageBrokerRuntime {
             executor,
             StorageApplyConstructionV1::DormantProtectedWorker,
             None,
+            host_pins,
         )
         .map(|(runtime, _)| runtime)
     }
@@ -1974,6 +1985,7 @@ impl StorageBrokerRuntime {
         operator_credentials: Option<
             &crate::operator_recovery_credentials::StorageOperatorRecoveryCredentialsV1,
         >,
+        host_pins: Option<crate::activation::StorageHostPinDescriptorsV1>,
     ) -> Result<
         (Self, Option<crate::operator_recovery::StorageOperatorRecoveryOwnerV1>),
         StorageRuntimeError,
@@ -1992,6 +2004,7 @@ impl StorageBrokerRuntime {
             executor,
             apply_construction,
             selection,
+            host_pins,
         )? {
             StorageStartupOutcomeV4::Runtime(runtime, owner) => Ok((runtime, owner)),
             StorageStartupOutcomeV4::OperatorProvisioned => Err(StorageRuntimeError::Recovery),
@@ -2009,6 +2022,7 @@ impl StorageBrokerRuntime {
         executor: SystemdZfsExecutor,
         apply_construction: StorageApplyConstructionV1,
         selection: operator_startup::OperatorStartupSelectionV4<'_>,
+        host_pins: Option<crate::activation::StorageHostPinDescriptorsV1>,
     ) -> Result<StorageStartupOutcomeV4, StorageRuntimeError> {
         let mut executor = Some(executor);
         let mut assembly = StorageRuntimeAssemblyV1::new();
@@ -2017,6 +2031,7 @@ impl StorageBrokerRuntime {
             resolver_policy_directory, identity_pool, zfs_executable,
             StorageStartupExecutorV1::Legacy(&mut executor),
             apply_construction, selection, &mut assembly, None,
+            host_pins,
         )
     }
 
@@ -2033,13 +2048,19 @@ impl StorageBrokerRuntime {
         selection: operator_startup::OperatorStartupSelectionV4<'_>,
         assembly: &mut StorageRuntimeAssemblyV1,
         mut original: Option<(&mut StorageOriginalNativeConstructionV1, OriginalStartupProfileV1<'_>)>,
+        host_pins: Option<crate::activation::StorageHostPinDescriptorsV1>,
     ) -> Result<StorageStartupOutcomeV4, StorageRuntimeError> {
         let operator_credentials = selection.credentials();
-        // Pin authority survives replacement of this service's private mount
-        // namespace. Retain the fixed PID 1 scope with the same descriptor
-        // footprint before constructing namespace-scoped helpers.
-        assembly.pin_custody = Some(WorkspacePinHostCustody::retain_pid1_root_owned()
-            .map_err(|_| StorageRuntimeError::WorkspacePinScope)?);
+        // Only PID 1's closed descriptor delivery selects the durable host
+        // scope. Retain partial native observations in this same assembly.
+        assembly.pin_capture_result = Some(assembly.pin_capture.capture_once(host_pins));
+        if !matches!(assembly.pin_capture_result, Some(Ok(_))) {
+            return Err(StorageRuntimeError::WorkspacePinScope);
+        }
+        let Some(Ok(custody)) = assembly.pin_capture_result.take() else {
+            std::process::abort();
+        };
+        assembly.pin_custody = Some(custody);
         let selected_receiver = original.as_ref().is_some_and(|(attempt, _)|
             attempt.has_storage_service_receiving_original_v1());
         let protected_configuration = if selected_receiver {

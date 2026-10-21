@@ -319,12 +319,16 @@ impl StorageReceivingOriginalV1 {
         ResourceVector::ZERO
             .with(D::MemoryBytes, std::mem::size_of::<Self>() as u64 + 4 * 1024 * 1024
                 // Initial cleanup arithmetic/payment errors precede its native body.
-                + 2 * 256)
-            // stdio3 + inherited9 + retained duplicates9 + original/image/
-            // own-pidfd6 + actual initial cgroup6 =33 retained slots. Fifteen
+                + 2 * 256
+                // Shared custody of the two actual inherited host-pin roles.
+                + 64)
+            // stdio3 + inherited11 + retained duplicates11 + original/image/
+            // own-pidfd6 + actual initial cgroup6 =37 retained slots. Fifteen
             // fixed Native path/proc/image verification slots cover transient
             // acquisitions; containment24 and observer7/row are added below.
-            .with(D::OpenFiles, 48)
+            // Runtime validates two owned copies and an O_PATH pin-root view;
+            // the same captured pair stays resident in original startup.
+            .with(D::OpenFiles, 55)
             .with(D::Pids, RESIDENT_PROCESS_SLOTS_V1)
             // Five empty admission headers and three actual Runtime borrow/scan/
             // disposal receipts precede any possible cleanup admission refusal.

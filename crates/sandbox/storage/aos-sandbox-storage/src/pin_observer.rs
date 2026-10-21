@@ -37,6 +37,9 @@ use crate::workspace_pin::{
 use crate::workspace_repair::WorkspacePinRepairProbeV1;
 use crate::workspace_repair_admission::WorkspacePinRepairAdmissionProbeV1;
 
+mod host_custody;
+pub(crate) use host_custody::WorkspacePinHostCaptureV1;
+
 const MAXIMUM_HOST_MOUNTS: usize = 65_536;
 const CATALOG_PIN_OBSERVATION_DIGEST_DOMAIN: &[u8] =
     b"aos.sandbox.storage.workspace-catalog-pin-root-observation.v1\0";
@@ -97,6 +100,7 @@ pub(crate) struct WorkspacePinHostCustody {
     kernel_boot_id: [u8; 16],
     mount_namespace: NamespaceFd,
     pin_root: ResolvedPath,
+    _root_carrier: Option<BeneathRoot>,
 }
 
 impl WorkspacePinHostCustody {
@@ -119,43 +123,7 @@ impl WorkspacePinHostCustody {
             kernel_boot_id,
             mount_namespace,
             pin_root,
-        })
-    }
-
-    /// Retains PID 1's stable host scope before entering a confined service scope.
-    ///
-    /// The broker's private mount namespace is replaced on every service
-    /// restart. Durable workspace pins belong to PID 1's host namespace instead.
-    /// These fixed procfs sources select that namespace and its root; the
-    /// observer still enters the retained namespace and reopens the exact pin
-    /// root before accepting any observation or effect.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the boot ID, PID 1 mount namespace, or root-owned
-    /// fixed pin directory cannot be retained. It never falls back to the
-    /// calling service's private namespace.
-    pub(crate) fn retain_pid1_root_owned() -> Result<Self, WorkspacePinObserverError> {
-        let kernel_boot_id = KernelBootId::current()?.into_bytes();
-        let descriptor = rustix::fs::open(
-            "/proc/1/ns/mnt",
-            OFlags::RDONLY | OFlags::CLOEXEC,
-            Mode::empty(),
-        )?;
-        let mount_namespace = NamespaceFd::from_owned(descriptor, NamespaceKind::Mount)?;
-        // Following this fixed kernel procfs link is intentional: opening `/`
-        // here would retain the service's private root and mount identities.
-        let system_root = rustix::fs::open(
-            "/proc/1/root",
-            OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
-            Mode::empty(),
-        )?;
-        let pin_root = open_pin_root_beneath(BeneathRoot::from_owned(system_root)?)?;
-
-        Ok(Self {
-            kernel_boot_id,
-            mount_namespace,
-            pin_root,
+            _root_carrier: None,
         })
     }
 

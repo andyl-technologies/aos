@@ -150,7 +150,7 @@ pub use storage_worker_origin::{
     StorageCaptureWorkerDisposalV2, StorageCgroupRootErrorV3,
     StorageFloorPhysicalProgramReceivingV2, StorageGuestRootTemplateReceivingLoanV1,
     StorageInitialPinQuiescenceLoanV1, StorageInitialSessionHelloDisposalV1,
-    StorageLaunchCaptureErrorV3, StorageLaunchListenersV3, StorageLifecycleDisposalErrorV1,
+    StorageHostPinDescriptorsV1, StorageLaunchCaptureErrorV3, StorageLaunchListenersV3, StorageLifecycleDisposalErrorV1,
     StorageLifecyclePositiveDisposalV1, StorageLifecycleSessionLoanV1,
     StorageOutputOwedAfterOriginalV1, StoragePhysicalWorkerDisposalV1, StoragePhysicalWorkerLoanV1,
     StoragePrepareReceivingLoanV1, StoragePrepareSessionReplayLoanV1,

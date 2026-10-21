@@ -12,6 +12,7 @@ use aos_sandbox_controller_domain::normal_root::{
     capture_storage_launch_v3,
 };
 pub use aos_sandbox_controller_domain::normal_root::storage_resource_recipient_selected_v1;
+pub use aos_sandbox_controller_domain::normal_root::StorageHostPinDescriptorsV1;
 
 use crate::service::StorageServiceError;
 
@@ -60,7 +61,12 @@ impl StorageResourceRecipientCaptureV1 {
     ///
     /// Owns the complete failed recipient and partial Startup custody.
     pub fn into_original_worker_parts(self) -> Result<
-        (StorageSystemdListenersV1, Option<OwnedFd>, Option<StorageOriginalWorkerStartupV3>),
+        (
+            StorageSystemdListenersV1,
+            Option<OwnedFd>,
+            Option<StorageHostPinDescriptorsV1>,
+            Option<StorageOriginalWorkerStartupV3>,
+        ),
         StorageOriginalWorkerStartupErrorV3,
     > {
         original_worker::admit_resource_recipient(self.original)
@@ -75,7 +81,11 @@ pub struct CapturedStorageStartupV1 {
 impl CapturedStorageStartupV1 {
     /// Returns observed listener roles and an unverified original launch image.
     #[must_use]
-    pub fn into_parts(self) -> (StorageSystemdListenersV1, Option<OwnedFd>) {
+    pub fn into_parts(self) -> (
+        StorageSystemdListenersV1,
+        Option<OwnedFd>,
+        Option<StorageHostPinDescriptorsV1>,
+    ) {
         self.original.into_parts()
     }
 
@@ -95,6 +105,7 @@ impl CapturedStorageStartupV1 {
         (
             StorageSystemdListenersV1,
             Option<OwnedFd>,
+            Option<StorageHostPinDescriptorsV1>,
             Option<StorageOriginalWorkerStartupV3>,
         ),
         StorageOriginalWorkerStartupErrorV3,
@@ -109,16 +120,16 @@ impl CapturedStorageStartupV1 {
 ///
 /// Rejects wrong PID, count, names, descriptor type, or missing record subjects.
 pub fn take_systemd_listeners() -> Result<StorageSystemdListenersV1, StorageServiceError> {
-    let (listeners, image) = take_systemd_startup()?.into_parts();
-    if image.is_some() {
+    let (listeners, image, host_pins) = take_systemd_startup()?.into_parts();
+    if image.is_some() || host_pins.is_some() {
         return Err(activation_error(
-            "legacy listener adoption cannot consume a PID 1 image",
+            "legacy listener adoption cannot consume a PID 1 image or host-pin delivery",
         ));
     }
     Ok(listeners)
 }
 
-/// Captures fixed listeners and at most one observed parent-only image FD.
+/// Captures fixed listeners, paired host-pin observations, and an optional parent image.
 ///
 /// Every numeric entry is copied before opening any other retained descriptor.
 /// Names and environment are correlation hints only. The security owner must

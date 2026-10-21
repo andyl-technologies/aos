@@ -103,11 +103,11 @@ class FakePolicy:
             for transition in effective_policy.TRANSITIONS
         }
         self.xperms: dict[effective_policy.Access, list[FakeXpermRule]] = {}
-        for subject in effective_policy.HOST_CANARY_NAMESPACE_SUBJECTS:
+        for subject in effective_policy.NAMESPACE_KIND_OBSERVATION_SUBJECTS:
             access = effective_policy.Access(subject, "nsfs_t", "file", "ioctl")
             self.xperms[access] = [FakeXpermRule(
                 "fixed namespace kind selector",
-                perms=frozenset({effective_policy.HOST_CANARY_NAMESPACE_SELECTOR}),
+                perms=frozenset({effective_policy.NAMESPACE_KIND_OBSERVATION_SELECTOR}),
             )]
         native_pidfs = effective_policy.Access(
             "aos_sandbox_host_t", "aos_nspawn_t", "file", "ioctl",
@@ -565,7 +565,7 @@ class EffectivePolicyTest(unittest.TestCase):
             + len(effective_policy.POSITIVE_ACCESS)
             + len(effective_policy.NEGATIVE_ACCESS)
             + 4  # Two closed delivery sets and two source attribute cuts.
-            + 7,  # Two namespace, four pidfs and one state ioctl cells.
+            + 8,  # Three namespace, four pidfs and one state ioctl cells.
         )
 
     def test_explicit_loader_membership_is_exact_and_preserves_domains(self) -> None:
@@ -2042,19 +2042,19 @@ class HostCanaryStateIoctlTest(unittest.TestCase):
             ), negative)
 
 
-class HostCanaryNamespaceIoctlTest(unittest.TestCase):
+class NamespaceKindObservationIoctlTest(unittest.TestCase):
     """Checks fixed namespace-kind DATA access, not donated-object authority."""
 
-    def test_only_exact_kind_selector_is_enabled_for_both_cells(self) -> None:
+    def test_only_exact_kind_selector_is_enabled_for_all_cells(self) -> None:
         policy = FakePolicy()
 
-        evidence = effective_policy._check_host_canary_namespace_ioctls(
+        evidence = effective_policy._check_namespace_kind_observation_ioctls(
             FAKE_SETOOLS, policy,
         )
 
         self.assertEqual(evidence, [
             f"allowxperm\t{subject}\tnsfs_t\tfile\tioctl\t0xb703"
-            for subject in effective_policy.HOST_CANARY_NAMESPACE_SUBJECTS
+            for subject in effective_policy.NAMESPACE_KIND_OBSERVATION_SUBJECTS
         ])
         for query in policy.queries:
             self.assertIs(query["source_indirect"], True)
@@ -2077,7 +2077,7 @@ class HostCanaryNamespaceIoctlTest(unittest.TestCase):
                     ))
 
                     with self.assertRaisesRegex(ValueError, "forbidden.*namespace"):
-                        effective_policy._check_host_canary_namespace_ioctls(
+                        effective_policy._check_namespace_kind_observation_ioctls(
                             FAKE_SETOOLS, policy,
                         )
 
@@ -2093,7 +2093,7 @@ class HostCanaryNamespaceIoctlTest(unittest.TestCase):
 
             with self.subTest(axis=axis):
                 with self.assertRaisesRegex(ValueError, "forbidden.*namespace"):
-                    effective_policy._check_host_canary_namespace_ioctls(
+                    effective_policy._check_namespace_kind_observation_ioctls(
                         FAKE_SETOOLS, policy,
                     )
 
@@ -2103,7 +2103,11 @@ class HostCanaryNamespaceIoctlTest(unittest.TestCase):
             effective_policy.Access("aos_sandbox_host_t", "nsfs_t", "file", "open"),
             negative,
         )
-        for subject in effective_policy.HOST_CANARY_NAMESPACE_SUBJECTS:
+        self.assertIn(
+            effective_policy.Access("aos_sandbox_storage_t", "nsfs_t", "file", "open"),
+            negative,
+        )
+        for subject in effective_policy.NAMESPACE_KIND_OBSERVATION_SUBJECTS:
             for permission in ("write", "execute", "execute_no_trans", "map", "setattr"):
                 self.assertIn(
                     effective_policy.Access(subject, "nsfs_t", "file", permission),
@@ -2134,9 +2138,9 @@ class HostCanaryNativePidfsIoctlTest(unittest.TestCase):
         self.assertEqual(evidence, [
             "allowxperm\taos_sandbox_host_t\taos_nspawn_t\tfile\tioctl\t0xff0b",
         ])
-        self.assertEqual(len(effective_policy._check_host_canary_namespace_ioctls(
+        self.assertEqual(len(effective_policy._check_namespace_kind_observation_ioctls(
             FAKE_SETOOLS, policy,
-        )), 2)
+        )), 3)
 
     def test_missing_inactive_or_extra_selector_refuses(self) -> None:
         access = effective_policy.Access(

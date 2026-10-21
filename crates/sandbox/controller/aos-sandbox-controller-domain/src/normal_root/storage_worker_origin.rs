@@ -111,6 +111,40 @@ const EXISTING_OUTPUT_FD_NAME: &str = "aos-storaged-existing-output";
 /// Names the parent-only original PID 1 image delivered by fixed-unit OpenFile.
 pub const PID1_LAUNCH_IMAGE_FD_NAME: &str = "aos-method46-pid1-image";
 
+const HOST_MOUNT_NAMESPACE_FD_NAME: &str = "aos-storage-host-mount-namespace";
+const HOST_PIN_ROOT_FD_NAME: &str = "aos-storage-host-pin-root";
+
+/// Retains the two observed host-pin roles from one complete startup capture.
+///
+/// Only the closed inherited-table capture constructs this value. It conveys
+/// descriptor custody, not namespace, pin, worker, or resource authorization.
+/// The receiving runtime must validate both actual kernel objects before use.
+/// Shared custody keeps these same observations resident in the original
+/// startup owner when a later consumer fails; the worker owner stays unique.
+#[derive(Clone)]
+pub struct StorageHostPinDescriptorsV1 {
+    descriptors: std::sync::Arc<StorageHostPinDescriptorPairV1>,
+}
+
+struct StorageHostPinDescriptorPairV1 {
+    mount_namespace: OwnedFd,
+    pin_root: OwnedFd,
+}
+
+impl StorageHostPinDescriptorsV1 {
+    /// Borrows the original namespace observation without reopening it.
+    #[must_use]
+    pub fn mount_namespace(&self) -> std::os::fd::BorrowedFd<'_> {
+        std::os::fd::AsFd::as_fd(&self.descriptors.mount_namespace)
+    }
+
+    /// Borrows the original pin-root observation without reopening it.
+    #[must_use]
+    pub fn pin_root(&self) -> std::os::fd::BorrowedFd<'_> {
+        std::os::fd::AsFd::as_fd(&self.descriptors.pin_root)
+    }
+}
+
 /// The fixed Storage listener roles, without any TPM or image authorization.
 pub type StorageLaunchListenersV3 = (
     RecordSubjectListener,
@@ -125,13 +159,18 @@ pub type StorageLaunchListenersV3 = (
 pub struct CapturedStorageLaunchV3 {
     listeners: StorageLaunchListenersV3,
     pid1_image: Option<OwnedFd>,
+    host_pins: Option<StorageHostPinDescriptorsV1>,
 }
 
 impl CapturedStorageLaunchV3 {
     /// Returns observed roles and the unverified original launch image.
     #[must_use]
-    pub fn into_parts(self) -> (StorageLaunchListenersV3, Option<OwnedFd>) {
-        (self.listeners, self.pid1_image)
+    pub fn into_parts(self) -> (
+        StorageLaunchListenersV3,
+        Option<OwnedFd>,
+        Option<StorageHostPinDescriptorsV1>,
+    ) {
+        (self.listeners, self.pid1_image, self.host_pins)
     }
 
     /// Admits custody only from this actual fixed launch capture.
@@ -143,7 +182,12 @@ impl CapturedStorageLaunchV3 {
     pub fn into_original_worker_parts(
         self,
     ) -> Result<
-        (StorageLaunchListenersV3, Option<OwnedFd>, Option<StorageWorkerOriginV3>),
+        (
+            StorageLaunchListenersV3,
+            Option<OwnedFd>,
+            Option<StorageHostPinDescriptorsV1>,
+            Option<StorageWorkerOriginV3>,
+        ),
         StorageWorkerOriginAdmissionErrorV3,
     > {
         admit_captured(self)
@@ -221,7 +265,7 @@ impl StorageWorkerOriginAdmissionErrorV3 {
     }
 }
 
-/// Captures fixed listeners and at most one observed parent-only image FD.
+/// Captures fixed listeners, paired host-pin observations, and an optional parent image.
 ///
 /// Every numeric entry is copied before opening any other retained descriptor.
 /// Names and environment are correlation hints only. The security owner must
@@ -236,15 +280,15 @@ pub fn capture_storage_launch_v3() -> Result<CapturedStorageLaunchV3, StorageLau
     let current_pid = u32::try_from(rustix::process::getpid().as_raw_nonzero().get())
         .map_err(|_| activation_error("current PID does not fit u32"))?;
     let descriptor_count = environment_u32("LISTEN_FDS")?;
-    if listen_pid != current_pid || !(2..=7).contains(&descriptor_count) {
+    if listen_pid != current_pid || !(2..=9).contains(&descriptor_count) {
         return Err(activation_error(
-            "two to seven named startup entries are required",
+            "two to nine named startup entries are required",
         ));
     }
 
     let names = std::env::var("LISTEN_FDNAMES")
         .map_err(|_| activation_error("activated descriptor names are absent"))?;
-    if names.len() > 7 * 256
+    if names.len() > 9 * 256
         || !names.is_ascii()
         || names.bytes().any(|byte| byte.is_ascii_control())
     {
@@ -266,6 +310,8 @@ pub fn capture_storage_launch_v3() -> Result<CapturedStorageLaunchV3, StorageLau
     let mut operator_repair = None;
     let mut existing_output = None;
     let mut pid1_image = None;
+    let mut host_mount_namespace = None;
+    let mut host_pin_root = None;
     for (name, descriptor) in names.into_iter().zip(descriptors) {
         match name {
             EXPECTED_FD_NAME => controller = Some(descriptor),
@@ -275,6 +321,8 @@ pub fn capture_storage_launch_v3() -> Result<CapturedStorageLaunchV3, StorageLau
             OPERATOR_REPAIR_FD_NAME => operator_repair = Some(descriptor),
             EXISTING_OUTPUT_FD_NAME => existing_output = Some(descriptor),
             PID1_LAUNCH_IMAGE_FD_NAME => pid1_image = Some(descriptor),
+            HOST_MOUNT_NAMESPACE_FD_NAME => host_mount_namespace = Some(descriptor),
+            HOST_PIN_ROOT_FD_NAME => host_pin_root = Some(descriptor),
             _ => return Err(activation_error("activated descriptor name is unknown")),
         }
     }
@@ -307,6 +355,7 @@ pub fn capture_storage_launch_v3() -> Result<CapturedStorageLaunchV3, StorageLau
             existing_output,
         ),
         pid1_image,
+        host_pins: host_pin_descriptors(host_mount_namespace, host_pin_root)?,
     })
 }
 
@@ -355,12 +404,29 @@ fn valid_startup_names(names: &[&str], descriptor_count: u32) -> bool {
     let listeners = names
         .iter()
         .copied()
-        .filter(|name| *name != PID1_LAUNCH_IMAGE_FD_NAME)
+        .filter(|name| !matches!(*name, PID1_LAUNCH_IMAGE_FD_NAME | HOST_MOUNT_NAMESPACE_FD_NAME | HOST_PIN_ROOT_FD_NAME))
         .collect::<Vec<_>>();
-    (2..=7).contains(&descriptor_count)
+    let namespaces = names.iter().filter(|name| **name == HOST_MOUNT_NAMESPACE_FD_NAME).count();
+    let pin_roots = names.iter().filter(|name| **name == HOST_PIN_ROOT_FD_NAME).count();
+    (2..=9).contains(&descriptor_count)
         && names.len() == descriptor_count as usize
         && images <= 1
-        && valid_listener_names(&listeners, descriptor_count - images as u32)
+        && namespaces <= 1
+        && namespaces == pin_roots
+        && valid_listener_names(&listeners, descriptor_count - (images + namespaces + pin_roots) as u32)
+}
+
+fn host_pin_descriptors(
+    mount_namespace: Option<OwnedFd>,
+    pin_root: Option<OwnedFd>,
+) -> Result<Option<StorageHostPinDescriptorsV1>, StorageLaunchCaptureErrorV3> {
+    match (mount_namespace, pin_root) {
+        (Some(mount_namespace), Some(pin_root)) => Ok(Some(StorageHostPinDescriptorsV1 {
+            descriptors: std::sync::Arc::new(StorageHostPinDescriptorPairV1 { mount_namespace, pin_root }),
+        })),
+        (None, None) => Ok(None),
+        _ => Err(activation_error("host-pin descriptor roles are incomplete")),
+    }
 }
 
 fn valid_listener_names(names: &[&str], descriptor_count: u32) -> bool {
@@ -434,6 +500,7 @@ pub fn storage_resource_recipient_selected_v1() -> bool {
 type StorageWorkerPartsV3 = (
     StorageLaunchListenersV3,
     Option<OwnedFd>,
+    Option<StorageHostPinDescriptorsV1>,
     Option<StorageWorkerOriginV3>,
 );
 
@@ -457,7 +524,7 @@ enum RecipientFailure {
 pub struct StorageResourceRecipientCaptureV1 {
     table: StorageInitialActivationTableV1,
     names: Option<Result<(u32, String), StorageLaunchCaptureErrorV3>>,
-    entries: Option<[Option<OwnedFd>; 9]>,
+    entries: Option<[Option<OwnedFd>; 11]>,
     listeners: [Option<Result<RecordSubjectListener, SeqpacketError>>; 6],
     captured: Option<Result<CapturedStorageLaunchV3, StorageLaunchCaptureErrorV3>>,
     paths: Option<Result<(), SeqpacketError>>,
@@ -634,13 +701,13 @@ impl StorageResourceRecipientCaptureV1 {
     /// Owns this entire negative attempt, including failed Startup custody.
     pub fn into_worker_parts(mut self) -> Result<StorageWorkerPartsV3, StorageResourceRecipientErrorV1> {
         if self.first.is_none() && self.admitted && self.receiving.is_some() {
-            if let (Some(Ok((listeners, image, Some(mut startup)))), Some(component), Some(receiving)) = (
+            if let (Some(Ok((listeners, image, host_pins, Some(mut startup)))), Some(component), Some(receiving)) = (
                 self.startup.take(), self.component.take(), self.receiving.take(),
             ) {
                 startup.recipient = Some(StorageResourceRecipientCustodyV1::Receiving {
                     component, receiving,
                 });
-                return Ok((listeners, image, Some(startup)));
+                return Ok((listeners, image, host_pins, Some(startup)));
             }
             self.first = Some(RecipientFailure::Closed);
         }
@@ -700,8 +767,8 @@ fn selected_startup_names() -> Result<(u32, String), StorageLaunchCaptureErrorV3
     let count = environment_u32("LISTEN_FDS")?;
     let names = std::env::var("LISTEN_FDNAMES")
         .map_err(|_| activation_error("activated descriptor names are absent"))?;
-    if listen_pid != current_pid || !(5..=9).contains(&count)
-        || names.len() > 9 * 256 || !names.is_ascii()
+    if listen_pid != current_pid || !(7..=11).contains(&count)
+        || names.len() > 11 * 256 || !names.is_ascii()
         || names.bytes().any(|byte| byte.is_ascii_control())
     {
         return Err(activation_error("selected Storage startup table differs"));
@@ -714,6 +781,8 @@ fn selected_startup_names() -> Result<(u32, String), StorageLaunchCaptureErrorV3
         || parsed.iter().filter(|name| **name == RESOURCE_POLICY_NAME).count() != 1
         || parsed.iter().filter(|name| **name == RESOURCE_ENROLLMENT_NAME).count() != 1
         || ordinary.iter().filter(|name| **name == PID1_LAUNCH_IMAGE_FD_NAME).count() != 1
+        || ordinary.iter().filter(|name| **name == HOST_MOUNT_NAMESPACE_FD_NAME).count() != 1
+        || ordinary.iter().filter(|name| **name == HOST_PIN_ROOT_FD_NAME).count() != 1
         || !valid_startup_names(&ordinary, count - 2)
     {
         return Err(activation_error("selected Storage startup roles differ"));
@@ -723,7 +792,7 @@ fn selected_startup_names() -> Result<(u32, String), StorageLaunchCaptureErrorV3
 
 fn adopt_selected_roles(
     names: &str,
-    entries: &mut [Option<OwnedFd>; 9],
+    entries: &mut [Option<OwnedFd>; 11],
     listeners: &mut [Option<Result<RecordSubjectListener, SeqpacketError>>; 6],
     component: &mut Option<StorageComponentEnvelopeOriginalV1>,
 ) -> Result<CapturedStorageLaunchV3, StorageLaunchCaptureErrorV3> {
@@ -760,6 +829,9 @@ fn adopt_selected_roles(
     let captured = CapturedStorageLaunchV3 {
         listeners,
         pid1_image: take_role(PID1_LAUNCH_IMAGE_FD_NAME),
+        host_pins: host_pin_descriptors(
+            take_role(HOST_MOUNT_NAMESPACE_FD_NAME), take_role(HOST_PIN_ROOT_FD_NAME),
+        )?,
     };
     Ok(captured)
 }
@@ -790,6 +862,8 @@ struct StartupCustody {
 /// It is move-only; only its same original runtime may borrow it for rechecks.
 pub struct StorageWorkerOriginV3 {
     custody: StartupCustody,
+    // Preserve the original table observations through upper admission errors.
+    _host_pins: Option<StorageHostPinDescriptorsV1>,
     open: bool,
     recipient: Option<StorageResourceRecipientCustodyV1>,
 }
@@ -918,12 +992,13 @@ fn admit_captured(
     (
         StorageLaunchListenersV3,
         Option<OwnedFd>,
+        Option<StorageHostPinDescriptorsV1>,
         Option<StorageWorkerOriginV3>,
     ),
     StorageWorkerOriginAdmissionErrorV3,
 > {
     let Some(original) = captured.pid1_image.as_ref() else {
-        return Ok((captured.listeners, None, None));
+        return Ok((captured.listeners, None, captured.host_pins, None));
     };
     let mut custody = Box::new(StartupCustody::default());
     let result = custody.capture(original);
@@ -934,11 +1009,14 @@ fn admit_captured(
             partial: Some(custody),
         });
     }
+    let retained_host_pins = captured.host_pins.clone();
     Ok((
         captured.listeners,
         captured.pid1_image,
+        captured.host_pins,
         Some(StorageWorkerOriginV3 {
             custody: *custody,
+            _host_pins: retained_host_pins,
             open: true,
             recipient: None,
         }),
@@ -960,8 +1038,9 @@ fn admit_captured_receiving(
             cause, captured: Some(captured), partial: Some(custody),
         });
     }
-    Ok((captured.listeners, captured.pid1_image, Some(StorageWorkerOriginV3 {
-        custody: *custody, open: true, recipient: None,
+    let retained_host_pins = captured.host_pins.clone();
+    Ok((captured.listeners, captured.pid1_image, captured.host_pins, Some(StorageWorkerOriginV3 {
+        custody: *custody, _host_pins: retained_host_pins, open: true, recipient: None,
     })))
 }
 
@@ -1240,6 +1319,29 @@ mod activation_tests {
             ],
             4,
         ));
+    }
+
+    #[test]
+    fn activation_host_pin_roles_are_paired_unique_and_separate_from_listeners() {
+        let mut roles = vec![EXPECTED_FD_NAME, EXPORT_FD_NAME,
+            HOST_PIN_ROOT_FD_NAME, HOST_MOUNT_NAMESPACE_FD_NAME];
+        assert!(valid_startup_names(&roles, roles.len() as u32));
+        roles.push(PID1_LAUNCH_IMAGE_FD_NAME);
+        roles.extend([LIVE_EXPORT_FD_NAME, ZFS_HOLD_FD_NAME,
+            OPERATOR_REPAIR_FD_NAME, EXISTING_OUTPUT_FD_NAME]);
+        assert!(valid_startup_names(&roles, 9));
+        assert!(!valid_listener_names(&roles, 9));
+        for role in [HOST_PIN_ROOT_FD_NAME, HOST_MOUNT_NAMESPACE_FD_NAME] {
+            let mut missing = roles.clone();
+            missing.retain(|name| *name != role);
+            assert!(!valid_startup_names(&missing, 8));
+            let mut duplicate = roles.clone();
+            duplicate.push(role);
+            assert!(!valid_startup_names(&duplicate, 10));
+        }
+        let mut replaced = roles.clone();
+        replaced[2] = "aos-storage-host-root";
+        assert!(!valid_startup_names(&replaced, 9));
     }
 
     #[test]

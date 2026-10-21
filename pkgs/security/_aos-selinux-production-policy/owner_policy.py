@@ -120,6 +120,8 @@ def matrix(Access, Transition, accesses, ordinary_domains):
     """Returns queries consumed by the one shared attribute-expanded checker."""
 
     positive = []
+    positive.extend(accesses("aos_sandbox_storage_t", "nsfs_t", "file", ("getattr", "ioctl", "read")))
+    positive.append(Access("aos_sandbox_storage_t", "nsfs_t", "filesystem", "getattr"))
     negative = []
     transitions = []
     all_roles = (

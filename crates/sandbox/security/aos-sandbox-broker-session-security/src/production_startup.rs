@@ -241,6 +241,7 @@ pub struct ProductionStorageStartupV1 {
     zfs_hold: Option<RecordSubjectListener>,
     operator: Option<RecordSubjectListener>,
     existing_output: Option<RecordSubjectListener>,
+    host_pins: Option<aos_sandbox_storage::activation::StorageHostPinDescriptorsV1>,
 }
 
 /// Storage activation and its separately retained non-broker listeners.
@@ -251,11 +252,13 @@ pub type ProductionStorageStartupPartsV1 = (
     Option<RecordSubjectListener>,
     Option<RecordSubjectListener>,
     Option<RecordSubjectListener>,
+    Option<aos_sandbox_storage::activation::StorageHostPinDescriptorsV1>,
 );
 
 type StorageResourceRecipientWorkerPartsV1 = (
     aos_sandbox_storage::activation::StorageSystemdListenersV1,
     Option<OwnedFd>,
+    Option<aos_sandbox_storage::activation::StorageHostPinDescriptorsV1>,
     Option<StorageOriginalWorkerStartupV3>,
 );
 
@@ -323,6 +326,7 @@ struct StorageResourceRecipientStartupAttemptV1 {
     zfs_hold: Option<RecordSubjectListener>,
     operator: Option<RecordSubjectListener>,
     existing_output: Option<RecordSubjectListener>,
+    host_pins: Option<aos_sandbox_storage::activation::StorageHostPinDescriptorsV1>,
     worker: Option<StorageOriginalWorkerStartupV3>,
     failed_worker: Option<StorageOriginalWorkerStartupErrorV3>,
     activation: Option<ProductionBrokerSessionActivationV1>,
@@ -357,6 +361,7 @@ impl StorageResourceRecipientStartupAttemptV1 {
             zfs_hold: None,
             operator: None,
             existing_output: None,
+            host_pins: None,
             worker: None,
             failed_worker: None,
             activation: Some(ProductionBrokerSessionActivationV1::prearm_storage_resource_recipient()),
@@ -403,7 +408,7 @@ impl StorageResourceRecipientStartupAttemptV1 {
             self.first = Some(StorageResourceRecipientStartupStageV1::Closed);
             return false;
         }
-        let Some(Ok(((control, export, live_export, zfs_hold, operator, existing_output), image, worker))) =
+        let Some(Ok(((control, export, live_export, zfs_hold, operator, existing_output), image, host_pins, worker))) =
             self.captured.take()
         else {
             std::process::abort();
@@ -414,6 +419,7 @@ impl StorageResourceRecipientStartupAttemptV1 {
         self.zfs_hold = zfs_hold;
         self.operator = operator;
         self.existing_output = existing_output;
+        self.host_pins = host_pins;
         self.worker = worker;
         *destination = image.map(File::from);
         if destination.is_none() || self.worker.is_none() {
@@ -651,6 +657,7 @@ impl StorageResourceRecipientStartupAttemptV1 {
             zfs_hold: self.zfs_hold.take(),
             operator: self.operator.take(),
             existing_output: self.existing_output.take(),
+            host_pins: self.host_pins.take(),
         };
         self.armed = false;
         Ok((startup, Some(worker)))
@@ -769,8 +776,8 @@ impl ProductionStorageStartupV1 {
     /// Rejects invalid activation, mismatched immutable floor mode/image
     /// presence, or any fixed broker-listener failure. This cannot be retried.
     pub fn capture() -> Result<Self, StorageServiceError> {
-        let (listeners, image) = take_systemd_startup()?.into_parts();
-        Self::admit_captured_parts(listeners, image)
+        let (listeners, image, host_pins) = take_systemd_startup()?.into_parts();
+        Self::admit_captured_parts(listeners, image, host_pins)
     }
 
     /// Captures once and transfers genuine original worker startup downward.
@@ -793,8 +800,8 @@ impl ProductionStorageStartupV1 {
         aos_sandbox_storage::activation::StorageOriginalWorkerStartupErrorV3,
     > {
         let captured = take_systemd_startup()?;
-        let (listeners, image, startup) = captured.into_original_worker_parts()?;
-        Self::admit_original_worker_route(listeners, image, startup)
+        let (listeners, image, host_pins, startup) = captured.into_original_worker_parts()?;
+        Self::admit_original_worker_route(listeners, image, host_pins, startup)
     }
 
     /// Admits only the selected actual resource-recipient table before startup.
@@ -823,6 +830,7 @@ impl ProductionStorageStartupV1 {
     fn admit_original_worker_route(
         listeners: aos_sandbox_storage::activation::StorageSystemdListenersV1,
         image: Option<OwnedFd>,
+        host_pins: Option<aos_sandbox_storage::activation::StorageHostPinDescriptorsV1>,
         startup: Option<aos_sandbox_storage::activation::StorageOriginalWorkerStartupV3>,
     ) -> Result<
         (Self, Option<aos_sandbox_storage::activation::StorageOriginalWorkerStartupV3>),
@@ -859,7 +867,7 @@ impl ProductionStorageStartupV1 {
         } else {
             image
         };
-        let startup_owner = match Self::admit_captured_parts(listeners, floor_image) {
+        let startup_owner = match Self::admit_captured_parts(listeners, floor_image, host_pins) {
             Ok(owner) => owner,
             Err(cause) => return Err(route.fail(cause)),
         };
@@ -879,6 +887,7 @@ impl ProductionStorageStartupV1 {
     fn admit_captured_parts(
         listeners: aos_sandbox_storage::activation::StorageSystemdListenersV1,
         image: Option<OwnedFd>,
+        host_pins: Option<aos_sandbox_storage::activation::StorageHostPinDescriptorsV1>,
     ) -> Result<Self, StorageServiceError> {
         let (control, export, live_export, zfs_hold, operator, existing_output) = listeners;
         let endpoint = ProtectedBrokerSessionFixedEndpointV1::StorageBroker;
@@ -895,6 +904,7 @@ impl ProductionStorageStartupV1 {
             zfs_hold,
             operator,
             existing_output,
+            host_pins,
         })
     }
 
@@ -911,6 +921,7 @@ impl ProductionStorageStartupV1 {
             self.zfs_hold,
             self.operator,
             self.existing_output,
+            self.host_pins,
         )
     }
 }
