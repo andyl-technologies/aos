@@ -6,13 +6,13 @@
 
 use super::*;
 use crate::retained_metadata::{
-    observe_retained_native_launch, retained_native_launch_counter_scratch_data,
+    MetadataObserver, OrdinaryBytesFormatterDemandData,
+    ordinary_bytes_formatter_counter_scratch_data, retained_native_launch_counter_scratch_data,
     serialization_storage::{
         OriginalSerializationStorageData as Shape,
         OriginalSerializationStorageProjection as Projection,
         original_json_value_storage_extent_counter_scratch_data,
         original_json_value_storage_extent_data, original_serialization_counter_scratch_data,
-        original_serialization_formatter_temporary_storage_data,
         original_serialization_frame_counter_scratch_data,
     },
 };
@@ -60,8 +60,7 @@ fn for_bank_length(
     // The parent never scans or parses its opaque worker response to quote the
     // native check. Real Value/Vec/tree/JCS layouts are applied independently.
     let raw = original_json_value_storage_extent_data(length)?;
-    let facts = observe_retained_native_launch(launch)?;
-    let formatter = original_serialization_formatter_temporary_storage_data(&facts)?;
+    let formatter = launch_formatter_data(launch)?;
     let mut fields = Projection::new(maximum)?;
     fields.add_value(launch)?;
     let fields = fields.finish(maximum)?;
@@ -116,18 +115,29 @@ fn for_bank_length(
 pub(in crate::reference_packet) fn source_authentication_quote_construction_data(
     launch: &PacketNative5SourceLaunch,
 ) -> Result<[usize; 3], ProviderError> {
-    let facts = observe_retained_native_launch(launch)?;
     Ok([
         0,
-        original_serialization_formatter_temporary_storage_data(&facts)?,
+        launch_formatter_data(launch)?,
         source_authentication_counter_scratch_data(),
     ])
+}
+
+fn launch_formatter_data(launch: &PacketNative5SourceLaunch) -> Result<usize, ProviderError> {
+    let mut observer = MetadataObserver::new();
+    observer.observe_bootstrap_launch_data(launch)?;
+    // Initialized Bytes leaves invoke the custom base64 serializer. Spare
+    // capacities remain in the original owner's separate retained census;
+    // they cannot alter an independently reconstructed native constructor row.
+    observer
+        .ordinary_bytes_formatter_data()
+        .maximum_temporary_requested_bytes_data()
 }
 
 /// Names actual lexical, metadata, projection and correspondence quote controls.
 pub(in crate::reference_packet) fn source_authentication_counter_scratch_data() -> usize {
     original_json_value_storage_extent_counter_scratch_data()
         + retained_native_launch_counter_scratch_data()
+        + ordinary_bytes_formatter_counter_scratch_data()
         + original_serialization_counter_scratch_data()
         + native_import18_source_declaration_counter_scratch_data()
         + size_of::<&PacketNativeImport18SourceDeclarationWireData>()
@@ -138,9 +148,8 @@ pub(in crate::reference_packet) fn source_authentication_counter_scratch_data() 
         + size_of::<
             crate::retained_metadata::serialization_storage::OriginalJsonValueStorageExtentData,
         >()
-        + size_of::<crate::retained_metadata::RetainedProtocolMetadataFacts>()
-        + size_of::<Result<crate::retained_metadata::RetainedProtocolMetadataFacts, ProviderError>>(
-        )
+        + size_of::<MetadataObserver<'static>>()
+        + size_of::<OrdinaryBytesFormatterDemandData>()
         + size_of::<[usize; 12]>()
         + size_of::<std::slice::Iter<'static, usize>>()
         + size_of::<[usize; 3]>() * 2

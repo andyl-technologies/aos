@@ -74,6 +74,37 @@ fn quoting_never_interprets_the_original_opaque_source_bank() {
 }
 
 #[test]
+fn constructor_rows_ignore_parent_spare_capacity_without_discounting_its_ownership() {
+    let mut selected = launch(false);
+    let original = inert_bootstrap_fixtures::source_birth(selected.launch_data());
+    let declaration = declaration(&original);
+    let before =
+        source_authentication_construction_data(&declaration, selected.launch_data(), usize::MAX)
+            .unwrap();
+    let mut spare = Vec::with_capacity(4096);
+    spare.extend_from_slice(selected.launch.admission_token.as_slice());
+    selected.launch.admission_token = Bytes::new(spare);
+    if let crate::reference_packet::service::PacketConnectedSourceProgram::Producer { program } =
+        &mut selected.launch.program
+    {
+        program.events.reserve_exact(1024);
+    }
+    let after =
+        source_authentication_construction_data(&declaration, selected.launch_data(), usize::MAX)
+            .unwrap();
+
+    assert_eq!(before, after);
+    assert!(selected.launch.admission_token.allocation_capacity() >= 4096);
+    assert_eq!(
+        original,
+        inert_bootstrap_fixtures::source_birth(selected.launch_data())
+    );
+    declaration
+        .authenticate_launch_data(selected.launch_data())
+        .unwrap();
+}
+
+#[test]
 fn actual_source_checker_refuses_changed_fields_reports_and_noncanonical_banks() {
     let selected = launch(false);
     let launch = selected.launch_data();

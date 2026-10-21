@@ -20,7 +20,7 @@ use crate::retained_metadata::{
 };
 
 /// Borrows the actual private operands without a future Source wrapper or row.
-pub(super) struct PrivateOperands<'a> {
+pub(in crate::reference_packet) struct PrivateOperands<'a> {
     pub(super) declaration: PacketNativeImport18SourceDeclarationView<'a>,
     pub(super) private_key: &'a Bytes,
     pub(super) birth_id: &'a Bytes,
@@ -59,7 +59,7 @@ pub(super) fn construction_data(
     )
 }
 
-fn quote(
+pub(super) fn quote(
     recipe: &impl Serialize,
     recipe_identity: &[u8; 32],
     launch: &PacketNative5SourceLaunch,

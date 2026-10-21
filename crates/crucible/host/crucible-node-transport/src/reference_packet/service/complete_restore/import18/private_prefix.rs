@@ -184,6 +184,20 @@ impl PacketNativeImport18PrivatePrefixData {
         Ok(())
     }
 
+    /// Compares the inert announcement identity without validating its derivation.
+    ///
+    /// # Errors
+    /// Refuses a prefix bound to a different announced identity.
+    pub(in crate::reference_packet) fn authenticate_announced_recipe_identity_data(
+        &self,
+        identity: &[u8; 32],
+    ) -> Result<(), ProviderError> {
+        if self.bytes[136..168] != *identity {
+            return Err(invalid());
+        }
+        Ok(())
+    }
+
     /// Compares the embedded key to the genuine separately guarded Boot18 owner.
     ///
     /// # Errors

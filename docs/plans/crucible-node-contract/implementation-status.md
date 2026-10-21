@@ -594,9 +594,55 @@ malformed/RawValue-looking banks and the existing full Source field checker.
 Both full Transport library configurations pass 1,782 tests, zero failures, no
 filtering and sixteen existing ignores. All-feature/all-target checking passes.
 The six architecture checks and required application-target compilation gate
-are running for this checkpoint. Full Initial/Recipe production and native
+pass for `97de81af79`. All 121 owned changed Rust files match its captured
+source; it compiles 180 test executables across 58 package IDs, including 71
+integration targets. The output is
+`7xh4nrvnp7hjxr7xi2j0v0n51366hkii-aos-test-targets-0.1.0`. This capture excludes
+the later capacity correction and initial reconstruction. Full Initial/Recipe production and native
 startup selection remain unfinished; these DATA controls do not establish full
 RFC-0025 completion.
+
+## Independent initial DATA reconstruction
+
+The physical owner now retains an additional once-only reconstruction slot
+before reading. After complete original Source correspondence, it admits the
+actual formatter window and independently repeats the prospective body/parser
+formula from the received immutable recipe and actual launch/private operands.
+The combined row includes the real receiver, seven empty bank headers, all raw
+and typed outputs, parser/census windows, Source checks and reconstruction
+controls. Announced Initial numbers never enter that calculation. Unknown
+Initial decimal widths retain their defining U64 maximum independently of the
+eventual values.
+
+All three announced Initial rows, the prefix/selected/Source recipe commitments,
+the complete repeated recipe and the actual private key must join that derived
+DATA. Each independently derived initial axis must also fit the same announced
+whole escrow. Original raw/hash/channel/cut guards run before and after the
+transition; successful and failed attempts remain spent. Derived DATA stays
+retained even when a later join refuses. This selects no native model, full
+recipe producer, phase issuer, input backing, Hold or common Ready.
+
+The shared Source comparison formatter now follows the existing typed Bytes
+observer's actual initialized-length maximum. Parent spare capacity remains in
+its separate retained census and cannot change independently reconstructed
+constructor demand. A regression keeps Source fields unchanged while adding
+spare token/program-vector capacity and verifies identical constructor rows.
+
+The initial positive socket fixture first refused because its 64 MiB transient
+escrow was smaller than the independently derived 140,713,496-byte window. Its
+corrected inert phase partition remains inside the same original 256 MiB
+independent total restriction; no production ceiling changes. Three real-socket
+controls now pass both program families, changed body/prefix rows and recipe
+identities/copies, changed private key, insufficient escrow, unchecked Source,
+foreign thread, changed raw bytes, expired cut, independent total demand and
+retry. Two separate formula controls cover simultaneous actual raw/typed owners,
+unknown decimal widths, exact/one-byte-short demand and checked overflow.
+
+Both full Transport configurations pass 1,788 tests, zero failures, no
+filtering and sixteen existing ignores. All-feature/all-target checking and
+the six architecture checks pass. Required application compilation is running.
+Genuine full five-phase Recipe/Initial production and native startup remain
+unfinished. These fixtures contain inert Wire DATA throughout.
 
 ## Original launch custody and shared startup geometry
 

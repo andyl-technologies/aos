@@ -44,6 +44,15 @@ pub(in crate::reference_packet) use decoding::{
 #[path = "startup_wire/prospective.rs"]
 mod prospective;
 
+#[path = "startup_wire/initial_construction.rs"]
+mod initial_construction;
+
+pub(in crate::reference_packet) use initial_construction::{
+    InitialConstructionData, authenticate_initial_headers_data,
+    initial_construction_counter_scratch_data, initial_construction_from_wire_data,
+    initial_construction_projection_data, initial_quote_formatter_data,
+};
+
 #[path = "startup_wire/retained.rs"]
 mod retained;
 

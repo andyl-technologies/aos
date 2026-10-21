@@ -56,7 +56,7 @@ impl OriginalImport18RawBootstrap {
             .authenticate_launch_data(bodies.launch.launch_data())
     }
 
-    fn admit_source_row(&self, required: [usize; 3]) -> Result<(), ProviderError> {
+    pub(super) fn admit_source_row(&self, required: [usize; 3]) -> Result<(), ProviderError> {
         let announced = self
             .header
             .as_ref()

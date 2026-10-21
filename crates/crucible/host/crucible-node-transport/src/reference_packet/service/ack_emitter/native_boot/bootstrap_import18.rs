@@ -7,14 +7,16 @@
 //! This receiver owns partial bytes and one nonrenewing operational cut. Its
 //! independently calculated raw-storage floor precedes body allocation. Its
 //! typed DATA transition independently checks complete raw/parser storage before
-//! decoding. It creates no Initial, Recipe, native model or readiness grant;
+//! decoding. Separate Source checks and exact initial DATA reconstruction share
+//! that same custody and cut. It creates no Initial, Recipe, model or readiness grant;
 //! those require their separate complete constructors and original custody.
 
 use crate::ProviderError;
 use crate::operational_time::OperationalDeadline;
 use crate::reference_packet::service::complete_restore::import18::{
-    NATIVE_IMPORT18_PRIVATE_PREFIX_BYTES, OriginalImport18DecodedBodies,
+    InitialConstructionData, NATIVE_IMPORT18_PRIVATE_PREFIX_BYTES, OriginalImport18DecodedBodies,
     PacketNativeImport18PrivatePrefixData, decode_native_import18_private_prefix_data,
+    initial_construction_counter_scratch_data,
     native_import18_private_prefix_construction_transient_data,
     native_import18_private_prefix_counter_scratch_data, private_body_decode_counter_scratch_data,
     private_body_owner_counter_scratch_data,
@@ -29,6 +31,9 @@ mod decoding;
 
 #[path = "bootstrap_import18/source_authentication.rs"]
 mod source_authentication;
+
+#[path = "bootstrap_import18/initial_reconstruction.rs"]
+mod initial_reconstruction;
 use receiving_banks::OriginalImport18ReceivingBanks;
 
 /// Restricts the three raw inputs independently of their announced allocation.
@@ -58,6 +63,10 @@ pub(super) struct OriginalImport18RawBootstrap {
     source_authentication_row: Option<[usize; 3]>,
     source_authentication_started: bool,
     source_authenticated: bool,
+    initial_construction: Option<InitialConstructionData>,
+    initial_reconstruction_row: Option<[usize; 3]>,
+    initial_reconstruction_started: bool,
+    initial_reconstructed: bool,
     received: [usize; 3],
     tail: [u8; 1],
     tail_received: usize,
@@ -91,6 +100,10 @@ impl OriginalImport18RawBootstrap {
             source_authentication_row: None,
             source_authentication_started: false,
             source_authenticated: false,
+            initial_construction: None,
+            initial_reconstruction_row: None,
+            initial_reconstruction_started: false,
+            initial_reconstructed: false,
             received: [0; 3],
             tail: [0; 1],
             tail_received: 0,
@@ -239,10 +252,13 @@ impl OriginalImport18RawBootstrap {
 
 /// Calculates only this physical raw receiver's actual userspace construction.
 ///
-/// The complete Initial producer must add dynamic typed parser and seven-bank
-/// construction and all their overlapping owners before issuing Initial DATA.
+/// The independent initial construction projection combines this physical row
+/// with prospective typed decoders, Source checks and overlapping outputs.
+/// A genuine complete recipe and parent custody still precede opaque Initial.
 /// No caller-supplied row enters this calculation.
-pub(super) fn raw_storage_floor(lengths: [usize; 3]) -> Result<[usize; 3], ProviderError> {
+pub(in crate::reference_packet::service) fn raw_storage_floor(
+    lengths: [usize; 3],
+) -> Result<[usize; 3], ProviderError> {
     let retained = lengths
         .into_iter()
         .try_fold(size_of::<OriginalImport18RawBootstrap>(), |sum, length| {
@@ -261,6 +277,8 @@ pub(super) fn raw_storage_floor(lengths: [usize; 3]) -> Result<[usize; 3], Provi
         + private_body_owner_counter_scratch_data()
         + decoding::counter_scratch_data()
         + source_authentication::counter_scratch_data()
+        + initial_construction_counter_scratch_data()
+        + initial_reconstruction::counter_scratch_data()
         + size_of::<&OriginalImport18RawBootstrap>()
         + size_of::<&mut OriginalImport18RawBootstrap>()
         + size_of::<&UnixStream>()

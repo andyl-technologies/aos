@@ -121,6 +121,39 @@ pub struct PacketNativeImport18PrebirthRecipeWireData {
     fields: RecipeFields,
 }
 
+impl PacketNativeImport18PrebirthRecipeWireData {
+    /// Returns the inert announced commitment without validating its derivation.
+    pub(in crate::reference_packet) const fn announced_identity_data(&self) -> &[u8; 32] {
+        &self.fields.identity
+    }
+
+    /// Restricts independent initial demand to the same announced whole escrow.
+    ///
+    /// This comparison grants no phase claim; full native recomputation remains
+    /// necessary before any model or Hold effect.
+    ///
+    /// # Errors
+    /// Refuses an initial axis larger than the original escrow announcement.
+    pub(in crate::reference_packet) fn authenticate_initial_limits_data(
+        &self,
+        initial: &crate::reference_packet::service::native_startup::PacketNativeStartupAllocationRow,
+    ) -> Result<(), ProviderError> {
+        for (demand, maximum) in [
+            initial.retained_requested_bytes,
+            initial.maximum_simultaneous_transient_bytes,
+            initial.declared_counter_scratch_bytes,
+        ]
+        .into_iter()
+        .zip(self.fields.escrow)
+        {
+            if demand > maximum {
+                return Err(invalid());
+            }
+        }
+        Ok(())
+    }
+}
+
 impl PacketNativeImport18PrebirthRecipeData {
     /// Copies the exact inert announcement without serialization or parsing.
     ///

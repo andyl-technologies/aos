@@ -33,6 +33,7 @@ pub(crate) use boot::{
     original_native_restoration_upload_counter_scratch_data,
     original_restored_suffix_post_observation_counter_scratch_data,
 };
+pub(in crate::reference_packet::service) use bootstrap_import18::raw_storage_floor as original_import18_raw_bootstrap_storage_data;
 
 pub(crate) use boot::{
     NativeAckBoot, NativeRestoredControlEvidence, OriginalCanonicalAckControlAdmit,
