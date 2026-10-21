@@ -17,11 +17,15 @@
 
 mod records;
 mod purpose;
+mod setup;
 
 use crate::boundary_action::{ACTION_BYTES, ActionObservation};
 
 pub use records::{PublisherLoanIdentity, PublisherOutcome, PublisherReturn, PublisherTerminal};
 pub use purpose::{PUBLISHER_PURPOSE_BYTES, PublisherPurpose};
+pub use setup::{PUBLISHER_SETUP_FRAME_BYTES, PublisherSetup};
+#[cfg(unix)]
+pub use setup::send_publisher_setup_frame_with_descriptors;
 
 /// Requested file extent of the proposed subscription region.
 pub const PUBLISHER_REGION_BYTES: usize = 4096;
