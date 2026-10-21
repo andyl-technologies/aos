@@ -349,7 +349,7 @@
           // lib.optionalAttrs (builtins.elem file ["host-publish.nix" "surfaces.nix"]) {inherit sourceGateWithInputs;}
           // lib.optionalAttrs (file == "bucket.nix") {inherit bucketSdkGate;}
           // lib.optionalAttrs (file == "pack.nix") {inherit defaultSdkGate;}
-          // lib.optionalAttrs (file == "host-publish.nix") {inherit publisherLocalProof hostCacheProof;}
+          // lib.optionalAttrs (file == "host-publish.nix") {inherit publisherLocalProof hostCacheProof moduleEval;}
         );
         duplicates = builtins.filter (name: builtins.hasAttr name accumulated) (builtins.attrNames added);
       in
@@ -376,6 +376,7 @@
     registry);
 
   localWorkflow = import ./local-workflow-ext4.nix {inherit pkgs lib;};
+  moduleEval = import ./module-eval.nix {inherit pkgs lib mkSystem;};
   localSdkCheckout = import ./local-sdk-checkout.nix {inherit sourceGate;};
   localCliWorkflow = import ./local-cli-workflow.nix {inherit sourceGate;};
 
@@ -412,7 +413,7 @@
   };
 in {
   package = pkgs.terrane;
-  module-eval = import ./module-eval.nix {inherit pkgs lib mkSystem;};
+  module-eval = moduleEval;
   gates = aggregate // registeredGates;
   activeGates = implementedGates;
   integration.bucket-sdk-test-image = bucketSdkTestImage;

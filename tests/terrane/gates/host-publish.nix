@@ -3,8 +3,10 @@
   pkgs,
   lib,
   sourceGateWithInputs,
+  nativeSdkGate,
   publisherLocalProof,
   hostCacheProof,
+  moduleEval,
   ...
 }: let
   portableNames = [
@@ -228,12 +230,43 @@
         }
       ];
     };
+  wipeConfiguration = nativeSdkGate "host-wipe-configuration" ''
+    cd crates
+    selector=config::tests::sealed_host_tiers_reject_zero_wipe_for_every_role
+    "$TERRANE_NATIVE_SDK_TEST_BINARY" --list > "$TMPDIR/wipe-inventory.txt"
+    python3 ../tests/terrane/check_native_gate.py inventory \
+      "$TMPDIR/wipe-inventory.txt" "[\"$selector\"]"
+    "$TERRANE_NATIVE_SDK_TEST_BINARY" "$selector" --exact \
+      > "$out/configuration.log" 2>&1 || {
+        cat "$out/configuration.log"
+        exit 1
+      }
+    python3 ../tests/terrane/check_native_gate.py execution \
+      "$out/configuration.log" "[\"$selector\"]"
+  '';
 in {
   host-publish-sequence = combined "host-publish-sequence";
   host-publish-no-replace = combined "host-publish-no-replace";
   host-sealed-immutable = combined "host-sealed-immutable";
   host-sealed-adopt = combined "host-sealed-adopt";
   host-sealed-before-serve = combined "host-sealed-before-serve";
+  host-wipe-on-release = pkgs.mkDerivation {
+    pname = "terrane-gate-host-wipe-on-release";
+    version = "0.1.0";
+    src = null;
+    phases = [
+      {
+        name = "qualify";
+        script = ''
+          mkdir -p "$out"
+          test -s ${wipeConfiguration}/configuration.log
+          test -s ${moduleEval}/result.json
+          test -s ${combined "host-publish-sequence"}/result
+          printf '%s\n' 'PASS: sealed tiers refuse unsupported wipe policies before effects; explicit none retains kernel sealing (D-128)' > "$out/result"
+        '';
+      }
+    ];
+  };
   publisher-sole-writer = import ../publisher-ownership.nix {
     inherit pkgs publisherLocalProof hostCacheProof;
     publication = combined "host-publish-sequence";
