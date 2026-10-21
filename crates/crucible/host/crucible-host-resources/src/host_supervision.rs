@@ -22,6 +22,8 @@ pub use action_loan::{
 
 mod bootstrap;
 mod deadline;
+mod deadline_sources;
+pub use deadline_sources::HostDeadlineSources;
 mod prepared_start;
 mod worker_admission;
 mod quiescence;
@@ -255,7 +257,7 @@ pub struct HostEffectiveDeadline {
     /// Remaining operational allowance; zero means elapsed.
     pub remaining: Duration,
     /// Bounded sources whose allowance equals the earliest deadline.
-    pub sources: Vec<HostDeadlineSource>,
+    pub sources: HostDeadlineSources,
 }
 
 /// Coherent operational status of one original-start operation.

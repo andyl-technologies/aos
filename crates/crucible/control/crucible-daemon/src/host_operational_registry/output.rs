@@ -78,8 +78,9 @@ pub(super) fn copy_status(source: &HostRamStatus) -> Result<HostRamStatus, HostO
 
 pub(super) fn admit_operation_snapshot() -> Result<(), HostOperationalError> {
     // The bounded supervisor refuses a larger roster before allocating. Its
-    // snapshot owns ids, statuses and at most three deadline sources per row;
-    // deadline calculation also stages three scalar candidate limits per row.
+    // snapshot owns ids and statuses, including inline deadline sources. Keep
+    // the existing conservative allowance for three additional source records
+    // and three scalar candidates rather than reducing admission here.
     let row = std::mem::size_of::<u64>()
         + std::mem::size_of::<HostOperationStatus>()
         + 3 * std::mem::size_of::<HostDeadlineSource>()

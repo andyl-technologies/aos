@@ -72,14 +72,19 @@ fn deadline_limits_preserve_every_tie_and_source_order() {
 
                 assert_eq!(decision.map(|value| value.remaining), expected);
                 if let Some(decision) = decision {
-                    let status = decision.into_status(&state);
+                    let (status, counts) =
+                        crate::test_support::TestAllocationObserver::count(|| {
+                            decision.into_status(&state)
+                        });
+                    assert_eq!(counts.allocations, 0);
+                    assert_eq!(counts.reallocations, 0);
+                    assert!(!counts.overflow);
                     let sources: Vec<_> = entries
                         .into_iter()
                         .zip(source_order)
                         .filter_map(|(value, source)| (value == expected).then_some(source))
                         .collect();
-                    assert_eq!(status.sources, sources);
-                    assert_eq!(status.sources.capacity(), 3);
+                    assert_eq!(status.sources.as_slice(), sources.as_slice());
                 }
             }
         }
@@ -165,7 +170,7 @@ fn decisions_preserve_terminal_precedence_for_every_class() {
                     }
                     let deadline = status.effective_deadline.unwrap();
                     assert_eq!(deadline.remaining, Duration::from_secs(minimum));
-                    assert_eq!(deadline.sources, expected_sources);
+                    assert_eq!(deadline.sources.as_slice(), expected_sources.as_slice());
                 }
             }
         }
@@ -243,5 +248,60 @@ fn expired_and_canceled_guard_checks_preserve_original_errors_without_reporting(
         assert_eq!(operation.wait_for_change().unwrap_err(), expected);
         assert_eq!(operation.complete().unwrap_err(), expected);
         assert_eq!(DEADLINE_STATUS_CONSTRUCTIONS.with(std::cell::Cell::get), 0);
+    }
+}
+
+#[test]
+fn actual_status_and_completion_preserve_deadlines_without_allocating() {
+    use crate::test_support::TestAllocationObserver;
+
+    for class in HostOperationClass::ALL {
+        let supervisor = HostOperationSupervisor::new(
+            HostOperationBudgets::default(),
+            Some(Duration::from_secs(60)),
+        )
+        .unwrap();
+        let operation = supervisor.begin(class).unwrap();
+
+        let (status, counts) = TestAllocationObserver::count(|| operation.status());
+        let status = status.unwrap();
+        assert_eq!(status.class, class);
+        assert_eq!(status.state, HostOperationState::Running);
+        assert_eq!(status.completed_work_units, 0);
+        assert_eq!(status.outstanding_work_units, 1);
+        assert!(
+            !status
+                .effective_deadline
+                .as_ref()
+                .unwrap()
+                .sources
+                .is_empty()
+        );
+        assert_eq!(counts.allocations, 0, "status for {class:?}");
+        assert_eq!(counts.reallocations, 0);
+        assert!(!counts.overflow);
+
+        let (completed, counts) = TestAllocationObserver::count(|| operation.complete());
+        let completed = completed.unwrap();
+        assert_eq!(completed.operation_id, status.operation_id);
+        assert_eq!(completed.class, class);
+        assert_eq!(completed.state, HostOperationState::Completed);
+        assert_eq!(completed.completed_work_units, 1);
+        assert_eq!(completed.outstanding_work_units, 0);
+        assert_eq!(
+            completed.started_policy_revision,
+            status.started_policy_revision
+        );
+        assert_eq!(
+            completed.applied_policy_revision,
+            status.applied_policy_revision
+        );
+        assert_eq!(
+            completed.effective_deadline.unwrap().sources,
+            status.effective_deadline.unwrap().sources,
+        );
+        assert_eq!(counts.allocations, 0, "completion for {class:?}");
+        assert_eq!(counts.reallocations, 0);
+        assert!(!counts.overflow);
     }
 }

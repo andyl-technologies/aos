@@ -2,7 +2,7 @@
 //!
 //! The parent module owns synchronization, original clocks and sticky updates.
 //! This module reads one borrowed operation and preserves tied-source order;
-//! only the public report conversion constructs an owned source list.
+//! public reports retain the same bounded provenance inline.
 
 use std::time::Duration;
 
@@ -12,8 +12,8 @@ use super::{
 };
 
 // Liveness checks need a deadline decision, while status callers also need an
-// owned list of tied sources. Keeping that distinction avoids heap allocation
-// on each poll without changing deadline provenance or terminal precedence.
+// inline list of tied sources. Keeping that distinction avoids constructing
+// reports on each poll without changing provenance or terminal precedence.
 #[derive(Clone, Copy, Debug)]
 struct DeadlineLimits {
     progress: Option<Duration>,
@@ -67,19 +67,18 @@ impl DeadlineDecision {
         #[cfg(test)]
         DEADLINE_STATUS_CONSTRUCTIONS.with(|count| count.set(count.get() + 1));
 
-        let mut sources = Vec::with_capacity(3);
-        if self.progress_limited {
-            sources.push(HostDeadlineSource::Progress(state.policy_revision));
-        }
-        if self.total_limited {
-            sources.push(HostDeadlineSource::Total(state.policy_revision));
-        }
-        if self.outer_limited {
-            sources.push(HostDeadlineSource::Outer {
+        let sources = [
+            self.progress_limited
+                .then_some(HostDeadlineSource::Progress(state.policy_revision)),
+            self.total_limited
+                .then_some(HostDeadlineSource::Total(state.policy_revision)),
+            self.outer_limited.then_some(HostDeadlineSource::Outer {
                 cap_id: state.cap_id,
                 revision: state.cap_revision,
-            });
-        }
+            }),
+        ]
+        .into();
+
         HostEffectiveDeadline {
             remaining: self.remaining,
             sources,

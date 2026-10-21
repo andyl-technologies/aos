@@ -404,13 +404,14 @@ fn status() -> HostRamStatus {
             state: HostOperationState::Running,
             effective_deadline: Some(HostEffectiveDeadline {
                 remaining: Duration::ZERO,
-                sources: vec![
+                sources: [
                     HostDeadlineSource::Total(2),
                     HostDeadlineSource::Outer {
                         cap_id: [0x77; 32],
                         revision: 5,
                     },
-                ],
+                ]
+                .into(),
             }),
         }],
     }
@@ -679,14 +680,15 @@ fn admitted_status_topology_fits_the_canonical_envelope_at_all_field_ceilings() 
             let mut rows = status().outstanding_operations;
             let mut operation = rows.remove(0);
             operation.operation_id = index as u64;
-            operation.effective_deadline.as_mut().unwrap().sources = vec![
+            operation.effective_deadline.as_mut().unwrap().sources = [
                 HostDeadlineSource::Progress(2),
                 HostDeadlineSource::Total(2),
                 HostDeadlineSource::Outer {
                     cap_id: [0x77; 32],
                     revision: 5,
                 },
-            ];
+            ]
+            .into();
             operation
         })
         .collect();

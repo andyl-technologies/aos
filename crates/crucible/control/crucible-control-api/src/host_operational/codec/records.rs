@@ -644,12 +644,12 @@ impl<'a> Reader<'a> {
             if count == 0 || count > 3 {
                 return Err(invalid("invalid deadline source count"));
             }
-            let mut sources = admitted_vec(count as usize)?;
-            for _ in 0..count {
+            let mut sources = [None; 3];
+            for slot in sources.iter_mut().take(usize::from(count)) {
                 let tag = self.u8()?;
                 let cap_id = if tag == 2 { Some(self.fixed()?) } else { None };
                 let revision = self.u64()?;
-                sources.push(match tag {
+                *slot = Some(match tag {
                     0 => HostDeadlineSource::Progress(revision),
                     1 => HostDeadlineSource::Total(revision),
                     2 => HostDeadlineSource::Outer {
@@ -659,7 +659,10 @@ impl<'a> Reader<'a> {
                     _ => return Err(invalid("unknown deadline source")),
                 });
             }
-            Some(HostEffectiveDeadline { remaining, sources })
+            Some(HostEffectiveDeadline {
+                remaining,
+                sources: sources.into(),
+            })
         } else {
             None
         };
