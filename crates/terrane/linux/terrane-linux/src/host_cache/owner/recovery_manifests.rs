@@ -10,7 +10,7 @@ use super::{
     recovery::{self, CompletedRecovery},
     recovery_accounting,
     recovery_candidates::{self, RecoveryCase},
-    recovery_encoded, recovery_inline, recovery_manifest_state,
+    recovery_encoded, recovery_inline, recovery_manifest_state, recovery_metadata,
     recovery_namespace::SharedNamespaceObservation,
     recovery_residences::ResidenceSelection,
     recovery_state_parent::StateParentObservation,
@@ -207,8 +207,15 @@ pub(super) async fn run(
             &encoded_chunks,
         )?)?;
     }
-    shared.require_sources(executor.manifest_sources(), &encoded_chunks, &[])?;
     let final_inventory = inspector.inspect()?;
+    let metadata_pairs = recovery_metadata::select(&final_inventory, executor.manifest_sources())?;
+    let mut verified_hashes = recovery_encoded::hashes(&encoded_chunks);
+    verified_hashes.extend(recovery_metadata::hashes(&metadata_pairs)?);
+    shared.require_sources(
+        executor.manifest_sources(),
+        &encoded_chunks,
+        &metadata_pairs,
+    )?;
     check_inventory(
         &final_inventory,
         &verified,
@@ -216,6 +223,7 @@ pub(super) async fn run(
         &layout,
         executor.inline_registry(),
         &encoded_chunks,
+        &metadata_pairs,
     )?;
     for body in &verified {
         body.check_current(&original)?;
@@ -242,7 +250,7 @@ pub(super) async fn run(
             &bootstrap_id,
             &resources,
             selected.finish(),
-            &recovery_encoded::hashes(&encoded_chunks),
+            &verified_hashes,
         )?;
         recovery_encoded::check(&final_inventory, &encoded_chunks, &expected.residences)?;
         owner.begin_mutation()?;
@@ -272,7 +280,11 @@ pub(super) async fn run(
         owner.preparation.recheck()?;
         recovery::check_charge(&owner, 0)?;
         recovery_manifest_state::require_same(&owner.state, &expected)?;
-        shared.require_sources(executor.manifest_sources(), &encoded_chunks, &[])?;
+        shared.require_sources(
+            executor.manifest_sources(),
+            &encoded_chunks,
+            &metadata_pairs,
+        )?;
         state_parent.check_current()?;
         let future = owner
             .state
@@ -330,7 +342,7 @@ pub(super) async fn run(
         manifest_results: verified,
         metadata_sources: executor.manifest_sources().to_vec(),
         encoded_chunks,
-        metadata_pairs: Vec::new(),
+        metadata_pairs,
         expected_policy: Some(expected),
     })
 }
@@ -346,10 +358,12 @@ pub(super) fn check_inventory(
     layout: &Arc<crate::host_cache::NativeHostLayout<HostDomainLocation>>,
     inline: &[recovery_inline::AdoptedInline],
     chunks: &[Arc<crate::host_cache::VerifiedStandaloneChunk>],
+    metadata_pairs: &[Arc<crate::host_cache::DerivedIndexRepair>],
 ) -> io::Result<()> {
     recovery_candidates::preflight(inventory)?;
     recovery_inline::check_subset(inventory, layout, inline)?;
     recovery_encoded::check(inventory, chunks, &[])?;
+    recovery_metadata::check(inventory, metadata_pairs, sources)?;
     let mut sealed = 0usize;
     for candidate in inventory.candidates() {
         match recovery_candidates::classify(candidate)? {
@@ -368,6 +382,9 @@ pub(super) fn check_inventory(
                 if !sources
                     .iter()
                     .any(|source| candidate.key().pack_id.as_slice() == source.pack_id().as_bytes())
+                    && !metadata_pairs.iter().any(|source| {
+                        candidate.key().pack_id.as_slice() == source.pack_id().as_bytes()
+                    })
                 {
                     return Err(unresolved("final inventory contains unrelated shared pack"));
                 }

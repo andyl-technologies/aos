@@ -79,6 +79,8 @@ CASES += ["encoded-eviction", "encoded-recovery", "encoded-cold", "encoded-corru
 CASES += ["shared-reextract"]
 CASES += ["encoded-sealed", "encoded-old-range"]
 CASES += ["encoded-metadata", "encoded-metadata-only", "encoded-data-pack"]
+MANIFEST_CASES.append(("manifest-extra-metadata", "seed-manifest", "recover-manifest", True, "valid manifest"))
+CASES += ["manifest-extra-metadata"]
 BUDGET = HARD * len(CASES)
 PROVISION_CAPS = "-all,+sys_admin,+dac_read_search,+fowner,+chown,+fsetid"
 QUERY_CAPS = "-all,+sys_admin,+dac_read_search"
@@ -332,8 +334,9 @@ def seed_manifests(uuid):
         ], "missing actual cold seed witness: " + case)
         bodies = list((root(case) / "sealed").glob("*/*"))
         packs = list((root(case) / "objects/pack").glob("*/*"))
-        require(len(bodies) == (2 if case in MIXED_CASES else 1) and len(packs) == 2
-                and sorted(path.suffix for path in packs) == [".idx", ".pack"]
+        pair_count = 2 if case == "manifest-extra-metadata" else 1
+        require(len(bodies) == (2 if case in MIXED_CASES else 1) and len(packs) == 2 * pair_count
+                and sorted(path.suffix for path in packs) == [".idx"] * pair_count + [".pack"] * pair_count
                 and (case in BOUND_CASES
                      or list((root(case) / "state/publication").iterdir()) == [])
                 and list((root(case) / "state/cache").iterdir()) == [],
@@ -429,6 +432,9 @@ def manifest_recovery_cases(uuid, seeded, helper):
                 "missing actual lock-free recovered reads before/after Running mutation: " + case)
             require("PASS actual recovered ranges survived a new Running admission; original metadata retained"
                     in output.splitlines(), "recovered source reused the cold completion predicate: " + case)
+        if case == "manifest-extra-metadata":
+            require("PASS additional metadata pair retained original inodes and actual cache grace beside recovered sealed content; no hidden cold descriptors or duplicate funding" in output.splitlines(),
+                    "missing genuine mixed metadata registry and original inode control")
         original = seeded[case]
         runpy.run_path(str(IMAGE / "share/manifest_publication_vm.py"))[
             "check_cold_policy"](sys.modules[__name__], case, output, original)

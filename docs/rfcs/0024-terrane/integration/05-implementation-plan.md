@@ -8694,6 +8694,17 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
 
 ### T2 — Host tier
 
+Mixed metadata recovery preparation (2026-10-20): after actual manifest
+adoption, matched metadata pairs outside its retained reconstruction closure
+transfer into the same physical cache registry after Resume. Exclusion from
+that transfer requires genuine retained source identity, roots and both actual
+inodes; a matching pack key alone is insufficient. Original cold policy still
+reconciles against actual verified entries. A native control seeds a distinct
+metadata pair beside a real sealed manifest and checks independent original
+inodes, exactly one retained descriptor per added member, actual cache grace,
+unchanged original funding and duplicate admission refusal. Runtime and final
+application qualification remain pending; no T2 task is accepted.
+
 Metadata recovery preparation (2026-10-20): independently verified matched
 metadata pack/index pairs can recover before their sealed object is published,
 alone or beside standalone chunks. The original verified pair enters physical

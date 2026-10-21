@@ -210,6 +210,7 @@ impl CompletedRecovery {
                 owner.preparation.layout(),
                 &self.adopted_inline,
                 &self.encoded_chunks,
+                &self.metadata_pairs,
             )?;
             drop(owner);
             for body in &self.manifest_results {
@@ -244,7 +245,7 @@ impl CompletedRecovery {
         )?;
         self.shared
             .require_sources(&[], &self.encoded_chunks, &self.metadata_pairs)?;
-        recovery_metadata::check(&self.inventory, &self.metadata_pairs)?;
+        recovery_metadata::check(&self.inventory, &self.metadata_pairs, &[])?;
         self.state_parent.check_current()?;
         self.inventory.check_current()?;
         recovery_inline::check_subset(
@@ -424,7 +425,7 @@ pub(super) async fn run(executor: &mut NativeOwnerExecutor) -> io::Result<Comple
         .await;
     }
     let encoded_chunks = recovery_encoded::select(&initial_inventory)?;
-    let metadata_pairs = recovery_metadata::select(&initial_inventory)?;
+    let metadata_pairs = recovery_metadata::select(&initial_inventory, &[])?;
     let mut verified_hashes = recovery_encoded::hashes(&encoded_chunks);
     verified_hashes.extend(recovery_metadata::hashes(&metadata_pairs)?);
     shared.require_sources(&[], &encoded_chunks, &metadata_pairs)?;
@@ -488,7 +489,7 @@ pub(super) async fn run(executor: &mut NativeOwnerExecutor) -> io::Result<Comple
             &encoded_chunks,
         )?;
         recovery_encoded::check(&inventory, &encoded_chunks, &residences)?;
-        recovery_metadata::check(&inventory, &metadata_pairs)?;
+        recovery_metadata::check(&inventory, &metadata_pairs, &[])?;
         cold.reconcile(&residences, &verified_hashes)?;
         owner.state.residences = residences;
         super::snapshot::prepare(executor, &mut owner)?
@@ -539,7 +540,7 @@ pub(super) async fn run(executor: &mut NativeOwnerExecutor) -> io::Result<Comple
         )?;
         recovery_encoded::check(&inventory, &encoded_chunks, &owner.state.residences)?;
         shared.require_sources(&[], &encoded_chunks, &metadata_pairs)?;
-        recovery_metadata::check(&inventory, &metadata_pairs)?;
+        recovery_metadata::check(&inventory, &metadata_pairs, &[])?;
         owner.recovery_id = Some(id);
         owner.recovery_required = false;
         owner.faulted = false;

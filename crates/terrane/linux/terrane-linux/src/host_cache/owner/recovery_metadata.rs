@@ -15,6 +15,7 @@ use terrane_sdk::pack::PackReader;
 /// Refuses unresolved candidates, data packs and changed or unbounded pairs.
 pub(super) fn select(
     inventory: &NativeRecoveryInspection,
+    referenced: &[Arc<crate::host_cache::NativeManifestSource>],
 ) -> io::Result<Vec<Arc<DerivedIndexRepair>>> {
     recovery_candidates::preflight(inventory)?;
     let mut sources = Vec::new();
@@ -30,6 +31,33 @@ pub(super) fn select(
                 "metadata candidate lost verified native custody",
             ));
         };
+        if let Some(retained) = referenced
+            .iter()
+            .find(|retained| retained.pack_id() == source.pack_id())
+        {
+            retained.recheck()?;
+            source.check_current()?;
+            if !Arc::ptr_eq(retained.layout(), source.layout())
+                || retained.pack_identity() != source.pack_identity()
+            {
+                return Err(io::Error::other(
+                    "referenced metadata differs from verified recovery source",
+                ));
+            }
+            for (left, right) in [
+                (retained.files().0, source.pack_file()),
+                (retained.files().1, index(source)?),
+            ] {
+                let left = left.metadata()?;
+                let right = right.metadata()?;
+                if (left.dev(), left.ino()) != (right.dev(), right.ino()) {
+                    return Err(io::Error::other(
+                        "referenced metadata changed its original pair",
+                    ));
+                }
+            }
+            continue;
+        }
         source.metadata_bytes()?;
         sources.push(Arc::clone(source));
     }
@@ -43,8 +71,9 @@ pub(super) fn select(
 pub(super) fn check(
     inventory: &NativeRecoveryInspection,
     original: &[Arc<DerivedIndexRepair>],
+    referenced: &[Arc<crate::host_cache::NativeManifestSource>],
 ) -> io::Result<()> {
-    let current = select(inventory)?;
+    let current = select(inventory, referenced)?;
     if current.len() != original.len() {
         return Err(io::Error::other("metadata recovery inventory changed"));
     }

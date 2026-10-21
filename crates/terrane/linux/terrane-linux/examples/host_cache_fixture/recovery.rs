@@ -12,6 +12,8 @@ pub(super) mod encoded;
 mod indexes;
 #[path = "recovery/inline.rs"]
 mod inline;
+#[path = "recovery/metadata.rs"]
+mod metadata;
 #[path = "recovery/pending.rs"]
 pub(super) mod pending;
 #[path = "recovery/pending_packs.rs"]
@@ -233,6 +235,9 @@ pub(super) fn seed(mode: &str) -> io::Result<()> {
     File::open(inputs.root.join("objects/pack"))?.sync_all()?;
     File::open(inputs.root.join("objects"))?.sync_all()?;
 
+    if inputs.domain == metadata::DOMAIN {
+        metadata::seed(&inputs, &fixture.manifest)?;
+    }
     let sealed_parent = inputs.root.join("sealed").join(&fixture.manifest_hash[..2]);
     directory(&sealed_parent, 841, 841, 0o755)?;
     let sealed = sealed_parent.join(&fixture.manifest_hash);
@@ -507,10 +512,17 @@ pub(super) fn run(
             "PASS actual cold consumer pins, leases and holds reconciled with verified native backing; original records retained"
         );
     }
+    let metadata = if inputs.domain == metadata::DOMAIN {
+        Some(metadata::Observation::capture(runtime, inputs)?)
+    } else {
+        None
+    };
     runtime
         .block_on(owner.resume_recovered(completed))
         .map_err(io::Error::other)?;
-    if fs::read(inputs.root.join("state/cache/records.toml"))? != before {
+    if let Some(metadata) = metadata {
+        metadata.check(owner, runtime, inputs)?;
+    } else if fs::read(inputs.root.join("state/cache/records.toml"))? != before {
         return Err(invalid(
             "manifest Resume changed its durable recovery policy",
         ));
@@ -521,7 +533,7 @@ pub(super) fn run(
     println!(
         "PASS actual recovered ranges survived a new Running admission; original metadata retained"
     );
-    if case == FixtureCase::Verified {
+    if case == FixtureCase::Verified && inputs.domain != metadata::DOMAIN {
         reuse::run(owner, runtime, inputs)?;
     } else if case == FixtureCase::MixedVerified {
         inline::run(owner, runtime, inputs)?;
@@ -826,7 +838,9 @@ fn metadata_pack_hash(inputs: &Inputs) -> io::Result<String> {
 }
 
 fn require_domain(inputs: &Inputs, case: FixtureCase) -> io::Result<()> {
-    if inputs.domain != case.domain() {
+    if inputs.domain != case.domain()
+        && !(case == FixtureCase::Verified && inputs.domain == metadata::DOMAIN)
+    {
         return Err(invalid("manifest fixture requires its dedicated domain"));
     }
     Ok(())
