@@ -70,13 +70,26 @@ fn connect(
         RESPONSE_BYTES,
     )?;
     hello.required_methods = vec![method.into()];
-    let profile = authenticated_broker_method_profile_v1(method).unwrap();
+    // Inventory-only negotiation names the separate operator-Recover slot.
+    // This fixture exercises ordinary Storage history across fresh clients.
+    if method == BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES {
+        hello
+            .required_methods
+            .push(BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG.into());
+    }
+    let profiles: Vec<_> = hello
+        .required_methods
+        .iter()
+        .map(|method| authenticated_broker_method_profile_v1(method.as_known().unwrap()).unwrap())
+        .collect();
     hello.required_features.retain(|feature| {
         feature.namespace == aos_sandbox_model::BROKER_SESSION_AUTHENTICATION_FEATURE_NAMESPACE
-            || profile
-                .required_features()
-                .iter()
-                .any(|required| required.namespace() == feature.namespace)
+            || profiles.iter().any(|profile| {
+                profile
+                    .required_features()
+                    .iter()
+                    .any(|required| required.namespace() == feature.namespace)
+            })
     });
     if let Some(minor) = minor {
         hello.protocol_minor = minor;
@@ -136,8 +149,14 @@ fn exchange(
             envelope
         })
         .unwrap();
-    let DormantBrokerRequestPreparationV1::Prepared(mut request) = prepared else {
-        panic!("Storage qualification request requires protected recovery");
+    let mut request = match prepared {
+        DormantBrokerRequestPreparationV1::Prepared(request) => request,
+        DormantBrokerRequestPreparationV1::InitializationRecoveryRequired { error, .. } => {
+            panic!("Storage qualification initialization requires protected recovery: {error}");
+        }
+        DormantBrokerRequestPreparationV1::SuccessorRecoveryRequired { error, .. } => {
+            panic!("Storage qualification successor requires protected recovery: {error}");
+        }
     };
 
     let mut outstanding = loop {
