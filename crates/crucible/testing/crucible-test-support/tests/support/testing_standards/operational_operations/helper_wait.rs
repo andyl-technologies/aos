@@ -7,6 +7,8 @@ use super::{Companion, Contract};
 
 #[path = "helper_wait/funding.rs"]
 mod funding;
+#[path = "helper_wait/incarnation.rs"]
+mod incarnation;
 #[path = "helper_wait/probe_output.rs"]
 mod probe_output;
 
@@ -99,6 +101,9 @@ loop {
     )],
     identifiers: &[],
     companions: &[
+        incarnation::SOURCE,
+        incarnation::RECEIVER,
+        incarnation::CALLER,
         probe_output::OWNER,
         probe_output::RECEIVER,
         probe_output::HANDOFF,

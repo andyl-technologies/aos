@@ -47,6 +47,21 @@ impl InstalledIncarnationRetirement {
 }
 
 impl SourceCleanupLender {
+    /// Binds a late helper to the actual still-installed Source incarnation.
+    ///
+    /// A construction receiver has no process generation. It cannot be retained
+    /// unchanged by a later helper: the genuine installed allocation supplies
+    /// that generation after the same controller is independently authenticated.
+    pub(crate) fn current_incarnation(&self) -> Result<Self, OriginalActorAccountError> {
+        let controller = self.controller()?;
+        let attempt = NativeAccountAttempt {
+            roster: RosterWeak::clone(&self.roster),
+            index: self.index,
+            generation: self.generation,
+        };
+        attempt.bound_source_cleanup_lender(controller.as_ref())
+    }
+
     pub(crate) fn controller(
         &self,
     ) -> Result<

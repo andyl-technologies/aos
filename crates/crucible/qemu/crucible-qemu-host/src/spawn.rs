@@ -2273,7 +2273,9 @@ fn run_guarded_image_tool_for_purpose(
             run_directory.validate_helper_basis(process_contract)
         }
         GuardedImageToolPurpose::RetainedHotForkSource => {
-            run_directory.validate_retained_source_helper_basis(process_contract)
+            run_directory
+                .validate_retained_source_helper_basis(process_contract)
+                .and_then(|()| process_contract.retained_source_helper_lender().map(|_| ()))
         }
     };
     if let Err(source) = admission {
@@ -2292,9 +2294,22 @@ fn run_guarded_image_tool_for_purpose(
         .freeze_for_launch()
         .map_err(|source| QemuGuardedImagePreparationError::local(source))?;
 
-    process_contract.with_spawned_helper(command, operation, |child, original, _output| {
-        helper_receiver::wait_image_tool(child, original, operation)
-    })
+    match purpose {
+        GuardedImageToolPurpose::FreshLaunch => {
+            process_contract.with_spawned_helper(command, operation, |child, original, _output| {
+                helper_receiver::wait_image_tool(child, original, operation)
+            })
+        }
+        GuardedImageToolPurpose::RetainedHotForkSource => {
+            process_contract.with_spawned_retained_source_helper(
+                command,
+                operation,
+                |child, original, _output| {
+                    helper_receiver::wait_image_tool(child, original, operation)
+                },
+            )
+        }
+    }
 }
 
 #[derive(Clone, Copy)]

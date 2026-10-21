@@ -32,6 +32,7 @@ fn nominal_helper_receiver_cannot_promote_an_unissued_source() {
     assert!(receiver.upgrade().is_none());
     assert!(!receiver.matches_controller(&controller));
     assert!(lender.clone().retained_original().is_err());
+    assert!(lender.current_incarnation().is_err());
 
     // Scalar edits only form negative observers; they cannot issue custody.
     for changed in [
@@ -52,6 +53,7 @@ fn nominal_helper_receiver_cannot_promote_an_unissued_source() {
             ..lender.clone()
         },
     ] {
+        assert!(changed.current_incarnation().is_err());
         let foreign = crate::QemuIssuedHelperReceiver::from_lender(changed);
         assert!(!receiver.same_identity(&foreign));
         assert!(foreign.upgrade().is_none());

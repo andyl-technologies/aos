@@ -106,6 +106,40 @@ impl QemuChildProcessContract {
         }
     }
 
+    /// Resolves the same Source's physical incarnation before a late helper.
+    ///
+    /// This binds cleanup identity only. The actual helper effect still needs
+    /// its entered action Original and existing paid control reservation.
+    pub(super) fn retained_source_helper_lender(
+        &self,
+    ) -> Result<crate::linux_attempt_host::SourceCleanupLender, QemuSpawnError> {
+        self.attempt_binding
+            .helper_receiver
+            .get()
+            .ok_or_else(helper_custody_refusal)?
+            .current_incarnation()
+            .map_err(|_| helper_custody_refusal())
+    }
+
+    pub(super) fn with_spawned_retained_source_helper<T: HelperOutput>(
+        &self,
+        command: Command,
+        operation: &'static str,
+        body: impl FnOnce(
+            &mut QemuNodeChild,
+            &crucible_host_resources::host_supervision::HostOperationGuard,
+            &mut Option<RetainedHelperOutput>,
+        ) -> Result<T, QemuSpawnError>,
+    ) -> Result<T::Received, QemuGuardedImagePreparationError> {
+        let receiver = self
+            .retained_source_helper_lender()
+            .map_err(QemuGuardedImagePreparationError::local)?;
+        let controller = receiver
+            .controller()
+            .map_err(|_| QemuGuardedImagePreparationError::local(helper_custody_refusal()))?;
+        controller.with_spawned_helper(&receiver, command, operation, body)
+    }
+
     pub(super) fn with_spawned_helper<T: HelperOutput>(
         &self,
         command: Command,

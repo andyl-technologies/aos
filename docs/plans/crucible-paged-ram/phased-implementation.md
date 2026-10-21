@@ -408,7 +408,8 @@ and independently attempts both later returns. All 1,114 plugin unit cases and
 the integration targets pass, including nineteen receive/delivery controls.
 Three independently rebuilt Rust defects fail their intended assertions for
 lost negative-post consumption, skipped independent returns and overwritten
-first error. Native owning component coverage remains 187 cases; the 37
+first error. Required hermetic application test-target compilation passes for
+the paired roster and Ready keeper increments. Native owning component coverage remains 187 cases; the 37
 lifetime/payload/Ready scenarios use explicit modeled entry inputs. Raw ABI,
 signed reconstruction and the license ledger pass. The native causal timeout
 and mandatory launched Source/Root lifecycle refusal remain unresolved; this
@@ -416,6 +417,17 @@ is not full native qualification. Coverage names 157 component cases and
 nineteen native cases, with 149 requirements uncovered and none qualified.
 Actual Main borrowers, CPU-operation authority, entered action Originals,
 activation, ACK and physical peer return remain unfinished.
+
+
+The late hot-fork image-helper route now resolves the genuinely installed
+Source allocation and retains its exact process generation in the helper's
+cleanup recipient. It checks that binding before constructing the helper
+command and independently at the actual receiving route. An unissued,
+retired or replaced Source cannot promote the launch construction recipient
+into a late-helper lender. All 53 roster controls, the 71 focused source-policy
+controls and engineering hygiene pass. This is physical cleanup identity only:
+the late helper still requires its genuine action Original instead of the
+launch Preparation clock, and detached-overlay preparation is not qualified.
 
 
 Whole-node shutdown now keeps one continuation through process reap, RAM service
