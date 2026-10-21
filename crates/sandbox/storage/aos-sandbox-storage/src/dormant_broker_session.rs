@@ -489,6 +489,17 @@ impl DormantStorageApplyCompositionV1 {
             .or_else(|| self.runtime.lifecycle_apply_failure_v1())
     }
 
+    /// Borrows the ordinary repair failure retained behind protected reopen.
+    ///
+    /// This diagnostic grants no retry or effect authority. The original
+    /// runtime retains the failure until its fail-stop owner is dropped.
+    #[must_use]
+    pub fn ordinary_repair_completion_failure_v1(
+        &self,
+    ) -> Option<&(dyn std::error::Error + 'static)> {
+        self.runtime.ordinary_repair_completion_failure_v1()
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn consume_authenticated_operation_inner_v1(
         runtime: &mut StorageBrokerRuntime,

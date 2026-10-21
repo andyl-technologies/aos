@@ -3994,7 +3994,12 @@ impl StorageBrokerRuntime {
         let disposition = match completed {
             Ok(disposition) => disposition,
             Err(cause) => {
-                if selected { self.startup_reconciliation.operation_error = Some(cause); }
+                if selected {
+                    self.startup_reconciliation.operation_error = Some(cause);
+                } else {
+                    self.startup_reconciliation.ordinary_repair_completion_failure =
+                        Some(StorageRuntimeError::Helper(cause));
+                }
                 return Err(StorageRuntimeError::ReopenRequired);
             }
         };
@@ -4008,7 +4013,15 @@ impl StorageBrokerRuntime {
             Some(receiving) => self.reconcile_entered_state_v1(receiving),
             None => self.reconcile_startup(),
         };
-        finish_reopen_required_reconciliation(&mut self.readiness, reconciliation)?;
+        match reconciliation {
+            Err(cause) if !selected => {
+                // Preserve the concrete failure while keeping every method
+                // closed behind the existing protected-reopen requirement.
+                self.startup_reconciliation.ordinary_repair_completion_failure = Some(cause);
+                return Err(StorageRuntimeError::ReopenRequired);
+            }
+            other => finish_reopen_required_reconciliation(&mut self.readiness, other)?,
+        }
         Ok(WorkspacePinRepairExecutionOutcomeV1::Satisfied)
     }
 
@@ -4366,6 +4379,15 @@ impl StorageBrokerRuntime {
                 Some(marker) => marker as &dyn std::error::Error,
                 None => cause,
             })
+    }
+
+    pub(crate) fn ordinary_repair_completion_failure_v1(
+        &self,
+    ) -> Option<&(dyn std::error::Error + 'static)> {
+        self.startup_reconciliation
+            .ordinary_repair_completion_failure
+            .as_ref()
+            .map(|cause| cause as &dyn std::error::Error)
     }
 
     pub(crate) fn lifecycle_state_journal_v1(&self) -> &aos_sandbox_controller_domain::Journal {

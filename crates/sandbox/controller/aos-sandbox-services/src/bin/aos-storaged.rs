@@ -1246,7 +1246,14 @@ fn run() -> Result<(), StorageStartupRunErrorV3> {
                             .map_err(|error| StorageServiceError::Activation(error.to_string()))?;
                         match session.serve_production_storage_request(storage.composition_mut(), request_deadline) {
                             Ok(retained) => *active_session = Some(retained),
-                            Err(error) => eprintln!("aos-storaged: authenticated request failed: {error}"),
+                            Err(error) => {
+                                eprintln!("aos-storaged: authenticated request failed: {error}");
+                                if let Some(cause) = storage.composition_mut()
+                                    .ordinary_repair_completion_failure_v1()
+                                {
+                                    eprintln!("aos-storaged: retained repair completion failed: {cause}");
+                                }
+                            }
                         }
                     } else {
                         let accept_deadline = production_deadline_after(ACCEPT_TIMEOUT)

@@ -21,6 +21,7 @@ pub(super) struct StartupReconciliationOriginalV1 {
     application_error: Option<crate::DormantStorageBrokerCallErrorV1>,
     operator_retirement_error: Option<crate::helper::ZfsHelperError>,
     pub(super) operation_error: Option<crate::helper::ZfsHelperError>,
+    pub(super) ordinary_repair_completion_failure: Option<StorageRuntimeError>,
     pub(super) operator_policy_error: Option<StorageRuntimeError>,
     result: Option<Result<StorageRuntimeReadiness, StorageRuntimeError>>,
     post: Option<Result<(), aos_sandbox_controller_domain::StorageReceivingClosedV1>>,
@@ -45,6 +46,7 @@ impl StartupReconciliationOriginalV1 {
             application_error: None,
             operator_retirement_error: None,
             operation_error: None,
+            ordinary_repair_completion_failure: None,
             operator_policy_error: None,
             result: None,
             post: None,
@@ -413,9 +415,11 @@ impl ReconciliationPartsV1<'_> {
                 *self.workspaces = Some(validated);
                 Err(error)
             }
-            Err((None, _)) => {
+            Err((None, error)) => {
                 *self.readiness = StorageRuntimeReadiness::ReopenRequired;
-                Err(StorageRuntimeError::ReopenRequired)
+                // The readiness latch owns the reopen requirement; retain the
+                // concrete catalog cause for the caller's diagnostic custody.
+                Err(error)
             }
         }
     }

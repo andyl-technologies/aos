@@ -754,6 +754,9 @@ fn public_runtime_uncertain_catalog_commit_reopens_without_worker_redispatch() {
     assert!(state.lock().unwrap().pin_present);
     assert_eq!(state.lock().unwrap().executions, 1);
 
+    assert!(runtime.ordinary_repair_completion_failure_v1().is_some());
+    assert!(runtime.requires_reopen());
+
     let (locked_coordinator, locked_workspaces) = runtime.into_reopen_components_for_test();
     drop(locked_workspaces);
     drop(locked_coordinator);
@@ -821,6 +824,14 @@ fn public_runtime_uncertain_completion_commit_reopens_without_worker_redispatch(
     ));
     assert!(state.lock().unwrap().pin_present);
     assert_eq!(state.lock().unwrap().executions, 1);
+
+    assert!(matches!(
+        runtime
+            .ordinary_repair_completion_failure_v1()
+            .and_then(|cause| cause.downcast_ref::<crate::StorageRuntimeError>()),
+        Some(crate::StorageRuntimeError::Helper(_))
+    ));
+    assert!(runtime.requires_reopen());
 
     let (locked_coordinator, locked_workspaces) = runtime.into_journals_for_test();
     drop(locked_workspaces);
