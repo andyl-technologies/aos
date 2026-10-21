@@ -17,15 +17,15 @@ use aos_systemd_client::PinnedSystemdManager;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use super::{atomic_write, key, normalized_path, private_directory, read_regular, state_path};
+use super::{
+    atomic_write, key, normalized_path, private_directory, read_regular, state_path, unit_root,
+};
 
 #[cfg(all(test, feature = "systemd-parser-tests"))]
 mod parser_tests;
 mod resource_group;
 
 pub(crate) use resource_group::render_resource_groups;
-
-const UNIT_ROOT: &str = "/etc/systemd/system";
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -377,10 +377,11 @@ fn definition_for(id: &str, revision: &str, ability: &str, input: &Value) -> Res
 }
 
 fn unit_path(definition: &Definition) -> PathBuf {
-    Path::new(UNIT_ROOT).join(&definition.unit)
+    unit_root().join(&definition.unit)
 }
+
 fn link_path(definition: &Definition) -> PathBuf {
-    Path::new(UNIT_ROOT)
+    unit_root()
         .join(format!("{}.wants", definition.target))
         .join(&definition.unit)
 }
@@ -613,7 +614,7 @@ pub(super) async fn execute(invocation: &Invocation, action: &str, ability: &str
                 if enabled {
                     fs::remove_file(link_path(&desired))?;
                 }
-                fs::File::open(UNIT_ROOT)?.sync_all()?;
+                fs::File::open(unit_root())?.sync_all()?;
                 manager.daemon_reload().await?;
                 fs::remove_file(path)?;
                 return Ok(json!({}));
@@ -692,7 +693,7 @@ pub(super) async fn execute(invocation: &Invocation, action: &str, ability: &str
             // Pending custody is durable before the alias disappears. A crash
             // in this gap is recoverable; installing uses no-clobber below.
             fs::remove_file(unit_path(&desired))?;
-            fs::File::open(UNIT_ROOT)?.sync_all()?;
+            fs::File::open(unit_root())?.sync_all()?;
         }
     }
     if let Some(retiring) = &receipt.retiring {
@@ -701,7 +702,7 @@ pub(super) async fn execute(invocation: &Invocation, action: &str, ability: &str
         atomic_write(&path, &serde_json::to_vec(&receipt)?, 0o600)?;
     }
     if !owned_file(&desired)? {
-        let mut temporary = tempfile::NamedTempFile::new_in(UNIT_ROOT)?;
+        let mut temporary = tempfile::NamedTempFile::new_in(unit_root())?;
         use std::io::Write;
         use std::os::unix::fs::PermissionsExt;
         temporary
@@ -728,7 +729,7 @@ pub(super) async fn execute(invocation: &Invocation, action: &str, ability: &str
     manager.load_unit(&desired.unit).await?;
     let identity = owned_identity(&manager, &desired).await?;
     if receipt.image.take().is_some() {
-        fs::File::open(UNIT_ROOT)?.sync_all()?;
+        fs::File::open(unit_root())?.sync_all()?;
         atomic_write(&path, &serde_json::to_vec(&receipt)?, 0o600)?;
     }
     let source_missing = optional_mount_source_missing(&desired)?;

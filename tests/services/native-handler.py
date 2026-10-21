@@ -157,6 +157,48 @@ def active_bus_manager(calls):
 
 
 class NativeHandlerTests(unittest.TestCase):
+    def test_immutable_initrd_uses_runtime_service_ownership(self):
+        document = invocation("serviceManagement", "realize", service())
+        document["input"].update(activation_owner="image", auto_start=False)
+        document["effect"]["identity"] = [
+            "test", "initrd", "service-management", "serviceManagement", "realize", "main",
+        ]
+        original_handler = handler_module.Handler
+        original_dispatch = handler_module.locked_dispatch
+
+        with tempfile.TemporaryDirectory() as temporary:
+            runtime = Path(temporary) / "run"
+            state = runtime / "aos/initrd-native-service-effects"
+            units = runtime / "systemd/system"
+            calls = []
+
+            def dispatch(directory, operation):
+                self.assertEqual(directory, "/run/aos/initrd-native-service-effects")
+                return original_dispatch(state, operation)
+
+            def handler(value, manager, unit_directory, state_directory, image_directory):
+                self.assertEqual(unit_directory, "/run/systemd/system")
+                selected = original_handler(value, manager, units, state_directory, image_directory)
+                selected.manager = active_bus_manager(calls)
+                return selected
+
+            with (
+                patch.object(handler_module.Path, "is_file", return_value=True),
+                patch.object(handler_module, "read_invocation", return_value=document),
+                patch.object(handler_module, "locked_dispatch", side_effect=dispatch),
+                patch.object(handler_module, "Handler", side_effect=handler),
+                patch.object(sys, "argv", ["handler", "--systemctl", "/pinned/systemctl", "apply"]),
+            ):
+                handler_module.main()
+
+            receipt_path = state / (handler_module.digest(document["id"].encode()) + ".json")
+            receipt = json.loads(receipt_path.read_text())
+            self.assertFalse(receipt["pending"])
+            self.assertEqual(receipt["id"], document["id"])
+            self.assertTrue((units / "example.service").is_file())
+            self.assertIn(("daemon-reload",), calls)
+            self.assertFalse((Path(temporary) / "var").exists())
+
     def test_host_activator_publishes_mounts_in_the_manager_namespace(self):
         self.assertIsNotNone(host_activation_input, "requires the actual host activator projection")
         value = json.loads(host_activation_input.read_text())

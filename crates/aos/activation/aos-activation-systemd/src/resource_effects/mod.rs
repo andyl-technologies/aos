@@ -16,13 +16,46 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Component, Path};
+use std::sync::OnceLock;
 
 use anyhow::{Context, Result, bail, ensure};
 use aos_activation::activation::{Action, Invocation};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-const STATE_ROOT: &str = "/var/lib/aos/systemd-resources";
+struct ManagerDirectories {
+    state: &'static str,
+    units: &'static str,
+}
+
+fn manager_directories() -> &'static ManagerDirectories {
+    static DIRECTORIES: OnceLock<ManagerDirectories> = OnceLock::new();
+
+    // Retain one stage selection for both the lock and all receipt/unit IO.
+    // Initrd ownership lives for this boot, before /var and the host /etc
+    // overlay are mounted; host ownership remains separately persistent.
+    DIRECTORIES.get_or_init(|| {
+        if Path::new("/etc/initrd-release").is_file() {
+            ManagerDirectories {
+                state: "/run/aos/initrd-systemd-resources",
+                units: "/run/systemd/system",
+            }
+        } else {
+            ManagerDirectories {
+                state: "/var/lib/aos/systemd-resources",
+                units: "/etc/systemd/system",
+            }
+        }
+    })
+}
+
+fn state_root() -> &'static Path {
+    Path::new(manager_directories().state)
+}
+
+fn unit_root() -> &'static Path {
+    Path::new(manager_directories().units)
+}
 
 /// Executes or observes one admitted ancillary operation.
 ///
@@ -52,7 +85,7 @@ pub(super) async fn execute(
         "invalid effect revision"
     );
 
-    private_directory(Path::new(STATE_ROOT))?;
+    private_directory(state_root())?;
     let lock = OpenOptions::new()
         .read(true)
         .write(true)
@@ -60,7 +93,7 @@ pub(super) async fn execute(
         .truncate(false)
         .mode(0o600)
         .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
-        .open(Path::new(STATE_ROOT).join(".lock"))?;
+        .open(state_root().join(".lock"))?;
     rustix::fs::flock(&lock, rustix::fs::FlockOperation::LockExclusive)?;
 
     let result = match (ability.as_str(), operation.as_str()) {
@@ -174,7 +207,7 @@ fn atomic_write(path: &Path, bytes: &[u8], mode: u32) -> Result<()> {
 }
 
 fn state_path(invocation: &Invocation, kind: &str) -> std::path::PathBuf {
-    Path::new(STATE_ROOT).join(format!("{}-{kind}.json", key(&invocation.id)))
+    state_root().join(format!("{}-{kind}.json", key(&invocation.id)))
 }
 
 #[cfg(test)]

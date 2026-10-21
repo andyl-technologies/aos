@@ -1006,8 +1006,8 @@ def main():
     parser.add_argument("--true-executable")
     parser.add_argument("--flock-executable")
     parser.add_argument("--mac-condition-executable")
-    parser.add_argument("--unit-directory", default="/etc/systemd/system")
-    parser.add_argument("--state-directory", default="/var/lib/aos/native-service-effects")
+    parser.add_argument("--unit-directory")
+    parser.add_argument("--state-directory")
     parser.add_argument("--image-unit-directory", default="/usr/lib/aos/toplevel/systemd-units")
     parser.add_argument("action", choices=["apply", "remove", "observe", "render", "check-mac"])
     parser.add_argument("--output-dir")
@@ -1031,14 +1031,27 @@ def main():
         return
     if not args.systemctl:
         raise ValueError("native service manager executable must be pinned")
+
+    # The immutable initrd runs before persistent /var and the host /etc
+    # overlay exist. Its same-boot receipts and unit overrides belong in /run;
+    # the host keeps its independent persistent ownership records after pivot.
+    initrd = Path("/etc/initrd-release").is_file()
+    unit_directory = args.unit_directory or (
+        "/run/systemd/system" if initrd else "/etc/systemd/system"
+    )
+    state_directory = args.state_directory or (
+        "/run/aos/initrd-native-service-effects" if initrd
+        else "/var/lib/aos/native-service-effects"
+    )
+
     identity = document["effect"]["identity"]
     ability, operation = identity[-3:-1]
     def dispatch(state_directory):
-        handler = Handler(document, args.systemctl, args.unit_directory, state_directory, args.image_unit_directory)
+        handler = Handler(document, args.systemctl, unit_directory, state_directory, args.image_unit_directory)
         operations = {("serviceManagement", "realize"): handler.service, ("device", "present"): handler.device}
         return operations[(ability, operation)](args.action)
 
-    result = locked_dispatch(args.state_directory, dispatch)
+    result = locked_dispatch(state_directory, dispatch)
     print(json.dumps(result, separators=(",", ":")))
 
 
