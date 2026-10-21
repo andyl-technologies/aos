@@ -1760,10 +1760,24 @@ Six lower controls and seventeen inherited-socket flights cover both program
 families, independent body backing, complete profile/facet/extension content,
 literal RawValue marker keys, original spare capacities, serializer refusal,
 partial moves, original admissions, expiry and spent retries. All 90 bootstrap
-controls pass with zero failures and one existing ignored private child. Full
-qualification of this source remains pending. Live SDK admission, response
-publication, bootstrap ACK, Native18 policy, model adoption and opaque
-Initial/Recipe construction remain separate unfinished transitions.
+controls pass with zero failures and one existing ignored private child.
+
+For `ea264ebca3`, both complete standard and raw-value Transport libraries pass
+1,888 tests each, with zero failures, no filtering and sixteen existing ignores.
+Affected Transport/Engine/Daemon all-feature/all-target checking, scoped
+formatting and all six architecture gates pass. Required application compilation
+passes with 180 test executables across 58 package identities, including 71
+integration targets. The funded-Source VM passes both independent three-Birth
+consumer flights, refusal controls, cleanup and default-feature CLI refusal.
+All 229 owned changed Rust paths and the Transport manifest match that committed
+checkpoint in the application and all three actual VM component captures.
+These captures come from the exact build derivations. Subsequent selected and
+retired SDK census work is excluded. Full Engine and Daemon library runtime
+qualification remains at `f2150ce5c7`.
+
+Live SDK admission, response publication, bootstrap ACK, Native18 policy, model
+adoption and opaque Initial/Recipe construction remain separate unfinished
+transitions.
 
 ## Original launch custody and shared startup geometry
 
