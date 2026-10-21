@@ -531,14 +531,15 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
     ) -> Result<QemuPendingQuantum, QemuQuantumError> {
         let operation_start = self.operation_log.as_slice().len();
         self.record(QemuQuantumOperation::ReadNodeReport);
-        let initial_snapshot =
-            self.view
-                .node_slot
-                .try_snapshot()
-                .map_err(|source| QemuQuantumError::NodeSlot {
-                    operation: "observe initial scheduler command coordinates",
-                    source,
-                })?;
+        let observation = self
+            .view
+            .node_slot
+            .observe_scheduler_advance()
+            .map_err(|source| QemuQuantumError::NodeSlot {
+                operation: "observe initial scheduler command coordinates",
+                source,
+            })?;
+        let initial_snapshot = observation.snapshot();
         let initial_state = idle_state_from_snapshot(initial_snapshot);
         let initial_device_io_freeze = device_io_freeze_from_snapshot(initial_snapshot);
         let inbound_consumption = self.snapshot_inbound_consumption()?;
@@ -558,11 +559,16 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
         )
         .map_err(|source| QemuQuantumError::Lookahead { source })?;
 
+        let publication = observation
+            .reserve()
+            .map_err(|source| QemuQuantumError::NodeSlot {
+                operation: "reserve observed scheduler command generation",
+                source,
+            })?;
         self.record(QemuQuantumOperation::StoreSchedulerCeiling);
         self.record(QemuQuantumOperation::FutexWake);
-        self.view
-            .node_slot
-            .publish_scheduler_inbox_and_advance(
+        publication
+            .publish_inbox_and_advance(
                 self.config.vm_slot,
                 self.config.router_slot,
                 self.view.inbound_ring,

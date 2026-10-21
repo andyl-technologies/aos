@@ -39,6 +39,13 @@ impl NodeSlot {
         &self,
     ) -> Result<SchedulerAdvancePublication<'_>, NodeSlotError> {
         let observed = self.advance_publication_sequence.load(Ordering::Acquire);
+        self.reserve_scheduler_advance_at(observed)
+    }
+
+    pub(super) fn reserve_scheduler_advance_at(
+        &self,
+        observed: u64,
+    ) -> Result<SchedulerAdvancePublication<'_>, NodeSlotError> {
         if !observed.is_multiple_of(2) {
             return Err(NodeSlotError::AdvancePublicationOccupied {
                 expected: observed,

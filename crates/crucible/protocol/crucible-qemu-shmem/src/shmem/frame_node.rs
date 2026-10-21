@@ -32,6 +32,9 @@ mod layout;
 #[path = "frame_node/runtime.rs"]
 mod runtime;
 pub use runtime::ControlBoundaryPublicationError;
+#[path = "frame_node/scheduler_observation.rs"]
+mod scheduler_observation;
+pub use scheduler_observation::{ObservedSchedulerAdvance, PreparedSchedulerAdvance};
 #[path = "frame_node/scheduler_publication.rs"]
 mod scheduler_publication;
 pub use scheduler_publication::{CommittedSchedulerAdvance, SchedulerAdvancePublication};

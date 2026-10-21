@@ -101,9 +101,14 @@ fn qemu_quantum_start_uses_ordered_scheduler_wake_handoff() {
     assert_source_order(
         source,
         &[
+            "self.record(QemuQuantumOperation::ReadNodeReport);",
+            ".observe_scheduler_advance()",
+            "observation.snapshot()",
+            "self.record(QemuQuantumOperation::ComputeSchedulerCeiling);",
+            ".reserve()",
             "self.record(QemuQuantumOperation::StoreSchedulerCeiling);",
             "self.record(QemuQuantumOperation::FutexWake);",
-            ".publish_scheduler_inbox_and_advance(",
+            ".publish_inbox_and_advance(",
             "self.config.vm_slot,",
             "self.config.router_slot,",
             "self.view.inbound_ring,",
@@ -111,7 +116,7 @@ fn qemu_quantum_start_uses_ordered_scheduler_wake_handoff() {
             "&[],",
             "ceiling,",
         ],
-        "QEMU start_quantum must publish RUN through the ordered inbox/ceiling/wake helper",
+        "QEMU start_quantum must reserve its actual observation before the ordered inbox/ceiling/wake handoff",
     );
 }
 
