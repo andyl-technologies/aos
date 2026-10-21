@@ -127,6 +127,10 @@
       };
       environment.systemPackages = [pkgs.coreutils pkgs.systemd zfs];
 
+      # This fixture replaces the Controller unit without enabling its module.
+      # Its real Storage journal still requires an explicit immutable mode pin.
+      environment.etc."aos/method46-tpm-floor/controller-mode".text = "legacy-closed-v1\n";
+
       systemd.services.aos-sandboxd = {
         description = "Storage RPC controller fixture";
         serviceConfig = {
