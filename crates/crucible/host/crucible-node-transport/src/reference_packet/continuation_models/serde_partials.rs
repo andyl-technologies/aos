@@ -94,6 +94,11 @@ pub(in crate::reference_packet) const fn field_tag_levels_data<S, T: DecoderPart
     T::BUFFERED_TAG_LEVELS
 }
 
+/// Combines actual child tagged-enum depths during constant evaluation.
+const fn maximum_tag_levels_data(left: usize, right: usize) -> usize {
+    if left > right { left } else { right }
+}
+
 /// Names one actual typed value's slot; no map is implied by that value.
 pub(in crate::reference_packet) const fn slot_layout_data<T>() -> (usize, usize, usize, usize) {
     (size_of::<T>(), std::mem::align_of::<T>(), 0, 1)
@@ -969,19 +974,16 @@ impl DecoderPartial for ResponseShape {
     // The actual internally tagged branches currently contain no other tagged
     // DTO. Propagate their real child facts so a field-type change is visible;
     // arbitrary Value trees remain the independent dynamic JSON row.
-    const BUFFERED_TAG_LEVELS: usize = 1 + {
-        let mut child = OperationState::BUFFERED_TAG_LEVELS;
-        if Map::<String, Value>::BUFFERED_TAG_LEVELS > child {
-            child = Map::<String, Value>::BUFFERED_TAG_LEVELS;
-        }
-        if ErrorRecord::BUFFERED_TAG_LEVELS > child {
-            child = ErrorRecord::BUFFERED_TAG_LEVELS;
-        }
-        if Extensions::BUFFERED_TAG_LEVELS > child {
-            child = Extensions::BUFFERED_TAG_LEVELS;
-        }
-        child
-    };
+    const BUFFERED_TAG_LEVELS: usize = 1 + maximum_tag_levels_data(
+        maximum_tag_levels_data(
+            OperationState::BUFFERED_TAG_LEVELS,
+            Map::<String, Value>::BUFFERED_TAG_LEVELS,
+        ),
+        maximum_tag_levels_data(
+            ErrorRecord::BUFFERED_TAG_LEVELS,
+            Extensions::BUFFERED_TAG_LEVELS,
+        ),
+    );
 
     const DIAGNOSTIC_NAMES_BYTES: usize = {
         let own = "ResponseShape".len()

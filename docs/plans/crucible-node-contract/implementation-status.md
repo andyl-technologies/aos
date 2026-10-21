@@ -91,6 +91,15 @@ remains a failure. No lint allowance or strict acceptance criterion changes.
 The edited restored-suffix module's existing content-bound source review is
 refreshed after a full source read; the six architecture gates pass.
 
+The actual ResponseShape child tag depths now combine through a private const
+maximum helper, preserving every child-type dependency and the resulting depth.
+Complete standard and raw-JSON Transport library runs each pass 1,747 tests with
+zero failures, no filtering and 15 ignores. Formatting and all six architecture
+gates pass. The content-bound decoder review is refreshed after a complete
+source read. Production-library Clippy reports 128 errors and 1,426 warnings;
+strict Clippy remains unqualified. The required application-target compilation
+refresh for this change is running.
+
 Commit `e50b1042c1` adds a fixed test-observer diagnostic from the actor's retained
 first failure. Its actual VM run identifies the installed-mechanism refusal;
 the public command continues to return its existing refusal. Subsequent verifier
