@@ -18,7 +18,7 @@
             aos.boot.kernelParams = [
               "systemd.log_level=info"
               "rd.systemd.log_level=info"
-              "systemd.log_target=console"
+              "systemd.log_target=journal-or-kmsg"
             ];
             # An unselected image must boot its ordinary host services while
             # refusing Sandbox jobs before any command can run without a bank.
