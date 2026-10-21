@@ -574,8 +574,26 @@ impl NativeInventory {
         self.check(&objects, Custody::Content, InodeKind::Directory)?;
         for name in names(&objects, *budget)? {
             charge(budget)?;
-            if name != "pack" {
-                return Err(invalid("unreconciled inventory objects namespace entry"));
+            match name.as_str() {
+                "pack" => {}
+                "index" => {
+                    // The SDK catalog is ordinary host-owned metadata, outside
+                    // the publisher's body registry. Recognizing this root does
+                    // not validate its children or prove an empty namespace:
+                    // native recovery independently compares its complete
+                    // selected catalog and retained inodes before Resume.
+                    let catalog = open(&objects, &name, true)?;
+                    let metadata = catalog.metadata()?;
+                    if metadata.uid() != 0
+                        || metadata.gid() != 0
+                        || metadata.mode() & 0o7777 != 0o755
+                        || metadata.dev() != self.root.metadata()?.dev()
+                    {
+                        return Err(invalid("portable catalog root custody changed"));
+                    }
+                    self.check_project(&catalog, InodeKind::Directory)?;
+                }
+                _ => return Err(invalid("unreconciled inventory objects namespace entry")),
             }
         }
         let packs = match open(&objects, "pack", true) {

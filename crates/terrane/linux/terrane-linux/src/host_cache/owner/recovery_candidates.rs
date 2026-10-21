@@ -31,9 +31,16 @@ pub(super) enum RecoveryCase {
 /// # Errors
 /// Refuses global inventory errors and every unsupported or unresolved case.
 pub(super) fn preflight(inventory: &NativeRecoveryInspection) -> io::Result<()> {
-    if inventory.inventory_failure().is_some() || inventory.namespace_failure().is_some() {
-        return Err(unresolved(
-            "recovery inventory has unresolved global failures",
+    if let Some(error) = inventory.inventory_failure() {
+        return Err(io::Error::new(
+            io::ErrorKind::WouldBlock,
+            format!("recovery publisher inventory failed: {error}"),
+        ));
+    }
+    if let Some(error) = inventory.namespace_failure() {
+        return Err(io::Error::new(
+            io::ErrorKind::WouldBlock,
+            format!("recovery shared namespace inventory failed: {error}"),
         ));
     }
     for candidate in inventory.candidates() {
