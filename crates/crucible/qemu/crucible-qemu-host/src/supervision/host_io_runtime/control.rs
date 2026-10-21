@@ -250,7 +250,7 @@ impl QemuLiveHostIoRuntime {
                 // a secondary wake failure must not reclassify it as Message.
                 let mut primary = primary;
                 primary.operation = "rollback failed checkpoint pause";
-                primary.message = message;
+                primary.message = message.into();
                 Err(primary)
             }
         }

@@ -1,6 +1,7 @@
 //! Errors produced by the bounded asynchronous QEMU driver.
 
 use super::*;
+use std::borrow::Cow;
 use thiserror::Error;
 
 /// Error returned by a host-I/O runtime adapter.
@@ -8,11 +9,11 @@ use thiserror::Error;
 pub struct QemuAsyncDriverRuntimeError {
     /// Operation being attempted.
     pub operation: &'static str,
-    /// Authored failure text; typed supervision and storage refusals keep this empty.
+    /// Authored text, borrowed for static diagnostics; typed refusals keep this empty.
     ///
     /// Formatting renders a retained supervision cause directly unless a later
     /// combined diagnostic was explicitly saved here.
-    pub message: String,
+    pub message: Cow<'static, str>,
     detail: QemuAsyncDriverRuntimeErrorDetail,
 }
 
@@ -59,7 +60,7 @@ impl QemuAsyncDriverRuntimeError {
             operation,
             // The typed cause already owns every diagnostic coordinate. Render
             // it only when requested; exhaustion must not format another String.
-            message: String::new(),
+            message: Cow::Borrowed(""),
             detail: QemuAsyncDriverRuntimeErrorDetail::HostSupervision(source),
         }
     }
@@ -75,9 +76,12 @@ impl QemuAsyncDriverRuntimeError {
         }
     }
 
-    /// Creates a runtime adapter error.
+    /// Creates a runtime adapter error, borrowing static diagnostic text.
+    ///
+    /// Existing owned diagnostics move into the error without copying. This
+    /// constructor supplies no funding for a dynamically formatted message.
     #[must_use]
-    pub fn new(operation: &'static str, message: impl Into<String>) -> Self {
+    pub fn new(operation: &'static str, message: impl Into<Cow<'static, str>>) -> Self {
         Self {
             operation,
             message: message.into(),
@@ -93,7 +97,7 @@ impl QemuAsyncDriverRuntimeError {
             // This constructor is itself used after allocation refusal. Keep
             // its diagnostic storage empty so propagating typed LIMIT-2 never
             // attempts another heap allocation.
-            message: String::new(),
+            message: Cow::Borrowed(""),
             detail: QemuAsyncDriverRuntimeErrorDetail::FaultResultStorage(
                 u32::try_from(requested).unwrap_or(u32::MAX),
                 u32::try_from(configured).unwrap_or(u32::MAX),
@@ -106,7 +110,7 @@ impl QemuAsyncDriverRuntimeError {
     pub fn fault_event_storage(current: usize, requested: usize, configured: usize) -> Self {
         Self {
             operation: "stage fault occurrence event",
-            message: String::new(),
+            message: Cow::Borrowed(""),
             detail: QemuAsyncDriverRuntimeErrorDetail::FaultEventStorage(
                 u64::try_from(current).unwrap_or(u64::MAX),
                 u64::try_from(requested).unwrap_or(u64::MAX),
@@ -126,7 +130,7 @@ impl QemuAsyncDriverRuntimeError {
     ) -> Self {
         Self {
             operation: "reserve host I/O resource",
-            message: String::new(),
+            message: Cow::Borrowed(""),
             detail: QemuAsyncDriverRuntimeErrorDetail::ResourceLimit(
                 field, current, requested, configured, hard,
             ),
@@ -276,6 +280,7 @@ mod tests {
         assert_eq!(counts.allocations, 0);
         assert_eq!(counts.reallocations, 0);
         assert_eq!(error.message.as_ptr(), pointer);
+        assert!(matches!(error.message, Cow::Owned(_)));
         assert_eq!(
             error.to_string(),
             "adapter wait failed: actual adapter refusal"

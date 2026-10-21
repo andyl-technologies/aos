@@ -209,3 +209,29 @@ fn issued_quantum_completes_only_after_final_yield() -> Result<(), Box<dyn std::
     assert!(runtime.supervisor.operation_statuses()?.is_empty());
     Ok(())
 }
+
+#[test]
+fn unsupported_metadata_runtime_refuses_without_diagnostic_allocation() {
+    use crucible_host_resources::test_support::TestAllocationObserver;
+    use std::borrow::Cow;
+
+    let runtime = ScriptedRuntime::new([]);
+
+    let (result, counts) =
+        TestAllocationObserver::count(|| runtime.reserve_fault_manifest_metadata(1));
+
+    let error = match result {
+        Err(error) => error,
+        Ok(_) => panic!("unsupported runtime cannot issue a metadata lease"),
+    };
+    assert_eq!(counts.allocations, 0);
+    assert_eq!(counts.reallocations, 0);
+    assert!(matches!(error.message, Cow::Borrowed(_)));
+    assert_eq!(error.operation, "reserve fault manifest metadata");
+    assert_eq!(
+        error.to_string(),
+        "reserve fault manifest metadata failed: runtime has no admitted node service allocator"
+    );
+    assert_eq!(runtime.yields, 0);
+    assert_eq!(runtime.awaits, 0);
+}
