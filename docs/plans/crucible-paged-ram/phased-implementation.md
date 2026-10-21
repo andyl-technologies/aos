@@ -63,11 +63,96 @@ failed attempts appear in the dated entries below.
 | Publisher transport | `e9784079c4` creates the once-owned physical session under the actual Source payer and installing Original, exports exact roles and sends Setup6 with plan nine. Six physical controls, five alias controls, seven startup controls, setup completion and hygiene pass. | Mandatory application compilation passes with all 5,279 committed Rust/TOML files matching the frozen source. Genuine launched transfer, command publication, peer acquisition and terminal consumption remain unqualified. |
 | Host alias custody | `90f00965fa` journals each standing descriptor before the next guarded duplication. Five real-socket controls, 73 focused policy checks and five hygiene checks pass. | Mandatory application compilation passes at `yyiy0g0z5lfdkx3x563k0sgnf1i20d1c`; all 5,272 committed Rust/TOML files match its immutable source. All 211 exact supervision cases pass at `dy2jldwf5dizmsmj0icwwxnlfpf8k45a`. |
 | Installing plan reads | `54caaed474` guards every plan read and retry with the same installing Source and preserves the first validation cause on failed ACK. All 24 focused setup tests, 73 policy controls and five hygiene controls pass. | Mandatory application compilation passes with all 5,274 Rust/TOML files matching the immutable source. The corrected setup gate `edb742a73f` passes 39 tests; all 218 exact supervision cases pass at `7iwxg7vg1r0gxwv39ajixz95n45jg9b4`. Genuine Native admission remains unexecuted. |
-| Native integration | `3811d30684` imports signed `e1dde9de57`, tree `446bedad`, adding retained mapping journals, bounded header observations, Runtime service transfer and construction read children. Exact atomic reconstruction and the 327-file license inventory pass. The independently configured 1,918-object cohort and first normal delivery pass at 51.556 seconds. | Fresh owning Source qualification passes. The full package completes 4,060 build actions and passes 25/26 fixtures; mandatory launched dirty capture remains the sole failure. Fresh ABI and all sixteen independently bounded custody suites pass. Genuine paid/selected execution remains unexecuted; the license-boundary gate stops at strict controller Clippy. |
+| Native integration | `12fbae747e` imports signed `f9d1c47a9d`, tree `c10be7db`, composing retained receiver/Entry and Native Initial-read custody. Exact atomic reconstruction and the 338-created-file license inventory pass. The independently configured 1,918-object cohort and first normal delivery pass at 55.286 seconds. | Fresh owning Source qualification and ABI pass. The full package completes 4,060 actions and passes 25/26 fixtures; mandatory launched dirty capture remains the failure. The expanded twenty-two-suite custody run is in progress. Genuine paid/selected execution remains unexecuted; the prior license-boundary gate stops at strict controller Clippy. |
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | Latest focused checks pass all 73 policy and five hygiene controls; the broad gate retains thirteen daemon paths. | The fresh canonical license-boundary check is blocked by strict controller Clippy (1,189 host-library and 1,262 host-test errors); its boundary assertions did not run. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 372 committed bindings: 353 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
+| Requirements | 386 committed bindings: 367 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
+
+#### Native receiver and Initial-read composition
+
+`12fbae747e` imports signed QEMU atomic commit `f9d1c47a9d`, composing the receiver/Entry subset
+with retained Native Initial-read custody. Its sole upstream base remains
+`1ed0467509`; the reconstructed tree is `c10be7dbf460b809f437f43124500c64a3f07f9f`.
+Independent review matches all 977 signed changed-source hashes, 15,349 regular
+evidence files, 156 literal symlinks and three integration artifacts without
+traversing those symlinks. The verification record has SHA-256
+`b41e310beb7e0f94f579a213cb9b122ef35848b8ba42501e5455593b539bd1d9`.
+The independently configured 1,918-object cohort passes under its original
+600-second/6-GiB bound; first normal delivery passes in 55.286 seconds under
+the unchanged 60-second/6-GiB bound. Complete fixed geometry is 277,734 bytes,
+including the actual 233,888-byte Source.
+
+Exact signed patch reconstruction passes at
+`qvzfc2q1l07xv39r0nsjn74z1jb0h404`; the 338-created-file license inventory
+passes at `b9ch1pz611d52sivak2f0x01c1pf9ang`. Fresh owning Source qualification
+passes at `5sjrrsyjp5hkbymmwzjljyfgh62qwq9z`, and ABI conformance passes at
+`gdj14hqq2pfjvlmrhrsx4mpmkjc845h1`. All sixteen prior custody suites and six
+additional suites are selected by the updated independent Native runner; its
+fresh result remains in progress at this checkpoint.
+
+The first raw reconstruction failed because the signature-header parser stopped
+reading a large signed commit, causing Git SIGPIPE under pipefail. `cb6546b6ee`
+drains the full object while counting signature headers only; the corrected
+raw reconstruction passes with every signature/tree/DCO check retained. The
+aggregate regeneration target additionally builds the full QEMU package. That
+package completes 4,060 actions and still fails mandatory launched dirty capture,
+passing 25/26 fixtures. The raw reconstruction result does not qualify that
+package or its aggregate gate. Receiver/Command/Entry implement three of the
+seven proposed observation families; Use, Outcome, CleanupUse and Tail remain
+open. No actual Module Original, selected paid Source or CPU issuer is claimed.
+
+#### Source Quantum command handoff
+
+`2ce72df77c` connects the actual driver's existing Quantum Original and unique
+live Source producer to the mapped scheduler channel. The runtime's independent
+mapping must name the same backing and node slot as the actual channel. The
+move-only prepared writer retains the real Quantum and Preparation memberships
+before tuple commitment; the complete locked lender collector then publishes
+the immutable command and recipient ticket through the paid session. Its native
+ceiling includes every present end in every retained row. Raw instruction limits
+preserve the actual logical calibration and round conservatively.
+
+Publication precedes the node event and once-only scheduler wake. The same
+Original post and an independent full Source post run after either a successful
+or failed publication, outside the session and lender locks. Negative posts,
+publication failure and notification failure revoke the born offer without
+consuming its borrowers. A changed standing sequence or cohort cannot rebind
+the command. Ordinary control ACKs and their old return journals explicitly
+refuse Quantum membership return.
+
+All 23 focused Source controls, 67 quantum/mapped cases and 33 driver cases
+pass after the publication-failure post correction. Engineering hygiene passes.
+All 5,288 committed Rust/TOML inputs match immutable application-test source
+`sig08w0fs3vfzf3y3crg37bxlmkr9l4m`; the comparison record has SHA-256
+`8baf8032a34710462bac4844a9840aa76629b0a88d0f5b6f020edb4da6336e45`.
+Mandatory application compilation passes at `vf237hxz9r17sqy0mvfarvkq61hz81pg`;
+the final 269-case supervision run remains in progress at this checkpoint.
+The earlier source snapshots and failed local
+attempts remain separate. Genuine Module construction, Native execution,
+producer consumption, receiver Closed and ticket reuse remain unimplemented.
+The first offer therefore retains real debt through every uncertain path.
+
+#### Physical command publication and revocation
+
+`3558879a7c` retains each exact command and its canonical encoding in the paid
+session before shared effects. It publishes one physical offer and fresh ticket,
+and implements one attempted withdrawal that preserves a lost acquisition race.
+`9e568305c8` adds once-only revocation: the next publication sequence changes
+permission while preserving the immutable command, original offer identity and
+ticket phase. An uncertain CAS cannot be retried. These physical operations
+alone grant no Source membership or Original and return no borrower.
+
+Thirteen publication/withdrawal controls and the later sixteen-control publisher
+cohort pass without allocation in their measured physical paths. Hygiene and
+mandatory application compilation pass for both checkpoints. The latter output
+is `fmi8addgh510a0hr2nrrra57654l93sq`; all 5,285 committed Rust/TOML files match
+immutable source `v0yb846wswhhqmp4bkjr926x6fhzfswb`. Its comparison record has
+SHA-256 `26577943bb2f53c389a1aa927a788575040226b96a9e053000af440745c92cc0`.
+The publication checkpoint passes all 262 exact supervision cases at
+`rnkip1vqcyggd9d6sw4hlgw7161dzsnf`. The later revocation checkpoint passes all
+265 exact cases at `l78l8s375lyd3sspcb0baspsjz68v2kb`. Complete stack/error-carrier
+pricing and genuine remote return remain unqualified.
 
 #### Retained pending Quantum reports
 
