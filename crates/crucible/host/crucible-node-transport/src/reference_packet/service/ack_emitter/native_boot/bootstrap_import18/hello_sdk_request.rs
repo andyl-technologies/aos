@@ -152,6 +152,20 @@ impl OriginalImport18RawBootstrap {
         terminal?;
         Ok(output)
     }
+
+    /// Names completed request correspondence and its original registrar loan.
+    pub(in super::super) fn sdk_hello_request_loan_counter_scratch_data<R: Copy>() -> usize {
+        Self::hello_registrar_loan_counter_scratch_data::<()>()
+            + Attempt::counter_scratch_data()
+            + size_of::<super::hello_request::Claims>()
+            + size_of::<&Self>()
+            + size_of::<&HelloRequest>()
+            + size_of::<&serde_json::Value>()
+            + size_of::<&[u8]>()
+            + size_of::<R>() * 2
+            + size_of::<Result<R, ProviderError>>() * 2
+            + size_of::<Result<(), ProviderError>>() * 3
+    }
 }
 
 /// Quotes the same typed construction for every bounded future original body.

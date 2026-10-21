@@ -37,6 +37,9 @@ mod hello_registrar;
 #[path = "initial_reconstruction/hello_sdk_request.rs"]
 mod hello_sdk_request;
 
+#[path = "initial_reconstruction/hello_result.rs"]
+mod hello_result;
+
 pub(super) fn hello_request_body_data(case: &str) -> Vec<u8> {
     hello_request::body_data(case)
 }
@@ -119,12 +122,14 @@ fn operands(case: &str) -> [Value; 3] {
             | "initial_hello_request_reactive"
             | "initial_hello_registrar_reactive"
             | "initial_hello_sdk_request_reactive"
+            | "initial_hello_result_reactive"
     ));
     if case.starts_with("initial_selection_") || case.starts_with("initial_hello_") {
         selection::prepare_selected(case, &mut selected);
     }
     if case.starts_with("initial_hello_registrar_")
         || case.starts_with("initial_hello_sdk_request_")
+        || case.starts_with("initial_hello_result_")
     {
         hello_registrar::prepare_selected(case, &mut selected);
     }
@@ -383,6 +388,10 @@ pub(super) fn assert_child(
     }
     if case.starts_with("initial_selection_") {
         selection::assert_child(case, &mut owner);
+        return;
+    }
+    if case.starts_with("initial_hello_result_") {
+        hello_result::assert_child(case, &mut owner);
         return;
     }
     if case.starts_with("initial_hello_sdk_request_") {

@@ -12,6 +12,18 @@ struct Admission<'a> {
     row: Cell<Option<[usize; 3]>>,
 }
 
+pub(super) fn construct_for_result(owner: &mut OriginalImport18RawBootstrap) {
+    super::hello_registrar::construct_for_sdk_request(owner);
+    let admission = Admission {
+        case: "initial_hello_sdk_request_complete",
+        calls: Cell::new(0),
+        before: owner.retained_requested_bytes().unwrap(),
+        row: Cell::new(None),
+    };
+    owner.construct_sdk_hello_request_data(&admission).unwrap();
+    assert_eq!(admission.calls.get(), 3);
+}
+
 impl OriginalImport18SdkHelloRequestAdmission for Admission<'_> {
     fn quote_data(
         &self,

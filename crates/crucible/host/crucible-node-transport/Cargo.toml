@@ -46,7 +46,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 thiserror = { workspace = true }
-rustix = { workspace = true, features = ["event", "net", "process", "stdio"] }
+rustix = { workspace = true, features = ["event", "net", "process", "rand", "stdio"] }
 
 [[bin]]
 name = "crucible-reference-lineage-device"

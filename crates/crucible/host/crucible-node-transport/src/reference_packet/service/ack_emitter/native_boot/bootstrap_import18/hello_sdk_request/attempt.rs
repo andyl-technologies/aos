@@ -236,7 +236,10 @@ impl Attempt {
     ///
     /// # Errors
     /// Refuses stale/substituted custody or incomplete/refused construction.
-    pub(super) fn data(&self, cut: OperationalDeadline) -> Result<&HelloRequest, ProviderError> {
+    pub(in super::super) fn data(
+        &self,
+        cut: OperationalDeadline,
+    ) -> Result<&HelloRequest, ProviderError> {
         self.guard(cut)?;
         if self.stage != Stage::Complete || self.failure.is_some() {
             return Err(refused());

@@ -146,6 +146,7 @@ fn complete_initial_population_and_policy_refuse_overflow() {
                 request: [0; 3],
                 registrar: [0; 3],
                 sdk_request: [0; 3],
+                result: [0; 3],
             },
             usize::MAX
         )
@@ -165,6 +166,7 @@ fn complete_initial_population_and_policy_refuse_overflow() {
                 request: [0; 3],
                 registrar: [0; 3],
                 sdk_request: [0; 3],
+                result: [0; 3],
             },
             usize::MAX
         )
@@ -184,6 +186,7 @@ fn complete_initial_population_and_policy_refuse_overflow() {
                 request: [0; 3],
                 registrar: [0; 3],
                 sdk_request: [0; 3],
+                result: [0; 3],
             },
             1
         )
@@ -203,6 +206,7 @@ fn complete_initial_population_and_policy_refuse_overflow() {
                 request: [0; 3],
                 registrar: [0; 3],
                 sdk_request: [0; 3],
+                result: [0; 3],
             },
             usize::MAX
         )
@@ -222,6 +226,7 @@ fn complete_initial_population_and_policy_refuse_overflow() {
                 request: [0; 3],
                 registrar: [0; 3],
                 sdk_request: [0; 3],
+                result: [0; 3],
             },
             usize::MAX
         )

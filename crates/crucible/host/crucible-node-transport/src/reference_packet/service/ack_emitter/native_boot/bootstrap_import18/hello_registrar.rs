@@ -12,6 +12,13 @@ mod clone_backing;
 #[path = "hello_registrar/clone_controls.rs"]
 mod clone_controls;
 
+#[path = "hello_registrar/hello_result_clone.rs"]
+mod hello_result_clone;
+pub(super) use hello_result_clone::{
+    construction_data as hello_result_clone_construction_data,
+    counter_scratch_data as hello_result_clone_counter_scratch_data,
+};
+
 #[path = "hello_registrar/validation_storage.rs"]
 mod validation_storage;
 

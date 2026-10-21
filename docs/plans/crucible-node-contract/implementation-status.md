@@ -1644,6 +1644,37 @@ qualification. Full Engine and Daemon library runtime qualification remains at
 `f2150ce5c7`. This transition issues no connection, reply, bootstrap ACK, native
 policy, model or opaque Initial/Recipe; remaining RFC exits stay unfinished.
 
+## Retained actual SDK Hello result and provider challenge
+
+The original bootstrap now constructs the real initial SDK `HelloResult` after
+the typed request and fresh registrar. Its physical attempt, fixed challenge
+array and scalar entropy-error slot exist before the first private read.
+Separately admitted construction obtains actual Linux kernel entropy with
+nonblocking `getrandom`, checking the original cut before and after reads.
+Partial progress remains in the same array, EINTR retries only its unwritten
+suffix, and unavailable entropy refuses without substituting bytes or renewing
+credit. Completed result ownership precedes terminal admission and guards.
+
+The result owns fresh copies of both challenges, original session/incarnation,
+selected features and the complete provider manifest, including all supported
+profiles, facets, schema references, qualification references and extensions.
+The selected receiving limits remain unchanged; initial resumption stays empty.
+Compiler-bound concrete field rosters price the actual pinned clone DAGs.
+Both independent initial projections include the new retained population, its
+constructor/clone overlap and exact quote controls. A first broad bootstrap run
+exposed summed sequential manifest-walk controls exceeding the raw-only policy;
+the complete field walks now reuse their maximum recursive control window while
+retaining actual quote arrays and result headers. No resource ceiling changes.
+
+Five lower controls and seventeen inherited-socket flights pass, including
+actual kernel result construction, complete profile/facet/extension cloning,
+spare-capacity independence, partial reads, interruption, unavailable entropy,
+both program families, all admissions, expiry and retained error-callback
+custody. All 76 bootstrap controls pass with zero failures and one existing
+ignored private child. Full qualification remains pending. This component does
+not perform live SDK authentication, publish Hello/ACK, construct Native18
+policy, adopt a model or supply opaque Initial/Recipe authority.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.
