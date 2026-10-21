@@ -259,7 +259,7 @@ impl QemuProductionExactRestoreRequest {
     ) -> Result<QemuProductionExactRestoreLaunch, QemuLiveNodeStepGateError> {
         let Self {
             config,
-            mut run_directory,
+            run_directory,
             process_contract,
             snapshot,
             snapshot_object,
@@ -283,7 +283,11 @@ impl QemuProductionExactRestoreRequest {
                         source: crate::OriginalActorAccountError::Unavailable,
                     });
                 }
-                run_directory
+                let mut artifacts =
+                    IssuedExactRestoreArtifacts::new(&binding, run_directory, target)?;
+                let prepared = artifacts.preparation()?;
+                prepared
+                    .run_directory
                     .prepare_vmstate_container_guarded(config.qemu_executable(), &process_contract)
                     .map_err(
                         |source| QemuLiveNodeStepGateError::ExactVmstatePreparation { source },
@@ -291,17 +295,24 @@ impl QemuProductionExactRestoreRequest {
                 let cancellation = process_contract
                     .try_clone_cancellation_event()
                     .map_err(|source| QemuLiveNodeStepGateError::Spawn { source })?;
-                let ram_inputs = run_directory
+                let ram_inputs = prepared
+                    .run_directory
                     .materialize_production_exact_checkpoint(
                         &process_contract,
-                        target,
+                        &mut prepared.target,
                         source,
                         cancellation.as_fd(),
                     )
                     .map_err(|source| QemuLiveNodeStepGateError::Spawn { source })?;
+                prepared.ram_inputs = Some(ram_inputs);
+                let ram_inputs = prepared.ram_inputs.as_ref().ok_or_else(|| {
+                    QemuLiveNodeStepGateError::ExactSnapshotInvariant {
+                        reason: String::from("exact preparation lost its retained sealed inputs"),
+                    }
+                })?;
                 let identity = QemuLiveNodeIdentity::new(&node.name, &router, &crash_detector);
                 let admission = AtomicExactRestoreAdmission::admit(
-                    &mut run_directory,
+                    &mut prepared.run_directory,
                     &process_contract,
                     identity,
                     &snapshot,
@@ -309,9 +320,9 @@ impl QemuProductionExactRestoreRequest {
                     ram_inputs,
                     cancellation.as_fd(),
                 )?;
-                let (node, target) =
+                let node =
                     launch_atomic_exact_restore(&config, admission, false, binding, workspace)?;
-                let artifacts = IssuedExactRestoreArtifacts::new(&node, run_directory, target)?;
+                prepared.complete_preparation()?;
                 Ok(QemuProductionExactRestoreLaunch { node, artifacts })
             },
             |launch, refusal, after| refusal.retain_exact_launch(launch, after),

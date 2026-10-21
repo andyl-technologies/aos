@@ -898,7 +898,7 @@ pub(crate) struct AtomicExactRestoreAdmission<'a> {
     process_contract: &'a QemuChildProcessContract,
     identity: QemuLiveNodeIdentity<'a>,
     snapshot: &'a QemuVmSnapshot,
-    ram_inputs: crate::spawn::SealedAtomicExactRestoreInputs,
+    ram_inputs: &'a crate::spawn::SealedAtomicExactRestoreInputs,
     device_file: File,
     cancellation_descriptor: BorrowedFd<'a>,
     exact_binding: crate::spawn::QemuExactDeviceStateBinding,
@@ -1033,7 +1033,7 @@ impl<'a> AtomicExactRestoreAdmission<'a> {
         identity: QemuLiveNodeIdentity<'a>,
         snapshot: &'a QemuVmSnapshot,
         snapshot_object: ContentHash,
-        ram_inputs: crate::spawn::SealedAtomicExactRestoreInputs,
+        ram_inputs: &'a crate::spawn::SealedAtomicExactRestoreInputs,
         cancellation_descriptor: BorrowedFd<'a>,
     ) -> Result<Self, QemuLiveNodeStepGateError> {
         let exact_binding = ram_inputs.binding();
@@ -1061,7 +1061,7 @@ impl<'a> AtomicExactRestoreAdmission<'a> {
         process_contract: &'a QemuChildProcessContract,
         identity: QemuLiveNodeIdentity<'a>,
         snapshot: &'a QemuVmSnapshot,
-        ram_inputs: crate::spawn::SealedAtomicExactRestoreInputs,
+        ram_inputs: &'a crate::spawn::SealedAtomicExactRestoreInputs,
         cancellation_descriptor: BorrowedFd<'a>,
         exact_binding: crate::spawn::QemuExactDeviceStateBinding,
     ) -> Result<Self, QemuLiveNodeStepGateError> {
@@ -1074,7 +1074,7 @@ impl<'a> AtomicExactRestoreAdmission<'a> {
             });
         }
         run_directory
-            .validate_exact_ram_inputs(exact_binding, &ram_inputs)
+            .validate_exact_ram_inputs(exact_binding, ram_inputs)
             .map_err(|source| QemuLiveNodeStepGateError::Spawn { source })?;
         run_directory
             .claim_exact_checkpoint_materialization(process_contract, exact_binding)
@@ -1110,13 +1110,7 @@ pub(crate) fn launch_atomic_exact_restore(
     resume_restored: bool,
     original_native_binding: crate::linux_attempt_host::OriginalNativeNodeBinding,
     original_workspace: Option<crate::spawn::OriginalDeviceDigestWorkspace>,
-) -> Result<
-    (
-        crate::node::IssuedLaunchOwner,
-        crucible_engine::exact_checkpoint::ExactCheckpointVerifiedNode,
-    ),
-    QemuLiveNodeStepGateError,
-> {
+) -> Result<crate::node::IssuedLaunchOwner, QemuLiveNodeStepGateError> {
     let descriptors = QemuExactCheckpointRestoreDescriptors::new(
         request.ram_inputs.root_descriptor(),
         request.device_file.as_fd(),
@@ -1146,9 +1140,7 @@ pub(crate) fn launch_atomic_exact_restore(
         },
     )?
     .prime_and_build_issued()?;
-    let target = request.ram_inputs.into_target();
-
-    Ok((node, target))
+    Ok(node)
 }
 
 #[cfg(target_os = "linux")]

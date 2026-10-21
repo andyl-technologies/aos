@@ -12,6 +12,8 @@ pub(super) const PRE_VM_ALLOCATION: Companion = preparation::ALLOCATION;
 pub(super) const PRE_VM_RECEIVER: Companion = preparation::RECEIVER;
 pub(super) const PRE_VM_HELPER_RETURN: Companion = preparation::HELPER_RETURN;
 pub(super) const PRE_VM_LENDER: Companion = preparation::LENDER;
+pub(super) const PRE_VM_EXACT_ADMISSION: Companion = preparation::EXACT_ADMISSION;
+pub(super) const PRE_VM_EXACT_MATERIALIZATION: Companion = preparation::EXACT_MATERIALIZATION;
 pub(super) const PRE_VM_EXACT_HANDOFF: Companion = preparation::EXACT_HANDOFF;
 pub(super) const PRE_VM_EXACT_LAUNCH: Companion = preparation::EXACT_LAUNCH;
 pub(super) const PRE_VM_EXACT_ARTIFACTS: Companion = preparation::EXACT_ARTIFACTS;
@@ -565,6 +567,8 @@ pub(super) const CONTRACT: Contract = Contract {
         preparation::NATIVE_RETURN,
         preparation::EXACT_ARTIFACTS,
         preparation::EXACT_HANDOFF,
+        preparation::EXACT_ADMISSION,
+        preparation::EXACT_MATERIALIZATION,
         preparation::EXACT_LAUNCH,
         preparation::NATIVE_OWNER,
         preparation::ISSUED_RETURN,

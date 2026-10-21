@@ -3,6 +3,9 @@
 use super::*;
 use super::super::super::{mask_contract, read_companions, replace_one_obligation, source_pattern};
 
+#[path = "exact_artifacts.rs"]
+mod exact_artifacts;
+
 struct Fixture {
     contract: &'static Contract,
     code: String,
@@ -646,60 +649,6 @@ fn fresh_native_continuation_requires_actual_return_and_same_saved_cleanup()
             "drop(retained); drop(returned); self.exact_launch.close()",
             "drop(retained); self.exact_launch.close()",
             "physical success before actual owner destruction",
-        ),
-        (
-            "original_node.rs",
-            "retained.owner.is_none() && self.exact_launch.returned()",
-            "retained.owner.is_none()",
-            "process absence substitutes for actual artifact destruction",
-        ),
-        (
-            "original_node/exact_artifacts.rs",
-            "drop(artifacts);",
-            "std::mem::forget(artifacts);",
-            "artifact closure declared without actual destruction",
-        ),
-        (
-            "original_node/exact_artifacts.rs",
-            "ArtifactState::Issued | ArtifactState::Closing | ArtifactState::Uncertain(_) => { return false; }",
-            "ArtifactState::Issued | ArtifactState::Closing | ArtifactState::Uncertain(_) => { return true; }",
-            "uncertain artifact destruction treated as physical return",
-        ),
-        (
-            "original_node/exact_artifacts.rs",
-            "if !matches!(*state, ArtifactState::Closing)",
-            "if false",
-            "concurrent duplicate disposition erased after destruction",
-        ),
-        (
-            "supervision/exact_restore/artifacts.rs",
-            "if !receiver.reserve_exact_artifact_transfer()",
-            "if false",
-            "process return races ahead of unreserved artifact custody",
-        ),
-        (
-            "supervision/exact_restore/artifacts.rs",
-            "if !same_receiver || owner.node_mut().is_err()",
-            "if false",
-            "foreign or unassembled Node enters exact artifact handoff",
-        ),
-        (
-            "supervision/exact_restore/artifacts.rs",
-            "drop(self); receiver.record_returned_cleanup_failure(primary);",
-            "receiver.record_returned_cleanup_failure(primary); drop(self);",
-            "failure published before actual files reach their receiver",
-        ),
-        (
-            "supervision/exact_restore/artifacts.rs",
-            "if let Some(artifacts) = self.artifacts.take()",
-            "if let Some(artifacts) = None",
-            "abandoned launch discards actual artifact return",
-        ),
-        (
-            "supervision/exact_restore.rs",
-            "node: crate::node::IssuedLaunchOwner, artifacts: IssuedExactRestoreArtifacts,",
-            "artifacts: IssuedExactRestoreArtifacts, node: crate::node::IssuedLaunchOwner,",
-            "artifact cell returned before the abandoned process owner",
         ),
         (
             "original_node.rs",

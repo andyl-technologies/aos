@@ -811,6 +811,14 @@ pub(super) const ISSUED_RETURN: Companion = Companion {
     path: "crates/crucible/qemu/crucible-qemu-host/src/node/failed_launch/issued.rs",
     required: &[
         (
+            r#"pub(crate) fn retained_receiver(
+    &self,
+) -> Option<crate::linux_attempt_host::RetainedNativeFreshLaunchError> {
+    self.receiver.clone()
+}"#,
+            1,
+        ),
+        (
             r#"pub(crate) fn new(
     receiver: crate::linux_attempt_host::RetainedNativeFreshLaunchError,
     lender: crate::linux_attempt_host::SourceCleanupLender,

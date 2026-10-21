@@ -17,10 +17,31 @@ impl QemuPreparedRunDirectory {
     pub(crate) fn materialize_production_exact_checkpoint(
         &mut self,
         process_contract: &QemuChildProcessContract,
-        target: crucible_engine::exact_checkpoint::ExactCheckpointVerifiedNode,
+        target: &mut Option<crucible_engine::exact_checkpoint::ExactCheckpointVerifiedNode>,
         source: QemuProductionExactRestoreSource,
         cancellation: BorrowedFd<'_>,
     ) -> Result<SealedAtomicExactRestoreInputs, QemuSpawnError> {
+        if self.exact_checkpoint_target.is_some() {
+            return Err(invalid_input(
+                "retain exact restore target",
+                "prepared directory already retains an authenticated target",
+            ));
+        }
+        let target = target.take().ok_or_else(|| {
+            invalid_input(
+                "retain exact restore target",
+                "authenticated target is absent",
+            )
+        })?;
+        // The directory is already in its issued artifact guard. Retain the
+        // actual relation there before validation, helpers or materialization.
+        self.exact_checkpoint_target = Some(target);
+        let target = self.exact_checkpoint_target.as_ref().ok_or_else(|| {
+            invalid_input(
+                "retain exact restore target",
+                "authenticated target was lost",
+            )
+        })?;
         let QemuProductionExactRestoreSource {
             mut root_overlay,
             mut device_state,
@@ -58,8 +79,6 @@ impl QemuPreparedRunDirectory {
             root_overlay_bytes,
             device_state_bytes,
         )?;
-        self.exact_checkpoint_target = Some(target);
-
         let mut overlay = self.begin_atomic_exact_root_overlay(root_overlay_bytes)?;
         copy_exact_checkpoint_stream(
             &mut root_overlay,

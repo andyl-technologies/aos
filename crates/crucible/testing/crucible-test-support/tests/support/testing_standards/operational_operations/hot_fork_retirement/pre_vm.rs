@@ -99,6 +99,8 @@ pub(super) const CONTRACTS: &[Contract] = &[
             source::PRE_VM_NATIVE_RETURN,
             source::PRE_VM_EXACT_ARTIFACTS,
             source::PRE_VM_EXACT_HANDOFF,
+            source::PRE_VM_EXACT_ADMISSION,
+            source::PRE_VM_EXACT_MATERIALIZATION,
             source::PRE_VM_EXACT_LAUNCH,
             source::PRE_VM_NATIVE_OWNER,
             source::PRE_VM_ISSUED_RETURN,

@@ -8,11 +8,15 @@ use super::Companion;
 mod native;
 #[path = "preparation/exact_artifacts.rs"]
 mod exact_artifacts;
+#[path = "preparation/exact_preparation.rs"]
+mod exact_preparation;
 
 pub(super) const CUSTODY: Companion = native::CUSTODY;
 pub(super) const BIRTH: Companion = native::BIRTH;
 pub(super) const EXACT_HANDOFF: Companion = exact_artifacts::HANDOFF;
 pub(super) const EXACT_LAUNCH: Companion = exact_artifacts::LAUNCH;
+pub(super) const EXACT_ADMISSION: Companion = exact_preparation::ADMISSION;
+pub(super) const EXACT_MATERIALIZATION: Companion = exact_preparation::MATERIALIZATION;
 pub(super) const EXACT_ARTIFACTS: Companion = exact_artifacts::CONTRACT;
 
 pub(super) const NATIVE_RETURN: Companion = native::NATIVE_RETURN;
@@ -335,6 +339,34 @@ owner.finish().expect("both exact leases physically absent");"#,
 pub(super) const LENDER: Companion = Companion {
     path: "crates/crucible/qemu/crucible-qemu-host/src/linux_attempt_host/original_roster/process_purpose/source_cleanup.rs",
     required: &[
+        (r##"impl OriginalNativeNodeBinding {
+    /// Borrows the live Source share actually retained by this installed node.
+    ///
+    /// # Errors
+    /// Refuses absent, foreign, non-Source or no longer current installed custody.
+    pub(crate) fn source_helper_lender(
+        &self,
+    ) -> Result<SourceCleanupLender, OriginalActorAccountError> {
+        let installed = self
+            .installed_process
+            .as_ref()
+            .filter(|installed| {
+                installed.subdivision_index == 0
+                    && installed.index == self.index
+                    && installed.generation == self.generation
+                    && RosterWeak::ptr_eq(&installed.roster, &self.roster)
+            })
+            .ok_or(OriginalActorAccountError::Unavailable)?;
+        let lender = SourceCleanupLender {
+            roster: RosterWeak::clone(&installed.roster),
+            index: installed.index,
+            generation: installed.generation,
+            process_generation: Some(installed.process_generation),
+        };
+        lender.controller()?;
+        Ok(lender)
+    }
+}"##, 1),
         (
             r#"pub(crate) struct SourceCleanupOriginal {
     lender: SourceCleanupLender,
