@@ -205,10 +205,15 @@ pub(crate) async fn control(mut request: Request, env: &Env) -> worker::Result<R
         return Response::error("authority request is invalid", 400);
     };
     let deployment = env.var("HUB_DEPLOYMENT_ID")?.to_string();
-    let observed_at = aos_hub_model::clock::now_unix_secs();
-    if control
-        .validate(&deployment, &namespace, observed_at)
-        .is_err()
+    if crate::hybrid_authority_not_before::validate_when_current(
+        &control,
+        &deployment,
+        &namespace,
+        aos_hub_model::clock::now_unix_secs,
+        worker::Delay::from,
+    )
+    .await
+    .is_err()
     {
         #[cfg(feature = "do-e2e")]
         worker::console_error!(
@@ -218,7 +223,7 @@ pub(crate) async fn control(mut request: Request, env: &Env) -> worker::Result<R
             control.version,
             control.issued_at,
             control.expires_at,
-            observed_at,
+            aos_hub_model::clock::now_unix_secs(),
         );
         return Response::error("authority request is outside configured domain", 400);
     }

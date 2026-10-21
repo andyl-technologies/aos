@@ -210,6 +210,8 @@ pub mod hybrid_authority_issuer;
 #[cfg(any(test, target_arch = "wasm32"))]
 mod hybrid_authority_issuer_deadline;
 #[cfg(any(test, target_arch = "wasm32"))]
+mod hybrid_authority_not_before;
+#[cfg(any(test, target_arch = "wasm32"))]
 mod hybrid_authority_state;
 #[cfg(target_arch = "wasm32")]
 pub mod hybrid_binding;
