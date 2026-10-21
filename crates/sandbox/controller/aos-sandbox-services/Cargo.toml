@@ -181,6 +181,7 @@ zeroize = { workspace = true, optional = true }
 
 aos-sandbox-cache = { workspace = true }
 [dev-dependencies]
+aos-sandbox-model.workspace = true
 aos-sandbox-mount-native = { workspace = true, features = ["test-fixtures"] }
 serde_json.workspace = true
 tempfile = "3"
