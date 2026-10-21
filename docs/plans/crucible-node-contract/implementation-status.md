@@ -1715,8 +1715,20 @@ compiler-bound minimum encoded extent for all five objects, every field name,
 validated scalar leaves and both 64-character digests. Body array counts also
 include their required comma separators. All original program families now have
 an explicit regression checking each unchanged Prepare axis. All 83 bootstrap
-controls pass with zero failures and one existing ignored private child. Full
-qualification of this final source remains pending.
+controls pass with zero failures and one existing ignored private child.
+
+For `ffbe2ee404`, both complete standard and raw-value Transport libraries pass
+1,881 tests each, with zero failures, no filtering and sixteen existing ignores.
+Affected Transport/Engine/Daemon all-feature/all-target checking, scoped
+formatting and all six architecture gates pass. Required application compilation
+passes with 180 test executables across 58 package identities, including 71
+integration targets. The funded-Source VM passes both independent three-Birth
+consumer flights, refusal controls, cleanup and default-feature CLI refusal.
+All 222 owned changed Rust paths and the Transport manifest match that committed
+checkpoint in the application and all three actual VM component captures.
+These captures come from the exact build derivations. Subsequent response
+construction is excluded. Full Engine and Daemon library runtime qualification
+remains at `f2150ce5c7`.
 
 This transition grants no live SDK connection, response publication, bootstrap
 ACK, Native18 policy, model or opaque Initial/Recipe authority.
