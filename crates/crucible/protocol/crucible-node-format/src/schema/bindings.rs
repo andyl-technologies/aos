@@ -176,23 +176,19 @@ impl Validate for ImplementationIdentity {
         if self.schema_version != 1 {
             return Err(invalid("schema_version", "expected baseline version 1"));
         }
-        validate_sorted(&self.artifacts, |value| value.id.clone(), "artifacts")?;
+        validate_sorted(&self.artifacts, |value| &value.id, "artifacts")?;
         for value in &self.artifacts {
             value.validate()?;
         }
         validate_sorted(
             &self.model_definitions,
-            |value| (value.hash.domain.clone(), value.hash.digest.clone()),
+            |value| (&value.hash.domain, &value.hash.digest),
             "model_definitions",
         )?;
         for value in &self.model_definitions {
             value.validate()?;
         }
-        validate_sorted(
-            &self.formats,
-            |value| (value.id.clone(), value.version),
-            "formats",
-        )?;
+        validate_sorted(&self.formats, |value| (&value.id, value.version), "formats")?;
         for value in &self.formats {
             value.validate()?;
         }

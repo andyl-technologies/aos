@@ -1973,6 +1973,24 @@ manifest ordering work is excluded. Full Engine and Daemon library runtime
 qualification remains at `f2150ce5c7`. This establishes no Native18 process,
 SDK constructor funding, verifier, policy, ACK or model grant.
 
+## Borrowed Hello manifest ordering
+
+The portable ordering helper now permits keys borrowed from the original roster.
+Hello's full Provider/Node/Implementation manifest validators compare those
+original identifier, edition and domain/digest keys directly. All IdSet ordering
+checks likewise borrow identifier text. Their array ceilings, strict order,
+duplicate rejection, field diagnostics and child-validation order are unchanged.
+No validator sorts or modifies the original roster. Historical constructor
+key-clone allowances remain conservative; no existing resource credit is reduced.
+
+Three new contract controls cover duplicate and reversed order in all ten actual
+Hello manifest rosters, identifier/edition and domain/digest tie breakers, and
+oversized-roster refusal before duplicate or child errors. All 64 active format
+crate tests pass, with zero failures and the existing private child ignored.
+Complete affected-crate qualification remains pending. This reduces transient
+copies on the SDK path; its complete constructor row, native verifier and original
+root invocation remain unfinished, along with policy/ACK/model authority.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.

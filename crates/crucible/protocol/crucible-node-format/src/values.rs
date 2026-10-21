@@ -585,9 +585,10 @@ pub(crate) fn validate_domain(domain: &str) -> Result<(), ContractError> {
     Ok(())
 }
 
-pub(crate) fn validate_sorted<T, K: Ord>(
-    values: &[T],
-    key: impl Fn(&T) -> K,
+// Keys may borrow the original roster; validation need not clone owned text.
+pub(crate) fn validate_sorted<'a, T, K: Ord>(
+    values: &'a [T],
+    key: impl Fn(&'a T) -> K,
     field: &'static str,
 ) -> Result<(), ContractError> {
     if values.len() > MAX_ARRAY_ELEMENTS {
@@ -603,7 +604,7 @@ pub(crate) fn validate_sorted<T, K: Ord>(
 }
 
 pub(crate) fn validate_ids(ids: &[Id], field: &'static str) -> Result<(), ContractError> {
-    validate_sorted(ids, |id| id.as_str().to_owned(), field)
+    validate_sorted(ids, Id::as_str, field)
 }
 
 #[cfg(test)]

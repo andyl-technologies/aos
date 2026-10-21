@@ -1,8 +1,10 @@
-//! Prices the closed installation/policy validation reached by a fresh issuer.
+//! Bounds the closed installation/policy validation reached by a fresh issuer.
 //!
 //! The configuration is the actual launch installation plus two copies of the
 //! defining native feature roster, its key map and an empty required-schema Vec.
 //! No validator, diagnostic constructor, configuration clone or issuer runs here.
+//! Historical key-clone allowances remain conservative after borrowed ordering
+//! removes those copies; this row does not discount existing constructor credit.
 
 use super::clone_controls;
 use crate::ProviderError;
@@ -36,7 +38,7 @@ const VALIDATION_REASONS: [&str; 15] = [
     "extension registry names unsupported feature",
 ];
 
-/// Prices actual validation key clones, retained failures and validator controls.
+/// Bounds validation key windows, retained failures and validator controls.
 ///
 /// The caller admits these quote controls before the walk and composes its row
 /// with configuration cloning and the actual issuer/registry constructors.
@@ -83,10 +85,10 @@ pub(super) fn construction_data(
     let transient_fields: ValidationTransientFields = [
         keys,
         string_clone[0],
-        size_of::<String>() * 4, // two actual (domain,digest) key results
+        size_of::<String>() * 4, // conservative legacy owned-key allowance
         size_of::<(String, String)>() * 2,
         size_of::<Id>() * 2,            // artifact/format key results
-        size_of::<(Id, u16)>() * 2,     // format clone result and comparison key
+        size_of::<(Id, u16)>() * 2,     // conservative format comparison allowance
         size_of::<ContractError>() * 2, // actual validation error/return
         size_of::<ProviderError>() * 2, // conversion and constructor return
         size_of::<Result<(), ContractError>>() * 2,

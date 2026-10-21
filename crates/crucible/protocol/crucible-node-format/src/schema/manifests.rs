@@ -108,7 +108,7 @@ impl Validate for NodeManifest {
         self.port_templates_ref.validate()?;
         validate_sorted(
             &self.state_formats,
-            |value| (value.id.clone(), value.version),
+            |value| (&value.id, value.version),
             "state_formats",
         )?;
         for value in &self.state_formats {
@@ -116,7 +116,7 @@ impl Validate for NodeManifest {
         }
         validate_sorted(
             &self.operation_facets,
-            |value| (value.id.clone(), value.version),
+            |value| (&value.id, value.version),
             "operation_facets",
         )?;
         for value in &self.operation_facets {
@@ -135,7 +135,7 @@ impl Validate for ProviderManifest {
         validate_ids(&self.protocol_versions, "protocol_versions")?;
         validate_sorted(
             &self.supported_profiles,
-            |value| value.profile_id.clone(),
+            |value| &value.profile_id,
             "supported_profiles",
         )?;
         for value in &self.supported_profiles {
@@ -144,7 +144,7 @@ impl Validate for ProviderManifest {
         validate_ids(&self.extensions_supported, "extensions_supported")?;
         validate_sorted(
             &self.qualification_refs,
-            |value| (value.hash.domain.clone(), value.hash.digest.clone()),
+            |value| (&value.hash.domain, &value.hash.digest),
             "qualification_refs",
         )?;
         for value in &self.qualification_refs {
