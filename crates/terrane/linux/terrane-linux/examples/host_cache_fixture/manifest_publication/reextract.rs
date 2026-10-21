@@ -239,21 +239,22 @@ fn wait_removed(
         .monotonic()
         .checked_add(std::time::Duration::from_secs(5))
         .ok_or_else(|| invalid("shared deletion observation deadline overflows"))?;
-    let canonical = inputs.root.join("sealed").join(&object[..2]).join(object);
+    // The content role cannot traverse publisher-private sealed directories.
+    // The independent root supervisor checks canonical/pending names and the
+    // original unlinked inode; this actor observes its own actual policy only.
     loop {
         let state = load(runtime, inputs)?;
-        let named = canonical.try_exists()?;
         let residences = state
             .residences
             .iter()
             .filter(|row| row.object == object)
             .count();
-        if !named && residences == 0 {
+        if residences == 0 {
             break;
         }
         if TokioClock.monotonic() >= deadline {
             return Err(io::Error::other(format!(
-                "retired shared body retains canonical={named} residences={residences}"
+                "retired shared body retains {residences} original residence rows"
             )));
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
