@@ -13,6 +13,22 @@ pub(in crate::runtime) struct Payload {
     _private: [u8; 0],
 }
 
+mod borrow;
+
+/// Names one actual local module payload borrow without exposing its record.
+#[repr(C)]
+pub(in crate::runtime) struct PayloadBorrow {
+    _private: [u8; 0],
+}
+
+/// Keeps the original Source output fields inside the prepaid pending journal.
+pub(super) struct PayloadBorrowState {
+    holder: *mut *mut PayloadBorrow,
+    serial_holder: *mut u64,
+    serial: u64,
+    thread: libc::pid_t,
+}
+
 impl ProtectedReader {
     /// Claims the retained payload into the exact stable Source output field.
     ///
@@ -102,6 +118,9 @@ impl ProtectedReader {
             || pending.canonical_holder != holder
         {
             return Err(-libc::ESTALE);
+        }
+        if pending.borrow.is_some() {
+            return Err(-libc::EBUSY);
         }
         let payload = std::ptr::from_mut(pending).cast::<Payload>();
         // SAFETY: only the exact recorded stable field is read after the actual

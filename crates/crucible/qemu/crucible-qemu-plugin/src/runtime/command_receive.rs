@@ -127,6 +127,8 @@ impl CommandReceive {
             writer,
             payload.claim,
             payload.release,
+            payload.borrow_acquire,
+            payload.borrow_release,
             &mut self.member_creation,
         );
         self.member = self.member_creation;

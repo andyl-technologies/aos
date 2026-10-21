@@ -3,7 +3,7 @@
 
 use super::super::control_component::NativeComponent;
 use super::super::live_callbacks::{
-    ControlIntentFacts, ParkReturnWriteProgress, Payload, ReceiveProgress,
+    ControlIntentFacts, ParkReturnWriteProgress, Payload, PayloadBorrow, ReceiveProgress,
 };
 use crate::StartupSourceError;
 use std::ffi::c_void;
@@ -34,11 +34,33 @@ pub(super) type PayloadClaim = extern "C" fn(*mut *mut Payload, *mut u64, *mut c
 /// Matches the first-bound exact canonical payload return callback.
 pub(super) type PayloadReturn = extern "C" fn(*mut *mut Payload, u64, *mut c_void) -> i32;
 
-/// Binds both lifetime endpoints to the same genuine complete child.
+/// Matches a local module borrow's physical output and known-absence callback.
+pub(super) type PayloadBorrowAcquire = extern "C" fn(
+    *mut *mut Payload,
+    u64,
+    *mut *mut PayloadBorrow,
+    *mut u64,
+    *mut u32,
+    *mut c_void,
+) -> i32;
+
+/// Matches exact local borrow consumption independently from signed status.
+pub(super) type PayloadBorrowRelease = extern "C" fn(
+    *mut *mut Payload,
+    u64,
+    *mut *mut PayloadBorrow,
+    u64,
+    *mut u32,
+    *mut c_void,
+) -> i32;
+
+/// Binds payload custody and local borrow endpoints to the same complete child.
 #[derive(Clone, Copy)]
 pub(in crate::runtime) struct PayloadCallbacks {
     pub(in crate::runtime) claim: PayloadClaim,
     pub(in crate::runtime) release: PayloadReturn,
+    pub(in crate::runtime) borrow_acquire: PayloadBorrowAcquire,
+    pub(in crate::runtime) borrow_release: PayloadBorrowRelease,
 }
 
 /// Copies Source's actual callback and validation dispositions.
@@ -68,6 +90,8 @@ pub(super) struct Api {
         Writer,
         PayloadClaim,
         PayloadReturn,
+        PayloadBorrowAcquire,
+        PayloadBorrowRelease,
         *mut *mut Member,
     ) -> i32,
     pub(super) member_transfer: extern "C" fn(u64, *mut *mut Member, *mut *mut Member) -> i32,
@@ -112,7 +136,7 @@ impl Api {
         Ok(Self {
             delivery: super::delivery::Api::resolve()?,
             member_create: entry!(
-                c"qemu_plugin_crucible_startup_source_command_member_create_v3",
+                c"qemu_plugin_crucible_startup_source_command_member_create_v4",
                 extern "C" fn(
                     u64,
                     *mut NativeComponent,
@@ -120,6 +144,8 @@ impl Api {
                     Writer,
                     PayloadClaim,
                     PayloadReturn,
+                    PayloadBorrowAcquire,
+                    PayloadBorrowRelease,
                     *mut *mut Member,
                 ) -> i32
             ),

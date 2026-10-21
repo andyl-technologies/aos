@@ -504,12 +504,64 @@ case. Strict resource Clippy, the 71 focused source-policy controls, reviewed
 boundary-export confinement and engineering hygiene pass. Four independently
 rebuilt defects fail the intended assertions: strong credit before storage,
 weak credit before storage, funding credit before its header, and pricing only
-the publisher header. Required hermetic application compilation is running for
-this increment. The broader harness lint still reports its existing protocol
-allow annotation and payload-test unsafe-comment findings. Coverage names 167
+the publisher header. Required hermetic application compilation passes for
+this increment. The protocol's existing narrow portability allowance and the
+payload test's unsafe call now carry adjacent intent annotations; all 36
+boundary-harness controls pass. Coverage names 167
 component cases and nineteen native cases; 149 requirements remain uncovered
 and none qualified. Allocation ownership supplies no Source/action membership,
 entered operation, activation or physical peer-return evidence.
+
+The complete callback child now first-binds a local payload-borrow pair through
+the matched version-four member constructor. Its prepaid inline journal records
+both original output-field addresses, a checked local generation and the actual
+calling thread. A live record prevents canonical payload destruction. Return
+authenticates the original fields and consumes the record before clearing both
+outputs; a missing record cannot certify an unknown acquire attempt as absent.
+No payload reference or operation permission crosses this local boundary.
+
+All 1,127 plugin unit controls, its four integration cases across three targets,
+36 boundary-harness controls and 71 focused custody-policy controls pass.
+Thirteen new payload-borrow controls cover actual contention, poison, foreign
+threads, stale generations, copied fields and physical consumption. Six
+independently rebuilt defects fail at their intended checks: premature payload
+retirement, copied-holder acceptance, foreign-thread acceptance, ignoring the
+original serial field, retaining the record after reported return and clearing
+only one output. The retained-record mutation initially failed through the
+test's final return unwrap; an explicit return assertion then independently
+reproduced the intended refusal. Production sources were restored afterward.
+All twenty restored payload controls and five engineering-hygiene controls pass;
+required hermetic compilation of all Rust application test targets also passes.
+All 82 individually selected hermetic RAM-supervision cases pass.
+Raw ABI conformance and all eighteen direct license-boundary controls pass.
+The full hermetic license gate fails before its boundary-test phase because the
+controller prerequisite rejects 901 host lint errors and an unused, shadowed
+engine integration-test binding. Large returned errors account for 855 host
+findings; the retained ownership/error representation and remaining strict lint
+work stay unresolved. No lint allowance or packaging-gate bypass was added.
+Coverage names 180 component cases and nineteen native cases; 149 requirements
+remain uncovered and none qualified. Native Main custody and this module-local
+record still supply no entered action Original, publisher membership, action
+return, activation or physical peer-return qualification.
+
+The matched native payload-borrow candidate is signed commit
+`86918f82ecf10b631171e1383185c63d95c018be`, tree
+`696aff90cd4eb6f29d70c01df2906987430c171a`. Its corrected owning identity
+passes all 187 controls, including 58 native lifetime scenarios. Eight new
+independently rebuilt defects fail their intended assertions. Raw ABI, signed
+reconstruction and the unchanged 257-row license ledger pass. All 3,863 native
+targets compile; 25 of 26 full fixtures pass, with the mandatory launched
+Source/Root lifecycle still refusing. The first complete causal attempt stopped
+at a stronger payload identity assertion after thirteen intended defects; its
+corrected second attempt reached eight intended defects before the unchanged
+60-second limit expired on `ready-delivery-dependency`. That timeout remains a
+failed, unresolved attempt, not complete causal qualification.
+
+A fresh broad source-policy run reports 21 paths: the previous fourteen daemon
+and six host paths, plus the delivery test's physical-lifetime retry name.
+That component test preserves its first error through a second modeled physical
+return; its exact source-policy custody companion remains to be added. The
+broad gate remains failing, without a new baseline or scanner exemption.
 
 
 Whole-node shutdown now keeps one continuation through process reap, RAM service

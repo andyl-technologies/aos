@@ -938,6 +938,8 @@ impl OwnedCallbackRuntimeState {
                     command_receive::PayloadCallbacks {
                         claim: live_callbacks::protected_payload_claim,
                         release: live_callbacks::protected_payload_return,
+                        borrow_acquire: live_callbacks::protected_payload_borrow_acquire,
+                        borrow_release: live_callbacks::protected_payload_borrow_release,
                     },
                 )
             };

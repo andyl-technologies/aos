@@ -64,7 +64,8 @@ pub(super) use park_return::{WriteProgress as ParkReturnWriteProgress, protected
 mod registration;
 pub(super) use control_callback_witness::ControlCallbackWitness;
 pub(super) use control_facts::{
-    ControlIntentFacts, Payload, ReadyObservation, ReceiveProgress, protected_payload_claim,
+    ControlIntentFacts, Payload, PayloadBorrow, ReadyObservation, ReceiveProgress,
+    protected_payload_borrow_acquire, protected_payload_borrow_release, protected_payload_claim,
     protected_payload_return, protected_request_snapshot,
 };
 mod devices;

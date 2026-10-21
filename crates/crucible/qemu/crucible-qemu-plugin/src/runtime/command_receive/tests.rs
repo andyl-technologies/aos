@@ -15,6 +15,8 @@ struct Cuts {
     writer_address: usize,
     payload_claim_address: usize,
     payload_return_address: usize,
+    borrow_acquire_address: usize,
+    borrow_release_address: usize,
     member_transfer_status: i32,
     member_field: usize,
     member_returned_field: usize,
@@ -42,6 +44,8 @@ extern "C" fn member_create(
     writer: Writer,
     claim: abi::PayloadClaim,
     release: abi::PayloadReturn,
+    borrow_acquire: abi::PayloadBorrowAcquire,
+    borrow_release: abi::PayloadBorrowRelease,
     out: *mut *mut Member,
 ) -> i32 {
     // SAFETY: this fixture table receives one distinct live local output cell.
@@ -53,6 +57,8 @@ extern "C" fn member_create(
         cuts.writer_address = writer as usize;
         cuts.payload_claim_address = claim as usize;
         cuts.payload_return_address = release as usize;
+        cuts.borrow_acquire_address = borrow_acquire as usize;
+        cuts.borrow_release_address = borrow_release as usize;
         cuts.member_create_status
     })
 }
@@ -111,10 +117,34 @@ extern "C" fn payload_return(
     -libc::ENOKEY
 }
 
+extern "C" fn payload_borrow_acquire(
+    _: *mut *mut super::super::live_callbacks::Payload,
+    _: u64,
+    _: *mut *mut super::super::live_callbacks::PayloadBorrow,
+    _: *mut u64,
+    _: *mut u32,
+    _: *mut std::ffi::c_void,
+) -> i32 {
+    -libc::ENOKEY
+}
+
+extern "C" fn payload_borrow_release(
+    _: *mut *mut super::super::live_callbacks::Payload,
+    _: u64,
+    _: *mut *mut super::super::live_callbacks::PayloadBorrow,
+    _: u64,
+    _: *mut u32,
+    _: *mut std::ffi::c_void,
+) -> i32 {
+    -libc::ENOKEY
+}
+
 fn payload_callbacks() -> PayloadCallbacks {
     PayloadCallbacks {
         claim: payload_claim,
         release: payload_return,
+        borrow_acquire: payload_borrow_acquire,
+        borrow_release: payload_borrow_release,
     }
 }
 
@@ -385,6 +415,8 @@ fn first_member_constructor_receives_the_exact_writer_before_negative_status() {
     let supplied_payload = std::hint::black_box(payload_callbacks());
     let claim_address = supplied_payload.claim as *const () as usize;
     let return_address = supplied_payload.release as *const () as usize;
+    let borrow_acquire_address = supplied_payload.borrow_acquire as *const () as usize;
+    let borrow_release_address = supplied_payload.borrow_release as *const () as usize;
 
     let result = keeper.enroll_using(
         3,
@@ -405,6 +437,8 @@ fn first_member_constructor_receives_the_exact_writer_before_negative_status() {
         assert_eq!(cuts.writer_address, supplied_address);
         assert_eq!(cuts.payload_claim_address, claim_address);
         assert_eq!(cuts.payload_return_address, return_address);
+        assert_eq!(cuts.borrow_acquire_address, borrow_acquire_address);
+        assert_eq!(cuts.borrow_release_address, borrow_release_address);
     });
     assert!(
         keeper
