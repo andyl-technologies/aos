@@ -1,8 +1,8 @@
-From 529ca2ec448fa0120d328b3977a5a267ddf19b4d Mon Sep 17 00:00:00 2001
+From 7db67fefae5063ec0b738404da06e86f1213ad34 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:00 +0000
-Subject: [PATCH] crucible: retain nominal publisher and entered semantic
- action custody
+Subject: [PATCH] crucible: retain initial CPU construction children and SDK
+ refusal
 
 Retain the complete Crucible integration on the sole pinned QEMU base.
 Supply required run and teardown rows with real compiled fixture layouts
@@ -230,6 +230,31 @@ Include the newly referenced actual Core Main/action predicates and their real
 inactive journal declarations in the owning Source/Native extractor closure.
 No fixture may replace those predicates with successful authority providers.
 Preserve the first incomplete-closure link failure as a failed build attempt.
+
+Retain selected initial CPU callbacks under the actual stopped construction
+Original. Defer enqueue until each actual Source allocation receipt exists,
+retain its canonical QOM participant and registration group, and complete the
+real CPU FIFO callback/barrier before construction Post. Authenticate distinct
+callback entry, return and final physical consumption; pre-enqueue refusal
+closes only the actual unentered child. Check actual roster generation after
+QOM unref before advancing its iterator. No FIFO marker invents callback return.
+
+Guard selected realized capability, manifest, bind, seal and register-list SDK
+factories with the actual class-0 child and exact Core/Native callback. Preserve
+independent first/post failures. Their missing bounded native constructor payer
+still refuses before factory allocation with ENOKEY; unselected paths keep their
+existing behavior. Generic VCPU_INIT remains factual and inactive; no new
+workspace, operation, activation, ACK or physical peer-return permission exists.
+
+Charge the actual Core initial-dispatch static extent and enlarged actual CPU
+allocation owner through their existing paid layouts. Extract the real storage
+and getter for component sizing, retaining exact source and dependency guards.
+Add two explicitly GPL-2.0-or-later includes. Literal clock and SDK-history tests
+exercise independent total/progress/clock and signed-history omission controls.
+The assertion-only actual initial callback hooks remain unexecuted pending the
+genuine installed-module launch harness; compilation and pure predicate tests
+cannot qualify that route. Preserve original ceilings, all previous failed
+attempts and mandatory launched Source/Root lifecycle refusal.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -62354,7 +62379,7 @@ index 5f3b1327de0aa287c1859bf155a47c8815ebb08d..b726a4cbd5f2dae44f78ecbaefc4a92a
  
  SiFiveUARTState *sifive_uart_create(MemoryRegion *address_space, hwaddr base,
 diff --git a/include/hw/core/cpu.h b/include/hw/core/cpu.h
-index b54035fb13b22a530692186b0afbe2718f1fb8b8..b4bd82918c55ea3a257ec11ab1390e2d53f280a7 100644
+index b54035fb13b22a530692186b0afbe2718f1fb8b8..a15014830574df2015625b0ccefa9daba9036f87 100644
 --- a/include/hw/core/cpu.h
 +++ b/include/hw/core/cpu.h
 @@ -63,6 +63,7 @@ typedef int (*WriteCoreDumpFunction)(const void *buf, size_t size,
@@ -62488,7 +62513,17 @@ index b54035fb13b22a530692186b0afbe2718f1fb8b8..b4bd82918c55ea3a257ec11ab1390e2d
      uint64_t random_seed;
      sigjmp_buf jmp_env;
  
-@@ -738,6 +814,138 @@ enum CPUDumpFlags {
+@@ -552,6 +628,9 @@ struct CPUState {
+ 
+ #ifdef CONFIG_PLUGIN
+     CPUPluginState *plugin_state;
++    /* These holders belong to the prepaid QOM instance extent. */
++    struct QemuCrucibleInitialCpuParticipant *crucible_initial_participant;
++    bool crucible_initial_pending;
+ #endif
+ 
+     /* TODO Move common fields from CPUArchState here. */
+@@ -738,6 +817,138 @@ enum CPUDumpFlags {
   */
  void cpu_dump_state(CPUState *cpu, FILE *f, int flags);
  
@@ -62627,7 +62662,7 @@ index b54035fb13b22a530692186b0afbe2718f1fb8b8..b4bd82918c55ea3a257ec11ab1390e2d
  /**
   * TranslateForDebugResult: gives result of cpu_translate_for_debug()
   *
-@@ -927,6 +1135,10 @@ void run_on_cpu(CPUState *cpu, run_on_cpu_func func, run_on_cpu_data data);
+@@ -927,6 +1138,10 @@ void run_on_cpu(CPUState *cpu, run_on_cpu_func func, run_on_cpu_data data);
   */
  void async_run_on_cpu(CPUState *cpu, run_on_cpu_func func, run_on_cpu_data data);
  
@@ -62638,7 +62673,7 @@ index b54035fb13b22a530692186b0afbe2718f1fb8b8..b4bd82918c55ea3a257ec11ab1390e2d
  /**
   * async_safe_run_on_cpu:
   * @cpu: The vCPU to run on.
-@@ -941,6 +1153,37 @@ void async_run_on_cpu(CPUState *cpu, run_on_cpu_func func, run_on_cpu_data data)
+@@ -941,6 +1156,37 @@ void async_run_on_cpu(CPUState *cpu, run_on_cpu_func func, run_on_cpu_data data)
   */
  void async_safe_run_on_cpu(CPUState *cpu, run_on_cpu_func func, run_on_cpu_data data);
  
@@ -62676,7 +62711,7 @@ index b54035fb13b22a530692186b0afbe2718f1fb8b8..b4bd82918c55ea3a257ec11ab1390e2d
  /**
   * cpu_in_exclusive_context()
   * @cpu: The vCPU to check
-@@ -1088,6 +1331,7 @@ void process_queued_cpu_work(CPUState *cpu);
+@@ -1088,6 +1334,7 @@ void process_queued_cpu_work(CPUState *cpu);
   * cpu_exit.
   */
  void cpu_exec_start(CPUState *cpu);
@@ -64779,7 +64814,7 @@ index 890497b0d22ede109c03bcc24fbc3aa24b09e59c..5dd867c2d765690a2644af92a6520b8b
  
  int monitor_puts(Monitor *mon, const char *str);
 diff --git a/include/plugins/qemu-plugin.h b/include/plugins/qemu-plugin.h
-index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..3fc45c763649cc8732e875563b74958d9249863b 100644
+index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..85dc15a7a761466a949baae0d1e6dd9968532679 100644
 --- a/include/plugins/qemu-plugin.h
 +++ b/include/plugins/qemu-plugin.h
 @@ -198,6 +198,326 @@ typedef void (*qemu_plugin_vcpu_discon_cb_t)(unsigned int vcpu_index,
@@ -65109,7 +65144,7 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..3fc45c763649cc8732e875563b74958d
  /**
   * qemu_plugin_uninstall() - Uninstall a plugin
   * @id: this plugin's opaque ID
-@@ -827,524 +1147,2076 @@ QEMU_PLUGIN_API
+@@ -827,524 +1147,2088 @@ QEMU_PLUGIN_API
  void qemu_plugin_update_ns(const void *handle, int64_t time);
  
  /**
@@ -66613,6 +66648,9 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..3fc45c763649cc8732e875563b74958d
 + *
 + * Should be used from a qemu_plugin_register_vcpu_init_cb() callback
 + * after the vCPU is initialised, i.e. in the vCPU context.
++ * A selected Crucible Source requires its actual entered stopped-construction
++ * participant. Refused admission or post returns NULL; the caller still owns
++ * and must free any non-NULL result. Internal GDB storage remains retained.
 + */
 +QEMU_PLUGIN_API
 +GArray *qemu_plugin_get_registers(void);
@@ -66892,6 +66930,15 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..3fc45c763649cc8732e875563b74958d
 +    const uint8_t *read_only_mask;
 +    size_t mask_bytes;
 +};
++
++/* Selected Crucible Source enumerates its realized fault capabilities and
++ * register/instruction/interrupt/hardware-error/clock/accelerator manifests,
++ * and binds/seals their initial identities, only under its actual entered
++ * stopped class-0 CPU child. Cached rows do not reopen initial construction;
++ * later access requires a separately authenticated borrower. Failed post
++ * preserves internal construction and binding state plus the Source owner.
++ * The bounded native constructor payer is not installed, so selected factories
++ * currently refuse even under that temporal child. */
 +
 +/** Copy the immutable register target manifest for the realized CPU model. */
 +QEMU_PLUGIN_API
@@ -67546,7 +67593,7 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..3fc45c763649cc8732e875563b74958d
  
  /**
   * qemu_plugin_u64_set() - set value of a qemu_plugin_u64 for a given vcpu
-@@ -1353,15 +3225,4007 @@ uint64_t qemu_plugin_u64_get(qemu_plugin_u64 entry, unsigned int vcpu_index);
+@@ -1353,15 +3237,4007 @@ uint64_t qemu_plugin_u64_get(qemu_plugin_u64 entry, unsigned int vcpu_index);
   * @val: new value
   */
  QEMU_PLUGIN_API
@@ -74024,10 +74071,10 @@ index 0000000000000000000000000000000000000000..408d6581d0379a50c790bc656f142a9d
 +#endif
 diff --git a/include/qemu/crucible-native-invocation.h b/include/qemu/crucible-native-invocation.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..239664b16d889d4f3a25e8f50130d66092e811be
+index 0000000000000000000000000000000000000000..d7e4be5ad349f83c6424690b7125ac2b2ab3cb1e
 --- /dev/null
 +++ b/include/qemu/crucible-native-invocation.h
-@@ -0,0 +1,486 @@
+@@ -0,0 +1,490 @@
 +/*
 + * Retained native callback provenance, private to QEMU.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -74315,6 +74362,10 @@ index 0000000000000000000000000000000000000000..239664b16d889d4f3a25e8f50130d660
 +int qemu_plugin_crucible_native_main_action_current_v1(
 +    QemuCrucibleNativeInvocationTicket *main,
 +    QemuCrucibleNativeInvocationTicket *callback);
++/* Exact entered initial callback corroboration; Source separately retains and
++ * checks its actual construction Original. No generic CPU grant is issued. */
++int qemu_plugin_crucible_native_initial_cpu_current_v1(
++    struct CPUState *cpu, QemuCrucibleNativeInvocationTicket *callback);
 +int qemu_plugin_crucible_native_main_control_bind_v1(
 +    QemuCrucibleNativeInvocationTicket *holder,
 +    struct QemuCrucibleMainControlBorrow *borrow);
@@ -76592,7 +76643,7 @@ index 8c1241a2c11c289bc3c69fff66ab67d06e9f257c..0c821e747558eabaeb83af16c23b3c0f
  
  #endif
 diff --git a/include/qemu/plugin.h b/include/qemu/plugin.h
-index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..44ec4b646486924e0a36274c3fcd7719ad11b8a3 100644
+index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..e1e67c4751e493f9f7e9a7c4e8694066aa5f142d 100644
 --- a/include/qemu/plugin.h
 +++ b/include/qemu/plugin.h
 @@ -9,11 +9,15 @@
@@ -76611,8 +76662,11 @@ index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..44ec4b646486924e0a36274c3fcd7719
  #include "exec/memopidx.h"
  #include "hw/core/cpu.h"
  
-@@ -24,6 +28,11 @@
+@@ -22,8 +26,14 @@
+  * Note that we can load an arbitrary number of plugins.
+  */
  struct qemu_plugin_desc;
++struct QemuCrucibleInitialCpuParticipant;
  typedef QTAILQ_HEAD(, qemu_plugin_desc) QemuPluginList;
  
 +typedef enum QemuPluginCrucibleIdleCallbackDisposition {
@@ -76623,7 +76677,7 @@ index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..44ec4b646486924e0a36274c3fcd7719
  /*
   * Construct a qemu_plugin_meminfo_t.
   */
-@@ -43,7 +52,49 @@ get_plugin_meminfo_rw(qemu_plugin_meminfo_t i)
+@@ -43,7 +53,49 @@ get_plugin_meminfo_rw(qemu_plugin_meminfo_t i)
      return i >> 16;
  }
  
@@ -76673,7 +76727,7 @@ index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..44ec4b646486924e0a36274c3fcd7719
  extern QemuOptsList qemu_plugin_opts;
  
  static inline void qemu_plugin_add_opts(void)
-@@ -54,6 +105,9 @@ static inline void qemu_plugin_add_opts(void)
+@@ -54,6 +106,9 @@ static inline void qemu_plugin_add_opts(void)
  void qemu_plugin_opt_parse(const char *optstr, QemuPluginList *head);
  int qemu_plugin_load_list(QemuPluginList *head, Error **errp);
  
@@ -76683,7 +76737,7 @@ index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..44ec4b646486924e0a36274c3fcd7719
  union qemu_plugin_cb_sig {
      qemu_plugin_udata_cb_t               udata;
      qemu_plugin_vcpu_udata_cb_t          vcpu_udata;
-@@ -75,6 +129,8 @@ enum plugin_dyn_cb_type {
+@@ -75,6 +130,8 @@ enum plugin_dyn_cb_type {
  };
  
  struct qemu_plugin_regular_cb {
@@ -76692,7 +76746,7 @@ index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..44ec4b646486924e0a36274c3fcd7719
      union qemu_plugin_cb_sig f;
      TCGHelperInfo *info;
      void *userp;
-@@ -88,6 +144,8 @@ struct qemu_plugin_inline_cb {
+@@ -88,6 +145,8 @@ struct qemu_plugin_inline_cb {
  };
  
  struct qemu_plugin_conditional_cb {
@@ -76701,7 +76755,25 @@ index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..44ec4b646486924e0a36274c3fcd7719
      union qemu_plugin_cb_sig f;
      TCGHelperInfo *info;
      void *userp;
-@@ -183,6 +241,103 @@ void qemu_plugin_flush_cb(void);
+@@ -156,6 +215,17 @@ struct CPUPluginState {
+ CPUPluginState *qemu_plugin_create_vcpu_state(void);
+ 
+ void qemu_plugin_vcpu_init_hook(CPUState *cpu);
++int qemu_plugin_crucible_initial_vcpus_complete_v1(void);
++size_t qemu_plugin_crucible_initial_cpu_dispatch_storage_bytes_v1(void);
++int qemu_plugin_crucible_initial_cpu_dispatch_current_v1(
++    CPUState *cpu, struct QemuCrucibleInitialCpuParticipant **holder,
++    bool entering, bool returning);
++int qemu_plugin_crucible_initial_cpu_callback_current_v1(
++    CPUState *cpu, struct qemu_plugin_cb *callback, bool returning);
++int qemu_plugin_crucible_initial_cpu_native_holder_current_v1(
++    CPUState *cpu, QemuCrucibleNativeInvocationTicket *ticket);
++int qemu_plugin_crucible_initial_cpu_sdk_begin_v1(void);
++int qemu_plugin_crucible_initial_cpu_sdk_post_v1(int first_status);
+ void qemu_plugin_vcpu_exit_hook(CPUState *cpu);
+ void qemu_plugin_tb_trans_cb(CPUState *cpu, struct qemu_plugin_tb *tb);
+ void qemu_plugin_vcpu_idle_cb(CPUState *cpu);
+@@ -183,6 +253,103 @@ void qemu_plugin_flush_cb(void);
  
  void qemu_plugin_atexit_cb(void);
  
@@ -76805,7 +76877,7 @@ index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..44ec4b646486924e0a36274c3fcd7719
  void qemu_plugin_add_dyn_cb_arr(GArray *arr);
  
  static inline void qemu_plugin_disable_mem_helpers(CPUState *cpu)
-@@ -233,10 +388,86 @@ static inline enum qemu_plugin_cb_flags qemu_plugin_get_cb_flags(void)
+@@ -233,10 +400,86 @@ static inline enum qemu_plugin_cb_flags qemu_plugin_get_cb_flags(void)
  }
  
  #else /* !CONFIG_PLUGIN */
@@ -76892,7 +76964,53 @@ index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..44ec4b646486924e0a36274c3fcd7719
  static inline void qemu_plugin_opt_parse(const char *optstr,
                                           QemuPluginList *head)
  {
-@@ -306,6 +537,204 @@ static inline void qemu_plugin_flush_cb(void)
+@@ -252,6 +495,45 @@ static inline int qemu_plugin_load_list(QemuPluginList *head, Error **errp)
+ static inline void qemu_plugin_vcpu_init_hook(CPUState *cpu)
+ { }
+ 
++static inline int qemu_plugin_crucible_initial_vcpus_complete_v1(void)
++{
++    return 0;
++}
++
++static inline size_t qemu_plugin_crucible_initial_cpu_dispatch_storage_bytes_v1(void)
++{
++    return 0;
++}
++
++static inline int qemu_plugin_crucible_initial_cpu_dispatch_current_v1(
++    CPUState *cpu, struct QemuCrucibleInitialCpuParticipant **holder,
++    bool entering, bool returning)
++{
++    return -ENOTSUP;
++}
++
++static inline int qemu_plugin_crucible_initial_cpu_callback_current_v1(
++    CPUState *cpu, struct qemu_plugin_cb *callback, bool returning)
++{
++    return -ENOTSUP;
++}
++
++static inline int qemu_plugin_crucible_initial_cpu_native_holder_current_v1(
++    CPUState *cpu, QemuCrucibleNativeInvocationTicket *ticket)
++{
++    return -ENOTSUP;
++}
++
++static inline int qemu_plugin_crucible_initial_cpu_sdk_begin_v1(void)
++{
++    return 0;
++}
++
++static inline int qemu_plugin_crucible_initial_cpu_sdk_post_v1(int first_status)
++{
++    return first_status;
++}
++
+ static inline void qemu_plugin_vcpu_exit_hook(CPUState *cpu)
+ { }
+ 
+@@ -306,6 +588,204 @@ static inline void qemu_plugin_flush_cb(void)
  static inline void qemu_plugin_atexit_cb(void)
  { }
  
@@ -98353,7 +98471,7 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..e1e3a5cf0ea6de7e90591816134a0fc9
 +    qemu_mutex_unlock(&qemu_plugin_crucible_virtual_timer_witness_lock);
 +}
 diff --git a/plugins/api.c b/plugins/api.c
-index eb982f9aad7f564314654723e70a5fd679c5256f..214ccc07a9b035db04de432017968ed339346301 100644
+index eb982f9aad7f564314654723e70a5fd679c5256f..76d0d136afdb458e8b28fec3c2784572097929d3 100644
 --- a/plugins/api.c
 +++ b/plugins/api.c
 @@ -36,14 +36,35 @@
@@ -98415,7 +98533,39 @@ index eb982f9aad7f564314654723e70a5fd679c5256f..214ccc07a9b035db04de432017968ed3
  }
  
  void qemu_plugin_register_vcpu_syscall_cb(qemu_plugin_id_t id,
-@@ -528,6 +556,48 @@ bool qemu_plugin_read_memory_vaddr(uint64_t addr, GByteArray *data, size_t len)
+@@ -461,7 +489,7 @@ static GArray *create_register_handles(GArray *gdbstub_regs)
+     return find_data;
+ }
+ 
+-GArray *qemu_plugin_get_registers(void)
++static GArray *plugin_get_registers_body(void)
+ {
+     g_assert(current_cpu);
+ 
+@@ -469,6 +497,22 @@ GArray *qemu_plugin_get_registers(void)
+     return create_register_handles(regs);
+ }
+ 
++GArray *qemu_plugin_get_registers(void)
++{
++    int status = qemu_plugin_crucible_initial_cpu_sdk_begin_v1();
++
++    if (status) {
++        return NULL;
++    }
++    GArray *result = plugin_get_registers_body();
++
++    status = qemu_plugin_crucible_initial_cpu_sdk_post_v1(0);
++    if (status) {
++        g_clear_pointer(&result, g_array_unref);
++    }
++    return result;
++}
++
+ bool qemu_plugin_read_register(struct qemu_plugin_register *reg,
+                                GByteArray *buf)
+ {
+@@ -528,6 +572,48 @@ bool qemu_plugin_read_memory_vaddr(uint64_t addr, GByteArray *data, size_t len)
      return true;
  }
  
@@ -98464,7 +98614,7 @@ index eb982f9aad7f564314654723e70a5fd679c5256f..214ccc07a9b035db04de432017968ed3
  bool qemu_plugin_write_memory_vaddr(uint64_t addr, GByteArray *data)
  {
      g_assert(current_cpu);
-@@ -642,6 +712,812 @@ bool qemu_plugin_translate_vaddr(uint64_t vaddr, uint64_t *hwaddr)
+@@ -642,6 +728,812 @@ bool qemu_plugin_translate_vaddr(uint64_t vaddr, uint64_t *hwaddr)
  #endif
  }
  
@@ -99277,25 +99427,29 @@ index eb982f9aad7f564314654723e70a5fd679c5256f..214ccc07a9b035db04de432017968ed3
  struct qemu_plugin_scoreboard *qemu_plugin_scoreboard_new(size_t element_size)
  {
      return plugin_scoreboard_new(element_size);
-@@ -694,4 +1570,3 @@ uint64_t qemu_plugin_u64_sum(qemu_plugin_u64 entry)
+@@ -694,4 +1586,3 @@ uint64_t qemu_plugin_u64_sum(qemu_plugin_u64 entry)
      }
      return total;
  }
 -
 diff --git a/plugins/core.c b/plugins/core.c
-index 1113bfe5673c904bf0e5a50d03fca434a3d7bde7..4b2e88310264a0ab73814d9e5dd2b9d367409e84 100644
+index 1113bfe5673c904bf0e5a50d03fca434a3d7bde7..da097ff6fc4c4c99f8eb8de2ddfb7f90f9809fe9 100644
 --- a/plugins/core.c
 +++ b/plugins/core.c
-@@ -15,6 +15,7 @@
+@@ -13,22 +13,19 @@
+  */
+ #include "qemu/osdep.h"
  #include "qemu/lockable.h"
++#include "qemu/main-loop.h"
  #include "qemu/option.h"
  #include "qemu/plugin.h"
 +#include "qemu/crucible-hot-fork-plugin.h"
  #include "plugins/qemu-plugin.h"
  #include "qemu/queue.h"
  #include "qemu/rcu_queue.h"
-@@ -22,13 +23,7 @@
+ #include "qemu/rcu.h"
  #include "exec/tb-flush.h"
++#include "exec/cpu-common.h"
  #include "tcg/tcg-op-common.h"
  #include "plugin.h"
 -
@@ -99309,7 +99463,7 @@ index 1113bfe5673c904bf0e5a50d03fca434a3d7bde7..4b2e88310264a0ab73814d9e5dd2b9d3
  
  struct qemu_plugin_state plugin;
  
-@@ -61,6 +56,38 @@ static void plugin_cpu_update__locked(gpointer k, gpointer v, gpointer udata)
+@@ -61,6 +58,38 @@ static void plugin_cpu_update__locked(gpointer k, gpointer v, gpointer udata)
      async_run_on_cpu(cpu, plugin_cpu_update__async, mask);
  }
  
@@ -99348,7 +99502,7 @@ index 1113bfe5673c904bf0e5a50d03fca434a3d7bde7..4b2e88310264a0ab73814d9e5dd2b9d3
  void plugin_unregister_cb__locked(struct qemu_plugin_ctx *ctx,
                                    enum qemu_plugin_event ev)
  {
-@@ -70,14 +97,43 @@ void plugin_unregister_cb__locked(struct qemu_plugin_ctx *ctx,
+@@ -70,14 +99,47 @@ void plugin_unregister_cb__locked(struct qemu_plugin_ctx *ctx,
          return;
      }
      QLIST_REMOVE_RCU(cb, entry);
@@ -99390,10 +99544,14 @@ index 1113bfe5673c904bf0e5a50d03fca434a3d7bde7..4b2e88310264a0ab73814d9e5dd2b9d3
 +    return true;
 +}
 +
++static bool initial_cpu_callback_status(CPUState *cpu, struct qemu_plugin_cb *cb,
++    int status, const QemuCrucibleNativeInvocationTicket *ticket);
++static void initial_cpu_callback_returned(CPUState *cpu, struct qemu_plugin_cb *cb);
++
  /*
   * Disable CFI checks.
   * The callback function has been loaded from an external library so we do not
-@@ -94,8 +150,28 @@ static void plugin_vcpu_cb__udata(CPUState *cpu, enum qemu_plugin_event ev)
+@@ -94,8 +156,32 @@ static void plugin_vcpu_cb__udata(CPUState *cpu, enum qemu_plugin_event ev)
      case QEMU_PLUGIN_EV_VCPU_RESUME:
      case QEMU_PLUGIN_EV_VCPU_EXIT:
          QLIST_FOREACH_SAFE_RCU(cb, &plugin.cb_lists[ev], entry, next) {
@@ -99405,8 +99563,12 @@ index 1113bfe5673c904bf0e5a50d03fca434a3d7bde7..4b2e88310264a0ab73814d9e5dd2b9d3
 +                        cb, 0, cpu, &actual);
 +                qemu_plugin_vcpu_udata_cb_t init = actual.function;
 +
-+                if (init) {
++                bool allowed = initial_cpu_callback_status(
++                    cpu, cb, init ? use.invocation_status : -ENOENT, &use.invocation);
++
++                if (init && allowed) {
 +                    init(cpu->cpu_index, actual.userdata);
++                    initial_cpu_callback_returned(cpu, cb);
 +                }
 +                qemu_plugin_crucible_native_group_use_end_v1(use);
 +                continue;
@@ -99423,7 +99585,7 @@ index 1113bfe5673c904bf0e5a50d03fca434a3d7bde7..4b2e88310264a0ab73814d9e5dd2b9d3
          }
          break;
      default:
-@@ -122,7 +198,13 @@ static void plugin_vcpu_cb__discon(CPUState *cpu,
+@@ -122,7 +208,13 @@ static void plugin_vcpu_cb__discon(CPUState *cpu,
          /* iterate safely; plugins might uninstall themselves at any time */
          QLIST_FOREACH_SAFE_RCU(cb, &plugin.cb_lists[ev], entry, next) {
              qemu_plugin_vcpu_discon_cb_t func = cb->f.vcpu_discon;
@@ -99438,7 +99600,7 @@ index 1113bfe5673c904bf0e5a50d03fca434a3d7bde7..4b2e88310264a0ab73814d9e5dd2b9d3
          }
      }
      qemu_plugin_set_cb_flags(cpu, QEMU_PLUGIN_CB_NO_REGS);
-@@ -144,7 +226,13 @@ static void plugin_cb__udata(enum qemu_plugin_event ev)
+@@ -144,7 +236,13 @@ static void plugin_cb__udata(enum qemu_plugin_event ev)
          QLIST_FOREACH_SAFE_RCU(cb, &plugin.cb_lists[ev], entry, next) {
              qemu_plugin_udata_cb_t func = cb->f.udata;
  
@@ -99453,7 +99615,7 @@ index 1113bfe5673c904bf0e5a50d03fca434a3d7bde7..4b2e88310264a0ab73814d9e5dd2b9d3
          }
          break;
      default:
-@@ -152,40 +240,122 @@ static void plugin_cb__udata(enum qemu_plugin_event ev)
+@@ -152,40 +250,122 @@ static void plugin_cb__udata(enum qemu_plugin_event ev)
      }
  }
  
@@ -99600,7 +99762,294 @@ index 1113bfe5673c904bf0e5a50d03fca434a3d7bde7..4b2e88310264a0ab73814d9e5dd2b9d3
  }
  
  void plugin_register_cb(qemu_plugin_id_t id, enum qemu_plugin_event ev,
-@@ -294,34 +464,69 @@ void qemu_plugin_vcpu_exit_hook(CPUState *cpu)
+@@ -254,10 +434,181 @@ static void plugin_grow_scoreboards__locked(CPUState *cpu)
+     end_exclusive();
+ }
+ 
++/* Initial selected callbacks remain children of the actual construction
++ * Original. The stopped CPU executes this existing FIFO work before Post. */
++static struct {
++    CPUState *cpu;
++    struct qemu_plugin_cb *callback;
++    QemuCrucibleNativeInvocationTicket callback_ticket;
++    pid_t process;
++    QemuThread creator;
++    bool issuing;
++    bool enqueued;
++    bool calling;
++    bool returned;
++    bool returning;
++    bool callback_returning;
++    int first_status;
++} initial_cpu_dispatch;
++
++size_t qemu_plugin_crucible_initial_cpu_dispatch_storage_bytes_v1(void)
++{
++    return sizeof(initial_cpu_dispatch);
++}
++
++int qemu_plugin_crucible_initial_cpu_sdk_begin_v1(void)
++{
++#if defined(CONFIG_LINUX) && !defined(CONFIG_USER_ONLY)
++    if (qemu_crucible_startup_source_fingerprint_enrollment_required_v1()) {
++        if (!current_cpu) {
++            return -EPERM;
++        }
++        int status = qemu_crucible_source_initial_cpu_current_v1(
++            current_cpu, &current_cpu->crucible_initial_participant);
++
++        if (status) {
++            return status;
++        }
++        /* No bounded native manifest/register-list payer is installed yet.
++         * Retaining the temporal child cannot fund these factory allocations. */
++        return qemu_crucible_source_initial_cpu_sdk_post_v1(
++            current_cpu, &current_cpu->crucible_initial_participant, -ENOKEY);
++    }
++#endif
++    return 0;
++}
++
++int qemu_plugin_crucible_initial_cpu_sdk_post_v1(int first_status)
++{
++#if defined(CONFIG_LINUX) && !defined(CONFIG_USER_ONLY)
++    if (qemu_crucible_startup_source_fingerprint_enrollment_required_v1()) {
++        return current_cpu ? qemu_crucible_source_initial_cpu_sdk_post_v1(
++            current_cpu, &current_cpu->crucible_initial_participant,
++            first_status) : -EPERM;
++    }
++#endif
++    return first_status;
++}
++
++static bool initial_cpu_callback_status(CPUState *cpu, struct qemu_plugin_cb *cb,
++    int status, const QemuCrucibleNativeInvocationTicket *ticket)
++{
++#if defined(CONFIG_LINUX) && !defined(CONFIG_USER_ONLY)
++    if (cpu->crucible_initial_participant) {
++        initial_cpu_dispatch.callback = cb;
++        initial_cpu_dispatch.callback_ticket = *ticket;
++        if (!status) {
++            status = qemu_crucible_source_initial_cpu_callback_begin_v1(
++                cpu, &cpu->crucible_initial_participant, cb);
++        }
++        if (status && !initial_cpu_dispatch.first_status) {
++            initial_cpu_dispatch.first_status = status;
++        }
++        return status == 0;
++    }
++#endif
++    return true;
++}
++
++static void initial_cpu_callback_returned(CPUState *cpu, struct qemu_plugin_cb *cb)
++{
++#if defined(CONFIG_LINUX) && !defined(CONFIG_USER_ONLY)
++    if (cpu->crucible_initial_participant) {
++        initial_cpu_dispatch.callback_returning = true;
++        int status = qemu_crucible_source_initial_cpu_callback_end_v1(
++            cpu, &cpu->crucible_initial_participant, cb);
++
++        initial_cpu_dispatch.callback_returning = false;
++        initial_cpu_dispatch.callback = NULL;
++        memset(&initial_cpu_dispatch.callback_ticket, 0,
++               sizeof(initial_cpu_dispatch.callback_ticket));
++        if (status && !initial_cpu_dispatch.first_status) {
++            initial_cpu_dispatch.first_status = status;
++        }
++    }
++#endif
++}
++
++int qemu_plugin_crucible_initial_cpu_callback_current_v1(
++    CPUState *cpu, struct qemu_plugin_cb *callback, bool returning)
++{
++#if defined(CONFIG_LINUX) && !defined(CONFIG_USER_ONLY)
++    if (!cpu) {
++        return -EINVAL;
++    }
++    int status = qemu_plugin_crucible_initial_cpu_dispatch_current_v1(
++        cpu, &cpu->crucible_initial_participant, true, false) ||
++        initial_cpu_dispatch.callback != callback ||
++        initial_cpu_dispatch.callback_returning != returning ? -EPERM : 0;
++
++    return status ? status : qemu_plugin_crucible_native_initial_cpu_current_v1(
++        cpu, &initial_cpu_dispatch.callback_ticket);
++#else
++    return -ENOTSUP;
++#endif
++}
++
++int qemu_plugin_crucible_initial_cpu_native_holder_current_v1(
++    CPUState *cpu, QemuCrucibleNativeInvocationTicket *ticket)
++{
++#if defined(CONFIG_LINUX) && !defined(CONFIG_USER_ONLY)
++    return cpu && ticket == &initial_cpu_dispatch.callback_ticket &&
++        initial_cpu_dispatch.callback &&
++        !qemu_plugin_crucible_initial_cpu_dispatch_current_v1(
++            cpu, &cpu->crucible_initial_participant, true, false) ? 0 : -EPERM;
++#else
++    return -ENOTSUP;
++#endif
++}
++
++int qemu_plugin_crucible_initial_cpu_dispatch_current_v1(
++    CPUState *cpu, struct QemuCrucibleInitialCpuParticipant **holder,
++    bool entering, bool returning)
++{
++#if defined(CONFIG_LINUX) && !defined(CONFIG_USER_ONLY)
++    if (!bql_locked() || qemu_in_coroutine() || !cpu ||
++        initial_cpu_dispatch.cpu != cpu || initial_cpu_dispatch.process != getpid() ||
++        !cpu->plugin_state || holder != &cpu->crucible_initial_participant) {
++        return -EPERM;
++    }
++    if (entering) {
++        return initial_cpu_dispatch.enqueued && initial_cpu_dispatch.calling &&
++            !initial_cpu_dispatch.returned && current_cpu == cpu &&
++            qemu_cpu_is_self(cpu) ? 0 : -EPERM;
++    }
++    if (!qemu_in_main_thread() || current_cpu ||
++        !qemu_thread_is_self(&initial_cpu_dispatch.creator)) {
++        return -EPERM;
++    }
++    if (returning) {
++        return initial_cpu_dispatch.returning && !initial_cpu_dispatch.calling &&
++            (!initial_cpu_dispatch.enqueued || initial_cpu_dispatch.returned) ? 0 : -EBUSY;
++    }
++    return initial_cpu_dispatch.issuing && !initial_cpu_dispatch.enqueued &&
++        cpu->crucible_initial_pending ? 0 : -EPERM;
++#else
++    return -ENOTSUP;
++#endif
++}
++
+ static void qemu_plugin_vcpu_init__async(CPUState *cpu, run_on_cpu_data unused)
+ {
+     bool success;
+ 
++#if defined(CONFIG_LINUX) && !defined(CONFIG_USER_ONLY)
++    int initial_status = 0;
++    bool selected_initial = cpu->crucible_initial_participant != NULL;
++
++    if (selected_initial) {
++        initial_cpu_dispatch.calling = true;
++        initial_status = qemu_crucible_source_initial_cpu_enter_v1(
++            cpu, &cpu->crucible_initial_participant);
++        if (initial_status) {
++            goto initial_return;
++        }
++    }
++#endif
++
+     assert(cpu->cpu_index != UNASSIGNED_CPU_INDEX);
+     qemu_rec_mutex_lock(&plugin.lock);
+     plugin.num_vcpus = MAX(plugin.num_vcpus, cpu->cpu_index + 1);
+@@ -271,14 +622,104 @@ static void qemu_plugin_vcpu_init__async(CPUState *cpu, run_on_cpu_data unused)
+     qemu_plugin_set_cb_flags(cpu, QEMU_PLUGIN_CB_RW_REGS);
+     plugin_vcpu_cb__udata(cpu, QEMU_PLUGIN_EV_VCPU_INIT);
+     qemu_plugin_set_cb_flags(cpu, QEMU_PLUGIN_CB_NO_REGS);
++
++#if defined(CONFIG_LINUX) && !defined(CONFIG_USER_ONLY)
++initial_return:
++    if (selected_initial) {
++        initial_status = initial_status ? initial_status : initial_cpu_dispatch.first_status;
++        int post = qemu_crucible_source_initial_cpu_post_v1(
++            cpu, &cpu->crucible_initial_participant, initial_status);
++
++        initial_cpu_dispatch.first_status = initial_status ? initial_status : post;
++        initial_cpu_dispatch.calling = false;
++        initial_cpu_dispatch.returned = true;
++    }
++#endif
+ }
+ 
+ void qemu_plugin_vcpu_init_hook(CPUState *cpu)
+ {
++#if defined(CONFIG_LINUX) && !defined(CONFIG_USER_ONLY)
++    if (qemu_crucible_startup_source_fingerprint_enrollment_required_v1()) {
++        cpu->crucible_initial_pending = true;
++        return;
++    }
++#endif
+     /* Plugin initialization must wait until the cpu start executing code */
+     async_run_on_cpu(cpu, qemu_plugin_vcpu_init__async, RUN_ON_CPU_NULL);
+ }
+ 
++#if defined(CONFIG_LINUX) && !defined(CONFIG_USER_ONLY)
++static void initial_cpu_fifo_barrier(CPUState *cpu, run_on_cpu_data unused)
++{
++    /* Its completion only orders the queue. The participant independently
++     * records the actual callback's entry, post and physical return. */
++}
++#endif
++
++int qemu_plugin_crucible_initial_vcpus_complete_v1(void)
++{
++#if defined(CONFIG_LINUX) && !defined(CONFIG_USER_ONLY)
++    CPUState *cpu;
++    int status = 0;
++    unsigned int roster_generation = cpu_list_generation_id_get();
++
++    if (!qemu_in_main_thread() || current_cpu || !bql_locked() ||
++        qemu_in_coroutine() || initial_cpu_dispatch.cpu) {
++        return -EPERM;
++    }
++    CPU_FOREACH(cpu) {
++        if (!cpu->plugin_state || !cpu->crucible_initial_pending ||
++            !cpu->created || !cpu->stopped || qatomic_read(&cpu->running) ||
++            cpu_list_generation_id_get() != roster_generation) {
++            return -EBUSY;
++        }
++        object_ref(OBJECT(cpu));
++        initial_cpu_dispatch.cpu = cpu;
++        initial_cpu_dispatch.process = getpid();
++        qemu_thread_get_self(&initial_cpu_dispatch.creator);
++        initial_cpu_dispatch.issuing = true;
++        status = qemu_crucible_source_initial_cpu_acquire_v1(
++            cpu, &cpu->crucible_initial_participant);
++        initial_cpu_dispatch.issuing = false;
++        if (!status) {
++            initial_cpu_dispatch.enqueued = true;
++            async_run_on_cpu(cpu, qemu_plugin_vcpu_init__async, RUN_ON_CPU_NULL);
++            run_on_cpu(cpu, initial_cpu_fifo_barrier, RUN_ON_CPU_NULL);
++            status = initial_cpu_dispatch.first_status;
++            if (!initial_cpu_dispatch.returned) {
++                status = status ? status : -EBUSY;
++            }
++        }
++        initial_cpu_dispatch.returning = true;
++        if (cpu->crucible_initial_participant) {
++            int returned = qemu_crucible_source_initial_cpu_return_v1(
++                cpu, &cpu->crucible_initial_participant);
++
++            status = status ? status : returned;
++        }
++        if (cpu->crucible_initial_participant) {
++            return status ? status : -EBUSY;
++        }
++        cpu->crucible_initial_pending = false;
++        if (cpu_list_generation_id_get() != roster_generation) {
++            status = status ? status : -ESTALE;
++        }
++        memset(&initial_cpu_dispatch, 0, sizeof(initial_cpu_dispatch));
++        object_unref(OBJECT(cpu));
++        if (cpu_list_generation_id_get() != roster_generation) {
++            status = status ? status : -ESTALE;
++        }
++        if (status) {
++            return status;
++        }
++    }
++    return qemu_crucible_source_initial_cpus_closed_v1();
++#else
++    return -ENOTSUP;
++#endif
++}
++
+ void qemu_plugin_vcpu_exit_hook(CPUState *cpu)
+ {
+     bool success;
+@@ -294,34 +735,69 @@ void qemu_plugin_vcpu_exit_hook(CPUState *cpu)
      qemu_rec_mutex_unlock(&plugin.lock);
  }
  
@@ -99613,15 +100062,15 @@ index 1113bfe5673c904bf0e5a50d03fca434a3d7bde7..4b2e88310264a0ab73814d9e5dd2b9d3
 +struct plugin_vcpu_snapshot_entry {
 +    CPUState *cpu;
 +    unsigned int index;
- };
- 
--static void plugin_vcpu_for_each(gpointer k, gpointer v, gpointer udata)
++};
++
 +struct plugin_vcpu_snapshot {
 +    struct plugin_vcpu_snapshot_entry *entries;
 +    size_t count;
 +    size_t capacity;
-+};
-+
+ };
+ 
+-static void plugin_vcpu_for_each(gpointer k, gpointer v, gpointer udata)
 +static void plugin_vcpu_snapshot_collect(gpointer key, gpointer value,
 +                                         gpointer opaque)
  {
@@ -99684,7 +100133,7 @@ index 1113bfe5673c904bf0e5a50d03fca434a3d7bde7..4b2e88310264a0ab73814d9e5dd2b9d3
  }
  
  /* Allocate and return a callback record */
-@@ -393,6 +598,10 @@ void plugin_register_dyn_cb__udata(GArray **arr,
+@@ -393,6 +869,10 @@ void plugin_register_dyn_cb__udata(GArray **arr,
                                                   .info = &info[flags] };
      dyn_cb->type = PLUGIN_CB_REGULAR;
      dyn_cb->regular = regular_cb;
@@ -99695,7 +100144,7 @@ index 1113bfe5673c904bf0e5a50d03fca434a3d7bde7..4b2e88310264a0ab73814d9e5dd2b9d3
  }
  
  void plugin_register_dyn_cond_cb__udata(GArray **arr,
-@@ -427,6 +636,10 @@ void plugin_register_dyn_cond_cb__udata(GArray **arr,
+@@ -427,6 +907,10 @@ void plugin_register_dyn_cond_cb__udata(GArray **arr,
                                                    .info = &info[flags] };
      dyn_cb->type = PLUGIN_CB_COND;
      dyn_cb->cond = cond_cb;
@@ -99706,7 +100155,7 @@ index 1113bfe5673c904bf0e5a50d03fca434a3d7bde7..4b2e88310264a0ab73814d9e5dd2b9d3
  }
  
  void plugin_register_vcpu_mem_cb(GArray **arr,
-@@ -469,6 +682,10 @@ void plugin_register_vcpu_mem_cb(GArray **arr,
+@@ -469,6 +953,10 @@ void plugin_register_vcpu_mem_cb(GArray **arr,
                                                   .info = &info[flags] };
      dyn_cb->type = PLUGIN_CB_MEM_REGULAR;
      dyn_cb->regular = regular_cb;
@@ -99717,7 +100166,7 @@ index 1113bfe5673c904bf0e5a50d03fca434a3d7bde7..4b2e88310264a0ab73814d9e5dd2b9d3
  }
  
  /*
-@@ -488,7 +705,13 @@ void qemu_plugin_tb_trans_cb(CPUState *cpu, struct qemu_plugin_tb *tb)
+@@ -488,7 +976,13 @@ void qemu_plugin_tb_trans_cb(CPUState *cpu, struct qemu_plugin_tb *tb)
          qemu_plugin_vcpu_tb_trans_cb_t func = cb->f.vcpu_tb_trans;
  
          qemu_plugin_set_cb_flags(cpu, QEMU_PLUGIN_CB_RW_REGS);
@@ -99732,7 +100181,7 @@ index 1113bfe5673c904bf0e5a50d03fca434a3d7bde7..4b2e88310264a0ab73814d9e5dd2b9d3
          qemu_plugin_set_cb_flags(cpu, QEMU_PLUGIN_CB_NO_REGS);
      }
  }
-@@ -534,7 +757,13 @@ qemu_plugin_vcpu_syscall(CPUState *cpu, int64_t num, uint64_t a1, uint64_t a2,
+@@ -534,7 +1028,13 @@ qemu_plugin_vcpu_syscall(CPUState *cpu, int64_t num, uint64_t a1, uint64_t a2,
          qemu_plugin_vcpu_syscall_cb_t func = cb->f.vcpu_syscall;
  
          qemu_plugin_set_cb_flags(cpu, QEMU_PLUGIN_CB_RW_REGS_PC);
@@ -99747,7 +100196,7 @@ index 1113bfe5673c904bf0e5a50d03fca434a3d7bde7..4b2e88310264a0ab73814d9e5dd2b9d3
          qemu_plugin_set_cb_flags(cpu, QEMU_PLUGIN_CB_NO_REGS);
      }
  }
-@@ -558,7 +787,13 @@ void qemu_plugin_vcpu_syscall_ret(CPUState *cpu, int64_t num, int64_t ret)
+@@ -558,7 +1058,13 @@ void qemu_plugin_vcpu_syscall_ret(CPUState *cpu, int64_t num, int64_t ret)
          qemu_plugin_vcpu_syscall_ret_cb_t func = cb->f.vcpu_syscall_ret;
  
          qemu_plugin_set_cb_flags(cpu, QEMU_PLUGIN_CB_RW_REGS_PC);
@@ -99762,7 +100211,7 @@ index 1113bfe5673c904bf0e5a50d03fca434a3d7bde7..4b2e88310264a0ab73814d9e5dd2b9d3
          qemu_plugin_set_cb_flags(cpu, QEMU_PLUGIN_CB_NO_REGS);
      }
  }
-@@ -590,8 +825,15 @@ qemu_plugin_vcpu_syscall_filter(CPUState *cpu, int64_t num, uint64_t a1,
+@@ -590,8 +1096,15 @@ qemu_plugin_vcpu_syscall_filter(CPUState *cpu, int64_t num, uint64_t a1,
      QLIST_FOREACH_SAFE_RCU(cb, &plugin.cb_lists[ev], entry, next) {
          qemu_plugin_vcpu_syscall_filter_cb_t func = cb->f.vcpu_syscall_filter;
  
@@ -99780,7 +100229,7 @@ index 1113bfe5673c904bf0e5a50d03fca434a3d7bde7..4b2e88310264a0ab73814d9e5dd2b9d3
              filtered = true;
              break;
          }
-@@ -674,6 +916,10 @@ void qemu_plugin_register_flush_cb(qemu_plugin_id_t id,
+@@ -674,6 +1187,10 @@ void qemu_plugin_register_flush_cb(qemu_plugin_id_t id,
                                     void *userdata)
  {
      plugin_register_cb_udata(id, QEMU_PLUGIN_EV_FLUSH, cb, userdata);
@@ -99791,7 +100240,7 @@ index 1113bfe5673c904bf0e5a50d03fca434a3d7bde7..4b2e88310264a0ab73814d9e5dd2b9d3
  }
  
  static bool free_dyn_cb_arr(void *p, uint32_t h, void *userp)
-@@ -684,6 +930,7 @@ static bool free_dyn_cb_arr(void *p, uint32_t h, void *userp)
+@@ -684,6 +1201,7 @@ static bool free_dyn_cb_arr(void *p, uint32_t h, void *userp)
  
  void qemu_plugin_flush_cb(void)
  {
@@ -99799,7 +100248,7 @@ index 1113bfe5673c904bf0e5a50d03fca434a3d7bde7..4b2e88310264a0ab73814d9e5dd2b9d3
      qht_iter_remove(&plugin.dyn_cb_arr_ht, free_dyn_cb_arr, NULL);
      qht_reset(&plugin.dyn_cb_arr_ht);
  
-@@ -738,9 +985,18 @@ void qemu_plugin_vcpu_mem_cb(CPUState *cpu, uint64_t vaddr,
+@@ -738,9 +1256,18 @@ void qemu_plugin_vcpu_mem_cb(CPUState *cpu, uint64_t vaddr,
                  qemu_plugin_set_cb_flags(cpu,
                      tcg_call_to_qemu_plugin_cb_flags(cb->regular.info->flags));
  
@@ -99818,7 +100267,7 @@ index 1113bfe5673c904bf0e5a50d03fca434a3d7bde7..4b2e88310264a0ab73814d9e5dd2b9d3
                  qemu_plugin_set_cb_flags(cpu, QEMU_PLUGIN_CB_NO_REGS);
              }
              break;
-@@ -836,6 +1092,43 @@ static bool plugin_dyn_cb_arr_cmp(const void *ap, const void *bp)
+@@ -836,6 +1363,43 @@ static bool plugin_dyn_cb_arr_cmp(const void *ap, const void *bp)
      return ap == bp;
  }
  
@@ -99862,7 +100311,7 @@ index 1113bfe5673c904bf0e5a50d03fca434a3d7bde7..4b2e88310264a0ab73814d9e5dd2b9d3
  static void __attribute__((__constructor__)) plugin_init(void)
  {
      int i;
-@@ -844,6 +1137,9 @@ static void __attribute__((__constructor__)) plugin_init(void)
+@@ -844,6 +1408,9 @@ static void __attribute__((__constructor__)) plugin_init(void)
          QLIST_INIT(&plugin.cb_lists[i]);
      }
      qemu_rec_mutex_init(&plugin.lock);
@@ -113349,10 +113798,10 @@ index 0000000000000000000000000000000000000000..c3c98bd96b159f52934106191d7bd4be
 +}
 diff --git a/plugins/crucible-fault-accelerator.c b/plugins/crucible-fault-accelerator.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..72b2a1320db867cae97f384a2e47c167e21030e8
+index 0000000000000000000000000000000000000000..3276196fdbd7a9ba8b926dab19d9f340f9fd2611
 --- /dev/null
 +++ b/plugins/crucible-fault-accelerator.c
-@@ -0,0 +1,1847 @@
+@@ -0,0 +1,1863 @@
 +/*
 + * Crucible deterministic accelerator fault device integration
 + *
@@ -113362,6 +113811,7 @@ index 0000000000000000000000000000000000000000..72b2a1320db867cae97f384a2e47c167
 + */
 +
 +#include "qemu/osdep.h"
++#include "qemu/plugin.h"
 +#include "exec/icount.h"
 +#include "qemu/bswap.h"
 +#include "qemu/crucible-fault.h"
@@ -113484,7 +113934,7 @@ index 0000000000000000000000000000000000000000..72b2a1320db867cae97f384a2e47c167
 +    }
 +}
 +
-+size_t qemu_plugin_crucible_fault_accelerator_manifest(
++static size_t crucible_fault_accelerator_manifest_body(
 +    struct qemu_plugin_crucible_fault_accelerator_capability *out,
 +    size_t capacity)
 +{
@@ -113511,6 +113961,21 @@ index 0000000000000000000000000000000000000000..72b2a1320db867cae97f384a2e47c167
 +        *out = row;
 +    }
 +    return 1;
++}
++
++size_t qemu_plugin_crucible_fault_accelerator_manifest(
++    struct qemu_plugin_crucible_fault_accelerator_capability *out,
++    size_t capacity)
++{
++    int status = qemu_plugin_crucible_initial_cpu_sdk_begin_v1();
++
++    if (status) {
++        return 0;
++    }
++    size_t result = crucible_fault_accelerator_manifest_body(out, capacity);
++
++    status = qemu_plugin_crucible_initial_cpu_sdk_post_v1(0);
++    return status ? 0 : result;
 +}
 +
 +void qemu_crucible_fault_accelerator_device_register(
@@ -115202,10 +115667,10 @@ index 0000000000000000000000000000000000000000..72b2a1320db867cae97f384a2e47c167
 +}
 diff --git a/plugins/crucible-fault-clock.c b/plugins/crucible-fault-clock.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..8c78247aa6a1c0d10fe52311c552eadbc15761d9
+index 0000000000000000000000000000000000000000..a1fca035b4f5ec815220675362d89db53c690e3e
 --- /dev/null
 +++ b/plugins/crucible-fault-clock.c
-@@ -0,0 +1,4662 @@
+@@ -0,0 +1,4706 @@
 +/*
 + * Crucible deterministic guest-clock fault transforms
 + *
@@ -115215,6 +115680,7 @@ index 0000000000000000000000000000000000000000..8c78247aa6a1c0d10fe52311c552eadb
 + */
 +
 +#include "qemu/osdep.h"
++#include "qemu/plugin.h"
 +#include "exec/icount.h"
 +#include "hw/core/cpu.h"
 +#include "qemu/accel.h"
@@ -115831,7 +116297,7 @@ index 0000000000000000000000000000000000000000..8c78247aa6a1c0d10fe52311c552eadb
 +    return 0;
 +}
 +
-+size_t qemu_plugin_crucible_fault_clock_manifest(
++static size_t crucible_fault_clock_manifest_body(
 +    struct qemu_plugin_crucible_fault_clock_capability *out,
 +    size_t capacity, uint16_t *architecture)
 +{
@@ -115858,7 +116324,22 @@ index 0000000000000000000000000000000000000000..8c78247aa6a1c0d10fe52311c552eadb
 +    return crucible_clock_sources->len;
 +}
 +
-+int qemu_plugin_crucible_fault_clock_bind(
++size_t qemu_plugin_crucible_fault_clock_manifest(
++    struct qemu_plugin_crucible_fault_clock_capability *out,
++    size_t capacity, uint16_t *architecture)
++{
++    int status = qemu_plugin_crucible_initial_cpu_sdk_begin_v1();
++
++    if (status) {
++        return 0;
++    }
++    size_t result = crucible_fault_clock_manifest_body(out, capacity, architecture);
++
++    status = qemu_plugin_crucible_initial_cpu_sdk_post_v1(0);
++    return status ? 0 : result;
++}
++
++static int crucible_fault_clock_bind_body(
 +    uint32_t row_index, const uint8_t id[32])
 +{
 +    uint8_t zero[32] = { 0 };
@@ -115889,7 +116370,21 @@ index 0000000000000000000000000000000000000000..8c78247aa6a1c0d10fe52311c552eadb
 +    return 0;
 +}
 +
-+int qemu_plugin_crucible_fault_clock_bindings_seal(
++int qemu_plugin_crucible_fault_clock_bind(
++    uint32_t row_index, const uint8_t id[32])
++{
++    int status = qemu_plugin_crucible_initial_cpu_sdk_begin_v1();
++
++    if (status) {
++        return status;
++    }
++    int result = crucible_fault_clock_bind_body(row_index, id);
++
++    status = qemu_plugin_crucible_initial_cpu_sdk_post_v1(result);
++    return status ? status : result;
++}
++
++static int crucible_fault_clock_bindings_seal_body(
 +    const uint8_t manifest_sha256[32])
 +{
 +    uint8_t zero[32] = { 0 };
@@ -115938,6 +116433,20 @@ index 0000000000000000000000000000000000000000..8c78247aa6a1c0d10fe52311c552eadb
 +            crucible_clock_sources, CrucibleClockSource, i));
 +    }
 +    return 0;
++}
++
++int qemu_plugin_crucible_fault_clock_bindings_seal(
++    const uint8_t manifest_sha256[32])
++{
++    int status = qemu_plugin_crucible_initial_cpu_sdk_begin_v1();
++
++    if (status) {
++        return status;
++    }
++    int result = crucible_fault_clock_bindings_seal_body(manifest_sha256);
++
++    status = qemu_plugin_crucible_initial_cpu_sdk_post_v1(result);
++    return status ? status : result;
 +}
 +
 +static bool crucible_clock_rule_selects(
@@ -119870,10 +120379,10 @@ index 0000000000000000000000000000000000000000..8c78247aa6a1c0d10fe52311c552eadb
 +type_init(crucible_clock_register)
 diff --git a/plugins/crucible-fault-hardware-error.c b/plugins/crucible-fault-hardware-error.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..165f4fb9345c1c9661721e7d2a259889e689ccc3
+index 0000000000000000000000000000000000000000..225c9b5ff30266669948557211f51b76c6fae195
 --- /dev/null
 +++ b/plugins/crucible-fault-hardware-error.c
-@@ -0,0 +1,1869 @@
+@@ -0,0 +1,1917 @@
 +/*
 + * Crucible architecture and platform hardware-error injection
 + *
@@ -119883,6 +120392,7 @@ index 0000000000000000000000000000000000000000..165f4fb9345c1c9661721e7d2a259889
 + */
 +
 +#include "qemu/osdep.h"
++#include "qemu/plugin.h"
 +
 +#include "system/address-spaces.h"
 +#include "system/memory.h"
@@ -120214,7 +120724,7 @@ index 0000000000000000000000000000000000000000..165f4fb9345c1c9661721e7d2a259889
 +    return true;
 +}
 +
-+size_t qemu_plugin_crucible_fault_hardware_error_manifest(
++static size_t crucible_fault_hardware_error_manifest_body(
 +    struct qemu_plugin_crucible_fault_hardware_error_capability *out,
 +    size_t capacity, uint16_t *architecture)
 +{
@@ -120229,7 +120739,23 @@ index 0000000000000000000000000000000000000000..165f4fb9345c1c9661721e7d2a259889
 +    return crucible_hardware_manifest->len;
 +}
 +
-+int qemu_plugin_crucible_fault_hardware_error_bind(
++size_t qemu_plugin_crucible_fault_hardware_error_manifest(
++    struct qemu_plugin_crucible_fault_hardware_error_capability *out,
++    size_t capacity, uint16_t *architecture)
++{
++    int status = qemu_plugin_crucible_initial_cpu_sdk_begin_v1();
++
++    if (status) {
++        return 0;
++    }
++    size_t result = crucible_fault_hardware_error_manifest_body(
++        out, capacity, architecture);
++
++    status = qemu_plugin_crucible_initial_cpu_sdk_post_v1(0);
++    return status ? 0 : result;
++}
++
++static int crucible_fault_hardware_error_bind_body(
 +    uint32_t row_index, const uint8_t id[32], const uint8_t bank[32],
 +    const uint8_t channel[32], const uint8_t rank[32],
 +    const uint8_t firmware[32], const uint8_t state[32])
@@ -120257,7 +120783,24 @@ index 0000000000000000000000000000000000000000..165f4fb9345c1c9661721e7d2a259889
 +    return 0;
 +}
 +
-+int qemu_plugin_crucible_fault_hardware_error_bindings_seal(
++int qemu_plugin_crucible_fault_hardware_error_bind(
++    uint32_t row_index, const uint8_t id[32], const uint8_t bank[32],
++    const uint8_t channel[32], const uint8_t rank[32],
++    const uint8_t firmware[32], const uint8_t state[32])
++{
++    int status = qemu_plugin_crucible_initial_cpu_sdk_begin_v1();
++
++    if (status) {
++        return status;
++    }
++    int result = crucible_fault_hardware_error_bind_body(
++        row_index, id, bank, channel, rank, firmware, state);
++
++    status = qemu_plugin_crucible_initial_cpu_sdk_post_v1(result);
++    return status ? status : result;
++}
++
++static int crucible_fault_hardware_error_bindings_seal_body(
 +    const uint8_t manifest_sha256[32])
 +{
 +    if (!manifest_sha256 || !crucible_hardware_manifest_init() ||
@@ -120273,6 +120816,20 @@ index 0000000000000000000000000000000000000000..165f4fb9345c1c9661721e7d2a259889
 +    memcpy(crucible_hardware_manifest_sha256, manifest_sha256, 32);
 +    crucible_hardware_bindings_sealed = true;
 +    return 0;
++}
++
++int qemu_plugin_crucible_fault_hardware_error_bindings_seal(
++    const uint8_t manifest_sha256[32])
++{
++    int status = qemu_plugin_crucible_initial_cpu_sdk_begin_v1();
++
++    if (status) {
++        return status;
++    }
++    int result = crucible_fault_hardware_error_bindings_seal_body(manifest_sha256);
++
++    status = qemu_plugin_crucible_initial_cpu_sdk_post_v1(result);
++    return status ? status : result;
 +}
 +
 +static bool crucible_hardware_field(
@@ -121745,10 +122302,10 @@ index 0000000000000000000000000000000000000000..165f4fb9345c1c9661721e7d2a259889
 +}
 diff --git a/plugins/crucible-fault-instruction.c b/plugins/crucible-fault-instruction.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..c151a8d81b7ea9fe7ea075e3c2a626a3b2af4c17
+index 0000000000000000000000000000000000000000..0bd2e3a64c7e84c748b1ad6ab42ef93479156d97
 --- /dev/null
 +++ b/plugins/crucible-fault-instruction.c
-@@ -0,0 +1,3310 @@
+@@ -0,0 +1,3327 @@
 +/*
 + * Crucible architecture instruction faults
 + *
@@ -121758,6 +122315,7 @@ index 0000000000000000000000000000000000000000..c151a8d81b7ea9fe7ea075e3c2a626a3
 + */
 +
 +#include "qemu/osdep.h"
++#include "qemu/plugin.h"
 +#include "exec/cpu-common.h"
 +#include "exec/translation-block.h"
 +#include "hw/core/cpu.h"
@@ -122069,7 +122627,7 @@ index 0000000000000000000000000000000000000000..c151a8d81b7ea9fe7ea075e3c2a626a3
 +    g_assert(digest_len == 32);
 +}
 +
-+size_t qemu_plugin_crucible_fault_instruction_manifest(
++static size_t crucible_fault_instruction_manifest_body(
 +    uint8_t *manifest, size_t capacity, uint8_t sha256[32],
 +    uint16_t *architecture)
 +{
@@ -122092,6 +122650,22 @@ index 0000000000000000000000000000000000000000..c151a8d81b7ea9fe7ea075e3c2a626a3
 +        memcpy(manifest, crucible_instruction_manifest_v1, length);
 +    }
 +    return length;
++}
++
++size_t qemu_plugin_crucible_fault_instruction_manifest(
++    uint8_t *manifest, size_t capacity, uint8_t sha256[32],
++    uint16_t *architecture)
++{
++    int status = qemu_plugin_crucible_initial_cpu_sdk_begin_v1();
++
++    if (status) {
++        return 0;
++    }
++    size_t result = crucible_fault_instruction_manifest_body(
++        manifest, capacity, sha256, architecture);
++
++    status = qemu_plugin_crucible_initial_cpu_sdk_post_v1(0);
++    return status ? 0 : result;
 +}
 +
 +static void crucible_instruction_system_digest(
@@ -125061,10 +125635,10 @@ index 0000000000000000000000000000000000000000..c151a8d81b7ea9fe7ea075e3c2a626a3
 +}
 diff --git a/plugins/crucible-fault-interrupt.c b/plugins/crucible-fault-interrupt.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..956059d73495bbe1aacf19550ebe19b1141fc07c
+index 0000000000000000000000000000000000000000..360e43e6375acb30fc96be86864e5a5fdefe1ad4
 --- /dev/null
 +++ b/plugins/crucible-fault-interrupt.c
-@@ -0,0 +1,2850 @@
+@@ -0,0 +1,2894 @@
 +/*
 + * Crucible architecture interrupt fault targets
 + *
@@ -125074,6 +125648,7 @@ index 0000000000000000000000000000000000000000..956059d73495bbe1aacf19550ebe19b1
 + */
 +
 +#include "qemu/osdep.h"
++#include "qemu/plugin.h"
 +#include "exec/icount.h"
 +#include "hw/core/cpu.h"
 +#include "qemu/crucible-fault.h"
@@ -125733,7 +126308,7 @@ index 0000000000000000000000000000000000000000..956059d73495bbe1aacf19550ebe19b1
 +    return crucible_interrupt_manifest->len != 0;
 +}
 +
-+size_t qemu_plugin_crucible_fault_interrupt_manifest(
++static size_t crucible_fault_interrupt_manifest_body(
 +    CrucibleInterruptCapability *out, size_t capacity,
 +    uint16_t *architecture)
 +{
@@ -125748,7 +126323,22 @@ index 0000000000000000000000000000000000000000..956059d73495bbe1aacf19550ebe19b1
 +    return crucible_interrupt_manifest->len;
 +}
 +
-+int qemu_plugin_crucible_fault_interrupt_bind(
++size_t qemu_plugin_crucible_fault_interrupt_manifest(
++    CrucibleInterruptCapability *out, size_t capacity,
++    uint16_t *architecture)
++{
++    int status = qemu_plugin_crucible_initial_cpu_sdk_begin_v1();
++
++    if (status) {
++        return 0;
++    }
++    size_t result = crucible_fault_interrupt_manifest_body(out, capacity, architecture);
++
++    status = qemu_plugin_crucible_initial_cpu_sdk_post_v1(0);
++    return status ? 0 : result;
++}
++
++static int crucible_fault_interrupt_bind_body(
 +    uint32_t row_index, const uint8_t id[32],
 +    const uint8_t controller[32], const uint8_t source[32])
 +{
@@ -125782,7 +126372,22 @@ index 0000000000000000000000000000000000000000..956059d73495bbe1aacf19550ebe19b1
 +    return 0;
 +}
 +
-+int qemu_plugin_crucible_fault_interrupt_bindings_seal(void)
++int qemu_plugin_crucible_fault_interrupt_bind(
++    uint32_t row_index, const uint8_t id[32],
++    const uint8_t controller[32], const uint8_t source[32])
++{
++    int status = qemu_plugin_crucible_initial_cpu_sdk_begin_v1();
++
++    if (status) {
++        return status;
++    }
++    int result = crucible_fault_interrupt_bind_body(row_index, id, controller, source);
++
++    status = qemu_plugin_crucible_initial_cpu_sdk_post_v1(result);
++    return status ? status : result;
++}
++
++static int crucible_fault_interrupt_bindings_seal_body(void)
 +{
 +    if (crucible_interrupt_bindings_sealed ||
 +        !crucible_interrupt_bindings ||
@@ -125797,6 +126402,19 @@ index 0000000000000000000000000000000000000000..956059d73495bbe1aacf19550ebe19b1
 +    }
 +    crucible_interrupt_bindings_sealed = true;
 +    return 0;
++}
++
++int qemu_plugin_crucible_fault_interrupt_bindings_seal(void)
++{
++    int status = qemu_plugin_crucible_initial_cpu_sdk_begin_v1();
++
++    if (status) {
++        return status;
++    }
++    int result = crucible_fault_interrupt_bindings_seal_body();
++
++    status = qemu_plugin_crucible_initial_cpu_sdk_post_v1(result);
++    return status ? status : result;
 +}
 +
 +static bool crucible_interrupt_target_allowed(
@@ -145810,10 +146428,10 @@ index 0000000000000000000000000000000000000000..9106a118974a554e63561e4fb20eaaa6
 +type_init(crucible_memory_access_faults_register)
 diff --git a/plugins/crucible-fault-register.c b/plugins/crucible-fault-register.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..b9abb65b6beadd7edf6876a5735db1470ef58f31
+index 0000000000000000000000000000000000000000..97725a83fb110c3cdd4ee1e5a23964218b651c91
 --- /dev/null
 +++ b/plugins/crucible-fault-register.c
-@@ -0,0 +1,1335 @@
+@@ -0,0 +1,1392 @@
 +/*
 + * Crucible architecture register fault targets
 + *
@@ -146048,7 +146666,7 @@ index 0000000000000000000000000000000000000000..b9abb65b6beadd7edf6876a5735db147
 +    return false;
 +}
 +
-+size_t qemu_plugin_crucible_fault_register_manifest(
++static size_t crucible_fault_register_manifest_body(
 +    CrucibleRegisterCapability *out,
 +    size_t capacity, uint16_t *architecture, const char **cpu_model)
 +{
@@ -146062,6 +146680,22 @@ index 0000000000000000000000000000000000000000..b9abb65b6beadd7edf6876a5735db147
 +               crucible_register_manifest->len * sizeof(*out));
 +    }
 +    return crucible_register_manifest->len;
++}
++
++size_t qemu_plugin_crucible_fault_register_manifest(
++    CrucibleRegisterCapability *out,
++    size_t capacity, uint16_t *architecture, const char **cpu_model)
++{
++    int status = qemu_plugin_crucible_initial_cpu_sdk_begin_v1();
++
++    if (status) {
++        return 0;
++    }
++    size_t result = crucible_fault_register_manifest_body(
++        out, capacity, architecture, cpu_model);
++
++    status = qemu_plugin_crucible_initial_cpu_sdk_post_v1(0);
++    return status ? 0 : result;
 +}
 +
 +static void crucible_register_observed_capability_clear(
@@ -146188,7 +146822,7 @@ index 0000000000000000000000000000000000000000..b9abb65b6beadd7edf6876a5735db147
 +    return 0;
 +}
 +
-+int qemu_plugin_crucible_fault_register_bind(const uint8_t identity[32],
++static int crucible_fault_register_bind_body(const uint8_t identity[32],
 +                                             uint32_t numeric_id)
 +{
 +    GBytes *key;
@@ -146219,7 +146853,21 @@ index 0000000000000000000000000000000000000000..b9abb65b6beadd7edf6876a5735db147
 +    return 0;
 +}
 +
-+int qemu_plugin_crucible_fault_register_bind_architecture(
++int qemu_plugin_crucible_fault_register_bind(const uint8_t identity[32],
++                                             uint32_t numeric_id)
++{
++    int status = qemu_plugin_crucible_initial_cpu_sdk_begin_v1();
++
++    if (status) {
++        return status;
++    }
++    int result = crucible_fault_register_bind_body(identity, numeric_id);
++
++    status = qemu_plugin_crucible_initial_cpu_sdk_post_v1(result);
++    return status ? status : result;
++}
++
++static int crucible_fault_register_bind_architecture_body(
 +    const uint8_t identity[32])
 +{
 +    uint8_t zero[32] = { 0 };
@@ -146235,7 +146883,21 @@ index 0000000000000000000000000000000000000000..b9abb65b6beadd7edf6876a5735db147
 +    return 0;
 +}
 +
-+int qemu_plugin_crucible_fault_register_bindings_seal(void)
++int qemu_plugin_crucible_fault_register_bind_architecture(
++    const uint8_t identity[32])
++{
++    int status = qemu_plugin_crucible_initial_cpu_sdk_begin_v1();
++
++    if (status) {
++        return status;
++    }
++    int result = crucible_fault_register_bind_architecture_body(identity);
++
++    status = qemu_plugin_crucible_initial_cpu_sdk_post_v1(result);
++    return status ? status : result;
++}
++
++static int crucible_fault_register_bindings_seal_body(void)
 +{
 +    if (crucible_register_bindings_sealed ||
 +        !crucible_register_manifest_init() ||
@@ -146250,6 +146912,19 @@ index 0000000000000000000000000000000000000000..b9abb65b6beadd7edf6876a5735db147
 +    }
 +    crucible_register_bindings_sealed = true;
 +    return 0;
++}
++
++int qemu_plugin_crucible_fault_register_bindings_seal(void)
++{
++    int status = qemu_plugin_crucible_initial_cpu_sdk_begin_v1();
++
++    if (status) {
++        return status;
++    }
++    int result = crucible_fault_register_bindings_seal_body();
++
++    status = qemu_plugin_crucible_initial_cpu_sdk_post_v1(result);
++    return status ? status : result;
 +}
 +
 +static const CrucibleRegisterTarget *crucible_register_target(
@@ -149430,10 +150105,10 @@ index 0000000000000000000000000000000000000000..d035f6c68a7d8e4bff25b4d76130f01f
 +}
 diff --git a/plugins/crucible-fault.c b/plugins/crucible-fault.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..69dba27cb08fa26f74d985c06994aef4896f052c
+index 0000000000000000000000000000000000000000..0930f31f35512b0ab0d57a3a6b8c9eca5adf7bc6
 --- /dev/null
 +++ b/plugins/crucible-fault.c
-@@ -0,0 +1,1645 @@
+@@ -0,0 +1,1658 @@
 +/*
 + * Crucible deterministic fault command registry and dispatcher
 + *
@@ -150071,7 +150746,7 @@ index 0000000000000000000000000000000000000000..69dba27cb08fa26f74d985c06994aef4
 +    return result;
 +}
 +
-+size_t qemu_plugin_crucible_fault_capabilities(
++static size_t crucible_fault_capabilities_body(
 +    struct qemu_plugin_crucible_fault_capability *out, size_t capacity)
 +{
 +    size_t required;
@@ -150098,6 +150773,19 @@ index 0000000000000000000000000000000000000000..69dba27cb08fa26f74d985c06994aef4
 +    return required;
 +}
 +
++size_t qemu_plugin_crucible_fault_capabilities(
++    struct qemu_plugin_crucible_fault_capability *out, size_t capacity)
++{
++    int status = qemu_plugin_crucible_initial_cpu_sdk_begin_v1();
++
++    if (status) {
++        return 0;
++    }
++    size_t result = crucible_fault_capabilities_body(out, capacity);
++
++    status = qemu_plugin_crucible_initial_cpu_sdk_post_v1(0);
++    return status ? 0 : result;
++}
 +int qemu_plugin_crucible_fault_submit(
 +    const struct qemu_plugin_crucible_fault_command *command,
 +    const uint8_t *payload, size_t payload_len)
@@ -152732,12 +153420,397 @@ index 0000000000000000000000000000000000000000..e8d98a0beb68a58aed72e673fb28070c
 +    *witness = state->witness;
 +    return 0;
 +}
+diff --git a/plugins/crucible-initial-cpu.inc.h b/plugins/crucible-initial-cpu.inc.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..afb2e59e491c0769b7fa31a3a48ab4203380d11b
+--- /dev/null
++++ b/plugins/crucible-initial-cpu.inc.h
+@@ -0,0 +1,379 @@
++/*
++ * Initial CPU children of the actual machine-construction Original
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++static int initial_cpu_identity(CPUState *cpu,
++    struct QemuCrucibleInitialCpuParticipant **holder,
++    struct QemuCrucibleInitialCpuParticipant **out)
++{
++    QemuCrucibleCpuSourceAllocationOwner *owner = NULL;
++    QemuCrucibleCpuAllocationReceipt *receipt = NULL;
++    uint64_t generation = 0;
++    int status = qemu_crucible_startup_source_cpu_instance_identity_v1(
++        OBJECT(cpu), &owner, &receipt, &generation);
++
++    if (status) {
++        return status;
++    }
++    struct QemuCrucibleInitialCpuParticipant *participant = &owner->initial;
++
++    if (!participant->attempted || !participant->held ||
++        participant->owner != owner || participant->cpu != cpu ||
++        participant->holder != holder || *holder != participant ||
++        participant->process != getpid() || participant->receipt != receipt ||
++        participant->allocation_generation != generation ||
++        participant->binding != &startup_source.standing.construction ||
++        participant->operation_serial != participant->binding->operation.serial) {
++        return -ESTALE;
++    }
++    *out = participant;
++    return 0;
++}
++
++static int initial_cpu_limits_current(const struct QemuCrucibleFingerprintOperation *operation,
++    const QemuCrucibleStandingRecord *current, uint64_t last_now_ns, uint64_t now)
++{
++    const QemuCrucibleStandingBudget *budgets[] = {
++        &operation->admitted.budgets[0], &current->budgets[0],
++    };
++    int status;
++
++    if (now < last_now_ns || now < operation->start_ns || now < operation->progress_ns) {
++        return -ESTALE;
++    }
++    status = standing_limits_current(&operation->admitted, now);
++    if (!status) {
++        status = standing_limits_current(current, now);
++    }
++    for (size_t index = 0; !status && index < G_N_ELEMENTS(budgets); index++) {
++        const QemuCrucibleStandingBudget *budget = budgets[index];
++
++        if ((budget->total_present && now - operation->start_ns >= budget->total_ns) ||
++            (budget->progress_present && now - operation->progress_ns >= budget->progress_ns)) {
++            status = -ETIMEDOUT;
++        }
++    }
++    return status;
++}
++
++/* The original creator remains blocked in its actual construction frame.
++ * The CPU child observes that same live Original; it issues no new clock,
++ * class, progress or operation from a roster or passive execution witness. */
++static int initial_cpu_original_current(
++    struct QemuCrucibleInitialCpuParticipant *participant)
++{
++    struct QemuCrucibleFingerprintOperation *operation = &participant->binding->operation;
++    struct pollfd cancellation = {
++        .fd = startup_source.standing.cancellation_fd, .events = POLLIN,
++    };
++    uint64_t sequence = 0;
++    uint64_t now;
++    int status;
++
++    if (!operation->held || operation->post_recorded || operation->class_index ||
++        operation->serial != participant->operation_serial ||
++        operation->process != getpid() || operation->first_status ||
++        participant->callback_returned || participant->return_in_flight) {
++        return operation->first_status ? operation->first_status : -EPERM;
++    }
++    if (!participant->cpu->created || !participant->cpu->stopped ||
++        qatomic_read(&participant->cpu->running)) {
++        return -EBUSY;
++    }
++    status = qemu_crucible_startup_source_callback_group_owner_identity_v1(
++        participant->group, QEMU_CRUCIBLE_NATIVE_GROUP_VCPU_INIT, participant->group_serial);
++    if (!status && (!participant->group->native.complete ||
++                    participant->group->native.terminal)) {
++        status = -ESTALE;
++    }
++    if (!status) {
++        status = qemu_crucible_preexec_standing_sequence_v1(
++            startup_source.standing.lender, &sequence);
++    }
++    if (!status && (!sequence || (sequence & 1) || sequence != participant->sequence ||
++                   startup_source.standing.sequence != participant->sequence)) {
++        status = -ESTALE;
++    }
++    if (!status) {
++        int polled = poll(&cancellation, 1, 0);
++
++        status = polled < 0 ? -errno : polled || cancellation.revents ? -ECANCELED : 0;
++    }
++    if (!status) {
++        status = standing_clock(&now);
++    }
++    if (!status) {
++        status = initial_cpu_limits_current(operation, &startup_source.standing.current,
++                                            participant->last_now_ns, now);
++    }
++    if (!status) {
++        participant->last_now_ns = now;
++    }
++    return status;
++}
++
++int qemu_crucible_source_initial_cpu_acquire_v1(
++    CPUState *cpu, struct QemuCrucibleInitialCpuParticipant **holder)
++{
++    QemuCrucibleObservationConstructionBinding *binding = &startup_source.standing.construction;
++    QemuCrucibleCallbackRegistrationGroupOwner *group = &startup_source.callback_groups.vcpu_init;
++    QemuCrucibleCpuSourceAllocationOwner *owner = NULL;
++    QemuCrucibleCpuAllocationReceipt *receipt = NULL;
++    struct QemuCrucibleInitialCpuParticipant *participant;
++    uint64_t generation = 0;
++    int status = qemu_plugin_crucible_initial_cpu_dispatch_current_v1(
++        cpu, holder, false, false);
++
++    if (status || !holder || *holder) {
++        return status ? status : -EINVAL;
++    }
++    if (!standing_construction_operation_identity() ||
++        qemu_crucible_machine_construction_frame_current_v1(binding->frame)) {
++        return -EPERM;
++    }
++    status = qemu_crucible_startup_source_callback_group_owner_identity_v1(
++        group, QEMU_CRUCIBLE_NATIVE_GROUP_VCPU_INIT, group->publication_serial);
++    if (!status && (!group->held || !group->native.complete || group->native.terminal ||
++        !group->callback || group->member_count != 1)) {
++        status = -ENOKEY;
++    }
++    if (!status) {
++        status = qemu_crucible_startup_source_cpu_instance_identity_v1(
++            OBJECT(cpu), &owner, &receipt, &generation);
++    }
++    if (status) {
++        return status;
++    }
++    participant = &owner->initial;
++    if (participant->attempted || participant->held) {
++        return -EALREADY;
++    }
++    object_ref(OBJECT(cpu));
++    *participant = (struct QemuCrucibleInitialCpuParticipant) {
++        .owner = owner, .binding = binding, .group = group,
++        .group_serial = group->publication_serial, .receipt = receipt, .holder = holder,
++        .cpu = cpu, .process = getpid(), .operation_serial = binding->operation.serial,
++        .allocation_generation = generation, .sequence = startup_source.standing.sequence,
++        .last_now_ns = binding->operation.last_now_ns, .attempted = true, .held = true,
++    };
++    qemu_thread_get_self(&participant->creator);
++    *holder = participant;
++    status = initial_cpu_original_current(participant);
++    participant->first_status = participant->post_status = status;
++    return status;
++}
++
++int qemu_crucible_source_initial_cpu_enter_v1(
++    CPUState *cpu, struct QemuCrucibleInitialCpuParticipant **holder)
++{
++    struct QemuCrucibleInitialCpuParticipant *participant = NULL;
++    int status = qemu_plugin_crucible_initial_cpu_dispatch_current_v1(
++        cpu, holder, true, false);
++
++    if (!status) {
++        status = initial_cpu_identity(cpu, holder, &participant);
++    }
++    if (!status && (participant->entered || participant->callback_returned)) {
++        status = -EALREADY;
++    }
++    if (!status) {
++        participant->entered = true;
++        status = initial_cpu_original_current(participant);
++        if (!participant->first_status) {
++            participant->first_status = status;
++        }
++    }
++    return status ? status : participant->first_status;
++}
++
++int qemu_crucible_source_initial_cpu_current_v1(
++    CPUState *cpu, struct QemuCrucibleInitialCpuParticipant **holder)
++{
++    struct QemuCrucibleInitialCpuParticipant *participant = NULL;
++    int status = qemu_plugin_crucible_initial_cpu_dispatch_current_v1(
++        cpu, holder, true, false);
++
++    if (!status) {
++        status = initial_cpu_identity(cpu, holder, &participant);
++    }
++    if (!status && (!participant->entered || !participant->module_callback_active ||
++        qemu_plugin_crucible_initial_cpu_callback_current_v1(
++            cpu, participant->group->callback, false))) {
++        status = -EPERM;
++    }
++    if (!status) {
++        status = initial_cpu_original_current(participant);
++        if (!participant->first_status) {
++            participant->first_status = status;
++        }
++    }
++    return status ? status : participant->first_status;
++}
++
++static void initial_cpu_sdk_record(
++    struct QemuCrucibleInitialCpuParticipant *participant,
++    int first_status, int post_status)
++{
++    if (!participant->sdk_first_status) {
++        participant->sdk_first_status = first_status;
++    }
++    if (!participant->sdk_post_status) {
++        participant->sdk_post_status = post_status;
++    }
++    if (!participant->first_status) {
++        participant->first_status = first_status ? first_status : post_status;
++    }
++}
++
++int qemu_crucible_source_initial_cpu_sdk_post_v1(
++    CPUState *cpu, struct QemuCrucibleInitialCpuParticipant **holder,
++    int first_status)
++{
++    struct QemuCrucibleInitialCpuParticipant *participant = NULL;
++    int status = qemu_plugin_crucible_initial_cpu_dispatch_current_v1(
++        cpu, holder, true, false);
++
++    if (!status) {
++        status = initial_cpu_identity(cpu, holder, &participant);
++    }
++    if (!status && (!participant->entered || !participant->module_callback_active ||
++        qemu_plugin_crucible_initial_cpu_callback_current_v1(
++            cpu, participant->group->callback, false))) {
++        status = -EPERM;
++    }
++    if (status) {
++        return status;
++    }
++    /* The actual SDK result and its independent Original post remain distinct.
++     * Neither result records module return or consumes this physical child. */
++    status = initial_cpu_original_current(participant);
++    initial_cpu_sdk_record(participant, first_status, status);
++    return first_status ? first_status : status;
++}
++
++int qemu_crucible_source_initial_cpu_callback_begin_v1(
++    CPUState *cpu, struct QemuCrucibleInitialCpuParticipant **holder,
++    struct qemu_plugin_cb *callback)
++{
++    struct QemuCrucibleInitialCpuParticipant *participant = NULL;
++    int status = qemu_plugin_crucible_initial_cpu_callback_current_v1(cpu, callback, false);
++
++    if (!status) {
++        status = initial_cpu_identity(cpu, holder, &participant);
++    }
++    if (!status && (!participant->entered || participant->module_callback_active ||
++        participant->module_callback_returned || callback != participant->group->callback ||
++        participant->group != &startup_source.callback_groups.vcpu_init ||
++        participant->group_serial != participant->group->publication_serial)) {
++        status = -EPERM;
++    }
++    if (!status) {
++        status = initial_cpu_original_current(participant);
++    }
++    if (!status) {
++        participant->module_callback_active = true;
++    }
++    return status;
++}
++
++int qemu_crucible_source_initial_cpu_callback_end_v1(
++    CPUState *cpu, struct QemuCrucibleInitialCpuParticipant **holder,
++    struct qemu_plugin_cb *callback)
++{
++    struct QemuCrucibleInitialCpuParticipant *participant = NULL;
++    int status = qemu_plugin_crucible_initial_cpu_callback_current_v1(cpu, callback, true);
++
++    if (!status) {
++        status = initial_cpu_identity(cpu, holder, &participant);
++    }
++    if (status || !participant->module_callback_active ||
++        callback != participant->group->callback) {
++        return status ? status : -EPERM;
++    }
++    /* Only the actual Core call's return cut records this fact. Semantic
++     * refusal after return preserves it independently of the signed post. */
++    participant->module_callback_active = false;
++    participant->module_callback_returned = true;
++    status = initial_cpu_original_current(participant);
++    if (!participant->first_status) {
++        participant->first_status = status;
++    }
++    return status;
++}
++
++int qemu_crucible_source_initial_cpu_post_v1(
++    CPUState *cpu, struct QemuCrucibleInitialCpuParticipant **holder, int first_status)
++{
++    struct QemuCrucibleInitialCpuParticipant *participant = NULL;
++    int status = qemu_plugin_crucible_initial_cpu_dispatch_current_v1(
++        cpu, holder, true, false);
++
++    if (!status) {
++        status = initial_cpu_identity(cpu, holder, &participant);
++    }
++    if (status || participant->callback_returned) {
++        return status ? status : -EALREADY;
++    }
++    if (!participant->first_status) {
++        participant->first_status = first_status;
++    }
++    participant->post_status = initial_cpu_original_current(participant);
++    if (!participant->post_status && !participant->module_callback_returned) {
++        participant->post_status = -ENOKEY;
++    }
++    /* This actual async producer records its own callback return, including
++     * a refused entry. FIFO ordering alone never writes this physical fact. */
++    participant->callback_returned = true;
++    if (!participant->first_status) {
++        participant->first_status = participant->post_status;
++    }
++    return participant->post_status;
++}
++
++int qemu_crucible_source_initial_cpu_return_v1(
++    CPUState *cpu, struct QemuCrucibleInitialCpuParticipant **holder)
++{
++    struct QemuCrucibleInitialCpuParticipant *participant = NULL;
++    int status = qemu_plugin_crucible_initial_cpu_dispatch_current_v1(
++        cpu, holder, false, true);
++
++    if (!status) {
++        status = initial_cpu_identity(cpu, holder, &participant);
++    }
++    if (status || !qemu_thread_is_self(&participant->creator) ||
++        participant->module_callback_active ||
++        (participant->entered && !participant->callback_returned)) {
++        return status ? status : -EBUSY;
++    }
++    participant->return_in_flight = true;
++    *holder = NULL;
++    object_unref(OBJECT(cpu));
++    participant->return_in_flight = false;
++    participant->held = false;
++    participant->physically_returned = true;
++    return participant->first_status;
++}
++
++int qemu_crucible_source_initial_cpus_closed_v1(void)
++{
++    QemuCrucibleCpuSourceAllocationOwner *owner;
++    int status;
++
++    if (getpid() != startup_source.owner_process) {
++        return -EPERM;
++    }
++    status = pthread_mutex_trylock(&startup_source.cpu_allocations.lock);
++    if (status) {
++        return -status;
++    }
++    for (owner = startup_source.cpu_allocations.owners; owner; owner = owner->next) {
++        if (owner->payload && (!owner->initial.attempted || owner->initial.held ||
++            owner->initial.return_in_flight || !owner->initial.physically_returned)) {
++            status = -EBUSY;
++            break;
++        }
++    }
++    pthread_mutex_unlock(&startup_source.cpu_allocations.lock);
++    return status;
++}
 diff --git a/plugins/crucible-native-invocation.c b/plugins/crucible-native-invocation.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..40e6729098ed0dc8eb3888f4a2ce7d32904b19ec
+index 0000000000000000000000000000000000000000..e2724991f57b5379a4a560b85a06f247aecaeeed
 --- /dev/null
 +++ b/plugins/crucible-native-invocation.c
-@@ -0,0 +1,2618 @@
+@@ -0,0 +1,2651 @@
 +/*
 + * Native entered-callback lifetime and factual physical-use association.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -154858,6 +155931,39 @@ index 0000000000000000000000000000000000000000..40e6729098ed0dc8eb3888f4a2ce7d32
 +            status = -ESTALE;
 +        }
 +    }
++    return status;
++#else
++    return -ENOTSUP;
++#endif
++}
++
++int qemu_plugin_crucible_native_initial_cpu_current_v1(
++    CPUState *cpu, QemuCrucibleNativeInvocationTicket *callback)
++{
++#if defined(CONFIG_LINUX) && !defined(CONFIG_USER_ONLY)
++    QemuCrucibleNativeInvocationRegistry *registry = native_dispatch_hint();
++    QemuCrucibleNativeInvocation *frame;
++    int status = qemu_plugin_crucible_initial_cpu_native_holder_current_v1(cpu, callback);
++
++    if (status || !registry || !registry_process_current(registry, getpid()) ||
++        !callback || callback->registry != registry || callback->suppressed) {
++        return status ? status : -EPERM;
++    }
++    qemu_mutex_lock(&registry->mutex);
++    frame = callback->frame;
++    status = frame_identity_locked(registry, frame, callback->serial, getpid());
++    if (!status && (!frame->live || frame->kind != QEMU_CRUCIBLE_NATIVE_VCPU_INIT ||
++        frame->cpu != cpu || current_cpu != cpu || top_locked(registry) != frame ||
++        frame->suppressed_children || frame->use_references || frame->cpu_return_in_flight ||
++        !frame->cpu_owner || !frame->cpu_receipt || !frame->cpu_generation ||
++        !frame->registration || !frame->registration->descriptor_retained ||
++        !frame->registration->source_authenticated ||
++        !group_identity_locked(registry, frame->registration->group) ||
++        frame->registration->group->terminal || !frame->registration->group->complete ||
++        frame->registration->group->kind != QEMU_CRUCIBLE_NATIVE_GROUP_VCPU_INIT)) {
++        status = -EBUSY;
++    }
++    qemu_mutex_unlock(&registry->mutex);
 +    return status;
 +#else
 +    return -ENOTSUP;
@@ -175235,10 +176341,10 @@ index 0000000000000000000000000000000000000000..f33911c6d93010f8c345aa392c9b7974
 +}
 diff --git a/plugins/crucible-startup-source.c b/plugins/crucible-startup-source.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..f0f31ed7ea355e7dd3a251bc2f04e65eea9f0fd8
+index 0000000000000000000000000000000000000000..2ca8b8f33dd520765788158b92c1de77b14e6a7a
 --- /dev/null
 +++ b/plugins/crucible-startup-source.c
-@@ -0,0 +1,8067 @@
+@@ -0,0 +1,8106 @@
 +/*
 + * Original installer startup source custody
 + *
@@ -175433,6 +176539,7 @@ index 0000000000000000000000000000000000000000..f0f31ed7ea355e7dd3a251bc2f04e65e
 +    uint64_t park_requests = qemu_crucible_native_park_request_static_extent();
 +    uint64_t ram_metadata = qemu_crucible_ram_metadata_fixed_storage_bytes();
 +    const uint64_t descriptor_storage[] = {
++        qemu_plugin_crucible_initial_cpu_dispatch_storage_bytes_v1(),
 +        qemu_thread_bounded_registry_fixed_storage_bytes(),
 +        qemu_plugin_crucible_native_shmem_dispatch_descriptor_storage_bytes_v1(),
 +        qemu_plugin_crucible_native_net_tx_descriptor_storage_bytes_v1(),
@@ -179147,6 +180254,12 @@ index 0000000000000000000000000000000000000000..f0f31ed7ea355e7dd3a251bc2f04e65e
 +    if (first_status && !binding->operation.first_status) {
 +        binding->operation.first_status = first_status;
 +    }
++    binding->operation.callback_status = first_status;
++    status = qemu_crucible_source_initial_cpus_closed_v1();
++    if (status) {
++        binding->operation.post_status = status;
++        return status;
++    }
 +    status = standing_boundary();
 +    if (!status) {
 +        status = standing_budget_current(&binding->operation);
@@ -180895,6 +182008,34 @@ index 0000000000000000000000000000000000000000..f0f31ed7ea355e7dd3a251bc2f04e65e
 +#include "crucible-control-invocation.inc.h"
 +
 +#ifdef CONFIG_LINUX
++struct QemuCrucibleInitialCpuParticipant {
++    QemuCrucibleCpuSourceAllocationOwner *owner;
++    QemuCrucibleObservationConstructionBinding *binding;
++    QemuCrucibleCallbackRegistrationGroupOwner *group;
++    QemuCrucibleCpuAllocationReceipt *receipt;
++    struct QemuCrucibleInitialCpuParticipant **holder;
++    CPUState *cpu;
++    QemuThread creator;
++    pid_t process;
++    uint64_t operation_serial;
++    uint64_t allocation_generation;
++    uint64_t group_serial;
++    uint64_t sequence;
++    uint64_t last_now_ns;
++    int first_status;
++    int post_status;
++    int sdk_first_status;
++    int sdk_post_status;
++    bool attempted;
++    bool held;
++    bool entered;
++    bool callback_returned;
++    bool module_callback_active;
++    bool module_callback_returned;
++    bool return_in_flight;
++    bool physically_returned;
++};
++
 +struct QemuCrucibleCpuSourceAllocationOwner {
 +    struct QemuCrucibleCpuSourceAllocationOwner *next;
 +    QemuCrucibleObservationConstructionBinding *binding;
@@ -180910,6 +182051,7 @@ index 0000000000000000000000000000000000000000..f0f31ed7ea355e7dd3a251bc2f04e65e
 +    size_t payload_alignment;
 +    size_t storage_bytes;
 +    size_t receipt_offset;
++    struct QemuCrucibleInitialCpuParticipant initial;
 +};
 +
 +/* Registry lookup precedes fields of any caller-provided owner. Native free
@@ -181206,7 +182348,8 @@ index 0000000000000000000000000000000000000000..f0f31ed7ea355e7dd3a251bc2f04e65e
 +        return status;
 +    }
 +    owner = *out;
-+    if (!owner->receipt || owner->tlb_children) {
++    if (!owner->receipt || owner->tlb_children || owner->initial.held ||
++        owner->initial.return_in_flight) {
 +        return -EBUSY;
 +    }
 +    status = qemu_crucible_cpu_allocation_receipt_identity_return_v1(&owner->receipt);
@@ -181301,6 +182444,8 @@ index 0000000000000000000000000000000000000000..f0f31ed7ea355e7dd3a251bc2f04e65e
 +    }
 +    pthread_mutex_unlock(&startup_source.cpu_allocations.lock);
 +}
++
++#include "crucible-initial-cpu.inc.h"
 +#endif
 +
 +#ifdef CONFIG_LINUX
@@ -183308,10 +184453,10 @@ index 0000000000000000000000000000000000000000..f0f31ed7ea355e7dd3a251bc2f04e65e
 +#include "crucible-parent-park-metadata.inc.h"
 diff --git a/plugins/crucible-startup-source.h b/plugins/crucible-startup-source.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..a3b70996cc59c9ea5407141e1cae33217ace8dbc
+index 0000000000000000000000000000000000000000..8daebf23b4532f06322a4262fe368f082d8f445d
 --- /dev/null
 +++ b/plugins/crucible-startup-source.h
-@@ -0,0 +1,2712 @@
+@@ -0,0 +1,2735 @@
 +/*
 + * Fixed process-private control for the original installer startup source
 + *
@@ -185898,6 +187043,29 @@ index 0000000000000000000000000000000000000000..a3b70996cc59c9ea5407141e1cae3321
 +    QemuCrucibleCpuSourceAllocationOwner *owner);
 +int qemu_crucible_startup_source_cpu_allocation_identity_return_v1(
 +    QemuCrucibleCpuSourceAllocationOwner **out);
++struct QemuCrucibleInitialCpuParticipant;
++
++int qemu_crucible_source_initial_cpu_acquire_v1(
++    CPUState *cpu, struct QemuCrucibleInitialCpuParticipant **holder);
++int qemu_crucible_source_initial_cpu_enter_v1(
++    CPUState *cpu, struct QemuCrucibleInitialCpuParticipant **holder);
++int qemu_crucible_source_initial_cpu_current_v1(
++    CPUState *cpu, struct QemuCrucibleInitialCpuParticipant **holder);
++int qemu_crucible_source_initial_cpu_sdk_post_v1(
++    CPUState *cpu, struct QemuCrucibleInitialCpuParticipant **holder,
++    int first_status);
++int qemu_crucible_source_initial_cpu_callback_begin_v1(
++    CPUState *cpu, struct QemuCrucibleInitialCpuParticipant **holder,
++    struct qemu_plugin_cb *callback);
++int qemu_crucible_source_initial_cpu_callback_end_v1(
++    CPUState *cpu, struct QemuCrucibleInitialCpuParticipant **holder,
++    struct qemu_plugin_cb *callback);
++int qemu_crucible_source_initial_cpu_post_v1(
++    CPUState *cpu, struct QemuCrucibleInitialCpuParticipant **holder,
++    int first_status);
++int qemu_crucible_source_initial_cpu_return_v1(
++    CPUState *cpu, struct QemuCrucibleInitialCpuParticipant **holder);
++int qemu_crucible_source_initial_cpus_closed_v1(void);
 +#endif
 +
 +#ifdef CONFIG_LINUX
@@ -196915,7 +198083,7 @@ index f8e17dcf1ce91d8aefb8d82cafd3196a4fd9edf6..f24121d2d3c66f1436ba73c976a7bd76
      return true;
 diff --git a/scripts/extract-crucible-preexec-purpose.py b/scripts/extract-crucible-preexec-purpose.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..5c08f288f0e81bf1409e2e4dd271610e0d6f5ab5
+index 0000000000000000000000000000000000000000..d8025a220e4cd10462cb0282ae334fadbe86b79f
 --- /dev/null
 +++ b/scripts/extract-crucible-preexec-purpose.py
 @@ -0,0 +1,87 @@
@@ -196941,9 +198109,9 @@ index 0000000000000000000000000000000000000000..5c08f288f0e81bf1409e2e4dd271610e
 +    'include/qemu/crucible-device-workspace.h':
 +        '5710b0cc44f68508cecd4186cca2e10c6aa32eceed1b81f2250ca9faf9028a4b',
 +    'include/plugins/qemu-plugin.h':
-+        'c22c75e242bb2c6ca49717b0f4f8cd3ac8591d470f7d1c153d0ef3e240e9ac5f',
++        '09e87de330a40af07b68d9803b4fe99d0e730ddf289dc386f634656f69e4e111',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'f99579bc9e926614cb2543d71e162b86a4c1ac4bd28f7ad4d88ee01c42ec0625',
++        '3cb253ef688fd207bb8b1552899bf2480ab5296ae393dac3196c70e2a63bbc10',
 +}
 +
 +PURPOSE_FUNCTIONS = (
@@ -217451,7 +218619,7 @@ index 08acf801b0e6cdbade400a64a3de6e2d1f08d1ca..1dd091e99d4084a51f953f28e4d90255
           * runstate can change in pause_all_vcpus()
           * as iothread mutex is unlocked
 diff --git a/system/vl.c b/system/vl.c
-index 061cbdf860bfc5f056aab26f347eeea0b82dc4e8..f458d0bcb2d34576ca1bca575bef6c743c89f209 100644
+index 061cbdf860bfc5f056aab26f347eeea0b82dc4e8..94251be7b50b82f1639fb780a43babb7027a2242 100644
 --- a/system/vl.c
 +++ b/system/vl.c
 @@ -23,6 +23,8 @@
@@ -217647,7 +218815,7 @@ index 061cbdf860bfc5f056aab26f347eeea0b82dc4e8..f458d0bcb2d34576ca1bca575bef6c74
  static bool qemu_machine_creation_done(Error **errp)
  {
      MachineState *machine = MACHINE(qdev_get_machine());
-@@ -2794,6 +2938,29 @@ static bool qemu_machine_creation_done(Error **errp)
+@@ -2794,6 +2938,32 @@ static bool qemu_machine_creation_done(Error **errp)
  
      qdev_machine_creation_done();
  
@@ -217659,6 +218827,9 @@ index 061cbdf860bfc5f056aab26f347eeea0b82dc4e8..f458d0bcb2d34576ca1bca575bef6c74
 +        if (source_required) {
 +            status = qemu_crucible_startup_source_observation_construction_associate_v1(
 +                crucible_machine_construction.source);
++        }
++        if (!status && source_required) {
++            status = qemu_plugin_crucible_initial_vcpus_complete_v1();
 +        }
 +        if (!status) {
 +            status = qemu_crucible_ram_seal_admission(errp);
@@ -217677,7 +218848,7 @@ index 061cbdf860bfc5f056aab26f347eeea0b82dc4e8..f458d0bcb2d34576ca1bca575bef6c74
      if (machine->cgs && !machine->cgs->ready) {
          error_setg(errp, "accelerator does not support confidential guest %s",
                     object_get_typename(OBJECT(machine->cgs)));
-@@ -2808,6 +2975,7 @@ static bool qemu_machine_creation_done(Error **errp)
+@@ -2808,6 +2978,7 @@ static bool qemu_machine_creation_done(Error **errp)
                      "type does not use that option; "
                      "No VGA device has been created");
      }
@@ -217685,7 +218856,7 @@ index 061cbdf860bfc5f056aab26f347eeea0b82dc4e8..f458d0bcb2d34576ca1bca575bef6c74
      return true;
  }
  
-@@ -2818,8 +2986,27 @@ void qmp_x_exit_preconfig(Error **errp)
+@@ -2818,8 +2989,27 @@ void qmp_x_exit_preconfig(Error **errp)
          return;
      }
  
@@ -217713,7 +218884,7 @@ index 061cbdf860bfc5f056aab26f347eeea0b82dc4e8..f458d0bcb2d34576ca1bca575bef6c74
      if (!qemu_machine_creation_done(errp)) {
          return;
      }
-@@ -3768,6 +3955,9 @@ void qemu_init(int argc, char **argv)
+@@ -3768,6 +3958,9 @@ void qemu_init(int argc, char **argv)
      trace_init_file();
  
      qemu_init_main_loop(&error_fatal);
@@ -217723,7 +218894,7 @@ index 061cbdf860bfc5f056aab26f347eeea0b82dc4e8..f458d0bcb2d34576ca1bca575bef6c74
      cpu_timers_init();
  
      user_register_global_props();
-@@ -3778,6 +3968,16 @@ void qemu_init(int argc, char **argv)
+@@ -3778,6 +3971,16 @@ void qemu_init(int argc, char **argv)
      /* Transfer QemuOpts options into machine options */
      parse_memory_options();
  
@@ -239194,6 +240365,78 @@ index 0000000000000000000000000000000000000000..b4feb7bf485f89ac366d54f648cdcdaa
 +rebuilt omission controls prove those component cuts only. Genuine semantic
 +entry requires the installed complete child's first-bound v5 callback quartet;
 +no standalone C journal or decoded action tuple substitutes for that module.
+diff --git a/tests/unit/crucible-initial-cpu-fixture.inc.h b/tests/unit/crucible-initial-cpu-fixture.inc.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..42fa8854feabdfea6b14c8baee09686bc2ad5bbd
+--- /dev/null
++++ b/tests/unit/crucible-initial-cpu-fixture.inc.h
+@@ -0,0 +1,66 @@
++/*
++ * Checks inside an actual initial CPU callback; no issuer or provider model.
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++static void initial_cpu_fixture_entered(CPUState *cpu)
++{
++    struct QemuCrucibleInitialCpuParticipant *participant = cpu->crucible_initial_participant;
++
++    g_assert_nonnull(participant);
++
++    struct QemuCrucibleInitialCpuParticipant *holder_copy = participant;
++    QemuCrucibleNativeInvocationTicket ticket_copy = initial_cpu_dispatch.callback_ticket;
++    struct QemuCrucibleFingerprintOperation *operation = &participant->binding->operation;
++    uint64_t original_serial = operation->serial;
++    uint64_t original_start = operation->start_ns;
++    uint64_t original_progress = operation->progress_ns;
++    CPUState cpu_copy = *cpu;
++
++    g_assert_true(participant->held);
++    g_assert_true(participant->entered);
++    g_assert_true(participant->module_callback_active);
++    g_assert_false(participant->module_callback_returned);
++    g_assert_false(operation->post_recorded);
++    g_assert_true(operation->held);
++    g_assert_cmpuint(operation->class_index, ==, 0);
++    g_assert_cmpuint(participant->operation_serial, ==, original_serial);
++    g_assert_cmpint(qemu_crucible_source_initial_cpu_current_v1(
++        cpu, &cpu->crucible_initial_participant), ==, 0);
++    g_assert_cmpint(qemu_crucible_source_initial_cpus_closed_v1(), ==, -EBUSY);
++    g_assert_cmpint(qemu_crucible_source_initial_cpu_return_v1(
++        cpu, &cpu->crucible_initial_participant), <, 0);
++
++    g_assert_cmpint(qemu_crucible_source_initial_cpu_current_v1(cpu, &holder_copy), <, 0);
++    g_assert_cmpint(qemu_crucible_source_initial_cpu_current_v1(
++        &cpu_copy, &cpu_copy.crucible_initial_participant), <, 0);
++    g_assert_cmpint(qemu_plugin_crucible_native_initial_cpu_current_v1(cpu, &ticket_copy), <, 0);
++
++    QemuCrucibleNativeInvocationTicket nested = qemu_plugin_crucible_native_mask_v1(
++        &initial_cpu_fixture_entered, initial_cpu_fixture_entered, NULL);
++
++    g_assert_cmpint(qemu_crucible_source_initial_cpu_current_v1(
++        cpu, &cpu->crucible_initial_participant), <, 0);
++    qemu_plugin_crucible_native_exit_v1(nested);
++    g_assert_cmpint(qemu_crucible_source_initial_cpu_current_v1(
++        cpu, &cpu->crucible_initial_participant), ==, 0);
++    g_assert_cmpuint(operation->serial, ==, original_serial);
++    g_assert_cmpuint(operation->start_ns, ==, original_start);
++    g_assert_cmpuint(operation->progress_ns, ==, original_progress);
++    g_assert_true(cpu->crucible_initial_participant == participant);
++}
++
++static void initial_cpu_fixture_missing_payer(CPUState *cpu)
++{
++    struct QemuCrucibleInitialCpuParticipant *participant = cpu->crucible_initial_participant;
++
++    g_assert_cmpint(qemu_plugin_crucible_initial_cpu_sdk_begin_v1(), ==, -ENOKEY);
++    g_assert_cmpint(participant->sdk_first_status, ==, -ENOKEY);
++    g_assert_cmpint(participant->sdk_post_status, ==, 0);
++    g_assert_cmpint(participant->first_status, ==, -ENOKEY);
++    g_assert_null(qemu_plugin_get_registers());
++    g_assert_true(participant->held);
++    g_assert_true(participant->module_callback_active);
++    g_assert_false(participant->module_callback_returned);
++    g_assert_false(participant->physically_returned);
++}
 diff --git a/tests/unit/crucible-net-stop-support.py b/tests/unit/crucible-net-stop-support.py
 new file mode 100644
 index 0000000000000000000000000000000000000000..b0a6ceda6d413ce2cc91ed4153408ba72b549a5c
@@ -241680,7 +242923,7 @@ index 0000000000000000000000000000000000000000..5278f261c25f36176259f4749fc0e1b2
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-placement.py b/tests/unit/extract-crucible-checkpoint-placement.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..e8fc993aefbaec26474b5917338ab1c9e40852de
+index 0000000000000000000000000000000000000000..937b4535758482fe18b252c74a61550163667a92
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-placement.py
 @@ -0,0 +1,100 @@
@@ -241698,7 +242941,7 @@ index 0000000000000000000000000000000000000000..e8fc993aefbaec26474b5917338ab1c9
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'f99579bc9e926614cb2543d71e162b86a4c1ac4bd28f7ad4d88ee01c42ec0625',
++        '3cb253ef688fd207bb8b1552899bf2480ab5296ae393dac3196c70e2a63bbc10',
 +}
 +
 +FUNCTIONS = (
@@ -241786,7 +243029,7 @@ index 0000000000000000000000000000000000000000..e8fc993aefbaec26474b5917338ab1c9
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-receiving.py b/tests/unit/extract-crucible-checkpoint-receiving.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..97a1718b4a99defb59f80d0565202b915089a309
+index 0000000000000000000000000000000000000000..2af45b4d979d788d5fb3fbe3243200337269acd8
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-receiving.py
 @@ -0,0 +1,241 @@
@@ -241807,17 +243050,17 @@ index 0000000000000000000000000000000000000000..97a1718b4a99defb59f80d0565202b91
 +    'plugins/crucible-checkpoint-finalizer.inc.h':
 +        '6616d8f61ceaa17d668033d824d0fd6dc37ff4fafe76fc7665582a80447c7303',
 +    'plugins/crucible-startup-source.c':
-+        '251c9e5b5bfda09e26939cb2d9245ff5b139bc6fa6a78d085a7588a0a73feebf',
++        '774bbc52b168b9cfc8d1d9043bbb9586c44804eff6381e8cc16eece2105bd892',
 +    'plugins/crucible-startup-source.h':
-+        'd9c3b024afc5e9a01c902e7c1b9f4903082c44eaf0bbb3ea8f0cd527775a9762',
++        'ba6d7016297cfa25482a084d3de96054a70e3b01ddfa074c57bb037e0719e13e',
 +    'include/plugins/qemu-plugin.h':
-+        'c22c75e242bb2c6ca49717b0f4f8cd3ac8591d470f7d1c153d0ef3e240e9ac5f',
++        '09e87de330a40af07b68d9803b4fe99d0e730ddf289dc386f634656f69e4e111',
 +    'system/crucible-hot-fork-coordinator.c':
 +        'a8db45cdd7a6aebebe44990565c08eed6a833a05ea7f77958ffa12bd2017b65b',
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'f99579bc9e926614cb2543d71e162b86a4c1ac4bd28f7ad4d88ee01c42ec0625',
++        '3cb253ef688fd207bb8b1552899bf2480ab5296ae393dac3196c70e2a63bbc10',
 +}
 +
 +FUNCTIONS = (
@@ -242033,7 +243276,7 @@ index 0000000000000000000000000000000000000000..97a1718b4a99defb59f80d0565202b91
 +    main()
 diff --git a/tests/unit/extract-crucible-monitor-fd-loans.py b/tests/unit/extract-crucible-monitor-fd-loans.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..157214289fffbceffbfa8d09f99f312c633773a8
+index 0000000000000000000000000000000000000000..e57ed96df8e9086d6b442bc2fa2348b8ccb09056
 --- /dev/null
 +++ b/tests/unit/extract-crucible-monitor-fd-loans.py
 @@ -0,0 +1,112 @@
@@ -242057,7 +243300,7 @@ index 0000000000000000000000000000000000000000..157214289fffbceffbfa8d09f99f312c
 +    'monitor/monitor.c':
 +        '6773b71937e9c0058143070560f3ce3bb114a966d6d4224c7a60d8862fb8d05b',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'f99579bc9e926614cb2543d71e162b86a4c1ac4bd28f7ad4d88ee01c42ec0625',
++        '3cb253ef688fd207bb8b1552899bf2480ab5296ae393dac3196c70e2a63bbc10',
 +}
 +
 +FUNCTIONS = (
@@ -242151,7 +243394,7 @@ index 0000000000000000000000000000000000000000..157214289fffbceffbfa8d09f99f312c
 +    main()
 diff --git a/tests/unit/extract-crucible-preexec-setup.py b/tests/unit/extract-crucible-preexec-setup.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..d0c8bd245a8e6c88cd45c2313a2e6e82980e53d9
+index 0000000000000000000000000000000000000000..d83eb4c77e0227085103a3dbe2978d2e496c9fe5
 --- /dev/null
 +++ b/tests/unit/extract-crucible-preexec-setup.py
 @@ -0,0 +1,173 @@
@@ -242186,21 +243429,21 @@ index 0000000000000000000000000000000000000000..d0c8bd245a8e6c88cd45c2313a2e6e82
 +    'include/qemu/crucible-device-workspace.h':
 +        '5710b0cc44f68508cecd4186cca2e10c6aa32eceed1b81f2250ca9faf9028a4b',
 +    'include/plugins/qemu-plugin.h':
-+        'c22c75e242bb2c6ca49717b0f4f8cd3ac8591d470f7d1c153d0ef3e240e9ac5f',
++        '09e87de330a40af07b68d9803b4fe99d0e730ddf289dc386f634656f69e4e111',
 +    'plugins/crucible-process-purpose.c':
 +        '64259225673f964f4fa063c73fc07afa5c4af4154e7fcad7871f7aa67ff9f6b5',
 +    'plugins/crucible-device-workspace.c':
 +        '3dd77a2ad8d4688fb57ccc94618763485d36b9460e3461ac5ff4bc6fa25c558d',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'f99579bc9e926614cb2543d71e162b86a4c1ac4bd28f7ad4d88ee01c42ec0625',
++        '3cb253ef688fd207bb8b1552899bf2480ab5296ae393dac3196c70e2a63bbc10',
 +    'scripts/extract-crucible-preexec-purpose.py':
-+        'b61b8531c8b858a49eb3df6cd29521e1ccc3003b551bec665cc968127902f1a6',
++        '89ca44ba1a0c4e15e0c0b72e2b2a3f694e512b89db6f4c560e64a454dbd6d674',
 +    'meson.build':
 +        '7eef2c0d1494dfdeed66f56c77f092382cd63d3fd5ad7c0b7c7ac85ca599e39e',
 +    'tests/unit/test-crucible-preexec-setup.c':
 +        'd26871f569f6be81b3b6189a373f2937b4b2e705a5f06c93120a6a18e0416a6c',
 +    'tests/unit/meson.build':
-+        '317db227223c2911fd3bfd210ebc42df5b5518f06c2e9fdcc15228b2ac1a38ae',
++        '95072463bbd0b5a45ca04814bda3fac28fb5c3ca61630f222545cb3edbb4fac5',
 +}
 +
 +PRIVATE_INCLUDES = ('family', 'contract', 'artifact', 'ram', 'workspace')
@@ -242330,10 +243573,10 @@ index 0000000000000000000000000000000000000000..d0c8bd245a8e6c88cd45c2313a2e6e82
 +        main()
 diff --git a/tests/unit/extract-crucible-startup-source-controls.py b/tests/unit/extract-crucible-startup-source-controls.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..92493eab1ad5acabe7b66b0cfde5aabf1cbc140b
+index 0000000000000000000000000000000000000000..351a46b349c47e1d49b3eb39b5648c2869577cf3
 --- /dev/null
 +++ b/tests/unit/extract-crucible-startup-source-controls.py
-@@ -0,0 +1,1123 @@
+@@ -0,0 +1,1131 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Extract literal startup integration control cuts, never an issuer fixture."""
 +
@@ -242343,6 +243586,10 @@ index 0000000000000000000000000000000000000000..92493eab1ad5acabe7b66b0cfde5aabf
 +from pathlib import Path
 +
 +SOURCE_HASHES = {
++    'tests/unit/crucible-initial-cpu-fixture.inc.h':
++        'eeac90f26cbe12147448fe3954203ae51442801fa5d377065b9827f4cb68e857',
++    'plugins/crucible-initial-cpu.inc.h':
++        '9d1775cb96635aa3ecb05eda6247469750f6c1f09ec0c5927c50f9b2c89c73e8',
 +    'include/qemu/module.h':
 +        '762238aeeb571946a39a3f4bfd13ce8f4cb03207d072a7935a89bb7d25b49b06',
 +    'include/system/ramblock.h':
@@ -242424,7 +243671,7 @@ index 0000000000000000000000000000000000000000..92493eab1ad5acabe7b66b0cfde5aabf
 +    'plugins/crucible-fault-lifecycle.c':
 +        '8119526bf428c17645bbf9137e62aab3abe3b05aeed527f72a24a526e92d2af8',
 +    'plugins/core.c':
-+        'eae2530525b5bdd22a5d4bebb06fc9af49f082875c6e6e193e0dc949081a4d90',
++        '1a60ab8ae2d192e51844e72534cdbba662c72c6d25b9a22798166c683541f4be',
 +    'plugins/loader.c':
 +        'ee5bb6da8d25638e197eb03de2e9d5de344eae52f77f8a0143513124bed9f502',
 +    'plugins/crucible-paged-ram.c':
@@ -242434,15 +243681,15 @@ index 0000000000000000000000000000000000000000..92493eab1ad5acabe7b66b0cfde5aabf
 +    'system/crucible-hot-fork-coordinator.c':
 +        'a8db45cdd7a6aebebe44990565c08eed6a833a05ea7f77958ffa12bd2017b65b',
 +    'plugins/crucible-startup-source.c':
-+        '251c9e5b5bfda09e26939cb2d9245ff5b139bc6fa6a78d085a7588a0a73feebf',
++        '774bbc52b168b9cfc8d1d9043bbb9586c44804eff6381e8cc16eece2105bd892',
 +    'plugins/crucible-startup-source.h':
-+        'd9c3b024afc5e9a01c902e7c1b9f4903082c44eaf0bbb3ea8f0cd527775a9762',
++        'ba6d7016297cfa25482a084d3de96054a70e3b01ddfa074c57bb037e0719e13e',
 +    'plugins/crucible-device-workspace.c':
 +        '3dd77a2ad8d4688fb57ccc94618763485d36b9460e3461ac5ff4bc6fa25c558d',
 +    'include/qemu/crucible-device-workspace.h':
 +        '5710b0cc44f68508cecd4186cca2e10c6aa32eceed1b81f2250ca9faf9028a4b',
 +    'include/plugins/qemu-plugin.h':
-+        'c22c75e242bb2c6ca49717b0f4f8cd3ac8591d470f7d1c153d0ef3e240e9ac5f',
++        '09e87de330a40af07b68d9803b4fe99d0e730ddf289dc386f634656f69e4e111',
 +    'plugins/crucible-command-consumer.inc.h':
 +        '90e66020ed3cd06206739f0921207a2ba0a35ccdf2144b6c829dd77c5f44fd2f',
 +    'plugins/crucible-callback-owner.inc.h':
@@ -242464,15 +243711,15 @@ index 0000000000000000000000000000000000000000..92493eab1ad5acabe7b66b0cfde5aabf
 +    'include/qemu/crucible-shared-region-layout.h':
 +        '9ad3be4a8b3aa0e0c10ab0f12908b0e827e219ec93e91d3939c90606383f54b5',
 +    'include/qemu/crucible-native-invocation.h':
-+        '91de66a1796a41540848a592985c655ce31c9cb8947857eecd4ddecd0343d79f',
++        '73ca8904b721cceb2c750b7cdf7e4aec6185af837b4576688447147be47eeed6',
 +    'plugins/crucible-native-invocation.c':
-+        '8cba55e8a8afe6a466a021650c15967dee411f2e54ef0bd59ff9cba395b489b3',
++        '862f46c6c60ccb6b004d5a4dd39666150241b23d8dcf6ca769ca26388ddf2d08',
 +    'cpu-common.c':
 +        'c8eefc24511efd7ddc63e8c99a5d44b1d3cbc6b390bedf7f24046a4f6d486c4d',
 +    'include/hw/core/cpu.h':
-+        '7ad1fe4b222dbbc84e7c2f5d2d2d0d59c7a9328f16666d157815c72a2145ae67',
++        '8f9ad9044f5723b24cf10c49847524242f552225cbf47f79ff9f59ef85046aeb',
 +    'include/qemu/plugin.h':
-+        'd8988d06afc798edbe5edc267efb33361b52c7d66bf6728de1eaef2c370f508d',
++        '52946896f359e052a3dca7d4e6efc8783aefe4b12038d1b5f14874359f364705',
 +    'plugins/plugin.h':
 +        'dec437b7d16e795c5e1e45ad37a8b16d44c933a6614006449cdf03b869257036',
 +    'system/cpus.c':
@@ -242498,7 +243745,7 @@ index 0000000000000000000000000000000000000000..92493eab1ad5acabe7b66b0cfde5aabf
 +    'plugins/crucible-control-stop.h':
 +        '04697b147a4e6d7f50976170447aa27ae3214a6e04f6c393fc2cdf3eb27e6b0e',
 +    'system/vl.c':
-+        '54ee39196994c9620942e43b68931b728ad05af38dddc038cdc3db16a7a8d53c',
++        'bda48b07e561bf62d49e1da06f816618a3735384c850e06bbd6b97ab0fe90481',
 +    'util/main-loop.c':
 +        '2db25444346dd67bc5f2b4b3c9bc7efed5e053ac25cf257db7adcc1186e289ef',
 +    'qom/object.c':
@@ -242560,7 +243807,7 @@ index 0000000000000000000000000000000000000000..92493eab1ad5acabe7b66b0cfde5aabf
 +    'tests/unit/crucible-action-original-fixture.inc.h':
 +        '539ae53a564b8c758b5e1b6712054f513437a10adbbbe6a4c41b1a747d2a8c35',
 +    'tests/unit/test-crucible-action-original.py':
-+        '706d92c45b3b263986b1ed7ddf8e36edf5412991b06f984e87b17bd4344264bb',
++        '7f085dd3222403bd611ae5d3eacd6c6cc7362685221eae2a31376e089a85efd1',
 +    'plugins/crucible-publisher-subscription.inc.h':
 +        '03de4fcc32e1100712fee79294b4fd2671df8ff73843cf00991979f7dc7a38c1',
 +    'plugins/crucible-command-receive.inc.h':
@@ -243178,6 +244425,9 @@ index 0000000000000000000000000000000000000000..92493eab1ad5acabe7b66b0cfde5aabf
 +              '#include "system/crucible-ram-quiescence.h"',
 +              '#include "monitor/monitor-internal.h"']
 +    blocks = (
++        ("plugins/core.c",
++         "static struct {\n    CPUState *cpu;\n    struct qemu_plugin_cb *callback;\n    QemuCrucibleNativeInvocationTicket callback_ticket;",
++         "size_t qemu_plugin_crucible_initial_cpu_dispatch_storage_bytes_v1("),
 +        ("plugins/crucible-paged-ram.c",
 +         "typedef struct CrucibleRamRegion {",
 +         "static int arena_placement_authority("),
@@ -243249,6 +244499,7 @@ index 0000000000000000000000000000000000000000..92493eab1ad5acabe7b66b0cfde5aabf
 +        output.extend((notice, declaration[0], body))
 +
 +    getters = {
++        "plugins/core.c": ("qemu_plugin_crucible_initial_cpu_dispatch_storage_bytes_v1",),
 +        "system/crucible-native-park-request.c": ("qemu_crucible_native_park_request_static_extent",),
 +        "plugins/crucible-checkpoint-receiving.c": ("qemu_crucible_checkpoint_owner_bytes",),
 +        "plugins/crucible-paged-ram.c": (
@@ -243556,7 +244807,7 @@ index 0000000000000000000000000000000000000000..228f5bfb67fb64768c9806c3617cc308
 +if __name__ == "__main__":
 +    main()
 diff --git a/tests/unit/meson.build b/tests/unit/meson.build
-index dc3fb954c03a02a82f09b38521e2d85ede2549f5..3c9e8ea9dc612a9aa8dc8b76cc1271200c50a008 100644
+index dc3fb954c03a02a82f09b38521e2d85ede2549f5..879c4d3a4e31231a2ea1ad1f80b47c37ccdf822c 100644
 --- a/tests/unit/meson.build
 +++ b/tests/unit/meson.build
 @@ -21,6 +21,8 @@ tests = {
@@ -243631,7 +244882,7 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..3c9e8ea9dc612a9aa8dc8b76cc127120
  foreach test_name, extra: tests
    src = [test_name + '.c']
    deps = [qemuutil]
-@@ -207,3 +251,1173 @@ foreach test_name, extra: tests
+@@ -207,3 +251,1175 @@ foreach test_name, extra: tests
         priority: slow_tests.get(test_name, 30),
         suite: ['unit'])
  endforeach
@@ -244437,6 +245688,8 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..3c9e8ea9dc612a9aa8dc8b76cc127120
 +                        '../../plugins/crucible-command-membership.inc.h',
 +                        '../../plugins/crucible-command-receive.inc.h',
 +                        '../../plugins/crucible-action-original.inc.h',
++                        '../../plugins/crucible-initial-cpu.inc.h',
++                        'crucible-initial-cpu-fixture.inc.h',
 +                        '../../plugins/crucible-publisher-subscription.inc.h',
 +                        'crucible-publisher-subscription-fixture.inc.h',
 +                        'crucible-action-original-fixture.inc.h',
@@ -250287,12 +251540,12 @@ index 0000000000000000000000000000000000000000..50f595239e1be81a66e8bf682ebabcf2
 +}
 diff --git a/tests/unit/test-crucible-action-original.py b/tests/unit/test-crucible-action-original.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..fde9324f0b8b81e42bf26af64fc70e0c676ea650
+index 0000000000000000000000000000000000000000..b961d6f63a57a072904446a8b2523a05d3cbb3d3
 --- /dev/null
 +++ b/tests/unit/test-crucible-action-original.py
-@@ -0,0 +1,156 @@
+@@ -0,0 +1,211 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
-+"""Check literal action evidence and independent containing-row limits.
++"""Check literal evidence and retained action/construction clock limits.
 +
 +These pure checks issue no action, subscriber, operation, activation or physical
 +receipt. The mandatory launched lifecycle remains a separate requirement.
@@ -250383,7 +251636,49 @@ index 0000000000000000000000000000000000000000..fde9324f0b8b81e42bf26af64fc70e0c
 +    action.evidence.completed_required_units = 0;
 +    assert(action_original_return_evidence(&action, -EIO) == -EPROTO);
 +    assert(action.completed_required_units == 1);
-+    puts("PASS literal semantic evidence, final completion and independent containing-row limits; no lifecycle authority");
++    struct QemuCrucibleFingerprintOperation construction = {
++        .class_index = 0, .start_ns = 20, .progress_ns = 30,
++        .admitted = { .origin_ns = 5, .outer_allowance_present = true,
++                     .outer_allowance_ns = 100 },
++    };
++    construction.admitted.budgets[0] = (QemuCrucibleStandingBudget) {
++        .total_present = true, .total_ns = 50,
++        .progress_present = true, .progress_ns = 40,
++    };
++    struct QemuCrucibleFingerprintOperation original = construction;
++
++    assert(initial_cpu_limits_current(&construction, &construction.admitted, 60, 69) == 0);
++    assert(initial_cpu_limits_current(&construction, &construction.admitted, 60, 70) == -ETIMEDOUT);
++    assert(initial_cpu_limits_current(&construction, &construction.admitted, 70, 69) == -ESTALE);
++    assert(initial_cpu_limits_current(&construction, &construction.admitted, 0, 29) == -ESTALE);
++    construction.admitted.outer_allowance_ns = 60;
++    assert(initial_cpu_limits_current(&construction, &construction.admitted, 60, 65) == -ETIMEDOUT);
++    construction.admitted.outer_allowance_ns = 100;
++    assert(memcmp(&original, &construction, sizeof(original)) == 0);
++    QemuCrucibleStandingRecord current = construction.admitted;
++
++    current.budgets[0].total_ns = 40;
++    assert(initial_cpu_limits_current(&construction, &current, 60, 60) == -ETIMEDOUT);
++    current.budgets[0] = construction.admitted.budgets[0];
++    current.state = 3;
++    assert(initial_cpu_limits_current(&construction, &current, 60, 60) == -ECANCELED);
++    assert(memcmp(&original, &construction, sizeof(original)) == 0);
++    struct QemuCrucibleInitialCpuParticipant participant = {
++        .held = true, .entered = true, .module_callback_active = true,
++    };
++
++    initial_cpu_sdk_record(&participant, -EIO, -ETIMEDOUT);
++    assert(participant.sdk_first_status == -EIO);
++    assert(participant.sdk_post_status == -ETIMEDOUT);
++    assert(participant.first_status == -EIO);
++    initial_cpu_sdk_record(&participant, 0, 0);
++    assert(participant.sdk_first_status == -EIO);
++    assert(participant.sdk_post_status == -ETIMEDOUT);
++    assert(participant.first_status == -EIO);
++    assert(participant.held && participant.entered && participant.module_callback_active);
++    assert(!participant.module_callback_returned && !participant.callback_returned);
++    assert(!participant.physically_returned);
++    puts("PASS literal contracts, original deadlines and independent SDK first/post; no lifecycle authority");
 +    return 0;
 +}
 +"""
@@ -250406,6 +251701,13 @@ index 0000000000000000000000000000000000000000..fde9324f0b8b81e42bf26af64fc70e0c
 +        "static int action_original_return_evidence(",
 +        "static int action_original_frozen_slice(",
 +    ))
++    initial = (source / "plugins/crucible-initial-cpu.inc.h").read_text()
++    startup = (source / "plugins/crucible-startup-source.c").read_text()
++    literal += "\n\n" + extract["function"](startup, "static int standing_limits_current(")
++    literal += "\n\n" + extract["function"](initial, "static int initial_cpu_limits_current(")
++    literal += "\n\n" + extract["function"](
++        startup, "struct QemuCrucibleInitialCpuParticipant {").rstrip() + ";\n"
++    literal += "\n\n" + extract["function"](initial, "static void initial_cpu_sdk_record(")
 +    controls = {
 +        "positive": literal,
 +        "omit-containing-row": literal.replace(
@@ -250416,6 +251718,12 @@ index 0000000000000000000000000000000000000000..fde9324f0b8b81e42bf26af64fc70e0c
 +        "permit-incomplete-healthy-return": literal.replace(
 +            "action->evidence.completed_required_units != action->evidence.required_units",
 +            "false"),
++        "retime-initial-construction": literal.replace(
++            "now - operation->start_ns >= budget->total_ns", "false").replace(
++            "now - operation->progress_ns >= budget->progress_ns", "false"),
++        "collapse-initial-sdk-post": literal.replace(
++            "participant->sdk_post_status = post_status",
++            "participant->sdk_post_status = first_status"),
 +    }
 +    proof = {}
 +    for name, definitions in controls.items():
@@ -258169,7 +259477,7 @@ index 0000000000000000000000000000000000000000..962b0dba612e5ea5407517d6188d2189
 +    main()
 diff --git a/tests/unit/test-crucible-control-deferred.py b/tests/unit/test-crucible-control-deferred.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..523dd9dfb0640ffc9e1e37c6476897fdb0ae7aa6
+index 0000000000000000000000000000000000000000..56cf35bafbbcf125b0f992c22fd2d7802fa42aae
 --- /dev/null
 +++ b/tests/unit/test-crucible-control-deferred.py
 @@ -0,0 +1,745 @@
@@ -258217,7 +259525,7 @@ index 0000000000000000000000000000000000000000..523dd9dfb0640ffc9e1e37c6476897fd
 +    "plugins/api-system.c":
 +        "348c168b9ac0fe693c44ac5336dc48d31de8ce2b41b58c541aa9ba0c669ba7a3",
 +    "plugins/crucible-native-invocation.c":
-+        "8cba55e8a8afe6a466a021650c15967dee411f2e54ef0bd59ff9cba395b489b3",
++        "862f46c6c60ccb6b004d5a4dd39666150241b23d8dcf6ca769ca26388ddf2d08",
 +    "plugins/crucible-callback-publication.inc.h":
 +        "5f91b39050b0fd482825221f4dd573d7f5f61f677d26afb4d45947b6a200689a",
 +}
