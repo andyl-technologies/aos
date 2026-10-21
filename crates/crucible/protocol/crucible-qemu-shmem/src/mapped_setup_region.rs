@@ -6,7 +6,7 @@ use std::ptr::NonNull;
 
 use thiserror::Error;
 
-use crate::region::{helpers::directed_rings, layout_from_setup_region_header};
+use crate::region::{helpers::directed_ring_descriptors, layout_from_setup_region_header};
 
 use super::{
     ACCELERATOR_ENTRY_ALIGN, ACCELERATOR_ENTRY_SIZE, AcceleratorEntry, AcceleratorRingDirection,

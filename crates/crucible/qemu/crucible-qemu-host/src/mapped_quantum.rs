@@ -290,7 +290,7 @@ impl QemuMappedQuantumShmemHotPath {
         let view =
             mapped_view(region, config).map_err(|source| source.into_channel_error(operation))?;
         let mut hot_path = QemuQuantumShmemHotPath::new_with_inbound_delivery_ledger(
-            config.clone(),
+            config,
             view,
             inbound_delivery_ledger,
             send_authorizer.as_ref(),
@@ -1127,21 +1127,21 @@ impl QemuShmemHotPathChannel for QemuMappedQuantumShmemHotPath {
                 )
             })?;
         if sample.sample_icount < current_icount {
-            return Err(QemuNodeChannelError::retryable(
+            return Err(QemuNodeChannelError::fingerprint_sample(
                 "execution_fingerprint",
-                format!(
-                    "black-box fingerprint sample at icount {} is behind current boundary {current_icount}",
-                    sample.sample_icount
-                ),
+                crate::QemuFingerprintSampleError::BehindBoundary {
+                    sample_icount: sample.sample_icount,
+                    current_icount,
+                },
             ));
         }
         if sample.sample_icount != current_icount {
-            return Err(QemuNodeChannelError::new(
+            return Err(QemuNodeChannelError::fingerprint_sample(
                 "execution_fingerprint",
-                format!(
-                    "black-box fingerprint sample at icount {} is ahead of current boundary {current_icount}",
-                    sample.sample_icount
-                ),
+                crate::QemuFingerprintSampleError::AheadOfBoundary {
+                    sample_icount: sample.sample_icount,
+                    current_icount,
+                },
             ));
         }
         black_box_execution_fingerprint(&self.config.node, &sample)

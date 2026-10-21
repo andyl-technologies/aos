@@ -56,6 +56,26 @@ pub enum QemuFingerprintSampleError {
         #[source]
         source: crucible_qemu_shmem::FingerprintSampleError,
     },
+    /// The latest published sample has not reached the current boundary.
+    #[error(
+        "black-box fingerprint sample at icount {sample_icount} is behind current boundary {current_icount}"
+    )]
+    BehindBoundary {
+        /// Actual sample coordinate, retained without another capture request.
+        sample_icount: u64,
+        /// Actual node boundary requiring a matching sample.
+        current_icount: u64,
+    },
+    /// The latest published sample is beyond the current node boundary.
+    #[error(
+        "black-box fingerprint sample at icount {sample_icount} is ahead of current boundary {current_icount}"
+    )]
+    AheadOfBoundary {
+        /// Actual sample coordinate that cannot identify this boundary.
+        sample_icount: u64,
+        /// Actual node boundary requiring a matching sample.
+        current_icount: u64,
+    },
     /// The plugin reported failed component captures in its actual sample.
     #[error("black-box fingerprint sample has component failure mask {mask:#x}")]
     ComponentFailures {
@@ -182,13 +202,16 @@ impl QemuNodeChannelError {
     }
 
     /// Retains an actual fingerprint failure without allocating its diagnostic.
+    ///
+    /// Only a sample behind the current boundary remains retryable. This
+    /// classification issues no fresh capture request or publication authority.
     #[must_use]
     pub fn fingerprint_sample(operation: &'static str, source: QemuFingerprintSampleError) -> Self {
         Self {
             operation,
             message: Cow::Borrowed(""),
             timeout: None,
-            retryable: false,
+            retryable: matches!(source, QemuFingerprintSampleError::BehindBoundary { .. }),
             detail: ChannelFailureDetail::FingerprintSample(source),
         }
     }

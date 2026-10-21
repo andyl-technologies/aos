@@ -85,3 +85,113 @@ fn black_box_fingerprint_rejects_incomplete_samples() {
     empty.vcpu_count = 0;
     assert!(black_box_execution_fingerprint(&node, &empty).is_err());
 }
+
+struct RejectFingerprintNetworkSends;
+
+impl crucible_engine::SchedulerSendAuthorizer for RejectFingerprintNetworkSends {
+    fn authorize_cross_node_send(
+        &self,
+        _producer: &crucible_engine::SchedulerNodeId,
+        _consumer: &crucible_engine::SchedulerNodeId,
+    ) -> Result<crucible_engine::SchedulerSendAuthorization, crucible_engine::SchedulerError> {
+        panic!("fingerprint observation must not authorize a network send");
+    }
+}
+
+fn mapped_fingerprint_channel()
+-> Result<(QemuMappedQuantumShmemHotPath, MappedSetupRegion), Box<dyn std::error::Error>> {
+    use std::io::Write as _;
+    use std::os::fd::AsFd as _;
+    use crucible_qemu_shmem::{RegionAllocation, RegionConfig, mmap_setup_region};
+
+    let allocation = RegionAllocation::new_model(RegionConfig::new(1, 4))?;
+    let layout = allocation.layout();
+    let mut shmem = std::fs::File::from(crate::spawn::memfd_region(layout.region_size)?);
+    shmem.write_all(&allocation.setup_region_bytes()?)?;
+    let producer = mmap_setup_region(shmem.as_fd(), layout.region_size)?;
+    let region = mmap_setup_region(shmem.as_fd(), layout.region_size)?;
+    let config = QemuQuantumShmemConfig::new(
+        crucible_engine::NodeId {
+            name: String::from("fingerprint-node"),
+        },
+        0,
+    );
+    let channel =
+        QemuMappedQuantumShmemHotPath::new(config, region, RejectFingerprintNetworkSends)?;
+    Ok((channel, producer))
+}
+
+#[test]
+fn mapped_snapshot_borrows_existing_configuration_without_allocating()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crucible_host_resources::test_support::TestAllocationObserver;
+
+    let (mut channel, producer) = mapped_fingerprint_channel()?;
+    let expected = producer.node_slot(0)?.snapshot();
+
+    let (snapshot, counts) = TestAllocationObserver::count(|| {
+        channel.with_hot_path("observe fingerprint boundary", |hot_path| {
+            Ok(hot_path.node_snapshot())
+        })
+    });
+
+    assert_eq!(snapshot?, expected);
+    assert_eq!(counts.allocations, 0, "{counts:?}");
+    assert_eq!(counts.reallocations, 0, "{counts:?}");
+    assert!(!counts.overflow);
+    Ok(())
+}
+
+#[test]
+fn mapped_fingerprint_boundary_refusal_retains_coordinates_without_allocating()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crucible_host_resources::test_support::TestAllocationObserver;
+
+    let (mut channel, producer) = mapped_fingerprint_channel()?;
+    let current = 4096 * crucible_qemu_shmem::TICKS_PER_INSTRUCTION;
+    producer.node_slot(0)?.publish_pause_quiesced(current, 0)?;
+
+    for (sample_icount, relation, retryable) in [
+        (current - 1, "behind", true),
+        (current + 1, "ahead of", false),
+    ] {
+        let sample = FingerprintSample {
+            sample_icount,
+            ..sample()
+        };
+        producer.fingerprint_sample(0)?.publish(&sample)?;
+        let expected = format!(
+            "execution_fingerprint failed: black-box fingerprint sample at icount {sample_icount} is {relation} current boundary {current}"
+        );
+
+        let (result, counts) = TestAllocationObserver::count(|| {
+            QemuShmemHotPathChannel::execution_fingerprint(&mut channel)
+        });
+
+        let error = result.expect_err("a different boundary cannot supply this fingerprint");
+        assert_eq!(counts.allocations, 0, "{counts:?}");
+        assert_eq!(counts.reallocations, 0, "{counts:?}");
+        assert!(!counts.overflow);
+        assert_eq!(error.to_string(), expected);
+        let expected_source = if retryable {
+            crate::QemuFingerprintSampleError::BehindBoundary {
+                sample_icount,
+                current_icount: current,
+            }
+        } else {
+            crate::QemuFingerprintSampleError::AheadOfBoundary {
+                sample_icount,
+                current_icount: current,
+            }
+        };
+        assert_eq!(error.fingerprint_sample_source(), Some(expected_source));
+        assert_eq!(error.is_retryable(), retryable);
+        assert!(error.bounded_timeout().is_none());
+        assert_eq!(producer.fingerprint_sample(0)?.snapshot(), Some(sample));
+        assert_eq!(
+            producer.fingerprint_sample(0)?.pending_capture_request_v1(),
+            None
+        );
+    }
+    Ok(())
+}

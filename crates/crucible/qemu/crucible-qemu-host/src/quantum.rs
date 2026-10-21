@@ -8,6 +8,7 @@
 //! over caller-supplied shared-memory ABI objects; it does not allocate private
 //! shadow slots or use QMP/plugin IPC for per-quantum progress.
 
+use std::borrow::Cow;
 use std::collections::VecDeque;
 
 use crucible_engine::{
@@ -351,7 +352,7 @@ pub struct QemuQuantumReport {
 
 /// Host-side QEMU shared-memory hot-path adapter.
 pub struct QemuQuantumShmemHotPath<'a> {
-    config: QemuQuantumShmemConfig,
+    config: Cow<'a, QemuQuantumShmemConfig>,
     view: QemuQuantumShmemView<'a>,
     operation_log: Vec<QemuQuantumOperation>,
     next_router_inbound_sequence: u64,
@@ -373,7 +374,7 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
     ) -> Result<Self, QemuQuantumError> {
         let inbound_delivery_ledger = inbound_delivery_ledger_from_view(&view)?;
         Ok(Self {
-            config,
+            config: Cow::Owned(config),
             view,
             operation_log: Vec::new(),
             next_router_inbound_sequence: 0,
@@ -382,14 +383,16 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
         })
     }
 
+    /// Borrows the mapped channel's existing identities and delivery ledger.
+    /// The temporary view cannot outlive either containing owner.
     pub(crate) fn new_with_inbound_delivery_ledger(
-        config: QemuQuantumShmemConfig,
+        config: &'a QemuQuantumShmemConfig,
         view: QemuQuantumShmemView<'a>,
         inbound_delivery_ledger: &'a mut VecDeque<FrameDeliveryKey>,
         send_authorizer: &'a dyn SchedulerSendAuthorizer,
     ) -> Result<Self, QemuQuantumError> {
         Ok(Self {
-            config,
+            config: Cow::Borrowed(config),
             view,
             operation_log: Vec::new(),
             next_router_inbound_sequence: 0,

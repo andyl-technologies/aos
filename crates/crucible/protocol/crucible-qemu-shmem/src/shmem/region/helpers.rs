@@ -56,33 +56,48 @@ pub(super) fn compiled_layout_target() -> &'static str {
     }
 }
 
-pub(crate) fn directed_rings(vm_node_count: u32) -> Result<Vec<DirectedRing>, RegionLayoutError> {
+fn directed_ring_count(vm_node_count: u32) -> Result<usize, RegionLayoutError> {
     let count = usize::try_from(vm_node_count)
         .ok()
         .and_then(|nodes| nodes.checked_mul(ReservedExecutorSlot::all().len()))
         .and_then(|pairs| pairs.checked_mul(2))
         .ok_or(RegionLayoutError::GeometryOverflow)?;
-    let mut rings = Vec::with_capacity(count);
-    for vm_slot in 0..vm_node_count {
-        for executor in ReservedExecutorSlot::all() {
-            let executor_slot =
-                u32::try_from(executor.slot()).map_err(|_| RegionLayoutError::GeometryOverflow)?;
-            let outbound_index =
-                u32::try_from(rings.len()).map_err(|_| RegionLayoutError::GeometryOverflow)?;
-            rings.push(DirectedRing {
-                index: outbound_index,
-                src_slot: vm_slot,
-                dst_slot: executor_slot,
-            });
-            let inbound_index =
-                u32::try_from(rings.len()).map_err(|_| RegionLayoutError::GeometryOverflow)?;
-            rings.push(DirectedRing {
-                index: inbound_index,
-                src_slot: executor_slot,
-                dst_slot: vm_slot,
-            });
-        }
-    }
+    u32::try_from(count).map_err(|_| RegionLayoutError::GeometryOverflow)?;
+    Ok(count)
+}
+
+/// Enumerates the canonical directed-ring topology without allocating storage.
+///
+/// # Errors
+///
+/// Returns [`RegionLayoutError::GeometryOverflow`] when the descriptor count
+/// cannot fit the native address space or the wire index.
+pub(crate) fn directed_ring_descriptors(
+    vm_node_count: u32,
+) -> Result<impl Iterator<Item = DirectedRing>, RegionLayoutError> {
+    directed_ring_count(vm_node_count)?;
+    Ok((0..vm_node_count)
+        .flat_map(|vm_slot| {
+            ReservedExecutorSlot::all()
+                .into_iter()
+                .flat_map(move |executor| {
+                    // Reserved physical slots are constants below MAX_NODES (32).
+                    let executor_slot = executor.slot() as u32;
+                    [(vm_slot, executor_slot), (executor_slot, vm_slot)]
+                })
+        })
+        .enumerate()
+        .map(|(index, (src_slot, dst_slot))| DirectedRing {
+            // The complete count was checked before constructing the iterator.
+            index: index as u32,
+            src_slot,
+            dst_slot,
+        }))
+}
+
+pub(crate) fn directed_rings(vm_node_count: u32) -> Result<Vec<DirectedRing>, RegionLayoutError> {
+    let mut rings = Vec::with_capacity(directed_ring_count(vm_node_count)?);
+    rings.extend(directed_ring_descriptors(vm_node_count)?);
     Ok(rings)
 }
 
@@ -475,4 +490,46 @@ pub(super) fn wake_all_slots_for_control<'a>(
         slots_signaled,
         waiters_woken,
     })
+}
+
+#[cfg(test)]
+mod directed_ring_tests {
+    use super::*;
+
+    #[test]
+    fn descriptor_iterator_preserves_every_supported_ring_and_rejects_overflow()
+    -> Result<(), RegionLayoutError> {
+        for vm_node_count in 0..=MAX_VM_NODES as u32 {
+            let mut expected = Vec::new();
+            for vm_slot in 0..vm_node_count {
+                for executor in ReservedExecutorSlot::all() {
+                    let slot = executor.slot() as u32;
+                    expected.push(DirectedRing {
+                        index: expected.len() as u32,
+                        src_slot: vm_slot,
+                        dst_slot: slot,
+                    });
+                    expected.push(DirectedRing {
+                        index: expected.len() as u32,
+                        src_slot: slot,
+                        dst_slot: vm_slot,
+                    });
+                }
+            }
+
+            let actual: Vec<_> = directed_ring_descriptors(vm_node_count)?.collect();
+            assert_eq!(actual, expected);
+            assert_eq!(directed_rings(vm_node_count)?, expected);
+        }
+
+        assert!(matches!(
+            directed_ring_descriptors(u32::MAX),
+            Err(RegionLayoutError::GeometryOverflow)
+        ));
+        assert!(matches!(
+            directed_rings(u32::MAX),
+            Err(RegionLayoutError::GeometryOverflow)
+        ));
+        Ok(())
+    }
 }
