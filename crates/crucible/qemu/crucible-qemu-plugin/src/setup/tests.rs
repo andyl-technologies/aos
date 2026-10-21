@@ -120,6 +120,56 @@ fn prepare_setup_rejects_a_raw_app_random_body() {
 }
 
 #[test]
+fn invalid_plan_keeps_first_validation_cause_when_failure_ack_write_refuses() {
+    let layout = valid_layout();
+    let setup = ReceivedSetup {
+        process_generation: 1,
+        device_digest_workspace: None,
+        region_len: layout.region_size,
+        descriptors: ReceivedSetupDescriptors {
+            device_digest_workspace: None,
+            shmem_fd: valid_region_file(layout).into(),
+            wake_fd: wake_fd().into(),
+            plugin_setup_plan_fd: test_sealed_setup_plan_fd(
+                &AppRandomBranchPlan::default().encode(),
+            ),
+            source_supervision_fd: test_plugin_setup_plan_fd(),
+            source_cancellation_fd: test_plugin_setup_plan_fd(),
+        },
+    };
+    struct RefusedAck;
+
+    impl Write for RefusedAck {
+        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::from_raw_os_error(libc::EPIPE))
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            panic!("a failed write must not flush the acknowledgement");
+        }
+    }
+
+    let result = prepare_setup_completion(
+        &mut RefusedAck,
+        setup,
+        plugin_handshake(0, layout.node_count),
+    );
+
+    assert!(matches!(
+        result,
+        Err(PluginSetupError::ValidatePluginSetupPlan {
+            source: PluginSetupPlanDescriptorError::DecodeComposite { .. },
+            failure_ack: Some(SetupCompletionError::Io {
+                source: crucible_qemu_protocol::FrameIoError::Io {
+                    kind: std::io::ErrorKind::BrokenPipe,
+                    ..
+                },
+            }),
+        })
+    ));
+}
+
+#[test]
 fn prepare_setup_sends_nonzero_ack_when_region_validation_fails() {
     let region_len = REGION_HEADER_SIZE as u64;
     let setup = ReceivedSetup {

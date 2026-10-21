@@ -43,6 +43,8 @@ use crate::{
 mod boot_barrier;
 #[cfg(unix)]
 mod mapping;
+#[cfg(target_os = "linux")]
+mod plan_read;
 #[cfg(unix)]
 pub use boot_barrier::PluginSetupBootBarrierError;
 #[cfg(unix)]
@@ -812,14 +814,14 @@ pub(crate) fn prepare_setup_completion_borrowing_plan<W: Write>(
         }
     };
 
-    let decoded_plans = match read_plugin_setup_plan(
-        plugin_setup_plan_fd,
-        original.and_then(crate::startup_source::InstallerStartupSource::retained_native_setup),
-    ) {
+    let decoded_plans = match read_plugin_setup_plan(plugin_setup_plan_fd, original) {
         Ok(plans) => plans,
         Err(source) => {
-            send_setup_failure_ack(writer, PluginSetupFailureStage::ValidatePluginSetupPlan)?;
-            return Err(PluginSetupError::ValidatePluginSetupPlan { source });
+            let failure_ack = plugin_send_setup_ack(writer, SETUP_ACK_STATUS_SETUP_FAILED).err();
+            return Err(PluginSetupError::ValidatePluginSetupPlan {
+                source,
+                failure_ack,
+            });
         }
     };
 
@@ -913,18 +915,19 @@ struct DecodedPluginSetupPlans {
 #[cfg(target_os = "linux")]
 fn read_plugin_setup_plan(
     fd: BorrowedFd<'_>,
-    native_setup: Option<&crate::startup_source::NativeSetupBorrow>,
+    original: Option<&crate::startup_source::InstallerStartupSource>,
 ) -> Result<DecodedPluginSetupPlans, PluginSetupPlanDescriptorError> {
     #[cfg(not(test))]
-    if native_setup.is_none() {
+    if original
+        .and_then(crate::startup_source::InstallerStartupSource::retained_native_setup)
+        .is_none()
+    {
         return Err(PluginSetupPlanDescriptorError::DecodeComposite {
             source: PluginSetupPlanError::InvalidPreexecSection {
                 section: "native custody",
             },
         });
     }
-    #[cfg(test)]
-    let _model_native_custody = native_setup;
     let required_seals =
         libc::F_SEAL_SHRINK | libc::F_SEAL_GROW | libc::F_SEAL_WRITE | libc::F_SEAL_SEAL;
     let observed_seals = unsafe {
@@ -978,44 +981,9 @@ fn read_plugin_setup_plan(
         });
     }
 
+    plan_read::check_original(original)?;
     let mut bytes = vec![0_u8; length];
-    let mut read = 0_usize;
-    while read < bytes.len() {
-        let offset = libc::off_t::try_from(read).map_err(|_error| {
-            PluginSetupPlanDescriptorError::InvalidLength {
-                bytes: length,
-                maximum,
-            }
-        })?;
-        let result = unsafe {
-            // SAFETY: the destination suffix is writable for its declared
-            // length and pread does not retain the pointer.
-            libc::pread(
-                fd.as_raw_fd(),
-                bytes[read..].as_mut_ptr().cast::<libc::c_void>(),
-                bytes.len() - read,
-                offset,
-            )
-        };
-        if result < 0 {
-            let errno = last_errno();
-            if errno == libc::EINTR {
-                continue;
-            }
-            return Err(PluginSetupPlanDescriptorError::Io {
-                operation: "read plugin setup-plan descriptor",
-                errno,
-            });
-        }
-        let count = usize::try_from(result).unwrap_or(0);
-        if count == 0 {
-            return Err(PluginSetupPlanDescriptorError::Truncated {
-                expected: length,
-                actual: read,
-            });
-        }
-        read += count;
-    }
+    plan_read::read(fd, &mut bytes, original)?;
     let (app_random_branch_plan, selectable_catalog_plan) =
         PluginSetupPlan::decode_preexec_parts(&bytes)
             .map_err(|source| PluginSetupPlanDescriptorError::DecodeComposite { source })?;
@@ -1028,7 +996,7 @@ fn read_plugin_setup_plan(
 #[cfg(all(unix, not(target_os = "linux")))]
 fn read_plugin_setup_plan(
     _fd: BorrowedFd<'_>,
-    _native_setup: Option<&crate::startup_source::NativeSetupBorrow>,
+    _original: Option<&crate::startup_source::InstallerStartupSource>,
 ) -> Result<DecodedPluginSetupPlans, PluginSetupPlanDescriptorError> {
     Err(PluginSetupPlanDescriptorError::UnsupportedPlatform)
 }
@@ -1544,8 +1512,10 @@ pub enum PluginSetupError {
     /// Validating the immutable current-version setup-plan descriptor failed.
     #[error("setup plugin-plan validation failed")]
     ValidatePluginSetupPlan {
-        /// Underlying descriptor or canonical-plan failure.
+        /// Underlying descriptor or canonical-plan failure, retained first.
         source: PluginSetupPlanDescriptorError,
+        /// Later failure acknowledgement refusal, independent of validation.
+        failure_ack: Option<SetupCompletionError>,
     },
     /// The handshake node count disagrees with the mapped shared-memory header.
     #[error(
@@ -1607,6 +1577,25 @@ pub enum PluginSetupPlanDescriptorError {
         operation: &'static str,
         /// Raw OS errno.
         errno: i32,
+    },
+    /// The retained installing Source refused before another plan-read effect.
+    #[error("plugin setup-plan Original refused before reading: {source}")]
+    Original {
+        /// Actual retained Source refusal; no replacement Original is created.
+        #[source]
+        source: crate::StartupSourceError,
+    },
+    /// Retains a completed read attempt beside a negative Original observation.
+    #[error(
+        "plugin setup-plan read at {offset} returned {result:?}; independent Original: {original_after}"
+    )]
+    ReadOriginal {
+        /// Bytes already consumed before this exact read attempt.
+        offset: usize,
+        /// Actual syscall result, including a first errno or successful byte count.
+        result: Result<usize, i32>,
+        /// Retained Source refusal observed after the read, including EINTR.
+        original_after: crate::StartupSourceError,
     },
     /// The descriptor was not a regular memfd-like file.
     #[error("plugin setup-plan descriptor is not a regular file")]
