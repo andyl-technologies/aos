@@ -1,7 +1,8 @@
-From d042f43ee8ab8b4f2aa58f1d8b7e01807e37a375 Mon Sep 17 00:00:00 2001
+From 8c726fa874350779b2e62eb48d6b0c514f779036 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:00 +0000
-Subject: [PATCH] crucible: independently post actual action-current callbacks
+Subject: [PATCH] crucible: retain Main dependencies until actual action
+ closure
 
 Retain the complete Crucible integration on the sole pinned QEMU base.
 Supply required run and teardown rows with real compiled fixture layouts
@@ -535,6 +536,22 @@ Standing publication equality is corroboration only and supplies no scheduler
 Advance or asynchronous class-1 continuation owner. The literal predicate
 controls model local inputs and do not execute a genuine module callback,
 construct a Source provider or qualify selected admission or the lifecycle.
+
+Gate actual Main payload release, CPU QOM return and Native finish on the
+real Source ActionOriginal closed predicate. Preserve the existing locked
+identity, publisher and closure checks and add the independent pre-lock
+boundary checks. Retain the exact payload, Source/Ready borrower, Native
+ticket and QOM while action custody remains live or uncertain. Save first
+return and payload-post failures independently across later cleanup attempts;
+a negative result alone neither proves nor prevents actual physical closure.
+
+Run literal Main-return refusal and four independently rebuilt omission
+controls with an actual Source closed predicate and abort-only dependent
+edges. They issue no successful module action, payer or physical return.
+Preserve the configured compiler working directory, existing RR controls,
+authenticated input closures and every original assertion and limit.
+Genuine provider-backed action closure, selected admission, Quantum/Advance
+issuance and the mandatory launched lifecycle remain unavailable or unqualified.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -111906,10 +111923,10 @@ index 0000000000000000000000000000000000000000..440ebf452f243b490290d08dbec175e7
 +}
 diff --git a/plugins/crucible-command-receive.inc.h b/plugins/crucible-command-receive.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..b521d50345ae87d6f84699a04082519c2646d783
+index 0000000000000000000000000000000000000000..345ee375cab1efeaae805853e24ee8fbdd6b83f3
 --- /dev/null
 +++ b/plugins/crucible-command-receive.inc.h
-@@ -0,0 +1,1523 @@
+@@ -0,0 +1,1530 @@
 +/*
 + * Retained physical receive through the first-bound module reader.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -113086,6 +113103,9 @@ index 0000000000000000000000000000000000000000..b521d50345ae87d6f84699a04082519c
 +        status = qemu_plugin_crucible_source_main_dispatch_current_v1(
 +            frame->registration, frame->cpu, borrow->invocation, true, borrow->holder);
 +    }
++    if (!status) {
++        status = qemu_crucible_source_action_original_closed_v1(borrow);
++    }
 +    if (status) {
 +        return status;
 +    }
@@ -113162,6 +113182,10 @@ index 0000000000000000000000000000000000000000..b521d50345ae87d6f84699a04082519c
 +        borrow->holder != holder || !borrow->held || borrow->handoff != handoff ||
 +        borrow->process != getpid() || !qemu_thread_is_self(&borrow->thread)) {
 +        return -ESTALE;
++    }
++    status = qemu_crucible_source_action_original_closed_v1(borrow);
++    if (status) {
++        return status;
 +    }
 +    qemu_mutex_lock(&commands->mutex);
 +    status = qemu_crucible_source_action_original_closed_v1(borrow);
@@ -113714,10 +113738,10 @@ index 0000000000000000000000000000000000000000..c59aa6c7a3c1078aa88a3019b2104cca
 +#endif
 diff --git a/plugins/crucible-control-stop.inc.h b/plugins/crucible-control-stop.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..e8eff9b4b561e6973b8a6196ae9b026651f8dcd5
+index 0000000000000000000000000000000000000000..bc3b7f436113ac37677d72ea995e17fe08583486
 --- /dev/null
 +++ b/plugins/crucible-control-stop.inc.h
-@@ -0,0 +1,541 @@
+@@ -0,0 +1,563 @@
 +/*
 + * Actual control invocation and Stop effect journals
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -114104,28 +114128,50 @@ index 0000000000000000000000000000000000000000..e8eff9b4b561e6973b8a6196ae9b0266
 +
 +static void control_stop_main_return(void)
 +{
++    int status;
++
 +    if (control_stop_storage.main.borrow) {
-+        qemu_crucible_source_action_original_return_v1(control_stop_storage.main.borrow);
++        status = qemu_crucible_source_action_original_return_v1(
++            control_stop_storage.main.borrow);
++        if (!control_stop_storage.main.return_status) {
++            control_stop_storage.main.return_status = status;
++        }
++        /* Signed failure and physical closure are independent. An action's
++         * retained children still need the payload, CPU and Native frame. */
++        if (qemu_crucible_source_action_original_closed_v1(
++                control_stop_storage.main.borrow)) {
++            goto retained;
++        }
 +    }
 +    if (control_stop_storage.main.ticket.frame &&
 +        qemu_plugin_crucible_native_main_control_current_v1(
 +            &control_stop_storage.main.ticket, true)) {
 +        if (control_stop_storage.main.borrow) {
-+            control_stop_storage.main.payload_return_status =
-+                qemu_crucible_source_main_payload_return_v1(control_stop_storage.main.borrow);
++            status = qemu_crucible_source_main_payload_return_v1(
++                control_stop_storage.main.borrow);
++            if (!control_stop_storage.main.payload_return_status) {
++                control_stop_storage.main.payload_return_status = status;
++            }
 +        }
-+        control_stop_storage.main.return_status =
-+            qemu_plugin_crucible_native_main_control_cpu_return_v1(
-+                &control_stop_storage.main.ticket);
++        status = qemu_plugin_crucible_native_main_control_cpu_return_v1(
++            &control_stop_storage.main.ticket);
++        if (!control_stop_storage.main.return_status) {
++            control_stop_storage.main.return_status = status;
++        }
 +    }
 +    if (control_stop_storage.main.ticket.frame &&
 +        !qemu_plugin_crucible_native_main_control_current_v1(
 +            &control_stop_storage.main.ticket, true)) {
-+        control_stop_storage.main.return_status = control_stop_storage.main.borrow ?
++        status = control_stop_storage.main.borrow ?
 +            qemu_crucible_source_main_control_return_v1(&control_stop_storage.main.borrow) :
 +            qemu_plugin_crucible_native_main_control_finish_v1(
 +                &control_stop_storage.main.ticket, NULL);
++        if (!control_stop_storage.main.return_status) {
++            control_stop_storage.main.return_status = status;
++        }
 +    }
++
++retained:
 +    control_stop_storage.main.held = control_stop_storage.main.ticket.frame ||
 +        control_stop_storage.main.borrow;
 +    control_stop_storage.main.returned = !control_stop_storage.main.held;
@@ -158268,10 +158314,10 @@ index 0000000000000000000000000000000000000000..2c68b995431953a3b722eae623548702
 +}
 diff --git a/plugins/crucible-native-invocation.c b/plugins/crucible-native-invocation.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..e2724991f57b5379a4a560b85a06f247aecaeeed
+index 0000000000000000000000000000000000000000..839d0223e8146128bf42c676796ea6e1038fe28b
 --- /dev/null
 +++ b/plugins/crucible-native-invocation.c
-@@ -0,0 +1,2651 @@
+@@ -0,0 +1,2660 @@
 +/*
 + * Native entered-callback lifetime and factual physical-use association.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -160548,7 +160594,10 @@ index 0000000000000000000000000000000000000000..e2724991f57b5379a4a560b85a06f247
 +        return status;
 +    }
 +    if (frame->main_borrow) {
-+        status = qemu_crucible_source_main_payload_closed_v1(frame->main_borrow);
++        status = qemu_crucible_source_action_original_closed_v1(frame->main_borrow);
++        if (!status) {
++            status = qemu_crucible_source_main_payload_closed_v1(frame->main_borrow);
++        }
 +        if (status) {
 +            return status;
 +        }
@@ -160586,6 +160635,12 @@ index 0000000000000000000000000000000000000000..e2724991f57b5379a4a560b85a06f247
 +
 +    if (status) {
 +        return status;
++    }
++    if (borrow) {
++        status = qemu_crucible_source_action_original_closed_v1(borrow);
++        if (status) {
++            return status;
++        }
 +    }
 +    registry = holder->registry;
 +    frame = holder->frame;
@@ -202904,7 +202959,7 @@ index f8e17dcf1ce91d8aefb8d82cafd3196a4fd9edf6..f24121d2d3c66f1436ba73c976a7bd76
      return true;
 diff --git a/scripts/extract-crucible-preexec-purpose.py b/scripts/extract-crucible-preexec-purpose.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..575dbb75c850a53e25c1552826454d7186681234
+index 0000000000000000000000000000000000000000..fb650b9bb67ed05f6caa384d34dfb7d45ac57714
 --- /dev/null
 +++ b/scripts/extract-crucible-preexec-purpose.py
 @@ -0,0 +1,87 @@
@@ -202932,7 +202987,7 @@ index 0000000000000000000000000000000000000000..575dbb75c850a53e25c1552826454d71
 +    'include/plugins/qemu-plugin.h':
 +        '09e87de330a40af07b68d9803b4fe99d0e730ddf289dc386f634656f69e4e111',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'f6665374c4e1472da58f3dbf6c43201d8550e8f1eb10922a34517d20565982cc',
++        '224aa791425f9de7d750701e72a0ad4cd0c9bb30ddb8e8d6a64af449a89e2fe3',
 +}
 +
 +PURPOSE_FUNCTIONS = (
@@ -245588,10 +245643,10 @@ index 0000000000000000000000000000000000000000..fa83127f268e7c87e3d134ada76cb747
 +PRIMITIVE(q, uint64_t, 8)
 diff --git a/tests/unit/crucible-dirty-iterator.rst b/tests/unit/crucible-dirty-iterator.rst
 new file mode 100644
-index 0000000000000000000000000000000000000000..94c149d39a48f14e6d21cabf271b61217ef8de13
+index 0000000000000000000000000000000000000000..14aff4af6759f374b07ff73a3882bb2c400620c8
 --- /dev/null
 +++ b/tests/unit/crucible-dirty-iterator.rst
-@@ -0,0 +1,745 @@
+@@ -0,0 +1,770 @@
 +.. SPDX-License-Identifier: GPL-2.0-or-later
 +
 +Dirty selection and capture lifecycle qualification
@@ -246337,6 +246392,31 @@ index 0000000000000000000000000000000000000000..94c149d39a48f14e6d21cabf271b6121
 +are only declarations and call sites in this source tree; their absent
 +production implementations are another required owner, not a test seam to
 +fill with successful stubs.
++
++Main physical return waits for the Original
++------------------------------------------
++
++The actual Core Main return attempts semantic return, then independently asks
++whether the Source ActionOriginal is physically closed. A held Original stops
++payload release, CPU QOM return and Native finish. Source payload/Main return
++and Native CPU/finish also enforce that closed predicate at their own edges.
++The synchronous callback still ends at its actual return; a later Main boundary
++may retry physical cleanup without reopening CALLING or issuing new authority.
++
++Main preserves the first return and payload-return failures across retries.
++Its held/returned facts derive from the actual remaining ticket and borrow,
++not those signed results. Existing payload consumption and Native CPU-return
++checks prevent a consumed payload or QOM reference from being released again.
++An incomplete or uncertain Original retains its dependent physical owners.
++
++The literal Core-return controls use the real storage layout, closed predicate
++and return body with a refusal-only action callback and abort-only downstream
++edges. They prove that retained debt blocks cleanup, a negative status alone
++does not establish retention, and retry does not overwrite the first error.
++They perform no successful provider callback, payload destruction or QOM
++finalization. Actual system/user Core and Native objects and the actual Source
++object are compiled; provider-backed physical closure remains unexecuted.
++Selected Quantum admission and activation remain unavailable.
 diff --git a/tests/unit/crucible-fault-command-restore-fixture.inc.h b/tests/unit/crucible-fault-command-restore-fixture.inc.h
 new file mode 100644
 index 0000000000000000000000000000000000000000..ccee61df89ecf56a18b6faf1c268f7dc5646275a
@@ -249723,7 +249803,7 @@ index 0000000000000000000000000000000000000000..5278f261c25f36176259f4749fc0e1b2
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-placement.py b/tests/unit/extract-crucible-checkpoint-placement.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..acf8e3be7a715205ca26fc6d9239c926d2af9ed0
+index 0000000000000000000000000000000000000000..0160af5a79656374fd3fa0879999f5d3a32c314c
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-placement.py
 @@ -0,0 +1,100 @@
@@ -249741,7 +249821,7 @@ index 0000000000000000000000000000000000000000..acf8e3be7a715205ca26fc6d9239c926
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'f6665374c4e1472da58f3dbf6c43201d8550e8f1eb10922a34517d20565982cc',
++        '224aa791425f9de7d750701e72a0ad4cd0c9bb30ddb8e8d6a64af449a89e2fe3',
 +}
 +
 +FUNCTIONS = (
@@ -249829,7 +249909,7 @@ index 0000000000000000000000000000000000000000..acf8e3be7a715205ca26fc6d9239c926
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-receiving.py b/tests/unit/extract-crucible-checkpoint-receiving.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..c6de07194525465eb7d932ad0b27cc5c0ce88439
+index 0000000000000000000000000000000000000000..17d650c81653d07150acee3100b7769b35870b4d
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-receiving.py
 @@ -0,0 +1,241 @@
@@ -249860,7 +249940,7 @@ index 0000000000000000000000000000000000000000..c6de07194525465eb7d932ad0b27cc5c
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'f6665374c4e1472da58f3dbf6c43201d8550e8f1eb10922a34517d20565982cc',
++        '224aa791425f9de7d750701e72a0ad4cd0c9bb30ddb8e8d6a64af449a89e2fe3',
 +}
 +
 +FUNCTIONS = (
@@ -250076,7 +250156,7 @@ index 0000000000000000000000000000000000000000..c6de07194525465eb7d932ad0b27cc5c
 +    main()
 diff --git a/tests/unit/extract-crucible-monitor-fd-loans.py b/tests/unit/extract-crucible-monitor-fd-loans.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..c73a77e3b5ffd74d90e2490e209b14379d909079
+index 0000000000000000000000000000000000000000..ac1b75996337649f0530e9a9e1c0b99e660a06a2
 --- /dev/null
 +++ b/tests/unit/extract-crucible-monitor-fd-loans.py
 @@ -0,0 +1,112 @@
@@ -250100,7 +250180,7 @@ index 0000000000000000000000000000000000000000..c73a77e3b5ffd74d90e2490e209b1437
 +    'monitor/monitor.c':
 +        '6773b71937e9c0058143070560f3ce3bb114a966d6d4224c7a60d8862fb8d05b',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'f6665374c4e1472da58f3dbf6c43201d8550e8f1eb10922a34517d20565982cc',
++        '224aa791425f9de7d750701e72a0ad4cd0c9bb30ddb8e8d6a64af449a89e2fe3',
 +}
 +
 +FUNCTIONS = (
@@ -250194,7 +250274,7 @@ index 0000000000000000000000000000000000000000..c73a77e3b5ffd74d90e2490e209b1437
 +    main()
 diff --git a/tests/unit/extract-crucible-preexec-setup.py b/tests/unit/extract-crucible-preexec-setup.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..e51516a702398ec216213d0af613b094b365883f
+index 0000000000000000000000000000000000000000..8dbc10ce5c24376b98ebf3ef94bd8d0ddba41aaa
 --- /dev/null
 +++ b/tests/unit/extract-crucible-preexec-setup.py
 @@ -0,0 +1,173 @@
@@ -250235,9 +250315,9 @@ index 0000000000000000000000000000000000000000..e51516a702398ec216213d0af613b094
 +    'plugins/crucible-device-workspace.c':
 +        '3dd77a2ad8d4688fb57ccc94618763485d36b9460e3461ac5ff4bc6fa25c558d',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'f6665374c4e1472da58f3dbf6c43201d8550e8f1eb10922a34517d20565982cc',
++        '224aa791425f9de7d750701e72a0ad4cd0c9bb30ddb8e8d6a64af449a89e2fe3',
 +    'scripts/extract-crucible-preexec-purpose.py':
-+        'd9471b81af1f51e7704325ed0aaa493dbbd6381c843d82cd8090518bc56f4fb1',
++        '9960ded994fe7ff462c7ca6b35794f6a8f4bff3348deed1b8c73493385674ad4',
 +    'meson.build':
 +        '7eef2c0d1494dfdeed66f56c77f092382cd63d3fd5ad7c0b7c7ac85ca599e39e',
 +    'tests/unit/test-crucible-preexec-setup.c':
@@ -250373,7 +250453,7 @@ index 0000000000000000000000000000000000000000..e51516a702398ec216213d0af613b094
 +        main()
 diff --git a/tests/unit/extract-crucible-startup-source-controls.py b/tests/unit/extract-crucible-startup-source-controls.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..1f4bf217b1eec67fcf943c9681e397b495bf47a3
+index 0000000000000000000000000000000000000000..ebe6ac361047543757f12ea9b1d3ec832ad6faa0
 --- /dev/null
 +++ b/tests/unit/extract-crucible-startup-source-controls.py
 @@ -0,0 +1,1250 @@
@@ -250389,7 +250469,7 @@ index 0000000000000000000000000000000000000000..1f4bf217b1eec67fcf943c9681e397b4
 +    'include/system/crucible-quantum-execution.h':
 +        '6fff4b03ad6e029bdbe9c8fdc4bb11ba1af8daa1b2f56ed02f757a54aa5286e6',
 +    'tests/unit/test-crucible-quantum-execution.py':
-+        'f0c75fe3bc02fecf3c87f82303be0a80768d5a26539bc4bb0284c391feb674d4',
++        '6094423ab9db36cfd9709d7e51b6a4b25dff854e8de3e813c7efacff3f9fb26d',
 +    'accel/tcg/tcg-accel-ops-rr.c':
 +        'b9c2a62089fe389fd9d5be22fc176c05d4722a14d3a9afb898e488374e287037',
 +    'accel/tcg/tcg-accel-ops.c':
@@ -250587,7 +250667,7 @@ index 0000000000000000000000000000000000000000..1f4bf217b1eec67fcf943c9681e397b4
 +    'include/qemu/crucible-native-invocation.h':
 +        '73ca8904b721cceb2c750b7cdf7e4aec6185af837b4576688447147be47eeed6',
 +    'plugins/crucible-native-invocation.c':
-+        '862f46c6c60ccb6b004d5a4dd39666150241b23d8dcf6ca769ca26388ddf2d08',
++        'eb0fe1528252e80f89f6f6f32501f370feb3116ddd9a48107d891f0a954837c7',
 +    'cpu-common.c':
 +        'c8eefc24511efd7ddc63e8c99a5d44b1d3cbc6b390bedf7f24046a4f6d486c4d',
 +    'include/hw/core/cpu.h':
@@ -250599,7 +250679,7 @@ index 0000000000000000000000000000000000000000..1f4bf217b1eec67fcf943c9681e397b4
 +    'system/cpus.c':
 +        '879b690f3c11615c7096688b75e8a94e2430aeeb2ba845747f42c44868105fb1',
 +    'plugins/crucible-control-stop.inc.h':
-+        '25225bed5327b6c45ff496a9337d609147b767446d5ab939cdb01f8f25fd6ce2',
++        '5a06cc409c130e4613462b7adddd51b1547f8f5ce72efe0e4b6295e1c4f884f7',
 +    'plugins/crucible-socket-ingress.inc.h':
 +        '405891558960960b7f4379405e2c7628ce21a679b4b62e1e7ec223df1c9811ad',
 +    'plugins/crucible-qmp-allocation.inc.h':
@@ -250685,7 +250765,7 @@ index 0000000000000000000000000000000000000000..1f4bf217b1eec67fcf943c9681e397b4
 +    'plugins/crucible-publisher-subscription.inc.h':
 +        '03de4fcc32e1100712fee79294b4fd2671df8ff73843cf00991979f7dc7a38c1',
 +    'plugins/crucible-command-receive.inc.h':
-+        '9fe82a07347313f2f6c1335a5fc6435266a18c7523065f29c6707de9974c253c',
++        '1ae5ac537a90bc5490f403e18eaaf850627f7b690e60dc5a3036aec61f9a2d49',
 +}
 +
 +
@@ -266680,7 +266760,7 @@ index 0000000000000000000000000000000000000000..962b0dba612e5ea5407517d6188d2189
 +    main()
 diff --git a/tests/unit/test-crucible-control-deferred.py b/tests/unit/test-crucible-control-deferred.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..a3398a6116a12a7580f1afafdb2215cfc9adca55
+index 0000000000000000000000000000000000000000..5d00940ca707875ed02daa9a860cb6de942ec730
 --- /dev/null
 +++ b/tests/unit/test-crucible-control-deferred.py
 @@ -0,0 +1,745 @@
@@ -266728,7 +266808,7 @@ index 0000000000000000000000000000000000000000..a3398a6116a12a7580f1afafdb2215cf
 +    "plugins/api-system.c":
 +        "348c168b9ac0fe693c44ac5336dc48d31de8ce2b41b58c541aa9ba0c669ba7a3",
 +    "plugins/crucible-native-invocation.c":
-+        "862f46c6c60ccb6b004d5a4dd39666150241b23d8dcf6ca769ca26388ddf2d08",
++        "eb0fe1528252e80f89f6f6f32501f370feb3116ddd9a48107d891f0a954837c7",
 +    "plugins/crucible-callback-publication.inc.h":
 +        "5f91b39050b0fd482825221f4dd573d7f5f61f677d26afb4d45947b6a200689a",
 +}
@@ -297277,15 +297357,16 @@ index 0000000000000000000000000000000000000000..49b54cb72fc04601b3021c5cdaf7fb62
 +}
 diff --git a/tests/unit/test-crucible-quantum-execution.py b/tests/unit/test-crucible-quantum-execution.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..2d43f07392e421ddca227ec9c278eb4776d17c9b
+index 0000000000000000000000000000000000000000..1c75cc919ad09fc37f2a3880d776a569f9993bbb
 --- /dev/null
 +++ b/tests/unit/test-crucible-quantum-execution.py
-@@ -0,0 +1,148 @@
+@@ -0,0 +1,303 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Check literal Native custody predicates without a Source Quantum issuer.
 +
-+The sample journal below is component input. It does not acquire QOM custody,
++The sample journals below are component inputs. They do not acquire QOM custody,
 +enter RR, issue a semantic child, execute guest code or qualify a lifecycle.
++Main return controls supply only an action refusal and abort-only cleanup edges.
 +Use configured QEMU include/compiler flags through CC, CFLAGS and LDFLAGS.
 +"""
 +
@@ -297367,6 +297448,159 @@ index 0000000000000000000000000000000000000000..2d43f07392e421ddca227ec9c278eb47
 +"""
 +
 +
++MAIN_RETURN_EDGES = r"""
++static QemuCrucibleStartupSourceControl startup_source;
++static unsigned action_return_calls;
++
++/* Refusal only: these controls supply no module action or successful return.
++ * Every downstream lifetime edge aborts if the literal guard lets it run. */
++int qemu_crucible_source_action_original_return_v1(QemuCrucibleMainControlBorrow *borrow)
++{
++    assert(borrow == &startup_source.main_control_borrow);
++    action_return_calls++;
++    return -EIO;
++}
++
++int qemu_plugin_crucible_native_main_control_current_v1(
++    QemuCrucibleNativeInvocationTicket *holder, bool returned)
++{
++    abort();
++}
++
++int qemu_crucible_source_main_payload_return_v1(QemuCrucibleMainControlBorrow *borrow)
++{
++    abort();
++}
++
++int qemu_plugin_crucible_native_main_control_cpu_return_v1(
++    QemuCrucibleNativeInvocationTicket *holder)
++{
++    abort();
++}
++
++int qemu_crucible_source_main_control_return_v1(QemuCrucibleMainControlBorrow **holder)
++{
++    abort();
++}
++
++int qemu_plugin_crucible_native_main_control_finish_v1(
++    QemuCrucibleNativeInvocationTicket *holder, QemuCrucibleMainControlBorrow *borrow)
++{
++    abort();
++}
++"""
++
++
++MAIN_RETURN_CHECKS = r"""
++int main(void)
++{
++    QemuCrucibleMainControlBorrow *borrow = &startup_source.main_control_borrow;
++    QemuCrucibleNativeInvocation frame = { 0 };
++    int status;
++
++    assert(qemu_crucible_source_action_original_closed_v1(NULL) == -EPERM);
++    assert(!qemu_crucible_source_action_original_closed_v1(borrow));
++    control_stop_main_return();
++    assert(!control_stop_storage.main.held && control_stop_storage.main.returned);
++    assert(!action_return_calls);
++
++    startup_source.action_original.held = true;
++    control_stop_storage.main.borrow = borrow;
++    control_stop_storage.main.ticket.frame = &frame;
++    control_stop_storage.main.payload_return_status = -ETIMEDOUT;
++    control_stop_main_return();
++    assert(action_return_calls == 1);
++    assert(control_stop_storage.main.return_status == -EIO);
++    assert(control_stop_storage.main.payload_return_status == -ETIMEDOUT);
++    assert(control_stop_storage.main.borrow == borrow);
++    assert(control_stop_storage.main.ticket.frame == &frame);
++    assert(control_stop_storage.main.held && !control_stop_storage.main.returned);
++
++    control_stop_storage.main.return_status = -ECANCELED;
++    control_stop_main_return();
++    assert(action_return_calls == 2);
++    assert(control_stop_storage.main.return_status == -ECANCELED);
++    assert(control_stop_storage.main.payload_return_status == -ETIMEDOUT);
++    assert(control_stop_storage.main.held && !control_stop_storage.main.returned);
++
++    /* A negative signed result with a closed predicate must reach cleanup.
++     * The child aborts at its first forbidden edge; it returns no real debt. */
++    pid_t child = fork();
++    assert(child >= 0);
++    if (!child) {
++        startup_source.action_original.held = false;
++        control_stop_main_return();
++        _exit(0);
++    }
++    assert(waitpid(child, &status, 0) == child);
++    assert(WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT);
++
++    /* These component inputs have no physical fields. A saved error cannot
++     * fabricate retained debt or override their actual absent-field facts. */
++    startup_source.action_original.held = false;
++    control_stop_storage.main.borrow = NULL;
++    control_stop_storage.main.ticket.frame = NULL;
++    control_stop_main_return();
++    assert(!control_stop_storage.main.held && control_stop_storage.main.returned);
++    assert(control_stop_storage.main.return_status == -ECANCELED);
++    puts("PASS literal Main return refusals; no successful provider or physical return");
++    return 0;
++}
++"""
++
++
++def check_main_return(source, output, extract):
++    output.mkdir(parents=True, exist_ok=True)
++    core = (source / "plugins/crucible-control-stop.inc.h").read_text()
++    storage = core[:core.index("uint64_t qemu_plugin_crucible_control_stop_storage_bytes_v1(")]
++    action = (source / "plugins/crucible-action-original.inc.h").read_text()
++    closed = extract["function"](
++        action, "int qemu_crucible_source_action_original_closed_v1(")
++    literal = extract["function"](core, "static void control_stop_main_return(")
++    controls = {
++        "positive": literal,
++        "omit-action-closure": literal.replace(
++            "if (qemu_crucible_source_action_original_closed_v1(\n"
++            "                control_stop_storage.main.borrow))", "if (false)"),
++        "status-is-closure": literal.replace(
++            "if (qemu_crucible_source_action_original_closed_v1(\n"
++            "                control_stop_storage.main.borrow))", "if (status)"),
++        "overwrite-first-return": literal.replace(
++            "if (!control_stop_storage.main.return_status)", "if (true)"),
++        "status-is-retention": literal.replace(
++            "control_stop_storage.main.held = control_stop_storage.main.ticket.frame ||",
++            "control_stop_storage.main.held = control_stop_storage.main.return_status ||\n"
++            "        control_stop_storage.main.ticket.frame ||"),
++    }
++    proof = {}
++    for name, body in controls.items():
++        if name != "positive" and body == literal:
++            raise ValueError(f"literal Main return control did not change: {name}")
++        generated = output / f"{name}.c"
++        generated.write_text('#include "qemu/osdep.h"\n'
++                             '#include "plugins/crucible-startup-source.h"\n'
++                             '#include "plugins/crucible-control-stop.h"\n'
++                             '#include <assert.h>\n#include <sys/wait.h>\n' +
++                             storage + MAIN_RETURN_EDGES + closed + body + MAIN_RETURN_CHECKS)
++        binary = output / name
++        command = [os.environ.get("CC", "cc"),
++                   *shlex.split(os.environ.get("CFLAGS", "")),
++                   str(generated), "-o", str(binary),
++                   *shlex.split(os.environ.get("LDFLAGS", ""))]
++        (output / f"{name}.command.json").write_text(json.dumps(command, indent=2) + "\n")
++        subprocess.run(command, check=True)
++        result = subprocess.run([str(binary)], text=True, stdout=subprocess.PIPE,
++                                stderr=subprocess.STDOUT, timeout=30, cwd=output)
++        (output / f"{name}.log").write_text(result.stdout)
++        expected = 0 if name == "positive" else -6
++        if result.returncode != expected:
++            raise RuntimeError(f"unexpected Main return {name}: {result.returncode}\n{result.stdout}")
++        proof[name] = {"returncode": result.returncode, "output": result.stdout}
++    (output / "proof.json").write_text(json.dumps(proof, indent=2) + "\n")
++    print(proof["positive"]["output"], end="")
++    print("PASS four literal Main return controls; provider-backed closure remains unexecuted")
++
++
 +def main():
 +    parser = argparse.ArgumentParser(description=__doc__)
 +    parser.add_argument("--source-root", type=Path,
@@ -297425,6 +297659,7 @@ index 0000000000000000000000000000000000000000..2d43f07392e421ddca227ec9c278eb47
 +    (output / "proof.json").write_text(json.dumps(proof, indent=2) + "\n")
 +    print(proof["positive"]["output"], end="")
 +    print("PASS eight literal omission controls; owned continuation remains unexecuted")
++    check_main_return(source, output / "main-return", extract)
 +
 +
 +if __name__ == "__main__":
