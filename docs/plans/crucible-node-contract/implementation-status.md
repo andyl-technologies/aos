@@ -377,10 +377,25 @@ completion cache or permission to construct any model.
 
 All four durable-status model tests pass, including the withheld-original-reply,
 full-queue and lost-reply controls. The six registered architecture checks pass
-with the content-bound actor source review refreshed. Complete configured Daemon
-execution, refreshed application-target compilation and the actual funded VM
-retry control are still running. General bounded actor polling and physical
-native readiness remain unqualified.
+with the content-bound actor source review refreshed. The complete configured
+Daemon suite passes 1,837 tests with zero failures, no filtering and 166 ignores
+in 239.74 seconds, using four test threads and the source-built gem5 manifest
+compiled into the executable. The preceding direct-executable run failed 38
+tests: its build omitted that manifest and its default concurrency exhausted the
+existing 1,024-descriptor process limit during fixture setup. Assertions and
+production bounds remain unchanged.
+
+The required application-target gate passes for `a821942d3e`: all 89 owned
+changed Rust files match its registered source capture, with 180 test executables
+across 58 package IDs and 71 integration targets. Compilation runs no tests and
+excludes the later raw EOF refinement and actual declaration encoding.
+
+The complete funded-Source VM now passes both genuine private-Birth/declaration
+loan consumers, the small-policy and foreign-pin controls, default-feature CLI
+original and spent refusals, retained world credit and terminal namespace cleanup.
+Its snapshot predates the receiver-only EOF refinement and actual declaration
+encoding. General bounded actor polling, native readiness and preservation remain
+unqualified; neither the submission guard nor this VM establishes those claims.
 
 ## Physical import18 raw bootstrap receipt
 
@@ -405,9 +420,9 @@ contain inert raw bodies and construct no opaque Initial or Recipe.
 This physical precursor remains unselected from native startup. Its floor is
 only raw receiver demand; typed body parsing, complete seven-bank custody and
 their independent Initial producer remain unfinished. No model, native Boot,
-startup finalizer, common Ready or full-RFC qualification follows. The refreshed
-architecture and application compilation checks still need the final EOF source;
-the running funded VM snapshot predates that receiver-only refinement.
+startup finalizer, common Ready or full-RFC qualification follows. All six
+architecture checks pass for the final EOF source. Application compilation still
+needs that refinement; the passing funded VM snapshot predates it.
 
 ## Original launch custody and shared startup geometry
 
