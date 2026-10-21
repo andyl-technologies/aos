@@ -4,6 +4,7 @@
 //! of consumer accounts. Its physical readbacks establish neither resource
 //! credit nor permission to publish a different account or workload.
 
+use std::borrow::Cow;
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
@@ -213,8 +214,11 @@ impl AuthenticatedProcessResources {
 #[derive(Debug, thiserror::Error)]
 pub enum ServiceBirthError {
     /// The immutable birth or its actual kernel identity was refused.
+    ///
+    /// Fixed refusals borrow static text so exhaustion needs no diagnostic
+    /// allocation. Dynamic manager and kernel diagnostics retain their owned text.
     #[error("{0}")]
-    Policy(String),
+    Policy(Cow<'static, str>),
     /// The unchanged original operation retains its concrete first cause.
     #[error(transparent)]
     Supervision(#[from] crate::host_supervision::HostSupervisionError),
@@ -236,7 +240,7 @@ pub enum ServiceBirthError {
 }
 
 impl ServiceBirthError {
-    fn policy(message: impl Into<String>) -> Self {
+    fn policy(message: impl Into<Cow<'static, str>>) -> Self {
         Self::Policy(message.into())
     }
 }
@@ -588,8 +592,8 @@ mod tests {
         });
 
         assert!(result.is_err());
-        // One diagnostic String is allowed; no two account controls are born.
-        assert_eq!(counts.allocations, 1);
+        // Refusal borrows its fixed diagnostic before either account is born.
+        assert_eq!(counts.allocations, 0);
         assert_eq!(counts.reallocations, 0);
         assert!(!counts.overflow);
     }
@@ -649,7 +653,12 @@ mod tests {
             Ok(_) => panic!("oversized containment must refuse"),
             Err(error) => error,
         };
-        assert!(matches!(&oversized, ServiceBirthError::Policy(_)));
+        assert!(matches!(
+            &oversized,
+            ServiceBirthError::Policy(Cow::Borrowed(
+                "campaign containment read exceeds its fixed bound"
+            ))
+        ));
         assert_eq!(
             oversized.to_string(),
             "campaign containment read exceeds its fixed bound"
@@ -663,7 +672,10 @@ mod tests {
             Ok(_) => panic!("invalid containment text must refuse"),
             Err(error) => error,
         };
-        assert!(matches!(&invalid_text, ServiceBirthError::Policy(_)));
+        assert!(matches!(
+            &invalid_text,
+            ServiceBirthError::Policy(Cow::Owned(_))
+        ));
         assert_eq!(invalid_text.to_string(), expected);
         Ok(())
     }

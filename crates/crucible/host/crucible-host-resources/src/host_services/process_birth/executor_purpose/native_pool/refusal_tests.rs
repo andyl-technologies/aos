@@ -11,7 +11,7 @@ fn refused_report_keeps_first_post_and_independent_delivery_causes() {
     supervisor.cancel().unwrap();
     let post = original.wait_slice().unwrap_err();
     let mut report = NativePoolRefusal {
-        cause: ServiceBirthError::Policy(String::from("original admission refusal")),
+        cause: ServiceBirthError::Policy(String::from("original admission refusal").into()),
         after: Some(post.into()),
         _retained: None,
         world_assignment_refused: false,

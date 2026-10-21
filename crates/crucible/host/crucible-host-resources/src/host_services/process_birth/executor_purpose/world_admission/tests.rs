@@ -37,7 +37,7 @@ fn held_control_refuses_before_work_and_keeps_independent_original_post() {
     );
 
     assert!(matches!(result, Err(ServiceBirthError::Policy(ref message))
-        if message == "real held descriptor control"));
+        if matches!(message, std::borrow::Cow::Borrowed("real held descriptor control"))));
     assert!(!work_entered.get());
     assert_eq!(checks.get(), 2);
     assert!(matches!(after, Some(ServiceBirthError::Supervision(actual))

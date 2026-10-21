@@ -1332,7 +1332,7 @@ impl QemuAttemptSelectedHostResourceFactory for LinuxQemuAttemptHostResourceFact
                             )
                         })
                     })
-                    .map_err(|source| ServiceBirthError::Policy(source.to_string()))
+                    .map_err(|source| ServiceBirthError::Policy(source.to_string().into()))
             },
         );
         let hosts = match hosts {

@@ -278,8 +278,8 @@ mod history_tests {
                 crate::ProductionVmConstructionCleanupError::Scheduler(
                     SchedulerError::BoundaryViolation { message },
                 ),
-            )
-            | SourceCleanupCause::Body(
+            ) => message,
+            SourceCleanupCause::Body(
                 crucible_host_resources::host_services::process_birth::ServiceBirthError::Policy(
                     message,
                 ),
@@ -300,7 +300,7 @@ mod history_tests {
             SourceCleanupCause::Native(native("native cleanup")),
             SourceCleanupCause::Body(
                 crucible_host_resources::host_services::process_birth::ServiceBirthError::Policy(
-                    String::from("body cleanup"),
+                    String::from("body cleanup").into(),
                 ),
             ),
         ];

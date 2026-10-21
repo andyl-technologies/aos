@@ -144,7 +144,7 @@ mod tests {
         let first = std::cell::RefCell::new(Some(first));
         let report = admit_worker_controls(&ledger, 112, || {
             Err(ServiceBirthError::Policy(
-                first.borrow_mut().take().unwrap(),
+                first.borrow_mut().take().unwrap().into(),
             ))
         })
         .unwrap_err();

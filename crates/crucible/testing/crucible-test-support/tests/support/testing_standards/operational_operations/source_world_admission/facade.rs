@@ -251,7 +251,7 @@ pub(in super::super) const FACADE: Companion = Companion {
                             )
                         })
                     })
-                    .map_err(|source| ServiceBirthError::Policy(source.to_string()))
+                    .map_err(|source| ServiceBirthError::Policy(source.to_string().into()))
             },
         );"#,
             1,

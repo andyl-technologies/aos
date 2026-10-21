@@ -1192,7 +1192,7 @@ mod history_tests {
             )),
             cleanup_first: Some(
                 crucible_host_resources::host_services::process_birth::ServiceBirthError::Policy(
-                    cleanup_message,
+                    cleanup_message.into(),
                 ),
             ),
             ..SourcePreparationHistory::default()
