@@ -30,8 +30,9 @@ use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt as _;
 use std::path::{Component, Path};
 
-use crate::Error;
-use crate::pidfd::{PidFd, PidFdInfo};
+use aos_linux_descriptors::Error;
+use aos_linux_descriptors::pidfd::PidFd;
+use aos_linux_descriptors::pidfd::PidFdInfo;
 use crate::uapi::{self, RawAncillary};
 
 mod listener;
@@ -271,11 +272,11 @@ impl PendingSocketAdmissionV1 {
     }
 
     pub(super) fn require_inherited_subjects(&self) -> Result<(), SeqpacketError> {
-        uapi::require_seqpacket_identity(self.borrow_fd()?).map_err(map_kernel_error)
+        aos_linux_descriptors::native::require_seqpacket_identity(self.borrow_fd()?).map_err(map_kernel_error)
     }
 
     pub(super) fn prepare_accepted_descriptor(&self) -> Result<(), SeqpacketError> {
-        uapi::ensure_cloexec(self.borrow_fd()?).map_err(map_kernel_error)
+        aos_linux_descriptors::native::ensure_cloexec(self.borrow_fd()?).map_err(map_kernel_error)
     }
 
     pub(super) fn admit_peer(&mut self) -> Result<(), SeqpacketError> {
@@ -297,7 +298,7 @@ impl PendingSocketAdmissionV1 {
     }
 
     pub(super) fn enable_subjects(&self) -> Result<(), SeqpacketError> {
-        uapi::enable_seqpacket_identity(self.borrow_fd()?).map_err(SeqpacketError::from)
+        aos_linux_descriptors::native::enable_seqpacket_identity(self.borrow_fd()?).map_err(SeqpacketError::from)
     }
 
     pub(super) fn fail(mut self, source: SeqpacketError) -> RetainedSeqpacketAdmissionErrorV1 {
@@ -393,7 +394,7 @@ fn connect_pending_with_gate_v4<E>(
         let pending = PendingSocketAdmissionV1::new(fd);
 
         let connected = (|| {
-            uapi::ensure_cloexec(pending.borrow_fd()?)?;
+            aos_linux_descriptors::native::ensure_cloexec(pending.borrow_fd()?)?;
             if zero_rights {
                 uapi::set_seqpacket_passrights(pending.borrow_fd()?, false)?;
             }
@@ -505,9 +506,9 @@ impl SeqpacketSocket {
     /// Returns an error when socket creation, identity-option configuration, or
     /// peer pinning fails. Neither endpoint escapes on failure.
     pub fn pair_with_record_subjects() -> Result<(Self, OwnedFd), SeqpacketError> {
-        let (receiver, endpoint) = uapi::seqpacket_pair()?;
-        uapi::enable_seqpacket_identity(receiver.as_fd())?;
-        uapi::enable_seqpacket_identity(endpoint.as_fd())?;
+        let (receiver, endpoint) = aos_linux_descriptors::native::seqpacket_pair()?;
+        aos_linux_descriptors::native::enable_seqpacket_identity(receiver.as_fd())?;
+        aos_linux_descriptors::native::enable_seqpacket_identity(endpoint.as_fd())?;
         Ok((Self::from_owned(receiver)?, endpoint))
     }
 
@@ -626,7 +627,7 @@ impl SeqpacketSocket {
     /// Returns an error if either socket option is unavailable or rejected.
     /// A partially configured socket is closed before the error is returned.
     pub fn enable_record_subjects(&mut self) -> Result<(), SeqpacketError> {
-        match uapi::enable_seqpacket_identity(self.borrow_fd()?) {
+        match aos_linux_descriptors::native::enable_seqpacket_identity(self.borrow_fd()?) {
             Ok(()) => Ok(()),
             Err(error) => {
                 self.fd.take();
@@ -1047,7 +1048,7 @@ impl SeqpacketSocket {
     /// in the caller's same original slot. The socket and packet stay owned.
     pub fn require_guest_monitor_registration_origin_retaining_v2(&self,
         record: &descriptor_subject::ReceivedDescriptorRecord,
-        native: &mut Option<Result<u64, crate::Error>>,
+        native: &mut Option<Result<u64, aos_linux_descriptors::Error>>,
     ) -> Result<(), RecordBindingError> {
         let fd = self.fd.as_ref().map(AsFd::as_fd).ok_or_else(RecordBindingError::closed)?;
         self.peer.binding.require_current_with_originals_v1(fd, Some(native))?;
@@ -1591,6 +1592,35 @@ impl SeqpacketSocket {
         )
     }
 
+    /// Prices both actual samples of the installed Agent Authorize receiver.
+    ///
+    /// Returns `None` for an invalid bound or representation overflow. This
+    /// passive quote changes no descriptor grammar or application permission.
+    #[must_use]
+    pub fn agent_authorize_receive_obligations_v2(maximum: usize) -> Option<(usize, usize)> {
+        if maximum == 0 || maximum > u32::MAX as usize { return None; }
+        // New passive helper frames are distinct from native message backing.
+        const INTERFACES: usize = 3 * std::mem::size_of::<usize>()
+            + 3 * std::mem::size_of::<(usize, uapi::ReceiveControlProfileV1, usize)>()
+            + 3 * std::mem::size_of::<Option<(usize, usize)>>()
+            // Two checked_add calls and one checked_mul have distinct
+            // receiver/argument tuples and returned Option planes.
+            + 9 * std::mem::size_of::<(usize, usize)>()
+            + 9 * std::mem::size_of::<Option<usize>>()
+            // The actual maximum_descriptor_slots getter return is separate
+            // from requested_receive_bytes' return and the two scalar locals.
+            + 3 * std::mem::size_of::<usize>()
+            + 3 * std::mem::size_of::<usize>()
+            + std::mem::size_of::<uapi::ReceiveControlProfileV1>()
+            + 2 * std::mem::size_of::<usize>();
+        let control = uapi::ReceiveControlProfileV1::AgentAuthorize;
+        let bytes = Self::requested_receive_bytes(maximum, control, 2)
+            .checked_add(std::mem::size_of::<Result<descriptor_subject::ReceivedDescriptorRecord,
+                RetainedSeqpacketReceiveErrorV1>>())?
+            .checked_add(INTERFACES)?;
+        Some((bytes, control.maximum_descriptor_slots().checked_mul(2)?))
+    }
+
     /// Bounds raw installed rights/probe slots for one fixed Agent sample.
     ///
     /// A retaining receive can hold two actual samples; the caller adds that
@@ -2025,7 +2055,7 @@ impl SeqpacketSocket {
     /// Neither the actual record nor Socket is moved, closed or cloned.
     #[doc(hidden)]
     pub fn compare_storage_preparation_received_original_retaining_v4(
-        &self, record: &ReceivedRecord, native: &mut Option<Result<u64, crate::Error>>,
+        &self, record: &ReceivedRecord, native: &mut Option<Result<u64, aos_linux_descriptors::Error>>,
     ) -> Result<(), RecordBindingError> {
         self.require_record_origin_with_originals_v4(record, Some(native))
     }
@@ -2261,7 +2291,7 @@ impl SeqpacketSocket {
     }
 
     fn require_record_origin_with_originals_v4(&self, record: &ReceivedRecord,
-        native: Option<&mut Option<Result<u64, crate::Error>>>,
+        native: Option<&mut Option<Result<u64, aos_linux_descriptors::Error>>>,
     ) -> Result<(), RecordBindingError> {
         let fd = self
             .fd
@@ -2407,14 +2437,14 @@ impl GuestAncestorHostChannelV1 {
         let fd = self.fd.as_ref().ok_or(SeqpacketError::Closed)?.as_fd();
         uapi::prepare_seqpacket(fd)?;
         self.binding = Some(ConnectedSocketBinding::capture_peer(fd)?);
-        let credentials = uapi::peer_credentials(fd)?;
+        let credentials = aos_linux_descriptors::native::peer_credentials(fd)?;
         self.credentials = Some((credentials.uid, credentials.gid));
         if credentials.pid != 0 {
             return Err(SeqpacketError::PeerIdentity("selected Host peer is not namespace-local PID0"));
         }
         // Park the real kernel return before CLOEXEC, ioctl, stat and polling.
-        self.peer_pin = Some(uapi::peer_pidfd(fd)?);
-        self.pin = Some(PidFd::require_ancestor_host_original(
+        self.peer_pin = Some(aos_linux_descriptors::native::peer_pidfd(fd)?);
+        self.pin = Some(crate::pidfd::require_ancestor_host_original(
             self.peer_pin.as_ref().ok_or(SeqpacketError::Closed)?.as_fd(),
         )?);
         self.require_original_inner()
@@ -2439,12 +2469,12 @@ impl GuestAncestorHostChannelV1 {
         if ConnectedSocketBinding::capture_peer(fd)? != binding {
             return Err(SeqpacketError::PeerIdentity("original ancestor Host socket changed"));
         }
-        let credentials = uapi::peer_credentials(fd)?;
+        let credentials = aos_linux_descriptors::native::peer_credentials(fd)?;
         if credentials.pid != 0 || Some((credentials.uid, credentials.gid)) != self.credentials {
             return Err(SeqpacketError::PeerIdentity("original ancestor Host credentials changed"));
         }
         let pin = self.peer_pin.as_ref().ok_or(SeqpacketError::Closed)?;
-        if Some(PidFd::require_ancestor_host_original(pin.as_fd())?) != self.pin {
+        if Some(crate::pidfd::require_ancestor_host_original(pin.as_fd())?) != self.pin {
             return Err(SeqpacketError::PeerIdentity("original ancestor Host pidfs pin changed"));
         }
         if ConnectedSocketBinding::capture_peer(fd)? != binding {
@@ -2569,7 +2599,7 @@ impl GuestAncestorHostChannelV1 {
         record.origin.require_binding(binding)
             .map_err(|_| SeqpacketError::PeerIdentity("ancestor record socket origin changed"))?;
         if Some(record.pin.identity) != self.pin
-            || PidFd::require_ancestor_host_original(record.pin.fd.as_fd())? != record.pin.identity
+            || crate::pidfd::require_ancestor_host_original(record.pin.fd.as_fd())? != record.pin.identity
         {
             return Err(SeqpacketError::PeerIdentity("ancestor record pin changed"));
         }
@@ -2819,7 +2849,7 @@ struct PeerCaptureAttemptV1 {
     complete: bool,
     binding: Option<ConnectedSocketBinding>,
     credentials: Option<PeerCredentials>,
-    raw_pidfd: Option<uapi::RawAncillary>,
+    raw_pidfd: Option<OwnedFd>,
     pidfd: Option<PidFd>,
     info: Option<PidFdInfo>,
     after: Option<ConnectedSocketBinding>,
@@ -2835,13 +2865,16 @@ impl PeerCaptureAttemptV1 {
         self.entered = true;
         uapi::validate_connected_seqpacket(fd)?;
         self.binding = Some(ConnectedSocketBinding::capture_peer(fd)?);
-        self.credentials = Some(PeerCredentials::from_raw(uapi::peer_credentials(fd)?)?);
+        self.credentials = Some(PeerCredentials::from_raw(aos_linux_descriptors::native::peer_credentials(fd)?)?);
         if retain_raw {
-            uapi::peer_pidfd_retaining_into_v1(fd, &mut self.raw_pidfd)?;
+            aos_linux_descriptors::native::peer_pidfd_retaining_into_v1(fd, &mut self.raw_pidfd)?;
         } else {
-            self.raw_pidfd = Some(uapi::RawAncillary::PidFd(uapi::peer_pidfd(fd)?));
+            self.raw_pidfd = Some(aos_linux_descriptors::native::peer_pidfd(fd)?);
         }
-        self.pidfd = Some(PidFd::adopt_received_slot(&mut self.raw_pidfd)?);
+        self.raw_pidfd.as_ref().ok_or(aos_linux_descriptors::Error::WrongDescriptorType {
+            expected: "pidfd",
+        })?;
+        self.pidfd = Some(PidFd::adopt_owned_slot_v2(&mut self.raw_pidfd)?);
         self.info = Some(self.pidfd.as_ref().ok_or(SeqpacketError::Closed)?.info()?);
         self.after = Some(ConnectedSocketBinding::capture_peer(fd)?);
         if self.info.ok_or(SeqpacketError::Closed)?.pid()
@@ -2980,7 +3013,7 @@ impl ConnectionPeerIdentity {
     /// # Errors
     ///
     /// Returns an error for pidfd failures other than normal process exit.
-    pub fn is_alive(&self) -> crate::Result<bool> {
+    pub fn is_alive(&self) -> aos_linux_descriptors::Result<bool> {
         self.pidfd.is_alive()
     }
 }
@@ -3065,7 +3098,7 @@ impl KernelAuthorizedRecordSubject {
     /// # Errors
     ///
     /// Returns an error for pidfd failures other than normal process exit.
-    pub fn is_alive(&self) -> crate::Result<bool> {
+    pub fn is_alive(&self) -> aos_linux_descriptors::Result<bool> {
         self.pidfd.is_alive()
     }
 }
@@ -3295,7 +3328,7 @@ mod tests {
     }
 
     fn pair() -> (SeqpacketSocket, SeqpacketSocket) {
-        let (left, right) = uapi::seqpacket_pair().expect("create seqpacket pair");
+        let (left, right) = aos_linux_descriptors::native::seqpacket_pair().expect("create seqpacket pair");
         (
             SeqpacketSocket::from_owned(left).expect("adopt left socket"),
             SeqpacketSocket::from_owned(right).expect("adopt right socket"),
@@ -3305,23 +3338,23 @@ mod tests {
     #[test]
     fn connection_identity_capture_does_not_change_socket_flags() {
         for flags in [0, libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC] {
-            let (left, _right) = uapi::seqpacket_pair_with_flags(flags).expect("create test pair");
-            let before_status = uapi::get_status_flags(left.as_fd()).expect("initial status flags");
-            let before_cloexec = uapi::is_cloexec(left.as_fd()).expect("initial FD flags");
+            let (left, _right) = aos_linux_descriptors::native::seqpacket_pair_with_flags(flags).expect("create test pair");
+            let before_status = aos_linux_descriptors::native::get_status_flags(left.as_fd()).expect("initial status flags");
+            let before_cloexec = aos_linux_descriptors::native::is_cloexec(left.as_fd()).expect("initial FD flags");
             let identity = ConnectionPeerIdentity::from_socket(left.as_fd()).expect("capture peer");
             assert_eq!(identity.credentials().pid().get(), std::process::id());
             assert_eq!(identity.initial_info().pid(), std::process::id());
             assert_ne!(identity.socket_cookie().get(), 0);
-            assert!(uapi::is_cloexec(identity.pidfd().as_fd()).expect("peer pidfd CLOEXEC"));
+            assert!(aos_linux_descriptors::native::is_cloexec(identity.pidfd().as_fd()).expect("peer pidfd CLOEXEC"));
             assert_eq!(
-                uapi::get_status_flags(left.as_fd()).expect("final status flags"),
+                aos_linux_descriptors::native::get_status_flags(left.as_fd()).expect("final status flags"),
                 before_status
             );
             assert_eq!(
-                uapi::is_cloexec(left.as_fd()).expect("final FD flags"),
+                aos_linux_descriptors::native::is_cloexec(left.as_fd()).expect("final FD flags"),
                 before_cloexec
             );
-            assert!(uapi::require_seqpacket_identity(left.as_fd()).is_err());
+            assert!(aos_linux_descriptors::native::require_seqpacket_identity(left.as_fd()).is_err());
         }
     }
 
@@ -3441,7 +3474,7 @@ mod tests {
         );
         assert_eq!(record.subject().initial_info().pid(), std::process::id());
         assert!(record.subject().is_alive().expect("test subject liveness"));
-        assert!(uapi::is_cloexec(record.subject().pidfd().as_fd()).expect("inspect pidfd flags"));
+        assert!(aos_linux_descriptors::native::is_cloexec(record.subject().pidfd().as_fd()).expect("inspect pidfd flags"));
     }
 
     #[test]
@@ -3490,7 +3523,7 @@ mod tests {
         receiver
             .enable_record_subjects()
             .expect("enable record subjects");
-        let duplicate_fd = uapi::duplicate_at_least(receiver.as_fd().expect("receiver fd"), 0)
+        let duplicate_fd = aos_linux_descriptors::native::duplicate_at_least(receiver.as_fd().expect("receiver fd"), 0)
             .expect("duplicate receiver");
         let mut duplicate = SeqpacketSocket::from_owned(duplicate_fd).expect("adopt duplicate");
         sender.send(b"duplicate").expect("send duplicate record");
@@ -3646,7 +3679,7 @@ mod tests {
         assert_eq!(socket.peer().initial_info().pid(), std::process::id());
         assert_ne!(socket.peer().socket_cookie().get(), 0);
         assert!(socket.peer().is_alive().expect("test peer liveness"));
-        assert!(uapi::is_cloexec(socket.peer().pidfd().as_fd()).expect("inspect peer pidfd flags"));
+        assert!(aos_linux_descriptors::native::is_cloexec(socket.peer().pidfd().as_fd()).expect("inspect peer pidfd flags"));
     }
 
     #[test]
@@ -3880,13 +3913,13 @@ mod tests {
             Err(SeqpacketError::Ancillary("unknown control message"))
         ));
 
-        let pidfd_one = uapi::pidfd_open(std::process::id()).expect("open first pidfd");
-        let pidfd_two = uapi::pidfd_open(std::process::id()).expect("open second pidfd");
+        let pidfd_one = aos_linux_descriptors::native::pidfd_open(std::process::id()).expect("open first pidfd");
+        let pidfd_two = aos_linux_descriptors::native::pidfd_open(std::process::id()).expect("open second pidfd");
         assert!(matches!(
             validate_record_subject(vec![
                 RawAncillary::Credentials(credentials),
-                RawAncillary::PidFd(pidfd_one),
-                RawAncillary::PidFd(pidfd_two),
+                RawAncillary::PidFd(aos_linux_descriptors::pidfd::PidFdAdmissionSlotV1::new(pidfd_one)),
+                RawAncillary::PidFd(aos_linux_descriptors::pidfd::PidFdAdmissionSlotV1::new(pidfd_two)),
             ]),
             Err(SeqpacketError::Ancillary("duplicate SCM_PIDFD"))
         ));
@@ -3899,22 +3932,22 @@ mod tests {
         // range so parallel fd-heavy tests cannot reuse its number before the
         // postcondition is inspected.
         let owned: OwnedFd =
-            uapi::duplicate_at_least(file.as_fd(), 512).expect("duplicate test descriptor");
+            aos_linux_descriptors::native::duplicate_at_least(file.as_fd(), 512).expect("duplicate test descriptor");
         let raw = owned.as_raw_fd();
         assert!(matches!(
             validate_record_subject(vec![RawAncillary::Rights(vec![owned])]),
             Err(SeqpacketError::Ancillary("SCM_RIGHTS is forbidden"))
         ));
-        assert!(!uapi::raw_fd_is_open(raw));
+        assert!(!aos_linux_descriptors::native::raw_fd_is_open(raw));
     }
 
     #[test]
     fn adopted_socket_and_received_pidfd_are_close_on_exec() {
-        let (left, _right) = uapi::seqpacket_pair().expect("create pair");
+        let (left, _right) = aos_linux_descriptors::native::seqpacket_pair().expect("create pair");
         let raw = left.as_raw_fd();
         let socket = SeqpacketSocket::from_owned(left).expect("adopt socket");
         assert_eq!(socket.as_fd().expect("borrow socket").as_raw_fd(), raw);
-        assert!(uapi::is_cloexec(socket.as_fd().expect("borrow socket")).expect("inspect flags"));
+        assert!(aos_linux_descriptors::native::is_cloexec(socket.as_fd().expect("borrow socket")).expect("inspect flags"));
     }
 
     #[test]
@@ -4204,5 +4237,14 @@ mod network_activation_gate_tests {
                 .1,
             2
         );
+    }
+}
+
+impl From<aos_linux_descriptors::unix_stream::StreamReportingErrorV1> for SeqpacketError {
+    fn from(error: aos_linux_descriptors::unix_stream::StreamReportingErrorV1) -> Self {
+        match error {
+            aos_linux_descriptors::unix_stream::StreamReportingErrorV1::Closed => Self::Closed,
+            aos_linux_descriptors::unix_stream::StreamReportingErrorV1::Native(source) => source.into(),
+        }
     }
 }

@@ -11,7 +11,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use aos_sandbox_model::NodeId;
-use aos_sandbox_linux::pidfd::PidFd;
+use aos_linux_descriptors::pidfd::PidFd;
 use aos_sandbox_protocol::nix_build::VerifiedNixRecipeArtifactV2;
 
 use crate::production_operation_compiler::{

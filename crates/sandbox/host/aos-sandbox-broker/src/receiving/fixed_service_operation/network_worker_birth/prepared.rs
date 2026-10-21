@@ -15,14 +15,14 @@ enum First { Order, Clock, PeerBefore, Poll, Receive, Binding, Packet, SubjectAf
 pub(super) struct PreparedOriginalV2 {
     entered: bool,
     before: Option<Result<RawPairedClockSample, FixedServiceOperationClosedV4>>,
-    peer_before: Option<Result<bool, aos_sandbox_linux::Error>>,
+    peer_before: Option<Result<bool, aos_linux_descriptors::Error>>,
     poll: Option<Result<usize, rustix::io::Errno>>,
     receive: Option<Result<ReceivedRecord, RetainedSeqpacketReceiveErrorV1>>,
-    cookie: Option<Result<u64, aos_sandbox_linux::Error>>,
+    cookie: Option<Result<u64, aos_linux_descriptors::Error>>,
     binding: Option<Result<(), RecordBindingError>>,
     packet: Option<Result<(), FixedServiceOperationClosedV4>>,
-    subject_after: Option<Result<bool, aos_sandbox_linux::Error>>,
-    peer_after: Option<Result<bool, aos_sandbox_linux::Error>>,
+    subject_after: Option<Result<bool, aos_linux_descriptors::Error>>,
+    peer_after: Option<Result<bool, aos_linux_descriptors::Error>>,
     parent_after: Option<Result<(), FixedServiceOperationClosedV4>>,
     first: Option<First>,
 }

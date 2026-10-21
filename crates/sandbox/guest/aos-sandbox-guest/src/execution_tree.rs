@@ -13,7 +13,8 @@ use std::time::Instant;
 use aos_sandbox_linux::cgroup::{
     CgroupPopulationMonitor, CgroupPopulationState, RetainedCgroupAnchor,
 };
-use aos_sandbox_linux::pidfd::{PidFd, PidFdProcessIdentity};
+use aos_linux_descriptors::pidfd::PidFd;
+use aos_sandbox_linux::pidfd::PidFdProcessIdentity;
 use rustix::fs::{Mode, OFlags, fchmod, fstat, mkdirat, openat};
 
 use crate::GuestProcessEffectErrorV1 as Error;
@@ -139,7 +140,7 @@ impl ExecutionTree {
     }
 
     pub(crate) fn leader_start_ticks(&self) -> Result<u64, Error> {
-        Ok(self.leader.process_identity()?.start_time_ticks())
+        Ok(aos_sandbox_linux::pidfd::process_identity(&(self.leader))?.start_time_ticks())
     }
 
     pub(crate) fn require_leader(&self) -> Result<(), Error> {
@@ -167,7 +168,7 @@ impl ExecutionTree {
             return Ok(false);
         }
         self.require_leader()?;
-        let identity = self.leader.process_identity()?;
+        let identity = aos_sandbox_linux::pidfd::process_identity(&(self.leader))?;
         Ok(matches!(record.version, 2 | 3)
             && record.cgroup == Some(self.kernel_id())
             && identity.pid() == record.pid

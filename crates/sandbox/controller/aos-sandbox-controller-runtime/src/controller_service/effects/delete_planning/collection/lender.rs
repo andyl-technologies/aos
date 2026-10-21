@@ -16,7 +16,7 @@ use aos_sandbox_protocol::domain_ledger::{delete_batch::DeleteBatchOwnerCutDataV
 pub(in crate::controller_service) struct ControllerDeleteInitialSixPlanningLoanV2<'borrow, 'cache> {
     sessions: [DeleteSessionInventoryCutDataV2<'borrow>; 4],
     negotiated: [aos_sandbox_broker_session_security::controller_composition::DeleteInventoryNegotiatedPreimagesV2<'borrow>; 4],
-    cache: &'borrow aos_sandbox_controller_domain::cache_residency::CacheDeleteInventoryOriginalV1<'cache>,
+    cache: &'borrow aos_sandbox_controller_domain::CacheDeleteInventoryOriginalV1<'cache>,
     transfer: ControllerDeleteTransferPlanningLoanV2<'borrow>,
     cuts: [DeleteBatchOwnerCutDataV2; 6],
     initial: [u8; 32],
@@ -39,7 +39,7 @@ impl<'borrow, 'cache> ControllerDeleteInitialSixPlanningLoanV2<'borrow, 'cache> 
 
     /// Borrows the same Cache five-journal/physical/reducer original.
     pub(in crate::controller_service) fn cache_v2(&self)
-        -> &aos_sandbox_controller_domain::cache_residency::CacheDeleteInventoryOriginalV1<'cache>
+        -> &aos_sandbox_controller_domain::CacheDeleteInventoryOriginalV1<'cache>
     {
         self.cache
     }

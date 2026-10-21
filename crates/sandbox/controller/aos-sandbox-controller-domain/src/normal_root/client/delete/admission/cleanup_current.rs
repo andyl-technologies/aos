@@ -4,9 +4,8 @@
 //! independently reads and authenticates both complete native Session histories.
 
 use super::*;
-use crate::policy_compiler::bounded_stream_io::{
-    DeadlineStreamDirectionV1, FixedDeadlineStreamIoV1,
-};
+use aos_sandbox_broker::bounded_stream_io::DeadlineStreamDirectionV1;
+use aos_sandbox_broker::bounded_stream_io::FixedDeadlineStreamIoV1;
 use aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodOutcomeV1;
 use aos_sandbox_protocol::domain_ledger::delete_root::cleanup_current::{
     DeleteRootCleanupCurrentDataV4, DeleteRootCleanupTerminalDataV4,

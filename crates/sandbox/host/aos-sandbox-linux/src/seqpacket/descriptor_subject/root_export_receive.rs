@@ -186,7 +186,7 @@ mod tests {
     use std::os::fd::AsFd as _;
 
     fn pair() -> (DescriptorSubjectSocket, SeqpacketSocket) {
-        let (receiver, sender) = crate::uapi::seqpacket_pair().unwrap();
+        let (receiver, sender) = aos_linux_descriptors::native::seqpacket_pair().unwrap();
         (
             DescriptorSubjectSocket::from_owned_retaining(receiver).unwrap(),
             SeqpacketSocket::from_owned(sender).unwrap(),
@@ -262,7 +262,7 @@ mod tests {
     #[test]
     fn same_length_queue_substitution_cannot_change_the_paid_model_branch() {
         let (mut receiver, mut sender) = pair();
-        let competing = crate::uapi::duplicate_at_least(receiver.as_fd().unwrap(), 0).unwrap();
+        let competing = aos_linux_descriptors::native::duplicate_at_least(receiver.as_fd().unwrap(), 0).unwrap();
         let mut competing = SeqpacketSocket::from_owned(competing).unwrap();
         let mut first = b"AOSHCX02".to_vec();
         first.resize(418, 1);

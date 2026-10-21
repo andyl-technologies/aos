@@ -11,10 +11,12 @@ use std::error::Error;
 use std::fmt;
 
 use aos_sandbox_model::{ResourceDimension as D, ResourceVector};
-use aos_sandbox_linux::pidfd::{
-    PidFd, PidFdNegativeContextOriginalV1, PidFdNegativeIdentityOriginalV1,
-    PidFdProcObservationsV1, PidFdProcOriginalsV1, PidFdProcessIdentity,
-};
+use aos_linux_descriptors::pidfd::PidFd;
+use aos_sandbox_linux::pidfd::PidFdNegativeContextOriginalV1;
+use aos_sandbox_linux::pidfd::PidFdNegativeIdentityOriginalV1;
+use aos_sandbox_linux::pidfd::PidFdProcObservationsV1;
+use aos_sandbox_linux::pidfd::PidFdProcOriginalsV1;
+use aos_sandbox_linux::pidfd::PidFdProcessIdentity;
 
 use super::{PhysicalTpmFailureV1, require_canary_helper_context_v2};
 
@@ -122,10 +124,10 @@ enum First {
 pub(super) struct BootHelperAfterOriginalV1 {
     identity: PidFdNegativeIdentityOriginalV1,
     context: PidFdNegativeContextOriginalV1,
-    identity_preparation: Option<aos_sandbox_linux::Result<()>>,
-    context_preparation: Option<aos_sandbox_linux::Result<()>>,
-    identity_result: Option<aos_sandbox_linux::Result<()>>,
-    context_result: Option<aos_sandbox_linux::Result<()>>,
+    identity_preparation: Option<aos_linux_descriptors::Result<()>>,
+    context_preparation: Option<aos_linux_descriptors::Result<()>>,
+    identity_result: Option<aos_linux_descriptors::Result<()>>,
+    context_result: Option<aos_linux_descriptors::Result<()>>,
     role: Option<Result<(), PhysicalTpmFailureV1>>,
     entered: [bool; 4],
     first: Option<First>,

@@ -33,7 +33,8 @@ use aos_sandbox_model::{
 };
 use aos_sandbox_linux::mount::DetachedMount;
 use aos_sandbox_linux::path::BeneathRoot;
-use aos_sandbox_linux::pidfd::{NamespaceKind, PidFd};
+use aos_sandbox_linux::pidfd::NamespaceKind;
+use aos_linux_descriptors::pidfd::PidFd;
 use aos_sandbox_protocol::{PeerCredentials, PeerPolicy, decode_runtime_request};
 use buffa::Message as _;
 
@@ -290,7 +291,7 @@ async fn production_compiler_worker_launch_refresh_and_stop() {
         NamespaceKind::User,
         NamespaceKind::Uts,
     ] {
-        assert_eq!(own_pidfd.namespace(kind).unwrap().kind(), kind);
+        assert_eq!(aos_sandbox_linux::pidfd::namespace(&(own_pidfd), kind).unwrap().kind(), kind);
     }
 
     let executable = std::env::var("AOS_SANDBOX_QUALIFICATION_NSPAWN").unwrap();
@@ -460,10 +461,9 @@ async fn production_compiler_worker_launch_refresh_and_stop() {
             NamespaceKind::Pid,
             NamespaceKind::User,
         ]
-        .map(|kind| old_payload.pidfd().namespace(kind).unwrap());
-        let old_network = old_payload
-            .pidfd()
-            .namespace(NamespaceKind::Network)
+        .map(|kind| aos_sandbox_linux::pidfd::namespace(&(old_payload.pidfd()), kind).unwrap());
+        let old_network = aos_sandbox_linux::pidfd::namespace(&(old_payload
+            .pidfd()), NamespaceKind::Network)
             .unwrap();
         std::fs::write(format!("{WORKSPACE}/var/qualification-reboot"), b"reboot\n").unwrap();
         wait_for_payload_generation(generation).await;
@@ -521,14 +521,13 @@ async fn production_compiler_worker_launch_refresh_and_stop() {
         );
         assert!(!old_payload.has_same_cgroup(new_payload));
         for old_namespace in old_namespaces {
-            let current_namespace = new_payload.pidfd().namespace(old_namespace.kind()).unwrap();
+            let current_namespace = aos_sandbox_linux::pidfd::namespace(&(new_payload.pidfd()), old_namespace.kind()).unwrap();
             assert_ne!(old_namespace.identity(), current_namespace.identity());
         }
         assert_eq!(
             old_network.identity(),
-            new_payload
-                .pidfd()
-                .namespace(NamespaceKind::Network)
+            aos_sandbox_linux::pidfd::namespace(&(new_payload
+                .pidfd()), NamespaceKind::Network)
                 .unwrap()
                 .identity()
         );

@@ -332,10 +332,22 @@ impl OriginalStorageClientSessionTransitionV1 {
     ) -> Option<&'cause (dyn std::error::Error + 'static)> {
         // A readiness owner is present only while that primary observation
         // failed. Its owed posts run later and cannot replace this cause.
-        self.readiness.as_ref().and_then(ReadinessOriginalV1::failure)
-            .or_else(|| self.inner.as_ref().and_then(|inner| inner.failure_with_native_cause(native)))
-            .or_else(|| self.closed.as_ref().map(|cause| cause as _))
+        transition_failure(
+            self.readiness.as_ref(), self.inner.as_ref(), self.closed.as_ref(), native,
+        )
     }
+}
+
+// Selects retained diagnostic causes without constructing an unentered Session.
+fn transition_failure<'cause>(
+    readiness: Option<&'cause ReadinessOriginalV1>,
+    inner: Option<&'cause RetainedStorageClientTransitionV1>,
+    closed: Option<&'cause OriginalStorageClientTransitionClosedV1>,
+    native: Option<&'cause (dyn std::error::Error + 'static)>,
+) -> Option<&'cause (dyn std::error::Error + 'static)> {
+    readiness.and_then(ReadinessOriginalV1::failure)
+        .or_else(|| inner.and_then(|inner| inner.failure_with_native_cause(native)))
+        .or_else(|| closed.map(|cause| cause as _))
 }
 
 
@@ -358,30 +370,18 @@ mod tests {
         assert!(matches!(readiness.returned,
             Some(Err(DormantBrokerSessionHandshakeErrorV1::Deadline))));
 
-        // This refusal-only diagnostic owner creates no Session or J loan.
-        // It keeps the actual poll and timeout while a later closure is parked.
-        let mut transition = OriginalStorageClientSessionTransitionV1 {
-            old: None,
-            inner: None,
-            readiness: Some(readiness),
-            host_tickets: None,
-            closed: None,
-            started: true,
-            provisioning_predecessor: None,
-            provisioning_lineage: None,
-            provisioning_handoff_entered: false,
-            provisioning_borrowed: None,
-        };
-        let first = transition.failure_with_native_cause(None).unwrap()
+        // Borrow the real failed poll through the same selector used by the
+        // resident transition; this diagnostic needs no Session or J owner.
+        let first = transition_failure(Some(&readiness), None, None, None).unwrap()
             .downcast_ref::<DormantBrokerSessionHandshakeErrorV1>().unwrap()
             as *const DormantBrokerSessionHandshakeErrorV1;
-        transition.closed = Some(OriginalStorageClientTransitionClosedV1);
+        let closed = OriginalStorageClientTransitionClosedV1;
         let later = aos_sandbox_controller_domain::CreateStorageClientSessionClosedV1;
 
-        assert_eq!(transition.failure_with_native_cause(Some(&later)).unwrap()
+        assert_eq!(transition_failure(Some(&readiness), None, Some(&closed), Some(&later)).unwrap()
             .downcast_ref::<DormantBrokerSessionHandshakeErrorV1>().unwrap()
             as *const _, first);
-        assert!(matches!(transition.readiness.as_ref().unwrap().native, Some(Ok(0))));
+        assert!(matches!(readiness.native, Some(Ok(0))));
     }
 
     #[test]

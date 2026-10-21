@@ -54,7 +54,7 @@ pub(crate) enum ControllerQ04CredentialErrorV1 {
     Role(#[from] crate::policy_compiler::ControllerHoldReadbackErrorV1),
     /// The existing Cache-purpose pin rejected its canonical bytes.
     #[error(transparent)]
-    CacheRole(#[from] crate::cache_residency::CacheOwnerReadbackErrorV1),
+    CacheRole(#[from] aos_sandbox_cache::CacheOwnerReadbackErrorV1),
 }
 
 // Preserve the existing upper flattened packet-error lane after the pure codec move.
@@ -62,7 +62,7 @@ impl From<aos_sandbox_protocol::cache_owner_readback::CacheOwnerReadbackDataErro
     for ControllerQ04CredentialErrorV1
 {
     fn from(cause: aos_sandbox_protocol::cache_owner_readback::CacheOwnerReadbackDataErrorV1) -> Self {
-        Self::CacheRole(crate::cache_residency::CacheOwnerReadbackErrorV1::from(cause))
+        Self::CacheRole(aos_sandbox_cache::CacheOwnerReadbackErrorV1::from(cause))
     }
 }
 

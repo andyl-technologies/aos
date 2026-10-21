@@ -28,12 +28,12 @@ enum LogicalClockErrorV1 {
     #[error("the original logical Output kernel clock is stale")]
     Stale,
     #[error(transparent)]
-    Kernel(aos_sandbox_linux::Error),
+    Kernel(aos_linux_descriptors::Error),
 }
 
 impl aos_sandbox_broker::kernel_clock::KernelPairedClockErrorV1 for LogicalClockErrorV1 {
     fn stale() -> Self { Self::Stale }
-    fn kernel(error: aos_sandbox_linux::Error) -> Self { Self::Kernel(error) }
+    fn kernel(error: aos_linux_descriptors::Error) -> Self { Self::Kernel(error) }
 }
 
 type Clock = aos_sandbox_broker::kernel_clock::RetainedKernelPairedClockAttemptV1<LogicalClockErrorV1>;

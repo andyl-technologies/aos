@@ -12,7 +12,7 @@ use crate::observer_handoff_v2::{
     HEADER_BYTES, ObserverHandoffDataV2, ObserverHandoffHeaderDataV3,
 };
 use aos_sandbox_broker::receiving::NetworkChildOperationBindingDataV2;
-use aos_sandbox_linux::pidfd::PidFd;
+use aos_linux_descriptors::pidfd::PidFd;
 use aos_sandbox_linux::seqpacket::descriptor_subject::{
     NetworkWorkerBootstrapWaitOriginalV3, NetworkWorkerBootstrapWaitRefusalV3,
     NetworkWorkerRetiredRecordDataV2, ReceivedDescriptorRecord,

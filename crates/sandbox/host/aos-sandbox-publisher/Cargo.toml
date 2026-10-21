@@ -18,6 +18,7 @@ thiserror.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 aos-sandbox-linux.workspace = true
+aos-linux-descriptors.workspace = true
 
 [dev-dependencies]
 rustix = { workspace = true, features = ["net"] }

@@ -14,7 +14,7 @@ use aos_sandbox_model::{
     PortableMediaType, RawClockProvenance, RawPairedClockSample, RevocationScopeId,
     descriptor_for_bytes,
 };
-use aos_sandbox_linux::boot::KernelBootId;
+use aos_linux_descriptors::boot::KernelBootId;
 use aos_sandbox_linux::inherited_fd::duplicate_inherited_descriptor;
 use aos_sandbox_linux::pidfd::SingleThreadedProcess;
 use rustix::fs::{AtFlags, FileType, OFlags, SealFlags, fcntl_get_seals, fcntl_getfl, fstat};

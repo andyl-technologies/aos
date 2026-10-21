@@ -186,216 +186,239 @@ impl RootSubjectChunkReceivingV1 {
             cutoff,
             reached,
         } = self;
-        while !buffer.completed_exact() {
-            if purpose_posts.is_some()
-                || before.is_some()
-                || readiness.entered()
-                || received.is_some()
-                || subject.is_some()
-                || binding.is_some()
-                || copied.is_some()
-                || after.is_some()
-                || clock_original.is_some()
-                || clock.is_some()
-                || cutoff.is_some()
-            {
-                return Err(Error::Ready);
-            }
-            *before = Some(match purpose {
-                RootSubjectPurposeV1::Create(_) => flight.recheck_current_controller_peer_once(),
-                RootSubjectPurposeV1::Delete(owner) => {
-                    // The whole D challenge prepaid this resident peak. Debit
-                    // this reached schedule before its first arm/native work.
-                    *purpose_posts = Some(Box::new(RootChunkPostsV1::Delete(Default::default())));
-                    let posts = purpose_posts.as_mut().ok_or(Error::Ready)?;
-                    if flight.arm_delete_chunk_posts_once_v1(owner, posts.delete_mut_v1()?).is_err() {
-                        // Any earlier successful arms were independently posted
-                        // by the armer before its retained failure returned.
-                        return Err(Error::Ready);
-                    }
-                    posts.observe_before_v1(flight, purpose)
+        // This private lexical adapter adds no runtime carrier or callback.
+        // Each arm remains in this actual owner's original frame; the shared
+        // macro supplies only the single fixed iteration and stage order.
+        macro_rules! legacy_chunk_stage_v1 {
+            (completed_exact_v1) => {
+                buffer.completed_exact()
+            };
+            (require_empty_once_v1) => {{
+                if purpose_posts.is_some()
+                    || before.is_some()
+                    || readiness.entered()
+                    || received.is_some()
+                    || subject.is_some()
+                    || binding.is_some()
+                    || copied.is_some()
+                    || after.is_some()
+                    || clock_original.is_some()
+                    || clock.is_some()
+                    || cutoff.is_some()
+                {
+                    return Err(Error::Ready);
                 }
-                RootSubjectPurposeV1::Apply(owner) => {
-                    *purpose_posts = Some(Box::new(RootChunkPostsV1::Apply(Default::default())));
-                    let posts = purpose_posts.as_mut().ok_or(Error::Ready)?;
-                    if flight.arm_apply_chunk_posts_once_v1(owner, posts.apply_mut_v1()?).is_err() {
-                        return Err(Error::Ready);
+            }};
+            (observe_before_once_v1) => {{
+                *before = Some(match purpose {
+                    RootSubjectPurposeV1::Create(_) => flight.recheck_current_controller_peer_once(),
+                    RootSubjectPurposeV1::Delete(owner) => {
+                        // The whole D challenge prepaid this resident peak. Debit
+                        // this reached schedule before its first arm/native work.
+                        *purpose_posts = Some(Box::new(RootChunkPostsV1::Delete(Default::default())));
+                        let posts = purpose_posts.as_mut().ok_or(Error::Ready)?;
+                        if flight.arm_delete_chunk_posts_once_v1(owner, posts.delete_mut_v1()?).is_err() {
+                            // Any earlier successful arms were independently posted
+                            // by the armer before its retained failure returned.
+                            return Err(Error::Ready);
+                        }
+                        posts.observe_before_v1(flight, purpose)
                     }
-                    posts.observe_before_v1(flight, purpose)
-                }
-                RootSubjectPurposeV1::Host(owner) => {
-                    *purpose_posts = Some(Box::new(RootChunkPostsV1::Host(Default::default())));
-                    let posts = purpose_posts.as_mut().ok_or(Error::Ready)?;
-                    if flight.arm_host_launch_chunk_posts_once_v2(owner, posts.host_mut_v2()?).is_err() {
-                        return Err(Error::Ready);
+                    RootSubjectPurposeV1::Apply(owner) => {
+                        *purpose_posts = Some(Box::new(RootChunkPostsV1::Apply(Default::default())));
+                        let posts = purpose_posts.as_mut().ok_or(Error::Ready)?;
+                        if flight.arm_apply_chunk_posts_once_v1(owner, posts.apply_mut_v1()?).is_err() {
+                            return Err(Error::Ready);
+                        }
+                        posts.observe_before_v1(flight, purpose)
                     }
-                    posts.observe_before_v1(flight, purpose)
-                }
-                RootSubjectPurposeV1::ExecutionNoApply(owner) => {
-                    *purpose_posts = Some(Box::new(RootChunkPostsV1::ExecutionNoApply(Default::default())));
-                    let posts = purpose_posts.as_mut().ok_or(Error::Ready)?;
-                    if flight.arm_execution_no_apply_chunk_posts_once_v2(owner, posts.execution_no_apply_mut_v2()?).is_err() {
-                        return Err(Error::Ready);
+                    RootSubjectPurposeV1::Host(owner) => {
+                        *purpose_posts = Some(Box::new(RootChunkPostsV1::Host(Default::default())));
+                        let posts = purpose_posts.as_mut().ok_or(Error::Ready)?;
+                        if flight.arm_host_launch_chunk_posts_once_v2(owner, posts.host_mut_v2()?).is_err() {
+                            return Err(Error::Ready);
+                        }
+                        posts.observe_before_v1(flight, purpose)
                     }
-                    posts.observe_before_v1(flight, purpose)
-                }
-
-                RootSubjectPurposeV1::StopCleanup(owner) => {
-                    *purpose_posts = Some(Box::new(RootChunkPostsV1::StopCleanup(Default::default())));
-                    let posts = purpose_posts.as_mut().ok_or(Error::Ready)?;
-                    if flight.arm_stop_cleanup_chunk_posts_once_v1(owner, posts.stop_cleanup_mut_v1()?).is_err() {
-                        return Err(Error::Ready);
+                    RootSubjectPurposeV1::ExecutionNoApply(owner) => {
+                        *purpose_posts = Some(Box::new(RootChunkPostsV1::ExecutionNoApply(Default::default())));
+                        let posts = purpose_posts.as_mut().ok_or(Error::Ready)?;
+                        if flight.arm_execution_no_apply_chunk_posts_once_v2(owner, posts.execution_no_apply_mut_v2()?).is_err() {
+                            return Err(Error::Ready);
+                        }
+                        posts.observe_before_v1(flight, purpose)
                     }
-                    posts.observe_before_v1(flight, purpose)
-                }
-                RootSubjectPurposeV1::MaintenanceStorage(owner) => {
-                    *purpose_posts = Some(Box::new(RootChunkPostsV1::MaintenanceStorage(Default::default())));
-                    let posts = purpose_posts.as_mut().ok_or(Error::Ready)?;
-                    if flight.arm_maintenance_storage_chunk_posts_once_v2(owner, posts.maintenance_storage_mut_v2()?).is_err() {
-                        return Err(Error::Ready);
+    
+                    RootSubjectPurposeV1::StopCleanup(owner) => {
+                        *purpose_posts = Some(Box::new(RootChunkPostsV1::StopCleanup(Default::default())));
+                        let posts = purpose_posts.as_mut().ok_or(Error::Ready)?;
+                        if flight.arm_stop_cleanup_chunk_posts_once_v1(owner, posts.stop_cleanup_mut_v1()?).is_err() {
+                            return Err(Error::Ready);
+                        }
+                        posts.observe_before_v1(flight, purpose)
                     }
-                    posts.observe_before_v1(flight, purpose)
-                }
-                RootSubjectPurposeV1::StartInputs(owner) => {
-                    *purpose_posts = Some(Box::new(RootChunkPostsV1::StartInputs(Default::default())));
-                    let posts = purpose_posts.as_mut().ok_or(Error::Ready)?;
-                    if flight.arm_start_assignment_inputs_chunk_posts_once_v2(owner, posts.start_inputs_mut_v2()?).is_err() {
-                        return Err(Error::Ready);
+                    RootSubjectPurposeV1::MaintenanceStorage(owner) => {
+                        *purpose_posts = Some(Box::new(RootChunkPostsV1::MaintenanceStorage(Default::default())));
+                        let posts = purpose_posts.as_mut().ok_or(Error::Ready)?;
+                        if flight.arm_maintenance_storage_chunk_posts_once_v2(owner, posts.maintenance_storage_mut_v2()?).is_err() {
+                            return Err(Error::Ready);
+                        }
+                        posts.observe_before_v1(flight, purpose)
                     }
-                    posts.observe_before_v1(flight, purpose)
+                    RootSubjectPurposeV1::StartInputs(owner) => {
+                        *purpose_posts = Some(Box::new(RootChunkPostsV1::StartInputs(Default::default())));
+                        let posts = purpose_posts.as_mut().ok_or(Error::Ready)?;
+                        if flight.arm_start_assignment_inputs_chunk_posts_once_v2(owner, posts.start_inputs_mut_v2()?).is_err() {
+                            return Err(Error::Ready);
+                        }
+                        posts.observe_before_v1(flight, purpose)
+                    }
+                });
+                if matches!(purpose, RootSubjectPurposeV1::Create(_)) {
+                    positive(before)?;
                 }
-            });
-            if matches!(purpose, RootSubjectPurposeV1::Create(_)) {
+            }};
+            (poll_receive_once_v1) => {{
+                // recvmsg is MSG_DONTWAIT even on this blocking UnixStream. Wait
+                // on the same original first, retaining the finite poll sample.
+                if matches!(before, Some(Ok(()))) && readiness.wait_once(original, cutoff_nanoseconds) {
+                    *received = Some(match purpose {
+                        RootSubjectPurposeV1::Create(_) => {
+                            flight.receive_current_subject_chunk_into(buffer, geometry)
+                        }
+                        RootSubjectPurposeV1::Delete(_) => {
+                            flight.receive_delete_subject_chunk_into_v1(buffer, geometry)
+                        }
+                        RootSubjectPurposeV1::Apply(_) => {
+                            flight.receive_apply_subject_chunk_into_v1(buffer, geometry)
+                        }
+                        RootSubjectPurposeV1::Host(_) => {
+                            flight.receive_host_launch_subject_chunk_into_v1(buffer, geometry)
+                        }
+                        RootSubjectPurposeV1::ExecutionNoApply(_) => {
+                            flight.receive_execution_no_apply_subject_chunk_into_v2(buffer, geometry)
+                        }
+    
+                        RootSubjectPurposeV1::StopCleanup(_) => {
+                            flight.receive_stop_cleanup_subject_chunk_into_v1(buffer, geometry)
+                        }
+                        RootSubjectPurposeV1::MaintenanceStorage(_) => {
+                            flight.receive_maintenance_storage_subject_chunk_into_v2(buffer, geometry)
+                        }
+                        RootSubjectPurposeV1::StartInputs(_) => {
+                            flight.receive_start_assignment_inputs_subject_chunk_into_v2(buffer, geometry)
+                        }
+                    });
+                    *subject = Some(RootControllerChunkSubjectSampleV1::default());
+                }
+            }};
+            (observe_subject_copy_once_v1) => {{
+                if matches!(received, Some(Ok(()))) {
+                    let sample = subject.as_mut().ok_or(Error::Ready)?;
+                    *binding = Some(match purpose {
+                        RootSubjectPurposeV1::Create(_) => {
+                            flight.observe_current_chunk_subject_into(buffer, sample)
+                        }
+                        RootSubjectPurposeV1::Delete(_) => {
+                            flight.observe_delete_chunk_subject_into_v1(buffer, sample)
+                        }
+                        RootSubjectPurposeV1::Apply(_) => {
+                            flight.observe_apply_chunk_subject_into_v1(buffer, sample)
+                        }
+                        RootSubjectPurposeV1::Host(_) => {
+                            flight.observe_host_launch_chunk_subject_into_v1(buffer, sample)
+                        }
+                        RootSubjectPurposeV1::ExecutionNoApply(_) => {
+                            flight.observe_execution_no_apply_chunk_subject_into_v2(buffer, sample)
+                        }
+                        RootSubjectPurposeV1::StopCleanup(_) => {
+                            flight.observe_stop_cleanup_chunk_subject_into_v1(buffer, sample)
+                        }
+                        RootSubjectPurposeV1::MaintenanceStorage(_) => {
+                            flight.observe_maintenance_storage_chunk_subject_into_v2(buffer, sample)
+                        }
+                        RootSubjectPurposeV1::StartInputs(_) => {
+                            flight.observe_start_assignment_inputs_chunk_subject_into_v2(buffer, sample)
+                        }
+                    });
+                    if matches!(binding, Some(Ok(()))) {
+                        *copied = Some(buffer.append_pending_payload_once());
+                    }
+                }
+            }};
+            (observe_after_once_v1) => {{
+                // A native/chunk/copy error does not suppress independent currentness.
+                *after = Some(match purpose {
+                    RootSubjectPurposeV1::Create(_) => flight.recheck_current_controller_peer_once(),
+                    RootSubjectPurposeV1::Delete(_) | RootSubjectPurposeV1::Apply(_)
+                        | RootSubjectPurposeV1::StartInputs(_) | RootSubjectPurposeV1::Host(_)
+                        | RootSubjectPurposeV1::MaintenanceStorage(_) | RootSubjectPurposeV1::ExecutionNoApply(_) | RootSubjectPurposeV1::StopCleanup(_) => purpose_posts
+                        .as_mut()
+                        .ok_or(Error::Ready)?
+                        .observe_after_v1(flight, purpose),
+                });
+            }};
+            (observe_clock_once_v1) => {{
+                *clock_original = Some(RetainedKernelPairedClockAttemptV1::default());
+                *clock = Some(
+                    clock_original
+                        .as_mut()
+                        .ok_or(Error::Ready)?
+                        .observe_once(None),
+                );
+                *cutoff = Some((|| {
+                    let now = *positive(clock).map_err(|_| JournalError::ProtectedBoundary)?;
+                    match purpose {
+                        RootSubjectPurposeV1::Create(root) => root.require_clock(now)?,
+                        RootSubjectPurposeV1::Delete(owner) => owner.require_current_clock_v1(now)?,
+                        RootSubjectPurposeV1::Apply(owner) => owner.require_current_clock_v1(now)?,
+                        RootSubjectPurposeV1::Host(owner) => owner.require_current_clock_v1(now)?,
+                        RootSubjectPurposeV1::ExecutionNoApply(owner) => owner.require_current_clock_v1(now)?,
+                        RootSubjectPurposeV1::StopCleanup(owner) => owner.require_current_clock_v1(now)?,
+                        RootSubjectPurposeV1::MaintenanceStorage(owner) => owner.require_current_clock_v1(now)?,
+                        RootSubjectPurposeV1::StartInputs(owner) => owner.require_current_clock_v1(now)?,
+                    }
+                    if now.boottime_nanoseconds() >= cutoff_nanoseconds {
+                        return Err(JournalError::ProtectedBoundary);
+                    }
+                    Ok(())
+                })());
+            }};
+            (require_positive_once_v1) => {{
                 positive(before)?;
-            }
-            // recvmsg is MSG_DONTWAIT even on this blocking UnixStream. Wait
-            // on the same original first, retaining the finite poll sample.
-            if matches!(before, Some(Ok(()))) && readiness.wait_once(original, cutoff_nanoseconds) {
-                *received = Some(match purpose {
-                    RootSubjectPurposeV1::Create(_) => {
-                        flight.receive_current_subject_chunk_into(buffer, geometry)
-                    }
-                    RootSubjectPurposeV1::Delete(_) => {
-                        flight.receive_delete_subject_chunk_into_v1(buffer, geometry)
-                    }
-                    RootSubjectPurposeV1::Apply(_) => {
-                        flight.receive_apply_subject_chunk_into_v1(buffer, geometry)
-                    }
-                    RootSubjectPurposeV1::Host(_) => {
-                        flight.receive_host_launch_subject_chunk_into_v1(buffer, geometry)
-                    }
-                    RootSubjectPurposeV1::ExecutionNoApply(_) => {
-                        flight.receive_execution_no_apply_subject_chunk_into_v2(buffer, geometry)
-                    }
-
-                    RootSubjectPurposeV1::StopCleanup(_) => {
-                        flight.receive_stop_cleanup_subject_chunk_into_v1(buffer, geometry)
-                    }
-                    RootSubjectPurposeV1::MaintenanceStorage(_) => {
-                        flight.receive_maintenance_storage_subject_chunk_into_v2(buffer, geometry)
-                    }
-                    RootSubjectPurposeV1::StartInputs(_) => {
-                        flight.receive_start_assignment_inputs_subject_chunk_into_v2(buffer, geometry)
-                    }
-                });
-                *subject = Some(RootControllerChunkSubjectSampleV1::default());
-            }
-            if matches!(received, Some(Ok(()))) {
-                let sample = subject.as_mut().ok_or(Error::Ready)?;
-                *binding = Some(match purpose {
-                    RootSubjectPurposeV1::Create(_) => {
-                        flight.observe_current_chunk_subject_into(buffer, sample)
-                    }
-                    RootSubjectPurposeV1::Delete(_) => {
-                        flight.observe_delete_chunk_subject_into_v1(buffer, sample)
-                    }
-                    RootSubjectPurposeV1::Apply(_) => {
-                        flight.observe_apply_chunk_subject_into_v1(buffer, sample)
-                    }
-                    RootSubjectPurposeV1::Host(_) => {
-                        flight.observe_host_launch_chunk_subject_into_v1(buffer, sample)
-                    }
-                    RootSubjectPurposeV1::ExecutionNoApply(_) => {
-                        flight.observe_execution_no_apply_chunk_subject_into_v2(buffer, sample)
-                    }
-                    RootSubjectPurposeV1::StopCleanup(_) => {
-                        flight.observe_stop_cleanup_chunk_subject_into_v1(buffer, sample)
-                    }
-                    RootSubjectPurposeV1::MaintenanceStorage(_) => {
-                        flight.observe_maintenance_storage_chunk_subject_into_v2(buffer, sample)
-                    }
-                    RootSubjectPurposeV1::StartInputs(_) => {
-                        flight.observe_start_assignment_inputs_chunk_subject_into_v2(buffer, sample)
-                    }
-                });
-                if matches!(binding, Some(Ok(()))) {
-                    *copied = Some(buffer.append_pending_payload_once());
+                if !readiness.positive() {
+                    return Err(Error::Ready);
                 }
-            }
-            // A native/chunk/copy error does not suppress independent currentness.
-            *after = Some(match purpose {
-                RootSubjectPurposeV1::Create(_) => flight.recheck_current_controller_peer_once(),
-                RootSubjectPurposeV1::Delete(_) | RootSubjectPurposeV1::Apply(_)
-                    | RootSubjectPurposeV1::StartInputs(_) | RootSubjectPurposeV1::Host(_)
-                    | RootSubjectPurposeV1::MaintenanceStorage(_) | RootSubjectPurposeV1::ExecutionNoApply(_) | RootSubjectPurposeV1::StopCleanup(_) => purpose_posts
-                    .as_mut()
-                    .ok_or(Error::Ready)?
-                    .observe_after_v1(flight, purpose),
-            });
-            *clock_original = Some(RetainedKernelPairedClockAttemptV1::default());
-            *clock = Some(
-                clock_original
-                    .as_mut()
-                    .ok_or(Error::Ready)?
-                    .observe_once(None),
-            );
-            *cutoff = Some((|| {
-                let now = *positive(clock).map_err(|_| JournalError::ProtectedBoundary)?;
-                match purpose {
-                    RootSubjectPurposeV1::Create(root) => root.require_clock(now)?,
-                    RootSubjectPurposeV1::Delete(owner) => owner.require_current_clock_v1(now)?,
-                    RootSubjectPurposeV1::Apply(owner) => owner.require_current_clock_v1(now)?,
-                    RootSubjectPurposeV1::Host(owner) => owner.require_current_clock_v1(now)?,
-                    RootSubjectPurposeV1::ExecutionNoApply(owner) => owner.require_current_clock_v1(now)?,
-                    RootSubjectPurposeV1::StopCleanup(owner) => owner.require_current_clock_v1(now)?,
-                    RootSubjectPurposeV1::MaintenanceStorage(owner) => owner.require_current_clock_v1(now)?,
-                    RootSubjectPurposeV1::StartInputs(owner) => owner.require_current_clock_v1(now)?,
+                positive(received)?;
+                positive(binding)?;
+                positive(copied)?;
+                positive(after)?;
+                positive(cutoff)?;
+                if let Some(posts) = purpose_posts.as_ref() {
+                    posts.require_positive_v1().map_err(|_| Error::Ready)?;
                 }
-                if now.boottime_nanoseconds() >= cutoff_nanoseconds {
-                    return Err(JournalError::ProtectedBoundary);
-                }
-                Ok(())
-            })());
-            positive(before)?;
-            if !readiness.positive() {
-                return Err(Error::Ready);
-            }
-            positive(received)?;
-            positive(binding)?;
-            positive(copied)?;
-            positive(after)?;
-            positive(cutoff)?;
-            if let Some(posts) = purpose_posts.as_ref() {
-                posts.require_positive_v1().map_err(|_| Error::Ready)?;
-            }
-            *reached = reached.checked_add(1).ok_or(Error::Ready)?;
-            let chunk = buffer.take_copied_chunk_once().map_err(|_| Error::Ready)?;
-            drop(chunk);
-            drop(subject.take());
-            // Only the actual complete receive/subject/copy/native/paired-clock
-            // conjunction permits another chunk. Traffic remains spent on R.
-            drop(purpose_posts.take());
-            *before = None;
-            *readiness = RootCurrentReadinessV1::default();
-            *received = None;
-            *binding = None;
-            *copied = None;
-            *after = None;
-            drop(clock_original.take());
-            *clock = None;
-            *cutoff = None;
+            }};
+            (dispose_positive_once_v1) => {{
+                *reached = reached.checked_add(1).ok_or(Error::Ready)?;
+                let chunk = buffer.take_copied_chunk_once().map_err(|_| Error::Ready)?;
+                drop(chunk);
+                drop(subject.take());
+                // Only the actual complete receive/subject/copy/native/paired-clock
+                // conjunction permits another chunk. Traffic remains spent on R.
+                drop(purpose_posts.take());
+                *before = None;
+                *readiness = RootCurrentReadinessV1::default();
+                *received = None;
+                *binding = None;
+                *copied = None;
+                *after = None;
+                drop(clock_original.take());
+                *clock = None;
+                *cutoff = None;
+            }};
         }
-        Ok(())
+
+        aos_sandbox_broker::root_subject_chunk_programme_v1!(legacy_chunk_stage_v1)
     }
 
     // The existing Ready recipe and later fixed Root frames share this same
@@ -403,44 +426,11 @@ impl RootSubjectChunkReceivingV1 {
     // controls stay with each caller's own explicit fixed layout and census.
     pub(crate) fn additional_receiving_demand_v1()
     -> Result<aos_sandbox_model::ResourceVector, JournalError> {
-        use aos_sandbox_model::{ResourceDimension as D, ResourceVector};
-        let invalid = || JournalError::LimitExceeded("fixed Root Ready receiving shape");
-        let geometry =
-            RootControllerChunkSubjectSampleV1::receive_geometry_v1().map_err(|_| invalid())?;
-        let (native_bytes, native_files) = geometry.receive_obligations_v1();
-        let cell = 4096_u64
-            + 256
-            + std::mem::size_of::<aos_sandbox_linux::Error>() as u64
-            + std::mem::size_of::<aos_sandbox_linux::pidfd::PidFdInfo>() as u64;
-        let native = 512_u64
-            .checked_mul(cell)
-            .ok_or_else(invalid)?
-            .max(u64::try_from(native_bytes).map_err(|_| invalid())?);
-        let membership = aos_sandbox_linux::cgroup::ExactCgroupMembershipReadbackV1::
-            dominant_requested_bytes_v1().ok_or_else(invalid)?;
-        let memory = native
-            .checked_add(u64::try_from(membership).map_err(|_| invalid())?)
-            .and_then(|bytes| bytes.checked_add(8 * 4096))
-            .and_then(|bytes| {
-                bytes.checked_add(RootCurrentReadinessV1::receiving_construction_bytes_v1()?)
-            })
-            .and_then(|bytes| {
-                bytes.checked_add(u64::try_from(
-                    RootControllerChunkSubjectSampleV1::receiving_construction_bytes_v1()?,
-                ).ok()?)
-            })
-            .ok_or_else(invalid)?;
-        let files = u64::try_from(native_files)
-            .map_err(|_| invalid())?
-            .checked_add(10)
-            .ok_or_else(invalid)?;
-        Ok(ResourceVector::ZERO
-            .with(D::MemoryBytes, memory)
-            .with(
-                D::MetadataEntries,
-                512 + RootCurrentReadinessV1::receiving_metadata_cells_v1(),
-            )
-            .with(D::OpenFiles, files))
+        aos_sandbox_broker::root_subject_receiving_demand_v1! {
+            sample: RootControllerChunkSubjectSampleV1,
+            readiness: RootCurrentReadinessV1,
+            error: JournalError::LimitExceeded("fixed Root Ready receiving shape"),
+        }
     }
 
     // New D never imports the old Create512 metadata-field allowance. Native

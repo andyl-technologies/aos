@@ -62,29 +62,35 @@ impl RootStartAssignmentInputsModelsOriginalV2 {
         &self,
         readonly: &mut RootCreateFinalityReadonlyOriginalV1,
     ) -> Result<ResourceVector, JournalError> {
-        let (controller, source) = readonly.journals_v1()?;
-        let state = controller.historical_read_view_v1().materialized_state_v1();
+        let (controller, source) = readonly.models_v1()?;
+        let state = controller.state_v1();
         let selectors = crate::cold_launch_publication::completion::
             create_stopped_controller_receiving_demand_v1(state).ok_or(JournalError::JournalTooLarge)?;
         let lifecycle = crate::lifecycle::retained_lifecycle_replay_receiving_demand_v1(
             source.all_records(),
         ).ok_or(JournalError::JournalTooLarge)?;
-        let tree = crate::hierarchy::protected_journal::start_assignment_tree_receiving_demand_v2(source)?;
+        let tree = aos_sandbox_ledger_replay::replay::tree_lineage::start_assignment::
+            start_assignment_tree_receiving_demand_v2(source.rows_data_v2())
+            .map_err(JournalError::from)?;
         let (policy_bytes, policy_rows) = controller.records(RecordNamespace::PublisherPolicy)
             .try_fold((0_usize, 0_usize), |(bytes, rows), (key, value)| {
                 Some((bytes.checked_add(key.len())?.checked_add(value.len())?, rows.checked_add(1)?))
             }).ok_or(JournalError::JournalTooLarge)?;
         let policy = crate::public_mutation_compiler::delete_admission::geometry::
             authorization_model_bytes_v1(policy_bytes, policy_rows).ok_or(JournalError::JournalTooLarge)?;
-        let names = crate::publisher_admin::policy_namespace_entries_v2(controller)
+        let names = aos_sandbox_protocol::publisher_policy::receiving_data::policy_namespace_entries_v2(controller.rows_data_v2())
             .and_then(|entries| u64::try_from(entries).ok()).ok_or(JournalError::JournalTooLarge)?;
         let fixed = size_of::<Self>().checked_mul(2)
+            .and_then(|bytes| bytes.checked_add(crate::policy_compiler::public_start_source::
+                start_source_root_observation_control_bytes_v2()?))
+            .and_then(|bytes| bytes.checked_add(aos_sandbox_protocol::publisher_policy::
+                receiving_data::namespace_receiving_control_bytes_v1()?))
             .and_then(|bytes| bytes.checked_add(LifecycleHistoricalReadOriginalV1::carrier_receiving_bytes_v1()?))
             .and_then(|bytes| bytes.checked_add(crate::policy_compiler::provisioning_current::
                 current_manifest::current_protected_assignment_carrier_receiving_bytes_v2()?))
             .and_then(|bytes| bytes.checked_add(policy))
             .and_then(|bytes| u64::try_from(bytes).ok()).ok_or(JournalError::JournalTooLarge)?;
-        let projection = crate::controller_service::public_projection::sandbox_source_receiving_bytes_v1(controller)
+        let projection = aos_sandbox_protocol::public_api::projection::geometry::sandbox_source_receiving_bytes_v1(controller.rows_data_v2())
             .ok_or(JournalError::JournalTooLarge)?;
 
         let memory = fixed.checked_add(projection).ok_or(JournalError::JournalTooLarge)?;
@@ -135,15 +141,15 @@ impl RootStartAssignmentInputsModelsOriginalV2 {
         if (query.controller_next, query.controller_end) != (controller_cut.next, controller_cut.end) {
             return Err(JournalError::ProtectedBoundary.into());
         }
-        let (controller, source) = readonly.journals_v1()?;
+        let (controller, source) = readonly.models_v1()?;
         if controller.get(RecordNamespace::Operation, operation.as_bytes()) != Some(subject.accepted_start) {
             return Err(JournalError::ProtectedBoundary.into());
         }
         crate::policy_compiler::provisioning_current::apply_inputs::require_controller_bank_head_data_v2(
-            controller.historical_read_view_v1().materialized_state_v1(), subject.controller_account,
+            controller.state_v1(), subject.controller_account,
             stage.controller_baseline_partition_v1()?, stage.enrolled_node_v1()?,
         )?;
-        self.source_read = Some(self.source.observe_once_v1(source, operation));
+        self.source_read = Some(self.source.observe_once_v1(source.rows_data_v2(), operation));
         let (selected, _) = self.source.operation_v1()?;
         let LifecycleIntentV1::Start { sandbox, .. } = selected.intent() else {
             return Err(JournalError::ProtectedBoundary.into());
@@ -167,9 +173,21 @@ impl RootStartAssignmentInputsModelsOriginalV2 {
             controller, operation, &self.source, predecessor.manifest_v2(), sample,
         ).map_err(|cause| cause as Cause));
         let current = value(&self.current)?;
-        let (record, tree_head, _) = crate::hierarchy::protected_journal::start_assignment_source_tree_data_v2(
-            source, current.project_v2(), current.sandbox_v2(),
-        )?;
+        source.ensure_healthy()
+            .map_err(crate::hierarchy::protected_journal::HierarchyProtectedJournalErrorV1::from)?;
+        let (record, tree_head, _) = aos_sandbox_ledger_replay::replay::tree_lineage::start_assignment::
+            start_assignment_source_tree_data_v2(
+                source.rows_data_v2(), current.project_v2(), current.sandbox_v2(),
+            ).map_err(|cause| {
+                use aos_sandbox_ledger_replay::replay::tree_lineage::start_assignment::
+                    StartAssignmentTreeReadDataErrorV2;
+                match cause {
+                    StartAssignmentTreeReadDataErrorV2::History(cause) =>
+                        crate::hierarchy::protected_journal::HierarchyProtectedJournalErrorV1::from(cause),
+                    StartAssignmentTreeReadDataErrorV2::MissingTarget =>
+                        crate::hierarchy::protected_journal::HierarchyProtectedJournalErrorV1::StaleAuthority,
+                }
+            })?;
         let previous = predecessor.manifest_v2().manifest();
         if record.parent().is_some() || record.project() != previous.project()
             || record.incarnation() != Some(previous.incarnation())

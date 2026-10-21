@@ -4,14 +4,14 @@
 //! destination through later expected-proof and shifted-payload conjunctions.
 //! A completed snapshot is DATA, not launch or cleanup permission.
 
-use aos_sandbox_linux::boot::RootOriginalKernelBootIdAttemptV1;
+use aos_linux_descriptors::boot::RootOriginalKernelBootIdAttemptV1;
 use aos_sandbox_linux::pidfd::PidFdProcessIdentityOriginalV1;
 
 use super::*;
 
 macro_rules! snapshot_identity {
     (Local, $original:ident, $field:ident, $process:expr) => {
-        $process.process_identity().map_err(|error| HostError::Worker(error.to_string()))?
+        aos_sandbox_linux::pidfd::process_identity(&($process)).map_err(|error| HostError::Worker(error.to_string()))?
     };
     (Retained, $original:ident, $field:ident, $process:expr) => {{
         $original.require_deadline()?;
@@ -129,10 +129,10 @@ pub(in crate::worker) struct RuntimeProofOriginalV2 {
     deadline: tokio::time::Instant,
     entered: bool,
     native_disposed: Option<RuntimeSnapshotNativeDisposedV4>,
-    workspace_mount: Option<std::result::Result<MountId, aos_sandbox_linux::Error>>,
+    workspace_mount: Option<std::result::Result<MountId, aos_linux_descriptors::Error>>,
     supervisor_identity: PidFdProcessIdentityOriginalV1,
     payload_identity: PidFdProcessIdentityOriginalV1,
-    payload_mount: Option<std::result::Result<MountId, aos_sandbox_linux::Error>>,
+    payload_mount: Option<std::result::Result<MountId, aos_linux_descriptors::Error>>,
     boot: RootOriginalKernelBootIdAttemptV1,
     primary: Option<Result<RuntimeProofSnapshot>>,
     refusal: Option<HostError>,

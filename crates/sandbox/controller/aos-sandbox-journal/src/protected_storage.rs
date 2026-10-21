@@ -616,7 +616,7 @@ impl<P> ProtectedJournalLocation<P> {
     #[cfg(target_os = "linux")]
     pub fn directory_mount_id(
         &self,
-    ) -> Result<aos_sandbox_linux::inventory::MountId, aos_sandbox_linux::Error> {
+    ) -> Result<aos_sandbox_linux::inventory::MountId, aos_linux_descriptors::Error> {
         use std::os::fd::AsFd as _;
         aos_sandbox_linux::inventory::MountId::from_fd(self.directory.as_fd())
     }

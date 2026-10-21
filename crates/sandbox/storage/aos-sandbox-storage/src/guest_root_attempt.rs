@@ -306,7 +306,7 @@ mod tests {
                 root_image_digest: [12; 32],
                 package_binding: [13; 32],
                 root_tree_digest: [14; 32],
-                feature_mask: 0x003f,
+                feature_mask: aos_sandbox_guest_protocol::guest_root_publication::CONCRETE_GUEST_FEATURE_MASK_V1,
             },
             root_device: 15,
             root_inode: 16,

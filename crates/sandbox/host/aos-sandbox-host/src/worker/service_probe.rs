@@ -3,11 +3,13 @@
 //! This observer proves kernel namespace-access DATA only. It cannot issue a
 //! role, launch permission or process handle from caller-supplied coordinates.
 
-use aos_sandbox_linux::pidfd::{PidFdInfo, PidFdNamespaceOriginalV2, PidFdOpenAttemptV1};
+use aos_linux_descriptors::pidfd::PidFdInfo;
+use aos_sandbox_linux::pidfd::PidFdNamespaceOriginalV2;
+use aos_sandbox_linux::pidfd::PidFdOpenAttemptV1;
 
 use super::*;
 
-type Native<T> = std::result::Result<T, aos_sandbox_linux::Error>;
+type Native<T> = std::result::Result<T, aos_linux_descriptors::Error>;
 
 macro_rules! probe_open {
     (Local, $original:ident, $pid:ident) => {
@@ -36,7 +38,7 @@ macro_rules! probe_native {
 
 macro_rules! probe_namespace {
     (Local, $original:ident, $field:ident, $slot:expr, $process:ident, $kind:ident) => {
-        $process.namespace(NamespaceKind::$kind).map_err(|error| HostError::Worker(error.to_string()))?
+        aos_sandbox_linux::pidfd::namespace(&($process), NamespaceKind::$kind).map_err(|error| HostError::Worker(error.to_string()))?
     };
     (Retained, $original:ident, $field:ident, $slot:expr, $process:ident, $kind:ident) => {{
         $original.namespaces[$slot].capture_once($process, NamespaceKind::$kind)

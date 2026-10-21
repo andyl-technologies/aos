@@ -9,7 +9,7 @@ use std::path::Path;
 
 use aos_sandbox_host::peer::ControllerPeerVerifier;
 use aos_sandbox_linux::cgroup::CgroupV2Root;
-use aos_sandbox_linux::pidfd::PidFd;
+use aos_linux_descriptors::pidfd::PidFd;
 use aos_sandbox_linux::seqpacket::ConnectionPeerIdentity;
 
 use super::*;

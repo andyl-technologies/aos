@@ -121,7 +121,7 @@ impl crate::public_mutation_compiler::PublicMutationAuthorizationNativeV1 {
     ) -> Result<(
         crate::cli_model::AuditAuthorizationV1,
         crate::cli_model::authorization_adapter::CurrentCapabilityDecisionV1,
-    ), crate::cli_model::authorization_adapter::CliAuthorizationAdapterError> {
+    ), aos_sandbox_protocol::public_api::authorization_error::CliAuthorizationAdapterError> {
         super::public_api_authorization::authorize_public_operation_read_retaining_v1(
             controller, peer, capability, scope, protobuf_body, self,
         )

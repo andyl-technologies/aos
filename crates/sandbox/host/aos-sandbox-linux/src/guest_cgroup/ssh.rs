@@ -14,7 +14,8 @@ use crate::cgroup::{
     RetainedCgroupAnchor,
 };
 use crate::process::{FixedProcessCaptureCutV3, GuestSshProcessOriginalV1};
-use crate::{Error, Result};
+use aos_linux_descriptors::Error;
+use aos_linux_descriptors::Result;
 
 use super::{control::ControlWriteOriginalV1, directory::DirectoryOriginalV1};
 
@@ -285,7 +286,7 @@ impl GuestSshScopeOriginalV1 {
     ///
     /// # Errors
     /// Refuses an absent/incomplete spawn or a native pidfd admission failure.
-    pub fn child_pidfd_v1(&self) -> Result<&crate::pidfd::PidFd> {
+    pub fn child_pidfd_v1(&self) -> Result<&aos_linux_descriptors::pidfd::PidFd> {
         self.spawn.as_ref().ok_or_else(closed)?.pidfd()
     }
 
@@ -335,7 +336,7 @@ impl GuestSshScopeOriginalV1 {
     ///
     /// # Errors
     /// Refuses a partial native spawn or failed independently owed post.
-    pub fn share_child_pidfd_v1(&self) -> Result<std::sync::Arc<crate::pidfd::PidFd>> {
+    pub fn share_child_pidfd_v1(&self) -> Result<std::sync::Arc<aos_linux_descriptors::pidfd::PidFd>> {
         self.spawn.as_ref().ok_or_else(closed)?.shared_pidfd()
     }
 

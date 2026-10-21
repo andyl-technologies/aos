@@ -8,7 +8,8 @@ use super::*;
 use aos_sandbox_linux::cgroup::{
     ExactCgroupMembershipReadbackV1, ExactCgroupMembershipRefusalV1,
 };
-use aos_sandbox_linux::pidfd::{PidFd, PidFdInfo};
+use aos_linux_descriptors::pidfd::PidFd;
+use aos_linux_descriptors::pidfd::PidFdInfo;
 
 pub(super) struct MembershipObservationV1 {
     original: ExactCgroupMembershipReadbackV1,

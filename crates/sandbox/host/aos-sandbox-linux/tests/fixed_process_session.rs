@@ -629,7 +629,7 @@ fn retained_output_case(case: &str) {
             error,
             FixedProcessRetainedSessionError::Session(
                 FixedProcessSessionError::Process {
-                    source: aos_sandbox_linux::Error::InvalidInput {
+                    source: aos_linux_descriptors::Error::InvalidInput {
                         field: "fixed process capture",
                         ..
                     },
@@ -680,7 +680,7 @@ fn retained_exec_errno_has_original_cause() {
         error,
         FixedProcessRetainedSessionError::Session(
             FixedProcessSessionError::Process {
-                source: aos_sandbox_linux::Error::Syscall {
+                source: aos_linux_descriptors::Error::Syscall {
                     operation: "execveat fixed descriptor process",
                     source,
                 },

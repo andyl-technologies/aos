@@ -6,7 +6,7 @@
 //! pointer cast, new socket, callback or reconstructed native owner is accepted.
 
 use super::*;
-use aos_sandbox_linux::unix_stream::RetainedUnixStream;
+use aos_linux_descriptors::unix_stream::RetainedUnixStream;
 use std::os::fd::AsFd as _;
 
 pub(crate) struct RootDeleteDispatchOriginalV4 {

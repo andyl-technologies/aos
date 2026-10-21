@@ -309,3 +309,47 @@ mod canonical_order_tests {
         assert!(canonical_dependency_postorder_data_v2(&cycle, &[first, second], root).is_err());
     }
 }
+
+/// Bounds the established complete lifecycle expectation and inventory rosters.
+pub const MAXIMUM_LIFECYCLE_EXPECTATIONS: usize = 4_096;
+
+/// Carries one historical resource and its complete row commitment.
+///
+/// These fields are comparison DATA. They authenticate no inventory and retain
+/// no native owner or effect grant. Actual inventory owners independently
+/// verify protected provenance, completeness and currentness before use.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct LifecycleBootDomainEntryDataV1 {
+    /// Identifies the logical resource represented by this historical row.
+    pub resource: LifecycleResourceV1,
+    /// Commits the complete protected row bytes used for stable ordering.
+    pub identity: aos_sandbox_model::ObjectDigest,
+}
+
+impl LifecycleBootDomainEntryDataV1 {
+    /// Checks the established nonzero resource and row identity constraints.
+    ///
+    /// # Errors
+    /// Refuses the same sentinel resource or zero row commitment as before.
+    pub fn from_fields_data_v1(
+        resource: LifecycleResourceV1,
+        identity: aos_sandbox_model::ObjectDigest,
+    ) -> Result<Self, LifecycleModelError> {
+        if resource.as_bytes() == &[0; 16] || identity.as_bytes() == &[0; 32] {
+            return Err(LifecycleModelError::InvalidModel);
+        }
+        Ok(Self { resource, identity })
+    }
+
+    /// Returns the logical resource represented by this historical row.
+    #[must_use]
+    pub const fn resource(self) -> LifecycleResourceV1 {
+        self.resource
+    }
+
+    /// Returns the complete row commitment used for stable order.
+    #[must_use]
+    pub const fn identity(self) -> aos_sandbox_model::ObjectDigest {
+        self.identity
+    }
+}

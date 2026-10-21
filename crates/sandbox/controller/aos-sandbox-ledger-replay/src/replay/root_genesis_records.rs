@@ -36,13 +36,13 @@ const FLOOR_DOMAIN_V2: &[u8] = b"aos.sandbox.source-hierarchy.semantic-floor.v2\
 /// Bounds the exact Root-owned durable deployment-instance row.
 pub const SOURCE_GENESIS_DEPLOYMENT_INSTANCE_BYTES_V1: usize = 80;
 /// Bounds the exact Root prepare intent retained before Source mutation.
-pub use aos_sandbox_protocol::source_genesis_geometry::ROOT_SOURCE_GENESIS_INTENT_BYTES_V1;
+pub const ROOT_SOURCE_GENESIS_INTENT_BYTES_V1: usize = 792;
 /// Bounds one initial semantic per-project Root hierarchy floor.
-pub use aos_sandbox_protocol::source_genesis_geometry::SOURCE_HIERARCHY_FLOOR_BYTES_V1;
+pub const SOURCE_HIERARCHY_FLOOR_BYTES_V1: usize = 792;
 /// Bounds an initial intent retaining the full SGC02 acceptance.
-pub use aos_sandbox_protocol::source_genesis_geometry::ROOT_SOURCE_GENESIS_INTENT_BYTES_V2;
+pub const ROOT_SOURCE_GENESIS_INTENT_BYTES_V2: usize = 968;
 /// Bounds an initial floor retaining the full resource authorization receipt.
-pub use aos_sandbox_protocol::source_genesis_geometry::SOURCE_HIERARCHY_FLOOR_BYTES_V2;
+pub const SOURCE_HIERARCHY_FLOOR_BYTES_V2: usize = 968;
 
 pub fn instance_bytes(instance: [u8; 32]) -> Result<[u8; 80], SourceGenesisErrorV1> {
     if instance == [0; 32] {
@@ -363,4 +363,60 @@ fn array_at<const N: usize>(bytes: &[u8], offset: usize) -> [u8; N] {
     let mut array = [0; N];
     array.copy_from_slice(&bytes[offset..offset + N]);
     array
+}
+
+/// Compares the immutable receipt against exactly one saved Root context.
+///
+/// The supplied roles and rows are historical DATA, not a current Root proof.
+/// Native callers retain their actual fixed owner and independent credentials.
+///
+/// # Errors
+/// Rejects an absent or ambiguous context, a different intent or instance, or
+/// a floor that differs in any receipt or role field. Candidate construction
+/// preserves its original noncanonical error.
+pub fn require_receipt_matches_retained_root_v1(
+    receipt: &SourceTreeGenesisReceiptV1,
+    intent: Option<&RootSourceGenesisIntentRecordV1>,
+    floor: Option<&SourceHierarchyFloorRecordV1>,
+    roles: ObjectDigest,
+) -> Result<(), SourceGenesisErrorV1> {
+    match (intent, floor) {
+        (Some(intent), None) => {
+            if receipt.intent_digest() != intent.digest() || receipt.instance() != intent.instance()
+            {
+                return Err(SourceGenesisErrorV1::Conflict);
+            }
+        }
+        (None, Some(floor)) => {
+            let candidate = SourceHierarchyFloorRecordV1::new(receipt.clone(), roles)?;
+            if &candidate != floor {
+                return Err(SourceGenesisErrorV1::Conflict);
+            }
+        }
+        _ => return Err(SourceGenesisErrorV1::Conflict),
+    }
+    Ok(())
+}
+
+/// Compares the full settled ACK join against supplied observed Source DATA.
+///
+/// A successful comparison creates no Root owner, writer or native authority.
+///
+/// # Errors
+/// Rejects another revision/predecessor, incomplete state, different receipt or
+/// floor commitment, or absent actual ACK record commitment.
+pub fn require_anchored_observation_data_v1(
+    observed: &crate::source_signer_data::VerifiedSourceTreeGenesisReadbackV1,
+    floor: &SourceHierarchyFloorRecordV1,
+) -> Result<(), SourceGenesisErrorV1> {
+    if floor.semantic_revision() != 1
+        || floor.predecessor().is_some()
+        || observed.state() != crate::source_signer_data::SourceTreeGenesisStateV1::Anchored
+        || observed.receipt() != Some(floor.receipt())
+        || observed.ack_floor_digest() != Some(floor.digest())
+        || observed.ack_record_digest().is_none()
+    {
+        return Err(SourceGenesisErrorV1::Conflict);
+    }
+    Ok(())
 }

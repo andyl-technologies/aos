@@ -7,9 +7,13 @@
 use std::error::Error;
 
 use aos_sandbox_model::{RawPairedClockSample, ResourceDimension as D, ResourceVector};
-use crate::cache_residency::{
-    CacheHeldClosedV1, CacheHeldCurrentnessSiteV1, CacheHeldErrorV1,
-    CacheHeldIdentityDataV1, CacheHeldNativeSemanticShapeV1, OriginalCreateStorageCacheLoanV1,
+use aos_sandbox_cache::{
+    CacheHeldClosedV1, CacheHeldCurrentnessOriginalV1, CacheHeldCurrentnessSiteV1,
+    CacheHeldErrorV1, CacheHeldIdentityDataV1, CacheHeldNativeSemanticShapeV1,
+};
+use crate::cache_programmes::initialization::create_storage::OriginalCreateStorageCacheLoanV1;
+use aos_sandbox_broker::controller_receiving::bank_launch::{
+    ControllerCacheAuditFundingErrorV1, ControllerCacheAuditFundingLoanV1,
 };
 use crate::controller_resource_reservation::q04_intake::CreateContinuationCaptureOwnerV1;
 use crate::journal::{CreateStorageWriterPositionOriginalV1, JournalError};
@@ -85,6 +89,8 @@ pub(in crate::controller_resource_reservation::create_intake) struct CacheCaptur
     variable: Option<Result<(), ResourceReservationErrorV1>>,
     captured_paid: bool,
     semantic_failure: Option<CacheHeldErrorV1>,
+    audit_funding_failure: Option<ControllerCacheAuditFundingErrorV1>,
+    audit_source_failure: Option<JournalError>,
     preparation: CacheCurrentnessOriginalV1,
     capture_post: CacheCurrentnessOriginalV1,
     before_capture: CacheCurrentnessOriginalV1,
@@ -100,11 +106,18 @@ impl CacheCaptureOriginalV1 {
     {
         error(&self.fixed_geometry).or_else(|| error(&self.fixed))
             .or_else(|| self.preparation.failure())
-            .or_else(|| error(&self.capture)).or_else(|| error(&self.variable_geometry))
-            .or_else(|| error(&self.variable)).or_else(|| self.capture_post.failure())
-            .or_else(|| self.before_capture.failure()).or_else(|| self.transition.failure())
-            .or_else(|| self.final_crossing.failure()).or_else(|| self.semantic_failure.as_ref().map(|cause| cause as _))
-            .or_else(|| self.after_append.failure()).or_else(|| self.after_root.failure())
+            .or_else(|| error(&self.capture))
+            .or_else(|| error(&self.variable_geometry))
+            .or_else(|| error(&self.variable))
+            .or_else(|| self.capture_post.failure())
+            .or_else(|| self.audit_source_failure.as_ref().map(|cause| cause as _))
+            .or_else(|| self.audit_funding_failure.as_ref().map(|cause| cause as _))
+            .or_else(|| self.before_capture.failure())
+            .or_else(|| self.transition.failure())
+            .or_else(|| self.final_crossing.failure())
+            .or_else(|| self.semantic_failure.as_ref().map(|cause| cause as _))
+            .or_else(|| self.after_append.failure())
+            .or_else(|| self.after_root.failure())
             .or_else(|| error(&self.released_association_result))
     }
 
@@ -114,7 +127,10 @@ impl CacheCaptureOriginalV1 {
     pub(super) fn funding_failure(&self) -> Option<&(dyn Error + 'static)> {
         error(&self.fixed_geometry).or_else(|| error(&self.fixed))
             .or_else(|| self.preparation.failure())
-            .or_else(|| error(&self.variable_geometry)).or_else(|| error(&self.variable))
+            .or_else(|| error(&self.variable_geometry))
+            .or_else(|| error(&self.variable))
+            .or_else(|| self.audit_source_failure.as_ref().map(|cause| cause as _))
+            .or_else(|| self.audit_funding_failure.as_ref().map(|cause| cause as _))
             .or_else(|| self.semantic_failure.as_ref().map(|cause| cause as _))
     }
 
@@ -253,7 +269,7 @@ impl CacheCurrentnessOriginalV1 {
     }
 
     pub(super) fn observe_once(&mut self, original: CacheControlOriginalsV1<'_>,
-        cache: &OriginalCreateStorageCacheLoanV1<'_>, expected: OriginalCacheAssociationV1,
+        cache: &CacheHeldCurrentnessOriginalV1<'_>, expected: OriginalCacheAssociationV1,
         controller_position: Result<CreateStorageWriterPositionV1, ResourceReservationErrorV1>,
         require_copied_source: bool) -> Result<(), ResourceReservationErrorV1>
     {
@@ -264,7 +280,7 @@ impl CacheCurrentnessOriginalV1 {
     pub(super) fn observe_operation_once(
         &mut self,
         original: CacheControlOriginalsV1<'_>,
-        cache: &OriginalCreateStorageCacheLoanV1<'_>,
+        cache: &CacheHeldCurrentnessOriginalV1<'_>,
         expected: OriginalCacheAssociationV1,
         controller_position: Result<CreateStorageWriterPositionV1, ResourceReservationErrorV1>,
     ) -> Result<(), ResourceReservationErrorV1> {
@@ -275,7 +291,7 @@ impl CacheCurrentnessOriginalV1 {
     fn observe_with_route_once(
         &mut self,
         original: CacheControlOriginalsV1<'_>,
-        cache: &OriginalCreateStorageCacheLoanV1<'_>,
+        cache: &CacheHeldCurrentnessOriginalV1<'_>,
         expected: OriginalCacheAssociationV1,
         controller_position: Result<CreateStorageWriterPositionV1, ResourceReservationErrorV1>,
         require_copied_source: bool,
@@ -288,7 +304,8 @@ impl CacheCurrentnessOriginalV1 {
             if cache.original_identity_v1() != expected.identity {
                 return Err(ResourceReservationErrorV1::Conflict);
             }
-            cache.require_same_controller_original_v1(original.profile)?;
+            cache.require_same_controller_original_v1(original.profile.lower_original_v1())
+                .map_err(|_| ResourceReservationErrorV1::Conflict)?;
             original.parent.require_create_storage_association(original.controller, original.source, original.profile)
         })());
         // These are already prepaid independent destinations. In particular,
@@ -346,7 +363,7 @@ impl CreateStorageOriginalLoanV1<'_> {
         self.owner.cache_capture.preparation.observe_once(CacheControlOriginalsV1 {
             parent: &self.owner.parent, intake: &self.owner.intake,
             controller: self.controller, source: self.source, profile: self.profile,
-        }, cache, expected, position, false)
+        }, &cache.currentness_original_v1(), expected, position, false)
     }
 
     fn admit_cache_fixed_inner(&mut self, cache: &OriginalCreateStorageCacheLoanV1<'_>)
@@ -438,7 +455,7 @@ impl CreateStorageOriginalLoanV1<'_> {
         let post = self.owner.cache_capture.capture_post.observe_once(CacheControlOriginalsV1 {
             parent: &self.owner.parent, intake: &self.owner.intake,
             controller: self.controller, source: self.source, profile: self.profile,
-        }, cache, expected, position, false);
+        }, &cache.currentness_original_v1(), expected, position, false);
         primary.and(post)
     }
 
@@ -468,7 +485,7 @@ impl CreateStorageOriginalLoanV1<'_> {
         Ok(())
     }
 
-    pub(crate) fn require_cache_capture_current(&mut self, cache: &OriginalCreateStorageCacheLoanV1<'_>)
+    pub(crate) fn require_cache_capture_current(&mut self, cache: &CacheHeldCurrentnessOriginalV1<'_>)
         -> Result<(), ResourceReservationErrorV1>
     {
         if !self.owner.cache_capture.rows_ready { return Err(ResourceReservationErrorV1::Conflict); }
@@ -486,4 +503,60 @@ impl CreateStorageOriginalLoanV1<'_> {
 
 fn error<T, E: Error + 'static>(slot: &Option<Result<T, E>>) -> Option<&(dyn Error + 'static)> {
     slot.as_ref().and_then(|result| result.as_ref().err()).map(|cause| cause as _)
+}
+
+
+impl<'original> CreateStorageOriginalLoanV1<'original> {
+    pub(crate) fn cache_audit_funding_forwarding_bytes_v1() -> Option<usize> {
+        type Actual<'funding, 'profile> =
+            aos_sandbox_broker::controller_receiving::bank_launch::
+                ControllerCreateContinuationFundingLoanV1<'funding, 'profile>;
+        Some(std::mem::size_of::<(
+            &mut Self,
+            &aos_sandbox_cache::OriginalCreateStorageCacheLoanV1<'_>,
+            Result<
+                &aos_sandbox_broker::controller_receiving::
+                    ControllerSourceOriginalRefV1,
+                JournalError,
+            >,
+            Result<Actual<'_, '_>, ResourceReservationErrorV1>,
+            Result<ControllerCacheAuditFundingLoanV1<'_, '_>, ControllerCacheAuditFundingErrorV1>,
+            Result<ControllerCacheAuditFundingLoanV1<'_, '_>, ResourceReservationErrorV1>,
+        )>())
+    }
+
+    /// Lends the actual committed J to this same private native Cache shape.
+    ///
+    /// The Source association is borrowed from the actual fixed Source owner
+    /// after the original fixed/captured admissions. No phase or payer is
+    /// reconstructed from receipt DATA and no duplicate debit is performed.
+    ///
+    /// # Errors
+    /// Retains actual Source handoff, J/profile and native original refusal.
+    pub(crate) fn borrow_initial_cache_audit_funding_v1<'funding, 'cache>(
+        &'funding mut self,
+        cache: &aos_sandbox_cache::OriginalCreateStorageCacheLoanV1<'cache>,
+    ) -> Result<
+        ControllerCacheAuditFundingLoanV1<'funding, 'original>,
+        ResourceReservationErrorV1,
+    >
+    where
+        'cache: 'funding,
+    {
+        let source = match self.source.journal_ref_v1().cache_audit_source_original_v1() {
+            Ok(source) => source,
+            Err(cause) => {
+                self.owner.cache_capture.audit_source_failure.get_or_insert(cause);
+                return Err(ResourceReservationErrorV1::Conflict);
+            }
+        };
+        let original = self.owner.intake.borrow_cache_continuation_funding_v1(self.profile)?;
+        match cache.bind_initial_audit_funding_v1(original, source) {
+            Ok(funding) => Ok(funding),
+            Err(cause) => {
+                self.owner.cache_capture.audit_funding_failure.get_or_insert(cause);
+                Err(ResourceReservationErrorV1::Conflict)
+            }
+        }
+    }
 }

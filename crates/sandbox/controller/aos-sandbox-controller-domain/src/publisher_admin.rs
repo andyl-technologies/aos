@@ -15,8 +15,6 @@ pub mod audit;
 #[cfg(target_os = "linux")]
 pub mod registration;
 
-mod read_data;
-pub(crate) use read_data::PublisherReadDataV2;
+pub(crate) use aos_sandbox_protocol::publisher_policy::PublisherReadDataV2;
 
-mod receiving;
-pub(crate) use receiving::{authorization_namespace_entries_v1, policy_namespace_entries_v2};
+

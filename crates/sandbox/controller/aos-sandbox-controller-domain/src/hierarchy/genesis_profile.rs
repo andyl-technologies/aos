@@ -34,6 +34,10 @@ pub enum SourceGenesisErrorV1 {
     /// Protected journal replay, capacity, append, or readback failed.
     #[error(transparent)]
     Journal(#[from] JournalError),
+    /// A genuine lower Root Authority retains its new native failure category.
+    #[cfg(target_os = "linux")]
+    #[error(transparent)]
+    NativeAuthority(aos_sandbox_policy::native::RootAuthorityErrorV1),
     /// Canonical hierarchy replay or member construction failed.
     #[error(transparent)]
     Hierarchy(#[from] super::protected_journal::HierarchyProtectedJournalErrorV1),
@@ -52,7 +56,7 @@ pub enum SourceGenesisErrorV1 {
     /// A genuine kernel peer, cgroup, boot, or descriptor observation failed.
     #[cfg(target_os = "linux")]
     #[error(transparent)]
-    Kernel(#[from] aos_sandbox_linux::Error),
+    Kernel(#[from] aos_linux_descriptors::Error),
     /// A stream fragment violated its strict kernel-subject profile.
     #[cfg(target_os = "linux")]
     #[error(transparent)]
@@ -259,5 +263,56 @@ pub(crate) fn project_source_genesis_wire_error_v1(
     match cause {
         genesis_wire::SourceGenesisWireErrorV1::NonCanonical =>
             SourceGenesisErrorV1::NonCanonical,
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl From<aos_sandbox_policy::native::RootAuthorityErrorV1> for SourceGenesisErrorV1 {
+    fn from(error: aos_sandbox_policy::native::RootAuthorityErrorV1) -> Self {
+        use aos_sandbox_policy::native::RootAuthorityErrorV1 as Native;
+        use aos_sandbox_policy::native::PolicyNativeJournalErrorV1 as JournalNative;
+        use aos_sandbox_ledger_replay::data::SourceSuccessorDataErrorV2 as Data;
+
+        match error {
+            Native::NonCanonical => Self::NonCanonical,
+            Native::Conflict => Self::Conflict,
+            Native::Stale => Self::Stale,
+            Native::AdmissionClosed => Self::AdmissionClosed,
+            Native::Journal(JournalNative::Mechanical(cause)) => Self::Journal(JournalError::from(cause)),
+            Native::Journal(JournalNative::Root(cause)) => Self::Journal(JournalError::RootNative(cause)),
+            Native::Journal(JournalNative::Financial(cause)) => Self::Journal(JournalError::RootFinancial(cause)),
+            Native::Seed(cause) => Self::Seed(cause),
+            Native::Authorization(cause) => Self::from(Data::Authorization(cause)),
+            Native::AuthorizationSignature(cause) => Self::from(Data::AuthorizationSignature(cause)),
+            Native::ControllerGenesis(cause) => Self::from(cause),
+            Native::Transport(cause) => Self::Transport(cause),
+            Native::Kernel(cause) => Self::Kernel(cause),
+            cause @ (Native::Journal(JournalNative::Q04Current(_))
+                | Native::Journal(JournalNative::RootAppend(_))
+                | Native::Journal(JournalNative::NativePost(_))
+                | Native::Journal(JournalNative::TargetCurrent(_))
+                | Native::Currentness(_) | Native::Origin(_) | Native::OriginBorrow(_)
+                | Native::Credential(_) | Native::Controller(_) | Native::Source(_)
+                | Native::Q04Data(_) | Native::ControllerProject(_) | Native::CacheReadback(_)
+                | Native::CacheNative(_) | Native::SignedInput(_) | Native::Allocation(_)
+                | Native::GenesisOpening(_) | Native::GenesisMutation(_) | Native::SavedFloorData(_)) => Self::NativeAuthority(cause),
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl From<aos_sandbox_policy::controller_successor_data::ControllerSuccessorReadbackDataErrorV1>
+    for SourceGenesisErrorV1
+{
+    fn from(error: aos_sandbox_policy::controller_successor_data::ControllerSuccessorReadbackDataErrorV1) -> Self {
+        use aos_sandbox_policy::controller_successor_data::ControllerSuccessorReadbackDataErrorV1 as Data;
+        match error {
+            Data::NonCanonical => Self::NonCanonical,
+            Data::Conflict => Self::Conflict,
+            Data::Stale => Self::Stale,
+            Data::AdmissionClosed => Self::AdmissionClosed,
+            Data::Source(cause) => Self::from(cause),
+            Data::Mechanical(cause) => Self::Journal(JournalError::from(cause)),
+        }
     }
 }

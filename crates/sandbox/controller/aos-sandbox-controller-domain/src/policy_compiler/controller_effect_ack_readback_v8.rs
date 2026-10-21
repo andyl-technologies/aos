@@ -9,6 +9,8 @@
 //! The distinct packet domain prevents a V1 qualified-held ACK from being
 //! mistaken for a V8 held-CAS receipt. This packet never grants release.
 
+use aos_sandbox_ledger_replay::controller_policy_hold::ControllerPolicyHoldCodecV1;
+
 use aos_sandbox_policy::controller_readback::{
     PinnedControllerHoldSignerV1, encode_controller_hold_signer_credential_v1,
 };

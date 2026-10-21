@@ -13,9 +13,11 @@ use std::fmt;
 use std::os::fd::{AsFd as _, BorrowedFd, OwnedFd};
 use std::time::Duration;
 
-use crate::pidfd::{PidFd, PidFdInfo};
+use aos_linux_descriptors::pidfd::PidFd;
+use aos_linux_descriptors::pidfd::PidFdInfo;
 use crate::uapi::FixedDescriptorExecRecipeV1;
-use crate::{Error, Result};
+use aos_linux_descriptors::Error;
+use aos_linux_descriptors::Result;
 
 use super::capture::{
     FixedProcessCaptureV1, FixedProcessRetainedSessionError,
@@ -2392,7 +2394,7 @@ mod tests {
 
     #[test]
     fn blocking_control_is_rejected_before_spawning() {
-        let (control, child) = uapi::seqpacket_pair_with_flags(libc::SOCK_CLOEXEC).unwrap();
+        let (control, child) = aos_linux_descriptors::native::seqpacket_pair_with_flags(libc::SOCK_CLOEXEC).unwrap();
         let mut exchange = ScenarioExchange::new("staged");
         let error = run_fixed_process_session(
             session_request(
@@ -2422,7 +2424,7 @@ mod tests {
 
     #[test]
     fn descriptor_session_accepts_four_roles_and_rejects_a_fifth() {
-        let (control, child) = uapi::seqpacket_pair().unwrap();
+        let (control, child) = aos_linux_descriptors::native::seqpacket_pair().unwrap();
         let roles = (0..5)
             .map(|_| child.as_fd().try_clone_to_owned().unwrap())
             .collect::<Vec<_>>();
@@ -2523,7 +2525,7 @@ mod tests {
             return;
         }
 
-        let (control, child_control) = uapi::seqpacket_pair().unwrap();
+        let (control, child_control) = aos_linux_descriptors::native::seqpacket_pair().unwrap();
         let executable = std::env::current_exe().unwrap();
         let arguments = child_arguments();
         let timeout = match case {
@@ -2565,7 +2567,7 @@ mod tests {
     }
 
     fn assert_spawn_failure() {
-        let (control, _child_control) = uapi::seqpacket_pair().unwrap();
+        let (control, _child_control) = aos_linux_descriptors::native::seqpacket_pair().unwrap();
         let mut exchange = ScenarioExchange::new("spawn-failure");
         let error = run_fixed_process_session_under_libtest(
             session_request(
@@ -2592,7 +2594,7 @@ mod tests {
     }
 
     fn assert_descriptor_layout() {
-        let (control, child_control) = uapi::seqpacket_pair().unwrap();
+        let (control, child_control) = aos_linux_descriptors::native::seqpacket_pair().unwrap();
         let temporary = tempfile::tempdir().unwrap();
         let executable = temporary.path().join("fixed-descriptor-test");
         std::fs::copy(std::env::current_exe().unwrap(), &executable).unwrap();

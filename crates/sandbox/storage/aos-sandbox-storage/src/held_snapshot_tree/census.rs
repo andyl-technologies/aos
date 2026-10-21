@@ -58,13 +58,13 @@ struct CensusNodeCapture {
     path_capacity: usize,
     portable_path: RelativePath,
     portable_path_capacity: usize,
-    resolved: Option<Result<ResolvedPath, aos_sandbox_linux::Error>>,
+    resolved: Option<Result<ResolvedPath, aos_linux_descriptors::Error>>,
     readable: Option<Result<OwnedFd, rustix::io::Errno>>,
-    file: Option<Result<ResolvedFile, aos_sandbox_linux::Error>>,
+    file: Option<Result<ResolvedFile, aos_linux_descriptors::Error>>,
     symlink: Option<Result<OwnedFd, rustix::io::Errno>>,
     inode: [Option<Result<Stat, rustix::io::Errno>>; 3],
     terminal_inode: Option<Result<Stat, rustix::io::Errno>>,
-    mount: Option<Result<aos_sandbox_linux::inventory::MountId, aos_sandbox_linux::Error>>,
+    mount: Option<Result<aos_sandbox_linux::inventory::MountId, aos_linux_descriptors::Error>>,
     metadata: CensusMetadataCapture,
     metadata_summary: Option<CensusMetadataSummary>,
     model: Option<FilesystemMetadata>,
@@ -102,7 +102,7 @@ pub(crate) struct CensusWalkState {
     pub(crate) maximum_uid: u32,
     pub(crate) maximum_gid: u32,
     pub(crate) tree: Option<ObjectDescriptor>,
-    root_mount: Option<Result<aos_sandbox_linux::inventory::MountId, aos_sandbox_linux::Error>>,
+    root_mount: Option<Result<aos_sandbox_linux::inventory::MountId, aos_linux_descriptors::Error>>,
     first_failed_node: Option<usize>,
     preparation_failure: Option<CensusDataError>,
     outcome: Option<Result<(), CensusDataError>>,
@@ -768,7 +768,7 @@ fn original_native<T>(result: &Option<Result<T, rustix::io::Errno>>) -> Result<&
     result.as_ref().ok_or(CensusDataError::Closed)?.as_ref().map_err(|_| CensusDataError::NativeObservation)
 }
 
-fn original_linux<T>(result: &Option<Result<T, aos_sandbox_linux::Error>>) -> Result<&T, CensusDataError> {
+fn original_linux<T>(result: &Option<Result<T, aos_linux_descriptors::Error>>) -> Result<&T, CensusDataError> {
     result.as_ref().ok_or(CensusDataError::Closed)?.as_ref().map_err(|_| CensusDataError::NativeObservation)
 }
 

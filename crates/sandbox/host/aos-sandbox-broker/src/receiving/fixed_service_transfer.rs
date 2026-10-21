@@ -44,7 +44,7 @@ struct ExecutableReadback {
     stat: Option<Result<Stat, rustix::io::Errno>>,
     filesystem: Option<Result<StatFs, rustix::io::Errno>>,
     flags: Option<Result<OFlags, rustix::io::Errno>>,
-    mount: Option<Result<MountId, aos_sandbox_linux::Error>>,
+    mount: Option<Result<MountId, aos_linux_descriptors::Error>>,
 }
 
 /// Retains the final transfer's actual kernel checks without moving its file.

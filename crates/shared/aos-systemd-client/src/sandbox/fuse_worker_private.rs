@@ -11,9 +11,9 @@ use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use aos_sandbox_linux::boot::KernelBootId;
-use aos_sandbox_linux::pidfd::PidFdInfo;
-use aos_sandbox_linux::unix_stream::RetainedUnixStream;
+use aos_linux_descriptors::boot::KernelBootId;
+use aos_linux_descriptors::pidfd::PidFdInfo;
+use aos_linux_descriptors::unix_stream::RetainedUnixStream;
 
 use super::{
     ExactStartError, FuseWorkerUnitNameV1, FuseWorkerUnitObservationV1, FuseWorkerUnitSpecV1,
@@ -279,7 +279,7 @@ fn require_pid1(peer: &RetainedUnixStream, information: PidFdInfo) -> Result<()>
     Ok(())
 }
 
-fn kernel_error(error: aos_sandbox_linux::Error) -> Error {
+fn kernel_error(error: aos_linux_descriptors::Error) -> Error {
     Error::WorkerPrivateKernel(error)
 }
 

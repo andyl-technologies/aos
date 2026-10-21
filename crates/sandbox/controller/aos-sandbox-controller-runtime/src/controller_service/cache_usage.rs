@@ -3,7 +3,10 @@
 //! This shares the existing executor and worker; it neither admits Git nor
 //! fills the other project-account dimensions with zero.
 
-use aos_sandbox_controller_domain::cache_residency::{CacheProjectUsageLoanV1, CacheResidentUnavailableV1};
+use aos_sandbox_controller_domain::CacheResidentGitCoverageExtV1;
+
+use aos_sandbox_controller_domain::CacheResidentGitCoverageExtV1 as _;
+use aos_sandbox_cache::{CacheProjectUsageLoanV1, CacheResidentUnavailableV1};
 use aos_sandbox_model::ProjectId;
 
 use super::{ProductionController, ProductionEffectExecutor};
@@ -24,7 +27,7 @@ impl ProductionEffectExecutor {
         self.cache_mutation.require_completed_or_empty()?;
         let protected = self.cache_inventory.as_mut().ok_or(CacheResidentUnavailableV1)?;
         let physical = self.cache_physical.as_ref().ok_or(CacheResidentUnavailableV1)?;
-        self.cache_resident_usage.capture_existing_git_coverage_account_cut_v1(
+        self.cache_resident_usage.native_original_v1().capture_existing_git_coverage_account_cut_v1(
             protected, physical, &mut self.source_domains, journal,
             original_inputs, original_bootstrap, original_source, original_capacity,
             original_bootstrap_credentials, attempt,
@@ -45,7 +48,7 @@ impl ProductionEffectExecutor {
         self.cache_mutation.require_completed_or_empty()?;
         let protected = self.cache_inventory.as_mut().ok_or(CacheResidentUnavailableV1)?;
         let physical = self.cache_physical.as_ref().ok_or(CacheResidentUnavailableV1)?;
-        self.cache_resident_usage.commit_existing_git_coverage_account_v1(
+        self.cache_resident_usage.native_original_v1().commit_existing_git_coverage_account_v1(
             protected, physical, &mut self.source_domains, journal,
             original_inputs, original_bootstrap, original_source, original_capacity,
             original_bootstrap_credentials, attempt,
@@ -69,7 +72,7 @@ impl ProductionEffectExecutor {
 
         self.cache_mutation.require_completed_or_empty()?;
         if !self.cache_resident_usage.started() {
-            self.cache_resident_usage.initialize_git_coverage_once(
+            self.cache_resident_usage.native_original_v1().initialize_git_coverage_once(
                 &mut self.cache_inventory, self.controller_uid, original_inputs,
             )?;
         }
@@ -83,13 +86,13 @@ impl ProductionEffectExecutor {
             // Read. None is never a fallback after its capture has started.
             // A failed Source comparison is already parked before this real
             // initializer performs its independent name/hold/clock checks.
-            self.cache_resident_usage.bookend_existing_git_coverage_v1(
+            self.cache_resident_usage.native_original_v1().bookend_existing_git_coverage_v1(
                 protected, &mut self.source_domains, original_inputs,
                 original_account.as_deref_mut(),
             )?;
         }
         let returned = (|| {
-            self.cache_resident_usage.prepare_existing_physical_owner(
+            self.cache_resident_usage.native_original_v1().prepare_existing_physical_owner(
                 protected, &mut self.cache_physical, self.node,
                 super::CACHE_OWNER_MEMORY_BYTES,
             )?;
@@ -97,20 +100,20 @@ impl ProductionEffectExecutor {
 
             match flight {
                 GitCoverageFlightV1::Prepare => {
-                    self.cache_resident_usage.enroll_empty_git_coverage_once_v1(
+                    self.cache_resident_usage.native_original_v1().enroll_empty_git_coverage_once_v1(
                         protected, physical, original_inputs, original_nonce,
                     )?;
                 }
                 GitCoverageFlightV1::Read => {}
             }
-            self.cache_resident_usage.current_git_coverage_coordinates_v1(
+            self.cache_resident_usage.native_original_v1().current_git_coverage_coordinates_v1(
                 protected, physical, original_inputs,
             )
         })();
 
         // Actual action causes and native Results are resident before this
         // independent same-input/source/hold/clock bookend; debt stays distinct.
-        let postchecked = self.cache_resident_usage.bookend_existing_git_coverage_v1(
+        let postchecked = self.cache_resident_usage.native_original_v1().bookend_existing_git_coverage_v1(
             protected, &mut self.source_domains, original_inputs, original_account,
         );
         let coordinates = returned?;
@@ -124,10 +127,10 @@ impl ProductionEffectExecutor {
     ) -> Result<CacheProjectUsageLoanV1<'_>, CacheResidentUnavailableV1> {
         self.cache_mutation.require_completed_or_empty()?;
         if !self.cache_resident_usage.started() {
-            self.cache_resident_usage.initialize_once(&mut self.cache_inventory, self.controller_uid)?;
+            self.cache_resident_usage.native_original_v1().initialize_once(&mut self.cache_inventory, self.controller_uid)?;
         }
         let owner = self.cache_inventory.as_mut().ok_or(CacheResidentUnavailableV1)?;
-        self.cache_resident_usage.recheck(owner)?;
+        self.cache_resident_usage.native_original_v1().recheck(owner)?;
         owner.observe_project_usage(project).map_err(|_| CacheResidentUnavailableV1)
     }
 }

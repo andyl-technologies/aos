@@ -7,7 +7,8 @@ use std::os::fd::{AsFd, OwnedFd};
 
 use super::{RecordBindingError, SeqpacketError, SeqpacketSocket, map_kernel_error};
 use super::socket_binding::ConnectedSocketBinding;
-use crate::{Error, uapi};
+use aos_linux_descriptors::Error;
+use crate::uapi;
 
 /// Retains the existing kernel socket binding for passive continuity checks.
 ///

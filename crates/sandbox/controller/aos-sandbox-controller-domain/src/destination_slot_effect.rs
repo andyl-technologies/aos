@@ -102,7 +102,7 @@ pub enum DestinationSlotEffectError {
     Transport(#[from] aos_sandbox_linux::seqpacket::SeqpacketError),
     /// Kernel-nominated subject or retained cgroup validation failed.
     #[error(transparent)]
-    Kernel(#[from] aos_sandbox_linux::Error),
+    Kernel(#[from] aos_linux_descriptors::Error),
     /// Protected effect state or its cross-references are inconsistent.
     #[error("destination-slot effect state is corrupt")]
     CorruptState,

@@ -7,9 +7,8 @@
 //! All own afters precede C-turn disposal; the Source scope stays held separately.
 
 use super::*;
-use crate::policy_compiler::bounded_stream_io::{
-    DeadlineStreamDirectionV1 as Direction, FixedDeadlineStreamIoV1,
-};
+use aos_sandbox_broker::bounded_stream_io::DeadlineStreamDirectionV1 as Direction;
+use aos_sandbox_broker::bounded_stream_io::FixedDeadlineStreamIoV1;
 use aos_sandbox_protocol::domain_ledger::create_storage_history::HistoryErrorV1;
 use aos_sandbox_protocol::domain_ledger::delete_root::completion::DeleteRootSourceCompletionDataV4 as Frame;
 use std::os::fd::AsFd as _;

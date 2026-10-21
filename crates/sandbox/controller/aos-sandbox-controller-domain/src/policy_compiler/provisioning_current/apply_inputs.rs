@@ -29,9 +29,11 @@ use crate::journal::{JournalError, RecordNamespace};
 use crate::normal_root::{RootApplyStageReceivingV1, RootPolicyAcceptedFlightV1};
 use crate::public_api_session::{RootCurrentOwnershipCredentialCustodyV1,
     RootCurrentStorageManifestCustodyV1, RootCurrentBrokerPlanCredentialCustodyV1};
-use crate::policy_compiler::create_storage_current::{bundle_ownership::{
+use aos_sandbox_policy::bundle_ownership_data::{
     planned_assignment_v1, require_claim_data_v1, require_manifest_data_v1,
-    ownership_bundle_typed_demand_v1}, controller_readonly::{
+    ownership_bundle_typed_demand_v1,
+};
+use crate::policy_compiler::create_storage_current::{controller_readonly::{
     storage_inventory::{InventoryValues, verify_historical_inventory_v1, RootVerifiedSessionTerminalV1},
 }};
 use super::{RootContinuationClockGateV1, RootContinuationHorizonDataV1};
@@ -77,6 +79,8 @@ impl NativeV1 {
     fn fixed_demand_v1() -> Result<ResourceVector, JournalError> {
         let bytes = size_of::<Self>().checked_mul(2).and_then(|bytes|
             bytes.checked_add(2 * size_of::<RootApplyInputsOriginalV1>()))
+            .and_then(|bytes| bytes.checked_add(aos_sandbox_policy::bundle_ownership_data::
+                fixed_interface_control_bytes_v1::<JournalError>()?))
             .and_then(|bytes| super::ownership_trust::receiving_frame_bytes_v2()
                 .and_then(|frame| bytes.checked_add(frame)))
             .and_then(|bytes| u64::try_from(bytes).ok()).ok_or(JournalError::JournalTooLarge)?;
@@ -100,7 +104,7 @@ impl NativeV1 {
         let planned = planned_assignment_v1(bundle)?;
         let verifier = self.trust.verifier().ok_or(JournalError::ProtectedBoundary)?;
         stage.admit_apply_bundle_typed_once_v1(demand(ownership_bundle_typed_demand_v1(
-            bundle, planned.manifest.len(), verifier)?))?;
+            bundle, planned.manifest.len(), verifier).map_err(|_| JournalError::JournalTooLarge)?))?;
         let sample = self.clock.check_next_once_v1()?;
         self.manifest = Some(Box::new(CanonicalAssignmentDecodeCaptureV1::new()));
         self.claim = Some(Box::new(OwnershipClaimDecodeCaptureV1::new()));

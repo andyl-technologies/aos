@@ -13,7 +13,7 @@ use crate::policy_compiler::execution_no_apply_root::{
     RootExecutionNoApplyHostTrustOriginalV2,
 };
 use crate::policy_compiler::provisioning_current::finality_readonly::RootCreateFinalityReadonlyOriginalV1;
-use aos_sandbox_linux::unix_stream::RetainedUnixStream;
+use aos_linux_descriptors::unix_stream::RetainedUnixStream;
 
 impl RootPolicyAcceptedFlightV1<'_, '_> {
     pub(crate) fn certify_execution_no_apply_ack_once_v2(

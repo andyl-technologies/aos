@@ -7,7 +7,7 @@
 //! or authenticated Retired. Every interrupted or uncertain prefix is retained.
 
 use super::*;
-use crate::pidfd::PidFd;
+use aos_linux_descriptors::pidfd::PidFd;
 use rustix::event::{PollFd, PollFlags};
 
 /// Reports refusal while the issued-scope native original stays retained.

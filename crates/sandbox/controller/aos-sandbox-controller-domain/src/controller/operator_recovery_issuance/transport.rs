@@ -11,7 +11,7 @@ use aos_sandbox_model::operator_recovery_effect::{
     OPERATOR_RECOVERY_EFFECT_INTENT_BYTES, verify_operator_recovery_effect_intent_v1,
 };
 use aos_sandbox_model::{OperationId, ProtocolId};
-use aos_sandbox_linux::pidfd::PidFdInfo;
+use aos_linux_descriptors::pidfd::PidFdInfo;
 use aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket;
 use aos_sandbox_linux::seqpacket::{KernelAuthorizedRecordSubject, SeqpacketError};
 use aos_sandbox_protocol::operator_storage_repair_transport_v3::{

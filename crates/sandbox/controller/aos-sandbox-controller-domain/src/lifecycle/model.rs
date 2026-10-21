@@ -31,8 +31,7 @@ use aos_sandbox_protocol::domain_ledger::lifecycle_model::{
     LifecycleModelError, LifecycleResourceV1,
 };
 
-/// Maximum resources fenced by one lifecycle operation.
-pub const MAXIMUM_LIFECYCLE_EXPECTATIONS: usize = 4_096;
+pub use aos_sandbox_protocol::domain_ledger::lifecycle_model::MAXIMUM_LIFECYCLE_EXPECTATIONS;
 /// Maximum steps retained by one lifecycle operation.
 pub const MAXIMUM_LIFECYCLE_STEPS: usize = 4_096;
 

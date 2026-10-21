@@ -30,9 +30,9 @@ pub struct FixedSignerListenerClosedV1;
 pub struct FixedSignerListenerOriginalV1 {
     recipe: Recipe,
     entered: bool,
-    duplicate: Option<Result<UnixListener, aos_sandbox_linux::Error>>,
+    duplicate: Option<Result<UnixListener, aos_linux_descriptors::Error>>,
     subject: RetainedSubjectStreamListenerReadbackV1,
-    subject_result: Option<Result<(), aos_sandbox_linux::Error>>,
+    subject_result: Option<Result<(), aos_linux_descriptors::Error>>,
     address: Option<std::io::Result<SocketAddr>>,
     socket_custody: Option<std::io::Result<()>>,
     flags: Option<rustix::io::Result<OFlags>>,

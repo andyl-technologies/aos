@@ -5,8 +5,9 @@
 //! every stage and withholds outputs through its actual native EOF/after posts.
 //! This capsule cannot construct a Session, a live query or a six-owner grant.
 
+use aos_sandbox_protocol::domain_ledger::readonly::FixedJournalReadbackDataV1 as RootFixedNativeReadbackV1;
+
 use crate::policy_compiler::create_storage_current::controller_readonly::{
-    native_read::RootFixedNativeReadbackV1,
     storage_inventory::{
         RootCurrentStorageInventoryV1, RootHistoricalSessionPurposeV1,
         verify_session_for_purpose_v1,

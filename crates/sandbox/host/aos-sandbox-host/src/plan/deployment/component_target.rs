@@ -11,9 +11,10 @@ use aos_sandbox_model::{ResourceDimension as D, ResourceVector};
 use aos_sandbox_linux::cgroup::{
     ExactCgroupMembershipReadbackV1, HostPhase0TargetCgroupReadbackV2, RetainedCgroupAnchor,
 };
-use aos_sandbox_linux::pidfd::{
-    NamespaceFd, PidFdInfo, PidFdNamespaceOriginalV2, PidFdOpenAttemptV1,
-};
+use aos_sandbox_linux::pidfd::NamespaceFd;
+use aos_linux_descriptors::pidfd::PidFdInfo;
+use aos_sandbox_linux::pidfd::PidFdNamespaceOriginalV2;
+use aos_sandbox_linux::pidfd::PidFdOpenAttemptV1;
 use aos_systemd_client::{ServiceControlGroupReadOriginalV2, ServicePropertiesReadOriginalV2};
 
 use super::*;
@@ -56,15 +57,15 @@ pub(in crate::plan::deployment) struct HostShiftedTargetOriginalV2 {
     status: [StatusOriginalV2; 2],
     opening: PidFdOpenAttemptV1,
     process: Option<PidFd>,
-    before_info: Option<aos_sandbox_linux::Result<PidFdInfo>>,
+    before_info: Option<aos_linux_descriptors::Result<PidFdInfo>>,
     cgroup: HostPhase0TargetCgroupReadbackV2,
     root: Option<CgroupV2Root>,
     anchor: Option<RetainedCgroupAnchor>,
     membership: [ExactCgroupMembershipReadbackV1; 2],
     namespace: [PidFdNamespaceOriginalV2; 4],
     namespaces: [Option<NamespaceFd>; 4],
-    after_info: Option<aos_sandbox_linux::Result<PidFdInfo>>,
-    alive: Option<aos_sandbox_linux::Result<bool>>,
+    after_info: Option<aos_linux_descriptors::Result<PidFdInfo>>,
+    alive: Option<aos_linux_descriptors::Result<bool>>,
     policies: [Option<Result<()>>; 16],
     first: Option<First>,
     reentry: Option<HostError>,

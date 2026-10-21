@@ -17,7 +17,7 @@ use std::os::fd::AsFd as _;
 
 use aos_sandbox_api::aos::sandbox::local::v1::BrokerMethod;
 use aos_sandbox_model::ProtocolId;
-use aos_sandbox_linux::boot::KernelBootId;
+use aos_linux_descriptors::boot::KernelBootId;
 use aos_sandbox_linux::protected_file::{
     ExactReadFailure, open_nofollow_child, read_exact_positioned_retaining_cause,
 };
@@ -267,11 +267,11 @@ impl HostCanaryJobOwnerV1 {
     pub(crate) fn seal_original_job_v2(
         &mut self,
     ) -> Result<std::result::Result<
-        aos_sandbox_linux::immutable_file::SealedReadOnlyCredential,
-        aos_sandbox_linux::immutable_file::ImmutableFileError,
+        aos_linux_descriptors::credential::SealedReadOnlyCredential,
+        aos_linux_descriptors::ImmutableFileError,
     >> {
         self.recheck()?;
-        Ok(aos_sandbox_linux::immutable_file::SealedReadOnlyCredential::create(
+        Ok(aos_linux_descriptors::credential::SealedReadOnlyCredential::create(
             "aos-host-canary-job-v2", &self.bytes[1], MAXIMUM_JOB_BYTES,
         ))
     }

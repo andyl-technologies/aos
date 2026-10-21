@@ -6,8 +6,10 @@ use crate::cgroup::{
     CgroupActiveOriginalV2, CgroupChildOriginalV2, ExactCgroupMembershipReadbackV1,
     RetainedCgroupAnchor,
 };
-use crate::pidfd::{PidFd, PidFdProcessIdentityOriginalV1};
-use crate::{Error, Result};
+use aos_linux_descriptors::pidfd::PidFd;
+use crate::pidfd::PidFdProcessIdentityOriginalV1;
+use aos_linux_descriptors::Error;
+use aos_linux_descriptors::Result;
 
 pub(super) struct AgentCompletionOriginalV1 {
     child: CgroupChildOriginalV2,

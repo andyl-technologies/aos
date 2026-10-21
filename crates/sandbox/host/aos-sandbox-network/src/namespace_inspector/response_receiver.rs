@@ -37,7 +37,7 @@ pub(super) enum InspectorResponseReceiveErrorV1 {
     Response(#[from] NetworkNamespaceInspectorError),
     /// The first transferred descriptor was not a Network namespace.
     #[error(transparent)]
-    Namespace(#[from] aos_sandbox_linux::Error),
+    Namespace(#[from] aos_linux_descriptors::Error),
     /// The typed namespace descriptor disagreed with the response record.
     #[error("inspector response namespace descriptor does not match its record")]
     NamespaceMismatch,

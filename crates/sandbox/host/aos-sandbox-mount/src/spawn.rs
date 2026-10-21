@@ -139,6 +139,6 @@ fn validate(executable: &Path, mappings: &[DescriptorMapping<'_>]) -> Result<()>
     Ok(())
 }
 
-fn linux_error(error: aos_sandbox_linux::Error) -> MountError {
+fn linux_error(error: aos_linux_descriptors::Error) -> MountError {
     MountError::Worker(error.to_string())
 }

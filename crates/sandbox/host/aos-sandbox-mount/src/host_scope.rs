@@ -15,7 +15,10 @@ use aos_sandbox_api::aos::sandbox::local::v1::{Audience, BrokerClientHello, Brok
 use aos_sandbox_model::{FeatureRef, ProtocolId, ProtocolVersion};
 use aos_sandbox_linux::cgroup::{CgroupV2Root, RetainedCgroupAnchor};
 use aos_sandbox_linux::path::{BeneathRoot, ResolvedPath};
-use aos_sandbox_linux::pidfd::{NamespaceFd, NamespaceKind, PidFd, PidFdInfo};
+use aos_sandbox_linux::pidfd::NamespaceFd;
+use aos_sandbox_linux::pidfd::NamespaceKind;
+use aos_linux_descriptors::pidfd::PidFd;
+use aos_linux_descriptors::pidfd::PidFdInfo;
 use aos_sandbox_linux::seqpacket::SeqpacketError;
 use aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket;
 use aos_sandbox_protocol::mount_scope::{decode_mount_scope_request, decode_mount_scope_response};
@@ -62,7 +65,7 @@ pub enum HostScopeError {
     Transport(#[from] SeqpacketError),
     /// Kernel descriptor or membership validation failed.
     #[error(transparent)]
-    Kernel(#[from] aos_sandbox_linux::Error),
+    Kernel(#[from] aos_linux_descriptors::Error),
     /// Negotiation, request binding, or the broker response was rejected.
     #[error(transparent)]
     Protocol(#[from] ProtocolValidationError),

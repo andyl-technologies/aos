@@ -166,7 +166,7 @@ fn live_admission_clock(
 
 #[cfg(target_os = "linux")]
 fn read_kernel_admission_clock() -> Result<AdmissionClockV1, DormantRuntimeExecutionOwnerErrorV1> {
-    use aos_sandbox_linux::boot::KernelBootId;
+    use aos_linux_descriptors::boot::KernelBootId;
     use rustix::time::{ClockId, clock_gettime};
 
     let boot_before = KernelBootId::current()
@@ -233,7 +233,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn admission_clock_reads_current_kernel_boot_and_monotonic_boottime() {
-        use aos_sandbox_linux::boot::KernelBootId;
+        use aos_linux_descriptors::boot::KernelBootId;
 
         let first = read_kernel_admission_clock().expect("first kernel sample");
         let second = read_kernel_admission_clock().expect("second kernel sample");

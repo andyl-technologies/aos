@@ -8,11 +8,12 @@ use std::os::unix::ffi::OsStrExt as _;
 
 use rustix::fs::{FileType, OFlags};
 
-use crate::boot::KernelBootId;
+use aos_linux_descriptors::boot::KernelBootId;
 use crate::inventory::MountId;
 use crate::pidfd::SingleThreadedProcess;
 use crate::uapi;
-use crate::{Error, Result};
+use aos_linux_descriptors::Error;
+use aos_linux_descriptors::Result;
 
 use super::execution::{
     ReturnedProcessSlot, capture_current_and_launcher, capture_selected_current_and_launcher,

@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use aos_sandbox_controller_domain::cache_residency::CacheResidentInitializationV1;
+use aos_sandbox_controller_domain::CacheResidentInitializationV1;
 use aos_sandbox_controller_domain::normal_root::ProductionControllerNormalRootProfileV1;
 use aos_sandbox_controller_domain::reconciler::{EffectFailure};
 use aos_sandbox_protocol::domain_ledger::effect_history::{EffectPlan};
@@ -19,7 +19,7 @@ use super::ProductionEffectExecutor;
 pub(super) struct OriginalQ04ControllerSelectionV1 {
     profile: Arc<ProductionControllerNormalRootProfileV1>,
     driver: super::inventory::OriginalCreateStorageDriverV1,
-    initialization_result: Option<Result<(), aos_sandbox_controller_domain::cache_residency::CacheResidentUnavailableV1>>,
+    initialization_result: Option<Result<(), aos_sandbox_cache::CacheResidentUnavailableV1>>,
     initialization: CacheResidentInitializationV1,
     reservation: Option<aos_sandbox_controller_domain::ProjectPreparationReservationAttemptV1>,
     continued: Option<Result<(), EffectFailure>>,

@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 aos-sandbox-linux.workspace = true
+aos-linux-descriptors.workspace = true
 aos-sandbox-source-provider-protocol.workspace = true
 ed25519-dalek.workspace = true
 libc.workspace = true

@@ -20,7 +20,7 @@ use crate::journal::StorageNativeOpeningOwnerLinkV1;
 use aos_sandbox_broker_session_protocol::{
     BrokerSessionProtocolV1, VerifiedBrokerSessionTranscriptV1,
 };
-use aos_sandbox_linux::immutable_file::SealedReadOnlyCredential;
+use aos_linux_descriptors::credential::SealedReadOnlyCredential;
 use aos_sandbox_linux::seqpacket::{
     RecordBindingError, SeqpacketSocket, StorageSeqpacketSessionOriginV1,
 };
@@ -37,7 +37,7 @@ pub enum ControllerCatalogMaintenanceSessionCurrentnessErrorV2 {
     Native {
         /// The original kernel error from the single reached cookie sampler.
         #[source]
-        native: aos_sandbox_linux::Error,
+        native: aos_linux_descriptors::Error,
         /// The same sampler's binding-level projection.
         binding: RecordBindingError,
     },

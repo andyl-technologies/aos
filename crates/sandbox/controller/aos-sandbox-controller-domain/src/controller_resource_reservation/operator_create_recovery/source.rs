@@ -204,9 +204,9 @@ impl OperatorCreateRecoveryLoanV1<'_, '_> {
                 // Before-argument Execution may have no Lifecycle operation.
                 // Reconstruct the actual full Source schema without inventing
                 // one; Root independently classifies its exact execution rows.
-                model.observe_projection_once_v1(source.journal())?;
+                model.observe_rows_projection_once_v3(source.journal().historical_read_view_v1().rows_data_v2())?;
             } else {
-                model.observe_once_v1(source.journal(), parent)?;
+                model.observe_once_v1(source.journal().historical_read_view_v1().rows_data_v2(), parent)?;
             }
             if stop_cleanup {
                 model.select_stop_dispatch_once_v1()?;
@@ -289,7 +289,10 @@ impl OperatorCreateRecoveryOriginalV1 {
         let target = self.request.as_ref().and_then(|value| value.as_ref().ok())
             .and_then(RequestModelsV1::stop_cleanup_target_v1)
             .ok_or(ResourceReservationErrorV1::Conflict)?;
-        let record = target.source_parent_data_v1(controller, model)
+        let record = target.source_parent_data_v1(
+            crate::journal::historical_observation::HistoricalObservationV1::from_journal_v1(controller),
+            model,
+        )
             .map_err(|_| ResourceReservationErrorV1::Conflict)?;
         let binding = model.stop_dispatch_data_v1()?;
         // The held decoder proved the complete immutable A7 pair and either

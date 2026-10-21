@@ -9,11 +9,11 @@ use super::*;
 use aos_sandbox_linux::pidfd::PidFdProcObservationsV1;
 
 pub(super) struct ProcessNativeObservationV1 {
-    before: Option<Result<PidFdInfo, aos_sandbox_linux::Error>>,
+    before: Option<Result<PidFdInfo, aos_linux_descriptors::Error>>,
     proc: Option<PidFdProcObservationsV1>,
-    identity: Option<Result<PidFdProcessIdentity, aos_sandbox_linux::Error>>,
-    after: Option<Result<PidFdInfo, aos_sandbox_linux::Error>>,
-    alive: Option<Result<bool, aos_sandbox_linux::Error>>,
+    identity: Option<Result<PidFdProcessIdentity, aos_linux_descriptors::Error>>,
+    after: Option<Result<PidFdInfo, aos_linux_descriptors::Error>>,
+    alive: Option<Result<bool, aos_linux_descriptors::Error>>,
 }
 
 impl ProcessNativeObservationV1 {
@@ -34,7 +34,7 @@ impl ProcessNativeObservationV1 {
     }
 
     pub(super) fn identity(&mut self, pidfd: &PidFd) -> Result<PidFdProcessIdentity, HandshakeError> {
-        self.proc = Some(pidfd.prepare_proc_observations_v1());
+        self.proc = Some(aos_sandbox_linux::pidfd::prepare_proc_observations_v1(&(pidfd)));
         let Some(proc) = self.proc.as_mut() else { std::process::abort() };
         self.identity = Some(proc.capture_stat(pidfd));
         self.identity.as_ref().and_then(|result| result.as_ref().ok()).copied()

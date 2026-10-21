@@ -13,6 +13,11 @@
 //! specification named by current assignment authority declared the slot.
 
 use std::collections::BTreeMap;
+use std::mem::size_of;
+
+use aos_sandbox_protocol::domain_ledger::readonly::HistoricalLedgerRowsDataV2;
+
+use crate::journal::historical_observation::HistoricalObservationV1;
 
 use aos_sandbox_model::model::SandboxSpec;
 use aos_sandbox_model::{
@@ -295,9 +300,13 @@ struct History {
 
 impl History {
     fn load(journal: &Journal) -> Result<Self, SandboxSpecStateError> {
+        Self::load_rows_v2(journal.historical_read_view_v1().rows_data_v2())
+    }
+
+    fn load_rows_v2(rows: HistoricalLedgerRowsDataV2<'_>) -> Result<Self, SandboxSpecStateError> {
         let mut history = Self::default();
 
-        for (key, value) in journal.records(RecordNamespace::SandboxSpec) {
+        for (key, value) in rows.records_data_v2(RecordNamespace::SandboxSpec) {
             if key.len() != 40 || value.len() > MAXIMUM_RECORD_BYTES {
                 return Err(SandboxSpecStateError::CorruptState);
             }
@@ -431,8 +440,29 @@ pub(crate) fn get(
     journal: &Journal,
     descriptor: &ObjectDescriptor,
 ) -> Result<Option<DurableSandboxSpecV1>, SandboxSpecStateError> {
+    get_rows_v2(journal.historical_read_view_v1().rows_data_v2(), descriptor)
+}
+
+/// Reads specification DATA from the same continuously borrowed native owner.
+///
+/// Specification replay itself has no native admission check. The observation
+/// preserves custody at the caller; these bytes issue no effect permission.
+///
+/// # Errors
+/// Refuses the original descriptor, complete history, identity or bound errors.
+pub(crate) fn get_from_observation_v2(
+    journal: HistoricalObservationV1<'_>,
+    descriptor: &ObjectDescriptor,
+) -> Result<Option<DurableSandboxSpecV1>, SandboxSpecStateError> {
+    get_rows_v2(journal.rows_data_v2(), descriptor)
+}
+
+fn get_rows_v2(
+    rows: HistoricalLedgerRowsDataV2<'_>,
+    descriptor: &ObjectDescriptor,
+) -> Result<Option<DurableSandboxSpecV1>, SandboxSpecStateError> {
     validate_spec_descriptor(descriptor)?;
-    let history = History::load(journal)?;
+    let history = History::load_rows_v2(rows)?;
     let record = history
         .specifications
         .get(&descriptor_tuple(descriptor))
@@ -440,17 +470,50 @@ pub(crate) fn get(
     checked_lookup(record, descriptor)
 }
 
+/// Prices the new same-owner and Rows lookup interfaces before replay.
+///
+/// Complete history maps, decoded specifications and selected clones retain
+/// their existing dynamic invoice. This adds no model or native-owner credit.
+pub(crate) fn observed_get_control_bytes_v2() -> Option<usize> {
+    type Lookup = Result<Option<DurableSandboxSpecV1>, SandboxSpecStateError>;
+    type Replay = Result<History, SandboxSpecStateError>;
+
+    size_of::<(HistoricalObservationV1<'_>, &ObjectDescriptor)>()
+        .checked_mul(3)?
+        .checked_add(size_of::<(HistoricalLedgerRowsDataV2<'_>, &ObjectDescriptor)>().checked_mul(3)?)?
+        .checked_add(size_of::<HistoricalLedgerRowsDataV2<'_>>().checked_mul(3)?)?
+        .checked_add(size_of::<Lookup>().checked_mul(3)?)?
+        .checked_add(size_of::<History>().checked_mul(3)?)?
+        .checked_add(size_of::<Replay>().checked_mul(3)?)?
+        .checked_add(size_of::<Option<usize>>().checked_mul(3)?)
+}
+
 /// Reads one specification after the caller has validated the complete namespace.
+
+
+macro_rules! get_in_validated_namespace_historical_recipe_v2 {
+    ($input:expr, $get:ident, $descriptor:expr) => {{
+    validate_spec_descriptor($descriptor)?;
+    let record = $input
+        .$get(RecordNamespace::SandboxSpec, &descriptor_key($descriptor))
+        .map(Record::decode)
+        .transpose()?;
+    checked_lookup(record, $descriptor)
+    }};
+}
+
 pub(crate) fn get_in_validated_namespace(
     journal: &Journal,
     descriptor: &ObjectDescriptor,
 ) -> Result<Option<DurableSandboxSpecV1>, SandboxSpecStateError> {
-    validate_spec_descriptor(descriptor)?;
-    let record = journal
-        .get(RecordNamespace::SandboxSpec, &descriptor_key(descriptor))
-        .map(Record::decode)
-        .transpose()?;
-    checked_lookup(record, descriptor)
+    get_in_validated_namespace_historical_recipe_v2!(journal, get, descriptor)
+}
+
+pub(crate) fn get_in_validated_rows_v2(
+    journal: aos_sandbox_protocol::domain_ledger::readonly::HistoricalLedgerRowsDataV2<'_>,
+    descriptor: &ObjectDescriptor,
+) -> Result<Option<DurableSandboxSpecV1>, SandboxSpecStateError> {
+    get_in_validated_namespace_historical_recipe_v2!(journal, get_data_v2, descriptor)
 }
 
 fn checked_lookup(
@@ -498,7 +561,21 @@ pub(crate) fn validate_historical_slot_declarations<'a>(
     journal: &Journal,
     declarations: impl IntoIterator<Item = (&'a ObjectDescriptor, AttachmentSlotId)>,
 ) -> Result<(), SandboxSpecStateError> {
-    let history = History::load(journal)?;
+    validate_historical_slot_declarations_rows_v2(
+        journal.historical_read_view_v1().rows_data_v2(),
+        declarations,
+    )
+}
+
+/// Compares slot declarations against the same complete historical row view.
+///
+/// # Errors
+/// Rejects malformed history, missing specifications or mismatched declarations.
+pub(crate) fn validate_historical_slot_declarations_rows_v2<'a>(
+    journal: aos_sandbox_protocol::domain_ledger::readonly::HistoricalLedgerRowsDataV2<'_>,
+    declarations: impl IntoIterator<Item = (&'a ObjectDescriptor, AttachmentSlotId)>,
+) -> Result<(), SandboxSpecStateError> {
+    let history = History::load_rows_v2(journal)?;
     for (descriptor, slot_id) in declarations {
         let key = validated_descriptor_tuple(descriptor)
             .map_err(|_| SandboxSpecStateError::CorruptState)?;
@@ -892,4 +969,21 @@ mod tests {
             Err(SandboxSpecStateError::InvalidPublication)
         ));
     }
+}
+
+/// Reuses the complete specification replay without adding an owner check.
+pub(crate) fn validate_namespace_rows_v2(
+    rows: aos_sandbox_protocol::domain_ledger::readonly::HistoricalLedgerRowsDataV2<'_>,
+) -> Result<(), SandboxSpecStateError> {
+    History::load_rows_v2(rows).map(|_| ())
+}
+
+/// Prices the full validation and validated lookup interfaces reached by Host.
+pub(crate) fn observed_validated_control_bytes_v2() -> Option<usize> {
+    type Lookup = Result<Option<DurableSandboxSpecV1>, SandboxSpecStateError>;
+    std::mem::size_of::<(aos_sandbox_protocol::domain_ledger::readonly::HistoricalLedgerRowsDataV2<'_>, &ObjectDescriptor)>().checked_mul(3)?
+        .checked_add(std::mem::size_of::<Result<History, SandboxSpecStateError>>().checked_mul(3)?)?
+        .checked_add(std::mem::size_of::<Lookup>().checked_mul(3)?)?
+        .checked_add(std::mem::size_of::<Result<(), SandboxSpecStateError>>().checked_mul(3)?)?
+        .checked_add(std::mem::size_of::<Option<usize>>().checked_mul(3)?)
 }

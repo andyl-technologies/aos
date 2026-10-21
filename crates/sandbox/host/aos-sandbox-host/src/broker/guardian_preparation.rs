@@ -6,7 +6,7 @@
 
 use aos_sandbox_broker::ProtectedBrokerPublicCredentialRevalidationOriginalV1;
 use aos_sandbox_model::{ResourceDimension as D, ResourceVector};
-use aos_sandbox_linux::immutable_file::SealedReadOnlyCredentialCreateOriginalsV1;
+use aos_linux_descriptors::credential::SealedReadOnlyCredentialCreateOriginalsV1;
 use aos_systemd_client::{GuardianCredentialAcquisitionOriginalV2, GuardianCredentialRole};
 
 use super::GuardianOriginalInputV1;

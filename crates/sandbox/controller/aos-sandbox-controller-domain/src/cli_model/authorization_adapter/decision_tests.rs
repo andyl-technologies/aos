@@ -203,11 +203,13 @@ fn checked_admission_projection_keeps_actual_inputs_and_advances_floor_once() {
         digest[byte] ^= 1;
         changed.digest = ObjectDigest::from_bytes(digest);
         assert_ne!(
-            protected_authorization_revision(
+            aos_sandbox_protocol::domain_ledger::delete_root::named_cuts::protected_authorization_revision_data_v2(
                 &capability,
                 decision.controller.generation,
                 decision.policy.generation(),
-                changed
+                changed.generation,
+                changed.clock,
+                changed.digest.as_bytes(),
             ),
             checked.revision,
             "the complete trailing floor digest is committed"

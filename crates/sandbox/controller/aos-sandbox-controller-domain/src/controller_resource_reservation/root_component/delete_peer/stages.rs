@@ -114,6 +114,11 @@ impl RootContinuationDemandV1 {
         Self(demand, ResourceVector::ZERO)
     }
 
+    /// Moves both existing comparison-only demand components without admission.
+    pub(crate) fn into_parts_data_v1(self) -> (ResourceVector, ResourceVector) {
+        (self.0, self.1)
+    }
+
     // The concrete D receiver derives this baseline from its genuine still-held
     // owners. Arithmetic stays inside the sole actual retained stage engine.
     pub(crate) fn with_resident_baseline_v2(mut self, baseline: ResourceVector) -> Self {
@@ -200,87 +205,9 @@ impl RootMaintenanceStorageStageV2 {
     }
 }
 
-/// Names the nine actual shared native read phases of Execution NoApply.
-///
-/// These slots own no floor, terminal, signing or sibling-purpose authority.
-#[derive(Clone, Copy)]
-pub(crate) enum RootExecutionNoApplyReadPhaseV2 {
-    ControllerFixed,
-    ControllerNative,
-    ControllerSemantic,
-    HostSessionFixed,
-    HostSessionNative,
-    HostSessionSemantic,
-    SourceFixed,
-    SourceNative,
-    SourceSemantic,
-}
-
-impl RootExecutionNoApplyReadPhaseV2 {
-    fn acquisition_index_v2(self) -> usize {
-        match self {
-            Self::ControllerFixed => 276,
-            Self::ControllerNative => 277,
-            Self::ControllerSemantic => 278,
-            Self::HostSessionFixed => 279,
-            Self::HostSessionNative => 280,
-            Self::HostSessionSemantic => 281,
-            Self::SourceFixed => 282,
-            Self::SourceNative => 283,
-            Self::SourceSemantic => 284,
-        }
-    }
-
-    fn final_index_v2(self) -> usize {
-        match self {
-            Self::ControllerFixed => 266,
-            Self::ControllerNative => 267,
-            Self::ControllerSemantic => 268,
-            Self::HostSessionFixed => 269,
-            Self::HostSessionNative => 270,
-            Self::HostSessionSemantic => 271,
-            Self::SourceFixed => 272,
-            Self::SourceNative => 273,
-            Self::SourceSemantic => 274,
-        }
-    }
-
-    fn index_v2(self) -> usize {
-        match self {
-            Self::ControllerFixed => 218,
-            Self::ControllerNative => 219,
-            Self::ControllerSemantic => 220,
-            Self::HostSessionFixed => 221,
-            Self::HostSessionNative => 222,
-            Self::HostSessionSemantic => 223,
-            Self::SourceFixed => 224,
-            Self::SourceNative => 225,
-            Self::SourceSemantic => 226,
-        }
-    }
-
-    fn prerequisites_positive_v2(self, stages: &RootContinuationStagesV1) -> bool {
-        match self {
-            Self::ControllerFixed => true,
-            _ => stages.positive(self.index_v2() - 1),
-        }
-    }
-}
-
 #[derive(Clone, Copy)]
 pub(crate) enum RootContinuationStageV1 {
     StopCleanup(RootStopCleanupStageV1),
-    ExecutionNoApplyAcquisitionReadV2(RootExecutionNoApplyReadPhaseV2),
-    ExecutionNoApplyAcquisitionTrustV2,
-    ExecutionNoApplyAcquisitionModelsV2,
-    ExecutionNoApplyAcquisitionSignV2,
-    ExecutionNoApplyFinalReadV2(RootExecutionNoApplyReadPhaseV2),
-    ExecutionNoApplyAckV2,
-    ExecutionNoApplyFloorV2,
-    ExecutionNoApplyHostTrustV2,
-    ExecutionNoApplyHostCurrentLeaseV2,
-    ExecutionNoApplyModelsV2,
-    ExecutionNoApplyRead(RootExecutionNoApplyReadPhaseV2),
     MaintenanceStorage(RootMaintenanceStorageStageV2),
     ControllerFixed,
     ControllerNative,
@@ -440,17 +367,6 @@ impl RootContinuationStageV1 {
     fn index(self) -> usize {
         match self {
             Self::StopCleanup(phase) => phase.index_v1(),
-            Self::ExecutionNoApplyFloorV2 => 254,
-            Self::ExecutionNoApplyFinalReadV2(phase) => phase.final_index_v2(),
-            Self::ExecutionNoApplyAckV2 => 275,
-            Self::ExecutionNoApplyAcquisitionReadV2(phase) => phase.acquisition_index_v2(),
-            Self::ExecutionNoApplyAcquisitionTrustV2 => 285,
-            Self::ExecutionNoApplyAcquisitionModelsV2 => 286,
-            Self::ExecutionNoApplyAcquisitionSignV2 => 287,
-            Self::ExecutionNoApplyHostTrustV2 => 252,
-            Self::ExecutionNoApplyHostCurrentLeaseV2 => 253,
-            Self::ExecutionNoApplyModelsV2 => 235,
-            Self::ExecutionNoApplyRead(phase) => phase.index_v2(),
             Self::MaintenanceStorage(phase) => phase.index_v2(),
             Self::ControllerFixed => 0,
             Self::ControllerNative => 1,
@@ -678,23 +594,6 @@ impl RootContinuationStageV1 {
     fn prerequisites_positive(self, stages: &RootContinuationStagesV1) -> bool {
         match self {
             Self::StopCleanup(phase) => phase.prerequisites_positive_v1(stages),
-            Self::ExecutionNoApplyFloorV2 => stages.positive(253) && stages.positive(235),
-            Self::ExecutionNoApplyFinalReadV2(phase) => match phase {
-                RootExecutionNoApplyReadPhaseV2::ControllerFixed => stages.positive(254),
-                _ => stages.positive(phase.final_index_v2() - 1),
-            },
-            Self::ExecutionNoApplyAckV2 => stages.positive(254) && stages.positive(274),
-            Self::ExecutionNoApplyAcquisitionReadV2(phase) => match phase {
-                RootExecutionNoApplyReadPhaseV2::ControllerFixed => true,
-                _ => stages.positive(phase.acquisition_index_v2() - 1),
-            },
-            Self::ExecutionNoApplyAcquisitionTrustV2 => true,
-            Self::ExecutionNoApplyAcquisitionModelsV2 => stages.positive(284) && stages.positive(285),
-            Self::ExecutionNoApplyAcquisitionSignV2 => stages.positive(286),
-            Self::ExecutionNoApplyHostTrustV2 => true,
-            Self::ExecutionNoApplyHostCurrentLeaseV2 => stages.positive(252) && stages.positive(226),
-            Self::ExecutionNoApplyModelsV2 => stages.positive(226),
-            Self::ExecutionNoApplyRead(phase) => phase.prerequisites_positive_v2(stages),
             Self::MaintenanceStorage(phase) => phase.prerequisites_positive_v2(stages),
             Self::ControllerFixed | Self::StorageFixed | Self::SourceFixed
                 | Self::CacheFixed(_) => true,
@@ -939,23 +838,12 @@ impl RootReceivingOriginalV1 {
             self.require_active_policy_flight_v1()
                 .map_err(|_| ResourceReservationErrorV1::Conflict)?;
             admission.require_armed_v1().map_err(|_| ResourceReservationErrorV1::Conflict)?;
-            // Initial/final Execution readers and ACK share only their own
-            // actual purpose. No sibling can lend its Root7 work.
+            // NoApply now has its own actual native ledger. The remaining
+            // legacy Root purposes retain their distinct old stage subsets.
             if K::STOP_CLEANUP_ONLY != matches!(stage, RootContinuationStageV1::StopCleanup(_)) {
                 return Err(ResourceReservationErrorV1::Conflict);
             }
-            if K::EXECUTION_NO_APPLY_ONLY
-                != matches!(stage, RootContinuationStageV1::ExecutionNoApplyRead(_)
-                    | RootContinuationStageV1::ExecutionNoApplyModelsV2
-                    | RootContinuationStageV1::ExecutionNoApplyHostTrustV2
-                    | RootContinuationStageV1::ExecutionNoApplyHostCurrentLeaseV2
-                    | RootContinuationStageV1::ExecutionNoApplyFloorV2
-                    | RootContinuationStageV1::ExecutionNoApplyFinalReadV2(_)
-                    | RootContinuationStageV1::ExecutionNoApplyAckV2
-                    | RootContinuationStageV1::ExecutionNoApplyAcquisitionReadV2(_)
-                    | RootContinuationStageV1::ExecutionNoApplyAcquisitionTrustV2
-                    | RootContinuationStageV1::ExecutionNoApplyAcquisitionModelsV2
-                    | RootContinuationStageV1::ExecutionNoApplyAcquisitionSignV2) {
+            if K::EXECUTION_NO_APPLY_ONLY {
                 return Err(ResourceReservationErrorV1::Conflict);
             }
             if matches!(stage, RootContinuationStageV1::DeletePreparationCurrent(_)
@@ -1269,115 +1157,7 @@ mod delete_continuation_stage_tests {
         stages.traffic[stage.index()] = Some(Ok(()));
     }
 
-    #[test]
-    fn execution_models_requires_the_actual_ninth_reader_debit() {
-        let mut stages = RootContinuationStagesV1::default();
-        let models = RootContinuationStageV1::ExecutionNoApplyModelsV2;
-        assert_eq!(models.index(), 235);
-        assert!(models.index() < STAGES);
-        assert!(!models.prerequisites_positive(&stages));
 
-        // Earlier readers and an unrelated positive Network tail cannot pay it.
-        for index in [218, 219, 220, 221, 222, 223, 224, 225, 234] {
-            stages.requirements[index] = Some(Ok(ResourceVector::ZERO));
-            stages.traffic[index] = Some(Ok(()));
-        }
-        assert!(!models.prerequisites_positive(&stages));
-        stages.requirements[226] = Some(Ok(ResourceVector::ZERO));
-        assert!(!models.prerequisites_positive(&stages));
-        stages.traffic[226] = Some(Ok(()));
-        assert!(models.prerequisites_positive(&stages));
-        stages.traffic[226] = Some(Err(ResourceReservationErrorV1::Conflict));
-        assert!(!models.prerequisites_positive(&stages));
-    }
-
-    #[test]
-    fn execution_ack_requires_completed_floor_and_new_ordered_native_readers() {
-        use RootExecutionNoApplyReadPhaseV2 as P;
-        let readers = [P::ControllerFixed, P::ControllerNative, P::ControllerSemantic,
-            P::HostSessionFixed, P::HostSessionNative, P::HostSessionSemantic,
-            P::SourceFixed, P::SourceNative, P::SourceSemantic];
-        let mut stages = RootContinuationStagesV1::default();
-        let first = RootContinuationStageV1::ExecutionNoApplyFinalReadV2(readers[0]);
-        let ack = RootContinuationStageV1::ExecutionNoApplyAckV2;
-        assert_eq!((first.index(), ack.index()), (266, 275));
-        assert!(ack.index() < STAGES);
-        assert!(!first.prerequisites_positive(&stages));
-        assert!(!ack.prerequisites_positive(&stages));
-
-        paid(&mut stages, RootContinuationStageV1::ExecutionNoApplyFloorV2);
-        for (offset, phase) in readers.into_iter().enumerate() {
-            let reader = RootContinuationStageV1::ExecutionNoApplyFinalReadV2(phase);
-            assert_eq!(reader.index(), 266 + offset);
-            assert!(reader.prerequisites_positive(&stages));
-            assert!(!ack.prerequisites_positive(&stages));
-            paid(&mut stages, reader);
-        }
-        assert!(ack.prerequisites_positive(&stages));
-
-        stages.traffic[274] = Some(Err(ResourceReservationErrorV1::Conflict));
-        assert!(!ack.prerequisites_positive(&stages));
-        stages.traffic[274] = Some(Ok(()));
-        stages.traffic[254] = Some(Err(ResourceReservationErrorV1::Conflict));
-        assert!(!ack.prerequisites_positive(&stages));
-    }
-
-    #[test]
-    fn acquisition_signature_requires_its_own_native_reads_trust_and_classifier() {
-        use RootExecutionNoApplyReadPhaseV2 as P;
-        let mut stages = RootContinuationStagesV1::default();
-        let models = RootContinuationStageV1::ExecutionNoApplyAcquisitionModelsV2;
-        let sign = RootContinuationStageV1::ExecutionNoApplyAcquisitionSignV2;
-        assert_eq!((models.index(), sign.index()), (286, 287));
-        assert!(sign.index() < STAGES);
-        assert!(!models.prerequisites_positive(&stages));
-        assert!(!sign.prerequisites_positive(&stages));
-
-        paid(&mut stages, RootContinuationStageV1::ExecutionNoApplyAcquisitionReadV2(P::SourceSemantic));
-        assert!(!models.prerequisites_positive(&stages));
-        paid(&mut stages, RootContinuationStageV1::ExecutionNoApplyAcquisitionTrustV2);
-        assert!(models.prerequisites_positive(&stages));
-        assert!(!sign.prerequisites_positive(&stages));
-        paid(&mut stages, models);
-        assert!(sign.prerequisites_positive(&stages));
-        stages.traffic[286] = Some(Err(ResourceReservationErrorV1::Conflict));
-        assert!(!sign.prerequisites_positive(&stages));
-    }
-
-    #[test]
-    fn execution_current_lease_requires_its_own_trust_and_complete_native_readers() {
-        let mut stages = RootContinuationStagesV1::default();
-        let trust = RootContinuationStageV1::ExecutionNoApplyHostTrustV2;
-        let lease = RootContinuationStageV1::ExecutionNoApplyHostCurrentLeaseV2;
-        assert_eq!((trust.index(), lease.index()), (252, 253));
-        assert!(lease.index() < STAGES);
-        assert!(trust.prerequisites_positive(&stages));
-        assert!(!lease.prerequisites_positive(&stages));
-
-        paid(&mut stages, trust);
-        assert!(!lease.prerequisites_positive(&stages));
-        stages.requirements[226] = Some(Ok(ResourceVector::ZERO));
-        assert!(!lease.prerequisites_positive(&stages));
-        stages.traffic[226] = Some(Ok(()));
-        assert!(lease.prerequisites_positive(&stages));
-
-        stages.traffic[252] = Some(Err(ResourceReservationErrorV1::Conflict));
-        assert!(!lease.prerequisites_positive(&stages));
-    }
-
-    #[test]
-    fn execution_floor_requires_both_actual_current_host_and_three_row_models() {
-        let mut stages = RootContinuationStagesV1::default();
-        let floor = RootContinuationStageV1::ExecutionNoApplyFloorV2;
-        assert_eq!(floor.index(), 254);
-        assert!(floor.index() < STAGES);
-        paid(&mut stages, RootContinuationStageV1::ExecutionNoApplyHostCurrentLeaseV2);
-        assert!(!floor.prerequisites_positive(&stages));
-        paid(&mut stages, RootContinuationStageV1::ExecutionNoApplyModelsV2);
-        assert!(floor.prerequisites_positive(&stages));
-        stages.traffic[253] = Some(Err(ResourceReservationErrorV1::Conflict));
-        assert!(!floor.prerequisites_positive(&stages));
-    }
 
     #[test]
     fn apply_issuer_requires_each_distinct_post26_successor_debit() {

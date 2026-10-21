@@ -183,3 +183,45 @@ pub fn method_coordinates(
         _ => Err(ProtocolValidationError::MethodMismatch),
     }
 }
+
+/// Carries one original prefix observation as historical comparison DATA.
+///
+/// A profile distinguishes the Cache bootstrap from global Source. These
+/// copied coordinates retain no writer, currentness, financial loan or append
+/// authority. Actual owners independently retain and recheck those originals.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct GitCoverageNativeCutDataV1 {
+    /// Names the original fixed native writer's profile.
+    pub profile: aos_sandbox_model::format::git_upload_enrollment::GitCoverageJournalProfileV1,
+    /// Commits the original directory, file and lock identities.
+    pub provision_origin: [u8; 32],
+    /// Commits every canonical native frame reached in this observation.
+    pub prefix: [u8; 32],
+    /// Counts the completely observed native transactions.
+    pub transactions: usize,
+    /// Counts the completely observed native records.
+    pub records: usize,
+    /// Names the last observed UUID and COMMIT sequence, when present.
+    pub last_commit: Option<([u8; 16], u64)>,
+}
+
+/// Assembles the same six comparison fields beside an actual borrowed prefix.
+///
+/// The actual caller separately owns its native loan and bookends. This DATA
+/// expression opens nothing and authenticates no native owner or role. It
+/// emits the old constructor body in place, with no new runtime wrapper,
+/// callback, owning argument carrier or additional return plane.
+#[macro_export]
+macro_rules! git_coverage_native_cut_data_v1 {
+    (profile: $profile:path, loan: $loan:ident) => {{
+        let (transactions, records) = $loan.counts();
+        $crate::git_project_coverage::GitCoverageNativeCutDataV1 {
+            profile: $profile,
+            provision_origin: $loan.provision_origin_digest(),
+            prefix: $loan.prefix_digest(),
+            transactions,
+            records,
+            last_commit: $loan.last_commit(),
+        }
+    }};
+}

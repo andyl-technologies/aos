@@ -16,7 +16,7 @@ use aos_sandbox_model::{
     BrokerAudience, BrokerPlanExpectation, BrokerPlanRequest, BrokerPlanTrustAnchor, NodeId,
     PrincipalId, RawPairedClockSample, SandboxId, verify_broker_plan,
 };
-use aos_sandbox_linux::boot::KernelBootId;
+use aos_linux_descriptors::boot::KernelBootId;
 use aos_sandbox_ownership_protocol::{
     OwnershipAuthorityVerifier, SignedOwnershipLease, UnverifiedOwnershipLeaseResponse,
 };

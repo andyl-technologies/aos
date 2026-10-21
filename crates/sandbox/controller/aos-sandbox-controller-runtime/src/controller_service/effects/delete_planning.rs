@@ -96,7 +96,7 @@ impl ControllerDeleteLocalRuntimeFieldsV1<'_> {
 /// The real initialized owners remain borrowed by the returned cut, preventing
 /// replacement or a fallback bootstrap opener during planning/preaccept.
 pub(in crate::controller_service) struct ControllerDeleteCacheRuntimeFieldsV1<'runtime> {
-    initialized: &'runtime mut aos_sandbox_controller_domain::cache_residency::CacheResidentInitializationV1,
+    initialized: &'runtime mut aos_sandbox_controller_domain::CacheResidentInitializationV1,
     owner: &'runtime mut Option<CacheResidencyProtectedOwnerV1>,
     physical: &'runtime Option<DormantCacheOwnerV1>,
 }
@@ -108,7 +108,7 @@ impl ControllerDeleteCacheRuntimeFieldsV1<'_> {
         bank: &aos_sandbox_controller_domain::ControllerResourceBankOpeningV1,
         controller: &mut Journal,
         profile: &aos_sandbox_controller_domain::normal_root::ProductionControllerNormalRootProfileV1,
-    ) -> Result<aos_sandbox_controller_domain::cache_residency::CacheDeleteInventoryOriginalV1<'cache>, aos_sandbox_controller_domain::ResourceReservationErrorV1> {
+    ) -> Result<aos_sandbox_controller_domain::CacheDeleteInventoryOriginalV1<'cache>, aos_sandbox_controller_domain::ResourceReservationErrorV1> {
         let owner = self.owner.as_mut().ok_or(aos_sandbox_controller_domain::ResourceReservationErrorV1::Conflict)?;
         let physical = self.physical.as_ref().ok_or(aos_sandbox_controller_domain::ResourceReservationErrorV1::Conflict)?;
         let mut query = bank.borrow_delete_planning_cache_once_v1(

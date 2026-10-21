@@ -22,6 +22,28 @@ use super::transport::{OPEN_BYTES, OpenQueryV1};
 /// Holds the exact first Root Open body width.
 pub const ROOT_OPEN_BODY_BYTES_V1: usize = 360;
 
+/// Copies original startup and accepted-peer identity as comparison DATA.
+///
+/// These fields do not establish enrollment, credential custody, a current
+/// invocation or permission to append. The native owner supplies those joins.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RootCurrentOpenIdentityDataV1 {
+    /// The independently measured Root startup profile digest.
+    pub profile: [u8; 32],
+    /// The resource recipient invocation from the original enrollment.
+    pub recipient: [u8; 16],
+    /// The original resource-image producer invocation.
+    pub producer: [u8; 16],
+    /// The selected Root process identifier.
+    pub root_pid: u32,
+    /// The accepted socket creator's Controller process identifier.
+    pub controller_pid: u32,
+    /// The independently selected Controller user identifier.
+    pub controller_uid: u32,
+    /// The independently selected Controller group identifier.
+    pub controller_gid: u32,
+}
+
 /// Describes the fixed Root Open body without admitting any live invocation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RootOpenBodyDataV1 {

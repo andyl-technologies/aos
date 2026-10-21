@@ -11,7 +11,7 @@ use aos_sandbox_model::{
     SandboxId, SnapshotId, TrustScopeId, ViewId, descriptor_for_bytes, verify_signature,
 };
 use aos_sandbox_protocol::domain_ledger::lifecycle_model::LifecycleResourceV1;
-use aos_sandbox_linux::boot::KernelBootId;
+use aos_linux_descriptors::boot::KernelBootId;
 use sha2::{Digest as _, Sha256};
 
 use crate::local_inventory::{MultiNodeJournalDomainV1, ProtectedMultiNodeCurrentRecordV1};
@@ -962,7 +962,7 @@ impl CurrentLifecycleOperationV1<'_> {
         &self,
         dependency: &ExternalDependency,
         effect: CurrentLifecycleEffectV1<'_>,
-        owner: &mut crate::cache_residency::DormantCacheOwnerV1,
+        owner: &mut aos_sandbox_cache::DormantCacheOwnerV1,
     ) -> Result<LifecycleExternalAvailabilityEvidenceV1, LifecyclePhase6ErrorV1> {
         let (class, _required, identity, version) = external_dependency_binding(dependency);
         let provider = external_dependency_provider(class);
@@ -979,7 +979,7 @@ impl CurrentLifecycleOperationV1<'_> {
             || effect.target() != identity
             || effect.prerequisite() != version
             || result.effect()
-                != crate::cache_residency::cache_lifecycle_availability_effect_v1(
+                != aos_sandbox_cache::cache_lifecycle_availability_effect_v1(
                     environment,
                     result.currentness(),
                 )

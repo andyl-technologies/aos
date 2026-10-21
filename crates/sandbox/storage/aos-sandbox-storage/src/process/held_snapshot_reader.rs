@@ -655,7 +655,7 @@ fn require_prior_reader_empty(state: CgroupPopulationState) -> Result<(), ZfsWor
 /// Keeps the original setup failure separate from unproved cancellation debt.
 struct ReaderSetupFailure {
     cause: ZfsWorkerError,
-    cancellation: Option<aos_sandbox_linux::Error>,
+    cancellation: Option<aos_linux_descriptors::Error>,
 }
 
 impl ReaderSetupFailure {
@@ -675,7 +675,7 @@ impl ReaderSetupFailure {
 fn fail_stop_unproved_setup<T>(
     fail_stopped: &mut bool,
     error: ZfsWorkerError,
-    cancellation_error: Option<aos_sandbox_linux::Error>,
+    cancellation_error: Option<aos_linux_descriptors::Error>,
 ) -> Result<T, ZfsWorkerError> {
     *fail_stopped = true;
     Err(ReaderSetupFailure {
@@ -1253,7 +1253,7 @@ mod lower_custody_tests {
     fn setup_capture_keeps_the_original_cause_separate_from_cancellation_debt() {
         let capture = ReaderSetupFailure {
             cause: ZfsWorkerError::Protocol("original setup"),
-            cancellation: Some(aos_sandbox_linux::Error::WrongDescriptorType {
+            cancellation: Some(aos_linux_descriptors::Error::WrongDescriptorType {
                 expected: "cgroup.kill",
             }),
         };
@@ -1493,7 +1493,7 @@ mod tests {
         let cases = [
             ZfsWorkerError::Protocol("invalid READY frame"),
             ZfsWorkerError::PeerMismatch,
-            ZfsWorkerError::Linux(aos_sandbox_linux::Error::WrongDescriptorType {
+            ZfsWorkerError::Linux(aos_linux_descriptors::Error::WrongDescriptorType {
                 expected: "cgroup.events",
             }),
         ];
@@ -1515,12 +1515,12 @@ mod tests {
     #[test]
     fn failed_cancellation_keeps_reader_fail_stopped() {
         let mut fail_stopped = false;
-        let cancellation_error = aos_sandbox_linux::Error::WrongDescriptorType {
+        let cancellation_error = aos_linux_descriptors::Error::WrongDescriptorType {
             expected: "cgroup.kill",
         };
         let result: Result<(), ZfsWorkerError> = fail_stop_unproved_setup(
             &mut fail_stopped,
-            ZfsWorkerError::Linux(aos_sandbox_linux::Error::WrongDescriptorType {
+            ZfsWorkerError::Linux(aos_linux_descriptors::Error::WrongDescriptorType {
                 expected: "cgroup.events",
             }),
             Some(cancellation_error),
@@ -1988,7 +1988,7 @@ mod tests {
                 measured.content_digest,
             )
             .unwrap_err();
-            let HeldSnapshotTreeErrorV1::Linux(aos_sandbox_linux::Error::Syscall {
+            let HeldSnapshotTreeErrorV1::Linux(aos_linux_descriptors::Error::Syscall {
                 source, ..
             }) = error
             else {

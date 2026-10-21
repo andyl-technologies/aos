@@ -5,7 +5,8 @@
 //! own genuine role's held Parent/financial/native construction separately.
 
 use std::os::unix::fs::{FileExt as _, MetadataExt as _};
-use aos_sandbox_linux::boot::{KernelBootId, RootOriginalKernelBootIdAttemptV1};
+use aos_linux_descriptors::boot::KernelBootId;
+use aos_linux_descriptors::boot::RootOriginalKernelBootIdAttemptV1;
 use aos_sandbox_protocol::domain_ledger::resource_bank::{self as bank, EnrollmentIdentity, ImageBootstrapPolicy};
 use rustix::fs::{OFlags, SealFlags, fcntl_get_seals, fcntl_getfl, fstatfs};
 use sha2::{Digest as _, Sha256};
@@ -18,7 +19,7 @@ pub enum OriginalPairErrorV1 {
     /// An actual descriptor operation failed.
     #[error(transparent)] Descriptor(#[from] rustix::io::Errno),
     /// The original kernel boot observation failed.
-    #[error(transparent)] Kernel(#[from] aos_sandbox_linux::Error),
+    #[error(transparent)] Kernel(#[from] aos_linux_descriptors::Error),
     /// Canonical identity, vector or subdivision validation failed.
     #[error(transparent)] Data(#[from] bank::ResourceBankDataError),
     /// The actual original files or producer identity are unavailable.
@@ -226,7 +227,7 @@ struct OriginalPairObservations {
     manifest: Option<[u8; 32]>,
     // Ordinary acquisition keeps its original returned-result contract. Only
     // the actual retained Root pair installs bounded original boot custody.
-    boot: Option<Result<KernelBootId, aos_sandbox_linux::Error>>,
+    boot: Option<Result<KernelBootId, aos_linux_descriptors::Error>>,
     completion: Option<Result<OriginalEnrollment, OriginalPairErrorV1>>,
 }
 

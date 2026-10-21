@@ -376,3 +376,14 @@ pub fn decode_operation(bytes: &[u8]) -> Result<OperationRecord, PublicOperation
         accepted_start,
     })
 }
+
+/// Expands the established lookup at an actual historical row borrower.
+///
+/// The caller retains its original missing-row and canonical decoder categories.
+#[macro_export]
+macro_rules! historical_operation_read_data_v2 {
+    (read = $read:expr, missing = $missing:expr, project = $project:expr) => {{
+        let bytes = $read.ok_or($missing)?;
+        $crate::domain_ledger::operation::decode_operation(bytes).map_err($project)
+    }};
+}

@@ -89,6 +89,18 @@ impl<P> SourceNativeJournalOwnerV1<P> {
         self.coordinator.borrow_execution_scope_v1(receiving, controller, launch, profile)
     }
 
+    /// Borrows the same genuine Source construction's inert original association.
+    ///
+    /// The reference stays tied to this private native owner. It creates no
+    /// phase, currentness, completion, funding or native custody permission.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn cache_audit_original_v1(
+        &self,
+    ) -> &aos_sandbox_broker::controller_receiving::ControllerSourceOriginalRefV1 {
+        self.coordinator.cache_audit_original_v1()
+    }
+
     /// Borrows the same held writer's bounded readonly comparison view.
     pub fn coordinator_read_view(&self) -> CanonicalWriterReadViewV1<'_, P> {
         self.coordinator.coordinator_read_view()

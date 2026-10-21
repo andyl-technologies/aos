@@ -20,8 +20,8 @@ use crate::journal::JournalError;
 use crate::normal_root::{RootApplyStageReceivingV1, NormalRootStartupErrorV1};
 use crate::policy_compiler::{continuation_policy::RootApplyPolicyOriginalV1,
     public_create_source::{CurrentCreateProjectPolicySourceV1,
-        current_parentless_create_project_source_with_observed_wall_v1}};
-use crate::publisher_admin::policy::{PublisherPolicyStore, PublisherPolicyLimits};
+        current_parentless_create_project_source_from_observation_v2}};
+use crate::publisher_admin::policy::{PublisherPolicyObservationV2, PublisherPolicyLimits};
 use super::{RootProvisioningNativeViewsV1, RootContinuationHorizonDataV1, RootContinuationClockGateV1,
     current_compiler_complete_receiving_demand_v1};
 use super::{apply_readonly::RootApplyReadonlyContextV1, apply_inputs::RootApplyInputsOriginalV1};
@@ -64,6 +64,9 @@ impl RootApplyCompilerOriginalV1 {
             let width = readonly.compiler_input_bytes_v1()?
                 .checked_add(native.apply_source_input_bytes_v1()?).ok_or(JournalError::JournalTooLarge)?;
             let extra = size_of::<ValuesV1>().checked_mul(2).and_then(|bytes| bytes.checked_add(2 * size_of::<Self>()))
+                .and_then(|bytes| bytes.checked_add(crate::sandbox_spec_state::observed_get_control_bytes_v2()?))
+                .and_then(|bytes| bytes.checked_add(crate::publisher_admin::policy::publisher_observation_control_bytes_v2()?))
+                .and_then(|bytes| bytes.checked_add(crate::policy_compiler::public_create_source::current_parentless_observation_control_bytes_v2()?))
                 .and_then(|bytes| u64::try_from(bytes).ok()).ok_or(JournalError::JournalTooLarge)?;
             current_compiler_complete_receiving_demand_v1(width, readonly.controller_state_v1()?, signed)?
                 .checked_add(RootContinuationClockGateV1::receiving_demand_v1()?)
@@ -139,17 +142,17 @@ fn compile_once_v1(readonly: &mut RootApplyReadonlyContextV1, native: &RootProvi
     { return Err(JournalError::ProtectedBoundary.into()); }
     native.prepared_apply_physical_v1()?;
     native.prepared_apply_limits_digest_v1()?;
-    let controller = readonly.controller_mut_v1()?;
-    let source = current_parentless_create_project_source_with_observed_wall_v1(controller,
+    let controller = readonly.controller_model_v1()?;
+    let source = current_parentless_create_project_source_from_observation_v2(controller,
         operation, manifest.sandbox(), Some(sample.wall_seconds()))?;
     if source.project() != manifest.project() { return Err(JournalError::ProtectedBoundary.into()); }
-    let specification = crate::sandbox_spec_state::get(controller, manifest.sandbox_spec())?
+    let specification = crate::sandbox_spec_state::get_from_observation_v2(controller, manifest.sandbox_spec())?
         .ok_or(JournalError::ProtectedBoundary)?.spec().clone();
     if specification != aos_sandbox_model::decode_sandbox_spec(ready.specification, DecodeLimits::default())? {
         return Err(JournalError::ProtectedBoundary.into());
     }
     let publisher = decode_policy(source.canonical_policy(), DecodeLimits::default())?;
-    let expires = PublisherPolicyStore::load(controller, PublisherPolicyLimits::default())?
+    let expires = PublisherPolicyObservationV2::load_from_observation_v2(controller, PublisherPolicyLimits::default())?
         .current_policy(source.project())?.ok_or(JournalError::ProtectedBoundary)?.expires_at()
         .min(signed.0.head().expires_at()).min(signed.1.expires_at());
     let project = signed.0.head();

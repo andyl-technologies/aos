@@ -20,7 +20,7 @@ pub(super) struct ConnectedSocketBinding(NonZeroU64);
 impl ConnectedSocketBinding {
     /// Captures an adoption-time binding with the legacy peer-error taxonomy.
     pub(super) fn capture_peer(fd: BorrowedFd<'_>) -> Result<Self, SeqpacketError> {
-        let cookie = uapi::socket_cookie(fd)?;
+        let cookie = aos_linux_descriptors::native::socket_cookie(fd)?;
         NonZeroU64::new(cookie)
             .map(Self)
             .ok_or(SeqpacketError::PeerIdentity(
@@ -36,12 +36,12 @@ impl ConnectedSocketBinding {
     pub(super) fn require_current_with_originals_v1(
         self,
         fd: BorrowedFd<'_>,
-        retained: Option<&mut Option<Result<u64, crate::Error>>>,
+        retained: Option<&mut Option<Result<u64, aos_linux_descriptors::Error>>>,
     ) -> Result<(), RecordBindingError> {
         #[cfg(test)]
         CURRENT_QUERY_COUNT.with(|count| count.set(count.get() + 1));
 
-        let observed = uapi::socket_cookie(fd);
+        let observed = aos_linux_descriptors::native::socket_cookie(fd);
         let cookie = match retained {
             None => observed.map_err(|_| RecordBindingError::current_socket())?,
             Some(destination) => {
@@ -134,10 +134,10 @@ mod tests {
 
     #[test]
     fn duplicate_descriptors_share_only_their_source_socket_binding() {
-        let (source, opposite) = uapi::seqpacket_pair().expect("source socket pair");
+        let (source, opposite) = aos_linux_descriptors::native::seqpacket_pair().expect("source socket pair");
         let (independent, _independent_opposite) =
-            uapi::seqpacket_pair().expect("independent socket pair");
-        let duplicate = uapi::duplicate_at_least(source.as_fd(), 0).expect("duplicate source");
+            aos_linux_descriptors::native::seqpacket_pair().expect("independent socket pair");
+        let duplicate = aos_linux_descriptors::native::duplicate_at_least(source.as_fd(), 0).expect("duplicate source");
         let binding = ConnectedSocketBinding::capture_peer(source.as_fd()).expect("source binding");
 
         binding
@@ -160,7 +160,7 @@ mod tests {
             Err(error) if error.category() == super::super::RecordBindingErrorCategory::CurrentSocket
         ));
 
-        let (socket, _opposite) = uapi::seqpacket_pair().expect("socket pair");
+        let (socket, _opposite) = aos_linux_descriptors::native::seqpacket_pair().expect("socket pair");
         let binding = ConnectedSocketBinding::capture_peer(socket.as_fd()).expect("socket binding");
         let file = tempfile::tempfile().expect("ordinary file");
         assert!(matches!(
@@ -171,11 +171,11 @@ mod tests {
 
     #[test]
     fn capture_and_recheck_leave_socket_state_unchanged() {
-        let (socket, _opposite) = uapi::seqpacket_pair().expect("socket pair");
-        uapi::enable_socket_passcred_for_test(socket.as_fd()).expect("enable SO_PASSCRED");
-        let status = uapi::get_status_flags(socket.as_fd()).expect("status flags");
-        let cloexec = uapi::is_cloexec(socket.as_fd()).expect("descriptor flags");
-        let passcred = uapi::socket_passcred_for_test(socket.as_fd()).expect("SO_PASSCRED");
+        let (socket, _opposite) = aos_linux_descriptors::native::seqpacket_pair().expect("socket pair");
+        aos_linux_descriptors::native::enable_socket_passcred_for_test(socket.as_fd()).expect("enable SO_PASSCRED");
+        let status = aos_linux_descriptors::native::get_status_flags(socket.as_fd()).expect("status flags");
+        let cloexec = aos_linux_descriptors::native::is_cloexec(socket.as_fd()).expect("descriptor flags");
+        let passcred = aos_linux_descriptors::native::socket_passcred_for_test(socket.as_fd()).expect("SO_PASSCRED");
 
         let binding =
             ConnectedSocketBinding::capture_peer(socket.as_fd()).expect("capture binding");
@@ -184,15 +184,15 @@ mod tests {
             .expect("recheck binding");
 
         assert_eq!(
-            uapi::get_status_flags(socket.as_fd()).expect("final status flags"),
+            aos_linux_descriptors::native::get_status_flags(socket.as_fd()).expect("final status flags"),
             status
         );
         assert_eq!(
-            uapi::is_cloexec(socket.as_fd()).expect("final descriptor flags"),
+            aos_linux_descriptors::native::is_cloexec(socket.as_fd()).expect("final descriptor flags"),
             cloexec
         );
         assert_eq!(
-            uapi::socket_passcred_for_test(socket.as_fd()).expect("final SO_PASSCRED"),
+            aos_linux_descriptors::native::socket_passcred_for_test(socket.as_fd()).expect("final SO_PASSCRED"),
             passcred
         );
     }

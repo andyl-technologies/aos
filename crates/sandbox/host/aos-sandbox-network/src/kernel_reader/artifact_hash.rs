@@ -8,9 +8,8 @@
 use super::{File, NetworkKernelReaderError, ObjectDigest};
 use std::os::fd::AsFd as _;
 
-use aos_sandbox_linux::protected_file::positional_hash::{
-    PositionalHashFailureV2, PositionalHashOriginalV2,
-};
+use aos_linux_descriptors::positional_hash::PositionalHashFailureV2;
+use aos_linux_descriptors::positional_hash::PositionalHashOriginalV2;
 
 #[derive(Clone, Copy)]
 enum First {
@@ -169,7 +168,7 @@ fn marker() -> NetworkKernelReaderError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aos_sandbox_linux::protected_file::positional_hash::POSITIONAL_HASH_BUFFER_BYTES_V2;
+    use aos_linux_descriptors::positional_hash::POSITIONAL_HASH_BUFFER_BYTES_V2;
     use sha2::{Digest as _, Sha256};
     use std::io::Write as _;
 

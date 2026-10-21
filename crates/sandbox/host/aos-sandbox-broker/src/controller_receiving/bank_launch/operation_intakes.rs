@@ -1330,7 +1330,8 @@ mod entry_tests {
 }
 
 mod preaccept;
-pub use preaccept::{ControllerDeletePreacceptTurnOriginalV1, ControllerDeletePreacceptTurnDisposalV1};
+pub use preaccept::{ControllerDeletePreacceptTurnOriginalV1, ControllerDeletePreacceptTurnDisposalV1,
+    ControllerCacheDeleteAuditFundingLoanV1};
 
 impl ControllerOperationIntakeOriginalV1 {
     /// Binds actual completed enrollment after the upper Source/clock conjunction.

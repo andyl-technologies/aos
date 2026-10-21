@@ -8,8 +8,9 @@
 use std::fmt;
 use std::os::fd::AsFd as _;
 
-use super::subject::StreamSubjectState;
+
 use super::{RetainedUnixStream, SubjectStreamReceiveGeometryV1};
+use aos_linux_descriptors::unix_stream::StreamReportingStateV1 as StreamSubjectState;
 use crate::seqpacket::receive_custody::ReceiveAttemptV1;
 use crate::seqpacket::{RetainedSeqpacketReceiveErrorV1, SeqpacketError};
 use crate::uapi;
@@ -45,93 +46,71 @@ impl SubjectStreamReceiveGeometryV1 {
     }
 }
 
-impl RetainedUnixStream {
-    /// Requires subject reporting already installed on this original stream.
-    ///
-    /// This observes the three existing options without enabling any of them.
-    /// A service must separately prove that its actual listener enabled them
-    /// before accepting or queueing input; this check cannot upgrade old bytes.
-    ///
-    /// # Errors
-    /// Refuses repeated activation, a missing option or a native option failure.
-    /// Failure poisons this profile; it does not grant a fallback raw reader.
-    pub fn require_inherited_subject_reporting_v1(&mut self) -> Result<(), SeqpacketError> {
-        if self.subject_state != StreamSubjectState::Dormant {
-            return Err(SeqpacketError::Closed);
+/// Receives actual EOF with retained custody using prepaid control geometry.
+///
+/// This performs one nonblocking recvmsg, accepting only zero payload and
+/// no ancillary data except one kernel pid-zero credential placeholder. It
+/// never interprets a Closed error as EOF. A positive owner retains the
+/// receive buffers and original duplicate until
+/// the caller disposes it after its independent role-specific posts.
+///
+/// # Errors
+/// Retains trailing bytes, ancillary data, truncation, changed options and
+/// native failures. Fatal failures poison and shut down the same stream.
+/// Only initial nonconsuming EAGAIN/EINTR permits a caller-controlled retry.
+pub fn try_receive_subject_eof_with_geometry_retaining(
+    stream: &mut RetainedUnixStream,
+    geometry: &SubjectStreamReceiveGeometryV1,
+) -> Result<UnixStreamSubjectEofReadbackV1, RetainedSeqpacketReceiveErrorV1> {
+    let mut result = receive_subject_eof(stream, geometry);
+    if let Err(error) = &mut result {
+        if !error.is_nonconsuming_would_block() && !error.is_nonconsuming_interrupted() {
+            stream.poison_subject_reporting_v1();
+            let failure = rustix::net::shutdown(stream.as_fd(), rustix::net::Shutdown::Both)
+                .err().map(std::io::Error::from);
+            error.record_shutdown_failure(failure);
         }
-        if let Err(error) = uapi::require_stream_subject(self.as_fd()) {
-            self.subject_state = StreamSubjectState::Poisoned;
-            return Err(error.into());
-        }
-        self.subject_state = StreamSubjectState::Ready;
-        Ok(())
     }
-
-    /// Receives actual EOF with retained custody using prepaid control geometry.
-    ///
-    /// This performs one nonblocking recvmsg, accepting only zero payload and
-    /// no ancillary data except one kernel pid-zero credential placeholder. It
-    /// never interprets a Closed error as EOF. A positive owner retains the
-    /// receive buffers and original duplicate until
-    /// the caller disposes it after its independent role-specific posts.
-    ///
-    /// # Errors
-    /// Retains trailing bytes, ancillary data, truncation, changed options and
-    /// native failures. Fatal failures poison and shut down the same stream.
-    /// Only initial nonconsuming EAGAIN/EINTR permits a caller-controlled retry.
-    pub fn try_receive_subject_eof_with_geometry_retaining(
-        &mut self,
-        geometry: &SubjectStreamReceiveGeometryV1,
-    ) -> Result<UnixStreamSubjectEofReadbackV1, RetainedSeqpacketReceiveErrorV1> {
-        let mut result = self.receive_subject_eof(geometry);
-        if let Err(error) = &mut result {
-            if !error.is_nonconsuming_would_block() && !error.is_nonconsuming_interrupted() {
-                self.subject_state = StreamSubjectState::Poisoned;
-                let failure = rustix::net::shutdown(self.as_fd(), rustix::net::Shutdown::Both)
-                    .err().map(std::io::Error::from);
-                error.record_shutdown_failure(failure);
-            }
-        }
-        result
-    }
-
-    fn receive_subject_eof(
-        &self,
-        geometry: &SubjectStreamReceiveGeometryV1,
-    ) -> Result<UnixStreamSubjectEofReadbackV1, RetainedSeqpacketReceiveErrorV1> {
-        if self.subject_state != StreamSubjectState::Ready {
-            return Err(RetainedSeqpacketReceiveErrorV1::before_receive(SeqpacketError::Closed));
-        }
-        let mut attempt = ReceiveAttemptV1::capture_with_control(
-            self.as_fd(), self.socket_cookie, geometry.control(),
-        )?;
-        if let Err(source) = uapi::require_stream_subject(self.as_fd()) {
-            return Err(attempt.reject(source.into()));
-        }
-        let actual = match attempt.receive(1, 0) {
-            Ok(bytes) => bytes,
-            Err(failure) => return Err(attempt.syscall_failure(failure)),
-        };
-        let message = &attempt.messages[0];
-        if message.raw.flags & libc::MSG_CTRUNC != 0 {
-            return Err(attempt.reject(SeqpacketError::ControlTruncated));
-        }
-        if message.raw.flags & libc::MSG_TRUNC != 0 || actual != 0 {
-            return Err(attempt.reject(SeqpacketError::Ancillary("expected exact stream EOF")));
-        }
-        if let Err(source) = require_eof_ancillary(&message.raw) {
-            return Err(attempt.reject(source));
-        }
-        if let Err(source) = uapi::require_stream_subject(self.as_fd()) {
-            return Err(attempt.reject(source.into()));
-        }
-
-        // Keep native custody resident while allowing the caller's response.
-        // Independent peer/currentness posts belong to that caller's owner.
-        attempt.disarm();
-        Ok(UnixStreamSubjectEofReadbackV1 { attempt })
-    }
+    result
 }
+
+fn receive_subject_eof(
+    stream: &RetainedUnixStream,
+    geometry: &SubjectStreamReceiveGeometryV1,
+) -> Result<UnixStreamSubjectEofReadbackV1, RetainedSeqpacketReceiveErrorV1> {
+    if stream.subject_reporting_state_v1() != StreamSubjectState::Ready {
+        return Err(RetainedSeqpacketReceiveErrorV1::before_receive(SeqpacketError::Closed));
+    }
+    let mut attempt = ReceiveAttemptV1::capture_with_control(
+        stream.as_fd(), stream.socket_cookie_data_v1(), geometry.control(),
+    )?;
+    if let Err(source) = aos_linux_descriptors::native::require_stream_subject(stream.as_fd()) {
+        return Err(attempt.reject(source.into()));
+    }
+    let actual = match attempt.receive(1, 0) {
+        Ok(bytes) => bytes,
+        Err(failure) => return Err(attempt.syscall_failure(failure)),
+    };
+    let message = &attempt.messages[0];
+    if message.raw.flags & libc::MSG_CTRUNC != 0 {
+        return Err(attempt.reject(SeqpacketError::ControlTruncated));
+    }
+    if message.raw.flags & libc::MSG_TRUNC != 0 || actual != 0 {
+        return Err(attempt.reject(SeqpacketError::Ancillary("expected exact stream EOF")));
+    }
+    if let Err(source) = require_eof_ancillary(&message.raw) {
+        return Err(attempt.reject(source));
+    }
+    if let Err(source) = aos_linux_descriptors::native::require_stream_subject(stream.as_fd()) {
+        return Err(attempt.reject(source.into()));
+    }
+
+    // Keep native custody resident while allowing the caller's response.
+    // Independent peer/currentness posts belong to that caller's owner.
+    attempt.disarm();
+    Ok(UnixStreamSubjectEofReadbackV1 { attempt })
+}
+
 
 // At zero payload Linux can synthesize credentials from its empty scm cookie.
 // PID zero supplies no writer identity; mapped UID/GID values are inert DATA.
@@ -158,9 +137,9 @@ mod tests {
 
     fn pair() -> (RetainedUnixStream, UnixStream, SubjectStreamReceiveGeometryV1) {
         let (left, right) = UnixStream::pair().unwrap();
-        uapi::enable_stream_subject(left.as_fd()).unwrap();
+        aos_linux_descriptors::native::enable_stream_subject(left.as_fd()).unwrap();
         let mut stream = RetainedUnixStream::from_owned(left.into()).unwrap();
-        stream.require_inherited_subject_reporting_v1().unwrap();
+        stream.require_inherited_subject_reporting_v1().map_err(crate::seqpacket::SeqpacketError::from).unwrap();
         let geometry = SubjectStreamReceiveGeometryV1::for_context_bytes(48).unwrap();
         (stream, right, geometry)
     }
@@ -170,7 +149,7 @@ mod tests {
         let (mut stream, mut peer, geometry) = pair();
         peer.shutdown(std::net::Shutdown::Write).unwrap();
 
-        let eof = stream.try_receive_subject_eof_with_geometry_retaining(&geometry)
+        let eof = crate::unix_stream::try_receive_subject_eof_with_geometry_retaining(&mut stream, &geometry)
             .unwrap_or_else(|error| panic!("actual EOF refused: {error:?}; cause: {:?}", std::error::Error::source(&error)));
         assert_eq!(eof.attempt.messages.len(), 1);
         assert!(eof.attempt.messages[0].raw.received);
@@ -178,7 +157,7 @@ mod tests {
         require_eof_ancillary(&eof.attempt.messages[0].raw).expect("exact kernel EOF control");
         drop(eof);
 
-        let mut writer = std::fs::File::from(stream.fd.try_clone().unwrap());
+        let mut writer = std::fs::File::from(stream.as_fd().try_clone_to_owned().unwrap());
         writer.write_all(b"reply").unwrap();
         let mut reply = [0; 5];
         peer.read_exact(&mut reply).unwrap();
@@ -188,13 +167,13 @@ mod tests {
     #[test]
     fn nonconsuming_backpressure_is_distinct_from_eof() {
         let (mut stream, peer, geometry) = pair();
-        let error = stream.try_receive_subject_eof_with_geometry_retaining(&geometry).unwrap_err();
+        let error = crate::unix_stream::try_receive_subject_eof_with_geometry_retaining(&mut stream, &geometry).unwrap_err();
         assert!(error.is_nonconsuming_would_block());
-        assert_eq!(stream.subject_state, StreamSubjectState::Ready);
+        assert_eq!(stream.subject_reporting_state_v1(), StreamSubjectState::Ready);
         drop(error);
 
         peer.shutdown(std::net::Shutdown::Write).unwrap();
-        stream.try_receive_subject_eof_with_geometry_retaining(&geometry)
+        crate::unix_stream::try_receive_subject_eof_with_geometry_retaining(&mut stream, &geometry)
             .unwrap_or_else(|error| panic!("EOF after backpressure refused: {error:?}; cause: {:?}", std::error::Error::source(&error)));
     }
 
@@ -210,10 +189,10 @@ mod tests {
             }
             peer.shutdown(std::net::Shutdown::Write).unwrap();
 
-            let error = stream.try_receive_subject_eof_with_geometry_retaining(&geometry).unwrap_err();
+            let error = crate::unix_stream::try_receive_subject_eof_with_geometry_retaining(&mut stream, &geometry).unwrap_err();
             assert!(!error.is_nonconsuming_would_block());
             assert!(!error.is_nonconsuming_interrupted());
-            assert_eq!(stream.subject_state, StreamSubjectState::Poisoned);
+            assert_eq!(stream.subject_reporting_state_v1(), StreamSubjectState::Poisoned);
         }
     }
 
@@ -222,9 +201,9 @@ mod tests {
         let (left, _right) = UnixStream::pair().unwrap();
         let mut stream = RetainedUnixStream::from_owned(left.into()).unwrap();
 
-        assert!(stream.require_inherited_subject_reporting_v1().is_err());
-        assert_eq!(stream.subject_state, StreamSubjectState::Poisoned);
-        assert_eq!(uapi::socket_integer_option(stream.as_fd(), libc::SO_PASSCRED, "getsockopt(test SO_PASSCRED)").unwrap(), 0);
+        assert!(stream.require_inherited_subject_reporting_v1().map_err(crate::seqpacket::SeqpacketError::from).is_err());
+        assert_eq!(stream.subject_reporting_state_v1(), StreamSubjectState::Poisoned);
+        assert_eq!(aos_linux_descriptors::native::socket_integer_option(stream.as_fd(), libc::SO_PASSCRED, "getsockopt(test SO_PASSCRED)").unwrap(), 0);
     }
 
     #[test]
@@ -251,7 +230,7 @@ mod tests {
             uapi::RawAncillary::SecurityContext(b"role\0".to_vec()),
             uapi::RawAncillary::Unknown { level: libc::SOL_SOCKET, kind: 999 },
             uapi::RawAncillary::Rights(vec![std::fs::File::open("/dev/null").unwrap().into()]),
-            uapi::RawAncillary::PidFd(std::fs::File::open("/dev/null").unwrap().into()),
+            uapi::RawAncillary::PidFd(aos_linux_descriptors::pidfd::PidFdAdmissionSlotV1::new(std::fs::File::open("/dev/null").unwrap().into())),
         ] {
             raw.ancillary = vec![Some(ancillary)];
             assert!(require_eof_ancillary(&raw).is_err());

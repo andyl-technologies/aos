@@ -10,7 +10,7 @@ use crate::worker_process::{NetworkWorkerNegativeV2, decode_acknowledgement};
 use crate::worker_runtime::child_intake_v2::{
     NetworkPreparationFrameDispositionV3 as Slot, NetworkPreparationIntakeOriginalV2,
 };
-use aos_sandbox_linux::pidfd::PidFd;
+use aos_linux_descriptors::pidfd::PidFd;
 use aos_sandbox_linux::seqpacket::descriptor_subject::{
     DescriptorWorkerNativeSendAttemptV1, NetworkWorkerBootstrapWaitOriginalV3,
     NetworkWorkerBootstrapWaitRefusalV3, NetworkWorkerRetiredRecordDataV2,
@@ -122,7 +122,7 @@ pub(super) struct PreparationDispositionOriginalV2 {
     peer_before: NetworkChildSourceRecordOriginalV2,
     peer_before_result: Option<Result<(), NetworkChildOriginClosedV2>>,
     send: Option<Result<DescriptorWorkerNativeSendAttemptV1, SeqpacketError>>,
-    native_post: Option<aos_sandbox_linux::Error>,
+    native_post: Option<aos_linux_descriptors::Error>,
     binding: Option<Result<(), RecordBindingError>>,
     peer_after: NetworkChildSourceRecordOriginalV2,
     peer_after_result: Option<Result<(), NetworkChildOriginClosedV2>>,

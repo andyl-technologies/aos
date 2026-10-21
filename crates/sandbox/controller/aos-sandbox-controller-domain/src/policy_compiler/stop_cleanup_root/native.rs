@@ -3,7 +3,8 @@
 use std::{error::Error, mem::size_of};
 
 use aos_sandbox_model::{RawPairedClockSample, ResourceDimension as D, ResourceVector};
-use aos_sandbox_linux::unix_stream::{RetainedUnixStream, UnixStreamOriginalCurrentnessV1};
+use aos_linux_descriptors::unix_stream::RetainedUnixStream;
+use aos_linux_descriptors::unix_stream::UnixStreamOriginalCurrentnessV1;
 use aos_sandbox_protocol::authorization_artifact::{
     host_stop_cleanup_plan::{
         StopCleanupPlanPreparationDataV1, host_stop_cleanup_request_body_data_v1,
@@ -89,7 +90,7 @@ struct Native {
         Result<aos_sandbox_model::VerifiedBrokerPlan, aos_sandbox_model::BrokerPlanVerificationError>,
     >,
     connection: [UnixStreamOriginalCurrentnessV1; 3],
-    connection_result: [Option<aos_sandbox_linux::Result<()>>; 3],
+    connection_result: [Option<aos_linux_descriptors::Result<()>>; 3],
     after_clock: RetainedKernelPairedClockAttemptV1,
     after_sample: Option<
         Result<RawPairedClockSample, crate::hierarchy::genesis_profile::SourceGenesisErrorV1>,

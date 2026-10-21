@@ -5,7 +5,7 @@
 
 use std::fs::File;
 use std::io::Read as _;
-use aos_sandbox_linux::pidfd::PidFdInfo;
+use aos_linux_descriptors::pidfd::PidFdInfo;
 use aos_sandbox_linux::guest_confinement::require_subject;
 use aos_sandbox_linux::selinux_policy::PolicyReadbackError;
 use crate::immutable_image::ImmutableImageErrorV1;
@@ -19,15 +19,15 @@ pub(super) struct LocalCurrentness {
     images_allocation: Option<Result<(), std::collections::TryReserveError>>,
     nix: Option<Result<(), ImmutableImageErrorV1>>,
     policy: Option<Result<(), PolicyReadbackError>>,
-    subject: Option<Result<(), aos_sandbox_linux::Error>>,
+    subject: Option<Result<(), aos_linux_descriptors::Error>>,
     credentials: Option<Result<(), ControllerProfileErrorV1>>,
     status_open: Option<std::io::Result<Option<File>>>,
     status_file_retired: bool,
     status_bytes: Vec<u8>,
     status_read: Option<std::io::Result<usize>>,
     status: Option<Result<(), ControllerProfileErrorV1>>,
-    membership: Option<Result<PidFdInfo, aos_sandbox_linux::Error>>,
-    alive: Option<Result<bool, aos_sandbox_linux::Error>>,
+    membership: Option<Result<PidFdInfo, aos_linux_descriptors::Error>>,
+    alive: Option<Result<bool, aos_linux_descriptors::Error>>,
     fragment: Option<Result<(), ImmutableImageErrorV1>>,
     pub(super) completion: Option<Result<(), ControllerProfileErrorV1>>,
 }
@@ -211,7 +211,7 @@ impl LocalCurrentness {
                 let captured = originals.membership.capture_once(&profile.cgroup, &profile.process);
                 match (captured, originals.membership.result()) {
                     (Ok(()), Some(Ok(info))) => Ok(*info),
-                    _ => Err(aos_sandbox_linux::Error::InvalidInput {
+                    _ => Err(aos_linux_descriptors::Error::InvalidInput {
                         field: "Controller profile membership",
                         message: "retained membership observation refused".into(),
                     }),

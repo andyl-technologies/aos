@@ -1434,6 +1434,7 @@ impl ProductionOperationCompilerV1 {
     }
 }
 
+#[cfg(target_os = "linux")]
 pub(crate) use operator_recovery::require_create_recovery_target_v1;
 #[cfg(target_os = "linux")]
 pub(crate) use operator_recovery::{StopRecoveryTargetDataV1, ExecutionNoApplyRecoveryTargetDataV1,
@@ -1496,3 +1497,7 @@ pub(crate) fn public_execution_compiler_receiving_bytes_v2(
     // prospective public projection coexist with their validation clones.
     request.checked_add(encoded.checked_mul(32)?)?.checked_add(fixed)
 }
+
+// The request receiving owner admits these new observer interfaces once.
+#[cfg(target_os = "linux")]
+pub(crate) use operator_recovery::recovery_target_control_bytes_v1;

@@ -12,7 +12,7 @@ aos-sandbox-broker.workspace = true
 aos-sandbox-broker-session-security.workspace = true
 aos-sandbox-linux.workspace = true
 aos-sandbox-protocol.workspace = true
-aos-sandbox-policy.workspace = true
+aos-sandbox-policy = { workspace = true, features = ["native-journal"] }
 aos-sandbox-source.workspace = true
 aos-sandbox-source-provider.workspace = true
 aos-sandbox-source-provider-ledger.workspace = true
@@ -23,5 +23,6 @@ rustix = { workspace = true, features = ["fs", "net", "process"] }
 serde_json.workspace = true
 sha2.workspace = true
 
+aos-sandbox-cache = { workspace = true }
 [lints]
 workspace = true

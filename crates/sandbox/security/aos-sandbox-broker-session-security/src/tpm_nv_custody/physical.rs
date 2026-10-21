@@ -15,7 +15,9 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use aos_sandbox_controller_domain::ProtectedJournalLockCustodyV1;
-use aos_sandbox_linux::pidfd::{PidFd, PidFdProcObservationsV1, PidFdProcessIdentity};
+use aos_linux_descriptors::pidfd::PidFd;
+use aos_sandbox_linux::pidfd::PidFdProcObservationsV1;
+use aos_sandbox_linux::pidfd::PidFdProcessIdentity;
 use aos_sandbox_linux::seqpacket::{ReceivedRecord, SeqpacketError, SeqpacketSocket};
 use rustix::event::PollFlags;
 use sha2::{Digest as _, Sha256};
@@ -592,12 +594,12 @@ macro_rules! broker_admission_step {
     (Legacy, pidfd $owner:ident, $pidfd:ident) => {};
     (Retained, pidfd $owner:ident, $pidfd:ident) => {
         $owner.pidfd = Some($pidfd);
-        let observations = $owner.pidfd()?.prepare_proc_observations_v1();
+        let observations = aos_sandbox_linux::pidfd::prepare_proc_observations_v1($owner.pidfd()?);
         $owner.broker_mut()?.observations = Some(observations);
     };
 
     (Legacy, identity $owner:ident, $pidfd:ident, $process:ident) => {
-        let $process = $pidfd.process_identity().map_err(|_| FloorErrorV1::Unavailable)?;
+        let $process = aos_sandbox_linux::pidfd::process_identity(&($pidfd)).map_err(|_| FloorErrorV1::Unavailable)?;
     };
     (Retained, identity $owner:ident, $pidfd:ident, $process:ident) => {
         $owner.identity = Some($owner.capture_broker_identity()?);
@@ -1422,7 +1424,7 @@ impl<'owner, 'origin, 'startup, H: PhysicalHostSlotV1<'owner, 'origin, 'startup>
                 _ => return Err(PhysicalTpmFailureV1::State),
             }
         } else {
-            self.pidfd()?.process_identity().map_err(PhysicalTpmFailureV1::Linux)?
+            aos_sandbox_linux::pidfd::process_identity(self.pidfd()?).map_err(PhysicalTpmFailureV1::Linux)?
         });
         self.measure_host_helper_before_hello()?;
 
@@ -2197,7 +2199,7 @@ impl<'owner, 'origin, 'startup, H: PhysicalHostSlotV1<'owner, 'origin, 'startup>
                     .observe_identity(pidfd).map_err(PhysicalTpmFailureV1::Linux)
             }
             _ => {
-                pidfd.process_identity().map_err(|error| self.linux_error(error))
+                aos_sandbox_linux::pidfd::process_identity(&(pidfd)).map_err(|error| self.linux_error(error))
             }
         }
     }
@@ -2209,10 +2211,9 @@ impl<'owner, 'origin, 'startup, H: PhysicalHostSlotV1<'owner, 'origin, 'startup>
         if !self.is_retained_broker() && !self.is_canary_host_v2() {
             // Host and Legacy retain the original pathname identity call.
             return Ok(
-                self.received_record(frame)?
+                aos_sandbox_linux::pidfd::process_identity(&(self.received_record(frame)?
                     .subject()
-                    .pidfd()
-                    .process_identity()
+                    .pidfd()))
                     .map_err(|error| self.linux_error(error))?
                     != self.identity.ok_or(FloorErrorV1::Unavailable)?,
             );
@@ -2342,7 +2343,7 @@ impl<'owner, 'origin, 'startup, H: PhysicalHostSlotV1<'owner, 'origin, 'startup>
         self.channel.as_mut().ok_or_else(|| FloorErrorV1::Unavailable.into())
     }
 
-    fn linux_error(&self, error: aos_sandbox_linux::Error) -> PhysicalTpmFailureV1 {
+    fn linux_error(&self, error: aos_linux_descriptors::Error) -> PhysicalTpmFailureV1 {
         if self.is_host() || self.is_retained_broker() {
             PhysicalTpmFailureV1::Linux(error)
         } else {

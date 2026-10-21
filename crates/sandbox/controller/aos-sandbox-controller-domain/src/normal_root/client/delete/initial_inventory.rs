@@ -18,9 +18,8 @@ use aos_sandbox_protocol::domain_ledger::delete_root::{
 };
 use aos_sandbox_protocol::domain_ledger::delete_batch::DeleteBatchOwnerCutDataV2;
 use crate::hierarchy::genesis_profile::SourceGenesisErrorV1;
-use crate::policy_compiler::bounded_stream_io::{
-    DeadlineStreamDirectionV1, FixedDeadlineStreamIoV1,
-};
+use aos_sandbox_broker::bounded_stream_io::DeadlineStreamDirectionV1;
+use aos_sandbox_broker::bounded_stream_io::FixedDeadlineStreamIoV1;
 use crate::policy_compiler::{RetainedKernelPairedClockAttemptV1, RootSubjectReadinessV1};
 use aos_sandbox_model::RawPairedClockSample;
 use aos_sandbox_linux::{

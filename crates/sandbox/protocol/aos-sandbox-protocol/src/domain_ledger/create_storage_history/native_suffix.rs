@@ -4,6 +4,10 @@
 //! native errors and independent posts. These borrowed recipes/progress cannot
 //! open a file, authenticate an owner, grant capacity or authorize a transition.
 
+mod chain;
+
+pub use chain::HistoryPairNativeChainDataV1;
+
 use aos_sandbox_model::RecordNamespace;
 use sha2::{Digest as _, Sha256};
 use crate::domain_ledger::transaction::JournalTransaction;
@@ -322,3 +326,7 @@ impl<'expected, 'progress> HistoryPairNativeSuffixV1<'expected, 'progress> {
         self.progress.first.as_ref()
     }
 }
+
+
+/// Compares fixed Controller and Cache chains without native authority.
+pub mod controller;

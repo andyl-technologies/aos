@@ -29,7 +29,7 @@ use aos_sandbox_controller_domain::runtime_scope::{
 };
 use aos_sandbox_model::{AttachmentSlotId, NodeId, OperationId, ProjectId, SandboxId};
 use aos_sandbox_linux::cgroup::{CgroupV2Root, RetainedCgroupAnchor};
-use aos_sandbox_linux::pidfd::PidFd;
+use aos_linux_descriptors::pidfd::PidFd;
 use aos_systemd_client::SystemdClient;
 use rustix::fs::{Mode, OFlags, open};
 
@@ -127,7 +127,7 @@ pub(super) enum ControllerServiceIdentityErrorV1 {
     #[error(transparent)]
     Systemd(#[from] aos_systemd_client::Error),
     #[error(transparent)]
-    Kernel(#[from] aos_sandbox_linux::Error),
+    Kernel(#[from] aos_linux_descriptors::Error),
     #[error(transparent)]
     Io(#[from] rustix::io::Errno),
 }
@@ -142,7 +142,7 @@ pub(super) enum ControllerAttachmentProvisionErrorV1 {
     #[error(transparent)]
     BrokerPlan(#[from] ControllerBrokerPlanSignerError),
     #[error(transparent)]
-    Kernel(#[from] aos_sandbox_linux::Error),
+    Kernel(#[from] aos_linux_descriptors::Error),
     #[error(transparent)]
     Io(#[from] rustix::io::Errno),
 }

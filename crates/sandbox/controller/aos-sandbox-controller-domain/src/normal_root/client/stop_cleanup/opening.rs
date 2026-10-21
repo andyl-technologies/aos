@@ -183,7 +183,7 @@ impl RootStopCleanupClientOriginalV1 {
         let profile = Arc::clone(&native.profile);
         self.observe_bookend(0, &profile, false)?;
         let native = self.native.as_mut().ok_or(RootStopCleanupClientClosedV1)?;
-        native.reporting = Some(native.connection.stream_mut()?.enable_subject_reporting());
+        native.reporting = Some(native.connection.stream_mut()?.enable_subject_reporting().map_err(aos_sandbox_linux::seqpacket::SeqpacketError::from));
         positive(&native.reporting)?;
         native.query_sent = Some(native.query_sender.run_once(
             native.connection.stream_mut()?,

@@ -6,7 +6,7 @@
 //! native subject API and cannot recreate a record, Source or effect loan.
 
 use super::{ReceivedDescriptorRecord, ReceivedSocketOrigin};
-use crate::pidfd::PidFdInfo;
+use aos_linux_descriptors::pidfd::PidFdInfo;
 use crate::seqpacket::RecordCredentials;
 
 /// Retains a completed closed Network record without a live subject capability.

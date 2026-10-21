@@ -20,7 +20,7 @@ use crate::host_catalog_reconciliation::StartHostCatalogPublicationOriginalV2;
 use aos_sandbox_broker_session_protocol::{
     BrokerSessionProtocolV1, VerifiedBrokerSessionTranscriptV1,
 };
-use aos_sandbox_linux::immutable_file::SealedReadOnlyCredential;
+use aos_linux_descriptors::credential::SealedReadOnlyCredential;
 use aos_sandbox_linux::seqpacket::SeqpacketSocket;
 
 #[derive(Default)]

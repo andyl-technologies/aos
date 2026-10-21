@@ -18,7 +18,7 @@ pub(super) struct CatalogPinOriginalV2 {
     opening: Option<rustix::io::Result<OwnedFd>>,
     namespace: Option<std::result::Result<NamespaceFd, NamespaceAdoptionFailureV2>>,
     stat: Option<rustix::io::Result<Stat>>,
-    mount: Option<aos_sandbox_linux::Result<MountId>>,
+    mount: Option<aos_linux_descriptors::Result<MountId>>,
     expected: Option<Result<()>>,
     host_opening: Option<rustix::io::Result<OwnedFd>>,
     host_namespace: Option<std::result::Result<NamespaceFd, NamespaceAdoptionFailureV2>>,

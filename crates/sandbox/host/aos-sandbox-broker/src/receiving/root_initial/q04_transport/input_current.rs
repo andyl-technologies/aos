@@ -41,8 +41,32 @@ impl RootQ04InputCurrentLoanV1<'_, '_> {
     /// Always refuses while retaining every actual independently owed result.
     pub fn finish_refused_once_v1(mut self) -> Result<(), RootObservationErrorV1> {
         self.finished = true;
-        let _owed = self.origin.finish_input_prefix_once_v1(true);
+        let _owed = self.finish_negative_posts_v1();
         Err(RootObservationErrorV1::Service)
+    }
+
+    /// Reports only the actual independently owed negative post completion.
+    ///
+    /// The original remains refused and closed. A successful unit result
+    /// supplies no paired sample, current settlement or semantic permission.
+    ///
+    /// # Errors
+    /// Retains an actual Root-post/final-clock failure or unreturned post.
+    pub fn finish_negative_posts_once_v1(mut self) -> Result<(), RootObservationErrorV1> {
+        self.finished = true;
+        self.finish_negative_posts_v1()
+    }
+
+    fn finish_negative_posts_v1(&mut self) -> Result<(), RootObservationErrorV1> {
+        if !self.origin.input_prefix_pending {
+            return Err(RootObservationErrorV1::Service);
+        }
+        let _primary_refusal = self.origin.finish_input_prefix_once_v1(true);
+        self.origin
+            .crossings
+            .last()
+            .ok_or(RootObservationErrorV1::Service)?
+            .require_independent_posts_complete_v1()
     }
 }
 

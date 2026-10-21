@@ -3,7 +3,9 @@
 use std::error::Error;
 use aos_sandbox_model::{AccountingError, ResourceVector};
 use aos_sandbox_linux::cgroup::RetainedCgroupAnchor;
-use aos_sandbox_linux::pidfd::{CurrentSelfPidFdCustodyV1, PidFdInfo, PidFdProcessIdentity};
+use aos_sandbox_linux::pidfd::CurrentSelfPidFdCustodyV1;
+use aos_linux_descriptors::pidfd::PidFdInfo;
+use aos_sandbox_linux::pidfd::PidFdProcessIdentity;
 use super::SourceReceivingClosedV1;
 use aos_sandbox_broker::receiving::receiving_limits::ReceivingContainmentReadbackV1;
 use aos_sandbox_broker::receiving::FixedServiceCurrentnessSampleV1;

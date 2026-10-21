@@ -43,7 +43,10 @@ pub use start_publication::CatalogMaintenancePublicationStatusV2;
 pub use start_publication::{StartHostCatalogPublicationClosedV2, StartHostCatalogPublicationOriginalV2};
 mod start_projection;
 pub(crate) use start_projection::{project_start_successor_catalog_data_v2,
-    start_projection_receiving_demand_data_v2};
+    start_projection_receiving_demand_data_v2,
+    project_start_successor_catalog_from_observation_v2,
+    start_projection_receiving_from_observation_v2,
+    host_start_observation_control_bytes_v2};
 
 use aos_sandbox_api::aos::sandbox::local::v1::DestinationSlotLifecycle;
 use aos_sandbox_model::{CanonicalAssignmentManifestV1, ObjectDescriptor, ObjectDigest};
@@ -477,12 +480,14 @@ struct CatalogHistory {
     current: Option<CatalogRecord>,
 }
 
-impl CatalogHistory {
-    fn load(journal: &mut Journal) -> Result<Self, HostCatalogReconciliationError> {
-        journal.ensure_healthy()?;
+
+
+macro_rules! host_catalog_reconciliation_history_recipe_v2 {
+    ($input:expr) => {{
+        $input.ensure_healthy()?;
         let mut history = Self::default();
 
-        for (key, value) in journal.records(RecordNamespace::HostCatalogReconciliation) {
+        for (key, value) in $input.records(RecordNamespace::HostCatalogReconciliation) {
             let record = CatalogRecord::decode(value)?;
             if key != record.key() {
                 return Err(HostCatalogReconciliationError::CorruptState);
@@ -522,6 +527,16 @@ impl CatalogHistory {
         }
 
         Ok(history)
+        }};
+}
+
+impl CatalogHistory {
+    fn load(journal: &mut Journal) -> Result<Self, HostCatalogReconciliationError> {
+        host_catalog_reconciliation_history_recipe_v2!(journal)
+    }
+
+    fn load_observed_v2(journal: crate::journal::historical_observation::HistoricalObservationV1<'_>) -> Result<Self, HostCatalogReconciliationError> {
+        host_catalog_reconciliation_history_recipe_v2!(journal)
     }
 }
 

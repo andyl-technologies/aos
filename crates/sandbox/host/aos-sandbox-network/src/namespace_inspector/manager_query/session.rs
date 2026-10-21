@@ -11,7 +11,7 @@ use std::os::fd::{AsFd as _, BorrowedFd, OwnedFd};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use aos_sandbox_linux::pidfd::PidFd;
+use aos_linux_descriptors::pidfd::PidFd;
 use aos_sandbox_linux::process::{
     ExchangeStep, FixedLiveChild, FixedProcessControlInterest, FixedProcessControlReadiness,
     FixedProcessRequest, FixedProcessSessionError, FixedProcessSessionExchange,
@@ -69,7 +69,7 @@ pub(crate) enum NamespaceInspectorManagerQuerySessionError {
     InvalidInput(&'static str),
     /// Descriptor setup or retained kernel observation failed.
     #[error(transparent)]
-    Linux(#[from] aos_sandbox_linux::Error),
+    Linux(#[from] aos_linux_descriptors::Error),
     /// The authenticated control socket could not be created.
     #[error(transparent)]
     Seqpacket(#[from] SeqpacketError),
@@ -461,7 +461,7 @@ pub(in crate::namespace_inspector) enum ManagerQueryExchangeError {
     #[error(transparent)]
     Seqpacket(#[from] SeqpacketError),
     #[error(transparent)]
-    Linux(#[from] aos_sandbox_linux::Error),
+    Linux(#[from] aos_linux_descriptors::Error),
     #[error(transparent)]
     Snapshot(#[from] NamespaceInspectorManagerQueryError),
     #[error(transparent)]
@@ -660,31 +660,31 @@ fn validate_helper_executable(
     Ok(())
 }
 
-fn open_process_executable(pid: u32) -> Result<OwnedFd, aos_sandbox_linux::Error> {
+fn open_process_executable(pid: u32) -> Result<OwnedFd, aos_linux_descriptors::Error> {
     let path = PathBuf::from(format!("/proc/{pid}/exe"));
     rustix::fs::open(
         &path,
         rustix::fs::OFlags::PATH | rustix::fs::OFlags::CLOEXEC,
         rustix::fs::Mode::empty(),
     )
-    .map_err(|source| aos_sandbox_linux::Error::Syscall {
+    .map_err(|source| aos_linux_descriptors::Error::Syscall {
         operation: "open manager-query helper executable",
         source: source.into(),
     })
 }
 
-fn descriptor_inode(descriptor: BorrowedFd<'_>) -> Result<u64, aos_sandbox_linux::Error> {
+fn descriptor_inode(descriptor: BorrowedFd<'_>) -> Result<u64, aos_linux_descriptors::Error> {
     let status =
-        rustix::fs::fstat(descriptor).map_err(|source| aos_sandbox_linux::Error::Syscall {
+        rustix::fs::fstat(descriptor).map_err(|source| aos_linux_descriptors::Error::Syscall {
             operation: "inspect manager-query descriptor inode",
             source: source.into(),
         })?;
     Ok(status.st_ino)
 }
 
-fn duplicate_descriptor(descriptor: BorrowedFd<'_>) -> Result<OwnedFd, aos_sandbox_linux::Error> {
+fn duplicate_descriptor(descriptor: BorrowedFd<'_>) -> Result<OwnedFd, aos_linux_descriptors::Error> {
     rustix::io::fcntl_dupfd_cloexec(descriptor, 0).map_err(|source| {
-        aos_sandbox_linux::Error::Syscall {
+        aos_linux_descriptors::Error::Syscall {
             operation: "duplicate manager-query descriptor",
             source: source.into(),
         }

@@ -22,7 +22,7 @@ use aos_sandbox_broker::receiving::{
     NetworkChildOperationBindingDataV2, NetworkChildOriginOriginalV2,
 };
 use aos_sandbox_model::{BrokerVerb, ObjectDigest};
-use aos_sandbox_linux::pidfd::PidFd;
+use aos_linux_descriptors::pidfd::PidFd;
 
 #[derive(Clone, Copy)]
 enum First {

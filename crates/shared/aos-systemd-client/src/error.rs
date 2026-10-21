@@ -14,7 +14,7 @@ pub enum Error {
     /// A retained kernel pin for the fixed worker private transport failed.
     #[cfg(target_os = "linux")]
     #[error("worker private transport kernel pin failed: {0}")]
-    WorkerPrivateKernel(#[source] aos_sandbox_linux::Error),
+    WorkerPrivateKernel(#[source] aos_linux_descriptors::Error),
 
     /// A caller attempted to construct an invalid typed sandbox unit, or
     /// systemd returned an observation that violates the typed contract.

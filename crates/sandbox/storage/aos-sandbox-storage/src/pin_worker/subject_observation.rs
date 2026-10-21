@@ -3,8 +3,8 @@
 use super::*;
 
 pub(crate) struct SubjectLivenessOriginalV1 {
-    expected: Option<Result<bool, aos_sandbox_linux::Error>>,
-    actual: Option<Result<bool, aos_sandbox_linux::Error>>,
+    expected: Option<Result<bool, aos_linux_descriptors::Error>>,
+    actual: Option<Result<bool, aos_linux_descriptors::Error>>,
 }
 
 impl SubjectLivenessOriginalV1 {

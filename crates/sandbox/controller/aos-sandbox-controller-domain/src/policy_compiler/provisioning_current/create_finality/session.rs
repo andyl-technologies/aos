@@ -5,6 +5,8 @@
 //! packet interpretation uses only each authenticated durable companion's parse
 //! coordinate, and cannot turn an expired Apply lease into current authority.
 
+use aos_sandbox_protocol::domain_ledger::readonly::FixedJournalReadbackDataV1 as RootFixedNativeReadbackV1;
+
 use std::error::Error;
 use std::mem::size_of;
 
@@ -29,7 +31,6 @@ use aos_sandbox_protocol::storage_inventory::ValidatedStorageInventory;
 
 use crate::journal::{JournalError, RecordNamespace};
 use crate::policy_compiler::create_storage_current::controller_readonly::{
-    native_read::RootFixedNativeReadbackV1,
     storage_inventory::{RootCurrentStorageInventoryV1,
         RootHistoricalSessionPurposeV1, verify_session_for_purpose_v1,
         verify_storage_history_roster_v2},

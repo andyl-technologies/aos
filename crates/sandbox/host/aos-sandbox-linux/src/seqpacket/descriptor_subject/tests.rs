@@ -15,7 +15,7 @@ const ORIGIN_DESCRIPTOR_DROP_FIXTURE_ENV: &str = "AOS_DESCRIPTOR_SUBJECT_ORIGIN_
 const PEER_LOSS_FIXTURE_ENV: &str = "AOS_DESCRIPTOR_SUBJECT_PEER_LOSS_FIXTURE_V1";
 
 fn pair() -> (DescriptorSubjectSocket, OwnedFd) {
-    let (receiver, sender) = uapi::seqpacket_pair().expect("socket pair");
+    let (receiver, sender) = aos_linux_descriptors::native::seqpacket_pair().expect("socket pair");
     (
         DescriptorSubjectSocket::from_owned(receiver).expect("configured receiver"),
         sender,
@@ -28,7 +28,7 @@ fn accepted_endpoint_requires_the_exact_bound_filesystem_path() {
     let expected = directory.path().join("expected.sock");
     let substituted = directory.path().join("substituted.sock");
     let listener = uapi::bind_record_subject_listener(&expected, 1).expect("bind expected socket");
-    uapi::enable_seqpacket_identity(listener.as_fd()).expect("configure expected listener");
+    aos_linux_descriptors::native::enable_seqpacket_identity(listener.as_fd()).expect("configure expected listener");
     let connector = uapi::connect_seqpacket(&expected).expect("connect expected socket");
     let accepted = uapi::accept_record_subject_socket(listener.as_fd()).expect("accept endpoint");
     let endpoint = DescriptorSubjectSocket::from_owned(accepted).expect("adopt accepted endpoint");
@@ -53,7 +53,7 @@ fn accepted_endpoint_requires_the_exact_bound_filesystem_path() {
             .require_local_filesystem_path(&substituted)
             .is_err()
     );
-    let (foreign, _) = uapi::seqpacket_pair().expect("create foreign socket");
+    let (foreign, _) = aos_linux_descriptors::native::seqpacket_pair().expect("create foreign socket");
     assert!(
         endpoint
             .peer()
@@ -119,9 +119,9 @@ fn exact_descriptor_replies_retain_subject_and_cloexec_ownership() {
     assert_eq!(record.payload(), b"reply");
     assert_eq!(record.descriptors().len(), 2);
     assert_eq!(record.subject().initial_info().pid(), std::process::id());
-    assert!(uapi::is_cloexec(record.subject().pidfd().as_fd()).expect("subject CLOEXEC"));
+    assert!(aos_linux_descriptors::native::is_cloexec(record.subject().pidfd().as_fd()).expect("subject CLOEXEC"));
     for fd in record.descriptors() {
-        assert!(uapi::is_cloexec(fd.as_fd()).expect("transferred CLOEXEC"));
+        assert!(aos_linux_descriptors::native::is_cloexec(fd.as_fd()).expect("transferred CLOEXEC"));
     }
 }
 
@@ -151,7 +151,7 @@ fn received_descriptor_record_binds_only_to_its_exact_socket() {
 #[test]
 fn same_socket_duplicate_accepts_descriptor_record_origin() {
     let (mut receiver, sender) = pair();
-    let duplicate_fd = uapi::duplicate_at_least(receiver.as_fd().expect("receiver fd"), 0)
+    let duplicate_fd = aos_linux_descriptors::native::duplicate_at_least(receiver.as_fd().expect("receiver fd"), 0)
         .expect("duplicate receiver");
     let mut duplicate = DescriptorSubjectSocket::from_owned(duplicate_fd).expect("adopt duplicate");
     uapi::send_seqpacket(sender.as_fd(), b"duplicate").expect("send duplicate record");
@@ -193,7 +193,7 @@ fn independent_descriptor_socket_rejects_origin_and_closes() {
 fn opposite_descriptor_endpoint_rejects_origin_and_closes() {
     let (mut receiver, sender_fd) = pair();
     let duplicate_sender =
-        uapi::duplicate_at_least(sender_fd.as_fd(), 0).expect("duplicate sender");
+        aos_linux_descriptors::native::duplicate_at_least(sender_fd.as_fd(), 0).expect("duplicate sender");
     let mut sender =
         DescriptorSubjectSocket::from_owned(sender_fd).expect("adopt sending endpoint");
     uapi::send_seqpacket(duplicate_sender.as_fd(), b"opposite").expect("send opposite record");
@@ -288,7 +288,7 @@ fn run_origin_descriptor_drop_fixture() {
         Err(error)
             if error.category() == crate::seqpacket::RecordBindingErrorCategory::OriginMismatch
     ));
-    assert!(!uapi::raw_fd_is_open(received_fd));
+    assert!(!aos_linux_descriptors::native::raw_fd_is_open(received_fd));
     assert!(matches!(
         second_receiver.as_fd(),
         Err(SeqpacketError::Closed)
@@ -297,7 +297,7 @@ fn run_origin_descriptor_drop_fixture() {
 
 #[test]
 fn production_sender_transfers_only_bounded_exact_tables() {
-    let (receiver, sender) = uapi::seqpacket_pair().expect("socket pair");
+    let (receiver, sender) = aos_linux_descriptors::native::seqpacket_pair().expect("socket pair");
     let mut receiver = DescriptorSubjectSocket::from_owned(receiver).expect("configured receiver");
     let mut sender = DescriptorSubjectSocket::from_owned(sender).expect("configured sender");
     let first = tempfile::tempfile().expect("first transferred file");
@@ -362,7 +362,7 @@ fn production_sender_transfers_only_bounded_exact_tables() {
 
 #[test]
 fn closed_kernel_export_profile_transfers_three_ordered_opath_descriptors() {
-    let (left, right) = uapi::seqpacket_pair().expect("socket pair");
+    let (left, right) = aos_linux_descriptors::native::seqpacket_pair().expect("socket pair");
     let mut sender = DescriptorSubjectSocket::from_owned(left).expect("configured sender");
     let mut receiver = DescriptorSubjectSocket::from_owned(right).expect("configured receiver");
     let directories = [
@@ -404,7 +404,7 @@ fn closed_kernel_export_profile_transfers_three_ordered_opath_descriptors() {
                     .expect("status")
                     .contains(rustix::fs::OFlags::PATH)
             );
-            assert!(uapi::is_cloexec(fd.as_fd()).expect("CLOEXEC"));
+            assert!(aos_linux_descriptors::native::is_cloexec(fd.as_fd()).expect("CLOEXEC"));
             (stat.st_dev, stat.st_ino)
         })
         .collect();
@@ -430,7 +430,7 @@ fn closed_kernel_export_profile_rejects_missing_extra_and_swapped_roles() {
         assert!(receiver.receive_kernel_export_three(856).is_err());
     }
 
-    let (left, right) = uapi::seqpacket_pair().expect("socket pair");
+    let (left, right) = aos_linux_descriptors::native::seqpacket_pair().expect("socket pair");
     let mut sender = DescriptorSubjectSocket::from_owned(left).expect("configured sender");
     let mut receiver = DescriptorSubjectSocket::from_owned(right).expect("configured receiver");
     sender
@@ -468,7 +468,7 @@ fn closed_kernel_export_profile_closes_after_peer_loss() {
         return;
     }
 
-    let (sender, receiver) = uapi::seqpacket_pair().expect("socket pair");
+    let (sender, receiver) = aos_linux_descriptors::native::seqpacket_pair().expect("socket pair");
     let mut sender = DescriptorSubjectSocket::from_owned(sender).expect("configured sender");
     let first = tempfile::tempfile().expect("first role");
     let second = tempfile::tempfile().expect("second role");
@@ -498,7 +498,7 @@ fn packet_capacity_rejects_invalid_bounds_without_closing() {
 
 #[test]
 fn small_provisioned_packet_transfers_exactly() {
-    let (left, right) = uapi::seqpacket_pair().expect("socket pair");
+    let (left, right) = aos_linux_descriptors::native::seqpacket_pair().expect("socket pair");
     let mut left = DescriptorSubjectSocket::from_owned(left).expect("configured left");
     let mut right = DescriptorSubjectSocket::from_owned(right).expect("configured right");
     let payload = vec![0xa5; 4096];
@@ -569,7 +569,7 @@ fn descriptor_sender_connect_rejects_noncanonical_paths_before_connecting() {
     ] {
         assert!(matches!(
             DescriptorSubjectSocket::connect(Path::new(path)),
-            Err(SeqpacketError::Kernel(crate::Error::InvalidInput {
+            Err(SeqpacketError::Kernel(aos_linux_descriptors::Error::InvalidInput {
                 field: "descriptor-subject connection path",
                 ..
             }))
@@ -605,7 +605,7 @@ fn wrong_descriptor_count_and_oversize_close_the_receiver() {
 
 #[test]
 fn records_queued_before_identity_configuration_are_not_upgraded() {
-    let (receiver, sender) = uapi::seqpacket_pair().expect("socket pair");
+    let (receiver, sender) = aos_linux_descriptors::native::seqpacket_pair().expect("socket pair");
     uapi::send_seqpacket(sender.as_fd(), b"early").expect("queue before options");
     let mut receiver = DescriptorSubjectSocket::from_owned(receiver).expect("configure receiver");
     assert!(receiver.receive(64, 0).is_err());
@@ -666,7 +666,7 @@ fn mount_scope_reply_profile_accepts_only_zero_or_five_descriptors() {
             assert_eq!(record.descriptors().len(), count);
             assert_eq!(record.subject().initial_info().pid(), std::process::id());
             for descriptor in record.descriptors() {
-                assert!(uapi::is_cloexec(descriptor.as_fd()).expect("transferred CLOEXEC"));
+                assert!(aos_linux_descriptors::native::is_cloexec(descriptor.as_fd()).expect("transferred CLOEXEC"));
             }
         } else {
             assert!(result.is_err(), "unexpected descriptor count {count}");

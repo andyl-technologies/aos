@@ -28,11 +28,11 @@ pub(crate) use use_reserved::{CreateStorageUseBankOriginalsV1, CreateStorageUseB
 pub(in crate::controller_resource_reservation) use use_reserved::UseReceivingOriginalsV1;
 pub(super) mod root_exchange;
 mod cache_current_proof;
-pub(crate) use root_exchange::CacheCurrentAuditReceivingLoanV1;
 pub(crate) use use_reserved::release::CacheReleaseReceivingLoanV1;
 pub(crate) use use_reserved::cache_terminal::CacheTerminalReceivingLoanV1;
 pub use use_reserved::release::create_storage_held_release_receiving_demand_v1;
 pub use root_exchange::create_storage_cache_current_fixed_receiving_demand_v1;
+pub use root_exchange::create_storage_cache_current_dynamic_receiving_demand_v1;
 pub use root_exchange::{OriginalCreateStorageUseSigningV1, CreateStorageUseSigningInputsDataV1};
 pub(in crate::controller_resource_reservation) use root_exchange::signing_originals_receiving_demand_v1;
 pub use root_exchange::{CreateStorageRootUseTailShapeDataV1, create_storage_root_use_tail_shape_v1};
@@ -100,7 +100,7 @@ impl CreateStorageOriginalLoanV1<'_> {
     // exclusive purpose still admits its additional backing and runs all
     // currentness posts before IO; earlier failure prevents any peak reuse.
     pub(super) fn require_operation_currentness_peak_v1(
-        &self, cache: &crate::cache_residency::OriginalCreateStorageCacheLoanV1<'_>,
+        &self, cache: &crate::cache_programmes::OriginalCreateStorageCacheLoanV1<'_>,
     ) -> Result<(), ResourceReservationErrorV1> {
         if self.owner.failure().is_some() || cache.failure().is_some() {
             return Err(ResourceReservationErrorV1::Conflict);

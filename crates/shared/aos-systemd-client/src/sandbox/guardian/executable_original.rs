@@ -4,9 +4,8 @@
 //! fixed-buffer hash loop is shared with Nspawn below both role layers.
 
 use std::os::fd::{AsFd as _, BorrowedFd};
-use aos_sandbox_linux::protected_file::positional_hash::{
-    PositionalHashFailureV2, PositionalHashOriginalV2,
-};
+use aos_linux_descriptors::positional_hash::PositionalHashFailureV2;
+use aos_linux_descriptors::positional_hash::PositionalHashOriginalV2;
 use super::{GuardianExecutableDescriptor, GuardianExecutableSnapshot, MAXIMUM_EXECUTABLE_BYTES, invalid};
 use crate::error::Result;
 
@@ -217,7 +216,7 @@ mod tests {
     use std::io::Write as _;
     use std::os::unix::fs::PermissionsExt as _;
     use super::*;
-    use aos_sandbox_linux::protected_file::positional_hash::POSITIONAL_HASH_BUFFER_BYTES_V2;
+    use aos_linux_descriptors::positional_hash::POSITIONAL_HASH_BUFFER_BYTES_V2;
 
     fn executable() -> tempfile::NamedTempFile {
         let file = tempfile::NamedTempFile::new().unwrap();

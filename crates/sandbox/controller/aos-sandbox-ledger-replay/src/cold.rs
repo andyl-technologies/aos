@@ -56,6 +56,19 @@ impl<E: Error + 'static> ColdReplayOriginalV1<E> {
         }
     }
 
+    /// Returns the actual inline driver and flag construction planes.
+    ///
+    /// Family backing is excluded; retained role callers admit it at the real
+    /// reached semantic frontier before allocating their family originals.
+    #[must_use]
+    pub fn receiving_construction_bytes_v1() -> Option<usize> {
+        semantic::SelectedSemanticReplayOriginalV1::<E>::receiving_construction_bytes_v1()?
+            .checked_add(std::mem::size_of::<Self>()
+                .checked_sub(std::mem::size_of::<semantic::SelectedSemanticReplayOriginalV1<E>>())?
+                .checked_mul(2)?)?
+            .checked_add(std::mem::size_of::<Option<usize>>().checked_mul(2)?)
+    }
+
     /// Returns the same retained driver's compiled byte allowance.
     ///
     /// # Errors
@@ -235,6 +248,16 @@ impl ColdReplayOriginalV1 {
     ) -> Result<(), ColdReplayClosedV1> {
         self.original.observe_ordinary_once(cursor, identity, limits, None)
             .map_err(|_| ColdReplayClosedV1)
+    }
+
+    /// Returns inline construction and the exact borrowed suffix adapter planes.
+    ///
+    /// Dynamic model and Source-family backing remain separate real admission.
+    #[must_use]
+    pub fn receiving_construction_with_release_observer_bytes_v1() -> Option<usize> {
+        Self::receiving_construction_bytes_v1()?
+            .checked_add(std::mem::size_of::<ObservedCursorV1<'_, '_, '_, '_, '_, '_>>()
+                .checked_mul(2)?)
     }
 
     /// Returns the compiled byte peak including the borrowed suffix adapter.
@@ -434,6 +457,13 @@ impl<E: Error + 'static> ColdReplayOriginalV1<E> {
     /// Borrows the exact first native stopping result or semantic cause.
     pub fn failure(&self) -> Option<&(dyn Error + 'static)> {
         self.original.failure()
+    }
+
+    /// Borrows the same retained Source transition or family diagnostic.
+    ///
+    /// Selection remains with the real caller's existing first-cause order.
+    pub fn source_failure_cause_v1(&self) -> Option<&(dyn Error + 'static)> {
+        self.original.source_failure_cause_v1()
     }
 
     /// Identifies when the real native cursor owns the selected deeper cause.

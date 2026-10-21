@@ -449,7 +449,7 @@ impl OperatorCreateRecoveryOriginalV1 {
             .ok_or(JournalError::ProtectedBoundary)?;
         clock.check_next_once_v1()?;
         models.prepared = Some(models.terminal.prepare_once_v1(
-            controller,
+            crate::journal::historical_observation::HistoricalObservationV1::from_journal_v1(controller),
             parent,
             aos_sandbox_model::ProjectId::from_bytes(association.project),
             aos_sandbox_model::SandboxId::from_bytes(association.sandbox),

@@ -733,14 +733,14 @@ impl<'journal> LifecycleProtectedJournalOwnerV1<'journal> {
         let current = self
             .current_operation(operation_key)?
             .ok_or(LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
-        let boot_before = aos_sandbox_linux::boot::KernelBootId::current()
+        let boot_before = aos_linux_descriptors::boot::KernelBootId::current()
             .map_err(|_| LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?
             .into_bytes();
         let mut nonce = [0; 32];
         OsRng
             .try_fill_bytes(&mut nonce)
             .map_err(|_| LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
-        let boot_after = aos_sandbox_linux::boot::KernelBootId::current()
+        let boot_after = aos_linux_descriptors::boot::KernelBootId::current()
             .map_err(|_| LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?
             .into_bytes();
         if boot_before != boot_after {
@@ -775,7 +775,7 @@ impl<'journal> LifecycleProtectedJournalOwnerV1<'journal> {
         let boot = self
             .current_boot_inventory(boot_inventory_key)?
             .ok_or(LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
-        let host_boot = aos_sandbox_linux::boot::KernelBootId::current()
+        let host_boot = aos_linux_descriptors::boot::KernelBootId::current()
             .map_err(|_| LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?
             .into_bytes();
         if boot.inventory().operation() != current.operation().operation_id()
@@ -824,7 +824,7 @@ impl<'journal> LifecycleProtectedJournalOwnerV1<'journal> {
         storage: &crate::DurableStorageResourceInventorySnapshotV1,
         storage_inventory: &super::LifecycleAuthenticatedStorageInventoryBootstrapV1,
         network: &super::LifecycleAuthenticatedBrokerDomainInventoryBootstrapV1,
-        cache: &mut crate::cache_residency::CacheResidencyProtectedOwnerV1,
+        cache: &mut aos_sandbox_cache::CacheResidencyProtectedOwnerV1,
         transfer: &mut crate::local_inventory::ProtectedMultiNodeAuthorityOwnerV1,
         transfer_inventory: &super::LifecycleAuthenticatedTransferInventoryV1,
         transaction_id: [u8; 16],
@@ -833,7 +833,7 @@ impl<'journal> LifecycleProtectedJournalOwnerV1<'journal> {
         inventory_lineage: ResourceId,
         observed_at: LifecycleTimeV1,
     ) -> Result<LifecycleProgressCommitOutcomeV1, super::LifecyclePhase6ErrorV1> {
-        let boot_before = aos_sandbox_linux::boot::KernelBootId::current()
+        let boot_before = aos_linux_descriptors::boot::KernelBootId::current()
             .map_err(|_| super::LifecyclePhase6ErrorV1::StaleAuthority)?
             .into_bytes();
         if boot_before != challenge.host_boot() {
@@ -871,7 +871,7 @@ impl<'journal> LifecycleProtectedJournalOwnerV1<'journal> {
         transfer
             .recheck_lifecycle_transfer_inventory(transfer_inventory)
             .map_err(|_| super::LifecyclePhase6ErrorV1::StaleAuthority)?;
-        let boot_after = aos_sandbox_linux::boot::KernelBootId::current()
+        let boot_after = aos_linux_descriptors::boot::KernelBootId::current()
             .map_err(|_| super::LifecyclePhase6ErrorV1::StaleAuthority)?
             .into_bytes();
         if boot_before != boot_after {

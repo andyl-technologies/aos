@@ -17,7 +17,7 @@ pub(crate) struct HostTerminalInventoryShapeV4 {
 impl HostTerminalInventoryShapeV4 {
     fn derive_v4(maximum_response: u32) -> Option<Self> {
         let carriers = std::mem::size_of::<HostTerminalInventoryOriginalV4>().checked_mul(3)?;
-        let boot = aos_sandbox_linux::boot::RootOriginalKernelBootIdAttemptV1::dominant_requested_bytes_v1()?;
+        let boot = aos_linux_descriptors::boot::RootOriginalKernelBootIdAttemptV1::dominant_requested_bytes_v1()?;
         let bytes = carriers.checked_add(3 * HOST_STOPPED_NAMESPACE_BYTES_V4)?
             .checked_add(4 * std::mem::size_of::<Vec<u8>>())?
             .checked_add(5_usize.checked_mul(boot)?)?

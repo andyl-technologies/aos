@@ -12,7 +12,7 @@ use std::os::fd::AsFd as _;
 use std::os::unix::net::UnixStream;
 use std::time::Duration;
 
-use super::bounded_stream_io::{DeadlineStreamDirectionV1, FixedDeadlineStreamIoV1};
+use aos_sandbox_broker::bounded_stream_io::{DeadlineStreamDirectionV1, FixedDeadlineStreamIoV1};
 use super::create_storage_current::OriginalRootCreateStorageCurrentAttemptV1;
 use crate::normal_root::{NormalRootStartupErrorV1, RootPolicyAcceptedFlightV1};
 
@@ -90,7 +90,7 @@ enum First {
 pub(super) struct RootPolicyPreludeNativeOriginalV1 {
     clock: opening_clock::RootPolicyOpeningClockV1,
     endpoint_access: Option<Result<(), NormalRootStartupErrorV1>>,
-    endpoint: Option<Result<(), aos_sandbox_linux::Error>>,
+    endpoint: Option<Result<(), aos_linux_descriptors::Error>>,
     write_timeout: Option<std::io::Result<()>>,
     prefix_io: FixedDeadlineStreamIoV1<32>,
     prefix_bytes: [u8; 32],
@@ -329,6 +329,21 @@ impl<'flight, 'listener, 'startup> RootPolicyPreludeOriginalV1<'flight, 'listene
         Ok(OriginalRootCreateStorageCurrentAttemptV1::from_prelude_v1(
             self,
         ))
+    }
+
+    /// Moves the whole classified Create opening into the native caller input.
+    ///
+    /// # Errors
+    /// Returns the unchanged whole owner when the prefix did not select Create.
+    /// This author-input entry is not installed until all native continuations
+    /// and the genuine terminal handoff have been joined and qualified.
+    pub(crate) fn into_owned_current_initial_v1(
+        self,
+    ) -> Result<super::create_storage_current::initial_owned::RootOwnedInitialCurrentAttemptV1<'flight, 'listener, 'startup>, Self> {
+        if self.purpose_v1() != Some(RootPolicyPurposeV1::CreateStorage) {
+            return Err(self);
+        }
+        Ok(super::create_storage_current::initial_owned::RootOwnedInitialCurrentAttemptV1::from_prelude_v1(self))
     }
 
     pub(crate) fn into_delete_v1(

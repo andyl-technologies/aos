@@ -12,14 +12,10 @@
 //! AOSQ4G01 | version=1 | Applying-only policy subgate | checksum
 //! ```
 
-use aos_sandbox_policy::controller_project_readback::CONTROLLER_PROJECT_ADMISSION_READBACK_BYTES_V1;
-
-use aos_sandbox_protocol::source_genesis_wire as genesis_wire;
-
 use aos_sandbox_protocol::domain_ledger::JournalTransactionDataError;
 use aos_sandbox_protocol::domain_ledger::ProtectedHistoryDataErrorV1;
 pub(crate) use aos_sandbox_protocol::domain_ledger::create_q04_history::{
-    CLAIM_CHUNK_BYTES, CLAIM_INDEX_BYTES, CLAIM_CHUNK_PREFIX_BYTES, PREVIEW_INDEX_BYTES, DECISION_BYTES, GATE_BYTES, IDENTITY_BYTES, MAXIMUM_CLAIM_BYTES,
+    CLAIM_CHUNK_BYTES, DECISION_BYTES, GATE_BYTES, IDENTITY_BYTES, MAXIMUM_CLAIM_BYTES,
     PENDING_BYTES, PHASE_BYTES, PREHOLD_RESPONSE_BYTES, Q04CutIdentityV1, Q04EffectSubgateV1,
     Q04HistoryDataErrorV1, Q04PendingOwnerV1, Q04PendingRecordV1, Q04PhaseOwnerV1,
     Q04PhaseRecordV1, Q04PreholdPublicationDataV1, Q04RootDecisionV1, Q04TransactionOwnerV1,
@@ -28,110 +24,69 @@ pub(crate) use aos_sandbox_protocol::domain_ledger::create_q04_history::{
 #[cfg(test)]
 const GATE_IDENTITY_DOMAIN: &[u8] = b"aos.sandbox.create-q04.effect-gate-identity.v1\0";
 
+use aos_sandbox_model::bounded_codec::BoundedReader;
 use aos_sandbox_model::{ObjectDigest, OperationId, ProjectId, SandboxId};
 use ed25519_dalek::{Signature, Signer as _, SigningKey};
 use sha2::{Digest as _, Sha256};
 
 use crate::journal::JournalError;
 
+mod authority_error;
+mod owned_error;
+
+pub(crate) use owned_error::{
+    project_root_native_journal_error_v1, project_root_policy_error_v1,
+};
+
+fn project_q04_wire_error_v1(
+    error: aos_sandbox_protocol::source_genesis_wire::Q04TransferWireErrorV1,
+) -> CreateQ04ErrorV1 {
+    use aos_sandbox_protocol::source_genesis_wire::Q04TransferWireErrorV1;
+
+    match error {
+        Q04TransferWireErrorV1::ChangedCut => CreateQ04ErrorV1::ChangedCut,
+        Q04TransferWireErrorV1::Allocation(cause) => CreateQ04ErrorV1::Allocation(cause),
+    }
+}
+
 mod client;
 mod input_origin;
 pub(super) mod root;
 
 pub(crate) use client::{
-    OriginalCreateQ04InvocationV1, OriginalQ04FinalRootObservationV1, OriginalQ04RootCacheLoanV1,
-    RetainedCreatePolicySourcesDataV1,
-    Q04ControllerPreparationV1,
-    OriginalQ04ProjectPreparationLoanV1,
-    OriginalQ04CompletedPreparationLoanV1,
+    OriginalCreateQ04InvocationV1, OriginalQ04CompletedPreparationLoanV1,
+    OriginalQ04FinalRootObservationV1, OriginalQ04ProjectPreparationLoanV1,
+    OriginalQ04RootCacheLoanV1, Q04ControllerPreparationV1, RetainedCreatePolicySourcesDataV1,
 };
-pub(crate) use root::{
-    Q04RootAuthorityHistoryV1, RootOriginalInputLoanV1,
-    require_root_q04_fixed_writer, require_root_q04_ordinary_boundary,
-    RootInertHistoryScanV1, require_inert_root_open_history_v1, inert_root_open_history_scan_demand_v1,
-    root_history_chunk_getter_control_bytes_v1,
+pub(crate) use input_origin::{
+    Q04OriginalInputDemandV1, Q04PreparedInputOriginV1, cache_replay_cell_bytes,
+    original_input_demand,
 };
 pub(crate) use root::capacity_shape_digest as q04_capacity_shape_digest_v1;
 pub(crate) use root::root_consumed_gate_record as root_consumed_gate_v1;
-pub(crate) use input_origin::{
-    Q04OriginalInputDemandV1, Q04PreparedInputOriginV1, cache_replay_cell_bytes,
-    candidate_capacity, original_input_demand,
-};
 
-pub(crate) use aos_sandbox_protocol::domain_ledger::create_q04_history::transfer::{
-    MAXIMUM_PREVIEW_BYTES, PREHOLD_METADATA_BYTES, MAXIMUM_PREHOLD_BYTES,
-    PREHOLD_FIELDS, PREHOLD_PREFIX_BYTES, PREVIEW_FIELDS, PREVIEW_PREFIX_BYTES,
-    CLAIM_FIELDS, CLAIM_PREFIX_BYTES, Q04PreviewV1, Q04PreviewTransferRecipeV1,
-    Q04PreviewChunkV1, preview_index_shape, encode_q04_preview_body_v1,
+
+pub(crate) use aos_sandbox_policy::q04_data::{
+    CLAIM_CHUNK_PREFIX_BYTES, CLAIM_FIELDS, CLAIM_INDEX_BYTES, CLAIM_PREFIX_BYTES,
+    MAXIMUM_PREHOLD_BYTES, MAXIMUM_PREVIEW_BYTES, PREHOLD_FIELDS, PREHOLD_METADATA_BYTES,
+    PREHOLD_PREFIX_BYTES, PREVIEW_FIELDS, PREVIEW_INDEX_BYTES, PREVIEW_PREFIX_BYTES,
 };
-use aos_sandbox_protocol::domain_ledger::create_q04_history::transfer::{
-    Q04ChunkPurposeV1, Q04OrderedChunkV1,
-};
-pub(crate) use aos_sandbox_ledger_replay::controller_policy_hold::CONTROLLER_IDENTITY_KEY;
-pub(crate) use aos_sandbox_ledger_replay::controller_policy_hold::CONTROLLER_PHASE_PREFIX;
+pub(crate) const CONTROLLER_IDENTITY_KEY: &[u8] = b"\0aos-controller-q04-cut-v1\0";
+pub(crate) const CONTROLLER_PHASE_PREFIX: &[u8] = b"\0aos-controller-q04-phase-v1\0";
 pub(crate) use aos_sandbox_ledger_replay::source_policy_hold::SOURCE_PENDING_KEY;
 pub(crate) const CACHE_PENDING_KEY: &[u8] = b"\0aos-cache-q04-pending-v1\0";
 
-const CLAIM_SIGNATURE_DOMAIN: &[u8] = b"aos.sandbox.create-q04.claim.signature.v1\0";
-const CLAIM_INDEX_DOMAIN: &[u8] = b"aos.sandbox.create-q04.claim-index.v1\0";
-const PREHOLD_SIGNATURE_DOMAIN: &[u8] = b"aos.sandbox.create-q04.prefund-request.signature.v1\0";
-const PREHOLD_REQUEST_DOMAIN: &[u8] = b"aos.sandbox.create-q04.prefund-request.v1\0";
-const ORIGINAL_PRECUT_DOMAIN: &[u8] = b"aos.sandbox.create-q04.original-precut.v1\0";
-
 // Both original owners compare the same canonical DATA. The recipe contains
 // no live loan, signature brand, future phase or caller-created authority.
-pub(super) struct Q04CutRecipeV1<'recipe> {
-    pub(super) nonce: [u8; 16],
-    pub(super) project: ProjectId,
-    pub(super) operation: OperationId,
-    pub(super) sandbox: SandboxId,
-    pub(super) controller_uid: u32,
-    pub(super) source_uid: u32,
-    pub(super) controller_metadata: &'recipe [u8],
-    pub(super) root_boot: [u8; 16],
-    pub(super) root_started: u64,
-    pub(super) handoff_epoch: u64,
-    pub(super) stage: [u8; 16],
-    pub(super) publication: [u8; 16],
-    pub(super) digests: [ObjectDigest; 14],
-}
-
-pub(super) fn encode_q04_cut_recipe_v1(
-    recipe: Q04CutRecipeV1<'_>,
-) -> Result<Q04CutIdentityV1, CreateQ04ErrorV1> {
-    if recipe.controller_metadata.len() != PREHOLD_METADATA_BYTES {
-        return Err(CreateQ04ErrorV1::Bounds);
-    }
-    let mut body = [0; IDENTITY_BYTES];
-    body[16..32].copy_from_slice(&recipe.nonce);
-    body[32..48].copy_from_slice(recipe.project.as_bytes());
-    body[48..64].copy_from_slice(recipe.operation.as_bytes());
-    body[64..80].copy_from_slice(recipe.sandbox.as_bytes());
-    body[80..84].copy_from_slice(&recipe.controller_uid.to_be_bytes());
-    body[84..88].copy_from_slice(&recipe.source_uid.to_be_bytes());
-    body[88..96].copy_from_slice(&recipe.controller_metadata[32..40]);
-    body[96..104].copy_from_slice(&1_u64.to_be_bytes());
-    body[112..128].copy_from_slice(&recipe.root_boot);
-    body[128..144].copy_from_slice(&recipe.controller_metadata[16..32]);
-    body[144..152].copy_from_slice(&recipe.root_started.to_be_bytes());
-    body[152..160].copy_from_slice(&recipe.root_started
-        .checked_add(65_000_000_000).ok_or(CreateQ04ErrorV1::Expired)?.to_be_bytes());
-    body[160..168].copy_from_slice(&recipe.handoff_epoch.to_be_bytes());
-    body[168..184].copy_from_slice(&recipe.stage);
-    body[184..200].copy_from_slice(&recipe.publication);
-    for (index, digest) in recipe.digests.into_iter().enumerate() {
-        let start = 200 + index * 32;
-        body[start..start + 32].copy_from_slice(digest.as_bytes());
-    }
-    Q04CutIdentityV1::from_body(body).map_err(CreateQ04ErrorV1::from)
-}
-
 /// Reports the original typed failure of a selected Q04 continuation.
 ///
 /// This error is not a retry, clearance, receipt or public Create result.
 /// Its caller retains the actual failed invocation and independent owners.
 #[derive(Debug, thiserror::Error)]
 pub enum CreateQ04ErrorV1 {
+    /// The genuine native Cache owner retained the exact owning failure.
+    #[error(transparent)]
+    NativeCache(Box<aos_sandbox_cache::CacheQ04ErrorV1>),
     /// A protected native journal or exact phase transition failed.
     #[error(transparent)]
     Journal(#[from] JournalError),
@@ -149,7 +104,13 @@ pub enum CreateQ04ErrorV1 {
     },
     /// The existing canonical compiler/publication engine rejected the cut.
     #[error(transparent)]
-    PolicyCompiler(#[from] super::PolicyCompilerJournalErrorV1),
+    PolicyCompiler(#[from] aos_sandbox_policy::native::PolicyCompilerJournalErrorV1),
+    /// The Controller-side publication join retained its own native cause.
+    #[error(transparent)]
+    ControllerPolicyCompiler(#[from] super::PolicyCompilerJournalErrorV1),
+    /// The native Policy owner retains its exact append, readback or post failure.
+    #[error(transparent)]
+    PolicyNativeJournal(aos_sandbox_policy::native::PolicyNativeJournalErrorV1),
     /// The original generation-one owner or signed readback failed.
     #[error(transparent)]
     SourceGenesis(#[from] crate::hierarchy::genesis_profile::SourceGenesisErrorV1),
@@ -161,7 +122,7 @@ pub enum CreateQ04ErrorV1 {
     Io(#[from] std::io::Error),
     /// Strict native stream adoption or original-identity checking failed.
     #[error(transparent)]
-    Kernel(#[from] aos_sandbox_linux::Error),
+    Kernel(#[from] aos_linux_descriptors::Error),
     /// A bounded continuation buffer could not reserve its actual storage.
     #[error(transparent)]
     Allocation(#[from] std::collections::TryReserveError),
@@ -185,16 +146,16 @@ pub enum CreateQ04ErrorV1 {
     ControllerHeld(#[from] super::ControllerHoldReadbackErrorV1),
     /// The independently pinned Cache-purpose observation failed its old codec.
     #[error(transparent)]
-    CachePacket(#[from] crate::cache_residency::CacheOwnerReadbackErrorV1),
+    CachePacket(#[from] aos_sandbox_cache::CacheOwnerReadbackErrorV1),
     /// The actual fixed read-only Cache journal view failed its old engine.
     #[error(transparent)]
-    CacheJournal(#[from] crate::cache_residency::CacheResidencyProtectedJournalErrorV1),
+    CacheJournal(#[from] aos_sandbox_cache::CacheResidencyProtectedJournalErrorV1),
     /// The same retained physical Cache owner failed an original bookend.
     #[error(transparent)]
-    CachePhysical(#[from] crate::cache_residency::CacheOwnerErrorV1),
+    CachePhysical(#[from] aos_sandbox_cache::CacheOwnerErrorV1),
     /// The original fixed Cache bootstrap source failed its existing engine.
     #[error(transparent)]
-    CacheBootstrap(#[from] crate::cache_residency::CacheReplayControllerBootstrapErrorV1),
+    CacheBootstrap(#[from] aos_sandbox_cache::CacheReplayControllerBootstrapErrorV1),
     /// The actual independently admitted normal-Root or original peer changed.
     #[error(transparent)]
     NormalRoot(#[from] crate::normal_root::NormalRootStartupErrorV1),
@@ -225,6 +186,9 @@ pub enum CreateQ04ErrorV1 {
     /// The unchanged original flight cutoff was reached.
     #[error("the original Q04 flight deadline expired")]
     Expired,
+    /// The same retained original transport was already mutably borrowed.
+    #[error(transparent)]
+    OriginBorrowMut(std::cell::BorrowMutError),
     /// A bounded original input or canonical suffix exceeded its limit.
     #[error("the original Q04 input or suffix exceeds its bound")]
     Bounds,
@@ -248,13 +212,27 @@ impl From<aos_sandbox_protocol::cache_owner_readback::CacheOwnerReadbackDataErro
     for CreateQ04ErrorV1
 {
     fn from(cause: aos_sandbox_protocol::cache_owner_readback::CacheOwnerReadbackDataErrorV1) -> Self {
-        Self::CachePacket(crate::cache_residency::CacheOwnerReadbackErrorV1::from(cause))
+        Self::CachePacket(aos_sandbox_cache::CacheOwnerReadbackErrorV1::from(cause))
     }
 }
 
 impl From<JournalTransactionDataError> for CreateQ04ErrorV1 {
     fn from(error: JournalTransactionDataError) -> Self {
         <Self as From<JournalError>>::from(JournalError::from(error))
+    }
+}
+
+impl From<aos_sandbox_protocol::policy_data::binding_v2::BindingDataErrorV1>
+    for CreateQ04ErrorV1
+{
+    fn from(error: aos_sandbox_protocol::policy_data::binding_v2::BindingDataErrorV1) -> Self {
+        Self::PolicyCompiler(aos_sandbox_policy::native::PolicyCompilerJournalErrorV1::from(error))
+    }
+}
+
+impl From<aos_sandbox_ledger_replay::data::SourceSuccessorDataErrorV2> for CreateQ04ErrorV1 {
+    fn from(error: aos_sandbox_ledger_replay::data::SourceSuccessorDataErrorV2) -> Self {
+        Self::SourceGenesis(crate::hierarchy::genesis_profile::SourceGenesisErrorV1::from(error))
     }
 }
 
@@ -274,18 +252,23 @@ impl From<Q04HistoryDataErrorV1> for CreateQ04ErrorV1 {
     }
 }
 
-#[cfg(target_os = "linux")]
-impl From<aos_sandbox_protocol::domain_ledger::create_q04_history::recipes::Q04RecipeDataErrorV1>
-    for CreateQ04ErrorV1
-{
-    fn from(error: aos_sandbox_protocol::domain_ledger::create_q04_history::recipes::Q04RecipeDataErrorV1) -> Self {
-        use aos_sandbox_protocol::domain_ledger::create_q04_history::recipes::Q04RecipeDataErrorV1 as Error;
+impl From<aos_sandbox_policy::q04_data::PolicyQ04DataErrorV1> for CreateQ04ErrorV1 {
+    fn from(error: aos_sandbox_policy::q04_data::PolicyQ04DataErrorV1) -> Self {
+        use aos_sandbox_policy::q04_data::PolicyQ04DataErrorV1 as Data;
         match error {
-            Error::ChangedCut => Self::ChangedCut,
-            Error::Bounds => Self::Bounds,
-            Error::SequenceExhausted => Self::Journal(JournalError::SequenceExhausted),
-            Error::History(error) => Self::from(error),
-            Error::Transaction(error) => Self::from(error),
+            Data::UnauthenticatedCandidate => {
+                Self::PolicyCompiler(aos_sandbox_policy::native::PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)
+            }
+            Data::ChangedCut => Self::ChangedCut,
+            Data::Bounds => Self::Bounds,
+            Data::ProtectedBoundary => Self::Journal(JournalError::ProtectedBoundary),
+            Data::Allocation(error) => Self::Allocation(error),
+            Data::AcknowledgementSignature(error) => Self::AcknowledgementSignature(error),
+            Data::ClaimSignature(error) => Self::ClaimSignature(error),
+            Data::PreholdSignature(error) => Self::PreholdSignature(error),
+            Data::History(error) => Self::from(error),
+            Data::ProtectedHistory(error) => Self::from(error),
+            Data::Transaction(error) => Self::from(error),
         }
     }
 }
@@ -312,16 +295,6 @@ pub(crate) fn finish_controller_q04_signing_v1(
     }
 }
 
-// This nonissuing shape funds the same fixed-width lower suffix before Root5
-// exists. Neither lower writer may commit a release with this value: the
-// actual original-flight loan must bind the observed Root5 first.
-pub(crate) fn lower_release_capacity_shape(identity: &Q04CutIdentityV1) -> ObjectDigest {
-    ObjectDigest::from_bytes(Sha256::new()
-        .chain_update(b"aos.sandbox.create-q04.lower-release-capacity-shape.v1\0")
-        .chain_update(identity.bytes())
-        .finalize().into())
-}
-
 // Comparison DATA only. Each input is the exact canonical retained encoding;
 // authority/currentness comes from the original loans, never this digest.
 // Cclear = SHA256(domain || six (BEu32 length || complete value) pairs).
@@ -333,10 +306,12 @@ pub(crate) fn lower_clearance_recipe_digest_v1(
     controller_settlement: &Q04PhaseRecordV1,
     status_three_effect: &[u8],
 ) -> Result<ObjectDigest, CreateQ04ErrorV1> {
-    if root_settlement.owner() != Q04PhaseOwnerV1::Root || root_settlement.phase() != 6
+    if root_settlement.owner() != Q04PhaseOwnerV1::Root
+        || root_settlement.phase() != 6
         || controller_settlement.owner() != Q04PhaseOwnerV1::Controller
         || controller_settlement.phase() != 6
-        || cache_clear.as_bytes() == &[0; 32] || source_clear.as_bytes() == &[0; 32]
+        || cache_clear.as_bytes() == &[0; 32]
+        || source_clear.as_bytes() == &[0; 32]
         || status_three_effect.is_empty()
     {
         return Err(CreateQ04ErrorV1::ChangedCut);
@@ -344,9 +319,12 @@ pub(crate) fn lower_clearance_recipe_digest_v1(
     let mut digest = Sha256::new();
     digest.update(b"aos.sandbox.create-q04.lower-clearance-recipe.v1\0");
     for value in [
-        identity.bytes().as_slice(), root_settlement.bytes().as_slice(),
-        cache_clear.as_bytes().as_slice(), source_clear.as_bytes().as_slice(),
-        controller_settlement.bytes().as_slice(), status_three_effect,
+        identity.bytes().as_slice(),
+        root_settlement.bytes().as_slice(),
+        cache_clear.as_bytes().as_slice(),
+        source_clear.as_bytes().as_slice(),
+        controller_settlement.bytes().as_slice(),
+        status_three_effect,
     ] {
         let length = u32::try_from(value.len()).map_err(|_| CreateQ04ErrorV1::Bounds)?;
         digest.update(length.to_be_bytes());
@@ -354,7 +332,6 @@ pub(crate) fn lower_clearance_recipe_digest_v1(
     }
     Ok(ObjectDigest::from_bytes(digest.finalize().into()))
 }
-
 
 // A borrowed, unbranded event recipe shared by the actual Controller and
 // Root's independent reconstruction. Callers supply real observations for a
@@ -383,15 +360,22 @@ pub(crate) fn q04_controller_capacity_events_v1(
     authority_next: u64,
 ) -> Result<(Q04RootDecisionV1, Q04ControllerPhaseEventsV1), CreateQ04ErrorV1> {
     let earlier = Q04TransactionOwnerV1::Root.transaction_id(
-        identity, 2, q04_capacity_shape_digest_v1(identity, 13)?,
+        identity,
+        2,
+        q04_capacity_shape_digest_v1(identity, 13)?,
     )?;
     let decision = root::root_decision_record(
-        identity, earlier, state_next.checked_add(5).ok_or(CreateQ04ErrorV1::Bounds)?,
-        authority_next, pairs[2], pairs[4],
+        identity,
+        earlier,
+        state_next.checked_add(5).ok_or(CreateQ04ErrorV1::Bounds)?,
+        authority_next,
+        pairs[2],
+        pairs[4],
     )?;
     let gate = root::root_consumed_gate_record(identity, &decision)?;
     let events = Q04ControllerPhaseEventsV1 {
-        decision: decision.digest(), consumed_gate: gate.digest(),
+        decision: decision.digest(),
+        consumed_gate: gate.digest(),
         release: q04_capacity_shape_digest_v1(identity, 7)?,
         settlement: q04_capacity_shape_digest_v1(identity, 8)?,
         clearance: q04_capacity_shape_digest_v1(identity, 9)?,
@@ -411,15 +395,21 @@ pub(crate) fn controller_phase_recipe_v1(
     prior: Option<&Q04PhaseRecordV1>,
     events: &Q04ControllerPhaseEventsV1,
 ) -> Result<Q04PhaseRecordV1, CreateQ04ErrorV1> {
-    if phase == 0 || phase > 8 || (phase == 1) != prior.is_none()
-        || prior.is_some_and(|prior| prior.owner() != Q04PhaseOwnerV1::Controller
-            || prior.phase().checked_add(1) != Some(phase))
+    if phase == 0
+        || phase > 8
+        || (phase == 1) != prior.is_none()
+        || prior.is_some_and(|prior| {
+            prior.owner() != Q04PhaseOwnerV1::Controller
+                || prior.phase().checked_add(1) != Some(phase)
+        })
     {
         return Err(CreateQ04ErrorV1::ChangedCut);
     }
     let predecessor = prior.map(Q04PhaseRecordV1::digest);
     let transaction = Q04TransactionOwnerV1::Controller.transaction_id(
-        identity, phase, predecessor.unwrap_or(identity.before_controller_rows()),
+        identity,
+        phase,
+        predecessor.unwrap_or(identity.before_controller_rows()),
     )?;
     let mut body = [0; PHASE_BYTES];
     body[16..48].copy_from_slice(identity.digest().as_bytes());
@@ -428,8 +418,16 @@ pub(crate) fn controller_phase_recipe_v1(
         body[64..96].copy_from_slice(predecessor.as_bytes());
     }
     let introduced = [2, 2, 5, 6, 7, 8];
-    for (index, event) in [events.decision, events.consumed_gate, events.release,
-        events.settlement, events.clearance, events.final_root].into_iter().enumerate()
+    for (index, event) in [
+        events.decision,
+        events.consumed_gate,
+        events.release,
+        events.settlement,
+        events.clearance,
+        events.final_root,
+    ]
+    .into_iter()
+    .enumerate()
     {
         if phase >= introduced[index] {
             body[96 + index * 32..128 + index * 32].copy_from_slice(event.as_bytes());
@@ -459,150 +457,21 @@ pub(crate) fn controller_phase_recipe_v1(
     Ok(record)
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum Q04AcknowledgementKindV1 {
-    Policy,
-    Release,
-    Settlement,
-    Clearance,
-}
+pub(crate) use aos_sandbox_policy::q04_data::{
+    Q04AcknowledgementKindV1, Q04AcknowledgementV1, Q04ClaimChunkV1, Q04ClaimStorageRecipeV1,
+    Q04ClaimV1, Q04PreholdChunkV1, Q04PreholdInputDataV1, Q04PreholdTransferRecipeV1,
+    Q04PreviewChunkV1, Q04PreviewTransferRecipeV1, Q04PreviewV1,
+    acknowledgement_signature_preimage, claim_body_fields, decode_length_prefixed_fields,
+    encode_length_prefixed_fields, encode_q04_acknowledgement_data_v1, encode_q04_claim_body_v1,
+    encode_q04_prehold_body_v1, encode_q04_preview_body_v1, finish_q04_acknowledgement_body_v1,
+    fixed, nonzero, prehold_body_fields, prehold_index_shape, prepare_q04_acknowledgement_v1,
+    prepare_q04_claim_v1, prepare_q04_prehold_body_v1, preview_index_shape,
+    q04_original_precut_digest_v1, q04_publication_precut_seed_v1, read_integer_bytes, read_u32,
+    read_u64, require_acknowledgement_body, require_claim_field_bounds,
+    require_genesis_observation_pair_widths, require_prehold_fields, require_presence,
+    signed_record_preimage,
+};
 
-impl Q04AcknowledgementKindV1 {
-    fn body_bytes(self) -> usize {
-        match self {
-            Self::Policy | Self::Release => 344,
-            Self::Settlement => 536,
-            Self::Clearance => 664,
-        }
-    }
-
-    fn phase(self) -> u8 {
-        match self {
-            Self::Policy => 1,
-            Self::Release => 2,
-            Self::Settlement => 3,
-            Self::Clearance => 4,
-        }
-    }
-
-    fn magic(self) -> &'static [u8; 8] {
-        match self {
-            Self::Policy => b"AOSQ4A01",
-            Self::Release => b"AOSQ4E01",
-            Self::Settlement => b"AOSQ4T01",
-            Self::Clearance => b"AOSQ4F01",
-        }
-    }
-
-    fn signature_domain(self) -> &'static [u8] {
-        match self {
-            Self::Policy => b"aos.sandbox.create-q04.policy-ack.signature.v1\0",
-            Self::Release => b"aos.sandbox.create-q04.release-ack.signature.v1\0",
-            Self::Settlement => b"aos.sandbox.create-q04.settlement-ack.signature.v1\0",
-            Self::Clearance => b"aos.sandbox.create-q04.clearance-ack.signature.v1\0",
-        }
-    }
-}
-
-// One body recipe serves nonissuing capacity shapes and actual signed ACKs.
-// The caller retains the output allocation before this fallible encoding and
-// supplies actual current sequence/clear observations only on the live path.
-pub(crate) fn encode_q04_acknowledgement_data_v1(
-    output: &mut Vec<u8>,
-    kind: Q04AcknowledgementKindV1,
-    identity: &Q04CutIdentityV1,
-    controller_sequence: u64,
-    consumed_gate: ObjectDigest,
-    pairs: [ObjectDigest; 6],
-    clear_fields: Option<[ObjectDigest; 4]>,
-) -> Result<(), CreateQ04ErrorV1> {
-    if !output.is_empty() || (kind == Q04AcknowledgementKindV1::Clearance) != clear_fields.is_some() {
-        return Err(CreateQ04ErrorV1::ChangedCut);
-    }
-    output.try_reserve_exact(kind.body_bytes() + 64)?;
-    output.resize(kind.body_bytes(), 0);
-    output[16..24].copy_from_slice(&identity.bytes()[88..96]);
-    output[24..40].copy_from_slice(&identity.nonce());
-    output[40..72].copy_from_slice(identity.digest().as_bytes());
-    output[72..76].copy_from_slice(&identity.bytes()[80..84]);
-    output[76..84].copy_from_slice(&controller_sequence.to_be_bytes());
-    output[84..100].copy_from_slice(identity.operation().as_bytes());
-    output[100..116].copy_from_slice(identity.sandbox().as_bytes());
-    output[116..124].copy_from_slice(&identity.accepted_generation().to_be_bytes());
-    output[128..160].copy_from_slice(identity.desired_precondition().as_bytes());
-    output[160..192].copy_from_slice(identity.effect_plan_digest().as_bytes());
-    output[192..224].copy_from_slice(identity.binding().as_bytes());
-    output[224..232].copy_from_slice(&identity.epoch().to_be_bytes());
-    output[232..248].copy_from_slice(&identity.publication_id());
-    output[248..280].copy_from_slice(identity.policy_current().as_bytes());
-    output[280..312].copy_from_slice(consumed_gate.as_bytes());
-    output[312..344].copy_from_slice(identity.gen1_floor().as_bytes());
-    if kind.body_bytes() >= 536 {
-        for (index, pair) in pairs.into_iter().enumerate() {
-            let start = 344 + index * 32;
-            output[start..start + 32].copy_from_slice(pair.as_bytes());
-        }
-    }
-    if let Some(fields) = clear_fields {
-        for (index, field) in fields.into_iter().enumerate() {
-            let start = 536 + index * 32;
-            output[start..start + 32].copy_from_slice(field.as_bytes());
-        }
-    }
-    finish_q04_acknowledgement_body_v1(kind, output, identity)
-}
-
-// Signature provenance over an original owned packet is comparison DATA.
-// Actual current owners, fixed pins and phase/native joins remain separate.
-pub(crate) struct Q04AcknowledgementV1<'packet> {
-    kind: Q04AcknowledgementKindV1,
-    bytes: &'packet [u8],
-}
-
-impl<'packet> Q04AcknowledgementV1<'packet> {
-    pub(crate) fn verify(
-        kind: Q04AcknowledgementKindV1,
-        bytes: &'packet [u8],
-        signer: &aos_sandbox_policy::controller_readback::PinnedControllerHoldSignerV1,
-        identity: &Q04CutIdentityV1,
-    ) -> Result<Self, CreateQ04ErrorV1> {
-        if bytes.len() != kind.body_bytes() + 64 {
-            return Err(CreateQ04ErrorV1::Bounds);
-        }
-        let body = &bytes[..kind.body_bytes()];
-        require_acknowledgement_body(kind, body, identity)?;
-        if read_u64(body, 16)? != signer.generation() {
-            return Err(CreateQ04ErrorV1::ChangedCut);
-        }
-
-        let signature = Signature::from_bytes(&fixed(bytes, kind.body_bytes()));
-        signer.verifying_key().verify_strict(
-            &acknowledgement_signature_preimage(kind, body)?,
-            &signature,
-        )?;
-        Ok(Self { kind, bytes })
-    }
-
-    pub(crate) fn bytes(&self) -> &'packet [u8] {
-        self.bytes
-    }
-
-    pub(crate) fn kind(&self) -> Q04AcknowledgementKindV1 {
-        self.kind
-    }
-
-    pub(crate) fn digest(&self) -> ObjectDigest {
-        ObjectDigest::from_bytes(Sha256::digest(self.bytes).into())
-    }
-
-    pub(crate) fn controller_sequence(&self) -> u64 {
-        u64::from_be_bytes(fixed(self.bytes, 76))
-    }
-}
-
-// The enclosing original owner already parks this exact body buffer. The
-// helper borrows it through validation/allocation/signing, including failure;
-// it does not consume a packet into a callee-local Result or mint live custody.
 #[cfg(test)]
 pub(crate) fn sign_q04_acknowledgement_v1(
     kind: Q04AcknowledgementKindV1,
@@ -613,18 +482,6 @@ pub(crate) fn sign_q04_acknowledgement_v1(
     let preimage = prepare_q04_acknowledgement_v1(kind, body, identity)?;
     append_q04_signature(body, key, &preimage);
     Ok(())
-}
-
-fn prepare_q04_acknowledgement_v1(
-    kind: Q04AcknowledgementKindV1,
-    body: &mut Vec<u8>,
-    identity: &Q04CutIdentityV1,
-) -> Result<Vec<u8>, CreateQ04ErrorV1> {
-    finish_q04_acknowledgement_body_v1(kind, body, identity)?;
-
-    let preimage = acknowledgement_signature_preimage(kind, body)?;
-    body.try_reserve_exact(64)?;
-    Ok(preimage)
 }
 
 pub(crate) fn sign_original_q04_acknowledgement_v1(
@@ -641,160 +498,9 @@ pub(crate) fn sign_original_q04_acknowledgement_v1(
     Ok(())
 }
 
-// The caller retains this named preimage through the append, as before.
-// Capacity and every fallible preparation step have already completed.
 fn append_q04_signature(body: &mut Vec<u8>, key: &SigningKey, preimage: &[u8]) {
     let signature = key.sign(preimage);
     body.extend_from_slice(&signature.to_bytes());
-}
-
-// The same body/header checks may advise fixed-width future capacity DATA.
-// Only the real signer above appends an authentic signature; body formation
-// does not produce an acknowledgement, permission or positive observation.
-pub(super) fn finish_q04_acknowledgement_body_v1(
-    kind: Q04AcknowledgementKindV1,
-    body: &mut Vec<u8>,
-    identity: &Q04CutIdentityV1,
-) -> Result<(), CreateQ04ErrorV1> {
-    if body.len() != kind.body_bytes() {
-        return Err(CreateQ04ErrorV1::Bounds);
-    }
-    body[..8].copy_from_slice(kind.magic());
-    body[8..10].copy_from_slice(&1_u16.to_be_bytes());
-    body[10] = kind.phase();
-    body[11..16].fill(0);
-    require_acknowledgement_body(kind, body, identity)?;
-
-    Ok(())
-}
-
-fn require_acknowledgement_body(
-    kind: Q04AcknowledgementKindV1,
-    body: &[u8],
-    identity: &Q04CutIdentityV1,
-) -> Result<(), CreateQ04ErrorV1> {
-    if body.len() != kind.body_bytes()
-        || body[..8] != *kind.magic()
-        || body[8..10] != 1_u16.to_be_bytes()
-        || body[10] != kind.phase()
-        || body[11..16] != [0; 5]
-        || body[16..24] != identity.bytes()[88..96]
-        || body[24..40] != identity.nonce()
-        || body[40..72] != *identity.digest().as_bytes()
-        || body[72..76] != identity.bytes()[80..84]
-        || read_u64(body, 76)? == 0
-        || body[84..100] != *identity.operation().as_bytes()
-        || body[100..116] != *identity.sandbox().as_bytes()
-        || body[116..124] != identity.accepted_generation().to_be_bytes()
-        || body[124..128] != [0; 4]
-        || body[128..160] != identity.bytes()[232..264]
-        || body[160..192] != identity.bytes()[264..296]
-        || body[192..224] != *identity.binding().as_bytes()
-        || body[224..232] != identity.epoch().to_be_bytes()
-        || body[232..248] != identity.publication_id()
-        || body[248..280] != *identity.policy_current().as_bytes()
-        || nonzero::<32>(body, 280).is_err()
-        || body[312..344] != *identity.gen1_floor().as_bytes()
-    {
-        return Err(CreateQ04ErrorV1::ChangedCut);
-    }
-
-    if matches!(kind, Q04AcknowledgementKindV1::Settlement | Q04AcknowledgementKindV1::Clearance) {
-        for offset in (344..536).step_by(32) {
-            nonzero::<32>(body, offset)?;
-        }
-    }
-    if kind == Q04AcknowledgementKindV1::Clearance {
-        for offset in (536..664).step_by(32) {
-            nonzero::<32>(body, offset)?;
-        }
-    }
-    Ok(())
-}
-
-fn acknowledgement_signature_preimage(
-    kind: Q04AcknowledgementKindV1,
-    body: &[u8],
-) -> Result<Vec<u8>, CreateQ04ErrorV1> {
-    signed_record_preimage(kind.signature_domain(), body)
-}
-
-fn signed_record_preimage(
-    domain: &[u8],
-    body: &[u8],
-) -> Result<Vec<u8>, CreateQ04ErrorV1> {
-    let size = domain.len()
-        .checked_add(body.len())
-        .ok_or(CreateQ04ErrorV1::Bounds)?;
-    let mut preimage = Vec::new();
-    preimage.try_reserve_exact(size)?;
-    preimage.extend_from_slice(domain);
-    preimage.extend_from_slice(body);
-    Ok(preimage)
-}
-
-// The view borrows the actual parked complete packet. Neither decode nor
-// signature verification owns the writers, supplies currentness or admits a
-// project. Root's same-flight consumer repeats those independent joins.
-pub(crate) struct Q04ClaimV1<'packet> {
-    bytes: &'packet [u8],
-    fields: [&'packet [u8]; CLAIM_FIELDS],
-}
-
-impl<'packet> Q04ClaimV1<'packet> {
-    pub(crate) fn decode(
-        bytes: &'packet [u8],
-        identity: &Q04CutIdentityV1,
-    ) -> Result<Self, CreateQ04ErrorV1> {
-        if bytes.len() < CLAIM_PREFIX_BYTES + 64 || bytes.len() > MAXIMUM_CLAIM_BYTES {
-            return Err(CreateQ04ErrorV1::Bounds);
-        }
-        let fields = claim_body_fields(&bytes[..bytes.len() - 64], identity)?;
-        Ok(Self { bytes, fields })
-    }
-
-    pub(crate) fn verify(
-        bytes: &'packet [u8],
-        signer: &aos_sandbox_policy::controller_readback::PinnedControllerHoldSignerV1,
-        identity: &Q04CutIdentityV1,
-    ) -> Result<Self, CreateQ04ErrorV1> {
-        let claim = Self::decode(bytes, identity)?;
-        if identity.bytes()[88..96] != signer.generation().to_be_bytes() {
-            return Err(CreateQ04ErrorV1::ChangedCut);
-        }
-        let signature_offset = bytes.len() - 64;
-        let signature = Signature::from_bytes(&fixed(bytes, signature_offset));
-        signer.verifying_key().verify_strict(
-            &signed_record_preimage(CLAIM_SIGNATURE_DOMAIN, &bytes[..signature_offset])?,
-            &signature,
-        ).map_err(CreateQ04ErrorV1::ClaimSignature)?;
-        Ok(claim)
-    }
-
-    pub(crate) fn fields(&self) -> &[&'packet [u8]; CLAIM_FIELDS] {
-        &self.fields
-    }
-
-    pub(crate) fn bytes(&self) -> &'packet [u8] {
-        self.bytes
-    }
-}
-
-// The caller parks this buffer before the first allocation. Only unsigned
-// DATA is constructed here; each existing field codec remains responsible
-// for its canonical format and independently authenticated semantic checks.
-pub(crate) fn encode_q04_claim_body_v1(
-    body: &mut Vec<u8>,
-    fields: [&[u8]; CLAIM_FIELDS],
-    identity: &Q04CutIdentityV1,
-) -> Result<(), CreateQ04ErrorV1> {
-    if !body.is_empty() {
-        return Err(CreateQ04ErrorV1::ChangedCut);
-    }
-    require_claim_field_bounds(&fields, identity)?;
-    encode_length_prefixed_fields(body, b"AOSQ4L01", fields, MAXIMUM_CLAIM_BYTES - 64)?;
-    claim_body_fields(body, identity)?;
-    Ok(())
 }
 
 #[cfg(test)]
@@ -806,16 +512,6 @@ pub(crate) fn sign_q04_claim_v1(
     let preimage = prepare_q04_claim_v1(body, identity)?;
     append_q04_signature(body, key, &preimage);
     Ok(())
-}
-
-fn prepare_q04_claim_v1(
-    body: &mut Vec<u8>,
-    identity: &Q04CutIdentityV1,
-) -> Result<Vec<u8>, CreateQ04ErrorV1> {
-    claim_body_fields(body, identity)?;
-    let preimage = signed_record_preimage(CLAIM_SIGNATURE_DOMAIN, body)?;
-    body.try_reserve_exact(64)?;
-    Ok(preimage)
 }
 
 pub(super) fn sign_original_q04_claim_v1(
@@ -831,233 +527,6 @@ pub(super) fn sign_original_q04_claim_v1(
     Ok(())
 }
 
-fn claim_body_fields<'body>(
-    body: &'body [u8],
-    identity: &Q04CutIdentityV1,
-) -> Result<[&'body [u8]; CLAIM_FIELDS], CreateQ04ErrorV1> {
-    if body.len() < CLAIM_PREFIX_BYTES
-        || body.len().checked_add(64).is_none_or(|size| size > MAXIMUM_CLAIM_BYTES)
-        || body[..8] != *b"AOSQ4L01"
-        || body[8..10] != 1_u16.to_be_bytes()
-        || body[10..16] != [0; 6]
-    {
-        return Err(CreateQ04ErrorV1::Bounds);
-    }
-
-    let fields = decode_length_prefixed_fields(body)?;
-    require_claim_field_bounds(&fields, identity)?;
-    Ok(fields)
-}
-
-fn require_claim_field_bounds(
-    fields: &[&[u8]; CLAIM_FIELDS],
-    identity: &Q04CutIdentityV1,
-) -> Result<(), CreateQ04ErrorV1> {
-    if fields.iter().any(|field| field.is_empty())
-        || fields[..7].iter().any(|field| field.len() > 64 * 1024)
-        || fields[7].len() > 3 * 1024
-        || fields[8].len() != super::CLOSED_POLICY_BINDING_BYTES_V2
-        || fields[9].len() != CONTROLLER_PROJECT_ADMISSION_READBACK_BYTES_V1
-        || fields[10].len()
-            != aos_sandbox_policy::controller_readback::CLOSED_CONTROLLER_HOLD_READBACK_BYTES_V1
-        || !matches!(
-            fields[11].len(),
-            super::SOURCE_TREE_GENESIS_READBACK_BYTES_V1
-                | super::SOURCE_TREE_GENESIS_READBACK_BYTES_V2
-        )
-        || fields[12].len() != aos_sandbox_protocol::cache_owner_readback::CLOSED_CACHE_OWNER_READBACK_BYTES_V2
-        || fields[13] != identity.bytes()
-    {
-        return Err(CreateQ04ErrorV1::ChangedCut);
-    }
-    Ok(())
-}
-
-// This recipe borrows the same complete parked Claim. It owns only the fixed
-// index DATA; it cannot replace native membership, signature or currentness.
-pub(crate) struct Q04ClaimStorageRecipeV1<'packet> {
-    claim: &'packet [u8],
-    index: [u8; CLAIM_INDEX_BYTES],
-}
-
-impl<'packet> Q04ClaimStorageRecipeV1<'packet> {
-    pub(crate) fn new(
-        claim: &Q04ClaimV1<'packet>,
-        identity: &Q04CutIdentityV1,
-    ) -> Result<Self, CreateQ04ErrorV1> {
-        if claim.fields()[13] != identity.bytes() {
-            return Err(CreateQ04ErrorV1::ChangedCut);
-        }
-        let count = claim_chunk_count(claim.bytes().len())?;
-        let total = u32::try_from(claim.bytes().len()).map_err(|_| CreateQ04ErrorV1::Bounds)?;
-
-        let mut index = [0; CLAIM_INDEX_BYTES];
-        index[..8].copy_from_slice(b"AOSQ4X01");
-        index[8..10].copy_from_slice(&1_u16.to_be_bytes());
-        index[16..48].copy_from_slice(identity.digest().as_bytes());
-        index[48..52].copy_from_slice(&total.to_be_bytes());
-        index[52..54].copy_from_slice(&count.to_be_bytes());
-        let digest = Sha256::new()
-            .chain_update(CLAIM_INDEX_DOMAIN)
-            .chain_update(&index[..64])
-            .chain_update(claim.bytes())
-            .finalize();
-        index[64..96].copy_from_slice(&digest);
-        Ok(Self { claim: claim.bytes(), index })
-    }
-
-    // There is intentionally no header-only digest verification. The
-    // comparison includes every byte of the reconstructed signed Claim.
-    pub(crate) fn verify_index(
-        bytes: &[u8],
-        claim: &Q04ClaimV1<'packet>,
-        identity: &Q04CutIdentityV1,
-    ) -> Result<Self, CreateQ04ErrorV1> {
-        let recipe = Self::new(claim, identity)?;
-        if bytes != recipe.index.as_slice() {
-            return Err(CreateQ04ErrorV1::ChangedCut);
-        }
-        Ok(recipe)
-    }
-
-    pub(crate) fn index_bytes(&self) -> &[u8; CLAIM_INDEX_BYTES] {
-        &self.index
-    }
-
-    pub(crate) fn chunk_count(&self) -> u16 {
-        u16::from_be_bytes(fixed(&self.index, 52))
-    }
-
-    // The caller parks the output before this first possible allocation. All
-    // chunk fields derive from the one immutable original packet, not a second
-    // copy, callback or caller-supplied digest/count.
-    pub(crate) fn encode_chunk(
-        &self,
-        chunk: u16,
-        output: &mut Vec<u8>,
-    ) -> Result<(), CreateQ04ErrorV1> {
-        if !output.is_empty() {
-            return Err(CreateQ04ErrorV1::ChangedCut);
-        }
-        Q04ChunkPurposeV1::Claim.encode_chunk(
-            self.claim, fixed(&self.index, 16), chunk, output,
-        ).map_err(Into::into)
-    }
-}
-
-pub(crate) struct Q04ClaimChunkV1<'chunk> {
-    chunk: Q04OrderedChunkV1<'chunk>,
-}
-
-impl<'chunk> Q04ClaimChunkV1<'chunk> {
-    pub(crate) fn decode(
-        bytes: &'chunk [u8],
-        original_index: &[u8],
-        identity: &Q04CutIdentityV1,
-    ) -> Result<Self, CreateQ04ErrorV1> {
-        let (indexed_total, indexed_count) = claim_index_shape(original_index, identity)?;
-        let chunk = Q04ChunkPurposeV1::Claim.decode_chunk(
-            bytes, *identity.digest().as_bytes(), indexed_total, indexed_count,
-        )?;
-        Ok(Self { chunk })
-    }
-
-    // Original chunk order and exact offsets are checked before growing the
-    // caller-owned reconstruction. Complete index/signature checks follow.
-    pub(crate) fn append_to(&self, output: &mut Vec<u8>) -> Result<(), CreateQ04ErrorV1> {
-        self.chunk.append_to(output).map_err(Into::into)
-    }
-}
-
-// Reading the fixed index's shape only bounds reconstruction. Its final
-// digest is deliberately not verified until the complete Claim is present.
-fn claim_index_shape(
-    bytes: &[u8],
-    identity: &Q04CutIdentityV1,
-) -> Result<(usize, u16), CreateQ04ErrorV1> {
-    if bytes.len() != CLAIM_INDEX_BYTES
-        || bytes[..8] != *b"AOSQ4X01"
-        || bytes[8..10] != 1_u16.to_be_bytes()
-        || bytes[10..16] != [0; 6]
-        || bytes[16..48] != *identity.digest().as_bytes()
-        || bytes[54..64] != [0; 10]
-    {
-        return Err(CreateQ04ErrorV1::Bounds);
-    }
-    let total = usize::try_from(read_u32(bytes, 48)?).map_err(|_| CreateQ04ErrorV1::Bounds)?;
-    let count = u16::from_be_bytes(fixed(bytes, 52));
-    if count != claim_chunk_count(total)? {
-        return Err(CreateQ04ErrorV1::Bounds);
-    }
-    Ok((total, count))
-}
-
-// This packet authenticates original comparison DATA only. Neither its
-// signature nor its capacity reply supplies currentness, a logical hold or a
-// publication permit. The same original owners remain independently required.
-pub(crate) struct Q04PreholdInputDataV1<'packet> {
-    bytes: &'packet [u8],
-    fields: [&'packet [u8]; PREHOLD_FIELDS],
-}
-
-impl<'packet> Q04PreholdInputDataV1<'packet> {
-    pub(crate) fn decode(bytes: &'packet [u8]) -> Result<Self, CreateQ04ErrorV1> {
-        if bytes.len() < PREHOLD_PREFIX_BYTES + 64 || bytes.len() > MAXIMUM_PREHOLD_BYTES {
-            return Err(CreateQ04ErrorV1::Bounds);
-        }
-        let fields = prehold_body_fields(&bytes[..bytes.len() - 64])?;
-        Ok(Self { bytes, fields })
-    }
-
-    pub(crate) fn verify(
-        bytes: &'packet [u8],
-        signer: &aos_sandbox_policy::controller_readback::PinnedControllerHoldSignerV1,
-    ) -> Result<Self, CreateQ04ErrorV1> {
-        let request = Self::decode(bytes)?;
-        if read_u64(request.fields[0], 32)? != signer.generation() {
-            return Err(CreateQ04ErrorV1::ChangedCut);
-        }
-        let signature_offset = bytes.len() - 64;
-        let signature = Signature::from_bytes(&fixed(bytes, signature_offset));
-        signer.verifying_key().verify_strict(
-            &signed_record_preimage(PREHOLD_SIGNATURE_DOMAIN, &bytes[..signature_offset])?,
-            &signature,
-        ).map_err(CreateQ04ErrorV1::PreholdSignature)?;
-        Ok(request)
-    }
-
-    pub(crate) fn fields(&self) -> &[&'packet [u8]; PREHOLD_FIELDS] {
-        &self.fields
-    }
-
-    pub(crate) fn bytes(&self) -> &'packet [u8] {
-        self.bytes
-    }
-
-    pub(crate) fn digest(&self) -> ObjectDigest {
-        ObjectDigest::from_bytes(Sha256::new()
-            .chain_update(PREHOLD_REQUEST_DOMAIN)
-            .chain_update(self.bytes)
-            .finalize().into())
-    }
-}
-
-pub(crate) fn encode_q04_prehold_body_v1(
-    output: &mut Vec<u8>,
-    fields: [&[u8]; PREHOLD_FIELDS],
-) -> Result<(), CreateQ04ErrorV1> {
-    if !output.is_empty() {
-        return Err(CreateQ04ErrorV1::ChangedCut);
-    }
-    require_prehold_fields(&fields)?;
-    encode_length_prefixed_fields(output, b"AOSQ4N01", fields, MAXIMUM_PREHOLD_BYTES - 64)?;
-    prehold_body_fields(output)?;
-    Ok(())
-}
-
-// Only the genuine private Controller donor invokes this DATA serializer.
-// The actual buffer is resident before allocation/signing; all original
-// ledger/current-source/name/clock bookends remain in that donor and caller.
 #[cfg(test)]
 pub(super) fn sign_q04_prehold_body_v1(
     output: &mut Vec<u8>,
@@ -1066,15 +535,6 @@ pub(super) fn sign_q04_prehold_body_v1(
     let preimage = prepare_q04_prehold_body_v1(output)?;
     append_q04_signature(output, key, &preimage);
     Ok(())
-}
-
-fn prepare_q04_prehold_body_v1(
-    output: &mut Vec<u8>,
-) -> Result<Vec<u8>, CreateQ04ErrorV1> {
-    prehold_body_fields(output)?;
-    let preimage = signed_record_preimage(PREHOLD_SIGNATURE_DOMAIN, output)?;
-    output.try_reserve_exact(64)?;
-    Ok(preimage)
 }
 
 pub(super) fn sign_original_q04_prehold_body_v1(
@@ -1088,214 +548,15 @@ pub(super) fn sign_original_q04_prehold_body_v1(
     append_q04_signature(output, key, &preimage);
     Ok(())
 }
-
-fn prehold_body_fields(body: &[u8]) -> Result<[&[u8]; PREHOLD_FIELDS], CreateQ04ErrorV1> {
-    if body.len() < PREHOLD_PREFIX_BYTES
-        || body.len().checked_add(64).is_none_or(|size| size > MAXIMUM_PREHOLD_BYTES)
-        || body[..8] != *b"AOSQ4N01"
-        || body[8..10] != 1_u16.to_be_bytes()
-        || body[10..16] != [0; 6]
-    {
-        return Err(CreateQ04ErrorV1::Bounds);
-    }
-    let fields = decode_length_prefixed_fields(body)?;
-    require_prehold_fields(&fields)?;
-    Ok(fields)
-}
-
-fn require_prehold_fields(fields: &[&[u8]; PREHOLD_FIELDS]) -> Result<(), CreateQ04ErrorV1> {
-    if fields[0].len() != PREHOLD_METADATA_BYTES
-        || fields[1..4].iter().any(|field| field.is_empty() || field.len() > 64 * 1024)
-        || fields[4].len() != super::CLOSED_POLICY_BINDING_BYTES_V2
-        || fields[5].len() != CONTROLLER_PROJECT_ADMISSION_READBACK_BYTES_V1
-    {
-        return Err(CreateQ04ErrorV1::Bounds);
-    }
-    let metadata = fields[0];
-    if nonzero::<16>(metadata, 0).is_err()
-        || read_u64(metadata, 24)?.checked_sub(read_u64(metadata, 16)?) != Some(60_000_000_000)
-        || read_u64(metadata, 32)? == 0
-        || read_u64(metadata, 40)? != 1
-        || (48..176).step_by(32).any(|offset| nonzero::<32>(metadata, offset).is_err())
-        || (464..512).step_by(8).any(|offset| read_u64(metadata, offset).map_or(true, |value| value == 0))
-    {
-        return Err(CreateQ04ErrorV1::ChangedCut);
-    }
-    for offset in (176..464).step_by(48) {
-        crate::journal::ProtectedJournalNamesV1::from_bytes(&metadata[offset..offset + 48])
-            .map_err(crate::journal::JournalError::from)?;
-    }
-    Ok(())
-}
-
-// The exact sixteen-tag whitelist excludes request signatures, B664/CTP03,
-// Stage fields, new transaction IDs and all own-future publication heads.
-// Hashing the full request here would reintroduce Tli's identity cycle.
-pub(crate) fn q04_original_precut_digest_v1(
-    request: &Q04PreholdInputDataV1<'_>,
-    preview: &Q04PreviewV1<'_>,
-    controller_complete: &[u8],
-    source_observation: &[u8],
-    state_names: crate::journal::ProtectedJournalNamesV1,
-    state_sequence: u64,
-) -> Result<ObjectDigest, CreateQ04ErrorV1> {
-    require_genesis_observation_pair_widths(controller_complete, source_observation)?;
-    if state_sequence == 0 {
-        return Err(CreateQ04ErrorV1::Bounds);
-    }
-    let original = request.fields();
-    let preview = preview.fields();
-    let names = state_names.to_bytes();
-    let sequence = state_sequence.to_be_bytes();
-    let fields = [
-        original[0], original[1], original[2], original[3],
-        preview[2], preview[3], preview[4], preview[5], preview[6], preview[7], preview[8],
-        controller_complete, source_observation, preview[0], &names, &sequence,
-    ];
-    let mut digest = Sha256::new().chain_update(ORIGINAL_PRECUT_DOMAIN);
-    for (index, field) in fields.into_iter().enumerate() {
-        let tag = u8::try_from(index + 1).map_err(|_| CreateQ04ErrorV1::Bounds)?;
-        let length = u32::try_from(field.len()).map_err(|_| CreateQ04ErrorV1::Bounds)?;
-        digest.update([tag]);
-        digest.update(length.to_be_bytes());
-        digest.update(field);
-    }
-    Ok(ObjectDigest::from_bytes(digest.finalize().into()))
-}
-
-// This is shape DATA only. Root authenticates both complete packets on the
-// current original owner before any caller may consume their semantic joins.
-pub(super) fn require_genesis_observation_pair_widths(
-    controller: &[u8], source: &[u8],
-) -> Result<(), CreateQ04ErrorV1> {
-    let legacy = controller.len() == super::source_genesis_root::CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V1
-        && source.len() == super::SOURCE_TREE_GENESIS_READBACK_BYTES_V1;
-    let resource = controller.len() == super::source_genesis_root::CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V2
-        && source.len() == super::SOURCE_TREE_GENESIS_READBACK_BYTES_V2;
-    if legacy || resource {
-        Ok(())
-    } else {
-        Err(CreateQ04ErrorV1::Bounds)
-    }
-}
-
-// This canonical pre-envelope seed excludes the final Cut and every future
-// native/publication/phase identity. Both owners borrow the same actual
-// original inputs and independently compare this nonauthorizing DATA hash.
-pub(crate) fn q04_publication_precut_seed_v1(
-    original_precut: ObjectDigest,
-    root_before: ObjectDigest,
-    controller_before: ObjectDigest,
-    floor: ObjectDigest,
-    ancestry: ObjectDigest,
-    policy_before: ObjectDigest,
-) -> Result<ObjectDigest, CreateQ04ErrorV1> {
-    let fields = [original_precut, root_before, controller_before, floor, ancestry, policy_before];
-    if fields.iter().any(|value| value.as_bytes() == &[0; 32]) {
-        return Err(CreateQ04ErrorV1::ChangedCut);
-    }
-    let mut digest = Sha256::new()
-        .chain_update(b"aos.sandbox.create-q04.publication-precut-seed.v1\0");
-    for field in fields {
-        digest.update(field.as_bytes());
-    }
-    digest.update(1_u64.to_be_bytes());
-    Ok(ObjectDigest::from_bytes(digest.finalize().into()))
-}
-
-pub(crate) struct Q04PreholdTransferRecipeV1<'packet> {
-    request: &'packet [u8],
-    index: [u8; PREVIEW_INDEX_BYTES],
-}
-
-impl<'packet> Q04PreholdTransferRecipeV1<'packet> {
-    pub(crate) fn new(request: &Q04PreholdInputDataV1<'packet>) -> Result<Self, CreateQ04ErrorV1> {
-        let index = bounded_input_transfer_index(request.bytes, PREHOLD_REQUEST_DOMAIN, MAXIMUM_PREHOLD_BYTES)?;
-        Ok(Self { request: request.bytes, index })
-    }
-
-    pub(crate) fn verify_index(
-        original_index: &[u8],
-        request: &Q04PreholdInputDataV1<'packet>,
-    ) -> Result<Self, CreateQ04ErrorV1> {
-        let recipe = Self::new(request)?;
-        if original_index != recipe.index.as_slice() {
-            return Err(CreateQ04ErrorV1::ChangedCut);
-        }
-        Ok(recipe)
-    }
-
-    pub(crate) fn index_bytes(&self) -> &[u8; PREVIEW_INDEX_BYTES] {
-        &self.index
-    }
-
-    pub(crate) fn chunk_count(&self) -> u16 {
-        u16::from_be_bytes(fixed(&self.index, 36))
-    }
-
-    pub(crate) fn encode_chunk(&self, index: u16, output: &mut Vec<u8>) -> Result<(), CreateQ04ErrorV1> {
-        Q04ChunkPurposeV1::Prehold.encode_chunk(self.request, fixed(&self.index, 0), index, output).map_err(Into::into)
-    }
-}
-
-pub(crate) struct Q04PreholdChunkV1<'chunk> {
-    chunk: Q04OrderedChunkV1<'chunk>,
-}
-
-impl<'chunk> Q04PreholdChunkV1<'chunk> {
-    pub(crate) fn decode(bytes: &'chunk [u8], original_index: &[u8]) -> Result<Self, CreateQ04ErrorV1> {
-        let (total, count) = prehold_index_shape(original_index)?;
-        let chunk = Q04ChunkPurposeV1::Prehold.decode_chunk(bytes, fixed(original_index, 0), total, count)?;
-        Ok(Self { chunk })
-    }
-
-    pub(crate) fn append_to(&self, output: &mut Vec<u8>) -> Result<(), CreateQ04ErrorV1> {
-        self.chunk.append_to(output).map_err(Into::into)
-    }
-}
-
-pub(crate) fn prehold_index_shape(bytes: &[u8]) -> Result<(usize, u16), CreateQ04ErrorV1> {
-    bounded_input_transfer_shape(bytes, PREHOLD_PREFIX_BYTES + 64, MAXIMUM_PREHOLD_BYTES)
-}
-
-
-fn decode_length_prefixed_fields<const COUNT: usize>(
-    body: &[u8],
-) -> Result<[&[u8]; COUNT], CreateQ04ErrorV1> {
-    aos_sandbox_protocol::domain_ledger::create_q04_history::transfer::decode_length_prefixed_fields(body).map_err(Into::into)
-}
-
-fn encode_length_prefixed_fields<const COUNT: usize>(
-    output: &mut Vec<u8>,
-    magic: &[u8; 8],
-    fields: [&[u8]; COUNT],
-    maximum: usize,
-) -> Result<(), CreateQ04ErrorV1> {
-    aos_sandbox_protocol::domain_ledger::create_q04_history::transfer::encode_length_prefixed_fields(output, magic, fields, maximum).map_err(Into::into)
-}
-
-fn require_presence(bytes: &[u8], present: bool) -> Result<(), JournalError> {
-    aos_sandbox_protocol::domain_ledger::create_q04_history::transfer::require_presence(bytes, present).map_err(|_| JournalError::ProtectedBoundary)
-}
-
-fn nonzero<const SIZE: usize>(bytes: &[u8], offset: usize) -> Result<[u8; SIZE], JournalError> {
-    aos_sandbox_protocol::domain_ledger::create_q04_history::transfer::nonzero(bytes, offset).map_err(|_| JournalError::ProtectedBoundary)
-}
-
-use aos_sandbox_protocol::domain_ledger::create_q04_history::transfer::fixed;
-
-fn read_u32(bytes: &[u8], offset: usize) -> Result<u32, JournalError> {
-    aos_sandbox_protocol::domain_ledger::create_q04_history::transfer::read_u32(bytes, offset).map_err(|_| JournalError::ProtectedBoundary)
-}
-
-fn read_u64(bytes: &[u8], offset: usize) -> Result<u64, JournalError> {
-    aos_sandbox_protocol::domain_ledger::create_q04_history::transfer::read_u64(bytes, offset).map_err(|_| JournalError::ProtectedBoundary)
-}
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aos_sandbox_policy::controller_project_readback::CONTROLLER_PROJECT_ADMISSION_READBACK_BYTES_V1;
+
+    // These format fixtures independently reseal malformed canonical packets.
+    const CLAIM_INDEX_DOMAIN: &[u8] = b"aos.sandbox.create-q04.claim-index.v1\0";
+    const CLAIM_CHUNK_DOMAIN: &[u8] = b"aos.sandbox.create-q04.claim-chunk.v1\0";
+    const CLAIM_SIGNATURE_DOMAIN: &[u8] = b"aos.sandbox.create-q04.claim.signature.v1\0";
 
     #[test]
     fn signing_keeps_original_io_cause_and_separate_first_postcheck_debt() {
@@ -1306,9 +567,14 @@ mod tests {
         assert!(finish_controller_q04_signing_v1(
             Err(CreateQ04ErrorV1::Expired), &mut first, &mut debt,
         ).is_err());
-        assert!(finish_controller_q04_signing_v1(
-            Err(CreateQ04ErrorV1::ChangedCut), &mut first, &mut debt,
-        ).is_err());
+        assert!(
+            finish_controller_q04_signing_v1(
+                Err(CreateQ04ErrorV1::ChangedCut),
+                &mut first,
+                &mut debt,
+            )
+            .is_err()
+        );
         assert!(finish_controller_q04_signing_v1(Ok(()), &mut first, &mut debt).is_err());
 
         assert!(matches!(first, Some(CreateQ04ErrorV1::Io(ref error))
@@ -1322,9 +588,14 @@ mod tests {
         let mut debt = None;
 
         assert!(finish_controller_q04_signing_v1(Ok(()), &mut first, &mut debt).is_ok());
-        assert!(finish_controller_q04_signing_v1(
-            Err(CreateQ04ErrorV1::ChangedCut), &mut first, &mut debt,
-        ).is_err());
+        assert!(
+            finish_controller_q04_signing_v1(
+                Err(CreateQ04ErrorV1::ChangedCut),
+                &mut first,
+                &mut debt,
+            )
+            .is_err()
+        );
 
         assert!(matches!(first, Some(CreateQ04ErrorV1::ChangedCut)));
         assert!(debt.is_none());
@@ -1385,10 +656,7 @@ mod tests {
         Q04RootDecisionV1::from_body(body, identity).unwrap()
     }
 
-    fn gate(
-        identity: &Q04CutIdentityV1,
-        decision: &Q04RootDecisionV1,
-    ) -> Q04EffectSubgateV1 {
+    fn gate(identity: &Q04CutIdentityV1, decision: &Q04RootDecisionV1) -> Q04EffectSubgateV1 {
         let mut body = [0; GATE_BYTES];
         body[16..48].copy_from_slice(identity.digest().as_bytes());
         body[48..80].copy_from_slice(identity.binding().as_bytes());
@@ -1436,16 +704,25 @@ mod tests {
         let pairs = std::array::from_fn(|index| ObjectDigest::from_bytes([40 + index as u8; 32]));
         let clear = std::array::from_fn(|index| ObjectDigest::from_bytes([46 + index as u8; 32]));
 
-        for kind in [Q04AcknowledgementKindV1::Policy, Q04AcknowledgementKindV1::Release,
-            Q04AcknowledgementKindV1::Settlement, Q04AcknowledgementKindV1::Clearance]
-        {
+        for kind in [
+            Q04AcknowledgementKindV1::Policy,
+            Q04AcknowledgementKindV1::Release,
+            Q04AcknowledgementKindV1::Settlement,
+            Q04AcknowledgementKindV1::Clearance,
+        ] {
             let mut expected = acknowledgement_body(kind, &identity);
             finish_q04_acknowledgement_body_v1(kind, &mut expected, &identity).unwrap();
             let mut actual = Vec::new();
             encode_q04_acknowledgement_data_v1(
-                &mut actual, kind, &identity, 11, consumed, pairs,
+                &mut actual,
+                kind,
+                &identity,
+                11,
+                consumed,
+                pairs,
                 (kind == Q04AcknowledgementKindV1::Clearance).then_some(clear),
-            ).unwrap();
+            )
+            .unwrap();
 
             assert_eq!(actual, expected);
             assert_eq!(actual.len(), kind.body_bytes());
@@ -1474,7 +751,10 @@ mod tests {
         let gate = gate(&identity, &decision);
         gate.require_identity(&identity, &decision).unwrap();
 
-        assert_eq!(gate.digest().as_bytes(), Sha256::digest(gate.bytes()).as_slice());
+        assert_eq!(
+            gate.digest().as_bytes(),
+            Sha256::digest(gate.bytes()).as_slice()
+        );
         assert_ne!(gate.digest().as_bytes().as_slice(), &gate.bytes()[256..288]);
         assert_ne!(gate.digest(), identity.gate_identity());
         assert_eq!(gate.acknowledgement().as_bytes(), &[0; 32]);
@@ -1520,17 +800,29 @@ mod tests {
         let identity = identity();
         let predecessor = ObjectDigest::from_bytes([30; 32]);
         let controller = Q04TransactionOwnerV1::Controller
-            .transaction_id(&identity, 2, predecessor).unwrap();
+            .transaction_id(&identity, 2, predecessor)
+            .unwrap();
         let root = Q04TransactionOwnerV1::Root
-            .transaction_id(&identity, 2, predecessor).unwrap();
+            .transaction_id(&identity, 2, predecessor)
+            .unwrap();
 
         assert_ne!(controller, root);
         assert_ne!(root, identity.publication_id());
-        assert!(Q04TransactionOwnerV1::Root.transaction_id(&identity, 8, predecessor).is_err());
-        assert!(Q04TransactionOwnerV1::Controller
-            .transaction_id(&identity, 0, predecessor).is_err());
-        assert!(Q04TransactionOwnerV1::Cache
-            .transaction_id(&identity, 1, ObjectDigest::from_bytes([0; 32])).is_err());
+        assert!(
+            Q04TransactionOwnerV1::Root
+                .transaction_id(&identity, 8, predecessor)
+                .is_err()
+        );
+        assert!(
+            Q04TransactionOwnerV1::Controller
+                .transaction_id(&identity, 0, predecessor)
+                .is_err()
+        );
+        assert!(
+            Q04TransactionOwnerV1::Cache
+                .transaction_id(&identity, 1, ObjectDigest::from_bytes([0; 32]))
+                .is_err()
+        );
     }
 
     #[test]
@@ -1570,8 +862,14 @@ mod tests {
         sign_q04_acknowledgement_v1(kind, &mut packet, &key, &identity).unwrap();
         let acknowledgement = Q04AcknowledgementV1::verify(kind, &packet, &pin, &identity).unwrap();
         assert_eq!(acknowledgement.bytes().len(), 408);
-        assert_eq!(&acknowledgement.bytes()[40..72], identity.digest().as_bytes());
-        assert_ne!(&acknowledgement.bytes()[40..72], &identity.bytes()[392..424]);
+        assert_eq!(
+            &acknowledgement.bytes()[40..72],
+            identity.digest().as_bytes()
+        );
+        assert_ne!(
+            &acknowledgement.bytes()[40..72],
+            &identity.bytes()[392..424]
+        );
         assert_eq!(acknowledgement.controller_sequence(), 11);
 
         let mut substituted = acknowledgement_body(kind, &identity);
@@ -1579,13 +877,12 @@ mod tests {
         assert!(sign_q04_acknowledgement_v1(kind, &mut substituted, &key, &identity).is_err());
 
         packet[10] = 2;
-        let signature = key.sign(
-            &acknowledgement_signature_preimage(kind, &packet[..kind.body_bytes()]).unwrap(),
-        );
+        let signature = key
+            .sign(&acknowledgement_signature_preimage(kind, &packet[..kind.body_bytes()]).unwrap());
         packet[kind.body_bytes()..].copy_from_slice(&signature.to_bytes());
         assert!(matches!(
             Q04AcknowledgementV1::verify(kind, &packet, &pin, &identity),
-            Err(CreateQ04ErrorV1::ChangedCut),
+            Err(aos_sandbox_policy::q04_data::PolicyQ04DataErrorV1::ChangedCut),
         ));
     }
 
@@ -1614,27 +911,37 @@ mod tests {
         ] {
             let mut packet = acknowledgement_body(kind, &identity);
             sign_q04_acknowledgement_v1(kind, &mut packet, &key, &identity).unwrap();
-            let acknowledgement = Q04AcknowledgementV1::verify(kind, &packet, &pin, &identity).unwrap();
+            let acknowledgement =
+                Q04AcknowledgementV1::verify(kind, &packet, &pin, &identity).unwrap();
 
             assert_eq!(acknowledgement.bytes().len(), expected_length);
             assert_eq!(acknowledgement.kind(), kind);
-            assert_eq!(acknowledgement.digest().as_bytes(), Sha256::digest(&packet).as_slice());
-            assert!(Q04AcknowledgementV1::verify(kind, &packet[..packet.len() - 1], &pin, &identity).is_err());
+            assert_eq!(
+                acknowledgement.digest().as_bytes(),
+                Sha256::digest(&packet).as_slice()
+            );
+            assert!(
+                Q04AcknowledgementV1::verify(kind, &packet[..packet.len() - 1], &pin, &identity)
+                    .is_err()
+            );
             assert!(sign_q04_acknowledgement_v1(kind, &mut packet, &key, &identity).is_err());
         }
 
         let release = Q04AcknowledgementKindV1::Release;
         let mut packet = acknowledgement_body(release, &identity);
         sign_q04_acknowledgement_v1(release, &mut packet, &key, &identity).unwrap();
-        let foreign_signature = key.sign(&acknowledgement_signature_preimage(
-            Q04AcknowledgementKindV1::Policy,
-            &packet[..release.body_bytes()],
-        ).unwrap());
+        let foreign_signature = key.sign(
+            &acknowledgement_signature_preimage(
+                Q04AcknowledgementKindV1::Policy,
+                &packet[..release.body_bytes()],
+            )
+            .unwrap(),
+        );
         packet[release.body_bytes()..].copy_from_slice(&foreign_signature.to_bytes());
 
         assert!(matches!(
             Q04AcknowledgementV1::verify(release, &packet, &pin, &identity),
-            Err(CreateQ04ErrorV1::AcknowledgementSignature(_)),
+            Err(aos_sandbox_policy::q04_data::PolicyQ04DataErrorV1::AcknowledgementSignature(_)),
         ));
     }
 
@@ -1660,17 +967,27 @@ mod tests {
         // field with its existing engine; no fixture constructs a live owner.
         let binding = vec![8; super::super::CLOSED_POLICY_BINDING_BYTES_V2];
         let current = vec![9; CONTROLLER_PROJECT_ADMISSION_READBACK_BYTES_V1];
-        let held =
-            vec![
+        let held = vec![
                 10;
                 aos_sandbox_policy::controller_readback::CLOSED_CONTROLLER_HOLD_READBACK_BYTES_V1
             ];
         let source = vec![11; super::super::SOURCE_TREE_GENESIS_READBACK_BYTES_V1];
         let cache = vec![12; aos_sandbox_protocol::cache_owner_readback::CLOSED_CACHE_OWNER_READBACK_BYTES_V2];
         let fields = [
-            b"operation".as_slice(), b"desired", b"effect", b"node",
-            b"site", b"backend", b"catalogs", b"project",
-            &binding, &current, &held, &source, &cache, identity.bytes(),
+            b"operation".as_slice(),
+            b"desired",
+            b"effect",
+            b"node",
+            b"site",
+            b"backend",
+            b"catalogs",
+            b"project",
+            &binding,
+            &current,
+            &held,
+            &source,
+            &cache,
+            identity.bytes(),
         ];
         let mut packet = Vec::new();
         encode_q04_claim_body_v1(&mut packet, fields, &identity).unwrap();
@@ -1685,19 +1002,22 @@ mod tests {
         let mut tampered = packet.clone();
         tampered[CLAIM_PREFIX_BYTES] ^= 1;
         assert!(matches!(
-            Q04ClaimV1::verify(&tampered, &pin, &identity),
+            Q04ClaimV1::verify(&tampered, &pin, &identity).map_err(CreateQ04ErrorV1::from),
             Err(CreateQ04ErrorV1::ClaimSignature(_)),
         ));
 
         let signature_offset = packet.len() - 64;
-        let wrong = key.sign(&signed_record_preimage(
-            Q04AcknowledgementKindV1::Policy.signature_domain(),
-            &packet[..signature_offset],
-        ).unwrap());
+        let wrong = key.sign(
+            &signed_record_preimage(
+                Q04AcknowledgementKindV1::Policy.signature_domain(),
+                &packet[..signature_offset],
+            )
+            .unwrap(),
+        );
         let mut foreign = packet.clone();
         foreign[signature_offset..].copy_from_slice(&wrong.to_bytes());
         assert!(matches!(
-            Q04ClaimV1::verify(&foreign, &pin, &identity),
+            Q04ClaimV1::verify(&foreign, &pin, &identity).map_err(CreateQ04ErrorV1::from),
             Err(CreateQ04ErrorV1::ClaimSignature(_)),
         ));
     }
@@ -1707,17 +1027,27 @@ mod tests {
         let identity = identity();
         let binding = vec![8; super::super::CLOSED_POLICY_BINDING_BYTES_V2];
         let current = vec![9; CONTROLLER_PROJECT_ADMISSION_READBACK_BYTES_V1];
-        let held =
-            vec![
+        let held = vec![
                 10;
                 aos_sandbox_policy::controller_readback::CLOSED_CONTROLLER_HOLD_READBACK_BYTES_V1
             ];
         let source = vec![11; super::super::SOURCE_TREE_GENESIS_READBACK_BYTES_V1];
         let cache = vec![12; aos_sandbox_protocol::cache_owner_readback::CLOSED_CACHE_OWNER_READBACK_BYTES_V2];
         let fields = [
-            b"operation".as_slice(), b"desired", b"effect", b"node",
-            b"site", b"backend", b"catalogs", b"project",
-            &binding, &current, &held, &source, &cache, identity.bytes(),
+            b"operation".as_slice(),
+            b"desired",
+            b"effect",
+            b"node",
+            b"site",
+            b"backend",
+            b"catalogs",
+            b"project",
+            &binding,
+            &current,
+            &held,
+            &source,
+            &cache,
+            identity.bytes(),
         ];
         let mut body = Vec::new();
         encode_q04_claim_body_v1(&mut body, fields, &identity).unwrap();
@@ -1745,17 +1075,27 @@ mod tests {
         let operation = vec![1; 9000];
         let binding = vec![8; super::super::CLOSED_POLICY_BINDING_BYTES_V2];
         let current = vec![9; CONTROLLER_PROJECT_ADMISSION_READBACK_BYTES_V1];
-        let held =
-            vec![
+        let held = vec![
                 10;
                 aos_sandbox_policy::controller_readback::CLOSED_CONTROLLER_HOLD_READBACK_BYTES_V1
             ];
         let source = vec![11; super::super::SOURCE_TREE_GENESIS_READBACK_BYTES_V1];
         let cache = vec![12; aos_sandbox_protocol::cache_owner_readback::CLOSED_CACHE_OWNER_READBACK_BYTES_V2];
         let fields = [
-            operation.as_slice(), b"desired", b"effect", b"node",
-            b"site", b"backend", b"catalogs", b"project",
-            &binding, &current, &held, &source, &cache, identity.bytes(),
+            operation.as_slice(),
+            b"desired",
+            b"effect",
+            b"node",
+            b"site",
+            b"backend",
+            b"catalogs",
+            b"project",
+            &binding,
+            &current,
+            &held,
+            &source,
+            &cache,
+            identity.bytes(),
         ];
         let mut packet = Vec::new();
         encode_q04_claim_body_v1(&mut packet, fields, identity).unwrap();
@@ -1793,26 +1133,26 @@ mod tests {
             assert!(chunk.append_to(&mut reconstructed).is_err());
         }
         let reconstructed = Q04ClaimV1::verify(&reconstructed, &pin, &identity).unwrap();
-        Q04ClaimStorageRecipeV1::verify_index(
-            recipe.index_bytes(),
-            &reconstructed,
-            &identity,
-        ).unwrap();
+        Q04ClaimStorageRecipeV1::verify_index(recipe.index_bytes(), &reconstructed, &identity)
+            .unwrap();
 
         assert_eq!(reconstructed.bytes(), packet);
         assert_eq!(recipe.index_bytes().len(), 96);
         assert_eq!(claim_chunk_count(MAXIMUM_CLAIM_BYTES).unwrap(), 342);
         assert!(claim_chunk_count(MAXIMUM_CLAIM_BYTES + 1).is_err());
-        assert!(recipe.encode_chunk(recipe.chunk_count(), &mut Vec::new()).is_err());
+        assert!(
+            recipe
+                .encode_chunk(recipe.chunk_count(), &mut Vec::new())
+                .is_err()
+        );
 
         let mut changed = packet.clone();
         changed[CLAIM_PREFIX_BYTES] ^= 1;
         let changed = Q04ClaimV1::decode(&changed, &identity).unwrap();
-        assert!(Q04ClaimStorageRecipeV1::verify_index(
-            recipe.index_bytes(),
-            &changed,
-            &identity,
-        ).is_err());
+        assert!(
+            Q04ClaimStorageRecipeV1::verify_index(recipe.index_bytes(), &changed, &identity,)
+                .is_err()
+        );
     }
 
     #[test]
@@ -1830,9 +1170,12 @@ mod tests {
         index[64..96].copy_from_slice(&header_only);
 
         assert!(Q04ClaimStorageRecipeV1::verify_index(&index, &claim, &identity).is_err());
-        let mut foreign_chunk = Vec::new();
-        recipe.encode_chunk(0, &mut foreign_chunk).unwrap();
-        index[64..96].copy_from_slice(&foreign_chunk[56..88]);
+        let foreign = Sha256::new()
+            .chain_update(CLAIM_CHUNK_DOMAIN)
+            .chain_update(&index[..64])
+            .chain_update(&packet)
+            .finalize();
+        index[64..96].copy_from_slice(&foreign);
         assert!(Q04ClaimStorageRecipeV1::verify_index(&index, &claim, &identity).is_err());
 
         let mut chunk = Vec::new();
@@ -1873,9 +1216,15 @@ mod tests {
         let input = vec![8; input_bytes];
         let layer = vec![9; layer_bytes];
         let fields = [
-            metadata.as_slice(), stage.as_slice(), deployment.as_slice(),
-            input.as_slice(), input.as_slice(), input.as_slice(), input.as_slice(),
-            project.as_slice(), layer.as_slice(),
+            metadata.as_slice(),
+            stage.as_slice(),
+            deployment.as_slice(),
+            input.as_slice(),
+            input.as_slice(),
+            input.as_slice(),
+            input.as_slice(),
+            project.as_slice(),
+            layer.as_slice(),
         ];
         let mut packet = Vec::new();
         encode_q04_preview_body_v1(&mut packet, fields, [13; 16]).unwrap();
@@ -1903,7 +1252,8 @@ mod tests {
         let reconstructed_preview = Q04PreviewV1::decode(&reconstructed, [13; 16]).unwrap();
 
         assert_eq!(reconstructed, packet);
-        Q04PreviewTransferRecipeV1::verify_index(recipe.index_bytes(), &reconstructed_preview).unwrap();
+        Q04PreviewTransferRecipeV1::verify_index(recipe.index_bytes(), &reconstructed_preview)
+            .unwrap();
         assert!(Q04ClaimV1::decode(&reconstructed, &identity()).is_err());
         assert!(Q04PreviewV1::decode(&packet, [12; 16]).is_err());
     }
@@ -1946,7 +1296,10 @@ mod tests {
         changed[final_byte] ^= 1;
         let changed_preview = Q04PreviewV1::decode(&changed, [13; 16]).unwrap();
 
-        assert!(Q04PreviewTransferRecipeV1::verify_index(recipe.index_bytes(), &changed_preview).is_err());
+        assert!(
+            Q04PreviewTransferRecipeV1::verify_index(recipe.index_bytes(), &changed_preview)
+                .is_err()
+        );
         changed.push(0);
         assert!(Q04PreviewV1::decode(&changed, [13; 16]).is_err());
 
@@ -1981,7 +1334,11 @@ mod tests {
         let binding = [5; super::super::CLOSED_POLICY_BINDING_BYTES_V2];
         let current = [6; CONTROLLER_PROJECT_ADMISSION_READBACK_BYTES_V1];
         let mut packet = Vec::new();
-        encode_q04_prehold_body_v1(&mut packet, [&metadata, &rows, &rows, &rows, &binding, &current]).unwrap();
+        encode_q04_prehold_body_v1(
+            &mut packet,
+            [&metadata, &rows, &rows, &rows, &binding, &current],
+        )
+        .unwrap();
         sign_q04_prehold_body_v1(&mut packet, &SigningKey::from_bytes(&[42; 32])).unwrap();
         packet
     }
@@ -2009,7 +1366,10 @@ mod tests {
         assert!(Q04PreholdInputDataV1::verify(&altered, &pin).is_err());
         let mut wrong_domain = packet;
         let signature_offset = wrong_domain.len() - 64;
-        let signature = key.sign(&signed_record_preimage(CLAIM_SIGNATURE_DOMAIN, &wrong_domain[..signature_offset]).unwrap());
+        let signature = key.sign(
+            &signed_record_preimage(CLAIM_SIGNATURE_DOMAIN, &wrong_domain[..signature_offset])
+                .unwrap(),
+        );
         wrong_domain[signature_offset..].copy_from_slice(&signature.to_bytes());
         assert!(Q04PreholdInputDataV1::verify(&wrong_domain, &pin).is_err());
     }
@@ -2043,15 +1403,23 @@ mod tests {
         let preview_packet = preview_fixture(1, 1);
         let request = Q04PreholdInputDataV1::decode(&packet).unwrap();
         let preview = Q04PreviewV1::decode(&preview_packet, [13; 16]).unwrap();
-        let names = crate::journal::ProtectedJournalNamesV1::from_bytes(&request.fields()[0][176..224]).unwrap();
-        let complete = [7; super::super::source_genesis_root::CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V1];
+        let names =
+            crate::journal::ProtectedJournalNamesV1::from_bytes(&request.fields()[0][176..224])
+                .unwrap();
+        let complete =
+            [7; super::super::source_genesis_root::CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V1];
         let source = [8; super::super::SOURCE_TREE_GENESIS_READBACK_BYTES_V1];
-        let original = q04_original_precut_digest_v1(&request, &preview, &complete, &source, names, 1).unwrap();
+        let original =
+            q04_original_precut_digest_v1(&request, &preview, &complete, &source, names, 1)
+                .unwrap();
 
         let mut changed = packet.clone();
         // Header40 + metadata512 + three one-byte rows precede B664/CTP03.
         changed[PREHOLD_PREFIX_BYTES + PREHOLD_METADATA_BYTES + 3] ^= 1;
-        changed[PREHOLD_PREFIX_BYTES + PREHOLD_METADATA_BYTES + 3 + super::super::CLOSED_POLICY_BINDING_BYTES_V2] ^= 1;
+        changed[PREHOLD_PREFIX_BYTES
+            + PREHOLD_METADATA_BYTES
+            + 3
+            + super::super::CLOSED_POLICY_BINDING_BYTES_V2] ^= 1;
         let final_byte = changed.len() - 1;
         changed[final_byte] ^= 1;
         let changed = Q04PreholdInputDataV1::decode(&changed).unwrap();
@@ -2059,52 +1427,55 @@ mod tests {
         changed_preview[PREVIEW_PREFIX_BYTES + 120 + 96] ^= 1;
         let changed_preview = Q04PreviewV1::decode(&changed_preview, [13; 16]).unwrap();
 
-        assert_eq!(q04_original_precut_digest_v1(&changed, &changed_preview, &complete, &source, names, 1).unwrap(), original);
+        assert_eq!(
+            q04_original_precut_digest_v1(&changed, &changed_preview, &complete, &source, names, 1)
+                .unwrap(),
+            original
+        );
         let mut changed_row = packet.clone();
         changed_row[PREHOLD_PREFIX_BYTES + PREHOLD_METADATA_BYTES] ^= 1;
         let changed_row = Q04PreholdInputDataV1::decode(&changed_row).unwrap();
-        assert_ne!(q04_original_precut_digest_v1(&changed_row, &preview, &complete, &source, names, 1).unwrap(), original);
-        assert_ne!(q04_original_precut_digest_v1(&request, &preview, &complete, &source, names, 2).unwrap(), original);
+        assert_ne!(
+            q04_original_precut_digest_v1(&changed_row, &preview, &complete, &source, names, 1)
+                .unwrap(),
+            original
+        );
+        assert_ne!(
+            q04_original_precut_digest_v1(&request, &preview, &complete, &source, names, 2)
+                .unwrap(),
+            original
+        );
     }
 }
 
-fn bounded_input_transfer_index(original: &[u8], domain: &[u8], maximum: usize) -> Result<[u8; PREVIEW_INDEX_BYTES], CreateQ04ErrorV1> {
-    aos_sandbox_protocol::domain_ledger::create_q04_history::transfer::bounded_input_transfer_index(original, domain, maximum).map_err(Into::into)
-}
-
-fn bounded_input_transfer_shape(bytes: &[u8], minimum: usize, maximum: usize) -> Result<(usize,u16), CreateQ04ErrorV1> {
-    aos_sandbox_protocol::domain_ledger::create_q04_history::transfer::bounded_input_transfer_shape(bytes, minimum, maximum).map_err(Into::into)
-}
-
-impl From<aos_sandbox_protocol::domain_ledger::create_q04_history::transfer::Q04DataErrorV1> for CreateQ04ErrorV1 {
-    fn from(error: aos_sandbox_protocol::domain_ledger::create_q04_history::transfer::Q04DataErrorV1) -> Self {
-        use aos_sandbox_protocol::domain_ledger::create_q04_history::transfer::Q04DataErrorV1 as Data;
+impl From<aos_sandbox_protocol::domain_ledger::create_q04_history::original_rows::Q04OriginalRowsDataErrorV1> for CreateQ04ErrorV1 {
+    fn from(error: aos_sandbox_protocol::domain_ledger::create_q04_history::original_rows::Q04OriginalRowsDataErrorV1) -> Self {
+        use aos_sandbox_protocol::domain_ledger::create_q04_history::original_rows::Q04OriginalRowsDataErrorV1 as Data;
         match error {
-            Data::UnauthenticatedCandidate => {
-                Self::PolicyCompiler(super::PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)
-            }
-            Data::ChangedCut => Self::ChangedCut,
-            Data::Bounds => Self::Bounds,
-            Data::ProtectedBoundary => Self::Journal(JournalError::ProtectedBoundary),
-            Data::Allocation(error) => Self::Allocation(error),
-            Data::AcknowledgementSignature(error) => Self::AcknowledgementSignature(error),
-            Data::ClaimSignature(error) => Self::ClaimSignature(error),
-            Data::PreholdSignature(error) => Self::PreholdSignature(error),
-            Data::History(error) => Self::from(error),
-            Data::ProtectedHistory(error) => Self::from(error),
-            Data::Transaction(error) => Self::from(error),
+            Data::CorruptLedger(reason) => Self::Reconciler(crate::reconciler::ReconcilerError::CorruptLedger(reason)),
+            Data::Operation(error) => Self::Reconciler(crate::reconciler::ReconcilerError::from(error)),
+            Data::Effect(error) => Self::Reconciler(crate::reconciler::ReconcilerError::from(error)),
+            Data::Projection(error) => Self::Projection(error),
+            Data::Hash(error) => Self::Journal(match error {
+                aos_sandbox_protocol::domain_ledger::create_q04_history::original_rows::Q04OriginalRowsHashDataErrorV1::ProtectedBoundary => JournalError::ProtectedBoundary,
+                aos_sandbox_protocol::domain_ledger::create_q04_history::original_rows::Q04OriginalRowsHashDataErrorV1::Transaction(error) => JournalError::from(error),
+            }),
         }
     }
 }
 
-/// Preserves Q04's original changed-cut and owned allocation error lanes.
-pub(crate) fn project_q04_wire_error_v1(
-    cause: genesis_wire::Q04TransferWireErrorV1,
+// Origin failures retain their exact selected/ordinary native source. This
+// projection never observes another Origin or reconstructs a currentness cut.
+pub(crate) fn project_root_q04_origin_error_v1(
+    error: aos_sandbox_broker::receiving::RootQ04OriginErrorV1,
 ) -> CreateQ04ErrorV1 {
-    match cause {
-        genesis_wire::Q04TransferWireErrorV1::ChangedCut =>
-            CreateQ04ErrorV1::ChangedCut,
-        genesis_wire::Q04TransferWireErrorV1::Allocation(cause) =>
-            CreateQ04ErrorV1::Allocation(cause),
+    authority_error::map_root_authority_error_v1(
+        aos_sandbox_policy::native::RootAuthorityErrorV1::Origin(error),
+    )
+}
+
+impl From<aos_sandbox_cache::CacheQ04ErrorV1> for CreateQ04ErrorV1 {
+    fn from(cause: aos_sandbox_cache::CacheQ04ErrorV1) -> Self {
+        Self::NativeCache(Box::new(cause))
     }
 }

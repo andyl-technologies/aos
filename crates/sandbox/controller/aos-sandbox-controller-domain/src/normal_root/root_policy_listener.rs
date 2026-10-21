@@ -5,6 +5,7 @@
 //! grants no phase or signer authority. Native settlement independently checks
 //! the original selected Root and ends the same accepted socket before reuse.
 
+mod initial_owned;
 mod connection_escrow;
 mod permanent_completion;
 pub(crate) use permanent_completion::RootPolicyPositiveCompletionPlanV2;
@@ -20,22 +21,15 @@ use std::io;
 use std::os::unix::{fs::FileTypeExt as _, net::{UnixListener, UnixStream}};
 use std::path::Path;
 
+use aos_sandbox_broker::receiving::RootPurposePeerPostsOriginalV1;
 use aos_sandbox_model::{ResourceDimension as D, ResourceVector};
-use aos_sandbox_linux::unix_stream::RetainedUnixStream;
+use aos_linux_descriptors::unix_stream::RetainedUnixStream;
 
 use super::{NormalRootStartupErrorV1, ProductionNormalRootStartupV1};
 
 const SOCKET: &str = crate::policy_compiler::POLICY_AUTHORITY_FIXED_SOCKET_PATH_V2;
 
-pub(crate) struct RootCurrentOpenIdentityDataV1 {
-    pub(crate) profile: [u8; 32],
-    pub(crate) recipient: [u8; 16],
-    pub(crate) producer: [u8; 16],
-    pub(crate) root_pid: u32,
-    pub(crate) controller_pid: u32,
-    pub(crate) controller_uid: u32,
-    pub(crate) controller_gid: u32,
-}
+pub(crate) use aos_sandbox_protocol::domain_ledger::create_storage_history::root_open::RootCurrentOpenIdentityDataV1;
 
 /// Retains fixed socket preparation and one installed Root listener.
 ///
@@ -69,33 +63,186 @@ impl<'startup> RootPolicyListenerReceivingV1<'startup> {
     }
 
     pub(crate) fn fixed_demand() -> ResourceVector {
-        // Fixed listener/flight owners, at most one accepted address and socket
-        // duplicate/pidfd family, literal socket path, bounded native error/path
-        // work and a 112-byte prelude's per-byte subject-evidence owner slots.
-        let memory = std::mem::size_of::<Self>() + std::mem::size_of::<RootPolicyAcceptedFlightV1<'_, '_>>()
-            + 112 * (std::mem::size_of::<aos_sandbox_linux::unix_stream::UnixStreamSubjectChunk>() + 4096)
-            + 3 * std::mem::size_of::<crate::policy_compiler::RootPolicyPreludeOriginalV1<'_, '_, '_>>()
-            + (3 * std::mem::size_of::<crate::policy_compiler::OriginalRootCreateStorageCurrentAttemptV1<'_, '_, '_>>())
-                .max(3 * std::mem::size_of::<crate::policy_compiler::delete_root::RootDeletePendingReceivingV1<'_, '_, '_>>())
-                .max(3 * std::mem::size_of::<crate::policy_compiler::delete_root::RootDeletePlanningReceivingV1<'_, '_, '_>>())
-                .max(3 * std::mem::size_of::<crate::policy_compiler::RootStorageApplyReceivingV1<'_, '_, '_>>())
-                .max(3 * std::mem::size_of::<crate::policy_compiler::RootStartResourceReceivingV2<'_, '_, '_>>())
-                .max(3 * std::mem::size_of::<crate::policy_compiler::RootMaintenanceStorageReceivingV3<'_, '_, '_>>())
-                .max(3 * std::mem::size_of::<crate::policy_compiler::RootFinalityRecoverReceivingV1<'_, '_, '_>>())
-                .max(3 * std::mem::size_of::<crate::policy_compiler::execution_no_apply_root::transport::RootExecutionNoApplyReceivingV2<'_, '_, '_>>())
-                .max(3 * std::mem::size_of::<crate::policy_compiler::stop_cleanup_root::transport::RootStopCleanupReceivingV1<'_, '_, '_>>())
-                .max(3 * std::mem::size_of::<crate::policy_compiler::RootEnvironmentPolicyAttemptV1<'_, '_, '_>>())
-            + 3 * std::mem::size_of::<serving::RootPolicyServingCustodyV1>()
+        use std::mem::size_of;
+        type Branches = (
+            Option<usize>,
+            Option<usize>,
+            Option<usize>,
+            Option<usize>,
+            Option<usize>,
+            Option<usize>,
+            Option<usize>,
+            Option<usize>,
+            Option<usize>,
+            Option<usize>,
+            Option<usize>,
+        );
+
+        // These owners coexist before and throughout the one accepted purpose.
+        let common = size_of::<Self>()
+            + size_of::<RootPolicyAcceptedFlightV1<'_, '_>>()
+            + 112 * (size_of::<aos_sandbox_linux::unix_stream::UnixStreamSubjectChunk>() + 4096)
+            + 3 * size_of::<crate::policy_compiler::RootPolicyPreludeOriginalV1<'_, '_, '_>>()
+            + 3 * size_of::<serving::RootPolicyServingCustodyV1>()
             + serving::disposition_construction_bytes_v1()
             + 64 * 1024;
-        let base = ResourceVector::ZERO.with(D::MemoryBytes, memory as u64)
-            .with(D::OpenFiles, 6).with(D::MetadataEntries, 128)
-            .with(D::NetworkBytes, 112).with(D::OutputBytes, memory as u64);
-        let opening_clock = crate::policy_compiler::RootPolicyPreludeOriginalV1::opening_clock_demand_v1();
+        let create = 3 * size_of::<
+            crate::policy_compiler::OriginalRootCreateStorageCurrentAttemptV1<'_, '_, '_>,
+        >();
+        let delete = 3 * size_of::<
+            crate::policy_compiler::delete_root::RootDeletePendingReceivingV1<'_, '_, '_>,
+        >();
+        let planning = 3 * size_of::<
+            crate::policy_compiler::delete_root::RootDeletePlanningReceivingV1<'_, '_, '_>,
+        >();
+        let apply =
+            3 * size_of::<crate::policy_compiler::RootStorageApplyReceivingV1<'_, '_, '_>>();
+        let host =
+            3 * size_of::<crate::policy_compiler::RootStartResourceReceivingV2<'_, '_, '_>>();
+        let maintenance =
+            3 * size_of::<crate::policy_compiler::RootMaintenanceStorageReceivingV3<'_, '_, '_>>();
+        let finality =
+            3 * size_of::<crate::policy_compiler::RootFinalityRecoverReceivingV1<'_, '_, '_>>();
+        let no_apply = 3 * size_of::<crate::policy_compiler::execution_no_apply_root::transport::RootExecutionNoApplyReceivingV2<'_, '_, '_>>();
+        let stop = 3 * size_of::<
+            crate::policy_compiler::stop_cleanup_root::transport::RootStopCleanupReceivingV1<
+                '_,
+                '_,
+                '_,
+            >,
+        >();
+        let environment =
+            3 * size_of::<crate::policy_compiler::RootEnvironmentPolicyAttemptV1<'_, '_, '_>>();
+        let assignment = 3 * size_of::<
+            crate::policy_compiler::RootStartAssignmentInputsReceivingV2<'_, '_, '_>,
+        >();
+
+        // Preserve the old output supplier literally in value; new constructor
+        // and comparison controls below are Memory-only additions.
+        let old_work_peak = create
+            .max(delete)
+            .max(planning)
+            .max(apply)
+            .max(host)
+            .max(maintenance)
+            .max(finality)
+            .max(no_apply)
+            .max(stop)
+            .max(environment);
+        let output_memory = common + old_work_peak;
+        let base = ResourceVector::ZERO
+            .with(D::OpenFiles, 6)
+            .with(D::MetadataEntries, 128)
+            .with(D::NetworkBytes, 112)
+            .with(D::OutputBytes, output_memory as u64);
+
+        // A complete branch includes its live receiver and all new nested
+        // constructors/interfaces. The retained peer fields are mutually exclusive.
+        let initial_controls = aos_sandbox_policy::native::RootStartupControllerPeerOriginalV1::financial_receiving_control_bytes_v1()
+            .and_then(|bytes| bytes.checked_add(super::RootControllerPeerReceivingV1::initial_interface_control_bytes_v1()?))
+            .and_then(|bytes| bytes.checked_add(super::RootReceivingGuardV1::initial_peer_control_bytes_v1()?));
+        let owned_controls = crate::policy_compiler::create_storage_current::initial_owned::RootOwnedInitialCurrentAttemptV1::incoming_construction_control_bytes_v1();
+        let initial_names = match crate::policy_compiler::create_storage_current::initial_owned::RootOwnedInitialCurrentAttemptV1::incoming_owed_names_demand_v1() {
+            Ok(names) => names,
+            Err(_) => return base.with(D::MemoryBytes, u64::MAX).with(D::OpenFiles, u64::MAX),
+        };
+        let names_memory = match usize::try_from(initial_names.get(D::MemoryBytes)) {
+            Ok(bytes) => bytes,
+            Err(_) => return base.with(D::MemoryBytes, u64::MAX).with(D::OpenFiles, u64::MAX),
+        };
+        let legacy_controls = RootPurposePeerPostsOriginalV1::<NormalRootStartupErrorV1>::construction_control_bytes_v1();
+        let no_apply_controls =
+            super::RootExecutionNoApplyControllerPeerReceivingV2::construction_control_bytes_v2();
+        let delete_controls =
+            crate::policy_compiler::delete_root::inert_reader_construction_control_bytes_v1();
+        let branches: Branches = (
+            initial_controls.and_then(|shared| {
+                let owned = owned_controls?.checked_add(names_memory)?;
+                shared.checked_add(create.max(owned))
+            }),
+            legacy_controls
+                .and_then(|controls| controls.checked_add(delete_controls?))
+                .and_then(|controls| delete.checked_add(controls)),
+            legacy_controls
+                .and_then(|controls| controls.checked_add(delete_controls?))
+                .and_then(|controls| planning.checked_add(controls)),
+            legacy_controls.and_then(|controls| apply.checked_add(controls)),
+            legacy_controls.and_then(|controls| host.checked_add(controls)),
+            legacy_controls.and_then(|controls| maintenance.checked_add(controls)),
+            legacy_controls.and_then(|controls| finality.checked_add(controls)),
+            no_apply_controls.and_then(|controls| no_apply.checked_add(controls)),
+            legacy_controls.and_then(|controls| stop.checked_add(controls)),
+            legacy_controls.and_then(|controls| environment.checked_add(controls)),
+            legacy_controls.and_then(|controls| assignment.checked_add(controls)),
+        );
+        let branch = match branches {
+            (
+                Some(create),
+                Some(delete),
+                Some(planning),
+                Some(apply),
+                Some(host),
+                Some(maintenance),
+                Some(finality),
+                Some(no_apply),
+                Some(stop),
+                Some(environment),
+                Some(assignment),
+            ) => create
+                .max(delete)
+                .max(planning)
+                .max(apply)
+                .max(host)
+                .max(maintenance)
+                .max(finality)
+                .max(no_apply)
+                .max(stop)
+                .max(environment)
+                .max(assignment),
+            _ => {
+                return base
+                    .with(D::MemoryBytes, u64::MAX)
+                    .with(D::OpenFiles, u64::MAX);
+            }
+        };
+
+        // Ten closed admission methods add only a retained-field comparison.
+        // Quote calculation scalars, closure captures and the actual tuple are
+        // distinct from both the branch's native backing and old fixed reserve.
+        let controls = size_of::<&Option<super::RootControllerPeerReceivingV1<'_>>>()
+            .checked_mul(30)
+            .and_then(|bytes| bytes.checked_add(size_of::<bool>().checked_mul(30)?))
+            .and_then(|bytes| bytes.checked_add(size_of::<usize>().checked_mul(66)?))
+            .and_then(|bytes| bytes.checked_add(size_of::<Option<usize>>().checked_mul(51)?))
+            .and_then(|bytes| bytes.checked_add(size_of::<Branches>().checked_mul(3)?))
+            // These are actual new quote-result, projection and finite-match
+            // planes, separate from the native owed-name vectors themselves.
+            .and_then(|bytes| bytes.checked_add(size_of::<Result<ResourceVector, aos_sandbox_policy::native::PolicyNativeJournalErrorV1>>().checked_mul(3)?))
+            .and_then(|bytes| bytes.checked_add(size_of::<Result<usize, std::num::TryFromIntError>>().checked_mul(3)?))
+            .and_then(|bytes| bytes.checked_add(size_of::<ResourceVector>().checked_mul(9)?))
+            .and_then(|bytes| bytes.checked_add(size_of::<Result<ResourceVector, aos_sandbox_model::AccountingError>>().checked_mul(3)?))
+            .and_then(|bytes| bytes.checked_add(size_of::<usize>().checked_mul(3)?));
+        let memory = controls
+            .and_then(|controls| common.checked_add(controls))
+            .and_then(|common| common.checked_add(branch))
+            .and_then(|bytes| u64::try_from(bytes).ok());
+        let Some(memory) = memory else {
+            return base
+                .with(D::MemoryBytes, u64::MAX)
+                .with(D::OpenFiles, u64::MAX);
+        };
+        let base = base.with(D::MemoryBytes, memory);
+        let base = match base.checked_add(initial_names.with(D::MemoryBytes, 0)) {
+            Ok(complete) => complete,
+            Err(_) => return base.with(D::MemoryBytes, u64::MAX).with(D::OpenFiles, u64::MAX),
+        };
+        let opening_clock =
+            crate::policy_compiler::RootPolicyPreludeOriginalV1::opening_clock_demand_v1();
         match base.checked_add(opening_clock) {
             Ok(complete) => complete,
-            // An unrepresentable fixed shape cannot produce a smaller debit.
-            Err(_) => base.with(D::MemoryBytes, u64::MAX).with(D::OpenFiles, u64::MAX),
+            Err(_) => base
+                .with(D::MemoryBytes, u64::MAX)
+                .with(D::OpenFiles, u64::MAX),
         }
     }
 
@@ -109,7 +256,7 @@ impl<'startup> RootPolicyListenerReceivingV1<'startup> {
         self.entered = true;
         self.permit = Some(if self.startup.receiving.is_some() {
             let mut receiving = self.startup.lock_receiving_v1()?;
-            let returned = receiving.original_mut_v1().prepay_policy_listener_once(self.startup);
+            let returned = receiving.prepay_policy_listener_native_once_v1(self.startup);
             receiving.finish_returned_v1(returned)
         } else { Err(NormalRootStartupErrorV1::Service) });
         if !matches!(self.permit, Some(Ok(()))) {
@@ -210,7 +357,7 @@ pub struct RootPolicyAcceptedFlightV1<'listener, 'startup> {
     accepted: Option<io::Result<(UnixStream, std::os::unix::net::SocketAddr)>>,
     duplicate: Option<Result<std::os::fd::OwnedFd, rustix::io::Errno>>,
     original: Option<UnixStream>,
-    native: Option<Result<RetainedUnixStream, aos_sandbox_linux::Error>>,
+    native: Option<Result<RetainedUnixStream, aos_linux_descriptors::Error>>,
     controller_peer: Option<super::RootControllerPeerReceivingV1<'startup>>,
     controller_admission: Option<Result<(), NormalRootStartupErrorV1>>,
     purpose_peer: Option<RootAcceptedPurposePeerV1<'startup>>,
@@ -317,7 +464,7 @@ impl<'listener, 'startup> RootPolicyAcceptedFlightV1<'listener, 'startup> {
     }
 
     pub(crate) fn admit_current_controller_peer_once(&mut self) -> Result<(), NormalRootStartupErrorV1> {
-        if self.purpose_peer.is_some() || self.controller_admission.is_some() || self.purpose_admission.is_some()
+        if self.controller_peer.is_some() || self.purpose_peer.is_some() || self.controller_admission.is_some() || self.purpose_admission.is_some()
             || self.closed.is_some() || !self.transferred {
             self.closed.get_or_insert(NormalRootStartupErrorV1::Service);
             return Err(NormalRootStartupErrorV1::Service);
@@ -329,29 +476,41 @@ impl<'listener, 'startup> RootPolicyAcceptedFlightV1<'listener, 'startup> {
 
     fn admit_current_controller_peer_inner(&mut self) -> Result<(), NormalRootStartupErrorV1> {
         let startup = self.listener.startup;
-        let lifetime = {
+        {
             let mut receiving = startup.lock_receiving_v1()?;
-            let returned = receiving.original_mut_v1().prepay_current_controller_peer_once(startup);
-            receiving.finish_returned_v1(returned)?
-        };
-        self.controller_peer = Some(super::RootControllerPeerReceivingV1::new(startup, lifetime));
+            // Park both real owners before entering Stage under this same L/U.
+            let parked = receiving.park_initial_controller_peer_once_v1(startup);
+            self.controller_peer = Some(receiving.finish_returned_v1(parked)?);
+            let peer = self.controller_peer.as_mut().ok_or(NormalRootStartupErrorV1::Service)?;
+            let returned = receiving.prepare_initial_controller_peer_once_v1(peer);
+            receiving.finish_returned_v1(returned)?;
+        }
         let peer = self.controller_peer.as_mut().ok_or(NormalRootStartupErrorV1::Service)?;
         let native = self.native.as_ref().and_then(|result| result.as_ref().ok())
             .ok_or(NormalRootStartupErrorV1::Service)?;
         let capture = peer.capture_once(native);
-        // The actual Root post runs even after peer capture/decoder failure.
         {
             let mut receiving = startup.lock_receiving_v1()?;
-            let returned = receiving.original_mut_v1().post_current_controller_peer_once(startup, capture);
+            // The native producer has parked capture itself; no supplied
+            // success/error Result constructs a financial or physical phase.
+            let returned = receiving.finish_initial_controller_post_once_v1(peer);
             receiving.finish_returned_v1(returned)?;
         }
+        capture?;
         let settlement = peer.settle_positive_once();
         {
             let mut receiving = startup.lock_receiving_v1()?;
-            let returned = receiving.original_mut_v1().finish_current_controller_peer_once(settlement);
+            let returned = receiving.complete_initial_controller_peer_once_v1(peer);
             receiving.finish_returned_v1(returned)?;
         }
+        settlement?;
         peer.require_completed()
+    }
+
+    pub(crate) fn current_peer_startup_original_v1(&self)
+        -> Result<&aos_sandbox_policy::native::RootStartupControllerPeerOriginalV1<'startup>, NormalRootStartupErrorV1> {
+        self.current_cut_startup()?;
+        self.controller_peer.as_ref().ok_or(NormalRootStartupErrorV1::Service)?.startup_original_v1()
     }
 
     pub(crate) fn current_outcome_failure_view_v1(&self,
@@ -392,6 +551,30 @@ impl<'listener, 'startup> RootPolicyAcceptedFlightV1<'listener, 'startup> {
         receiving.finish_returned_v1(returned)
     }
 
+    pub(crate) fn borrow_accepted_history_v1<'cut>(
+        &'cut self,
+        post: &'cut mut super::RootHistoryPeerPostV1,
+    ) -> Result<aos_sandbox_broker::receiving::RootAcceptedHistoryBorrowerV1<'cut, 'startup>, NormalRootStartupErrorV1> {
+        self.current_cut_startup()?;
+        let native = self.current_cut_native()?;
+        let peer = self.controller_peer.as_ref().ok_or(NormalRootStartupErrorV1::Service)?;
+        post.native_original_mut_v1().borrow_accepted_history_v1(peer.native_original_v1()?, native)
+            .map_err(Into::into)
+    }
+
+    pub(crate) fn borrow_root_open_physical_v1<'cut>(
+        &'cut self,
+        post: &'cut mut super::RootHistoryPeerPostV1,
+        clock: &'cut aos_sandbox_broker::receiving::RootOpenClockOriginalV1,
+    ) -> Result<aos_sandbox_broker::receiving::RootOpenPhysicalBorrowerV1<'cut, 'startup>, NormalRootStartupErrorV1> {
+        self.current_cut_startup()?;
+        let native = self.current_cut_native()?;
+        let peer = self.controller_peer.as_ref().ok_or(NormalRootStartupErrorV1::Service)?;
+        post.native_original_mut_v1()
+            .borrow_root_open_physical_v1(peer.native_original_v1()?, native, clock)
+            .map_err(Into::into)
+    }
+
     pub(crate) fn observe_history_peer_post_once_v1(&self, post: &mut super::RootHistoryPeerPostV1)
         -> Result<(), NormalRootStartupErrorV1> {
         post.observe_once(self.listener.startup, self.native.as_ref().and_then(|result| result.as_ref().ok()),
@@ -429,7 +612,7 @@ impl<'listener, 'startup> RootPolicyAcceptedFlightV1<'listener, 'startup> {
         self.current_cut_startup().map_err(|_| aos_sandbox_linux::seqpacket::SeqpacketError::Closed)?;
         self.native.as_mut().and_then(|result| result.as_mut().ok())
             .ok_or(aos_sandbox_linux::seqpacket::SeqpacketError::Closed)?
-            .enable_subject_reporting()
+            .enable_subject_reporting().map_err(aos_sandbox_linux::seqpacket::SeqpacketError::from)
     }
 
     pub(crate) fn receive_current_subject_chunk_into(
@@ -452,7 +635,7 @@ impl<'listener, 'startup> RootPolicyAcceptedFlightV1<'listener, 'startup> {
         let peer = self.controller_peer.as_ref().ok_or(NormalRootStartupErrorV1::Service)?;
         let native = self.current_cut_native()?;
         let chunk = buffer.pending_chunk().map_err(|_| NormalRootStartupErrorV1::Service)?;
-        sample.capture_once(peer.native_original_v1(), native, chunk).map_err(Into::into)
+        sample.capture_once(peer.native_original_v1()?, native, chunk).map_err(Into::into)
     }
 
     pub(crate) fn current_root_open_identity(&self) -> Result<RootCurrentOpenIdentityDataV1, NormalRootStartupErrorV1> {
@@ -678,38 +861,10 @@ impl<'listener, 'startup> RootPolicyAcceptedFlightV1<'listener, 'startup> {
         returned: Result<(), Box<dyn Error>>,
         kind: serving::ServingDispatchV1,
     ) -> Result<(), NormalRootStartupErrorV1> {
-        let invalid = self.closed.is_some() || self.dispatch.is_some() || !self.transferred;
-        if self.finish_order.is_none() {
-            self.finish_order = Some(if invalid { Err(NormalRootStartupErrorV1::Service) } else { Ok(()) });
+        macro_rules! original_socket_stage_v1 {
+            () => { self.end_original_socket_once() };
         }
-        if self.dispatch.is_none() {
-            self.dispatch = Some(returned);
-        } else if self.rejected_dispatch.is_none() {
-            self.rejected_dispatch = Some(returned);
-        } else {
-            // No unbounded rejected-offer list or implicit dropping of a new
-            // whole error. The offered owner remains on this stack at death.
-            std::process::abort();
-        }
-        if invalid {
-            self.closed.get_or_insert(NormalRootStartupErrorV1::Service);
-        }
-        // An invalid handler disposition cannot cancel the already armed post.
-        // Keep its offered result and every native owner through that post.
-        if !matches!(kind, serving::ServingDispatchV1::DeleteCompletion | serving::ServingDispatchV1::ExecutionNoApply | serving::ServingDispatchV1::StopCleanup) {
-            self.end_original_socket_once();
-        }
-        self.finish_native_post_once();
-        self.finished = !invalid
-            && matches!(self.dispatch, Some(Ok(())))
-            && self.socket_disposition_matches_v1(kind)
-            && matches!(self.after, Some(Ok(())));
-        if self.finished {
-            self.complete_serving_dispatch_v1(kind)
-        } else {
-            self.listener.failed = true;
-            Err(NormalRootStartupErrorV1::Service)
-        }
+        initial_owned::dispatch_programme_v1!(self, returned, kind, original_socket_stage_v1)
     }
 
     fn socket_disposition_matches_v1(&self, kind: serving::ServingDispatchV1) -> bool {

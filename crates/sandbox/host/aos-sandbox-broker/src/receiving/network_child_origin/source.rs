@@ -48,16 +48,16 @@ enum RecordFirst { Order, Before(usize), SourceInfoBefore, SubjectBefore, Identi
 #[must_use]
 pub struct NetworkChildSourceRecordOriginalV2 {
     entered: bool,
-    before: [Option<Result<bool, aos_sandbox_linux::Error>>; 2],
-    subject_before: Option<Result<bool, aos_sandbox_linux::Error>>,
-    source_info_before: Option<Result<aos_sandbox_linux::pidfd::PidFdInfo, aos_sandbox_linux::Error>>,
+    before: [Option<Result<bool, aos_linux_descriptors::Error>>; 2],
+    subject_before: Option<Result<bool, aos_linux_descriptors::Error>>,
+    source_info_before: Option<Result<aos_linux_descriptors::pidfd::PidFdInfo, aos_linux_descriptors::Error>>,
     identity: PidFdProcessIdentityOriginalV1,
-    identity_result: Option<Result<(), aos_sandbox_linux::Error>>,
-    subject_after: Option<Result<bool, aos_sandbox_linux::Error>>,
-    source_info_after: Option<Result<aos_sandbox_linux::pidfd::PidFdInfo, aos_sandbox_linux::Error>>,
-    after: [Option<Result<bool, aos_sandbox_linux::Error>>; 2],
+    identity_result: Option<Result<(), aos_linux_descriptors::Error>>,
+    subject_after: Option<Result<bool, aos_linux_descriptors::Error>>,
+    source_info_after: Option<Result<aos_linux_descriptors::pidfd::PidFdInfo, aos_linux_descriptors::Error>>,
+    after: [Option<Result<bool, aos_linux_descriptors::Error>>; 2],
     first: Option<RecordFirst>,
-    stat_retirement: Option<Result<(), aos_sandbox_linux::Error>>,
+    stat_retirement: Option<Result<(), aos_linux_descriptors::Error>>,
 }
 
 impl NetworkChildSourceRecordOriginalV2 {
@@ -155,13 +155,13 @@ enum First { Order, Before(usize), Send, Reply, After(usize) }
 #[must_use]
 pub struct NetworkChildSourceProbeOriginalV2 {
     entered: bool,
-    before: [Option<Result<bool, aos_sandbox_linux::Error>>; 2],
+    before: [Option<Result<bool, aos_linux_descriptors::Error>>; 2],
     request: [u8; 64],
     send: NetworkPid1RequestOriginalV2,
     send_result: Option<Result<(), aos_sandbox_linux::seqpacket::SeqpacketError>>,
     reply: NetworkPid1ReplyOriginalV2,
     reply_result: Option<Result<(), aos_sandbox_linux::seqpacket::SeqpacketError>>,
-    after: [Option<Result<bool, aos_sandbox_linux::Error>>; 2],
+    after: [Option<Result<bool, aos_linux_descriptors::Error>>; 2],
     first: Option<First>,
 }
 
@@ -242,7 +242,7 @@ impl<'native> NetworkChildSourceLoanV2<'native> {
     /// # Errors
     /// Refuses an already-failed Source or unavailable actual native subject.
     pub fn original_netd_pidfd_for_worker_wait_v2(&self)
-        -> Result<&'native aos_sandbox_linux::pidfd::PidFd, NetworkChildOriginClosedV2>
+        -> Result<&'native aos_linux_descriptors::pidfd::PidFd, NetworkChildOriginClosedV2>
     {
         if self.closed || !self.native.completed() {
             return Err(NetworkChildOriginClosedV2);
@@ -468,7 +468,7 @@ impl NetworkChildOriginOriginalV2 {
     /// Refuses an unfailed original, missing authenticated carrier or absent
     /// exact held Source/recipient identity; PID1 is never substituted.
     pub fn owed_netd_pidfd_for_worker_wait_v2(&self)
-        -> Result<&aos_sandbox_linux::pidfd::PidFd, NetworkChildOriginClosedV2>
+        -> Result<&aos_linux_descriptors::pidfd::PidFd, NetworkChildOriginClosedV2>
     {
         if self.first.is_none() || !matches!(self.origin, Some(Ok(())))
             || !matches!(self.packet, Some(Ok(())))
@@ -567,8 +567,8 @@ impl IdentityUse<'_> {
 }
 
 fn require_same_netd_identity_once_v2(native: &native::NativeOriginalV2,
-    packet: &[u8; 840], mut use_kind: IdentityUse<'_>, pidfd: &aos_sandbox_linux::pidfd::PidFd,
-    initial_info: aos_sandbox_linux::pidfd::PidFdInfo, uid: u32, gid: u32,
+    packet: &[u8; 840], mut use_kind: IdentityUse<'_>, pidfd: &aos_linux_descriptors::pidfd::PidFd,
+    initial_info: aos_linux_descriptors::pidfd::PidFdInfo, uid: u32, gid: u32,
     original: &mut NetworkChildSourceRecordOriginalV2)
     -> Result<(), NetworkChildOriginClosedV2>
 {

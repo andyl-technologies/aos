@@ -51,6 +51,18 @@ pub use model::{
 use aos_sandbox_protocol::domain_ledger::runtime_authority_history as runtime_data;
 use runtime_data::CURRENT_PREFIX;
 use runtime_data::ledger_read as runtime_read;
+
+// Native-owner selectors differ, while key order, missing-head refusal and
+// collection stay one lexical DATA recipe with no runtime callback.
+macro_rules! current_bindings_data_v2 {
+    ($records:expr, $key:ident, $selected:expr) => {
+        $records
+            .filter(|(key, _)| key.starts_with(CURRENT_PREFIX))
+            .map(|($key, _)| $selected)
+            .map(|binding| binding?.ok_or(RuntimeAuthorityError::CorruptState))
+            .collect()
+    };
+}
 #[cfg(test)]
 use runtime_data::MAXIMUM_RECORD_BYTES;
 
@@ -178,12 +190,10 @@ impl<'journal> RuntimeAuthorityStore<'journal> {
     ) -> Result<Vec<RuntimeAuthorityBindingV1>, RuntimeAuthorityError> {
         self.journal.ensure_protected_authority()?;
 
-        self.journal
-            .records(RecordNamespace::RuntimeAuthority)
-            .filter(|(key, _)| key.starts_with(CURRENT_PREFIX))
-            .map(|(key, _)| current_from_journal(self.journal, sandbox_from_current_key(key)?))
-            .map(|binding| binding?.ok_or(RuntimeAuthorityError::CorruptState))
-            .collect()
+        current_bindings_data_v2!(
+            self.journal.records(RecordNamespace::RuntimeAuthority), key,
+            current_from_journal(self.journal, sandbox_from_current_key(key)?)
+        )
     }
 
     /// Validates that every current assignment belongs to the configured node.
@@ -527,8 +537,17 @@ pub(crate) fn validate_activated_pending(
 #[must_use]
 pub(crate) fn current_publication_receiving_demand_v2(journal: &Journal)
     -> Option<aos_sandbox_model::ResourceVector> {
+    current_publication_observed_receiving_demand_v2(
+        crate::journal::historical_observation::HistoricalObservationV1::from_journal_v1(journal),
+    )
+}
+
+/// Prices the same current structural selection over the actual held read owner.
+pub(crate) fn current_publication_observed_receiving_demand_v2(
+    journal: crate::journal::historical_observation::HistoricalObservationV1<'_>,
+) -> Option<aos_sandbox_model::ResourceVector> {
     use aos_sandbox_model::{ResourceDimension as D, ResourceVector};
-    let state = journal.historical_read_view_v1().materialized_state_v1();
+    let state = journal.state_v1();
     let models = crate::cold_launch_publication::completion::controller_selector_model_bytes_v1(state)?;
     let names = crate::cold_launch_publication::completion::controller_selector_namespace_entries_v1(state)?;
     let maps = runtime_data::namespace_scan_map_receiving_demand_v2(state)?;
@@ -551,10 +570,32 @@ pub(crate) fn current_publication_receiving_demand_v2(journal: &Journal)
 pub(crate) fn current_readonly_v2(journal: &Journal, limits: RuntimeAuthorityLimits,
     sandbox: SandboxId,
 ) -> Result<Option<RuntimeAuthorityBindingV1>, RuntimeAuthorityError> {
+    current_observed_v2(
+        crate::journal::historical_observation::HistoricalObservationV1::from_journal_v1(journal),
+        limits, sandbox,
+    )
+}
+
+/// Selects current structural Runtime DATA under the actual retained read owner.
+///
+/// Both original protected checks stay on that owner, before the complete
+/// namespace scan and again before the exact current selector. Arbitrary rows
+/// cannot construct this borrower or the private accepted binding wrapper.
+///
+/// # Errors
+/// Refuses native protection/health, full history bounds or current crosslinks.
+pub(crate) fn current_observed_v2(
+    journal: crate::journal::historical_observation::HistoricalObservationV1<'_>,
+    limits: RuntimeAuthorityLimits,
+    sandbox: SandboxId,
+) -> Result<Option<RuntimeAuthorityBindingV1>, RuntimeAuthorityError> {
     journal.ensure_protected_authority()?;
-    validate_namespace(journal, limits)?;
+    runtime_read::scan_namespace_rows_data_v2(journal.rows_data_v2(), limits.data)
+        .map_err(RuntimeAuthorityError::from)?;
     journal.ensure_protected_authority()?;
-    current_from_journal(journal, sandbox)
+    runtime_read::current_rows_data_v2(journal.rows_data_v2(), sandbox)
+        .map(|binding| binding.map(|data| RuntimeAuthorityBindingV1 { data }))
+        .map_err(RuntimeAuthorityError::from)
 }
 
 fn current_from_journal(
@@ -583,6 +624,7 @@ pub(crate) fn binding_in_validated_namespace(
         .map(|data| RuntimeAuthorityBindingV1 { data })
         .map_err(RuntimeAuthorityError::from)
 }
+
 
 /// Reuses the exact uninterrupted holder/assignment check after full replay.
 ///
@@ -724,4 +766,109 @@ fn current_key(sandbox: SandboxId) -> Vec<u8> {
 
 fn sandbox_from_current_key(key: &[u8]) -> Result<SandboxId, RuntimeAuthorityError> {
     runtime_read::sandbox_from_current_key(key).map_err(RuntimeAuthorityError::from)
+}
+
+/// Prices the same-owner Runtime scan/current enclosure interfaces.
+///
+/// Counts the concrete construction, ABI return and caller planes. It pays
+/// only new Memory controls; full canonical maps and decoder backing stay
+/// with the existing reached semantic invoice.
+pub(crate) fn current_observation_control_bytes_v2() -> Option<usize> {
+    let mut bytes = std::mem::size_of::<
+        aos_sandbox_protocol::domain_ledger::readonly::HistoricalLedgerRowsDataV2<'_>,
+    >().checked_mul(3)?;
+    bytes = bytes.checked_add(std::mem::size_of::<crate::journal::historical_observation::HistoricalObservationV1<'_>>().checked_mul(3)?)?;
+    bytes = bytes.checked_add(std::mem::size_of::<RuntimeAuthorityLimits>().checked_mul(3)?)?;
+    bytes = bytes.checked_add(std::mem::size_of::<SandboxId>().checked_mul(3)?)?;
+    bytes = bytes.checked_add(std::mem::size_of::<Result<(), JournalError>>().checked_mul(3)?)?;
+    bytes = bytes.checked_add(std::mem::size_of::<Result<(usize, usize, bool), runtime_read::RuntimeHistoryReadErrorV1>>().checked_mul(3)?)?;
+    bytes = bytes.checked_add(std::mem::size_of::<Result<Option<runtime_data::RuntimeAuthorityBindingV1>, runtime_read::RuntimeHistoryReadErrorV1>>().checked_mul(3)?)?;
+    bytes = bytes.checked_add(std::mem::size_of::<Result<Option<RuntimeAuthorityBindingV1>, RuntimeAuthorityError>>().checked_mul(3)?)?;
+    bytes = bytes.checked_add(std::mem::size_of::<runtime_read::RuntimeHistoryReadErrorV1>().checked_mul(3)?)?;
+    bytes = bytes.checked_add(std::mem::size_of::<RuntimeAuthorityError>().checked_mul(3)?)?;
+    bytes.checked_add(std::mem::size_of::<Option<usize>>().checked_mul(3)?)
+}
+
+/// Prices the new current-publication geometry forwarding interfaces.
+pub(crate) fn current_publication_geometry_control_bytes_v2() -> Option<usize> {
+    std::mem::size_of::<crate::journal::historical_observation::HistoricalObservationV1<'_>>()
+        .checked_mul(3)?
+        .checked_add(std::mem::size_of::<Option<aos_sandbox_model::ResourceVector>>().checked_mul(3)?)?
+        .checked_add(std::mem::size_of::<Option<usize>>().checked_mul(3)?)
+}
+
+/// Validates and reads every current binding through the same actual owner.
+pub(crate) fn current_bindings_observed_v2(
+    journal: crate::journal::historical_observation::HistoricalObservationV1<'_>,
+    limits: RuntimeAuthorityLimits,
+) -> Result<Vec<RuntimeAuthorityBindingV1>, RuntimeAuthorityError> {
+    journal.ensure_protected_authority()?;
+    validate_namespace_observed_v2(journal, limits)?;
+    journal.ensure_protected_authority()?;
+    current_bindings_selected_v2(journal)
+}
+
+fn current_bindings_selected_v2(
+    journal: crate::journal::historical_observation::HistoricalObservationV1<'_>,
+) -> Result<Vec<RuntimeAuthorityBindingV1>, RuntimeAuthorityError> {
+    let (poisoned, protected) = journal.historical_status_data_v2()?;
+    current_bindings_data_v2!(
+        journal.records(RecordNamespace::RuntimeAuthority), key,
+        runtime_read::current_diagnostic_rows_data_v2(journal.rows_data_v2(), poisoned, protected, sandbox_from_current_key(key)?)
+            .map(|binding| binding.map(|data| RuntimeAuthorityBindingV1 { data }))
+            .map_err(RuntimeAuthorityError::from)
+    )
+}
+
+/// Validates complete Runtime rows under the original real protected gate.
+pub(crate) fn validate_namespace_observed_v2(
+    journal: crate::journal::historical_observation::HistoricalObservationV1<'_>, limits: RuntimeAuthorityLimits,
+) -> Result<(usize, usize), RuntimeAuthorityError> {
+    let (poisoned, protected) = journal.historical_status_data_v2()?;
+    runtime_read::scan_namespace_diagnostic_rows_data_v2(journal.rows_data_v2(), poisoned, protected, limits.data)
+        .map(|(records, bytes, _)| (records, bytes))
+        .map_err(RuntimeAuthorityError::from)
+}
+
+/// Resolves a binding through the same owner at the old lower guard frontier.
+pub(crate) fn binding_in_validated_observation_v2(
+    journal: crate::journal::historical_observation::HistoricalObservationV1<'_>, sandbox: SandboxId, revision: u64,
+) -> Result<RuntimeAuthorityBindingV1, RuntimeAuthorityError> {
+    let (poisoned, protected) = journal.historical_status_data_v2()?;
+    runtime_read::binding_diagnostic_rows_data_v2(journal.rows_data_v2(), poisoned, protected, sandbox, revision)
+        .map(|data| RuntimeAuthorityBindingV1 { data })
+        .map_err(RuntimeAuthorityError::from)
+}
+
+/// Prices the actual complete/binding selectors and their closed diagnostics.
+pub(crate) fn all_bindings_observation_control_bytes_v2() -> Option<usize> {
+    use std::mem::size_of;
+    type Lower = runtime_read::RuntimeHistoryReadErrorV1;
+    size_of::<(crate::journal::historical_observation::HistoricalObservationV1<'_>, RuntimeAuthorityLimits, SandboxId, u64, bool, bool)>().checked_mul(3)?
+        .checked_add(size_of::<(aos_sandbox_protocol::domain_ledger::readonly::HistoricalLedgerRowsDataV2<'_>, runtime_data::RuntimeAuthorityLimits, SandboxId, u64, bool, bool)>().checked_mul(3)?)?
+        .checked_add(size_of::<Result<(bool, bool), JournalError>>().checked_mul(3)?)?
+        .checked_add(size_of::<Result<(usize, usize, bool), Lower>>().checked_mul(3)?)?
+        .checked_add(size_of::<Result<(usize, usize), RuntimeAuthorityError>>().checked_mul(3)?)?
+        .checked_add(size_of::<Result<runtime_data::RuntimeAuthorityBindingV1, Lower>>().checked_mul(3)?)?
+        .checked_add(size_of::<Result<Option<runtime_data::RuntimeAuthorityBindingV1>, Lower>>().checked_mul(3)?)?
+        .checked_add(size_of::<Result<RuntimeAuthorityBindingV1, RuntimeAuthorityError>>().checked_mul(3)?)?
+        .checked_add(size_of::<Result<Option<RuntimeAuthorityBindingV1>, RuntimeAuthorityError>>().checked_mul(3)?)?
+        .checked_add(size_of::<Result<Vec<RuntimeAuthorityBindingV1>, RuntimeAuthorityError>>().checked_mul(3)?)?
+        .checked_add(size_of::<(Lower, RuntimeAuthorityError)>().checked_mul(3)?)?
+        .checked_add(size_of::<(crate::journal::historical_observation::HistoricalObservationV1<'_>, bool, bool)>().checked_mul(3)?)?
+        // The selector closure borrows these three saved locals. These
+        // environment/Map transport planes are distinct from the by-value
+        // DATA call tuple above. Iterator::map invokes the FnMut entry; its
+        // receiver and actual key/value argument planes are explicit too.
+        .checked_add(size_of::<(
+            &crate::journal::historical_observation::HistoricalObservationV1<'_>,
+            &bool, &bool,
+        )>().checked_mul(3)?)?
+        .checked_add(size_of::<(
+            &mut (&crate::journal::historical_observation::HistoricalObservationV1<'_>, &bool, &bool),
+            (&[u8], &[u8]),
+        )>().checked_mul(3)?)?
+        .checked_add(size_of::<Result<Option<RuntimeAuthorityBindingV1>, RuntimeAuthorityError>>().checked_mul(3)?)?
+        .checked_add(runtime_read::diagnostic_control_bytes_v2()?)?
+        .checked_add(size_of::<Option<usize>>().checked_mul(3)?)
 }

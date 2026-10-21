@@ -7,13 +7,13 @@
 
 mod stages;
 
-pub(crate) use stages::{RootStopCleanupStageReceivingV1, RootMaintenanceStorageStageReceivingV2, RootExecutionNoApplyStageReceivingV2, RootDeleteCacheStageReceivingV2, RootApplyStageReceivingV1, RootHostLaunchStageReceivingV1, RootEnvironmentStageReceivingV1, RootFinalityRecoverStageReceivingV1, RootStartAssignmentInputsStageReceivingV2};
+pub(crate) use stages::{RootStopCleanupStageReceivingV1, RootMaintenanceStorageStageReceivingV2, RootDeleteCacheStageReceivingV2, RootApplyStageReceivingV1, RootHostLaunchStageReceivingV1, RootEnvironmentStageReceivingV1, RootFinalityRecoverStageReceivingV1, RootStartAssignmentInputsStageReceivingV2};
 
 use std::error::Error as StdError;
 
-use aos_sandbox_broker::receiving::RootPrearmedHistoryServicePostV1;
+use aos_sandbox_broker::receiving::{RootPrearmedHistoryServicePostV1, RootPurposePeerPostsOriginalV1};
 use aos_sandbox_model::{ResourceDimension as D, ResourceVector};
-use aos_sandbox_linux::unix_stream::RetainedUnixStream;
+use aos_linux_descriptors::unix_stream::RetainedUnixStream;
 
 use super::receiving::{RootControllerPeerCurrentSampleV1, RootControllerPeerReceivingV1};
 use super::{Error, ProductionNormalRootStartupV1};
@@ -51,19 +51,6 @@ pub(crate) type RootFinalityRecoverControllerPeerReceivingV1<'startup> =
 /// Binds only current Maintenance Storage31 to its own actual Root peer.
 pub(crate) type RootMaintenanceStorageControllerPeerReceivingV2<'startup> =
     RootPurposeControllerPeerReceivingV1<'startup, MaintenanceStorageRootPeerPurposeV2>;
-
-/// Binds only the distinct paid Execution NoApply native comparison peer.
-pub(crate) type RootExecutionNoApplyControllerPeerReceivingV2<'startup> =
-    RootPurposeControllerPeerReceivingV1<'startup, crate::controller_resource_reservation::ExecutionNoApplyRootPeerPurposeV2>;
-
-impl<'startup> RootExecutionNoApplyControllerPeerReceivingV2<'startup> {
-    pub(in crate::normal_root) fn execution_no_apply_stage_receiving_v2(&mut self)
-        -> Result<RootExecutionNoApplyStageReceivingV2<'_, 'startup>, Error>
-    {
-        self.require_initial_v1()?;
-        Ok(RootExecutionNoApplyStageReceivingV2::new_v2(self.startup, &mut self.admission))
-    }
-}
 
 pub(crate) struct RootPurposeControllerPeerReceivingV1<'startup, K: RootPeerPurposeV1> {
     startup: &'startup ProductionNormalRootStartupV1,
@@ -107,6 +94,9 @@ impl<'startup, K: RootPeerPurposeV1> RootPurposeControllerPeerReceivingV1<'start
         let post = RootPrearmedHistoryServicePostV1::demand_v1().ok_or_else(invalid)?;
         let bytes = std::mem::size_of::<Self>()
             .checked_mul(3)
+            .and_then(|bytes| {
+                bytes.checked_add(RootPurposePeerPostsOriginalV1::<Error>::operation_control_bytes_v1()?)
+            })
             // Two actual observer lifetime Arc allocations, including their
             // reference-count headers, coexist with the inline constructors.
             .and_then(|bytes| bytes.checked_add(2 * (3 * std::mem::size_of::<usize>())))
@@ -119,9 +109,6 @@ impl<'startup, K: RootPeerPurposeV1> RootPurposeControllerPeerReceivingV1<'start
         // credit is inferred from archive completion or a later body result.
         for _ in 0..4 {
             demand = demand.checked_add(post)?;
-        }
-        if K::EXECUTION_NO_APPLY_ONLY {
-            demand = demand.checked_add(crate::policy_compiler::execution_no_apply_root::transport::fixed_receiving_demand_v2()?)?;
         }
         if K::STOP_CLEANUP_ONLY {
             demand = demand.checked_add(crate::policy_compiler::stop_cleanup_root::transport::fixed_receiving_demand_v1()?)?;

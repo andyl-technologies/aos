@@ -6,6 +6,8 @@
 //! own pending markers. No owner row is deleted and no Create or Apply authority
 //! follows from the clear.
 
+use aos_sandbox_ledger_replay::controller_policy_hold::ControllerPolicyHoldCodecV1;
+
 use aos_sandbox_protocol::domain_ledger::source_policy_hold::SourceDomainPolicyHoldV1;
 
 use std::path::Path;
@@ -13,7 +15,7 @@ use std::path::Path;
 use aos_sandbox_model::{OperationId, SandboxId};
 
 use crate::Journal;
-use crate::cache_residency::{CacheResidencyProtectedOwnerV1, DormantCacheOwnerV1};
+use aos_sandbox_cache::{CacheResidencyProtectedOwnerV1, DormantCacheOwnerV1};
 use crate::journal::controller::production_journal_limits;
 
 use crate::protected_domain_journal::ProtectedDomainJournalErrorV1;
@@ -47,7 +49,37 @@ pub fn clear_current_create_v8_successor_fences_v1(
     let released_source =
         require_settled_owner_cut(controller, source_domains, operation, sandbox, grant)?;
 
-    cache.with_cleared_v8_pending_cache_settlement_v1(physical, grant, |cache_clear| {
+    let mut original = cache.borrow_v8_settlement_clear_v1(physical, grant)?;
+    let mut native = original.borrow_context_once_v1()?;
+    // The old inspect/finish/finalize were exactly no-op successes. Their
+    // native currentness and all three pre-commit posts remain real entries.
+    let inspected = {
+        let returned = native.borrow_inspection_once_v1();
+        match returned {
+            Err(cause) => Err(cause),
+            Ok(mut guard) => {
+                let returned_context = guard.borrow_context_once_v1();
+                let result = match returned_context {
+                    Err(cause) => Err(cause),
+                    Ok(mut context) => {
+                        if context.readback_v1().is_none() {
+                            context.finish_after_upper_refusal_v1()
+                        } else {
+                            let inner = context.refresh_after_inspect_once_v1();
+                            context.finish_after_inspect_v1().and(inner)
+                        }
+                    }
+                };
+                result
+            }
+        }
+    };
+    native.postflight_after_inspect_v1()?;
+    inspected?;
+    native.postflight_after_finish_v1()?;
+    native.postflight_before_commit_v1()?;
+    let cache_clear = native.clear_settlement_once_v1()?;
+    let result = (|| {
         require_settled_owner_cut(controller, source_domains, operation, sandbox, grant)
             .map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority)?;
         source_domains.clear_closed_policy_source_v8_settlement_v1(
@@ -57,8 +89,13 @@ pub fn clear_current_create_v8_successor_fences_v1(
         )?;
         require_settled_owner_cut(controller, source_domains, operation, sandbox, grant)
             .map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority)?;
-        Ok(())
-    })?;
+        Ok::<(), ProtectedDomainJournalErrorV1>(())
+    })();
+    // The post remains owed after Source refusal; it cannot replace that
+    // earlier owner's error when both sides fail.
+    let post = native.postflight_after_settlement_clear_v1();
+    result?;
+    post?;
     Ok(())
 }
 

@@ -3,7 +3,8 @@
 use std::time::{Duration, Instant};
 
 use aos_sandbox_model::ObjectDigest;
-use aos_sandbox_linux::immutable_file::{SealedMemfdMapping, SealedReadOnlyCredential};
+use aos_sandbox_linux::immutable_file::SealedMemfdMapping;
+use aos_linux_descriptors::credential::SealedReadOnlyCredential;
 use aos_sandbox_linux::seqpacket::{SeqpacketError, SeqpacketSocket};
 use sha2::{Digest as _, Sha256};
 

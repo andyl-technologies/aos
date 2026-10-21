@@ -32,8 +32,9 @@ use aos_sandbox_ownership_protocol::SignedOwnershipLease;
 use crate::{Journal, OriginalStartHostRootLoanV1};
 use crate::controller_resource_reservation::ResourceReservationErrorV1;
 use crate::hierarchy::genesis_profile::SourceGenesisErrorV1;
-use crate::policy_compiler::{RetainedKernelPairedClockAttemptV1,
-    bounded_stream_io::{FixedDeadlineStreamIoV1, DeadlineStreamDirectionV1}};
+use crate::policy_compiler::RetainedKernelPairedClockAttemptV1;
+use aos_sandbox_broker::bounded_stream_io::FixedDeadlineStreamIoV1;
+use aos_sandbox_broker::bounded_stream_io::DeadlineStreamDirectionV1;
 use super::{NormalRootStartupErrorV1, ProductionControllerNormalRootProfileV1,
     root_connection::ControllerRootConnectionOriginalV1, strict_chunk::RootStrictChunkOriginalV1,
     peer_receiving::{CreateStorageRootPeerReceivingOriginalsV1, StableRootPeerV1,
@@ -379,7 +380,7 @@ impl RootHostLaunchClientOriginalV1 {
             .observe_with_cutoff_once_v1(&state.profile, state.connection.stream().map_err(|_| First::Before)?,
                 None, None, false, state.cutoff));
         if !matches!(state.before, Some(Ok(()))) { return Err(First::Before); }
-        state.reporting = Some(state.connection.stream_mut().map_err(|_| First::Reporting)?.enable_subject_reporting());
+        state.reporting = Some(state.connection.stream_mut().map_err(|_| First::Reporting)?.enable_subject_reporting().map_err(aos_sandbox_linux::seqpacket::SeqpacketError::from));
         if !matches!(state.reporting, Some(Ok(()))) { return Err(First::Reporting); }
         state.query_sent = Some(state.query_sender.run_once(state.connection.stream_mut().map_err(|_| First::Send)?,
             &mut state.query_bytes, state.cutoff, DeadlineStreamDirectionV1::Write));

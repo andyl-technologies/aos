@@ -15,7 +15,7 @@ use std::fmt;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use aos_sandbox_linux::cgroup::{CgroupPopulationMonitor, CgroupPopulationState};
-use aos_sandbox_linux::pidfd::PidFd;
+use aos_linux_descriptors::pidfd::PidFd;
 
 use super::{
     RuntimeDeploymentComparisonErrorV1,
@@ -52,7 +52,7 @@ enum InvocationFailureV1 {
     #[error("deployment original genesis custody differs")]
     Origins(#[source] RuntimeDeploymentComparisonErrorV1),
     #[error("deployment original population monitor failed")]
-    Population(#[source] aos_sandbox_linux::Error),
+    Population(#[source] aos_linux_descriptors::Error),
     #[error("deployment publisher is not in its original populated lifetime")]
     NotPopulated,
     #[error("deployment physical invocation is already held")]
@@ -442,7 +442,7 @@ mod tests {
             .begin()
             .expect("begin inert check")
             .finish::<()>(Err(InvocationFailureV1::Population(
-                aos_sandbox_linux::Error::DeadlineExceeded {
+                aos_linux_descriptors::Error::DeadlineExceeded {
                     operation: "inert population observation",
                 },
             )))
@@ -450,7 +450,7 @@ mod tests {
         assert!(
             first.source()
                 .and_then(|cause| cause.source())
-                .is_some_and(|cause| cause.is::<aos_sandbox_linux::Error>()),
+                .is_some_and(|cause| cause.is::<aos_linux_descriptors::Error>()),
         );
         let later = claim.begin().err().expect("no retry after failure");
         assert!(Arc::ptr_eq(&first.cause, &later.cause));

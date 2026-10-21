@@ -74,7 +74,7 @@ fn evaluate(
     selector: &aos_sandbox_model::Selector,
 ) -> Result<
     CurrentCapabilityDecisionV1,
-    crate::cli_model::authorization_adapter::CliAuthorizationAdapterError,
+    aos_sandbox_protocol::public_api::authorization_error::CliAuthorizationAdapterError,
 > {
     evaluate_current_protected_capability(
         journal,

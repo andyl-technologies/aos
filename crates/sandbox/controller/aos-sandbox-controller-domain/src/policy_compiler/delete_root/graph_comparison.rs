@@ -64,8 +64,8 @@ impl RootDeleteGraphComparisonOriginalV2 {
             .and_then(|bytes| bytes.checked_add(graph.selection_receiving_bytes_v2()?))
             .and_then(|bytes| bytes.checked_add(delete_graph_batch_comparison_bytes_v2()?))
             .and_then(|bytes| bytes.checked_add(DeleteBatchViewV1::decode_receiving_bytes_v1(batch.len())?))
-            .and_then(|bytes| bytes.checked_add(crate::public_mutation_compiler::delete_admission::geometry::
-                delete_decode_bytes_v1(input.len())?))
+            .and_then(|bytes| bytes.checked_add(aos_sandbox_protocol::public_api::delete_geometry::
+                delete_decode_bytes_v1::<crate::public_mutation_compiler::AuthorizedPublicMutationRequestV1>(input.len())?))
             .and_then(|bytes| u64::try_from(bytes).ok())
             .ok_or(JournalError::JournalTooLarge)?;
         Ok(ResourceVector::ZERO.with(D::MemoryBytes, bytes))

@@ -14,7 +14,7 @@ use super::{
     RetainedPrivateArtifact, SealedPrivateFile, inspect_root, is_kernel_verity_filesystem,
     strict_resolution,
 };
-use crate::Error;
+use aos_linux_descriptors::Error;
 use crate::immutable_file::FsVerityDigest;
 use crate::uapi::{self, OpenHow};
 
@@ -364,8 +364,8 @@ fn inspect_retained_private(
     file: BorrowedFd<'_>,
     maximum_bytes: u64,
 ) -> Result<PrivateIdentity, ObserveSealedPublicationError> {
-    uapi::ensure_cloexec(file)?;
-    let flags = uapi::get_status_flags(file)?;
+    aos_linux_descriptors::native::ensure_cloexec(file)?;
+    let flags = aos_linux_descriptors::native::get_status_flags(file)?;
     let stat = uapi::fstat(file)?;
     let bytes = u64::try_from(stat.st_size)
         .map_err(|_| ObserveSealedPublicationError::ByteLimitExceeded)?;
@@ -451,7 +451,7 @@ fn inspect_observed_publication(
     if bytes > maximum_bytes {
         return Err(ObserveSealedPublicationError::ByteLimitExceeded);
     }
-    let flags = uapi::get_status_flags(file)?;
+    let flags = aos_linux_descriptors::native::get_status_flags(file)?;
     if stat.st_mode & libc::S_IFMT != libc::S_IFREG
         || stat.st_uid != uapi::effective_uid()
         || stat.st_mode & 0o7777 != 0o600

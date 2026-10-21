@@ -53,11 +53,15 @@ use std::path::{Path, PathBuf};
 use aos_sandbox_controller_domain::ResourceReservationErrorV1;
 use aos_sandbox_model::ResourceVector;
 use aos_sandbox_broker::receiving::OriginalEnrollmentPairAttemptV1;
-use aos_sandbox_linux::boot::{KernelBootId, RootOriginalKernelBootIdAttemptV1};
+use aos_linux_descriptors::boot::KernelBootId;
+use aos_linux_descriptors::boot::RootOriginalKernelBootIdAttemptV1;
 use aos_sandbox_linux::inherited_fd::HostComponentInitialActivationTableV2;
 use aos_sandbox_linux::guest_confinement::CurrentThreadSubjectOriginalV1;
 use aos_sandbox_linux::inventory::{MountId, MountNamespace};
-use aos_sandbox_linux::pidfd::{CurrentSelfPidFdCustodyV1, PidFd, PidFdProcessIdentity, PidFdNegativeIdentityOriginalV1};
+use aos_sandbox_linux::pidfd::CurrentSelfPidFdCustodyV1;
+use aos_linux_descriptors::pidfd::PidFd;
+use aos_sandbox_linux::pidfd::PidFdProcessIdentity;
+use aos_sandbox_linux::pidfd::PidFdNegativeIdentityOriginalV1;
 use aos_sandbox_linux::protected_file::{ExactReadFailure, read_exact_positioned_retaining_cause};
 use aos_sandbox_linux::seqpacket::{
     ListenerAdmissionFailureRefV1, RecordSubjectListener, RecordSubjectListenerAdmissionAttemptV1,
@@ -170,7 +174,7 @@ enum OriginErrorV2 {
     #[error(transparent)]
     Read(#[from] ExactReadFailure),
     #[error(transparent)]
-    Linux(#[from] aos_sandbox_linux::Error),
+    Linux(#[from] aos_linux_descriptors::Error),
     #[error(transparent)]
     Host(#[from] HostError),
     #[error(transparent)]
@@ -197,15 +201,15 @@ struct OriginAttemptV2 {
     files: Option<std::result::Result<(), OriginErrorV2>>,
     process: Option<std::result::Result<(), OriginErrorV2>>,
     pid1: Option<std::result::Result<(), OriginErrorV2>>,
-    boot: Option<std::result::Result<KernelBootId, aos_sandbox_linux::Error>>,
+    boot: Option<std::result::Result<KernelBootId, aos_linux_descriptors::Error>>,
     boot_original: Option<RootOriginalKernelBootIdAttemptV1>,
     // Admission's entered primary and its independently owed post must not
     // overwrite each other's native subject or reached proc input prefixes.
     process_subjects: [Option<CurrentThreadSubjectOriginalV1>; 2],
-    process_subject_results: [Option<aos_sandbox_linux::Result<()>>; 2],
+    process_subject_results: [Option<aos_linux_descriptors::Result<()>>; 2],
     negative_identity: Option<PidFdNegativeIdentityOriginalV1>,
-    negative_preparation: Option<aos_sandbox_linux::Result<()>>,
-    negative_observation: Option<aos_sandbox_linux::Result<()>>,
+    negative_preparation: Option<aos_linux_descriptors::Result<()>>,
+    negative_observation: Option<aos_linux_descriptors::Result<()>>,
     process_bytes: [[Vec<u8>; 2]; 2],
     boot_check: Option<std::result::Result<(), OriginErrorV2>>,
 }
@@ -305,8 +309,8 @@ pub struct HostComponentControlStartupV2 {
     canonical_fragment: Option<std::io::Result<PathBuf>>,
     process: CurrentSelfPidFdCustodyV1,
     process_identity: Option<PidFdProcessIdentity>,
-    pid1_process: Option<std::result::Result<PidFd, aos_sandbox_linux::Error>>,
-    original_boot: Option<std::result::Result<KernelBootId, aos_sandbox_linux::Error>>,
+    pid1_process: Option<std::result::Result<PidFd, aos_linux_descriptors::Error>>,
+    original_boot: Option<std::result::Result<KernelBootId, aos_linux_descriptors::Error>>,
     original_boot_capture: Option<RootOriginalKernelBootIdAttemptV1>,
     manager_preparation_issued: bool,
     component_phase0_funding: Option<std::result::Result<(), execution_receiving::Closed>>,

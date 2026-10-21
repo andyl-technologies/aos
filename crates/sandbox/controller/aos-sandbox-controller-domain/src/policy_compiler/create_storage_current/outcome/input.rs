@@ -85,8 +85,8 @@ impl RootOutcomeInputV1 {
         self.primary = Some(self.receive_inner(flight, writers, original, root, ready,
             signed, reserved, source));
         let body = root.completed_body().ok();
-        let origin = root.original_clock_origin_v1().ok();
-        self.after.observe_once(flight, writers, body.as_ref(), origin.map(|pair| pair.0), origin.map(|pair| pair.1));
+        let origin = root.original_clock_native_v1().ok();
+        self.after.observe_once(flight, writers, body.as_ref(), origin);
         self.after_readback = Some(match writers.authority_and_policy() {
             Ok((authority, policy)) => signed.readback_current_v1(authority, policy).map(|_| ()),
             Err(cause) => Err(cause),
@@ -112,8 +112,8 @@ impl RootOutcomeInputV1 {
     ) -> Result<(), Error> {
         signed.require_complete_v1()?;
         let body = root.completed_body()?;
-        let origin = root.original_clock_origin_v1()?;
-        self.before.observe_once(flight, writers, Some(&body), Some(origin.0), Some(origin.1));
+        let origin = root.original_clock_native_v1()?;
+        self.before.observe_once(flight, writers, Some(&body), Some(origin));
         self.before_readback = Some(match writers.authority_and_policy() {
             Ok((authority, policy)) => signed.readback_current_v1(authority, policy).map(|_| ()),
             Err(cause) => Err(cause),

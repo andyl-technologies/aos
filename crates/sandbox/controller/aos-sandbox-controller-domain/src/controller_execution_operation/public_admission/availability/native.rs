@@ -25,7 +25,7 @@ pub(in crate::controller_execution_operation) struct ExecutionAvailabilitySessio
     journal: Option<StorageNativeOpeningOwnerLinkV1>,
     binding: Option<([u8; 32], [u8; 32])>,
     socket: Slot<StorageSeqpacketSessionOriginV1, RecordBindingError>,
-    kernel: Slot<u64, aos_sandbox_linux::Error>,
+    kernel: Slot<u64, aos_linux_descriptors::Error>,
     metadata: Option<std::io::Result<std::fs::Metadata>>,
     extent: Slot<ProtectedJournalPreopenReplayExtentV1, JournalError>,
     after_names: ProtectedJournalCurrentnessOriginalsV1,
@@ -37,7 +37,7 @@ pub(in crate::controller_execution_operation) struct ExecutionAvailabilitySessio
 pub struct ControllerExecutionAvailabilitySessionCurrentnessErrorV2 {
     data: Result<(), JournalError>,
     socket: Slot<(), RecordBindingError>,
-    kernel: Slot<u64, aos_sandbox_linux::Error>,
+    kernel: Slot<u64, aos_linux_descriptors::Error>,
 }
 
 impl Error for ControllerExecutionAvailabilitySessionCurrentnessErrorV2 {

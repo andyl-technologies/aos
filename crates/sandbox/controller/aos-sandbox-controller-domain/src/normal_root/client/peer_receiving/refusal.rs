@@ -26,7 +26,7 @@ impl RootPeerRefusalOriginalV1 {
     }
 
     pub(in crate::normal_root::client) fn observe_once(&mut self, profile: &ProductionControllerNormalRootProfileV1,
-        stream: &aos_sandbox_linux::unix_stream::RetainedUnixStream,
+        stream: &aos_linux_descriptors::unix_stream::RetainedUnixStream,
         stable: Option<&StableRootPeerV1>, origin: RawPairedClockSample, cutoff: u64,
     ) {
         if self.entered { return; }

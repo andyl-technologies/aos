@@ -24,7 +24,8 @@
 
 use aos_sandbox_model::{ChannelBinding, PublisherInstanceId};
 use aos_sandbox_linux::cgroup::RetainedCgroupAnchor;
-use aos_sandbox_linux::pidfd::{PidFd, PidFdInfo};
+use aos_linux_descriptors::pidfd::PidFd;
+use aos_linux_descriptors::pidfd::PidFdInfo;
 use aos_sandbox_linux::seqpacket::{
     ReceivedRecord, RecordSubjectListener, SeqpacketError, SeqpacketSocket,
 };
@@ -94,7 +95,7 @@ pub enum PublisherSessionError {
     Transport(#[from] SeqpacketError),
     /// A pidfd or retained cgroup observation failed.
     #[error(transparent)]
-    Kernel(#[from] aos_sandbox_linux::Error),
+    Kernel(#[from] aos_linux_descriptors::Error),
 }
 
 /// Owns fixed-capacity publisher executions without reconstructing live authority.

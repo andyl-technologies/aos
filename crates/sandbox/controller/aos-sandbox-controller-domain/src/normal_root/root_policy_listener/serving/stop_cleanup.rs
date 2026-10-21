@@ -10,7 +10,7 @@ use crate::policy_compiler::{
     provisioning_current::RootContinuationClockGateV1,
     stop_cleanup_root::{RootStopCleanupNativeOriginalV1, SelectionData},
 };
-use aos_sandbox_linux::unix_stream::RetainedUnixStream;
+use aos_linux_descriptors::unix_stream::RetainedUnixStream;
 
 impl<'startup> RootPolicyAcceptedFlightV1<'_, 'startup> {
     fn stop_cleanup_native_parts_v1(

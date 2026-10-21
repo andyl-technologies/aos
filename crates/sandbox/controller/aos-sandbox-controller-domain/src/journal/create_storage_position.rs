@@ -13,7 +13,6 @@ use aos_sandbox_journal::protected_storage::{
 };
 
 use super::{Journal, JournalError, JournalLimits, ProtectedJournalNamesV1};
-use crate::cache_residency::InitializerJournal;
 use crate::controller_resource_reservation::{CreateStorageWriterPositionV1, HistoryRoleV1};
 
 #[derive(Default)]
@@ -70,26 +69,8 @@ impl CreateStorageWriterPositionOriginalV1 {
         self.capture_fixed_once(journal, recipe);
     }
 
-    /// Counts the same fixed Cache recipe's reached name/result carriers.
-    ///
-    /// This is passive metadata geometry for an already owned original. It
-    /// uses the same rooted census as the existing Source/Client suppliers.
-    pub(crate) fn cache_receiving_metadata_cells_v1(role: InitializerJournal)
-        -> Result<usize, JournalError>
-    {
-        Self::rooted_metadata_cells_v1(role.recipe().0)
-    }
 
-    /// Captures one of the existing closed Cache journal recipes.
-    pub(crate) fn capture_cache_once(
-        &mut self,
-        journal: &Journal,
-        role: InitializerJournal,
-        uid: u32,
-    ) {
-        let (root, name, limits) = role.recipe();
-        self.capture_fixed_once(journal, Some((root, name, limits, Some(uid))));
-    }
+
 
     /// Captures the fixed Controller Storage Client location on its same writer.
     ///

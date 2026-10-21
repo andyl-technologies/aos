@@ -99,13 +99,13 @@ impl RuntimeDeploymentOriginalWindowV3 {
 pub enum RuntimeDeploymentOriginalClockCauseV3 {
     /// The original kernel boot observation failed.
     #[error("selected publisher original kernel observation failed")]
-    Kernel(#[source] aos_sandbox_linux::Error),
+    Kernel(#[source] aos_linux_descriptors::Error),
     /// Both independent original observations failed.
     #[error("selected publisher original paired clock observation failed")]
     Paired {
         /// The actual kernel boot error.
         #[source]
-        kernel: aos_sandbox_linux::Error,
+        kernel: aos_linux_descriptors::Error,
         /// The actual boottime conversion error.
         clock: RuntimeDeploymentOriginalClockRangeV3,
     },
@@ -135,7 +135,7 @@ pub enum RuntimeDeploymentOriginalClockRangeV3 {
 pub fn observe_original_runtime_deployment_clock_v3()
     -> Result<([u8; 16], u64), RuntimeDeploymentOriginalClockCauseV3>
 {
-    let boot = aos_sandbox_linux::boot::KernelBootId::current();
+    let boot = aos_linux_descriptors::boot::KernelBootId::current();
     let now = original_boottime_v3();
 
     match (boot, now) {

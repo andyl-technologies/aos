@@ -8,7 +8,9 @@
 use std::os::fd::AsRawFd as _;
 
 use crate::pidfd::{NamespaceFd, NamespaceKind};
-use crate::{Error, Result, uapi};
+use aos_linux_descriptors::Error;
+use aos_linux_descriptors::Result;
+use crate::uapi;
 
 const RTM_NEWNSID: u16 = 88;
 const RTM_GETNSID: u16 = 90;

@@ -21,7 +21,7 @@ use aos_sandbox_controller_domain::runtime_scope::CurrentAssignmentTarget;
 use aos_sandbox_model::{ExecutionId, OperationId, ResourceDimension as D, ResourceVector, RawPairedClockSample};
 use aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError;
 use aos_sandbox_broker::controller_receiving::bank_launch::ControllerOperationIntakeDemandDataV1 as Demand;
-use aos_sandbox_linux::immutable_file::SealedReadOnlyCredentialCreateOriginalsV1;
+use aos_linux_descriptors::credential::SealedReadOnlyCredentialCreateOriginalsV1;
 use aos_sandbox_protocol::domain_ledger::effect_history::{EffectReceipt, PublicMutationEffectHistoryV1};
 use aos_sandbox_protocol::host_execution::admission_content::{
     HostExecutionAdmissionContentV5, MAXIMUM_ADMISSION_CONTENT_BYTES_V5,

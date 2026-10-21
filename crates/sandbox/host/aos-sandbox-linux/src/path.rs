@@ -15,7 +15,8 @@ use crate::pidfd::{NamespaceFd, NamespaceKind};
 use crate::uapi::{
     self, OpenHow, RESOLVE_BENEATH, RESOLVE_NO_MAGICLINKS, RESOLVE_NO_SYMLINKS, RESOLVE_NO_XDEV,
 };
-use crate::{Error, Result};
+use aos_linux_descriptors::Error;
+use aos_linux_descriptors::Result;
 
 mod read_original;
 mod empty_directory;
@@ -42,7 +43,7 @@ const MAXIMUM_BOUNDED_READ_BYTES: usize = 16 * 1024 * 1024;
 // The retained caller parks its descriptor before expanding these checks.
 macro_rules! owned_root_identity_recipe {
     ($fd:ident) => {{
-        uapi::ensure_cloexec($fd.as_fd())?;
+        aos_linux_descriptors::native::ensure_cloexec($fd.as_fd())?;
         let identity = inspect($fd.as_fd())?;
         if identity.file_type != FileType::Directory {
             return Err(Error::WrongDescriptorType {
@@ -524,8 +525,8 @@ impl ResolvedPath {
     /// Returns an error when the descriptor was not opened with `O_PATH`,
     /// inspection fails, or the object is a symlink.
     pub fn from_inherited(fd: OwnedFd) -> Result<Self> {
-        uapi::ensure_cloexec(fd.as_fd())?;
-        let flags = uapi::get_status_flags(fd.as_fd())?;
+        aos_linux_descriptors::native::ensure_cloexec(fd.as_fd())?;
+        let flags = aos_linux_descriptors::native::get_status_flags(fd.as_fd())?;
         if flags & libc::O_PATH != libc::O_PATH {
             return Err(Error::invalid(
                 "inherited path descriptor",

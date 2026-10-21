@@ -354,7 +354,7 @@ impl ProjectPreparationReservationAttemptV1 {
         source: &mut crate::source_domain::ProtectedSourceDomainJournalOwnerV1,
         bank: &Arc<Mutex<ControllerResourceBankOpeningV1>>,
         profile: &ProductionControllerNormalRootProfileV1,
-        cache: &mut crate::cache_residency::OriginalQ04CachePreflightLoanV1<'_>,
+        cache: &mut crate::cache_programmes::OriginalQ04CachePreflightLoanV1<'_>,
     ) -> Result<(), ResourceReservationErrorV1> {
         if self.intake.is_some() {
             return Err(ResourceReservationErrorV1::Conflict);

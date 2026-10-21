@@ -128,7 +128,7 @@ pub struct NetworkServiceWorkersOriginalV2 {
     finalization_result: Option<Result<()>>,
     output: Option<crate::worker_runtime::PreparedNetworkWorkerOutput>,
     boot: Option<
-        std::result::Result<aos_sandbox_linux::boot::KernelBootId, aos_sandbox_linux::Error>,
+        std::result::Result<aos_linux_descriptors::boot::KernelBootId, aos_linux_descriptors::Error>,
     >,
     response: response::PreparationResponseOriginalV2,
     prepared_source: Option<(usize, [u8; 16], [u8; 32], ObjectDigest)>,

@@ -17,7 +17,7 @@ pub(super) use wire::{RetainedOwnershipRecordDataV1, VerifiedOwnershipWireDataV1
 use std::error::Error;
 use std::collections::TryReserveError;
 use std::path::Path;
-use crate::cache_residency::OriginalCreateStorageCacheLoanV1;
+use crate::cache_programmes::OriginalCreateStorageCacheLoanV1;
 use aos_sandbox_model::{CanonicalAssignmentManifestV1, LeaseAssignment, RawPairedClockSample};
 use aos_sandbox_linux::seqpacket::{LocalOwnershipSeqpacketEndAttemptV1,
     RetainedSeqpacketAdmissionErrorV1, SeqpacketSocket};
@@ -604,7 +604,7 @@ fn observe(sample: &mut CacheCurrentnessOriginalV1, originals: &OriginalOwnershi
     sample.observe_operation_once(CacheControlOriginalsV1 {
         parent: originals.parent, intake: originals.intake,
         controller: originals.controller, source: originals.source, profile: originals.profile,
-    }, originals.cache, originals.expected, position.as_ref().and_then(|result| result.as_ref().ok()).copied()
+    }, &(originals.cache).currentness_original_v1(), originals.expected, position.as_ref().and_then(|result| result.as_ref().ok()).copied()
         .ok_or(ResourceReservationErrorV1::Conflict))
 }
 

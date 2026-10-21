@@ -8,7 +8,9 @@ use super::*;
 use aos_sandbox_linux::cgroup::{
     CgroupActiveOriginalV2, RuntimeScopeMembershipOriginalV1, WorkerCgroupOpeningV1,
 };
-use aos_sandbox_linux::pidfd::{NamespaceAdoptionFailureV2, PidFdInfo, PidFdNamespaceOriginalV2};
+use aos_sandbox_linux::pidfd::NamespaceAdoptionFailureV2;
+use aos_linux_descriptors::pidfd::PidFdInfo;
+use aos_sandbox_linux::pidfd::PidFdNamespaceOriginalV2;
 
 pub(super) trait ReadyNativeV4 {
     fn descriptor_count(&self) -> usize;
@@ -105,7 +107,7 @@ pub(crate) struct NetworkWorkerReadyOriginalV4 {
     target: Option<Result<NamespaceFd, NamespaceAdoptionFailureV2>>,
     subject_namespace: PidFdNamespaceOriginalV2,
     subject_namespace_value: Option<NamespaceFd>,
-    alive: Option<Result<bool, aos_sandbox_linux::Error>>,
+    alive: Option<Result<bool, aos_linux_descriptors::Error>>,
     child_current: CgroupActiveOriginalV2,
     parent_current_entered: bool,
     result: Option<Result<(), NetworkWorkerProcessError>>,

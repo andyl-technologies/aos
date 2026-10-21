@@ -312,8 +312,8 @@ macro_rules! exact_cgroup_absence_recipe_v2 {
     }};
 }
 
-fn exact_cgroup_path_missing_v2(error: &aos_sandbox_linux::Error) -> bool {
-    matches!(error, aos_sandbox_linux::Error::Syscall { source, .. }
+fn exact_cgroup_path_missing_v2(error: &aos_linux_descriptors::Error) -> bool {
+    matches!(error, aos_linux_descriptors::Error::Syscall { source, .. }
         if source.raw_os_error() == Some(rustix::io::Errno::NOENT.raw_os_error()))
 }
 
@@ -685,8 +685,8 @@ fn finish_original_canary_call(
 }
 
 fn retain_native_limit_result<T>(
-    result: aos_sandbox_linux::Result<T>,
-    failure: &mut Option<aos_sandbox_linux::Error>,
+    result: aos_linux_descriptors::Result<T>,
+    failure: &mut Option<aos_linux_descriptors::Error>,
 ) -> Result<T> {
     result.map_err(|error| {
         if failure.is_none() {
@@ -1812,9 +1812,8 @@ impl HostWorker for SystemdOneShotWorker {
         let supervisor = observation.leader.as_ref().ok_or_else(|| {
             HostError::Worker("completed payload has no pinned supervisor".to_owned())
         })?;
-        let supervisor_info = supervisor
-            .pidfd
-            .process_identity()
+        let supervisor_info = aos_sandbox_linux::pidfd::process_identity(&(supervisor
+            .pidfd))
             .map_err(|error| HostError::Worker(error.to_string()))?;
         let payload_root = resolve_payload_root(&self.cgroup_root, &supervisor.cgroup)?;
         let payload = inspect_quiesced_payload(&payload_root, |inspector| {

@@ -10,7 +10,7 @@
 use std::os::fd::{AsFd as _, BorrowedFd, OwnedFd};
 
 use aos_sandbox_model::ObjectDigest;
-use aos_sandbox_linux::boot::KernelBootId;
+use aos_linux_descriptors::boot::KernelBootId;
 use aos_sandbox_linux::inventory::MountId;
 use aos_sandbox_protocol::{
     MAXIMUM_RESPONSE_BYTES, ValidatedStorageInventory, ValidatedStorageWorkspace,

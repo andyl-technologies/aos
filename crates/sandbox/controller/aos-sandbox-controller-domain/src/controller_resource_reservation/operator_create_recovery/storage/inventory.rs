@@ -73,8 +73,8 @@ enum First {
 pub(crate) struct InventoryOriginalsV1 {
     entered: bool,
     retain_cookie_originals: bool,
-    socket_native: Option<Result<u64, aos_sandbox_linux::Error>>,
-    final_socket_native: Option<Result<u64, aos_sandbox_linux::Error>>,
+    socket_native: Option<Result<u64, aos_linux_descriptors::Error>>,
+    final_socket_native: Option<Result<u64, aos_linux_descriptors::Error>>,
     borrowed: bool,
     phase: Phase,
     cutoff: u64,

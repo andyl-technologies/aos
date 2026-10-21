@@ -43,13 +43,15 @@
 //! AOSPHQ8W | client-nonce[16] | reserved[8]=0 | binding[32] | epoch:u64 | EOF
 //! ```
 
+use aos_sandbox_ledger_replay::controller_policy_hold::ControllerPolicyHoldCodecV1;
+
 use std::io::{self, Read as _, Write as _};
 use std::marker::PhantomData;
 use std::os::unix::net::UnixStream;
 use std::rc::Rc;
 use std::time::Duration;
 
-use aos_sandbox_controller_domain::cache_residency::CacheResidencyWriterReadbackV2;
+use aos_sandbox_cache::CacheResidencyWriterReadbackV2;
 use aos_sandbox_controller_domain::journal::{ControllerPolicyV8EffectAckV1, Journal};
 #[cfg(test)]
 use aos_sandbox_controller_domain::policy_compiler::validate_untrusted_root_v8_release_reply_frame_v1;

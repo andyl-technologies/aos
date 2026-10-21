@@ -49,13 +49,13 @@ impl StopRecoveryTargetDataV1 {
     /// it creates no mutable Source cursor or old SDK request.
     pub(crate) fn source_parent_data_v1(
         &self,
-        controller: &mut Journal,
+        controller: HistoricalObservationV1<'_>,
         source: &crate::lifecycle::LifecycleHistoricalReadOriginalV1,
     ) -> Result<crate::lifecycle::LifecycleRecordDigestV1, OperationCompilationError> {
         let rejected = || OperationCompilationError::Rejected;
         let request = self.context.validated_request().map_err(|_| rejected())?;
         let manifest = self.binding.manifest().manifest();
-        let admission = crate::lifecycle::lifecycle_public_mutation_admission_v1(
+        let admission = crate::lifecycle::lifecycle_public_mutation_admission_from_observation_v2(
             controller,
             self.operation,
             self.context.project(),
@@ -76,9 +76,11 @@ impl StopRecoveryTargetDataV1 {
         let (operation, record) = source.operation_v1().map_err(|_| rejected())?;
         crate::lifecycle::require_same_lifecycle_admission_v1(&expected, operation)
             .map_err(|_| rejected())?;
-        if !matches!(operation.phase(), crate::lifecycle::LifecyclePhaseV1::Completing
-                | crate::lifecycle::LifecyclePhaseV1::Residual)
-            || operation.terminal_result().is_some()
+        if !matches!(
+            operation.phase(),
+            crate::lifecycle::LifecyclePhaseV1::Completing
+                | crate::lifecycle::LifecyclePhaseV1::Residual
+        ) || operation.terminal_result().is_some()
             || !matches!(
                 operation.intent(),
                 crate::lifecycle::LifecycleIntentV1::Stop { .. }
@@ -112,7 +114,7 @@ impl StopRecoveryTargetDataV1 {
     // selected before a later public mutation cannot survive on its ID alone.
     pub(crate) fn require_current_v1(
         &self,
-        journal: &Journal,
+        journal: HistoricalObservationV1<'_>,
         project: ProjectId,
         node: NodeId,
         request: &OperatorRecoveryRequestV1,
@@ -132,7 +134,7 @@ impl StopRecoveryTargetDataV1 {
 }
 
 pub(crate) fn require_stop_recovery_target_v1(
-    journal: &Journal,
+    journal: HistoricalObservationV1<'_>,
     project: ProjectId,
     node: NodeId,
     request: &OperatorRecoveryRequestV1,
@@ -176,7 +178,7 @@ pub(crate) fn require_stop_recovery_target_v1(
     {
         return Err(rejected());
     }
-    let context = crate::reconciler::accepted_stop_effect_from_journal_v4(journal, operation)
+    let context = crate::reconciler::accepted_stop_effect_from_observation_v4(journal, operation)
         .map_err(|_| rejected())?
         .ok_or_else(rejected)?;
     if context.project() != project {
@@ -195,10 +197,13 @@ pub(crate) fn require_stop_recovery_target_v1(
         return Err(rejected());
     }
     let sandbox = SandboxId::from_bytes(sandbox_bytes);
-    let projection = PublicProjectionStoreV1::new(journal)
-        .get(PublicProjectionKindV1::Sandbox, sandbox_bytes)
-        .map_err(|_| rejected())?
-        .ok_or_else(rejected)?;
+    let projection = crate::controller_service::public_projection::get_from_observation_v2(
+        journal,
+        PublicProjectionKindV1::Sandbox,
+        sandbox_bytes,
+    )
+    .map_err(|_| rejected())?
+    .ok_or_else(rejected)?;
     let PublicProjectionResourceV1::Sandbox(public) = projection.resource() else {
         return Err(rejected());
     };
@@ -212,7 +217,7 @@ pub(crate) fn require_stop_recovery_target_v1(
     {
         return Err(rejected());
     }
-    let binding = crate::runtime_authority::current_readonly_v2(
+    let binding = crate::runtime_authority::current_observed_v2(
         journal,
         RuntimeAuthorityLimits::default(),
         sandbox,

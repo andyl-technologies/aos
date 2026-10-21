@@ -36,10 +36,10 @@ use super::{
 use crate::controller_resource_reservation::{
     ResourceReservationErrorV1, operator_create_recovery::finality::RecoverRootAssociationV1,
 };
-use crate::policy_compiler::{
-    bounded_stream_io::{DeadlineStreamDirectionV1 as Direction, FixedDeadlineStreamIoV1},
-    provisioning_current::{RootContinuationClockGateV1 as Clock, RootContinuationHorizonDataV1},
-};
+use aos_sandbox_broker::bounded_stream_io::DeadlineStreamDirectionV1 as Direction;
+use aos_sandbox_broker::bounded_stream_io::FixedDeadlineStreamIoV1;
+use crate::policy_compiler::provisioning_current::RootContinuationClockGateV1 as Clock;
+use crate::policy_compiler::provisioning_current::RootContinuationHorizonDataV1;
 use crate::{Journal, JournalError, OperatorCreateRecoveryLoanV1};
 
 type Cause = Box<dyn Error + Send + Sync>;
@@ -317,7 +317,7 @@ impl RootFinalityRecoverClientOriginalV1 {
             self.first = Some(First::Before);
             return Err(CLOSED.into());
         }
-        state.reporting = Some(state.connection.stream_mut()?.enable_subject_reporting());
+        state.reporting = Some(state.connection.stream_mut()?.enable_subject_reporting().map_err(aos_sandbox_linux::seqpacket::SeqpacketError::from));
         if !matches!(state.reporting, Some(Ok(()))) {
             self.first = Some(First::Reporting);
             return Err(CLOSED.into());

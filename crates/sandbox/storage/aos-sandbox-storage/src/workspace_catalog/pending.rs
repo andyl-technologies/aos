@@ -761,7 +761,7 @@ enum GitCoverageWorkspaceCensusCauseV1 {
     #[error("workspace census kernel operation failed: {0}")]
     Kernel(#[from] rustix::io::Errno),
     #[error("workspace census original observation failed: {0}")]
-    Linux(#[from] aos_sandbox_linux::Error),
+    Linux(#[from] aos_linux_descriptors::Error),
     #[error("workspace census refused: {0}")]
     Refused(&'static str),
 }
@@ -837,7 +837,8 @@ impl GitCoverageWorkspaceCensusV1 {
 
     fn bookend(&self, boot: [u8; 16]) -> Result<(), GitCoverageWorkspaceCensusCauseV1> {
         use std::os::fd::AsFd as _;
-        use aos_sandbox_linux::{boot::KernelBootId, inventory::MountId};
+        use aos_linux_descriptors::boot::KernelBootId;
+        use aos_sandbox_linux::inventory::MountId;
         use GitCoverageWorkspaceCensusCauseV1::Refused;
 
         let root = match self.root.as_ref() {

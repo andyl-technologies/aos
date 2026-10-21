@@ -138,7 +138,7 @@ mod tests {
 
     #[test]
     fn fresh_native_boottime_refuses_expired_cutoff_despite_future_local_instant() {
-        let boot = aos_sandbox_linux::boot::KernelBootId::current().unwrap().into_bytes();
+        let boot = aos_linux_descriptors::boot::KernelBootId::current().unwrap().into_bytes();
         let mut clock = ArgumentClockV2::capture_launch_v2(boot);
         let original_cutoff = clock.sample().unwrap().boottime_nanoseconds();
         let future_local = std::time::Instant::now() + std::time::Duration::from_secs(60);

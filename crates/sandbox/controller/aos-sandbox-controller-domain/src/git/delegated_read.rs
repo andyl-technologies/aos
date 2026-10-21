@@ -11,6 +11,7 @@
 //! SCM_RIGHTS: none; original BOOTTIME cut: at most ten seconds, never renewed
 //! ```
 
+use aos_sandbox_protocol::public_api::authorization_error::CliAuthorizationAdapterError;
 use std::fmt;
 use std::future::poll_fn;
 use std::path::Path;
@@ -18,7 +19,9 @@ use std::time::Duration;
 
 use aos_sandbox_model::{ChannelBinding, PrincipalId, ProjectId, ResourceId, RawPairedClockSample};
 use aos_sandbox_linux::cgroup::{CgroupV2Root, RetainedCgroupAnchor};
-use aos_sandbox_linux::pidfd::{PidFd, PidFdProcObservationsV1, PidFdProcessIdentity};
+use aos_linux_descriptors::pidfd::PidFd;
+use aos_sandbox_linux::pidfd::PidFdProcObservationsV1;
+use aos_sandbox_linux::pidfd::PidFdProcessIdentity;
 use aos_sandbox_linux::seqpacket::{
     KernelAuthorizedRecordSubject, ReceivedRecord, RecordBindingError, RecordSubjectListener,
     RetainedSeqpacketAdmissionErrorV1, RetainedSeqpacketReceiveErrorV1, SeqpacketError,
@@ -31,8 +34,7 @@ use sha2::{Digest as _, Sha256};
 use tokio::io::unix::AsyncFd;
 use zeroize::Zeroizing;
 
-use crate::cli_model::authorization_adapter::{
-    CliAuthorizationAdapterError, CurrentCapabilityDecisionV1, RetainedAuthorizationTimeFloorV1,
+use crate::cli_model::authorization_adapter::{ CurrentCapabilityDecisionV1, RetainedAuthorizationTimeFloorV1,
 };
 use crate::controller::ControllerProtectedClockV1;
 use crate::immutable_image::RetainedImmutableFileV1;
@@ -143,7 +145,7 @@ fn hex(byte: u8) -> Option<u8> {
 pub struct GitReadInspectionUnavailableV1;
 
 enum CauseV1 {
-    Linux(aos_sandbox_linux::Error),
+    Linux(aos_linux_descriptors::Error),
     Transport(SeqpacketError),
     Io(std::io::Error),
     Native(rustix::io::Errno),
@@ -243,7 +245,7 @@ impl RoleObservationV1 {
         let info = process.info().map_err(CauseV1::Linux)?;
         require_ids(info, self.ids)?;
         if self.proc.is_none() {
-            self.proc = Some(process.prepare_proc_observations_v1());
+            self.proc = Some(aos_sandbox_linux::pidfd::prepare_proc_observations_v1(&(process)));
             let proc = self.proc.as_mut().ok_or(CauseV1::Closed)?;
             self.identity = Some(proc.capture_stat(process).map_err(CauseV1::Linux)?);
             let context = proc.capture_context(process).map_err(CauseV1::Linux)?;
@@ -295,7 +297,7 @@ impl RoleObservationV1 {
     }
 }
 
-fn require_ids(info: aos_sandbox_linux::pidfd::PidFdInfo, ids: RoleIdsV1) -> Result<(), CauseV1> {
+fn require_ids(info: aos_linux_descriptors::pidfd::PidFdInfo, ids: RoleIdsV1) -> Result<(), CauseV1> {
     let credentials = info.credentials().ok_or(CauseV1::Closed)?;
     if ids.uid == 0 || ids.gid == 0 || info.pid() != info.thread_group_id()
         || [credentials.real_user_id(), credentials.effective_user_id(),

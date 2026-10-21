@@ -36,10 +36,12 @@ enum OpeningPurposeV2 {
     StartInputs,
 }
 
-pub(in crate::policy_compiler) enum OpeningReceivingV2<'held, 'flight, 'startup> {
+// No-Apply retains startup inside its mutable peer. Give that borrow its own
+// lifetime so unrelated stage loans keep their original independent lifetimes.
+pub(in crate::policy_compiler) enum OpeningReceivingV2<'held, 'flight, 'startup, 'peer_startup> {
     StopCleanup(&'held mut crate::normal_root::RootStopCleanupStageReceivingV1<'flight, 'startup>),
     ExecutionNoApply(
-        &'held mut crate::normal_root::RootExecutionNoApplyStageReceivingV2<'flight, 'startup>,
+        &'held mut crate::normal_root::RootExecutionNoApplyStageReceivingV2<'flight, 'peer_startup>,
     ),
     MaintenanceStorage(&'held mut RootMaintenanceStorageStageReceivingV2<'flight, 'startup>),
     Apply(&'held mut RootApplyStageReceivingV1<'flight, 'startup>),
@@ -47,7 +49,7 @@ pub(in crate::policy_compiler) enum OpeningReceivingV2<'held, 'flight, 'startup>
     StartInputs(&'held mut RootStartAssignmentInputsStageReceivingV2<'flight, 'startup>),
 }
 
-impl OpeningReceivingV2<'_, '_, '_> {
+impl OpeningReceivingV2<'_, '_, '_, '_> {
     fn purpose(&self) -> OpeningPurposeV2 {
         match self {
             Self::StopCleanup(_) => OpeningPurposeV2::StopCleanup,
@@ -196,7 +198,7 @@ impl RootResourceOpeningOriginalV2 {
     // remainder IO before either the lazy state or native clock is created.
     pub(in crate::policy_compiler) fn admit_query_once_v1(
         &mut self,
-        mut stage: OpeningReceivingV2<'_, '_, '_>,
+        mut stage: OpeningReceivingV2<'_, '_, '_, '_>,
         server_bytes: usize,
     ) -> Result<(), JournalError> {
         if self.query_funding.is_some() {
@@ -278,7 +280,7 @@ impl RootResourceOpeningOriginalV2 {
 
     pub(in crate::policy_compiler) fn admit_subject_once_v1(
         &mut self,
-        mut stage: OpeningReceivingV2<'_, '_, '_>,
+        mut stage: OpeningReceivingV2<'_, '_, '_, '_>,
         subject_owner_bytes: usize,
     ) -> Result<(), JournalError> {
         if self.subject_geometry.is_some() {

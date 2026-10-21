@@ -81,25 +81,9 @@ pub fn propose_closed_current_create_explicit_policy_binding_v2(
     )
 }
 
-// This borrowed view contains only comparison fields already selected by a
-// caller's real owner engine. It is not a Controller source, brand or permission
-// to publish. Root constructs it only after its independent original-cut join.
-pub(in crate::policy_compiler) struct ClosedCreateProposalFieldViewV2<'cut> {
-    pub(in crate::policy_compiler) source_commitment: &'cut ObjectDigest,
-    pub(in crate::policy_compiler) operation: &'cut aos_sandbox_model::OperationId,
-    pub(in crate::policy_compiler) operation_revision: &'cut ObjectDigest,
-    pub(in crate::policy_compiler) accepted_generation: &'cut u64,
-    pub(in crate::policy_compiler) sandbox: &'cut aos_sandbox_model::SandboxId,
-    pub(in crate::policy_compiler) project: &'cut aos_sandbox_model::ProjectId,
-    pub(in crate::policy_compiler) projection_revision: &'cut ObjectDigest,
-    pub(in crate::policy_compiler) publisher_generation: &'cut u64,
-    pub(in crate::policy_compiler) publisher_head: &'cut ObjectDigest,
-    pub(in crate::policy_compiler) cache_domain_head: &'cut ObjectDigest,
-    pub(in crate::policy_compiler) revocation_head: &'cut ObjectDigest,
-    pub(in crate::policy_compiler) ancestry: &'cut ObjectDigest,
-    pub(in crate::policy_compiler) physical_partition: &'cut ObjectDigest,
-    pub(in crate::policy_compiler) physical_cache: &'cut ObjectDigest,
-}
+use aos_sandbox_policy::q04_data::{
+    ClosedCreateProposalFieldViewV2, encode_closed_proposal_fields,
+};
 
 #[allow(clippy::too_many_arguments)]
 fn encode_closed_proposal(
@@ -152,83 +136,14 @@ fn encode_closed_proposal(
         physical_cache: &physical_cache,
     };
     encode_closed_proposal_fields(
-        &fields, project_packet, project_input, deployment_head,
-        normalized_input, candidate, root_base, checked_draft,
-    )
-}
-
-// Q04 may borrow its already compiled candidate/input commitments here only
-// after its actual Root/current-owner verifier rechecks the full original cut.
-// This sole serializer/barrier/effect recipe remains comparison DATA.
-#[allow(clippy::too_many_arguments)]
-pub(in crate::policy_compiler) fn encode_closed_proposal_fields(
-    fields: &ClosedCreateProposalFieldViewV2<'_>,
-    project_packet: ObjectDigest,
-    project_input: ObjectDigest,
-    deployment_head: PolicyDeploymentHeadV1,
-    normalized_input: ObjectDigest,
-    candidate: ObjectDigest,
-    root_base: ClosedPolicyRootCasBaseV2,
-    checked_draft: ObjectDigest,
-) -> Result<Vec<u8>, PolicyCompilerJournalErrorV1> {
-    let barrier_head = ObjectDigest::from_bytes(
-        Sha256::new()
-            .chain_update(BARRIER_DOMAIN)
-            .chain_update(fields.source_commitment.as_bytes())
-            .chain_update(checked_draft.as_bytes())
-            .chain_update(fields.ancestry.as_bytes())
-            .chain_update(fields.physical_partition.as_bytes())
-            .chain_update(fields.physical_cache.as_bytes())
-            .chain_update(project_packet.as_bytes())
-            .chain_update(deployment_head.packet_digest().as_bytes())
-            .chain_update(normalized_input.as_bytes())
-            .chain_update(candidate.as_bytes())
-            .chain_update(root_base.predecessor().as_bytes())
-            .chain_update(root_base.next_generation().to_be_bytes())
-            .finalize()
-            .into(),
-    );
-    // The effect ID is deterministic across a lost response. A second root
-    // generation cannot reuse it for the same accepted Create.
-    let effect_digest = Sha256::new()
-        .chain_update(EFFECT_TRANSACTION_DOMAIN)
-        .chain_update(fields.operation.as_bytes())
-        .chain_update(fields.operation_revision.as_bytes())
-        .chain_update(normalized_input.as_bytes())
-        .chain_update(candidate.as_bytes())
-        .finalize();
-    let effect_transaction: [u8; 16] = effect_digest[..16]
-        .try_into()
-        .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
-
-    ClosedPolicyRootBindingV2 {
-        issuer_owner: root_base.issuer_owner(),
-        project: *fields.project,
-        sandbox: *fields.sandbox,
-        operation: *fields.operation,
-        operation_revision: *fields.operation_revision,
-        accepted_generation: *fields.accepted_generation,
-        projection_revision: *fields.projection_revision,
-        publisher_generation: *fields.publisher_generation,
-        publisher_head: *fields.publisher_head,
-        project_policy_head: project_packet,
-        project_policy_input: project_input,
-        ancestry_head: *fields.ancestry,
-        compiler_head: deployment_head.packet_digest(),
-        cache_domain_head: *fields.cache_domain_head,
-        revocation_head: *fields.revocation_head,
-        physical_partition: *fields.physical_partition,
-        physical_cache_head: *fields.physical_cache,
+        &fields,
+        project_packet,
+        project_input,
+        deployment_head,
         normalized_input,
         candidate,
-        project_signer_generation: root_base.project_signer_generation(),
-        deployment_signer_generation: root_base.deployment_signer_generation(),
-        barrier_epoch: root_base.next_generation(),
-        barrier_head,
-        root_predecessor: root_base.predecessor(),
-        root_generation: root_base.next_generation(),
-        effect_transaction,
-        handoff_epoch: root_base.next_generation(),
-    }
-    .encode()
+        root_base,
+        checked_draft,
+    )
+    .map_err(Into::into)
 }

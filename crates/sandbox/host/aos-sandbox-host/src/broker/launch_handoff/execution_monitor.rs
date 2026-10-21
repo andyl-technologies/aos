@@ -633,7 +633,7 @@ mod clock_post_tests {
 
     #[test]
     fn independent_post_enters_after_unaccepted_primary_contract_refusal() {
-        let boot = aos_sandbox_linux::boot::KernelBootId::current().unwrap().into_bytes();
+        let boot = aos_linux_descriptors::boot::KernelBootId::current().unwrap().into_bytes();
         let mut clock = ArgumentClockV2::capture(boot);
         let mut bookends = MonitorBookendsV5::<5>::new();
 

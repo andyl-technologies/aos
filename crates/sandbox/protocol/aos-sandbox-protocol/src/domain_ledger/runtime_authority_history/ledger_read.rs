@@ -103,6 +103,7 @@ enum RuntimeComparisonBoundaryV2 {
     NativeProtected,
     NativeAbsent,
     HistoricalRows,
+    HistoricalPoisoned,
 }
 
 #[derive(Clone, Copy)]
@@ -118,7 +119,9 @@ impl<'rows> RuntimeLedgerComparisonV2<'rows> {
     }
 
     fn ensure_protected_authority(self) -> Result<(), RuntimeHistoryReadErrorV1> {
-        if self.ledger.native_poisoned_v2() {
+        if matches!(self.boundary, RuntimeComparisonBoundaryV2::HistoricalPoisoned)
+            || self.ledger.native_poisoned_v2()
+        {
             return Err(RuntimeHistoryReadErrorV1::Poisoned);
         }
         if matches!(self.boundary, RuntimeComparisonBoundaryV2::NativeAbsent) {
@@ -731,4 +734,67 @@ pub fn current_rows_data_v2(
     rows: HistoricalLedgerRowsDataV2<'_>, sandbox: SandboxId,
 ) -> Result<Option<RuntimeAuthorityBindingV1>, RuntimeHistoryReadErrorV1> {
     current_from_journal_comparison_v2(RuntimeLedgerComparisonV2::from_rows_v2(rows), sandbox)
+}
+
+// These diagnostic inputs reproduce the original CPU guard positions. Saved
+// flags and rows never authenticate a location, current role or live owner.
+fn diagnostic_rows_v2(
+    rows: HistoricalLedgerRowsDataV2<'_>, poisoned: bool, protected: bool,
+) -> RuntimeLedgerComparisonV2<'_> {
+    RuntimeLedgerComparisonV2 {
+        ledger: HistoricalLedgerComparisonV2::Rows(rows),
+        boundary: if poisoned {
+            RuntimeComparisonBoundaryV2::HistoricalPoisoned
+        } else if protected {
+            RuntimeComparisonBoundaryV2::NativeProtected
+        } else {
+            RuntimeComparisonBoundaryV2::NativeAbsent
+        },
+    }
+}
+
+/// Replays historical Runtime DATA with saved diagnostic flags at old guard slots.
+///
+/// # Errors
+/// Preserves malformed-row, poison, missing-protection and crosslink failures
+/// at the same positions as the native historical comparison. Grants no role.
+pub fn scan_namespace_diagnostic_rows_data_v2(
+    rows: HistoricalLedgerRowsDataV2<'_>, poisoned: bool, protected: bool,
+    limits: RuntimeAuthorityLimits,
+) -> Result<(usize, usize, bool), RuntimeHistoryReadErrorV1> {
+    scan_namespace_comparison_v2(diagnostic_rows_v2(rows, poisoned, protected), limits, None)
+}
+
+/// Resolves historical binding DATA with the original saved diagnostic checks.
+///
+/// # Errors
+/// Preserves the original diagnostic guard and binding decode/identity errors.
+pub fn binding_diagnostic_rows_data_v2(
+    rows: HistoricalLedgerRowsDataV2<'_>, poisoned: bool, protected: bool,
+    sandbox: SandboxId, revision: u64,
+) -> Result<RuntimeAuthorityBindingV1, RuntimeHistoryReadErrorV1> {
+    binding_in_validated_namespace_comparison_v2(
+        diagnostic_rows_v2(rows, poisoned, protected), sandbox, revision)
+}
+
+/// Resolves current Runtime DATA while retaining the original guard positions.
+///
+/// # Errors
+/// Preserves head decoding before the historical binding's diagnostic guard.
+pub fn current_diagnostic_rows_data_v2(
+    rows: HistoricalLedgerRowsDataV2<'_>, poisoned: bool, protected: bool,
+    sandbox: SandboxId,
+) -> Result<Option<RuntimeAuthorityBindingV1>, RuntimeHistoryReadErrorV1> {
+    current_from_journal_comparison_v2(diagnostic_rows_v2(rows, poisoned, protected), sandbox)
+}
+
+/// Prices the finite diagnostic comparison/control interfaces, not row backing.
+pub fn diagnostic_control_bytes_v2() -> Option<usize> {
+    use std::mem::size_of;
+    size_of::<RuntimeLedgerComparisonV2<'_>>().checked_mul(3)?
+        .checked_add(size_of::<(HistoricalLedgerRowsDataV2<'_>, bool, bool)>().checked_mul(3)?)?
+        .checked_add(size_of::<Result<(usize, usize, bool), RuntimeHistoryReadErrorV1>>().checked_mul(3)?)?
+        .checked_add(size_of::<Result<RuntimeAuthorityBindingV1, RuntimeHistoryReadErrorV1>>().checked_mul(3)?)?
+        .checked_add(size_of::<Result<Option<RuntimeAuthorityBindingV1>, RuntimeHistoryReadErrorV1>>().checked_mul(3)?)?
+        .checked_add(size_of::<Option<usize>>().checked_mul(3)?)
 }

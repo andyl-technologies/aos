@@ -139,7 +139,7 @@ pub struct GuestStartupReportOriginalV1 {
     socket: GuestAncestorHostChannelV1,
     agent: GuestAncestorHostChannelV1,
     challenge: Option<GuestAncestorHostRecordV1>,
-    provisioning_duplicate: Option<crate::Result<std::os::fd::OwnedFd>>,
+    provisioning_duplicate: Option<aos_linux_descriptors::Result<std::os::fd::OwnedFd>>,
     provisioning: crate::immutable_file::SealedMemfdReadOriginalV2,
     provisioning_refusal: Option<crate::immutable_file::SealedMemfdReadClosedV2>,
     receive_failure: Option<RetainedSeqpacketReceiveErrorV1>,
@@ -574,7 +574,7 @@ impl GuestStartupReportOriginalV1 {
     pub fn receiving_obligations_v1() -> Option<(usize, usize, usize)> {
         let receive = GuestAncestorHostChannelV1::startup_report_receive_obligations_v1()?;
         let child = HostCanaryLocalChildOriginalsV1::receiving_obligations_v1()?;
-        let error = std::mem::size_of::<crate::Error>()
+        let error = std::mem::size_of::<aos_linux_descriptors::Error>()
             .checked_add(std::mem::size_of::<SeqpacketError>())?
             .checked_add(std::mem::size_of::<std::io::Error>())?
             .checked_mul(2)?;

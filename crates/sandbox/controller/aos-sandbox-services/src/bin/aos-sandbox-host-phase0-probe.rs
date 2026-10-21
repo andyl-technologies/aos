@@ -20,9 +20,10 @@ use aos_sandbox_host::phase0_probe::{
     verified_packaged_hostd_digest, verified_packaged_inspector_digest,
 };
 use aos_sandbox_host::plan::{VerifiedLiveSelinuxPolicyV1, verified_packaged_nspawn_digest};
-use aos_sandbox_linux::boot::KernelBootId;
+use aos_linux_descriptors::boot::KernelBootId;
 use aos_sandbox_linux::cgroup::CgroupV2Root;
-use aos_sandbox_linux::pidfd::{NamespaceKind, PidFd};
+use aos_sandbox_linux::pidfd::NamespaceKind;
+use aos_linux_descriptors::pidfd::PidFd;
 use aos_systemd_client::{OwnedValue, SystemdClient};
 use ed25519_dalek::SigningKey;
 use rustix::fs::{FileType, Mode, OFlags, fstat, open};
@@ -142,19 +143,15 @@ async fn inspect(nspawn_path: &str, hostd_path: &str, selinux_policy: &str) -> R
         .map_err(|_| "inspector PID is invalid".to_owned())?;
     let own_pid = NonZeroU32::new(own_pid).ok_or_else(|| "inspector PID is zero".to_owned())?;
     let own_user = PidFd::open(own_pid)
-        .and_then(|process| process.namespace(NamespaceKind::User))
+        .and_then(|process| aos_sandbox_linux::pidfd::namespace(&(process), NamespaceKind::User))
         .map_err(|error| error.to_string())?;
-    let user = target
-        .namespace(NamespaceKind::User)
+    let user = aos_sandbox_linux::pidfd::namespace(&(target), NamespaceKind::User)
         .map_err(|error| error.to_string())?;
-    let mount = target
-        .namespace(NamespaceKind::Mount)
+    let mount = aos_sandbox_linux::pidfd::namespace(&(target), NamespaceKind::Mount)
         .map_err(|error| error.to_string())?;
-    let network = target
-        .namespace(NamespaceKind::Network)
+    let network = aos_sandbox_linux::pidfd::namespace(&(target), NamespaceKind::Network)
         .map_err(|error| error.to_string())?;
-    let pid = target
-        .namespace(NamespaceKind::Pid)
+    let pid = aos_sandbox_linux::pidfd::namespace(&(target), NamespaceKind::Pid)
         .map_err(|error| error.to_string())?;
     if user.identity() == own_user.identity() {
         return Err("target is not in a shifted user namespace".to_owned());

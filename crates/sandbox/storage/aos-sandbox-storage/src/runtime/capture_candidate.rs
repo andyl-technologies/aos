@@ -7,7 +7,7 @@
 
 use aos_sandbox_api::aos::sandbox::local::v1::{BrokerMethod, StorageExecutionCaptureCandidateV1};
 use aos_sandbox_model::{ProtocolVersion, RawPairedClockSample};
-use aos_sandbox_linux::boot::KernelBootId;
+use aos_linux_descriptors::boot::KernelBootId;
 use aos_sandbox_protocol::authenticated_session::all_methods::{
     AuthenticatedBrokerMethodRequestV1, AuthenticatedBrokerRequestDirectionV1,
 };

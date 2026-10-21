@@ -8,7 +8,7 @@ use std::error::Error as StdError;
 
 use aos_sandbox_model::{RawPairedClockSample, ResourceDimension as D, ResourceVector};
 
-use crate::cache_residency::CacheOwnerReadbackErrorV1;
+use aos_sandbox_cache::CacheOwnerReadbackErrorV1;
 use aos_sandbox_protocol::cache_owner_readback::PinnedCacheOwnerReadbackSignerV1;
 use crate::hierarchy::genesis_profile::SourceGenesisErrorV1;
 use crate::journal::{JournalError, RecordNamespace};
@@ -17,8 +17,9 @@ use crate::public_api_session::RootCurrentIssuerCredentialCustodyV1;
 
 use super::super::cache_readback_pin::CACHE_PIN_KEY;
 use super::super::root_current_writers::RootCreateStorageCurrentWritersV1;
-use super::super::source_genesis_root::{
-    RootRolePinsDataV1, original_root_kernel_pair_v1, role_pins_from_journal_v1,
+use super::super::source_genesis_root::original_root_kernel_pair_v1;
+use aos_sandbox_policy::root_role_pins_data::{
+    RootRolePinsDataErrorV1, RootRolePinsDataV1, role_pins_from_rows_v1,
 };
 use super::ready::RootCurrentReadyStateV1;
 use super::root_open::{RootCurrentOpenReadbackV1, RootCurrentOpenStateV1};
@@ -205,7 +206,7 @@ impl RootCurrentPinsStateV1 {
             .ok_or(SourceGenesisErrorV1::Stale)?;
         let cache = self.cache_bytes.as_ref().and_then(|result| result.as_ref().ok())
             .ok_or(SourceGenesisErrorV1::Stale)?;
-        if observed.encoded != original.encoded
+        if observed.encoded_data_v1() != original.encoded_data_v1()
             || policy.get(RecordNamespace::DesiredState, CACHE_PIN_KEY) != Some(cache.as_slice())
         {
             return Err(SourceGenesisErrorV1::Stale);
@@ -247,7 +248,7 @@ impl RootCurrentPinsStateV1 {
     {
         self.require_complete()?;
         self.tuple.as_ref().and_then(|value| value.as_ref().ok())
-            .map(|tuple| &tuple.source).ok_or(Error::History)
+            .map(RootRolePinsDataV1::source_data_v1).ok_or(Error::History)
     }
 
     pub(crate) fn failure(&self) -> Option<&(dyn StdError + 'static)> {
@@ -278,7 +279,25 @@ impl RootCurrentPinsStateV1 {
 impl RootCurrentPinsStateV1 {
     pub(crate) fn saved_genesis_role_tuple_v1(&self) -> Result<&[u8; 488], Error> {
         self.require_complete()?;
-        self.tuple.as_ref().and_then(|tuple| tuple.as_ref().ok()).map(|tuple| &tuple.encoded)
+        self.tuple.as_ref().and_then(|tuple| tuple.as_ref().ok()).map(RootRolePinsDataV1::encoded_data_v1)
             .ok_or(Error::History)
     }
+}
+
+// The original saved-row join does not observe or recreate credential custody.
+// Only the separately held issuer and journal owners establish that custody.
+fn role_pins_from_journal_v1(
+    policy: &crate::Journal,
+    seed: &[u8],
+    authorization: &[u8],
+) -> Result<RootRolePinsDataV1, SourceGenesisErrorV1> {
+    role_pins_from_rows_v1(policy.historical_read_view_v1(), seed, authorization)
+        .map_err(|error| match error {
+            RootRolePinsDataErrorV1::NonCanonical => SourceGenesisErrorV1::NonCanonical,
+            RootRolePinsDataErrorV1::Stale => SourceGenesisErrorV1::Stale,
+            RootRolePinsDataErrorV1::Data(cause) => SourceGenesisErrorV1::from(cause),
+            RootRolePinsDataErrorV1::Controller(_) | RootRolePinsDataErrorV1::Source(_) => {
+                SourceGenesisErrorV1::NonCanonical
+            }
+        })
 }

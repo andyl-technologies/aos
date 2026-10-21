@@ -9,7 +9,7 @@ use crate::journal::NetworkNamespaceCapturedJournalOpenV4;
 use aos_sandbox_broker::receiving::{FixedServiceOperationClosedV4 as Closed,
     FixedServiceReceivingCaptureV1 as Common};
 use aos_sandbox_model::{ResourceDimension as D, ResourceVector};
-use aos_sandbox_linux::boot::RootOriginalKernelBootIdAttemptV1;
+use aos_linux_descriptors::boot::RootOriginalKernelBootIdAttemptV1;
 use crate::service_original::journal::{NetworkJournalOriginalV4,
     NetworkJournalStartupErrorV4, reached_rows_v4};
 

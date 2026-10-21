@@ -100,7 +100,7 @@ pub use boot_reconcile::{
     LifecycleAuthenticatedStorageInventoryBootstrapV1,
     LifecycleAuthenticatedStorageInventorySuccessorV1, LifecycleAuthenticatedStorageInventoryV1,
     LifecycleAuthenticatedStorageReadbackV1, LifecycleAuthenticatedTransferInventoryV1,
-    LifecycleBootBootstrapEndpointV1, LifecycleBootDomainEntryV1, LifecycleBootDomainInventoryV1,
+    LifecycleBootBootstrapEndpointV1, LifecycleBootDomainInventoryV1,
     LifecycleBootDomainV1, LifecycleBootInventoryBootstrapChallengeV1, LifecycleBootReconcilerV1,
     LifecycleBootRecoveryActionV1, LifecycleBootRecoveryStepV1, LifecycleBootResourceObservationV1,
     LifecycleBootResourceStateV1, LifecycleStorageInventoryEntryV1,
@@ -211,14 +211,18 @@ pub use public_admission::{
     LifecyclePublicMutationAdmissionErrorV1, LifecyclePublicMutationAdmissionV1,
     lifecycle_desired_state_semantic_commit_v1, lifecycle_public_mutation_admission_v1,
 };
+pub(crate) use public_admission::{
+    historical_admission_control_bytes_v2,
+    lifecycle_public_mutation_admission_from_observation_v2,
+};
 pub use public_operation::{
     LifecyclePublicOperationErrorV1, lifecycle_operation_from_public_mutation_v1,
 };
 pub use recovery::{LifecycleRecoveryActionV1, classify_operation_recovery_v1};
 pub use runtime_admission::{
     LifecycleRuntimeAdmissionErrorV1, LifecycleRuntimeAdmissionFenceV1,
-    lifecycle_runtime_admission_fence_from_journal_v1,
 };
+pub(crate) use runtime_admission::lifecycle_runtime_admission_fence_from_observation_v2;
 pub use semantic::{
     LifecycleAssignmentCommitFactV1, LifecycleAuthoritativeSemanticCommitV1,
     LifecycleCascadePlanDigestV1, LifecycleCascadeTombstonePlanV1, LifecycleCommittedResourceV1,

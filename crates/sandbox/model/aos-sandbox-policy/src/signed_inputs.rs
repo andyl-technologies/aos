@@ -7,8 +7,19 @@
 //! protected credentials and independently join every current prerequisite.
 
 mod deployment;
+mod held_root;
 mod profile;
 mod project;
+mod startup_deployment;
+
+/// Owns the existing twelve-member fixed startup credential DATA recipe.
+pub mod startup_credentials;
+pub use startup_credentials::{RootStartupCredentialGeometryErrorV1, RootStartupCredentialMemberV1};
+
+pub use startup_deployment::RootPolicyStartupDeploymentV1;
+
+#[doc(hidden)]
+pub use aos_sandbox_model::RecordNamespace as HeldRootRecordNamespaceV1;
 
 pub use deployment::{
     DeploymentLayerV1 as DeploymentLayerDataV1, INPUT_MAGICS as DEPLOYMENT_INPUT_MAGICS,
@@ -77,3 +88,9 @@ pub(super) fn read_digest(
         .and_then(|part| part.try_into().ok())
         .ok_or(SignedPolicyInputDataErrorV1::InvalidHead)
 }
+
+#[cfg(feature = "native-journal")]
+pub(crate) use project::project_source_verification_receiving_bytes_v2;
+
+#[cfg(feature = "native-journal")]
+pub(crate) use deployment::deployment_sources_decoding_bytes_v1;

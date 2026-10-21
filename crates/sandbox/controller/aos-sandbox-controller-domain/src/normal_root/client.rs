@@ -48,7 +48,8 @@ pub use admission::{
     ControllerProfileAdmissionFailureV1, ProductionControllerSelectedProfileAdmissionV1,
 };
 use aos_sandbox_broker::profile_data::delivery as canonical_delivery;
-use aos_sandbox_linux::unix_stream::{RetainedUnixStream, UnixStreamSubjectChunk};
+use aos_linux_descriptors::unix_stream::RetainedUnixStream;
+use aos_sandbox_linux::unix_stream::UnixStreamSubjectChunk;
 use aos_systemd_client::{OwnedValue, Value};
 pub use capture::{
     ControllerInitialCaptureFailureRefV1, ProductionControllerInitialCaptureAttemptV1,

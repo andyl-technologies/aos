@@ -55,17 +55,17 @@ use aos_sandbox_journal::geometry::EncodedRecordLayout;
 #[cfg(test)]
 use aos_sandbox_journal::geometry::NativeGeometryBounds;
 use aos_sandbox_journal::materialized::{self, RecordMutationRef};
+use aos_sandbox_journal::owner::{NativeJournal, NativeJournalState};
 use aos_sandbox_journal::record::RecordError;
 use aos_sandbox_journal::recovery::RecoveryTailError;
 use aos_sandbox_journal::replay::{
     NativeReplayBookkeeping, NativeReplayCoordinates, NativeReplayError,
 };
-use aos_sandbox_journal::owner::{NativeJournal, NativeJournalState};
 use aos_sandbox_journal::storage::JournalReadIdentityDataV1;
+use aos_sandbox_journal::transaction::{self, NativePendingTransaction};
 use aos_sandbox_protocol::domain_ledger::readonly::{
     HistoricalLedgerReadViewV1, IdempotencyDecisionV1 as IdempotencyDecision,
 };
-use aos_sandbox_journal::transaction::{self, NativePendingTransaction};
 
 #[cfg(target_os = "linux")]
 pub mod controller;
@@ -80,30 +80,36 @@ pub(crate) struct JournalShape {
 }
 
 mod delete_batch;
-mod new_use;
-#[cfg(target_os = "linux")]
-pub(crate) mod inventory_native;
+mod delete_resource_signing;
 #[cfg(target_os = "linux")]
 pub(crate) mod delete_storage_preparation;
+#[cfg(target_os = "linux")]
+pub(crate) mod inventory_native;
+mod new_use;
 mod runtime_history_read;
+mod semantic_append;
 #[cfg(target_os = "linux")]
 mod start_assignment_receiving;
-mod delete_resource_signing;
-mod semantic_append;
 pub use semantic_append::ProtectedJournalPreflightOriginalV2;
 
-#[cfg(target_os = "linux")]
-pub(crate) use semantic_append::delete::{
-    SourceDeleteSemanticScopeV1, DeletePlanningBaseCutsDataV2,
-    SourceDeleteMetadataRequestDataV2, SourceDeleteMetadataRequestErrorV2,
-    DeleteDependencyGraphDataV2, SourceDeleteGraphErrorV2,
-};
-#[cfg(target_os = "linux")]
-pub use semantic_append::delete::{DeleteInventorySessionAppendOriginalV1, DeleteInventorySessionAppendDisposalV1, DeleteInventoryIoDisposalV1, DeleteInventorySecurityShapeDataV1};
-pub(crate) use semantic_append::delete::{SourceDeletePendingFenceV1, DeleteSourceFrontierClockV3};
 pub(crate) use semantic_append::delete::SourceDeleteCompletionDisposalOriginalV4;
 #[cfg(target_os = "linux")]
-pub(crate) use semantic_append::delete::{SourceExecutionSemanticScopeV1, CompletedEnvironmentSourceAppendV1, QualifiedEnvironmentSourceViewV1};
+pub(crate) use semantic_append::delete::{
+    CompletedEnvironmentSourceAppendV1, QualifiedEnvironmentSourceViewV1,
+    SourceExecutionSemanticScopeV1,
+};
+#[cfg(target_os = "linux")]
+pub(crate) use semantic_append::delete::{
+    DeleteDependencyGraphDataV2, DeletePlanningBaseCutsDataV2, SourceDeleteGraphErrorV2,
+    SourceDeleteMetadataRequestDataV2, SourceDeleteMetadataRequestErrorV2,
+    SourceDeleteSemanticScopeV1,
+};
+#[cfg(target_os = "linux")]
+pub use semantic_append::delete::{
+    DeleteInventoryIoDisposalV1, DeleteInventorySecurityShapeDataV1,
+    DeleteInventorySessionAppendDisposalV1, DeleteInventorySessionAppendOriginalV1,
+};
+pub(crate) use semantic_append::delete::{DeleteSourceFrontierClockV3, SourceDeletePendingFenceV1};
 mod native_backing;
 pub use native_backing::JournalProtectedNativeResidencyV1;
 #[cfg(target_os = "linux")]
@@ -112,20 +118,22 @@ mod source_construction;
 pub(crate) use source_construction::SourceJournalConstructionOriginalsV1;
 mod native_append;
 #[cfg(target_os = "linux")]
-mod native_interval;
-#[cfg(target_os = "linux")]
 mod native_compaction;
+#[cfg(target_os = "linux")]
+mod native_interval;
 #[cfg(target_os = "linux")]
 pub(crate) mod root_construction;
 #[cfg(target_os = "linux")]
 pub(crate) use native_backing::ControllerCoordinatorSelectionV1;
-pub(crate) mod semantic_replay;
-mod semantic_remainder;
 mod ordinary_materialization;
-mod ordinary_semantics;
 mod ordinary_opening;
 mod ordinary_reread;
-use ordinary_reread::{ObservedReplayStateV1, replay_coordinator_observed_v1, replay_published_bytes_observed_v1};
+mod ordinary_semantics;
+mod semantic_remainder;
+pub(crate) mod semantic_replay;
+use ordinary_reread::{
+    ObservedReplayStateV1, replay_coordinator_observed_v1, replay_published_bytes_observed_v1,
+};
 
 #[cfg(target_os = "linux")]
 mod network_session_replay;
@@ -140,114 +148,114 @@ mod readonly_receiving;
 mod root_controller_readonly;
 #[cfg(target_os = "linux")]
 pub(crate) use root_controller_readonly::{
-    RootControllerReadonlyReceivingContextV1, root_controller_replay_fixed_controls_v1, ROOT_CONTROLLER_DIRECTORY_V1,
-    ROOT_CONTROLLER_JOURNAL_V1,
+    ROOT_CONTROLLER_DIRECTORY_V1, ROOT_CONTROLLER_JOURNAL_V1,
+    RootControllerReadonlyReceivingContextV1, root_controller_replay_fixed_controls_v1,
 };
 #[cfg(target_os = "linux")]
 mod root_controller_readonly_audit;
 #[cfg(target_os = "linux")]
-pub(crate) use root_controller_readonly_audit::{RootControllerReadonlyGeometryAuditV1, RootDeleteAuxiliaryRowDataV3, DeleteAdmissionAuditInputsDataV3};
-#[cfg(target_os = "linux")]
 use readonly_receiving::{CapturedReadonlyReceivingContextV1, ReadonlyReceivingContextV1};
 #[cfg(target_os = "linux")]
+pub(crate) use root_controller_readonly_audit::{
+    DeleteAdmissionAuditInputsDataV3, RootControllerReadonlyGeometryAuditV1,
+    RootDeleteAuxiliaryRowDataV3,
+};
+#[cfg(target_os = "linux")]
 mod create_storage_append;
-mod execution_no_apply_settlement;
 #[cfg(target_os = "linux")]
 mod delete_admission;
+mod execution_no_apply_settlement;
 #[cfg(target_os = "linux")]
 pub(crate) use delete_admission::ControllerDeleteAdmissionOriginalV3;
 pub(crate) use delete_admission::ControllerDeleteTerminalOriginalV4;
+#[cfg(target_os = "linux")]
+mod create_stopped_observer;
 #[cfg(target_os = "linux")]
 mod create_stopped_pre_ack;
 #[cfg(target_os = "linux")]
 mod create_stopped_terminal;
 #[cfg(target_os = "linux")]
-mod create_stopped_observer;
-#[cfg(target_os = "linux")]
 #[doc(hidden)]
-pub use create_stopped_observer::{CreateStoppedColdObserverOriginalV1, CreateStoppedColdObserverClosedV1};
-#[cfg(target_os = "linux")]
-pub(crate) use create_stopped_terminal::{
-    LifecycleTerminalMetadataOriginalV4, start_terminal_receiving_demand_v2, stop_terminal_receiving_demand_v5,
-    stop_cleanup_terminal_model_receiving_demand_v1,
-    CreateStoppedControllerTerminalAppendOriginalV1, create_stopped_terminal_receiving_demand_v1,
-    CreateStoppedMetadataTransitionOriginalV1, create_stopped_metadata_model_receiving_demand_v1,
+pub use create_stopped_observer::{
+    CreateStoppedColdObserverClosedV1, CreateStoppedColdObserverOriginalV1,
 };
 #[cfg(target_os = "linux")]
 pub(crate) use create_stopped_pre_ack::CreateStoppedControllerPreAckAppendOriginalV1;
-pub(crate) mod source_provisioning;
 #[cfg(target_os = "linux")]
-mod operator_recover;
-mod public_authorization_floor;
-#[cfg(target_os = "linux")]
-mod operator_recover_floor;
-mod root_q04_inert_successor;
+pub(crate) use create_stopped_terminal::{
+    CreateStoppedControllerTerminalAppendOriginalV1, CreateStoppedMetadataTransitionOriginalV1,
+    LifecycleTerminalMetadataOriginalV4, create_stopped_metadata_model_receiving_demand_v1,
+    create_stopped_terminal_receiving_demand_v1, start_terminal_receiving_demand_v2,
+    stop_cleanup_terminal_model_receiving_demand_v1, stop_terminal_receiving_demand_v5,
+    create_stopped_geometry_control_bytes_v2, create_stopped_independent_geometry_control_bytes_v2,
+};
 #[cfg(target_os = "linux")]
 mod create_storage_position;
-mod start_resource_completion;
-pub(crate) use start_resource_completion::StartResourceNativePositionsOriginalV2;
 #[cfg(target_os = "linux")]
-pub(crate) use create_storage_position::{CreateStorageWriterPositionOriginalV1, create_storage_name_peak_demand_v1};
+mod operator_recover;
+#[cfg(target_os = "linux")]
+mod operator_recover_floor;
+mod public_authorization_floor;
+pub(crate) mod source_provisioning;
+mod start_resource_completion;
+#[cfg(target_os = "linux")]
+pub(crate) use create_storage_position::{
+    CreateStorageWriterPositionOriginalV1, create_storage_name_peak_demand_v1,
+};
+pub(crate) use start_resource_completion::StartResourceNativePositionsOriginalV2;
 #[cfg(target_os = "linux")]
 mod source_readonly_receiving;
 #[cfg(target_os = "linux")]
 pub(crate) use source_readonly_receiving::semantic_demand as source_readonly_semantic_demand_v1;
 #[cfg(target_os = "linux")]
-mod storage_prepare_clock;
-#[cfg(target_os = "linux")]
 pub(crate) mod storage_native_commit;
 #[cfg(target_os = "linux")]
-pub use storage_native_commit::{StorageStateNativeCommitAttemptV1, StorageStateNativeCommitClosedV1};
+mod storage_prepare_clock;
+#[cfg(target_os = "linux")]
+pub use storage_native_commit::{
+    StorageStateNativeCommitAttemptV1, StorageStateNativeCommitClosedV1,
+};
 #[cfg(target_os = "linux")]
 pub use storage_prepare_clock::StoragePrepareNativeClockCaptureV1;
+#[cfg(target_os = "linux")]
+mod append_receiving_demand;
 #[cfg(target_os = "linux")]
 mod original_release_capture;
 #[cfg(target_os = "linux")]
 mod receiving_demand;
 #[cfg(target_os = "linux")]
-mod append_receiving_demand;
-#[cfg(target_os = "linux")]
 pub use append_receiving_demand::JournalAppendReceivingDemandErrorV1;
-#[cfg(target_os = "linux")]
-mod semantic_receiving;
 #[cfg(target_os = "linux")]
 mod create_stopped_history;
 #[cfg(target_os = "linux")]
 mod original_currentness;
 #[cfg(target_os = "linux")]
+mod semantic_receiving;
 #[cfg(target_os = "linux")]
-mod cache_held_observation;
-#[cfg(target_os = "linux")]
-pub(crate) use cache_held_observation::CacheHeldWriterShapeV1;
-
-#[cfg(target_os = "linux")]
-use original_release_capture::native_release_replay_work_v1;
+pub(crate) use original_currentness::Q04CacheTerminalPhaseV1;
 #[cfg(target_os = "linux")]
 use original_currentness::Q04NativeRecipeAuditV1;
 #[cfg(target_os = "linux")]
-pub(crate) use original_currentness::{
-    Q04CachePrepareNativeLoanV1, Q04CacheTerminalNativeLoanV1, Q04CacheTerminalPhaseV1,
-};
+#[cfg(target_os = "linux")]
+use original_release_capture::native_release_replay_work_v1;
 
 #[cfg(target_os = "linux")]
 mod git_coverage_history;
 #[cfg(target_os = "linux")]
-pub use git_coverage_history::{
-    GitCoverageNativeHistoryErrorV1, GitCoverageNativePrefixLoanV1,
-};
+pub use git_coverage_history::{GitCoverageNativeHistoryErrorV1, GitCoverageNativePrefixLoanV1};
+pub(crate) mod controller_source_successor_issuance;
 #[cfg(target_os = "linux")]
 mod git_evidence_namespace;
-pub(crate) mod controller_source_successor_issuance;
 pub(crate) mod source_tree_successor;
+use aos_sandbox_protocol::domain_ledger::JournalTransactionDataError;
+pub(super) use aos_sandbox_protocol::domain_ledger::transaction::encoded_transaction_record_bytes;
 pub use aos_sandbox_protocol::domain_ledger::transaction::{
     IdempotencyKey, JournalLimits, JournalRecord, JournalTransaction,
     encoded_transaction_append_bytes,
 };
-pub(super) use aos_sandbox_protocol::domain_ledger::transaction::encoded_transaction_record_bytes;
 use aos_sandbox_protocol::domain_ledger::transaction::{
     decode_record, encode_record, encode_record_fields, encode_transaction, validate_transaction,
 };
-use aos_sandbox_protocol::domain_ledger::JournalTransactionDataError;
 mod root_local_recovery;
 mod root_original_inventory;
 pub(crate) use root_original_inventory::materialize as materialize_root_inventory_transaction;
@@ -257,43 +265,47 @@ mod runtime_deployment_history;
 #[cfg(target_os = "linux")]
 mod runtime_deployment_sidecar_history;
 #[cfg(target_os = "linux")]
-mod storage_native_issuance_history;
-#[cfg(target_os = "linux")]
 mod storage_canary_export_history;
 #[cfg(target_os = "linux")]
+mod storage_native_issuance_history;
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) use runtime_deployment_history::deployment_original_compaction_selected_for_test;
+#[cfg(target_os = "linux")]
+pub(crate) use runtime_deployment_sidecar_history::RetainedDeploymentNativeHistoryV1;
+#[cfg(target_os = "linux")]
+pub use runtime_deployment_sidecar_history::RuntimeDeploymentNativeTransactionDataV1;
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) use runtime_deployment_sidecar_history::{
+    observed_native_fixture_v1, require_sidecar_capture_limits_for_test,
+};
+#[cfg(target_os = "linux")]
 pub use storage_canary_export_history::{
-    StorageCanaryBootstrapPrimaryHistoryDataV1,
-    StorageCanaryExportEdgeDataV1, StorageCanaryExportHistoryCursorV1,
-    StorageCanaryExportHistoryDataV1, StorageCanaryExportHistoryErrorV1,
+    StorageCanaryBootstrapPrimaryHistoryDataV1, StorageCanaryExportEdgeDataV1,
+    StorageCanaryExportHistoryCursorV1, StorageCanaryExportHistoryDataV1,
+    StorageCanaryExportHistoryErrorV1,
 };
 #[cfg(target_os = "linux")]
 pub use storage_native_issuance_history::{
     StorageNativeIssuanceEdgeDataV1, StorageNativeIssuanceHistoryCursorV1,
     StorageNativeIssuanceHistoryDataV1, StorageNativeIssuanceHistoryErrorV1,
 };
-#[cfg(target_os = "linux")]
-pub use runtime_deployment_sidecar_history::RuntimeDeploymentNativeTransactionDataV1;
-#[cfg(target_os = "linux")]
-pub(crate) use runtime_deployment_sidecar_history::RetainedDeploymentNativeHistoryV1;
-#[cfg(all(test, target_os = "linux"))]
-pub(crate) use runtime_deployment_sidecar_history::{
-    observed_native_fixture_v1, require_sidecar_capture_limits_for_test,
-};
-#[cfg(all(test, target_os = "linux"))]
-pub(crate) use runtime_deployment_history::deployment_original_compaction_selected_for_test;
-mod source_history;
 mod cache_policy_hold;
+mod source_history;
+#[cfg(target_os = "linux")]
+pub(crate) use cache_policy_hold::CacheGitCoverageObservationV1;
 pub(crate) use cache_policy_hold::{
     BorrowedCacheMutationGateV1, CacheMutationGateV1, HeldCacheMutationGateV1,
 };
-#[cfg(target_os = "linux")]
-pub(crate) use cache_policy_hold::CacheGitCoverageObservationV1;
 mod capacity_reservation;
 pub use capacity_reservation::native_held;
 mod controller_policy_hold;
 #[cfg(target_os = "linux")]
 pub(crate) use controller_policy_hold::{
-    RootControllerCreateAcceptanceOriginalsV1, RootControllerAcceptedNativeProgressV1,
+    RootControllerAcceptedNativeProgressV1, RootControllerCreateAcceptanceOriginalsV1,
+};
+#[cfg(target_os = "linux")]
+pub(crate) use controller_policy_hold::{
+    controller_q04_history_from_observation_v2, controller_q04_history_observation_control_bytes_v2,
 };
 pub(crate) mod controller_source_genesis;
 pub(crate) mod host_currentness_fence;
@@ -302,9 +314,9 @@ mod host_settlement_admission_gate;
 mod source_domain_challenge;
 mod source_domain_policy_hold;
 #[cfg(target_os = "linux")]
-pub(crate) use source_domain_policy_hold::SourceQ04TransactionRecipesV1;
+pub(crate) use aos_sandbox_cache::CacheQ04TransactionRecipesV1;
 #[cfg(target_os = "linux")]
-pub(crate) use cache_policy_hold::CacheQ04TransactionRecipesV1;
+pub(crate) use source_domain_policy_hold::SourceQ04TransactionRecipesV1;
 #[cfg(target_os = "linux")]
 pub(crate) use source_domain_policy_hold::q04_clear_recipe_digest_data as q04_source_clear_recipe_digest_data_v1;
 mod source_project_admission_challenge;
@@ -325,11 +337,8 @@ pub use capacity_reservation::{
     PreparedGlobalCapacityReservationV1,
 };
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum RootSourceGenesisTransitionV1 {
-    None,
-    Initialize,
-}
+#[cfg(target_os = "linux")]
+pub(crate) use controller_policy_hold::ControllerQ04TransitionV1;
 pub use controller_policy_hold::{
     ControllerPolicyHoldV1, ControllerPolicyV8AttemptV1, ControllerPolicyV8EffectAckV1,
 };
@@ -338,8 +347,6 @@ pub(crate) use controller_policy_hold::{
     ControllerPolicyV8SettlementV1, controller_v8_root_receipt_record_digest_v1,
     v8_root_receipt_matches_ack,
 };
-#[cfg(target_os = "linux")]
-pub(crate) use controller_policy_hold::ControllerQ04TransitionV1;
 pub(crate) use host_currentness_fence::HostCurrentnessFenceV1;
 pub(crate) use host_execution_fence::HostExecutionFenceV1;
 pub use source_domain_challenge::SourceDomainChallengeV1;
@@ -356,186 +363,48 @@ pub(crate) use source_project_admission_challenge::{
     replay_source_project_admission_challenge_v1, source_project_challenge_matches_current,
 };
 
-/// Carries configured initial-replay representation DATA before a protected open.
-///
-/// These separate terms describe logical bytes and inline representations, not
-/// allocator RAM, a service budget, a paid loan, or permission to open. They may
-/// overcount shared storage. Every consumer must also cover [`Self::unpriced`]
-/// before treating an aggregate as a prepaid service extent.
+// The sole DATA recipe retains these actual Domain compiled type/layout
+// bindings. Native owner extraction must bind its real replacement types;
+// a smaller key-index extent or a dummy model cannot substitute for them.
 #[cfg(target_os = "linux")]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ProtectedJournalPreopenReplayExtentV1 {
-    /// Preserves the exact limits supplied to the native opener.
-    pub limits: JournalLimits,
-    /// Bounds the configured native prefix; this is disk input, not heap storage.
-    pub native_bytes: u64,
-    /// Reuses the original Release replay's logical map, frame and owner charge.
-    pub native_replay_representation_bytes: usize,
-    /// Identifies the physical-clipped pending term already included above.
-    ///
-    /// A complete initial receiving demand replaces this term with
-    /// `declared_pending_record_bytes`; it does not omit the full BEGIN reserve.
-    pub clipped_native_pending_record_bytes: usize,
-    /// Covers reached frame Vec capacity plus the shared fixed read scratch.
-    ///
-    /// The incremental frame reader grows only after bytes are read; the full
-    /// advertised payload is a wire limit, not an absent-byte allocation.
-    pub native_frame_read_memory_bytes: usize,
-    /// Preserves the unchanged advertised frame payload wire ceiling.
-    pub maximum_advertised_payload_bytes: usize,
-    /// Covers the full BEGIN reservation, irrespective of physical frame count.
-    pub declared_pending_record_bytes: usize,
-    /// Covers insertion of one extra transaction ID before count refusal.
-    pub reached_transaction_id_bytes: usize,
-    /// Covers intermediate map cells before all transaction deletions apply.
-    pub reached_materialized_cell_bytes: usize,
-    /// Bounds committed transactions reached before the count check can refuse.
-    pub source_transactions: usize,
-    /// Covers conservative inline cache copies, including the pending marker.
-    pub source_cache_copies: usize,
-    /// Bounds original checkpoint rows from this configured native file.
-    pub source_checkpoint_rows: usize,
-    /// Covers this file's original checkpoint rows and one independent copy.
-    pub source_checkpoint_representation_bytes: usize,
-    /// Covers initial cache owners whose physical-history collections stay empty.
-    pub source_cache_metadata_bytes: usize,
-    /// Covers inline native opener, replay, metadata, result and error owners.
-    pub native_owner_result_bytes: usize,
-    /// Requires independent bounds for all representations not priced here.
-    pub unpriced: ProtectedJournalPreopenUnpricedPrerequisitesV1,
+mod preopen_geometry {
+    use super::*;
+    use super::semantic_receiving::semantic_representation_demand_v1;
+    use aos_sandbox_model::{ResourceDimension as D, ResourceVector};
+
+    aos_sandbox_ledger_replay::define_protected_preopen_geometry_data_v1!();
 }
 
-/// Identifies obligations that configured journal limits alone cannot price.
-///
-/// Collection spare capacity, BTree nodes, Arc control blocks and allocator
-/// overhead need separate conservative service provision and physical backstops.
-/// Decoder/validator temporaries and owning error payloads need their own bounds,
-/// as do native descriptors, kernel state, path/name allocations and service work.
-/// The parser checks initial file metadata, so growing input needs independently
-/// enforced containment or a stable-prefix prerequisite. Initial replay has no
-/// external challenge witness; the legacy marker name does not add the separate
-/// later replay's external-history demand to this phase.
-///
-/// The ordinary read-only opener drops its local files and partial replay on
-/// failure. This marker neither retains those locals nor changes their lifetime.
 #[cfg(target_os = "linux")]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ProtectedJournalPreopenUnpricedPrerequisitesV1 {
-    /// Requires conservative allocator, decoder/error and native/containment bounds.
-    AllocatorDecoderErrorsNativePathsAndExternalChallenges,
-}
-
-/// Computes replay representation DATA for an already captured physical prefix.
-///
-/// The caller retains the genuine original metadata and bounds its reader to
-/// this same length. A scalar alone authenticates neither that prefix nor a
-/// payer. BEGIN count storage retains its full configured maximum independently
-/// of the prefix; frame Vec capacity follows reached bytes plus fixed scratch.
-///
-/// # Errors
-/// Rejects invalid limits, an excessive captured prefix, or checked overflow.
-#[cfg(target_os = "linux")]
-pub fn protected_journal_preopen_replay_extent_for_prefix_v1(
-    limits: JournalLimits,
-    native_prefix_bytes: u64,
-) -> Result<ProtectedJournalPreopenReplayExtentV1, JournalError> {
-    validate_limits(limits)?;
-    let limit = || JournalError::LimitExceeded("protected journal pre-open replay extent");
-    if native_prefix_bytes > limits.maximum_journal_bytes {
-        return Err(JournalError::JournalTooLarge);
-    }
-    let physical = usize::try_from(native_prefix_bytes).map_err(|_| limit())?;
-    let frames = physical / HEADER_BYTES;
-    let source_transactions = limits.maximum_transactions.checked_add(1)
-        .ok_or_else(limit)?.min(frames);
-    let source_checkpoint_rows = frames;
-    let source_cache_copies = 3_usize;
-    let map_entry = std::mem::size_of::<((RecordNamespace, Vec<u8>), Vec<u8>)>();
-
-    // BEGIN reserves its bounded declared count before reading its records.
-    // The shared frame reader instead grows only after actual bytes arrive;
-    // its reached Vec capacity and fixed read scratch are already in Native work.
-    let native_work = native_release_replay_work_v1(physical, limits)?;
-    let native_replay_representation_bytes = native_work.replay_indexes
-        .checked_add(native_work.pending_records)
-        .and_then(|bytes| bytes.checked_add(native_work.frame_payload))
-        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<ObservedReplayStateV1>()))
-        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<(Vec<JournalRecord>, NativePendingTransaction)>()))
-        .and_then(|bytes| bytes.checked_add(ordinary_reread::receiving_control_bytes_v1()?))
-        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<OriginalReleaseControllerCutCaptureV1>()))
-        .ok_or_else(limit)?;
-    let maximum_advertised_payload_bytes = limits.maximum_record_bytes.checked_add(7).ok_or_else(limit)?;
-    let declared_pending_record_bytes = limits.maximum_records_per_transaction
-        .checked_mul(std::mem::size_of::<JournalRecord>()).ok_or_else(limit)?;
-    let reached_transaction_id_bytes = std::mem::size_of::<[u8; 16]>();
-    let reached_materialized_cell_bytes = limits.maximum_records_per_transaction
-        .checked_mul(map_entry).and_then(|bytes| bytes.checked_mul(2)).ok_or_else(limit)?;
-
-    // This runs independently of the optional external challenge witness.
-    // Retain its committed-frame rows even when Source replay remains pending.
-    let source_checkpoint_representation_bytes = source_checkpoint_rows
-        .checked_mul(std::mem::size_of::<source_history::SourceOriginalChallengeCheckpointV5>())
-        .and_then(|bytes| bytes.checked_add(physical))
-        .and_then(|bytes| bytes.checked_mul(2)).ok_or_else(limit)?;
-    // replay_transaction(None) returns before origins, cuts, retirements or
-    // their maps are retained. observe_compaction likewise only sets pending;
-    // its temporary prospective map remains in the native replay allowance.
-    let source_cache_metadata_bytes = std::mem::size_of::<source_history::replay::SourceOriginalReplayCacheV5>()
-        .checked_mul(source_cache_copies)
-        .ok_or_else(limit)?;
-
-    // Price simultaneous inline representations conservatively. Ordinary
-    // recovery still transfers its maps and drops its failure locals unchanged.
-    let native_owner_result_bytes = std::mem::size_of::<ProtectedWriterOpenOriginalsV1>()
-        .checked_add(std::mem::size_of::<Result<(ReadOnlyProtectedJournal, RecoveryReport), JournalError>>())
-        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Result<ObservedReplayStateV1, JournalError>>()))
-        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<ProtectedJournalLocation>()))
-        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<ReadOnlyJournalNameWitness>()))
-        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Frame>()))
-        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<std::cell::Cell<bool>>()))
-        .and_then(|bytes| bytes.checked_add(HEADER_BYTES))
-        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Result<fs::Metadata, io::Error>>()))
-        .ok_or_else(limit)?;
-
-    Ok(ProtectedJournalPreopenReplayExtentV1 {
-        limits,
-        native_bytes: native_prefix_bytes,
-        native_replay_representation_bytes,
-        clipped_native_pending_record_bytes: native_work.pending_records,
-        native_frame_read_memory_bytes: native_work.frame_payload,
-        maximum_advertised_payload_bytes,
-        declared_pending_record_bytes,
-        reached_transaction_id_bytes,
-        reached_materialized_cell_bytes,
-        source_transactions,
-        source_cache_copies,
-        source_checkpoint_rows,
-        source_checkpoint_representation_bytes,
-        source_cache_metadata_bytes,
-        native_owner_result_bytes,
-        unpriced: ProtectedJournalPreopenUnpricedPrerequisitesV1::AllocatorDecoderErrorsNativePathsAndExternalChallenges,
-    })
-}
+pub use preopen_geometry::{
+    ProtectedJournalPreopenReplayExtentV1, ProtectedJournalPreopenUnpricedPrerequisitesV1,
+    protected_journal_preopen_replay_extent_for_prefix_v1,
+};
 
 // Closed live crossings; neither the canonical transaction nor project DATA
 // can construct the genuine original Root borrower in the issuer arm.
 enum ProjectNativeTransitionV3<'cut, 'owner> {
-    Genesis(source_tree_successor::ProjectGenesisNativePhaseV3, source_tree_successor::ProjectGenesisNativeCutV3<'cut>),
+    Genesis(
+        source_tree_successor::ProjectGenesisNativePhaseV3,
+        source_tree_successor::ProjectGenesisNativeCutV3<'cut>,
+    ),
     #[cfg(target_os = "linux")]
     GlobalGenesis(GlobalGenesisNativeCutV2<'cut>),
     #[cfg(target_os = "linux")]
-    GlobalRootGenesis(&'cut crate::policy_compiler::GlobalRootGenesisNativeCutV2<'cut>),
-    #[cfg(target_os = "linux")]
     Issuance {
         transition: controller_source_successor_issuance::Transition,
-        completed: &'cut crate::policy_compiler::CompletedRootSourceProjectGenesisFloorV3<'cut, 'cut>,
+        completed:
+            &'cut crate::policy_compiler::CompletedRootSourceProjectGenesisFloorV3<'cut, 'cut>,
     },
     #[cfg(target_os = "linux")]
     FirstSuccessor(source_tree_successor::FirstSuccessorNativeCutV3<'cut, 'owner>),
     // Selected producers are Linux-only; this uninhabited arm retains the
     // owner's lifetime in the portable ordinary engine without issuing a cut.
     #[cfg(not(target_os = "linux"))]
-    Unsupported(std::convert::Infallible, std::marker::PhantomData<&'owner ()>),
+    Unsupported(
+        std::convert::Infallible,
+        std::marker::PhantomData<&'owner ()>,
+    ),
 }
 
 // Global and mixed Project semantics remain separate. This arm contributes
@@ -749,15 +618,27 @@ impl From<CanonicalJournalMechanicalErrorV1> for JournalError {
     fn from(error: CanonicalJournalMechanicalErrorV1) -> Self {
         match error {
             CanonicalJournalMechanicalErrorV1::ResourceBank(value) => Self::ResourceBank(value),
-            CanonicalJournalMechanicalErrorV1::ProvisioningResources(value) => Self::ProvisioningResources(value),
+            CanonicalJournalMechanicalErrorV1::ProvisioningResources(value) => {
+                Self::ProvisioningResources(value)
+            }
             CanonicalJournalMechanicalErrorV1::Io(value) => Self::Io(value),
             CanonicalJournalMechanicalErrorV1::AlreadyLocked => Self::AlreadyLocked,
             CanonicalJournalMechanicalErrorV1::JournalTooLarge => Self::JournalTooLarge,
-            CanonicalJournalMechanicalErrorV1::UnsupportedVersion(value) => Self::UnsupportedVersion(value),
-            CanonicalJournalMechanicalErrorV1::ChecksumMismatch(value) => Self::ChecksumMismatch(value),
-            CanonicalJournalMechanicalErrorV1::SequenceDiscontinuity(value) => Self::SequenceDiscontinuity(value),
-            CanonicalJournalMechanicalErrorV1::MalformedTransaction(value) => Self::MalformedTransaction(value),
-            CanonicalJournalMechanicalErrorV1::MalformedRecord(value) => Self::MalformedRecord(value),
+            CanonicalJournalMechanicalErrorV1::UnsupportedVersion(value) => {
+                Self::UnsupportedVersion(value)
+            }
+            CanonicalJournalMechanicalErrorV1::ChecksumMismatch(value) => {
+                Self::ChecksumMismatch(value)
+            }
+            CanonicalJournalMechanicalErrorV1::SequenceDiscontinuity(value) => {
+                Self::SequenceDiscontinuity(value)
+            }
+            CanonicalJournalMechanicalErrorV1::MalformedTransaction(value) => {
+                Self::MalformedTransaction(value)
+            }
+            CanonicalJournalMechanicalErrorV1::MalformedRecord(value) => {
+                Self::MalformedRecord(value)
+            }
             CanonicalJournalMechanicalErrorV1::InvalidTransaction => Self::InvalidTransaction,
             CanonicalJournalMechanicalErrorV1::InvalidIdempotencyKey => Self::InvalidIdempotencyKey,
             CanonicalJournalMechanicalErrorV1::LimitExceeded(value) => Self::LimitExceeded(value),
@@ -766,10 +647,18 @@ impl From<CanonicalJournalMechanicalErrorV1> for JournalError {
             CanonicalJournalMechanicalErrorV1::IdempotencyConflict => Self::IdempotencyConflict,
             CanonicalJournalMechanicalErrorV1::Poisoned => Self::Poisoned,
             CanonicalJournalMechanicalErrorV1::ProtectedBoundary => Self::ProtectedBoundary,
-            CanonicalJournalMechanicalErrorV1::ForeignAuthorityNamespace => Self::ForeignAuthorityNamespace,
-            CanonicalJournalMechanicalErrorV1::StaleAuthoritySnapshot => Self::StaleAuthoritySnapshot,
-            CanonicalJournalMechanicalErrorV1::AuthorityPreflightMismatch => Self::AuthorityPreflightMismatch,
-            CanonicalJournalMechanicalErrorV1::UnsupportedProtectedOpen => Self::UnsupportedProtectedOpen,
+            CanonicalJournalMechanicalErrorV1::ForeignAuthorityNamespace => {
+                Self::ForeignAuthorityNamespace
+            }
+            CanonicalJournalMechanicalErrorV1::StaleAuthoritySnapshot => {
+                Self::StaleAuthoritySnapshot
+            }
+            CanonicalJournalMechanicalErrorV1::AuthorityPreflightMismatch => {
+                Self::AuthorityPreflightMismatch
+            }
+            CanonicalJournalMechanicalErrorV1::UnsupportedProtectedOpen => {
+                Self::UnsupportedProtectedOpen
+            }
             CanonicalJournalMechanicalErrorV1::SequenceExhausted => Self::SequenceExhausted,
         }
     }
@@ -822,10 +711,10 @@ impl From<RecoveryTailError> for JournalError {
 }
 
 #[cfg(target_os = "linux")]
+mod execution_admission;
+#[cfg(target_os = "linux")]
 mod provisioning;
 mod start_admission;
-#[cfg(target_os = "linux")]
-mod execution_admission;
 pub(crate) use start_admission::StartAdmissionJournalIdentityV1;
 
 /// Owns one exclusively locked, append-only journal and its replayed indexes.
@@ -859,15 +748,16 @@ pub struct Journal {
 #[cfg(target_os = "linux")]
 mod root_readonly_model;
 #[cfg(target_os = "linux")]
-pub(crate) use root_readonly_model::{RootReadonlyJournalModelOriginalsV1,
-    RootReadonlyJournalModelInputsV1};
+pub(crate) use root_readonly_model::{
+    RootReadonlyJournalModelInputsV1, RootReadonlyJournalModelOriginalsV1,
+};
 
 #[cfg(target_os = "linux")]
 mod nix_offline_provisioning;
 #[cfg(target_os = "linux")]
 pub use nix_offline_provisioning::{
-    NixOfflineContactDataV5, NixOfflineHelperLaunchV5,
-    NixOfflineNativeJobErrorV5, NixOfflineNativeJobV5,
+    NixOfflineContactDataV5, NixOfflineHelperLaunchV5, NixOfflineNativeJobErrorV5,
+    NixOfflineNativeJobV5,
 };
 
 #[cfg(target_os = "linux")]
@@ -875,46 +765,48 @@ mod execution_observation;
 pub(crate) use execution_observation::ExecutionObservationJournalIdentityV4;
 
 mod storage_captured_open;
-pub(crate) use storage_captured_open::controller_session_directory_data_v1;
 pub(crate) use storage_captured_open::EnvironmentEvidenceCapturedJournalOpenV1;
 #[cfg(target_os = "linux")]
 #[cfg(target_os = "linux")]
 pub(crate) use storage_captured_open::StorageNativeOpeningOwnerLinkV1;
+pub(crate) use storage_captured_open::controller_session_directory_data_v1;
 #[cfg(target_os = "linux")]
 pub use storage_captured_open::{
-    HostPeerCapturedJournalOpenV2, HostExecutionCapturedJournalOpenV2,
-    HostAgentCapturedJournalOpenV2, HostLifecycleCapturedJournalOpenV2,
-    HostArgumentCapturedJournalOpenV2,
-    RuntimeDeploymentMainCapturedJournalOpenV1, RuntimeDeploymentFloorCapturedJournalOpenV1,
-    ControllerBrokerSessionCapturedJournalOpenV1, ControllerStartResourceSessionCapturedJournalOpenV4, ControllerStorageFloorCapturedJournalOpenV1, StorageBrokerFloorCapturedJournalOpenV2,
-    StorageHostSessionCapturedJournalOpenV1,
-    CapturedJournalOpenModeV1, StorageBrokerCapturedJournalOpenV1, StorageStateCapturedJournalOpenV1,
-    MountBrokerSessionCapturedJournalOpenV4, HostBrokerSessionCapturedJournalOpenV1,
-    StorageWorkspaceCapturedJournalOpenV1, StorageNativeIssuanceCapturedJournalOpenV1, StorageOutputCapturedJournalOpenV1,
-    StorageRequestTrustCapturedJournalOpenV1,
+    CapturedJournalOpenModeV1, ControllerBrokerSessionCapturedJournalOpenV1,
+    ControllerStartResourceSessionCapturedJournalOpenV4,
+    ControllerStorageFloorCapturedJournalOpenV1, HostAgentCapturedJournalOpenV2,
+    HostArgumentCapturedJournalOpenV2, HostBrokerSessionCapturedJournalOpenV1,
+    HostExecutionCapturedJournalOpenV2, HostLifecycleCapturedJournalOpenV2,
+    HostPeerCapturedJournalOpenV2, MountBrokerSessionCapturedJournalOpenV4,
+    RuntimeDeploymentFloorCapturedJournalOpenV1, RuntimeDeploymentMainCapturedJournalOpenV1,
+    StorageBrokerCapturedJournalOpenV1, StorageBrokerFloorCapturedJournalOpenV2,
+    StorageHostSessionCapturedJournalOpenV1, StorageNativeIssuanceCapturedJournalOpenV1,
+    StorageOutputCapturedJournalOpenV1, StorageRequestTrustCapturedJournalOpenV1,
+    StorageStateCapturedJournalOpenV1, StorageWorkspaceCapturedJournalOpenV1,
 };
 
 mod protected_storage;
 mod runtime_deployment_post;
 pub(crate) mod runtime_deployment_receiving;
-pub use runtime_deployment_post::{
-    RuntimeDeploymentJournalPostFailureV1, RuntimeDeploymentJournalPostOriginalV1,
-};
 pub use protected_storage::ProtectedJournalCurrentnessOriginalsV1;
-pub use protected_storage::{ProtectedJournalLockCustodyV1, ProtectedJournalNamesV1};
-pub(crate) use protected_storage::{
-    ProtectedWriterNameWitness, ProtectedWriterOpenOriginalsV1,
-    ReadOnlyJournalNameWitness, ReadOnlyJournalOpenOriginalsV1, ReadOnlyProtectedJournal,
-};
 use protected_storage::{
     FileIdentity, ProtectedJournalLocation, open_protected_file_into,
     resolve_protected_directory_from_root, rustix_io, validate_protected_fd,
 };
 #[cfg(test)]
 use protected_storage::{
-    MAXIMUM_PROTECTED_JOURNAL_BASENAME_BYTES, ProtectedAncestry, open_protected_file, protected_open_error,
-    reject_operator_provisioning_history, require_empty_operator_provisioning_state,
-    require_opened_directory_identity, traverse_protected_directory,
+    MAXIMUM_PROTECTED_JOURNAL_BASENAME_BYTES, ProtectedAncestry, open_protected_file,
+    protected_open_error, reject_operator_provisioning_history,
+    require_empty_operator_provisioning_state, require_opened_directory_identity,
+    traverse_protected_directory,
+};
+pub use protected_storage::{ProtectedJournalLockCustodyV1, ProtectedJournalNamesV1};
+pub(crate) use protected_storage::{
+    ProtectedWriterNameWitness, ProtectedWriterOpenOriginalsV1, ReadOnlyJournalNameWitness,
+    ReadOnlyJournalOpenOriginalsV1, ReadOnlyProtectedJournal,
+};
+pub use runtime_deployment_post::{
+    RuntimeDeploymentJournalPostFailureV1, RuntimeDeploymentJournalPostOriginalV1,
 };
 
 /// Grants scoped access to one closed authority namespace in a protected journal.
@@ -958,29 +850,10 @@ enum RootOwnerEdge {
 enum PreflightTransactionViewV1<'recipes> {
     Ordinary(&'recipes [JournalTransaction]),
     #[cfg(target_os = "linux")]
-    CacheQ04ReadOnlyBase {
-        hold: &'recipes Journal,
-        transactions: &'recipes [JournalTransaction; 0],
-    },
-    #[cfg(target_os = "linux")]
-    RootQ04Capacity(&'recipes [JournalTransaction]),
-    #[cfg(target_os = "linux")]
-    RootQ04 {
-        history: &'recipes crate::policy_compiler::create_q04::Q04RootAuthorityHistoryV1,
-        first: usize,
-        end: usize,
-    },
-    #[cfg(target_os = "linux")]
     ControllerQ04(&'recipes [ControllerQ04TransitionV1<'recipes>]),
     #[cfg(target_os = "linux")]
     SourceQ04 {
         recipes: &'recipes SourceQ04TransactionRecipesV1<'recipes>,
-        first: usize,
-        end: usize,
-    },
-    #[cfg(target_os = "linux")]
-    CacheQ04 {
-        recipes: &'recipes CacheQ04TransactionRecipesV1<'recipes>,
         first: usize,
         end: usize,
     },
@@ -1003,8 +876,6 @@ enum Q04JournalTransitionV1<
     'cache_invocation,
     'cache_profile,
     'cache_cut,
-    'root_input,
-    'root_startup,
 > {
     Controller(
         &'borrow ControllerQ04TransitionV1<'recipe_cut>,
@@ -1027,7 +898,7 @@ enum Q04JournalTransitionV1<
             >,
         >,
         Option<
-            &'borrow crate::cache_residency::OriginalQ04CacheClearanceLoanV1<
+            &'borrow crate::cache_programmes::OriginalQ04CacheClearanceLoanV1<
                 'cache_loan,
                 'cache_owner,
                 'cache_invocation,
@@ -1036,30 +907,6 @@ enum Q04JournalTransitionV1<
             >,
         >,
     ),
-    Cache(
-        &'borrow CacheQ04TransactionRecipesV1<'recipe_cut>,
-        usize,
-        Option<
-            &'borrow crate::policy_compiler::create_q04::OriginalQ04RootCacheLoanV1<
-                'root_invocation,
-                'root_profile,
-                'root_cut,
-            >,
-        >,
-    ),
-    Root(
-        &'borrow crate::policy_compiler::create_q04::Q04RootAuthorityHistoryV1,
-        usize,
-        Option<
-            &'borrow crate::policy_compiler::create_q04::RootOriginalInputLoanV1<
-                'root_input,
-                'root_startup,
-            >,
-        >,
-    ),
-    // Capacity permits only the nonissuing preflight engine. Actual commit
-    // rejects this position even if its predicted bytes are canonical.
-    RootCapacity(&'borrow JournalTransaction),
 }
 
 impl PreflightTransactionViewV1<'_> {
@@ -1067,17 +914,9 @@ impl PreflightTransactionViewV1<'_> {
         match self {
             Self::Ordinary(transactions) => transactions.len(),
             #[cfg(target_os = "linux")]
-            Self::CacheQ04ReadOnlyBase { transactions, .. } => transactions.len(),
-            #[cfg(target_os = "linux")]
-            Self::RootQ04Capacity(transactions) => transactions.len(),
-            #[cfg(target_os = "linux")]
-            Self::RootQ04 { first, end, .. } => end - first,
-            #[cfg(target_os = "linux")]
             Self::ControllerQ04(transitions) => transitions.len(),
             #[cfg(target_os = "linux")]
             Self::SourceQ04 { first, end, .. } => end - first,
-            #[cfg(target_os = "linux")]
-            Self::CacheQ04 { first, end, .. } => end - first,
         }
     }
 
@@ -1087,17 +926,9 @@ impl PreflightTransactionViewV1<'_> {
         match self {
             Self::Ordinary(transactions) => &transactions[index],
             #[cfg(target_os = "linux")]
-            Self::CacheQ04ReadOnlyBase { transactions, .. } => &transactions[index],
-            #[cfg(target_os = "linux")]
-            Self::RootQ04Capacity(transactions) => &transactions[index],
-            #[cfg(target_os = "linux")]
-            Self::RootQ04 { history, first, .. } => &history.transactions()[first + index],
-            #[cfg(target_os = "linux")]
             Self::ControllerQ04(transitions) => transitions[index].transaction(),
             #[cfg(target_os = "linux")]
             Self::SourceQ04 { recipes, first, .. } => &recipes.transactions()[first + index],
-            #[cfg(target_os = "linux")]
-            Self::CacheQ04 { recipes, first, .. } => &recipes.transactions()[first + index],
         }
     }
 
@@ -1105,21 +936,19 @@ impl PreflightTransactionViewV1<'_> {
     fn q04_transition(
         &self,
         index: usize,
-    ) -> Option<Q04JournalTransitionV1<'_, '_, '_, '_, '_, '_, '_, '_, '_, '_, '_, '_>> {
+    ) -> Option<Q04JournalTransitionV1<'_, '_, '_, '_, '_, '_, '_, '_, '_, '_>> {
         match self {
             Self::Ordinary(_) => None,
-            Self::CacheQ04ReadOnlyBase { .. } => None,
-            Self::RootQ04Capacity(transactions) => Some(Q04JournalTransitionV1::RootCapacity(&transactions[index])),
-            Self::RootQ04 { history, first, .. } => Some(Q04JournalTransitionV1::Root(history, first + index, None)),
-            Self::ControllerQ04(transitions) => {
-                Some(Q04JournalTransitionV1::Controller(&transitions[index], None))
-            }
-            Self::SourceQ04 { recipes, first, .. } => {
-                Some(Q04JournalTransitionV1::Source(recipes, first + index, None, None))
-            }
-            Self::CacheQ04 { recipes, first, .. } => {
-                Some(Q04JournalTransitionV1::Cache(recipes, first + index, None))
-            }
+            Self::ControllerQ04(transitions) => Some(Q04JournalTransitionV1::Controller(
+                &transitions[index],
+                None,
+            )),
+            Self::SourceQ04 { recipes, first, .. } => Some(Q04JournalTransitionV1::Source(
+                recipes,
+                first + index,
+                None,
+                None,
+            )),
         }
     }
 }
@@ -1171,12 +1000,6 @@ pub struct ProtectedJournalPreflight {
     transaction_digest: [u8; 32],
 }
 
-
-
-
-
-
-
 struct JournalAuthorityInstance;
 
 /// Holds a comparison-only weak stamp of an already-owned Journal instance.
@@ -1198,7 +1021,10 @@ impl Journal {
     /// Compares a stamp to this same retained writer without native IO.
     #[doc(hidden)]
     #[must_use]
-    pub fn matches_authority_comparison_stamp_v1(&self, stamp: &JournalAuthorityComparisonStampV1) -> bool {
+    pub fn matches_authority_comparison_stamp_v1(
+        &self,
+        stamp: &JournalAuthorityComparisonStampV1,
+    ) -> bool {
         std::sync::Weak::ptr_eq(&Arc::downgrade(&self.authority_instance), &stamp.0)
     }
 }
@@ -1221,7 +1047,6 @@ impl Journal {
             Ok(())
         }
     }
-
 
     /// Claims this protected journal for one closed authority namespace.
     ///
@@ -1298,10 +1123,17 @@ impl Journal {
         if has_foreign_history
             || has_foreign_state
             || !(match captures {
-                Some(originals) => originals[1].all_owned_by_once_v1(self.native.state(), namespace),
-                None => aos_sandbox_protocol::domain_ledger::capacity_family::
-                    all_reservations_owned_by(self.native.state(), namespace),
-            }.map_err(JournalError::from)?)
+                Some(originals) => {
+                    originals[1].all_owned_by_once_v1(self.native.state(), namespace)
+                }
+                None => {
+                    aos_sandbox_protocol::domain_ledger::capacity_family::all_reservations_owned_by(
+                        self.native.state(),
+                        namespace,
+                    )
+                }
+            }
+            .map_err(JournalError::from)?)
         {
             return Err(JournalError::ForeignAuthorityNamespace);
         }
@@ -1312,9 +1144,6 @@ impl Journal {
             scope: ProtectedAuthorityScope::SingleNamespace,
         })
     }
-
-
-
 
     /// Claims one closed cross-namespace capacity-reserved transaction protocol.
     ///
@@ -1347,7 +1176,6 @@ impl Journal {
             scope: ProtectedAuthorityScope::CapacityReservation(purpose),
         })
     }
-
 
     /// Requires retained protected storage provenance before resolving authority.
     pub(crate) fn ensure_protected_authority(&self) -> Result<(), JournalError> {
@@ -1420,7 +1248,9 @@ impl Journal {
         &self,
         metadata: &mut Option<std::io::Result<std::fs::Metadata>>,
     ) -> Result<ProtectedJournalPreopenReplayExtentV1, JournalError> {
-        if metadata.is_some() { return Err(JournalError::ProtectedBoundary); }
+        if metadata.is_some() {
+            return Err(JournalError::ProtectedBoundary);
+        }
         self.ensure_protected_authority()?;
         *metadata = Some(self.native.metadata());
         let physical = match metadata.as_ref() {
@@ -1461,21 +1291,29 @@ impl Journal {
         self.ensure_healthy()?;
         let mut retained_bytes = 0_usize;
         for ((_, key), value) in self.native.state() {
-            retained_bytes = retained_bytes.checked_add(key.capacity())
+            retained_bytes = retained_bytes
+                .checked_add(key.capacity())
                 .and_then(|bytes| bytes.checked_add(value.capacity()))
                 .ok_or(JournalError::JournalTooLarge)?;
         }
         for key in self.native.idempotency().keys() {
-            retained_bytes = retained_bytes.checked_add(key.capacity())
+            retained_bytes = retained_bytes
+                .checked_add(key.capacity())
                 .ok_or(JournalError::JournalTooLarge)?;
         }
-        let cells = self.native.state().len().checked_add(self.native.idempotency().len())
+        let cells = self
+            .native
+            .state()
+            .len()
+            .checked_add(self.native.idempotency().len())
             .and_then(|count| count.checked_add(self.native.transaction_ids().len()))
             .and_then(|count| count.checked_add(self.native.committed_namespaces().len()))
             .ok_or(JournalError::JournalTooLarge)?;
         let native_bytes = match metadata {
             Some(destination) => {
-                if destination.is_some() { return Err(JournalError::ProtectedBoundary); }
+                if destination.is_some() {
+                    return Err(JournalError::ProtectedBoundary);
+                }
                 *destination = Some(self.held_native_receiving_metadata_v1().0);
                 match destination.as_ref() {
                     Some(Ok(metadata)) => metadata.len(),
@@ -1501,21 +1339,30 @@ impl Journal {
     pub(crate) fn first_global_native_append_bound_v1(
         largest_phase_payload: usize,
     ) -> Result<u64, JournalError> {
-        let key = aos_sandbox_ledger_replay::replay::controller_source_genesis::ACCEPTANCE_PREFIX.len()
+        let key = aos_sandbox_ledger_replay::replay::controller_source_genesis::ACCEPTANCE_PREFIX
+            .len()
             .checked_add(std::mem::size_of::<aos_sandbox_model::ProjectId>())
             .ok_or(JournalError::JournalTooLarge)?;
         let value = largest_phase_payload.max(945);
-        let record = EncodedFrameLayout::new(EncodedRecordLayout::new(key, Some(value))?.payload_bytes)?;
+        let record =
+            EncodedFrameLayout::new(EncodedRecordLayout::new(key, Some(value))?.payload_bytes)?;
         let begin = EncodedFrameLayout::new(std::mem::size_of::<u32>())?;
         let commit = EncodedFrameLayout::new(COMMIT_PAYLOAD_BYTES)?;
-        [1_usize, 4, 1, 2, 1, 3, 2].into_iter().try_fold(0_u64, |bytes, members| {
-            let transaction = record.frame_bytes.checked_mul(members)
-                .and_then(|bytes| bytes.checked_add(begin.frame_bytes))
-                .and_then(|bytes| bytes.checked_add(commit.frame_bytes))
-                .ok_or(JournalError::JournalTooLarge)?;
-            bytes.checked_add(u64::try_from(transaction).map_err(|_| JournalError::JournalTooLarge)?)
-                .ok_or(JournalError::JournalTooLarge)
-        })
+        [1_usize, 4, 1, 2, 1, 3, 2]
+            .into_iter()
+            .try_fold(0_u64, |bytes, members| {
+                let transaction = record
+                    .frame_bytes
+                    .checked_mul(members)
+                    .and_then(|bytes| bytes.checked_add(begin.frame_bytes))
+                    .and_then(|bytes| bytes.checked_add(commit.frame_bytes))
+                    .ok_or(JournalError::JournalTooLarge)?;
+                bytes
+                    .checked_add(
+                        u64::try_from(transaction).map_err(|_| JournalError::JournalTooLarge)?,
+                    )
+                    .ok_or(JournalError::JournalTooLarge)
+            })
     }
 
     /// Reports whether replay produced no materialized record in any namespace.
@@ -1579,24 +1426,35 @@ impl Journal {
         pending_effect_value_ceiling: usize,
         complete_effect_value_ceiling: usize,
     ) -> Result<[usize; 3], JournalError> {
-        if traffic_key.len() != 9 || fence_key.len() != 24
+        if traffic_key.len() != 9
+            || fence_key.len() != 24
             || current_effect_key.len() != 24
-            || traffic_key == fence_key || fence_key == current_effect_key
+            || traffic_key == fence_key
+            || fence_key == current_effect_key
             || traffic_key == current_effect_key
         {
             return Err(JournalError::ProtectedBoundary);
         }
-        let keys = [Some(traffic_key), Some(fence_key), Some(current_effect_key), None];
+        let keys = [
+            Some(traffic_key),
+            Some(fence_key),
+            Some(current_effect_key),
+            None,
+        ];
         for key in keys.into_iter().flatten() {
-            if !self.native.state().iter().any(|((namespace, actual), _)|
-                *namespace == RecordNamespace::BrokerSessionTraffic && actual.as_slice() == key)
-            {
+            if !self.native.state().iter().any(|((namespace, actual), _)| {
+                *namespace == RecordNamespace::BrokerSessionTraffic && actual.as_slice() == key
+            }) {
                 return Err(JournalError::ProtectedBoundary);
             }
         }
 
         let traffic_overhead = EncodedRecordLayout::new(traffic_key.len(), Some(0))?.payload_bytes;
-        let traffic_bytes = self.native.limits().maximum_record_bytes.checked_sub(traffic_overhead)
+        let traffic_bytes = self
+            .native
+            .limits()
+            .maximum_record_bytes
+            .checked_sub(traffic_overhead)
             .ok_or(JournalError::LimitExceeded("record bytes"))?;
         let terminal = [
             OnlineNixExtentV1::put(0, traffic_key.len(), traffic_bytes),
@@ -1613,9 +1471,7 @@ impl Journal {
             OnlineNixExtentV1::put(0, traffic_key.len(), traffic_bytes),
             OnlineNixExtentV1::put(3, 24, complete_effect_value_ceiling),
         ];
-        let widths = self.compare_online_nix_extents_v1(
-            keys, &[&terminal, &request, &query],
-        )?;
+        let widths = self.compare_online_nix_extents_v1(keys, &[&terminal, &request, &query])?;
         Ok([widths[0], widths[1], widths[2]])
     }
 
@@ -1640,30 +1496,46 @@ impl Journal {
         intent_value_bytes: usize,
         prepared_main_value_bytes: [usize; 3],
     ) -> Result<(), JournalError> {
-        if checkpoint_key != b"checkpoint" || intent_key != b"intent"
-            || transaction_key != b"transaction" || self.native.state().len() != 1
-            || !self.native.state().iter().any(|((namespace, key), value)|
+        if checkpoint_key != b"checkpoint"
+            || intent_key != b"intent"
+            || transaction_key != b"transaction"
+            || self.native.state().len() != 1
+            || !self.native.state().iter().any(|((namespace, key), value)| {
                 *namespace == RecordNamespace::BrokerSessionTraffic
                     && key.as_slice() == checkpoint_key
-                    && value.len() == checkpoint_value_bytes)
+                    && value.len() == checkpoint_value_bytes
+            })
         {
             return Err(JournalError::ProtectedBoundary);
         }
-        let keys = [Some(checkpoint_key), Some(intent_key), Some(transaction_key), None];
-        let preparations = prepared_main_value_bytes.map(|bytes| [
-            OnlineNixExtentV1::put(1, intent_key.len(), intent_value_bytes),
-            OnlineNixExtentV1::put(2, transaction_key.len(), bytes),
-        ]);
+        let keys = [
+            Some(checkpoint_key),
+            Some(intent_key),
+            Some(transaction_key),
+            None,
+        ];
+        let preparations = prepared_main_value_bytes.map(|bytes| {
+            [
+                OnlineNixExtentV1::put(1, intent_key.len(), intent_value_bytes),
+                OnlineNixExtentV1::put(2, transaction_key.len(), bytes),
+            ]
+        });
         let finalize = [
             OnlineNixExtentV1::put(0, checkpoint_key.len(), checkpoint_value_bytes),
             OnlineNixExtentV1::delete(1, intent_key.len()),
             OnlineNixExtentV1::delete(2, transaction_key.len()),
         ];
-        self.compare_online_nix_extents_v1(keys, &[
-            &preparations[0], &finalize,
-            &preparations[1], &finalize,
-            &preparations[2], &finalize,
-        ])?;
+        self.compare_online_nix_extents_v1(
+            keys,
+            &[
+                &preparations[0],
+                &finalize,
+                &preparations[1],
+                &finalize,
+                &preparations[2],
+                &finalize,
+            ],
+        )?;
         Ok(())
     }
 
@@ -1677,11 +1549,18 @@ impl Journal {
         self.ensure_healthy()?;
         self.require_protected_names_current()?;
         validate_limits(self.native.limits())?;
-        if phases.is_empty() || phases.len() > 6
-            || self.native.committed_namespaces().iter().any(|namespace|
-                *namespace != RecordNamespace::BrokerSessionTraffic)
-            || self.native.state().keys().any(|(namespace, _)|
-                *namespace != RecordNamespace::BrokerSessionTraffic)
+        if phases.is_empty()
+            || phases.len() > 6
+            || self
+                .native
+                .committed_namespaces()
+                .iter()
+                .any(|namespace| *namespace != RecordNamespace::BrokerSessionTraffic)
+            || self
+                .native
+                .state()
+                .keys()
+                .any(|(namespace, _)| *namespace != RecordNamespace::BrokerSessionTraffic)
             || !self.native.idempotency().is_empty()
         {
             return Err(JournalError::ForeignAuthorityNamespace);
@@ -1690,7 +1569,8 @@ impl Journal {
         let mut values = [None; 4];
         let mut materialized = 0_usize;
         for ((_, key), value) in self.native.state() {
-            materialized = materialized.checked_add(key.len())
+            materialized = materialized
+                .checked_add(key.len())
                 .and_then(|bytes| bytes.checked_add(value.len()))
                 .ok_or(JournalError::LimitExceeded("materialized state bytes"))?;
             for (index, selected) in keys.iter().enumerate() {
@@ -1708,7 +1588,9 @@ impl Journal {
         let mut next = self.native.next_sequence();
         let mut committed = self.native.committed_transactions();
         let mut widths = [0_usize; 6];
-        if next == 0 || next == u64::MAX || length > self.native.limits().maximum_journal_bytes
+        if next == 0
+            || next == u64::MAX
+            || length > self.native.limits().maximum_journal_bytes
             || materialized > self.native.limits().maximum_materialized_bytes
             || entries > self.native.limits().maximum_materialized_records
         {
@@ -1716,18 +1598,22 @@ impl Journal {
         }
 
         for (phase, records) in phases.iter().enumerate() {
-            if records.is_empty() || records.len() > self.native.limits().maximum_records_per_transaction {
+            if records.is_empty()
+                || records.len() > self.native.limits().maximum_records_per_transaction
+            {
                 return Err(JournalError::LimitExceeded("transaction record count"));
             }
             let _ = u32::try_from(records.len())
                 .map_err(|_| JournalError::LimitExceeded("transaction record count"))?;
             let mut changed = [false; 4];
             let mut payload = 0_usize;
-            let mut append = EncodedFrameLayout::new(4)?.frame_bytes
+            let mut append = EncodedFrameLayout::new(4)?
+                .frame_bytes
                 .checked_add(EncodedFrameLayout::new(COMMIT_PAYLOAD_BYTES)?.frame_bytes)
                 .ok_or(JournalError::JournalTooLarge)?;
             for record in *records {
-                if record.slot >= values.len() || changed[record.slot]
+                if record.slot >= values.len()
+                    || changed[record.slot]
                     || keys[record.slot].is_some_and(|key| key.len() != record.key_bytes)
                 {
                     return Err(JournalError::ProtectedBoundary);
@@ -1739,26 +1625,33 @@ impl Journal {
                 {
                     return Err(JournalError::LimitExceeded("record bytes"));
                 }
-                payload = payload.checked_add(layout.payload_bytes)
+                payload = payload
+                    .checked_add(layout.payload_bytes)
                     .filter(|bytes| *bytes <= self.native.limits().maximum_transaction_bytes)
                     .ok_or(JournalError::LimitExceeded("transaction bytes"))?;
-                append = append.checked_add(EncodedFrameLayout::new(layout.payload_bytes)?.frame_bytes)
+                append = append
+                    .checked_add(EncodedFrameLayout::new(layout.payload_bytes)?.frame_bytes)
                     .ok_or(JournalError::JournalTooLarge)?;
 
                 if let Some(old) = values[record.slot] {
-                    materialized = materialized.checked_sub(record.key_bytes)
+                    materialized = materialized
+                        .checked_sub(record.key_bytes)
                         .and_then(|bytes| bytes.checked_sub(old))
                         .ok_or(JournalError::ProtectedBoundary)?;
                 }
                 match record.value_bytes {
                     Some(bytes) => {
                         if values[record.slot].is_none() {
-                            entries = entries.checked_add(1)
+                            entries = entries
+                                .checked_add(1)
                                 .ok_or(JournalError::LimitExceeded("materialized record count"))?;
                         }
-                        materialized = materialized.checked_add(record.key_bytes)
+                        materialized = materialized
+                            .checked_add(record.key_bytes)
                             .and_then(|total| total.checked_add(bytes))
-                            .filter(|total| *total <= self.native.limits().maximum_materialized_bytes)
+                            .filter(|total| {
+                                *total <= self.native.limits().maximum_materialized_bytes
+                            })
                             .ok_or(JournalError::LimitExceeded("materialized state bytes"))?;
                     }
                     None if values[record.slot].is_some() => entries -= 1,
@@ -1770,14 +1663,20 @@ impl Journal {
                 }
             }
 
-            committed = committed.checked_add(1)
+            committed = committed
+                .checked_add(1)
                 .filter(|count| *count <= self.native.limits().maximum_transactions)
                 .ok_or(JournalError::LimitExceeded("committed transaction count"))?;
-            let frames = u64::try_from(records.len()).ok().and_then(|count| count.checked_add(2))
+            let frames = u64::try_from(records.len())
+                .ok()
+                .and_then(|count| count.checked_add(2))
                 .ok_or(JournalError::SequenceExhausted)?;
-            next = next.checked_add(frames).filter(|next| *next != u64::MAX)
+            next = next
+                .checked_add(frames)
+                .filter(|next| *next != u64::MAX)
                 .ok_or(JournalError::SequenceExhausted)?;
-            length = length.checked_add(u64::try_from(append).map_err(|_| JournalError::JournalTooLarge)?)
+            length = length
+                .checked_add(u64::try_from(append).map_err(|_| JournalError::JournalTooLarge)?)
                 .filter(|bytes| *bytes <= self.native.limits().maximum_journal_bytes)
                 .ok_or(JournalError::JournalTooLarge)?;
             widths[phase] = JournalTransaction::maximum_prepared_bytes_v1(JournalLimits {
@@ -1804,7 +1703,8 @@ impl Journal {
         key: &IdempotencyKey,
         request_digest: [u8; 32],
     ) -> IdempotencyOutcome {
-        self.historical_read_view_v1().check_idempotency(key, request_digest)
+        self.historical_read_view_v1()
+            .check_idempotency(key, request_digest)
     }
 
     /// Returns the already-decoded selected genesis and successor family DATA.
@@ -1855,9 +1755,12 @@ impl Journal {
     /// whose original native history must remain intact.
     pub fn compact(&mut self) -> Result<(), JournalError> {
         self.ensure_healthy()?;
-        if self.native.state().keys().any(|(namespace, _)| {
-            *namespace == RecordNamespace::CreateStorageHistory
-        }) {
+        if self
+            .native
+            .state()
+            .keys()
+            .any(|(namespace, _)| *namespace == RecordNamespace::CreateStorageHistory)
+        {
             return Err(JournalError::ProtectedBoundary);
         }
         if aos_sandbox_ledger_replay::git_coverage_prefix::has_durable_owner_fence_v1(
@@ -1875,13 +1778,18 @@ impl Journal {
             // released row would erase that relation; no retirement is implied.
             return Err(JournalError::ProtectedBoundary);
         }
-        if self.native.state().keys().any(|(namespace, _)| {
-            *namespace == RecordNamespace::NixOfflineProvisioning
-        }) {
+        if self
+            .native
+            .state()
+            .keys()
+            .any(|(namespace, _)| *namespace == RecordNamespace::NixOfflineProvisioning)
+        {
             return Err(JournalError::ProtectedBoundary);
         }
         if self.source_original_replay.has_dependencies()
-            || aos_sandbox_ledger_replay::replay::source_original::cache::has_original_rows(self.native.state())
+            || aos_sandbox_ledger_replay::replay::source_original::cache::has_original_rows(
+                self.native.state(),
+            )
             || self.native.state().keys().any(|(namespace, key)| {
                 *namespace == RecordNamespace::SourceProviderAuthority
                     && aos_sandbox_ledger_replay::replay::challenge::is_challenge_key(key)
@@ -1904,13 +1812,19 @@ impl Journal {
         source_tree_genesis::require_no_compaction(self.native.state())?;
         source_tree_successor::require_no_compaction(self.native.state())?;
         source_project_admission_challenge::require_no_compaction(self.native.state())?;
-        aos_sandbox_ledger_replay::replay::controller_source_genesis::require_no_compaction(self.native.state()).map_err(crate::journal::JournalError::from)?;
+        aos_sandbox_ledger_replay::replay::controller_source_genesis::require_no_compaction(
+            self.native.state(),
+        )
+        .map_err(crate::journal::JournalError::from)?;
         controller_source_successor_issuance::require_no_compaction(self.native.state())?;
         // The bank retains exact native transaction membership and uncertain
         // claims. Generic state-only compaction is not its recovery barrier.
-        if self.native.state().keys().any(|(namespace, _)| {
-            *namespace == RecordNamespace::ControllerResourceReservation
-        }) {
+        if self
+            .native
+            .state()
+            .keys()
+            .any(|(namespace, _)| *namespace == RecordNamespace::ControllerResourceReservation)
+        {
             return Err(JournalError::ProtectedBoundary);
         }
         cache_policy_hold::require_valid_compaction(self)?;
@@ -1921,27 +1835,33 @@ impl Journal {
         source_domain_policy_hold::require_no_compaction(self.native.state())?;
         let _cache_policy_guard = cache_policy_hold::mutation_guard(self)?;
         let result = (|| {
-        if let Err(error) = self.compact_inner() {
-            self.native.poison();
-            return Err(error);
-        }
-        root_local_recovery::pending(self.native.state()).inspect_err(|_| self.native.poison())?;
-        root_original_native::pending(self.native.state(), self.native.limits())
+            if let Err(error) = self.compact_inner() {
+                self.native.poison();
+                return Err(error);
+            }
+            root_local_recovery::pending(self.native.state())
+                .inspect_err(|_| self.native.poison())?;
+            root_original_native::pending(self.native.state(), self.native.limits())
+                .inspect_err(|_| self.native.poison())?;
+            root_original_inventory::validate_rejoined_capacity(
+                self.native.state(),
+                self.native.materialized_bytes(),
+                self.native.metadata()?.len(),
+                self.native.committed_transactions(),
+                self.native.limits(),
+                self.native.next_sequence(),
+            )
             .inspect_err(|_| self.native.poison())?;
-        root_original_inventory::validate_rejoined_capacity(
-            self.native.state(),
-            self.native.materialized_bytes(),
-            self.native.metadata()?.len(),
-            self.native.committed_transactions(),
-            self.native.limits(),
-            self.native.next_sequence(),
-        ).inspect_err(|_| self.native.poison())?;
-        Ok(())
+            Ok(())
         })();
         #[cfg(target_os = "linux")]
-        { self.finish_selected_compaction_v1(result) }
+        {
+            self.finish_selected_compaction_v1(result)
+        }
         #[cfg(not(target_os = "linux"))]
-        { result }
+        {
+            result
+        }
     }
 
     fn compact_inner(&mut self) -> Result<(), JournalError> {
@@ -2068,10 +1988,11 @@ impl ProtectedJournalAuthority<'_> {
         self.journal.validate_held_root_owned_at(directory, name)
     }
 
-
-
     fn validate_fixed_storage(&self, directory: &str, name: &str) -> Result<(), JournalError> {
-        let retained = self.journal.native.protected_view()
+        let retained = self
+            .journal
+            .native
+            .protected_view()
             .ok_or(JournalError::ProtectedBoundary)?;
         if retained.expected_uid() != 0 || retained.name() != name {
             return Err(JournalError::ProtectedBoundary);
@@ -2083,21 +2004,6 @@ impl ProtectedJournalAuthority<'_> {
         retained.require_opened_directory::<JournalError>(&fixed)?;
         Ok(())
     }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
     /// Returns the current authority value for a logical key.
     ///
@@ -2454,15 +2360,14 @@ impl ProtectedJournalAuthority<'_> {
         {
             return Err(JournalError::ProtectedBoundary);
         }
-        self.journal
-            .commit_in_scope(
-                transaction,
-                AppendScope {
-                    allow_host_fence_acquisition: true,
-                    ..AppendScope::default()
-                },
-                CacheMutationGateV1::Ordinary,
-            )
+        self.journal.commit_in_scope(
+            transaction,
+            AppendScope {
+                allow_host_fence_acquisition: true,
+                ..AppendScope::default()
+            },
+            CacheMutationGateV1::Ordinary,
+        )
     }
 
     #[cfg(test)]
@@ -2475,15 +2380,14 @@ impl ProtectedJournalAuthority<'_> {
         {
             return Err(JournalError::ProtectedBoundary);
         }
-        self.journal
-            .commit_in_scope(
-                transaction,
-                AppendScope {
-                    allow_host_fence_acquisition: true,
-                    ..AppendScope::default()
-                },
-                CacheMutationGateV1::Ordinary,
-            )
+        self.journal.commit_in_scope(
+            transaction,
+            AppendScope {
+                allow_host_fence_acquisition: true,
+                ..AppendScope::default()
+            },
+            CacheMutationGateV1::Ordinary,
+        )
     }
 
     /// Acquires the nonauthorizing HostState half of a retained Effect fence.
@@ -2528,15 +2432,14 @@ impl ProtectedJournalAuthority<'_> {
         if !exact_owner || measured_cut != fence.pre_hold_cut {
             return Err(JournalError::ProtectedBoundary);
         }
-        self.journal
-            .commit_in_scope(
-                transaction,
-                AppendScope {
-                    allow_host_currentness_fence_acquisition: true,
-                    ..AppendScope::default()
-                },
-                CacheMutationGateV1::Ordinary,
-            )
+        self.journal.commit_in_scope(
+            transaction,
+            AppendScope {
+                allow_host_currentness_fence_acquisition: true,
+                ..AppendScope::default()
+            },
+            CacheMutationGateV1::Ordinary,
+        )
     }
 
     #[cfg(test)]
@@ -2549,15 +2452,14 @@ impl ProtectedJournalAuthority<'_> {
         {
             return Err(JournalError::ProtectedBoundary);
         }
-        self.journal
-            .commit_in_scope(
-                transaction,
-                AppendScope {
-                    allow_host_currentness_fence_acquisition: true,
-                    ..AppendScope::default()
-                },
-                CacheMutationGateV1::Ordinary,
-            )
+        self.journal.commit_in_scope(
+            transaction,
+            AppendScope {
+                allow_host_currentness_fence_acquisition: true,
+                ..AppendScope::default()
+            },
+            CacheMutationGateV1::Ordinary,
+        )
     }
 
     /// Appends one structurally exact, nonauthorizing admission-time witness.
@@ -2631,15 +2533,14 @@ impl ProtectedJournalAuthority<'_> {
         if !witness.matches_stage(marker, preliminary, witness.store_binding) {
             return Err(JournalError::ProtectedBoundary);
         }
-        self.journal
-            .commit_in_scope(
-                transaction,
-                AppendScope {
-                    allow_host_settlement_admission_append: true,
-                    ..AppendScope::default()
-                },
-                CacheMutationGateV1::Ordinary,
-            )
+        self.journal.commit_in_scope(
+            transaction,
+            AppendScope {
+                allow_host_settlement_admission_append: true,
+                ..AppendScope::default()
+            },
+            CacheMutationGateV1::Ordinary,
+        )
     }
 
     #[cfg(test)]
@@ -2652,15 +2553,14 @@ impl ProtectedJournalAuthority<'_> {
         {
             return Err(JournalError::ProtectedBoundary);
         }
-        self.journal
-            .commit_in_scope(
-                transaction,
-                AppendScope {
-                    allow_host_settlement_admission_append: true,
-                    ..AppendScope::default()
-                },
-                CacheMutationGateV1::Ordinary,
-            )
+        self.journal.commit_in_scope(
+            transaction,
+            AppendScope {
+                allow_host_settlement_admission_append: true,
+                ..AppendScope::default()
+            },
+            CacheMutationGateV1::Ordinary,
+        )
     }
 
     /// Prepares capacity reservation bound to this protected owner namespace.
@@ -2821,8 +2721,7 @@ impl ProtectedJournalAuthority<'_> {
         {
             let (request, _admission_transaction, reservation_id) =
                 capacity_reservation::decode_reservation(value)?;
-            if key
-                != capacity_reservation::reservation_key(reservation_id).as_slice()
+            if key != capacity_reservation::reservation_key(reservation_id).as_slice()
                 || request.purpose != purpose
                 || request.owner_namespace != self.namespace
                 || !retained.insert(reservation_id)
@@ -3123,7 +3022,9 @@ impl ProtectedJournalAuthority<'_> {
 }
 
 fn authority_preflight_digest(transactions: &[JournalTransaction]) -> [u8; 32] {
-    aos_sandbox_protocol::domain_ledger::transaction::transaction_preflight_comparison_digest_v1(transactions)
+    aos_sandbox_protocol::domain_ledger::transaction::transaction_preflight_comparison_digest_v1(
+        transactions,
+    )
 }
 
 pub(crate) fn source_native_family_dynamic_demand_v1(
@@ -3134,9 +3035,11 @@ pub(crate) fn source_native_family_dynamic_demand_v1(
 }
 
 pub(crate) fn source_native_family_fixed_footprint_v1() -> Option<(usize, usize)> {
-    let (state_bytes, state_cells) = source_tree_successor::SourceReplayFamilyOriginalsV1::boxed_footprint_v1()?;
-    let (transition_bytes, transition_cells) = source_tree_successor::SourceReplayTransactionOriginalsV1::boxed_footprint_v1()?;
-    Some((state_bytes.checked_add(transition_bytes)?, state_cells.checked_add(transition_cells)?))
+    aos_sandbox_ledger_replay::geometry::source_family_boxed_footprint_data_v1::<
+        JournalError,
+        crate::hierarchy::protected_journal::HierarchyProtectedJournalErrorV1,
+        crate::hierarchy::genesis_profile::SourceGenesisErrorV1,
+    >()
 }
 
 // Shared logical representation arithmetic only. The original Release caller
@@ -3180,27 +3083,43 @@ impl DeploymentHistoryObserverV1<'_, '_> {
     ) -> Result<(), JournalError> {
         match self {
             Self::GitCoverage(history) => history.observe(
-                transaction, begin_sequence, commit_sequence, begin_offset, end_offset,
+                transaction,
+                begin_sequence,
+                commit_sequence,
+                begin_offset,
+                end_offset,
             ),
             Self::Main(history) => history.observe(transaction, begin_sequence, commit_sequence),
             Self::Sidecar(history) => history.observe(transaction, begin_sequence, commit_sequence),
             Self::Storage(history) => history.observe(
-                transaction, begin_sequence, commit_sequence, begin_offset, end_offset,
+                transaction,
+                begin_sequence,
+                commit_sequence,
+                begin_offset,
+                end_offset,
             ),
             Self::Q04(history) => history.observe(
-                transaction, begin_sequence, commit_sequence, begin_offset, end_offset,
+                transaction,
+                begin_sequence,
+                commit_sequence,
+                begin_offset,
+                end_offset,
             ),
-            Self::NixOffline(history) => history.observe(
-                transaction, begin_sequence, begin_offset, end_offset,
-            ),
-            Self::Delete(history) => history.observe(
-                transaction, commit_sequence, end_offset, native_digest,
-            ),
-            Self::DeletePending(history) => history.observe(
-                transaction, commit_sequence, end_offset, native_digest,
-            ),
+            Self::NixOffline(history) => {
+                history.observe(transaction, begin_sequence, begin_offset, end_offset)
+            }
+            Self::Delete(history) => {
+                history.observe(transaction, commit_sequence, end_offset, native_digest)
+            }
+            Self::DeletePending(history) => {
+                history.observe(transaction, commit_sequence, end_offset, native_digest)
+            }
             Self::OriginalRelease(history) => history.observe(
-                transaction, begin_sequence, commit_sequence, begin_offset, end_offset,
+                transaction,
+                begin_sequence,
+                commit_sequence,
+                begin_offset,
+                end_offset,
                 native_digest,
             ),
         }
@@ -3255,8 +3174,6 @@ pub(crate) struct OriginalReleaseControllerCutCaptureV1 {
     error_transferred: bool,
 }
 
-
-
 #[cfg(test)]
 fn validate_replayed_source_transaction(
     state: &source_tree_successor::State,
@@ -3265,7 +3182,13 @@ fn validate_replayed_source_transaction(
     retaining: bool,
     original: &mut Option<Box<source_tree_successor::SourceReplayTransactionOriginalsV1>>,
 ) -> Result<bool, JournalError> {
-    semantic_replay::validate_replayed_source_transaction(state, transaction, limits, retaining, original)
+    semantic_replay::validate_replayed_source_transaction(
+        state,
+        transaction,
+        limits,
+        retaining,
+        original,
+    )
 }
 
 // Each actual validation has a fresh pure destination. Only complete positive
@@ -3280,7 +3203,6 @@ fn validate_replayed_source_state(
 ) -> Result<(), JournalError> {
     semantic_replay::validate_replayed_source_state(state, compacted, retaining, original)
 }
-
 
 #[allow(clippy::too_many_arguments)]
 fn validate_reserved_capacity(
@@ -3298,9 +3220,15 @@ fn validate_reserved_capacity(
     };
     let deletion = CapacityDeletionSelectorDataV1::Reservation(settling_reservation);
     validate_reserved_capacity_data_v1(
-        state, prospective_materialized_bytes, records, deletion,
-        prospective_journal_bytes, prospective_transactions, limits,
-    ).map_err(JournalError::from)
+        state,
+        prospective_materialized_bytes,
+        records,
+        deletion,
+        prospective_journal_bytes,
+        prospective_transactions,
+        limits,
+    )
+    .map_err(JournalError::from)
 }
 
 fn projected_materialized_record_count(
@@ -3312,8 +3240,7 @@ fn projected_materialized_record_count(
 }
 
 fn validate_limits(limits: JournalLimits) -> Result<(), JournalError> {
-    aos_sandbox_journal::geometry::validate_native_bounds(limits.into())
-        .map_err(JournalError::from)
+    aos_sandbox_journal::geometry::validate_native_bounds(limits.into()).map_err(JournalError::from)
 }
 
 fn validate_materialized_change(
@@ -3342,8 +3269,11 @@ fn validate_idempotency_changes(
     idempotency: &BTreeMap<Vec<u8>, IdempotencyDecision>,
     records: &[JournalRecord],
 ) -> Result<(), JournalError> {
-    aos_sandbox_protocol::domain_ledger::readonly::validate_idempotency_changes(idempotency, records)
-        .map_err(project_idempotency_record_error)
+    aos_sandbox_protocol::domain_ledger::readonly::validate_idempotency_changes(
+        idempotency,
+        records,
+    )
+    .map_err(project_idempotency_record_error)
 }
 
 /// Carries only one fixed selected sizing extent, never record bytes or a key.
@@ -3355,11 +3285,19 @@ struct OnlineNixExtentV1 {
 
 impl OnlineNixExtentV1 {
     const fn put(slot: usize, key_bytes: usize, value_bytes: usize) -> Self {
-        Self { slot, key_bytes, value_bytes: Some(value_bytes) }
+        Self {
+            slot,
+            key_bytes,
+            value_bytes: Some(value_bytes),
+        }
     }
 
     const fn delete(slot: usize, key_bytes: usize) -> Self {
-        Self { slot, key_bytes, value_bytes: None }
+        Self {
+            slot,
+            key_bytes,
+            value_bytes: None,
+        }
     }
 }
 
@@ -3376,7 +3314,11 @@ pub(crate) fn q04_controller_before_rows_digest_v1(
     let desired_key = projection_key(PublicProjectionKindV1::Sandbox, sandbox);
     let effect_key = aos_sandbox_protocol::domain_ledger::operation::effect_key(operation_id, 0);
     let rows: [(RecordNamespace, &[u8], &[u8]); 3] = [
-        (RecordNamespace::Operation, operation_id.as_bytes(), operation),
+        (
+            RecordNamespace::Operation,
+            operation_id.as_bytes(),
+            operation,
+        ),
         (RecordNamespace::DesiredState, &desired_key, desired),
         (RecordNamespace::Effect, &effect_key, effect),
     ];
@@ -3467,9 +3409,8 @@ mod tests {
         HEADER_BYTES, IdempotencyKey, IdempotencyOutcome, Journal, JournalError, JournalLimits,
         JournalRecord, JournalTransaction, MAXIMUM_PROTECTED_JOURNAL_BASENAME_BYTES,
         ProtectedAncestry, ProtectedAuthorityScope, ProtectedJournalAuthority,
-        ProtectedJournalLockCustodyV1,
-        ReadOnlyJournalNameWitness, RecordNamespace, RecoveryReport, encode_transaction,
-        open_protected_file, protected_open_error,
+        ProtectedJournalLockCustodyV1, ReadOnlyJournalNameWitness, RecordNamespace, RecoveryReport,
+        encode_transaction, open_protected_file, protected_open_error,
         require_opened_directory_identity, traverse_protected_directory,
     };
 
@@ -3612,9 +3553,14 @@ mod tests {
     fn readonly_cursor_replays_the_same_real_committed_prefix_without_ofd_seek() {
         use aos_sandbox_journal::storage::ReadOnlyCapturedFileCursorV1;
 
-        let transaction = transaction(23, vec![JournalRecord::put(
-            RecordNamespace::DesiredState, b"scope".to_vec(), b"active".to_vec(),
-        )]);
+        let transaction = transaction(
+            23,
+            vec![JournalRecord::put(
+                RecordNamespace::DesiredState,
+                b"scope".to_vec(),
+                b"active".to_vec(),
+            )],
+        );
         let frames = encode_transaction(&transaction, 1).unwrap();
         let mut file = tempfile::tempfile().unwrap();
         for frame in &frames {
@@ -3625,16 +3571,24 @@ mod tests {
         let mut reader = ReadOnlyCapturedFileCursorV1::new(&file, length);
 
         let actual = super::ordinary_reread::replay_fixture_observed_v1(
-            &mut reader, JournalLimits::default(), None,
+            &mut reader,
+            JournalLimits::default(),
+            None,
             #[cfg(target_os = "linux")]
             None,
-        ).unwrap();
+        )
+        .unwrap();
 
         assert_eq!(actual.committed_transactions, 1);
         assert_eq!(actual.committed_records, 1);
         assert_eq!(actual.durable_end, length);
-        assert_eq!(actual.native.state_data_v1().get(&(RecordNamespace::DesiredState, b"scope".to_vec())),
-            Some(&b"active".to_vec()));
+        assert_eq!(
+            actual
+                .native
+                .state_data_v1()
+                .get(&(RecordNamespace::DesiredState, b"scope".to_vec())),
+            Some(&b"active".to_vec())
+        );
         assert_eq!((&file).stream_position().unwrap(), 2);
     }
 
@@ -3643,11 +3597,16 @@ mod tests {
         use aos_sandbox_journal::storage::{CapturedFileCursor, ReadOnlyCapturedFileCursorV1};
 
         let frames = aos_sandbox_journal::transaction::encode_transaction(
-            [24; 16], 1,
+            [24; 16],
+            1,
             [aos_sandbox_journal::transaction::NativeRecordRef {
-                namespace_byte: 255, key: b"key", value: None,
-            }].into_iter(),
-        ).unwrap();
+                namespace_byte: 255,
+                key: b"key",
+                value: None,
+            }]
+            .into_iter(),
+        )
+        .unwrap();
         let prefix = [&frames[0][..], &frames[1][..]].concat();
         let mut file = tempfile::tempfile().unwrap();
         file.write_all(&prefix).unwrap();
@@ -3655,20 +3614,28 @@ mod tests {
         let mut readonly = ReadOnlyCapturedFileCursorV1::new(&file, prefix.len() as u64);
 
         let ordinary = super::ordinary_reread::replay_fixture_observed_v1(
-            &mut ordinary, JournalLimits::default(), None,
+            &mut ordinary,
+            JournalLimits::default(),
+            None,
             #[cfg(target_os = "linux")]
             None,
         );
         let readonly = super::ordinary_reread::replay_fixture_observed_v1(
-            &mut readonly, JournalLimits::default(), None,
+            &mut readonly,
+            JournalLimits::default(),
+            None,
             #[cfg(target_os = "linux")]
             None,
         );
 
-        assert!(matches!(ordinary,
-            Err(JournalError::MalformedRecord("unknown record namespace"))));
-        assert!(matches!(readonly,
-            Err(JournalError::MalformedRecord("unknown record namespace"))));
+        assert!(matches!(
+            ordinary,
+            Err(JournalError::MalformedRecord("unknown record namespace"))
+        ));
+        assert!(matches!(
+            readonly,
+            Err(JournalError::MalformedRecord("unknown record namespace"))
+        ));
     }
 
     #[test]
@@ -3703,7 +3670,10 @@ mod tests {
 
             let actual = JournalError::from(codec);
 
-            assert_eq!(std::mem::discriminant(&actual), std::mem::discriminant(&expected));
+            assert_eq!(
+                std::mem::discriminant(&actual),
+                std::mem::discriminant(&expected)
+            );
             assert_eq!(actual.to_string(), expected.to_string());
         }
     }
@@ -3717,14 +3687,20 @@ mod tests {
                 RecoveryTailError::UncommittedTail,
                 JournalError::MalformedTransaction("read-only journal has an uncommitted tail"),
             ),
-            (RecoveryTailError::RetainedNativeFailure, JournalError::ProtectedBoundary),
+            (
+                RecoveryTailError::RetainedNativeFailure,
+                JournalError::ProtectedBoundary,
+            ),
         ];
         for (native, expected) in cases {
             assert_eq!(native.to_string(), expected.to_string());
 
             let actual = JournalError::from(native);
 
-            assert_eq!(std::mem::discriminant(&actual), std::mem::discriminant(&expected));
+            assert_eq!(
+                std::mem::discriminant(&actual),
+                std::mem::discriminant(&expected)
+            );
             assert_eq!(actual.to_string(), expected.to_string());
         }
 
@@ -3751,7 +3727,9 @@ mod tests {
 
         for (value, expected) in cases {
             let record = match value {
-                Some(value) => JournalRecord::put(RecordNamespace::DesiredState, b"k".to_vec(), value.to_vec()),
+                Some(value) => {
+                    JournalRecord::put(RecordNamespace::DesiredState, b"k".to_vec(), value.to_vec())
+                }
                 None => JournalRecord::delete(RecordNamespace::DesiredState, b"k".to_vec()),
             };
 
@@ -3781,9 +3759,10 @@ mod tests {
     #[test]
     fn idempotency_refusal_still_follows_materialized_map_mutation() {
         let key = b"decision".to_vec();
-        let mut state = std::collections::BTreeMap::from([
-            ((RecordNamespace::Idempotency, key.clone()), vec![0; 48]),
-        ]);
+        let mut state = std::collections::BTreeMap::from([(
+            (RecordNamespace::Idempotency, key.clone()),
+            vec![0; 48],
+        )]);
         let mut idempotency = std::collections::BTreeMap::new();
         let record = JournalRecord::delete(RecordNamespace::Idempotency, key.clone());
 
@@ -3791,7 +3770,9 @@ mod tests {
 
         assert!(matches!(
             result,
-            Err(JournalError::MalformedRecord("idempotency records cannot be deleted")),
+            Err(JournalError::MalformedRecord(
+                "idempotency records cannot be deleted"
+            )),
         ));
         assert!(!state.contains_key(&(RecordNamespace::Idempotency, key)));
         assert!(idempotency.is_empty());
@@ -3812,16 +3793,19 @@ mod tests {
 
         let actual = super::NativeGeometryBounds::from(limits);
 
-        assert_eq!(actual, super::NativeGeometryBounds {
-            maximum_journal_bytes: 101,
-            maximum_record_bytes: 102,
-            maximum_key_bytes: 103,
-            maximum_records_per_transaction: 104,
-            maximum_transaction_bytes: 105,
-            maximum_transactions: 106,
-            maximum_materialized_bytes: 107,
-            maximum_materialized_records: 108,
-        });
+        assert_eq!(
+            actual,
+            super::NativeGeometryBounds {
+                maximum_journal_bytes: 101,
+                maximum_record_bytes: 102,
+                maximum_key_bytes: 103,
+                maximum_records_per_transaction: 104,
+                maximum_transaction_bytes: 105,
+                maximum_transactions: 106,
+                maximum_materialized_bytes: 107,
+                maximum_materialized_records: 108,
+            }
+        );
     }
 
     #[test]
@@ -3830,8 +3814,14 @@ mod tests {
 
         let cases = [
             (FrameError::JournalTooLarge, JournalError::JournalTooLarge),
-            (FrameError::UnsupportedVersion(2), JournalError::UnsupportedVersion(2)),
-            (FrameError::ChecksumMismatch(17), JournalError::ChecksumMismatch(17)),
+            (
+                FrameError::UnsupportedVersion(2),
+                JournalError::UnsupportedVersion(2),
+            ),
+            (
+                FrameError::ChecksumMismatch(17),
+                JournalError::ChecksumMismatch(17),
+            ),
             (
                 FrameError::MalformedTransaction("unknown frame kind"),
                 JournalError::MalformedTransaction("unknown frame kind"),
@@ -3840,8 +3830,14 @@ mod tests {
                 FrameError::LimitExceeded("frame payload bytes"),
                 JournalError::LimitExceeded("frame payload bytes"),
             ),
-            (FrameError::MissingRetainedPayload, JournalError::ProtectedBoundary),
-            (FrameError::SequenceExhausted, JournalError::SequenceExhausted),
+            (
+                FrameError::MissingRetainedPayload,
+                JournalError::ProtectedBoundary,
+            ),
+            (
+                FrameError::SequenceExhausted,
+                JournalError::SequenceExhausted,
+            ),
         ];
 
         for (framing, expected) in cases {
@@ -3849,7 +3845,10 @@ mod tests {
 
             let actual = JournalError::from(framing);
 
-            assert_eq!(std::mem::discriminant(&actual), std::mem::discriminant(&expected));
+            assert_eq!(
+                std::mem::discriminant(&actual),
+                std::mem::discriminant(&expected)
+            );
             assert_eq!(actual.to_string(), expected.to_string());
         }
 
@@ -3879,17 +3878,9 @@ mod tests {
                 b"deleted".to_vec(),
             )],
             vec![
-                JournalRecord::put(
-                    RecordNamespace::DesiredState,
-                    b"first".to_vec(),
-                    vec![1, 2],
-                ),
+                JournalRecord::put(RecordNamespace::DesiredState, b"first".to_vec(), vec![1, 2]),
                 JournalRecord::delete(RecordNamespace::Effect, b"second".to_vec()),
-                JournalRecord::put(
-                    RecordNamespace::Operation,
-                    b"third".to_vec(),
-                    vec![],
-                ),
+                JournalRecord::put(RecordNamespace::Operation, b"third".to_vec(), vec![]),
             ],
         ];
 
@@ -3926,9 +3917,21 @@ mod tests {
         let pending = EncodedRecordLayout::new(24, Some(617)).unwrap();
         let complete = EncodedRecordLayout::new(24, Some(649)).unwrap();
         let cases = [
-            (2, traffic.payload_bytes + complete.payload_bytes, 67_242_958),
-            (3, traffic.payload_bytes + fence.payload_bytes + pending.payload_bytes, 67_243_702),
-            (2, traffic.payload_bytes + complete.payload_bytes, 67_242_958),
+            (
+                2,
+                traffic.payload_bytes + complete.payload_bytes,
+                67_242_958,
+            ),
+            (
+                3,
+                traffic.payload_bytes + fence.payload_bytes + pending.payload_bytes,
+                67_243_702,
+            ),
+            (
+                2,
+                traffic.payload_bytes + complete.payload_bytes,
+                67_242_958,
+            ),
         ];
 
         let mut main_append = 0;
@@ -3940,8 +3943,10 @@ mod tests {
                 ..JournalLimits::default()
             };
             let prepared = JournalTransaction::maximum_prepared_bytes_v1(limits).unwrap();
-            let append = payload + EncodedFrameLayout::new(4).unwrap().frame_bytes
-                + EncodedFrameLayout::new(36).unwrap().frame_bytes + records * HEADER_BYTES;
+            let append = payload
+                + EncodedFrameLayout::new(4).unwrap().frame_bytes
+                + EncodedFrameLayout::new(36).unwrap().frame_bytes
+                + records * HEADER_BYTES;
 
             assert_eq!(prepared, expected_prepared);
             main_append += append;
@@ -3949,9 +3954,15 @@ mod tests {
         assert_eq!(main_append, 201_730_550);
 
         let largest_prepared = 67_243_702;
-        let sidecar_prepare = EncodedRecordLayout::new(6, Some(324)).unwrap().payload_bytes
-            + EncodedRecordLayout::new(11, Some(largest_prepared)).unwrap().payload_bytes;
-        let sidecar_finalize = EncodedRecordLayout::new(10, Some(156)).unwrap().payload_bytes
+        let sidecar_prepare = EncodedRecordLayout::new(6, Some(324))
+            .unwrap()
+            .payload_bytes
+            + EncodedRecordLayout::new(11, Some(largest_prepared))
+                .unwrap()
+                .payload_bytes;
+        let sidecar_finalize = EncodedRecordLayout::new(10, Some(156))
+            .unwrap()
+            .payload_bytes
             + EncodedRecordLayout::new(6, None).unwrap().payload_bytes
             + EncodedRecordLayout::new(11, None).unwrap().payload_bytes;
 
@@ -4108,18 +4119,38 @@ mod tests {
         use crate::controller_service::public_projection::PublicProjectionStoreV1;
         use aos_sandbox_protocol::public_api::projection::PublicProjectionKindV1;
         let directory = TestDirectory::new("poisoned-public-observer");
-        let (mut journal, _) = Journal::open(directory.journal(), JournalLimits::default()).unwrap();
+        let (mut journal, _) =
+            Journal::open(directory.journal(), JournalLimits::default()).unwrap();
         let resource = [1; 16];
         let operation = OperationId::from_bytes([2; 16]);
-        assert!(PublicProjectionStoreV1::new(&journal).get(PublicProjectionKindV1::Sandbox, resource).unwrap().is_none());
+        assert!(
+            PublicProjectionStoreV1::new(&journal)
+                .get(PublicProjectionKindV1::Sandbox, resource)
+                .unwrap()
+                .is_none()
+        );
 
         journal.native.poison();
 
         let observer = PublicProjectionStoreV1::new(&journal);
-        assert!(observer.get(PublicProjectionKindV1::Sandbox, resource).is_err());
-        assert!(observer.list(PublicProjectionKindV1::Sandbox, aos_sandbox_model::ProjectId::from_bytes([3; 16])).is_err());
+        assert!(
+            observer
+                .get(PublicProjectionKindV1::Sandbox, resource)
+                .is_err()
+        );
+        assert!(
+            observer
+                .list(
+                    PublicProjectionKindV1::Sandbox,
+                    aos_sandbox_model::ProjectId::from_bytes([3; 16])
+                )
+                .is_err()
+        );
         assert!(observer.list_operation(operation).is_err());
-        assert!(matches!(journal.ensure_healthy(), Err(JournalError::Poisoned)));
+        assert!(matches!(
+            journal.ensure_healthy(),
+            Err(JournalError::Poisoned)
+        ));
     }
 
     #[test]
@@ -4150,14 +4181,6 @@ mod tests {
     fn transaction(id: u8, records: Vec<JournalRecord>) -> JournalTransaction {
         JournalTransaction::new([id; 16], records).unwrap()
     }
-
-
-
-
-
-
-
-
 
     #[test]
     fn namespace_codes_are_append_only_and_unknown_codes_fail_closed() {
@@ -4560,7 +4583,10 @@ mod tests {
 
         let duplicate = original.duplicate_provenance();
 
-        assert!(std::sync::Arc::ptr_eq(&original.instance, &duplicate.instance));
+        assert!(std::sync::Arc::ptr_eq(
+            &original.instance,
+            &duplicate.instance
+        ));
         assert_eq!(original.namespace, duplicate.namespace);
         assert_eq!(original.sequence, duplicate.sequence);
         assert_eq!(original.scope, duplicate.scope);
@@ -4633,7 +4659,12 @@ mod tests {
     ) -> Result<(Journal, ReadOnlyJournalNameWitness), JournalError> {
         let uid = std::fs::metadata(path)?.uid();
         let (readback, _) = Journal::open_actual_ordinary_readonly_v1(
-            path, "protected.journal", JournalLimits::default(), uid, None, true,
+            path,
+            "protected.journal",
+            JournalLimits::default(),
+            uid,
+            None,
+            true,
         )?;
         Ok(readback.into_parts())
     }
@@ -5489,12 +5520,18 @@ mod tests {
     #[test]
     fn resident_encoding_width_survives_an_externally_truncated_file() {
         let directory = TestDirectory::new("resident-receiving-width");
-        let (mut journal, _) = Journal::open(directory.journal(), JournalLimits::default()).unwrap();
-        journal.commit(&transaction(1, vec![JournalRecord::put(
-            RecordNamespace::DesiredState,
-            b"resident".to_vec(),
-            vec![0x52; 4096],
-        )])).unwrap();
+        let (mut journal, _) =
+            Journal::open(directory.journal(), JournalLimits::default()).unwrap();
+        journal
+            .commit(&transaction(
+                1,
+                vec![JournalRecord::put(
+                    RecordNamespace::DesiredState,
+                    b"resident".to_vec(),
+                    vec![0x52; 4096],
+                )],
+            ))
+            .unwrap();
         let before = journal.held_materialized_encoding_bytes_v1().unwrap();
         assert!(before >= 4096);
 
@@ -5505,13 +5542,21 @@ mod tests {
         let physical = metadata.unwrap().len();
         let resident = journal.held_materialized_encoding_bytes_v1().unwrap();
         let extent = super::protected_journal_preopen_replay_extent_for_prefix_v1(
-            limits, physical.max(resident),
-        ).unwrap();
+            limits,
+            physical.max(resident),
+        )
+        .unwrap();
 
         assert_eq!(physical, 0);
         assert_eq!(resident, before);
         assert_eq!(extent.native_bytes, resident);
-        assert_eq!(journal.get(RecordNamespace::DesiredState, b"resident").unwrap().len(), 4096);
+        assert_eq!(
+            journal
+                .get(RecordNamespace::DesiredState, b"resident")
+                .unwrap()
+                .len(),
+            4096
+        );
     }
 
     fn commit_fixture(path: &Path) -> u64 {
@@ -5612,9 +5657,18 @@ mod tests {
     #[test]
     fn compaction_batches_preserve_exact_native_bytes_and_literal_row_payloads() {
         let state = std::collections::BTreeMap::from([
-            ((RecordNamespace::DesiredState, b"c".to_vec()), b"3".to_vec()),
-            ((RecordNamespace::DesiredState, b"a".to_vec()), b"1".to_vec()),
-            ((RecordNamespace::DesiredState, b"b".to_vec()), b"2".to_vec()),
+            (
+                (RecordNamespace::DesiredState, b"c".to_vec()),
+                b"3".to_vec(),
+            ),
+            (
+                (RecordNamespace::DesiredState, b"a".to_vec()),
+                b"1".to_vec(),
+            ),
+            (
+                (RecordNamespace::DesiredState, b"b".to_vec()),
+                b"2".to_vec(),
+            ),
         ]);
         let limits = JournalLimits {
             maximum_records_per_transaction: 2,
@@ -5719,7 +5773,9 @@ mod tests {
 
         assert!(matches!(
             super::write_compacted(file.as_file_mut(), &state, limits),
-            Err(JournalError::MalformedRecord("invalid idempotency decision")),
+            Err(JournalError::MalformedRecord(
+                "invalid idempotency decision"
+            )),
         ));
         assert_eq!(file.as_file().metadata().unwrap().len(), 0);
     }
@@ -5727,8 +5783,14 @@ mod tests {
     #[test]
     fn compaction_later_configured_key_refusal_retains_the_original_prior_native_chunk() {
         let state = std::collections::BTreeMap::from([
-            ((RecordNamespace::DesiredState, b"a".to_vec()), b"1".to_vec()),
-            ((RecordNamespace::DesiredState, b"bb".to_vec()), b"2".to_vec()),
+            (
+                (RecordNamespace::DesiredState, b"a".to_vec()),
+                b"1".to_vec(),
+            ),
+            (
+                (RecordNamespace::DesiredState, b"bb".to_vec()),
+                b"2".to_vec(),
+            ),
         ]);
         let limits = JournalLimits {
             maximum_records_per_transaction: 1,
@@ -5925,9 +5987,9 @@ mod tests {
         let path = directory.journal();
         let (mut journal, _) = Journal::open(&path, JournalLimits::default()).unwrap();
         journal.ensure_healthy().unwrap();
-        journal.native.replace_file(
-            OpenOptions::new().read(true).open(&path).unwrap(),
-        );
+        journal
+            .native
+            .replace_file(OpenOptions::new().read(true).open(&path).unwrap());
         let entry = transaction(
             1,
             vec![JournalRecord::put(
@@ -5949,7 +6011,9 @@ mod tests {
 
     #[test]
     fn publisher_registry_rejects_unprotected_or_poisoned_journal() {
-        use crate::publisher_admin::capabilities::{PublisherAuthorityLimits, PublisherCapabilityRegistry};
+        use crate::publisher_admin::capabilities::{
+            PublisherAuthorityLimits, PublisherCapabilityRegistry,
+        };
         use crate::publisher_admin::policy::{PublisherPolicyLimits, PublisherPolicyStore};
 
         let directory = TestDirectory::new("publisher-poison");
@@ -6016,14 +6080,16 @@ mod tests {
     #[cfg(all(target_os = "linux", feature = "kernel-tests"))]
     #[test]
     fn failed_publisher_registration_commit_retires_execution_pin() {
-        use crate::publisher_admin::registration::tests::fixture::{anchor, fixture, open_journal, sample};
-        use crate::publisher_admin::registration::{PublisherControlError, PublisherControlPolicy};
         use crate::publisher_admin::audit::{PublisherIngressError, PublisherIngressLimits};
+        use crate::publisher_admin::registration::tests::fixture::{
+            anchor, fixture, open_journal, sample,
+        };
+        use crate::publisher_admin::registration::{PublisherControlError, PublisherControlPolicy};
+        use aos_sandbox_linux::seqpacket::RecordSubjectListener;
         use aos_sandbox_publisher::publisher_sessions::{
             PublisherSessionError, PublisherSessionLimits, PublisherSessionRegistry,
             PublisherSessionScope,
         };
-        use aos_sandbox_linux::seqpacket::RecordSubjectListener;
         use rustix::net::{
             AddressFamily, SocketAddrUnix, SocketFlags, SocketType, connect, socket_with,
         };
@@ -6298,7 +6364,9 @@ mod tests {
         let directory = TestDirectory::new("sequence-exhaustion-prewrite");
         let path = directory.journal();
         let (mut journal, _) = Journal::open(&path, JournalLimits::default()).unwrap();
-        journal.native.replace_next_sequence_for_fixture(u64::MAX - 2);
+        journal
+            .native
+            .replace_next_sequence_for_fixture(u64::MAX - 2);
         let entry = transaction(
             1,
             vec![JournalRecord::put(
@@ -6380,4 +6448,13 @@ mod tests {
     }
 }
 
+pub(crate) mod historical_observation;
+
 mod catalog_maintenance;
+
+// Same upper compiled control quote; DATA only, no runtime forwarding hop.
+pub(crate) use original_currentness::native_audit_fixed_receiving_demand_v1 as cache_native_semantic_supplement_v1;
+
+// Reuse the same upper full semantic quote without constructing another extent
+// or adding a runtime forwarding body. The value supplies no native authority.
+pub(crate) use semantic_receiving::semantic_representation_demand_v1 as cache_delete_semantic_representation_demand_v1;

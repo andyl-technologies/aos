@@ -19,6 +19,8 @@
 //! policy publication, or Apply. The AOSQ8F01 and AOSQ8S01 DATA codecs are shared with
 //! LedgerReplay; their mutation exceptions remain private to this owner.
 
+use aos_sandbox_ledger_replay::controller_policy_hold::ControllerPolicyHoldCodecV1;
+
 use aos_sandbox_protocol::domain_ledger::source_policy_hold::SourceDomainPolicyHoldV1;
 use aos_sandbox_protocol::domain_ledger::cache_policy_hold::CachePolicyHoldV1;
 
@@ -48,12 +50,10 @@ use crate::policy_compiler::create_q04::{
 };
 
 #[cfg(target_os = "linux")]
-mod create_storage_acceptance;
-
-#[cfg(target_os = "linux")]
-pub(crate) use create_storage_acceptance::{
-    RootControllerCreateAcceptanceOriginalsV1, RootControllerAcceptedNativeProgressV1,
-    RootControllerAcceptedNativeV1,
+pub(crate) use aos_sandbox_policy::controller_acceptance_data::{
+    ControllerCreateAcceptanceDataV1 as RootControllerCreateAcceptanceOriginalsV1,
+    ControllerAcceptedHistoryProgressDataV1 as RootControllerAcceptedNativeProgressV1,
+    ControllerAcceptedHistoryObserverDataV1 as RootControllerAcceptedNativeV1,
 };
 
 use v8_pre_release_floor::{
@@ -399,7 +399,10 @@ impl<'cut> ControllerQ04TransitionV1<'cut> {
     }
 
     pub(crate) fn require_signing_binding(&self, proposed: &[u8]) -> Result<(), CreateQ04ErrorV1> {
-        if crate::policy_compiler::closed_policy_binding_digest_v2(proposed)? != self.identity.binding() {
+        if aos_sandbox_policy::q04_data::closed_policy_binding_digest_v2(proposed)
+            .map_err(aos_sandbox_policy::native::PolicyCompilerJournalErrorV1::from)?
+            != self.identity.binding()
+        {
             return Err(CreateQ04ErrorV1::ChangedCut);
         }
         Ok(())
@@ -819,7 +822,7 @@ fn v8_settlement_capacity_transaction(
     ).map_err(JournalError::from)
 }
 
-fn ensure_controller(journal: &Journal) -> Result<(), JournalError> {
+pub(super) fn ensure_controller(journal: &Journal) -> Result<(), JournalError> {
     journal.ensure_protected_authority()?;
     if journal.native.protected_view().map(|location| location.name()) != Some("controller.journal") {
         return Err(JournalError::ProtectedBoundary);
@@ -910,8 +913,9 @@ impl Journal {
     pub(crate) fn controller_q04_history_v1(
         &self,
     ) -> Result<Option<ControllerQ04HistoryV1>, JournalError> {
-        ensure_controller(self)?;
-        Ok(current_readback(self.native.state())?.q04)
+        controller_q04_history_from_observation_v2(
+            super::historical_observation::HistoricalObservationV1::from_journal_v1(self),
+        )
     }
 
     /// Reads the exact protected V8 pre-send attempt under Controller custody.
@@ -2631,4 +2635,23 @@ mod tests {
             Some(receipt)
         );
     }
+}
+
+/// Selects Controller Q04 history under the same actual Controller owner.
+#[cfg(target_os = "linux")]
+pub(crate) fn controller_q04_history_from_observation_v2(
+    journal: super::historical_observation::HistoricalObservationV1<'_>,
+) -> Result<Option<ControllerQ04HistoryV1>, JournalError> {
+    journal.ensure_controller_v1()?;
+    Ok(current_readback(journal.state_v1())?.q04)
+}
+
+/// Prices the actual new Controller-history forwarding controls.
+#[cfg(target_os = "linux")]
+pub(crate) fn controller_q04_history_observation_control_bytes_v2() -> Option<usize> {
+    std::mem::size_of::<super::historical_observation::HistoricalObservationV1<'_>>()
+        .checked_mul(3)?
+        .checked_add(std::mem::size_of::<Result<Option<ControllerQ04HistoryV1>, JournalError>>().checked_mul(3)?)?
+        .checked_add(std::mem::size_of::<Result<(), JournalError>>().checked_mul(3)?)?
+        .checked_add(std::mem::size_of::<Option<usize>>().checked_mul(3)?)
 }

@@ -27,7 +27,7 @@ impl<'original> RootStartupCredentialReceivingLoanV1<'original> {
     ) -> Result<Self, NormalRootStartupErrorV1> {
         let original = if startup.receiving.is_some() {
             let mut original = startup.lock_receiving_v1()?;
-            let returned = original.original_mut_v1().prepay_startup_credentials_once(startup, journal);
+            let returned = original.begin_startup_credentials_native_once_v1(startup, journal);
             original.finish_returned_v1(returned)?;
             Some(original)
         } else {
@@ -69,7 +69,11 @@ impl<'original> RootStartupCredentialReceivingLoanV1<'original> {
             Some(original) => Some(original.borrow_startup_credential_financial_v1()?),
             None => None,
         };
-        Ok(self.journal.credential_writer_v1(original))
+        match original {
+            Some(original) => self.journal.native_mut_v1()?
+                .selected_credential_writer_v1(original),
+            None => self.journal.native_mut_v1()?.ordinary_credential_writer_v1(),
+        }.map_err(NormalRootStartupErrorV1::StartupJournal)
     }
 
     /// Denies new shared entry after the caller retains its actual body error.
@@ -86,13 +90,12 @@ impl<'original> RootStartupCredentialReceivingLoanV1<'original> {
     /// # Errors
     /// Rejects changed native names or original selected/current containment.
     pub fn finish_once(mut self) -> Result<(), NormalRootStartupErrorV1> {
-        let names = self.journal.finish_names_once();
         let result = match self.original.as_mut() {
             Some(original) => {
-                let returned = original.original_mut_v1().finish_startup_credentials_once(self.startup, names);
+                let returned = original.finish_startup_credentials_native_once_v1(self.startup, self.journal);
                 original.finish_returned_v1(returned)
             }
-            None => names.map_err(|_| NormalRootStartupErrorV1::Image),
+            None => self.journal.finish_names_once().map_err(|_| NormalRootStartupErrorV1::Image),
         };
         self.finished = true;
         result

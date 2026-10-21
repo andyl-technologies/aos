@@ -14,7 +14,7 @@ use aos_sandbox_linux::cgroup::{
 enum First { Alive, Population, Kill, Clock, Wait, Sequence }
 
 pub(super) struct WorkerExitOriginalV1 {
-    alive: Option<Result<bool, aos_sandbox_linux::Error>>,
+    alive: Option<Result<bool, aos_linux_descriptors::Error>>,
     population: CgroupPopulationObservationV1,
     population_result: Option<Result<(), aos_sandbox_linux::cgroup::CgroupPopulationObservationRefusalV1>>,
     kill: CgroupKillAttemptV1,
@@ -114,12 +114,12 @@ impl Disposition<'_> {
         }
     }
 
-    fn kill(&mut self, anchor: &RetainedCgroupAnchor) -> Result<(), aos_sandbox_linux::Error> {
+    fn kill(&mut self, anchor: &RetainedCgroupAnchor) -> Result<(), aos_linux_descriptors::Error> {
         let Self::Retained(owner) = self else { return anchor.kill_all(); };
         owner.kill_result = Some(owner.kill.capture_once(anchor));
         if matches!(owner.kill_result, Some(Ok(()))) { Ok(()) } else {
             owner.first.get_or_insert(First::Kill);
-            Err(aos_sandbox_linux::Error::InvalidInput {
+            Err(aos_linux_descriptors::Error::InvalidInput {
                 field: "pin worker cancellation", message: "original cause retained".into(),
             })
         }

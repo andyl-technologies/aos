@@ -51,7 +51,7 @@ use aos_sandbox_model::{
     ObjectDigest, OperationId, ProjectId, ProtocolId, ProtocolVersion, SandboxId,
     encode_execution_spec_v1, execution_spec_digest_v1,
 };
-use aos_sandbox_linux::immutable_file::SealedReadOnlyCredential;
+use aos_linux_descriptors::credential::SealedReadOnlyCredential;
 use aos_sandbox_protocol::authenticated_session::all_methods::{
     AuthenticatedBrokerMethodOutcomeV1, AuthenticatedBrokerMethodResultV1,
 };

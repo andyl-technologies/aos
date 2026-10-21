@@ -22,7 +22,7 @@ use aos_sandbox_model::{
     MediaType, NamespaceGeneration, ObjectDigest, OperationId, PrincipalId, RawClockProvenance,
     Revision, SandboxId, ViewId, descriptor_for_bytes, encode_view,
 };
-use aos_sandbox_linux::boot::KernelBootId;
+use aos_linux_descriptors::boot::KernelBootId;
 use sha2::{Digest as _, Sha256};
 use tempfile::TempDir;
 

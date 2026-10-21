@@ -49,7 +49,7 @@ impl HostStoppedNamespaceOriginalV4 {
     }
 }
 
-type Native<T> = aos_sandbox_linux::Result<T>;
+type Native<T> = aos_linux_descriptors::Result<T>;
 type RequestIdentity = ([u8; 16], [u8; 32], [u8; 32]);
 // Two exact alias-close gates, entry/shutdown/open/send and pre-CAS, plus a separate
 // independently owed final sampler. No ordinary16 or SDK22 slot is reused.

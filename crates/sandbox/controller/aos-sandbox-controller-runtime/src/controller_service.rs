@@ -48,7 +48,7 @@ use aos_sandbox_model::{
     AttachmentId, CapabilityId, NodeId, ObjectDigest, OperationId, ProjectId, RawClockProvenance,
     RawPairedClockSample, ResourceId,
 };
-use aos_sandbox_linux::boot::KernelBootId;
+use aos_linux_descriptors::boot::KernelBootId;
 use sha2::{Digest as _, Sha256};
 
 use crate::controller_service::attach_credentials::ControllerAttachCredentialsV1;
@@ -61,10 +61,7 @@ use crate::controller_service::ownership::ControllerOwnershipConfigurationV1;
 use aos_sandbox_broker_session_security::controller_composition::sample_ownership_clock;
 use crate::controller_service::plan_signer::ControllerBrokerPlanSignerV1;
 use crate::controller_service::publication::ControllerHostPublication;
-use aos_sandbox_controller_domain::cache_residency::{
-    CacheOwnerLimitsV1, CacheReplayControllerBootstrapOwnerV1, CacheResidencyProtectedOwnerV1,
-    DormantCacheOwnerV1,
-};
+use aos_sandbox_cache::{CacheOwnerLimitsV1, CacheReplayControllerBootstrapOwnerV1, CacheResidencyProtectedOwnerV1, DormantCacheOwnerV1};
 use aos_sandbox_controller_domain::cli_model::PublicMutationRequestV1;
 use aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1;
 use aos_sandbox_controller_domain::controller::DormantControllerCompositionV1;
@@ -329,7 +326,7 @@ pub enum ControllerRuntimeError {
     NormalRootProfile(#[source] aos_sandbox_controller_domain::normal_root::NormalRootStartupErrorV1),
     /// Protected cache Replay source import failed.
     #[error("protected controller cache Replay source failed: {0}")]
-    CacheReplaySource(aos_sandbox_controller_domain::cache_residency::CacheReplayControllerBootstrapErrorV1),
+    CacheReplaySource(aos_sandbox_cache::CacheReplayControllerBootstrapErrorV1),
     /// The optional protected broker-plan signing credential is unsafe or malformed.
     #[error("protected controller broker-plan signing credential is invalid")]
     InvalidBrokerPlanCredential,

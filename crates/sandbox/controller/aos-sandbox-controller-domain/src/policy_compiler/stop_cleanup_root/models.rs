@@ -81,7 +81,7 @@ impl Models {
         _policy: &RootStopCleanupPolicyOriginalV1,
         selection: SelectionData,
     ) -> Result<ResourceVector, Cause> {
-        let (controller, source) = readonly.journals_v1()?;
+        let (controller, source) = readonly.models_v1()?;
         let auth = Authorization::receiving_recovery_demand_v2(controller, selection.admission)?;
         let source_models = retained_lifecycle_replay_receiving_demand_v1(source.all_records())
             .ok_or(JournalError::JournalTooLarge)?;
@@ -101,7 +101,7 @@ impl Models {
                 sum.checked_add(key.len())?.checked_add(value.len())
             })
             .ok_or(JournalError::JournalTooLarge)?;
-        let state = controller.historical_read_view_v1().materialized_state_v1();
+        let state = controller.state_v1();
         let current = current_cleanup_assignment_receiving_demand_v2(state)
             .ok_or(JournalError::JournalTooLarge)?;
         let lease = trust
@@ -110,6 +110,8 @@ impl Models {
             .ok_or(JournalError::JournalTooLarge)?;
         let fixed = size_of::<Self>()
             .checked_mul(3)
+            .and_then(|bytes| bytes.checked_add(crate::lifecycle::historical_admission_control_bytes_v2()?))
+            .and_then(|bytes| bytes.checked_add(LifecycleHistoricalReadOriginalV1::observe_rows_interface_control_bytes_v2()?))
             .and_then(|bytes| bytes.checked_add(3 * size_of::<CurrentCleanupAssignmentDataV2>()))
             .and_then(|bytes| bytes.checked_add(lease))
             .and_then(|bytes| u64::try_from(bytes).ok())
@@ -171,7 +173,7 @@ impl Models {
         partition: (ResourceVector, ResourceVector, ResourceVector),
     ) -> Result<(), Cause> {
         self.authorization.observe_stop_cleanup_once_v2(
-            readonly.controller_v1()?,
+            readonly.controller_model_v1()?,
             selection.admission,
             node,
             partition,
@@ -182,12 +184,12 @@ impl Models {
             controller_identity,
         )?;
 
-        let (controller, source) = readonly.journals_v1()?;
+        let (controller, source) = readonly.models_v1()?;
         let request = self.authorization.stop_cleanup_request_v2()?;
         let target = request
             .stop_cleanup_target_v1()
             .ok_or(JournalError::ProtectedBoundary)?;
-        self.source.observe_once_v1(source, target.operation_v1())?;
+        self.source.observe_once_v1(source.rows_data_v2(), target.operation_v1())?;
         self.source.select_stop_dispatch_once_v1()?;
         let parent = target.source_parent_data_v1(controller, &self.source)?;
         let dispatch = self.source.stop_dispatch_data_v1()?;
@@ -217,7 +219,7 @@ impl Models {
 
         self.assignment = Some(
             current_cleanup_assignment_rows_data_v2(
-                controller.historical_read_view_v1().rows_data_v2(),
+                controller.rows_data_v2(),
                 SandboxId::from_bytes(*old_fence.sandbox_id()),
             )
             .map_err(|cause| cause as Cause),

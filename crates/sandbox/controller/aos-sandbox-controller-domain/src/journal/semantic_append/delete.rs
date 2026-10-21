@@ -30,6 +30,7 @@ pub(crate) use metadata_dependencies::{
     SourceDeleteMetadataRequestDataV2, SourceDeleteMetadataRequestErrorV2,
 };
 
+mod cache_audit;
 mod planning_cuts;
 pub(crate) use planning_cuts::DeletePlanningBaseCutsDataV2;
 mod readiness;
@@ -636,8 +637,9 @@ impl<'transaction> AppendContextV1<'transaction> for SourceOperationSemanticAppe
         crate::attachment_effect_owner::validate_consumer_resource_transaction_read_v1(None, self.read().historical_view(), transaction, capacity, settling)
     }
 
-    fn require_root_genesis_transition(&self, transaction: &JournalTransaction, transition: RootSourceGenesisTransitionV1, capacity: bool, settling: Option<[u8; 32]>) -> Result<(), JournalError> {
-        crate::policy_compiler::require_root_source_genesis_mutation_read_v1(None, transaction, transition, capacity, settling)
+    fn require_root_genesis_transition(&self, transaction: &JournalTransaction) -> Result<(), JournalError> {
+        aos_sandbox_ledger_replay::replay::root_genesis_capacity::require_no_mutation_v1(transaction)
+            .map_err(JournalError::from)
     }
 
     fn require_source_policy_transition(&self, transaction: &JournalTransaction) -> Result<(), JournalError> {

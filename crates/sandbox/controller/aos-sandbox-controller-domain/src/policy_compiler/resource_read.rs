@@ -18,10 +18,11 @@ use crate::publisher_admin::policy::PublisherPolicyError;
 use aos_sandbox_model::model::{AssignmentManifestV1, CacheDomain};
 use aos_sandbox_model::{Operation, OperationSet, ResourceKind, Selector};
 
-use super::protected_journal::compare_recompiled_candidate_derivation_v1;
+use aos_sandbox_policy::publication::compare_recompiled_candidate_derivation_v1;
 use super::{
-    HeldResolvedRuntimePolicyV1, PolicyCompilerJournalErrorV1, PolicyPublicationPrerequisitesV1,
+    HeldResolvedRuntimePolicyV1, PolicyPublicationPrerequisitesV1,
 };
+use aos_sandbox_policy::publication::PolicyCompilerJournalErrorV1;
 use aos_sandbox_protocol::policy_data::RetainedPublisherCompilerOriginV3;
 use aos_sandbox_policy::{
     CompiledPolicyCandidateV1, PolicyCompilationError, PolicyCompilerInputV1, PolicyCompilerV1,

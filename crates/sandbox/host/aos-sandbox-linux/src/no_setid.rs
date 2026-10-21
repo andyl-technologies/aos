@@ -11,7 +11,9 @@ use std::os::fd::{AsRawFd as _, BorrowedFd};
 use std::os::unix::ffi::OsStrExt as _;
 use std::os::unix::ffi::OsStringExt as _;
 
-use crate::{Error, Result, uapi};
+use aos_linux_descriptors::Error;
+use aos_linux_descriptors::Result;
+use crate::uapi;
 
 /// Requires the calling thread to have the AOS no-set-ID guard installed.
 ///

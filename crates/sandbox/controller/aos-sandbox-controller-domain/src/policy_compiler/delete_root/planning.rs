@@ -4,6 +4,8 @@
 //! namespace/active Ownership engines as pending Delete. No pending native64,
 //! candidate batch, floor, remote service, or decoded proof is manufactured.
 
+use aos_sandbox_policy::native::{RootFinalityReadOriginalV1 as Target, RootFinalityReadKindV1 as Kind};
+use crate::journal::historical_observation::root_readonly_error_v1 as project_read;
 mod challenge;
 pub(crate) use challenge::RootDeletePlanningChallengeOriginalV1;
 mod shape;
@@ -15,10 +17,9 @@ use super::transfer_namespace::{
 use crate::controller_resource_reservation::{ResourceReservationErrorV1, RootDeleteChunkPostsV1};
 use crate::journal::JournalError;
 use crate::normal_root::{NormalRootStartupErrorV1, RootPolicyAcceptedFlightV1};
-use crate::policy_compiler::bounded_stream_io::{
-    DeadlineStreamDirectionV1, FixedDeadlineStreamIoV1,
-};
-use crate::policy_compiler::create_storage_current::controller_readonly::native_read::RootFixedNativeReadOriginalsV1 as Reader;
+use aos_sandbox_broker::bounded_stream_io::DeadlineStreamDirectionV1;
+use aos_sandbox_broker::bounded_stream_io::FixedDeadlineStreamIoV1;
+
 use crate::policy_compiler::root_policy_prelude::{
     RootPolicyDispositionGuardV1, RootPolicyPreludeNativeOriginalV1, RootPolicyPreludeOriginalV1,
     RootPolicyPurposeV1,
@@ -147,8 +148,8 @@ pub(crate) struct RootDeletePlanningDispatchOriginalV1 {
     armed: Option<Result<(), NormalRootStartupErrorV1>>,
     before: Option<Result<(), NormalRootStartupErrorV1>>,
     after: Option<Result<(), NormalRootStartupErrorV1>>,
-    controller: Reader,
-    source: Reader,
+    controller: Target,
+    source: Target,
     capture: [Option<Result<(), JournalError>>; 2],
     native: [Option<Result<ResourceVector, JournalError>>; 2],
     semantic: [Option<Result<ResourceVector, JournalError>>; 2],
@@ -216,8 +217,8 @@ impl RootDeletePlanningDispatchOriginalV1 {
             armed: None,
             before: None,
             after: None,
-            controller: Reader::controller_current_v1(),
-            source: Reader::source_current_v1(),
+            controller: Target::new(Kind::Controller),
+            source: Target::new(Kind::Source),
             capture: [None, None],
             native: [None, None],
             semantic: [None, None],
@@ -400,8 +401,8 @@ impl RootDeletePlanningDispatchOriginalV1 {
         self.read_source(flight, ids[0])?;
         self.compared = Some((|| {
             let open = self.open_v3().map_err(|_| ComparisonError::Changed)?;
-            let controller = self.controller.replay_native_v1()?;
-            let source = self.source.replay_native_v1()?;
+            let controller = self.controller.replay_native_v1().map_err(project_read)?;
+            let source = self.source.replay_native_v1().map_err(project_read)?;
             if (controller.next, controller.end) != (open.controller_next, open.controller_end)
                 || (source.next, source.end) != (open.source_next, open.source_end)
             {
@@ -451,14 +452,15 @@ impl RootDeletePlanningDispatchOriginalV1 {
         flight: &RootPolicyAcceptedFlightV1<'_, '_>,
         uid: u32,
     ) -> Result<(), RootDeleteErrorV1> {
+        self.controller.construct_reader_once_v1().map_err(|_| RootDeleteErrorV1::Original)?;
         self.controller.capture_once(uid);
-        self.capture[0] = Some(self.controller.require_captured_v1());
+        self.capture[0] = Some(self.controller.require_captured_v1().map_err(project_read));
         self.require(matches!(self.capture[0], Some(Ok(()))), First::Controller)?;
-        self.native[0] = Some(self.controller.replay_demand_v1());
+        self.native[0] = Some(self.controller.replay_demand_v1().map_err(project_read));
         self.require(matches!(self.native[0], Some(Ok(_))), First::Controller)?;
         self.admit(flight, RootDeletePlanningAdmissionPhaseV1::ControllerNative)?;
         self.controller.audit_once();
-        self.semantic[0] = Some(self.controller.additional_semantic_demand_v1());
+        self.semantic[0] = Some(self.controller.additional_semantic_demand_v1().map_err(project_read));
         self.require(matches!(self.semantic[0], Some(Ok(_))), First::Controller)?;
         self.admit(
             flight,
@@ -473,14 +475,15 @@ impl RootDeletePlanningDispatchOriginalV1 {
         flight: &RootPolicyAcceptedFlightV1<'_, '_>,
         uid: u32,
     ) -> Result<(), RootDeleteErrorV1> {
+        self.source.construct_reader_once_v1().map_err(|_| RootDeleteErrorV1::Original)?;
         self.source.capture_once(uid);
-        self.capture[1] = Some(self.source.require_captured_v1());
+        self.capture[1] = Some(self.source.require_captured_v1().map_err(project_read));
         self.require(matches!(self.capture[1], Some(Ok(()))), First::Source)?;
-        self.native[1] = Some(self.source.replay_demand_v1());
+        self.native[1] = Some(self.source.replay_demand_v1().map_err(project_read));
         self.require(matches!(self.native[1], Some(Ok(_))), First::Source)?;
         self.admit(flight, RootDeletePlanningAdmissionPhaseV1::SourceNative)?;
         self.source.audit_once();
-        self.semantic[1] = Some(self.source.additional_semantic_demand_v1());
+        self.semantic[1] = Some(self.source.additional_semantic_demand_v1().map_err(project_read));
         self.require(matches!(self.semantic[1], Some(Ok(_))), First::Source)?;
         self.admit(flight, RootDeletePlanningAdmissionPhaseV1::SourceSemantic)?;
         self.source.replay_once();
@@ -591,7 +594,7 @@ impl RootDeletePlanningDispatchOriginalV1 {
 
     pub(crate) fn require_same_complete_v1(
         &self,
-        native: &aos_sandbox_linux::unix_stream::RetainedUnixStream,
+        native: &aos_linux_descriptors::unix_stream::RetainedUnixStream,
     ) -> Result<(), NormalRootStartupErrorV1> {
         if !self.complete
             || self.first.is_some()
@@ -604,8 +607,8 @@ impl RootDeletePlanningDispatchOriginalV1 {
             || !matches!(self.bootstrap_post, Some(Ok(())))
             || self.namespace.bootstrap_trust_data_v2().is_err()
             || !matches!(self.ownership_after, Some(Ok(())))
-            || self.controller.terminal_native_v1().is_err()
-            || self.source.terminal_native_v1().is_err()
+            || self.controller.terminal_native_v1().map_err(project_read).is_err()
+            || self.source.terminal_native_v1().map_err(project_read).is_err()
             || self.posts.require_positive_v1().is_err()
         {
             return Err(NormalRootStartupErrorV1::Service);

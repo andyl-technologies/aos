@@ -95,7 +95,7 @@ impl<'flight> OriginalRootFirstSourceSuccessorFlightV2<'flight> {
         let floor = RootFirstSourceSuccessorFloorV2::decode(
             self.decode(frame, Phase::Anchored)?,
         ).map_err(crate::hierarchy::genesis_profile::SourceGenesisErrorV1::from)?;
-        super::successor_owner::require_receipt_intent(floor.receipt(), prepared.record())?;
+        aos_sandbox_ledger_replay::replay::root_successor::require_receipt_intent(floor.receipt(), prepared.record())?;
         if floor.roles() != prepared.record().roles() || floor.approval() != prepared.record().approval()
             || floor.predecessor_floor() != prepared.record().predecessor_floor()
             || !std::ptr::eq(self, prepared.origin)
@@ -360,7 +360,7 @@ impl RootFirstSourceSuccessorFloorProofV2<'_> {
     /// Rejects changed peer, custody deadline or original receipt/intent joins.
     pub fn recheck(&self) -> Result<(), SourceGenesisErrorV1> {
         self.origin.recheck()?;
-        super::successor_owner::require_receipt_intent(self.floor.receipt(), &self.original)?;
+        aos_sandbox_ledger_replay::replay::root_successor::require_receipt_intent(self.floor.receipt(), &self.original)?;
         if self.origin.source_uid()? != self.original.source_uid() { return Err(SourceGenesisErrorV1::Stale); }
         Ok(())
     }

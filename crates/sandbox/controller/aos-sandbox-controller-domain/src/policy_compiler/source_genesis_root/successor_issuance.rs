@@ -472,7 +472,7 @@ impl CompletedGenesisRecipeV3<'_, '_, '_> {
         match self { Self::StrictV2(proof) => proof.recheck(), Self::ProjectV3(proof) => proof.recheck() }
     }
 
-    fn floor(&self) -> &super::records::SourceHierarchyFloorRecordV1 {
+    fn floor(&self) -> &aos_sandbox_ledger_replay::replay::root_genesis_records::SourceHierarchyFloorRecordV1 {
         match self { Self::StrictV2(proof) => proof.floor(), Self::ProjectV3(proof) => proof.floor() }
     }
 }

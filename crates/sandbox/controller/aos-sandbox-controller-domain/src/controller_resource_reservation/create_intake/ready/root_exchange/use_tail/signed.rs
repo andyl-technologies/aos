@@ -102,7 +102,7 @@ impl OriginalCreateStorageReadyV1<'_, '_> {
             parent: &owner.parent, intake: &mut owner.intake,
             controller: self.original.controller, source: self.original.source,
             profile: self.original.profile, cache: &mut self.cache,
-            state: &mut root.turn, use_receiving: Some(receiving),
+            state: &mut root.turn, use_receiving: Some(RootUseReceivingV1::Original(receiving)),
         };
         loan.run_signed_once(&mut root.peer, &signed, original_cutoff)
     }

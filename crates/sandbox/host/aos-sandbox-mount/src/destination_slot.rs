@@ -41,7 +41,7 @@ use aos_sandbox_model::{
     PortableMediaType, descriptor_for_bytes, encode_sandbox_spec, sandbox_spec_media_type,
     validate_descriptor_role,
 };
-use aos_sandbox_linux::boot::KernelBootId;
+use aos_linux_descriptors::boot::KernelBootId;
 use aos_sandbox_linux::inventory::MountId;
 use aos_sandbox_linux::path::{BeneathRoot, FileIdentity, FileType, ResolveOptions, ResolvedPath};
 use aos_sandbox_protocol::ValidatedAssignmentFence;
@@ -550,7 +550,7 @@ enum GitCoverageCensusCauseV1 {
     #[error("destination coverage census kernel operation failed: {0}")]
     Kernel(#[from] rustix::io::Errno),
     #[error("destination coverage census original identity failed: {0}")]
-    Linux(#[from] aos_sandbox_linux::Error),
+    Linux(#[from] aos_linux_descriptors::Error),
     #[error("destination coverage census refused: {0}")]
     Refused(&'static str),
     #[error(transparent)]
@@ -1195,7 +1195,7 @@ impl DestinationSlotStoreV1 {
     fn resolve_optional_path(&self, path: &Path) -> Result<Option<ResolvedPath>> {
         match self.root.resolve(path, ResolveOptions::directory()) {
             Ok(value) => Ok(Some(value)),
-            Err(aos_sandbox_linux::Error::Syscall { source, .. })
+            Err(aos_linux_descriptors::Error::Syscall { source, .. })
                 if source.raw_os_error() == Some(libc::ENOENT) =>
             {
                 Ok(None)
@@ -1892,7 +1892,7 @@ fn kernel_error(error: rustix::io::Errno) -> MountError {
     ))
 }
 
-fn linux_error(error: aos_sandbox_linux::Error) -> MountError {
+fn linux_error(error: aos_linux_descriptors::Error) -> MountError {
     MountError::Worker(format!(
         "destination-slot descriptor operation failed: {error}"
     ))

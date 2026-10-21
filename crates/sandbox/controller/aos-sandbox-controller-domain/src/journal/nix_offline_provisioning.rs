@@ -32,7 +32,8 @@ use aos_sandbox_broker::canonical_journal::{
 };
 
 use aos_sandbox_linux::inventory::MountId;
-use aos_sandbox_linux::pidfd::{PidFdInfo, PidFdProcObservationsV1};
+use aos_linux_descriptors::pidfd::PidFdInfo;
+use aos_sandbox_linux::pidfd::PidFdProcObservationsV1;
 use aos_sandbox_linux::process::{
     FixedLiveChild, FixedNixOfflineSessionOwnerV1, FixedProcessRetainedSessionOutcome,
     FixedProcessCaptureV1, FixedProcessRequest, FixedProcessSessionRequest,
@@ -84,7 +85,7 @@ impl NixOriginalDirectoryV5<'_> {
         }
     }
 
-    fn mount_id(&self) -> Result<MountId, aos_sandbox_linux::Error> {
+    fn mount_id(&self) -> Result<MountId, aos_linux_descriptors::Error> {
         match self {
             Self::Opened(directory) => directory.observations().mount_id(),
             Self::Protected(location) => location.directory_mount_id(),
@@ -159,7 +160,7 @@ pub enum NixOfflineNativeJobErrorV5 {
     Read(#[from] ExactReadFailure),
     /// An actual original kernel descriptor or mount observation failed.
     #[error("offline native kernel observation failed")]
-    Linux(#[from] aos_sandbox_linux::Error),
+    Linux(#[from] aos_linux_descriptors::Error),
     /// The actual retained nonblocking helper transport failed.
     #[error("offline native original helper transport failed")]
     Socket(#[from] aos_sandbox_linux::seqpacket::SeqpacketError),
@@ -695,7 +696,7 @@ impl<'startup> NixOfflineNativeJobV5<'startup> {
         if contact.observations.is_some() || contact.original_child.is_some() {
             return Err(Error::Rejected);
         }
-        contact.observations = Some(child.pidfd().prepare_proc_observations_v1());
+        contact.observations = Some(aos_sandbox_linux::pidfd::prepare_proc_observations_v1(&(child.pidfd())));
 
         // Advance the same resident originals before any purpose comparison.
         // A failed capture leaves its partial files and closed phase parked.

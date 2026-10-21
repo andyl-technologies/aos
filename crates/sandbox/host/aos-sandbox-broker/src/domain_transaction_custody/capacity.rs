@@ -9,8 +9,7 @@ use aos_sandbox_protocol::domain_ledger::capacity::GlobalCapacityReservationPurp
 use aos_sandbox_protocol::domain_ledger::transaction::{JournalRecord, JournalTransaction};
 
 /// Preserves the existing sole canonical capacity error DATA classifications.
-pub use aos_sandbox_protocol::domain_ledger::capacity_family::CapacityDataError
-    as DomainCapacityDataErrorV1;
+pub use aos_sandbox_protocol::domain_ledger::capacity_family::CapacityDataError as DomainCapacityDataErrorV1;
 
 /// Joins exactly one canonical reservation record to its domain transaction.
 ///

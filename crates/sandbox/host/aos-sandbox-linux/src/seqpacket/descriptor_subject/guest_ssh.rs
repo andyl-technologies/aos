@@ -8,7 +8,8 @@ use super::*;
 use crate::guest_cgroup::GuestSshScopeOriginalV1;
 use crate::process::FixedProcessCaptureCutV3;
 use crate::process::capture_cut::CaptureProcessCutOriginalV3;
-use crate::{Error, Result as NativeResult};
+use aos_linux_descriptors::Error;
+use aos_linux_descriptors::Result as NativeResult;
 
 mod listeners;
 
@@ -34,7 +35,7 @@ impl ListenerOriginal {
         self.kind = Some(rustix::net::sockopt::socket_type(fd));
         self.protocol = Some(rustix::net::sockopt::socket_protocol(fd));
         self.address = Some(rustix::net::getsockname(fd));
-        self.cookie = Some(uapi::socket_cookie(fd));
+        self.cookie = Some(aos_linux_descriptors::native::socket_cookie(fd));
         if !matches!(self.accepting, Some(Ok(true)))
             || !matches!(self.kind, Some(Ok(rustix::net::SocketType::STREAM)))
             || !matches!(self.protocol, Some(Ok(Some(rustix::net::ipproto::TCP))))
@@ -115,8 +116,8 @@ pub struct GuestSshBootstrapOriginalV1 {
     prepare_after: Option<NativeResult<std::time::Duration>>,
     spawned: Option<NativeResult<()>>,
     receipt: Option<Result<ReceivedDescriptorRecord, RetainedSeqpacketReceiveErrorV1>>,
-    child_info: Option<NativeResult<crate::pidfd::PidFdInfo>>,
-    subject_info: Option<NativeResult<crate::pidfd::PidFdInfo>>,
+    child_info: Option<NativeResult<aos_linux_descriptors::pidfd::PidFdInfo>>,
+    subject_info: Option<NativeResult<aos_linux_descriptors::pidfd::PidFdInfo>>,
     listeners: [ListenerOriginal; 2],
     verified: Option<NativeResult<()>>,
     verified_after: Option<NativeResult<std::time::Duration>>,
@@ -232,7 +233,7 @@ impl GuestSshBootstrapOriginalV1 {
         let cut = FixedProcessCaptureCutV3::new(deadline, wall)?;
         self.cut = Some(cut);
         self.clock.observe(cut)?;
-        match uapi::seqpacket_pair() {
+        match aos_linux_descriptors::native::seqpacket_pair() {
             Ok((parent, child)) => {
                 // Both descriptors have owning destinations before admission
                 // can fail. Subject options are enabled only on the parent.
@@ -253,8 +254,8 @@ impl GuestSshBootstrapOriginalV1 {
             .and_then(|value| value.as_ref().ok())
             .ok_or_else(closed)?;
         let parent_fd = parent.fd.as_ref().ok_or_else(closed)?;
-        self.cookies[0] = Some(uapi::socket_cookie(parent_fd.as_fd()));
-        self.cookies[1] = Some(uapi::socket_cookie(
+        self.cookies[0] = Some(aos_linux_descriptors::native::socket_cookie(parent_fd.as_fd()));
+        self.cookies[1] = Some(aos_linux_descriptors::native::socket_cookie(
             self.child_endpoint.as_ref().ok_or_else(closed)?.as_fd(),
         ));
         self.request[..8].copy_from_slice(b"AOSSLB01");
@@ -832,7 +833,7 @@ mod tests {
 
     #[test]
     fn zero_length_subject_record_cannot_counterfeit_zero_ancillary_eof() {
-        let (parent, child) = uapi::seqpacket_pair().unwrap();
+        let (parent, child) = aos_linux_descriptors::native::seqpacket_pair().unwrap();
         let parent = DescriptorSubjectSocket::from_pending_retaining_raw_v2(
             PendingSocketAdmissionV1::new(parent),
         ).unwrap();
@@ -853,7 +854,7 @@ mod tests {
 
     #[test]
     fn actual_private_peer_close_has_no_record_ancillary() {
-        let (parent, child) = uapi::seqpacket_pair().unwrap();
+        let (parent, child) = aos_linux_descriptors::native::seqpacket_pair().unwrap();
         let parent = DescriptorSubjectSocket::from_pending_retaining_raw_v2(
             PendingSocketAdmissionV1::new(parent),
         ).unwrap();
@@ -891,7 +892,7 @@ mod tests {
         let address =
             rustix::net::SocketAddrV4::try_from(rustix::net::getsockname(&listener).unwrap())
                 .unwrap();
-        let cookie = uapi::socket_cookie(listener.as_fd()).unwrap();
+        let cookie = aos_linux_descriptors::native::socket_cookie(listener.as_fd()).unwrap();
 
         let mut positive = ListenerOriginal::default();
         assert_eq!(

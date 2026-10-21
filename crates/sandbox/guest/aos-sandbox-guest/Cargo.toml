@@ -37,6 +37,7 @@ aos-sandbox-model.workspace = true
 aos-sandbox-guest-root-realization.workspace = true
 aos-sandbox-guest-root-measurement.workspace = true
 aos-sandbox-linux.workspace = true
+aos-linux-descriptors.workspace = true
 ed25519-dalek = { workspace = true, features = ["zeroize"] }
 nix = { version = "0.31.3", default-features = false, features = ["feature"] }
 ssh-key.workspace = true

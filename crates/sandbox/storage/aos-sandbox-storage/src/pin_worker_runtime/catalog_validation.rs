@@ -16,7 +16,7 @@ pub(super) struct CatalogResultOriginalV1 {
     request_canonical: Vec<u8>,
     matches: Option<Result<bool, ZfsWorkerError>>,
     stat: Option<Result<rustix::fs::Stat, rustix::io::Errno>>,
-    mount: Option<Result<MountId, aos_sandbox_linux::Error>>,
+    mount: Option<Result<MountId, aos_linux_descriptors::Error>>,
     statvfs: Option<Result<rustix::fs::StatVfs, rustix::io::Errno>>,
     result: Option<Result<(), ZfsWorkerError>>,
     retain: bool,

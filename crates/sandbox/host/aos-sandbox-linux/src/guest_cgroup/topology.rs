@@ -12,10 +12,12 @@ use crate::cgroup::{
     CgroupActiveOriginalV2, CgroupControllerReadbackV2, CgroupSingleTaskObservationV1,
     ExactCgroupMembershipReadbackV1, RetainedCgroupAnchor,
 };
-use crate::pidfd::{
-    PidFd, PidFdOpenAttemptV1, PidFdProcessIdentity, PidFdProcessIdentityOriginalV1,
-};
-use crate::{Error, Result};
+use aos_linux_descriptors::pidfd::PidFd;
+use crate::pidfd::PidFdOpenAttemptV1;
+use crate::pidfd::PidFdProcessIdentity;
+use crate::pidfd::PidFdProcessIdentityOriginalV1;
+use aos_linux_descriptors::Error;
+use aos_linux_descriptors::Result;
 
 use super::GuestPayloadCgroupCustodyV1;
 use super::control::ControlWriteOriginalV1;
@@ -767,7 +769,7 @@ impl GuestRuntimeTopologyOriginalV1 {
         let identity = PidFdProcessIdentityOriginalV1::receiving_footprint_v1()?;
         let reader = CgroupControllerReadbackV2::receiving_obligations_v2()?;
         let directory = DirectoryOriginalV1::receiving_obligations_v1()?;
-        let sealer = crate::immutable_file::SealedReadOnlyCredentialCreateOriginalsV1
+        let sealer = aos_linux_descriptors::credential::SealedReadOnlyCredentialCreateOriginalsV1
             ::receiving_footprint_v1("aos-guest-topology-handoff-v1".len(), 64)?;
         let final_before_handoff = 1_usize
             .checked_add(identity.1.checked_mul(2)?)?

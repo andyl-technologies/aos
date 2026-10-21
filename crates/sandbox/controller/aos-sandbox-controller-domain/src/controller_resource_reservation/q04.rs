@@ -76,7 +76,9 @@ impl Q04ResourceTransferV1 {
         aos_sandbox_policy::require_specification_resource_profile_v1(
             specification.spec().resource_profile(), candidate.hard_resources().core_profile(),
         ).map_err(|_| CreateQ04ErrorV1::ChangedCut)?;
-        let amount = crate::policy_compiler::create_q04::candidate_capacity(candidate)?;
+        let amount = aos_sandbox_policy::q04_candidate_capacity_v1!(
+            candidate, crate::policy_compiler::create_q04::CreateQ04ErrorV1::ChangedCut
+        )?;
         let demand = root.original_input_demand(amount)?;
         let retained_use = demand.retained();
         let (intake, observations) = root.original_intake_association()?;

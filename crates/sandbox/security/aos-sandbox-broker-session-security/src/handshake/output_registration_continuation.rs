@@ -1941,11 +1941,11 @@ impl OriginalReceivedPacketV4 {
 pub(crate) struct OriginalOutputPacketV1 {
     received: Option<Result<OriginalReceivedPacketV4, RetainedSeqpacketReceiveErrorV1>>,
     binding: Option<Result<(), RecordBindingError>>,
-    alive: Option<Result<bool, aos_sandbox_linux::Error>>,
+    alive: Option<Result<bool, aos_linux_descriptors::Error>>,
     subject_current: bool,
     witness_failure: bool,
     replay_binding: Option<Result<(), RecordBindingError>>,
-    replay_alive: Option<Result<bool, aos_sandbox_linux::Error>>,
+    replay_alive: Option<Result<bool, aos_linux_descriptors::Error>>,
     replay_subject_current: Option<bool>,
 }
 

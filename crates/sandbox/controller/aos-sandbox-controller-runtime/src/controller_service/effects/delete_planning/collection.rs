@@ -35,7 +35,7 @@ pub(in crate::controller_service) struct ControllerDeletePlanningCollectionV2<'s
     model_admission: Option<Result<(), ResourceReservationErrorV1>>,
     broker_cuts: [Option<Result<aos_sandbox_protocol::domain_ledger::delete_batch::DeleteBatchOwnerCutDataV2,
         aos_sandbox_protocol::domain_ledger::lifecycle_model::LifecycleModelError>>; 4],
-    cache: Option<aos_sandbox_controller_domain::cache_residency::CacheDeleteInventoryOriginalV1<'cache>>,
+    cache: Option<aos_sandbox_controller_domain::CacheDeleteInventoryOriginalV1<'cache>>,
     root: Option<ControllerDeleteLocalRootPlanningOriginalV1<'profile>>,
     cache_cut: Option<Result<aos_sandbox_protocol::domain_ledger::delete_batch::DeleteBatchOwnerCutDataV2,
         CacheCutFailureV2>>,
@@ -89,7 +89,7 @@ pub(in crate::controller_service) struct ControllerDeletePlanningCollectionV2<'s
 enum CacheCutFailureV2 {
     Admission(ResourceReservationErrorV1),
     Original(aos_sandbox_controller_domain::JournalError),
-    Physical(aos_sandbox_controller_domain::cache_residency::CacheOwnerErrorV1),
+    Physical(aos_sandbox_cache::CacheOwnerErrorV1),
     Canonical(aos_sandbox_protocol::domain_ledger::lifecycle_model::LifecycleModelError),
 }
 
@@ -561,7 +561,7 @@ fn derive_broker_models_from_originals_v2(
 
 
 fn derive_cache_cut_from_original_v2(
-    cache: Option<&aos_sandbox_controller_domain::cache_residency::CacheDeleteInventoryOriginalV1<'_>>,
+    cache: Option<&aos_sandbox_controller_domain::CacheDeleteInventoryOriginalV1<'_>>,
     source: &mut ControllerDeleteInventorySourceV2<'_, '_, '_, '_>,
     bank: &aos_sandbox_controller_domain::ControllerResourceBankOpeningV1,
     controller: &mut Journal,
@@ -572,13 +572,13 @@ fn derive_cache_cut_from_original_v2(
             // No duplicate row Vec is built. Pay the actual fixed five-name
             // array, borrowed row iterator, SHA, per-row pair and name encoding.
             let bytes = std::mem::size_of::<[CacheJournalDataV1; 5]>()
-                .checked_add(std::mem::size_of::<std::slice::Iter<'_, aos_sandbox_controller_domain::lifecycle::LifecycleBootDomainEntryV1>>())
+                .checked_add(std::mem::size_of::<std::slice::Iter<'_, aos_sandbox_protocol::domain_ledger::lifecycle_model::LifecycleBootDomainEntryDataV1>>())
                 .and_then(|bytes| bytes.checked_add(std::mem::size_of::<(
                     aos_sandbox_protocol::domain_ledger::lifecycle_model::LifecycleResourceV1, [u8; 32])>()))
                 .and_then(|bytes| bytes.checked_add(std::mem::size_of::<sha2::Sha256>()))
                 .and_then(|bytes| bytes.checked_add(std::mem::size_of::<
                     aos_sandbox_protocol::domain_ledger::create_storage_history::cache_held::CachePhysicalDataV1>()))
-                .and_then(|bytes| bytes.checked_add(std::mem::size_of::<aos_sandbox_controller_domain::cache_residency::CacheOwnerLimitsV1>()))
+                .and_then(|bytes| bytes.checked_add(std::mem::size_of::<aos_sandbox_cache::CacheOwnerLimitsV1>()))
                 .and_then(|bytes| bytes.checked_add(48 + 128)).and_then(|bytes| bytes.checked_mul(3))
                 .ok_or(CacheCutFailureV2::Canonical(LifecycleModelError::InvalidModel))?;
             source.reserve_model_bytes_v2(bank, controller, profile, bytes)

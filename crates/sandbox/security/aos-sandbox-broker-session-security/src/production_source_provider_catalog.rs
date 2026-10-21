@@ -753,8 +753,8 @@ impl SelectedMountCatalogCredentialsV1 {
 struct SelectedCatalogStateV1 {
     filesystem_root: Option<Result<std::os::fd::OwnedFd, rustix::io::Errno>>,
     root_duplicate: Option<Result<std::os::fd::OwnedFd, rustix::io::Errno>>,
-    root: Option<aos_sandbox_linux::Result<BeneathRoot>>,
-    resolved: Option<aos_sandbox_linux::Result<aos_sandbox_linux::path::ResolvedPath>>,
+    root: Option<aos_linux_descriptors::Result<BeneathRoot>>,
+    resolved: Option<aos_linux_descriptors::Result<aos_sandbox_linux::path::ResolvedPath>>,
     path_stat: Option<Result<Stat, rustix::io::Errno>>,
     directory: Option<Result<std::os::fd::OwnedFd, rustix::io::Errno>>,
     readable_stat: Option<Result<Stat, rustix::io::Errno>>,
@@ -790,7 +790,7 @@ pub enum SelectedSourceProviderCatalogFailureRefV1<'owner> {
     /// A returned syscall result retains the actual kernel cause.
     Kernel(&'owner rustix::io::Errno),
     /// The same consuming path validator returned this retained error.
-    Path(&'owner aos_sandbox_linux::Error),
+    Path(&'owner aos_linux_descriptors::Error),
     /// A read, write, seek or file-sync result retains this I/O cause.
     Io(&'owner std::io::Error),
     /// Formatting the bounded temporary basename failed.

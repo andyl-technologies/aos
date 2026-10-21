@@ -4,7 +4,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU32;
 use std::os::fd::{AsFd as _, OwnedFd};
 
-use aos_sandbox_linux::pidfd::{PidFd, PidFdCredentials};
+use aos_linux_descriptors::pidfd::PidFd;
+use aos_linux_descriptors::pidfd::PidFdCredentials;
 use aos_sandbox_linux::startup_fd_table::{
     ClaimedInitialProcessFdTableV1, InitialDescriptorObjectKindV1, InitialDescriptorObservationV1,
     ActivationEnvironmentHintsV1, ClaimedInitialDescriptorV1, StartupProcessObservationV1,
@@ -36,7 +37,7 @@ use crate::{JournalError, ProtectedJournalAuthority};
 pub enum MountManagerSourceInventoryError {
     /// The Linux one-shot table changed or could not be revalidated.
     #[error("Mount-manager startup kernel capture failed")]
-    Kernel(#[from] aos_sandbox_linux::Error),
+    Kernel(#[from] aos_linux_descriptors::Error),
     /// Protected journal state was malformed, stale, or could not be committed.
     #[error("Mount-manager startup protected authority failed")]
     Journal(#[from] JournalError),
@@ -713,16 +714,16 @@ fn prove_execution_dead(
         NonZeroU32::new(prior_tgid).ok_or(MountManagerSourceInventoryError::InvalidCapture)?;
     let pidfd = match PidFd::open(pid) {
         Ok(pidfd) => pidfd,
-        Err(aos_sandbox_linux::Error::Syscall { source, .. })
+        Err(aos_linux_descriptors::Error::Syscall { source, .. })
             if source.raw_os_error() == Some(3) =>
         {
             return Ok(MountManagerExecutionDeathKindV1::PidfdExited);
         }
         Err(error) => return Err(error.into()),
     };
-    let identity = match pidfd.process_identity() {
+    let identity = match aos_sandbox_linux::pidfd::process_identity(&(pidfd)) {
         Ok(identity) => identity,
-        Err(aos_sandbox_linux::Error::Syscall { source, .. })
+        Err(aos_linux_descriptors::Error::Syscall { source, .. })
             if source.raw_os_error() == Some(3) =>
         {
             return Ok(MountManagerExecutionDeathKindV1::PidfdExited);
@@ -1108,7 +1109,7 @@ fn release_selected_descriptors(
         owner.pending_descriptor = Some(
             std::os::fd::AsFd::as_fd(entry)
                 .try_clone_to_owned()
-                .map_err(|source| aos_sandbox_linux::Error::Syscall {
+                .map_err(|source| aos_linux_descriptors::Error::Syscall {
                     operation: "duplicate admitted Mount startup descriptor",
                     source,
                 })?,

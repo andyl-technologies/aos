@@ -13,9 +13,10 @@ use aos_sandbox_api::aos::sandbox::local::v1::{Audience, BrokerMethod};
 use aos_sandbox_broker_session_protocol::{
     BrokerSessionProtocolV1, authenticated_broker_methods_for_role_v1,
 };
-use aos_sandbox_linux::boot::KernelBootId;
+use aos_linux_descriptors::boot::KernelBootId;
 use aos_sandbox_linux::cgroup::{CgroupV2Root, RetainedCgroupAnchor};
-use aos_sandbox_linux::pidfd::{PidFd, PidFdInfo};
+use aos_linux_descriptors::pidfd::PidFd;
+use aos_linux_descriptors::pidfd::PidFdInfo;
 use aos_sandbox_protocol::host_consumer_cgroup::ValidatedConsumerCgroupRequestV1;
 use aos_sandbox_storage::StorageLiveExportReadbackV1;
 use rustix::time::{ClockId, clock_gettime};

@@ -20,7 +20,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use aos_sandbox_linux::cgroup::{CgroupV2Root, RetainedCgroupAnchor};
-use aos_sandbox_linux::pidfd::{PidFd, PidFdProcessIdentity};
+use aos_linux_descriptors::pidfd::PidFd;
+use aos_sandbox_linux::pidfd::PidFdProcessIdentity;
 use aos_systemd_client::{OwnedValue, SystemdClient, Value};
 use rustix::fs::{Mode, OFlags, open};
 
@@ -108,7 +109,7 @@ macro_rules! service_open_step {
         $original.capture_info()?;
     };
     (Ordinary, identity $original:ident, $parent:ident, $identity:ident) => {
-        let $identity = $parent.process_identity().map_err(|_| FloorErrorV1::Unavailable)?;
+        let $identity = aos_sandbox_linux::pidfd::process_identity(&($parent)).map_err(|_| FloorErrorV1::Unavailable)?;
     };
     (Retained, identity $original:ident, $parent:ident, $identity:ident) => {
         $original.capture_identity()?;
@@ -177,7 +178,7 @@ macro_rules! service_open_recipe {
     }};
 }
 
-fn require_original_manager_parent(info: aos_sandbox_linux::pidfd::PidFdInfo)
+fn require_original_manager_parent(info: aos_linux_descriptors::pidfd::PidFdInfo)
     -> Result<(), FloorErrorV1>
 {
     if info.parent_pid() != 1 || info.pid() != std::process::id() {

@@ -14,13 +14,16 @@ use std::os::fd::{AsFd, BorrowedFd, OwnedFd, RawFd};
 use std::rc::Rc;
 
 use crate::uapi::{self, NamespaceIoctl};
-use crate::{Error, Result};
+use aos_linux_descriptors::Error;
+use aos_linux_descriptors::Result;
+use aos_linux_descriptors::pidfd::{PidFd, PidFdInfo, PidFdCredentials, PidFdOwnedAdmissionFailureV3, PidFdAdmissionSlotV1};
 
 mod identity;
 mod proc_observations;
 
-pub use identity::{PidFdProcessIdentity, PidFdProcessIdentityOriginalV1};
+pub use identity::{PidFdProcessIdentity, PidFdProcessIdentityOriginalV1, process_identity};
 pub use proc_observations::{
+    prepare_proc_observations_v1,
     HostCanaryLocalChildOriginalsV1, HostCanaryReceivedChildErrorV1,
     HostCanaryReceivedChildOriginalsV1, PidFdContextReadbackV1, PidFdIdentityReadbackV1,
     PidFdNegativeContextOriginalV1,
@@ -33,13 +36,8 @@ pub use current_network::CurrentNetworkNamespaceOriginalV4;
 mod single_thread_original;
 pub use single_thread_original::SingleThreadedProcessOriginalV2;
 
-const LIVENESS_POLL_INTERRUPT_LIMIT: usize = 8;
 
-/// A process pinned against PID reuse by an owned pidfd.
-#[derive(Debug)]
-pub struct PidFd {
-    fd: OwnedFd,
-}
+
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CurrentSelfPhaseV1 {
@@ -56,7 +54,7 @@ enum CurrentSelfPhaseV1 {
 /// bytes are DATA: an independent purpose owner must compare its original role,
 /// credentials and membership. This type grants no launch or process authority.
 pub struct CurrentSelfPidFdCustodyV1 {
-    raw: Option<OwnedFd>,
+    raw: Option<PidFdAdmissionSlotV1>,
     process: Option<PidFd>,
     observations: Option<PidFdProcObservationsV1>,
     phase: CurrentSelfPhaseV1,
@@ -88,22 +86,22 @@ impl CurrentSelfPidFdCustodyV1 {
     }
 
     fn capture_current_inner(&mut self) -> Result<PidFdProcessIdentity> {
-        self.raw = Some(uapi::pidfd_open_current_original()?);
+        self.raw = Some(PidFdAdmissionSlotV1::new(aos_linux_descriptors::native::pidfd_open_current_original()?));
 
         // Preserve the original fd_result pass, then the sole typed validator's
         // second CLOEXEC pass. Both now borrow the already-resident fresh pin.
         let raw = self.raw.as_ref().ok_or_else(current_self_closed)?;
-        uapi::ensure_cloexec(raw.as_fd())?;
-        PidFd::validate_owned_kind(raw.as_fd())?;
+        aos_linux_descriptors::native::ensure_cloexec(raw.as_fd())?;
+        self.raw.as_mut().ok_or_else(current_self_closed)?.validate_once()?;
 
         // Removal is followed only by an infallible same-owner typed transfer.
         match self.raw.take() {
-            Some(fd) => self.process = Some(PidFd { fd }),
+            Some(fd) => self.process = Some(match fd.into_validated() { Ok(pin) => pin, Err(_still_owned) => std::process::abort() }),
             None => return Err(current_self_closed()),
         }
 
         let process = self.process.as_ref().ok_or_else(current_self_closed)?;
-        self.observations = Some(process.prepare_proc_observations_v1());
+        self.observations = Some(crate::pidfd::prepare_proc_observations_v1(process));
         self.observations
             .as_mut()
             .ok_or_else(current_self_closed)?
@@ -250,7 +248,7 @@ fn current_self_closed() -> Error {
 /// No descriptor is duplicated or reopened and no process is nominated by PID.
 #[derive(Debug, Default)]
 pub struct RuntimeScopeReceivedPidFdOriginalV1 {
-    raw: Option<OwnedFd>,
+    raw: Option<PidFdAdmissionSlotV1>,
     validation: Option<Result<()>>,
     pin: Option<PidFd>,
     attempted: bool,
@@ -268,14 +266,14 @@ impl RuntimeScopeReceivedPidFdOriginalV1 {
     pub fn capture_once(&mut self, fd: OwnedFd) -> Result<()> {
         if self.attempted { return Err(current_self_closed()); }
         self.attempted = true;
-        self.raw = Some(fd);
-        self.validation = Some(match self.raw.as_ref() {
-            Some(raw) => PidFd::validate_owned_kind(raw.as_fd()),
+        self.raw = Some(PidFdAdmissionSlotV1::new(fd));
+        self.validation = Some(match self.raw.as_mut() {
+            Some(raw) => raw.validate_once(),
             None => Err(current_self_closed()),
         });
         if !matches!(self.validation, Some(Ok(()))) { return Err(current_self_closed()); }
         let Some(fd) = self.raw.take() else { std::process::abort(); };
-        self.pin = Some(PidFd { fd });
+        self.pin = Some(match fd.into_validated() { Ok(pin) => pin, Err(_still_owned) => std::process::abort() });
         Ok(())
     }
 
@@ -307,26 +305,11 @@ impl RuntimeScopeReceivedPidFdOriginalV1 {
 #[error("original pidfd opening is incomplete or fenced")]
 pub struct PidFdOpenRefusalV1;
 
-/// Retains a transferred descriptor rejected by the sole kernel-pin validator.
-///
-/// No descriptor getter, retry or process authority is supplied.
-#[derive(Debug)]
-pub struct PidFdOwnedAdmissionFailureV3 {
-    cause: Error,
-    _input: Option<OwnedFd>,
-}
 
-impl std::fmt::Display for PidFdOwnedAdmissionFailureV3 {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt(&self.cause, formatter)
-    }
-}
 
-impl std::error::Error for PidFdOwnedAdmissionFailureV3 {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(&self.cause)
-    }
-}
+
+
+
 
 /// Retains one original kernel pidfd through validation and once-only transfer.
 ///
@@ -334,7 +317,7 @@ impl std::error::Error for PidFdOwnedAdmissionFailureV3 {
 /// actual PID selector and checks membership, credentials and current liveness.
 /// It must fund this reservoir before acquisition and retain it on failure.
 pub struct PidFdOpenAttemptV1 {
-    open: Option<Result<OwnedFd>>,
+    open: Option<Result<PidFdAdmissionSlotV1>>,
     flags: Option<Result<()>>,
     validation: Option<Result<()>>,
     process: Option<PidFd>,
@@ -368,22 +351,25 @@ impl PidFdOpenAttemptV1 {
             return Err(PidFdOpenRefusalV1);
         }
         self.entered = true;
-        self.open = Some(uapi::pidfd_open_original(pid.get()));
+        self.open = Some(aos_linux_descriptors::native::pidfd_open_original(pid.get()).map(PidFdAdmissionSlotV1::new));
         let Some(Ok(raw)) = self.open.as_ref() else {
             return Err(PidFdOpenRefusalV1);
         };
-        self.flags = Some(uapi::ensure_cloexec(raw.as_fd()));
+        self.flags = Some(aos_linux_descriptors::native::ensure_cloexec(raw.as_fd()));
         if !matches!(self.flags, Some(Ok(()))) {
             return Err(PidFdOpenRefusalV1);
         }
-        self.validation = Some(PidFd::validate_owned_kind(raw.as_fd()));
+        self.validation = Some(match self.open.as_mut() {
+            Some(Ok(raw)) => raw.validate_once(),
+            _ => std::process::abort(),
+        });
         if !matches!(self.validation, Some(Ok(()))) {
             return Err(PidFdOpenRefusalV1);
         }
         // Validation borrows the original. Only this infallible owning move
         // follows; no new syscall or duplicate can lose the validated prefix.
         match self.open.take() {
-            Some(Ok(fd)) => self.process = Some(PidFd { fd }),
+            Some(Ok(fd)) => self.process = Some(match fd.into_validated() { Ok(pin) => pin, Err(_still_owned) => std::process::abort() }),
             _ => std::process::abort(),
         }
         self.complete = true;
@@ -416,270 +402,7 @@ impl Default for PidFdOpenAttemptV1 {
     }
 }
 
-impl PidFd {
-    /// Validates a transferred original while retaining its descriptor on error.
-    ///
-    /// This mechanical admission identifies a kernel pin only. The caller
-    /// independently verifies the received subject, role, ancestry and scope.
-    ///
-    /// # Errors
-    /// Preserves the actual same-validator error and raw input descriptor.
-    pub fn from_owned_retaining_v3(fd: OwnedFd) -> std::result::Result<Self, PidFdOwnedAdmissionFailureV3> {
-        let mut input = Some(fd);
-        Self::adopt_owned_slot_v2(&mut input).map_err(|cause| PidFdOwnedAdmissionFailureV3 { cause, _input: input })
-    }
 
-    /// Opens and validates a pidfd for `pid`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the process cannot be pinned, the kernel lacks the
-    /// required pidfd operations, or the returned descriptor is not a pidfd.
-    pub fn open(pid: NonZeroU32) -> Result<Self> {
-        Self::from_owned(uapi::pidfd_open(pid.get())?)
-    }
-
-    /// Opens the same pidfd while retaining any raw typed-admission failure.
-    ///
-    /// The existing kernel open and CLOEXEC/pidfs checker remain shared. The
-    /// failure owns any returned original descriptor; it grants no identity,
-    /// process membership or permission to observe a different task.
-    ///
-    /// # Errors
-    /// Retains the original syscall or typed descriptor validation cause and
-    /// any raw descriptor acquired before that validation failed.
-    pub fn open_retaining_v4(pid: NonZeroU32) -> std::result::Result<Self, PidFdOwnedAdmissionFailureV3> {
-        let descriptor = uapi::pidfd_open(pid.get()).map_err(|cause| PidFdOwnedAdmissionFailureV3 {
-            cause, _input: None,
-        })?;
-        Self::from_owned_retaining_v3(descriptor)
-    }
-
-    /// Validates and adopts an already-owned pidfd.
-    ///
-    /// The `PIDFD_GET_INFO` validation prevents an arbitrary caller-supplied
-    /// descriptor from crossing the typed boundary.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the descriptor is not a live pidfd supported by the
-    /// Linux 6.18 pidfs UAPI.
-    pub fn from_owned(fd: OwnedFd) -> Result<Self> {
-        Self::adopt_owned_slot_v2(&mut Some(fd))
-    }
-
-    // Typed admission leaves the exact raw fd in its actual native owner if
-    // the common borrowed CLOEXEC/pidfs checker refuses before the move.
-    pub(crate) fn adopt_owned_slot_v2(slot: &mut Option<OwnedFd>) -> Result<Self> {
-        let fd = slot.as_ref().ok_or_else(current_self_closed)?;
-        Self::validate_owned_kind(fd.as_fd())?;
-        match slot.take() {
-            Some(fd) => Ok(Self { fd }),
-            None => std::process::abort(),
-        }
-    }
-
-    // All callers use this sole checker and its original error precedence.
-    // The retaining caller leaves ownership in its guarded received slot.
-    pub(crate) fn validate_owned_kind(fd: BorrowedFd<'_>) -> Result<()> {
-        uapi::ensure_cloexec(fd)?;
-        match uapi::pidfd_info(fd) {
-            Ok(info) if info.mask & PidFdInfo::PID_PRESENT != 0 => Ok(()),
-            Ok(_) => Err(Error::MalformedKernelResponse {
-                object: "pidfd info",
-                message: "kernel omitted mandatory PID information".to_string(),
-            }),
-            Err(Error::Syscall { source, .. })
-                if matches!(source.raw_os_error(), Some(libc::ENOTTY | libc::EINVAL)) =>
-            {
-                Err(Error::WrongDescriptorType { expected: "pidfd" })
-            }
-            Err(error) => Err(error),
-        }
-    }
-
-    /// Adopts only an actual staged kernel slot after the same borrowed check.
-    pub(crate) fn adopt_received_slot(
-        slot: &mut Option<uapi::RawAncillary>,
-    ) -> Result<Self> {
-        let Some(uapi::RawAncillary::PidFd(fd)) = slot.as_ref() else {
-            return Err(Error::WrongDescriptorType { expected: "pidfd" });
-        };
-        Self::validate_owned_kind(fd.as_fd())?;
-
-        // No fallible operation follows removal. The caller installs the
-        // resulting typed pin directly in the same receive-attempt owner.
-        match slot.take() {
-            Some(uapi::RawAncillary::PidFd(fd)) => Ok(Self { fd }),
-            other => {
-                *slot = other;
-                Err(Error::WrongDescriptorType { expected: "pidfd" })
-            }
-        }
-    }
-
-    /// Borrows the underlying pidfd for descriptor-oriented APIs.
-    #[must_use]
-    pub fn as_fd(&self) -> BorrowedFd<'_> {
-        self.fd.as_fd()
-    }
-
-    /// Reads process identity, credentials, and cgroup ID with one pidfs ioctl.
-    ///
-    /// The fields are one observation of the pinned process, not a globally
-    /// atomic process snapshot. The process may exit immediately afterward.
-    /// Retain this `PidFd` and call [`PidFd::is_alive`] after related
-    /// observations.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `PIDFD_GET_INFO` fails or omits mandatory PID data.
-    pub fn info(&self) -> Result<PidFdInfo> {
-        decode_pidfd_info(uapi::pidfd_info(self.fd.as_fd())?)
-    }
-
-    /// Delivers a Linux signal to the thread group pinned by this descriptor.
-    ///
-    /// Explicit thread-group scope prevents an inherited thread pidfd from
-    /// silently selecting one thread or a mutable process group. The descriptor
-    /// and signal are not authorization: the owner must retain its current
-    /// policy, execution membership and effect reservation through the call.
-    ///
-    /// # Errors
-    /// Rejects a signal outside `1..=64`, stale custody, missing permission, or
-    /// a kernel failure. An error does not authorize automatic redispatch.
-    pub fn send_thread_group_signal(&self, signal: u8) -> Result<()> {
-        if !(1..=64).contains(&signal) {
-            return Err(Error::invalid("signal", "must be in 1..=64"));
-        }
-        uapi::pidfd_send_thread_group_signal(self.fd.as_fd(), signal)
-    }
-
-    /// Tests whether the pinned process has not exited without sending a signal.
-    ///
-    /// Pidfd exit readiness is independent of signal permissions. An exited
-    /// process reports `false` even while it remains waitable as a zombie or
-    /// while this descriptor continues to pin its identity.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when polling fails, is interrupted too many times, or
-    /// reports invalid or unexpected readiness flags.
-    pub fn is_alive(&self) -> Result<bool> {
-        Self::poll_original_liveness(self.fd.as_fd())
-    }
-
-    // The selected namespace-local channel shares the exact exit-poll engine;
-    // it never constructs a strict PidFd or synthesizes visible PID information.
-    fn poll_original_liveness(fd: BorrowedFd<'_>) -> Result<bool> {
-        let timeout = rustix::event::Timespec {
-            tv_sec: 0,
-            tv_nsec: 0,
-        };
-        for attempt in 0..LIVENESS_POLL_INTERRUPT_LIMIT {
-            let mut descriptors = [rustix::event::PollFd::new(
-                &fd,
-                rustix::event::PollFlags::IN | rustix::event::PollFlags::RDNORM,
-            )];
-            match rustix::event::poll(&mut descriptors, Some(&timeout)) {
-                Ok(0) => return Ok(true),
-                Ok(_) => {
-                    let readiness = descriptors[0].revents();
-                    let exit_readiness = rustix::event::PollFlags::IN
-                        | rustix::event::PollFlags::RDNORM
-                        | rustix::event::PollFlags::HUP;
-                    if readiness
-                        .intersects(rustix::event::PollFlags::ERR | rustix::event::PollFlags::NVAL)
-                    {
-                        return Err(Error::MalformedKernelResponse {
-                            object: "pidfd poll",
-                            message: "kernel reported an invalid descriptor state".to_owned(),
-                        });
-                    }
-                    if !readiness.difference(exit_readiness).is_empty() {
-                        return Err(Error::MalformedKernelResponse {
-                            object: "pidfd poll",
-                            message: "kernel reported unexpected readiness flags".to_owned(),
-                        });
-                    }
-                    if readiness.intersects(exit_readiness) {
-                        return Ok(false);
-                    }
-                    return Err(Error::MalformedKernelResponse {
-                        object: "pidfd poll",
-                        message: "kernel reported unexpected readiness flags".to_owned(),
-                    });
-                }
-                Err(source)
-                    if source == rustix::io::Errno::INTR
-                        && attempt + 1 < LIVENESS_POLL_INTERRUPT_LIMIT =>
-                {
-                    continue;
-                }
-                Err(source) => {
-                    return Err(Error::Syscall {
-                        operation: "poll pidfd liveness",
-                        source: source.into(),
-                    });
-                }
-            }
-        }
-        Err(Error::MalformedKernelResponse {
-            object: "pidfd poll",
-            message: "bounded liveness poll exhausted without a result".to_owned(),
-        })
-    }
-
-    pub(crate) fn require_ancestor_host_original(fd: BorrowedFd<'_>) -> Result<(u64, u64)> {
-        if !cfg!(all(target_pointer_width = "64", any(target_arch = "x86_64", target_arch = "aarch64"))) {
-            return Err(Error::invalid("ancestor Host pin", "unsupported pidfs inode width"));
-        }
-        uapi::ensure_cloexec(fd)?;
-        match uapi::pidfd_info(fd) {
-            Err(Error::Syscall { source, .. }) if source.raw_os_error() == Some(libc::EREMOTE) => {}
-            Err(cause) => return Err(cause),
-            Ok(_) => return Err(Error::invalid("ancestor Host pin", "process is visible in this PID namespace")),
-        }
-        let stat = uapi::fstat(fd)?;
-        if stat.st_ino == 0 || !Self::poll_original_liveness(fd)? {
-            return Err(Error::invalid("ancestor Host pin", "original process is unavailable"));
-        }
-        Ok((stat.st_dev as u64, stat.st_ino as u64))
-    }
-
-    /// Duplicates one descriptor from the pinned process with `pidfd_getfd`.
-    ///
-    /// This operation remains subject to the kernel's ptrace access check.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the target descriptor does not exist, access is
-    /// denied, the process exited, or the syscall is unavailable.
-    pub fn duplicate_target_fd(&self, target: RawFd) -> Result<OwnedFd> {
-        if target < 0 {
-            return Err(Error::invalid("target descriptor", "must be non-negative"));
-        }
-        uapi::pidfd_getfd(self.fd.as_fd(), target)
-    }
-
-    /// Acquires a typed namespace descriptor from this pinned process.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the process exited, access is denied, the requested
-    /// namespace is unavailable, or the returned descriptor is not `nsfs`.
-    pub fn namespace(&self, kind: NamespaceKind) -> Result<NamespaceFd> {
-        NamespaceFd::from_owned(self.acquire_namespace_original(kind)?, kind)
-    }
-
-    fn acquire_namespace_original(&self, kind: NamespaceKind) -> Result<OwnedFd> {
-        uapi::pidfd_namespace(self.fd.as_fd(), namespace_request_v2(kind))
-    }
-
-    fn acquire_namespace_retaining_v2(&self, kind: NamespaceKind, original: &mut Option<OwnedFd>) -> Result<()> {
-        uapi::pidfd_namespace_retaining_v2(self.fd.as_fd(), namespace_request_v2(kind), original)
-    }
-}
 
 fn namespace_request_v2(kind: NamespaceKind) -> NamespaceIoctl {
     match kind {
@@ -694,154 +417,6 @@ fn namespace_request_v2(kind: NamespaceKind) -> NamespaceIoctl {
 mod namespace_original;
 pub use namespace_original::PidFdNamespaceOriginalV2;
 
-/// Information returned by one `PIDFD_GET_INFO` ioctl observation.
-///
-/// Credentials, cgroup membership, and process identifiers are read separately
-/// during the ioctl. This value does not assert that they form a globally
-/// atomic snapshot or that any mutable field remains current afterward. Callers
-/// making an authorization decision must retain the pidfd and repeat the
-/// observations required at their effect boundary.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct PidFdInfo {
-    pid: u32,
-    thread_group_id: u32,
-    parent_pid: u32,
-    credentials: Option<PidFdCredentials>,
-    cgroup_id: Option<u64>,
-}
-
-impl PidFdInfo {
-    const PID_PRESENT: u64 = 1 << 0;
-    const CREDENTIALS_PRESENT: u64 = 1 << 1;
-    const CGROUP_PRESENT: u64 = 1 << 2;
-
-    /// Returns the process ID in the caller's PID namespace.
-    #[must_use]
-    pub const fn pid(self) -> u32 {
-        self.pid
-    }
-
-    /// Returns the thread-group leader ID.
-    #[must_use]
-    pub const fn thread_group_id(self) -> u32 {
-        self.thread_group_id
-    }
-
-    /// Returns the parent process ID observed by the kernel.
-    #[must_use]
-    pub const fn parent_pid(self) -> u32 {
-        self.parent_pid
-    }
-
-    /// Returns the task credentials when the kernel supplied them.
-    #[must_use]
-    pub const fn credentials(self) -> Option<PidFdCredentials> {
-        self.credentials
-    }
-
-    /// Returns the cgroup-v2 kernfs ID when the kernel supplied it.
-    #[must_use]
-    pub const fn cgroup_id(self) -> Option<u64> {
-        self.cgroup_id
-    }
-}
-
-/// Credentials captured from one coherent task credential snapshot.
-///
-/// The kernel maps these IDs into the caller's current user namespace. Real,
-/// effective, saved-set, and filesystem IDs are distinct mutable process
-/// attributes. This value reports all eight fields from the same credential
-/// object but makes no freshness claim after the ioctl returns.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct PidFdCredentials {
-    real_user_id: u32,
-    real_group_id: u32,
-    effective_user_id: u32,
-    effective_group_id: u32,
-    saved_user_id: u32,
-    saved_group_id: u32,
-    filesystem_user_id: u32,
-    filesystem_group_id: u32,
-}
-
-impl PidFdCredentials {
-    /// Returns the real user ID.
-    #[must_use]
-    pub const fn real_user_id(self) -> u32 {
-        self.real_user_id
-    }
-
-    /// Returns the real group ID.
-    #[must_use]
-    pub const fn real_group_id(self) -> u32 {
-        self.real_group_id
-    }
-
-    /// Returns the effective user ID.
-    #[must_use]
-    pub const fn effective_user_id(self) -> u32 {
-        self.effective_user_id
-    }
-
-    /// Returns the effective group ID.
-    #[must_use]
-    pub const fn effective_group_id(self) -> u32 {
-        self.effective_group_id
-    }
-
-    /// Returns the saved-set user ID.
-    #[must_use]
-    pub const fn saved_user_id(self) -> u32 {
-        self.saved_user_id
-    }
-
-    /// Returns the saved-set group ID.
-    #[must_use]
-    pub const fn saved_group_id(self) -> u32 {
-        self.saved_group_id
-    }
-
-    /// Returns the filesystem user ID used for filesystem access checks.
-    #[must_use]
-    pub const fn filesystem_user_id(self) -> u32 {
-        self.filesystem_user_id
-    }
-
-    /// Returns the filesystem group ID used for filesystem access checks.
-    #[must_use]
-    pub const fn filesystem_group_id(self) -> u32 {
-        self.filesystem_group_id
-    }
-}
-
-fn decode_pidfd_info(raw: uapi::RawPidfdInfo) -> Result<PidFdInfo> {
-    if raw.mask & PidFdInfo::PID_PRESENT == 0 {
-        return Err(Error::MalformedKernelResponse {
-            object: "pidfd info",
-            message: "kernel omitted mandatory PID information".to_string(),
-        });
-    }
-
-    let credentials =
-        (raw.mask & PidFdInfo::CREDENTIALS_PRESENT != 0).then_some(PidFdCredentials {
-            real_user_id: raw.ruid,
-            real_group_id: raw.rgid,
-            effective_user_id: raw.euid,
-            effective_group_id: raw.egid,
-            saved_user_id: raw.suid,
-            saved_group_id: raw.sgid,
-            filesystem_user_id: raw.fsuid,
-            filesystem_group_id: raw.fsgid,
-        });
-
-    Ok(PidFdInfo {
-        pid: raw.pid,
-        thread_group_id: raw.tgid,
-        parent_pid: raw.ppid,
-        credentials,
-        cgroup_id: (raw.mask & PidFdInfo::CGROUP_PRESENT != 0).then_some(raw.cgroup_id),
-    })
-}
 
 /// Namespace kinds exposed by the sandbox Linux boundary.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -978,7 +553,7 @@ impl NamespaceFd {
         fd: BorrowedFd<'_>,
         kind: NamespaceKind,
     ) -> Result<NamespaceIdentity> {
-        uapi::ensure_cloexec(fd)?;
+        aos_linux_descriptors::native::ensure_cloexec(fd)?;
         if !uapi::is_namespace(fd)? {
             return Err(Error::WrongDescriptorType {
                 expected: "nsfs namespace",
@@ -1307,51 +882,7 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn pidfd_info_maps_all_credential_fields_and_mask_omission() {
-        let raw = uapi::RawPidfdInfo {
-            mask: PidFdInfo::PID_PRESENT
-                | PidFdInfo::CREDENTIALS_PRESENT
-                | PidFdInfo::CGROUP_PRESENT,
-            cgroup_id: 19,
-            pid: 11,
-            tgid: 12,
-            ppid: 13,
-            ruid: 21,
-            rgid: 22,
-            euid: 23,
-            egid: 24,
-            suid: 25,
-            sgid: 26,
-            fsuid: 27,
-            fsgid: 28,
-            ..uapi::RawPidfdInfo::default()
-        };
-        let info = decode_pidfd_info(raw).unwrap();
-        let credentials = info.credentials().unwrap();
 
-        assert_eq!(info.pid(), 11);
-        assert_eq!(info.thread_group_id(), 12);
-        assert_eq!(info.parent_pid(), 13);
-        assert_eq!(info.cgroup_id(), Some(19));
-        assert_eq!(credentials.real_user_id(), 21);
-        assert_eq!(credentials.real_group_id(), 22);
-        assert_eq!(credentials.effective_user_id(), 23);
-        assert_eq!(credentials.effective_group_id(), 24);
-        assert_eq!(credentials.saved_user_id(), 25);
-        assert_eq!(credentials.saved_group_id(), 26);
-        assert_eq!(credentials.filesystem_user_id(), 27);
-        assert_eq!(credentials.filesystem_group_id(), 28);
-
-        let without_credentials = decode_pidfd_info(uapi::RawPidfdInfo {
-            mask: PidFdInfo::PID_PRESENT,
-            pid: 11,
-            ..raw
-        })
-        .unwrap();
-        assert_eq!(without_credentials.credentials(), None);
-        assert_eq!(without_credentials.cgroup_id(), None);
-    }
 
     #[test]
     fn current_process_pidfd_is_pinned_when_kernel_supports_info() {
@@ -1360,7 +891,7 @@ mod tests {
             Ok(pidfd) => {
                 assert!(pidfd.is_alive().unwrap());
                 assert_eq!(pidfd.info().unwrap().pid(), pid.get());
-                match pidfd.namespace(NamespaceKind::Mount) {
+                match crate::pidfd::namespace(&(pidfd), NamespaceKind::Mount) {
                     Ok(namespace) => assert_eq!(namespace.kind(), NamespaceKind::Mount),
                     Err(Error::Syscall { source, .. })
                         if matches!(
@@ -1498,7 +1029,7 @@ mod tests {
         let stdin = std::io::stdin();
         let pidfd = PidFd::from_owned(stdin.as_fd().try_clone_to_owned().unwrap()).unwrap();
         assert!(matches!(
-            uapi::pidfd_send_signal_zero_for_test(pidfd.as_fd()),
+            aos_linux_descriptors::native::pidfd_send_signal_zero_for_test(pidfd.as_fd()),
             Err(Error::Syscall { source, .. }) if source.raw_os_error() == Some(libc::EPERM)
         ));
         assert!(pidfd.is_alive().unwrap());
@@ -1509,6 +1040,66 @@ mod tests {
         while pidfd.is_alive().unwrap() {
             assert!(Instant::now() < deadline, "target did not become exited");
             std::thread::yield_now();
+        }
+    }
+}
+
+
+
+pub(crate) fn require_ancestor_host_original(fd: BorrowedFd<'_>) -> Result<(u64, u64)> {
+    if !cfg!(all(target_pointer_width = "64", any(target_arch = "x86_64", target_arch = "aarch64"))) {
+        return Err(Error::invalid("ancestor Host pin", "unsupported pidfs inode width"));
+    }
+    aos_linux_descriptors::native::ensure_cloexec(fd)?;
+    match aos_linux_descriptors::native::pidfd_info(fd) {
+        Err(Error::Syscall { source, .. }) if source.raw_os_error() == Some(libc::EREMOTE) => {}
+        Err(cause) => return Err(cause),
+        Ok(_) => return Err(Error::invalid("ancestor Host pin", "process is visible in this PID namespace")),
+    }
+    let stat = uapi::fstat(fd)?;
+    if stat.st_ino == 0 || !PidFd::poll_original_liveness(fd)? {
+        return Err(Error::invalid("ancestor Host pin", "original process is unavailable"));
+    }
+    Ok((stat.st_dev as u64, stat.st_ino as u64))
+}
+
+
+/// Acquires a typed namespace descriptor from this pinned process.
+///
+/// # Errors
+///
+/// Returns an error if the process exited, access is denied, the requested
+/// namespace is unavailable, or the returned descriptor is not `nsfs`.
+pub fn namespace(process: &PidFd, kind: NamespaceKind) -> Result<NamespaceFd> {
+    NamespaceFd::from_owned(acquire_namespace_original(process, kind)?, kind)
+}
+
+
+
+fn acquire_namespace_original(process: &PidFd, kind: NamespaceKind) -> Result<OwnedFd> {
+    uapi::pidfd_namespace(process.as_fd(), namespace_request_v2(kind))
+}
+
+
+
+fn acquire_namespace_retaining_v2(process: &PidFd, kind: NamespaceKind, original: &mut Option<OwnedFd>) -> Result<()> {
+    uapi::pidfd_namespace_retaining_v2(process.as_fd(), namespace_request_v2(kind), original)
+}
+
+/// Transfers one actual private kernel slot after the sole borrowed validator.
+pub(crate) fn adopt_received_slot(slot: &mut Option<uapi::RawAncillary>) -> Result<PidFd> {
+    let Some(uapi::RawAncillary::PidFd(fd)) = slot.as_mut() else {
+        return Err(Error::WrongDescriptorType { expected: "pidfd" });
+    };
+    fd.validate_once()?;
+    match slot.take() {
+        Some(uapi::RawAncillary::PidFd(fd)) => match fd.into_validated() {
+            Ok(pin) => Ok(pin),
+            Err(_still_owned) => std::process::abort(),
+        },
+        other => {
+            *slot = other;
+            Err(Error::WrongDescriptorType { expected: "pidfd" })
         }
     }
 }

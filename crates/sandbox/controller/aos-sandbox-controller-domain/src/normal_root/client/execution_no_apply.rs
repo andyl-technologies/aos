@@ -14,14 +14,11 @@ use super::{
     root_connection::ControllerRootConnectionOriginalV1,
     strict_chunk::RootStrictChunkOriginalV1,
 };
-use crate::{
-    controller_execution_operation::ControllerExecutionNoApplyClientLoanV2,
-    controller_resource_reservation::ResourceReservationErrorV1,
-    policy_compiler::{
-        RetainedKernelPairedClockAttemptV1,
-        bounded_stream_io::{DeadlineStreamDirectionV1, FixedDeadlineStreamIoV1},
-    },
-};
+use crate::controller_execution_operation::ControllerExecutionNoApplyClientLoanV2;
+use crate::controller_resource_reservation::ResourceReservationErrorV1;
+use crate::policy_compiler::RetainedKernelPairedClockAttemptV1;
+use aos_sandbox_broker::bounded_stream_io::DeadlineStreamDirectionV1;
+use aos_sandbox_broker::bounded_stream_io::FixedDeadlineStreamIoV1;
 use aos_sandbox_broker::bounded_entropy::{EntropyError, RetainedKernelNonceOriginalV1};
 use aos_sandbox_model::{RawPairedClockSample, ResourceDimension as D, ResourceVector};
 use aos_sandbox_linux::unix_stream::{RetainedSubjectStreamReadV1, SubjectStreamReadErrorV1};
@@ -315,7 +312,7 @@ impl RootExecutionNoApplyClientOriginalV2 {
             .state
             .as_mut()
             .ok_or(RootExecutionNoApplyClientClosedV2)?;
-        native.reporting = Some(native.connection.stream_mut()?.enable_subject_reporting());
+        native.reporting = Some(native.connection.stream_mut()?.enable_subject_reporting().map_err(aos_sandbox_linux::seqpacket::SeqpacketError::from));
         positive(&native.reporting)?;
         native.query_sent = Some(native.query_sender.run_once(
             native.connection.stream_mut()?,

@@ -1,0 +1,44 @@
+[package]
+name = "aos-sandbox-cache"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+autobins = false
+
+[dependencies]
+aos-sandbox-broker = { workspace = true }
+aos-sandbox-filesystem-format = { workspace = true }
+aos-sandbox-journal = { workspace = true, features = ["protected-unix"] }
+aos-sandbox-ledger-replay = { workspace = true }
+aos-sandbox-model = { workspace = true }
+aos-sandbox-protocol = { workspace = true }
+ed25519-dalek = { workspace = true, features = ["zeroize"] }
+rustix = { workspace = true, features = ["fs", "process", "time"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+aos-sandbox-broker = { workspace = true, features = ["test-fixtures"] }
+aos-sandbox-journal = { workspace = true, features = ["test-fixtures"] }
+aos-sandbox-ledger-replay = { workspace = true, features = ["test-fixtures"] }
+aos-sandbox-protocol = { workspace = true, features = ["test-fixtures"] }
+tempfile = { workspace = true }
+
+[features]
+cache-physical-join-vm-fixture = []
+default = []
+kernel-tests = ["aos-sandbox-linux/kernel-tests"]
+test-fixtures = ["aos-sandbox-journal/test-fixtures", "aos-sandbox-broker/test-fixtures", "aos-sandbox-ledger-replay/test-fixtures", "aos-sandbox-protocol/test-fixtures"]
+
+[lib]
+name = "aos_sandbox_cache"
+path = "src/lib.rs"
+
+[lints]
+workspace = true
+
+[target."cfg(target_os = \"linux\")".dependencies]
+aos-sandbox-linux = { workspace = true }
+aos-linux-descriptors.workspace = true

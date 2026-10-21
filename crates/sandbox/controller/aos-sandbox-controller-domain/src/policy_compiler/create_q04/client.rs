@@ -187,7 +187,7 @@ pub(crate) struct Q04ControllerPreparationV1 {
     ancestry: aos_sandbox_model::ObjectDigest,
     candidate: aos_sandbox_policy::CompiledPolicyCandidateV1,
     input_origin: super::Q04PreparedInputOriginV1,
-    publication_recipe: super::super::protected_journal::Q04IndependentPublicationRecipeV1,
+    publication_recipe: aos_sandbox_policy::native::Q04IndependentPublicationRecipeV1,
 }
 
 impl Q04ControllerPreparationV1 {
@@ -333,9 +333,9 @@ fn require_original_identity_data(
     Ok(())
 }
 
-impl OriginalQ04RootCacheLoanV1<'_, '_, '_> {
+impl<'invocation, 'profile, 'cut> OriginalQ04RootCacheLoanV1<'invocation, 'profile, 'cut> {
     /// Borrows the same actual native continuation without another observation.
-    pub(crate) fn native_original_v1(&self) -> &aos_sandbox_broker::controller_receiving::profile::root_flight::ControllerRootQ04CacheLoanV1<'_, '_, '_> {
+    pub(crate) fn native_original_v1(&self) -> &aos_sandbox_broker::controller_receiving::profile::root_flight::ControllerRootQ04CacheLoanV1<'invocation, 'profile, 'cut> {
         &self.native
     }
 
@@ -561,7 +561,7 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
             >,
         >,
         operation: aos_sandbox_model::OperationId,
-        cache: &mut crate::cache_residency::OriginalQ04CachePreflightLoanV1<'_>,
+        cache: &mut crate::cache_programmes::OriginalQ04CachePreflightLoanV1<'_>,
     ) -> Result<(), CreateQ04ErrorV1> {
         if self.flight.is_some() || self.resource_preparation.is_some() {
             return Err(CreateQ04ErrorV1::ChangedCut);
@@ -585,11 +585,11 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
 
     pub(crate) fn begin_original_cache_capture<'cache>(
         &self,
-        cache: crate::cache_residency::OriginalQ04CachePreflightLoanV1<'cache>,
-    ) -> Result<crate::cache_residency::OriginalQ04CacheOwnerCutV1<'cache>, crate::cache_residency::CacheResidentUnavailableV1,
+        cache: crate::cache_programmes::OriginalQ04CachePreflightLoanV1<'cache>,
+    ) -> Result<crate::cache_programmes::OriginalQ04CacheOwnerCutV1<'cache>, aos_sandbox_cache::CacheResidentUnavailableV1,
     > {
         let paid = self.resource_preparation.as_ref()
-            .ok_or(crate::cache_residency::CacheResidentUnavailableV1)?;
+            .ok_or(aos_sandbox_cache::CacheResidentUnavailableV1)?;
         cache.begin(paid, self.profile)
     }
 
@@ -996,7 +996,7 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
         journal: &mut Journal,
         source: &mut ProtectedSourceDomainJournalOwnerV1,
         ledger: &crate::reconciler::OriginalQ04ControllerLedgerV1,
-        cache: &mut crate::cache_residency::OriginalQ04CacheOwnerCutV1<'_>,
+        cache: &mut crate::cache_programmes::OriginalQ04CacheOwnerCutV1<'_>,
         credentials: &crate::public_api_session::ControllerQ04CredentialCustodyV1,
     ) -> Result<Q04ControllerPreparationV1, CreateQ04ErrorV1> {
         self.resource_preparation()?.original_input_demand(self.profile)
@@ -1078,9 +1078,11 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
             &current, &project, &deployment, &input, &prerequisites, now,
         )?;
         let normalized = super::super::normalized_policy_input_digest_v1(&input)
-            .map_err(|_| super::super::PolicyCompilerJournalErrorV1::NonCanonicalPublication)?;
+            .map_err(|_| aos_sandbox_policy::native::PolicyCompilerJournalErrorV1::NonCanonicalPublication)?;
         let candidate = aos_sandbox_policy::PolicyCompilerV1::compile_retained(&input)?;
-        let inclusive = super::input_origin::candidate_capacity(&candidate)?;
+        let inclusive = aos_sandbox_policy::q04_candidate_capacity_v1!(
+            &candidate, crate::policy_compiler::create_q04::CreateQ04ErrorV1::ChangedCut
+        )?;
         self.original_input_demand(inclusive)?;
         // Subdivision is checked under the actual once-admitted Project owner
         // before the full input serializer creates its independently owned copy.
@@ -1095,7 +1097,7 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
         {
             return Err(CreateQ04ErrorV1::ChangedCut);
         }
-        let publication_recipe = super::super::protected_journal::q04_independent_publication_data_v1(
+        let publication_recipe = aos_sandbox_policy::native::q04_independent_publication_data_v1(
             &input, &candidate, &prerequisites,
         )?;
         Ok(Q04ControllerPreparationV1 {
@@ -1109,7 +1111,7 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
         journal: &mut Journal,
         source: &mut ProtectedSourceDomainJournalOwnerV1,
         ledger: &crate::reconciler::OriginalQ04ControllerLedgerV1,
-        cache: &mut crate::cache_residency::OriginalQ04CacheOwnerCutV1<'_>,
+        cache: &mut crate::cache_programmes::OriginalQ04CacheOwnerCutV1<'_>,
         prepared: &Q04ControllerPreparationV1,
     ) -> Result<(), CreateQ04ErrorV1> {
         let flight = self.flight.as_ref().ok_or(CreateQ04ErrorV1::ChangedCut)?;
@@ -1333,7 +1335,7 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
         let (normalized, candidate) = super::super::binding_v2::ClosedPolicyRootBindingV2::q04_decode(
             &prepared.proposed,
         )?.q04_compilation_commitments();
-        let identity = super::encode_q04_cut_recipe_v1(super::Q04CutRecipeV1 {
+        let cut_recipe = aos_sandbox_protocol::domain_ledger::create_q04_history::Q04CutRecipeV1 {
             nonce,
             project: prepared.source.project(),
             operation: prepared.source.operation(),
@@ -1354,7 +1356,10 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
                 ObjectDigest::from_bytes(super::fixed(reply, 192)),
                 ObjectDigest::from_bytes(super::fixed(&prepared.metadata, 144)), root_before,
             ],
-        })?;
+        };
+        let identity = aos_sandbox_protocol::encode_original_q04_cut_recipe_v1!(
+            cut_recipe, CreateQ04ErrorV1
+        )?;
         ledger.require_identity(&identity)?;
         self.require_cache_terminal_original(&identity)?;
         Ok(identity)
@@ -1723,7 +1728,7 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
         let floor_payload = genesis_wire::decode_root_source_genesis_frame_v2(
             &self.floor_frame, RootSourceGenesisFrameKindV1::Anchored, nonce,
         ).map_err(project_source_genesis_wire_error_v1)?;
-        let floor = super::super::SourceHierarchyFloorRecordV1::from_record_bytes(floor_payload)?;
+        let floor = aos_sandbox_ledger_replay::replay::root_genesis_records::SourceHierarchyFloorRecordV1::from_record_bytes(floor_payload)?;
         let controller = hold_existing_completed_source_genesis_v2(journal, identity.project())?;
         let inventory = retained_tree_inventory_data_v1(source).map_err(SourceGenesisErrorV1::from)?;
         let acknowledged = observe_retained_source_genesis_v1(&inventory, controller.uid(), identity.project())?;
@@ -1765,7 +1770,7 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
         ledger: &crate::reconciler::OriginalQ04ControllerLedgerV1,
         transitions: &[crate::journal::ControllerQ04TransitionV1<'_>],
         source_recipes: &crate::journal::SourceQ04TransactionRecipesV1<'_>,
-        cache: &mut crate::cache_residency::OriginalQ04CacheOwnerCutV1<'_>,
+        cache: &mut crate::cache_programmes::OriginalQ04CacheOwnerCutV1<'_>,
         cache_recipes: &crate::journal::CacheQ04TransactionRecipesV1<'_>,
         identity: &super::Q04CutIdentityV1,
     ) -> Result<(), ()> {

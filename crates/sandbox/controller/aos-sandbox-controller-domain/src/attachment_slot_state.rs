@@ -604,11 +604,13 @@ struct History {
     retained_bytes: usize,
 }
 
-impl History {
-    fn load(journal: &Journal) -> Result<Self, AttachmentSlotStateError> {
+
+
+macro_rules! attachment_slot_state_history_recipe_v2 {
+    ($input:expr, $records:ident, $rows:expr) => {{
         let mut history = Self::default();
 
-        for (key, value) in journal.records(RecordNamespace::AttachmentSlot) {
+        for (key, value) in $input.$records(RecordNamespace::AttachmentSlot) {
             if key.len() != 24 || value.len() != RECORD_BYTES {
                 return Err(AttachmentSlotStateError::CorruptState);
             }
@@ -657,8 +659,8 @@ impl History {
             history.current.insert(*slot_id, record.clone());
         }
 
-        crate::sandbox_spec_state::validate_historical_slot_declarations(
-            journal,
+        crate::sandbox_spec_state::validate_historical_slot_declarations_rows_v2(
+            $rows,
             history
                 .revisions
                 .iter()
@@ -669,6 +671,20 @@ impl History {
         .map_err(|_| AttachmentSlotStateError::CorruptState)?;
 
         Ok(history)
+        }};
+}
+
+impl History {
+    fn load(journal: &Journal) -> Result<Self, AttachmentSlotStateError> {
+        attachment_slot_state_history_recipe_v2!(
+            journal,
+            records,
+            journal.historical_read_view_v1().rows_data_v2()
+        )
+    }
+
+    fn load_rows_v2(journal: aos_sandbox_protocol::domain_ledger::readonly::HistoricalLedgerRowsDataV2<'_>) -> Result<Self, AttachmentSlotStateError> {
+        attachment_slot_state_history_recipe_v2!(journal, records_data_v2, journal)
     }
 
     fn select(
@@ -972,12 +988,12 @@ pub(crate) fn validate_attachment_reference(
     Ok(())
 }
 
-pub(crate) fn validate_historical_attachment_references<'a>(
-    journal: &Journal,
-    intents: impl IntoIterator<Item = &'a AttachmentIntent>,
-) -> Result<(), AttachmentSlotStateError> {
-    let history = History::load(journal)?;
-    if intents.into_iter().any(|intent| {
+
+
+macro_rules! validate_historical_attachment_references_historical_recipe_v2 {
+    ($history:expr, $intents:expr) => {{
+    let history = $history?;
+    if $intents.into_iter().any(|intent| {
         history
             .revisions
             .get(&(intent.destination_slot(), 1))
@@ -989,6 +1005,21 @@ pub(crate) fn validate_historical_attachment_references<'a>(
         return Err(AttachmentSlotStateError::CorruptState);
     }
     Ok(())
+    }};
+}
+
+pub(crate) fn validate_historical_attachment_references<'a>(
+    journal: &Journal,
+    intents: impl IntoIterator<Item = &'a AttachmentIntent>,
+) -> Result<(), AttachmentSlotStateError> {
+    validate_historical_attachment_references_historical_recipe_v2!(History::load(journal), intents)
+}
+
+pub(crate) fn validate_historical_attachment_references_rows_v2<'a>(
+    journal: aos_sandbox_protocol::domain_ledger::readonly::HistoricalLedgerRowsDataV2<'_>,
+    intents: impl IntoIterator<Item = &'a AttachmentIntent>,
+) -> Result<(), AttachmentSlotStateError> {
+    validate_historical_attachment_references_historical_recipe_v2!(History::load_rows_v2(journal), intents)
 }
 
 fn take<const N: usize>(bytes: &mut &[u8]) -> Result<[u8; N], AttachmentSlotStateError> {
@@ -1577,4 +1608,13 @@ mod tests {
                 if matches!(*error, AttachmentSlotStateError::CorruptState)
         ));
     }
+}
+
+/// Prices the reached actual-owner/Rows argument and owning return controls.
+/// Dynamic retained histories and their backing retain their existing quote.
+pub(crate) fn historical_observation_control_bytes_v2() -> Option<usize> {
+    std::mem::size_of::<(aos_sandbox_protocol::domain_ledger::readonly::HistoricalLedgerRowsDataV2<'_>, &History)>().checked_mul(3)?
+        .checked_add(std::mem::size_of::<Result<History, AttachmentSlotStateError>>().checked_mul(3)?)?
+        .checked_add(std::mem::size_of::<Result<(), AttachmentSlotStateError>>().checked_mul(3)?)?
+        .checked_add(std::mem::size_of::<Option<usize>>().checked_mul(3)?)
 }

@@ -354,9 +354,9 @@ impl<'source> CurrentNixInputAttemptV1<'source> {
             target.record.sandbox(), target.record.project(),
             &CurrentNixRelationV1 { binding, target },
         )?;
-        Ok(super::super::public_create_source::parentless_create_input_from_authenticated_layers_v1(
+        Ok(aos_sandbox_policy::parentless_input::parentless_create_input_from_authenticated_layers_v1(
             relation, project_layer, deployment,
-        )?)
+        ).map_err(super::super::public_create_source::CurrentCreateCompilerInputErrorV1::from)?)
     }
 
     pub(super) fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {

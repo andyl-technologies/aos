@@ -9,7 +9,8 @@ use std::os::fd::OwnedFd;
 
 use aos_sandbox_api::aos::sandbox::local::v1::{BrokerErrorCode, BrokerMethod,
     BrokerDescriptorEntry, BrokerRequestEnvelope, PublishHostCatalogRequest, RequestHeader};
-use aos_sandbox_linux::immutable_file::{SealedReadOnlyCredential, ImmutableFileError};
+use aos_linux_descriptors::credential::SealedReadOnlyCredential;
+use aos_linux_descriptors::ImmutableFileError;
 use buffa::Message as _;
 use aos_sandbox_model::ObjectDigest;
 use aos_sandbox_linux::seqpacket::SeqpacketError;
@@ -158,7 +159,7 @@ pub enum HostCatalogPublicationError {
     Io(#[from] rustix::io::Errno),
     /// Configured service-subject or cgroup correlation failed.
     #[error(transparent)]
-    Kernel(#[from] aos_sandbox_linux::Error),
+    Kernel(#[from] aos_linux_descriptors::Error),
 }
 
 #[cfg(test)]

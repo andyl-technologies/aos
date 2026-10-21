@@ -10,7 +10,8 @@ use std::error::Error;
 use aos_sandbox_model::{ResourceDimension as D, ResourceVector};
 use aos_sandbox_linux::cgroup::ExactCgroupMembershipReadbackV1;
 use aos_sandbox_linux::guest_confinement::CurrentThreadSubjectOriginalV1;
-use aos_sandbox_linux::pidfd::{PidFdInfo, PidFdProcessIdentityOriginalV1};
+use aos_linux_descriptors::pidfd::PidFdInfo;
+use aos_sandbox_linux::pidfd::PidFdProcessIdentityOriginalV1;
 use aos_sandbox_linux::selinux_policy::{PolicyReadbackError, RetainedLiveSelinuxPolicyReadbackV1};
 
 use crate::immutable_image::{
@@ -47,7 +48,7 @@ pub(in crate::receiving) struct RootLocalCurrentnessOriginalV1 {
     subject: CurrentThreadSubjectOriginalV1,
     status: BoundedFileReadOriginalV1,
     identity: PidFdProcessIdentityOriginalV1,
-    info: Option<aos_sandbox_linux::Result<PidFdInfo>>,
+    info: Option<aos_linux_descriptors::Result<PidFdInfo>>,
     membership: ExactCgroupMembershipReadbackV1,
     result: Option<Result<(), NormalRootStartupErrorV1>>,
     first: Option<Failure>,
@@ -267,7 +268,7 @@ impl RootStartupNativeOriginalV1 {
                     .map_err(|_| NormalRootStartupErrorV1::Service)?;
                 original.identity.identity().ok_or(NormalRootStartupErrorV1::Service)?
             }
-            None => self.process.process_identity().map_err(|_| NormalRootStartupErrorV1::Service)?,
+            None => aos_sandbox_linux::pidfd::process_identity(&(self.process)).map_err(|_| NormalRootStartupErrorV1::Service)?,
         };
         if identity != self.identity {
             return Err(NormalRootStartupErrorV1::Service);

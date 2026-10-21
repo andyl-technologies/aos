@@ -12,13 +12,13 @@ use aos_sandbox_model::{
 };
 
 use crate::Journal;
+use crate::journal::historical_observation::HistoricalObservationV1;
 use aos_sandbox_protocol::public_api::projection::{PublicProjectionError, PublicProjectionKindV1};
-use crate::controller_service::public_projection::{PublicProjectionStoreV1};
 use crate::lifecycle::{
-    LifecycleRuntimeAdmissionErrorV1, lifecycle_runtime_admission_fence_from_journal_v1,
+    LifecycleRuntimeAdmissionErrorV1, lifecycle_runtime_admission_fence_from_observation_v2,
 };
 use crate::runtime_authority::{
-    RuntimeAuthorityError, RuntimeAuthorityLimits, RuntimeAuthorityStateV1, RuntimeAuthorityStore,
+    RuntimeAuthorityError, RuntimeAuthorityLimits, RuntimeAuthorityStateV1,
 };
 use crate::sandbox_spec_state::{self, SandboxSpecStateError};
 
@@ -134,13 +134,33 @@ pub fn current_execution_parent_resource_from_journal_v1(
     sandbox: SandboxId,
     node: NodeId,
 ) -> Result<ExecutionParentResourceSourceV1, ExecutionParentResourceSourceErrorV1> {
+    current_execution_parent_resource_from_observation_v2(
+        HistoricalObservationV1::from_journal_v1(journal), project, sandbox, node,
+    )
+}
+
+/// Compares current parent DATA under the actual retained historical owner.
+///
+/// The original lifecycle, projection and Runtime protection checks remain at
+/// their original semantic frontiers. The returned source grants no effect.
+///
+/// # Errors
+/// Refuses the original missing, stale, corrupt or mismatched parent evidence.
+pub(crate) fn current_execution_parent_resource_from_observation_v2(
+    journal: HistoricalObservationV1<'_>,
+    project: ProjectId,
+    sandbox: SandboxId,
+    node: NodeId,
+) -> Result<ExecutionParentResourceSourceV1, ExecutionParentResourceSourceErrorV1> {
     let _current =
-        lifecycle_runtime_admission_fence_from_journal_v1(journal, project, sandbox, node)?;
-    let projection = PublicProjectionStoreV1::new(journal)
-        .get(PublicProjectionKindV1::Sandbox, *sandbox.as_bytes())?
+        lifecycle_runtime_admission_fence_from_observation_v2(journal, project, sandbox, node)?;
+    let projection = crate::controller_service::public_projection::get_from_observation_v2(
+        journal, PublicProjectionKindV1::Sandbox, *sandbox.as_bytes(),
+    )?
         .ok_or(ExecutionParentResourceSourceErrorV1::NotCurrent)?;
-    let binding = RuntimeAuthorityStore::load(journal, RuntimeAuthorityLimits::default())?
-        .current(sandbox)?
+    let binding = crate::runtime_authority::current_observed_v2(
+        journal, RuntimeAuthorityLimits::default(), sandbox,
+    )?
         .filter(|binding| {
             binding.state() == RuntimeAuthorityStateV1::Bound && binding.holder().is_some()
         })
@@ -156,7 +176,7 @@ pub fn current_execution_parent_resource_from_journal_v1(
     }
 
     let specification_descriptor = manifest.sandbox_spec();
-    let specification = sandbox_spec_state::get(journal, specification_descriptor)?
+    let specification = sandbox_spec_state::get_from_observation_v2(journal, specification_descriptor)?
         .ok_or(ExecutionParentResourceSourceErrorV1::ProfileUnavailable)?;
     let profile = specification.spec().resource_profile().clone();
     let profile_commitment = manifest.resource_commitment();
@@ -191,7 +211,20 @@ pub fn revalidate_execution_parent_resource_from_journal_v1(
     journal: &mut Journal,
     source: &ExecutionParentResourceSourceV1,
 ) -> Result<(), ExecutionParentResourceSourceErrorV1> {
-    let current = current_execution_parent_resource_from_journal_v1(
+    revalidate_execution_parent_resource_from_observation_v2(
+        HistoricalObservationV1::from_journal_v1(journal), source,
+    )
+}
+
+/// Revalidates a retained parent against the same genuine observation owner.
+///
+/// # Errors
+/// Refuses the original replay failure or any changed parent field.
+pub(crate) fn revalidate_execution_parent_resource_from_observation_v2(
+    journal: HistoricalObservationV1<'_>,
+    source: &ExecutionParentResourceSourceV1,
+) -> Result<(), ExecutionParentResourceSourceErrorV1> {
+    let current = current_execution_parent_resource_from_observation_v2(
         journal,
         source.project,
         source.sandbox,
@@ -201,6 +234,46 @@ pub fn revalidate_execution_parent_resource_from_journal_v1(
         return Err(ExecutionParentResourceSourceErrorV1::NotCurrent);
     }
     Ok(())
+}
+
+/// Prices the actual current-parent observation interfaces before model growth.
+///
+/// Dynamic projections, Runtime history, specification maps and profile clones
+/// retain their original complete invoice. The two projection/Runtime calls
+/// are distinct: the lifecycle join and the subsequent exact parent comparison.
+pub(crate) fn observed_current_control_bytes_v2() -> Option<usize> {
+    use std::mem::size_of;
+    use crate::lifecycle::LifecycleRuntimeAdmissionFenceV1;
+
+    type Arguments<'a> = (HistoricalObservationV1<'a>, ProjectId, SandboxId, NodeId);
+    type Current = Result<ExecutionParentResourceSourceV1, ExecutionParentResourceSourceErrorV1>;
+    type Lifecycle = Result<LifecycleRuntimeAdmissionFenceV1, LifecycleRuntimeAdmissionErrorV1>;
+
+    // The current entry and nested lifecycle entry own distinct ABI planes.
+    size_of::<Arguments<'_>>().checked_mul(3)?
+        .checked_add(size_of::<Current>().checked_mul(3)?)?
+        .checked_add(size_of::<Arguments<'_>>().checked_mul(3)?)?
+        .checked_add(size_of::<Lifecycle>().checked_mul(3)?)?
+        .checked_add(size_of::<LifecycleRuntimeAdmissionErrorV1>().checked_mul(3)?)?
+        .checked_add(size_of::<ExecutionParentResourceSourceErrorV1>().checked_mul(3)?)?
+        .checked_add(crate::controller_service::public_projection::
+            projection_observation_control_bytes_v2()?.checked_mul(2)?)?
+        .checked_add(crate::runtime_authority::current_observation_control_bytes_v2()?.checked_mul(2)?)?
+        .checked_add(sandbox_spec_state::observed_get_control_bytes_v2()?)?
+        .checked_add(size_of::<Option<usize>>().checked_mul(3)?)
+}
+
+/// Prices revalidation's own argument and owning return forwarding controls.
+///
+/// This includes the current-parent call once and grants no observation owner.
+pub(crate) fn observed_revalidation_control_bytes_v2() -> Option<usize> {
+    use std::mem::size_of;
+
+    observed_current_control_bytes_v2()?
+        .checked_add(size_of::<(HistoricalObservationV1<'_>, &ExecutionParentResourceSourceV1)>()
+            .checked_mul(3)?)?
+        .checked_add(size_of::<Result<(), ExecutionParentResourceSourceErrorV1>>().checked_mul(3)?)?
+        .checked_add(size_of::<Option<usize>>().checked_mul(3)?)
 }
 
 fn validate_current_parent_profile(

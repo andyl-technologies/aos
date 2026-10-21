@@ -17,7 +17,7 @@ use aos_sandbox_api::aos::sandbox::local::v1::{
 };
 #[cfg(test)]
 use aos_sandbox_broker::{AdmissionRequest, BrokerAuthority, BrokerDomain};
-use aos_sandbox_linux::boot::KernelBootId;
+use aos_linux_descriptors::boot::KernelBootId;
 use aos_sandbox_linux::cgroup::CgroupV2Root;
 use aos_sandbox_linux::pidfd::{NamespaceFd, NamespaceKind, SingleThreadedProcess};
 use aos_sandbox_linux::seqpacket::RecordSubjectListener;

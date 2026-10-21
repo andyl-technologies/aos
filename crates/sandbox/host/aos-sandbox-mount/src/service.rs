@@ -2,7 +2,7 @@
 
 use aos_sandbox_api::aos::sandbox::local::v1::{Audience, BrokerErrorCode, BrokerMethod, MountAction};
 use aos_sandbox_model::{FeatureRef, ProtocolId, RawClockProvenance, RawPairedClockSample};
-use aos_sandbox_linux::boot::KernelBootId;
+use aos_linux_descriptors::boot::KernelBootId;
 use aos_sandbox_linux::cgroup::CgroupV2Root;
 use aos_sandbox_protocol::mount_catalog::decode_mount_catalog_preparation;
 use aos_sandbox_protocol::session::{

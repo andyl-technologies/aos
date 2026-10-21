@@ -8,13 +8,16 @@ use super::*;
 use std::fs::{File, Metadata};
 use std::num::NonZeroU32;
 use std::os::unix::fs::MetadataExt as _;
-use aos_sandbox_linux::boot::RootOriginalKernelBootIdAttemptV1;
+use aos_linux_descriptors::boot::RootOriginalKernelBootIdAttemptV1;
 use aos_sandbox_linux::cgroup::{CgroupV2Root, RetainedCgroupAnchor,
     RuntimeScopeCgroupOriginalV1, RuntimeScopeMembershipOriginalV1,
     NetworkChildControlDonationOriginalV2, NetworkChildControlKindV2 as Kind,
     NetworkChildControlValueV2 as Value, NetworkChildAggregateAncestryOriginalV2};
-use aos_sandbox_linux::pidfd::{PidFd, RuntimeScopeReceivedPidFdOriginalV1,
-    PidFdOpenAttemptV1, PidFdOpenRefusalV1, PidFdProcessIdentityOriginalV1};
+use aos_linux_descriptors::pidfd::PidFd;
+use aos_sandbox_linux::pidfd::RuntimeScopeReceivedPidFdOriginalV1;
+use aos_sandbox_linux::pidfd::PidFdOpenAttemptV1;
+use aos_sandbox_linux::pidfd::PidFdOpenRefusalV1;
+use aos_sandbox_linux::pidfd::PidFdProcessIdentityOriginalV1;
 
 #[derive(Clone, Copy)]
 enum First { Order, Donations, SourcePidFd, OwnPidFd, Cgroup(usize), Identity(usize),
@@ -26,36 +29,36 @@ pub(super) struct NativeOriginalV2 {
     entered: bool,
     raw: [Option<OwnedFd>; 9],
     source_original: RuntimeScopeReceivedPidFdOriginalV1,
-    source_result: Option<Result<(), aos_sandbox_linux::Error>>,
+    source_result: Option<Result<(), aos_linux_descriptors::Error>>,
     source: Option<PidFd>,
     own_original: PidFdOpenAttemptV1,
     own_result: Option<Result<(), PidFdOpenRefusalV1>>,
     own: Option<PidFd>,
     cgroup_originals: [RuntimeScopeCgroupOriginalV1; 3],
-    cgroup_results: [Option<Result<(), aos_sandbox_linux::Error>>; 3],
+    cgroup_results: [Option<Result<(), aos_linux_descriptors::Error>>; 3],
     cgroups: [Option<(CgroupV2Root, RetainedCgroupAnchor)>; 3],
     identities: [PidFdProcessIdentityOriginalV1; 2],
-    identity_results: [Option<Result<(), aos_sandbox_linux::Error>>; 2],
+    identity_results: [Option<Result<(), aos_linux_descriptors::Error>>; 2],
     membership: [RuntimeScopeMembershipOriginalV1; 2],
-    membership_results: [Option<Result<(), aos_sandbox_linux::Error>>; 2],
+    membership_results: [Option<Result<(), aos_linux_descriptors::Error>>; 2],
     controls: [NetworkChildControlDonationOriginalV2; 5],
-    control_results: [Option<Result<(), aos_sandbox_linux::Error>>; 5],
+    control_results: [Option<Result<(), aos_linux_descriptors::Error>>; 5],
     limits: Option<rustix::process::Rlimit>,
     ancestry: NetworkChildAggregateAncestryOriginalV2,
-    ancestry_result: Option<Result<(), aos_sandbox_linux::Error>>,
+    ancestry_result: Option<Result<(), aos_linux_descriptors::Error>>,
     boot: RootOriginalKernelBootIdAttemptV1,
     executable: Option<Result<OwnedFd, rustix::io::Errno>>,
     executable_result: Option<Result<(), rustix::io::Errno>>,
     executable_file: Option<File>,
     executable_metadata: Option<std::io::Result<Metadata>>,
-    source_after: Option<Result<bool, aos_sandbox_linux::Error>>,
-    own_after: Option<Result<bool, aos_sandbox_linux::Error>>,
+    source_after: Option<Result<bool, aos_linux_descriptors::Error>>,
+    own_after: Option<Result<bool, aos_linux_descriptors::Error>>,
     membership_after: [RuntimeScopeMembershipOriginalV1; 2],
-    membership_after_results: [Option<Result<(), aos_sandbox_linux::Error>>; 2],
+    membership_after_results: [Option<Result<(), aos_linux_descriptors::Error>>; 2],
     executable_after: Option<std::io::Result<Metadata>>,
     first: Option<First>,
     complete: bool,
-    retirement: [Option<Result<(), aos_sandbox_linux::Error>>; 16],
+    retirement: [Option<Result<(), aos_linux_descriptors::Error>>; 16],
     proofs_retired: bool,
 }
 
@@ -84,14 +87,14 @@ impl NativeOriginalV2 {
     }
 
     pub(super) fn held_source_info(&self)
-        -> Option<Result<aos_sandbox_linux::pidfd::PidFdInfo, aos_sandbox_linux::Error>>
+        -> Option<Result<aos_linux_descriptors::pidfd::PidFdInfo, aos_linux_descriptors::Error>>
     {
         self.source.as_ref().map(PidFd::info)
     }
 
     pub(super) fn completed(&self) -> bool { self.complete }
 
-    pub(super) fn held_liveness(&self, index: usize) -> Option<Result<bool, aos_sandbox_linux::Error>> {
+    pub(super) fn held_liveness(&self, index: usize) -> Option<Result<bool, aos_linux_descriptors::Error>> {
         match index { 0 => self.source.as_ref(), 1 => self.own.as_ref(), _ => None }
             .map(PidFd::is_alive)
     }
@@ -362,8 +365,8 @@ impl NativeOriginalV2 {
     }
 }
 
-fn retirement_closed() -> aos_sandbox_linux::Error {
-    aos_sandbox_linux::Error::InvalidInput {
+fn retirement_closed() -> aos_linux_descriptors::Error {
+    aos_linux_descriptors::Error::InvalidInput {
         field: "Network child proof retirement",
         message: "the completed native prefix is unavailable".into(),
     }

@@ -593,7 +593,7 @@ mod tests {
             HostScopeError::Descriptor,
             HostScopeError::Io(rustix::io::Errno::BADF),
             HostScopeError::Transport(aos_sandbox_linux::seqpacket::SeqpacketError::Closed),
-            HostScopeError::Kernel(aos_sandbox_linux::Error::WrongDescriptorType {
+            HostScopeError::Kernel(aos_linux_descriptors::Error::WrongDescriptorType {
                 expected: "cgroup",
             }),
             HostScopeError::Protocol(

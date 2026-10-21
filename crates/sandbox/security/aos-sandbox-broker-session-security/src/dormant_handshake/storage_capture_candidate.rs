@@ -72,7 +72,7 @@ impl DormantAuthenticatedBrokerSessionV1 {
             )?,
         };
         let version = ProtocolVersion::new(context.protocol_major(), context.protocol_minor());
-        let boot = match aos_sandbox_linux::boot::KernelBootId::from_bytes(context.boot_id()) {
+        let boot = match aos_linux_descriptors::boot::KernelBootId::from_bytes(context.boot_id()) {
             Ok(boot) => boot,
             Err(error) => {
                 let error = aos_sandbox_storage::StorageRuntimeError::from(

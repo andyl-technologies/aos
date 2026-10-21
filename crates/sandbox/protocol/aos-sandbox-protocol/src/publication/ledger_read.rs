@@ -213,3 +213,38 @@ pub fn current_rows_data_v2(
 ) -> Result<Option<DecodedPublicationCurrentV1>, PublicationLedgerDataErrorV1> {
     current_in_validated_namespace_comparison_v2(HistoricalLedgerComparisonV2::Rows(rows), sandbox)
 }
+
+/// Scans the complete supplied publication namespace with the canonical recipe.
+///
+/// Native callers retain the actual health/currentness and complete-prefix
+/// observations before entering. Supplied rows cannot establish those facts.
+///
+/// # Errors
+/// Refuses the same malformed keys, immutable records and current/prepared
+/// crosslinks as the existing historical native view.
+pub fn scan_namespace_rows_data_v2(
+    rows: crate::domain_ledger::readonly::HistoricalLedgerRowsDataV2<'_>,
+    subject: Option<SandboxId>,
+) -> Result<bool, PublicationLedgerDataErrorV1> {
+    scan_publication_namespace_comparison_v2(HistoricalLedgerComparisonV2::Rows(rows), subject)
+}
+
+/// Compares one activated gate with supplied complete publication history DATA.
+///
+/// Native health and protected ownership stay on the real caller before entry.
+///
+/// # Errors
+/// Refuses the original gate, claim, current/prepared or successor mismatch.
+pub fn validate_durable_gate_publication_rows_data_v2(
+    rows: crate::domain_ledger::readonly::HistoricalLedgerRowsDataV2<'_>,
+    publication_digest: ObjectDigest,
+    draft: &AuthorityPublicationDraftV1,
+    claim: &OwnershipClaimV1,
+    lease_generation: u64,
+    lease_digest: ObjectDigest,
+) -> Result<(), PublicationLedgerDataErrorV1> {
+    validate_durable_gate_publication_comparison_v2(
+        HistoricalLedgerComparisonV2::Rows(rows), publication_digest,
+        draft, claim, lease_generation, lease_digest,
+    )
+}

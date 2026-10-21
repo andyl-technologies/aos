@@ -11,8 +11,12 @@
 
 use std::num::NonZeroU32;
 
-use crate::boot::KernelBootId;
-use crate::pidfd::{CurrentSelfPidFdCustodyV1, PidFd, PidFdCredentials, PidFdInfo, PidFdProcessIdentity};
+use aos_linux_descriptors::boot::KernelBootId;
+use crate::pidfd::CurrentSelfPidFdCustodyV1;
+use aos_linux_descriptors::pidfd::PidFd;
+use aos_linux_descriptors::pidfd::PidFdCredentials;
+use aos_linux_descriptors::pidfd::PidFdInfo;
+use crate::pidfd::PidFdProcessIdentity;
 
 mod observations;
 pub use observations::SelfExecutionObservationV1;
@@ -83,7 +87,7 @@ enum SelfExecutionOriginalV1 {
 
 struct SelectedSelfCaptureV1 {
     process: CurrentSelfPidFdCustodyV1,
-    capture: Option<crate::Result<PidFdProcessIdentity>>,
+    capture: Option<aos_linux_descriptors::Result<PidFdProcessIdentity>>,
     observation: SelfExecutionObservationV1,
 }
 
@@ -360,8 +364,7 @@ impl ExecutionObservationSource for KernelObservationSource {
         &mut self,
         process: &Self::Process,
     ) -> Result<IdentityObservation, SelfExecutionObservationError> {
-        process
-            .process_identity()
+        crate::pidfd::process_identity(process)
             .map(identity_from_pidfd)
             .map_err(|_| SelfExecutionObservationError)
     }

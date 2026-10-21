@@ -175,14 +175,12 @@ fn refresh_original_terminal_inner(
     if sender.pid() != original.pid()
         || sender.uid() != original.uid()
         || sender.gid() != original.gid()
-        || subject
-            .pidfd()
-            .process_identity()
+        || aos_sandbox_linux::pidfd::process_identity(&(subject
+            .pidfd()))
             .map_err(Error::Confinement)?
-            != session
+            != aos_sandbox_linux::pidfd::process_identity(&(session
                 .subject
-                .pidfd()
-                .process_identity()
+                .pidfd()))
                 .map_err(Error::Confinement)?
     {
         return Err(Error::InvalidRequest);

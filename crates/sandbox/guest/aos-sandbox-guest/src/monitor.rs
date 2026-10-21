@@ -19,7 +19,7 @@ use aos_sandbox_guest_protocol::openssh_monitor::{
     OpenSshMonitorWitnessV2,
 };
 use aos_sandbox_model::public_attach_ticket::PublicAttachTicketBindingV2;
-use aos_sandbox_linux::pidfd::PidFd;
+use aos_linux_descriptors::pidfd::PidFd;
 use aos_sandbox_linux::seqpacket::{
     KernelAuthorizedRecordSubject, SeqpacketError, SeqpacketSocket,
 };
@@ -732,7 +732,7 @@ fn refresh_relay(
         &custody.original_witness, ledger)?;
     let witness = OpenSshMonitorWitnessV2::decode_confined_v3(&custody.original_witness)
         .map_err(|_| Error::InvalidRequest)?;
-    let parent = custody.child.process_identity().map_err(|_| Error::InvalidRequest)?;
+    let parent = aos_sandbox_linux::pidfd::process_identity(&(custody.child)).map_err(|_| Error::InvalidRequest)?;
     installed.runtime.require_confined_child_v3(custody.relay_registration.child()?,
         parent.pid(), witness.uid, witness.gid).map_err(|_| Error::InvalidRequest)?;
     custody.relay = Some(custody.relay_registration.take_child()?);
@@ -787,8 +787,7 @@ fn validate_relay_custody(
         ledger,
     )?;
     let relay = custody.relay.as_ref().ok_or(Error::InvalidRequest)?;
-    let expected = relay
-        .process_identity()
+    let expected = aos_sandbox_linux::pidfd::process_identity(&(relay))
         .map_err(|_| Error::InvalidRequest)?;
     let connector = pending.socket.peer().credentials();
     let sender = pending.subject.credentials();
@@ -806,17 +805,15 @@ fn validate_relay_custody(
             .peer()
             .is_alive()
             .map_err(|_| Error::InvalidRequest)?
-        || pending
+        || aos_sandbox_linux::pidfd::process_identity(&(pending
             .subject
-            .pidfd()
-            .process_identity()
+            .pidfd()))
             .map_err(|_| Error::InvalidRequest)?
             != expected
-        || pending
+        || aos_sandbox_linux::pidfd::process_identity(&(pending
             .socket
             .peer()
-            .pidfd()
-            .process_identity()
+            .pidfd()))
             .map_err(|_| Error::InvalidRequest)?
             != expected
     {
@@ -824,9 +821,8 @@ fn validate_relay_custody(
     }
     let witness = OpenSshMonitorWitnessV2::decode_confined_v3(&custody.original_witness)
         .map_err(|_| Error::InvalidRequest)?;
-    let parent = custody
-        .child
-        .process_identity()
+    let parent = aos_sandbox_linux::pidfd::process_identity(&(custody
+        .child))
         .map_err(|_| Error::InvalidRequest)?;
     installed
         .runtime
@@ -848,8 +844,7 @@ fn custody_binding(custody: &MonitorCustody, pending: &RelayConnection) -> Resul
             .to_be_bytes(),
     );
     digest.update(
-        relay
-            .process_identity()
+        aos_sandbox_linux::pidfd::process_identity(&(relay))
             .map_err(|_| Error::InvalidRequest)?
             .pid()
             .to_be_bytes(),

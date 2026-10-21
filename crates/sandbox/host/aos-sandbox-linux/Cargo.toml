@@ -11,6 +11,7 @@ kernel-tests = []
 selected-kernel-clone-layout = []
 
 [dependencies]
+aos-linux-descriptors.workspace = true
 libc.workspace = true
 rustix = { workspace = true, features = ["event", "fs", "mount", "net", "pipe", "process", "stdio", "thread", "time"] }
 sha2.workspace = true
@@ -21,6 +22,7 @@ zeroize.workspace = true
 sha2.workspace = true
 
 [dev-dependencies]
+aos-linux-descriptors = { workspace = true, features = ["test-fixtures"] }
 tempfile = "3"
 
 [[test]]

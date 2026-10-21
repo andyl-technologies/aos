@@ -159,7 +159,7 @@ impl RootDeletePreparatoryApprovalOriginalV3 {
             self.sent = Some((|| {
                 let cutoff = challenge.current_cutoff_v1()?;
                 self.io.run_once(original, &mut self.response, cutoff,
-                    crate::policy_compiler::bounded_stream_io::DeadlineStreamDirectionV1::Write)?;
+                    aos_sandbox_broker::bounded_stream_io::DeadlineStreamDirectionV1::Write)?;
                 Ok(())
             })());
             if !matches!(self.sent, Some(Ok(()))) { self.first = Some(ApprovalFirst::Send); }

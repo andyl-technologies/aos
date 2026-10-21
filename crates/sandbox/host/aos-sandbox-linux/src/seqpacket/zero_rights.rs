@@ -85,15 +85,15 @@ impl SeqpacketSocket {
 pub struct SeqpacketRightsRestrictionOriginalV6 {
     entered: bool,
     epoch: u64,
-    cookie_before: Option<crate::Result<u64>>,
+    cookie_before: Option<aos_linux_descriptors::Result<u64>>,
     binding_before: Option<Result<(), SeqpacketError>>,
-    set: Option<crate::Result<()>>,
+    set: Option<aos_linux_descriptors::Result<()>>,
     peek_payload: [u8; 1],
     peek: Option<rustix::io::Result<rustix::net::RecvMsg>>,
     queue_empty: Option<Result<(), SeqpacketError>>,
-    cookie_after: Option<crate::Result<u64>>,
+    cookie_after: Option<aos_linux_descriptors::Result<u64>>,
     binding_after: Option<Result<(), SeqpacketError>>,
-    mode_after: Option<crate::Result<()>>,
+    mode_after: Option<aos_linux_descriptors::Result<()>>,
 }
 
 impl SeqpacketRightsRestrictionOriginalV6 {
@@ -149,7 +149,7 @@ impl SeqpacketRightsRestrictionOriginalV6 {
         if self.entered { return Err(SeqpacketError::Closed); }
         self.entered = true;
         self.epoch = epoch;
-        self.cookie_before = Some(uapi::socket_cookie(fd));
+        self.cookie_before = Some(aos_linux_descriptors::native::socket_cookie(fd));
         self.binding_before = Some(if matches!(self.cookie_before, Some(Ok(value)) if value == cookie.get()) {
             Ok(())
         } else { Err(SeqpacketError::Ancillary("rights restriction socket binding")) });
@@ -169,7 +169,7 @@ impl SeqpacketRightsRestrictionOriginalV6 {
 
         // Both posts are independent debts once the finite recipe enters.
         // Earlier set/peek failures never gate these actual observations.
-        self.cookie_after = Some(uapi::socket_cookie(fd));
+        self.cookie_after = Some(aos_linux_descriptors::native::socket_cookie(fd));
         self.binding_after = Some(if matches!(self.cookie_after, Some(Ok(value)) if value == cookie.get()) {
             Ok(())
         } else { Err(SeqpacketError::Ancillary("rights restriction socket binding after")) });
@@ -326,7 +326,7 @@ mod zero_rights_native_tests {
         assert!(matches!(std::error::Error::source(&error)
             .and_then(|cause| cause.downcast_ref::<SeqpacketError>()),
             Some(SeqpacketError::Kernel(Error::InvalidInput { field: "closed zero-rights socket", .. }))));
-        assert!(uapi::is_cloexec(child.as_fd()).unwrap());
+        assert!(aos_linux_descriptors::native::is_cloexec(child.as_fd()).unwrap());
     }
     #[test]
     fn exposed_empty_socket_restricts_and_keeps_descriptor_free_records() {

@@ -420,7 +420,7 @@ impl<'owner, P> CanonicalWriterReadViewV1<'owner, P> {
     ///
     /// # Errors
     /// Preserves existing fixture traversal and identity failures.
-    #[cfg(any(test, all(feature = "test-fixtures", debug_assertions)))]
+    #[cfg(any(test, feature = "test-fixtures"))]
     pub fn require_directory_at_uid_for_test<E: ProtectedFailure>(
         self, path: &std::path::Path, uid: u32,
     ) -> Result<CanonicalDirectoryComparisonDataV1, E> {
@@ -607,7 +607,7 @@ impl<'owner, P> CanonicalProtectedReadViewV1<'owner, P> {
     ///
     /// # Errors
     /// Preserves the existing fixture rooted traversal/identity failure.
-    #[cfg(any(test, all(feature = "test-fixtures", debug_assertions)))]
+    #[cfg(any(test, feature = "test-fixtures"))]
     pub fn require_directory_at_uid_for_test<E: ProtectedFailure>(
         self, path: &std::path::Path, uid: u32,
     ) -> Result<CanonicalDirectoryComparisonDataV1, E> {

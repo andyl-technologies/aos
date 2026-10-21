@@ -255,7 +255,7 @@ enum NativeFailure {
     #[error(transparent)]
     Read(#[from] ExactReadFailure),
     #[error(transparent)]
-    Linux(#[from] aos_sandbox_linux::Error),
+    Linux(#[from] aos_linux_descriptors::Error),
     #[error("Host canary original storage or transition changed")]
     Original,
     #[error("Host canary fixed memory reservation failed")]

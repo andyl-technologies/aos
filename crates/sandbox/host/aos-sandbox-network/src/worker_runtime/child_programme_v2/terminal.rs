@@ -123,7 +123,7 @@ pub(super) struct PreparationPositiveSendOriginalV2 {
     current_before: Option<Result<(), NetworkWorkerProtocolError>>,
     wait_before: Option<rustix::event::Timespec>,
     send: Option<Result<DescriptorWorkerNativeSendAttemptV1, SeqpacketError>>,
-    native_post: Option<aos_sandbox_linux::Error>,
+    native_post: Option<aos_linux_descriptors::Error>,
     binding: Option<Result<(), RecordBindingError>>,
     clock_after: PreparationClockOriginalV2,
     current_after: Option<Result<(), NetworkWorkerProtocolError>>,

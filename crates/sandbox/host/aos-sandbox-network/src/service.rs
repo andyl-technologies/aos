@@ -11,7 +11,7 @@
 
 use aos_sandbox_api::aos::sandbox::local::v1::{Audience, BrokerErrorCode, BrokerMethod};
 use aos_sandbox_linux::cgroup::RetainedCgroupAnchor;
-use aos_sandbox_linux::pidfd::PidFdInfo;
+use aos_linux_descriptors::pidfd::PidFdInfo;
 use aos_sandbox_linux::seqpacket::bounded::{
     BoundedRecordError, accept_connection, boottime, receive, send,
 };
@@ -54,7 +54,7 @@ pub enum NetworkServiceError {
     Transport(#[from] SeqpacketError),
     /// A retained cgroup or process observation failed.
     #[error(transparent)]
-    Kernel(#[from] aos_sandbox_linux::Error),
+    Kernel(#[from] aos_linux_descriptors::Error),
     /// A protocol value produced internally violated the closed schema.
     #[error(transparent)]
     Protocol(#[from] ProtocolValidationError),

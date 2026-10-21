@@ -142,7 +142,7 @@ impl<'held, 'financial> NetworkWorkerBirthReservationV2<'held, 'financial> {
         &mut self,
         scope: &mut NetworkWorkerCleanupClockScopeV4,
         body: impl FnOnce(
-            &aos_sandbox_linux::pidfd::PidFd,
+            &aos_linux_descriptors::pidfd::PidFd,
             &aos_sandbox_linux::cgroup::RetainedCgroupAnchor,
             &aos_sandbox_linux::cgroup::CgroupPopulationMonitor,
             &mut FixedServiceOperationLoanV4<'financial>,

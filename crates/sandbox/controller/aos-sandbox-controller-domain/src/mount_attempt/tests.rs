@@ -489,7 +489,7 @@ fn exact_mount_two_zero_apply_and_release_bind_admit_and_resume() {
     let mut clock = || {
         Ok(RawPairedClockSample::new_untrusted(
             RawClockProvenance::new_untrusted([91; 16]).unwrap(),
-            aos_sandbox_linux::boot::KernelBootId::current()
+            aos_linux_descriptors::boot::KernelBootId::current()
                 .unwrap()
                 .into_bytes(),
             150,

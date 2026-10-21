@@ -5,6 +5,7 @@
 //! same-file replay must independently observe all six transactions before the
 //! enclosing Root continuation can use the reserved cut.
 
+use aos_sandbox_protocol::domain_ledger::create_storage_history::readback::HistoryPairReadbackDataV1;
 use std::error::Error as StdError;
 use std::os::fd::AsFd as _;
 use std::os::unix::net::UnixStream;
@@ -18,9 +19,10 @@ use aos_sandbox_protocol::domain_ledger::create_storage_history::{
         USE_RESERVED_RECEIPT_BYTES_V1},
 };
 use crate::journal::{JournalError, JournalTransaction};
-use crate::journal::create_storage_history::{HistoryPairReadbackV1, prepare_readonly_history_pair_v1};
+use crate::journal::create_storage_history::{prepare_readonly_history_pair_v1};
 use crate::normal_root::RootPolicyAcceptedFlightV1;
-use crate::policy_compiler::bounded_stream_io::{FixedDeadlineStreamIoV1, DeadlineStreamDirectionV1};
+use aos_sandbox_broker::bounded_stream_io::FixedDeadlineStreamIoV1;
+use aos_sandbox_broker::bounded_stream_io::DeadlineStreamDirectionV1;
 use crate::policy_compiler::root_current_writers::RootCreateStorageCurrentWritersV1;
 use super::super::{RootCreateStorageCurrentErrorV1 as Error,
     cache_current::RootCurrentCacheProofStateV1,
@@ -31,10 +33,10 @@ use super::super::{RootCreateStorageCurrentErrorV1 as Error,
     use_authorized::RootCurrentUseAuthorizedStateV1};
 
 pub(super) const FRAME_BYTES: usize = FRAME_HEADER_BYTES + USE_RESERVED_RECEIPT_BYTES_V1;
-type RootReadback = HistoryPairReadbackV1<{ aos_sandbox_protocol::domain_ledger::create_storage_history::use_authorized::USE_AUTHORIZED_RECORD_BYTES_V1 }>;
+type RootReadback = HistoryPairReadbackDataV1<{ aos_sandbox_protocol::domain_ledger::create_storage_history::use_authorized::USE_AUTHORIZED_RECORD_BYTES_V1 }>;
 
 pub(crate) struct RootCurrentUseReservedReceivedV1 {
-    endpoint: Option<Result<(), aos_sandbox_linux::Error>>,
+    endpoint: Option<Result<(), aos_linux_descriptors::Error>>,
     before: RootCurrentHistoryPostsV1,
     before_readback: Option<Result<RootReadback, JournalError>>,
     before_live: Option<Result<(), JournalError>>,
@@ -99,9 +101,9 @@ impl RootCurrentUseReservedReceivedV1 {
         self.primary = Some(self.receive_inner(flight, writers, original, root,
             authorization, ready, source, cache, first));
         let body = root.completed_body().ok();
-        let origin = root.original_clock_origin_v1().ok();
+        let origin = root.original_clock_native_v1().ok();
         self.after.observe_once(flight, writers, body.as_ref(),
-            origin.map(|pair| pair.0), origin.map(|pair| pair.1));
+            origin);
         self.after_readback = Some(match writers.authority_and_policy() {
             Ok((authority, policy)) => authorization.readback_current_v1(authority, policy),
             Err(error) => Err(error),
@@ -125,11 +127,11 @@ impl RootCurrentUseReservedReceivedV1 {
         authorization.require_complete_v1()?;
         first.require_complete_v1()?;
         let body = root.completed_body()?;
-        let origin = root.original_clock_origin_v1()?;
+        let origin = root.original_clock_native_v1()?;
         self.endpoint = Some(flight.current_cut_native().map_err(|_| Error::Original)?
             .require_same_endpoint_v1(original.as_fd()));
         positive(&self.endpoint).map_err(|_| Error::Original)?;
-        self.before.observe_once(flight, writers, Some(&body), Some(origin.0), Some(origin.1));
+        self.before.observe_once(flight, writers, Some(&body), Some(origin));
         self.before_readback = Some(match writers.authority_and_policy() {
             Ok((authority, policy)) => authorization.readback_current_v1(authority, policy),
             Err(error) => Err(error),

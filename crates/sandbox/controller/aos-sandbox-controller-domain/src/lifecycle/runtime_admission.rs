@@ -11,13 +11,12 @@ use aos_sandbox_protocol::domain_ledger::lifecycle_model::{
     LifecycleModelError, LifecycleResourceV1,
 };
 
-use crate::Journal;
 use aos_sandbox_protocol::public_api::projection::{
     PublicProjectionError, PublicProjectionKindV1, PublicProjectionResourceV1,
 };
-use crate::controller_service::public_projection::{PublicProjectionStoreV1};
+use crate::journal::historical_observation::HistoricalObservationV1;
 use crate::runtime_authority::{
-    RuntimeAuthorityError, RuntimeAuthorityLimits, RuntimeAuthorityStateV1, RuntimeAuthorityStore,
+    RuntimeAuthorityError, RuntimeAuthorityLimits, RuntimeAuthorityStateV1,
 };
 
 use super::{
@@ -81,14 +80,15 @@ pub enum LifecycleRuntimeAdmissionErrorV1 {
 /// malformed, the sandbox has no bound assignment on `node`, or the public
 /// incarnation, assignment epoch, desired generation, or specification does
 /// not exactly match protected current state.
-pub fn lifecycle_runtime_admission_fence_from_journal_v1(
-    journal: &mut Journal,
+pub(crate) fn lifecycle_runtime_admission_fence_from_observation_v2(
+    journal: HistoricalObservationV1<'_>,
     project: ProjectId,
     sandbox: SandboxId,
     node: NodeId,
 ) -> Result<LifecycleRuntimeAdmissionFenceV1, LifecycleRuntimeAdmissionErrorV1> {
-    let projection = PublicProjectionStoreV1::new(journal)
-        .get(PublicProjectionKindV1::Sandbox, *sandbox.as_bytes())?
+    let projection = crate::controller_service::public_projection::get_from_observation_v2(
+        journal, PublicProjectionKindV1::Sandbox, *sandbox.as_bytes(),
+    )?
         .ok_or(LifecycleRuntimeAdmissionErrorV1::MissingProjection)?;
     if projection.project() != project {
         return Err(LifecycleRuntimeAdmissionErrorV1::CurrentMismatch);
@@ -105,8 +105,9 @@ pub fn lifecycle_runtime_admission_fence_from_journal_v1(
         .as_option()
         .ok_or(LifecycleRuntimeAdmissionErrorV1::CurrentMismatch)?;
 
-    let binding = RuntimeAuthorityStore::load(journal, RuntimeAuthorityLimits::default())?
-        .current(sandbox)?
+    let binding = crate::runtime_authority::current_observed_v2(
+        journal, RuntimeAuthorityLimits::default(), sandbox,
+    )?
         .filter(|binding| binding.state() == RuntimeAuthorityStateV1::Bound)
         .ok_or(LifecycleRuntimeAdmissionErrorV1::MissingAssignment)?;
     let manifest = binding.manifest().manifest();

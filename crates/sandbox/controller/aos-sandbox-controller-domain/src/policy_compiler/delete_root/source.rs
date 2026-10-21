@@ -6,6 +6,8 @@
 //! None of these comparison results accepts six owners or grants lifecycle
 //! disposition; every reached original remains with the enclosing D receiver.
 
+use aos_sandbox_policy::native::{RootFinalityReadOriginalV1 as Target, RootFinalityReadKindV1 as Kind};
+use crate::journal::historical_observation::root_readonly_error_v1 as project_read;
 mod predecessor;
 pub(crate) use predecessor::RootDeleteSourcePredecessorPhaseV2;
 
@@ -16,10 +18,10 @@ use crate::controller_resource_reservation::{ResourceReservationErrorV1, RootDel
 use crate::hierarchy::genesis_profile::SourceGenesisErrorV1;
 use crate::journal::JournalError;
 use crate::normal_root::{NormalRootStartupErrorV1, RootPolicyAcceptedFlightV1};
-use crate::policy_compiler::{
-    RetainedKernelPairedClockAttemptV1, RootCreateStorageCurrentErrorV1,
-    source_signer_transport::{RootSourceSignerTransportOriginalsV1, RootSourceTransportClosedV1},
-};
+use crate::policy_compiler::RetainedKernelPairedClockAttemptV1;
+use crate::policy_compiler::RootCreateStorageCurrentErrorV1;
+use aos_sandbox_broker::source_signer_transport::RootSourceSignerTransportOriginalsV1;
+use aos_sandbox_broker::source_signer_transport::RootSourceTransportClosedV1;
 use aos_sandbox_model::{RawPairedClockSample, ResourceDimension as D, ResourceVector};
 use aos_sandbox_protocol::domain_ledger::delete_root::{
     source_current::{
@@ -90,8 +92,7 @@ pub(crate) struct RootDeleteSourceCurrentOriginalV1 {
     signature: Option<Result<(), ed25519_dalek::SignatureError>>,
     correlation: Option<Result<(), SourceDeleteCurrentDataErrorV1>>,
     native: Option<Result<(), SourceDeleteCurrentDataErrorV1>>,
-    predecessor: Option<crate::policy_compiler::create_storage_current::controller_readonly::native_read::RootFixedNativeReadOriginalsV1>,
-    completed_predecessor: Option<crate::policy_compiler::create_storage_current::controller_readonly::native_read::RootFixedCompletedReadDataV2>,
+    predecessor: Option<Target>,
     predecessor_retirement: Option<Result<(), JournalError>>,
     predecessor_capture: Option<Result<(), JournalError>>,
     predecessor_native: Option<Result<ResourceVector, JournalError>>,
@@ -135,8 +136,7 @@ impl Default for RootDeleteSourceCurrentOriginalV1 {
             signature: None,
             correlation: None,
             native: None,
-            predecessor: Some(crate::policy_compiler::create_storage_current::controller_readonly::native_read::RootFixedNativeReadOriginalsV1::source_current_v1()),
-            completed_predecessor: None,
+            predecessor: Some(Target::new(Kind::Source)),
             predecessor_retirement: None,
             predecessor_capture: None, predecessor_native: None, predecessor_semantic: None,
             predecessor_phase: None, predecessor_permits: [None, None], predecessor_binding: None,
@@ -400,9 +400,9 @@ impl RootDeleteSourceCurrentOriginalV1 {
             .and_then(|cells| cells.checked_add(6))
             .and_then(|cells| u64::try_from(cells).ok())
             .ok_or_else(invalid)?;
-        let prefix = crate::policy_compiler::create_storage_current::controller_readonly::native_read::RootFixedNativeReadOriginalsV1::source_current_fixed_demand_v1()
+        let prefix = super::reader::fixed_demand_v1(Kind::Source)
             .map_err(|_| invalid())?;
-        let prefix = if self.completed_predecessor.is_some() && self.predecessor.is_none() {
+        let prefix = if self.predecessor.as_ref().is_some_and(Target::native_prefixes_retired_data_v2) {
             prefix.with(D::OpenFiles, 0)
         } else { prefix };
         RootDeleteChunkPostsV1::fixed_demand_v1()?.checked_add(prefix)?

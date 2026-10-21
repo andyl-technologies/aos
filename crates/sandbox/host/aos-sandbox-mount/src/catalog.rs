@@ -1666,7 +1666,7 @@ pub(crate) fn digest_idmaps(mount: &MountObservation) -> [u8; 32] {
     digest.finalize().into()
 }
 
-fn linux_worker_error(error: aos_sandbox_linux::Error) -> MountError {
+fn linux_worker_error(error: aos_linux_descriptors::Error) -> MountError {
     MountError::Worker(error.to_string())
 }
 

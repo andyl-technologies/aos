@@ -18,7 +18,8 @@ use crate::uapi::{
     STATMOUNT_MNT_ROOT, STATMOUNT_MNT_UIDMAP, STATMOUNT_SB_BASIC, STATMOUNT_SB_SOURCE,
     STATMOUNT_SUPPORTED_MASK, StatMountBuffer,
 };
-use crate::{Error, Result};
+use aos_linux_descriptors::Error;
+use aos_linux_descriptors::Result;
 
 mod read_only_directory;
 

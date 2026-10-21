@@ -416,13 +416,15 @@ struct History {
     retained_bytes: usize,
 }
 
-impl History {
-    fn load(journal: &mut Journal) -> Result<Self, AttachmentVerificationError> {
-        journal.ensure_healthy()?;
+
+
+macro_rules! attachment_verification_history_recipe_v2 {
+    ($input:expr, $desired:expr, $namespace:expr, $record:ident, $crosslinks:expr) => {{
+        $input.ensure_healthy()?;
         let mut records = BTreeMap::new();
         let mut retained_bytes = 0_usize;
 
-        for (key, value) in journal.records(NAMESPACE) {
+        for (key, value) in $input.records(NAMESPACE) {
             retained_bytes = retained_bytes
                 .checked_add(key.len())
                 .and_then(|size| size.checked_add(value.len()))
@@ -446,12 +448,12 @@ impl History {
         }
 
         if !records.is_empty() {
-            attachment_state::validate_namespace(journal)
+            $desired
                 .map_err(|error| AttachmentVerificationError::Desired(Box::new(error)))?;
-            validate_namespace_target_namespace(journal)
+            $namespace
                 .map_err(|error| AttachmentVerificationError::NamespaceTarget(Box::new(error)))?;
-            for record in records.values() {
-                validate_cross_references(journal, record)?;
+            for $record in records.values() {
+                $crosslinks?;
             }
         }
 
@@ -459,6 +461,16 @@ impl History {
             records,
             retained_bytes,
         })
+        }};
+}
+
+impl History {
+    fn load(journal: &mut Journal) -> Result<Self, AttachmentVerificationError> {
+        attachment_verification_history_recipe_v2!(journal, attachment_state::validate_namespace(journal), validate_namespace_target_namespace(journal), record, validate_cross_references(journal, record))
+    }
+
+    fn load_observed_v2(journal: crate::journal::historical_observation::HistoricalObservationV1<'_>) -> Result<Self, AttachmentVerificationError> {
+        attachment_verification_history_recipe_v2!(journal, attachment_state::validate_namespace_rows_v2(journal.rows_data_v2()), crate::runtime_scope::validate_namespace_target_observed_v2(journal), record, validate_cross_references_observed_v2(journal, record))
     }
 
     fn ensure_capacity(&self, record: &Record) -> Result<(), AttachmentVerificationError> {
@@ -643,13 +655,14 @@ pub(crate) fn verified_handles_for_manifest_data_v2(
 
 // The already supported no-slot namespace profile must derive emptiness from
 // complete canonical histories, never from a caller bool or absent DTO field.
-pub(crate) fn require_empty_namespace_for_manifest_data_v2(
-    journal: &mut Journal, manifest: &CanonicalAssignmentManifestV1,
-) -> Result<(), AttachmentVerificationError> {
-    let assignment = manifest.manifest();
-    let desired = attachment_state::current_for_consumer(journal, assignment.sandbox(),
+
+
+macro_rules! require_empty_namespace_for_manifest_data_v2_historical_recipe_v2 {
+    ($input:expr, $current:path, $history:expr, $manifest:expr) => {{
+    let assignment = $manifest.manifest();
+    let desired = $current($input, assignment.sandbox(),
         assignment.incarnation(), assignment.namespace_generation().get())?;
-    let history = History::load(journal)?;
+    let history = $history?;
     if !desired.is_empty() || history.records.values().any(|record| {
         record.namespace_target.sandbox() == assignment.sandbox()
             && record.namespace_target.incarnation() == assignment.incarnation()
@@ -658,33 +671,61 @@ pub(crate) fn require_empty_namespace_for_manifest_data_v2(
         return Err(AttachmentVerificationError::NotVerifiable);
     }
     Ok(())
+    }};
+}
+
+pub(crate) fn require_empty_namespace_for_manifest_data_v2(
+    journal: &mut Journal, manifest: &CanonicalAssignmentManifestV1,
+) -> Result<(), AttachmentVerificationError> {
+    require_empty_namespace_for_manifest_data_v2_historical_recipe_v2!(journal, attachment_state::current_for_consumer, History::load(journal), manifest)
+}
+
+pub(crate) fn require_empty_namespace_for_manifest_observed_v2(
+    journal: crate::journal::historical_observation::HistoricalObservationV1<'_>, manifest: &CanonicalAssignmentManifestV1,
+) -> Result<(), AttachmentVerificationError> {
+    require_empty_namespace_for_manifest_data_v2_historical_recipe_v2!(journal.rows_data_v2(), attachment_state::current_for_consumer_rows_v2, History::load_observed_v2(journal), manifest)
 }
 
 pub(crate) fn validate_namespace(journal: &mut Journal) -> Result<(), AttachmentVerificationError> {
     History::load(journal).map(|_| ())
 }
 
-fn validate_cross_references(
-    journal: &mut Journal,
-    record: &Record,
-) -> Result<(), AttachmentVerificationError> {
-    validate_durable_reference_in_validated_namespace(journal, record.namespace_target)
+
+
+macro_rules! validate_cross_references_historical_recipe_v2 {
+    ($input:expr, $reference:path, $generation:path, $record:expr) => {{
+    $reference($input, $record.namespace_target)
         .map_err(|error| AttachmentVerificationError::NamespaceTarget(Box::new(error)))?;
     let desired =
-        attachment_state::get_generation(journal, record.attachment_id, record.desired_generation)?
+        $generation($input, $record.attachment_id, $record.desired_generation)?
             .ok_or(AttachmentVerificationError::CorruptState)?;
     let (consumer_sandbox, consumer_incarnation) = desired.intent().consumer();
     if desired.presence() != AttachmentDesiredPresenceV1::Present
-        || desired.record_digest().as_bytes() != &record.desired_record_digest
-        || consumer_sandbox != record.namespace_target.sandbox()
-        || consumer_incarnation != record.namespace_target.incarnation()
+        || desired.record_digest().as_bytes() != &$record.desired_record_digest
+        || consumer_sandbox != $record.namespace_target.sandbox()
+        || consumer_incarnation != $record.namespace_target.incarnation()
         || desired.intent().expected_namespace_generation().get()
-            != record.namespace_target.target_generation()
-        || desired_recipe_digest(desired.intent()) != record.recipe_digest
+            != $record.namespace_target.target_generation()
+        || desired_recipe_digest(desired.intent()) != $record.recipe_digest
     {
         return Err(AttachmentVerificationError::CorruptState);
     }
     Ok(())
+    }};
+}
+
+fn validate_cross_references(
+    journal: &mut Journal,
+    record: &Record,
+) -> Result<(), AttachmentVerificationError> {
+    validate_cross_references_historical_recipe_v2!(journal, validate_durable_reference_in_validated_namespace, attachment_state::get_generation, record)
+}
+
+fn validate_cross_references_observed_v2(
+    journal: crate::journal::historical_observation::HistoricalObservationV1<'_>,
+    record: &Record,
+) -> Result<(), AttachmentVerificationError> {
+    validate_cross_references_historical_recipe_v2!(journal.rows_data_v2(), crate::runtime_scope::validate_durable_reference_in_validated_namespace_rows_v2, attachment_state::get_generation_rows_v2, record)
 }
 
 pub(crate) fn mount_resource_digest(resource: &ValidatedMountInventoryRecord) -> [u8; 32] {
@@ -926,3 +967,15 @@ fn valid_kernel_path(value: &[u8]) -> bool {
 
 #[cfg(test)]
 mod tests;
+
+/// Prices the reached actual-owner/Rows argument and owning return controls.
+/// Dynamic retained histories and their backing retain their existing quote.
+pub(crate) fn historical_observation_control_bytes_v2() -> Option<usize> {
+    std::mem::size_of::<(crate::journal::historical_observation::HistoricalObservationV1<'_>, &History)>().checked_mul(3)?
+        .checked_add(std::mem::size_of::<Result<History, AttachmentVerificationError>>().checked_mul(3)?)?
+        .checked_add(std::mem::size_of::<Result<(), AttachmentVerificationError>>().checked_mul(3)?)?
+        .checked_add(std::mem::size_of::<Option<usize>>().checked_mul(3)?)?
+        .checked_add(std::mem::size_of::<(crate::journal::historical_observation::HistoricalObservationV1<'_>, &CanonicalAssignmentManifestV1, &Record)>().checked_mul(3)?)?
+        .checked_add(std::mem::size_of::<Result<Vec<DurableAttachmentDesiredStateV1>, AttachmentDesiredStateError>>().checked_mul(3)?)?
+        .checked_add(std::mem::size_of::<Result<(), crate::runtime_scope::NamespaceTargetError>>().checked_mul(3)?)
+}

@@ -47,7 +47,7 @@ pub use admitted_profile::{
 
 mod controller_peer;
 mod receiving_guard;
-pub(crate) use receiving_guard::RootReceivingGuardV1;
+pub(crate) use receiving_guard::{RootReceivingGuardV1, RootOwnedCurrentStageV1};
 mod git_evidence_credential;
 mod nix_offline_provision;
 pub(crate) use nix_offline_provision::nix_offline_location_has_original_label_v5;
@@ -65,8 +65,7 @@ mod root_startup_failure;
 pub(crate) use controller_peer::delete_receiving::{
     RootStopCleanupControllerPeerReceivingV1, RootStopCleanupStageReceivingV1, RootApplyControllerPeerReceivingV1, RootApplyStageReceivingV1, RootDeleteCacheStageReceivingV2,
     RootDeleteControllerPeerReceivingV1, RootEnvironmentControllerPeerReceivingV1,
-    RootEnvironmentStageReceivingV1, RootExecutionNoApplyControllerPeerReceivingV2,
-    RootExecutionNoApplyStageReceivingV2, RootFinalityRecoverControllerPeerReceivingV1,
+    RootEnvironmentStageReceivingV1, RootFinalityRecoverControllerPeerReceivingV1,
     RootFinalityRecoverStageReceivingV1, RootHostLaunchControllerPeerReceivingV1,
     RootHostLaunchStageReceivingV1, RootMaintenanceStorageControllerPeerReceivingV2,
     RootMaintenanceStorageStageReceivingV2, RootPurposeControllerPeerReceivingV1,
@@ -103,7 +102,8 @@ use std::path::Path;
 use aos_sandbox_linux::cgroup::{CgroupV2Root, RetainedCgroupAnchor};
 use aos_sandbox_linux::guest_confinement::require_subject;
 use aos_sandbox_linux::inherited_fd::duplicate_initial_activation_table;
-use aos_sandbox_linux::pidfd::{PidFd, PidFdProcessIdentity};
+use aos_linux_descriptors::pidfd::PidFd;
+use aos_sandbox_linux::pidfd::PidFdProcessIdentity;
 use aos_sandbox_linux::selinux_policy::VerifiedLiveSelinuxPolicy;
 use rustix::fs::{Mode, OFlags, open};
 use sha2::{Digest as _, Sha256};
@@ -169,6 +169,9 @@ pub(super) const PROFILE_FD_NAME: &str = "aos-normal-root-profile";
 /// Reports rejection of normal-Root startup comparison or original custody.
 #[derive(Debug, thiserror::Error)]
 pub enum NormalRootStartupErrorV1 {
+    /// Owns a same-purpose native startup writer factory refusal.
+    #[error(transparent)]
+    StartupJournal(aos_sandbox_policy::native::RootStartupJournalErrorV1),
     /// The complete original launch descriptor table differs.
     #[error("normal Root original startup table differs")]
     Activation,
@@ -515,7 +518,7 @@ impl ProductionNormalRootStartupV1 {
     ) -> Result<(), NormalRootStartupErrorV1> {
         if self.receiving.is_some() {
             let mut receiving = self.lock_receiving_v1()?;
-            let returned = receiving.original_mut_v1().receive_startup_journal_once(self, journal);
+            let returned = receiving.receive_startup_journal_native_once_v1(self, journal);
             receiving.finish_returned_v1(returned)
         } else {
             journal.open_once();
@@ -556,13 +559,12 @@ impl ProductionNormalRootStartupV1 {
         if self.receiving.is_none() {
             return Err(NormalRootStartupErrorV1::Service);
         }
-        let uid = self.native.fields().profile.identities[2];
-        let gid = self.cache_signer_gid();
-        let socket_gid = self.native.fields().profile.identities[1];
-        if uid == 0 || gid == 0 || socket_gid == 0 {
-            return Err(NormalRootStartupErrorV1::Service);
-        }
-        Ok((uid, gid, socket_gid))
+        aos_sandbox_broker::root_current_cache_signer_identity_data_v1!(
+            uid = self.native.fields().profile.identities[2],
+            gid = self.cache_signer_gid(),
+            socket_gid = self.native.fields().profile.identities[1],
+            error = NormalRootStartupErrorV1::Service
+        )
     }
 
     pub(crate) fn prepay_create_storage_use_source_query_once(
@@ -1169,3 +1171,6 @@ pub use client::{
     RootExecutionNoApplyClientAcquisitionBorrowV2, RootExecutionNoApplyClientClosedV2,
     RootExecutionNoApplyClientFloorBorrowV2, RootExecutionNoApplyClientOriginalV2,
 };
+
+pub(crate) use controller_peer::{RootExecutionNoApplyControllerPeerReceivingV2,
+    RootExecutionNoApplyStageReceivingV2};

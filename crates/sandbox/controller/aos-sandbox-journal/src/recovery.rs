@@ -7,6 +7,11 @@
 //! Selected callers loan their actual native-result slots so each owning error
 //! remains resident before classification or another operation.
 
+mod report;
+
+/// Reuses completed recovery counts without native custody or authority.
+pub use report::RecoveryReport;
+
 use std::fs::File;
 use std::io::{self, Seek, SeekFrom};
 

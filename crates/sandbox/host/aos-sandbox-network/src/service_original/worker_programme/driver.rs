@@ -1,7 +1,7 @@
 //! Calls the sole retained parent P/O engine from actual completed sources.
 
 use super::*;
-use aos_sandbox_linux::boot::KernelBootId;
+use aos_linux_descriptors::boot::KernelBootId;
 
 impl NetworkServiceDomainCallsiteV4<'_> {
     /// Executes Destroy9's distinct signed programme through the same P/O engine.

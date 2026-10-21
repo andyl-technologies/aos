@@ -49,7 +49,8 @@ use aos_sandbox_model::runtime_backend::{
     reserve_effect_issue,
 };
 use aos_sandbox_model::{DecodeLimits, ObjectDigest, decode_execution_spec_v1};
-use aos_sandbox_linux::immutable_file::{ImmutableFileError, SealedReadOnlyCredential};
+use aos_linux_descriptors::ImmutableFileError;
+use aos_linux_descriptors::credential::SealedReadOnlyCredential;
 use aos_sandbox_linux::seqpacket::{SeqpacketError, SeqpacketSocket};
 use aos_sandbox_protocol::ValidatedAssignmentFence;
 use aos_systemd_client::{SandboxUnitName, SandboxUnitSpec};
@@ -105,7 +106,7 @@ pub(crate) enum CanaryAgentFailureV1 {
     #[error(transparent)]
     Read(#[from] aos_sandbox_linux::protected_file::ExactReadFailure),
     #[error(transparent)]
-    Inspection(#[from] aos_sandbox_linux::Error),
+    Inspection(#[from] aos_linux_descriptors::Error),
     #[error(transparent)]
     ChildOriginal(#[from] aos_sandbox_linux::pidfd::HostCanaryReceivedChildErrorV1),
     #[error(transparent)]

@@ -18,7 +18,7 @@ use aos_sandbox_protocol::domain_ledger::create_storage_history::{
     assignment_planned::AssignmentPlannedBodyDataV1,
     cache_held::CacheHeldReceiptDataV1,
 };
-use crate::cache_residency::CacheHeldPreRootCutV1;
+use aos_sandbox_cache::CacheHeldPreRootCutV1;
 use sha2::{Digest as _, Sha256};
 
 type AssignmentResult<T> = Result<T, AssignmentPlannedErrorV1>;
@@ -154,7 +154,9 @@ impl AssignmentPlannedOriginalV1 {
             let mut demand = pair_fixed_demand(record_bound)?;
             demand = demand.checked_add(controller.create_storage_semantic_append_demand_v1()?)?;
             demand = demand.checked_add(source.journal().create_storage_semantic_append_demand_v1()?)?;
-            demand = demand.checked_add(crate::hierarchy::protected_journal::create_storage_tree_model_demand_v1(source.journal())?)?;
+            demand = demand.checked_add(aos_sandbox_ledger_replay::replay::tree_lineage::start_assignment::
+                create_storage_tree_model_demand_v1(source.journal().historical_read_view_v1().rows_data_v2())
+                .map_err(crate::JournalError::from)?)?;
             demand = demand.checked_add(policy_model_demand(policy_bytes)?)?;
             let construction = crate::policy_compiler::assignment_manifest_construction_receiving_bytes_v2()
                 .and_then(|bytes| u64::try_from(bytes).ok())

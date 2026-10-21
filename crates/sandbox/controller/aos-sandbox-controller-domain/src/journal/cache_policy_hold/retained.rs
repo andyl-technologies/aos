@@ -235,7 +235,7 @@ impl Journal {
             .as_ref()
             .ok_or(JournalError::ProtectedBoundary)?;
         #[cfg(not(test))]
-        if directory.as_path() != std::path::Path::new(crate::cache_residency::PROTECTED_CACHE_ROOT)
+        if directory.as_path() != std::path::Path::new(aos_sandbox_protocol::cache_state::fixed_journals::CACHE_JOURNAL_DIRECTORY_V1)
         {
             return Err(JournalError::ProtectedBoundary);
         }
@@ -284,7 +284,7 @@ impl Journal {
             .as_ref()
             .ok_or(JournalError::ProtectedBoundary)?;
         #[cfg(not(test))]
-        if directory.as_path() != std::path::Path::new(crate::cache_residency::PROTECTED_CACHE_ROOT)
+        if directory.as_path() != std::path::Path::new(aos_sandbox_protocol::cache_state::fixed_journals::CACHE_JOURNAL_DIRECTORY_V1)
         {
             return Err(JournalError::ProtectedBoundary);
         }

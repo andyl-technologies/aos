@@ -5,31 +5,14 @@
 //! already match the fixed credentials; exact replay is allowed, rotation is
 //! closed, and the Cache key cannot reuse either policy signing key.
 
-use aos_sandbox_policy::journal_keys::{
-    CONTROLLER_HOLD_PIN_KEY, SIGNER_PINS_KEY, SOURCE_HOLD_PIN_KEY,
-};
-
-use aos_sandbox_policy::controller_readback::PinnedControllerHoldSignerV1;
-
+#[cfg(all(test, target_os = "linux"))]
 use std::path::Path;
 
 use ed25519_dalek::VerifyingKey;
 
-use aos_sandbox_protocol::cache_owner_readback::PinnedCacheOwnerReadbackSignerV1;
-use crate::journal::{Journal, JournalError, RecordNamespace};
+use crate::journal::JournalError;
 
-
-
-use super::deployment_head::encode_policy_signer_pins_v1;
-use super::owner_pin_transaction::owner_pin_transaction;
-use super::protected_owner::{
-    POLICY_AUTHORITY_JOURNAL, PROTECTED_POLICY_ROOT, policy_authority_journal_limits,
-};
-
-use super::source_hold_readback::PinnedSourceHoldReadbackSignerV1;
-
-pub(super) const CACHE_PIN_KEY: &[u8] = b"\0aos-policy-cache-readback-pin-v1\0";
-const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.policy-cache-readback-pin-transaction.v1\0";
+pub(super) use aos_sandbox_policy::journal_keys::CACHE_PIN_KEY;
 
 /// Reports a rejected protected Cache readback pin admission.
 #[derive(Debug, thiserror::Error)]
@@ -43,6 +26,10 @@ pub enum CacheReadbackPinErrorV1 {
     /// Root journal replay or durable admission failed.
     #[error(transparent)]
     Journal(#[from] JournalError),
+    /// Retains the exact same-owner native startup refusal and custody marker.
+    #[error(transparent)]
+    #[cfg(target_os = "linux")]
+    NativeStartup(aos_sandbox_policy::native::RootStartupCredentialErrorV1),
 }
 
 /// Reconciles an optional Cache-only public pin with the fixed protected root.
@@ -61,108 +48,34 @@ pub fn admit_fixed_cache_readback_pin_v1(
     project_generation: u64,
     project_key: &VerifyingKey,
 ) -> Result<(), CacheReadbackPinErrorV1> {
-    let (mut journal, _) = Journal::open_protected_at(
-        Path::new(PROTECTED_POLICY_ROOT),
-        POLICY_AUTHORITY_JOURNAL,
-        policy_authority_journal_limits(),
-    )?;
-    admit_cache_readback_pin_in_journal_v1(
-        &mut journal,
-        credential,
-        deployment_generation,
-        deployment_key,
-        project_generation,
-        project_key,
-    )
+    #[cfg(target_os = "linux")]
+    {
+    aos_sandbox_policy::native::RootStartupJournalOriginalV1::admit_fixed_cache_pin_v1(
+        credential, deployment_generation, deployment_key, project_generation, project_key,
+    ).map_err(CacheReadbackPinErrorV1::from)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (credential, deployment_generation, deployment_key, project_generation, project_key);
+        Err(JournalError::UnsupportedProtectedOpen.into())
+    }
 }
 
+#[cfg(all(test, target_os = "linux"))]
 pub(super) fn admit_cache_readback_pin_in_journal_v1(
-    journal: &mut Journal,
+    journal: &mut aos_sandbox_policy::native::RootStartupFixedAdmissionFixtureV1,
     credential: Option<&[u8]>,
     deployment_generation: u64,
     deployment_key: &VerifyingKey,
     project_generation: u64,
     project_key: &VerifyingKey,
 ) -> Result<(), CacheReadbackPinErrorV1> {
-    admit_cache_readback_pin_in_journal_v1_with_root_receiving(
-        journal,
-        credential,
-        deployment_generation,
-        deployment_key,
-        project_generation,
-        project_key,
-        None,
-    )
+    journal.admit_cache_pin_v1(
+        credential, deployment_generation, deployment_key, project_generation, project_key,
+    ).map_err(CacheReadbackPinErrorV1::from)
 }
 
-pub(super) fn admit_cache_readback_pin_in_journal_v1_with_root_receiving(
-    journal: &mut Journal,
-    credential: Option<&[u8]>,
-    deployment_generation: u64,
-    deployment_key: &VerifyingKey,
-    project_generation: u64,
-    project_key: &VerifyingKey,
-    original: Option<&aos_sandbox_broker::receiving::RootJournalFinancialBorrowV1<'_>>,
-) -> Result<(), CacheReadbackPinErrorV1> {
-    let policy_pins = encode_policy_signer_pins_v1(
-        deployment_generation,
-        deployment_key,
-        project_generation,
-        project_key,
-    )
-    .map_err(|_| CacheReadbackPinErrorV1::InvalidPin)?;
-
-    let mut authority = journal.claim_protected_authority(RecordNamespace::DesiredState)?;
-    super::binding_v2::ensure_root_binding_unheld(&authority)
-        .map_err(|_| CacheReadbackPinErrorV1::StalePin)?;
-    if authority.get(SIGNER_PINS_KEY)? != Some(policy_pins.as_slice()) {
-        return Err(CacheReadbackPinErrorV1::StalePin);
-    }
-    let Some(credential) = credential else {
-        return if authority.get(CACHE_PIN_KEY)?.is_none() {
-            Ok(())
-        } else {
-            Err(CacheReadbackPinErrorV1::StalePin)
-        };
-    };
-    let cache = PinnedCacheOwnerReadbackSignerV1::decode(credential)
-        .map_err(|_| CacheReadbackPinErrorV1::InvalidPin)?;
-    if cache.verifying_key() == deployment_key || cache.verifying_key() == project_key {
-        return Err(CacheReadbackPinErrorV1::InvalidPin);
-    }
-    if let Some(controller_pin) = authority.get(CONTROLLER_HOLD_PIN_KEY)? {
-        let controller = PinnedControllerHoldSignerV1::decode(controller_pin)
-            .map_err(crate::policy_compiler::ControllerHoldReadbackErrorV1::from)
-            .map_err(|_| CacheReadbackPinErrorV1::StalePin)?;
-        if controller.verifying_key() == cache.verifying_key() {
-            return Err(CacheReadbackPinErrorV1::InvalidPin);
-        }
-    }
-    if let Some(source_pin) = authority.get(SOURCE_HOLD_PIN_KEY)? {
-        let source = PinnedSourceHoldReadbackSignerV1::decode(source_pin)
-            .map_err(|_| CacheReadbackPinErrorV1::StalePin)?;
-        if source.verifying_key() == cache.verifying_key() {
-            return Err(CacheReadbackPinErrorV1::InvalidPin);
-        }
-    }
-    match authority.get(CACHE_PIN_KEY)? {
-        Some(current) if current == credential => return Ok(()),
-        Some(_) => return Err(CacheReadbackPinErrorV1::StalePin),
-        None => {}
-    }
-
-    let transaction = owner_pin_transaction(TRANSACTION_DOMAIN, CACHE_PIN_KEY, credential)?;
-    match original {
-        Some(original) => authority.commit_root_credential_receiving_v1(&transaction, original)?,
-        None => authority.commit(&transaction)?,
-    };
-    if authority.get(CACHE_PIN_KEY)? != Some(credential) {
-        return Err(CacheReadbackPinErrorV1::StalePin);
-    }
-    Ok(())
-}
-
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use std::fs;
     use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
@@ -175,16 +88,15 @@ mod tests {
     use super::*;
     use crate::policy_compiler::deployment_head::admit_policy_signer_pins_in_journal_v1;
 
-    fn journal(directory: &Path) -> Journal {
+    fn journal(directory: &Path) -> aos_sandbox_policy::native::RootStartupFixedAdmissionFixtureV1 {
         let uid = fs::metadata(directory).expect("test root metadata").uid();
-        Journal::open_protected_at_uid(
+        aos_sandbox_policy::native::RootStartupFixedAdmissionFixtureV1::open_v1(
             directory,
             "authority.journal",
             JournalLimits::default(),
             uid,
         )
         .expect("protected test journal")
-        .0
     }
 
     #[test]

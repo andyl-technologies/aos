@@ -5,6 +5,8 @@
 //! Source canonical replay, auxiliary reducer and signer transport engines
 //! retain all primary failures before independent native and Root posts.
 
+use aos_sandbox_policy::native::{RootFinalityReadOriginalV1 as Target, RootFinalityReadKindV1 as Kind};
+use crate::journal::historical_observation::root_readonly_error_v1 as project_read;
 use super::controller::sessions::model::{
     DeleteCleanupTerminalPurposeV4 as SessionPurpose, DeleteSessionModelsOriginalV2,
 };
@@ -12,11 +14,9 @@ use super::preparation_current::RootDeletePreparationSourceModelsV3;
 use super::*;
 use crate::controller_resource_reservation::{ResourceReservationErrorV1, RootDeleteChunkPostsV1};
 use crate::journal::JournalError;
-use crate::policy_compiler::{
-    RetainedKernelPairedClockAttemptV1,
-    create_storage_current::controller_readonly::native_read::RootFixedNativeReadOriginalsV1 as Reader,
-    source_signer_transport::{RootSourceSignerTransportOriginalsV1, RootSourceTransportClosedV1},
-};
+use crate::policy_compiler::RetainedKernelPairedClockAttemptV1;
+use aos_sandbox_broker::source_signer_transport::RootSourceSignerTransportOriginalsV1;
+use aos_sandbox_broker::source_signer_transport::RootSourceTransportClosedV1;
 use aos_sandbox_model::{RawPairedClockSample, ResourceDimension as D, ResourceVector};
 use aos_sandbox_protocol::domain_ledger::delete_root::{
     completion::{
@@ -97,7 +97,7 @@ pub(crate) struct RootDeleteCompletionCurrentOriginalV4 {
     ack_result: Option<
         Result<(), aos_sandbox_protocol::domain_ledger::create_storage_history::HistoryErrorV1>,
     >,
-    readers: [Reader; 3],
+    readers: [Target; 3],
     native: [Option<Result<(), JournalError>>; 3],
     sessions: [DeleteSessionModelsOriginalV2; 2],
     models: [Option<Result<(), JournalError>>; 2],
@@ -138,9 +138,9 @@ impl Default for RootDeleteCompletionCurrentOriginalV4 {
             ack_io: Default::default(),
             ack_result: None,
             readers: [
-                Reader::mount_session_v2(),
-                Reader::default(),
-                Reader::source_current_v1(),
+                Target::new(Kind::MountSession),
+                Target::new(Kind::StorageSession),
+                Target::new(Kind::Source),
             ],
             native: std::array::from_fn(|_| None),
             sessions: std::array::from_fn(|_| Default::default()),
@@ -324,9 +324,10 @@ impl RootDeleteCompletionCurrentOriginalV4 {
                     SessionPurpose::StorageDestroy7,
                 )
             };
-            self.readers[index].prepare_delete_completion_session_observation_v4(proof.native)?;
+            self.readers[index].construct_reader_once_v1().map_err(project_read)?;
+            self.readers[index].prepare_delete_completion_session_observation_v4(proof.native).map_err(project_read)?;
             self.readers[index].capture_once(ids[0]);
-            if self.readers[index].require_captured_v1().is_err() {
+            if self.readers[index].require_captured_v1().map_err(project_read).is_err() {
                 self.first = Some(First::Native(index));
                 return Err(JournalError::ProtectedBoundary.into());
             }
@@ -334,7 +335,7 @@ impl RootDeleteCompletionCurrentOriginalV4 {
                 flight,
                 native,
                 self.readers[index]
-                    .replay_demand_v1()
+                    .replay_demand_v1().map_err(project_read)
                     .map_err(|cause| cause.into()),
             )?;
             self.sample_once_v4(2 + index * 2, inputs);
@@ -343,14 +344,14 @@ impl RootDeleteCompletionCurrentOriginalV4 {
             self.readers[index].finish_post_once();
             self.native[index] = Some(
                 self.readers[index]
-                    .delete_preparation_native_data_v3()
+                    .delete_preparation_native_data_v3().map_err(project_read)
                     .map(|_| ()),
             );
             if !matches!(self.native[index], Some(Ok(()))) {
                 self.first = Some(First::Native(index));
             }
             self.require_primary_v4()?;
-            let bytes = usize::try_from(self.readers[index].terminal_native_v1()?.end)
+            let bytes = usize::try_from(self.readers[index].terminal_native_v1().map_err(project_read)?.end)
                 .map_err(|_| JournalError::JournalTooLarge)?;
             self.admit_v4(
                 flight,
@@ -362,8 +363,8 @@ impl RootDeleteCompletionCurrentOriginalV4 {
             self.require_primary_v4()?;
             let manifests = inputs.controller.broker_manifests_v2()?;
             self.models[index] = Some(self.sessions[index].observe_cleanup_packets_once_v4(
-                self.readers[index].terminal_native_v1()?,
-                self.readers[index].completed_delete_storage_history_rows_v3()?,
+                self.readers[index].terminal_native_v1().map_err(project_read)?,
+                self.readers[index].completed_delete_storage_history_rows_v3().map_err(project_read)?,
                 if index == 0 { manifests.1 } else { manifests.2 },
                 query.cutoff,
                 query.boot,
@@ -374,9 +375,10 @@ impl RootDeleteCompletionCurrentOriginalV4 {
             }
             self.require_primary_v4()?;
         }
-        self.readers[2].prepare_delete_terminal_observation_v4(query)?;
+        self.readers[2].construct_reader_once_v1().map_err(project_read)?;
+        self.readers[2].prepare_delete_terminal_observation_v4(query).map_err(project_read)?;
         self.readers[2].capture_once(ids[0]);
-        if self.readers[2].require_captured_v1().is_err() {
+        if self.readers[2].require_captured_v1().map_err(project_read).is_err() {
             self.first = Some(First::Native(2));
             return Err(JournalError::ProtectedBoundary.into());
         }
@@ -384,7 +386,7 @@ impl RootDeleteCompletionCurrentOriginalV4 {
             flight,
             P::SourceNative,
             self.readers[2]
-                .replay_demand_v1()
+                .replay_demand_v1().map_err(project_read)
                 .map_err(|cause| cause.into()),
         )?;
         self.sample_once_v4(6, inputs);
@@ -398,7 +400,7 @@ impl RootDeleteCompletionCurrentOriginalV4 {
             flight,
             P::SourceSemantic,
             self.readers[2]
-                .additional_delete_preparation_semantic_demand_v3()
+                .additional_delete_preparation_semantic_demand_v3().map_err(project_read)
                 .map_err(|cause| cause.into()),
         )?;
         self.sample_once_v4(7, inputs);
@@ -406,8 +408,8 @@ impl RootDeleteCompletionCurrentOriginalV4 {
         self.readers[2].replay_once();
         self.readers[2].finish_post_once();
         self.native[2] = Some((|| {
-            if self.readers[2].delete_preparation_native_data_v3()? != frame.source
-                || self.readers[2].delete_terminal_historical_source_native_v4()? != prior.source
+            if self.readers[2].delete_preparation_native_data_v3().map_err(project_read)? != frame.source
+                || self.readers[2].delete_terminal_historical_source_native_v4().map_err(project_read)? != prior.source
             {
                 return Err(JournalError::StaleAuthoritySnapshot);
             }
@@ -475,7 +477,7 @@ impl RootDeleteCompletionCurrentOriginalV4 {
                 *positive(&self.samples[9])?,
                 reply.fields,
             )?;
-            let native = self.readers[2].terminal_native_v1()?;
+            let native = self.readers[2].terminal_native_v1().map_err(project_read)?;
             let tree = aos_sandbox_ledger_replay::delete_pending::source_delete_tree_data_v1(
                 native.state.iter().map(|((namespace, key), value)| {
                     (*namespace, key.as_slice(), value.as_slice())
@@ -553,8 +555,8 @@ impl RootDeleteCompletionCurrentOriginalV4 {
             .and_then(|names| names.checked_mul(CLOCKS))
             .and_then(|names| u64::try_from(names).ok())
             .ok_or(JournalError::JournalTooLarge)?;
-        Ok(Reader::mount_session_fixed_demand_v2()?.checked_add(Reader::fixed_demand_v1()?)?
-            .checked_add(Reader::source_current_fixed_demand_v1()?)?
+        Ok(super::reader::fixed_demand_v1(Kind::MountSession)?.checked_add(super::reader::fixed_demand_v1(Kind::StorageSession)?)?
+            .checked_add(super::reader::fixed_demand_v1(Kind::Source)?)?
             .checked_add(RootDeleteChunkPostsV1::fixed_demand_v1()?)?
             .checked_add(crate::policy_compiler::root_subject_chunk::RootSubjectChunkReceivingV1::delete_receiving_demand_v1()?)?
             .checked_add(ResourceVector::ZERO.with(D::MemoryBytes, bytes).with(D::MetadataEntries, names + 2)

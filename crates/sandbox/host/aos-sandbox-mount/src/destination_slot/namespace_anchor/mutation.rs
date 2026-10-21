@@ -156,7 +156,7 @@ struct NamespaceMutationModelsV4 {
     parents: [DirectoryParentOriginalV1; 4],
     syncs: [DirectorySyncOriginalV1; 4],
     guards: [Option<Result<()>>; 10],
-    mount: Option<std::result::Result<MountId, aos_sandbox_linux::Error>>,
+    mount: Option<std::result::Result<MountId, aos_linux_descriptors::Error>>,
     pin: Option<Arc<BeneathRoot>>,
     intent_transaction: Option<std::result::Result<JournalTransaction,
         aos_sandbox_protocol::domain_ledger::JournalTransactionDataError>>,

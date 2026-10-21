@@ -628,7 +628,7 @@ mod tests {
     use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
     #[cfg(target_os = "linux")]
-    use aos_sandbox_linux::immutable_file::SealedReadOnlyCredential;
+    use aos_linux_descriptors::credential::SealedReadOnlyCredential;
 
     use super::*;
 

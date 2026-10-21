@@ -224,7 +224,7 @@ mod tests {
     #[test]
     fn available_stat_prefix_keeps_native_capture_and_closed_source() {
         let process = PidFd::open(std::num::NonZeroU32::new(std::process::id()).unwrap()).unwrap();
-        let mut source = process.prepare_proc_observations_v1();
+        let mut source = crate::pidfd::prepare_proc_observations_v1(&process);
         let mut capture = PidFdProcOriginalsV1::new();
         let identity = source.capture_stat_retaining_v1(&process, &mut capture).unwrap();
         let original_file = source.stat.file.as_ref().unwrap().as_raw_fd();
@@ -253,7 +253,7 @@ mod tests {
     #[test]
     fn repeated_retained_stat_closes_source_without_replacing_native_results() {
         let process = PidFd::open(std::num::NonZeroU32::new(std::process::id()).unwrap()).unwrap();
-        let mut source = process.prepare_proc_observations_v1();
+        let mut source = crate::pidfd::prepare_proc_observations_v1(&process);
         let mut capture = PidFdProcOriginalsV1::new();
         let identity = source.capture_stat_retaining_v1(&process, &mut capture).unwrap();
         let file = source.stat.file.as_ref().unwrap().as_raw_fd();

@@ -40,6 +40,8 @@ pub mod capacity;
 pub mod capacity_family;
 pub mod controller_history_relation;
 pub mod create_q04_history;
+pub mod create_admission;
+pub mod create_failure;
 pub mod create_storage_history;
 pub mod delete_batch;
 pub mod effect_history;
@@ -141,3 +143,12 @@ pub mod delete_root;
 
 /// Defines undeployed, purpose-specific Root provisioning exchange DATA.
 pub mod provisioning_root;
+
+/// Shares exact pure operation-plan bounds and ordered admission rows.
+pub mod admission_records;
+
+/// Rebuilds nonauthorizing Delete admission comparison DATA.
+pub mod delete_admission_comparison;
+
+/// Defines the passive Controller hold identity without native dependencies.
+pub mod controller_policy_hold;

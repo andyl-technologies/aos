@@ -10,7 +10,8 @@ use aos_sandbox_model::{ResourceDimension as D, ResourceVector};
 use aos_sandbox_broker_session_protocol::VerifiedBrokerSessionTranscriptV1;
 use aos_sandbox_linux::seqpacket::SeqpacketSocket;
 use crate::journal::{Journal, JournalError, ProtectedJournalPreopenReplayExtentV1};
-use crate::journal::broker_session_receiving::{StorageCreateUseSecurityShapeDataV1,
+use aos_sandbox_policy::storage_create_use_data::StorageCreateUseSecurityShapeDataV1;
+use crate::journal::broker_session_receiving::{
     StorageSessionGeometryRefusalV1, storage_create_use_receiving_demand_v1};
 use crate::controller_resource_reservation::{AccountTransition, ReturnedAppend,
     ResourceReservationErrorV1, bank};
@@ -238,7 +239,7 @@ impl OriginalCreateStorageReadyV1<'_, '_> {
         progress.before_result = Some(progress.before.observe_operation_once(CacheControlOriginalsV1 {
             parent: &owner.parent, intake: &owner.intake, controller: self.original.controller,
             source: self.original.source, profile: self.original.profile,
-        }, &self.cache, expected, use_state.validated.position()));
+        }, &(&self.cache).currentness_original_v1(), expected, use_state.validated.position()));
         progress.association = Some(owner.client_session.require_completed_association_v1(session, socket, transcript));
         progress.primary = Some((|| {
             if progress.before.failure().is_some() || !matches!(progress.before_result, Some(Ok(())))
@@ -302,7 +303,7 @@ impl OriginalCreateStorageReadyV1<'_, '_> {
         progress.after_result = Some(progress.after.observe_operation_once(CacheControlOriginalsV1 {
             parent: &owner.parent, intake: &owner.intake, controller: self.original.controller,
             source: self.original.source, profile: self.original.profile,
-        }, &self.cache, expected, current));
+        }, &(&self.cache).currentness_original_v1(), expected, current));
         progress.complete = matches!(progress.primary, Some(Ok(())))
             && matches!(progress.after_result, Some(Ok(()))) && progress.failure().is_none();
         if progress.complete { Ok(()) } else { Err(CreateStorageReadyClosedV1) }

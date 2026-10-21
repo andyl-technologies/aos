@@ -11,10 +11,7 @@ use super::inputs_receiving::{ResourceInputsPurposeV2, ResourceInputsReceivingV2
 use crate::controller_resource_reservation::RootContinuationDemandV1;
 use crate::journal::JournalError;
 use crate::normal_root::{RootHostLaunchStageReceivingV1, RootMaintenanceStorageStageReceivingV2};
-use crate::policy_compiler::create_storage_current::{
-    bundle_ownership::ownership_bundle_typed_demand_v1,
-    controller_readonly::public_trust::RootBrokerPlanPublicTrustDataV1,
-};
+use aos_sandbox_policy::root_trust_data::RootBrokerPlanPublicTrustDataV1;
 use crate::policy_compiler::provisioning_current::{
     RootContinuationClockGateV1, RootContinuationHorizonDataV1,
     ownership_trust::prepare_once_v2,
@@ -28,6 +25,7 @@ use aos_sandbox_broker_session_protocol::{
     manifest::{BrokerSessionManifestAudienceV1, BrokerSessionManifestV1},
 };
 use aos_sandbox_model::{LeaseAssignment, ResourceDimension as D, ResourceVector};
+use aos_sandbox_policy::bundle_ownership_data::ownership_bundle_typed_demand_v1;
 use aos_sandbox_ownership_protocol::{
     OwnershipClaimAction, SignedOwnershipLease,
     response_verification::{OwnershipClaimDecodeCaptureV1, OwnershipResponseVerifyCaptureV1},
@@ -116,6 +114,8 @@ impl RootResourceInputsOriginalV2 {
                     crate::policy_compiler::provisioning_current::ownership_trust::
                     receiving_frame_bytes_v2().and_then(|frame| bytes.checked_add(frame))
                 })
+                .and_then(|bytes| bytes.checked_add(aos_sandbox_policy::bundle_ownership_data::
+                    fixed_interface_control_bytes_v1::<JournalError>()?))
                 .and_then(|bytes| u64::try_from(bytes).ok())
                 .ok_or(JournalError::JournalTooLarge)?;
             let demand = RootCurrentOwnershipCredentialCustodyV1::dominant_demand()
@@ -228,8 +228,9 @@ impl RootResourceInputsOriginalV2 {
                 recovered.canonical_receipt(), recovered.canonical_receipt_signature()]
                 .into_iter().try_fold(0_usize, |sum, field| sum.checked_add(field.len()))
                 .ok_or(JournalError::JournalTooLarge)?;
-            let demand = crate::policy_compiler::create_storage_current::bundle_ownership::
-                ownership_response_typed_demand_v2(quartet_bytes, verifier)?;
+            let demand = aos_sandbox_policy::bundle_ownership_data::
+                ownership_response_typed_demand_v2(quartet_bytes, verifier)
+                    .map_err(|_| JournalError::JournalTooLarge)?;
             stage.admit_maintenance_live_ownership_once_v2(
                 RootContinuationDemandV1::from_demand_v1(demand))?;
             native.response = Some(Box::new(OwnershipResponseVerifyCaptureV1::new()));
@@ -527,7 +528,7 @@ impl Native {
                     .canonical_bytes()
                     .len(),
                 verifier,
-            )?,
+            ).map_err(|_| JournalError::JournalTooLarge)?,
         ))?;
         self.claim = Some(Box::new(OwnershipClaimDecodeCaptureV1::new()));
         self.response = Some(Box::new(OwnershipResponseVerifyCaptureV1::new()));

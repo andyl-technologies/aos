@@ -10,7 +10,7 @@ use std::mem::size_of;
 
 use aos_sandbox_model::{ResourceDimension as D, ResourceVector};
 
-use aos_sandbox_linux::unix_stream::RetainedUnixStream;
+use aos_linux_descriptors::unix_stream::RetainedUnixStream;
 use aos_sandbox_protocol::domain_ledger::create_storage_history::{
     HistoryErrorV1,
     cache_held::current_proof::CACHE_CURRENT_PROOF_PACKET_BYTES_V1,
@@ -24,9 +24,8 @@ use aos_sandbox_protocol::domain_ledger::create_storage_history::{
         current_proofs_commitment_v1},
 };
 
-use crate::policy_compiler::bounded_stream_io::{
-    DeadlineStreamDirectionV1, FixedDeadlineStreamIoV1,
-};
+use aos_sandbox_broker::bounded_stream_io::DeadlineStreamDirectionV1;
+use aos_sandbox_broker::bounded_stream_io::FixedDeadlineStreamIoV1;
 use crate::controller_resource_reservation::ResourceReservationErrorV1;
 
 use super::{CacheControlOriginalsV1, CacheCurrentnessOriginalV1,
@@ -530,7 +529,7 @@ impl OriginalCreateStorageRootExchangeV1<'_, '_, '_> {
             self.state.use_gate.before_result = Some(self.state.use_gate.before.observe_operation_once(
             CacheControlOriginalsV1 { parent: self.parent, intake: self.intake,
                 controller: self.controller, source: self.source, profile: self.profile },
-                self.cache, expected, Ok(position)));
+                &(self.cache).currentness_original_v1(), expected, Ok(position)));
             self.state.use_gate.mark(!matches!(self.state.use_gate.before_result, Some(Ok(()))), CurrentFailure::Before);
         }
         if self.state.use_gate.first.is_none() {

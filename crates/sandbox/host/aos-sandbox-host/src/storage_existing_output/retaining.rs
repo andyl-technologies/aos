@@ -29,7 +29,7 @@ pub(super) enum NativeCauseV2 {
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]
-    Linux(#[from] aos_sandbox_linux::Error),
+    Linux(#[from] aos_linux_descriptors::Error),
     #[error(transparent)]
     Transport(#[from] StorageClientTransportErrorV2),
     #[error(transparent)]
@@ -532,7 +532,7 @@ pub(super) fn capture<T, E: Into<NativeCauseV2> + std::fmt::Display>(result: std
     }
 }
 
-pub(super) fn membership_observed(anchor: &RetainedCgroupAnchor, process: &aos_sandbox_linux::pidfd::PidFd,
+pub(super) fn membership_observed(anchor: &RetainedCgroupAnchor, process: &aos_linux_descriptors::pidfd::PidFd,
     native: &mut NativeDestinationV2<'_>) -> Result<PidFdInfo> {
     let Some(original) = native.as_deref_mut() else { return anchor.verify_exact_membership(process).map_err(query_error); };
     if original.membership.len() >= MEMBERSHIP_SAMPLES { return Err(refused()); }

@@ -9,7 +9,8 @@ use super::{
     capture_limit_control_slot_v1, recheck_limit_control_slot_v1,
 };
 use crate::path::PendingRegularFileV1;
-use crate::{Error, Result};
+use aos_linux_descriptors::Error;
+use aos_linux_descriptors::Result;
 
 /// Reports a closed negative status while the original native cause stays held.
 #[derive(Clone, Copy, Debug, thiserror::Error)]
@@ -256,7 +257,7 @@ pub struct MemoryLimitReadbackRefusalV1;
 pub struct CgroupControllerReadbackV2 {
     original: PidsLimitReadbackV1,
     entered: bool,
-    reentry: Option<crate::Error>,
+    reentry: Option<aos_linux_descriptors::Error>,
 }
 
 impl CgroupControllerReadbackV2 {
@@ -291,7 +292,7 @@ impl CgroupControllerReadbackV2 {
         -> std::result::Result<(), PidsLimitReadbackRefusalV1>
     {
         if self.entered {
-            self.reentry.get_or_insert_with(|| crate::Error::invalid("Guest controller readback", "original reentry"));
+            self.reentry.get_or_insert_with(|| aos_linux_descriptors::Error::invalid("Guest controller readback", "original reentry"));
             return Err(PidsLimitReadbackRefusalV1);
         }
         self.entered = true;
@@ -322,7 +323,7 @@ impl CgroupControllerReadbackV2 {
 
     /// Borrows the chronological original native or parser error.
     #[must_use]
-    pub fn failure(&self) -> Option<&crate::Error> { self.original.failure().or(self.reentry.as_ref()) }
+    pub fn failure(&self) -> Option<&aos_linux_descriptors::Error> { self.original.failure().or(self.reentry.as_ref()) }
 }
 
 /// Retains the fixed memory.max record through the same native slot engine.

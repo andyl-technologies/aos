@@ -117,7 +117,7 @@ impl FixedServiceInitialTableV1 {
         }
     }
 
-    fn observe_once(&mut self) -> Result<(), &aos_sandbox_linux::Error> {
+    fn observe_once(&mut self) -> Result<(), &aos_linux_descriptors::Error> {
         match self { Self::Source(value) => value.observe_once(), Self::Ownership(value) => value.observe_once(), Self::Cache(value) => value.observe_once(), Self::Mount(value) => value.observe_once(), Self::Network(value) => value.observe_once(), Self::BootPreparation(value) => value.observe_once() }
     }
 
@@ -133,7 +133,7 @@ impl FixedServiceInitialTableV1 {
         ordinary.map(|[first, second]| [first, second, None, None])
     }
 
-    fn failure(&self) -> Option<&aos_sandbox_linux::Error> {
+    fn failure(&self) -> Option<&aos_linux_descriptors::Error> {
         match self { Self::Source(value) => value.failure(), Self::Ownership(value) => value.failure(), Self::Cache(value) => value.failure(), Self::Mount(value) => value.failure(), Self::Network(value) => value.failure(), Self::BootPreparation(value) => value.failure() }
     }
 }
@@ -159,7 +159,7 @@ impl FixedServiceInitialCgroupV1 {
         }
     }
 
-    fn capture_once(&mut self) -> Result<(), aos_sandbox_linux::Error> {
+    fn capture_once(&mut self) -> Result<(), aos_linux_descriptors::Error> {
         match self { Self::Source(value) => value.capture_once(), Self::Ownership(value) => value.capture_once(), Self::Cache(value) => value.capture_once(), Self::Mount(value) => value.capture_once(), Self::Network(value) => value.capture_once(), Self::BootPreparation(value) => value.capture_once() }
     }
 
@@ -178,7 +178,7 @@ const PARENT_HEADER: usize = 2742;
 const PARENT_ROW: usize = 1506;
 const PARENT_MAXIMUM: usize = PARENT_HEADER + 16 * PARENT_ROW + 32;
 
-type NativeResult = Result<(), aos_sandbox_linux::Error>;
+type NativeResult = Result<(), aos_linux_descriptors::Error>;
 
 pub(crate) struct FixedServiceOriginalPart<E> {
     pub(crate) marker: std::marker::PhantomData<E>,
@@ -259,7 +259,7 @@ pub struct FixedServiceReceivingCaptureV1<E> {
     /// Retains this process original; role-private stages prepay every observation.
     pub process: CurrentSelfPidFdCustodyV1,
     /// Retains the exact initial process identity Result.
-    pub process_before: Option<Result<PidFdProcessIdentity, aos_sandbox_linux::Error>>,
+    pub process_before: Option<Result<PidFdProcessIdentity, aos_linux_descriptors::Error>>,
     cgroup_capture: FixedServiceInitialCgroupV1,
     pub(super) network_aggregate: Option<Box<super::network_receiving_aggregate::NetworkReceivingAggregateOriginalV4>>,
     pub(crate) cgroup_result: Option<NativeResult>,
@@ -267,12 +267,12 @@ pub struct FixedServiceReceivingCaptureV1<E> {
     /// Retains the actual fixed-role cgroup anchor after complete initial capture.
     pub cgroup: Option<RetainedCgroupAnchor>,
     /// Retains the original exact cgroup membership comparison Result.
-    pub membership: Option<Result<aos_sandbox_linux::pidfd::PidFdInfo, E>>,
+    pub membership: Option<Result<aos_linux_descriptors::pidfd::PidFdInfo, E>>,
     membership_capture: ExactCgroupMembershipReadbackV1,
     membership_entry: Option<Result<(), ExactCgroupMembershipRefusalV1>>,
     /// Retains the actual installed hard-limit readers and all initial Results.
     pub limits: ReceivingContainmentReadbackV1,
-    pub(crate) process_after: Option<Result<PidFdProcessIdentity, aos_sandbox_linux::Error>>,
+    pub(crate) process_after: Option<Result<PidFdProcessIdentity, aos_linux_descriptors::Error>>,
     /// Retains the actual final startup conjunction Result.
     pub final_binding: Option<Result<(), E>>,
     pub(crate) transfer: super::fixed_service_transfer::FixedServiceExecTransferReadbackV1<E>,

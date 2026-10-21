@@ -6,7 +6,8 @@
 
 use std::error::Error as StdError;
 
-use aos_sandbox_linux::unix_stream::{RetainedUnixStream, UnixStreamSubjectChunk};
+use aos_linux_descriptors::unix_stream::RetainedUnixStream;
+use aos_sandbox_linux::unix_stream::UnixStreamSubjectChunk;
 
 use super::{Error, RootControllerMembershipV1, RootSelectedControllerPeerOriginalV1, positive};
 
@@ -20,13 +21,13 @@ pub struct RootSelectedControllerSubjectSampleV1 {
     after_unwind: Option<Box<dyn std::any::Any + Send>>,
     closed: Option<Error>,
     entry: Option<Result<(), Error>>,
-    stream_before: Option<Result<(), aos_sandbox_linux::Error>>,
+    stream_before: Option<Result<(), aos_linux_descriptors::Error>>,
     nomination: Option<Result<(), Error>>,
-    alive: Option<Result<bool, aos_sandbox_linux::Error>>,
+    alive: Option<Result<bool, aos_linux_descriptors::Error>>,
     alive_binding: Option<Result<(), Error>>,
     membership: RootControllerMembershipV1,
     identity: Option<Result<(), Error>>,
-    stream_after: Option<Result<(), aos_sandbox_linux::Error>>,
+    stream_after: Option<Result<(), aos_linux_descriptors::Error>>,
     completion: Option<Result<(), Error>>,
 }
 

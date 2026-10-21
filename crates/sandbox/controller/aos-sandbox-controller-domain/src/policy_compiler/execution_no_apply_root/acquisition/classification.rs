@@ -5,6 +5,7 @@
 //! returned here is comparison DATA; no phase alone can produce a signature.
 
 use super::*;
+use aos_sandbox_ledger_replay::replay::execution_no_apply_history as history;
 use aos_sandbox_protocol::domain_ledger::execution_no_apply_floor::RootExecutionNoApplyFloorKeyDataV2;
 use aos_sandbox_protocol::host_execution_no_apply::{
     HostExecutionNoApplyRecordV2,
@@ -13,15 +14,15 @@ use aos_sandbox_protocol::host_execution_no_apply::{
 };
 
 pub(super) struct Classified {
-    pub(super) history: super::super::floor::history::HistoryDataV2,
-    pub(super) plan: crate::reconciler::ClosedCreateFailurePlanDataV2,
+    pub(super) history: history::HistoryDataV2,
+    pub(super) plan: aos_sandbox_protocol::domain_ledger::create_failure::ClosedCreateFailurePlanDataV2,
     pub(super) phase: RootNoApplyRecoveryPhaseV2,
     pub(super) recovery: Option<RootNoApplyRecoveryHistoryDataV2>,
 }
 
 pub(super) fn classify(
     authority: &Journal,
-    controller: &Journal,
+    controller: crate::journal::historical_observation::HistoricalObservationV1<'_>,
     authorization: &Authorization,
     host: &HostHistoryOriginalV2,
     selection: &RootNoApplyAcquisitionSelectionDataV2,
@@ -41,7 +42,7 @@ pub(super) fn classify(
     let (sealed, acknowledged) =
         host.require_recovery_lineage_v2(selection, sample.host_boot_id())?;
     let history =
-        super::super::floor::history::inspect_history_data_v2(authority, *operation.as_bytes())?;
+        history::inspect_history_data_v2(authority.historical_read_view_v1(), *operation.as_bytes())?;
     let prepare = controller
         .get(
             crate::RecordNamespace::ControllerCreateFailurePrepare,
@@ -55,12 +56,11 @@ pub(super) fn classify(
         .map(|prepared| prepared.wall_seconds)
         .or_else(|| {
             history
-                .selected
+                .selected_data_v2()
                 .map(|floor| floor.fields().terminal_wall_seconds)
         })
         .unwrap_or(sample.wall_seconds());
-    let plan = crate::reconciler::plan_closed_create_failure_rows_data_v2(
-        controller,
+    let plan = crate::reconciler::plan_closed_create_failure_rows_from_observation_v2(controller,
         selection.marker,
         aos_sandbox_model::ObjectDigest::from_bytes(selection.terminal_archive),
         aos_sandbox_model::ObjectDigest::from_bytes(selection.signed_terminal),
@@ -69,7 +69,7 @@ pub(super) fn classify(
     if plan.operation_data_v2() != operation || plan.prepared_data_v2() != prepare {
         return Err(JournalError::ProtectedBoundary.into());
     }
-    if let Some(floor) = history.selected {
+    if let Some(floor) = history.selected_data_v2() {
         let fields = floor.fields();
         let (before, after) = plan.row_digests_data_v2();
         if fields.host_lease.fields().accepted_source != selection.accepted_source
@@ -85,9 +85,9 @@ pub(super) fn classify(
         }
     }
     if let Some(prepare) = prepare {
-        let current = history.selected.ok_or(JournalError::ProtectedBoundary)?;
-        let referenced = super::super::floor::history::record_data_v2(
-            authority,
+        let current = history.selected_data_v2().ok_or(JournalError::ProtectedBoundary)?;
+        let referenced = history::record_data_v2(
+            authority.historical_read_view_v1(),
             RootExecutionNoApplyFloorKeyDataV2::new(*operation.as_bytes(), prepare.root_sequence)?,
         )?;
         if referenced.digest() != *prepare.root_floor.as_bytes()
@@ -118,7 +118,7 @@ pub(super) fn classify(
                     canonical_root_attestation,
                 )?;
                 let record = artifact.floor_data_v2();
-                let actual = super::super::floor::history::record_data_v2(authority, record.key())?;
+                let actual = history::record_data_v2(authority.historical_read_view_v1(), record.key())?;
                 if record != actual
                     || artifact.prepare_data_v2() != *controller_prepare
                     || ClosedCreateFailurePrepareDataV2::from_root_floor_data_v2(actual)?
@@ -133,8 +133,8 @@ pub(super) fn classify(
             HostNoApplyHeldCommandV2::Acknowledge { comparison, ack }
                 if comparison.fields().accepted_source == selection.accepted_source =>
             {
-                let actual = super::super::floor::history::record_data_v2(
-                    authority,
+                let actual = history::record_data_v2(
+                    authority.historical_read_view_v1(),
                     RootExecutionNoApplyFloorKeyDataV2::new(
                         *operation.as_bytes(),
                         ack.root_sequence,
@@ -154,7 +154,7 @@ pub(super) fn classify(
         }
     }
     let phase = match (
-        history.selected,
+        history.selected_data_v2(),
         prepare,
         plan.settled_data_v2(),
         sealed,
@@ -166,7 +166,7 @@ pub(super) fn classify(
         (Some(_), Some(_), true, _, _) => RootNoApplyRecoveryPhaseV2::Settled,
         _ => return Err(JournalError::ProtectedBoundary.into()),
     };
-    let recovery = match history.selected {
+    let recovery = match history.selected_data_v2() {
         Some(floor) => Some(RootNoApplyRecoveryHistoryDataV2 {
             // Only FloorAnchored derives intended DATA here. Prepared and
             // Settled retain the actual canonical C prepare validated above.
@@ -185,4 +185,21 @@ pub(super) fn classify(
         phase,
         recovery,
     })
+}
+
+/// Prices the actual historical Controller classifier interface before entry.
+///
+/// The existing closed-failure supplier retains the complete dynamic plan and
+/// diagnostic-model quote. This adds no native owner, budget or phase grant.
+pub(super) fn observation_control_bytes_v2() -> Option<usize> {
+    use std::mem::size_of;
+
+    size_of::<(
+        &Journal,
+        crate::journal::historical_observation::HistoricalObservationV1<'_>,
+        &Authorization, &HostHistoryOriginalV2, &RootNoApplyAcquisitionSelectionDataV2,
+        RawPairedClockSample,
+    )>().checked_mul(3)?
+        .checked_add(size_of::<Result<Classified, Cause>>().checked_mul(3)?)?
+        .checked_add(size_of::<Option<usize>>().checked_mul(3)?)
 }

@@ -5,7 +5,7 @@
 //! adopted from a PID, and only the existing cancel-on-disconnect law cancels.
 
 use super::{Error, Ledger, MonitorCustody, SessionLiveness};
-use aos_sandbox_linux::pidfd::PidFd;
+use aos_linux_descriptors::pidfd::PidFd;
 use aos_sandbox_linux::seqpacket::SeqpacketOwnedShutdownOriginalV1;
 use aos_sandbox_linux::seqpacket::SeqpacketSocket;
 

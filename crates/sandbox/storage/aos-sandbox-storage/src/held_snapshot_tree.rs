@@ -70,7 +70,7 @@ const IDENTITY_TREE_DOMAIN: &[u8] = b"aos.sandbox.storage.held-snapshot-identity
 pub enum HeldSnapshotTreeErrorV1 {
     /// A kernel or descriptor operation failed closed.
     #[error("held snapshot descriptor read failed: {0}")]
-    Linux(#[from] aos_sandbox_linux::Error),
+    Linux(#[from] aos_linux_descriptors::Error),
     /// A filesystem observation failed closed.
     #[error("held snapshot filesystem read failed: {0}")]
     Filesystem(#[from] rustix::io::Errno),

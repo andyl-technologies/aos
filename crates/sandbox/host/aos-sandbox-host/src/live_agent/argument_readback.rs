@@ -1,8 +1,8 @@
 //! Host custody of signed Guest runtime-argument measurements.
 //!
-//! A retained, authenticated AOSAGE channel issues a fresh challenge. The
-//! exact signed reply is verified against the fixed protected runtime peer and
-//! committed to a dedicated root-owned journal before evidence is returned.
+//! The funded argument-attempt owner issues fresh challenges. This module
+//! preserves historical readback records and verifies exact signed replies
+//! against the fixed protected runtime peer; it exposes no live send route.
 //! Cold reads are historical audit records, not authority to construct a new
 //! execution specification: the Guest's later exec limit can differ.
 //!
@@ -13,8 +13,6 @@
 //!         || canonical-request || signed-packet || SHA256(preceding-value)[32]
 //! ```
 
-use std::time::Instant;
-
 use aos_sandbox_controller_domain::execution_parent_resource::ExecutionParentResourceSourceV1;
 use aos_sandbox_controller_domain::runtime_execution::{
     AuthenticatedRuntimeArgumentReadbackV1, DormantRuntimeExecutionClaimV1,
@@ -24,7 +22,7 @@ use aos_sandbox_controller_domain::{
     Journal, JournalError, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace,
 };
 use aos_sandbox_guest_protocol::{
-    AgentFeatureV1, AgentRuntimeBindingV1, GuestRuntimeArgumentObservationErrorV1,
+    AgentRuntimeBindingV1, GuestRuntimeArgumentObservationErrorV1,
     GuestRuntimeArgumentObserveRequestV1, GuestRuntimeArgumentReadbackV1,
     verify_guest_runtime_argument_readback_v1,
 };
@@ -33,9 +31,11 @@ use aos_sandbox_model::{
 };
 use ed25519_dalek::VerifyingKey;
 use sha2::{Digest as _, Sha256};
+#[cfg(test)]
+use aos_sandbox_guest_protocol::AgentFeatureV1;
 
 use super::{
-    HostAgentLiveErrorV1, HostAgentLiveSessionV1, agent_runtime, receive_record, send_frame,
+    HostAgentLiveErrorV1, agent_runtime,
 };
 
 const HOST_STATE_ROOT: &str = "/var/lib/aos/sandbox-host";
@@ -371,79 +371,6 @@ fn join_completion(
     Ok(HostRuntimeArgumentReadbackCompletionV1 { host, protected })
 }
 
-impl HostAgentLiveSessionV1 {
-    /// Requests, verifies, and durably records a fresh Guest `ARG_MAX` reading.
-    ///
-    /// This dormant operation requires negotiated feature 7. The published
-    /// Guest root currently lacks that feature, so production calls fail closed.
-    /// The protected owner reserves the exact challenge before any socket send.
-    /// Existing challenges are handled only by digest-only cold recovery,
-    /// never resent. Any post-send ambiguity poisons this
-    /// stop-and-wait channel rather than risking a queued reply on later use.
-    ///
-    /// # Errors
-    ///
-    /// Rejects missing feature 7, stale accepted-Create/currentness, a foreign
-    /// signed session, invalid Guest signature, channel loss, deadline, or
-    /// failed protected challenge/packet custody.
-    pub fn observe_runtime_argument_limit(
-        &mut self,
-        claim: &mut DormantRuntimeExecutionClaimV1<'_>,
-        controller: &mut Journal,
-        execution: ExecutionId,
-        create_operation: OperationId,
-        parent: &ExecutionParentResourceSourceV1,
-        deadline: Instant,
-    ) -> Result<HostRuntimeArgumentReadbackCompletionV1, HostRuntimeArgumentReadbackErrorV1> {
-        if self.poisoned
-            || !self
-                .response
-                .features()
-                .contains(AgentFeatureV1::RuntimeArgumentObservation)
-        {
-            return Err(HostRuntimeArgumentReadbackErrorV1::Binding);
-        }
-        self.validate_claim(claim)?;
-        let mut journal = HostRuntimeArgumentReadbackJournalV1::open()?;
-        let challenge = claim
-            .begin_runtime_argument_observation_v1(
-                controller,
-                execution,
-                create_operation,
-                parent,
-                &self.handshake,
-                &self.response,
-            )
-            .map_err(HostAgentLiveErrorV1::from)?;
-        let request = challenge.request();
-        if challenge.handshake() != &self.handshake
-            || challenge.response() != &self.response
-            || request.session() != self.binding
-            || request.runtime() != &agent_runtime(claim.currentness())?
-            || request.channel() != claim.agent_peer().channel_binding()
-            || request.profile() != &fixed_runtime_profile()?
-            || request.profile_commitment() != claim.runtime_profile_commitment()
-        {
-            return Err(HostRuntimeArgumentReadbackErrorV1::Binding);
-        }
-        if challenge.is_completed() {
-            return Err(HostRuntimeArgumentReadbackErrorV1::Binding);
-        }
-
-        self.poisoned = true;
-        send_frame(&mut self.socket, &request.encode(), deadline, None)?;
-        let packet = receive_record(&mut self.socket, MAXIMUM_PACKET_BYTES, deadline, None)?;
-        self.validate_claim(claim)?;
-        let host = journal.record(claim, request, &packet)?;
-        let protected = claim
-            .complete_runtime_argument_observation_v1(&challenge, &packet)
-            .map_err(HostAgentLiveErrorV1::from)?;
-        let completion = join_completion(host, protected, execution, create_operation)?;
-        self.poisoned = false;
-        Ok(completion)
-    }
-}
-
 pub(super) fn fixed_runtime_profile() -> Result<FeatureRef, HostRuntimeArgumentReadbackErrorV1> {
     FeatureRef::new(PROFILE_NAMESPACE, 1, 0)
         .map_err(|_| HostRuntimeArgumentReadbackErrorV1::Binding)
@@ -595,7 +522,16 @@ mod tests {
         assert_eq!(profile.major(), 1);
         assert_eq!(profile.minor(), 0);
         let feature_bit = 1_u16 << (AgentFeatureV1::RuntimeArgumentObservation as u8 - 1);
-        assert_eq!(CONCRETE_GUEST_FEATURE_MASK_V1 & feature_bit, 0);
+        let features = &aos_sandbox_guest_protocol::guest_root_publication::CONCRETE_GUEST_FEATURES_V1;
+        assert_eq!(features.len(), 8);
+        assert_eq!(CONCRETE_GUEST_FEATURE_MASK_V1, 0x00ff);
+        assert_eq!(CONCRETE_GUEST_FEATURE_MASK_V1 & feature_bit, feature_bit);
+        assert!(features.contains(&aos_sandbox_guest_protocol::AgentFeatureV1::RuntimeArgumentObservation));
+        assert!(features.contains(&aos_sandbox_guest_protocol::AgentFeatureV1::CapturePipeHandoffV2));
+        let actual_mask = features.iter().fold(0_u16, |mask, feature| {
+            mask | (1_u16 << (*feature as u8 - 1))
+        });
+        assert_eq!(actual_mask, CONCRETE_GUEST_FEATURE_MASK_V1);
     }
 
     #[test]

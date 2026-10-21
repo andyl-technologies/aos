@@ -44,20 +44,7 @@ impl CapturedReadOnlyPreparationV1 {
 impl ReadOnlyJournalOpenOriginalsV1 {
 
 
-    /// Prepares Cache's actual captured owner with its prepaid name roster.
-    #[cfg(target_os = "linux")]
-    pub(crate) fn prepare_captured_cache_once(
-        &mut self,
-        path: &Path,
-        name: &str,
-        limits: JournalLimits,
-        uid: u32,
-        directory_identity: (u64, u64),
-        receiving: &mut crate::cache_residency::CacheHeldReadonlyContextV1<'_, '_, '_>,
-    ) {
-        self.prepare_captured_receiving_once(path, name, limits, uid, directory_identity,
-            crate::journal::ReadonlyReceivingContextV1::Cache(receiving));
-    }
+
 
     /// Prepares Root's independent fixed Controller reader under its same R.
     #[cfg(target_os = "linux")]
@@ -99,7 +86,6 @@ impl ReadOnlyJournalOpenOriginalsV1 {
             return;
         }
         self.captured.named_admission = Some(match &mut receiving {
-            Receiving::Cache(context) => context.require_fixed_named_preparation(),
             Receiving::RootController(context) => context.require_fixed_named_preparation(),
         });
         if !matches!(self.captured.named_admission, Some(Ok(()))) {
@@ -107,7 +93,6 @@ impl ReadOnlyJournalOpenOriginalsV1 {
             return;
         }
         self.named_receiving = Some(match &receiving {
-            Receiving::Cache(_) => ReadonlyNameArchiveV1::cache(),
             Receiving::RootController(_) => ReadonlyNameArchiveV1::root_controller(),
         });
         match &mut receiving {
@@ -115,7 +100,6 @@ impl ReadOnlyJournalOpenOriginalsV1 {
                 path, name, limits, uid, directory_identity,
                 Some(context.retained_lock_name_destination_v1()),
             ),
-            _ => self.prepare_captured_inner(path, name, limits, uid, directory_identity, None),
         }
     }
 
@@ -198,19 +182,6 @@ impl ReadOnlyJournalOpenOriginalsV1 {
 
 
 
-    /// Replays this same captured owner with the genuine Cache J loan once.
-    ///
-    /// Complete errors, scratch and independent posts stay in this owner. The
-    /// caller alone disposes a complete positive after its other actual posts.
-    #[cfg(target_os = "linux")]
-    pub(crate) fn replay_captured_cache_once(
-        &mut self,
-        receiving: &mut crate::cache_residency::CacheHeldReadonlyContextV1<'_, '_, '_>,
-    ) {
-        self.replay_captured_inner(Some(
-            crate::journal::ReadonlyReceivingContextV1::Cache(receiving),
-        ));
-    }
 
     /// Replays the same held Controller prefix using its actual Root R context.
     #[cfg(target_os = "linux")]

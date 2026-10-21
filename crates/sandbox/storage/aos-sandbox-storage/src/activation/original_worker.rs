@@ -27,7 +27,7 @@ pub(crate) enum StorageOriginalWorkerStartupCauseV3 {
     #[error(transparent)]
     Service(#[from] StorageServiceError),
     #[error(transparent)]
-    Linux(#[from] aos_sandbox_linux::Error),
+    Linux(#[from] aos_linux_descriptors::Error),
     #[error(transparent)]
     Image(#[from] ImmutableImageErrorV1),
     #[error(transparent)]

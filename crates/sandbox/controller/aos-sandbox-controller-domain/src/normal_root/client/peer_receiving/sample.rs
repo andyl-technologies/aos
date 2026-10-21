@@ -9,9 +9,9 @@ use aos_sandbox_linux::cgroup::{
     CgroupV2Root, ExactCgroupMembershipReadbackV1, ExactCgroupMembershipRefusalV1,
     RetainedCgroupAnchor, RootInitialCgroupReadbackV1,
 };
-use aos_sandbox_linux::unix_stream::{
-    RetainedUnixStream, UnixStreamOriginalCurrentnessV1, UnixStreamSubjectChunk,
-};
+use aos_linux_descriptors::unix_stream::RetainedUnixStream;
+use aos_linux_descriptors::unix_stream::UnixStreamOriginalCurrentnessV1;
+use aos_sandbox_linux::unix_stream::UnixStreamSubjectChunk;
 use aos_systemd_client::{FixedPid1PropertyArchiveV1, FixedPid1PropertyErrorV1, FixedPid1PropertyWorkerSlotV1, OwnedValue};
 use super::queued_cutoff::PropertyQueuedCutoffOriginalV1;
 use sha2::{Digest as _, Sha256};
@@ -48,10 +48,10 @@ pub(in crate::normal_root::client) struct PeerSampleV1 {
     controller_binding: Option<Result<(), Refusal>>,
     controller_primary: Option<Result<(), Refusal>>,
     stream_before: UnixStreamOriginalCurrentnessV1,
-    stream_before_result: Option<Result<(), aos_sandbox_linux::Error>>,
+    stream_before_result: Option<Result<(), aos_linux_descriptors::Error>>,
     nomination: Option<Result<(), Refusal>>,
     root_capture: RootInitialCgroupReadbackV1,
-    root_capture_result: Option<Result<(), aos_sandbox_linux::Error>>,
+    root_capture_result: Option<Result<(), aos_linux_descriptors::Error>>,
     root_pair: Option<(CgroupV2Root, RetainedCgroupAnchor)>,
     held_root: Option<Result<rustix::fs::Stat, rustix::io::Errno>>,
     current_root: Option<Result<rustix::fs::Stat, rustix::io::Errno>>,
@@ -72,14 +72,14 @@ pub(in crate::normal_root::client) struct PeerSampleV1 {
     normalized: Option<Result<Vec<u8>, Refusal>>,
     unit_binding: Option<Result<(), Refusal>>,
     chunk_binding: Option<Result<(), Refusal>>,
-    chunk_alive: Option<Result<bool, aos_sandbox_linux::Error>>,
+    chunk_alive: Option<Result<bool, aos_linux_descriptors::Error>>,
     chunk_liveness: Option<Result<(), Refusal>>,
     chunk_membership: ExactCgroupMembershipReadbackV1,
     chunk_membership_result: Option<Result<(), ExactCgroupMembershipRefusalV1>>,
     chunk_identity: Option<Result<(), Refusal>>,
     root_primary: Option<Result<(), Refusal>>,
     stream_after: UnixStreamOriginalCurrentnessV1,
-    stream_after_result: Option<Result<(), aos_sandbox_linux::Error>>,
+    stream_after_result: Option<Result<(), aos_linux_descriptors::Error>>,
     controller_post: ControllerProfileLocalCurrentnessOriginalV1,
     controller_post_result: Option<Result<(), Refusal>>,
     completion: Option<Result<(), Refusal>>,

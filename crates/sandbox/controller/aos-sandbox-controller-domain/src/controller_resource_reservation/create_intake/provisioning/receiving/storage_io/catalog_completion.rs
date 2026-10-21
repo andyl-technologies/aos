@@ -95,8 +95,8 @@ pub(in crate::controller_resource_reservation) fn observe_catalog_receipts_retai
     outcome_packet: &[u8],
     sent: Option<&aos_sandbox_linux::seqpacket::StorageSeqpacketSendAttemptV1>,
     received: Option<&aos_sandbox_linux::seqpacket::ReceivedRecord>,
-    sent_cookie: &mut Option<Result<u64, aos_sandbox_linux::Error>>,
-    received_cookie: &mut Option<Result<u64, aos_sandbox_linux::Error>>,
+    sent_cookie: &mut Option<Result<u64, aos_linux_descriptors::Error>>,
+    received_cookie: &mut Option<Result<u64, aos_linux_descriptors::Error>>,
     sent_binding: &mut Option<Result<(), aos_sandbox_linux::seqpacket::RecordBindingError>>,
     received_binding: &mut Option<Result<(), aos_sandbox_linux::seqpacket::RecordBindingError>>,
 ) -> Option<CatalogReceiptFirstV2> {

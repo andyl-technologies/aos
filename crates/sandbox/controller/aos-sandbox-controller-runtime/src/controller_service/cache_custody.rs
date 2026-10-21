@@ -3,12 +3,7 @@
 //! Both operations retain the same protected and physical ambiguity tokens.
 //! The caller supplies the transaction identity and operation-specific errors.
 
-use aos_sandbox_controller_domain::cache_residency::{
-    CacheOwnerErrorV1, CacheOwnerOutcomeUnknownV1, CacheOwnerPinSettlementErrorV1,
-    CacheOwnerPinSettlementV1, CacheResidencyCommitOutcomeV1, CacheResidencyOutcomeUnknownV1,
-    CacheResidencyProtectedOwnerRecoveryV1, CacheResidencyProtectedOwnerV1,
-    CacheResidencyRecoveryV1, DormantCacheOwnerV1,
-};
+use aos_sandbox_cache::{CacheOwnerErrorV1, CacheOwnerOutcomeUnknownV1, CacheOwnerPinSettlementErrorV1, CacheOwnerPinSettlementV1, CacheResidencyCommitOutcomeV1, CacheResidencyOutcomeUnknownV1, CacheResidencyProtectedOwnerRecoveryV1, CacheResidencyProtectedOwnerV1, CacheResidencyRecoveryV1, DormantCacheOwnerV1};
 
 use super::{EffectFailure, OperationId};
 

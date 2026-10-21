@@ -9,9 +9,11 @@ use rustix::fs::{FileType, OFlags, StatVfsMountFlags};
 use rustix::io::FdFlags;
 
 use super::MountId;
-use crate::boot::{KernelBootId, RootOriginalKernelBootIdAttemptV1};
+use aos_linux_descriptors::boot::KernelBootId;
+use aos_linux_descriptors::boot::RootOriginalKernelBootIdAttemptV1;
 use std::error::Error as StdError;
-use crate::{Error, Result};
+use aos_linux_descriptors::Error;
+use aos_linux_descriptors::Result;
 
 /// Records nonauthorizing facts sampled from one original directory descriptor.
 ///

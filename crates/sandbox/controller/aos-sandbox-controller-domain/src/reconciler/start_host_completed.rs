@@ -15,12 +15,15 @@ use crate::policy_compiler::provisioning_current::current_manifest::CurrentProte
 ///
 /// # Errors
 /// Rejects arithmetic overflow or an unavailable canonical model/name bound.
-pub(crate) fn completed_start_host_publication_receiving_demand_v2(
-    controller: &Journal,
+
+pub(crate) fn completed_start_host_publication_receiving_from_observation_v2(
+    controller: crate::journal::historical_observation::HistoricalObservationV1<'_>,
 ) -> Result<ResourceVector, JournalError> {
-    let state = controller.historical_read_view_v1().materialized_state_v1();
+    let state = controller.state_v1();
     let models = crate::cold_launch_publication::completion::controller_selector_model_bytes_v1(state)
         .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Result<(), ReconcilerError>>().checked_mul(2)?))
+        .and_then(|bytes| bytes.checked_add(aos_sandbox_protocol::domain_ledger::runtime_authority_history::
+            current_assignment::current_assignment_links_control_bytes_v2()?))
         .and_then(|bytes| u64::try_from(bytes).ok()).ok_or(JournalError::ProtectedBoundary)?;
     let names = crate::cold_launch_publication::completion::controller_selector_namespace_entries_v1(state)
         .and_then(|names| u64::try_from(names).ok()).ok_or(JournalError::ProtectedBoundary)?;
@@ -39,8 +42,9 @@ pub(crate) fn completed_start_host_publication_receiving_demand_v2(
 /// Rejects unhealthy C, a changed current pair, another parent/reply/lease/plan,
 /// a public or nonterminal child, a different dispatch, or a different receipt.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn require_completed_start_host_publication_data_v2(
-    controller: &Journal,
+
+pub(crate) fn require_completed_start_host_publication_from_observation_v2(
+    controller: crate::journal::historical_observation::HistoricalObservationV1<'_>,
     current: &CurrentProtectedAssignmentDataV2,
     parent: OperationId,
     root_reply: [u8; 32],
@@ -55,9 +59,9 @@ pub(crate) fn require_completed_start_host_publication_data_v2(
     controller.ensure_protected_authority()?;
     let binding = current.binding_data_v2();
     let publication = current.publication_v2();
-    crate::policy_compiler::provisioning_current::current_manifest::require_current_assignment_records_v2(
-        binding, publication,
-    )?;
+    aos_sandbox_protocol::domain_ledger::runtime_authority_history::current_assignment::
+        require_current_assignment_history_data_v2(binding.historical_data_v1(), publication.history_data_v2())
+        .map_err(|_| JournalError::ProtectedBoundary)?;
     let child = crate::controller_resource_reservation::start_host_publication_operation_id_data_v2(
         parent, root_reply, publication.digest(),
     );
@@ -74,7 +78,7 @@ pub(crate) fn require_completed_start_host_publication_data_v2(
         return Err(conflict_v2());
     }
 
-    let operation = core_journal::readonly::load_operation(controller, child)?;
+    let operation = core_journal::readonly::load_operation_rows_v2(controller.rows_data_v2(), child)?;
     if operation.state() != OperationState::Succeeded || operation.effect_count() != 1
         || !operation.ownership_gated() || operation.public_operation().is_some()
         || operation.runtime_intent_digest().is_none()
@@ -128,7 +132,7 @@ pub(crate) fn require_completed_start_host_publication_data_v2(
     {
         return Err(conflict_v2());
     }
-    validate_durable_effect_attempt(controller, manifest.manifest().sandbox(),
+    crate::publication::validate_durable_effect_attempt_observed_v2(controller, manifest.manifest().sandbox(),
         publication.digest(), authority.digest(), authority.source_draft_digest(),
         authority.audience(), template.digest(), template.body_without_deadline(),
         &dispatch, None)?;
@@ -138,4 +142,17 @@ pub(crate) fn require_completed_start_host_publication_data_v2(
 
 fn conflict_v2() -> ReconcilerError {
     ReconcilerError::InvalidExecutorOutput("completed private Start Host tuple differs from actual final C")
+}
+
+/// Prices the reached Host completion comparison interfaces before its quote.
+pub(crate) fn completed_host_observation_control_bytes_v2() -> Option<usize> {
+    use std::mem::size_of;
+    size_of::<(crate::journal::historical_observation::HistoricalObservationV1<'_>, &CurrentProtectedAssignmentDataV2, OperationId, [u8; 32],
+        &CanonicalAssignmentManifestV1, &SignedOwnershipLease, &[u8], &[u8], &[u8], &[u8], &[u8])>().checked_mul(3)?
+        .checked_add(size_of::<Result<ResourceVector, JournalError>>().checked_mul(3)?)?
+        .checked_add(size_of::<Result<(), ReconcilerError>>().checked_mul(3)?)?
+        .checked_add(size_of::<(aos_sandbox_protocol::domain_ledger::readonly::HistoricalLedgerRowsDataV2<'_>, OperationId)>().checked_mul(3)?)?
+        .checked_add(size_of::<Result<OperationRecord, ReconcilerError>>().checked_mul(3)?)?
+        .checked_add(crate::publication::effect_observation_control_bytes_v2()?)?
+        .checked_add(size_of::<Option<usize>>().checked_mul(3)?)
 }

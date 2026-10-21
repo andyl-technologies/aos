@@ -2,7 +2,7 @@
 
 use super::*;
 use aos_sandbox_model::ResourceVector;
-use crate::cache_residency::CacheDeleteInventoryOriginalV1;
+use crate::cache_programmes::CacheDeleteInventoryOriginalV1;
 use crate::public_mutation_compiler::delete_admission::{
     ControllerDeleteCandidateOriginalV2, ControllerDeleteSourceAuthorizedScopeV1,
 };

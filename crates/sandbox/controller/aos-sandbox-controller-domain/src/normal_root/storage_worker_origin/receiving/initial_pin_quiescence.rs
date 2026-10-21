@@ -44,7 +44,7 @@ enum First {
 pub(super) struct InitialPinQuiescenceOriginalV1 {
     before: Option<NativeResult>,
     parent: StorageRecoveryControlCgroupReadbackV1,
-    parent_result: Option<Result<(), aos_sandbox_linux::Error>>,
+    parent_result: Option<Result<(), aos_linux_descriptors::Error>>,
     parent_root: Option<CgroupV2Root>,
     parent_anchor: Option<RetainedCgroupAnchor>,
     parent_metadata: Option<Result<rustix::fs::Stat, rustix::io::Errno>>,

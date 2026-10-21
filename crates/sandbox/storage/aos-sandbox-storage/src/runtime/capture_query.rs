@@ -43,12 +43,12 @@ enum CaptureQueryClockErrorV3 {
     #[error("the original Capture Query kernel clock is stale or unavailable")]
     Stale,
     #[error(transparent)]
-    Kernel(aos_sandbox_linux::Error),
+    Kernel(aos_linux_descriptors::Error),
 }
 
 impl aos_sandbox_broker::kernel_clock::KernelPairedClockErrorV1 for CaptureQueryClockErrorV3 {
     fn stale() -> Self { Self::Stale }
-    fn kernel(error: aos_sandbox_linux::Error) -> Self { Self::Kernel(error) }
+    fn kernel(error: aos_linux_descriptors::Error) -> Self { Self::Kernel(error) }
 }
 
 type KernelClock = aos_sandbox_broker::kernel_clock::RetainedKernelPairedClockAttemptV1<CaptureQueryClockErrorV3>;

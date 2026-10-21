@@ -37,7 +37,7 @@ use aos_sandbox_broker_session_protocol::{
     manifest::{BrokerSessionManifestAudienceV1, BrokerSessionManifestV1},
 };
 use aos_sandbox_model::{RawPairedClockSample, ResourceDimension as D, ResourceVector};
-use aos_sandbox_linux::unix_stream::RetainedUnixStream;
+use aos_linux_descriptors::unix_stream::RetainedUnixStream;
 use aos_sandbox_protocol::{
     host_execution_availability::observation::HostExecutionAvailabilityObservationV2,
     host_execution_no_apply::{
@@ -97,8 +97,8 @@ struct Native {
     signer_result: Option<Result<(), JournalError>>,
     controller_cut: Option<aos_sandbox_protocol::domain_ledger::execution_no_apply_floor::RootExecutionNoApplyControllerCutDataV2>,
     readonly: RootCreateFinalityReadonlyOriginalV1,
-    connection: [aos_sandbox_linux::unix_stream::UnixStreamOriginalCurrentnessV1; 3],
-    connection_result: [Option<Result<(), aos_sandbox_linux::Error>>; 3],
+    connection: [aos_linux_descriptors::unix_stream::UnixStreamOriginalCurrentnessV1; 3],
+    connection_result: [Option<Result<(), aos_linux_descriptors::Error>>; 3],
 }
 
 #[derive(Clone, Copy)]
@@ -527,11 +527,11 @@ impl Native {
         positive(&self.manifest)?;
         self.phase = Phase::ModelsGeometry;
         self.models_geometry = Some((|| {
-            let c = self.readonly.controller_v1()?;
+            let c = self.readonly.controller_model_v1()?;
             let authorization =
                 Authorization::receiving_recovery_demand_v2(c, self.selection.admission)?;
             let rows =
-                crate::reconciler::ClosedCreateFailurePlanDataV2::receiving_demand_data_v2(c)?;
+                crate::reconciler::closed_create_failure_receiving_demand_from_observation_v2(c)?;
             let native = self.readonly.session_v1()?;
             let prefix = usize::try_from(native.end).map_err(|_| JournalError::JournalTooLarge)?;
             let entries = native
@@ -545,6 +545,7 @@ impl Native {
                 .checked_mul(2)
                 .and_then(|n| n.checked_add(size_of::<aos_sandbox_protocol::domain_ledger::execution_no_apply_floor::RootExecutionNoApplyFloorRecordDataV2>().checked_mul(3)?))
                 .and_then(|n| n.checked_add(aos_sandbox_protocol::host_execution_no_apply::closed_controller::CLOSED_CREATE_FAILURE_PREPARE_BYTES_V2.checked_mul(3)?))
+                .and_then(|n| n.checked_add(classification::observation_control_bytes_v2()?))
                 .and_then(|n| u64::try_from(n).ok()).ok_or(JournalError::JournalTooLarge)?;
             Ok(authorization
                 .checked_add(rows)?
@@ -572,7 +573,7 @@ impl Native {
         positive(&self.models_funding)?;
         self.phase = Phase::Authorization;
         self.authorization.observe_execution_no_apply_once_v2(
-            self.readonly.controller_v1()?,
+            self.readonly.controller_model_v1()?,
             self.selection.admission,
             node,
             partition,
@@ -589,7 +590,7 @@ impl Native {
         self.phase = Phase::Classification;
         self.classified = Some(classification::classify(
             authority,
-            self.readonly.controller_v1()?,
+            self.readonly.controller_model_v1()?,
             &self.authorization,
             &self.host,
             &self.selection,
@@ -813,7 +814,7 @@ impl CompletedAcquisitionSigningLoanV2<'_> {
             root_instance: model
                 .classified
                 .history
-                .instance
+                .instance_data_v2()
                 .map(|instance| instance.instance()),
             phase: model.classified.phase,
             history: model.classified.recovery,
@@ -871,7 +872,7 @@ fn trust_demand(
         .and_then(|n| u64::try_from(n).ok())
         .ok_or(JournalError::JournalTooLarge)?;
     let (stream_bytes, stream_names, stream_files) =
-        aos_sandbox_linux::unix_stream::UnixStreamOriginalCurrentnessV1::receiving_demand_v1()
+        aos_linux_descriptors::unix_stream::UnixStreamOriginalCurrentnessV1::receiving_demand_v1()
             .ok_or(JournalError::JournalTooLarge)?;
     let one_stream = ResourceVector::ZERO
         .with(

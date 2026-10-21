@@ -12,7 +12,7 @@ pub(in crate::destination_slot) struct DirectoryParentOriginalV1 {
     entered: bool,
     mkdir: Option<std::result::Result<(), rustix::io::Errno>>,
     resolved: BeneathRootResolveOriginalV2,
-    resolution: Option<std::result::Result<(), aos_sandbox_linux::Error>>,
+    resolution: Option<std::result::Result<(), aos_linux_descriptors::Error>>,
     metadata: Option<std::result::Result<rustix::fs::Stat, rustix::io::Errno>>,
     comparison: Option<Result<()>>,
     root: Option<BeneathRoot>,

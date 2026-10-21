@@ -11,9 +11,8 @@ use super::root_connection::ControllerRootConnectionOriginalV1;
 use super::strict_chunk::RootStrictChunkOriginalV1;
 use super::{NormalRootStartupErrorV1, ProductionControllerNormalRootProfileV1};
 use crate::journal::{Journal, JournalError};
-use crate::policy_compiler::bounded_stream_io::{
-    DeadlineStreamDirectionV1, FixedDeadlineStreamIoV1,
-};
+use aos_sandbox_broker::bounded_stream_io::DeadlineStreamDirectionV1;
+use aos_sandbox_broker::bounded_stream_io::FixedDeadlineStreamIoV1;
 use crate::public_mutation_compiler::delete_admission::{
     ControllerDeleteSourceAuthorizedScopeV1, PlanningNonce,
 };
@@ -340,7 +339,7 @@ impl<'profile> RootDeletePlanningClientOriginalV1<'profile> {
             self.connection
                 .stream_mut()
                 .map_err(|_| RootDeletePlanningClientClosedV1)?
-                .enable_subject_reporting(),
+                .enable_subject_reporting().map_err(aos_sandbox_linux::seqpacket::SeqpacketError::from),
         );
         self.require(
             self.local
@@ -647,7 +646,7 @@ impl<'profile> RootDeletePlanningClientOriginalV1<'profile> {
             .ok_or(RootDeletePlanningClientClosedV1)?;
         let now = rustix::time::clock_gettime(rustix::time::ClockId::Boottime);
         self.gate_clock = Some(now);
-        self.gate = Some(crate::policy_compiler::bounded_stream_io::remaining(
+        self.gate = Some(aos_sandbox_broker::bounded_stream_io::remaining(
             now,
             open.controller_cutoff,
         ));

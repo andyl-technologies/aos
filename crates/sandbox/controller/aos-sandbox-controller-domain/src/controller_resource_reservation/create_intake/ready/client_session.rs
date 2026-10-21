@@ -21,7 +21,7 @@ use aos_sandbox_linux::seqpacket::{
     StorageSeqpacketSessionOriginV1,
 };
 
-use crate::cache_residency::OriginalCreateStorageCacheLoanV1;
+use crate::cache_programmes::OriginalCreateStorageCacheLoanV1;
 use crate::controller_resource_reservation::q04_intake::CreateContinuationCaptureOwnerV1;
 use crate::journal::broker_session_receiving::{
     CONTROLLER_STORAGE_CLIENT_JOURNAL_ROOT_V1, StorageSessionGeometryRefusalV1,

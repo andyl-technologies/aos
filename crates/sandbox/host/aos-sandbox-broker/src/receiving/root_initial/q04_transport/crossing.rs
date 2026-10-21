@@ -10,7 +10,8 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use aos_sandbox_model::{RawPairedClockSample, ResourceDimension as D, ResourceVector};
-use aos_sandbox_linux::unix_stream::{RetainedUnixStream, UnixStreamSubjectChunk};
+use aos_linux_descriptors::unix_stream::RetainedUnixStream;
+use aos_sandbox_linux::unix_stream::UnixStreamSubjectChunk;
 
 use crate::kernel_clock::RetainedKernelPairedClockAttemptV1;
 use crate::receiving::{
@@ -317,6 +318,23 @@ impl Q04CurrentCrossingV1 {
         self.settlement = Some(self.controller.settle_once_v1());
         if self.is_complete_v1() {
             positive(&self.post_sample).copied()
+        } else {
+            Err(Closed::Service)
+        }
+    }
+
+    // This deliberately excludes the refused primary and current settlement.
+    // Completed negative posts cannot revive the failed current crossing.
+    pub(super) fn require_independent_posts_complete_v1(&self) -> Result<(), Closed> {
+        if self.post_panic.is_none()
+            && self.clock_panic.is_none()
+            && self.root_post.failure().is_none()
+            && matches!(self.root_post_result, Some(Ok(())))
+            && self.post_clock.failure().is_none()
+            && matches!(self.post_sample, Some(Ok(_)))
+            && matches!(self.interval, Some(Ok(())))
+        {
+            Ok(())
         } else {
             Err(Closed::Service)
         }

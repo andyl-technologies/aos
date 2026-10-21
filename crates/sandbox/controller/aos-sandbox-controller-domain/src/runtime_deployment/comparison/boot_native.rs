@@ -8,7 +8,7 @@ use std::cell::{Cell, RefCell};
 use std::fmt;
 
 use aos_sandbox_model::{ResourceDimension as D, ResourceVector};
-use aos_sandbox_linux::boot::RootOriginalKernelBootIdAttemptV1;
+use aos_linux_descriptors::boot::RootOriginalKernelBootIdAttemptV1;
 
 use super::super::RuntimeDeploymentOriginalClockCauseV3;
 use super::*;

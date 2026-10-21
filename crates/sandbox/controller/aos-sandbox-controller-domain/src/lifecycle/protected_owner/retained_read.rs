@@ -10,7 +10,8 @@ use aos_sandbox_model::OperationId;
 use aos_sandbox_protocol::domain_ledger::records::{
     ReplayProjectionRecordsCaptureV1, replay_projection_records_with_schema_capture_v1,
 };
-use crate::journal::{Journal, JournalError};
+use crate::journal::JournalError;
+use aos_sandbox_protocol::domain_ledger::readonly::HistoricalLedgerRowsDataV2;
 use crate::lifecycle::protected_journal::{
     LifecycleProtectedJournalSchemaV1, LifecycleSchemaReplayCaptureV1,
 };
@@ -48,8 +49,12 @@ impl LifecycleHistoricalReadOriginalV1 {
             returned: None, reentered: false }
     }
 
-    pub(crate) fn observe_once_v1(&mut self,source:&Journal,parent:OperationId)->Result<(),JournalError> {
-        self.observe_projection_engine_v1(source,Some(parent),true)?;
+    pub(crate) fn observe_once_v1(
+        &mut self,
+        rows: HistoricalLedgerRowsDataV2<'_>,
+        parent: OperationId,
+    ) -> Result<(), JournalError> {
+        self.observe_rows_engine_v3(rows, Some(parent), true)?;
         self.operation_v1().map(|_|())
     }
 
@@ -58,10 +63,10 @@ impl LifecycleHistoricalReadOriginalV1 {
     // an effect grant, and every malformed matching prefix remains retained.
     pub(crate) fn observe_optional_operation_once_v4(
         &mut self,
-        source: &Journal,
+        rows: HistoricalLedgerRowsDataV2<'_>,
         parent: OperationId,
     ) -> Result<(), JournalError> {
-        self.observe_projection_engine_v1(source, Some(parent), false)
+        self.observe_rows_engine_v3(rows, Some(parent), false)
     }
 
     pub(crate) fn optional_operation_v4(
@@ -77,15 +82,6 @@ impl LifecycleHistoricalReadOriginalV1 {
         &LifecycleOperationV1, LifecycleRecordDigestV1)>, JournalError> {
         self.projection_ready_v1()?;
         Ok(self.selected.completed_v1().map(|(key, operation, digest)| (key, operation, *digest)))
-    }
-
-    pub(crate) fn observe_projection_once_v1(&mut self,source:&Journal)->Result<(),JournalError> {
-        self.observe_projection_engine_v1(source,None,true)?;
-        self.projection_ready_v1().map(|_|())
-    }
-
-    fn observe_projection_engine_v1(&mut self, source: &Journal, parent: Option<OperationId>, required: bool) -> Result<(), JournalError> {
-        self.observe_rows_engine_v3(source.historical_read_view_v1().rows_data_v2(), parent, required)
     }
 
     pub(crate) fn observe_rows_projection_once_v3(&mut self,
@@ -185,7 +181,18 @@ impl LifecycleHistoricalReadOriginalV1 {
     pub(crate) fn carrier_receiving_bytes_v1() -> Option<usize> {
         std::mem::size_of::<Self>().checked_mul(2)?
             .checked_add(std::mem::size_of::<crate::lifecycle::LifecycleAuxiliaryRecordV1>()
-                .checked_mul(2)?)
+                .checked_mul(2)?)?
+            .checked_add(Self::observe_rows_interface_control_bytes_v2()?)
+    }
+
+    // Each actual carrier payer precedes its required/optional Rows entry.
+    // This names the widened outer interface without attributing it to the
+    // retired Journal relay, resident padding or dynamic replay backing.
+    pub(crate) fn observe_rows_interface_control_bytes_v2() -> Option<usize> {
+        std::mem::size_of::<(&mut Self, HistoricalLedgerRowsDataV2<'_>, OperationId)>()
+            .checked_mul(3)?
+            .checked_add(std::mem::size_of::<Result<(), JournalError>>().checked_mul(3)?)?
+            .checked_add(std::mem::size_of::<Option<usize>>().checked_mul(3)?)
     }
 
     pub(crate) fn failure(&self) -> Option<&(dyn Error + 'static)> {
@@ -206,6 +213,7 @@ const CLOSED: JournalError = JournalError::ProtectedBoundary;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::journal::Journal;
 
     #[test]
     fn empty_projection_cannot_select_an_operation_and_reentry_closes_the_reader() {
@@ -214,15 +222,15 @@ mod tests {
             crate::JournalLimits::default()).unwrap();
         let mut original = LifecycleHistoricalReadOriginalV1::new();
 
-        original.observe_projection_once_v1(&journal).unwrap();
+        original.observe_rows_projection_once_v3(journal.historical_read_view_v1().rows_data_v2()).unwrap();
         assert!(original.projection_ready_v1().is_ok());
         assert!(original.operation_v1().is_err());
 
         // An empty schema is valid historical DATA, but cannot select a parent.
         // A second observation still closes this single-use reader.
-        assert!(original.observe_projection_once_v1(&journal).is_err());
+        assert!(original.observe_rows_projection_once_v3(journal.historical_read_view_v1().rows_data_v2()).is_err());
         let failure = original.failure().unwrap().to_string();
-        assert!(original.observe_projection_once_v1(&journal).is_err());
+        assert!(original.observe_rows_projection_once_v3(journal.historical_read_view_v1().rows_data_v2()).is_err());
 
         assert_eq!(original.failure().unwrap().to_string(), failure);
         assert!(original.projection_ready_v1().is_err());
@@ -238,13 +246,13 @@ mod tests {
         let mut optional = LifecycleHistoricalReadOriginalV1::new();
         let mut required = LifecycleHistoricalReadOriginalV1::new();
 
-        optional.observe_optional_operation_once_v4(&journal, parent).unwrap();
+        optional.observe_optional_operation_once_v4(journal.historical_read_view_v1().rows_data_v2(), parent).unwrap();
         assert!(optional.optional_operation_v4().unwrap().is_none());
         assert!(optional.optional_selection_v4().unwrap().is_none());
         assert!(optional.operation_v1().is_err());
-        assert!(required.observe_once_v1(&journal, parent).is_err());
+        assert!(required.observe_once_v1(journal.historical_read_view_v1().rows_data_v2(), parent).is_err());
 
-        assert!(optional.observe_optional_operation_once_v4(&journal, parent).is_err());
+        assert!(optional.observe_optional_operation_once_v4(journal.historical_read_view_v1().rows_data_v2(), parent).is_err());
         assert!(optional.optional_operation_v4().is_err());
         assert!(optional.optional_selection_v4().is_err());
         assert!(optional.failure().is_some());
@@ -258,10 +266,10 @@ mod tests {
         let mut original=LifecycleHistoricalReadOriginalV1::new();
         let parent=OperationId::from_bytes([11;16]);
 
-        assert!(original.observe_once_v1(&journal,parent).is_err());
+        assert!(original.observe_once_v1(journal.historical_read_view_v1().rows_data_v2(),parent).is_err());
         let failure=original.failure().unwrap().to_string();
         assert!(original.operation_v1().is_err());
-        assert!(original.observe_once_v1(&journal,OperationId::from_bytes([12;16])).is_err());
+        assert!(original.observe_once_v1(journal.historical_read_view_v1().rows_data_v2(),OperationId::from_bytes([12;16])).is_err());
 
         assert_eq!(original.failure().unwrap().to_string(),failure);
         assert!(original.operation_v1().is_err());

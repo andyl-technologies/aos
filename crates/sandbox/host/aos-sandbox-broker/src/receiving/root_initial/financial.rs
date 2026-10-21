@@ -311,6 +311,24 @@ impl Clone for RootJournalFinancialOriginalV1 {
 }
 
 impl RootJournalFinancialOriginalV1 {
+    // The actual selected-role factory may lend this intrinsic association
+    // after refusal for owed tails. Each reached operation still checks N and
+    // its original financial or observation prerequisites independently.
+    pub(super) fn from_selected_role_provision_v1(
+        initial: &super::RootInitialReceivingOriginalV1,
+    ) -> Result<Self, super::super::RootObservationErrorV1> {
+        let invalid = || super::super::RootObservationErrorV1::Service;
+        let original = initial.permanent.as_ref().ok_or_else(invalid)?;
+        if !original.has_identity(&initial.owner)
+            || initial.process_id_v1() != std::process::id()
+            || initial.selected_role_prefix_data_v1().is_none()
+            || !matches!(initial.recipient_binding, Some(Ok(())))
+        {
+            return Err(invalid());
+        }
+        Ok(Self { original: Arc::clone(original) })
+    }
+
     // The sealed Q04 origin borrows this same association; it stores no second
     // Permanent Arc beside its already genuine financial original.
     pub(super) fn q04_permanent_v1(&self) -> &Arc<RootPermanentNativeOriginalV1> {
@@ -340,6 +358,53 @@ impl RootJournalFinancialOriginalV1 {
             invocation.refuse();
         }
         result
+    }
+
+    /// Checks one actual receiving stage while retaining its same exclusion.
+    ///
+    /// The finite role owner derives demand from its genuine held models and
+    /// predecessors. This method only runs the existing Stage accounting law;
+    /// a vector or successful debit grants no role, sampler or append permission.
+    ///
+    /// # Errors
+    /// Refuses a different held guard, unhealthy/ended original, earlier actual
+    /// financial failure, arithmetic overflow or exhausted complete liability.
+    pub fn require_receiving_demand_under_upper_exclusion_v1(
+        &self,
+        exclusion: &RootUpperMutationGuardV1<'_>,
+        demand: ResourceVector,
+    ) -> Result<(), RootFinancialClosedV1> {
+        if !exclusion.matches_permanent_original_v1(self.original.as_ref()) {
+            exclusion.refuse_v1();
+            self.original.invocation().latch_refusal();
+            return Err(RootFinancialClosedV1);
+        }
+        let mut invocation = self.original.enter_native().map_err(|_| RootFinancialClosedV1)?;
+        let returned = match self.envelope() {
+            Ok(envelope) => self.original.financial.mutate(envelope, MutationV1::Stage(demand)),
+            Err(error) => Err(error),
+        };
+        if returned.is_err() {
+            invocation.refuse();
+        }
+        returned
+    }
+
+    /// Measures the concrete held-guard Stage constructor and return controls.
+    ///
+    /// The actual finite receiving owner consumes this passive quote before
+    /// invoking its real same-original Stage operation.
+    #[must_use]
+    pub fn receiving_stage_under_exclusion_control_bytes_v1() -> Option<usize> {
+        std::mem::size_of::<(&Self, &RootUpperMutationGuardV1<'_>, ResourceVector)>().checked_mul(3)?
+            .checked_add(std::mem::size_of::<(&RootUpperMutationGuardV1<'_>, &RootPermanentNativeOriginalV1)>().checked_mul(3)?)?
+            .checked_add(std::mem::size_of::<bool>().checked_mul(3)?)?
+            .checked_add(std::mem::size_of::<Result<(), RootFinancialClosedV1>>().checked_mul(3)?)?
+            .checked_add(std::mem::size_of::<Result<ResourceVector, RootFinancialClosedV1>>().checked_mul(3)?)?
+            .checked_add(std::mem::size_of::<MutationV1>().checked_mul(3)?)?
+            .checked_add(std::mem::size_of::<ResourceVector>().checked_mul(3)?)?
+            .checked_add(std::mem::size_of::<super::super::root_invocation::RootNativeInvocationGuardV1<'_>>().checked_mul(3)?)?
+            .checked_add(std::mem::size_of::<Result<super::super::root_invocation::RootNativeInvocationGuardV1<'_>, super::super::RootObservationErrorV1>>().checked_mul(3)?)
     }
 
     /// Requires the writer's intrinsic permanent association without IO.
@@ -471,7 +536,46 @@ impl Error for RootJournalFinancialOriginalV1 {
     }
 }
 
+/// Retains the same history-post L and denies before unwinding its native slot.
+pub(in crate::receiving) struct RootHistoryUpperExclusionGuardV1<'original> {
+    original: &'original RootPermanentNativeOriginalV1,
+    _lock: std::sync::MutexGuard<'original, ()>,
+}
+
+impl Drop for RootHistoryUpperExclusionGuardV1<'_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            self.original.invocation().latch_refusal();
+        }
+    }
+}
+
 impl RootPermanentNativeOriginalV1 {
+    pub(in crate::receiving) fn enter_history_post_exclusion_v1(&self) -> RootHistoryUpperExclusionGuardV1<'_> {
+        let lock = match self.financial.upper_mutation.lock() {
+            Ok(lock) => lock,
+            Err(poisoned) => {
+                self.invocation().latch_refusal();
+                poisoned.into_inner()
+            }
+        };
+        RootHistoryUpperExclusionGuardV1 { original: self, _lock: lock }
+    }
+
+    pub(in crate::receiving) fn enter_history_worker_under_exclusion_v1(&self) -> Result<(), super::super::RootObservationErrorV1> {
+        let mut invocation = self.enter_native()?;
+        let returned = self.service.enter_worker_once_v1();
+        if returned.is_err() { invocation.refuse(); }
+        returned
+    }
+
+    pub(in crate::receiving) fn finish_history_worker_under_exclusion_v1(&self) -> Result<(), super::super::RootObservationErrorV1> {
+        let mut invocation = self.enter_observation()?;
+        let returned = self.service.finish_worker_once_v1();
+        if returned.is_err() { invocation.refuse(); }
+        returned
+    }
+
     // This closed native entry owns the same L/N/M ordering as the former
     // selected upper recheck. N remains held across its actual native IO;
     // M is released immediately after the existing traffic mutation.
@@ -485,6 +589,35 @@ impl RootPermanentNativeOriginalV1 {
             self.invocation().latch_refusal();
             Closed::Service
         })?;
+        self.recheck_selected_service_after_exclusion_v1(startup)
+    }
+
+    /// Repeats the original selected service recipe under the same held L.
+    ///
+    /// # Errors
+    /// Refuses a foreign exclusion, failed or ended original, nonidle worker,
+    /// original traffic debit, or the actual native currentness observation.
+    pub(in crate::receiving) fn recheck_selected_service_under_upper_exclusion_v1(
+        &self,
+        startup: &super::super::RootStartupNativeOriginalV1,
+        exclusion: &RootUpperMutationGuardV1<'_>,
+    ) -> Result<(), super::super::RootObservationErrorV1> {
+        if !exclusion.matches_permanent_original_v1(self) {
+            exclusion.refuse_v1();
+            self.invocation().latch_refusal();
+            return Err(super::super::RootObservationErrorV1::Service);
+        }
+        self.recheck_selected_service_after_exclusion_v1(startup)
+    }
+
+    // Both entry points retain their real L. Only this body enters N, debits
+    // under M, releases M, and performs the original native service observation.
+    fn recheck_selected_service_after_exclusion_v1(
+        &self,
+        startup: &super::super::RootStartupNativeOriginalV1,
+    ) -> Result<(), super::super::RootObservationErrorV1> {
+        use super::super::RootObservationErrorV1 as Closed;
+
         let mut invocation = self.enter_native()?;
         let checked = (|| {
             if !startup.initial_owner.as_ref().is_some_and(|identity| self.has_identity(identity))
@@ -667,7 +800,15 @@ impl super::RootInitialReceivingOriginalV1 {
     #[must_use]
     pub fn financial_fixed_construction_demand_v1() -> Option<ResourceVector> {
         let bytes = std::mem::size_of::<RootFinancialFailureV1>().checked_mul(2)?
+            .checked_add(std::mem::size_of::<&RootPermanentNativeOriginalV1>().checked_mul(6)?)?
+            .checked_add(std::mem::size_of::<Result<(), super::super::RootObservationErrorV1>>().checked_mul(6)?)?
             .checked_add(std::mem::size_of::<RootFinancialErrorV1>().checked_mul(3)?)?
+            // Passive role association and the shared service body's new
+            // forwarding entry are paid before their actual constructors.
+            .checked_add(std::mem::size_of::<&super::RootInitialReceivingOriginalV1>().checked_mul(3)?)?
+            .checked_add(std::mem::size_of::<&Arc<RootPermanentNativeOriginalV1>>().checked_mul(3)?)?
+            .checked_add(std::mem::size_of::<(&RootPermanentNativeOriginalV1, &super::super::RootStartupNativeOriginalV1)>().checked_mul(3)?)?
+            .checked_add(std::mem::size_of::<Result<(), super::super::RootObservationErrorV1>>().checked_mul(3)?)?
             .checked_add(std::mem::size_of::<MutationV1>().checked_mul(2)?)?
             .checked_add(std::mem::size_of::<std::sync::MutexGuard<'_, RootFinancialStateV1>>().checked_mul(2)?)?
             .checked_add(std::mem::size_of::<std::sync::LockResult<std::sync::MutexGuard<'_, RootFinancialStateV1>>>().checked_mul(2)?)?

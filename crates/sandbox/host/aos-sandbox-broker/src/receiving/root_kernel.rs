@@ -11,7 +11,9 @@ use std::os::fd::OwnedFd;
 
 use aos_sandbox_model::{ResourceDimension as D, ResourceVector};
 use aos_sandbox_linux::cgroup::{CgroupV2Root, RetainedCgroupAnchor, RootInitialCgroupReadbackV1};
-use aos_sandbox_linux::pidfd::{PidFd, PidFdInfo, PidFdProcessIdentity};
+use aos_linux_descriptors::pidfd::PidFd;
+use aos_linux_descriptors::pidfd::PidFdInfo;
+use aos_sandbox_linux::pidfd::PidFdProcessIdentity;
 
 use crate::immutable_image::{ImmutableImageErrorV1, PendingImmutableFileV1};
 
@@ -27,14 +29,14 @@ const MATERIALIZED_PROPERTY_BYTES: usize = 64 * 1024;
 ///
 /// The physical observations grant no recipient, financial or semantic authority.
 pub struct RootKernelOriginalCaptureV1 {
-    process: Option<Result<PidFd, aos_sandbox_linux::Error>>,
-    initial_process: Option<Result<PidFdInfo, aos_sandbox_linux::Error>>,
-    startup_identity: Option<Result<PidFdProcessIdentity, aos_sandbox_linux::Error>>,
+    process: Option<Result<PidFd, aos_linux_descriptors::Error>>,
+    initial_process: Option<Result<PidFdInfo, aos_linux_descriptors::Error>>,
+    startup_identity: Option<Result<PidFdProcessIdentity, aos_linux_descriptors::Error>>,
     cgroup_original: RootInitialCgroupReadbackV1,
-    cgroup_capture: Option<Result<(), aos_sandbox_linux::Error>>,
+    cgroup_capture: Option<Result<(), aos_linux_descriptors::Error>>,
     hierarchy: Option<CgroupV2Root>,
     cgroup: Option<Result<RetainedCgroupAnchor, NormalRootStartupErrorV1>>,
-    initial_membership: Option<Result<PidFdInfo, aos_sandbox_linux::Error>>,
+    initial_membership: Option<Result<PidFdInfo, aos_linux_descriptors::Error>>,
     containment: ReceivingContainmentReadbackV1,
     initial: Option<Result<(), NormalRootStartupErrorV1>>,
     manager: PendingImmutableFileV1,
@@ -51,8 +53,8 @@ pub struct RootKernelOriginalCaptureV1 {
     profile_post: Option<Result<(), ImmutableImageErrorV1>>,
     manager_post: Option<Result<(), ImmutableImageErrorV1>>,
     manager_executed_post: Option<Result<(), ImmutableImageErrorV1>>,
-    final_process: Option<Result<PidFdInfo, aos_sandbox_linux::Error>>,
-    final_membership: Option<Result<PidFdInfo, aos_sandbox_linux::Error>>,
+    final_process: Option<Result<PidFdInfo, aos_linux_descriptors::Error>>,
+    final_membership: Option<Result<PidFdInfo, aos_linux_descriptors::Error>>,
     final_binding: Option<Result<(), NormalRootStartupErrorV1>>,
 }
 
@@ -349,7 +351,7 @@ impl RootKernelOriginalCaptureV1 {
             return Err(NormalRootStartupErrorV1::Service);
         }
         let process = positive(&self.process)?;
-        self.startup_identity = Some(process.process_identity());
+        self.startup_identity = Some(aos_sandbox_linux::pidfd::process_identity(&(process)));
         positive(&self.startup_identity).map(|_| ())
     }
 

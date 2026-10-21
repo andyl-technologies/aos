@@ -10,9 +10,10 @@ use aos_sandbox_model::{AccountingError, ResourceDimension as D, ResourceVector}
 use aos_sandbox_linux::cgroup::{
     ExactCgroupMembershipReadbackV1, ExactCgroupMembershipRefusalV1, RetainedCgroupAnchor,
 };
-use aos_sandbox_linux::pidfd::{
-    CurrentSelfPidFdCustodyV1, PidFdInfo, PidFdProcObservationsV1, PidFdProcessIdentity,
-};
+use aos_sandbox_linux::pidfd::CurrentSelfPidFdCustodyV1;
+use aos_linux_descriptors::pidfd::PidFdInfo;
+use aos_sandbox_linux::pidfd::PidFdProcObservationsV1;
+use aos_sandbox_linux::pidfd::PidFdProcessIdentity;
 
 use super::receiving_limits::{ReceivingContainmentCurrentnessV1, ReceivingContainmentReadbackV1};
 
@@ -35,10 +36,10 @@ pub struct FixedServiceCurrentnessSampleV1<E> {
     entered: bool,
     first: Option<Failure>,
     closed: Option<E>,
-    original: Option<Result<(), aos_sandbox_linux::Error>>,
+    original: Option<Result<(), aos_linux_descriptors::Error>>,
     proc: Option<PidFdProcObservationsV1>,
-    stat: Option<Result<PidFdProcessIdentity, aos_sandbox_linux::Error>>,
-    context: Option<Result<bool, aos_sandbox_linux::Error>>,
+    stat: Option<Result<PidFdProcessIdentity, aos_linux_descriptors::Error>>,
+    context: Option<Result<bool, aos_linux_descriptors::Error>>,
     context_bytes: [u8; 256],
     context_length: usize,
     limits: ReceivingContainmentCurrentnessV1,
@@ -47,7 +48,7 @@ pub struct FixedServiceCurrentnessSampleV1<E> {
     membership: Option<Result<PidFdInfo, E>>,
     membership_capture: ExactCgroupMembershipReadbackV1,
     membership_entry: Option<Result<(), ExactCgroupMembershipRefusalV1>>,
-    process_post: Option<Result<PidFdProcessIdentity, aos_sandbox_linux::Error>>,
+    process_post: Option<Result<PidFdProcessIdentity, aos_linux_descriptors::Error>>,
     binding: Option<Result<(), E>>,
 }
 
@@ -155,7 +156,7 @@ impl<E: Copy + Default + Error + 'static> FixedServiceCurrentnessSampleV1<E> {
             Ok(pidfd) => pidfd,
             Err(_) => return Err(self.fail(Failure::Original)),
         };
-        self.proc = Some(pidfd.prepare_proc_observations_v1());
+        self.proc = Some(aos_sandbox_linux::pidfd::prepare_proc_observations_v1(&(pidfd)));
         if let Some(observations) = self.proc.as_mut() {
             self.stat = Some(observations.capture_stat(pidfd));
             if matches!(self.stat, Some(Ok(_))) {

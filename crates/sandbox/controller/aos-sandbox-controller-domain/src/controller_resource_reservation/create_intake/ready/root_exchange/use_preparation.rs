@@ -71,7 +71,7 @@ impl RootExchangeOriginalsV1 {
         }
         let mut loan = OriginalCreateStorageRootExchangeV1 {
             parent, intake, controller, source, profile, cache, state: &mut self.turn,
-            use_receiving: Some(receiving),
+            use_receiving: Some(RootUseReceivingV1::Original(receiving)),
         };
         if !after {
             purpose.select_mut(loan.state).entered = true;
@@ -156,7 +156,7 @@ impl RootExchangeOriginalsV1 {
         purpose.select_mut(&mut self.turn).refusal = Some(CreateStorageRootExchangeClosedV1);
         let mut loan = OriginalCreateStorageRootExchangeV1 {
             parent, intake, controller, source, profile, cache, state: &mut self.turn,
-            use_receiving: Some(receiving),
+            use_receiving: Some(RootUseReceivingV1::Original(receiving)),
         };
         // Root11 prepaid this exact following refusal before accepting its
         // comparison. No new debit or health restoration occurs after poison.

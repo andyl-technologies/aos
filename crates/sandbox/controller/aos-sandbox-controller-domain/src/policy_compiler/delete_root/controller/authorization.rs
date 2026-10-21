@@ -35,7 +35,7 @@ enum AuthorizationError {
     #[error(transparent)]
     Journal(#[from] JournalError),
     #[error(transparent)]
-    Models(#[from] crate::cli_model::authorization_adapter::CliAuthorizationAdapterError),
+    Models(#[from] aos_sandbox_protocol::public_api::authorization_error::CliAuthorizationAdapterError),
 }
 
 #[derive(Default)]
@@ -145,7 +145,7 @@ impl RootDeleteControllerCurrentOriginalV1 {
                     total.checked_add(key.len())?.checked_add(value.len())
                 })
                 .ok_or(JournalError::JournalTooLarge)?;
-            let bytes = crate::public_mutation_compiler::delete_admission::geometry::delete_decode_bytes_v1(input)
+            let bytes = aos_sandbox_protocol::public_api::delete_geometry::delete_decode_bytes_v1::<crate::public_mutation_compiler::AuthorizedPublicMutationRequestV1>(input)
                 .and_then(|bytes| bytes.checked_add(
                     crate::public_mutation_compiler::delete_admission::geometry::authorization_model_bytes_v1(
                         encoded, actual.state.len())?))
@@ -200,7 +200,7 @@ impl RootDeleteControllerCurrentOriginalV1 {
             let body = self.authorization.body.bytes_v2()?;
             let length =
                 usize::try_from(fields.input_bytes).map_err(|_| DeleteRootWireErrorV2::Format)?;
-            Ok(crate::cli_model::authorization_adapter::recompute_delete_authorization_cut_from_records_v2(
+            Ok(aos_sandbox_ledger_replay::authorization_comparison::recompute_delete_authorization_cut_from_records_v2(
                 crate::publisher_admin::PublisherReadDataV2::from_state_v2(actual.state), &body[..length], fields, open)?)
         })());
         if !matches!(self.authorization.recomputed, Some(Ok(_))) {

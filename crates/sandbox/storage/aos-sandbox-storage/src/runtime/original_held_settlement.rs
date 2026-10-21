@@ -306,7 +306,7 @@ impl StorageBrokerRuntime {
         verifier: &ProviderLiveExportPeerVerifier,
         key: &StorageZfsHoldKeyV1,
         child: &mut SeqpacketSocket,
-        execution: Option<aos_sandbox_linux::pidfd::PidFdInfo>,
+        execution: Option<aos_linux_descriptors::pidfd::PidFdInfo>,
         records: &[Option<OriginalHeldRecordV1>; 2],
         stored: &StorageHeldIssuanceRowV2,
         state: &mut OriginalHeldSettlementV1,
@@ -483,7 +483,7 @@ impl StorageBrokerRuntime {
 
 fn carrier_read<'owner>(
     child: &'owner SeqpacketSocket,
-    execution: Option<aos_sandbox_linux::pidfd::PidFdInfo>,
+    execution: Option<aos_linux_descriptors::pidfd::PidFdInfo>,
     records: &'owner [Option<OriginalHeldRecordV1>; 2],
 ) -> OriginalHeldCarrierReadV1<'owner> {
     OriginalHeldCarrierReadV1 { child: Some(child), execution, records }

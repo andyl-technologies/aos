@@ -39,11 +39,15 @@ use std::os::fd::{AsFd as _, BorrowedFd, OwnedFd};
 use std::path::{Component, Path, PathBuf};
 
 use aos_sandbox_linux::cgroup::{CgroupV2Root, RetainedCgroupAnchor};
-use aos_sandbox_linux::pidfd::{PidFd, PidFdCredentials, PidFdInfo, PidFdProcessIdentity};
+use aos_linux_descriptors::pidfd::PidFd;
+use aos_linux_descriptors::pidfd::PidFdCredentials;
+use aos_linux_descriptors::pidfd::PidFdInfo;
+use aos_sandbox_linux::pidfd::PidFdProcessIdentity;
 use aos_sandbox_linux::seqpacket::{
     ConnectionPeerIdentity, KernelAuthorizedRecordSubject, PeerCredentials, RecordCredentials,
 };
-use aos_sandbox_linux::unix_stream::{UnixStreamPeerCredentials, UnixStreamPeerIdentity};
+use aos_linux_descriptors::unix_stream::UnixStreamPeerCredentials;
+use aos_linux_descriptors::unix_stream::UnixStreamPeerIdentity;
 
 use super::{
     InspectorProcessIdentityV1, KernelAuthenticatedInspectorPeerV1,
@@ -86,7 +90,7 @@ fn is_inspector_mac_context(observed: &[u8]) -> bool {
 pub(crate) enum NamespaceInspectorKernelAuthenticationError {
     /// A trusted descriptor or kernel observation failed.
     #[error(transparent)]
-    Linux(#[from] aos_sandbox_linux::Error),
+    Linux(#[from] aos_linux_descriptors::Error),
     /// A fixed executable descriptor or procfs observation failed.
     #[error("namespace-inspector kernel authentication failed during {operation}: {source}")]
     Io {
@@ -358,7 +362,7 @@ impl NamespaceInspectorKernelVerifierV1 {
     ) -> Result<RetainedKernelProcessEvidenceV1, NamespaceInspectorKernelAuthenticationError> {
         let initial_pidfd = PidFdObservation::try_from(initial_info)?;
         let pidfd_before = PidFdObservation::try_from(pidfd.info()?)?;
-        let before = pidfd.process_identity()?;
+        let before = aos_sandbox_linux::pidfd::process_identity(&(pidfd))?;
         let cgroup = self.cgroup_root.resolve(expected.cgroup)?;
         cgroup.verify_exact_membership(pidfd)?;
 
@@ -368,7 +372,7 @@ impl NamespaceInspectorKernelVerifierV1 {
         let mac_after = read_effective_mac_context(before.pid())?;
 
         cgroup.verify_exact_membership(pidfd)?;
-        let after = pidfd.process_identity()?;
+        let after = aos_sandbox_linux::pidfd::process_identity(&(pidfd))?;
         let pidfd_after = PidFdObservation::try_from(pidfd.info()?)?;
         validate_observation(
             expected,
@@ -705,7 +709,7 @@ impl RetainedKernelProcessEvidenceV1 {
     ) -> Result<(), NamespaceInspectorKernelAuthenticationError> {
         let initial_pidfd = PidFdObservation::try_from(initial_info)?;
         let pidfd_before = PidFdObservation::try_from(pidfd.info()?)?;
-        let before = pidfd.process_identity()?;
+        let before = aos_sandbox_linux::pidfd::process_identity(&(pidfd))?;
         self.cgroup.verify_exact_membership(pidfd)?;
 
         let executable_before = open_proc_executable(before.pid())?;
@@ -714,7 +718,7 @@ impl RetainedKernelProcessEvidenceV1 {
         let mac_after = read_effective_mac_context(before.pid())?;
 
         self.cgroup.verify_exact_membership(pidfd)?;
-        let after = pidfd.process_identity()?;
+        let after = aos_sandbox_linux::pidfd::process_identity(&(pidfd))?;
         let pidfd_after = PidFdObservation::try_from(pidfd.info()?)?;
         let expected_executable = executable_identity(self.executable.as_fd())?;
         validate_observation(
@@ -1088,7 +1092,7 @@ fn inspector_cgroup(
 pub(super) fn inspector_instance_from_record_subject(
     subject: &KernelAuthorizedRecordSubject,
 ) -> Result<String, NamespaceInspectorKernelAuthenticationError> {
-    let before = subject.pidfd().process_identity()?;
+    let before = aos_sandbox_linux::pidfd::process_identity(&(subject.pidfd()))?;
     if subject.initial_info() != subject.pidfd().info()?
         || subject.credentials().pid().get() != before.pid()
     {
@@ -1111,7 +1115,7 @@ pub(super) fn inspector_instance_from_record_subject(
             source,
         })?;
 
-    let after = subject.pidfd().process_identity()?;
+    let after = aos_sandbox_linux::pidfd::process_identity(&(subject.pidfd()))?;
     if before != after || subject.initial_info() != subject.pidfd().info()? {
         return Err(NamespaceInspectorKernelAuthenticationError::Mismatch);
     }

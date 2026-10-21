@@ -6,62 +6,13 @@
 //! Role consumers retain their actual opener and independently price semantic
 //! models, paths, controls, transport, errors and the original physical limits.
 
-use aos_sandbox_model::{ResourceDimension as D, ResourceVector};
+#[cfg(test)]
+use aos_sandbox_model::ResourceDimension as D;
 
-use super::{JournalError, ProtectedJournalPreopenReplayExtentV1};
+#[cfg(test)]
+use super::ProtectedJournalPreopenReplayExtentV1;
 
-impl ProtectedJournalPreopenReplayExtentV1 {
-    /// Prices the common Native replay representations without clipping EOF work.
-    ///
-    /// Release work contains physical-clipped pending records but already
-    /// includes the shared incremental reader's reached Vec capacity and fixed
-    /// scratch. BEGIN can reserve its complete declared count before EOF, so
-    /// only that pending term is replaced with its independent full maximum.
-    /// Absent advertised payload bytes receive no allocation or semantic charge.
-    /// Reached map/checkpoint owners remain separately priced.
-    ///
-    /// Only an extent borrowed from the actual staged original can be joined
-    /// to a payer. Writable DATA fields and this calculation create no authority.
-    /// Semantic decoded models and collections need their own conservative
-    /// shape allowance. Strict parsers and the genuine service cgroup back
-    /// residual allocator metadata and kernel/page-cache overhead (RFC-0006).
-    ///
-    /// # Errors
-    /// Refuses inconsistent clipped terms, checked overflow, or an extent whose
-    /// complete logical receiving terms cannot be represented by the vector.
-    pub fn dominant_native_receiving_demand_v1(&self) -> Result<ResourceVector, JournalError> {
-        let invalid = || JournalError::LimitExceeded("native receiving replay demand");
-        let physical = usize::try_from(self.native_bytes).map_err(|_| invalid())?;
-        let advertised = self.limits.maximum_record_bytes.checked_add(7).ok_or_else(invalid)?;
-        let frame = aos_sandbox_journal::framing::reached_frame_read_memory_bound_v1(
-            advertised, physical,
-        ).map_err(|_| invalid())?;
-        if self.clipped_native_pending_record_bytes > self.declared_pending_record_bytes
-            || self.maximum_advertised_payload_bytes != advertised
-            || self.native_frame_read_memory_bytes != frame
-            || self.native_replay_representation_bytes < frame
-        {
-            return Err(invalid());
-        }
-        let memory = self.native_replay_representation_bytes
-            .checked_sub(self.clipped_native_pending_record_bytes)
-            .and_then(|bytes| bytes.checked_add(self.declared_pending_record_bytes))
-            .and_then(|bytes| bytes.checked_add(self.reached_transaction_id_bytes))
-            .and_then(|bytes| bytes.checked_add(self.reached_materialized_cell_bytes))
-            .and_then(|bytes| bytes.checked_add(self.source_checkpoint_representation_bytes))
-            .and_then(|bytes| bytes.checked_add(self.source_cache_metadata_bytes))
-            .and_then(|bytes| bytes.checked_add(self.native_owner_result_bytes))
-            .ok_or_else(invalid)?;
-        let memory = u64::try_from(memory).map_err(|_| invalid())?;
-        let metadata = self.source_checkpoint_rows.checked_mul(2)
-            .and_then(|count| count.checked_add(self.source_transactions))
-            .and_then(|count| count.checked_add(self.limits.maximum_records_per_transaction))
-            .and_then(|count| count.checked_add(1)).ok_or_else(invalid)?;
-        Ok(ResourceVector::ZERO
-            .with(D::MemoryBytes, memory)
-            .with(D::MetadataEntries, u64::try_from(metadata).map_err(|_| invalid())?))
-    }
-}
+
 
 #[cfg(test)]
 mod tests {

@@ -18,6 +18,8 @@ use aos_sandbox_api::aos::sandbox::v1::{
     Attachment, CacheStatus, Capability, Execution, FilesystemView, Sandbox, Snapshot,
 };
 pub mod dependencies;
+/// Prices the existing decoder/model representations without native admission.
+pub mod geometry;
 
 use aos_sandbox_model::{ObjectDigest, OperationId, ProjectId, RecordNamespace, SandboxId};
 use buffa::Message as _;
@@ -787,4 +789,57 @@ mod operation_receiving_tests {
         assert!(larger > one);
         assert!(two > one);
     }
+}
+
+/// Expands the original exact projection lookup at its actual health frontier.
+///
+/// The read expression borrows existing row DATA. The health block belongs to
+/// the caller's genuine native owner; neither is a runtime callback or trait.
+/// Output bindings keep the decoder and original Result in the same frame.
+#[macro_export]
+macro_rules! checked_public_projection_read_data_v1 {
+    (
+        kind = $kind:expr, resource_id = $resource:expr,
+        invalid_identity = $invalid:expr, healthy = $healthy:block,
+        key = $key:ident, read = $read:expr, output = $projection:ident
+    ) => {
+        if $resource == [0; 16] {
+            return Err($invalid);
+        }
+        $healthy
+        let $key = $crate::public_api::projection::projection_key($kind, $resource);
+        let $projection = $read
+            .map(|value| $crate::public_api::projection::decode_checked_public_projection_v1(&$key, value))
+            .transpose()?;
+    };
+}
+
+/// Expands the original operation list at its genuine native health frontier.
+///
+/// The initially empty Vec precedes the health check, as in the original Store
+/// method. Supplied records lend bytes only; the caller supplies its actual
+/// owner check at the same lexical position, without a runtime callback.
+#[macro_export]
+macro_rules! checked_public_projection_list_operation_data_v2 {
+    (
+        operation = $operation:expr, invalid_identity = $invalid:expr,
+        healthy = $healthy:block, rows = $rows:expr, output = $records:ident
+    ) => {
+        if $operation.as_bytes() == &[0; 16] {
+            return Err($invalid);
+        }
+        let mut $records = Vec::new();
+        $healthy
+        for record in $crate::public_api::projection::iter_public_projection_rows_data_v2($rows, None) {
+            let record = record?;
+            if record.operation() == $operation {
+                $records.push(record);
+            }
+        }
+        $records.sort_by(|left, right| {
+            left.resource().kind().cmp(&right.resource().kind()).then_with(|| {
+                left.resource().resource_id().cmp(right.resource().resource_id())
+            })
+        });
+    };
 }

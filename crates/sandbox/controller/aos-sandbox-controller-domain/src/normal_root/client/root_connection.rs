@@ -8,7 +8,8 @@ use std::error::Error;
 use std::os::fd::OwnedFd;
 
 use crate::policy_compiler::POLICY_AUTHORITY_FIXED_SOCKET_PATH_V2;
-use aos_sandbox_linux::unix_stream::{RetainedUnixStream, RetainedUnixStreamAdmissionErrorV1};
+use aos_linux_descriptors::unix_stream::RetainedUnixStream;
+use aos_linux_descriptors::unix_stream::RetainedUnixStreamAdmissionErrorV1;
 use aos_sandbox_protocol::domain_ledger::create_storage_history::HistoryErrorV1;
 use rustix::fs::OFlags;
 use rustix::net::{AddressFamily, SocketAddrUnix, SocketFlags, SocketType};

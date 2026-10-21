@@ -11,6 +11,7 @@
 //!          | present:u8+length+current | present:u8+length+Desired | checksum[32]
 //! ```
 
+use crate::journal::historical_observation::HistoricalObservationV1;
 use aos_sandbox_model::{OperationId, ProjectId};
 use aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodOutcomeV1;
 use aos_sandbox_protocol::operator_storage_repair_terminal_v4::RepairTerminalRequestV4;
@@ -28,6 +29,7 @@ use aos_sandbox_protocol::public_api::projection::{
 };
 use crate::reconciler::{RepairPreconditionFailureReceiptV1, REPAIR_FAILURE_RECEIPT_BYTES,
     REPAIR_FAILURE_RECEIPT_DOMAIN, operator_repair_failure_terminal_rows_v1,
+    operator_repair_failure_terminal_rows_from_observation_v2,
     pending_operator_repair_ledger_v1};
 use crate::{Journal, JournalRecord, JournalTransaction, RecordNamespace};
 
@@ -249,17 +251,60 @@ pub(in crate::controller::operator_recovery_issuance) fn terminal_claims(
     body: &[u8],
     fresh: &AuthenticatedBrokerMethodOutcomeV1,
 ) -> Result<([u8; 32], [u8; 16], [u8; 32]), OperatorRecoveryIssuanceErrorV1> {
-    let (issued, intent) = super::issued_intent(journal, signer, operation)?;
-    let physical = super::super::receipt::verified_retained_repair_receipt_v3(journal, &intent, owner)?;
-    if verify_original_transport(journal, operation, &issued, &intent)? != body {
+    terminal_claims_from_observation_v2(
+        HistoricalObservationV1::from_journal_v1(journal),
+        signer,
+        owner,
+        operation,
+        body,
+        fresh,
+    )
+}
+
+/// Checks the original signed Repair custody through the same borrowed owner.
+///
+/// # Errors
+///
+/// Preserves the original malformed-history, signature, credential and owner failures.
+pub(in crate::controller::operator_recovery_issuance) fn terminal_claims_from_observation_v2(
+    journal: HistoricalObservationV1<'_>,
+    signer: &ProtectedOperatorRecoverySignerV1,
+    owner: &ProtectedStorageRepairReceiptVerifierV2,
+    operation: OperationId,
+    body: &[u8],
+    fresh: &AuthenticatedBrokerMethodOutcomeV1,
+) -> Result<([u8; 32], [u8; 16], [u8; 32]), OperatorRecoveryIssuanceErrorV1> {
+    let (issued, intent) = super::issued_intent_from_observation_v2(journal, signer, operation)?;
+    let physical = super::super::receipt::verified_retained_repair_receipt_from_observation_v2(
+        journal, &intent, owner,
+    )?;
+    if verify_original_transport_from_observation_v2(journal, operation, &issued, &intent)? != body
+    {
         return Err(OperatorRecoveryIssuanceErrorV1::Binding);
     }
-    let proof = super::read_sealed_proof_v2(journal, &issued, intent.effect_id, physical.signed_pair_digest)?;
-    super::super::probe_challenge::read(journal, &issued, intent.effect_id,
-        super::super::probe_challenge::ProbeStageV1::Terminal, physical.signed_pair_digest)?.matches_outcome(fresh)?;
+    let proof = super::read_sealed_proof_from_observation_v2(
+        journal,
+        &issued,
+        intent.effect_id,
+        physical.signed_pair_digest,
+    )?;
+    super::super::probe_challenge::read_from_observation_v2(
+        journal,
+        &issued,
+        intent.effect_id,
+        super::super::probe_challenge::ProbeStageV1::Terminal,
+        physical.signed_pair_digest,
+    )?
+    .matches_outcome(fresh)?;
     super::ledger_receipt::verify_fresh_physical_target(&physical, &intent, body, fresh)?;
-    Ok((hash(super::PROOF_DOMAIN, &[&proof.encode()]), fresh.request().request_id(),
-        hash(b"aos.sandbox.operator-repair-terminal-fresh-packet.v1\0", &[fresh.canonical_packet()])))
+    Ok((
+        hash(super::PROOF_DOMAIN, &[&proof.encode()]),
+        fresh.request().request_id(),
+        hash(
+            b"aos.sandbox.operator-repair-terminal-fresh-packet.v1\0",
+            &[fresh.canonical_packet()],
+        ),
+    ))
 }
 
 /// Independently joins a cold failure receipt, original authorization and exact four rows.
@@ -275,24 +320,71 @@ pub(in crate::controller::operator_recovery_issuance) fn verify_current_failure_
     operation: OperationId,
     fresh: Option<(&[u8], &AuthenticatedBrokerMethodOutcomeV1)>,
 ) -> Result<([u8; 32], [u8; 32]), OperatorRecoveryIssuanceErrorV1> {
-    journal.ensure_protected_authority().map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
-    if journal.get(RecordNamespace::OperatorRecovery,
-        &key(b"storage-repair-predecessor-v1/", operation)).is_some()
+    verify_current_failure_from_observation_v2(
+        HistoricalObservationV1::from_journal_v1(journal),
+        signer,
+        owner,
+        operation,
+        fresh,
+    )
+}
+
+/// Checks the original signed Repair custody through the same borrowed owner.
+///
+/// # Errors
+///
+/// Preserves the original malformed-history, signature, credential and owner failures.
+pub(in crate::controller::operator_recovery_issuance) fn verify_current_failure_from_observation_v2(
+    journal: HistoricalObservationV1<'_>,
+    signer: &ProtectedOperatorRecoverySignerV1,
+    owner: &ProtectedStorageRepairReceiptVerifierV2,
+    operation: OperationId,
+    fresh: Option<(&[u8], &AuthenticatedBrokerMethodOutcomeV1)>,
+) -> Result<([u8; 32], [u8; 32]), OperatorRecoveryIssuanceErrorV1> {
+    journal
+        .ensure_protected_authority()
+        .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
+    if journal
+        .get(
+            RecordNamespace::OperatorRecovery,
+            &key(b"storage-repair-predecessor-v1/", operation),
+        )
+        .is_some()
     {
         return Err(OperatorRecoveryIssuanceErrorV1::Binding);
     }
-    signer.credential.recheck().map_err(|_| OperatorRecoveryIssuanceErrorV1::Key)?;
+    signer
+        .credential
+        .recheck()
+        .map_err(|_| OperatorRecoveryIssuanceErrorV1::Key)?;
     owner.recheck()?;
-    let receipt = read_receipt(journal, signer, owner, operation)?;
+    let receipt = read_receipt_from_observation_v2(journal, signer, owner, operation)?;
     let bytes = receipt.as_bytes();
-    let (issued, intent) = super::issued_intent(journal, signer, operation)?;
-    let original_body = verify_original_transport(journal, operation, &issued, &intent)?;
-    let physical = super::super::receipt::verified_retained_repair_receipt_v3(journal, &intent, owner)?;
-    let proof = super::read_sealed_proof_v2(journal, &issued, intent.effect_id, physical.signed_pair_digest)?;
-    let claims = RepairTerminalRequestV4::verify_retained_signed_header(&bytes[224..876], signer.verifier(), signer.generation())
-        .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
-    let challenge = super::super::probe_challenge::read(journal, &issued, intent.effect_id,
-        super::super::probe_challenge::ProbeStageV1::Terminal, physical.signed_pair_digest)?;
+    let (issued, intent) = super::issued_intent_from_observation_v2(journal, signer, operation)?;
+    let original_body =
+        verify_original_transport_from_observation_v2(journal, operation, &issued, &intent)?;
+    let physical = super::super::receipt::verified_retained_repair_receipt_from_observation_v2(
+        journal, &intent, owner,
+    )?;
+    let proof = super::read_sealed_proof_from_observation_v2(
+        journal,
+        &issued,
+        intent.effect_id,
+        physical.signed_pair_digest,
+    )?;
+    let claims = RepairTerminalRequestV4::verify_retained_signed_header(
+        &bytes[224..876],
+        signer.verifier(),
+        signer.generation(),
+    )
+    .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
+    let challenge = super::super::probe_challenge::read_from_observation_v2(
+        journal,
+        &issued,
+        intent.effect_id,
+        super::super::probe_challenge::ProbeStageV1::Terminal,
+        physical.signed_pair_digest,
+    )?;
     if bytes[32..64] != issued.current_head_digest
         || bytes[192..224] != issued.public_request_digest
         || claims.signed_intent() != issued.signed_intent
@@ -302,47 +394,87 @@ pub(in crate::controller::operator_recovery_issuance) fn verify_current_failure_
     {
         return Err(OperatorRecoveryIssuanceErrorV1::Binding);
     }
-    let original = super::super::bridge::verify_failure_history_custody(
-        journal, operation, signer, &claims, proof.before_packet_digest,
-        proof.after_packet_digest, i64::from_be_bytes(take_array(bytes, 1092)?),
+    let original = super::super::bridge::verify_failure_history_custody_from_observation_v2(
+        journal,
+        operation,
+        signer,
+        &claims,
+        proof.before_packet_digest,
+        proof.after_packet_digest,
+        i64::from_be_bytes(take_array(bytes, 1092)?),
         u64::from_be_bytes(take_array(bytes, 1084)?),
     )?;
     super::ledger_receipt::verify_fresh_physical_target_body(
-        &physical, &intent, &original_body, original.inventory(),
+        &physical,
+        &intent,
+        &original_body,
+        original.inventory(),
     )?;
     if let Some((body, fresh)) = fresh {
         challenge.matches_outcome(fresh)?;
-        let (_, _, packet) = terminal_claims(journal, signer, owner, operation, body, fresh)?;
+        let (_, _, packet) =
+            terminal_claims_from_observation_v2(journal, signer, owner, operation, body, fresh)?;
         if claims.signed_header()[460..492] != packet {
             return Err(OperatorRecoveryIssuanceErrorV1::Binding);
         }
     }
-    let archive = journal.get(RecordNamespace::OperatorRecovery, &key(ARCHIVE_PREFIX, operation))
+    let archive = journal
+        .get(
+            RecordNamespace::OperatorRecovery,
+            &key(ARCHIVE_PREFIX, operation),
+        )
         .ok_or(OperatorRecoveryIssuanceErrorV1::Binding)?;
     let predecessor = decode_archive(archive, &receipt, intent.target_id)?;
     let clock = i64::from_be_bytes(take_array(bytes, 1092)?);
-    let rows = operator_repair_failure_terminal_rows_v1(journal, operation, intent.target_id,
-        issued.public_request_digest, &predecessor.operation, &predecessor.effect, bytes, clock)
-        .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
-    if !rows.iter().all(|row| journal.get(row.namespace(), row.key()) == row.value()) {
+    let rows = operator_repair_failure_terminal_rows_from_observation_v2(
+        journal,
+        operation,
+        intent.target_id,
+        issued.public_request_digest,
+        &predecessor.operation,
+        &predecessor.effect,
+        bytes,
+        clock,
+    )
+    .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
+    if !rows
+        .iter()
+        .all(|row| journal.get(row.namespace(), row.key()) == row.value())
+    {
         return Err(OperatorRecoveryIssuanceErrorV1::Binding);
     }
     // Revalidate the archived replacement against the unchanged admitted
     // expected version. Current Desired/head may legitimately have moved again.
-    let pending = crate::reconciler::operator_repair_original_ledger_v1(
-        journal, operation, intent.target_id, issued.public_request_digest,
-        &predecessor.operation, &predecessor.effect,
-    ).map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
+    let pending = crate::reconciler::operator_repair_original_ledger_from_observation_v2(
+        journal,
+        operation,
+        intent.target_id,
+        issued.public_request_digest,
+        &predecessor.operation,
+        &predecessor.effect,
+    )
+    .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
     validate_original_intent(&pending, &intent, issued.public_request_digest)?;
-    if !validate_observed_precondition(predecessor.current.as_deref(), predecessor.projection.as_deref(),
-        intent.target_id, ProjectId::from_bytes(intent.project_id), pending.request().expected_resource_version(), issued.current_head_digest)?
-    {
+    if !validate_observed_precondition(
+        predecessor.current.as_deref(),
+        predecessor.projection.as_deref(),
+        intent.target_id,
+        ProjectId::from_bytes(intent.project_id),
+        pending.request().expected_resource_version(),
+        issued.current_head_digest,
+    )? {
         return Err(OperatorRecoveryIssuanceErrorV1::Binding);
     }
     let exact = failure_decision_rows(operation, archive.to_vec(), rows, bytes);
-    signer.credential.recheck().map_err(|_| OperatorRecoveryIssuanceErrorV1::Key)?;
+    signer
+        .credential
+        .recheck()
+        .map_err(|_| OperatorRecoveryIssuanceErrorV1::Key)?;
     owner.recheck()?;
-    Ok((exact_transaction_digest(&transaction_id(operation, bytes)?, &exact)?, receipt.digest()))
+    Ok((
+        exact_transaction_digest(&transaction_id(operation, bytes)?, &exact)?,
+        receipt.digest(),
+    ))
 }
 
 /// Checks historical release debt against the exact original four-row decision.
@@ -375,16 +507,43 @@ fn read_receipt(
     owner: &ProtectedStorageRepairReceiptVerifierV2,
     operation: OperationId,
 ) -> Result<RepairPreconditionFailureReceiptV1, OperatorRecoveryIssuanceErrorV1> {
-    let receipt = RepairPreconditionFailureReceiptV1::decode(journal.get(
-        RecordNamespace::OperatorRecovery, &key(TERMINAL_PREFIX, operation),
-    ).ok_or(OperatorRecoveryIssuanceErrorV1::Binding)?)
-        .map_err(|()| OperatorRecoveryIssuanceErrorV1::Binding)?;
+    read_receipt_from_observation_v2(
+        HistoricalObservationV1::from_journal_v1(journal),
+        signer,
+        owner,
+        operation,
+    )
+}
+
+/// Checks the original signed Repair custody through the same borrowed owner.
+///
+/// # Errors
+///
+/// Preserves the original malformed-history, signature, credential and owner failures.
+fn read_receipt_from_observation_v2(
+    journal: HistoricalObservationV1<'_>,
+    signer: &ProtectedOperatorRecoverySignerV1,
+    owner: &ProtectedStorageRepairReceiptVerifierV2,
+    operation: OperationId,
+) -> Result<RepairPreconditionFailureReceiptV1, OperatorRecoveryIssuanceErrorV1> {
+    let receipt = RepairPreconditionFailureReceiptV1::decode(
+        journal
+            .get(
+                RecordNamespace::OperatorRecovery,
+                &key(TERMINAL_PREFIX, operation),
+            )
+            .ok_or(OperatorRecoveryIssuanceErrorV1::Binding)?,
+    )
+    .map_err(|()| OperatorRecoveryIssuanceErrorV1::Binding)?;
     if receipt.operation() != operation {
         return Err(OperatorRecoveryIssuanceErrorV1::Binding);
     }
     let request = RepairTerminalRequestV4::verify_retained_signed_header(
-        &receipt.as_bytes()[224..876], signer.verifier(), signer.generation(),
-    ).map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
+        &receipt.as_bytes()[224..876],
+        signer.verifier(),
+        signer.generation(),
+    )
+    .map_err(|_| OperatorRecoveryIssuanceErrorV1::Binding)?;
     owner.verify_terminal_witness_v4(&receipt.as_bytes()[876..1084], &request)?;
     Ok(receipt)
 }
@@ -453,17 +612,48 @@ fn verify_original_transport(
     issued: &super::super::StorageRepairIssuanceV2,
     intent: &aos_sandbox_model::operator_recovery_effect::OperatorRecoveryEffectIntentV1,
 ) -> Result<Vec<u8>, OperatorRecoveryIssuanceErrorV1> {
-    let (body, _) = super::super::bridge::read_original_request(journal, operation)?;
-    let attempt = journal.get(RecordNamespace::OperatorRecovery,
-        &key(super::super::admission::ATTEMPT_PREFIX, operation))
+    verify_original_transport_from_observation_v2(
+        HistoricalObservationV1::from_journal_v1(journal),
+        operation,
+        issued,
+        intent,
+    )
+}
+
+/// Checks the original signed Repair custody through the same borrowed owner.
+///
+/// # Errors
+///
+/// Preserves the original malformed-history, signature, credential and owner failures.
+fn verify_original_transport_from_observation_v2(
+    journal: HistoricalObservationV1<'_>,
+    operation: OperationId,
+    issued: &super::super::StorageRepairIssuanceV2,
+    intent: &aos_sandbox_model::operator_recovery_effect::OperatorRecoveryEffectIntentV1,
+) -> Result<Vec<u8>, OperatorRecoveryIssuanceErrorV1> {
+    let (body, _) =
+        super::super::bridge::read_original_request_from_observation_v2(journal, operation)?;
+    let attempt = journal
+        .get(
+            RecordNamespace::OperatorRecovery,
+            &key(super::super::admission::ATTEMPT_PREFIX, operation),
+        )
         .ok_or(OperatorRecoveryIssuanceErrorV1::Binding)?;
-    let admission = journal.get(RecordNamespace::OperatorRecovery,
-        &key(super::super::admission::INVENTORY_PREFIX, operation))
-        .filter(|bytes| bytes.len() > 16).ok_or(OperatorRecoveryIssuanceErrorV1::Binding)?;
+    let admission = journal
+        .get(
+            RecordNamespace::OperatorRecovery,
+            &key(super::super::admission::INVENTORY_PREFIX, operation),
+        )
+        .filter(|bytes| bytes.len() > 16)
+        .ok_or(OperatorRecoveryIssuanceErrorV1::Binding)?;
     if attempt[32..64] != issued.public_request_digest
         || hash(super::super::REQUEST_DOMAIN, &[&body]) != intent.effect_id
         || admission[..16] == [0; 16]
-        || attempt[96..128] != hash(b"aos.sandbox.operator-repair-admission-packet.v1\0", &[&admission[16..]])
+        || attempt[96..128]
+            != hash(
+                b"aos.sandbox.operator-repair-admission-packet.v1\0",
+                &[&admission[16..]],
+            )
     {
         return Err(OperatorRecoveryIssuanceErrorV1::Binding);
     }

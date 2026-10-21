@@ -13,7 +13,7 @@ const SOCKET: &str = "/run/aos/sandbox-zfs-worker/control.sock";
 
 pub(crate) struct StorageExecutorStartupV1 {
     native: StorageExecutorInitialCgroupReadbackV1,
-    observation: Option<Result<(), aos_sandbox_linux::Error>>,
+    observation: Option<Result<(), aos_linux_descriptors::Error>>,
     completed: Option<SystemdZfsExecutor>,
     entered: bool,
     taken: bool,

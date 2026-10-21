@@ -38,7 +38,7 @@ use aos_sandbox_broker::controller_receiving::bank_launch::ControllerOperatorRec
 use aos_sandbox_model::{NodeId, RawPairedClockSample, ResourceDimension as D, ResourceVector};
 
 use super::{ControllerResourceBankOpeningV1, ResourceReservationErrorV1};
-use crate::cli_model::authorization_adapter::CliAuthorizationAdapterError;
+use aos_sandbox_protocol::public_api::authorization_error::CliAuthorizationAdapterError;
 use crate::cli_model::PublicMutationAuthorizationV1;
 use crate::normal_root::ProductionControllerNormalRootProfileV1;
 use crate::public_mutation_compiler::PublicMutationAuthorizationNativeV1;
@@ -229,6 +229,7 @@ impl OperatorCreateRecoveryOriginalV1 {
 
     fn fixed_receiving_demand_v2() -> Option<ResourceVector> {
         let bytes = std::mem::size_of::<Self>().checked_mul(2)?
+            .checked_add(crate::journal::create_stopped_geometry_control_bytes_v2()?)?
             .checked_add(aos_sandbox_broker::bounded_entropy::RetainedKernelNonceOriginalV1::construction_bytes_v1()?)?
             .checked_add(std::mem::size_of::<stop_cleanup::StopCleanupObservationReceiptV1>().checked_mul(3)?)?
             .checked_add(std::mem::size_of::<OperatorStopCleanupObservationLoanV1<'static, 'static>>().checked_mul(3)?)?
@@ -637,8 +638,10 @@ mod custody_layout_tests {
         let metadata_projection = aos_sandbox_protocol::domain_ledger::public_operation::
             metadata_complete_projection_receiving_bytes_v1().unwrap();
         let stopped_predecessor = stopped_predecessor::carrier_receiving_bytes_v1().unwrap();
+        let terminal_geometry = crate::journal::create_stopped_geometry_control_bytes_v2().unwrap();
         let complete = ordinary_carriers + cleanup_nonce + cleanup_observation + cleanup_loan
-            + execution_handoff + stop_handoff + metadata_projection + stopped_predecessor;
+            + execution_handoff + stop_handoff + metadata_projection + stopped_predecessor
+            + terminal_geometry;
         assert_eq!(paid, complete);
     }
 }

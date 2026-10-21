@@ -16,7 +16,8 @@ use rustix::fs::{Mode, OFlags, fcntl_getfl, fstatfs, open};
 
 use super::identity::{MAXIMUM_PROC_STAT_BYTES, identity_from_stat, parse_proc_stat};
 use super::{NamespaceFd, NamespaceIdentity, NamespaceKind, PidFd, PidFdInfo, PidFdProcessIdentity};
-use crate::{Error, Result};
+use aos_linux_descriptors::Error;
+use aos_linux_descriptors::Result;
 
 mod context_readback;
 pub use context_readback::PidFdContextReadbackV1;
@@ -112,7 +113,7 @@ struct ProcDescriptorV1 {
 /// fencing this instance. Lower syscall/library pre-return prefixes remain
 /// outside its custody, and dropping it is not a process-drain observation.
 pub struct HostCanaryLocalChildOriginalsV1 {
-    raw_pidfd: Option<OwnedFd>,
+    raw_pidfd: Option<super::PidFdAdmissionSlotV1>,
     child: Option<PidFd>,
     observations: Option<PidFdProcObservationsV1>,
     executable: Option<File>,
@@ -179,10 +180,10 @@ impl HostCanaryLocalChildOriginalsV1 {
             return Err(Error::invalid("Guest child originals", "actual child ID is unavailable"));
         }
 
-        self.raw_pidfd = Some(crate::uapi::pidfd_open(pid)?);
-        PidFd::validate_owned_kind(self.raw_pidfd.as_ref().ok_or_else(closed)?.as_fd())?;
+        self.raw_pidfd = Some(super::PidFdAdmissionSlotV1::new(aos_linux_descriptors::native::pidfd_open(pid)?));
+        self.raw_pidfd.as_mut().ok_or_else(closed)?.validate_once()?;
         if let Some(fd) = self.raw_pidfd.take() {
-            self.child = Some(PidFd { fd });
+            self.child = Some(match fd.into_validated() { Ok(pin) => pin, Err(_still_owned) => std::process::abort() });
         }
         let info = self.child()?.info()?;
         if info.pid() != pid || info.thread_group_id() != pid || info.parent_pid() != 1
@@ -191,7 +192,7 @@ impl HostCanaryLocalChildOriginalsV1 {
             return Err(Error::invalid("Guest child originals", "pin differs from the actual child"));
         }
         self.original_info = Some(info);
-        self.observations = Some(self.child()?.prepare_proc_observations_v1());
+        self.observations = Some(crate::pidfd::prepare_proc_observations_v1(self.child()?));
         {
             let child = self.child.as_ref().ok_or_else(closed)?;
             let observations = self.observations.as_mut().ok_or_else(closed)?;
@@ -224,7 +225,7 @@ impl HostCanaryLocalChildOriginalsV1 {
         self.require_same_child()?;
 
         for (slot, kind) in CANARY_CHILD_NAMESPACES.into_iter().enumerate() {
-            self.child.as_ref().ok_or_else(closed)?.acquire_namespace_retaining_v2(
+            crate::pidfd::acquire_namespace_retaining_v2(self.child.as_ref().ok_or_else(closed)?, 
                 kind, &mut self.namespace_raw[slot],
             )?;
             let identity = NamespaceFd::validate_original_kind(
@@ -407,6 +408,7 @@ pub struct HostCanaryReceivedChildOriginalsV1 {
     records: [Option<crate::seqpacket::descriptor_subject::ReceivedDescriptorRecord>; 2],
     payloads: [Vec<u8>; 2],
     subjects: [Option<crate::seqpacket::KernelAuthorizedRecordSubject>; 2],
+    raw_child_pidfd: Option<super::PidFdAdmissionSlotV1>,
     raw: [Option<OwnedFd>; 10],
     child: Option<PidFd>,
     executable: Option<File>,
@@ -487,6 +489,7 @@ impl HostCanaryReceivedChildOriginalsV1 {
             records: [None, None],
             payloads: [Vec::new(), Vec::new()],
             subjects: [None, None],
+            raw_child_pidfd: None,
             raw: [None, None, None, None, None, None, None, None, None, None],
             child: None,
             executable: None,
@@ -802,7 +805,10 @@ impl HostCanaryReceivedChildOriginalsV1 {
                 }
             }
         }
-        PidFd::validate_owned_kind(self.raw[0].as_ref().ok_or_else(closed)?.as_fd())?;
+        self.raw_child_pidfd = Some(super::PidFdAdmissionSlotV1::new(
+            self.raw[0].take().ok_or_else(closed)?,
+        ));
+        self.raw_child_pidfd.as_mut().ok_or_else(closed)?.validate_once()?;
         for (slot, kind) in CANARY_CHILD_NAMESPACES.into_iter().enumerate() {
             self.namespace_identities[slot] = Some(NamespaceFd::validate_original_kind(
                 self.raw[6 + slot].as_ref().ok_or_else(closed)?.as_fd(), kind,
@@ -811,8 +817,8 @@ impl HostCanaryReceivedChildOriginalsV1 {
                 return Err(Error::invalid("received Guest child", "child left the original bootstrap namespace").into());
             }
         }
-        if let Some(fd) = self.raw[0].take() {
-            self.child = Some(PidFd { fd });
+        if let Some(fd) = self.raw_child_pidfd.take() {
+            self.child = Some(match fd.into_validated() { Ok(pin) => pin, Err(_still_owned) => std::process::abort() });
         }
         if let Some(fd) = self.raw[1].take() {
             self.executable = Some(File::from(fd));
@@ -1379,18 +1385,17 @@ pub struct PidFdProcObservationsV1 {
     nix_helper: Option<NixHelperOriginalsV1>,
 }
 
-impl PidFd {
-    /// Prepares empty nonauthorizing slots before original procfs acquisition.
-    #[must_use]
-    pub fn prepare_proc_observations_v1(&self) -> PidFdProcObservationsV1 {
-        PidFdProcObservationsV1 {
-            stat: ProcDescriptorV1::empty(),
-            context: ProcDescriptorV1::empty(),
-            original_info: None,
-            original_identity: None,
-            phase: ObservationPhaseV1::Fresh,
-            nix_helper: None,
-        }
+
+/// Prepares empty nonauthorizing slots before original procfs acquisition.
+#[must_use]
+pub fn prepare_proc_observations_v1(_process: &PidFd) -> PidFdProcObservationsV1 {
+    PidFdProcObservationsV1 {
+        stat: ProcDescriptorV1::empty(),
+        context: ProcDescriptorV1::empty(),
+        original_info: None,
+        original_identity: None,
+        phase: ObservationPhaseV1::Fresh,
+        nix_helper: None,
     }
 }
 

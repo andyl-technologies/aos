@@ -7,7 +7,8 @@ use aos_sandbox_api::aos::sandbox::v1::ExecutionPhase;
 use aos_sandbox_model::{ExecutionId, OperationId, SandboxId};
 use aos_sandbox_protocol::domain_ledger::effect_history::PublicMutationEffectHistoryV1;
 use aos_sandbox_protocol::public_api::projection::PublicProjectionResourceV1;
-use crate::controller_service::public_projection::PublicProjectionStoreV1;
+use crate::controller_service::public_projection::list_operation_from_observation_v2;
+use crate::journal::historical_observation::HistoricalObservationV1;
 use crate::Journal;
 use super::EffectFailure;
 
@@ -21,8 +22,19 @@ pub fn accepted_execution_target_from_journal_v1(
     operation: OperationId,
     context: &PublicMutationEffectHistoryV1,
 ) -> Result<(SandboxId, ExecutionId), EffectFailure> {
+    accepted_execution_target_from_observation_v2(
+        HistoricalObservationV1::from_journal_v1(controller), operation, context,
+    )
+}
+
+/// Selects the same Requested target from the retained historical owner.
+pub(crate) fn accepted_execution_target_from_observation_v2(
+    controller: HistoricalObservationV1<'_>,
+    operation: OperationId,
+    context: &PublicMutationEffectHistoryV1,
+) -> Result<(SandboxId, ExecutionId), EffectFailure> {
     let mut original = AcceptedExecutionTargetOriginalV2::new();
-    let _selected = original.observe_once_v2(controller, operation, context);
+    let _selected = original.observe_once_from_observation_v2(controller, operation, context);
     match original.result {
         Some(result) => result,
         None => Err(retryable("accepted execution target was not selected")),
@@ -42,8 +54,16 @@ impl AcceptedExecutionTargetOriginalV2 {
     pub(crate) fn observe_once_v2(&mut self, controller: &Journal, operation: OperationId,
         context: &PublicMutationEffectHistoryV1,
     ) -> Result<(), ()> {
+        self.observe_once_from_observation_v2(
+            HistoricalObservationV1::from_journal_v1(controller), operation, context,
+        )
+    }
+
+    fn observe_once_from_observation_v2(&mut self, controller: HistoricalObservationV1<'_>,
+        operation: OperationId, context: &PublicMutationEffectHistoryV1,
+    ) -> Result<(), ()> {
         if self.projections.is_some() || self.result.is_some() { return Err(()); }
-        self.projections = Some(PublicProjectionStoreV1::new(controller).list_operation(operation));
+        self.projections = Some(list_operation_from_observation_v2(controller, operation));
         self.result = Some(self.select_target_v2(operation, context));
         self.target_v2().map(|_| ())
     }

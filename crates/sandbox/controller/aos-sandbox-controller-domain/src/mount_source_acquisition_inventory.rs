@@ -97,7 +97,7 @@ pub enum MountSourceAcquisitionInventoryError {
     Transport(#[from] SeqpacketError),
     /// Configured service-subject or cgroup correlation failed.
     #[error(transparent)]
-    Kernel(#[from] aos_sandbox_linux::Error),
+    Kernel(#[from] aos_linux_descriptors::Error),
     /// The bounded Mount exchange could not be prepared or completed in time.
     #[error(transparent)]
     Preparation(#[from] MountCatalogPreparationError),

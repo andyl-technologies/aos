@@ -27,14 +27,14 @@ enum ClockError {
     #[error("fresh Stop paired clock is unavailable or stale")]
     Stale,
     #[error(transparent)]
-    Native(aos_sandbox_linux::Error),
+    Native(aos_linux_descriptors::Error),
 }
 
 impl aos_sandbox_broker::kernel_clock::KernelPairedClockErrorV1 for ClockError {
     fn stale() -> Self {
         Self::Stale
     }
-    fn kernel(cause: aos_sandbox_linux::Error) -> Self {
+    fn kernel(cause: aos_linux_descriptors::Error) -> Self {
         Self::Native(cause)
     }
 }
@@ -150,13 +150,13 @@ pub(super) struct CaptureStopNativeOriginalV4 {
     posts: [Option<Result<(), StorageReceivingClosedV1>>; 2],
     clocks: [ClockSlot; CLOCKS],
     binding: Option<Result<(), StorageReceivingClosedV1>>,
-    population_owner: Option<Result<(), aos_sandbox_linux::Error>>,
-    before_alive: Option<Result<bool, aos_sandbox_linux::Error>>,
+    population_owner: Option<Result<(), aos_linux_descriptors::Error>>,
+    before_alive: Option<Result<bool, aos_linux_descriptors::Error>>,
     kill: CgroupKillAttemptV1,
     kill_result: Option<Result<(), CgroupKillRefusalV1>>,
     kill_gate: Option<StorageReceivingClosedV1>,
     wait: Option<Result<(), BoundedRecordError>>,
-    alive: Option<Result<bool, aos_sandbox_linux::Error>>,
+    alive: Option<Result<bool, aos_linux_descriptors::Error>>,
     population: CgroupPopulationObservationV1,
     population_result: Option<Result<(), CgroupPopulationObservationRefusalV1>>,
     proof: Option<StorageCaptureStopQuiescenceV4>,
@@ -296,7 +296,7 @@ impl CaptureStopNativeOriginalV4 {
         }
     }
 
-    fn requires_kill_v4(&mut self, pidfd: &aos_sandbox_linux::pidfd::PidFd) -> bool {
+    fn requires_kill_v4(&mut self, pidfd: &aos_linux_descriptors::pidfd::PidFd) -> bool {
         self.before_alive = Some(pidfd.is_alive());
         if matches!(self.before_alive, Some(Err(_))) {
             self.first.get_or_insert(First::BeforeAlive);
@@ -362,7 +362,7 @@ impl CaptureStopNativeOriginalV4 {
 pub(super) fn observe_quiescence_native_v4(
     ready: &ReceivedRecord,
     population: &CgroupPopulationMonitor,
-    alive: &mut Option<Result<bool, aos_sandbox_linux::Error>>,
+    alive: &mut Option<Result<bool, aos_linux_descriptors::Error>>,
     observation: &mut CgroupPopulationObservationV1,
     result: &mut Option<Result<(), CgroupPopulationObservationRefusalV1>>,
 ) {
@@ -681,7 +681,7 @@ impl StoragePrepareReceivingLoanV1<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aos_sandbox_linux::pidfd::PidFd;
+    use aos_linux_descriptors::pidfd::PidFd;
     use std::num::NonZeroU32;
     use std::os::fd::{AsFd as _, AsRawFd as _};
 

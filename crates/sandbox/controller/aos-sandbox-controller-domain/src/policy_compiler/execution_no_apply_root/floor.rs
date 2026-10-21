@@ -5,10 +5,11 @@
 //! and native peer interval. Its common append engine takes a distinct closed
 //! original. No DATA constructor, RootStorage loan or scalar readiness opens it.
 
-pub(super) mod history;
+use aos_sandbox_ledger_replay::replay::execution_no_apply_history as history;
 pub(super) mod loan;
 pub(super) mod signer;
 
+pub(crate) use crate::journal::root_construction::RootJournalServingIdentityV1 as RootPolicyJournalServingIdentityV1;
 pub(crate) use loan::RootExecutionNoApplyFloorAppendLoanV2;
 
 use std::error::Error;
@@ -17,7 +18,7 @@ use std::mem::size_of;
 
 use aos_sandbox_broker::bounded_entropy::{EntropyError, RetainedKernelNonceOriginalV1};
 use aos_sandbox_model::{ResourceDimension as D, ResourceVector};
-use aos_sandbox_linux::unix_stream::RetainedUnixStream;
+use aos_linux_descriptors::unix_stream::RetainedUnixStream;
 use aos_sandbox_protocol::domain_ledger::execution_no_apply_floor::{
     MAXIMUM_ROOT_EXECUTION_NO_APPLY_FLOOR_BYTES_V2 as MAXIMUM_FLOOR,
     ROOT_EXECUTION_NO_APPLY_HEAD_BYTES_V2 as HEAD_BYTES,
@@ -34,7 +35,6 @@ use crate::controller_resource_reservation::{
 };
 use crate::journal::{
     CommitResult, Journal, JournalError, JournalRecord, JournalTransaction,
-    root_construction::RootJournalServingIdentityV1,
 };
 use crate::normal_root::{
     NormalRootStartupErrorV1, RootControllerPeerCurrentSampleV1, RootPolicyAcceptedFlightV1,
@@ -73,7 +73,7 @@ struct Native {
     history: Option<Result<history::HistoryDataV2, JournalError>>,
     entropy_original: RetainedKernelNonceOriginalV1,
     entropy: Option<Result<[u8; 16], EntropyError>>,
-    before: Option<Result<[RootJournalServingIdentityV1; 2], JournalError>>,
+    before: Option<Result<[RootPolicyJournalServingIdentityV1; 2], JournalError>>,
     floor: Option<Result<Floor, Cause>>,
     record: Option<Vec<u8>>,
     head: Option<[u8; HEAD_BYTES]>,
@@ -85,7 +85,7 @@ struct Native {
     append: Option<Result<CommitResult, JournalError>>,
     readback: Option<Result<(), JournalError>>,
     end: Option<std::io::Result<Metadata>>,
-    after: Option<Result<[RootJournalServingIdentityV1; 2], JournalError>>,
+    after: Option<Result<[RootPolicyJournalServingIdentityV1; 2], JournalError>>,
     body: Option<Result<(), Cause>>,
     external_trust: bool,
 }
@@ -203,8 +203,8 @@ impl RootExecutionNoApplyFloorOriginalV2 {
                     .create_storage_semantic_append_demand_v1()?
                     .checked_add(posts)?
                     .checked_add(signer::RootFloorSignerV2::receiving_demand_v2()?)?
-                    .checked_add(RootJournalServingIdentityV1::pair_demand_v1()?)?
-                    .checked_add(RootJournalServingIdentityV1::pair_demand_v1()?)?
+                    .checked_add(RootPolicyJournalServingIdentityV1::pair_demand_v1()?)?
+                    .checked_add(RootPolicyJournalServingIdentityV1::pair_demand_v1()?)?
                     .checked_add(
                         RootControllerPeerCurrentSampleV1::demand_v1()
                             .map_err(|_| JournalError::ProtectedBoundary)?,
@@ -331,7 +331,7 @@ impl RootExecutionNoApplyFloorOriginalV2 {
         &self,
         writers: &RootCreateStorageCurrentWritersV1,
         pins: &RootCurrentPinsStateV1,
-        before: &[RootJournalServingIdentityV1; 2],
+        before: &[RootPolicyJournalServingIdentityV1; 2],
     ) -> Result<(), JournalError> {
         let native = self.completed_append_native_v2()?;
         let saved = native
@@ -421,16 +421,16 @@ impl Native {
         policy_interval.require_prepared_floor_pair_v2(authority, policy, pins)?;
         self.crossing.arm_once(authority, policy)?;
         self.history = Some(history::inspect_history_data_v2(
-            authority,
+            authority.historical_read_view_v1(),
             *plan.operation_data_v2().as_bytes(),
-        ));
+        ).map_err(JournalError::from));
         let history = self
             .history
             .as_ref()
             .and_then(|value| value.as_ref().ok())
             .ok_or(JournalError::ProtectedBoundary)?;
         require_prepared_root_reference_data_v2(authority, plan)?;
-        let instance = match history.instance {
+        let instance = match history.instance_data_v2() {
             Some(instance) => instance,
             None => {
                 self.entropy = Some(self.entropy_original.observe_once());
@@ -443,7 +443,7 @@ impl Native {
                 )?
             }
         };
-        self.instance = history.instance.is_none().then_some(instance);
+        self.instance = history.instance_data_v2().is_none().then_some(instance);
         let sample = trust.next_sample_v2()?;
         if let FloorOriginV2::Recovery(acquisition) = origin {
             acquisition.require_cleanup_sample_v2(policy_interval, sample)?;
@@ -460,11 +460,11 @@ impl Native {
                 root_instance: instance.instance(),
                 operation: *plan.operation_data_v2().as_bytes(),
                 revision: history
-                    .selected
+                    .selected_data_v2()
                     .map_or(Some(1), |old| old.fields().revision.checked_add(1))
                     .ok_or(JournalError::SequenceExhausted)?,
                 authority_next: authority.snapshot_sequence(),
-                predecessor_floor: history.selected.map_or([0; 32], |old| old.digest()),
+                predecessor_floor: history.selected_data_v2().map_or([0; 32], |old| old.digest()),
                 policy_commitment: *sources.0.head().packet_digest().as_bytes(),
                 controller_cut,
                 host_lease: lease,
@@ -473,7 +473,7 @@ impl Native {
                 successor_rows,
                 terminal_wall_seconds: plan.wall_seconds_data_v2(),
             })?;
-            if let Some(old) = history.selected {
+            if let Some(old) = history.selected_data_v2() {
                 history::require_immutable_successor_data_v2(old, record)?;
             }
             Ok(record)
@@ -683,13 +683,13 @@ impl Native {
 
 fn require_prepared_root_reference_data_v2(
     authority: &Journal,
-    plan: &crate::reconciler::ClosedCreateFailurePlanDataV2,
+    plan: &aos_sandbox_protocol::domain_ledger::create_failure::ClosedCreateFailurePlanDataV2,
 ) -> Result<(), JournalError> {
     let Some((digest, next)) = plan.prepared_root_reference_data_v2() else {
         return Ok(());
     };
     for (key, bytes) in
-        authority.records(crate::journal::RecordNamespace::RootExecutionNoApplyFloorV2)
+        authority.historical_read_view_v1().records(crate::journal::RecordNamespace::RootExecutionNoApplyFloorV2)
     {
         if key.len() != 24 {
             continue;
@@ -762,10 +762,10 @@ fn require_readback_data_v2(
         return Err(JournalError::ProtectedBoundary);
     }
     for row in transaction.records() {
-        if row.value() != authority.get(row.namespace(), row.key()) {
+        if row.value() != authority.historical_read_view_v1().get(row.namespace(), row.key()) {
             return Err(JournalError::ProtectedBoundary);
         }
     }
-    history::inspect_history_data_v2(authority, floor.fields().operation)?;
+    history::inspect_history_data_v2(authority.historical_read_view_v1(), floor.fields().operation)?;
     Ok(())
 }

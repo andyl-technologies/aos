@@ -1,4 +1,4 @@
-//! Captures distinct final Controller, Session and Source cuts for Apply.
+//! Captures distinct Controller, Session and Source cuts for Root continuations.
 //!
 //! The initial readers remain resident. No final receipt can rearm them or
 //! replace native proof with supplied names. Every reached fixed target is
@@ -6,15 +6,21 @@
 //! same rooted reader. The final semantic comparator runs while all three
 //! actual native owners and their independent late posts remain held.
 
+use aos_sandbox_protocol::domain_ledger::readonly::FixedJournalReadbackDataV1 as RootFixedNativeReadbackV1;
+
 use std::error::Error;
 use std::mem::size_of;
 use aos_sandbox_model::{ResourceDimension as D, ResourceVector};
 use crate::controller_resource_reservation::RootContinuationDemandV1;
-use crate::journal::{JournalError, RootReadonlyJournalModelOriginalsV1 as Model};
-use crate::normal_root::{NormalRootStartupErrorV1, RootStopCleanupStageReceivingV1, RootApplyStageReceivingV1, RootFinalityRecoverStageReceivingV1, RootStartAssignmentInputsStageReceivingV2, RootHostLaunchStageReceivingV1, RootMaintenanceStorageStageReceivingV2, RootExecutionNoApplyStageReceivingV2};
-use crate::policy_compiler::create_storage_current::controller_readonly::native_read::{
-    RootFixedNativeReadOriginalsV1 as Reader, RootFixedNativeReadbackV1,
+use crate::journal::JournalError;
+use crate::journal::historical_observation::{
+    HistoricalObservationV1, root_readonly_error_v1 as read_error,
 };
+use aos_sandbox_policy::native::{
+    RootFinalityReadKindV1 as NativeKind, RootFinalityReadOriginalV1 as NativeTarget,
+    RootReadonlyModelOriginalsV1 as Model,
+};
+use crate::normal_root::{NormalRootStartupErrorV1, RootStopCleanupStageReceivingV1, RootApplyStageReceivingV1, RootFinalityRecoverStageReceivingV1, RootStartAssignmentInputsStageReceivingV2, RootHostLaunchStageReceivingV1, RootMaintenanceStorageStageReceivingV2, RootExecutionNoApplyStageReceivingV2};
 use crate::policy_compiler::provisioning_current::RootContinuationClockGateV1;
 
 type Cause = Box<dyn Error>;
@@ -25,53 +31,46 @@ type Cause = Box<dyn Error>;
 enum TargetV1 { Controller, Session, Source }
 
 impl TargetV1 {
-    fn construct_v1(self, stage: &RootCreateFinalityReadStageV1<'_, '_, '_>) -> Reader {
-        match self { Self::Controller => Reader::controller_current_v1(),
+    fn native_kind_v1(self, stage: &RootCreateFinalityReadStageV1<'_, '_, '_, '_>) -> NativeKind {
+        match self { Self::Controller => NativeKind::Controller,
             Self::Session => match stage {
-                RootCreateFinalityReadStageV1::StopCleanup(_) | RootCreateFinalityReadStageV1::StopCleanupFinal(_) | RootCreateFinalityReadStageV1::ExecutionNoApply(_) | RootCreateFinalityReadStageV1::ExecutionNoApplyFinal(_) | RootCreateFinalityReadStageV1::ExecutionNoApplyAcquisition(_) => Reader::host_session_v2(),
+                RootCreateFinalityReadStageV1::StopCleanup(_) | RootCreateFinalityReadStageV1::StopCleanupFinal(_) | RootCreateFinalityReadStageV1::ExecutionNoApply(_) | RootCreateFinalityReadStageV1::ExecutionNoApplyFinal(_) | RootCreateFinalityReadStageV1::ExecutionNoApplyAcquisition(_) => NativeKind::HostSession,
                 RootCreateFinalityReadStageV1::PreparationSession(_, kind) => match kind {
-                    StartPreparationSessionKindV2::HostNetworkCatalog => Reader::network_session_v2(),
+                    StartPreparationSessionKindV2::HostNetworkCatalog => NativeKind::NetworkSession,
                     StartPreparationSessionKindV2::HostMountCatalog
-                        | StartPreparationSessionKindV2::MountBefore62 => Reader::mount_session_v2(),
+                        | StartPreparationSessionKindV2::MountBefore62 => NativeKind::MountSession,
                 },
-                RootCreateFinalityReadStageV1::HostResource(_, crate::policy_compiler::host_launch_root::kind::ResourceKindV2::Host) => Reader::host_session_v2(),
-                RootCreateFinalityReadStageV1::HostResource(_, crate::policy_compiler::host_launch_root::kind::ResourceKindV2::Network) => Reader::network_session_v2(),
-                RootCreateFinalityReadStageV1::HostResource(_, crate::policy_compiler::host_launch_root::kind::ResourceKindV2::Mount) => Reader::mount_session_v2(),
-                RootCreateFinalityReadStageV1::HostResource(_, crate::policy_compiler::host_launch_root::kind::ResourceKindV2::StorageGuestRoot) => Reader::default(),
-                _ => Reader::default(),
+                RootCreateFinalityReadStageV1::HostResource(_, crate::policy_compiler::host_launch_root::kind::ResourceKindV2::Host) => NativeKind::HostSession,
+                RootCreateFinalityReadStageV1::HostResource(_, crate::policy_compiler::host_launch_root::kind::ResourceKindV2::Network) => NativeKind::NetworkSession,
+                RootCreateFinalityReadStageV1::HostResource(_, crate::policy_compiler::host_launch_root::kind::ResourceKindV2::Mount) => NativeKind::MountSession,
+                RootCreateFinalityReadStageV1::HostResource(_, crate::policy_compiler::host_launch_root::kind::ResourceKindV2::StorageGuestRoot) => NativeKind::StorageSession,
+                _ => NativeKind::StorageSession,
             },
-            Self::Source => Reader::source_current_v1() }
+            Self::Source => NativeKind::Source }
     }
 
-    fn fixed_demand_v1(self, stage: &RootCreateFinalityReadStageV1<'_, '_, '_>) -> Result<ResourceVector, JournalError> {
-        match self { Self::Controller => Reader::controller_current_fixed_demand_v1(),
-            Self::Session => match stage {
-                RootCreateFinalityReadStageV1::StopCleanup(_) | RootCreateFinalityReadStageV1::StopCleanupFinal(_) | RootCreateFinalityReadStageV1::ExecutionNoApply(_) | RootCreateFinalityReadStageV1::ExecutionNoApplyFinal(_) | RootCreateFinalityReadStageV1::ExecutionNoApplyAcquisition(_) => Reader::host_session_fixed_demand_v2(),
-                RootCreateFinalityReadStageV1::PreparationSession(_, kind) => match kind {
-                    StartPreparationSessionKindV2::HostNetworkCatalog => Reader::network_session_fixed_demand_v2(),
-                    StartPreparationSessionKindV2::HostMountCatalog
-                        | StartPreparationSessionKindV2::MountBefore62 => Reader::mount_session_fixed_demand_v2(),
-                },
-                RootCreateFinalityReadStageV1::HostResource(_, crate::policy_compiler::host_launch_root::kind::ResourceKindV2::Host) => Reader::host_session_fixed_demand_v2(),
-                RootCreateFinalityReadStageV1::HostResource(_, crate::policy_compiler::host_launch_root::kind::ResourceKindV2::Network) => Reader::network_session_fixed_demand_v2(),
-                RootCreateFinalityReadStageV1::HostResource(_, crate::policy_compiler::host_launch_root::kind::ResourceKindV2::Mount) => Reader::mount_session_fixed_demand_v2(),
-                RootCreateFinalityReadStageV1::HostResource(_, crate::policy_compiler::host_launch_root::kind::ResourceKindV2::StorageGuestRoot) => Reader::fixed_demand_v1(),
-                _ => Reader::fixed_demand_v1(),
-            },
-            Self::Source => Reader::source_current_fixed_demand_v1() }
+    fn fixed_demand_v1(self, stage: &RootCreateFinalityReadStageV1<'_, '_, '_, '_>)
+        -> Result<ResourceVector, JournalError> {
+        let construction = NativeTarget::construction_control_bytes_v1()
+            .and_then(|bytes| u64::try_from(bytes).ok())
+            .ok_or(JournalError::JournalTooLarge)?;
+        NativeTarget::provisioning_fixed_demand_v2(self.native_kind_v1(stage))
+            .map_err(read_error)?.checked_add(
+                ResourceVector::ZERO.with(D::MemoryBytes, construction))
+            .map_err(JournalError::ReceivingAccounting)
     }
 
-    fn admit_fixed_v1(self, stage: &mut RootCreateFinalityReadStageV1<'_, '_, '_>,
+    fn admit_fixed_v1(self, stage: &mut RootCreateFinalityReadStageV1<'_, '_, '_, '_>,
         demand: ResourceVector) -> Result<(), NormalRootStartupErrorV1> {
         stage.admit_once_v1(self, ReadPlaneV1::Fixed, demand)
     }
 
-    fn admit_native_v1(self, stage: &mut RootCreateFinalityReadStageV1<'_, '_, '_>,
+    fn admit_native_v1(self, stage: &mut RootCreateFinalityReadStageV1<'_, '_, '_, '_>,
         demand: ResourceVector) -> Result<(), NormalRootStartupErrorV1> {
         stage.admit_once_v1(self, ReadPlaneV1::Native, demand)
     }
 
-    fn admit_semantic_v1(self, stage: &mut RootCreateFinalityReadStageV1<'_, '_, '_>,
+    fn admit_semantic_v1(self, stage: &mut RootCreateFinalityReadStageV1<'_, '_, '_, '_>,
         demand: ResourceVector) -> Result<(), NormalRootStartupErrorV1> {
         stage.admit_once_v1(self, ReadPlaneV1::Semantic, demand)
     }
@@ -84,12 +83,14 @@ enum ReadPlaneV1 { Fixed, Native, Semantic }
 
 // Both variants borrow a genuine already-entered same-R purpose. No callback,
 // raw parts, supplied vector or sibling-purpose cast can populate this selector.
-pub(crate) enum RootCreateFinalityReadStageV1<'call, 'flight, 'startup> {
+// No-Apply retains startup inside its mutable peer. Give that borrow its own
+// lifetime so unrelated stage loans keep their original independent lifetimes.
+pub(crate) enum RootCreateFinalityReadStageV1<'call, 'flight, 'startup, 'peer_startup> {
     StopCleanup(&'call mut RootStopCleanupStageReceivingV1<'flight, 'startup>),
     StopCleanupFinal(&'call mut RootStopCleanupStageReceivingV1<'flight, 'startup>),
-    ExecutionNoApply(&'call mut RootExecutionNoApplyStageReceivingV2<'flight, 'startup>),
-    ExecutionNoApplyFinal(&'call mut RootExecutionNoApplyStageReceivingV2<'flight, 'startup>),
-    ExecutionNoApplyAcquisition(&'call mut RootExecutionNoApplyStageReceivingV2<'flight, 'startup>),
+    ExecutionNoApply(&'call mut RootExecutionNoApplyStageReceivingV2<'flight, 'peer_startup>),
+    ExecutionNoApplyFinal(&'call mut RootExecutionNoApplyStageReceivingV2<'flight, 'peer_startup>),
+    ExecutionNoApplyAcquisition(&'call mut RootExecutionNoApplyStageReceivingV2<'flight, 'peer_startup>),
     Apply(&'call mut RootApplyStageReceivingV1<'flight, 'startup>),
     MaintenanceInitial(&'call mut RootMaintenanceStorageStageReceivingV2<'flight, 'startup>),
     MaintenanceFinal(&'call mut RootMaintenanceStorageStageReceivingV2<'flight, 'startup>),
@@ -99,7 +100,7 @@ pub(crate) enum RootCreateFinalityReadStageV1<'call, 'flight, 'startup> {
     PreparationSession(&'call mut RootHostLaunchStageReceivingV1<'flight, 'startup>, StartPreparationSessionKindV2),
 }
 
-impl RootCreateFinalityReadStageV1<'_, '_, '_> {
+impl RootCreateFinalityReadStageV1<'_, '_, '_, '_> {
     fn admit_once_v1(&mut self, target: TargetV1, plane: ReadPlaneV1,
         demand: ResourceVector) -> Result<(), NormalRootStartupErrorV1> {
         let demand = RootContinuationDemandV1::from_demand_v1(demand);
@@ -257,8 +258,7 @@ struct FinalTargetOriginalV1 {
     funding: Option<Result<(), NormalRootStartupErrorV1>>,
     native_funding: Option<Result<(), NormalRootStartupErrorV1>>,
     semantic_funding: Option<Result<(), NormalRootStartupErrorV1>>,
-    native: Option<Box<Reader>>,
-    model: Option<Box<Model>>,
+    native: Option<NativeTarget>,
     native_data: Option<NativeCutDataV1>,
     primary: Option<Result<(), Cause>>,
     posts: Option<Result<(), JournalError>>,
@@ -281,17 +281,59 @@ impl NativeCutDataV1 {
 }
 
 impl FinalTargetOriginalV1 {
-    fn new(target: TargetV1) -> Self {
-        Self { first: None, target, funding: None, native_funding: None, semantic_funding: None, native: None, model: None, native_data: None, primary: None, posts: None }
+    fn native_interface_control_bytes_v1(target: TargetV1,
+        stage: &RootCreateFinalityReadStageV1<'_, '_, '_, '_>) -> Option<usize> {
+        use aos_sandbox_policy::native::{RootReadonlyErrorV1 as ReadError,
+            RootFinalityNativeCutDataV1};
+        let entries = size_of::<(TargetV1, &RootCreateFinalityReadStageV1<'_, '_, '_, '_>)>()
+            .checked_mul(3)?
+            .checked_add(size_of::<(&Self, &NativeTarget)>().checked_mul(9)?)?
+            .checked_add(size_of::<(&mut Self, &mut NativeTarget)>().checked_mul(9)?)?;
+        let results = size_of::<Result<(), ReadError>>().checked_mul(12)?
+            .checked_add(size_of::<Result<ResourceVector, ReadError>>().checked_mul(6)?)?
+            .checked_add(size_of::<Result<RootFinalityNativeCutDataV1, ReadError>>().checked_mul(3)?)?
+            .checked_add(size_of::<Result<RootFixedNativeReadbackV1<'_>, ReadError>>().checked_mul(3)?)?
+            .checked_add(size_of::<Result<usize, ReadError>>().checked_mul(3)?)?
+            .checked_add(size_of::<Result<&Model, ReadError>>().checked_mul(3)?)?
+            .checked_add(size_of::<Result<(), JournalError>>().checked_mul(9)?)?
+            .checked_add(size_of::<Result<ResourceVector, JournalError>>().checked_mul(6)?)?;
+        let base = entries.checked_add(results)?
+            .checked_add(size_of::<Option<usize>>().checked_mul(3)?)?;
+        let loan_or_session_bridge = if matches!(target, TargetV1::Session) {
+            // Session never enters the model-loan supplier. Its reached native
+            // ports still move each failed cause through the same owning bridge.
+            // Sequential calls share this argument/ABI/return peak. Retained
+            // Result envelopes have their separately named controls above.
+            size_of::<ReadError>().checked_mul(3)?
+                .checked_add(size_of::<JournalError>().checked_mul(3)?)?
+        } else {
+            HistoricalObservationV1::receiving_control_bytes_v1()?
+                .checked_add(size_of::<HistoricalObservationV1<'_>>().checked_mul(3)?)?
+                .checked_add(size_of::<Result<HistoricalObservationV1<'_>, JournalError>>().checked_mul(6)?)?
+                .checked_add(size_of::<Result<(HistoricalObservationV1<'_>, HistoricalObservationV1<'_>), JournalError>>()
+                    .checked_mul(3)?)?
+        };
+        let maintenance = if matches!(target, TargetV1::Controller)
+            && matches!(stage, RootCreateFinalityReadStageV1::MaintenanceInitial(_)
+                | RootCreateFinalityReadStageV1::MaintenanceFinal(_)) {
+            crate::guest_root_publication::reservation_observation_control_bytes_v3()?
+                .checked_add(crate::guest_root_publication::workspace_observation_control_bytes_v3()?)?
+                .checked_add(crate::sandbox_spec_state::observed_get_control_bytes_v2()?)?
+        } else { 0 };
+        base.checked_add(loan_or_session_bridge)?.checked_add(maintenance)
     }
 
-    fn observe_once_v1(&mut self, stage: &mut RootCreateFinalityReadStageV1<'_, '_, '_>,
+    fn new(target: TargetV1) -> Self {
+        Self { first: None, target, funding: None, native_funding: None, semantic_funding: None, native: None, native_data: None, primary: None, posts: None }
+    }
+
+    fn observe_once_v1(&mut self, stage: &mut RootCreateFinalityReadStageV1<'_, '_, '_, '_>,
         clock: &mut RootContinuationClockGateV1,
     ) -> Result<(), JournalError> {
         if self.funding.is_some() { return Err(JournalError::ProtectedBoundary); }
-        let bytes = size_of::<Reader>().checked_mul(2)
-            .and_then(|bytes| bytes.checked_add(3 * size_of::<Self>()))
-            .and_then(|bytes| bytes.checked_add(3 * size_of::<RootCreateFinalityReadStageV1<'static, 'static, 'static>>()))
+        let bytes = size_of::<Self>().checked_mul(3)
+            .and_then(|bytes| bytes.checked_add(3 * size_of::<RootCreateFinalityReadStageV1<'static, 'static, 'static, 'static>>()))
+            .and_then(|bytes| bytes.checked_add(Self::native_interface_control_bytes_v1(self.target, stage)?))
             .and_then(|bytes| u64::try_from(bytes).ok()).ok_or(JournalError::JournalTooLarge)?;
         let wrapper = match stage {
             RootCreateFinalityReadStageV1::PreparationSession(_, _) =>
@@ -304,12 +346,14 @@ impl FinalTargetOriginalV1 {
                 .ok_or(JournalError::JournalTooLarge)?)).map_err(JournalError::ReceivingAccounting)?;
         self.funding = Some(self.target.admit_fixed_v1(stage, demand));
         if !matches!(self.funding, Some(Ok(()))) { return Err(JournalError::ProtectedBoundary); }
-        self.native = Some(Box::new(self.target.construct_v1(stage)));
+        self.native = Some(NativeTarget::new(self.target.native_kind_v1(stage)));
+        self.native.as_mut().ok_or(JournalError::ProtectedBoundary)?
+            .construct_reader_once_v1().map_err(read_error)?;
         self.primary = Some(self.observe_inner_v1(stage, clock));
         if matches!(self.primary, Some(Err(_))) {
             self.first = Some(if self.native.as_ref().and_then(|native| native.failure()).is_some() {
                 TargetFailureV1::Native
-            } else if self.model.as_ref().and_then(|model| model.failure()).is_some() {
+            } else if self.native.as_ref().and_then(|native| native.model_failure_v1()).is_some() {
                 TargetFailureV1::Model
             } else if self.funding_failed_v1() { TargetFailureV1::Funding }
             else if clock.failure().is_some() { TargetFailureV1::ExternalClock }
@@ -318,50 +362,45 @@ impl FinalTargetOriginalV1 {
         if matches!(self.primary, Some(Ok(()))) { Ok(()) } else { Err(JournalError::ProtectedBoundary) }
     }
 
-    fn observe_inner_v1(&mut self, stage: &mut RootCreateFinalityReadStageV1<'_, '_, '_>,
+    fn observe_inner_v1(&mut self, stage: &mut RootCreateFinalityReadStageV1<'_, '_, '_, '_>,
         clock: &mut RootContinuationClockGateV1,
     ) -> Result<(), Cause> {
         let native = self.native.as_mut().ok_or(JournalError::ProtectedBoundary)?;
         clock.check_next_once_v1()?;
-        native.capture_once(stage.controller_identity_v1().0);
-        native.require_captured_v1()?;
-        self.native_funding = Some(self.target.admit_native_v1(stage, native.replay_demand_v1()?));
+        native.capture_once_v1(stage.controller_identity_v1().0).map_err(read_error)?;
+        self.native_funding = Some(self.target.admit_native_v1(stage, native.native_receiving_demand_v1().map_err(read_error)?));
         if !matches!(self.native_funding, Some(Ok(()))) { return Err(JournalError::ProtectedBoundary.into()); }
         clock.check_next_once_v1()?;
         let semantic = if matches!(self.target, TargetV1::Session) {
             // SessionSchema's complete codec/index geometry is already in
             // replay_demand_v1; it has no separate full-cold audit/model.
             stage.session_receiving_demand_v1(
-                usize::try_from(native.captured_extent_v1()?.native_bytes)
-                    .map_err(|_| JournalError::JournalTooLarge)?)?
+                native.captured_prefix_bytes_v1().map_err(read_error)?)?
         } else {
-            native.audit_once();
-            native.additional_semantic_demand_v1()?.checked_add(Model::receiving_demand_v1(native)?)?
+            native.audited_semantic_only_v2().map_err(read_error)?
+                .checked_add(native.model_receiving_demand_v2().map_err(read_error)?)?
         };
         self.semantic_funding = Some(self.target.admit_semantic_v1(stage, semantic));
         if !matches!(self.semantic_funding, Some(Ok(()))) { return Err(JournalError::ProtectedBoundary.into()); }
         clock.check_next_once_v1()?;
-        native.replay_once();
-        let data = native.replay_native_v1()?;
+        native.replay_only_once_v2().map_err(read_error)?;
+        let data = native.native_cut_v1().map_err(read_error)?;
         self.native_data = Some(NativeCutDataV1 { names: data.names, next: data.next, end: data.end });
         if !matches!(self.target, TargetV1::Session) {
-            native.finish_post_once();
-            native.terminal_native_v1()?;
-            self.model = Some(Box::new(Model::new()));
-            self.model.as_mut().ok_or(JournalError::ProtectedBoundary)?.adopt_once(native);
-            self.model.as_ref().ok_or(JournalError::ProtectedBoundary)?.require_complete_v1()?;
+            native.finish_native_post_once_v2();
+            native.posted_readback_v2().map_err(read_error)?;
+            native.adopt_posted_model_once_v2().map_err(read_error)?;
         }
         Ok(())
     }
 
     fn finish_posts_once_v1(&mut self) {
         if self.posts.is_some() { return; }
-        if let Some(native) = self.native.as_mut() { native.finish_post_once(); }
-        if let Some(model) = self.model.as_mut() { model.finish_parent_post_once_v1(); }
+        if let Some(native) = self.native.as_mut() { native.finish_posts_once_v1(); }
         self.posts = Some((|| {
             if !matches!(self.primary, Some(Ok(()))) { return Err(JournalError::ProtectedBoundary); }
-            if let Some(model) = self.model.as_ref() { model.require_parent_post_v1()?; }
-            else { self.native.as_ref().ok_or(JournalError::ProtectedBoundary)?.terminal_native_v1()?; }
+            self.native.as_ref().ok_or(JournalError::ProtectedBoundary)?
+                .require_complete_v1().map_err(read_error)?;
             Ok(())
         })());
     }
@@ -380,7 +419,7 @@ impl FinalTargetOriginalV1 {
         if matches!(self.first, Some(TargetFailureV1::ExternalClock)) { return None; }
         let selected = match self.first {
             Some(TargetFailureV1::Native) => self.native.as_ref().and_then(|native| native.failure()),
-            Some(TargetFailureV1::Model) => self.model.as_ref().and_then(|model| model.failure()),
+            Some(TargetFailureV1::Model) => self.native.as_ref().and_then(|native| native.model_failure_v1()),
             Some(TargetFailureV1::Funding) => self.native_funding.as_ref().and_then(|value| value.as_ref().err()).map(|cause| cause as _)
                 .or_else(|| self.semantic_funding.as_ref()?.as_ref().err().map(|cause| cause as _)),
             Some(TargetFailureV1::ExternalClock) => None,
@@ -390,7 +429,7 @@ impl FinalTargetOriginalV1 {
         self.funding.as_ref()?.as_ref().err().map(|cause| cause as _)
             .or(selected)
             .or_else(|| self.native.as_ref().and_then(|native| native.failure()))
-            .or_else(|| self.model.as_ref().and_then(|model| model.failure()))
+            .or_else(|| self.native.as_ref().and_then(|native| native.model_failure_v1()))
             .or_else(|| self.primary.as_ref()?.as_ref().err().map(|cause| cause.as_ref()))
             .or_else(|| self.posts.as_ref()?.as_ref().err().map(|cause| cause as _))
     }
@@ -419,11 +458,11 @@ impl RootExecutionNoApplyCurrentDataV2<'_> {
     pub(crate) fn global_controller_cut_data_v2(&self)
         -> Result<aos_sandbox_protocol::domain_ledger::execution_no_apply_floor::
             RootExecutionNoApplyControllerCutDataV2, JournalError> {
-        let journal=self.controller_model_v2()?.journal_v1()?;
+        let journal=HistoricalObservationV1::from_root_model_v1(self.controller_model_v2()?)?;
         // Replay moved this exact prefix/index into the canonical Model. Only
         // native names/NEXT/end were copied before that same-owner transfer.
         let native=self.owner.controller.native_data.ok_or(JournalError::ProtectedBoundary)?;
-        if journal.snapshot_sequence()!=native.next{return Err(JournalError::ProtectedBoundary);}
+        if journal.next_sequence_v1()!=native.next{return Err(JournalError::ProtectedBoundary);}
         aos_sandbox_protocol::domain_ledger::execution_no_apply_floor::
             RootExecutionNoApplyControllerCutDataV2::from_rows_data_v2(
                 native.names,native.next,native.end,journal.all_records())
@@ -464,17 +503,18 @@ impl RootExecutionNoApplyCurrentDataV2<'_> {
                     || target.first.is_some() || target.failure().is_some() {
                     return Err(JournalError::ProtectedBoundary);
                 }
-                if let Some(model)=target.model.as_ref(){model.require_parent_post_v1()?;}
-                else{target.native.as_ref().ok_or(JournalError::ProtectedBoundary)?.terminal_native_v1()?;}
+                target.native.as_ref().ok_or(JournalError::ProtectedBoundary)?
+                    .require_complete_v1().map_err(read_error)?;
             }
         }
-        self.owner.controller.model.as_deref().ok_or(JournalError::ProtectedBoundary)
+        self.owner.controller.native.as_ref().ok_or(JournalError::ProtectedBoundary)?
+            .model_v1().map_err(read_error)
     }
 
     pub(crate) fn planning_demand_v2(&self) -> Result<ResourceVector,
         crate::policy_compiler::execution_no_apply_root::RootExecutionNoApplyModelsErrorV2> {
-        let journal = self.controller_model_v2()?.journal_v1()?;
-        Ok(crate::reconciler::ClosedCreateFailurePlanDataV2::receiving_demand_data_v2(journal)?)
+        let journal = HistoricalObservationV1::from_root_model_v1(self.controller_model_v2()?)?;
+        Ok(crate::reconciler::closed_create_failure_receiving_demand_from_observation_v2(journal)?)
     }
 
     pub(crate) fn plan_rows_data_v2(&self,
@@ -482,10 +522,9 @@ impl RootExecutionNoApplyCurrentDataV2<'_> {
         terminal_archive: aos_sandbox_model::ObjectDigest,
         signed_terminal: aos_sandbox_model::ObjectDigest,
         wall_seconds: i64,
-    ) -> Result<crate::reconciler::ClosedCreateFailurePlanDataV2,
+    ) -> Result<aos_sandbox_protocol::domain_ledger::create_failure::ClosedCreateFailurePlanDataV2,
         crate::policy_compiler::execution_no_apply_root::RootExecutionNoApplyModelsErrorV2> {
-        Ok(crate::reconciler::plan_closed_create_failure_rows_data_v2(
-            self.controller_model_v2()?.journal_v1()?, marker, terminal_archive,
+        Ok(crate::reconciler::plan_closed_create_failure_rows_from_observation_v2(HistoricalObservationV1::from_root_model_v1(self.controller_model_v2()?)?, marker, terminal_archive,
             signed_terminal, wall_seconds)?)
     }
 }
@@ -508,7 +547,8 @@ impl RootMaintenanceCurrentDataV2<'_> {
     fn controller_model_v2(&self) -> Result<&Model, JournalError> {
         self.owner.maintenance_source_data_v2()?;
         self.owner.controller.body_complete_v1()?;
-        self.owner.controller.model.as_deref().ok_or(JournalError::ProtectedBoundary)
+        self.owner.controller.native.as_ref().ok_or(JournalError::ProtectedBoundary)?
+            .model_v1().map_err(read_error)
     }
 
     pub(crate) fn require_initial_cut_data_v3(&self) -> Result<(), JournalError> {
@@ -540,14 +580,14 @@ impl RootMaintenanceCurrentDataV2<'_> {
             return Err(JournalError::ProtectedBoundary.into());
         }
         crate::policy_compiler::root_resource_opening::require_controller_baseline_account_data_v3(
-            self.controller_model_v2()?.raw_state_v1()?, subject.controller_account,
+            self.controller_model_v2()?.raw_state_v1().map_err(read_error)?, subject.controller_account,
             stage.enrolled_node_v1()?, stage.controller_baseline_partition_v1()?)
     }
 
     pub(crate) fn compiler_geometry_v2(&self,
         signed: &crate::policy_compiler::root_signed_sources::RootSignedProjectSourcesV1,
     ) -> Result<ResourceVector, JournalError> {
-        let state = self.controller_model_v2()?.raw_state_v1()?;
+        let state = self.controller_model_v2()?.raw_state_v1().map_err(read_error)?;
         let source = self.owner.maintenance_source_data_v2()?;
         let width = state.iter().chain(source.state_data_v2()?.iter()).try_fold(
             0_u64, |sum, ((_, key), value)| {
@@ -559,8 +599,8 @@ impl RootMaintenanceCurrentDataV2<'_> {
 
     pub(crate) fn reservation_data_v2(&self, bytes: &[u8])
         -> Result<crate::guest_root_publication::GuestRootPublicationReservationV1, Box<dyn Error>> {
-        Ok(crate::guest_root_publication::current_guest_root_reservation_data_v2(
-            self.controller_model_v2()?.journal_v1()?, bytes)?)
+        Ok(crate::guest_root_publication::current_guest_root_reservation_from_observation_v3(
+            HistoricalObservationV1::from_root_model_v1(self.controller_model_v2()?)?, bytes)?)
     }
 
     pub(crate) fn reserved_workspace_data_v2<'inventory>(&self,
@@ -568,21 +608,22 @@ impl RootMaintenanceCurrentDataV2<'_> {
         inventory: &'inventory aos_sandbox_protocol::ValidatedStorageInventory,
         reservation: &[u8], enrolled_node: aos_sandbox_model::NodeId,
     ) -> Result<crate::guest_root_publication::ReservedGuestRootWorkspaceDataV2<'inventory>, Box<dyn Error>> {
-        Ok(crate::guest_root_publication::reserved_guest_root_workspace_data_v2(
-            self.controller_model_v2()?.journal_v1()?, manifest, inventory, reservation, enrolled_node)?)
+        Ok(crate::guest_root_publication::reserved_guest_root_workspace_from_observation_v3(
+            HistoricalObservationV1::from_root_model_v1(self.controller_model_v2()?)?, manifest, inventory, reservation, enrolled_node)?)
     }
 
     pub(crate) fn assignment_data_v2(&self, sandbox: aos_sandbox_model::SandboxId)
         -> Result<super::current_cleanup_assignment::CurrentCleanupAssignmentDataV2, Box<dyn Error>> {
-        let journal = self.controller_model_v2()?.journal_v1()?;
+        let journal = HistoricalObservationV1::from_root_model_v1(self.controller_model_v2()?)?;
         super::current_cleanup_assignment::current_cleanup_assignment_rows_data_v2(
-            journal.historical_read_view_v1().rows_data_v2(), sandbox)
+            journal.rows_data_v2(), sandbox)
             .map_err(|cause| cause as Box<dyn Error>)
     }
 
     pub(crate) fn specification_data_v2(&self, descriptor: &aos_sandbox_model::ObjectDescriptor)
         -> Result<crate::sandbox_spec_state::DurableSandboxSpecV1, Box<dyn Error>> {
-        crate::sandbox_spec_state::get(self.controller_model_v2()?.journal_v1()?, descriptor)?
+        crate::sandbox_spec_state::get_from_observation_v2(
+            HistoricalObservationV1::from_root_model_v1(self.controller_model_v2()?)?, descriptor)?
             .ok_or_else(|| Box::new(JournalError::ProtectedBoundary) as Box<dyn Error>)
     }
 }
@@ -594,7 +635,8 @@ impl RootMaintenanceSourceDataV2<'_> {
             return Err(JournalError::ProtectedBoundary);
         }
         self.owner.source.body_complete_v1()?;
-        self.owner.source.model.as_ref().ok_or(JournalError::ProtectedBoundary)?.raw_state_v1()
+        self.owner.source.native.as_ref().ok_or(JournalError::ProtectedBoundary)?
+            .model_v1().map_err(read_error)?.raw_state_v1().map_err(read_error)
     }
 }
 
@@ -629,7 +671,7 @@ impl RootStopCleanupFinalHostOriginalV1 {
 
     pub(crate) fn session_v1(&self) -> Result<RootFixedNativeReadbackV1<'_>, JournalError> {
         self.session.body_complete_v1()?;
-        self.session.native.as_ref().ok_or(JournalError::ProtectedBoundary)?.replay_native_v1()
+        self.session.native.as_ref().ok_or(JournalError::ProtectedBoundary)?.readback_v1().map_err(read_error)
     }
 
     pub(crate) fn finish_posts_once_v1(&mut self) {
@@ -655,7 +697,7 @@ impl RootCreateFinalityReadonlyOriginalV1 {
             session: FinalTargetOriginalV1::new(TargetV1::Session), source: FinalTargetOriginalV1::new(TargetV1::Source) }
     }
 
-    pub(crate) fn observe_once_v1(&mut self, stage: &mut RootCreateFinalityReadStageV1<'_, '_, '_>,
+    pub(crate) fn observe_once_v1(&mut self, stage: &mut RootCreateFinalityReadStageV1<'_, '_, '_, '_>,
         clock: &mut RootContinuationClockGateV1,
     ) -> Result<(), JournalError> {
         if let Err(cause) = self.controller.observe_once_v1(stage, clock) {
@@ -776,38 +818,64 @@ impl RootCreateFinalityReadonlyOriginalV1 {
         Ok(())
     }
 
-    pub(crate) fn controller_v1(&mut self) -> Result<&mut crate::journal::Journal, JournalError> {
+    /// Borrows the same native Controller model after its body gates.
+    ///
+    /// # Errors
+    /// Returns a boundary or original model error if its body is incomplete or
+    /// the retained native model cannot lend the historical observation.
+    pub(crate) fn controller_model_v1(&self) -> Result<HistoricalObservationV1<'_>, JournalError> {
         self.controller.body_complete_v1()?;
-        self.controller.model.as_mut().ok_or(JournalError::ProtectedBoundary)?.journal_mut_v1()
+        HistoricalObservationV1::from_root_model_v1(
+            self.controller.native.as_ref().ok_or(JournalError::ProtectedBoundary)?
+                .model_v1().map_err(read_error)?)
     }
 
-    pub(crate) fn journals_v1(&mut self)
-        -> Result<(&mut crate::journal::Journal, &mut crate::journal::Journal), JournalError>
-    {
+    /// Borrows both actual models without lending a mutable journal.
+    ///
+    /// # Errors
+    /// Returns the incomplete body or original model refusal from either
+    /// continuously retained Controller or Source owner.
+    pub(crate) fn models_v1(&self)
+        -> Result<(HistoricalObservationV1<'_>, HistoricalObservationV1<'_>), JournalError> {
         self.controller.body_complete_v1()?;
         self.source.body_complete_v1()?;
-        let controller = self.controller.model.as_mut().ok_or(JournalError::ProtectedBoundary)?.journal_mut_v1()?;
-        let source = self.source.model.as_mut().ok_or(JournalError::ProtectedBoundary)?.journal_mut_v1()?;
+        let controller = HistoricalObservationV1::from_root_model_v1(
+            self.controller.native.as_ref().ok_or(JournalError::ProtectedBoundary)?
+                .model_v1().map_err(read_error)?)?;
+        let source = HistoricalObservationV1::from_root_model_v1(
+            self.source.native.as_ref().ok_or(JournalError::ProtectedBoundary)?
+                .model_v1().map_err(read_error)?)?;
         Ok((controller, source))
     }
 
-    pub(crate) fn source_v1(&mut self) -> Result<&mut crate::journal::Journal, JournalError> {
+    /// Borrows the same native Source model after its body gates.
+    ///
+    /// # Errors
+    /// Returns a boundary or original model error if its body is incomplete or
+    /// the same native Source model cannot lend the observation.
+    pub(crate) fn source_model_v1(&self) -> Result<HistoricalObservationV1<'_>, JournalError> {
         self.source.body_complete_v1()?;
-        self.source.model.as_mut().ok_or(JournalError::ProtectedBoundary)?.journal_mut_v1()
+        HistoricalObservationV1::from_root_model_v1(
+            self.source.native.as_ref().ok_or(JournalError::ProtectedBoundary)?
+                .model_v1().map_err(read_error)?)
     }
 
-    /// Borrows the same immutable adopted C model after its paid late post.
-    /// This performs no observation or reentry and supplies no writer grant.
-    pub(crate) fn completed_controller_v1(&mut self) -> Result<&mut crate::journal::Journal, JournalError> {
+    /// Borrows the same Controller only after all independently owed posts.
+    ///
+    /// # Errors
+    /// Returns a boundary or original model refusal when any required target
+    /// post is incomplete or the same Controller model cannot be borrowed.
+    pub(crate) fn completed_controller_model_v1(&self)
+        -> Result<HistoricalObservationV1<'_>, JournalError> {
         self.require_complete_v1()?;
-        let model = self.controller.model.as_mut().ok_or(JournalError::ProtectedBoundary)?;
-        model.require_parent_post_v1()?;
-        model.journal_mut_v1()
+        let target = self.controller.native.as_ref().ok_or(JournalError::ProtectedBoundary)?;
+        target.require_model_post_v2().map_err(read_error)?;
+        HistoricalObservationV1::from_root_model_v1(target.model_v1().map_err(read_error)?)
     }
 
     pub(crate) fn session_v1(&self) -> Result<RootFixedNativeReadbackV1<'_>, JournalError> {
         self.session.body_complete_v1()?;
-        self.session.native.as_ref().ok_or(JournalError::ProtectedBoundary)?.replay_native_v1()
+        self.session.native.as_ref().ok_or(JournalError::ProtectedBoundary)?.readback_v1().map_err(read_error)
     }
 
     pub(crate) fn cuts_v1(&self) -> Result<(NativeCutDataV1, NativeCutDataV1), JournalError> {
@@ -977,7 +1045,7 @@ impl RootStartPreparationSessionReadOriginalV2 {
         }
         self.target.native.as_ref()
             .ok_or(JournalError::ProtectedBoundary)?
-            .replay_native_v1()
+            .replay_native_v1().map_err(read_error)
     }
 
     pub(in crate::policy_compiler) fn finish_posts_once_v2(&mut self) {

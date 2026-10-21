@@ -4,7 +4,7 @@
 //! resident through protected append, physical settlement and all bookends.
 //! A failed attempt is terminal; it is not permission to reopen or retry.
 
-use aos_sandbox_controller_domain::cache_residency::{CacheOwnerErrorV1, CacheResidentUnavailableV1};
+use aos_sandbox_cache::{CacheOwnerErrorV1, CacheResidentUnavailableV1};
 use aos_sandbox_controller_domain::filesystem_view_state::{
     DurableFilesystemViewRevisionV1, FilesystemViewRevisionStateError,
     current_filesystem_view_revision_v1,
@@ -135,9 +135,9 @@ impl ProductionEffectExecutor {
     ) -> Result<(), CacheResidentUnavailableV1> {
         let protected = self.cache_inventory.as_mut().ok_or(CacheResidentUnavailableV1)?;
         let physical = self.cache_physical.as_mut().ok_or(CacheResidentUnavailableV1)?;
-        if self.cache_resident_usage.reconcile_existing_public_pin(
+        if self.cache_resident_usage.native_original_v1().reconcile_existing_public_pin(
             protected, physical, consumer, operation,
-            public_cache_pin_transaction_id_v1(operation), journal, request,
+            public_cache_pin_transaction_id_v1(operation), journal.cache_consumer_read_original_v1().as_ref(), request,
         )? {
             return Ok(());
         }
@@ -156,7 +156,7 @@ impl ProductionEffectExecutor {
         };
         let compiler_abi = Sha256::digest(b"aos.sandbox.cache.pin-compiler.v1\0").into();
         self.cache_mutation.pin = Some(execute_resident_public_cache_pin_v1(
-            &mut self.cache_resident_usage, protected, physical, source, revision,
+            self.cache_resident_usage.native_original_v1(), protected, physical, source, revision,
             consumer, journal, request, operation, self.node, compiler_abi,
             super::cache_pin::controller_cache_source_limits(),
         ));
@@ -184,7 +184,7 @@ impl ProductionEffectExecutor {
             EffectFailure::Permanent("resident physical Cache owner is absent".to_owned())
         })?;
         let returned = execute_resident_public_cache_unpin_v1(
-            &mut self.cache_resident_usage, protected, physical, &mut self.cache_mutation.unpin,
+            self.cache_resident_usage.native_original_v1(), protected, physical, &mut self.cache_mutation.unpin,
             consumer, journal, request, operation,
         );
         if returned.is_err() {
@@ -220,7 +220,7 @@ impl ProductionEffectExecutor {
             }
         }
         let original_current = match self.cache_inventory.as_mut() {
-            Some(owner) => self.cache_resident_usage.recheck(owner).is_ok(),
+            Some(owner) => self.cache_resident_usage.native_original_v1().recheck(owner).is_ok(),
             None => false,
         };
         if !action_succeeded
@@ -237,7 +237,7 @@ impl ProductionEffectExecutor {
             EffectFailure::Permanent("resident physical Cache owner is absent".to_owned())
         })?;
         if self
-            .cache_resident_usage
+            .cache_resident_usage.native_original_v1()
             .finish_existing_pin_operation(owner, physical, operation)
             .is_err()
         {

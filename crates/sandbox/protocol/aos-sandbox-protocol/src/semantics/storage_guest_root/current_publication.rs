@@ -211,7 +211,7 @@ mod tests {
         GuestRootPublicationProofV1 {
             sandbox: [1; 16], incarnation: [2; 16], assignment_epoch: 3, assignment_digest: [4; 32],
             creation_operation: [5; 16], workspace_handle: [6; 32], dataset_guid: 7,
-            root_image_digest: [8; 32], package_binding: [9; 32], root_tree_digest: [10; 32], feature_mask: 0x003f,
+            root_image_digest: [8; 32], package_binding: [9; 32], root_tree_digest: [10; 32], feature_mask: aos_sandbox_guest_protocol::guest_root_publication::CONCRETE_GUEST_FEATURE_MASK_V1,
         }
     }
 

@@ -25,7 +25,7 @@
 
 use aos_sandbox_model::model::{AttachmentConsistency, ViewConsistency, ViewSource};
 use aos_sandbox_model::{ObjectDigest, RawPairedClockSample};
-use aos_sandbox_linux::boot::KernelBootId;
+use aos_linux_descriptors::boot::KernelBootId;
 use aos_sandbox_protocol::host_consumer_cgroup::ValidatedConsumerCgroupRequestV1;
 use sha2::Sha256;
 

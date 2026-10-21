@@ -10,7 +10,8 @@ use std::io::{Read as _, Seek as _};
 use std::path::Path;
 
 use aos_sandbox_linux::cgroup::CgroupV2Root;
-use aos_sandbox_linux::pidfd::{NamespaceKind, PidFd};
+use aos_sandbox_linux::pidfd::NamespaceKind;
+use aos_linux_descriptors::pidfd::PidFd;
 use aos_systemd_client::{OwnedValue, SandboxUnitSpec, SystemdClient, Value};
 use rustix::fs::{Mode, OFlags, open};
 #[cfg(target_arch = "x86_64")]
@@ -646,7 +647,7 @@ async fn verify_host_shifted_target_access(
         (NamespaceKind::Network, expected.network),
         (NamespaceKind::Pid, expected.pid),
     ] {
-        let namespace = target.namespace(kind).map_err(|error| {
+        let namespace = aos_sandbox_linux::pidfd::namespace(&(target), kind).map_err(|error| {
             HostError::State(format!(
                 "zero-capability shifted pidfd access failed: {error}"
             ))

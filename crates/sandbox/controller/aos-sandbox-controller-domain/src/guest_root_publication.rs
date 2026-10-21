@@ -15,6 +15,10 @@
 //! ```
 
 use std::collections::BTreeSet;
+use std::mem::size_of;
+
+use aos_sandbox_protocol::domain_ledger::readonly::HistoricalLedgerRowsDataV2;
+use crate::journal::historical_observation::HistoricalObservationV1;
 
 use aos_sandbox_guest_protocol::guest_root_publication::{
     CONCRETE_GUEST_FEATURE_MASK_V1, GuestRootPublicationProofV1,
@@ -587,8 +591,18 @@ fn require_reservation_history_data_v2(
     inventory: &aos_sandbox_protocol::ValidatedStorageInventory,
     require_present: bool,
 ) -> Result<BTreeSet<[u8; 16]>, GuestRootPublicationErrorV1> {
+    require_reservation_history_rows_v3(
+        journal.historical_read_view_v1().rows_data_v2(), inventory, require_present,
+    )
+}
+
+fn require_reservation_history_rows_v3(
+    rows: HistoricalLedgerRowsDataV2<'_>,
+    inventory: &aos_sandbox_protocol::ValidatedStorageInventory,
+    require_present: bool,
+) -> Result<BTreeSet<[u8; 16]>, GuestRootPublicationErrorV1> {
     let mut used_operations = BTreeSet::new();
-    for (key, value) in journal.records(RecordNamespace::GuestRootPublication) {
+    for (key, value) in rows.records_data_v2(RecordNamespace::GuestRootPublication) {
         let existing = GuestRootPublicationReservationV1::decode(key, value)?;
         if !used_operations.insert(*existing.operation.as_bytes()) {
             return Err(GuestRootPublicationErrorV1::Corrupt);
@@ -641,8 +655,40 @@ pub(crate) fn reserved_guest_root_workspace_data_v2<'inventory>(
     reservation_bytes: &[u8],
     enrolled_node: NodeId,
 ) -> Result<ReservedGuestRootWorkspaceDataV2<'inventory>, GuestRootPublicationErrorV1> {
-    require_reservation_history_data_v2(journal, inventory, true)?;
-    let reservation = current_guest_root_reservation_data_v2(journal, reservation_bytes)?;
+    reserved_guest_root_workspace_rows_v3(
+        journal.historical_read_view_v1().rows_data_v2(),
+        manifest, inventory, reservation_bytes, enrolled_node,
+    )
+}
+
+/// Compares a reserved workspace under the same actual retained read owner.
+///
+/// This pure result has no current lease, Root permit or effect permission.
+/// The caller retains actual native, assignment and signed Inventory gates.
+///
+/// # Errors
+/// Refuses the original reservation history, assignment or workspace mismatch.
+pub(crate) fn reserved_guest_root_workspace_from_observation_v3<'inventory>(
+    journal: HistoricalObservationV1<'_>,
+    manifest: &aos_sandbox_model::CanonicalAssignmentManifestV1,
+    inventory: &'inventory aos_sandbox_protocol::ValidatedStorageInventory,
+    reservation_bytes: &[u8],
+    enrolled_node: NodeId,
+) -> Result<ReservedGuestRootWorkspaceDataV2<'inventory>, GuestRootPublicationErrorV1> {
+    reserved_guest_root_workspace_rows_v3(
+        journal.rows_data_v2(), manifest, inventory, reservation_bytes, enrolled_node,
+    )
+}
+
+fn reserved_guest_root_workspace_rows_v3<'inventory>(
+    rows: HistoricalLedgerRowsDataV2<'_>,
+    manifest: &aos_sandbox_model::CanonicalAssignmentManifestV1,
+    inventory: &'inventory aos_sandbox_protocol::ValidatedStorageInventory,
+    reservation_bytes: &[u8],
+    enrolled_node: NodeId,
+) -> Result<ReservedGuestRootWorkspaceDataV2<'inventory>, GuestRootPublicationErrorV1> {
+    require_reservation_history_rows_v3(rows, inventory, true)?;
+    let reservation = current_guest_root_reservation_rows_v3(rows, reservation_bytes)?;
     let assignment = manifest.broker_assignment()
         .map_err(|_| GuestRootPublicationErrorV1::Unavailable)?;
     if manifest.manifest().node() != enrolled_node
@@ -675,13 +721,70 @@ pub(crate) fn current_guest_root_reservation_data_v2(
     journal: &Journal,
     reservation_bytes: &[u8],
 ) -> Result<GuestRootPublicationReservationV1, GuestRootPublicationErrorV1> {
-    let mut records = journal.records(RecordNamespace::GuestRootPublication)
+    current_guest_root_reservation_rows_v3(
+        journal.historical_read_view_v1().rows_data_v2(), reservation_bytes,
+    )
+}
+
+/// Selects exact reservation DATA from the same actual native observation.
+///
+/// # Errors
+/// Refuses the original absent, duplicate or malformed reservation bytes.
+pub(crate) fn current_guest_root_reservation_from_observation_v3(
+    journal: HistoricalObservationV1<'_>,
+    reservation_bytes: &[u8],
+) -> Result<GuestRootPublicationReservationV1, GuestRootPublicationErrorV1> {
+    current_guest_root_reservation_rows_v3(journal.rows_data_v2(), reservation_bytes)
+}
+
+fn current_guest_root_reservation_rows_v3(
+    rows: HistoricalLedgerRowsDataV2<'_>,
+    reservation_bytes: &[u8],
+) -> Result<GuestRootPublicationReservationV1, GuestRootPublicationErrorV1> {
+    let mut records = rows.records_data_v2(RecordNamespace::GuestRootPublication)
         .filter(|(_, value)| *value == reservation_bytes);
     let (key, value) = records.next().ok_or(GuestRootPublicationErrorV1::Unavailable)?;
     if records.next().is_some() {
         return Err(GuestRootPublicationErrorV1::Corrupt);
     }
     GuestRootPublicationReservationV1::decode(key, value)
+}
+
+/// Prices the actual observation-to-Rows reservation lookup interfaces.
+///
+/// This is Memory-only forwarding, not native capture or reservation authority.
+pub(crate) fn reservation_observation_control_bytes_v3() -> Option<usize> {
+    reservation_rows_control_bytes_v3()?
+        .checked_add(size_of::<(HistoricalObservationV1<'_>, &[u8])>().checked_mul(3)?)?
+        .checked_add(size_of::<Option<usize>>().checked_mul(3)?)
+}
+
+fn reservation_rows_control_bytes_v3() -> Option<usize> {
+    size_of::<(HistoricalLedgerRowsDataV2<'_>, &[u8])>().checked_mul(3)?
+        .checked_add(size_of::<Result<GuestRootPublicationReservationV1, GuestRootPublicationErrorV1>>()
+            .checked_mul(3)?)?
+        .checked_add(size_of::<Option<usize>>().checked_mul(3)?)
+}
+
+/// Prices the actual reserved-workspace observation and Rows interfaces.
+///
+/// The original complete history/set/assignment/workspace backing stays in its
+/// existing model invoice. No observed-wrapper fee is added to a Rows-only call.
+pub(crate) fn workspace_observation_control_bytes_v3() -> Option<usize> {
+    type Manifest = aos_sandbox_model::CanonicalAssignmentManifestV1;
+    type Inventory = aos_sandbox_protocol::ValidatedStorageInventory;
+    type ObservedArguments<'a> = (HistoricalObservationV1<'a>, &'a Manifest, &'a Inventory, &'a [u8], NodeId);
+    type RowsArguments<'a> = (HistoricalLedgerRowsDataV2<'a>, &'a Manifest, &'a Inventory, &'a [u8], NodeId);
+    type Workspace<'a> = Result<ReservedGuestRootWorkspaceDataV2<'a>, GuestRootPublicationErrorV1>;
+    type History = Result<BTreeSet<[u8; 16]>, GuestRootPublicationErrorV1>;
+
+    size_of::<ObservedArguments<'_>>().checked_mul(3)?
+        .checked_add(size_of::<RowsArguments<'_>>().checked_mul(3)?)?
+        .checked_add(size_of::<Workspace<'_>>().checked_mul(3)?)?
+        .checked_add(size_of::<(HistoricalLedgerRowsDataV2<'_>, &Inventory, bool)>().checked_mul(3)?)?
+        .checked_add(size_of::<History>().checked_mul(3)?)?
+        .checked_add(reservation_rows_control_bytes_v3()?)?
+        .checked_add(size_of::<Option<usize>>().checked_mul(3)?)
 }
 
 /// Derives a new Storage-only grant from the reserved operation and live lease.

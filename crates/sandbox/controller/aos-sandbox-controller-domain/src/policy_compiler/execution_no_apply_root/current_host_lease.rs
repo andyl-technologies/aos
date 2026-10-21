@@ -5,6 +5,8 @@
 //! keys and the fresh read nonce. No packet supplied by Controller can replace
 //! the native journal, and a verified result alone cannot append a Root floor.
 
+use aos_sandbox_protocol::domain_ledger::readonly::FixedJournalReadbackDataV1 as RootFixedNativeReadbackV1;
+
 use std::error::Error;
 use std::mem::size_of;
 
@@ -37,7 +39,6 @@ use crate::controller_resource_reservation::RootContinuationDemandV1;
 use crate::journal::JournalError;
 use crate::normal_root::{NormalRootStartupErrorV1, RootExecutionNoApplyStageReceivingV2};
 use crate::policy_compiler::create_storage_current::controller_readonly::{
-    native_read::RootFixedNativeReadbackV1,
     storage_inventory::verify_current_execution_no_apply_session_retaining_v2,
 };
 use crate::policy_compiler::provisioning_current::finality_readonly::RootCreateFinalityReadonlyOriginalV1;

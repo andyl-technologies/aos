@@ -6,6 +6,8 @@
 //! independently owed after succeeds. Signed histories, models and cuts remain
 //! resident; a failed prefix stays owned and prevents another role from opening.
 
+use aos_sandbox_policy::native::{RootFinalityReadOriginalV1 as Target, RootFinalityReadKindV1 as Kind};
+use crate::journal::historical_observation::root_readonly_error_v1 as project_read;
 pub(in crate::policy_compiler::delete_root) mod model;
 use super::*;
 use aos_sandbox_protocol::domain_ledger::delete_batch::DeleteBatchOwnerCutDataV2;
@@ -75,7 +77,7 @@ pub(super) struct RootDeleteInitialSessionsOriginalV2 {
 }
 
 struct SessionNativeOriginalV2 {
-    reader: RootFixedNativeReadOriginalsV1,
+    reader: Target,
     captured: bool,
     native: Option<Result<ResourceVector, JournalError>>,
     packets: Option<Result<ResourceVector, JournalError>>,
@@ -98,10 +100,10 @@ struct SessionNativeOriginalV2 {
 impl SessionNativeOriginalV2 {
     fn new(role: DeleteBrokerRoleV2) -> Self {
         let reader = match role {
-            DeleteBrokerRoleV2::Runtime => RootFixedNativeReadOriginalsV1::host_session_v2(),
-            DeleteBrokerRoleV2::Mount => RootFixedNativeReadOriginalsV1::mount_session_v2(),
-            DeleteBrokerRoleV2::Storage => RootFixedNativeReadOriginalsV1::default(),
-            DeleteBrokerRoleV2::Network => RootFixedNativeReadOriginalsV1::network_session_v2(),
+            DeleteBrokerRoleV2::Runtime => Target::new(Kind::HostSession),
+            DeleteBrokerRoleV2::Mount => Target::new(Kind::MountSession),
+            DeleteBrokerRoleV2::Storage => Target::new(Kind::StorageSession),
+            DeleteBrokerRoleV2::Network => Target::new(Kind::NetworkSession),
         };
         Self {
             reader,
@@ -165,19 +167,20 @@ impl SessionNativeOriginalV2 {
                 return Err(RootDeleteErrorV1::Opening);
             }
         };
+        self.reader.construct_reader_once_v1().map_err(|_| RootDeleteErrorV1::Original)?;
         self.captured = true;
         self.reader.capture_once(uid);
-        if self.reader.require_captured_v1().is_err() {
+        if self.reader.require_captured_v1().map_err(project_read).is_err() {
             self.first = Some(SessionFirst::Capture);
             return Err(RootDeleteErrorV1::Opening);
         }
-        self.native = Some(self.reader.replay_demand_v1());
+        self.native = Some(self.reader.replay_demand_v1().map_err(project_read));
         if !matches!(self.native, Some(Ok(_))) {
             self.first = Some(SessionFirst::NativeDemand);
             return Err(RootDeleteErrorV1::Opening);
         }
         self.packets = Some((|| {
-            let prefix = self.reader.captured_extent_v1()?.native_bytes;
+            let prefix = self.reader.captured_prefix_native_bytes_v1().map_err(project_read)?;
             let prefix = usize::try_from(prefix).map_err(|_| JournalError::JournalTooLarge)?;
             DeleteSessionModelsOriginalV2::packet_demand_v2(prefix, role)
         })());
@@ -190,7 +193,7 @@ impl SessionNativeOriginalV2 {
 
     fn replay(&mut self) -> Result<(), RootDeleteErrorV1> {
         self.reader.replay_once();
-        if self.reader.replay_native_v1().is_err() {
+        if self.reader.replay_native_v1().map_err(project_read).is_err() {
             self.first = Some(SessionFirst::Replay);
             return Err(RootDeleteErrorV1::Opening);
         }
@@ -298,10 +301,10 @@ impl RootDeleteInitialSessionsOriginalV2 {
         let mut demand = ResourceVector::ZERO.with(D::MemoryBytes, bytes);
         let mut native_files = 0;
         for fixed in [
-            RootFixedNativeReadOriginalsV1::host_session_fixed_demand_v2(),
-            RootFixedNativeReadOriginalsV1::mount_session_fixed_demand_v2(),
-            RootFixedNativeReadOriginalsV1::fixed_demand_v1(),
-            RootFixedNativeReadOriginalsV1::network_session_fixed_demand_v2(),
+            crate::policy_compiler::delete_root::reader::fixed_demand_v1(Kind::HostSession),
+            crate::policy_compiler::delete_root::reader::fixed_demand_v1(Kind::MountSession),
+            crate::policy_compiler::delete_root::reader::fixed_demand_v1(Kind::StorageSession),
+            crate::policy_compiler::delete_root::reader::fixed_demand_v1(Kind::NetworkSession),
         ] {
             let fixed = fixed.map_err(|_| invalid())?;
             native_files = native_files.max(fixed.get(D::OpenFiles));
@@ -421,7 +424,7 @@ impl RootDeleteControllerCurrentOriginalV1 {
                 && self.sessions.native[index].as_ref().is_some_and(|native| {
                     native.first.is_none()
                         && native.failure(&self.sessions.models[index]).is_none()
-                        && native.reader.terminal_native_v1().is_ok()
+                        && native.reader.terminal_native_v1().map_err(project_read).is_ok()
                         && self.sessions.models[index].cut_v2().is_ok()
                 });
             if !complete {
@@ -478,7 +481,7 @@ impl RootDeleteControllerCurrentOriginalV1 {
         if native.first.is_some() {
             return Err(RootDeleteErrorV1::Opening);
         }
-        // Manifest storage order is Host/Mount/Network/Storage. Reader/cut order
+        // Manifest storage order is Host/Mount/Network/Storage. Target/cut order
         // is Runtime/Mount/Storage/Network, unchanged from the complete fold.
         let manifest = match initial {
             Some(initial) => initial.broker_trust.manifest([0, 1, 3, 2][index])?,
@@ -486,7 +489,7 @@ impl RootDeleteControllerCurrentOriginalV1 {
         };
         let actual = native
             .reader
-            .terminal_native_v1()
+            .terminal_native_v1().map_err(project_read)
             .map_err(|_| RootDeleteErrorV1::Opening)?;
         if self.sessions.models[index]
             .observe_packets_once_v2(actual, ROLES[index], manifest, query.cutoff, query.boot)
@@ -506,7 +509,7 @@ impl RootDeleteControllerCurrentOriginalV1 {
             .ok_or(RootDeleteErrorV1::Original)?;
         let actual = native
             .reader
-            .terminal_native_v1()
+            .terminal_native_v1().map_err(project_read)
             .map_err(|_| RootDeleteErrorV1::Opening)?;
         if self.sessions.models[index]
             .finish_model_once_v2(actual, ROLES[index], query.boot)

@@ -6,7 +6,7 @@ use crate::normal_root::{NormalRootStartupErrorV1, RootPolicyAcceptedFlightV1};
 use crate::policy_compiler::root_policy_prelude::{
     RootPolicyDispositionGuardV1, RootPolicyPreludeNativeOriginalV1, RootPolicyPreludeOriginalV1,
 };
-use aos_sandbox_linux::unix_stream::RetainedUnixStream;
+use aos_linux_descriptors::unix_stream::RetainedUnixStream;
 use std::error::Error;
 use std::os::fd::AsFd as _;
 use std::os::unix::net::UnixStream;

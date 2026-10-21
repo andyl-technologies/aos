@@ -70,7 +70,7 @@ impl ExecutionTreeOpeningOriginalV1 {
     }
 
     fn observe_identity(&mut self, index: usize) -> Result<PidFdProcessIdentity, Error> {
-        if !self.retained { return Ok(self.leader()?.process_identity()?); }
+        if !self.retained { return Ok(aos_sandbox_linux::pidfd::process_identity(self.leader()?)?); }
         let leader = self.leader.as_ref().ok_or(Error::AmbiguousEffect)?;
         self.identity[index].capture_once(leader)?;
         self.identity[index].identity().ok_or(Error::AmbiguousEffect)

@@ -6,11 +6,10 @@
 
 use std::error::Error as StdError;
 use aos_sandbox_model::{ResourceDimension as D, ResourceVector};
-use aos_sandbox_broker::receiving::RootPrearmedHistoryServicePostV1;
-use aos_sandbox_linux::unix_stream::RetainedUnixStream;
+use aos_sandbox_broker::receiving::{RootHistoryPeerPostNativeOriginalV1, RootPrearmedHistoryServicePostV1};
+use aos_linux_descriptors::unix_stream::RetainedUnixStream;
 use crate::controller_resource_reservation::{ResourceReservationErrorV1, service_interval::ObserverLifetime};
 use super::{ProductionNormalRootStartupV1, NormalRootStartupErrorV1 as Error, RootControllerPeerReceivingV1};
-use super::controller_peer::receiving::RootControllerPeerCurrentSampleV1;
 
 enum RootPeerPostSchedulingV1 {
     InitialSharedWorker,
@@ -19,9 +18,7 @@ enum RootPeerPostSchedulingV1 {
 
 pub(crate) struct RootHistoryPeerPostV1 {
     traffic: Result<(), ResourceReservationErrorV1>,
-    before: RootPrearmedHistoryServicePostV1,
-    after: RootPrearmedHistoryServicePostV1,
-    peer: Option<RootControllerPeerCurrentSampleV1>,
+    native: RootHistoryPeerPostNativeOriginalV1,
     worker_entry: Option<Result<(), Error>>,
     worker_exit: Option<Result<(), Error>>,
     before_result: Option<Result<(), Error>>,
@@ -38,21 +35,20 @@ impl RootHistoryPeerPostV1 {
     pub(crate) fn from_originals_v1(before: RootPrearmedHistoryServicePostV1,
         after: RootPrearmedHistoryServicePostV1, lifetime: ObserverLifetime,
         traffic: Result<(), ResourceReservationErrorV1>) -> Self {
-        Self { traffic, before, after, peer: Some(RootControllerPeerCurrentSampleV1::new(lifetime)),
+        Self { traffic, native: RootHistoryPeerPostNativeOriginalV1::from_originals_v1(before, after, lifetime),
             worker_entry: None, worker_exit: None, before_result: None, peer_result: None, after_result: None, deadline_sample: None, deadline_result: None, settlement: None,
             complete: false, closed: false }
     }
 
     fn complete_demand_v1() -> Result<ResourceVector, ResourceReservationErrorV1> {
-        let invalid = || ResourceReservationErrorV1::EnrollmentUnavailable;
-        let service = RootPrearmedHistoryServicePostV1::demand_v1().ok_or_else(invalid)?;
-        let peer = RootControllerPeerCurrentSampleV1::demand_v1()?;
-        service.checked_add(service).and_then(|value| value.checked_add(peer)).map_err(|_| invalid())
+        RootHistoryPeerPostNativeOriginalV1::demand_v1()
+            .map_err(|_| ResourceReservationErrorV1::EnrollmentUnavailable)
     }
 
     pub(crate) fn demand_v1() -> Result<ResourceVector, ResourceReservationErrorV1> {
         let demand = Self::complete_demand_v1()?.checked_add(ResourceVector::ZERO
             .with(D::MemoryBytes, u64::try_from(std::mem::size_of::<Self>().checked_mul(3)
+                .and_then(|bytes| bytes.checked_add(UpperHistoryProgrammeV1::control_bytes_v1()?))
                 .ok_or(ResourceReservationErrorV1::EnrollmentUnavailable)?)
                 .map_err(|_| ResourceReservationErrorV1::EnrollmentUnavailable)?))
             .map_err(|_| ResourceReservationErrorV1::EnrollmentUnavailable)?;
@@ -64,6 +60,7 @@ impl RootHistoryPeerPostV1 {
         // runtimes; only the actual simultaneous explicit worker count is one.
         Ok(without_traffic(demand).with(D::Pids, row.worker_threads))
     }
+
 
     pub(crate) fn additional_resident_demand_v1() -> Result<ResourceVector, ResourceReservationErrorV1> {
         let demand = Self::demand_v1()?;
@@ -95,7 +92,8 @@ impl RootHistoryPeerPostV1 {
     pub(crate) fn observe_once(&mut self, startup: &ProductionNormalRootStartupV1,
         native: Option<&RetainedUnixStream>, peer: Option<&RootControllerPeerReceivingV1<'_>>)
         -> Result<(), Error> {
-        self.observe_with_scheduling_once(startup, native, peer,
+        self.observe_with_scheduling_once(startup, native,
+            RootHistoryControllerPeerBorrowV1::Upper(peer),
             RootPeerPostSchedulingV1::InitialSharedWorker)
     }
 
@@ -114,77 +112,47 @@ impl RootHistoryPeerPostV1 {
         native: Option<&RetainedUnixStream>, peer: Option<&RootControllerPeerReceivingV1<'_>>,
         cutoff: u64)
         -> Result<(), Error> {
-        self.observe_with_scheduling_once(startup, native, peer,
+        self.observe_with_scheduling_once(startup, native,
+            RootHistoryControllerPeerBorrowV1::Upper(peer),
+            RootPeerPostSchedulingV1::ContinuationPaidWorker { cutoff })
+    }
+
+    // NoApply owns its actual peer in Policy. This fixed native borrow enters
+    // the same sampler, with the same paid continuation scheduling branch.
+    pub(crate) fn observe_native_continuation_once_v2(&mut self,
+        startup: &ProductionNormalRootStartupV1,
+        native: Option<&RetainedUnixStream>,
+        peer: Option<&aos_sandbox_broker::receiving::RootSelectedControllerPeerOriginalV1<'_>>,
+        cutoff: u64,
+    ) -> Result<(), Error> {
+        self.observe_with_scheduling_once(startup, native, RootHistoryControllerPeerBorrowV1::Native(peer),
             RootPeerPostSchedulingV1::ContinuationPaidWorker { cutoff })
     }
 
     fn observe_with_scheduling_once(&mut self, startup: &ProductionNormalRootStartupV1,
-        native: Option<&RetainedUnixStream>, peer: Option<&RootControllerPeerReceivingV1<'_>>,
+        native: Option<&RetainedUnixStream>, peer: RootHistoryControllerPeerBorrowV1<'_, '_>,
         scheduling: RootPeerPostSchedulingV1) -> Result<(), Error> {
-        if self.worker_entry.is_some() || self.before_result.is_some() || self.closed { self.closed = true; return Err(Error::Service); }
-        self.require_armed_v1()?;
-        if matches!(scheduling, RootPeerPostSchedulingV1::InitialSharedWorker) {
-            self.worker_entry = Some(worker_slot(startup, true));
-            if !matches!(self.worker_entry, Some(Ok(()))) { return Err(Error::Service); }
-        }
-        self.before_result = Some(observe_root(startup, &mut self.before));
-        // An earlier Root service/financial/append refusal never suppresses the
-        // separately owned Controller sample or independently owed Root after.
-        self.peer_result = Some(match (native, peer, self.peer.as_mut()) {
-            (Some(native), Some(peer), Some(sample)) => peer.observe_prearmed_current_into_v1(native, sample),
-            _ => Err(Error::Service),
-        });
-        self.after_result = Some(observe_root(startup, &mut self.after));
-        // Every reached archive.read has returned through its unconditional
-        // join. Retained negative runtimes/FDs stay owned; only this explicit
-        // worker-task exclusivity ends. Refusal still prevents another arm.
-        if matches!(scheduling, RootPeerPostSchedulingV1::InitialSharedWorker) {
-            self.worker_exit = Some(worker_slot(startup, false));
-        }
-        if let RootPeerPostSchedulingV1::ContinuationPaidWorker { cutoff } = scheduling {
-            // This local native leaf must also be timely before its positive
-            // archive/native originals can be retired below. The enclosing
-            // chunk still owes its separate paired-clock and subject/copy posts.
-            let now = rustix::time::clock_gettime(rustix::time::ClockId::Boottime);
-            self.deadline_sample = Some(now);
-            self.deadline_result = Some(crate::policy_compiler::root_deadline_remaining_v1(
-                now, cutoff).map(|_| ()));
-        }
-        if self.failure().is_none() && matches!(self.peer_result, Some(Ok(()))) {
-            self.settlement = Some(self.peer.as_mut().ok_or(Error::Service)?.settle_after_root_post_once_v1());
-        }
-        self.complete = matches!(self.settlement, Some(Ok(()))) && self.failure().is_none();
-        if self.complete {
-            // The same old successful current sample disposal frontier follows
-            // actual independent Root after and archive/socket settlement.
-            drop(self.peer.take());
-            self.before.retire_positive_once_v1();
-            self.after.retire_positive_once_v1();
-            Ok(())
-        } else {
-            if startup.receiving.is_some() {
-                if let Ok(mut original) = startup.lock_receiving_v1() {
-                    original.original_mut_v1().refuse_history_peer_post_v1();
-                }
-            }
-            Err(Error::Service)
-        }
+        let mut driver = UpperHistoryProgrammeV1 { original: self, startup, native, peer, scheduling };
+        aos_sandbox_broker::root_history_observation_programme_v1!(driver)
+    }
+
+    pub(crate) fn native_original_mut_v1(&mut self) -> &mut RootHistoryPeerPostNativeOriginalV1 {
+        &mut self.native
     }
 
     pub(crate) fn property_failure_view_v1(&self) -> Option<aos_systemd_client::FixedPid1PropertyFailureViewV1<'_>> {
         let first = self.failure()?;
-        let peer = self.peer.as_ref()?;
-        if peer.failure().is_some_and(|cause| std::ptr::addr_eq(first as *const _, cause as *const _)) {
-            peer.property_failure_view_v1()
+        if self.native.peer_failure_v1().is_some_and(|cause| std::ptr::addr_eq(first as *const _, cause as *const _)) {
+            self.native.peer_property_failure_view_v1()
         } else { None }
     }
 
     pub(crate) fn failure(&self) -> Option<&(dyn StdError + 'static)> {
         self.traffic.as_ref().err().map(|cause| cause as &(dyn StdError + 'static))
             .or_else(|| cause(&self.worker_entry))
-            .or_else(|| self.before.failure()).or_else(|| cause(&self.before_result))
-            .or_else(|| self.peer.as_ref().and_then(|sample| sample.failure()))
-            .or_else(|| cause(&self.peer_result)).or_else(|| self.after.failure())
+            .or_else(|| self.native.before_failure_v1()).or_else(|| cause(&self.before_result))
+            .or_else(|| self.native.peer_failure_v1())
+            .or_else(|| cause(&self.peer_result)).or_else(|| self.native.after_failure_v1())
             .or_else(|| cause(&self.after_result)).or_else(|| cause(&self.worker_exit))
             .or_else(|| cause(&self.deadline_result))
             .or_else(|| cause(&self.settlement))
@@ -212,4 +180,113 @@ fn worker_slot(startup: &ProductionNormalRootStartupV1, enter: bool) -> Result<(
     let returned = if enter { original.enter_history_peer_worker_once_v1() }
         else { original.finish_history_peer_worker_once_v1() };
     receiving.finish_returned_v1(returned)
+}
+
+// The closed reference alternatives preserve a failed upper getter until the
+// actual Controller frontier, after Root-before and before independent Root-after.
+enum RootHistoryControllerPeerBorrowV1<'a, 'startup> {
+    Upper(Option<&'a RootControllerPeerReceivingV1<'startup>>),
+    Native(Option<&'a aos_sandbox_broker::receiving::RootSelectedControllerPeerOriginalV1<'startup>>),
+}
+
+struct UpperHistoryProgrammeV1<'a, 'startup> {
+    original: &'a mut RootHistoryPeerPostV1,
+    startup: &'a ProductionNormalRootStartupV1,
+    native: Option<&'a RetainedUnixStream>,
+    peer: RootHistoryControllerPeerBorrowV1<'a, 'startup>,
+    scheduling: RootPeerPostSchedulingV1,
+}
+
+impl UpperHistoryProgrammeV1<'_, '_> {
+    fn begin_once_v1(&mut self) -> Result<(), Error> {
+        if self.original.worker_entry.is_some() || self.original.before_result.is_some() || self.original.closed {
+            self.original.closed = true;
+            return Err(Error::Service);
+        }
+        Ok(())
+    }
+
+    fn require_armed_v1(&self) -> Result<(), Error> { self.original.require_armed_v1() }
+
+    fn uses_shared_worker_v1(&self) -> bool {
+        matches!(self.scheduling, RootPeerPostSchedulingV1::InitialSharedWorker)
+    }
+
+    fn enter_worker_once_v1(&mut self) -> Result<(), Error> {
+        self.original.worker_entry = Some(worker_slot(self.startup, true));
+        if matches!(self.original.worker_entry, Some(Ok(()))) { Ok(()) }
+        else { Err(Error::Service) }
+    }
+
+    fn observe_root_before_once_v1(&mut self) {
+        self.original.before_result = Some(observe_root(self.startup,
+            self.original.native.before_original_mut_v1()));
+    }
+
+    fn observe_controller_once_v1(&mut self) {
+        self.original.peer_result = Some(match &self.peer {
+            RootHistoryControllerPeerBorrowV1::Upper(Some(peer)) => match peer.native_original_v1() {
+                Ok(peer) => self.original.native.observe_controller_once_v1(self.native, Some(peer)).map_err(Into::into),
+                Err(error) => Err(error),
+            },
+            RootHistoryControllerPeerBorrowV1::Native(Some(peer)) => self.original.native
+                .observe_controller_once_v1(self.native, Some(*peer)).map_err(Into::into),
+            RootHistoryControllerPeerBorrowV1::Upper(None) | RootHistoryControllerPeerBorrowV1::Native(None) =>
+                self.original.native.observe_controller_once_v1(self.native, None).map_err(Into::into),
+        });
+    }
+
+    fn observe_root_after_once_v1(&mut self) {
+        self.original.after_result = Some(observe_root(self.startup,
+            self.original.native.after_original_mut_v1()));
+    }
+
+    fn finish_worker_once_v1(&mut self) {
+        self.original.worker_exit = Some(worker_slot(self.startup, false));
+    }
+
+    fn observe_deadline_once_v1(&mut self) {
+        if let RootPeerPostSchedulingV1::ContinuationPaidWorker { cutoff } = self.scheduling {
+            let now = rustix::time::clock_gettime(rustix::time::ClockId::Boottime);
+            self.original.deadline_sample = Some(now);
+            self.original.deadline_result = Some(aos_sandbox_broker::bounded_stream_io::remaining(
+                now, cutoff).map(|_| ()));
+        }
+    }
+
+    fn settle_if_complete_once_v1(&mut self) {
+        if self.original.failure().is_none() && matches!(self.original.peer_result, Some(Ok(()))) {
+            self.original.settlement = Some(self.original.native.settle_after_root_post_once_v1().map_err(Into::into));
+        }
+    }
+
+    fn finish_once_v1(&mut self) -> Result<(), Error> {
+        self.original.complete = matches!(self.original.settlement, Some(Ok(()))) && self.original.failure().is_none();
+        if self.original.complete {
+            self.original.native.retire_positive_once_v1();
+            Ok(())
+        } else {
+            if self.startup.receiving.is_some() {
+                if let Ok(mut original) = self.startup.lock_receiving_v1() {
+                    original.original_mut_v1().refuse_history_peer_post_v1();
+                }
+            }
+            Err(Error::Service)
+        }
+    }
+}
+
+impl UpperHistoryProgrammeV1<'_, '_> {
+    fn control_bytes_v1() -> Option<usize> {
+        use std::mem::size_of;
+        size_of::<Self>().checked_mul(3)?
+            .checked_add(size_of::<RootHistoryControllerPeerBorrowV1<'_, '_>>().checked_mul(3)?)?
+            .checked_add(size_of::<(&mut RootHistoryPeerPostV1, &ProductionNormalRootStartupV1,
+                Option<&RetainedUnixStream>, RootHistoryControllerPeerBorrowV1<'_, '_>, RootPeerPostSchedulingV1)>().checked_mul(3)?)?
+            .checked_add(size_of::<&mut Self>().checked_mul(27)?)?
+            .checked_add(size_of::<&Self>().checked_mul(9)?)?
+            .checked_add(size_of::<Result<(), Error>>().checked_mul(12)?)?
+            .checked_add(size_of::<bool>().checked_mul(12)?)?
+            .checked_add(size_of::<Option<usize>>().checked_mul(3)?)
+    }
 }

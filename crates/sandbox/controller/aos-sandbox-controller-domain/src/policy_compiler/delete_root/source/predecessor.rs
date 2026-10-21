@@ -4,6 +4,8 @@
 //! complete semantic models and independently owed native afters. The existing
 //! Source stage's paid Root/C/clock bookends enclose this entire read as well.
 
+
+use crate::journal::historical_observation::root_readonly_error_v1 as project_read;
 use super::*;
 
 #[derive(Clone, Copy)]
@@ -31,13 +33,15 @@ impl RootDeleteSourceCurrentOriginalV1 {
         fields: SourceDeleteCurrentReplyFieldsV1,
         uid: u32,
     ) -> Result<(), RootDeleteErrorV1> {
+        self.predecessor.as_mut().ok_or(RootDeleteErrorV1::Original)?
+            .construct_reader_once_v1().map_err(|_| RootDeleteErrorV1::Original)?;
         self.predecessor.as_mut().ok_or(RootDeleteErrorV1::Original)?.capture_once(uid);
-        self.predecessor_capture = Some(self.predecessor.as_ref().ok_or(RootDeleteErrorV1::Original)?.require_captured_v1());
+        self.predecessor_capture = Some(self.predecessor.as_ref().ok_or(RootDeleteErrorV1::Original)?.require_captured_v1().map_err(project_read));
         self.require(
             matches!(self.predecessor_capture, Some(Ok(()))),
             First::Predecessor,
         )?;
-        self.predecessor_native = Some(self.predecessor.as_ref().ok_or(RootDeleteErrorV1::Original)?.replay_demand_v1());
+        self.predecessor_native = Some(self.predecessor.as_ref().ok_or(RootDeleteErrorV1::Original)?.replay_demand_v1().map_err(project_read));
         self.require(
             matches!(self.predecessor_native, Some(Ok(_))),
             First::Predecessor,
@@ -51,7 +55,7 @@ impl RootDeleteSourceCurrentOriginalV1 {
         self.predecessor.as_mut().ok_or(RootDeleteErrorV1::Original)?
             .audit_delete_graph_once_v2(controller.graph_controller_rows_v2()?);
         self.predecessor_semantic =
-            Some(self.predecessor.as_ref().ok_or(RootDeleteErrorV1::Original)?.additional_delete_graph_predecessor_demand_v2());
+            Some(self.predecessor.as_ref().ok_or(RootDeleteErrorV1::Original)?.additional_delete_graph_predecessor_demand_v2().map_err(project_read));
         self.require(
             matches!(self.predecessor_semantic, Some(Ok(_))),
             First::Predecessor,
@@ -163,8 +167,8 @@ impl RootDeleteSourceCurrentOriginalV1 {
 
     pub(crate) fn verified_graph_request_receiving_bytes_v2(&self) -> Result<usize, JournalError> {
         self.verified_source_predecessor_v2().map_err(|_| JournalError::ProtectedBoundary)?;
-        self.completed_predecessor.as_ref().ok_or(JournalError::ProtectedBoundary)?
-            .delete_graph_request_receiving_bytes_v2()
+        self.predecessor.as_ref().ok_or(JournalError::ProtectedBoundary)?
+            .completed_delete_graph_request_receiving_bytes_v2().map_err(project_read)
     }
 
     // This move is permitted only after the SAME Source signature, EOF/native64,
@@ -173,8 +177,8 @@ impl RootDeleteSourceCurrentOriginalV1 {
         -> Result<aos_sandbox_ledger_replay::delete_graph::DeleteDependencyGraphBaseDataV2, RootDeleteErrorV1>
     {
         self.verified_source_predecessor_v2()?;
-        let result = self.completed_predecessor.as_mut().ok_or(RootDeleteErrorV1::Original)?
-            .take_delete_graph_base_data_v2().map_err(|_| RootDeleteErrorV1::Original);
+        let result = self.predecessor.as_mut().ok_or(RootDeleteErrorV1::Original)?
+            .take_completed_delete_graph_base_data_v2().map_err(project_read).map_err(|_| RootDeleteErrorV1::Original);
         if result.is_err() {
             self.first.get_or_insert(First::Reentry);
             self.closed.get_or_insert(RootDeleteErrorV1::Original);
@@ -183,12 +187,14 @@ impl RootDeleteSourceCurrentOriginalV1 {
     }
 
     fn predecessor_readback_v2(&self) -> Result<
-        crate::policy_compiler::create_storage_current::controller_readonly::native_read::RootFixedNativeReadbackV1<'_>,
+        aos_sandbox_protocol::domain_ledger::readonly::FixedJournalReadbackDataV1<'_>,
         JournalError,
     > {
-        match &self.completed_predecessor {
-            Some(data) => data.readback_v2(),
-            None => self.predecessor.as_ref().ok_or(JournalError::ProtectedBoundary)?.terminal_native_v1(),
+        let target = self.predecessor.as_ref().ok_or(JournalError::ProtectedBoundary)?;
+        if target.native_prefixes_retired_data_v2() {
+            target.completed_readback_v2().map_err(project_read)
+        } else {
+            target.terminal_native_v1().map_err(project_read)
         }
     }
 
@@ -196,19 +202,13 @@ impl RootDeleteSourceCurrentOriginalV1 {
         aos_sandbox_ledger_replay::delete_pending::DeleteSourcePredecessorDataV2,
         JournalError,
     > {
-        match &self.completed_predecessor {
-            Some(data) => data.delete_predecessor_data_v2(),
-            None => self.predecessor.as_ref().ok_or(JournalError::ProtectedBoundary)?.delete_predecessor_data_v2(),
-        }
+        self.predecessor.as_ref().ok_or(JournalError::ProtectedBoundary)?
+            .delete_predecessor_data_v2().map_err(project_read)
     }
 
     pub(super) fn retire_predecessor_once_v2(&mut self) -> Result<(), JournalError> {
-        if self.completed_predecessor.is_some() { return Err(JournalError::ProtectedBoundary); }
-        let original = self.predecessor.take().ok_or(JournalError::ProtectedBoundary)?;
-        match original.into_completed_data_v2() {
-            Ok(data) => { self.completed_predecessor = Some(data); Ok(()) }
-            Err(original) => { self.predecessor = Some(original); Err(JournalError::ProtectedBoundary) }
-        }
+        self.predecessor.as_mut().ok_or(JournalError::ProtectedBoundary)?
+            .retire_completed_reader_once_v2().map_err(project_read)
     }
 
     pub(super) fn retained_predecessor_shape_v2(

@@ -14,7 +14,7 @@ use aos_sandbox_model::{
     AssignmentEpoch, DesiredGeneration, IncarnationId, NamespaceGeneration, NodeId, ObjectDigest,
     ObservationSequence, PayloadBootId, Revision, SandboxId,
 };
-use aos_sandbox_linux::boot::KernelBootId;
+use aos_linux_descriptors::boot::KernelBootId;
 use ed25519_dalek::SigningKey;
 
 use super::{

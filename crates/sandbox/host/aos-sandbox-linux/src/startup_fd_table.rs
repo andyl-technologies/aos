@@ -15,7 +15,8 @@ pub use model::*;
 
 use std::sync::atomic::{AtomicU8, Ordering};
 
-use crate::{Error, Result};
+use aos_linux_descriptors::Error;
+use aos_linux_descriptors::Result;
 
 const CAPTURE_FRESH: u8 = 0;
 const CAPTURE_RUNNING: u8 = 1;

@@ -12,7 +12,8 @@ use std::os::fd::{AsFd, BorrowedFd, FromRawFd as _, OwnedFd, RawFd};
 use std::sync::{Mutex, MutexGuard};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use crate::{Error, Result};
+use aos_linux_descriptors::Error;
+use aos_linux_descriptors::Result;
 
 mod network_child;
 pub use network_child::NetworkWorkerChildInitialTableV2;

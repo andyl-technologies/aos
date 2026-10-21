@@ -11,9 +11,10 @@ use std::path::{Path, PathBuf};
 
 use aos_sandbox_linux::cgroup::{CgroupV2Root, ExactCgroupMembershipReadbackV1,
     ExactCgroupMembershipRefusalV1, RetainedCgroupAnchor, RootInitialCgroupReadbackV1};
-use aos_sandbox_linux::pidfd::PidFdInfo;
+use aos_linux_descriptors::pidfd::PidFdInfo;
 use aos_sandbox_linux::selinux_policy::{PolicyReadbackError, RetainedLiveSelinuxPolicyReadbackV1};
-use aos_sandbox_linux::unix_stream::{RetainedUnixStream, SubjectStreamReceiveGeometryV1};
+use aos_linux_descriptors::unix_stream::RetainedUnixStream;
+use aos_sandbox_linux::unix_stream::SubjectStreamReceiveGeometryV1;
 use sha2::{Digest, Sha256};
 
 use crate::immutable_image::{ImmutableImageErrorV1, ImmutableFileAcquisitionOriginalV1};
@@ -58,7 +59,7 @@ pub fn require_root_process_identity_v1(
 /// Retains the fixed Root connection's anchor, fragment and comparison baseline.
 pub struct RootPeerConnectionOriginalsV1 {
     capture: RootInitialCgroupReadbackV1,
-    capture_result: Option<Result<(), aos_sandbox_linux::Error>>,
+    capture_result: Option<Result<(), aos_linux_descriptors::Error>>,
     anchor: Option<(CgroupV2Root, RetainedCgroupAnchor)>,
     fragment: ImmutableFileAcquisitionOriginalV1,
     baseline: Option<ServiceObservationV1>,
@@ -123,7 +124,7 @@ enum Delivery { Ordinary, Selected, SelectedProducer }
 pub struct RootPeerObservationOriginalsV1<E> {
     delivery: Delivery,
     entered: bool,
-    stream_before: Option<Result<(), aos_sandbox_linux::Error>>,
+    stream_before: Option<Result<(), aos_linux_descriptors::Error>>,
     nomination: Option<Result<(), E>>,
     membership_before: ExactCgroupMembershipReadbackV1,
     membership_before_result: Option<Result<(), ExactCgroupMembershipRefusalV1>>,
@@ -138,7 +139,7 @@ pub struct RootPeerObservationOriginalsV1<E> {
     policy_before: RetainedLiveSelinuxPolicyReadbackV1,
     policy_before_result: Option<Result<(), PolicyReadbackError>>,
     begin: Option<Result<(), E>>,
-    stream_after: Option<Result<(), aos_sandbox_linux::Error>>,
+    stream_after: Option<Result<(), aos_linux_descriptors::Error>>,
     membership_after: ExactCgroupMembershipReadbackV1,
     membership_after_result: Option<Result<(), ExactCgroupMembershipRefusalV1>>,
     identity_after: Option<Result<(), E>>,
@@ -465,7 +466,7 @@ fn failure<T, E: Error + 'static>(slot: &Option<Result<T, E>>) -> Option<&(dyn E
 #[cfg(test)]
 mod tests {
     use super::*;
-    use aos_sandbox_linux::pidfd::PidFd;
+    use aos_linux_descriptors::pidfd::PidFd;
 
     #[test]
     fn actual_pidfd_identity_cannot_be_rebound_to_another_root_task() {

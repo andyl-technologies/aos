@@ -48,7 +48,7 @@ use aos_sandbox_host::worker::{
 use aos_sandbox_host::{
     DormantHostBrokerCallsiteV1, DormantHostBrokerCompositionV1, HostError, Result as HostResult,
 };
-use aos_sandbox_linux::boot::KernelBootId;
+use aos_linux_descriptors::boot::KernelBootId;
 use aos_sandbox_protocol::authenticated_session::all_methods::{
     AuthenticatedBrokerMethodOutcomeAdmissionV1, AuthenticatedBrokerMethodRequestAdmissionV1,
     AuthenticatedBrokerMethodRequestV1,

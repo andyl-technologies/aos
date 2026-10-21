@@ -1,7 +1,10 @@
 //! Retained remote execution evidence from one descriptor-subject record.
 
 use aos_sandbox_linux::pidfd::{NamespaceFd, NamespaceKind};
-use aos_sandbox_linux::pidfd::{PidFd, PidFdCredentials, PidFdInfo, PidFdProcessIdentity};
+use aos_linux_descriptors::pidfd::PidFd;
+use aos_linux_descriptors::pidfd::PidFdCredentials;
+use aos_linux_descriptors::pidfd::PidFdInfo;
+use aos_sandbox_linux::pidfd::PidFdProcessIdentity;
 use aos_sandbox_linux::seqpacket::{ConnectionPeerIdentity, KernelAuthorizedRecordSubject};
 
 use super::{
@@ -307,9 +310,8 @@ impl ProcessExecutionEvidenceV1 {
     }
 
     pub(crate) fn mount_namespace(&self) -> Result<NamespaceFd, SourceProviderSecurityError> {
-        self.subject
-            .pidfd()
-            .namespace(NamespaceKind::Mount)
+        aos_sandbox_linux::pidfd::namespace(&(self.subject
+            .pidfd()), NamespaceKind::Mount)
             .map_err(|_| SourceProviderSecurityError::DescriptorObservation)
     }
 
@@ -416,9 +418,8 @@ fn require_peer_matches(
         .pidfd()
         .info()
         .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
-    let identity = peer
-        .pidfd()
-        .process_identity()
+    let identity = aos_sandbox_linux::pidfd::process_identity(&(peer
+        .pidfd()))
         .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
     let info_after = peer
         .pidfd()
@@ -478,8 +479,7 @@ fn observe_process(
     let info_before = process
         .info()
         .map_err(|_| SourceProviderSecurityError::ExecutionChanged)?;
-    let identity = process
-        .process_identity()
+    let identity = aos_sandbox_linux::pidfd::process_identity(&(process))
         .map_err(|_| SourceProviderSecurityError::ExecutionChanged)?;
     let (cgroup_path_digest, _) = read_cgroup_path_digest(expected_pid)?;
     let info_after = process

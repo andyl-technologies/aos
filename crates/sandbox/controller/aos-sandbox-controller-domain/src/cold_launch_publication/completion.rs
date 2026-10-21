@@ -89,7 +89,7 @@ pub(crate) struct CreateStoppedEvidenceSubjectsV2<'held> {
 enum CreateStoppedComparisonPhaseV2<'held> {
     PreAck(&'held aos_sandbox_protocol::public_api::projection::PublicProjectionRecordV1),
     Historical {
-        native: &'held crate::policy_compiler::create_storage_current::controller_readonly::native_read::RootCreateStoppedHistoricalOriginalV2,
+        native: &'held aos_sandbox_policy::native::RootCreateStoppedHistoricalOriginalV2,
         operation: &'held [u8],
         effect: &'held [u8],
     },
@@ -103,7 +103,7 @@ enum CreateStoppedComparisonPhaseV2<'held> {
 /// substituted for the historical atomic STOPPED member.
 pub(crate) struct CreateStoppedHistoricalSubjectsV2<'held> {
     pub(crate) evidence: CreateStoppedEvidenceSubjectsV2<'held>,
-    pub(crate) native: &'held crate::policy_compiler::create_storage_current::controller_readonly::native_read::RootCreateStoppedHistoricalOriginalV2,
+    pub(crate) native: &'held aos_sandbox_policy::native::RootCreateStoppedHistoricalOriginalV2,
     pub(crate) parent_operation_bytes: &'held [u8],
     pub(crate) parent_effect_bytes: &'held [u8],
 }
@@ -122,8 +122,17 @@ pub(crate) fn create_stopped_comparison_receiving_demand_v1() -> Option<Resource
 }
 
 pub(crate) fn create_stopped_historical_comparison_receiving_demand_v2() -> Option<ResourceVector> {
+    use aos_sandbox_model::{OperationId, ProjectId, SandboxId};
     create_stopped_selected_comparison_receiving_v2(
-        std::mem::size_of::<CreateStoppedHistoricalSubjectsV2<'static>>())
+        std::mem::size_of::<CreateStoppedHistoricalSubjectsV2<'static>>())?
+        .checked_add(ResourceVector::ZERO.with(ResourceDimension::MemoryBytes,
+            u64::try_from(
+                std::mem::size_of::<Result<(), aos_sandbox_policy::native::RootReadonlyErrorV1>>()
+                    .checked_mul(3)?
+                    .checked_add(std::mem::size_of::<(&aos_sandbox_policy::native::RootCreateStoppedHistoricalOriginalV2,
+                        OperationId, ProjectId, SandboxId, &[u8], &[u8])>().checked_mul(3)?)?,
+            ).ok()?,
+        )).ok()
 }
 
 // Only these two closed codec-local callers select their actual input layout.

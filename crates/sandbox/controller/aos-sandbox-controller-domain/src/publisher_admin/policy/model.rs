@@ -1,216 +1,6 @@
-//! Public policy-authority values and bounded preparation contracts.
-//!
-//! Preparation establishes canonical encoding and base-registry semantic
-//! support for required features, including resource-limit enforcement
-//! features. It does not prove that a particular publisher host currently has
-//! those mechanisms available; online admission must establish that separate
-//! platform-readiness fact.
+//! Retains native Publisher errors and exact canonical DATA projections.
 
-use super::*;
-
-/// Bounds replay and retained policy work below fixed implementation ceilings.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct PublisherPolicyLimits {
-    pub(super) maximum_records: usize,
-    pub(super) maximum_record_bytes: usize,
-    pub(super) maximum_materialized_bytes: usize,
-}
-
-impl PublisherPolicyLimits {
-    /// Constructs policy-store limits within fixed implementation ceilings.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`PublisherPolicyError::InvalidLimits`] for zero or excessive limits.
-    pub fn new(
-        maximum_records: usize,
-        maximum_record_bytes: usize,
-        maximum_materialized_bytes: usize,
-    ) -> Result<Self, PublisherPolicyError> {
-        if maximum_records == 0
-            || maximum_records > MAXIMUM_RECORDS
-            || maximum_record_bytes == 0
-            || maximum_record_bytes > MAXIMUM_RECORD_BYTES
-            || maximum_materialized_bytes == 0
-            || maximum_materialized_bytes > MAXIMUM_MATERIALIZED_BYTES
-        {
-            return Err(PublisherPolicyError::InvalidLimits);
-        }
-        Ok(Self {
-            maximum_records,
-            maximum_record_bytes,
-            maximum_materialized_bytes,
-        })
-    }
-}
-
-impl Default for PublisherPolicyLimits {
-    fn default() -> Self {
-        Self {
-            maximum_records: MAXIMUM_RECORDS,
-            maximum_record_bytes: MAXIMUM_RECORD_BYTES,
-            maximum_materialized_bytes: MAXIMUM_MATERIALIZED_BYTES,
-        }
-    }
-}
-
-/// Binds one logical cache resource to an immutable project isolation domain.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PublisherResourceBindingV1 {
-    pub(super) resource: ResourceId,
-    pub(super) project: ProjectId,
-    pub(super) cache_domain: CacheDomain,
-    pub(super) isolation_policy: ObjectDigest,
-}
-
-impl PublisherResourceBindingV1 {
-    /// Constructs an immutable protected resource binding.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`PublisherPolicyError::InvalidResourceBinding`] for zero IDs or
-    /// commitment, or a non-project disclosure domain.
-    pub fn new(
-        resource: ResourceId,
-        project: ProjectId,
-        cache_domain: CacheDomain,
-        isolation_policy: ObjectDigest,
-    ) -> Result<Self, PublisherPolicyError> {
-        if resource.as_bytes() == &[0; 16]
-            || project.as_bytes() == &[0; 16]
-            || cache_domain.kind() != CacheDomainKind::Project
-            || cache_domain.domain_id().as_bytes() == &[0; 16]
-            || isolation_policy.as_bytes() == &[0; 32]
-        {
-            return Err(PublisherPolicyError::InvalidResourceBinding);
-        }
-        Ok(Self {
-            resource,
-            project,
-            cache_domain,
-            isolation_policy,
-        })
-    }
-
-    /// Returns the logical cache resource.
-    #[must_use]
-    pub const fn resource(&self) -> ResourceId {
-        self.resource
-    }
-
-    /// Returns the owning project.
-    #[must_use]
-    pub const fn project(&self) -> ProjectId {
-        self.project
-    }
-
-    /// Returns the exact project cache domain.
-    #[must_use]
-    pub const fn cache_domain(&self) -> CacheDomain {
-        self.cache_domain
-    }
-
-    /// Returns the configured isolation-policy commitment.
-    #[must_use]
-    pub const fn isolation_policy(&self) -> ObjectDigest {
-        self.isolation_policy
-    }
-}
-
-/// Identifies the current controller authority principal and generation.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct PublisherControllerHeadV1 {
-    /// Controller authority principal used as the capability audience.
-    pub principal: PrincipalId,
-    /// Contiguous current controller-authority generation.
-    pub generation: u64,
-}
-
-/// Identifies one current revocation-scope generation.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct PublisherRevocationHeadV1 {
-    /// Independently managed revocation scope.
-    pub scope: RevocationScopeId,
-    /// Contiguous current generation for that scope.
-    pub generation: u64,
-}
-
-/// Identifies the project disclosure choice in a current publisher revision.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct PublisherProjectCacheDomainHeadV1 {
-    pub(super) project: ProjectId,
-    pub(super) generation: u64,
-    pub(super) policy_digest: ObjectDigest,
-    pub(super) domain: CacheDomain,
-    pub(super) digest: ObjectDigest,
-}
-
-impl PublisherProjectCacheDomainHeadV1 {
-    /// Returns the publisher project owning the current policy.
-    #[must_use]
-    pub const fn project(self) -> ProjectId {
-        self.project
-    }
-
-    /// Returns the contiguous current publisher-policy generation.
-    #[must_use]
-    pub const fn generation(self) -> u64 {
-        self.generation
-    }
-
-    /// Returns the exact current policy descriptor digest.
-    #[must_use]
-    pub const fn policy_digest(self) -> ObjectDigest {
-        self.policy_digest
-    }
-
-    /// Returns the current project disclosure domain.
-    #[must_use]
-    pub const fn domain(self) -> CacheDomain {
-        self.domain
-    }
-
-    /// Returns the project, generation, policy, and domain commitment.
-    #[must_use]
-    pub const fn digest(self) -> ObjectDigest {
-        self.digest
-    }
-}
-
-/// Identifies the current protected revocation scope for one project.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct PublisherProjectRevocationHeadV1 {
-    pub(super) project: ProjectId,
-    pub(super) scope: RevocationScopeId,
-    pub(super) generation: u64,
-    pub(super) digest: ObjectDigest,
-}
-
-impl PublisherProjectRevocationHeadV1 {
-    /// Returns the publisher project bound by the protected mapping.
-    #[must_use]
-    pub const fn project(self) -> ProjectId {
-        self.project
-    }
-
-    /// Returns the independently managed revocation scope.
-    #[must_use]
-    pub const fn scope(self) -> RevocationScopeId {
-        self.scope
-    }
-
-    /// Returns its exact current generation.
-    #[must_use]
-    pub const fn generation(self) -> u64 {
-        self.generation
-    }
-
-    /// Returns the project-bound currentness commitment.
-    #[must_use]
-    pub const fn digest(self) -> ObjectDigest {
-        self.digest
-    }
-}
+use crate::JournalError;
 
 impl From<aos_sandbox_protocol::policy_data::PublisherPolicyDataError> for PublisherPolicyError {
     fn from(error: aos_sandbox_protocol::policy_data::PublisherPolicyDataError) -> Self {
@@ -281,4 +71,28 @@ pub enum PublisherPolicyError {
     /// Protected journal access or durability failed.
     #[error("publisher policy journal failed: {0}")]
     Journal(#[from] JournalError),
+}
+
+impl From<aos_sandbox_protocol::publisher_policy::PublisherPolicySchemaErrorV1> for PublisherPolicyError {
+    fn from(error: aos_sandbox_protocol::publisher_policy::PublisherPolicySchemaErrorV1) -> Self {
+        use aos_sandbox_protocol::publisher_policy::PublisherPolicySchemaErrorV1 as DataError;
+        match error {
+            DataError::InvalidLimits => Self::InvalidLimits,
+            DataError::LimitExceeded(value) => Self::LimitExceeded(value),
+            DataError::InvalidPolicyRevision => Self::InvalidPolicyRevision,
+            DataError::InvalidResourceBinding => Self::InvalidResourceBinding,
+            DataError::InvalidGenerationHead => Self::InvalidGenerationHead,
+            DataError::InvalidProjectRevocationBinding => Self::InvalidProjectRevocationBinding,
+            DataError::InvalidProjectCacheDomainBinding => Self::InvalidProjectCacheDomainBinding,
+            DataError::ProjectRevocationBindingAlreadyExists => Self::ProjectRevocationBindingAlreadyExists,
+            DataError::CompareAndSwapFailed => Self::CompareAndSwapFailed,
+            DataError::NoncontiguousGeneration => Self::NoncontiguousGeneration,
+            DataError::GenerationExhausted => Self::GenerationExhausted,
+            DataError::RevisionAlreadyExists => Self::RevisionAlreadyExists,
+            DataError::ResourceAlreadyExists => Self::ResourceAlreadyExists,
+            DataError::ControllerPrincipalMismatch => Self::ControllerPrincipalMismatch,
+            DataError::ResourcePolicyMismatch => Self::ResourcePolicyMismatch,
+            DataError::CorruptState => Self::CorruptState,
+        }
+    }
 }

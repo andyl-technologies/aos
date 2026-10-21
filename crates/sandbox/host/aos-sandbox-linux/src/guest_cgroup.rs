@@ -13,7 +13,8 @@
 use std::os::fd::OwnedFd;
 
 use crate::cgroup::RetainedCgroupAnchor;
-use crate::{Error, Result};
+use aos_linux_descriptors::Error;
+use aos_linux_descriptors::Result;
 
 mod control;
 mod directory;

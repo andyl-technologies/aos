@@ -41,15 +41,15 @@ impl WorkerCommandFamilyV3 {
 
 struct WorkerForkOriginalV1 {
     before: CgroupSingleTaskObservationV1,
-    before_result: Option<Result<(), aos_sandbox_linux::Error>>,
+    before_result: Option<Result<(), aos_linux_descriptors::Error>>,
     census: StorageWorkerForkObservationV1,
     process: FixedProcessRunOriginalV3,
     process_result: Option<Result<(), FixedProcessRunRefusalV3>>,
     process_disposal: Option<Result<(), FixedProcessRunRefusalV3>>,
     completed_output: Option<FixedProcessOutput>,
     after: CgroupSingleTaskObservationV1,
-    after_result: Option<Result<(), aos_sandbox_linux::Error>>,
-    disposal: Option<Result<(), aos_sandbox_linux::Error>>,
+    after_result: Option<Result<(), aos_linux_descriptors::Error>>,
+    disposal: Option<Result<(), aos_linux_descriptors::Error>>,
 }
 
 impl WorkerForkOriginalV1 {
@@ -70,14 +70,14 @@ impl WorkerForkOriginalV1 {
 }
 
 struct WorkerExecutionOriginalV1 {
-    initial_limits: Option<Result<rustix::process::Rlimit, aos_sandbox_linux::Error>>,
-    initial_limits_result: Option<Result<(), aos_sandbox_linux::Error>>,
+    initial_limits: Option<Result<rustix::process::Rlimit, aos_linux_descriptors::Error>>,
+    initial_limits_result: Option<Result<(), aos_linux_descriptors::Error>>,
     own_opening: WorkerCgroupOpeningV1,
     own_result: Option<Result<(), WorkerCgroupOpeningRefusalV1>>,
     own_post: Option<Result<(), WorkerCgroupOpeningRefusalV1>>,
     own_anchor: Option<RetainedCgroupAnchor>,
     own_sample: CgroupSingleTaskObservationV1,
-    own_sample_result: Option<Result<(), aos_sandbox_linux::Error>>,
+    own_sample_result: Option<Result<(), aos_linux_descriptors::Error>>,
     forks: Vec<WorkerForkOriginalV1>,
 }
 
@@ -102,7 +102,7 @@ pub(crate) struct WorkerAggregateV1 {
     inherited_limit: aos_sandbox_linux::process::StorageWorkerInheritedLimitOriginalV1,
     inherited_limit_result: Option<Result<(), aos_sandbox_linux::process::StorageWorkerInheritedLimitRefusalV1>>,
     native: StorageWorkerAggregateReadbackV1,
-    result: Option<Result<(), aos_sandbox_linux::Error>>,
+    result: Option<Result<(), aos_linux_descriptors::Error>>,
     root: Option<CgroupV2Root>,
     main: Option<RetainedCgroupAnchor>,
     completed: bool,
@@ -216,7 +216,7 @@ impl WorkerAggregateV1 {
         execution.initial_limits = Some(aos_sandbox_linux::process::observe_nofile_limit_v1());
         execution.initial_limits_result = Some(match execution.initial_limits.as_ref() {
             Some(Ok(rustix::process::Rlimit { current: Some(128), maximum: Some(128) })) => Ok(()),
-            _ => Err(aos_sandbox_linux::Error::InvalidInput {
+            _ => Err(aos_linux_descriptors::Error::InvalidInput {
                 field: "selected worker descriptor limit", message: "requires exact inherited soft/hard128".to_owned(),
             }),
         });
@@ -339,7 +339,7 @@ pub(crate) struct WorkerExecutionScopeV1<'aggregate> {
     root: CgroupV2Root,
     original: Box<WorkerExecutionOriginalV1>,
     completed: bool,
-    capture_cut: Option<Result<aos_sandbox_linux::process::FixedProcessCaptureCutV3, aos_sandbox_linux::Error>>,
+    capture_cut: Option<Result<aos_sandbox_linux::process::FixedProcessCaptureCutV3, aos_linux_descriptors::Error>>,
 }
 
 impl WorkerExecutionScopeV1<'_> {
@@ -360,7 +360,7 @@ impl WorkerExecutionScopeV1<'_> {
     }
 
     pub(crate) fn run_fixed_process_v1(&mut self, request: FixedProcessRequest<'_>)
-        -> Result<FixedProcessOutcome, aos_sandbox_linux::Error>
+        -> Result<FixedProcessOutcome, aos_linux_descriptors::Error>
     {
         let capture = match self.family {
             WorkerCommandFamilyV3::Capture => Some(self.capture_cut.as_ref()
@@ -371,7 +371,7 @@ impl WorkerExecutionScopeV1<'_> {
         if execution.forks.len() >= self.family.maximum_invocations() || execution.own_sample_result.as_ref()
             .is_none_or(|result| result.is_err())
         {
-            return Err(aos_sandbox_linux::Error::InvalidInput {
+            return Err(aos_linux_descriptors::Error::InvalidInput {
                 field: "selected worker invocation", message: "fixed family or actual native scope refused".to_owned(),
             });
         }
@@ -399,13 +399,13 @@ impl WorkerExecutionScopeV1<'_> {
             || !matches!(original.process_result, Some(Ok(())))
             || !matches!(original.after_result, Some(Ok(())))
         {
-            return Err(aos_sandbox_linux::Error::InvalidInput {
+            return Err(aos_linux_descriptors::Error::InvalidInput {
                 field: "selected worker invocation", message: "actual process/native originals retained".to_owned(),
             });
         }
         original.disposal = Some(original.after.dispose_positive_after_posts_v1());
         if !matches!(original.disposal, Some(Ok(()))) {
-            return Err(aos_sandbox_linux::Error::InvalidInput {
+            return Err(aos_linux_descriptors::Error::InvalidInput {
                 field: "selected worker invocation", message: "actual positive native disposition refused".to_owned(),
             });
         }
@@ -451,8 +451,8 @@ impl WorkerExecutionScopeV1<'_> {
     }
 }
 
-fn retained_process_refusal_v3() -> aos_sandbox_linux::Error {
-    aos_sandbox_linux::Error::InvalidInput {
+fn retained_process_refusal_v3() -> aos_linux_descriptors::Error {
+    aos_linux_descriptors::Error::InvalidInput {
         field: "selected worker process",
         message: "actual native process prefix is retained".to_owned(),
     }

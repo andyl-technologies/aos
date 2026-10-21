@@ -98,7 +98,7 @@ impl MeasuredExecutable {
 
 #[derive(Clone)]
 struct MonitorInstallationV2 {
-    listener: Arc<aos_sandbox_linux::pidfd::PidFd>,
+    listener: Arc<aos_linux_descriptors::pidfd::PidFd>,
     configuration_device: u64,
     configuration_inode: u64,
     session_executable: MeasuredExecutable,
@@ -146,10 +146,9 @@ impl OpenSshMonitorRuntimeV2 {
         {
             return Err(OpenSshGatePhysicalErrorV1::InvalidInstallation);
         }
-        let listener = self
+        let listener = aos_sandbox_linux::pidfd::process_identity(&(self
             .installation
-            .listener
-            .process_identity()
+            .listener))
             .map_err(|_| OpenSshGatePhysicalErrorV1::DaemonUnavailable)?;
         let credentials = self
             .installation
@@ -209,7 +208,7 @@ impl OpenSshMonitorRuntimeV2 {
     /// dead monitors or PID reuse. No callback-nominated PID is accepted.
     pub fn require_monitor(
         &self,
-        monitor: &aos_sandbox_linux::pidfd::PidFd,
+        monitor: &aos_linux_descriptors::pidfd::PidFd,
     ) -> Result<(), OpenSshGatePhysicalErrorV1> {
         self.require_current()?;
         self.require_original_monitor_identity(monitor)
@@ -226,7 +225,7 @@ impl OpenSshMonitorRuntimeV2 {
     /// ancestry or non-root credentials. Original route expiry is not renewed.
     pub fn require_original_terminal_monitor_v4(
         &self,
-        monitor: &aos_sandbox_linux::pidfd::PidFd,
+        monitor: &aos_linux_descriptors::pidfd::PidFd,
     ) -> Result<(), OpenSshGatePhysicalErrorV1> {
         self.require_original_session_installation_v4()?;
         self.require_original_monitor_identity(monitor)
@@ -242,7 +241,7 @@ impl OpenSshMonitorRuntimeV2 {
     /// Rejects expiry, physical substitution, dead/foreign monitors or PID reuse.
     pub fn require_original_control_monitor_v5(
         &self,
-        monitor: &aos_sandbox_linux::pidfd::PidFd,
+        monitor: &aos_linux_descriptors::pidfd::PidFd,
     ) -> Result<(), OpenSshGatePhysicalErrorV1> {
         require_original_control_expiry_v5(&self.claim)?;
         self.require_original_session_installation_v4()?;
@@ -251,10 +250,9 @@ impl OpenSshMonitorRuntimeV2 {
 
     fn require_original_monitor_identity(
         &self,
-        monitor: &aos_sandbox_linux::pidfd::PidFd,
+        monitor: &aos_linux_descriptors::pidfd::PidFd,
     ) -> Result<(), OpenSshGatePhysicalErrorV1> {
-        let identity = monitor
-            .process_identity()
+        let identity = aos_sandbox_linux::pidfd::process_identity(&(monitor))
             .map_err(|_| OpenSshGatePhysicalErrorV1::DaemonUnavailable)?;
         let credentials = monitor
             .info()
@@ -291,14 +289,13 @@ impl OpenSshMonitorRuntimeV2 {
     /// This does not establish continuous child memory/descriptor confinement.
     pub fn require_child(
         &self,
-        child: &aos_sandbox_linux::pidfd::PidFd,
+        child: &aos_linux_descriptors::pidfd::PidFd,
         monitor_pid: u32,
         uid: u32,
         gid: u32,
     ) -> Result<(), OpenSshGatePhysicalErrorV1> {
         self.require_confined_child_v3(child, monitor_pid, uid, gid)?;
-        let identity = child
-            .process_identity()
+        let identity = aos_sandbox_linux::pidfd::process_identity(&(child))
             .map_err(|_| OpenSshGatePhysicalErrorV1::DaemonUnavailable)?;
         self.installation
             .session_executable
@@ -320,13 +317,12 @@ impl OpenSshMonitorRuntimeV2 {
     /// Rejects wrong/dead/reused children, ancestry or login credentials.
     pub fn require_confined_child_v3(
         &self,
-        child: &aos_sandbox_linux::pidfd::PidFd,
+        child: &aos_linux_descriptors::pidfd::PidFd,
         parent_pid: u32,
         uid: u32,
         gid: u32,
     ) -> Result<(), OpenSshGatePhysicalErrorV1> {
-        let identity = child
-            .process_identity()
+        let identity = aos_sandbox_linux::pidfd::process_identity(&(child))
             .map_err(|_| OpenSshGatePhysicalErrorV1::DaemonUnavailable)?;
         let credentials = child
             .info()
@@ -589,7 +585,7 @@ impl RunningOpenSshGateV1 {
                         original.capture_once(pid).map_err(|_| OpenSshGatePhysicalErrorV1::DaemonUnavailable)?;
                         original.take_validated().ok_or(OpenSshGatePhysicalErrorV1::DaemonUnavailable)?
                     }
-                    None => aos_sandbox_linux::pidfd::PidFd::open(pid)
+                    None => aos_linux_descriptors::pidfd::PidFd::open(pid)
                         .map_err(|_| OpenSshGatePhysicalErrorV1::DaemonUnavailable)?,
                 };
                 Ok::<_, OpenSshGatePhysicalErrorV1>(MonitorInstallationV2 {
@@ -1235,7 +1231,7 @@ mod tests {
             host_public_key: String::new(), trusted_user_ca_public_key: String::new(),
             expires_at: 0, gate_config_digest: [7; 32],
         };
-        let listener = std::sync::Arc::new(aos_sandbox_linux::pidfd::PidFd::open(
+        let listener = std::sync::Arc::new(aos_linux_descriptors::pidfd::PidFd::open(
             std::num::NonZeroU32::new(std::process::id()).unwrap(),
         ).unwrap());
         let measured = super::MeasuredExecutable { device: 0, inode: 0, digest: [0; 32] };

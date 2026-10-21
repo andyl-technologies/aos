@@ -275,7 +275,7 @@ pub fn require_peer_launch(
 pub fn require_root_process_identity_data_v1(
     pid: std::num::NonZeroU32,
     gid: u32,
-    info: &aos_sandbox_linux::pidfd::PidFdInfo,
+    info: &aos_linux_descriptors::pidfd::PidFdInfo,
 ) -> Result<(), NormalRootStartupErrorV1> {
     let credentials = info.credentials().ok_or(NormalRootStartupErrorV1::Service)?;
     if info.thread_group_id() != pid.get() || info.parent_pid() != 1

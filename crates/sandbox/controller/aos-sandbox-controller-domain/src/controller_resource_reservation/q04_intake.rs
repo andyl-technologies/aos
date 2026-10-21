@@ -11,7 +11,7 @@ use aos_sandbox_model::{RawPairedClockSample, ResourceDimension as D, ResourceVe
 use aos_sandbox_linux::cgroup::FirstGlobalCpuReadbackV1;
 
 use crate::journal::{JournalShape, ProtectedJournalNamesV1};
-use crate::cache_residency::OriginalQ04CachePreflightLoanV1;
+use crate::cache_programmes::OriginalQ04CachePreflightLoanV1;
 use super::bank::FAILURE_MEMORY_BYTES;
 use super::service_interval::{
     ObserverAdmission, ObserverLifetime, OriginalReceiver, capacity_for, multiply,

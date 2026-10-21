@@ -4,7 +4,7 @@
 //! steps. This module retains ambiguous tokens in the single controller owner
 //! and rechecks every partition before publishing one public receipt.
 
-use aos_sandbox_controller_domain::cache_residency::{CacheOwnerErrorV1, CacheOwnerPinSettlementErrorV1, CachePinV1};
+use aos_sandbox_cache::{CacheOwnerErrorV1, CacheOwnerPinSettlementErrorV1, CachePinV1};
 use aos_sandbox_protocol::public_api::cache_consumer::CacheConsumerDataV1;
 
 use super::{EffectFailure, Journal, OperationId, ProductionEffectExecutor};

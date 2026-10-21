@@ -19,12 +19,12 @@ pub(crate) enum CaptureIssuanceClockErrorV3 {
     #[error("Capture issuance clock changed or its original entry expired")]
     Stale,
     #[error(transparent)]
-    Native(aos_sandbox_linux::Error),
+    Native(aos_linux_descriptors::Error),
 }
 
 impl KernelPairedClockErrorV1 for CaptureIssuanceClockErrorV3 {
     fn stale() -> Self { Self::Stale }
-    fn kernel(cause: aos_sandbox_linux::Error) -> Self { Self::Native(cause) }
+    fn kernel(cause: aos_linux_descriptors::Error) -> Self { Self::Native(cause) }
 }
 
 #[derive(Debug, thiserror::Error)]

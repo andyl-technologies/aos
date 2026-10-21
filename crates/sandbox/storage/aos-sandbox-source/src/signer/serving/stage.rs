@@ -8,7 +8,7 @@ use std::error::Error;
 
 use aos_sandbox_broker::receiving::ComponentReceivingOperationLoanV1;
 use crate::signer::root_observation::{SourceRootPeerConnectionV1, SourceRootPeerStageV1};
-use aos_sandbox_linux::unix_stream::RetainedUnixStream;
+use aos_linux_descriptors::unix_stream::RetainedUnixStream;
 
 use super::{SourceServingOriginalLoanV1, SourceReceivingClosedV1, CLOSED};
 use super::super::currentness::SourceCurrentnessSampleV1;

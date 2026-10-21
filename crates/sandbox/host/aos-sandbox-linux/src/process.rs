@@ -14,9 +14,10 @@ use std::os::unix::ffi::OsStrExt as _;
 use std::path::{Component, Path};
 use std::time::Duration;
 
-use crate::pidfd::PidFd;
+use aos_linux_descriptors::pidfd::PidFd;
 use crate::uapi;
-use crate::{Error, Result};
+use aos_linux_descriptors::Error;
+use aos_linux_descriptors::Result;
 
 mod child_lifetime;
 mod guest_ssh;

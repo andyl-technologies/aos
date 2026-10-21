@@ -336,7 +336,7 @@ fn storage_output_readback_fixture() -> (Vec<u8>, Vec<u8>, BrokerAssignment) {
     source[48..80].fill(3);
     source[96..104].copy_from_slice(&1_u64.to_be_bytes());
     source[104..120].copy_from_slice(
-        &aos_sandbox_linux::boot::KernelBootId::current()
+        &aos_linux_descriptors::boot::KernelBootId::current()
             .unwrap()
             .into_bytes(),
     );

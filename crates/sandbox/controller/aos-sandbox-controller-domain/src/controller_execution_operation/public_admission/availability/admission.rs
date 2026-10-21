@@ -13,7 +13,7 @@ enum ExecutionAdmissionClockErrorV2 {
     #[error("the original Execution admission clock is stale or incomplete")]
     Stale,
     #[error(transparent)]
-    Kernel(#[from] aos_sandbox_linux::Error),
+    Kernel(#[from] aos_linux_descriptors::Error),
 }
 
 impl aos_sandbox_broker::kernel_clock::KernelPairedClockErrorV1 for ExecutionAdmissionClockErrorV2 {
@@ -21,7 +21,7 @@ impl aos_sandbox_broker::kernel_clock::KernelPairedClockErrorV1 for ExecutionAdm
         Self::Stale
     }
 
-    fn kernel(cause: aos_sandbox_linux::Error) -> Self {
+    fn kernel(cause: aos_linux_descriptors::Error) -> Self {
         Self::Kernel(cause)
     }
 }

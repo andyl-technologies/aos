@@ -5,7 +5,8 @@ use std::os::fd::{AsFd as _, OwnedFd};
 use rustix::fs::{AtFlags, Mode, OFlags, fstat, openat, statat};
 
 use crate::cgroup::{CgroupActiveOriginalV2, RetainedCgroupAnchor};
-use crate::{Error, Result};
+use aos_linux_descriptors::Error;
+use aos_linux_descriptors::Result;
 
 pub(super) struct ControlWriteOriginalV1 {
     owner: Option<Box<crate::guest_confinement::GuestOwnerOriginalV2>>,

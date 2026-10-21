@@ -4,6 +4,7 @@
 //! bytes remain comparison DATA; the same existing native commit engine still
 //! invokes the exact role transition and final-crossing gates.
 
+use aos_sandbox_protocol::domain_ledger::create_storage_history::readback::HistoryPairReadbackDataV1;
 use std::error::Error as StdError;
 use std::fs::Metadata;
 use std::io;
@@ -14,7 +15,7 @@ use aos_sandbox_protocol::domain_ledger::create_storage_history::{
     RecordEnvelopeV1, PhaseV1,
 };
 use crate::journal::{CommitResult, Journal, JournalError, JournalTransaction};
-use crate::journal::create_storage_history::{HistoryPairReadbackV1,
+use crate::journal::create_storage_history::{
     prepare_history_pair_v1, readback_history_pair_v1};
 use crate::normal_root::RootPolicyAcceptedFlightV1;
 use super::root_open::{RootCurrentOpenStateV1, RootCurrentOpenAppendLoanV1,
@@ -28,7 +29,7 @@ pub(super) struct RootCurrentHistoryPairV1<const RECORD: usize> {
     transaction: Option<Result<JournalTransaction, JournalError>>,
     crossing: RootCurrentOpenCrossingV1,
     pub(super) append: Option<Result<CommitResult, JournalError>>,
-    pub(super) readback: Option<Result<HistoryPairReadbackV1<RECORD>, JournalError>>,
+    pub(super) readback: Option<Result<HistoryPairReadbackDataV1<RECORD>, JournalError>>,
     pub(super) native_end: Option<io::Result<Metadata>>,
     before_next: Option<u64>,
     policy_next: Option<u64>,
@@ -86,7 +87,7 @@ impl<const RECORD: usize> RootCurrentHistoryPairV1<RECORD> {
     }
 
     pub(super) fn readback_pair(&self, authority: &Journal, policy: &Journal)
-        -> Result<HistoryPairReadbackV1<RECORD>, JournalError>
+        -> Result<HistoryPairReadbackDataV1<RECORD>, JournalError>
     {
         let observed = self.readback_pair_data(authority)?;
         if Some(policy.snapshot_sequence()) != self.policy_next {
@@ -96,7 +97,7 @@ impl<const RECORD: usize> RootCurrentHistoryPairV1<RECORD> {
     }
 
     fn readback_pair_data(&self, authority: &Journal)
-        -> Result<HistoryPairReadbackV1<RECORD>, JournalError>
+        -> Result<HistoryPairReadbackDataV1<RECORD>, JournalError>
     {
         readback_history_pair_v1(authority, positive(&self.transaction)?,
             &self.record, &self.head, self.before_next.ok_or(JournalError::ProtectedBoundary)?,
@@ -113,7 +114,7 @@ impl<const RECORD: usize> RootCurrentHistoryPairV1<RECORD> {
     }
 
     pub(super) fn readback_current_v1(&self, authority: &Journal, policy: &Journal)
-        -> Result<HistoryPairReadbackV1<RECORD>, JournalError>
+        -> Result<HistoryPairReadbackDataV1<RECORD>, JournalError>
     {
         let observed = self.readback_pair_data(authority)?;
         let metadata = authority.held_native_receiving_metadata_v1().0?;

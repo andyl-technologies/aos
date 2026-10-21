@@ -228,7 +228,7 @@ fn launch_actual_agent_and_systemd(report: &mut GuestStartupReportOriginalV1, ca
 struct GuestPid1AgentSpawnOriginalV1 {
     spawned: Option<std::io::Result<Child>>,
     pidfd: aos_sandbox_linux::pidfd::PidFdOpenAttemptV1,
-    process: Option<aos_sandbox_linux::pidfd::PidFd>,
+    process: Option<aos_linux_descriptors::pidfd::PidFd>,
     identity: Option<Box<aos_sandbox_linux::pidfd::PidFdProcessIdentityOriginalV1>>,
 }
 

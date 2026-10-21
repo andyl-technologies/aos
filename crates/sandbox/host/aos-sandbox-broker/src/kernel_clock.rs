@@ -7,7 +7,8 @@
 use std::error::Error;
 
 use aos_sandbox_model::{RawClockProvenance, RawPairedClockSample};
-use aos_sandbox_linux::boot::{KernelBootId, RootOriginalKernelBootIdAttemptV1};
+use aos_linux_descriptors::boot::KernelBootId;
+use aos_linux_descriptors::boot::RootOriginalKernelBootIdAttemptV1;
 use rustix::time::{ClockId, Timespec, clock_gettime};
 
 /// Projects only clock diagnostics into an existing role's error class.
@@ -19,7 +20,7 @@ pub trait KernelPairedClockErrorV1: Error + 'static {
     fn stale() -> Self;
 
     /// Preserves the actual owning native error at an ordinary boundary.
-    fn kernel(error: aos_sandbox_linux::Error) -> Self;
+    fn kernel(error: aos_linux_descriptors::Error) -> Self;
 }
 
 /// Samples BOOTTIME and realtime between two kernel boot observations.

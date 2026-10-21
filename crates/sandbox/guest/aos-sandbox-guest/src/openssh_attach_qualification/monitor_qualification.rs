@@ -6,7 +6,7 @@
 //! consume and installed continuous confinement require separate qualification.
 
 use aos_sandbox_model::public_attach_ticket::PublicAttachTicketBindingV2;
-use aos_sandbox_linux::pidfd::PidFd;
+use aos_linux_descriptors::pidfd::PidFd;
 use aos_sandbox_linux::seqpacket::{RecordSubjectListener, SeqpacketError};
 use nix::libc;
 use std::io::Write as _;
@@ -251,11 +251,11 @@ pub(super) fn qualify_root_monitor_binding(ssh: &str, base: &OpenSshGateClaimV1,
     runtime.require_monitor(relay_sender.pidfd()).unwrap();
     let relay = PidFd::from_owned(descriptors.pop().unwrap()).unwrap();
     assert!(descriptors.is_empty());
-    let child_pid = child.process_identity().unwrap().pid();
+    let child_pid = aos_sandbox_linux::pidfd::process_identity(&(child)).unwrap().pid();
     runtime
         .require_confined_child_v3(&relay, child_pid, witness.uid, witness.gid)
         .unwrap();
-    let relay_pid = relay.process_identity().unwrap().pid();
+    let relay_pid = aos_sandbox_linux::pidfd::process_identity(&(relay)).unwrap().pid();
     qualify_same_uid_denials(child_pid, relay_pid, witness.uid, witness.gid);
     assert!(child.is_alive().unwrap() && relay.is_alive().unwrap());
     connection.send(b"AOSRAK03").unwrap();
@@ -364,8 +364,8 @@ pub(super) fn qualify_root_monitor_binding(ssh: &str, base: &OpenSshGateClaimV1,
                 );
                 assert_eq!(bound.subject().credentials().uid(), 0);
                 assert_eq!(
-                    bound.subject().pidfd().process_identity().unwrap(),
-                    subject.pidfd().process_identity().unwrap()
+                    aos_sandbox_linux::pidfd::process_identity(&(bound.subject().pidfd())).unwrap(),
+                    aos_sandbox_linux::pidfd::process_identity(&(subject.pidfd())).unwrap()
                 );
                 let request = OpenSshSessionRequestV4::decode(bound.payload()).unwrap();
                 assert_eq!(request.sequence, 1);

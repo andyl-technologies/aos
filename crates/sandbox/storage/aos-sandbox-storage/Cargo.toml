@@ -53,6 +53,7 @@ aos-sandbox-broker.workspace = true
 aos-sandbox-model.workspace = true
 aos-sandbox-journal.workspace = true
 aos-sandbox-linux.workspace = true
+aos-linux-descriptors.workspace = true
 aos-sandbox-mount.workspace = true
 aos-sandbox-protocol.workspace = true
 aos-sandbox-source-provider-protocol.workspace = true

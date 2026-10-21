@@ -285,7 +285,7 @@ pub(crate) fn validate_lifecycle_worker_ready(
         return Err(NetworkWorkerProcessError::PeerMismatch);
     }
 
-    let bootstrap = subject.pidfd().namespace(NamespaceKind::Network)?;
+    let bootstrap = aos_sandbox_linux::pidfd::namespace(&(subject.pidfd()), NamespaceKind::Network)?;
     let identities = [host.identity(), bootstrap.identity(), target.identity()];
     if bootstrap.identity() != ready.bootstrap()
         || identities[0] == identities[1]
@@ -322,7 +322,7 @@ pub(crate) fn validate_same_lifecycle_worker(
     let info = worker_cgroup.verify_exact_membership(later.pidfd())?;
     if info.pid() != later_credentials.pid().get()
         || info.thread_group_id() != later_credentials.pid().get()
-        || later.pidfd().namespace(NamespaceKind::Network)?.identity() != bootstrap.identity()
+        || aos_sandbox_linux::pidfd::namespace(&(later.pidfd()), NamespaceKind::Network)?.identity() != bootstrap.identity()
     {
         return Err(NetworkWorkerProcessError::PeerMismatch);
     }

@@ -7,33 +7,18 @@
 use aos_sandbox_model::{ObjectDigest, ResourceVector};
 use sha2::{Digest as _, Sha256};
 
+use super::CreateQ04ErrorV1;
 use crate::controller_resource_reservation::ResourceReservationErrorV1;
 use crate::journal::JournalShape;
-use super::CreateQ04ErrorV1;
 
 pub(crate) fn cache_replay_cell_bytes() -> Result<usize, ResourceReservationErrorV1> {
-    std::mem::size_of::<crate::cache_residency::CacheAtomicObjectPayloadV1>()
-        .checked_add(std::mem::size_of::<crate::cache_residency::CacheGlobalRecoveryStateV1>())
-        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<crate::cache_residency::CacheRecoveryWorkV1>()))
-        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<crate::cache_residency::CacheTypedCheckpointV1>()))
-        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<crate::cache_residency::CacheRecoveryInventoryV1>()))
+    std::mem::size_of::<aos_sandbox_cache::CacheAtomicObjectPayloadV1>()
+        .checked_add(std::mem::size_of::<aos_sandbox_cache::CacheGlobalRecoveryStateV1>())
+        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<aos_sandbox_cache::CacheRecoveryWorkV1>()))
+        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<aos_sandbox_cache::CacheTypedCheckpointV1>()))
+        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<aos_sandbox_cache::CacheRecoveryInventoryV1>()))
         .and_then(|bytes| bytes.checked_add(std::mem::size_of::<(Vec<u8>, Vec<u8>, [usize; 4])>()))
         .ok_or(ResourceReservationErrorV1::Conflict)
-}
-
-pub(crate) fn candidate_capacity(
-    candidate: &aos_sandbox_policy::CompiledPolicyCandidateV1,
-) -> Result<ResourceVector, CreateQ04ErrorV1> {
-    use aos_sandbox_model::{ResourceDimension, ResourceLimit};
-
-    let mut values = [0; ResourceDimension::COUNT];
-    for (index, dimension) in ResourceDimension::ALL.into_iter().enumerate() {
-        let ResourceLimit::Bounded(value) = candidate.hard_resources().accounting_ceilings().get(dimension) else {
-            return Err(CreateQ04ErrorV1::ChangedCut);
-        };
-        values[index] = value;
-    }
-    Ok(ResourceVector::new(values))
 }
 
 /// Owns the exact existing AOSPCO03 bytes as prepared provenance, not authority.
@@ -96,7 +81,9 @@ impl Q04OriginalInputDemandV1 {
         inclusive: ResourceVector,
     ) -> Result<(), ResourceReservationErrorV1> {
         inclusive.checked_sub(self.retained)?;
-        original.checked_sub(inclusive)?.checked_sub(self.continuation)?;
+        original
+            .checked_sub(inclusive)?
+            .checked_sub(self.continuation)?;
         original.checked_sub(self.total()?)?;
         Ok(())
     }
@@ -115,27 +102,16 @@ pub(crate) fn original_input_demand(
     source: &JournalShape,
 ) -> Result<Q04OriginalInputDemandV1, ResourceReservationErrorV1> {
     let failed = || ResourceReservationErrorV1::Conflict;
-    let layer = aos_sandbox_policy::MAXIMUM_POLICY_LAYER_BYTES;
-    // The parentless path has four layers, two branded catalogs and backend
-    // input. Four portable outputs, original/candidate verification copies,
-    // and the AOSPCO03 serializer's independent record remain simultaneously
-    // owned. Every encoded byte is also a conservative possible owned cell.
-    let input_bytes = layer.checked_mul(4 + 2 + 1).ok_or_else(failed)?;
-    let output_bytes = layer.checked_mul(4).ok_or_else(failed)?;
-    let origin_bytes = 4 * 1024 * 1024;
-    let compiler_bytes = input_bytes.checked_add(output_bytes)
-        .and_then(|bytes| bytes.checked_mul(2))
-        .and_then(|bytes| bytes.checked_add(origin_bytes * 2)).ok_or_else(failed)?;
-    let cell_bytes = std::mem::size_of::<(Vec<u8>, Vec<u8>, [usize; 4])>()
-        .checked_add(std::mem::size_of::<aos_sandbox_policy::PolicyLayerV1>())
-        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<aos_sandbox_policy::CompiledPolicyCandidateV1>()))
-        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<aos_sandbox_policy::PolicyCompilerInputV1>()))
+    let aos_sandbox_policy::parentless_input::CompilerMaterializationShapeDataV1 {
+        origin_bytes,
+        cell_bytes,
+        compiler_cells,
+        compiler_memory,
+    } = aos_sandbox_policy::parentless_input::compiler_materialization_shape_v1()
         .ok_or_else(failed)?;
-    let compiler_cells = compiler_bytes;
-    let compiler_memory = compiler_bytes.checked_add(compiler_cells.checked_mul(cell_bytes).ok_or_else(failed)?)
-        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<aos_sandbox_policy::PolicyCompilerInputV1>()))
-        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<aos_sandbox_policy::CompiledPolicyCandidateV1>()))
-        .ok_or_else(failed)?;
+    let parentless_controls =
+        aos_sandbox_policy::parentless_input::additional_construction_control_bytes_v1()
+            .ok_or_else(failed)?;
 
     // The actual fresh Controller and unchanged Source shapes are not replaced
     // with namespace maxima. Future complete recipes use their existing native
@@ -143,35 +119,63 @@ pub(crate) fn original_input_demand(
     // and a conservative four Source/Cache recipes for their three-phase cuts.
     // Cache's state/authority use JournalLimits::default, not the smaller
     // Controller cache-source opener. Complete replay/error owners count too.
-    let controller_suffix = controller.maximum_transaction_bytes.checked_mul(9).ok_or_else(failed)?;
-    let source_suffix = source.maximum_transaction_bytes.checked_mul(4).ok_or_else(failed)?;
+    let controller_suffix = controller
+        .maximum_transaction_bytes
+        .checked_mul(9)
+        .ok_or_else(failed)?;
+    let source_suffix = source
+        .maximum_transaction_bytes
+        .checked_mul(4)
+        .ok_or_else(failed)?;
     let cache = crate::JournalLimits::default();
-    let cache_suffix = cache.maximum_transaction_bytes.checked_mul(4).ok_or_else(failed)?;
-    let cache_native = usize::try_from(cache.maximum_journal_bytes).map_err(|_| failed())?
-        .checked_mul(2).and_then(|bytes| bytes.checked_add(256 * 1024 * 1024)).ok_or_else(failed)?;
-    let cache_cell = cache_replay_cell_bytes()?.checked_add(cell_bytes).ok_or_else(failed)?;
+    let cache_suffix = cache
+        .maximum_transaction_bytes
+        .checked_mul(4)
+        .ok_or_else(failed)?;
+    let cache_native = usize::try_from(cache.maximum_journal_bytes)
+        .map_err(|_| failed())?
+        .checked_mul(2)
+        .and_then(|bytes| bytes.checked_add(256 * 1024 * 1024))
+        .ok_or_else(failed)?;
+    let cache_cell = cache_replay_cell_bytes()?
+        .checked_add(cell_bytes)
+        .ok_or_else(failed)?;
     // Each canonical byte can conservatively name an owned decoded cell.
     // The sum includes the largest nested payload/global/work carriers and
     // tree-node/key overhead; whole native extents bound all admitted input.
-    let cache_materialized = cache_native.checked_mul(cache_cell)
-        .and_then(|bytes| bytes.checked_mul(4)).ok_or_else(failed)?;
-    let suffix = controller_suffix.checked_add(source_suffix)
+    let cache_materialized = cache_native
+        .checked_mul(cache_cell)
+        .and_then(|bytes| bytes.checked_mul(4))
+        .ok_or_else(failed)?;
+    let suffix = controller_suffix
+        .checked_add(source_suffix)
         .and_then(|bytes| bytes.checked_add(cache_suffix))
-        .and_then(|bytes| bytes.checked_add(cache_native)).ok_or_else(failed)?;
-    let replay = controller.native_bytes.checked_add(source.native_bytes)
-        .and_then(|bytes| bytes.checked_add(u64::try_from(suffix).ok()?)).ok_or_else(failed)?;
-    let rows = controller.cells.checked_add(source.cells)
+        .and_then(|bytes| bytes.checked_add(cache_native))
+        .ok_or_else(failed)?;
+    let replay = controller
+        .native_bytes
+        .checked_add(source.native_bytes)
+        .and_then(|bytes| bytes.checked_add(u64::try_from(suffix).ok()?))
+        .ok_or_else(failed)?;
+    let rows = controller
+        .cells
+        .checked_add(source.cells)
         .and_then(|cells| cells.checked_mul(9 + 4))
         .and_then(|cells| cells.checked_add(cache_native))
-        .and_then(|cells| cells.checked_add(compiler_cells)).ok_or_else(failed)?;
-    let materialized = controller.retained_bytes.checked_add(source.retained_bytes)
+        .and_then(|cells| cells.checked_add(compiler_cells))
+        .ok_or_else(failed)?;
+    let materialized = controller
+        .retained_bytes
+        .checked_add(source.retained_bytes)
         .and_then(|bytes| bytes.checked_mul(9 + 4))
         .and_then(|bytes| bytes.checked_add(rows.checked_mul(cell_bytes)?))
         .and_then(|bytes| bytes.checked_add(suffix.checked_mul(4)?))
         .and_then(|bytes| bytes.checked_add(usize::try_from(replay).ok()?))
         .and_then(|bytes| bytes.checked_add(compiler_memory))
+        .and_then(|bytes| bytes.checked_add(parentless_controls))
         .and_then(|bytes| bytes.checked_add(cache_materialized))
-        .and_then(|bytes| bytes.checked_add(origin_bytes.checked_mul(16)?)).ok_or_else(failed)?;
+        .and_then(|bytes| bytes.checked_add(origin_bytes.checked_mul(16)?))
+        .ok_or_else(failed)?;
     // The lower Cache DATA grouping introduces only a returned Result and
     // caller-local header before the same final wrapper. Payload/suffix/replay
     // backing remains in the existing terms above; no second backing fee.
@@ -181,7 +185,9 @@ pub(crate) fn original_input_demand(
         .ok_or_else(failed)?;
     #[cfg(not(target_os = "linux"))]
     let recipe_controls = 0;
-    let materialized = materialized.checked_add(recipe_controls).ok_or_else(failed)?;
+    let materialized = materialized
+        .checked_add(recipe_controls)
+        .ok_or_else(failed)?;
     // Moving the bounded parser preserves its byte backing. The exact lower
     // return plus caller-local envelopes below are the new forwarding storage;
     // existing outer CreateQ04Error/result controls remain in their old owners.
@@ -199,10 +205,20 @@ pub(crate) fn original_input_demand(
         std::mem::size_of::<Result<u32, TransferError>>(),
         std::mem::size_of::<Result<u64, TransferError>>(),
         std::mem::size_of::<Result<(), TransferError>>(),
-        std::mem::size_of::<Result<super::Q04EffectSubgateV1, aos_sandbox_protocol::domain_ledger::ProtectedHistoryDataErrorV1>>(),
-    ].into_iter().try_fold(0_usize, |sum, bytes| sum.checked_add(bytes))
-        .and_then(|bytes| bytes.checked_mul(2)).ok_or_else(failed)?;
-    let materialized = materialized.checked_add(transfer_controls).ok_or_else(failed)?;
+        std::mem::size_of::<
+            Result<
+                super::Q04EffectSubgateV1,
+                aos_sandbox_protocol::domain_ledger::ProtectedHistoryDataErrorV1,
+            >,
+        >(),
+    ]
+    .into_iter()
+    .try_fold(0_usize, |sum, bytes| sum.checked_add(bytes))
+    .and_then(|bytes| bytes.checked_mul(2))
+    .ok_or_else(failed)?;
+    let materialized = materialized
+        .checked_add(transfer_controls)
+        .ok_or_else(failed)?;
     let memory = u64::try_from(materialized).map_err(|_| failed())?;
     let rows = u64::try_from(rows).map_err(|_| failed())?;
 
@@ -213,7 +229,8 @@ pub(crate) fn original_input_demand(
     // the Project continuation retains its actual attempt and fixed native
     // original/residual rows, not fabricated signed input buffers.
     let continuation = std::mem::size_of::<crate::ProjectPreparationReservationAttemptV1>()
-        .checked_add(945 + 531 + 787).ok_or_else(failed)?;
+        .checked_add(945 + 531 + 787)
+        .ok_or_else(failed)?;
     let continuation = u64::try_from(continuation).map_err(|_| failed())?;
 
     // Q already pays the exact original profile/CPU/observer archive and early
@@ -222,13 +239,32 @@ pub(crate) fn original_input_demand(
     // or executions. Its new owners are compiler/recipe/replay/record DATA.
     Ok(Q04OriginalInputDemandV1 {
         retained: ResourceVector::new([
-            0, memory, 0, 0, 0, 0, replay, 0, 0, 0, rows, 0, 0, 0,
-            memory, 0, 0, 0, 0, memory, memory, 1,
+            0, memory, 0, 0, 0, 0, replay, 0, 0, 0, rows, 0, 0, 0, memory, 0, 0, 0, 0, memory,
+            memory, 1,
         ]),
         continuation: ResourceVector::new([
-            0, continuation, 0, 0, 0, 0, 945 + 531 + 787, 0, 0, 0,
-            continuation, 0, 0, 0, continuation, 0, 0, 0, 0,
-            continuation, continuation, 0,
+            0,
+            continuation,
+            0,
+            0,
+            0,
+            0,
+            945 + 531 + 787,
+            0,
+            0,
+            0,
+            continuation,
+            0,
+            0,
+            0,
+            continuation,
+            0,
+            0,
+            0,
+            0,
+            continuation,
+            continuation,
+            0,
         ]),
     })
 }

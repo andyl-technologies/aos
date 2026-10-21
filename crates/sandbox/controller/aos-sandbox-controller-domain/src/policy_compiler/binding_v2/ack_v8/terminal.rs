@@ -133,7 +133,8 @@ fn terminal_transaction(
             TERMINAL_KEY.to_vec(),
             row.to_vec(),
         )],
-    ).map_err(crate::journal::JournalError::from)?)
+    )
+    .map_err(crate::journal::JournalError::from)?)
 }
 
 fn terminal_record(
@@ -235,7 +236,9 @@ pub(super) fn terminal_capacity_transactions()
 -> Result<[JournalTransaction; 2], RootV8EffectAckErrorV1> {
     let challenge = CHALLENGE_CODEC.encode(1, [1; 16], ObjectDigest::from_bytes([1; 32]));
     Ok([
-        CHALLENGE_CODEC.transaction(challenge)?,
+        CHALLENGE_CODEC
+            .transaction(challenge)
+            .map_err(crate::journal::JournalError::from)?,
         terminal_transaction([1; CONTROLLER_V8_ROOT_RECEIPT_READBACK_BYTES_V1])?,
     ])
 }
@@ -379,13 +382,19 @@ pub(super) fn verify_in_authority(
     let challenge_row = CHALLENGE_CODEC.encode(issue, nonce, cut);
     let terminal_capacity = terminal_capacity_transactions()?;
     let planned = [
-        CHALLENGE_CODEC.transaction(challenge_row)?,
+        CHALLENGE_CODEC
+            .transaction(challenge_row)
+            .map_err(crate::journal::JournalError::from)?,
         terminal_capacity[1].clone(),
         release_capacity_transaction()?,
     ];
     let preflight = authority.preflight_transactions(&planned)?;
     authority.validate_preflight_for_effect(&preflight, &planned)?;
-    authority.commit(&CHALLENGE_CODEC.transaction(challenge_row)?)?;
+    authority.commit(
+        &CHALLENGE_CODEC
+            .transaction(challenge_row)
+            .map_err(crate::journal::JournalError::from)?,
+    )?;
     let snapshot = authority.snapshot()?;
 
     let packet = exchange(challenge)?;

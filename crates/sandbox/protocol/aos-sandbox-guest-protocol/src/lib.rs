@@ -16,6 +16,8 @@
 //! protected runtime owners.
 
 pub mod capture_receiving;
+/// Shares the actual prepaid Guest argument-observation representation bound.
+pub mod argument_receiving;
 pub mod guest_attach_trust;
 pub mod guest_root_publication;
 pub mod launch;

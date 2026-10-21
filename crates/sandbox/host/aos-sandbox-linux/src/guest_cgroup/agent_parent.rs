@@ -4,8 +4,11 @@ use std::num::NonZeroU32;
 use std::path::Path;
 
 use crate::cgroup::{CgroupChildOriginalV2, ExactCgroupMembershipReadbackV1, RetainedCgroupAnchor};
-use crate::pidfd::{PidFd, PidFdOpenAttemptV1, PidFdProcessIdentityOriginalV1};
-use crate::{Error, Result};
+use aos_linux_descriptors::pidfd::PidFd;
+use crate::pidfd::PidFdOpenAttemptV1;
+use crate::pidfd::PidFdProcessIdentityOriginalV1;
+use aos_linux_descriptors::Error;
+use aos_linux_descriptors::Result;
 
 use super::handoff::TopologyRecordV1;
 

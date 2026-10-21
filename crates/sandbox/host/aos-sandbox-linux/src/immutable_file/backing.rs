@@ -205,7 +205,7 @@ fn inspect_read_only(fd: BorrowedFd<'_>) -> Result<ObservedFile, ImmutableFileEr
         return Err(ImmutableFileError::NotRegular);
     }
     let descriptor_flags = rustix::io::fcntl_getfd(fd).map_err(|source| {
-        ImmutableFileError::Linux(crate::Error::Syscall {
+        ImmutableFileError::Linux(aos_linux_descriptors::Error::Syscall {
             operation: "fcntl(F_GETFD) immutable backing",
             source: source.into(),
         })
@@ -213,7 +213,7 @@ fn inspect_read_only(fd: BorrowedFd<'_>) -> Result<ObservedFile, ImmutableFileEr
     if !descriptor_flags.contains(rustix::io::FdFlags::CLOEXEC) {
         return Err(ImmutableFileError::DescriptorNotCloseOnExec);
     }
-    let flags = uapi::get_status_flags(fd)?;
+    let flags = aos_linux_descriptors::native::get_status_flags(fd)?;
     if flags & libc::O_ACCMODE != libc::O_RDONLY || flags & libc::O_PATH != 0 {
         return Err(ImmutableFileError::DescriptorNotReadOnly);
     }

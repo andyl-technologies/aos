@@ -28,6 +28,7 @@ use crate::controller_resource_reservation::{ResourceReservationErrorV1, CreateS
 use aos_sandbox_api::aos::sandbox::v1::SandboxPhase;
 use sha2::{Digest as _, Sha256};
 use super::JournalRecord;
+use super::historical_observation::HistoricalObservationV1;
 
 mod receiving;
 mod start;
@@ -121,10 +122,29 @@ pub(crate) fn create_stopped_terminal_receiving_demand_v1(journal: &Journal,
 ///
 /// Native append IO, writer carriers and financial admission are not included.
 /// This passive supplier cannot grant an append or a completion lender.
-pub(crate) fn create_stopped_metadata_model_receiving_demand_v1(journal: &Journal,
+pub(crate) fn create_stopped_metadata_model_receiving_demand_v1(
+    journal: aos_sandbox_protocol::domain_ledger::readonly::HistoricalLedgerRowsDataV2<'_>,
     parent: OperationId,
 ) -> Result<ResourceVector, JournalError> {
     receiving::independent_model_demand_v1(journal, parent)
+}
+
+
+/// Prices the exact passive geometry interfaces before their first traversal.
+///
+/// The caller must join this Memory-only amount to its actual earlier fixed
+/// Stage. It authenticates no Rows and cannot issue a reader or append grant.
+pub(crate) fn create_stopped_geometry_control_bytes_v2() -> Option<usize> {
+    receiving::geometry_control_bytes_v2()?
+        .checked_add(size_of::<Option<usize>>().checked_mul(3)?)
+}
+
+/// Prices the independent Rows geometry before its real Root fixed admission.
+///
+/// This contains no ordinary Journal/view constructor or native owner fee.
+pub(crate) fn create_stopped_independent_geometry_control_bytes_v2() -> Option<usize> {
+    receiving::independent_geometry_control_bytes_v2()?
+        .checked_add(size_of::<Option<usize>>().checked_mul(3)?)
 }
 
 
@@ -153,8 +173,8 @@ impl CreateStoppedControllerTerminalAppendOriginalV1 {
         journal: &mut Journal,
     ) -> Result<(), FirstV1> {
         let models = self.models.as_mut().ok_or(FirstV1::Entry)?;
-        prepare_terminal_metadata_models_v1(models, journal, self.parent,
-            TerminalMetadataInputV1::PostAck(context))?;
+        prepare_terminal_metadata_models_v1(models, HistoricalObservationV1::from_journal_v1(journal), self.parent,
+            TerminalMetadataInputV1::PostAck { context, journal })?;
         let transaction = models.transaction.as_ref().and_then(|v| v.as_ref().ok()).ok_or(FirstV1::Transaction)?;
         let effect_key = effect_key(self.parent, 0);
         let key = projection_key(PublicProjectionKindV1::Sandbox, *context.sandbox_v1().as_bytes());
@@ -174,7 +194,7 @@ impl CreateStoppedControllerTerminalAppendOriginalV1 {
 // A finite input selects the same pure recipe. Only PostAck has a genuine
 // append destination; IndependentRead can produce transaction DATA only.
 enum TerminalMetadataInputV1<'call, 'turn> {
-    PostAck(&'call CreateStoppedPostAckContextV1<'turn>),
+    PostAck { context: &'call CreateStoppedPostAckContextV1<'turn>, journal: &'call Journal },
     IndependentRead {
         project: aos_sandbox_model::ProjectId,
         sandbox: aos_sandbox_model::SandboxId,
@@ -185,35 +205,35 @@ enum TerminalMetadataInputV1<'call, 'turn> {
 
 impl TerminalMetadataInputV1<'_, '_> {
     fn project_v1(&self) -> aos_sandbox_model::ProjectId {
-        match self { Self::PostAck(context) => context.project_v1(),
+        match self { Self::PostAck { context, .. } => context.project_v1(),
             Self::IndependentRead { project, .. } => *project }
     }
 
     fn sandbox_v1(&self) -> aos_sandbox_model::SandboxId {
-        match self { Self::PostAck(context) => context.sandbox_v1(),
+        match self { Self::PostAck { context, .. } => context.sandbox_v1(),
             Self::IndependentRead { sandbox, .. } => *sandbox }
     }
 
     fn receipt_bytes_v1(&self) -> Result<&[u8], ResourceReservationErrorV1> {
-        match self { Self::PostAck(context) => context.receipt_bytes_v1(),
+        match self { Self::PostAck { context, .. } => context.receipt_bytes_v1(),
             Self::IndependentRead { receipt, .. } => Ok(receipt) }
     }
 
     fn actual_after_clock_v1(&self) -> Result<aos_sandbox_model::RawPairedClockSample, ResourceReservationErrorV1> {
-        match self { Self::PostAck(context) => context.actual_after_clock_v1(),
+        match self { Self::PostAck { context, .. } => context.actual_after_clock_v1(),
             Self::IndependentRead { sample, .. } => Ok(*sample) }
     }
 
-    fn require_controller_transition_v1(&self, journal: &Journal, transaction: &JournalTransaction)
+    fn require_controller_transition_v1(&self, transaction: &JournalTransaction)
         -> Result<(), JournalError> {
-        match self { Self::PostAck(context) => context.require_controller_transition_v1(journal, transaction),
+        match self { Self::PostAck { context, journal } => context.require_controller_transition_v1(journal, transaction),
             Self::IndependentRead { .. } => Ok(()) }
     }
 }
 
 fn prepare_terminal_metadata_models_v1(
     models: &mut TerminalModelsV1,
-    journal: &Journal,
+    journal: HistoricalObservationV1<'_>,
     parent: OperationId,
     context: TerminalMetadataInputV1<'_, '_>,
 ) -> Result<(), FirstV1> {
@@ -242,8 +262,8 @@ fn prepare_terminal_metadata_models_v1(
         Ok(value)
     })());
     if !matches!(models.effect, Some(Ok(_))) { return Err(FirstV1::Effect); }
-    models.projection = Some(crate::controller_service::public_projection::PublicProjectionStoreV1::new(journal)
-        .get(PublicProjectionKindV1::Sandbox, *context.sandbox_v1().as_bytes())
+    models.projection = Some(crate::controller_service::public_projection::get_from_observation_v2(
+            journal, PublicProjectionKindV1::Sandbox, *context.sandbox_v1().as_bytes())
         .and_then(|value| value.ok_or(PublicProjectionError::CorruptRecord)));
     if !matches!(models.projection, Some(Ok(_))) { return Err(FirstV1::Projection); }
     models.operation = Some((|| {
@@ -287,7 +307,7 @@ fn prepare_terminal_metadata_models_v1(
         CreateStoppedTerminalTransactionDataV1::from_data_v1(parent, context.project_v1(),
             context.sandbox_v1(), operation, effect).and_then(|data| data.require_transaction_v1(&transaction))
             .map_err(terminal_error)?;
-        context.require_controller_transition_v1(journal, &transaction)?;
+        context.require_controller_transition_v1(&transaction)?;
         Ok(transaction)
     })());
     if !matches!(models.transaction, Some(Ok(_))) { return Err(FirstV1::Transaction); }
@@ -383,11 +403,25 @@ pub(crate) struct CreateStoppedMetadataTransitionOriginalV1 {
 }
 
 impl CreateStoppedMetadataTransitionOriginalV1 {
+    /// Prices the independent reader's exact new same-owner interfaces.
+    pub(crate) fn observation_control_bytes_v2() -> Option<usize> {
+        size_of::<HistoricalObservationV1<'_>>().checked_mul(3)?
+            .checked_add(size_of::<(
+                &mut Self, HistoricalObservationV1<'_>, OperationId,
+                aos_sandbox_model::ProjectId, aos_sandbox_model::SandboxId, &[u8],
+                aos_sandbox_model::RawPairedClockSample,
+            )>().checked_mul(3)?)?
+            .checked_add(size_of::<Result<(), JournalError>>().checked_mul(3)?)?
+            .checked_add(size_of::<Result<ResourceVector, JournalError>>().checked_mul(3)?)?
+            .checked_add(crate::controller_service::public_projection::projection_observation_control_bytes_v2()?)?
+            .checked_add(size_of::<Option<usize>>().checked_mul(3)?)
+    }
+
     pub(crate) fn new() -> Self {
         Self { models: TerminalModelsV1::new(), prepared: false, first: None, reentered: false }
     }
 
-    pub(crate) fn prepare_once_v1(&mut self, journal: &Journal,
+    pub(crate) fn prepare_once_v1(&mut self, journal: HistoricalObservationV1<'_>,
         parent: OperationId, project: aos_sandbox_model::ProjectId,
         sandbox: aos_sandbox_model::SandboxId, receipt: &[u8],
         sample: aos_sandbox_model::RawPairedClockSample,

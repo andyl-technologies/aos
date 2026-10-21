@@ -9,8 +9,9 @@ use super::*;
 use aos_sandbox_linux::cgroup::{CgroupV2Root, RetainedCgroupAnchor,
     RuntimeScopeCgroupOriginalV1, RuntimeScopeMembershipOriginalV1,
     NetworkBirthPopulationDonationOriginalV2, CgroupPopulationMonitor};
-use aos_sandbox_linux::pidfd::{PidFd, RuntimeScopeReceivedPidFdOriginalV1,
-    PidFdProcessIdentityOriginalV1};
+use aos_linux_descriptors::pidfd::PidFd;
+use aos_sandbox_linux::pidfd::RuntimeScopeReceivedPidFdOriginalV1;
+use aos_sandbox_linux::pidfd::PidFdProcessIdentityOriginalV1;
 use aos_sandbox_linux::seqpacket::{RetainedSeqpacketReceiveErrorV1, SeqpacketSocket};
 use aos_sandbox_linux::seqpacket::descriptor_subject::ReceivedDescriptorRecord;
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
@@ -24,10 +25,10 @@ enum First { Order, Clock, PeerBefore, Poll, Receive, Binding, Packet, Donations
 pub(super) struct BirthOriginalV2 {
     entered: bool,
     before: Option<Result<RawPairedClockSample, FixedServiceOperationClosedV4>>,
-    peer_before: Option<Result<bool, aos_sandbox_linux::Error>>,
+    peer_before: Option<Result<bool, aos_linux_descriptors::Error>>,
     poll: Option<Result<usize, rustix::io::Errno>>,
     receive: Option<Result<ReceivedDescriptorRecord, RetainedSeqpacketReceiveErrorV1>>,
-    cookie: Option<Result<u64, aos_sandbox_linux::Error>>,
+    cookie: Option<Result<u64, aos_linux_descriptors::Error>>,
     binding: Option<Result<(), RecordBindingError>>,
     packet: Option<Result<(), FixedServiceOperationClosedV4>>,
     donations: Option<Vec<OwnedFd>>,
@@ -35,21 +36,21 @@ pub(super) struct BirthOriginalV2 {
     raw_cgroup: Option<OwnedFd>,
     raw_events: Option<OwnedFd>,
     pidfd_original: RuntimeScopeReceivedPidFdOriginalV1,
-    pidfd_result: Option<Result<(), aos_sandbox_linux::Error>>,
+    pidfd_result: Option<Result<(), aos_linux_descriptors::Error>>,
     pidfd: Option<PidFd>,
     cgroup_original: RuntimeScopeCgroupOriginalV1,
-    cgroup_result: Option<Result<(), aos_sandbox_linux::Error>>,
+    cgroup_result: Option<Result<(), aos_linux_descriptors::Error>>,
     cgroup: Option<(CgroupV2Root, RetainedCgroupAnchor)>,
     identity: PidFdProcessIdentityOriginalV1,
-    identity_result: Option<Result<(), aos_sandbox_linux::Error>>,
+    identity_result: Option<Result<(), aos_linux_descriptors::Error>>,
     membership: RuntimeScopeMembershipOriginalV1,
-    membership_result: Option<Result<(), aos_sandbox_linux::Error>>,
+    membership_result: Option<Result<(), aos_linux_descriptors::Error>>,
     events: NetworkBirthPopulationDonationOriginalV2,
-    events_result: Option<Result<(), aos_sandbox_linux::Error>>,
+    events_result: Option<Result<(), aos_linux_descriptors::Error>>,
     membership_after: RuntimeScopeMembershipOriginalV1,
-    membership_after_result: Option<Result<(), aos_sandbox_linux::Error>>,
-    subject_after: Option<Result<bool, aos_sandbox_linux::Error>>,
-    peer_after: Option<Result<bool, aos_sandbox_linux::Error>>,
+    membership_after_result: Option<Result<(), aos_linux_descriptors::Error>>,
+    subject_after: Option<Result<bool, aos_linux_descriptors::Error>>,
+    peer_after: Option<Result<bool, aos_linux_descriptors::Error>>,
     parent_after: Option<Result<(), FixedServiceOperationClosedV4>>,
     owed_source: [FixedServiceCurrentnessSampleV1<FixedServiceOperationClosedV4>; 2],
     owed_source_results: [Option<Result<(), FixedServiceOperationClosedV4>>; 2],

@@ -13,8 +13,10 @@
 
 use std::os::fd::{AsFd as _, AsRawFd as _, OwnedFd};
 
-use crate::immutable_file::{SealedMemfdReadOriginalV2, SealedReadOnlyCredentialCreateOriginalsV1};
-use crate::{Error, Result};
+use crate::immutable_file::SealedMemfdReadOriginalV2;
+use aos_linux_descriptors::credential::SealedReadOnlyCredentialCreateOriginalsV1;
+use aos_linux_descriptors::Error;
+use aos_linux_descriptors::Result;
 
 pub(super) const DESCRIPTOR: i32 = 9;
 const NAME: &str = "aos-guest-topology-handoff-v1";

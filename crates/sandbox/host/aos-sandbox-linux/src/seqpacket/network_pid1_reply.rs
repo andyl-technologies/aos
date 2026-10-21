@@ -32,22 +32,22 @@ enum ProfileFirst {
 pub struct NetworkPid1ReplyProfileOriginalV2 {
     entered: bool,
     binding: Option<Result<(), RecordBindingError>>,
-    binding_cookie: Option<crate::Result<u64>>,
-    before: Option<crate::Result<bool>>,
-    rights_set: Option<crate::Result<()>>,
-    pidfd_set: Option<crate::Result<()>>,
-    rights_read: Option<crate::Result<i32>>,
-    pidfd_read: Option<crate::Result<i32>>,
-    credentials_read: Option<crate::Result<i32>>,
-    after: Option<crate::Result<bool>>,
+    binding_cookie: Option<aos_linux_descriptors::Result<u64>>,
+    before: Option<aos_linux_descriptors::Result<bool>>,
+    rights_set: Option<aos_linux_descriptors::Result<()>>,
+    pidfd_set: Option<aos_linux_descriptors::Result<()>>,
+    rights_read: Option<aos_linux_descriptors::Result<i32>>,
+    pidfd_read: Option<aos_linux_descriptors::Result<i32>>,
+    credentials_read: Option<aos_linux_descriptors::Result<i32>>,
+    after: Option<aos_linux_descriptors::Result<bool>>,
     first: Option<ProfileFirst>,
     closed: Option<SeqpacketError>,
     initial_packet: Option<[u8; 840]>,
     original_cookie: Option<u64>,
     channel_lent: bool,
     borrow_binding: Option<Result<(), RecordBindingError>>,
-    borrow_cookie: Option<crate::Result<u64>>,
-    borrow_after: Option<crate::Result<bool>>,
+    borrow_cookie: Option<aos_linux_descriptors::Result<u64>>,
+    borrow_after: Option<aos_linux_descriptors::Result<bool>>,
 }
 
 impl NetworkPid1ReplyProfileOriginalV2 {
@@ -167,13 +167,13 @@ impl NetworkPid1ReplyProfileOriginalV2 {
         if !matches!(self.rights_set, Some(Ok(()))) { self.first = Some(ProfileFirst::RightsSet); }
         self.pidfd_set = Some(uapi::set_seqpacket_passpidfd(fd, false));
         if !matches!(self.pidfd_set, Some(Ok(()))) { self.first.get_or_insert(ProfileFirst::PidfdSet); }
-        self.rights_read = Some(uapi::socket_integer_option(fd, uapi::SO_PASSRIGHTS,
+        self.rights_read = Some(aos_linux_descriptors::native::socket_integer_option(fd, uapi::SO_PASSRIGHTS,
             "getsockopt(Network Source SO_PASSRIGHTS)"));
         if !matches!(self.rights_read, Some(Ok(0))) { self.first.get_or_insert(ProfileFirst::RightsRead); }
-        self.pidfd_read = Some(uapi::socket_integer_option(fd, uapi::SO_PASSPIDFD,
+        self.pidfd_read = Some(aos_linux_descriptors::native::socket_integer_option(fd, aos_linux_descriptors::native::SO_PASSPIDFD,
             "getsockopt(Network Source SO_PASSPIDFD)"));
         if !matches!(self.pidfd_read, Some(Ok(0))) { self.first.get_or_insert(ProfileFirst::PidfdRead); }
-        self.credentials_read = Some(uapi::socket_integer_option(fd, libc::SO_PASSCRED,
+        self.credentials_read = Some(aos_linux_descriptors::native::socket_integer_option(fd, libc::SO_PASSCRED,
             "getsockopt(Network Source SO_PASSCRED)"));
         if !matches!(self.credentials_read, Some(Ok(1))) { self.first.get_or_insert(ProfileFirst::CredentialsRead); }
         if self.first.is_some() { Err(SeqpacketError::Closed) } else { Ok(()) }
@@ -274,9 +274,9 @@ enum ReplyFirst { Before, Rights, Pidfd, Credentials, Poll, Receive, Binding, Af
 #[derive(Default)]
 pub struct NetworkPid1RequestOriginalV2 {
     entered: bool,
-    before: Option<crate::Result<bool>>,
+    before: Option<aos_linux_descriptors::Result<bool>>,
     send: Option<Result<(), RetainedSeqpacketSendErrorV1>>,
-    after: Option<crate::Result<bool>>,
+    after: Option<aos_linux_descriptors::Result<bool>>,
     first: Option<RequestFirst>,
     closed: Option<SeqpacketError>,
 }
@@ -306,14 +306,14 @@ impl NetworkPid1RequestOriginalV2 {
 #[derive(Default)]
 pub struct NetworkPid1ReplyOriginalV2 {
     entered: bool,
-    before: Option<crate::Result<bool>>,
-    rights: Option<crate::Result<i32>>,
-    pidfd: Option<crate::Result<i32>>,
-    credentials: Option<crate::Result<i32>>,
+    before: Option<aos_linux_descriptors::Result<bool>>,
+    rights: Option<aos_linux_descriptors::Result<i32>>,
+    pidfd: Option<aos_linux_descriptors::Result<i32>>,
+    credentials: Option<aos_linux_descriptors::Result<i32>>,
     poll: Option<Result<usize, rustix::io::Errno>>,
     poll_events: Option<rustix::event::PollFlags>,
     receive: Option<Result<Vec<u8>, RetainedSeqpacketReceiveErrorV1>>,
-    after: Option<crate::Result<bool>>,
+    after: Option<aos_linux_descriptors::Result<bool>>,
     first: Option<ReplyFirst>,
     closed: Option<SeqpacketError>,
 }
@@ -494,13 +494,13 @@ impl<'native> NetworkPid1ReplyChannelV2<'native> {
         original.before = Some(self.manager.is_alive());
         if !matches!(original.before, Some(Ok(true))) { original.first = Some(ReplyFirst::Before); }
         if let Ok(fd) = self.socket.borrow_fd() {
-            original.rights = Some(uapi::socket_integer_option(fd, uapi::SO_PASSRIGHTS,
+            original.rights = Some(aos_linux_descriptors::native::socket_integer_option(fd, uapi::SO_PASSRIGHTS,
                 "getsockopt(Network reply SO_PASSRIGHTS)"));
             if !matches!(original.rights, Some(Ok(0))) { original.first.get_or_insert(ReplyFirst::Rights); }
-            original.pidfd = Some(uapi::socket_integer_option(fd, uapi::SO_PASSPIDFD,
+            original.pidfd = Some(aos_linux_descriptors::native::socket_integer_option(fd, aos_linux_descriptors::native::SO_PASSPIDFD,
                 "getsockopt(Network reply SO_PASSPIDFD)"));
             if !matches!(original.pidfd, Some(Ok(0))) { original.first.get_or_insert(ReplyFirst::Pidfd); }
-            original.credentials = Some(uapi::socket_integer_option(fd, libc::SO_PASSCRED,
+            original.credentials = Some(aos_linux_descriptors::native::socket_integer_option(fd, libc::SO_PASSCRED,
                 "getsockopt(Network reply SO_PASSCRED)"));
             if !matches!(original.credentials, Some(Ok(1))) { original.first.get_or_insert(ReplyFirst::Credentials); }
         } else {
@@ -628,7 +628,7 @@ impl SeqpacketSocket {
     /// changed socket or record from another actual carrier.
     pub fn require_network_child_origin_retaining_v2(
         &self, record: &ReceivedDescriptorRecord,
-        native: &mut Option<crate::Result<u64>>,
+        native: &mut Option<aos_linux_descriptors::Result<u64>>,
     ) -> Result<(), RecordBindingError> {
         let fd = self.fd.as_ref().map(AsFd::as_fd)
             .ok_or_else(RecordBindingError::closed)?;
@@ -647,7 +647,7 @@ impl SeqpacketSocket {
     pub fn require_network_birth_handoff_origin_retaining_v2(
         &self,
         record: &ReceivedDescriptorRecord,
-        native: &mut Option<crate::Result<u64>>,
+        native: &mut Option<aos_linux_descriptors::Result<u64>>,
     ) -> Result<(), RecordBindingError> {
         let fd = self.fd.as_ref().map(AsFd::as_fd)
             .ok_or_else(RecordBindingError::closed)?;
@@ -667,7 +667,7 @@ impl SeqpacketSocket {
     pub fn require_network_prebirth_prepared_origin_retaining_v2(
         &self,
         record: &ReceivedRecord,
-        native: &mut Option<crate::Result<u64>>,
+        native: &mut Option<aos_linux_descriptors::Result<u64>>,
     ) -> Result<(), RecordBindingError> {
         self.require_record_origin_with_originals_v4(record, Some(native))
     }

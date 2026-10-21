@@ -237,7 +237,7 @@ impl RecordSubjectListener {
     /// Returns an error when either required socket option is now disabled or
     /// the kernel cannot inspect the listener.
     pub fn validate_current(&self) -> Result<(), SeqpacketError> {
-        uapi::require_seqpacket_identity(self.fd.as_fd()).map_err(map_kernel_error)
+        aos_linux_descriptors::native::require_seqpacket_identity(self.fd.as_fd()).map_err(map_kernel_error)
     }
 
     /// Verifies the exact filesystem pathname bound to this listener.
@@ -261,14 +261,14 @@ impl RecordSubjectListener {
                 .components()
                 .all(|part| matches!(part, Component::RootDir | Component::Normal(_)));
         if !normalized {
-            return Err(SeqpacketError::Kernel(crate::Error::invalid(
+            return Err(SeqpacketError::Kernel(aos_linux_descriptors::Error::invalid(
                 "record subject listener path",
                 "must be a normalized absolute path",
             )));
         }
         let observed = uapi::unix_socket_local_filesystem_path(self.fd.as_fd())?;
         if observed != expected_bytes {
-            return Err(SeqpacketError::Kernel(crate::Error::invalid(
+            return Err(SeqpacketError::Kernel(aos_linux_descriptors::Error::invalid(
                 "record subject listener path",
                 "differs from the fixed endpoint",
             )));
@@ -290,7 +290,7 @@ impl RecordSubjectListener {
     /// Any newly accepted descriptor closes before a rejection is returned.
     pub fn accept(&mut self) -> Result<SeqpacketSocket, SeqpacketError> {
         let child = self.accept_child()?;
-        uapi::require_seqpacket_identity(child.as_fd()).map_err(map_kernel_error)?;
+        aos_linux_descriptors::native::require_seqpacket_identity(child.as_fd()).map_err(map_kernel_error)?;
         SeqpacketSocket::from_owned(child)
     }
 
@@ -326,7 +326,7 @@ impl RecordSubjectListener {
     /// or child identity options, failed acceptance, or child adoption failure.
     pub fn accept_descriptor_subject(&mut self) -> Result<DescriptorSubjectSocket, SeqpacketError> {
         let child = self.accept_child()?;
-        uapi::require_seqpacket_identity(child.as_fd()).map_err(map_kernel_error)?;
+        aos_linux_descriptors::native::require_seqpacket_identity(child.as_fd()).map_err(map_kernel_error)?;
         DescriptorSubjectSocket::from_owned(child)
     }
 
@@ -401,14 +401,14 @@ impl RecordSubjectListener {
 )]
 mod tests {
     use super::*;
-    use crate::Error;
+    use aos_linux_descriptors::Error;
     use std::ffi::OsStr;
     use std::os::fd::AsRawFd;
     use std::os::unix::fs::FileTypeExt as _;
 
     fn configured_listener() -> RecordSubjectListener {
         let fd = uapi::seqpacket_listener().expect("create listener");
-        uapi::enable_seqpacket_identity(fd.as_fd()).expect("configure listener");
+        aos_linux_descriptors::native::enable_seqpacket_identity(fd.as_fd()).expect("configure listener");
         RecordSubjectListener::from_owned(fd).expect("adopt listener")
     }
 
@@ -447,7 +447,7 @@ mod tests {
 
     #[test]
     fn retained_missing_options_keep_original_without_repair() {
-        for enabled in [libc::SO_PASSCRED, uapi::SO_PASSPIDFD] {
+        for enabled in [libc::SO_PASSCRED, aos_linux_descriptors::native::SO_PASSPIDFD] {
             let original = uapi::seqpacket_listener().expect("create listener");
             uapi::enable_test_socket_option(original.as_fd(), enabled)
                 .expect("enable only one option");
@@ -466,7 +466,7 @@ mod tests {
 
             let original = attempt.descriptor.as_ref().expect("resident original");
             assert_eq!(original.as_raw_fd(), raw);
-            assert!(uapi::require_seqpacket_identity(original.as_fd()).is_err());
+            assert!(aos_linux_descriptors::native::require_seqpacket_identity(original.as_fd()).is_err());
             assert!(attempt.take_completed_listener().is_none());
         }
     }
@@ -600,7 +600,7 @@ mod tests {
                 .file_type()
                 .is_socket()
         );
-        assert!(uapi::is_cloexec(listener.as_fd()).expect("listener CLOEXEC"));
+        assert!(aos_linux_descriptors::native::is_cloexec(listener.as_fd()).expect("listener CLOEXEC"));
         assert!(matches!(listener.accept(), Err(SeqpacketError::WouldBlock)));
 
         assert!(matches!(
@@ -669,9 +669,9 @@ mod tests {
             record.subject().credentials().pid().get(),
             std::process::id()
         );
-        assert!(uapi::is_cloexec(listener.as_fd()).expect("listener CLOEXEC"));
-        assert!(uapi::is_cloexec(child.as_fd().expect("child FD")).expect("child CLOEXEC"));
-        assert!(uapi::is_cloexec(record.subject().pidfd().as_fd()).expect("subject CLOEXEC"));
+        assert!(aos_linux_descriptors::native::is_cloexec(listener.as_fd()).expect("listener CLOEXEC"));
+        assert!(aos_linux_descriptors::native::is_cloexec(child.as_fd().expect("child FD")).expect("child CLOEXEC"));
+        assert!(aos_linux_descriptors::native::is_cloexec(record.subject().pidfd().as_fd()).expect("subject CLOEXEC"));
         assert!(matches!(listener.accept(), Err(SeqpacketError::WouldBlock)));
     }
 
@@ -735,7 +735,7 @@ mod tests {
         let old_sender =
             uapi::connect_seqpacket_listener(fd.as_fd()).expect("connect early sender");
         uapi::send_seqpacket(old_sender.as_fd(), b"early").expect("enqueue early message");
-        uapi::enable_seqpacket_identity(fd.as_fd()).expect("configure after early connect");
+        aos_linux_descriptors::native::enable_seqpacket_identity(fd.as_fd()).expect("configure after early connect");
         let mut listener =
             RecordSubjectListener::from_owned(fd).expect("adopt configured listener");
         assert!(matches!(
@@ -759,15 +759,15 @@ mod tests {
 
     #[test]
     fn missing_each_identity_option_rejects_and_closes_owned_listener() {
-        for enabled in [libc::SO_PASSCRED, uapi::SO_PASSPIDFD] {
+        for enabled in [libc::SO_PASSCRED, aos_linux_descriptors::native::SO_PASSPIDFD] {
             let fd = uapi::seqpacket_listener().expect("create listener");
             uapi::enable_test_socket_option(fd.as_fd(), enabled).expect("enable only one option");
             // Use an otherwise-unused high FD to avoid incidental low-FD reuse
             // by concurrently running tests between rejection and observation.
-            let high = uapi::duplicate_at_least(fd.as_fd(), 512).expect("duplicate test FD");
+            let high = aos_linux_descriptors::native::duplicate_at_least(fd.as_fd(), 512).expect("duplicate test FD");
             let raw = high.as_raw_fd();
             assert!(RecordSubjectListener::from_owned(high).is_err());
-            assert!(!uapi::raw_fd_is_open(raw));
+            assert!(!aos_linux_descriptors::native::raw_fd_is_open(raw));
         }
     }
 
@@ -782,7 +782,7 @@ mod tests {
         .expect("create stream listener");
         assert!(RecordSubjectListener::from_owned(stream.into()).is_err());
         let fd = uapi::unconnected_seqpacket().expect("create unconnected socket");
-        uapi::enable_seqpacket_identity(fd.as_fd()).expect("enable options");
+        aos_linux_descriptors::native::enable_seqpacket_identity(fd.as_fd()).expect("enable options");
         assert!(RecordSubjectListener::from_owned(fd).is_err());
     }
 

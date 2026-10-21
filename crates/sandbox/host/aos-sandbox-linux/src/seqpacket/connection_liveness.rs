@@ -13,7 +13,7 @@ use rustix::event::{PollFd, PollFlags, Timespec, poll};
 #[derive(Default)]
 pub struct SeqpacketSendAfterOriginalV1 {
     entered: bool,
-    cookie: Option<crate::Result<u64>>,
+    cookie: Option<aos_linux_descriptors::Result<u64>>,
     binding: Option<Result<(), super::RecordBindingError>>,
     refusal: bool,
 }
@@ -162,7 +162,7 @@ impl SeqpacketSocket {
         let returned = poll(
             &mut descriptors,
             Some(&Timespec { tv_sec: 0, tv_nsec: 0 }),
-        ).map_err(|source| crate::Error::Syscall {
+        ).map_err(|source| aos_linux_descriptors::Error::Syscall {
             operation: "poll retained local connection",
             source: source.into(),
         });
@@ -190,7 +190,7 @@ impl SeqpacketSocket {
 pub struct SeqpacketShutdownOriginalV4 {
     entered: bool,
     descriptor: Option<Result<(), SeqpacketError>>,
-    poll: Option<crate::Result<usize>>,
+    poll: Option<aos_linux_descriptors::Result<usize>>,
     events: Option<PollFlags>,
     refusal: bool,
 }

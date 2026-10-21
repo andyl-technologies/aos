@@ -17,8 +17,9 @@ use sha2::{Digest as _, Sha256};
 
 use super::provenance::{
     AuditAuthorizationV1, AuthenticatedRequestSemanticsDigestV1, AuthorizedResolvedMutationV1,
-    CanonicalRequestDigestV1, InvalidRequestProvenance, RequestProvenanceV1,
+    CanonicalRequestDigestV1, RequestProvenanceV1,
 };
+use aos_sandbox_protocol::public_api::authorization_error::{CliAuthorizationAdapterError, InvalidRequestProvenance};
 use super::requests::ResolvedPublicMutationV1;
 use aos_sandbox_protocol::public_api::model::{
     AuthorizationRevisionDigestV1,
@@ -322,40 +323,7 @@ impl DecodedAuthenticatedCliRequestV1 {
     }
 }
 
-/// Reports invalid or inconsistently bound authenticated CLI evidence.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
-pub(crate) enum CliAuthorizationAdapterError {
-    /// An authenticated identity, session, or channel value is absent or oversized.
-    #[error("authenticated CLI evidence is invalid")]
-    InvalidAuthenticatedEvidence,
-    /// Authenticated bytes do not encode the exact closed canonical V1 request schema.
-    #[error("authenticated CLI authorization request is invalid or noncanonical")]
-    InvalidCanonicalAuthorizationRequest,
-    /// Current protected lookup or authorization rejected the requested operation.
-    #[error("current protected CLI authorization was rejected")]
-    ProtectedAuthorizationRejected,
-    /// The authenticated session names a different identity.
-    #[error("authenticated CLI identity and session evidence do not match")]
-    IdentitySessionMismatch,
-    /// The authenticated channel names a different identity or session.
-    #[error("authenticated CLI session and channel evidence do not match")]
-    SessionChannelMismatch,
-    /// Current protected authorization names a different identity, session, or channel.
-    #[error("authenticated CLI evidence does not match current protected authorization")]
-    ProtectedBindingMismatch,
-    /// Authenticated or protected evidence covers different canonical request bytes.
-    #[error("canonical CLI request does not match authenticated authorization evidence")]
-    RequestBindingMismatch,
-    /// Protected authorization covers another authority surface.
-    #[error("protected CLI authorization does not cover the requested authority surface")]
-    AuthoritySurfaceMismatch,
-    /// The resolved mutation differs from the authenticated identity and fence commitment.
-    #[error("resolved CLI mutation does not match authenticated identity and fences")]
-    MutationBindingMismatch,
-    /// Canonical request or resolved-mutation provenance is invalid.
-    #[error(transparent)]
-    Provenance(#[from] InvalidRequestProvenance),
-}
+
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 struct EvidenceCommitmentV1(ObjectDigest);
@@ -684,11 +652,9 @@ impl CurrentCapabilityDecisionV1 {
     }
 
     fn revision(&self) -> AuthorizationRevisionDigestV1 {
-        protected_authorization_revision(
-            &self.capability,
-            self.controller.generation,
-            self.policy.generation(),
-            self.time_floor,
+        aos_sandbox_protocol::domain_ledger::delete_root::named_cuts::protected_authorization_revision_data_v2(
+            &self.capability, self.controller.generation, self.policy.generation(),
+            self.time_floor.generation, self.time_floor.clock, self.time_floor.digest.as_bytes(),
         )
     }
 
@@ -815,12 +781,7 @@ fn evaluate_at_protected_time_floor(
     )
 }
 
-enum CapabilityCheckV1 {
-    Scope,
-    // Preserve scope-denied negative DATA after the ordinary floor crossing;
-    // Denied is distinct from the real context, validity or revocation errors.
-    RetainedLifetime,
-}
+
 
 #[allow(clippy::too_many_arguments)]
 fn prepare_capability_at_protected_time_floor(
@@ -881,55 +842,6 @@ fn prepare_capability_at_protected_time_floor(
     })
 }
 
-// The ordinary evaluator and selected crossings borrow the same grant and
-// lifetime paragraph. This helper neither advances a floor nor prepares DATA.
-#[allow(clippy::too_many_arguments)]
-fn validate_current_capability_inputs(
-    capability: &aos_sandbox_model::CapabilityRecord,
-    policy: &aos_sandbox_protocol::policy_data::PreparedPublisherPolicyRevisionV1,
-    controller: &crate::publisher_admin::policy::PublisherControllerHeadV1,
-    revocation: &crate::publisher_admin::policy::PublisherRevocationHeadV1,
-    holder: PrincipalId,
-    channel_binding: ChannelBinding,
-    resource_kind: ResourceKind,
-    operation: Operation,
-    selector: &Selector,
-    trusted_now: i64,
-    check: CapabilityCheckV1,
-) -> Result<(), CliAuthorizationAdapterError> {
-    let claims = capability.claims();
-    if controller.principal != claims.audience
-        || revocation.scope != claims.revocation_scope
-        || revocation.generation != claims.revocation_generation.get()
-        || policy.project() != claims.project
-        || policy.descriptor().digest() != claims.policy_digest
-        || trusted_now < policy.not_before()
-        || trusted_now >= policy.expires_at()
-    {
-        return Err(CliAuthorizationAdapterError::ProtectedAuthorizationRejected);
-    }
-
-    let context = AuthorizationContext {
-        now: trusted_now,
-        audience: controller.principal,
-        holder,
-        channel_binding,
-        project: claims.project,
-        sandbox: claims.sandbox,
-        incarnation: claims.incarnation,
-        assignment_epoch: claims.assignment_epoch,
-        revocation_generation: claims.revocation_generation,
-    };
-    match capability.authorize(&context, resource_kind, operation, selector) {
-        Ok(()) => {}
-        Err(aos_sandbox_model::AuthorizationError::Denied)
-            if matches!(check, CapabilityCheckV1::RetainedLifetime) => {}
-        Err(_) => return Err(CliAuthorizationAdapterError::ProtectedAuthorizationRejected),
-    }
-
-    Ok(())
-}
-
 #[cfg(target_os = "linux")]
 pub(crate) fn compare_retained_git_read_at_clock_v1(
     decision: &CurrentCapabilityDecisionV1,
@@ -957,15 +869,7 @@ pub(crate) fn compare_retained_git_entitlement_at_clock_v1(
     ).map_err(|_| CliAuthorizationAdapterError::ProtectedAuthorizationRejected)
 }
 
-fn require_authenticated_project(
-    authenticated_project: ProjectId,
-    capability_project: ProjectId,
-) -> Result<(), CliAuthorizationAdapterError> {
-    if authenticated_project.as_bytes() == &[0; 16] || authenticated_project != capability_project {
-        return Err(CliAuthorizationAdapterError::ProtectedAuthorizationRejected);
-    }
-    Ok(())
-}
+
 
 /// Lends one genuine selected request to the fixed same-writer crossing.
 ///
@@ -1784,17 +1688,7 @@ pub(crate) fn compare_git_coverage_floor_history_v1(
     }
 }
 
-fn protected_authorization_revision(
-    capability: &aos_sandbox_model::CapabilityRecord,
-    controller_generation: u64,
-    policy_generation: u64,
-    time_floor: ProtectedTimeFloorRevisionV1,
-) -> AuthorizationRevisionDigestV1 {
-    aos_sandbox_protocol::domain_ledger::delete_root::named_cuts::protected_authorization_revision_data_v2(
-        capability, controller_generation, policy_generation,
-        time_floor.generation, time_floor.clock, time_floor.digest.as_bytes(),
-    )
-}
+
 
 fn principal_commitment(
     identity: EvidenceCommitmentV1,
@@ -1808,9 +1702,12 @@ fn principal_commitment(
     QueryPrincipalDigestV1::commit(&exact_binding)
 }
 
-mod delete_root;
-pub(crate) use delete_root::recompute_delete_authorization_cut_from_records_v2;
+
 
 mod current_records;
 pub(crate) use current_records::{recompute_create_recovery_authorization_from_records_v1,
     compare_create_recovery_authorization_from_records_v1};
+
+use aos_sandbox_ledger_replay::authorization_comparison::{
+    CapabilityCheckV1, require_authenticated_project, validate_current_capability_inputs,
+};

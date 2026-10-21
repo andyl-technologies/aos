@@ -22,7 +22,8 @@ use crate::controller_resource_reservation::RootContinuationDemandV1;
 use crate::journal::JournalError;
 use crate::normal_root::{NormalRootStartupErrorV1, RootPolicyAcceptedFlightV1};
 use crate::policy_compiler::{RootCurrentPolicyInputDataV1, RetainedKernelPairedClockAttemptV1};
-use crate::policy_compiler::bounded_stream_io::{DeadlineStreamDirectionV1, FixedDeadlineStreamIoV1};
+use aos_sandbox_broker::bounded_stream_io::DeadlineStreamDirectionV1;
+use aos_sandbox_broker::bounded_stream_io::FixedDeadlineStreamIoV1;
 use crate::policy_compiler::continuation_policy::RootApplyPolicyOriginalV1;
 use crate::policy_compiler::provisioning_current::{RootContinuationClockGateV1,
     current_compiler_complete_receiving_demand_v1};
@@ -76,6 +77,8 @@ impl RootApplyFinalExchangeOriginalV1 {
             .ok_or(JournalError::JournalTooLarge)?;
         let bytes = size_of::<Self>().checked_mul(3)
             .and_then(|bytes| bytes.checked_add(clock))
+            .and_then(|bytes| bytes.checked_add(crate::policy_compiler::provisioning_current::create_finality::controller::CreateFinalityControllerOriginalV1::observation_control_bytes_v2()?))
+            .and_then(|bytes| bytes.checked_add(RootApplyFinalReadonlyOriginalV1::observation_control_bytes_v2()?))
             .and_then(|bytes| u64::try_from(bytes).ok()).ok_or(JournalError::JournalTooLarge)?;
         Ok(flight.apply_policy_receiving_demand_v1()?.checked_add(
             RootContinuationClockGateV1::receiving_demand_v1()?)
@@ -194,13 +197,15 @@ impl RootApplyFinalExchangeOriginalV1 {
             self.readers.session_v1()?, &initial.inputs, issued, controller,
             self.clock.check_next_once_v1()?, opening.current_cutoff_v1()?)?;
         self.phase = Phase::Funding;
-        let (controller, source) = self.readers.journals_v1()?;
-        let c_state = controller.historical_read_view_v1().materialized_state_v1();
+        let (controller, source) = self.readers.models_v1()?;
+        let c_state = controller.state_v1();
         let width = c_state.iter().try_fold(0_u64, |total, ((_, key), value)| {
             total.checked_add(u64::try_from(key.len().checked_add(value.len())?).ok()?)
         }).ok_or(JournalError::JournalTooLarge)?;
         let fixed = size_of::<RootApplyFinalLifecycleOriginalV1>().checked_mul(3)
             .and_then(|bytes| bytes.checked_add(3 * size_of::<RootApplyFinalControllerOriginalV1>()))
+            .and_then(|bytes| bytes.checked_add(RootApplyFinalLifecycleOriginalV1::observe_rows_interface_control_bytes_v2()?))
+
             .and_then(|bytes| u64::try_from(bytes).ok()).ok_or(JournalError::JournalTooLarge)?;
         let demand = retained_lifecycle_replay_receiving_demand_v1(source.all_records())
             .ok_or(JournalError::JournalTooLarge)?
@@ -208,7 +213,7 @@ impl RootApplyFinalExchangeOriginalV1 {
             .checked_add(create_stopped_comparison_receiving_demand_v1().ok_or(JournalError::JournalTooLarge)?)?
             .checked_add(current_compiler_complete_receiving_demand_v1(width, c_state, current)?)?
             .checked_add(ResourceVector::ZERO.with(D::MemoryBytes,
-                crate::controller_service::public_projection::sandbox_source_receiving_bytes_v1(controller)
+                aos_sandbox_protocol::public_api::projection::geometry::sandbox_source_receiving_bytes_v1(controller.rows_data_v2())
                     .ok_or(JournalError::JournalTooLarge)?))?
             .checked_add(ResourceVector::ZERO.with(D::MemoryBytes, fixed)
                 .with(D::NetworkBytes, CLOSED_BYTES_V1 as u64).with(D::OutputBytes, CLOSED_BYTES_V1 as u64))?;
@@ -219,7 +224,7 @@ impl RootApplyFinalExchangeOriginalV1 {
         let parent = initial.inputs.proposed_v1()?.operation_id();
         self.phase = Phase::Lifecycle;
         self.lifecycle = Some(Box::new(RootApplyFinalLifecycleOriginalV1::new()));
-        self.lifecycle.as_mut().ok_or(JournalError::ProtectedBoundary)?.observe_once_v1(source, parent)?;
+        self.lifecycle.as_mut().ok_or(JournalError::ProtectedBoundary)?.observe_once_v1(source.rows_data_v2(), parent)?;
         self.clock.check_next_once_v1()?;
         let LifecycleEffectReceiptDataV1::CreateStopped(receipt) =
             decode_lifecycle_effect_receipt_v1(proof.lifecycle_receipt, lane)?

@@ -8,12 +8,8 @@ use aos_sandbox_policy::signed_inputs::{
     VerifiedSignedProjectPolicySourceV2,
 };
 
-use aos_sandbox_policy::journal_keys::{HEAD_KEY, SIGNER_PINS_KEY};
+use aos_sandbox_protocol::domain_ledger::readonly::HistoricalLedgerReadViewV1;
 
-use crate::journal::{Journal, RecordNamespace};
-
-use super::deployment_head::decode_policy_signer_pins_v1;
-use super::project_source_v2::{HEAD_KEY_V2, INPUT_KEY_V2};
 use super::PolicyDeploymentHeadErrorV1;
 
 pub(crate) type RootSignedProjectSourcesV1 = (
@@ -30,53 +26,29 @@ pub(crate) enum RootSignedSourcesErrorV1 {
     Deployment(#[from] PolicyDeploymentHeadErrorV1),
 }
 
+impl From<aos_sandbox_policy::root_signed_sources_data::RootSignedSourcesDataErrorV1>
+    for RootSignedSourcesErrorV1
+{
+    fn from(error: aos_sandbox_policy::root_signed_sources_data::RootSignedSourcesDataErrorV1) -> Self {
+        use aos_sandbox_policy::root_signed_sources_data::RootSignedSourcesDataErrorV1;
+        match error {
+            RootSignedSourcesDataErrorV1::ChangedCut => Self::ChangedCut,
+            RootSignedSourcesDataErrorV1::Deployment(error) => Self::Deployment(error.into()),
+        }
+    }
+}
+
 // Packet and verifying-key selection always comes from the actual held Root
 // records. Raw supplied input bytes authenticate only by exact existing heads.
 pub(super) fn verify_root_signed_project_sources_v1(
-    journal: &Journal,
+    journal: HistoricalLedgerReadViewV1<'_>,
     project_input: &[u8],
     deployment_inputs: &PolicyDeploymentInputsV1<'_>,
     now_unix_seconds: i64,
 ) -> Result<RootSignedProjectSourcesV1, RootSignedSourcesErrorV1> {
-    let namespace = RecordNamespace::DesiredState;
-    let pins = journal.get(namespace, SIGNER_PINS_KEY)
-        .ok_or(RootSignedSourcesErrorV1::ChangedCut)?;
-    let (deployment_generation, deployment_key, project_generation, project_key) =
-        decode_policy_signer_pins_v1(pins)?;
-    let deployment_packet = journal.get(namespace, HEAD_KEY)
-        .ok_or(RootSignedSourcesErrorV1::ChangedCut)?;
-    let deployment = aos_sandbox_policy::signed_inputs::verify_policy_deployment_head_v1(
-        deployment_packet,
-        deployment_inputs,
-        &deployment_key,
-        now_unix_seconds,
-    )
-    .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)?;
-    let decoded = aos_sandbox_policy::signed_inputs::decode_policy_deployment_sources_v1(
-        deployment_inputs,
-        deployment,
-    )
-    .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)?;
-    let project_packet = journal
-        .get(namespace, HEAD_KEY_V2)
-        .ok_or(RootSignedSourcesErrorV1::ChangedCut)?;
-    if journal.get(namespace, INPUT_KEY_V2) != Some(project_input) {
-        return Err(RootSignedSourcesErrorV1::ChangedCut);
-    }
-    let project = aos_sandbox_policy::signed_inputs::verify_signed_project_policy_source_v2(
-        project_packet,
-        project_input,
-        &project_key,
-        now_unix_seconds,
-    )
-    .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)?;
-    if project.head().deployment_signer_generation() != deployment_generation
-        || project.head().project_signer_generation() != project_generation
-        || project.head().prerequisite_claims()[1] != deployment.packet_digest()
-    {
-        return Err(RootSignedSourcesErrorV1::ChangedCut);
-    }
-    Ok((project, deployment, decoded))
+    aos_sandbox_policy::root_signed_sources_data::verify_root_signed_project_sources_data_v1(
+        journal, project_input, deployment_inputs, now_unix_seconds,
+    ).map_err(RootSignedSourcesErrorV1::from)
 }
 
 // Shared verification of the actual retained signed input bytes. The caller

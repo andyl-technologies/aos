@@ -110,7 +110,7 @@ pub type OpaqueHandle = [u8; 32];
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum CatalogPinConstructionCauseV2 {
     #[error(transparent)] Native(#[from] rustix::io::Errno),
-    #[error(transparent)] Mount(#[from] aos_sandbox_linux::Error),
+    #[error(transparent)] Mount(#[from] aos_linux_descriptors::Error),
     #[error("{0}")] Binding(&'static str),
 }
 

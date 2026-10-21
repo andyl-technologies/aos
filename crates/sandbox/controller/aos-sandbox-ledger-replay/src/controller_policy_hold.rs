@@ -408,30 +408,78 @@ impl ControllerPolicyV8EffectAckV1 {
     }
 }
 
-/// Identifies one exact, nonauthorizing Controller policy hold.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ControllerPolicyHoldV1 {
-    /// Names the associated public Create operation.
-    pub operation: OperationId,
-    /// Names the associated sandbox.
-    pub sandbox: SandboxId,
-    /// Commits the Controller-selected Create source.
-    pub source: ObjectDigest,
-    /// Commits the proposed policy binding.
-    pub binding: ObjectDigest,
-    /// Names the policy handoff epoch.
-    pub epoch: u64,
-    /// Distinguishes the held row from its released form.
-    pub held: bool,
-}
+pub use aos_sandbox_protocol::domain_ledger::controller_policy_hold::ControllerPolicyHoldV1;
 
-impl ControllerPolicyHoldV1 {
+/// Implements the existing static Controller hold codec without authority.
+///
+/// This trait preserves the original mechanical error type and call frames.
+/// It cannot acquire, adopt, refresh, mutate or release a protected owner.
+pub trait ControllerPolicyHoldCodecV1: Sized {
+
     /// Constructs the exact hold to persist before root Q04 submission.
     ///
     /// # Errors
     ///
     /// Rejects zero identifiers, commitments, or epoch.
-    pub fn new(
+    fn new(
+        operation: OperationId,
+        sandbox: SandboxId,
+        source: ObjectDigest,
+        binding: ObjectDigest,
+        epoch: u64,
+    ) -> Result<Self, MechanicalError>;
+
+
+    /// Returns the digest of this exact held or released Controller row.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed local hold fields.
+    fn record_digest(self) -> Result<ObjectDigest, MechanicalError>;
+
+
+    // Canonical comparison DATA only. A digest does not observe retirement or
+    // permit a transition; the Q04 native/owner engines establish that cut.
+    #[cfg(target_os = "linux")]
+    /// Returns the digest of the matching released Q04 hold row.
+    ///
+    /// # Errors
+    ///
+    /// Rejects zero operation, sandbox, source, binding or epoch fields.
+    fn q04_released_record_digest(self) -> Result<ObjectDigest, MechanicalError>;
+
+
+    /// Checks the hold identity fields.
+    ///
+    /// # Errors
+    ///
+    /// Rejects zero operation, sandbox, source, binding or epoch fields.
+    fn validate(self) -> Result<(), MechanicalError>;
+
+
+    /// Encodes the held or released AOSCTH01 row.
+    ///
+    /// # Errors
+    ///
+    /// Rejects zero identity fields or epoch.
+    fn encode(self) -> Result<[u8; RECORD_BYTES], MechanicalError>;
+
+
+    /// Decodes a held or released AOSCTH01 row.
+    ///
+    /// # Errors
+    ///
+    /// Rejects wrong framing, invalid identity fields or a checksum mismatch.
+    fn decode(bytes: &[u8]) -> Result<Self, MechanicalError>;
+}
+
+impl ControllerPolicyHoldCodecV1 for ControllerPolicyHoldV1 {
+    /// Constructs the exact hold to persist before root Q04 submission.
+    ///
+    /// # Errors
+    ///
+    /// Rejects zero identifiers, commitments, or epoch.
+    fn new(
         operation: OperationId,
         sandbox: SandboxId,
         source: ObjectDigest,
@@ -450,48 +498,12 @@ impl ControllerPolicyHoldV1 {
         Ok(hold)
     }
 
-    /// Returns the accepted Create operation fixed by this hold.
-    #[must_use]
-    pub const fn operation(self) -> OperationId {
-        self.operation
-    }
-
-    /// Returns the accepted Create sandbox fixed by this hold.
-    #[must_use]
-    pub const fn sandbox(self) -> SandboxId {
-        self.sandbox
-    }
-
-    /// Returns the query-time Controller source commitment.
-    #[must_use]
-    pub const fn source(self) -> ObjectDigest {
-        self.source
-    }
-
-    /// Returns the root binding digest fixed before submission.
-    #[must_use]
-    pub const fn binding(self) -> ObjectDigest {
-        self.binding
-    }
-
-    /// Returns the root handoff epoch fixed before submission.
-    #[must_use]
-    pub const fn epoch(self) -> u64 {
-        self.epoch
-    }
-
-    /// Reports whether this historical hold row is held.
-    #[must_use]
-    pub const fn is_held(self) -> bool {
-        self.held
-    }
-
     /// Returns the digest of this exact held or released Controller row.
     ///
     /// # Errors
     ///
     /// Rejects malformed local hold fields.
-    pub fn record_digest(self) -> Result<ObjectDigest, MechanicalError> {
+    fn record_digest(self) -> Result<ObjectDigest, MechanicalError> {
         Ok(ObjectDigest::from_bytes(
             Sha256::digest(self.encode()?).into(),
         ))
@@ -505,7 +517,7 @@ impl ControllerPolicyHoldV1 {
     /// # Errors
     ///
     /// Rejects zero operation, sandbox, source, binding or epoch fields.
-    pub fn q04_released_record_digest(self) -> Result<ObjectDigest, MechanicalError> {
+    fn q04_released_record_digest(self) -> Result<ObjectDigest, MechanicalError> {
         Self {
             held: false,
             ..self
@@ -518,7 +530,7 @@ impl ControllerPolicyHoldV1 {
     /// # Errors
     ///
     /// Rejects zero operation, sandbox, source, binding or epoch fields.
-    pub fn validate(self) -> Result<(), MechanicalError> {
+    fn validate(self) -> Result<(), MechanicalError> {
         if self.operation.as_bytes() == &[0; 16]
             || self.sandbox.as_bytes() == &[0; 16]
             || self.source.as_bytes() == &[0; 32]
@@ -535,7 +547,7 @@ impl ControllerPolicyHoldV1 {
     /// # Errors
     ///
     /// Rejects zero identity fields or epoch.
-    pub fn encode(self) -> Result<[u8; RECORD_BYTES], MechanicalError> {
+    fn encode(self) -> Result<[u8; RECORD_BYTES], MechanicalError> {
         self.validate()?;
         let mut bytes = [0_u8; RECORD_BYTES];
         bytes[..8].copy_from_slice(MAGIC);
@@ -559,7 +571,7 @@ impl ControllerPolicyHoldV1 {
     /// # Errors
     ///
     /// Rejects wrong framing, invalid identity fields or a checksum mismatch.
-    pub fn decode(bytes: &[u8]) -> Result<Self, MechanicalError> {
+    fn decode(bytes: &[u8]) -> Result<Self, MechanicalError> {
         if bytes.len() != RECORD_BYTES
             || bytes.get(..8) != Some(MAGIC.as_slice())
             || bytes.get(8..10) != Some(1_u16.to_be_bytes().as_slice())

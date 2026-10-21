@@ -9,6 +9,7 @@
 //! AOSORP01 | operation[16] | phase:u8 | zero[7] | payload-length:u32be | payload
 //! ```
 
+use crate::journal::historical_observation::HistoricalObservationV1;
 use aos_sandbox_model::{OperationId, ProtocolId};
 use aos_sandbox_model::operator_recovery_effect_v2::{
     OPERATOR_RECOVERY_EFFECT_EVIDENCE_BYTES_V2, OPERATOR_RECOVERY_EFFECT_RECEIPT_BYTES_V2,
@@ -429,17 +430,38 @@ pub(super) fn read_original_request(
     journal: &Journal,
     operation: OperationId,
 ) -> Result<(Vec<u8>, Vec<u8>), OperatorRecoveryIssuanceErrorV1> {
+    read_original_request_from_observation_v2(
+        HistoricalObservationV1::from_journal_v1(journal),
+        operation,
+    )
+}
+
+/// Checks the original signed Repair custody through the same borrowed owner.
+///
+/// # Errors
+///
+/// Preserves the original malformed-history, signature, credential and owner failures.
+pub(super) fn read_original_request_from_observation_v2(
+    journal: HistoricalObservationV1<'_>,
+    operation: OperationId,
+) -> Result<(Vec<u8>, Vec<u8>), OperatorRecoveryIssuanceErrorV1> {
     let key = [super::admission::ATTEMPT_PREFIX, operation.as_bytes()].concat();
-    let bytes = journal.get(RecordNamespace::OperatorRecovery, &key)
+    let bytes = journal
+        .get(RecordNamespace::OperatorRecovery, &key)
         .ok_or(OperatorRecoveryIssuanceErrorV1::Binding)?;
-    if bytes.len() < 132 || &bytes[..8] != b"AOSORA01"
+    if bytes.len() < 132
+        || &bytes[..8] != b"AOSORA01"
         || bytes[8..16] != [1, 0, 0, 0, 0, 0, 0, 0]
         || &bytes[16..32] != operation.as_bytes()
     {
         return Err(OperatorRecoveryIssuanceErrorV1::Binding);
     }
     let length = u32::from_be_bytes(super::take_array(bytes, 128)?) as usize;
-    if bytes.len() != 132_usize.checked_add(length).ok_or(OperatorRecoveryIssuanceErrorV1::Binding)? {
+    if bytes.len()
+        != 132_usize
+            .checked_add(length)
+            .ok_or(OperatorRecoveryIssuanceErrorV1::Binding)?
+    {
         return Err(OperatorRecoveryIssuanceErrorV1::Binding);
     }
     let envelope = bytes[132..].to_vec();
@@ -496,18 +518,62 @@ pub(super) fn verify_failure_history_custody(
     after_digest: [u8; 32],
     completion_clock: i64,
     decision_sequence: u64,
-) -> Result<aos_sandbox_protocol::operator_storage_repair_terminal_v4::RepairTerminalRequestV4, OperatorRecoveryIssuanceErrorV1> {
-    let before = read_progress(journal, operation, BEFORE_PACKET)?
+) -> Result<
+    aos_sandbox_protocol::operator_storage_repair_terminal_v4::RepairTerminalRequestV4,
+    OperatorRecoveryIssuanceErrorV1,
+> {
+    verify_failure_history_custody_from_observation_v2(
+        HistoricalObservationV1::from_journal_v1(journal),
+        operation,
+        signer,
+        claims,
+        before_digest,
+        after_digest,
+        completion_clock,
+        decision_sequence,
+    )
+}
+
+/// Checks the original signed Repair custody through the same borrowed owner.
+///
+/// # Errors
+///
+/// Preserves the original malformed-history, signature, credential and owner failures.
+pub(super) fn verify_failure_history_custody_from_observation_v2(
+    journal: HistoricalObservationV1<'_>,
+    operation: OperationId,
+    signer: &ProtectedOperatorRecoverySignerV1,
+    claims: &aos_sandbox_protocol::operator_storage_repair_terminal_v4::RepairTerminalRequestV4,
+    before_digest: [u8; 32],
+    after_digest: [u8; 32],
+    completion_clock: i64,
+    decision_sequence: u64,
+) -> Result<
+    aos_sandbox_protocol::operator_storage_repair_terminal_v4::RepairTerminalRequestV4,
+    OperatorRecoveryIssuanceErrorV1,
+> {
+    let before = read_progress_from_observation_v2(journal, operation, BEFORE_PACKET)?
         .ok_or(OperatorRecoveryIssuanceErrorV1::Binding)?;
-    let after = read_progress(journal, operation, AFTER_PACKET)?
+    let after = read_progress_from_observation_v2(journal, operation, AFTER_PACKET)?
         .ok_or(OperatorRecoveryIssuanceErrorV1::Binding)?;
-    if hash(b"aos.sandbox.operator-storage-repair-before-packet.v1\0", &[before]) != before_digest
-        || hash(b"aos.sandbox.operator-storage-repair-after-packet.v1\0", &[after]) != after_digest
+    if hash(
+        b"aos.sandbox.operator-storage-repair-before-packet.v1\0",
+        &[before],
+    ) != before_digest
+        || hash(
+            b"aos.sandbox.operator-storage-repair-after-packet.v1\0",
+            &[after],
+        ) != after_digest
     {
         return Err(OperatorRecoveryIssuanceErrorV1::Binding);
     }
     for epoch in 0..MAXIMUM_TERMINAL_EPOCHS {
-        let Some(proposal) = read_progress(journal, operation, terminal_phase(HOLD_REQUEST, epoch))? else {
+        let Some(proposal) = read_progress_from_observation_v2(
+            journal,
+            operation,
+            terminal_phase(HOLD_REQUEST, epoch),
+        )?
+        else {
             continue;
         };
         let original = aos_sandbox_protocol::operator_storage_repair_terminal_v4::RepairTerminalRequestV4::verify(
@@ -517,15 +583,21 @@ pub(super) fn verify_failure_history_custody(
         if original.cut_digest() != claims.cut_digest() {
             continue;
         }
-        let terminal = read_progress(journal, operation, terminal_phase(TERMINAL_PACKET, epoch))?
-            .ok_or(OperatorRecoveryIssuanceErrorV1::Binding)?;
+        let terminal = read_progress_from_observation_v2(
+            journal,
+            operation,
+            terminal_phase(TERMINAL_PACKET, epoch),
+        )?
+        .ok_or(OperatorRecoveryIssuanceErrorV1::Binding)?;
         if original.signed_intent() != claims.signed_intent()
             || original.signed_header()[444..588] != claims.signed_header()[444..588]
             || i64::from_be_bytes(super::take_array(proposal, 0)?) != completion_clock
             || u64::from_be_bytes(super::take_array(proposal, 8)?) > decision_sequence
-            || original.signed_header()[460..492] != hash(
-                b"aos.sandbox.operator-repair-terminal-fresh-packet.v1\0", &[terminal],
-            )
+            || original.signed_header()[460..492]
+                != hash(
+                    b"aos.sandbox.operator-repair-terminal-fresh-packet.v1\0",
+                    &[terminal],
+                )
         {
             return Err(OperatorRecoveryIssuanceErrorV1::Binding);
         }
@@ -539,6 +611,23 @@ fn read_progress(
     operation: OperationId,
     phase: u8,
 ) -> Result<Option<&[u8]>, OperatorRecoveryIssuanceErrorV1> {
+    read_progress_from_observation_v2(
+        HistoricalObservationV1::from_journal_v1(journal),
+        operation,
+        phase,
+    )
+}
+
+/// Checks the original signed Repair custody through the same borrowed owner.
+///
+/// # Errors
+///
+/// Preserves the original malformed-history, signature, credential and owner failures.
+fn read_progress_from_observation_v2<'read>(
+    journal: HistoricalObservationV1<'read>,
+    operation: OperationId,
+    phase: u8,
+) -> Result<Option<&'read [u8]>, OperatorRecoveryIssuanceErrorV1> {
     let key = progress_key(operation, phase);
     let Some(bytes) = journal.get(RecordNamespace::OperatorRecovery, &key) else {
         return Ok(None);
@@ -553,7 +642,11 @@ fn read_progress(
     }
 
     let length = u32::from_be_bytes(super::take_array(bytes, 32)?) as usize;
-    if bytes.len() != 36_usize.checked_add(length).ok_or(OperatorRecoveryIssuanceErrorV1::Binding)? {
+    if bytes.len()
+        != 36_usize
+            .checked_add(length)
+            .ok_or(OperatorRecoveryIssuanceErrorV1::Binding)?
+    {
         return Err(OperatorRecoveryIssuanceErrorV1::Binding);
     }
 

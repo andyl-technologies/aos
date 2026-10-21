@@ -28,7 +28,7 @@ use aos_sandbox_host::state::FileHostStateStore;
 use aos_sandbox_host::worker::{PidfdNamespaceAccessProbe, SystemdOneShotWorker};
 use aos_sandbox_host::{HostError, Result};
 use aos_sandbox_linux::cgroup::CgroupV2Root;
-use aos_sandbox_linux::boot::KernelBootId;
+use aos_linux_descriptors::boot::KernelBootId;
 use aos_sandbox_linux::path::BeneathRoot;
 use aos_sandbox_services::host::{
     ProductionHostBrokerServiceErrorV1, ProductionHostBrokerServiceV1,
@@ -200,9 +200,9 @@ struct ComponentAssembly {
     service: Option<std::result::Result<ProductionHostBrokerServiceV1, ProductionBrokerSessionActivationErrorV1>>,
     cgroup_raw: Option<std::result::Result<OwnedFd, rustix::io::Errno>>,
     cgroup_copy: Option<std::io::Result<OwnedFd>>,
-    cgroup: Option<std::result::Result<BeneathRoot, aos_sandbox_linux::Error>>,
+    cgroup: Option<std::result::Result<BeneathRoot, aos_linux_descriptors::Error>>,
     export_copy: Option<std::io::Result<OwnedFd>>,
-    export: Option<std::result::Result<CgroupV2Root, aos_sandbox_linux::Error>>,
+    export: Option<std::result::Result<CgroupV2Root, aos_linux_descriptors::Error>>,
     catalog: Option<Result<FileHostCatalog>>,
     publisher: Option<Result<FileHostCatalogPublisher>>,
     state: Option<Result<FileHostStateStore>>,
@@ -220,7 +220,7 @@ struct ComponentAssembly {
     serving: Option<Result<()>>,
     posts: [Option<Result<()>>; 2],
     mutex_posts: [Option<Result<()>>; 2],
-    boot: [Option<std::result::Result<KernelBootId, aos_sandbox_linux::Error>>; 3],
+    boot: [Option<std::result::Result<KernelBootId, aos_linux_descriptors::Error>>; 3],
     boot_compare: [Option<Result<()>>; 2],
     first: Option<ComponentAssemblySite>,
     armed: bool,

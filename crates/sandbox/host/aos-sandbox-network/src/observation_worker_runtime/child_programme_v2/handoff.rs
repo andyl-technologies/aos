@@ -7,7 +7,7 @@ use crate::observation_worker_runtime::read_admission_v2::{
 use crate::observer_handoff_v2::{
     HEADER_BYTES, ObserverHandoffHeaderDataV3, observer_handoff_length_data_v2,
 };
-use aos_sandbox_linux::pidfd::PidFd;
+use aos_linux_descriptors::pidfd::PidFd;
 use aos_sandbox_linux::seqpacket::descriptor_subject::{
     NetworkWorkerBootstrapWaitOriginalV3, NetworkWorkerBootstrapWaitRefusalV3,
     NetworkWorkerRetiredRecordDataV2, ReceivedDescriptorRecord,

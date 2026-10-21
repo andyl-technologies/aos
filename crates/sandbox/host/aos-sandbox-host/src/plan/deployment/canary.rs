@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use aos_sandbox_linux::boot::KernelBootId;
+use aos_linux_descriptors::boot::KernelBootId;
 use aos_sandbox_linux::cgroup::{CgroupV2Root, RetainedCgroupAnchor};
 use aos_sandbox_linux::inherited_fd::HostCanaryInitialActivationTableV1;
 use aos_sandbox_linux::inventory::{MountId, MountNamespace};
@@ -86,7 +86,7 @@ pub(super) enum StartupFailure {
     #[error(transparent)]
     Read(#[from] ExactReadFailure),
     #[error(transparent)]
-    Linux(#[from] aos_sandbox_linux::Error),
+    Linux(#[from] aos_linux_descriptors::Error),
     #[error(transparent)]
     Host(#[from] HostError),
     #[error("Host canary startup originals or fixed roles differ")]

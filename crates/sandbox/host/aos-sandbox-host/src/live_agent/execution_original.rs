@@ -5,7 +5,7 @@
 
 use std::error::Error;
 use aos_sandbox_model::{ResourceDimension as D, ResourceVector};
-use aos_sandbox_linux::immutable_file::SealedReadOnlyCredentialCreateOriginalsV1;
+use aos_linux_descriptors::credential::SealedReadOnlyCredentialCreateOriginalsV1;
 use aos_sandbox_linux::seqpacket::{ReceivedRecord, RetainedSeqpacketReceiveErrorV1};
 use super::HostAgentLiveErrorV1;
 

@@ -80,7 +80,7 @@ pub enum NetworkWorkerProcessError {
     PeerMismatch,
     /// A typed Linux descriptor or retained cgroup check failed.
     #[error(transparent)]
-    Linux(#[from] aos_sandbox_linux::Error),
+    Linux(#[from] aos_linux_descriptors::Error),
 }
 
 /// Carries the worker's fresh target namespace and exact reserved cgroup.
@@ -350,8 +350,8 @@ pub(crate) fn validate_broker_request(
             "REQUEST host namespace descriptor is absent",
         ))?;
     let host = NamespaceFd::from_owned(descriptor, NamespaceKind::Network)?;
-    let peer_namespace = peer.pidfd().namespace(NamespaceKind::Network)?;
-    let subject_namespace = subject.pidfd().namespace(NamespaceKind::Network)?;
+    let peer_namespace = aos_sandbox_linux::pidfd::namespace(&(peer.pidfd()), NamespaceKind::Network)?;
+    let subject_namespace = aos_sandbox_linux::pidfd::namespace(&(subject.pidfd()), NamespaceKind::Network)?;
     if host.identity() != peer_namespace.identity()
         || host.identity() != subject_namespace.identity()
         || host.identity() == worker_namespace.identity()

@@ -7,7 +7,7 @@ autobins = false
 
 [features]
 default = []
-selected-kernel-clone-layout = ["dep:aos-sandbox-linux", "aos-sandbox-linux/selected-kernel-clone-layout"]
+selected-kernel-clone-layout = ["dep:aos-sandbox-linux", "dep:aos-linux-descriptors", "aos-sandbox-linux/selected-kernel-clone-layout"]
 controller = [
     "dep:aos-sandbox-api",
     "dep:aos-sandbox-controller-runtime",
@@ -19,7 +19,7 @@ controller = [
     "dep:tokio",
     "dep:aos-sandbox-broker",
     "dep:aos-sandbox-model",
-    "dep:aos-sandbox-linux",
+    "dep:aos-sandbox-linux", "dep:aos-linux-descriptors",
     "dep:aos-sandbox-protocol",
     "dep:aos-sandbox-ledger-replay",
     "dep:ed25519-dalek",
@@ -44,7 +44,7 @@ policy = [
     "dep:ed25519-dalek",
     "dep:rustix",
     "dep:sha2",
-    "dep:aos-sandbox-linux",
+    "dep:aos-sandbox-linux", "dep:aos-linux-descriptors",
     "dep:thiserror",
     "dep:zeroize",
 ]
@@ -60,7 +60,7 @@ cache-signer = [
     "dep:aos-sandbox-cache-signer",
     "dep:aos-sandbox-broker",
     "dep:aos-sandbox-model",
-    "dep:aos-sandbox-linux",
+    "dep:aos-sandbox-linux", "dep:aos-linux-descriptors",
     "dep:aos-sandbox-protocol",
     "dep:ed25519-dalek",
     "dep:rustix",
@@ -72,7 +72,7 @@ host = [
     "dep:aos-sandbox-controller-domain",
     "dep:aos-sandbox-broker-session-security",
     "dep:aos-sandbox-host",
-    "dep:aos-sandbox-linux",
+    "dep:aos-sandbox-linux", "dep:aos-linux-descriptors",
     "dep:aos-systemd-client",
     "dep:ed25519-dalek",
     "dep:rustix",
@@ -81,8 +81,9 @@ host = [
     "dep:zeroize",
 ]
 storage = [
+    "dep:aos-sandbox-controller-domain",
     "dep:aos-sandbox-broker-session-security",
-    "dep:aos-sandbox-linux",
+    "dep:aos-sandbox-linux", "dep:aos-linux-descriptors",
     "dep:aos-sandbox-storage",
     "dep:rustix",
     "dep:thiserror",
@@ -91,7 +92,7 @@ network = [
     "dep:aos-sandbox-broker",
     "dep:aos-sandbox-model",
     "dep:aos-sandbox-broker-session-security",
-    "dep:aos-sandbox-linux",
+    "dep:aos-sandbox-linux", "dep:aos-linux-descriptors",
     "dep:aos-sandbox-network",
     "dep:rustix",
     "dep:thiserror",
@@ -101,7 +102,7 @@ mount = [
     "dep:aos-sandbox-broker",
     "dep:aos-sandbox-broker-session-security",
     "dep:aos-sandbox-model",
-    "dep:aos-sandbox-linux",
+    "dep:aos-sandbox-linux", "dep:aos-linux-descriptors",
     "dep:aos-sandbox-mount",
     "dep:aos-sandbox-mount-native",
     "dep:aos-sandbox-protocol",
@@ -113,7 +114,7 @@ mount = [
 ownership = ["dep:aos-sandbox-ownership"]
 source-provider = [
     "dep:aos-sandbox-controller-domain",
-    "dep:aos-sandbox-linux",
+    "dep:aos-sandbox-linux", "dep:aos-linux-descriptors",
     "dep:aos-sandbox-broker-session-security",
     "dep:aos-sandbox-model",
     "dep:aos-sandbox-source-provider",
@@ -152,6 +153,7 @@ aos-sandbox-controller-runtime = { workspace = true, optional = true }
 aos-sandbox-model = { workspace = true, optional = true }
 aos-sandbox-host = { workspace = true, optional = true }
 aos-sandbox-linux = { workspace = true, optional = true }
+aos-linux-descriptors = { workspace = true, optional = true }
 aos-sandbox-mount = { workspace = true, optional = true }
 aos-sandbox-mount-native = { workspace = true, optional = true }
 aos-sandbox-network = { workspace = true, optional = true }
@@ -177,6 +179,7 @@ thiserror = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
 zeroize = { workspace = true, optional = true }
 
+aos-sandbox-cache = { workspace = true }
 [dev-dependencies]
 aos-sandbox-mount-native = { workspace = true, features = ["test-fixtures"] }
 serde_json.workspace = true

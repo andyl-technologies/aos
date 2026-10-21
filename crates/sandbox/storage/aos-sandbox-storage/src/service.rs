@@ -34,7 +34,7 @@ pub enum StorageServiceError {
     Transport(#[from] SeqpacketError),
     /// A retained cgroup, pidfd, or protected filesystem operation failed.
     #[error(transparent)]
-    Kernel(#[from] aos_sandbox_linux::Error),
+    Kernel(#[from] aos_linux_descriptors::Error),
     /// A protocol value produced internally violated the closed schema.
     #[error(transparent)]
     Protocol(#[from] ProtocolValidationError),

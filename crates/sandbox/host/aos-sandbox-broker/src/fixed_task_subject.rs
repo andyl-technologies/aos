@@ -5,8 +5,10 @@
 //! posts. Task labels remain separate from the listener creator/socket SID.
 
 use std::error::Error;
-use aos_sandbox_linux::pidfd::{PidFdContextReadbackV1, PidFdIdentityReadbackV1,
-    PidFdInfo, PidFdProcessIdentity};
+use aos_sandbox_linux::pidfd::PidFdContextReadbackV1;
+use aos_sandbox_linux::pidfd::PidFdIdentityReadbackV1;
+use aos_linux_descriptors::pidfd::PidFdInfo;
+use aos_sandbox_linux::pidfd::PidFdProcessIdentity;
 use aos_sandbox_linux::unix_stream::UnixStreamSubjectChunk;
 
 /// Classifies a failed native task comparison without granting a role.
@@ -25,14 +27,14 @@ pub enum FixedTaskSubjectClosedV1 {
 
 /// Retains one actual task subject and all independently owed native posts.
 pub struct FixedTaskSubjectOriginalsV1<E> {
-    info: Option<Result<PidFdInfo, aos_sandbox_linux::Error>>,
+    info: Option<Result<PidFdInfo, aos_linux_descriptors::Error>>,
     identity: PidFdIdentityReadbackV1,
-    identity_result: Option<Result<(), aos_sandbox_linux::Error>>,
+    identity_result: Option<Result<(), aos_linux_descriptors::Error>>,
     context: PidFdContextReadbackV1,
-    context_result: Option<Result<(), aos_sandbox_linux::Error>>,
+    context_result: Option<Result<(), aos_linux_descriptors::Error>>,
     comparison: Option<Result<(), E>>,
-    after: Option<Result<PidFdInfo, aos_sandbox_linux::Error>>,
-    alive: Option<Result<bool, aos_sandbox_linux::Error>>,
+    after: Option<Result<PidFdInfo, aos_linux_descriptors::Error>>,
+    alive: Option<Result<bool, aos_linux_descriptors::Error>>,
     completion: Option<Result<(), E>>,
 }
 

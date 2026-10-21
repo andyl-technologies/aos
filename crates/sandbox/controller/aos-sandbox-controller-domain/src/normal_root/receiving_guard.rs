@@ -5,6 +5,11 @@
 //! This restores the old fee exclusion while keeping lower native N and sums
 //! M locks out of upper computation, native IO and physical owner destruction.
 
+mod startup;
+mod initial_peer;
+mod current_owned;
+pub(crate) use current_owned::RootOwnedCurrentStageV1;
+
 use std::sync::MutexGuard;
 
 use aos_sandbox_broker::receiving::{RootJournalFinancialBorrowV1, RootUpperMutationGuardV1};
@@ -48,6 +53,16 @@ impl RootReceivingGuardV1<'_> {
     /// Reborrows the same upper owner within its existing exclusion interval.
     pub(crate) fn original_mut_v1(&mut self) -> &mut RootReceivingOriginalV1 {
         &mut self.original
+    }
+
+    /// Splits the real prior producer and Initial within this same held L/U.
+    pub(crate) fn native_startup_prior_parts_mut_v1(&mut self) -> Result<(
+        &mut aos_sandbox_policy::native::RootStartupProvisionOriginalV1,
+        &mut aos_sandbox_broker::receiving::RootInitialReceivingOriginalV1,
+        &RootUpperMutationGuardV1<'_>,
+    ), Error> {
+        let (prior, initial) = self.original.native_startup_prior_parts_mut_v1()?;
+        Ok((prior, initial, &self.mutation))
     }
 
     /// Denies new native work before releasing this same upper interval.

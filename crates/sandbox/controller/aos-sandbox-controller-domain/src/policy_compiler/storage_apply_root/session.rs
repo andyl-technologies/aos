@@ -4,6 +4,8 @@
 //! manifest/context, signed transcript, traffic machine and method captures
 //! verify it; incoming final bytes provide no packet, key or Session authority.
 
+use aos_sandbox_protocol::domain_ledger::readonly::FixedJournalReadbackDataV1 as RootFixedNativeReadbackV1;
+
 use std::error::Error;
 use std::mem::size_of;
 use aos_sandbox_model::{BrokerPlanExpectation, DecodeLimits, RawPairedClockSample,
@@ -26,7 +28,7 @@ use aos_sandbox_protocol::authenticated_session::{all_methods::{
     StoredBrokerSessionHistoryDecodeCaptureV1}};
 use crate::journal::{JournalError, RecordNamespace};
 use crate::policy_compiler::create_storage_current::controller_readonly::{RootProspectiveStorageApplyPlanV1,
-    native_read::RootFixedNativeReadbackV1, storage_inventory::{RootCurrentStorageInventoryV1,
+    storage_inventory::{RootCurrentStorageInventoryV1,
         verify_session_for_purpose_v1, RootHistoricalSessionPurposeV1}};
 use crate::policy_compiler::provisioning_current::apply_inputs::RootApplyInputsOriginalV1;
 

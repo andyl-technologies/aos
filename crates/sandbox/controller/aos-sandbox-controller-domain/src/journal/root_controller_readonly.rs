@@ -5,6 +5,7 @@
 //! their actual fixed, captured-native and audited-semantic stages complete.
 
 use aos_sandbox_model::{ResourceDimension as D, ResourceVector};
+use aos_sandbox_policy::controller_history_data as history_data;
 
 use crate::normal_root::{NormalRootStartupErrorV1, ProductionNormalRootStartupV1};
 use crate::policy_compiler::create_storage_current::root_open::RootCurrentOpenStateV1;
@@ -371,7 +372,7 @@ impl<'borrow, 'original, 'data>
         let audit = self.audit.ok_or(JournalError::ProtectedBoundary)?;
         let ids = audit.native_data_v1().and_then(|native| native.transaction_ids_data_v1())
             .ok_or(JournalError::ProtectedBoundary)?;
-        self.accepted.as_mut().ok_or(JournalError::ProtectedBoundary)?.finish_original_names(ids)
+        self.accepted.as_mut().ok_or(JournalError::ProtectedBoundary)?.finish_original_names(ids).map_err(JournalError::from)
     }
 }
 
@@ -426,7 +427,7 @@ impl ReadOnlyProtectedJournal {
         self.journal.ensure_healthy()?;
         let [validated, _] = validated.records() else { return Err(JournalError::ProtectedBoundary); };
         let [signed, head] = signed.records() else { return Err(JournalError::ProtectedBoundary); };
-        require_lane_history_data_v1(self.journal.native.state(), bundle.lane, [
+        history_data::require_lane_history_data_v1(self.journal.native.state(), bundle.lane, [
             (KeyV1::new(bundle.lane, OwnerV1::Controller, 1), bundle.intent_record),
             (KeyV1::new(bundle.lane, OwnerV1::Controller, 2), bundle.assignment_planned),
             (KeyV1::new(bundle.lane, OwnerV1::Controller, 3), inputs.record.as_slice()),
@@ -434,7 +435,7 @@ impl ReadOnlyProtectedJournal {
             (KeyV1::new(bundle.lane, OwnerV1::Controller, 5), reserved.record.as_slice()),
             (KeyV1::new(bundle.lane, OwnerV1::Controller, 6), signed.value().ok_or(JournalError::ProtectedBoundary)?),
             (KeyV1::new(bundle.lane, OwnerV1::Controller, 0), head.value().ok_or(JournalError::ProtectedBoundary)?),
-        ])
+        ]).map_err(JournalError::from)
     }
 
     pub(crate) fn require_root_controller_outcome_replay_data_v1(&self,
@@ -462,29 +463,10 @@ impl ReadOnlyProtectedJournal {
         receipt: aos_sandbox_protocol::domain_ledger::create_storage_history::continuation::ContinuationNativeReceiptDataV1<'_>,
         later: [&JournalTransaction; N],
     ) -> Result<(), JournalError> {
-        use aos_sandbox_protocol::domain_ledger::create_storage_history::{KeyV1, OwnerV1};
         self.journal.ensure_healthy()?;
-        let mut reached = 0;
-        for ((namespace, key), value) in self.journal.native.state() {
-            if *namespace != RecordNamespace::CreateStorageHistory { continue; }
-            let key = KeyV1::decode(key).map_err(|_| JournalError::ProtectedBoundary)?;
-            if key.lane() != lane { continue; }
-            if key.owner() != OwnerV1::Controller || key.revision() > (5 + N as u64) {
-                return Err(JournalError::ProtectedBoundary);
-            }
-            if key.revision() == 0 {
-                if value.as_slice() != receipt.latest_head { return Err(JournalError::ProtectedBoundary); }
-            } else if key.revision() >= 6 {
-                let row = later[usize::try_from(key.revision() - 6).map_err(|_| JournalError::ProtectedBoundary)?]
-                    .records().first().ok_or(JournalError::ProtectedBoundary)?;
-                if row.key() != key.encode().as_slice() || row.value() != Some(value.as_slice()) {
-                    return Err(JournalError::ProtectedBoundary);
-                }
-            }
-            reached += 1;
-        }
-        if reached != 6 + N { return Err(JournalError::ProtectedBoundary); }
-        Ok(())
+        history_data::require_continuation_history_data_v1(
+            self.journal.native.state(), lane, receipt, later,
+        ).map_err(JournalError::from)
     }
 
     fn require_root_controller_native_cut_v1(&self, audit: &RootControllerReadonlyGeometryAuditV1,
@@ -522,7 +504,7 @@ impl ReadOnlyProtectedJournal {
         let original = ControllerIntentBodyDataV1::decode(intent.body())
             .map_err(|_| JournalError::ProtectedBoundary)?;
         originals.observe_once(self.journal.native.state(), original);
-        originals.require_complete()
+        originals.require_complete().map_err(JournalError::from)
     }
 
     pub(crate) fn require_root_controller_bundle_history_data_v1(
@@ -530,10 +512,10 @@ impl ReadOnlyProtectedJournal {
         bundle: aos_sandbox_protocol::domain_ledger::create_storage_history::ready::ReadyBundleDataV1<'_>,
         receipt: aos_sandbox_protocol::domain_ledger::create_storage_history::ready::InputsReadyNativeReceiptDataV1<'_>,
     ) -> Result<(), JournalError> {
-        require_bundle_history_data_v1(
+        history_data::require_bundle_history_data_v1(
             self.journal.native.state(), bundle.lane, bundle.intent_record,
             bundle.assignment_planned, receipt,
-        )
+        ).map_err(JournalError::from)
     }
 
     pub(crate) fn require_root_controller_use_bundle_history_data_v1(
@@ -545,62 +527,19 @@ impl ReadOnlyProtectedJournal {
     ) -> Result<(), JournalError> {
         use aos_sandbox_protocol::domain_ledger::create_storage_history::{KeyV1, OwnerV1};
         let [record, _] = validated.records() else { return Err(JournalError::ProtectedBoundary); };
-        require_lane_history_data_v1(self.journal.native.state(), bundle.lane, [
+        history_data::require_lane_history_data_v1(self.journal.native.state(), bundle.lane, [
             (KeyV1::new(bundle.lane, OwnerV1::Controller, 1), bundle.intent_record),
             (KeyV1::new(bundle.lane, OwnerV1::Controller, 2), bundle.assignment_planned),
             (KeyV1::new(bundle.lane, OwnerV1::Controller, 3), inputs.record.as_slice()),
             (KeyV1::new(bundle.lane, OwnerV1::Controller, 4), record.value().ok_or(JournalError::ProtectedBoundary)?),
             (KeyV1::new(bundle.lane, OwnerV1::Controller, 5), receipt.record.as_slice()),
             (KeyV1::new(bundle.lane, OwnerV1::Controller, 0), receipt.latest_head.as_slice()),
-        ])
+        ]).map_err(JournalError::from)
     }
 
 }
 
-fn require_bundle_history_data_v1(
-    state: &State,
-    lane: [u8; 16],
-    intent: &[u8],
-    planned: &[u8],
-    receipt: aos_sandbox_protocol::domain_ledger::create_storage_history::ready::InputsReadyNativeReceiptDataV1<'_>,
-) -> Result<(), JournalError> {
-    use aos_sandbox_protocol::domain_ledger::create_storage_history::{KeyV1, OwnerV1};
-    let expected = [
-        (KeyV1::new(lane, OwnerV1::Controller, 1), intent),
-        (KeyV1::new(lane, OwnerV1::Controller, 2), planned),
-        (KeyV1::new(lane, OwnerV1::Controller, 3), receipt.record.as_slice()),
-        (KeyV1::new(lane, OwnerV1::Controller, 0), receipt.latest_head.as_slice()),
-    ];
-    require_lane_history_data_v1(state, lane, expected)
-}
 
-fn require_lane_history_data_v1<const N: usize>(state: &State, lane: [u8; 16],
-    expected: [(Result<aos_sandbox_protocol::domain_ledger::create_storage_history::KeyV1,
-        aos_sandbox_protocol::domain_ledger::create_storage_history::HistoryErrorV1>, &[u8]); N],
-) -> Result<(), JournalError> {
-    use aos_sandbox_protocol::domain_ledger::create_storage_history::KeyV1;
-    let mut reached = 0;
-    for ((namespace, key), bytes) in state {
-        if *namespace != RecordNamespace::CreateStorageHistory {
-            continue;
-        }
-        let observed = KeyV1::decode(key).map_err(|_| JournalError::ProtectedBoundary)?;
-        if observed.lane() != lane {
-            continue;
-        }
-        if !expected.iter().any(|(key, value)| {
-            key.as_ref().is_ok_and(|key| key.encode() == observed.encode())
-                && bytes.as_slice() == *value
-        }) {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        reached += 1;
-    }
-    if reached != expected.len() {
-        return Err(JournalError::ProtectedBoundary);
-    }
-    Ok(())
-}
 
 fn require_positive<T, E>(result: &Option<Result<T, E>>) -> Result<(), JournalError> {
     match result {
@@ -609,39 +548,3 @@ fn require_positive<T, E>(result: &Option<Result<T, E>>) -> Result<(), JournalEr
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use aos_sandbox_protocol::domain_ledger::create_storage_history::{KeyV1, OwnerV1};
-    use aos_sandbox_protocol::domain_ledger::create_storage_history::ready::InputsReadyNativeReceiptDataV1;
-    use aos_sandbox_protocol::domain_ledger::protected_names::ProtectedJournalNamesV1;
-
-    #[test]
-    fn current_lane_history_requires_every_exact_member_and_rejects_an_extra_step() {
-        // Opaque map-equality DATA only. The production caller first completes
-        // actual canonical/role replay, original R gates and the exact suffix.
-        let lane = [7; 16];
-        let record = [8; 412];
-        let receipt = InputsReadyNativeReceiptDataV1 {
-            record: &record, latest_head: [9; 40],
-            names: ProtectedJournalNamesV1::from_bytes(&[1; 48]).unwrap(),
-            after_next: 10, after_end: 11,
-        };
-        let key = |revision| (RecordNamespace::CreateStorageHistory,
-            KeyV1::new(lane, OwnerV1::Controller, revision).unwrap().encode().to_vec());
-        let mut state = State::from([
-            (key(1), b"intent".to_vec()),
-            (key(2), b"planned".to_vec()),
-            (key(3), record.to_vec()),
-            (key(0), receipt.latest_head.to_vec()),
-        ]);
-
-        assert!(require_bundle_history_data_v1(&state, lane, b"intent", b"planned", receipt).is_ok());
-        assert!(require_bundle_history_data_v1(&state, lane, b"substituted", b"planned", receipt).is_err());
-        state.insert(key(4), b"unobserved later phase".to_vec());
-        assert!(require_bundle_history_data_v1(&state, lane, b"intent", b"planned", receipt).is_err());
-        state.remove(&key(4));
-        state.remove(&key(2));
-        assert!(require_bundle_history_data_v1(&state, lane, b"intent", b"planned", receipt).is_err());
-    }
-}

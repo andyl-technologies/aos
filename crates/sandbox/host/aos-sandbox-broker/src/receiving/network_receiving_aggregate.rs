@@ -20,7 +20,7 @@ enum First { Fixed, Descendant, Binding, InitialControls, FinalControls, ParentA
 
 pub(super) struct NetworkReceivingAggregateOriginalV4 {
     fixed: NetworkReceivingAggregateCgroupReadbackV4,
-    fixed_result: Option<Result<(), aos_sandbox_linux::Error>>,
+    fixed_result: Option<Result<(), aos_linux_descriptors::Error>>,
     pair: Option<(CgroupV2Root, RetainedCgroupAnchor)>,
     main: WorkerCgroupOpeningV1,
     descendant: Option<Result<(), WorkerCgroupOpeningRefusalV1>>,

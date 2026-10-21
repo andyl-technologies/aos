@@ -237,6 +237,59 @@ struct ProjectLayerV2 {
     revocation: RevocationPolicy,
 }
 
+// The fixed startup model supplier and each independently entered project
+// verifier share this exact original JSON/typed-model representation recipe.
+pub(super) fn project_input_decoding_bytes_v2(input_bytes: usize) -> Option<usize> {
+    let value_cell = std::mem::size_of::<(String, Value, [usize; 3])>();
+    let limit_cell = std::mem::size_of::<DeploymentLimitV1>();
+    input_bytes
+        .checked_mul(3)?
+        .checked_mul(value_cell.checked_add(limit_cell)?)?
+        .checked_add(input_bytes.checked_mul(8)?)
+}
+
+// The native caller independently pays this DATA before entering the same
+// existing signature/JSON verifier. Invalid widths retain its early no-model
+// branch; this quote neither verifies bytes nor creates a native role.
+#[cfg(feature = "native-journal")]
+pub(crate) fn project_source_verification_receiving_bytes_v2(
+    packet_bytes: usize,
+    input_bytes: usize,
+) -> Option<usize> {
+    let controls = std::mem::size_of::<VerifiedSignedProjectPolicySourceV2>()
+        .checked_mul(3)?
+        .checked_add(
+            std::mem::size_of::<
+                Result<VerifiedSignedProjectPolicySourceV2, SignedPolicyInputDataErrorV1>,
+            >()
+            .checked_mul(3)?,
+        )?
+        .checked_add(std::mem::size_of::<Signature>().checked_mul(3)?)?
+        .checked_add(std::mem::size_of::<Sha256>().checked_mul(3)?)?
+        .checked_add(std::mem::size_of::<Vec<u8>>().checked_mul(3)?)?;
+    if packet_bytes != PACKET_BYTES || input_bytes > MAXIMUM_INPUT_BYTES {
+        return Some(controls);
+    }
+    let typed = std::mem::size_of::<ProjectEnvelopeV2>()
+        .checked_mul(3)?
+        .checked_add(std::mem::size_of::<ProjectLayerV2>().checked_mul(3)?)?;
+    let resource_count = crate::PORTABLE_LIMIT_DIMENSIONS
+        .len()
+        .checked_add(aos_sandbox_model::ResourceDimension::COUNT)?;
+    let resource_backing = resource_count
+        .checked_mul(3)?
+        .checked_mul(std::mem::size_of::<crate::HardLimitRequestV1>())?;
+    let preimage = SIGNING_DOMAIN
+        .len()
+        .checked_add(PAYLOAD_BYTES)?
+        .checked_mul(3)?;
+    controls
+        .checked_add(typed)?
+        .checked_add(resource_backing)?
+        .checked_add(preimage)?
+        .checked_add(project_input_decoding_bytes_v2(input_bytes)?)
+}
+
 /// Verifies a version-2 project signature and exact canonical input framing.
 ///
 /// The supplied key is not selected by this function and the result grants no

@@ -15,6 +15,7 @@ aos-sandbox-model.workspace = true
 aos-sandbox-journal = { workspace = true, features = ["protected-unix"] }
 aos-sandbox-ledger-replay.workspace = true
 aos-sandbox-linux.workspace = true
+aos-linux-descriptors.workspace = true
 aos-sandbox-protocol.workspace = true
 aos-sandbox-source-provider-protocol.workspace = true
 aos-systemd-client.workspace = true

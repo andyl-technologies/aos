@@ -11,7 +11,10 @@ use aos_sandbox_linux::cgroup::{
     ExactCgroupMembershipReadbackV1,
     ExactCgroupMembershipRefusalV1, RetainedCgroupAnchor,
 };
-use aos_sandbox_linux::pidfd::{PidFd, PidFdInfo, PidFdOpenAttemptV1, PidFdOpenRefusalV1};
+use aos_linux_descriptors::pidfd::PidFd;
+use aos_linux_descriptors::pidfd::PidFdInfo;
+use aos_sandbox_linux::pidfd::PidFdOpenAttemptV1;
+use aos_sandbox_linux::pidfd::PidFdOpenRefusalV1;
 use aos_systemd_client::{
     ControllerAttachmentServiceV1, ControllerPropertyObserverAttemptV1,
     ServiceControlGroupObservation,
@@ -54,7 +57,7 @@ enum StartupCgroup {
 }
 
 impl StartupCgroup {
-    fn capture_once(&mut self) -> aos_sandbox_linux::Result<()> {
+    fn capture_once(&mut self) -> aos_linux_descriptors::Result<()> {
         match self {
             Self::Host(read) => read.capture_once(),
             Self::Mount(read) => read.capture_once(),
@@ -89,7 +92,7 @@ pub struct ServiceIdentityFlightV1 {
     observations: [Option<ControllerPropertyObserverAttemptV1>; 2],
     reads: [Option<aos_systemd_client::Result<()>>; 2],
     cgroup_read: Option<StartupCgroup>,
-    cgroup_capture: Option<aos_sandbox_linux::Result<()>>,
+    cgroup_capture: Option<aos_linux_descriptors::Result<()>>,
     root: Option<CgroupV2Root>,
     anchor: Option<RetainedCgroupAnchor>,
     pidfd_read: PidFdOpenAttemptV1,

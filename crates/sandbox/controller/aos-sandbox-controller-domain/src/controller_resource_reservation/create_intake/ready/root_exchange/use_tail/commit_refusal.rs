@@ -63,7 +63,7 @@ impl RootExchangeOriginalsV1 {
             .and_then(|position| position.as_ref().ok()).copied();
         let mut loan = OriginalCreateStorageRootExchangeV1 {
             parent, intake, controller, source, profile, cache,
-            state: &mut self.turn, use_receiving: Some(receiving),
+            state: &mut self.turn, use_receiving: Some(RootUseReceivingV1::Original(receiving)),
         };
         loan.state.owed_post = Some(RootPostFrontierV1::UseCommitRefusal);
         let post = self.peer.recheck_once(&mut loan);

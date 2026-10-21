@@ -1266,3 +1266,29 @@ pub use replay_hooks::{validate_replayed_transaction, validate_replayed_transact
 /// Retains reached transition DATA and original typed errors.
 pub mod transition_retained;
 pub use transition_retained::SourceReplayTransactionOriginalsV1;
+
+/// Checks each proposed closed successor capacity record as DATA.
+///
+/// Native phase ownership remains a separate caller check. The canonical
+/// decoder and request-limit engine are shared with the existing Domain route.
+///
+/// # Errors
+/// Rejects another purpose, an unequal admission transaction or invalid bounds.
+pub fn require_capacity_records_data_v1(
+    limits: aos_sandbox_protocol::domain_ledger::transaction::JournalLimits,
+    transaction: &JournalTransaction,
+) -> Result<(), JournalError> {
+    for record in transaction.records() {
+        if record.namespace() != RecordNamespace::GlobalCapacityReservation
+            || record.value().is_none()
+        {
+            continue;
+        }
+        let (request, admission, _) = aos_sandbox_protocol::domain_ledger::capacity_family::decode_capacity_reservation_request_v1(record)?;
+        if !request.purpose.is_first_source_successor() || &admission != transaction.id() {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        aos_sandbox_protocol::domain_ledger::capacity_family::validate_request_with_limits(&request, limits)?;
+    }
+    Ok(())
+}

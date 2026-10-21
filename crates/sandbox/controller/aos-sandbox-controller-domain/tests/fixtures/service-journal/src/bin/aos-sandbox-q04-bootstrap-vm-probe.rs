@@ -28,7 +28,7 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use aos_sandbox_controller_domain::Journal;
-use aos_sandbox_controller_domain::cache_residency::sign_fixed_signer_cache_owner_readback_v2;
+use aos_sandbox_cache::sign_fixed_signer_cache_owner_readback_v2;
 use aos_sandbox_protocol::cache_owner_readback::{
     CacheOwnerReadbackChallengeV1,
     PinnedCacheOwnerReadbackSignerV1,
@@ -38,10 +38,11 @@ use aos_sandbox_protocol::cache_owner_readback::{
 use aos_sandbox_controller_domain::journal::controller::production_journal_limits;
 use aos_sandbox_controller_domain::source_domain::ProtectedSourceDomainJournalOwnerV1;
 use aos_sandbox_controller_domain::policy_compiler::{
-    PinnedSourceHoldReadbackSignerV1, PolicyCompilerProtectedOwnerV1,
+    PinnedSourceHoldReadbackSignerV1,
     encode_source_hold_readback_signer_credential_v1, read_fixed_policy_cache_hold_v1,
     verify_fixed_policy_cache_owner_readback_v2,
 };
+use aos_sandbox_policy::native::PolicyCompilerProtectedOwnerV1;
 use aos_sandbox_model::{ObjectDigest, ProjectId};
 use ed25519_dalek::{Signer as _, SigningKey};
 use sha2::{Digest as _, Sha256};

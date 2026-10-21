@@ -11,7 +11,7 @@ use aos_sandbox_api::aos::sandbox::local::v1::{
     AtomicStorageSnapshotResponse, BrokerMethod, PopulateStorageGuestRootResponseV1, StorageResult,
 };
 use aos_sandbox_model::{ObjectDigest, ProtocolVersion, RawPairedClockSample};
-use aos_sandbox_linux::boot::KernelBootId;
+use aos_linux_descriptors::boot::KernelBootId;
 use aos_sandbox_linux::seqpacket::RecordSubjectListener;
 use aos_sandbox_protocol::semantics::CanonicalStorageRepairSemanticsV1;
 use aos_sandbox_protocol::git_project_coverage::{

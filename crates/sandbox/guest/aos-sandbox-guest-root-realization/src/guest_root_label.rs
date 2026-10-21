@@ -275,7 +275,7 @@ pub enum GuestRootLabelErrorV1 {
     WrongLabel,
     /// Bounded descriptor resolution rejected a path or inode.
     #[error("guest-root label path is invalid: {0}")]
-    Path(#[from] aos_sandbox_linux::Error),
+    Path(#[from] aos_linux_descriptors::Error),
     /// A physical filesystem or xattr operation failed.
     #[error("guest-root label I/O failed: {0}")]
     Io(#[from] rustix::io::Errno),
@@ -454,7 +454,7 @@ mod tests {
                 .unwrap_err();
                 assert!(matches!(
                     error,
-                    GuestRootLabelErrorV1::Path(aos_sandbox_linux::Error::Syscall {
+                    GuestRootLabelErrorV1::Path(aos_linux_descriptors::Error::Syscall {
                         operation: "openat2",
                         source,
                     }) if source.raw_os_error() == Some(rustix::io::Errno::XDEV.raw_os_error())

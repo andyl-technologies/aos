@@ -549,9 +549,9 @@ impl RetainedImmutableFileV1 {
     /// this method nor the lower DATA holder establishes process retirement.
     pub fn matches_nix_offline_executed_original_v5(
         &self,
-        original: &aos_sandbox_linux::pidfd::PidFd,
+        original: &aos_linux_descriptors::pidfd::PidFd,
         observations: &mut aos_sandbox_linux::pidfd::PidFdProcObservationsV1,
-    ) -> Result<bool, aos_sandbox_linux::Error> {
+    ) -> Result<bool, aos_linux_descriptors::Error> {
         Ok(observations.observe_nix_offline_helper_executable_v1(original)? == self.identity)
     }
 

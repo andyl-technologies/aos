@@ -24,11 +24,13 @@ use aos_sandbox_protocol::domain_ledger::create_storage_history::{
 };
 use crate::controller_resource_reservation::CreateStorageCacheCurrentExtentsDataV1;
 use crate::journal::{Journal, JournalError};
-use crate::journal::broker_session_receiving::{StorageCreateUseSecurityShapeDataV1,
+use aos_sandbox_policy::storage_create_use_data::StorageCreateUseSecurityShapeDataV1;
+use crate::journal::broker_session_receiving::{
     StorageSessionGeometryRefusalV1, storage_create_use_receiving_demand_v1};
-use crate::journal::create_storage_history::HistoryPairReadbackV1;
+use aos_sandbox_protocol::domain_ledger::create_storage_history::readback::HistoryPairReadbackDataV1;
 use crate::normal_root::RootPolicyAcceptedFlightV1;
-use crate::policy_compiler::bounded_stream_io::{FixedDeadlineStreamIoV1, DeadlineStreamDirectionV1};
+use aos_sandbox_broker::bounded_stream_io::FixedDeadlineStreamIoV1;
+use aos_sandbox_broker::bounded_stream_io::DeadlineStreamDirectionV1;
 use crate::policy_compiler::root_current_writers::RootCreateStorageCurrentWritersV1;
 
 use super::{RootCreateStorageCurrentErrorV1 as Error,
@@ -39,7 +41,7 @@ use super::{RootCreateStorageCurrentErrorV1 as Error,
     root_open::{RootCurrentOpenStateV1, RootCurrentHistoryPostsV1},
     source_current::RootCurrentSourceExchangeStateV1};
 
-type Readback = HistoryPairReadbackV1<USE_AUTHORIZED_RECORD_BYTES_V1>;
+type Readback = HistoryPairReadbackDataV1<USE_AUTHORIZED_RECORD_BYTES_V1>;
 
 pub(crate) struct RootCurrentUseAuthorizedStateV1 {
     receiving: Option<Result<ResourceVector, StorageSessionGeometryRefusalV1>>,
@@ -93,10 +95,10 @@ impl RootCurrentUseAuthorizedStateV1 {
         self.append_posts.arm_once(flight)?;
         self.primary = Some(self.produce_inner(flight, writers, original, root,
             ready, source, cache, ownership, readonly, private));
-        let origin = root.original_clock_origin_v1().ok();
+        let origin = root.original_clock_native_v1().ok();
         let body = root.completed_body().ok();
         self.append_posts.observe_once(flight, writers, body.as_ref(),
-            origin.map(|pair| pair.0), origin.map(|pair| pair.1));
+            origin);
         self.append_live = Some(self.append_posts.require_complete()
             .and_then(|()| self.append_posts.sample())
             .and_then(|sample| require_live(root, source, readonly, sample)));
@@ -111,7 +113,7 @@ impl RootCurrentUseAuthorizedStateV1 {
         // A failed write still owes these posts. No returned Error unwinds the
         // actual accepted socket, append outcomes or partial write progress.
         self.send_posts.observe_once(flight, writers, body.as_ref(),
-            origin.map(|pair| pair.0), origin.map(|pair| pair.1));
+            origin);
         match writers.authority_and_policy() {
             Ok((authority, policy)) => {
                 self.send_readback = Some(self.pair.readback_pair(authority, policy));

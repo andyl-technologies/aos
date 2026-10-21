@@ -1,7 +1,8 @@
 //! Delegates the normal Apply final comparison to the shared C finality engine.
 
 use super::{lifecycle::RootApplyFinalLifecycleOriginalV1, session::RootApplyFinalSessionOriginalV1};
-use crate::journal::{Journal, JournalError};
+use crate::journal::JournalError;
+use crate::journal::historical_observation::HistoricalObservationV1;
 use crate::policy_compiler::provisioning_current::create_finality::controller::CreateFinalityControllerOriginalV1;
 use aos_sandbox_model::OperationId;
 use aos_sandbox_protocol::domain_ledger::effect_history::CreateStoppedLifecycleReceiptDataV1;
@@ -19,14 +20,14 @@ impl RootApplyFinalControllerOriginalV1 {
         Self { original: CreateFinalityControllerOriginalV1::new() }
     }
 
-    pub(super) fn observe_once_v1(&mut self, controller: &mut Journal,
+    pub(super) fn observe_once_v1(&mut self, controller: HistoricalObservationV1<'_>,
         receipt: CreateStoppedLifecycleReceiptDataV1<'_>, expected_parent: OperationId,
         final_receipt: &[u8],
     ) -> Result<(), JournalError> {
         self.original.observe_once_v1(controller, receipt, expected_parent, final_receipt)
     }
 
-    pub(super) fn compare_once_v1(&self, controller: &Journal,
+    pub(super) fn compare_once_v1(&self, controller: HistoricalObservationV1<'_>,
         lifecycle: &RootApplyFinalLifecycleOriginalV1, session: &RootApplyFinalSessionOriginalV1,
         receipt: CreateStoppedLifecycleReceiptDataV1<'_>,
         root: aos_sandbox_protocol::domain_ledger::create_storage_history::continuation::ContinuationNativeReceiptDataV1<'_>,

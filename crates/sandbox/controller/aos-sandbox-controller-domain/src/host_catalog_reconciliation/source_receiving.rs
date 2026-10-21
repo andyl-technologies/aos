@@ -7,7 +7,7 @@
 use super::*;
 use crate::ResourceReservationErrorV1;
 use aos_sandbox_model::{ResourceDimension as D, ResourceVector};
-use aos_sandbox_linux::immutable_file::SealedReadOnlyCredentialCreateOriginalsV1;
+use aos_linux_descriptors::credential::SealedReadOnlyCredentialCreateOriginalsV1;
 
 const TRANSFER_NAME: &str = "aos-host-catalog";
 

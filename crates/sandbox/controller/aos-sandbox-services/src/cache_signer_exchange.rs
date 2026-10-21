@@ -23,7 +23,7 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
 use std::time::Duration;
 
-use aos_sandbox_controller_domain::cache_residency::sign_fixed_signer_cache_owner_readback_v2;
+use aos_sandbox_cache::sign_fixed_signer_cache_owner_readback_v2;
 use aos_sandbox_protocol::cache_owner_readback::{
     CLOSED_CACHE_OWNER_READBACK_BYTES_V2,
     CacheOwnerReadbackChallengeV1,
@@ -39,6 +39,7 @@ use rustix::event::{PollFd, PollFlags, poll};
 use rustix::net::sockopt::{socket_acceptconn, socket_peercred};
 use rustix::time::Timespec;
 
+#[cfg(feature = "policy")]
 use super::cache_signer_ordinary_credential::CacheSignerCredentialV2;
 
 /// Names the sole systemd-owned Cache signer ingress socket.
@@ -327,6 +328,7 @@ fn invalid_data(message: &'static str) -> io::Error {
 /// purposes; a failed selected capture never falls back to ordinary service.
 /// Ordinary invalid exchanges are logged and consumed without reusing their
 /// in-process root epoch.
+#[cfg(feature = "policy")]
 pub fn run_cache_signer_service_v2(
     controller_uid: u32,
     controller_gid: u32,
@@ -394,6 +396,7 @@ pub fn run_cache_signer_service_v2(
     }
 }
 
+#[cfg(feature = "policy")]
 fn serve_exchange(
     listener: &UnixListener,
     root: &mut UnixStream,

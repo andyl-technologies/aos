@@ -29,8 +29,8 @@ use aos_sandbox_policy::journal_keys::{HEAD_KEY, SIGNER_PINS_KEY, SOURCE_HOLD_PI
 
 use aos_sandbox_policy::controller_readback::encode_controller_hold_signer_credential_v1;
 
-use aos_sandbox_protocol::domain_ledger::source_policy_hold::SourceDomainPolicyHoldV1;
 use aos_sandbox_protocol::domain_ledger::cache_policy_hold::CachePolicyHoldV1;
+use aos_sandbox_protocol::domain_ledger::source_policy_hold::SourceDomainPolicyHoldV1;
 
 use std::{collections::BTreeSet, path::Path};
 
@@ -39,25 +39,17 @@ use aos_sandbox_model::{ObjectDigest, OperationId, ProjectId, SandboxId};
 use ed25519_dalek::VerifyingKey;
 use sha2::{Digest as _, Sha256};
 
-use crate::cache_residency::release_fixed_closed_policy_cache_hold_after_root_readback_v1;
-use aos_sandbox_protocol::cache_owner_readback::{
-    CacheOwnerReadbackChallengeV1,
-    PinnedCacheOwnerReadbackSignerV1,
-    VerifiedClosedCacheOwnerReadbackV2,
-    verify_closed_cache_owner_readback_v2,
-};
 use crate::journal::{
-    ControllerPolicyHoldV1,
-    Journal,
-    JournalRecord,
-    JournalTransaction,
-    ProtectedJournalAuthority,
-    ProtectedJournalNamesV1,
-    ProtectedJournalSnapshot,
-    RecordNamespace,
+    ControllerPolicyHoldV1, Journal, JournalRecord, JournalTransaction, ProtectedJournalAuthority,
+    ProtectedJournalNamesV1, ProtectedJournalSnapshot, RecordNamespace,
 };
 use crate::protected_domain_journal::ProtectedDomainJournalErrorV1;
 use crate::source_domain::ProtectedSourceDomainJournalOwnerV1;
+use aos_sandbox_cache::release_fixed_closed_policy_cache_hold_after_root_readback_v1;
+use aos_sandbox_protocol::cache_owner_readback::{
+    CacheOwnerReadbackChallengeV1, PinnedCacheOwnerReadbackSignerV1,
+    VerifiedClosedCacheOwnerReadbackV2, verify_closed_cache_owner_readback_v2,
+};
 
 use super::cache_journal_readback::read_fixed_policy_cache_hold_v1;
 use super::cache_readback_pin::CACHE_PIN_KEY;
@@ -71,12 +63,12 @@ use super::protected_owner::{
 };
 use super::root_challenge_record::RootChallengeRecordCodec;
 
+use super::PolicyCompilerJournalErrorV1;
 use super::source_hold_readback::{
     PinnedSourceHoldReadbackSignerV1, SourceHoldReadbackChallengeV1,
     verify_current_source_hold_readback_v1,
 };
 use super::source_hold_readback_v2::verify_source_hold_readback_with_names_v2;
-use super::PolicyCompilerJournalErrorV1;
 
 mod ack_v8;
 
@@ -107,31 +99,16 @@ pub use ack_v8::{
     sign_fixed_controller_v8_final_release_v1, verify_fixed_closed_root_v8_terminal_v1,
 };
 
-pub use producer::{propose_closed_current_create_explicit_policy_binding_v2};
-pub(super) use producer::{ClosedCreateProposalFieldViewV2, encode_closed_proposal_fields};
+pub(super) use aos_sandbox_policy::q04_data::{
+    ClosedCreateProposalFieldViewV2, encode_closed_proposal_fields,
+};
+pub use producer::propose_closed_current_create_explicit_policy_binding_v2;
 pub use source_terminal::{
     CLOSED_SOURCE_TERMINAL_RECORD_BYTES_V1, ClosedSourceTerminalClaimV1,
     ClosedSourceTerminalRecordV1,
 };
 
-pub(super) const BINDING_V2_KEY_PREFIX: &[u8] = b"\0aos-policy-compiler-binding-v2\0";
-const MAGIC: &[u8; 8] = b"AOSPCB02";
-const CHECKSUM_DOMAIN: &[u8] = b"aos.sandbox.policy-compiler.protected-binding.v2\0";
-const KEY_DOMAIN: &[u8] = b"aos.sandbox.policy-compiler.binding-key.v2\0";
-const STAGE_KEY: &[u8] = b"\0aos-policy-compiler-binding-stage-v2\0";
-const STAGE_MAGIC: &[u8; 8] = b"AOSPBS02";
-const STAGE_CUT_DOMAIN: &[u8] = b"aos.sandbox.policy-compiler.binding-stage-cut.v2\0";
-const STAGE_RECORD_DOMAIN: &[u8] = b"aos.sandbox.policy-compiler.binding-stage-record.v2\0";
-const STAGE_TRANSACTION_DOMAIN: &[u8] =
-    b"aos.sandbox.policy-compiler.binding-stage-transaction.v2\0";
-const STAGED_SIGNER_CUT_DOMAIN: &[u8] =
-    b"aos.sandbox.policy-compiler.staged-source-cache-signer-cut.v2\0";
-const STAGE_CODEC: RootChallengeRecordCodec = RootChallengeRecordCodec::new(
-    STAGE_MAGIC,
-    STAGE_RECORD_DOMAIN,
-    STAGE_TRANSACTION_DOMAIN,
-    STAGE_KEY,
-);
+pub(super) use aos_sandbox_policy::q04_data::{BINDING_V2_KEY_PREFIX, STAGE_CODEC, STAGE_KEY};
 const SOURCE_FLIGHT_KEY: &[u8] = b"\0aos-policy-compiler-source-flight-v1\0";
 const SOURCE_FLIGHT_CODEC: RootChallengeRecordCodec = RootChallengeRecordCodec::new(
     b"AOSSFC01",
@@ -139,329 +116,20 @@ const SOURCE_FLIGHT_CODEC: RootChallengeRecordCodec = RootChallengeRecordCodec::
     b"aos.sandbox.policy-compiler.source-flight-transaction.v1\0",
     SOURCE_FLIGHT_KEY,
 );
-const RECORD_BYTES: usize = 664;
-/// Bounds one closed AOSPCB02 record on the root controller socket.
-pub const CLOSED_POLICY_BINDING_BYTES_V2: usize = RECORD_BYTES;
+pub use aos_sandbox_policy::q04_data::CLOSED_POLICY_BINDING_BYTES_V2;
+use aos_sandbox_policy::q04_data::ROOT_BINDING_HEAD_KEY;
+#[cfg(test)]
+const RECORD_BYTES: usize = CLOSED_POLICY_BINDING_BYTES_V2;
+#[cfg(test)]
 const BODY_BYTES: usize = RECORD_BYTES - 32;
-const ROOT_BINDING_HEAD_KEY: &[u8] = b"\0aos-policy-compiler-binding-head-v2\0";
 const ROOT_TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.policy-compiler-binding-cas.v2\0";
 const ISSUER_DOMAIN: &[u8] = b"aos.sandbox.policy-controller-owner.v2\0";
 
-/// Retains canonical fields without asserting that their independent owners held a barrier.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct ClosedPolicyRootBindingV2 {
-    issuer_owner: [u8; 16],
-    project: ProjectId,
-    sandbox: SandboxId,
-    operation: OperationId,
-    operation_revision: ObjectDigest,
-    accepted_generation: u64,
-    projection_revision: ObjectDigest,
-    publisher_generation: u64,
-    publisher_head: ObjectDigest,
-    project_policy_head: ObjectDigest,
-    project_policy_input: ObjectDigest,
-    ancestry_head: ObjectDigest,
-    compiler_head: ObjectDigest,
-    cache_domain_head: ObjectDigest,
-    revocation_head: ObjectDigest,
-    physical_partition: ObjectDigest,
-    physical_cache_head: ObjectDigest,
-    normalized_input: ObjectDigest,
-    candidate: ObjectDigest,
-    project_signer_generation: u64,
-    deployment_signer_generation: u64,
-    barrier_epoch: u64,
-    barrier_head: ObjectDigest,
-    root_predecessor: ObjectDigest,
-    root_generation: u64,
-    effect_transaction: [u8; 16],
-    handoff_epoch: u64,
-}
-
-impl ClosedPolicyRootBindingV2 {
-    // This decoder projection is unbranded DATA. Q04's Root owner separately
-    // verifies the pinned Controller packet and genuine same-flight gen1 cut
-    // before these fields enter the shared compiler/proposal recipe.
-    pub(in crate::policy_compiler) fn q04_decode(
-        bytes: &[u8],
-    ) -> Result<Self, PolicyCompilerJournalErrorV1> {
-        Self::decode(bytes)
-    }
-
-    pub(in crate::policy_compiler) fn q04_compilation_commitments(
-        &self,
-    ) -> (ObjectDigest, ObjectDigest) {
-        (self.normalized_input, self.candidate)
-    }
-
-    pub(in crate::policy_compiler) fn q04_fields<'fields>(
-        &'fields self,
-        source_commitment: &'fields ObjectDigest,
-    ) -> ClosedCreateProposalFieldViewV2<'fields> {
-        ClosedCreateProposalFieldViewV2 {
-            source_commitment,
-            operation: &self.operation,
-            operation_revision: &self.operation_revision,
-            accepted_generation: &self.accepted_generation,
-            sandbox: &self.sandbox,
-            project: &self.project,
-            projection_revision: &self.projection_revision,
-            publisher_generation: &self.publisher_generation,
-            publisher_head: &self.publisher_head,
-            cache_domain_head: &self.cache_domain_head,
-            revocation_head: &self.revocation_head,
-            ancestry: &self.ancestry_head,
-            physical_partition: &self.physical_partition,
-            physical_cache: &self.physical_cache_head,
-        }
-    }
-
-    fn canonical(&self) -> bool {
-        self.issuer_owner != [0; 16]
-            && self.project.as_bytes() != &[0; 16]
-            && self.sandbox.as_bytes() != &[0; 16]
-            && self.operation.as_bytes() != &[0; 16]
-            && self.effect_transaction != [0; 16]
-            && self.accepted_generation != 0
-            && self.publisher_generation != 0
-            && self.project_signer_generation != 0
-            && self.deployment_signer_generation != 0
-            && self.barrier_epoch != 0
-            && self.root_generation != 0
-            && self.handoff_epoch == self.barrier_epoch
-            && (self.root_predecessor.as_bytes() == &[0; 32]) == (self.root_generation == 1)
-            && [
-                self.operation_revision,
-                self.projection_revision,
-                self.publisher_head,
-                self.project_policy_head,
-                self.project_policy_input,
-                self.ancestry_head,
-                self.compiler_head,
-                self.cache_domain_head,
-                self.revocation_head,
-                self.physical_partition,
-                self.physical_cache_head,
-                self.normalized_input,
-                self.candidate,
-                self.barrier_head,
-            ]
-            .iter()
-            .all(|digest| digest.as_bytes() != &[0; 32])
-    }
-
-    fn encode(&self) -> Result<Vec<u8>, PolicyCompilerJournalErrorV1> {
-        if !self.canonical() {
-            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
-        }
-
-        let mut bytes = Vec::with_capacity(RECORD_BYTES);
-        bytes.extend_from_slice(MAGIC);
-        bytes.extend_from_slice(&2_u16.to_be_bytes());
-        bytes.extend_from_slice(&[0; 6]);
-        bytes.extend_from_slice(&self.issuer_owner);
-        bytes.extend_from_slice(self.project.as_bytes());
-        bytes.extend_from_slice(self.sandbox.as_bytes());
-        bytes.extend_from_slice(self.operation.as_bytes());
-        bytes.extend_from_slice(self.operation_revision.as_bytes());
-        bytes.extend_from_slice(&self.accepted_generation.to_be_bytes());
-        bytes.extend_from_slice(self.projection_revision.as_bytes());
-        bytes.extend_from_slice(&self.publisher_generation.to_be_bytes());
-        bytes.extend_from_slice(self.publisher_head.as_bytes());
-        bytes.extend_from_slice(self.project_policy_head.as_bytes());
-        bytes.extend_from_slice(self.project_policy_input.as_bytes());
-        bytes.extend_from_slice(self.ancestry_head.as_bytes());
-        bytes.extend_from_slice(self.compiler_head.as_bytes());
-        bytes.extend_from_slice(self.cache_domain_head.as_bytes());
-        bytes.extend_from_slice(self.revocation_head.as_bytes());
-        bytes.extend_from_slice(self.physical_partition.as_bytes());
-        bytes.extend_from_slice(self.physical_cache_head.as_bytes());
-        bytes.extend_from_slice(self.normalized_input.as_bytes());
-        bytes.extend_from_slice(self.candidate.as_bytes());
-        bytes.extend_from_slice(&self.project_signer_generation.to_be_bytes());
-        bytes.extend_from_slice(&self.deployment_signer_generation.to_be_bytes());
-        bytes.extend_from_slice(&self.barrier_epoch.to_be_bytes());
-        bytes.extend_from_slice(self.barrier_head.as_bytes());
-        bytes.extend_from_slice(self.root_predecessor.as_bytes());
-        bytes.extend_from_slice(&self.root_generation.to_be_bytes());
-        bytes.extend_from_slice(&self.effect_transaction);
-        bytes.extend_from_slice(&self.handoff_epoch.to_be_bytes());
-        if bytes.len() != BODY_BYTES {
-            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
-        }
-        let checksum = Sha256::new()
-            .chain_update(CHECKSUM_DOMAIN)
-            .chain_update(&bytes)
-            .finalize();
-        bytes.extend_from_slice(&checksum);
-        Ok(bytes)
-    }
-
-    fn decode(bytes: &[u8]) -> Result<Self, PolicyCompilerJournalErrorV1> {
-        if bytes.len() != RECORD_BYTES {
-            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
-        }
-        let mut reader = BoundedReader::new(bytes, |_| {
-            PolicyCompilerJournalErrorV1::UnauthenticatedCandidate
-        });
-        if reader.array::<8>()? != *MAGIC
-            || reader.array::<2>()? != 2_u16.to_be_bytes()
-            || reader.array::<6>()? != [0; 6]
-        {
-            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
-        }
-        let binding = Self {
-            issuer_owner: reader.array()?,
-            project: ProjectId::from_bytes(reader.array()?),
-            sandbox: SandboxId::from_bytes(reader.array()?),
-            operation: OperationId::from_bytes(reader.array()?),
-            operation_revision: reader.digest()?,
-            accepted_generation: reader.u64()?,
-            projection_revision: reader.digest()?,
-            publisher_generation: reader.u64()?,
-            publisher_head: reader.digest()?,
-            project_policy_head: reader.digest()?,
-            project_policy_input: reader.digest()?,
-            ancestry_head: reader.digest()?,
-            compiler_head: reader.digest()?,
-            cache_domain_head: reader.digest()?,
-            revocation_head: reader.digest()?,
-            physical_partition: reader.digest()?,
-            physical_cache_head: reader.digest()?,
-            normalized_input: reader.digest()?,
-            candidate: reader.digest()?,
-            project_signer_generation: reader.u64()?,
-            deployment_signer_generation: reader.u64()?,
-            barrier_epoch: reader.u64()?,
-            barrier_head: reader.digest()?,
-            root_predecessor: reader.digest()?,
-            root_generation: reader.u64()?,
-            effect_transaction: reader.array()?,
-            handoff_epoch: reader.u64()?,
-        };
-        // Leave the checksum unread; canonical re-encoding validates the whole record.
-        if reader.remaining() != RECORD_BYTES - BODY_BYTES || binding.encode()?.as_slice() != bytes
-        {
-            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
-        }
-        Ok(binding)
-    }
-
-    fn key(&self) -> Result<Vec<u8>, PolicyCompilerJournalErrorV1> {
-        let encoded = self.encode()?;
-        let digest = Sha256::new()
-            .chain_update(KEY_DOMAIN)
-            .chain_update(encoded)
-            .finalize();
-        let mut key = Vec::with_capacity(BINDING_V2_KEY_PREFIX.len() + 32);
-        key.extend_from_slice(BINDING_V2_KEY_PREFIX);
-        key.extend_from_slice(&digest);
-        Ok(key)
-    }
-}
-
-/// Decodes an exact root-journal key/value pair without granting publication authority.
-pub(super) fn decode_closed_policy_binding_v2(
-    key: &[u8],
-    value: &[u8],
-) -> Result<ClosedPolicyRootBindingV2, PolicyCompilerJournalErrorV1> {
-    let binding = ClosedPolicyRootBindingV2::decode(value)?;
-    if binding.key()?.as_slice() != key {
-        return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
-    }
-    Ok(binding)
-}
-
-/// Validates one closed AOSPCB02 record and returns its content-addressed head.
-///
-/// The digest is framing evidence only; it cannot authorize publication or
-/// an effect without the independent protected owner barrier.
-///
-/// # Errors
-///
-/// Rejects a malformed or noncanonical closed record.
-pub fn closed_policy_binding_digest_v2(
-    value: &[u8],
-) -> Result<ObjectDigest, PolicyCompilerJournalErrorV1> {
-    let binding = ClosedPolicyRootBindingV2::decode(value)?;
-    let key = binding.key()?;
-    let suffix: [u8; 32] = key[BINDING_V2_KEY_PREFIX.len()..]
-        .try_into()
-        .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
-    Ok(ObjectDigest::from_bytes(suffix))
-}
-
-/// Compares a closed proposal with the three exact held journal claims.
-///
-/// This is a necessary, non-authorizing comparison. The caller must obtain
-/// each hold from its independent retained writer/readback, and must join the
-/// physical Cache signer statement separately. Scalar copies from a Q04
-/// request do not establish custody or permit admission.
-///
-/// # Errors
-///
-/// Rejects a malformed proposal, released or cross-bound holds, mismatched
-/// Create, ancestry, Cache partition/head, binding, or handoff epoch.
-pub fn compare_closed_policy_binding_hold_claims_v2(
-    proposed: &[u8],
-    controller: ControllerPolicyHoldV1,
-    source: SourceDomainPolicyHoldV1,
-    cache: CachePolicyHoldV1,
-) -> Result<(), PolicyCompilerJournalErrorV1> {
-    compare_closed_policy_binding_claims_with_cache_phase_v2(
-        proposed, controller, source, cache, true,
-    )
-}
-
-/// Compares a released Cache row to still-held Controller and Source claims.
-///
-/// # Errors
-///
-/// Rejects any noncanonical proposal or mismatched owner identity or phase.
-pub fn compare_closed_policy_binding_released_cache_claims_v2(
-    proposed: &[u8],
-    controller: ControllerPolicyHoldV1,
-    source: SourceDomainPolicyHoldV1,
-    cache: CachePolicyHoldV1,
-) -> Result<(), PolicyCompilerJournalErrorV1> {
-    compare_closed_policy_binding_claims_with_cache_phase_v2(
-        proposed, controller, source, cache, false,
-    )
-}
-
-fn compare_closed_policy_binding_claims_with_cache_phase_v2(
-    proposed: &[u8],
-    controller: ControllerPolicyHoldV1,
-    source: SourceDomainPolicyHoldV1,
-    cache: CachePolicyHoldV1,
-    cache_held: bool,
-) -> Result<(), PolicyCompilerJournalErrorV1> {
-    let binding = ClosedPolicyRootBindingV2::decode(proposed)?;
-    let head = closed_policy_binding_digest_v2(proposed)?;
-    if !controller.is_held()
-        || !source.is_held()
-        || cache.is_held() != cache_held
-        || controller.operation() != binding.operation
-        || controller.sandbox() != binding.sandbox
-        || controller.binding() != head
-        || controller.epoch() != binding.handoff_epoch
-        || source.operation() != binding.operation
-        || source.sandbox() != binding.sandbox
-        || source.controller_source() != controller.source()
-        || source.ancestry() != binding.ancestry_head
-        || source.binding() != head
-        || source.epoch() != binding.handoff_epoch
-        || cache.project() != binding.project
-        || cache.partition() != binding.physical_partition
-        || cache.cache_head() != binding.physical_cache_head
-        || cache.binding() != head
-        || cache.epoch() != binding.handoff_epoch
-    {
-        return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
-    }
-    Ok(())
-}
+pub(super) use aos_sandbox_policy::q04_data::{ClosedPolicyRootBindingV2, Q04RootStageRecipeV1};
+pub use aos_sandbox_policy::q04_data::{
+    ClosedPolicyRootCasBaseV2, StagedClosedPolicyRootBaseV2, StagedClosedPolicySignerChallengeV2,
+    staged_closed_policy_signer_challenge_v2,
+};
 
 /// Reports a durable but non-authorizing root CAS and retained handoff epoch.
 ///
@@ -575,43 +243,6 @@ impl ClosedPolicyRootCacheCutV2 {
     }
 }
 
-pub use aos_sandbox_protocol::domain_ledger::create_q04_history::transfer::{
-    ClosedPolicyRootCasBaseV2, StagedClosedPolicyRootBaseV2,
-};
-
-/// Names one nonauthorizing challenge for both independent Q04 signer roles.
-///
-/// Root must revalidate the staged token before accepting packets on this cut.
-/// The existing Cache V2 transport spends a different `AOSCRH02` challenge,
-/// so it cannot supply a packet for this cut. V3 supplies it only within a
-/// nonauthorizing Root-last held flight.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct StagedClosedPolicySignerChallengeV2 {
-    nonce: [u8; 16],
-    cut: ObjectDigest,
-    issue_epoch: u64,
-}
-
-impl StagedClosedPolicySignerChallengeV2 {
-    /// Returns the Root-staged nonce shared by the Source and Cache packets.
-    #[must_use]
-    pub const fn nonce(self) -> [u8; 16] {
-        self.nonce
-    }
-
-    /// Returns the exact staged-token and canonical-proposal commitment.
-    #[must_use]
-    pub const fn cut(self) -> ObjectDigest {
-        self.cut
-    }
-
-    /// Returns the protected Root stage epoch for versioned signer transport.
-    #[must_use]
-    pub const fn issue_epoch(self) -> u64 {
-        self.issue_epoch
-    }
-}
-
 /// Reports an inert Root-last join of two separately signed Q04 readbacks.
 ///
 /// This value does not prove the Controller writer, Source writer, Cache
@@ -651,47 +282,6 @@ impl ClosedPolicyRootSignerJoinV2 {
         self.physical_cache
     }
 }
-
-/// Derives one exact Source/Cache challenge from a Root stage and proposal.
-///
-/// This deterministic derivation does not authenticate the staged token.
-/// Root revalidates its durable stage and protected signer pins during the
-/// joined readback. The held-flight transport cannot open first CAS.
-///
-/// # Errors
-///
-/// Rejects a malformed proposal or noncanonical challenge.
-pub fn staged_closed_policy_signer_challenge_v2(
-    staged: StagedClosedPolicyRootBaseV2,
-    proposed: &[u8],
-) -> Result<StagedClosedPolicySignerChallengeV2, PolicyCompilerJournalErrorV1> {
-    let binding = closed_policy_binding_digest_v2(proposed)?;
-    let base = staged.base();
-    let cut = ObjectDigest::from_bytes(
-        Sha256::new()
-            .chain_update(STAGED_SIGNER_CUT_DOMAIN)
-            .chain_update(base.issuer_owner())
-            .chain_update(base.predecessor().as_bytes())
-            .chain_update(base.next_generation().to_be_bytes())
-            .chain_update(base.deployment_signer_generation().to_be_bytes())
-            .chain_update(base.project_signer_generation().to_be_bytes())
-            .chain_update(staged.challenge())
-            .chain_update(staged.issue_epoch().to_be_bytes())
-            .chain_update(binding.as_bytes())
-            .finalize()
-            .into(),
-    );
-    if cut.as_bytes() == &[0; 32] {
-        return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
-    }
-    Ok(StagedClosedPolicySignerChallengeV2 {
-        nonce: staged.challenge(),
-        cut,
-        issue_epoch: staged.issue_epoch(),
-    })
-}
-
-
 
 impl ClosedPolicyRootCasObservationV2 {
     /// Reconstructs an inert observation from an exact protected replay reply.
@@ -735,56 +325,7 @@ impl ClosedPolicyRootCasObservationV2 {
     }
 }
 
-struct RootPolicyBindingIdentityV2 {
-    deployment_head: ObjectDigest,
-    project: ProjectId,
-    publisher_generation: u64,
-    publisher_head: ObjectDigest,
-    project_policy_head: ObjectDigest,
-    project_policy_input: ObjectDigest,
-    prerequisite_claims: [ObjectDigest; 4],
-    deployment_signer_generation: u64,
-    project_signer_generation: u64,
-    issuer_owner: [u8; 16],
-}
-
-impl RootPolicyBindingIdentityV2 {
-    fn matches(&self, binding: &ClosedPolicyRootBindingV2) -> bool {
-        let claims = self.prerequisite_claims;
-        binding.issuer_owner == self.issuer_owner
-            && binding.project == self.project
-            && binding.publisher_generation == self.publisher_generation
-            && binding.publisher_head == self.publisher_head
-            && binding.project_policy_head == self.project_policy_head
-            && binding.project_policy_input == self.project_policy_input
-            && binding.ancestry_head == claims[0]
-            && binding.compiler_head == self.deployment_head
-            && binding.cache_domain_head == claims[2]
-            && binding.revocation_head == claims[3]
-            && binding.deployment_signer_generation == self.deployment_signer_generation
-            && binding.project_signer_generation == self.project_signer_generation
-    }
-
-    fn stage_cut(&self, base: ClosedPolicyRootCasBaseV2) -> ObjectDigest {
-        let mut digest = Sha256::new()
-            .chain_update(STAGE_CUT_DOMAIN)
-            .chain_update(base.issuer_owner)
-            .chain_update(base.predecessor.as_bytes())
-            .chain_update(base.next_generation.to_be_bytes())
-            .chain_update(base.deployment_signer_generation.to_be_bytes())
-            .chain_update(base.project_signer_generation.to_be_bytes())
-            .chain_update(self.deployment_head.as_bytes())
-            .chain_update(self.project.as_bytes())
-            .chain_update(self.publisher_generation.to_be_bytes())
-            .chain_update(self.publisher_head.as_bytes())
-            .chain_update(self.project_policy_head.as_bytes())
-            .chain_update(self.project_policy_input.as_bytes());
-        for claim in self.prerequisite_claims {
-            digest.update(claim.as_bytes());
-        }
-        ObjectDigest::from_bytes(digest.finalize().into())
-    }
-}
+use aos_sandbox_policy::q04_data::RootPolicyBindingIdentityV2;
 
 #[derive(Clone, Copy)]
 struct RootProjectHeadFieldsV2 {
@@ -821,105 +362,6 @@ pub struct ClosedPolicyRootSessionV2<'journal> {
     postcommit: Option<ProtectedJournalSnapshot>,
 }
 
-// Reservation is comparison DATA. It owns the sole existing Stage encoding,
-// not a Root lease or permission to commit after the original cut changes.
-pub(super) struct Q04RootStageRecipeV1 {
-    project: ProjectId,
-    staged: StagedClosedPolicyRootBaseV2,
-    prior: Option<Vec<u8>>,
-    cut: ObjectDigest,
-    record: [u8; 96],
-    transaction: JournalTransaction,
-}
-
-impl Q04RootStageRecipeV1 {
-    pub(super) const fn project(&self) -> ProjectId {
-        self.project
-    }
-
-    pub(super) const fn staged(&self) -> StagedClosedPolicyRootBaseV2 {
-        self.staged
-    }
-
-    pub(super) const fn cut(&self) -> ObjectDigest {
-        self.cut
-    }
-
-    pub(super) const fn transaction(&self) -> &JournalTransaction {
-        &self.transaction
-    }
-
-    // The actual Q04 Root history has already proved the complete original
-    // before-state and every intervening self-append. This checks its sole
-    // reserved Stage row without restaging, renewing, or constructing a V8
-    // proof. Ordinary Stage/CAS entry points retain their existing checks.
-    pub(super) fn require_original_row(
-        &self,
-        journal: &Journal,
-        committed: bool,
-    ) -> Result<(), PolicyCompilerJournalErrorV1> {
-        let expected = if committed { Some(self.record.as_slice()) } else { self.prior.as_deref() };
-        if journal.get(RecordNamespace::DesiredState, STAGE_KEY) != expected {
-            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
-        }
-        Ok(())
-    }
-
-    // Capacity DATA reuses the sole old binding/head/hold record encoders.
-    // It has no commit method or signer proof; the live Root action must
-    // independently rejoin its real staged CAS base and held owners.
-    pub(super) fn q04_binding_capacity_records(
-        &self,
-        proposed: &[u8],
-    ) -> Result<(Vec<JournalRecord>, JournalRecord), PolicyCompilerJournalErrorV1> {
-        let binding = ClosedPolicyRootBindingV2::decode(proposed)?;
-        let base = self.staged.base();
-        if binding.project != self.project
-            || binding.issuer_owner != base.issuer_owner()
-            || binding.root_predecessor != base.predecessor()
-            || binding.root_generation != base.next_generation()
-            || binding.handoff_epoch != base.next_generation()
-            || binding.barrier_epoch != base.next_generation()
-            || binding.deployment_signer_generation != base.deployment_signer_generation()
-            || binding.project_signer_generation != base.project_signer_generation()
-        {
-            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
-        }
-        let key = binding.key()?;
-        let head = closed_policy_binding_digest_v2(proposed)?;
-        let held = RootBindingHoldV1 {
-            issuer_owner: binding.issuer_owner, binding: head,
-            epoch: binding.handoff_epoch, held: true,
-        };
-        let records = vec![
-            JournalRecord::put(RecordNamespace::DesiredState, key, proposed.to_vec()),
-            JournalRecord::put(RecordNamespace::DesiredState, ROOT_BINDING_HEAD_KEY.to_vec(), head.as_bytes().to_vec()),
-            JournalRecord::put(RecordNamespace::DesiredState, HOLD_KEY.to_vec(), held.encode()?.to_vec()),
-        ];
-        let released = JournalRecord::put(
-            RecordNamespace::DesiredState, HOLD_KEY.to_vec(),
-            RootBindingHoldV1 { held: false, ..held }.encode()?.to_vec(),
-        );
-        Ok((records, released))
-    }
-
-    // The prehold transfer encodes the actual once-reserved base and Stage
-    // fields. Its separate record cut is not the B664-derived signer cut.
-    pub(super) fn preview_fields(&self) -> [u8; 128] {
-        let base = self.staged.base();
-        let mut fields = [0; 128];
-        fields[..16].copy_from_slice(&base.issuer_owner());
-        fields[16..48].copy_from_slice(base.predecessor().as_bytes());
-        fields[48..56].copy_from_slice(&base.next_generation().to_be_bytes());
-        fields[56..64].copy_from_slice(&base.deployment_signer_generation().to_be_bytes());
-        fields[64..72].copy_from_slice(&base.project_signer_generation().to_be_bytes());
-        fields[72..88].copy_from_slice(&self.staged.challenge());
-        fields[88..96].copy_from_slice(&self.staged.issue_epoch().to_be_bytes());
-        fields[96..128].copy_from_slice(self.cut.as_bytes());
-        fields
-    }
-}
-
 impl ClosedPolicyRootSessionV2<'_> {
     // The challenge is the actual original gen1 Root owner's once-selected
     // nonce. There is deliberately no entropy callback or fallback here.
@@ -954,7 +396,9 @@ impl ClosedPolicyRootSessionV2<'_> {
             return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
         }
         let record = STAGE_CODEC.encode(issue_epoch, original_nonce, cut);
-        let transaction = STAGE_CODEC.transaction(record)?;
+        let transaction = STAGE_CODEC
+            .transaction(record)
+            .map_err(crate::journal::JournalError::from)?;
         self.authority
             .preflight_transactions(std::slice::from_ref(&transaction))?;
 
@@ -1052,7 +496,9 @@ impl ClosedPolicyRootSessionV2<'_> {
             return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
         }
         let record = STAGE_CODEC.encode(issue_epoch, challenge, cut);
-        let transaction = STAGE_CODEC.transaction(record)?;
+        let transaction = STAGE_CODEC
+            .transaction(record)
+            .map_err(crate::journal::JournalError::from)?;
         self.authority.commit(&transaction)?;
         if self.authority.get(STAGE_KEY)? != Some(record.as_slice()) {
             return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
@@ -1148,8 +594,11 @@ impl ClosedPolicyRootSessionV2<'_> {
         let challenge = SourceHoldReadbackChallengeV1::new(nonce, cut)
             .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
         let record = SOURCE_FLIGHT_CODEC.encode(issue, nonce, cut);
-        self.authority
-            .commit(&SOURCE_FLIGHT_CODEC.transaction(record)?)?;
+        self.authority.commit(
+            &SOURCE_FLIGHT_CODEC
+                .transaction(record)
+                .map_err(crate::journal::JournalError::from)?,
+        )?;
         self.require_spent_source_challenge_v1(proposed, staged, challenge, issue)?;
         Ok((challenge, issue))
     }
@@ -2172,11 +1621,7 @@ pub(super) fn read_inert_closed_policy_binding_hold_in_journal_v1(
     let (head, next_epoch, count) = current_root_binding_chain(&authority)?;
     Ok(current_hold(&authority, head, next_epoch, count)?
         .filter(|hold| hold.held)
-        .map(|hold| ClosedPolicyRootCasObservationV2 {
-            binding: hold.binding,
-            root_generation: hold.epoch,
-            handoff_epoch: hold.epoch,
-        }))
+        .map(startup_binding_hold_observation_data_v1))
 }
 
 /// Replays one committed, still-held Source/Cache Root CAS from protected history.
@@ -2675,28 +2120,32 @@ pub fn release_fixed_closed_policy_cache_hold_v1(
     owner_uid: u32,
     expected: CachePolicyHoldV1,
 ) -> Result<(), PolicyCompilerJournalErrorV1> {
-    release_fixed_closed_policy_cache_hold_after_root_readback_v1(owner_uid, expected, || {
-        let (mut root, _) = Journal::open_protected_at(
-            Path::new(PROTECTED_POLICY_ROOT),
-            POLICY_AUTHORITY_JOURNAL,
-            policy_authority_journal_limits(),
-        )
-        .map_err(ProtectedDomainJournalErrorV1::from)?;
-        let authority = root
-            .claim_protected_authority(RecordNamespace::DesiredState)
+    release_fixed_closed_policy_cache_hold_after_root_readback_v1(
+        owner_uid,
+        expected,
+        || -> Result<(), PolicyCompilerJournalErrorV1> {
+            let (mut root, _) = Journal::open_protected_at(
+                Path::new(PROTECTED_POLICY_ROOT),
+                POLICY_AUTHORITY_JOURNAL,
+                policy_authority_journal_limits(),
+            )
             .map_err(ProtectedDomainJournalErrorV1::from)?;
-        let (head, next_epoch, count) = current_root_binding_chain(&authority)
-            .map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority)?;
-        let root_hold = current_hold(&authority, head, next_epoch, count)
-            .map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority)?;
-        if root_hold_has_handoff_proof(&authority, expected.binding())
-            .map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority)?
-            || !cache_hold_can_retire_at_root_cut(expected, next_epoch, root_hold)
-        {
-            return Err(ProtectedDomainJournalErrorV1::StaleAuthority);
-        }
-        Ok(())
-    })?;
+            let authority = root
+                .claim_protected_authority(RecordNamespace::DesiredState)
+                .map_err(ProtectedDomainJournalErrorV1::from)?;
+            let (head, next_epoch, count) = current_root_binding_chain(&authority)
+                .map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority)?;
+            let root_hold = current_hold(&authority, head, next_epoch, count)
+                .map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority)?;
+            if root_hold_has_handoff_proof(&authority, expected.binding())
+                .map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority)?
+                || !cache_hold_can_retire_at_root_cut(expected, next_epoch, root_hold)
+            {
+                return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
+            }
+            Ok(())
+        },
+    )?;
     Ok(())
 }
 
@@ -2746,19 +2195,19 @@ fn controller_hold_can_retire_at_root_cut(
 
 #[cfg(test)]
 mod tests {
+    use aos_sandbox_ledger_replay::controller_policy_hold::ControllerPolicyHoldCodecV1;
     use std::fs;
     use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 
     use ed25519_dalek::SigningKey;
 
     use super::*;
-    use crate::cache_residency::sign_test_cache_owner_readback_v2;
-    use aos_sandbox_protocol::cache_owner_readback::encode_cache_owner_readback_signer_credential_v1;
     use crate::journal::{Journal, JournalRecord, JournalTransaction, RecordNamespace};
+    use aos_sandbox_cache::sign_test_cache_owner_readback_v2;
+    use aos_sandbox_protocol::cache_owner_readback::encode_cache_owner_readback_signer_credential_v1;
+    use aos_sandbox_protocol::policy_data::binding_v2::BINDING_V2_CHECKSUM_DOMAIN as CHECKSUM_DOMAIN;
 
-    use crate::policy_compiler::protected_owner::{
-        ProtectedPolicyPublicationVerifierV1, policy_authority_journal_limits,
-    };
+    use crate::policy_compiler::protected_owner::policy_authority_journal_limits;
     use crate::policy_compiler::source_hold_readback::{
         encode_source_hold_readback_signer_credential_v1, sign_test_source_hold_readback_v1,
     };
@@ -2949,12 +2398,9 @@ mod tests {
         )
         .unwrap();
         let original_nonce = [37; 16];
-        let staged = StagedClosedPolicyRootBaseV2::from_untrusted_remote_fields(
-            base,
-            original_nonce,
-            9,
-        )
-        .unwrap();
+        let staged =
+            StagedClosedPolicyRootBaseV2::from_untrusted_remote_fields(base, original_nonce, 9)
+                .unwrap();
         let conflated = StagedClosedPolicyRootBaseV2::from_untrusted_remote_fields(
             base,
             original_nonce,
@@ -2966,7 +2412,10 @@ mod tests {
         let challenge = staged_closed_policy_signer_challenge_v2(staged, &proposed).unwrap();
         let wrong = staged_closed_policy_signer_challenge_v2(conflated, &proposed).unwrap();
 
-        assert_eq!(STAGE_CODEC.read_prior(Some(&record)), Some((9, original_nonce)));
+        assert_eq!(
+            STAGE_CODEC.read_prior(Some(&record)),
+            Some((9, original_nonce))
+        );
         assert_eq!(staged.issue_epoch(), 9);
         assert_eq!(staged.base().next_generation(), 1);
         assert_eq!(binding.handoff_epoch, 1);
@@ -2989,17 +2438,20 @@ mod tests {
             binding.root_generation,
             binding.deployment_signer_generation,
             binding.project_signer_generation,
-        ).unwrap();
-        let staged = StagedClosedPolicyRootBaseV2::from_untrusted_remote_fields(
-            base, [37; 16], 9,
-        ).unwrap();
-        let tuple = |generation| super::super::PolicyPublicationPrerequisitesV1::new(
-            binding.ancestry_head,
-            binding.compiler_head,
-            binding.cache_domain_head,
-            binding.revocation_head,
-            generation,
-        ).unwrap();
+        )
+        .unwrap();
+        let staged =
+            StagedClosedPolicyRootBaseV2::from_untrusted_remote_fields(base, [37; 16], 9).unwrap();
+        let tuple = |generation| {
+            super::super::PolicyPublicationPrerequisitesV1::new(
+                binding.ancestry_head,
+                binding.compiler_head,
+                binding.cache_domain_head,
+                binding.revocation_head,
+                generation,
+            )
+            .unwrap()
+        };
 
         let actual = tuple(staged.base().next_generation());
         let conflated_stage = tuple(staged.issue_epoch());
@@ -3294,11 +2746,11 @@ mod tests {
 
     #[test]
     fn explicit_sessions_refuse_retained_legacy_sources_live_and_after_reopen() {
-        use std::cell::Cell;
         use super::super::deployment_head::tests::{
             explicit_project_input, retired_project_input, signed_deployment_fixture,
             signed_explicit_project_packet, signed_retired_project_packet,
         };
+        use std::cell::Cell;
 
         for (retired, explicit) in [(false, true), (true, false), (true, true)] {
             let directory = tempfile::tempdir().expect("protected test directory");
@@ -3882,10 +3334,31 @@ mod tests {
         };
         assert!(stale_session.commit_closed_binding(&first_bytes).is_err());
         drop(stale_session);
-        assert!(matches!(
-            ProtectedPolicyPublicationVerifierV1::from_journal(recovered),
-            Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)
-        ));
+        drop(recovered);
+        // The ordinary owner opens its fixed Authority basename. Present the
+        // recovered Root history there so this checks authentication refusal,
+        // rather than opening an unrelated empty Authority journal.
+        fs::rename(
+            directory.path().join("closed-binding.journal"),
+            directory
+                .path()
+                .join(aos_sandbox_policy::journal_keys::POLICY_AUTHORITY_JOURNAL),
+        )
+        .expect("move recovered history to the ordinary Authority path");
+
+        let ordinary =
+            aos_sandbox_policy::native::PolicyCompilerProtectedOwnerV1::open_fixture_at_uid(
+                directory.path(),
+                fs::metadata(directory.path()).unwrap().uid(),
+            );
+        assert!(
+            matches!(
+                ordinary,
+                Err(aos_sandbox_policy::native::PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)
+            ),
+            "ordinary owner returned {:?}",
+            ordinary.as_ref().err()
+        );
     }
 
     #[test]
@@ -5497,9 +4970,62 @@ mod tests {
             .expect("canonical readback"),
             binding
         );
+        drop(journal);
         assert!(matches!(
-            ProtectedPolicyPublicationVerifierV1::from_journal(journal),
-            Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)
+            aos_sandbox_policy::native::PolicyCompilerProtectedOwnerV1::open_fixture_at_uid(
+                directory.path(),
+                uid,
+            ),
+            Err(aos_sandbox_policy::native::PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)
         ));
+    }
+}
+
+pub(super) fn decode_closed_policy_binding_v2(
+    key: &[u8],
+    value: &[u8],
+) -> Result<ClosedPolicyRootBindingV2, PolicyCompilerJournalErrorV1> {
+    aos_sandbox_policy::q04_data::decode_closed_policy_binding_v2(key, value).map_err(Into::into)
+}
+
+pub fn closed_policy_binding_digest_v2(
+    value: &[u8],
+) -> Result<ObjectDigest, PolicyCompilerJournalErrorV1> {
+    aos_sandbox_policy::q04_data::closed_policy_binding_digest_v2(value).map_err(Into::into)
+}
+
+pub fn compare_closed_policy_binding_hold_claims_v2(
+    proposed: &[u8],
+    controller: ControllerPolicyHoldV1,
+    source: SourceDomainPolicyHoldV1,
+    cache: CachePolicyHoldV1,
+) -> Result<(), PolicyCompilerJournalErrorV1> {
+    aos_sandbox_policy::q04_data::compare_closed_policy_binding_hold_claims_v2(
+        proposed, controller, source, cache,
+    )
+    .map_err(Into::into)
+}
+
+pub fn compare_closed_policy_binding_released_cache_claims_v2(
+    proposed: &[u8],
+    controller: ControllerPolicyHoldV1,
+    source: SourceDomainPolicyHoldV1,
+    cache: CachePolicyHoldV1,
+) -> Result<(), PolicyCompilerJournalErrorV1> {
+    aos_sandbox_policy::q04_data::compare_closed_policy_binding_released_cache_claims_v2(
+        proposed, controller, source, cache,
+    )
+    .map_err(Into::into)
+}
+
+// This is the existing inert observation DATA construction, shared by the
+// native startup reader and ordinary fixed read. It establishes no currentness.
+pub(super) fn startup_binding_hold_observation_data_v1(
+    hold: aos_sandbox_protocol::policy_data::binding_v2::RootBindingHoldV1,
+) -> ClosedPolicyRootCasObservationV2 {
+    ClosedPolicyRootCasObservationV2 {
+        binding: hold.binding,
+        root_generation: hold.epoch,
+        handoff_epoch: hold.epoch,
     }
 }

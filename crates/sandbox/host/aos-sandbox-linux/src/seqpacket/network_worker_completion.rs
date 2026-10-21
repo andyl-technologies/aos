@@ -54,7 +54,7 @@ impl SeqpacketSocket {
     pub fn require_network_worker_completion_origin_retaining_v3(
         &self,
         record: &descriptor_subject::ReceivedDescriptorRecord,
-        native: &mut Option<crate::Result<u64>>,
+        native: &mut Option<aos_linux_descriptors::Result<u64>>,
     ) -> Result<(), RecordBindingError> {
         let fd = self
             .fd

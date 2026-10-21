@@ -23,8 +23,7 @@ use aos_sandbox_protocol::domain_ledger::JournalTransactionDataError;
 use sha2::{Digest as _, Sha256};
 
 /// Preserves the existing sole canonical capacity error DATA classifications.
-pub use aos_sandbox_protocol::domain_ledger::capacity_family::CapacityDataError
-    as CapacityCustodyDataErrorV1;
+pub use aos_sandbox_protocol::domain_ledger::capacity_family::CapacityDataError as CapacityCustodyDataErrorV1;
 
 /// Holds an unaccepted canonical reservation record for native preflight.
 #[must_use]

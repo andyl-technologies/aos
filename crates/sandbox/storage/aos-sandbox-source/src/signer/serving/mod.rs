@@ -11,7 +11,9 @@ use std::time::{Duration, Instant};
 
 use aos_sandbox_model::{AccountingError, ResourceDimension as D, ResourceVector};
 use aos_sandbox_linux::cgroup::RetainedCgroupAnchor;
-use aos_sandbox_linux::pidfd::{CurrentSelfPidFdCustodyV1, PidFdInfo, PidFdProcessIdentity};
+use aos_sandbox_linux::pidfd::CurrentSelfPidFdCustodyV1;
+use aos_linux_descriptors::pidfd::PidFdInfo;
+use aos_sandbox_linux::pidfd::PidFdProcessIdentity;
 use aos_sandbox_linux::unix_stream::SubjectStreamReceiveGeometryV1;
 use ed25519_dalek::SigningKey;
 

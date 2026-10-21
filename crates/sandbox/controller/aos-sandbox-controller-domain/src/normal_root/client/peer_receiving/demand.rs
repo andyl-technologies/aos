@@ -7,7 +7,7 @@ use std::mem::size_of;
 
 use aos_sandbox_model::ResourceDimension as D;
 use aos_sandbox_linux::cgroup::{ExactCgroupMembershipReadbackV1, RootInitialCgroupReadbackV1};
-use aos_sandbox_linux::unix_stream::UnixStreamOriginalCurrentnessV1;
+use aos_linux_descriptors::unix_stream::UnixStreamOriginalCurrentnessV1;
 use aos_systemd_client::{FixedPid1PropertyArchiveV1, FixedPid1PropertyGeometryV1};
 
 use super::{CreateStorageEndpointRevalidationShapeDataV1, CreateStorageRootPeerReceivingOriginalsV1,

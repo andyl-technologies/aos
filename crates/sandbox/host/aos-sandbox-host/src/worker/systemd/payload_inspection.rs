@@ -16,7 +16,7 @@ enum InspectionFailure {
     #[error(transparent)]
     Host(#[from] HostError),
     #[error(transparent)]
-    Native(#[from] aos_sandbox_linux::Error),
+    Native(#[from] aos_linux_descriptors::Error),
     #[error(transparent)]
     Descriptor(#[from] rustix::io::Errno),
     #[error("{context}: {source}")]

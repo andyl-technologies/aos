@@ -1,6 +1,6 @@
 //! Charges each actual Root service read and retains its prearmed owed post.
 //!
-//! Five closed startup purposes have one future post each. Their native owner
+//! The two remaining upper Current writer purposes have one future post each. Their owner
 //! is armed only after the same R pays both its extra resident peak and traffic.
 //! A refused primary never needs a healthy reentry or another debit to run it.
 
@@ -14,21 +14,15 @@ use super::{RootReceivingOriginalV1, ResourceReservationErrorV1};
 
 #[derive(Clone, Copy)]
 pub(super) enum RootServicePostPurposeV1 {
-    Journal,
-    Credentials,
     AuthorityWriter,
     PolicyWriter,
-    InitialController,
 }
 
 impl RootServicePostPurposeV1 {
     fn index(self) -> usize {
         match self {
-            Self::Journal => 0,
-            Self::Credentials => 1,
-            Self::AuthorityWriter => 2,
-            Self::PolicyWriter => 3,
-            Self::InitialController => 4,
+            Self::AuthorityWriter => 0,
+            Self::PolicyWriter => 1,
         }
     }
 }
@@ -55,7 +49,7 @@ pub(super) struct RootServiceObservationsV1 {
     resident: Option<Result<(), Arc<ResourceReservationErrorV1>>>,
     recheck: Option<Result<(), Arc<ResourceReservationErrorV1>>>,
     first_payment: Option<Arc<ResourceReservationErrorV1>>,
-    posts: [Option<ServicePostV1>; 5],
+    posts: [Option<ServicePostV1>; 2],
 }
 
 impl RootServiceObservationsV1 {
@@ -131,16 +125,10 @@ impl RootReceivingOriginalV1 {
 
     fn service_post_may_arm_v1(&self, purpose: RootServicePostPurposeV1) -> bool {
         match purpose {
-            RootServicePostPurposeV1::Journal => self.journal_receiving.as_ref()
-                .is_some_and(|stage| stage.may_arm_service_post_v1()),
-            RootServicePostPurposeV1::Credentials => self.credential_receiving.as_ref()
-                .is_some_and(|stage| stage.may_arm_service_post_v1()),
             RootServicePostPurposeV1::AuthorityWriter => self.current_writers_receiving.as_ref()
                 .is_some_and(|stage| stage.may_arm_service_post_v1(0)),
             RootServicePostPurposeV1::PolicyWriter => self.current_writers_receiving.as_ref()
                 .is_some_and(|stage| stage.may_arm_service_post_v1(1)),
-            RootServicePostPurposeV1::InitialController => self.controller_peer_provision.as_ref()
-                .is_some_and(|stage| stage.may_arm_service_post_v1()),
         }
     }
 
@@ -224,16 +212,10 @@ impl RootReceivingOriginalV1 {
 
     fn service_post_may_retire_v1(&self, purpose: RootServicePostPurposeV1) -> bool {
         match purpose {
-            RootServicePostPurposeV1::Journal => self.journal_receiving.as_ref()
-                .is_some_and(|stage| stage.service_post_can_retire_v1()),
-            RootServicePostPurposeV1::Credentials => self.credential_receiving.as_ref()
-                .is_some_and(|stage| stage.service_post_can_retire_v1()),
             RootServicePostPurposeV1::AuthorityWriter => self.current_writers_receiving.as_ref()
                 .is_some_and(|stage| stage.service_post_can_retire_v1(0)),
             RootServicePostPurposeV1::PolicyWriter => self.current_writers_receiving.as_ref()
                 .is_some_and(|stage| stage.service_post_can_retire_v1(1)),
-            RootServicePostPurposeV1::InitialController => self.controller_peer_provision.as_ref()
-                .is_some_and(|stage| stage.service_post_can_retire_v1()),
         }
     }
 

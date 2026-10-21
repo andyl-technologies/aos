@@ -12,14 +12,14 @@ pub(super) enum CleanupClockErrorV2 {
     #[error("issued worker cleanup clock observation refused")]
     Stale,
     #[error(transparent)]
-    Kernel(aos_sandbox_linux::Error),
+    Kernel(aos_linux_descriptors::Error),
 }
 
 impl KernelPairedClockErrorV1 for CleanupClockErrorV2 {
     fn stale() -> Self {
         Self::Stale
     }
-    fn kernel(error: aos_sandbox_linux::Error) -> Self {
+    fn kernel(error: aos_linux_descriptors::Error) -> Self {
         Self::Kernel(error)
     }
 }

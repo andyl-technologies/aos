@@ -4,13 +4,14 @@
 //! must equal the final proof and the exact Root-issued canonical body and plan;
 //! only the independently reread protected Session supplies the transcript.
 
+use aos_sandbox_protocol::domain_ledger::readonly::FixedJournalReadbackDataV1 as RootFixedNativeReadbackV1;
+
 use super::session_inventory_origin::{CurrentInventoryOriginV2, FinalResourceOriginV3};
 use super::{
     compiler::RootStartResourceCompilerOriginalV2, plan::RootStartResourceUnsignedPlanOriginalV2,
 };
 use crate::journal::{JournalError, RecordNamespace};
 use crate::policy_compiler::create_storage_current::controller_readonly::{
-    native_read::RootFixedNativeReadbackV1,
     storage_inventory::verify_start_resource_session_retaining_v2,
 };
 use aos_sandbox_broker_session_protocol::hello_message::BrokerMethod;

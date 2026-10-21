@@ -149,7 +149,7 @@ pub struct CacheObjectViewOriginalV1 {
     decoded: Option<Result<PhysicalManifestSnapshotDataV1, PhysicalManifestDataErrorV1>>,
     metadata_catalog: Option<Result<aos_sandbox_protocol::cache_state::physical_manifest::view_data::PhysicalManifestInventoryDataV2, PhysicalManifestDataErrorV1>>,
     metadata_root: aos_sandbox_linux::path::BeneathRootOpenOriginalV2,
-    metadata_root_result: Option<Result<(), aos_sandbox_linux::Error>>,
+    metadata_root_result: Option<Result<(), aos_linux_descriptors::Error>>,
     root_after: Option<Result<CacheRootObservationDataV1, CacheObjectViewErrorV1>>,
     lock_after: Option<Result<CacheLockObservationDataV1, CacheObjectViewErrorV1>>,
     manifest_after: Option<Result<Option<CacheManifestObservationDataV1>, CacheObjectViewErrorV1>>,

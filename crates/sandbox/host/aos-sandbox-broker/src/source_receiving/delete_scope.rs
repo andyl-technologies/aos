@@ -7,6 +7,7 @@
 //! Its joint token keeps both real owners until every upper post completes.
 
 mod append;
+mod cache_audit;
 pub use append::{SourceDeleteAppendOriginalV1, SourceDeleteAppendDisposalV1,
     SourceExecutionEnvironmentAppendOriginalV1, SourceExecutionEnvironmentAppendDisposalV1};
 

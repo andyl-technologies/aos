@@ -8,7 +8,9 @@ use std::time::{Duration, Instant};
 
 use aos_sandbox_controller_domain::runtime_execution::DormantRuntimeExecutionOwnerV1;
 use aos_sandbox_guest_protocol::guest_root_publication::CONCRETE_GUEST_FEATURE_MASK_V1;
-use aos_sandbox_guest_protocol::{AgentFeatureSetV1, AgentFeatureV1};
+use aos_sandbox_guest_protocol::AgentFeatureSetV1;
+#[cfg(test)]
+use aos_sandbox_guest_protocol::AgentFeatureV1;
 use aos_sandbox_model::ObjectDigest;
 use aos_sandbox_protocol::ValidatedAssignmentFence;
 
@@ -163,14 +165,7 @@ where
 }
 
 pub(crate) fn fixed_guest_features() -> Result<AgentFeatureSetV1> {
-    AgentFeatureSetV1::new(vec![
-        AgentFeatureV1::Readiness,
-        AgentFeatureV1::ExecutionHandoff,
-        AgentFeatureV1::ExecutionObservation,
-        AgentFeatureV1::TerminalResize,
-        AgentFeatureV1::ExecutionSignal,
-        AgentFeatureV1::Quiesce,
-    ])
+    AgentFeatureSetV1::new(aos_sandbox_guest_protocol::guest_root_publication::CONCRETE_GUEST_FEATURES_V1.to_vec())
     .map_err(|error| HostError::InvalidPlan(error.to_string()))
 }
 
@@ -186,7 +181,8 @@ mod tests {
         });
 
         assert_eq!(mask, CONCRETE_GUEST_FEATURE_MASK_V1);
-        assert!(!features.contains(AgentFeatureV1::RuntimeArgumentObservation));
+        assert!(features.contains(AgentFeatureV1::RuntimeArgumentObservation));
+        assert!(features.contains(AgentFeatureV1::CapturePipeHandoffV2));
     }
 
     #[test]

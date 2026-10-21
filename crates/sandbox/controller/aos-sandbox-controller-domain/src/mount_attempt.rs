@@ -135,7 +135,7 @@ pub enum MountAttemptError {
     Transport(#[from] SeqpacketError),
     /// Kernel-nominated subject or retained cgroup validation failed.
     #[error(transparent)]
-    Kernel(#[from] aos_sandbox_linux::Error),
+    Kernel(#[from] aos_linux_descriptors::Error),
     /// Volatile operation preparation is stale, expired, or otherwise invalid.
     #[error(transparent)]
     Preparation(#[from] MountCatalogPreparationError),

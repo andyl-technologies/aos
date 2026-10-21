@@ -87,7 +87,7 @@ impl DirectoryOriginalV1 {
 #[derive(Default)]
 struct NamespaceSampleV1 {
     directory: Option<rustix::io::Result<Stat>>,
-    mount: Option<Result<MountId, aos_sandbox_linux::Error>>,
+    mount: Option<Result<MountId, aos_linux_descriptors::Error>>,
     local: [Option<rustix::io::Result<Stat>>; LOCAL_NAMES.len()],
     transfer: [Option<rustix::io::Result<Stat>>; TRANSFER_NAMES.len()],
     comparison: Option<Result<(), JournalError>>,

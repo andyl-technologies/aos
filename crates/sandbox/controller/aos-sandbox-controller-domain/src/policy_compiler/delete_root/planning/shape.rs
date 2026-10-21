@@ -1,7 +1,8 @@
 //! Derives planning receiving shapes from the same actual staged native owners.
 
+use aos_sandbox_policy::native::RootFinalityReadKindV1 as Kind;
 use super::{
-    Reader, RootDeletePlanningAdmissionPhaseV1, RootDeletePlanningDispatchOriginalV1,
+    RootDeletePlanningAdmissionPhaseV1, RootDeletePlanningDispatchOriginalV1,
     RootDeletePlanningReceivingV1, RootOwnershipProfileOriginalV1,
     TransferNamespaceNativeOriginalV1,
 };
@@ -64,9 +65,9 @@ impl RootDeletePlanningDispatchOriginalV1 {
             .checked_add(DELETE_ROOT_PLANNING_OBSERVATION_BYTES_V2)
             .and_then(|bytes| u64::try_from(bytes).ok())
             .ok_or_else(invalid)?;
-        let readers = Reader::controller_current_fixed_demand_v1()
+        let readers = crate::policy_compiler::delete_root::reader::fixed_demand_v1(Kind::Controller)
             .and_then(|controller| {
-                Reader::source_current_fixed_demand_v1().and_then(|source| {
+                crate::policy_compiler::delete_root::reader::fixed_demand_v1(Kind::Source).and_then(|source| {
                     controller
                         .checked_add(source)
                         .map_err(|_| crate::journal::JournalError::ProtectedBoundary)

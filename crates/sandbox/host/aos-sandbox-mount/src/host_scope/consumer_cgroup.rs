@@ -13,7 +13,7 @@ use std::os::fd::BorrowedFd;
 use std::os::unix::ffi::OsStrExt as _;
 use std::path::Path;
 
-use aos_sandbox_linux::boot::KernelBootId;
+use aos_linux_descriptors::boot::KernelBootId;
 use aos_sandbox_linux::cgroup::{
     CgroupPopulationMonitor, CgroupPopulationState, CgroupV2Root, RetainedCgroupAnchor,
 };

@@ -15,7 +15,7 @@ struct ReleaseOriginalsV1 {
     source_returned: Option<Result<(), CreateStorageReadyClosedV1>>,
     cache_invoked: bool,
     cache_returned: Option<Result<(), CreateStorageReadyClosedV1>>,
-    cache: Option<Box<crate::cache_residency::CacheReleasedOriginalsV1>>,
+    cache: Option<Box<crate::cache_programmes::CacheReleasedOriginalsV1>>,
     admission: Option<Box<CacheReleaseAdmissionOriginalsV1>>,
     complete: bool,
     cutoff: Option<u64>,
@@ -60,12 +60,9 @@ impl ReleaseOriginalsV1 {
     fn funding_failure_is_selected_v1(&self) -> bool {
         self.source_invoked && self.source.as_deref()
             .is_some_and(SourceReleasedOriginalsV1::funding_failure_is_selected_v1)
-            || self.cache_invoked && (
-                self.admission.as_deref().is_some_and(|admission|
-                    matches!(admission.semantic_geometry, Some(Ok(_)))
-                        && matches!(admission.semantic_funding, Some(Err(_))))
-                || self.cache.as_deref().is_some_and(crate::cache_residency::CacheReleasedOriginalsV1::
-                    append_funding_failure_is_selected_v1))
+            || self.cache_invoked && self.cache.as_deref().is_some_and(
+                crate::cache_programmes::CacheReleasedOriginalsV1::append_funding_failure_is_selected_v1,
+            )
     }
 
     pub(super) fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
@@ -77,7 +74,7 @@ impl ReleaseOriginalsV1 {
             .or_else(|| self.admission.as_deref().and_then(CacheReleaseAdmissionOriginalsV1::failure))
             .or_else(|| self.cache.as_deref().and_then(|cache| cache.selected_control_v1())
                 .and_then(|site| self.admission.as_deref().and_then(|admission| admission.control_failure(site))))
-            .or_else(|| self.cache.as_deref().and_then(crate::cache_residency::CacheReleasedOriginalsV1::failure))
+            .or_else(|| self.cache.as_deref().and_then(crate::cache_programmes::CacheReleasedOriginalsV1::failure))
     }
 }
 
@@ -98,7 +95,7 @@ impl<'held> OriginalCreateStorageReleasedV1<'held> {
     pub(in crate::controller_resource_reservation::create_intake)
     fn committed_v1(&self) -> &OriginalCreateStorageUseCommittedV1<'held> { &self.committed }
 
-    pub(super) fn cache_original_v1(&self) -> Result<&'held crate::cache_residency::CacheReleasedOriginalsV1, ResourceReservationErrorV1> {
+    pub(super) fn cache_original_v1(&self) -> Result<&'held crate::cache_programmes::CacheReleasedOriginalsV1, ResourceReservationErrorV1> {
         if !self.originals.complete || self.originals.failure().is_some() { return Err(ResourceReservationErrorV1::Conflict); }
         self.originals.cache.as_deref().ok_or(ResourceReservationErrorV1::Conflict)
     }
@@ -165,17 +162,15 @@ impl OriginalCreateStorageReadyV1<'_, '_> {
 }
 
 use aos_sandbox_model::{RawPairedClockSample, ResourceDimension as D, ResourceVector};
-use crate::cache_residency::{CacheReleasedOriginalsV1, CacheReleasedShapeV1,
-    CacheReleasedCurrentnessSiteV1, CacheHeldIdentityDataV1, CacheHeldNativeSemanticShapeV1};
+use crate::cache_programmes::{CacheReleasedOriginalsV1, CacheReleasedCurrentnessSiteV1};
+use aos_sandbox_cache::{CacheReleasedShapeV1, CacheHeldIdentityDataV1};
+use aos_sandbox_broker::controller_receiving::bank_launch::ControllerCacheAuditFundingLoanV1;
 use super::super::cache_receiving::{CacheControlOriginalsV1, CacheCurrentnessOriginalV1,
     OriginalCacheAssociationV1};
 
 #[derive(Default)]
 struct CacheReleaseAdmissionOriginalsV1 {
     named: Option<Result<(), ResourceReservationErrorV1>>,
-    semantic_geometry: Option<Result<ResourceVector, ResourceReservationErrorV1>>,
-    semantic_funding: Option<Result<(), ResourceReservationErrorV1>>,
-    semantic_paid: ResourceVector,
     controls: [CacheCurrentnessOriginalV1; 4],
     returned: [Option<Result<(), ResourceReservationErrorV1>>; 4],
 }
@@ -192,14 +187,18 @@ pub(crate) struct CacheReleaseReceivingLoanV1<'borrow> {
     profile: &'borrow ProductionControllerNormalRootProfileV1,
     committed: &'borrow OriginalCreateStorageUseCommittedV1<'borrow>,
     source_released: &'borrow SourceReleasedOriginalsV1,
-    root: &'borrow super::super::root_exchange::OriginalCreateStorageRootOutcomeV1<'borrow>,
+    root: super::super::root_exchange::OriginalCreateStorageRootOutcomeV1<'borrow>,
     expected: OriginalCacheAssociationV1,
-    receiving: &'borrow mut UseReceivingOriginalsV1,
+    funding: ControllerCacheAuditFundingLoanV1<'borrow, 'borrow>,
     state: &'borrow mut CacheReleaseAdmissionOriginalsV1,
     admission: super::super::root_exchange::OriginalCreateStorageCacheReleaseAdmissionV1<'borrow>,
 }
 
-impl CacheReleaseReceivingLoanV1<'_> {
+impl<'borrow> CacheReleaseReceivingLoanV1<'borrow> {
+    pub(crate) fn native_funding_v1(&mut self) -> &mut ControllerCacheAuditFundingLoanV1<'borrow, 'borrow> {
+        &mut self.funding
+    }
+
     pub(crate) fn lane_v1(&self) -> Result<[u8; 16], ResourceReservationErrorV1> {
         self.intake.create_lane()
     }
@@ -215,7 +214,8 @@ impl CacheReleaseReceivingLoanV1<'_> {
     pub(crate) fn require_cache_named_preparation(&mut self, identity: CacheHeldIdentityDataV1)
         -> Result<(), ResourceReservationErrorV1> {
         let result = (|| {
-            self.receiving.require_reserved_v1()?;
+            self.funding.require_storage_use_reserved_v1()
+                .map_err(|_| ResourceReservationErrorV1::Conflict)?;
             self.committed.require_current_state_v1(self.controller.controller_resource_state_v1()?)?;
             self.intake.require_retained_capture()?;
             self.parent.require_create_storage_association(self.controller, self.source, self.profile)?;
@@ -242,38 +242,6 @@ impl CacheReleaseReceivingLoanV1<'_> {
         else { Err(ResourceReservationErrorV1::Conflict) }
     }
 
-    pub(crate) fn admit_cache_semantic_shape(&mut self, shape: &CacheHeldNativeSemanticShapeV1)
-        -> Result<(), ResourceReservationErrorV1> {
-        self.require_cache_named_preparation(shape.original_identity_v1())?;
-        let complete = shape.dominant_receiving_demand_v1().map_err(|_| ResourceReservationErrorV1::Conflict)?;
-        self.admit_cache_complete_v1(complete)
-    }
-
-    pub(crate) fn admit_cache_append_semantic_v1(&mut self, semantic: ResourceVector)
-        -> Result<(), ResourceReservationErrorV1> {
-        let shape = self.admission.shape_v1()?;
-        let prepaid = shape.semantic_peak_v1();
-        let extra = semantic.componentwise_max(prepaid).checked_sub(prepaid)?;
-        self.admit_cache_complete_v1(shape.complete_receiving_demand_v1().checked_add(extra)?)
-    }
-
-    fn admit_cache_complete_v1(&mut self, complete: ResourceVector)
-        -> Result<(), ResourceReservationErrorV1> {
-        let base = self.cache_native_base_v1()?.checked_add(self.state.semantic_paid)?;
-        self.state.semantic_geometry = Some(complete.componentwise_max(base).checked_sub(base)
-            .map_err(ResourceReservationErrorV1::from));
-        self.state.semantic_funding = Some(match self.state.semantic_geometry.as_ref() {
-            Some(Ok(extra)) => self.receiving.reserve_once(*extra),
-            _ => Err(ResourceReservationErrorV1::Conflict),
-        });
-        if matches!(self.state.semantic_funding, Some(Ok(()))) {
-            let extra = self.state.semantic_geometry.as_ref().and_then(|result| result.as_ref().ok())
-                .copied().ok_or(ResourceReservationErrorV1::Conflict)?;
-            self.state.semantic_paid = self.state.semantic_paid.checked_add(extra)?;
-            Ok(())
-        } else { Err(ResourceReservationErrorV1::Conflict) }
-    }
-
     pub(crate) fn released_body_v1(&self, held: [u8; 32])
         -> Result<aos_sandbox_protocol::domain_ledger::create_storage_history::outcome::ReleasedBodyDataV1,
             ResourceReservationErrorV1> {
@@ -290,7 +258,7 @@ impl CacheReleaseReceivingLoanV1<'_> {
     }
 
     pub(crate) fn observe_cache_release_currentness_once(&mut self,
-        cache: &crate::cache_residency::OriginalCreateStorageCacheLoanV1<'_>,
+        cache: &aos_sandbox_cache::CacheHeldCurrentnessOriginalV1<'_>,
         site: CacheReleasedCurrentnessSiteV1,
     ) -> Result<(), ResourceReservationErrorV1> {
         let index = match site {
@@ -326,8 +294,6 @@ impl CacheReleaseReceivingLoanV1<'_> {
 impl CacheReleaseAdmissionOriginalsV1 {
     fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
         self.named.as_ref().and_then(|result| result.as_ref().err()).map(|cause| cause as _)
-            .or_else(|| self.semantic_geometry.as_ref().and_then(|result| result.as_ref().err()).map(|cause| cause as _))
-            .or_else(|| self.semantic_funding.as_ref().and_then(|result| result.as_ref().err()).map(|cause| cause as _))
     }
 
     fn control_failure(&self, site: CacheReleasedCurrentnessSiteV1)
@@ -347,6 +313,15 @@ pub(in crate::controller_resource_reservation::create_intake::ready)
 fn cache_release_admission_receiving_demand_v1() -> Result<ResourceVector, ResourceReservationErrorV1> {
     let bytes = std::mem::size_of::<CacheReleaseAdmissionOriginalsV1>().checked_mul(2)
         .and_then(|bytes| bytes.checked_add(std::mem::align_of::<CacheReleaseAdmissionOriginalsV1>()))
+        .and_then(|bytes| bytes.checked_add(ControllerCacheAuditFundingLoanV1::root_observation_funding_receiving_bytes_v1()?))
+        .and_then(|bytes| bytes.checked_add(super::super::root_exchange::RootUseReceivingV1::cache_audit_receiving_bytes_v1()?))
+        // The actual Release caller maps the native Root borrower Result to
+        // Closed before constructing its Root loan. Both forwarding planes
+        // coexist with the native funding Result already in its own supplier.
+        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Result<
+            aos_sandbox_broker::controller_receiving::bank_launch::ControllerCacheRootObservationFundingLoanV1<'_>,
+            super::super::root_exchange::CreateStorageRootExchangeClosedV1,
+        >>().checked_mul(2)?))
         .ok_or(ResourceReservationErrorV1::Conflict)?;
     let (wire, logs) = ProductionControllerNormalRootProfileV1::create_storage_producer_traffic_bound_v1(4)
         .ok_or(ResourceReservationErrorV1::Conflict)?;
@@ -370,12 +345,12 @@ fn cache_release_admission_receiving_demand_v1() -> Result<ResourceVector, Resou
 #[doc(hidden)]
 pub fn create_storage_held_release_receiving_demand_v1(
     source_extent: &crate::journal::ProtectedJournalPreopenReplayExtentV1,
-    cache_extents: &[crate::journal::ProtectedJournalPreopenReplayExtentV1; 5],
+    cache_extents: &[aos_sandbox_broker::canonical_journal::CanonicalReplayExtentDataV1; 5],
 ) -> Result<ResourceVector, ResourceReservationErrorV1> {
     if source_extent.limits != crate::source_domain::source_domain_journal_limits() {
         return Err(ResourceReservationErrorV1::Conflict);
     }
-    let append = crate::cache_residency::release_append_bytes_v1()
+    let append = aos_sandbox_cache::release_append_bytes_v1()
         .map_err(|_| ResourceReservationErrorV1::Conflict)?;
     let source = crate::journal::protected_journal_preopen_replay_extent_for_prefix_v1(
         source_extent.limits, source_extent.native_bytes.checked_add(append)
@@ -383,7 +358,7 @@ pub fn create_storage_held_release_receiving_demand_v1(
     )?;
     let semantic = source.dominant_semantic_receiving_demand_v1()?;
     SourceReleasedOriginalsV1::fixed_receiving_demand_v1(&semantic)?
-        .checked_add(crate::cache_residency::release_receiving_demand_v1(cache_extents)
+        .checked_add(crate::cache_programmes::initialization::create_storage::released::release_receiving_demand_v1(cache_extents)
             .map_err(|_| ResourceReservationErrorV1::Conflict)?)?
         .checked_add(cache_release_admission_receiving_demand_v1()?)
         .map_err(ResourceReservationErrorV1::from)
@@ -414,7 +389,7 @@ impl OriginalCreateStorageReadyV1<'_, '_> {
         let before = owner.root_exchange.begin_original_cache_release_once(&owner.parent, &mut owner.intake,
             self.original.controller, self.original.source, self.original.profile, &mut self.cache,
             &committed, receiving);
-        let primary = if before.is_ok() {
+        let primary = if let Ok(funding) = before {
             // The preceding exact Cache shape includes both late allocations
             // and every independently owed native/control destination.
             actual.release.cache_invoked = true;
@@ -431,7 +406,7 @@ impl OriginalCreateStorageReadyV1<'_, '_> {
                 let source_released = actual.release.source.as_deref().ok_or(CreateStorageReadyClosedV1)?;
                 let mut loan = CacheReleaseReceivingLoanV1 { parent: &owner.parent, intake: &mut owner.intake,
                     controller: self.original.controller, source: self.original.source, profile: self.original.profile,
-                    committed: &committed, source_released, root: &root, expected, receiving,
+                    committed: &committed, source_released, root, expected, funding,
                     state: actual.release.admission.as_deref_mut().ok_or(CreateStorageReadyClosedV1)?, admission };
                 self.cache.release_original_held_once(actual.release.cache.as_deref_mut()
                     .ok_or(CreateStorageReadyClosedV1)?, &mut loan).map_err(|_| CreateStorageReadyClosedV1)

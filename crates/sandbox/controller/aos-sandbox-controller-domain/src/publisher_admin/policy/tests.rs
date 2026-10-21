@@ -832,7 +832,7 @@ fn replay_rejects_unknown_or_orphaned_and_noncontiguous_history() {
 
     assert!(matches!(
         validate_successor(Some(u64::MAX), Some(u64::MAX), u64::MAX),
-        Err(PublisherPolicyError::GenerationExhausted)
+        Err(PublisherPolicySchemaErrorV1::GenerationExhausted)
     ));
 }
 

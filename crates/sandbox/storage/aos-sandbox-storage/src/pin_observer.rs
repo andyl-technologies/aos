@@ -13,7 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::os::unix::ffi::OsStrExt as _;
 use std::path::Path;
 
-use aos_sandbox_linux::boot::KernelBootId;
+use aos_linux_descriptors::boot::KernelBootId;
 use aos_sandbox_linux::inventory::{MountId, MountListOrder, MountNamespace, MountObservation};
 use aos_sandbox_linux::mount::{DetachedMount, MountAttributes};
 use aos_sandbox_linux::path::{BeneathRoot, FileIdentity, ResolveOptions, ResolvedPath};
@@ -76,7 +76,7 @@ impl<'a> TryFrom<&'a WorkspacePinAttemptV1> for WorkspacePinObservationTargetV1<
 pub(crate) enum WorkspacePinObserverError {
     /// A Linux descriptor, namespace, boot, or mount observation failed.
     #[error("workspace pin Linux observation failed: {0}")]
-    Linux(#[from] aos_sandbox_linux::Error),
+    Linux(#[from] aos_linux_descriptors::Error),
     /// A safe kernel operation failed.
     #[error("workspace pin kernel operation failed: {0}")]
     Kernel(#[from] rustix::io::Errno),

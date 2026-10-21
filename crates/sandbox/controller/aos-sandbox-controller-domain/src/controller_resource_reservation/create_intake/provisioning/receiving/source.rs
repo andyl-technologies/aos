@@ -20,7 +20,7 @@ use aos_sandbox_protocol::domain_ledger::effect_history::{PublicMutationEffectHi
 use crate::cold_launch_publication::OriginalPublicationActionV1;
 use crate::journal::source_provisioning::SourceProvisioningIdentityV1;
 use crate::lifecycle::{LifecycleIntentV1, LifecycleOperationV1,
-    LifecycleProtectedJournalOwnerV1, lifecycle_public_mutation_admission_v1,
+    LifecycleProtectedJournalOwnerV1,
     lifecycle_operation_from_public_mutation_v1};
 use crate::lifecycle::{PreparedSourceLifecycleAdmissionV1,
     SourceLifecycleAdmissionCommitV1};
@@ -218,6 +218,8 @@ impl SourceTurnOriginalsV1 {
 
     fn fixed_demand_v1() -> Result<ResourceVector, ResourceReservationErrorV1> {
         let bytes = std::mem::size_of::<Self>().checked_mul(2)
+            .and_then(|bytes| bytes.checked_add(crate::journal::historical_observation::HistoricalObservationV1::journal_receiving_control_bytes_v1()?))
+            .and_then(|bytes| bytes.checked_add(crate::lifecycle::historical_admission_control_bytes_v2()?))
             .and_then(|bytes| u64::try_from(bytes).ok())
             .ok_or(ResourceReservationErrorV1::Conflict)?;
         Ok(ResourceVector::ZERO.with(ResourceDimension::MemoryBytes, bytes))
@@ -532,7 +534,8 @@ impl OriginalCreateProvisioningRootLoanV1<'_, '_> {
                 if !matches!(request, aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1::Create(_)) {
                     return Err(SourceAdmissionErrorV1::Closed);
                 }
-                let admission = lifecycle_public_mutation_admission_v1(controller, self.receiving.parent,
+                let admission = crate::lifecycle::lifecycle_public_mutation_admission_from_observation_v2(
+                    crate::journal::historical_observation::HistoricalObservationV1::from_journal_v1(controller), self.receiving.parent,
                     context.project(), self.original_node_v1()?, &request)
                     .map_err(SourceAdmissionErrorV1::Admission)?;
                 lifecycle_operation_from_public_mutation_v1(self.receiving.parent,

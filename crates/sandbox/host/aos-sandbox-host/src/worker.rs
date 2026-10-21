@@ -23,14 +23,16 @@ use std::os::fd::{AsFd as _, BorrowedFd, OwnedFd};
 use std::path::Path;
 use std::sync::Mutex;
 
-use aos_sandbox_linux::boot::KernelBootId;
+use aos_linux_descriptors::boot::KernelBootId;
 use aos_sandbox_linux::cgroup::{
     CgroupFreezerState, CgroupLimitControlV1, CgroupLimitReadbackV1, CgroupPopulationMonitor,
     CgroupPopulationState, CgroupV2Root, RetainedCgroupAnchor,
 };
 use aos_sandbox_linux::inventory::MountId;
 use aos_sandbox_linux::path::{BeneathRoot, ResolveOptions};
-use aos_sandbox_linux::pidfd::{NamespaceFd, NamespaceKind, PidFd};
+use aos_sandbox_linux::pidfd::NamespaceFd;
+use aos_sandbox_linux::pidfd::NamespaceKind;
+use aos_linux_descriptors::pidfd::PidFd;
 use aos_sandbox_protocol::ValidatedAssignmentFence;
 use aos_systemd_client::{
     ExactStartError, ExactStopError, ExactStopOutcome, ExactUnitClient, ExactUnitObservation,
@@ -645,7 +647,7 @@ pub(crate) struct BoundPayloadReadbackV1 {
     pub(super) payload_anchor: Option<RetainedCgroupAnchor>,
     pub(super) anchor_bookends: [Option<RetainedCgroupAnchor>; 4],
     pub(super) limits: [CgroupLimitReadbackV1; 4],
-    pub(super) native_failure: Option<aos_sandbox_linux::Error>,
+    pub(super) native_failure: Option<aos_linux_descriptors::Error>,
     pub(super) missing_control: Option<(usize, CgroupLimitControlV1)>,
     pub(super) failure: Option<HostError>,
     pub(super) phase: BoundReadbackPhaseV1,
@@ -736,7 +738,7 @@ enum CanaryPayloadFailureV1 {
     #[error(transparent)]
     Host(#[from] HostError),
     #[error(transparent)]
-    Native(#[from] aos_sandbox_linux::Error),
+    Native(#[from] aos_linux_descriptors::Error),
     #[error(transparent)]
     Descriptor(#[from] rustix::io::Errno),
     #[error(transparent)]
@@ -1620,13 +1622,11 @@ mod tests {
             root,
             network: NamespaceFd::from_owned(network, NamespaceKind::Network).unwrap(),
             mount: NamespaceFd::from_owned(mount, NamespaceKind::Mount).unwrap(),
-            pid: PidFd::open(pid)
-                .unwrap()
-                .namespace(NamespaceKind::Pid)
+            pid: aos_sandbox_linux::pidfd::namespace(&(PidFd::open(pid)
+                .unwrap()), NamespaceKind::Pid)
                 .unwrap(),
-            user: PidFd::open(pid)
-                .unwrap()
-                .namespace(NamespaceKind::User)
+            user: aos_sandbox_linux::pidfd::namespace(&(PidFd::open(pid)
+                .unwrap()), NamespaceKind::User)
                 .unwrap(),
         }
     }
@@ -1648,7 +1648,7 @@ mod tests {
         assert!(originals.observe_once(&payload, &supervisor).is_err());
         let receiver = originals.first_original_address().unwrap();
         let cause = originals.failure().unwrap()
-            .downcast_ref::<aos_sandbox_linux::Error>().unwrap() as *const _;
+            .downcast_ref::<aos_linux_descriptors::Error>().unwrap() as *const _;
         assert!(!originals.can_dispose_first());
 
         // The genuine non-cgroup filesystem refusal retains its exact owner
@@ -1656,7 +1656,7 @@ mod tests {
         assert!(originals.observe_once(&payload, &supervisor).is_err());
         assert_eq!(originals.first_original_address(), Some(receiver));
         let retained = originals.failure().unwrap()
-            .downcast_ref::<aos_sandbox_linux::Error>().unwrap() as *const _;
+            .downcast_ref::<aos_linux_descriptors::Error>().unwrap() as *const _;
         assert_eq!(cause, retained);
     }
 

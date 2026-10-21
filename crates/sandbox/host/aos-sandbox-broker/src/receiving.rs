@@ -33,6 +33,16 @@ mod root_observation_error;
 mod root_profile;
 mod root_kernel;
 mod root_initial;
+mod root_purpose_posts;
+pub use root_purpose_posts::{RootPurposePeerPostV1, RootPurposePeerPostsOriginalV1, RootPurposePostErrorV1};
+mod root_subject_chunk;
+mod root_subject_readiness;
+pub use root_subject_readiness::RootSubjectReadinessV1;
+mod root_open_clock;
+pub use root_open_clock::{RootOpenClockClosedV1, RootOpenClockOriginalV1};
+mod root_history_peer;
+pub use root_history_peer::{RootHistoryPeerPostNativeOriginalV1, RootAcceptedHistoryBorrowerV1, RootOpenPhysicalBorrowerV1};
+pub use root_history_peer::RootHistoryObservationOriginalV1;
 pub(crate) mod root_invocation;
 mod root_permanent;
 mod root_startup_native;
@@ -41,7 +51,7 @@ mod root_currentness;
 mod root_selected_currentness;
 pub use root_selected_currentness::{RootSelectedStartupBorrowV1, RootSelectedCurrentnessFailureOriginalV1};
 mod root_controller_policy_peer;
-pub use root_controller_policy_peer::{RootControllerPolicyPeerV1,
+pub use root_controller_policy_peer::{RootControllerCurrentBorrowerV1, RootControllerPolicyPeerV1,
     RootSelectedControllerPeerOriginalV1, RootSelectedControllerCurrentSampleV1,
     RootSelectedControllerSubjectSampleV1,
     require_controller_process_identity_data_v1, selected_controller_resource_pair_data_v1,
@@ -62,10 +72,18 @@ pub use fixed_service_operation::{FixedServiceOperationClosedV4, FixedServiceOpe
     MountServiceSessionOpeningLoanV4, NetworkServiceSessionOpeningLoanV4};
 pub use fixed_service_listener::FixedServiceListenerOriginalV4;
 pub use root_observation_error::RootObservationErrorV1;
+
+mod q04_origin;
+pub use q04_origin::{
+    RootQ04OrdinaryTransportErrorV1, RootQ04OrdinaryTransportOriginalV1,
+    RootQ04OriginBorrowerV1, RootQ04OriginErrorV1, RootQ04OriginInputCurrentLoanV1,
+    RootQ04OriginLoanV1, RootQ04OriginNativeStreamLoanV1, RootQ04OriginPurposeV1,
+};
 pub use root_profile::RootProfileOriginalCaptureV1;
 pub use root_initial::{
     RootQ04InputCurrentLoanV1, RootQ04NativeStreamLoanV1, RootQ04TransportOriginalV1,
-    RootInitialReceivingOriginalV1, RootInitialRestoreFailureV1, RootNativeAdmissionErrorV1,
+    RootInitialReceivingOriginalV1, RootStartupServicePostErrorV1, RootSelectedProvisionBorrowV1,
+    RootInitialRestoreFailureV1, RootNativeAdmissionErrorV1,
     RootPrearmedHistoryServicePostV1,
     RootInitialStartupFieldsV1, RootInitialStartupPartsV1,
     RootFinancialClosedV1, RootJournalFinancialBorrowV1, RootJournalFinancialOriginalV1,
@@ -113,6 +131,7 @@ pub use root_peer_observation::{RootPeerConnectionOriginalsV1, RootPeerObservati
 mod root_writer;
 #[cfg(target_os = "linux")]
 pub use root_writer::{
+    RootAppendPostAdmissionErrorV1,
     RootAppendFailureOriginalV1, RootCoordinatorWriterV1, RootPreparedAppendV1,
     RootWriterErrorV1, RootWriterOpeningOriginalV1, RootWriterReplayV1, RootWriterPostOriginalV1,
     root_authority_journal_limits_data_v1,
@@ -120,3 +139,7 @@ pub use root_writer::{
 
 /// Retains the same genuine Root replacement and original diagnostic source.
 pub use root_writer::{RootPreparedReplacementV1, RootReplacementFailureOriginalV1};
+
+mod root_indexed_transfer;
+
+mod root_subject_geometry;

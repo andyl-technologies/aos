@@ -12,7 +12,7 @@ use crate::BrokerSessionSecurityError;
 /// Owns one selected recovery peer observation until its actual owner disposes it.
 #[derive(Default)]
 pub(crate) struct ObservedBrokerPeerOriginalV1 {
-    liveness: Option<Result<bool, aos_sandbox_linux::Error>>,
+    liveness: Option<Result<bool, aos_linux_descriptors::Error>>,
     reentered: bool,
 }
 
@@ -90,7 +90,7 @@ mod tests {
             rustix::fs::Mode::empty(),
         )
         .unwrap();
-        let native_error = aos_sandbox_linux::pidfd::PidFd::from_owned(wrong_kind).unwrap_err();
+        let native_error = aos_linux_descriptors::pidfd::PidFd::from_owned(wrong_kind).unwrap_err();
         // This is an explicit diagnostic fault-state fixture. It lends neither
         // a fabricated peer nor paid J authority and claims no liveness fault.
         let mut originals = ObservedBrokerPeerOriginalV1 {
@@ -98,12 +98,12 @@ mod tests {
             reentered: false,
         };
         let original = originals.failure().unwrap()
-            .downcast_ref::<aos_sandbox_linux::Error>().unwrap() as *const _;
+            .downcast_ref::<aos_linux_descriptors::Error>().unwrap() as *const _;
 
         assert!(originals.observe_once(socket.peer()).is_err());
 
         let retained = originals.failure().unwrap()
-            .downcast_ref::<aos_sandbox_linux::Error>().unwrap() as *const _;
+            .downcast_ref::<aos_linux_descriptors::Error>().unwrap() as *const _;
         assert_eq!(original, retained);
         assert!(originals.reentered);
     }

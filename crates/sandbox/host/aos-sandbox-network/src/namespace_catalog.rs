@@ -28,7 +28,7 @@ use aos_sandbox_api::aos::sandbox::local::v1::{
 };
 use crate::journal::{Journal, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace};
 use aos_sandbox_model::{BrokerAssignment, ObjectDigest};
-use aos_sandbox_linux::boot::KernelBootId;
+use aos_linux_descriptors::boot::KernelBootId;
 use aos_sandbox_linux::path::BeneathRoot;
 use aos_sandbox_linux::pidfd::{NamespaceIdentity, NamespaceKind};
 use aos_sandbox_protocol::canonical_map;

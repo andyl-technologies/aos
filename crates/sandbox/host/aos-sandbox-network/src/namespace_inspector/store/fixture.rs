@@ -286,7 +286,7 @@ fn assert_ambiguous_publication_rejected(
         )) => {
             let exact_exdev = matches!(
                 source,
-                aos_sandbox_linux::Error::Syscall { operation, source }
+                aos_linux_descriptors::Error::Syscall { operation, source }
                     if *operation == "renameat2"
                         && source.raw_os_error() == Some(rustix::io::Errno::XDEV.raw_os_error())
             );

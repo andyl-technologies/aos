@@ -5,7 +5,7 @@
 //! INIT while Mount applies the original namespace's required idmap. It does
 //! not install metadata callbacks, acknowledge readiness, or issue read grants.
 
-use aos_sandbox_linux::boot::KernelBootId;
+use aos_linux_descriptors::boot::KernelBootId;
 use aos_sandbox_linux::fuse_worker_startup::FixedFuseWorkerSessionV1;
 use aos_sandbox_linux::seqpacket::bounded::{BoundedRecordError, boottime};
 use aos_sandbox_linux::seqpacket::{KernelAuthorizedRecordSubject, SeqpacketError};
@@ -22,7 +22,7 @@ use crate::{RunError, TransportLimits, abi};
 pub enum FixedWorkerKernelInitError {
     /// The original inherited execution or kernel observations were rejected.
     #[error("fixed worker kernel observation failed: {0}")]
-    Kernel(#[from] aos_sandbox_linux::Error),
+    Kernel(#[from] aos_linux_descriptors::Error),
     /// The original kernel BOOTTIME observation failed.
     #[error("fixed worker preparation clock failed: {0}")]
     Clock(#[from] BoundedRecordError),

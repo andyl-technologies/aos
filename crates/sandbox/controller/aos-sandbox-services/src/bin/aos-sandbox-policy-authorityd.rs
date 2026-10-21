@@ -29,6 +29,7 @@
 //! cannot mint the separately qualified live Root client proof.
 
 use aos_sandbox_policy::controller_project_readback::CONTROLLER_PROJECT_ADMISSION_READBACK_BYTES_V1;
+use aos_sandbox_policy::native::fixed_root_source_genesis_recovery_available_v1;
 
 use aos_sandbox_protocol::source_genesis_wire::{
     ROOT_SOURCE_GENESIS_QUERY_MAGIC_V1,
@@ -54,7 +55,7 @@ use std::{
     error::Error,
     fs::File,
     io::{self, Read, Write},
-    os::unix::{fs::FileTypeExt as _, net::UnixListener},
+    os::unix::{fs::FileTypeExt as _, net::{UnixListener, UnixStream}},
     path::Path,
     process::ExitCode,
     time::Duration,
@@ -100,7 +101,6 @@ use aos_sandbox_controller_domain::policy_compiler::{
     fixed_root_project_admission_recovery_required_v1,
     fixed_root_project_history_readback_available_v1,
     fixed_root_project_negative_recovery_available_v1,
-    fixed_root_source_genesis_recovery_available_v1,
     prepare_fixed_root_project_admission_intent_v1, prepare_fixed_root_project_negative_intent_v1,
     read_fixed_cache_signer_challenge_v2, read_fixed_inert_closed_policy_binding_hold_v1,
     read_fixed_policy_cache_hold_v1, record_fixed_cache_signer_root_settlement_v2,
@@ -700,7 +700,8 @@ fn run() -> Result<(), Box<dyn Error>> {
             deployment_signer.verifying_key(),
             deployment_signer.generation(),
             now_unix_seconds,
-        )?;
+        )
+        .map_err(aos_sandbox_controller_domain::policy_compiler::PolicyDeploymentHeadErrorV1::from)?;
         if let Some((project_packet_v2, project_input_v2)) = explicit_project.as_ref() {
             let verified = verify_signed_project_policy_source_v2(
                 project_packet_v2,
@@ -727,8 +728,9 @@ fn run() -> Result<(), Box<dyn Error>> {
                     deployment_signer.verifying_key(),
                     project_signer.generation(),
                     project_signer.verifying_key(),
-                )?;
-                journal.admit_deployment_head(deployment)?;
+                ).map_err(aos_sandbox_controller_domain::policy_compiler::PolicyDeploymentHeadErrorV1::from)?;
+                journal.admit_deployment_head(deployment)
+                    .map_err(aos_sandbox_controller_domain::policy_compiler::PolicyDeploymentHeadErrorV1::from)?;
                 None
             }
             None => {
@@ -749,7 +751,8 @@ fn run() -> Result<(), Box<dyn Error>> {
         };
         let cache_pin = credential_reads.optional(credential_loan.as_ref(), CredentialMember::CachePin)?;
         match credential_loan.as_mut().map(|loan| loan.journal_mut()).transpose()? {
-            Some(mut journal) => journal.admit_cache_pin(cache_pin.as_deref())?,
+            Some(mut journal) => journal.admit_cache_pin(cache_pin.as_deref())
+                .map_err(aos_sandbox_controller_domain::policy_compiler::CacheReadbackPinErrorV1::from)?,
             None => admit_fixed_cache_readback_pin_v1(
                 cache_pin.as_deref(),
                 deployment_signer.generation(),
@@ -760,7 +763,8 @@ fn run() -> Result<(), Box<dyn Error>> {
         }
         let controller_hold_pin = credential_reads.optional(credential_loan.as_ref(), CredentialMember::ControllerPin)?;
         match credential_loan.as_mut().map(|loan| loan.journal_mut()).transpose()? {
-            Some(mut journal) => journal.admit_controller_pin(controller_hold_pin.as_deref())?,
+            Some(mut journal) => journal.admit_controller_pin(controller_hold_pin.as_deref())
+                .map_err(aos_sandbox_controller_domain::policy_compiler::ControllerHoldPinErrorV1::from)?,
             None => admit_fixed_controller_hold_pin_v1(
                 controller_hold_pin.as_deref(),
                 deployment_signer.generation(),
@@ -771,7 +775,8 @@ fn run() -> Result<(), Box<dyn Error>> {
         }
         let source_hold_pin = credential_reads.optional(credential_loan.as_ref(), CredentialMember::SourcePin)?;
         match credential_loan.as_mut().map(|loan| loan.journal_mut()).transpose()? {
-            Some(mut journal) => journal.admit_source_pin(source_hold_pin.as_deref())?,
+            Some(mut journal) => journal.admit_source_pin(source_hold_pin.as_deref())
+                .map_err(aos_sandbox_controller_domain::policy_compiler::SourceHoldPinErrorV1::from)?,
             None => admit_fixed_source_hold_pin_v1(
                 source_hold_pin.as_deref(),
                 deployment_signer.generation(),
@@ -1877,9 +1882,170 @@ fn require_pre_root_startup(
     })
 }
 
+// Declared after every owning slot and before the first effect. It therefore
+// ends the process before any partial native owner can drop during unwinding.
+struct OrdinaryQ04DriverGuardV1 {
+    armed: bool,
+}
+
+impl Drop for OrdinaryQ04DriverGuardV1 {
+    fn drop(&mut self) {
+        if self.armed {
+            std::process::exit(1);
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn serve_ordinary_create_q04(
+    original: UnixStream,
+    startup: Option<&aos_sandbox_controller_domain::normal_root::ProductionNormalRootStartupV1>,
+    request: [u8; 32],
+    controller_uid: u32,
+    controller_gid: u32,
+    cache_signer_uid: u32,
+    source_signer_uid: u32,
+    packet: &[u8],
+    inputs: &PolicyDeploymentInputsV1<'_>,
+    deployment_key: &VerifyingKey,
+    deployment_generation: u64,
+    explicit_project: Option<(&[u8], &[u8])>,
+    project_key: &VerifyingKey,
+    project_generation: u64,
+) {
+    use aos_sandbox_controller_domain::policy_compiler::OriginalRootCreateQ04AttemptV1 as Attempt;
+    use aos_sandbox_broker::receiving::RootQ04OriginBorrowerV1;
+    use aos_sandbox_policy::native::{
+        RootAuthorityConstructionOriginalV1, RootAuthorityQ04FlightOriginalV1,
+        RootPolicyTargetConstructionOriginalV1,
+    };
+
+    // The native transport is external to the real Authority/Target borrows.
+    // Every constructor below is inert; actual acquisitions retain the old
+    // ordinary route and never select an absent/failed selected lender.
+    let transport = std::cell::RefCell::new(Attempt::park_ordinary_transport_v1(
+        original,
+        startup,
+        request,
+        [
+            controller_uid,
+            controller_gid,
+            controller_uid,
+            cache_signer_uid,
+        ],
+    ));
+    let origin = RootQ04OriginBorrowerV1::ordinary(&transport);
+    let mut authority_construction = RootAuthorityConstructionOriginalV1::new();
+    let mut authority;
+    let mut flight;
+    let mut target_construction = RootPolicyTargetConstructionOriginalV1::new();
+    let mut target;
+    let mut work;
+    let mut attempt;
+    let admission;
+    let authority_completion;
+    let flight_entry;
+    let mut opening_posts = [None, None, None];
+    let returned;
+    let retirement;
+    let mut guard = OrdinaryQ04DriverGuardV1 { armed: true };
+
+    admission = transport
+        .try_borrow_mut()
+        .map(|mut original| original.admit_original_once_v1());
+    if !matches!(admission, Ok(Ok(()))) {
+        std::process::exit(1);
+    }
+    opening_posts[0] = Some(Attempt::recheck_ordinary_opening_v1(origin, None, None));
+    if !matches!(opening_posts[0], Some(Ok(_))) {
+        std::process::exit(1);
+    }
+
+    authority_construction.open_fixed_ordinary_once_v1();
+    authority_completion = authority_construction.complete_role_once();
+    if authority_completion.is_err() {
+        let _first_cause = authority_construction.failure();
+        std::process::exit(1);
+    }
+    authority = authority_construction.take_authority_once();
+    let Some(authority) = authority.as_mut() else {
+        let _first_cause = authority_construction.failure();
+        std::process::exit(1);
+    };
+    flight = Some(RootAuthorityQ04FlightOriginalV1::new(authority, origin));
+    let Some(root) = flight.as_mut() else {
+        std::process::exit(1);
+    };
+    // The sole Root nonce and its Authority post precede the Target opener.
+    flight_entry = root.begin_once();
+    if flight_entry.is_err() {
+        let _first_cause = root.failure();
+        std::process::exit(1);
+    }
+    opening_posts[1] = Some(Attempt::recheck_ordinary_opening_v1(
+        origin,
+        Some(root),
+        None,
+    ));
+    if !matches!(opening_posts[1], Some(Ok(_))) {
+        std::process::exit(1);
+    }
+
+    target_construction.open_fixed_ordinary_once_v1();
+    target = target_construction.take_target_once();
+    let Some(target) = target.as_mut() else {
+        let _first_cause = target_construction.failure();
+        std::process::exit(1);
+    };
+    work = Some(target.begin_q04_publication_work_v1());
+    opening_posts[2] = Some(Attempt::recheck_ordinary_opening_v1(
+        origin,
+        flight.as_ref(),
+        work.as_ref(),
+    ));
+    if !matches!(opening_posts[2], Some(Ok(_))) {
+        std::process::exit(1);
+    }
+
+    let (Some(root), Some(publication)) = (flight.take(), work.take()) else {
+        std::process::exit(1);
+    };
+    attempt = Some(Attempt::new(root, publication, origin));
+    let Some(active) = attempt.as_mut() else {
+        std::process::exit(1);
+    };
+    returned = serve_original_create_q04(
+        active,
+        source_signer_uid,
+        controller_gid,
+        packet,
+        inputs,
+        deployment_key,
+        deployment_generation,
+        explicit_project,
+        project_key,
+        project_generation,
+    );
+    if returned.is_err() {
+        // All first causes, partials and independently owed posts stay resident.
+        let _ = writeln!(
+            std::io::stderr().lock(),
+            "aos-sandbox-policy-authorityd: original Q04 cut refused"
+        );
+        std::process::exit(1);
+    }
+    retirement = origin
+        .try_borrow_mut()
+        .map(|mut original| original.retire_ordinary_after_shutdown_once_v1());
+    if !matches!(retirement, Ok(Ok(()))) {
+        std::process::exit(1);
+    }
+    guard.armed = false;
+}
+
 #[allow(clippy::too_many_arguments)]
 fn serve_original_create_q04(
-    attempt: &mut aos_sandbox_controller_domain::policy_compiler::OriginalRootCreateQ04AttemptV1<'_>,
+    attempt: &mut aos_sandbox_controller_domain::policy_compiler::OriginalRootCreateQ04AttemptV1<'_, '_, '_, '_>,
     source_signer_uid: u32,
     controller_gid: u32,
     packet: &[u8],
@@ -2053,23 +2219,15 @@ fn serve_current_head(
         return Ok(());
     }
     if matches!(mode, HeadRequestMode::CreateQ04) {
-        let mut attempt = aos_sandbox_controller_domain::policy_compiler::OriginalRootCreateQ04AttemptV1::new(
+        serve_ordinary_create_q04(
             original, startup, request, controller_uid, controller_gid,
-            controller_uid, cache_signer_uid,
+            cache_signer_uid, source_signer_uid, packet, inputs, verifying_key,
+            deployment_signer_generation, explicit_project, project_key,
+            project_signer_generation,
         );
-        let returned = serve_original_create_q04(
-            &mut attempt, source_signer_uid, controller_gid,
-            packet, inputs, verifying_key, deployment_signer_generation,
-            explicit_project, project_key, project_signer_generation,
-        );
-        if returned.is_err() {
-            // The first cause, original partials, both actual Root writers and
-            // shutdown result are resident before diagnostics or process exit.
-            let _ = writeln!(std::io::stderr().lock(), "aos-sandbox-policy-authorityd: original Q04 cut refused");
-            std::process::exit(1);
-        }
         return Ok(());
     }
+
     if matches!(mode, HeadRequestMode::GitCoverageEnrollment) {
         let mut attempt = aos_sandbox_controller_domain::policy_compiler::RootGitCoverageEnrollmentOwnerV1::new(
             startup, original, request,

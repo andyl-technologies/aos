@@ -27,7 +27,8 @@ use std::path::{Path, PathBuf};
 use aos_sandbox_linux::cgroup::RetainedCgroupAnchor;
 use aos_sandbox_linux::guest_confinement::{require_subject, task_has_subject};
 use aos_sandbox_linux::inherited_fd::duplicate_initial_activation_table;
-use aos_sandbox_linux::pidfd::{PidFd, PidFdProcessIdentity};
+use aos_linux_descriptors::pidfd::PidFd;
+use aos_sandbox_linux::pidfd::PidFdProcessIdentity;
 use aos_sandbox_linux::selinux_policy::VerifiedLiveSelinuxPolicy;
 use aos_systemd_client::{OwnedValue, Value};
 use serde::Deserialize;
@@ -362,7 +363,7 @@ struct ControllerNixOriginals {
 #[allow(dead_code)]
 enum NixAdmissionCause {
     Image(images::ImageObservationErrorV1),
-    Linux(aos_sandbox_linux::Error),
+    Linux(aos_linux_descriptors::Error),
     Policy(aos_sandbox_linux::selinux_policy::PolicyReadbackError),
     Allocation(std::collections::TryReserveError),
 }
@@ -602,7 +603,7 @@ macro_rules! nix_admission_recipe {
                 nix_direct!($mode, NonZeroU32::new(std::process::id()).ok_or(Error::Service))
             ), Service, Linux));
         nix_bind!($mode, $storage, identity,
-            nix_checked!($mode, process.process_identity(), Service, Linux));
+            nix_checked!($mode, aos_sandbox_linux::pidfd::process_identity(&(process)), Service, Linux));
         nix_bind!($mode, $storage, cgroup,
             nix_direct!($mode, super::retain_fixed_cgroup(Path::new($role.cgroup()))));
         nix_root_reference!($mode, $storage, $root_profile);
@@ -904,7 +905,7 @@ impl RetainedNixStartup {
         let gid = if self.role == Role::Controller { self.profile.identities[1] } else { 0 };
         if rustix::process::getuid().as_raw() != uid || rustix::process::geteuid().as_raw() != uid
             || rustix::process::getgid().as_raw() != gid || rustix::process::getegid().as_raw() != gid
-            || self.process.process_identity().map_err(|_| Error::Service)? != self.identity
+            || aos_sandbox_linux::pidfd::process_identity(&(self.process)).map_err(|_| Error::Service)? != self.identity
         {
             return Err(Error::Confinement);
         }

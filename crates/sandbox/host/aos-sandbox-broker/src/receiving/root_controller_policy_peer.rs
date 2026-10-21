@@ -9,8 +9,9 @@ use std::num::NonZeroU32;
 use std::path::Path;
 
 use aos_sandbox_linux::cgroup::RetainedCgroupAnchor;
-use aos_sandbox_linux::pidfd::PidFd;
-use aos_sandbox_linux::unix_stream::{RetainedUnixStream, UnixStreamSubjectChunk};
+use aos_linux_descriptors::pidfd::PidFd;
+use aos_linux_descriptors::unix_stream::RetainedUnixStream;
+use aos_sandbox_linux::unix_stream::UnixStreamSubjectChunk;
 use aos_systemd_client::{OwnedValue, Value};
 
 use super::root_service as service;
@@ -20,7 +21,7 @@ use crate::immutable_image::RetainedImmutableFileV1;
 use crate::profile_data::delivery as client;
 
 mod selected;
-pub use selected::{RootSelectedControllerPeerOriginalV1, RootSelectedControllerCurrentSampleV1,
+pub use selected::{RootControllerCurrentBorrowerV1, RootSelectedControllerPeerOriginalV1, RootSelectedControllerCurrentSampleV1,
     RootSelectedControllerSubjectSampleV1};
 
 const UNIT: &str = "aos-sandboxd.service";
@@ -152,7 +153,7 @@ impl RootControllerPolicyPeerV1<'_> {
 pub fn require_controller_process_identity_data_v1(
     identities: [u32; 4],
     pid: NonZeroU32,
-    info: &aos_sandbox_linux::pidfd::PidFdInfo,
+    info: &aos_linux_descriptors::pidfd::PidFdInfo,
 ) -> Result<(), Error> {
     let credentials = info.credentials().ok_or(Error::Service)?;
     let [uid, gid, _, _] = identities;

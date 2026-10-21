@@ -19,7 +19,7 @@ use aos_sandbox_broker_session_protocol::{
     manifest::{BrokerSessionManifestAudienceV1, BrokerSessionManifestV1},
 };
 use aos_sandbox_model::{ResourceDimension as D, ResourceVector};
-use aos_sandbox_linux::unix_stream::RetainedUnixStream;
+use aos_linux_descriptors::unix_stream::RetainedUnixStream;
 use aos_sandbox_protocol::authenticated_session::{
     historical_checkpoint::HistoricalSessionCheckpointVerifyCaptureV1,
     historical_method::HistoricalStartResourceMethodCaptureV2,
@@ -55,7 +55,7 @@ use crate::policy_compiler::{
     provisioning_current::finality_readonly::RootCreateFinalityReadonlyOriginalV1,
     root_current_writers::{RootCreateStorageCurrentWritersV1, RootCurrentWriterRoleV1},
 };
-use crate::reconciler::ClosedCreateFailurePlanDataV2;
+use aos_sandbox_protocol::domain_ledger::create_failure::ClosedCreateFailurePlanDataV2;
 
 use super::{
     RootExecutionNoApplyFloorOriginalV2, RootExecutionNoApplyHostLeaseOriginalV2,

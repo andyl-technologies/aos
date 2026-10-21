@@ -13,7 +13,7 @@ use aos_sandbox_linux::cgroup::{
     CgroupKillAttemptV1, CgroupKillRefusalV1, CgroupPopulationObservationV1,
 };
 use aos_sandbox_linux::seqpacket::NetworkWorkerNativeCutoffV4;
-use aos_sandbox_linux::pidfd::PidFd;
+use aos_linux_descriptors::pidfd::PidFd;
 
 pub(in crate::worker_runtime) trait WorkerQuiescenceNativeV4 {
     fn alive(
@@ -132,11 +132,11 @@ enum First {
 }
 
 struct PhaseOriginalV4 {
-    alive: Option<aos_sandbox_linux::Result<bool>>,
+    alive: Option<aos_linux_descriptors::Result<bool>>,
     population: CgroupPopulationObservationV1,
     population_result:
         Option<Result<(), aos_sandbox_linux::cgroup::CgroupPopulationObservationRefusalV1>>,
-    clock: Option<aos_sandbox_linux::Result<u64>>,
+    clock: Option<aos_linux_descriptors::Result<u64>>,
     returned: Option<Result<(), NetworkWorkerRuntimeError>>,
     closed: Option<NetworkWorkerRuntimeError>,
     samples: usize,

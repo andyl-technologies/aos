@@ -8,8 +8,8 @@
 use aos_sandbox_model::OperationId;
 use aos_sandbox_protocol::domain_ledger::effect_history::PublicMutationEffectHistoryV1;
 use crate::{Journal, RecordNamespace};
-use super::{ReconcilerError, OperationState, decode_operation, decode_effect, effect_key,
-    recovered_public_operation_resource_v1};
+use crate::journal::historical_observation::HistoricalObservationV1;
+use super::{ReconcilerError, OperationState, decode_operation, decode_effect, effect_key};
 
 /// Reads the exact accepted CreateExecution effect from protected operation custody.
 ///
@@ -22,6 +22,16 @@ use super::{ReconcilerError, OperationState, decode_operation, decode_effect, ef
 /// public method and retained request disagree.
 pub(crate) fn accepted_create_execution_effect_from_journal_v1(
     journal: &Journal,
+    operation_id: OperationId,
+) -> Result<Option<PublicMutationEffectHistoryV1>, ReconcilerError> {
+    accepted_create_execution_effect_from_observation_v2(
+        HistoricalObservationV1::from_journal_v1(journal), operation_id,
+    )
+}
+
+/// Reads the same strict Create graph through its retained historical owner.
+pub(crate) fn accepted_create_execution_effect_from_observation_v2(
+    journal: HistoricalObservationV1<'_>,
     operation_id: OperationId,
 ) -> Result<Option<PublicMutationEffectHistoryV1>, ReconcilerError> {
     accepted_execution_effect_engine_v3(journal, operation_id, AcceptedExecutionFamilyV3::Create)
@@ -40,15 +50,37 @@ pub(crate) fn accepted_execution_effect_from_journal_v3(
     journal: &Journal,
     operation_id: OperationId,
 ) -> Result<Option<PublicMutationEffectHistoryV1>, ReconcilerError> {
-    accepted_execution_effect_engine_v3(journal, operation_id, AcceptedExecutionFamilyV3::Lifecycle)
+    accepted_execution_effect_engine_v3(
+        HistoricalObservationV1::from_journal_v1(journal),
+        operation_id,
+        AcceptedExecutionFamilyV3::Lifecycle,
+    )
 }
 
 /// Reads a pending public Stop only for its separately funded lifecycle owner.
 ///
 /// This delegates the same full protected accepted-graph decoder. It grants
 /// neither executionC18 nor a Source mutation/native effect permission.
-pub(crate) fn accepted_stop_effect_from_journal_v4(journal: &Journal, operation: OperationId)
-    -> Result<Option<PublicMutationEffectHistoryV1>, ReconcilerError> {
+pub(crate) fn accepted_stop_effect_from_journal_v4(
+    journal: &Journal,
+    operation: OperationId,
+) -> Result<Option<PublicMutationEffectHistoryV1>, ReconcilerError> {
+    accepted_execution_effect_engine_v3(
+        HistoricalObservationV1::from_journal_v1(journal),
+        operation,
+        AcceptedExecutionFamilyV3::Stop,
+    )
+}
+
+/// Reads the named accepted Stop through its continuously borrowed owner.
+///
+/// # Errors
+///
+/// Rejects the same corrupt or mismatched accepted execution graph as the Journal entry.
+pub(crate) fn accepted_stop_effect_from_observation_v4(
+    journal: HistoricalObservationV1<'_>,
+    operation: OperationId,
+) -> Result<Option<PublicMutationEffectHistoryV1>, ReconcilerError> {
     accepted_execution_effect_engine_v3(journal, operation, AcceptedExecutionFamilyV3::Stop)
 }
 
@@ -60,11 +92,13 @@ enum AcceptedExecutionFamilyV3 {
 }
 
 fn accepted_execution_effect_engine_v3(
-    journal: &Journal,
+    journal: HistoricalObservationV1<'_>,
     operation_id: OperationId,
     family: AcceptedExecutionFamilyV3,
 ) -> Result<Option<PublicMutationEffectHistoryV1>, ReconcilerError> {
-    if recovered_public_operation_resource_v1(journal, operation_id)?.is_none() {
+    if super::recovered_public_operation_resource_from_observation_v2(journal, operation_id)?
+        .is_none()
+    {
         return Ok(None);
     }
     let bytes = journal
@@ -91,10 +125,17 @@ fn accepted_execution_effect_engine_v3(
     let method = effect.plan().public_mutation_method();
     let accepted = match family {
         AcceptedExecutionFamilyV3::Create => method == Some(Method::CreateExecution),
-        AcceptedExecutionFamilyV3::Lifecycle => matches!(method,
-            Some(Method::CreateExecution | Method::ControlExecution | Method::CancelExecution)),
-        AcceptedExecutionFamilyV3::Stop => method == Some(Method::StopSandbox)
-            && matches!(operation.state(), OperationState::Accepted | OperationState::Applying),
+        AcceptedExecutionFamilyV3::Lifecycle => matches!(
+            method,
+            Some(Method::CreateExecution | Method::ControlExecution | Method::CancelExecution)
+        ),
+        AcceptedExecutionFamilyV3::Stop => {
+            method == Some(Method::StopSandbox)
+                && matches!(
+                    operation.state(),
+                    OperationState::Accepted | OperationState::Applying
+                )
+        }
     };
     if !accepted {
         return Ok(None);
@@ -119,7 +160,10 @@ fn accepted_execution_effect_engine_v3(
             "accepted Create request has another method",
         ));
     }
-    if matches!(family, AcceptedExecutionFamilyV3::Lifecycle | AcceptedExecutionFamilyV3::Stop) {
+    if matches!(
+        family,
+        AcceptedExecutionFamilyV3::Lifecycle | AcceptedExecutionFamilyV3::Stop
+    ) {
         // The genuine C18 entry pays before this sole decoder. Recheck an
         // already accepted request before any new Source/Host/native effect;
         // accepted history may predate the target's Delete tombstone.
@@ -145,22 +189,9 @@ pub(crate) fn accepted_public_effect_models_receiving_bytes_v4(
 pub(crate) fn accepted_public_effect_models_receiving_bytes_retaining_v4(
     controller: &Journal,
 ) -> Result<usize, crate::controller_resource_reservation::ResourceReservationErrorV1> {
-    use aos_sandbox_protocol::domain_ledger::effect_history::EffectLedgerRecord;
-    use aos_sandbox_protocol::domain_ledger::operation::MAXIMUM_EFFECTS;
-    use aos_sandbox_api::aos::sandbox::v1::Feature;
-    use crate::controller_resource_reservation::ResourceReservationErrorV1;
-    use std::mem::size_of;
-
+    use crate::controller_resource_reservation::ResourceReservationErrorV1 as Error;
     let encoded = usize::try_from(controller.held_materialized_encoding_bytes_v1()?)
-        .map_err(|_| ResourceReservationErrorV1::Conflict)?;
-    let bytes = (|| {
-        let effects = MAXIMUM_EFFECTS.checked_mul(size_of::<EffectLedgerRecord>())?;
-        let atom = size_of::<buffa::UnknownField>()
-            .checked_add(size_of::<Feature>())?
-            .checked_add(size_of::<Vec<u8>>())?;
-        encoded.checked_mul(atom)?.checked_mul(8)?.checked_add(effects)?
-            .checked_add(aos_sandbox_protocol::domain_ledger::delete_batch::new_use::
-                public_mutation_new_use_receiving_bytes_v2())
-    })();
-    bytes.ok_or(ResourceReservationErrorV1::Conflict)
+        .map_err(|_| Error::Conflict)?;
+    aos_sandbox_protocol::domain_ledger::create_failure::accepted_effect_models_receiving_bytes_v4(encoded)
+        .ok_or(Error::Conflict)
 }

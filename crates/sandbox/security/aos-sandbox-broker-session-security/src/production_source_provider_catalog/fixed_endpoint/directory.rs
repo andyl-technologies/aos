@@ -12,15 +12,15 @@ pub(super) struct DirectoryOriginalV4 {
     pub(super) mkdir: Option<Result<(), rustix::io::Errno>>,
     pub(super) descriptor: Option<Result<OwnedFd, rustix::io::Errno>>,
     pub(super) metadata: Option<Result<Stat, rustix::io::Errno>>,
-    pub(super) mount: Option<Result<MountId, aos_sandbox_linux::Error>>,
+    pub(super) mount: Option<Result<MountId, aos_linux_descriptors::Error>>,
     pub(super) writable: Option<Result<(), rustix::io::Errno>>,
     pub(super) final_mode: Option<Result<(), rustix::io::Errno>>,
     pub(super) sync: Option<Result<(), rustix::io::Errno>>,
     pub(super) named: Option<Result<OwnedFd, rustix::io::Errno>>,
     pub(super) named_metadata: Option<Result<Stat, rustix::io::Errno>>,
-    pub(super) named_mount: Option<Result<MountId, aos_sandbox_linux::Error>>,
+    pub(super) named_mount: Option<Result<MountId, aos_linux_descriptors::Error>>,
     pub(super) held_after: Option<Result<Stat, rustix::io::Errno>>,
-    pub(super) mount_after: Option<Result<MountId, aos_sandbox_linux::Error>>,
+    pub(super) mount_after: Option<Result<MountId, aos_linux_descriptors::Error>>,
     pub(super) post: Option<InstallResult<()>>,
 }
 

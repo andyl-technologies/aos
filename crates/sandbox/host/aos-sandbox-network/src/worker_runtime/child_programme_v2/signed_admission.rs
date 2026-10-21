@@ -27,7 +27,7 @@ pub(super) enum PreparationClockErrorV2 {
     #[error("the actual P clock differs from its original native boot")]
     Changed,
     #[error(transparent)]
-    Native(aos_sandbox_linux::Error),
+    Native(aos_linux_descriptors::Error),
 }
 
 impl KernelPairedClockErrorV1 for PreparationClockErrorV2 {
@@ -35,7 +35,7 @@ impl KernelPairedClockErrorV1 for PreparationClockErrorV2 {
         Self::Changed
     }
 
-    fn kernel(cause: aos_sandbox_linux::Error) -> Self {
+    fn kernel(cause: aos_linux_descriptors::Error) -> Self {
         Self::Native(cause)
     }
 }

@@ -17,16 +17,17 @@ use aos_sandbox_protocol::domain_ledger::{
         provisioning_parent_key_v1, validate_provisioning_resource_links_v1},
 };
 use aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1;
-use crate::journal::{Journal, JournalError, RecordNamespace};
-use crate::controller_service::public_projection::PublicProjectionStoreV1;
+use crate::journal::{JournalError, RecordNamespace};
+use crate::journal::historical_observation::HistoricalObservationV1;
+use crate::controller_service::public_projection::get_from_observation_v2;
 use aos_sandbox_protocol::public_api::projection::{PublicProjectionKindV1, PublicProjectionRecordV1};
-use crate::publication::{AuthorityPublicationStore, CurrentAuthorityPublicationV1,
-    validate_durable_effect_attempt, validate_publication_namespace};
-use crate::runtime_authority::{RuntimeAuthorityBindingV1, RuntimeAuthorityStore, RuntimeAuthorityLimits};
+use crate::publication::{CurrentAuthorityPublicationV1,
+    validate_durable_effect_attempt_observed_v2, validate_publication_observed_v2};
+use crate::runtime_authority::{RuntimeAuthorityBindingV1, RuntimeAuthorityLimits};
 use crate::cold_launch_publication::completion::{CreateStoppedPreAckSubjectsV1,
     require_create_stopped_pre_ack_v1, CreateStoppedEvidenceSubjectsV2,
     CreateStoppedHistoricalSubjectsV2, require_create_stopped_historical_v2};
-use crate::policy_compiler::create_storage_current::controller_readonly::native_read::RootCreateStoppedHistoricalOriginalV2;
+use aos_sandbox_policy::native::RootCreateStoppedHistoricalOriginalV2;
 use crate::lifecycle::{LifecycleOperationV1, LifecycleRecordDigestV1};
 use aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodOutcomeV1;
 use aos_sandbox_protocol::storage_inventory::ValidatedStorageInventory;
@@ -50,13 +51,48 @@ pub(crate) struct CreateFinalityControllerOriginalV1 {
 }
 
 impl CreateFinalityControllerOriginalV1 {
+    /// Prices new same-owner interfaces before any Controller candidate grows.
+    pub(crate) fn observation_control_bytes_v2() -> Option<usize> {
+        Self::common_observation_control_bytes_v2()?
+            .checked_add(HistoricalObservationV1::receiving_control_bytes_v1()?)?
+            .checked_add(crate::controller_service::public_projection::projection_observation_control_bytes_v2()?)?
+            .checked_add(std::mem::size_of::<Option<usize>>().checked_mul(3)?)
+    }
+
+    /// Prices the actual historical branch, which does not read a current projection.
+    pub(crate) fn historical_observation_control_bytes_v2() -> Option<usize> {
+        Self::common_observation_control_bytes_v2()?
+            .checked_add(std::mem::size_of::<&RootCreateStoppedHistoricalOriginalV2>().checked_mul(3)?)?
+            .checked_add(std::mem::size_of::<Result<(), aos_sandbox_policy::native::RootReadonlyErrorV1>>().checked_mul(3)?)?
+            .checked_add(std::mem::size_of::<(aos_sandbox_policy::native::RootReadonlyErrorV1, JournalError)>().checked_mul(3)?)?
+            .checked_add(std::mem::size_of::<Result<(), JournalError>>().checked_mul(3)?)?
+            .checked_add(std::mem::size_of::<Option<usize>>().checked_mul(3)?)
+    }
+
+    fn common_observation_control_bytes_v2() -> Option<usize> {
+        let interfaces = std::mem::size_of::<HistoricalObservationV1<'_>>().checked_mul(3)?
+            .checked_add(std::mem::size_of::<(
+                &mut Self, HistoricalObservationV1<'_>, CreateStoppedLifecycleReceiptDataV1<'_>,
+                OperationId, &[u8], Option<&RootCreateStoppedHistoricalOriginalV2>,
+            )>().checked_mul(3)?)?
+            .checked_add(std::mem::size_of::<Result<(), Cause>>().checked_mul(3)?)?
+            .checked_add(std::mem::size_of::<Result<(), JournalError>>().checked_mul(3)?)?;
+        interfaces
+            .checked_add(crate::publication::current_observation_control_bytes_v2()?)?
+            .checked_add(crate::publication::gate_observation_control_bytes_v2()?)?
+            .checked_add(crate::publication::effect_observation_control_bytes_v2()?)?
+            .checked_add(crate::runtime_authority::current_observation_control_bytes_v2()?)?
+            .checked_add(crate::reconciler::ownership_gate_observation_control_bytes_v2()?)?
+            .checked_add(std::mem::size_of::<Option<usize>>().checked_mul(3)?)
+    }
+
     pub(crate) fn new() -> Self {
         Self { parent: None, child: None, parent_effect: None, child_effect: None,
             accepted: None, request: None, resources: None, parent_projection: None, gate: None,
             binding: None, publication: None, returned: None, reentered: false }
     }
 
-    pub(crate) fn observe_once_v1(&mut self, controller: &mut Journal,
+    pub(crate) fn observe_once_v1(&mut self, controller: HistoricalObservationV1<'_>,
         receipt: CreateStoppedLifecycleReceiptDataV1<'_>, expected_parent: OperationId,
         final_receipt: &[u8],
     ) -> Result<(), JournalError> {
@@ -69,7 +105,7 @@ impl CreateFinalityControllerOriginalV1 {
     }
 
     /// Selects the same canonical models after a genuine historical native proof.
-    pub(crate) fn observe_historical_once_v2(&mut self, controller: &mut Journal,
+    pub(crate) fn observe_historical_once_v2(&mut self, controller: HistoricalObservationV1<'_>,
         receipt: CreateStoppedLifecycleReceiptDataV1<'_>, expected_parent: OperationId,
         final_receipt: &[u8], historical: &RootCreateStoppedHistoricalOriginalV2,
     ) -> Result<(), JournalError> {
@@ -82,13 +118,13 @@ impl CreateFinalityControllerOriginalV1 {
         self.require_complete_v1()
     }
 
-    fn observe_inner_v1(&mut self, controller: &mut Journal,
+    fn observe_inner_v1(&mut self, controller: HistoricalObservationV1<'_>,
         receipt: CreateStoppedLifecycleReceiptDataV1<'_>, expected_parent: OperationId,
         final_receipt: &[u8], historical: Option<&RootCreateStoppedHistoricalOriginalV2>,
     ) -> Result<(), Cause> {
-        validate_publication_namespace(controller)?;
+        validate_publication_observed_v2(controller)?;
         validate_provisioning_resource_links_v1(
-            controller.historical_read_view_v1().materialized_state_v1())?;
+            controller.state_v1())?;
         if receipt.operation_v1() != expected_parent { return Err(JournalError::ProtectedBoundary.into()); }
         self.parent = Some(operation_v1(controller, expected_parent));
         let parent = value(&self.parent)?;
@@ -115,7 +151,7 @@ impl CreateFinalityControllerOriginalV1 {
             let raw = controller.get(RecordNamespace::DesiredState, &key).ok_or(JournalError::ProtectedBoundary)?;
             let (_, records) = decode_provisioning_resource_row_v1(&key, raw)?
                 .ok_or(JournalError::ProtectedBoundary)?;
-            records.require_companions_v1(controller.historical_read_view_v1().materialized_state_v1())?;
+            records.require_companions_v1(controller.state_v1())?;
             Ok(records)
         })());
         let sandbox = value(&self.resources)?.fields_v1().sandbox;
@@ -125,25 +161,26 @@ impl CreateFinalityControllerOriginalV1 {
                 .ok_or(JournalError::ProtectedBoundary)?;
             let effect = controller.get(RecordNamespace::Effect, &effect_key(expected_parent, 0))
                 .ok_or(JournalError::ProtectedBoundary)?;
-            historical.require_rows_v2(expected_parent, fields.project, fields.sandbox, operation, effect)?;
+            historical.require_rows_v2(expected_parent, fields.project, fields.sandbox, operation, effect)
+                .map_err(crate::journal::historical_observation::root_readonly_error_v1)?;
         } else {
-            self.parent_projection = Some(PublicProjectionStoreV1::new(controller)
-                .get(PublicProjectionKindV1::Sandbox, *sandbox.as_bytes())
+            self.parent_projection = Some(get_from_observation_v2(controller,
+                PublicProjectionKindV1::Sandbox, *sandbox.as_bytes())
                 .map_err(|cause| Box::new(cause) as Cause)
                 .and_then(|projection| projection.ok_or_else(|| Box::new(JournalError::ProtectedBoundary) as Cause)));
             value(&self.parent_projection)?;
         }
-        self.gate = Some(crate::reconciler::validated_ownership_gate_from_journal_v1(controller, publication_operation)
+        self.gate = Some(crate::reconciler::validated_ownership_gate_from_observation_v2(controller, publication_operation)
             .map_err(|cause| Box::new(cause) as Cause)
             .and_then(|gate| gate.ok_or_else(|| Box::new(JournalError::ProtectedBoundary) as Cause)));
         let OwnershipGateStatusV1::Activated { publication_digest, .. } = value(&self.gate)?
         else { return Err(JournalError::ProtectedBoundary.into()); };
         let activated = *publication_digest;
         self.binding = Some((|| {
-            let store = RuntimeAuthorityStore::load(controller, RuntimeAuthorityLimits::default())?;
-            store.current(sandbox)?.ok_or_else(|| Box::new(JournalError::ProtectedBoundary) as Cause)
+            crate::runtime_authority::current_observed_v2(
+                controller, RuntimeAuthorityLimits::default(), sandbox)?.ok_or_else(|| Box::new(JournalError::ProtectedBoundary) as Cause)
         })());
-        self.publication = Some(AuthorityPublicationStore::new(controller).current(sandbox)
+        self.publication = Some(crate::publication::current_observed_v2(controller, sandbox)
             .map_err(|cause| Box::new(cause) as Cause)
             .and_then(|publication| publication.ok_or_else(|| Box::new(JournalError::ProtectedBoundary) as Cause)));
         self.child_effect = Some(effect_v1(controller, publication_operation));
@@ -153,7 +190,7 @@ impl CreateFinalityControllerOriginalV1 {
         let dispatch = effect.dispatch().ok_or(JournalError::ProtectedBoundary)?;
         // The dispatch binds the effect authority, while the runtime binding
         // remains independently joined by the complete pre-ACK comparison.
-        validate_durable_effect_attempt(controller, sandbox, activated, authority.digest(),
+        validate_durable_effect_attempt_observed_v2(controller, sandbox, activated, authority.digest(),
             authority.source_draft_digest(), authority.audience(), authority.template_digest(),
             effect.plan().request(), dispatch, None)?;
         let EffectState::Applied { receipt, .. } = effect.state()
@@ -162,7 +199,7 @@ impl CreateFinalityControllerOriginalV1 {
         Ok(())
     }
 
-    pub(crate) fn compare_data_v1(&self, controller: &Journal,
+    pub(crate) fn compare_data_v1(&self, controller: HistoricalObservationV1<'_>,
         source: &LifecycleOperationV1, source_record: LifecycleRecordDigestV1,
         apply: &AuthenticatedBrokerMethodOutcomeV1,
         apply_response: &aos_sandbox_api::aos::sandbox::local::v1::StorageResult,
@@ -195,7 +232,7 @@ impl CreateFinalityControllerOriginalV1 {
     ///
     /// The enclosing Host owner separately authenticates both exact signed
     /// historical exchanges and the full Source Completing-to-Terminal chain.
-    pub(crate) fn compare_historical_once_v2(&self, controller: &Journal,
+    pub(crate) fn compare_historical_once_v2(&self, controller: HistoricalObservationV1<'_>,
         historical: &RootCreateStoppedHistoricalOriginalV2,
         source: &crate::lifecycle::LifecycleOperationV1,
         source_record: crate::lifecycle::LifecycleRecordDigestV1,
@@ -250,7 +287,7 @@ impl CreateFinalityControllerOriginalV1 {
     /// Recovery does not supply an adopted receipt. The canonical historical
     /// Applied bytes are first retained by this same owner; their fixed copy
     /// permits the existing mutable selector to consume them without an alias.
-    pub(crate) fn observe_recovery_once_v1(&mut self, controller: &mut Journal,
+    pub(crate) fn observe_recovery_once_v1(&mut self, controller: HistoricalObservationV1<'_>,
         parent: OperationId, lane: [u8; 16],
     ) -> Result<(), JournalError> {
         if self.returned.is_some() || self.parent_effect.is_some() {
@@ -316,12 +353,12 @@ fn cause<T>(result: &Option<Result<T, Cause>>) -> Option<&(dyn Error + 'static)>
     result.as_ref()?.as_ref().err().map(|cause| cause.as_ref())
 }
 
-fn operation_v1(controller: &Journal, operation: OperationId) -> Result<OperationRecord, Cause> {
+fn operation_v1(controller: HistoricalObservationV1<'_>, operation: OperationId) -> Result<OperationRecord, Cause> {
     Ok(decode_operation(controller.get(RecordNamespace::Operation, operation.as_bytes())
         .ok_or(JournalError::ProtectedBoundary)?)?)
 }
 
-fn effect_v1(controller: &Journal, operation: OperationId) -> Result<EffectLedgerRecord, Cause> {
+fn effect_v1(controller: HistoricalObservationV1<'_>, operation: OperationId) -> Result<EffectLedgerRecord, Cause> {
     Ok(decode_effect(controller.get(RecordNamespace::Effect, &effect_key(operation, 0))
         .ok_or(JournalError::ProtectedBoundary)?)?)
 }

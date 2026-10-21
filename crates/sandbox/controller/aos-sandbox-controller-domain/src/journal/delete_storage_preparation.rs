@@ -91,7 +91,7 @@ pub(crate) struct DeleteStorageSessionNativeOriginalV3 {
     before_result: Option<Result<(), JournalError>>,
     association: Option<Result<(), JournalError>>,
     socket: Option<Result<StorageSeqpacketSessionOriginV1, RecordBindingError>>,
-    socket_native: Option<Result<u64, aos_sandbox_linux::Error>>,
+    socket_native: Option<Result<u64, aos_linux_descriptors::Error>>,
     after: ProtectedJournalCurrentnessOriginalsV1,
     after_result: Option<Result<(), JournalError>>,
     metadata: Option<std::io::Result<std::fs::Metadata>>,

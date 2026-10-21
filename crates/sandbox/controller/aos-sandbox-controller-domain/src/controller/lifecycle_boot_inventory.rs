@@ -37,7 +37,7 @@ where
         storage: &crate::DurableStorageResourceInventorySnapshotV1,
         storage_inventory: &crate::lifecycle::LifecycleAuthenticatedStorageInventorySuccessorV1,
         network: &crate::lifecycle::LifecycleAuthenticatedBrokerDomainInventorySuccessorV1,
-        cache: &mut crate::cache_residency::CacheResidencyProtectedOwnerV1,
+        cache: &mut aos_sandbox_cache::CacheResidencyProtectedOwnerV1,
         transfer: &mut crate::local_inventory::ProtectedMultiNodeAuthorityOwnerV1,
         transfer_inventory: &crate::lifecycle::LifecycleAuthenticatedTransferInventoryV1,
     ) -> Result<
@@ -76,7 +76,7 @@ where
         storage: &crate::DurableStorageResourceInventorySnapshotV1,
         storage_inventory: &crate::lifecycle::LifecycleAuthenticatedStorageInventoryBootstrapV1,
         network: &crate::lifecycle::LifecycleAuthenticatedBrokerDomainInventoryBootstrapV1,
-        cache: &mut crate::cache_residency::CacheResidencyProtectedOwnerV1,
+        cache: &mut aos_sandbox_cache::CacheResidencyProtectedOwnerV1,
         transfer: &mut crate::local_inventory::ProtectedMultiNodeAuthorityOwnerV1,
         transfer_inventory: &crate::lifecycle::LifecycleAuthenticatedTransferInventoryV1,
     ) -> Result<
@@ -85,7 +85,7 @@ where
     > {
         use crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority;
 
-        let boot_before = aos_sandbox_linux::boot::KernelBootId::current()
+        let boot_before = aos_linux_descriptors::boot::KernelBootId::current()
             .map_err(|_| StaleAuthority)?
             .into_bytes();
         if boot_before != challenge.host_boot() {
@@ -124,7 +124,7 @@ where
         transfer
             .recheck_lifecycle_transfer_inventory(transfer_inventory)
             .map_err(|_| StaleAuthority)?;
-        let boot_after = aos_sandbox_linux::boot::KernelBootId::current()
+        let boot_after = aos_linux_descriptors::boot::KernelBootId::current()
             .map_err(|_| StaleAuthority)?
             .into_bytes();
         if boot_before != boot_after {
@@ -160,7 +160,7 @@ where
         storage: &crate::DurableStorageResourceInventorySnapshotV1,
         storage_inventory: &crate::lifecycle::LifecycleAuthenticatedStorageInventoryBootstrapV1,
         network: &crate::lifecycle::LifecycleAuthenticatedBrokerDomainInventoryBootstrapV1,
-        cache: &mut crate::cache_residency::CacheResidencyProtectedOwnerV1,
+        cache: &mut aos_sandbox_cache::CacheResidencyProtectedOwnerV1,
         transfer: &mut crate::local_inventory::ProtectedMultiNodeAuthorityOwnerV1,
         transfer_inventory: &crate::lifecycle::LifecycleAuthenticatedTransferInventoryV1,
         transaction_id: [u8; 16],
@@ -222,7 +222,7 @@ where
         storage: &crate::DurableStorageResourceInventorySnapshotV1,
         storage_inventory: &crate::lifecycle::LifecycleAuthenticatedStorageInventoryBootstrapV1,
         network: &crate::lifecycle::LifecycleAuthenticatedBrokerDomainInventoryBootstrapV1,
-        cache: &mut crate::cache_residency::CacheResidencyProtectedOwnerV1,
+        cache: &mut aos_sandbox_cache::CacheResidencyProtectedOwnerV1,
         transfer: &mut crate::local_inventory::ProtectedMultiNodeAuthorityOwnerV1,
         transfer_inventory: &crate::lifecycle::LifecycleAuthenticatedTransferInventoryV1,
         transaction_id: [u8; 16],
@@ -295,14 +295,14 @@ where
         storage: &'current crate::DurableStorageResourceInventorySnapshotV1,
         storage_inventory: &'current crate::lifecycle::LifecycleAuthenticatedStorageInventorySuccessorV1,
         network: &'current crate::lifecycle::LifecycleAuthenticatedBrokerDomainInventorySuccessorV1,
-        cache: &'current mut crate::cache_residency::CacheResidencyProtectedOwnerV1,
+        cache: &'current mut aos_sandbox_cache::CacheResidencyProtectedOwnerV1,
         transfer: &'current mut crate::local_inventory::ProtectedMultiNodeAuthorityOwnerV1,
         transfer_inventory: &'current crate::lifecycle::LifecycleAuthenticatedTransferInventoryV1,
     ) -> Result<
         crate::lifecycle::CurrentLifecycleBootDomainInventoriesV1<'current>,
         crate::lifecycle::LifecyclePhase6ErrorV1,
     > {
-        let boot_before = aos_sandbox_linux::boot::KernelBootId::current()
+        let boot_before = aos_linux_descriptors::boot::KernelBootId::current()
             .map_err(|_| crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority)?
             .into_bytes();
         let runtime_inventory = runtime.initial();
@@ -346,10 +346,10 @@ where
         transfer
             .recheck_lifecycle_transfer_inventory(transfer_inventory)
             .map_err(|_| crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority)?;
-        let boot_after = aos_sandbox_linux::boot::KernelBootId::current()
+        let boot_after = aos_linux_descriptors::boot::KernelBootId::current()
             .map_err(|_| crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority)?
             .into_bytes();
-        let boot_final = aos_sandbox_linux::boot::KernelBootId::current()
+        let boot_final = aos_linux_descriptors::boot::KernelBootId::current()
             .map_err(|_| crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority)?
             .into_bytes();
         runtime_inventory.recheck_boot(boot_final)?;
@@ -424,7 +424,7 @@ where
         let sample = clock
             .sample()
             .map_err(|_| crate::lifecycle::LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
-        let current_boot = aos_sandbox_linux::boot::KernelBootId::current()
+        let current_boot = aos_linux_descriptors::boot::KernelBootId::current()
             .map_err(|_| crate::lifecycle::LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?
             .into_bytes();
         if sample.host_boot_id() != current_boot || sample.wall_seconds() <= 0 {

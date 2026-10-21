@@ -93,7 +93,7 @@ pub(crate) enum OriginalHeldMeasurementErrorV3 {
 /// Parent-retained original carrier; short trust/subject loans never self-reference.
 pub(crate) struct OriginalHeldCarrierV1 {
     pub(crate) child: Option<aos_sandbox_linux::seqpacket::SeqpacketSocket>,
-    pub(crate) execution: Option<aos_sandbox_linux::pidfd::PidFdInfo>,
+    pub(crate) execution: Option<aos_linux_descriptors::pidfd::PidFdInfo>,
     pub(crate) pending_record: Option<aos_sandbox_linux::seqpacket::ReceivedRecord>,
     pub(crate) records: [Option<OriginalHeldRecordV1>; 2],
     pub(crate) root: Option<aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1>,
@@ -113,7 +113,7 @@ pub(crate) struct OriginalHeldCarrierV1 {
 #[derive(Clone, Copy)]
 pub(super) struct OriginalHeldCarrierReadV1<'owner> {
     pub(super) child: Option<&'owner aos_sandbox_linux::seqpacket::SeqpacketSocket>,
-    pub(super) execution: Option<aos_sandbox_linux::pidfd::PidFdInfo>,
+    pub(super) execution: Option<aos_linux_descriptors::pidfd::PidFdInfo>,
     pub(super) records: &'owner [Option<OriginalHeldRecordV1>; 2],
 }
 

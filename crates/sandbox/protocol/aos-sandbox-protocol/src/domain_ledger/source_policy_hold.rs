@@ -18,6 +18,9 @@ use aos_sandbox_model::{ObjectDigest, OperationId, SandboxId};
 use sha2::{Digest as _, Sha256};
 use super::ProtectedHistoryDataErrorV1;
 
+/// Names the existing saved held/released Source custody row.
+pub const KEY: &[u8] = b"\0aos-source-domain-policy-hold-v1\0";
+
 const MAGIC: &[u8; 8] = b"AOSSDH01";
 const V8_PENDING_MAGIC: &[u8; 8] = b"AOSSDP08";
 const CHECKSUM_DOMAIN: &[u8] = b"aos.sandbox.source-domain-policy-hold.v1\0";

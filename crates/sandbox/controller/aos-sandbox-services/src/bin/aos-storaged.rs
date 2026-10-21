@@ -385,8 +385,8 @@ impl From<StorageRuntimeError> for StorageStartupRunErrorV3 {
     }
 }
 
-impl From<aos_sandbox_linux::Error> for StorageStartupRunErrorV3 {
-    fn from(error: aos_sandbox_linux::Error) -> Self {
+impl From<aos_linux_descriptors::Error> for StorageStartupRunErrorV3 {
+    fn from(error: aos_linux_descriptors::Error) -> Self {
         Self::Service(error.into())
     }
 }

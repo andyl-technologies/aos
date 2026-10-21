@@ -4,7 +4,11 @@
 //! posts remain on the same paid D flight. This comparison creates no Source
 //! pending proof, six-owner conjunction, accepted floor or lifecycle grant.
 
+use aos_sandbox_policy::native::{RootFinalityReadOriginalV1 as Target, RootFinalityReadKindV1 as Kind};
+use crate::journal::historical_observation::root_readonly_error_v1 as project_read;
 mod broker_trust;
+use aos_sandbox_protocol::domain_ledger::readonly::FixedJournalReadbackDataV1 as RootFixedNativeReadbackV1;
+
 use broker_trust::RootDeleteBrokerTrustOriginalV2;
 
 mod fresh;
@@ -25,7 +29,6 @@ use crate::journal::JournalError;
 use crate::normal_root::{
     NormalRootStartupErrorV1, RootControllerChunkSubjectSampleV1, RootPolicyAcceptedFlightV1,
 };
-use crate::policy_compiler::create_storage_current::controller_readonly::native_read::{RootFixedNativeReadOriginalsV1, RootFixedCompletedReadDataV2, RootFixedNativeReadbackV1};
 use crate::policy_compiler::{
     RetainedKernelPairedClockAttemptV1, root_subject_chunk::RootSubjectChunkReceivingV1,
 };
@@ -130,8 +133,7 @@ pub(crate) struct RootDeleteControllerCurrentOriginalV1 {
     clock_after_original: RetainedKernelPairedClockAttemptV1,
     clock_after: Option<Result<RawPairedClockSample, SourceGenesisErrorV1>>,
     clock_after_binding: Option<Result<(), JournalError>>,
-    reader: Option<RootFixedNativeReadOriginalsV1>,
-    completed_reader: Option<RootFixedCompletedReadDataV2>,
+    reader: Option<Target>,
     retirement: Option<Result<(), JournalError>>,
     capture: Option<Result<(), JournalError>>,
     native_demand: Option<Result<ResourceVector, JournalError>>,
@@ -173,8 +175,7 @@ impl Default for RootDeleteControllerCurrentOriginalV1 {
             clock_after_original: Default::default(),
             clock_after: None,
             clock_after_binding: None,
-            reader: Some(RootFixedNativeReadOriginalsV1::controller_current_v1()),
-            completed_reader: None,
+            reader: Some(Target::new(Kind::Controller)),
             retirement: None,
             capture: None,
             native_demand: None,
@@ -261,8 +262,8 @@ impl RootDeleteControllerCurrentOriginalV1 {
         -> Result<aos_sandbox_protocol::domain_ledger::readonly::HistoricalLedgerRowsDataV2<'_>, JournalError> {
         self.retained_receiving_demand_v1().map_err(|_| JournalError::ProtectedBoundary)?;
         self.initial_session_cuts_v2().map_err(|_| JournalError::ProtectedBoundary)?;
-        self.completed_reader.as_ref().ok_or(JournalError::ProtectedBoundary)?
-            .historical_rows_data_v2()
+        self.reader.as_ref().ok_or(JournalError::ProtectedBoundary)?
+            .completed_historical_rows_data_v2().map_err(project_read)
     }
 
     pub(in crate::policy_compiler::delete_root) fn current_assignment_state_v2(&self)
@@ -272,19 +273,17 @@ impl RootDeleteControllerCurrentOriginalV1 {
     }
 
     fn readback_v2(&self) -> Result<RootFixedNativeReadbackV1<'_>, JournalError> {
-        match &self.completed_reader {
-            Some(data) => data.readback_v2(),
-            None => self.reader.as_ref().ok_or(JournalError::ProtectedBoundary)?.terminal_native_v1(),
+        let target = self.reader.as_ref().ok_or(JournalError::ProtectedBoundary)?;
+        if target.native_prefixes_retired_data_v2() {
+            target.completed_readback_v2().map_err(project_read)
+        } else {
+            target.terminal_native_v1().map_err(project_read)
         }
     }
 
     fn retire_reader_once_v2(&mut self) -> Result<(), JournalError> {
-        if self.completed_reader.is_some() { return Err(JournalError::ProtectedBoundary); }
-        let reader = self.reader.take().ok_or(JournalError::ProtectedBoundary)?;
-        match reader.into_completed_data_v2() {
-            Ok(data) => { self.completed_reader = Some(data); Ok(()) }
-            Err(reader) => { self.reader = Some(reader); Err(JournalError::ProtectedBoundary) }
-        }
+        self.reader.as_mut().ok_or(JournalError::ProtectedBoundary)?
+            .retire_completed_reader_once_v2().map_err(project_read)
     }
 
     fn admit(
@@ -398,13 +397,15 @@ impl RootDeleteControllerCurrentOriginalV1 {
             .fields()
             .profile
             .identities[0];
+        self.reader.as_mut().ok_or(RootDeleteErrorV1::Original)?
+            .construct_reader_once_v1().map_err(|_| RootDeleteErrorV1::Original)?;
         self.reader.as_mut().ok_or(RootDeleteErrorV1::Original)?.capture_once(uid);
-        self.capture = Some(self.reader.as_ref().ok_or(RootDeleteErrorV1::Original)?.captured_extent_v1().map(|_| ()));
+        self.capture = Some(self.reader.as_ref().ok_or(RootDeleteErrorV1::Original)?.captured_prefix_native_bytes_v1().map_err(project_read).map(|_| ()));
         if !matches!(self.capture, Some(Ok(()))) {
             self.first = Some(First::Capture);
             return Err(RootDeleteErrorV1::Opening);
         }
-        self.native_demand = Some(self.reader.as_ref().ok_or(RootDeleteErrorV1::Original)?.replay_demand_v1());
+        self.native_demand = Some(self.reader.as_ref().ok_or(RootDeleteErrorV1::Original)?.replay_demand_v1().map_err(project_read));
         if !matches!(self.native_demand, Some(Ok(_))) {
             self.first = Some(First::NativeDemand);
             return Err(RootDeleteErrorV1::Opening);
@@ -415,7 +416,7 @@ impl RootDeleteControllerCurrentOriginalV1 {
             RootDeleteControllerAdmissionPhaseV1::Native,
         )?;
         self.reader.as_mut().ok_or(RootDeleteErrorV1::Original)?.audit_once();
-        self.semantic_demand = Some(self.reader.as_ref().ok_or(RootDeleteErrorV1::Original)?.additional_semantic_demand_v1());
+        self.semantic_demand = Some(self.reader.as_ref().ok_or(RootDeleteErrorV1::Original)?.additional_semantic_demand_v1().map_err(project_read));
         if !matches!(self.semantic_demand, Some(Ok(_))) {
             self.first = Some(First::SemanticDemand);
             return Err(RootDeleteErrorV1::Opening);
@@ -426,12 +427,12 @@ impl RootDeleteControllerCurrentOriginalV1 {
             RootDeleteControllerAdmissionPhaseV1::Semantic,
         )?;
         self.reader.as_mut().ok_or(RootDeleteErrorV1::Original)?.replay_once();
-        if self.reader.as_ref().and_then(RootFixedNativeReadOriginalsV1::failure).is_some() {
+        if self.reader.as_ref().and_then(Target::failure).is_some() {
             self.first = Some(First::Replay);
             return Err(RootDeleteErrorV1::Opening);
         }
         self.compared = Some((|| {
-            let actual = self.reader.as_ref().ok_or(JournalError::ProtectedBoundary)?.replay_native_v1()?;
+            let actual = self.reader.as_ref().ok_or(JournalError::ProtectedBoundary)?.replay_native_v1().map_err(project_read)?;
             if (actual.next, actual.end) != (frame.next, frame.end) {
                 return Err(ComparisonError::Changed);
             }
@@ -509,9 +510,9 @@ impl RootDeleteControllerCurrentOriginalV1 {
             .and_then(|bytes| bytes.checked_add(pair.checked_mul(2)?))
             .and_then(|bytes| u64::try_from(bytes).ok())
             .ok_or_else(invalid)?;
-        let fixed = RootFixedNativeReadOriginalsV1::controller_current_fixed_demand_v1()
+        let fixed = super::reader::fixed_demand_v1(Kind::Controller)
             .map_err(|_| invalid())?;
-        let fixed = if self.completed_reader.is_some() && self.reader.is_none() {
+        let fixed = if self.reader.as_ref().is_some_and(Target::native_prefixes_retired_data_v2) {
             fixed.with(D::OpenFiles, 0)
         } else { fixed };
         let mut demand = fixed.checked_add(
@@ -588,7 +589,7 @@ impl RootDeleteControllerCurrentOriginalV1 {
         match self.first? {
             First::Sessions => self.sessions.failure(),
             First::Capabilities => self.capabilities.failure_v2(),
-            First::Retirement => self.reader.as_ref().and_then(RootFixedNativeReadOriginalsV1::failure)
+            First::Retirement => self.reader.as_ref().and_then(Target::failure)
                 .or_else(|| cause(&self.retirement)),
             First::BrokerTrust => self.broker_trust.failure(),
             First::Authorization => self.authorization.failure(),
@@ -618,17 +619,17 @@ impl RootDeleteControllerCurrentOriginalV1 {
                 .failure()
                 .or_else(|| cause(&self.clock_after))
                 .or_else(|| cause(&self.clock_after_binding)),
-            First::Capture => self.reader.as_ref().and_then(RootFixedNativeReadOriginalsV1::failure).or_else(|| cause(&self.capture)),
-            First::NativeDemand => self.reader.as_ref().and_then(RootFixedNativeReadOriginalsV1::failure).or_else(|| cause(&self.native_demand)),
+            First::Capture => self.reader.as_ref().and_then(Target::failure).or_else(|| cause(&self.capture)),
+            First::NativeDemand => self.reader.as_ref().and_then(Target::failure).or_else(|| cause(&self.native_demand)),
             First::SemanticDemand => self
                 .reader
                 .as_ref()
-                .and_then(RootFixedNativeReadOriginalsV1::failure)
+                .and_then(Target::failure)
                 .or_else(|| cause(&self.semantic_demand)),
-            First::Replay => self.reader.as_ref().and_then(RootFixedNativeReadOriginalsV1::failure),
+            First::Replay => self.reader.as_ref().and_then(Target::failure),
             First::Compare => cause(&self.fresh_predecessor)
                 .or_else(|| cause(&self.compared)).or_else(|| cause(&self.named_cut)),
-            First::NativePost => self.reader.as_ref().and_then(RootFixedNativeReadOriginalsV1::post_failure),
+            First::NativePost => self.reader.as_ref().and_then(Target::post_failure),
             First::Reentry => self.closed.as_ref().map(|cause| cause as _),
         }
     }

@@ -316,7 +316,7 @@ impl ControllerDeleteAdmissionOriginalV3 {
             return Err(First::Identity);
         }
         self.models = Some(crate::reconciler::prepare_delete_admission_transaction_v3(
-            journal, fence,
+            fence,
         ));
         let (_, transaction) = self
             .models
@@ -532,6 +532,9 @@ fn model_receiving_demand_v3(
                     .checked_mul(6)?,
             )
         })
+        .and_then(|bytes| bytes.checked_add(
+            crate::reconciler::admission_records::delete_comparison_forwarding_control_bytes_v3()?,
+        ))
         .and_then(|bytes| u64::try_from(bytes).ok())
         .ok_or(JournalError::JournalTooLarge)?;
     let native = extent.dominant_native_receiving_demand_v1()?;

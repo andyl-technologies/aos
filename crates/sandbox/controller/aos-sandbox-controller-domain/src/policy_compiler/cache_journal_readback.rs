@@ -6,14 +6,7 @@
 
 use aos_sandbox_protocol::domain_ledger::cache_policy_hold::CachePolicyHoldV1;
 
-use crate::cache_residency::{
-    CacheOwnerReadbackErrorV1,
-    CacheResidencyProtectedJournalErrorV1,
-    CacheResidencyRootReadOnlyPolicyHoldV1,
-    CacheResidencyRootReadOnlyReplayV1,
-    replay_fixed_root_read_only_cache_journals_v1,
-    replay_fixed_root_read_only_cache_policy_hold_v1,
-};
+use aos_sandbox_cache::{CacheOwnerReadbackErrorV1, CacheResidencyProtectedJournalErrorV1, CacheResidencyRootReadOnlyPolicyHoldV1, CacheResidencyRootReadOnlyReplayV1, replay_fixed_root_read_only_cache_journals_v1, replay_fixed_root_read_only_cache_policy_hold_v1};
 use aos_sandbox_protocol::cache_owner_readback::{
     CacheOwnerReadbackChallengeV1,
     PinnedCacheOwnerReadbackSignerV1,
@@ -41,7 +34,7 @@ impl From<aos_sandbox_protocol::cache_owner_readback::CacheOwnerReadbackDataErro
     for ClosedCacheJoinedReadbackErrorV2
 {
     fn from(cause: aos_sandbox_protocol::cache_owner_readback::CacheOwnerReadbackDataErrorV1) -> Self {
-        Self::Receipt(crate::cache_residency::CacheOwnerReadbackErrorV1::from(cause))
+        Self::Receipt(aos_sandbox_cache::CacheOwnerReadbackErrorV1::from(cause))
     }
 }
 
@@ -128,12 +121,9 @@ mod tests {
     use ed25519_dalek::SigningKey;
 
     use super::*;
-    use crate::cache_residency::{
-        CacheResidencyProtectedOpenReportV1,
-        sign_test_cache_owner_readback_v2,
-    };
+    use aos_sandbox_cache::{CacheResidencyProtectedOpenReportV1, sign_test_cache_owner_readback_v2};
     use aos_sandbox_protocol::cache_owner_readback::encode_cache_owner_readback_signer_credential_v1;
-    use crate::journal::RecoveryReport;
+    use aos_sandbox_journal::RecoveryReport;
 
     #[test]
     fn joined_comparison_rejects_stale_hold_quota_and_replayed_packet() {

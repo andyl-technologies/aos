@@ -7,7 +7,7 @@
 use aos_sandbox_linux::cgroup::{
     CgroupPopulationMonitor, CgroupPopulationMonitorOriginalV3, ExactCgroupMembershipReadbackV1,
 };
-use aos_sandbox_linux::pidfd::PidFd;
+use aos_linux_descriptors::pidfd::PidFd;
 
 use super::*;
 

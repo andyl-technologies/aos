@@ -14,7 +14,7 @@ use aos_sandbox_guest_protocol::openssh_control_channel::{
 };
 use aos_sandbox_guest_protocol::openssh_monitor::OpenSshMonitorWitnessV2;
 use aos_sandbox_model::public_attach_ticket::PublicAttachTicketBindingV2;
-use aos_sandbox_linux::pidfd::PidFd;
+use aos_linux_descriptors::pidfd::PidFd;
 use aos_sandbox_linux::seqpacket::{KernelAuthorizedRecordSubject, SeqpacketSocket};
 use sha2::{Digest as _, Sha256};
 
@@ -323,13 +323,11 @@ pub(super) fn require_same_root_subject(
         || actual.pid() != expected.pid()
         || actual.uid() != expected.uid()
         || actual.gid() != expected.gid()
-        || subject
-            .pidfd()
-            .process_identity()
+        || aos_sandbox_linux::pidfd::process_identity(&(subject
+            .pidfd()))
             .map_err(|_| Error::InvalidRequest)?
-            != original
-                .pidfd()
-                .process_identity()
+            != aos_sandbox_linux::pidfd::process_identity(&(original
+                .pidfd()))
                 .map_err(|_| Error::InvalidRequest)?
     {
         return Err(Error::InvalidRequest);
@@ -352,8 +350,7 @@ fn control_binding(
     digest.update(witness);
     digest.update(connection.peer().socket_cookie().get().to_be_bytes());
     for process in [subject.pidfd(), child] {
-        let identity = process
-            .process_identity()
+        let identity = aos_sandbox_linux::pidfd::process_identity(&(process))
             .map_err(|_| Error::InvalidRequest)?;
         digest.update(identity.pid().to_be_bytes());
         digest.update(identity.start_time_ticks().to_be_bytes());

@@ -8,7 +8,8 @@
 use std::mem::MaybeUninit;
 use std::os::fd::{AsFd as _, AsRawFd as _, OwnedFd};
 
-use crate::{Error, Result};
+use aos_linux_descriptors::Error;
+use aos_linux_descriptors::Result;
 
 const SCANS: usize = 2;
 const STORAGE_MAXIMUM_TABLE: usize = 32;

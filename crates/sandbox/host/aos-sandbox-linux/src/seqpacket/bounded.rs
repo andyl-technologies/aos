@@ -46,7 +46,7 @@ pub enum WorkerRecordError {
     Poll(#[from] rustix::io::Errno),
     /// The fixed received-descriptor inspection failed.
     #[error(transparent)]
-    Linux(#[from] crate::Error),
+    Linux(#[from] aos_linux_descriptors::Error),
     /// Clock conversion, timeout conversion, or the deadline check failed.
     #[error(transparent)]
     Clock(#[from] WorkerRecordClockError),
@@ -531,7 +531,7 @@ pub fn accept_connection(
             Err(SeqpacketError::WouldBlock) => wait_unbounded(listener.as_fd(), PollFlags::IN)?,
             Err(SeqpacketError::Interrupted) => {}
             // A queued child may predate the listener's identity options.
-            Err(SeqpacketError::Kernel(crate::Error::InvalidInput {
+            Err(SeqpacketError::Kernel(aos_linux_descriptors::Error::InvalidInput {
                 field: "record subject options",
                 ..
             })) => return Ok(None),
@@ -887,7 +887,7 @@ pub fn wait_storage_root_export_request_v2(
 ///
 /// # Errors
 /// Returns the existing original-cutoff, clock or native poll refusal.
-pub fn wait_capture_worker_exit_v3(pidfd: &crate::pidfd::PidFd,
+pub fn wait_capture_worker_exit_v3(pidfd: &aos_linux_descriptors::pidfd::PidFd,
     original_deadline: u64) -> Result<(), BoundedRecordError> {
     wait_until(pidfd.as_fd(), PollFlags::IN, original_deadline)
 }
@@ -1022,14 +1022,14 @@ mod worker_tests {
         fn inspect(&self, _: &Record) -> Result<(), Self::Error> {
             self.wait.trace.borrow_mut().push("inspect");
             if self.reject {
-                return Err(crate::Error::invalid("descriptor inspection", "test refusal").into());
+                return Err(aos_linux_descriptors::Error::invalid("descriptor inspection", "test refusal").into());
             }
             Ok(())
         }
     }
 
     fn pair() -> (DescriptorSubjectSocket, DescriptorSubjectSocket) {
-        let (first, second) = crate::uapi::seqpacket_pair().unwrap();
+        let (first, second) = aos_linux_descriptors::native::seqpacket_pair().unwrap();
         (
             DescriptorSubjectSocket::from_owned(first).unwrap(),
             DescriptorSubjectSocket::from_owned(second).unwrap(),
@@ -1285,7 +1285,7 @@ mod worker_tests {
                         rustix::fs::fstat(received).unwrap().st_ino,
                         rustix::fs::fstat(sent).unwrap().st_ino
                     );
-                    assert!(crate::uapi::is_cloexec(received.as_fd()).unwrap());
+                    assert!(aos_linux_descriptors::native::is_cloexec(received.as_fd()).unwrap());
                 }
             }
         }
@@ -1493,7 +1493,7 @@ mod tests {
     }
 
     fn descriptor_pair() -> (DescriptorSubjectSocket, OwnedFd) {
-        let (receiver, sender) = crate::uapi::seqpacket_pair().unwrap();
+        let (receiver, sender) = aos_linux_descriptors::native::seqpacket_pair().unwrap();
         (
             DescriptorSubjectSocket::from_owned(receiver).unwrap(),
             sender,
@@ -1645,7 +1645,7 @@ mod tests {
                 std::process::id()
             );
             for descriptor in record.descriptors() {
-                assert!(crate::uapi::is_cloexec(descriptor.as_fd()).unwrap());
+                assert!(aos_linux_descriptors::native::is_cloexec(descriptor.as_fd()).unwrap());
             }
         }
     }
@@ -1721,7 +1721,7 @@ mod fixed_worker_observer_tests {
     use super::*;
 
     fn pair() -> (DescriptorSubjectSocket, SeqpacketSocket) {
-        let (first, second) = crate::uapi::seqpacket_pair().unwrap();
+        let (first, second) = aos_linux_descriptors::native::seqpacket_pair().unwrap();
         (
             DescriptorSubjectSocket::from_owned_retaining(first).unwrap(),
             SeqpacketSocket::from_owned(second).unwrap(),
@@ -2170,7 +2170,7 @@ struct NetworkWorkerNativeSendV4<E> {
 
 #[derive(Debug)]
 enum NetworkWorkerNativeGateFailureV4<E> {
-    Cutoff(crate::Error),
+    Cutoff(aos_linux_descriptors::Error),
     Original(E),
 }
 
@@ -2451,7 +2451,7 @@ mod network_worker_native_tests {
     use std::os::fd::AsFd as _;
 
     fn pair() -> (DescriptorSubjectSocket, DescriptorSubjectSocket) {
-        let (first, second) = crate::uapi::seqpacket_pair().unwrap();
+        let (first, second) = aos_linux_descriptors::native::seqpacket_pair().unwrap();
         (
             DescriptorSubjectSocket::from_owned_retaining(first).unwrap(),
             DescriptorSubjectSocket::from_owned_retaining(second).unwrap(),

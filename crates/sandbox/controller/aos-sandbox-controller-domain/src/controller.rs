@@ -76,6 +76,8 @@ pub(crate) use operator_recovery::{
     DormantOperatorRecoveryTerminalCommitV1, DormantOperatorRecoveryTerminalV1,
     PreparedOperatorRecoveryCurrentV1, operator_repair_successor_current_v1,
     prepare_operator_recovery_operation_current_v1, prepare_operator_recovery_sandbox_current_v1,
+    prepare_operator_recovery_operation_current_from_observation_v2,
+    prepare_operator_recovery_sandbox_current_from_observation_v2,
 };
 
 use operator_recovery::{decode_recovery_current, recovery_current_key, validate_recovery_current};
@@ -87,6 +89,7 @@ mod operator_recovery_issuance;
 pub(crate) use operator_recovery_issuance::{
     RepairPublicTerminalV1, has_operator_storage_repair_settlement_debt_v1,
     verify_atomic_operator_storage_repair_terminal_v2, verify_operator_storage_repair_failure_v1,
+    verify_operator_storage_repair_failure_from_observation_v2,
 };
 
 #[cfg(target_os = "linux")]
@@ -109,11 +112,12 @@ pub(crate) use public_handle_lookup::resolve_delete_capability_handle_retaining_
 #[cfg(target_os = "linux")]
 mod public_api_authorization;
 #[cfg(target_os = "linux")]
-mod protected_clock;
+pub(crate) use aos_sandbox_broker::controller_clock::ControllerProtectedClockV1;
+
+// The shared native owner retains the existing Domain boundary diagnostics.
 #[cfg(target_os = "linux")]
-pub(crate) use protected_clock::ControllerProtectedClockV1;
-#[cfg(target_os = "linux")]
-pub(crate) use protected_clock::RetainedControllerProtectedClockAttemptV1;
+pub(crate) type RetainedControllerProtectedClockAttemptV1 =
+    aos_sandbox_broker::controller_clock::RetainedControllerProtectedClockAttemptV1<crate::JournalError>;
 #[cfg(target_os = "linux")]
 pub(crate) use public_api_authorization::DormantCliAuthorizationOwnerV1;
 #[cfg(target_os = "linux")]
@@ -890,7 +894,7 @@ where
     pub fn existing_cache_project_usage_v1(
         &mut self,
         project: aos_sandbox_model::ProjectId,
-    ) -> Result<crate::cache_residency::CacheProjectUsageLoanV1<'_>, crate::cache_residency::CacheResidentUnavailableV1> {
+    ) -> Result<aos_sandbox_cache::CacheProjectUsageLoanV1<'_>, aos_sandbox_cache::CacheResidentUnavailableV1> {
         self.reconciler.existing_cache_project_usage_v1(project)
     }
 
@@ -924,7 +928,7 @@ where
         acceptor: &crate::public_api_session::PublicApiSessionAcceptor,
         inputs: &mut crate::public_api_session::GitCoverageCredentialCustodyV1,
         account: &mut crate::policy_compiler::GitCoverageAccountAttemptV1<'_>,
-    ) -> Result<(), crate::cache_residency::CacheResidentUnavailableV1> {
+    ) -> Result<(), aos_sandbox_cache::CacheResidentUnavailableV1> {
         let mut operation = crate::reconciler::GitCoverageReadMetadataOperationV1::inspect(
             original, acceptor, account,
         );
@@ -955,7 +959,7 @@ where
     /// This performs no reopen, mutation or operation admission.
     pub fn recheck_existing_cache_project_usage_v1(
         &mut self,
-    ) -> Result<(), crate::cache_residency::CacheResidentUnavailableV1> {
+    ) -> Result<(), aos_sandbox_cache::CacheResidentUnavailableV1> {
         self.reconciler.recheck_existing_cache_project_usage_v1()
     }
 
@@ -982,7 +986,7 @@ where
         aos_sandbox_model::format::git_upload_enrollment::GitCoverageFenceFieldsV1,
         [u8; 32],
         u64,
-    ), crate::cache_residency::CacheResidentUnavailableV1> {
+    ), aos_sandbox_cache::CacheResidentUnavailableV1> {
         self.reconciler.compare_existing_cache_git_coverage_v1(
             original_inputs, flight, original_nonce, original_account,
         )
@@ -1006,7 +1010,7 @@ where
         original_capacity: &aos_sandbox_model::GitUploadCapacityV1,
         original_bootstrap_credentials: &mut crate::public_api_session::PublisherPolicyBootstrapCredentialCustodyV1,
         attempt: &mut crate::policy_compiler::GitCoverageAccountAttemptV1<'_>,
-    ) -> Result<(), crate::cache_residency::CacheResidentUnavailableV1> {
+    ) -> Result<(), aos_sandbox_cache::CacheResidentUnavailableV1> {
         self.reconciler.capture_existing_git_coverage_account_cut_v1(
             original_inputs, original_bootstrap, original_source, original_capacity,
             original_bootstrap_credentials, attempt,
@@ -1028,7 +1032,7 @@ where
         original_capacity: &aos_sandbox_model::GitUploadCapacityV1,
         original_bootstrap_credentials: &mut crate::public_api_session::PublisherPolicyBootstrapCredentialCustodyV1,
         attempt: &mut crate::policy_compiler::GitCoverageAccountAttemptV1<'_>,
-    ) -> Result<(), crate::cache_residency::CacheResidentUnavailableV1> {
+    ) -> Result<(), aos_sandbox_cache::CacheResidentUnavailableV1> {
         self.reconciler.commit_existing_git_coverage_account_v1(
             original_inputs, original_bootstrap, original_source, original_capacity,
             original_bootstrap_credentials, attempt,
@@ -1073,7 +1077,7 @@ where
         original: &mut crate::public_capability_issuance::RetainedGitInitialIssuanceV1,
         inputs: &mut crate::public_api_session::GitCoverageCredentialCustodyV1,
         account: &mut crate::policy_compiler::GitCoverageAccountAttemptV1<'_>,
-    ) -> Result<(), crate::cache_residency::CacheResidentUnavailableV1> {
+    ) -> Result<(), aos_sandbox_cache::CacheResidentUnavailableV1> {
         let mut operation = crate::cli_model::authorization_adapter::GitCoverageReadMetadataOperationV1::bootstrap(
             original, account,
         );
@@ -1247,7 +1251,7 @@ where
             aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError,
         >,
     {
-        let boot_before = aos_sandbox_linux::boot::KernelBootId::current()
+        let boot_before = aos_linux_descriptors::boot::KernelBootId::current()
             .map_err(|_| crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority)?
             .into_bytes();
         runtime
@@ -1259,7 +1263,7 @@ where
         runtime
             .recheck(self.reconciler.journal_mut(), clock)
             .map_err(|_| crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority)?;
-        let boot_after = aos_sandbox_linux::boot::KernelBootId::current()
+        let boot_after = aos_linux_descriptors::boot::KernelBootId::current()
             .map_err(|_| crate::lifecycle::LifecyclePhase6ErrorV1::StaleAuthority)?
             .into_bytes();
         if boot_before != boot_after {

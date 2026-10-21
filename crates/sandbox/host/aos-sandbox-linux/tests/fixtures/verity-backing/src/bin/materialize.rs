@@ -18,7 +18,7 @@ mod linux {
         MediaType, ObjectDescriptorVerificationError, ObjectDescriptorVerifier,
         descriptor_for_bytes,
     };
-    use aos_sandbox_linux::Error as LinuxError;
+    use aos_linux_descriptors::Error as LinuxError;
     use aos_sandbox_linux::immutable_file::{
         BeforeRenameFailure, FsVerityBacking, FsVerityDigest, FsVerityPublicationRoot,
         MaterializationCallbacks, MaterializationFailure, NoReplacePublicationError,

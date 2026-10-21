@@ -84,6 +84,12 @@ impl RootStartResourceCompilerOriginalV2 {
                 .ok_or(JournalError::JournalTooLarge)?;
             let fixed = std::mem::size_of::<Self>()
                 .checked_mul(2)
+                .and_then(|bytes| bytes.checked_add(crate::policy_compiler::provisioning_current::
+                    current_manifest::current_protected_assignment_observation_control_bytes_v2()?))
+                .and_then(|bytes| bytes.checked_add(crate::sandbox_spec_state::observed_get_control_bytes_v2()?))
+                .and_then(|bytes| bytes.checked_add(LifecycleHistoricalReadOriginalV1::observe_rows_interface_control_bytes_v2()?))
+                .and_then(|bytes| bytes.checked_add(crate::policy_compiler::provisioning_current::
+                    root_start_compilation_control_bytes_v2()?))
                 .and_then(|bytes| {
                     bytes.checked_add(2 * std::mem::size_of::<StartAssignmentCompilationDataV2>())
                 })
@@ -148,13 +154,13 @@ impl RootStartResourceCompilerOriginalV2 {
             .verified_at_v1()
             .ok_or(JournalError::ProtectedBoundary)?
             .validate_later_sample(sample)?;
-        let planned = crate::policy_compiler::create_storage_current::bundle_ownership::
-            planned_assignment_v1(bundle)?;
+        let planned = aos_sandbox_policy::bundle_ownership_data::planned_assignment_v1(bundle)?;
         self.source
-            .observe_once_v1(views.prepared_host_launch_source_v2()?, operation)?;
+            .observe_once_v1(views.prepared_host_launch_source_v2()?.rows_data_v2(), operation)?;
         let (_, _, sandbox) = readonly.historical_v2()?.target_v2();
-        let controller = readonly.controller_mut_v2()?;
-        self.previous = Some(current_protected_assignment_data_v2(controller, sandbox)?);
+        let controller = readonly.controller_model_v2()?;
+        self.previous = Some(current_protected_assignment_data_v2(
+            controller, sandbox)?);
         let previous = self
             .previous
             .as_ref()
@@ -163,7 +169,7 @@ impl RootStartResourceCompilerOriginalV2 {
             return Err(JournalError::ProtectedBoundary.into());
         }
         self.specification = Some(
-            crate::sandbox_spec_state::get(
+            crate::sandbox_spec_state::get_from_observation_v2(
                 controller,
                 previous.manifest_v2().manifest().sandbox_spec(),
             )?

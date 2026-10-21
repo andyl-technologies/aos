@@ -33,7 +33,8 @@ use std::path::Path;
 use aos_sandbox_api::aos::sandbox::local::v1::{Audience, BrokerClientHello, BrokerMethod, Feature};
 use aos_sandbox_model::{FeatureRef, ProtocolId, ProtocolVersion};
 use aos_sandbox_linux::cgroup::{CgroupV2Root, RetainedCgroupAnchor};
-use aos_sandbox_linux::pidfd::{PidFd, PidFdInfo};
+use aos_linux_descriptors::pidfd::PidFd;
+use aos_linux_descriptors::pidfd::PidFdInfo;
 use aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket;
 use aos_sandbox_linux::seqpacket::{KernelAuthorizedRecordSubject, SeqpacketError};
 use aos_sandbox_protocol::payload_scope::{
@@ -79,6 +80,9 @@ pub use generation::{CurrentRuntimeGeneration, RuntimeGenerationError};
 pub(crate) use namespace_target::{
     ConsumerNamespaceOriginV1, DurableNamespaceTargetReferenceV1, consumer_namespace_origin_data,
     current_consumer_namespace_origin, validate_durable_reference_in_validated_namespace,
+    validate_durable_reference_in_validated_namespace_rows_v2,
+    validate_namespace_observed_v2 as validate_namespace_target_observed_v2,
+    historical_observation_control_bytes_v2 as namespace_target_observation_control_bytes_v2,
     validate_namespace as validate_namespace_target_namespace,
 };
 pub use namespace_target::{
@@ -138,7 +142,7 @@ pub enum RuntimeScopeError {
     Transport(#[from] SeqpacketError),
     /// Kernel object validation or membership observation failed.
     #[error(transparent)]
-    Kernel(#[from] aos_sandbox_linux::Error),
+    Kernel(#[from] aos_linux_descriptors::Error),
     /// A negotiated header, authority carrier, or response body failed validation.
     #[error(transparent)]
     Protocol(#[from] ProtocolValidationError),
@@ -665,4 +669,9 @@ impl ObservedPayloadScope {
         }
         Ok(fresh)
     }
+}
+
+/// Prices reached generation replay interfaces without granting runtime custody.
+pub(crate) fn generation_observation_control_bytes_v2() -> Option<usize> {
+    generation::historical_observation_control_bytes_v2()
 }

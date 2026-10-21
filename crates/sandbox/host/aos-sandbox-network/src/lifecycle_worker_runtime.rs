@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use aos_sandbox_model::{ObjectDigest, RawClockProvenance, RawPairedClockSample};
-use aos_sandbox_linux::boot::KernelBootId;
+use aos_linux_descriptors::boot::KernelBootId;
 use aos_sandbox_linux::cgroup::{
     CgroupPopulationMonitor, CgroupPopulationState, CgroupV2Root, RetainedCgroupAnchor,
 };
@@ -198,7 +198,7 @@ pub enum NetworkLifecycleWorkerRuntimeError {
     Transport(#[from] SeqpacketError),
     /// A typed Linux descriptor, namespace, cgroup, or process check failed.
     #[error(transparent)]
-    Linux(#[from] aos_sandbox_linux::Error),
+    Linux(#[from] aos_linux_descriptors::Error),
     /// A fixed procfs read failed.
     #[error("Network lifecycle worker local I/O failed: {0}")]
     Io(#[from] std::io::Error),
@@ -701,7 +701,7 @@ pub fn run_inherited_network_lifecycle_worker(
     let descriptor: OwnedFd = rustix::io::dup(std::io::stdin().as_fd())?;
     let mut socket = DescriptorSubjectSocket::from_owned(descriptor)?;
     validate_broker_peer(socket.peer(), &control_cgroup)?;
-    let host_namespace = socket.peer().pidfd().namespace(NamespaceKind::Network)?;
+    let host_namespace = aos_sandbox_linux::pidfd::namespace(&(socket.peer().pidfd()), NamespaceKind::Network)?;
     if host_namespace.identity() == bootstrap_namespace.identity() {
         return Err(NetworkLifecycleWorkerRuntimeError::Authority);
     }

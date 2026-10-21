@@ -9,7 +9,8 @@ use std::error::Error;
 use std::mem::size_of;
 
 use aos_sandbox_model::{ResourceDimension as D, ResourceVector};
-use aos_sandbox_linux::unix_stream::{RetainedUnixStream, SubjectStreamReceiveGeometryV1};
+use aos_linux_descriptors::unix_stream::RetainedUnixStream;
+use aos_sandbox_linux::unix_stream::SubjectStreamReceiveGeometryV1;
 use aos_sandbox_protocol::domain_ledger::create_q04_history::CLAIM_CHUNK_BYTES;
 use aos_sandbox_protocol::domain_ledger::create_storage_history::{
     HistoryErrorV1,
@@ -27,9 +28,11 @@ use aos_sandbox_broker_session_protocol::projection::AUTHENTICATED_RESPONSE_MAXI
 
 use crate::controller_resource_reservation::ResourceReservationErrorV1;
 use crate::normal_root::CreateStorageRootPeerReceivingOriginalsV1;
-use crate::policy_compiler::bounded_stream_io::{DeadlineStreamDirectionV1, SliceDeadlineStreamIoV1};
+use aos_sandbox_broker::bounded_stream_io::DeadlineStreamDirectionV1;
+use aos_sandbox_broker::bounded_stream_io::SliceDeadlineStreamIoV1;
 
 use super::subject::RootExactSubjectReceiveV1;
+use super::RootUseReceivingV1;
 
 mod reserved_turn;
 mod current;

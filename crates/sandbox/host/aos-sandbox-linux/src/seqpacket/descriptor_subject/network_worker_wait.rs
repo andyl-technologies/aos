@@ -8,8 +8,8 @@
 //! already-owed negative disposition omit it.
 
 use super::{DescriptorSubjectSocket, OriginalObservationV1, SeqpacketError};
-use crate::Error;
-use crate::pidfd::PidFd;
+use aos_linux_descriptors::Error;
+use aos_linux_descriptors::pidfd::PidFd;
 use crate::seqpacket::NetworkWorkerNativeCutoffV4;
 use crate::seqpacket::RecordBindingError;
 use crate::seqpacket::socket_binding::ConnectedSocketBinding;

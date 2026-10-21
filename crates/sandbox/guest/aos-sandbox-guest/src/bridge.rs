@@ -19,7 +19,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use aos_sandbox_guest_protocol::openssh_gate::{OpenSshGateBridgeRequestV1, OpenSshGateClaimV1};
-use aos_sandbox_linux::Error as LinuxError;
+use aos_linux_descriptors::Error as LinuxError;
 use aos_sandbox_linux::seqpacket::{RecordSubjectListener, SeqpacketError, SeqpacketSocket};
 
 use crate::GuestProcessEffectErrorV1;

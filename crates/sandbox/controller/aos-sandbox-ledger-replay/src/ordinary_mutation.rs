@@ -374,4 +374,7 @@ fn require_not_settlement_v1(key: &[u8], value: &[u8]) -> Result<(), JournalErro
 }
 
 mod common_boundaries;
-pub use common_boundaries::require_common_no_selected_boundaries_v1;
+pub use common_boundaries::{
+    require_common_no_selected_boundaries_v1,
+    require_common_outside_create_storage_boundaries_v1,
+};

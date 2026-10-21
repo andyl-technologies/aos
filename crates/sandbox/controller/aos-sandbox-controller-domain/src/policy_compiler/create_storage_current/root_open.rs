@@ -5,21 +5,22 @@
 //! dispatch or Prepare authority. Native final crossing rejoins these same
 //! owners after ordinary semantic validation and before the original append.
 
+use aos_sandbox_protocol::domain_ledger::create_storage_history::readback::HistoryPairReadbackDataV1;
 use std::error::Error as StdError;
 use std::io;
 use std::os::fd::AsFd as _;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
-use std::time::{Duration, Instant};
 
+use aos_sandbox_broker::receiving::{RootOpenClockClosedV1, RootOpenClockOriginalV1};
 use aos_sandbox_model::RawPairedClockSample;
 use aos_sandbox_protocol::domain_ledger::create_storage_history::{
     HEAD_BYTES, RECORD_OVERHEAD_BYTES, HistoryErrorV1, KeyV1, LatestHeadV1,
     OwnerV1, PhaseV1, RecordCoordinatesV1, RecordEnvelopeV1,
-    root_open::{ROOT_OPEN_BODY_BYTES_V1, RootOpenBodyDataV1}, transport::OpenQueryV1,
+    root_open::{ROOT_OPEN_BODY_BYTES_V1, RootOpenBodyDataV1, RootCurrentOpenIdentityDataV1}, transport::OpenQueryV1,
 };
 use crate::journal::create_storage_history::{
-    HistoryPairReadbackV1, prepare_history_pair_v1, readback_history_pair_v1,
+    prepare_history_pair_v1, readback_history_pair_v1,
 };
 
 use crate::hierarchy::genesis_profile::SourceGenesisErrorV1;
@@ -28,7 +29,7 @@ use crate::journal::{
     ProtectedJournalNamesV1, ProtectedJournalCurrentnessOriginalsV1, RecordNamespace,
 };
 use crate::normal_root::{
-    NormalRootStartupErrorV1, RootCurrentOpenIdentityDataV1, RootPolicyAcceptedFlightV1,
+    NormalRootStartupErrorV1, RootPolicyAcceptedFlightV1,
 };
 
 use super::RootCreateStorageCurrentErrorV1 as Error;
@@ -42,14 +43,12 @@ use crate::policy_compiler::RetainedKernelPairedClockAttemptV1;
 type WitnessOriginal = aos_sandbox_journal::protected_storage::WriterWitnessOriginalsV1<JournalError>;
 
 const ROOT_RECORD_BYTES: usize = RECORD_OVERHEAD_BYTES + ROOT_OPEN_BODY_BYTES_V1;
-const MAXIMUM_ROOT_FLIGHT: Duration = Duration::from_secs(65);
 
 pub(crate) struct RootCurrentOpenStateV1 {
     provision: Option<Result<(), NormalRootStartupErrorV1>>,
     identity: Option<Result<RootCurrentOpenIdentityDataV1, NormalRootStartupErrorV1>>,
-    clock_original: RetainedKernelPairedClockAttemptV1,
-    clock: Option<Result<RawPairedClockSample, SourceGenesisErrorV1>>,
-    started: Option<Instant>,
+    clock_original: RootOpenClockOriginalV1,
+    clock: Option<Result<RawPairedClockSample, RootOpenClockClosedV1>>,
     nonce: Option<io::Result<[u8; 16]>>,
     authority_name_original: ProtectedJournalCurrentnessOriginalsV1,
     authority_witness_original: WitnessOriginal,
@@ -81,7 +80,6 @@ impl RootCurrentOpenStateV1 {
             identity: None,
             clock_original: Default::default(),
             clock: None,
-            started: None,
             nonce: None,
             authority_name_original: Default::default(), authority_witness_original: Default::default(),
             policy_name_original: Default::default(), policy_witness_original: Default::default(),
@@ -144,8 +142,7 @@ impl RootCurrentOpenStateV1 {
         self.posts.arm_once(flight)?;
         self.identity = Some(flight.current_root_open_identity());
         positive(&self.identity).map_err(|_| Error::Original)?;
-        self.started = Some(Instant::now());
-        self.clock = Some(self.clock_original.observe_once(None));
+        self.clock = Some(self.clock_original.start_once_v1());
         positive(&self.clock).map_err(|_| Error::Original)?;
         self.nonce = Some(fresh_root_nonce());
         positive(&self.nonce).map_err(|_| Error::Original)?;
@@ -161,8 +158,8 @@ impl RootCurrentOpenStateV1 {
                 root_nonce: *positive(&self.nonce)?,
                 boot: clock.host_boot_id(),
                 started: clock.boottime_nanoseconds(),
-                cutoff: clock.boottime_nanoseconds().checked_add(65_000_000_000)
-                    .ok_or(JournalError::SequenceExhausted)?,
+                cutoff: self.clock_original.cutoff_data_v1()
+                    .map_err(|_| JournalError::SequenceExhausted)?,
                 authority_names: *positive(&self.authority_names)?,
                 policy_names: *positive(&self.policy_names)?,
                 authority_next: authority.snapshot_sequence(),
@@ -206,8 +203,7 @@ impl RootCurrentOpenStateV1 {
             policy,
             body,
             transaction,
-            clock: *positive(&self.clock).map_err(|_| Error::Original)?,
-            started: self.started.ok_or(Error::Original)?,
+            clock_original: &self.clock_original,
             crossing: &mut self.crossing,
             purpose: RootCurrentHistoryPurposeV1::Open,
         };
@@ -228,8 +224,7 @@ impl RootCurrentOpenStateV1 {
     ) {
         self.posts.observe_once(flight, writers,
             self.body.as_ref().and_then(|result| result.as_ref().ok()),
-            self.clock.as_ref().and_then(|result| result.as_ref().ok()).copied(),
-            self.started);
+            Some(&self.clock_original));
     }
 
     pub(crate) fn committed_record(&self) -> Result<&[u8; ROOT_RECORD_BYTES], Error> {
@@ -266,15 +261,16 @@ impl RootCurrentOpenStateV1 {
             &self.record, &self.head, positive(&self.append)?)
     }
 
-    pub(super) fn original_clock_origin_v1(&self) -> Result<(RawPairedClockSample, Instant), Error> {
+    pub(super) fn original_clock_native_v1(&self) -> Result<&RootOpenClockOriginalV1, Error> {
         self.completed_body()?;
-        Ok((*positive(&self.clock).map_err(|_| Error::Original)?, self.started.ok_or(Error::Original)?))
+        self.clock_original.initial_data_v1().map_err(|_| Error::Original)?;
+        Ok(&self.clock_original)
     }
 
     pub(in crate::policy_compiler) fn require_clock(&self, current: RawPairedClockSample) -> Result<(), JournalError> {
         let body = self.completed_body().map_err(|_| JournalError::ProtectedBoundary)?;
-        require_original_clock(*positive(&self.clock)?, current, body.cutoff,
-            self.started.ok_or(JournalError::ProtectedBoundary)?)
+        self.clock_original.require_current_v1(current, body.cutoff)
+            .map_err(|_| JournalError::ProtectedBoundary)
     }
 
     pub(super) fn failure(&self) -> Option<&(dyn StdError + 'static)> {
@@ -284,7 +280,7 @@ impl RootCurrentOpenStateV1 {
         }
         cause!(self.provision)
             .or_else(|| cause!(self.identity))
-            .or_else(|| self.clock_original.failure()).or_else(|| cause!(self.clock))
+            .or_else(|| self.clock_original.failure_v1()).or_else(|| cause!(self.clock))
             .or_else(|| cause!(self.nonce))
             .or_else(|| self.authority_name_original.failure().or_else(|| self.authority_witness_original.failure()).or_else(|| cause!(self.authority_names)))
             .or_else(|| self.policy_name_original.failure().or_else(|| self.policy_witness_original.failure()).or_else(|| cause!(self.policy_names)))
@@ -301,12 +297,12 @@ impl RootCurrentOpenStateV1 {
     }
 }
 
-pub(super) type RootCurrentOpenReadbackV1 = HistoryPairReadbackV1<ROOT_RECORD_BYTES>;
+pub(super) type RootCurrentOpenReadbackV1 = HistoryPairReadbackDataV1<ROOT_RECORD_BYTES>;
 
 #[derive(Default)]
 pub(super) struct RootCurrentOpenCrossingV1 {
     purpose_current: Option<Result<(), JournalError>>,
-    root_history: crate::policy_compiler::create_q04::RootInertHistoryScanV1,
+    root_history: aos_sandbox_policy::q04_data::RootInertHistoryScanV1,
     root_history_result: Option<Result<(), crate::policy_compiler::create_q04::CreateQ04ErrorV1>>,
     transition: Option<Result<(), JournalError>>,
     authority_location_original: ProtectedJournalCurrentnessOriginalsV1,
@@ -320,7 +316,7 @@ pub(super) struct RootCurrentOpenCrossingV1 {
     authority_names: Option<Result<ProtectedJournalNamesV1, JournalError>>,
     policy_names: Option<Result<ProtectedJournalNamesV1, JournalError>>,
     cut_binding: Option<Result<(), JournalError>>,
-    endpoint: Option<Result<(), aos_sandbox_linux::Error>>,
+    endpoint: Option<Result<(), aos_linux_descriptors::Error>>,
     endpoint_binding: Option<Result<(), NormalRootStartupErrorV1>>,
     peer_original: Option<Result<crate::normal_root::RootHistoryPeerPostV1, NormalRootStartupErrorV1>>,
     peer: Option<Result<(), NormalRootStartupErrorV1>>,
@@ -365,8 +361,7 @@ pub(crate) struct RootCurrentOpenAppendLoanV1<'cut, 'listener, 'startup> {
     policy: &'cut Journal,
     body: RootOpenBodyDataV1,
     transaction: &'cut JournalTransaction,
-    clock: RawPairedClockSample,
-    started: Instant,
+    clock_original: &'cut RootOpenClockOriginalV1,
     crossing: &'cut mut RootCurrentOpenCrossingV1,
     purpose: RootCurrentHistoryPurposeV1<'cut>,
 }
@@ -520,9 +515,9 @@ impl<'cut, 'listener, 'startup> RootCurrentOpenAppendLoanV1<'cut, 'listener, 'st
         positive(&crossing.peer_original).map_err(|_| Error::Original)?
             .require_armed_v1().map_err(|_| Error::Original)?;
         let body = root.completed_body()?;
-        let clock = *positive(&root.clock).map_err(|_| Error::Original)?;
-        let started = root.started.ok_or(Error::Original)?;
-        Ok(Self { flight, original, policy, body, transaction, clock, started, crossing, purpose })
+        positive(&root.clock).map_err(|_| Error::Original)?;
+        let clock_original = &root.clock_original;
+        Ok(Self { flight, original, policy, body, transaction, clock_original, crossing, purpose })
     }
 
 }
@@ -548,10 +543,13 @@ impl RootCurrentOpenAppendLoanV1<'_, '_, '_> {
             self.purpose.require_current(journal, self.policy)
         })());
         positive(&self.crossing.transition)?;
-        self.crossing.root_history_result = Some(journal.observe_inert_root_q04_predecessor_v1(
-            &mut self.crossing.root_history,
-        ));
-        self.crossing.root_history.require_complete()
+        self.crossing.root_history_result = Some(
+            aos_sandbox_policy::q04_data::require_inert_root_open_history_v1(
+                journal.historical_read_view_v1().materialized_state_v1(),
+                &mut self.crossing.root_history,
+            ).map_err(crate::policy_compiler::create_q04::CreateQ04ErrorV1::from),
+        );
+        self.crossing.root_history.require_complete().map_err(|_| JournalError::ProtectedBoundary)
     }
 
     /// Compares the exact earlier typed history check at the ordinary boundary.
@@ -564,7 +562,7 @@ impl RootCurrentOpenAppendLoanV1<'_, '_, '_> {
     {
         positive(&self.crossing.transition)?;
         if transaction != self.transaction { return Err(JournalError::ProtectedBoundary); }
-        self.crossing.root_history.require_complete()
+        self.crossing.root_history.require_complete().map_err(|_| JournalError::ProtectedBoundary)
     }
 
     /// Rechecks the held writers, accepted peer and immutable original cutoff.
@@ -610,7 +608,7 @@ impl RootCurrentOpenAppendLoanV1<'_, '_, '_> {
         self.crossing.completion = Some((|| {
             positive(&self.crossing.transition)?;
             positive(&self.crossing.purpose_current)?;
-            self.crossing.root_history.require_complete()?;
+            self.crossing.root_history.require_complete().map_err(|_| JournalError::ProtectedBoundary)?;
             positive(&self.crossing.authority)?;
             positive(&self.crossing.policy)?;
             positive(&self.crossing.cut_binding)?;
@@ -618,7 +616,8 @@ impl RootCurrentOpenAppendLoanV1<'_, '_, '_> {
             positive(&self.crossing.endpoint)?;
             positive(&self.crossing.peer)?;
             let current = *positive(&self.crossing.clock)?;
-            require_original_clock(self.clock, current, self.body.cutoff, self.started)?;
+            self.clock_original.require_current_v1(current, self.body.cutoff)
+                .map_err(|_| JournalError::ProtectedBoundary)?;
             self.purpose.require_live_at(current)
         })());
         positive(&self.crossing.completion).map(|_| ())
@@ -701,19 +700,6 @@ fn one_history_names_demand_v1() -> Result<aos_sandbox_model::ResourceVector, Jo
         u64::try_from(bytes).map_err(|_| invalid())?)).map_err(|_| invalid())
 }
 
-fn require_original_clock(
-    original: RawPairedClockSample,
-    current: RawPairedClockSample,
-    cutoff: u64,
-    started: Instant,
-) -> Result<(), JournalError> {
-    original.validate_later_sample(current).map_err(|_| JournalError::ProtectedBoundary)?;
-    if current.boottime_nanoseconds() >= cutoff || started.elapsed() >= MAXIMUM_ROOT_FLIGHT {
-        return Err(JournalError::ProtectedBoundary);
-    }
-    Ok(())
-}
-
 fn positive<T, E>(result: &Option<Result<T, E>>) -> Result<&T, JournalError> {
     result.as_ref().and_then(|result| result.as_ref().ok()).ok_or(JournalError::ProtectedBoundary)
 }
@@ -769,8 +755,7 @@ impl RootCurrentHistoryPostsV1 {
         flight: &mut RootPolicyAcceptedFlightV1<'_, '_>,
         writers: &mut RootCreateStorageCurrentWritersV1,
         body: Option<&RootOpenBodyDataV1>,
-        origin_clock: Option<RawPairedClockSample>,
-        started: Option<Instant>,
+        origin_clock: Option<&RootOpenClockOriginalV1>,
     ) {
         if !matches!(self.peer_original, Some(Ok(_))) || self.peer_post.is_some() {
             self.reentered = true;
@@ -807,8 +792,8 @@ impl RootCurrentHistoryPostsV1 {
             let original = origin_clock.ok_or(JournalError::ProtectedBoundary)?;
             let current = *positive(&self.clock_post)?;
             let body = body.ok_or(JournalError::ProtectedBoundary)?;
-            require_original_clock(original, current, body.cutoff,
-                started.ok_or(JournalError::ProtectedBoundary)?)
+            original.require_current_v1(current, body.cutoff)
+                .map_err(|_| JournalError::ProtectedBoundary)
         })());
     }
 
@@ -855,4 +840,50 @@ const ROOT_HISTORY_POST_REENTRY: Error = Error::Original;
 // stays resident beside the separately paid independent post.
 pub(super) fn history_clock_receiving_demand_v1() -> Result<aos_sandbox_model::ResourceVector, JournalError> {
     super::ready::subject::RootCurrentChunkReceivingV1::additional_clock_demand_v1()
+}
+
+// The listener admits these controls before constructing the actual attempt.
+// Its existing three whole-attempt planes include the resident original; the
+// new nested native factory and call planes are additional and paid once here.
+pub(crate) fn original_clock_control_demand_v1()
+    -> Result<aos_sandbox_model::ResourceVector, JournalError>
+{
+    use std::mem::size_of;
+    use aos_sandbox_model::{ResourceDimension as D, ResourceVector};
+    let invalid = || JournalError::JournalTooLarge;
+    let bytes = RootOpenClockOriginalV1::additional_control_bytes_v1()
+        .and_then(|bytes| bytes.checked_add(
+            size_of::<RootCurrentOpenAppendLoanV1<'_, '_, '_>>().checked_mul(3)?,
+        ))
+        .and_then(|bytes| bytes.checked_add(
+            size_of::<Result<&RootOpenClockOriginalV1, Error>>().checked_mul(3)?,
+        ))
+        .and_then(|bytes| bytes.checked_add(
+            size_of::<Option<&RootOpenClockOriginalV1>>().checked_mul(3)?,
+        ))
+        .and_then(|bytes| bytes.checked_add(
+            size_of::<(&RootOpenClockOriginalV1, RawPairedClockSample, u64)>()
+                .checked_mul(3)?,
+        ))
+        .and_then(|bytes| bytes.checked_add(
+            size_of::<Result<(), JournalError>>().checked_mul(3)?,
+        ))
+        .and_then(|bytes| bytes.checked_add(
+            size_of::<Result<ResourceVector, JournalError>>().checked_mul(3)?,
+        ))
+        .and_then(|bytes| bytes.checked_add(
+            size_of::<Result<ResourceVector, aos_sandbox_model::AccountingError>>()
+                .checked_mul(3)?,
+        ))
+        .and_then(|bytes| bytes.checked_add(
+            size_of::<(&mut RootCurrentHistoryPostsV1, Option<&RootOpenClockOriginalV1>)>()
+                .checked_mul(3)?,
+        ))
+        .and_then(|bytes| bytes.checked_add(size_of::<Option<usize>>().checked_mul(3)?))
+        .and_then(|bytes| bytes.checked_add(
+            size_of::<Result<u64, std::num::TryFromIntError>>().checked_mul(3)?,
+        ))
+        .and_then(|bytes| u64::try_from(bytes).ok())
+        .ok_or_else(invalid)?;
+    Ok(ResourceVector::ZERO.with(D::MemoryBytes, bytes))
 }

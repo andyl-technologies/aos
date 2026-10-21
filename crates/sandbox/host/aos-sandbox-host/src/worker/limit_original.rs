@@ -203,16 +203,16 @@ mod tests {
         readback.native_failure = returned.err();
 
         {
-            let actual: &aos_sandbox_linux::Error =
+            let actual: &aos_linux_descriptors::Error =
                 readback.limit_native.as_ref().unwrap().root.failure().unwrap();
             let selected = readback.failure_cause().unwrap();
             let marker = readback.native_failure.as_ref().unwrap();
             // The upper view intentionally borrows its error without a static
             // object bound. Compare data addresses, independently of a trait
             // vtable or a downcast that would require a static borrow.
-            let actual_address = actual as *const aos_sandbox_linux::Error as *const ();
+            let actual_address = actual as *const aos_linux_descriptors::Error as *const ();
             let selected_address = selected as *const dyn std::error::Error as *const ();
-            let marker_address = marker as *const aos_sandbox_linux::Error as *const ();
+            let marker_address = marker as *const aos_linux_descriptors::Error as *const ();
             assert_eq!(selected_address, actual_address);
             assert_ne!(selected_address, marker_address);
         }

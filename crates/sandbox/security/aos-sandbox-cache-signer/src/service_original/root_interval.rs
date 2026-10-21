@@ -20,7 +20,7 @@ use aos_sandbox_broker::receiving::{
     RootProfileOriginalCaptureV1,
 };
 use aos_sandbox_model::{ResourceDimension as D, ResourceVector};
-use aos_sandbox_linux::unix_stream::RetainedUnixStream;
+use aos_linux_descriptors::unix_stream::RetainedUnixStream;
 use aos_systemd_client::{
     FixedPid1PropertyArchiveV1, FixedPid1PropertyErrorV1, FixedPid1PropertyFailureViewV1,
 };

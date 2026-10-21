@@ -20,6 +20,7 @@ pub(super) struct RootPolicyFlightNativeV1 {
     after_return: Option<Result<(), RootObservationErrorV1>>,
     disposal_entered: bool,
     q04_origin_claimed: bool,
+    initial_controller_entered: bool,
 }
 
 impl RootInitialReceivingOriginalV1 {
@@ -93,7 +94,7 @@ impl RootInitialReceivingOriginalV1 {
             before_return: None,
             after_return: None,
             disposal_entered: false,
-            q04_origin_claimed: false,
+            q04_origin_claimed: false, initial_controller_entered: false,
         }));
         Ok(())
     }
@@ -296,5 +297,36 @@ impl RootPolicyFlightNativeDisposalV1<'_> {
     pub fn complete_after_disposal_v1(self) {
         drop(self.flight.take());
         drop(self.admission.take());
+    }
+}
+
+impl RootInitialReceivingOriginalV1 {
+    /// Claims the existing initial-peer once frontier on this real policy flight.
+    ///
+    /// This negative-only latch grants no peer, finance or semantic purpose.
+    /// Existing native flight disposal drops it with the same flight owner.
+    ///
+    /// # Errors
+    /// Refuses unavailable, ended or repeated entry before Stage or native arm.
+    pub fn claim_initial_controller_peer_once_v1(&mut self) -> Result<(), RootObservationErrorV1> {
+        self.require_active_policy_flight_native_v1()?;
+        let flight = self.policy_flight.as_mut().ok_or(RootObservationErrorV1::Service)?;
+        if flight.initial_controller_entered {
+            self.latch_root_refusal_v1();
+            return Err(RootObservationErrorV1::Service);
+        }
+        flight.initial_controller_entered = true;
+        Ok(())
+    }
+
+    /// Measures the concrete once-claim helper's fixed forwarding controls.
+    #[must_use]
+    pub fn initial_controller_claim_control_bytes_v1() -> Option<usize> {
+        use std::mem::size_of;
+        size_of::<&mut Self>().checked_mul(3)?
+            .checked_add(size_of::<Result<(), RootObservationErrorV1>>().checked_mul(6)?)?
+            .checked_add(size_of::<Option<&mut RootPolicyFlightNativeV1>>().checked_mul(3)?)?
+            .checked_add(size_of::<Result<&mut RootPolicyFlightNativeV1, RootObservationErrorV1>>().checked_mul(3)?)?
+            .checked_add(size_of::<bool>().checked_mul(3)?)
     }
 }

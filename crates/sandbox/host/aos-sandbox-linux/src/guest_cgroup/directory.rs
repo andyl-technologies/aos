@@ -6,7 +6,8 @@ use std::path::Path;
 use rustix::fs::{Mode, fstat, mkdirat};
 
 use crate::cgroup::{CgroupActiveOriginalV2, CgroupChildOriginalV2, RetainedCgroupAnchor};
-use crate::{Error, Result};
+use aos_linux_descriptors::Error;
+use aos_linux_descriptors::Result;
 
 pub(super) const EXECUTIONS: &str = "aos-executions-v1";
 pub(super) const AGENT: &str = "aos-agent-v1";

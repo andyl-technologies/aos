@@ -11,9 +11,8 @@ use std::mem::size_of;
 use std::os::fd::{AsFd as _, BorrowedFd};
 use std::path::{Path, PathBuf};
 
-use aos_sandbox_linux::protected_file::positional_hash::{
-    PositionalHashClosedV2, PositionalHashOriginalV2,
-};
+use aos_linux_descriptors::positional_hash::PositionalHashClosedV2;
+use aos_linux_descriptors::positional_hash::PositionalHashOriginalV2;
 use rustix::fs::{AtFlags, FileType, Mode, OFlags, Stat, fstat, statat, open};
 
 const MAXIMUM_BYTES: u64 = 256 * 1024 * 1024;

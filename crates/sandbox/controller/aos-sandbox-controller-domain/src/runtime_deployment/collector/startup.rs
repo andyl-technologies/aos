@@ -18,7 +18,8 @@ use std::path::{Path, PathBuf};
 
 use aos_sandbox_linux::guest_confinement::require_subject;
 use aos_sandbox_linux::inherited_fd::duplicate_initial_activation_table;
-use aos_sandbox_linux::pidfd::{PidFd, PidFdProcessIdentity};
+use aos_linux_descriptors::pidfd::PidFd;
+use aos_sandbox_linux::pidfd::PidFdProcessIdentity;
 use aos_sandbox_linux::selinux_policy::VerifiedLiveSelinuxPolicy;
 use aos_sandbox_linux::seqpacket::RecordSubjectListener;
 use serde::Deserialize;
@@ -303,7 +304,7 @@ impl ProductionInstalledCollectorStartupCaptureV1 {
 
         let process = PidFd::open(NonZeroU32::new(std::process::id()).ok_or(Error::Service)?)
             .map_err(|_| Error::Service)?;
-        let identity = process.process_identity().map_err(|_| Error::Service)?;
+        let identity = aos_sandbox_linux::pidfd::process_identity(&(process)).map_err(|_| Error::Service)?;
         let service = RetainedCollectorServicePolicyV1::retain(
             profile_file.path(),
             &profile.executable.path,
@@ -392,7 +393,7 @@ impl ProductionInstalledCollectorStartupV1 {
         if !self.process.is_alive().map_err(|_| Error::Service)?
             || info.pid() != std::process::id()
             || info.parent_pid() != 1
-            || self.process.process_identity().map_err(|_| Error::Service)? != self.identity
+            || aos_sandbox_linux::pidfd::process_identity(&(self.process)).map_err(|_| Error::Service)? != self.identity
             || [
                 credentials.real_user_id(),
                 credentials.effective_user_id(),

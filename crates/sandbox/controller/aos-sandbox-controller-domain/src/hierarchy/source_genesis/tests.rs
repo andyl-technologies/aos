@@ -120,7 +120,7 @@ fn prepared_project(
 ) {
     let acceptance = acceptance(project);
     #[cfg(target_os = "linux")]
-    let intent = crate::policy_compiler::RootSourceGenesisIntentRecordV1::new(
+    let intent = aos_sandbox_ledger_replay::replay::root_genesis_records::RootSourceGenesisIntentRecordV1::new(
         instance,
         journal.protected_owner_uid().unwrap(),
         [11; 16],

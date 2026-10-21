@@ -507,7 +507,7 @@ impl OriginalCreateStorageBundleV1<'_, '_, '_> {
             (&mut owner.bundle.before, &mut owner.bundle.before_association, &mut owner.bundle.before_result)
         };
         *result = Some(match expected {
-            Ok(expected) => sample.observe_operation_once(control, &self.ready.cache, expected, position),
+            Ok(expected) => sample.observe_operation_once(control, &self.ready.cache.currentness_original_v1(), expected, position),
             Err(cause) => Err(cause),
         });
         *association = Some(owner.client_session.require_completed_association_v1(journal, socket, transcript));

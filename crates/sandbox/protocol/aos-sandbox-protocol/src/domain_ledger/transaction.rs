@@ -21,6 +21,9 @@
 mod preflight_digest;
 pub use preflight_digest::transaction_preflight_comparison_digest_v1;
 
+/// Reuses the canonical lower recovery counts without role admission.
+pub use aos_sandbox_journal::RecoveryReport;
+
 use aos_sandbox_model::{OperationId, RecordNamespace};
 use aos_sandbox_journal::geometry::NativeGeometryBounds;
 use aos_sandbox_journal::materialized::RecordMutationRef;

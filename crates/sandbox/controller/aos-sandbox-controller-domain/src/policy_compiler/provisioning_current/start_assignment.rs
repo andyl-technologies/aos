@@ -70,7 +70,7 @@ pub(crate) fn compile_accepted_start_assignment_v2(
 /// This shares Controller's compiler and materializer and returns comparison
 /// DATA only, never an OperationPlan, receiving original or predecessor grant.
 pub(in crate::policy_compiler) fn compile_root_start_assignment_v2(
-    controller: &mut Journal,
+    controller: crate::journal::historical_observation::HistoricalObservationV1<'_>,
     operation: aos_sandbox_model::OperationId,
     source: &LifecycleHistoricalReadOriginalV1,
     previous: &CanonicalAssignmentManifestV1,
@@ -104,7 +104,9 @@ fn compile_current_start_assignment_v2(
     let (input, candidate) = super::parentless_compiler::compile_parentless_current_v1(
         signed, current.project_v2(), current.sandbox_v2(), publisher.cache_domain,
     )?;
-    let reservations = crate::policy_compiler::create_q04::candidate_capacity(&candidate)?;
+    let reservations = aos_sandbox_policy::q04_candidate_capacity_v1!(
+            &candidate, crate::policy_compiler::create_q04::CreateQ04ErrorV1::ChangedCut
+        )?;
     let previous_model = previous.manifest();
     if reservations != previous_model.reservations() {
         return Err(JournalError::ProtectedBoundary.into());
@@ -163,4 +165,16 @@ pub(crate) fn require_current_start_signed_inputs_v2(
     }
 
     Ok(())
+}
+
+/// Prices the actual Root compiler's changed incoming loan and selector ports.
+///
+/// Its genuine model getter already admitted native loan construction. The
+/// Controller compiler retains its ordinary Journal endpoint and quote.
+pub(in crate::policy_compiler) fn root_start_compilation_control_bytes_v2() -> Option<usize> {
+    std::mem::size_of::<crate::journal::historical_observation::HistoricalObservationV1<'_>>()
+        .checked_mul(3)?
+        .checked_add(crate::policy_compiler::public_start_source::
+            start_source_root_observation_control_bytes_v2()?)?
+        .checked_add(std::mem::size_of::<Option<usize>>().checked_mul(3)?)
 }

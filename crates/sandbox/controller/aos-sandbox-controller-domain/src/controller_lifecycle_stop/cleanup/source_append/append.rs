@@ -194,7 +194,7 @@ impl StopCleanupSourceAppendOriginalV1 {
         self.first = Some(First::Readback);
         self.readback = Some((|| {
             self.read.observe_once_v1(
-                source.journal_ref_v1(),
+                source.journal_ref_v1().historical_read_view_v1().rows_data_v2(),
                 auth.completion_data_v1().operation(),
             )?;
             self.read.select_stop_completion_once_v1()?;

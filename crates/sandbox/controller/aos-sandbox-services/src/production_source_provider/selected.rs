@@ -17,7 +17,7 @@ pub enum ProductionSelectedSourceProviderFailureRefV1<'owner> {
     /// A catalog Result slot retains the actual kernel failure.
     CatalogKernel(&'owner rustix::io::Errno),
     /// The unchanged path validator retains its actual failure.
-    CatalogPath(&'owner aos_sandbox_linux::Error),
+    CatalogPath(&'owner aos_linux_descriptors::Error),
     /// A read/seek Result slot retains the actual I/O failure and read buffer.
     CatalogRead(&'owner std::io::Error),
     /// The genuine selected Core/security owner retains the actual nested cause.

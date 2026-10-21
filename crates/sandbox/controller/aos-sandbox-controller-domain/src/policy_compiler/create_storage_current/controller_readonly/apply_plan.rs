@@ -6,6 +6,7 @@
 //! original horizon before it may invoke this purpose-specific recipe. No
 //! earlier Prepare signature or Root8 borrower grants Apply authority.
 
+use aos_sandbox_policy::root_trust_data::RootBrokerPlanPublicTrustDataV1;
 use std::error::Error;
 use aos_sandbox_model::{BrokerAuthorizationPlan, BrokerPlanTrustAnchor, RawPairedClockSample};
 use aos_sandbox_ownership_protocol::SignedOwnershipLease;
@@ -44,7 +45,7 @@ impl RootProspectiveStorageApplyPlanV1 {
         cutoff: u64,
         policy_expires: i64,
     ) -> Result<Self, Box<dyn Error>> {
-        let trust = super::public_trust::RootBrokerPlanPublicTrustDataV1::from_fixed_public_data_v1(public)?;
+        let trust = aos_sandbox_policy::root_trust_data::RootBrokerPlanPublicTrustDataV1::from_fixed_public_data_v1(public)?;
         let prepared = aos_sandbox_protocol::authorization_artifact::prepare_storage_create_apply_plan_v1(
             protected, candidate.portable().policy_descriptor().digest(), lease,
             sample, cutoff, policy_expires, trust.authority, trust.revocation_scope,

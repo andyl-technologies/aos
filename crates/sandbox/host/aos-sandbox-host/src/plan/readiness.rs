@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use aos_sandbox_model::ObjectDigest;
 use aos_sandbox_protocol::runtime_deployment::readiness_preparation::BackendReadinessPreparationDataV1 as BackendReadinessArtifact;
-use aos_sandbox_linux::boot::KernelBootId;
+use aos_linux_descriptors::boot::KernelBootId;
 use aos_systemd_client::{OwnedValue, PayloadRootContinuityPolicyV1, SystemdClient};
 use rustix::fs::{FileType, Mode, OFlags, fstat, open, openat};
 use serde::{Deserialize, Serialize};
@@ -46,7 +46,7 @@ const BACKEND_POLICY_ARTIFACT_BYTES: usize = 9 + 65 * 4;
 const BACKEND_POLICY_MAGIC: &[u8; 9] = b"AOSBPA02\n";
 const PAYLOAD_FILTER_SOURCE: &str = "share/aos/nspawn-seccomp-source-v1";
 const MAXIMUM_PAYLOAD_FILTER_SOURCE_BYTES: usize = 256 * 1024;
-const EXECUTABLE_HASH_BUFFER_BYTES: usize = aos_sandbox_linux::protected_file::positional_hash::POSITIONAL_HASH_BUFFER_BYTES_V2;
+const EXECUTABLE_HASH_BUFFER_BYTES: usize = aos_linux_descriptors::positional_hash::POSITIONAL_HASH_BUFFER_BYTES_V2;
 const READINESS_BINDING_DOMAIN: &[u8] = b"aos.sandbox.host-readiness-binding.v1\0";
 
 #[derive(Clone, Copy)]
@@ -825,10 +825,10 @@ fn current_boot_id() -> Result<[u8; 16]> {
 
 
 pub(super) struct NspawnRevalidationOriginalV2 {
-    pub(super) boot: aos_sandbox_linux::boot::RootOriginalKernelBootIdAttemptV1,
+    pub(super) boot: aos_linux_descriptors::boot::RootOriginalKernelBootIdAttemptV1,
     pub(super) metadata: [Option<std::result::Result<rustix::fs::Stat, rustix::io::Errno>>; 2],
     read_error: Option<rustix::io::Errno>,
-    hash: aos_sandbox_linux::protected_file::positional_hash::PositionalHashOriginalV2,
+    hash: aos_linux_descriptors::positional_hash::PositionalHashOriginalV2,
 }
 
 impl NspawnRevalidationOriginalV2 {
@@ -839,24 +839,24 @@ impl NspawnRevalidationOriginalV2 {
     }
 
     pub(super) fn new() -> Self {
-        Self { boot: aos_sandbox_linux::boot::RootOriginalKernelBootIdAttemptV1::new(),
+        Self { boot: aos_linux_descriptors::boot::RootOriginalKernelBootIdAttemptV1::new(),
             metadata: std::array::from_fn(|_| None), read_error: None,
-            hash: aos_sandbox_linux::protected_file::positional_hash::PositionalHashOriginalV2::new() }
+            hash: aos_linux_descriptors::positional_hash::PositionalHashOriginalV2::new() }
     }
 
     pub(super) fn requested_bytes_v2() -> Option<usize> {
         // The same lower positional reader retains its actual fixed buffer.
         // There is no whole executable allocation or second hash engine.
         std::mem::size_of::<Self>().checked_mul(2)?
-            .checked_add(aos_sandbox_linux::protected_file::positional_hash::PositionalHashOriginalV2::receiving_bytes_v2()?)?
-            .checked_add(aos_sandbox_linux::boot::RootOriginalKernelBootIdAttemptV1::dominant_requested_bytes_v1()?)
+            .checked_add(aos_linux_descriptors::positional_hash::PositionalHashOriginalV2::receiving_bytes_v2()?)?
+            .checked_add(aos_linux_descriptors::boot::RootOriginalKernelBootIdAttemptV1::dominant_requested_bytes_v1()?)
     }
 
     pub(super) fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
         self.boot.failure()
             .or_else(|| self.metadata[0].as_ref()?.as_ref().err().map(|cause| cause as _))
             .or_else(|| self.hash.failure().map(|cause| match cause {
-                aos_sandbox_linux::protected_file::positional_hash::PositionalHashFailureV2::Read(error) => error as _,
+                aos_linux_descriptors::positional_hash::PositionalHashFailureV2::Read(error) => error as _,
                 _ => cause as _,
             }))
             .or_else(|| self.metadata[1].as_ref()?.as_ref().err().map(|cause| cause as _))
@@ -899,9 +899,8 @@ where F: FnMut(u64),
     let expected_bytes = u64::try_from(before.bytes).map_err(|_| {
         HostError::State("backend readiness executable has an invalid size".to_owned())
     })?;
-    use aos_sandbox_linux::protected_file::positional_hash::{
-        PositionalHashFailureV2, PositionalHashOriginalV2,
-    };
+    use aos_linux_descriptors::positional_hash::PositionalHashFailureV2;
+    use aos_linux_descriptors::positional_hash::PositionalHashOriginalV2;
     let mut local = PositionalHashOriginalV2::new();
     let destination = match original.as_deref_mut() {
         Some(original) => &mut original.hash,

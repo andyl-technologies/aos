@@ -290,8 +290,7 @@ pub(crate) enum ProtectedPriorAtomicStorageHistoryV1 {
 }
 
 // Names the DATA returned by fully reauthenticated protected history reads.
-pub(crate) use crate::controller_composition::HistoricalAtomicStorageHistoryDataV1
-    as ProtectedVerifiedAtomicStorageHistoryV1;
+pub(crate) use crate::controller_composition::HistoricalAtomicStorageHistoryDataV1 as ProtectedVerifiedAtomicStorageHistoryV1;
 
 /// Retains one reauthenticated original method-37 request from protected H custody.
 ///

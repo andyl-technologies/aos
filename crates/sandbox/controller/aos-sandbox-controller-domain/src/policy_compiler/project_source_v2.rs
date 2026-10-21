@@ -17,18 +17,18 @@
 
 use aos_sandbox_policy::signed_inputs::{
     PolicyDeploymentInputsV1, SignedProjectPolicyHeadV2, VerifiedSignedProjectPolicySourceV2,
-    decode_policy_deployment_sources_v1, verify_policy_deployment_head_v1,
-    verify_signed_project_policy_source_v2, materialize_signed_project_layer_data_v1,
+    decode_policy_deployment_sources_v1, materialize_signed_project_layer_data_v1,
+    verify_policy_deployment_head_v1, verify_signed_project_policy_source_v2,
 };
 
 use aos_sandbox_policy::journal_keys::{HEAD_KEY, SIGNER_PINS_KEY};
 
-use std::path::Path;
 use aos_sandbox_policy::signed_inputs::{
-    PROJECT_MAGIC as MAGIC, PROJECT_INPUT_MAGIC as INPUT_MAGIC,
-    PROJECT_SIGNING_DOMAIN as SIGNING_DOMAIN, PROJECT_PAYLOAD_BYTES as PAYLOAD_BYTES,
-    PROJECT_PACKET_BYTES as PACKET_BYTES,
+    PROJECT_INPUT_MAGIC as INPUT_MAGIC, PROJECT_MAGIC as MAGIC,
+    PROJECT_PACKET_BYTES as PACKET_BYTES, PROJECT_PAYLOAD_BYTES as PAYLOAD_BYTES,
+    PROJECT_SIGNING_DOMAIN as SIGNING_DOMAIN,
 };
+use std::path::Path;
 
 use aos_sandbox_model::format::descriptor_for_bytes;
 use aos_sandbox_model::model::{CacheDomain, CacheDomainKind, RevocationPolicy};
@@ -42,9 +42,10 @@ use sha2::{Digest as _, Sha256};
 use crate::Journal;
 use crate::hierarchy::protected_journal::HierarchyProtectedJournalOwnerV1;
 use crate::journal::{JournalRecord, JournalTransaction, RecordNamespace};
-use crate::source_domain::ProtectedSourceDomainJournalOwnerV1;
 use crate::publisher_admin::policy::{PublisherPolicyLimits, PublisherPolicyStore};
+use crate::source_domain::ProtectedSourceDomainJournalOwnerV1;
 
+use super::PolicyDeploymentHeadErrorV1;
 use super::deployment_head::{
     PROJECT_HEAD_KEY, PROJECT_INPUT_KEY, ProjectAncestryHeadReaderV1,
     bind_signed_project_to_controller_currentness, encode_policy_signer_pins_v1,
@@ -52,15 +53,15 @@ use super::deployment_head::{
 use super::protected_owner::{
     POLICY_AUTHORITY_JOURNAL, PROTECTED_POLICY_ROOT, policy_authority_journal_limits,
 };
-use super::PolicyDeploymentHeadErrorV1;
 use aos_sandbox_policy::{
     AuthenticatedCacheDomainV1, CacheDomainBindingV1, CacheDomainInputV1, CacheDomainVerifierV1,
     PolicyLayerV1, RevocationInputV1,
 };
 
 const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.policy-project-head-transaction.v2\0";
-pub(super) const HEAD_KEY_V2: &[u8] = b"\0aos-policy-project-head-v2\0";
-pub(super) const INPUT_KEY_V2: &[u8] = b"\0aos-policy-project-input-v2\0";
+pub(super) use aos_sandbox_policy::journal_keys::{
+    PROJECT_HEAD_KEY_V2 as HEAD_KEY_V2, PROJECT_INPUT_KEY_V2 as INPUT_KEY_V2,
+};
 
 /// Retains the explicit layer only after protected root/current-head admission.
 pub struct AdmittedSignedProjectPolicySourceV2 {

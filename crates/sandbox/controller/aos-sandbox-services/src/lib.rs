@@ -32,7 +32,7 @@ pub mod source_genesis_flight;
 pub mod production_source_provider;
 
 // Application-level ordinary/Q04 orchestration stays above protected roles.
-#[cfg(any(feature = "policy", feature = "controller"))]
+#[cfg(feature = "policy")]
 mod cache_signer_ordinary_credential;
 #[cfg(any(feature = "policy", feature = "controller"))]
 pub mod cache_signer_exchange;

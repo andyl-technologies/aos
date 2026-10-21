@@ -1672,7 +1672,7 @@ fn entry_demand_v5(actual_body_bytes: usize) -> Result<ResourceVector> {
     let model = HostInventoryAbsenceDataV5::request_decoding_memory_bytes_v5(actual_body_bytes)
         .ok_or(HostError::ResourceExhausted)?;
     let boot =
-        aos_sandbox_linux::boot::RootOriginalKernelBootIdAttemptV1::dominant_requested_bytes_v1()
+        aos_linux_descriptors::boot::RootOriginalKernelBootIdAttemptV1::dominant_requested_bytes_v1()
             .ok_or(HostError::ResourceExhausted)?;
     let bytes = std::mem::size_of::<HostNativeInventoryOriginalV5>()
         .checked_mul(2)

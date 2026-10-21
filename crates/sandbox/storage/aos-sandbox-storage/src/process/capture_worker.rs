@@ -45,9 +45,9 @@ impl<'entry> AuthenticatedCaptureWorkerContextV3<'entry> {
     // Only the authenticated inherited context selects these original native
     // ceilings. The Linux value denies operations; it is no execution grant.
     pub(super) fn process_cut_data_v3(&self)
-        -> aos_sandbox_linux::Result<aos_sandbox_linux::process::FixedProcessCaptureCutV3> {
+        -> aos_linux_descriptors::Result<aos_sandbox_linux::process::FixedProcessCaptureCutV3> {
         let (_, _, _, _, _, _, cutoff) = crate::execution_output::capture_worker_inputs_v3(self)
-            .map_err(|_| aos_sandbox_linux::Error::DeadlineExceeded {
+            .map_err(|_| aos_linux_descriptors::Error::DeadlineExceeded {
                 operation: "Capture process original association",
             })?;
         aos_sandbox_linux::process::FixedProcessCaptureCutV3::new(cutoff,

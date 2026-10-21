@@ -17,7 +17,10 @@ use aos_sandbox_linux::cgroup::{
     CgroupV2Root, ExactCgroupMembershipReadbackV1, ExactCgroupMembershipRefusalV1,
     OwnershipInitialCgroupReadbackV1, RetainedCgroupAnchor,
 };
-use aos_sandbox_linux::pidfd::{PidFd, PidFdInfo, PidFdOpenAttemptV1, PidFdOpenRefusalV1};
+use aos_linux_descriptors::pidfd::PidFd;
+use aos_linux_descriptors::pidfd::PidFdInfo;
+use aos_sandbox_linux::pidfd::PidFdOpenAttemptV1;
+use aos_sandbox_linux::pidfd::PidFdOpenRefusalV1;
 use aos_systemd_client::{
     FixedPid1PropertyArchiveV1, FixedPid1PropertyErrorV1, FixedPid1PropertyValuesV1,
     FixedPid1PropertyWorkerSlotV1, OwnedValue, Value,
@@ -72,7 +75,7 @@ pub(in crate::policy_compiler::delete_root) struct RootOwnershipProfileOriginalV
     fragment_after: ImmutableFileRevalidationOriginalV1,
     fragment_post: Option<Result<(), ImmutableImageErrorV1>>,
     cgroup: OwnershipInitialCgroupReadbackV1,
-    cgroup_result: Option<aos_sandbox_linux::Result<()>>,
+    cgroup_result: Option<aos_linux_descriptors::Result<()>>,
     pair: Option<(CgroupV2Root, RetainedCgroupAnchor)>,
     pidfd: PidFdOpenAttemptV1,
     pidfd_result: Option<Result<(), PidFdOpenRefusalV1>>,
@@ -81,7 +84,7 @@ pub(in crate::policy_compiler::delete_root) struct RootOwnershipProfileOriginalV
     membership_results: [Option<Result<(), ExactCgroupMembershipRefusalV1>>; 2],
     process_binding: [Option<Result<(), OwnershipProfileClosedV1>>; 2],
     kernel_result: Option<Result<(), OwnershipProfileClosedV1>>,
-    liveness: Option<aos_sandbox_linux::Result<bool>>,
+    liveness: Option<aos_linux_descriptors::Result<bool>>,
     comparison: Option<Result<(), OwnershipProfileClosedV1>>,
     entered: bool,
     finished: bool,

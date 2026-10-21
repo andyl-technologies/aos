@@ -21,7 +21,8 @@ use aos_sandbox_protocol::domain_ledger::{
 };
 
 use crate::controller_resource_reservation::OperatorCreateRecoveryRequestDataV1;
-use crate::journal::{Journal, JournalError, RecordNamespace};
+use crate::journal::{JournalError, RecordNamespace};
+use crate::journal::historical_observation::HistoricalObservationV1;
 use aos_sandbox_protocol::domain_ledger::provisioning_root::finality_recover::public_operation::{
     metadata_complete_admission_receiving_bytes_v1, metadata_complete_admission_transaction_v1,
     require_metadata_complete_admission_rows_v1,
@@ -95,14 +96,14 @@ impl CreateFinalityAuthorizationOriginalV1 {
 
     /// Measures actual authority/request graphs before any decoder is entered.
     pub(crate) fn receiving_demand_v1(
-        controller: &Journal,
+        controller: HistoricalObservationV1<'_>,
         query: FinalityRecoverQueryDataV1,
     ) -> Result<ResourceVector, Cause> {
         Self::receiving_recovery_demand_v2(controller, query.into())
     }
 
     pub(crate) fn receiving_recovery_demand_v2(
-        controller: &Journal,
+        controller: HistoricalObservationV1<'_>,
         reference: RootRecoveryAdmissionReferenceDataV2,
     ) -> Result<ResourceVector, Cause> {
         let admission = admission_v1(controller, reference)?;
@@ -120,12 +121,20 @@ impl CreateFinalityAuthorizationOriginalV1 {
         let models = models
             .checked_add(candidate)
             .ok_or(JournalError::JournalTooLarge)?;
+        let models = models.checked_add(
+            aos_sandbox_protocol::publisher_policy::receiving_data::namespace_receiving_control_bytes_v1()
+                .ok_or(JournalError::JournalTooLarge)?,
+        ).ok_or(JournalError::JournalTooLarge)?;
         let models = u64::try_from(models).map_err(|_| JournalError::JournalTooLarge)?;
         let carrier = size_of::<Self>()
             .checked_mul(3)
+            // observe-purpose -> recovery-once -> inner retain the same real
+            // loan by value; the forecast wrappers are shallower than this.
+            .and_then(|bytes| bytes.checked_add(size_of::<HistoricalObservationV1<'_>>().checked_mul(9)?))
+            .and_then(|bytes| bytes.checked_add(aos_sandbox_protocol::publisher_policy::receiving_data::namespace_receiving_control_bytes_v1()?))
             .and_then(|bytes| u64::try_from(bytes).ok())
             .ok_or(JournalError::JournalTooLarge)?;
-        let entries = crate::publisher_admin::authorization_namespace_entries_v1(controller)
+        let entries = aos_sandbox_protocol::publisher_policy::receiving_data::authorization_namespace_entries_v1(controller.rows_data_v2())
             .and_then(|entries| u64::try_from(entries).ok())
             .ok_or(JournalError::JournalTooLarge)?;
         Ok(ResourceVector::ZERO
@@ -141,7 +150,7 @@ impl CreateFinalityAuthorizationOriginalV1 {
     /// Compares the exact immutable observation and actual current scope.
     pub(crate) fn observe_once_v1(
         &mut self,
-        controller: &Journal,
+        controller: HistoricalObservationV1<'_>,
         query: FinalityRecoverQueryDataV1,
         node: [u8; 16],
         partition: (ResourceVector, ResourceVector, ResourceVector),
@@ -156,7 +165,7 @@ impl CreateFinalityAuthorizationOriginalV1 {
     /// Recomputes actual kind3 capability and all four protected admission rows.
     pub(crate) fn observe_execution_no_apply_once_v2(
         &mut self,
-        controller: &Journal,
+        controller: HistoricalObservationV1<'_>,
         reference: RootRecoveryAdmissionReferenceDataV2,
         node: [u8; 16],
         partition: (ResourceVector, ResourceVector, ResourceVector),
@@ -171,7 +180,7 @@ impl CreateFinalityAuthorizationOriginalV1 {
     /// Rechecks a distinct Stop cleanup on the same actual current-cap engine.
     pub(crate) fn observe_stop_cleanup_once_v2(
         &mut self,
-        controller: &Journal,
+        controller: HistoricalObservationV1<'_>,
         reference: RootRecoveryAdmissionReferenceDataV2,
         node: [u8; 16],
         partition: (ResourceVector, ResourceVector, ResourceVector),
@@ -185,7 +194,7 @@ impl CreateFinalityAuthorizationOriginalV1 {
 
     fn observe_recovery_once_v2(
         &mut self,
-        controller: &Journal,
+        controller: HistoricalObservationV1<'_>,
         reference: RootRecoveryAdmissionReferenceDataV2,
         node: [u8; 16],
         partition: (ResourceVector, ResourceVector, ResourceVector),
@@ -200,13 +209,13 @@ impl CreateFinalityAuthorizationOriginalV1 {
 
     fn observe_inner_v1(
         &mut self,
-        controller: &Journal,
+        controller: HistoricalObservationV1<'_>,
         reference: RootRecoveryAdmissionReferenceDataV2,
         node: [u8; 16],
         (baseline, normal, recovery): (ResourceVector, ResourceVector, ResourceVector),
     ) -> Result<OperationId, Cause> {
         let admission = admission_v1(controller, reference)?;
-        let state = controller.historical_read_view_v1().materialized_state_v1();
+        let state = controller.state_v1();
         let enrollment = resource_bank::validate(state)?.ok_or(JournalError::ProtectedBoundary)?;
         let recipient = resource_bank::recipient_incarnation(state, enrollment)?
             .ok_or(JournalError::ProtectedBoundary)?;
@@ -269,7 +278,7 @@ impl CreateFinalityAuthorizationOriginalV1 {
         self.authorization = Some((|| {
             let (revision, expires) = crate::cli_model::authorization_adapter::
                 compare_create_recovery_authorization_from_records_v1(
-                    crate::publisher_admin::PublisherReadDataV2::from_journal_v2(controller),
+                    crate::publisher_admin::PublisherReadDataV2::from_state_v2(controller.state_v1()),
                     request, ProjectId::from_bytes(admission.project),
                     PrincipalId::from_bytes(admission.holder),
                     CapabilityId::from_bytes(admission.capability),
@@ -367,7 +376,7 @@ impl CreateFinalityAuthorizationOriginalV1 {
 // Both native payment geometry and the entered model owner borrow this one
 // canonical framing check. Native integrity/currentness remains the caller's.
 fn admission_v1(
-    controller: &Journal,
+    controller: HistoricalObservationV1<'_>,
     reference: RootRecoveryAdmissionReferenceDataV2,
 ) -> Result<Admission<'_>, JournalError> {
     let raw = controller

@@ -26,23 +26,22 @@ use aos_sandbox_protocol::public_api::projection::{PublicProjectionKindV1, PROJE
 use crate::controller_resource_reservation::RootContinuationDemandV1;
 use crate::journal::{
     create_stopped_metadata_model_receiving_demand_v1, CreateStoppedMetadataTransitionOriginalV1,
-    Journal, JournalError, JournalRecord, RecordNamespace,
+    JournalError, JournalRecord, RecordNamespace,
 };
+use crate::journal::historical_observation::HistoricalObservationV1;
 use crate::normal_root::{NormalRootStartupErrorV1, RootPolicyAcceptedFlightV1};
-use crate::policy_compiler::{
-    bounded_stream_io::{DeadlineStreamDirectionV1 as Direction, FixedDeadlineStreamIoV1},
-    continuation_policy::{RootContinuationPolicyErrorV1, RootFinalityRecoverPairOriginalV1},
-    provisioning_current::create_finality::{
-        recovery_models::CreateFinalityRecoveryModelsOriginalV1 as Models,
-        session::CreateFinalitySessionOriginalV1 as Session,
-        storage_trust::CreateFinalityStorageTrustOriginalV1 as Trust,
-    },
-    provisioning_current::finality_readonly::{
-        RootCreateFinalityReadStageV1, RootCreateFinalityReadonlyOriginalV1 as Readonly,
-    },
-    provisioning_current::{RootContinuationClockGateV1 as Clock, RootContinuationHorizonDataV1},
-    root_policy_prelude::RootPolicyPreludeOriginalV1,
-};
+use aos_sandbox_broker::bounded_stream_io::DeadlineStreamDirectionV1 as Direction;
+use aos_sandbox_broker::bounded_stream_io::FixedDeadlineStreamIoV1;
+use crate::policy_compiler::continuation_policy::RootContinuationPolicyErrorV1;
+use crate::policy_compiler::continuation_policy::RootFinalityRecoverPairOriginalV1;
+use crate::policy_compiler::provisioning_current::create_finality::recovery_models::CreateFinalityRecoveryModelsOriginalV1 as Models;
+use crate::policy_compiler::provisioning_current::create_finality::session::CreateFinalitySessionOriginalV1 as Session;
+use crate::policy_compiler::provisioning_current::create_finality::storage_trust::CreateFinalityStorageTrustOriginalV1 as Trust;
+use crate::policy_compiler::provisioning_current::finality_readonly::RootCreateFinalityReadStageV1;
+use crate::policy_compiler::provisioning_current::finality_readonly::RootCreateFinalityReadonlyOriginalV1 as Readonly;
+use crate::policy_compiler::provisioning_current::RootContinuationClockGateV1 as Clock;
+use crate::policy_compiler::provisioning_current::RootContinuationHorizonDataV1;
+use crate::policy_compiler::root_policy_prelude::RootPolicyPreludeOriginalV1;
 
 type Cause = Box<dyn Error>;
 
@@ -118,6 +117,12 @@ impl RootFinalityRecoverNativeOriginalV1 {
     ) -> Result<ResourceVector, Cause> {
         let carrier = size_of::<Self>()
             .checked_mul(3)
+            .and_then(|bytes| bytes.checked_add(crate::journal::create_stopped_independent_geometry_control_bytes_v2()?))
+            .and_then(|bytes| bytes.checked_add(crate::policy_compiler::provisioning_current::create_finality::controller::CreateFinalityControllerOriginalV1::observation_control_bytes_v2()?))
+            .and_then(|bytes| bytes.checked_add(CreateStoppedMetadataTransitionOriginalV1::observation_control_bytes_v2()?))
+            .and_then(|bytes| bytes.checked_add(Models::observation_control_bytes_v2()?))
+            .and_then(|bytes| bytes.checked_add(size_of::<(HistoricalObservationV1<'_>, Query)>().checked_mul(3)?))
+            .and_then(|bytes| bytes.checked_add(size_of::<Result<ResourceVector, Cause>>().checked_mul(3)?))
             .and_then(|bytes| u64::try_from(bytes).ok())
             .ok_or(JournalError::JournalTooLarge)?;
         let clock = Clock::controller_authorization_receiving_demand_v1()?;
@@ -279,7 +284,7 @@ impl RootFinalityRecoverNativeOriginalV1 {
 
         self.phase = Phase::Models;
         let demand = {
-            let (controller, source) = self.readonly.journals_v1()?;
+            let (controller, source) = self.readonly.models_v1()?;
             Models::receiving_demand_v1(controller, source, query)?
         };
         self.clock_v1()?.check_next_once_v1()?;
@@ -293,7 +298,7 @@ impl RootFinalityRecoverNativeOriginalV1 {
         if !matches!(self.models_funding, Some(Ok(()))) {
             return Err(JournalError::ProtectedBoundary.into());
         }
-        let (controller, source) = self.readonly.journals_v1()?;
+        let (controller, source) = self.readonly.models_v1()?;
         self.models.observe_once_v1(
             controller,
             source,
@@ -305,7 +310,7 @@ impl RootFinalityRecoverNativeOriginalV1 {
         )?;
 
         self.phase = Phase::Response;
-        let demand = response_receiving_demand_v1(self.readonly.controller_v1()?, query)?;
+        let demand = response_receiving_demand_v1(self.readonly.controller_model_v1()?, query)?;
         self.clock_v1()?.check_next_once_v1()?;
         self.response_funding = Some(
             root.flight
@@ -383,7 +388,7 @@ impl RootFinalityRecoverNativeOriginalV1 {
             .and_then(|value| value.as_ref().ok())
             .copied()
             .ok_or(JournalError::ProtectedBoundary)?;
-        let controller = self.readonly.completed_controller_v1()?;
+        let controller = self.readonly.completed_controller_model_v1()?;
         let raw = controller
             .get(RecordNamespace::OperatorRecovery, &query.admission_key)
             .ok_or(JournalError::ProtectedBoundary)?;
@@ -623,7 +628,7 @@ impl RootFinalityRecoverNativeOriginalV1 {
 }
 
 fn response_receiving_demand_v1(
-    controller: &Journal,
+    controller: HistoricalObservationV1<'_>,
     query: Query,
 ) -> Result<ResourceVector, Cause> {
     let admission = Admission::decode_v1(
@@ -665,7 +670,7 @@ fn response_receiving_demand_v1(
         .and_then(|bytes| u64::try_from(bytes).ok())
         .ok_or(JournalError::JournalTooLarge)?;
     Ok(
-        create_stopped_metadata_model_receiving_demand_v1(controller, target)?.checked_add(
+        create_stopped_metadata_model_receiving_demand_v1(controller.rows_data_v2(), target)?.checked_add(
             ResourceVector::ZERO
                 .with(D::MemoryBytes, clone_bytes)
                 .with(D::NetworkBytes, ACK_BYTES as u64)

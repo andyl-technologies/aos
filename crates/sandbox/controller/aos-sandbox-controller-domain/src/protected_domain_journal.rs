@@ -386,8 +386,7 @@ pub(crate) enum ResidentDomainCommitFailureV1 {
 ///
 /// The record alone grants no effect. This module privately constructs the
 /// current transaction composite only after its real native role guards.
-pub use aos_sandbox_protocol::domain_ledger::records::DomainPostcommitRecordDataV1
-    as DomainPostcommitRecordV1;
+pub use aos_sandbox_protocol::domain_ledger::records::DomainPostcommitRecordDataV1 as DomainPostcommitRecordV1;
 
 /// Reports a successful exact readback and any role-specific authority.
 #[must_use = "postcommit capabilities must be consumed or deliberately discarded"]
@@ -918,56 +917,7 @@ impl<'journal, S: ProtectedDomainSchemaV1> ProtectedDomainJournalV1<'journal, S>
         self.commit_with_custody(prepared, |_| Ok(()), gate)
     }
 
-    fn commit_with_custody(
-        &mut self,
-        prepared: PreparedDomainTransactionV1<S>,
-        mut check: impl FnMut(&Journal) -> Result<(), JournalError>,
-        mut gate: CacheMutationGateV1<'_>,
-    ) -> Result<DomainCommitOutcomeV1<S>, DomainRetainedCommitFailureV1<S>> {
-        let before = self.check_prepared_before_append(&prepared, &mut gate, &mut check);
-        if let Err(cause) = before {
-            return Err(RetainedCommitFailureV1::BeforeJournalAppend { prepared, cause });
-        }
-        if let Err(cause) = gate.commit(self.journal, &prepared.data.transaction) {
-            return Ok(DomainCommitOutcomeV1::OutcomeUnknown {
-                pending: DomainOutcomeUnknownV1 { prepared },
-                cause,
-            });
-        }
-        if let Err(cause) = validate_expected_values(self.journal, &prepared, true) {
-            return Err(RetainedCommitFailureV1::AfterAppendReadback {
-                pending: DomainOutcomeUnknownV1 { prepared },
-                cause,
-            });
-        }
-        if let Err(cause) = check(self.journal) {
-            return Ok(DomainCommitOutcomeV1::OutcomeUnknown {
-                pending: DomainOutcomeUnknownV1 { prepared },
-                cause,
-            });
-        }
-        self.applied_retaining(prepared)
-            .map(DomainCommitOutcomeV1::Applied)
-            .map_err(
-                |(prepared, cause)| RetainedCommitFailureV1::AfterAppendSealing {
-                    pending: DomainOutcomeUnknownV1 { prepared },
-                    cause,
-                },
-            )
-    }
-
-    fn check_prepared_before_append(
-        &self,
-        prepared: &PreparedDomainTransactionV1<S>,
-        gate: &mut CacheMutationGateV1<'_>,
-        check: &mut impl FnMut(&Journal) -> Result<(), JournalError>,
-    ) -> Result<(), ProtectedDomainJournalErrorV1> {
-        self.validate_snapshot(&prepared.snapshot)?;
-        validate_expected_values(self.journal, prepared, false)?;
-        gate.preflight(self.journal, std::slice::from_ref(&prepared.data.transaction))?;
-        check(self.journal)?;
-        Ok(())
-    }
+    aos_sandbox_broker::define_protected_commit_control_v1!(Journal);
 
     pub(crate) fn commit_resident_source_prepared_v1(
         &mut self, prepared: &PreparedDomainTransactionV1<S>,
@@ -1006,29 +956,6 @@ impl<'journal, S: ProtectedDomainSchemaV1> ProtectedDomainJournalV1<'journal, S>
         original: &crate::controller_lifecycle_stop::StopCleanupSourceAppendAuthorizationV1<'_>,
     ) -> Result<(), JournalError> {
         original.require_published_source_successor_once_v1(self.journal, native, prepared.journal_transaction_v1())
-    }
-
-    /// Appends while borrowing the resident Prepared instead of taking it.
-    ///
-    /// The caller parks this complete Result before any final owner checks.
-    /// An append failure keeps both exact before/after bytes and its native
-    /// error in the same resident owner; it is not retry authorization.
-    ///
-    /// # Errors
-    /// Returns the first preappend, append, readback or sealing failure.
-    pub(crate) fn commit_resident_prepared(
-        &mut self,
-        prepared: &PreparedDomainTransactionV1<S>,
-        mut gate: CacheMutationGateV1<'_>,
-    ) -> Result<AppliedDomainTransactionV1<S>, ResidentDomainCommitFailureV1> {
-        self.check_prepared_before_append(prepared, &mut gate, &mut |_| Ok(()))
-            .map_err(ResidentDomainCommitFailureV1::Before)?;
-        gate.commit(self.journal, &prepared.data.transaction)
-            .map_err(ResidentDomainCommitFailureV1::Append)?;
-        validate_expected_values(self.journal, prepared, true)
-            .map_err(ResidentDomainCommitFailureV1::Readback)?;
-        self.applied_borrowed(prepared)
-            .map_err(ResidentDomainCommitFailureV1::Sealing)
     }
 
     /// Commits while retaining the exact prepared token on preflight failure.
@@ -1136,144 +1063,9 @@ impl<'journal, S: ProtectedDomainSchemaV1> ProtectedDomainJournalV1<'journal, S>
         self.recover_retaining_with_cache_gate(pending, CacheMutationGateV1::Ordinary)
     }
 
-    /// Classifies the same pending event without reopening a resident writer.
-    ///
-    /// A before image must still match its original snapshot and pass the same
-    /// gate and preflight. Classification is not permission to retry an effect.
-    pub(crate) fn recover_retaining_with_cache_gate(
-        &self,
-        pending: DomainOutcomeUnknownV1<S>,
-        mut gate: CacheMutationGateV1<'_>,
-    ) -> DomainRetainedRecoveryV1<S> {
-        if let Err(error) = self.replay() {
-            return DomainRetainedRecoveryV1::Retryable { pending, error };
-        }
-        let prepared = pending.prepared;
-        let DomainRecoveryImageComparisonDataV1 { before, after } =
-            transaction_state::compare_recovery_images_v1(
-                self.journal.historical_read_view_v1(), &prepared.data,
-            );
-        if after {
-            return match self.applied_retaining(prepared) {
-                Ok(applied) => {
-                    DomainRetainedRecoveryV1::Outcome(DomainRecoveryV1::Applied(applied))
-                }
-                Err((prepared, error)) => DomainRetainedRecoveryV1::Retryable {
-                    pending: DomainOutcomeUnknownV1 { prepared },
-                    error,
-                },
-            };
-        }
-        if before {
-            let mut prepared = prepared;
-            if matches!(&gate, CacheMutationGateV1::Ordinary) {
-                prepared.snapshot = match self.snapshot() {
-                    Ok(snapshot) => snapshot,
-                    Err(error) => {
-                        return DomainRetainedRecoveryV1::Retryable {
-                            pending: DomainOutcomeUnknownV1 { prepared },
-                            error,
-                        };
-                    }
-                };
-            } else if let Err(error) = self.validate_snapshot(&prepared.snapshot) {
-                return DomainRetainedRecoveryV1::Retryable {
-                    pending: DomainOutcomeUnknownV1 { prepared },
-                    error,
-                };
-            }
-            if let Err(error) = gate
-                .preflight(self.journal, std::slice::from_ref(&prepared.data.transaction))
-                .map_err(ProtectedDomainJournalErrorV1::from)
-            {
-                return DomainRetainedRecoveryV1::Retryable {
-                    pending: DomainOutcomeUnknownV1 { prepared },
-                    error,
-                };
-            }
-            return DomainRetainedRecoveryV1::Outcome(DomainRecoveryV1::Retry(prepared));
-        }
-        DomainRetainedRecoveryV1::Outcome(DomainRecoveryV1::Diverged(DomainOutcomeUnknownV1 {
-            prepared,
-        }))
-    }
+    aos_sandbox_broker::define_protected_recovery_control_v1!(Journal);
 
-    fn validate_snapshot(
-        &self,
-        snapshot: &ProtectedDomainSnapshotV1<S>,
-    ) -> Result<(), ProtectedDomainJournalErrorV1> {
-        let current = self.snapshot()?;
-        if !Arc::ptr_eq(&snapshot.instance, &self.instance)
-            || snapshot.sequence != current.sequence
-            || snapshot.root != current.root
-        {
-            return Err(ProtectedDomainJournalErrorV1::StaleAuthority);
-        }
-        Ok(())
-    }
-
-    fn applied(
-        &self,
-        prepared: PreparedDomainTransactionV1<S>,
-    ) -> Result<AppliedDomainTransactionV1<S>, ProtectedDomainJournalErrorV1> {
-        self.applied_borrowed(&prepared)
-    }
-
-    fn applied_borrowed(
-        &self,
-        prepared: &PreparedDomainTransactionV1<S>,
-    ) -> Result<AppliedDomainTransactionV1<S>, ProtectedDomainJournalErrorV1> {
-        let snapshot = self.snapshot()?;
-        let records = postcommit_records(prepared, &self.validator)?;
-        let capability = Some(DomainPostcommitCapabilityV1 {
-            instance: Arc::clone(&self.instance),
-            transaction: prepared.data.digest,
-            set_digest: prepared.data.set_digest,
-            sequence: snapshot.sequence,
-            root: snapshot.root,
-            records,
-            marker: PhantomData,
-        });
-        Ok(AppliedDomainTransactionV1 {
-            transaction: prepared.data.digest,
-            snapshot,
-            capability,
-        })
-    }
-
-    fn applied_retaining(
-        &self,
-        prepared: PreparedDomainTransactionV1<S>,
-    ) -> Result<
-        AppliedDomainTransactionV1<S>,
-        (
-            PreparedDomainTransactionV1<S>,
-            ProtectedDomainJournalErrorV1,
-        ),
-    > {
-        let snapshot = match self.snapshot() {
-            Ok(snapshot) => snapshot,
-            Err(error) => return Err((prepared, error)),
-        };
-        let records = match postcommit_records(&prepared, &self.validator) {
-            Ok(records) => records,
-            Err(error) => return Err((prepared, error)),
-        };
-        let capability = Some(DomainPostcommitCapabilityV1 {
-            instance: Arc::clone(&self.instance),
-            transaction: prepared.data.digest,
-            set_digest: prepared.data.set_digest,
-            sequence: snapshot.sequence,
-            root: snapshot.root,
-            records,
-            marker: PhantomData,
-        });
-        Ok(AppliedDomainTransactionV1 {
-            transaction: prepared.data.digest,
-            snapshot,
-            capability,
-        })
-    }
+    aos_sandbox_broker::define_protected_sealing_control_v1!(Journal);
 }
 
 impl<S: ProtectedDomainSchemaV1> DomainPostcommitCapabilityV1<S> {

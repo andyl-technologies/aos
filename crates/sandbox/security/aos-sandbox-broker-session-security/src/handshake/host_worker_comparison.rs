@@ -21,7 +21,7 @@ use aos_sandbox_broker_session_protocol::BrokerSessionProtocolV1;
 use aos_sandbox_host::peer::ControllerPeerVerifier;
 use aos_sandbox_linux::cgroup::CgroupV2Root;
 use aos_sandbox_linux::cgroup::RetainedCgroupAnchor;
-use aos_sandbox_linux::pidfd::PidFd;
+use aos_linux_descriptors::pidfd::PidFd;
 use aos_sandbox_mount::broker::PreparedMountFuseWorkerHandoffV1;
 use aos_sandbox_mount::worker::MountWorker;
 use aos_sandbox_protocol::authenticated_session::all_methods::{

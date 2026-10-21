@@ -5,7 +5,7 @@
 //! their sole common authorization engine; it creates no financial or policy grant.
 
 use std::error::Error;
-use aos_sandbox_linux::boot::RootOriginalKernelBootIdAttemptV1;
+use aos_linux_descriptors::boot::RootOriginalKernelBootIdAttemptV1;
 use crate::public_api_session::PublicApiPeerRecheckV1;
 use crate::cli_model::authorization_adapter::{CurrentCapabilityDecisionV1,
     RetainedAuthorizationTimeFloorV1};

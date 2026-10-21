@@ -4,6 +4,8 @@
 //! prefixes, full method models, framed receipts and final same-D comparison.
 //! This owner creates no Root62 signature or physical Mount acknowledgement.
 
+use aos_sandbox_policy::native::{RootFinalityReadOriginalV1 as Target, RootFinalityReadKindV1 as Kind};
+use crate::journal::historical_observation::root_readonly_error_v1 as project_read;
 use super::body::message::RootDeleteMessageReceivingV2;
 use super::controller::sessions::model::{
     DeleteCleanupTerminalPurposeV4, DeleteSessionModelsOriginalV2,
@@ -13,7 +15,7 @@ use crate::controller_resource_reservation::{ResourceReservationErrorV1, RootDel
 use crate::journal::JournalError;
 use crate::policy_compiler::{
     RetainedKernelPairedClockAttemptV1,
-    create_storage_current::controller_readonly::native_read::RootFixedNativeReadOriginalsV1,
+
 };
 use aos_sandbox_model::{RawPairedClockSample, ResourceDimension as D, ResourceVector};
 use aos_sandbox_protocol::{
@@ -81,7 +83,7 @@ pub(crate) struct RootDeleteCleanupCurrentOriginalV4 {
     frame: RootDeleteMessageReceivingV2,
     received: Option<Result<(), RootDeleteErrorV1>>,
     decoded: Option<Result<DeleteRootCleanupCurrentDataV4, DeleteRootCleanupCurrentErrorV4>>,
-    readers: [RootFixedNativeReadOriginalsV1; 2],
+    readers: [Target; 2],
     native: [Option<Result<(), JournalError>>; 2],
     models: [DeleteSessionModelsOriginalV2; 2],
     model_results: [Option<Result<(), JournalError>>; 2],
@@ -113,8 +115,8 @@ impl Default for RootDeleteCleanupCurrentOriginalV4 {
             received: None,
             decoded: None,
             readers: [
-                RootFixedNativeReadOriginalsV1::network_session_v2(),
-                RootFixedNativeReadOriginalsV1::host_session_v2(),
+                Target::new(Kind::NetworkSession),
+                Target::new(Kind::HostSession),
             ],
             native: std::array::from_fn(|_| None),
             models: std::array::from_fn(|_| Default::default()),
@@ -266,7 +268,7 @@ impl RootDeleteCleanupCurrentOriginalV4 {
                     P::NetworkNative,
                     P::NetworkModels,
                     DeleteCleanupTerminalPurposeV4::NetworkDestroy9,
-                    RootFixedNativeReadOriginalsV1::network_session_fixed_demand_v2(),
+                    super::reader::fixed_demand_v1(Kind::NetworkSession),
                 )
             } else {
                 (
@@ -274,7 +276,7 @@ impl RootDeleteCleanupCurrentOriginalV4 {
                     P::HostNative,
                     P::HostModels,
                     DeleteCleanupTerminalPurposeV4::HostInventory3,
-                    RootFixedNativeReadOriginalsV1::host_session_fixed_demand_v2(),
+                    super::reader::fixed_demand_v1(Kind::HostSession),
                 )
             };
             self.admit_v4(flight, fixed, demand.map_err(|cause| cause.into()))?;
@@ -285,14 +287,15 @@ impl RootDeleteCleanupCurrentOriginalV4 {
             } else {
                 frame.host
             };
-            self.readers[index].prepare_delete_cleanup_session_observation_v4(proof.native)?;
+            self.readers[index].construct_reader_once_v1().map_err(project_read)?;
+            self.readers[index].prepare_delete_cleanup_session_observation_v4(proof.native).map_err(project_read)?;
             self.readers[index].capture_once(uid);
-            if self.readers[index].require_captured_v1().is_err() {
+            if self.readers[index].require_captured_v1().map_err(project_read).is_err() {
                 self.first = Some(First::Native(index));
                 return Err(RootDeleteErrorV1::Opening.into());
             }
             let demand = self.readers[index]
-                .replay_demand_v1()
+                .replay_demand_v1().map_err(project_read)
                 .map_err(|cause| cause.into());
             self.admit_v4(flight, native, demand)?;
             self.sample_once_v4(3 + index * 3, inputs);
@@ -301,14 +304,14 @@ impl RootDeleteCleanupCurrentOriginalV4 {
             self.readers[index].finish_post_once();
             self.native[index] = Some(
                 self.readers[index]
-                    .delete_preparation_native_data_v3()
+                    .delete_preparation_native_data_v3().map_err(project_read)
                     .map(|_| ()),
             );
             if !matches!(self.native[index], Some(Ok(()))) {
                 self.first = Some(First::Native(index));
                 return Err(RootDeleteErrorV1::Opening.into());
             }
-            let bytes = usize::try_from(self.readers[index].terminal_native_v1()?.end)
+            let bytes = usize::try_from(self.readers[index].terminal_native_v1().map_err(project_read)?.end)
                 .map_err(|_| JournalError::JournalTooLarge)?;
             let demand = DeleteSessionModelsOriginalV2::cleanup_packet_demand_v4(bytes, purpose)
                 .map_err(|cause| cause.into());
@@ -317,8 +320,8 @@ impl RootDeleteCleanupCurrentOriginalV4 {
             self.require_primary_v4()?;
             let manifests = inputs.controller.broker_manifests_v2()?;
             self.model_results[index] = Some(self.models[index].observe_cleanup_packets_once_v4(
-                self.readers[index].terminal_native_v1()?,
-                self.readers[index].completed_delete_cleanup_history_rows_v4()?,
+                self.readers[index].terminal_native_v1().map_err(project_read)?,
+                self.readers[index].completed_delete_cleanup_history_rows_v4().map_err(project_read)?,
                 if index == 0 { manifests.3 } else { manifests.0 },
                 query.cutoff,
                 query.boot,

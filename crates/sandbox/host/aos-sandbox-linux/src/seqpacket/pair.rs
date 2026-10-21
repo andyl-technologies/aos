@@ -61,12 +61,12 @@ impl RecordSubjectSeqpacketPairOriginalV2 {
         // Actual native/result carriers and their construction overlap. The
         // pair already embeds its pending peer capture and successful socket.
         type NativeCarriers = (
-            Result<(OwnedFd, OwnedFd), crate::Error>,
-            Result<(), crate::Error>,
+            Result<(OwnedFd, OwnedFd), aos_linux_descriptors::Error>,
+            Result<(), aos_linux_descriptors::Error>,
             libc::sockaddr_storage,
             libc::socklen_t,
             libc::ucred,
-            uapi::RawPidfdInfo,
+            aos_linux_descriptors::native::RawPidfdInfo,
             PidFdInfo,
             u64,
             libc::c_int,
@@ -139,12 +139,12 @@ impl RecordSubjectSeqpacketPairOriginalV2 {
     }
 
     fn prepare_inner(&mut self, retain_raw: bool) -> Result<(), SeqpacketError> {
-        let (receiver, endpoint) = uapi::seqpacket_pair()?;
+        let (receiver, endpoint) = aos_linux_descriptors::native::seqpacket_pair()?;
         self.pending = Some(PendingSocketAdmissionV1::new(receiver));
         self.endpoint = Some(endpoint);
         let pending = self.pending.as_mut().ok_or(SeqpacketError::Closed)?;
         pending.enable_subjects()?;
-        uapi::enable_seqpacket_identity(
+        aos_linux_descriptors::native::enable_seqpacket_identity(
             self.endpoint.as_ref().ok_or(SeqpacketError::Closed)?.as_fd(),
         )?;
         if self.zero_rights {

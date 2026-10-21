@@ -21,10 +21,22 @@ pub struct RootPrearmedHistoryServicePostV1 {
 }
 
 impl RootPrearmedHistoryServicePostV1 {
+    pub(in crate::receiving) fn matches_startup_original_v1(&self, startup: &RootStartupNativeOriginalV1) -> bool {
+        startup.initial_owner.as_ref().is_some_and(|owner| self.original.has_identity(owner))
+    }
+
+
     /// Describes the actual native sampler and constructor without funding it.
     #[must_use]
     pub fn demand_v1() -> Option<ResourceVector> {
-        let bytes = std::mem::size_of::<Self>().checked_mul(3)?;
+        let bytes = std::mem::size_of::<Self>().checked_mul(3)?
+            .checked_add(std::mem::size_of::<(&mut Self, &RootStartupNativeOriginalV1)>().checked_mul(9)?)?
+            .checked_add(std::mem::size_of::<Result<(), E>>().checked_mul(15)?)?
+            .checked_add(std::mem::size_of::<Arc<RootPermanentNativeOriginalV1>>().checked_mul(3)?)?
+            .checked_add(std::mem::size_of::<super::financial::RootHistoryUpperExclusionGuardV1<'_>>().checked_mul(12)?)?
+            .checked_add(std::mem::size_of::<&RootPermanentNativeOriginalV1>().checked_mul(9)?)?
+            .checked_add(std::mem::size_of::<std::sync::LockResult<std::sync::MutexGuard<'_, ()>>>().checked_mul(3)?)?
+            .checked_add(std::mem::size_of::<std::sync::MutexGuard<'_, ()>>().checked_mul(6)?)?;
         RootServiceCurrentnessOriginalV1::demand()?.checked_add(ResourceVector::ZERO
             .with(D::MemoryBytes, u64::try_from(bytes).ok()?)).ok()
     }
@@ -40,6 +52,75 @@ impl RootPrearmedHistoryServicePostV1 {
     #[must_use]
     pub fn is_positive_v1(&self) -> bool {
         !self.closed && matches!(self.returned, Some(Ok(()))) && self.failure().is_none()
+    }
+
+    pub(in crate::receiving) fn refuse_original_history_post_v1(&self) {
+        self.original.invocation().latch_refusal();
+    }
+
+    pub(in crate::receiving) fn enter_original_history_worker_once_v1(&self) -> Result<(), E> {
+        let _exclusion = self.original.enter_history_post_exclusion_v1();
+        self.original.enter_history_worker_under_exclusion_v1()
+    }
+
+    pub(in crate::receiving) fn finish_original_history_worker_once_v1(&self) -> Result<(), E> {
+        let _exclusion = self.original.enter_history_post_exclusion_v1();
+        self.original.finish_history_worker_under_exclusion_v1()
+    }
+
+    pub(in crate::receiving) fn observe_owned_with_exclusion_once_v1(&mut self, startup: &RootStartupNativeOriginalV1) -> Result<(), E> {
+        // The real Arc keeps the same L owner borrowed while this destination
+        // is mutably sampled; cloning it creates neither an account nor a lease.
+        let original = Arc::clone(&self.original);
+        let _exclusion = original.enter_history_post_exclusion_v1();
+        self.observe_once_on_original_v1(startup)
+    }
+
+    /// Observes the original prearmed post under its same already-held L.
+    ///
+    /// No healthy financial gate, new service traffic fee or second exclusion
+    /// acquisition suppresses this independently owed observation after refusal.
+    ///
+    /// # Errors
+    /// Retains a foreign guard, changed startup, repeated post, ended original
+    /// or actual native sample refusal on the same owning post.
+    pub(in crate::receiving) fn observe_under_upper_exclusion_once_v1(
+        &mut self,
+        startup: &RootStartupNativeOriginalV1,
+        exclusion: &super::RootUpperMutationGuardV1<'_>,
+    ) -> Result<(), E> {
+        if !exclusion.matches_permanent_original_v1(&self.original) {
+            exclusion.refuse_v1();
+            return Err(E::Service);
+        }
+        self.observe_once_on_original_v1(startup)
+    }
+
+    fn observe_once_on_original_v1(&mut self, startup: &RootStartupNativeOriginalV1) -> Result<(), E> {
+        if self.returned.is_some() || self.closed { self.closed = true; return Err(E::Service); }
+        self.returned = Some(self.observe_original_inner_v1(startup));
+        if self.is_positive_v1() {
+            Ok(())
+        } else {
+            self.original.invocation().latch_refusal();
+            Err(E::Service)
+        }
+    }
+
+    fn observe_original_inner_v1(&mut self, startup: &RootStartupNativeOriginalV1) -> Result<(), E> {
+        if !self.matches_startup_original_v1(startup)
+            || self.original.enrollment().process_id_v1() != std::process::id()
+        { return Err(E::Service); }
+        // This SAME Permanent physically received enrollment and kernel only
+        // after positive recipient binding/startup settlement. Its prearmed
+        // constructor rejoined that actual Initial; the binding is never reset.
+        let original = self.original.enrollment().enrollment_v1().copied().ok_or(E::Service)?;
+        let kernel = self.original.service.kernel();
+        let mut guard = self.original.enter_observation()?;
+        let sample = self.sample.as_mut().ok_or(E::Service)?;
+        sample.observe_once(startup, kernel, original.recipient_invocation,
+            original.identity.native_fields().invocation);
+        if sample.is_positive() { Ok(()) } else { guard.refuse(); Err(E::Service) }
     }
 
     /// Disposes the positive sampler only after all enclosing independent posts.
@@ -80,22 +161,17 @@ impl RootInitialReceivingOriginalV1 {
         startup: &RootStartupNativeOriginalV1, post: &mut RootPrearmedHistoryServicePostV1,
     ) -> Result<(), E> {
         if post.returned.is_some() || post.closed { post.closed = true; return Err(E::Service); }
-        post.returned = Some((|| {
-            if !self.permanent.as_ref().is_some_and(|original| Arc::ptr_eq(original, &post.original))
-                || !startup.initial_owner.as_ref().is_some_and(|owner| self.same_owner_link(owner))
-                || self.process_id_v1() != std::process::id()
-                || !matches!(self.recipient_binding, Some(Ok(())))
-            { return Err(E::Service); }
-            let original = self.enrollment_v1().copied().ok_or(E::Service)?;
-            let kernel = self.kernel_capture_v1().ok_or(E::Service)?;
-            // SAME existing observation admission permits Refused, never Ended.
-            // This guard cannot authorize native append or restore Serving.
-            let mut guard = post.original.enter_observation()?;
-            let sample = post.sample.as_mut().ok_or(E::Service)?;
-            sample.observe_once(startup, kernel, original.recipient_invocation,
-                original.identity.native_fields().invocation);
-            if sample.is_positive() { Ok(()) } else { guard.refuse(); Err(E::Service) }
-        })());
-        if post.is_positive_v1() { Ok(()) } else { self.latch_root_refusal_v1(); Err(E::Service) }
+        if !self.permanent.as_ref().is_some_and(|original| Arc::ptr_eq(original, &post.original))
+            || !startup.initial_owner.as_ref().is_some_and(|owner| self.same_owner_link(owner))
+            || self.process_id_v1() != std::process::id()
+            || !matches!(self.recipient_binding, Some(Ok(())))
+        {
+            post.returned = Some(Err(E::Service));
+            self.latch_root_refusal_v1();
+            return Err(E::Service);
+        }
+        let returned = post.observe_once_on_original_v1(startup);
+        if returned.is_err() { self.latch_root_refusal_v1(); }
+        returned
     }
 }

@@ -37,22 +37,15 @@ use aos_sandbox_model::{ObjectDigest, ProjectId};
 #[cfg(target_os = "linux")]
 use aos_sandbox_model::format::git_upload_enrollment::{
     GitCoverageBirthFieldsV1, GitCoverageBirthV1, GitCoverageFenceFieldsV1,
-    GitCoverageFenceV1, GitCoverageOwnerKindV1,
+    GitCoverageFenceV1,
 };
 use sha2::{Digest as _, Sha256};
 
-use aos_sandbox_broker::root_settlement::RootV8SettledGrantV1;
 use aos_sandbox_protocol::root_settlement::RootV8SuccessorSettlementV1;
-#[cfg(target_os = "linux")]
-use crate::policy_compiler::create_q04::{CACHE_PENDING_KEY, Q04CutIdentityV1};
-#[cfg(target_os = "linux")]
-use aos_sandbox_protocol::cache_state::hold_state::q04_recipes::{
-    CacheQ04TransactionRecipesDataV1, hold_recipe_bodies_data_v1,
-};
 
 use super::{
     Journal, JournalError, JournalLimits, JournalRecord, JournalTransaction,
-    ReadOnlyProtectedJournal, RecordNamespace,
+    RecordNamespace,
 };
 
 mod retained;
@@ -64,8 +57,6 @@ pub(crate) const NAME: &str = aos_sandbox_protocol::cache_state::fixed_journals:
 const GENESIS_KEY: &[u8] = aos_sandbox_protocol::cache_state::fixed_journals::CACHE_HOLD_GENESIS_KEY_V1;
 const HOLD_KEY: &[u8] = aos_sandbox_protocol::cache_state::hold_state::HOLD_KEY;
 const V8_PENDING_KEY: &[u8] = aos_sandbox_protocol::cache_state::hold_state::V8_PENDING_KEY;
-const GIT_BIRTH_KEY: &[u8] = aos_sandbox_protocol::cache_state::hold_state::GIT_BIRTH_KEY;
-const GIT_FENCE_KEY: &[u8] = aos_sandbox_protocol::cache_state::hold_state::GIT_FENCE_KEY;
 const GENESIS: &[u8] = aos_sandbox_protocol::cache_state::fixed_journals::CACHE_HOLD_GENESIS_V1;
 const V8_RELEASE_TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.cache-policy-v8-release.v1\0";
 const V8_SETTLEMENT_TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.cache-policy-v8-settlement.v1\0";
@@ -216,9 +207,17 @@ fn v8_settlement_preflight_transaction(
 // writer-only native loan. Ordinary Q04 and V8 adapters cannot ignore a fence.
 
 
+#[cfg(target_os = "linux")]
+fn require_no_cache_held_history(journal: &Journal) -> Result<(), JournalError> {
+    if journal.records(RecordNamespace::CreateStorageHistory).next().is_some() {
+        return Err(JournalError::ProtectedBoundary);
+    }
+    Ok(())
+}
+
 fn current_full_state(journal: &mut Journal) -> Result<CachePolicyHoldReadbackV1, JournalError> {
     #[cfg(target_os = "linux")]
-    journal.require_no_cache_held_history_v1()?;
+    require_no_cache_held_history(journal)?;
     let authority = journal.claim_protected_authority(RecordNamespace::DesiredState)?;
     decode_full_state(authority.records()?)
 }
@@ -250,7 +249,7 @@ fn current_state(journal: &mut Journal) -> Result<CachePolicyHoldStateV1, Journa
 
 fn current_gate_state(journal: &mut Journal) -> Result<CachePolicyGateStateV1, JournalError> {
     #[cfg(target_os = "linux")]
-    journal.require_no_cache_held_history_v1()?;
+    require_no_cache_held_history(journal)?;
     let decoded = {
         let authority = journal.claim_protected_authority(RecordNamespace::DesiredState)?;
         decode_gate_state(authority.records()?)?
@@ -284,20 +283,6 @@ fn current_gate_state(journal: &mut Journal) -> Result<CachePolicyGateStateV1, J
             }))
         }
     }
-}
-
-// Called only by the existing COMMIT observer's closed Cache recipe. No DEL,
-// prior hold, compacted map, changed UUID/order, or third transaction is birth.
-#[cfg(target_os = "linux")]
-pub(super) fn require_coverage_native_transaction_v1(
-    index: usize,
-    observed: &JournalTransaction,
-    commit_sequence: u64,
-    predecessor_prefix: [u8; 32],
-) -> Result<(), JournalError> {
-    aos_sandbox_ledger_replay::git_coverage_prefix::cache::require_policy_native_transaction_v1(
-        index, observed, commit_sequence, predecessor_prefix,
-    ).map_err(JournalError::from)
 }
 
 // The durable node-cohort denial cannot be released through a generic hold,
@@ -342,137 +327,6 @@ pub(super) fn require_q04_ordinary_boundary(
         .map_err(crate::journal::JournalError::from)
 }
 
-// This complete suffix is inert DATA. It does not supply the physical flock,
-// clock guard, live Root release/settlement or the in-cut Cache clearance loan.
-#[cfg(target_os = "linux")]
-pub(crate) struct CacheQ04TransactionRecipesV1<'cut> {
-    identity: &'cut Q04CutIdentityV1,
-    uid: u32,
-    names: super::ProtectedJournalNamesV1,
-    original_next: u64,
-    data: CacheQ04TransactionRecipesDataV1,
-}
-
-#[cfg(target_os = "linux")]
-impl<'cut> CacheQ04TransactionRecipesV1<'cut> {
-    pub(crate) fn capture(
-        journal: &mut Journal,
-        ledger: &crate::reconciler::OriginalQ04ControllerLedgerV1,
-        identity: &'cut Q04CutIdentityV1,
-        selected: crate::cache_residency::CurrentProjectPhysicalCacheHeadV1,
-    ) -> Result<Self, crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
-        use crate::policy_compiler::create_q04::CreateQ04ErrorV1;
-
-        ledger.require_identity(identity)?;
-        let uid = journal.protected_owner_uid()?;
-        journal.require_protected_named_location(
-            Path::new(crate::cache_residency::PROTECTED_CACHE_ROOT), NAME, uid, hold_limits(),
-        )?;
-        let before = current_state(journal)?;
-        if before.hold.is_some_and(CachePolicyHoldV1::is_held)
-            || before.v8_pending.is_some()
-            || selected.project() != identity.project()
-        {
-            return Err(CreateQ04ErrorV1::ChangedCut);
-        }
-        let names = journal.protected_writer_physical_names_v1()?;
-        let original_next = journal.snapshot_sequence();
-        let held = CachePolicyHoldV1::new(
-            selected.project(), selected.partition().digest(), selected.head(),
-            identity.binding(), identity.epoch(),
-        )?;
-        let data = CacheQ04TransactionRecipesDataV1::new(
-            identity, names, before.hold, held,
-            crate::policy_compiler::create_q04::lower_release_capacity_shape(identity),
-        )?;
-        let recipes = Self {
-            identity, uid, names, original_next, data,
-        };
-        recipes.require_fixed_journal(journal)?;
-        recipes.require_prefix(journal.native.state(), 0)?;
-        Ok(recipes)
-    }
-
-    pub(crate) fn transactions(&self) -> &[JournalTransaction; 3] {
-        self.data.transactions()
-    }
-
-    pub(crate) fn identity(&self) -> &Q04CutIdentityV1 {
-        self.identity
-    }
-
-    pub(crate) fn original_next(&self) -> u64 {
-        self.original_next
-    }
-
-    pub(crate) fn release_authorization(&self) -> Option<ObjectDigest> {
-        self.data.release_authorization()
-    }
-
-    pub(crate) fn bind_observed_release(
-        &mut self,
-        journal: &mut Journal,
-        root: &crate::policy_compiler::create_q04::OriginalQ04RootCacheLoanV1<'_, '_, '_>,
-    ) -> Result<(), crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
-        use crate::policy_compiler::create_q04::CreateQ04ErrorV1;
-
-        if self.release_authorization().is_some() || !std::ptr::eq(self.identity, root.identity()) {
-            return Err(CreateQ04ErrorV1::ChangedCut);
-        }
-        let release = root.release_phase()?.digest();
-        root.require_lower_transition(1, Some(release))?;
-        self.require_fixed_journal(journal)?;
-        self.require_prefix(journal.native.state(), 1)?;
-        journal.require_q04_native_recipe_prefix_v1(&self.transactions()[..1], self.original_next)?;
-        self.data.bind_release_data_v1(self.identity, self.names, release)?;
-        journal.preflight_cache_q04_remaining_v1(self, 1)?;
-        self.require_fixed_journal(journal)?;
-        root.require_lower_transition(1, Some(release))
-    }
-
-    pub(crate) fn clear_recipe_digest(
-        &self,
-    ) -> Result<ObjectDigest, crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
-        self.data
-            .clear_recipe_digest(self.identity, self.names, self.original_next)
-            .map_err(Into::into)
-    }
-
-    pub(crate) fn terminal_hold(&self, phase: super::Q04CacheTerminalPhaseV1) -> CachePolicyHoldV1 {
-        self.data.terminal_hold(phase)
-    }
-
-    pub(crate) fn require_fixed_journal(&self, journal: &Journal) -> Result<(), JournalError> {
-        journal.require_protected_named_location(
-            Path::new(crate::cache_residency::PROTECTED_CACHE_ROOT), NAME, self.uid, hold_limits(),
-        )?;
-        if journal.protected_writer_physical_names_v1()? != self.names {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        Ok(())
-    }
-
-    pub(crate) fn require_prefix(
-        &self,
-        state: &std::collections::BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
-        committed: usize,
-    ) -> Result<(), JournalError> {
-        self.data.require_prefix(state, committed).map_err(Into::into)
-    }
-}
-
-#[cfg(target_os = "linux")]
-pub(super) fn require_q04_transition(
-    state: &std::collections::BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
-    transaction: &JournalTransaction,
-    recipes: &CacheQ04TransactionRecipesV1<'_>,
-    index: usize,
-) -> Result<(), JournalError> {
-    recipes.data
-        .require_transition(state, transaction, index)
-        .map_err(Into::into)
-}
-
 fn v8_released_pair(
     state: CachePolicyHoldStateV1,
 ) -> Result<(CachePolicyHoldV1, CachePolicyHoldV1), JournalError> {
@@ -494,151 +348,8 @@ pub(super) fn require_valid_compaction(journal: &mut Journal) -> Result<(), Jour
     Ok(())
 }
 
-impl ReadOnlyProtectedJournal {
-    // Only the distinct Root terminal DATA path selects this position. The
-    // same pending decoder and recipe builder validate the actual released
-    // row; the whole native suffix starts at the original signed prehold NEXT.
-    #[cfg(target_os = "linux")]
-    pub(crate) fn q04_terminal_cache_policy_hold(
-        &mut self,
-        identity: &Q04CutIdentityV1,
-        phase: super::Q04CacheTerminalPhaseV1,
-        original_names: super::ProtectedJournalNamesV1,
-        original_next: u64,
-        held: CachePolicyHoldV1,
-        release_authorization: ObjectDigest,
-    ) -> Result<CachePolicyHoldV1, crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
-        use crate::policy_compiler::create_q04::CreateQ04ErrorV1;
-
-        if self.witness.name() != NAME || self.physical_names_v1() != original_names
-            || matches!(phase, super::Q04CacheTerminalPhaseV1::Held)
-        {
-            return Err(CreateQ04ErrorV1::ChangedCut);
-        }
-        self.check_named_currentness()?;
-        let bodies = hold_recipe_bodies_data_v1(identity, original_names, held, release_authorization)?;
-        let current = current_full_state(&mut self.journal)?;
-        let released = (held).released_data();
-        if current.legacy.v8_pending.is_some() || current.legacy.hold != Some(released)
-            || match phase {
-                super::Q04CacheTerminalPhaseV1::Released => {
-                    current.q04_pending.as_ref() != Some(&bodies.released_marker)
-                }
-                super::Q04CacheTerminalPhaseV1::Cleared => current.q04_pending.is_some(),
-                super::Q04CacheTerminalPhaseV1::Held => true,
-            }
-        {
-            return Err(CreateQ04ErrorV1::ChangedCut);
-        }
-        self.journal.require_q04_native_recipe_prefix_v1(
-            &bodies.transactions[..phase.prefix()], original_next,
-        )?;
-        self.check_named_currentness()?;
-        Ok(released)
-    }
-
-    /// Returns only an active, canonical hold from the fixed read-only name.
-    pub(crate) fn held_cache_policy_hold(&mut self) -> Result<CachePolicyHoldV1, JournalError> {
-        if self.witness.name() != NAME {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        current(&mut self.journal)?
-            .filter(|hold| hold.is_held())
-            .ok_or(JournalError::ProtectedBoundary)
-    }
-}
 
 impl Journal {
-    // Selected initializer only: the same existing fixed hold writer supplies
-    // the observation. Ordinary hold/release APIs still reject exclusive state.
-    #[cfg(target_os = "linux")]
-    pub(crate) fn cache_git_coverage_observation_for_writer_v1(
-        &mut self,
-    ) -> Result<Option<CacheGitCoverageObservationV1>, JournalError> {
-        if self.native.protected_view().map(|location| location.name()) != Some(NAME) {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        self.require_protected_names_current()?;
-        match current_gate_state(self)? {
-            CachePolicyGateStateV1::Ordinary(state) => {
-                if state.hold.is_some() || state.v8_pending.is_some() {
-                    return Err(JournalError::ProtectedBoundary);
-                }
-                Ok(None)
-            }
-            CachePolicyGateStateV1::Exclusive(observed) => Ok(Some(observed)),
-        }
-    }
-
-    // The actual selected owner independently validates signed inputs and all
-    // other Cache originals before calling this private DATA preparation seam.
-    // Its returned complete transaction must be parked before preflight/commit.
-    #[cfg(target_os = "linux")]
-    pub(crate) fn prepare_cache_git_coverage_append_v1(
-        &mut self,
-        birth: GitCoverageBirthFieldsV1,
-        fence: GitCoverageFenceFieldsV1,
-    ) -> Result<JournalTransaction, JournalError> {
-        if self.cache_git_coverage_observation_for_writer_v1()?.is_some() {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        let mut native = self.cache_coverage_native_prefix_v1()
-            .map_err(|error| JournalError::GitCoverageNativeHistory(Box::new(error)))?;
-        if native.counts() != (1, 1)
-            || birth.owner != GitCoverageOwnerKindV1::CacheAuthority
-            || birth.predecessor_prefix != native.prefix_digest()
-            || fence.predecessor_prefix != native.prefix_digest()
-            || birth.commit_sequence != self.snapshot_sequence().checked_add(3)
-                .ok_or(JournalError::SequenceExhausted)?
-        {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        native.recheck()?;
-        drop(native);
-
-        let birth_bytes = birth.encode().map_err(|_| JournalError::ProtectedBoundary)?;
-        let fence_bytes = fence.encode().map_err(|_| JournalError::ProtectedBoundary)?;
-        let transaction = JournalTransaction::new(
-            birth.transaction,
-            vec![
-                JournalRecord::put(RecordNamespace::DesiredState,
-                    GIT_BIRTH_KEY.to_vec(), birth_bytes.to_vec()),
-                JournalRecord::put(RecordNamespace::DesiredState,
-                    GIT_FENCE_KEY.to_vec(), fence_bytes.to_vec()),
-            ],
-        )?;
-        require_coverage_native_transaction_v1(
-            1, &transaction, birth.commit_sequence, birth.predecessor_prefix,
-        )?;
-        Ok(transaction)
-    }
-
-    // Prepare observes the actual existing writer without granting a hold or
-    // accepting a pending terminal row. Full native replay is checked by the
-    // borrowing Journal engine before and after this materialized comparison.
-    #[cfg(target_os = "linux")]
-    pub(crate) fn require_q04_cache_prepare_v1(
-        &self,
-    ) -> Result<Option<CachePolicyHoldV1>, JournalError> {
-        let uid = self.protected_owner_uid()?;
-        self.require_protected_named_location(
-            Path::new(crate::cache_residency::PROTECTED_CACHE_ROOT), NAME, uid, hold_limits(),
-        )?;
-        let state = decode_full_state(self.native.state().iter().map(|((namespace, key), value)| {
-            (*namespace, key.as_slice(), value.as_slice())
-        }).filter_map(|(namespace, key, value)| {
-            (namespace == RecordNamespace::DesiredState).then_some((key, value))
-        }))?;
-        if self.native.state().keys().any(|(namespace, _)| *namespace != RecordNamespace::DesiredState)
-            || state.legacy.hold.is_some_and(CachePolicyHoldV1::is_held)
-            || state.legacy.v8_pending.is_some()
-            || state.q04_pending.is_some()
-        {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        Ok(state.legacy.hold)
-    }
-
     /// Reads an active Cache hold while retaining its protected writer lock.
     ///
     /// # Errors
@@ -688,23 +399,6 @@ impl Journal {
         v8_released_pair(self.cache_policy_hold_state_for_writer()?)
     }
 
-    /// Reads one released Cache row against an authenticated Root settlement.
-    ///
-    /// The marker's presence is returned so a retained writer can reject a
-    /// change between its first observation and final postflight. Absence is
-    /// accepted only when Root's exact released-row digest still matches.
-    ///
-    /// # Errors
-    ///
-    /// Rejects changed writer names, a held or different row, or malformed
-    /// pending settlement evidence.
-    pub(crate) fn v8_cache_policy_settlement_state_for_writer(
-        &mut self,
-        grant: RootV8SettledGrantV1,
-    ) -> Result<(CachePolicyHoldV1, CachePolicyHoldV1, bool), JournalError> {
-        self.v8_cache_policy_settlement_state_from_record(grant.record_data())
-    }
-
     fn v8_cache_policy_settlement_state_from_record(
         &mut self,
         grant: RootV8SuccessorSettlementV1,
@@ -721,21 +415,6 @@ impl Journal {
 
         let held = (released).held_data();
         Ok((held, released, state.v8_pending.is_some()))
-    }
-
-    /// Clears only the pending V8 marker after an exact Root successor grant.
-    ///
-    /// The canonical released row remains durable. Replaying after a lost
-    /// reply performs no second commit, but still checks that row and grant.
-    ///
-    /// # Errors
-    ///
-    /// Rejects a stale row or grant, or a failed durable deletion and readback.
-    pub(crate) fn clear_v8_pending_cache_settlement_for_writer(
-        &mut self,
-        grant: RootV8SettledGrantV1,
-    ) -> Result<CachePolicyHoldV1, JournalError> {
-        self.clear_v8_pending_cache_settlement_from_record(grant.record_data())
     }
 
     fn clear_v8_pending_cache_settlement_from_record(
@@ -1041,34 +720,6 @@ impl Journal {
         Ok(released_readback)
     }
 
-    /// Retains the exact hold writer through a non-mutating local observation.
-    ///
-    /// The caller must already retain clock, authority, and state writers in
-    /// that order. In particular, this is not a policy publication capability.
-    pub(crate) fn with_held_cache_policy_hold_at<R, E>(
-        directory: &Path,
-        uid: u32,
-        expected: CachePolicyHoldV1,
-        observe: impl FnOnce() -> Result<R, E>,
-    ) -> Result<R, E>
-    where
-        E: From<JournalError>,
-    {
-        let mut journal = open(directory, uid)?;
-        if !expected.is_held() || current(&mut journal)? != Some(expected) {
-            return Err(JournalError::ProtectedBoundary.into());
-        }
-
-        let result = observe()?;
-        if current(&mut journal)? != Some(expected) {
-            return Err(JournalError::ProtectedBoundary.into());
-        }
-        #[cfg(test)]
-        journal.require_protected_names_current_for_test()?;
-        #[cfg(not(test))]
-        journal.require_protected_named_location(directory, NAME, uid, hold_limits())?;
-        Ok(result)
-    }
 }
 
 #[cfg(test)]

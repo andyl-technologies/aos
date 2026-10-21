@@ -23,7 +23,7 @@ use aos_sandbox_protocol::domain_ledger::{
         ProvisioningResourceRowKindV1 as CompanionKind,
     },
 };
-use crate::cache_residency::CacheDeleteInventoryOriginalV1;
+use crate::cache_programmes::CacheDeleteInventoryOriginalV1;
 use crate::lifecycle::{
     DeleteCandidateOperationErrorV2, LifecycleOperationV1, ResourceExpectationV1,
     authorized_delete_operation_data_v2, delete_candidate_projection_generation_data_v2,

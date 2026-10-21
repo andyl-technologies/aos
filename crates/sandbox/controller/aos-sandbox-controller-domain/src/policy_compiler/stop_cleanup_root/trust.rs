@@ -5,6 +5,7 @@
 //! Every reached credential owes its independent original named readback even
 //! after an earlier capture, model, policy, clock or financial refusal.
 
+use aos_sandbox_policy::root_trust_data::RootBrokerPlanPublicTrustDataV1;
 use std::{error::Error, mem::size_of};
 
 use aos_sandbox_broker::systemd_credentials::{
@@ -24,7 +25,6 @@ use aos_sandbox_ownership_protocol::trusted_policy::{
 use crate::{
     journal::JournalError,
     policy_compiler::{
-        create_storage_current::controller_readonly::public_trust::RootBrokerPlanPublicTrustDataV1,
         provisioning_current::RootContinuationClockGateV1,
     },
 };

@@ -5,7 +5,7 @@ use std::os::fd::{AsFd as _, OwnedFd};
 use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
 use std::path::{Path, PathBuf};
 
-use aos_sandbox_linux::boot::KernelBootId;
+use aos_linux_descriptors::boot::KernelBootId;
 use aos_sandbox_linux::inherited_fd::claim_mount_helper_descriptor_table;
 use aos_sandbox_linux::inventory::{MountId, MountNamespace, MountObservation};
 use aos_sandbox_linux::mount::{DetachedMount, detach_child};
@@ -967,7 +967,7 @@ fn verify_namespace(
     Ok(())
 }
 
-fn helper_linux_error(error: aos_sandbox_linux::Error) -> MountError {
+fn helper_linux_error(error: aos_linux_descriptors::Error) -> MountError {
     let message = error.to_string();
     drop(error);
     MountError::Worker(message)

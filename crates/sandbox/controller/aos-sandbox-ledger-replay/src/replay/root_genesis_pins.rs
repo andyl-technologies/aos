@@ -5,7 +5,6 @@
 
 use aos_sandbox_model::ObjectDigest;
 use ed25519_dalek::VerifyingKey;
-use sha2::{Digest as _, Sha256};
 use aos_sandbox_protocol::role_credential::decode_role_credential;
 use aos_sandbox_protocol::controller_source_seed::PinnedControllerSourceTreeSeedIssuerV1;
 use aos_sandbox_protocol::publisher_project_authorization::{
@@ -13,16 +12,10 @@ use aos_sandbox_protocol::publisher_project_authorization::{
 };
 use crate::data::{SourceSuccessorDataErrorV2 as SourceGenesisErrorV1, hash, take};
 
-/// Reports the exact historical Policy public tuple codec failure.
-#[derive(Debug, thiserror::Error)]
-pub enum PolicySignerPinsDataErrorV1 {
-    /// A requested generation or fixed integer field is invalid.
-    #[error("invalid deployment signer generation or field")]
-    InvalidHead,
-    /// The canonical saved tuple framing, public key or bytes differ.
-    #[error("stale or malformed deployment signer tuple")]
-    StaleHead,
-}
+pub use aos_sandbox_protocol::policy_data::signer_pins::{
+    POLICY_SIGNER_PINS_BYTES_V1, PolicySignerPinsDataErrorV1,
+    decode_policy_signer_pins_v1, encode_policy_signer_pins_v1, read_u64,
+};
 
 /// Decodes Controller-purpose public DATA without establishing pin custody.
 pub fn decode_controller_hold_signer_data_v1(bytes: &[u8]) -> Option<(u64, VerifyingKey)> {
@@ -32,89 +25,6 @@ pub fn decode_controller_hold_signer_data_v1(bytes: &[u8]) -> Option<(u64, Verif
 /// Decodes Source-purpose public DATA without establishing pin custody.
 pub fn decode_source_hold_signer_data_v1(bytes: &[u8]) -> Option<(u64, VerifyingKey)> {
     decode_role_credential(bytes, b"AOSSPK01", b"aos.sandbox.source-hold-readback-verifier.v1\0")
-}
-
-const SIGNER_PINS_MAGIC: &[u8; 8] = b"AOSPKP01";
-const SIGNER_PINS_DOMAIN: &[u8] = b"aos.sandbox.policy-signer-pins.v1\0";
-
-/// Applies the existing canonical saved public-verifier comparison.
-///
-/// # Errors
-/// Rejects malformed framing, noncanonical generations or failed exact verification.
-pub fn encode_policy_signer_pins_v1(
-    deployment_generation: u64,
-    deployment_key: &VerifyingKey,
-    project_generation: u64,
-    project_key: &VerifyingKey,
-) -> Result<Vec<u8>, PolicySignerPinsDataErrorV1> {
-    if deployment_generation == 0 || project_generation == 0 {
-        return Err(PolicySignerPinsDataErrorV1::InvalidHead);
-    }
-    let mut encoded = Vec::with_capacity(120);
-    encoded.extend_from_slice(SIGNER_PINS_MAGIC);
-    encoded.extend_from_slice(&deployment_generation.to_be_bytes());
-    encoded.extend_from_slice(deployment_key.as_bytes());
-    encoded.extend_from_slice(&project_generation.to_be_bytes());
-    encoded.extend_from_slice(project_key.as_bytes());
-    let checksum = Sha256::new()
-        .chain_update(SIGNER_PINS_DOMAIN)
-        .chain_update(&encoded)
-        .finalize();
-    encoded.extend_from_slice(&checksum);
-    Ok(encoded)
-}
-
-/// Applies the existing canonical saved public-verifier comparison.
-///
-/// # Errors
-/// Rejects malformed framing, noncanonical generations or failed exact verification.
-pub fn decode_policy_signer_pins_v1(
-    pins: &[u8],
-) -> Result<(u64, VerifyingKey, u64, VerifyingKey), PolicySignerPinsDataErrorV1> {
-    if pins.len() != 120 || &pins[..8] != SIGNER_PINS_MAGIC {
-        return Err(PolicySignerPinsDataErrorV1::StaleHead);
-    }
-    let deployment_generation = read_u64(pins, 8)?;
-    let project_generation = read_u64(pins, 48)?;
-    let key_at = |offset: usize| {
-        let bytes = pins
-            .get(offset..offset + 32)
-            .and_then(|field| field.try_into().ok())
-            .ok_or(PolicySignerPinsDataErrorV1::StaleHead)?;
-        VerifyingKey::from_bytes(bytes).map_err(|_| PolicySignerPinsDataErrorV1::StaleHead)
-    };
-    let deployment = key_at(16)?;
-    let project = key_at(56)?;
-    if encode_policy_signer_pins_v1(
-        deployment_generation,
-        &deployment,
-        project_generation,
-        &project,
-    )?
-    .as_slice()
-        != pins
-    {
-        return Err(PolicySignerPinsDataErrorV1::StaleHead);
-    }
-    Ok((
-        deployment_generation,
-        deployment,
-        project_generation,
-        project,
-    ))
-}
-
-/// Applies the existing canonical saved public-verifier comparison.
-///
-/// # Errors
-/// Rejects malformed framing, noncanonical generations or failed exact verification.
-pub fn read_u64(bytes: &[u8], offset: usize) -> Result<u64, PolicySignerPinsDataErrorV1> {
-    Ok(u64::from_be_bytes(
-        bytes
-            .get(offset..offset + 8)
-            .and_then(|part| part.try_into().ok())
-            .ok_or(PolicySignerPinsDataErrorV1::InvalidHead)?,
-    ))
 }
 
 const MAGIC: &[u8; 8] = b"AOSGPK01";
@@ -217,6 +127,65 @@ pub fn decode(bytes: &[u8]) -> Result<(), SourceGenesisErrorV1> {
         if keys[..index].contains(key) {
             return Err(SourceGenesisErrorV1::NonCanonical);
         }
+    }
+    Ok(())
+}
+
+/// Preserves a refused administrative comparison without native role authority.
+#[derive(Debug, thiserror::Error)]
+pub enum RootAdministrativePinsDataErrorV1 {
+    /// The original canonical seed, authorization or signature check refused.
+    #[error(transparent)]
+    Data(#[from] crate::data::SourceSuccessorDataErrorV2),
+    /// The complete saved administrative role tuple has another commitment.
+    #[error("Source genesis owner or credential is not current")]
+    Stale,
+}
+
+/// Verifies the exact administrative input against a complete saved role tuple.
+///
+/// The tuple and acceptance are DATA. Native callers separately retain their
+/// actual fixed writer and independent credential originals and currentness.
+///
+/// # Errors
+/// Preserves the original seed, authorization and signature errors, and refuses
+/// a different whole administrative role commitment without granting admission.
+pub fn verify_administrative_input_data_v1(
+    encoded: &[u8; 488],
+    acceptance: &aos_sandbox_protocol::source_genesis_acceptance::ControllerSourceGenesisAcceptanceRecordV1,
+) -> Result<(), RootAdministrativePinsDataErrorV1> {
+    use aos_sandbox_protocol::controller_source_seed::{
+        ControllerSourceTreeSeedExpectedV1, verify_controller_source_tree_seed_v1,
+    };
+
+    let verified = (|| -> Result<(), SourceGenesisErrorV1> {
+        let seed_pin = PinnedControllerSourceTreeSeedIssuerV1::decode(&encoded[16..96])?;
+        let authorization_pin =
+            PinnedPublisherProjectAuthorizationIssuerV2::decode(&encoded[96..176])?;
+        let seed = acceptance.seed_claims()?;
+        let expected = ControllerSourceTreeSeedExpectedV1::new(
+            seed.project(),
+            seed.publisher_generation(),
+            seed.publisher_head(),
+            seed.project_authorization_head(),
+            seed.request_id(),
+            seed.epoch() - 1,
+        )?;
+        verify_controller_source_tree_seed_v1(acceptance.seed_packet(), &seed_pin, expected)?;
+        verify_signed_project_authorization_claims_v2(
+            acceptance.auth_packet(),
+            &authorization_pin,
+        )?;
+        Ok(())
+    })();
+    verified?;
+    if acceptance.administrative_roles()
+        != hash(
+            b"aos.sandbox.source-genesis.administrative-roles.v1\0",
+            &encoded[16..176],
+        )
+    {
+        return Err(RootAdministrativePinsDataErrorV1::Stale);
     }
     Ok(())
 }

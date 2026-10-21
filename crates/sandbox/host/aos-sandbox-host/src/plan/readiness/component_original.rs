@@ -9,7 +9,7 @@ use std::os::fd::AsFd as _;
 use std::path::Path;
 
 use aos_sandbox_model::{ResourceDimension as D, ResourceVector};
-use aos_sandbox_linux::boot::RootOriginalKernelBootIdAttemptV1;
+use aos_linux_descriptors::boot::RootOriginalKernelBootIdAttemptV1;
 
 use super::watermark_original::{
     ProtectedReadOriginalV2, ReadinessWatermarkOriginalV2, validate_directory_metadata_v2,

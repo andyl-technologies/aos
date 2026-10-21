@@ -10,6 +10,7 @@
 //!          | predecessor-sequence:u64be | completion-wall:i64be | checksum[32]
 //! ```
 
+use crate::journal::historical_observation::HistoricalObservationV1;
 use aos_sandbox_model::OperationId;
 use sha2::{Digest as _, Sha256};
 
@@ -82,13 +83,33 @@ pub(super) fn classify(receipt: &EffectReceipt) -> Result<bool, ReconcilerError>
 
 /// Independently checks the original public admission and actual signed decision.
 pub(super) fn validate(journal: &Journal, operation: OperationId) -> Result<(), ReconcilerError> {
+    validate_from_observation_v2(HistoricalObservationV1::from_journal_v1(journal), operation)
+}
+
+/// Checks the original signed Repair custody through the same borrowed owner.
+///
+/// # Errors
+///
+/// Preserves the original malformed-history, signature, credential and owner failures.
+pub(super) fn validate_from_observation_v2(
+    journal: HistoricalObservationV1<'_>,
+    operation: OperationId,
+) -> Result<(), ReconcilerError> {
     #[cfg(target_os = "linux")]
-    return crate::controller::verify_operator_storage_repair_failure_v1(journal, operation)
-        .map_err(|_| ReconcilerError::CorruptLedger("Repair failure decision does not match its original custody"));
+    return crate::controller::verify_operator_storage_repair_failure_from_observation_v2(
+        journal, operation,
+    )
+    .map_err(|_| {
+        ReconcilerError::CorruptLedger(
+            "Repair failure decision does not match its original custody",
+        )
+    });
     #[cfg(not(target_os = "linux"))]
     {
         let _ = (journal, operation);
-        Err(ReconcilerError::CorruptLedger("Repair failure owner is unsupported"))
+        Err(ReconcilerError::CorruptLedger(
+            "Repair failure owner is unsupported",
+        ))
     }
 }
 

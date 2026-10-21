@@ -5,6 +5,8 @@
 //! structural result does not authenticate Source currentness or grant writes.
 
 pub mod retained;
+/// Shares exact historical Start selectors and full structural geometry.
+pub mod start_assignment;
 pub mod delete_cut;
 
 use std::collections::BTreeMap;

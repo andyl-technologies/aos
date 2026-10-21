@@ -6,8 +6,10 @@
 
 use std::error::Error;
 use std::time::Duration;
-use aos_sandbox_linux::unix_stream::{RetainedSubjectStreamReadV1, RetainedUnixStream,
-    SubjectStreamReadErrorV1, SubjectStreamReceiveGeometryV1};
+use aos_sandbox_linux::unix_stream::RetainedSubjectStreamReadV1;
+use aos_linux_descriptors::unix_stream::RetainedUnixStream;
+use aos_sandbox_linux::unix_stream::SubjectStreamReadErrorV1;
+use aos_sandbox_linux::unix_stream::SubjectStreamReceiveGeometryV1;
 use aos_sandbox_protocol::domain_ledger::create_storage_history::{HistoryErrorV1,
     transport::{FrameCoordinatesV1, FrameEnvelopeV1, FRAME_HEADER_BYTES},
     continuation::SIGNED_BOUND_RECEIPT_BYTES_V1,
@@ -15,7 +17,7 @@ use aos_sandbox_protocol::domain_ledger::create_storage_history::{HistoryErrorV1
     outcome::{ROOT_OUTCOME_RECEIPT_BYTES_V1, ROOT_CLOSED_RECEIPT_BYTES_V1}};
 use rustix::event::{PollFd, PollFlags, poll};
 use rustix::time::{ClockId, Timespec, clock_gettime};
-use crate::policy_compiler::bounded_stream_io::remaining;
+use aos_sandbox_broker::bounded_stream_io::remaining;
 use super::{CreateStorageRootExchangeClosedV1 as Closed, CreateStorageRootPeerReceivingOriginalsV1,
     OriginalCreateStorageRootExchangeV1, RootPostFrontierV1, RootReceivePurposeV1};
 

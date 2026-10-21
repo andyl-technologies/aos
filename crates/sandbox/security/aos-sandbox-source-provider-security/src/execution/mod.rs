@@ -61,7 +61,7 @@ impl SelectedExecutionRoleV1 {
 
     pub(crate) fn require_task(
         self,
-        process: &aos_sandbox_linux::pidfd::PidFd,
+        process: &aos_linux_descriptors::pidfd::PidFd,
     ) -> Result<(), SourceProviderSecurityError> {
         aos_sandbox_linux::selinux_policy::require_enforcing()
             .map_err(|_| SourceProviderSecurityError::ExecutionChanged)?;

@@ -14,9 +14,11 @@ use aos_sandbox_protocol::domain_ledger::create_storage_history::{
     root_open::RootHelloDataV1,
 };
 
-use crate::cache_residency::{CacheCurrentAuditOriginalsV1, CacheCurrentAuditShapeV1,
-    CacheHeldClosedV1, CacheHeldErrorV1, CacheHeldIdentityDataV1,
-    CacheHeldNativeSemanticShapeV1};
+use aos_sandbox_cache::{CacheCurrentAuditOriginalsV1, CacheCurrentAuditShapeV1,
+    CacheHeldClosedV1, CacheHeldErrorV1, CacheHeldIdentityDataV1, CacheJournalErrorV1};
+use aos_sandbox_broker::controller_receiving::bank_launch::{
+    ControllerCacheAuditFundingErrorV1, ControllerCacheAuditFundingLoanV1,
+};
 use super::super::cache_current_proof::{CacheCurrentProofRootStageV1,
     CacheCurrentSignerInputsV1, OriginalCreateStorageCacheCurrentProofV1,
     CacheCurrentProofPurposeV1};
@@ -32,8 +34,15 @@ pub(super) struct CacheCurrentAdmissionOriginalsV1 {
     funding: Option<Result<(), ResourceReservationErrorV1>>,
     arm: Option<Result<(), CacheHeldClosedV1>>,
     semantic_geometry: Option<Result<ResourceVector, ResourceReservationErrorV1>>,
-    semantic_funding: Option<Result<(), ResourceReservationErrorV1>>,
-    semantic_delta: Option<Result<(ResourceVector, ResourceVector), ResourceReservationErrorV1>>,
+    semantic_funding_failed: bool,
+    semantic_supplement: Option<Result<ResourceVector, crate::JournalError>>,
+    upper_cache_quote: Option<Result<ResourceVector, ResourceReservationErrorV1>>,
+    native_funding_failure: Option<ControllerCacheAuditFundingErrorV1>,
+    post_clock: crate::policy_compiler::RetainedKernelPairedClockAttemptV1,
+    post_clock_result: Option<Result<RawPairedClockSample, crate::hierarchy::genesis_profile::SourceGenesisErrorV1>>,
+    post_cutoff: Option<Result<(), ResourceReservationErrorV1>>,
+    completed_clocks: [Option<RawPairedClockSample>; 5],
+    reader_clock_selected: bool,
     semantic_base: Option<ResourceVector>,
     before_entered: bool,
     before: CacheCurrentnessOriginalV1,
@@ -54,8 +63,7 @@ pub(super) struct CacheCurrentAdmissionOriginalsV1 {
 
 impl CacheCurrentAdmissionOriginalsV1 {
     pub(super) fn use_semantic_funding_failed_v1(&self) -> bool {
-        matches!(self.semantic_delta, Some(Ok(_)))
-            && matches!(self.semantic_funding, Some(Err(_)))
+        self.semantic_funding_failed
     }
 
     pub(super) fn base_without_traffic_v1(&self) -> Option<ResourceVector> {
@@ -74,16 +82,23 @@ impl CacheCurrentAdmissionOriginalsV1 {
     }
 
     fn admission_failure(&self) -> Option<&(dyn Error + 'static)> {
-        cause(&self.shape).or_else(|| cause(&self.owner_geometry))
-            .or_else(|| cause(&self.geometry)).or_else(|| cause(&self.funding))
+        match self.shape.as_ref().and_then(|result| result.as_ref().err()) {
+            Some(CacheHeldErrorV1::Journal(CacheJournalErrorV1::DeferredUpperSemanticQuote)) =>
+                cause(&self.semantic_supplement),
+            Some(CacheHeldErrorV1::Journal(CacheJournalErrorV1::DeferredUpperFixedQuote)) =>
+                cause(&self.upper_cache_quote),
+            _ => cause(&self.shape),
+        }.or_else(|| cause(&self.owner_geometry))
+            .or_else(|| cause(&self.geometry))
+            .or_else(|| self.native_funding_failure.as_ref().map(|cause| cause as _))
+            .or_else(|| cause(&self.funding))
             .or_else(|| cause(&self.arm))
     }
 
     fn funding_failure(&self) -> Option<&(dyn Error + 'static)> {
         self.named_failure.as_ref().map(|error| error as _)
             .or_else(|| cause(&self.semantic_geometry))
-            .or_else(|| cause(&self.semantic_delta))
-            .or_else(|| cause(&self.semantic_funding))
+            .or_else(|| self.native_funding_failure.as_ref().map(|cause| cause as _))
     }
 
     fn semantic_failure(&self) -> Option<&(dyn Error + 'static)> {
@@ -107,7 +122,12 @@ impl CacheCurrentAdmissionOriginalsV1 {
             // The independent post-clock happens after active replay and must
             // keep the audit owner's actual active/native/clock cause order.
             None if owner.audit_failure_is_selected_v1() =>
-                self.funding_failure().or_else(|| owner.failure()),
+                self.funding_failure().or_else(|| {
+                    if self.reader_clock_selected {
+                        self.post_clock.failure().or_else(|| cause(&self.post_clock_result))
+                            .or_else(|| cause(&self.post_cutoff))
+                    } else { None }
+                }).or_else(|| owner.failure()),
             None => owner.failure(),
         }.or_else(|| owner.failure())
     }
@@ -115,7 +135,7 @@ impl CacheCurrentAdmissionOriginalsV1 {
     // Actual construction bytes and independently owed native backing.
     fn fixed_demand_v1() -> Result<ResourceVector, ResourceReservationErrorV1> {
         let bytes = std::mem::size_of::<Self>().checked_mul(2)
-            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<CacheCurrentAuditReceivingLoanV1<'_>>().checked_mul(2)?))
+            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<ControllerCacheAuditFundingLoanV1<'_, '_>>().checked_mul(2)?))
             .and_then(|bytes| bytes.checked_add(2 * std::mem::size_of::<CacheCurrentSignerInputsV1<'_>>()))
             .and_then(|bytes| bytes.checked_add(2 * std::mem::size_of::<RawPairedClockSample>()))
             .and_then(|bytes| bytes.checked_add(std::mem::size_of::<(u32, u32, u32)>()))
@@ -134,39 +154,15 @@ impl CacheCurrentAdmissionOriginalsV1 {
     }
 }
 
-/// Borrows only the actual already-admitted Cache purpose's original payer.
-///
-/// Cache itself remains a disjoint mutable borrow in the shared native audit.
-/// This type has no public constructor or raw budget/identity input.
-pub(crate) struct CacheCurrentAuditReceivingLoanV1<'borrow> {
-    parent: &'borrow ProjectPreparationReservationAttemptV1,
-    intake: &'borrow mut Q04OriginalIntakeAttemptV1,
-    controller: &'borrow Journal,
-    source: &'borrow ProtectedSourceDomainJournalOwnerV1,
-    profile: &'borrow ProductionControllerNormalRootProfileV1,
-    state: &'borrow mut RootTurnStateV1,
-    cache_base: ResourceVector,
-    use_receiving: Option<&'borrow mut super::super::UseReceivingOriginalsV1>,
-}
-
-impl CacheCurrentAuditReceivingLoanV1<'_> {
-    pub(crate) fn cache_native_base_v1(&self) -> ResourceVector { self.cache_base }
-
-    pub(crate) fn cache_current_semantic_peak_v1(&self)
-        -> Result<ResourceVector, ResourceReservationErrorV1>
-    {
-        self.state.cache_current.shape.as_ref()
-            .and_then(|result| result.as_ref().ok())
-            .map(CacheCurrentAuditShapeV1::semantic_peak_v1)
-            .ok_or(ResourceReservationErrorV1::Conflict)
-    }
-
-
-    pub(crate) fn require_cache_named_preparation(&mut self, identity: CacheHeldIdentityDataV1)
+// These same upper checks are pure while the actual parent/Controller/Source,
+// profile and invitation are immutably held during one native reader. Mutable
+// J/U admission is checked separately by the real facade at every reached slot.
+impl<'turn, 'original: 'turn, 'cache> OriginalCreateStorageRootExchangeV1<'turn, 'original, 'cache> {
+    fn require_current_named_v1(&mut self, identity: CacheHeldIdentityDataV1)
         -> Result<(), ResourceReservationErrorV1>
     {
         let result = (|| {
-            if let Some(receiving) = self.use_receiving.as_deref() {
+            if let Some(receiving) = self.use_receiving.as_ref() {
                 receiving.require_reserved_v1()?;
             }
             self.intake.require_retained_capture()?;
@@ -175,8 +171,7 @@ impl CacheCurrentAuditReceivingLoanV1<'_> {
                 .require_identity_v1(identity)?;
             let current = &self.state.cache_current;
             if !current.entered || !matches!(current.funding, Some(Ok(())))
-                || current.semantic_failure().is_some()
-                || !self.state.invitation_complete {
+                || current.semantic_failure().is_some() || !self.state.invitation_complete {
                 return Err(ResourceReservationErrorV1::Conflict);
             }
             Ok(())
@@ -188,40 +183,7 @@ impl CacheCurrentAuditReceivingLoanV1<'_> {
         Ok(())
     }
 
-    pub(crate) fn admit_cache_semantic_shape(&mut self, shape: &CacheHeldNativeSemanticShapeV1)
-        -> Result<(), ResourceReservationErrorV1>
-    {
-        self.require_cache_named_preparation(shape.original_identity_v1())?;
-        if self.use_receiving.is_some() {
-            return self.admit_use_cache_semantic_shape_v1(shape);
-        }
-        let result = (|| {
-            let base = self.state.geometry.as_ref().and_then(|result| result.as_ref().ok())
-                .copied().ok_or(ResourceReservationErrorV1::Conflict)?;
-            let non_cache = self.state.cache_current.owner_geometry.as_ref()
-                .and_then(|result| result.as_ref().ok()).copied()
-                .ok_or(ResourceReservationErrorV1::Conflict)?;
-            Ok(base.checked_add(non_cache)?
-                .checked_add(shape.dominant_receiving_demand_v1().map_err(|_| ResourceReservationErrorV1::Conflict)?)?)
-        })();
-        self.state.cache_current.semantic_geometry = Some(result);
-        if let Some(Ok(base)) = self.state.cache_current.semantic_geometry.as_ref() {
-            self.state.cache_current.semantic_base = Some(*base);
-        }
-        let complete = self.state.cache_current.semantic_geometry.as_ref()
-            .and_then(|result| result.as_ref().ok()).copied()
-            .ok_or(ResourceReservationErrorV1::Conflict)
-            .and_then(|base| with_property_traffic(base, self.state.property_paid));
-        self.state.cache_current.semantic_funding = Some(match complete {
-            Ok(complete) => self.intake.reserve_create_capture_complete(
-                CreateContinuationCaptureOwnerV1::RootExchange, complete),
-            Err(error) => Err(error),
-        });
-        if matches!(self.state.cache_current.semantic_funding, Some(Ok(()))) { Ok(()) }
-        else { Err(ResourceReservationErrorV1::Conflict) }
-    }
-
-    pub(crate) fn require_current_clock_v1(&mut self, sample: RawPairedClockSample)
+    fn require_current_clock_v1(&mut self, sample: RawPairedClockSample)
         -> Result<(), ResourceReservationErrorV1>
     {
         if self.state.cache_current.clock_failure.is_some() {
@@ -258,7 +220,7 @@ fn with_property_traffic(base: ResourceVector, observations: usize)
     Ok(base.checked_add(ResourceVector::ZERO.with(D::NetworkBytes, wire).with(D::LogBytes, logs))?)
 }
 
-impl OriginalCreateStorageRootExchangeV1<'_, '_, '_> {
+impl<'turn, 'original: 'turn, 'cache> OriginalCreateStorageRootExchangeV1<'turn, 'original, 'cache> {
     pub(in crate::controller_resource_reservation::create_intake::ready) fn admit_cache_current_once_v1(&mut self,
         owner: &mut OriginalCreateStorageCacheCurrentProofV1,
     ) -> Result<(), ResourceReservationErrorV1> {
@@ -274,7 +236,12 @@ impl OriginalCreateStorageRootExchangeV1<'_, '_, '_> {
             return Err(ResourceReservationErrorV1::Conflict);
         }
         self.state.cache_current.entered = true;
-        self.state.cache_current.shape = Some(self.cache.current_proof_audit_shape_v1());
+        self.state.cache_current.semantic_supplement = Some(crate::journal::cache_native_semantic_supplement_v1());
+        self.state.cache_current.upper_cache_quote = Some(current_upper_cache_fixed_receiving_demand_v1());
+        self.state.cache_current.shape = Some(self.cache.native.current_proof_audit_shape_v1(
+            self.state.cache_current.upper_cache_quote.as_ref().and_then(|result| result.as_ref().ok()).copied(),
+            self.state.cache_current.semantic_supplement.as_ref().and_then(|result| result.as_ref().ok()).copied(),
+        ));
         self.state.cache_current.owner_geometry = Some(
             current_outer_fixed_receiving_demand_v1());
         self.state.cache_current.geometry = Some((|| {
@@ -304,31 +271,97 @@ impl OriginalCreateStorageRootExchangeV1<'_, '_, '_> {
         }
         self.state.property_paid = self.state.cache_current.property_reservation
             .ok_or(ResourceReservationErrorV1::Conflict)?;
-        let cache_base = self.state.cache_current.shape.as_ref().and_then(|result| result.as_ref().ok())
-            .map(CacheCurrentAuditShapeV1::dominant_receiving_demand_v1)
-            .ok_or(ResourceReservationErrorV1::Conflict)?;
-        let mut receiving = CacheCurrentAuditReceivingLoanV1 {
-            parent: self.parent, intake: self.intake, controller: self.controller,
-            source: self.source, profile: self.profile, state: self.state, cache_base,
-            use_receiving: self.use_receiving.as_deref_mut(),
-        };
-        let arm = self.cache.arm_current_proof_audit_once(owner.audit_originals_v1(), &mut receiving);
-        receiving.state.cache_current.arm = Some(arm);
-        if matches!(receiving.state.cache_current.arm, Some(Ok(()))) { Ok(()) }
-        else { Err(ResourceReservationErrorV1::Conflict) }
+        self.arm_current_native_once_v1(owner)
     }
 
-    pub(in crate::controller_resource_reservation::create_intake::ready) fn audit_cache_current_once_v1(&mut self, audit: &mut CacheCurrentAuditOriginalsV1)
-        -> Result<(), CacheHeldClosedV1>
-    {
-        let cache_base = self.state.cache_current.shape.as_ref().and_then(|result| result.as_ref().ok())
-            .map(CacheCurrentAuditShapeV1::dominant_receiving_demand_v1).ok_or(CacheHeldClosedV1)?;
-        let mut receiving = CacheCurrentAuditReceivingLoanV1 {
-            parent: self.parent, intake: self.intake, controller: self.controller,
-            source: self.source, profile: self.profile, state: self.state, cache_base,
-            use_receiving: self.use_receiving.as_deref_mut(),
-        };
-        self.cache.audit_current_proof_once(audit, &mut receiving)
+    pub(in crate::controller_resource_reservation::create_intake::ready) fn audit_cache_current_once_v1(
+        &mut self, audit: &mut CacheCurrentAuditOriginalsV1,
+    ) -> Result<(), CacheHeldClosedV1> {
+        self.cache.native.begin_current_proof_audit_once(audit)?;
+        while !audit.readers_complete_v1() {
+            let writer = audit.next_reader_index_v1();
+            let identity = self.state.cache_current.shape.as_ref()
+                .and_then(|result| result.as_ref().ok())
+                .map(CacheCurrentAuditShapeV1::original_identity_v1).ok_or(CacheHeldClosedV1)?;
+            self.require_current_named_v1(identity).map_err(|_| CacheHeldClosedV1)?;
+            let source = self.source.journal_ref_v1().cache_audit_source_original_v1()
+                .map_err(|_| CacheHeldClosedV1)?;
+            let shape = self.state.cache_current.shape.as_ref()
+                .and_then(|result| result.as_ref().ok()).ok_or(CacheHeldClosedV1)?;
+            match self.use_receiving.as_mut() {
+                Some(RootUseReceivingV1::CurrentCacheAudit(funding)) => {
+                    self.cache.native.capture_current_reader_once_v1(audit, funding)?;
+                }
+                None => {
+                    let root = self.state.geometry.as_ref().and_then(|result| result.as_ref().ok())
+                        .copied().ok_or(CacheHeldClosedV1)?;
+                    let owner = self.state.cache_current.owner_geometry.as_ref()
+                        .and_then(|result| result.as_ref().ok()).copied().ok_or(CacheHeldClosedV1)?;
+                    let non_cache = root.checked_add(owner).map_err(|_| CacheHeldClosedV1)?;
+                    let traffic = property_traffic_v1(self.state.property_paid).map_err(|_| CacheHeldClosedV1)?;
+                    let original = self.intake.borrow_cache_continuation_funding_v1(self.profile)
+                        .map_err(|_| CacheHeldClosedV1)?;
+                    let funding = self.cache.native.bind_current_j_audit_funding_v1(
+                        original, source, shape, non_cache, traffic,
+                    );
+                    let mut funding = match funding {
+                        Ok(funding) => funding,
+                        Err(cause) => {
+                            self.state.cache_current.native_funding_failure = Some(cause);
+                            return Err(CacheHeldClosedV1);
+                        }
+                    };
+                    self.cache.native.capture_current_reader_once_v1(audit, &mut funding)?;
+                }
+                _ => return Err(CacheHeldClosedV1),
+            }
+            // Actual lower geometry was selected before the original upper
+            // clock. Preserve J's latest non-traffic base for subsequent peers.
+            if let Some(complete) = audit.reached_cache_complete_v1() {
+                self.state.cache_current.semantic_geometry = Some((|| {
+                    let owner = self.state.cache_current.owner_geometry.as_ref()
+                        .and_then(|result| result.as_ref().ok()).copied()
+                        .ok_or(ResourceReservationErrorV1::Conflict)?;
+                    let root = if self.use_receiving.is_none() {
+                        self.state.geometry.as_ref().and_then(|result| result.as_ref().ok())
+                            .copied().ok_or(ResourceReservationErrorV1::Conflict)?
+                    } else { ResourceVector::ZERO };
+                    Ok(root.checked_add(owner)?.checked_add(complete)?)
+                })());
+                if let Some(Ok(base)) = self.state.cache_current.semantic_geometry.as_ref() {
+                    if self.use_receiving.is_none() {
+                        // J retained its reached base before the funding call.
+                        self.state.cache_current.semantic_base = Some(*base);
+                    } else if audit.reached_semantic_admission_succeeded_v1() {
+                        // U retained only the positive complete-bound highwater.
+                        let paid = self.state.cache_current.semantic_base.or(self.state.cache_current.base)
+                            .ok_or(CacheHeldClosedV1)?;
+                        self.state.cache_current.semantic_base = Some(paid.componentwise_max(*base));
+                    }
+                }
+            }
+            self.state.cache_current.semantic_funding_failed |= audit.storage_use_semantic_funding_failed_v1();
+            // A failed native reader still owes this exact kernel observation
+            // and cutoff comparison while its original native owners stay live.
+            self.state.cache_current.post_clock_result = Some(self.state.cache_current.post_clock.observe_once(None));
+            self.state.cache_current.post_cutoff = Some(match self.state.cache_current.post_clock_result.as_ref() {
+                Some(Ok(sample)) => self.require_current_clock_v1(*sample),
+                _ => Err(ResourceReservationErrorV1::Conflict),
+            });
+            if self.state.cache_current.post_clock.failure().is_some()
+                || !matches!(self.state.cache_current.post_cutoff, Some(Ok(()))) {
+                self.state.cache_current.reader_clock_selected = audit.failure().is_none();
+                self.cache.native.retain_current_reader_after_upper_refusal_v1(audit);
+                return Err(CacheHeldClosedV1);
+            }
+            self.cache.native.retire_current_reader_after_upper_clock_v1(audit)?;
+            self.state.cache_current.completed_clocks[writer] = self.state.cache_current.post_clock_result.as_ref()
+                .and_then(|result| result.as_ref().ok()).copied();
+            self.state.cache_current.post_clock = Default::default();
+            self.state.cache_current.post_clock_result = None;
+            self.state.cache_current.post_cutoff = None;
+        }
+        Ok(())
     }
 
     pub(in crate::controller_resource_reservation::create_intake::ready) fn finish_cache_current_audit_once_v1(&mut self, audit: &mut CacheCurrentAuditOriginalsV1)
@@ -336,7 +369,7 @@ impl OriginalCreateStorageRootExchangeV1<'_, '_, '_> {
     {
         // The real same Cache post is already armed. Sticky J or signer debt
         // cannot suppress this independently owed native observation.
-        self.cache.finish_current_proof_audit_once(audit)
+        self.cache.native.finish_current_proof_audit_once(audit)
     }
 
     pub(in crate::controller_resource_reservation::create_intake::ready) fn observe_cache_current_before_v1(&mut self,
@@ -357,7 +390,7 @@ impl OriginalCreateStorageRootExchangeV1<'_, '_, '_> {
         self.state.cache_current.before_result = Some(self.state.cache_current.before.observe_operation_once(
             CacheControlOriginalsV1 { parent: self.parent, intake: self.intake,
                 controller: self.controller, source: self.source, profile: self.profile },
-            self.cache, expected, Ok(position)));
+            &(self.cache).currentness_original_v1(), expected, Ok(position)));
         if !matches!(self.state.cache_current.before_result, Some(Ok(()))) {
             return Err(CreateStorageRootExchangeClosedV1);
         }
@@ -382,7 +415,7 @@ impl OriginalCreateStorageRootExchangeV1<'_, '_, '_> {
         self.state.cache_current.after_result = Some(self.state.cache_current.after.observe_operation_once(
             CacheControlOriginalsV1 { parent: self.parent, intake: self.intake,
                 controller: self.controller, source: self.source, profile: self.profile },
-            self.cache, expected, Ok(position)));
+            &(self.cache).currentness_original_v1(), expected, Ok(position)));
         self.state.owed_post = Some(RootPostFrontierV1::CacheCurrentAfter);
         let after_peer = peer.recheck_once(self);
         self.state.cache_current.after_peer = Some(after_peer);
@@ -562,7 +595,10 @@ pub fn create_storage_cache_current_fixed_receiving_demand_v1()
     -> Result<ResourceVector, ResourceReservationErrorV1>
 {
     Ok(current_outer_fixed_receiving_demand_v1()?
-        .checked_add(crate::cache_residency::current_cache_fixed_receiving_demand_v1()?)?)
+        .checked_add(aos_sandbox_cache::current_cache_fixed_receiving_demand_v1()
+            .map_err(|_| ResourceReservationErrorV1::Conflict)?)?
+        .checked_add(current_upper_cache_fixed_receiving_demand_v1()?)?
+        .checked_add(current_u_root_receiving_demand_v1()?)?)
 }
 
 impl OriginalCreateStorageReadyV1<'_, '_> {
@@ -573,14 +609,14 @@ impl OriginalCreateStorageReadyV1<'_, '_> {
     /// original pre-Root cut. It performs no reopen and grants no new purpose.
     #[doc(hidden)]
     pub fn completed_cache_current_extents_v1(&self)
-        -> Result<crate::cache_residency::CreateStorageCacheCurrentExtentsDataV1, CreateStorageReadyClosedV1>
+        -> Result<aos_sandbox_cache::CreateStorageCacheCurrentExtentsDataV1, CreateStorageReadyClosedV1>
     {
         if self.failure().is_some() {
             return Err(CreateStorageReadyClosedV1);
         }
         self.original.owner.root_exchange.cache_current_proof.completed_packet_v1()
             .map_err(|_| CreateStorageReadyClosedV1)?;
-        self.cache.current_proof_extents_v1().map_err(|_| CreateStorageReadyClosedV1)
+        self.cache.native.current_proof_extents_v1().map_err(|_| CreateStorageReadyClosedV1)
     }
 }
 
@@ -601,12 +637,12 @@ mod shared_receiving_tests {
 }
 
 
-impl OriginalCreateStorageRootExchangeV1<'_, '_, '_> {
+impl<'turn, 'original: 'turn, 'cache> OriginalCreateStorageRootExchangeV1<'turn, 'original, 'cache> {
     pub(in crate::controller_resource_reservation::create_intake::ready)
     fn cache_current_purpose_v1(&self)
         -> Result<CacheCurrentProofPurposeV1, ResourceReservationErrorV1>
     {
-        match self.use_receiving.as_deref() {
+        match self.use_receiving.as_ref() {
             Some(_) if self.state.use_tail.second_invitation_complete_v1()
                 && self.state.initial_cache_current.is_some() => {
                 Ok(CacheCurrentProofPurposeV1::ReservedU)
@@ -626,11 +662,17 @@ impl OriginalCreateStorageRootExchangeV1<'_, '_, '_> {
             || self.require_fixed().is_err() {
             return Err(ResourceReservationErrorV1::Conflict);
         }
-        self.use_receiving.as_deref().ok_or(ResourceReservationErrorV1::Conflict)?
+        self.use_receiving.as_mut().ok_or(ResourceReservationErrorV1::Conflict)?
             .require_reserved_v1()?;
         self.state.cache_current.entered = true;
-        self.state.cache_current.shape = Some(self.cache.current_proof_audit_shape_v1());
-        self.state.cache_current.owner_geometry = Some(current_outer_fixed_receiving_demand_v1());
+        self.state.cache_current.semantic_supplement = Some(crate::journal::cache_native_semantic_supplement_v1());
+        self.state.cache_current.upper_cache_quote = Some(current_upper_cache_fixed_receiving_demand_v1());
+        self.state.cache_current.shape = Some(self.cache.native.current_proof_audit_shape_v1(
+            self.state.cache_current.upper_cache_quote.as_ref().and_then(|result| result.as_ref().ok()).copied(),
+            self.state.cache_current.semantic_supplement.as_ref().and_then(|result| result.as_ref().ok()).copied(),
+        ));
+        self.state.cache_current.owner_geometry = Some(current_outer_fixed_receiving_demand_v1()
+            .and_then(|fixed| Ok(fixed.checked_add(current_u_root_receiving_demand_v1()?)?)));
         self.state.cache_current.geometry = Some((|| {
             let shape = self.state.cache_current.shape.as_ref()
                 .and_then(|result| result.as_ref().ok())
@@ -645,11 +687,11 @@ impl OriginalCreateStorageRootExchangeV1<'_, '_, '_> {
             owner.checked_add(shape.dominant_receiving_demand_v1())
                 .map_err(ResourceReservationErrorV1::Accounting)
         })());
-        self.state.cache_current.funding = Some(match self.state.cache_current.geometry.as_ref() {
-            Some(Ok(demand)) => self.use_receiving.as_deref_mut()
-                .ok_or(ResourceReservationErrorV1::Conflict)?.reserve_once(*demand),
-            _ => Err(ResourceReservationErrorV1::Conflict),
-        });
+        let original = match self.use_receiving.take() {
+            Some(RootUseReceivingV1::Original(original)) => original,
+            _ => return Err(ResourceReservationErrorV1::Conflict),
+        };
+        self.state.cache_current.funding = Some(self.bind_use_current_funding_once_v1(original));
         if !matches!(self.state.cache_current.funding, Some(Ok(()))) {
             if matches!(self.state.cache_current.geometry, Some(Ok(_))) {
                 self.state.use_tail.mark_use_funding_failure_v1();
@@ -658,59 +700,11 @@ impl OriginalCreateStorageRootExchangeV1<'_, '_, '_> {
         }
         self.state.cache_current.base = self.state.cache_current.geometry.as_ref()
             .and_then(|result| result.as_ref().ok()).copied();
-        self.prepay_root_peer_observations_v1(2)
-            .map_err(|_| ResourceReservationErrorV1::Conflict)?;
-        let cache_base = self.state.cache_current.shape.as_ref()
-            .and_then(|result| result.as_ref().ok())
-            .map(CacheCurrentAuditShapeV1::dominant_receiving_demand_v1)
-            .ok_or(ResourceReservationErrorV1::Conflict)?;
-        let mut receiving = CacheCurrentAuditReceivingLoanV1 {
-            parent: self.parent, intake: self.intake, controller: self.controller,
-            source: self.source, profile: self.profile, state: self.state, cache_base,
-            use_receiving: self.use_receiving.as_deref_mut(),
-        };
-        let arm = self.cache.arm_current_proof_audit_once(owner.audit_originals_v1(), &mut receiving);
-        receiving.state.cache_current.arm = Some(arm);
-        if matches!(receiving.state.cache_current.arm, Some(Ok(()))) { Ok(()) }
-        else { Err(ResourceReservationErrorV1::Conflict) }
+        self.prepay_root_peer_observations_v1(2).map_err(|_| ResourceReservationErrorV1::Conflict)?;
+        self.arm_current_native_once_v1(owner)
     }
 }
 
-impl CacheCurrentAuditReceivingLoanV1<'_> {
-    fn admit_use_cache_semantic_shape_v1(&mut self, shape: &CacheHeldNativeSemanticShapeV1)
-        -> Result<(), ResourceReservationErrorV1>
-    {
-        self.state.cache_current.semantic_geometry = Some((|| {
-            let owner = self.state.cache_current.owner_geometry.as_ref()
-                .and_then(|result| result.as_ref().ok()).copied()
-                .ok_or(ResourceReservationErrorV1::Conflict)?;
-            owner.checked_add(shape.dominant_receiving_demand_v1()
-                .map_err(|_| ResourceReservationErrorV1::Conflict)?)
-                .map_err(ResourceReservationErrorV1::Accounting)
-        })());
-        self.state.cache_current.semantic_delta = Some((|| {
-            let paid = self.state.cache_current.semantic_base.or(self.state.cache_current.base)
-                .ok_or(ResourceReservationErrorV1::Conflict)?;
-            let reached = self.state.cache_current.semantic_geometry.as_ref()
-                .and_then(|result| result.as_ref().ok()).copied()
-                .ok_or(ResourceReservationErrorV1::Conflict)?;
-            aos_sandbox_model::component_receiving::complete_bound_delta_v1(paid, reached)
-                .map_err(ResourceReservationErrorV1::Accounting)
-        })());
-        self.state.cache_current.semantic_funding = Some(match self.state.cache_current.semantic_delta.as_ref() {
-            Some(Ok((_, additional))) => self.use_receiving.as_deref_mut()
-                .ok_or(ResourceReservationErrorV1::Conflict)?.reserve_once(*additional),
-            _ => Err(ResourceReservationErrorV1::Conflict),
-        });
-        if matches!(self.state.cache_current.semantic_funding, Some(Ok(()))) {
-            self.state.cache_current.semantic_base = self.state.cache_current.semantic_delta.as_ref()
-                .and_then(|result| result.as_ref().ok()).map(|(complete, _)| *complete);
-            Ok(())
-        } else {
-            Err(ResourceReservationErrorV1::Conflict)
-        }
-    }
-}
 
 impl OriginalCreateStorageReadyV1<'_, '_> {
     /// Produces the distinct second Cache proof after the actual U reservation.
@@ -753,7 +747,7 @@ impl OriginalCreateStorageReadyV1<'_, '_> {
             parent: &owner.parent, intake: &mut owner.intake,
             controller: self.original.controller, source: self.original.source,
             profile: self.original.profile, cache: &mut self.cache,
-            state: &mut root.turn, use_receiving: Some(receiving),
+            state: &mut root.turn, use_receiving: Some(RootUseReceivingV1::Original(receiving)),
         };
         let result = root.use_cache_current_proof.produce_once(&mut loan, &mut root.peer, bytes);
         if result.is_ok() {
@@ -761,5 +755,173 @@ impl OriginalCreateStorageReadyV1<'_, '_> {
             root.turn.use_cache_complete = true;
         }
         result
+    }
+}
+
+impl<'turn, 'original: 'turn, 'cache> OriginalCreateStorageRootExchangeV1<'turn, 'original, 'cache> {
+    fn arm_current_native_once_v1(&mut self, owner: &mut OriginalCreateStorageCacheCurrentProofV1)
+        -> Result<(), ResourceReservationErrorV1>
+    {
+        let shape = self.state.cache_current.shape.as_ref().and_then(|result| result.as_ref().ok())
+            .ok_or(ResourceReservationErrorV1::Conflict)?;
+        let identity = shape.original_identity_v1();
+        self.require_current_named_v1(identity)?;
+        let shape = self.state.cache_current.shape.as_ref().and_then(|result| result.as_ref().ok())
+            .ok_or(ResourceReservationErrorV1::Conflict)?;
+        let fixed = self.state.cache_current.upper_cache_quote.as_ref().and_then(|result| result.as_ref().ok()).copied();
+        let supplement = self.state.cache_current.semantic_supplement.as_ref().and_then(|result| result.as_ref().ok()).copied();
+        let source = self.source.journal_ref_v1().cache_audit_source_original_v1()?;
+        let arm = match self.use_receiving.as_mut() {
+            Some(RootUseReceivingV1::CurrentCacheAudit(funding)) =>
+                self.cache.native.arm_current_proof_audit_once(owner.audit_originals_v1(), funding, fixed, supplement),
+            None => {
+                let root = self.state.geometry.as_ref().and_then(|result| result.as_ref().ok())
+                    .copied().ok_or(ResourceReservationErrorV1::Conflict)?;
+                let non_cache = root.checked_add(self.state.cache_current.owner_geometry.as_ref()
+                    .and_then(|result| result.as_ref().ok()).copied().ok_or(ResourceReservationErrorV1::Conflict)?)?;
+                let traffic = property_traffic_v1(self.state.property_paid)?;
+                let original = self.intake.borrow_cache_continuation_funding_v1(self.profile)?;
+                let funding = self.cache.native.bind_current_j_audit_funding_v1(original, source, shape, non_cache, traffic);
+                let mut funding = match funding {
+                    Ok(funding) => funding,
+                    Err(cause) => {
+                        self.state.cache_current.native_funding_failure = Some(cause);
+                        return Err(ResourceReservationErrorV1::Conflict);
+                    }
+                };
+                self.cache.native.arm_current_proof_audit_once(owner.audit_originals_v1(), &mut funding, fixed, supplement)
+            }
+            _ => return Err(ResourceReservationErrorV1::Conflict),
+        };
+        self.state.cache_current.arm = Some(arm);
+        if matches!(self.state.cache_current.arm, Some(Ok(()))) { Ok(()) }
+        else { Err(ResourceReservationErrorV1::Conflict) }
+    }
+}
+
+fn property_traffic_v1(observations: usize) -> Result<ResourceVector, ResourceReservationErrorV1> {
+    let (wire, logs) = CreateStorageRootPeerReceivingOriginalsV1::query_traffic_v1(observations)
+        .ok_or(ResourceReservationErrorV1::Conflict)?;
+    Ok(ResourceVector::ZERO.with(D::NetworkBytes, wire).with(D::LogBytes, logs))
+}
+
+// This is the original upper kernel-clock recipe, now beside its actual owner.
+// It is added once to native Current fixed receiving, never a prepaid receipt.
+fn current_upper_cache_fixed_receiving_demand_v1() -> Result<ResourceVector, ResourceReservationErrorV1> {
+    use crate::policy_compiler::RetainedKernelPairedClockAttemptV1 as Clock;
+    let clock_bytes = Clock::dominant_requested_bytes_v1().ok_or(ResourceReservationErrorV1::Conflict)?;
+    // These three actual environments/argument tuples are separate from
+    // resident progress and owning Result payloads. Both construction and call
+    // planes are reserved without optimizer or unused field-padding credit.
+    let named_check = std::mem::size_of::<(
+        &Option<RootUseReceivingV1<'_, '_>>,
+        &Q04OriginalIntakeAttemptV1,
+        &ProjectPreparationReservationAttemptV1,
+        &Journal,
+        &ProtectedSourceDomainJournalOwnerV1,
+        &ProductionControllerNormalRootProfileV1,
+        &Option<cache_receiving::OriginalCacheAssociationV1>,
+        &CacheCurrentAdmissionOriginalsV1,
+        &bool,
+        &CacheHeldIdentityDataV1,
+    )>().checked_mul(2)
+        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Result<(), ResourceReservationErrorV1>>().checked_mul(2)?))
+        .ok_or(ResourceReservationErrorV1::Conflict)?;
+    let reached_geometry = std::mem::size_of::<(
+        &Option<Result<ResourceVector, ResourceReservationErrorV1>>,
+        &Option<RootUseReceivingV1<'_, '_>>,
+        &Option<Result<ResourceVector, ResourceReservationErrorV1>>,
+        &ResourceVector,
+    )>().checked_mul(2)
+        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Result<ResourceVector, ResourceReservationErrorV1>>().checked_mul(2)?))
+        .ok_or(ResourceReservationErrorV1::Conflict)?;
+    let environments = named_check.checked_add(reached_geometry)
+        .ok_or(ResourceReservationErrorV1::Conflict)?;
+    let forwarding = std::mem::size_of::<Option<ResourceVector>>().checked_mul(4)
+        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Result<ResourceVector, crate::JournalError>>().checked_mul(4)?))
+        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Result<ResourceVector, ResourceReservationErrorV1>>().checked_mul(4)?))
+        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Result<ControllerCacheAuditFundingLoanV1<'_, '_>, ControllerCacheAuditFundingErrorV1>>().checked_mul(4)?))
+        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<ResourceVector>().checked_mul(12)?))
+        .and_then(|bytes| bytes.checked_add(Journal::cache_audit_source_original_receiving_bytes_v1()?))
+        .and_then(|bytes| bytes.checked_add(environments))
+        .ok_or(ResourceReservationErrorV1::Conflict)?;
+    let construction = std::mem::size_of::<aos_sandbox_cache::CreateStorageCacheCurrentExtentsDataV1>().checked_mul(2)
+        .and_then(|bytes| bytes.checked_add(4 * std::mem::size_of::<ResourceVector>()))
+        .and_then(|bytes| bytes.checked_add(clock_bytes))
+        .and_then(|bytes| bytes.checked_add(forwarding)).ok_or(ResourceReservationErrorV1::Conflict)?;
+    Ok(ResourceVector::ZERO.with(D::MemoryBytes, u64::try_from(construction).map_err(|_| ResourceReservationErrorV1::Conflict)?)
+        .with(D::OpenFiles, u64::try_from(Clock::MAXIMUM_RETAINED_FILES_V1).map_err(|_| ResourceReservationErrorV1::Conflict)?))
+}
+
+/// Prices the same Current prefix ceiling for the two actual upper U peers.
+///
+/// This quote admits no work and constructs neither a Cache nor a payer.
+///
+/// # Errors
+/// Retains actual native/full-prefix arithmetic errors. A failed upper quote
+/// is selected only after the native full-prefix recipe reaches its marker.
+#[doc(hidden)]
+pub fn create_storage_cache_current_dynamic_receiving_demand_v1(
+    extents: &[aos_sandbox_broker::canonical_journal::CanonicalReplayExtentDataV1; 5],
+) -> Result<ResourceVector, ResourceReservationErrorV1> {
+    let supplement = crate::journal::cache_native_semantic_supplement_v1();
+    let native = aos_sandbox_cache::create_storage_cache_current_dynamic_with_upper_semantic_quote_v1(
+        extents, supplement.as_ref().ok().copied(),
+    );
+    match native {
+        Err(CacheHeldErrorV1::Journal(CacheJournalErrorV1::DeferredUpperSemanticQuote)) =>
+            Err(supplement.err().map(ResourceReservationErrorV1::Journal)
+                .unwrap_or(ResourceReservationErrorV1::Conflict)),
+        value => value.map_err(ResourceReservationErrorV1::NativeCache),
+    }
+}
+
+fn current_u_root_receiving_demand_v1() -> Result<ResourceVector, ResourceReservationErrorV1> {
+    let lower = ControllerCacheAuditFundingLoanV1::root_observation_funding_receiving_bytes_v1()
+        .ok_or(ResourceReservationErrorV1::Conflict)?;
+    let upper = RootUseReceivingV1::cache_audit_receiving_bytes_v1()
+        .ok_or(ResourceReservationErrorV1::Conflict)?;
+    // The genuine facade is boxed only AFTER this Current-U purpose's first
+    // reserve. Price its actual move/heap destination and Box controls here;
+    // ordinary J and Released short Root loans allocate none of this backing.
+    let owned_current = std::mem::size_of::<ControllerCacheAuditFundingLoanV1<'_, '_>>().checked_mul(2)
+        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Box<ControllerCacheAuditFundingLoanV1<'_, '_>>>().checked_mul(2)?))
+        .ok_or(ResourceReservationErrorV1::Conflict)?;
+    let use_factory = std::mem::size_of::<(
+        &mut OriginalCreateStorageRootExchangeV1<'_, '_, '_>,
+        &mut super::super::UseReceivingOriginalsV1,
+    )>().checked_mul(2)
+        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Result<(), ResourceReservationErrorV1>>().checked_mul(2)?))
+        .ok_or(ResourceReservationErrorV1::Conflict)?;
+    let bytes = lower.checked_add(upper).and_then(|bytes| bytes.checked_add(owned_current))
+        .and_then(|bytes| bytes.checked_add(use_factory))
+        .ok_or(ResourceReservationErrorV1::Conflict)?;
+    Ok(ResourceVector::ZERO.with(D::MemoryBytes,
+        u64::try_from(bytes).map_err(|_| ResourceReservationErrorV1::Conflict)?))
+}
+
+impl<'turn, 'original: 'turn, 'cache> OriginalCreateStorageRootExchangeV1<'turn, 'original, 'cache> {
+    // This moves the actual long U borrow into the retained purpose. No closure
+    // environment can lend a shorter captured reborrow into the owning facade.
+    fn bind_use_current_funding_once_v1(
+        &mut self,
+        original: &'turn mut super::super::UseReceivingOriginalsV1,
+    ) -> Result<(), ResourceReservationErrorV1> {
+        let shape = self.state.cache_current.shape.as_ref()
+            .and_then(|result| result.as_ref().ok()).ok_or(ResourceReservationErrorV1::Conflict)?;
+        let non_cache = self.state.cache_current.owner_geometry.as_ref()
+            .and_then(|result| result.as_ref().ok()).copied().ok_or(ResourceReservationErrorV1::Conflict)?;
+        // Geometry must succeed before this old real debit frontier.
+        self.state.cache_current.geometry.as_ref().and_then(|result| result.as_ref().ok())
+            .ok_or(ResourceReservationErrorV1::Conflict)?;
+        let lower = original.borrow_cache_funding_v1(self.profile)?;
+        let source = self.source.journal_ref_v1().cache_audit_source_original_v1()?;
+        match self.cache.native.bind_current_u_audit_funding_v1(lower, source, shape, non_cache) {
+            Ok(funding) => { self.use_receiving = Some(RootUseReceivingV1::CurrentCacheAudit(Box::new(funding))); Ok(()) }
+            Err(cause) => {
+                self.state.cache_current.native_funding_failure = Some(cause);
+                Err(ResourceReservationErrorV1::Conflict)
+            }
+        }
     }
 }

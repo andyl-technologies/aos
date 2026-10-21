@@ -5,12 +5,14 @@
 //! admission. All four native post destinations are armed before primary work.
 
 mod stages;
+pub(crate) use aos_sandbox_policy::native::RootExecutionNoApplyReadPhaseV2;
 
-pub(crate) use stages::{RootStopCleanupStageV1, RootMaintenanceStorageStageV2, RootExecutionNoApplyReadPhaseV2, RootContinuationDemandV1, RootContinuationStageV1, RootContinuationStagesV1};
+pub(crate) use stages::{RootStopCleanupStageV1, RootMaintenanceStorageStageV2, RootContinuationDemandV1, RootContinuationStageV1, RootContinuationStagesV1};
 
 use std::error::Error as StdError;
 
-use aos_sandbox_broker::receiving::{RootObservationErrorV1, RootPrearmedHistoryServicePostV1};
+pub(crate) use aos_sandbox_broker::receiving::RootPurposePeerPostV1;
+use aos_sandbox_broker::receiving::{RootPurposePeerPostsOriginalV1, RootPurposePostErrorV1};
 use aos_sandbox_model::{
     ResourceVector,
     component_receiving::{operation_traffic_demand_v1, without_operation_traffic_v1},
@@ -140,29 +142,18 @@ pub(crate) struct RootPurposePeerAdmissionV1<K: RootPeerPurposeV1> {
     entered: bool,
     permit: Option<Result<ResourceVector, ResourceReservationErrorV1>>,
     traffic: Option<Result<(), ResourceReservationErrorV1>>,
-    posts: [Option<Result<RootPrearmedHistoryServicePostV1, RootObservationErrorV1>>; 4],
-    returned: [Option<Result<(), Error>>; 4],
-    settled: [bool; 2],
+    posts: RootPurposePeerPostsOriginalV1<Error>,
     kind: std::marker::PhantomData<K>,
     stages: K::Stages,
 }
 
-#[derive(Clone, Copy)]
-pub(crate) enum RootPurposePeerPostV1 {
-    AdmissionBefore,
-    AdmissionAfter,
-    FinalBefore,
-    FinalAfter,
-}
+impl RootPurposePostErrorV1 for Error {
+    fn closed() -> Self {
+        Self::Service
+    }
 
-impl RootPurposePeerPostV1 {
-    fn index(self) -> usize {
-        match self {
-            Self::AdmissionBefore => 0,
-            Self::AdmissionAfter => 1,
-            Self::FinalBefore => 2,
-            Self::FinalAfter => 3,
-        }
+    fn from_observation(error: aos_sandbox_broker::receiving::RootObservationErrorV1) -> Self {
+        error.into()
     }
 }
 
@@ -174,7 +165,7 @@ impl<K: RootPeerPurposeV1> RootPurposePeerAdmissionV1<K> {
     pub(crate) fn require_armed_v1(&self) -> Result<(), Error> {
         if matches!(self.permit, Some(Ok(_)))
             && matches!(self.traffic, Some(Ok(())))
-            && self.posts.iter().all(|post| matches!(post, Some(Ok(_))))
+            && self.posts.require_armed_v1().is_ok()
         {
             Ok(())
         } else {
@@ -183,7 +174,7 @@ impl<K: RootPeerPurposeV1> RootPurposePeerAdmissionV1<K> {
     }
 
     pub(crate) fn is_positive_v1(&self, purpose: RootPurposePeerPostV1) -> bool {
-        matches!(self.returned[purpose.index()], Some(Ok(())))
+        self.posts.is_positive_v1(purpose)
     }
 
     pub(crate) fn admission_failure_v1(&self) -> Option<&(dyn StdError + 'static)> {
@@ -197,68 +188,22 @@ impl<K: RootPeerPurposeV1> RootPurposePeerAdmissionV1<K> {
                     .and_then(|result| result.as_ref().err())
                     .map(|cause| cause as _)
             })
-            .or_else(|| {
-                self.posts
-                    .iter()
-                    .find_map(|post| post.as_ref()?.as_ref().err().map(|cause| cause as _))
-            })
+            .or_else(|| self.posts.arming_failure_v1().map(|cause| cause as _))
     }
 
     pub(crate) fn post_failure_v1(
         &self,
         purpose: RootPurposePeerPostV1,
     ) -> Option<&(dyn StdError + 'static)> {
-        let slot = purpose.index();
-        self.posts[slot]
-            .as_ref()
-            .and_then(|result| result.as_ref().ok())
-            .and_then(|original| original.failure())
-            .or_else(|| {
-                self.returned[slot]
-                    .as_ref()
-                    .and_then(|result| result.as_ref().err())
-                    .map(|cause| cause as _)
-            })
+        self.posts.post_failure_v1(purpose)
     }
 
     pub(crate) fn settle_admission_positive_v1(&mut self) -> Result<(), Error> {
-        self.settle_pair_positive(0)
+        self.posts.settle_admission_positive_once_v1()
     }
 
     pub(crate) fn settle_final_positive_v1(&mut self) -> Result<(), Error> {
-        self.settle_pair_positive(1)
-    }
-
-    fn settle_pair_positive(&mut self, pair: usize) -> Result<(), Error> {
-        let first = pair * 2;
-        if self.settled[pair]
-            || self.posts[first..first + 2]
-                .iter()
-                .any(|post| !matches!(post, Some(Ok(_))))
-            || self.returned[first..first + 2]
-                .iter()
-                .any(|returned| !matches!(returned, Some(Ok(()))))
-        {
-            return Err(Error::Service);
-        }
-        for original in &mut self.posts[first..first + 2] {
-            let original = original
-                .as_mut()
-                .and_then(|result| result.as_mut().ok())
-                .ok_or(Error::Service)?;
-            if original.failure().is_some() {
-                return Err(Error::Service);
-            }
-        }
-        for original in &mut self.posts[first..first + 2] {
-            original
-                .as_mut()
-                .and_then(|result| result.as_mut().ok())
-                .ok_or(Error::Service)?
-                .retire_positive_once_v1();
-        }
-        self.settled[pair] = true;
-        Ok(())
+        self.posts.settle_final_positive_once_v1()
     }
 }
 
@@ -268,7 +213,7 @@ impl RootReceivingOriginalV1 {
         startup: &ProductionNormalRootStartupV1,
         admission: &mut RootPurposePeerAdmissionV1<K>,
     ) -> Result<(), Error> {
-        if admission.entered {
+        if K::EXECUTION_NO_APPLY_ONLY || admission.entered {
             self.activation.latch_root_refusal_v1();
             return Err(Error::Service);
         }
@@ -299,11 +244,10 @@ impl RootReceivingOriginalV1 {
         }
         // Arm all four once-only debts before any primary comparison. A later
         // arm refusal leaves each earlier actual destination resident.
-        for post in &mut admission.posts {
-            let returned = self.activation
-                .arm_history_service_post_v1(startup.native_startup_original_v1());
-            self.native_refusal_original_v1().park_empty_result_v1(post, returned);
-        }
+        admission.posts.arm_once_v1(
+            &self.activation,
+            startup.native_startup_original_v1(),
+        )?;
         admission.require_armed_v1()
     }
 
@@ -313,23 +257,10 @@ impl RootReceivingOriginalV1 {
         admission: &mut RootPurposePeerAdmissionV1<K>,
         purpose: RootPurposePeerPostV1,
     ) -> Result<(), Error> {
-        let slot = purpose.index();
-        if admission.returned[slot].is_some() {
-            return Err(Error::Service);
-        }
-        let post = admission.posts[slot]
-            .as_mut()
-            .and_then(|result| result.as_mut().ok())
-            .ok_or(Error::Service)?;
-        // This is an already-paid debt, with no healthy reentry or new debit.
-        let returned = self.activation
-            .observe_history_service_post_once_v1(startup.native_startup_original_v1(), post)
-            .map_err(Into::into);
-        self.native_refusal_original_v1().park_empty_result_v1(&mut admission.returned[slot], returned);
-        if admission.is_positive_v1(purpose) {
-            Ok(())
-        } else {
-            Err(Error::Service)
-        }
+        admission.posts.observe_once_v1(
+            &mut self.activation,
+            startup.native_startup_original_v1(),
+            purpose,
+        )
     }
 }

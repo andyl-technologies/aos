@@ -12,11 +12,13 @@
 
 use std::error::Error;
 
-use aos_sandbox_linux::unix_stream::{
-    RetainedSubjectStreamReadV1, RetainedUnixStream, RetainedUnixStreamAdmissionErrorV1,
-    RetainedUnixStreamSubjectReceiveErrorV1, SubjectStreamReadErrorV1,
-    SubjectStreamReceiveGeometryV1, UnixStreamSubjectEofReadbackV1,
-};
+use aos_sandbox_linux::unix_stream::RetainedSubjectStreamReadV1;
+use aos_linux_descriptors::unix_stream::RetainedUnixStream;
+use aos_linux_descriptors::unix_stream::RetainedUnixStreamAdmissionErrorV1;
+use aos_sandbox_linux::unix_stream::RetainedUnixStreamSubjectReceiveErrorV1;
+use aos_sandbox_linux::unix_stream::SubjectStreamReadErrorV1;
+use aos_sandbox_linux::unix_stream::SubjectStreamReceiveGeometryV1;
+use aos_sandbox_linux::unix_stream::UnixStreamSubjectEofReadbackV1;
 use rustix::event::PollFd;
 use rustix::time::{ClockId, Timespec, clock_gettime};
 
@@ -102,7 +104,7 @@ pub struct CacheCurrentSignerExchangeOriginalsV1 {
     activation: Option<Result<(), aos_sandbox_linux::seqpacket::SeqpacketError>>,
     request: [u8; CACHE_CURRENT_SIGNER_CHALLENGE_BYTES_V1],
     sender: Option<(u32, u32)>,
-    begin_before: Option<Result<(), aos_sandbox_linux::Error>>,
+    begin_before: Option<Result<(), aos_linux_descriptors::Error>>,
     write_wait: Option<ReadinessOriginalsV1>,
     write: Option<rustix::io::Result<usize>>,
     write_progress: Option<Result<(), Closed>>,
@@ -110,12 +112,12 @@ pub struct CacheCurrentSignerExchangeOriginalsV1 {
     write_deadline: Option<Result<Timespec, Closed>>,
     sent: usize,
     shutdown: Option<rustix::io::Result<()>>,
-    begin_after: Option<Result<(), aos_sandbox_linux::Error>>,
+    begin_after: Option<Result<(), aos_linux_descriptors::Error>>,
     begin_clock: Option<Timespec>,
     begin_deadline: Option<Result<Timespec, Closed>>,
     read: RetainedSubjectStreamReadV1,
     preparation: Option<Result<(), SubjectStreamReadErrorV1>>,
-    read_before: Option<Result<(), aos_sandbox_linux::Error>>,
+    read_before: Option<Result<(), aos_linux_descriptors::Error>>,
     read_wait: Option<ReadinessOriginalsV1>,
     received: Option<Result<(), SubjectStreamReadErrorV1>>,
     receive_clock: Option<Timespec>,
@@ -125,7 +127,7 @@ pub struct CacheCurrentSignerExchangeOriginalsV1 {
     subject_clock: Option<Timespec>,
     subject_deadline: Option<Result<Timespec, Closed>>,
     copied: Option<Result<(), SubjectStreamReadErrorV1>>,
-    read_after: Option<Result<(), aos_sandbox_linux::Error>>,
+    read_after: Option<Result<(), aos_linux_descriptors::Error>>,
     read_clock: Option<Timespec>,
     read_deadline: Option<Result<Timespec, Closed>>,
     anchor: Option<SignerAnchorV1>,
@@ -135,7 +137,7 @@ pub struct CacheCurrentSignerExchangeOriginalsV1 {
     eof_deadline: Option<Result<Timespec, Closed>>,
     final_subject: Option<SignerSubjectOriginalsV1>,
     final_subject_result: Option<Result<(), Closed>>,
-    final_original: Option<Result<(), aos_sandbox_linux::Error>>,
+    final_original: Option<Result<(), aos_linux_descriptors::Error>>,
     final_clock: Option<Timespec>,
     final_deadline: Option<Result<Timespec, Closed>>,
     first: Option<Stage>,
@@ -244,7 +246,7 @@ impl CacheCurrentSignerExchangeOriginalsV1 {
         let stream = self.connection.take_stream_once().map_err(|_| Closed::Retained)?;
         self.stream = Some(RetainedUnixStream::from_owned_retaining_v1(stream.into()));
         if !matches!(self.stream, Some(Ok(_))) { return self.refuse(Stage::Admission, Closed::Retained); }
-        self.activation = Some(self.stream_mut()?.enable_subject_reporting());
+        self.activation = Some(self.stream_mut()?.enable_subject_reporting().map_err(aos_sandbox_linux::seqpacket::SeqpacketError::from));
         if !matches!(self.activation, Some(Ok(()))) { self.first.get_or_insert(Stage::Activation); }
         if self.first.is_none() {
             self.preparation = Some(self.read.prepare_exact_once(CACHE_CURRENT_SIGNER_PACKET_BYTES_V1));
@@ -410,7 +412,7 @@ impl CacheCurrentSignerExchangeOriginalsV1 {
             }
         }
         if self.first.is_none() {
-            self.eof = Some(self.stream_mut()?.try_receive_subject_eof_with_geometry_retaining(&geometry));
+            self.eof = Some(aos_sandbox_linux::unix_stream::try_receive_subject_eof_with_geometry_retaining(self.stream_mut()?, &geometry));
             if !matches!(self.eof, Some(Ok(_))) { self.first = Some(Stage::Eof); }
             capture_deadline(&mut self.eof_clock, &mut self.eof_deadline, cutoff);
             if !matches!(self.eof_deadline, Some(Ok(_))) { self.first.get_or_insert(Stage::EofDeadline); }

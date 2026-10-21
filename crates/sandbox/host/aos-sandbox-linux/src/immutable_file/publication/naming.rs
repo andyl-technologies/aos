@@ -17,7 +17,7 @@ use super::{
     inspect_allocated_bytes, inspect_private, inspect_root, is_kernel_verity_filesystem,
     sha256_measurement, strict_resolution,
 };
-use crate::Error;
+use aos_linux_descriptors::Error;
 use crate::uapi::{self, OpenHow};
 
 /// Reports a failure known to precede the no-replace rename effect.
@@ -625,7 +625,7 @@ fn validate_pinned(
     allocated_bytes: u64,
     verity: super::FsVerityDigest,
 ) -> Result<(), MechanicsFailure> {
-    let flags = uapi::get_status_flags(file).map_err(MechanicsFailure::Linux)?;
+    let flags = aos_linux_descriptors::native::get_status_flags(file).map_err(MechanicsFailure::Linux)?;
     if flags & libc::O_ACCMODE != libc::O_RDONLY || flags & libc::O_PATH != 0 {
         return Err(MechanicsFailure::InodeInvariant);
     }

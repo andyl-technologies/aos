@@ -7,38 +7,15 @@
 use std::collections::TryReserveError;
 use std::os::unix::net::UnixStream;
 use aos_sandbox_linux::unix_stream::{RetainedSubjectStreamReadV1, SubjectStreamReceiveGeometryV1};
-use aos_sandbox_protocol::domain_ledger::create_q04_history::CLAIM_CHUNK_BYTES;
 use aos_sandbox_protocol::domain_ledger::create_storage_history::{
-    HistoryErrorV1, ready::ready_commitment_v1,
-    continuation::SignedPreparationBundleDataV1,
-    transport::{TransferIndexV1, FrameCoordinatesV1, FrameEnvelopeV1,
-        FrameKindV1, ChunkEnvelopeV1, FRAME_HEADER_BYTES, CHUNK_HEADER_BYTES},
+    HistoryErrorV1, transport::TransferIndexV1,
 };
 use crate::normal_root::RootPolicyAcceptedFlightV1;
 use super::subject::RootCurrentChunkReceivingV1;
 use super::super::{RootCreateStorageCurrentErrorV1 as Error, root_open::RootCurrentOpenStateV1};
 
-#[derive(Clone, Copy)]
-pub(in crate::policy_compiler::create_storage_current) enum IndexedTransferPurposeDataV1 {
-    Ready,
-    Signed { maxima: [usize; 3] },
-    Outcome { maxima: [usize; 2] },
-}
-
-impl IndexedTransferPurposeDataV1 {
-    fn chunk_kind(self) -> FrameKindV1 {
-        match self { Self::Ready => FrameKindV1::ReadyChunk, Self::Signed { .. } => FrameKindV1::SignedChunk, Self::Outcome { .. } => FrameKindV1::OutcomeChunk }
-    }
-
-    fn commitment(self, bytes: &[u8]) -> Result<[u8; 32], HistoryErrorV1> {
-        match self {
-            Self::Ready => Ok(ready_commitment_v1(bytes)),
-            Self::Signed { maxima } => SignedPreparationBundleDataV1::decode(bytes, maxima)?.commitment(),
-            Self::Outcome { maxima } => aos_sandbox_protocol::domain_ledger::create_storage_history::outcome::
-                OutcomeBundleDataV1::decode(bytes, maxima)?.commitment(),
-        }
-    }
-}
+pub(in crate::policy_compiler::create_storage_current) use
+    aos_sandbox_protocol::domain_ledger::create_storage_history::indexed_transfer::IndexedTransferPurposeDataV1;
 
 pub(in crate::policy_compiler::create_storage_current) struct IndexedReceiveSlotsV1<'slots> {
     pub(in crate::policy_compiler::create_storage_current) allocation: &'slots mut Option<Result<(), TryReserveError>>,
@@ -65,58 +42,53 @@ pub(in crate::policy_compiler::create_storage_current) fn receive_chunks_once_v1
     let IndexedReceiveSlotsV1 { allocation, bytes, frame, frame_binding,
         next_chunk, chunks, digest } = slots;
     let body = root_open.completed_body()?;
-    let total = usize::try_from(index.total()).map_err(|_| Error::Ready)?;
-    *allocation = Some(bytes.try_reserve_exact(total));
-    positive(allocation)?;
 
-    while *next_chunk < index.count() {
-        let offset = u64::from(*next_chunk).checked_mul(CLAIM_CHUNK_BYTES as u64)
-            .ok_or(Error::Ready)?;
-        let remaining = index.total().checked_sub(offset).ok_or(Error::Ready)?;
-        let payload = usize::try_from(remaining.min(CLAIM_CHUNK_BYTES as u64))
-            .map_err(|_| Error::Ready)?;
-        let frame_bytes = FRAME_HEADER_BYTES + CHUNK_HEADER_BYTES + payload;
-        *frame = Some(RetainedSubjectStreamReadV1::new());
-        let current_frame = frame.as_mut().ok_or(Error::Ready)?;
-        current_frame.prepare_exact_once(frame_bytes).map_err(|_| Error::Ready)?;
-        match purpose {
-            IndexedTransferPurposeDataV1::Ready => chunks.receive_exact(flight, original, current_frame, root_open, geometry)?,
-            IndexedTransferPurposeDataV1::Signed { .. } | IndexedTransferPurposeDataV1::Outcome { .. } => chunks.receive_exact_until(flight, original, current_frame, root_open, geometry, cutoff)?,
-        }
-        *frame_binding = Some((|| {
-            let envelope = FrameEnvelopeV1::decode(current_frame.bytes(), FrameCoordinatesV1 {
-                kind: purpose.chunk_kind(),
-                lane: body.open.lane,
-                sequence: first_sequence.checked_add(u64::from(*next_chunk)).ok_or(HistoryErrorV1::Extent)?,
-                root_nonce: body.root_nonce,
-                controller_nonce: body.open.controller_nonce,
-            })?;
-            let chunk = ChunkEnvelopeV1::decode(envelope.payload(), index, *next_chunk)?;
-            let reached = bytes.len().checked_add(chunk.payload().len())
-                .ok_or(HistoryErrorV1::Extent)?;
-            if reached > total || reached > bytes.capacity() {
-                return Err(HistoryErrorV1::Extent);
+    macro_rules! indexed_stage {
+        (extent, $total:ident) => {
+            aos_sandbox_broker::root_indexed_transfer_extent_v1! {
+                index: index, total: $total, error: Error::Ready,
             }
-            bytes.extend_from_slice(chunk.payload());
-            Ok(())
-        })());
-        positive(frame_binding)?;
-        // Exact framed bytes, checksum, next-index geometry and cumulative
-        // copy have all completed. Dispose this positive raw frame before
-        // the next bounded frame. A failed frame stays in frame.
-        drop(frame.take());
-        *frame_binding = None;
-        *next_chunk = (*next_chunk).checked_add(1).ok_or(Error::Ready)?;
+        };
+        (allocate, $total:ident) => {
+            aos_sandbox_broker::root_indexed_transfer_allocate_v1! {
+                allocation: allocation, bytes: bytes, total: $total, positive: positive,
+            }
+        };
+        (has_next) => { *next_chunk < index.count() };
+        (prepare_frame, $current_frame:ident) => {
+            aos_sandbox_broker::root_indexed_transfer_prepare_frame_v1! {
+                index: index, next_chunk: next_chunk, frame: frame,
+                current_frame: $current_frame, error: Error::Ready,
+            }
+        };
+        (receive_frame, $current_frame:ident) => {
+            match purpose {
+                IndexedTransferPurposeDataV1::Ready => chunks.receive_exact(flight, original, $current_frame, root_open, geometry)?,
+                IndexedTransferPurposeDataV1::Signed { .. } | IndexedTransferPurposeDataV1::Outcome { .. } => chunks.receive_exact_until(flight, original, $current_frame, root_open, geometry, cutoff)?,
+            }
+        };
+        (bind_copy, $current_frame:ident, $total:ident) => {
+            aos_sandbox_broker::root_indexed_transfer_bind_copy_v1! {
+                frame_binding: frame_binding, current_frame: $current_frame,
+                purpose: purpose, body: body, first_sequence: first_sequence,
+                next_chunk: next_chunk, index: index, bytes: bytes, total: $total,
+                positive: positive,
+            }
+        };
+        (dispose_frame, $current_frame:ident) => {
+            aos_sandbox_broker::root_indexed_transfer_dispose_frame_v1! {
+                frame: frame, frame_binding: frame_binding, next_chunk: next_chunk,
+                error: Error::Ready,
+            }
+        };
+        (digest, $total:ident) => {
+            aos_sandbox_broker::root_indexed_transfer_digest_v1! {
+                digest: digest, bytes: bytes, total: $total, purpose: purpose,
+                index: index, positive: positive,
+            }
+        };
     }
-    *digest = Some(if bytes.len() != total {
-        Err(HistoryErrorV1::Correlation)
-    } else {
-        purpose.commitment(bytes).and_then(|observed| {
-            if observed == index.digest() { Ok(()) }
-            else { Err(HistoryErrorV1::Correlation) }
-        })
-    });
-    positive(digest).map(|_| ())
+    aos_sandbox_broker::root_indexed_transfer_receive_v1!(indexed_stage)
 }
 
 fn positive<T, E>(slot: &Option<Result<T, E>>) -> Result<&T, Error> {
@@ -126,6 +98,9 @@ fn positive<T, E>(slot: &Option<Result<T, E>>) -> Result<&T, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aos_sandbox_protocol::domain_ledger::create_storage_history::{
+        continuation::SignedPreparationBundleDataV1, transport::FrameKindV1,
+    };
 
     #[test]
     fn signed_commitment_binds_each_received_field() {

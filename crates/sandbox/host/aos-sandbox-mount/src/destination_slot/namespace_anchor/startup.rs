@@ -5,7 +5,7 @@
 
 use super::*;
 use aos_sandbox_linux::path::BeneathRootOwnedOriginalV2;
-use aos_sandbox_linux::boot::RootOriginalKernelBootIdAttemptV1;
+use aos_linux_descriptors::boot::RootOriginalKernelBootIdAttemptV1;
 
 /// Retains the complete fixed Store opening and every failed native prefix.
 ///
@@ -17,9 +17,9 @@ pub struct DestinationSlotStartupOriginalV4 {
     pending: Option<OwnedFd>,
     descriptor_metadata: Option<std::result::Result<rustix::fs::Stat, rustix::io::Errno>>,
     root_original: BeneathRootOwnedOriginalV2,
-    root_result: Option<std::result::Result<(), aos_sandbox_linux::Error>>,
+    root_result: Option<std::result::Result<(), aos_linux_descriptors::Error>>,
     root: Option<BeneathRoot>,
-    mount: Option<std::result::Result<MountId, aos_sandbox_linux::Error>>,
+    mount: Option<std::result::Result<MountId, aos_linux_descriptors::Error>>,
     boot: RootOriginalKernelBootIdAttemptV1,
     replay: DestinationResourceReplayOriginalV4,
     reads: Vec<inventory::AnchorReadOriginalV4>,

@@ -24,7 +24,7 @@ use aos_sandbox_publisher::publisher_sessions::{
 };
 use aos_sandbox_model::{NodeId, PrincipalId, ProjectId, PublisherInstanceId, ResourceId};
 use aos_sandbox_linux::cgroup::CgroupV2Root;
-use aos_sandbox_linux::pidfd::PidFd;
+use aos_linux_descriptors::pidfd::PidFd;
 use aos_sandbox_linux::seqpacket::{
     ListenerAdmissionFailureRefV1, RecordSubjectListener,
     RecordSubjectListenerAdmissionAttemptV1, SeqpacketError,

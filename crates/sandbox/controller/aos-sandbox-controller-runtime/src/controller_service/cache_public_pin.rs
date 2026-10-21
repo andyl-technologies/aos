@@ -6,15 +6,7 @@
 
 use aos_sandbox_filesystem_format::ValidatedViewSourceObject;
 use aos_sandbox_controller_domain::Journal;
-use aos_sandbox_controller_domain::cache_residency::{
-    CacheOwnerCurrentnessV1, CacheOwnerErrorV1, CacheOwnerPinActionV1, CacheOwnerPinIdV1,
-    CacheOwnerPinPresenceV1, CacheOwnerPinReconciliationStateV1, CacheOwnerPinReconciliationV1,
-    CacheOwnerPinSettlementErrorV1, CacheOwnerPinSettlementV1, CachePinV1,
-    CacheResidencyCommitOutcomeV1, CacheResidencyProtectedJournalErrorV1,
-    CacheResidencyProtectedOwnerV1, CacheResidencyProtectedPinRecoveryV1, DormantCacheOwnerV1,
-    PublicLogicalPinAcquisitionCommitV1, PublicLogicalPinAcquisitionErrorV1,
-    ValidatedPublicLogicalPinAcquisitionV1,
-};
+use aos_sandbox_cache::{CacheOwnerCurrentnessV1, CacheOwnerErrorV1, CacheOwnerPinActionV1, CacheOwnerPinIdV1, CacheOwnerPinPresenceV1, CacheOwnerPinReconciliationStateV1, CacheOwnerPinReconciliationV1, CacheOwnerPinSettlementErrorV1, CacheOwnerPinSettlementV1, CachePinV1, CacheResidencyCommitOutcomeV1, CacheResidencyProtectedJournalErrorV1, CacheResidencyProtectedOwnerV1, CacheResidencyProtectedPinRecoveryV1, DormantCacheOwnerV1, PublicLogicalPinAcquisitionCommitV1, PublicLogicalPinAcquisitionErrorV1, ValidatedPublicLogicalPinAcquisitionV1};
 use aos_sandbox_protocol::cache_state::{CatalogPresenceV1, PhysicalPartitionId};
 use aos_sandbox_controller_domain::filesystem_view_state::DurableFilesystemViewRevisionV1;
 use aos_sandbox_protocol::public_api::cache_consumer::CacheConsumerDataV1;
@@ -53,7 +45,7 @@ impl ResidentPublicCacheUnpinV1 {
 /// Uses the sole portable compiler with the actual retained Cache owner cut.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn execute_resident_public_cache_pin_v1(
-    original: &mut aos_sandbox_controller_domain::cache_residency::CacheResidentInitializationV1,
+    original: &mut aos_sandbox_cache::CacheResidentInitializationV1,
     protected: &mut CacheResidencyProtectedOwnerV1,
     physical: &mut DormantCacheOwnerV1,
     source: &mut ProjectSealedViewObjectSourceV1,
@@ -118,7 +110,7 @@ pub(super) fn execute_resident_public_cache_pin_v1(
                     &acquisition,
                     operation,
                     public_cache_pin_transaction_id_v1(operation),
-                    source_journal,
+                    source_journal.cache_consumer_read_original_v1().as_ref(),
                     request,
                 )
                 .map_err(|_| CacheResidencyProtectedJournalErrorV1::StaleAuthority)?;
@@ -136,7 +128,7 @@ fn cache_pin_root_error(
 }
 
 fn public_pin_partition_payload_matches(
-    payload: &aos_sandbox_controller_domain::cache_residency::CacheAtomicObjectPayloadV1,
+    payload: &aos_sandbox_cache::CacheAtomicObjectPayloadV1,
     partition: PhysicalPartitionId,
     consumer: &CacheConsumerDataV1,
 ) -> bool {
@@ -152,7 +144,7 @@ fn public_pin_partition_payload_matches(
 /// Releases all partitions, then checks every retained release tombstone.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn execute_resident_public_cache_unpin_v1(
-    original: &mut aos_sandbox_controller_domain::cache_residency::CacheResidentInitializationV1,
+    original: &mut aos_sandbox_cache::CacheResidentInitializationV1,
     protected: &mut CacheResidencyProtectedOwnerV1,
     physical: &mut DormantCacheOwnerV1,
     progress: &mut ResidentPublicCacheUnpinV1,
@@ -160,10 +152,10 @@ pub(super) fn execute_resident_public_cache_unpin_v1(
     source_journal: &Journal,
     request: &DormantSandboxRequestKindV1,
     operation: OperationId,
-) -> Result<(), aos_sandbox_controller_domain::cache_residency::CacheResidentUnavailableV1> {
+) -> Result<(), aos_sandbox_cache::CacheResidentUnavailableV1> {
     progress.selected = Some(original.existing_consumer_logical_pins_v1(protected, consumer));
     let Some(Ok((active, _))) = progress.selected.as_ref() else {
-        return Err(aos_sandbox_controller_domain::cache_residency::CacheResidentUnavailableV1);
+        return Err(aos_sandbox_cache::CacheResidentUnavailableV1);
     };
     for pin in active {
         original.unpin_existing_logical_consumer(
@@ -173,7 +165,7 @@ pub(super) fn execute_resident_public_cache_unpin_v1(
             pin,
             operation,
             public_cache_unpin_transaction_id_v1(pin),
-            source_journal,
+            source_journal.cache_consumer_read_original_v1().as_ref(),
             request,
         )?;
     }
@@ -182,10 +174,10 @@ pub(super) fn execute_resident_public_cache_unpin_v1(
     // This replaces completed selection DATA, not any failed or live owner.
     progress.selected = Some(original.existing_consumer_logical_pins_v1(protected, consumer));
     let Some(Ok((active, released))) = progress.selected.as_ref() else {
-        return Err(aos_sandbox_controller_domain::cache_residency::CacheResidentUnavailableV1);
+        return Err(aos_sandbox_cache::CacheResidentUnavailableV1);
     };
     if !active.is_empty() {
-        return Err(aos_sandbox_controller_domain::cache_residency::CacheResidentUnavailableV1);
+        return Err(aos_sandbox_cache::CacheResidentUnavailableV1);
     }
     for pin in released {
         let id = CacheOwnerPinIdV1::for_cache_pin(pin.partition(), pin.id());
@@ -202,10 +194,10 @@ pub(super) fn execute_resident_public_cache_unpin_v1(
                     pin,
                     operation,
                     public_cache_unpin_transaction_id_v1(pin),
-                    source_journal,
+                    source_journal.cache_consumer_read_original_v1().as_ref(),
                     request,
                 )?,
-            _ => return Err(aos_sandbox_controller_domain::cache_residency::CacheResidentUnavailableV1),
+            _ => return Err(aos_sandbox_cache::CacheResidentUnavailableV1),
         }
         original.recheck(protected)?;
     }
@@ -729,7 +721,7 @@ fn commit_public_pin_for_membership<E: std::error::Error + 'static>(
         public_cache_pin_transaction_id_v1(operation),
         &acquisition,
         operation,
-        source_journal,
+        source_journal.cache_consumer_read_original_v1().as_ref(),
         request,
         |postcommit| postcommit.settle_cache_owner_pin_change(physical),
     )?;
@@ -811,7 +803,7 @@ pub(super) fn execute_public_cache_unpin_v1(
         consumer,
         pin,
         operation,
-        source_journal,
+        source_journal.cache_consumer_read_original_v1().as_ref(),
         request,
         |postcommit| postcommit.settle_cache_owner_pin_change(physical),
     )?;

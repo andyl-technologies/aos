@@ -52,7 +52,7 @@ pub(crate) struct NetworkObservationReadersOriginalV2 {
     before: NetworkChildSourceProbeOriginalV2,
     after: NetworkChildSourceProbeOriginalV2,
     kernel: aos_sandbox_linux::kernel_clone::ConfiguredKernelCloneOriginalV1,
-    kernel_result: Option<Result<(), aos_sandbox_linux::Error>>,
+    kernel_result: Option<Result<(), aos_linux_descriptors::Error>>,
     originals: [NetworkArtifactOpeningOriginalV4; 5],
     opened: [Option<Result<(), NetworkKernelReaderError>>; 5],
     artifacts: [Option<PinnedArtifact>; 5],

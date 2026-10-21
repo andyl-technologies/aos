@@ -13,10 +13,12 @@ use std::os::unix::net::{SocketAddr, UnixStream};
 use std::time::Instant;
 
 use aos_sandbox_linux::seqpacket::{RetainedSeqpacketReceiveErrorV1, SeqpacketError};
-use aos_sandbox_linux::unix_stream::{
-    RetainedSubjectStreamReadV1, RetainedUnixStream, RetainedUnixStreamAdmissionErrorV1,
-    SubjectStreamReceiveGeometryV1, SubjectStreamReadErrorV1, UnixStreamSubjectEofReadbackV1,
-};
+use aos_sandbox_linux::unix_stream::RetainedSubjectStreamReadV1;
+use aos_linux_descriptors::unix_stream::RetainedUnixStream;
+use aos_linux_descriptors::unix_stream::RetainedUnixStreamAdmissionErrorV1;
+use aos_sandbox_linux::unix_stream::SubjectStreamReceiveGeometryV1;
+use aos_sandbox_linux::unix_stream::SubjectStreamReadErrorV1;
+use aos_sandbox_linux::unix_stream::UnixStreamSubjectEofReadbackV1;
 use ed25519_dalek::SigningKey;
 use rustix::event::{PollFd, PollFlags};
 use rustix::net::sockopt::{Timeout, set_socket_timeout};
@@ -139,7 +141,7 @@ impl SourceConnectionV1 {
             if !matches!(self.stream, Some(Ok(_))) { self.first = Some(Failure::Adoption); }
         }
         if let Some(Ok(stream)) = self.stream.as_mut() {
-            self.subject = Some(stream.require_inherited_subject_reporting_v1());
+            self.subject = Some(stream.require_inherited_subject_reporting_v1().map_err(aos_sandbox_linux::seqpacket::SeqpacketError::from));
             self.read_timeout = Some(set_socket_timeout(stream.as_fd(), Timeout::Recv, Some(FLIGHT_TIMEOUT)));
             self.write_timeout = Some(set_socket_timeout(stream.as_fd(), Timeout::Send, Some(FLIGHT_TIMEOUT)));
             if !matches!(self.subject, Some(Ok(()))) { self.first.get_or_insert(Failure::Subject); }
@@ -262,7 +264,7 @@ impl SourceConnectionV1 {
             self.first = Some(Failure::EofPoll);
             return;
         }
-        self.eof = Some(stream.try_receive_subject_eof_with_geometry_retaining(geometry));
+        self.eof = Some(aos_sandbox_linux::unix_stream::try_receive_subject_eof_with_geometry_retaining(stream, geometry));
         if !matches!(self.eof, Some(Ok(_))) { self.first = Some(Failure::Eof); }
     }
 

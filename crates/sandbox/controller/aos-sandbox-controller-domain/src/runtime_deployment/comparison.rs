@@ -17,7 +17,7 @@ pub use boot_preparation::{RuntimeBootPreparationOriginsClosedV1, RuntimeBootPre
 mod boot_native;
 pub use boot_native::{RuntimeBootPreparationNativeFailureViewV1, RuntimeBootPreparationNativeOriginalV1};
 
-use aos_sandbox_linux::pidfd::PidFd;
+use aos_linux_descriptors::pidfd::PidFd;
 use aos_sandbox_protocol::runtime_deployment::DeploymentGenesisV1;
 
 use crate::immutable_image::RetainedImmutableFileV1;

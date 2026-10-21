@@ -191,8 +191,8 @@ impl RootHostCatalogInputsOriginalV2 {
         if namespaces.next().is_some() {
             return Err(JournalError::ProtectedBoundary.into());
         }
-        let journal = controller.controller_mut_v2()?;
-        let demand = crate::host_catalog_reconciliation::start_projection_receiving_demand_data_v2(
+        let journal = controller.controller_model_v2()?;
+        let demand = crate::host_catalog_reconciliation::start_projection_receiving_from_observation_v2(
             journal,
             storage.inventory_v2()?,
             network,
@@ -213,7 +213,7 @@ impl RootHostCatalogInputsOriginalV2 {
             }
         }
         self.catalog = Some(
-            crate::host_catalog_reconciliation::project_start_successor_catalog_data_v2(
+            crate::host_catalog_reconciliation::project_start_successor_catalog_from_observation_v2(
                 journal,
                 compiler.previous_v2()?.manifest_v2(),
                 assignment,

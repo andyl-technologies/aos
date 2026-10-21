@@ -82,6 +82,14 @@ pub mod paired_clock;
 #[cfg(target_os = "linux")]
 pub mod kernel_clock;
 
+/// Owns the unchanged fixed Controller clock and retained native sampler.
+#[cfg(target_os = "linux")]
+pub mod controller_clock;
+
+/// Retains fixed continuation samplers and strict original comparison bounds.
+#[cfg(target_os = "linux")]
+pub mod continuation_clock;
+
 /// Shares passive transaction and capacity custody recipes for private role adapters.
 pub mod domain_transaction_custody;
 
@@ -129,3 +137,9 @@ pub mod source_signer_connection;
 
 /// Owns native protected endpoint descriptors without endpoint or signing authority.
 pub mod endpoint_native_files;
+
+/// Provides the existing fixed and variable byte engine with retained deadlines.
+pub mod bounded_stream_io;
+
+/// Retains the existing fixed Source signer socket transport without role grants.
+pub mod source_signer_transport;

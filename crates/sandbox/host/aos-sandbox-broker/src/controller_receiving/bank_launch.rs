@@ -8,6 +8,11 @@
 mod append;
 mod conjunction;
 mod cache_consumer;
+mod cache_audit;
+pub use cache_audit::{
+    ControllerCacheAuditIdentityDataV1, ControllerCacheAuditFundingErrorV1,
+    ControllerCacheAuditFundingLoanV1,
+};
 pub use cache_consumer::ControllerCacheConsumerReadBorrowV1;
 mod create_continuation;
 mod storage_use;
@@ -27,13 +32,15 @@ mod native_post;
 mod opening;
 mod operation_intakes;
 mod recipe;
+pub use recipe::{NAME as CONTROLLER_JOURNAL_BASENAME_V1, controller_journal_limits_v1};
 mod replay;
 mod writer;
 
 pub use append::{ControllerPreparedAppendV1, ControllerAppendFailureOriginalV1};
 pub use conjunction::{ControllerCacheConstructionLoanV1, PublisherControllerLoanV1};
 pub use storage_use::{
-    ControllerCreateStorageUseClosedV1, ControllerCreateStorageUseFundingLoanV1,
+    ControllerCacheRootObservationFundingLoanV1, ControllerCreateStorageUseClosedV1,
+    ControllerCreateStorageUseFundingLoanV1,
     ControllerCreateStorageUseReceivingOriginalV1,
 };
 pub use create_continuation::{
@@ -68,4 +75,5 @@ pub use operation_intakes::{
     ControllerOperationIntakeFundingKindDataV2, ControllerOperationIntakeDisposalV1,
     ControllerOperationIntakeFailureViewV1,
     ControllerDeletePreacceptTurnOriginalV1, ControllerDeletePreacceptTurnDisposalV1,
+    ControllerCacheDeleteAuditFundingLoanV1,
 };

@@ -5,8 +5,7 @@
 //! set, after the complete shared schema/model peak has been admitted.
 
 use super::*;
-pub(crate) use aos_sandbox_ledger_replay::delete_graph::DeleteGraphMetadataRequestDataV2
-    as SourceDeleteMetadataRequestDataV2;
+pub(crate) use aos_sandbox_ledger_replay::delete_graph::DeleteGraphMetadataRequestDataV2 as SourceDeleteMetadataRequestDataV2;
 pub(crate) type SourceDeleteMetadataRequestErrorV2 = super::SourceDeleteGraphErrorV2;
 
 impl SourceDeleteSemanticScopeV1<'_, '_> {
@@ -27,7 +26,7 @@ impl SourceDeleteSemanticScopeV1<'_, '_> {
             .and_then(|bytes| bytes.checked_mul(3))
             .and_then(|bytes| u64::try_from(bytes).ok())
             .ok_or(JournalError::JournalTooLarge)?;
-        let current = crate::controller_service::public_projection::metadata_source_receiving_bytes_v2(controller)
+        let current = aos_sandbox_protocol::public_api::projection::geometry::metadata_source_receiving_bytes_v2(controller.historical_read_view_v1().rows_data_v2())
             .ok_or(JournalError::JournalTooLarge)?;
         // This initial phase now retains the one complete graph/census base
         // through subsequent object reads, rather than rebuilding it afterward.

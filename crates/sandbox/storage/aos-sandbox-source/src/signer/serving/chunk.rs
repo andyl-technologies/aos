@@ -6,10 +6,11 @@
 
 use std::error::Error;
 
-use aos_sandbox_linux::unix_stream::{
-    RetainedSubjectStreamReadV1, RetainedUnixStream, SubjectStreamReceiveGeometryV1,
-    SubjectStreamReadErrorV1, UnixStreamSubjectChunk,
-};
+use aos_sandbox_linux::unix_stream::RetainedSubjectStreamReadV1;
+use aos_linux_descriptors::unix_stream::RetainedUnixStream;
+use aos_sandbox_linux::unix_stream::SubjectStreamReceiveGeometryV1;
+use aos_sandbox_linux::unix_stream::SubjectStreamReadErrorV1;
+use aos_sandbox_linux::unix_stream::UnixStreamSubjectChunk;
 use rustix::event::{PollFd, PollFlags};
 
 use aos_sandbox_broker::receiving::ComponentReceivingOperationLoanV1;

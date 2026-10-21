@@ -5,7 +5,8 @@
 //! while a failed sample keeps the lane and its native custody closed.
 
 use aos_sandbox_model::{AccountingError, ResourceDimension as D, ResourceVector};
-use aos_sandbox_linux::unix_stream::{RetainedUnixStream, SubjectStreamReceiveGeometryV1};
+use aos_linux_descriptors::unix_stream::RetainedUnixStream;
+use aos_sandbox_linux::unix_stream::SubjectStreamReceiveGeometryV1;
 
 use crate::signer::SourceReceivingGeometryErrorV1 as ResourceReservationErrorV1;
 use crate::signer::root_observation::{SourceRootChunkReadbackV1, SourceRootPeerStageV1};

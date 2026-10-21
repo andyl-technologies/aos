@@ -13,7 +13,7 @@ use std::path::Path;
 use aos_sandbox_model::ProjectId;
 
 #[cfg(target_os = "linux")]
-use crate::cache_residency::CacheV8SettledClearV1;
+use aos_sandbox_cache::CacheV8SettledClearV1;
 use crate::journal::{
     Journal,
     JournalError,
@@ -286,7 +286,7 @@ impl<'source> OriginalQ04SourceOwnerCutV1<'source> {
     pub(crate) fn clear_after_original_cache(
         &mut self,
         recipes: &crate::journal::SourceQ04TransactionRecipesV1<'_>,
-        clearance: crate::cache_residency::OriginalQ04CacheClearanceLoanV1<'_, '_, '_, '_, '_>,
+        clearance: crate::cache_programmes::OriginalQ04CacheClearanceLoanV1<'_, '_, '_, '_, '_>,
     ) -> Result<(), ()> {
         let prepared = (|| {
             self.require_cut(recipes.identity())?;
@@ -324,7 +324,7 @@ impl<'source> OriginalQ04SourceOwnerCutV1<'source> {
         invocation: &crate::policy_compiler::create_q04::OriginalCreateQ04InvocationV1<'_>,
         journal: &mut Journal,
         ledger: &crate::reconciler::OriginalQ04ControllerLedgerV1,
-        cache: &mut crate::cache_residency::OriginalQ04CacheOwnerCutV1<'_>,
+        cache: &mut crate::cache_programmes::OriginalQ04CacheOwnerCutV1<'_>,
         credentials: &crate::public_api_session::ControllerQ04CredentialCustodyV1,
         destination: &mut Option<
             Result<
@@ -375,7 +375,7 @@ impl<'source> OriginalQ04SourceOwnerCutV1<'source> {
         invocation: &crate::policy_compiler::create_q04::OriginalCreateQ04InvocationV1<'_>,
         journal: &mut Journal,
         ledger: &crate::reconciler::OriginalQ04ControllerLedgerV1,
-        cache: &mut crate::cache_residency::OriginalQ04CacheOwnerCutV1<'_>,
+        cache: &mut crate::cache_programmes::OriginalQ04CacheOwnerCutV1<'_>,
         prepared: &crate::policy_compiler::create_q04::Q04ControllerPreparationV1,
     ) -> Result<(), ()> {
         let checked = invocation.recheck_controller_preparation(
@@ -425,7 +425,7 @@ impl<'source> OriginalQ04SourceOwnerCutV1<'source> {
         ledger: &crate::reconciler::OriginalQ04ControllerLedgerV1,
         transitions: &[crate::journal::ControllerQ04TransitionV1<'_>],
         recipes: &crate::journal::SourceQ04TransactionRecipesV1<'_>,
-        cache: &mut crate::cache_residency::OriginalQ04CacheOwnerCutV1<'_>,
+        cache: &mut crate::cache_programmes::OriginalQ04CacheOwnerCutV1<'_>,
         cache_recipes: &crate::journal::CacheQ04TransactionRecipesV1<'_>,
     ) -> Result<(), ()> {
         use crate::policy_compiler::create_q04::CreateQ04ErrorV1;

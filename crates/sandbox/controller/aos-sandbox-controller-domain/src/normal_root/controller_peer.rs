@@ -6,7 +6,8 @@
 
 use std::num::NonZeroU32;
 use std::path::Path;
-use aos_sandbox_linux::unix_stream::{RetainedUnixStream, UnixStreamSubjectChunk};
+use aos_linux_descriptors::unix_stream::RetainedUnixStream;
+use aos_sandbox_linux::unix_stream::UnixStreamSubjectChunk;
 use aos_systemd_client::OwnedValue;
 #[cfg(test)]
 use aos_systemd_client::Value;
@@ -60,7 +61,7 @@ impl OriginalControllerPolicyPeerV1<'_> {
 
 fn require_controller_process_identity(
     startup: &ProductionNormalRootStartupV1, pid: NonZeroU32,
-    info: &aos_sandbox_linux::pidfd::PidFdInfo,
+    info: &aos_linux_descriptors::pidfd::PidFdInfo,
 ) -> Result<(), Error> {
     native::require_controller_process_identity_data_v1(startup.native.fields().profile.identities,
         pid, info).map_err(Into::into)
@@ -165,3 +166,7 @@ mod backend_tests {
         ).is_err());
     }
 }
+
+mod no_apply;
+pub(crate) use no_apply::{RootExecutionNoApplyControllerPeerReceivingV2,
+    RootExecutionNoApplyStageReceivingV2};

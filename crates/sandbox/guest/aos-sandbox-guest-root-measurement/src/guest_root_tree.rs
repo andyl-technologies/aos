@@ -971,7 +971,7 @@ pub enum GuestRootTreeErrorV1 {
     Native(#[from] rustix::io::Errno),
     /// A selected original mount identity could not be observed.
     #[error("guest root traversal original mount failed: {0}")]
-    Linux(#[from] aos_sandbox_linux::Error),
+    Linux(#[from] aos_linux_descriptors::Error),
     /// The template or workspace tree is missing, unsafe, substituted, or oversized.
     #[error("guest root tree is invalid")]
     InvalidTree,

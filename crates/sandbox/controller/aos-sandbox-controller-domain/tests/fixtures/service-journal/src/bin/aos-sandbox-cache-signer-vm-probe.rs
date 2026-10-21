@@ -7,7 +7,7 @@ use std::error::Error;
 use std::fs;
 use std::os::unix::fs::PermissionsExt as _;
 
-use aos_sandbox_controller_domain::cache_residency::sign_fixed_signer_cache_owner_readback_v2;
+use aos_sandbox_cache::sign_fixed_signer_cache_owner_readback_v2;
 use aos_sandbox_protocol::cache_owner_readback::{
     CacheOwnerReadbackChallengeV1,
     PinnedCacheOwnerReadbackSignerV1,

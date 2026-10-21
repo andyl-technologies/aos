@@ -16,9 +16,10 @@ use crate::normal_root::{NormalRootStartupErrorV1, RootPolicyAcceptedFlightV1};
 use super::root_current_writers::RootCreateStorageCurrentWritersV1;
 use super::root_policy_prelude::{RootPolicyPreludeOriginalV1, RootPolicyPurposeV1,
     RootPolicyDispositionGuardV1, RootPolicyPreludeNativeOriginalV1};
-use super::bounded_stream_io::{DeadlineStreamDirectionV1, FixedDeadlineStreamIoV1};
+use aos_sandbox_broker::bounded_stream_io::{DeadlineStreamDirectionV1, FixedDeadlineStreamIoV1};
 
 mod geometry;
+pub(crate) mod initial_owned;
 mod history_pair;
 pub(crate) mod use_admitted;
 pub(crate) mod signed_bound;
@@ -304,7 +305,7 @@ impl<'flight, 'listener, 'startup> OriginalRootCreateStorageCurrentAttemptV1<'fl
         policy_inputs: &RootCurrentPolicyInputDataV1<'_>,
         source_signer_uid: u32,
         source_socket_gid: u32,
-        private: crate::journal::broker_session_receiving::StorageCreateUseSecurityShapeDataV1,
+        private: aos_sandbox_policy::storage_create_use_data::StorageCreateUseSecurityShapeDataV1,
     ) -> Result<(), RootCreateStorageCurrentErrorV1> {
         if self.completion.is_some() {
             self.reentry = true;
@@ -321,7 +322,7 @@ impl<'flight, 'listener, 'startup> OriginalRootCreateStorageCurrentAttemptV1<'fl
         policy_inputs: &RootCurrentPolicyInputDataV1<'_>,
         source_signer_uid: u32,
         source_socket_gid: u32,
-        private: crate::journal::broker_session_receiving::StorageCreateUseSecurityShapeDataV1,
+        private: aos_sandbox_policy::storage_create_use_data::StorageCreateUseSecurityShapeDataV1,
     ) -> Result<(), RootCreateStorageCurrentErrorV1> {
         use RootCreateStorageCurrentErrorV1 as Error;
 

@@ -84,6 +84,9 @@ impl<K: RootPeerPurposeV1> RootPurposePolicyOriginalV1<K> {
         } else {
             aos_sandbox_policy::signed_inputs::fixed_root_startup_decoding_bytes_v1()
                 .and_then(|bytes| bytes.checked_add(64 * 1024))
+                .and_then(|bytes| bytes.checked_add(
+                    aos_sandbox_policy::root_policy_inputs_data::verification_return_control_bytes_v1()?,
+                ))
         };
         let bytes = decoder
             .and_then(|bytes| bytes.checked_add(size_of::<Self>().checked_mul(3)?))
@@ -160,7 +163,8 @@ impl<K: RootPeerPurposeV1> RootPurposePolicyOriginalV1<K> {
             }
         };
         self.verified_at = Some(now);
-        self.verified = Some(data.verify_current_sources_v1(policy, now.wall_seconds()));
+        self.verified = Some(data.verify_current_sources_v1(policy.historical_read_view_v1(), now.wall_seconds())
+            .map_err(RootSignedSourcesErrorV1::from));
         if matches!(self.verified, Some(Ok(_))) { Ok(()) } else {
             self.first.get_or_insert(First::Verification);
             Err(RootContinuationPolicyErrorV1::Closed)

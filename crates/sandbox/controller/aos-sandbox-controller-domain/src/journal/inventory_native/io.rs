@@ -37,9 +37,9 @@ enum First {
 pub(crate) struct IoOriginals {
     turn: Option<Turn>,
     retain_cookie_originals: bool,
-    socket_native: Option<Result<u64, aos_sandbox_linux::Error>>,
-    after_socket_native: Option<Result<u64, aos_sandbox_linux::Error>>,
-    pending_socket_native: Option<Result<u64, aos_sandbox_linux::Error>>,
+    socket_native: Option<Result<u64, aos_linux_descriptors::Error>>,
+    after_socket_native: Option<Result<u64, aos_linux_descriptors::Error>>,
+    pending_socket_native: Option<Result<u64, aos_linux_descriptors::Error>>,
     binding: Option<Result<(), JournalError>>,
     socket: Option<Result<(), RecordBindingError>>,
     before: ProtectedJournalCurrentnessOriginalsV1,

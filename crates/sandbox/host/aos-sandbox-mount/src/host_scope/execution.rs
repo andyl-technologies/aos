@@ -5,7 +5,7 @@
 //! session/results and deployment MAC/capability confinement remain required.
 
 use aos_sandbox_linux::cgroup::RetainedCgroupAnchor;
-use aos_sandbox_linux::pidfd::PidFdInfo;
+use aos_linux_descriptors::pidfd::PidFdInfo;
 use aos_sandbox_linux::seqpacket::KernelAuthorizedRecordSubject;
 
 use super::{HostScopeError, Result};

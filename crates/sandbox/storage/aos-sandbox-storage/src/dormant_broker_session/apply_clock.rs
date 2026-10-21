@@ -4,7 +4,7 @@
 //! ordinary adapter keeps its original clock source/order. These inert owners
 //! return DATA and keep native failures; only the genuine State stage pays IO.
 
-use aos_sandbox_linux::boot::RootOriginalKernelBootIdAttemptV1;
+use aos_linux_descriptors::boot::RootOriginalKernelBootIdAttemptV1;
 
 use super::*;
 

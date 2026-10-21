@@ -14,7 +14,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use aos_sandbox_linux::pidfd::PidFd;
+use aos_linux_descriptors::pidfd::PidFd;
 
 use crate::production_operation_compiler::{
     ControllerNixPublicDataLoanV2, ControllerNixStartRecipeSelectorV2,

@@ -35,6 +35,7 @@ use sha2::{Digest as _, Sha256};
 
 use crate::DormantGuestAgentServiceV1;
 mod active_control;
+mod argument;
 mod handshake;
 use crate::runtime_argument_observation::sign_current_guest_argument_readback_v1;
 #[cfg(test)]
@@ -481,6 +482,7 @@ enum ProtocolFailureDispositionV1 {
 pub struct ProtectedGuestAgentV1<Effects> {
     effects: Effects,
     capture: Option<crate::capture::GuestCaptureAuthorizeOriginalV2>,
+    argument: Option<argument::GuestArgumentObservationOriginalV1>,
     ssh_authorize: Option<crate::ssh_authorize::GuestSshAuthorizeOriginalV1>,
     operation_deadline: Option<GuestOperationDeadlineOriginalV1>,
     capture_receive_failure: Option<RetainedSeqpacketReceiveErrorV1>,
@@ -498,6 +500,7 @@ impl<Effects> ProtectedGuestAgentV1<Effects> {
         Self {
             effects,
             capture: None,
+            argument: None,
             ssh_authorize: None,
             operation_deadline: None,
             capture_receive_failure: None,
@@ -516,6 +519,7 @@ impl<Effects> ProtectedGuestAgentV1<Effects> {
             .or_else(|| self.capture_receive_failure.as_ref().map(|cause| cause as _))
             .or_else(|| self.protocol_send_failure.as_ref().map(|cause| cause as _))
             .or_else(|| self.initial_handshake.as_ref()?.body.as_ref()?.as_ref().err().map(|cause| cause as _))
+            .or_else(|| self.argument.as_ref().and_then(|original| original.failure()))
             .or_else(|| self.capture.as_ref().and_then(|original| original.failure()))
             .or_else(|| self.ssh_authorize.as_ref().and_then(|original| original.failure()))
             .or_else(|| self.operation_deadline.as_ref().and_then(|original| original.failure()))
@@ -536,6 +540,7 @@ impl ProtectedGuestAgentV1<crate::GuestProcessEffectsV1> {
         Self {
             effects,
             capture: None,
+            argument: None,
             ssh_authorize: None,
             operation_deadline: None,
             capture_receive_failure: None,
@@ -552,10 +557,14 @@ impl<Effects: GuestOperationEffectsV1> DormantGuestAgentServiceV1
     type Error = ProtectedGuestAgentErrorV1;
 
     fn run(&mut self) -> Result<(), Self::Error> {
-        if self.capture.is_some() || self.capture_receive_failure.is_some() || self.session_socket.is_some() {
+        if self.capture.is_some() || self.argument.is_some() || self.capture_receive_failure.is_some() || self.session_socket.is_some() {
             return Err(ProtectedGuestAgentErrorV1::CaptureRefused);
         }
         let result = match self.run_session() {
+            Err(cause) if self.argument.is_some() => {
+                if let Some(original) = self.argument.as_mut() { original.protocol_failure = Some(cause); }
+                Err(ProtectedGuestAgentErrorV1::CaptureRefused)
+            }
             Err(cause) if self.capture.is_some() => {
                 if let Some(capture) = self.capture.as_mut() {
                     capture.protocol_failure = Some(cause);
@@ -682,27 +691,17 @@ impl<Effects: GuestOperationEffectsV1> ProtectedGuestAgentV1<Effects> {
             let mut capture_frame = false;
             let mut ssh_frame = false;
             if !capture_candidate && received.starts_with(ARGUMENT_OBSERVE_REQUEST_MAGIC_V1) {
-                if !descriptors.is_empty() {
-                    return Err(ProtectedGuestAgentErrorV1::UnexpectedFrame);
-                }
-                if !provisioning
-                    .features
-                    .contains(AgentFeatureV1::RuntimeArgumentObservation)
-                {
-                    return Err(ProtectedGuestAgentErrorV1::UnsupportedFeature);
-                }
-                let observe = GuestRuntimeArgumentObserveRequestV1::decode(&received)?;
-                if observe.session() != binding
-                    || observe.runtime() != &provisioning.runtime
-                    || observe.channel() != provisioning.channel
-                {
-                    return Err(ProtectedGuestAgentErrorV1::OperationMismatch);
-                }
-                check_deadline(deadline)?;
-                let packet =
-                    sign_current_guest_argument_readback_v1(&observe, &provisioning.signing_key)?;
-                check_deadline(deadline)?;
-                send_selected_v2(socket, selected_control_transport.then_some(&mut self.protocol_send_failure), &packet, deadline)?;
+                if self.argument.is_some() { return Err(ProtectedGuestAgentErrorV1::CaptureRefused); }
+                self.argument = Some(argument::GuestArgumentObservationOriginalV1::new(
+                    std::mem::take(&mut received), std::mem::take(&mut descriptors), subject,
+                ));
+                let original = self.argument.as_mut().ok_or(ProtectedGuestAgentErrorV1::CaptureRefused)?;
+                original.run_once(&provisioning, binding, socket, selected_control_transport,
+                    &mut self.protocol_send_failure, deadline)?;
+                // Only this same positive decode/measurement/response owner may
+                // retire its temporary bytes and subject before another request.
+                if !original.completed() { return Err(ProtectedGuestAgentErrorV1::CaptureRefused); }
+                drop(self.argument.take());
                 continue;
             }
             let frame = if capture_candidate {
@@ -1647,13 +1646,13 @@ impl<'a> ProvisioningCursor<'a> {
 pub enum ProtectedGuestAgentErrorV1 {
     /// A fixed inherited descriptor is unavailable or invalid.
     #[error("guest-agent descriptor boundary failed: {0}")]
-    Linux(#[from] aos_sandbox_linux::Error),
+    Linux(#[from] aos_linux_descriptors::Error),
     /// The connected channel is unavailable or malformed.
     #[error("guest-agent channel failed: {0}")]
     Transport(#[from] SeqpacketError),
     /// The provisioning descriptor is not a fully sealed immutable memfd.
     #[error("guest-agent provisioning seal failed: {0}")]
-    Immutable(#[from] aos_sandbox_linux::immutable_file::ImmutableFileError),
+    Immutable(#[from] aos_linux_descriptors::ImmutableFileError),
     /// The fixed package credential cannot be read or the executable cannot be measured.
     #[error("guest-agent package credential read failed: {0}")]
     Io(#[from] std::io::Error),

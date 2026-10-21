@@ -65,6 +65,7 @@ impl ControllerResourceBankOpeningV1 {
             initial_sessions: [const { None }; super::super::initial_session::ControllerInitialBrokerSessionRoleV1::COUNT],
             initial_sessions_taken: [false; super::super::initial_session::ControllerInitialBrokerSessionRoleV1::COUNT],
             cache_import: None,
+            cache_semantic_supplement: None,
             preopen: None,
             preopen_attempted: false,
             nix_intake_attempted: false,

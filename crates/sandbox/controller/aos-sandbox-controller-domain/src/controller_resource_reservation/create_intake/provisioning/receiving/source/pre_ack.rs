@@ -224,6 +224,9 @@ impl OriginalCreateProvisioningRootLoanV1<'_, '_> {
                 return Err(ResourceReservationErrorV1::Conflict);
             }
             let fixed = std::mem::size_of::<CreateStoppedCompletionAttemptV1>().checked_mul(2)
+                .and_then(|bytes| bytes.checked_add(crate::journal::create_stopped_geometry_control_bytes_v2()?))
+                .and_then(|bytes| bytes.checked_add(crate::journal::historical_observation::HistoricalObservationV1::journal_receiving_control_bytes_v1()?))
+                .and_then(|bytes| bytes.checked_add(crate::lifecycle::historical_admission_control_bytes_v2()?))
                 .and_then(|bytes| bytes.checked_add(std::mem::size_of::<CreateStoppedPreAckContextV1<'static>>().checked_mul(2)?))
                 .and_then(|bytes| u64::try_from(bytes).ok()).ok_or(ResourceReservationErrorV1::Conflict)?;
             let complete = action.resident_receiving_demand_v1(controller)?
@@ -274,7 +277,8 @@ impl OriginalCreateProvisioningRootLoanV1<'_, '_> {
             let context = PublicMutationEffectHistoryV1::decode(self.completed.accepted_context_v1()?)?
                 .ok_or(SourceAdmissionErrorV1::Closed)?;
             let request = context.validated_request()?;
-            let admission = lifecycle_public_mutation_admission_v1(controller, self.receiving.parent,
+            let admission = crate::lifecycle::lifecycle_public_mutation_admission_from_observation_v2(
+                crate::journal::historical_observation::HistoricalObservationV1::from_journal_v1(controller), self.receiving.parent,
                 context.project(), self.original_node_v1()?, &request)?;
             let expected = lifecycle_operation_from_public_mutation_v1(self.receiving.parent,
                 context.caller(), context.project(), context.accepted_wall_seconds(),

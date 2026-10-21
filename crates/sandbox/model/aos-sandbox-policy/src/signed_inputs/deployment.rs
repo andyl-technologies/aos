@@ -539,8 +539,14 @@ pub(super) fn validate_canonical_input(
 /// Returns `None` if the existing checked representation recipe overflows.
 #[must_use]
 pub fn fixed_root_startup_decoding_bytes_v1() -> Option<usize> {
+    deployment_sources_decoding_bytes_v1()?
+        .checked_add(super::project::project_input_decoding_bytes_v2(3 * 1024usize)?)
+}
+
+// Independent native deployment verification uses the same complete model
+// recipe without also paying the separately entered project verifier twice.
+pub(crate) fn deployment_sources_decoding_bytes_v1() -> Option<usize> {
     let input = MAXIMUM_INPUT_BYTES;
-    let project_input = 3 * 1024usize;
     let value_cell = std::mem::size_of::<(String, Value, [usize; 3])>();
     let limit_cell = std::mem::size_of::<DeploymentLimitV1>();
 
@@ -557,13 +563,7 @@ pub fn fixed_root_startup_decoding_bytes_v1() -> Option<usize> {
         .checked_mul(3)?
         .checked_mul(std::mem::size_of::<String>())?;
     let catalogs = input.checked_mul(3)?.checked_mul(value_cell)?;
-    let project = project_input
-        .checked_mul(3)?
-        .checked_mul(value_cell.checked_add(limit_cell)?)?;
-    let encoding = input
-        .checked_mul(4)?
-        .checked_add(project_input)?
-        .checked_mul(8)?;
+    let encoding = input.checked_mul(4)?.checked_mul(8)?;
     let wrappers = std::mem::size_of::<PolicyDeploymentSourcesV1>()
         .checked_add(
             std::mem::size_of::<DeploymentEnvelopeV1<DeploymentLayerV1>>().checked_mul(2)?,
@@ -571,7 +571,7 @@ pub fn fixed_root_startup_decoding_bytes_v1() -> Option<usize> {
         .checked_add(std::mem::size_of::<DeploymentEnvelopeV1<DeploymentBackendV1>>())?
         .checked_add(std::mem::size_of::<DeploymentEnvelopeV1<DeploymentCatalogsV1>>())?;
     canonical.checked_add(node_site)?.checked_add(backend)?.checked_add(catalogs)?
-        .checked_add(project)?.checked_add(encoding)?.checked_add(wrappers)
+        .checked_add(encoding)?.checked_add(wrappers)
 }
 
 #[cfg(test)]

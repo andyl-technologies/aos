@@ -16,7 +16,8 @@ use crate::uapi::{
     MOUNT_ATTR_ATIME_MASK, MOUNT_ATTR_IDMAP, MOUNT_ATTR_NOATIME, MOUNT_ATTR_NODEV,
     MOUNT_ATTR_NOEXEC, MOUNT_ATTR_NOSUID, MOUNT_ATTR_RDONLY, RawMountAttr,
 };
-use crate::{Error, Result};
+use aos_linux_descriptors::Error;
+use aos_linux_descriptors::Result;
 use std::os::unix::ffi::OsStrExt as _;
 use std::path::Path;
 
@@ -292,7 +293,7 @@ impl DetachedMount {
         fd: OwnedFd,
     ) -> std::result::Result<Self, MountAdoptionFailureV2> {
         let validation = (|| {
-            uapi::ensure_cloexec(fd.as_fd())?;
+            aos_linux_descriptors::native::ensure_cloexec(fd.as_fd())?;
             let _ = uapi::fstat(fd.as_fd())?;
             MountId::from_fd(fd.as_fd())
         })();

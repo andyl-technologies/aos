@@ -95,6 +95,31 @@ impl StopControllerTerminalOriginalV4 {
             .with(D::MetadataEntries, u64::try_from(Pair::receiving_metadata_cells_v1().ok_or(CLOSED)?).map_err(|_| CLOSED)?))
     }
 
+    // Prices the added entry arithmetic separately from the old fixed demand:
+    // that old demand is also included in the later paid-model composition.
+    fn geometry_entry_control_bytes_v4() -> Option<usize> {
+        use std::mem::size_of;
+        use aos_sandbox_model::AccountingError;
+
+        // The two complete bindings, supplement, scalar conversion and amount
+        // remain explicit; no old receiver or Self padding pays these lanes.
+        size_of::<(ResourceVector, ResourceVector, u64)>().checked_mul(3)?
+            .checked_add(size_of::<usize>().checked_mul(3)?)?
+            .checked_add(size_of::<std::result::Result<u64, std::num::TryFromIntError>>().checked_mul(3)?)?
+            .checked_add(size_of::<std::result::Result<u64, ResourceReservationErrorV1>>().checked_mul(3)?)?
+            .checked_add(size_of::<(Option<usize>, ResourceReservationErrorV1)>().checked_mul(3)?)?
+            .checked_add(size_of::<std::result::Result<usize, ResourceReservationErrorV1>>().checked_mul(3)?)?
+            // ResourceVector::with and checked_add take their receivers by
+            // value. Their return and owning error-conversion planes coexist.
+            .checked_add(size_of::<(ResourceVector, D, u64)>().checked_mul(3)?)?
+            .checked_add(size_of::<ResourceVector>().checked_mul(3)?)?
+            .checked_add(size_of::<(ResourceVector, ResourceVector)>().checked_mul(3)?)?
+            .checked_add(size_of::<std::result::Result<ResourceVector, AccountingError>>().checked_mul(3)?)?
+            .checked_add(size_of::<(AccountingError, ResourceReservationErrorV1)>().checked_mul(3)?)?
+            // This supplier's return and its new checked quote composition.
+            .checked_add(size_of::<Option<usize>>().checked_mul(6)?)
+    }
+
     fn run_once_v4(&mut self, operation: OperationId,
         bank: &Arc<Mutex<ControllerResourceBankOpeningV1>>,
         profile: &ProductionControllerNormalRootProfileV1,
@@ -109,8 +134,19 @@ impl StopControllerTerminalOriginalV4 {
         self.entered = true;
         self.residual = observation.capture_stop_residual_v4().is_some();
         self.entry = Some((|| {
+            let complete = resident.checked_add(Self::fixed_demand_v4()?)?;
+            // paid_models carries this entry amount into the later quote,
+            // which separately adds the old fixed demand again.
+            let geometry_bytes = u64::try_from(
+                crate::journal::create_stopped_geometry_control_bytes_v2()
+                    .and_then(|bytes| bytes.checked_add(Self::geometry_entry_control_bytes_v4()?))
+                    .ok_or(CLOSED)?,
+            ).map_err(|_| CLOSED)?;
+            let complete = complete.checked_add(
+                ResourceVector::ZERO.with(D::MemoryBytes, geometry_bytes),
+            )?;
             self.turn.enter_once_v4(operation, bank, profile, native,
-                resident.checked_add(Self::fixed_demand_v4()?)?, controller, source)
+                complete, controller, source)
         })());
         if !matches!(self.entry, Some(Ok(()))) { self.first = Some(First::Entry); }
         let mut frontier = First::Entry;

@@ -13,7 +13,8 @@ use std::sync::{Arc, OnceLock};
 use aos_sandbox_linux::cgroup::RetainedCgroupAnchor;
 use aos_sandbox_linux::guest_confinement::require_subject;
 use aos_sandbox_linux::inherited_fd::duplicate_initial_activation_table;
-use aos_sandbox_linux::pidfd::{PidFd, PidFdProcessIdentity};
+use aos_linux_descriptors::pidfd::PidFd;
+use aos_sandbox_linux::pidfd::PidFdProcessIdentity;
 use aos_sandbox_linux::selinux_policy::VerifiedLiveSelinuxPolicy;
 
 use crate::profile_data::{images, schema as profile};
@@ -163,8 +164,7 @@ impl RootLegacyStartupCaptureV1 {
         {
             return Err(NormalRootStartupErrorV1::Service);
         }
-        let identity = process
-            .process_identity()
+        let identity = aos_sandbox_linux::pidfd::process_identity(&(process))
             .map_err(|_| NormalRootStartupErrorV1::Service)?;
         let cgroup = retain_fixed_cgroup(Path::new(&format!("system.slice/{UNIT}")))?;
         let retained = RootStartupNativeOriginalV1 {

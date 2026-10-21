@@ -29,7 +29,7 @@ pub enum ConsumerReadFlightErrorV1 {
     Subject(#[from] aos_sandbox_linux::seqpacket::SeqpacketError),
     /// A kernel observation was unavailable.
     #[error(transparent)]
-    Kernel(#[from] aos_sandbox_linux::Error),
+    Kernel(#[from] aos_linux_descriptors::Error),
     /// Genuine selected startup or original peer comparisons failed.
     #[error(transparent)]
     Startup(#[from] crate::normal_root::NormalRootStartupErrorV1),
@@ -38,7 +38,7 @@ pub enum ConsumerReadFlightErrorV1 {
     Resource(#[from] crate::attachment_effect_owner::ConsumerResourceErrorV1),
     /// Actual named Policy state or canonical projection failed.
     #[error(transparent)]
-    Policy(#[from] super::PolicyCompilerJournalErrorV1),
+    Policy(#[from] aos_sandbox_policy::native::PolicyCompilerJournalErrorV1),
     /// Frame, phase, selector or accepted Policy comparison differs.
     #[error("consumer-read PRE-ROOT protocol differs")]
     Protocol,

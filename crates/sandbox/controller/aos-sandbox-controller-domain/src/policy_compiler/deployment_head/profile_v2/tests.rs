@@ -25,6 +25,7 @@ use aos_sandbox_model::{
 use ed25519_dalek::{Signer as _, SigningKey};
 
 use super::*;
+use aos_sandbox_policy::signed_inputs::DEPLOYMENT_PACKET_BYTES as PACKET_BYTES;
 use crate::journal::JournalLimits;
 use aos_sandbox_policy::{
     AdvisoryActionV1, AdvisoryDegradationV1, AdvisoryKindV1, AuthenticatedCacheDomainV1,
@@ -168,23 +169,33 @@ fn fixture_profile(generation: u64, signer_generation: u64) -> PolicyDeploymentI
     .expect("explicit V2 profile")
 }
 
-fn open_journal(directory: &Path) -> Journal {
+fn open_journal(directory: &Path) -> aos_sandbox_policy::native::RootStartupFixedAdmissionFixtureV1 {
     let uid = fs::metadata(directory).expect("fixture directory").uid();
-    let journal = Journal::open_protected_at_uid(
+    let journal = aos_sandbox_policy::native::RootStartupFixedAdmissionFixtureV1::open_v1(
         directory,
         "authority.journal",
         JournalLimits::default(),
         uid,
     )
-    .expect("protected owner fixture")
-    .0;
+    .expect("protected owner fixture");
     journal
-        .validate_held_protected_at_uid_for_test(directory, "authority.journal", uid)
+        .validate_held_names_v1(directory, "authority.journal", uid)
         .expect("actual held fixed fixture names");
     journal
 }
 
-fn pinned_journal(directory: &Path, key: &VerifyingKey, generation: u64) -> Journal {
+fn verify_native_fixture_profile(
+    journal: &mut aos_sandbox_policy::native::RootStartupFixedAdmissionFixtureV1,
+    packet: &[u8],
+    inputs: &PolicyDeploymentInputsV1<'_>,
+    profile: &PolicyDeploymentInputProfileV2,
+    now: i64,
+) -> Result<PolicyDeploymentHeadV1, PolicyDeploymentHeadErrorV1> {
+    journal.verify_profile_v2(packet, inputs, profile, now)
+        .map_err(PolicyDeploymentHeadErrorV1::from)
+}
+
+fn pinned_journal(directory: &Path, key: &VerifyingKey, generation: u64) -> aos_sandbox_policy::native::RootStartupFixedAdmissionFixtureV1 {
     let mut journal = open_journal(directory);
     let project_key = SigningKey::from_bytes(&[80; 32]);
     admit_policy_signer_pins_in_journal_v1(
@@ -239,19 +250,19 @@ fn explicit_deployment_profile_v2_retains_all_typed_inputs_and_current_owner_hea
     .expect("exact signed declaration");
     admit_deployment_head_in_journal(&mut journal, &packet, head, &key.verifying_key())
         .expect("existing protected head CAS");
-    let sequence = journal.snapshot_sequence();
+    let sequence = journal.snapshot_sequence_v1().expect("actual held fixture NEXT");
     assert_eq!(
-        verify_current_profile(&mut journal, &packet, &views, &profile, 20)
+        verify_native_fixture_profile(&mut journal, &packet, &views, &profile, 20)
             .expect("actual role pin and exact current head")
             .packet_digest(),
         head.packet_digest()
     );
-    assert_eq!(journal.snapshot_sequence(), sequence);
+    assert_eq!(journal.snapshot_sequence_v1().expect("actual held fixture NEXT"), sequence);
     drop(journal);
 
     let mut reopened = open_journal(directory.path());
-    assert!(verify_current_profile(&mut reopened, &packet, &views, &profile, 20).is_ok());
-    assert_eq!(reopened.snapshot_sequence(), sequence);
+    assert!(verify_native_fixture_profile(&mut reopened, &packet, &views, &profile, 20).is_ok());
+    assert_eq!(reopened.snapshot_sequence_v1().expect("actual held fixture NEXT"), sequence);
 }
 
 #[test]
@@ -490,8 +501,8 @@ fn explicit_deployment_profile_v2_pins_role_generation_and_rejects_head_equivoca
     .expect("correct role signature");
     admit_deployment_head_in_journal(&mut journal, &packet, head, &key.verifying_key())
         .expect("initial current head");
-    let sequence = journal.snapshot_sequence();
-    assert!(verify_current_profile(&mut journal, &packet, &views, &profile, 30).is_err());
+    let sequence = journal.snapshot_sequence_v1().expect("actual held fixture NEXT");
+    assert!(verify_native_fixture_profile(&mut journal, &packet, &views, &profile, 30).is_err());
     let project_signed = sign_head(1, &inputs, &project_key);
     assert!(
         verify_policy_deployment_profile_data_v2(
@@ -504,7 +515,7 @@ fn explicit_deployment_profile_v2_pins_role_generation_and_rejects_head_equivoca
         .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)
         .is_ok()
     );
-    assert!(verify_current_profile(&mut journal, &project_signed, &views, &profile, 20).is_err());
+    assert!(verify_native_fixture_profile(&mut journal, &project_signed, &views, &profile, 20).is_err());
     assert!(
         admit_policy_signer_pins_in_journal_v1(
             &mut journal,
@@ -515,7 +526,7 @@ fn explicit_deployment_profile_v2_pins_role_generation_and_rejects_head_equivoca
         )
         .is_err()
     );
-    assert_eq!(journal.snapshot_sequence(), sequence);
+    assert_eq!(journal.snapshot_sequence_v1().expect("actual held fixture NEXT"), sequence);
 
     // Independently pinned generation/key mismatches are rejected even when
     // the caller supplies a self-consistent, correctly signed current packet.
@@ -523,7 +534,7 @@ fn explicit_deployment_profile_v2_pins_role_generation_and_rejects_head_equivoca
         let other = private_directory();
         let mut pinned = pinned_journal(other.path(), pin, generation);
         let (actual_key, actual_generation) =
-            read_deployment_role(&mut pinned).expect("actual pins");
+            pinned.deployment_role_data_v1().expect("actual pins");
         assert!(
             actual_key != key.verifying_key() || actual_generation != profile.signer_generation()
         );
@@ -539,11 +550,11 @@ fn explicit_deployment_profile_v2_pins_role_generation_and_rejects_head_equivoca
         )
         .expect("wrong-role fixture record");
         pinned
-            .commit(&transaction)
+            .seed_v1(&transaction)
             .expect("protected wrong-role history fixture");
-        let before = pinned.snapshot_sequence();
-        assert!(verify_current_profile(&mut pinned, &packet, &views, &profile, 20).is_err());
-        assert_eq!(pinned.snapshot_sequence(), before);
+        let before = pinned.snapshot_sequence_v1().expect("actual held fixture NEXT");
+        assert!(verify_native_fixture_profile(&mut pinned, &packet, &views, &profile, 20).is_err());
+        assert_eq!(pinned.snapshot_sequence_v1().expect("actual held fixture NEXT"), before);
     }
 }
 
@@ -568,10 +579,10 @@ fn explicit_deployment_profile_v2_reuses_exact_head_cas_and_cold_replay() {
         .expect("signed successor");
         admit_deployment_head_in_journal(&mut journal, &packet, head, &key.verifying_key())
             .expect("one-generation shared CAS");
-        let sequence = journal.snapshot_sequence();
+        let sequence = journal.snapshot_sequence_v1().expect("actual held fixture NEXT");
         admit_deployment_head_in_journal(&mut journal, &packet, head, &key.verifying_key())
             .expect("lost-reply exact retry");
-        assert_eq!(journal.snapshot_sequence(), sequence);
+        assert_eq!(journal.snapshot_sequence_v1().expect("actual held fixture NEXT"), sequence);
 
         // A second valid signed interval changes the packet commitment while
         // retaining the same generation and exact canonical profile inputs.
@@ -598,7 +609,7 @@ fn explicit_deployment_profile_v2_reuses_exact_head_cas_and_cold_replay() {
             )
             .is_err()
         );
-        assert_eq!(journal.snapshot_sequence(), sequence);
+        assert_eq!(journal.snapshot_sequence_v1().expect("actual held fixture NEXT"), sequence);
         retained = Some((profile, inputs, packet, sequence));
     }
     let (profile, inputs, packet, sequence) = retained.expect("last successor");
@@ -618,14 +629,14 @@ fn explicit_deployment_profile_v2_reuses_exact_head_cas_and_cold_replay() {
         admit_deployment_head_in_journal(&mut journal, &gap_packet, gap_head, &key.verifying_key())
             .is_err()
     );
-    assert_eq!(journal.snapshot_sequence(), sequence);
+    assert_eq!(journal.snapshot_sequence_v1().expect("actual held fixture NEXT"), sequence);
     drop(journal);
 
     let mut reopened = open_journal(directory.path());
     assert!(
-        verify_current_profile(&mut reopened, &packet, &input_views(&inputs), &profile, 20).is_ok()
+        verify_native_fixture_profile(&mut reopened, &packet, &input_views(&inputs), &profile, 20).is_ok()
     );
-    assert_eq!(reopened.snapshot_sequence(), sequence);
+    assert_eq!(reopened.snapshot_sequence_v1().expect("actual held fixture NEXT"), sequence);
 }
 
 #[test]

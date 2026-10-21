@@ -8,7 +8,7 @@ use std::fs::File;
 use std::os::fd::OwnedFd;
 
 use aos_sandbox_model::{AccountingError, ResourceDimension as D, ResourceVector};
-use aos_sandbox_linux::pidfd::PidFdInfo;
+use aos_linux_descriptors::pidfd::PidFdInfo;
 
 use aos_sandbox_broker::receiving::RepresentationDemandDebitV1;
 use crate::signer::SourceReceivingGeometryErrorV1 as ResourceReservationErrorV1;

@@ -18,10 +18,10 @@ use aos_sandbox_policy::{CompiledPolicyCandidateV1, PolicyCompilerInputV1};
 
 use crate::controller_resource_reservation::RootContinuationDemandV1;
 use crate::execution_parent_resource::{ExecutionParentResourceSourceV1,
-    revalidate_execution_parent_resource_from_journal_v1};
+    revalidate_execution_parent_resource_from_observation_v2};
 use crate::journal::JournalError;
 use crate::normal_root::{NormalRootStartupErrorV1, RootEnvironmentStageReceivingV1};
-use crate::publisher_admin::policy::{PublisherPolicyLimits, PublisherPolicyStore};
+use crate::publisher_admin::policy::{PublisherPolicyLimits, PublisherPolicyObservationV2};
 use crate::policy_compiler::continuation_policy::RootEnvironmentPolicyOriginalV1;
 use super::current_compiler_complete_receiving_demand_v1;
 use super::horizon::{RootContinuationHorizonDataV1, RootContinuationClockGateV1};
@@ -76,6 +76,9 @@ impl RootEnvironmentCompilerOriginalV1 {
             let bytes = readonly.compiler_input_bytes_v1()?;
             let header = u64::try_from(size_of::<ValuesV1>().checked_mul(2)
                 .and_then(|bytes| bytes.checked_add(2 * size_of::<Self>()))
+                .and_then(|bytes| bytes.checked_add(crate::execution_parent_resource::observed_revalidation_control_bytes_v2()?))
+                .and_then(|bytes| bytes.checked_add(crate::sandbox_spec_state::observed_get_control_bytes_v2()?))
+                .and_then(|bytes| bytes.checked_add(crate::publisher_admin::policy::publisher_observation_control_bytes_v2()?))
                 .ok_or(JournalError::JournalTooLarge)?).map_err(|_| JournalError::JournalTooLarge)?;
             let signed = policy.verified_v1().ok_or(JournalError::ProtectedBoundary)?;
             let shared = current_compiler_complete_receiving_demand_v1(bytes, readonly.compiler_controller_state_v1()?, signed)?
@@ -210,11 +213,11 @@ fn compile_current_v1(readonly: &mut RootEnvironmentReadonlyContextV1,
     let _actual_limits = native.prepared_environment_limits_digest_v1()?;
     if cache.selected_v1().project != manifest.project() { return Err(Changed.into()); }
 
-    let (controller, _) = readonly.models_mut_v1()?;
-    revalidate_execution_parent_resource_from_journal_v1(controller, parent)?;
-    let specification = crate::sandbox_spec_state::get(controller, parent.specification_descriptor())?
+    let (controller, _) = readonly.models_v1()?;
+    revalidate_execution_parent_resource_from_observation_v2(controller, parent)?;
+    let specification = crate::sandbox_spec_state::get_from_observation_v2(controller, parent.specification_descriptor())?
         .ok_or(Changed)?.spec().clone();
-    let store = PublisherPolicyStore::load(controller, PublisherPolicyLimits::default())?;
+    let store = PublisherPolicyObservationV2::load_from_observation_v2(controller, PublisherPolicyLimits::default())?;
     let revision = store.current_policy(manifest.project())?.ok_or(Changed)?;
     let revocation = store.project_revocation_head(manifest.project())?.ok_or(Changed)?;
     let cache_domain = store.project_cache_domain_head(manifest.project())?.ok_or(Changed)?;

@@ -45,8 +45,8 @@ pub(crate) struct HostLaunchCompilationOriginalV2 {
     pub(super) namespace_failure: Option<aos_sandbox_linux::pidfd::NamespaceAdoptionFailureV2>,
     pub(super) spec: Option<aos_systemd_client::SandboxUnitSpec>,
     pub(super) nspawn_identity: Option<std::result::Result<rustix::fs::Stat, rustix::io::Errno>>,
-    pub(super) nspawn_mount: Option<aos_sandbox_linux::Result<aos_sandbox_linux::inventory::MountId>>,
-    pub(super) workspace_mount: Option<aos_sandbox_linux::Result<aos_sandbox_linux::inventory::MountId>>,
+    pub(super) nspawn_mount: Option<aos_linux_descriptors::Result<aos_sandbox_linux::inventory::MountId>>,
+    pub(super) workspace_mount: Option<aos_linux_descriptors::Result<aos_sandbox_linux::inventory::MountId>>,
     pub(super) entered: bool,
     pub(super) returned: Option<crate::Result<()>>,
 }

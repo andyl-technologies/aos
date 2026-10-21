@@ -474,7 +474,7 @@ impl RootPolicyAcceptedFlightV1<'_, '_> {
                 },
                 ServingDispatchV1::ExecutionNoApply => match self.purpose_peer.as_ref() {
                     Some(super::RootAcceptedPurposePeerV1::ExecutionNoApply(peer)) => original
-                        .prepare_policy_flight_disposal_for_completed_purpose_v1(
+                        .prepare_policy_flight_disposal_for_execution_no_apply_v2(
                             self.listener.startup,
                             peer,
                         ),
@@ -742,7 +742,7 @@ impl RootPolicyAcceptedFlightV1<'_, '_> {
     pub(crate) fn append_execution_no_apply_floor_once_v2(
         &mut self,
         floor:&mut crate::policy_compiler::execution_no_apply_root::RootExecutionNoApplyFloorOriginalV2,
-        original: &aos_sandbox_linux::unix_stream::RetainedUnixStream,
+        original: &aos_linux_descriptors::unix_stream::RetainedUnixStream,
         policy:&mut crate::policy_compiler::continuation_policy::RootExecutionNoApplyPolicyOriginalV2,
         readonly:&mut crate::policy_compiler::provisioning_current::finality_readonly::RootCreateFinalityReadonlyOriginalV1,
         models:&crate::policy_compiler::execution_no_apply_root::RootExecutionNoApplyModelsOriginalV2,

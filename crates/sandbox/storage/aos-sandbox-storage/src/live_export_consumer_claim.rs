@@ -9,7 +9,7 @@
 
 use aos_sandbox_model::model::ViewSource;
 use aos_sandbox_model::{ObjectDigest, encode_view_source};
-use aos_sandbox_linux::boot::KernelBootId;
+use aos_linux_descriptors::boot::KernelBootId;
 use aos_sandbox_mount::host_scope::ProtectedHostCgroupIdentityV1;
 use aos_sandbox_protocol::semantics::{
     DecodedCanonicalMountSemanticsV1, decode_canonical_mount_semantics_v1,

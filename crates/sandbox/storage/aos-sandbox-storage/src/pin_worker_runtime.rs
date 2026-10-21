@@ -421,7 +421,7 @@ impl SystemdWorkspacePinExecutor {
                     let population = worker.population_monitor()?;
                     population.state()
                 })
-                .collect::<Result<Vec<_>, aos_sandbox_linux::Error>>()?
+                .collect::<Result<Vec<_>, aos_linux_descriptors::Error>>()?
                 .into_iter()
                 .any(|state| state == CgroupPopulationState::Populated)
             {
@@ -1933,7 +1933,7 @@ fn protected_clock() -> Result<RawPairedClockSample, StorageAdmissionError> {
         .map_err(|_| StorageAdmissionError::FenceRejected)?;
     RawPairedClockSample::new_untrusted(
         provenance,
-        aos_sandbox_linux::boot::KernelBootId::current()
+        aos_linux_descriptors::boot::KernelBootId::current()
             .map_err(|_| StorageAdmissionError::FenceRejected)?
             .into_bytes(),
         wall_seconds,

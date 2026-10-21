@@ -4,17 +4,18 @@
 //! frontier. Preparatory192 supplies no destruction permission: this complete
 //! original must precede construction of a new catalog-bound Destroy7 plan.
 
+use aos_sandbox_policy::native::{RootFinalityReadOriginalV1 as Target, RootFinalityReadKindV1 as Kind};
+use crate::journal::historical_observation::root_readonly_error_v1 as project_read;
 mod source_models;
 
 use super::*;
 use crate::controller_resource_reservation::{ResourceReservationErrorV1, RootDeleteChunkPostsV1};
 use crate::hierarchy::genesis_profile::SourceGenesisErrorV1;
-use crate::journal::{DeleteAdmissionAuditInputsDataV3, JournalError};
-use crate::policy_compiler::{
-    RetainedKernelPairedClockAttemptV1,
-    create_storage_current::controller_readonly::native_read::RootFixedNativeReadOriginalsV1,
-    source_signer_transport::{RootSourceSignerTransportOriginalsV1, RootSourceTransportClosedV1},
-};
+use crate::journal::JournalError;
+use aos_sandbox_policy::native::DeleteAdmissionAuditInputsDataV3;
+use crate::policy_compiler::RetainedKernelPairedClockAttemptV1;
+use aos_sandbox_broker::source_signer_transport::RootSourceSignerTransportOriginalsV1;
+use aos_sandbox_broker::source_signer_transport::RootSourceTransportClosedV1;
 use aos_sandbox_model::{RawPairedClockSample, ResourceDimension as D, ResourceVector};
 use aos_sandbox_protocol::domain_ledger::delete_batch::LifecycleDeleteBatchRecordV1;
 use aos_sandbox_protocol::domain_ledger::delete_root::{
@@ -101,9 +102,9 @@ pub(crate) struct RootDeletePreparationCurrentOriginalV3 {
     decoded:
         Option<Result<DeleteRootPreparationCurrentDataV3, DeleteRootPreparationCurrentErrorV3>>,
     binding: Option<Result<(), Cause>>,
-    controller: RootFixedNativeReadOriginalsV1,
-    source: RootFixedNativeReadOriginalsV1,
-    storage: RootFixedNativeReadOriginalsV1,
+    controller: Target,
+    source: Target,
+    storage: Target,
     native: [Option<Result<(), JournalError>>; 3],
     planned: Option<Result<LifecycleDeleteBatchRecordV1, Box<dyn StdError + Send + Sync>>>,
     committed: Option<
@@ -154,9 +155,9 @@ impl Default for RootDeletePreparationCurrentOriginalV3 {
             received: None,
             decoded: None,
             binding: None,
-            controller: RootFixedNativeReadOriginalsV1::controller_current_v1(),
-            source: RootFixedNativeReadOriginalsV1::source_current_v1(),
-            storage: Default::default(),
+            controller: Target::new(Kind::Controller),
+            source: Target::new(Kind::Source),
+            storage: Target::new(Kind::StorageSession),
             native: std::array::from_fn(|_| None),
             planned: None,
             committed: None,
@@ -362,8 +363,9 @@ impl RootDeletePreparationCurrentOriginalV3 {
         let query = *positive(&self.query)?;
         self.sample_once_v3(14, inputs);
         self.require_primary_v3()?;
+        self.controller.construct_reader_once_v1().map_err(project_read)?;
         self.controller
-            .prepare_delete_accepted_observation_v3(frame.controller)?;
+            .prepare_delete_accepted_observation_v3(frame.controller).map_err(project_read)?;
         let uid = flight
             .delete_cut_startup_v1()?
             .native_startup_original_v1()
@@ -377,11 +379,11 @@ impl RootDeletePreparationCurrentOriginalV3 {
             P::ControllerNative,
             (|| {
                 self.controller
-                    .replay_demand_v1()?
+                    .replay_demand_v1().map_err(project_read)?
                     .checked_add(self.controller.delete_admission_comparison_demand_v3(
                         inputs.batch.bytes_for_graph_comparison_v2()?,
                         inputs.controller.verified_authorized_input_v2()?,
-                    )?)
+                    ).map_err(project_read)?)
                     .map_err(|cause| Box::new(cause) as Cause)
             })(),
         )?;
@@ -396,14 +398,14 @@ impl RootDeletePreparationCurrentOriginalV3 {
                 opening: inputs.opening,
                 authorization: inputs.controller.verified_authorization_cut_data_v2()?,
             },
-        )?;
+        ).map_err(project_read)?;
         self.controller.audit_once();
         self.admit_v3(
             flight,
             inputs,
             P::ControllerSemantic,
             self.controller
-                .additional_delete_preparation_semantic_demand_v3()
+                .additional_delete_preparation_semantic_demand_v3().map_err(project_read)
                 .map_err(|cause| cause.into()),
         )?;
         self.sample_once_v3(2, inputs);
@@ -412,7 +414,7 @@ impl RootDeletePreparationCurrentOriginalV3 {
         self.controller.finish_post_once();
         self.native[0] = Some(
             self.controller
-                .delete_preparation_native_data_v3()
+                .delete_preparation_native_data_v3().map_err(project_read)
                 .map(|_| ()),
         );
         if !matches!(self.native[0], Some(Ok(()))) {
@@ -423,17 +425,18 @@ impl RootDeletePreparationCurrentOriginalV3 {
             flight,
             inputs,
             P::SourceFixed,
-            Ok(RootFixedNativeReadOriginalsV1::source_current_fixed_demand_v1()?),
+            Ok(super::reader::fixed_demand_v1(Kind::Source)?),
         )?;
         self.sample_once_v3(3, inputs);
         self.require_primary_v3()?;
-        self.source.prepare_delete_current_observation_v3(query)?;
+        self.source.construct_reader_once_v1().map_err(project_read)?;
+        self.source.prepare_delete_current_observation_v3(query).map_err(project_read)?;
         self.source.capture_once(uid);
         self.admit_v3(
             flight,
             inputs,
             P::SourceNative,
-            self.source.replay_demand_v1().map_err(|cause| cause.into()),
+            self.source.replay_demand_v1().map_err(project_read).map_err(|cause| cause.into()),
         )?;
         self.sample_once_v3(4, inputs);
         self.require_primary_v3()?;
@@ -443,7 +446,7 @@ impl RootDeletePreparationCurrentOriginalV3 {
             inputs,
             P::SourceSemantic,
             self.source
-                .additional_delete_preparation_semantic_demand_v3()
+                .additional_delete_preparation_semantic_demand_v3().map_err(project_read)
                 .map_err(|cause| cause.into()),
         )?;
         self.sample_once_v3(5, inputs);
@@ -452,7 +455,7 @@ impl RootDeletePreparationCurrentOriginalV3 {
         self.source.finish_post_once();
         self.native[1] = Some(
             self.source
-                .delete_preparation_native_data_v3()
+                .delete_preparation_native_data_v3().map_err(project_read)
                 .and_then(|actual| {
                     if actual == frame.source {
                         Ok(())
@@ -493,31 +496,32 @@ impl RootDeletePreparationCurrentOriginalV3 {
             flight,
             inputs,
             P::StorageFixed,
-            Ok(RootFixedNativeReadOriginalsV1::fixed_demand_v1()?),
+            Ok(super::reader::fixed_demand_v1(Kind::StorageSession)?),
         )?;
         self.sample_once_v3(8, inputs);
         self.require_primary_v3()?;
+        self.storage.construct_reader_once_v1().map_err(project_read)?;
         self.storage
-            .prepare_delete_preparation_session_observation_v3(frame.session)?;
+            .prepare_delete_preparation_session_observation_v3(frame.session).map_err(project_read)?;
         self.storage.capture_once(uid);
         self.admit_v3(
             flight,
             inputs,
             P::StorageNative,
             self.storage
-                .replay_demand_v1()
+                .replay_demand_v1().map_err(project_read)
                 .map_err(|cause| cause.into()),
         )?;
         self.sample_once_v3(9, inputs);
         self.require_primary_v3()?;
         self.storage.replay_once();
         self.storage.finish_post_once();
-        self.native[2] = Some(self.storage.delete_preparation_native_data_v3().map(|_| ()));
+        self.native[2] = Some(self.storage.delete_preparation_native_data_v3().map_err(project_read).map(|_| ()));
         if !matches!(self.native[2], Some(Ok(()))) {
             self.first = Some(CurrentFirst::Storage);
             return Err(RootDeleteErrorV1::Opening.into());
         }
-        let storage = self.storage.terminal_native_v1()?;
+        let storage = self.storage.terminal_native_v1().map_err(project_read)?;
         let extent = usize::try_from(storage.end).map_err(|_| JournalError::JournalTooLarge)?;
         let packet_demand = (|| -> Result<ResourceVector, Cause> {
             let body = inputs
@@ -546,8 +550,8 @@ impl RootDeletePreparationCurrentOriginalV3 {
         self.sample_once_v3(10, inputs);
         self.require_primary_v3()?;
         self.storage_models_result = Some(self.storage_models.observe_preparation_packets_once_v3(
-            self.storage.terminal_native_v1()?,
-            self.storage.completed_delete_storage_history_rows_v3()?,
+            self.storage.terminal_native_v1().map_err(project_read)?,
+            self.storage.completed_delete_storage_history_rows_v3().map_err(project_read)?,
             inputs.controller.broker_manifests_v2()?.2,
             query.cutoff,
             query.boot,
@@ -599,7 +603,7 @@ impl RootDeletePreparationCurrentOriginalV3 {
             .ok_or(JournalError::JournalTooLarge)?;
         let fixed = RootDeleteChunkPostsV1::fixed_demand_v1()?
             .checked_add(crate::policy_compiler::root_subject_chunk::RootSubjectChunkReceivingV1::delete_receiving_demand_v1()?)?
-            .checked_add(RootFixedNativeReadOriginalsV1::controller_current_fixed_demand_v1()?)?;
+            .checked_add(super::reader::fixed_demand_v1(Kind::Controller)?)?;
         Ok(fixed.checked_add(
             ResourceVector::ZERO
                 .with(D::MemoryBytes, memory)
@@ -746,7 +750,7 @@ impl RootDeletePreparationCurrentOriginalV3 {
                 *positive(&self.samples[13])?,
                 reply.fields,
             )?;
-            let native = self.source.terminal_native_v1()?;
+            let native = self.source.terminal_native_v1().map_err(project_read)?;
             let frame = *positive(&self.decoded)?;
             let tree = aos_sandbox_ledger_replay::delete_pending::source_delete_tree_data_v1(
                 native.state.iter().map(|((namespace, key), value)| {
@@ -779,7 +783,7 @@ impl RootDeletePreparationCurrentOriginalV3 {
         &self,
         inputs: &CurrentInputsV3<'_>,
     ) -> Result<aos_sandbox_protocol::semantics::CatalogBindingV1, Cause> {
-        self.controller.require_delete_admission_comparison_v3()?;
+        self.controller.require_delete_admission_comparison_v3().map_err(project_read)?;
         let frame = *positive(&self.decoded)?;
         let outcome = self.storage_models.outcome_v2()?;
         let request = outcome.request();
@@ -809,9 +813,9 @@ impl RootDeletePreparationCurrentOriginalV3 {
         }
         // Both same-native joins are complete before this passive catalog is
         // returned. A matching packet alone never supplies native authority.
-        if self.storage.delete_preparation_native_data_v3()? != frame.session
-            || self.source.delete_preparation_native_data_v3()? != frame.source
-            || self.controller.delete_preparation_native_data_v3()? != frame.controller
+        if self.storage.delete_preparation_native_data_v3().map_err(project_read)? != frame.session
+            || self.source.delete_preparation_native_data_v3().map_err(project_read)? != frame.source
+            || self.controller.delete_preparation_native_data_v3().map_err(project_read)? != frame.controller
         {
             return Err(JournalError::StaleAuthoritySnapshot.into());
         }
@@ -863,7 +867,7 @@ impl RootDeletePreparationCurrentOriginalV3 {
         &crate::lifecycle::LifecycleHistoricalReadOriginalV1,
     ), JournalError> {
         self.require_completed_v3().map_err(|_| JournalError::ProtectedBoundary)?;
-        Ok((self.source.completed_rows_data_v3()?,
+        Ok((self.source.completed_rows_data_v3().map_err(project_read)?,
             self.accepted_source_models_v4().map_err(|_| JournalError::ProtectedBoundary)?
                 .current_lifecycle_data_v5()?))
     }
@@ -872,14 +876,14 @@ impl RootDeletePreparationCurrentOriginalV3 {
         -> Result<aos_sandbox_protocol::domain_ledger::readonly::HistoricalLedgerRowsDataV2<'_>, JournalError>
     {
         self.require_completed_v3().map_err(|_| JournalError::ProtectedBoundary)?;
-        self.controller.completed_rows_data_v3()
+        self.controller.completed_rows_data_v3().map_err(project_read)
     }
 
     pub(super) fn current_assignment_state_v3(&self)
         -> Result<&std::collections::BTreeMap<(crate::journal::RecordNamespace, Vec<u8>), Vec<u8>>, JournalError>
     {
         self.require_completed_v3().map_err(|_| JournalError::ProtectedBoundary)?;
-        Ok(self.controller.terminal_native_v1()?.state)
+        Ok(self.controller.terminal_native_v1().map_err(project_read)?.state)
     }
 
     pub(super) fn catalog_data_v3(

@@ -64,7 +64,7 @@ struct OriginalStage {
     result: Option<usize>,
     cgroup: Option<RetainedCgroupAnchor>,
     population: Option<CgroupPopulationMonitor>,
-    setup_cancellation: Option<Result<(), aos_sandbox_linux::Error>>,
+    setup_cancellation: Option<Result<(), aos_linux_descriptors::Error>>,
     cleanup: WorkerCleanupReport,
     shutdown: Option<Result<(), rustix::io::Errno>>,
     first_failure: Option<OriginalHeldMeasurementErrorV3>,

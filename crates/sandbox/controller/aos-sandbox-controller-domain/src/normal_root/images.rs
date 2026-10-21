@@ -40,6 +40,7 @@ impl ImageObservationErrorV1 {
                 NormalRootStartupErrorV1::Service => NormalRootStartupErrorV1::Service,
                 NormalRootStartupErrorV1::Confinement => NormalRootStartupErrorV1::Confinement,
                 NormalRootStartupErrorV1::Receiving(_) => NormalRootStartupErrorV1::Service,
+                NormalRootStartupErrorV1::StartupJournal(_) => NormalRootStartupErrorV1::Service,
                 NormalRootStartupErrorV1::SelectedCurrentness(_) => NormalRootStartupErrorV1::Service,
                 NormalRootStartupErrorV1::ServiceReceiving(cause) => {
                     NormalRootStartupErrorV1::ServiceReceiving(std::sync::Arc::clone(cause))

@@ -26,6 +26,7 @@
 //! remains the canonical encoding for internal operations; V2 adds immutable
 //! public identity and restart-stable observation metadata.
 
+use crate::journal::historical_observation::HistoricalObservationV1;
 use aos_sandbox_model::{ObjectDigest, OperationId, SandboxId};
 use aos_sandbox_protocol::public_api::PublicOperationMethodV1;
 #[cfg(test)]
@@ -53,14 +54,15 @@ use crate::publication::{
 pub(crate) mod start_admission;
 mod start_host_completed;
 pub(crate) use start_host_completed::{
-    completed_start_host_publication_receiving_demand_v2,
-    require_completed_start_host_publication_data_v2,
+    completed_start_host_publication_receiving_from_observation_v2,
+    completed_host_observation_control_bytes_v2,
+    require_completed_start_host_publication_from_observation_v2,
 };
 mod accepted_start;
 mod core_journal;
-mod admission_records;
+pub(crate) mod admission_records;
 #[cfg(target_os = "linux")]
-pub(crate) use admission_records::{prepare_delete_admission_transaction_v3, prepare_delete_admission_comparison_data_v3};
+pub(crate) use admission_records::prepare_delete_admission_transaction_v3;
 pub(crate) use accepted_start::accepted_start_origin_from_journal_v1;
 
 mod create_failure;
@@ -69,16 +71,17 @@ mod execution_target;
 mod execution_acceptance;
 pub(crate) use execution_acceptance::{accepted_create_execution_effect_from_journal_v1,
     accepted_execution_effect_from_journal_v3, accepted_stop_effect_from_journal_v4,
+    accepted_stop_effect_from_observation_v4,
     accepted_public_effect_models_receiving_bytes_v4,
     accepted_public_effect_models_receiving_bytes_retaining_v4};
 pub use execution_target::accepted_execution_target_from_journal_v1;
+pub(crate) use execution_target::accepted_execution_target_from_observation_v2;
+pub(crate) use execution_acceptance::accepted_create_execution_effect_from_observation_v2;
 pub(crate) use execution_target::AcceptedExecutionTargetOriginalV2;
 #[cfg(target_os = "linux")]
 mod create_q04;
 #[cfg(target_os = "linux")]
-pub(crate) use create_q04::{validate_original_claim_rows_v1, RootAcceptedCreateRowsV1};
-#[cfg(target_os = "linux")]
-pub(crate) use create_q04::{Q04OriginalRowBindingV1, read_original_q04_rows_v1};
+pub(crate) use create_q04::validate_original_claim_rows_v1;
 #[cfg(target_os = "linux")]
 pub(crate) use create_q04::OriginalQ04ControllerLedgerV1;
 #[cfg(target_os = "linux")]
@@ -105,8 +108,10 @@ pub(crate) use runtime_authority::{
 };
 
 #[cfg(test)]
-use create_failure::CreateFailureReceiptV1;
-pub(crate) use create_failure::{ClosedCreateFailurePlanDataV2, plan_closed_create_failure_rows_data_v2};
+use aos_sandbox_protocol::domain_ledger::create_failure::CreateFailureReceiptV1;
+pub(crate) use create_failure::{closed_create_failure_receiving_demand_from_observation_v2,
+    plan_closed_create_failure_rows_from_observation_v2};
+use aos_sandbox_protocol::domain_ledger::create_failure::ClosedCreateFailurePlanDataV2;
 pub(crate) use operator_repair_failure::{
     RepairPreconditionFailureReceiptV1, RECEIPT_BYTES as REPAIR_FAILURE_RECEIPT_BYTES,
     RECEIPT_DOMAIN as REPAIR_FAILURE_RECEIPT_DOMAIN,
@@ -202,15 +207,9 @@ impl OperationPlan {
         desired_value: Vec<u8>,
         effects: Vec<EffectPlan>,
     ) -> Result<Self, ReconcilerError> {
-        if operation_id.as_bytes() == &[0; 16]
-            || desired_key.is_empty()
-            || desired_value.is_empty()
-            || effects.is_empty()
-            || effects.len() > MAXIMUM_EFFECTS
-            || effects.iter().any(|effect| effect.authority().is_some())
-        {
-            return Err(ReconcilerError::InvalidPlan("invalid operation plan"));
-        }
+        aos_sandbox_protocol::require_operation_plan_shape_data_v3!(
+            operation_id, desired_key, desired_value, effects, ReconcilerError::InvalidPlan
+        );
         Ok(Self {
             operation_id,
             idempotency_key,
@@ -635,18 +634,10 @@ impl OperationPlan {
         } else {
             MAXIMUM_EFFECTS - 1
         };
-        let atomic_records = self
-            .effects
-            .len()
-            .checked_add(self.local_records.len())
-            .ok_or(ReconcilerError::InvalidPlan(
-                "public operation metadata exceeds admission bounds",
-            ))?;
-        if self.public_operation.is_some() || atomic_records > maximum_effects {
-            return Err(ReconcilerError::InvalidPlan(
-                "public operation metadata is duplicate or exceeds admission bounds",
-            ));
-        }
+        aos_sandbox_protocol::require_public_operation_shape_data_v3!(
+            self.effects, self.local_records, self.public_operation, maximum_effects,
+            ReconcilerError::InvalidPlan
+        );
         self.public_operation = Some(public_operation);
         Ok(self)
     }
@@ -679,8 +670,10 @@ impl OperationPlan {
             .checked_mul(2)?;
         let new_use = aos_sandbox_protocol::domain_ledger::delete_batch::new_use::
             public_mutation_new_use_receiving_bytes_v2();
-        let memory=u64::try_from(context.checked_add(operation)?.checked_add(new_use)?).ok()?
-            .checked_add(crate::controller_service::public_projection::sandbox_source_receiving_bytes_v1(journal)?)?;
+        let memory=u64::try_from(context.checked_add(operation)?.checked_add(new_use)?
+            .checked_add(crate::policy_compiler::start_source_observation_control_bytes_v2()?)?
+            .checked_add(crate::lifecycle::LifecycleHistoricalReadOriginalV1::observe_rows_interface_control_bytes_v2()?)?).ok()?
+            .checked_add(aos_sandbox_protocol::public_api::projection::geometry::sandbox_source_receiving_bytes_v1(journal.historical_read_view_v1().rows_data_v2())?)?;
         Some(aos_sandbox_model::ResourceVector::ZERO.with(
             aos_sandbox_model::ResourceDimension::MemoryBytes,memory))
     }
@@ -937,8 +930,8 @@ pub trait SingleNodeEffectExecutor {
         _original_capacity: &aos_sandbox_model::GitUploadCapacityV1,
         _original_bootstrap_credentials: &mut crate::public_api_session::PublisherPolicyBootstrapCredentialCustodyV1,
         _attempt: &mut crate::policy_compiler::GitCoverageAccountAttemptV1<'_>,
-    ) -> Result<(), crate::cache_residency::CacheResidentUnavailableV1> {
-        Err(crate::cache_residency::CacheResidentUnavailableV1)
+    ) -> Result<(), aos_sandbox_cache::CacheResidentUnavailableV1> {
+        Err(aos_sandbox_cache::CacheResidentUnavailableV1)
     }
 
     /// Commits the exact successor through the same retained account attempt.
@@ -955,8 +948,8 @@ pub trait SingleNodeEffectExecutor {
         _original_capacity: &aos_sandbox_model::GitUploadCapacityV1,
         _original_bootstrap_credentials: &mut crate::public_api_session::PublisherPolicyBootstrapCredentialCustodyV1,
         _attempt: &mut crate::policy_compiler::GitCoverageAccountAttemptV1<'_>,
-    ) -> Result<(), crate::cache_residency::CacheResidentUnavailableV1> {
-        Err(crate::cache_residency::CacheResidentUnavailableV1)
+    ) -> Result<(), aos_sandbox_cache::CacheResidentUnavailableV1> {
+        Err(aos_sandbox_cache::CacheResidentUnavailableV1)
     }
 
     /// Runs the fixed enrolled metadata crossing with both original writers.
@@ -969,8 +962,8 @@ pub trait SingleNodeEffectExecutor {
         _controller: &mut Journal,
         _original_inputs: &mut crate::public_api_session::GitCoverageCredentialCustodyV1,
         _operation: &mut GitCoverageReadMetadataOperationV1<'_, '_>,
-    ) -> Result<(), crate::cache_residency::CacheResidentUnavailableV1> {
-        Err(crate::cache_residency::CacheResidentUnavailableV1)
+    ) -> Result<(), aos_sandbox_cache::CacheResidentUnavailableV1> {
+        Err(aos_sandbox_cache::CacheResidentUnavailableV1)
     }
 
     /// Compares the fixed cohort through the same resident Cache owners.
@@ -994,8 +987,8 @@ pub trait SingleNodeEffectExecutor {
         aos_sandbox_model::format::git_upload_enrollment::GitCoverageFenceFieldsV1,
         [u8; 32],
         u64,
-    ), crate::cache_residency::CacheResidentUnavailableV1> {
-        Err(crate::cache_residency::CacheResidentUnavailableV1)
+    ), aos_sandbox_cache::CacheResidentUnavailableV1> {
+        Err(aos_sandbox_cache::CacheResidentUnavailableV1)
     }
 
     /// Initializes the same fixed existing Cache and borrows local project usage.
@@ -1007,8 +1000,8 @@ pub trait SingleNodeEffectExecutor {
     fn existing_cache_project_usage_v1(
         &mut self,
         _project: aos_sandbox_model::ProjectId,
-    ) -> Result<crate::cache_residency::CacheProjectUsageLoanV1<'_>, crate::cache_residency::CacheResidentUnavailableV1> {
-        Err(crate::cache_residency::CacheResidentUnavailableV1)
+    ) -> Result<aos_sandbox_cache::CacheProjectUsageLoanV1<'_>, aos_sandbox_cache::CacheResidentUnavailableV1> {
+        Err(aos_sandbox_cache::CacheResidentUnavailableV1)
     }
 
     /// Rechecks the same initialization originals after the short usage loan.
@@ -1018,8 +1011,8 @@ pub trait SingleNodeEffectExecutor {
     /// retain actual causes and must not reopen or reconstruct their owners.
     fn recheck_existing_cache_project_usage_v1(
         &mut self,
-    ) -> Result<(), crate::cache_residency::CacheResidentUnavailableV1> {
-        Err(crate::cache_residency::CacheResidentUnavailableV1)
+    ) -> Result<(), aos_sandbox_cache::CacheResidentUnavailableV1> {
+        Err(aos_sandbox_cache::CacheResidentUnavailableV1)
     }
 
     /// Selects the closed original-gen1 Create policy-subgate continuation.
@@ -1682,7 +1675,7 @@ pub(crate) fn require_closed_no_apply_terminal_ack_data_v2(journal: &Journal,
         || prepare.digest() != ack.controller_prepare || prepare.settled_cas_digest() != ack.settled_cas {
         return Err(ReconcilerError::InvalidExecutorOutput("NoApply completion prepare/ACK identity changed"));
     }
-    let plan = plan_closed_create_failure_rows_data_v2(journal, prepare.identity.marker,
+    let plan = crate::reconciler::plan_closed_create_failure_rows_from_observation_v2(crate::journal::historical_observation::HistoricalObservationV1::from_journal_v1(journal), prepare.identity.marker,
         prepare.identity.terminal_archive, prepare.identity.signed_terminal, prepare.wall_seconds)?;
     if !plan.settled_data_v2() || plan.prepared_data_v2() != Some(prepare) {
         return Err(ReconcilerError::InvalidExecutorOutput("NoApply completion is not the exact actual three-row terminal"));
@@ -1852,6 +1845,22 @@ impl From<aos_sandbox_protocol::domain_ledger::public_operation::PublicOperation
     }
 }
 
+
+impl From<aos_sandbox_protocol::domain_ledger::create_admission::CreateAdmissionDataErrorV1>
+    for ReconcilerError
+{
+    fn from(error: aos_sandbox_protocol::domain_ledger::create_admission::CreateAdmissionDataErrorV1) -> Self {
+        use aos_sandbox_protocol::domain_ledger::create_admission::CreateAdmissionDataErrorV1;
+        match error {
+            CreateAdmissionDataErrorV1::InvalidPlan(reason) => Self::InvalidPlan(reason),
+            CreateAdmissionDataErrorV1::CorruptLedger(reason) => Self::CorruptLedger(reason),
+            CreateAdmissionDataErrorV1::InvalidExecutorOutput(reason) => Self::InvalidExecutorOutput(reason),
+            CreateAdmissionDataErrorV1::PublicOperationClock => Self::PublicOperationClock,
+            CreateAdmissionDataErrorV1::PublicOperationSequenceExhausted => Self::PublicOperationSequenceExhausted,
+        }
+    }
+}
+
 impl From<OwnershipGateDataErrorV1> for ReconcilerError {
     fn from(error: OwnershipGateDataErrorV1) -> Self {
         match error {
@@ -1979,7 +1988,7 @@ where
         original_capacity: &aos_sandbox_model::GitUploadCapacityV1,
         original_bootstrap_credentials: &mut crate::public_api_session::PublisherPolicyBootstrapCredentialCustodyV1,
         attempt: &mut crate::policy_compiler::GitCoverageAccountAttemptV1<'_>,
-    ) -> Result<(), crate::cache_residency::CacheResidentUnavailableV1> {
+    ) -> Result<(), aos_sandbox_cache::CacheResidentUnavailableV1> {
         self.ledger_validated = false;
         self.executor.capture_existing_git_coverage_account_cut_v1(
             &mut self.journal, original_inputs, original_bootstrap, original_source,
@@ -1996,7 +2005,7 @@ where
         original_capacity: &aos_sandbox_model::GitUploadCapacityV1,
         original_bootstrap_credentials: &mut crate::public_api_session::PublisherPolicyBootstrapCredentialCustodyV1,
         attempt: &mut crate::policy_compiler::GitCoverageAccountAttemptV1<'_>,
-    ) -> Result<(), crate::cache_residency::CacheResidentUnavailableV1> {
+    ) -> Result<(), aos_sandbox_cache::CacheResidentUnavailableV1> {
         self.ledger_validated = false;
         self.executor.commit_existing_git_coverage_account_v1(
             &mut self.journal, original_inputs, original_bootstrap, original_source,
@@ -2009,7 +2018,7 @@ where
         &mut self,
         original_inputs: &mut crate::public_api_session::GitCoverageCredentialCustodyV1,
         operation: &mut GitCoverageReadMetadataOperationV1<'_, '_>,
-    ) -> Result<(), crate::cache_residency::CacheResidentUnavailableV1> {
+    ) -> Result<(), aos_sandbox_cache::CacheResidentUnavailableV1> {
         self.ledger_validated = false;
         self.executor.run_existing_git_coverage_read_metadata_v1(
             &mut self.journal, original_inputs, operation,
@@ -2019,13 +2028,13 @@ where
     pub(crate) fn existing_cache_project_usage_v1(
         &mut self,
         project: aos_sandbox_model::ProjectId,
-    ) -> Result<crate::cache_residency::CacheProjectUsageLoanV1<'_>, crate::cache_residency::CacheResidentUnavailableV1> {
+    ) -> Result<aos_sandbox_cache::CacheProjectUsageLoanV1<'_>, aos_sandbox_cache::CacheResidentUnavailableV1> {
         self.executor.existing_cache_project_usage_v1(project)
     }
 
     pub(crate) fn recheck_existing_cache_project_usage_v1(
         &mut self,
-    ) -> Result<(), crate::cache_residency::CacheResidentUnavailableV1> {
+    ) -> Result<(), aos_sandbox_cache::CacheResidentUnavailableV1> {
         self.executor.recheck_existing_cache_project_usage_v1()
     }
 
@@ -2049,7 +2058,7 @@ where
         aos_sandbox_model::format::git_upload_enrollment::GitCoverageFenceFieldsV1,
         [u8; 32],
         u64,
-    ), crate::cache_residency::CacheResidentUnavailableV1> {
+    ), aos_sandbox_cache::CacheResidentUnavailableV1> {
         self.executor.compare_existing_cache_git_coverage_v1(
             original_inputs, flight, original_nonce, original_account,
         )
@@ -3461,30 +3470,38 @@ pub(crate) fn recovered_public_operation_admission_v1(
     journal: &Journal,
     operation_id: OperationId,
 ) -> Result<Option<PublicOperationAdmissionV1>, ReconcilerError> {
-    let Some(operation_bytes) = journal.get(RecordNamespace::Operation, operation_id.as_bytes())
-    else {
-        return Ok(None);
-    };
-    let operation = decode_operation(operation_bytes)?;
-    let Some(public) = operation.public_operation() else {
-        return Ok(None);
-    };
-    let authorization = journal
-        .get(
-            RecordNamespace::PublicOperationAuthorization,
-            operation_id.as_bytes(),
-        )
-        .map(PublicOperationAuthorizationV1::decode)
-        .transpose()?
-        .ok_or(ReconcilerError::CorruptLedger(
-            "public operation has no authorization scope",
-        ))?;
+    aos_sandbox_protocol::domain_ledger::create_admission::recovered_public_operation_admission_from_rows_v1(
+        journal.historical_read_view_v1().rows_data_v2(), operation_id,
+    ).map_err(ReconcilerError::from)
+}
 
-    Ok(Some(public.into_admission(authorization)))
+// Shares the sole canonical admission decoder without inventing native proof.
+pub(crate) fn recovered_public_operation_admission_from_observation_v2(
+    journal: HistoricalObservationV1<'_>,
+    operation_id: OperationId,
+) -> Result<Option<PublicOperationAdmissionV1>, ReconcilerError> {
+    aos_sandbox_protocol::domain_ledger::create_admission::recovered_public_operation_admission_from_rows_v1(
+        journal.rows_data_v2(), operation_id,
+    ).map_err(ReconcilerError::from)
 }
 
 pub(crate) fn recovered_public_operation_authorization_v1(
     journal: &Journal,
+    operation_id: OperationId,
+) -> Result<Option<PublicOperationAuthorizationV1>, ReconcilerError> {
+    recovered_public_operation_authorization_from_observation_v2(
+        HistoricalObservationV1::from_journal_v1(journal),
+        operation_id,
+    )
+}
+
+/// Checks the original field model against its continuously borrowed owner.
+///
+/// # Errors
+///
+/// Preserves the original ledger, current-field and protected-owner refusals.
+pub(crate) fn recovered_public_operation_authorization_from_observation_v2(
+    journal: HistoricalObservationV1<'_>,
     operation_id: OperationId,
 ) -> Result<Option<PublicOperationAuthorizationV1>, ReconcilerError> {
     journal.ensure_protected_authority()?;
@@ -3512,6 +3529,21 @@ pub(crate) fn recovered_public_operation_resource_v1(
     journal: &Journal,
     operation_id: OperationId,
 ) -> Result<Option<aos_sandbox_api::aos::sandbox::v1::Operation>, ReconcilerError> {
+    recovered_public_operation_resource_from_observation_v2(
+        HistoricalObservationV1::from_journal_v1(journal),
+        operation_id,
+    )
+}
+
+/// Checks the original field model against its continuously borrowed owner.
+///
+/// # Errors
+///
+/// Preserves the original ledger, current-field and protected-owner refusals.
+pub(crate) fn recovered_public_operation_resource_from_observation_v2(
+    journal: HistoricalObservationV1<'_>,
+    operation_id: OperationId,
+) -> Result<Option<aos_sandbox_api::aos::sandbox::v1::Operation>, ReconcilerError> {
     journal.ensure_protected_authority()?;
     let Some(operation_bytes) = journal.get(RecordNamespace::Operation, operation_id.as_bytes())
     else {
@@ -3521,7 +3553,11 @@ pub(crate) fn recovered_public_operation_resource_v1(
     let Some(public) = operation.public_operation() else {
         return Ok(None);
     };
-    create_failure::validate_failed_create_operation(journal, operation_id, operation)?;
+    create_failure::validate_failed_create_operation_from_observation_v2(
+        journal,
+        operation_id,
+        operation,
+    )?;
 
     let mut applied_effects = 0_u32;
     let mut applying_effects = 0_u32;
@@ -3545,7 +3581,9 @@ pub(crate) fn recovered_public_operation_resource_v1(
                 increment_effect_count(&mut applied_effects)?;
                 if stop_residual::classify(operation_id, effect.plan(), receipt)?.is_some() {
                     if step != 0 || operation.effect_count() != 1 {
-                        return Err(ReconcilerError::CorruptLedger("residual Stop has another effect graph"));
+                        return Err(ReconcilerError::CorruptLedger(
+                            "residual Stop has another effect graph",
+                        ));
                     }
                     increment_effect_count(&mut stop_residual_effects)?;
                 }
@@ -3650,7 +3688,8 @@ pub(crate) fn recovered_public_operation_resource_v1(
     };
     if !state_matches_effects
         || (failed_repair_effects != 0 && operation.state() != OperationState::PermanentlyBlocked)
-        || (stop_residual_effects != 0 && operation.state() != OperationState::CommittedWithResidualCleanup)
+        || (stop_residual_effects != 0
+            && operation.state() != OperationState::CommittedWithResidualCleanup)
     {
         return Err(ReconcilerError::CorruptLedger(
             "public operation state contradicts its effects",
@@ -3658,7 +3697,7 @@ pub(crate) fn recovered_public_operation_resource_v1(
     }
 
     if failed_repair_effects == 1 {
-        operator_repair_failure::validate(journal, operation_id)?;
+        operator_repair_failure::validate_from_observation_v2(journal, operation_id)?;
         return Ok(Some(public.project_original_precondition_replaced(
             operation_id,
             operation_bytes,
@@ -4005,6 +4044,29 @@ fn pending_operator_repair_from_exact_rows_v1(
     operation: OperationRecord,
     effect: EffectLedgerRecord,
 ) -> Result<PendingOperatorRepairLedgerV1, ReconcilerError> {
+    pending_operator_repair_from_exact_rows_from_observation_v2(
+        HistoricalObservationV1::from_journal_v1(journal),
+        operation_id,
+        sandbox_id,
+        request_digest,
+        operation,
+        effect,
+    )
+}
+
+/// Checks the original signed Repair custody through the same borrowed owner.
+///
+/// # Errors
+///
+/// Preserves the original malformed-history, signature, credential and owner failures.
+fn pending_operator_repair_from_exact_rows_from_observation_v2(
+    journal: HistoricalObservationV1<'_>,
+    operation_id: OperationId,
+    sandbox_id: [u8; 16],
+    request_digest: [u8; 32],
+    operation: OperationRecord,
+    effect: EffectLedgerRecord,
+) -> Result<PendingOperatorRepairLedgerV1, ReconcilerError> {
     use aos_sandbox_api::aos::sandbox::v1::OperatorRecoveryAction;
     use aos_sandbox_model::{ResourceKind, Selector};
 
@@ -4025,9 +4087,10 @@ fn pending_operator_repair_from_exact_rows_v1(
     };
     let request = crate::cli_model::OperatorRecoveryRequestV1::try_from(request)
         .map_err(|_| ReconcilerError::CorruptLedger("invalid public Repair request"))?;
-    let public = recovered_public_operation_admission_v1(journal, operation_id)?.ok_or(
-        ReconcilerError::CorruptLedger("Repair has no public operation"),
-    )?;
+    let public = recovered_public_operation_admission_from_observation_v2(journal, operation_id)?
+        .ok_or(ReconcilerError::CorruptLedger(
+        "Repair has no public operation",
+    ))?;
     let selector_matches = matches!(
         public.authorization().selector(),
         Selector::Resource { resource } if resource.as_bytes() == &sandbox_id
@@ -4128,6 +4191,33 @@ pub(crate) fn operator_repair_failure_terminal_rows_v1(
     receipt: &[u8],
     completion_wall_seconds: i64,
 ) -> Result<[JournalRecord; 2], ReconcilerError> {
+    operator_repair_failure_terminal_rows_from_observation_v2(
+        HistoricalObservationV1::from_journal_v1(journal),
+        operation_id,
+        sandbox_id,
+        request_digest,
+        predecessor_operation,
+        predecessor_effect,
+        receipt,
+        completion_wall_seconds,
+    )
+}
+
+/// Checks the original signed Repair custody through the same borrowed owner.
+///
+/// # Errors
+///
+/// Preserves the original malformed-history, signature, credential and owner failures.
+pub(crate) fn operator_repair_failure_terminal_rows_from_observation_v2(
+    journal: HistoricalObservationV1<'_>,
+    operation_id: OperationId,
+    sandbox_id: [u8; 16],
+    request_digest: [u8; 32],
+    predecessor_operation: &[u8],
+    predecessor_effect: &[u8],
+    receipt: &[u8],
+    completion_wall_seconds: i64,
+) -> Result<[JournalRecord; 2], ReconcilerError> {
     journal.ensure_protected_authority()?;
     let failure = RepairPreconditionFailureReceiptV1::decode(receipt)
         .map_err(|()| ReconcilerError::CorruptLedger("invalid Repair failure decision"))?;
@@ -4136,7 +4226,7 @@ pub(crate) fn operator_repair_failure_terminal_rows_v1(
             "Repair failure names another operation",
         ));
     }
-    pending_operator_repair_from_exact_rows_v1(
+    pending_operator_repair_from_exact_rows_from_observation_v2(
         journal,
         operation_id,
         sandbox_id,
@@ -4163,7 +4253,30 @@ pub(crate) fn operator_repair_original_ledger_v1(
     predecessor_operation: &[u8],
     predecessor_effect: &[u8],
 ) -> Result<PendingOperatorRepairLedgerV1, ReconcilerError> {
-    pending_operator_repair_from_exact_rows_v1(
+    operator_repair_original_ledger_from_observation_v2(
+        HistoricalObservationV1::from_journal_v1(journal),
+        operation_id,
+        sandbox_id,
+        request_digest,
+        predecessor_operation,
+        predecessor_effect,
+    )
+}
+
+/// Checks the original signed Repair custody through the same borrowed owner.
+///
+/// # Errors
+///
+/// Preserves the original malformed-history, signature, credential and owner failures.
+pub(crate) fn operator_repair_original_ledger_from_observation_v2(
+    journal: HistoricalObservationV1<'_>,
+    operation_id: OperationId,
+    sandbox_id: [u8; 16],
+    request_digest: [u8; 32],
+    predecessor_operation: &[u8],
+    predecessor_effect: &[u8],
+) -> Result<PendingOperatorRepairLedgerV1, ReconcilerError> {
+    pending_operator_repair_from_exact_rows_from_observation_v2(
         journal,
         operation_id,
         sandbox_id,
@@ -4207,6 +4320,16 @@ pub fn activated_ownership_gate_digest_from_journal_v1(
 
 pub(crate) fn validated_ownership_gate_from_journal_v1(
     journal: &Journal,
+    operation_id: OperationId,
+) -> Result<Option<OwnershipGateStatusV1>, ReconcilerError> {
+    validated_ownership_gate_from_observation_v2(
+        crate::journal::historical_observation::HistoricalObservationV1::from_journal_v1(journal),
+        operation_id,
+    )
+}
+
+pub(crate) fn validated_ownership_gate_from_observation_v2(
+    journal: crate::journal::historical_observation::HistoricalObservationV1<'_>,
     operation_id: OperationId,
 ) -> Result<Option<OwnershipGateStatusV1>, ReconcilerError> {
     journal.ensure_protected_authority()?;
@@ -4266,7 +4389,7 @@ pub(crate) fn validated_ownership_gate_from_journal_v1(
                 | OperationState::FailedBeforeCommit
         ) =>
         {
-            validate_durable_gate_publication(
+            crate::publication::validate_durable_gate_publication_observed_v2(
                 journal,
                 *publication_digest,
                 plan.publication_draft(),
@@ -7955,8 +8078,7 @@ mod tests {
         let archive = ObjectDigest::from_bytes([0xb8; 32]);
         let terminal = ObjectDigest::from_bytes([0xb9; 32]);
         let mut reconciler = applying_failed_create_reconciler(&directory, &accepted);
-        let initial = plan_closed_create_failure_rows_data_v2(
-            &reconciler.journal,
+        let initial = crate::reconciler::plan_closed_create_failure_rows_from_observation_v2(crate::journal::historical_observation::HistoricalObservationV1::from_journal_v1(&reconciler.journal),
             marker,
             archive,
             terminal,
@@ -7992,8 +8114,7 @@ mod tests {
             &JournalTransaction::new([0xec; 16], prepare_rows).unwrap(),
         ).unwrap();
         let mut journal = protected_runtime_journal(&directory);
-        let prepared = plan_closed_create_failure_rows_data_v2(
-            &journal,
+        let prepared = crate::reconciler::plan_closed_create_failure_rows_from_observation_v2(crate::journal::historical_observation::HistoricalObservationV1::from_journal_v1(&journal),
             marker,
             archive,
             terminal,
@@ -8009,14 +8130,13 @@ mod tests {
         let journal = protected_runtime_journal(&directory);
         let next = journal.snapshot_sequence();
         let settled =
-            plan_closed_create_failure_rows_data_v2(&journal, marker, archive, terminal, 102).unwrap();
+            crate::reconciler::plan_closed_create_failure_rows_from_observation_v2(crate::journal::historical_observation::HistoricalObservationV1::from_journal_v1(&journal), marker, archive, terminal, 102).unwrap();
         assert!(settled.settled_data_v2());
         assert_eq!(settled.prepared_data_v2(), Some(prepare));
         assert_eq!(settled.row_digests_data_v2(), (predecessor, successor));
         assert_eq!(journal.snapshot_sequence(), next);
         assert!(
-            plan_closed_create_failure_rows_data_v2(
-                &journal,
+            crate::reconciler::plan_closed_create_failure_rows_from_observation_v2(crate::journal::historical_observation::HistoricalObservationV1::from_journal_v1(&journal),
                 marker,
                 archive,
                 ObjectDigest::from_bytes([0xff; 32]),
@@ -8025,7 +8145,7 @@ mod tests {
             .is_err()
         );
         assert!(
-            plan_closed_create_failure_rows_data_v2(&journal, marker, archive, terminal, 103,).is_err()
+            crate::reconciler::plan_closed_create_failure_rows_from_observation_v2(crate::journal::historical_observation::HistoricalObservationV1::from_journal_v1(&journal), marker, archive, terminal, 103,).is_err()
         );
         let mut cold = Reconciler::new(journal, Executor::default());
         assert_eq!(cold.reconcile_once_at(operation, 104).unwrap(), ReconcileOutcome::CreateFailurePending);
@@ -8213,7 +8333,7 @@ mod tests {
             panic!("expected terminal receipt");
         };
         let original_receipt =
-            create_failure::CreateFailureReceiptV1::decode(original_receipt.as_bytes())
+            aos_sandbox_protocol::domain_ledger::create_failure::CreateFailureReceiptV1::decode(original_receipt.as_bytes())
                 .unwrap()
                 .unwrap();
         let mut foreign_fields = marker.fields();
@@ -8223,7 +8343,7 @@ mod tests {
                 foreign_fields,
             )
             .unwrap();
-        let wrong_marker = create_failure::CreateFailureReceiptV1 {
+        let wrong_marker = aos_sandbox_protocol::domain_ledger::create_failure::CreateFailureReceiptV1 {
             marker: foreign_marker,
             ..original_receipt
         };
@@ -9690,4 +9810,18 @@ impl<E: SingleNodeEffectExecutor> std::fmt::Display for OriginalProvisioningFail
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.0.fmt_original_provisioning_failure_v1(formatter)
     }
+}
+
+/// Prices the actual ownership-gate observation forwarding interfaces.
+///
+/// Counts the concrete construction, ABI return and caller planes. It pays
+/// only new Memory controls; full canonical maps and decoder backing stay
+/// with the existing reached semantic invoice.
+pub(crate) fn ownership_gate_observation_control_bytes_v2() -> Option<usize> {
+    let mut bytes = 0_usize;
+    bytes = bytes.checked_add(std::mem::size_of::<crate::journal::historical_observation::HistoricalObservationV1<'_>>().checked_mul(3)?)?;
+    bytes = bytes.checked_add(std::mem::size_of::<OperationId>().checked_mul(3)?)?;
+    bytes = bytes.checked_add(std::mem::size_of::<Result<(), JournalError>>().checked_mul(3)?)?;
+    bytes = bytes.checked_add(std::mem::size_of::<Result<Option<OwnershipGateStatusV1>, ReconcilerError>>().checked_mul(3)?)?;
+    bytes.checked_add(std::mem::size_of::<Option<usize>>().checked_mul(3)?)
 }

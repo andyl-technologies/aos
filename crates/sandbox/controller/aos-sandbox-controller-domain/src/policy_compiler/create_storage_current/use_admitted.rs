@@ -24,7 +24,8 @@ use aos_sandbox_protocol::domain_ledger::create_storage_history::{
 use sha2::{Digest as _, Sha256};
 use crate::journal::{Journal, JournalError};
 use crate::normal_root::RootPolicyAcceptedFlightV1;
-use crate::policy_compiler::bounded_stream_io::{SliceDeadlineStreamIoV1, DeadlineStreamDirectionV1};
+use aos_sandbox_broker::bounded_stream_io::SliceDeadlineStreamIoV1;
+use aos_sandbox_broker::bounded_stream_io::DeadlineStreamDirectionV1;
 use crate::policy_compiler::root_current_writers::RootCreateStorageCurrentWritersV1;
 use super::{RootCreateStorageCurrentErrorV1 as Error,
     cache_current::RootCurrentCacheProofStateV1,
@@ -35,7 +36,7 @@ use super::{RootCreateStorageCurrentErrorV1 as Error,
     use_reserved::RootCurrentUseReservedStateV1,
     history_pair::RootCurrentHistoryPairV1};
 
-type Readback = crate::journal::create_storage_history::HistoryPairReadbackV1<USE_ADMITTED_RECORD_BYTES_V1>;
+type Readback = aos_sandbox_protocol::domain_ledger::create_storage_history::readback::HistoryPairReadbackDataV1<USE_ADMITTED_RECORD_BYTES_V1>;
 
 pub(crate) struct RootCurrentUseAdmittedStateV1 {
     body: Option<Result<UseAdmittedBodyDataV1, Error>>,
@@ -102,10 +103,10 @@ impl RootCurrentUseAdmittedStateV1 {
         self.append_posts.arm_once(flight)?;
         self.primary = Some(self.produce_inner(flight, writers, original, root,
             authorization, reserved, source, cache));
-        let origin = root.original_clock_origin_v1().ok();
+        let origin = root.original_clock_native_v1().ok();
         let body = root.completed_body().ok();
         self.append_posts.observe_once(flight, writers, body.as_ref(),
-            origin.map(|pair| pair.0), origin.map(|pair| pair.1));
+            origin);
         self.append_live = Some(self.append_posts.require_complete()
             .and_then(|()| require_live(root, reserved, source, self.append_posts.sample()?)));
         positive(&self.primary).map_err(|_| Error::History)?;
@@ -116,7 +117,7 @@ impl RootCurrentUseAdmittedStateV1 {
         self.sent = Some(self.send.run_once(&mut &*original, &mut self.frame,
             source.original_cutoff_v1()?, DeadlineStreamDirectionV1::Write));
         self.send_posts.observe_once(flight, writers, body.as_ref(),
-            origin.map(|pair| pair.0), origin.map(|pair| pair.1));
+            origin);
         match writers.authority_and_policy() {
             Ok((authority, policy)) => {
                 self.send_readback = Some(self.pair.readback_pair(authority, policy));

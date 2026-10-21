@@ -180,7 +180,7 @@ impl<'journal> PublisherCapabilityRegistry<'journal> {
         let replay::CapabilityRegistrySummaryV2 {
             entries, materialized_bytes, has_runtime_issuance, handle_index,
         } = replay::validate_registry_rows_v2(
-            super::PublisherReadDataV2::from_journal_v2(journal), limits)?;
+            super::PublisherReadDataV2::from_state_v2(journal.historical_read_view_v1().materialized_state_v1()), limits)?;
 
         if has_runtime_issuance {
             // Validate the bounded namespace once; individual immutable history
@@ -220,7 +220,7 @@ impl<'journal> PublisherCapabilityRegistry<'journal> {
     ) -> Result<CapabilityRecord, PublisherAuthorityError> {
         self.journal.ensure_protected_authority()?;
         resolve_current_capability_from_data_v2(
-            super::PublisherReadDataV2::from_journal_v2(self.journal), id, self.limits,
+            super::PublisherReadDataV2::from_state_v2(self.journal.historical_read_view_v1().materialized_state_v1()), id, self.limits,
         )
     }
 
@@ -1523,13 +1523,8 @@ pub(crate) mod tests {
 pub(crate) fn resolve_current_capability_from_data_v2(
     records: super::PublisherReadDataV2<'_>, id: CapabilityId, limits: PublisherAuthorityLimits,
 ) -> Result<CapabilityRecord, PublisherAuthorityError> {
-        let key = capability_key(id);
-        let value = records
-            .get(RecordNamespace::PublisherAuthority, &key)
-            .ok_or(PublisherAuthorityError::UnknownCapability)?;
-        let record = decode_record(&key, value, limits.maximum_record_bytes)?;
-        match record.state {
-            DurableCapabilityStateV1::Active => Ok(record.capability),
-            DurableCapabilityStateV1::Revoked => Err(PublisherAuthorityError::Revoked),
-        }
+    aos_sandbox_ledger_replay::resolve_current_capability_read_data_v2!(
+        records, id, limits.maximum_record_bytes,
+        PublisherAuthorityError::UnknownCapability, PublisherAuthorityError::Revoked,
+    )
 }

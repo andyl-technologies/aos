@@ -2,7 +2,10 @@
 
 use std::num::NonZeroU32;
 
-use aos_sandbox_linux::pidfd::{PidFd, PidFdCredentials, PidFdInfo, PidFdProcessIdentity};
+use aos_linux_descriptors::pidfd::PidFd;
+use aos_linux_descriptors::pidfd::PidFdCredentials;
+use aos_linux_descriptors::pidfd::PidFdInfo;
+use aos_sandbox_linux::pidfd::PidFdProcessIdentity;
 
 use super::{CurrentKernelBootV1, SelectedExecutionRoleV1, read_cgroup_path_digest};
 use crate::SourceProviderSecurityError;
@@ -116,8 +119,7 @@ fn observe(
     let info_before = pidfd
         .info()
         .map_err(|_| SourceProviderSecurityError::ExecutionChanged)?;
-    let identity = pidfd
-        .process_identity()
+    let identity = aos_sandbox_linux::pidfd::process_identity(&(pidfd))
         .map_err(|_| SourceProviderSecurityError::ExecutionChanged)?;
     let (cgroup_path_digest, _) = read_cgroup_path_digest(info_before.pid())?;
     let info_after = pidfd

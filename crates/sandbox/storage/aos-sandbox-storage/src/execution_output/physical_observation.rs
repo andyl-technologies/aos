@@ -17,7 +17,7 @@
 
 use aos_sandbox_controller_domain::{JournalRecord, JournalTransaction};
 use aos_sandbox_model::ObjectDigest;
-use aos_sandbox_linux::boot::KernelBootId;
+use aos_linux_descriptors::boot::KernelBootId;
 use sha2::{Digest as _, Sha256};
 
 use super::capture_attempt::{

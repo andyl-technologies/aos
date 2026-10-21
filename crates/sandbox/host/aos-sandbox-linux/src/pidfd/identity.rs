@@ -9,7 +9,8 @@ use std::io::Read as _;
 use std::num::NonZeroU32;
 
 use super::{PidFd, PidFdInfo};
-use crate::{Error, Result};
+use aos_linux_descriptors::Error;
+use aos_linux_descriptors::Result;
 
 pub(super) const MAXIMUM_PROC_STAT_BYTES: usize = 4096;
 
@@ -62,37 +63,36 @@ impl PidFdProcessIdentity {
     }
 }
 
-impl PidFd {
-    /// Observes a stable process instance while retaining this pidfd.
-    ///
-    /// The procfs start time is read between two equal `PIDFD_GET_INFO`
-    /// observations. Equality is a consistency sandwich, not a globally atomic
-    /// snapshot or proof against a mutable field changing and changing back.
-    /// Final liveness rejects the case where the pinned process exits and its
-    /// numeric PID is reused while procfs is being inspected. No field is
-    /// guaranteed fresh after this method returns.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when pidfd inspection is unavailable, procfs returns a
-    /// malformed or oversized stat record, the stat record contradicts the
-    /// pidfd, the process changes during observation, or the process exits.
-    pub fn process_identity(&self) -> Result<PidFdProcessIdentity> {
-        self.process_identity_observed(&mut None)
-    }
 
-    fn process_identity_observed(
-        &self,
-        original: &mut Option<&mut PidFdProcessIdentityOriginalV1>,
-    ) -> Result<PidFdProcessIdentity> {
-        let before = original::observe_copy(self.info(), original.as_deref_mut()
-            .map(|original| &mut original.before))?;
-        let stat = read_proc_stat_observed(before.pid(), original)?;
-        let after = original::observe_copy(self.info(), original.as_deref_mut()
-            .map(|original| &mut original.after))?;
+/// Observes a stable process instance while retaining this pidfd.
+///
+/// The procfs start time is read between two equal `PIDFD_GET_INFO`
+/// observations. Equality is a consistency sandwich, not a globally atomic
+/// snapshot or proof against a mutable field changing and changing back.
+/// Final liveness rejects the case where the pinned process exits and its
+/// numeric PID is reused while procfs is being inspected. No field is
+/// guaranteed fresh after this method returns.
+///
+/// # Errors
+///
+/// Returns an error when pidfd inspection is unavailable, procfs returns a
+/// malformed or oversized stat record, the stat record contradicts the
+/// pidfd, the process changes during observation, or the process exits.
+pub fn process_identity(process: &PidFd) -> Result<PidFdProcessIdentity> {
+    process_identity_observed(process, &mut None)
+}
 
-        identity_from_stat_observed(self, before, stat, after, original)
-    }
+pub(super) fn process_identity_observed(
+    process: &PidFd,
+    original: &mut Option<&mut PidFdProcessIdentityOriginalV1>,
+) -> Result<PidFdProcessIdentity> {
+    let before = original::observe_copy(process.info(), original.as_deref_mut()
+        .map(|original| &mut original.before))?;
+    let stat = read_proc_stat_observed(before.pid(), original)?;
+    let after = original::observe_copy(process.info(), original.as_deref_mut()
+        .map(|original| &mut original.after))?;
+
+    identity_from_stat_observed(process, before, stat, after, original)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -358,7 +358,7 @@ mod tests {
         let raw_pid = u32::try_from(rustix::process::getpid().as_raw_nonzero().get()).unwrap();
         let pid = NonZeroU32::new(raw_pid).unwrap();
         let process = PidFd::open(pid).unwrap();
-        let identity = process.process_identity().unwrap();
+        let identity = crate::pidfd::process_identity(&process).unwrap();
 
         assert_eq!(identity.pid(), raw_pid);
         assert_eq!(identity.thread_group_id(), raw_pid);

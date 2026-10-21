@@ -9,14 +9,16 @@
 //! The closed input precursor combines that observation with signed Root
 //! sources as proposal DATA only; publication still requires its own join.
 
+use aos_sandbox_ledger_replay::controller_policy_hold::ControllerPolicyHoldCodecV1;
+
 use aos_sandbox_policy::signed_inputs::{
     PolicyDeploymentHeadV1, PolicyDeploymentInputsV1, PolicyDeploymentSourcesV1,
     VerifiedSignedProjectPolicySourceV2, decode_policy_deployment_sources_v1,
     verify_policy_deployment_head_v1, verify_signed_project_policy_source_v2,
 };
 
-use aos_sandbox_protocol::domain_ledger::source_policy_hold::SourceDomainPolicyHoldV1;
 use aos_sandbox_protocol::domain_ledger::cache_policy_hold::CachePolicyHoldV1;
+use aos_sandbox_protocol::domain_ledger::source_policy_hold::SourceDomainPolicyHoldV1;
 
 #[cfg(target_os = "linux")]
 use std::path::Path;
@@ -24,58 +26,50 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use aos_sandbox_model::model::CacheDomain;
 use aos_sandbox_model::{ObjectDigest, OperationId, ProjectId, RevocationScopeId, SandboxId};
-#[cfg(target_os = "linux")]
-use aos_sandbox_model::ResourceDimension;
+#[cfg(test)]
 use sha2::{Digest as _, Sha256};
 
-use crate::cache_residency::{
-    CacheResidencyProtectedJournalErrorV1, CacheResidencyProtectedOwnerV1,
-    CurrentProjectPhysicalCacheHeadV1,
-};
+use aos_sandbox_cache::{CacheResidencyProtectedJournalErrorV1, CacheResidencyProtectedOwnerV1, CurrentProjectPhysicalCacheHeadV1};
 #[cfg(target_os = "linux")]
-use crate::cache_residency::{CacheResidencyWriterReadbackV2, DormantCacheOwnerV1};
+use aos_sandbox_cache::{CacheResidencyWriterReadbackV2, DormantCacheOwnerV1};
 use crate::controller::ControllerRequestScopeV1;
-use aos_sandbox_protocol::public_api::PublicOperationMethodV1;
-#[cfg(target_os = "linux")]
-use crate::journal::controller::production_journal_limits;
-use aos_sandbox_protocol::public_api::projection::{
-    PublicProjectionError, PublicProjectionKindV1, PublicProjectionResourceV1,
-};
-use crate::controller_service::public_projection::{PublicProjectionStoreV1};
+use crate::controller_service::public_projection::PublicProjectionStoreV1;
 use crate::hierarchy::protected_journal::{
     HierarchyProtectedJournalErrorV1, HierarchyProtectedJournalOwnerV1,
 };
 #[cfg(target_os = "linux")]
-use crate::journal::{
-    ControllerPolicyHoldV1,
-    ControllerPolicyV8ReleaseEvidenceV1,
-};
+use crate::journal::controller::production_journal_limits;
+#[cfg(target_os = "linux")]
+use crate::journal::{ControllerPolicyHoldV1, ControllerPolicyV8ReleaseEvidenceV1};
 #[cfg(target_os = "linux")]
 use crate::protected_domain_journal::ProtectedDomainJournalErrorV1;
-use crate::source_domain::ProtectedSourceDomainJournalOwnerV1;
-use crate::publisher_admin::policy::{PublisherPolicyError, PublisherPolicyLimits, PublisherPolicyStore};
+use crate::publisher_admin::policy::{
+    PublisherPolicyError, PublisherPolicyLimits, PublisherPolicyStore,
+};
 use crate::reconciler::{
     ReconcilerError, checked_live_create_sandbox_admission_revision_v1,
     live_create_sandbox_admission_revision_v1, recovered_public_operation_admission_v1,
 };
-use aos_sandbox_protocol::domain_ledger::effect_history::{EffectPlan};
+use crate::source_domain::ProtectedSourceDomainJournalOwnerV1;
 use crate::{Journal, JournalError};
+use aos_sandbox_protocol::domain_ledger::effect_history::EffectPlan;
+use aos_sandbox_protocol::public_api::PublicOperationMethodV1;
+use aos_sandbox_protocol::public_api::projection::{
+    PublicProjectionError, PublicProjectionKindV1, PublicProjectionResourceV1,
+};
 
+#[cfg(target_os = "linux")]
+use super::PolicyDeploymentHeadErrorV1;
 use super::{
     AdmittedSignedProjectPolicySourceV2, PolicyPublicationPrerequisitesV1, RootV8ReleasedProofV1,
     normalized_policy_input_digest_v1,
 };
+#[cfg(target_os = "linux")]
+use aos_sandbox_policy::{
+    HardResourceModelError, PolicyModelError,
+};
 use aos_sandbox_policy::{
     CacheDomainInputV1, HardLimitValueV1, PolicyCompilerInputV1, RevocationInputV1,
-};
-#[cfg(target_os = "linux")]
-use super::PolicyDeploymentHeadErrorV1;
-#[cfg(target_os = "linux")]
-use aos_sandbox_policy::{
-    AuthenticatedSandboxProjectRelationV1, HardLimitRequestV1, HardResourceKeyV1,
-    HardResourceModelError, HardResourceProfileV1, PORTABLE_LIMIT_DIMENSIONS,
-    PolicyCompilerLimitsV1, PolicyLayerV1, PolicyModelError, ProjectPolicyInputV1,
-    RequestPolicyInputV1,
 };
 
 /// Brands only the pair selected by the private current-Create producer.
@@ -106,9 +100,9 @@ impl aos_sandbox_policy::SandboxProjectRelationVerifierV1 for CurrentCreateRelat
         descriptor: &aos_sandbox_model::ObjectDescriptor,
         canonical_bytes: &[u8],
     ) -> bool {
-        let Ok(media) = aos_sandbox_model::MediaType::new(
-            aos_sandbox_model::PortableMediaType::Content.as_str(),
-        ) else {
+        let Ok(media) =
+            aos_sandbox_model::MediaType::new(aos_sandbox_model::PortableMediaType::Content.as_str())
+        else {
             return false;
         };
 
@@ -124,15 +118,16 @@ pub(crate) use aos_sandbox_protocol::domain_ledger::project_source::{
 };
 
 mod current_publisher;
-pub(in crate::policy_compiler) use current_publisher::{CurrentPublisherPolicyDataV2,
-    CurrentPublisherPolicyDataErrorV2, current_publisher_policy_data_v2};
+pub(in crate::policy_compiler) use current_publisher::{
+    CurrentPublisherPolicyDataErrorV2, CurrentPublisherPolicyDataV2,
+    current_publisher_policy_data_v2,
+};
 
-const EXPLICIT_DRAFT_DOMAIN: &[u8] = b"aos.sandbox.public-create-policy-draft.v2\0";
 
-#[cfg(target_os = "linux")]
-mod gen1_ancestry;
 #[cfg(target_os = "linux")]
 mod first_successor_ancestry;
+#[cfg(target_os = "linux")]
+mod gen1_ancestry;
 #[cfg(target_os = "linux")]
 pub(in crate::policy_compiler) use first_successor_ancestry::consume_completed_first_successor_ancestry_v2;
 pub(in crate::policy_compiler) use first_successor_ancestry::consume_completed_project_successor_ancestry_v3;
@@ -161,6 +156,10 @@ pub enum CurrentCreatePolicySourceErrorV1 {
     /// The independent physical Cache owner could not establish currentness.
     #[error(transparent)]
     Cache(#[from] CacheResidencyProtectedJournalErrorV1),
+    /// The held Controller or Source transaction rejected the upper barrier.
+    #[cfg(target_os = "linux")]
+    #[error(transparent)]
+    Protected(#[from] ProtectedDomainJournalErrorV1),
     /// The independent source-domain ancestry owner could not establish currentness.
     #[error(transparent)]
     Hierarchy(HierarchyProtectedJournalErrorV1),
@@ -187,6 +186,20 @@ pub enum CurrentCreateCompilerInputErrorV1 {
     Resources(#[from] HardResourceModelError),
 }
 
+#[cfg(target_os = "linux")]
+impl From<aos_sandbox_policy::parentless_input::ParentlessPolicyInputDataErrorV1>
+    for CurrentCreateCompilerInputErrorV1
+{
+    fn from(error: aos_sandbox_policy::parentless_input::ParentlessPolicyInputDataErrorV1) -> Self {
+        use aos_sandbox_policy::parentless_input::ParentlessPolicyInputDataErrorV1;
+
+        match error {
+            ParentlessPolicyInputDataErrorV1::Model(error) => Self::Model(error),
+            ParentlessPolicyInputDataErrorV1::Resources(error) => Self::Resources(error),
+        }
+    }
+}
+
 /// Carries a read-only snapshot of two independent heads at one held cut.
 ///
 /// The value cannot authorize publication once the held writer callback ends.
@@ -207,7 +220,7 @@ impl CurrentCreatePolicyBarrierHeadsV2 {
         source: &crate::hierarchy::source_genesis::HeldSourceTreeGenesisObservationV1<'_>,
         inventory: &crate::hierarchy::protected_journal::RetainedTreeInventoryDataV1<'_>,
         root: &super::source_genesis_root::CompletedRootSourceGenesisFloorV1<'_, '_>,
-        cache: &crate::cache_residency::Q04CachePrepareReadbackV1,
+        cache: &aos_sandbox_cache::Q04CachePrepareReadbackV1,
     ) -> Result<Self, super::create_q04::CreateQ04ErrorV1> {
         consume_completed_gen1_ancestry_v1(controller, source, inventory, root)?;
         let selected = cache.selected();
@@ -242,28 +255,7 @@ impl CurrentCreatePolicyBarrierHeadsV2 {
     }
 }
 
-/// Retains exact canonical publisher bytes under a current Create selector.
-///
-/// This read-only value expires with the admitted operation, projection,
-/// publisher, cache-domain, or revocation head. Before any compiler binding
-/// or effect, the caller must rejoin those heads under protected custody.
-pub struct CurrentCreateProjectPolicySourceV1 {
-    operation: OperationId,
-    operation_revision: ObjectDigest,
-    accepted_generation: u64,
-    sandbox: SandboxId,
-    project: ProjectId,
-    projection_revision: ObjectDigest,
-    policy_generation: u64,
-    policy_digest: ObjectDigest,
-    cache_domain: CacheDomain,
-    cache_domain_head: ObjectDigest,
-    revocation_scope: RevocationScopeId,
-    revocation_generation: u64,
-    revocation_head: ObjectDigest,
-    canonical_policy: Vec<u8>,
-    commitment: ObjectDigest,
-}
+aos_sandbox_protocol::define_current_create_project_source_model_v1!(CurrentCreateProjectPolicySourceV1, pub(crate));
 
 impl CurrentCreateProjectPolicySourceV1 {
     #[cfg(target_os = "linux")]
@@ -288,110 +280,8 @@ impl CurrentCreateProjectPolicySourceV1 {
             physical_cache: &heads.physical_cache,
         }
     }
-
-    pub(crate) fn historical_heads(&self) -> HistoricalCreateProjectSourceHeadsV1 {
-        HistoricalCreateProjectSourceHeadsV1::from_historical_fields(
-            self.projection_revision,
-            self.policy_generation,
-            self.policy_digest,
-            self.cache_domain_head,
-            self.revocation_scope,
-            self.revocation_generation,
-            self.revocation_head,
-        )
-    }
-
-    /// Returns the admitted public Create operation identity.
-    #[must_use]
-    pub const fn operation(&self) -> OperationId {
-        self.operation
-    }
-
-    /// Returns the exact accepted operation and effect-record revision.
-    #[must_use]
-    pub const fn operation_revision(&self) -> ObjectDigest {
-        self.operation_revision
-    }
-
-    /// Returns the protected admission generation of the selected Create.
-    #[must_use]
-    pub const fn accepted_generation(&self) -> u64 {
-        self.accepted_generation
-    }
-
-    /// Returns the exact selected sandbox identity.
-    #[must_use]
-    pub const fn sandbox(&self) -> SandboxId {
-        self.sandbox
-    }
-
-    /// Returns the protected project partition.
-    #[must_use]
-    pub const fn project(&self) -> ProjectId {
-        self.project
-    }
-
-    /// Returns the complete checked public projection record digest.
-    #[must_use]
-    pub const fn projection_revision(&self) -> ObjectDigest {
-        self.projection_revision
-    }
-
-    /// Returns the exact current publisher generation observed at the join.
-    #[must_use]
-    pub const fn policy_generation(&self) -> u64 {
-        self.policy_generation
-    }
-
-    /// Returns the canonical publisher policy object's digest.
-    #[must_use]
-    pub const fn policy_digest(&self) -> ObjectDigest {
-        self.policy_digest
-    }
-
-    /// Returns the publisher-selected project disclosure domain.
-    #[must_use]
-    pub const fn cache_domain(&self) -> CacheDomain {
-        self.cache_domain
-    }
-
-    /// Returns the publisher-owned current project cache-domain head.
-    #[must_use]
-    pub const fn cache_domain_head(&self) -> ObjectDigest {
-        self.cache_domain_head
-    }
-
-    /// Returns the protected scope selected for this project.
-    #[must_use]
-    pub const fn revocation_scope(&self) -> RevocationScopeId {
-        self.revocation_scope
-    }
-
-    /// Returns the exact current generation of the selected revocation scope.
-    #[must_use]
-    pub const fn revocation_generation(&self) -> u64 {
-        self.revocation_generation
-    }
-
-    /// Returns the independent protected project revocation head observed
-    /// with the publisher revision.
-    #[must_use]
-    pub const fn revocation_head(&self) -> ObjectDigest {
-        self.revocation_head
-    }
-
-    /// Returns exact canonical publisher policy bytes validated by its store.
-    #[must_use]
-    pub fn canonical_policy(&self) -> &[u8] {
-        &self.canonical_policy
-    }
-
-    /// Returns the versioned query-time source commitment.
-    #[must_use]
-    pub const fn commitment(&self) -> ObjectDigest {
-        self.commitment
-    }
 }
+
 
 /// Checks a parentless Create draft against an admitted explicit V2 source.
 ///
@@ -450,7 +340,7 @@ pub fn checked_parentless_create_policy_draft_v2(
 
     let normalized_input = normalized_policy_input_digest_v1(input)
         .map_err(|_| CurrentCreatePolicySourceErrorV1::NotCurrent)?;
-    Ok(parentless_explicit_draft_digest_v2(
+    Ok(aos_sandbox_policy::parentless_input::parentless_explicit_draft_digest_v2(
         source.commitment,
         project_head.packet_digest(),
         project_head.input_digest(),
@@ -507,36 +397,13 @@ pub fn checked_parentless_create_verified_policy_draft_v2(
 
     let normalized_input = normalized_policy_input_digest_v1(input)
         .map_err(|_| CurrentCreatePolicySourceErrorV1::NotCurrent)?;
-    Ok(parentless_explicit_draft_digest_v2(
+    Ok(aos_sandbox_policy::parentless_input::parentless_explicit_draft_digest_v2(
         source.commitment,
         project_head.packet_digest(),
         project_head.input_digest(),
         prerequisites.digest(),
         normalized_input,
     ))
-}
-
-// This digest recipe is comparison DATA. Both old V2 callers perform their
-// original checks first; Root's Q04 caller must separately rejoin its actual
-// signed current/held owners before borrowing these same authenticated fields.
-pub(super) fn parentless_explicit_draft_digest_v2(
-    source: ObjectDigest,
-    project_packet: ObjectDigest,
-    project_input: ObjectDigest,
-    prerequisites: ObjectDigest,
-    normalized_input: ObjectDigest,
-) -> ObjectDigest {
-    ObjectDigest::from_bytes(
-        Sha256::new()
-            .chain_update(EXPLICIT_DRAFT_DOMAIN)
-            .chain_update(source.as_bytes())
-            .chain_update(project_packet.as_bytes())
-            .chain_update(project_input.as_bytes())
-            .chain_update(prerequisites.as_bytes())
-            .chain_update(normalized_input.as_bytes())
-            .finalize()
-            .into(),
-    )
 }
 
 fn request_is_inherited(input: &PolicyCompilerInputV1) -> bool {
@@ -636,107 +503,70 @@ pub fn current_parentless_create_project_source_v1(
     operation: OperationId,
     sandbox: SandboxId,
 ) -> Result<CurrentCreateProjectPolicySourceV1, CurrentCreatePolicySourceErrorV1> {
-    current_parentless_create_project_source_with_observed_wall_v1(journal, operation, sandbox, None)
+    current_parentless_create_project_source_with_observed_wall_v1(
+        journal, operation, sandbox, None,
+    )
 }
 
 pub(in crate::policy_compiler) fn current_parentless_create_project_source_with_observed_wall_v1(
-    journal: &mut Journal, operation: OperationId, sandbox: SandboxId, observed_wall: Option<i64>,
+    journal: &mut Journal,
+    operation: OperationId,
+    sandbox: SandboxId,
+    observed_wall: Option<i64>,
 ) -> Result<CurrentCreateProjectPolicySourceV1, CurrentCreatePolicySourceErrorV1> {
-    journal.ensure_protected_authority()?;
-    if operation.as_bytes() == &[0; 16] || sandbox.as_bytes() == &[0; 16] {
-        return Err(CurrentCreatePolicySourceErrorV1::NotCurrent);
-    }
+    aos_sandbox_protocol::current_parentless_create_project_source_recipe_v1!(
+        rows = journal.historical_read_view_v1().rows_data_v2(),
+        operation = operation, sandbox = sandbox, observed_wall = observed_wall,
+        protected = { journal.ensure_protected_authority()?; },
+        retained_protected = { journal.ensure_protected_authority().map_err(ReconcilerError::from)?; },
+        projection_healthy = { journal.ensure_healthy().map_err(|_| aos_sandbox_protocol::public_api::projection::PublicProjectionError::CorruptRecord)?; },
+        publisher_protected = { journal.ensure_protected_authority().map_err(PublisherPolicyError::from)?; },
+        outputs = (operation_revision, accepted_generation, project, projection_revision, policy_generation, policy_digest, cache_domain, cache_domain_head, revocation_scope, revocation_generation, revocation_head, canonical_policy, commitment)
+    );
+    Ok(CurrentCreateProjectPolicySourceV1 { operation, operation_revision, accepted_generation, sandbox, project, projection_revision, policy_generation, policy_digest, cache_domain, cache_domain_head, revocation_scope, revocation_generation, revocation_head, canonical_policy, commitment })
+}
 
-    let admission = recovered_public_operation_admission_v1(journal, operation)?
-        .ok_or(CurrentCreatePolicySourceErrorV1::NotCurrent)?;
-    let (operation_revision, accepted_generation, request_digest) =
-        live_create_sandbox_admission_revision_v1(journal, operation)?
-            .ok_or(CurrentCreatePolicySourceErrorV1::NotCurrent)?;
-
-    let projection = PublicProjectionStoreV1::new(journal)
-        .get(PublicProjectionKindV1::Sandbox, *sandbox.as_bytes())?
-        .ok_or(CurrentCreatePolicySourceErrorV1::NotCurrent)?;
-    let PublicProjectionResourceV1::Sandbox(sandbox_resource) = projection.resource() else {
-        return Err(CurrentCreatePolicySourceErrorV1::NotCurrent);
-    };
-    if projection.operation() != operation
-        || sandbox_resource.sandbox_id.as_slice() != sandbox.as_bytes()
-        || !sandbox_resource.parent_sandbox_id.is_empty()
-        || sandbox_resource.resource_version
-            != crate::production_operation_compiler::admitted_public_resource_version_v1(
-                operation,
-                PublicOperationMethodV1::CreateSandbox,
-                1,
-                request_digest,
-            )
-    {
-        return Err(CurrentCreatePolicySourceErrorV1::NotCurrent);
-    }
-    let project = projection.project();
-    if sandbox_resource.project_id.as_slice() != project.as_bytes()
-        || admission.project() != project
-    {
-        return Err(CurrentCreatePolicySourceErrorV1::NotCurrent);
-    }
-    let desired = sandbox_resource
-        .desired
-        .as_option()
-        .ok_or(CurrentCreatePolicySourceErrorV1::NotCurrent)?;
-    let requested_policy = desired
-        .requested_policy
-        .as_option()
-        .ok_or(CurrentCreatePolicySourceErrorV1::NotCurrent)?;
-    let effective_policy = sandbox_resource
-        .effective_policy
-        .as_option()
-        .ok_or(CurrentCreatePolicySourceErrorV1::NotCurrent)?;
-    if requested_policy != effective_policy || desired.specification.as_option().is_none() {
-        return Err(CurrentCreatePolicySourceErrorV1::NotCurrent);
-    }
-    let projection_revision = projection.revision();
-
-    let current_publisher::CurrentPublisherPolicyDataV2 {
-        policy_generation, policy_digest, cache_domain, cache_domain_head,
-        revocation_scope, revocation_generation, revocation_head, canonical_policy, ..
-    } = current_publisher::current_publisher_policy_data_v2(journal, project,
-        &requested_policy.media_type, &requested_policy.sha256, requested_policy.encoded_size,
-        observed_wall).map_err(|cause| match cause {
-            current_publisher::CurrentPublisherPolicyDataErrorV2::NotCurrent => CurrentCreatePolicySourceErrorV1::NotCurrent,
-            current_publisher::CurrentPublisherPolicyDataErrorV2::Publisher(cause) => CurrentCreatePolicySourceErrorV1::Publisher(cause),
-        })?;
-    let commitment = create_project_source_commitment_v1(
-        operation,
-        operation_revision,
-        accepted_generation,
-        sandbox,
-        project,
-        HistoricalCreateProjectSourceHeadsV1::from_historical_fields(
-            projection_revision,
-            policy_generation,
-            policy_digest,
-            cache_domain_head,
-            revocation_scope,
-            revocation_generation,
-            revocation_head,
-        ),
+/// Selects current Create comparison inputs through their genuine read owner.
+///
+/// The same canonical recipe retains every original protected, projection and
+/// Publisher check at its original frontier. This creates no Source owner,
+/// current native permission or signed-input acceptance from historical DATA.
+pub(in crate::policy_compiler) fn current_parentless_create_project_source_from_observation_v2(
+    original: crate::journal::historical_observation::HistoricalObservationV1<'_>,
+    operation: OperationId,
+    sandbox: SandboxId,
+    observed_wall: Option<i64>,
+) -> Result<CurrentCreateProjectPolicySourceV1, CurrentCreatePolicySourceErrorV1> {
+    aos_sandbox_protocol::current_parentless_create_project_source_recipe_v1!(
+        rows = original.rows_data_v2(),
+        operation = operation, sandbox = sandbox, observed_wall = observed_wall,
+        protected = { original.ensure_protected_authority()?; },
+        retained_protected = { original.ensure_protected_authority().map_err(ReconcilerError::from)?; },
+        projection_healthy = { original.ensure_healthy().map_err(|_| aos_sandbox_protocol::public_api::projection::PublicProjectionError::CorruptRecord)?; },
+        publisher_protected = { original.ensure_protected_authority().map_err(PublisherPolicyError::from)?; },
+        outputs = (operation_revision, accepted_generation, project, projection_revision, policy_generation, policy_digest, cache_domain, cache_domain_head, revocation_scope, revocation_generation, revocation_head, canonical_policy, commitment)
     );
     Ok(CurrentCreateProjectPolicySourceV1 {
-        operation,
-        operation_revision,
-        accepted_generation,
-        sandbox,
-        project,
-        projection_revision,
-        policy_generation,
-        policy_digest,
-        cache_domain,
-        cache_domain_head,
-        revocation_scope,
-        revocation_generation,
-        revocation_head,
-        canonical_policy,
-        commitment,
+        operation, operation_revision, accepted_generation, sandbox, project,
+        projection_revision, policy_generation, policy_digest, cache_domain,
+        cache_domain_head, revocation_scope, revocation_generation, revocation_head,
+        canonical_policy, commitment,
     })
+}
+
+/// Prices the new actual-owner interface without charging a Journal constructor.
+pub(in crate::policy_compiler) fn current_parentless_observation_control_bytes_v2() -> Option<usize> {
+    use std::mem::size_of;
+    use crate::journal::historical_observation::HistoricalObservationV1;
+
+    size_of::<(HistoricalObservationV1<'_>, OperationId, SandboxId, Option<i64>)>()
+        .checked_mul(3)?
+        .checked_add(size_of::<Result<CurrentCreateProjectPolicySourceV1, CurrentCreatePolicySourceErrorV1>>().checked_mul(3)?)?
+        .checked_add(size_of::<Result<(), JournalError>>().checked_mul(3)?)?
+        .checked_add(size_of::<Result<(), ReconcilerError>>().checked_mul(3)?)?
+        .checked_add(size_of::<Result<(), PublisherPolicyError>>().checked_mul(3)?)?
+        .checked_add(size_of::<Result<(), aos_sandbox_protocol::public_api::projection::PublicProjectionError>>().checked_mul(3)?)?
+        .checked_add(size_of::<Option<usize>>().checked_mul(3)?)
 }
 
 /// Rechecks the fixed Controller journal for the current-Create input precursor.
@@ -801,9 +631,9 @@ pub fn current_parentless_create_compiler_input_v1(
         current_create_input_time()?,
     )?;
     let relation = relation_from_current_create_source(&source)?;
-    let input = parentless_create_input_from_authenticated_layers_v1(
+    let input = aos_sandbox_policy::parentless_input::parentless_create_input_from_authenticated_layers_v1(
         relation, project_layer, deployment,
-    )?;
+    ).map_err(CurrentCreateCompilerInputErrorV1::from)?;
 
     validate_current_create_controller_journal_v1(journal)?;
     let current = current_parentless_create_project_source_v1(journal, operation, sandbox)?;
@@ -812,31 +642,6 @@ pub fn current_parentless_create_compiler_input_v1(
     }
     require_create_input_sources(&current, deployment_head, deployment, signed_project)?;
     Ok(input)
-}
-
-// Both producers supply already authenticated model inputs. This helper only
-// shares the unchanged constructor/allocation sequence; it checks no owner,
-// admits no source and supplies no publication brand or effect right.
-#[cfg(target_os = "linux")]
-pub(super) fn parentless_create_input_from_authenticated_layers_v1(
-    relation: AuthenticatedSandboxProjectRelationV1,
-    project_layer: PolicyLayerV1,
-    deployment: &PolicyDeploymentSourcesV1,
-) -> Result<PolicyCompilerInputV1, CurrentCreateCompilerInputErrorV1> {
-    let project = ProjectPolicyInputV1::new(relation.project(), project_layer)?;
-    let request = RequestPolicyInputV1::new(inherited_request_layer()?)?;
-    Ok(PolicyCompilerInputV1::new(
-        relation,
-        deployment.node().clone(),
-        deployment.site().clone(),
-        project,
-        Vec::new(),
-        request,
-        deployment.endpoints().clone(),
-        deployment.destinations().clone(),
-        deployment.backend().clone(),
-        PolicyCompilerLimitsV1::DEFAULT,
-    )?)
 }
 
 #[cfg(target_os = "linux")]
@@ -871,38 +676,6 @@ fn current_create_input_time() -> Result<i64, CurrentCreatePolicySourceErrorV1> 
         .duration_since(UNIX_EPOCH)
         .map_err(|_| CurrentCreatePolicySourceErrorV1::NotCurrent)?;
     i64::try_from(now.as_secs()).map_err(|_| CurrentCreatePolicySourceErrorV1::NotCurrent)
-}
-
-#[cfg(target_os = "linux")]
-pub(super) fn inherited_request_layer() -> Result<PolicyLayerV1, CurrentCreateCompilerInputErrorV1> {
-    let portable = PORTABLE_LIMIT_DIMENSIONS
-        .into_iter()
-        .map(|dimension| {
-            HardLimitRequestV1::new(
-                HardResourceKeyV1::Portable(dimension),
-                HardLimitValueV1::Inherit,
-                None,
-            )
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let accounting = ResourceDimension::ALL
-        .into_iter()
-        .map(|dimension| {
-            HardLimitRequestV1::new(
-                HardResourceKeyV1::Accounting(dimension),
-                HardLimitValueV1::Inherit,
-                None,
-            )
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(PolicyLayerV1::new(
-        Vec::new(),
-        HardResourceProfileV1::new(portable, accounting)?,
-        Vec::new(),
-        Vec::new(),
-        CacheDomainInputV1::Inherit,
-        RevocationInputV1::Inherit,
-    )?)
 }
 
 /// Holds the matching physical Cache partition inside an already-held source cut.
@@ -1162,7 +935,7 @@ pub fn with_current_create_cache_signer_barrier_v5<R>(
             || held.hold().binding() != controller_hold.binding()
             || held.hold().epoch() != controller_hold.epoch()
         {
-            return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
+            return Err(CacheResidencyProtectedJournalErrorV1::StaleAuthority);
         }
         let heads = CurrentCreatePolicyBarrierHeadsV2 {
             ancestry,
@@ -1246,206 +1019,14 @@ pub fn with_current_create_cache_signer_terminal_barrier_v6<Prepared, Output>(
         .map_err(CurrentCreatePolicySourceErrorV1::from)?
 }
 
-/// Runs a Root-last final continuation and retires only Cache's exact hold.
-///
-/// The `inspect` callback may open a Root socket while Controller, Source,
-/// Cache, and physical guards are held. Cache then completes its final
-/// postflight before `release` may send a signed Root release command. The
-/// callback must return only after authenticating typed Root Released custody.
-/// Controller then durably floors the exact Root marker and held Cache/Source
-/// rows before Cache may retire its hold. Cache performs another postflight
-/// and durably retires its hold before this function returns. The result
-/// preserves the actual held row sampled under Cache's writer and the exact
-/// released row read back after commit.
-/// Source and Controller remain held; public Create and Apply remain closed.
-///
-/// # Errors
-///
-/// Rejects changed owner custody, failed callbacks, ambiguous Controller floor,
-/// or unsuccessful Cache retirement. A failed floor leaves Cache held so exact
-/// Root Released custody and the floor can be replayed on recovery.
 #[cfg(target_os = "linux")]
-#[allow(clippy::too_many_arguments)]
-pub fn with_current_create_cache_signer_release_barrier_v7<Prepared>(
-    controller: &mut Journal,
-    source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
-    cache: &mut CacheResidencyProtectedOwnerV1,
-    physical: &DormantCacheOwnerV1,
-    operation: OperationId,
-    sandbox: SandboxId,
-    inspect: impl FnOnce(
-        &mut Journal,
-        &mut ProtectedSourceDomainJournalOwnerV1,
-        &CurrentCreateProjectPolicySourceV1,
-        CurrentCreatePolicyBarrierHeadsV2,
-        &CacheResidencyWriterReadbackV2,
-    ) -> Result<Prepared, CacheResidencyProtectedJournalErrorV1>,
-    release: impl FnOnce(
-        &mut Journal,
-        &mut ProtectedSourceDomainJournalOwnerV1,
-        Prepared,
-    ) -> Result<RootV8ReleasedProofV1, CacheResidencyProtectedJournalErrorV1>,
-) -> Result<
-    (RootV8ReleasedProofV1, CachePolicyHoldV1, CachePolicyHoldV1),
-    CurrentCreatePolicySourceErrorV1,
-> {
-    let cut = HeldCreateSourceCut::begin(controller, source_domains, operation, sandbox)?;
-
-    let (proof_and_held, released) = cache
-        .with_held_cache_owner_terminal_and_release_v4(physical, |held| {
-            let heads = cut.cache_heads(held)?;
-            let actual_held = held.hold();
-            let cache_readback = held.clone();
-            let prepared = inspect(controller, source_domains, &cut.source, heads, held)?;
-            Ok((prepared, Ok, move |prepared| {
-                cut.revalidate(controller, source_domains, operation, sandbox)
-                    .map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority)?;
-                let output = release(controller, source_domains, prepared)?;
-                cut.validate_released_root_proof(controller, &cache_readback, output)?;
-                cut.revalidate(controller, source_domains, operation, sandbox)
-                    .map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority)?;
-                cut.record_pre_release_floor(controller, source_domains, &cache_readback, output)?;
-                cut.revalidate(controller, source_domains, operation, sandbox)
-                    .map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority)?;
-                Ok((output, actual_held))
-            }))
-        })
-        .map_err(CurrentCreatePolicySourceErrorV1::from)?;
-    Ok((proof_and_held.0, proof_and_held.1, released))
-}
-
-/// Replays an already released Cache hold under Controller and Source custody.
-///
-/// The callback must replay exact Root Released evidence after Cache's final
-/// postflight. This path commits no new release and returns the canonical
-/// Cache released row retained by its writer. The prior Controller floor must
-/// match Root's marker and the actual held Source and Cache rows; Cache's
-/// pending V8 marker authenticates the historical held row. Public Create
-/// remains closed.
-///
-/// # Errors
-///
-/// Rejects a held or changed Cache row, stale Controller/Source facts, or
-/// absent, mismatched, or unauthenticated Root Released evidence.
+mod v8_cache;
 #[cfg(target_os = "linux")]
-#[allow(clippy::too_many_arguments)]
-pub fn with_current_create_cache_signer_released_barrier_v8<Prepared>(
-    controller: &mut Journal,
-    source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
-    cache: &mut CacheResidencyProtectedOwnerV1,
-    physical: &DormantCacheOwnerV1,
-    operation: OperationId,
-    sandbox: SandboxId,
-    inspect: impl FnOnce(
-        &mut Journal,
-        &mut ProtectedSourceDomainJournalOwnerV1,
-        &CurrentCreateProjectPolicySourceV1,
-        CurrentCreatePolicyBarrierHeadsV2,
-        &CacheResidencyWriterReadbackV2,
-    ) -> Result<Prepared, CacheResidencyProtectedJournalErrorV1>,
-    replay: impl FnOnce(
-        &mut Journal,
-        &mut ProtectedSourceDomainJournalOwnerV1,
-        Prepared,
-    ) -> Result<RootV8ReleasedProofV1, CacheResidencyProtectedJournalErrorV1>,
-) -> Result<(RootV8ReleasedProofV1, CachePolicyHoldV1), CurrentCreatePolicySourceErrorV1> {
-    let cut = HeldCreateSourceCut::begin(controller, source_domains, operation, sandbox)?;
-
-    cache
-        .with_released_cache_owner_readback_v5(physical, |held, historical_cache_held| {
-            let heads = cut.cache_heads(held)?;
-            let cache_readback = held.clone();
-            let prepared = inspect(controller, source_domains, &cut.source, heads, held)?;
-            Ok((prepared, move |prepared| {
-                cut.revalidate(controller, source_domains, operation, sandbox)
-                    .map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority)?;
-                let proof = replay(controller, source_domains, prepared)?;
-                cut.validate_released_root_proof(controller, &cache_readback, proof)?;
-                cut.require_pre_release_floor(
-                    controller,
-                    source_domains,
-                    historical_cache_held,
-                    proof,
-                )?;
-                cut.revalidate(controller, source_domains, operation, sandbox)
-                    .map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority)?;
-                Ok(proof)
-            }))
-        })
-        .map_err(CurrentCreatePolicySourceErrorV1::from)
-}
-
-/// Settles released Root and Cache custody under retained owner writers.
-///
-/// `replay` must return a typed proof from the fixed Root peer. The Controller
-/// floor and both owner-local pending markers bind exact historical held rows;
-/// Source ancestry is never rejoined after Source retirement. Source release
-/// precedes the atomic Controller settlement. Both transitions admit exact
-/// cold replay, but neither grants Root successor, public Create, or Apply.
-///
-/// # Errors
-///
-/// Rejects missing or changed Root, floor, Cache, Source, or Controller
-/// evidence, failed writer postflight, or failed durable owner settlement.
-#[cfg(target_os = "linux")]
-#[allow(clippy::too_many_arguments)]
-pub fn with_current_create_v8_owner_settlement_barrier_v9(
-    controller: &mut Journal,
-    source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
-    cache: &mut CacheResidencyProtectedOwnerV1,
-    physical: &DormantCacheOwnerV1,
-    operation: OperationId,
-    sandbox: SandboxId,
-    replay: impl FnOnce(
-        &mut Journal,
-        ControllerPolicyHoldV1,
-    ) -> Result<RootV8ReleasedProofV1, CacheResidencyProtectedJournalErrorV1>,
-) -> Result<(), CurrentCreatePolicySourceErrorV1> {
-    let controller_uid = controller.protected_owner_uid()?;
-    HeldCreateSourceCut::require_controller_name(controller, controller_uid)?;
-    source_domains.require_fixed_named_writer_v1()?;
-    let attempt = controller
-        .controller_policy_v8_attempt_v1()?
-        .ok_or(CurrentCreatePolicySourceErrorV1::NotCurrent)?;
-    let held_controller = attempt.hold();
-    if held_controller.operation() != operation || held_controller.sandbox() != sandbox {
-        return Err(CurrentCreatePolicySourceErrorV1::NotCurrent);
-    }
-
-    cache
-        .with_released_cache_owner_readback_v5(physical, |readback, cache_held| {
-            let cache_released = readback.hold();
-            let quota = readback.quota_digest();
-            Ok(((), move |_| {
-                HeldCreateSourceCut::require_controller_name(controller, controller_uid)?;
-                source_domains.require_fixed_named_writer_v1()?;
-                let ack = controller
-                    .controller_policy_v8_effect_ack_v1()?
-                    .filter(|ack| ack.attempt() == attempt && ack.cache_quota() == quota)
-                    .ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?;
-                let receipt = controller
-                    .controller_policy_v8_root_receipt_v1()?
-                    .ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?;
-                let proof = replay(controller, held_controller)?;
-                if !proof.matches_controller_ack(ack, controller_uid) || proof.ack() != receipt {
-                    return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
-                }
-
-                settle_released_v8_owner_rows(
-                    controller,
-                    source_domains,
-                    held_controller,
-                    receipt,
-                    proof,
-                    cache_held,
-                    cache_released,
-                    controller_uid,
-                )
-            }))
-        })
-        .map(|_| ())
-        .map_err(CurrentCreatePolicySourceErrorV1::from)
-}
+pub use v8_cache::{
+    with_current_create_cache_signer_release_barrier_v7,
+    with_current_create_cache_signer_released_barrier_v8,
+    with_current_create_v8_owner_settlement_barrier_v9,
+};
 
 #[cfg(target_os = "linux")]
 #[allow(clippy::too_many_arguments)]
@@ -1458,7 +1039,7 @@ fn settle_released_v8_owner_rows(
     cache_held: CachePolicyHoldV1,
     cache_released: CachePolicyHoldV1,
     controller_uid: u32,
-) -> Result<(), CacheResidencyProtectedJournalErrorV1> {
+) -> Result<(), CurrentCreatePolicySourceErrorV1> {
     let floor = controller
         .controller_policy_v8_pre_release_floor_v1()?
         .ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?;
@@ -1475,8 +1056,14 @@ fn settle_released_v8_owner_rows(
         held
     };
     if floor.root_release_marker_digest() != proof.release_marker_digest()
-        || floor.cache_held_digest() != cache_held.record_digest().map_err(crate::journal::JournalError::from)?
-        || floor.source_held_digest() != source_held.record_digest().map_err(crate::journal::JournalError::from)?
+        || floor.cache_held_digest()
+            != cache_held
+                .record_digest()
+                .map_err(crate::journal::JournalError::from)?
+        || floor.source_held_digest()
+            != source_held
+                .record_digest()
+                .map_err(crate::journal::JournalError::from)?
     {
         return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
     }
@@ -1495,7 +1082,8 @@ fn settle_released_v8_owner_rows(
             .controller_policy_v8_settlement_v1()?
             .ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?;
         if current_source.is_held()
-            || settlement.controller_released_digest() != current_controller.record_digest().map_err(JournalError::from)?
+            || settlement.controller_released_digest()
+                != current_controller.record_digest().map_err(JournalError::from)?
         {
             return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
         }
@@ -1601,7 +1189,7 @@ impl HeldCreateSourceCut {
             || held.hold().binding() != self.controller_hold.binding()
             || held.hold().epoch() != self.controller_hold.epoch()
         {
-            return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
+            return Err(CacheResidencyProtectedJournalErrorV1::StaleAuthority);
         }
         Ok(CurrentCreatePolicyBarrierHeadsV2 {
             ancestry: self.ancestry,
@@ -1638,7 +1226,7 @@ impl HeldCreateSourceCut {
         controller: &mut Journal,
         cache: &CacheResidencyWriterReadbackV2,
         proof: RootV8ReleasedProofV1,
-    ) -> Result<(), CacheResidencyProtectedJournalErrorV1> {
+    ) -> Result<(), CurrentCreatePolicySourceErrorV1> {
         let ack = controller
             .controller_policy_v8_effect_ack_v1()?
             .ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?;
@@ -1658,7 +1246,7 @@ impl HeldCreateSourceCut {
         source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
         cache: &CacheResidencyWriterReadbackV2,
         proof: RootV8ReleasedProofV1,
-    ) -> Result<(), CacheResidencyProtectedJournalErrorV1> {
+    ) -> Result<(), CurrentCreatePolicySourceErrorV1> {
         let source_held = self.current_source_hold(source_domains)?;
         let cache_held = cache.hold();
 
@@ -1679,7 +1267,7 @@ impl HeldCreateSourceCut {
         source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
         cache_held: CachePolicyHoldV1,
         proof: RootV8ReleasedProofV1,
-    ) -> Result<(), CacheResidencyProtectedJournalErrorV1> {
+    ) -> Result<(), CurrentCreatePolicySourceErrorV1> {
         let source_held = self.current_source_hold(source_domains)?;
         if !cache_held.is_held() {
             return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
@@ -1688,8 +1276,14 @@ impl HeldCreateSourceCut {
             .controller_policy_v8_pre_release_floor_v1()?
             .ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?;
         if floor.root_release_marker_digest() != proof.release_marker_digest()
-            || floor.cache_held_digest() != cache_held.record_digest().map_err(crate::journal::JournalError::from)?
-            || floor.source_held_digest() != source_held.record_digest().map_err(crate::journal::JournalError::from)?
+            || floor.cache_held_digest()
+                != cache_held
+                    .record_digest()
+                    .map_err(crate::journal::JournalError::from)?
+            || floor.source_held_digest()
+                != source_held
+                    .record_digest()
+                    .map_err(crate::journal::JournalError::from)?
         {
             return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
         }
@@ -1699,7 +1293,7 @@ impl HeldCreateSourceCut {
     fn current_source_hold(
         &self,
         source_domains: &mut ProtectedSourceDomainJournalOwnerV1,
-    ) -> Result<SourceDomainPolicyHoldV1, CacheResidencyProtectedJournalErrorV1> {
+    ) -> Result<SourceDomainPolicyHoldV1, CurrentCreatePolicySourceErrorV1> {
         let row = source_domains
             .closed_policy_source_hold_v1()
             .map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority)?
@@ -1757,7 +1351,9 @@ fn current_source_domain_ancestry(
 mod tests {
     use std::cell::Cell;
 
-    use aos_sandbox_model::model::{CacheDomainKind, LimitDimension, RevocationMode, RevocationPolicy};
+    use aos_sandbox_model::model::{
+        CacheDomainKind, LimitDimension, RevocationMode, RevocationPolicy,
+    };
     use aos_sandbox_model::{CacheDomainId, ObjectDescriptor, ResourceDimension};
     use ed25519_dalek::{Signer as _, SigningKey};
 
@@ -2441,5 +2037,31 @@ mod tests {
             )
             .is_err()
         );
+    }
+}
+
+impl From<aos_sandbox_protocol::publisher_policy::current_create::CurrentCreateProjectSourceDataErrorV1>
+    for CurrentCreatePolicySourceErrorV1
+{
+    fn from(error: aos_sandbox_protocol::publisher_policy::current_create::CurrentCreateProjectSourceDataErrorV1) -> Self {
+        use aos_sandbox_protocol::publisher_policy::current_create::CurrentCreateProjectSourceDataErrorV1;
+        match error {
+            CurrentCreateProjectSourceDataErrorV1::NotCurrent => Self::NotCurrent,
+            CurrentCreateProjectSourceDataErrorV1::Operation(error) => Self::Operation(error.into()),
+            CurrentCreateProjectSourceDataErrorV1::Projection(error) => Self::Projection(error),
+            CurrentCreateProjectSourceDataErrorV1::Publisher(error) => error.into(),
+        }
+    }
+}
+
+impl From<aos_sandbox_protocol::publisher_policy::current_create::CurrentPublisherPolicyDataErrorV2>
+    for CurrentCreatePolicySourceErrorV1
+{
+    fn from(error: aos_sandbox_protocol::publisher_policy::current_create::CurrentPublisherPolicyDataErrorV2) -> Self {
+        use aos_sandbox_protocol::publisher_policy::current_create::CurrentPublisherPolicyDataErrorV2;
+        match error {
+            CurrentPublisherPolicyDataErrorV2::NotCurrent => Self::NotCurrent,
+            CurrentPublisherPolicyDataErrorV2::Publisher(error) => Self::Publisher(error.into()),
+        }
     }
 }

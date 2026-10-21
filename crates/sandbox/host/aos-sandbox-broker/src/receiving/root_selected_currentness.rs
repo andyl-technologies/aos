@@ -55,6 +55,8 @@ impl RootSelectedServiceOriginalV1 {
         type Guard<'a> = std::sync::MutexGuard<'a, ServiceStateV1>;
         std::mem::size_of::<Self>()
             .checked_mul(2)?
+            .checked_add(std::mem::size_of::<(&super::root_permanent::RootPermanentNativeOriginalV1, &RootStartupNativeOriginalV1)>().checked_mul(3)?)?
+            .checked_add(std::mem::size_of::<Result<(), Closed>>().checked_mul(3)?)?
             .checked_add(std::mem::size_of::<ServiceStateV1>().checked_mul(2)?)?
             .checked_add(std::mem::size_of::<Guard<'_>>().checked_mul(2)?)?
             .checked_add(std::mem::size_of::<std::sync::LockResult<Guard<'_>>>().checked_mul(2)?)?
@@ -254,7 +256,7 @@ impl RootStartupNativeOriginalV1 {
     }
 }
 
-impl RootSelectedStartupBorrowV1<'_> {
+impl<'startup> RootSelectedStartupBorrowV1<'startup> {
     /// Retains its already-selected original failure without another admission.
     #[must_use]
     pub fn failure_original_v1(&self) -> Option<RootSelectedCurrentnessFailureOriginalV1> {
@@ -273,6 +275,212 @@ impl RootSelectedStartupBorrowV1<'_> {
             .get()
             .ok_or(Closed::Service)?;
         original.recheck_selected_service_once_v1(self.startup)
+    }
+
+    /// Rechecks the same selected owner while retaining its genuine held L.
+    ///
+    /// The finite native provision keeps this guard across its original quote,
+    /// Stage mutation and returned service result. This entry neither reacquires
+    /// L nor performs another service traffic debit beside the existing one.
+    ///
+    /// # Errors
+    /// Refuses a foreign guard, failed/ended original, nonidle worker, failed
+    /// existing traffic mutation or actual native selected-service observation.
+    pub fn recheck_under_upper_exclusion_v1(
+        &self,
+        exclusion: &super::RootUpperMutationGuardV1<'_>,
+    ) -> Result<(), Closed> {
+        let original = self.startup.selected_permanent.get().ok_or(Closed::Service)?;
+        original.recheck_selected_service_under_upper_exclusion_v1(self.startup, exclusion)
+    }
+
+    /// Arms one independently owed service post on this same actual Initial.
+    ///
+    /// The finite native receiving owner prepays the real post before this
+    /// constructor. The hidden native startup is never supplied as field DATA.
+    ///
+    /// # Errors
+    /// Refuses a failed, incomplete or foreign actual Initial/startup pair.
+    pub fn arm_owed_service_post_once_v1(
+        &self,
+        initial: &mut super::RootInitialReceivingOriginalV1,
+    ) -> Result<super::RootPrearmedHistoryServicePostV1, Closed> {
+        initial.arm_history_service_post_v1(self.startup)
+    }
+
+    /// Observes the same owed post while retaining its genuine original L.
+    ///
+    /// No upper lock, healthy reentry or additional traffic fee is acquired.
+    /// The actual prearmed post retains every reached native prefix even when
+    /// an earlier body or primary service check already refused.
+    ///
+    /// # Errors
+    /// Retains a foreign guard, repeated post, ended original or native refusal.
+    pub fn observe_owed_service_post_under_upper_exclusion_v1(
+        &self,
+        exclusion: &super::RootUpperMutationGuardV1<'_>,
+        post: &mut super::RootPrearmedHistoryServicePostV1,
+    ) -> Result<(), Closed> {
+        post.observe_under_upper_exclusion_once_v1(self.startup, exclusion)
+    }
+
+    /// Measures the new held-exclusion receiving and service call controls.
+    ///
+    /// The actual finite provision supplier consumes this before entry. This
+    /// passive quote creates no financial account, guard or semantic role.
+    #[must_use]
+    pub fn held_exclusion_control_bytes_v1() -> Option<usize> {
+        super::RootJournalFinancialOriginalV1::receiving_stage_under_exclusion_control_bytes_v1()?
+            .checked_add(Self::service_recheck_under_exclusion_control_bytes_v1()?)?
+            .checked_add(Self::owed_service_arm_control_bytes_v1()?)?
+            .checked_add(std::mem::size_of::<(
+                &Self, &super::RootUpperMutationGuardV1<'_>, &mut super::RootPrearmedHistoryServicePostV1,
+            )>().checked_mul(3)?)?
+            .checked_add(std::mem::size_of::<(
+                &mut super::RootPrearmedHistoryServicePostV1, &RootStartupNativeOriginalV1,
+                &super::RootUpperMutationGuardV1<'_>,
+            )>().checked_mul(3)?)?
+            .checked_add(std::mem::size_of::<Result<(), Closed>>().checked_mul(6)?)?
+            .checked_add(std::mem::size_of::<(
+                &super::RootUpperMutationGuardV1<'_>, &super::root_permanent::RootPermanentNativeOriginalV1,
+            )>().checked_mul(3)?)?
+            .checked_add(std::mem::size_of::<bool>().checked_mul(3)?)
+    }
+
+    /// Measures the existing selected-service recheck under its retained guard.
+    ///
+    /// This is the service portion of the complete held-exclusion quote. It
+    /// grants no Stage or observation and does not include a second Stage fee.
+    #[must_use]
+    pub fn service_recheck_under_exclusion_control_bytes_v1() -> Option<usize> {
+        use std::mem::size_of;
+
+        size_of::<(&Self, &super::RootUpperMutationGuardV1<'_>)>()
+            .checked_mul(3)?
+            .checked_add(size_of::<(&super::root_permanent::RootPermanentNativeOriginalV1,
+                &RootStartupNativeOriginalV1, &super::RootUpperMutationGuardV1<'_>)>()
+                .checked_mul(3)?)?
+            .checked_add(size_of::<Result<(), Closed>>().checked_mul(6)?)?
+            .checked_add(size_of::<(&super::RootUpperMutationGuardV1<'_>,
+                &super::root_permanent::RootPermanentNativeOriginalV1)>().checked_mul(3)?)?
+            .checked_add(size_of::<bool>().checked_mul(3)?)
+    }
+
+    /// Arms the already-funded purpose posts against this same native startup.
+    ///
+    /// # Errors
+    /// Retains every reached arm and refuses reentry or actual native failure.
+    pub fn arm_purpose_posts_once_v1<E: super::RootPurposePostErrorV1>(
+        &self,
+        initial: &mut super::RootInitialReceivingOriginalV1,
+        posts: &mut super::RootPurposePeerPostsOriginalV1<E>,
+    ) -> Result<(), E> {
+        posts.arm_once_v1(initial, self.startup)
+    }
+
+    /// Runs one independently owed purpose post on its original startup.
+    ///
+    /// # Errors
+    /// Retains an absent, repeated, foreign or failed native observation. This
+    /// owed path remains available after the primary programme has refused.
+    pub fn observe_purpose_post_once_v1<E: super::RootPurposePostErrorV1>(
+        &self,
+        initial: &mut super::RootInitialReceivingOriginalV1,
+        posts: &mut super::RootPurposePeerPostsOriginalV1<E>,
+        purpose: super::RootPurposePeerPostV1,
+    ) -> Result<(), E> {
+        posts.observe_once_v1(initial, self.startup, purpose)
+    }
+
+    /// Measures the added opaque-startup forwarding planes for purpose posts.
+    ///
+    /// One arm and four distinct observations each retain their constructor,
+    /// ABI-return and caller planes. Native samplers and the aggregate remain
+    /// separately invoiced by the actual purpose before these interfaces.
+    #[must_use]
+    pub fn purpose_post_forwarding_control_bytes_v1<E: super::RootPurposePostErrorV1>() -> Option<usize> {
+        use std::mem::size_of;
+
+        size_of::<(&Self, &mut super::RootInitialReceivingOriginalV1,
+            &mut super::RootPurposePeerPostsOriginalV1<E>)>()
+            .checked_mul(3)?
+            .checked_add(size_of::<Result<(), E>>().checked_mul(3)?)?
+            .checked_add(size_of::<(&Self, &mut super::RootInitialReceivingOriginalV1,
+                &mut super::RootPurposePeerPostsOriginalV1<E>, super::RootPurposePeerPostV1)>()
+                .checked_mul(12)?)?
+            .checked_add(size_of::<Result<(), E>>().checked_mul(12)?)
+    }
+
+    /// Bounds the actual prearmed-service factory's finite forwarding planes.
+    ///
+    /// This contains no Stage, service observation, native backing or traffic
+    /// credit. A caller reaches it once per actual arm in its earlier pure
+    /// construction quote; the real arm still requires genuine Initial/startup.
+    #[must_use]
+    pub fn owed_service_arm_control_bytes_v1() -> Option<usize> {
+        use std::mem::size_of;
+
+        size_of::<(&Self, &mut super::RootInitialReceivingOriginalV1)>()
+            .checked_mul(3)?
+            .checked_add(size_of::<Result<super::RootPrearmedHistoryServicePostV1, Closed>>()
+                .checked_mul(3)?)?
+            .checked_add(size_of::<(&mut super::RootInitialReceivingOriginalV1,
+                &RootStartupNativeOriginalV1)>().checked_mul(3)?)?
+            .checked_add(size_of::<Option<usize>>().checked_mul(3)?)
+    }
+
+    /// Compares the same held permanent allocation without observing it.
+    ///
+    /// This passive affinity establishes no health, service or role completion.
+    #[must_use]
+    pub fn same_financial_original_data_v1(
+        &self,
+        financial: &super::RootJournalFinancialOriginalV1,
+    ) -> bool {
+        financial.same_startup_allocation_data_v1(self.startup)
+    }
+
+    /// Constructs only the existing native peer observer for this real startup.
+    ///
+    /// Its genuine Policy producer separately pays and owns admission and posts;
+    /// construction alone establishes no Controller or listener completion.
+    #[must_use]
+    pub fn new_controller_peer_original_v1(
+        &self,
+        lifetime: super::ObservationLifetimeV1,
+    ) -> super::RootSelectedControllerPeerOriginalV1<'startup> {
+        super::RootSelectedControllerPeerOriginalV1::new(self.startup, lifetime)
+    }
+
+    /// Pays and arms the original startup post on its same actual Initial.
+    ///
+    /// The Initial owns the shared once-resident payment; every named Policy
+    /// purpose still derives its own true phase before calling this mechanism.
+    ///
+    /// # Errors
+    /// Retains actual fixed/native/traffic denial or original arm refusal.
+    pub fn arm_paid_startup_service_post_once_v1(
+        &self,
+        initial: &mut super::RootInitialReceivingOriginalV1,
+        exclusion: &super::RootUpperMutationGuardV1<'_>,
+    ) -> Result<super::RootPrearmedHistoryServicePostV1, super::RootStartupServicePostErrorV1> {
+        initial.arm_paid_startup_service_post_once_v1(self.startup, exclusion)
+    }
+
+    /// Quotes the new passive association, native-peer and paid-arm forwarding.
+    #[must_use]
+    pub fn startup_provision_forwarding_control_bytes_v1() -> Option<usize> {
+        use std::mem::size_of;
+        size_of::<(&Self, &super::RootJournalFinancialOriginalV1)>().checked_mul(3)?
+            .checked_add(size_of::<(&super::RootJournalFinancialOriginalV1, &RootStartupNativeOriginalV1)>()
+                .checked_mul(3)?)?
+            .checked_add(size_of::<bool>().checked_mul(6)?)?
+            .checked_add(size_of::<(&Self, super::ObservationLifetimeV1)>().checked_mul(3)?)?
+            .checked_add(size_of::<super::RootSelectedControllerPeerOriginalV1<'static>>())?
+            .checked_add(size_of::<(&Self, &mut super::RootInitialReceivingOriginalV1,
+                &super::RootUpperMutationGuardV1<'_>)>().checked_mul(3)?)?
+            .checked_add(size_of::<Result<super::RootPrearmedHistoryServicePostV1,
+                super::RootStartupServicePostErrorV1>>().checked_mul(3)?)
     }
 
     /// Returns the actual configured identities as comparison DATA only.
@@ -294,4 +502,48 @@ pub(super) fn service_traffic_demand_v1() -> Option<ResourceVector> {
             )
             .with(D::OutputBytes, demand.get(D::OutputBytes)),
     )
+}
+
+impl RootStartupNativeOriginalV1 {
+    /// Borrows the same settled selected original without a healthy reentry.
+    ///
+    /// This association alone grants no currentness, service observation or
+    /// stage admission. Each reached native operation retains its own actual
+    /// gates. Independent owed posts can therefore run after primary refusal.
+    ///
+    /// # Errors
+    /// Refuses missing settled custody, a foreign initial identity or another PID.
+    pub fn borrow_selected_original_v1(&self) -> Result<RootSelectedStartupBorrowV1<'_>, Closed> {
+        let original = self.selected_permanent.get().ok_or(Closed::Service)?;
+        let identity = self.initial_owner.as_ref().ok_or(Closed::Service)?;
+        if !original.has_identity(identity)
+            || original.enrollment().process_id_v1() != std::process::id()
+        {
+            return Err(Closed::Service);
+        }
+        Ok(RootSelectedStartupBorrowV1 { startup: self })
+    }
+}
+
+impl RootStartupNativeOriginalV1 {
+    /// Measures the passive original-borrow helper's concrete control carriers.
+    ///
+    /// This inert geometry supplies no original, currentness or financial grant.
+    #[must_use]
+    pub fn selected_original_borrow_control_bytes_v1() -> Option<usize> {
+        use std::mem::size_of;
+        size_of::<&Self>()
+            .checked_mul(3)?
+            .checked_add(size_of::<RootSelectedStartupBorrowV1<'_>>().checked_mul(3)?)?
+            .checked_add(
+                size_of::<Result<RootSelectedStartupBorrowV1<'_>, Closed>>().checked_mul(3)?,
+            )?
+            .checked_add(
+                size_of::<Option<&Arc<super::root_permanent::RootPermanentNativeOriginalV1>>>()
+                    .checked_mul(3)?,
+            )?
+            .checked_add(size_of::<Option<&Arc<()>>>().checked_mul(3)?)?
+            .checked_add(size_of::<Result<&Arc<()>, Closed>>().checked_mul(3)?)?
+            .checked_add(size_of::<bool>().checked_mul(6)?)
+    }
 }

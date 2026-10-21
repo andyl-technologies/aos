@@ -6,7 +6,7 @@
 
 use aos_sandbox_api::aos::sandbox::local::v1::BrokerMethod;
 use aos_sandbox_model::{ObjectDigest, ProtocolVersion};
-use aos_sandbox_linux::boot::KernelBootId;
+use aos_linux_descriptors::boot::KernelBootId;
 use aos_sandbox_protocol::mount_catalog::decode_mount_catalog_preparation;
 use aos_sandbox_protocol::git_project_coverage::{
     decode_git_project_coverage_request_v1, encode_git_project_coverage_response_v1,

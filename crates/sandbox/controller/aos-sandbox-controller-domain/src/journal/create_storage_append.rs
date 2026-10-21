@@ -7,11 +7,9 @@
 use super::{CommitResult, Journal, JournalError, JournalTransaction};
 use aos_sandbox_protocol::domain_ledger::create_storage_history::OwnerV1;
 
-// Cache borrows both its own retained initializer and the live J borrower.
-// Their invariant lifetimes are independent of the earlier C/Source crossing.
 // The ACK-dependent terminal context likewise has its own loan/turn pair: its
 // nested context outlives that loan, not an unrelated history crossing.
-pub(super) enum CreateStorageAppendOriginalV1<'call, 'cut, 'original, 'terminal_loan, 'terminal_turn, 'cache_crossing, 'cache_original, 'cache, 'listener, 'startup, 'execution_cut, 'execution_source, 'execution_original> {
+pub(super) enum CreateStorageAppendOriginalV1<'call, 'cut, 'original, 'terminal_loan, 'terminal_turn, 'listener, 'startup, 'execution_cut, 'execution_source, 'execution_original> {
     ExecutionNoApplyController(&'call mut crate::controller_execution_operation::ControllerExecutionNoApplyAppendLoanV2<'execution_cut, 'execution_source, 'execution_original>),
     DeleteAdmission(&'call mut dyn super::delete_admission::DeleteAdmissionOriginalV3),
     OperatorRecover(&'call mut super::operator_recover_floor::OperatorRecoverAppendLoanV1<'cut>),
@@ -23,12 +21,10 @@ pub(super) enum CreateStorageAppendOriginalV1<'call, 'cut, 'original, 'terminal_
     Root(&'call mut crate::policy_compiler::create_storage_current::root_open::RootCurrentOpenAppendLoanV1<'cut, 'listener, 'startup>),
     Controller(&'call mut crate::controller_resource_reservation::CreateStorageHistoryAppendLoanV1<'cut, 'original>),
     Source(&'call mut crate::controller_resource_reservation::CreateStorageHistoryAppendLoanV1<'cut, 'original>),
-    Cache(&'call mut crate::cache_residency::CacheHeldAppendLoanV1<'cache_crossing, 'cache_original, 'cache>),
-    CacheReleased(&'call mut crate::cache_residency::CacheReleasedAppendLoanV1<'cache_crossing, 'cache_original, 'cache>),
 }
 
-impl<'call, 'cut, 'original, 'terminal_loan, 'terminal_turn, 'cache_crossing, 'cache_original, 'cache, 'listener, 'startup, 'execution_cut, 'execution_source, 'execution_original>
-    CreateStorageAppendOriginalV1<'call, 'cut, 'original, 'terminal_loan, 'terminal_turn, 'cache_crossing, 'cache_original, 'cache, 'listener, 'startup, 'execution_cut, 'execution_source, 'execution_original>
+impl<'call, 'cut, 'original, 'terminal_loan, 'terminal_turn, 'listener, 'startup, 'execution_cut, 'execution_source, 'execution_original>
+    CreateStorageAppendOriginalV1<'call, 'cut, 'original, 'terminal_loan, 'terminal_turn, 'listener, 'startup, 'execution_cut, 'execution_source, 'execution_original>
 {
     pub(super) fn require_transition(&mut self, journal: &Journal, transaction: &JournalTransaction)
         -> Result<(), JournalError>
@@ -43,8 +39,6 @@ impl<'call, 'cut, 'original, 'terminal_loan, 'terminal_turn, 'cache_crossing, 'c
             Self::Provisioning(original) => original.require_transition(journal, transaction),
             Self::ExecutionNoApplyFloor(original) => original.require_transition(journal, transaction),
             Self::Root(original) => original.require_transition(journal, transaction),
-            Self::Cache(original) => original.require_transition(journal, transaction),
-            Self::CacheReleased(original) => original.require_transition(journal, transaction),
             Self::Controller(original) => original.require_transition_for_owner(journal, transaction, OwnerV1::Controller),
             Self::Source(original) => original.require_transition_for_owner(journal, transaction, OwnerV1::Source),
         }
@@ -115,8 +109,6 @@ impl<'call, 'cut, 'original, 'terminal_loan, 'terminal_turn, 'cache_crossing, 'c
             Self::Provisioning(original) => original.final_crossing(journal),
             Self::ExecutionNoApplyFloor(original) => original.final_crossing(journal),
             Self::Root(original) => original.final_crossing(journal),
-            Self::Cache(original) => original.final_crossing(journal),
-            Self::CacheReleased(original) => original.final_crossing(journal),
             Self::Controller(original) | Self::Source(original) => original.final_crossing(journal),
         }
     }
@@ -148,11 +140,7 @@ impl Journal {
         -> Result<aos_sandbox_model::ResourceVector, JournalError>
     {
         self.ensure_healthy()?;
-        let encoded = self.native.state().iter().try_fold(0_usize, |total, ((_, key), value)| {
-            total.checked_add(key.capacity()).and_then(|n| n.checked_add(value.capacity()))
-                .ok_or(JournalError::JournalTooLarge)
-        })?;
-        super::semantic_receiving::semantic_representation_demand_v1(encoded, self.native.state().len())
+        super::historical_observation::semantic_append_model_data_v2!(self.native.state())
     }
 
     /// Appends the actual paid Controller original's exact closed history pair.
@@ -177,23 +165,11 @@ impl Journal {
         self.commit_create_storage_original_v1(transaction, CreateStorageAppendOriginalV1::Source(original))
     }
 
-    // HOLD is the actual initialized writer; no State/Authority Resident gate
-    // is substituted and the ordinary Exclusive/GitCoverage refusal remains.
-    pub(crate) fn commit_create_storage_cache_held_v1(&mut self, transaction: &JournalTransaction,
-        original: &mut crate::cache_residency::CacheHeldAppendLoanV1<'_, '_, '_>)
-        -> Result<CommitResult, JournalError>
-    {
-        self.commit_create_storage_original_v1(transaction, CreateStorageAppendOriginalV1::Cache(original))
-    }
 
-    pub(crate) fn commit_create_storage_cache_released_v1(&mut self, transaction: &JournalTransaction,
-        original: &mut crate::cache_residency::CacheReleasedAppendLoanV1<'_, '_, '_>)
-        -> Result<CommitResult, JournalError> {
-        self.commit_create_storage_original_v1(transaction, CreateStorageAppendOriginalV1::CacheReleased(original))
-    }
+
 
     pub(super) fn commit_create_storage_original_v1(&mut self, transaction: &JournalTransaction,
-        original: CreateStorageAppendOriginalV1<'_, '_, '_, '_, '_, '_, '_, '_, '_, '_, '_, '_, '_>)
+        original: CreateStorageAppendOriginalV1<'_, '_, '_, '_, '_, '_, '_, '_, '_, '_>)
         -> Result<CommitResult, JournalError>
     {
         self.commit_with_native_scope_and_storage_clock(transaction,

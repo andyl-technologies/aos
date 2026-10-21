@@ -78,10 +78,10 @@ struct SeedTreeArtifactOriginal {
     root: Option<Result<OwnedFd, rustix::io::Errno>>,
     output: Option<Result<OwnedFd, rustix::io::Errno>>,
     root_duplicate: Option<Result<OwnedFd, rustix::io::Errno>>,
-    beneath: Option<Result<BeneathRoot, aos_sandbox_linux::Error>>,
+    beneath: Option<Result<BeneathRoot, aos_linux_descriptors::Error>>,
     root_stat: [Option<Result<Stat, rustix::io::Errno>>; 5],
     root_flags: [Option<Result<StatVfs, rustix::io::Errno>>; 5],
-    root_mount: [Option<Result<MountId, aos_sandbox_linux::Error>>; 5],
+    root_mount: [Option<Result<MountId, aos_linux_descriptors::Error>>; 5],
     output_stat: [Option<Result<Stat, rustix::io::Errno>>; 2],
     output_names: Option<CensusDirectoryNames>,
     begin: Option<Result<(), CensusDataError>>,
@@ -768,7 +768,7 @@ fn native<T>(result: &Option<Result<T, rustix::io::Errno>>) -> Result<&T, Census
     result.as_ref().ok_or(CensusDataError::Closed)?.as_ref().map_err(|_| CensusDataError::NativeObservation)
 }
 
-fn linux<T>(result: &Option<Result<T, aos_sandbox_linux::Error>>) -> Result<&T, CensusDataError> {
+fn linux<T>(result: &Option<Result<T, aos_linux_descriptors::Error>>) -> Result<&T, CensusDataError> {
     result.as_ref().ok_or(CensusDataError::Closed)?.as_ref().map_err(|_| CensusDataError::NativeObservation)
 }
 

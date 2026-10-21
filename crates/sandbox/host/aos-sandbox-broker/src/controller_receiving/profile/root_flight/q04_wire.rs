@@ -109,6 +109,9 @@ impl Original {
             .checked_add(std::mem::size_of::<(&Q04PhaseRecordV1, u8, &Q04CutIdentityV1, &Q04RootDecisionV1, &aos_sandbox_protocol::domain_ledger::create_q04_history::Q04EffectSubgateV1, ObjectDigest, Option<&Q04PhaseRecordV1>)>().checked_mul(3)?)?
             .checked_add(std::mem::size_of::<Result<[u8;16], aos_sandbox_protocol::domain_ledger::ProtectedHistoryDataErrorV1>>().checked_mul(3)?)?
             .checked_add(std::mem::size_of::<ControllerRootQ04FinalObservationLoanV1<'_, '_, '_>>().checked_mul(3)?)?
+            .checked_add(std::mem::size_of::<&ControllerRootQ04FinalObservationLoanV1<'_, '_, '_>>().checked_mul(3)?)?
+            .checked_add(std::mem::size_of::<Result<(), Error>>().checked_mul(3)?)?
+            .checked_add(std::mem::size_of::<bool>().checked_mul(3)?)?
             .checked_add(std::mem::size_of::<Result<ObjectDigest, Error>>().checked_mul(3)?)?
             .checked_add(std::mem::size_of::<Result<std::cell::Ref<'_, Self>, std::cell::BorrowError>>().checked_mul(3)?)?
             .checked_add(std::mem::size_of::<Result<std::cell::RefMut<'_, Self>, std::cell::BorrowMutError>>().checked_mul(3)?)?
@@ -703,8 +706,17 @@ impl ControllerRootQ04FinalObservationLoanV1<'_, '_, '_> {
         self.identity
     }
 
-    fn require_original_data(&self) -> Result<(), Error> {
-        if !self.flight.shutdown_observed.get() {
+    /// Compares the same original's completed wire, Source refreshes and EOF.
+    ///
+    /// This reads only retained native facts and the original cut association.
+    /// It observes no peer, clock or socket and cannot complete another phase,
+    /// restore a refused flight or substitute a supplied completion flag.
+    ///
+    /// # Errors
+    /// Refuses a poisoned original, missing actual EOF, unavailable original
+    /// borrow, changed cut, incomplete Source programme or absent Root phase7.
+    pub fn require_completed_affinity_data_v1(&self) -> Result<(), Error> {
+        if self.flight.poisoned.get() || !self.flight.shutdown_observed.get() {
             return Err(Error::Stale);
         }
         let wire = self
@@ -733,7 +745,7 @@ impl ControllerRootQ04FinalObservationLoanV1<'_, '_, '_> {
     pub fn recheck(&self) -> Result<(), Error> {
         self.flight.terminal_clock()?;
         self.flight.terminal_clock()?;
-        self.require_original_data()?;
+        self.require_completed_affinity_data_v1()?;
         self.flight.terminal_clock().map(|_| ())
     }
 

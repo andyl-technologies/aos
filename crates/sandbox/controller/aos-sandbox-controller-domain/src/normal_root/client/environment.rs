@@ -19,8 +19,9 @@ use crate::environment::deployment::{RootEnvironmentProvisionalDataV1,
     transport::{EnvironmentRootOpenDataV1, EnvironmentRootResponseDataV1, EnvironmentRootClosedDataV1,
         OPEN_BYTES, RESPONSE_BYTES, CLOSED_BYTES}};
 use crate::journal::{Journal, JournalError};
-use crate::policy_compiler::bounded_stream_io::{FixedDeadlineStreamIoV1, SliceDeadlineStreamIoV1,
-    DeadlineStreamDirectionV1 as Direction};
+use aos_sandbox_broker::bounded_stream_io::FixedDeadlineStreamIoV1;
+use aos_sandbox_broker::bounded_stream_io::SliceDeadlineStreamIoV1;
+use aos_sandbox_broker::bounded_stream_io::DeadlineStreamDirectionV1 as Direction;
 use super::{ProductionControllerNormalRootProfileV1, root_connection::ControllerRootConnectionOriginalV1};
 use super::peer_receiving::{CreateStorageRootPeerReceivingOriginalsV1, StableRootPeerV1, sample::PeerSampleV1};
 

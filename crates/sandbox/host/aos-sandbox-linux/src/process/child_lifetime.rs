@@ -9,7 +9,8 @@ use std::process::{Child, ExitStatus};
 use crate::cgroup::{CgroupPopulationMonitor, CgroupPopulationState,
     CgroupPopulationObservationV1, CgroupKillAttemptV1, CgroupKillRefusalV1,
     RetainedCgroupAnchor};
-use crate::{Error, Result};
+use aos_linux_descriptors::Error;
+use aos_linux_descriptors::Result;
 
 /// Reports refusal while the actual lifetime and native observations remain held.
 #[derive(Debug, thiserror::Error)]

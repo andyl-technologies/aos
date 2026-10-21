@@ -6,7 +6,7 @@
 
 use std::error::Error;
 
-use aos_sandbox_linux::unix_stream::RetainedUnixStream;
+use aos_linux_descriptors::unix_stream::RetainedUnixStream;
 use crate::normal_root::ControllerRootConnectionOriginalV1;
 use aos_sandbox_protocol::domain_ledger::create_q04_history::CLAIM_CHUNK_BYTES;
 use aos_sandbox_protocol::domain_ledger::create_storage_history::{
@@ -14,7 +14,8 @@ use aos_sandbox_protocol::domain_ledger::create_storage_history::{
     transport::{OpenQueryV1, TransferIndexV1, FrameCoordinatesV1, FrameKindV1, OPEN_BYTES,
         FRAME_HEADER_BYTES, INDEX_BYTES, CHUNK_HEADER_BYTES},
 };
-use crate::policy_compiler::bounded_stream_io::{FixedDeadlineStreamIoV1, DeadlineStreamDirectionV1};
+use aos_sandbox_broker::bounded_stream_io::FixedDeadlineStreamIoV1;
+use aos_sandbox_broker::bounded_stream_io::DeadlineStreamDirectionV1;
 
 const INDEX_FRAME: usize = FRAME_HEADER_BYTES + INDEX_BYTES;
 const CHUNK_FRAME: usize = FRAME_HEADER_BYTES + CHUNK_HEADER_BYTES + CLAIM_CHUNK_BYTES;

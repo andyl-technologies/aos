@@ -94,7 +94,7 @@ mod tests {
 
     #[test]
     fn six_public_rights_share_native_receipt_and_original_order() {
-        let (first, second) = crate::uapi::seqpacket_pair().unwrap();
+        let (first, second) = aos_linux_descriptors::native::seqpacket_pair().unwrap();
         let mut sender = DescriptorSubjectSocket::from_owned_retaining(first).unwrap();
         let mut receiver = DescriptorSubjectSocket::from_owned_retaining(second).unwrap();
         let files: [std::fs::File; 6] = std::array::from_fn(|_| tempfile::tempfile().unwrap());

@@ -9,7 +9,10 @@ use std::error::Error;
 use aos_sandbox_broker::immutable_image::{ImmutableFileRevalidationOriginalV1, ImmutableImageErrorV1};
 use aos_sandbox_model::{ResourceDimension as D, ResourceVector};
 use aos_sandbox_linux::cgroup::{ExactCgroupMembershipReadbackV1, ExactCgroupMembershipRefusalV1, RetainedCgroupAnchor, StorageCgroupLayoutV1};
-use aos_sandbox_linux::pidfd::{PidFd, PidFdInfo, PidFdProcessIdentity, PidFdProcessIdentityOriginalV1};
+use aos_linux_descriptors::pidfd::PidFd;
+use aos_linux_descriptors::pidfd::PidFdInfo;
+use aos_sandbox_linux::pidfd::PidFdProcessIdentity;
+use aos_sandbox_linux::pidfd::PidFdProcessIdentityOriginalV1;
 use aos_systemd_client::FixedPid1PropertyFailureViewV1;
 use crate::production_startup::Pid1LaunchImageV1;
 
@@ -26,8 +29,8 @@ pub(crate) struct FloorServiceCurrentnessOriginalV1 {
     pub(super) policy_result: Option<Result<(), FloorErrorV1>>,
     pub(super) observed: Option<PolicyObservationV1>,
     identity: PidFdProcessIdentityOriginalV1,
-    identity_result: Option<aos_sandbox_linux::Result<()>>,
-    info: Option<aos_sandbox_linux::Result<PidFdInfo>>,
+    identity_result: Option<aos_linux_descriptors::Result<()>>,
+    info: Option<aos_linux_descriptors::Result<PidFdInfo>>,
     pub(super) binding: Option<Result<(), FloorErrorV1>>,
     pub(super) membership: ExactCgroupMembershipReadbackV1,
     pub(super) membership_result: Option<Result<(), ExactCgroupMembershipRefusalV1>>,
@@ -342,7 +345,7 @@ pub(super) fn identity(
     original: Option<&mut FloorServiceCurrentnessOriginalV1>,
 ) -> Result<PidFdProcessIdentity, FloorErrorV1> {
     match original {
-        None => process.process_identity().map_err(|_| FloorErrorV1::Unavailable),
+        None => aos_sandbox_linux::pidfd::process_identity(&(process)).map_err(|_| FloorErrorV1::Unavailable),
         Some(original) => {
             original.identity_result = Some(original.identity.capture_once(process));
             if !matches!(original.identity_result, Some(Ok(()))) {

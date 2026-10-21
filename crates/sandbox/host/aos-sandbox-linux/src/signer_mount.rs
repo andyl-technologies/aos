@@ -544,6 +544,34 @@ fn take_native_error<T>(result: &mut Option<Result<T, rustix::io::Errno>>) -> io
         .map(io::Error::from).unwrap_or_else(invalid_mount)
 }
 
+/// Checks an original sandbox signer view with its fixed protected ancestry.
+///
+/// Source/view names and signer UID remain the caller's fixed role selection.
+/// The native engine and returned nonauthorizing witness are unchanged.
+///
+/// # Errors
+/// Preserves the original observation error or refuses unsafe mount/ancestry.
+pub fn require_sandbox_signer_mount_v1(
+    view: &str,
+    source: &str,
+    signer_uid: u32,
+) -> io::Result<SignerMountWitness> {
+    require_signer_mount(
+        view,
+        source,
+        signer_uid,
+        "/run/aos",
+        &[
+            "/var",
+            "/var/lib",
+            "/var/lib/aos",
+            "/var/lib/aos/sandbox",
+            "/run",
+            "/run/aos",
+        ],
+    )
+}
+
 /// Checks a read-only signer mount and its original source directory name.
 ///
 /// Callers supply protected parent names in the order they must be observed.

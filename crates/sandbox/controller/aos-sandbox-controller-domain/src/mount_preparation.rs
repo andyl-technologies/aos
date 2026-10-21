@@ -29,7 +29,7 @@ use aos_sandbox_model::{
     FeatureRef, ObjectDigest, ProtocolId, ProtocolVersion, RawPairedClockSample,
 };
 use aos_sandbox_linux::cgroup::RetainedCgroupAnchor;
-use aos_sandbox_linux::pidfd::PidFdInfo;
+use aos_linux_descriptors::pidfd::PidFdInfo;
 use aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket;
 use aos_sandbox_linux::seqpacket::{KernelAuthorizedRecordSubject, SeqpacketError};
 use aos_sandbox_protocol::authenticated_session::all_methods::{
@@ -133,7 +133,7 @@ pub enum MountCatalogPreparationError {
     Transport(#[from] SeqpacketError),
     /// Configured service-subject or cgroup correlation failed.
     #[error(transparent)]
-    Kernel(#[from] aos_sandbox_linux::Error),
+    Kernel(#[from] aos_linux_descriptors::Error),
 }
 
 /// Holds one fence-free prospective Mount operation.

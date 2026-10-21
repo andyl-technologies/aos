@@ -16,8 +16,7 @@ use aos_sandbox_broker::controller_receiving::capture_ordinary_controller_initia
 use crate::normal_root::NormalRootStartupErrorV1;
 use crate::normal_root::nix_startup::ProductionControllerNixStartupCaptureV1;
 
-pub use aos_sandbox_broker::controller_receiving::ControllerInitialDeliveryFailureRefV1
-    as ControllerInitialCaptureFailureRefV1;
+pub use aos_sandbox_broker::controller_receiving::ControllerInitialDeliveryFailureRefV1 as ControllerInitialCaptureFailureRefV1;
 
 /// Retains the same opaque router output until its real startup handoff.
 ///

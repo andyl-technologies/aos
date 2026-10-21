@@ -5,7 +5,7 @@
 
 use super::*;
 use aos_sandbox_linux::cgroup::{RetainedCgroupAnchor, RuntimeScopeMembershipOriginalV1};
-use aos_sandbox_linux::pidfd::PidFd;
+use aos_linux_descriptors::pidfd::PidFd;
 
 #[derive(Clone, Copy)]
 enum First { Order, Clock, MembershipBefore, Send, SendAfter, MembershipAfter, ParentAfter }
@@ -15,12 +15,12 @@ pub(super) struct ArmedOriginalV2 {
     entered: bool,
     before: Option<Result<RawPairedClockSample, FixedServiceOperationClosedV4>>,
     membership_before: RuntimeScopeMembershipOriginalV1,
-    membership_before_result: Option<Result<(), aos_sandbox_linux::Error>>,
+    membership_before_result: Option<Result<(), aos_linux_descriptors::Error>>,
     send: Option<Result<(), RetainedSeqpacketSendErrorV1>>,
     send_after: SeqpacketSendAfterOriginalV1,
     send_after_result: Option<Result<(), RecordBindingError>>,
     membership_after: RuntimeScopeMembershipOriginalV1,
-    membership_after_result: Option<Result<(), aos_sandbox_linux::Error>>,
+    membership_after_result: Option<Result<(), aos_linux_descriptors::Error>>,
     parent_after: Option<Result<(), FixedServiceOperationClosedV4>>,
     first: Option<First>,
 }

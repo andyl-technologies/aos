@@ -16,7 +16,7 @@ use aos_sandbox_broker_session_protocol::VerifiedBrokerSessionTranscriptV1;
 use aos_sandbox_linux::seqpacket::SeqpacketSocket;
 use aos_sandbox_ownership_protocol::SignedOwnershipLease;
 use aos_sandbox_protocol::authorization_artifact::start_resource_plan::StartResourceRequestHeaderDataV2;
-use aos_sandbox_linux::immutable_file::SealedReadOnlyCredential;
+use aos_linux_descriptors::credential::SealedReadOnlyCredential;
 use crate::normal_root::RootStartResourceCurrentTurnV2;
 
 /// Names the shared SDK kernel's complete independently owed native post shape.

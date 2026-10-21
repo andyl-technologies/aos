@@ -6,7 +6,9 @@
 
 use std::os::fd::BorrowedFd;
 
-use crate::{Error, Result, uapi};
+use aos_linux_descriptors::Error;
+use aos_linux_descriptors::Result;
+use crate::uapi;
 
 #[derive(Debug, Clone, Copy)]
 enum Failure {
@@ -55,7 +57,7 @@ impl RetainedSubjectStreamListenerReadbackV1 {
             (libc::SO_ACCEPTCONN, "getsockopt(SO_ACCEPTCONN)", 1),
         ];
         for (index, (option, operation, expected)) in shape.into_iter().enumerate() {
-            self.shape[index] = Some(uapi::socket_integer_option(fd, option, operation));
+            self.shape[index] = Some(aos_linux_descriptors::native::socket_integer_option(fd, option, operation));
             if !matches!(self.shape[index], Some(Ok(value)) if value == expected) {
                 self.first = Some(Failure::Shape(index));
                 self.refusal = Some(Error::WrongDescriptorType {
@@ -69,11 +71,11 @@ impl RetainedSubjectStreamListenerReadbackV1 {
 
         let options = [
             (libc::SO_PASSCRED, "getsockopt(SO_PASSCRED)"),
-            (uapi::SO_PASSPIDFD, "getsockopt(SO_PASSPIDFD)"),
+            (aos_linux_descriptors::native::SO_PASSPIDFD, "getsockopt(SO_PASSPIDFD)"),
             (libc::SO_PASSSEC, "getsockopt(SO_PASSSEC)"),
         ];
         for (index, (option, operation)) in options.into_iter().enumerate() {
-            self.subject[index] = Some(uapi::socket_integer_option(fd, option, operation));
+            self.subject[index] = Some(aos_linux_descriptors::native::socket_integer_option(fd, option, operation));
         }
         if let Some(index) = self.subject.iter().position(|result| !matches!(result, Some(Ok(1)))) {
             self.first = Some(Failure::Subject(index));
@@ -125,9 +127,9 @@ mod tests {
         assert!(disabled.failure().is_some());
         assert!(!disabled.complete());
         assert!(disabled.subject.iter().all(Option::is_some));
-        assert_eq!(uapi::socket_integer_option(listener.as_fd(), libc::SO_PASSCRED, "test").expect("option"), 0);
+        assert_eq!(aos_linux_descriptors::native::socket_integer_option(listener.as_fd(), libc::SO_PASSCRED, "test").expect("option"), 0);
 
-        uapi::enable_stream_subject(listener.as_fd()).expect("enable for positive control");
+        aos_linux_descriptors::native::enable_stream_subject(listener.as_fd()).expect("enable for positive control");
         let mut enabled = RetainedSubjectStreamListenerReadbackV1::new();
         enabled.observe_once(listener.as_fd()).expect("same listener options");
         assert!(enabled.complete());

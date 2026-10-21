@@ -13,13 +13,15 @@ use std::os::fd::{AsFd as _, BorrowedFd, OwnedFd};
 use rustix::fs::{FileType, Mode, OFlags};
 
 use crate::fuse_mount::FreshDetachedFuseMountV1;
-use crate::immutable_file::{ImmutableFileError, SealedReadOnlyCredential};
+use aos_linux_descriptors::ImmutableFileError;
+use aos_linux_descriptors::credential::SealedReadOnlyCredential;
 use crate::inventory::MountId;
 use crate::mount::MountAttributes;
 use crate::pidfd::{NamespaceFd, NamespaceIdentity, NamespaceKind};
 use crate::seqpacket::{SeqpacketError, SeqpacketSocket};
 use crate::uapi::{self, OpenHow, RESOLVE_BENEATH, RESOLVE_NO_MAGICLINKS, RESOLVE_NO_SYMLINKS};
-use crate::{Error, Result};
+use aos_linux_descriptors::Error;
+use aos_linux_descriptors::Result;
 
 /// Names the sole enforcing worker process context.
 pub const FUSE_WORKER_CONTEXT_V1: &str = "system_u:system_r:aos_filesystem_fuse_worker_t";
@@ -143,7 +145,7 @@ impl MountCreatedFuseWorkerObjectsV1 {
             );
         }
         let fuse = FreshDetachedFuseMountV1::open_fixed_worker_read_only()?;
-        let plan = SealedReadOnlyCredential::create_fuse_worker_plan(plan)?;
+        let plan = create_fuse_worker_plan(plan)?;
         require_object_context(plan.as_fd(), FUSE_WORKER_PLAN_CONTEXT_V1)?;
         let (channel, worker_channel) = create_private_channel()?;
         let (cancellation_reader, cancellation_writer) = create_cancellation(worker_instance)?;
@@ -397,22 +399,6 @@ fn fixed_worker_mount_attributes() -> MountAttributes {
         .with_no_atime(true)
 }
 
-pub(crate) fn require_object_context(fd: BorrowedFd<'_>, expected: &str) -> Result<()> {
-    let mut context = [0; MAXIMUM_CONTEXT_BYTES];
-    let length = rustix::fs::fgetxattr(fd, "security.selinux", &mut context)
-        .map_err(|source| kernel_error("read worker object SID", source))?;
-    if !context_matches(&context[..length], expected.as_bytes()) {
-        return Err(Error::invalid("worker object SID", "unexpected label"));
-    }
-    Ok(())
-}
-
-pub(crate) fn context_matches(observed: &[u8], expected: &[u8]) -> bool {
-    observed == expected
-        || (observed.len() == expected.len() + 1
-            && observed.starts_with(expected)
-            && observed.last() == Some(&0))
-}
 
 fn require_fixed_mount_process() -> Result<()> {
     if rustix::process::geteuid().as_raw() != 0
@@ -688,3 +674,15 @@ mod tests {
         assert!(!context_matches(b"system_u:system_r:init_t", expected));
     }
 }
+
+
+    fn create_fuse_worker_plan(bytes: &[u8]) -> std::result::Result<SealedReadOnlyCredential, ImmutableFileError> {
+        SealedReadOnlyCredential::create_labelled(
+            "aos-fuse-worker-plan-v1",
+            bytes,
+            4096,
+            Some("system_u:object_r:aos_filesystem_fuse_worker_plan_t"),
+        )
+    }
+
+use aos_linux_descriptors::object_context::{context_matches, require_object_context};

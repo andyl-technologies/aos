@@ -4,30 +4,12 @@
 //! only after the deployment/project pins match; removal, rotation, and reuse
 //! of another policy role are closed without explicit reissuance.
 
-use aos_sandbox_policy::journal_keys::{
-    CONTROLLER_HOLD_PIN_KEY, SIGNER_PINS_KEY, SOURCE_HOLD_PIN_KEY,
-};
-
-use aos_sandbox_policy::controller_readback::PinnedControllerHoldSignerV1;
-
+#[cfg(all(test, target_os = "linux"))]
 use std::path::Path;
 
 use ed25519_dalek::VerifyingKey;
 
-use aos_sandbox_protocol::cache_owner_readback::PinnedCacheOwnerReadbackSignerV1;
-use crate::journal::{Journal, JournalError, RecordNamespace};
-
-use super::cache_readback_pin::CACHE_PIN_KEY;
-
-use super::deployment_head::encode_policy_signer_pins_v1;
-use super::owner_pin_transaction::owner_pin_transaction;
-use super::protected_owner::{
-    POLICY_AUTHORITY_JOURNAL, PROTECTED_POLICY_ROOT, policy_authority_journal_limits,
-};
-
-use super::source_hold_readback::PinnedSourceHoldReadbackSignerV1;
-
-const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.policy-controller-hold-pin-transaction.v1\0";
+use crate::journal::JournalError;
 
 /// Reports a rejected Controller-only signer pin admission.
 #[derive(Debug, thiserror::Error)]
@@ -41,6 +23,10 @@ pub enum ControllerHoldPinErrorV1 {
     /// Protected root journal replay or commit failed.
     #[error(transparent)]
     Journal(#[from] JournalError),
+    /// Retains the exact same-owner native startup refusal and custody marker.
+    #[error(transparent)]
+    #[cfg(target_os = "linux")]
+    NativeStartup(aos_sandbox_policy::native::RootStartupCredentialErrorV1),
 }
 
 /// Reconciles an optional Controller-only pin with fixed protected root state.
@@ -59,108 +45,34 @@ pub fn admit_fixed_controller_hold_pin_v1(
     project_generation: u64,
     project_key: &VerifyingKey,
 ) -> Result<(), ControllerHoldPinErrorV1> {
-    let (mut journal, _) = Journal::open_protected_at(
-        Path::new(PROTECTED_POLICY_ROOT),
-        POLICY_AUTHORITY_JOURNAL,
-        policy_authority_journal_limits(),
-    )?;
-    admit_controller_hold_pin_in_journal_v1(
-        &mut journal,
-        credential,
-        deployment_generation,
-        deployment_key,
-        project_generation,
-        project_key,
-    )
+    #[cfg(target_os = "linux")]
+    {
+    aos_sandbox_policy::native::RootStartupJournalOriginalV1::admit_fixed_controller_pin_v1(
+        credential, deployment_generation, deployment_key, project_generation, project_key,
+    ).map_err(ControllerHoldPinErrorV1::from)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (credential, deployment_generation, deployment_key, project_generation, project_key);
+        Err(JournalError::UnsupportedProtectedOpen.into())
+    }
 }
 
+#[cfg(all(test, target_os = "linux"))]
 pub(super) fn admit_controller_hold_pin_in_journal_v1(
-    journal: &mut Journal,
+    journal: &mut aos_sandbox_policy::native::RootStartupFixedAdmissionFixtureV1,
     credential: Option<&[u8]>,
     deployment_generation: u64,
     deployment_key: &VerifyingKey,
     project_generation: u64,
     project_key: &VerifyingKey,
 ) -> Result<(), ControllerHoldPinErrorV1> {
-    admit_controller_hold_pin_in_journal_v1_with_root_receiving(
-        journal,
-        credential,
-        deployment_generation,
-        deployment_key,
-        project_generation,
-        project_key,
-        None,
-    )
+    journal.admit_controller_pin_v1(
+        credential, deployment_generation, deployment_key, project_generation, project_key,
+    ).map_err(ControllerHoldPinErrorV1::from)
 }
 
-pub(super) fn admit_controller_hold_pin_in_journal_v1_with_root_receiving(
-    journal: &mut Journal,
-    credential: Option<&[u8]>,
-    deployment_generation: u64,
-    deployment_key: &VerifyingKey,
-    project_generation: u64,
-    project_key: &VerifyingKey,
-    original: Option<&aos_sandbox_broker::receiving::RootJournalFinancialBorrowV1<'_>>,
-) -> Result<(), ControllerHoldPinErrorV1> {
-    let policy_pins = encode_policy_signer_pins_v1(
-        deployment_generation,
-        deployment_key,
-        project_generation,
-        project_key,
-    )
-    .map_err(|_| ControllerHoldPinErrorV1::InvalidPin)?;
-    let mut authority = journal.claim_protected_authority(RecordNamespace::DesiredState)?;
-    super::binding_v2::ensure_root_binding_unheld(&authority)
-        .map_err(|_| ControllerHoldPinErrorV1::StalePin)?;
-    if authority.get(SIGNER_PINS_KEY)? != Some(policy_pins.as_slice()) {
-        return Err(ControllerHoldPinErrorV1::StalePin);
-    }
-    let Some(credential) = credential else {
-        return if authority.get(CONTROLLER_HOLD_PIN_KEY)?.is_none() {
-            Ok(())
-        } else {
-            Err(ControllerHoldPinErrorV1::StalePin)
-        };
-    };
-    let controller = PinnedControllerHoldSignerV1::decode(credential)
-        .map_err(crate::policy_compiler::ControllerHoldReadbackErrorV1::from)
-        .map_err(|_| ControllerHoldPinErrorV1::InvalidPin)?;
-    if controller.verifying_key() == deployment_key || controller.verifying_key() == project_key {
-        return Err(ControllerHoldPinErrorV1::InvalidPin);
-    }
-    if let Some(cache_pin) = authority.get(CACHE_PIN_KEY)? {
-        let cache = PinnedCacheOwnerReadbackSignerV1::decode(cache_pin)
-            .map_err(|_| ControllerHoldPinErrorV1::StalePin)?;
-        if cache.verifying_key() == controller.verifying_key() {
-            return Err(ControllerHoldPinErrorV1::InvalidPin);
-        }
-    }
-    if let Some(source_pin) = authority.get(SOURCE_HOLD_PIN_KEY)? {
-        let source = PinnedSourceHoldReadbackSignerV1::decode(source_pin)
-            .map_err(|_| ControllerHoldPinErrorV1::StalePin)?;
-        if source.verifying_key() == controller.verifying_key() {
-            return Err(ControllerHoldPinErrorV1::InvalidPin);
-        }
-    }
-    match authority.get(CONTROLLER_HOLD_PIN_KEY)? {
-        Some(current) if current == credential => return Ok(()),
-        Some(_) => return Err(ControllerHoldPinErrorV1::StalePin),
-        None => {}
-    }
-
-    let transaction =
-        owner_pin_transaction(TRANSACTION_DOMAIN, CONTROLLER_HOLD_PIN_KEY, credential)?;
-    match original {
-        Some(original) => authority.commit_root_credential_receiving_v1(&transaction, original)?,
-        None => authority.commit(&transaction)?,
-    };
-    if authority.get(CONTROLLER_HOLD_PIN_KEY)? != Some(credential) {
-        return Err(ControllerHoldPinErrorV1::StalePin);
-    }
-    Ok(())
-}
-
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use std::fs;
     use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
@@ -178,7 +90,7 @@ mod tests {
         let directory = tempfile::tempdir().expect("root pin directory");
         fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
         let uid = fs::metadata(directory.path()).unwrap().uid();
-        let (mut root, _) = Journal::open_protected_at_uid(
+        let mut root = aos_sandbox_policy::native::RootStartupFixedAdmissionFixtureV1::open_v1(
             directory.path(),
             "authority.journal",
             JournalLimits::default(),
@@ -212,7 +124,7 @@ mod tests {
             .unwrap();
 
         drop(root);
-        let (mut root, _) = Journal::open_protected_at_uid(
+        let mut root = aos_sandbox_policy::native::RootStartupFixedAdmissionFixtureV1::open_v1(
             directory.path(),
             "authority.journal",
             JournalLimits::default(),

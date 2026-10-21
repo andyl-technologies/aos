@@ -1,5 +1,6 @@
 //! Nonforgeable authenticated provenance for resolved requests and audit reads.
 
+use aos_sandbox_protocol::public_api::authorization_error::InvalidRequestProvenance;
 use std::fmt;
 
 use aos_sandbox_model::ObjectDigest;
@@ -20,16 +21,7 @@ use aos_sandbox_protocol::public_api::model::{
 /// Maximum canonical request bytes admitted to authenticated provenance.
 pub const MAXIMUM_CANONICAL_REQUEST_BYTES: usize = 16 * 1024 * 1024;
 
-/// Reports invalid authenticated request provenance.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
-pub enum InvalidRequestProvenance {
-    /// Canonical bytes are empty or exceed their fixed ceiling.
-    #[error("canonical request bytes are invalid")]
-    InvalidCanonicalRequest,
-    /// The resolved action does not carry its exact required fence kind.
-    #[error("resolved mutation fence does not match its action")]
-    InvalidMutationFence,
-}
+
 
 /// Commits bounded canonical request bytes inside the authenticated adapter.
 #[derive(Clone, Copy, Eq, PartialEq)]

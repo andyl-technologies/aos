@@ -29,13 +29,13 @@ impl std::error::Error for SelectedMountStartupEndedV2 {}
 /// Borrows the actual first selected startup failure reservoir.
 pub enum SelectedMountStartupFailureRefV2<'owner> {
     /// The exclusive table or retained kernel observation failed.
-    Kernel(&'owner aos_sandbox_linux::Error),
+    Kernel(&'owner aos_linux_descriptors::Error),
     /// The fixed native observer retains its actual protocol and transport cause.
     Observer(&'owner OwnUnitPid1ImageAttemptV1),
     /// Constructing the original observer runtime returned this error.
     Runtime(&'owner std::io::Error),
     /// Measuring an actual reply image failed.
-    Measurement(&'owner aos_sandbox_linux::Error),
+    Measurement(&'owner aos_linux_descriptors::Error),
     /// The protected startup recipe or an owner association failed.
     Admission(&'owner MountManagerSourceInventoryError),
     /// The genuine capture append returned this native protected-store error.

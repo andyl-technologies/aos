@@ -1685,10 +1685,14 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn guest_agent_handoff_has_fixed_argument_roles_and_prebinding_order() {
-        use aos_sandbox_linux::immutable_file::SealedReadOnlyCredential;
-        use aos_sandbox_linux::seqpacket::SeqpacketSocket;
+        use aos_linux_descriptors::credential::SealedReadOnlyCredential;
 
-        let (_host, channel) = SeqpacketSocket::pair_with_record_subjects().unwrap();
+        let (_host, channel) = rustix::net::socketpair(
+            rustix::net::AddressFamily::UNIX,
+            rustix::net::SocketType::SEQPACKET,
+            rustix::net::SocketFlags::CLOEXEC | rustix::net::SocketFlags::NONBLOCK,
+            None,
+        ).unwrap();
         let provisioning =
             SealedReadOnlyCredential::create("guest-provisioning-test", b"fd4", 3).unwrap();
         let attach_trust =

@@ -259,7 +259,7 @@ mod tests {
     #[test]
     fn same_context_negative_sample_preserves_closed_healthy_source() {
         let pidfd = PidFd::open(std::num::NonZeroU32::new(std::process::id()).unwrap()).unwrap();
-        let mut source = pidfd.prepare_proc_observations_v1();
+        let mut source = crate::pidfd::prepare_proc_observations_v1(&(pidfd));
         source.capture_stat(&pidfd).unwrap();
         let captured = source.capture_context(&pidfd).map(|_| ());
         if let Err(cause) = captured {

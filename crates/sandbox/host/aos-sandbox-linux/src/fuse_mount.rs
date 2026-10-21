@@ -13,7 +13,8 @@ use rustix::fs::{FileType, Mode, OFlags};
 use crate::inventory::MountId;
 use crate::mount::{DetachedMount, FileSystemContext, MountAttributes};
 use crate::pidfd::{NamespaceFd, NamespaceKind};
-use crate::{Error, Result};
+use aos_linux_descriptors::Error;
+use aos_linux_descriptors::Result;
 
 const FUSE_DEVICE: &str = "/dev/fuse";
 const FUSE_DEVICE_MAJOR: u32 = 10;
@@ -80,7 +81,7 @@ impl FreshDetachedFuseMountV1 {
         if verify_worker_label {
             // Inspect the original freshly opened OFD before any fscontext
             // consumes it. A later label check cannot establish fresh custody.
-            crate::fuse_worker_objects::require_object_context(
+            aos_linux_descriptors::object_context::require_object_context(
                 device.as_fd(),
                 crate::fuse_worker_objects::FUSE_WORKER_DEVICE_CONTEXT_V1,
             )?;

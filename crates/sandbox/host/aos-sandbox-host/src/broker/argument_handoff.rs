@@ -347,7 +347,7 @@ impl ArgumentClockV2 {
 
     pub(super) fn launch_write_demand_v2() -> Option<aos_sandbox_model::ResourceVector> {
         use aos_sandbox_model::{ResourceDimension as D, ResourceVector};
-        let boot = aos_sandbox_linux::boot::RootOriginalKernelBootIdAttemptV1::dominant_requested_bytes_v1()?;
+        let boot = aos_linux_descriptors::boot::RootOriginalKernelBootIdAttemptV1::dominant_requested_bytes_v1()?;
         let bytes = LAUNCH_WRITE_PAIRS.checked_mul(PairedClockSamplesV1::representation_memory_bytes())?
             .checked_add(2 * std::mem::size_of::<LaunchWriteSamplesV2>())?
             .checked_add(LAUNCH_WRITE_SAMPLES.checked_mul(2)?.checked_mul(boot)?)?;
@@ -400,7 +400,7 @@ impl ArgumentClockV2 {
     pub(super) fn receiving_demand_v2() -> Option<aos_sandbox_model::ResourceVector> {
         use aos_sandbox_model::{ResourceVector, ResourceDimension as D};
         let boot_readers = MAXIMUM_CLOCK_SAMPLES.checked_mul(2)?.checked_add(1)?;
-        let boot_bytes = aos_sandbox_linux::boot::RootOriginalKernelBootIdAttemptV1::dominant_requested_bytes_v1()?;
+        let boot_bytes = aos_linux_descriptors::boot::RootOriginalKernelBootIdAttemptV1::dominant_requested_bytes_v1()?;
         let bytes = CLOCK_PAIRS.checked_mul(PairedClockSamplesV1::representation_memory_bytes())?
             .checked_add(2 * std::mem::size_of::<Self>())?
             .checked_add(boot_readers.checked_mul(boot_bytes)?)?;
@@ -819,6 +819,19 @@ impl ArgumentStageOriginalV2 {
             let resident = four_resident.checked_add(HostArgumentAttemptOpeningV2::positive_resident_files_v6())?;
             file_peak = file_peak.max(four_resident.checked_add(fifth.get(D::OpenFiles))?)
                 .max(resident.checked_add(accepted.get(D::OpenFiles))?);
+            let (guest_receive, guest_files) = aos_sandbox_linux::seqpacket::SeqpacketSocket::
+                agent_authorize_receive_obligations_v2(aos_sandbox_guest_protocol::protocol::MAX_AGENT_FRAME_BYTES)?;
+            file_peak = file_peak.checked_add(u64::try_from(guest_files).ok()?)?;
+            let guest_argument = aos_sandbox_guest_protocol::argument_receiving::argument_guest_receiving_bytes_v1()?;
+            let guest_memory = guest_receive.checked_add(guest_argument)?
+                .checked_add(6 * std::mem::size_of::<Option<usize>>())?
+                .checked_add(6 * std::mem::size_of::<Option<(usize, usize)>>())?
+                .checked_add(8 * std::mem::size_of::<usize>())?;
+            // Same funded Accept20 pays Guest7 before its only original nonce
+            // and send. Capture8 keeps its distinct existing full invoice.
+            demand = demand.checked_add(ResourceVector::ZERO
+                .with(D::MemoryBytes, u64::try_from(guest_memory).ok()?)
+                .with(D::OpenFiles, u64::try_from(guest_files).ok()?)).ok()?;
             demand = demand.checked_add(fifth).ok()?
                 .checked_add(ResourceVector::ZERO.with(D::NetworkBytes, 512 + 1024)).ok()?
                 // The fixed finite20 continuation is admitted before59, not
@@ -1524,7 +1537,7 @@ mod argument_clock_disposal_tests {
 
     #[test]
     fn positive_clock_files_retire_with_full_schedule_and_no_sample_reuse() {
-        let boot = aos_sandbox_linux::boot::KernelBootId::current().unwrap().into_bytes();
+        let boot = aos_linux_descriptors::boot::KernelBootId::current().unwrap().into_bytes();
         let mut clock = ArgumentClockV2::capture(boot);
         let demand = ArgumentClockV2::receiving_demand_v2().unwrap();
         assert_eq!(demand.get(aos_sandbox_model::ResourceDimension::OpenFiles), 3);
@@ -1550,7 +1563,7 @@ mod argument_clock_disposal_tests {
 
     #[test]
     fn per_phase_clock_exhaustion_keeps_cause_and_cannot_reenter_or_advance() {
-        let boot = aos_sandbox_linux::boot::KernelBootId::current().unwrap().into_bytes();
+        let boot = aos_linux_descriptors::boot::KernelBootId::current().unwrap().into_bytes();
         let mut clock = ArgumentClockV2::capture(boot);
         assert!(clock.advance_argument_stage_v2(
             BrokerMethod::BROKER_METHOD_HOST_ACCEPT_EXECUTION_ARGUMENT_V2).is_err());
@@ -1569,7 +1582,7 @@ mod argument_clock_disposal_tests {
 
     #[test]
     fn launch_write_samples_share_the_baseline_without_spending_ordinary_slots() {
-        let boot = aos_sandbox_linux::boot::KernelBootId::current().unwrap().into_bytes();
+        let boot = aos_linux_descriptors::boot::KernelBootId::current().unwrap().into_bytes();
         let mut clock = ArgumentClockV2::capture_launch_v2(boot);
         let mut last = clock.sample().unwrap().boottime_nanoseconds();
 
@@ -1591,7 +1604,7 @@ mod argument_clock_disposal_tests {
 
     #[test]
     fn early_terminal_branch_spends_existing_slots_and_cannot_adopt_prepared_argument() {
-        let boot = aos_sandbox_linux::boot::KernelBootId::current()
+        let boot = aos_linux_descriptors::boot::KernelBootId::current()
             .unwrap()
             .into_bytes();
         let mut clock = ArgumentClockV2::capture(boot);
@@ -1659,7 +1672,7 @@ mod argument_clock_disposal_tests {
 
     #[test]
     fn held_cleanup_consumes_one_eight_phase_clock_and_cannot_reenter_after_ack() {
-        let boot = aos_sandbox_linux::boot::KernelBootId::current().unwrap().into_bytes();
+        let boot = aos_linux_descriptors::boot::KernelBootId::current().unwrap().into_bytes();
         let mut clock = ArgumentClockV2::capture(boot);
         let mut last = 0;
         let methods = [None,
@@ -1689,7 +1702,7 @@ mod argument_clock_disposal_tests {
 
     #[test]
     fn fresh_cleanup_has_only_four_new_phases_without_execution_frontiers() {
-        let boot = aos_sandbox_linux::boot::KernelBootId::current()
+        let boot = aos_linux_descriptors::boot::KernelBootId::current()
             .unwrap()
             .into_bytes();
         let mut clock = ArgumentClockV2::capture_cleanup_v2(boot);

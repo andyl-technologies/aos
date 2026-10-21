@@ -19,11 +19,14 @@ use aos_sandbox_broker::receiving::FixedSignerListenerOriginalV1;
 use aos_sandbox_model::{ResourceDimension as D, ResourceVector};
 use aos_sandbox_linux::pidfd::PidFdProcessIdentity;
 use aos_sandbox_linux::seqpacket::SeqpacketError;
-use aos_sandbox_linux::unix_stream::{
-    RetainedSubjectStreamReadV1, RetainedUnixStream, RetainedUnixStreamAdmissionErrorV1,
-    RetainedUnixStreamSubjectReceiveErrorV1, SubjectStreamReadErrorV1,
-    SubjectStreamReceiveGeometryV1, UnixStreamSubjectChunk, UnixStreamSubjectEofReadbackV1,
-};
+use aos_sandbox_linux::unix_stream::RetainedSubjectStreamReadV1;
+use aos_linux_descriptors::unix_stream::RetainedUnixStream;
+use aos_linux_descriptors::unix_stream::RetainedUnixStreamAdmissionErrorV1;
+use aos_sandbox_linux::unix_stream::RetainedUnixStreamSubjectReceiveErrorV1;
+use aos_sandbox_linux::unix_stream::SubjectStreamReadErrorV1;
+use aos_sandbox_linux::unix_stream::SubjectStreamReceiveGeometryV1;
+use aos_sandbox_linux::unix_stream::UnixStreamSubjectChunk;
+use aos_sandbox_linux::unix_stream::UnixStreamSubjectEofReadbackV1;
 use rustix::time::{ClockId, Timespec, clock_gettime};
 
 use super::CacheSignerReceivingClosedV1 as Closed;
@@ -117,7 +120,7 @@ pub(super) struct CacheCurrentRequestOriginalV1 {
     frame: [u8; CACHE_CURRENT_SIGNER_CHALLENGE_BYTES_V1],
     kind: Option<CacheRequestKindV1>,
     framing: Option<Result<(), Closed>>,
-    before: Option<Result<(), aos_sandbox_linux::Error>>,
+    before: Option<Result<(), aos_linux_descriptors::Error>>,
     readiness: Option<FixedStreamReadinessOriginalV1>,
     received: Option<Result<(), SubjectStreamReadErrorV1>>,
     receive_clock: Option<Timespec>,
@@ -131,7 +134,7 @@ pub(super) struct CacheCurrentRequestOriginalV1 {
     subject_result: Option<Result<(), Closed>>,
     sender: Option<Result<(), Closed>>,
     copied: Option<Result<(), SubjectStreamReadErrorV1>>,
-    after: Option<Result<(), aos_sandbox_linux::Error>>,
+    after: Option<Result<(), aos_linux_descriptors::Error>>,
     after_clock: Option<Timespec>,
     after_deadline: Option<
         Result<
@@ -151,7 +154,7 @@ pub(super) struct CacheCurrentRequestOriginalV1 {
     >,
     final_subject: Option<Subject>,
     final_subject_result: Option<Result<(), Closed>>,
-    final_original: Option<Result<(), aos_sandbox_linux::Error>>,
+    final_original: Option<Result<(), aos_linux_descriptors::Error>>,
     final_clock: Option<Timespec>,
     final_deadline: Option<
         Result<
@@ -331,7 +334,7 @@ impl CacheCurrentRequestOriginalV1 {
         if !matches!(self.stream, Some(Ok(_))) {
             return self.refuse(First::Admission);
         }
-        self.inherited = Some(self.stream_mut()?.require_inherited_subject_reporting_v1());
+        self.inherited = Some(self.stream_mut()?.require_inherited_subject_reporting_v1().map_err(aos_sandbox_linux::seqpacket::SeqpacketError::from));
         if !matches!(self.inherited, Some(Ok(()))) {
             return self.refuse(First::Inherited);
         }
@@ -495,8 +498,7 @@ impl CacheCurrentRequestOriginalV1 {
             return self.refuse(First::EofReadiness);
         }
         self.eof = Some(
-            self.stream_mut()?
-                .try_receive_subject_eof_with_geometry_retaining(&geometry),
+            aos_sandbox_linux::unix_stream::try_receive_subject_eof_with_geometry_retaining(self.stream_mut()?, &geometry),
         );
         if !matches!(self.eof, Some(Ok(_))) {
             self.first = Some(First::Eof);

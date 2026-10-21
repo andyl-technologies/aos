@@ -32,7 +32,7 @@ impl SourceDeleteSemanticScopeV1<'_, '_> {
         let current_extent = protected_journal_preopen_replay_extent_for_prefix_v1(
             current.limits(), current.durable_prefix_end_data_v1())?;
         let registry = crate::publisher_admin::capabilities::publisher_capability_census_receiving_bytes_v2(
-            crate::publisher_admin::PublisherReadDataV2::from_journal_v2(controller))
+            crate::publisher_admin::PublisherReadDataV2::from_state_v2(controller.historical_read_view_v1().materialized_state_v1()))
             .ok_or(JournalError::JournalTooLarge)?;
         let bytes = delete_dependency_graph_receiving_bytes_v2(source.state(),
             controller.historical_read_view_v1().materialized_state_v1(), metadata_links)
@@ -49,7 +49,7 @@ impl SourceDeleteSemanticScopeV1<'_, '_> {
     ) -> Result<DeleteDependencyGraphBaseDataV2, SourceDeleteGraphErrorV2> {
         let source = self.native.historical_view_v1().map_err(JournalError::ControllerNative)?;
         let registry = crate::publisher_admin::capabilities::publisher_capability_census_from_rows_v2(
-            crate::publisher_admin::PublisherReadDataV2::from_journal_v2(controller),
+            crate::publisher_admin::PublisherReadDataV2::from_state_v2(controller.historical_read_view_v1().materialized_state_v1()),
             controller.historical_read_view_v1().rows_data_v2(),
             crate::publisher_admin::capabilities::PublisherAuthorityLimits::default())?;
         prepare_delete_dependency_graph_base_data_v2(source.materialized_state_v1(),

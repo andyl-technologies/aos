@@ -7,7 +7,8 @@ use super::{
     CgroupLimitControlV1, LimitControlSlotV1, RetainedCgroupAnchor, is_missing,
     read_limit_record, validate_limit_record,
 };
-use crate::{Error, Result};
+use aos_linux_descriptors::Error;
+use aos_linux_descriptors::Result;
 
 pub(super) fn capture_limit_control_slot_v1(
     anchor: &RetainedCgroupAnchor,

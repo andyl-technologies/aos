@@ -47,7 +47,7 @@ use super::{
     RetainedSeqpacketAdmissionErrorV1, RetainedSeqpacketReceiveErrorV1, SeqpacketError,
     admit_connected_peer, connect_pending_seqpacket, map_kernel_error,
 };
-use crate::Error;
+use aos_linux_descriptors::Error;
 use crate::uapi::{self, RawAncillary};
 use rustix::net::{SendAncillaryBuffer, SendAncillaryMessage, SendFlags, sendmsg};
 
@@ -355,7 +355,7 @@ impl DescriptorSubjectSocket {
         let gate_frames = std::mem::size_of::<Option<E>>()
             .checked_mul(4)?
             .checked_add(4 * std::mem::size_of::<&mut dyn FnMut() -> Result<(), E>>())?
-            .checked_add(2 * std::mem::size_of::<Result<(), crate::Error>>())?;
+            .checked_add(2 * std::mem::size_of::<Result<(), aos_linux_descriptors::Error>>())?;
         Some((native_bytes.checked_add(gate_frames)?, files))
     }
 
@@ -406,7 +406,7 @@ impl DescriptorSubjectSocket {
     /// nonblocking, credential, or pidfd-reporting options.
     pub fn from_owned(fd: OwnedFd) -> Result<Self, SeqpacketError> {
         let peer = admit_connected_peer(fd.as_fd())?;
-        uapi::enable_seqpacket_identity(fd.as_fd())?;
+        aos_linux_descriptors::native::enable_seqpacket_identity(fd.as_fd())?;
         Ok(Self {
             fd: Some(fd),
             peer,
@@ -1807,7 +1807,7 @@ mod worker_observer_profile_tests {
 
     #[test]
     fn fixed_worker_request_preserves_two_real_descriptors_and_full_payload() {
-        let (receiver, sender) = crate::uapi::seqpacket_pair().unwrap();
+        let (receiver, sender) = aos_linux_descriptors::native::seqpacket_pair().unwrap();
         let mut receiver = DescriptorSubjectSocket::from_owned_retaining(receiver).unwrap();
         let mut sender = SeqpacketSocket::from_owned(sender).unwrap();
         let first = std::fs::File::open("/dev/null").unwrap();
@@ -1829,7 +1829,7 @@ mod worker_observer_profile_tests {
 
     #[test]
     fn fixed_worker_rejects_excess_rights_and_fences_original_channel() {
-        let (receiver, sender) = crate::uapi::seqpacket_pair().unwrap();
+        let (receiver, sender) = aos_linux_descriptors::native::seqpacket_pair().unwrap();
         let mut receiver = DescriptorSubjectSocket::from_owned_retaining(receiver).unwrap();
         let mut sender = SeqpacketSocket::from_owned(sender).unwrap();
         let original = std::fs::File::open("/dev/null").unwrap();
@@ -1845,7 +1845,7 @@ mod worker_observer_profile_tests {
 
     #[test]
     fn fixed_export_retains_existing_zero_descriptor_error_reply() {
-        let (receiver, sender) = crate::uapi::seqpacket_pair().unwrap();
+        let (receiver, sender) = aos_linux_descriptors::native::seqpacket_pair().unwrap();
         let mut receiver = DescriptorSubjectSocket::from_owned_retaining(receiver).unwrap();
         let mut sender = SeqpacketSocket::from_owned(sender).unwrap();
         sender.send(&[3; 313]).unwrap();
@@ -1867,7 +1867,7 @@ mod storage_held_output_control_tests {
 
     #[test]
     fn legitimate_held_reply_keeps_complete_payload_and_real_kernel_subject() {
-        let (receiver, sender) = crate::uapi::seqpacket_pair().unwrap();
+        let (receiver, sender) = aos_linux_descriptors::native::seqpacket_pair().unwrap();
         let mut receiver = DescriptorSubjectSocket::from_owned_retaining(receiver).unwrap();
         let mut sender = SeqpacketSocket::from_owned(sender).unwrap();
         sender.send(&[7; 248]).unwrap();
@@ -1882,7 +1882,7 @@ mod storage_held_output_control_tests {
 
     #[test]
     fn hostile_rights_reach_native_truncation_and_keep_the_fenced_error() {
-        let (receiver, sender) = crate::uapi::seqpacket_pair().unwrap();
+        let (receiver, sender) = aos_linux_descriptors::native::seqpacket_pair().unwrap();
         let mut receiver = DescriptorSubjectSocket::from_owned_retaining(receiver).unwrap();
         let original = std::fs::File::open("/dev/null").unwrap();
         // The raw native fixture deliberately bypasses the public sender's
@@ -1939,7 +1939,7 @@ mod root_mount_reply_tests {
 
     #[test]
     fn root_reply_keeps_actual_transferred_file_and_complete_payload() {
-        let (receiver, sender) = crate::uapi::seqpacket_pair().unwrap();
+        let (receiver, sender) = aos_linux_descriptors::native::seqpacket_pair().unwrap();
         let mut receiver = DescriptorSubjectSocket::from_owned_retaining(receiver).unwrap();
         let mut sender = SeqpacketSocket::from_owned(sender).unwrap();
         let original = std::fs::File::open("/dev/null").unwrap();
@@ -1956,7 +1956,7 @@ mod root_mount_reply_tests {
 
     #[test]
     fn excess_rights_fence_the_same_root_reply_channel() {
-        let (receiver, sender) = crate::uapi::seqpacket_pair().unwrap();
+        let (receiver, sender) = aos_linux_descriptors::native::seqpacket_pair().unwrap();
         let mut receiver = DescriptorSubjectSocket::from_owned_retaining(receiver).unwrap();
         let mut sender = SeqpacketSocket::from_owned(sender).unwrap();
         let original = std::fs::File::open("/dev/null").unwrap();
@@ -1978,7 +1978,7 @@ mod storage_capture_pipe_control_tests {
 
     #[test]
     fn ordered_capture_pipes_keep_the_actual_rights_and_kernel_subject() {
-        let (receiver, sender) = crate::uapi::seqpacket_pair().unwrap();
+        let (receiver, sender) = aos_linux_descriptors::native::seqpacket_pair().unwrap();
         let mut receiver = DescriptorSubjectSocket::from_owned_retaining(receiver).unwrap();
         let mut sender = SeqpacketSocket::from_owned(sender).unwrap();
         let (_stdout_read, stdout_write) = rustix::pipe::pipe_with(rustix::pipe::PipeFlags::CLOEXEC).unwrap();
@@ -2000,7 +2000,7 @@ mod storage_capture_pipe_control_tests {
 
     #[test]
     fn hostile_capture_rights_keep_the_actual_ctrunc_failure() {
-        let (receiver, sender) = crate::uapi::seqpacket_pair().unwrap();
+        let (receiver, sender) = aos_linux_descriptors::native::seqpacket_pair().unwrap();
         let mut receiver = DescriptorSubjectSocket::from_owned_retaining(receiver).unwrap();
         let original = std::fs::File::open("/dev/null").unwrap();
         crate::uapi::send_seqpacket_rights(sender.as_fd(), &[8; 248], &[original.as_fd(); 32]).unwrap();

@@ -8,23 +8,17 @@
 //!
 //! This grouping changes neither protected custody nor dependency boundaries.
 
-use aos_sandbox_protocol::domain_ledger::cache_policy_hold::CachePolicyHoldV1;
 
-use std::path::Path;
-use std::sync::Arc;
 
 use aos_sandbox_model::ObjectDigest;
 use sha2::{Digest, Sha256};
 
 use super::{
-    CACHE_POLICY_HOLD_JOURNAL,
-    CacheQ04TransactionRecipesV1,
     CommitResult,
     ControllerPolicyHoldV1,
     ControllerQ04TransitionV1,
     DeploymentHistoryObserverV1,
     Journal,
-    JournalAuthorityInstance,
     JournalError,
     JournalLimits,
     JournalTransaction,
@@ -52,211 +46,6 @@ enum Q04ControllerBookendPurposeV1<'recipes> {
 #[cfg(target_os = "linux")]
 pub(crate) use aos_sandbox_protocol::cache_state::hold_state::q04_recipes::Q04CacheTerminalPhaseV1;
 
-#[cfg(target_os = "linux")]
-struct Q04OriginalCacheTargetV1 {
-    instance: Arc<JournalAuthorityInstance>,
-    sequence: u64,
-    limits: JournalLimits,
-    name: &'static str,
-    uid: u32,
-    witness: ProtectedWriterNameWitness,
-}
-
-#[cfg(target_os = "linux")]
-impl Q04OriginalCacheTargetV1 {
-    fn capture(journal: &Journal, name: &'static str, uid: u32) -> Result<Self, JournalError> {
-        journal.require_protected_named_location(
-            Path::new(crate::cache_residency::PROTECTED_CACHE_ROOT), name, uid, journal.native.limits(),
-        )?;
-        Ok(Self {
-            instance: Arc::clone(&journal.authority_instance),
-            sequence: journal.snapshot_sequence(),
-            limits: journal.native.limits(),
-            name,
-            uid,
-            witness: journal.protected_writer_name_witness()?,
-        })
-    }
-
-    fn require(&self, journal: &Journal) -> Result<(), JournalError> {
-        if !Arc::ptr_eq(&self.instance, &journal.authority_instance)
-            || self.sequence != journal.snapshot_sequence()
-            || self.limits != journal.native.limits()
-        {
-            return Err(JournalError::StaleAuthoritySnapshot);
-        }
-        journal.require_protected_named_location(
-            Path::new(crate::cache_residency::PROTECTED_CACHE_ROOT), self.name, self.uid, self.limits,
-        )?;
-        journal.validate_protected_writer_name_witness(&self.witness)
-    }
-}
-
-// The actual resident initialization lends this original hold writer. The
-// other targets are pinned to their exact allocations, names, limits and
-// sequences; neither their Journals nor a mutable gate can escape this loan.
-#[cfg(target_os = "linux")]
-pub(crate) struct Q04CacheTerminalNativeLoanV1<'hold, 'recipes, 'cut> {
-    hold: &'hold mut Journal,
-    recipes: &'recipes CacheQ04TransactionRecipesV1<'cut>,
-    phase: Q04CacheTerminalPhaseV1,
-    targets: [Q04OriginalCacheTargetV1; 2],
-}
-
-// This is an existing-only observation before Root is opened. The original
-// hold remains mutably borrowed, but no mutable gate or transaction escapes.
-#[cfg(target_os = "linux")]
-pub(crate) struct Q04CachePrepareNativeLoanV1<'hold> {
-    hold: &'hold mut Journal,
-    prior: Option<CachePolicyHoldV1>,
-    targets: [Q04OriginalCacheTargetV1; 2],
-    original_hold: Q04OriginalCacheTargetV1,
-}
-
-#[cfg(target_os = "linux")]
-impl Q04CachePrepareNativeLoanV1<'_> {
-    pub(crate) fn require_current(
-        &self,
-        state: &Journal,
-        authority: &ProtectedJournalAuthority<'_>,
-    ) -> Result<(), crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
-        if authority.namespace != RecordNamespace::DesiredState
-            || authority.scope != ProtectedAuthorityScope::SingleNamespace
-            || self.hold.require_q04_cache_prepare_v1()? != self.prior
-        {
-            return Err(JournalError::ProtectedBoundary.into());
-        }
-        self.original_hold.require(self.hold)?;
-        self.targets[0].require(state)?;
-        self.targets[1].require(authority.journal)?;
-        self.hold.require_q04_native_recipes_v1(&[])?;
-        state.preflight_q04_cache_read_only_base_v1(self.hold)?;
-        authority.journal.preflight_q04_cache_read_only_base_v1(self.hold)?;
-        self.original_hold.require(self.hold)?;
-        self.targets[0].require(state)?;
-        self.targets[1].require(authority.journal)?;
-        Ok(())
-    }
-}
-
-#[cfg(target_os = "linux")]
-impl Q04CacheTerminalNativeLoanV1<'_, '_, '_> {
-    pub(crate) fn identity(&self) -> &crate::policy_compiler::create_q04::Q04CutIdentityV1 {
-        self.recipes.identity()
-    }
-
-    pub(crate) fn hold(&self) -> CachePolicyHoldV1 {
-        self.recipes.terminal_hold(self.phase)
-    }
-
-    pub(crate) fn require_current(
-        &mut self,
-        state: &Journal,
-        authority: &ProtectedJournalAuthority<'_>,
-    ) -> Result<(), crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
-        if authority.namespace != RecordNamespace::DesiredState
-            || authority.scope != ProtectedAuthorityScope::SingleNamespace
-        {
-            return Err(JournalError::ForeignAuthorityNamespace.into());
-        }
-        self.targets[0].require(state)?;
-        self.targets[1].require(authority.journal)?;
-        // Zero selections still run the sole whole native parser and complete
-        // replay comparison. Cache state/authority may not append in this cut.
-        state.require_q04_native_recipes_v1(&[])?;
-        authority.journal.require_q04_native_recipes_v1(&[])?;
-        self.recipes.require_fixed_journal(self.hold)?;
-        self.recipes.require_prefix(self.hold.native.state(), self.phase.prefix())?;
-        self.hold.require_q04_native_recipe_prefix_v1(
-            &self.recipes.transactions()[..self.phase.prefix()], self.recipes.original_next(),
-        )?;
-        self.targets[0].require(state)?;
-        self.targets[1].require(authority.journal)?;
-        self.recipes.require_fixed_journal(self.hold)?;
-        self.recipes.require_prefix(self.hold.native.state(), self.phase.prefix())?;
-        Ok(())
-    }
-}
-
-#[cfg(target_os = "linux")]
-impl Journal {
-    pub(crate) fn borrow_q04_cache_prepare_native_v1<'hold>(
-        state: &Journal,
-        authority: &Journal,
-        hold: &'hold mut Journal,
-    ) -> Result<Q04CachePrepareNativeLoanV1<'hold>, crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
-        let root = Path::new(crate::cache_residency::PROTECTED_CACHE_ROOT);
-        let uid = hold.protected_owner_uid()?;
-        if state.cache_policy_gate.as_ref().is_none_or(|(directory, owner)| {
-            directory.as_path() != root || *owner != uid
-        }) || authority.cache_policy_gate != state.cache_policy_gate
-        {
-            return Err(JournalError::ProtectedBoundary.into());
-        }
-        let prior = hold.require_q04_cache_prepare_v1()?;
-        let original_hold = Q04OriginalCacheTargetV1::capture(hold, CACHE_POLICY_HOLD_JOURNAL, uid)?;
-        let targets = [
-            Q04OriginalCacheTargetV1::capture(state, "state.journal", uid)?,
-            Q04OriginalCacheTargetV1::capture(authority, "authority.journal", uid)?,
-        ];
-        Ok(Q04CachePrepareNativeLoanV1 { hold, prior, targets, original_hold })
-    }
-
-    pub(super) fn require_q04_cache_read_only_base_v1(&self, hold: &Journal) -> Result<(), JournalError> {
-        let uid = hold.protected_owner_uid()?;
-        hold.require_q04_cache_prepare_v1()?;
-        let location = self
-            .native.protected_view()
-            .ok_or(JournalError::ProtectedBoundary)?;
-        let fixed_target = match location.name() {
-            "clock.journal" => self.cache_policy_gate.is_none(),
-            "authority.journal" | "state.journal" => self.cache_policy_gate.as_ref().is_some_and(|(root, owner)| {
-                root.as_path() == Path::new(crate::cache_residency::PROTECTED_CACHE_ROOT) && *owner == uid
-            }),
-            _ => false,
-        };
-        if !fixed_target
-        {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        self.require_protected_named_location(
-            Path::new(crate::cache_residency::PROTECTED_CACHE_ROOT),
-            &location.name(),
-            uid,
-            self.native.limits(),
-        )?;
-        self.require_q04_native_recipes_v1(&[])
-            .map_err(|cause| JournalError::Q04RootOriginal(Box::new(cause)))?;
-        hold.require_q04_native_recipes_v1(&[])
-            .map_err(|cause| JournalError::Q04RootOriginal(Box::new(cause)))?;
-        Ok(())
-    }
-
-    pub(crate) fn borrow_q04_cache_terminal_native_v1<'hold, 'recipes, 'cut>(
-        state: &Journal,
-        authority: &Journal,
-        hold: &'hold mut Journal,
-        recipes: &'recipes CacheQ04TransactionRecipesV1<'cut>,
-        phase: Q04CacheTerminalPhaseV1,
-    ) -> Result<Q04CacheTerminalNativeLoanV1<'hold, 'recipes, 'cut>, crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
-        let root = Path::new(crate::cache_residency::PROTECTED_CACHE_ROOT);
-        let uid = hold.protected_owner_uid()?;
-        if state.cache_policy_gate.as_ref().is_none_or(|(directory, owner)| {
-            directory.as_path() != root || *owner != uid
-        }) || authority.cache_policy_gate != state.cache_policy_gate
-        {
-            return Err(JournalError::ProtectedBoundary.into());
-        }
-        recipes.require_fixed_journal(hold)?;
-        recipes.require_prefix(hold.native.state(), phase.prefix())?;
-        let targets = [
-            Q04OriginalCacheTargetV1::capture(state, "state.journal", uid)?,
-            Q04OriginalCacheTargetV1::capture(authority, "authority.journal", uid)?,
-        ];
-        Ok(Q04CacheTerminalNativeLoanV1 { hold, recipes, phase, targets })
-    }
-}
-
 // Preserve the new actual allocation refusal; ordinary semantic categories
 // retain their established protected-boundary projection.
 #[cfg(target_os = "linux")]
@@ -276,7 +65,7 @@ fn resource_bank_history_error(
 
 // Fixed control bytes belong to the actual semantic/native receiving recipe;
 // namespace cardinalities remain with the existing map and path suppliers.
-pub(super) fn native_audit_fixed_receiving_demand_v1()
+pub(crate) fn native_audit_fixed_receiving_demand_v1()
     -> Result<aos_sandbox_model::ResourceVector, JournalError>
 {
     use aos_sandbox_ledger_replay::q04_native_history::Q04NativeHistoryDataErrorV1;
@@ -331,17 +120,6 @@ fn q04_history_data_error_v1(
 
 #[cfg(target_os = "linux")]
 impl Journal {
-    pub(crate) fn require_root_q04_materialized_prefix_v1(
-        &self,
-        history: &crate::policy_compiler::create_q04::Q04RootAuthorityHistoryV1,
-        prefix: usize,
-    ) -> Result<(), crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
-        history.require_prefix_rows(self.native.state().iter().map(|((namespace, key), value)| {
-            (*namespace, key.as_slice(), value.as_slice())
-        }), prefix)?;
-        Ok(())
-    }
-
     // This observes the actual whole Controller ledger/native file under its
     // original mutable borrow. The copied tuple is equality DATA only; every
     // signer calls this again after parking its returned packet or first cause.
@@ -684,21 +462,7 @@ impl Journal {
         Ok(())
     }
 
-    pub(crate) fn readback_cache_q04_original_v1(
-        &self,
-        recipes: &CacheQ04TransactionRecipesV1<'_>,
-        committed: usize,
-    ) -> Result<(), crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
-        if committed == 0 || committed > 3 {
-            return Err(crate::policy_compiler::create_q04::CreateQ04ErrorV1::ChangedCut);
-        }
-        recipes.require_fixed_journal(self)?;
-        recipes.require_prefix(self.native.state(), committed)?;
-        self.require_q04_native_recipe_prefix_v1(&recipes.transactions()[..committed], recipes.original_next())?;
-        recipes.require_fixed_journal(self)?;
-        recipes.require_prefix(self.native.state(), committed)?;
-        Ok(())
-    }
+
 
     pub(crate) fn require_q04_returned_commit_v1(
         &self,

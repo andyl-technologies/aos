@@ -216,12 +216,12 @@ pub fn delete_planning_broker_inventory_role_receiving_demand_v2(
     // The ordinary reducers also impose the existing lifecycle row bound.
     let rows = (exact_body.len() / 2).min(super::super::MAXIMUM_LIFECYCLE_EXPECTATIONS);
     let width = match role {
-        1 => size_of::<LifecycleBootDomainEntryV1>()
+        1 => size_of::<LifecycleBootDomainEntryDataV1>()
             .checked_add(size_of::<LifecycleAuthenticatedRuntimeFactV1>())?,
         // Mount16 retains its complete typed decoder model directly; the
         // shared method supplier below already owns that full plane.
         2 => 0,
-        4 => size_of::<LifecycleBootDomainEntryV1>(),
+        4 => size_of::<LifecycleBootDomainEntryDataV1>(),
         3 => size_of::<LifecycleStorageInventoryEntryV1>()
             .checked_add(size_of::<LifecycleStorageTransitionEntryV1>())?,
         _ => return None,

@@ -15,8 +15,8 @@ pub(crate) struct MountInventoryRootAbsenceOriginalV2 {
     directory_result: Option<std::result::Result<(), aos_sandbox_linux::path::EmptyDirectoryClosedV2>>,
     path_open: Option<std::result::Result<OwnedFd, rustix::io::Errno>>,
     path: Option<std::result::Result<rustix::fs::Stat, rustix::io::Errno>>,
-    path_mount: Option<std::result::Result<MountId, aos_sandbox_linux::Error>>,
-    mount: Option<std::result::Result<MountId, aos_sandbox_linux::Error>>,
+    path_mount: Option<std::result::Result<MountId, aos_linux_descriptors::Error>>,
+    mount: Option<std::result::Result<MountId, aos_linux_descriptors::Error>>,
     comparison: Option<Result<()>>,
     first: Option<First>,
 }

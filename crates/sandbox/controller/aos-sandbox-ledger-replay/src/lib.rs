@@ -81,3 +81,9 @@ pub mod provider_ordinary_recipe;
 
 /// Shares complete Q04 physical-history comparisons without native authority.
 pub mod q04_native_history;
+
+/// Shares typed protected preopen representation geometry without native authority.
+mod preopen_geometry;
+
+/// Compares historical authorization rows without native custody or admission.
+pub mod authorization_comparison;

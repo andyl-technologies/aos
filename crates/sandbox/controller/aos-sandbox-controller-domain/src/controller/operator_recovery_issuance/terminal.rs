@@ -13,6 +13,7 @@
 //!          | signed-pair-digest[32]
 //! ```
 
+use crate::journal::historical_observation::HistoricalObservationV1;
 use aos_sandbox_model::OperationId;
 use aos_sandbox_model::operator_recovery_effect::{
     OperatorRecoveryEffectIntentV1, verify_operator_recovery_effect_intent_v1,
@@ -47,7 +48,8 @@ mod precondition_failure;
 
 pub(super) use precondition_failure::{
     ObservedRepairPreconditionV1, PreparedRepairPreconditionFailureV1,
-    verify_current_failure_v1, verify_settled_failure_receipt_v1,
+    verify_current_failure_v1, verify_current_failure_from_observation_v2,
+    verify_settled_failure_receipt_v1,
     terminal_claims as failure_terminal_claims_v1,
 };
 
@@ -58,6 +60,26 @@ pub(super) use successor_commit::{
 
 pub(super) fn issued_intent(
     journal: &Journal,
+    signer: &ProtectedOperatorRecoverySignerV1,
+    operation_id: OperationId,
+) -> Result<
+    (StorageRepairIssuanceV2, OperatorRecoveryEffectIntentV1),
+    OperatorRecoveryIssuanceErrorV1,
+> {
+    issued_intent_from_observation_v2(
+        HistoricalObservationV1::from_journal_v1(journal),
+        signer,
+        operation_id,
+    )
+}
+
+/// Checks the original signed Repair custody through the same borrowed owner.
+///
+/// # Errors
+///
+/// Preserves the original malformed-history, signature, credential and owner failures.
+pub(super) fn issued_intent_from_observation_v2(
+    journal: HistoricalObservationV1<'_>,
     signer: &ProtectedOperatorRecoverySignerV1,
     operation_id: OperationId,
 ) -> Result<
@@ -310,6 +332,25 @@ fn reserve(
 /// Rechecks the retained proof identity before a new post-proof live query.
 pub(super) fn read_sealed_proof_v2(
     journal: &Journal,
+    issued: &StorageRepairIssuanceV2,
+    effect_id: [u8; 32],
+    signed_pair_digest: [u8; 32],
+) -> Result<StoredProofV2, OperatorRecoveryIssuanceErrorV1> {
+    read_sealed_proof_from_observation_v2(
+        HistoricalObservationV1::from_journal_v1(journal),
+        issued,
+        effect_id,
+        signed_pair_digest,
+    )
+}
+
+/// Checks the original signed Repair custody through the same borrowed owner.
+///
+/// # Errors
+///
+/// Preserves the original malformed-history, signature, credential and owner failures.
+pub(super) fn read_sealed_proof_from_observation_v2(
+    journal: HistoricalObservationV1<'_>,
     issued: &StorageRepairIssuanceV2,
     effect_id: [u8; 32],
     signed_pair_digest: [u8; 32],

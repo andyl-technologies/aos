@@ -60,6 +60,7 @@ pub use root_broker_plan::RootCurrentBrokerPlanCredentialCustodyV1;
 pub use root_storage::RootCurrentStorageManifestCustodyV1;
 pub use root_delete::{RootCurrentHostManifestCustodyV2, RootDeleteBrokerManifestsCustodyV2};
 pub use root_current::{RootCurrentIssuerCredentialCustodyV1,
+    RootCurrentIssuerReadbackOriginalV1,
     RootCurrentOwnershipCredentialCustodyV1, ROOT_OWNERSHIP_POLICY_MAXIMUM_BYTES_V1};
 
 mod controller_startup;

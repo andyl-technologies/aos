@@ -47,12 +47,12 @@ enum SocketOpeningErrorV2 {
 
 #[derive(Debug)]
 enum MountOpeningErrorV2 {
-    Ordinary(aos_sandbox_linux::Error),
+    Ordinary(aos_linux_descriptors::Error),
     Retained(MountAdoptionFailureV2),
 }
 
 impl MountOpeningErrorV2 {
-    fn cause(&self) -> &aos_sandbox_linux::Error {
+    fn cause(&self) -> &aos_linux_descriptors::Error {
         match self {
             Self::Ordinary(cause) => cause,
             Self::Retained(failure) => failure.cause(),
@@ -105,7 +105,7 @@ pub(crate) struct HostRootMountExportOriginalV2 {
     native: RootMountRecipeOriginalV2,
     returned: Option<Result<DetachedMount>>,
     cutoff: Option<u64>,
-    mount_post: Option<aos_sandbox_linux::Result<aos_sandbox_linux::inventory::MountId>>,
+    mount_post: Option<aos_linux_descriptors::Result<aos_sandbox_linux::inventory::MountId>>,
     parent_post: Option<Result<()>>,
     socket_post: Option<std::result::Result<(), SeqpacketError>>,
     posts: Option<Result<()>>,
@@ -232,7 +232,7 @@ impl ExportFrameV2 {
 
 struct RootMountRecipeOriginalV2 {
     active: RuntimeScopeMembershipOriginalV1,
-    active_result: Option<aos_sandbox_linux::Result<()>>,
+    active_result: Option<aos_linux_descriptors::Result<()>>,
     socket: Option<std::result::Result<DescriptorSubjectSocket, SocketOpeningErrorV2>>,
     nonce: [u8; 32],
     entropy: Option<std::result::Result<(), rand::rand_core::OsError>>,
@@ -244,7 +244,7 @@ struct RootMountRecipeOriginalV2 {
     receive: Option<std::result::Result<ReceivedDescriptorRecord, StorageClientTransportErrorV2>>,
     binding: Option<std::result::Result<(), RecordBindingError>>,
     membership: [ExactCgroupMembershipReadbackV1; 3],
-    alive: [Option<aos_sandbox_linux::Result<bool>>; 3],
+    alive: [Option<aos_linux_descriptors::Result<bool>>; 3],
     response:
         Option<std::result::Result<StorageRootExportResponseV1, StorageRootExportProtocolErrorV1>>,
     payload: Option<Vec<u8>>,
@@ -258,7 +258,7 @@ struct RootMountRecipeOriginalV2 {
     label_demand: Option<ResourceVector>,
     labels_result: Option<Result<()>>,
     label_clock: Option<std::result::Result<u64, StorageClientTransportErrorV2>>,
-    membership_results: [Option<Result<aos_sandbox_linux::pidfd::PidFdInfo>>; 3],
+    membership_results: [Option<Result<aos_linux_descriptors::pidfd::PidFdInfo>>; 3],
     first: Option<FirstV2>,
 }
 
@@ -677,10 +677,10 @@ fn export_recipe(
 
 fn observe_membership(
     anchor: &RetainedCgroupAnchor,
-    process: &aos_sandbox_linux::pidfd::PidFd,
+    process: &aos_linux_descriptors::pidfd::PidFd,
     retained: bool,
     original: &mut ExactCgroupMembershipReadbackV1,
-) -> Result<aos_sandbox_linux::pidfd::PidFdInfo> {
+) -> Result<aos_linux_descriptors::pidfd::PidFdInfo> {
     if !retained {
         return anchor
             .verify_exact_membership(process)
@@ -957,7 +957,7 @@ mod tests {
         assert!(matches!(
             labels.failure().unwrap().downcast_ref::<GuestRootLabelErrorV1>(),
             Some(GuestRootLabelErrorV1::Path(
-                aos_sandbox_linux::Error::WrongDescriptorType { expected: "directory" }
+                aos_linux_descriptors::Error::WrongDescriptorType { expected: "directory" }
             ))
         ));
         let actual = rustix::fs::fstat(mount.as_fd()).unwrap();
@@ -993,7 +993,7 @@ mod tests {
         assert_eq!((actual.st_dev, actual.st_ino), (expected.st_dev, expected.st_ino));
         assert!(matches!(original.failure().unwrap().downcast_ref::<GuestRootLabelErrorV1>(),
             Some(GuestRootLabelErrorV1::Path(
-                aos_sandbox_linux::Error::WrongDescriptorType { expected: "directory" }))));
+                aos_linux_descriptors::Error::WrongDescriptorType { expected: "directory" }))));
         assert!(std::ptr::eq(
             original.failure().unwrap().downcast_ref::<GuestRootLabelErrorV1>().unwrap(),
             original_cause,

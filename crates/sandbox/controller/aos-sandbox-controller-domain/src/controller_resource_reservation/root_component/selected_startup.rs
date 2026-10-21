@@ -4,13 +4,10 @@
 //! cumulative RootR permit. The completed startup and its original payer move
 //! together; a failed handoff keeps the complete original inside its error.
 
-use aos_sandbox_model::ResourceDimension as D;
-
 use crate::normal_root::{NormalRootStartupErrorV1, ProductionNormalRootStartupV1,
     RootReceivingStartupFailureV1, RootSelectedStartupReceivingV1, RootServiceCurrentnessV1};
 
 use super::RootReceivingOriginalV1;
-use super::super::ResourceReservationErrorV1;
 
 impl RootReceivingOriginalV1 {
     pub(crate) fn into_selected_startup_parts(
@@ -48,6 +45,19 @@ impl RootReceivingOriginalV1 {
                 RootReceivingStartupFailureV1::new(self),
             )));
         }
+        let native_prior = self.activation.borrow_selected_provision_v1().map(|original| {
+            aos_sandbox_policy::native::RootStartupProvisionOriginalV1::new_selected_v1(&original)
+        });
+        match native_prior {
+            Ok(original) => self.native_startup_prior = Some(original),
+            Err(cause) => {
+                self.selected_completion = Some(Err(cause.into()));
+                self.activation.latch_root_refusal_v1();
+                return Err(NormalRootStartupErrorV1::Receiving(Box::new(
+                    RootReceivingStartupFailureV1::new(self),
+                )));
+            }
+        }
         let completed = self.selected.as_mut().and_then(|selected| selected.take_completed());
         let Some(startup) = completed else {
             self.activation.latch_root_refusal_v1();
@@ -60,43 +70,14 @@ impl RootReceivingOriginalV1 {
     }
 
     fn admit_selected_once(&mut self, identities: [u32; 4]) -> Result<(), NormalRootStartupErrorV1> {
-        if self.selected_prefix.is_some() || self.selected.is_some() || self.failure().is_some()
+        if self.selected.is_some() || self.failure().is_some()
             || !matches!(self.recipient_binding, Some(Ok(())))
             || self.activation.process_id_v1() != std::process::id()
         {
             return Err(NormalRootStartupErrorV1::Service);
         }
-        let returned = (|| {
-            let error = || ResourceReservationErrorV1::EnrollmentUnavailable;
-            let envelope = self.original.as_ref().and_then(|result| result.as_ref().ok())
-                .and_then(|original| original.policy.bootstrap_provisions().root_receiving)
-                .ok_or_else(error)?;
-            let prefix = self.profile_prefix.as_ref().and_then(|result| result.as_ref().ok())
-                .copied().ok_or_else(error)?;
-            let selected = RootSelectedStartupReceivingV1::demand(&self.activation)?;
-            let currentness = RootServiceCurrentnessV1::demand()?;
-            let disposed_names = self.activation.kernel_capture_v1()
-                .and_then(|kernel| kernel.settled_named_descriptor_peak_v1())
-                .ok_or_else(error)?;
-            // Initial containment really disposed its successful named handles
-            // after the original recipient join. Keep their complete peak paid
-            // in prefix and reuse it for this sequential currentness phase.
-            // All raw/decoded memory and observer/global FD reserves remain.
-            let currentness = currentness.with(
-                D::OpenFiles,
-                currentness.get(D::OpenFiles).saturating_sub(disposed_names),
-            );
-            let demand = prefix.checked_add(selected)
-                .and_then(|demand| demand.checked_add(currentness)).map_err(|_| error())?;
-            envelope.checked_sub(demand).map_err(|_| error())?;
-            self.activation.require_receiving_demand_v1(demand)
-                .map_err(|_| ResourceReservationErrorV1::EnrollmentUnavailable)?;
-            Ok(demand)
-        })();
-        self.native_refusal_original_v1().park_empty_result_v1(&mut self.selected_prefix, returned);
-        if !matches!(self.selected_prefix, Some(Ok(_))) {
-            return Err(NormalRootStartupErrorV1::Service);
-        }
+        self.activation.admit_role_selected_once_v1()
+            .map_err(|_| NormalRootStartupErrorV1::Service)?;
 
         self.selected = Some(RootSelectedStartupReceivingV1::default());
         let returned = (|| {

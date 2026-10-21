@@ -21,9 +21,12 @@ use std::time::Duration;
 
 use aos_sandbox_model::model::{AclEntry, FilesystemMetadata};
 use aos_sandbox_model::{ObjectDescriptorVerifier, ObjectDescriptorVerificationError};
-use aos_sandbox_linux::immutable_file::{FsVerityBacking, FsVerityDigest, ImmutableFileError};
+use aos_sandbox_linux::immutable_file::FsVerityBacking;
+use aos_sandbox_linux::immutable_file::FsVerityDigest;
+use aos_linux_descriptors::ImmutableFileError;
 use aos_sandbox_linux::path::{BeneathRoot, ResolveOptions, ResolvedPath};
-use aos_sandbox_linux::pidfd::{PidFd, PidFdInfo};
+use aos_linux_descriptors::pidfd::PidFd;
+use aos_linux_descriptors::pidfd::PidFdInfo;
 use aos_sandbox_linux::process::{
     FixedProcessBoottimeCutV1, FixedProcessCaptureV1, FixedProcessDrivenInputsV1,
     FixedProcessDrivenProgressV1, FixedProcessDrivenSessionV1, FixedProcessRequest,
@@ -109,7 +112,7 @@ pub(super) enum StoreFailureV1 {
     #[error("physical Store operation failed: {0}")]
     Native(#[from] rustix::io::Errno),
     #[error("physical Store descriptor admission failed: {0}")]
-    Linux(#[from] aos_sandbox_linux::Error),
+    Linux(#[from] aos_linux_descriptors::Error),
     #[error("authenticated Store seal failed: {0}")]
     Verity(#[from] ImmutableFileError),
     #[error("canonical portable input failed: {0}")]

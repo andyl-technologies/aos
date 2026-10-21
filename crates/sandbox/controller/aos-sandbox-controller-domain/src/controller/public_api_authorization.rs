@@ -9,6 +9,7 @@
 //! The private owner keeps its Journal and fixed clock together across public
 //! request binding; transport evidence and current authorization remain separate.
 
+use aos_sandbox_protocol::public_api::authorization_error::CliAuthorizationAdapterError;
 use aos_sandbox_model::CapabilityId;
 
 use super::{ActivatedOperationCompiler, ControllerProtectedClockV1, NodeController};
@@ -16,7 +17,7 @@ use crate::PublicOperationAuthorizationV1;
 use crate::SingleNodeEffectExecutor;
 use crate::cli_model::authorization_adapter::{
     AuthenticatedCliChannelEvidenceV1, AuthenticatedCliIdentityEvidenceV1,
-    AuthenticatedCliSessionEvidenceV1, CliAuthorizationAdapterError, CurrentCapabilityDecisionV1,
+    AuthenticatedCliSessionEvidenceV1, CurrentCapabilityDecisionV1,
     CurrentProtectedCliAuthorizationV1, DecodedAuthenticatedCliRequestV1,
     DormantAuthenticatedCliRequestV1, PublicApiAuditMethodV1, canonical_public_audit_request_v2,
     canonical_public_mutation_request_v2,

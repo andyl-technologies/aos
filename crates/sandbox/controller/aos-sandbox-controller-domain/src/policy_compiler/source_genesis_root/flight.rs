@@ -26,7 +26,7 @@ use aos_sandbox_broker::controller_receiving::profile::root_flight::ControllerRo
 
 use crate::hierarchy::genesis_profile::{SourceGenesisErrorV1, take};
 
-use super::records::{RootSourceGenesisIntentRecordV1, SourceHierarchyFloorRecordV1};
+use aos_sandbox_ledger_replay::replay::root_genesis_records::{RootSourceGenesisIntentRecordV1, SourceHierarchyFloorRecordV1};
 use super::transport;
 
 

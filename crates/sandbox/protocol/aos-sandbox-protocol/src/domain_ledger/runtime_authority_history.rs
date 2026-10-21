@@ -7,6 +7,8 @@
 
 /// Shares historical operation/gate/effect comparisons without Native acceptance.
 pub mod crosslinks;
+/// Compares historical current assignment record links without Native acceptance.
+pub mod current_assignment;
 /// Shares complete historical namespace/continuity checks over actual borrowed objects.
 pub mod ledger_read;
 mod receiving;

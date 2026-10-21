@@ -11,7 +11,7 @@ use crate::kernel_reader::observation_helpers_v2::ObservationHelperPortV2;
 
 use aos_sandbox_model::ObjectDigest;
 use aos_sandbox_model::model::NetworkKind;
-use aos_sandbox_linux::boot::KernelBootId;
+use aos_linux_descriptors::boot::KernelBootId;
 use aos_sandbox_linux::netlink::network_namespace_id;
 use aos_sandbox_linux::pidfd::{NamespaceFd, NamespaceIdentity, SingleThreadedProcess};
 use sha2::{Digest as _, Sha256};
@@ -42,7 +42,7 @@ pub enum NetworkNamespaceObserverError {
     AuthorityMismatch,
     /// A namespace transition or descriptor-backed netlink query failed.
     #[error(transparent)]
-    Linux(#[from] aos_sandbox_linux::Error),
+    Linux(#[from] aos_linux_descriptors::Error),
     /// The fixed rtnetlink inventory could not be read exactly.
     #[error(transparent)]
     Reader(#[from] NetworkKernelReaderError),

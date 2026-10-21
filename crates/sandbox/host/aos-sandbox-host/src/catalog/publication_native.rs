@@ -122,11 +122,11 @@ impl LockOriginal {
 #[derive(Default)]
 pub(super) struct ReadOriginal {
     file: aos_sandbox_linux::path::BeneathRegularFileReadOriginalV2,
-    capture: Option<aos_sandbox_linux::Result<()>>,
+    capture: Option<aos_linux_descriptors::Result<()>>,
     root_metadata: Option<rustix::io::Result<rustix::fs::Stat>>,
     extent: Option<Result<usize>>,
     funding: Option<Result<()>>,
-    reading: Option<aos_sandbox_linux::Result<()>>,
+    reading: Option<aos_linux_descriptors::Result<()>>,
     comparison: Option<Result<()>>,
     snapshot: Option<
         std::result::Result<
@@ -134,7 +134,7 @@ pub(super) struct ReadOriginal {
             aos_sandbox_protocol::host_catalog_snapshot::HostCatalogSnapshotError,
         >,
     >,
-    post: Option<aos_sandbox_linux::Result<()>>,
+    post: Option<aos_linux_descriptors::Result<()>>,
     body: Option<Result<()>>,
     absent: bool,
 }
@@ -152,7 +152,7 @@ impl ReadOriginal {
             self.file
                 .capture_once_v2(root, std::path::Path::new(CATALOG_FILE)),
         );
-        self.absent = matches!(self.file.failure(), Some(aos_sandbox_linux::Error::Syscall { source, .. })
+        self.absent = matches!(self.file.failure(), Some(aos_linux_descriptors::Error::Syscall { source, .. })
             if source.raw_os_error() == Some(rustix::io::Errno::NOENT.raw_os_error()));
         if self.absent {
             return Ok(());

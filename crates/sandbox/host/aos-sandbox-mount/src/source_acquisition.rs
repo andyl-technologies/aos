@@ -169,7 +169,7 @@ pub(crate) struct SourceAcquisitionRuntimeV2 {
     table: SourceAcquisitionTableV2,
     git_coverage_first_failure: Option<MountManagerSourceInventoryError>,
     original_terminal_inventory_failure: Option<MountManagerSourceInventoryError>,
-    original_terminal_inventory_kernel_failure: Option<aos_sandbox_linux::Error>,
+    original_terminal_inventory_kernel_failure: Option<aos_linux_descriptors::Error>,
     broker_instance_id: [u8; 16],
     last_boottime_nanoseconds: Option<u64>,
     pending_provider: Option<SentProviderQueryV2>,
@@ -2232,7 +2232,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
     #[doc(hidden)]
     pub fn encode_current_inventory(&mut self) -> Result<Vec<u8>> {
         let broker_instance_id = self.runtime.broker_instance_id;
-        let kernel_boot_id = aos_sandbox_linux::boot::KernelBootId::current()
+        let kernel_boot_id = aos_linux_descriptors::boot::KernelBootId::current()
             .map_err(|error| crate::MountError::State(error.to_string()))?
             .into_bytes();
         self.with_source_acquisition_authority(|table, authority| {
@@ -2288,7 +2288,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
                 return Err(state_error("original terminal inventory snapshot refused"));
             }
         };
-        let boot = match aos_sandbox_linux::boot::KernelBootId::current() {
+        let boot = match aos_linux_descriptors::boot::KernelBootId::current() {
             Ok(boot) => boot.into_bytes(),
             Err(cause) => {
                 self.runtime.original_terminal_inventory_kernel_failure = Some(cause);
@@ -2325,7 +2325,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         policy: PeerPolicy,
         protected_boot_id: [u8; 16],
     ) -> Result<Vec<u8>> {
-        let current_boot_id = aos_sandbox_linux::boot::KernelBootId::current()
+        let current_boot_id = aos_linux_descriptors::boot::KernelBootId::current()
             .map_err(|error| crate::MountError::State(error.to_string()))?
             .into_bytes();
         let sample = crate::service::trusted_paired_clock_sample()?;
@@ -3467,7 +3467,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
     }
 
     fn current_boottime(&mut self, protected_boot_id: [u8; 16]) -> Result<u64> {
-        let current_boot_id = aos_sandbox_linux::boot::KernelBootId::current()
+        let current_boot_id = aos_linux_descriptors::boot::KernelBootId::current()
             .map_err(|error| crate::MountError::State(error.to_string()))?
             .into_bytes();
         let sample = crate::service::trusted_paired_clock_sample()?;

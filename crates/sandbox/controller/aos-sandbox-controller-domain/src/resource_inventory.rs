@@ -25,7 +25,7 @@ use aos_sandbox_api::aos::sandbox::local::v1::{
 };
 use aos_sandbox_model::{ObjectDigest, ProtocolId, ProtocolVersion};
 use aos_sandbox_linux::cgroup::RetainedCgroupAnchor;
-use aos_sandbox_linux::pidfd::PidFdInfo;
+use aos_linux_descriptors::pidfd::PidFdInfo;
 use aos_sandbox_linux::seqpacket::descriptor_subject::{
     DescriptorSubjectSocket, ReceivedDescriptorRecord,
 };
@@ -362,7 +362,7 @@ pub enum ResourceInventoryError {
     Transport(#[from] SeqpacketError),
     /// Configured service-subject or cgroup correlation failed.
     #[error(transparent)]
-    Kernel(#[from] aos_sandbox_linux::Error),
+    Kernel(#[from] aos_linux_descriptors::Error),
     /// Protected journal provenance, health, or durability failed.
     #[error(transparent)]
     Journal(#[from] JournalError),

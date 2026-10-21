@@ -21,10 +21,9 @@ use crate::controller_resource_reservation::{
     ControllerCatalogMaintenanceRootLoanV3, ResourceReservationErrorV1,
 };
 use crate::hierarchy::genesis_profile::SourceGenesisErrorV1;
-use crate::policy_compiler::{
-    RetainedKernelPairedClockAttemptV1,
-    bounded_stream_io::{DeadlineStreamDirectionV1, FixedDeadlineStreamIoV1},
-};
+use crate::policy_compiler::RetainedKernelPairedClockAttemptV1;
+use aos_sandbox_broker::bounded_stream_io::DeadlineStreamDirectionV1;
+use aos_sandbox_broker::bounded_stream_io::FixedDeadlineStreamIoV1;
 use crate::Journal;
 use aos_sandbox_model::{RawPairedClockSample, ResourceDimension as D, ResourceVector};
 use aos_sandbox_linux::unix_stream::RetainedSubjectStreamReadV1;
@@ -395,7 +394,7 @@ impl RootMaintenanceStorageClientOriginalV3 {
                 .connection
                 .stream_mut()
                 .map_err(|_| First::Reporting)?
-                .enable_subject_reporting(),
+                .enable_subject_reporting().map_err(aos_sandbox_linux::seqpacket::SeqpacketError::from),
         );
         if !matches!(state.reporting, Some(Ok(()))) {
             return Err(First::Reporting);

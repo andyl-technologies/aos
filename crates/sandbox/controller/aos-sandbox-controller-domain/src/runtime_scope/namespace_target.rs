@@ -351,14 +351,16 @@ struct History {
     count: usize,
 }
 
-impl History {
-    fn load(journal: &Journal) -> Result<Self, NamespaceTargetError> {
-        journal.ensure_protected_authority()?;
-        let runtimes = RuntimeHistory::load(journal)?;
+
+
+macro_rules! namespace_target_history_recipe_v2 {
+    ($input:expr, $load:ident) => {{
+        $input.ensure_protected_authority()?;
+        let runtimes = RuntimeHistory::$load($input)?;
         let mut history = Self::default();
         let mut heads = BTreeMap::new();
         let mut bytes = 0usize;
-        for (index, (key, value)) in journal.records(NAMESPACE).enumerate() {
+        for (index, (key, value)) in $input.records(NAMESPACE).enumerate() {
             bytes = bytes
                 .checked_add(key.len())
                 .and_then(|total| total.checked_add(value.len()))
@@ -402,6 +404,16 @@ impl History {
             return Err(NamespaceTargetError::CorruptState);
         }
         Ok(history)
+        }};
+}
+
+impl History {
+    fn load(journal: &Journal) -> Result<Self, NamespaceTargetError> {
+        namespace_target_history_recipe_v2!(journal, load)
+    }
+
+    fn load_observed_v2(journal: crate::journal::historical_observation::HistoricalObservationV1<'_>) -> Result<Self, NamespaceTargetError> {
+        namespace_target_history_recipe_v2!(journal, load_observed_v2)
     }
 
     fn append(&mut self, record: Record) -> Result<(), NamespaceTargetError> {
@@ -569,31 +581,46 @@ pub(crate) fn validate_namespace(journal: &mut Journal) -> Result<(), NamespaceT
     History::load(journal).map(|_| ())
 }
 
-pub(crate) fn validate_durable_reference_in_validated_namespace(
-    journal: &Journal,
-    reference: DurableNamespaceTargetReferenceV1,
-) -> Result<(), NamespaceTargetError> {
+
+
+macro_rules! validate_durable_reference_in_validated_namespace_historical_recipe_v2 {
+    ($input:expr, $get:ident, $reference:expr) => {{
     let identity = (
-        *reference.sandbox.as_bytes(),
-        *reference.incarnation.as_bytes(),
+        *$reference.sandbox.as_bytes(),
+        *$reference.incarnation.as_bytes(),
     );
     let mut key = vec![b't'];
     key.extend_from_slice(&identity.0);
     key.extend_from_slice(&identity.1);
-    key.extend_from_slice(&reference.observed_generation.to_be_bytes());
-    let record = journal
-        .get(NAMESPACE, &key)
+    key.extend_from_slice(&$reference.observed_generation.to_be_bytes());
+    let record = $input
+        .$get(NAMESPACE, &key)
         .ok_or(NamespaceTargetError::CorruptState)
         .and_then(Record::decode)?;
     if record.identity != identity
-        || record.observed_generation != reference.observed_generation
-        || record.observed_audit_digest != reference.observed_audit_digest
-        || record.target_generation != reference.target_generation
-        || record.digest != reference.allocation_digest
+        || record.observed_generation != $reference.observed_generation
+        || record.observed_audit_digest != $reference.observed_audit_digest
+        || record.target_generation != $reference.target_generation
+        || record.digest != $reference.allocation_digest
     {
         return Err(NamespaceTargetError::CorruptState);
     }
     Ok(())
+    }};
+}
+
+pub(crate) fn validate_durable_reference_in_validated_namespace(
+    journal: &Journal,
+    reference: DurableNamespaceTargetReferenceV1,
+) -> Result<(), NamespaceTargetError> {
+    validate_durable_reference_in_validated_namespace_historical_recipe_v2!(journal, get, reference)
+}
+
+pub(crate) fn validate_durable_reference_in_validated_namespace_rows_v2(
+    journal: aos_sandbox_protocol::domain_ledger::readonly::HistoricalLedgerRowsDataV2<'_>,
+    reference: DurableNamespaceTargetReferenceV1,
+) -> Result<(), NamespaceTargetError> {
+    validate_durable_reference_in_validated_namespace_historical_recipe_v2!(journal, get_data_v2, reference)
 }
 
 /// Contains only validated historical coordinates, never live worker custody.
@@ -664,4 +691,20 @@ pub(crate) fn consumer_namespace_origin_data(
         allocation,
         binding,
     })
+}
+
+/// Validates the exact allocation history through its retained real owner.
+pub(crate) fn validate_namespace_observed_v2(
+    journal: crate::journal::historical_observation::HistoricalObservationV1<'_>,
+) -> Result<(), NamespaceTargetError> {
+    History::load_observed_v2(journal).map(|_| ())
+}
+
+/// Prices the reached actual-owner/Rows argument and owning return controls.
+/// Dynamic retained histories and their backing retain their existing quote.
+pub(crate) fn historical_observation_control_bytes_v2() -> Option<usize> {
+    std::mem::size_of::<(crate::journal::historical_observation::HistoricalObservationV1<'_>, &History)>().checked_mul(3)?
+        .checked_add(std::mem::size_of::<Result<History, NamespaceTargetError>>().checked_mul(3)?)?
+        .checked_add(std::mem::size_of::<Result<(), NamespaceTargetError>>().checked_mul(3)?)?
+        .checked_add(std::mem::size_of::<Option<usize>>().checked_mul(3)?)
 }

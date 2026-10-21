@@ -6632,7 +6632,7 @@ mod tests {
         let realtime = rustix::time::clock_gettime(rustix::time::ClockId::Realtime);
         RawPairedClockSample::new_untrusted(
             RawClockProvenance::new_untrusted(*b"aos-kernel-clock").unwrap(),
-            aos_sandbox_linux::boot::KernelBootId::current()
+            aos_linux_descriptors::boot::KernelBootId::current()
                 .unwrap()
                 .into_bytes(),
             realtime.tv_sec,

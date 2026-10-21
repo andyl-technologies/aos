@@ -18,7 +18,7 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use super::{ConnectionPeerIdentity, RecordSubjectListener, SeqpacketError};
-use crate::Error;
+use aos_linux_descriptors::Error;
 use crate::uapi::{self, RawAncillary};
 
 const FIXTURE_ENV: &str = "AOS_SEQPACKET_CONNECTOR_FIXTURE_V1";
@@ -76,7 +76,7 @@ fn receive_control(fd: BorrowedFd<'_>) -> (Vec<u8>, Vec<RawAncillary>) {
 }
 
 pub(super) fn spawn_connector(listener: BorrowedFd<'_>) -> (Connector, OwnedFd, OwnedFd) {
-    let (parent_control, child_control) = uapi::seqpacket_pair().expect("create control pair");
+    let (parent_control, child_control) = aos_linux_descriptors::native::seqpacket_pair().expect("create control pair");
     let child = Command::new(std::env::current_exe().expect("test executable"))
         .args([
             "--exact",
@@ -137,7 +137,7 @@ fn connector_fixture() {
 #[test]
 fn delegated_writer_has_its_own_record_identity_while_connector_remains_pinned() {
     let fd = uapi::seqpacket_listener().expect("create listener");
-    uapi::enable_seqpacket_identity(fd.as_fd()).expect("configure listener before connect");
+    aos_linux_descriptors::native::enable_seqpacket_identity(fd.as_fd()).expect("configure listener before connect");
     let mut listener = RecordSubjectListener::from_owned(fd).expect("adopt listener");
     let (mut connector, control, delegated) = spawn_connector(listener.as_fd());
     let connector_pid = connector.0.id();

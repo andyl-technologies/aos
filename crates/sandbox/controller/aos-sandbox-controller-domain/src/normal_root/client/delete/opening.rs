@@ -10,9 +10,8 @@ use super::{
 };
 use crate::hierarchy::genesis_profile::SourceGenesisErrorV1;
 use crate::journal::{Journal, SourceDeletePendingFenceV1};
-use crate::policy_compiler::bounded_stream_io::{
-    FixedDeadlineStreamIoV1, SliceDeadlineStreamIoV1,
-};
+use aos_sandbox_broker::bounded_stream_io::FixedDeadlineStreamIoV1;
+use aos_sandbox_broker::bounded_stream_io::SliceDeadlineStreamIoV1;
 use crate::policy_compiler::RetainedKernelPairedClockAttemptV1;
 use aos_sandbox_model::RawPairedClockSample;
 use aos_sandbox_linux::unix_stream::{RetainedSubjectStreamReadV1, SubjectStreamReadErrorV1};
@@ -165,7 +164,7 @@ impl RootDeleteClientOpeningV1 {
 
     pub(super) fn send_controller_cut_once(
         &mut self,
-        stream: &mut aos_sandbox_linux::unix_stream::RetainedUnixStream,
+        stream: &mut aos_linux_descriptors::unix_stream::RetainedUnixStream,
         challenge: DeleteRootChallengeDataV2,
         funding: &[u8],
         next: u64,
@@ -192,7 +191,7 @@ impl RootDeleteClientOpeningV1 {
             stream,
             &mut self.controller_cut_bytes,
             cutoff,
-            crate::policy_compiler::bounded_stream_io::DeadlineStreamDirectionV1::Write,
+            aos_sandbox_broker::bounded_stream_io::DeadlineStreamDirectionV1::Write,
         ));
         if matches!(self.controller_cut_sent, Some(Ok(()))) {
             Ok(())
@@ -203,7 +202,7 @@ impl RootDeleteClientOpeningV1 {
 
     pub(super) fn send_authorization_once(
         &mut self,
-        stream: &mut aos_sandbox_linux::unix_stream::RetainedUnixStream,
+        stream: &mut aos_linux_descriptors::unix_stream::RetainedUnixStream,
         fence: &SourceDeletePendingFenceV1<'_, '_, '_, '_>,
         open: DeleteRootOpenDataV2,
         challenge: DeleteRootChallengeDataV2,
@@ -235,7 +234,7 @@ impl RootDeleteClientOpeningV1 {
         })());
         if !matches!(self.authorization_encoding, Some(Ok(()))) { return Err(First::Authorization); }
         self.authorization_sent = Some(self.authorization_io.run_once(stream, &mut self.authorization_bytes,
-            cutoff, crate::policy_compiler::bounded_stream_io::DeadlineStreamDirectionV1::Write));
+            cutoff, aos_sandbox_broker::bounded_stream_io::DeadlineStreamDirectionV1::Write));
         if matches!(self.authorization_sent, Some(Ok(()))) { Ok(()) }
         else { Err(First::SendAuthorization) }
     }

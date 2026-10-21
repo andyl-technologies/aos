@@ -40,7 +40,7 @@ pub(super) struct NamespaceReapOriginalV4 {
 #[derive(Default)]
 struct HeldPinOriginalV4 {
     metadata: Option<std::result::Result<rustix::fs::Stat, rustix::io::Errno>>,
-    mount: Option<std::result::Result<MountId, aos_sandbox_linux::Error>>,
+    mount: Option<std::result::Result<MountId, aos_linux_descriptors::Error>>,
     compared: Option<Result<()>>,
 }
 

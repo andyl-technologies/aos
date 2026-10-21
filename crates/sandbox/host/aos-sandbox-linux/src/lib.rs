@@ -11,7 +11,7 @@
 //!
 //! The modules divide responsibility as follows:
 //!
-//! - [`pidfd`] pins a process and obtains typed namespace descriptors;
+//! - [`pidfd`] owns process-role observations and typed namespace descriptors;
 //! - [`self_execution`] retains and revalidates the calling process's kernel identity;
 //! - [`inherited_fd`] safely duplicates unowned process-start descriptors;
 //! - [`fixed_spawn`] executes one absolute program with an exact inherited descriptor table;
@@ -26,11 +26,14 @@
 //! - [`seqpacket`] exchanges bounded records with kernel-pinned peer identity;
 //! - [`selinux_policy`] compares the enforcing kernel policy with an exact immutable package;
 //! - [`startup_fd_table`] exclusively claims and double-observes the initial descriptor table; and
-//! - [`unix_stream`] retains one connected stream and same-socket duplicates.
+//! - [`unix_stream`] owns strict stream subject and EOF receives.
+//!
+//! Generic process pins, endpoint correlation, kernel boot identity and sealed
+//! credentials are owned directly by `aos-linux-descriptors`; callers use that
+//! canonical crate without an old-path compatibility export.
 
 #![cfg(target_os = "linux")]
 
-pub mod boot;
 pub mod cgroup;
 pub mod credential;
 pub mod guest_startup_report;
@@ -60,78 +63,4 @@ pub mod startup_fd_table;
 mod uapi;
 pub mod unix_stream;
 
-/// Errors returned by the Linux sandbox descriptor boundary.
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    /// A kernel operation failed.
-    #[error("{operation} failed: {source}")]
-    Syscall {
-        /// Stable operation label.
-        operation: &'static str,
-        /// Kernel error.
-        #[source]
-        source: std::io::Error,
-    },
-
-    /// A path, limit, flag combination, or descriptor violated an API contract.
-    #[error("invalid {field}: {message}")]
-    InvalidInput {
-        /// Contract field being checked.
-        field: &'static str,
-        /// Human-readable reason.
-        message: String,
-    },
-
-    /// A descriptor was valid but not of the kernel object type required by
-    /// the wrapper.
-    #[error("descriptor type mismatch: expected {expected}")]
-    WrongDescriptorType {
-        /// Required kernel descriptor type.
-        expected: &'static str,
-    },
-
-    /// The running kernel returned a structure that violates its UAPI
-    /// contract or omitted a requested field.
-    #[error("malformed kernel {object} response: {message}")]
-    MalformedKernelResponse {
-        /// UAPI object being decoded.
-        object: &'static str,
-        /// Validation failure.
-        message: String,
-    },
-
-    /// A kernel topology exceeded a caller-provided admission bound.
-    #[error("{object} exceeds observation limit {limit}")]
-    ObservationLimitExceeded {
-        /// Topology object being observed.
-        object: &'static str,
-        /// Maximum number of admitted entries.
-        limit: usize,
-    },
-
-    /// A bounded kernel exchange did not become ready before its deadline.
-    #[error("{operation} exceeded its deadline")]
-    DeadlineExceeded {
-        /// Stable operation label.
-        operation: &'static str,
-    },
-}
-
-impl Error {
-    pub(crate) fn syscall(operation: &'static str) -> Self {
-        Self::Syscall {
-            operation,
-            source: std::io::Error::last_os_error(),
-        }
-    }
-
-    pub(crate) fn invalid(field: &'static str, message: impl Into<String>) -> Self {
-        Self::InvalidInput {
-            field,
-            message: message.into(),
-        }
-    }
-}
-
-/// Convenience result type for Linux sandbox operations.
-pub type Result<T> = std::result::Result<T, Error>;
+use aos_linux_descriptors::{Error, Result};

@@ -130,7 +130,7 @@ impl OriginalCreateStorageReadyV1<'_, '_> {
             parent: &owner.parent, intake: &mut owner.intake,
             controller: self.original.controller, source: self.original.source,
             profile: self.original.profile, cache: &mut self.cache,
-            state: &mut root.turn, use_receiving: Some(receiving),
+            state: &mut root.turn, use_receiving: Some(RootUseReceivingV1::Original(receiving)),
         };
         loan.run_outcome_once(&mut root.peer, &recorded, outcome, original_cutoff)
     }
@@ -408,7 +408,7 @@ impl RootExchangeOriginalsV1 {
             .and_then(|position| position.as_ref().ok()).copied();
         let mut loan = OriginalCreateStorageRootExchangeV1 {
             parent, intake, controller, source, profile, cache,
-            state: &mut self.turn, use_receiving: Some(receiving),
+            state: &mut self.turn, use_receiving: Some(RootUseReceivingV1::Original(receiving)),
         };
         loan.observe_outcome_admission_post_once(&mut self.peer);
         // The earlier actual C9 producer retains its primary cause. This

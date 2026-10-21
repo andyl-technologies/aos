@@ -17,14 +17,14 @@ pub(super) enum ClockError {
     #[error("the original O read clock is stale")]
     Stale,
     #[error(transparent)]
-    Kernel(aos_sandbox_linux::Error),
+    Kernel(aos_linux_descriptors::Error),
 }
 
 impl KernelPairedClockErrorV1 for ClockError {
     fn stale() -> Self {
         Self::Stale
     }
-    fn kernel(cause: aos_sandbox_linux::Error) -> Self {
+    fn kernel(cause: aos_linux_descriptors::Error) -> Self {
         Self::Kernel(cause)
     }
 }
@@ -202,7 +202,7 @@ impl ReadFrontierOriginalV2 {
 pub(super) struct ReadHelperOriginalV2 {
     before: ReadFrontierOriginalV2,
     arguments: Option<Result<Vec<OsString>, NetworkKernelReaderError>>,
-    cut: Option<Result<FixedProcessCaptureCutV3, aos_sandbox_linux::Error>>,
+    cut: Option<Result<FixedProcessCaptureCutV3, aos_linux_descriptors::Error>>,
     attestation_before: NetworkArtifactCurrentOriginalV4,
     attestation_after: NetworkArtifactCurrentOriginalV4,
     attestation_result: [Option<Result<(), NetworkKernelReaderError>>; 2],

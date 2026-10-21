@@ -1148,7 +1148,7 @@ fn conservative_boot_ceiling(
 }
 
 pub(crate) fn kernel_clock() -> Result<RawPairedClockSample, SourceProviderSecurityError> {
-    let boot = aos_sandbox_linux::boot::KernelBootId::current()
+    let boot = aos_linux_descriptors::boot::KernelBootId::current()
         .map_err(|_| SourceProviderSecurityError::SessionContinuity)?
         .into_bytes();
     // Later pairs observe wall first; their BOOTTIME endpoint still enforces
@@ -1158,7 +1158,7 @@ pub(crate) fn kernel_clock() -> Result<RawPairedClockSample, SourceProviderSecur
 }
 
 fn kernel_initial_clock() -> Result<OriginalNativeClockBracketV3, SourceProviderSecurityError> {
-    let boot = aos_sandbox_linux::boot::KernelBootId::current()
+    let boot = aos_linux_descriptors::boot::KernelBootId::current()
         .map_err(|_| SourceProviderSecurityError::SessionContinuity)?
         .into_bytes();
     let boottime_before = kernel_boottime_nanoseconds()?;
@@ -1172,7 +1172,7 @@ fn kernel_clock_after_wall(
     wall: i64,
 ) -> Result<RawPairedClockSample, SourceProviderSecurityError> {
     let nanoseconds = kernel_boottime_nanoseconds()?;
-    let after = aos_sandbox_linux::boot::KernelBootId::current()
+    let after = aos_linux_descriptors::boot::KernelBootId::current()
         .map_err(|_| SourceProviderSecurityError::SessionContinuity)?
         .into_bytes();
     if boot != after {

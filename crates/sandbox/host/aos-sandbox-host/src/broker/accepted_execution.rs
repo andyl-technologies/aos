@@ -16,7 +16,8 @@ use aos_sandbox_controller_domain::journal::ProtectedJournalCurrentnessOriginals
 use aos_sandbox_controller_domain::runtime_execution::DormantRuntimeExecutionOwnerV1;
 use aos_sandbox_model::{ResourceDimension as D, ResourceVector};
 use aos_sandbox_model::runtime_backend::{DurableExecutionEffectV1, EffectOperationV1, EffectPhaseV1, EffectCompletionStatusV1};
-use aos_sandbox_linux::immutable_file::{ImmutableFileError, SealedMemfdMapping};
+use aos_linux_descriptors::ImmutableFileError;
+use aos_sandbox_linux::immutable_file::SealedMemfdMapping;
 use aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodRequestV1;
 use aos_sandbox_protocol::execution_spec_attempt::ExecutionSpecAttemptFieldsV1;
 use aos_sandbox_protocol::host_execution::admission_content::{HostExecutionAdmissionContentV5};

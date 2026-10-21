@@ -7,13 +7,14 @@
 use std::sync::Arc;
 
 use aos_sandbox_linux::path::BeneathRootResolveOriginalV2;
-use aos_sandbox_linux::pidfd::{PidFdInfo, PidFdNamespaceOriginalV2};
+use aos_linux_descriptors::pidfd::PidFdInfo;
+use aos_sandbox_linux::pidfd::PidFdNamespaceOriginalV2;
 use tokio::sync::Mutex;
 
 use super::*;
 use crate::worker::launch::HostLaunchWorkerReceivingV2;
 
-type Native<T> = std::result::Result<T, aos_sandbox_linux::Error>;
+type Native<T> = std::result::Result<T, aos_linux_descriptors::Error>;
 
 macro_rules! supervisor_native {
     (Local, $original:ident, $field:ident, $expression:expr) => {
@@ -42,7 +43,7 @@ macro_rules! supervisor_boolean {
 
 macro_rules! supervisor_network {
     (Local, $original:ident, $pidfd:ident) => {
-        $pidfd.namespace(NamespaceKind::Network)
+        aos_sandbox_linux::pidfd::namespace(&($pidfd), NamespaceKind::Network)
             .map_err(|error| HostError::Worker(error.to_string()))?
     };
     (Retained, $original:ident, $pidfd:ident) => {{

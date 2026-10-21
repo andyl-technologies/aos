@@ -551,3 +551,9 @@ mod tests {
         ));
     }
 }
+
+impl From<aos_sandbox_protocol::publisher_policy::PublisherPolicySchemaErrorV1> for ProjectAuthorizationSourceErrorV2 {
+    fn from(error: aos_sandbox_protocol::publisher_policy::PublisherPolicySchemaErrorV1) -> Self {
+        Self::Publisher(error.into())
+    }
+}

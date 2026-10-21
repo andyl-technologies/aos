@@ -51,11 +51,11 @@ enum CaptureReserveClockErrorV3 {
     #[error("the actual Capture reserve paired clock is unavailable or stale")]
     Stale,
     #[error(transparent)]
-    Native(aos_sandbox_linux::Error),
+    Native(aos_linux_descriptors::Error),
 }
 impl KernelPairedClockErrorV1 for CaptureReserveClockErrorV3 {
     fn stale() -> Self { Self::Stale }
-    fn kernel(cause: aos_sandbox_linux::Error) -> Self { Self::Native(cause) }
+    fn kernel(cause: aos_linux_descriptors::Error) -> Self { Self::Native(cause) }
 }
 
 type Clock = RetainedKernelPairedClockAttemptV1<CaptureReserveClockErrorV3>;

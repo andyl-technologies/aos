@@ -13,7 +13,7 @@ use aos_sandbox_model::ResourceVector;
 use aos_sandbox_linux::cgroup::{
     CgroupPopulationMonitorOriginalV3, ExactCgroupMembershipReadbackV1,
 };
-use aos_sandbox_linux::pidfd::PidFd;
+use aos_linux_descriptors::pidfd::PidFd;
 
 use super::fixed_service_operation::FixedServiceOperationClosedV4;
 use super::fixed_service_receiving::{FixedServiceReceivingCaptureV1, FixedServiceRoleV1};

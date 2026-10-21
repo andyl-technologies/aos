@@ -65,7 +65,7 @@ impl CredentialNativePassV1 {
 pub(super) struct IdentityOriginalV1 {
     stat: Option<rustix::io::Result<rustix::fs::Stat>>,
     length: Option<Result<u64, std::num::TryFromIntError>>,
-    mount: Option<aos_sandbox_linux::Result<MountId>>,
+    mount: Option<aos_linux_descriptors::Result<MountId>>,
 }
 
 impl IdentityOriginalV1 {

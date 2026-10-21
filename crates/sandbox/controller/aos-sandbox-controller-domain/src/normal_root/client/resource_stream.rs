@@ -17,7 +17,8 @@ use aos_sandbox_protocol::domain_ledger::provisioning_root::{
 };
 use crate::{Journal, OriginalCreateProvisioningRootLoanV1, OriginalStartHostRootLoanV1};
 use crate::controller_resource_reservation::ResourceReservationErrorV1;
-use crate::policy_compiler::bounded_stream_io::{FixedDeadlineStreamIoV1, DeadlineStreamDirectionV1};
+use aos_sandbox_broker::bounded_stream_io::FixedDeadlineStreamIoV1;
+use aos_sandbox_broker::bounded_stream_io::DeadlineStreamDirectionV1;
 use super::peer_receiving::{CreateStorageRootPeerReceivingOriginalsV1,
     sample::PeerSampleV1};
 use super::profile_owner::ProductionControllerNormalRootProfileV1;

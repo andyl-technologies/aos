@@ -13,7 +13,6 @@ use aos_sandbox_policy::{AuthenticatedCacheDomainV1, AuthenticatedSandboxProject
     PolicyCompilerInputV1, CompiledPolicyCandidateV1, PolicyCompilerV1};
 use crate::journal::JournalError;
 use crate::policy_compiler::root_signed_sources::RootSignedProjectSourcesV1;
-use crate::policy_compiler::public_create_source::parentless_create_input_from_authenticated_layers_v1;
 
 type Cause = Box<dyn Error + Send + Sync>;
 
@@ -44,7 +43,9 @@ pub(crate) fn compile_parentless_current_v1(signed: &RootSignedProjectSourcesV1,
         .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)?;
     let relation =
         AuthenticatedSandboxProjectRelationV1::authenticate(sandbox, project, &verifier)?;
-    let input = parentless_create_input_from_authenticated_layers_v1(relation, layer, &signed.2)?;
+    let input = aos_sandbox_policy::parentless_input::parentless_create_input_from_authenticated_layers_v1(
+        relation, layer, &signed.2,
+    ).map_err(crate::policy_compiler::public_create_source::CurrentCreateCompilerInputErrorV1::from)?;
     let candidate = PolicyCompilerV1::compile_retained(&input)?;
     Ok((input, candidate))
 }
@@ -65,7 +66,9 @@ pub(in crate::policy_compiler) fn require_manifest_candidate_v1(assignment: &Can
         || manifest.root_view() != specification.root_view()
         || manifest.source_commitments() != commitments || manifest.required_features() != features
         || manifest.resource_commitment() != aos_sandbox_model::resource_profile_digest_v1(effective.limits())
-        || manifest.reservations() != crate::policy_compiler::create_q04::candidate_capacity(candidate)?
+        || manifest.reservations() != aos_sandbox_policy::q04_candidate_capacity_v1!(
+            candidate, crate::policy_compiler::create_q04::CreateQ04ErrorV1::ChangedCut
+        )?
     { return Err(RootParentlessComparisonChangedV1.into()); }
     Ok(())
 }

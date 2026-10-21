@@ -4,8 +4,11 @@ use std::os::fd::{AsFd as _, BorrowedFd, OwnedFd};
 
 use crate::cgroup::RetainedCgroupAnchor;
 use crate::inventory::{MountId, MountNamespace};
-use crate::pidfd::{PidFd, PidFdCredentials, PidFdProcessIdentity};
-use crate::{Error, Result};
+use aos_linux_descriptors::pidfd::PidFd;
+use aos_linux_descriptors::pidfd::PidFdCredentials;
+use crate::pidfd::PidFdProcessIdentity;
+use aos_linux_descriptors::Error;
+use aos_linux_descriptors::Result;
 
 /// Retains the scratch descriptor and first cause of one image DATA measurement.
 ///

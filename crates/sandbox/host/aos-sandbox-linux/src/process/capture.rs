@@ -13,8 +13,9 @@ use std::collections::TryReserveError;
 use std::fmt;
 use std::os::fd::AsFd as _;
 
-use crate::{Error, Result};
-use crate::pidfd::PidFd;
+use aos_linux_descriptors::Error;
+use aos_linux_descriptors::Result;
+use aos_linux_descriptors::pidfd::PidFd;
 
 use super::{
     ChildGuard, CleanupDisposition, FixedProcessRequest, OutputStream, ProcessStatus, SpawnedProcess,

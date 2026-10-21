@@ -5,6 +5,8 @@
 //! retains its exact marked C8 transaction and complete authenticated history;
 //! no incoming packet can substitute a native cut or construct a writer.
 
+use aos_sandbox_protocol::domain_ledger::readonly::FixedJournalReadbackDataV1 as RootFixedNativeReadbackV1;
+
 use std::error::Error;
 use std::mem::size_of;
 
@@ -15,13 +17,15 @@ use aos_sandbox_protocol::domain_ledger::create_storage_history::{
 };
 use crate::controller_resource_reservation::RootContinuationDemandV1;
 use crate::hierarchy::genesis_profile::SourceGenesisErrorV1;
-use crate::journal::{Journal, JournalError, RootReadonlyJournalModelOriginalsV1 as Model};
+use crate::journal::JournalError;
+use aos_sandbox_policy::native::{RootFinalityReadOriginalV1 as Target,
+    RootFinalityReadKindV1 as Kind};
+use crate::journal::historical_observation::{HistoricalObservationV1,
+    root_readonly_error_v1};
+
 use crate::normal_root::{NormalRootStartupErrorV1, RootApplyStageReceivingV1, RootHostLaunchStageReceivingV1};
-use crate::policy_compiler::{RetainedKernelPairedClockAttemptV1,
-    create_storage_current::controller_readonly::native_read::{
-        RootFixedNativeReadOriginalsV1 as Reader, RootFixedNativeReadbackV1,
-        RootCreateStoppedHistoricalOriginalV2,
-    }};
+use crate::policy_compiler::RetainedKernelPairedClockAttemptV1;
+use aos_sandbox_policy::native::RootCreateStoppedHistoricalOriginalV2;
 use super::{RootContinuationHorizonDataV1, RootContinuationClockGateV1};
 
 type Cause = Box<dyn Error>;
@@ -68,9 +72,8 @@ struct HistoricalTargetV2 {
 }
 
 struct NativeV1 {
-    controller: Reader,
-    session: Reader,
-    controller_model: Option<Box<Model>>,
+    controller: Target,
+    session: Target,
     controller_position: Option<(u64, u64)>,
     historical: Option<RootCreateStoppedHistoricalOriginalV2>,
     session_reserved: Option<Result<ControllerSessionReservedBodyDataV1, Cause>>,
@@ -81,30 +84,59 @@ struct NativeV1 {
     posts: Option<Result<(), JournalError>>,
 }
 
+impl Drop for NativeV1 {
+    fn drop(&mut self) {
+        // Preserve the original aggregate's Controller -> Session -> model
+        // destructor custody order, including failed native originals.
+        self.controller.dispose_scope_reader_v2();
+        self.session.dispose_scope_reader_v2();
+        self.controller.dispose_scope_model_v2();
+    }
+}
+
 impl NativeV1 {
+    fn scope_disposal_control_bytes_v2() -> Option<usize> {
+        size_of::<&mut Self>().checked_mul(3)?
+            .checked_add(Target::scope_disposal_control_bytes_v2()?)
+    }
+
     fn new(horizon: RootContinuationHorizonDataV1, historical: Option<HistoricalTargetV2>) -> Self {
         let controller = match historical {
-            Some(target) => Reader::controller_create_stopped_history_v2(target.parent, target.project, target.sandbox),
-            None => Reader::controller_current_v1(),
+            Some(target) => Kind::ControllerStopped { parent: target.parent, project: target.project, sandbox: target.sandbox },
+            None => Kind::Controller,
         };
-        Self { controller, session: Reader::default(),
-            controller_model: None, controller_position: None, historical: None, session_reserved: None,
+        Self { controller: Target::new(controller), session: Target::new(Kind::StorageSession),
+            controller_position: None, historical: None, session_reserved: None,
             clock: RootContinuationClockGateV1::new(horizon), after_clock: Default::default(),
             after: None, primary: None, posts: None }
     }
 
-    fn fixed_demand_v1(historical: bool) -> Result<ResourceVector, JournalError> {
-        let context = if historical {
+    fn fixed_demand_v1(historical: Option<HistoricalTargetV2>) -> Result<ResourceVector, JournalError> {
+        let context = if historical.is_some() {
             size_of::<RootHostReadonlyContextV2>()
         } else {
             size_of::<RootApplyReadonlyContextV1>()
         };
         let bytes = size_of::<Self>().checked_mul(2)
+            .and_then(|bytes| bytes.checked_add(Self::scope_disposal_control_bytes_v2()?))
+            // The changed fixed entry receives the original historical tuple,
+            // rather than the old bool-only quote argument. No old slot credit.
+            .and_then(|bytes| bytes.checked_add(size_of::<Option<HistoricalTargetV2>>().checked_mul(3)?))
+            .and_then(|bytes| bytes.checked_add(size_of::<(&Option<HistoricalTargetV2>, usize)>().checked_mul(3)?))
+            .and_then(|bytes| bytes.checked_add(size_of::<Option<usize>>().checked_mul(3)?))
+            .and_then(|bytes| if historical.is_some() {
+                bytes.checked_add(crate::host_catalog_reconciliation::host_start_observation_control_bytes_v2()?)
+            } else { Some(bytes) })
             .and_then(|bytes| context.checked_mul(2).and_then(|context| bytes.checked_add(context)))
+            .and_then(|bytes| bytes.checked_add(Target::construction_control_bytes_v1()?.checked_mul(2)?))
+            .and_then(|bytes| bytes.checked_add(HistoricalObservationV1::receiving_control_bytes_v1()?))
             .and_then(|bytes| bytes.checked_add(2 * size_of::<ReadonlyReceivingV2<'_, '_, '_>>()))
             .and_then(|bytes| bytes.checked_add(RetainedKernelPairedClockAttemptV1::dominant_requested_bytes_v1()?))
             .and_then(|bytes| u64::try_from(bytes).ok()).ok_or(JournalError::JournalTooLarge)?;
-        Reader::controller_current_fixed_demand_v1()?
+        Target::provisioning_fixed_demand_v2(match historical {
+            Some(target) => Kind::ControllerStopped { parent: target.parent, project: target.project, sandbox: target.sandbox },
+            None => Kind::Controller,
+        }).map_err(root_readonly_error_v1)?
             .checked_add(RootContinuationClockGateV1::receiving_demand_v1()?)
             .and_then(|demand| demand.checked_add(ResourceVector::ZERO.with(D::MemoryBytes, bytes)
                 .with(D::OpenFiles, RetainedKernelPairedClockAttemptV1::MAXIMUM_RETAINED_FILES_V1 as u64)))
@@ -116,18 +148,17 @@ impl NativeV1 {
         -> Result<(), Cause>
     {
         let uid = stage.controller_identity_v1().0;
+        self.controller.construct_reader_once_v1().map_err(root_readonly_error_v1)?;
         self.clock.check_next_once_v1()?;
-        self.controller.capture_once(uid);
-        self.controller.require_captured_v1()?;
-        stage.admit_controller_native_once_v1(demand(self.controller.replay_demand_v1()?))?;
+        self.controller.capture_once_v1(uid).map_err(root_readonly_error_v1)?;
+        stage.admit_controller_native_once_v1(demand(self.controller.native_receiving_demand_v1().map_err(root_readonly_error_v1)?))?;
         self.clock.check_next_once_v1()?;
-        self.controller.audit_once();
-        let semantic = self.controller.additional_semantic_demand_v1()?
-            .checked_add(Model::receiving_demand_v1(&self.controller)?)?;
+        let semantic = self.controller.audited_semantic_only_v2().map_err(root_readonly_error_v1)?
+            .checked_add(self.controller.model_receiving_demand_v2().map_err(root_readonly_error_v1)?)?;
         stage.admit_controller_semantic_once_v1(demand(semantic))?;
         self.clock.check_next_once_v1()?;
-        self.controller.replay_once();
-        let actual = self.controller.replay_native_v1()?;
+        self.controller.replay_only_once_v2().map_err(root_readonly_error_v1)?;
+        let actual = self.controller.readback_v1().map_err(root_readonly_error_v1)?;
         self.controller_position = Some((actual.next, actual.end));
         self.session_reserved = Some(session_reserved_v1(actual.state, lane));
         self.session_reserved.as_ref().and_then(|value| value.as_ref().ok())
@@ -135,23 +166,20 @@ impl NativeV1 {
 
         // Adoption requires the real Controller native post first. Its own
         // separately prepaid model-parent post remains owed around all joins.
-        self.controller.finish_post_once();
-        self.controller.terminal_native_v1()?;
+        self.controller.finish_native_post_once_v2();
+        self.controller.posted_readback_v2().map_err(root_readonly_error_v1)?;
         if historical.is_some() {
-            self.historical = Some(self.controller.take_create_stopped_historical_v2()?);
+            self.historical = Some(self.controller.take_stopped_historical_v2().map_err(root_readonly_error_v1)?);
             self.historical.as_ref().ok_or(JournalError::ProtectedBoundary)?
-                .require_cut_v2(&self.controller.terminal_native_v1()?)?;
+                .require_cut_v2(&self.controller.posted_readback_v2().map_err(root_readonly_error_v1)?).map_err(root_readonly_error_v1)?;
         }
-        self.controller_model = Some(Box::new(Model::new()));
-        self.controller_model.as_mut().ok_or(JournalError::ProtectedBoundary)?
-            .adopt_once(&mut self.controller);
-        self.controller_model.as_ref().ok_or(JournalError::ProtectedBoundary)?.require_complete_v1()?;
+        self.controller.adopt_posted_model_once_v2().map_err(root_readonly_error_v1)?;
 
-        stage.admit_storage_fixed_once_v1(demand(Reader::fixed_demand_v1()?))?;
+        stage.admit_storage_fixed_once_v1(demand(Target::provisioning_fixed_demand_v2(Kind::StorageSession).map_err(root_readonly_error_v1)?))?;
+        self.session.construct_reader_once_v1().map_err(root_readonly_error_v1)?;
         self.clock.check_next_once_v1()?;
-        self.session.capture_once(uid);
-        self.session.require_captured_v1()?;
-        stage.admit_storage_native_once_v1(demand(self.session.replay_demand_v1()?))?;
+        self.session.capture_once_v1(uid).map_err(root_readonly_error_v1)?;
+        stage.admit_storage_native_once_v1(demand(self.session.native_receiving_demand_v1().map_err(root_readonly_error_v1)?))?;
         self.clock.check_next_once_v1()?;
         // The fixed Session target uses the existing indexed SessionSchema,
         // whose complete codec/index geometry was paid by replay_demand_v1.
@@ -160,8 +188,8 @@ impl NativeV1 {
         let reserved = self.session_reserved.as_ref().and_then(|value| value.as_ref().ok())
             .ok_or(JournalError::ProtectedBoundary)?;
         self.clock.check_next_once_v1()?;
-        self.session.replay_marked_once_v1((reserved.after_next, reserved.after_end));
-        let actual = self.session.replay_native_v1()?;
+        self.session.replay_marked_once_v2((reserved.after_next, reserved.after_end)).map_err(root_readonly_error_v1)?;
+        let actual = self.session.readback_v1().map_err(root_readonly_error_v1)?;
         if actual.names != reserved.names { return Err(JournalError::ProtectedBoundary.into()); }
         Ok(())
     }
@@ -170,22 +198,21 @@ impl NativeV1 {
         if !matches!(self.primary, Some(Ok(()))) || self.posts.is_some() {
             return Err(JournalError::ProtectedBoundary);
         }
-        self.controller_model.as_ref().ok_or(JournalError::ProtectedBoundary)?.require_complete_v1()?;
-        self.session.replay_native_v1().map(|_| ())
+        self.controller.model_v1().map_err(root_readonly_error_v1)?;
+        self.session.readback_v1().map(|_| ()).map_err(root_readonly_error_v1)
     }
 
     fn finish_after_once_v1(&mut self) {
         // Every actually entered native destination is observed independently
         // even if a funding gate, decoder, semantic join or body already failed.
-        self.controller.finish_post_once();
-        self.session.finish_post_once();
-        if let Some(model) = &mut self.controller_model { model.finish_parent_post_once_v1(); }
+        self.controller.finish_native_post_once_v2();
+        self.session.finish_native_post_once_v2();
+        self.controller.finish_model_post_once_v2();
         self.after = Some(self.after_clock.observe_once(None));
         self.posts = Some((|| {
             if !matches!(self.primary, Some(Ok(()))) { return Err(JournalError::ProtectedBoundary); }
-            let model = self.controller_model.as_ref().ok_or(JournalError::ProtectedBoundary)?;
-            model.require_parent_post_v1()?;
-            self.session.terminal_native_v1()?;
+            self.controller.require_model_post_v2().map_err(root_readonly_error_v1)?;
+            self.session.posted_readback_v2().map_err(root_readonly_error_v1)?;
             let sample = *self.after.as_ref().and_then(|value| value.as_ref().ok())
                 .ok_or(JournalError::ProtectedBoundary)?;
             self.clock.require_final_sample_v1(sample)
@@ -193,12 +220,12 @@ impl NativeV1 {
     }
 
     fn failure(&self) -> Option<&(dyn Error + 'static)> {
-        self.controller.failure().or_else(|| self.clock.failure())
+        self.controller.native_failure_v1().or_else(|| self.clock.failure())
             .or_else(|| cause_box(&self.session_reserved))
-            .or_else(|| self.controller_model.as_ref().and_then(|model| model.failure()))
-            .or_else(|| self.session.failure()).or_else(|| cause_box(&self.primary))
-            .or_else(|| self.controller_model.as_ref().and_then(|model| model.parent_post_failure_v1()))
-            .or_else(|| self.controller.post_failure()).or_else(|| self.session.post_failure())
+            .or_else(|| self.controller.model_failure_v1())
+            .or_else(|| self.session.native_failure_v1()).or_else(|| cause_box(&self.primary))
+            .or_else(|| self.controller.model_post_failure_v2())
+            .or_else(|| self.controller.native_post_failure_v2()).or_else(|| self.session.native_post_failure_v2())
             .or_else(|| self.after_clock.failure()).or_else(|| cause(&self.after)).or_else(|| cause(&self.posts))
     }
 }
@@ -226,7 +253,7 @@ impl RootApplyReadonlyContextV1 {
         lane: [u8; 16], horizon: RootContinuationHorizonDataV1, historical: Option<HistoricalTargetV2>)
     {
         if self.geometry.is_some() { self.reentered = true; return; }
-        self.geometry = Some(NativeV1::fixed_demand_v1(historical.is_some()));
+        self.geometry = Some(NativeV1::fixed_demand_v1(historical));
         let Some(Ok(fixed)) = self.geometry else { return; };
         self.funding = Some(stage.admit_controller_fixed_once_v1(demand(fixed)));
         if !matches!(self.funding, Some(Ok(()))) { return; }
@@ -236,23 +263,23 @@ impl RootApplyReadonlyContextV1 {
         }
     }
 
-    pub(crate) fn controller_mut_v1(&mut self) -> Result<&mut Journal, JournalError> {
+    pub(crate) fn controller_model_v1(&self) -> Result<HistoricalObservationV1<'_>, JournalError> {
         self.require_body_v1()?;
-        self.native.as_mut().and_then(|native| native.controller_model.as_mut())
-            .ok_or(JournalError::ProtectedBoundary)?.journal_mut_v1()
+        let native = self.native.as_ref().ok_or(JournalError::ProtectedBoundary)?;
+        HistoricalObservationV1::from_root_model_v1(native.controller.model_v1().map_err(root_readonly_error_v1)?)
     }
 
     pub(crate) fn controller_state_v1(&self)
         -> Result<&std::collections::BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>, JournalError>
     {
         self.require_body_v1()?;
-        self.native.as_ref().and_then(|native| native.controller_model.as_ref())
-            .ok_or(JournalError::ProtectedBoundary)?.raw_state_v1()
+        self.native.as_ref().ok_or(JournalError::ProtectedBoundary)?.controller.model_v1()
+            .map_err(root_readonly_error_v1)?.raw_state_v1().map_err(root_readonly_error_v1)
     }
 
     pub(crate) fn session_v1(&self) -> Result<RootFixedNativeReadbackV1<'_>, JournalError> {
         self.require_body_v1()?;
-        self.native.as_ref().ok_or(JournalError::ProtectedBoundary)?.session.replay_native_v1()
+        self.native.as_ref().ok_or(JournalError::ProtectedBoundary)?.session.readback_v1().map_err(root_readonly_error_v1)
     }
 
     pub(crate) fn controller_position_v1(&self) -> Result<(u64, u64), JournalError> {
@@ -322,8 +349,8 @@ impl RootHostReadonlyContextV2 {
             Some(HistoricalTargetV2 { parent, project, sandbox }));
     }
 
-    pub(crate) fn controller_mut_v2(&mut self) -> Result<&mut Journal, JournalError> {
-        self.original.controller_mut_v1()
+    pub(crate) fn controller_model_v2(&self) -> Result<HistoricalObservationV1<'_>, JournalError> {
+        self.original.controller_model_v1()
     }
 
     pub(crate) fn controller_state_v2(&self)
@@ -332,14 +359,15 @@ impl RootHostReadonlyContextV2 {
         self.original.controller_state_v1()
     }
 
-    pub(crate) fn controller_with_historical_v2(&mut self)
-        -> Result<(&mut Journal, &RootCreateStoppedHistoricalOriginalV2), JournalError>
+    pub(crate) fn controller_with_historical_v2(&self)
+        -> Result<(HistoricalObservationV1<'_>, &RootCreateStoppedHistoricalOriginalV2), JournalError>
     {
         self.original.require_body_v1()?;
-        let native = self.original.native.as_mut().ok_or(JournalError::ProtectedBoundary)?;
+        let native = self.original.native.as_ref().ok_or(JournalError::ProtectedBoundary)?;
         let historical = native.historical.as_ref().ok_or(JournalError::ProtectedBoundary)?;
-        let controller = native.controller_model.as_mut().ok_or(JournalError::ProtectedBoundary)?;
-        Ok((controller.journal_mut_v1()?, historical))
+        let controller = HistoricalObservationV1::from_root_model_v1(
+            native.controller.model_v1().map_err(root_readonly_error_v1)?)?;
+        Ok((controller, historical))
     }
 
     pub(crate) fn historical_v2(&self) -> Result<&RootCreateStoppedHistoricalOriginalV2, JournalError> {

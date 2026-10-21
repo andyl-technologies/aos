@@ -10,10 +10,11 @@ use std::io::Read as _;
 use std::os::fd::{AsFd as _, BorrowedFd, OwnedFd};
 use std::path::Path;
 
-use aos_sandbox_linux::boot::KernelBootId;
+use aos_linux_descriptors::boot::KernelBootId;
 use aos_sandbox_linux::cgroup::{CgroupV2Root, RetainedCgroupAnchor};
 use aos_sandbox_linux::fuse_worker_image::FixedFuseWorkerImageV1;
-use aos_sandbox_linux::pidfd::{PidFd, PidFdProcessIdentity};
+use aos_linux_descriptors::pidfd::PidFd;
+use aos_sandbox_linux::pidfd::PidFdProcessIdentity;
 use aos_systemd_client::FixedFuseWorkerPid1ClientV1;
 use aos_systemd_client::{
     ExactStartError, FuseWorkerUnitNameV1, FuseWorkerUnitObservationV1, FuseWorkerUnitSpecV1,
@@ -144,7 +145,7 @@ impl RetainedFuseWorkerHostLaunchV1 {
         cgroup
             .verify_exact_membership(&process)
             .map_err(kernel_error)?;
-        let process_identity = process.process_identity().map_err(kernel_error)?;
+        let process_identity = aos_sandbox_linux::pidfd::process_identity(&(process)).map_err(kernel_error)?;
 
         let retained = Self {
             name,
@@ -175,7 +176,7 @@ impl RetainedFuseWorkerHostLaunchV1 {
         self.cgroup
             .verify_exact_membership(&self.process)
             .map_err(kernel_error)?;
-        if self.process.process_identity().map_err(kernel_error)? != self.process_identity {
+        if aos_sandbox_linux::pidfd::process_identity(&(self.process)).map_err(kernel_error)? != self.process_identity {
             return Err(HostError::Fence("FUSE worker process identity changed"));
         }
 
@@ -198,7 +199,7 @@ impl RetainedFuseWorkerHostLaunchV1 {
         }
 
         require_worker_context(self.process_identity.pid())?;
-        if self.process.process_identity().map_err(kernel_error)? != self.process_identity {
+        if aos_sandbox_linux::pidfd::process_identity(&(self.process)).map_err(kernel_error)? != self.process_identity {
             return Err(HostError::Fence("FUSE worker changed during MAC readback"));
         }
 
@@ -279,7 +280,7 @@ fn manager_error(error: aos_systemd_client::Error) -> HostError {
     HostError::Worker(format!("FUSE worker manager readback failed: {error}"))
 }
 
-fn kernel_error(error: aos_sandbox_linux::Error) -> HostError {
+fn kernel_error(error: aos_linux_descriptors::Error) -> HostError {
     HostError::Worker(format!("FUSE worker kernel readback failed: {error}"))
 }
 

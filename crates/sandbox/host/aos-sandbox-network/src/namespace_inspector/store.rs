@@ -28,12 +28,18 @@ use std::os::fd::{AsFd as _, OwnedFd};
 use std::os::unix::ffi::OsStrExt as _;
 use std::path::Path;
 
-use aos_sandbox_linux::immutable_file::{
-    BeforeRenameFailure, FsVerityDigest, FsVerityPublicationRoot, ImmutableFileError,
-    InvalidPublicationName, MaterializationCallbacks, MaterializationError,
-    NoReplacePublicationError, ObserveSealedPublicationError, PublicationName,
-    PublicationRootError, SealedReadOnlyCredential,
-};
+use aos_sandbox_linux::immutable_file::BeforeRenameFailure;
+use aos_sandbox_linux::immutable_file::FsVerityDigest;
+use aos_sandbox_linux::immutable_file::FsVerityPublicationRoot;
+use aos_linux_descriptors::ImmutableFileError;
+use aos_sandbox_linux::immutable_file::InvalidPublicationName;
+use aos_sandbox_linux::immutable_file::MaterializationCallbacks;
+use aos_sandbox_linux::immutable_file::MaterializationError;
+use aos_sandbox_linux::immutable_file::NoReplacePublicationError;
+use aos_sandbox_linux::immutable_file::ObserveSealedPublicationError;
+use aos_sandbox_linux::immutable_file::PublicationName;
+use aos_sandbox_linux::immutable_file::PublicationRootError;
+use aos_linux_descriptors::credential::SealedReadOnlyCredential;
 use sha2::{Digest as _, Sha256};
 
 use super::{

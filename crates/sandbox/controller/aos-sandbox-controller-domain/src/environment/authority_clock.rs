@@ -129,7 +129,7 @@ impl LiveAuthorityClockSourceV1 for LinuxLiveAuthorityClockV1 {
 fn sample_linux_clock_engine_v1(
     mut original: Option<&mut LiveClockNativeOriginalV1>,
 ) -> Result<LiveAuthorityClockSampleV1, LiveAuthorityClockErrorV1> {
-    use aos_sandbox_linux::boot::KernelBootId;
+    use aos_linux_descriptors::boot::KernelBootId;
 
     let boot_before = match original.as_deref_mut() {
         Some(original) => original.before.observe_once()
@@ -161,8 +161,8 @@ fn sample_linux_clock_engine_v1(
 
 #[cfg(target_os = "linux")]
 struct LiveClockNativeOriginalV1 {
-    before: aos_sandbox_linux::boot::RootOriginalKernelBootIdAttemptV1,
-    after: aos_sandbox_linux::boot::RootOriginalKernelBootIdAttemptV1,
+    before: aos_linux_descriptors::boot::RootOriginalKernelBootIdAttemptV1,
+    after: aos_linux_descriptors::boot::RootOriginalKernelBootIdAttemptV1,
     boottime: Option<rustix::time::Timespec>,
     result: Option<Result<LiveAuthorityClockSampleV1, LiveAuthorityClockErrorV1>>,
 }
@@ -170,8 +170,8 @@ struct LiveClockNativeOriginalV1 {
 #[cfg(target_os = "linux")]
 impl LiveClockNativeOriginalV1 {
     fn new() -> Self {
-        Self { before: aos_sandbox_linux::boot::RootOriginalKernelBootIdAttemptV1::new(),
-            after: aos_sandbox_linux::boot::RootOriginalKernelBootIdAttemptV1::new(),
+        Self { before: aos_linux_descriptors::boot::RootOriginalKernelBootIdAttemptV1::new(),
+            after: aos_linux_descriptors::boot::RootOriginalKernelBootIdAttemptV1::new(),
             boottime: None, result: None }
     }
 
@@ -218,7 +218,7 @@ pub(super) fn retaining_live_authority_clock_v1() -> FixedLiveAuthorityClockV1 {
 #[cfg(target_os = "linux")]
 pub(super) fn retained_live_clock_demand_v1() -> Option<aos_sandbox_model::ResourceVector> {
     use aos_sandbox_model::{ResourceDimension as D, ResourceVector};
-    let boot = aos_sandbox_linux::boot::RootOriginalKernelBootIdAttemptV1::dominant_requested_bytes_v1()?;
+    let boot = aos_linux_descriptors::boot::RootOriginalKernelBootIdAttemptV1::dominant_requested_bytes_v1()?;
     let bytes = std::mem::size_of::<RetainingLinuxLiveAuthorityClockV1>()
         .checked_mul(2)?.checked_add(boot.checked_mul(2)?)?;
     Some(ResourceVector::ZERO.with(D::MemoryBytes, u64::try_from(bytes).ok()?)

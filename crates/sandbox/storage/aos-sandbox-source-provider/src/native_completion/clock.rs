@@ -424,12 +424,12 @@ fn conservative_deadline(
 }
 
 fn kernel_clock() -> Result<RawPairedClockSample, ProviderLedgerError> {
-    let boot = aos_sandbox_linux::boot::KernelBootId::current()
+    let boot = aos_linux_descriptors::boot::KernelBootId::current()
         .map_err(|_| ProviderLedgerError::Unavailable)?
         .into_bytes();
     let boottime = rustix::time::clock_gettime(rustix::time::ClockId::Boottime);
     let wall = rustix::time::clock_gettime(rustix::time::ClockId::Realtime).tv_sec;
-    let after = aos_sandbox_linux::boot::KernelBootId::current()
+    let after = aos_linux_descriptors::boot::KernelBootId::current()
         .map_err(|_| ProviderLedgerError::Unavailable)?
         .into_bytes();
     if boot != after {

@@ -14,7 +14,7 @@ use aos_sandbox_api::aos::sandbox::local::v1::{
     HostCatalogPublicationStatus, PublishHostCatalogResponse,
 };
 use aos_sandbox_model::{FeatureRef, ProtocolId, RawClockProvenance, RawPairedClockSample};
-use aos_sandbox_linux::boot::KernelBootId;
+use aos_linux_descriptors::boot::KernelBootId;
 use aos_sandbox_linux::immutable_file::SealedMemfdMapping;
 use aos_sandbox_protocol::host_catalog::{
     HOST_CATALOG_PUBLICATION_DESCRIPTOR_ROLES, MAXIMUM_HOST_CATALOG_BYTES,

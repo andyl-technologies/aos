@@ -19,6 +19,8 @@ aos-sandbox-protocol.workspace = true
 aos-sandbox-source-provider-ledger.workspace = true
 aos-sandbox-source-provider-protocol.workspace = true
 ed25519-dalek.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 

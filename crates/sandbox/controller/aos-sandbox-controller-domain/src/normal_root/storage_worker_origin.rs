@@ -27,12 +27,13 @@ StorageInitialSessionHelloDisposalV1, StorageSessionHelloDisposalErrorV1,
                     StorageReceivingClosedV1};
 use receiving::StorageReceivingOriginalV1;
 
-use aos_sandbox_linux::boot::KernelBootId;
+use aos_linux_descriptors::boot::KernelBootId;
 use aos_sandbox_linux::cgroup::{CgroupV2Root, RetainedCgroupAnchor};
 use aos_sandbox_linux::inherited_fd::{
     StorageInitialActivationTableV1, duplicate_initial_activation_table,
 };
-use aos_sandbox_linux::pidfd::{PidFd, PidFdProcessIdentity};
+use aos_linux_descriptors::pidfd::PidFd;
+use aos_sandbox_linux::pidfd::PidFdProcessIdentity;
 use aos_sandbox_linux::seqpacket::{RecordSubjectListener, SeqpacketError};
 use aos_sandbox_protocol::operator_storage_repair_transport_v3::OPERATOR_STORAGE_REPAIR_SOCKET_PATH_V3;
 
@@ -57,7 +58,7 @@ pub enum StorageLaunchCaptureErrorV3 {
     Activation(String),
     /// Duplication of the original inherited table failed.
     #[error(transparent)]
-    Linux(#[from] aos_sandbox_linux::Error),
+    Linux(#[from] aos_linux_descriptors::Error),
     /// A fixed record-subject listener failed validation.
     #[error(transparent)]
     Transport(#[from] SeqpacketError),
@@ -71,7 +72,7 @@ pub enum StorageCgroupRootErrorV3 {
     Kernel(#[from] rustix::io::Errno),
     /// Adoption of the actual cgroup descriptor failed.
     #[error(transparent)]
-    Linux(#[from] aos_sandbox_linux::Error),
+    Linux(#[from] aos_linux_descriptors::Error),
 }
 
 /// Preserves a concrete original-custody failure without Storage dependencies.
@@ -79,7 +80,7 @@ pub enum StorageCgroupRootErrorV3 {
 pub enum StorageWorkerOriginCauseV3 {
     /// A retained Linux original or observation failed.
     #[error(transparent)]
-    Linux(#[from] aos_sandbox_linux::Error),
+    Linux(#[from] aos_linux_descriptors::Error),
     /// The fixed cgroup open syscall failed.
     #[error(transparent)]
     CgroupKernel(rustix::io::Errno),
@@ -774,7 +775,7 @@ struct StartupCustody {
     cgroup: Option<RetainedCgroupAnchor>,
     cgroup_root: Option<CgroupV2Root>,
     cgroup_initial: aos_sandbox_linux::cgroup::StorageInitialCgroupReadbackV1,
-    cgroup_initial_result: Option<Result<(), aos_sandbox_linux::Error>>,
+    cgroup_initial_result: Option<Result<(), aos_linux_descriptors::Error>>,
     aggregate: receiving::aggregate::StorageAggregateOriginalV1,
     manager: Option<RetainedImmutableFileV1>,
     executable: Option<RetainedImmutableFileV1>,
@@ -993,10 +994,9 @@ impl StartupCustody {
             NonZeroU32::new(std::process::id()).ok_or(StorageWorkerOriginCauseV3::Binding)?,
         )?);
         self.identity = Some(
-            self.process
+            aos_sandbox_linux::pidfd::process_identity(self.process
                 .as_ref()
-                .ok_or(StorageWorkerOriginCauseV3::Binding)?
-                .process_identity()?,
+                .ok_or(StorageWorkerOriginCauseV3::Binding)?)?,
         );
         Ok(())
     }
@@ -1106,7 +1106,7 @@ impl StartupCustody {
         executable.revalidate()?;
         executable.require_executed(std::process::id())?;
         fragment.revalidate()?;
-        if Some(process.process_identity()?) != self.identity
+        if Some(aos_sandbox_linux::pidfd::process_identity(&(process))?) != self.identity
             || Some(KernelBootId::current()?.into_bytes()) != self.boot
         {
             return Err(StorageWorkerOriginCauseV3::Binding);
@@ -1122,7 +1122,7 @@ impl StartupCustody {
         let process = self.process.as_ref().ok_or(StorageWorkerOriginCauseV3::Binding)?;
         let cgroup = self.cgroup.as_ref().ok_or(StorageWorkerOriginCauseV3::Binding)?;
         cgroup.verify_exact_membership(process)?;
-        if Some(process.process_identity()?) != self.identity || !process.is_alive()? {
+        if Some(aos_sandbox_linux::pidfd::process_identity(&(process))?) != self.identity || !process.is_alive()? {
             return Err(StorageWorkerOriginCauseV3::Binding);
         }
         fragment.revalidate()?;
@@ -1169,7 +1169,7 @@ fn open_storage_cgroup_root_inner_v3(
         Some(original) => {
             original.admit_once(descriptor)?;
             original.take_completed_once().ok_or_else(|| StorageCgroupRootErrorV3::Linux(
-                aos_sandbox_linux::Error::InvalidInput {
+                aos_linux_descriptors::Error::InvalidInput {
                     field: "Storage worker cgroup root",
                     message: "retained admission did not complete".to_owned(),
                 },

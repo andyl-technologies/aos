@@ -15,7 +15,8 @@ use std::fmt;
 use std::os::fd::{AsFd as _, BorrowedFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 
-use aos_sandbox_linux::immutable_file::{ImmutableFileError, SealedReadOnlyCredential};
+use aos_linux_descriptors::ImmutableFileError;
+use aos_linux_descriptors::credential::SealedReadOnlyCredential;
 use aos_sandbox_linux::path::BeneathRoot;
 use aos_sandbox_linux::process::{
     ExchangeStep, FixedLiveChild, FixedProcessCaptureV1, FixedProcessControlReadiness,
@@ -327,9 +328,9 @@ pub(super) enum GitHelperErrorV1 {
     #[error("Git helper role allocation failed")]
     Allocation(#[source] std::collections::TryReserveError),
     #[error("Git helper original mechanical clock or preparation failed")]
-    Process(#[source] aos_sandbox_linux::Error),
+    Process(#[source] aos_linux_descriptors::Error),
     #[error("Git helper original mechanical clock or cut failed")]
-    Clock(#[source] aos_sandbox_linux::Error),
+    Clock(#[source] aos_linux_descriptors::Error),
     #[error("Git helper retained supervisor failed")]
     Supervisor(#[source] FixedProcessRetainedSessionError<Infallible>),
     #[error("Git helper private staging invariant failed")]

@@ -8,7 +8,8 @@ use std::path::Path;
 use aos_sandbox_protocol::domain_ledger::transaction::JournalLimits;
 
 pub(super) const DIRECTORY: &str = "/var/lib/aos/sandboxd";
-pub(super) const NAME: &str = "controller.journal";
+/// Names the fixed Controller journal as nonauthorizing recipe DATA.
+pub const NAME: &str = "controller.journal";
 
 pub(super) fn directory() -> &'static Path {
     Path::new(DIRECTORY)

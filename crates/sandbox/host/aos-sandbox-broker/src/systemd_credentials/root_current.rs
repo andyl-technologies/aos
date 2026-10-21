@@ -4,6 +4,9 @@
 //! engine. No environment, caller path, key bytes or role selects this recipe.
 //! The enclosing genuine Root original prepays this custody before any capture.
 
+mod recurring;
+pub use recurring::RootCurrentIssuerReadbackOriginalV1;
+
 use aos_sandbox_model::{ResourceDimension as D, ResourceVector};
 
 use super::{

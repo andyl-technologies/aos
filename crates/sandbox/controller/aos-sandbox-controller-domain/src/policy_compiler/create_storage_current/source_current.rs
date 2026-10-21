@@ -28,7 +28,6 @@ use super::use_reserved::{RootCurrentProofTurnV1, RootCurrentUseReservedStateV1}
 use super::use_authorized::RootCurrentUseAuthorizedStateV1;
 
 mod exchange;
-mod io;
 pub(crate) use exchange::RootCurrentSourceExchangeStateV1;
 
 pub(crate) struct RootCurrentSourceQueryStateV1 {

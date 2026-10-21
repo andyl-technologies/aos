@@ -240,7 +240,7 @@ impl RootExecutionNoApplyClientOriginalV2 {
             .connection
             .as_mut()
             .ok_or(RootExecutionNoApplyClientClosedV2)?;
-        native.reporting = Some(connection.stream_mut()?.enable_subject_reporting());
+        native.reporting = Some(connection.stream_mut()?.enable_subject_reporting().map_err(aos_sandbox_linux::seqpacket::SeqpacketError::from));
         positive(&native.reporting)?;
         native.query_sent = Some(native.query_sender.run_once(
             connection.stream_mut()?,

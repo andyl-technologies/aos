@@ -17,6 +17,24 @@ use aos_sandbox_journal::owner::NativeJournal;
 
 use super::transaction::{IdempotencyKey, JournalLimits, JournalRecord};
 
+/// Borrows a historical fixed-journal cut as nonauthorizing comparison DATA.
+///
+/// The fields preserve the existing readback layout. A supplied value proves no
+/// protected origin, completed replay, currentness, receiving, or effect right.
+/// Actual native owners retain custody and enforce those independent gates.
+pub struct FixedJournalReadbackDataV1<'a> {
+    /// The historical marked transaction, when requested by the reader.
+    pub marked_transaction: Option<&'a super::transaction::JournalTransaction>,
+    /// The materialized rows borrowed from the historical prefix.
+    pub state: &'a BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
+    /// The captured historical physical names.
+    pub names: super::protected_names::ProtectedJournalNamesV1,
+    /// The durable next sequence at the historical cut.
+    pub next: u64,
+    /// The durable byte end at the historical cut.
+    pub end: u64,
+}
+
 /// Reports whether a request key is new, an exact replay, or a conflict.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum IdempotencyOutcome {
@@ -107,12 +125,12 @@ impl<'native> HistoricalLedgerReadViewV1<'native> {
     pub fn records(
         self,
         namespace: RecordNamespace,
-    ) -> impl Iterator<Item = (&'native [u8], &'native [u8])> + 'native { HistoricalLedgerComparisonV2::Native(self).records(namespace) }
+    ) -> impl Iterator<Item = (&'native [u8], &'native [u8])> + Clone + 'native { HistoricalLedgerComparisonV2::Native(self).records(namespace) }
 
     /// Iterates every diagnostic row by namespace and bytewise key order.
     pub fn all_records(
         self,
-    ) -> impl Iterator<Item = (RecordNamespace, &'native [u8], &'native [u8])> + 'native {
+    ) -> impl Iterator<Item = (RecordNamespace, &'native [u8], &'native [u8])> + Clone + 'native {
         self.rows_data_v2().all_records()
     }
 
@@ -145,9 +163,70 @@ impl<'rows> HistoricalLedgerRowsDataV2<'rows> {
     ) -> Self {
         Self { state, idempotency }
     }
+    /// Borrows one supplied diagnostic idempotency decision as comparison DATA.
+    ///
+    /// This performs no allocation, replay or native observation and authenticates
+    /// neither the index nor the request. Actual callers retain their independent
+    /// complete-prefix, currentness and owed-post checks.
+    #[must_use]
+    pub fn idempotency_decision_data_v2(
+        self,
+        key: &[u8],
+    ) -> Option<&'rows IdempotencyDecisionV1> {
+        self.idempotency.get(key)
+    }
+
+    /// Borrows the same supplied complete materialized map as comparison DATA.
+    ///
+    /// This performs no validation and establishes no protected provenance,
+    /// native health, paid observation or current role.
+    #[must_use]
+    pub fn materialized_state_data_v2(
+        self,
+    ) -> &'rows BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>> {
+        self.state
+    }
+
+    /// Selects one supplied row through the existing historical lookup recipe.
+    ///
+    /// The lookup preserves the original temporary key allocation. It grants
+    /// no native custody or positive interpretation to the supplied bytes.
+    #[must_use]
+    pub fn get_data_v2(self, namespace: RecordNamespace, key: &[u8]) -> Option<&'rows [u8]> {
+        HistoricalLedgerComparisonV2::Rows(self).get(namespace, key)
+    }
+
+    /// Iterates one supplied namespace in the original bytewise key order.
+    pub fn records_data_v2(
+        self,
+        namespace: RecordNamespace,
+    ) -> impl Iterator<Item = (&'rows [u8], &'rows [u8])> + Clone + 'rows {
+        HistoricalLedgerComparisonV2::Rows(self).records(namespace)
+    }
+
+    /// Compares one supplied idempotency decision without authenticating it.
+    #[must_use]
+    pub fn check_idempotency_data_v2(
+        self,
+        key: &IdempotencyKey,
+        request_digest: [u8; 32],
+    ) -> IdempotencyOutcome {
+        HistoricalLedgerComparisonV2::Rows(self).check_idempotency(key, request_digest)
+    }
+
+    /// Borrows one supplied historical row without native admission.
+    pub fn get_record_data_v1(self, namespace: RecordNamespace, key: &[u8]) -> Option<&'rows [u8]> {
+        HistoricalLedgerComparisonV2::Rows(self).get(namespace, key)
+    }
+
+    /// Borrows the supplied map without claiming native prefix or currentness.
+    pub const fn materialized_state_data_v1(self) -> &'rows BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>> {
+        self.state
+    }
+
     /// Iterates supplied complete rows without authenticating their provenance.
     pub fn all_records(self)
-        -> impl Iterator<Item = (RecordNamespace, &'rows [u8], &'rows [u8])> + 'rows
+        -> impl Iterator<Item = (RecordNamespace, &'rows [u8], &'rows [u8])> + Clone + 'rows
     {
         self.state.iter().map(|((namespace,key),value)| (*namespace,key.as_slice(),value.as_slice()))
     }
@@ -180,7 +259,7 @@ impl<'rows> HistoricalLedgerComparisonV2<'rows> {
     }
 
     pub(crate) fn records(self, namespace: RecordNamespace)
-        -> impl Iterator<Item = (&'rows [u8], &'rows [u8])> + 'rows
+        -> impl Iterator<Item = (&'rows [u8], &'rows [u8])> + Clone + 'rows
     {
         self.rows_v2().state.range((namespace, Vec::new())..)
             .take_while(move |((actual, _), _)| *actual == namespace)

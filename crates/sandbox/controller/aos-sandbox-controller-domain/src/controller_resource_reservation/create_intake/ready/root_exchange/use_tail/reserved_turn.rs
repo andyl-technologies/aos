@@ -51,7 +51,7 @@ impl OriginalCreateStorageReadyV1<'_, '_> {
             parent: &owner.parent, intake: &mut owner.intake,
             controller: self.original.controller, source: self.original.source,
             profile: self.original.profile, cache: &mut self.cache,
-            state: &mut root.turn, use_receiving: Some(receiving),
+            state: &mut root.turn, use_receiving: Some(RootUseReceivingV1::Original(receiving)),
         };
         loan.run_reserved_turn_once(&mut root.peer, reserved, original_cutoff)
     }
@@ -80,7 +80,7 @@ impl OriginalCreateStorageRootExchangeV1<'_, '_, '_> {
             root_use_observation_traffic_v1(delta)
         })());
         self.state.property_funding = Some(match self.state.property_geometry.as_ref() {
-            Some(Ok(demand)) => match self.use_receiving.as_deref_mut() {
+            Some(Ok(demand)) => match self.use_receiving.as_mut() {
                 Some(original) => original.reserve_once(*demand),
                 None => Err(ResourceReservationErrorV1::Conflict),
             },
@@ -120,7 +120,7 @@ impl OriginalCreateStorageRootExchangeV1<'_, '_, '_> {
         self.prepay_use_root_observations_once(3)?;
         self.state.use_tail.entered = true;
         let shape = self.state.use_tail.shape.as_ref().and_then(|v| v.as_ref().ok()).ok_or(Closed)?;
-        self.state.use_tail.fixed = Some(self.use_receiving.as_deref_mut().ok_or(Closed)?
+        self.state.use_tail.fixed = Some(self.use_receiving.as_mut().ok_or(Closed)?
             .reserve_once(shape.receiving.with(D::NetworkBytes, 0).with(D::LogBytes, 0)));
         if !matches!(self.state.use_tail.fixed, Some(Ok(()))) {
             self.state.use_tail.first.get_or_insert(TailFailureV1::Funding);
@@ -191,7 +191,7 @@ impl OriginalCreateStorageRootExchangeV1<'_, '_, '_> {
             if reached > self.state.use_tail.wire_limit {
                 return Err(ResourceReservationErrorV1::Conflict);
             }
-            self.use_receiving.as_deref_mut().ok_or(ResourceReservationErrorV1::Conflict)?
+            self.use_receiving.as_mut().ok_or(ResourceReservationErrorV1::Conflict)?
                 .reserve_once(ResourceVector::ZERO.with(D::NetworkBytes, bytes))?;
             self.state.use_tail.wire_used = reached;
             Ok(())

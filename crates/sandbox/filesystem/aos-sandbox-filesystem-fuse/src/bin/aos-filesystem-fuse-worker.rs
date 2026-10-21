@@ -13,7 +13,7 @@ use aos_sandbox_filesystem_fuse::worker_kernel_init::PreparedFixedWorkerKernelSe
 use aos_sandbox_filesystem_fuse::worker_session::{
     WORKER_PREPARATION_PLAN_BYTES_V1, WorkerPreparationPlanV1,
 };
-use aos_sandbox_linux::boot::KernelBootId;
+use aos_linux_descriptors::boot::KernelBootId;
 use aos_sandbox_linux::fuse_worker_startup::FixedFuseWorkerStartupV1;
 use aos_sandbox_linux::immutable_file::SealedMemfdMapping;
 use aos_sandbox_linux::seqpacket::SeqpacketError;

@@ -68,7 +68,7 @@ macro_rules! purpose_peer_ports {
             /// Enters only the selected purpose peer owner on this same accepted flight.
             /// This neither reuses InitialController nor grants a lifecycle phase.
             pub(crate) fn $admit_controller_peer_once_v1(&mut self) -> Result<(), NormalRootStartupErrorV1> {
-                if self.purpose_peer.is_some() || self.purpose_admission.is_some() || self.controller_admission.is_some()
+                if self.controller_peer.is_some() || self.purpose_peer.is_some() || self.purpose_admission.is_some() || self.controller_admission.is_some()
                     || self.closed.is_some() || !self.transferred
                 {
                     self.closed.get_or_insert(NormalRootStartupErrorV1::Service);
@@ -103,7 +103,7 @@ macro_rules! purpose_peer_ports {
                 use aos_sandbox_linux::seqpacket::SeqpacketError as Error;
                 self.$cut_startup_v1().map_err(|_| Error::Closed)?;
                 self.native.as_mut().and_then(|result| result.as_mut().ok())
-                    .ok_or(Error::Closed)?.enable_subject_reporting()
+                    .ok_or(Error::Closed)?.enable_subject_reporting().map_err(aos_sandbox_linux::seqpacket::SeqpacketError::from)
             }
 
             pub(crate) fn $receive_subject_chunk_into_v1(
@@ -125,7 +125,7 @@ macro_rules! purpose_peer_ports {
                 let peer = self.$peer_v1()?.peer_v1()?;
                 let native = self.current_cut_native()?;
                 let chunk = buffer.pending_chunk().map_err(|_| NormalRootStartupErrorV1::Service)?;
-                sample.capture_once(peer.native_original_v1(), native, chunk).map_err(Into::into)
+                sample.capture_once(peer.native_original_v1()?, native, chunk).map_err(Into::into)
             }
 
             pub(crate) fn $finish_controller_peer_posts_once_v1(&mut self) -> Result<(), NormalRootStartupErrorV1> {
@@ -383,40 +383,172 @@ impl<'startup> RootPolicyAcceptedFlightV1<'_, 'startup> {
     }
 }
 
-// This concrete peer reuses the sole native Controller/PID1/posts body.
-purpose_peer_ports!(
-    ExecutionNoApply, RootExecutionNoApplyControllerPeerReceivingV2,
-    admit_execution_no_apply_controller_peer_once_v2,
-    execution_no_apply_cut_startup_v2,
-    enable_execution_no_apply_subject_reporting_once_v2,
-    receive_execution_no_apply_subject_chunk_into_v2,
-    observe_execution_no_apply_chunk_subject_into_v2,
-    finish_execution_no_apply_controller_peer_posts_once_v2,
-    settle_execution_no_apply_controller_peer_positive_once_v2,
-    execution_no_apply_controller_property_failure_view_v2,
-    execution_no_apply_peer_v2,
-    execution_no_apply_peer_mut_v2
-);
+// NoApply now owns the real native Policy continuation; the upper ports
+// retain only accepted-stream selection and the original L/U scheduling.
+impl<'listener, 'startup> RootPolicyAcceptedFlightV1<'listener, 'startup> {
+    /// Enters only the selected purpose peer owner on this same accepted flight.
+    /// This neither reuses InitialController nor grants a lifecycle phase.
+    pub(crate) fn admit_execution_no_apply_controller_peer_once_v2(&mut self) -> Result<(), NormalRootStartupErrorV1> {
+        if self.controller_peer.is_some() || self.purpose_peer.is_some() || self.purpose_admission.is_some() || self.controller_admission.is_some()
+            || self.closed.is_some() || !self.transferred
+        {
+            self.closed.get_or_insert(NormalRootStartupErrorV1::Service);
+            return Err(NormalRootStartupErrorV1::Service);
+        }
+        self.purpose_peer = Some(RootAcceptedPurposePeerV1::ExecutionNoApply(
+            crate::normal_root::RootExecutionNoApplyControllerPeerReceivingV2::new(self.listener.startup),
+        ));
+        self.purpose_admission = Some((|| {
+            let native = self.native.as_ref().and_then(|result| result.as_ref().ok())
+                .ok_or(NormalRootStartupErrorV1::Service)?;
+            match self.purpose_peer.as_mut() {
+                Some(RootAcceptedPurposePeerV1::ExecutionNoApply(peer)) => peer.capture_once_v1(native),
+                _ => Err(NormalRootStartupErrorV1::Service),
+            }
+        })());
+        if matches!(self.purpose_admission, Some(Ok(()))) { Ok(()) }
+        else { Err(NormalRootStartupErrorV1::Service) }
+    }
+
+    pub(crate) fn execution_no_apply_cut_startup_v2(&self) -> Result<&'startup ProductionNormalRootStartupV1, NormalRootStartupErrorV1> {
+        if self.closed.is_some() || !matches!(self.purpose_admission, Some(Ok(()))) {
+            return Err(NormalRootStartupErrorV1::Service);
+        }
+        self.execution_no_apply_peer_v2()?.require_initial_v1()?;
+        Ok(self.listener.startup)
+    }
+
+    pub(crate) fn enable_execution_no_apply_subject_reporting_once_v2(
+        &mut self,
+    ) -> Result<(), aos_sandbox_linux::seqpacket::SeqpacketError> {
+        use aos_sandbox_linux::seqpacket::SeqpacketError as Error;
+        self.execution_no_apply_cut_startup_v2().map_err(|_| Error::Closed)?;
+        self.native.as_mut().and_then(|result| result.as_mut().ok())
+            .ok_or(Error::Closed)?.enable_subject_reporting().map_err(aos_sandbox_linux::seqpacket::SeqpacketError::from)
+    }
+
+    pub(crate) fn receive_execution_no_apply_subject_chunk_into_v2(
+        &mut self,
+        buffer: &mut aos_sandbox_linux::unix_stream::RetainedSubjectStreamReadV1,
+        geometry: &aos_sandbox_linux::unix_stream::SubjectStreamReceiveGeometryV1,
+    ) -> Result<(), aos_sandbox_linux::unix_stream::SubjectStreamReadErrorV1> {
+        use aos_sandbox_linux::unix_stream::SubjectStreamReadErrorV1 as Error;
+        self.execution_no_apply_cut_startup_v2().map_err(|_| Error::Order)?;
+        let native = self.native.as_mut().and_then(|result| result.as_mut().ok())
+            .ok_or(Error::Order)?;
+        buffer.receive_next_with_geometry_once(native, geometry)
+    }
+
+    pub(crate) fn observe_execution_no_apply_chunk_subject_into_v2(&self,
+        buffer: &aos_sandbox_linux::unix_stream::RetainedSubjectStreamReadV1,
+        sample: &mut crate::normal_root::RootControllerChunkSubjectSampleV1,
+    ) -> Result<(), NormalRootStartupErrorV1> {
+        let peer = self.execution_no_apply_peer_v2()?.peer_v1()?;
+        let native = self.current_cut_native()?;
+        let chunk = buffer.pending_chunk().map_err(|_| NormalRootStartupErrorV1::Service)?;
+        sample.capture_once(peer, native, chunk).map_err(Into::into)
+    }
+
+    pub(crate) fn finish_execution_no_apply_controller_peer_posts_once_v2(&mut self) -> Result<(), NormalRootStartupErrorV1> {
+        // The actual accepted native stream survives a failed protocol body.
+        // These already-prepaid posts do not call a healthy-cut accessor.
+        let native = self.native.as_ref().and_then(|result| result.as_ref().ok())
+            .ok_or(NormalRootStartupErrorV1::Service)?;
+        match self.purpose_peer.as_mut() {
+            Some(RootAcceptedPurposePeerV1::ExecutionNoApply(peer)) => peer.finish_posts_once_v1(native),
+            _ => Err(NormalRootStartupErrorV1::Service),
+        }
+    }
+
+    pub(crate) fn settle_execution_no_apply_controller_peer_positive_once_v2(&mut self) -> Result<(), NormalRootStartupErrorV1> {
+        self.execution_no_apply_peer_mut_v2()?.settle_positive_once_v1()
+    }
+
+    pub(crate) fn execution_no_apply_controller_property_failure_view_v2(&self) -> Option<aos_systemd_client::FixedPid1PropertyFailureViewV1<'_>> {
+        self.execution_no_apply_peer_v2().ok()?.property_failure_view_v1()
+    }
+
+    fn execution_no_apply_peer_v2(&self) -> Result<&crate::normal_root::RootExecutionNoApplyControllerPeerReceivingV2<'startup>, NormalRootStartupErrorV1> {
+        match self.purpose_peer.as_ref() {
+            Some(RootAcceptedPurposePeerV1::ExecutionNoApply(peer)) => Ok(peer),
+            _ => Err(NormalRootStartupErrorV1::Service),
+        }
+    }
+
+    pub(super) fn execution_no_apply_peer_mut_v2(&mut self) -> Result<&mut crate::normal_root::RootExecutionNoApplyControllerPeerReceivingV2<'startup>, NormalRootStartupErrorV1> {
+        match self.purpose_peer.as_mut() {
+            Some(RootAcceptedPurposePeerV1::ExecutionNoApply(peer)) => Ok(peer),
+            _ => Err(NormalRootStartupErrorV1::Service),
+        }
+    }
+
+}
 
 impl<'startup> RootPolicyAcceptedFlightV1<'_, 'startup> {
     pub(crate) fn execution_no_apply_stage_receiving_v2(&mut self)
         -> Result<crate::normal_root::RootExecutionNoApplyStageReceivingV2<'_, 'startup>, NormalRootStartupErrorV1>
     {
-        self.execution_no_apply_peer_mut_v2()?.execution_no_apply_stage_receiving_v2()
+        self.execution_no_apply_peer_mut_v2()?.stage_receiving_v2()
+    }
+
+    /// Lends the actual NoApply peer, held stream and native current sample.
+    ///
+    /// This mechanism grants no continuation stage, history service post or
+    /// worker entitlement; the actual NoApply owner retains those obligations.
+    pub(crate) fn borrow_execution_no_apply_floor_peer_v2<'cut>(
+        &'cut self,
+        stream: &'cut aos_linux_descriptors::unix_stream::RetainedUnixStream,
+        sample: &'cut mut aos_sandbox_broker::receiving::RootSelectedControllerCurrentSampleV1,
+    ) -> Result<aos_sandbox_broker::receiving::RootControllerCurrentBorrowerV1<'cut, 'startup>, NormalRootStartupErrorV1> {
+        let peer = self.execution_no_apply_peer_v2()?.peer_v1()?;
+        sample.borrow_current_original_v1(peer, stream)
+            .map_err(NormalRootStartupErrorV1::from)
+    }
+
+    /// Measures the lower borrower and actual upper forwarding controls.
+    /// The real NoApply entry admits this once before constructing its loan.
+    pub(crate) fn execution_no_apply_floor_peer_borrow_control_bytes_v2() -> Option<usize> {
+        use std::mem::size_of;
+        use aos_sandbox_broker::receiving::{
+            RootControllerCurrentBorrowerV1, RootSelectedControllerCurrentSampleV1,
+        };
+
+        RootControllerCurrentBorrowerV1::additional_control_bytes_v1()?
+            .checked_add(size_of::<Result<RootControllerCurrentBorrowerV1<'_, '_>, NormalRootStartupErrorV1>>()
+                .checked_mul(3)?)?
+            .checked_add(size_of::<(
+                &Self,
+                &aos_linux_descriptors::unix_stream::RetainedUnixStream,
+                &mut RootSelectedControllerCurrentSampleV1,
+            )>().checked_mul(3)?)?
+            .checked_add(size_of::<Option<usize>>().checked_mul(3)?)
     }
 
     /// Uses this same Execution peer's genuine native/PID1 currentness body.
     pub(crate) fn observe_execution_no_apply_floor_peer_once_v2(&self,
-        stream: &aos_sandbox_linux::unix_stream::RetainedUnixStream,
+        stream: &aos_linux_descriptors::unix_stream::RetainedUnixStream,
         sample: &mut crate::normal_root::RootControllerPeerCurrentSampleV1,
     ) -> Result<(), NormalRootStartupErrorV1> {
         self.execution_no_apply_peer_v2()?.peer_v1()?
-            .observe_prearmed_current_into_v1(stream, sample)
+            .observe_prearmed_current_into_v1(stream, sample.native_original_mut_v1())
+            .map_err(Into::into)
     }
 }
 
-continuation_chunk_post_port!(observe_execution_no_apply_chunk_post_once_v2, ExecutionNoApply,
-    crate::policy_compiler::execution_no_apply_root::transport::RootExecutionNoApplyOpeningOriginalV2);
+impl RootPolicyAcceptedFlightV1<'_, '_> {
+    pub(crate) fn observe_execution_no_apply_chunk_post_once_v2(&self,
+        post: &mut crate::normal_root::RootHistoryPeerPostV1,
+        owner: &crate::policy_compiler::execution_no_apply_root::transport::RootExecutionNoApplyOpeningOriginalV2,
+    ) -> Result<(), NormalRootStartupErrorV1> {
+        let native = self.native.as_ref().and_then(|result| result.as_ref().ok());
+        let peer = match self.purpose_peer.as_ref() {
+            Some(RootAcceptedPurposePeerV1::ExecutionNoApply(peer)) => peer.peer_v1().ok(),
+            _ => None,
+        };
+        let cutoff = owner.current_cutoff_v1().map_err(|_| NormalRootStartupErrorV1::Service)?;
+        post.observe_native_continuation_once_v2(self.listener.startup, native, peer, cutoff)
+    }
+}
 
 purpose_peer_ports!(
     StopCleanup, RootStopCleanupControllerPeerReceivingV1,

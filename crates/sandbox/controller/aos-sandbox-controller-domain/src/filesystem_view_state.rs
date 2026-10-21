@@ -443,14 +443,16 @@ struct History {
     retained_bytes: usize,
 }
 
-impl History {
-    fn load(journal: &Journal) -> Result<Self, FilesystemViewRevisionStateError> {
+
+
+macro_rules! filesystem_view_state_history_recipe_v2 {
+    ($input:expr, $records:ident) => {{
         let mut current: BTreeMap<ViewId, Record> = BTreeMap::new();
         let mut revisions = BTreeMap::new();
         let mut operations = BTreeMap::new();
         let mut retained_bytes = 0_usize;
 
-        for (key, value) in journal.records(RecordNamespace::FilesystemViewRevision) {
+        for (key, value) in $input.$records(RecordNamespace::FilesystemViewRevision) {
             if key.len() != 24 {
                 return Err(FilesystemViewRevisionStateError::CorruptState);
             }
@@ -502,6 +504,16 @@ impl History {
             operations,
             retained_bytes,
         })
+        }};
+}
+
+impl History {
+    fn load(journal: &Journal) -> Result<Self, FilesystemViewRevisionStateError> {
+        filesystem_view_state_history_recipe_v2!(journal, records)
+    }
+
+    fn load_rows_v2(journal: aos_sandbox_protocol::domain_ledger::readonly::HistoricalLedgerRowsDataV2<'_>) -> Result<Self, FilesystemViewRevisionStateError> {
+        filesystem_view_state_history_recipe_v2!(journal, records_data_v2)
     }
 
     fn validate_mutation(
@@ -727,12 +739,12 @@ pub(crate) fn validate_attachment_reference(
     Ok(())
 }
 
-pub(crate) fn validate_historical_attachment_references<'a>(
-    journal: &Journal,
-    intents: impl IntoIterator<Item = &'a AttachmentIntent>,
-) -> Result<(), FilesystemViewRevisionStateError> {
-    let history = History::load(journal)?;
-    if intents
+
+
+macro_rules! validate_historical_attachment_references_historical_recipe_v2 {
+    ($history:expr, $intents:expr) => {{
+    let history = $history?;
+    if $intents
         .into_iter()
         .any(|intent| !attachment_reference_matches(&history, intent))
     {
@@ -740,6 +752,21 @@ pub(crate) fn validate_historical_attachment_references<'a>(
     }
 
     Ok(())
+    }};
+}
+
+pub(crate) fn validate_historical_attachment_references<'a>(
+    journal: &Journal,
+    intents: impl IntoIterator<Item = &'a AttachmentIntent>,
+) -> Result<(), FilesystemViewRevisionStateError> {
+    validate_historical_attachment_references_historical_recipe_v2!(History::load(journal), intents)
+}
+
+pub(crate) fn validate_historical_attachment_references_rows_v2<'a>(
+    journal: aos_sandbox_protocol::domain_ledger::readonly::HistoricalLedgerRowsDataV2<'_>,
+    intents: impl IntoIterator<Item = &'a AttachmentIntent>,
+) -> Result<(), FilesystemViewRevisionStateError> {
+    validate_historical_attachment_references_historical_recipe_v2!(History::load_rows_v2(journal), intents)
 }
 
 fn attachment_reference_matches(history: &History, intent: &AttachmentIntent) -> bool {
@@ -1138,4 +1165,13 @@ mod tests {
                 if matches!(*error, FilesystemViewRevisionStateError::CorruptState)
         ));
     }
+}
+
+/// Prices the reached actual-owner/Rows argument and owning return controls.
+/// Dynamic retained histories and their backing retain their existing quote.
+pub(crate) fn historical_observation_control_bytes_v2() -> Option<usize> {
+    std::mem::size_of::<(aos_sandbox_protocol::domain_ledger::readonly::HistoricalLedgerRowsDataV2<'_>, &History)>().checked_mul(3)?
+        .checked_add(std::mem::size_of::<Result<History, FilesystemViewRevisionStateError>>().checked_mul(3)?)?
+        .checked_add(std::mem::size_of::<Result<(), FilesystemViewRevisionStateError>>().checked_mul(3)?)?
+        .checked_add(std::mem::size_of::<Option<usize>>().checked_mul(3)?)
 }

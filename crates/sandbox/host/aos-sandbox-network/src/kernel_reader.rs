@@ -69,7 +69,7 @@ pub enum NetworkKernelReaderError {
     Io(#[from] std::io::Error),
     /// The bounded fixed helper process could not be executed safely.
     #[error("Network kernel observer process failed: {0}")]
-    Linux(#[from] aos_sandbox_linux::Error),
+    Linux(#[from] aos_linux_descriptors::Error),
     /// The fixed helper timed out, exceeded output bounds, or rejected state.
     #[error("fixed Network observer did not return a complete snapshot")]
     HelperFailed,

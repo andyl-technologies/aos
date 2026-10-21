@@ -31,6 +31,9 @@ mod resources;
 /// Names existing Policy journal DATA keys without granting native authority.
 pub mod journal_keys;
 
+/// Materializes parentless compiler input from authenticated model layers.
+pub mod parentless_input;
+
 /// Checks canonical signed input DATA without native admission.
 pub mod signed_inputs;
 
@@ -39,6 +42,33 @@ pub mod controller_readback;
 
 /// Owns canonical Controller project-readback DATA and raw verification.
 pub mod controller_project_readback;
+
+/// Compares complete saved Root role tuples without native custody or grants.
+#[cfg(all(target_os = "linux", feature = "native-journal"))]
+pub mod root_role_pins_data;
+
+/// Compares complete settled Source floors without native custody or grants.
+#[cfg(all(target_os = "linux", feature = "native-journal"))]
+pub mod root_saved_floor_data;
+
+/// Verifies saved Root signed-source DATA without native custody.
+pub mod root_signed_sources_data;
+
+/// Shares raw Root signed-input DATA and full historical-row comparison.
+#[cfg(all(target_os = "linux", feature = "native-journal"))]
+pub mod root_policy_inputs_data;
+
+/// Derives and compares saved Controller history without native authority.
+#[cfg(all(target_os = "linux", feature = "native-journal"))]
+pub mod controller_history_data;
+
+/// Checks the existing Controller successor signature and clock DATA.
+#[cfg(all(target_os = "linux", feature = "native-journal"))]
+pub mod controller_successor_data;
+
+/// Checks current-Nix packet and signature DATA without a native role loan.
+#[cfg(all(target_os = "linux", feature = "native-journal"))]
+pub mod nix_current_data;
 
 #[cfg(target_os = "linux")]
 pub mod policy_signer_credential;
@@ -88,3 +118,45 @@ pub use resources::{
 pub use advisory::canonicalize_advisory_actions;
 pub use authority::canonical_endpoint_catalog_v1;
 pub use namespace::{canonical_namespace_catalog_v1, validate_portable_namespace_rule_order};
+
+/// Contains nonissuing Root public broker-plan trust comparison DATA.
+pub mod root_trust_data;
+
+/// Contains unsigned Root prospective Storage-plan comparison DATA.
+pub mod root_use_plan_data;
+
+/// Canonical closed publication comparison DATA for independent native owners.
+pub mod q04_data;
+
+/// Retains fixed Root journals and their genuine native Policy role custody.
+///
+/// The portable compiler and comparison models remain available without this
+/// Linux-only feature. Native constructors require their original fixed owners.
+#[cfg(all(feature = "native-journal", target_os = "linux"))]
+pub mod native;
+
+/// Owns portable publication schemas, prerequisites and comparison DATA.
+pub mod publication;
+
+/// Shares passive Create U Security layout and its concrete lexical geometry recipe.
+pub mod storage_create_use_data;
+
+/// Compares Source Current reply DATA without constructing native custody.
+pub mod source_current_data;
+
+/// Compares Ownership bundle DATA without constructing native custody.
+#[cfg(all(feature = "native-journal", target_os = "linux"))]
+pub mod bundle_ownership_data;
+
+/// Compares borrowed Cache proof and observed clock DATA without native custody.
+pub mod cache_current_data;
+
+/// Checks complete Controller accepted-history DATA without native admission.
+#[cfg(all(feature = "native-journal", target_os = "linux"))]
+pub mod controller_acceptance_data;
+
+/// Shares the guarded current-Create comparison programme without native custody.
+pub mod root_current_compile_recipe;
+
+/// Shares passive protected Session representation recipes.
+pub mod storage_session_geometry_data;

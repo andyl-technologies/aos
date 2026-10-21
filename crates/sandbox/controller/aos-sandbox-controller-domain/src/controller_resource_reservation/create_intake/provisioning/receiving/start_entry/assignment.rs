@@ -211,7 +211,9 @@ impl StartAssignmentOriginalV2 {
                     .and_then(|bytes| bytes.checked_add(crate::policy_compiler::assignment_manifest_construction_receiving_bytes_v2()?))
                     .and_then(|bytes| u64::try_from(bytes).ok()).ok_or(CLOSED)?;
                 self.base.ok_or(CLOSED)?.checked_add(lifecycle)?
-                    .checked_add(crate::hierarchy::protected_journal::start_assignment_tree_receiving_demand_v2(source)?)?
+                    .checked_add(aos_sandbox_ledger_replay::replay::tree_lineage::start_assignment::
+                        start_assignment_tree_receiving_demand_v2(source.historical_read_view_v1().rows_data_v2())
+                        .map_err(crate::JournalError::from)?)?
                     .checked_add(plan.start_source_context_receiving_demand_v1(controller).ok_or(CLOSED)?)?
                     .checked_add(ResourceVector::ZERO.with(D::MemoryBytes, carriers))
                     .map_err(Into::into)
@@ -242,7 +244,9 @@ impl StartAssignmentOriginalV2 {
             }
         }
         if self.first.is_none() {
-            self.replay = Some(self.read.observe_once_v1(source.journal_ref_v1(), plan.operation_id()));
+            self.replay = Some(self.read.observe_once_v1(
+                source.journal_ref_v1().historical_read_view_v1().rows_data_v2(), plan.operation_id(),
+            ));
             if !matches!(self.replay, Some(Ok(()))) {
                 self.first = Some(First::Replay);
             }
@@ -279,9 +283,22 @@ impl StartAssignmentOriginalV2 {
         if self.first.is_none() {
             self.tree = Some((|| {
                 let previous = completed.publication_material_v1()?.0.manifest();
-                crate::hierarchy::protected_journal::start_assignment_source_tree_data_v2(
-                    source.journal_ref_v1(), previous.project(), previous.sandbox(),
-                ).map_err(Into::into)
+                source.journal_ref_v1().ensure_healthy().map_err(crate::hierarchy::protected_journal::HierarchyProtectedJournalErrorV1::from)?;
+                aos_sandbox_ledger_replay::replay::tree_lineage::start_assignment::
+                    start_assignment_source_tree_data_v2(
+                        source.journal_ref_v1().historical_read_view_v1().rows_data_v2(),
+                        previous.project(), previous.sandbox(),
+                    ).map_err(|cause| {
+                        use aos_sandbox_ledger_replay::replay::tree_lineage::start_assignment::
+                            StartAssignmentTreeReadDataErrorV2;
+                        let cause = match cause {
+                            StartAssignmentTreeReadDataErrorV2::History(cause) =>
+                                crate::hierarchy::protected_journal::HierarchyProtectedJournalErrorV1::from(cause),
+                            StartAssignmentTreeReadDataErrorV2::MissingTarget =>
+                                crate::hierarchy::protected_journal::HierarchyProtectedJournalErrorV1::StaleAuthority,
+                        };
+                        cause.into()
+                    })
             })());
             if !matches!(self.tree, Some(Ok(_))) {
                 self.first = Some(First::Tree);

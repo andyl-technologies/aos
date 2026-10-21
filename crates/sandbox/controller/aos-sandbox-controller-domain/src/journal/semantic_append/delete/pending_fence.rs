@@ -7,6 +7,7 @@
 use super::*;
 use crate::lifecycle::delete_pending::SourceDeletePendingPlanV1;
 
+mod cache_audit;
 mod inventory_append;
 mod consumer;
 pub use inventory_append::{DeleteInventorySessionAppendOriginalV1, DeleteInventorySessionAppendDisposalV1, DeleteInventoryIoDisposalV1, DeleteInventorySecurityShapeDataV1};

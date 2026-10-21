@@ -33,7 +33,7 @@ use std::cell::OnceCell;
 use std::os::fd::{AsFd as _, OwnedFd};
 use std::sync::Arc;
 
-use aos_sandbox_linux::pidfd::PidFdInfo;
+use aos_linux_descriptors::pidfd::PidFdInfo;
 use aos_sandbox_linux::seqpacket::{
     RetainedSeqpacketAdmissionErrorV1, RetainedSeqpacketReceiveErrorV1,
     RetainedSeqpacketSendErrorV1, SeqpacketSocket,
@@ -118,9 +118,9 @@ struct PollObservation {
 }
 
 struct KernelPost {
-    peer_info: Result<PidFdInfo, aos_sandbox_linux::Error>,
-    peer_alive: Result<bool, aos_sandbox_linux::Error>,
-    subject_alive: Result<bool, aos_sandbox_linux::Error>,
+    peer_info: Result<PidFdInfo, aos_linux_descriptors::Error>,
+    peer_alive: Result<bool, aos_linux_descriptors::Error>,
+    subject_alive: Result<bool, aos_linux_descriptors::Error>,
     old_death: PollObservation,
     offered_stat: Result<rustix::fs::Stat, rustix::io::Errno>,
     clock: Option<Result<u64, ControllerBankLaunchErrorV1>>,

@@ -44,7 +44,10 @@ use aos_sandbox_broker_session_protocol::{
     verify_broker_session_transcript_after_client_v1, verify_broker_session_transcript_v1,
     verify_client_hello_context_v1, verify_client_hello_signature_v1,
 };
-use aos_sandbox_linux::pidfd::{PidFd, PidFdCredentials, PidFdInfo, PidFdProcessIdentity};
+use aos_linux_descriptors::pidfd::PidFd;
+use aos_linux_descriptors::pidfd::PidFdCredentials;
+use aos_linux_descriptors::pidfd::PidFdInfo;
+use aos_sandbox_linux::pidfd::PidFdProcessIdentity;
 use aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket;
 use aos_sandbox_linux::seqpacket::{
     ConnectionPeerIdentity, KernelAuthorizedRecordSubject, SeqpacketError, SeqpacketSocket,
@@ -76,7 +79,7 @@ fn require_connection_record_subject(
 fn require_connection_record_subject_engine_v1(
     subject: &KernelAuthorizedRecordSubject,
     peer: &ConnectionPeerIdentity,
-    mut original: Option<&mut Option<aos_sandbox_linux::Result<bool>>>,
+    mut original: Option<&mut Option<aos_linux_descriptors::Result<bool>>>,
 ) -> Result<(), DormantBrokerSessionHandshakeErrorV1> {
     let credentials = subject.credentials();
     let peer_credentials = peer.credentials();
@@ -558,7 +561,7 @@ impl ProcessEvidence {
         }?;
         let identity = match originals.as_deref_mut() {
             Some(originals) => originals.identity(pidfd),
-            None => pidfd.process_identity().map_err(|_| HandshakeError::KernelEvidence),
+            None => aos_sandbox_linux::pidfd::process_identity(&(pidfd)).map_err(|_| HandshakeError::KernelEvidence),
         }?;
         let after = match originals.as_deref_mut() {
             Some(originals) => originals.after(pidfd),
@@ -3928,7 +3931,7 @@ pub(crate) struct ExecutionResponsePacketOriginalV1 {
     rejected_record: Option<aos_sandbox_linux::seqpacket::ReceivedRecord>,
     payload: Option<Vec<u8>>,
     subject: Option<aos_sandbox_linux::seqpacket::KernelAuthorizedRecordSubject>,
-    alive: Option<aos_sandbox_linux::Result<bool>>,
+    alive: Option<aos_linux_descriptors::Result<bool>>,
 }
 
 impl ExecutionResponsePacketOriginalV1 {
@@ -4062,7 +4065,7 @@ pub enum OnlineTransportFailureV1 {
     Binding(#[from] aos_sandbox_linux::seqpacket::RecordBindingError),
     /// The original kernel record-subject observation failed.
     #[error("online original record subject failed: {0}")]
-    Kernel(#[from] aos_sandbox_linux::Error),
+    Kernel(#[from] aos_linux_descriptors::Error),
     /// The original HELLO witness refused its currentness check.
     #[error("online original HELLO witness failed: {0}")]
     Witness(#[from] DormantBrokerSessionHandshakeErrorV1),

@@ -98,7 +98,7 @@ struct IoStageV1 {
     before_association: Option<Result<(), IoSessionAssociationErrorV2>>,
     after_association: Option<Result<(), IoSessionAssociationErrorV2>>,
     pending_binding: Option<Result<(), aos_sandbox_linux::seqpacket::RecordBindingError>>,
-    pending_native: Option<Result<u64, aos_sandbox_linux::Error>>,
+    pending_native: Option<Result<u64, aos_linux_descriptors::Error>>,
     decode_geometry: Option<Result<ResourceVector, StorageSessionGeometryRefusalV1>>,
     decode: Option<Result<(), ResourceReservationErrorV1>>,
     outcome_geometry: Option<Result<ResourceVector, StorageSessionGeometryRefusalV1>>,

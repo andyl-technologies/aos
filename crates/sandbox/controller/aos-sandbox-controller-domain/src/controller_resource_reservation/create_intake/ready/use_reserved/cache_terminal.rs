@@ -10,7 +10,7 @@ use super::super::cache_receiving::{CacheControlOriginalsV1, CacheCurrentnessOri
 pub(super) struct CacheTerminalControlOriginalsV1 {
     control: CacheCurrentnessOriginalV1,
     returned: Option<Result<(), ResourceReservationErrorV1>>,
-    native: Option<Result<(), crate::cache_residency::CacheHeldClosedV1>>,
+    native: Option<Result<(), aos_sandbox_cache::CacheHeldClosedV1>>,
     selected_control: bool,
 }
 
@@ -45,7 +45,7 @@ pub(super) fn receiving_demand_v1() -> Result<aos_sandbox_model::ResourceVector,
     ResourceVector::ZERO.with(D::MemoryBytes, u64::try_from(bytes).map_err(|_| ResourceReservationErrorV1::Conflict)?)
         .with(D::NetworkBytes, wire).with(D::LogBytes, logs)
         .checked_add(CacheCurrentnessOriginalV1::receiving_backing_demand_v1(1)?)?
-        .checked_add(crate::cache_residency::cache_terminal_receiving_demand_v1()
+        .checked_add(crate::cache_programmes::initialization::create_storage::cache_terminal_receiving_demand_v1()
             .map_err(|_| ResourceReservationErrorV1::Conflict)?)
         .map_err(ResourceReservationErrorV1::from)
 }
@@ -67,11 +67,11 @@ pub(crate) struct CacheTerminalReceivingLoanV1<'borrow, 'held> {
 }
 
 impl CacheTerminalReceivingLoanV1<'_, '_> {
-    pub(crate) fn released_original_v1(&self) -> Result<&crate::cache_residency::CacheReleasedOriginalsV1, ResourceReservationErrorV1> {
+    pub(crate) fn released_original_v1(&self) -> Result<&crate::cache_programmes::initialization::create_storage::released::CacheReleasedOriginalsV1, ResourceReservationErrorV1> {
         self.handoff.released_v1().cache_original_v1()
     }
 
-    pub(crate) fn require_original_v1(&self, identity: crate::cache_residency::CacheHeldIdentityDataV1)
+    pub(crate) fn require_original_v1(&self, identity: aos_sandbox_cache::CacheHeldIdentityDataV1)
         -> Result<(), ResourceReservationErrorV1> {
         self.closed.require_handoff_v1(self.handoff)?;
         self.handoff.released_v1().committed_v1()
@@ -91,13 +91,13 @@ impl CacheTerminalReceivingLoanV1<'_, '_> {
 
     pub(crate) fn cutoff_v1(&self) -> Result<u64, ResourceReservationErrorV1> { self.closed.cutoff_v1() }
 
-    pub(crate) fn observe_currentness_once(&mut self, cache: &crate::cache_residency::OriginalCreateStorageCacheLoanV1<'_>)
+    pub(crate) fn observe_currentness_once(&mut self, cache: &crate::cache_programmes::initialization::create_storage::OriginalCreateStorageCacheLoanV1<'_>)
         -> Result<(), ResourceReservationErrorV1> {
         if self.state.returned.is_some() { return Err(ResourceReservationErrorV1::Conflict); }
         self.state.returned = Some(self.state.control.observe_operation_once(CacheControlOriginalsV1 {
             parent: self.parent, intake: self.intake, controller: self.controller,
             source: self.source, profile: self.profile,
-        }, cache, self.expected, self.handoff.position_v1()));
+        }, &(cache).currentness_original_v1(), self.expected, self.handoff.position_v1()));
         if matches!(self.state.returned, Some(Ok(()))) { Ok(()) }
         else { Err(ResourceReservationErrorV1::Conflict) }
     }

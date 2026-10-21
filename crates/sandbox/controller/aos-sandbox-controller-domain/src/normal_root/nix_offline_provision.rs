@@ -112,7 +112,7 @@ pub enum OfflineNixPrepareStartupErrorV3 {
     Startup(#[from] NormalRootStartupErrorV1),
     /// An actual kernel descriptor or process observation failed.
     #[error("offline prepare kernel observation failed")]
-    Linux(#[from] aos_sandbox_linux::Error),
+    Linux(#[from] aos_linux_descriptors::Error),
     /// An original file, credential or manager observation failed.
     #[error("offline prepare original I/O failed")]
     Io(#[from] io::Error),
@@ -520,7 +520,7 @@ impl OfflineNixPrepareStartupV3 {
     /// Borrows the actual first activation error from its resident table owner.
     ///
     /// This diagnostic neither releases partial descriptors nor admits a role.
-    pub fn initial_failure(&self) -> Option<&aos_sandbox_linux::Error> {
+    pub fn initial_failure(&self) -> Option<&aos_linux_descriptors::Error> {
         self.initial.failure()
     }
 
@@ -884,7 +884,7 @@ impl OfflineNixPrepareStartupV3 {
 
     fn require_helper_original(
         &self,
-        original: &aos_sandbox_linux::pidfd::PidFd,
+        original: &aos_linux_descriptors::pidfd::PidFd,
         observations: &mut aos_sandbox_linux::pidfd::PidFdProcObservationsV1,
         before_hello: bool,
     ) -> Result<(), Error> {
@@ -1384,7 +1384,7 @@ impl OfflineNixHardwareOriginV5<'_> {
 
     pub(crate) fn require_helper_before_hello(
         &mut self,
-        original: &aos_sandbox_linux::pidfd::PidFd,
+        original: &aos_linux_descriptors::pidfd::PidFd,
         observations: &mut aos_sandbox_linux::pidfd::PidFdProcObservationsV1,
     ) -> Result<(), &Error> {
         self.require_helper(original, observations, true)
@@ -1392,7 +1392,7 @@ impl OfflineNixHardwareOriginV5<'_> {
 
     pub(crate) fn require_helper_continued(
         &mut self,
-        original: &aos_sandbox_linux::pidfd::PidFd,
+        original: &aos_linux_descriptors::pidfd::PidFd,
         observations: &mut aos_sandbox_linux::pidfd::PidFdProcObservationsV1,
     ) -> Result<(), &Error> {
         self.require_helper(original, observations, false)
@@ -1400,7 +1400,7 @@ impl OfflineNixHardwareOriginV5<'_> {
 
     fn require_helper(
         &mut self,
-        original: &aos_sandbox_linux::pidfd::PidFd,
+        original: &aos_linux_descriptors::pidfd::PidFd,
         observations: &mut aos_sandbox_linux::pidfd::PidFdProcObservationsV1,
         before_hello: bool,
     ) -> Result<(), &Error> {
@@ -1439,7 +1439,7 @@ fn observe_hardware_boot(hardware: &mut HardwareStartupV5) -> Result<(), Error> 
         }
         failure => Error::Read(failure.legacy_classification()),
     })?;
-    let current = aos_sandbox_linux::boot::KernelBootId::parse(&hardware.boot_bytes)?.into_bytes();
+    let current = aos_linux_descriptors::boot::KernelBootId::parse(&hardware.boot_bytes)?.into_bytes();
     if hardware.boot_original.is_some_and(|original| original != current) {
         return Err(Error::Rejected);
     }
@@ -1782,7 +1782,7 @@ mod tests {
         let mut resident = OfflineNixPrepareStartupV3::new();
         resident.process = Some(CurrentSelfPidFdCustodyV1::new());
         let result = resident.complete(Err(Error::Linux(
-            aos_sandbox_linux::Error::WrongDescriptorType {
+            aos_linux_descriptors::Error::WrongDescriptorType {
                 expected: "pure failure sentinel",
             },
         )));
@@ -1790,7 +1790,7 @@ mod tests {
         assert!(matches!(
             result,
             Err(Error::Linux(
-                aos_sandbox_linux::Error::WrongDescriptorType {
+                aos_linux_descriptors::Error::WrongDescriptorType {
                     expected: "pure failure sentinel",
                 },
             )),
@@ -1802,7 +1802,7 @@ mod tests {
         assert!(matches!(
             resident.failure(),
             Some(Error::Linux(
-                aos_sandbox_linux::Error::WrongDescriptorType {
+                aos_linux_descriptors::Error::WrongDescriptorType {
                     expected: "pure failure sentinel",
                 },
             )),

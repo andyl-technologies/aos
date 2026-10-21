@@ -11,8 +11,10 @@ use crate::cgroup::{
     RetainedCgroupAnchor,
 };
 use crate::immutable_file::{SealedMemfdMapping, SealedMemfdReadOriginalV2};
-use crate::pidfd::{PidFd, PidFdOpenAttemptV1};
-use crate::{Error, Result};
+use aos_linux_descriptors::pidfd::PidFd;
+use crate::pidfd::PidFdOpenAttemptV1;
+use aos_linux_descriptors::Error;
+use aos_linux_descriptors::Result;
 
 use super::{
     GUEST_CGROUP_CUSTODY_BYTES, GUEST_CGROUP_CUSTODY_FD, GUEST_PAYLOAD_CGROUP_FD,

@@ -11,7 +11,7 @@ use aos_sandbox_linux::cgroup::{
 };
 use aos_sandbox_linux::pidfd::PidFdOpenAttemptV1;
 
-type Native<T> = std::result::Result<T, aos_sandbox_linux::Error>;
+type Native<T> = std::result::Result<T, aos_linux_descriptors::Error>;
 
 macro_rules! stop_root {
     (Local, $root:ident, $original:ident) => {
@@ -519,7 +519,7 @@ impl StopQuiescenceOriginalV3 {
     }
 }
 
-pub(super) fn require_stop_leader_identity_v3(identity: aos_sandbox_linux::pidfd::PidFdInfo, pid: NonZeroU32) -> Result<()> {
+pub(super) fn require_stop_leader_identity_v3(identity: aos_linux_descriptors::pidfd::PidFdInfo, pid: NonZeroU32) -> Result<()> {
     if identity.pid() != pid.get() || identity.thread_group_id() != pid.get() {
         return Err(HostError::Worker("exact stop MainPID is not its pinned process leader".to_owned()));
     }
@@ -644,14 +644,14 @@ mod tests {
         assert!(original.prepare_once_v3(&input, &observation).is_err());
 
         assert_eq!(open_references(directory.path()), 2);
-        let cause = original.failure().unwrap().downcast_ref::<aos_sandbox_linux::Error>().unwrap() as *const _;
+        let cause = original.failure().unwrap().downcast_ref::<aos_linux_descriptors::Error>().unwrap() as *const _;
         assert!(original.completed_root.is_none());
         assert!(original.completed_monitor.is_none());
         assert!(!original.completed_temporary_v4(&aos_systemd_client::ExactStopOutcome::MissingManagerObject));
         assert!(original.confirm_once_v3(&input, &observation).is_err());
         assert!(original.prepare_once_v3(&input, &observation).is_err());
         assert_eq!(open_references(directory.path()), 2);
-        assert_eq!(original.failure().unwrap().downcast_ref::<aos_sandbox_linux::Error>().unwrap() as *const _, cause);
+        assert_eq!(original.failure().unwrap().downcast_ref::<aos_linux_descriptors::Error>().unwrap() as *const _, cause);
     }
 
     #[test]

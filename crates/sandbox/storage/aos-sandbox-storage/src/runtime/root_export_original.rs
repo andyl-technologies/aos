@@ -19,7 +19,7 @@ use aos_sandbox_broker::kernel_clock::{
 };
 use aos_sandbox_linux::cgroup::{CgroupV2Root, ControllerStartupHostCgroupReadbackV1};
 use aos_sandbox_linux::inventory::MountId;
-use aos_sandbox_linux::pidfd::PidFdInfo;
+use aos_linux_descriptors::pidfd::PidFdInfo;
 use aos_sandbox_linux::seqpacket::{
     RecordBindingError, RecordSubjectListener, RetainedSeqpacketAdmissionErrorV1,
     RetainedSeqpacketReceiveErrorV1, SeqpacketError,
@@ -39,12 +39,12 @@ enum RootExportClockErrorV2 {
     #[error("original root-export clock changed or expired")]
     Stale,
     #[error(transparent)]
-    Linux(aos_sandbox_linux::Error),
+    Linux(aos_linux_descriptors::Error),
 }
 
 impl KernelPairedClockErrorV1 for RootExportClockErrorV2 {
     fn stale() -> Self { Self::Stale }
-    fn kernel(cause: aos_sandbox_linux::Error) -> Self { Self::Linux(cause) }
+    fn kernel(cause: aos_linux_descriptors::Error) -> Self { Self::Linux(cause) }
 }
 
 type Pair = RetainedKernelPairedClockAttemptV1<RootExportClockErrorV2>;
@@ -65,7 +65,7 @@ enum Failure {
 /// and successful descriptor transfer. No method returns a caller-adoptable FD.
 pub(super) struct RootExportOriginalV2 {
     host: ControllerStartupHostCgroupReadbackV1,
-    host_result: Option<aos_sandbox_linux::Result<()>>,
+    host_result: Option<aos_linux_descriptors::Result<()>>,
     host_pair: Option<(CgroupV2Root, HostRootExportPeerVerifier)>,
     host_pair_error: Option<crate::service::StorageServiceError>,
     listener: Option<Result<(), SeqpacketError>>,
@@ -89,7 +89,7 @@ pub(super) struct RootExportOriginalV2 {
     body: root_mount_export::RootMountExportOriginalV2,
     body_result: Option<Result<(), StorageRuntimeError>>,
     mount_stat: Option<rustix::io::Result<rustix::fs::Stat>>,
-    mount_id: Option<aos_sandbox_linux::Result<MountId>>,
+    mount_id: Option<aos_linux_descriptors::Result<MountId>>,
     response: Option<Result<[u8; aos_sandbox_protocol::storage_root_export::STORAGE_ROOT_EXPORT_RESPONSE_BYTES_V1], StorageRootExportProtocolErrorV1>>,
     send: Option<Result<(), SeqpacketError>>,
     socket_post: Option<Result<(), SeqpacketError>>,
@@ -97,7 +97,7 @@ pub(super) struct RootExportOriginalV2 {
     subject_post_result: Option<Result<(), RootServicePeerError>>,
     listener_post: Option<Result<(), SeqpacketError>>,
     mount_stat_post: Option<rustix::io::Result<rustix::fs::Stat>>,
-    mount_id_post: Option<aos_sandbox_linux::Result<MountId>>,
+    mount_id_post: Option<aos_linux_descriptors::Result<MountId>>,
     mount_comparison_post: Option<Result<(), StorageRuntimeError>>,
     native_post: Option<Result<(), aos_sandbox_controller_domain::StorageReceivingClosedV1>>,
     posts: Option<Result<(), StorageRuntimeError>>,

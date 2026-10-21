@@ -18,7 +18,9 @@ use crate::environment::deployment::{RootEnvironmentResponseOriginalV1, transpor
 use crate::normal_root::{NormalRootStartupErrorV1, RootPolicyAcceptedFlightV1};
 use crate::policy_compiler::RootCurrentPolicyInputDataV1;
 use super::business::{RootEnvironmentBusinessOriginalV1, EnvironmentExecutionHorizonDataV1};
-use super::super::bounded_stream_io::{DeadlineStreamDirectionV1, FixedDeadlineStreamIoV1, SliceDeadlineStreamIoV1};
+use aos_sandbox_broker::bounded_stream_io::DeadlineStreamDirectionV1;
+use aos_sandbox_broker::bounded_stream_io::FixedDeadlineStreamIoV1;
+use aos_sandbox_broker::bounded_stream_io::SliceDeadlineStreamIoV1;
 use super::super::root_policy_prelude::{RootPolicyPreludeOriginalV1, RootPolicyPurposeV1,
     RootPolicyDispositionGuardV1, RootPolicyPreludeNativeOriginalV1};
 
@@ -141,7 +143,7 @@ impl RootEnvironmentDispatchOriginalV1 {
     }
 
     pub(crate) fn require_same_complete_v1(&self,
-        native: &aos_sandbox_linux::unix_stream::RetainedUnixStream) -> Result<(), NormalRootStartupErrorV1>
+        native: &aos_linux_descriptors::unix_stream::RetainedUnixStream) -> Result<(), NormalRootStartupErrorV1>
     {
         if !matches!(self.primary, Some(Ok(()))) || self.failure().is_some()
             || !self.header_io.completed_exact() || !self.body_io.completed_exact()

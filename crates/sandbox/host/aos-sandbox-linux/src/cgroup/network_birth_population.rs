@@ -71,7 +71,7 @@ impl NetworkBirthPopulationDonationOriginalV2 {
 
     fn capture_inner(&mut self, anchor: &RetainedCgroupAnchor) -> Result<()> {
         let Some(donated) = self.donated.as_ref() else { return self.refuse(First::Input); };
-        self.cloexec = Some(uapi::is_cloexec(donated.as_fd()));
+        self.cloexec = Some(aos_linux_descriptors::native::is_cloexec(donated.as_fd()));
         if !matches!(self.cloexec, Some(Ok(true))) { return self.refuse(First::Cloexec); }
         self.stat = Some(uapi::fstat(donated.as_fd()));
         let Some(Ok(stat)) = self.stat.as_ref() else { return self.refuse(First::Stat); };
@@ -80,7 +80,7 @@ impl NetworkBirthPopulationDonationOriginalV2 {
         }
         self.filesystem = Some(uapi::filesystem_type(donated.as_fd()));
         if !matches!(self.filesystem, Some(Ok(CGROUP2_SUPER_MAGIC))) { return self.refuse(First::Filesystem); }
-        self.flags = Some(uapi::get_status_flags(donated.as_fd()));
+        self.flags = Some(aos_linux_descriptors::native::get_status_flags(donated.as_fd()));
         let Some(Ok(flags)) = self.flags.as_ref() else { return self.refuse(First::Flags); };
         if flags & libc::O_ACCMODE != libc::O_RDONLY || flags & libc::O_PATH != 0 {
             return self.refuse(First::Input);

@@ -374,7 +374,7 @@ mod tests {
     #[test]
     fn prearmed_same_stat_can_be_observed_without_reopening_closed_source() {
         let original = PidFd::open(std::num::NonZeroU32::new(std::process::id()).unwrap()).unwrap();
-        let mut source = original.prepare_proc_observations_v1();
+        let mut source = crate::pidfd::prepare_proc_observations_v1(&(original));
         source.capture_stat(&original).unwrap();
         let mut negative = PidFdNegativeIdentityOriginalV1::new();
         source.prepare_negative_identity_once_into(&mut negative).unwrap();

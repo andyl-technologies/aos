@@ -7,11 +7,33 @@ license.workspace = true
 [dependencies]
 aos-sandbox-model.workspace = true
 aos-sandbox-protocol.workspace = true
+aos-sandbox-ownership-protocol.workspace = true
 ed25519-dalek.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 
+aos-sandbox-broker-session-protocol = { workspace = true }
 [lints]
 workspace = true
+
+[dev-dependencies]
+aos-sandbox-broker = { workspace = true, features = ["test-fixtures"] }
+tempfile = { workspace = true }
+
+[features]
+default = []
+native-journal = ["dep:aos-sandbox-api", "dep:buffa", "dep:aos-sandbox-broker", "dep:aos-sandbox-journal", "dep:aos-sandbox-ledger-replay", "dep:aos-sandbox-cache", "dep:aos-sandbox-linux", "dep:aos-linux-descriptors", "dep:rustix"]
+test-fixtures = ["native-journal", "aos-sandbox-broker/test-fixtures", "aos-sandbox-journal/test-fixtures"]
+
+[target."cfg(target_os = \"linux\")".dependencies]
+aos-sandbox-api = { workspace = true, optional = true }
+buffa = { workspace = true, optional = true }
+aos-sandbox-broker = { workspace = true, optional = true }
+aos-sandbox-cache = { workspace = true, optional = true }
+aos-sandbox-journal = { workspace = true, features = ["protected-unix"], optional = true }
+aos-sandbox-ledger-replay = { workspace = true, optional = true }
+aos-sandbox-linux = { workspace = true, optional = true }
+aos-linux-descriptors = { workspace = true, optional = true }
+rustix = { workspace = true, features = ["process"], optional = true }

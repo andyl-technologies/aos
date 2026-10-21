@@ -12,10 +12,13 @@ use std::os::unix::ffi::OsStrExt as _;
 use std::path::Path;
 
 use aos_sandbox_api::aos::sandbox::local::v1::BrokerMethod;
-use aos_sandbox_linux::boot::KernelBootId;
+use aos_linux_descriptors::boot::KernelBootId;
 use aos_sandbox_linux::cgroup::{CgroupV2Root, RetainedCgroupAnchor};
 use aos_sandbox_linux::path::BeneathRoot;
-use aos_sandbox_linux::pidfd::{NamespaceFd, NamespaceKind, PidFd, PidFdInfo};
+use aos_sandbox_linux::pidfd::NamespaceFd;
+use aos_sandbox_linux::pidfd::NamespaceKind;
+use aos_linux_descriptors::pidfd::PidFd;
+use aos_linux_descriptors::pidfd::PidFdInfo;
 use aos_sandbox_protocol::ValidatedAssignmentFence;
 use aos_sandbox_protocol::authenticated_session::all_methods::{
     AuthenticatedBrokerMethodOutcomeV1, AuthenticatedBrokerMethodResultV1,
@@ -305,13 +308,11 @@ impl HostMountScopePhysicalReadbackV1 {
         if host_info != self.host_info || payload_info != self.payload_info {
             return Err("identity");
         }
-        let mount = self
-            .payload
-            .namespace(NamespaceKind::Mount)
+        let mount = aos_sandbox_linux::pidfd::namespace(&(self
+            .payload), NamespaceKind::Mount)
             .map_err(|_| "mount")?;
-        let user = self
-            .payload
-            .namespace(NamespaceKind::User)
+        let user = aos_sandbox_linux::pidfd::namespace(&(self
+            .payload), NamespaceKind::User)
             .map_err(|_| "user")?;
         if mount.identity() != self.mount.identity() || user.identity() != self.user.identity() {
             return Err("namespace changed");

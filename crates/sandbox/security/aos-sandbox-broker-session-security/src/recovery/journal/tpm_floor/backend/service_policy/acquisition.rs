@@ -11,8 +11,11 @@ use aos_sandbox_broker::immutable_image::{BackendPid1ImageAcquisitionOriginalV1,
     ImmutableFileAcquisitionOriginalV1, ImmutableImageErrorV1};
 use aos_sandbox_linux::cgroup::{CgroupV2Root, ControllerInitialCgroupReadbackV1,
     ExactCgroupMembershipReadbackV1, ExactCgroupMembershipRefusalV1, RetainedCgroupAnchor};
-use aos_sandbox_linux::pidfd::{PidFd, PidFdInfo, PidFdOpenAttemptV1,
-    PidFdProcessIdentityOriginalV1, PidFdOpenRefusalV1};
+use aos_linux_descriptors::pidfd::PidFd;
+use aos_linux_descriptors::pidfd::PidFdInfo;
+use aos_sandbox_linux::pidfd::PidFdOpenAttemptV1;
+use aos_sandbox_linux::pidfd::PidFdProcessIdentityOriginalV1;
+use aos_sandbox_linux::pidfd::PidFdOpenRefusalV1;
 use aos_sandbox_model::{ResourceDimension as D, ResourceVector};
 
 use crate::production_startup::Pid1LaunchImageV1;
@@ -31,15 +34,15 @@ pub(crate) struct FloorServiceAcquisitionOriginalV1 {
     parent_open: PidFdOpenAttemptV1,
     parent_result: Option<Result<(), PidFdOpenRefusalV1>>,
     parent: Option<PidFd>,
-    info: Option<aos_sandbox_linux::Result<PidFdInfo>>,
+    info: Option<aos_linux_descriptors::Result<PidFdInfo>>,
     info_binding: Option<Result<(), FloorErrorV1>>,
     identity: Option<PidFdProcessIdentityOriginalV1>,
-    identity_result: Option<aos_sandbox_linux::Result<()>>,
+    identity_result: Option<aos_linux_descriptors::Result<()>>,
     policy: FloorServicePolicyReadbackV1,
     policy_result: Option<Result<(), FloorErrorV1>>,
     observed: Option<PolicyObservationV1>,
     cgroup_open: Option<ControllerInitialCgroupReadbackV1>,
-    cgroup_result: Option<aos_sandbox_linux::Result<()>>,
+    cgroup_result: Option<aos_linux_descriptors::Result<()>>,
     root: Option<CgroupV2Root>,
     cgroup: Option<RetainedCgroupAnchor>,
     membership: ExactCgroupMembershipReadbackV1,
@@ -53,7 +56,7 @@ pub(crate) struct FloorServiceAcquisitionOriginalV1 {
     initial_result: Option<Result<(), FloorErrorV1>>,
     returned: Option<Result<RetainedFloorServicePolicyV1, FloorErrorV1>>,
     transfer: Option<Result<(), FloorErrorV1>>,
-    shared_process_info: Option<aos_sandbox_linux::Result<PidFdInfo>>,
+    shared_process_info: Option<aos_linux_descriptors::Result<PidFdInfo>>,
     shared_profile: Option<Result<(), FloorErrorV1>>,
     entered: bool,
     taken: bool,

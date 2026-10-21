@@ -14,7 +14,7 @@ use super::*;
 
 pub(super) struct HelperBirthOriginal {
     kernel: ConfiguredKernelCloneOriginalV1,
-    returned: Option<aos_sandbox_linux::Result<()>>,
+    returned: Option<aos_linux_descriptors::Result<()>>,
     complete: bool,
 }
 

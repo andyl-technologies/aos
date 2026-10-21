@@ -6,6 +6,9 @@
 
 use super::*;
 use crate::receiving::OriginalEnrollment;
+
+mod cache_audit;
+pub use cache_audit::ControllerCacheDeleteAuditFundingLoanV1;
 use crate::controller_receiving::ControllerReceivingErrorV1;
 use aos_sandbox_model::component_receiving::{complete_bound_delta_v1, operation_traffic_demand_v1};
 

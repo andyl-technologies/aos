@@ -6,8 +6,12 @@
 
 use std::error::Error;
 use aos_sandbox_model::{ResourceDimension as D, ResourceVector};
-use aos_sandbox_linux::pidfd::{PidFd, PidFdInfo, PidFdProcessIdentity,
-    PidFdProcObservationsV1, PidFdNegativeIdentityOriginalV1, PidFdNegativeContextOriginalV1};
+use aos_linux_descriptors::pidfd::PidFd;
+use aos_linux_descriptors::pidfd::PidFdInfo;
+use aos_sandbox_linux::pidfd::PidFdProcessIdentity;
+use aos_sandbox_linux::pidfd::PidFdProcObservationsV1;
+use aos_sandbox_linux::pidfd::PidFdNegativeIdentityOriginalV1;
+use aos_sandbox_linux::pidfd::PidFdNegativeContextOriginalV1;
 use crate::production_startup::Pid1LaunchImageV1;
 use crate::recovery::{BrokerPhysicalOpenV1, FloorProfileV1, FloorErrorV1,
     HelperImageRevalidationOriginalV1, MeasuredHelperImageV1,
@@ -15,7 +19,7 @@ use crate::recovery::{BrokerPhysicalOpenV1, FloorProfileV1, FloorErrorV1,
     RetainedFloorServicePolicyV1};
 use super::super::OwnedHelperChildV1;
 
-type Native<T> = Result<T, aos_sandbox_linux::Error>;
+type Native<T> = Result<T, aos_linux_descriptors::Error>;
 #[derive(Clone, Copy)]
 enum FirstV1 { Info, Coordinates, Alive, Wait, Identity, Image, Context, Service, Final, Closed }
 

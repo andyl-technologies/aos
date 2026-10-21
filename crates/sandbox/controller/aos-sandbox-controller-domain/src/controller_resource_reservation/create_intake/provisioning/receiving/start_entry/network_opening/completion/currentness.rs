@@ -16,7 +16,7 @@ use super::*;
 pub struct StartResourceSessionCurrentnessErrorV4 {
     data: Result<(), ResourceReservationErrorV1>,
     binding: Option<Result<(), RecordBindingError>>,
-    kernel: Option<Result<u64, aos_sandbox_linux::Error>>,
+    kernel: Option<Result<u64, aos_linux_descriptors::Error>>,
 }
 
 impl Error for StartResourceSessionCurrentnessErrorV4 {

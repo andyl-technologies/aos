@@ -12,6 +12,8 @@
 //! particular, neither it nor cold replay permits AOSPCB02, release, Create,
 //! or Apply.
 
+use aos_sandbox_ledger_replay::controller_policy_hold::ControllerPolicyHoldCodecV1;
+
 use aos_sandbox_policy::journal_keys::{
     CONTROLLER_HOLD_PIN_KEY, HEAD_KEY, SIGNER_PINS_KEY, SOURCE_HOLD_PIN_KEY,
 };
@@ -956,7 +958,7 @@ mod tests {
 
     use ed25519_dalek::{Signer as _, SigningKey};
 
-    use crate::cache_residency::sign_test_cache_owner_readback_v2;
+    use aos_sandbox_cache::sign_test_cache_owner_readback_v2;
     use aos_sandbox_protocol::cache_owner_readback::{
         CacheOwnerReadbackChallengeV1,
         PinnedCacheOwnerReadbackSignerV1,

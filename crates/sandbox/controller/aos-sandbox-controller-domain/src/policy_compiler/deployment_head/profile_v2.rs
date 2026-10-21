@@ -48,37 +48,19 @@ pub fn admit_fixed_policy_deployment_profile_v2(
     verifying_key: &VerifyingKey,
     now_unix_seconds: i64,
 ) -> Result<PolicyDeploymentHeadV1, PolicyDeploymentHeadErrorV1> {
-    let verified = verify_policy_deployment_profile_data_v2(
-        packet,
-        inputs,
-        profile,
-        verifying_key,
-        now_unix_seconds,
-    )
-    .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)?;
-    let (mut journal, _) = Journal::open_protected_at(
-        Path::new(PROTECTED_POLICY_ROOT),
-        POLICY_AUTHORITY_JOURNAL,
-        policy_authority_journal_limits(),
-    )?;
-    journal.require_protected_named_location(
-        Path::new(PROTECTED_POLICY_ROOT),
-        POLICY_AUTHORITY_JOURNAL,
-        0,
-        policy_authority_journal_limits(),
-    )?;
-    let (key, generation) = read_deployment_role(&mut journal)?;
-    if key != *verifying_key || generation != profile.signer_generation() {
-        return Err(PolicyDeploymentHeadErrorV1::StaleHead);
+    #[cfg(target_os = "linux")]
+    {
+    aos_sandbox_policy::native::RootStartupJournalOriginalV1::admit_fixed_deployment_profile_v2(
+        packet, inputs, profile, verifying_key, now_unix_seconds,
+    ).map_err(PolicyDeploymentHeadErrorV1::from)
     }
-    let admitted = admit_deployment_head_in_journal(&mut journal, packet, verified, &key)?;
-    journal.require_protected_named_location(
-        Path::new(PROTECTED_POLICY_ROOT),
-        POLICY_AUTHORITY_JOURNAL,
-        0,
-        policy_authority_journal_limits(),
-    )?;
-    Ok(admitted)
+    #[cfg(not(target_os = "linux"))]
+    {
+        verify_policy_deployment_profile_data_v2(packet, inputs, profile, verifying_key, now_unix_seconds)
+            .map_err(PolicyDeploymentHeadErrorV1::from)?;
+        let _ = (packet, inputs, profile, verifying_key, now_unix_seconds);
+        Err(JournalError::UnsupportedProtectedOpen.into())
+    }
 }
 
 /// Verifies exact declarations against a retained fixed Root writer and head.
@@ -145,5 +127,5 @@ fn read_deployment_role(
     Ok((deployment, deployment_generation))
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod tests;

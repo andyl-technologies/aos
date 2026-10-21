@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::source_domain::ProtectedSourceDomainJournalOwnerV1;
-use crate::lifecycle::{LifecycleProtectedJournalOwnerV1,lifecycle_public_mutation_admission_v1,
+use crate::lifecycle::{LifecycleProtectedJournalOwnerV1,
     lifecycle_operation_from_public_mutation_v1};
 
 impl StartSourceOriginOriginalV1 {
@@ -77,9 +77,9 @@ impl StartSourceOriginOriginalV1 {
         }
         if self.first.is_none() {
             self.replay = Some(if self.purpose == StartSourcePurposeV2::Admission {
-                self.read.observe_projection_once_v1(source.journal_ref_v1())
+                self.read.observe_rows_projection_once_v3(source.journal_ref_v1().historical_read_view_v1().rows_data_v2())
             } else {
-                self.read.observe_once_v1(source.journal_ref_v1(), plan.operation_id())
+                self.read.observe_once_v1(source.journal_ref_v1().historical_read_view_v1().rows_data_v2(), plan.operation_id())
             });
             if !matches!(self.replay,Some(Ok(()))) {self.first=Some(First::Replay);}
         }
@@ -120,7 +120,9 @@ impl StartSourceOriginOriginalV1 {
                 let native=state.native.as_ref().and_then(|value|value.as_ref().ok()).ok_or(CLOSED)?;
                 let node=state.bank.lock().map_err(|_|ResourceReservationErrorV1::EnrollmentUnavailable)?
                     .current_start_provisioning_node_v1(native.original_v1(),controller,state.profile.as_ref())?;
-                let admission=lifecycle_public_mutation_admission_v1(controller,plan.operation_id(),context.project(),node,&request)?;
+                let admission=crate::lifecycle::lifecycle_public_mutation_admission_from_observation_v2(
+                    crate::journal::historical_observation::HistoricalObservationV1::from_journal_v1(controller),
+                    plan.operation_id(),context.project(),node,&request)?;
                 let expected=lifecycle_operation_from_public_mutation_v1(plan.operation_id(),context.caller(),
                     context.project(),context.accepted_wall_seconds(),context.canonical_request(),&request,admission)?;
                 Ok(expected)

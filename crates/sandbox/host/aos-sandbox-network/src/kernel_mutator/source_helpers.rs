@@ -131,7 +131,7 @@ enum ClockError {
     #[error("the Network effect clock differs from its original BOOT or deadline")]
     Stale,
     #[error(transparent)]
-    Native(aos_sandbox_linux::Error),
+    Native(aos_linux_descriptors::Error),
 }
 
 impl KernelPairedClockErrorV1 for ClockError {
@@ -139,7 +139,7 @@ impl KernelPairedClockErrorV1 for ClockError {
         Self::Stale
     }
 
-    fn kernel(cause: aos_sandbox_linux::Error) -> Self {
+    fn kernel(cause: aos_linux_descriptors::Error) -> Self {
         Self::Native(cause)
     }
 }
@@ -188,7 +188,7 @@ impl ClockOriginal {
 pub(crate) struct NetworkSourceHelperOriginalV2 {
     clock_before: ClockOriginal,
     current_before: Option<Result<(), crate::worker_protocol::NetworkWorkerProtocolError>>,
-    cut: Option<Result<FixedProcessCaptureCutV3, aos_sandbox_linux::Error>>,
+    cut: Option<Result<FixedProcessCaptureCutV3, aos_linux_descriptors::Error>>,
     wait_before: Option<Result<rustix::event::Timespec, NetworkKernelMutationError>>,
     source_before: NetworkChildSourceProbeOriginalV2,
     source_before_result:

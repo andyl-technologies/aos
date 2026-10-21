@@ -54,8 +54,8 @@ pub struct StorageGenerationAttemptV1 {
     pub(crate) prepared: Option<Result<StorageCatalogPreparationOutcomeV1, StorageBrokerError>>,
     pub(crate) runtime_error: Option<crate::StorageRuntimeError>,
     pub(crate) kernel: Option<Result<
-        aos_sandbox_linux::boot::KernelBootId,
-        aos_sandbox_linux::Error,
+        aos_linux_descriptors::boot::KernelBootId,
+        aos_linux_descriptors::Error,
     >>,
     pub(crate) handoff: Option<Result<(), crate::DormantStorageBrokerCallErrorV1>>,
     pub(crate) allocation: Option<std::collections::TryReserveError>,

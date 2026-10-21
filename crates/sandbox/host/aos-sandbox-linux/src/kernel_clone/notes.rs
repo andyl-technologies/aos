@@ -4,8 +4,10 @@ use std::fs::{File, Metadata, OpenOptions};
 use std::os::fd::AsFd as _;
 use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
 
-use crate::protected_file::positional_hash::{PositionalHashClosedV2, PositionalHashOriginalV2};
-use crate::{Error, Result};
+use aos_linux_descriptors::positional_hash::PositionalHashClosedV2;
+use aos_linux_descriptors::positional_hash::PositionalHashOriginalV2;
+use aos_linux_descriptors::Error;
+use aos_linux_descriptors::Result;
 
 const NOTES: &str = "/sys/kernel/notes";
 const SYSFS_MAGIC: u64 = 0x6265_6572;

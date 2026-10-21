@@ -843,7 +843,7 @@ fn physical_snapshot(
     descriptor: &OwnedFd,
 ) -> Result<PhysicalSnapshotV1, crate::ProviderLedgerError> {
     PhysicalSnapshotV1::capture(descriptor.as_fd()).map_err(|error| match error {
-        aos_sandbox_linux::Error::InvalidInput { .. } => {
+        aos_linux_descriptors::Error::InvalidInput { .. } => {
             crate::ProviderLedgerError::BackendConflict
         }
         _ => crate::ProviderLedgerError::Unavailable,

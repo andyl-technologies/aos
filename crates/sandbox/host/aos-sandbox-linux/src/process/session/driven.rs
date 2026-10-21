@@ -15,7 +15,9 @@ use std::os::fd::{AsFd as _, BorrowedFd, OwnedFd};
 use std::rc::Rc;
 use std::time::Duration;
 
-use crate::{Error, Result, uapi};
+use aos_linux_descriptors::Error;
+use aos_linux_descriptors::Result;
+use crate::uapi;
 use super::super::capture::{
     FixedProcessCapturePartsV1, FixedProcessCaptureV1, FixedProcessRetainedSessionError,
     FixedProcessRetainedSessionOutcome, FixedProcessStopV1, SessionRun,
@@ -751,7 +753,7 @@ impl FixedProcessDrivingLoanV1<'_> {
     /// effect authority. It is absent outside healthy armed Running custody,
     /// before the first kernel observation and after observed leader exit.
     #[must_use]
-    pub fn original_child(&self) -> Option<(&crate::pidfd::PidFd, crate::pidfd::PidFdInfo)> {
+    pub fn original_child(&self) -> Option<(&aos_linux_descriptors::pidfd::PidFd, aos_linux_descriptors::pidfd::PidFdInfo)> {
         if self.owner.phase != Phase::Running
             || self.owner.cause.is_some()
             || self.owner.debt.is_some()

@@ -13,12 +13,11 @@ use std::os::unix::net::UnixStream;
 
 use aos_sandbox_model::{ResourceDimension as D, ResourceVector};
 use aos_sandbox_linux::unix_stream::RetainedSubjectStreamReadV1;
-use aos_sandbox_protocol::domain_ledger::create_q04_history::CLAIM_CHUNK_BYTES;
 use aos_sandbox_protocol::domain_ledger::create_storage_history::{
     HistoryErrorV1,
     ready::ready_commitment_v1,
     transport::{
-        CHUNK_HEADER_BYTES, FRAME_HEADER_BYTES, INDEX_BYTES, ChunkEnvelopeV1,
+        FRAME_HEADER_BYTES, INDEX_BYTES, ChunkEnvelopeV1,
         FrameCoordinatesV1, FrameEnvelopeV1, FrameKindV1, TransferIndexV1,
     },
 };
@@ -353,38 +352,19 @@ impl OriginalRootCreateStorageCurrentAttemptV1<'_, '_, '_> {
     }
 
     fn ready_fixed_base_demand_v1() -> Result<ResourceVector, JournalError> {
-        let invalid = || JournalError::LimitExceeded("fixed Root Ready receiving shape");
-        let native = RootCurrentChunkReceivingV1::additional_receiving_demand_v1()?;
-        let frames = FRAME_HEADER_BYTES + INDEX_BYTES
-            + FRAME_HEADER_BYTES + CHUNK_HEADER_BYTES + CLAIM_CHUNK_BYTES;
-        let memory = native.get(D::MemoryBytes)
-            .checked_add(frames as u64)
-            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<RootCurrentReadyStateV1>() as u64))
-            .ok_or_else(invalid)?;
-        Ok(ResourceVector::ZERO
-            .with(D::MemoryBytes, memory)
-            .with(D::MetadataEntries, native.get(D::MetadataEntries))
-            .with(D::OpenFiles, native.get(D::OpenFiles))
-            .with(D::NetworkBytes, (FRAME_HEADER_BYTES + INDEX_BYTES) as u64)
-            .with(D::OutputBytes, memory)
-            .with(D::LogBytes, 64 * 1024)
-            .checked_add(RootCurrentChunkReceivingV1::additional_clock_demand_v1()?)
-            .map_err(|_| invalid())?)
+        aos_sandbox_broker::root_ready_fixed_demand_v1! {
+            native: RootCurrentChunkReceivingV1::additional_receiving_demand_v1(),
+            owner: RootCurrentReadyStateV1,
+            clock: RootCurrentChunkReceivingV1::additional_clock_demand_v1(),
+            error: JournalError::LimitExceeded("fixed Root Ready receiving shape"),
+        }
     }
 
     pub(crate) fn ready_encoded_demand(index: TransferIndexV1) -> Result<ResourceVector, JournalError> {
-        let invalid = || JournalError::LimitExceeded("actual Root Ready encoded extent");
-        let _ = usize::try_from(index.total()).map_err(|_| invalid())?;
-        let memory = index.total().checked_mul(2).ok_or_else(invalid)?;
-        let overhead = u64::from(index.count())
-            .checked_mul((FRAME_HEADER_BYTES + CHUNK_HEADER_BYTES) as u64).ok_or_else(invalid)?;
-        let traffic = index.total().checked_add(overhead).ok_or_else(invalid)?;
-        // Only inert encoded storage/copy is admitted here. No typed B decoder,
-        // model graph, signing, U or prospective compiler allocation enters.
-        Ok(ResourceVector::ZERO
-            .with(D::MemoryBytes, memory)
-            .with(D::OutputBytes, memory)
-            .with(D::NetworkBytes, traffic))
+        aos_sandbox_broker::root_ready_encoded_demand_v1! {
+            index: index,
+            error: JournalError::LimitExceeded("actual Root Ready encoded extent"),
+        }
     }
 }
 

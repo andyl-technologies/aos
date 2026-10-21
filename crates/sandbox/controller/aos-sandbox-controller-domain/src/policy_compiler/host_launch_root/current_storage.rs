@@ -5,6 +5,8 @@
 //! and actual same-native Session readback; this module decodes no second full
 //! history and opens no journal. Outer native and policy posts remain mandatory.
 
+use aos_sandbox_protocol::domain_ledger::readonly::FixedJournalReadbackDataV1 as RootFixedNativeReadbackV1;
+
 use std::error::Error;
 use std::mem::size_of;
 
@@ -34,10 +36,7 @@ use aos_sandbox_protocol::semantics::storage_guest_root::{
 use aos_sandbox_protocol::storage_inventory::ValidatedStorageInventory;
 
 use crate::journal::JournalError;
-use crate::policy_compiler::create_storage_current::controller_readonly::{
-    native_read::RootFixedNativeReadbackV1,
-    public_trust::RootBrokerPlanPublicTrustDataV1,
-};
+use aos_sandbox_policy::root_trust_data::RootBrokerPlanPublicTrustDataV1;
 use crate::policy_compiler::provisioning_current::StartAssignmentCompilationDataV2;
 use super::history::RootHostHistoricalCreateOriginalV2;
 

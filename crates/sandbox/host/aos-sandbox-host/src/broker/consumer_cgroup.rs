@@ -9,7 +9,7 @@ use std::path::Path;
 
 use aos_sandbox_broker::BrokerAuthorizationFenceV1;
 use aos_sandbox_model::RawPairedClockSample;
-use aos_sandbox_linux::boot::KernelBootId;
+use aos_linux_descriptors::boot::KernelBootId;
 use aos_sandbox_linux::cgroup::{CgroupV2Root, RetainedCgroupAnchor};
 use aos_sandbox_protocol::host_consumer_cgroup::{
     ValidatedConsumerCgroupRequestV1, encode_consumer_cgroup_response_v1,

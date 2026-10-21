@@ -22,14 +22,14 @@ enum CandidateClockErrorV1 {
     #[error("the actual candidate kernel clock is stale")]
     Stale,
     #[error(transparent)]
-    Kernel(aos_sandbox_linux::Error),
+    Kernel(aos_linux_descriptors::Error),
 }
 
 impl aos_sandbox_broker::kernel_clock::KernelPairedClockErrorV1 for CandidateClockErrorV1 {
     fn stale() -> Self {
         Self::Stale
     }
-    fn kernel(error: aos_sandbox_linux::Error) -> Self {
+    fn kernel(error: aos_linux_descriptors::Error) -> Self {
         Self::Kernel(error)
     }
 }

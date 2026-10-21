@@ -19,6 +19,8 @@ fn demand() -> Option<ResourceVector> {
         .ok()?;
     let bytes = std::mem::size_of::<RootPolicyFlightDisposalV1<'_>>()
         .checked_mul(2)?
+        .checked_add(std::mem::size_of::<PolicyPeerOriginalV1<'_, '_,
+            super::DeleteRootPeerPurposeV1>>().checked_mul(2)?)?
         .checked_add(
             std::mem::size_of::<Result<RootPolicyFlightDisposalV1<'_>, NormalRootStartupErrorV1>>()
                 .checked_mul(2)?,
@@ -121,10 +123,14 @@ pub(crate) struct RootPolicyFlightDisposalV1<'original> {
 enum PolicyPeerOriginalV1<'peer, 'startup, K: super::RootPeerPurposeV1> {
     Initial,
     Purpose(&'peer crate::normal_root::RootPurposeControllerPeerReceivingV1<'startup, K>),
+    ExecutionNoApply(&'peer crate::normal_root::RootExecutionNoApplyControllerPeerReceivingV2<'startup>),
 }
 
 enum RootPolicyFlightPeerDisposalV1<'original> {
-    Initial(&'original mut Option<super::controller_peer::RootControllerPeerProvisionV1>),
+    Initial {
+        peer: &'original mut Option<aos_sandbox_policy::native::RootControllerPeerProvisionOriginalV1>,
+        history_resident: &'original mut Option<Result<aos_sandbox_model::ResourceVector, super::ResourceReservationErrorV1>>,
+    },
     Purpose,
 }
 
@@ -157,6 +163,16 @@ impl RootReceivingOriginalV1 {
         self.prepare_policy_flight_disposal_inner_v1(startup, PolicyPeerOriginalV1::Purpose(peer))
     }
 
+    pub(crate) fn prepare_policy_flight_disposal_for_execution_no_apply_v2(
+        &mut self,
+        startup: &ProductionNormalRootStartupV1,
+        peer: &crate::normal_root::RootExecutionNoApplyControllerPeerReceivingV2<'_>,
+    ) -> Result<RootPolicyFlightDisposalV1<'_>, NormalRootStartupErrorV1> {
+        self.prepare_policy_flight_disposal_inner_v1::<super::DeleteRootPeerPurposeV1>(
+            startup, PolicyPeerOriginalV1::ExecutionNoApply(peer),
+        )
+    }
+
     fn prepare_policy_flight_disposal_inner_v1<K: super::RootPeerPurposeV1>(
         &mut self,
         startup: &ProductionNormalRootStartupV1,
@@ -165,6 +181,9 @@ impl RootReceivingOriginalV1 {
         let peer_complete = match &peer {
             PolicyPeerOriginalV1::Initial => self.require_controller_peer_disposal_v1(),
             PolicyPeerOriginalV1::Purpose(peer) => {
+                peer.require_completed_for_root_disposal_v1(startup)
+            }
+            PolicyPeerOriginalV1::ExecutionNoApply(peer) => {
                 peer.require_completed_for_root_disposal_v1(startup)
             }
         };
@@ -180,9 +199,13 @@ impl RootReceivingOriginalV1 {
             lower: Some(lower),
             peer: match peer {
                 PolicyPeerOriginalV1::Initial => {
-                    RootPolicyFlightPeerDisposalV1::Initial(&mut self.controller_peer_provision)
+                    RootPolicyFlightPeerDisposalV1::Initial {
+                        peer: &mut self.controller_peer_provision,
+                        history_resident: &mut self.controller_history_resident,
+                    }
                 }
-                PolicyPeerOriginalV1::Purpose(_) => RootPolicyFlightPeerDisposalV1::Purpose,
+                PolicyPeerOriginalV1::Purpose(_) | PolicyPeerOriginalV1::ExecutionNoApply(_) =>
+                    RootPolicyFlightPeerDisposalV1::Purpose,
             },
             completed: false,
         })
@@ -197,8 +220,9 @@ impl RootPolicyFlightDisposalV1<'_> {
             None => std::process::abort(),
         };
         let financial = lower.complete_native_after_disposal_v1();
-        if let RootPolicyFlightPeerDisposalV1::Initial(peer) = &mut self.peer {
+        if let RootPolicyFlightPeerDisposalV1::Initial { peer, history_resident } = &mut self.peer {
             drop(peer.take());
+            drop(history_resident.take());
         }
         financial.complete_after_disposal_v1();
         self.completed = true;
@@ -210,5 +234,21 @@ impl Drop for RootPolicyFlightDisposalV1<'_> {
         if !self.completed {
             std::process::abort();
         }
+    }
+}
+
+impl RootReceivingOriginalV1 {
+    pub(super) fn initial_peer_disposal_control_bytes_v1() -> Option<usize> {
+        use std::mem::size_of;
+        type Provision = aos_sandbox_policy::native::RootControllerPeerProvisionOriginalV1;
+        type Resident = Option<Result<aos_sandbox_model::ResourceVector, super::ResourceReservationErrorV1>>;
+        size_of::<RootPolicyFlightPeerDisposalV1<'_>>().checked_mul(3)?
+            .checked_add(size_of::<RootPolicyFlightDisposalV1<'_>>().checked_mul(2)?)?
+            .checked_add(size_of::<Result<RootPolicyFlightDisposalV1<'_>, NormalRootStartupErrorV1>>().checked_mul(3)?)?
+            .checked_add(size_of::<(&mut Option<Provision>, &mut Resident)>().checked_mul(3)?)?
+            .checked_add(size_of::<&mut RootPolicyFlightPeerDisposalV1<'_>>().checked_mul(3)?)?
+            .checked_add(size_of::<Option<Provision>>().checked_mul(3)?)?
+            .checked_add(size_of::<Resident>().checked_mul(3)?)?
+            .checked_add(size_of::<Option<usize>>().checked_mul(3)?)
     }
 }

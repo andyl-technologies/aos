@@ -171,7 +171,7 @@ mod tests {
     fn original_endpoint_closes_before_actual_policy_writer_is_released() {
         let root = tempfile::tempdir().unwrap();
         std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-        let policy = crate::policy_compiler::resolved_policy::tests::open(root.path());
+        let policy = aos_sandbox_policy::native::policy_state_test_fixtures::open(root.path());
         let uid = std::fs::metadata(root.path()).unwrap().uid();
         let now = rustix::time::clock_gettime(rustix::time::ClockId::Boottime);
         let cutoff = now.tv_sec as u64 * 1_000_000_000 + now.tv_nsec as u64 + 2_000_000_000;

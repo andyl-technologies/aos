@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use aos_sandbox_model::ObjectDigest;
-use aos_sandbox_linux::boot::KernelBootId;
+use aos_linux_descriptors::boot::KernelBootId;
 use aos_sandbox_protocol::ValidatedAssignmentFence;
 use aos_sandbox_source_provider_protocol::{
     SignedStorageLiveExportRequestV1, SourceResourceV1, StorageLiveExportSelectorV1,

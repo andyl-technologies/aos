@@ -7,7 +7,7 @@
 
 use aos_sandbox_controller_domain::{CommitResult, EffectFailure, Journal, JournalError};
 use aos_sandbox_model::ProjectId;
-use aos_sandbox_linux::immutable_file::ImmutableFileError;
+use aos_linux_descriptors::ImmutableFileError;
 use aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodOutcomeV1;
 
 use crate::{
@@ -105,7 +105,7 @@ pub(super) struct ExecutionPublicationAttemptV1 {
     first_site: Option<PublicationFailureSiteV1>,
     post_boundary: Option<EffectFailure>,
     terminal_clock: Option<Result<aos_sandbox_model::RawPairedClockSample, aos_sandbox_broker::paired_clock::ProtectedOwnershipClockError>>,
-    retained_credential: aos_sandbox_linux::immutable_file::SealedReadOnlyCredentialCreateOriginalsV1,
+    retained_credential: aos_linux_descriptors::credential::SealedReadOnlyCredentialCreateOriginalsV1,
     names: [aos_sandbox_controller_domain::journal::ProtectedJournalCurrentnessOriginalsV1; 4],
     names_phase: usize,
 }
@@ -122,7 +122,7 @@ impl ExecutionPublicationAttemptV1 {
             native_append: None, projection_transaction: None, projection_geometry: None,
             projection_admission: None, host_after: None, controller_after: None, first_site: None,
             terminal_clock: None, post_boundary: None,
-            retained_credential: aos_sandbox_linux::immutable_file::SealedReadOnlyCredentialCreateOriginalsV1::new(),
+            retained_credential: aos_linux_descriptors::credential::SealedReadOnlyCredentialCreateOriginalsV1::new(),
             names: std::array::from_fn(|_| aos_sandbox_controller_domain::journal::ProtectedJournalCurrentnessOriginalsV1::new()),
             names_phase: 0,
         }

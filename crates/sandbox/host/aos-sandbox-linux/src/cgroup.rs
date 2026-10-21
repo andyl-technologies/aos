@@ -69,8 +69,11 @@ use crate::path::{
     BeneathRoot, PendingBeneathRootV5, PendingRegularFileV1, PendingResolvedPathV5,
     ResolveOptions,
 };
-use crate::pidfd::{PidFd, PidFdInfo};
-use crate::{Error, Result, uapi};
+use aos_linux_descriptors::pidfd::PidFd;
+use aos_linux_descriptors::pidfd::PidFdInfo;
+use aos_linux_descriptors::Error;
+use aos_linux_descriptors::Result;
+use crate::uapi;
 
 mod control_readback;
 use control_readback::{
@@ -2144,7 +2147,7 @@ mod initial_cgroup_phase_tests {
             InitialServiceCgroupV1::Controller,
         );
 
-        assert!(matches!(cause, Err(crate::Error::WrongDescriptorType { .. })));
+        assert!(matches!(cause, Err(aos_linux_descriptors::Error::WrongDescriptorType { .. })));
         assert!(original.take_validated_pair().is_none());
         let retained = original.hierarchy_candidate.as_ref().unwrap();
         let stat = rustix::fs::fstat(retained.as_fd()).unwrap();

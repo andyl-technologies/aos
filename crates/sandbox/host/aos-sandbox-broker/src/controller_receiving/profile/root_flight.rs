@@ -11,9 +11,9 @@ use std::os::fd::{AsFd as _, OwnedFd};
 use std::time::{Duration, Instant};
 
 use aos_sandbox_model::RawPairedClockSample;
-use aos_sandbox_linux::unix_stream::{
-    RetainedUnixStream, RetainedUnixStreamAdmissionOriginalV1, UnixStreamSubjectChunk,
-};
+use aos_linux_descriptors::unix_stream::RetainedUnixStream;
+use aos_linux_descriptors::unix_stream::RetainedUnixStreamAdmissionOriginalV1;
+use aos_sandbox_linux::unix_stream::UnixStreamSubjectChunk;
 use rustix::event::{PollFlags, Timespec};
 use rustix::net::{AddressFamily, SocketAddrUnix, SocketFlags, SocketType};
 
@@ -35,7 +35,7 @@ pub enum ControllerRootFlightErrorV1 {
     Transport(#[from] std::io::Error),
     /// The actual retained kernel observation failed.
     #[error(transparent)]
-    Kernel(#[from] aos_sandbox_linux::Error),
+    Kernel(#[from] aos_linux_descriptors::Error),
     /// The actual stream subject-reporting setup failed.
     #[error(transparent)]
     Subject(#[from] aos_sandbox_linux::seqpacket::SeqpacketError),
@@ -46,7 +46,7 @@ impl crate::kernel_clock::KernelPairedClockErrorV1 for ControllerRootFlightError
         Self::Stale
     }
 
-    fn kernel(error: aos_sandbox_linux::Error) -> Self {
+    fn kernel(error: aos_linux_descriptors::Error) -> Self {
         Self::Kernel(error)
     }
 }
@@ -170,8 +170,8 @@ impl<'profile> ControllerRootFlightOriginalV1<'profile> {
     pub fn additional_control_bytes_v1() -> Option<usize> {
         let (admission, _) = RetainedUnixStreamAdmissionOriginalV1::receiving_obligations_v1()?;
         std::mem::size_of::<Self>().checked_mul(2)?
-            .checked_add(std::mem::size_of::<Option<aos_sandbox_linux::Error>>().checked_mul(3)?)?
-            .checked_add(std::mem::size_of::<Option<Result<(), aos_sandbox_linux::Error>>>().checked_mul(3)?)?
+            .checked_add(std::mem::size_of::<Option<aos_linux_descriptors::Error>>().checked_mul(3)?)?
+            .checked_add(std::mem::size_of::<Option<Result<(), aos_linux_descriptors::Error>>>().checked_mul(3)?)?
             .checked_add(q04_wire::Original::additional_control_bytes_v1()?)?
             .checked_add(admission.checked_sub(std::mem::size_of::<RetainedUnixStreamAdmissionOriginalV1>())?)?
             .checked_add(std::mem::size_of::<ControllerRootOpeningClockV1>().checked_mul(2)?)?
@@ -320,7 +320,7 @@ impl<'profile> ControllerRootFlightOriginalV1<'profile> {
             .as_mut()
             .ok_or(ControllerRootFlightErrorV1::Stale)?
             .get_mut();
-        stream.enable_subject_reporting()?;
+        stream.enable_subject_reporting().map_err(aos_sandbox_linux::seqpacket::SeqpacketError::from)?;
         self.peer = Some(
             self.profile
                 .observe_original_peer(stream)
@@ -587,8 +587,7 @@ impl<'profile> ControllerRootFlightOriginalV1<'profile> {
         let original = self.client_nonce_data()?;
         let sequence = self.received_sequence.get();
         *destination = Some(
-            self.stream_mut()?
-                .try_receive_subject_chunk_retaining(maximum)
+            aos_sandbox_linux::unix_stream::try_receive_subject_chunk_retaining(&mut *self.stream_mut()?, maximum)
                 .map(|subject| {
                     self.pending_sequence.set(Some(sequence));
                     self.received_sequence.set(sequence + 1);
@@ -613,7 +612,7 @@ impl<'profile> ControllerRootFlightOriginalV1<'profile> {
         self.require_receive_destination()?;
         let original = self.client_nonce_data()?;
         let sequence = self.received_sequence.get();
-        let subject = self.stream_mut()?.try_receive_subject_chunk(maximum)?;
+        let subject = aos_sandbox_linux::unix_stream::try_receive_subject_chunk(&mut *self.stream_mut()?, maximum)?;
         self.pending_sequence.set(Some(sequence));
         self.received_sequence.set(sequence + 1);
         Ok(ControllerRootReceivedChunkV1 {

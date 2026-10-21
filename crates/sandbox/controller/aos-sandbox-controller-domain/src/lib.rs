@@ -47,7 +47,10 @@ pub mod attachment_source;
 pub mod attachment_state;
 #[cfg(target_os = "linux")]
 pub mod attachment_verification;
-pub mod cache_residency;
+#[cfg(target_os = "linux")]
+mod cache_programmes;
+#[cfg(target_os = "linux")]
+pub use cache_programmes::{CacheResidentGitCoverageExtV1, CacheResidentInitializationV1, CacheDeleteInventoryOriginalV1, CacheDeleteInventoryQueryV1};
 pub mod cli_model;
 pub mod controller;
 mod controller_inventory_absence;

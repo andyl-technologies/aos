@@ -1223,8 +1223,8 @@ impl<Installed> DormantInstalledLibfuseOperationsV2<Installed> {
 }
 
 fn current_boot_id() -> Result<[u8; 16], OperationError> {
-    aos_sandbox_linux::boot::KernelBootId::current()
-        .map(aos_sandbox_linux::boot::KernelBootId::into_bytes)
+    aos_linux_descriptors::boot::KernelBootId::current()
+        .map(aos_linux_descriptors::boot::KernelBootId::into_bytes)
         .map_err(|_| OperationError::Integrity)
 }
 

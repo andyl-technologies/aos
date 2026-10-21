@@ -10,6 +10,7 @@
 //! only the first two exchanges of the same fresh authenticated session
 //! ```
 
+use aos_sandbox_protocol::git_project_coverage::GitCoverageNativeCutDataV1;
 use aos_sandbox_api::aos::sandbox::local::v1::BrokerMethod;
 use buffa::Message as _;
 use aos_sandbox_broker_session_protocol::manifest::{
@@ -49,7 +50,8 @@ use aos_sandbox_model::format::git_upload_enrollment::{
     GitCoverageRootCoordinatesV1, GitCoverageRootSubmissionV1,
 };
 use aos_sandbox_linux::seqpacket::RetainedSeqpacketReceiveErrorV1;
-use aos_sandbox_linux::unix_stream::{RetainedUnixStream, UnixStreamSubjectChunk};
+use aos_linux_descriptors::unix_stream::RetainedUnixStream;
+use aos_sandbox_linux::unix_stream::UnixStreamSubjectChunk;
 
 use crate::normal_root::{
     NormalRootStartupErrorV1, OriginalNormalRootPeerV1,
@@ -95,9 +97,9 @@ enum RootFlightFailureV1 {
     #[error(transparent)]
     Native(Box<GitCoverageNativeHistoryErrorV1>),
     #[error(transparent)]
-    CacheSource(#[from] crate::cache_residency::CacheReplayControllerBootstrapErrorV1),
+    CacheSource(#[from] aos_sandbox_cache::CacheReplayControllerBootstrapErrorV1),
     #[error(transparent)]
-    CacheTarget(#[from] crate::cache_residency::CacheResidencyProtectedJournalErrorV1),
+    CacheTarget(#[from] aos_sandbox_cache::CacheResidencyProtectedJournalErrorV1),
     #[error(transparent)]
     Account(#[from] crate::publisher_admin::policy::GitUploadBootstrapErrorV1),
     #[error(transparent)]
@@ -112,38 +114,6 @@ struct RootNativeObservationV1 {
     prefix: [u8; 32],
     origin: [u8; 32],
     last_commit: Option<([u8; 16], u64)>,
-}
-
-/// Copies a closed observation from a real original native-prefix loan.
-///
-/// The profile prevents CacheBootstrap facts from substituting for global
-/// Source facts. This owns DATA only; its original writer stays with its owner.
-#[doc(hidden)]
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub struct GitCoverageNativeCutDataV1 {
-    profile: GitCoverageJournalProfileV1,
-    provision_origin: [u8; 32],
-    prefix: [u8; 32],
-    transactions: usize,
-    records: usize,
-    last_commit: Option<([u8; 16], u64)>,
-}
-
-impl GitCoverageNativeCutDataV1 {
-    pub(crate) fn from_original_loan(
-        profile: GitCoverageJournalProfileV1,
-        loan: &crate::journal::GitCoverageNativePrefixLoanV1<'_>,
-    ) -> Self {
-        let (transactions, records) = loan.counts();
-        Self {
-            profile,
-            provision_origin: loan.provision_origin_digest(),
-            prefix: loan.prefix_digest(),
-            transactions,
-            records,
-            last_commit: loan.last_commit(),
-        }
-    }
 }
 
 enum OriginalSourceCutReadV1<'captured> {
@@ -164,9 +134,7 @@ fn read_original_source_cut(
     let mut native = original.journal().source_git_coverage_native_prefix_v1(&catalog)
         .map_err(|cause| RootFlightFailureV1::Native(Box::new(cause)))?;
     native.recheck()?;
-    let actual = GitCoverageNativeCutDataV1::from_original_loan(
-        GitCoverageJournalProfileV1::Source, &native,
-    );
+    let actual = aos_sandbox_protocol::git_coverage_native_cut_data_v1! { profile: GitCoverageJournalProfileV1::Source, loan: native };
     if let OriginalSourceCutReadV1::Compare(expected) = read {
         if expected != Some(&actual) {
             return Err(RootFlightFailureV1::Refused);
@@ -204,8 +172,8 @@ pub struct GitCoverageAccountAttemptV1<'profile> {
     root: GitCoverageRootClientV1<'profile>,
     source_cut: Option<Result<GitCoverageNativeCutDataV1, RootFlightFailureV1>>,
     controller_cut: Option<Result<GitCoverageNativeCutDataV1, GitCoverageNativeHistoryErrorV1>>,
-    cache_bootstrap_cut: Option<Result<GitCoverageNativeCutDataV1, crate::cache_residency::CacheReplayControllerBootstrapErrorV1>>,
-    cache_cuts: Option<Result<Vec<GitCoverageNativeCutDataV1>, crate::cache_residency::CacheResidencyProtectedJournalErrorV1>>,
+    cache_bootstrap_cut: Option<Result<GitCoverageNativeCutDataV1, aos_sandbox_cache::CacheReplayControllerBootstrapErrorV1>>,
+    cache_cuts: Option<Result<Vec<GitCoverageNativeCutDataV1>, aos_sandbox_cache::CacheResidencyProtectedJournalErrorV1>>,
     controller_transaction: Option<Result<JournalTransaction, JournalError>>,
     controller_preflight: Option<Result<(), JournalError>>,
     controller_commit: Option<Result<CommitResult, JournalError>>,
@@ -519,14 +487,14 @@ impl<'profile> GitCoverageAccountAttemptV1<'profile> {
 
     pub(crate) fn capture_cache_bootstrap_cut(
         &mut self,
-        source: &mut crate::cache_residency::CacheReplayControllerBootstrapOwnerV1,
+        original: &mut aos_sandbox_cache::CacheGitOperationOriginalV1<'_, '_>,
         catalog: &GitCoverageCatalogV1<'_>,
     ) -> Result<(), ()> {
         if self.phase != AccountPhaseV1::Capturing || self.cache_bootstrap_cut.is_some() {
             self.phase = AccountPhaseV1::Failed;
             return Err(());
         }
-        self.cache_bootstrap_cut = Some(source.capture_git_coverage_native_cut_v1(catalog));
+        self.cache_bootstrap_cut = Some(original.capture_bootstrap_cut_v1(catalog));
         if !matches!(self.cache_bootstrap_cut.as_ref(), Some(Ok(_))) {
             self.phase = AccountPhaseV1::Failed;
             return Err(());
@@ -538,7 +506,7 @@ impl<'profile> GitCoverageAccountAttemptV1<'profile> {
     // row came from its SAME retained writer; an error is moved exactly once.
     pub(crate) fn park_original_cache_cuts(
         &mut self,
-        returned: Result<Vec<GitCoverageNativeCutDataV1>, crate::cache_residency::CacheResidencyProtectedJournalErrorV1>,
+        returned: Result<Vec<GitCoverageNativeCutDataV1>, aos_sandbox_cache::CacheResidencyProtectedJournalErrorV1>,
     ) -> Result<(), ()> {
         if self.phase != AccountPhaseV1::Capturing || self.cache_cuts.is_some() {
             self.phase = AccountPhaseV1::Failed;
@@ -554,10 +522,10 @@ impl<'profile> GitCoverageAccountAttemptV1<'profile> {
 
     pub(crate) fn compare_cache_bootstrap_cut(
         &mut self,
-        source: &mut crate::cache_residency::CacheReplayControllerBootstrapOwnerV1,
+        original: &mut aos_sandbox_cache::CacheGitOperationOriginalV1<'_, '_>,
         catalog: &GitCoverageCatalogV1<'_>,
     ) -> Result<(), ()> {
-        let returned = source.capture_git_coverage_native_cut_v1(catalog);
+        let returned = original.capture_bootstrap_cut_v1(catalog);
         match returned {
             Ok(actual) if self.cache_bootstrap_cut.as_ref()
                 .and_then(|result| result.as_ref().ok()) == Some(&actual) => Ok(()),
@@ -576,7 +544,7 @@ impl<'profile> GitCoverageAccountAttemptV1<'profile> {
 
     pub(crate) fn compare_original_cache_cuts(
         &mut self,
-        returned: Result<Vec<GitCoverageNativeCutDataV1>, crate::cache_residency::CacheResidencyProtectedJournalErrorV1>,
+        returned: Result<Vec<GitCoverageNativeCutDataV1>, aos_sandbox_cache::CacheResidencyProtectedJournalErrorV1>,
     ) -> Result<(), ()> {
         match returned {
             Ok(actual) if self.cache_cuts.as_ref()
@@ -1108,9 +1076,7 @@ fn observe_controller_native_cut(
     catalog: &GitCoverageCatalogV1<'_>,
 ) -> Result<GitCoverageNativeCutDataV1, GitCoverageNativeHistoryErrorV1> {
     let loan = journal.controller_git_coverage_native_prefix_v1(catalog)?;
-    Ok(GitCoverageNativeCutDataV1::from_original_loan(
-        GitCoverageJournalProfileV1::Controller, &loan,
-    ))
+    Ok(aos_sandbox_protocol::git_coverage_native_cut_data_v1! { profile: GitCoverageJournalProfileV1::Controller, loan: loan })
 }
 
 // Fixed local DATA, not another evidence/currentness engine. The complete

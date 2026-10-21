@@ -25,12 +25,14 @@ use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
 use aos_sandbox_model::ObjectDigest;
-use aos_sandbox_linux::boot::KernelBootId;
+use aos_linux_descriptors::boot::KernelBootId;
 use aos_sandbox_linux::no_setid::require_guarded_startup;
-use aos_sandbox_linux::pidfd::{NamespaceKind, PidFd, SingleThreadedProcess};
+use aos_sandbox_linux::pidfd::NamespaceKind;
+use aos_linux_descriptors::pidfd::PidFd;
+use aos_sandbox_linux::pidfd::SingleThreadedProcess;
 use aos_sandbox_linux::process::disable_core_dumps;
 use aos_sandbox_linux::seqpacket::{SeqpacketError, descriptor_subject::DescriptorSubjectSocket};
-use aos_sandbox_linux::unix_stream::RetainedUnixStream;
+use aos_linux_descriptors::unix_stream::RetainedUnixStream;
 use thiserror::Error;
 
 use super::launch_contract::{
@@ -174,7 +176,7 @@ pub enum NamespaceInspectorProductionError {
     },
     /// The audited Linux descriptor boundary rejected an operation.
     #[error(transparent)]
-    Linux(#[from] aos_sandbox_linux::Error),
+    Linux(#[from] aos_linux_descriptors::Error),
     /// Sequenced-packet framing or ancillary validation failed.
     #[error(transparent)]
     Transport(#[from] SeqpacketError),
@@ -411,7 +413,7 @@ pub fn run_inherited_network_namespace_inspector() -> Result<(), NamespaceInspec
         }
     };
 
-    let namespace = worker_pidfd.namespace(NamespaceKind::Network)?;
+    let namespace = aos_sandbox_linux::pidfd::namespace(&(worker_pidfd), NamespaceKind::Network)?;
     let process_after_inspection = worker.process().map_err(authentication)?;
     let response = authorization
         .respond(&mut clock, process_after_inspection, namespace.identity())

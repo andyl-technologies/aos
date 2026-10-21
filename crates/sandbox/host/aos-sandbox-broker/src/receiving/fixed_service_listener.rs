@@ -20,7 +20,7 @@ use super::representation::RepresentationDemandDebitV1;
 pub struct FixedServiceListenerOriginalV4 {
     entered: bool,
     moved: bool,
-    duplicate: Option<Result<(), aos_sandbox_linux::Error>>,
+    duplicate: Option<Result<(), aos_linux_descriptors::Error>>,
     admission: Option<RecordSubjectListenerAdmissionAttemptV1>,
     admitted: Option<Result<(), Closed>>,
     geometry: Option<Result<ResourceVector, AccountingError>>,

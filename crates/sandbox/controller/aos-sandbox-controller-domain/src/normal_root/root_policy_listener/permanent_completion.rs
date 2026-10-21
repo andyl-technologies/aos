@@ -5,11 +5,10 @@
 //! is admitted on the same permanent Root original before the body begins.
 
 use super::*;
-use crate::policy_compiler::bounded_stream_io::{
-    DeadlineStreamDirectionV1, FixedDeadlineStreamIoV1,
-};
+use aos_sandbox_broker::bounded_stream_io::DeadlineStreamDirectionV1;
+use aos_sandbox_broker::bounded_stream_io::FixedDeadlineStreamIoV1;
 use aos_sandbox_broker::receiving::{RootObservationErrorV1, RootPrearmedHistoryServicePostV1};
-use aos_sandbox_linux::unix_stream::UnixStreamOriginalCurrentnessV1;
+use aos_linux_descriptors::unix_stream::UnixStreamOriginalCurrentnessV1;
 use aos_sandbox_protocol::host_execution_no_apply::closed_controller::ControllerCreateFailureAckDataV2;
 use aos_sandbox_protocol::root_policy_completion::{
     delete_root_positive_completion_bytes_v2, execution_no_apply_positive_completion_bytes_v2,
@@ -64,9 +63,9 @@ pub(super) struct RootPermanentCompletionOriginalV2 {
     posts: [Option<Result<RootPrearmedHistoryServicePostV1, RootObservationErrorV1>>; 2],
     observed: [Option<Result<(), RootObservationErrorV1>>; 2],
     stream_before: UnixStreamOriginalCurrentnessV1,
-    stream_before_result: Option<aos_sandbox_linux::Result<()>>,
+    stream_before_result: Option<aos_linux_descriptors::Result<()>>,
     stream_after: UnixStreamOriginalCurrentnessV1,
-    stream_after_result: Option<aos_sandbox_linux::Result<()>>,
+    stream_after_result: Option<aos_linux_descriptors::Result<()>>,
     plan: Option<RootPolicyPositiveCompletionPlanV2>,
     sender: FixedDeadlineStreamIoV1<48>,
     sent: Option<
@@ -282,7 +281,7 @@ mod tests {
     fn pre_disposition_ack_followed_by_process_style_eof_lacks_confirmation() {
         use std::io::Write as _;
 
-        let peer = aos_sandbox_linux::pidfd::PidFd::open(
+        let peer = aos_linux_descriptors::pidfd::PidFd::open(
             std::num::NonZeroU32::new(std::process::id()).unwrap(),
         )
         .unwrap();

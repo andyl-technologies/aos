@@ -19,7 +19,6 @@
 //! accepting its reported digest. This boundary assumes a trusted kernel.
 
 mod backing;
-mod credential;
 mod publication;
 mod sealed_original;
 mod fs_verity_read;
@@ -29,10 +28,6 @@ pub use fs_verity_read::{FsVerityReadOriginalV2, FsVerityReadClosedV2};
 pub use sealed_original::{SealedMemfdReadOriginalV2, SealedMemfdReadClosedV2};
 
 pub use backing::{BackingFileIdentity, FsVerityBacking};
-pub use credential::{
-    SealedReadOnlyCredential, SealedReadOnlyCredentialCreateClosedV1,
-    SealedReadOnlyCredentialCreateFootprintV1, SealedReadOnlyCredentialCreateOriginalsV1,
-};
 pub use publication::{
     AfterRenameFailure, AmbiguousNamedSealedFile, BeforeRenameFailure, DurablyNamedSealedFile,
     FsVerityPublicationRoot, InvalidPublicationName, MaterializationCallbacks,
@@ -48,7 +43,8 @@ use std::path::Path;
 use std::ptr::NonNull;
 
 use crate::path::BeneathRoot;
-use crate::{Error, uapi};
+use aos_linux_descriptors::Error;
+use crate::uapi;
 
 /// Describes the inode pinned for one scoped immutable mapping.
 ///
@@ -101,52 +97,7 @@ impl FsVerityDigest {
     }
 }
 
-/// Reports immutable-file opening, mapping, or proof failure.
-#[derive(Debug, thiserror::Error)]
-pub enum ImmutableFileError {
-    /// A Linux descriptor or mapping operation failed.
-    #[error("immutable-file Linux operation failed: {0}")]
-    Linux(#[from] Error),
-    /// The descriptor does not name a regular file.
-    #[error("immutable-file descriptor is not a regular file")]
-    NotRegular,
-    /// The descriptor cannot be read through this file description.
-    #[error("immutable-file descriptor is write-only")]
-    WriteOnlyDescriptor,
-    /// The backing file description is not opened for read-only access.
-    #[error("immutable backing descriptor is not read-only")]
-    DescriptorNotReadOnly,
-    /// The backing descriptor could leak into a later exec.
-    #[error("immutable backing descriptor is not close-on-exec")]
-    DescriptorNotCloseOnExec,
-    /// A transferred immutable file is not owned by the creating identity.
-    #[error("immutable file is not owned by the current effective user")]
-    UnexpectedOwner,
-    /// A transient immutable file has a persistent directory link.
-    #[error("transient immutable file is not anonymous")]
-    NotAnonymous,
-    /// The expected backing size exceeds the explicit admission ceiling.
-    #[error("immutable backing exceeds its configured byte ceiling")]
-    BackingLimitExceeded,
-    /// The filesystem is not an admitted kernel fs-verity implementation.
-    #[error("filesystem is not an admitted kernel fs-verity implementation")]
-    UnsupportedVerityFilesystem,
-    /// The memfd lacks one or more seals required to prove stable bytes.
-    #[error("memfd lacks required write/grow/shrink/seal protection")]
-    MissingSeals,
-    /// The file size differs from the authenticated expected size.
-    #[error("immutable-file size differs from the authenticated expected size")]
-    SizeMismatch,
-    /// The expected size exceeds the mapping admission ceiling.
-    #[error("immutable-file mapping exceeds its configured byte ceiling")]
-    MappingLimitExceeded,
-    /// The pinned file identity, size, or proof changed during admission.
-    #[error("immutable file changed during mapping admission")]
-    AdmissionRace,
-    /// The fs-verity measurement differs from publication authority.
-    #[error("fs-verity measurement does not match publication authority")]
-    VerityMeasurementMismatch,
-}
+
 
 /// Opens scoped mappings of transient, fully sealed memfds.
 ///
@@ -201,13 +152,13 @@ fn inspect_sealed_memfd(
     file: &OwnedFd,
     original: &mut sealed_original::SealedInspectionV2,
 ) -> Result<ObservedFile, ImmutableFileError> {
-    uapi::ensure_cloexec(file.as_fd())?;
+    aos_linux_descriptors::native::ensure_cloexec(file.as_fd())?;
     original.before = Some(inspect_captured(file.as_fd(), Some(&mut original.raw_before))?);
     let before = original.before.ok_or(ImmutableFileError::AdmissionRace)?;
     if before.file_type != libc::S_IFREG {
         return Err(ImmutableFileError::NotRegular);
     }
-    original.flags = Some(uapi::get_status_flags(file.as_fd())?);
+    original.flags = Some(aos_linux_descriptors::native::get_status_flags(file.as_fd())?);
     if original.flags.is_some_and(|flags| flags & libc::O_ACCMODE == libc::O_WRONLY) {
         return Err(ImmutableFileError::WriteOnlyDescriptor);
     }
@@ -457,7 +408,7 @@ mod tests {
         let publisher =
             uapi::create_sealable_memfd().unwrap_or_else(|error| panic!("memfd failed: {error}"));
         let mut writer = File::from(
-            uapi::duplicate_at_least(publisher.as_fd(), 0)
+            aos_linux_descriptors::native::duplicate_at_least(publisher.as_fd(), 0)
                 .unwrap_or_else(|error| panic!("duplicate failed: {error}")),
         );
         writer
@@ -635,3 +586,5 @@ mod tests {
         }
     }
 }
+
+use aos_linux_descriptors::ImmutableFileError;

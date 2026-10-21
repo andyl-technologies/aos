@@ -91,8 +91,8 @@ impl RootCurrentOutcomeReadV1 {
         // captured-prefix, payment, replay, signature or terminal refusal.
         self.session.finish_post_once();
         let body = root.completed_body().ok();
-        let origin = root.original_clock_origin_v1().ok();
-        self.after.observe_once(flight, writers, body.as_ref(), origin.map(|pair| pair.0), origin.map(|pair| pair.1));
+        let origin = root.original_clock_native_v1().ok();
+        self.after.observe_once(flight, writers, body.as_ref(), origin);
         self.after_readback = Some(match writers.authority_and_policy() {
             Ok((authority, policy)) => signed.readback_current_v1(authority, policy).map(|_| ()),
             Err(cause) => Err(cause),

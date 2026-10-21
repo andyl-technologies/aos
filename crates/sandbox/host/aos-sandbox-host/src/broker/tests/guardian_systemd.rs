@@ -16,11 +16,13 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use aos_sandbox_guardian::GuardianState;
-use aos_sandbox_linux::boot::KernelBootId;
+use aos_linux_descriptors::boot::KernelBootId;
 use aos_sandbox_linux::cgroup::CgroupV2Root;
 use aos_sandbox_linux::mount::DetachedMount;
 use aos_sandbox_linux::path::BeneathRoot;
-use aos_sandbox_linux::pidfd::{NamespaceFd, NamespaceKind, PidFd};
+use aos_sandbox_linux::pidfd::NamespaceFd;
+use aos_sandbox_linux::pidfd::NamespaceKind;
+use aos_linux_descriptors::pidfd::PidFd;
 use aos_systemd_client::{ExactUnitRole, GuardianUnitSpec, SandboxUnitName, SandboxUnitSpec};
 use async_trait::async_trait;
 use rustix::event::{PollFd, PollFlags, poll};
@@ -2105,7 +2107,7 @@ fn assert_guardian_cgroup_absent(identity: &HostRuntimeIdentity) {
     let relative = guardian_cgroup_path(identity);
 
     match root.resolve(&relative) {
-        Err(aos_sandbox_linux::Error::Syscall { source, .. })
+        Err(aos_linux_descriptors::Error::Syscall { source, .. })
             if source.raw_os_error() == Some(rustix::io::Errno::NOENT.raw_os_error()) =>
         {
             root.resolve(Path::new(".")).unwrap();

@@ -83,7 +83,7 @@ impl StartHistoryOriginalV1 {
                     .require_provisioning_source_readonly_current_v1(source_native,native.original_v1(),
                         controller,source.journal_ref_v1(),state.profile.as_ref())?;
                 if predecessor.parent_operation_v1()? != state.create_parent { return Err(CLOSED.into()); }
-                self.read.observe_once_v1(source.journal_ref_v1(),state.create_parent)?;
+                self.read.observe_once_v1(source.journal_ref_v1().historical_read_view_v1().rows_data_v2(),state.create_parent)?;
                 predecessor.require_start_history_v1(state.create_parent,controller,&mut self.read)
             })());
             if !matches!(self.relation,Some(Ok(()))) { self.first.get_or_insert(First::Relation); }

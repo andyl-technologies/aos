@@ -372,7 +372,7 @@ impl NetworkWorkerBirthReservationV2<'_, '_> {
 
     /// Borrows a reached actual PIDFD even when another donation refused.
     #[must_use]
-    pub fn retained_birth_pidfd_data_v2(&self) -> Option<&aos_sandbox_linux::pidfd::PidFd> {
+    pub fn retained_birth_pidfd_data_v2(&self) -> Option<&aos_linux_descriptors::pidfd::PidFd> {
         self.original.birth.as_ref().and_then(|birth| birth.retained_pidfd_data())
             .or_else(|| self.original.owed_birth.as_ref()?.retained_pidfd_data())
     }
@@ -463,7 +463,7 @@ impl NetworkWorkerBirthReservationV2<'_, '_> {
     /// These retained originals alone prove no leader death or Empty/Retired.
     #[must_use]
     pub fn retained_birth_native_data_v2(&self) -> Option<(
-        &aos_sandbox_linux::pidfd::PidFd,
+        &aos_linux_descriptors::pidfd::PidFd,
         &aos_sandbox_linux::cgroup::RetainedCgroupAnchor,
         &aos_sandbox_linux::cgroup::CgroupPopulationMonitor,
     )> {

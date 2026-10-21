@@ -18,6 +18,7 @@ use aos_sandbox_protocol::domain_ledger::source_policy_hold::SourceDomainPolicyH
 use aos_sandbox_model::ObjectDigest;
 use sha2::{Digest as _, Sha256};
 
+use super::ControllerPolicyHoldCodecV1;
 use super::root_v8_receipt::RootV8EffectAckV1;
 use aos_sandbox_broker::canonical_journal::CanonicalJournalMechanicalErrorV1 as MechanicalError;
 

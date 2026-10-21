@@ -20,7 +20,8 @@ use crate::cold_launch_publication::completion::{
     create_stopped_comparison_receiving_demand_v1, create_stopped_controller_receiving_demand_v1,
     require_create_terminal_source_v1, require_create_workspace_inventory_data_v1,
 };
-use crate::journal::{Journal, JournalError};
+use crate::journal::JournalError;
+use crate::journal::historical_observation::HistoricalObservationV1;
 use crate::lifecycle::protected_journal::{
     lifecycle_protected_key_v1, LifecycleProtectedRecordKindV1, LifecycleReplayReceivingV1,
 };
@@ -47,6 +48,22 @@ pub(crate) struct CreateFinalityRecoveryModelsOriginalV1 {
 }
 
 impl CreateFinalityRecoveryModelsOriginalV1 {
+    /// Prices this real Recovery model entry and its two complete owner loans.
+    pub(crate) fn observation_control_bytes_v2() -> Option<usize> {
+        size_of::<(&Self, HistoricalObservationV1<'_>, HistoricalObservationV1<'_>,
+            FinalityRecoverQueryDataV1)>().checked_mul(3)?
+            .checked_add(size_of::<Result<ResourceVector, Cause>>().checked_mul(3)?)?
+            .checked_add(size_of::<(&mut Self, HistoricalObservationV1<'_>,
+                HistoricalObservationV1<'_>, &CreateFinalitySessionOriginalV1,
+                FinalityRecoverQueryDataV1, [u8; 16],
+                (ResourceVector, ResourceVector, ResourceVector),
+                &RootPolicyAcceptedFlightV1<'_, '_>,
+            )>().checked_mul(3)?)?
+            .checked_add(size_of::<Result<(), JournalError>>().checked_mul(3)?)?
+            .checked_add(size_of::<Result<(), Cause>>().checked_mul(3)?)?
+            .checked_add(size_of::<Option<usize>>().checked_mul(3)?)
+    }
+
     pub(crate) fn new() -> Self {
         Self {
             authorization: CreateFinalityAuthorizationOriginalV1::new(),
@@ -60,16 +77,17 @@ impl CreateFinalityRecoveryModelsOriginalV1 {
 
     /// Prices every reached selector before candidates or semantic models grow.
     pub(crate) fn receiving_demand_v1(
-        controller: &Journal,
-        source: &Journal,
+        controller: HistoricalObservationV1<'_>,
+        source: HistoricalObservationV1<'_>,
         query: FinalityRecoverQueryDataV1,
     ) -> Result<ResourceVector, Cause> {
-        let state = controller.historical_read_view_v1().materialized_state_v1();
+        let state = controller.state_v1();
         let selection =
             LifecycleReplayReceivingV1::additional_selection_receiving_v1(source.all_records())
                 .ok_or(JournalError::JournalTooLarge)?;
         let bytes = size_of::<Self>()
             .checked_mul(3)
+
             .and_then(|bytes| {
                 bytes.checked_add(LifecycleHistoricalReadOriginalV1::carrier_receiving_bytes_v1()?)
             })
@@ -79,8 +97,8 @@ impl CreateFinalityRecoveryModelsOriginalV1 {
             .and_then(|bytes| u64::try_from(bytes).ok())
             .ok_or(JournalError::JournalTooLarge)?;
         let projection =
-            crate::controller_service::public_projection::sandbox_source_receiving_bytes_v1(
-                controller,
+            aos_sandbox_protocol::public_api::projection::geometry::sandbox_source_receiving_bytes_v1(
+                controller.rows_data_v2(),
             )
             .ok_or(JournalError::JournalTooLarge)?;
         Ok(
@@ -112,8 +130,8 @@ impl CreateFinalityRecoveryModelsOriginalV1 {
     /// Compares only actual independently read models under the genuine flight.
     pub(crate) fn observe_once_v1(
         &mut self,
-        controller: &mut Journal,
-        source: &Journal,
+        controller: HistoricalObservationV1<'_>,
+        source: HistoricalObservationV1<'_>,
         session: &CreateFinalitySessionOriginalV1,
         query: FinalityRecoverQueryDataV1,
         node: [u8; 16],
@@ -132,8 +150,8 @@ impl CreateFinalityRecoveryModelsOriginalV1 {
 
     fn observe_inner_v1(
         &mut self,
-        controller: &mut Journal,
-        source: &Journal,
+        controller: HistoricalObservationV1<'_>,
+        source: HistoricalObservationV1<'_>,
         session: &CreateFinalitySessionOriginalV1,
         query: FinalityRecoverQueryDataV1,
         node: [u8; 16],
@@ -151,7 +169,7 @@ impl CreateFinalityRecoveryModelsOriginalV1 {
         // The same full schema replay supplies latest Terminal and the preserved
         // Completing Effect named by516. No writer or current Source capability
         // is reconstructed from these independently observed historical rows.
-        self.source.observe_once_v1(source, target)?;
+        self.source.observe_once_v1(source.rows_data_v2(), target)?;
         let fields = models.resources.fields_v1();
         let key = lifecycle_protected_key_v1(
             LifecycleProtectedRecordKindV1::Effect,

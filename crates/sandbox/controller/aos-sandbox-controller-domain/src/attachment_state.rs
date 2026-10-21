@@ -575,14 +575,16 @@ struct History {
     retained_bytes: usize,
 }
 
-impl History {
-    fn load(journal: &Journal) -> Result<Self, AttachmentDesiredStateError> {
+
+
+macro_rules! attachment_state_history_recipe_v2 {
+    ($input:expr, $records:ident, $views:path, $slots:path) => {{
         let mut records: BTreeMap<AttachmentId, Record> = BTreeMap::new();
         let mut generations = BTreeMap::new();
         let mut operations = BTreeMap::new();
         let mut retained_bytes = 0_usize;
 
-        for (key, value) in journal.records(RecordNamespace::AttachmentDesired) {
+        for (key, value) in $input.$records(RecordNamespace::AttachmentDesired) {
             if key.len() != 24 {
                 return Err(AttachmentDesiredStateError::CorruptState);
             }
@@ -652,12 +654,12 @@ impl History {
             }
         }
 
-        crate::filesystem_view_state::validate_historical_attachment_references(
-            journal,
+        $views(
+            $input,
             generations.values().map(|record| &record.intent),
         )?;
-        crate::attachment_slot_state::validate_historical_attachment_references(
-            journal,
+        $slots(
+            $input,
             generations.values().map(|record| &record.intent),
         )?;
 
@@ -667,6 +669,16 @@ impl History {
             operations,
             retained_bytes,
         })
+        }};
+}
+
+impl History {
+    fn load(journal: &Journal) -> Result<Self, AttachmentDesiredStateError> {
+        attachment_state_history_recipe_v2!(journal, records, crate::filesystem_view_state::validate_historical_attachment_references, crate::attachment_slot_state::validate_historical_attachment_references)
+    }
+
+    fn load_rows_v2(journal: aos_sandbox_protocol::domain_ledger::readonly::HistoricalLedgerRowsDataV2<'_>) -> Result<Self, AttachmentDesiredStateError> {
+        attachment_state_history_recipe_v2!(journal, records_data_v2, crate::filesystem_view_state::validate_historical_attachment_references_rows_v2, crate::attachment_slot_state::validate_historical_attachment_references_rows_v2)
     }
 
     fn validate_mutation(
@@ -840,17 +852,33 @@ pub(crate) fn commit_consumer_fixture(
     );
 }
 
+
+
+macro_rules! get_generation_historical_recipe_v2 {
+    ($history:expr, $attachment_id:expr, $desired_generation:expr) => {{
+    let history = $history?;
+    Ok(history
+        .generations
+        .get(&($attachment_id, $desired_generation))
+        .cloned()
+        .map(|record| DurableAttachmentDesiredStateV1 { record }))
+    }};
+}
+
 pub(crate) fn get_generation(
     journal: &Journal,
     attachment_id: AttachmentId,
     desired_generation: u64,
 ) -> Result<Option<DurableAttachmentDesiredStateV1>, AttachmentDesiredStateError> {
-    let history = History::load(journal)?;
-    Ok(history
-        .generations
-        .get(&(attachment_id, desired_generation))
-        .cloned()
-        .map(|record| DurableAttachmentDesiredStateV1 { record }))
+    get_generation_historical_recipe_v2!(History::load(journal), attachment_id, desired_generation)
+}
+
+pub(crate) fn get_generation_rows_v2(
+    journal: aos_sandbox_protocol::domain_ledger::readonly::HistoricalLedgerRowsDataV2<'_>,
+    attachment_id: AttachmentId,
+    desired_generation: u64,
+) -> Result<Option<DurableAttachmentDesiredStateV1>, AttachmentDesiredStateError> {
+    get_generation_historical_recipe_v2!(History::load_rows_v2(journal), attachment_id, desired_generation)
 }
 
 pub(crate) fn get_operation(
@@ -918,25 +946,42 @@ pub(crate) fn retained_attachment_inventory_data_v1(
 }
 
 /// Returns current desired attachments for one exact consumer generation.
-pub(crate) fn current_for_consumer(
-    journal: &Journal,
-    sandbox: aos_sandbox_model::SandboxId,
-    incarnation: aos_sandbox_model::IncarnationId,
-    namespace_generation: u64,
-) -> Result<Vec<DurableAttachmentDesiredStateV1>, AttachmentDesiredStateError> {
-    let history = History::load(journal)?;
+
+
+macro_rules! current_for_consumer_historical_recipe_v2 {
+    ($history:expr, $sandbox:expr, $incarnation:expr, $namespace_generation:expr) => {{
+    let history = $history?;
 
     Ok(history
         .records
         .values()
         .filter(|record| {
             record.presence == AttachmentDesiredPresenceV1::Present
-                && record.intent.consumer() == (sandbox, incarnation)
-                && record.intent.expected_namespace_generation().get() == namespace_generation
+                && record.intent.consumer() == ($sandbox, $incarnation)
+                && record.intent.expected_namespace_generation().get() == $namespace_generation
         })
         .cloned()
         .map(|record| DurableAttachmentDesiredStateV1 { record })
         .collect())
+    }};
+}
+
+pub(crate) fn current_for_consumer(
+    journal: &Journal,
+    sandbox: aos_sandbox_model::SandboxId,
+    incarnation: aos_sandbox_model::IncarnationId,
+    namespace_generation: u64,
+) -> Result<Vec<DurableAttachmentDesiredStateV1>, AttachmentDesiredStateError> {
+    current_for_consumer_historical_recipe_v2!(History::load(journal), sandbox, incarnation, namespace_generation)
+}
+
+pub(crate) fn current_for_consumer_rows_v2(
+    journal: aos_sandbox_protocol::domain_ledger::readonly::HistoricalLedgerRowsDataV2<'_>,
+    sandbox: aos_sandbox_model::SandboxId,
+    incarnation: aos_sandbox_model::IncarnationId,
+    namespace_generation: u64,
+) -> Result<Vec<DurableAttachmentDesiredStateV1>, AttachmentDesiredStateError> {
+    current_for_consumer_historical_recipe_v2!(History::load_rows_v2(journal), sandbox, incarnation, namespace_generation)
 }
 
 pub(crate) fn recheck_current(
@@ -979,8 +1024,20 @@ pub(crate) fn validate_current_fuse_reserve_source(
     recheck_current(journal, state)
 }
 
+
+
+macro_rules! validate_namespace_historical_recipe_v2 {
+    ($history:expr) => {{
+    $history.map(|_| ())
+    }};
+}
+
 pub(crate) fn validate_namespace(journal: &Journal) -> Result<(), AttachmentDesiredStateError> {
-    History::load(journal).map(|_| ())
+    validate_namespace_historical_recipe_v2!(History::load(journal))
+}
+
+pub(crate) fn validate_namespace_rows_v2(journal: aos_sandbox_protocol::domain_ledger::readonly::HistoricalLedgerRowsDataV2<'_>) -> Result<(), AttachmentDesiredStateError> {
+    validate_namespace_historical_recipe_v2!(History::load_rows_v2(journal))
 }
 
 pub(crate) fn source_view_usage(
@@ -2077,4 +2134,17 @@ mod tests {
                 if matches!(*error, AttachmentDesiredStateError::CorruptState)
         ));
     }
+}
+
+/// Prices the reached actual-owner/Rows argument and owning return controls.
+/// Dynamic retained histories and their backing retain their existing quote.
+pub(crate) fn historical_observation_control_bytes_v2() -> Option<usize> {
+    std::mem::size_of::<(aos_sandbox_protocol::domain_ledger::readonly::HistoricalLedgerRowsDataV2<'_>, &History)>().checked_mul(3)?
+        .checked_add(std::mem::size_of::<Result<History, AttachmentDesiredStateError>>().checked_mul(3)?)?
+        .checked_add(std::mem::size_of::<Result<(), AttachmentDesiredStateError>>().checked_mul(3)?)?
+        .checked_add(std::mem::size_of::<Option<usize>>().checked_mul(3)?)?
+        .checked_add(std::mem::size_of::<(aos_sandbox_model::SandboxId, aos_sandbox_model::IncarnationId, u64)>().checked_mul(3)?)?
+        .checked_add(std::mem::size_of::<(AttachmentId, u64)>().checked_mul(3)?)?
+        .checked_add(std::mem::size_of::<Result<Vec<DurableAttachmentDesiredStateV1>, AttachmentDesiredStateError>>().checked_mul(3)?)?
+        .checked_add(std::mem::size_of::<Result<Option<DurableAttachmentDesiredStateV1>, AttachmentDesiredStateError>>().checked_mul(3)?)
 }

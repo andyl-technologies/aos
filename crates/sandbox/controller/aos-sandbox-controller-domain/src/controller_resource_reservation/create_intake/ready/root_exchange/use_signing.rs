@@ -13,7 +13,8 @@ use aos_sandbox_model::{ObjectDigest, RawPairedClockSample, ResourceDimension as
 use aos_sandbox_ownership_protocol::SignedOwnershipLease;
 use crate::hierarchy::genesis_profile::SourceGenesisErrorV1;
 use crate::journal::Journal;
-use crate::journal::broker_session_receiving::{StorageCreateUseSecurityShapeDataV1,
+use aos_sandbox_policy::storage_create_use_data::StorageCreateUseSecurityShapeDataV1;
+use crate::journal::broker_session_receiving::{
     storage_create_use_signing_receiving_demand_v1};
 use crate::policy_compiler::RetainedKernelPairedClockAttemptV1;
 use super::*;
@@ -165,7 +166,7 @@ impl<'original, 'cache> OriginalCreateStorageReadyV1<'original, 'cache> {
             parent: &owner.parent, intake: &mut owner.intake,
             controller: self.original.controller, source: self.original.source,
             profile: self.original.profile, cache: &mut self.cache,
-            state: &mut root.turn, use_receiving: Some(receiving),
+            state: &mut root.turn, use_receiving: Some(RootUseReceivingV1::Original(receiving)),
         };
         let mut loan = OriginalCreateStorageUseSigningV1 {
             root: root_loan, peer: &mut root.peer, reserved, lease, policy_digest,
@@ -223,7 +224,7 @@ impl OriginalCreateStorageUseSigningV1<'_, '_, '_> {
         }
         let demand = *self.root.state.signing.demand.as_ref()
             .and_then(|result| result.as_ref().ok()).ok_or(Closed)?;
-        self.root.state.signing.funding = Some(self.root.use_receiving.as_deref_mut()
+        self.root.state.signing.funding = Some(self.root.use_receiving.as_mut()
             .ok_or(Closed)?.reserve_once(demand));
         if !matches!(self.root.state.signing.funding, Some(Ok(()))) {
             self.root.state.signing.first = Some(First::Funding);
@@ -293,7 +294,7 @@ impl OriginalCreateStorageUseSigningV1<'_, '_, '_> {
             self.root.state.signing.predecessor.capture_once(journal,
                 super::super::outcome_receiving::OutcomeReplayRosterV1::CreateSigning)?;
             let demand = self.root.state.signing.predecessor.demand_v1()?;
-            let admission = self.root.use_receiving.as_deref_mut()
+            let admission = self.root.use_receiving.as_mut()
                 .ok_or(ResourceReservationErrorV1::Conflict)?.reserve_once(demand);
             self.root.state.signing.predecessor_funding_failed = admission.is_err();
             self.root.state.signing.predecessor.retain_admission_once(admission)

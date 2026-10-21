@@ -5,7 +5,6 @@
 //! paths, open one literal child without following its final symlink, and read
 //! an already admitted descriptor at fixed offsets.
 
-pub mod positional_hash;
 mod readiness_atomic_write;
 pub use readiness_atomic_write::{ReadinessAtomicWriteClosedV2, ReadinessAtomicWriteOriginalV2,
     ReadinessAtomicWritePurposeV2, ReadinessAtomicWriteShapeDataV2};

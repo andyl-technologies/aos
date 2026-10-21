@@ -21,9 +21,9 @@
 //! disconnected three-FD precursor; held selected-row/attempt and recovery
 //! barriers still prevent production use or any grant transition.
 
-use aos_sandbox_linux::boot::KernelBootId;
+use aos_linux_descriptors::boot::KernelBootId;
 use aos_sandbox_linux::cgroup::RetainedCgroupAnchor;
-use aos_sandbox_linux::pidfd::PidFdInfo;
+use aos_linux_descriptors::pidfd::PidFdInfo;
 use aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket;
 use aos_sandbox_source_provider_protocol::storage_live_export_lease::SignedStorageLiveExportLeaseV1;
 use rustix::time::ClockId;

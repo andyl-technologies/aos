@@ -15,7 +15,7 @@
 
 use std::os::fd::{AsFd as _, OwnedFd};
 
-use aos_sandbox_linux::boot::KernelBootId;
+use aos_linux_descriptors::boot::KernelBootId;
 use aos_sandbox_linux::inventory::MountId;
 use aos_sandbox_source_provider_protocol::storage_live_export_lease::{
     SignedStorageLiveExportLeaseV1, StorageLiveExportLeaseErrorV1, StorageLiveExportSourceV1,

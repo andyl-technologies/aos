@@ -11,7 +11,7 @@ use aos_sandbox_model::{ResourceDimension as D, ResourceVector};
 use aos_sandbox_linux::cgroup::{
     CgroupV2Root, ControllerInitialCgroupReadbackV1, RetainedCgroupAnchor,
 };
-use aos_sandbox_linux::unix_stream::RetainedUnixStream;
+use aos_linux_descriptors::unix_stream::RetainedUnixStream;
 
 use crate::immutable_image::ImmutableFileAcquisitionOriginalV1;
 use crate::immutable_image::{ImmutableFileRevalidationOriginalV1, ImmutableImageErrorV1};
@@ -29,7 +29,7 @@ use super::{
 fn require_controller_process_identity(
     startup: &RootStartupNativeOriginalV1,
     pid: std::num::NonZeroU32,
-    info: &aos_sandbox_linux::pidfd::PidFdInfo,
+    info: &aos_linux_descriptors::pidfd::PidFdInfo,
 ) -> Result<(), Error> {
     super::require_controller_process_identity_data_v1(
         startup.fields().profile.identities,
@@ -44,6 +44,9 @@ use membership::RootControllerMembershipV1;
 mod subject;
 pub use subject::RootSelectedControllerSubjectSampleV1;
 
+mod current_borrow;
+pub use current_borrow::RootControllerCurrentBorrowerV1;
+
 const MATERIALIZED_PROPERTY_BYTES: usize = 64 * 1024;
 type Properties = service::PropertyPairV1;
 
@@ -56,7 +59,7 @@ pub struct RootSelectedControllerPeerOriginalV1<'startup> {
     startup: &'startup RootStartupNativeOriginalV1,
     archive: Option<service::FirstGlobalPropertyArchive>,
     preparation: Option<Result<(), Error>>,
-    stream_before: Option<Result<(), aos_sandbox_linux::Error>>,
+    stream_before: Option<Result<(), aos_linux_descriptors::Error>>,
     initial_properties: Option<Result<Properties, Error>>,
     selection: Option<Result<(Option<PathBuf>, bool, bool), Error>>,
     nix_profile: ImmutableFileAcquisitionOriginalV1,
@@ -70,7 +73,7 @@ pub struct RootSelectedControllerPeerOriginalV1<'startup> {
     fragment: ImmutableFileAcquisitionOriginalV1,
     fragment_measurement: Option<Result<(), ImmutableImageErrorV1>>,
     cgroup_capture: ControllerInitialCgroupReadbackV1,
-    cgroup_result: Option<Result<(), aos_sandbox_linux::Error>>,
+    cgroup_result: Option<Result<(), aos_linux_descriptors::Error>>,
     cgroup: Option<(CgroupV2Root, RetainedCgroupAnchor)>,
     membership_before: RootControllerMembershipV1,
     identity_before: Option<Result<(), Error>>,
@@ -82,7 +85,7 @@ pub struct RootSelectedControllerPeerOriginalV1<'startup> {
     nix_post_original: ImmutableFileRevalidationOriginalV1,
     fragment_post: Option<Result<(), ImmutableImageErrorV1>>,
     fragment_post_original: ImmutableFileRevalidationOriginalV1,
-    stream_after: Option<Result<(), aos_sandbox_linux::Error>>,
+    stream_after: Option<Result<(), aos_linux_descriptors::Error>>,
     membership_after: RootControllerMembershipV1,
     identity_after: Option<Result<(), Error>>,
     settlement: Option<Result<(), Error>>,
@@ -96,6 +99,13 @@ pub struct RootSelectedControllerPeerOriginalV1<'startup> {
 }
 
 impl<'startup> RootSelectedControllerPeerOriginalV1<'startup> {
+    /// Borrows the actual startup retained by this peer qualifier.
+    ///
+    /// This association performs no observation and supplies no completed role.
+    pub(in crate::receiving) fn startup_original_v1(&self) -> &'startup RootStartupNativeOriginalV1 {
+        self.startup
+    }
+
     /// Creates the existing bounded destinations after the real caller prepays.
     ///
     /// The original observation lifetime is moved unchanged; this constructor
@@ -579,6 +589,19 @@ pub struct RootSelectedControllerCurrentSampleV1 {
 }
 
 impl RootSelectedControllerCurrentSampleV1 {
+    /// Reports complete positive settlement without observing native state.
+    ///
+    /// Disposal callers still require their independently owed Root posts and
+    /// enclosing transport settlement before releasing this sample.
+    #[must_use]
+    pub(in crate::receiving) fn is_settled_positive_v1(&self) -> bool {
+        matches!(self.settlement, Some(Ok(())))
+            && matches!(self.completion, Some(Ok(())))
+            && self.failure().is_none()
+            && self.before.require_positive().is_ok()
+            && self.after.require_positive().is_ok()
+    }
+
     /// Measures the actual current sample and its simultaneous native backing.
     ///
     /// # Errors
@@ -711,7 +734,7 @@ struct RootControllerPeerNativeSampleV1 {
     unwinds: [Option<Box<dyn std::any::Any + Send>>; 4],
     entered: bool,
     closed: Option<Error>,
-    stream: Option<Result<(), aos_sandbox_linux::Error>>,
+    stream: Option<Result<(), aos_linux_descriptors::Error>>,
     profile: Option<Result<(), ImmutableImageErrorV1>>,
     profile_original: crate::immutable_image::ImmutableFileRevalidationOriginalV1,
     fragment: Option<Result<(), ImmutableImageErrorV1>>,
@@ -941,4 +964,60 @@ fn selected_error<T, E: StdError + 'static>(
                 cause as &(dyn StdError + 'static) as *const (dyn StdError + 'static),
             )
         })
+}
+
+/// Expands the original nonzero Cache signer identity comparison as DATA only.
+///
+/// The expressions read actual retained configuration at their original slots.
+/// This recipe performs no service/native observation and constructs no startup,
+/// receiving admission, signer owner or successful currentness phase.
+///
+/// # Errors
+/// Returns the supplied existing error class when any identity is zero.
+#[macro_export]
+macro_rules! root_current_cache_signer_identity_data_v1 {
+    (uid = $uid:expr, gid = $gid:expr, socket_gid = $socket_gid:expr, error = $error:expr) => {{
+        let uid = $uid;
+        let gid = $gid;
+        let socket_gid = $socket_gid;
+        if uid == 0 || gid == 0 || socket_gid == 0 {
+            return Err($error);
+        }
+        Ok((uid, gid, socket_gid))
+    }};
+}
+
+impl RootSelectedControllerPeerOriginalV1<'_> {
+    /// Copies Cache signer configuration DATA from this actual peer's startup.
+    ///
+    /// The genuine Current consumer must independently retain its same Initial,
+    /// completed Bundle/Pins and financial/peer association. These identity values
+    /// cannot substitute for any such original, receiving Stage or role authority.
+    ///
+    /// # Errors
+    /// Reports the existing service refusal when an identity is zero.
+    pub fn current_cache_signer_identity_data_v1(&self) -> Result<(u32, u32, u32), Error> {
+        crate::root_current_cache_signer_identity_data_v1!(
+            uid = self.startup.fields().profile.identities[2],
+            gid = self.startup.fields().profile.cache_signer_gid,
+            socket_gid = self.startup.fields().profile.identities[1],
+            error = Error::Service
+        )
+    }
+
+    /// Quotes the concrete new passive getter and its three field-read interfaces.
+    ///
+    /// Its actual native caller pays this Memory-only term before the getter;
+    /// the supplier itself creates no admission, paid receipt or native owner.
+    #[must_use]
+    pub fn current_cache_signer_identity_control_bytes_v1() -> Option<usize> {
+        std::mem::size_of::<&Self>().checked_mul(3)?
+            .checked_add(std::mem::size_of::<Result<(u32, u32, u32), Error>>().checked_mul(3)?)?
+            .checked_add(std::mem::size_of::<(u32, u32, u32)>().checked_mul(3)?)?
+            .checked_add(std::mem::size_of::<u32>().checked_mul(9)?)?
+            .checked_add(std::mem::size_of::<&RootStartupNativeOriginalV1>().checked_mul(9)?)?
+            .checked_add(std::mem::size_of::<&super::super::root_startup_native::RootStartupNativeFieldsV1>()
+                .checked_mul(9)?)?
+            .checked_add(std::mem::size_of::<Option<usize>>().checked_mul(3)?)
+    }
 }

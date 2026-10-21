@@ -15,7 +15,7 @@ use aos_sandbox_linux::cgroup::{
 
 pub(in crate::normal_root::storage_worker_origin) struct StorageAggregateOriginalV1 {
     opening: StorageReceivingAggregateCgroupReadbackV1,
-    opened: Option<Result<(), aos_sandbox_linux::Error>>,
+    opened: Option<Result<(), aos_linux_descriptors::Error>>,
     root: Option<CgroupV2Root>,
     anchor: Option<RetainedCgroupAnchor>,
     main: WorkerCgroupOpeningV1,

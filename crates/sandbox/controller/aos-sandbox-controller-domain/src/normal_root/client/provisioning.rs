@@ -29,8 +29,9 @@ use aos_sandbox_protocol::domain_ledger::resource_bank::ACCOUNT_HEAD_BYTES_V1;
 use crate::controller_resource_reservation::ResourceReservationErrorV1;
 use crate::OriginalCreateProvisioningRootLoanV1;
 use crate::Journal;
-use crate::policy_compiler::{RetainedKernelPairedClockAttemptV1,
-    bounded_stream_io::{FixedDeadlineStreamIoV1, DeadlineStreamDirectionV1}};
+use crate::policy_compiler::RetainedKernelPairedClockAttemptV1;
+use aos_sandbox_broker::bounded_stream_io::FixedDeadlineStreamIoV1;
+use aos_sandbox_broker::bounded_stream_io::DeadlineStreamDirectionV1;
 use crate::hierarchy::genesis_profile::SourceGenesisErrorV1;
 use super::root_connection::ControllerRootConnectionOriginalV1;
 use super::strict_chunk::RootStrictChunkOriginalV1;
@@ -264,7 +265,7 @@ impl RootStorageApplyClientOriginalV1 {
                 state.connection.stream().map_err(|_| First::Before)?, None, None, false, self.cutoff)
         });
         if !matches!(self.state.before,Some(Ok(()))) {return Err(First::Before);}
-        self.state.reporting=Some(self.state.connection.stream_mut().map_err(|_|First::Reporting)?.enable_subject_reporting());
+        self.state.reporting=Some(self.state.connection.stream_mut().map_err(|_|First::Reporting)?.enable_subject_reporting().map_err(aos_sandbox_linux::seqpacket::SeqpacketError::from));
         if !matches!(self.state.reporting,Some(Ok(()))) {return Err(First::Reporting);}
         self.state.query_sent = Some({
             let state = &mut *self.state;

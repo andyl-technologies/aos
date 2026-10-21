@@ -36,7 +36,7 @@ pub(super) struct ObserverReadyOriginalV2 {
     ready: Option<Result<super::super::ObservationReadyV1, NetworkObservationWorkerError>>,
     payload: Option<Result<Vec<u8>, NetworkObservationWorkerError>>,
     send: Option<Result<DescriptorWorkerNativeSendAttemptV1, SeqpacketError>>,
-    native_post: Option<aos_sandbox_linux::Error>,
+    native_post: Option<aos_linux_descriptors::Error>,
     binding: Option<Result<(), RecordBindingError>>,
     after: NetworkChildSourceProbeOriginalV2,
     after_result: Option<Result<(), NetworkChildOriginClosedV2>>,

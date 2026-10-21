@@ -25,7 +25,7 @@ use aos_sandbox_guest_root_realization::guest_root_marker::{
 use aos_sandbox_guest_root_realization::guest_root_populate::populate_fresh_guest_root_before_v1;
 use aos_sandbox_guest_protocol::guest_root_publication::GuestRootPublicationProofV1;
 use aos_sandbox_broker::BrokerEffectIntentV1;
-use aos_sandbox_linux::boot::KernelBootId;
+use aos_linux_descriptors::boot::KernelBootId;
 use aos_sandbox_linux::inventory::MountId;
 use aos_sandbox_linux::seqpacket::KernelAuthorizedRecordSubject;
 use aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket;

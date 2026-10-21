@@ -37,6 +37,7 @@ use aos_sandbox_model::{DecodeLimits, descriptor_for_bytes};
 use crate::BrokerDispatchTemplateV1;
 
 use publication_data::ledger_read;
+use crate::journal::historical_observation::HistoricalObservationV1;
 mod format;
 use format::{decode_current, decode_prepared};
 use aos_sandbox_protocol::publication::{
@@ -431,8 +432,25 @@ impl<'a> AuthorityPublicationStore<'a> {
 /// Refuses unhealthy/corrupt bounded publication history or an inconsistent head.
 pub(crate) fn current_readonly_v2(journal: &Journal, sandbox: SandboxId)
     -> Result<Option<CurrentAuthorityPublicationV1>, AuthorityPublicationError> {
-    validate_publication_namespace(journal)?;
-    current_in_validated_namespace(journal, sandbox)
+    current_observed_v2(HistoricalObservationV1::from_journal_v1(journal), sandbox)
+}
+
+/// Selects current publication under the same genuine observation borrow.
+///
+/// The actual owner supplies health and provenance; decoded rows cannot create
+/// this borrower or an accepted publication enclosure.
+///
+/// # Errors
+/// Refuses original native poison or any complete publication/schema mismatch.
+pub(crate) fn current_observed_v2(
+    journal: HistoricalObservationV1<'_>,
+    sandbox: SandboxId,
+) -> Result<Option<CurrentAuthorityPublicationV1>, AuthorityPublicationError> {
+    validate_publication_observed_v2(journal)?;
+    journal.ensure_healthy().map_err(AuthorityPublicationError::from)?;
+    ledger_read::current_rows_data_v2(journal.rows_data_v2(), sandbox)
+        .map(|current| current.map(format::enclose_decoded_current))
+        .map_err(AuthorityPublicationError::from)
 }
 
 /// Checks one exact current/prepared pair after a caller's full namespace scan.
@@ -456,8 +474,23 @@ pub(crate) fn validate_durable_gate_publication(
     lease_generation: u64,
     lease_digest: ObjectDigest,
 ) -> Result<(), AuthorityPublicationError> {
-    ledger_read::validate_durable_gate_publication(
-        journal.historical_read_view_v1(),
+    validate_durable_gate_publication_observed_v2(
+        HistoricalObservationV1::from_journal_v1(journal), publication_digest,
+        draft, claim, lease_generation, lease_digest,
+    )
+}
+
+pub(crate) fn validate_durable_gate_publication_observed_v2(
+    journal: HistoricalObservationV1<'_>,
+    publication_digest: ObjectDigest,
+    draft: &AuthorityPublicationDraftV1,
+    claim: &OwnershipClaimV1,
+    lease_generation: u64,
+    lease_digest: ObjectDigest,
+) -> Result<(), AuthorityPublicationError> {
+    journal.ensure_healthy().map_err(AuthorityPublicationError::from)?;
+    ledger_read::validate_durable_gate_publication_rows_data_v2(
+        journal.rows_data_v2(),
         publication_digest,
         draft,
         claim,
@@ -480,7 +513,28 @@ pub(crate) fn validate_durable_effect_attempt(
     prepared_effect: &PreparedAuthorityEffectHistoryV1,
     current_host_boot_id: Option<[u8; 16]>,
 ) -> Result<(), AuthorityPublicationError> {
-    validate_publication_namespace(journal)?;
+    validate_durable_effect_attempt_observed_v2(
+        HistoricalObservationV1::from_journal_v1(journal), sandbox,
+        activated_publication_digest, binding_digest, source_draft_digest,
+        audience, template_digest, body_without_deadline, prepared_effect,
+        current_host_boot_id,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn validate_durable_effect_attempt_observed_v2(
+    journal: HistoricalObservationV1<'_>,
+    sandbox: SandboxId,
+    activated_publication_digest: ObjectDigest,
+    binding_digest: ObjectDigest,
+    source_draft_digest: ObjectDigest,
+    audience: BrokerAudience,
+    template_digest: ObjectDigest,
+    body_without_deadline: &[u8],
+    prepared_effect: &PreparedAuthorityEffectHistoryV1,
+    current_host_boot_id: Option<[u8; 16]>,
+) -> Result<(), AuthorityPublicationError> {
+    validate_publication_observed_v2(journal)?;
     if prepared_effect.binding_digest() != binding_digest {
         return Err(AuthorityPublicationError::CorruptCurrent);
     }
@@ -571,7 +625,25 @@ fn scan_publication_namespace(
     journal: &Journal,
     subject: Option<SandboxId>,
 ) -> Result<bool, AuthorityPublicationError> {
-    ledger_read::scan_publication_namespace(journal.historical_read_view_v1(), subject)
+    scan_publication_observed_v2(HistoricalObservationV1::from_journal_v1(journal), subject)
+}
+
+/// Runs the complete canonical namespace scan under the actual read owner.
+///
+/// # Errors
+/// Refuses the old native health or complete publication-history boundary.
+pub(crate) fn validate_publication_observed_v2(
+    journal: HistoricalObservationV1<'_>,
+) -> Result<(), AuthorityPublicationError> {
+    scan_publication_observed_v2(journal, None).map(|_| ())
+}
+
+fn scan_publication_observed_v2(
+    journal: HistoricalObservationV1<'_>,
+    subject: Option<SandboxId>,
+) -> Result<bool, AuthorityPublicationError> {
+    journal.ensure_healthy().map_err(AuthorityPublicationError::from)?;
+    ledger_read::scan_namespace_rows_data_v2(journal.rows_data_v2(), subject)
         .map_err(AuthorityPublicationError::from)
 }
 
@@ -912,4 +984,59 @@ pub(crate) fn select_bound_current_models_v4(
         }
         .map_err(AuthorityPublicationError::DispatchAttempt)?;
         Ok((current.digest(), attempt))
+}
+
+/// Prices the actual current-publication observation interfaces.
+///
+/// Counts the concrete construction, ABI return and caller planes. It pays
+/// only new Memory controls; full canonical maps and decoder backing stay
+/// with the existing reached semantic invoice.
+pub(crate) fn current_observation_control_bytes_v2() -> Option<usize> {
+    let mut bytes = std::mem::size_of::<
+        aos_sandbox_protocol::domain_ledger::readonly::HistoricalLedgerRowsDataV2<'_>,
+    >().checked_mul(3)?;
+    bytes = bytes.checked_add(std::mem::size_of::<crate::journal::historical_observation::HistoricalObservationV1<'_>>().checked_mul(3)?)?;
+    bytes = bytes.checked_add(std::mem::size_of::<SandboxId>().checked_mul(3)?)?;
+    bytes = bytes.checked_add(std::mem::size_of::<Option<SandboxId>>().checked_mul(3)?)?;
+    bytes = bytes.checked_add(std::mem::size_of::<Result<bool, ledger_read::PublicationLedgerDataErrorV1>>().checked_mul(3)?)?;
+    bytes = bytes.checked_add(std::mem::size_of::<Result<bool, AuthorityPublicationError>>().checked_mul(3)?)?;
+    bytes = bytes.checked_add(std::mem::size_of::<Result<(), JournalError>>().checked_mul(3)?)?;
+    bytes = bytes.checked_add(std::mem::size_of::<Result<(), AuthorityPublicationError>>().checked_mul(3)?)?;
+    bytes = bytes.checked_add(std::mem::size_of::<Result<Option<publication_data::DecodedPublicationCurrentV1>, ledger_read::PublicationLedgerDataErrorV1>>().checked_mul(3)?)?;
+    bytes = bytes.checked_add(std::mem::size_of::<Result<Option<CurrentAuthorityPublicationV1>, AuthorityPublicationError>>().checked_mul(3)?)?;
+    bytes = bytes.checked_add(std::mem::size_of::<ledger_read::PublicationLedgerDataErrorV1>().checked_mul(3)?)?;
+    bytes = bytes.checked_add(std::mem::size_of::<AuthorityPublicationError>().checked_mul(3)?)?;
+    bytes.checked_add(std::mem::size_of::<Option<usize>>().checked_mul(3)?)
+}
+
+/// Prices the exact activated-gate publication observation interfaces.
+///
+/// Counts the concrete construction, ABI return and caller planes. It pays
+/// only new Memory controls; full canonical maps and decoder backing stay
+/// with the existing reached semantic invoice.
+pub(crate) fn gate_observation_control_bytes_v2() -> Option<usize> {
+    let mut bytes = std::mem::size_of::<
+        aos_sandbox_protocol::domain_ledger::readonly::HistoricalLedgerRowsDataV2<'_>,
+    >().checked_mul(3)?;
+    bytes = bytes.checked_add(std::mem::size_of::<crate::journal::historical_observation::HistoricalObservationV1<'_>>().checked_mul(3)?)?;
+    bytes = bytes.checked_add(std::mem::size_of::<(ObjectDigest, &AuthorityPublicationDraftV1, &OwnershipClaimV1, u64, ObjectDigest)>().checked_mul(3)?)?;
+    bytes = bytes.checked_add(std::mem::size_of::<Result<(), JournalError>>().checked_mul(3)?)?;
+    bytes = bytes.checked_add(std::mem::size_of::<Result<(), ledger_read::PublicationLedgerDataErrorV1>>().checked_mul(3)?)?;
+    bytes = bytes.checked_add(std::mem::size_of::<Result<(), AuthorityPublicationError>>().checked_mul(3)?)?;
+    bytes = bytes.checked_add(std::mem::size_of::<ledger_read::PublicationLedgerDataErrorV1>().checked_mul(3)?)?;
+    bytes = bytes.checked_add(std::mem::size_of::<AuthorityPublicationError>().checked_mul(3)?)?;
+    bytes.checked_add(std::mem::size_of::<Option<usize>>().checked_mul(3)?)
+}
+
+/// Prices the actual durable-effect observation forwarding interfaces.
+///
+/// Counts the concrete construction, ABI return and caller planes. It pays
+/// only new Memory controls; full canonical maps and decoder backing stay
+/// with the existing reached semantic invoice.
+pub(crate) fn effect_observation_control_bytes_v2() -> Option<usize> {
+    let mut bytes = 0_usize;
+    bytes = bytes.checked_add(std::mem::size_of::<crate::journal::historical_observation::HistoricalObservationV1<'_>>().checked_mul(3)?)?;
+    bytes = bytes.checked_add(std::mem::size_of::<(SandboxId, ObjectDigest, ObjectDigest, ObjectDigest, BrokerAudience, ObjectDigest, &[u8], &PreparedAuthorityEffectHistoryV1, Option<[u8; 16]>)>().checked_mul(3)?)?;
+    bytes = bytes.checked_add(std::mem::size_of::<Result<(), AuthorityPublicationError>>().checked_mul(3)?)?;
+    bytes.checked_add(std::mem::size_of::<Option<usize>>().checked_mul(3)?)
 }

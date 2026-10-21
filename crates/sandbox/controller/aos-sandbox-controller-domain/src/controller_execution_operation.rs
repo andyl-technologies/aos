@@ -275,7 +275,7 @@ impl<'owner> ControllerExecutionOperationReceivingLoanV1<'owner> {
         let demand = self.append_demand.as_ref().and_then(|result| result.as_ref().ok()).copied()
             .ok_or(ResourceReservationErrorV1::Conflict)?;
         let source_bytes = crate::sandbox_spec_state::execution_source_receiving_bytes_v1(controller)
-            .and_then(|bytes| bytes.checked_add(crate::controller_service::public_projection::execution_source_receiving_bytes_v1(controller)?))
+            .and_then(|bytes| bytes.checked_add(aos_sandbox_protocol::public_api::projection::geometry::execution_source_receiving_bytes_v1(controller.historical_read_view_v1().rows_data_v2())?))
             .ok_or(ResourceReservationErrorV1::Conflict)?;
         let complete = self.prefix.checked_add(demand)?
             .checked_add(ResourceVector::ZERO.with(D::MemoryBytes, source_bytes))?;
@@ -298,7 +298,7 @@ impl<'owner> ControllerExecutionOperationReceivingLoanV1<'owner> {
         profile: &ProductionControllerNormalRootProfileV1,
     ) -> Result<(), ResourceReservationErrorV1> {
         let sources = crate::sandbox_spec_state::execution_source_receiving_bytes_v1(controller)
-            .and_then(|bytes| bytes.checked_add(crate::controller_service::public_projection::execution_source_receiving_bytes_v1(controller)?))
+            .and_then(|bytes| bytes.checked_add(aos_sandbox_protocol::public_api::projection::geometry::execution_source_receiving_bytes_v1(controller.historical_read_view_v1().rows_data_v2())?))
             .ok_or(ResourceReservationErrorV1::Conflict)?;
         let state = controller.historical_read_view_v1().materialized_state_v1();
         let publication = crate::cold_launch_publication::completion::create_stopped_controller_receiving_demand_v1(state)

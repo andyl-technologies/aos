@@ -15,12 +15,12 @@ mod provider_policy_data {
 
     type PublisherPolicyError = super::JournalError;
 
-    aos_sandbox_ledger_replay::define_provider_record_helpers_data_recipe_v1!(
+    aos_sandbox_protocol::define_provider_record_helpers_data_recipe_v1!(
         PublisherPolicyError::ProtectedBoundary
     );
 
     mod account_coverage {
-        aos_sandbox_ledger_replay::define_provider_account_coverage_data_recipe_v1!(
+        aos_sandbox_protocol::define_provider_account_coverage_data_recipe_v1!(
             super::PublisherPolicyError::ProtectedBoundary
         );
     }
@@ -28,7 +28,7 @@ mod provider_policy_data {
     mod native_account {
         use super::*;
 
-        aos_sandbox_ledger_replay::define_provider_native_account_data_recipe_v1!(
+        aos_sandbox_protocol::define_provider_native_account_data_recipe_v1!(
             PublisherPolicyError::ProtectedBoundary
         );
     }

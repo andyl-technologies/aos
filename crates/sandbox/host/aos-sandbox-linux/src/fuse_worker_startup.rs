@@ -12,15 +12,20 @@ use std::os::fd::{AsFd as _, BorrowedFd, OwnedFd};
 
 use rustix::fs::{FileType, Mode, OFlags};
 
-use crate::fuse_worker_objects::{
-    FUSE_WORKER_CANCEL_CONTEXT_V1, FUSE_WORKER_CHANNEL_CONTEXT_V1, FUSE_WORKER_CONTEXT_V1,
-    FUSE_WORKER_DEVICE_CONTEXT_V1, FUSE_WORKER_EXECUTABLE_CONTEXT_V1, FUSE_WORKER_PLAN_CONTEXT_V1,
-    context_matches, require_object_context,
-};
+use crate::fuse_worker_objects::FUSE_WORKER_CANCEL_CONTEXT_V1;
+use crate::fuse_worker_objects::FUSE_WORKER_CHANNEL_CONTEXT_V1;
+use crate::fuse_worker_objects::FUSE_WORKER_CONTEXT_V1;
+use crate::fuse_worker_objects::FUSE_WORKER_DEVICE_CONTEXT_V1;
+use crate::fuse_worker_objects::FUSE_WORKER_EXECUTABLE_CONTEXT_V1;
+use crate::fuse_worker_objects::FUSE_WORKER_PLAN_CONTEXT_V1;
+use aos_linux_descriptors::object_context::context_matches;
+use aos_linux_descriptors::object_context::require_object_context;
 use crate::seqpacket::{
     ConnectionPeerIdentity, KernelAuthorizedRecordSubject, SeqpacketError, SeqpacketSocket,
 };
-use crate::{Error, Result, uapi};
+use aos_linux_descriptors::Error;
+use aos_linux_descriptors::Result;
+use crate::uapi;
 
 const EROFS_SUPER_MAGIC: i64 = 0xe0f5_e1e2;
 const MAXIMUM_STATUS_BYTES: usize = 16 * 1024;
@@ -121,8 +126,8 @@ impl FixedFuseWorkerSessionV1 {
         let records = self.records_fd()?;
         require_object_context(records, FUSE_WORKER_CHANNEL_CONTEXT_V1)?;
         uapi::validate_connected_seqpacket(records)?;
-        uapi::require_seqpacket_identity(records)?;
-        if uapi::socket_cookie(records)? != self.records.peer().socket_cookie().get() {
+        aos_linux_descriptors::native::require_seqpacket_identity(records)?;
+        if aos_linux_descriptors::native::socket_cookie(records)? != self.records.peer().socket_cookie().get() {
             return Err(Error::invalid(
                 "worker record channel",
                 "original endpoint changed",
@@ -433,7 +438,7 @@ mod tests {
 
 fn require_executable(pin: BorrowedFd<'_>) -> Result<()> {
     require_object_context(pin, FUSE_WORKER_EXECUTABLE_CONTEXT_V1)?;
-    if uapi::get_status_flags(pin)? & libc::O_ACCMODE != libc::O_RDONLY {
+    if aos_linux_descriptors::native::get_status_flags(pin)? & libc::O_ACCMODE != libc::O_RDONLY {
         return Err(Error::invalid("worker executable pin", "not read-only"));
     }
     // This is the running task's own magic link, not an authority-bearing
@@ -504,7 +509,7 @@ fn require_role_shapes(
         || plan_stat.st_uid != 0
         || plan_stat.st_size <= 0
         || plan_stat.st_size > 4096
-        || uapi::get_status_flags(plan)? & libc::O_ACCMODE != libc::O_RDONLY
+        || aos_linux_descriptors::native::get_status_flags(plan)? & libc::O_ACCMODE != libc::O_RDONLY
         || uapi::get_seals(plan)? & uapi::REQUIRED_IMMUTABLE_SEALS != uapi::REQUIRED_IMMUTABLE_SEALS
     {
         return Err(Error::invalid(
@@ -514,7 +519,7 @@ fn require_role_shapes(
     }
     let device = rustix::fs::fstat(connection)
         .map_err(|source| kernel_error("inspect worker FUSE role", source))?;
-    let flags = uapi::get_status_flags(connection)?;
+    let flags = aos_linux_descriptors::native::get_status_flags(connection)?;
     if FileType::from_raw_mode(device.st_mode) != FileType::CharacterDevice
         || rustix::fs::major(device.st_rdev) != 10
         || rustix::fs::minor(device.st_rdev) != 229
@@ -527,10 +532,10 @@ fn require_role_shapes(
         ));
     }
     uapi::validate_connected_seqpacket(records)?;
-    uapi::require_seqpacket_identity(records)?;
+    aos_linux_descriptors::native::require_seqpacket_identity(records)?;
     let cancelled = rustix::fs::fstat(cancellation)
         .map_err(|source| kernel_error("inspect worker cancellation role", source))?;
-    let flags = uapi::get_status_flags(cancellation)?;
+    let flags = aos_linux_descriptors::native::get_status_flags(cancellation)?;
     if FileType::from_raw_mode(cancelled.st_mode) != FileType::Fifo
         || cancelled.st_nlink != 0
         || cancelled.st_uid != 0

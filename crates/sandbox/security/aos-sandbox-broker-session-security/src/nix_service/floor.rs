@@ -18,7 +18,7 @@ use aos_sandbox_controller_domain::normal_root::{
 };
 use aos_sandbox_controller_domain::production_operation_compiler::NixStartAdmissionErrorV2;
 use aos_sandbox_broker::{BrokerAdmissionError, BrokerAuthority};
-use aos_sandbox_linux::pidfd::PidFd;
+use aos_linux_descriptors::pidfd::PidFd;
 use aos_sandbox_broker_session_protocol::manifest::{
     BrokerSessionManifestBindingV1, BrokerSessionManifestV1,
 };

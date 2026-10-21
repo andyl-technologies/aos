@@ -6,7 +6,8 @@
 //! It supplies no Source, READY adoption or positive effect permission.
 
 use super::*;
-use aos_sandbox_linux::pidfd::{PidFd, PidFdInfo};
+use aos_linux_descriptors::pidfd::PidFd;
+use aos_linux_descriptors::pidfd::PidFdInfo;
 
 #[derive(Clone, Copy)]
 enum First {
@@ -21,12 +22,12 @@ enum First {
 
 pub(crate) struct NetworkWorkerBirthExecutionOriginalV2 {
     entered: bool,
-    birth_before: Option<aos_sandbox_linux::Result<bool>>,
+    birth_before: Option<aos_linux_descriptors::Result<bool>>,
     subject: NetworkWorkerSubjectOriginalV4,
     subject_result: Option<Result<(), NetworkWorkerProcessError>>,
-    identity: Option<aos_sandbox_linux::Result<PidFdInfo>>,
-    subject_after: Option<aos_sandbox_linux::Result<bool>>,
-    birth_after: Option<aos_sandbox_linux::Result<bool>>,
+    identity: Option<aos_linux_descriptors::Result<PidFdInfo>>,
+    subject_after: Option<aos_linux_descriptors::Result<bool>>,
+    birth_after: Option<aos_linux_descriptors::Result<bool>>,
     first: Option<First>,
 }
 

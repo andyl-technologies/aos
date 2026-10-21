@@ -6,9 +6,10 @@ use std::os::fd::AsFd;
 use std::os::unix::fs::{FileExt, MetadataExt};
 use std::path::Path;
 
-use aos_sandbox_linux::immutable_file::{
-    FsVerityBacking, FsVerityDigest, FsVerityMapping, ImmutableFileError,
-};
+use aos_sandbox_linux::immutable_file::FsVerityBacking;
+use aos_sandbox_linux::immutable_file::FsVerityDigest;
+use aos_sandbox_linux::immutable_file::FsVerityMapping;
+use aos_linux_descriptors::ImmutableFileError;
 use aos_sandbox_linux::path::BeneathRoot;
 
 const PAYLOAD: &[u8] = b"aos-fuse-passthrough-proof\n";

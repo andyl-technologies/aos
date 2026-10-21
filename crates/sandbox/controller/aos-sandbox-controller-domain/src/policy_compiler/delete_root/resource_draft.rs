@@ -17,7 +17,8 @@ use crate::hierarchy::genesis_profile::SourceGenesisErrorV1;
 use crate::journal::JournalError;
 use crate::normal_root::{NormalRootStartupErrorV1, RootPolicyAcceptedFlightV1};
 use crate::policy_compiler::RetainedKernelPairedClockAttemptV1;
-use crate::policy_compiler::bounded_stream_io::{SliceDeadlineStreamIoV1, DeadlineStreamDirectionV1};
+use aos_sandbox_broker::bounded_stream_io::SliceDeadlineStreamIoV1;
+use aos_sandbox_broker::bounded_stream_io::DeadlineStreamDirectionV1;
 use super::{RootDeleteChallengeOriginalsV1, RootDeleteCleanupInputsOriginalV2, RootDeleteErrorV1,
     RootDeleteResourcePolicyOriginalV2, RootDeleteResourcePreparationOriginalV2, RootDeleteFreshInventoryOriginalV2};
 

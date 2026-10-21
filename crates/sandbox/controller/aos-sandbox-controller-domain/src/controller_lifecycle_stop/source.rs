@@ -208,6 +208,8 @@ impl StopSourceTurnOriginalV4 {
 
     pub(super) fn fixed_demand_v4() -> Result<ResourceVector> {
         let bytes = std::mem::size_of::<Self>().checked_mul(2)
+            .and_then(|bytes| bytes.checked_add(crate::journal::historical_observation::HistoricalObservationV1::journal_receiving_control_bytes_v1()?))
+            .and_then(|bytes| bytes.checked_add(crate::lifecycle::historical_admission_control_bytes_v2()?))
             .and_then(|bytes| bytes.checked_add(Pair::dominant_requested_bytes_v1()?.checked_mul(2)?))
             .and_then(|bytes| bytes.checked_add(LifecycleHistoricalReadOriginalV1::carrier_receiving_bytes_v1()?))
             .and_then(|bytes| u64::try_from(bytes).ok()).ok_or(CLOSED)?;
@@ -350,7 +352,9 @@ impl StopSourceTurnOriginalV4 {
             if !matches!(self.context, Some(Ok(Some(_)))) { self.first = Some(First::Context); }
         }
         if self.first.is_none() {
-            self.projection = Some(self.read.observe_optional_operation_once_v4(source.journal_ref_v1(), operation));
+            self.projection = Some(self.read.observe_optional_operation_once_v4(
+                source.journal_ref_v1().historical_read_view_v1().rows_data_v2(), operation,
+            ));
             if !matches!(self.projection, Some(Ok(()))) { self.first = Some(First::Projection); }
         }
         if self.first.is_none() {
@@ -365,8 +369,9 @@ impl StopSourceTurnOriginalV4 {
                 self.identity = Some(source.journal_ref_v1().source_provisioning_identity_v1()?);
                 let node = bank.lock().map_err(|_| ResourceReservationErrorV1::EnrollmentUnavailable)?
                     .current_lifecycle_stop_node_v4(controller_native, controller, profile)?;
-                let admission = crate::lifecycle::lifecycle_public_mutation_admission_v1(
-                    controller, operation, context.project(), node, &request)?;
+                let admission = crate::lifecycle::lifecycle_public_mutation_admission_from_observation_v2(
+                    crate::journal::historical_observation::HistoricalObservationV1::from_journal_v1(controller),
+                    operation, context.project(), node, &request)?;
                 Ok(crate::lifecycle::lifecycle_operation_from_public_mutation_v1(operation,
                     context.caller(), context.project(), context.accepted_wall_seconds(),
                     context.canonical_request(), &request, admission)?)

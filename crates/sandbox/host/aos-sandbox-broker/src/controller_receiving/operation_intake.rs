@@ -467,6 +467,17 @@ impl OperationIntakeSlotV1 {
         self.preaccept_resident
     }
 
+    // Comparison cannot issue a turn or rearm its native destinations.
+    pub(in crate::controller_receiving) fn require_delete_preaccept_turn_v1(&self, ordinal: u64)
+        -> Result<(), ControllerReceivingErrorV1>
+    {
+        self.require_active()?;
+        if !self.preaccept_active || self.preaccept_prepared || self.preaccept_turns != ordinal {
+            return Err(ControllerReceivingErrorV1::Conflict);
+        }
+        Ok(())
+    }
+
     pub(in crate::controller_receiving) fn arm_delete_preaccept_turn_v1(&mut self, next: u64, resident: ResourceVector)
         -> Result<(), ControllerReceivingErrorV1>
     {
@@ -826,8 +837,11 @@ mod tests {
         }
 
         let next = slot.next_delete_preaccept_turn_v1().unwrap();
+        assert!(slot.require_delete_preaccept_turn_v1(next).is_err());
         slot.reserve_complete_traffic_v1(ResourceVector::ZERO.with(D::NetworkBytes, 20)).unwrap();
         slot.arm_delete_preaccept_turn_v1(next, ResourceVector::ZERO).unwrap();
+        assert!(slot.require_delete_preaccept_turn_v1(next + 1).is_err());
+        slot.require_delete_preaccept_turn_v1(next).unwrap();
         for index in 4..8 {
             slot.enter_profile_once(index).unwrap();
             slot.prepare_profile_disposal_once(index).unwrap();
@@ -835,6 +849,7 @@ mod tests {
         }
         slot.prepare_delete_preaccept_disposal_v1().unwrap();
         slot.complete_delete_preaccept_disposal_v1();
+        assert!(slot.require_delete_preaccept_turn_v1(next).is_err());
 
         assert_eq!(slot.profile_retired[..4], [true, true, false, false]);
         assert_eq!(slot.profile_entered[4..], [false; 4]);
@@ -854,6 +869,7 @@ mod tests {
         slot.enter_profile_once(4).unwrap();
         slot.refuse_delete_preaccept_turn_v1();
         let first = std::ptr::from_ref(slot.failure().unwrap());
+        assert!(slot.require_delete_preaccept_turn_v1(1).is_err());
 
         slot.enter_profile_once(6).unwrap();
         slot.enter_profile_once(7).unwrap();

@@ -11,7 +11,7 @@ use crate::journal::JournalError;
 use crate::normal_root::{NormalRootStartupErrorV1, RootExecutionNoApplyStageReceivingV2};
 use crate::policy_compiler::continuation_policy::RootExecutionNoApplyPolicyOriginalV2;
 use crate::policy_compiler::provisioning_current::finality_readonly::RootCreateFinalityReadonlyOriginalV1;
-use crate::reconciler::ClosedCreateFailurePlanDataV2;
+use aos_sandbox_protocol::domain_ledger::create_failure::ClosedCreateFailurePlanDataV2;
 
 use super::RootExecutionNoApplyModelsErrorV2;
 

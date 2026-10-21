@@ -11,14 +11,14 @@ use aos_sandbox_model::{ExecutionId, NodeId, OperationId, ProjectId, ResourceDim
 use aos_sandbox_protocol::domain_ledger::effect_history::PublicMutationEffectHistoryV1;
 use crate::controller_resource_reservation::RootContinuationDemandV1;
 use crate::execution_parent_resource::{ExecutionParentResourceSourceV1,
-    current_execution_parent_resource_from_journal_v1};
+    current_execution_parent_resource_from_observation_v2};
 use crate::journal::JournalError;
 use crate::normal_root::{NormalRootStartupErrorV1, RootEnvironmentStageReceivingV1};
 use crate::policy_compiler::provisioning_current::RootEnvironmentReadonlyContextV1;
 use crate::policy_compiler::provisioning_current::current_compiler_complete_receiving_demand_v1;
 use crate::policy_compiler::continuation_policy::RootEnvironmentPolicyOriginalV1;
-use crate::reconciler::{accepted_create_execution_effect_from_journal_v1,
-    accepted_execution_target_from_journal_v1};
+use crate::reconciler::{accepted_create_execution_effect_from_observation_v2,
+    accepted_execution_target_from_observation_v2};
 
 type Cause = Box<dyn Error>;
 
@@ -74,11 +74,11 @@ impl RootEnvironmentAcceptedOriginalV1 {
         if !matches!(self.funding, Some(Ok(()))) { return Err(JournalError::ProtectedBoundary); }
         self.result = Some((|| {
             let node = NodeId::from_bytes(stage.enrolled_node_v1()?);
-            let (controller, _) = readonly.models_mut_v1()?;
-            let accepted = accepted_create_execution_effect_from_journal_v1(controller, operation)?
+            let (controller, _) = readonly.models_v1()?;
+            let accepted = accepted_create_execution_effect_from_observation_v2(controller, operation)?
                 .ok_or(Changed)?;
-            let (sandbox, execution) = accepted_execution_target_from_journal_v1(controller, operation, &accepted)?;
-            let parent = current_execution_parent_resource_from_journal_v1(
+            let (sandbox, execution) = accepted_execution_target_from_observation_v2(controller, operation, &accepted)?;
+            let parent = current_execution_parent_resource_from_observation_v2(
                 controller, accepted.project(), sandbox, node)?;
             if parent.assignment().manifest().node() != node { return Err(Changed.into()); }
             Ok(Box::new(ValuesV1 { operation, execution, accepted, parent }))

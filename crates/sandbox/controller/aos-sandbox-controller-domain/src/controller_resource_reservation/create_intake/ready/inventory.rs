@@ -15,7 +15,7 @@ use aos_sandbox_linux::seqpacket::{
     RetainedSeqpacketReceiveErrorV1, SeqpacketSocket, StorageSeqpacketSendAttemptV1,
 };
 
-use crate::cache_residency::OriginalCreateStorageCacheLoanV1;
+use crate::cache_programmes::OriginalCreateStorageCacheLoanV1;
 use crate::controller_resource_reservation::q04_intake::CreateContinuationCaptureOwnerV1;
 use crate::journal::broker_session_receiving::{
     StorageSessionGeometryRefusalV1, initialization_demand, operation_flight_demand,
@@ -799,7 +799,7 @@ impl<'turn, 'original, 'cache> OriginalCreateStorageInventoryV1<'turn, 'original
             parent: &self.original.owner.parent, intake: &self.original.owner.intake,
             controller: self.original.controller, source: self.original.source,
             profile: self.original.profile,
-        }, self.cache, expected, expected_controller);
+        }, &(self.cache).currentness_original_v1(), expected, expected_controller);
         slot.association = Some(self.original.owner.client_session
             .require_completed_association_v1(journal, socket, transcript));
     }

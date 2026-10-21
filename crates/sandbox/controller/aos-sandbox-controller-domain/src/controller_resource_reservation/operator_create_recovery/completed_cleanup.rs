@@ -122,10 +122,18 @@ impl OperatorCreateRecoveryOriginalV1 {
         match purpose {
             PublicRecoveryKindV1::ExecutionNoApply => request.execution_no_apply_target_v1()
                 .ok_or(ResourceReservationErrorV1::Conflict)?
-                .require_current_v1(controller, project, node, recovery),
+                .require_current_v1(
+                    crate::journal::historical_observation::HistoricalObservationV1::
+                        from_journal_v1(controller),
+                    project, node, recovery,
+                ),
             PublicRecoveryKindV1::StopCleanup => request.stop_cleanup_target_v1()
                 .ok_or(ResourceReservationErrorV1::Conflict)?
-                .require_current_v1(controller, project, node, recovery),
+                .require_current_v1(
+                    crate::journal::historical_observation::HistoricalObservationV1::
+                        from_journal_v1(controller),
+                    project, node, recovery,
+                ),
             PublicRecoveryKindV1::Ordinary | PublicRecoveryKindV1::MetadataComplete =>
                 return Err(ResourceReservationErrorV1::Conflict),
         }.map_err(|_| ResourceReservationErrorV1::Conflict)

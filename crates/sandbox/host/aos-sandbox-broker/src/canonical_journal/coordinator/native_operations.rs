@@ -181,11 +181,11 @@ impl<'owner, P> CanonicalWriterNativeOperationsV1<'owner, P> {
     /// Preserves the existing mount inspection error or rejects closed entry.
     #[cfg(target_os = "linux")]
     pub fn directory_mount_id(self)
-        -> Result<aos_sandbox_linux::inventory::MountId, aos_sandbox_linux::Error>
+        -> Result<aos_sandbox_linux::inventory::MountId, aos_linux_descriptors::Error>
     {
         let mut guard = enter_root_read(self.invocation).map_err(|source|
-            aos_sandbox_linux::Error::Syscall { operation: "Root journal invocation", source })?;
-        let location = self.location.ok_or(aos_sandbox_linux::Error::WrongDescriptorType {
+            aos_linux_descriptors::Error::Syscall { operation: "Root journal invocation", source })?;
+        let location = self.location.ok_or(aos_linux_descriptors::Error::WrongDescriptorType {
             expected: "protected journal directory",
         })?;
         let result = location.directory_mount_id();

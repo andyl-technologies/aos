@@ -151,7 +151,7 @@ mod tests {
 
     #[test]
     fn complete_mapping_stays_on_same_original_for_following_validation() {
-        let sealed = super::super::SealedReadOnlyCredential::create("capture-spec-test", b"spec", 4).unwrap();
+        let sealed = aos_linux_descriptors::credential::SealedReadOnlyCredential::create("capture-spec-test", b"spec", 4).unwrap();
         let descriptor = sealed.as_fd().try_clone_to_owned().unwrap();
         let mut original = SealedMemfdReadOriginalV2::new();
         original.prepare_once(descriptor, 4, 4).unwrap();

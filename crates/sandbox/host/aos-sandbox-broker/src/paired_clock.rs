@@ -8,7 +8,7 @@
 
 use aos_sandbox_model::{RawClockProvenance, RawPairedClockSample,
     ResourceDimension as D, ResourceVector};
-use aos_sandbox_linux::boot::RootOriginalKernelBootIdAttemptV1;
+use aos_linux_descriptors::boot::RootOriginalKernelBootIdAttemptV1;
 
 mod incremental;
 pub use incremental::PairedClockIncrementalSamplesV3;

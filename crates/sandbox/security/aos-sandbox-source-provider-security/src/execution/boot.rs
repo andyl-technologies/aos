@@ -1,6 +1,6 @@
 //! Opaque current-kernel-boot evidence.
 
-use aos_sandbox_linux::boot::KernelBootId;
+use aos_linux_descriptors::boot::KernelBootId;
 
 use crate::SourceProviderSecurityError;
 

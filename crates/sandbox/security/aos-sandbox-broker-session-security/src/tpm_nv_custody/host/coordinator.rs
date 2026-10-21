@@ -52,8 +52,7 @@ pub(in crate::tpm_nv_custody) use aos_sandbox_controller_domain::{
     RuntimeDeploymentOriginalWindowV3 as CanaryAuthenticatedRequestV3,
     RuntimeDeploymentOriginalClockCauseV3 as CanaryClockCauseV2,
 };
-use aos_sandbox_controller_domain::observe_original_runtime_deployment_clock_v3
-    as original_clock_pair_v2;
+use aos_sandbox_controller_domain::observe_original_runtime_deployment_clock_v3 as original_clock_pair_v2;
 
 #[derive(Debug, thiserror::Error)]
 enum CanarySigningCauseV2 {

@@ -17,6 +17,28 @@ use aos_sandbox_protocol::domain_ledger::{DomainLedgerDataError, transaction::Jo
 use crate::genesis::SourceGenesisReceiptDataErrorV1;
 use crate::replay::source_tree_successor::{self, State};
 
+/// Sums the actual boxed Source state-family and transaction representations.
+///
+/// Each concrete error lane remains part of its original owned layout. The
+/// returned byte/cell pair is passive geometry, not native admission or a role.
+/// Returns `None` when either original supplier or checked sum overflows.
+#[must_use]
+pub fn source_family_boxed_footprint_data_v1<E, H, R>() -> Option<(usize, usize)>
+where
+    E: From<CanonicalJournalMechanicalErrorV1> + std::error::Error + 'static,
+    H: From<DomainLedgerDataError> + std::error::Error + 'static,
+    R: From<SourceGenesisReceiptDataErrorV1> + std::error::Error + 'static,
+{
+    let (state_bytes, state_cells) =
+        source_tree_successor::SourceReplayFamilyOriginalsV1::<E, H, R>::boxed_footprint_v1()?;
+    let (transaction_bytes, transaction_cells) =
+        source_tree_successor::SourceReplayTransactionOriginalsV1::<E, H, R>::boxed_footprint_v1()?;
+    Some((
+        state_bytes.checked_add(transaction_bytes)?,
+        state_cells.checked_add(transaction_cells)?,
+    ))
+}
+
 /// Bounds the same complete reached semantic families before their growth.
 ///
 /// # Errors

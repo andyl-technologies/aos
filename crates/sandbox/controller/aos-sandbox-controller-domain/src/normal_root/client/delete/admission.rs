@@ -228,7 +228,7 @@ pub(super) struct DeleteSourceAcceptanceRootStateV3 {
     current_entry: Option<Result<(), RootDeleteClientClosedV1>>,
     current_encoding: Option<Result<[u8;352], Cause>>,
     current_bytes: [u8;352],
-    current_io: crate::policy_compiler::bounded_stream_io::FixedDeadlineStreamIoV1<352>,
+    current_io: aos_sandbox_broker::bounded_stream_io::FixedDeadlineStreamIoV1<352>,
     current_send: Option<Result<(), aos_sandbox_protocol::domain_ledger::create_storage_history::HistoryErrorV1>>,
     current_after: Option<Result<(), RootDeleteClientClosedV1>>,
     demand: Option<Result<ResourceVector, JournalError>>,
@@ -1228,7 +1228,7 @@ impl RootDeleteClientOriginalV1<'_> {
             state.current_bytes = *bytes;
             state.current_send = Some(match self.connection.stream_mut() {
                 Ok(stream) => state.current_io.run_once(stream, &mut state.current_bytes, cutoff,
-                    crate::policy_compiler::bounded_stream_io::DeadlineStreamDirectionV1::Write),
+                    aos_sandbox_broker::bounded_stream_io::DeadlineStreamDirectionV1::Write),
                 Err(cause) => Err(cause),
             });
             if !matches!(state.current_send, Some(Ok(()))) { state.first.get_or_insert(RootAdmissionFirst::CurrentSend); }

@@ -16,12 +16,12 @@ use aos_sandbox_protocol::public_api::{
     PublicOperationMethodV1,
 };
 use aos_sandbox_protocol::public_api::projection::{PublicProjectionKindV1, PublicProjectionResourceV1};
-use crate::controller_service::public_projection::{PublicProjectionStoreV1};
 use crate::{
     IdempotencyKey, IdempotencyOutcome, Journal, OperationCompilationError, OperationPlan,
     PublicMutationEffectV1, PublicOperationAdmissionV1, PublicOperationAuthorizationV1,
 };
 use aos_sandbox_protocol::domain_ledger::effect_history::{EffectPlan};
+use crate::journal::historical_observation::HistoricalObservationV1;
 
 mod successor;
 mod stop_cleanup;
@@ -32,6 +32,9 @@ pub(crate) use execution_no_apply::{ExecutionNoApplyRecoveryTargetDataV1,
     require_execution_no_apply_recovery_target_v1};
 
 pub(crate) use successor::repair_sandbox_successor_projection_v1;
+
+mod receiving;
+pub(crate) use receiving::recovery_target_control_bytes_v1;
 
 /// Lowers only issuer-validated Repair records into the joint admission.
 pub(crate) fn compile_prepared_storage_repair_v1(
@@ -222,7 +225,8 @@ pub(super) fn compile_public_operator_recovery(
         IdempotencyOutcome::Vacant => {}
     }
 
-    let target = resolve_recovery_target(journal, peer.project(), request.resource_id())?;
+    let target = resolve_recovery_target(HistoricalObservationV1::from_journal_v1(journal),
+        peer.project(), request.resource_id())?;
     if !target.current.validates_request(&request) {
         return Err(OperationCompilationError::Rejected);
     }
@@ -401,17 +405,22 @@ struct ResolvedRecoveryTargetV1 {
 }
 
 fn resolve_recovery_target(
-    journal: &Journal,
+    journal: HistoricalObservationV1<'_>,
     project: ProjectId,
     resource_id: [u8; 16],
 ) -> Result<ResolvedRecoveryTargetV1, OperationCompilationError> {
-    let sandbox = PublicProjectionStoreV1::new(journal)
-        .get(PublicProjectionKindV1::Sandbox, resource_id)
-        .map_err(|_| OperationCompilationError::Rejected)?;
+    let sandbox = crate::controller_service::public_projection::get_from_observation_v2(
+        journal,
+        PublicProjectionKindV1::Sandbox,
+        resource_id,
+    )
+    .map_err(|_| OperationCompilationError::Rejected)?;
     let operation_id = OperationId::from_bytes(resource_id);
-    let operation =
-        crate::reconciler::recovered_public_operation_resource_v1(journal, operation_id)
-            .map_err(|_| OperationCompilationError::Rejected)?;
+    let operation = crate::reconciler::recovered_public_operation_resource_from_observation_v2(
+        journal,
+        operation_id,
+    )
+    .map_err(|_| OperationCompilationError::Rejected)?;
 
     match (sandbox, operation) {
         (Some(sandbox), None) => {
@@ -424,8 +433,10 @@ fn resolve_recovery_target(
             let resource = CheckedSandboxResourceV1::try_from(resource.clone())
                 .map_err(|_| OperationCompilationError::Rejected)?;
             let current =
-                crate::controller::prepare_operator_recovery_sandbox_current_v1(journal, &resource)
-                    .map_err(|_| OperationCompilationError::Rejected)?;
+                crate::controller::prepare_operator_recovery_sandbox_current_from_observation_v2(
+                    journal, &resource,
+                )
+                .map_err(|_| OperationCompilationError::Rejected)?;
             Ok(ResolvedRecoveryTargetV1 {
                 resource_kind: ResourceKind::Sandbox,
                 current,
@@ -433,21 +444,23 @@ fn resolve_recovery_target(
             })
         }
         (None, Some(resource)) => {
-            let scope = crate::reconciler::recovered_public_operation_authorization_v1(
-                journal,
-                operation_id,
-            )
-            .map_err(|_| OperationCompilationError::Rejected)?
-            .ok_or(OperationCompilationError::Rejected)?;
+            let scope =
+                crate::reconciler::recovered_public_operation_authorization_from_observation_v2(
+                    journal,
+                    operation_id,
+                )
+                .map_err(|_| OperationCompilationError::Rejected)?
+                .ok_or(OperationCompilationError::Rejected)?;
             if scope.project() != project {
                 return Err(OperationCompilationError::Rejected);
             }
             let resource = CheckedOperationResourceV1::try_from(resource)
                 .map_err(|_| OperationCompilationError::Rejected)?;
-            let current = crate::controller::prepare_operator_recovery_operation_current_v1(
-                journal, &resource,
-            )
-            .map_err(|_| OperationCompilationError::Rejected)?;
+            let current =
+                crate::controller::prepare_operator_recovery_operation_current_from_observation_v2(
+                    journal, &resource,
+                )
+                .map_err(|_| OperationCompilationError::Rejected)?;
             Ok(ResolvedRecoveryTargetV1 {
                 resource_kind: ResourceKind::Operation,
                 current,
@@ -790,28 +803,35 @@ mod tests {
 
 
 pub(crate) fn require_create_recovery_target_v1(
-    journal: &Journal, project: ProjectId, request: &OperatorRecoveryRequestV1,
+    journal: HistoricalObservationV1<'_>,
+    project: ProjectId,
+    request: &OperatorRecoveryRequestV1,
 ) -> Result<OperationId, OperationCompilationError> {
     if request.action() != OperatorRecoveryAction::OPERATOR_RECOVERY_ACTION_RETRY as i32 {
         return Err(OperationCompilationError::Rejected);
     }
     let target = resolve_recovery_target(journal, project, request.resource_id())?;
     if target.resource_kind != ResourceKind::Operation
-        || !target.current.validates_create_finality_fence_v1(request) {
-        return Err(OperationCompilationError::Rejected);
-    }
-    let operation = OperationId::from_bytes(request.resource_id());
-    let row = journal.get(crate::RecordNamespace::Operation, operation.as_bytes())
-        .ok_or(OperationCompilationError::Rejected)?;
-    let record = aos_sandbox_protocol::domain_ledger::operation::decode_operation(row)
-        .map_err(|_| OperationCompilationError::Rejected)?;
-    if record.state() != aos_sandbox_protocol::domain_ledger::public_operation::OperationState::Applying
-        || record.effect_count() != 1 || record.public_operation().is_none_or(|public|
-        public.method() != PublicOperationMethodV1::CreateSandbox)
+        || !target.current.validates_create_finality_fence_v1(request)
     {
         return Err(OperationCompilationError::Rejected);
     }
-    let history = journal.controller_q04_history_v1()
+    let operation = OperationId::from_bytes(request.resource_id());
+    let row = journal
+        .get(crate::RecordNamespace::Operation, operation.as_bytes())
+        .ok_or(OperationCompilationError::Rejected)?;
+    let record = aos_sandbox_protocol::domain_ledger::operation::decode_operation(row)
+        .map_err(|_| OperationCompilationError::Rejected)?;
+    if record.state()
+        != aos_sandbox_protocol::domain_ledger::public_operation::OperationState::Applying
+        || record.effect_count() != 1
+        || record
+            .public_operation()
+            .is_none_or(|public| public.method() != PublicOperationMethodV1::CreateSandbox)
+    {
+        return Err(OperationCompilationError::Rejected);
+    }
+    let history = crate::journal::controller_q04_history_from_observation_v2(journal)
         .map_err(|_| OperationCompilationError::Rejected)?
         .ok_or(OperationCompilationError::Rejected)?;
     if history.identity.operation() != operation {
@@ -819,13 +839,19 @@ pub(crate) fn require_create_recovery_target_v1(
     }
     // This is a distinct metadata-finality entrance. Ordinary Retry's checked
     // action mask remains unchanged and cannot redispatch this Applied effect.
-    let raw = journal.get(crate::RecordNamespace::Effect,
-        &aos_sandbox_protocol::domain_ledger::operation::effect_key(operation, 0))
+    let raw = journal
+        .get(
+            crate::RecordNamespace::Effect,
+            &aos_sandbox_protocol::domain_ledger::operation::effect_key(operation, 0),
+        )
         .ok_or(OperationCompilationError::Rejected)?;
     let effect = aos_sandbox_protocol::domain_ledger::effect_history::decode_effect(raw)
         .map_err(|_| OperationCompilationError::Rejected)?;
-    if !matches!(effect.state(), aos_sandbox_protocol::domain_ledger::effect_history::EffectState::Applied { .. })
-        || effect.plan().public_mutation_method() != Some(PublicOperationMethodV1::CreateSandbox) {
+    if !matches!(
+        effect.state(),
+        aos_sandbox_protocol::domain_ledger::effect_history::EffectState::Applied { .. }
+    ) || effect.plan().public_mutation_method() != Some(PublicOperationMethodV1::CreateSandbox)
+    {
         return Err(OperationCompilationError::Rejected);
     }
     Ok(operation)

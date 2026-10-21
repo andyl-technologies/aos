@@ -84,6 +84,22 @@ pub(super) fn require_q04_ordinary_boundary(
         .map_err(crate::journal::JournalError::from)
 }
 
+#[cfg(target_os = "linux")]
+fn q04_recipe_error(
+    error: aos_sandbox_protocol::domain_ledger::create_q04_history::recipes::Q04RecipeDataErrorV1,
+) -> crate::policy_compiler::create_q04::CreateQ04ErrorV1 {
+    use aos_sandbox_protocol::domain_ledger::create_q04_history::recipes::Q04RecipeDataErrorV1;
+    use crate::policy_compiler::create_q04::CreateQ04ErrorV1;
+
+    match error {
+        Q04RecipeDataErrorV1::ChangedCut => CreateQ04ErrorV1::ChangedCut,
+        Q04RecipeDataErrorV1::Bounds => CreateQ04ErrorV1::Bounds,
+        Q04RecipeDataErrorV1::SequenceExhausted => JournalError::SequenceExhausted.into(),
+        Q04RecipeDataErrorV1::History(cause) => cause.into(),
+        Q04RecipeDataErrorV1::Transaction(cause) => cause.into(),
+    }
+}
+
 // These are inert complete transaction recipes, not a Source writer lease or
 // a Root release proof. The installed coordinator retains the real owner and
 // repeats its gen1/native/named/clock joins before selecting any append.
@@ -138,7 +154,7 @@ impl<'cut> SourceQ04TransactionRecipesV1<'cut> {
         // Acquisition bytes do not depend on a future Root response.
         let bodies = q04_hold_recipe_bodies(
             identity, names, held,
-            crate::policy_compiler::create_q04::lower_release_capacity_shape(identity),
+            aos_sandbox_protocol::domain_ledger::create_q04_history::recipes::lower_release_capacity_shape_data_v1(identity),
         )?;
         source.require_fixed_named_writer_v1()?;
         if source.fixed_physical_names_v1()? != names {
@@ -218,7 +234,7 @@ impl<'cut> SourceQ04TransactionRecipesV1<'cut> {
             self.identity, Q04TransactionOwnerV1::Source, self.names,
             self.original_next.checked_add(8).ok_or(JournalError::SequenceExhausted)?,
             &self.transactions[2],
-        ).map_err(Into::into)
+        ).map_err(q04_recipe_error)
     }
 
     pub(crate) fn require_fixed_journal(&self, journal: &Journal) -> Result<(), JournalError> {
@@ -350,7 +366,7 @@ pub(crate) fn q04_clear_recipe_digest_data(
         identity, Q04TransactionOwnerV1::Source, names,
         original_next.checked_add(8).ok_or(JournalError::SequenceExhausted)?,
         &bodies.transactions[2],
-    ).map_err(Into::into)
+    ).map_err(q04_recipe_error)
 }
 
 #[cfg(target_os = "linux")]

@@ -14,12 +14,15 @@ use aos_sandbox_linux::cgroup::{
     CgroupChildOriginalV2, CgroupRootOriginalV2, CgroupV2Root,
     RetainedCgroupAnchor, RuntimeScopeMembershipOriginalV1,
 };
-use aos_sandbox_linux::pidfd::{NamespaceFd, NamespaceKind, PidFdInfo, PidFdNamespaceOriginalV2};
+use aos_sandbox_linux::pidfd::NamespaceFd;
+use aos_sandbox_linux::pidfd::NamespaceKind;
+use aos_linux_descriptors::pidfd::PidFdInfo;
+use aos_sandbox_linux::pidfd::PidFdNamespaceOriginalV2;
 
 use super::{PinnedLeader, PinnedPayloadLeader};
 use crate::{HostError, Result};
 
-type Native<T> = std::result::Result<T, aos_sandbox_linux::Error>;
+type Native<T> = std::result::Result<T, aos_linux_descriptors::Error>;
 
 pub(super) struct PayloadKernelRecheckOriginalV2 {
     origin: Arc<()>,
@@ -255,7 +258,7 @@ macro_rules! kernel_nested_pid {
 
 macro_rules! kernel_namespace {
     (Local, $original:ident, $payload:ident, $index:expr, $kind:expr) => {
-        $payload.pidfd.namespace($kind).map_err(|error| HostError::Worker(error.to_string()))?
+        aos_sandbox_linux::pidfd::namespace(&($payload.pidfd), $kind).map_err(|error| HostError::Worker(error.to_string()))?
     };
     (Retained, $original:ident, $payload:ident, $index:expr, $kind:expr) => {{
         let namespace = $original.namespaces[$index].as_mut()

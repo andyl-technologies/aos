@@ -14,12 +14,14 @@ use std::path::Path;
 
 use rustix::fs::{FileType, Mode, OFlags, StatVfsMountFlags};
 
-use crate::fuse_worker_objects::{FUSE_WORKER_EXECUTABLE_CONTEXT_V1, require_object_context};
+use crate::fuse_worker_objects::FUSE_WORKER_EXECUTABLE_CONTEXT_V1;
+use aos_linux_descriptors::object_context::require_object_context;
 use crate::path::{BeneathRoot, FileIdentity, ResolveOptions};
 use crate::uapi::{
     self, OpenHow, RESOLVE_BENEATH, RESOLVE_NO_MAGICLINKS, RESOLVE_NO_SYMLINKS, RESOLVE_NO_XDEV,
 };
-use crate::{Error, Result};
+use aos_linux_descriptors::Error;
+use aos_linux_descriptors::Result;
 
 const EROFS_SUPER_MAGIC: i64 = 0xe0f5_e1e2;
 const TEMPLATE: &str = "aos-view-worker@.service";

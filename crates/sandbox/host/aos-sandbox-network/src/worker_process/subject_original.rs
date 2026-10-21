@@ -2,7 +2,8 @@
 
 use super::*;
 use aos_sandbox_linux::cgroup::{CgroupActiveOriginalV2, RuntimeScopeMembershipOriginalV1};
-use aos_sandbox_linux::pidfd::{PidFd, PidFdInfo};
+use aos_linux_descriptors::pidfd::PidFd;
+use aos_linux_descriptors::pidfd::PidFdInfo;
 use aos_sandbox_linux::seqpacket::{PeerCredentials, RecordCredentials};
 
 #[derive(Clone, Copy)]
@@ -147,7 +148,7 @@ enum First {
 pub(crate) struct NetworkWorkerSubjectOriginalV4 {
     membership: RuntimeScopeMembershipOriginalV1,
     current: CgroupActiveOriginalV2,
-    alive: Option<aos_sandbox_linux::Result<bool>>,
+    alive: Option<aos_linux_descriptors::Result<bool>>,
     result: Option<Result<(), NetworkWorkerProcessError>>,
     first: Option<First>,
     closed: Option<NetworkWorkerProcessError>,
@@ -345,7 +346,7 @@ pub(super) fn validate_execution_local_v4(
 }
 
 pub(crate) struct NetworkWorkerExecutionOriginalV4 {
-    alive: [Option<aos_sandbox_linux::Result<bool>>; 2],
+    alive: [Option<aos_linux_descriptors::Result<bool>>; 2],
     returned: Option<Result<(), NetworkWorkerProcessError>>,
     closed: Option<NetworkWorkerProcessError>,
 }

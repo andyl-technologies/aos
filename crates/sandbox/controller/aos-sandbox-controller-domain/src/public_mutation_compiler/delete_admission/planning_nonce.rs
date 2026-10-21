@@ -20,14 +20,14 @@ pub(crate) enum PlanningClockError {
     #[error("the actual Delete authorization/query clock is stale")]
     Stale,
     #[error(transparent)]
-    Kernel(#[from] aos_sandbox_linux::Error),
+    Kernel(#[from] aos_linux_descriptors::Error),
 }
 
 impl KernelPairedClockErrorV1 for PlanningClockError {
     fn stale() -> Self {
         Self::Stale
     }
-    fn kernel(cause: aos_sandbox_linux::Error) -> Self {
+    fn kernel(cause: aos_linux_descriptors::Error) -> Self {
         Self::Kernel(cause)
     }
 }

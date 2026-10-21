@@ -7,8 +7,9 @@
 use std::num::NonZeroU32;
 use std::path::Path;
 use aos_sandbox_linux::cgroup::RetainedCgroupAnchor;
-use aos_sandbox_linux::pidfd::PidFd;
-use aos_sandbox_linux::unix_stream::{RetainedUnixStream, UnixStreamSubjectChunk};
+use aos_linux_descriptors::pidfd::PidFd;
+use aos_linux_descriptors::unix_stream::RetainedUnixStream;
+use aos_sandbox_linux::unix_stream::UnixStreamSubjectChunk;
 use crate::immutable_image::RetainedImmutableFileV1;
 use crate::profile_data::native_observation::retain_cgroup_anchor_data_v1 as retain_fixed_cgroup;
 use crate::profile_data::images::require_unit;

@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use aos_sandbox_linux::cgroup::{CgroupV2Root, RetainedCgroupAnchor};
-use aos_sandbox_linux::pidfd::PidFd;
+use aos_linux_descriptors::pidfd::PidFd;
 use aos_systemd_client::{OwnedValue, SystemdClient, Value};
 use rustix::fs::{Mode, OFlags, open};
 use sha2::{Digest as _, Sha256};

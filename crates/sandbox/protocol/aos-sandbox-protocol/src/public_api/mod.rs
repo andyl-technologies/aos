@@ -107,3 +107,9 @@ pub use watch_resource::{
     CheckedWatchSnapshotResourceV1, InvalidWatchSnapshotResource, PublicWatchSnapshotResourceRefV1,
     WatchSnapshotResourceTypeV1,
 };
+
+/// Defines structural authorization and provenance DATA errors.
+pub mod authorization_error;
+
+/// Prices the canonical Delete decoder with its actual retained header type.
+pub mod delete_geometry;

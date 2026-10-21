@@ -190,20 +190,14 @@ fn accepted_target_receiving_demand_v2(
 ) -> Result<ResourceVector, ResourceReservationErrorV1> {
     let bad = || ResourceReservationErrorV1::Conflict;
     let decoder =
-        crate::controller_service::public_projection::execution_source_receiving_bytes_v1(
-            controller,
-        )
+        aos_sandbox_protocol::public_api::projection::geometry::execution_source_receiving_bytes_v1(controller.historical_read_view_v1().rows_data_v2())
         .ok_or_else(bad)?
         .max(
-            crate::controller_service::public_projection::sandbox_source_receiving_bytes_v1(
-                controller,
-            )
+            aos_sandbox_protocol::public_api::projection::geometry::sandbox_source_receiving_bytes_v1(controller.historical_read_view_v1().rows_data_v2())
             .ok_or_else(bad)?,
         )
         .max(
-            crate::controller_service::public_projection::metadata_source_receiving_bytes_v2(
-                controller,
-            )
+            aos_sandbox_protocol::public_api::projection::geometry::metadata_source_receiving_bytes_v2(controller.historical_read_view_v1().rows_data_v2())
             .ok_or_else(bad)?,
         );
     let rows = controller

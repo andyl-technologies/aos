@@ -161,7 +161,7 @@ mod tests {
         assert!(originals.alive.is_some());
         assert!(originals.originals.path.as_deref().unwrap().ends_with("/attr/current"));
         if result.is_ok() {
-            let mut ordinary = process.prepare_proc_observations_v1();
+            let mut ordinary = crate::pidfd::prepare_proc_observations_v1(&process);
             ordinary.capture_stat(&process).unwrap();
             assert_eq!(originals.bytes().unwrap(), ordinary.capture_context(&process).unwrap());
             assert!(originals.descriptor.file.is_some());

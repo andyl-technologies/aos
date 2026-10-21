@@ -14,7 +14,7 @@ use aos_sandbox_controller_domain::runtime_execution::{
     DormantRuntimeExecutionClaimV1, ProtectedHostNoApplySettlementHistoryV1,
 };
 use aos_sandbox_model::{ObjectDigest, ProtocolVersion};
-use aos_sandbox_linux::boot::KernelBootId;
+use aos_linux_descriptors::boot::KernelBootId;
 use aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodRequestV1;
 use aos_sandbox_protocol::host_consumer_cgroup::decode_consumer_cgroup_request_v1;
 use aos_sandbox_protocol::host_execution_argument::receipt::HostExecutionArgumentHistoricalReceiptV1;

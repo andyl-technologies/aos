@@ -6,7 +6,8 @@
 
 use super::*;
 use aos_sandbox_linux::cgroup::{CgroupPopulationMonitor, CgroupPopulationState};
-use aos_sandbox_linux::pidfd::{PidFd, PidFdNegativeIdentityOriginalV1};
+use aos_linux_descriptors::pidfd::PidFd;
+use aos_sandbox_linux::pidfd::PidFdNegativeIdentityOriginalV1;
 use crate::receiving::receiving_limits::ReceivingContainmentCurrentnessV1;
 
 #[derive(Clone, Copy)]
@@ -17,8 +18,8 @@ enum First {
 
 pub(super) struct SourceSample {
     identity: PidFdNegativeIdentityOriginalV1,
-    preparation: Option<Result<(), aos_sandbox_linux::Error>>,
-    observation: Option<Result<(), aos_sandbox_linux::Error>>,
+    preparation: Option<Result<(), aos_linux_descriptors::Error>>,
+    observation: Option<Result<(), aos_linux_descriptors::Error>>,
     limits: ReceivingContainmentCurrentnessV1,
     aggregate: ReceivingContainmentCurrentnessV1,
     aggregate_result: Option<Result<(), FixedServiceOperationClosedV4>>,
@@ -76,13 +77,13 @@ pub(super) struct TerminalOriginalV2 {
     source_before: SourceSample,
     source_after: SourceSample,
     packet: [u8; 160],
-    leader_before: Option<Result<bool, aos_sandbox_linux::Error>>,
-    population_before: Option<Result<CgroupPopulationState, aos_sandbox_linux::Error>>,
+    leader_before: Option<Result<bool, aos_linux_descriptors::Error>>,
+    population_before: Option<Result<CgroupPopulationState, aos_linux_descriptors::Error>>,
     send: Option<Result<(), RetainedSeqpacketSendErrorV1>>,
     send_after: SeqpacketSendAfterOriginalV1,
     send_after_result: Option<Result<(), RecordBindingError>>,
-    leader_after: Option<Result<bool, aos_sandbox_linux::Error>>,
-    population_after: Option<Result<CgroupPopulationState, aos_sandbox_linux::Error>>,
+    leader_after: Option<Result<bool, aos_linux_descriptors::Error>>,
+    population_after: Option<Result<CgroupPopulationState, aos_linux_descriptors::Error>>,
     first: Option<First>,
 }
 
@@ -203,6 +204,6 @@ pub(super) fn issued_affinity(loan: &FixedServiceOperationLoanV4<'_>, invocation
         && matches!(loan.operation.method, Some(Ok(())))
 }
 
-fn population_is_terminal(result: &Option<Result<CgroupPopulationState, aos_sandbox_linux::Error>>) -> bool {
+fn population_is_terminal(result: &Option<Result<CgroupPopulationState, aos_linux_descriptors::Error>>) -> bool {
     matches!(result, Some(Ok(CgroupPopulationState::Empty | CgroupPopulationState::Retired)))
 }

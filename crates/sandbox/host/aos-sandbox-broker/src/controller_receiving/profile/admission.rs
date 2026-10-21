@@ -17,7 +17,7 @@ use std::path::Path;
 use aos_sandbox_linux::cgroup::RetainedCgroupAnchor;
 use rustix::fs::{open, Mode, OFlags};
 use aos_sandbox_linux::guest_confinement::require_subject;
-use aos_sandbox_linux::pidfd::PidFd;
+use aos_linux_descriptors::pidfd::PidFd;
 use aos_sandbox_linux::selinux_policy::{PolicyReadbackError, VerifiedLiveSelinuxPolicy};
 
 use crate::immutable_image::{
@@ -51,7 +51,7 @@ pub struct ControllerProfileAdmissionFailureV1 {
 #[allow(dead_code)]
 enum OwnedCause {
     Image(images::ImageObservationErrorV1),
-    Linux(aos_sandbox_linux::Error),
+    Linux(aos_linux_descriptors::Error),
     Policy(PolicyReadbackError),
     Allocation(TryReserveError),
     Unwind,

@@ -19,7 +19,7 @@ use std::os::fd::{AsFd as _, BorrowedFd, OwnedFd};
 use std::path::Path;
 use std::time::Duration;
 
-use aos_sandbox_linux::pidfd::PidFd;
+use aos_linux_descriptors::pidfd::PidFd;
 use aos_sandbox_linux::process::{
     ExchangeStep, FixedLiveChild, FixedProcessControlInterest, FixedProcessControlReadiness,
     FixedProcessRequest, FixedProcessSessionError, FixedProcessSessionExchange,
@@ -29,7 +29,7 @@ use aos_sandbox_linux::process::{
 use aos_sandbox_linux::seqpacket::{
     KernelAuthorizedRecordSubject, SeqpacketError, SeqpacketSocket,
 };
-use aos_sandbox_linux::unix_stream::RetainedUnixStream;
+use aos_linux_descriptors::unix_stream::RetainedUnixStream;
 use thiserror::Error;
 
 use crate::inspector_deployment::{InspectorDeploymentErrorV2, ProtectedInspectorDeploymentV2};
@@ -315,7 +315,7 @@ pub enum BrokerPid1QueryErrorV2 {
     Deployment(#[from] InspectorDeploymentErrorV2),
     /// The retained Linux descriptor operation failed.
     #[error(transparent)]
-    Linux(#[from] aos_sandbox_linux::Error),
+    Linux(#[from] aos_linux_descriptors::Error),
     /// The authenticated record transport failed.
     #[error(transparent)]
     Seqpacket(#[from] SeqpacketError),
@@ -804,17 +804,17 @@ impl<'a> Cursor<'a> {
     }
 }
 
-fn descriptor_inode(fd: BorrowedFd<'_>) -> Result<u64, aos_sandbox_linux::Error> {
+fn descriptor_inode(fd: BorrowedFd<'_>) -> Result<u64, aos_linux_descriptors::Error> {
     rustix::fs::fstat(fd)
         .map(|status| status.st_ino)
-        .map_err(|source| aos_sandbox_linux::Error::Syscall {
+        .map_err(|source| aos_linux_descriptors::Error::Syscall {
             operation: "inspect broker query descriptor",
             source: source.into(),
         })
 }
 
-fn duplicate(fd: BorrowedFd<'_>) -> Result<OwnedFd, aos_sandbox_linux::Error> {
-    rustix::io::fcntl_dupfd_cloexec(fd, 0).map_err(|source| aos_sandbox_linux::Error::Syscall {
+fn duplicate(fd: BorrowedFd<'_>) -> Result<OwnedFd, aos_linux_descriptors::Error> {
+    rustix::io::fcntl_dupfd_cloexec(fd, 0).map_err(|source| aos_linux_descriptors::Error::Syscall {
         operation: "duplicate broker query descriptor",
         source: source.into(),
     })
@@ -826,7 +826,7 @@ fn random_nonce() -> Result<[u8; 32], BrokerPid1QueryErrorV2> {
     while filled < nonce.len() {
         let count =
             rustix::rand::getrandom(&mut nonce[filled..], rustix::rand::GetRandomFlags::empty())
-                .map_err(|source| aos_sandbox_linux::Error::Syscall {
+                .map_err(|source| aos_linux_descriptors::Error::Syscall {
                     operation: "generate broker query nonce",
                     source: source.into(),
                 })?;

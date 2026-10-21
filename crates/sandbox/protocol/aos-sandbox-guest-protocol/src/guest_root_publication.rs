@@ -18,10 +18,18 @@ use sha2::{Digest as _, Sha256};
 const MAGIC: &[u8; 8] = b"AOSGRP01";
 const CANONICAL_BYTES: usize = 266;
 const CHECKSUM_OFFSET: usize = CANONICAL_BYTES - 32;
-const CONCRETE_FEATURE_MASK: u16 = 0x003f;
+const CONCRETE_FEATURE_MASK: u16 = 0x00ff;
 
 /// Names the exact concrete guest features implemented by the pinned package.
 pub const CONCRETE_GUEST_FEATURE_MASK_V1: u16 = CONCRETE_FEATURE_MASK;
+
+/// Names the same complete installed Guest profile used for sealed provisioning.
+pub const CONCRETE_GUEST_FEATURES_V1: [crate::AgentFeatureV1; 8] = [
+    crate::AgentFeatureV1::Readiness, crate::AgentFeatureV1::ExecutionHandoff,
+    crate::AgentFeatureV1::ExecutionObservation, crate::AgentFeatureV1::TerminalResize,
+    crate::AgentFeatureV1::ExecutionSignal, crate::AgentFeatureV1::Quiesce,
+    crate::AgentFeatureV1::RuntimeArgumentObservation, crate::AgentFeatureV1::CapturePipeHandoffV2,
+];
 
 /// Carries a physically checked, assignment-bound guest root publication.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -46,7 +54,7 @@ pub struct GuestRootPublicationProofV1 {
     pub package_binding: [u8; 32],
     /// Measured complete populated tree, including the package closure.
     pub root_tree_digest: [u8; 32],
-    /// Closed six-feature mask implemented by this concrete package.
+    /// Closed eight-feature mask implemented by this concrete package.
     pub feature_mask: u16,
 }
 
@@ -185,4 +193,13 @@ mod tests {
             Err(GuestRootPublicationErrorV1::InvalidRecord)
         );
     }
+
+    #[test]
+    fn previous_six_feature_profile_is_not_the_new_package_contract() {
+        let mut proof = example();
+        proof.feature_mask = 0x003f;
+
+        assert_eq!(proof.encode(), Err(GuestRootPublicationErrorV1::InvalidRecord));
+    }
+
 }

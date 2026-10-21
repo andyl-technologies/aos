@@ -9,6 +9,17 @@
 /// Defines the unchanged ordinary Git policy around actual held-path DATA.
 #[macro_export]
 macro_rules! define_provider_git_ordinary_data_recipe_v1 {
+    (@fixed_remote $read:expr, $state:expr, $boundary:expr) => {
+        if matches!(($read).path().to_str(),
+            Some("/var/lib/aos/sandbox-mount/mount.journal")
+                | Some("/var/lib/aos/sandbox-storage/storage-state.journal")
+                | Some("/var/lib/aos/sandbox/policy-compiler/authority.journal")
+                | Some("/var/lib/aos/sandbox/policy-compiler/state.journal"))
+            && $crate::git_coverage_prefix::has_durable_owner_fence_v1($state)
+        {
+            return Err($boundary);
+        }
+    };
     () => {
         fn controller_fenced_read_v1<P>(
             read: aos_sandbox_broker::canonical_journal::coordinator::CanonicalWriterReadViewV1<'_, P>,
@@ -23,16 +34,8 @@ macro_rules! define_provider_git_ordinary_data_recipe_v1 {
             state: &std::collections::BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
             transaction: &JournalTransaction,
         ) -> Result<(), JournalError> {
-            let fixed_remote_owner = matches!(read.path().to_str(),
-                Some("/var/lib/aos/sandbox-mount/mount.journal")
-                    | Some("/var/lib/aos/sandbox-storage/storage-state.journal")
-                    | Some("/var/lib/aos/sandbox/policy-compiler/authority.journal")
-                    | Some("/var/lib/aos/sandbox/policy-compiler/state.journal"));
-            if fixed_remote_owner && has_durable_owner_fence_v1(state) {
-                // These owners have no admitted successor mutation in the first
-                // empty-cohort profile. Readback and original Broker-session
-                // outcome journals are separate and retain their existing engine.
-                return Err(JournalError::ProtectedBoundary);
+            $crate::define_provider_git_ordinary_data_recipe_v1! {
+                @fixed_remote read, state, JournalError::ProtectedBoundary
             }
             if !controller_fenced_read_v1(read, state) {
                 return Ok(());

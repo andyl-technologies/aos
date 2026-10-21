@@ -16,7 +16,7 @@ use aos_sandbox_model::{ObjectDigest, ProjectId};
 use ed25519_dalek::SigningKey;
 use sha2::{Digest as _, Sha256};
 
-use crate::cache_residency::CacheResidencyWriterReadbackV2;
+use aos_sandbox_cache::CacheResidencyWriterReadbackV2;
 use crate::journal::controller::production_journal_limits;
 use crate::journal::{Journal, ProtectedJournalAuthority, RecordNamespace};
 use crate::policy_compiler::controller_effect_ack_readback::{

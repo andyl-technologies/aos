@@ -27,13 +27,17 @@ impl PidFdNamespaceOriginalV2 {
     /// Retains the exact ioctl or validation error and every returned native
     /// descriptor. Reentry cannot resample or replace an earlier original.
     pub fn capture_once(&mut self, process: &PidFd, kind: NamespaceKind) -> Result<()> {
+        self.capture_descriptor_once(process.as_fd(), kind)
+    }
+
+    fn capture_descriptor_once(&mut self, descriptor: BorrowedFd<'_>, kind: NamespaceKind) -> Result<()> {
         if self.entered {
             self.closed.get_or_insert_with(closed);
             return Err(closed());
         }
         self.entered = true;
         self.returned = Some((|| {
-            process.acquire_namespace_retaining_v2(kind, &mut self.raw)?;
+            uapi::pidfd_namespace_retaining_v2(descriptor, namespace_request_v2(kind), &mut self.raw)?;
             let identity = NamespaceFd::validate_original_kind(
                 self.raw.as_ref().ok_or_else(closed)?.as_fd(), kind,
             )?;
@@ -77,14 +81,14 @@ mod tests {
         // A regular descriptor reaches the real ioctl's ENOTTY before any
         // namespace can be created. Private construction tests only the same
         // mechanical error path, never a process or namespace authority.
-        let process = PidFd { fd: std::fs::File::open("/dev/null").unwrap().into() };
+        let process = std::fs::File::open("/dev/null").unwrap();
         let mut original = PidFdNamespaceOriginalV2::new();
-        assert!(original.capture_once(&process, NamespaceKind::Mount).is_err());
+        assert!(original.capture_descriptor_once(process.as_fd(), NamespaceKind::Mount).is_err());
         let first = original.failure().unwrap() as *const Error;
         assert!(original.raw.is_none());
         assert!(original.validated.is_none());
 
-        assert!(original.capture_once(&process, NamespaceKind::User).is_err());
+        assert!(original.capture_descriptor_once(process.as_fd(), NamespaceKind::User).is_err());
         assert_eq!(original.failure().unwrap() as *const Error, first);
         assert!(original.take_completed_once().is_none());
         assert!(uapi::fstat(process.as_fd()).is_ok());

@@ -110,22 +110,13 @@ impl Journal {
                 NativePostV1::Controller(writer.begin_independent_native_post_once().map_err(JournalError::ControllerNative)?)
             }
             JournalNativeBackingV1::Root(writer) => {
-                use aos_sandbox_model::{ResourceDimension as D, ResourceVector};
-                let upper = u64::try_from(bytes).map_err(|_| JournalError::LimitExceeded("Root append interval"))?;
-                let demand = writer.append_receiving_demand_v1(transaction).map_err(JournalError::RootNative)?
-                    .checked_add(writer.native_post_demand_v1().map_err(JournalError::RootNative)?)
-                    .and_then(|demand| demand.checked_add(ResourceVector::ZERO.with(D::MemoryBytes, upper)))
-                    .map_err(|_| JournalError::LimitExceeded("Root native append representation"))?;
-                if let Some(original) = borrowed_root {
-                    original.debit_v1(writer, demand).map_err(|_| match original.diagnostic_original_v1() {
-                        Some(cause) => JournalError::RootFinancial(cause),
-                        None => JournalError::ProtectedBoundary,
-                    })?;
-                } else {
-                    let financial = self.root_journal_financial.as_ref().ok_or(JournalError::ProtectedBoundary)?;
-                    financial.debit_v1(writer, demand).map_err(|_| JournalError::RootFinancial(financial.clone()))?;
-                }
-                NativePostV1::Root(writer.arm_native_post_once_v1().map_err(JournalError::RootNative)?)
+                NativePostV1::Root(writer.prepay_native_append_post_once_v1(
+                    transaction, bytes, self.root_journal_financial.as_ref(), borrowed_root,
+                ).map_err(|cause| match cause {
+                    aos_sandbox_broker::receiving::RootAppendPostAdmissionErrorV1::Mechanical(cause) => JournalError::from(cause),
+                    aos_sandbox_broker::receiving::RootAppendPostAdmissionErrorV1::Native(cause) => JournalError::RootNative(cause),
+                    aos_sandbox_broker::receiving::RootAppendPostAdmissionErrorV1::Financial(cause) => JournalError::RootFinancial(cause),
+                })?)
             }
             JournalNativeBackingV1::Source(writer) => {
                 writer.prepay_append_interval_once(transaction, bytes).map_err(JournalError::SourceNative)?;

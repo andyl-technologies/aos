@@ -67,7 +67,7 @@ pub enum NixApprovedJobInspectionErrorV3 {
     Io(#[from] io::Error),
     /// An actual descriptor or mount observation failed.
     #[error("offline inspection kernel observation failed")]
-    Linux(#[from] aos_sandbox_linux::Error),
+    Linux(#[from] aos_linux_descriptors::Error),
     /// The sole positioned reader failed or observed unexpected trailing bytes.
     #[error("offline inspection exact read failed ({0:?})")]
     Read(aos_sandbox_linux::protected_file::ExactReadError),

@@ -4,7 +4,7 @@
 //! table recipe. Neither variant can be constructed from a descriptor, profile,
 //! record, digest, resource vector or caller assertion of currentness.
 
-use aos_sandbox_linux::pidfd::PidFd;
+use aos_linux_descriptors::pidfd::PidFd;
 use sha2::{Digest as _, Sha256};
 
 use crate::immutable_image::RetainedImmutableFileV1;

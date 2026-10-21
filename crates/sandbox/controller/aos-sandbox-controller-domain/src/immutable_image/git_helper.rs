@@ -9,7 +9,9 @@ use std::fmt;
 use std::os::fd::{AsFd as _, OwnedFd};
 use std::path::Path;
 
-use aos_sandbox_linux::immutable_file::{FsVerityBacking, FsVerityDigest, ImmutableFileError};
+use aos_sandbox_linux::immutable_file::FsVerityBacking;
+use aos_sandbox_linux::immutable_file::FsVerityDigest;
+use aos_linux_descriptors::ImmutableFileError;
 use aos_sandbox_linux::startup_fd_table::{
     StartupExecutableObservationV1, observe_provisioned_startup_executable,
 };
@@ -188,7 +190,7 @@ pub(crate) enum GitHelperImageErrorV1 {
     #[error("Git helper content custody failed")]
     Content(#[source] ImmutableImageErrorV1),
     #[error("Git helper kernel observation failed")]
-    Kernel(#[source] aos_sandbox_linux::Error),
+    Kernel(#[source] aos_linux_descriptors::Error),
     #[error("Git helper backing custody failed")]
     Backing(#[source] ImmutableFileError),
     #[error("Git helper descriptor duplication failed")]

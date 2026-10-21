@@ -947,11 +947,11 @@ fn current_publication_boottime(
     request: &AuthenticatedBrokerMethodRequestV1,
     context: &ProtectedBrokerSessionVerificationContextV1,
 ) -> Result<u64, BrokerSessionSecurityError> {
-    let boot_before = aos_sandbox_linux::boot::KernelBootId::current()
+    let boot_before = aos_linux_descriptors::boot::KernelBootId::current()
         .map_err(|_| BrokerSessionSecurityError::Currentness)?
         .into_bytes();
     let boottime = rustix::time::clock_gettime(rustix::time::ClockId::Boottime);
-    let boot_after = aos_sandbox_linux::boot::KernelBootId::current()
+    let boot_after = aos_linux_descriptors::boot::KernelBootId::current()
         .map_err(|_| BrokerSessionSecurityError::Currentness)?
         .into_bytes();
     let seconds =

@@ -12,12 +12,12 @@ pub(crate) enum CaptureWorkerClockErrorV3 {
     #[error("original Capture worker clock or execution horizon changed")]
     Stale,
     #[error(transparent)]
-    Native(aos_sandbox_linux::Error),
+    Native(aos_linux_descriptors::Error),
 }
 
 impl KernelPairedClockErrorV1 for CaptureWorkerClockErrorV3 {
     fn stale() -> Self { Self::Stale }
-    fn kernel(cause: aos_sandbox_linux::Error) -> Self { Self::Native(cause) }
+    fn kernel(cause: aos_linux_descriptors::Error) -> Self { Self::Native(cause) }
 }
 
 type Clock = RetainedKernelPairedClockAttemptV1<CaptureWorkerClockErrorV3>;

@@ -58,7 +58,7 @@ impl ControllerSharedStartupProfileV1 {
 /// currentness observation or supply an admission, payer or process role.
 #[doc(hidden)]
 pub struct ControllerFloorServiceAnchorBorrowV1<'profile> {
-    process: &'profile aos_sandbox_linux::pidfd::PidFd,
+    process: &'profile aos_linux_descriptors::pidfd::PidFd,
     cgroup: &'profile aos_sandbox_linux::cgroup::RetainedCgroupAnchor,
     fragment: &'profile aos_sandbox_broker::immutable_image::RetainedImmutableFileV1,
     manager: &'profile aos_sandbox_broker::immutable_image::RetainedImmutableFileV1,
@@ -67,7 +67,7 @@ pub struct ControllerFloorServiceAnchorBorrowV1<'profile> {
 
 impl<'profile> ControllerFloorServiceAnchorBorrowV1<'profile> {
     /// Borrows the original Controller process pin.
-    pub fn process(&self) -> &'profile aos_sandbox_linux::pidfd::PidFd { self.process }
+    pub fn process(&self) -> &'profile aos_linux_descriptors::pidfd::PidFd { self.process }
 
     /// Borrows the original Controller cgroup pin.
     pub fn cgroup(&self) -> &'profile aos_sandbox_linux::cgroup::RetainedCgroupAnchor { self.cgroup }

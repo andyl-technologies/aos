@@ -23,7 +23,7 @@ use aos_sandbox_broker_session_security::controller_composition::{
     HistoricalAtomicStorageHistoryDataV1, sample_ownership_clock,
 };
 use aos_sandbox_model::{NodeId, ObjectDigest};
-use aos_sandbox_linux::Error as LinuxError;
+use aos_linux_descriptors::Error as LinuxError;
 use aos_sandbox_linux::seqpacket::SeqpacketError;
 
 use super::attach_credentials::ControllerAttachCredentialsV1;

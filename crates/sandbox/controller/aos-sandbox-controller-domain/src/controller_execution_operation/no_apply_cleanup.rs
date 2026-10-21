@@ -35,7 +35,7 @@ struct Native {
     entropy: [RetainedKernelNonceOriginalV1; 2],
     observed: [Option<Result<[u8; 16], EntropyError>>; 2],
     nonce: Option<Result<[u8; 32], ResourceReservationErrorV1>>,
-    decoded: Option<Result<crate::reconciler::ClosedCreateFailurePlanDataV2, ReconcilerError>>,
+    decoded: Option<Result<aos_sandbox_protocol::domain_ledger::create_failure::ClosedCreateFailurePlanDataV2, ReconcilerError>>,
 }
 
 impl ControllerExecutionCleanupOriginalV2 {
@@ -70,7 +70,7 @@ impl ControllerExecutionCleanupOriginalV2 {
             })
             .and_then(|n| u64::try_from(n).ok())
             .ok_or(ResourceReservationErrorV1::Conflict)?;
-        crate::reconciler::ClosedCreateFailurePlanDataV2::receiving_demand_data_v2(controller)?
+        crate::reconciler::closed_create_failure_receiving_demand_from_observation_v2(crate::journal::historical_observation::HistoricalObservationV1::from_journal_v1(controller))?
             .checked_add(
                 ControllerExecutionClockOriginalV1::fixed_demand_v1()
                     .ok_or(ResourceReservationErrorV1::Conflict)?,
@@ -521,7 +521,7 @@ impl<'scope, 'owner> ControllerExecutionCleanupSourceLoanV2<'scope, 'owner> {
                     .map(|prepare| prepare.wall_seconds)
                     .map_err(|_| ReconcilerError::InvalidExecutorOutput("cleanup stored prepare is malformed")))
                 .transpose()?.unwrap_or(first.wall_seconds());
-            crate::reconciler::plan_closed_create_failure_rows_data_v2(controller, marker,
+            crate::reconciler::plan_closed_create_failure_rows_from_observation_v2(crate::journal::historical_observation::HistoricalObservationV1::from_journal_v1(controller), marker,
                 historical_terminal.archive_head(), historical_terminal.signed_terminal_outcome(), wall)
         })());
         let native = self.cleanup.require_native()?;
@@ -551,7 +551,7 @@ impl<'scope, 'owner> ControllerExecutionCleanupSourceLoanV2<'scope, 'owner> {
 
     pub(crate) fn plan_data_v2(
         &self,
-    ) -> Result<&crate::reconciler::ClosedCreateFailurePlanDataV2, ResourceReservationErrorV1> {
+    ) -> Result<&aos_sandbox_protocol::domain_ledger::create_failure::ClosedCreateFailurePlanDataV2, ResourceReservationErrorV1> {
         self.cleanup
             .require_native()?
             .decoded

@@ -49,8 +49,7 @@ impl RootDeleteControllerCurrentOriginalV1 {
         if !self.complete || self.first.is_some() || self.failure().is_some() {
             return Err(RootDeleteErrorV1::Original);
         }
-        self.completed_reader.as_ref().ok_or(RootDeleteErrorV1::Original)?
-            .readback_v2().map(|view| view.state).map_err(|_| RootDeleteErrorV1::Original)
+        self.readback_v2().map(|view| view.state).map_err(|_| RootDeleteErrorV1::Original)
     }
 
     /// Moves the same positive census beside a short actual completed-C borrow.
@@ -67,8 +66,8 @@ impl RootDeleteControllerCurrentOriginalV1 {
         {
             return Err(RootDeleteErrorV1::Original);
         }
-        let state = self.completed_reader.as_ref().ok_or(RootDeleteErrorV1::Original)?
-            .readback_v2().map_err(|_| RootDeleteErrorV1::Original)?.state;
+        let reader = self.reader.as_ref().ok_or(RootDeleteErrorV1::Original)?;
+        let state = reader.completed_readback_v2().map_err(|_| RootDeleteErrorV1::Original)?.state;
         match self.capabilities.census.take() {
             Some(Ok(census)) => Ok((state, census.records)),
             _ => Err(RootDeleteErrorV1::Original),
@@ -76,8 +75,7 @@ impl RootDeleteControllerCurrentOriginalV1 {
     }
 
     pub(super) fn capability_census_demand_v2(&self) -> Result<ResourceVector, JournalError> {
-        let state = self.completed_reader.as_ref().ok_or(JournalError::ProtectedBoundary)?
-            .readback_v2()?.state;
+        let state = self.readback_v2()?.state;
         let bytes = publisher_capability_census_receiving_bytes_v2(
             PublisherReadDataV2::from_state_v2(state))
             .and_then(|bytes| u64::try_from(bytes).ok()).ok_or(JournalError::JournalTooLarge)?;
@@ -95,9 +93,9 @@ impl RootDeleteControllerCurrentOriginalV1 {
     pub(super) fn capture_capability_census_v2(&self)
         -> Result<PublisherCapabilityCensusDataV2, PublisherAuthorityError>
     {
-        let reader = self.completed_reader.as_ref().ok_or(JournalError::ProtectedBoundary)?;
-        let state = reader.readback_v2()?.state;
+        let reader = self.reader.as_ref().ok_or(JournalError::ProtectedBoundary)?;
+        let state = reader.completed_readback_v2().map_err(project_read)?.state;
         publisher_capability_census_from_rows_v2(PublisherReadDataV2::from_state_v2(state),
-            reader.historical_rows_data_v2()?, PublisherAuthorityLimits::default())
+            reader.completed_historical_rows_data_v2().map_err(project_read)?, PublisherAuthorityLimits::default())
     }
 }

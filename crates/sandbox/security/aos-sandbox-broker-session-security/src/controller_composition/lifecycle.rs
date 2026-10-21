@@ -21,7 +21,7 @@ use aos_sandbox_controller_domain::lifecycle::{
     LifecycleEffectObservationV1, LifecyclePhase6ErrorV1,
 };
 use aos_sandbox_model::ObjectDigest;
-use aos_sandbox_linux::boot::KernelBootId;
+use aos_linux_descriptors::boot::KernelBootId;
 use aos_sandbox_protocol::authenticated_session::all_methods::{
     AuthenticatedBrokerMethodOutcomeV1, AuthenticatedBrokerMethodResultV1,
 };

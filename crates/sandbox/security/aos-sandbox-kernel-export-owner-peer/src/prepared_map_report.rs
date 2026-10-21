@@ -11,7 +11,7 @@
 //! report carrier can bind a packet to a protected sender process, but is not
 //! deployed. Neither component provides a held currentness barrier.
 
-use aos_sandbox_linux::boot::KernelBootId;
+use aos_linux_descriptors::boot::KernelBootId;
 use aos_sandbox_linux::seqpacket::bounded::boottime;
 use sha2::{Digest as _, Sha256};
 

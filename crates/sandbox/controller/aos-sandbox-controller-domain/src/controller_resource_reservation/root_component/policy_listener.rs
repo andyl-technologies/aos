@@ -5,25 +5,11 @@
 
 use aos_sandbox_model::ResourceVector;
 
-use crate::normal_root::{NormalRootStartupErrorV1, ProductionNormalRootStartupV1,
-    RootPolicyListenerReceivingV1};
+use crate::normal_root::{
+    NormalRootStartupErrorV1, ProductionNormalRootStartupV1, RootPolicyListenerReceivingV1,
+};
 
-use super::{RootReceivingOriginalV1, root_journal::RootJournalDemandErrorV1};
-use super::super::ResourceReservationErrorV1;
-
-#[derive(Default)]
-pub(super) struct RootPolicyListenerProvisionV1 {
-    permit: Option<Result<ResourceVector, RootJournalDemandErrorV1>>,
-    before: Option<Result<(), NormalRootStartupErrorV1>>,
-}
-
-impl RootPolicyListenerProvisionV1 {
-    pub(super) fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        if let Some(Err(cause)) = &self.permit { return Some(cause); }
-        if let Some(Err(cause)) = &self.before { return Some(cause); }
-        None
-    }
-}
+use super::RootReceivingOriginalV1;
 
 impl RootReceivingOriginalV1 {
     // Only the actual parked pre-body escrow calls this finite supplier. Its
@@ -82,43 +68,10 @@ impl RootReceivingOriginalV1 {
         Ok(())
     }
 
-    pub(crate) fn prepay_policy_listener_once(
-        &mut self,
-        startup: &ProductionNormalRootStartupV1,
-    ) -> Result<(), NormalRootStartupErrorV1> {
-        if self.policy_listener_provision.is_some() || self.failure().is_some() {
-            self.activation.latch_root_refusal_v1();
-            return Err(NormalRootStartupErrorV1::Service);
-        }
-        self.policy_listener_provision = Some(RootPolicyListenerProvisionV1::default());
-        let permit = (|| {
-            let error = || ResourceReservationErrorV1::EnrollmentUnavailable;
-            let base = self.completed_startup_credential_demand().ok_or_else(error)?;
-            let demand = base.checked_add(RootPolicyListenerReceivingV1::fixed_demand())
-                .map_err(|_| error())?;
-            self.require_receiving_demand_v1(demand).map_err(|_| error())?;
-            Ok(demand)
-        })();
-        self.native_refusal_original_v1().park_empty_result_v1(
-            &mut self.policy_listener_provision.as_mut().ok_or(NormalRootStartupErrorV1::Service)?.permit, permit,
-        );
-        if !self.policy_listener_provision.as_ref().is_some_and(|stage| matches!(stage.permit, Some(Ok(_)))) {
-            self.activation.latch_root_refusal_v1();
-            return Err(NormalRootStartupErrorV1::Service);
-        }
-        let before = self.recheck_service(startup);
-        self.native_refusal_original_v1().park_empty_result_v1(
-            &mut self.policy_listener_provision.as_mut().ok_or(NormalRootStartupErrorV1::Service)?.before, before,
-        );
-        if self.policy_listener_prefix().is_some() { Ok(()) } else {
-            self.activation.latch_root_refusal_v1();
-            Err(NormalRootStartupErrorV1::Service)
-        }
-    }
-
     pub(super) fn policy_listener_prefix(&self) -> Option<ResourceVector> {
-        let stage = self.policy_listener_provision.as_ref()?;
-        if !matches!(stage.before, Some(Ok(()))) { return None; }
-        stage.permit.as_ref()?.as_ref().ok().copied()
+        self.native_completed_listener
+            .as_ref()?
+            .completed_prefix_data_v1(&self.activation)
+            .ok()
     }
 }

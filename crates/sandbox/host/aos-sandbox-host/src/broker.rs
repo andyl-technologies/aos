@@ -80,8 +80,8 @@ use aos_sandbox_model::{
     BrokerAdmissionIntersection, BrokerAssignment, ObjectDigest, ProtocolVersion,
     RawClockProvenance, RawPairedClockSample, VerifiedOwnershipLease,
 };
-use aos_sandbox_linux::immutable_file::SealedReadOnlyCredential;
-use aos_sandbox_linux::pidfd::PidFd;
+use aos_linux_descriptors::credential::SealedReadOnlyCredential;
+use aos_linux_descriptors::pidfd::PidFd;
 use aos_sandbox_protocol::authenticated_session::all_methods::{
     AuthenticatedBrokerMethodRequestV1, AuthenticatedBrokerRequestDirectionV1,
 };

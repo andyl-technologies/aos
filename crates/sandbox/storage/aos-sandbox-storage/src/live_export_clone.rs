@@ -25,7 +25,7 @@ use aos_sandbox_controller_domain::{
     Journal, JournalError, JournalLimits, JournalRecord, JournalTransaction, RecordNamespace,
 };
 use aos_sandbox_model::ObjectDigest;
-use aos_sandbox_linux::boot::KernelBootId;
+use aos_linux_descriptors::boot::KernelBootId;
 use aos_sandbox_linux::inventory::MountId;
 use rustix::fs::{FileType, OFlags, StatVfsMountFlags};
 use sha2::{Digest as _, Sha256};

@@ -13,7 +13,8 @@ use std::os::fd::{AsRawFd as _, BorrowedFd, OwnedFd, RawFd};
 use std::os::unix::ffi::OsStrExt as _;
 use std::path::{Component, Path};
 
-use crate::{Error, Result};
+use aos_linux_descriptors::Error;
+use aos_linux_descriptors::Result;
 
 const FIRST_NONSTANDARD_FD: RawFd = 3;
 const MAXIMUM_FIXED_ROLE_FD: RawFd = 1_024;

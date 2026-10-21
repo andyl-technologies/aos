@@ -17,7 +17,7 @@ use aos_sandbox_protocol::domain_ledger::create_storage_history::cache_held::{
     CacheJournalDataV1, CachePhysicalDataV1,
 };
 
-type Rows = Vec<crate::lifecycle::LifecycleBootDomainEntryV1>;
+type Rows = Vec<aos_sandbox_protocol::domain_ledger::lifecycle_model::LifecycleBootDomainEntryDataV1>;
 
 #[derive(Debug, thiserror::Error)]
 pub(super) enum RowsError {
@@ -28,7 +28,7 @@ pub(super) enum RowsError {
     #[error(transparent)]
     Journal(#[from] JournalError),
     #[error(transparent)]
-    Cache(#[from] crate::cache_residency::CacheResidencyProtectedJournalErrorV1),
+    Cache(#[from] aos_sandbox_cache::CacheResidencyProtectedJournalErrorV1),
 }
 
 #[derive(Clone, Copy)]
@@ -221,7 +221,7 @@ impl RootDeleteCacheCurrentOriginalV2 {
         }
         if self.first.is_none() {
             self.rows_demand = Some(self.views.cache_inventory_v1().and_then(|models| {
-                crate::cache_residency::actionable_rows_receiving_demand_v2(
+                aos_sandbox_cache::actionable_rows_receiving_demand_v2(
                     models.historical_inventories_data_v2(),
                 )
                 .ok_or(JournalError::JournalTooLarge)
@@ -241,7 +241,7 @@ impl RootDeleteCacheCurrentOriginalV2 {
                 } else {
                     self.rows = Some((|| {
                         let models = self.views.cache_inventory_v1()?;
-                        Ok(crate::cache_residency::actionable_rows_data_v2(
+                        Ok(aos_sandbox_cache::actionable_rows_data_v2(
                             models.historical_inventories_data_v2(),
                         )?)
                     })());

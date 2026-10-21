@@ -4,7 +4,7 @@
 //! validates the sample against its own admitted effect and session custody.
 
 use aos_sandbox_model::{OwnershipClockObservationError, RawClockProvenance, RawPairedClockSample};
-use aos_sandbox_linux::boot::KernelBootId;
+use aos_linux_descriptors::boot::KernelBootId;
 
 /// Names the unchanged raw ownership-clock observation provenance.
 pub const CLOCK_PROVENANCE: [u8; 16] = *b"AOSOWNCTRLCLKV1!";

@@ -1,5 +1,8 @@
 //! Canonical codecs for resolved policy and advisory optimization objects.
 
+mod receiving;
+pub use receiving::decoding_receiving_bytes_v1 as policy_decoding_receiving_bytes_v1;
+
 use crate::model::{
     ExplanationReason, ExplanationReasonCode, Optimization, OptimizationKind, OptimizationProfile,
     Policy, PolicyViewAction, RevocationMode, RevocationPolicy,

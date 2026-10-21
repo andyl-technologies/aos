@@ -199,7 +199,7 @@ fn observe_site_v1(
     };
     if slot.binding.is_some() { progress.close(); return; }
     if let Some((inputs, cache, expected, expected_controller)) = original {
-        let _ = slot.control.observe_operation_once(inputs, cache, expected, expected_controller);
+        let _ = slot.control.observe_operation_once(inputs, &cache.currentness_original_v1(), expected, expected_controller);
     }
     slot.session.capture_controller_storage_client_once(journal, controller);
     slot.binding = Some((|| {

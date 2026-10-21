@@ -47,3 +47,9 @@ impl From<ControllerSourceGenesisAcceptanceDataErrorV1> for PublisherProjectGene
         }
     }
 }
+
+impl From<aos_sandbox_protocol::publisher_policy::PublisherPolicySchemaErrorV1> for PublisherProjectGenesisErrorV1 {
+    fn from(error: aos_sandbox_protocol::publisher_policy::PublisherPolicySchemaErrorV1) -> Self {
+        Self::Publisher(error.into())
+    }
+}

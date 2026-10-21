@@ -9,7 +9,8 @@ use super::descriptor_subject::{
 };
 use super::receive_custody::SubjectProfileV1;
 use super::{RetainedSeqpacketReceiveErrorV1, uapi};
-use crate::{Error, Result};
+use aos_linux_descriptors::Error;
+use aos_linux_descriptors::Result;
 use std::os::fd::BorrowedFd;
 
 /// Names one existing Network READY or result record and its exact rights table.

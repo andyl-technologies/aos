@@ -77,10 +77,11 @@ pub(crate) fn initial_profile_native_layout_v1() -> bank::NativeLayoutDemand {
 }
 
 mod create_intake;
-pub(crate) use create_intake::ready::{CreateStorageOriginalLoanV1, CacheTerminalReceivingLoanV1, CacheReleaseReceivingLoanV1, CacheCurrentAuditReceivingLoanV1,
+pub(crate) use create_intake::ready::{CreateStorageOriginalLoanV1, CacheTerminalReceivingLoanV1, CacheReleaseReceivingLoanV1,
     CreateStorageUseBankOriginalsV1, CreateStorageUseBankAppendV1, CreateStorageUseHistoryReceivingLoanV1};
 #[doc(hidden)]
-pub use crate::cache_residency::{CreateStorageCacheCurrentExtentsDataV1, create_storage_cache_current_dynamic_receiving_demand_v1};
+pub use aos_sandbox_cache::CreateStorageCacheCurrentExtentsDataV1;
+pub use create_intake::ready::create_storage_cache_current_dynamic_receiving_demand_v1;
 #[doc(hidden)]
 pub use create_intake::ready::create_storage_cache_current_fixed_receiving_demand_v1;
 #[doc(hidden)]
@@ -164,12 +165,11 @@ pub(crate) fn create_storage_use_history_pair_receiving_demand_v1(
     create_intake::history::use_history_pair_receiving_demand_v1(record_bytes, semantic)
 }
 
-pub(crate) fn create_storage_use_profile_rows_receiving_demand_v1(
-    rows: usize,
-) -> Result<ResourceVector, ResourceReservationErrorV1> {
-    let row = crate::normal_root::ProductionControllerNormalRootProfileV1::
-        create_intake_observer_demand()?;
-    service_interval::multiply(row, rows)
+aos_sandbox_policy::define_storage_create_use_profile_rows_v1! {
+    pub(crate) fn create_storage_use_profile_rows_receiving_demand_v1,
+    error = ResourceReservationErrorV1,
+    row_error = |error| ResourceReservationErrorV1::BootstrapProfile(error.into()),
+    multiply_error = |_| ResourceReservationErrorV1::Conflict,
 }
 
 // The bootstrap interval is paid by the same original enrollment, not the
@@ -186,6 +186,9 @@ pub(crate) fn require_controller_interval(
 /// Reports missing enrollment, invalid native custody, or exhausted capacity.
 #[derive(Debug, thiserror::Error)]
 pub enum ResourceReservationErrorV1 {
+    /// Retains the actual Cache-native forecast cause across the owner boundary.
+    #[error(transparent)]
+    NativeCache(#[from] aos_sandbox_cache::CacheHeldErrorV1),
     /// Retains the actual lower Root financial error on its original allocation.
     #[error(transparent)]
     RootReceiving(aos_sandbox_broker::receiving::RootJournalFinancialOriginalV1),
@@ -206,7 +209,7 @@ pub enum ResourceReservationErrorV1 {
     BootstrapProfile(#[from] crate::normal_root::NormalRootStartupErrorV1),
     /// The existing bounded kernel-boot observation failed.
     #[error(transparent)]
-    BootstrapKernel(#[from] aos_sandbox_linux::Error),
+    BootstrapKernel(#[from] aos_linux_descriptors::Error),
     /// The image-owned enrollment producer is absent or no longer held.
     #[error("shared resource enrollment is unavailable")]
     EnrollmentUnavailable,

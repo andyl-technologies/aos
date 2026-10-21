@@ -45,3 +45,28 @@ pub fn prepare_history_pair_v1(
         JournalRecord::put(RecordNamespace::CreateStorageHistory, latest.encode().to_vec(), head.to_vec()),
     ]).map_err(Into::into)
 }
+
+
+
+/// Expands the original fixed readonly pair precheck before comparison allocation.
+///
+/// The caller supplies its concrete error expression and the same final pair
+/// constructor expression. Both are lexical source, with no callback, adapter,
+/// success receipt or native authority. Native callers still pay their actual
+/// transaction and error interfaces at their genuine earlier receiving stage.
+#[macro_export]
+macro_rules! prepare_readonly_history_pair_recipe_v1 {
+    (
+        key = $key:ident, phase = $phase:ident, record = $record:ident,
+        invalid = $invalid:expr, prepared = $prepared:expr
+    ) => {{
+        let envelope = $crate::domain_ledger::create_storage_history::RecordEnvelopeV1::decode($record, $key, $phase)
+            .map_err(|_| $invalid)?;
+        if $crate::domain_ledger::create_storage_history::native_suffix::history_pair_transaction_id_v1($key.owner(), envelope.checksum()) == [0; 16] {
+            return Err($invalid);
+        }
+        // The same immutable recipe always supplies exactly two records. The shared
+        // transaction constructor therefore cannot discard an allocated negative.
+        $prepared
+    }};
+}

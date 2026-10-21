@@ -44,3 +44,6 @@ pub mod recovery;
 pub mod replay;
 pub mod storage;
 pub mod transaction;
+
+/// Reuses completed native recovery-coordinate DATA without opening a journal.
+pub use recovery::RecoveryReport;

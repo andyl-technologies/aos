@@ -14,10 +14,10 @@ use aos_sandbox_model::{
     Operation, ProtocolId, PublisherAdmissionRequestV1, PublisherInstanceId, RegistryError,
     ResourceKind, Selector, negotiate_protocol,
 };
-use aos_sandbox_linux::pidfd::PidFd;
-use aos_sandbox_linux::{
-    boot::KernelBootId, cgroup::RetainedCgroupAnchor, seqpacket::RecordSubjectListener,
-};
+use aos_linux_descriptors::pidfd::PidFd;
+use aos_linux_descriptors::boot::KernelBootId;
+use aos_sandbox_linux::cgroup::RetainedCgroupAnchor;
+use aos_sandbox_linux::seqpacket::RecordSubjectListener;
 
 use crate::publisher_admin::audit::{
     PublisherExecutionDraftV1, PublisherExecutionRegistrationV1, PublisherIngressError,
@@ -79,7 +79,7 @@ pub enum PublisherControlError {
     Clock,
     /// The kernel boot or execution observation failed.
     #[error(transparent)]
-    Kernel(#[from] aos_sandbox_linux::Error),
+    Kernel(#[from] aos_linux_descriptors::Error),
     /// The accepted process, record subject, or volatile session failed validation.
     #[error(transparent)]
     Session(#[from] PublisherSessionError),

@@ -10,17 +10,16 @@ use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::ffi::OsStrExt as _;
 use std::path::Path;
 
-use crate::{Error, Result};
+use aos_linux_descriptors::Error;
+use aos_linux_descriptors::Result;
+use aos_linux_descriptors::native::{pidfd_open, pidfd_open_current_original, pidfd_open_original, pidfd_open_raw_result, pidfd_send_thread_group_signal, pidfd_getfd, pidfd_info, ensure_cloexec, validate_connected_unix_stream, require_connected_unix_stream_peer, require_connected_unix_peer_with_labels, socket_cookie, socket_integer_option, peer_credentials, set_socket_bool, set_socket_integer, require_seqpacket_identity, enable_seqpacket_identity, enable_stream_subject, require_stream_subject, duplicate_at_least, adopt_created_fd, fd_result, unit_result, RawPidfdInfo, SO_PASSPIDFD, SO_PEERPIDFD, SO_COOKIE, peer_pidfd, peer_pidfd_retaining_into_v1, finish_peer_pidfd_observation_v1};
 
 // Linux 6.18 `include/linux/socket.h`. glibc versions older than 2.39 do not
 // publish these constants even when the running kernel implements the ABI.
-pub(crate) const SO_PASSPIDFD: libc::c_int = 76;
 // Deployed Linux7.2.3 asm-generic/socket.h; unsupported kernels fail closed.
 pub(crate) const SO_PASSRIGHTS: libc::c_int = 83;
 pub(crate) const SCM_PIDFD: libc::c_int = 0x04;
 pub(crate) const SCM_SECURITY: libc::c_int = 0x03;
-pub(crate) const SO_PEERPIDFD: libc::c_int = 77;
-pub(crate) const SO_COOKIE: libc::c_int = 57;
 
 pub(crate) const SEQPACKET_CONTROL_BYTES: usize = 512;
 /// Selects descriptor-buffer geometry only, never a peer or authority bypass.
@@ -133,7 +132,7 @@ pub(crate) fn get_aos_no_setid() -> Result<i32> {
 #[derive(Debug)]
 pub(crate) enum RawAncillary {
     Credentials(libc::ucred),
-    PidFd(OwnedFd),
+    PidFd(aos_linux_descriptors::pidfd::PidFdAdmissionSlotV1),
     SecurityContext(Vec<u8>),
     Rights(Vec<OwnedFd>),
     Unknown { level: i32, kind: i32 },
@@ -307,7 +306,7 @@ impl RawReceiveObservationV1 {
                 fds.remove(fd_index)
             }
             RawAncillary::PidFd(_) => match item.take() {
-                Some(RawAncillary::PidFd(fd)) => fd,
+                Some(RawAncillary::PidFd(fd)) => fd.into_owned(),
                 other => { *item = other; return None; }
             },
             _ => return None,
@@ -396,7 +395,8 @@ pub(crate) fn rtnetlink_exchange(
             libc::NETLINK_ROUTE,
         )
     };
-    let fd = fd_result(raw_fd.into(), "socket(NETLINK_ROUTE)")?;
+    // SAFETY: the preceding native call returned a fresh unowned FD.
+    let fd = unsafe { fd_result(raw_fd.into(), "socket(NETLINK_ROUTE)") }?;
 
     // SAFETY: all-zero is a valid sockaddr_nl base value.
     let mut local = unsafe { std::mem::zeroed::<libc::sockaddr_nl>() };
@@ -1076,7 +1076,8 @@ fn duplicate_raw_high(descriptor: BorrowedFd<'_>, operation: &'static str) -> Re
             FIXED_DUPLICATE_MINIMUM,
         )
     };
-    fd_result(duplicated.into(), operation)
+    // SAFETY: the preceding native call returned a fresh unowned FD.
+    unsafe { fd_result(duplicated.into(), operation) }
 }
 
 struct FixedExecveatChild<'a> {
@@ -1503,7 +1504,6 @@ const PIDFD_GET_NET_NAMESPACE: libc::c_ulong = 0xff04;
 const PIDFD_GET_PID_NAMESPACE: libc::c_ulong = 0xff05;
 const PIDFD_GET_USER_NAMESPACE: libc::c_ulong = 0xff09;
 const PIDFD_GET_UTS_NAMESPACE: libc::c_ulong = 0xff0a;
-const PIDFD_GET_INFO: libc::c_ulong = 0xc048_ff0b;
 
 #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
 const SYS_STATMOUNT: libc::c_long = 457;
@@ -1532,26 +1532,7 @@ pub(crate) struct RawMountAttr {
     pub(crate) userns_fd: u64,
 }
 
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct RawPidfdInfo {
-    pub(crate) mask: u64,
-    pub(crate) cgroup_id: u64,
-    pub(crate) pid: u32,
-    pub(crate) tgid: u32,
-    pub(crate) ppid: u32,
-    pub(crate) ruid: u32,
-    pub(crate) rgid: u32,
-    pub(crate) euid: u32,
-    pub(crate) egid: u32,
-    pub(crate) suid: u32,
-    pub(crate) sgid: u32,
-    pub(crate) fsuid: u32,
-    pub(crate) fsgid: u32,
-    pub(crate) exit_code: i32,
-    pub(crate) coredump_mask: u32,
-    pub(crate) spare: u32,
-}
+
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
@@ -1627,80 +1608,9 @@ impl StatMountBuffer {
     }
 }
 
-pub(crate) fn pidfd_open(pid: u32) -> Result<OwnedFd> {
-    let result = pidfd_open_raw_result(pid);
-    fd_result(result, "pidfd_open")
-}
 
-// The current-self owner parks this fresh descriptor before either flag check.
-pub(crate) fn pidfd_open_current_original() -> Result<OwnedFd> {
-    pidfd_open_original(std::process::id())
-}
 
-// Selected owners park any fresh pidfd before the ordinary flag/type passes.
-pub(crate) fn pidfd_open_original(pid: u32) -> Result<OwnedFd> {
-    let result = pidfd_open_raw_result(pid);
-    adopt_created_fd(result, "pidfd_open")
-}
 
-fn pidfd_open_raw_result(pid: u32) -> libc::c_long {
-    // SAFETY: `pidfd_open` receives scalar arguments and returns a new fd.
-    unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0_u32) }
-}
-
-pub(crate) fn pidfd_send_thread_group_signal(pidfd: BorrowedFd<'_>, signal: u8) -> Result<()> {
-    const PIDFD_SIGNAL_THREAD_GROUP: u32 = 1 << 1;
-    // SAFETY: the descriptor stays borrowed, all other arguments are scalar,
-    // and the null siginfo asks the kernel to construct the sender identity.
-    // Explicit scope never interprets this pidfd as a process-group selector.
-    let result = unsafe {
-        libc::syscall(
-            libc::SYS_pidfd_send_signal,
-            pidfd.as_raw_fd(),
-            u32::from(signal),
-            std::ptr::null::<libc::siginfo_t>(),
-            PIDFD_SIGNAL_THREAD_GROUP,
-        )
-    };
-    unit_result(result, "pidfd_send_signal thread group")
-}
-
-#[cfg(all(test, feature = "kernel-tests"))]
-pub(crate) fn pidfd_send_signal_zero_for_test(pidfd: BorrowedFd<'_>) -> Result<()> {
-    // SAFETY: the borrowed fd remains live for the call; signal 0 has no
-    // side-effect and the siginfo pointer is intentionally null.
-    let result = unsafe {
-        libc::syscall(
-            libc::SYS_pidfd_send_signal,
-            pidfd.as_raw_fd(),
-            0,
-            std::ptr::null::<libc::siginfo_t>(),
-            0_u32,
-        )
-    };
-    unit_result(result, "pidfd_send_signal")
-}
-
-pub(crate) fn pidfd_getfd(pidfd: BorrowedFd<'_>, target: RawFd) -> Result<OwnedFd> {
-    // SAFETY: the pidfd remains borrowed for the call; the returned descriptor
-    // is new and immediately transferred to `OwnedFd`.
-    let result = unsafe { libc::syscall(libc::SYS_pidfd_getfd, pidfd.as_raw_fd(), target, 0_u32) };
-    fd_result(result, "pidfd_getfd")
-}
-
-pub(crate) fn pidfd_info(pidfd: BorrowedFd<'_>) -> Result<RawPidfdInfo> {
-    let mut info = RawPidfdInfo {
-        mask: 0x7,
-        ..RawPidfdInfo::default()
-    };
-    // SAFETY: `info` is a live, correctly-sized writable C structure and the
-    // pidfd borrow spans the ioctl.
-    let result = unsafe { libc::ioctl(pidfd.as_raw_fd(), PIDFD_GET_INFO, &mut info) };
-    if result < 0 {
-        return Err(Error::syscall("PIDFD_GET_INFO"));
-    }
-    Ok(info)
-}
 
 #[derive(Clone, Copy)]
 pub(crate) enum NamespaceIoctl {
@@ -1712,7 +1622,8 @@ pub(crate) enum NamespaceIoctl {
 }
 
 pub(crate) fn pidfd_namespace(pidfd: BorrowedFd<'_>, namespace: NamespaceIoctl) -> Result<OwnedFd> {
-    fd_result(pidfd_namespace_raw_result(pidfd, namespace), "pidfd namespace ioctl")
+    // SAFETY: the preceding native call returned a fresh unowned FD.
+    unsafe { fd_result(pidfd_namespace_raw_result(pidfd, namespace), "pidfd namespace ioctl") }
 }
 
 // Selected destinations keep the actual created FD before the SAME flag check.
@@ -1723,7 +1634,8 @@ pub(crate) fn pidfd_namespace_retaining_v2(
     if original.is_some() {
         return Err(Error::invalid("pidfd namespace", "raw destination already occupied"));
     }
-    *original = Some(adopt_created_fd(pidfd_namespace_raw_result(pidfd, namespace), "pidfd namespace ioctl")?);
+    // SAFETY: the native return is fresh and has no existing descriptor owner.
+    *original = Some(unsafe { adopt_created_fd(pidfd_namespace_raw_result(pidfd, namespace), "pidfd namespace ioctl") }?);
     ensure_cloexec(original.as_ref().ok_or_else(|| Error::invalid(
         "pidfd namespace", "created descriptor is absent"))?.as_fd())
 }
@@ -1826,15 +1738,6 @@ pub(crate) fn get_seals(fd: BorrowedFd<'_>) -> Result<libc::c_int> {
     }
 }
 
-pub(crate) fn get_status_flags(fd: BorrowedFd<'_>) -> Result<libc::c_int> {
-    // SAFETY: `F_GETFL` only observes the borrowed file description.
-    let result = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFL) };
-    if result < 0 {
-        Err(Error::syscall("fcntl(F_GETFL)"))
-    } else {
-        Ok(result)
-    }
-}
 
 pub(crate) fn measure_verity(fd: BorrowedFd<'_>) -> Result<VerityMeasurement> {
     let mut measurement = RawVerityDigest {
@@ -2032,23 +1935,10 @@ pub(crate) fn statx_unique_mount_id(fd: BorrowedFd<'_>) -> Result<u64> {
     Ok(statx.stx_mnt_id)
 }
 
-pub(crate) fn ensure_cloexec(fd: BorrowedFd<'_>) -> Result<()> {
-    // SAFETY: `F_GETFD` and `F_SETFD` operate only on the borrowed descriptor
-    // and do not dereference an argument pointer.
-    let flags = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFD) };
-    if flags < 0 {
-        return Err(Error::syscall("fcntl(F_GETFD)"));
-    }
-    // SAFETY: as above; the scalar flag value preserves all existing bits.
-    let result = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFD, flags | libc::FD_CLOEXEC) };
-    if result < 0 {
-        return Err(Error::syscall("fcntl(F_SETFD)"));
-    }
-    Ok(())
-}
 
 pub(crate) fn openat2(directory: BorrowedFd<'_>, path: &CStr, how: &OpenHow) -> Result<OwnedFd> {
-    fd_result(openat2_result(directory, path, how), "openat2")
+    // SAFETY: the preceding native call returned a fresh unowned FD.
+    unsafe { fd_result(openat2_result(directory, path, how), "openat2") }
 }
 
 // The selected acquisition parks the one actual syscall result before either
@@ -2063,7 +1953,8 @@ pub(crate) fn openat2_retaining(
     if original.is_some() {
         return Err(Error::invalid("retained openat2", "already acquired"));
     }
-    *original = Some(adopt_created_fd(openat2_result(directory, path, how), "openat2")?);
+    // SAFETY: the native return is fresh and has no existing descriptor owner.
+    *original = Some(unsafe { adopt_created_fd(openat2_result(directory, path, how), "openat2") }?);
     let descriptor = original.as_ref().ok_or_else(|| {
         Error::invalid("retained openat2", "original descriptor is absent")
     })?;
@@ -2094,7 +1985,8 @@ pub(crate) fn open_tree(path: BorrowedFd<'_>, recursive: bool) -> Result<OwnedFd
     // static, and a successful result is a new detached mount fd.
     let result =
         unsafe { libc::syscall(libc::SYS_open_tree, path.as_raw_fd(), c"".as_ptr(), flags) };
-    fd_result(result, "open_tree")
+    // SAFETY: the preceding native call returned a fresh unowned FD.
+    unsafe { fd_result(result, "open_tree") }
 }
 
 pub(crate) fn open_tree_attr(
@@ -2118,7 +2010,8 @@ pub(crate) fn open_tree_attr(
             size_of::<RawMountAttr>(),
         )
     };
-    fd_result(result, "open_tree_attr")
+    // SAFETY: the preceding native call returned a fresh unowned FD.
+    unsafe { fd_result(result, "open_tree_attr") }
 }
 
 pub(crate) fn mount_setattr(
@@ -2168,7 +2061,8 @@ pub(crate) fn fsopen(filesystem: &CStr) -> Result<OwnedFd> {
     // SAFETY: the filesystem name is a live C string and the result is a new
     // filesystem-context descriptor.
     let result = unsafe { libc::syscall(libc::SYS_fsopen, filesystem.as_ptr(), FSOPEN_CLOEXEC) };
-    fd_result(result, "fsopen")
+    // SAFETY: the preceding native call returned a fresh unowned FD.
+    unsafe { fd_result(result, "fsopen") }
 }
 
 pub(crate) fn fsconfig(
@@ -2204,7 +2098,8 @@ pub(crate) fn fsmount(context: BorrowedFd<'_>) -> Result<OwnedFd> {
             0_u32,
         )
     };
-    fd_result(result, "fsmount")
+    // SAFETY: the preceding native call returned a fresh unowned FD.
+    unsafe { fd_result(result, "fsmount") }
 }
 
 pub(crate) fn statmount(request: &MountIdRequest) -> Result<Box<StatMountBuffer>> {
@@ -2274,28 +2169,6 @@ pub(crate) fn validate_connected_seqpacket(fd: BorrowedFd<'_>) -> Result<()> {
     require_connected_unix_peer(fd)
 }
 
-pub(crate) fn validate_connected_unix_stream(fd: BorrowedFd<'_>) -> Result<()> {
-    let socket_type = socket_integer_option(fd, libc::SO_TYPE, "getsockopt(SO_TYPE)")?;
-    if socket_type != libc::SOCK_STREAM {
-        return Err(Error::WrongDescriptorType {
-            expected: "Unix SOCK_STREAM socket",
-        });
-    }
-    let domain = socket_integer_option(fd, libc::SO_DOMAIN, "getsockopt(SO_DOMAIN)")?;
-    if domain != libc::AF_UNIX {
-        return Err(Error::WrongDescriptorType {
-            expected: "Unix SOCK_STREAM socket",
-        });
-    }
-    let accepts_connections =
-        socket_integer_option(fd, libc::SO_ACCEPTCONN, "getsockopt(SO_ACCEPTCONN)")?;
-    if accepts_connections != 0 {
-        return Err(Error::WrongDescriptorType {
-            expected: "connected Unix SOCK_STREAM socket, not a listener",
-        });
-    }
-    require_connected_unix_stream_peer(fd)
-}
 
 fn ensure_nonblocking(fd: BorrowedFd<'_>) -> Result<()> {
     // SAFETY: F_GETFL observes the borrowed descriptor and takes no pointer.
@@ -2322,27 +2195,18 @@ pub(crate) fn prepare_record_subject_listener(fd: BorrowedFd<'_>) -> Result<()> 
     ensure_nonblocking(fd)
 }
 
-pub(crate) fn require_seqpacket_identity(fd: BorrowedFd<'_>) -> Result<()> {
-    if socket_integer_option(fd, libc::SO_PASSCRED, "getsockopt(SO_PASSCRED)")? != 1
-        || socket_integer_option(fd, SO_PASSPIDFD, "getsockopt(SO_PASSPIDFD)")? != 1
-    {
-        return Err(Error::invalid(
-            "record subject options",
-            "SO_PASSCRED and SO_PASSPIDFD must already be enabled",
-        ));
-    }
-    Ok(())
-}
 
 pub(crate) fn accept_record_subject_socket(fd: BorrowedFd<'_>) -> Result<OwnedFd> {
     let result = accepted_record_subject_socket_result(fd);
-    fd_result(result.into(), "accept4(SOCK_SEQPACKET)")
+    // SAFETY: the preceding native call returned a fresh unowned FD.
+    unsafe { fd_result(result.into(), "accept4(SOCK_SEQPACKET)") }
 }
 
 /// Adopts the actual accepted child before any fallible descriptor flag check.
 pub(crate) fn accept_record_subject_socket_before_flags(fd: BorrowedFd<'_>) -> Result<OwnedFd> {
     let result = accepted_record_subject_socket_result(fd);
-    adopt_created_fd(result.into(), "accept4(SOCK_SEQPACKET)")
+    // SAFETY: the native return is fresh and has no existing descriptor owner.
+    unsafe { adopt_created_fd(result.into(), "accept4(SOCK_SEQPACKET)") }
 }
 
 fn accepted_record_subject_socket_result(fd: BorrowedFd<'_>) -> libc::c_int {
@@ -2367,92 +2231,6 @@ fn require_connected_unix_peer(fd: BorrowedFd<'_>) -> Result<()> {
     )
 }
 
-fn require_connected_unix_stream_peer(fd: BorrowedFd<'_>) -> Result<()> {
-    require_connected_unix_peer_with_labels(
-        fd,
-        "getpeername(SOCK_STREAM)",
-        "SOCK_STREAM peer address",
-    )
-}
-
-fn require_connected_unix_peer_with_labels(
-    fd: BorrowedFd<'_>,
-    operation: &'static str,
-    object: &'static str,
-) -> Result<()> {
-    // All-zero is valid for sockaddr_storage and lets the kernel fill the
-    // peer address without relying on a pathname representation.
-    // SAFETY: sockaddr_storage is a plain C output structure.
-    let mut address: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
-    let mut length = size_of::<libc::sockaddr_storage>() as libc::socklen_t;
-    // SAFETY: the address and length are writable and live for the call. A
-    // successful getpeername positively establishes connected socket state.
-    let result = unsafe {
-        libc::getpeername(
-            fd.as_raw_fd(),
-            std::ptr::addr_of_mut!(address).cast(),
-            std::ptr::addr_of_mut!(length),
-        )
-    };
-    unit_result(result.into(), operation)?;
-    if usize::try_from(length).unwrap_or(0) < size_of::<libc::sa_family_t>()
-        || i32::from(address.ss_family) != libc::AF_UNIX
-    {
-        return Err(Error::MalformedKernelResponse {
-            object,
-            message: "getpeername returned a missing or non-Unix peer".to_string(),
-        });
-    }
-    Ok(())
-}
-
-pub(crate) fn socket_cookie(fd: BorrowedFd<'_>) -> Result<u64> {
-    let mut cookie = 0_u64;
-    let mut length = size_of::<u64>() as libc::socklen_t;
-    // SAFETY: the output integer and length remain writable and live for the
-    // call, and the socket descriptor remains borrowed throughout.
-    let result = unsafe {
-        libc::getsockopt(
-            fd.as_raw_fd(),
-            libc::SOL_SOCKET,
-            SO_COOKIE,
-            std::ptr::addr_of_mut!(cookie).cast(),
-            std::ptr::addr_of_mut!(length),
-        )
-    };
-    unit_result(result.into(), "getsockopt(SO_COOKIE)")?;
-    if length as usize != size_of::<u64>() {
-        return Err(Error::MalformedKernelResponse {
-            object: "SO_COOKIE",
-            message: "kernel returned an unexpected cookie length".to_string(),
-        });
-    }
-    Ok(cookie)
-}
-
-pub(crate) fn socket_integer_option(fd: BorrowedFd<'_>, option: i32, operation: &'static str) -> Result<i32> {
-    let mut value = 0_i32;
-    let mut length = size_of::<i32>() as libc::socklen_t;
-    // SAFETY: the output integer and its length are writable and live for the
-    // call, and the descriptor borrow spans the call.
-    let result = unsafe {
-        libc::getsockopt(
-            fd.as_raw_fd(),
-            libc::SOL_SOCKET,
-            option,
-            std::ptr::addr_of_mut!(value).cast(),
-            std::ptr::addr_of_mut!(length),
-        )
-    };
-    unit_result(result.into(), operation)?;
-    if length as usize != size_of::<i32>() {
-        return Err(Error::MalformedKernelResponse {
-            object: "socket option",
-            message: format!("{operation} returned an unexpected length"),
-        });
-    }
-    Ok(value)
-}
 
 // Linux's receive-direction admission happens before a rights-bearing skb
 // enters the peer queue. This is distinct from dropping installed rights.
@@ -2471,148 +2249,7 @@ pub(crate) fn require_seqpacket_zero_rights(fd: BorrowedFd<'_>) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn enable_seqpacket_identity(fd: BorrowedFd<'_>) -> Result<()> {
-    set_socket_bool(fd, libc::SO_PASSCRED, "setsockopt(SO_PASSCRED)")?;
-    set_socket_bool(fd, SO_PASSPIDFD, "setsockopt(SO_PASSPIDFD)")
-}
 
-pub(crate) fn enable_stream_subject(fd: BorrowedFd<'_>) -> Result<()> {
-    enable_seqpacket_identity(fd)?;
-    set_socket_bool(fd, libc::SO_PASSSEC, "setsockopt(SO_PASSSEC)")
-}
-
-pub(crate) fn require_stream_subject(fd: BorrowedFd<'_>) -> Result<()> {
-    require_seqpacket_identity(fd)?;
-    if socket_integer_option(fd, libc::SO_PASSSEC, "getsockopt(SO_PASSSEC)")? != 1 {
-        return Err(Error::invalid(
-            "stream subject options",
-            "SO_PASSSEC must remain enabled",
-        ));
-    }
-    Ok(())
-}
-
-pub(crate) fn peer_credentials(fd: BorrowedFd<'_>) -> Result<libc::ucred> {
-    // All-zero is valid for this integer-only output structure.
-    // SAFETY: `ucred` contains only integer scalars.
-    let mut credentials: libc::ucred = unsafe { std::mem::zeroed() };
-    let mut length = size_of::<libc::ucred>() as libc::socklen_t;
-    // SAFETY: the output structure and length remain writable and live for
-    // the call, and the connected socket descriptor is borrowed.
-    let result = unsafe {
-        libc::getsockopt(
-            fd.as_raw_fd(),
-            libc::SOL_SOCKET,
-            libc::SO_PEERCRED,
-            std::ptr::addr_of_mut!(credentials).cast(),
-            std::ptr::addr_of_mut!(length),
-        )
-    };
-    unit_result(result.into(), "getsockopt(SO_PEERCRED)")?;
-    if length as usize != size_of::<libc::ucred>() {
-        return Err(Error::MalformedKernelResponse {
-            object: "SO_PEERCRED",
-            message: "kernel returned an unexpected credential length".to_string(),
-        });
-    }
-    Ok(credentials)
-}
-
-pub(crate) fn peer_pidfd(fd: BorrowedFd<'_>) -> Result<OwnedFd> {
-    peer_pidfd_observed(fd, None)?.ok_or(Error::WrongDescriptorType { expected: "pidfd" })
-}
-
-// Only the actual guarded peer capture supplies this private original slot.
-pub(crate) fn peer_pidfd_retaining_into_v1(
-    fd: BorrowedFd<'_>,
-    original: &mut Option<RawAncillary>,
-) -> Result<()> {
-    if original.is_some() { return Err(Error::WrongDescriptorType { expected: "vacant peer pidfd slot" }); }
-    peer_pidfd_observed(fd, Some(original)).map(|_| ())
-}
-
-fn peer_pidfd_observed(
-    fd: BorrowedFd<'_>,
-    retained: Option<&mut Option<RawAncillary>>,
-) -> Result<Option<OwnedFd>> {
-    let mut peer_fd = -1_i32;
-    let mut length = size_of::<RawFd>() as libc::socklen_t;
-    // SAFETY: the output integer and length remain writable and live for the
-    // call. On success Linux installs a new pidfd in `peer_fd`.
-    let result = unsafe {
-        libc::getsockopt(
-            fd.as_raw_fd(),
-            libc::SOL_SOCKET,
-            SO_PEERPIDFD,
-            std::ptr::addr_of_mut!(peer_fd).cast(),
-            std::ptr::addr_of_mut!(length),
-        )
-    };
-    unit_result(result.into(), "getsockopt(SO_PEERPIDFD)")?;
-    if peer_fd < 0 {
-        return Err(Error::MalformedKernelResponse {
-            object: "SO_PEERPIDFD",
-            message: "kernel returned a negative descriptor".to_string(),
-        });
-    }
-    // Adopt before validating the returned length so every successful kernel
-    // installation is owned and closed on all later error paths.
-    // SAFETY: SO_PEERPIDFD returned a fresh descriptor in this process, and
-    // ownership has not been transferred elsewhere.
-    let peer_fd = unsafe { OwnedFd::from_raw_fd(peer_fd) };
-    finish_peer_pidfd_observation_v1(peer_fd, length, retained)
-}
-
-fn finish_peer_pidfd_observation_v1(
-    peer_fd: OwnedFd,
-    length: libc::socklen_t,
-    retained: Option<&mut Option<RawAncillary>>,
-) -> Result<Option<OwnedFd>> {
-    let retaining = retained.is_some();
-    let mut ordinary = None;
-    let destination = retained.unwrap_or(&mut ordinary);
-    // Install the actual adopted kernel FD before CLOEXEC/length validation.
-    // The retained caller keeps this same slot on either later native error;
-    // None uses a local slot with the existing immediate error disposition.
-    *destination = Some(RawAncillary::PidFd(peer_fd));
-    let Some(RawAncillary::PidFd(peer_fd)) = destination.as_ref() else {
-        return Err(Error::WrongDescriptorType { expected: "pidfd" });
-    };
-    ensure_cloexec(peer_fd.as_fd())?;
-    if length as usize != size_of::<RawFd>() {
-        return Err(Error::MalformedKernelResponse {
-            object: "SO_PEERPIDFD",
-            message: "kernel returned an unexpected descriptor length".to_string(),
-        });
-    }
-    if retaining { return Ok(None); }
-    match ordinary.take() {
-        Some(RawAncillary::PidFd(peer_fd)) => Ok(Some(peer_fd)),
-        other => {
-            drop(other);
-            Err(Error::WrongDescriptorType { expected: "pidfd" })
-        }
-    }
-}
-
-fn set_socket_bool(fd: BorrowedFd<'_>, option: i32, operation: &'static str) -> Result<()> {
-    set_socket_integer(fd, option, 1, operation)
-}
-
-fn set_socket_integer(fd: BorrowedFd<'_>, option: i32, enabled: i32, operation: &'static str) -> Result<()> {
-    // SAFETY: the scalar option value remains live and correctly sized for
-    // the complete call; the socket descriptor is borrowed.
-    let result = unsafe {
-        libc::setsockopt(
-            fd.as_raw_fd(),
-            libc::SOL_SOCKET,
-            option,
-            std::ptr::addr_of!(enabled).cast(),
-            size_of::<i32>() as libc::socklen_t,
-        )
-    };
-    unit_result(result.into(), operation)
-}
 
 pub(crate) fn send_seqpacket(fd: BorrowedFd<'_>, payload: &[u8]) -> Result<usize> {
     // SAFETY: the byte slice remains readable and the descriptor remains
@@ -2850,7 +2487,7 @@ fn decode_cmsg(level: i32, kind: i32, payload: &[u8], slot: &mut RawAncillary) {
             if let RawAncillary::Malformed(mut fds) = staged {
                 *slot = if promote_pidfd {
                     match fds.pop() {
-                        Some(fd) => RawAncillary::PidFd(fd),
+                        Some(fd) => RawAncillary::PidFd(aos_linux_descriptors::pidfd::PidFdAdmissionSlotV1::new(fd)),
                         None => RawAncillary::Malformed(fds),
                     }
                 } else { RawAncillary::Rights(fds) };
@@ -2878,41 +2515,18 @@ const fn cmsg_align(length: usize) -> usize {
     (length + alignment - 1) & !(alignment - 1)
 }
 
-pub(crate) fn seqpacket_pair() -> Result<(OwnedFd, OwnedFd)> {
-    seqpacket_pair_with_flags(libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC)
-}
-
-pub(crate) fn seqpacket_pair_with_flags(flags: i32) -> Result<(OwnedFd, OwnedFd)> {
-    let mut descriptors = [-1; 2];
-    // SAFETY: the output array contains space for exactly two descriptors;
-    // success transfers both newly-created descriptors to this process.
-    let result = unsafe {
-        libc::socketpair(
-            libc::AF_UNIX,
-            libc::SOCK_SEQPACKET | flags,
-            0,
-            descriptors.as_mut_ptr(),
-        )
-    };
-    unit_result(result.into(), "socketpair(SOCK_SEQPACKET)")?;
-    // SAFETY: socketpair returned two distinct fresh descriptors.
-    Ok(unsafe {
-        (
-            OwnedFd::from_raw_fd(descriptors[0]),
-            OwnedFd::from_raw_fd(descriptors[1]),
-        )
-    })
-}
 
 pub(crate) fn unconnected_seqpacket() -> Result<OwnedFd> {
     let result = unconnected_seqpacket_result();
-    fd_result(result.into(), "socket(SOCK_SEQPACKET)")
+    // SAFETY: the preceding native call returned a fresh unowned FD.
+    unsafe { fd_result(result.into(), "socket(SOCK_SEQPACKET)") }
 }
 
 /// Adopts the actual created socket before any fallible descriptor flag check.
 pub(crate) fn unconnected_seqpacket_before_flags() -> Result<OwnedFd> {
     let result = unconnected_seqpacket_result();
-    adopt_created_fd(result.into(), "socket(SOCK_SEQPACKET)")
+    // SAFETY: the native return is fresh and has no existing descriptor owner.
+    unsafe { adopt_created_fd(result.into(), "socket(SOCK_SEQPACKET)") }
 }
 
 fn unconnected_seqpacket_result() -> libc::c_int {
@@ -3271,51 +2885,15 @@ pub(crate) fn send_seqpacket_rights(
     }
 }
 
-/// Reads the borrowed descriptor's existing CLOEXEC flag without changing it.
-pub(crate) fn is_cloexec(fd: BorrowedFd<'_>) -> Result<bool> {
-    // SAFETY: F_GETFD only observes a descriptor borrowed for the call.
-    let flags = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFD) };
-    if flags < 0 {
-        Err(Error::syscall("fcntl(F_GETFD)"))
-    } else {
-        Ok(flags & libc::FD_CLOEXEC != 0)
-    }
-}
 
-#[cfg(test)]
-pub(crate) fn clear_cloexec_for_test(fd: BorrowedFd<'_>) -> Result<()> {
-    // SAFETY: F_GETFD and F_SETFD operate only on the borrowed descriptor.
-    let flags = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFD) };
-    if flags < 0 {
-        return Err(Error::syscall("fcntl(F_GETFD)"));
-    }
-    // SAFETY: the scalar flag value preserves every bit except FD_CLOEXEC.
-    let result = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFD, flags & !libc::FD_CLOEXEC) };
-    unit_result(result.into(), "fcntl(F_SETFD)")
-}
 
-#[cfg(test)]
-pub(crate) fn enable_socket_passcred_for_test(fd: BorrowedFd<'_>) -> Result<()> {
-    set_socket_bool(fd, libc::SO_PASSCRED, "setsockopt(SO_PASSCRED)")
-}
 
-#[cfg(test)]
-pub(crate) fn socket_passcred_for_test(fd: BorrowedFd<'_>) -> Result<bool> {
-    Ok(socket_integer_option(fd, libc::SO_PASSCRED, "getsockopt(SO_PASSCRED)")? != 0)
-}
 
-#[cfg(test)]
-pub(crate) fn raw_fd_is_open(fd: RawFd) -> bool {
-    // SAFETY: F_GETFD only observes the integer descriptor table entry.
-    let result = unsafe { libc::fcntl(fd, libc::F_GETFD) };
-    result >= 0 || std::io::Error::last_os_error().raw_os_error() != Some(libc::EBADF)
-}
 
-pub(crate) fn duplicate_at_least(fd: BorrowedFd<'_>, minimum: RawFd) -> Result<OwnedFd> {
-    // SAFETY: F_DUPFD_CLOEXEC borrows the source and returns a fresh owned fd.
-    let result = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_DUPFD_CLOEXEC, minimum) };
-    fd_result(result.into(), "fcntl(F_DUPFD_CLOEXEC)")
-}
+
+
+
+
 
 #[cfg(test)]
 pub(crate) fn create_sealable_memfd() -> Result<OwnedFd> {
@@ -3327,7 +2905,8 @@ pub(crate) fn create_sealable_memfd() -> Result<OwnedFd> {
             libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
         )
     };
-    fd_result(result.into(), "memfd_create")
+    // SAFETY: the preceding native call returned a fresh unowned FD.
+    unsafe { fd_result(result.into(), "memfd_create") }
 }
 
 #[cfg(test)]
@@ -3337,34 +2916,6 @@ pub(crate) fn add_seals(fd: BorrowedFd<'_>, seals: libc::c_int) -> Result<()> {
     unit_result(result.into(), "fcntl(F_ADD_SEALS)")
 }
 
-fn fd_result(result: libc::c_long, operation: &'static str) -> Result<OwnedFd> {
-    let fd = adopt_created_fd(result, operation)?;
-    ensure_cloexec(fd.as_fd())?;
-    Ok(fd)
-}
-
-/// Immediately owns a successful fresh-descriptor result without observing flags.
-fn adopt_created_fd(result: libc::c_long, operation: &'static str) -> Result<OwnedFd> {
-    if result < 0 {
-        return Err(Error::syscall(operation));
-    }
-    let raw = RawFd::try_from(result).map_err(|_| Error::MalformedKernelResponse {
-        object: "file descriptor",
-        message: format!("{operation} returned an out-of-range descriptor"),
-    })?;
-    // SAFETY: each caller invokes a syscall documented to return a fresh fd on
-    // success, and ownership has not been transferred elsewhere.
-    let fd = unsafe { OwnedFd::from_raw_fd(raw) };
-    Ok(fd)
-}
-
-fn unit_result(result: libc::c_long, operation: &'static str) -> Result<()> {
-    if result < 0 {
-        Err(Error::syscall(operation))
-    } else {
-        Ok(())
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -3547,7 +3098,7 @@ mod tests {
         let mut observed = RawReceiveObservationV1::empty();
         let fd = OwnedFd::from(std::fs::File::open("/dev/null").unwrap());
         let raw = fd.as_raw_fd();
-        observed.ancillary.push(Some(RawAncillary::PidFd(fd)));
+        observed.ancillary.push(Some(RawAncillary::PidFd(aos_linux_descriptors::pidfd::PidFdAdmissionSlotV1::new(fd))));
         observed.remember_slots(40);
         // The denied inspection is a private disposition fixture. An actual
         // procfs-denied installed policy still requires its deferred harness.
@@ -3793,7 +3344,7 @@ mod peer_pidfd_retention_tests {
         let result = finish_peer_pidfd_observation_v1(pin, 0, Some(&mut original));
 
         assert!(matches!(result, Err(Error::MalformedKernelResponse { object: "SO_PEERPIDFD", .. })));
-        let Some(RawAncillary::PidFd(held)) = original.as_ref() else { panic!("actual peer pidfd missing"); };
+        let Some(held) = original.as_ref() else { panic!("actual peer pidfd missing"); };
         assert_eq!(held.as_raw_fd(), descriptor);
         assert!(raw_fd_is_open(descriptor));
         assert!(pidfd_info(held.as_fd()).is_ok());
@@ -3811,3 +3362,7 @@ mod peer_pidfd_retention_tests {
         assert!(!raw_fd_is_open(descriptor));
     }
 }
+
+use aos_linux_descriptors::native::{is_cloexec, get_status_flags, seqpacket_pair};
+#[cfg(test)]
+use aos_linux_descriptors::native::{raw_fd_is_open, clear_cloexec_for_test, enable_socket_passcred_for_test, socket_passcred_for_test, pidfd_send_signal_zero_for_test};

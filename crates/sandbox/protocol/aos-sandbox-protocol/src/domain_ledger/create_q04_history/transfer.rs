@@ -78,33 +78,26 @@ const PREHOLD_CHUNK_DOMAIN: &[u8] = b"aos.sandbox.create-q04.prefund-chunk.v1\0"
 /// Supplies root-derived CAS fields while the protected writer remains held.
 ///
 /// A controller may use these bytes to construct a proposal, but the root
-/// session rechecks every field at commit. These copied fields do not
-/// establish the other owners' current heads.
+/// session rechecks every field at commit. This value is not an authority
+/// token and cannot establish the other owners' current heads.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ClosedPolicyRootCasBaseV2 {
-    /// Identifies the Root-derived issuer owner compared at commit.
     pub issuer_owner: [u8; 16],
-    /// Names the preceding binding, or zero before the first generation.
     pub predecessor: ObjectDigest,
-    /// Names the required next binding generation.
     pub next_generation: u64,
-    /// Names the deployment signer generation selected by Root.
     pub deployment_signer_generation: u64,
-    /// Names the project signer generation selected by Root.
     pub project_signer_generation: u64,
 }
 
 /// Retains one Root-issued base and challenge before other writers are acquired.
 ///
-/// These are copied stage coordinates. Root independently rechecks its held
-/// journal, original socket and signed-source identity before any mutation.
+/// This token is authenticated by the Root socket but is not a CAS, owner-cut,
+/// publication, or effect authority. Root rechecks its protected stage and
+/// exact signed-source identity after acquiring its writer last.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StagedClosedPolicyRootBaseV2 {
-    /// Contains the copied proposal comparison base.
     pub base: ClosedPolicyRootCasBaseV2,
-    /// Binds the stage to the original nonzero Root challenge.
     pub challenge: [u8; 16],
-    /// Identifies the nonzero stage issuance epoch.
     pub issue_epoch: u64,
 }
 
@@ -301,8 +294,7 @@ impl Q04ChunkPurposeV1 {
     ///
     /// # Errors
     ///
-    /// Refuses a nonempty output, zero comparison digest, invalid chunk range or
-    /// allocation failure.
+    /// Rejects malformed fields, changed indexed relationships, overflow or allocation failure.
     pub fn encode_chunk(
         self,
         original: &[u8],
@@ -352,12 +344,11 @@ impl Q04ChunkPurposeV1 {
             .ok_or(Q04DataErrorV1::Bounds)
     }
 
-    /// Checks a complete chunk against its indexed original and checksum.
+    /// Decodes one complete chunk against its indexed original.
     ///
     /// # Errors
     ///
-    /// Rejects malformed headers, a changed original digest, inconsistent total or
-    /// count, an incorrect payload width, or a mismatched checksum.
+    /// Rejects malformed fields, changed indexed relationships, overflow or allocation failure.
     pub fn decode_chunk<'chunk>(
         self,
         bytes: &'chunk [u8],
@@ -398,22 +389,27 @@ pub struct Q04OrderedChunkV1<'chunk> {
 }
 
 impl Q04OrderedChunkV1<'_> {
-    /// Returns the checked ordinal within the original transfer.
-    pub fn index(&self) -> u16 {
+    /// Returns this decoded chunk's original reconstruction ordinal.
+    ///
+    /// The value remains comparison DATA and does not advance a live transfer.
+    #[must_use]
+    pub const fn index(&self) -> u16 {
         self.index
     }
 
-    /// Borrows the payload checked against the original transfer index.
-    pub fn payload(&self) -> &[u8] {
+    /// Borrows this decoded chunk's exact original payload bytes.
+    ///
+    /// No copy, append, authentication or live-flight state is produced.
+    #[must_use]
+    pub const fn payload(&self) -> &[u8] {
         self.payload
     }
 
-    /// Appends this chunk at its exact reconstruction offset.
+    /// Appends this chunk only at its exact ordered reconstruction offset.
     ///
     /// # Errors
     ///
-    /// Refuses an out-of-order output length, a packet exceeding its maximum, or
-    /// allocation failure.
+    /// Rejects malformed fields, changed indexed relationships, overflow or allocation failure.
     pub fn append_to(&self, output: &mut Vec<u8>) -> Result<(), Q04DataErrorV1> {
         let offset = usize::from(self.index)
             .checked_mul(CLAIM_CHUNK_BYTES)
@@ -442,12 +438,11 @@ pub struct Q04PreviewV1<'preview> {
 }
 
 impl<'preview> Q04PreviewV1<'preview> {
-    /// Borrows a complete Preview after checking its fields and original nonce.
+    /// Decodes a complete bounded packet against the original nonce or transfer index.
     ///
     /// # Errors
     ///
-    /// Rejects malformed framing, invalid field widths, noncanonical metadata,
-    /// protected names, stage coordinates, or a different original nonce.
+    /// Rejects malformed fields, changed indexed relationships, overflow or allocation failure.
     pub fn decode(bytes: &'preview [u8], original_nonce: [u8; 16]) -> Result<Self, Q04DataErrorV1> {
         if bytes.len() < PREVIEW_PREFIX_BYTES
             || bytes.len() > MAXIMUM_PREVIEW_BYTES
@@ -472,23 +467,21 @@ impl<'preview> Q04PreviewV1<'preview> {
         self.bytes
     }
 
-    /// Decodes the Preview's copied stage coordinates.
+    /// Decodes the untrusted scalar stage fields for independent native comparison.
     ///
     /// # Errors
     ///
-    /// Rejects a malformed stage width, zero issuer or signer generations, an
-    /// inconsistent predecessor, zero challenge, or zero issuance epoch.
+    /// Rejects malformed fields, changed indexed relationships, overflow or allocation failure.
     pub fn staged(&self) -> Result<StagedClosedPolicyRootBaseV2, Q04DataErrorV1> {
         preview_stage(self.fields[1])
     }
 }
 
-/// Encodes the nine Preview fields into an empty output.
+/// Compares or encodes the bounded encode q04 preview body v1 DATA.
 ///
 /// # Errors
 ///
-/// Refuses nonempty output, invalid Preview fields or nonce, an excessive
-/// encoded length, or allocation failure.
+/// Rejects malformed fields, changed indexed relationships, overflow or allocation failure.
 pub fn encode_q04_preview_body_v1(
     output: &mut Vec<u8>,
     fields: [&[u8]; PREVIEW_FIELDS],
@@ -564,12 +557,11 @@ pub struct Q04PreviewTransferRecipeV1<'preview> {
 }
 
 impl<'preview> Q04PreviewTransferRecipeV1<'preview> {
-    /// Computes the transfer index for this complete Preview.
+    /// Derives the bounded index from the same complete original Preview.
     ///
     /// # Errors
     ///
-    /// Rejects a Preview length that cannot be represented by the bounded chunk
-    /// count or the fixed index length field.
+    /// Rejects malformed fields, changed indexed relationships, overflow or allocation failure.
     pub fn new(preview: &Q04PreviewV1<'preview>) -> Result<Self, Q04DataErrorV1> {
         let index =
             bounded_input_transfer_index(preview.bytes, PREVIEW_DOMAIN, MAXIMUM_PREVIEW_BYTES)?;
@@ -579,12 +571,11 @@ impl<'preview> Q04PreviewTransferRecipeV1<'preview> {
         })
     }
 
-    /// Compares an index with the complete retained Preview.
+    /// Compares the supplied index to the same complete original Preview.
     ///
     /// # Errors
     ///
-    /// Rejects unrepresentable Preview dimensions or an index differing from the
-    /// one computed over the original bytes.
+    /// Rejects malformed fields, changed indexed relationships, overflow or allocation failure.
     pub fn verify_index(
         original_index: &[u8],
         preview: &Q04PreviewV1<'preview>,
@@ -606,11 +597,11 @@ impl<'preview> Q04PreviewTransferRecipeV1<'preview> {
         u16::from_be_bytes(fixed(&self.index, 36))
     }
 
-    /// Encodes one indexed chunk from this retained Preview.
+    /// Encodes one bounded chunk from the same original packet.
     ///
     /// # Errors
     ///
-    /// Refuses a nonempty output, invalid chunk index or allocation failure.
+    /// Rejects malformed fields, changed indexed relationships, overflow or allocation failure.
     pub fn encode_chunk(&self, index: u16, output: &mut Vec<u8>) -> Result<(), Q04DataErrorV1> {
         Q04ChunkPurposeV1::Preview.encode_chunk(self.preview, fixed(&self.index, 0), index, output)
     }
@@ -622,12 +613,11 @@ pub struct Q04PreviewChunkV1<'chunk> {
 }
 
 impl<'chunk> Q04PreviewChunkV1<'chunk> {
-    /// Checks a complete Preview chunk against its transfer index.
+    /// Decodes a complete bounded packet against the original nonce or transfer index.
     ///
     /// # Errors
     ///
-    /// Rejects a malformed index or chunk, changed indexed coordinates, or an
-    /// incorrect chunk checksum.
+    /// Rejects malformed fields, changed indexed relationships, overflow or allocation failure.
     pub fn decode(bytes: &'chunk [u8], original_index: &[u8]) -> Result<Self, Q04DataErrorV1> {
         let (total, count) = preview_index_shape(original_index)?;
         let chunk = Q04ChunkPurposeV1::Preview.decode_chunk(
@@ -666,35 +656,32 @@ impl<'chunk> Q04PreviewChunkV1<'chunk> {
         Ok(Some(fixed(payload, PREVIEW_PREFIX_BYTES)))
     }
 
-    /// Appends this Preview chunk at its exact reconstruction offset.
+    /// Appends this chunk only at its exact ordered reconstruction offset.
     ///
     /// # Errors
     ///
-    /// Refuses an out-of-order output length, a Preview exceeding its maximum, or
-    /// allocation failure.
+    /// Rejects malformed fields, changed indexed relationships, overflow or allocation failure.
     pub fn append_to(&self, output: &mut Vec<u8>) -> Result<(), Q04DataErrorV1> {
         self.chunk.append_to(output)
     }
 }
 
-/// Checks a Preview index and returns its total bytes and chunk count.
+/// Compares or encodes the bounded preview index shape DATA.
 ///
 /// # Errors
 ///
-/// Rejects the wrong index width, nonzero reserved bytes, a zero digest, or
-/// inconsistent bounded total and chunk count.
+/// Rejects malformed fields, changed indexed relationships, overflow or allocation failure.
 pub fn preview_index_shape(bytes: &[u8]) -> Result<(usize, u16), Q04DataErrorV1> {
     bounded_input_transfer_shape(bytes, PREVIEW_PREFIX_BYTES, MAXIMUM_PREVIEW_BYTES)
 }
 
 // Preview and prehold share the same fixed index coordinates and strict
 // reconstruction bounds. Their complete-packet domains remain distinct.
-/// Hashes an original packet into its fixed transfer index.
+/// Compares or encodes the bounded bounded input transfer index DATA.
 ///
 /// # Errors
 ///
-/// Rejects an empty or oversized original, an unrepresentable total length,
-/// or a chunk count exceeding the canonical bound.
+/// Rejects malformed fields, changed indexed relationships, overflow or allocation failure.
 pub fn bounded_input_transfer_index(
     original: &[u8],
     domain: &[u8],
@@ -713,12 +700,11 @@ pub fn bounded_input_transfer_index(
     Ok(index)
 }
 
-/// Checks a transfer index against its packet length bounds.
+/// Compares or encodes the bounded bounded input transfer shape DATA.
 ///
 /// # Errors
 ///
-/// Rejects the wrong index width, nonzero reserved bytes, a zero digest, or
-/// a total and chunk count outside the supplied bounds.
+/// Rejects malformed fields, changed indexed relationships, overflow or allocation failure.
 pub fn bounded_input_transfer_shape(
     bytes: &[u8],
     minimum: usize,
@@ -742,12 +728,11 @@ pub fn bounded_input_transfer_shape(
 // signature nor its capacity reply supplies currentness, a logical hold or a
 // publication permit. The same original owners remain independently required.
 
-/// Borrows every field from a complete length-prefixed body.
+/// Compares or encodes the bounded decode length prefixed fields DATA.
 ///
 /// # Errors
 ///
-/// Rejects an overflowing prefix or field length, truncated fields, or bytes
-/// remaining after the final declared field.
+/// Rejects malformed fields, changed indexed relationships, overflow or allocation failure.
 pub fn decode_length_prefixed_fields<const COUNT: usize>(
     body: &[u8],
 ) -> Result<[&[u8]; COUNT], Q04DataErrorV1> {
@@ -773,12 +758,11 @@ pub fn decode_length_prefixed_fields<const COUNT: usize>(
     Ok(fields)
 }
 
-/// Appends a versioned header and its length-prefixed fields.
+/// Compares or encodes the bounded encode length prefixed fields DATA.
 ///
 /// # Errors
 ///
-/// Rejects representation overflow, an encoded size above the supplied
-/// maximum, a field length exceeding u32, or allocation failure.
+/// Rejects malformed fields, changed indexed relationships, overflow or allocation failure.
 pub fn encode_length_prefixed_fields<const COUNT: usize>(
     output: &mut Vec<u8>,
     magic: &[u8; 8],
@@ -809,12 +793,11 @@ pub fn encode_length_prefixed_fields<const COUNT: usize>(
     Ok(())
 }
 
-/// Compares a byte field's nonzero presence with its required state.
+/// Compares or encodes the bounded require presence DATA.
 ///
 /// # Errors
 ///
-/// Rejects an all-zero field when presence is required, or any nonzero byte
-/// when absence is required.
+/// Rejects malformed fields, changed indexed relationships, overflow or allocation failure.
 pub fn require_presence(bytes: &[u8], present: bool) -> Result<(), Q04DataErrorV1> {
     if bytes.iter().any(|byte| *byte != 0) != present {
         return Err(Q04DataErrorV1::ProtectedBoundary);
@@ -822,11 +805,11 @@ pub fn require_presence(bytes: &[u8], present: bool) -> Result<(), Q04DataErrorV
     Ok(())
 }
 
-/// Copies a checked fixed-width field containing a nonzero byte.
+/// Compares or encodes the bounded nonzero DATA.
 ///
 /// # Errors
 ///
-/// Rejects an overflowing or truncated range, or an all-zero field.
+/// Rejects malformed fields, changed indexed relationships, overflow or allocation failure.
 pub fn nonzero<const SIZE: usize>(
     bytes: &[u8],
     offset: usize,
@@ -855,29 +838,29 @@ pub fn fixed<const SIZE: usize>(bytes: &[u8], offset: usize) -> [u8; SIZE] {
     field
 }
 
-/// Reads one bounded big-endian 32-bit integer.
+/// Compares or encodes the bounded read u32 DATA.
 ///
 /// # Errors
 ///
-/// Rejects an overflowing offset or fewer than four bytes at that offset.
+/// Rejects malformed fields, changed indexed relationships, overflow or allocation failure.
 pub fn read_u32(bytes: &[u8], offset: usize) -> Result<u32, Q04DataErrorV1> {
     Ok(u32::from_be_bytes(read_integer_bytes(bytes, offset)?))
 }
 
-/// Reads one bounded big-endian 64-bit integer.
+/// Compares or encodes the bounded read u64 DATA.
 ///
 /// # Errors
 ///
-/// Rejects an overflowing offset or fewer than eight bytes at that offset.
+/// Rejects malformed fields, changed indexed relationships, overflow or allocation failure.
 pub fn read_u64(bytes: &[u8], offset: usize) -> Result<u64, Q04DataErrorV1> {
     Ok(u64::from_be_bytes(read_integer_bytes(bytes, offset)?))
 }
 
-/// Copies a bounded fixed-width integer representation.
+/// Compares or encodes the bounded read integer bytes DATA.
 ///
 /// # Errors
 ///
-/// Rejects an overflowing offset or a truncated field.
+/// Rejects malformed fields, changed indexed relationships, overflow or allocation failure.
 pub fn read_integer_bytes<const SIZE: usize>(
     bytes: &[u8],
     offset: usize,
@@ -942,5 +925,13 @@ mod tests {
                 .frame_bytes_from_prefix_v1(&prefix)
                 .is_err()
         );
+    }
+}
+
+impl From<crate::policy_data::binding_v2::BindingDataErrorV1> for Q04DataErrorV1 {
+    fn from(error: crate::policy_data::binding_v2::BindingDataErrorV1) -> Self {
+        match error {
+            crate::policy_data::binding_v2::BindingDataErrorV1::UnauthenticatedCandidate => Self::UnauthenticatedCandidate,
+        }
     }
 }

@@ -12,7 +12,8 @@ use std::os::fd::{AsFd as _, OwnedFd};
 use std::path::Path;
 
 use aos_sandbox_linux::cgroup::RetainedCgroupAnchor;
-use aos_sandbox_linux::pidfd::{NamespaceFd, PidFd};
+use aos_sandbox_linux::pidfd::NamespaceFd;
+use aos_linux_descriptors::pidfd::PidFd;
 use aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket;
 use aos_sandbox_linux::seqpacket::{
     ConnectionPeerIdentity, KernelAuthorizedRecordSubject, SeqpacketError,
@@ -54,7 +55,7 @@ pub(super) enum BrokerInspectorStartError {
     Time(#[from] NetworkNamespaceInspectorError),
     /// A Linux pidfd observation failed.
     #[error(transparent)]
-    Linux(#[from] aos_sandbox_linux::Error),
+    Linux(#[from] aos_linux_descriptors::Error),
     /// The independently provisioned role verifier rejected PID 1.
     #[error(transparent)]
     Authentication(#[from] NamespaceInspectorKernelAuthenticationError),
@@ -80,7 +81,7 @@ pub(super) enum BrokerInspectorResponseError {
     AcceptedEndpointMismatch,
     /// The retained broker connector pidfd could not be observed.
     #[error(transparent)]
-    Linux(#[from] aos_sandbox_linux::Error),
+    Linux(#[from] aos_linux_descriptors::Error),
     /// The broker connector pidfd inode could not be read.
     #[error("broker inspector connector pidfd stat failed: {0}")]
     ConnectorStat(#[source] rustix::io::Errno),
@@ -364,7 +365,8 @@ mod tests {
     use std::num::NonZeroU32;
 
     use aos_sandbox_model::ObjectDigest;
-    use aos_sandbox_linux::pidfd::{NamespaceIdentity, PidFd};
+    use aos_sandbox_linux::pidfd::NamespaceIdentity;
+    use aos_linux_descriptors::pidfd::PidFd;
     use aos_sandbox_linux::seqpacket::SeqpacketSocket;
 
     use super::*;

@@ -11,6 +11,7 @@
 //!          | current-head-digest[32] | request-id[16] | signed-pair-digest[32]
 //! ```
 
+use crate::journal::historical_observation::HistoricalObservationV1;
 use aos_sandbox_model::OperationId;
 use aos_sandbox_model::operator_recovery_effect::verify_operator_recovery_effect_intent_v1;
 use aos_sandbox_model::operator_recovery_effect_v2::{
@@ -312,6 +313,27 @@ fn current_issuance(
 
 pub(super) fn read(
     journal: &Journal,
+    issued: &StorageRepairIssuanceV2,
+    effect_id: [u8; 32],
+    stage: ProbeStageV1,
+    pair_digest: [u8; 32],
+) -> Result<StoredProbeChallengeV1, OperatorRecoveryIssuanceErrorV1> {
+    read_from_observation_v2(
+        HistoricalObservationV1::from_journal_v1(journal),
+        issued,
+        effect_id,
+        stage,
+        pair_digest,
+    )
+}
+
+/// Checks the original signed Repair custody through the same borrowed owner.
+///
+/// # Errors
+///
+/// Preserves the original malformed-history, signature, credential and owner failures.
+pub(super) fn read_from_observation_v2(
+    journal: HistoricalObservationV1<'_>,
     issued: &StorageRepairIssuanceV2,
     effect_id: [u8; 32],
     stage: ProbeStageV1,

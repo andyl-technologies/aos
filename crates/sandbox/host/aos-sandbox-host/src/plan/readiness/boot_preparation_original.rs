@@ -19,10 +19,9 @@ use aos_sandbox_broker::profile_data::runtime_deployment::{
 };
 use aos_sandbox_broker::profile_data::schema::MAXIMUM_PROFILE_BYTES;
 use aos_sandbox_model::{ResourceDimension as D, ResourceVector};
-use aos_sandbox_linux::boot::RootOriginalKernelBootIdAttemptV1;
-use aos_sandbox_linux::protected_file::{
-    FixedProtectedReadOriginalV3, positional_hash::PositionalHashOriginalV2,
-};
+use aos_linux_descriptors::boot::RootOriginalKernelBootIdAttemptV1;
+use aos_sandbox_linux::protected_file::FixedProtectedReadOriginalV3;
+use aos_linux_descriptors::positional_hash::PositionalHashOriginalV2;
 use aos_sandbox_protocol::runtime_deployment::boot_preparation::{
     BOOT_PREPARATION_COMPLETION_BYTES_V1, BOOT_PREPARATION_COMPLETION_FILE_V1,
     BOOT_PREPARATION_PURPOSE_BYTES_V1, SignedBootPreparationCompletionDataV1,

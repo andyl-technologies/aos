@@ -7,7 +7,7 @@
 use std::error::Error;
 
 use aos_sandbox_model::RawPairedClockSample;
-use aos_sandbox_linux::unix_stream::RetainedUnixStream;
+use aos_linux_descriptors::unix_stream::RetainedUnixStream;
 use aos_sandbox_protocol::domain_ledger::create_storage_history::HistoryErrorV1;
 
 use super::{

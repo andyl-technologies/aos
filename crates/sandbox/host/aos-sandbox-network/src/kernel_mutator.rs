@@ -80,7 +80,7 @@ pub enum NetworkKernelMutationError {
     Artifact,
     /// A namespace or single-thread transition was rejected by Linux.
     #[error("Network mutator namespace authority was rejected: {0}")]
-    Linux(#[from] aos_sandbox_linux::Error),
+    Linux(#[from] aos_linux_descriptors::Error),
     /// A retained fixed artifact could not be revalidated.
     #[error("Network mutator artifact validation failed: {0}")]
     Reader(#[from] NetworkKernelReaderError),
@@ -444,7 +444,7 @@ fn linux_syscall(
     operation: &'static str,
 ) -> impl FnOnce(rustix::io::Errno) -> NetworkKernelMutationError {
     move |source| {
-        NetworkKernelMutationError::Linux(aos_sandbox_linux::Error::Syscall {
+        NetworkKernelMutationError::Linux(aos_linux_descriptors::Error::Syscall {
             operation,
             source: std::io::Error::from_raw_os_error(source.raw_os_error()),
         })

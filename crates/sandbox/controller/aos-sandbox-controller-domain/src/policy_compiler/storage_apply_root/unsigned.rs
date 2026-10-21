@@ -10,7 +10,7 @@ use aos_sandbox_protocol::domain_ledger::create_storage_history::ready::ReadyBun
 use aos_sandbox_protocol::semantics::{CatalogBindingV1, ProtectedStorageCreateApplyDataV1};
 use crate::journal::JournalError;
 use crate::controller_resource_reservation::RootContinuationDemandV1;
-use crate::policy_compiler::bounded_stream_io::DeadlineStreamDirectionV1;
+use aos_sandbox_broker::bounded_stream_io::DeadlineStreamDirectionV1;
 use crate::policy_compiler::create_storage_current::controller_readonly::RootProspectiveStorageApplyPlanV1;
 use crate::policy_compiler::root_policy_prelude::RootPolicyPreludeOriginalV1;
 use crate::policy_compiler::provisioning_current::RootContinuationClockGateV1;

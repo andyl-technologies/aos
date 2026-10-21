@@ -12,7 +12,6 @@ use aos_sandbox_protocol::domain_ledger::{readonly::HistoricalLedgerRowsDataV2, 
 use aos_sandbox_protocol::publication::{PublicationHistoryV1, RecoveredOwnershipLeaseV1,
     RecoveredBrokerDispatchTemplateV1};
 use crate::journal::JournalError;
-use super::current_manifest::require_current_assignment_history_v2;
 
 /// Quotes the same current quartet selectors without entering the compiler.
 ///
@@ -56,7 +55,9 @@ pub(crate) fn current_cleanup_assignment_receiving_demand_v2(
             .with(D::MetadataEntries, u64::try_from(entries).ok()?)).ok()?;
     }
     demand.checked_add(ResourceVector::ZERO.with(D::MemoryBytes,
-        u64::try_from(size_of::<CurrentCleanupAssignmentDataV2>().checked_mul(3)?).ok()?)).ok()
+        u64::try_from(size_of::<CurrentCleanupAssignmentDataV2>().checked_mul(3)?
+            .checked_add(aos_sandbox_protocol::domain_ledger::runtime_authority_history::current_assignment::
+                current_assignment_links_control_bytes_v2()?)?).ok()?)).ok()
 }
 
 type Cause = Box<dyn std::error::Error + Send + Sync>;
@@ -78,7 +79,9 @@ pub(crate) fn current_cleanup_assignment_rows_data_v2(
         .ok_or(JournalError::ProtectedBoundary)?;
     let publication = aos_sandbox_protocol::publication::ledger_read::current_rows_data_v2(rows, sandbox)?
         .ok_or(JournalError::ProtectedBoundary)?;
-    require_current_assignment_history_v2(&binding, publication.history())?;
+    aos_sandbox_protocol::domain_ledger::runtime_authority_history::current_assignment::
+        require_current_assignment_history_data_v2(&binding, publication.history())
+        .map_err(|_| JournalError::ProtectedBoundary)?;
     let OwnershipGateStatusV1::Activated { plan, .. } = crosslinks::runtime_gate_rows_data_v2(rows, binding.operation())?
         else { return Err(JournalError::ProtectedBoundary.into()); };
     let (history, recovered_lease, templates) = publication.into_parts();

@@ -42,7 +42,7 @@ use std::sync::{Arc, Mutex};
 use aos_sandbox_broker::kernel_clock::RetainedKernelPairedClockAttemptV1;
 use aos_sandbox_model::{OperationId, ResourceDimension as D, ResourceVector};
 use aos_sandbox_protocol::domain_ledger::create_q04_history::Q04CutIdentityV1;
-use aos_sandbox_linux::boot::RootOriginalKernelBootIdAttemptV1;
+use aos_linux_descriptors::boot::RootOriginalKernelBootIdAttemptV1;
 
 use super::{CreateProvisioningOriginalsV1, NativeResidenceV1, runtime_layout};
 use crate::controller_resource_reservation::create_intake::ready::ownership::StartOwnershipOriginalV1;
@@ -532,7 +532,7 @@ impl StartNativeStateV1 {
             .checked_add(*self.predecessor_resident.as_ref().and_then(|result| result.as_ref().ok()).ok_or_else(bad)?)?
             .checked_add(controller.create_storage_semantic_append_demand_v1()?)?
             .checked_add(ResourceVector::ZERO.with(D::MemoryBytes,
-                crate::controller_service::public_projection::sandbox_source_receiving_bytes_v1(controller)
+                aos_sandbox_protocol::public_api::projection::geometry::sandbox_source_receiving_bytes_v1(controller.historical_read_view_v1().rows_data_v2())
                     .ok_or_else(bad)?))?)
     }
 }

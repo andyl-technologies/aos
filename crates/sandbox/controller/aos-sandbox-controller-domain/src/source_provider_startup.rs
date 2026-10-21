@@ -47,13 +47,13 @@ pub enum SourceStartupAdmissionErrorV1 {
 /// Borrows the actual first cause without copying an error or lending a FD.
 pub enum SourceStartupFailureRefV1<'owner> {
     /// The same Linux table retains the native/kernel cause.
-    Kernel(&'owner aos_sandbox_linux::Error),
+    Kernel(&'owner aos_linux_descriptors::Error),
     /// The fixed native image attempt retains its protocol and transport cause.
     Observer(&'owner OwnUnitPid1ImageAttemptV1),
     /// The actual runtime constructor returned this error.
     Runtime(&'owner std::io::Error),
     /// The original image measurement retains its native cause.
-    Measurement(&'owner aos_sandbox_linux::Error),
+    Measurement(&'owner aos_linux_descriptors::Error),
     /// Safe duplication of original FD3 returned this native cause.
     Duplicate(&'owner rustix::io::Errno),
     /// The same listener admission attempt retains its typed cause.
@@ -500,7 +500,7 @@ impl Drop for OriginalSourceStartupV1 {
     }
 }
 
-fn root_credentials(credentials: aos_sandbox_linux::pidfd::PidFdCredentials) -> bool {
+fn root_credentials(credentials: aos_linux_descriptors::pidfd::PidFdCredentials) -> bool {
     credentials.real_user_id() == 0
         && credentials.effective_user_id() == 0
         && credentials.saved_user_id() == 0

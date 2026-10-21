@@ -12,6 +12,7 @@ test-fixtures = ["aos-sandbox-journal/test-fixtures"]
 aos-sandbox-model.workspace = true
 aos-sandbox-journal = { workspace = true, features = ["protected-unix"] }
 aos-sandbox-linux.workspace = true
+aos-linux-descriptors.workspace = true
 aos-sandbox-protocol.workspace = true
 aos-systemd-client.workspace = true
 ed25519-dalek = { workspace = true, features = ["zeroize"] }

@@ -51,13 +51,13 @@ enum ClockError {
     #[error("fresh Capture Stop clock is unavailable or stale")]
     Stale,
     #[error(transparent)]
-    Native(aos_sandbox_linux::Error),
+    Native(aos_linux_descriptors::Error),
 }
 impl KernelPairedClockErrorV1 for ClockError {
     fn stale() -> Self {
         Self::Stale
     }
-    fn kernel(cause: aos_sandbox_linux::Error) -> Self {
+    fn kernel(cause: aos_linux_descriptors::Error) -> Self {
         Self::Native(cause)
     }
 }
@@ -141,7 +141,7 @@ pub(super) struct CaptureStopCleanupOriginalV4 {
 struct Action {
     clocks: [ClockSlot; CLOCKS],
     peer: RootServiceConnectionOriginalV2,
-    peer_result: Option<Result<aos_sandbox_linux::pidfd::PidFdInfo, RootServicePeerError>>,
+    peer_result: Option<Result<aos_linux_descriptors::pidfd::PidFdInfo, RootServicePeerError>>,
     wait: Option<Result<(), BoundedRecordError>>,
     record: Option<Result<ReceivedDescriptorRecord, RetainedSeqpacketReceiveErrorV1>>,
     binding: Option<Result<(), RecordBindingError>>,
@@ -166,7 +166,7 @@ struct Action {
     sent: Option<DescriptorWorkerSendAttemptV1>,
     peer_after: [RootServiceConnectionOriginalV2; 2],
     peer_after_result:
-        [Option<Result<aos_sandbox_linux::pidfd::PidFdInfo, RootServicePeerError>>; 2],
+        [Option<Result<aos_linux_descriptors::pidfd::PidFdInfo, RootServicePeerError>>; 2],
     subject_after: [RootServiceSubjectPostOriginalV2; 2],
     subject_after_result: [Option<Result<(), RootServicePeerError>>; 2],
     socket_after: [Option<Result<(), SeqpacketError>>; 2],

@@ -5,8 +5,8 @@
 //! exposed, and no Create/Boot loan or historical inventory is substituted.
 
 use super::*;
-use crate::cache_residency::{CacheDeleteInventoryQueryV1, CacheResidentInitializationV1,
-    CacheResidencyProtectedOwnerV1, DormantCacheOwnerV1};
+use crate::cache_programmes::{CacheDeleteInventoryQueryV1, CacheResidentInitializationV1};
+use aos_sandbox_cache::{CacheResidencyProtectedOwnerV1, DormantCacheOwnerV1};
 use crate::normal_root::ProductionControllerNormalRootProfileV1;
 
 impl ControllerResourceBankOpeningV1 {
@@ -43,7 +43,7 @@ impl ControllerResourceBankOpeningV1 {
     #[doc(hidden)]
     pub fn begin_retained_delete_pending_cache_once_v2<'query, 'cache, 'journal, 'original, 'profile>(
         &'query self,
-        retained: &mut Option<crate::cache_residency::CacheDeleteInventoryOriginalV1<'cache>>,
+        retained: &mut Option<crate::cache_programmes::CacheDeleteInventoryOriginalV1<'cache>>,
         pending: &'query mut crate::ControllerDeletePendingOriginalV2<'journal, 'original>,
         controller: &'query mut Journal,
         profile: &'profile ProductionControllerNormalRootProfileV1,

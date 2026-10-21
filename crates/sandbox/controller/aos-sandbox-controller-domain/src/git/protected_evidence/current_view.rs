@@ -25,7 +25,8 @@ use std::path::Path;
 use aos_sandbox_model::ObjectDigest;
 use aos_sandbox_model::bounded_codec::checked_byte_region;
 use aos_sandbox_linux::seqpacket::RetainedSeqpacketReceiveErrorV1;
-use aos_sandbox_linux::unix_stream::{RetainedUnixStream, UnixStreamSubjectChunk};
+use aos_linux_descriptors::unix_stream::RetainedUnixStream;
+use aos_sandbox_linux::unix_stream::UnixStreamSubjectChunk;
 
 use super::{
     DecodedGitEvidenceV1, FixedLiveAuthorityClockV1, GitProtectedEvidenceErrorV1,

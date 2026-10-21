@@ -124,7 +124,7 @@ impl PidFdIdentityReadbackV1 {
             return Err(closed());
         }
         self.entered = true;
-        self.source = Some(original.prepare_proc_observations_v1());
+        self.source = Some(crate::pidfd::prepare_proc_observations_v1(&(original)));
         let source = self.source.as_mut().ok_or_else(closed)?;
         source.phase = ObservationPhaseV1::Closed;
         self.result = Some(source.capture_stat_inner_observed(original, Some(&mut self.originals)));
@@ -201,7 +201,7 @@ mod tests {
         let process = PidFd::open(std::num::NonZeroU32::new(std::process::id()).unwrap()).unwrap();
         let mut original = PidFdIdentityReadbackV1::new();
         original.capture_once(&process).unwrap();
-        assert_eq!(original.identity().unwrap(), process.process_identity().unwrap());
+        assert_eq!(original.identity().unwrap(), crate::pidfd::process_identity(&process).unwrap());
         assert!(original.failure().is_none());
         let source = original.source.as_ref().unwrap();
         assert!(source.stat.file.is_some());

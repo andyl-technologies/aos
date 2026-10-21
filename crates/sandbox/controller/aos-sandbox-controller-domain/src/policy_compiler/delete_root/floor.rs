@@ -23,10 +23,12 @@ use crate::policy_compiler::{
     RetainedKernelPairedClockAttemptV1,
     create_storage_current::pins::RootCurrentPinsStateV1,
     root_current_writers::RootCreateStorageCurrentWritersV1,
-    source_genesis_root::{
-        RootSavedFloorComparisonErrorV1, RootSavedSourceFloorDataV1, compare_saved_source_floor_v1,
-    },
 };
+use aos_sandbox_ledger_replay::replay::root_saved_floor::{
+    RootSavedFloorComparisonDataErrorV1, RootSavedSourceFloorDataV1,
+};
+use aos_sandbox_policy::root_role_pins_data::RootRolePinsDataV1;
+use aos_sandbox_policy::root_saved_floor_data::compare_settled_source_floor_data_v1;
 use aos_sandbox_model::{RawPairedClockSample, ResourceDimension as D, ResourceVector};
 use std::error::Error;
 use std::path::Path;
@@ -175,7 +177,7 @@ pub(crate) struct RootDeleteFloorOriginalV1 {
     pin_check: Option<
         Result<(), crate::policy_compiler::create_storage_current::pins::RootServingPinsErrorV1>,
     >,
-    floor: Option<Result<RootSavedSourceFloorDataV1, RootSavedFloorComparisonErrorV1>>,
+    floor: Option<Result<RootSavedSourceFloorDataV1, RootSavedFloorComparisonDataErrorV1>>,
     entered: bool,
     native_entered: bool,
     complete: bool,
@@ -317,7 +319,12 @@ impl RootDeleteFloorOriginalV1 {
         let (authority, _) = writers
             .authority_and_policy()
             .map_err(|_| RootDeleteErrorV1::Opening)?;
-        self.floor = Some(compare_saved_source_floor_v1(authority, tuple, fields));
+        // The fixed native writers, independently captured pins and Source
+        // reply remain in this same interval through the owed after posts.
+        // The lower fold compares DATA only; it cannot replace those owners.
+        self.floor = Some(compare_settled_source_floor_data_v1(
+            authority.historical_read_view_v1(), tuple, fields,
+        ));
         self.require(matches!(self.floor, Some(Ok(_))), First::Compare)
     }
 
@@ -454,7 +461,7 @@ fn actual_map_geometry_v1(
         .ok_or(JournalError::JournalTooLarge)?;
     let fixed_models = std::mem::size_of::<RootSavedSourceFloorDataV1>().checked_mul(4)
         .and_then(|bytes| bytes.checked_add(std::mem::size_of::<aos_sandbox_ledger_replay::hierarchy::graph::SandboxTreeV1>().checked_mul(4)?))
-        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<crate::policy_compiler::source_genesis_root::RootRolePinsDataV1>().checked_mul(4)?))
+        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<RootRolePinsDataV1>().checked_mul(4)?))
         .and_then(|bytes| bytes.checked_add(std::mem::size_of::<sha2::Sha256>().checked_mul(4)?))
         .and_then(|bytes| bytes.checked_add(4 * 72))
         .and_then(|bytes| bytes.checked_add(receipt))

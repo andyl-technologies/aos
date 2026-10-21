@@ -8,10 +8,8 @@
 
 use std::error::Error;
 
-use crate::cache_residency::{
-    CacheResidentInitializationV1, CacheResidencyProtectedOwnerV1, DormantCacheOwnerV1,
-    OriginalCreateStorageCacheLoanV1,
-};
+use crate::cache_programmes::{CacheResidentInitializationV1, OriginalCreateStorageCacheLoanV1};
+use aos_sandbox_cache::{CacheResidencyProtectedOwnerV1, DormantCacheOwnerV1};
 
 use super::*;
 
@@ -32,7 +30,7 @@ pub struct OriginalCreateStorageReadyV1<'original, 'cache> {
     pub(super) original: CreateStorageOriginalLoanV1<'original>,
     pub(super) cache: OriginalCreateStorageCacheLoanV1<'cache>,
     association: Option<Result<(), ResourceReservationErrorV1>>,
-    cache_production: Option<Result<(), crate::cache_residency::CacheHeldClosedV1>>,
+    cache_production: Option<Result<(), aos_sandbox_cache::CacheHeldClosedV1>>,
 }
 
 impl CreateContinuationIntakeAttemptV1 {

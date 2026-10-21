@@ -12,7 +12,7 @@ use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 
 use aos_sandbox_model::{ResourceDimension as D, ResourceVector};
-use aos_sandbox_linux::boot::RootOriginalKernelBootIdAttemptV1;
+use aos_linux_descriptors::boot::RootOriginalKernelBootIdAttemptV1;
 use aos_sandbox_linux::protected_file::FixedProtectedReadOriginalV3;
 use aos_sandbox_linux::selinux_policy::RetainedLiveSelinuxPolicyReadbackV1;
 use ed25519_dalek::VerifyingKey;

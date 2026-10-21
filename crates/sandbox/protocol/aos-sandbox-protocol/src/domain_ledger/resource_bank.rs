@@ -147,6 +147,8 @@ pub struct NativeLayoutDemand {
     q04_attempt_bytes: usize,
     preparation_attempt_bytes: usize,
     create_intake_attempt_bytes: usize,
+    root_role_adapters: Option<[ResourceVector; 3]>,
+    root_listener_layout: Option<ResourceVector>,
 }
 
 impl NativeLayoutDemand {
@@ -159,7 +161,41 @@ impl NativeLayoutDemand {
             q04_attempt_bytes,
             preparation_attempt_bytes,
             create_intake_attempt_bytes: 0,
+            root_role_adapters: None,
+            root_listener_layout: None,
         }
+    }
+
+    /// Adds the actual Root adapter representation geometry.
+    ///
+    /// These three fixed quotes describe the profile adapter, selected wrapper,
+    /// and currentness wrapper. They carry no completed prefix or payment.
+    /// Missing or overflowing geometry cannot enter the native role sequence.
+    #[must_use]
+    pub const fn with_root_role_adapters(mut self, adapters: Option<[ResourceVector; 3]>) -> Self {
+        self.root_role_adapters = adapters;
+        self
+    }
+
+    /// Returns fixed Root adapter geometry without establishing native custody.
+    #[must_use]
+    pub const fn root_role_adapters(self) -> Option<[ResourceVector; 3]> {
+        self.root_role_adapters
+    }
+
+    /// Adds the actual upper fixed listener reservoir as inert layout DATA.
+    ///
+    /// This layout neither records a Stage nor constructs a completed listener.
+    #[must_use]
+    pub const fn with_root_listener_layout(mut self, layout: Option<ResourceVector>) -> Self {
+        self.root_listener_layout = layout;
+        self
+    }
+
+    /// Copies fixed listener layout DATA without receiving authority.
+    #[must_use]
+    pub const fn root_listener_layout(self) -> Option<ResourceVector> {
+        self.root_listener_layout
     }
 
     /// Adds an inert width sampled from the actual Create intake owner.

@@ -49,7 +49,7 @@ pub enum GuestProcessEffectErrorV1 {
     OpenSshPhysical(#[from] crate::openssh_gate_linux::OpenSshGatePhysicalErrorV1),
     /// Enforcing Guest ownership or retained kernel custody failed.
     #[error("guest execution confinement failed: {0}")]
-    Confinement(#[from] aos_sandbox_linux::Error),
+    Confinement(#[from] aos_linux_descriptors::Error),
     /// The protected state directory or one of its records is unsafe.
     #[error("guest effect ledger is not root-protected")]
     UnprotectedLedger,

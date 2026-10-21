@@ -758,8 +758,8 @@ fn qualified_inode_entropy(
 }
 
 fn read_kernel_boot_id() -> Result<[u8; 16], QualificationError> {
-    aos_sandbox_linux::boot::KernelBootId::current()
-        .map(aos_sandbox_linux::boot::KernelBootId::into_bytes)
+    aos_linux_descriptors::boot::KernelBootId::current()
+        .map(aos_linux_descriptors::boot::KernelBootId::into_bytes)
         .map_err(|_| QualificationError::Clock)
 }
 

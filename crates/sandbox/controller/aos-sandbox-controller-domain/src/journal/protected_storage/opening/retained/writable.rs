@@ -55,38 +55,6 @@ pub(crate) struct ProtectedWriterOpenOriginalsV1 {
 }
 
 impl ProtectedWriterOpenOriginalsV1 {
-    /// Prices the shared native recipe without adding a writable semantic model.
-    pub(crate) fn fixed_preparation_demand_v1<T>(
-        directory_descriptors: u16,
-        path_name_bytes: u16,
-    ) -> Result<aos_sandbox_model::ResourceVector, aos_sandbox_model::AccountingError> {
-        use aos_sandbox_model::{AccountingError, ResourceDimension as D, ResourceVector};
-
-        let overflow = || AccountingError::ArithmeticOverflow {
-            dimension: D::MemoryBytes,
-        };
-        let directories = u64::from(directory_descriptors);
-        let paths = u64::from(path_name_bytes);
-        let memory = u64::try_from(std::mem::size_of::<T>())
-            .ok()
-            .and_then(|bytes| {
-                bytes.checked_add(
-                    directories
-                        .checked_mul(3)?
-                        .checked_mul(u64::try_from(std::mem::size_of::<std::fs::File>()).ok()?)?,
-                )
-            })
-            .and_then(|bytes| bytes.checked_add(paths.checked_add(32)?.checked_mul(16)?))
-            .and_then(|bytes| bytes.checked_add(32 * 256))
-            .ok_or_else(overflow)?;
-        // Same already-admitted physical recipe: held hierarchy plus two
-        // failed/owed name bookends. No semantic backing or heap metadata fee.
-        Ok(ResourceVector::ZERO
-            .with(D::MemoryBytes, memory)
-            .with(D::OpenFiles, directories * 3 + 6)
-            .with(D::MetadataEntries, directories * 3 + 14))
-    }
-
     /// Adds only the real writable construction planes outside its resident T.
     pub(crate) fn fixed_writable_preparation_demand_v1<T>(
         directory_descriptors: u16,
@@ -98,7 +66,7 @@ impl ProtectedWriterOpenOriginalsV1 {
         let overflow = || AccountingError::ArithmeticOverflow {
             dimension: D::MemoryBytes,
         };
-        let base = Self::fixed_preparation_demand_v1::<T>(directory_descriptors, path_name_bytes)?;
+        let base = CanonicalOrdinaryOpeningOriginalsV1::<()>::fixed_preparation_demand_v1::<T>(directory_descriptors, path_name_bytes)?;
 
         // T already contains one opening and its resident held-output slot.
         // Keep the common supplier's other working/return planes, without

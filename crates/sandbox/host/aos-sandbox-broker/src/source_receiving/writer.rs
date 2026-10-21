@@ -75,6 +75,16 @@ impl<P> SourceCoordinatorWriterV1<P> {
             u64::try_from(bytes).map_err(|_| SourceNativeErrorV1::Closed)?))
     }
 
+    /// Borrows the original association retained by genuine fixed construction.
+    ///
+    /// This inert, non-Clone reference grants no completion, phase, custody,
+    /// native entry or effect permission. No Arc, writer or file escapes.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn cache_audit_original_v1(&self) -> &ControllerSourceOriginalRefV1 {
+        &self.original
+    }
+
     /// Returns the same retained native writer's next sequence as comparison DATA.
     pub const fn next_sequence(&self) -> u64 {
         self.physical.native.native().next_sequence()

@@ -26,12 +26,18 @@ pub mod stored_history;
 
 pub mod history_archive;
 
+/// Defines the compiled protected Session name, limits and archive ceilings.
+pub mod fixed_journal;
+
 use aos_sandbox_api::aos::sandbox::local::v1::{
     BrokerDescriptorRole, BrokerErrorCode, BrokerMethod, BrokerRequestEnvelope,
     BrokerResponseEnvelope, InventoryNetworksRequest, RequestHeader,
 };
+/// Bounds the same canonical authenticated response used by Session framing.
+pub use aos_sandbox_broker_session_protocol::AUTHENTICATED_RESPONSE_MAXIMUM_BYTES;
+
 use aos_sandbox_broker_session_protocol::{
-    AUTHENTICATED_RESPONSE_MAXIMUM_BYTES, BrokerOutcomeAdmissionV1, BrokerOutcomeSubjectV1,
+    BrokerOutcomeAdmissionV1, BrokerOutcomeSubjectV1,
     BrokerRequestAdmissionV1, BrokerRequestSubjectV1, BrokerSessionAuthorizationPresenceV1,
     BrokerSessionMethodProfileV1, BrokerSessionProjectionError, BrokerSessionProtocolV1,
     BrokerSessionReplayEvidenceV1, BrokerSessionSequenceError, BrokerSessionSuccessBodyPresenceV1,

@@ -35,7 +35,7 @@ pub(crate) enum RootGitEvidenceCredentialErrorV1 {
     #[error("original normal Root no longer matches")]
     Root(#[from] NormalRootStartupErrorV1),
     #[error("original Git credential kernel observation failed")]
-    Linux(#[from] aos_sandbox_linux::Error),
+    Linux(#[from] aos_linux_descriptors::Error),
     #[error("original Git credential I/O failed")]
     Io(#[from] io::Error),
     #[error("fixed Git credential profile differs")]

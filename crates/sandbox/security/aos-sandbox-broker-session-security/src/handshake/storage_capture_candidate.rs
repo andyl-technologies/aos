@@ -10,7 +10,7 @@ impl DormantAuthenticatedBrokerSessionV1 {
         output: &mut aos_sandbox_storage::execution_output_credential::StorageExecutionOutputCustodyV1,
         receiving: &mut aos_sandbox_controller_domain::StorageLifecycleSessionLoanV1<'_, '_>,
         version: aos_sandbox_model::ProtocolVersion,
-        boot: aos_sandbox_linux::boot::KernelBootId,
+        boot: aos_linux_descriptors::boot::KernelBootId,
     ) -> Result<Vec<u8>, aos_sandbox_storage::DormantStorageBrokerCallErrorV1> {
         let journal = self
             .owner

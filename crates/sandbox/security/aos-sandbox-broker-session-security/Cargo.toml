@@ -45,6 +45,7 @@ aos-sandbox-journal.workspace = true
 aos-sandbox-policy.workspace = true
 aos-sandbox-host.workspace = true
 aos-sandbox-linux.workspace = true
+aos-linux-descriptors.workspace = true
 aos-sandbox-mount.workspace = true
 aos-sandbox-mount-native.workspace = true
 aos-sandbox-network.workspace = true
@@ -69,6 +70,7 @@ thiserror.workspace = true
 tokio.workspace = true
 zeroize.workspace = true
 
+aos-sandbox-cache = { workspace = true }
 [dev-dependencies]
 axum.workspace = true
 aos-sandbox-controller-domain = { workspace = true, features = ["test-fixtures"] }

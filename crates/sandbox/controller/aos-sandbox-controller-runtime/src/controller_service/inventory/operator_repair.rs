@@ -220,7 +220,7 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
             .session
             .retain_authenticated_peer_pidfd()
             .map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?;
-        let peer = aos_sandbox_linux::pidfd::PidFd::from_owned(descriptor)
+        let peer = aos_linux_descriptors::pidfd::PidFd::from_owned(descriptor)
             .map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?;
         let descriptor = rustix::fs::open(
             "/sys/fs/cgroup",

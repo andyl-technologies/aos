@@ -10,7 +10,7 @@ use aos_sandbox_model::{
     SandboxId,
 };
 
-use super::super::protected_journal::validated_candidate_body;
+use aos_sandbox_policy::native::validated_candidate_body;
 use super::ConsumerReadFlightErrorV1 as Error;
 use super::transport::{Deadline, Flight};
 use super::wire::{Correlation, Phase, STATE_PREFIX_BYTES, take};
@@ -141,17 +141,17 @@ fn decode_state<'state>(
     let generation = u64::from_be_bytes(take(bytes, 64)?);
     let output = ObjectDescriptor::new(
         MediaType::new(PortableMediaType::Policy.as_str()).map_err(|_| Error::Protocol)?,
-        header.outputs[0].0,
-        header.outputs[0].1,
+        header.outputs()[0].0,
+        header.outputs()[0].1,
     );
     let current: [u8; 32] = take(bytes, 0)?;
     let envelope: [u8; 32] = take(bytes, 32)?;
     if current == [0; 32]
         || envelope == [0; 32]
         || generation == 0
-        || header.project != project
-        || header.sandbox != sandbox
-        || header.generation != generation
+        || header.project() != project
+        || header.sandbox() != sandbox
+        || header.generation() != generation
         || &output != accepted
     {
         return Err(Error::Protocol);
@@ -167,8 +167,8 @@ fn decode_state<'state>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::policy_compiler::protected_journal::resolved_policy_fixture as fixture;
-    use crate::policy_compiler::resolved_policy::tests::{commit_fixture, open};
+    use aos_sandbox_policy::native::policy_state_test_fixtures as fixture;
+    use aos_sandbox_policy::native::policy_state_test_fixtures::{commit_fixture, open};
     use aos_sandbox_model::model::CacheDomainKind;
     use std::os::unix::fs::PermissionsExt as _;
 

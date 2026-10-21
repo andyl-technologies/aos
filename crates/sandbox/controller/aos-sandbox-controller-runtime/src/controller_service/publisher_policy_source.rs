@@ -19,6 +19,7 @@ use aos_sandbox_controller_domain::publisher_admin::policy::{
     GitUploadBootstrapAppendV1, GitUploadBootstrapErrorV1, PublisherPolicyError,
     PublisherPolicyLimits, VerifiedPublisherPolicySourceV1,
 };
+use aos_sandbox_protocol::publisher_policy::git_source::GitUploadSourceDataErrorV1;
 use aos_sandbox_controller_domain::public_api_session::PublisherPolicyBootstrapCredentialCustodyV1;
 use aos_sandbox_publisher::publisher_sessions::PublisherSessionScope;
 use aos_sandbox_model::{GitUploadCapacityV1, RawPairedClockSample};
@@ -104,7 +105,7 @@ impl SignedSourceV1 {
         controller: &mut ProductionController,
     ) -> Result<(), PublisherPolicySourceErrorV1> {
         let mut store = controller.publisher_policies(PublisherPolicyLimits::default())?;
-        self.0.install_initial_policy(&mut store).map_err(|error| match error {
+        store.install_initial_policy_from_source_v1(&self.0).map_err(|error| match error {
             GitUploadBootstrapErrorV1::Conflict => PublisherPolicySourceErrorV1::Conflict,
             GitUploadBootstrapErrorV1::Store(cause) => PublisherPolicySourceErrorV1::Store(cause),
             _ => PublisherPolicySourceErrorV1::Source,
@@ -121,8 +122,8 @@ impl SignedSourceV1 {
 // is parked here before another readback, clock sample or protected crossing.
 pub(super) struct PublisherPolicyBootstrapAttemptV1 {
     credentials: PublisherPolicyBootstrapCredentialCustodyV1,
-    source: Option<Result<VerifiedPublisherPolicySourceV1, GitUploadBootstrapErrorV1>>,
-    capacity: Option<Result<GitUploadCapacityV1, GitUploadBootstrapErrorV1>>,
+    source: Option<Result<VerifiedPublisherPolicySourceV1, GitUploadSourceDataErrorV1>>,
+    capacity: Option<Result<GitUploadCapacityV1, GitUploadSourceDataErrorV1>>,
     installs: [Option<Result<(), GitUploadBootstrapErrorV1>>; 4],
     append: Option<Result<GitUploadBootstrapAppendV1, GitUploadBootstrapErrorV1>>,
     original_clock: Option<RawPairedClockSample>,
@@ -153,7 +154,7 @@ enum BootstrapCauseV1 {
     #[error("original paired clock observation failed")]
     Clock(#[source] OwnershipClockObservationError),
     #[error("original exclusive-cohort account crossing is unavailable")]
-    Coverage(#[source] aos_sandbox_controller_domain::cache_residency::CacheResidentUnavailableV1),
+    Coverage(#[source] aos_sandbox_cache::CacheResidentUnavailableV1),
     #[error("original bootstrap phase, clock or interval is invalid")]
     Rejected,
 }
@@ -264,10 +265,10 @@ impl PublisherPolicyBootstrapAttemptV1 {
             let source = self.source.as_ref().and_then(|value| value.as_ref().ok())
                 .ok_or(BootstrapCauseV1::Rejected)?;
             self.installs[index] = Some(match index {
-                0 => source.install_initial_resource(&mut store),
-                1 => source.install_initial_controller(&mut store),
-                2 => source.install_initial_revocation(&mut store),
-                _ => source.install_initial_policy_head(&mut store),
+                0 => store.install_initial_resource_from_source_v1(source),
+                1 => store.install_initial_controller_from_source_v1(source),
+                2 => store.install_initial_revocation_from_source_v1(source),
+                _ => store.install_initial_policy_head_from_source_v1(source),
             });
             if matches!(self.installs[index].as_ref(), Some(Err(_))) {
                 return Err(BootstrapCauseV1::Install(index));
@@ -639,7 +640,7 @@ mod tests {
         let last = changed.len() - 1;
         changed[last] ^= 1;
         assert!(matches!(
-            verified.verify_git_capacity(&changed), Err(GitUploadBootstrapErrorV1::Descriptor(_)),
+            verified.verify_git_capacity(&changed), Err(GitUploadSourceDataErrorV1::Descriptor(_)),
         ));
         assert!(verified.verify_git_capacity(&[0]).is_err());
     }

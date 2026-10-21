@@ -8,8 +8,9 @@
 use super::*;
 use aos_sandbox_protocol::domain_ledger::provisioning_root::host_launch::HostResourcePurposeDataV1 as Purpose;
 use aos_sandbox_model::{ResourceDimension as D, RevocationScopeId};
-use aos_sandbox_linux::immutable_file::{SealedReadOnlyCredential,
-    SealedReadOnlyCredentialCreateOriginalsV1, SealedReadOnlyCredentialCreateClosedV1};
+use aos_linux_descriptors::credential::SealedReadOnlyCredential;
+use aos_linux_descriptors::credential::SealedReadOnlyCredentialCreateOriginalsV1;
+use aos_linux_descriptors::credential::SealedReadOnlyCredentialCreateClosedV1;
 use aos_sandbox_protocol::authorization_artifact::{BrokerPlanPreparation, SignedBrokerPlan,
     SigningAuthority, start_resource_plan::{StartResourcePlanPreparationDataV1,
         prepare_admitted_start_network_plan_v2}};

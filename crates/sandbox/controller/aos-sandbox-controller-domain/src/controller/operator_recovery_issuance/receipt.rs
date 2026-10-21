@@ -16,6 +16,7 @@
 //! signed-receipt[328]
 //! ```
 
+use crate::journal::historical_observation::HistoricalObservationV1;
 use aos_sandbox_api::aos::sandbox::local::v1::{
     InventoryStorageResourcesResponse, RepairStorageWorkspacePinRequest,
 };
@@ -684,14 +685,49 @@ pub(super) fn verified_retained_repair_receipt_v3(
     intent: &OperatorRecoveryEffectIntentV1,
     owner: &ProtectedStorageRepairReceiptVerifierV2,
 ) -> Result<VerifiedRetainedRepairReceiptV3, OperatorRecoveryIssuanceErrorV1> {
+    verified_retained_repair_receipt_from_observation_v2(
+        HistoricalObservationV1::from_journal_v1(journal),
+        intent,
+        owner,
+    )
+}
+
+/// Checks the original signed Repair custody through the same borrowed owner.
+///
+/// # Errors
+///
+/// Preserves the original malformed-history, signature, credential and owner failures.
+pub(super) fn verified_retained_repair_receipt_from_observation_v2(
+    journal: HistoricalObservationV1<'_>,
+    intent: &OperatorRecoveryEffectIntentV1,
+    owner: &ProtectedStorageRepairReceiptVerifierV2,
+) -> Result<VerifiedRetainedRepairReceiptV3, OperatorRecoveryIssuanceErrorV1> {
     owner.recheck()?;
-    let facts = verified_retained_repair_receipt_with_pin_v3(journal, intent, &owner.pin)?;
+    let facts =
+        verified_retained_repair_receipt_with_pin_from_observation_v2(journal, intent, &owner.pin)?;
     owner.recheck()?;
     Ok(facts)
 }
 
 fn verified_retained_repair_receipt_with_pin_v3(
     journal: &Journal,
+    intent: &OperatorRecoveryEffectIntentV1,
+    owner: &StorageOwnerPinV2,
+) -> Result<VerifiedRetainedRepairReceiptV3, OperatorRecoveryIssuanceErrorV1> {
+    verified_retained_repair_receipt_with_pin_from_observation_v2(
+        HistoricalObservationV1::from_journal_v1(journal),
+        intent,
+        owner,
+    )
+}
+
+/// Checks the original signed Repair custody through the same borrowed owner.
+///
+/// # Errors
+///
+/// Preserves the original malformed-history, signature, credential and owner failures.
+fn verified_retained_repair_receipt_with_pin_from_observation_v2(
+    journal: HistoricalObservationV1<'_>,
     intent: &OperatorRecoveryEffectIntentV1,
     owner: &StorageOwnerPinV2,
 ) -> Result<VerifiedRetainedRepairReceiptV3, OperatorRecoveryIssuanceErrorV1> {

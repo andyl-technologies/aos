@@ -9,13 +9,7 @@ use std::os::unix::fs::MetadataExt as _;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use aos_sandbox_controller_domain::cache_residency::{
-    CacheOwnerErrorV1, CacheOwnerLimitsV1, CacheReplayControllerBootstrapOwnerV1,
-    CacheResidencyHeldPhysicalCutErrorV1, DormantCacheOwnerV1,
-    encode_cache_replay_controller_bundle_v1, encode_cache_replay_genesis_manifest_v1,
-    with_fixed_closed_cache_physical_policy_cut_v1,
-    with_fixed_closed_cache_physical_policy_cut_vm_fixture_v1,
-};
+use aos_sandbox_cache::{CacheOwnerErrorV1, CacheOwnerLimitsV1, CacheReplayControllerBootstrapOwnerV1, CacheResidencyHeldPhysicalCutErrorV1, DormantCacheOwnerV1, encode_cache_replay_controller_bundle_v1, encode_cache_replay_genesis_manifest_v1, with_fixed_closed_cache_physical_policy_cut_v1, with_fixed_closed_cache_physical_policy_cut_vm_fixture_v1};
 use aos_sandbox_protocol::cache_state::{
     BackingIsolationV1, CacheIsolationPolicyV1, CacheNodeIdV1, NodeCacheQuotaV1,
     PhysicalPartitionId, ProjectCacheQuotaV1, ProtectedBackingIdentityV1, ResidencyEnforcementV1,

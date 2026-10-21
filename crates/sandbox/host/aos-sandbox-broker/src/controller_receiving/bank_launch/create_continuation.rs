@@ -616,6 +616,45 @@ impl ControllerCreateContinuationFundingLoanV1<'_, '_> {
         self.owner.failure_v1()
     }
 
+    /// Rejoins the actual Source allocation without claiming another group.
+    ///
+    /// # Errors
+    /// Retains foreign Source/profile affinity or earlier actual J refusal.
+    pub fn require_source_original_v1(
+        &mut self,
+        actual: &crate::controller_receiving::source_prebank::ControllerSourceOriginalRefV1,
+    ) -> Result<(), ControllerCreateContinuationClosedV1> {
+        self.owner.require_profile_retained(self.profile)?;
+        if !actual.has_same_original_v1(&self.owner.original) {
+            return Err(self.owner.accounting.refuse(ControllerBankLaunchErrorV1::Conflict));
+        }
+        Ok(())
+    }
+
+    /// Extends only this same J's existing RootExchange highwater.
+    ///
+    /// # Errors
+    /// Retains a foreign profile, missing commitment or actual account refusal.
+    pub fn reserve_root_exchange_complete_v1(
+        &mut self,
+        complete: ResourceVector,
+    ) -> Result<(), ControllerCreateContinuationClosedV1> {
+        self.owner.require_profile_retained(self.profile)?;
+        self.owner.reserve_complete(CaptureOwner::RootExchange, complete)
+    }
+
+    /// Compares the existing actual RootExchange admission on this same J.
+    ///
+    /// # Errors
+    /// Retains foreign/closed original or insufficient prior RootExchange work.
+    pub fn require_root_exchange_complete_v1(
+        &mut self,
+        required: ResourceVector,
+    ) -> Result<(), ControllerCreateContinuationClosedV1> {
+        self.owner.require_profile_retained(self.profile)?;
+        self.owner.accounting.require_paid(CaptureOwner::RootExchange, required)
+    }
+
     /// Claims one paid fixed-Source currentness group on this actual J.
     ///
     /// The actual Source constructor calls this before constructing its seven

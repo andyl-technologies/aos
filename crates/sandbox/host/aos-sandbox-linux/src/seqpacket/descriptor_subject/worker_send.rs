@@ -276,7 +276,7 @@ mod tests {
     use super::*;
 
     fn pair() -> (DescriptorSubjectSocket, DescriptorSubjectSocket) {
-        let (first, second) = crate::uapi::seqpacket_pair().unwrap();
+        let (first, second) = aos_linux_descriptors::native::seqpacket_pair().unwrap();
         (
             DescriptorSubjectSocket::from_owned_retaining(first).unwrap(),
             DescriptorSubjectSocket::from_owned_retaining(second).unwrap(),

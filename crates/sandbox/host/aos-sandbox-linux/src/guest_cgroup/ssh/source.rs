@@ -9,7 +9,8 @@ use std::num::NonZeroU32;
 use super::*;
 use crate::cgroup::ExactCgroupMembershipReadbackV1;
 use crate::kernel_clone::ConfiguredKernelCloneOriginalV1;
-use crate::pidfd::{PidFd, PidFdOpenAttemptV1};
+use aos_linux_descriptors::pidfd::PidFd;
+use crate::pidfd::PidFdOpenAttemptV1;
 
 #[derive(Clone, Copy)]
 pub(crate) struct GuestSshBirthSourceDataV1 {

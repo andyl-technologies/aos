@@ -6,6 +6,12 @@
 //! negative-lifetime fence; semantic stages and genuine purpose loans remain
 //! in the upper role until their complete owner cut.
 
+mod startup_post;
+pub use startup_post::RootStartupServicePostErrorV1;
+
+mod role_prefix;
+pub use role_prefix::RootSelectedProvisionBorrowV1;
+
 mod policy_flight;
 mod q04_transport;
 pub use q04_transport::{RootQ04InputCurrentLoanV1, RootQ04NativeStreamLoanV1, RootQ04TransportOriginalV1};
@@ -56,6 +62,11 @@ pub struct RootInitialReceivingOriginalV1 {
     permanent: Option<Arc<super::root_permanent::RootPermanentNativeOriginalV1>>,
     financial: Option<financial::RootFinancialCustodyV1>,
     owner: Arc<()>,
+    role_layout: NativeLayoutDemand,
+    startup_post_resident: Option<Result<(), RootStartupServicePostErrorV1>>,
+    current_writers_entered: bool,
+    role_profile_prefix: Option<Result<ResourceVector, RootNativeAdmissionErrorV1>>,
+    role_selected_prefix: Option<Result<ResourceVector, RootNativeAdmissionErrorV1>>,
     profile_prefix: Option<Result<ResourceVector, RootEnrollmentErrorV1>>,
     profile: Option<RootProfileOriginalCaptureV1>,
     kernel: Option<RootKernelOriginalCaptureV1>,
@@ -91,6 +102,11 @@ impl RootInitialReceivingOriginalV1 {
             permanent: None,
             financial: Some(financial::RootFinancialCustodyV1::new()),
             owner: Arc::new(()),
+            role_layout: layout,
+            startup_post_resident: None,
+            current_writers_entered: false,
+            role_profile_prefix: None,
+            role_selected_prefix: None,
             profile_prefix: None,
             profile: None,
             kernel: None,
@@ -150,7 +166,8 @@ impl RootInitialReceivingOriginalV1 {
             .checked_mul(2)?
             .checked_add(std::mem::size_of::<Result<(), RootObservationErrorV1>>().checked_mul(3)?)?;
         let permanent = super::root_permanent::RootPermanentNativeOriginalV1::construction_bytes_v1()?;
-        let memory = own.checked_add(invocation)?.checked_add(permanent)?
+        let role_controls = Self::role_prefix_control_bytes_v1()?;
+        let memory = own.checked_add(role_controls)?.checked_add(invocation)?.checked_add(permanent)?
             .checked_add(transfer)?.checked_add(fields)?
             .checked_add(std::mem::size_of::<OriginalEnrollment>())?
             .checked_add(restoration)?.checked_add(conversion)?
@@ -177,12 +194,19 @@ impl RootInitialReceivingOriginalV1 {
             // carriers (checked prerequisite, fence return, public return).
             .with(D::MetadataEntries,
                 7 + 3 + 2 + 3 + 3 + 2 + 1 + 1 + 2 + 2 + 2 + 1 + 8 + 4 + 4 + 14
-                    + 1 + 3 * 2 + 3);
+                    + 1 + 3 * 2 + 3
+                    // Layout and two retained role prefix results replace the
+                    // upper stage owners; named new forwarding controls stay
+                    // explicit in their actual fixed pre-entry supplier.
+                    + 3 + 3 * 3 + 2 * 3 + 12);
         RootProfileOriginalCaptureV1::fixed_demand()?
             .checked_add(RootKernelOriginalCaptureV1::fixed_demand()?).ok()?
             .checked_add(RootEnrollmentOriginalsV1::additional_receiving_demand_v1()?).ok()?
             .checked_add(parent).ok()
             .and_then(|demand| demand.checked_add(Self::financial_fixed_construction_demand_v1()?).ok())
+            .and_then(|demand| demand.checked_add(ResourceVector::ZERO
+                .with(aos_sandbox_model::ResourceDimension::MemoryBytes,
+                    u64::try_from(Self::startup_post_control_bytes_v1()?).ok()?)).ok())
     }
 
     /// Runs the closed same-original fixed profile/kernel receiving lane once.
@@ -290,10 +314,7 @@ impl RootInitialReceivingOriginalV1 {
     /// Refuses incomplete handoff, earlier refusal or an already active worker.
     pub fn enter_controller_history_worker_once_v1(&mut self) -> Result<(), RootObservationErrorV1> {
         let original = self.permanent.as_ref().ok_or(RootObservationErrorV1::Service)?;
-        let mut invocation = original.enter_native()?;
-        let returned = original.service.enter_worker_once_v1();
-        if returned.is_err() { invocation.refuse(); }
-        returned
+        original.enter_history_worker_under_exclusion_v1()
     }
 
     /// Ends only the same already-entered Controller history worker interval.
@@ -303,10 +324,7 @@ impl RootInitialReceivingOriginalV1 {
     /// can retain its disposition after refusal without admitting new work.
     pub fn finish_controller_history_worker_once_v1(&mut self) -> Result<(), RootObservationErrorV1> {
         let original = self.permanent.as_ref().ok_or(RootObservationErrorV1::Service)?;
-        let mut invocation = original.enter_observation()?;
-        let returned = original.service.finish_worker_once_v1();
-        if returned.is_err() { invocation.refuse(); }
-        returned
+        original.finish_history_worker_under_exclusion_v1()
     }
 
     /// Compares the actual retained worker interval without renewing authority.
@@ -676,6 +694,7 @@ impl RootInitialReceivingOriginalV1 {
     #[must_use]
     pub fn failure(&self) -> Option<&(dyn Error + 'static)> {
         self.native_enrollment().and_then(RootEnrollmentOriginalsV1::failure)
+            .or_else(|| self.role_profile_failure_v1())
             .or_else(|| self.profile_prefix.as_ref().and_then(|result| result.as_ref().err())
                 .map(|cause| cause as &(dyn Error + 'static)))
             .or_else(|| self.profile.as_ref().and_then(|profile| profile.failure()))
@@ -684,10 +703,13 @@ impl RootInitialReceivingOriginalV1 {
                 .map(|cause| cause as &(dyn Error + 'static)))
             .or_else(|| self.recipient_binding.as_ref().and_then(|result| result.as_ref().err())
                 .map(|cause| cause as &(dyn Error + 'static)))
+            .or_else(|| self.role_selected_failure_v1())
             .or_else(|| self.selected_admission.as_ref().and_then(|result| result.as_ref().err())
                 .map(|cause| cause as &(dyn Error + 'static)))
             .or_else(|| self.currentness_failure_v1())
             .or_else(|| self.policy_flight_failure_v1())
+            .or_else(|| self.startup_post_resident.as_ref()
+                .and_then(|result| result.as_ref().err()).map(|cause| cause as &(dyn Error + 'static)))
             .or_else(|| self.financial_failure_v1())
             .or_else(|| self.invocation_failure_v1())
     }
@@ -892,6 +914,39 @@ impl RootInitialReceivingOriginalV1 {
             }
         };
         super::RootWriterOpeningOriginalV1::from_initial(original, recipe)
+    }
+
+    /// Refuses a second current-writer entry on this same actual Initial.
+    ///
+    /// This negative-only latch precedes fixed receiving admission. It claims no
+    /// writer, arms no post, and supplies no financial or semantic permission.
+    ///
+    /// # Errors
+    /// Refuses a foreign exclusion, prior refusal, or repeated entry.
+    pub fn enter_current_writers_once_v1(
+        &mut self,
+        exclusion: &super::RootUpperMutationGuardV1<'_>,
+    ) -> Result<(), RootObservationErrorV1> {
+        let same = match self.permanent.as_ref() {
+            Some(original) => exclusion.matches_permanent_original_v1(original),
+            None => false,
+        };
+        if !same || self.failure().is_some() || self.current_writers_entered {
+            self.latch_root_refusal_v1();
+            return Err(RootObservationErrorV1::Service);
+        }
+        self.current_writers_entered = true;
+        Ok(())
+    }
+
+    /// Quotes this negative-only entry's actual borrowed interface controls.
+    #[must_use]
+    pub fn current_writers_entry_control_bytes_v1() -> Option<usize> {
+        use std::mem::size_of;
+        size_of::<(&mut Self, &super::RootUpperMutationGuardV1<'_>)>().checked_mul(3)?
+            .checked_add(size_of::<Option<&Arc<super::root_permanent::RootPermanentNativeOriginalV1>>>().checked_mul(3)?)?
+            .checked_add(size_of::<Result<(), RootObservationErrorV1>>().checked_mul(3)?)?
+            .checked_add(size_of::<bool>().checked_mul(3)?)
     }
 
     /// Claims the original startup authority writer after the permanent handoff.

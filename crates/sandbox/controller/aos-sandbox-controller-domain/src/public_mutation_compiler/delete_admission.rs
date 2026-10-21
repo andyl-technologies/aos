@@ -24,7 +24,7 @@ use std::error::Error;
 use std::mem::size_of;
 
 use aos_sandbox_model::{CapabilityId, ResourceDimension as D, ResourceVector};
-use aos_sandbox_linux::boot::RootOriginalKernelBootIdAttemptV1;
+use aos_linux_descriptors::boot::RootOriginalKernelBootIdAttemptV1;
 
 use super::{AuthorizedPublicMutationRequestV1, PublicMutationAuthorizationErrorV1};
 use crate::cli_model::authorization_adapter::{CurrentCapabilityDecisionV1,
@@ -41,8 +41,7 @@ use crate::Journal;
 
 const MAXIMUM_DELETE_ENVELOPE_BYTES: usize = 14 + 64 * 1024;
 
-pub(crate) use super::authorization_native::PublicMutationAuthorizationNativeV1
-    as DeleteAuthorizationNativeV1;
+pub(crate) use super::authorization_native::PublicMutationAuthorizationNativeV1 as DeleteAuthorizationNativeV1;
 
 /// Owns the intrinsic Delete claim and all reached authorization originals.
 ///
@@ -471,7 +470,7 @@ fn authorization_demand_v1(
             .ok_or_else(invalid)?;
         rows = rows.checked_add(1).ok_or_else(invalid)?;
     }
-    let request = delete_decode_bytes_v1(encoded).ok_or_else(invalid)?;
+    let request = aos_sandbox_protocol::public_api::delete_geometry::delete_decode_bytes_v1::<AuthorizedPublicMutationRequestV1>(encoded).ok_or_else(invalid)?;
     let models = authorization_model_bytes_v1(bytes, rows).ok_or_else(invalid)?;
     let boot = RootOriginalKernelBootIdAttemptV1::dominant_requested_bytes_v1()
         .ok_or_else(invalid)?;
@@ -500,4 +499,4 @@ fn source_authorized_construction_bytes_v1() -> Option<usize> {
 }
 
 pub(crate) mod geometry;
-use geometry::{delete_decode_bytes_v1, authorization_model_bytes_v1};
+use geometry::authorization_model_bytes_v1;

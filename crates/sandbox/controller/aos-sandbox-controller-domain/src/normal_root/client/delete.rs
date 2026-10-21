@@ -390,7 +390,7 @@ impl<'profile> RootDeleteClientOriginalV1<'profile> {
             self.connection
                 .stream_mut()
                 .map_err(|_| self.closed)?
-                .enable_subject_reporting(),
+                .enable_subject_reporting().map_err(aos_sandbox_linux::seqpacket::SeqpacketError::from),
         );
         if !matches!(local.reporting, Some(Ok(()))) {
             self.first = Some(First::Reporting);
@@ -401,7 +401,7 @@ impl<'profile> RootDeleteClientOriginalV1<'profile> {
             self.connection.stream_mut().map_err(|_| self.closed)?,
             &mut local.encoded_open,
             cutoff,
-            crate::policy_compiler::bounded_stream_io::DeadlineStreamDirectionV1::Write,
+            aos_sandbox_broker::bounded_stream_io::DeadlineStreamDirectionV1::Write,
         ));
         if !matches!(local.sent_open_result, Some(Ok(()))) {
             self.first = Some(First::SendOpen);
@@ -432,7 +432,7 @@ impl<'profile> RootDeleteClientOriginalV1<'profile> {
             self.connection.stream_mut().map_err(|_| self.closed)?,
             &mut local.batch,
             cutoff,
-            crate::policy_compiler::bounded_stream_io::DeadlineStreamDirectionV1::Write,
+            aos_sandbox_broker::bounded_stream_io::DeadlineStreamDirectionV1::Write,
         ));
         if !matches!(local.sent_batch_result, Some(Ok(()))) {
             self.first = Some(First::SendBatch);
@@ -583,7 +583,7 @@ impl<'profile> RootDeleteClientOriginalV1<'profile> {
             .ok_or(self.closed)?;
         let now = rustix::time::clock_gettime(rustix::time::ClockId::Boottime);
         self.challenge_clock = Some(now);
-        self.challenge_gate = Some(crate::policy_compiler::bounded_stream_io::remaining(
+        self.challenge_gate = Some(aos_sandbox_broker::bounded_stream_io::remaining(
             now,
             challenge.source.cutoff,
         ));

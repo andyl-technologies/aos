@@ -18,6 +18,10 @@ use sha2::{Digest as _, Sha256};
 /// Maximum bytes accepted by the existing canonical object encoding.
 pub const MAXIMUM_CANONICAL_OBJECT_BYTES: usize = 8 * 1024 * 1024;
 
+const BYTE_COUNT_OVERFLOW: &str = "canonical byte count overflow";
+const BYTE_CAP_EXCEEDED: &str = "canonical byte cap exceeded";
+const ALLOCATION_FAILED: &str = "canonical allocation failed";
+
 /// Reports a bounded canonical consistency encoding failure.
 #[derive(Debug, thiserror::Error)]
 pub enum PolicyCanonicalDataErrorV1 {
@@ -78,6 +82,98 @@ pub fn canonical_bytes<T: Serialize>(
     Ok(bytes)
 }
 
+/// Bounds writer-IO error backing for the actual closed typed policy serializers.
+///
+/// The caller pays this before the counting pass, whose fixed controls do not
+/// contain the error allocations. This is not a bound for arbitrary `T: Serialize`:
+/// a custom serializer may create an unbounded Message. The actual Explanation
+/// and strict decoded claims use closed derived serialization; the only failure
+/// source is the existing writer. The pinned serde JSON error holds one boxed
+/// code plus line/column; its code has only IO and boxed-text payload variants.
+/// The pinned Rust IO custom owner holds its kind, erased error and two drop
+/// function pointers. String conversion adds one boxed String and its bytes.
+/// These concrete field envelopes bound those private layouts without naming
+/// unstable dependency internals. They create no error or allocation here.
+///
+/// Returns `None` on checked arithmetic overflow.
+#[doc(hidden)]
+#[must_use]
+pub fn canonical_serialization_failure_backing_bytes_v1() -> Option<usize> {
+    use std::{error::Error, mem::size_of, ptr::NonNull};
+
+    let serde_error = serde_error_heap_bytes_v1();
+    let io_custom = size_of::<(io::ErrorKind, NonNull<dyn Error + Send + Sync>, fn(), fn())>();
+    let message = BYTE_COUNT_OVERFLOW.len()
+        .max(BYTE_CAP_EXCEEDED.len())
+        .max(ALLOCATION_FAILED.len());
+    serde_error.checked_add(io_custom)?
+        .checked_add(size_of::<String>())?
+        .checked_add(message)
+}
+
+// The private serde ErrorCode has only IO and Box<str> payload alternatives.
+// Including both plus an aligned tag bounds its boxed code/line/column layout.
+fn serde_error_heap_bytes_v1() -> usize {
+    std::mem::size_of::<(io::Error, Box<str>, usize, usize, usize)>()
+}
+
+/// Bounds one reached strict JSON decoder's separately owned error message.
+///
+/// The actual schema owns the static expected-field/variant/visitor roster.
+/// Untrusted names and numeric spellings consume the actual encoded extent.
+/// String construction/growth and shrink-to-Box<str> are separate from decoded
+/// model/path/escape backing. This geometry parses and authenticates nothing.
+///
+/// Returns `None` on checked arithmetic overflow.
+#[doc(hidden)]
+#[must_use]
+pub fn canonical_json_decode_error_receiving_bytes_v1(
+    encoded_bytes: usize,
+    static_context_bytes: usize,
+) -> Option<usize> {
+    // Rust/Serde's Unexpected::Str uses Debug escaping. The longest
+    // single-byte spelling is DEL as \u{7f}; longer Unicode scalars consume
+    // more input bytes. This is scalar error spelling, separate from growth.
+    let escaped_scalar = encoded_bytes.checked_mul(b"\\u{7f}".len())?;
+    let message = escaped_scalar.checked_add(static_context_bytes)?;
+    serde_error_heap_bytes_v1()
+        .checked_add(message.max(8).checked_mul(4)?)?
+        .checked_add(std::mem::size_of::<String>().checked_mul(2)?)
+}
+
+/// Bounds the existing canonical serializer's bytes and concrete controls.
+///
+/// `payload_bytes` is a source-derived upper bound for the actual typed JSON
+/// payload, including omitted optional fields reintroduced by serialization.
+/// It is not the configured object ceiling. The geometric writer and exact
+/// framed destination coexist; digest controls are streaming and add no bytes.
+/// No encoding, allocation, validation or authority is performed here.
+///
+/// Returns `None` on checked arithmetic overflow.
+#[doc(hidden)]
+#[must_use]
+pub fn canonical_model_receiving_bytes_v1(
+    payload_bytes: usize,
+    domain_bytes: usize,
+) -> Option<usize> {
+    use std::mem::size_of;
+
+    let frame = payload_bytes.checked_add(domain_bytes)?.checked_add(16)?;
+    let backing = payload_bytes.max(1).checked_mul(4)?.checked_add(frame)?;
+    let controls = size_of::<BoundedCanonicalWriter>().checked_mul(2)?
+        .checked_add(size_of::<serde_json::Serializer<&mut BoundedCanonicalWriter>>().checked_mul(2)?)?
+        .checked_add(size_of::<Vec<u8>>().checked_mul(3)?)?
+        .checked_add(size_of::<Result<Vec<u8>, PolicyCanonicalDataErrorV1>>())?
+        .checked_add(size_of::<CountingCanonicalWriter>().checked_mul(2)?)?
+        .checked_add(size_of::<serde_json::Serializer<&mut CountingCanonicalWriter>>().checked_mul(2)?)?
+        .checked_add(size_of::<Sha256>().checked_mul(2)?)?
+        .checked_add(size_of::<DigestCanonicalWriter<'_>>().checked_mul(2)?)?
+        .checked_add(size_of::<serde_json::Serializer<DigestCanonicalWriter<'_>>>().checked_mul(2)?)?
+        .checked_add(size_of::<Result<ObjectDigest, PolicyCanonicalDataErrorV1>>())?;
+    backing.checked_add(controls)?
+        .checked_add(canonical_serialization_failure_backing_bytes_v1()?)
+}
+
 /// Counts the bounded canonical JSON payload without allocating its bytes.
 ///
 /// # Errors
@@ -94,6 +190,26 @@ pub fn canonical_payload_size_v1<T: Serialize>(
         }
     })?;
     Ok(writer.length)
+}
+
+/// Bounds the fixed counter, serializer and returned control representations.
+///
+/// This measures Memory-only DATA for the existing counting operation. The
+/// supplied value's model, serializer error backing and any later encoded
+/// output remain separate receiving terms. A width grants no admission.
+#[must_use]
+pub fn canonical_payload_count_control_bytes_v1() -> Option<usize> {
+    use std::mem::size_of;
+
+    // Constructed, returned and caller-retained representations are distinct;
+    // no optimizer or spare-padding credit is assumed between these planes.
+    size_of::<CountingCanonicalWriter>()
+        .checked_add(size_of::<serde_json::Serializer<&mut CountingCanonicalWriter>>())?
+        .checked_add(size_of::<Result<(), serde_json::Error>>())?
+        .checked_add(size_of::<io::Result<usize>>())?
+        .checked_add(size_of::<Result<usize, PolicyCanonicalDataErrorV1>>())?
+        .checked_add(size_of::<Option<usize>>())?
+        .checked_mul(3)
 }
 
 struct CountingCanonicalWriter {
@@ -117,10 +233,10 @@ impl Write for CountingCanonicalWriter {
         let length = self
             .length
             .checked_add(bytes.len())
-            .ok_or_else(|| io::Error::other("canonical byte count overflow"))?;
+            .ok_or_else(|| io::Error::other(BYTE_COUNT_OVERFLOW))?;
         if length > self.maximum {
             self.exceeded = true;
-            return Err(io::Error::other("canonical byte cap exceeded"));
+            return Err(io::Error::other(BYTE_CAP_EXCEEDED));
         }
         self.length = length;
         Ok(bytes.len())
@@ -153,14 +269,14 @@ impl Write for BoundedCanonicalWriter {
             .bytes
             .len()
             .checked_add(bytes.len())
-            .ok_or_else(|| io::Error::other("canonical byte count overflow"))?;
+            .ok_or_else(|| io::Error::other(BYTE_COUNT_OVERFLOW))?;
         if length > self.maximum {
             self.exceeded = true;
-            return Err(io::Error::other("canonical byte cap exceeded"));
+            return Err(io::Error::other(BYTE_CAP_EXCEEDED));
         }
         self.bytes
             .try_reserve(bytes.len())
-            .map_err(|_| io::Error::other("canonical allocation failed"))?;
+            .map_err(|_| io::Error::other(ALLOCATION_FAILED))?;
         self.bytes.extend_from_slice(bytes);
         Ok(bytes.len())
     }

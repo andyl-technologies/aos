@@ -8,9 +8,10 @@
 
 use std::os::fd::{AsFd as _, BorrowedFd, OwnedFd};
 
-use aos_sandbox_linux::boot::KernelBootId;
+use aos_linux_descriptors::boot::KernelBootId;
 use aos_sandbox_linux::seqpacket::{RetainedSeqpacketReceiveErrorV1, SeqpacketError};
-use aos_sandbox_linux::unix_stream::{RetainedUnixStream, UnixStreamSubjectChunk};
+use aos_linux_descriptors::unix_stream::RetainedUnixStream;
+use aos_sandbox_linux::unix_stream::UnixStreamSubjectChunk;
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use rustix::net::{AddressFamily, SocketAddrUnix, SocketFlags, SocketType, connect, socket_with};
 
@@ -164,7 +165,7 @@ impl Flight {
         rustix::fs::fcntl_setfl(&fd, flags | rustix::fs::OFlags::NONBLOCK)
             .map_err(std::io::Error::from)?;
         let mut stream = RetainedUnixStream::from_owned(fd)?;
-        stream.enable_subject_reporting()?;
+        stream.enable_subject_reporting().map_err(aos_sandbox_linux::seqpacket::SeqpacketError::from)?;
         deadline.require_current()?;
         Ok(Self {
             stream,
@@ -302,10 +303,10 @@ enum ReceiveSlot {
 impl ReceiveSlot {
     fn receive(&mut self, stream: &mut RetainedUnixStream, maximum: usize) {
         match self {
-            Self::Legacy(result) => *result = Some(stream.try_receive_subject_chunk(maximum)),
+            Self::Legacy(result) => *result = Some(aos_sandbox_linux::unix_stream::try_receive_subject_chunk(stream, maximum)),
             Self::Retaining(result) => {
                 // Assignment precedes every decoder, role observation and allocation.
-                *result = Some(stream.try_receive_subject_chunk_retaining(maximum));
+                *result = Some(aos_sandbox_linux::unix_stream::try_receive_subject_chunk_retaining(stream, maximum));
             }
         }
     }
@@ -489,7 +490,7 @@ impl RetainedCarrier {
             .map_err(std::io::Error::from)?;
         let alias = rustix::io::fcntl_dupfd_cloexec(fd, 64).map_err(std::io::Error::from)?;
         self.stream = Some(RetainedUnixStream::from_owned(alias)?);
-        self.stream.as_mut().ok_or(Error::Protocol)?.enable_subject_reporting()?;
+        self.stream.as_mut().ok_or(Error::Protocol)?.enable_subject_reporting().map_err(aos_sandbox_linux::seqpacket::SeqpacketError::from)?;
         deadline.require_current()
     }
 

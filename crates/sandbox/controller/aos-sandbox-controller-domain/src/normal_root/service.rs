@@ -390,8 +390,7 @@ pub(super) fn growing_fixed_property_observer_demand_v1(
         .map_err(Into::into)
 }
 
-pub(crate) use aos_sandbox_broker::receiving::FixedPropertyArchiveGrowthErrorV1
-    as CreateIntakeObserverGrowthErrorV1;
+pub(crate) use aos_sandbox_broker::receiving::FixedPropertyArchiveGrowthErrorV1 as CreateIntakeObserverGrowthErrorV1;
 
 // The one-field role projection keeps the same native archive/lifetime layout.
 pub(crate) struct FirstGlobalPropertyArchive(

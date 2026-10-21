@@ -1438,7 +1438,7 @@ fn retained_hello_send_facade_keeps_actual_native_failure_and_fatal_socket() {
     let cause = std::error::Error::source(facade).unwrap();
 
     assert!(std::ptr::eq(native, cause));
-    assert!(cause.downcast_ref::<aos_sandbox_linux::Error>().is_some());
+    assert!(cause.downcast_ref::<aos_linux_descriptors::Error>().is_some());
     assert!(failure.attempt.retains_descriptor());
 }
 

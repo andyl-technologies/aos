@@ -8,11 +8,12 @@ use aos_sandbox_linux::cgroup::{
     CgroupChildOriginalV2, CgroupRootOriginalV2, FreezerReadOriginalV2,
 };
 use aos_sandbox_linux::path::BeneathRootResolveOriginalV2;
-use aos_sandbox_linux::pidfd::{PidFdInfo, PidFdOpenAttemptV1};
+use aos_linux_descriptors::pidfd::PidFdInfo;
+use aos_sandbox_linux::pidfd::PidFdOpenAttemptV1;
 
 use super::*;
 
-type Native<T> = std::result::Result<T, aos_sandbox_linux::Error>;
+type Native<T> = std::result::Result<T, aos_linux_descriptors::Error>;
 
 macro_rules! leader_native {
     (Local, $original:ident, $field:ident, $expression:expr) => {
@@ -353,9 +354,9 @@ mod tests {
 
         assert!(original.capture_once(&worker, &identity, observation).is_err());
 
-        assert!(matches!(original.failure().unwrap().downcast_ref::<aos_sandbox_linux::Error>(),
-            Some(aos_sandbox_linux::Error::WrongDescriptorType { .. })));
-        let cause = original.failure().unwrap().downcast_ref::<aos_sandbox_linux::Error>().unwrap() as *const _;
+        assert!(matches!(original.failure().unwrap().downcast_ref::<aos_linux_descriptors::Error>(),
+            Some(aos_linux_descriptors::Error::WrongDescriptorType { .. })));
+        let cause = original.failure().unwrap().downcast_ref::<aos_linux_descriptors::Error>().unwrap() as *const _;
         assert_eq!(count_named_descriptors(&path), 1);
         assert_eq!(original.observation.as_ref().unwrap().binding, Some([31; 32]));
         assert!(original.completed_root.is_none());
@@ -366,7 +367,7 @@ mod tests {
         // actual failed cgroup descriptor or first lower native cause.
         let replacement = original.observation.as_ref().unwrap().clone();
         assert!(original.capture_once(&worker, &identity, replacement).is_err());
-        assert_eq!(original.failure().unwrap().downcast_ref::<aos_sandbox_linux::Error>().unwrap() as *const _, cause);
+        assert_eq!(original.failure().unwrap().downcast_ref::<aos_linux_descriptors::Error>().unwrap() as *const _, cause);
         assert_eq!(count_named_descriptors(&path), 1);
         assert!(original.native_files_after_completed_move_v4().is_none());
     }

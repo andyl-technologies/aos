@@ -5,24 +5,6 @@
 
 use super::*;
 
-pub(crate) fn delete_decode_bytes_v1(encoded: usize) -> Option<usize> {
-    use aos_sandbox_api::aos::sandbox::v1 as wire;
-    // Every unknown field consumes at least one input tag byte, and each
-    // repeated Feature consumes at least one message tag byte. These are the actual reached
-    // collection element layouts, not a largest request model per input byte.
-    let nodes = size_of::<buffa::UnknownField>().checked_add(size_of::<wire::Feature>())?;
-    let dynamic = encoded.checked_mul(nodes)?.checked_mul(6)?;
-    let fixed = size_of::<wire::DeleteSandboxRequest>()
-        .checked_add(size_of::<wire::MutationContext>())?
-        .checked_add(size_of::<wire::Duration>())?
-        .checked_add(size_of::<AuthorizedPublicMutationRequestV1>())?
-        .checked_mul(4)?;
-    // Envelope/body ownership, validated-kind clone, canonical protobuf and
-    // JSON authorization envelope/hex scratch coexist under these byte lanes.
-    dynamic
-        .checked_add(encoded.checked_mul(32)?)?
-        .checked_add(fixed)
-}
 
 pub(crate) fn authorization_model_bytes_v1(encoded: usize, rows: usize) -> Option<usize> {
     use aos_sandbox_model::model::{ExplanationReason, Optimization, PolicyViewAction};

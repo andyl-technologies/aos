@@ -184,6 +184,46 @@ pub struct CanonicalOrdinaryOpeningOriginalsV1<C = ()> {
 }
 
 impl CanonicalOrdinaryOpeningOriginalsV1<()> {
+    /// Bounds the existing fixed physical opening recipe around resident `T`.
+    ///
+    /// The concrete caller supplies its actual retained construction type. The
+    /// recipe includes the held hierarchy and both failed or owed name bookends;
+    /// semantic backing and other construction planes remain separate. This
+    /// passive bound creates no opening, receiving permit or native authority.
+    ///
+    /// # Errors
+    /// Reports checked memory arithmetic overflow in the original fixed recipe.
+    pub fn fixed_preparation_demand_v1<T>(
+        directory_descriptors: u16,
+        path_name_bytes: u16,
+    ) -> Result<aos_sandbox_model::ResourceVector, aos_sandbox_model::AccountingError> {
+        use aos_sandbox_model::{AccountingError, ResourceDimension as D, ResourceVector};
+
+        let overflow = || AccountingError::ArithmeticOverflow {
+            dimension: D::MemoryBytes,
+        };
+        let directories = u64::from(directory_descriptors);
+        let paths = u64::from(path_name_bytes);
+        let memory = u64::try_from(std::mem::size_of::<T>())
+            .ok()
+            .and_then(|bytes| {
+                bytes.checked_add(
+                    directories
+                        .checked_mul(3)?
+                        .checked_mul(u64::try_from(std::mem::size_of::<std::fs::File>()).ok()?)?,
+                )
+            })
+            .and_then(|bytes| bytes.checked_add(paths.checked_add(32)?.checked_mul(16)?))
+            .and_then(|bytes| bytes.checked_add(32 * 256))
+            .ok_or_else(overflow)?;
+        // Same already-admitted physical recipe: held hierarchy plus two
+        // failed/owed name bookends. No semantic backing or heap metadata fee.
+        Ok(ResourceVector::ZERO
+            .with(D::MemoryBytes, memory)
+            .with(D::OpenFiles, directories * 3 + 6)
+            .with(D::MetadataEntries, directories * 3 + 14))
+    }
+
     /// Returns zero namespace entries for these composition-only carriers.
     ///
     /// Actual resident keys retain their existing native/index suppliers.

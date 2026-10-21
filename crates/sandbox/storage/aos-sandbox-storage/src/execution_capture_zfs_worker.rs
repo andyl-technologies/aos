@@ -12,7 +12,7 @@ use std::ffi::OsString;
 use std::time::Duration;
 
 use aos_sandbox_model::ObjectDigest;
-use aos_sandbox_linux::boot::KernelBootId;
+use aos_linux_descriptors::boot::KernelBootId;
 use aos_sandbox_linux::mount::{DetachedMount, FileSystemContext, MountAttributes};
 use aos_sandbox_linux::process::{FixedProcessOutcome, FixedProcessRequest, run_fixed_process};
 use sha2::{Digest as _, Sha256};
@@ -197,7 +197,7 @@ pub(crate) enum CaptureWriterWorkerErrorV1 {
     #[error("capture writer fixed ZFS observation failed: {0}")]
     Zfs(#[from] ZfsWorkerError),
     #[error("capture writer detached mount failed: {0}")]
-    Mount(#[from] aos_sandbox_linux::Error),
+    Mount(#[from] aos_linux_descriptors::Error),
     #[error("capture writer root descriptor failed: {0}")]
     Kernel(#[from] rustix::io::Errno),
     #[error("capture writer file namespace failed: {0}")]

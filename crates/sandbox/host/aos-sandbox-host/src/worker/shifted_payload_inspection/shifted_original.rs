@@ -13,7 +13,7 @@ use super::*;
 use crate::worker::launch::HostLaunchWorkerReceivingV2;
 use crate::worker::service_probe::ServiceNamespaceProbeOriginalV2;
 
-type Native<T> = std::result::Result<T, aos_sandbox_linux::Error>;
+type Native<T> = std::result::Result<T, aos_linux_descriptors::Error>;
 
 macro_rules! shifted_kernel {
     (Local, $original:ident, $temporary:ident, $receiving:ident, $payload:ident, $supervisor:ident, $slot:expr) => {
@@ -29,7 +29,7 @@ macro_rules! shifted_kernel {
 
 macro_rules! shifted_identity {
     (Local, $original:ident, $temporary:ident, $payload:ident, $slot:expr) => {
-        $payload.pidfd().process_identity().map_err(|error| HostError::Worker(error.to_string()))?
+        aos_sandbox_linux::pidfd::process_identity(&($payload.pidfd())).map_err(|error| HostError::Worker(error.to_string()))?
     };
     (Retained, $original:ident, $temporary:ident, $payload:ident, $slot:expr) => {{
         $temporary.identities[$slot].capture_once($payload.pidfd())
@@ -48,7 +48,7 @@ macro_rules! shifted_host {
 
 macro_rules! shifted_namespace {
     (Local, $original:ident, $temporary:ident, $payload:ident, $field:ident, $slot:expr, $kind:ident) => {
-        $payload.pidfd().namespace(NamespaceKind::$kind).map_err(|error| HostError::Worker(error.to_string()))?
+        aos_sandbox_linux::pidfd::namespace(&($payload.pidfd()), NamespaceKind::$kind).map_err(|error| HostError::Worker(error.to_string()))?
     };
     (Retained, $original:ident, $temporary:ident, $payload:ident, $field:ident, $slot:expr, $kind:ident) => {{
         $temporary.namespaces[$slot].capture_once($payload.pidfd(), NamespaceKind::$kind)

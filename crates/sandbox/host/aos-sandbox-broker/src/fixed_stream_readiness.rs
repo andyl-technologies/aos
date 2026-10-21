@@ -5,7 +5,7 @@
 //! any caller may perform IO or dispose its local native leaf.
 
 use std::error::Error;
-use aos_sandbox_linux::unix_stream::RetainedUnixStream;
+use aos_linux_descriptors::unix_stream::RetainedUnixStream;
 use rustix::event::{PollFd, PollFlags, poll};
 use rustix::time::{ClockId, Timespec, clock_gettime};
 use crate::cache_current_signer_exchange::CacheCurrentSignerExchangeClosedV1 as Closed;

@@ -94,15 +94,13 @@ impl<'journal> PublicProjectionStoreV1<'journal> {
         kind: PublicProjectionKindV1,
         resource_id: [u8; 16],
     ) -> Result<Option<PublicProjectionRecordV1>, PublicProjectionError> {
-        if resource_id == [0; 16] {
-            return Err(PublicProjectionError::InvalidIdentity);
-        }
-        self.journal.ensure_healthy().map_err(|_| PublicProjectionError::CorruptRecord)?;
-        let key = projection_key(kind, resource_id);
-        self.journal
-            .get(RecordNamespace::DesiredState, &key)
-            .map(|value| decode_record(&key, value))
-            .transpose()
+        aos_sandbox_protocol::checked_public_projection_read_data_v1!(
+            kind = kind, resource_id = resource_id,
+            invalid_identity = PublicProjectionError::InvalidIdentity,
+            healthy = { self.journal.ensure_healthy().map_err(|_| PublicProjectionError::CorruptRecord)?; },
+            key = key, read = self.journal.get(RecordNamespace::DesiredState, &key), output = projection
+        );
+        Ok(projection)
     }
 
     /// Lists one kind and project in stable resource-identity order.
@@ -162,26 +160,11 @@ impl<'journal> PublicProjectionStoreV1<'journal> {
         &self,
         operation: OperationId,
     ) -> Result<Vec<PublicProjectionRecordV1>, PublicProjectionError> {
-        if operation.as_bytes() == &[0; 16] {
-            return Err(PublicProjectionError::InvalidIdentity);
-        }
-        let mut records = Vec::new();
-        for record in self.iter_all_v2()? {
-            let record = record?;
-            if record.operation() == operation {
-                records.push(record);
-            }
-        }
-        records.sort_by(|left, right| {
-            left.resource()
-                .kind()
-                .cmp(&right.resource().kind())
-                .then_with(|| {
-                    left.resource()
-                        .resource_id()
-                        .cmp(right.resource().resource_id())
-                })
-        });
+        aos_sandbox_protocol::checked_public_projection_list_operation_data_v2!(
+            operation = operation, invalid_identity = PublicProjectionError::InvalidIdentity,
+            healthy = { self.journal.ensure_healthy().map_err(|_| PublicProjectionError::CorruptRecord)?; },
+            rows = self.journal.records(RecordNamespace::DesiredState), output = records
+        );
         Ok(records)
     }
 
@@ -205,51 +188,55 @@ impl<'journal> PublicProjectionStoreV1<'journal> {
     }
 }
 
-// The execution source reads its current Execution projection through this
-// same existing codec. The maximum includes every held projection with this prefix.
-pub(crate) fn execution_source_receiving_bytes_v1(journal: &Journal) -> Option<u64> {
-    projection_model_receiving_bytes_v1(journal,
-        std::mem::size_of::<aos_sandbox_api::aos::sandbox::v1::Execution>())
+pub(crate) use aos_sandbox_protocol::public_api::projection::geometry::
+    sandbox_projection_decoding_receiving_bytes_v2;
+
+/// Reads one projection while retaining the actual Journal or Root model owner.
+///
+/// This private entry shares the public Store recipe without changing the
+/// Store's existing layout or accepting a supplied map as a native original.
+/// Identity, actual owner health, key allocation and decode remain ordered.
+pub(crate) fn get_from_observation_v2(
+    original: crate::journal::historical_observation::HistoricalObservationV1<'_>,
+    kind: PublicProjectionKindV1,
+    resource_id: [u8; 16],
+) -> Result<Option<PublicProjectionRecordV1>, PublicProjectionError> {
+    aos_sandbox_protocol::checked_public_projection_read_data_v1!(
+        kind = kind, resource_id = resource_id,
+        invalid_identity = PublicProjectionError::InvalidIdentity,
+        healthy = { original.ensure_healthy().map_err(|_| PublicProjectionError::CorruptRecord)?; },
+        key = key, read = original.get(RecordNamespace::DesiredState, &key), output = projection
+    );
+    Ok(projection)
 }
 
-// Root's preterminal comparison uses the same codec with its actual Sandbox
-// model width. These bytes convey neither public success nor native custody.
-pub(crate) fn sandbox_source_receiving_bytes_v1(journal: &Journal) -> Option<u64> {
-    projection_model_receiving_bytes_v1(journal,
-        std::mem::size_of::<aos_sandbox_api::aos::sandbox::v1::Sandbox>())
+/// Lists operation projections through the same genuine owner and decoder.
+///
+/// The original empty-Vec, health check, full-prefix decode, filter and sort
+/// chronology is shared lexically with the public Store method.
+pub(crate) fn list_operation_from_observation_v2(
+    original: crate::journal::historical_observation::HistoricalObservationV1<'_>,
+    operation: OperationId,
+) -> Result<Vec<PublicProjectionRecordV1>, PublicProjectionError> {
+    aos_sandbox_protocol::checked_public_projection_list_operation_data_v2!(
+        operation = operation, invalid_identity = PublicProjectionError::InvalidIdentity,
+        healthy = { original.ensure_healthy().map_err(|_| PublicProjectionError::CorruptRecord)?; },
+        rows = original.records(RecordNamespace::DesiredState), output = records
+    );
+    Ok(records)
 }
 
-pub(crate) fn metadata_source_receiving_bytes_v2(journal: &Journal) -> Option<u64> {
-    projection_model_receiving_bytes_v1(journal,
-        std::mem::size_of::<aos_sandbox_api::aos::sandbox::v1::Snapshot>()
-            .max(std::mem::size_of::<aos_sandbox_api::aos::sandbox::v1::FilesystemView>()))?
-        .checked_add(u64::try_from(std::mem::size_of::<PublicProjectionRecordV1>()
-            .checked_mul(3)?).ok()?)?
-        .checked_add(u64::try_from(PROJECTION_KEY_PREFIX.len().checked_add(1 + 16)?
-            .checked_mul(3)?).ok()?)
-}
+/// Prices the reached genuine-owner projection entry's typed forwarding peak.
+pub(crate) fn projection_observation_control_bytes_v2() -> Option<usize> {
+    use crate::journal::historical_observation::HistoricalObservationV1;
+    use std::mem::size_of;
 
-fn projection_model_receiving_bytes_v1(journal: &Journal, width: usize) -> Option<u64> {
-    let mut maximum = 0usize;
-    for (key, value) in journal.records(RecordNamespace::DesiredState) {
-        if key.starts_with(PROJECTION_KEY_PREFIX) { maximum = maximum.max(value.len()); }
-    }
-    projection_encoded_model_receiving_bytes_v2(maximum, width)
-}
-
-// Historical native COMMIT comparison uses this SAME exact Sandbox decoder
-// recipe with the actual maximum observed historical row, rather than a later
-// possibly smaller current projection. The scalar supplies accounting DATA.
-pub(crate) fn sandbox_projection_decoding_receiving_bytes_v2(encoded_bytes: usize) -> Option<u64> {
-    projection_encoded_model_receiving_bytes_v2(encoded_bytes,
-        std::mem::size_of::<aos_sandbox_api::aos::sandbox::v1::Sandbox>())
-}
-
-fn projection_encoded_model_receiving_bytes_v2(encoded_bytes: usize, width: usize) -> Option<u64> {
-    let bytes = aos_sandbox_broker_session_protocol::receiving_geometry::protobuf_carriers_v1(
-        u64::try_from(encoded_bytes).ok()?, u64::try_from(width).ok()?,
-    ).ok()?;
-    // accepted_target and the spec producer each own their projected model;
-    // its canonical round trip and command clone can coexist with that input.
-    bytes.checked_mul(4)
+    let get = size_of::<(HistoricalObservationV1<'_>, PublicProjectionKindV1, [u8; 16])>()
+        .checked_mul(3)?
+        .checked_add(size_of::<Result<Option<PublicProjectionRecordV1>, PublicProjectionError>>().checked_mul(3)?)?;
+    let list = size_of::<(HistoricalObservationV1<'_>, OperationId)>().checked_mul(3)?
+        .checked_add(size_of::<Result<Vec<PublicProjectionRecordV1>, PublicProjectionError>>().checked_mul(3)?)?;
+    get.max(list)
+        .checked_add(size_of::<Result<(), crate::JournalError>>().checked_mul(3)?)?
+        .checked_add(size_of::<Option<usize>>().checked_mul(3)?)
 }

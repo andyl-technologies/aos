@@ -21,17 +21,17 @@ use aos_sandbox_linux::cgroup::{
 pub struct ReceivingContainmentReadbackV1 {
     controls: CgroupLimitReadbackV1,
     cpu: FirstGlobalCpuReadbackV1,
-    captured_controls: Option<Result<(), aos_sandbox_linux::Error>>,
-    captured_cpu: Option<Result<(), aos_sandbox_linux::Error>>,
+    captured_controls: Option<Result<(), aos_linux_descriptors::Error>>,
+    captured_cpu: Option<Result<(), aos_linux_descriptors::Error>>,
     initial_nofile: Option<rustix::process::Rlimit>,
     initial_binding: Option<Result<(), ContainmentBindingErrorV1>>,
-    checked_controls: Option<Result<(), aos_sandbox_linux::Error>>,
-    checked_cpu: Option<Result<(), aos_sandbox_linux::Error>>,
+    checked_controls: Option<Result<(), aos_linux_descriptors::Error>>,
+    checked_cpu: Option<Result<(), aos_linux_descriptors::Error>>,
     final_nofile: Option<rustix::process::Rlimit>,
     final_binding: Option<Result<(), ContainmentBindingErrorV1>>,
     expected: Option<ResourceVector>,
-    settled_control_names: Option<Result<(), aos_sandbox_linux::Error>>,
-    settled_cpu_names: Option<Result<(), aos_sandbox_linux::Error>>,
+    settled_control_names: Option<Result<(), aos_linux_descriptors::Error>>,
+    settled_cpu_names: Option<Result<(), aos_linux_descriptors::Error>>,
     reentry: Option<ContainmentBindingErrorV1>,
 }
 
@@ -40,8 +40,8 @@ pub struct ReceivingContainmentReadbackV1 {
 pub struct ReceivingContainmentCurrentnessV1 {
     controls: CgroupLimitCurrentnessSampleV1,
     cpu: CpuLimitCurrentnessSampleV1,
-    controls_result: Option<Result<(), aos_sandbox_linux::Error>>,
-    cpu_result: Option<Result<(), aos_sandbox_linux::Error>>,
+    controls_result: Option<Result<(), aos_linux_descriptors::Error>>,
+    cpu_result: Option<Result<(), aos_linux_descriptors::Error>>,
     nofile: Option<rustix::process::Rlimit>,
     binding: Option<Result<(), ContainmentBindingErrorV1>>,
     reentry: Option<ContainmentBindingErrorV1>,
@@ -273,8 +273,8 @@ impl ReceivingContainmentReadbackV1 {
 }
 
 fn native_failure(
-    result: &Option<Result<(), aos_sandbox_linux::Error>>,
-) -> Option<&aos_sandbox_linux::Error> {
+    result: &Option<Result<(), aos_linux_descriptors::Error>>,
+) -> Option<&aos_linux_descriptors::Error> {
     result.as_ref().and_then(|result| result.as_ref().err())
 }
 

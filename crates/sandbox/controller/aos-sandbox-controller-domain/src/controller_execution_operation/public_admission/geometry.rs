@@ -6,7 +6,7 @@
 
 use std::mem::size_of;
 
-use aos_sandbox_linux::boot::RootOriginalKernelBootIdAttemptV1;
+use aos_linux_descriptors::boot::RootOriginalKernelBootIdAttemptV1;
 use aos_sandbox_protocol::public_api::method::PublicApiAuditMethodV1;
 use aos_sandbox_protocol::public_api::mutation::PublicMutationEnvelopeDataV1;
 
@@ -80,8 +80,7 @@ fn compiler_receiving_demand_v2(
         public_execution_compiler_receiving_bytes_v2(encoded.len(), envelope.protobuf_body_v1().len())
         .ok_or_else(bad)?;
     let accepted = crate::reconciler::accepted_public_effect_models_receiving_bytes_retaining_v4(controller)?;
-    let projection = crate::controller_service::public_projection::
-        sandbox_source_receiving_bytes_v1(controller).ok_or_else(bad)?;
+    let projection = aos_sandbox_protocol::public_api::projection::geometry::sandbox_source_receiving_bytes_v1(controller.historical_read_view_v1().rows_data_v2()).ok_or_else(bad)?;
     let boot = RootOriginalKernelBootIdAttemptV1::dominant_requested_bytes_v1().ok_or_else(bad)?;
     let memory = size_of::<super::compiler::ExecutionPublicCompilerOriginalV2>().checked_mul(2)
         .and_then(|bytes| bytes.checked_add(authorization))

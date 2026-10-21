@@ -32,8 +32,12 @@ use aos_sandbox_controller_domain::hierarchy::genesis_profile::SourceGenesisErro
 use aos_sandbox_ledger_replay::replay::phase_records::{
     RootFirstSourceSuccessorIntentV2, RootFirstSourceSuccessorFloorV2,
 };
-use aos_sandbox_controller_domain::policy_compiler::{ RootFirstSourceSuccessorOpeningV2, RootFirstSuccessorMutationResultsV2, SOURCE_FIRST_SUCCESSOR_READBACK_BYTES_V2, observe_root_first_source_successor_clock_v2, RootSourceGenesisAuthorityV1, SOURCE_TREE_GENESIS_READBACK_BYTES_V1, SourceHierarchyFloorRecordV1,
+use aos_sandbox_controller_domain::policy_compiler::{
+    SOURCE_FIRST_SUCCESSOR_READBACK_BYTES_V2, observe_root_first_source_successor_clock_v2,
+    SOURCE_TREE_GENESIS_READBACK_BYTES_V1,
 };
+use aos_sandbox_policy::native::{RootFirstSourceSuccessorOpeningV2, RootFirstSuccessorMutationResultsV2, RootSourceGenesisAuthorityV1};
+use aos_sandbox_ledger_replay::replay::root_genesis_records::SourceHierarchyFloorRecordV1;
 
 use crate::source_signer_exchange::request_root_source_tree_genesis_readback_v2;
 use crate::source_signer_exchange::request_root_source_first_successor_readback_v2;
@@ -176,7 +180,7 @@ impl RootFirstSourceSuccessorBookendV2<'_, '_> {
         posts.push(recheck_optional(self.startup)
             .map_err(|_| SourceGenesisErrorV1::Stale));
         if let Some(site) = &mut site { site.owner(posts.len() - 1, posts.last().is_some_and(Result::is_err)); }
-        posts.push(self.owner.map_or(Ok(()), RootSourceGenesisAuthorityV1::recheck));
+        posts.push(self.owner.map_or(Ok(()), |owner| owner.recheck().map_err(SourceGenesisErrorV1::from)));
         if let Some(site) = &mut site { site.owner(posts.len() - 1, posts.last().is_some_and(Result::is_err)); }
         posts.push((|| {
             let peer = rustix::net::sockopt::socket_peercred(stream).map_err(io::Error::from)?;
@@ -531,16 +535,16 @@ impl<'stream, 'startup> RootFirstSourceSuccessorAttemptV2<'stream, 'startup> {
     }
 
     /// Borrows independent original-clock debt while actual native cause stays first.
-    pub fn clock_post_failures(&self) -> impl Iterator<Item = &SourceGenesisErrorV1> {
+    pub fn clock_post_failures(&self) -> impl Iterator<Item = &(dyn std::error::Error + 'static)> {
         self.clock_posts.iter().flatten()
             .chain(self.hello_io.clock_posts.iter().flatten())
             .chain(self.prepare_io.clock_posts.iter().flatten())
             .chain(self.anchor_io.clock_posts.iter().flatten())
             .chain(self.complete_io.clock_posts.iter().flatten())
             .chain(self.finish_io.clock_posts.iter().flatten())
-            .chain(self.prepare.clock_post_result())
-            .chain(self.anchor.clock_post_result())
-            .filter_map(|result| result.as_ref().err())
+            .filter_map(|result| result.as_ref().err().map(|cause| cause as &(dyn std::error::Error + 'static)))
+            .chain(self.prepare.clock_post_result().into_iter().chain(self.anchor.clock_post_result())
+                .filter_map(|result| result.as_ref().err().map(|cause| cause as &(dyn std::error::Error + 'static))))
     }
 }
 
@@ -590,7 +594,7 @@ impl<'stream, 'startup> RootProjectSuccessorAttemptV3<'stream, 'startup> {
         }
     }
     /// Borrows independent original-clock debt without clearing transport poison.
-    pub fn clock_post_failures(&self) -> impl Iterator<Item = &SourceGenesisErrorV1> { self.common.clock_post_failures() }
+    pub fn clock_post_failures(&self) -> impl Iterator<Item = &(dyn std::error::Error + 'static)> { self.common.clock_post_failures() }
 }
 
 impl Drop for RootFirstSourceSuccessorAttemptV2<'_, '_> {
@@ -605,8 +609,8 @@ impl Drop for RootFirstSourceSuccessorAttemptV2<'_, '_> {
 }
 
 enum CurrentSuccessorOwnerV3<'root> {
-    Strict(aos_sandbox_controller_domain::policy_compiler::CurrentRootFirstSourceSuccessorFloorV2<'root>),
-    Mixed(aos_sandbox_controller_domain::policy_compiler::CurrentRootProjectSuccessorFloorV3<'root>),
+    Strict(aos_sandbox_policy::native::CurrentRootFirstSourceSuccessorFloorV2<'root>),
+    Mixed(aos_sandbox_policy::native::CurrentRootProjectSuccessorFloorV3<'root>),
 }
 
 impl CurrentSuccessorOwnerV3<'_> {
@@ -615,7 +619,7 @@ impl CurrentSuccessorOwnerV3<'_> {
     }
 
     fn recheck(&self) -> Result<(), SourceGenesisErrorV1> {
-        match self { Self::Strict(owner) => owner.recheck(), Self::Mixed(owner) => owner.recheck() }
+        match self { Self::Strict(owner) => owner.recheck().map_err(SourceGenesisErrorV1::from), Self::Mixed(owner) => owner.recheck().map_err(SourceGenesisErrorV1::from) }
     }
 }
 
@@ -706,29 +710,29 @@ fn serve_first_successor(attempt: &mut RootFirstSourceSuccessorAttemptV2<'_, '_>
         received.map_err(|_| SourceGenesisErrorV1::Stale)?;
     }
     *context = Some(match (*recipe, *route) {
-        (RootSuccessorRecipeV3::StrictV2, RootFirstSourceSuccessorRouteV2::Current) => owner.first_source_successor_context_v2(&prepare_io.incoming[32..]),
-        (RootSuccessorRecipeV3::StrictV2, RootFirstSourceSuccessorRouteV2::Historical) => owner.historical_first_source_successor_context_v2(&prepare_io.incoming[32..]),
-        (RootSuccessorRecipeV3::MixedV3, RootFirstSourceSuccessorRouteV2::Current) => owner.project_successor_context_v3(&prepare_io.incoming[32..]),
-        (RootSuccessorRecipeV3::MixedV3, RootFirstSourceSuccessorRouteV2::Historical) => owner.historical_project_successor_context_v3(&prepare_io.incoming[32..]),
+        (RootSuccessorRecipeV3::StrictV2, RootFirstSourceSuccessorRouteV2::Current) => owner.first_source_successor_context_v2(&prepare_io.incoming[32..]).map_err(SourceGenesisErrorV1::from),
+        (RootSuccessorRecipeV3::StrictV2, RootFirstSourceSuccessorRouteV2::Historical) => owner.historical_first_source_successor_context_v2(&prepare_io.incoming[32..]).map_err(SourceGenesisErrorV1::from),
+        (RootSuccessorRecipeV3::MixedV3, RootFirstSourceSuccessorRouteV2::Current) => owner.project_successor_context_v3(&prepare_io.incoming[32..]).map_err(SourceGenesisErrorV1::from),
+        (RootSuccessorRecipeV3::MixedV3, RootFirstSourceSuccessorRouteV2::Historical) => owner.historical_project_successor_context_v3(&prepare_io.incoming[32..]).map_err(SourceGenesisErrorV1::from),
     });
     latch_project_successor_v3(*recipe, selected_first, RootProjectSuccessorSiteV3::Context, matches!(context, Some(Err(_))));
     let held = RootFirstSourceSuccessorBookendV2 { owner: Some(&*owner), ..before };
     let context_post = successor_bookend_v3(*recipe, &held, stream, posts, clock_posts, selected_first);
     let original = context.as_ref().and_then(|result| result.as_ref().ok()).ok_or(SourceGenesisErrorV1::Conflict)?;
     context_post.map_err(|_| SourceGenesisErrorV1::Stale)?;
-    source[0] = Some(request_successor_source_with_recipe_v3(*recipe, nonce, original, owner.source_readback_pin(), *source_signer_uid, *controller_gid));
+    source[0] = Some(owner.source_readback_pin().map_err(io::Error::other).and_then(|pin| request_successor_source_with_recipe_v3(*recipe, nonce, original, pin, *source_signer_uid, *controller_gid)));
     latch_project_successor_v3(*recipe, selected_first, RootProjectSuccessorSiteV3::Source(0), matches!(source[0], Some(Err(_))));
     let source_post = successor_bookend_v3(*recipe, &held, stream, posts, clock_posts, selected_first);
     let source_before = source[0].as_ref().and_then(|result| result.as_ref().ok()).ok_or(SourceGenesisErrorV1::Stale)?.bytes();
     source_post.map_err(|_| SourceGenesisErrorV1::Stale)?;
     if matches!(route, RootFirstSourceSuccessorRouteV2::Historical) {
         let resource = original.as_bytes().len() == 1424;
-        posts.push(match (*recipe, resource) {
-            (RootSuccessorRecipeV3::StrictV2, false) => aos_sandbox_controller_domain::policy_compiler::verify_source_first_successor_readback_v2(source_before, owner.source_readback_pin(), nonce, original).map(|observed| observed.phase()),
-            (RootSuccessorRecipeV3::MixedV3, false) => aos_sandbox_controller_domain::policy_compiler::verify_source_project_continuation_readback_v3(source_before, owner.source_readback_pin(), nonce, original).map(|observed| observed.phase()),
-            (RootSuccessorRecipeV3::StrictV2, true) => aos_sandbox_controller_domain::policy_compiler::verify_source_resource_first_successor_readback_v4(source_before, owner.source_readback_pin(), nonce, original).map(|observed| observed.phase()),
-            (RootSuccessorRecipeV3::MixedV3, true) => aos_sandbox_controller_domain::policy_compiler::verify_source_resource_project_continuation_readback_v5(source_before, owner.source_readback_pin(), nonce, original).map(|observed| observed.phase()),
-        }.and_then(|phase| if phase == aos_sandbox_controller_domain::policy_compiler::SourceFirstSuccessorReadbackPhaseV2::Before { Err(SourceGenesisErrorV1::AdmissionClosed) } else { Ok(()) }));
+        posts.push(owner.source_readback_pin().map_err(SourceGenesisErrorV1::from).and_then(|pin| match (*recipe, resource) {
+            (RootSuccessorRecipeV3::StrictV2, false) => aos_sandbox_controller_domain::policy_compiler::verify_source_first_successor_readback_v2(source_before, pin, nonce, original).map(|observed| observed.phase()),
+            (RootSuccessorRecipeV3::MixedV3, false) => aos_sandbox_controller_domain::policy_compiler::verify_source_project_continuation_readback_v3(source_before, pin, nonce, original).map(|observed| observed.phase()),
+            (RootSuccessorRecipeV3::StrictV2, true) => aos_sandbox_controller_domain::policy_compiler::verify_source_resource_first_successor_readback_v4(source_before, pin, nonce, original).map(|observed| observed.phase()),
+            (RootSuccessorRecipeV3::MixedV3, true) => aos_sandbox_controller_domain::policy_compiler::verify_source_resource_project_continuation_readback_v5(source_before, pin, nonce, original).map(|observed| observed.phase()),
+        }).and_then(|phase| if phase == aos_sandbox_controller_domain::policy_compiler::SourceFirstSuccessorReadbackPhaseV2::Before { Err(SourceGenesisErrorV1::AdmissionClosed) } else { Ok(()) }));
         latch_project_successor_v3(*recipe, selected_first, RootProjectSuccessorSiteV3::Owner(posts.len() - 1), posts.last().is_some_and(Result::is_err));
         successor_bookend_v3(*recipe, &held, stream, posts, clock_posts, selected_first).map_err(|_| SourceGenesisErrorV1::Stale)?;
     }
@@ -747,7 +751,7 @@ fn serve_first_successor(attempt: &mut RootFirstSourceSuccessorAttemptV2<'_, '_>
     let received = anchor_io.read_with_recipe(stream, &held, recipe.frame(Phase::Anchor), nonce);
     latch_project_successor_v3(*recipe, selected_first, RootProjectSuccessorSiteV3::Io(2), received.is_err());
     received.map_err(|_| SourceGenesisErrorV1::Stale)?;
-    source[1] = Some(request_successor_source_with_recipe_v3(*recipe, nonce, original, owner.source_readback_pin(), *source_signer_uid, *controller_gid));
+    source[1] = Some(owner.source_readback_pin().map_err(io::Error::other).and_then(|pin| request_successor_source_with_recipe_v3(*recipe, nonce, original, pin, *source_signer_uid, *controller_gid)));
     latch_project_successor_v3(*recipe, selected_first, RootProjectSuccessorSiteV3::Source(1), matches!(source[1], Some(Err(_))));
     let source_post = successor_bookend_v3(*recipe, &held, stream, posts, clock_posts, selected_first);
     let source_after = source[1].as_ref().and_then(|result| result.as_ref().ok()).ok_or(SourceGenesisErrorV1::Stale)?.bytes();
@@ -767,7 +771,7 @@ fn serve_first_successor(attempt: &mut RootFirstSourceSuccessorAttemptV2<'_, '_>
     let received = complete_io.read_with_recipe(stream, &held, recipe.frame(Phase::Complete), nonce);
     latch_project_successor_v3(*recipe, selected_first, RootProjectSuccessorSiteV3::Io(3), received.is_err());
     received.map_err(|_| SourceGenesisErrorV1::Stale)?;
-    source[2] = Some(request_successor_source_with_recipe_v3(*recipe, nonce, original, owner.source_readback_pin(), *source_signer_uid, *controller_gid));
+    source[2] = Some(owner.source_readback_pin().map_err(io::Error::other).and_then(|pin| request_successor_source_with_recipe_v3(*recipe, nonce, original, pin, *source_signer_uid, *controller_gid)));
     latch_project_successor_v3(*recipe, selected_first, RootProjectSuccessorSiteV3::Source(2), matches!(source[2], Some(Err(_))));
     let source_post = successor_bookend_v3(*recipe, &held, stream, posts, clock_posts, selected_first);
     let acknowledged = source[2].as_ref().and_then(|result| result.as_ref().ok()).ok_or(SourceGenesisErrorV1::Stale)?.bytes();
@@ -785,14 +789,14 @@ fn serve_first_successor(attempt: &mut RootFirstSourceSuccessorAttemptV2<'_, '_>
     let completion = current.completion();
     let sent = complete_io.send_successor_with_recipe_v3(stream, &held, Phase::Completed, nonce, completion, *recipe);
     latch_project_successor_v3(*recipe, selected_first, RootProjectSuccessorSiteV3::Io(3), sent.is_err());
-    let current_after_send = current.recheck();
+    let current_after_send = current.recheck().map_err(SourceGenesisErrorV1::from);
     posts.push(current_after_send);
     latch_project_successor_v3(*recipe, selected_first, RootProjectSuccessorSiteV3::Owner(posts.len() - 1), posts.last().is_some_and(Result::is_err));
     let independent = successor_bookend_v3(*recipe, &held, stream, posts, clock_posts, selected_first);
     if sent.is_err() || independent.is_err() { terminate_first_successor_root(); }
     let received = finish_io.read_with_recipe(stream, &held, recipe.frame(Phase::Finish), nonce);
     latch_project_successor_v3(*recipe, selected_first, RootProjectSuccessorSiteV3::Io(4), received.is_err());
-    posts.push(current.recheck());
+    posts.push(current.recheck().map_err(SourceGenesisErrorV1::from));
     latch_project_successor_v3(*recipe, selected_first, RootProjectSuccessorSiteV3::Owner(posts.len() - 1), posts.last().is_some_and(Result::is_err));
     let independent = successor_bookend_v3(*recipe, &held, stream, posts, clock_posts, selected_first);
     if received.is_err() || independent.is_err() || &finish_io.incoming[32..] != completion {
@@ -800,7 +804,7 @@ fn serve_first_successor(attempt: &mut RootFirstSourceSuccessorAttemptV2<'_, '_>
     }
     let sent = finish_io.send_successor_with_recipe_v3(stream, &held, Phase::Finish, nonce, completion, *recipe);
     latch_project_successor_v3(*recipe, selected_first, RootProjectSuccessorSiteV3::Io(4), sent.is_err());
-    posts.push(current.recheck());
+    posts.push(current.recheck().map_err(SourceGenesisErrorV1::from));
     latch_project_successor_v3(*recipe, selected_first, RootProjectSuccessorSiteV3::Owner(posts.len() - 1), posts.last().is_some_and(Result::is_err));
     let independent = successor_bookend_v3(*recipe, &held, stream, posts, clock_posts, selected_first);
     if sent.is_err() || independent.is_err() { terminate_first_successor_root(); }
@@ -837,11 +841,11 @@ pub struct RootProjectGenesisAttemptV3<'stream, 'startup> {
     owner: Option<RootSourceGenesisAuthorityV1>,
     contexts: [Option<Result<(aos_sandbox_controller_domain::policy_compiler::SourceProjectGenesisChallengeV3, aos_sandbox_controller_domain::policy_compiler::SourceTreeGenesisIntentContextV1), SourceGenesisErrorV1>>; 3],
     source: [Option<Result<aos_sandbox_controller_domain::policy_compiler::SourceProjectGenesisReadbackPacketV4, io::Error>>; 3],
-    prepared: Option<Result<aos_sandbox_controller_domain::policy_compiler::RootSourceGenesisIntentRecordV1, ()>>,
+    prepared: Option<Result<aos_sandbox_ledger_replay::replay::root_genesis_records::RootSourceGenesisIntentRecordV1, ()>>,
     floor_selection: Option<Result<bool, SourceGenesisErrorV1>>,
     anchored: Option<Result<SourceHierarchyFloorRecordV1, ()>>,
-    prepare: aos_sandbox_controller_domain::policy_compiler::RootProjectGenesisMutationResultsV3,
-    anchor: aos_sandbox_controller_domain::policy_compiler::RootProjectGenesisMutationResultsV3,
+    prepare: aos_sandbox_policy::native::RootProjectGenesisMutationResultsV3,
+    anchor: aos_sandbox_policy::native::RootProjectGenesisMutationResultsV3,
     io: [RootFirstSourceSuccessorIoV2; 5],
     posts: Vec<Result<(), SourceGenesisErrorV1>>,
     clock_posts: Vec<Option<Result<aos_sandbox_model::RawPairedClockSample, SourceGenesisErrorV1>>>,
@@ -867,8 +871,8 @@ impl<'stream, 'startup> RootProjectGenesisAttemptV3<'stream, 'startup> {
             stream, startup, request, route, controller_uid, controller_gid, source_uid, source_signer_uid,
             deadline: Instant::now() + ROOT_HOLD_LIMIT, clock: None, opening: RootFirstSourceSuccessorOpeningV2::new(), owner: None,
             contexts: std::array::from_fn(|_| None), source: std::array::from_fn(|_| None), prepared: None, floor_selection: None, anchored: None,
-            prepare: aos_sandbox_controller_domain::policy_compiler::RootProjectGenesisMutationResultsV3::new(),
-            anchor: aos_sandbox_controller_domain::policy_compiler::RootProjectGenesisMutationResultsV3::new(),
+            prepare: aos_sandbox_policy::native::RootProjectGenesisMutationResultsV3::new(),
+            anchor: aos_sandbox_policy::native::RootProjectGenesisMutationResultsV3::new(),
             io: std::array::from_fn(|_| RootFirstSourceSuccessorIoV2::default()), posts: Vec::new(), clock_posts: Vec::new(),
             returned: None, first_failure: None, cleanup: None, armed: true,
         }
@@ -972,19 +976,19 @@ fn serve_project_genesis_v3(attempt: &mut RootProjectGenesisAttemptV3<'_, '_>) -
             *first_failure = Some(RootProjectGenesisAttemptSiteV3::Io(1)); return Err(SourceGenesisErrorV1::Stale);
         }
     }
-    contexts[0] = Some(owner.accept_controller_project_genesis_v3(&io[1].incoming[32..]));
+    contexts[0] = Some(owner.accept_controller_project_genesis_v3(&io[1].incoming[32..]).map_err(SourceGenesisErrorV1::from));
     if contexts[0].as_ref().is_some_and(Result::is_err) { *first_failure = Some(RootProjectGenesisAttemptSiteV3::Context(0)); }
     let held = RootFirstSourceSuccessorBookendV2 { owner: Some(owner), ..before };
     let independent = project_genesis_bookend_v3(&held, stream, posts, clock_posts, first_failure);
     let (challenge, context) = contexts[0].as_ref().and_then(|result| result.as_ref().ok()).ok_or(SourceGenesisErrorV1::Stale)?;
     independent?;
     if matches!(route, RootFirstSourceSuccessorRouteV2::Historical) && challenge.intent().is_none() { return Err(SourceGenesisErrorV1::AdmissionClosed); }
-    source[0] = Some(crate::source_signer_exchange::request_root_source_project_genesis_readback_v4(*challenge, context, owner.source_readback_pin(), *source_signer_uid, *controller_gid));
+    source[0] = Some(owner.source_readback_pin().map_err(io::Error::other).and_then(|pin| crate::source_signer_exchange::request_root_source_project_genesis_readback_v4(*challenge, context, pin, *source_signer_uid, *controller_gid)));
     if source[0].as_ref().is_some_and(Result::is_err) { *first_failure = Some(RootProjectGenesisAttemptSiteV3::Source(0)); }
     let independent = project_genesis_bookend_v3(&held, stream, posts, clock_posts, first_failure);
     let packet = source[0].as_ref().and_then(|result| result.as_ref().ok()).ok_or(SourceGenesisErrorV1::Stale)?;
     independent?;
-    *floor_selection = Some(owner.project_genesis_floor_present_v3());
+    *floor_selection = Some(owner.project_genesis_floor_present_v3().map_err(SourceGenesisErrorV1::from));
     if floor_selection.as_ref().is_some_and(Result::is_err) && first_failure.is_none() {
         *first_failure = Some(RootProjectGenesisAttemptSiteV3::FloorSelection);
     }
@@ -1018,13 +1022,13 @@ fn serve_project_genesis_v3(attempt: &mut RootProjectGenesisAttemptV3<'_, '_>) -
         if io[2].read_with_recipe(stream, &held, RootFrameRecipeV3::ProjectGenesis(Phase::Anchor), nonce).is_err() {
             *first_failure = Some(RootProjectGenesisAttemptSiteV3::Io(2)); return Err(SourceGenesisErrorV1::Stale);
         }
-        contexts[1] = Some(owner.accept_controller_project_genesis_v3(&io[2].incoming[32..]));
+        contexts[1] = Some(owner.accept_controller_project_genesis_v3(&io[2].incoming[32..]).map_err(SourceGenesisErrorV1::from));
         if contexts[1].as_ref().is_some_and(Result::is_err) { *first_failure = Some(RootProjectGenesisAttemptSiteV3::Context(1)); }
         let held = RootFirstSourceSuccessorBookendV2 { owner: Some(owner), ..before };
         let independent = project_genesis_bookend_v3(&held, stream, posts, clock_posts, first_failure);
         let (challenge, context) = contexts[1].as_ref().and_then(|result| result.as_ref().ok()).ok_or(SourceGenesisErrorV1::Stale)?;
         independent?;
-        source[1] = Some(crate::source_signer_exchange::request_root_source_project_genesis_readback_v4(*challenge, context, owner.source_readback_pin(), *source_signer_uid, *controller_gid));
+        source[1] = Some(owner.source_readback_pin().map_err(io::Error::other).and_then(|pin| crate::source_signer_exchange::request_root_source_project_genesis_readback_v4(*challenge, context, pin, *source_signer_uid, *controller_gid)));
         if source[1].as_ref().is_some_and(Result::is_err) { *first_failure = Some(RootProjectGenesisAttemptSiteV3::Source(1)); }
         let independent = project_genesis_bookend_v3(&held, stream, posts, clock_posts, first_failure);
         let packet = source[1].as_ref().and_then(|result| result.as_ref().ok()).ok_or(SourceGenesisErrorV1::Stale)?;
@@ -1047,13 +1051,13 @@ fn serve_project_genesis_v3(attempt: &mut RootProjectGenesisAttemptV3<'_, '_>) -
     if io[3].read_with_recipe(stream, &held, RootFrameRecipeV3::ProjectGenesis(Phase::Complete), nonce).is_err() {
         *first_failure = Some(RootProjectGenesisAttemptSiteV3::Io(3)); return Err(SourceGenesisErrorV1::Stale);
     }
-    contexts[2] = Some(owner.accept_controller_project_genesis_v3(&io[3].incoming[32..]));
+    contexts[2] = Some(owner.accept_controller_project_genesis_v3(&io[3].incoming[32..]).map_err(SourceGenesisErrorV1::from));
     if contexts[2].as_ref().is_some_and(Result::is_err) { *first_failure = Some(RootProjectGenesisAttemptSiteV3::Context(2)); }
     let held = RootFirstSourceSuccessorBookendV2 { owner: Some(owner), ..before };
     let independent = project_genesis_bookend_v3(&held, stream, posts, clock_posts, first_failure);
     let (challenge, context) = contexts[2].as_ref().and_then(|result| result.as_ref().ok()).ok_or(SourceGenesisErrorV1::Stale)?;
     independent?;
-    source[2] = Some(crate::source_signer_exchange::request_root_source_project_genesis_readback_v4(*challenge, context, owner.source_readback_pin(), *source_signer_uid, *controller_gid));
+    source[2] = Some(owner.source_readback_pin().map_err(io::Error::other).and_then(|pin| crate::source_signer_exchange::request_root_source_project_genesis_readback_v4(*challenge, context, pin, *source_signer_uid, *controller_gid)));
     if source[2].as_ref().is_some_and(Result::is_err) { *first_failure = Some(RootProjectGenesisAttemptSiteV3::Source(2)); }
     let independent = project_genesis_bookend_v3(&held, stream, posts, clock_posts, first_failure);
     let packet = source[2].as_ref().and_then(|result| result.as_ref().ok()).ok_or(SourceGenesisErrorV1::Stale)?;
@@ -1066,20 +1070,20 @@ fn serve_project_genesis_v3(attempt: &mut RootProjectGenesisAttemptV3<'_, '_>) -
     if independent.is_err() || current.floor() != floor { terminate_first_successor_root(); }
     let sent = io[3].send_project_genesis_v3(stream, &held, Phase::Completed, nonce, current.floor().digest().as_bytes());
     if sent.is_err() { first_failure.get_or_insert(RootProjectGenesisAttemptSiteV3::Io(3)); }
-    posts.push(current.recheck());
+    posts.push(current.recheck().map_err(SourceGenesisErrorV1::from));
     if posts.last().is_some_and(Result::is_err) { first_failure.get_or_insert(RootProjectGenesisAttemptSiteV3::Owner(posts.len() - 1)); }
     let independent = project_genesis_bookend_v3(&held, stream, posts, clock_posts, first_failure);
     if sent.is_err() || posts.iter().any(Result::is_err) || independent.is_err() { terminate_first_successor_root(); }
     let received = io[4].read_with_recipe(stream, &held, RootFrameRecipeV3::ProjectGenesis(Phase::Finish), nonce);
     if received.is_err() { first_failure.get_or_insert(RootProjectGenesisAttemptSiteV3::Io(4)); }
-    posts.push(current.recheck());
+    posts.push(current.recheck().map_err(SourceGenesisErrorV1::from));
     if posts.last().is_some_and(Result::is_err) { first_failure.get_or_insert(RootProjectGenesisAttemptSiteV3::Owner(posts.len() - 1)); }
     let independent = project_genesis_bookend_v3(&held, stream, posts, clock_posts, first_failure);
     if received.is_err() || posts.iter().any(Result::is_err) || independent.is_err()
         || &io[4].incoming[32..] != current.floor().digest().as_bytes() { terminate_first_successor_root(); }
     let sent = io[4].send_project_genesis_v3(stream, &held, Phase::Finish, nonce, current.floor().digest().as_bytes());
     if sent.is_err() { first_failure.get_or_insert(RootProjectGenesisAttemptSiteV3::Io(4)); }
-    posts.push(current.recheck());
+    posts.push(current.recheck().map_err(SourceGenesisErrorV1::from));
     if posts.last().is_some_and(Result::is_err) { first_failure.get_or_insert(RootProjectGenesisAttemptSiteV3::Owner(posts.len() - 1)); }
     let independent = project_genesis_bookend_v3(&held, stream, posts, clock_posts, first_failure);
     if sent.is_err() || posts.iter().any(Result::is_err) || independent.is_err() { terminate_first_successor_root(); }
@@ -1122,11 +1126,11 @@ pub struct RootGlobalGenesisAttemptV2<'stream, 'startup> {
         Option<Result<aos_sandbox_controller_domain::policy_compiler::SourceTreeGenesisReadbackPacketV2, io::Error>>;
         3
     ],
-    prepared: Option<Result<aos_sandbox_controller_domain::policy_compiler::RootSourceGenesisIntentRecordV1, ()>>,
+    prepared: Option<Result<aos_sandbox_ledger_replay::replay::root_genesis_records::RootSourceGenesisIntentRecordV1, ()>>,
     floor_selection: Option<Result<bool, SourceGenesisErrorV1>>,
     anchored: Option<Result<SourceHierarchyFloorRecordV1, ()>>,
-    prepare: aos_sandbox_controller_domain::policy_compiler::RootProjectGenesisMutationResultsV3,
-    anchor: aos_sandbox_controller_domain::policy_compiler::RootProjectGenesisMutationResultsV3,
+    prepare: aos_sandbox_policy::native::RootProjectGenesisMutationResultsV3,
+    anchor: aos_sandbox_policy::native::RootProjectGenesisMutationResultsV3,
     io: [RootFirstSourceSuccessorIoV2; 5],
 
     posts: Vec<Result<(), SourceGenesisErrorV1>>,
@@ -1169,8 +1173,8 @@ impl<'stream, 'startup> RootGlobalGenesisAttemptV2<'stream, 'startup> {
             prepared: None,
             floor_selection: None,
             anchored: None,
-            prepare: aos_sandbox_controller_domain::policy_compiler::RootProjectGenesisMutationResultsV3::new(),
-            anchor: aos_sandbox_controller_domain::policy_compiler::RootProjectGenesisMutationResultsV3::new(),
+            prepare: aos_sandbox_policy::native::RootProjectGenesisMutationResultsV3::new(),
+            anchor: aos_sandbox_policy::native::RootProjectGenesisMutationResultsV3::new(),
             io: std::array::from_fn(|_| RootFirstSourceSuccessorIoV2::default()),
             posts: Vec::new(),
             clock_posts: Vec::new(),
@@ -1240,7 +1244,7 @@ impl<'stream, 'startup> RootGlobalGenesisAttemptV2<'stream, 'startup> {
         self.posts.push(
             self.owner
                 .as_ref()
-                .map_or(Ok(()), RootSourceGenesisAuthorityV1::recheck),
+                .map_or(Ok(()), |owner| owner.recheck().map_err(SourceGenesisErrorV1::from)),
         );
         self.posts.push((|| {
             let peer = rustix::net::sockopt::socket_peercred(&*self.stream)
@@ -1514,14 +1518,14 @@ fn serve_resource_global_genesis_v2(
         return Err(SourceGenesisErrorV1::AdmissionClosed);
     }
 
-    source[0] = Some(crate::source_signer_exchange::request_root_source_tree_genesis_readback_v3(
+    source[0] = Some(owner.source_readback_pin().map_err(io::Error::other).and_then(|pin| crate::source_signer_exchange::request_root_source_tree_genesis_readback_v3(
         *challenge,
         *project,
         context.as_ref(),
-        owner.source_readback_pin(),
+        pin,
         *source_signer_uid,
         *controller_gid,
-    ));
+    )));
     if source[0].as_ref().is_some_and(Result::is_err) {
         *first_failure = Some(RootProjectGenesisAttemptSiteV3::Source(0));
     }
@@ -1538,7 +1542,7 @@ fn serve_resource_global_genesis_v2(
         .ok_or(SourceGenesisErrorV1::Stale)?;
     independent?;
 
-    *floor_selection = Some(owner.resource_global_floor_present_v2());
+    *floor_selection = Some(owner.resource_global_floor_present_v2().map_err(SourceGenesisErrorV1::from));
     if floor_selection.as_ref().is_some_and(Result::is_err) && first_failure.is_none() {
         *first_failure = Some(RootProjectGenesisAttemptSiteV3::FloorSelection);
     }
@@ -1666,14 +1670,14 @@ fn serve_resource_global_genesis_v2(
             .ok_or(SourceGenesisErrorV1::Stale)?;
         independent?;
 
-        source[1] = Some(crate::source_signer_exchange::request_root_source_tree_genesis_readback_v3(
+        source[1] = Some(owner.source_readback_pin().map_err(io::Error::other).and_then(|pin| crate::source_signer_exchange::request_root_source_tree_genesis_readback_v3(
             *challenge,
             *project,
             context.as_ref(),
-            owner.source_readback_pin(),
+            pin,
             *source_signer_uid,
             *controller_gid,
-        ));
+        )));
         if source[1].as_ref().is_some_and(Result::is_err) {
             *first_failure = Some(RootProjectGenesisAttemptSiteV3::Source(1));
         }
@@ -1780,14 +1784,14 @@ fn serve_resource_global_genesis_v2(
         .ok_or(SourceGenesisErrorV1::Stale)?;
     independent?;
 
-    source[2] = Some(crate::source_signer_exchange::request_root_source_tree_genesis_readback_v3(
+    source[2] = Some(owner.source_readback_pin().map_err(io::Error::other).and_then(|pin| crate::source_signer_exchange::request_root_source_tree_genesis_readback_v3(
         *challenge,
         *project,
         context.as_ref(),
-        owner.source_readback_pin(),
+        pin,
         *source_signer_uid,
         *controller_gid,
-    ));
+    )));
     if source[2].as_ref().is_some_and(Result::is_err) {
         *first_failure = Some(RootProjectGenesisAttemptSiteV3::Source(2));
     }
@@ -1831,7 +1835,7 @@ fn serve_resource_global_genesis_v2(
     if sent.is_err() {
         first_failure.get_or_insert(RootProjectGenesisAttemptSiteV3::Io(3));
     }
-    posts.push(current.recheck());
+    posts.push(current.recheck().map_err(SourceGenesisErrorV1::from));
     if posts.last().is_some_and(Result::is_err) {
         first_failure.get_or_insert(RootProjectGenesisAttemptSiteV3::Owner(posts.len() - 1));
     }
@@ -1855,7 +1859,7 @@ fn serve_resource_global_genesis_v2(
     if received.is_err() {
         first_failure.get_or_insert(RootProjectGenesisAttemptSiteV3::Io(4));
     }
-    posts.push(current.recheck());
+    posts.push(current.recheck().map_err(SourceGenesisErrorV1::from));
     if posts.last().is_some_and(Result::is_err) {
         first_failure.get_or_insert(RootProjectGenesisAttemptSiteV3::Owner(posts.len() - 1));
     }
@@ -1884,7 +1888,7 @@ fn serve_resource_global_genesis_v2(
     if sent.is_err() {
         first_failure.get_or_insert(RootProjectGenesisAttemptSiteV3::Io(4));
     }
-    posts.push(current.recheck());
+    posts.push(current.recheck().map_err(SourceGenesisErrorV1::from));
     if posts.last().is_some_and(Result::is_err) {
         first_failure.get_or_insert(RootProjectGenesisAttemptSiteV3::Owner(posts.len() - 1));
     }
@@ -1951,7 +1955,7 @@ fn resource_global_source_context_v2(
 /// changed fixed custody or the actual Source RPC error in the same attempt.
 /// The caller must terminate without dropping the failed attempt or retrying.
 pub fn prepare_root_create_q04_existing_gen1_v1(
-    attempt: &mut aos_sandbox_controller_domain::policy_compiler::OriginalRootCreateQ04AttemptV1<'_>,
+    attempt: &mut aos_sandbox_controller_domain::policy_compiler::OriginalRootCreateQ04AttemptV1<'_, '_, '_, '_>,
     source_signer_uid: u32,
     controller_gid: u32,
 ) -> Result<(), ()> {
@@ -1976,7 +1980,7 @@ pub fn prepare_root_create_q04_existing_gen1_v1(
 /// Retains malformed fresh Complete, mismatched Source/current floor, changed
 /// actual names/owners, original RPC cause or the unchanged original cutoff.
 pub fn refresh_root_create_q04_gen1_v1(
-    attempt: &mut aos_sandbox_controller_domain::policy_compiler::OriginalRootCreateQ04AttemptV1<'_>,
+    attempt: &mut aos_sandbox_controller_domain::policy_compiler::OriginalRootCreateQ04AttemptV1<'_, '_, '_, '_>,
     source_signer_uid: u32,
     controller_gid: u32,
 ) -> Result<(), ()> {
@@ -1986,11 +1990,14 @@ pub fn refresh_root_create_q04_gen1_v1(
 }
 
 fn observe_root_create_q04_source(
-    observation: aos_sandbox_controller_domain::policy_compiler::RootCreateQ04SourceObservationLoanV1<'_, '_>,
+    observation: aos_sandbox_controller_domain::policy_compiler::RootCreateQ04SourceObservationLoanV1<'_, '_, '_, '_>,
     source_signer_uid: u32,
     controller_gid: u32,
 ) -> Result<(), ()> {
-    let (challenge, project, context, signer) = observation.request();
+    let (challenge, project, context, signer) = match observation.request() {
+        Ok(request) => request,
+        Err(()) => return observation.park_request_refusal_v1(),
+    };
     let returned = crate::source_signer_exchange::request_root_source_tree_genesis_readback_v3(
         challenge, Some(project), Some(context), signer, source_signer_uid, controller_gid,
     );
@@ -2152,14 +2159,14 @@ fn serve(
     if current.floor() != &floor {
         return Err(SourceGenesisErrorV1::Conflict);
     }
-    current.recheck()?;
+    current.recheck().map_err(SourceGenesisErrorV1::from)?;
     flight.send(
         RootSourceGenesisFrameKindV1::Completed,
         current.floor().digest().as_bytes(),
     )?;
     let final_ack = flight.read(RootSourceGenesisFrameKindV1::Finish)?;
     require_final_ack(&final_ack, current.floor())?;
-    current.recheck()?;
+    current.recheck().map_err(SourceGenesisErrorV1::from)?;
     flight.recheck()
 }
 
@@ -2190,7 +2197,7 @@ impl RootHeldStreamFlight<'_, '_> {
         if Instant::now() >= self.deadline {
             return Err(SourceGenesisErrorV1::Stale);
         }
-        self.owner.recheck()
+        self.owner.recheck().map_err(SourceGenesisErrorV1::from)
     }
 
     fn set_remaining_timeout(&self) -> Result<(), SourceGenesisErrorV1> {
@@ -2274,14 +2281,14 @@ impl RootHeldStreamFlight<'_, '_> {
                 let context = project
                     .map(|_| self.owner.source_genesis_intent_context_v1())
                     .transpose()?;
-                request_root_source_tree_genesis_readback_v2(
+                self.owner.source_readback_pin().map_err(io::Error::other).and_then(|pin| request_root_source_tree_genesis_readback_v2(
                     challenge,
                     project,
                     context.as_ref(),
-                    self.owner.source_readback_pin(),
+                    pin,
                     self.source_signer_uid,
                     self.controller_gid,
-                )
+                ))
                 .map_err(SourceGenesisErrorV1::from)
             })
             .transpose()?;

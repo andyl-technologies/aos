@@ -166,8 +166,8 @@ impl RetainedSubjectStreamReadV1 {
             }
         };
         self.received = Some(match geometry {
-            Some(geometry) => stream.try_receive_subject_chunk_with_geometry_retaining(maximum, geometry),
-            None => stream.try_receive_subject_chunk_retaining(maximum),
+            Some(geometry) => crate::unix_stream::try_receive_subject_chunk_with_geometry_retaining(stream, maximum, geometry),
+            None => crate::unix_stream::try_receive_subject_chunk_retaining(stream, maximum),
         });
         if matches!(self.received, Some(Ok(_))) {
             Ok(())

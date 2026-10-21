@@ -305,13 +305,17 @@ Selected native physical ownership is not qualification on other Unix targets.
 
 | Current owner | Responsibility and retained boundary |
 | --- | --- |
-| [Core](../../../crates/sandbox/model/aos-sandbox-model/src/lib.rs), Agent wire and Linux | Shared bounded mechanics, portable messages and fixed native mechanics; role validation and authority stay with callers. |
+| [Model](../../../crates/sandbox/model/aos-sandbox-model/src/lib.rs) and [Protocol](../../../crates/sandbox/protocol/aos-sandbox-protocol/src/lib.rs) | Portable models, bounded codecs and canonical historical/local DATA; role admission and fresh currentness remain with native owners. |
+| [Linux descriptors](../../../crates/shared/aos-linux-descriptors/src/lib.rs) and [Sandbox Linux](../../../crates/sandbox/host/aos-sandbox-linux/src/lib.rs) | Shared process pins, plain Unix streams, sealed credentials, boot identity and positional hashing sit below Sandbox-specific process/namespace, subject and packet mechanics. Neither grants a service role. |
+| [Systemd client](../../../crates/shared/aos-systemd-client/src/lib.rs) | Typed manager transport and observations use shared Linux descriptor mechanics without a Sandbox implementation dependency. |
 | [Journal](../../../crates/sandbox/controller/aos-sandbox-journal/src/lib.rs) | Portable framing/native DATA and opt-in physical custody; Domain retains typed semantic admission and final crossings. |
-| [Protocol](../../../crates/sandbox/protocol/aos-sandbox-protocol/src/lib.rs) | Canonical historical/local DATA; current grants, signing keys and native loans remain upper. |
+| [Ledger replay](../../../crates/sandbox/controller/aos-sandbox-ledger-replay/src/lib.rs) | Shared Source, Root and Cache saved-state models and complete replay comparisons; native roles retain construction, writer/descriptor custody, currentness and posts. |
 | [Domain Journal](../../../crates/sandbox/controller/aos-sandbox-controller-domain/src/journal.rs) and [protected domain adapter](../../../crates/sandbox/controller/aos-sandbox-controller-domain/src/protected_domain_journal.rs) | Native role transitions, original retained causes and cross-owner loans; private organization, not protected role-crate isolation. |
-| [Native Source](../../../crates/sandbox/controller/aos-sandbox-controller-domain/src/source_domain/mod.rs) | Private fixed-writer owner retains paid opening and Q04 custody in Domain, without a Source Cargo boundary. |
-| [Ownership](../../../crates/sandbox/model/aos-sandbox-ownership/src/lib.rs) and [Policy](../../../crates/sandbox/model/aos-sandbox-policy/src/lib.rs) | Historical lease state and pure compiler/verifier DATA; fresh issuance, Root binding and protected publication remain Native. |
-| [Controller Runtime](../../../crates/sandbox/controller/aos-sandbox-controller-runtime/src/lib.rs), Security and signers | Concrete Controller above session custody; Security and Source/Cache signers still depend on Domain. |
+| [Source](../../../crates/sandbox/storage/aos-sandbox-source/src/lib.rs) and [Domain Source integration](../../../crates/sandbox/controller/aos-sandbox-controller-domain/src/source_domain/mod.rs) | Source owns Linux fixed native construction, provider state and signer purposes; Domain still retains its fixed-writer integration and lifecycle/Q04 coordination. This is a package extraction, not complete Source/Lifecycle closure. |
+| [Cache](../../../crates/sandbox/storage/aos-sandbox-cache/src/lib.rs) | Cache owns its journal adapter, fixed role writers, admission/recovery and physical/currentness owners. Domain and Security consume finite owner APIs; historical Cache DATA remains in Protocol and Ledger replay. |
+| [Ownership](../../../crates/sandbox/model/aos-sandbox-ownership/src/lib.rs) | Historical lease state and successor/CAS comparison; genuine issuer, clock and commit custody remain with their original owners. |
+| [Policy](../../../crates/sandbox/model/aos-sandbox-policy/src/lib.rs) and [native Policy](../../../crates/sandbox/model/aos-sandbox-policy/src/native.rs) | Portable compiler/publication DATA is separate from opt-in Linux native journals, Root authority/Target, publication and Current owners. Native constructors require actual original loans; the package boundary does not establish a complete Current programme. |
+| [Controller Runtime](../../../crates/sandbox/controller/aos-sandbox-controller-runtime/src/lib.rs), [Security](../../../crates/sandbox/security/aos-sandbox-broker-session-security/src/lib.rs) and [Source](../../../crates/sandbox/security/aos-sandbox-source-signer/src/lib.rs)/[Cache](../../../crates/sandbox/security/aos-sandbox-cache-signer/src/lib.rs) signers | Concrete Controller remains above session custody. Security still depends on Domain; neither signer manifest declares a Domain dependency. |
 | [Guest root tree](../../../crates/sandbox/guest/aos-sandbox-guest-root-measurement/src/lib.rs) and [realization](../../../crates/sandbox/guest/aos-sandbox-guest-root-realization/src/lib.rs) | Separate nonauthorizing measurement and physical realization; original admission/effect/recovery custody remains at callers. |
 | [Coordinator](../../../crates/sandbox/controller/aos-sandbox-coordinator/src/lib.rs) | Explicitly selected placement/watch/projection; protected remote handoffs remain selected Domain owners. |
 
@@ -329,10 +333,16 @@ that reader without private read adapters; original bounds/errors, canonical
 domains, exact authenticated prefixes, protected factories and public Node
 carrier-decoder contracts remain local.
 
-Linux owns the bounded optional credential reader and retained native read DATA;
-role decoding, key separation and startup admission remain upper. Agent's portable
-wire module serves Protocol consumers; Linux executable/bootstrap/effect code
-belongs to Guest or assembly, not a concrete executable dependency of wire users.
+`aos-linux-descriptors` owns generic process pins, plain Unix stream correlation,
+sealed read-only credentials, bounded boot identity and positional hashing, with
+no Sandbox dependency. Systemd uses that owner directly in production and tests.
+Sandbox Linux retains namespace/proc observations, private ancillary parsing,
+subject admission and fixed role-specific credential producers. Received FDs
+move through their original resident slots; this extraction does not authorize a
+role, duplicate a descriptor or turn historical bytes into native evidence.
+Linux retains the bounded optional credential reader and role-specific retained
+reads; key separation and startup admission remain with their callers. Portable
+Guest messages live below Guest executable/bootstrap/effect composition.
 
 Journal's `owner` retains the original files/append poison, configuration,
 coordinates, identity/namespace-provenance sets and materialized DATA map. File
@@ -507,33 +517,36 @@ resident types and all protected Journal/capacity/postcommit custody stay
 with the journal owner. This private organization is not a Cargo boundary.
 
 `source_domain` owns the live fixed Source Journal, paid opening originals and
-original Q04 loans in private `fixed_writer`. Individual protected recovery remains
-with each domain owner; Lifecycle retains its schemas, accepted identities and
-private verifier factory. This ownership establishes neither a Source Cargo
-boundary nor the complete protected Source/Lifecycle closure.
+original Q04 loans in private `fixed_writer`. The separate
+`aos-sandbox-source` package owns its fixed native Source journal, paid
+construction and signer purposes, sharing complete replay with
+`aos-sandbox-ledger-replay`. Lifecycle retains schemas, accepted identities and
+its private verifier factory; Domain retains the actual fixed-writer integration.
+The package split does not establish complete protected Source/Lifecycle closure.
 
 The unused Policy, Publisher and Cache Controller-result conversions are
 retired. Canonical applied transactions retain their exact postcommit and
 acknowledgement custody. Cache record selection and session-branded reducer
-inputs have one private owner; their sealed factories and currentness stay
-with the protected Cache owner. This is not a protected Cargo boundary.
+inputs belong to the Cache package; sealed factories and currentness remain
+with that package's protected owner. Domain callers retain their original loans
+and cross-owner coordination.
 
-Private `cache_residency::recovery::logical_pin` owns complete Acquire/Renew/Release
+Cache's private `recovery::logical_pin` owns complete Acquire/Renew/Release
 planning with one shared successor recipe. Complete retained-ledger and exact
 PinAcquire/PinDrain checks remain at their original gates; protected commit,
 independent physical settlement, causes and custody stay with native Cache owners.
 Returned payloads remain plans, not current grants.
 
-Protocol `cache_state` owns inert Cache accounting/catalog transitions once,
-without descriptors, protected capabilities or live loans. Protected Cache
-admission, full/incremental recovery proofs and physical/currentness owners
-remain in Domain. Source/Cache/Publisher role crates remain planned; Security and
-Source/Cache signers still depend on Domain. The protected Journal/Policy/Source/
-Cache/Publisher and local Ownership group is not isolated by these prerequisites.
-No DATA enclosure, private grouping or historical construction is a current
-grant, removal of protected Controller/Journal backreferences or public lifecycle
-qualification. Shared engines retire duplicate mechanics; relocated source earns
-zero deletion credit, even when passive APIs/adapters add code.
+Protocol `cache_state` owns inert Cache accounting/catalog transitions without
+descriptors, protected capabilities or live loans. Cache's separate package owns
+protected admission, recovery proofs and physical/currentness custody; its old
+Domain `cache_residency` implementation is retired. Source and native Policy
+packages also exist, while Publisher remains integrated in Domain. Security
+still has a Domain dependency; the Source and Cache signer manifests no longer
+do. These concrete boundaries do not isolate every protected Controller/Journal
+owner or qualify the public lifecycle. Historical DATA is not a current grant.
+Shared engines retire duplicate mechanics; relocated source earns zero deletion
+credit, even when passive APIs/adapters add code.
 
 Ownership holds canonical historical lease records, authenticated historical
 recovery, successor/CAS validation and borrow-bound resident-map preparation/
@@ -544,13 +557,23 @@ The broker facade must own its common authority engine rather than reexporting
 Controller implementation; physical role/namespace admission and semantic commit
 belong to the domain owner.
 
-Policy's pure compiler, bounded candidate model and public verifier credentials
-depend only on Core and serialization/hash/cryptography/error libraries. They
-return nonauthorizing DATA; credential decoding delegates to Core's canonical
-format without protected custody/currentness. Services' offline key-pin helper
-has independent build/test selection and unchanged installed CLI; daemon/aggregate
-dependencies remain. Current-Create Source joins, Root binding, Journal admission,
-held-cut decisions, publication and recovery still require Native Policy ownership.
+Policy's default feature set is empty. Its compiler, publication schemas and
+comparison DATA depend on Model, Protocol and broker-session Protocol, alongside
+serialization/hash/cryptography/error libraries. They return nonauthorizing DATA;
+credential decoding uses the canonical model format without protected custody or
+currentness. The `native-journal` feature adds Linux-only Broker, Cache, Journal,
+Ledger replay, Linux descriptors and ownership-protocol dependencies; Journal's
+physical owner is selected with `protected-unix`. Domain explicitly selects that
+native feature, so a portable Policy default does not make Domain portable.
+Native Policy owns actual Root journals, original Authority/Target loans,
+publication/readback and finite append gates. Current and other continuations
+still require their complete genuine producers, callers, incoming accounting and
+qualification; these exports and source moves do not prove them. Services'
+offline key-pin helper retains independent selection and unchanged installed CLI.
+
+Source, Cache and shared Linux descriptors are current workspace/default members;
+coordinator packages remain outside default members. These are manifest facts,
+not a transitive-graph or selected runtime qualification result.
 
 ### Runtime custody and physical effects
 

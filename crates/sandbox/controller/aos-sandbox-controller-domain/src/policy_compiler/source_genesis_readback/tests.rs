@@ -48,7 +48,7 @@ fn source_genesis_exact_pending_recovery_keeps_original_nonce_and_fresh_correlat
         // The original intent may already be deleted by Root's floor CAS.
         // Its exact floor plus original acceptance still supplies comparison
         // data; only Source's pending row supplies the retained nonce.
-        let floor = crate::policy_compiler::SourceHierarchyFloorRecordV1::new(
+        let floor = aos_sandbox_ledger_replay::replay::root_genesis_records::SourceHierarchyFloorRecordV1::new(
             receipt.clone(),
             ObjectDigest::from_bytes([15; 32]),
         )
@@ -186,7 +186,7 @@ fn source_genesis_anchored_context_requires_exact_ack_role_commitment() {
     let mut journal = fixture::open(directory.path(), JournalLimits::default());
     let receipt = fixture::append(&mut journal);
     let context = fixture::intent_context(&journal, receipt.project());
-    let floor = crate::policy_compiler::SourceHierarchyFloorRecordV1::new(
+    let floor = aos_sandbox_ledger_replay::replay::root_genesis_records::SourceHierarchyFloorRecordV1::new(
         receipt.clone(),
         ObjectDigest::from_bytes([15; 32]),
     )
@@ -306,7 +306,7 @@ fn source_genesis_readback_actual_empty_prepared_anchored_are_distinct() {
     assert!(verified.ack_record_digest().is_none());
     drop(reader);
 
-    let floor = crate::policy_compiler::SourceHierarchyFloorRecordV1::new(
+    let floor = aos_sandbox_ledger_replay::replay::root_genesis_records::SourceHierarchyFloorRecordV1::new(
         receipt.clone(),
         ObjectDigest::from_bytes([15; 32]),
     )

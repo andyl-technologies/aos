@@ -29,8 +29,11 @@ use crate::IdempotencyKey;
 use crate::cli_model::{PublicApiAuditMethodV1, PublicMutationRequestV1};
 use aos_sandbox_protocol::public_api::PublicOperationMethodV1;
 use aos_sandbox_protocol::public_api::projection::{PublicProjectionPlanV1, PublicProjectionResourceV1};
+#[cfg(target_os = "linux")]
 use crate::policy_compiler::deployment_head::{
     admit_policy_signer_pins_in_journal_v1, admit_test_held_deployment_profile_v2,
+};
+use crate::policy_compiler::deployment_head::{
     signed_test_deployment_input_fixture_v1, verify_test_held_deployment_profile_v2,
 };
 use crate::policy_compiler::compile_publisher_policy_revision_v2;
@@ -498,6 +501,7 @@ fn project_v3_legacy_policy_cannot_brand_origin_or_default_request_layer() {
 }
 
 #[test]
+#[cfg(target_os = "linux")]
 fn project_v3_held_accepted_create_and_independently_pinned_role_association() {
     let input = original_input(SandboxId::from_bytes([2; 16]), None);
     let prepared = prepared(&input);
@@ -506,7 +510,10 @@ fn project_v3_held_accepted_create_and_independently_pinned_role_association() {
     let project_key = SigningKey::from_bytes(&[22; 32]);
     let (deployment_packet, bytes) = signed_deployment(&profile, &deployment_key);
     let root_directory = directory();
-    let mut root = open_root(root_directory.path());
+    let uid = fs::metadata(root_directory.path()).expect("fixture UID").uid();
+    let mut root = aos_sandbox_policy::native::RootStartupFixedAdmissionFixtureV1::open_v1(
+        root_directory.path(), "authority.journal", crate::JournalLimits::default(), uid,
+    ).expect("actual native Root credential fixture");
     admit_policy_signer_pins_in_journal_v1(
         &mut root,
         3,

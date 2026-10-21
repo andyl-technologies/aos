@@ -18,7 +18,7 @@ enum ClockError {
     #[error("Network native startup acquisition clock is not current")]
     Stale,
     #[error(transparent)]
-    Kernel(aos_sandbox_linux::Error),
+    Kernel(aos_linux_descriptors::Error),
     #[error(transparent)]
     Continuity(aos_sandbox_model::OwnershipLeaseVerificationError),
 }
@@ -28,7 +28,7 @@ impl KernelPairedClockErrorV1 for ClockError {
         Self::Stale
     }
 
-    fn kernel(cause: aos_sandbox_linux::Error) -> Self {
+    fn kernel(cause: aos_linux_descriptors::Error) -> Self {
         Self::Kernel(cause)
     }
 }

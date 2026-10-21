@@ -22,7 +22,7 @@ use aos_sandbox_protocol::domain_ledger::create_storage_history::{
     root_open::{RootHelloDataV1, ROOT_HELLO_FRAME_BYTES_V1},
 };
 
-use crate::cache_residency::{CacheCurrentAuditOriginalsV1, CacheHeldClosedV1};
+use aos_sandbox_cache::{CacheCurrentAuditOriginalsV1, CacheHeldClosedV1};
 use crate::controller_resource_reservation::ResourceReservationErrorV1;
 use crate::normal_root::CreateStorageRootPeerReceivingOriginalsV1;
 use super::root_exchange::{OriginalCreateStorageRootExchangeV1, CreateStorageRootExchangeClosedV1};
@@ -176,9 +176,9 @@ impl OriginalCreateStorageCacheCurrentProofV1 {
 
     // The Root module's field-split orchestrator alone calls this on the actual
     // Ready resident owner, after the same completed B and invitation checks.
-    pub(super) fn produce_once(
+    pub(super) fn produce_once<'turn, 'original: 'turn, 'cache>(
         &mut self,
-        loan: &mut OriginalCreateStorageRootExchangeV1<'_, '_, '_>,
+        loan: &mut OriginalCreateStorageRootExchangeV1<'turn, 'original, 'cache>,
         peer: &mut CreateStorageRootPeerReceivingOriginalsV1,
         bundle: &[u8],
     ) -> Result<(), CreateStorageRootExchangeClosedV1> {

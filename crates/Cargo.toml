@@ -47,6 +47,7 @@ members = [
     "aos/boot/aos-storage-layout",
     "crucible/storage/crucible-store",
     "shared/aos-linux-project-quota",
+    "shared/aos-linux-descriptors",
     "crucible/storage/crucible-store-s3",
     "crucible/engine/crucible-campaign",
     "crucible/engine/crucible-determinism",
@@ -124,6 +125,7 @@ members = [
     "sandbox/controller/aos-sandbox-controller-domain",
     "sandbox/controller/aos-sandbox-controller-domain/tests/fixtures/service-journal",
     "sandbox/protocol/aos-sandbox-api",
+    "sandbox/storage/aos-sandbox-cache",
 ]
 
 # Coordinator transport remains an explicitly selected graph.
@@ -174,6 +176,7 @@ default-members = [
     "aos/boot/aos-storage-layout",
     "crucible/storage/crucible-store",
     "shared/aos-linux-project-quota",
+    "shared/aos-linux-descriptors",
     "crucible/storage/crucible-store-s3",
     "crucible/engine/crucible-campaign",
     "crucible/engine/crucible-determinism",
@@ -249,6 +252,7 @@ default-members = [
     "sandbox/controller/aos-sandbox-controller-domain",
     "sandbox/controller/aos-sandbox-controller-domain/tests/fixtures/service-journal",
     "sandbox/protocol/aos-sandbox-api",
+    "sandbox/storage/aos-sandbox-cache",
 ]
 
 [workspace.package]
@@ -417,6 +421,7 @@ aos-activation-crucible = { path = "aos/activation/aos-activation-crucible" }
 aos-package-maintenance = { path = "aos/release/aos-package-maintenance" }
 crucible-store = { path = "crucible/storage/crucible-store" }
 aos-linux-project-quota = { path = "shared/aos-linux-project-quota" }
+aos-linux-descriptors = { path = "shared/aos-linux-descriptors" }
 crucible-store-s3 = { path = "crucible/storage/crucible-store-s3" }
 crucible-campaign = { path = "crucible/engine/crucible-campaign" }
 aos-core = { path = "shared/aos-core" }
@@ -510,6 +515,8 @@ aos-sandbox-storage = { path = "sandbox/storage/aos-sandbox-storage" }
 aos-sandbox-controller-domain = { path = "sandbox/controller/aos-sandbox-controller-domain" }
 aos-sandbox-service-journal-probe = { path = "sandbox/controller/aos-sandbox-controller-domain/tests/fixtures/service-journal" }
 aos-sandbox-api = { path = "sandbox/protocol/aos-sandbox-api" }
+
+aos-sandbox-cache = { path = "sandbox/storage/aos-sandbox-cache" }
 
 [workspace.lints.clippy]
 all = "deny"

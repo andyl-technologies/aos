@@ -8,6 +8,7 @@
 //! current-head monotonicity, and commits stay with this owner. Physical Repair
 //! and Reconcile require their separate signed-receipt path.
 
+use crate::journal::historical_observation::HistoricalObservationV1;
 use aos_sandbox_api::aos::sandbox::v1::OperatorRecoveryAction;
 use aos_sandbox_model::{ObjectDigest, OperationId};
 use sha2::{Digest as _, Sha256};
@@ -1280,6 +1281,21 @@ pub(crate) fn prepare_operator_recovery_sandbox_current_v1(
     journal: &crate::Journal,
     resource: &CheckedSandboxResourceV1,
 ) -> Result<PreparedOperatorRecoveryCurrentV1, InvalidObservationClientAdapter> {
+    prepare_operator_recovery_sandbox_current_from_observation_v2(
+        HistoricalObservationV1::from_journal_v1(journal),
+        resource,
+    )
+}
+
+/// Checks the original field model against its continuously borrowed owner.
+///
+/// # Errors
+///
+/// Preserves the original ledger, current-field and protected-owner refusals.
+pub(crate) fn prepare_operator_recovery_sandbox_current_from_observation_v2(
+    journal: HistoricalObservationV1<'_>,
+    resource: &CheckedSandboxResourceV1,
+) -> Result<PreparedOperatorRecoveryCurrentV1, InvalidObservationClientAdapter> {
     let allowed = (u8::from(resource.has_true_condition(PublicConditionCodeV1::Blocked))
         | u8::from(resource.has_true_condition(PublicConditionCodeV1::Degraded))
         | u8::from(resource.has_true_condition(PublicConditionCodeV1::ResidualState))
@@ -1288,7 +1304,7 @@ pub(crate) fn prepare_operator_recovery_sandbox_current_v1(
         | (u8::from(resource.has_true_condition(PublicConditionCodeV1::Fenced))
             | u8::from(resource.has_true_condition(PublicConditionCodeV1::Blocked)))
             * 8;
-    prepare_recovery_current(
+    prepare_recovery_current_from_observation_v2(
         journal,
         resource.sandbox_id(),
         &resource.as_proto().resource_version,
@@ -1356,11 +1372,26 @@ pub(crate) fn prepare_operator_recovery_operation_current_v1(
     journal: &crate::Journal,
     resource: &CheckedOperationResourceV1,
 ) -> Result<PreparedOperatorRecoveryCurrentV1, InvalidObservationClientAdapter> {
+    prepare_operator_recovery_operation_current_from_observation_v2(
+        HistoricalObservationV1::from_journal_v1(journal),
+        resource,
+    )
+}
+
+/// Checks the original field model against its continuously borrowed owner.
+///
+/// # Errors
+///
+/// Preserves the original ledger, current-field and protected-owner refusals.
+pub(crate) fn prepare_operator_recovery_operation_current_from_observation_v2(
+    journal: HistoricalObservationV1<'_>,
+    resource: &CheckedOperationResourceV1,
+) -> Result<PreparedOperatorRecoveryCurrentV1, InvalidObservationClientAdapter> {
     let ownership_retry = if resource.phase() == CheckedOperationPhaseV1::Committed
         && resource.retry() == CheckedRetryClassV1::AfterStateChange
     {
         matches!(
-            crate::reconciler::validated_ownership_gate_from_journal_v1(
+            crate::reconciler::validated_ownership_gate_from_observation_v2(
                 journal,
                 OperationId::from_bytes(resource.operation_id()),
             )
@@ -1378,7 +1409,7 @@ pub(crate) fn prepare_operator_recovery_operation_current_v1(
         CheckedOperationPhaseV1::PermanentlyBlocked
             | CheckedOperationPhaseV1::CommittedWithResidualCleanup
     );
-    prepare_recovery_current(
+    prepare_recovery_current_from_observation_v2(
         journal,
         resource.operation_id(),
         resource.resource_version().as_bytes(),
@@ -1412,8 +1443,8 @@ enum DormantOperatorRecoveryReservationV1 {
     },
 }
 
-fn prepare_recovery_current(
-    journal: &crate::Journal,
+fn prepare_recovery_current_from_observation_v2(
+    journal: HistoricalObservationV1<'_>,
     resource_id: [u8; 16],
     version: &[u8],
     kind: u8,

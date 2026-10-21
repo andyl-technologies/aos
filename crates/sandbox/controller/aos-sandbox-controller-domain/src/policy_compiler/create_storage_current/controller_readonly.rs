@@ -11,6 +11,10 @@ use std::fs::{File, Metadata};
 use std::mem::size_of;
 use std::path::Path;
 
+use aos_sandbox_policy::controller_history_data::{
+    self as history_data, ControllerHistoryGeometryV1,
+};
+
 use aos_sandbox_model::{RawPairedClockSample, ResourceDimension as D, ResourceVector};
 use aos_sandbox_protocol::domain_ledger::create_storage_history::{
     HistoryErrorV1, KeyV1, OwnerV1, PhaseV1,
@@ -47,7 +51,6 @@ pub(crate) mod native_read;
 pub(crate) mod outcome;
 pub(crate) mod closed;
 mod signed;
-mod use_plan;
 
 type WriterResult = Option<Result<(), JournalError>>;
 
@@ -150,7 +153,7 @@ pub(crate) struct RootCurrentControllerReadonlyStateV1 {
     history_binding: Option<Result<(), JournalError>>,
     accepted_create: crate::journal::RootControllerCreateAcceptanceOriginalsV1,
     accepted_native: crate::journal::RootControllerAcceptedNativeProgressV1,
-    root_parent: crate::policy_compiler::create_q04::RootInertHistoryScanV1,
+    root_parent: aos_sandbox_policy::q04_data::RootInertHistoryScanV1,
     root_parent_result: Option<Result<(), crate::policy_compiler::create_q04::CreateQ04ErrorV1>>,
     compiled: compiled_policy::RootCurrentCompiledPolicyV1,
     compiler_root_width: Option<Result<u64, JournalError>>,
@@ -246,6 +249,15 @@ impl RootCurrentControllerReadonlyStateV1 {
     }
 
     pub(crate) fn fixed_demand_v1() -> Result<ResourceVector, JournalError> {
+        Self::fixed_demand_for_history_comparison_v1(
+            history_data::bundle_comparison_control_bytes_v1::<JournalError>()
+                .ok_or(JournalError::JournalTooLarge)?,
+        )
+    }
+
+    fn fixed_demand_for_history_comparison_v1(comparison_controls: usize)
+        -> Result<ResourceVector, JournalError>
+    {
         let invalid = || JournalError::JournalTooLarge;
         let path = Path::new(ROOT_CONTROLLER_DIRECTORY_V1);
         let anchors = path.components()
@@ -269,8 +281,12 @@ impl RootCurrentControllerReadonlyStateV1 {
             .and_then(|bytes| bytes.checked_add(strings))
             .and_then(|bytes| bytes.checked_add(4 * 4096))
             .and_then(|bytes| bytes.checked_add(pair_bytes))
-            .and_then(|bytes| bytes.checked_add(2 * size_of::<ReadonlyFixedFramesV1>()))
-            .and_then(|bytes| bytes.checked_add(2 * size_of::<usize>())).ok_or_else(invalid)?;
+            .and_then(|bytes| bytes.checked_add(
+                history_data::readonly_fixed_frame_bytes_v1::<ProtectedJournalPreopenReplayExtentV1, JournalError>()?,
+            ))
+            .and_then(|bytes| bytes.checked_add(2 * size_of::<usize>()))
+            .and_then(|bytes| bytes.checked_add(aos_sandbox_policy::controller_acceptance_data::
+                fixed_interface_control_bytes_v1::<JournalError>()?)).ok_or_else(invalid)?;
         // Inline controls use byte permits. The named reader, native
         // indexes and semantic maps price their actual namespace entries.
         let mut demand = ResourceVector::ZERO
@@ -287,7 +303,8 @@ impl RootCurrentControllerReadonlyStateV1 {
         let context = RootControllerReadonlyReceivingContextV1::fixed_receiving_demand_v1()?;
         let names = ReadOnlyJournalOpenOriginalsV1::root_controller_named_receiving_demand_v1()?;
         let posts = root_current_post_backing_demand_v1()?;
-        let chain_frames = ControllerHistoryNativeSuffixV1::<3>::receiving_frame_demand_v1()?;
+        let chain_frames = ControllerHistoryNativeSuffixV1::<3>::receiving_frame_demand_v1()
+            .map_err(|_| JournalError::JournalTooLarge)?;
         demand = demand.checked_add(audit)
             .and_then(|value| value.checked_add(context))
             .and_then(|value| value.checked_add(names))
@@ -307,17 +324,39 @@ impl RootCurrentControllerReadonlyStateV1 {
         // output geometry before adding their separate Memory footprint.
         let output = demand.get(D::OutputBytes).max(demand.get(D::MemoryBytes));
         let getter_controls = u64::try_from(
-            crate::policy_compiler::create_q04::root_history_chunk_getter_control_bytes_v1()
+            aos_sandbox_policy::q04_data::root_history_data_control_bytes_v1()
                 .ok_or_else(invalid)?,
         ).map_err(|_| invalid())?;
-        let memory = demand.get(D::MemoryBytes).checked_add(getter_controls).ok_or_else(invalid)?;
+        let input_width_controls = u64::try_from(
+            aos_sandbox_policy::root_policy_inputs_data::width_return_control_bytes_v1()
+                .ok_or_else(invalid)?,
+        ).map_err(|_| invalid())?;
+        let memory = demand.get(D::MemoryBytes).checked_add(getter_controls)
+            .and_then(|bytes| bytes.checked_add(input_width_controls)).ok_or_else(invalid)?;
+        let history_controls = history_data::geometry_and_decode_control_bytes_v1::<JournalError, Error>()
+            .ok_or_else(invalid)?;
+        let history_controls = history_controls.checked_add(comparison_controls).ok_or_else(invalid)?;
+        let suffix_controls = aos_sandbox_protocol::domain_ledger::create_storage_history::native_suffix::controller::receiving_interface_control_bytes_v1::<JournalError>()
+            .ok_or_else(invalid)?;
+        let history_controls = history_controls.checked_add(suffix_controls).ok_or_else(invalid)?;
+        // The private common quote takes one actual selected comparison width
+        // and returns the full fixed demand; no purpose-only branch is charged.
+        let history_controls = history_controls.checked_add(3 * size_of::<usize>())
+            .and_then(|bytes| bytes.checked_add(3 * size_of::<Result<ResourceVector, JournalError>>()))
+            .and_then(|bytes| u64::try_from(bytes).ok()).ok_or_else(invalid)?;
+        let memory = memory.checked_add(history_controls).ok_or_else(invalid)?;
         Ok(demand.with(D::OutputBytes, output).with(D::MemoryBytes, memory))
     }
 
     pub(crate) fn reserved_fixed_demand_v1() -> Result<ResourceVector, JournalError> {
-        let base = Self::fixed_demand_v1()?;
-        let full = ControllerHistoryNativeSuffixV1::<6>::receiving_frame_demand_v1()?;
-        let initial = ControllerHistoryNativeSuffixV1::<3>::receiving_frame_demand_v1()?;
+        let base = Self::fixed_demand_for_history_comparison_v1(
+            history_data::lane_comparison_control_bytes_v1::<6, JournalError>()
+                .ok_or(JournalError::JournalTooLarge)?,
+        )?;
+        let full = ControllerHistoryNativeSuffixV1::<6>::receiving_frame_demand_v1()
+            .map_err(|_| JournalError::JournalTooLarge)?;
+        let initial = ControllerHistoryNativeSuffixV1::<3>::receiving_frame_demand_v1()
+            .map_err(|_| JournalError::JournalTooLarge)?;
         let construction = std::mem::size_of::<([&JournalTransaction; 3], [(u64, u64); 7],
             [(u64, u64); 4], [(u64, u64); 4])>().checked_mul(2)
             .and_then(|bytes| u64::try_from(bytes).ok()).ok_or(JournalError::JournalTooLarge)?;
@@ -329,9 +368,14 @@ impl RootCurrentControllerReadonlyStateV1 {
     pub(crate) fn signed_fixed_demand_v1(input: &super::signed_bound::input::RootSignedInputV1)
         -> Result<ResourceVector, JournalError>
     {
-        let base = Self::fixed_demand_v1()?;
-        let full = ControllerHistoryNativeSuffixV1::<7>::receiving_frame_demand_v1()?;
-        let initial = ControllerHistoryNativeSuffixV1::<3>::receiving_frame_demand_v1()?;
+        let base = Self::fixed_demand_for_history_comparison_v1(
+            history_data::lane_comparison_control_bytes_v1::<7, JournalError>()
+                .ok_or(JournalError::JournalTooLarge)?,
+        )?;
+        let full = ControllerHistoryNativeSuffixV1::<7>::receiving_frame_demand_v1()
+            .map_err(|_| JournalError::JournalTooLarge)?;
+        let initial = ControllerHistoryNativeSuffixV1::<3>::receiving_frame_demand_v1()
+            .map_err(|_| JournalError::JournalTooLarge)?;
         let bundle = input.completed_bundle_v1().map_err(|_| JournalError::ProtectedBoundary)?;
         let raw = bundle.encoded_bytes().map_err(|_| JournalError::ProtectedBoundary)?;
         // Fixed C6 framing, its temporary body/record and owned expected pair
@@ -368,9 +412,14 @@ impl RootCurrentControllerReadonlyStateV1 {
     }
 
     pub(crate) fn outcome_fixed_demand_v1() -> Result<ResourceVector, JournalError> {
-        let base = Self::fixed_demand_v1()?;
-        let full = ControllerHistoryNativeSuffixV1::<10>::receiving_frame_demand_v1()?;
-        let initial = ControllerHistoryNativeSuffixV1::<3>::receiving_frame_demand_v1()?;
+        let base = Self::fixed_demand_for_history_comparison_v1(
+            history_data::continuation_comparison_control_bytes_v1::<4, JournalError>()
+                .ok_or(JournalError::JournalTooLarge)?,
+        )?;
+        let full = ControllerHistoryNativeSuffixV1::<10>::receiving_frame_demand_v1()
+            .map_err(|_| JournalError::JournalTooLarge)?;
+        let initial = ControllerHistoryNativeSuffixV1::<3>::receiving_frame_demand_v1()
+            .map_err(|_| JournalError::JournalTooLarge)?;
         let construction = std::mem::size_of::<([&JournalTransaction; 10], [(u64, u64); 11],
             [(u64, u64); 4], [(u64, u64); 4], [(u64, u64); 5])>().checked_mul(2)
             .and_then(|bytes| u64::try_from(bytes).ok()).ok_or(JournalError::JournalTooLarge)?;
@@ -380,9 +429,14 @@ impl RootCurrentControllerReadonlyStateV1 {
     }
 
     pub(crate) fn closed_fixed_demand_v1() -> Result<ResourceVector, JournalError> {
-        let base = Self::fixed_demand_v1()?;
-        let full = ControllerHistoryNativeSuffixV1::<12>::receiving_frame_demand_v1()?;
-        let initial = ControllerHistoryNativeSuffixV1::<3>::receiving_frame_demand_v1()?;
+        let base = Self::fixed_demand_for_history_comparison_v1(
+            history_data::continuation_comparison_control_bytes_v1::<5, JournalError>()
+                .ok_or(JournalError::JournalTooLarge)?,
+        )?;
+        let full = ControllerHistoryNativeSuffixV1::<12>::receiving_frame_demand_v1()
+            .map_err(|_| JournalError::JournalTooLarge)?;
+        let initial = ControllerHistoryNativeSuffixV1::<3>::receiving_frame_demand_v1()
+            .map_err(|_| JournalError::JournalTooLarge)?;
         let construction = std::mem::size_of::<([&JournalTransaction; 12], [(u64, u64); 13],
             [(u64, u64); 4], [(u64, u64); 4], [(u64, u64); 5], [(u64, u64); 3])>()
             .checked_mul(2).and_then(|bytes| u64::try_from(bytes).ok()).ok_or(JournalError::JournalTooLarge)?;
@@ -665,9 +719,12 @@ impl RootCurrentControllerReadonlyStateV1 {
             .map_err(|_| Error::History)?;
         self.storage_width = Some(storage_inventory::RootCurrentStorageInventoryV1::encoded_width_v1(bundle));
         positive(&self.storage_width).map_err(|_| Error::History)?;
-        self.compiler_root_width = Some(policy_data.encoded_width_v1());
+        self.compiler_root_width = Some(policy_data.encoded_width_v1().map_err(JournalError::from));
         positive(&self.compiler_root_width).map_err(|_| Error::History)?;
-        self.history_geometry = Some(ControllerHistoryGeometryV1::from_bundle(bundle, receipt));
+        self.history_geometry = Some(match ControllerHistoryGeometryV1::from_bundle(bundle, receipt) {
+            Ok(geometry) => Ok(geometry),
+            Err(cause) => Err(JournalError::from(cause)),
+        });
         positive(&self.history_geometry).map_err(|_| Error::History)?;
         purpose.observe_writers(writers, root, &mut self.before, &mut self.before_result,
             &mut self.before_readback);
@@ -772,7 +829,7 @@ impl RootCurrentControllerReadonlyStateV1 {
                         Ok(suffix) => { self.suffix_construction = Some(Ok(())); suffix }
                         Err(cause) => { self.suffix_construction = Some(Err(cause)); return Err(Error::History); }
                     };
-                    let (original, admission_data) = decode_replay_original_v1(bundle)?;
+                    let (original, admission_data) = history_data::decode_replay_original_v1(bundle).map_err(|_| Error::History)?;
                     RootControllerReadonlyReceivingContextV1::replay(startup, root, &self.audit, suffix,
                         &mut self.replay_admission, &mut self.replay_frontier, &mut self.lock_name,
                         original, admission_data, &mut self.accepted_native)
@@ -806,7 +863,7 @@ impl RootCurrentControllerReadonlyStateV1 {
                         Ok(suffix) => { self.suffix_construction = Some(Ok(())); suffix },
                         Err(cause) => { self.suffix_construction = Some(Err(cause)); return Err(Error::History); },
                     };
-                    let (original, admission) = decode_replay_original_v1(bundle)?;
+                    let (original, admission) = history_data::decode_replay_original_v1(bundle).map_err(|_| Error::History)?;
                     RootControllerReadonlyReceivingContextV1::replay_closed(startup, root, signed, outcome,
                         &self.audit, suffix, &mut self.replay_admission, &mut self.replay_frontier,
                         &mut self.lock_name, original, admission,
@@ -832,7 +889,7 @@ impl RootCurrentControllerReadonlyStateV1 {
                         Ok(suffix) => { self.suffix_construction = Some(Ok(())); suffix }
                         Err(cause) => { self.suffix_construction = Some(Err(cause)); return Err(Error::History); }
                     };
-                    let (original, admission_data) = decode_replay_original_v1(bundle)?;
+                    let (original, admission_data) = history_data::decode_replay_original_v1(bundle).map_err(|_| Error::History)?;
                     RootControllerReadonlyReceivingContextV1::replay_signed(startup, root, admitted, authorization,
                         &self.audit, suffix, &mut self.replay_admission, &mut self.replay_frontier,
                         &mut self.lock_name, original, admission_data,
@@ -859,7 +916,7 @@ impl RootCurrentControllerReadonlyStateV1 {
                         Ok(suffix) => { self.suffix_construction = Some(Ok(())); suffix }
                         Err(cause) => { self.suffix_construction = Some(Err(cause)); return Err(Error::History); }
                     };
-                    let (original, admission_data) = decode_replay_original_v1(bundle)?;
+                    let (original, admission_data) = history_data::decode_replay_original_v1(bundle).map_err(|_| Error::History)?;
                     RootControllerReadonlyReceivingContextV1::replay_outcome(startup, root, signed, authorization,
                         &self.audit, suffix, &mut self.replay_admission, &mut self.replay_frontier,
                         &mut self.lock_name, original, admission_data,
@@ -883,7 +940,7 @@ impl RootCurrentControllerReadonlyStateV1 {
                         Ok(suffix) => { self.suffix_construction = Some(Ok(())); suffix }
                         Err(cause) => { self.suffix_construction = Some(Err(cause)); return Err(Error::History); }
                     };
-                    let (original, admission_data) = decode_replay_original_v1(bundle)?;
+                    let (original, admission_data) = history_data::decode_replay_original_v1(bundle).map_err(|_| Error::History)?;
                     RootControllerReadonlyReceivingContextV1::replay_reserved(startup, root, authorization,
                         &self.audit, suffix, &mut self.replay_admission, &mut self.replay_frontier,
                         &mut self.lock_name, original, admission_data,
@@ -934,16 +991,17 @@ impl RootCurrentControllerReadonlyStateV1 {
         let identity = self.accepted_create.identity_v1().map_err(|_| Error::History)?;
         let root_final = self.accepted_create.root_final_v1().map_err(|_| Error::History)?;
         let (authority, _) = writers.authority_and_policy().map_err(|_| Error::History)?;
-        self.root_parent_result = Some(authority.observe_original_root_q04_parent_v1(
-            &mut self.root_parent, identity, root_final,
-        ));
+        self.root_parent_result = Some(self.root_parent.observe_original_parent_once(
+            authority.historical_read_view_v1().materialized_state_v1(),
+            identity, root_final,
+        ).map_err(crate::policy_compiler::create_q04::CreateQ04ErrorV1::from));
         positive(&self.root_parent_result).map_err(|_| Error::History)?;
         let (_, policy) = writers.authority_and_policy().map_err(|_| Error::History)?;
         let source_fields = source.fields_v1()?;
         let cache_body = cache.verified_body_v1()?;
         let manifest = ownership.completed_manifest_v1()?;
         let now = positive(&self.before_sample).map_err(|_| Error::History)?.wall_seconds();
-        self.compiled.observe_once(view.journal_mut(), policy, policy_data, source_fields,
+        self.compiled.observe_once(view.journal_mut(), policy.historical_read_view_v1(), policy_data, source_fields,
             cache_body, bundle, identity, manifest, now);
         self.compiled.require_complete().map_err(|_| Error::History)?;
         let candidate = self.compiled.candidate_v1().map_err(|_| Error::History)?;
@@ -1046,7 +1104,7 @@ impl RootCurrentControllerReadonlyStateV1 {
     }
 
     pub(super) fn prospective_use_plan_v1(&self)
-        -> Result<&use_plan::RootProspectiveStorageUsePlanV1, Error>
+        -> Result<&aos_sandbox_policy::root_use_plan_data::RootProspectiveStorageUsePlanV1, Error>
     {
         self.require_complete_v1()?;
         self.storage_inventory.prospective_plan_v1().map_err(|_| Error::History)
@@ -1140,122 +1198,8 @@ fn cause<T, E: StdError + 'static>(value: &Option<Result<T, E>>) -> Option<&(dyn
     value.as_ref().and_then(|result| result.as_ref().err()).map(|cause| cause as _)
 }
 
-// This is comparison geometry derived from the same immutable B and actual
-// Phase4. It supplies no authority and allocates no encoded record or model.
-struct ControllerHistoryGeometryV1 {
-    positions: [(u64, u64); 4],
-    heads: [[u8; 40]; 2],
-    copy_bytes: u64,
-    accepted_bytes: u64,
-    compiler_bytes: u64,
-}
-
-impl ControllerHistoryGeometryV1 {
-    fn from_bundle(
-        bundle: ReadyBundleDataV1<'_>,
-        receipt: InputsReadyNativeReceiptDataV1<'_>,
-    ) -> Result<Self, JournalError> {
-        use aos_sandbox_protocol::domain_ledger::create_storage_history::{
-            LatestHeadV1, RecordEnvelopeV1, KEY_BYTES,
-            controller_intent::ControllerIntentBodyDataV1,
-            ready::IntentNativeReceiptDataV1,
-        };
-        let invalid = || JournalError::ProtectedBoundary;
-        let key = |revision| KeyV1::new(bundle.lane, OwnerV1::Controller, revision)
-            .map_err(|_| invalid());
-        let phase = |value| PhaseV1::new(OwnerV1::Controller, value).map_err(|_| invalid());
-        let intent = RecordEnvelopeV1::decode(bundle.intent_record, key(1)?, phase(1)?)
-            .map_err(|_| invalid())?;
-        let planned = RecordEnvelopeV1::decode(bundle.assignment_planned, key(2)?, phase(12)?)
-            .map_err(|_| invalid())?;
-        let inputs = RecordEnvelopeV1::decode(receipt.record, key(3)?, phase(2)?)
-            .map_err(|_| invalid())?;
-        let original = ControllerIntentBodyDataV1::decode(intent.body())
-            .map_err(|_| invalid())?.identity;
-        let accepted_bytes = u64::try_from(intent.body().len()).map_err(|_| invalid())?;
-        let compiler_bytes = [bundle.compiler_origin, bundle.policy_sources, bundle.specification]
-            .into_iter().try_fold(0_u64, |total, bytes| {
-                total.checked_add(u64::try_from(bytes.len()).map_err(|_| invalid())?)
-                    .ok_or_else(invalid)
-            })?;
-        let native = IntentNativeReceiptDataV1::decode(bundle.intent_native_receipt)
-            .map_err(|_| invalid())?;
-        if original.lane != bundle.lane || original.j_names != receipt.names
-            || native.names != receipt.names || intent.coordinates().predecessor != [0; 32]
-            || planned.coordinates().predecessor != intent.checksum()
-            || inputs.coordinates().predecessor != planned.checksum()
-            || planned.coordinates().correlation != intent.coordinates().correlation
-            || inputs.coordinates().correlation != intent.coordinates().correlation
-        {
-            return Err(invalid());
-        }
-        let append = |bytes| {
-            aos_sandbox_journal::geometry::encoded_transaction_append_bytes([
-                aos_sandbox_journal::geometry::RecordShape { key_bytes: KEY_BYTES, value_bytes: Some(bytes) },
-                aos_sandbox_journal::geometry::RecordShape { key_bytes: KEY_BYTES, value_bytes: Some(40) },
-            ].into_iter()).map_err(|_| invalid())
-        };
-        let start = (original.j_commit.checked_add(1).ok_or_else(invalid)?, original.j_end);
-        let after_intent = (start.0.checked_add(4).ok_or_else(invalid)?,
-            start.1.checked_add(append(bundle.intent_record.len())?).ok_or_else(invalid)?);
-        let after_planned = (after_intent.0.checked_add(4).ok_or_else(invalid)?,
-            after_intent.1.checked_add(append(bundle.assignment_planned.len())?).ok_or_else(invalid)?);
-        let after_inputs = (after_planned.0.checked_add(4).ok_or_else(invalid)?,
-            after_planned.1.checked_add(append(receipt.record.len())?).ok_or_else(invalid)?);
-        if start.0 == 0 || native.after_next != after_intent.0 || native.after_end != after_intent.1
-            || receipt.after_next != after_inputs.0 || receipt.after_end != after_inputs.1
-        {
-            return Err(invalid());
-        }
-        let heads = [native.latest_head,
-            LatestHeadV1::new(2, planned.checksum()).map_err(|_| invalid())?.encode()];
-        let copy_bytes = bundle.intent_record.len().checked_add(bundle.assignment_planned.len())
-            .and_then(|bytes| bytes.checked_add(2 * (40 + 2 * KEY_BYTES
-                + 2 * size_of::<crate::journal::JournalRecord>())))
-            .and_then(|bytes| bytes.checked_mul(2)).ok_or_else(invalid)?;
-        Ok(Self { positions: [start, after_intent, after_planned, after_inputs], heads,
-            copy_bytes: u64::try_from(copy_bytes).map_err(|_| invalid())?, accepted_bytes, compiler_bytes })
-    }
-}
-
-#[allow(dead_code)]
-struct ReadonlyFixedFramesV1 {
-    bundles: [ReadyBundleDataV1<'static>; 2],
-    receipts: [InputsReadyNativeReceiptDataV1<'static>; 4],
-    hellos: [aos_sandbox_protocol::domain_ledger::create_storage_history::root_open::RootHelloDataV1<'static>; 2],
-    proofs: [aos_sandbox_protocol::domain_ledger::create_storage_history::current_proofs::CurrentProofsDataV1<'static>; 2],
-    frames: [aos_sandbox_protocol::domain_ledger::create_storage_history::transport::FrameEnvelopeV1<'static>; 2],
-    keys: [KeyV1; 24],
-    records: [aos_sandbox_protocol::domain_ledger::create_storage_history::RecordEnvelopeV1<'static>; 12],
-    readers: [aos_sandbox_model::bounded_codec::BoundedReader<'static, HistoryErrorV1>; 16],
-    hashers: [sha2::Sha256; 8],
-    extents: [ProtectedJournalPreopenReplayExtentV1; 2],
-    transactions: [JournalTransaction; 6],
-    record_constructors: [crate::journal::JournalRecord; 12],
-    history_geometry: [ControllerHistoryGeometryV1; 2],
-    demands: [ResourceVector; 8],
-    results: [Result<ResourceVector, JournalError>; 8],
-    positions: [(u64, u64); 4],
-    metadata: [Result<Metadata, std::io::Error>; 2],
-}
 
 
-fn decode_replay_original_v1<'data>(bundle: ReadyBundleDataV1<'data>)
-    -> Result<(aos_sandbox_protocol::domain_ledger::create_storage_history::controller_intent::ControllerIntentBodyDataV1<'data>,
-        aos_sandbox_protocol::domain_ledger::create_storage_history::ready::ControllerAdmissionDataV1<'data>), Error>
-{
-    let intent = aos_sandbox_protocol::domain_ledger::create_storage_history::RecordEnvelopeV1::decode(
-        bundle.intent_record, KeyV1::new(bundle.lane, OwnerV1::Controller, 1).map_err(|_| Error::History)?,
-        PhaseV1::new(OwnerV1::Controller, 1).map_err(|_| Error::History)?)
-        .map_err(|_| Error::History)?;
-    let original = aos_sandbox_protocol::domain_ledger::create_storage_history::controller_intent::ControllerIntentBodyDataV1::decode(intent.body())
-        .map_err(|_| Error::History)?;
-    let admission = aos_sandbox_protocol::domain_ledger::create_storage_history::ready::ControllerAdmissionDataV1::decode(
-        bundle.controller_admission).map_err(|_| Error::History)?;
-    Ok((original, admission))
-}
-
-pub(in crate::policy_compiler) mod public_trust;
 
 mod apply_plan;
 

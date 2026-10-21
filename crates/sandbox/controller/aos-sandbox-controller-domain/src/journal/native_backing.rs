@@ -355,6 +355,51 @@ impl Journal {
         }
     }
 
+    /// Borrows only the genuine fixed Source owner's inert association.
+    ///
+    /// This performs no health gate or native observation. Actual upper
+    /// currentness and semantic checks remain at their original frontiers.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn cache_audit_source_original_v1(
+        &self,
+    ) -> Result<&aos_sandbox_broker::controller_receiving::ControllerSourceOriginalRefV1, JournalError> {
+        match &self.native {
+            JournalNativeBackingV1::Source(writer) => Ok(writer.cache_audit_original_v1()),
+            _ => Err(JournalError::ProtectedBoundary),
+        }
+    }
+
+    // The genuine Cache purpose prepays these new forwarding representations
+    // before reaching the association handoff. This is Memory-only DATA.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn cache_audit_source_original_receiving_bytes_v1() -> Option<usize> {
+        type Original = aos_sandbox_broker::controller_receiving::ControllerSourceOriginalRefV1;
+        // Three actual receiver borrows and the two lower borrowed returns.
+        // The upper Result argument/return planes contain their own reference.
+        std::mem::size_of::<&Original>().checked_mul(5)?
+            .checked_add(std::mem::size_of::<Result<&Original, JournalError>>().checked_mul(2)?)
+    }
+
+    /// Lends the actual Controller for later ordered Cache consumer checks.
+    ///
+    /// This tag-only selection performs no IO or currentness check. A missing
+    /// Controller remains absent until the Cache operation reaches its existing
+    /// consumer comparison frontier; it never becomes a comparison-only owner.
+    /// The finite borrow retains no additional native files or effect grant.
+    #[cfg(target_os = "linux")]
+    #[doc(hidden)]
+    #[must_use]
+    pub fn cache_consumer_read_original_v1(
+        &self,
+    ) -> Option<ControllerCacheConsumerReadBorrowV1<'_, impl Sized>> {
+        match &self.native {
+            JournalNativeBackingV1::Controller(writer) => {
+                Some(writer.borrow_cache_consumer_read_v1())
+            }
+            _ => None,
+        }
+    }
+
     /// Selects the actual C borrower or the explicit ordinary comparison route.
     ///
     /// Ordinary compilation keeps its historical allocation policy and cannot

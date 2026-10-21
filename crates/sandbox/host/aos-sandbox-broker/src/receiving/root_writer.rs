@@ -9,12 +9,14 @@
 mod coordinator;
 mod compaction;
 mod opening;
+mod append_prepay;
 pub(in crate::receiving) mod recipe;
 mod replay;
 
 pub use compaction::{RootPreparedReplacementV1, RootReplacementFailureOriginalV1};
 pub use coordinator::{RootAppendFailureOriginalV1, RootCoordinatorWriterV1, RootPreparedAppendV1, RootWriterPostOriginalV1};
 pub use opening::RootWriterOpeningOriginalV1;
+pub use append_prepay::RootAppendPostAdmissionErrorV1;
 pub use replay::RootWriterReplayV1;
 
 /// Preserves actual fixed Root native or invocation-stage refusal.

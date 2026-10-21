@@ -5,7 +5,8 @@
 //! READY; the parent independently authenticates that actual worker and pays
 //! its complete shape before launch. Ordinary workers never enter this gate.
 
-use crate::{Error, Result};
+use aos_linux_descriptors::Error;
+use aos_linux_descriptors::Result;
 use rustix::thread::{Capability, CapabilitySet, CapabilitySets};
 
 #[derive(Clone, Copy, Debug)]

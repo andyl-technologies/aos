@@ -94,7 +94,7 @@ pub(super) struct ProductionEffectExecutor {
     recovered_sessions: Option<Result<aos_sandbox_broker::controller_receiving::bank_launch::ControllerRecoveredOrdinarySessionsOriginalV2, aos_sandbox_controller_domain::ResourceReservationErrorV1>>,
     pub(in crate::controller_service) cache_inventory: Option<CacheResidencyProtectedOwnerV1>,
     pub(in crate::controller_service) cache_resident_usage:
-        aos_sandbox_controller_domain::cache_residency::CacheResidentInitializationV1,
+        aos_sandbox_controller_domain::CacheResidentInitializationV1,
     pub(in crate::controller_service) cache_mutation: cache_mutation::ControllerCacheMutationV1,
     pub(in crate::controller_service) cache_physical: Option<DormantCacheOwnerV1>,
     pub(in crate::controller_service) cache_physical_limits: Option<CacheOwnerLimitsV1>,
@@ -270,7 +270,7 @@ impl ProductionEffectExecutor {
             #[cfg(target_os = "linux")]
             recovered_sessions: None,
             cache_inventory: None,
-            cache_resident_usage: aos_sandbox_controller_domain::cache_residency::CacheResidentInitializationV1::new(),
+            cache_resident_usage: aos_sandbox_controller_domain::CacheResidentInitializationV1::new(),
             cache_mutation: cache_mutation::ControllerCacheMutationV1::default(),
             cache_physical: None,
             cache_physical_limits: None,
@@ -297,7 +297,7 @@ impl ProductionEffectExecutor {
             ));
         }
         if self.cache_resident_usage.started() {
-            self.cache_resident_usage.fence_unsupported_transition();
+            self.cache_resident_usage.native_original_v1().fence_unsupported_transition();
             return Err(EffectFailure::Permanent(
                 "legacy Cache transition is unsupported under resident custody".to_owned(),
             ));
@@ -351,7 +351,7 @@ impl ProductionEffectExecutor {
             let protected = self.cache_inventory.as_mut().ok_or_else(|| {
                 EffectFailure::Permanent("resident protected Cache inventory is unavailable".to_owned())
             })?;
-            return self.cache_resident_usage.prepare_existing_physical_owner(
+            return self.cache_resident_usage.native_original_v1().prepare_existing_physical_owner(
                 protected, &mut self.cache_physical, self.node, CACHE_OWNER_MEMORY_BYTES,
             ).map_err(|_| self.resident_cache_failure());
         }

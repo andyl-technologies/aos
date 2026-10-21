@@ -107,7 +107,7 @@ impl OriginalCreateStorageReadyV1<'_, '_> {
             progress.before_result = Some(progress.before.observe_operation_once(CacheControlOriginalsV1 {
                 parent: &owner.parent, intake: &owner.intake, controller: self.original.controller,
                 source: self.original.source, profile: self.original.profile,
-            }, &self.cache, expected, recorded.position_v1()));
+            }, &(&self.cache).currentness_original_v1(), expected, recorded.position_v1()));
             if !matches!(progress.before_result, Some(Ok(()))) { return Err(ResourceReservationErrorV1::Conflict); }
             let authorization = owner.root_exchange.borrow_use_authorization_v1()?;
             let transition = AccountTransition::commit_create_storage_use(before, prepared.claim,
@@ -131,7 +131,7 @@ impl OriginalCreateStorageReadyV1<'_, '_> {
                 progress.after_result = Some(progress.after.observe_operation_once(CacheControlOriginalsV1 {
                     parent: &owner.parent, intake: &owner.intake, controller: self.original.controller,
                     source: self.original.source, profile: self.original.profile,
-                }, &self.cache, expected, current));
+                }, &(&self.cache).currentness_original_v1(), expected, current));
             }
         }
         progress.complete = matches!(progress.primary, Some(Ok(())))

@@ -3174,3 +3174,10 @@ pub mod source_genesis_geometry;
 
 /// Bounded Source genesis, successor and Q04 framing DATA.
 pub mod source_genesis_wire;
+
+/// Owns canonical Publisher namespace and signed bootstrap comparison DATA.
+pub mod publisher_policy;
+mod provider_account_data;
+
+// Lexical comparison DATA shared by the original upper and native Storage owners.
+mod root_storage_session_recipe;

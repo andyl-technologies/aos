@@ -732,8 +732,8 @@ impl HostAgentLiveSessionV1 {
     /// Prepare response. The source, plan and transport digests and original
     /// Controller Session must match. The Host AOSEOR02/AOSHOP01 pair, current
     /// Effect cut and same live Agent are checked before the only nonce engine.
-    /// Production negotiation remains closed until its financial owner and
-    /// complete protected caller are connected.
+    /// The concrete Guest profile and paid Accept20 caller retain the same
+    /// one-shot owner through its completed response.
     ///
     /// # Errors
     ///

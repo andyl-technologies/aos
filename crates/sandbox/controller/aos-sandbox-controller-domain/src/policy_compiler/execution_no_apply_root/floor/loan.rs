@@ -7,7 +7,7 @@
 use std::error::Error;
 
 use aos_sandbox_broker::receiving::RootWriterPostOriginalV1;
-use aos_sandbox_linux::unix_stream::RetainedUnixStream;
+use aos_linux_descriptors::unix_stream::RetainedUnixStream;
 
 use crate::controller_resource_reservation::service_interval::ObserverLifetime;
 use crate::journal::{
@@ -261,7 +261,9 @@ impl RootExecutionNoApplyFloorAppendLoanV2<'_, '_, '_> {
                 return Err(JournalError::ProtectedBoundary);
             }
             self.require_held_inputs(journal)?;
-            super::history::inspect_history_data_v2(journal, self.floor.fields().operation)?;
+            aos_sandbox_ledger_replay::replay::execution_no_apply_history::inspect_history_data_v2(
+                journal.historical_read_view_v1(), self.floor.fields().operation,
+            )?;
             // The exact prepared transaction was built by this private owner;
             // no omitted or additional namespace is accepted by this boundary.
             if transaction.records().iter().any(|row| {

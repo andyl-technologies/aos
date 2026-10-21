@@ -4984,11 +4984,11 @@ pub enum DormantRuntimeExecutionOwnerErrorV1 {
     /// Fixed bootstrap manifest fs-verity validation failed.
     #[cfg(target_os = "linux")]
     #[error("runtime execution bootstrap immutable manifest failed: {0}")]
-    BootstrapImmutable(#[from] aos_sandbox_linux::immutable_file::ImmutableFileError),
+    BootstrapImmutable(#[from] aos_linux_descriptors::ImmutableFileError),
     /// Fixed bootstrap beneath-root validation failed.
     #[cfg(target_os = "linux")]
     #[error("runtime execution bootstrap path validation failed: {0}")]
-    BootstrapPath(#[from] aos_sandbox_linux::Error),
+    BootstrapPath(#[from] aos_linux_descriptors::Error),
     /// Fixed bootstrap descriptor operation failed.
     #[cfg(target_os = "linux")]
     #[error("runtime execution bootstrap descriptor failed: {0}")]

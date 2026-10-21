@@ -31,6 +31,7 @@ use aos_sandbox_broker_session_security::activation_envelope::{
 use aos_sandbox_broker_session_security::source_catalog_readback::{
     CatalogReadFailureRefV1, SelectedCatalogPairV1,
     read_current_catalog_manifest_data_v1,
+    read_protected_catalog_publication_data_v1 as read_protected_catalog_publication,
 };
 pub use aos_sandbox_broker_session_security::ProductionSourceProviderIngressErrorV1;
 

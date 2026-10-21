@@ -4,7 +4,8 @@
 //! actual socket while its existing installation, root-subject and confined
 //! child checks run. A failed packet or pidfd admission never leaves custody.
 
-use aos_sandbox_linux::pidfd::{PidFd, PidFdOwnedAdmissionFailureV3};
+use aos_linux_descriptors::pidfd::PidFd;
+use aos_linux_descriptors::pidfd::PidFdOwnedAdmissionFailureV3;
 use aos_sandbox_linux::seqpacket::descriptor_subject::ReceivedDescriptorRecord;
 use aos_sandbox_linux::seqpacket::{
     KernelAuthorizedRecordSubject, RecordBindingError, RetainedSeqpacketReceiveErrorV1,
@@ -16,7 +17,7 @@ use super::{Error, InstalledScope, Ledger, MonitorCustody, control, validate_cus
 #[derive(Default)]
 pub(super) struct RegistrationPacketV2 {
     pub(super) received: Option<Result<ReceivedDescriptorRecord, RetainedSeqpacketReceiveErrorV1>>,
-    native_binding: Option<Result<u64, aos_sandbox_linux::Error>>,
+    native_binding: Option<Result<u64, aos_linux_descriptors::Error>>,
     binding: Option<Result<(), RecordBindingError>>,
     child: Option<Result<PidFd, PidFdOwnedAdmissionFailureV3>>,
 }

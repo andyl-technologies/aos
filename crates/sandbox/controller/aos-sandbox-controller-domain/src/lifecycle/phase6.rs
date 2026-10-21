@@ -1485,13 +1485,13 @@ impl CurrentLifecycleEffectV1<'_> {
     #[cfg(target_os = "linux")]
     pub fn observe_cache_pin_release(
         self,
-        result: crate::cache_residency::CacheEffectObservationV1,
-        owner: &crate::cache_residency::DormantCacheOwnerV1,
+        result: aos_sandbox_cache::CacheEffectObservationV1,
+        owner: &aos_sandbox_cache::DormantCacheOwnerV1,
     ) -> Result<LifecycleEffectObservationV1, LifecyclePhase6ErrorV1> {
         let current = result.currentness();
         if self.domain() != LifecycleEffectDomainV1::Cache
             || result.effect()
-                != crate::cache_residency::cache_owner_effect_commitment_v1(
+                != aos_sandbox_cache::cache_owner_effect_commitment_v1(
                     b"unpin",
                     &self.target(),
                     current,
@@ -1505,8 +1505,8 @@ impl CurrentLifecycleEffectV1<'_> {
     #[cfg(target_os = "linux")]
     pub(super) fn observe_cache_availability(
         self,
-        result: crate::cache_residency::CacheEffectObservationV1,
-        owner: &crate::cache_residency::DormantCacheOwnerV1,
+        result: aos_sandbox_cache::CacheEffectObservationV1,
+        owner: &aos_sandbox_cache::DormantCacheOwnerV1,
     ) -> Result<LifecycleEffectObservationV1, LifecyclePhase6ErrorV1> {
         if self.domain() != LifecycleEffectDomainV1::Cache {
             return Err(LifecyclePhase6ErrorV1::InvalidInput);
@@ -1517,8 +1517,8 @@ impl CurrentLifecycleEffectV1<'_> {
     #[cfg(target_os = "linux")]
     fn observe_cache_owner_result(
         self,
-        result: crate::cache_residency::CacheEffectObservationV1,
-        owner: &crate::cache_residency::DormantCacheOwnerV1,
+        result: aos_sandbox_cache::CacheEffectObservationV1,
+        owner: &aos_sandbox_cache::DormantCacheOwnerV1,
     ) -> Result<LifecycleEffectObservationV1, LifecyclePhase6ErrorV1> {
         let current = result.currentness();
         owner

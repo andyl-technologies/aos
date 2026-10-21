@@ -4,13 +4,15 @@
 //! independently applies the existing full Operation/Batch atomic-join engine
 //! to actual native transaction groups and compares its final accepted facts.
 
+use aos_sandbox_policy::native::RootFinalityReadOriginalV1 as Target;
+use crate::journal::historical_observation::root_readonly_error_v1 as project_read;
 use crate::journal::JournalError;
 use crate::lifecycle::{
     LifecycleAuxiliaryDecodeOriginalV1, LifecycleAuxiliaryHistoryV1, LifecycleAuxiliaryRecordV1,
     LifecycleHistoricalReadOriginalV1, LifecycleOperationV1, LifecyclePhaseV1,
     LifecycleSemanticCommitFactV1, retained_lifecycle_replay_receiving_demand_v1,
 };
-use crate::policy_compiler::create_storage_current::controller_readonly::native_read::RootFixedNativeReadOriginalsV1;
+
 use aos_sandbox_model::{OperationId, ResourceDimension as D, ResourceVector};
 use aos_sandbox_protocol::domain_ledger::lifecycle_auxiliary::borrow_lifecycle_auxiliary_member_data_v1;
 use std::{error::Error, mem::size_of};
@@ -30,12 +32,12 @@ pub(in crate::policy_compiler::delete_root) struct RootDeletePreparationSourceMo
 
 impl RootDeletePreparationSourceModelsV3 {
     pub(in crate::policy_compiler::delete_root) fn receiving_demand_v3(
-        reader: &RootFixedNativeReadOriginalsV1,
+        reader: &Target,
     ) -> Result<ResourceVector, JournalError> {
-        let current = reader.completed_rows_data_v3()?;
+        let current = reader.completed_rows_data_v3().map_err(project_read)?;
         let mut demand = retained_lifecycle_replay_receiving_demand_v1(current.all_records())
             .ok_or(JournalError::JournalTooLarge)?;
-        let rows = reader.completed_delete_auxiliary_rows_v3()?;
+        let rows = reader.completed_delete_auxiliary_rows_v3().map_err(project_read)?;
         if rows.len() > crate::lifecycle::MAXIMUM_LIFECYCLE_AUXILIARY_RECORDS {
             return Err(JournalError::JournalTooLarge);
         }
@@ -65,7 +67,7 @@ impl RootDeletePreparationSourceModelsV3 {
 
     pub(super) fn observe_once_v3(
         &mut self,
-        reader: &RootFixedNativeReadOriginalsV1,
+        reader: &Target,
         parent: OperationId,
         expected_batch: &[u8],
         accepted_controller: &[u8; 64],
@@ -92,7 +94,7 @@ impl RootDeletePreparationSourceModelsV3 {
 
     fn observe_inner_v3(
         &mut self,
-        reader: &RootFixedNativeReadOriginalsV1,
+        reader: &Target,
         parent: OperationId,
         expected_batch: &[u8],
         accepted_controller: &[u8; 64],
@@ -100,10 +102,10 @@ impl RootDeletePreparationSourceModelsV3 {
         terminal: Option<(&Self, [u8; 32])>,
     ) -> Result<(), Box<dyn Error>> {
         let invalid = || JournalError::StaleAuthoritySnapshot;
-        let rows = reader.completed_delete_auxiliary_rows_v3()?;
+        let rows = reader.completed_delete_auxiliary_rows_v3().map_err(project_read)?;
         if rows.is_empty()
             || rows.last().map(|row| &row.native) != Some(source_native)
-            || reader.delete_preparation_native_data_v3()? != *source_native
+            || reader.delete_preparation_native_data_v3().map_err(project_read)? != *source_native
         {
             return Err(invalid().into());
         }
@@ -111,7 +113,7 @@ impl RootDeletePreparationSourceModelsV3 {
         self.current
             .as_mut()
             .ok_or_else(invalid)?
-            .observe_rows_projection_once_v3(reader.completed_rows_data_v3()?)?;
+            .observe_rows_projection_once_v3(reader.completed_rows_data_v3().map_err(project_read)?)?;
         let (projection, verifier) = self
             .current
             .as_ref()
@@ -172,7 +174,7 @@ impl RootDeletePreparationSourceModelsV3 {
 
     pub(in crate::policy_compiler::delete_root) fn observe_terminal_once_v4(
         &mut self,
-        reader: &RootFixedNativeReadOriginalsV1,
+        reader: &Target,
         parent: OperationId,
         expected_batch: &[u8],
         accepted_controller: &[u8; 64],

@@ -7,6 +7,7 @@ use aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1;
 use crate::cli_model::{OperatorRecoveryRequestV1, PublicApiAuditMethodV1, PublicMutationRequestV1};
 use crate::{JournalError, OperationCompilationError};
 use crate::public_api_session::PublicApiPeer;
+use crate::journal::historical_observation::HistoricalObservationV1;
 
 pub(crate) struct RequestModelsV1 {
     envelope: PublicMutationRequestV1,
@@ -25,10 +26,10 @@ pub(super) enum RecoveryTargetKindV2 {
 impl RequestModelsV1 {
     fn decode_once_v1(controller: &Journal, peer: &PublicApiPeer, encoded: &[u8], node: NodeId)
         -> Result<Self, OperationCompilationError> {
-        Self::decode_for_current_target_v2(controller, peer.project(), node, encoded, None)
+        Self::decode_for_current_target_v2(HistoricalObservationV1::from_journal_v1(controller), peer.project(), node, encoded, None)
     }
 
-    fn decode_for_current_target_v2(controller: &Journal, project: aos_sandbox_model::ProjectId,
+    fn decode_for_current_target_v2(controller: HistoricalObservationV1<'_>, project: aos_sandbox_model::ProjectId,
         node: NodeId, encoded: &[u8], expected: Option<aos_sandbox_protocol::domain_ledger::public_operation::PublicRecoveryKindV1>,
     ) -> Result<Self, OperationCompilationError> {
         use aos_sandbox_protocol::domain_ledger::public_operation::PublicRecoveryKindV1 as Kind;
@@ -59,7 +60,7 @@ impl RequestModelsV1 {
     }
 
     /// Replays only canonical request/target DATA under independently paid C.
-    pub(crate) fn decode_for_project_v1(controller: &Journal,
+    pub(crate) fn decode_for_project_v1(controller: HistoricalObservationV1<'_>,
         project: aos_sandbox_model::ProjectId, encoded: &[u8],
     ) -> Result<Self, OperationCompilationError> {
         let (envelope, request) = decode_recover_request_v1(encoded)?;
@@ -70,7 +71,7 @@ impl RequestModelsV1 {
     }
 
     /// Parses only the protected Stop cleanup purpose for Root's current reader.
-    pub(crate) fn decode_stop_cleanup_for_project_v1(controller: &Journal,
+    pub(crate) fn decode_stop_cleanup_for_project_v1(controller: HistoricalObservationV1<'_>,
         project: aos_sandbox_model::ProjectId, node: NodeId, encoded: &[u8],
     ) -> Result<Self, OperationCompilationError> {
         Self::decode_for_current_target_v2(controller, project, node, encoded,
@@ -78,7 +79,7 @@ impl RequestModelsV1 {
     }
 
     /// Parses only the protected NoApply purpose for Root's current reader.
-    pub(crate) fn decode_execution_no_apply_for_project_v1(controller: &Journal,
+    pub(crate) fn decode_execution_no_apply_for_project_v1(controller: HistoricalObservationV1<'_>,
         project: aos_sandbox_model::ProjectId, node: NodeId, encoded: &[u8],
     ) -> Result<Self, OperationCompilationError> {
         Self::decode_for_current_target_v2(controller, project, node, encoded,
@@ -89,7 +90,7 @@ impl RequestModelsV1 {
     ///
     /// Native raw replay, named indexes, peers and clock/append carriers remain
     /// separate obligations. This cost-only helper performs no decode or IO.
-    pub(crate) fn receiving_bytes_v1(controller: &Journal, encoded: &[u8])
+    pub(crate) fn receiving_bytes_v1(controller: HistoricalObservationV1<'_>, encoded: &[u8])
         -> Result<usize, ResourceReservationErrorV1> {
         let mut bytes = 0_usize;
         let mut rows = 0_usize;
@@ -109,6 +110,13 @@ impl RequestModelsV1 {
             .and_then(|n| n.checked_add(std::mem::size_of::<aos_sandbox_api::aos::sandbox::v1::OperatorRecoveryRequest>().checked_mul(4)?))
             .and_then(|n| n.checked_add(std::mem::size_of::<RequestModelsV1>().checked_mul(4)?))
             .and_then(|n| n.checked_add(models))
+            .ok_or(ResourceReservationErrorV1::Conflict)?;
+        let request = request
+            // The changed decoder wrapper and current-target body each retain
+            // a loan argument. The forecast interface has its own loan frame.
+            .checked_add(std::mem::size_of::<HistoricalObservationV1<'_>>().checked_mul(9)
+                .ok_or(ResourceReservationErrorV1::Conflict)?)
+            .and_then(|bytes| bytes.checked_add(crate::production_operation_compiler::recovery_target_control_bytes_v1()?))
             .ok_or(ResourceReservationErrorV1::Conflict)?;
         request.checked_add(crate::production_operation_compiler::ExecutionNoApplyRecoveryTargetDataV1::
             receiving_bytes_v1(controller).ok_or(ResourceReservationErrorV1::Conflict)?)
@@ -158,11 +166,17 @@ impl OperatorCreateRecoveryOriginalV1 {
         if envelope.method_v1() != PublicApiAuditMethodV1::OperatorRecover {
             return Err(ResourceReservationErrorV1::Conflict);
         }
-        let request = RequestModelsV1::receiving_bytes_v1(controller, encoded)?
+        let request = RequestModelsV1::receiving_bytes_v1(HistoricalObservationV1::from_journal_v1(controller), encoded)?
+            .checked_add(HistoricalObservationV1::journal_receiving_control_bytes_v1()
+                .ok_or(ResourceReservationErrorV1::Conflict)?)
+            .ok_or(ResourceReservationErrorV1::Conflict)?
+            .checked_add(aos_sandbox_protocol::publisher_policy::receiving_data::
+                namespace_receiving_control_bytes_v1().ok_or(ResourceReservationErrorV1::Conflict)?)
+            .ok_or(ResourceReservationErrorV1::Conflict)?
             .checked_add(Journal::operator_recover_append_carrier_bytes_v1()
                 .ok_or(ResourceReservationErrorV1::Conflict)?)
             .and_then(|n| n.checked_add(
-                aos_sandbox_linux::boot::RootOriginalKernelBootIdAttemptV1::dominant_requested_bytes_v1()?))
+                aos_linux_descriptors::boot::RootOriginalKernelBootIdAttemptV1::dominant_requested_bytes_v1()?))
             .and_then(|n| u64::try_from(n).ok())
             .ok_or(ResourceReservationErrorV1::Conflict)?;
         let peer = peer.retained_recheck_demand_v1().ok_or(ResourceReservationErrorV1::Conflict)?;
@@ -177,11 +191,12 @@ impl OperatorCreateRecoveryOriginalV1 {
         let controller_indices = crate::cold_launch_publication::completion::
             controller_selector_namespace_entries_v1(state)
             .and_then(|entries| entries.checked_add(
-                crate::publisher_admin::authorization_namespace_entries_v1(controller)?))
+                aos_sandbox_protocol::publisher_policy::receiving_data::authorization_namespace_entries_v1(
+                    controller.historical_read_view_v1().rows_data_v2())?))
             .and_then(|entries| u64::try_from(entries).ok())
             .ok_or(ResourceReservationErrorV1::Conflict)?;
-        let projection = crate::controller_service::public_projection::
-            sandbox_source_receiving_bytes_v1(controller)
+        let projection = aos_sandbox_protocol::public_api::projection::geometry::
+            sandbox_source_receiving_bytes_v1(controller.historical_read_view_v1().rows_data_v2())
             .ok_or(ResourceReservationErrorV1::Conflict)?;
         // The finite target selector may reach the existing full accepted Stop
         // and current assignment decoders. Pay their actual retained models
@@ -307,7 +322,7 @@ impl Journal {
             let claims = decision.capability().claims();
             let revision = crate::cli_model::authorization_adapter::
                 recompute_create_recovery_authorization_from_records_v1(
-                    crate::publisher_admin::PublisherReadDataV2::from_journal_v2(self),
+                    crate::publisher_admin::PublisherReadDataV2::from_state_v2(self.historical_read_view_v1().materialized_state_v1()),
                     &models.request, peer.project(), peer.principal(), claims.id,
                     claims.channel_binding, decision.clock(),
                 )?;

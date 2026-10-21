@@ -8,7 +8,8 @@ use std::error::Error as StdError;
 use std::fs::File;
 
 use super::{PidFd, PidFdInfo, PidFdProcessIdentity, ProcStatIdentity};
-use crate::{Error, Result};
+use aos_linux_descriptors::Error;
+use aos_linux_descriptors::Result;
 
 /// Retains native prefixes of one process identity observation without authority.
 ///
@@ -69,7 +70,7 @@ impl PidFdProcessIdentityOriginalV1 {
             return Err(closed());
         }
         self.entered = true;
-        self.returned = Some(process.process_identity_observed(&mut Some(&mut *self)));
+        self.returned = Some(super::process_identity_observed(process, &mut Some(&mut *self)));
         if matches!(self.returned, Some(Ok(_))) {
             Ok(())
         } else {
@@ -154,7 +155,7 @@ mod tests {
 
         original.capture_once(&process).unwrap();
 
-        assert_eq!(original.identity(), Some(process.process_identity().unwrap()));
+        assert_eq!(original.identity(), Some(crate::pidfd::process_identity(&process).unwrap()));
         assert!(original.file.is_some());
         assert!(!original.bytes.is_empty());
         assert!(matches!(original.open, Some(Ok(()))));

@@ -18,6 +18,7 @@ aos-sandbox-controller-domain.workspace = true
 aos-sandbox-broker.workspace = true
 aos-sandbox-model.workspace = true
 aos-sandbox-linux.workspace = true
+aos-linux-descriptors.workspace = true
 aos-sandbox-journal.workspace = true
 aos-sandbox-mount-native.workspace = true
 aos-sandbox-protocol.workspace = true

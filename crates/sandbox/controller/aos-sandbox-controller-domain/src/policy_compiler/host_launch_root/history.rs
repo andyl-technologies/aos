@@ -70,6 +70,7 @@ impl RootHostHistoricalCreateOriginalV2 {
             .ok_or(JournalError::JournalTooLarge)?;
         let fixed = size_of::<Self>().checked_mul(2)
             .and_then(|bytes| bytes.checked_add(effect_bytes))
+            .and_then(|bytes| bytes.checked_add(CreateFinalityControllerOriginalV1::historical_observation_control_bytes_v2()?))
             .and_then(|bytes| bytes.checked_add(LifecycleHistoricalReadOriginalV1::carrier_receiving_bytes_v1()?))
             .and_then(|bytes| u64::try_from(bytes).ok()).ok_or(JournalError::JournalTooLarge)?;
         let schema = retained_lifecycle_replay_receiving_demand_v1(source.all_records())
@@ -133,18 +134,20 @@ impl RootHostHistoricalCreateOriginalV2 {
             decode_lifecycle_effect_receipt_v1(receipt_bytes, lane)?
         else { return Err(JournalError::ProtectedBoundary.into()); };
         let (_, project, sandbox) = historical.target_v2();
-        historical.require_rows_v2(parent, project, sandbox, operation, effect)?;
+        historical.require_rows_v2(parent, project, sandbox, operation, effect)
+            .map_err(crate::journal::historical_observation::root_readonly_error_v1)?;
 
         // The native receipt is fixed and owned by readonly. Field-splitting
         // its model lets the same graph loaders borrow a mutable readonly C.
         {
             let (controller, historical) = readonly.controller_with_historical_v2()?;
-            self.controller.observe_historical_once_v2(controller, receipt,
+            self.controller.observe_historical_once_v2(
+                controller, receipt,
                 parent, receipt_bytes, historical)?;
         }
         let fields = self.controller.resources_v2()?.fields_v1();
         let source = views.prepared_host_launch_source_v2()?;
-        self.source.observe_once_v1(source, parent)?;
+        self.source.observe_once_v1(source.rows_data_v2(), parent)?;
         let key = lifecycle_protected_key_v1(LifecycleProtectedRecordKindV1::Effect,
             fields.project, ResourceId::from_bytes(*fields.sandbox.as_bytes()), parent)?;
         self.source.historical_once_v1(parent, &key)?;
@@ -156,7 +159,8 @@ impl RootHostHistoricalCreateOriginalV2 {
         require_create_terminal_source_v1(completing, record, terminal,
             aos_sandbox_model::ObjectDigest::from_bytes(inventory.encoded_response_digest_v1()))?;
         let (controller, historical) = readonly.controller_with_historical_v2()?;
-        self.controller.compare_historical_once_v2(controller,
+        self.controller.compare_historical_once_v2(
+            controller,
             historical, completing, record, receipt, original_root,
             self.session.admitted_plan_v1()?, lane, self.session.apply_v1()?,
             self.session.apply_response_v1()?, inventory_exchange, inventory)?;
@@ -182,8 +186,7 @@ impl RootHostHistoricalCreateOriginalV2 {
 
     pub(crate) fn current_storage_history_v2(
         &self,
-        native: &crate::policy_compiler::create_storage_current::controller_readonly::
-            native_read::RootFixedNativeReadbackV1<'_>,
+        native: &aos_sandbox_protocol::domain_ledger::readonly::FixedJournalReadbackDataV1<'_>,
     ) -> Result<crate::policy_compiler::provisioning_current::HistoricalStorageHistoryBorrowV2<'_>, JournalError> {
         self.require_complete_v2()?;
         self.session.verified_history_for_native_v2(native)

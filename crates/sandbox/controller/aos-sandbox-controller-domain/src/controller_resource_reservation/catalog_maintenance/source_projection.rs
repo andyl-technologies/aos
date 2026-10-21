@@ -159,7 +159,9 @@ impl CatalogMaintenanceSourceProjectionV2 {
         self.model = Some(Box::new(LifecycleHistoricalReadOriginalV1::new()));
         self.observed = Some((|| {
             let model = self.model.as_mut().ok_or(JournalError::ProtectedBoundary)?;
-            model.observe_projection_once_v1(source)?;
+            model.observe_rows_projection_once_v3(
+                source.historical_read_view_v1().rows_data_v2(),
+            )?;
             if self.historical_geometry {
                 self.history = Some(Box::new(CompletedStopHistoryOriginalV1::new()));
                 let history = self

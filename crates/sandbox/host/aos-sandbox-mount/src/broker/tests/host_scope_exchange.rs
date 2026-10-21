@@ -446,7 +446,7 @@ fn respond(mut socket: DescriptorSubjectSocket, case: ResponseCase) {
         bytes = raw.encode_to_vec();
     }
 
-    let payload = aos_sandbox_linux::pidfd::PidFd::open(
+    let payload = aos_linux_descriptors::pidfd::PidFd::open(
         std::num::NonZeroU32::new(std::process::id()).unwrap(),
     )
     .unwrap();

@@ -25,64 +25,34 @@ use crate::{
     CommitResult, Journal, JournalError, JournalRecord, JournalTransaction, RecordNamespace,
 };
 
-const POLICY_REVISION_PREFIX: &[u8] = b"policy/revision/";
-const POLICY_CURRENT_PREFIX: &[u8] = b"policy/current/";
-const RESOURCE_PREFIX: &[u8] = b"resource/";
-const CONTROLLER_REVISION_PREFIX: &[u8] = b"controller/revision/";
-const CONTROLLER_CURRENT_KEY: &[u8] = b"controller/current";
-const REVOCATION_REVISION_PREFIX: &[u8] = b"revocation/revision/";
-const REVOCATION_CURRENT_PREFIX: &[u8] = b"revocation/current/";
-const PROJECT_REVOCATION_PREFIX: &[u8] = b"revocation/project/";
-
-const POLICY_REVISION_MAGIC: &[u8; 8] = b"AOSPOLR1";
-const POLICY_CURRENT_MAGIC: &[u8; 8] = b"AOSPOLH1";
-const RESOURCE_MAGIC: &[u8; 8] = b"AOSRESB1";
-const CONTROLLER_REVISION_MAGIC: &[u8; 8] = b"AOSCTLR1";
-const CONTROLLER_CURRENT_MAGIC: &[u8; 8] = b"AOSCTLH1";
-const REVOCATION_REVISION_MAGIC: &[u8; 8] = b"AOSREVR1";
-const REVOCATION_CURRENT_MAGIC: &[u8; 8] = b"AOSREVH1";
-const PROJECT_REVOCATION_MAGIC: &[u8; 8] = b"AOSREVP1";
-// The signed project claim commits the protected mapping and exact scope generation:
-// SHA-256(domain || project:16 || scope:16 || generation:u64-be).
-const PROJECT_REVOCATION_DOMAIN: &[u8] = b"aos.sandbox.publisher-project-revocation-head.v1\0";
-// The project cache claim follows the current publisher revision, even when
-// the disclosure domain itself remains unchanged between revisions.
-const PROJECT_CACHE_DOMAIN_HEAD_DOMAIN: &[u8] =
-    b"aos.sandbox.publisher-project-cache-domain-head.v1\0";
-
-const MAXIMUM_POLICY_BYTES: usize = 4 * 1024 * 1024;
-const MAXIMUM_RECORDS: usize = 65_536;
-const MAXIMUM_RECORD_BYTES: usize = MAXIMUM_POLICY_BYTES + 128;
-const MAXIMUM_MATERIALIZED_BYTES: usize = 512 * 1024 * 1024;
-
+use aos_sandbox_protocol::publisher_policy::*;
+pub(crate) use aos_sandbox_protocol::publisher_policy::project_revocation_digest;
 mod model;
 use aos_sandbox_protocol::policy_data::PreparedPublisherPolicyRevisionV1;
 mod account_coverage;
 mod git_upload_capacity;
-pub use git_upload_capacity::{
-    GitUploadBootstrapAppendV1, GitUploadBootstrapDataRefV1, GitUploadEnrolledAccountAppendV1,
-    GitUploadBootstrapErrorV1, VerifiedPublisherPolicySourceV1,
-};
 pub(crate) use git_upload_capacity::{
-    require_coverage_native_account_transaction, require_complete_coverage_read_state_data_v1,
+    require_complete_coverage_read_state_data_v1, require_coverage_native_account_transaction,
+};
+pub use git_upload_capacity::{
+    GitUploadBootstrapAppendV1, GitUploadBootstrapDataRefV1, GitUploadBootstrapErrorV1,
+    GitUploadEnrolledAccountAppendV1, VerifiedPublisherPolicySourceV1,
 };
 mod project_authorization_source_v2;
 mod project_authorization_store_v2;
 mod project_genesis_error;
-pub use project_genesis_error::PublisherProjectGenesisErrorV1;
 #[cfg(any(target_os = "linux", test))]
 pub(crate) use project_authorization_store_v2::CurrentSourceTreeSeedPreflightErrorV1;
+pub use project_genesis_error::PublisherProjectGenesisErrorV1;
 #[cfg(test)]
 mod project_authorization_test_fixture;
-pub use model::{
-    PublisherControllerHeadV1, PublisherPolicyError, PublisherPolicyLimits,
-    PublisherProjectCacheDomainHeadV1, PublisherProjectRevocationHeadV1,
-    PublisherResourceBindingV1, PublisherRevocationHeadV1,
-};
+pub use model::PublisherPolicyError;
+mod observation;
+pub(crate) use observation::{PublisherPolicyObservationV2, publisher_observation_control_bytes_v2};
+pub use aos_sandbox_protocol::publisher_policy::{PublisherControllerHeadV1, PublisherPolicyLimits, PublisherProjectCacheDomainHeadV1, PublisherProjectRevocationHeadV1, PublisherResourceBindingV1, PublisherRevocationHeadV1};
 pub use project_authorization_source_v2::{
     ProjectAuthorizationSourceErrorV2, ProjectAuthorizationSourceExpectedV2,
-    VerifiedPublisherProjectAuthorizationSourceV2,
-    verify_current_project_authorization_source_v2,
+    VerifiedPublisherProjectAuthorizationSourceV2, verify_current_project_authorization_source_v2,
 };
 
 /// Provides exclusive access to validated current publisher policy state.
@@ -107,7 +77,7 @@ impl<'journal> PublisherPolicyStore<'journal> {
         limits: PublisherPolicyLimits,
     ) -> Result<Self, PublisherPolicyError> {
         journal.ensure_protected_authority()?;
-        let (records, materialized_bytes) = validate_namespace(journal, limits)?;
+        let (records, materialized_bytes) = validate_namespace(super::PublisherReadDataV2::from_state_v2(journal.historical_read_view_v1().materialized_state_v1()), limits)?;
         Ok(Self {
             journal,
             limits,
@@ -126,7 +96,7 @@ impl<'journal> PublisherPolicyStore<'journal> {
         project: ProjectId,
     ) -> Result<Option<PreparedPublisherPolicyRevisionV1>, PublisherPolicyError> {
         self.journal.ensure_protected_authority()?;
-        current_data::current_policy_from_data_v2(super::PublisherReadDataV2::from_journal_v2(self.journal), project)
+        current_data::current_policy_from_data_v2(super::PublisherReadDataV2::from_state_v2(self.journal.historical_read_view_v1().materialized_state_v1()), project).map_err(PublisherPolicyError::from)
     }
 
     /// Resolves one immutable cache-resource binding.
@@ -146,7 +116,7 @@ impl<'journal> PublisherPolicyStore<'journal> {
             .transpose()?;
         if binding
             .as_ref()
-            .is_some_and(|value| value.resource != resource)
+            .is_some_and(|value| value.resource() != resource)
         {
             return Err(PublisherPolicyError::CorruptState);
         }
@@ -162,7 +132,7 @@ impl<'journal> PublisherPolicyStore<'journal> {
         &self,
     ) -> Result<Option<PublisherControllerHeadV1>, PublisherPolicyError> {
         self.journal.ensure_protected_authority()?;
-        current_data::controller_head_from_data_v2(super::PublisherReadDataV2::from_journal_v2(self.journal))
+        current_data::controller_head_from_data_v2(super::PublisherReadDataV2::from_state_v2(self.journal.historical_read_view_v1().materialized_state_v1())).map_err(PublisherPolicyError::from)
     }
 
     /// Resolves one current revocation generation.
@@ -175,7 +145,7 @@ impl<'journal> PublisherPolicyStore<'journal> {
         scope: RevocationScopeId,
     ) -> Result<Option<PublisherRevocationHeadV1>, PublisherPolicyError> {
         self.journal.ensure_protected_authority()?;
-        current_data::revocation_head_from_data_v2(super::PublisherReadDataV2::from_journal_v2(self.journal), scope)
+        current_data::revocation_head_from_data_v2(super::PublisherReadDataV2::from_state_v2(self.journal.historical_read_view_v1().materialized_state_v1()), scope).map_err(PublisherPolicyError::from)
     }
 
     /// Resolves the independent current revocation head bound to one project.
@@ -193,26 +163,19 @@ impl<'journal> PublisherPolicyStore<'journal> {
         project: ProjectId,
     ) -> Result<Option<PublisherProjectRevocationHeadV1>, PublisherPolicyError> {
         self.journal.ensure_protected_authority()?;
-        let Some(bytes) = self.journal.get(
-            RecordNamespace::PublisherPolicy,
-            &project_revocation_key(project),
-        ) else {
+        let Some(scope) = current_data::project_revocation_scope_from_data_v2(
+            super::PublisherReadDataV2::from_state_v2(
+                self.journal.historical_read_view_v1().materialized_state_v1(),
+            ), project,
+        ).map_err(PublisherPolicyError::from)? else {
             return Ok(None);
         };
-        let (bound_project, scope) = decode_project_revocation_binding(bytes)?;
-        if bound_project != project {
-            return Err(PublisherPolicyError::CorruptState);
-        }
-        let head = self
-            .revocation_head(scope)?
-            .ok_or(PublisherPolicyError::CorruptState)?;
-        let digest = project_revocation_digest(project, scope, head.generation);
-        Ok(Some(PublisherProjectRevocationHeadV1 {
-            project,
-            scope,
-            generation: head.generation,
-            digest,
-        }))
+        self.journal.ensure_protected_authority()?;
+        current_data::project_revocation_head_from_scope_data_v2(
+            super::PublisherReadDataV2::from_state_v2(
+                self.journal.historical_read_view_v1().materialized_state_v1(),
+            ), project, scope,
+        ).map(Some).map_err(PublisherPolicyError::from)
     }
 
     /// Resolves the project disclosure choice of the current protected policy.
@@ -230,25 +193,12 @@ impl<'journal> PublisherPolicyStore<'journal> {
         &self,
         project: ProjectId,
     ) -> Result<Option<PublisherProjectCacheDomainHeadV1>, PublisherPolicyError> {
-        let Some(policy) = self.current_policy(project)? else {
-            return Ok(None);
-        };
-        let domain = policy.policy().cache_domain();
-        if domain.kind() != CacheDomainKind::Project
-            || domain.domain_id().as_bytes() != project.as_bytes()
-        {
-            return Err(PublisherPolicyError::InvalidProjectCacheDomainBinding);
-        }
-        let policy_digest = policy.descriptor().digest();
-        let digest =
-            project_cache_domain_digest(project, policy.generation(), policy_digest, domain);
-        Ok(Some(PublisherProjectCacheDomainHeadV1 {
-            project,
-            generation: policy.generation(),
-            policy_digest,
-            domain,
-            digest,
-        }))
+        self.journal.ensure_protected_authority()?;
+        current_data::project_cache_domain_head_from_data_v2(
+            super::PublisherReadDataV2::from_state_v2(
+                self.journal.historical_read_view_v1().materialized_state_v1(),
+            ), project,
+        ).map_err(PublisherPolicyError::from)
     }
 
     /// Compares a project cache-domain claim with the exact current head.
@@ -287,7 +237,7 @@ impl<'journal> PublisherPolicyStore<'journal> {
         prepared: &PreparedPublisherPolicyRevisionV1,
     ) -> Result<CommitResult, PublisherPolicyError> {
         self.journal.ensure_protected_authority()?;
-        validate_policy_resources(self.journal, prepared)?;
+        validate_policy_resources_from_data_v2(super::PublisherReadDataV2::from_state_v2(self.journal.historical_read_view_v1().materialized_state_v1()), prepared)?;
         let current = self.current_policy(prepared.project())?;
         validate_successor(
             current
@@ -305,7 +255,7 @@ impl<'journal> PublisherPolicyStore<'journal> {
             return Err(PublisherPolicyError::RevisionAlreadyExists);
         }
         let revision_bytes = encode_policy_revision(prepared)?;
-        if revision_bytes.len() > self.limits.maximum_record_bytes {
+        if revision_bytes.len() > self.limits.maximum_record_bytes() {
             return Err(PublisherPolicyError::LimitExceeded("policy revision bytes"));
         }
         let records = vec![
@@ -334,7 +284,7 @@ impl<'journal> PublisherPolicyStore<'journal> {
         binding: &PublisherResourceBindingV1,
     ) -> Result<CommitResult, PublisherPolicyError> {
         self.journal.ensure_protected_authority()?;
-        let key = resource_key(binding.resource);
+        let key = resource_key(binding.resource());
         if self
             .journal
             .get(RecordNamespace::PublisherPolicy, &key)
@@ -496,8 +446,8 @@ impl<'journal> PublisherPolicyStore<'journal> {
         records: Vec<JournalRecord>,
     ) -> Result<CommitResult, PublisherPolicyError> {
         let (next_records, next_bytes) = self.bounded_replacement_totals(&records)?;
-        let transaction = JournalTransaction::new(transaction_id, records)
-            .map_err(JournalError::from)?;
+        let transaction =
+            JournalTransaction::new(transaction_id, records).map_err(JournalError::from)?;
         let result = self.journal.commit(&transaction)?;
         self.records = next_records;
         self.materialized_bytes = next_bytes;
@@ -515,7 +465,7 @@ impl<'journal> PublisherPolicyStore<'journal> {
             if record.value().is_none()
                 || record
                     .value()
-                    .is_some_and(|value| value.len() > self.limits.maximum_record_bytes)
+                    .is_some_and(|value| value.len() > self.limits.maximum_record_bytes())
             {
                 return Err(PublisherPolicyError::LimitExceeded("record bytes"));
             }
@@ -534,8 +484,8 @@ impl<'journal> PublisherPolicyStore<'journal> {
                 })
                 .ok_or(PublisherPolicyError::LimitExceeded("materialized bytes"))?;
         }
-        if next_records > self.limits.maximum_records
-            || next_bytes > self.limits.maximum_materialized_bytes
+        if next_records > self.limits.maximum_records()
+            || next_bytes > self.limits.maximum_materialized_bytes()
         {
             return Err(PublisherPolicyError::LimitExceeded(
                 "materialized namespace",
@@ -545,55 +495,17 @@ impl<'journal> PublisherPolicyStore<'journal> {
     }
 }
 
-/// Computes the portable claim from an independently observed protected head.
-///
-/// This pure encoding does not establish that the supplied generation is current.
-pub(crate) fn project_revocation_digest(
-    project: ProjectId,
-    scope: RevocationScopeId,
-    generation: u64,
-) -> ObjectDigest {
-    ObjectDigest::from_bytes(
-        Sha256::new()
-            .chain_update(PROJECT_REVOCATION_DOMAIN)
-            .chain_update(project.as_bytes())
-            .chain_update(scope.as_bytes())
-            .chain_update(generation.to_be_bytes())
-            .finalize()
-            .into(),
-    )
-}
-
-fn project_cache_domain_digest(
-    project: ProjectId,
-    generation: u64,
-    policy_digest: ObjectDigest,
-    domain: CacheDomain,
-) -> ObjectDigest {
-    ObjectDigest::from_bytes(
-        Sha256::new()
-            .chain_update(PROJECT_CACHE_DOMAIN_HEAD_DOMAIN)
-            .chain_update(project.as_bytes())
-            .chain_update(generation.to_be_bytes())
-            .chain_update(policy_digest.as_bytes())
-            .chain_update([1_u8])
-            .chain_update(domain.domain_id().as_bytes())
-            .finalize()
-            .into(),
-    )
-}
 
 mod cache_domain;
 pub use cache_domain::PublisherProjectCacheDomainVerifierV1;
 
-mod record;
-use record::*;
+use aos_sandbox_protocol::publisher_policy::record::*;
+aos_sandbox_protocol::define_provider_record_helpers_data_recipe_v1!(PublisherPolicyError::CorruptState);
 
-mod replay;
-use replay::{validate_namespace, validate_policy_resources};
+use aos_sandbox_protocol::publisher_policy::replay::{validate_namespace, validate_policy_resources_from_data_v2};
 
 #[cfg(test)]
 mod tests;
 
-mod current_data;
+use aos_sandbox_protocol::publisher_policy::current_data;
 pub(crate) use current_data::{current_policy_from_data_v2, controller_head_from_data_v2, revocation_head_from_data_v2};

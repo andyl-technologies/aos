@@ -42,6 +42,12 @@ impl RootJournalFinancialOriginalV1 {
         }
     }
 
+    /// Compares this allocation's real startup link without currentness entry.
+    #[must_use]
+    pub fn same_startup_allocation_data_v1(&self, startup: &RootStartupNativeOriginalV1) -> bool {
+        startup.initial_owner.as_ref().is_some_and(|identity| self.original.has_identity(identity))
+    }
+
     /// Compares the held native startup with this actual permanent original.
     ///
     /// No native observation, namespace adoption or financial mutation occurs.
@@ -70,6 +76,25 @@ impl RootJournalFinancialOriginalV1 {
 }
 
 impl RootUpperMutationGuardV1<'_> {
+    /// Compares this held exclusion with the same actual financial allocation.
+    ///
+    /// This is passive affinity DATA. It performs no receiving debit, native
+    /// entry, observation or allocation, and cannot construct a mutation guard.
+    #[must_use]
+    pub fn same_financial_original_data_v1(
+        &self,
+        original: &RootJournalFinancialOriginalV1,
+    ) -> bool {
+        self.original.same_original_data_v1(original)
+    }
+
+    pub(in crate::receiving) fn matches_permanent_original_v1(
+        &self,
+        original: &crate::receiving::root_permanent::RootPermanentNativeOriginalV1,
+    ) -> bool {
+        std::ptr::eq(self.original.original.as_ref(), original)
+    }
+
     /// Permanently denies native entry without replacing an upper cause.
     pub fn refuse_v1(&self) {
         self.original.original.invocation().latch_refusal();

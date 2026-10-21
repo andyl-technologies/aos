@@ -5,7 +5,7 @@
 //! select a fresh destination.
 
 use aos_sandbox_filesystem_format::{ProjectionLimits, TreeCompileLimits};
-use aos_sandbox_controller_domain::cache_residency::{CacheOwnerErrorV1, CacheOwnerPinSettlementErrorV1};
+use aos_sandbox_cache::{CacheOwnerErrorV1, CacheOwnerPinSettlementErrorV1};
 use aos_sandbox_controller_domain::filesystem_view_state::current_filesystem_view_revision_v1;
 use aos_sandbox_protocol::public_api::cache_consumer::CacheConsumerDataV1;
 use aos_sandbox_model::DecodeLimits;

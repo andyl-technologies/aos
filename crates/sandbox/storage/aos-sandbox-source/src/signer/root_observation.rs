@@ -11,9 +11,9 @@ use aos_sandbox_broker::receiving::{RootPeerObservationOriginalsV1,
     RootObservationErrorV1, require_root_process_identity_v1};
 use aos_sandbox_model::{ResourceDimension as D, ResourceVector};
 use aos_sandbox_linux::cgroup::ExactCgroupMembershipReadbackV1;
-use aos_sandbox_linux::pidfd::PidFdInfo;
+use aos_linux_descriptors::pidfd::PidFdInfo;
 use aos_sandbox_linux::selinux_policy::RetainedLiveSelinuxPolicyReadbackV1;
-use aos_sandbox_linux::unix_stream::RetainedUnixStream;
+use aos_linux_descriptors::unix_stream::RetainedUnixStream;
 
 use crate::signer::SourceReceivingGeometryErrorV1 as ResourceReservationErrorV1;
 use aos_sandbox_broker::receiving::ObservationLifetimeV1 as ObserverLifetime;

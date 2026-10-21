@@ -41,7 +41,7 @@ fn installed_confinement() {
     assert!(!Path::new("/dev/zfs").exists());
 
     let error = SeqpacketSocket::pair_with_record_subjects().unwrap_err();
-    let aos_sandbox_linux::seqpacket::SeqpacketError::Kernel(aos_sandbox_linux::Error::Syscall {
+    let aos_sandbox_linux::seqpacket::SeqpacketError::Kernel(aos_linux_descriptors::Error::Syscall {
         source,
         ..
     }) = error
@@ -84,7 +84,7 @@ fn installed_confinement() {
         )
         .unwrap();
     let error = mount.attach(&target).unwrap_err();
-    let aos_sandbox_linux::Error::Syscall { source, .. } = error else {
+    let aos_linux_descriptors::Error::Syscall { source, .. } = error else {
         panic!("move_mount was not denied by the installed filter: {error}");
     };
     assert_eq!(
@@ -132,7 +132,7 @@ fn controller_denials() {
     require_permission_denied(error);
 
     let error = SeqpacketSocket::connect(Path::new(SOCKET_PATH)).unwrap_err();
-    let aos_sandbox_linux::seqpacket::SeqpacketError::Kernel(aos_sandbox_linux::Error::Syscall {
+    let aos_sandbox_linux::seqpacket::SeqpacketError::Kernel(aos_linux_descriptors::Error::Syscall {
         source,
         ..
     }) = error

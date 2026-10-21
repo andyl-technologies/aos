@@ -38,8 +38,8 @@ pub const GUEST_ARGUMENT_READBACK_SIGNATURE_DOMAIN_V1: &[u8] =
     b"aos.sandbox.guest-argument-readback.v1\0";
 
 use GUEST_ARGUMENT_READBACK_SIGNATURE_DOMAIN_V1 as SIGNATURE_DOMAIN;
-const MAXIMUM_REQUEST_BYTES: usize = 512;
-const MAXIMUM_READBACK_BYTES: usize = MAXIMUM_REQUEST_BYTES + 82;
+pub(super) const MAXIMUM_REQUEST_BYTES: usize = 512;
+pub(super) const MAXIMUM_READBACK_BYTES: usize = MAXIMUM_REQUEST_BYTES + 82;
 
 /// Reports a malformed, unauthenticated, or unavailable Guest measurement.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
@@ -355,10 +355,19 @@ mod tests {
     use crate::guest_root_publication::CONCRETE_GUEST_FEATURE_MASK_V1;
 
     #[test]
-    fn production_guest_root_does_not_advertise_unconsumed_observation() {
+    fn production_guest_profile_advertises_the_funded_argument_and_capture_contract() {
         let feature_bit =
             1_u16 << (crate::model::AgentFeatureV1::RuntimeArgumentObservation as u8 - 1);
-        assert_eq!(CONCRETE_GUEST_FEATURE_MASK_V1 & feature_bit, 0);
+        let features = &crate::guest_root_publication::CONCRETE_GUEST_FEATURES_V1;
+        assert_eq!(features.len(), 8);
+        assert_eq!(CONCRETE_GUEST_FEATURE_MASK_V1, 0x00ff);
+        assert_eq!(CONCRETE_GUEST_FEATURE_MASK_V1 & feature_bit, feature_bit);
+        assert!(features.contains(&crate::AgentFeatureV1::RuntimeArgumentObservation));
+        assert!(features.contains(&crate::AgentFeatureV1::CapturePipeHandoffV2));
+        let actual_mask = features.iter().fold(0_u16, |mask, feature| {
+            mask | (1_u16 << (*feature as u8 - 1))
+        });
+        assert_eq!(actual_mask, CONCRETE_GUEST_FEATURE_MASK_V1);
     }
 
     fn request() -> GuestRuntimeArgumentObserveRequestV1 {

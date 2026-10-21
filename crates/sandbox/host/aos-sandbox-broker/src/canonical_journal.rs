@@ -11,6 +11,10 @@ pub mod append_stages;
 /// Retains actual captured append DATA and independent native observations.
 pub mod captured;
 
+/// Shares advisory preflight representation while callers retain role authority.
+pub mod preflight;
+pub use preflight::CanonicalPreflightDataOriginalV1;
+
 /// Retains fixed Network native openings without semantic or financial authority.
 pub mod network_opening;
 
@@ -117,16 +121,8 @@ impl aos_sandbox_journal::protected_storage::ProtectedFailure for NativeJournalD
     const STALE_NAME: Self = Self::StaleAuthoritySnapshot;
 }
 
-/// Carries native recovery coordinates as DATA, never a current-cut receipt.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct RecoveryReport {
-    /// Counts committed transactions replayed from the actual file.
-    pub committed_transactions: usize,
-    /// Counts actual committed record frames.
-    pub committed_records: usize,
-    /// Counts incomplete tail bytes removed by the separately selected repair.
-    pub truncated_bytes: u64,
-}
+/// Reuses the canonical lower recovery-coordinate DATA.
+pub use aos_sandbox_journal::RecoveryReport;
 
 /// Carries returned native append coordinates without role admission.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -739,7 +735,7 @@ fn require_new_finality_admissions_v1(
 /// Prices native replay's actual bounded-prefix and declared-BEGIN carriers.
 ///
 /// The recipe accepts only DATA and creates no account or replay permission.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct CanonicalReplayExtentDataV1 { limits: JournalLimits, bytes: u64 }
 
 impl CanonicalReplayExtentDataV1 {
@@ -967,3 +963,6 @@ mod retained_commit_tests {
 
 mod semantic_cursor;
 pub use semantic_cursor::{CanonicalCommitReadViewV1, CanonicalReplayCursorV1, CanonicalReplayPrefixReadViewV1};
+
+// Private role contexts retain actual native owners and final typed gates.
+mod append_schedule;

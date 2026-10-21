@@ -13,7 +13,10 @@ use aos_sandbox_protocol::domain_ledger::create_storage_history::{HistoryErrorV1
         SOURCE_CURRENT_BODY_BYTES_V1, SOURCE_CURRENT_QUERY_BYTES_V1,
         SOURCE_CURRENT_REPLY_FRAME_BYTES_V1, SOURCE_CURRENT_REPLY_MAGIC_V1,
         SOURCE_CURRENT_SIGNATURE_DOMAIN_V1}};
-use ed25519_dalek::Signature;
+use aos_sandbox_policy::source_current_data::{
+    require_source_current_interval_data_v1,
+    verify_source_current_signature_data_v1 as verify_source_signature_v1,
+};
 
 use crate::hierarchy::genesis_profile::SourceGenesisErrorV1;
 use crate::journal::{JournalError};
@@ -23,8 +26,9 @@ use crate::policy_compiler::RetainedKernelPairedClockAttemptV1;
 use super::RootCurrentSourceQueryStateV1;
 use super::super::use_reserved::{RootCurrentProofTurnV1, RootCurrentUseReservedStateV1};
 use super::super::use_authorized::RootCurrentUseAuthorizedStateV1;
-use super::io::FixedSourceCurrentIoV1;
-use crate::policy_compiler::source_signer_transport::{RootSourceSignerTransportOriginalsV1, RootSourceTransportClosedV1};
+use aos_sandbox_broker::bounded_stream_io::FixedDeadlineStreamIoV1 as FixedSourceCurrentIoV1;
+use aos_sandbox_broker::source_signer_transport::RootSourceSignerTransportOriginalsV1;
+use aos_sandbox_broker::source_signer_transport::RootSourceTransportClosedV1;
 use super::super::{RootCreateStorageCurrentErrorV1 as Error, pins::RootCurrentPinsStateV1,
     ready::RootCurrentReadyStateV1, root_open::RootCurrentOpenStateV1,
     writer_sample::RootCurrentWriterSampleV1};
@@ -83,7 +87,10 @@ impl RootCurrentSourceExchangeStateV1 {
             .checked_add(SOURCE_CURRENT_BODY_BYTES_V1).ok_or_else(invalid)?;
         let bytes = size_of::<Self>().checked_add(pair.checked_mul(2).ok_or_else(invalid)?)
             .and_then(|bytes| bytes.checked_add(message))
-            .and_then(|bytes| bytes.checked_add(30 * 256)).ok_or_else(invalid)?;
+            .and_then(|bytes| bytes.checked_add(30 * 256))
+            .and_then(|bytes| bytes.checked_add(
+                aos_sandbox_policy::source_current_data::additional_control_bytes_v1()?,
+            )).ok_or_else(invalid)?;
         Ok(ResourceVector::ZERO
             .with(D::MemoryBytes, u64::try_from(bytes).map_err(|_| invalid())?)
             .with(D::OpenFiles, 1 + 2 * RetainedKernelPairedClockAttemptV1::MAXIMUM_RETAINED_FILES_V1 as u64)
@@ -193,7 +200,7 @@ impl RootCurrentSourceExchangeStateV1 {
         let reply = *positive(&self.reply)?;
         let signer = pins.source_signer_v1()?;
         self.signature = Some(verify_source_signature_v1(
-            self.transport.frame_v1(), reply.signature, signer,
+            self.transport.frame_v1(), reply.signature, signer.verifying_key(),
         ));
         positive(&self.signature)?;
         self.correlation = Some(SourceCurrentQueryDataV1::decode(request)
@@ -205,14 +212,7 @@ impl RootCurrentSourceExchangeStateV1 {
         let before = positive(&self.before_sample).map_err(|_| HistoryErrorV1::Correlation)?;
         let after = positive(&self.after_sample).map_err(|_| HistoryErrorV1::Correlation)?;
         let reply = positive(&self.reply).map_err(|_| HistoryErrorV1::Correlation)?.fields;
-        before.validate_later_sample(*after).map_err(|_| HistoryErrorV1::Correlation)?;
-        if reply.boot != before.host_boot_id() || reply.boot != after.host_boot_id()
-            || reply.boottime_nanoseconds < before.boottime_nanoseconds()
-            || reply.boottime_nanoseconds > after.boottime_nanoseconds()
-            || reply.wall_seconds < before.wall_seconds() || reply.wall_seconds > after.wall_seconds() {
-            return Err(HistoryErrorV1::Correlation);
-        }
-        Ok(())
+        require_source_current_interval_data_v1(before, after, &reply)
     }
 
     pub(crate) fn require_use_complete_for_v1(&self, root: &RootCurrentOpenStateV1,
@@ -293,19 +293,6 @@ fn require_clock(root: &RootCurrentOpenStateV1,
     Ok(())
 }
 
-// Shared by this actual Root consumer and its negative DATA fixtures. This
-// authenticates bytes only; it constructs no query, peer, cut or live original.
-fn verify_source_signature_v1(frame: &[u8; SOURCE_CURRENT_REPLY_FRAME_BYTES_V1],
-    signature: [u8; 64], signer: &crate::policy_compiler::PinnedSourceHoldReadbackSignerV1)
-    -> Result<(), ed25519_dalek::SignatureError>
-{
-    let mut message = [0; SOURCE_CURRENT_SIGNATURE_DOMAIN_V1.len() + SOURCE_CURRENT_BODY_BYTES_V1];
-    message[..SOURCE_CURRENT_SIGNATURE_DOMAIN_V1.len()].copy_from_slice(SOURCE_CURRENT_SIGNATURE_DOMAIN_V1);
-    message[SOURCE_CURRENT_SIGNATURE_DOMAIN_V1.len()..]
-        .copy_from_slice(&frame[8..8 + SOURCE_CURRENT_BODY_BYTES_V1]);
-    signer.verifying_key().verify_strict(&message, &Signature::from_bytes(&signature))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -330,9 +317,9 @@ mod tests {
         message.extend_from_slice(&frame[8..8 + SOURCE_CURRENT_BODY_BYTES_V1]);
         let signature = key.sign(&message).to_bytes();
 
-        assert!(verify_source_signature_v1(&frame, signature, &pinned).is_ok());
-        assert!(verify_source_signature_v1(&frame, signature, &foreign_pin).is_err());
+        assert!(verify_source_signature_v1(&frame, signature, pinned.verifying_key()).is_ok());
+        assert!(verify_source_signature_v1(&frame, signature, foreign_pin.verifying_key()).is_err());
         frame[8 + 24] ^= 1; // The signed complete-query digest field.
-        assert!(verify_source_signature_v1(&frame, signature, &pinned).is_err());
+        assert!(verify_source_signature_v1(&frame, signature, pinned.verifying_key()).is_err());
     }
 }

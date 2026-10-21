@@ -176,7 +176,7 @@ pub enum StorageStateError {
     CanaryHistory(#[from] aos_sandbox_controller_domain::journal::StorageCanaryExportHistoryErrorV1),
     /// The selected same-boot observation failed before a native crossing.
     #[error("canary original boot observation failed")]
-    CanaryKernel(#[source] aos_sandbox_linux::Error),
+    CanaryKernel(#[source] aos_linux_descriptors::Error),
     /// The selected original boottime observation failed before a crossing.
     #[error("canary original boottime observation failed")]
     CanaryClock(#[source] crate::ZfsWorkerError),
@@ -185,7 +185,7 @@ pub enum StorageStateError {
     CanaryPairedClock {
         /// Chronologically first boot observation failure.
         #[source]
-        boot: aos_sandbox_linux::Error,
+        boot: aos_linux_descriptors::Error,
         /// Separate subsequent boottime observation debt.
         boottime: crate::ZfsWorkerError,
     },

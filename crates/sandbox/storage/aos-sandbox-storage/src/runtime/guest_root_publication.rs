@@ -18,12 +18,12 @@ enum PublicationClockErrorV2 {
     #[error("guest-root publication clock changed or expired")]
     Stale,
     #[error(transparent)]
-    Linux(aos_sandbox_linux::Error),
+    Linux(aos_linux_descriptors::Error),
 }
 
 impl KernelPairedClockErrorV1 for PublicationClockErrorV2 {
     fn stale() -> Self { Self::Stale }
-    fn kernel(cause: aos_sandbox_linux::Error) -> Self { Self::Linux(cause) }
+    fn kernel(cause: aos_linux_descriptors::Error) -> Self { Self::Linux(cause) }
 }
 
 type FinalClock = RetainedKernelPairedClockAttemptV1<PublicationClockErrorV2>;

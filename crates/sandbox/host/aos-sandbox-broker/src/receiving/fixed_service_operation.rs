@@ -131,7 +131,7 @@ pub struct FixedServiceOperationOriginalV4 {
     worker_success_mask: u8,
     operation_ordinal: Option<u64>,
     worker_aggregate_entered: bool,
-    worker_aggregate_result: Option<Result<(), aos_sandbox_linux::Error>>,
+    worker_aggregate_result: Option<Result<(), aos_linux_descriptors::Error>>,
     before: FixedServiceCurrentnessSampleV1<FixedServiceOperationClosedV4>,
     before_result: Option<Result<(), FixedServiceOperationClosedV4>>,
     method: Option<Result<(), FixedServiceOperationClosedV4>>,

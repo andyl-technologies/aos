@@ -224,7 +224,16 @@ impl CatalogMetadata {
     }
 }
 
-fn read_protected_catalog_publication() -> Result<Vec<u8>, ProductionSourceProviderIngressErrorV1> {
+/// Reads comparison bytes from the fixed protected catalog publication.
+///
+/// File custody and exact length checks do not authenticate a publication or
+/// grant session authority. The retained Provider owner must verify its
+/// signature and current journal head before using these bytes.
+///
+/// # Errors
+/// Rejects native read failures, unsafe path or file metadata, and a publication
+/// whose length differs from the fixed wire format.
+pub fn read_protected_catalog_publication_data_v1() -> Result<Vec<u8>, ProductionSourceProviderIngressErrorV1> {
     let bytes = read_protected_catalog_file(CATALOG_PUBLICATION, CATALOG_PUBLICATION_BYTES)?;
     if bytes.len() != CATALOG_PUBLICATION_BYTES {
         return Err(ProductionSourceProviderIngressErrorV1::Catalog(
@@ -256,8 +265,8 @@ fn valid_catalog_metadata(metadata: CatalogMetadata, maximum_bytes: usize) -> bo
 struct SelectedCatalogReadV1 {
     filesystem_root: Option<Result<OwnedFd, rustix::io::Errno>>,
     root_duplicate: Option<Result<OwnedFd, rustix::io::Errno>>,
-    checked_root: Option<aos_sandbox_linux::Result<BeneathRoot>>,
-    directory: Option<aos_sandbox_linux::Result<ResolvedPath>>,
+    checked_root: Option<aos_linux_descriptors::Result<BeneathRoot>>,
+    directory: Option<aos_linux_descriptors::Result<ResolvedPath>>,
     directory_stat: Option<Result<Stat, rustix::io::Errno>>,
     descriptor: Option<Result<OwnedFd, rustix::io::Errno>>,
     before: Option<Result<Stat, rustix::io::Errno>>,
@@ -267,9 +276,9 @@ struct SelectedCatalogReadV1 {
     trailing: [u8; 1],
     tail_result: Option<std::io::Result<usize>>,
     after: Option<Result<Stat, rustix::io::Errno>>,
-    named_directory: Option<aos_sandbox_linux::Result<ResolvedPath>>,
+    named_directory: Option<aos_linux_descriptors::Result<ResolvedPath>>,
     named_directory_metadata: Option<Result<Stat, rustix::io::Errno>>,
-    named_after_directory: Option<aos_sandbox_linux::Result<ResolvedPath>>,
+    named_after_directory: Option<aos_linux_descriptors::Result<ResolvedPath>>,
     named_after_directory_metadata: Option<Result<Stat, rustix::io::Errno>>,
     named_descriptor: Option<Result<OwnedFd, rustix::io::Errno>>,
     named_metadata: Option<Result<Stat, rustix::io::Errno>>,
@@ -292,7 +301,7 @@ pub enum CatalogReadFailureRefV1<'owner> {
     /// The same native descriptor operation failed.
     Kernel(&'owner rustix::io::Errno),
     /// The same bounded path resolution failed.
-    Path(&'owner aos_sandbox_linux::Error),
+    Path(&'owner aos_linux_descriptors::Error),
     /// The same read or seek failed.
     Read(&'owner std::io::Error),
 }
@@ -570,7 +579,7 @@ impl SelectedCatalogPairV1 {
 /// Rejects unsafe fixed-root metadata, native I/O failure or a mismatched pair.
 pub fn read_current_catalog_manifest_data_v1(
 ) -> Result<(Vec<u8>, Vec<u8>), ProductionSourceProviderIngressErrorV1> {
-        let publication = read_protected_catalog_publication()?;
+        let publication = read_protected_catalog_publication_data_v1()?;
         let digest =
             aos_sandbox_model::ObjectDigest::from_bytes(publication[112..144].try_into().map_err(
                 |_| ProductionSourceProviderIngressErrorV1::Catalog("publication digest"),

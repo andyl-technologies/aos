@@ -3,7 +3,7 @@
 use std::num::NonZeroU32;
 
 use aos_sandbox_model::ObjectDigest;
-use aos_sandbox_linux::pidfd::PidFd;
+use aos_linux_descriptors::pidfd::PidFd;
 use sha2::{Digest as _, Sha256};
 
 use super::{CurrentKernelBootV1, ProcessExecutionEvidenceV1};
@@ -327,8 +327,7 @@ impl DeadProviderExecutionV1 {
                 if !alive {
                     true
                 } else {
-                    let identity = pidfd
-                        .process_identity()
+                    let identity = aos_sandbox_linux::pidfd::process_identity(&(pidfd))
                         .map_err(|_| SourceProviderSecurityError::DeathNotEstablished)?;
                     if identity.pid() != old_process_id {
                         return Err(SourceProviderSecurityError::DeathNotEstablished);
@@ -339,7 +338,7 @@ impl DeadProviderExecutionV1 {
                             .map_err(|_| SourceProviderSecurityError::DeathNotEstablished)?
                 }
             }
-            Err(aos_sandbox_linux::Error::Syscall { source, .. })
+            Err(aos_linux_descriptors::Error::Syscall { source, .. })
                 if source.raw_os_error() == Some(libc::ESRCH) =>
             {
                 true
@@ -421,7 +420,7 @@ mod tests {
     use std::time::Duration;
 
     use aos_sandbox_model::ObjectDigest;
-    use aos_sandbox_linux::pidfd::PidFd;
+    use aos_linux_descriptors::pidfd::PidFd;
 
     use super::{CurrentKernelBootV1, DeadProviderExecutionV1, RecoveredProviderExecutionV1};
 
@@ -443,7 +442,7 @@ mod tests {
             .expect("spawn test executable child");
         let process_id = NonZeroU32::new(child.id()).expect("child PID");
         let pidfd = PidFd::open(process_id).expect("pin child process");
-        let identity = pidfd.process_identity().expect("observe child identity");
+        let identity = aos_sandbox_linux::pidfd::process_identity(&(pidfd)).expect("observe child identity");
         let boot = CurrentKernelBootV1::capture().expect("capture kernel boot");
         let process_instance = [7; 16];
         let execution_digest = ObjectDigest::from_bytes([8; 32]);

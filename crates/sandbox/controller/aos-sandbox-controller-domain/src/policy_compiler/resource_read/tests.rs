@@ -15,9 +15,9 @@ use aos_sandbox_model::{
 
 use super::*;
 use crate::Journal;
-use crate::policy_compiler::protected_journal::resolved_policy_fixture as fixture;
+use aos_sandbox_policy::native::policy_state_test_fixtures as fixture;
 use crate::policy_compiler::protected_owner::{POLICY_STATE_JOURNAL, policy_state_journal_limits};
-use crate::policy_compiler::resolved_policy::tests::{commit_fixture, open};
+use aos_sandbox_policy::native::policy_state_test_fixtures::{commit_fixture, open};
 use aos_sandbox_policy::{CandidateAuthorityV1, PolicyCompilerLimitsV1};
 
 fn descriptor(kind: PortableMediaType, byte: u8) -> ObjectDescriptor {

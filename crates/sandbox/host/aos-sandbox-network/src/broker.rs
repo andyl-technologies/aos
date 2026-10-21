@@ -14,7 +14,7 @@ use aos_sandbox_api::aos::sandbox::local::v1::BrokerMethod;
 use aos_sandbox_model::RecordNamespace;
 use aos_sandbox_broker::BrokerEffectClockDispositionV1;
 use aos_sandbox_model::{ObjectDigest, ProtocolVersion, RawPairedClockSample};
-use aos_sandbox_linux::boot::KernelBootId;
+use aos_linux_descriptors::boot::KernelBootId;
 use aos_sandbox_linux::pidfd::NamespaceFd;
 use aos_sandbox_protocol::semantics::network::{CanonicalNetworkSemanticsV1, NetworkOperation};
 use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;

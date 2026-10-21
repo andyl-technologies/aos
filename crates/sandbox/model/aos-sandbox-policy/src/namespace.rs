@@ -7,6 +7,11 @@
 //! u64be(payload-length) || canonical-json([V1, ordered-rules])
 //! ```
 
+#[cfg(all(target_os = "linux", feature = "native-journal"))]
+mod receiving;
+#[cfg(all(target_os = "linux", feature = "native-journal"))]
+pub(crate) use receiving::{portable_order_receiving_bytes_v1, portable_order_metadata_entries_v1};
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use aos_sandbox_model::format::descriptor_for_bytes;

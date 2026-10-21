@@ -13,9 +13,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use aos_sandbox_model::{RawPairedClockSample, ResourceDimension as D, ResourceVector};
-use aos_sandbox_linux::unix_stream::{
-    RetainedUnixStream, RetainedUnixStreamAdmissionOriginalV1, UnixStreamSubjectChunk,
-};
+use aos_linux_descriptors::unix_stream::RetainedUnixStream;
+use aos_linux_descriptors::unix_stream::RetainedUnixStreamAdmissionOriginalV1;
+use aos_sandbox_linux::unix_stream::UnixStreamSubjectChunk;
 
 use crate::kernel_clock::{KernelPairedClockErrorV1, RetainedKernelPairedClockAttemptV1};
 use crate::receiving::{
@@ -62,7 +62,7 @@ enum ClockError {
     #[error("the original Q04 kernel interval is unavailable")]
     Stale,
     #[error(transparent)]
-    Kernel(#[from] aos_sandbox_linux::Error),
+    Kernel(#[from] aos_linux_descriptors::Error),
 }
 
 impl KernelPairedClockErrorV1 for ClockError {
@@ -70,7 +70,7 @@ impl KernelPairedClockErrorV1 for ClockError {
         Self::Stale
     }
 
-    fn kernel(error: aos_sandbox_linux::Error) -> Self {
+    fn kernel(error: aos_linux_descriptors::Error) -> Self {
         Self::Kernel(error)
     }
 }
@@ -98,7 +98,7 @@ pub struct RootQ04TransportOriginalV1<'startup> {
     admission_post: Option<Result<(), RootObservationErrorV1>>,
     admission_post_panic: Option<Box<dyn Any + Send>>,
     stream: Option<RetainedUnixStream>,
-    endpoint: Option<Result<(), aos_sandbox_linux::Error>>,
+    endpoint: Option<Result<(), aos_linux_descriptors::Error>>,
     subject_reporting: Option<Result<(), aos_sandbox_linux::seqpacket::SeqpacketError>>,
     qualifier: Option<RootSelectedControllerPeerOriginalV1<'startup>>,
     qualification: Option<Result<(), RootObservationErrorV1>>,
@@ -194,7 +194,7 @@ impl<'startup> RootQ04TransportOriginalV1<'startup> {
                 .checked_add(
                     std::mem::size_of::<
                         Result<
-                            aos_sandbox_linux::unix_stream::UnixStreamPeerCredentials,
+                            aos_linux_descriptors::unix_stream::UnixStreamPeerCredentials,
                             RootObservationErrorV1,
                         >,
                     >()
@@ -242,6 +242,8 @@ impl<'startup> RootQ04TransportOriginalV1<'startup> {
             .checked_add(RootSelectedControllerPeerOriginalV1::fixed_demand().ok()?)
             .ok()?
             .checked_add(RootServiceCurrentnessOriginalV1::demand()?)
+            .ok()?
+            .checked_add(crate::receiving::RootQ04OriginBorrowerV1::fixed_carrier_demand_v1()?)
             .ok()
     }
 
@@ -430,7 +432,7 @@ impl<'startup> RootQ04TransportOriginalV1<'startup> {
             .ok_or(RootObservationErrorV1::Service)?;
         self.endpoint = Some(accepted.require_same_endpoint_v1(stream.as_fd()));
         positive(&self.endpoint)?;
-        self.subject_reporting = Some(stream.enable_subject_reporting());
+        self.subject_reporting = Some(stream.enable_subject_reporting().map_err(aos_sandbox_linux::seqpacket::SeqpacketError::from));
         positive(&self.subject_reporting)?;
         self.qualifier = Some(RootSelectedControllerPeerOriginalV1::new(
             self.startup,
@@ -515,6 +517,19 @@ impl<'startup> RootQ04TransportOriginalV1<'startup> {
         &self,
     ) -> Result<(RawPairedClockSample, Instant), RootObservationErrorV1> {
         self.require_ready_v1()?;
+        self.retained_original_clock_data_v1()
+    }
+
+    /// Copies only this Origin's retained first pair and Instant as DATA.
+    ///
+    /// This performs no readiness, deadline, native or observation entry.
+    /// Actual role/currentness lenders separately enforce their reached gates.
+    ///
+    /// # Errors
+    /// Refuses a missing or unsuccessful original pair or absent saved Instant.
+    pub fn retained_original_clock_data_v1(
+        &self,
+    ) -> Result<(RawPairedClockSample, Instant), RootObservationErrorV1> {
         Ok((
             *positive(&self.original_pair)?,
             self.started.ok_or(RootObservationErrorV1::Service)?,
@@ -570,7 +585,7 @@ impl<'startup> RootQ04TransportOriginalV1<'startup> {
     /// Refuses incomplete, expired, failed or retired selected transport custody.
     pub fn qualified_peer_credentials_data_v1(
         &self,
-    ) -> Result<aos_sandbox_linux::unix_stream::UnixStreamPeerCredentials, RootObservationErrorV1>
+    ) -> Result<aos_linux_descriptors::unix_stream::UnixStreamPeerCredentials, RootObservationErrorV1>
     {
         self.require_ready_v1()?;
         self.stream
@@ -643,6 +658,21 @@ impl<'startup> RootQ04TransportOriginalV1<'startup> {
             .ok_or(RootObservationErrorV1::Service)?
             .require_same_v1(original)
             .map_err(|_| RootObservationErrorV1::Service)
+    }
+
+    /// Compares only the intrinsic financial allocation held by this Origin.
+    ///
+    /// This passive association is neither readiness nor permission to enter
+    /// native work. Actual currentness remains at its original reached slots.
+    #[must_use]
+    pub fn same_financial_original_data_v1(
+        &self,
+        original: &RootJournalFinancialOriginalV1,
+    ) -> bool {
+        match self.financial.as_ref() {
+            Some(financial) => financial.same_original_data_v1(original),
+            None => false,
+        }
     }
 
     /// Holds the same Permanent native phase across one actual stream IO step.
@@ -754,6 +784,13 @@ impl<'startup> RootQ04TransportOriginalV1<'startup> {
                             Result<RootQ04InputCurrentLoanV1<'_, '_>, RootObservationErrorV1>,
                         >()
                         .checked_mul(3)?,
+                    )
+                })
+                .and_then(|bytes| {
+                    // Public negative-post result, its shared finisher and
+                    // the retained-post diagnostic each have three planes.
+                    bytes.checked_add(
+                        std::mem::size_of::<Result<(), RootObservationErrorV1>>().checked_mul(9)?,
                     )
                 })
                 .and_then(|bytes| u64::try_from(bytes).ok())

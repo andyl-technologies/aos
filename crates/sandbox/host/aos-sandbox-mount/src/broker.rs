@@ -20,7 +20,7 @@ use aos_sandbox_mount_native::{
 use aos_sandbox_model::{
     AttachmentSlotId, ObjectDigest, OperationId, ProtocolVersion, RawPairedClockSample,
 };
-use aos_sandbox_linux::boot::KernelBootId;
+use aos_linux_descriptors::boot::KernelBootId;
 use aos_sandbox_linux::inventory::MountId;
 use aos_sandbox_protocol::mount_catalog::{
     ValidatedMountCatalogPreparation, encode_mount_catalog_preparation_response,

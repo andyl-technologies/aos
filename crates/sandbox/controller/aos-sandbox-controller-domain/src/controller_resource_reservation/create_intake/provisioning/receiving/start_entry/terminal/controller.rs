@@ -87,6 +87,7 @@ impl StartControllerTerminalOriginalV2 {
     fn fixed_demand_v2() -> Result<ResourceVector, ResourceReservationErrorV1> {
         let bytes = size_of::<Self>()
             .checked_mul(2)
+            .and_then(|bytes| bytes.checked_add(crate::journal::create_stopped_geometry_control_bytes_v2()?))
             .and_then(|bytes| {
                 bytes.checked_add(PairOriginal::dominant_requested_bytes_v1()?.checked_mul(3)?)
             })

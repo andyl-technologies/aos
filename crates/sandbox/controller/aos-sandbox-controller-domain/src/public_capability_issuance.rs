@@ -17,7 +17,7 @@ use sha2::{Digest as _, Sha256};
 
 use crate::Journal;
 use crate::cli_model::authorization_adapter::advance_initial_issuance_time_floor;
-use crate::cli_model::authorization_adapter::CliAuthorizationAdapterError;
+use aos_sandbox_protocol::public_api::authorization_error::CliAuthorizationAdapterError;
 use crate::controller::ControllerProtectedClockV1;
 use crate::public_api_session::PublicApiPeer;
 use crate::public_api_session::load_entitlement_credentials;

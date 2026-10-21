@@ -49,7 +49,7 @@ impl DeleteAdmissionAuditInputsDataV3 {
             prior_rows.checked_add(rows).ok_or_else(invalid)?,
         )?;
         let request =
-            crate::public_mutation_compiler::delete_admission::geometry::delete_decode_bytes_v1(
+            aos_sandbox_protocol::public_api::delete_geometry::delete_decode_bytes_v1::<crate::public_mutation_compiler::AuthorizedPublicMutationRequestV1>(
                 input.len(),
             )
             .ok_or_else(invalid)?;
@@ -82,7 +82,7 @@ pub(super) struct DeleteAdmissionAuditOriginalV3 {
         >,
     >,
     authorization: Option<
-        Result<[u8; 32], crate::cli_model::authorization_adapter::CliAuthorizationAdapterError>,
+        Result<[u8; 32], aos_sandbox_protocol::public_api::authorization_error::CliAuthorizationAdapterError>,
     >,
     candidate: Option<Result<(crate::OperationPlan, JournalTransaction), Cause>>,
     comparison: Option<Result<(), JournalError>>,
@@ -115,7 +115,7 @@ impl DeleteAdmissionAuditOriginalV3 {
         if self.comparison.is_some() {
             return Err(JournalError::StaleAuthoritySnapshot);
         }
-        self.authorization = Some(crate::cli_model::authorization_adapter::recompute_delete_authorization_cut_from_records_v2(
+        self.authorization = Some(aos_sandbox_ledger_replay::authorization_comparison::recompute_delete_authorization_cut_from_records_v2(
             crate::publisher_admin::PublisherReadDataV2::from_state_v2(actual.prior_state()),
             &self.inputs.input, self.inputs.fields, self.inputs.opening));
         self.request = Some(ResolvedPublicMutationRequestV1::decode_delete(
@@ -136,7 +136,7 @@ impl DeleteAdmissionAuditOriginalV3 {
                 .and_then(|result| result.as_ref().ok())
                 .ok_or(JournalError::ProtectedBoundary)?;
             let batch = DeleteBatchViewV1::decode(&self.inputs.batch)?;
-            crate::reconciler::prepare_delete_admission_comparison_data_v3(
+            let (plan, transaction) = aos_sandbox_protocol::domain_ledger::delete_admission_comparison::prepare_delete_admission_comparison_data_v3(
                 batch,
                 request,
                 aos_sandbox_model::PrincipalId::from_bytes(self.inputs.fields.caller),
@@ -145,6 +145,8 @@ impl DeleteAdmissionAuditOriginalV3 {
                 &self.inputs.input,
                 &self.inputs.opening.source_pending,
             )
+            .map_err(crate::reconciler::admission_records::comparison_error_to_legacy_v3)?;
+            Ok((crate::reconciler::admission_records::from_delete_plan_data_v3(plan), transaction))
         })());
         self.comparison = Some((|| {
             let (plan, expected) = self

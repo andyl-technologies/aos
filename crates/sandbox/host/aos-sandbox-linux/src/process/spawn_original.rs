@@ -288,7 +288,7 @@ fn spawn_body_v2(
             let raw_pid = u32::try_from(held(&original.guard).pid.as_raw_nonzero().get())
                 .ok().and_then(NonZeroU32::new)
                 .ok_or_else(|| Error::invalid("fixed process PID", "must be a positive u32"))?;
-            original.raw_pidfd = Some(uapi::pidfd_open(raw_pid.get())?);
+            original.raw_pidfd = Some(aos_linux_descriptors::native::pidfd_open(raw_pid.get())?);
             let pidfd = PidFd::adopt_owned_slot_v2(&mut original.raw_pidfd)?;
             match original.guard.as_mut() {
                 Some(guard) => guard.attach_pidfd(pidfd),

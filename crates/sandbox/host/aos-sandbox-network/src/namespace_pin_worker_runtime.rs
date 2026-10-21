@@ -65,7 +65,7 @@ pub enum NetworkNamespacePinWorkerError {
     Mutation(#[from] NetworkNamespacePinMutationError),
     /// A namespace, cgroup, or process descriptor operation failed.
     #[error(transparent)]
-    Linux(#[from] aos_sandbox_linux::Error),
+    Linux(#[from] aos_linux_descriptors::Error),
     /// A direct descriptor operation failed.
     #[error("Network namespace pin worker descriptor operation failed: {0}")]
     Descriptor(#[from] rustix::io::Errno),

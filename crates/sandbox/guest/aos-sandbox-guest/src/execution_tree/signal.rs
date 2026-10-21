@@ -12,7 +12,8 @@ use std::time::{Duration, Instant};
 
 use aos_sandbox_linux::cgroup::CgroupFreezerState;
 use aos_sandbox_linux::path::BeneathRoot;
-use aos_sandbox_linux::pidfd::{PidFd, PidFdProcessIdentity};
+use aos_linux_descriptors::pidfd::PidFd;
+use aos_sandbox_linux::pidfd::PidFdProcessIdentity;
 
 use super::{Error, ExecutionTree, NonZeroU32, Path};
 
@@ -103,7 +104,7 @@ impl ExecutionTree {
                     return Err(Error::AmbiguousEffect);
                 }
                 self.require_frozen_member(process)?;
-                if process.process_identity()? != *identity {
+                if aos_sandbox_linux::pidfd::process_identity(&(process))? != *identity {
                     return Err(Error::AmbiguousEffect);
                 }
                 // Freeze, membership and identity reads cannot carry a stale
@@ -194,7 +195,7 @@ impl ExecutionTree {
             crate::process::check_deadline(deadline)?;
             let process = PidFd::open(id)?;
             self.require_frozen_member(&process)?;
-            let identity = process.process_identity()?;
+            let identity = aos_sandbox_linux::pidfd::process_identity(&(process))?;
             if identity.pid() != id.get() || identity.thread_group_id() != id.get() {
                 return Err(Error::AmbiguousEffect);
             }
@@ -236,7 +237,7 @@ impl ExecutionTree {
         }
         for (process, original) in members {
             self.require_frozen_member(process)?;
-            if process.process_identity()? != *original {
+            if aos_sandbox_linux::pidfd::process_identity(&(process))? != *original {
                 return Err(Error::AmbiguousEffect);
             }
         }

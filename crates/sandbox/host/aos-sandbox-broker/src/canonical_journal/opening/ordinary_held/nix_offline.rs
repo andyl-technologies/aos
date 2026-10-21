@@ -86,7 +86,7 @@ impl CanonicalNixOfflineFileOperationsV1<'_> {
     ///
     /// # Errors
     /// Preserves the original kernel mount inspection failure.
-    pub fn mount_id(self) -> Result<MountId, aos_sandbox_linux::Error> {
+    pub fn mount_id(self) -> Result<MountId, aos_linux_descriptors::Error> {
         MountId::from_fd(self.file.as_fd())
     }
 

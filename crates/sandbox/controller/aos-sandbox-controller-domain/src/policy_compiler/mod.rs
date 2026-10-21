@@ -5,7 +5,6 @@
 //! actual Root, Source, Cache and Controller custody. Extracting compiler DATA
 //! does not make those effect-owning continuations independent.
 
-pub(crate) mod bounded_stream_io;
 #[cfg(target_os = "linux")]
 pub(crate) mod host_resources;
 
@@ -58,20 +57,15 @@ mod git_coverage_enrollment;
 pub use git_coverage_enrollment::{
     GIT_COVERAGE_ROOT_BOOTSTRAP_MAGIC_V1, GitCoverageRootClientV1,
     GitCoverageRootFlightErrorV1, GitCoverageAccountAttemptV1,
-    GitCoverageNativeCutDataV1, RootGitCoverageEnrollmentOwnerV1,
+    RootGitCoverageEnrollmentOwnerV1,
 };
 #[cfg(target_os = "linux")]
 mod nix_current_preflight;
 #[cfg(target_os = "linux")]
 pub use nix_current_preflight::{
-    CURRENT_NIX_PREFLIGHT_CONTEXT_BYTES_V1, CURRENT_NIX_CONTROLLER_RECEIPT_BYTES_V1,
-    CURRENT_NIX_SOURCE_REQUEST_BYTES_V1, CURRENT_NIX_SOURCE_LEGACY_REPLY_BYTES_V1,
-    CURRENT_NIX_SOURCE_LEGACY_GENESIS_REPLY_BYTES_V1, CURRENT_NIX_SOURCE_RESOURCE_REPLY_BYTES_V1,
-    CurrentNixPreflightContextV1, CurrentNixPreflightDataErrorV1,
-    CurrentNixPreflightAttemptV1, CurrentNixPreflightOriginalsV1,
-    VerifiedCurrentNixControllerReceiptV1, VerifiedCurrentNixSourceObservationV1,
+    CurrentNixPreflightAttemptV1,
+    CurrentNixPreflightOriginalsV1,
 };
-mod owner_pin_transaction;
 mod project_admission_root;
 
 #[cfg(test)]
@@ -87,7 +81,7 @@ pub(crate) use project_admission_root::{
 };
 mod project_source_v2;
 mod project_source_v3;
-mod protected_journal;
+mod publication_error;
 #[cfg(target_os = "linux")]
 pub(crate) mod create_q04;
 #[cfg(target_os = "linux")]
@@ -111,11 +105,12 @@ pub(crate) use public_create_source::{
 #[cfg(target_os = "linux")]
 pub mod consumer_read_flight;
 mod publisher_origin;
-mod resolved_policy;
 mod resource_read;
 mod root_challenge_record;
 mod root_project_admission_proof;
 mod root_startup_journal;
+#[cfg(target_os = "linux")]
+mod startup_credential_error;
 pub(crate) mod root_current_writers;
 pub use root_startup_journal::{RootStartupCredentialWriterV1, RootPolicyStartupDeploymentV1, RootPolicyStartupJournalV1};
 mod root_v8_released_proof;
@@ -131,7 +126,8 @@ pub(crate) use kernel_clock::RetainedKernelPairedClockAttemptV1;
 mod source_genesis_root;
 #[cfg(target_os = "linux")]
 pub(crate) use source_genesis_root::{
-    root_flight_additional_control_bytes_v1, root_flight_detached_construction_bytes_v1,
+    root_flight_additional_control_bytes_v1,
+    root_flight_detached_construction_bytes_v1,
 };
 mod source_phase_geometry;
 pub(crate) use source_phase_geometry::first_source_successor_fixed_codec_peak_bytes_v1;
@@ -149,32 +145,36 @@ pub use source_successor_readback::{
 };
 #[cfg(target_os = "linux")]
 pub use source_genesis_root::{
-    HeldControllerFirstSourceSuccessorV2, HeldRootFirstSourceSuccessorIntentV2,
+    HeldControllerFirstSourceSuccessorV2,
+    HeldRootFirstSourceSuccessorIntentV2,
     RootFirstSourceSuccessorFloorProofV2,
-    RootFirstSuccessorMutationResultsV2, CurrentRootFirstSourceSuccessorFloorV2,
-    FailedOriginalFirstSourceSuccessorV2, FirstSourceSuccessorConsumerPhaseV2,
-    FirstSourceSuccessorSelectionV2, OriginalFirstSourceSuccessorInvocationV2,
-    HeldControllerProjectSuccessorV3, HeldRootProjectSuccessorIntentV3,
-    RootProjectSuccessorFloorProofV3, CurrentRootProjectSuccessorFloorV3,
-    OriginalProjectSuccessorInvocationV3, FailedProjectSuccessorInvocationV3,
+    FailedOriginalFirstSourceSuccessorV2,
+    FirstSourceSuccessorConsumerPhaseV2,
+    FirstSourceSuccessorSelectionV2,
+    OriginalFirstSourceSuccessorInvocationV2,
+    HeldControllerProjectSuccessorV3,
+    HeldRootProjectSuccessorIntentV3,
+    RootProjectSuccessorFloorProofV3,
+    OriginalProjectSuccessorInvocationV3,
+    FailedProjectSuccessorInvocationV3,
 };
 #[cfg(target_os = "linux")]
-pub(crate) use source_genesis_root::{ControllerSuccessorOwnerViewV3, RootSuccessorIntentViewV3, RootSuccessorFloorViewV3};
+pub(crate) use source_genesis_root::{
+    ControllerSuccessorOwnerViewV3,
+    RootSuccessorIntentViewV3,
+    RootSuccessorFloorViewV3,
+};
 #[cfg(target_os = "linux")]
-pub(crate) use source_genesis_root::RootSuccessorNativeServerCutV3;
-#[cfg(target_os = "linux")]
-pub(crate) use source_genesis_root::{unavailable_project_successor_v3, unavailable_predecessor_successor_v3};
+pub(crate) use source_genesis_root::{
+    unavailable_project_successor_v3,
+    unavailable_predecessor_successor_v3,
+};
 
 #[cfg(target_os = "linux")]
 pub(crate) use source_genesis_root::{
-    require_root_first_source_successor_capacity_owner_v2,
-    validate_root_first_source_successor_state_v2,
-    validate_root_first_source_successor_transition_v2,
     unavailable_first_source_successor_v2,
 };
 mod source_hold_pin;
-#[cfg(target_os = "linux")]
-pub(crate) use source_genesis_root::Q04RootGen1CutLoanV1;
 #[cfg(target_os = "linux")]
 pub(crate) use public_create_source::{
     consume_completed_gen1_ancestry_v1,
@@ -183,30 +183,28 @@ pub(crate) use public_create_source::{
 #[cfg(target_os = "linux")]
 pub(crate) use source_genesis_root::{
     CompletedRootSourceGenesisFloorV1,
-    GlobalRootGenesisNativeCutV2,
 };
 mod source_hold_readback;
 use aos_sandbox_ledger_replay::source_signer_data::source_hold_readback_v2;
 #[cfg(target_os = "linux")]
 pub use source_genesis_root::{
-    RootFirstSourceSuccessorOpeningV2,
-    RootProjectGenesisMutationResultsV3, CurrentRootSourceProjectGenesisFloorV3,
-    OriginalConfiguredProjectGenesisInvocationV3, FailedConfiguredProjectGenesisInvocationV3,
+    OriginalConfiguredProjectGenesisInvocationV3,
+    FailedConfiguredProjectGenesisInvocationV3,
     observe_root_first_source_successor_clock_v2,
-    CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V1, CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V2,
-    CurrentRootSourceGenesisFloorV1,
+    CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V1,
+    CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V2,
     HeldRootSourceGenesisIntentV1,
-    HeldRootSourceProjectGenesisIntentV3, RootSourceProjectGenesisFloorProofV3,
-    FailedOriginalSourceSuccessorInvocationV2, OriginalSourceSuccessorInvocationV2,
-    OriginalSourceProjectSuccessorInvocationV3, FailedSourceProjectSuccessorInvocationV3,
-    SourceSuccessorIssuancePhaseV2, ROOT_SOURCE_GENESIS_INTENT_BYTES_V1,
-    ROOT_SOURCE_GENESIS_INTENT_BYTES_V2, RootSourceGenesisAuthorityV1,
-    RootSourceGenesisFloorProofV1, RootSourceGenesisIntentRecordV1,
-    SOURCE_GENESIS_DEPLOYMENT_INSTANCE_BYTES_V1, SOURCE_HIERARCHY_FLOOR_BYTES_V1,
-    SOURCE_HIERARCHY_FLOOR_BYTES_V2,
-    SourceHierarchyFloorRecordV1, coordinate_provisioned_source_genesis_v1,
-    OriginalConfiguredGlobalGenesisInvocationV2, FailedConfiguredGlobalGenesisInvocationV2,
-    fixed_root_source_genesis_recovery_available_v1,
+    HeldRootSourceProjectGenesisIntentV3,
+    RootSourceProjectGenesisFloorProofV3,
+    FailedOriginalSourceSuccessorInvocationV2,
+    OriginalSourceSuccessorInvocationV2,
+    OriginalSourceProjectSuccessorInvocationV3,
+    FailedSourceProjectSuccessorInvocationV3,
+    SourceSuccessorIssuancePhaseV2,
+    RootSourceGenesisFloorProofV1,
+    coordinate_provisioned_source_genesis_v1,
+    OriginalConfiguredGlobalGenesisInvocationV2,
+    FailedConfiguredGlobalGenesisInvocationV2,
     sign_controller_source_genesis_completion_readback_v1,
     sign_controller_source_genesis_readback_v1,
 };
@@ -214,11 +212,9 @@ pub use source_genesis_root::{
 pub(crate) use source_genesis_root::{
     unavailable_project_genesis_v3,
     unavailable_global_genesis_v2,
-    require_root_source_genesis_capacity_owner_v1, require_root_source_genesis_mutation_v1,
-    require_root_source_genesis_mutation_read_v1,
-    validate_root_source_genesis_capacity_admission_v1,
-    validate_root_source_genesis_capacity_settlement_v1,
-    SourceSuccessorSigningCutV2, SourceSuccessorSigningCutV3, CompletedRootSourceProjectGenesisFloorV3,
+    SourceSuccessorSigningCutV2,
+    SourceSuccessorSigningCutV3,
+    CompletedRootSourceProjectGenesisFloorV3,
     unavailable_source_successor_issuer_v2,
     unavailable_project_issuer_v3,
 };
@@ -327,21 +323,9 @@ pub use project_source_v3::{
     ProjectPolicyAssociationV3, verify_held_project_policy_association_v3,
     with_current_parentless_create_policy_inputs_v3,
 };
-pub use protected_journal::{
-    AppliedPolicyPublicationV1, PolicyCheckpointCommitOutcomeV1, PolicyCheckpointOutcomeUnknownV1,
-    PolicyCheckpointRecoveryV1, PolicyCompilerColdObservationV1, PolicyCompilerEffectHandoffV1,
-    PolicyCompilerJournalEnvelopeV1, PolicyCompilerJournalErrorV1, PolicyCompilerJournalKeyV1,
-    PolicyCompilerJournalProjectionV1, PolicyCompilerJournalRecordKindV1,
-    PolicyCompilerJournalSchemaV1, PolicyCompilerJournalSnapshotV1,
-    PolicyCompilerPostcommitCapabilityV1, PolicyCompilerProtectedJournalV1,
-    PolicyCompilerReplayValidatorV1, PolicyEffectObservationCommitOutcomeV1,
-    PolicyEffectObservationOutcomeUnknownV1, PolicyEffectObservationRecoveryV1,
-    PolicyPublicationColdRecoveryV1, PolicyPublicationCommitOutcomeV1,
-    PolicyPublicationOutcomeUnknownV1, PolicyPublicationPrerequisitesV1,
-    PolicyPublicationRecoveryV1, PreparedPolicyCheckpointV1, PreparedPolicyEffectObservationV1,
-    PreparedPolicyPublicationV1,
-};
-pub use protected_owner::{
+pub use publication_error::PolicyCompilerJournalErrorV1;
+pub use aos_sandbox_policy::publication::PolicyPublicationPrerequisitesV1;
+pub use aos_sandbox_policy::publication::{
     PolicyCompilerProtectedOpenReportV1, PolicyCompilerProtectedOwnerV1,
 };
 #[cfg(target_os = "linux")]
@@ -372,7 +356,9 @@ pub use aos_sandbox_policy::normalized_policy_input_digest_v1;
 pub use publisher_origin::{
     CompiledPublisherPolicyRevisionV2, compile_publisher_policy_revision_v2,
 };
-pub use resolved_policy::{HeldResolvedRuntimePolicyV1, PolicyCompilerStateReadbackOwnerV1};
+pub use aos_sandbox_policy::publication::{
+    HeldResolvedRuntimePolicyV1, PolicyCompilerStateReadbackOwnerV1,
+};
 pub use root_project_admission_proof::{
     ROOT_PROJECT_ADMISSION_ABORT_QUERY_MAGIC, ROOT_PROJECT_ADMISSION_COMMIT_QUERY_MAGIC,
     ROOT_PROJECT_ADMISSION_CURRENT_QUERY_MAGIC, ROOT_PROJECT_ADMISSION_INTENT_QUERY_MAGIC,
@@ -453,7 +439,6 @@ mod root_subject_readiness;
 pub(crate) use root_subject_readiness::RootSubjectReadinessV1;
 
 // Same checked native BOOTTIME bookend for a paid Root peer leaf.
-pub(crate) use bounded_stream_io::remaining as root_deadline_remaining_v1;
 
 mod root_subject_chunk;
 
@@ -465,7 +450,6 @@ pub use root_policy_prelude::{RootPolicyPreludeOriginalV1, RootPolicyPreludeErro
 #[cfg(target_os = "linux")]
 pub(crate) mod continuation_policy;
 
-mod source_signer_transport;
 
 pub(crate) mod storage_apply_root;
 pub(crate) mod host_launch_root;
@@ -494,6 +478,7 @@ pub(crate) use assignment_manifest::{
 mod public_start_source;
 #[cfg(target_os = "linux")]
 pub(crate) use public_start_source::{
+    start_source_observation_control_bytes_v2,
     CurrentAcceptedStartProjectSourceV2, current_accepted_start_project_source_v2,
 };
 

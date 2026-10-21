@@ -68,7 +68,7 @@ use aos_sandbox_model::{
     NodeId, ObjectDescriptor, ObjectDigest, decode_sandbox_spec, descriptor_for_bytes,
     encode_sandbox_spec, validate_descriptor_role,
 };
-use aos_sandbox_linux::boot::KernelBootId;
+use aos_linux_descriptors::boot::KernelBootId;
 use aos_sandbox_linux::inventory::{MountId, MountListOrder, MountNamespace};
 use aos_sandbox_protocol::canonical_map;
 use aos_sandbox_protocol::semantics::storage::CanonicalStorageWorkspaceMetadataV1;

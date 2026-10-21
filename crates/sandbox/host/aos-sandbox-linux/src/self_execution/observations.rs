@@ -6,7 +6,7 @@
 //! Ordinary self-execution observation retains its original native disposition.
 
 use super::*;
-use crate::boot::RootOriginalKernelBootIdAttemptV1;
+use aos_linux_descriptors::boot::RootOriginalKernelBootIdAttemptV1;
 use crate::pidfd::PidFdProcObservationsV1;
 
 /// Retains one complete selected execution observation and its partial natives.
@@ -17,10 +17,10 @@ use crate::pidfd::PidFdProcObservationsV1;
 /// destination. The owner must retain it through the enclosing negative result.
 pub struct SelfExecutionObservationV1 {
     boot: [RootOriginalKernelBootIdAttemptV1; 2],
-    information: [Option<crate::Result<PidFdInfo>>; 2],
+    information: [Option<aos_linux_descriptors::Result<PidFdInfo>>; 2],
     proc: Option<PidFdProcObservationsV1>,
-    identity: Option<crate::Result<PidFdProcessIdentity>>,
-    liveness: Option<crate::Result<bool>>,
+    identity: Option<aos_linux_descriptors::Result<PidFdProcessIdentity>>,
+    liveness: Option<aos_linux_descriptors::Result<bool>>,
     baseline: Option<Result<ExecutionBaseline, SelfExecutionObservationError>>,
     comparison: Option<Result<(), SelfExecutionObservationError>>,
     entered: bool,
@@ -204,7 +204,7 @@ impl ExecutionObservationSource for RetainingObservationSource<'_, '_> {
     }
 
     fn identity(&mut self, _process: &()) -> Result<IdentityObservation, SelfExecutionObservationError> {
-        self.destination.proc = Some(self.original.prepare_proc_observations_v1());
+        self.destination.proc = Some(crate::pidfd::prepare_proc_observations_v1(&(self.original)));
         let Some(proc) = self.destination.proc.as_mut() else {
             std::process::abort()
         };

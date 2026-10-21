@@ -10,24 +10,22 @@ use crate::lifecycle::{
     LifecycleHistoricalReadOriginalV1, retained_lifecycle_replay_receiving_demand_v1,
 };
 use crate::normal_root::{NormalRootStartupErrorV1, RootPolicyAcceptedFlightV1};
-use crate::policy_compiler::{
-    RetainedKernelPairedClockAttemptV1, RootCurrentPolicyInputDataV1,
-    bounded_stream_io::{
-        DeadlineStreamDirectionV1, FixedDeadlineStreamIoV1, SliceDeadlineStreamIoV1,
-    },
-    continuation_policy::RootHostLaunchPolicyOriginalV1,
-    provisioning_current::{
-        RootContinuationClockGateV1, current_compiler_complete_receiving_demand_v1,
-        current_manifest::{
-            CurrentProtectedAssignmentDataV2, current_protected_assignment_data_v2,
-        },
-        finality_readonly::{
-            NativeCutDataV1, RootCreateFinalityReadStageV1, RootCreateFinalityReadonlyOriginalV1,
-        },
-        StartAssignmentCompilationDataV2, compile_root_start_assignment_v2,
-    },
-    root_policy_prelude::RootPolicyPreludeOriginalV1,
-};
+use crate::policy_compiler::RetainedKernelPairedClockAttemptV1;
+use crate::policy_compiler::RootCurrentPolicyInputDataV1;
+use aos_sandbox_broker::bounded_stream_io::DeadlineStreamDirectionV1;
+use aos_sandbox_broker::bounded_stream_io::FixedDeadlineStreamIoV1;
+use aos_sandbox_broker::bounded_stream_io::SliceDeadlineStreamIoV1;
+use crate::policy_compiler::continuation_policy::RootHostLaunchPolicyOriginalV1;
+use crate::policy_compiler::provisioning_current::RootContinuationClockGateV1;
+use crate::policy_compiler::provisioning_current::current_compiler_complete_receiving_demand_v1;
+use crate::policy_compiler::provisioning_current::current_manifest::CurrentProtectedAssignmentDataV2;
+use crate::policy_compiler::provisioning_current::current_manifest::current_protected_assignment_data_v2;
+use crate::policy_compiler::provisioning_current::finality_readonly::NativeCutDataV1;
+use crate::policy_compiler::provisioning_current::finality_readonly::RootCreateFinalityReadStageV1;
+use crate::policy_compiler::provisioning_current::finality_readonly::RootCreateFinalityReadonlyOriginalV1;
+use crate::policy_compiler::provisioning_current::StartAssignmentCompilationDataV2;
+use crate::policy_compiler::provisioning_current::compile_root_start_assignment_v2;
+use crate::policy_compiler::root_policy_prelude::RootPolicyPreludeOriginalV1;
 use aos_sandbox_model::{OperationId, RawPairedClockSample, ResourceDimension as D, ResourceVector};
 use aos_sandbox_protocol::domain_ledger::provisioning_root::host_launch::{
     HostLaunchSubjectDataV1, HostResourcePurposeDataV1,
@@ -371,8 +369,8 @@ impl RootStartResourceFinalExchangeOriginalV2 {
         self.clock.narrow_horizon_data_v1(crate::policy_compiler::provisioning_current::RootContinuationHorizonDataV1::
             from_original_data_v1(opening.root_sample_v1()?, local_cutoff)?)?;
         self.phase = Phase::Models;
-        let (controller, source) = self.readers.journals_v1()?;
-        let state = controller.historical_read_view_v1().materialized_state_v1();
+        let (controller, source) = self.readers.models_v1()?;
+        let state = controller.state_v1();
         let width = state
             .iter()
             .try_fold(0u64, |sum, ((_, key), value)| {
@@ -380,12 +378,20 @@ impl RootStartResourceFinalExchangeOriginalV2 {
             })
             .ok_or(JournalError::JournalTooLarge)?;
         let mut demand = current_compiler_complete_receiving_demand_v1(width, state, current)?
+            .checked_add(ResourceVector::ZERO.with(D::MemoryBytes,
+                u64::try_from(crate::policy_compiler::provisioning_current::current_manifest::
+                    current_protected_assignment_observation_control_bytes_v2()
+                        .and_then(|bytes| bytes.checked_add(LifecycleHistoricalReadOriginalV1::observe_rows_interface_control_bytes_v2()?))
+                        .and_then(|bytes| bytes.checked_add(crate::policy_compiler::provisioning_current::
+                            root_start_compilation_control_bytes_v2()?))
+                        .ok_or(JournalError::JournalTooLarge)?)
+                    .map_err(|_| JournalError::JournalTooLarge)?))?
             .checked_add(
                 retained_lifecycle_replay_receiving_demand_v1(source.all_records())
                     .ok_or(JournalError::JournalTooLarge)?,
             )?;
         if initial.kind == Some(super::kind::ResourceKindV2::Host) {
-            self.host_models = Some(crate::reconciler::completed_start_host_publication_receiving_demand_v2(controller));
+            self.host_models = Some(crate::reconciler::completed_start_host_publication_receiving_from_observation_v2(controller));
             demand = demand.checked_add(*self.host_models.as_ref()
                 .and_then(|value| value.as_ref().ok()).ok_or(JournalError::ProtectedBoundary)?)?;
         }
@@ -406,7 +412,7 @@ impl RootStartResourceFinalExchangeOriginalV2 {
                 .map_err(|_| JournalError::ProtectedBoundary)?,
         );
         let original = initial.compiler.compiled_v2()?;
-        self.source.observe_once_v1(source, operation)?;
+        self.source.observe_once_v1(source.rows_data_v2(), operation)?;
         self.previous = Some(current_protected_assignment_data_v2(
             controller,
             original.source_v2().sandbox_v2(),
@@ -468,7 +474,7 @@ impl RootStartResourceFinalExchangeOriginalV2 {
         if initial.kind == Some(super::kind::ResourceKindV2::Host) {
             let (host_plan, host_signature, live_body, receipt) = self.session.as_ref()
                 .ok_or(JournalError::ProtectedBoundary)?.completed_host_comparison_data_v2()?;
-            self.host_completed = Some(crate::reconciler::require_completed_start_host_publication_data_v2(
+            self.host_completed = Some(crate::reconciler::require_completed_start_host_publication_from_observation_v2(
                 controller, self.previous.as_ref().ok_or(JournalError::ProtectedBoundary)?,
                 operation, initial.reply_digest.ok_or(JournalError::ProtectedBoundary)?,
                 original.manifest_v2(), initial.inputs.lease_v2()?, host_plan, host_signature,

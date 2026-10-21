@@ -18,11 +18,15 @@ use aos_sandbox_protocol::{cache_state::{fixed_journals::CacheJournalRecipeRoleV
 use aos_sandbox_ledger_replay::cache_current::{
     self, CacheCurrentRawViewsDataV1, CacheCurrentInventoryDataV1, CacheCurrentModelErrorV1,
 };
-use crate::journal::{JournalError, Journal, RootReadonlyJournalModelOriginalsV1 as Model};
+use crate::journal::JournalError;
+use aos_sandbox_policy::native::{RootFinalityReadOriginalV1 as Target,
+    RootFinalityReadKindV1 as Kind};
+use crate::journal::historical_observation::{HistoricalObservationV1,
+    root_readonly_error_v1};
+
 use crate::normal_root::{RootMaintenanceStorageStageReceivingV2, RootDeleteCacheStageReceivingV2, RootApplyStageReceivingV1, RootHostLaunchStageReceivingV1,
     RootEnvironmentStageReceivingV1, NormalRootStartupErrorV1};
-use crate::policy_compiler::{RetainedKernelPairedClockAttemptV1,
-    create_storage_current::controller_readonly::native_read::{RootFixedNativeReadOriginalsV1 as Reader, RootFixedCompletedReadDataV2 as CompletedReader}};
+use crate::policy_compiler::RetainedKernelPairedClockAttemptV1;
 use crate::hierarchy::genesis_profile::SourceGenesisErrorV1;
 use super::receiving::ReceivingV1;
 use super::RootEnvironmentReadonlyContextV1;
@@ -65,12 +69,10 @@ impl TreeDataV1 {
 // Lazy backing is constructed only after the genuine SourceFixed stage pays
 // its complete size/construction, clocks and first fixed native acquisition.
 struct NativeViewsV1 {
-    frontier_clock: RootContinuationClockGateV1,
-    source: Reader,
-    host_source_model: Option<Box<Model>>,
+    frontier_clock: Option<RootContinuationClockGateV1>,
+    source: Target,
     source_entered: bool,
-    cache: [Option<Reader>; 5],
-    completed_cache: [Option<CompletedReader>; 5],
+    cache: [Target; 5],
     before_clock: RetainedKernelPairedClockAttemptV1,
     before: Option<Result<RawPairedClockSample, SourceGenesisErrorV1>>,
     after_clock: RetainedKernelPairedClockAttemptV1,
@@ -82,27 +84,63 @@ struct NativeViewsV1 {
     posts: Option<Result<(), StopV1>>,
 }
 
+impl Drop for NativeViewsV1 {
+    fn drop(&mut self) {
+        drop(self.frontier_clock.take());
+        self.source.dispose_scope_reader_v2();
+        self.source.dispose_scope_model_v2();
+        for target in &mut self.cache { target.dispose_scope_reader_v2(); }
+        // Inline completed Cache DATA and the original before/after clocks
+        // retain their existing natural field-drop positions after all readers.
+    }
+}
+
 impl NativeViewsV1 {
+    fn scope_disposal_control_bytes_v2() -> Option<usize> {
+        // Explicit source iteration is additional to the old array field-drop
+        // glue. It is reached even when no later Cache fixed stage succeeded.
+        let cache_drop_loop = size_of::<&mut [Target; 5]>().checked_mul(3)?
+            .checked_add(size_of::<std::slice::IterMut<'_, Target>>().checked_mul(3)?)?
+            .checked_add(size_of::<&mut std::slice::IterMut<'_, Target>>().checked_mul(3)?)?
+            .checked_add(size_of::<Option<&mut Target>>().checked_mul(3)?)?
+            .checked_add(size_of::<&mut Target>().checked_mul(3)?)?;
+        let failure_adapter = size_of::<Option<&RootContinuationClockGateV1>>().checked_mul(3)?
+            .checked_add(size_of::<&RootContinuationClockGateV1>().checked_mul(3)?)?
+            .checked_add(size_of::<Option<&(dyn Error + 'static)>>().checked_mul(3)?)?;
+        size_of::<&mut Self>().checked_mul(3)?
+            .checked_add(Target::scope_disposal_control_bytes_v2()?)?
+            .checked_add(size_of::<Option<RootContinuationClockGateV1>>().checked_mul(3)?)?
+            .checked_add(size_of::<Result<&mut RootContinuationClockGateV1, JournalError>>().checked_mul(3)?)?
+            .checked_add(size_of::<Result<&RootContinuationClockGateV1, JournalError>>().checked_mul(3)?)?
+            .checked_add(size_of::<Option<&mut RootContinuationClockGateV1>>().checked_mul(3)?)?
+            .checked_add(size_of::<Option<&RootContinuationClockGateV1>>().checked_mul(3)?)?
+            .checked_add(cache_drop_loop)?.checked_add(failure_adapter)
+    }
+
     fn new(horizon: RootContinuationHorizonDataV1) -> Self {
         Self {
-            frontier_clock: RootContinuationClockGateV1::new(horizon),
-            source: Reader::source_current_v1(), host_source_model: None, source_entered: false,
-            cache: ROLES.map(|role| Some(Reader::cache_current_v1(role))),
-            completed_cache: std::array::from_fn(|_| None),
+            frontier_clock: Some(RootContinuationClockGateV1::new(horizon)),
+            source: Target::new(Kind::Source), source_entered: false,
+            cache: ROLES.map(|role| Target::new(Kind::CacheCurrent(role))),
             before_clock: Default::default(), before: None,
             after_clock: Default::default(), after: None,
             source_tree: None, cache_models: None, objects: None, primary: None, posts: None,
         }
     }
 
-    fn fixed_demand_v1(source: SourceInputV1<'_>, project: ProjectId) -> Result<ResourceVector, JournalError> {
+    fn fixed_demand_v1(source: SourceInputV1<'_>, project: ProjectId, purpose: PurposeV1) -> Result<ResourceVector, JournalError> {
         let invalid = || JournalError::JournalTooLarge;
         let bytes = size_of::<Self>().checked_mul(2)
+            .and_then(|bytes| bytes.checked_add(Self::scope_disposal_control_bytes_v2()?))
             .and_then(|bytes| bytes.checked_add(2 * size_of::<RootProvisioningNativeViewsV1>()))
+            .and_then(|bytes| bytes.checked_add(Target::construction_control_bytes_v1()?.checked_mul(6)?))
+            .and_then(|bytes| if matches!(purpose, PurposeV1::HostLaunch | PurposeV1::MaintenanceStorage) {
+                bytes.checked_add(HistoricalObservationV1::receiving_control_bytes_v1()?)
+            } else { Some(bytes) })
             .and_then(|bytes| bytes.checked_add(RetainedKernelPairedClockAttemptV1::dominant_requested_bytes_v1()?.checked_mul(2)?))
             .and_then(|bytes| u64::try_from(bytes).ok()).ok_or_else(invalid)?;
         let first = match source {
-            SourceInputV1::Captured => Reader::source_current_fixed_demand_v1()?,
+            SourceInputV1::Captured => Target::provisioning_fixed_demand_v2(Kind::Source).map_err(root_readonly_error_v1)?,
             SourceInputV1::Delete(source) => {
                 source.verified_fields_v1().map_err(|_| JournalError::ProtectedBoundary)?;
                 crate::policy_compiler::delete_root::RootDeleteCacheCurrentOriginalV2::fixed_overlay_demand_v2()?
@@ -119,16 +157,19 @@ impl NativeViewsV1 {
     }
 
     fn raw_cache_v1(&self) -> Result<CacheCurrentRawViewsDataV1<'_>, JournalError> {
-        Self::raw_cache_parts_v2(&self.cache, &self.completed_cache)
+        Self::raw_cache_parts_v2(&self.cache)
     }
 
-    fn raw_cache_parts_v2<'view>(
-        cache: &'view [Option<Reader>; 5],
-        completed_cache: &'view [Option<CompletedReader>; 5],
-    ) -> Result<CacheCurrentRawViewsDataV1<'view>, JournalError> {
-        let raw = |index: usize| match &completed_cache[index] {
-            Some(data) => data.cache_raw_view_v2(),
-            None => cache[index].as_ref().ok_or(JournalError::ProtectedBoundary)?.cache_raw_view_v1(),
+    fn raw_cache_parts_v2<'view>(cache: &'view [Target; 5])
+        -> Result<CacheCurrentRawViewsDataV1<'view>, JournalError>
+    {
+        let raw = |index: usize| {
+            let target = &cache[index];
+            if target.native_prefixes_retired_data_v2() {
+                target.completed_cache_raw_view_v2().map_err(root_readonly_error_v1)
+            } else {
+                target.cache_raw_view_v2().map_err(root_readonly_error_v1)
+            }
         };
         Ok(CacheCurrentRawViewsDataV1 {
             bootstrap: raw(0)?, hold: raw(1)?, state: raw(2)?,
@@ -142,9 +183,12 @@ impl NativeViewsV1 {
         project: ProjectId,
         source_input: SourceInputV1<'_>,
     ) -> Result<(), StopV1> {
+        if matches!(source_input, SourceInputV1::Captured) {
+            self.source.construct_reader_once_v1().map_err(root_readonly_error_v1)?;
+        }
         self.before = Some(self.before_clock.observe_once(None));
         let sample = *positive(&self.before)?;
-        self.frontier_clock.check_next_once_v1()?;
+        self.frontier_clock.as_mut().ok_or(JournalError::ProtectedBoundary)?.check_next_once_v1()?;
         let uid = receiving.controller_identity_v1().0;
         match source_input {
             SourceInputV1::Delete(source) => {
@@ -157,37 +201,32 @@ impl NativeViewsV1 {
             }
             SourceInputV1::Captured => {
                 self.source_entered = true;
-                self.source.capture_once(uid);
-                self.source.require_captured_v1()?;
-                receiving.admit_source_native_once_v1(self.source.replay_demand_v1()?)?;
-                self.frontier_clock.check_next_once_v1()?;
-                self.source.audit_once();
-                let semantic = self.source.additional_semantic_demand_v1()?;
+                self.source.capture_once_v1(uid).map_err(root_readonly_error_v1)?;
+                receiving.admit_source_native_once_v1(self.source.native_receiving_demand_v1().map_err(root_readonly_error_v1)?)?;
+                self.frontier_clock.as_mut().ok_or(JournalError::ProtectedBoundary)?.check_next_once_v1()?;
+                let semantic = self.source.audited_semantic_only_v2().map_err(root_readonly_error_v1)?;
                 let semantic = if matches!(receiving, ReceivingV1::HostLaunch(_) | ReceivingV1::MaintenanceStorage(_)) {
-                    semantic.checked_add(Model::receiving_demand_v1(&self.source)?)
+                    semantic.checked_add(self.source.model_receiving_demand_v2().map_err(root_readonly_error_v1)?)
                         .map_err(JournalError::ReceivingAccounting)?
                 } else { semantic };
                 receiving.admit_source_semantic_once_v1(semantic)?;
-                self.frontier_clock.check_next_once_v1()?;
-                self.source.replay_once();
-                self.source.replay_native_v1()?;
-                let source = self.source.replay_native_v1()?;
+                self.frontier_clock.as_mut().ok_or(JournalError::ProtectedBoundary)?.check_next_once_v1()?;
+                self.source.replay_only_once_v2().map_err(root_readonly_error_v1)?;
+                self.source.readback_v1().map_err(root_readonly_error_v1)?;
+                let source = self.source.readback_v1().map_err(root_readonly_error_v1)?;
                 receiving.admit_source_tree_models_once_v1(source_tree_demand_v1(
                     source.state,
                     project
                 )?)?;
-                self.frontier_clock.check_next_once_v1()?;
+                self.frontier_clock.as_mut().ok_or(JournalError::ProtectedBoundary)?.check_next_once_v1()?;
                 self.source_tree = Some(fold_source_tree_v1(source.state, project));
                 if matches!(receiving, ReceivingV1::HostLaunch(_) | ReceivingV1::MaintenanceStorage(_)) {
                     // Move the SAME completed Source reader into the readonly
                     // model only after its native post. No second open/replay
                     // or cloned map supplies Host's lifecycle history.
-                    self.source.finish_post_once();
-                    self.source.terminal_native_v1()?;
-                    self.host_source_model = Some(Box::new(Model::new()));
-                    let model = self.host_source_model.as_mut().ok_or(StopV1::Incomplete)?;
-                    model.adopt_once(&mut self.source);
-                    model.require_complete_v1()?;
+                    self.source.finish_native_post_once_v2();
+                    self.source.posted_readback_v2().map_err(root_readonly_error_v1)?;
+                    self.source.adopt_posted_model_once_v2().map_err(root_readonly_error_v1)?;
                 }
             }
             SourceInputV1::Environment(original) => {
@@ -199,7 +238,7 @@ impl NativeViewsV1 {
                 {
                     return Err(StopV1::Incomplete);
                 }
-                self.frontier_clock.check_next_once_v1()?;
+                self.frontier_clock.as_mut().ok_or(JournalError::ProtectedBoundary)?.check_next_once_v1()?;
                 self.source_tree = Some(fold_source_tree_v1(original.source_state_v1()?, project));
             }
             SourceInputV1::Maintenance(source) => {
@@ -207,7 +246,7 @@ impl NativeViewsV1 {
                 // captured/audited/replayed this Source under stages6..8 and
                 // retains its independent late post. No second Source reader
                 // or copied map substitutes for that held native model.
-                self.frontier_clock.check_next_once_v1()?;
+                self.frontier_clock.as_mut().ok_or(JournalError::ProtectedBoundary)?.check_next_once_v1()?;
                 self.source_tree = Some(fold_source_tree_v1(source.state_data_v2()?, project));
             }
         }
@@ -217,27 +256,26 @@ impl NativeViewsV1 {
 
         for (index, role) in ROLES.into_iter().enumerate() {
             receiving
-                .admit_cache_fixed_once_v1(role, Reader::cache_current_fixed_demand_v1(role)?)?;
-            let reader = self.cache[index].as_mut().ok_or(StopV1::Incomplete)?;
-            self.frontier_clock.check_next_once_v1()?;
-            reader.capture_once(uid);
-            reader.require_captured_v1()?;
-            receiving.admit_cache_native_once_v1(role, reader.replay_demand_v1()?)?;
-            self.frontier_clock.check_next_once_v1()?;
-            reader.audit_once();
-            receiving
-                .admit_cache_semantic_once_v1(role, reader.additional_semantic_demand_v1()?)?;
-            self.frontier_clock.check_next_once_v1()?;
-            reader.replay_once();
-            reader.replay_native_v1()?;
+                .admit_cache_fixed_once_v1(role, Target::provisioning_fixed_demand_v2(Kind::CacheCurrent(role)).map_err(root_readonly_error_v1)?)?;
+            let reader = &mut self.cache[index];
+            reader.construct_reader_once_v1().map_err(root_readonly_error_v1)?;
+            self.frontier_clock.as_mut().ok_or(JournalError::ProtectedBoundary)?.check_next_once_v1()?;
+            reader.capture_once_v1(uid).map_err(root_readonly_error_v1)?;
+            receiving.admit_cache_native_once_v1(role, reader.native_receiving_demand_v1().map_err(root_readonly_error_v1)?)?;
+            self.frontier_clock.as_mut().ok_or(JournalError::ProtectedBoundary)?.check_next_once_v1()?;
+            receiving.admit_cache_semantic_once_v1(role,
+                reader.audited_semantic_only_v2().map_err(root_readonly_error_v1)?)?;
+            self.frontier_clock.as_mut().ok_or(JournalError::ProtectedBoundary)?.check_next_once_v1()?;
+            reader.replay_only_once_v2().map_err(root_readonly_error_v1)?;
+            reader.readback_v1().map_err(root_readonly_error_v1)?;
         }
         // Borrow only the Cache fields while the independent frontier clock
         // is sampled; the model still observes the same retained native rows.
-        let raw = Self::raw_cache_parts_v2(&self.cache, &self.completed_cache)?;
+        let raw = Self::raw_cache_parts_v2(&self.cache)?;
         receiving.admit_cache_models_once_v1(
             cache_current::model_geometry_v1(&raw).map_err(CacheCurrentModelErrorV1::from)?
         )?;
-        self.frontier_clock.check_next_once_v1()?;
+        self.frontier_clock.as_mut().ok_or(JournalError::ProtectedBoundary)?.check_next_once_v1()?;
         self.cache_models = Some((|| {
             let clock = cache_current::decode_clock_v1(raw.clock)?;
             let hold = cache_current::decode_hold_v1(raw.hold)?;
@@ -260,26 +298,24 @@ impl NativeViewsV1 {
         self.objects
             .as_mut()
             .ok_or(StopV1::Incomplete)?
-            .observe_before(receiving, models.quotas_v1(), &mut self.frontier_clock)
+            .observe_before(receiving, models.quotas_v1(), self.frontier_clock.as_mut().ok_or(JournalError::ProtectedBoundary)?)
     }
 
     fn finish_posts(&mut self, uid: u32) {
         if let Some(objects) = self.objects.as_mut() { objects.finish_once(uid); }
-        self.source.finish_post_once();
-        if let Some(model) = self.host_source_model.as_mut() {
-            model.finish_parent_post_once_v1();
-        }
-        for reader in self.cache.iter_mut().flatten() { reader.finish_post_once(); }
+        self.source.finish_native_post_once_v2();
+        self.source.finish_model_post_once_v2();
+        for reader in &mut self.cache { reader.finish_native_post_once_v2(); }
         self.after = Some(self.after_clock.observe_once(self.before.as_ref().and_then(|sample| sample.as_ref().ok()).copied()));
         self.posts = Some((|| {
-            if let Some(model) = self.host_source_model.as_ref() {
-                model.require_parent_post_v1()?;
+            if self.source.model_entered_data_v2() {
+                self.source.require_model_post_v2().map_err(root_readonly_error_v1)?;
             } else if self.source_entered {
-                self.source.terminal_native_v1()?;
+                self.source.posted_readback_v2().map_err(root_readonly_error_v1)?;
             }
-            for reader in self.cache.iter().flatten() { reader.terminal_native_v1()?; }
+            for reader in &self.cache { reader.posted_readback_v2().map_err(root_readonly_error_v1)?; }
             let sample = *positive(&self.after)?;
-            self.frontier_clock.require_final_sample_v1(sample)?;
+            self.frontier_clock.as_ref().ok_or(JournalError::ProtectedBoundary)?.require_final_sample_v1(sample)?;
             let clock = cache_current::decode_clock_v1(self.raw_cache_v1()?.clock)?;
             let now = u64::try_from(sample.wall_seconds()).map_err(|_| StopV1::Incomplete)?.max(clock.observed_unix_seconds);
             positive(&self.cache_models)?.require_live_at_v1(now)?;
@@ -500,7 +536,7 @@ impl RootProvisioningNativeViewsV1 {
             ReceivingV1::HostLaunch(_) => PurposeV1::HostLaunch,
             ReceivingV1::MaintenanceStorage(_) => PurposeV1::MaintenanceStorage,
         });
-        self.geometry = Some(NativeViewsV1::fixed_demand_v1(source, project));
+        self.geometry = Some(NativeViewsV1::fixed_demand_v1(source, project, self.purpose.ok_or(JournalError::ProtectedBoundary)?));
         let demand = self.geometry.as_ref().and_then(|result| result.as_ref().ok()).copied()
             .ok_or(JournalError::ProtectedBoundary)?;
         self.fixed = Some(match source {
@@ -690,11 +726,11 @@ impl RootProvisioningNativeViewsV1 {
     }
 
     /// Borrows the same Host Source model while its independent parent post is owed.
-    pub(crate) fn prepared_host_launch_source_v2(&self) -> Result<&Journal, JournalError> {
+    pub(crate) fn prepared_host_launch_source_v2(&self) -> Result<HistoricalObservationV1<'_>, JournalError> {
         self.require_purpose_v1(PurposeV1::HostLaunch)?;
         self.require_pending_body_v1()?;
-        self.backing.as_ref().and_then(|actual| actual.host_source_model.as_ref())
-            .ok_or(JournalError::ProtectedBoundary)?.journal_v1()
+        let actual = self.backing.as_ref().ok_or(JournalError::ProtectedBoundary)?;
+        HistoricalObservationV1::from_root_model_v1(actual.source.model_v1().map_err(root_readonly_error_v1)?)
     }
 
     pub(crate) fn finish_host_launch_after_once_v1(&mut self) -> Result<(), JournalError> {
@@ -740,7 +776,7 @@ impl RootProvisioningNativeViewsV1 {
     pub(crate) fn apply_source_input_bytes_v1(&self) -> Result<u64, JournalError> {
         self.require_purpose_v1(PurposeV1::Apply)?;
         self.require_pending_body_v1()?;
-        let source = self.backing.as_ref().ok_or(JournalError::ProtectedBoundary)?.source.replay_native_v1()?;
+        let source = self.backing.as_ref().ok_or(JournalError::ProtectedBoundary)?.source.readback_v1().map_err(root_readonly_error_v1)?;
         source.state.iter().try_fold(0_u64, |sum, ((_, key), value)| {
             let row = key.len().checked_add(value.len()).and_then(|bytes| u64::try_from(bytes).ok())
                 .ok_or(JournalError::JournalTooLarge)?;
@@ -754,9 +790,11 @@ impl RootProvisioningNativeViewsV1 {
         self.require_complete_v1()?;
         let actual = self.backing.as_ref().ok_or(JournalError::ProtectedBoundary)?;
         let one = |index: usize| -> Result<_, JournalError> {
-            let native = match &actual.completed_cache[index] {
-                Some(data) => data.readback_v2()?,
-                None => actual.cache[index].as_ref().ok_or(JournalError::ProtectedBoundary)?.terminal_native_v1()?,
+            let target = &actual.cache[index];
+            let native = if target.native_prefixes_retired_data_v2() {
+                target.completed_readback_v2().map_err(root_readonly_error_v1)?
+            } else {
+                target.posted_readback_v2().map_err(root_readonly_error_v1)?
             };
             Ok(aos_sandbox_protocol::domain_ledger::create_storage_history::cache_held::CacheJournalDataV1 {
                 names: native.names, next: native.next, end: native.end })
@@ -789,22 +827,14 @@ impl RootProvisioningNativeViewsV1 {
         self.require_purpose_v1(PurposeV1::Delete)?;
         self.require_complete_v1()?;
         let actual = self.backing.as_mut().ok_or(JournalError::ProtectedBoundary)?;
-        let ready = actual.completed_cache.iter().all(Option::is_none)
-            && actual.cache.iter().all(|reader| reader.as_ref()
-                .is_some_and(|reader| reader.require_completed_data_v2().is_ok()));
-        if !ready {
+        if !actual.cache.iter().all(|target| target.require_reader_can_retire_v2().is_ok()) {
             self.closed.get_or_insert(JournalError::ProtectedBoundary);
             return Err(JournalError::ProtectedBoundary);
         }
-        for index in 0..5 {
-            let reader = actual.cache[index].take().ok_or(JournalError::ProtectedBoundary)?;
-            match reader.into_completed_data_v2() {
-                Ok(data) => actual.completed_cache[index] = Some(data),
-                Err(reader) => {
-                    actual.cache[index] = Some(reader);
-                    self.closed.get_or_insert(JournalError::ProtectedBoundary);
-                    return Err(JournalError::ProtectedBoundary);
-                }
+        for target in &mut actual.cache {
+            if let Err(cause) = target.retire_completed_reader_once_v2() {
+                self.closed.get_or_insert(JournalError::ProtectedBoundary);
+                return Err(root_readonly_error_v1(cause));
             }
         }
         Ok(())
@@ -814,10 +844,9 @@ impl RootProvisioningNativeViewsV1 {
         self.require_purpose_v1(PurposeV1::Delete)?;
         self.require_complete_v1()?;
         let actual = self.backing.as_ref().ok_or(JournalError::ProtectedBoundary)?;
-        if actual.cache.iter().any(Option::is_some) { return Err(JournalError::ProtectedBoundary); }
+        if !actual.cache.iter().all(Target::native_prefixes_retired_data_v2) { return Err(JournalError::ProtectedBoundary); }
         ROLES.into_iter().enumerate().try_fold(0u64, |total, (index, role)| {
-            let fixed = actual.completed_cache[index].as_ref().ok_or(JournalError::ProtectedBoundary)?
-                .cache_fixed_demand_v2(role)?;
+            let fixed = actual.cache[index].completed_cache_fixed_demand_v2(role).map_err(root_readonly_error_v1)?;
             total.checked_add(fixed.get(D::OpenFiles)).ok_or(JournalError::JournalTooLarge)
         })
     }
@@ -872,16 +901,16 @@ impl RootProvisioningNativeViewsV1 {
         let actual = self.backing.as_ref();
         cause(&self.geometry).or_else(|| cause(&self.fixed)).or_else(|| {
             let actual = actual?;
-            cause(&actual.before).or_else(|| actual.frontier_clock.failure()).or_else(|| actual.source.failure())
-                .or_else(|| actual.host_source_model.as_ref().and_then(|model| model.failure()))
+            cause(&actual.before).or_else(|| actual.frontier_clock.as_ref().and_then(|clock| clock.failure())).or_else(|| actual.source.native_failure_v1())
+                .or_else(|| actual.source.model_failure_v1())
                 .or_else(|| cause(&actual.source_tree))
-                .or_else(|| actual.cache.iter().flatten().find_map(Reader::failure))
+                .or_else(|| actual.cache.iter().find_map(Target::native_failure_v1))
                 .or_else(|| cause(&actual.cache_models))
                 .or_else(|| actual.objects.as_ref().and_then(|objects| objects.failure()))
                 .or_else(|| cause(&actual.primary))
-                .or_else(|| actual.source.post_failure())
-                .or_else(|| actual.host_source_model.as_ref().and_then(|model| model.parent_post_failure_v1()))
-                .or_else(|| actual.cache.iter().flatten().find_map(Reader::post_failure))
+                .or_else(|| actual.source.native_post_failure_v2())
+                .or_else(|| actual.source.model_post_failure_v2())
+                .or_else(|| actual.cache.iter().find_map(Target::native_post_failure_v2))
                 .or_else(|| cause(&actual.after)).or_else(|| cause(&actual.posts))
         }).or_else(|| self.closed.as_ref().map(|cause| cause as _))
     }
@@ -955,7 +984,7 @@ mod environment_currentness_tests {
         let source = RootEnvironmentReadonlyContextV1::new();
         let project = ProjectId::from_bytes([7; 16]);
 
-        assert!(NativeViewsV1::fixed_demand_v1(SourceInputV1::Environment(&source), project).is_err());
+        assert!(NativeViewsV1::fixed_demand_v1(SourceInputV1::Environment(&source), project, PurposeV1::Environment).is_err());
         assert!(source.source_state_v1().is_err());
     }
 

@@ -9,7 +9,7 @@
 //! observation grants no effect.
 
 use aos_sandbox_model::{BrokerAssignment, ObjectDigest, OperationId};
-use aos_sandbox_linux::boot::KernelBootId;
+use aos_linux_descriptors::boot::KernelBootId;
 use aos_sandbox_protocol::storage_capture_candidate::STORAGE_CAPTURE_CANDIDATE_BYTES_V1;
 use aos_sandbox_protocol::storage_capture_grant::ControllerOutputSettlementPreimageV1;
 use sha2::{Digest as _, Sha256};
@@ -102,12 +102,12 @@ enum CandidateClockErrorV1 {
     #[error("the original candidate clock is stale")]
     Stale,
     #[error(transparent)]
-    Kernel(aos_sandbox_linux::Error),
+    Kernel(aos_linux_descriptors::Error),
 }
 
 impl aos_sandbox_broker::kernel_clock::KernelPairedClockErrorV1 for CandidateClockErrorV1 {
     fn stale() -> Self { Self::Stale }
-    fn kernel(error: aos_sandbox_linux::Error) -> Self { Self::Kernel(error) }
+    fn kernel(error: aos_linux_descriptors::Error) -> Self { Self::Kernel(error) }
 }
 
 type CandidateClock = aos_sandbox_broker::kernel_clock::RetainedKernelPairedClockAttemptV1<CandidateClockErrorV1>;

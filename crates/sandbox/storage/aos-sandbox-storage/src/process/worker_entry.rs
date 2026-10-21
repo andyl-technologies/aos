@@ -216,7 +216,7 @@ pub(super) fn retained() -> ZfsWorkerError {
 }
 
 pub(super) fn verify_membership_into_v3(
-    anchor: &RetainedCgroupAnchor, process: &aos_sandbox_linux::pidfd::PidFd,
+    anchor: &RetainedCgroupAnchor, process: &aos_linux_descriptors::pidfd::PidFd,
     original: Option<&mut ExactCgroupMembershipReadbackV1>,
 ) -> Result<(), ZfsWorkerError> {
     match original {

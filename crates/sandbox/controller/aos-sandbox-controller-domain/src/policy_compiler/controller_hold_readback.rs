@@ -14,6 +14,8 @@
 //! SHA-256(Controller-key-domain || preceding 48 bytes):32
 //! ```
 
+use aos_sandbox_ledger_replay::controller_policy_hold::ControllerPolicyHoldCodecV1;
+
 use aos_sandbox_policy::controller_readback::{
     ControllerHoldReadbackFieldsDataV1,
     CONTROLLER_HOLD_READBACK_BODY_BYTES_V1 as BODY_BYTES,

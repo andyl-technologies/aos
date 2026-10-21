@@ -7,7 +7,7 @@
 
 use aos_sandbox_api::aos::sandbox::local::v1::Audience;
 use aos_sandbox_linux::cgroup::RetainedCgroupAnchor;
-use aos_sandbox_linux::pidfd::PidFdInfo;
+use aos_linux_descriptors::pidfd::PidFdInfo;
 use aos_sandbox_linux::seqpacket::{ConnectionPeerIdentity, KernelAuthorizedRecordSubject};
 use aos_sandbox_protocol::{PeerCredentials, PeerPolicy};
 
@@ -188,7 +188,7 @@ pub(crate) enum RootServicePeerError {
     PolicyMismatch,
     /// The original membership or liveness observation failed.
     #[error("root service peer observation failed: {0}")]
-    Linux(#[from] aos_sandbox_linux::Error),
+    Linux(#[from] aos_linux_descriptors::Error),
     /// The caller retains the reached native prefix and borrows its real cause.
     #[error("root service native observation is retained by its original")]
     RetainedObservation,
@@ -308,7 +308,7 @@ fn verify_root_service_record_engine(
 /// caller prepays this representation and stores its complete typed result.
 pub(crate) struct RootServiceConnectionOriginalV2 {
     membership: aos_sandbox_linux::cgroup::RuntimeScopeMembershipOriginalV1,
-    alive: Option<Result<bool, aos_sandbox_linux::Error>>,
+    alive: Option<Result<bool, aos_linux_descriptors::Error>>,
     result: Option<Result<PidFdInfo, RootServicePeerError>>,
 }
 
@@ -340,7 +340,7 @@ impl RootServiceConnectionOriginalV2 {
 /// Retains the exact old before/subject/after record-membership sandwich.
 pub(crate) struct RootServiceRecordOriginalV2 {
     before: RootServiceConnectionOriginalV2,
-    alive: Option<Result<bool, aos_sandbox_linux::Error>>,
+    alive: Option<Result<bool, aos_linux_descriptors::Error>>,
     membership: aos_sandbox_linux::cgroup::RuntimeScopeMembershipOriginalV1,
     after: RootServiceConnectionOriginalV2,
     result: Option<Result<(), RootServicePeerError>>,
@@ -376,7 +376,7 @@ impl RootServiceRecordOriginalV2 {
 
 /// Keeps both independent subject bookends after an entered root request.
 pub(crate) struct RootServiceSubjectPostOriginalV2 {
-    alive: Option<Result<bool, aos_sandbox_linux::Error>>,
+    alive: Option<Result<bool, aos_linux_descriptors::Error>>,
     membership: aos_sandbox_linux::cgroup::RuntimeScopeMembershipOriginalV1,
     result: Option<Result<(), RootServicePeerError>>,
 }
@@ -419,7 +419,7 @@ impl HostRootExportPeerVerifier {
         original: &mut aos_sandbox_linux::cgroup::ControllerStartupHostCgroupReadbackV1,
     ) -> Result<(aos_sandbox_linux::cgroup::CgroupV2Root, Self), StorageServiceError> {
         let (root, host_cgroup) = original.take_validated_pair().ok_or_else(|| {
-            StorageServiceError::Kernel(aos_sandbox_linux::Error::InvalidInput {
+            StorageServiceError::Kernel(aos_linux_descriptors::Error::InvalidInput {
                 field: "Storage root-export Host cgroup",
                 message: "fixed original capture incomplete or refused".into(),
             })
@@ -588,7 +588,7 @@ mod tests {
 
         assert!(RootServicePeerError::PolicyMismatch.source().is_none());
         let error = RootServicePeerError::Linux(
-            aos_sandbox_linux::Error::WrongDescriptorType {
+            aos_linux_descriptors::Error::WrongDescriptorType {
                 expected: "cgroup",
             },
         );
@@ -598,7 +598,7 @@ mod tests {
         };
         let source = error.source().unwrap();
         assert!(std::ptr::eq(
-            source.downcast_ref::<aos_sandbox_linux::Error>().unwrap(),
+            source.downcast_ref::<aos_linux_descriptors::Error>().unwrap(),
             cause,
         ));
     }

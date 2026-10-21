@@ -14,10 +14,14 @@ use aos_sandbox_model::{RawPairedClockSample, ResourceDimension as D, ResourceVe
 use super::horizon::{RootContinuationHorizonDataV1, RootContinuationClockGateV1};
 use crate::controller_resource_reservation::RootContinuationDemandV1;
 use crate::hierarchy::genesis_profile::SourceGenesisErrorV1;
-use crate::journal::{Journal, JournalError, RootReadonlyJournalModelOriginalsV1 as Model};
+use crate::journal::JournalError;
+use aos_sandbox_policy::native::{RootFinalityReadOriginalV1 as Target,
+    RootFinalityReadKindV1 as Kind};
+use crate::journal::historical_observation::{HistoricalObservationV1,
+    root_readonly_error_v1};
+
 use crate::normal_root::{NormalRootStartupErrorV1 as FundingError, RootEnvironmentStageReceivingV1};
-use crate::policy_compiler::{RetainedKernelPairedClockAttemptV1,
-    create_storage_current::controller_readonly::native_read::RootFixedNativeReadOriginalsV1 as Reader};
+use crate::policy_compiler::RetainedKernelPairedClockAttemptV1;
 
 #[derive(Debug, thiserror::Error)]
 enum StopV1 {
@@ -43,44 +47,96 @@ enum FirstV1 {
 }
 
 struct NativeV1 {
-    frontier_clock: RootContinuationClockGateV1,
-    controller: Reader,
-    source: Reader,
-    before_clock: RetainedKernelPairedClockAttemptV1,
+    frontier_clock: Option<RootContinuationClockGateV1>,
+    controller: Target,
+    source: Target,
+    before_clock: Option<RetainedKernelPairedClockAttemptV1>,
     before: Option<Result<RawPairedClockSample, SourceGenesisErrorV1>>,
-    after_clock: RetainedKernelPairedClockAttemptV1,
+    after_clock: Option<RetainedKernelPairedClockAttemptV1>,
     after: Option<Result<RawPairedClockSample, SourceGenesisErrorV1>>,
-    final_clock: RetainedKernelPairedClockAttemptV1,
+    final_clock: Option<RetainedKernelPairedClockAttemptV1>,
     final_sample: Option<Result<RawPairedClockSample, SourceGenesisErrorV1>>,
-    controller_model: Option<Box<Model>>,
-    source_model: Option<Box<Model>>,
     primary: Option<Result<(), StopV1>>,
     posts: Option<Result<(), StopV1>>,
     first: Option<FirstV1>,
 }
 
+impl Drop for NativeV1 {
+    fn drop(&mut self) {
+        // These are the same existing owners, taken only as their original
+        // aggregate scope ends. No replacement clock or observation is made.
+        drop(self.frontier_clock.take());
+        self.controller.dispose_scope_reader_v2();
+        self.source.dispose_scope_reader_v2();
+        drop(self.before_clock.take());
+        drop(self.before.take());
+        drop(self.after_clock.take());
+        drop(self.after.take());
+        drop(self.final_clock.take());
+        drop(self.final_sample.take());
+        self.controller.dispose_scope_model_v2();
+        self.source.dispose_scope_model_v2();
+    }
+}
+
 impl NativeV1 {
+    fn scope_disposal_control_bytes_v2() -> Option<usize> {
+        let taken_clock = size_of::<Option<RootContinuationClockGateV1>>()
+            .max(size_of::<Option<RetainedKernelPairedClockAttemptV1>>())
+            .max(size_of::<Option<Result<RawPairedClockSample, SourceGenesisErrorV1>>>()).checked_mul(3)?;
+        let query = size_of::<Result<&mut RootContinuationClockGateV1, JournalError>>().checked_mul(3)?
+            .checked_add(size_of::<Result<&RootContinuationClockGateV1, JournalError>>().checked_mul(3)?)?
+            .checked_add(size_of::<Option<&mut RootContinuationClockGateV1>>().checked_mul(3)?)?
+            .checked_add(size_of::<Option<&RootContinuationClockGateV1>>().checked_mul(3)?)?
+            .checked_add(size_of::<Result<&mut RetainedKernelPairedClockAttemptV1, JournalError>>().checked_mul(3)?)?
+            .checked_add(size_of::<Option<&mut RetainedKernelPairedClockAttemptV1>>().checked_mul(3)?)?
+            .checked_add(size_of::<Option<&RetainedKernelPairedClockAttemptV1>>().checked_mul(3)?)?;
+        // The normal after observation's Option::map receives the actual
+        // clock reference and captures the original before-sample reservoir.
+        // Its FnOnce result and outer Option return precede scope-end takes.
+        let after_map = size_of::<(Option<&mut RetainedKernelPairedClockAttemptV1>,
+                &Option<Result<RawPairedClockSample, SourceGenesisErrorV1>>)>().checked_mul(3)?
+            .checked_add(size_of::<(&mut RetainedKernelPairedClockAttemptV1,
+                &Option<Result<RawPairedClockSample, SourceGenesisErrorV1>>)>().checked_mul(3)?)?
+            .checked_add(size_of::<Result<RawPairedClockSample, SourceGenesisErrorV1>>().checked_mul(3)?)?
+            .checked_add(size_of::<Option<Result<RawPairedClockSample, SourceGenesisErrorV1>>>().checked_mul(3)?)?;
+        // Diagnostic and_then adapters borrow only existing originals. The
+        // noncapturing closures have their own actual argument/return ports.
+        let failure_adapters = size_of::<Option<&RootContinuationClockGateV1>>()
+            .checked_add(size_of::<&RootContinuationClockGateV1>())?
+            .max(size_of::<Option<&RetainedKernelPairedClockAttemptV1>>()
+                .checked_add(size_of::<&RetainedKernelPairedClockAttemptV1>())?)
+            .checked_mul(3)?
+            .checked_add(size_of::<Option<&(dyn Error + 'static)>>().checked_mul(3)?)?;
+        size_of::<&mut Self>().checked_mul(3)?
+            .checked_add(Target::scope_disposal_control_bytes_v2()?)?
+            .checked_add(taken_clock)?.checked_add(query)?
+            .checked_add(after_map)?.checked_add(failure_adapters)
+    }
+
     fn new(horizon: RootContinuationHorizonDataV1) -> Self {
         Self {
-            frontier_clock: RootContinuationClockGateV1::new(horizon),
-            controller: Reader::controller_current_v1(),
-            source: Reader::source_release_v1(),
-            before_clock: Default::default(), before: None,
-            after_clock: Default::default(), after: None,
-            final_clock: Default::default(), final_sample: None,
-            controller_model: None, source_model: None,
+            frontier_clock: Some(RootContinuationClockGateV1::new(horizon)),
+            controller: Target::new(Kind::Controller),
+            source: Target::new(Kind::SourceRelease),
+            before_clock: Some(Default::default()), before: None,
+            after_clock: Some(Default::default()), after: None,
+            final_clock: Some(Default::default()), final_sample: None,
             primary: None, posts: None, first: None,
         }
     }
 
     fn fixed_demand_v1() -> Result<ResourceVector, JournalError> {
         let bytes = size_of::<Self>().checked_mul(2)
+            .and_then(|bytes| bytes.checked_add(Self::scope_disposal_control_bytes_v2()?))
             .and_then(|bytes| bytes.checked_add(2 * size_of::<RootEnvironmentReadonlyContextV1>()))
+            .and_then(|bytes| bytes.checked_add(Target::construction_control_bytes_v1()?.checked_mul(2)?))
+            .and_then(|bytes| bytes.checked_add(HistoricalObservationV1::receiving_control_bytes_v1()?.checked_mul(2)?))
             .and_then(|bytes| bytes.checked_add(
                 RetainedKernelPairedClockAttemptV1::dominant_requested_bytes_v1()?.checked_mul(3)?))
             .and_then(|bytes| u64::try_from(bytes).ok())
             .ok_or(JournalError::JournalTooLarge)?;
-        Reader::controller_current_fixed_demand_v1()?.checked_add(RootContinuationClockGateV1::receiving_demand_v1()?)
+        Target::provisioning_fixed_demand_v2(Kind::Controller).map_err(root_readonly_error_v1)?.checked_add(RootContinuationClockGateV1::receiving_demand_v1()?)
             .map_err(|_| JournalError::JournalTooLarge)?.checked_add(ResourceVector::ZERO
             .with(D::MemoryBytes, bytes)
             .with(D::OpenFiles, u64::try_from(
@@ -91,54 +147,52 @@ impl NativeV1 {
 
     fn observe_inner(&mut self, stage: &mut RootEnvironmentStageReceivingV1<'_, '_>)
         -> Result<(), StopV1> {
+        self.controller.construct_reader_once_v1().map_err(root_readonly_error_v1)?;
         self.first = Some(FirstV1::BeforeClock);
-        self.before = Some(self.before_clock.observe_once(None));
+        self.before = Some(self.before_clock.as_mut().ok_or(JournalError::ProtectedBoundary)?.observe_once(None));
         positive(&self.before)?;
-        self.frontier_clock.check_next_once_v1()?;
+        self.frontier_clock.as_mut().ok_or(JournalError::ProtectedBoundary)?.check_next_once_v1()?;
         let uid = stage.controller_identity_v1().0;
 
         self.first = Some(FirstV1::Controller);
-        self.controller.capture_once(uid);
-        self.controller.require_captured_v1()?;
-        let native_demand = self.controller.replay_demand_v1()?;
+        self.controller.capture_once_v1(uid).map_err(root_readonly_error_v1)?;
+        let native_demand = self.controller.native_receiving_demand_v1().map_err(root_readonly_error_v1)?;
         self.first = Some(FirstV1::Funding);
         stage.admit_controller_native_once_v1(demand(native_demand))?;
         self.first = Some(FirstV1::Controller);
-        self.frontier_clock.check_next_once_v1()?;
-        self.controller.audit_once();
-        let semantic = self.controller.additional_semantic_demand_v1()?
-            .checked_add(Model::receiving_demand_v1(&self.controller)?)
+        self.frontier_clock.as_mut().ok_or(JournalError::ProtectedBoundary)?.check_next_once_v1()?;
+        let semantic = self.controller.audited_semantic_only_v2().map_err(root_readonly_error_v1)?
+            .checked_add(self.controller.model_receiving_demand_v2().map_err(root_readonly_error_v1)?)
             .map_err(|_| JournalError::JournalTooLarge)?;
         self.first = Some(FirstV1::Funding);
         stage.admit_controller_semantic_once_v1(demand(semantic))?;
         self.first = Some(FirstV1::Controller);
-        self.frontier_clock.check_next_once_v1()?;
-        self.controller.replay_once();
-        self.controller.replay_native_v1()?;
+        self.frontier_clock.as_mut().ok_or(JournalError::ProtectedBoundary)?.check_next_once_v1()?;
+        self.controller.replay_only_once_v2().map_err(root_readonly_error_v1)?;
+        self.controller.readback_v1().map_err(root_readonly_error_v1)?;
 
         self.first = Some(FirstV1::Source);
-        let fixed = Reader::source_release_fixed_demand_v1()?;
+        let fixed = Target::provisioning_fixed_demand_v2(Kind::SourceRelease).map_err(root_readonly_error_v1)?;
         self.first = Some(FirstV1::Funding);
         stage.admit_source_fixed_once_v1(demand(fixed))?;
+        self.source.construct_reader_once_v1().map_err(root_readonly_error_v1)?;
         self.first = Some(FirstV1::Source);
-        self.frontier_clock.check_next_once_v1()?;
-        self.source.capture_once(uid);
-        self.source.require_captured_v1()?;
-        let native_demand = self.source.replay_demand_v1()?;
+        self.frontier_clock.as_mut().ok_or(JournalError::ProtectedBoundary)?.check_next_once_v1()?;
+        self.source.capture_once_v1(uid).map_err(root_readonly_error_v1)?;
+        let native_demand = self.source.native_receiving_demand_v1().map_err(root_readonly_error_v1)?;
         self.first = Some(FirstV1::Funding);
         stage.admit_source_native_once_v1(demand(native_demand))?;
         self.first = Some(FirstV1::Source);
-        self.frontier_clock.check_next_once_v1()?;
-        self.source.audit_once();
-        let semantic = self.source.additional_semantic_demand_v1()?
-            .checked_add(Model::receiving_demand_v1(&self.source)?)
+        self.frontier_clock.as_mut().ok_or(JournalError::ProtectedBoundary)?.check_next_once_v1()?;
+        let semantic = self.source.audited_semantic_only_v2().map_err(root_readonly_error_v1)?
+            .checked_add(self.source.model_receiving_demand_v2().map_err(root_readonly_error_v1)?)
             .map_err(|_| JournalError::JournalTooLarge)?;
         self.first = Some(FirstV1::Funding);
         stage.admit_source_semantic_once_v1(demand(semantic))?;
         self.first = Some(FirstV1::Source);
-        self.frontier_clock.check_next_once_v1()?;
-        self.source.replay_once();
-        self.source.replay_native_v1()?;
+        self.frontier_clock.as_mut().ok_or(JournalError::ProtectedBoundary)?.check_next_once_v1()?;
+        self.source.replay_only_once_v2().map_err(root_readonly_error_v1)?;
+        self.source.readback_v1().map_err(root_readonly_error_v1)?;
         self.first = None;
         Ok(())
     }
@@ -146,22 +200,22 @@ impl NativeV1 {
     fn finish_posts(&mut self) {
         // Both methods are intrinsic once-only negative-capable posts; an
         // unentered second reader performs no native work.
-        self.controller.finish_post_once();
-        self.source.finish_post_once();
-        self.after = Some(self.after_clock.observe_once(
+        self.controller.finish_native_post_once_v2();
+        self.source.finish_native_post_once_v2();
+        self.after = self.after_clock.as_mut().map(|clock| clock.observe_once(
             self.before.as_ref().and_then(|value| value.as_ref().ok()).copied()));
         self.posts = Some((|| {
-            self.controller.terminal_native_v1()?;
-            self.source.terminal_native_v1()?;
-            self.frontier_clock.require_final_sample_v1(*positive(&self.after)?)?;
+            self.controller.posted_readback_v2().map_err(root_readonly_error_v1)?;
+            self.source.posted_readback_v2().map_err(root_readonly_error_v1)?;
+            self.frontier_clock.as_ref().ok_or(JournalError::ProtectedBoundary)?.require_final_sample_v1(*positive(&self.after)?)?;
             Ok(())
         })());
         if !matches!(self.primary, Some(Ok(()))) {
             return;
         }
-        self.first = if self.controller.post_failure().is_some() {
+        self.first = if self.controller.native_post_failure_v2().is_some() {
             Some(FirstV1::ControllerPost)
-        } else if self.source.post_failure().is_some() {
+        } else if self.source.native_post_failure_v2().is_some() {
             Some(FirstV1::SourcePost)
         } else if !matches!(self.after, Some(Ok(_))) {
             Some(FirstV1::AfterClock)
@@ -175,63 +229,51 @@ impl NativeV1 {
             return;
         }
         self.first = Some(FirstV1::ControllerModel);
-        self.controller_model = Some(Box::new(Model::new()));
-        if let Some(model) = &mut self.controller_model {
-            model.adopt_once(&mut self.controller);
-            if model.require_complete_v1().is_err() {
-                return;
-            }
-        }
+        if self.controller.adopt_posted_model_once_v2().is_err() { return; }
         self.first = Some(FirstV1::SourceModel);
-        self.source_model = Some(Box::new(Model::new()));
-        if let Some(model) = &mut self.source_model {
-            model.adopt_once(&mut self.source);
-            if model.require_complete_v1().is_err() {
-                return;
-            }
-        }
+        if self.source.adopt_posted_model_once_v2().is_err() { return; }
         self.first = None;
     }
 
     fn finish_models_after_once_v1(&mut self) -> Result<(), JournalError> {
-        if let Some(model) = &mut self.controller_model { model.finish_parent_post_once_v1(); }
-        if let Some(model) = &mut self.source_model { model.finish_parent_post_once_v1(); }
-        self.final_sample = Some(self.final_clock.observe_once(
+        self.controller.finish_model_post_once_v2();
+        self.source.finish_model_post_once_v2();
+        self.final_sample = Some(self.final_clock.as_mut().ok_or(JournalError::ProtectedBoundary)?.observe_once(
             self.after.as_ref().and_then(|value| value.as_ref().ok()).copied()));
         self.require_complete_v1()?;
-        self.controller_model.as_ref().ok_or(JournalError::ProtectedBoundary)?.require_parent_post_v1()?;
-        self.source_model.as_ref().ok_or(JournalError::ProtectedBoundary)?.require_parent_post_v1()?;
-        self.frontier_clock.require_final_sample_v1(*positive(&self.final_sample)?)
+        self.controller.require_model_post_v2().map_err(root_readonly_error_v1)?;
+        self.source.require_model_post_v2().map_err(root_readonly_error_v1)?;
+        self.frontier_clock.as_ref().ok_or(JournalError::ProtectedBoundary)?.require_final_sample_v1(*positive(&self.final_sample)?)
     }
 
     fn final_failure_v1(&self) -> Option<&(dyn Error + 'static)> {
-        self.controller_model.as_ref().and_then(|model| model.parent_post_failure_v1())
-            .or_else(|| self.source_model.as_ref().and_then(|model| model.parent_post_failure_v1()))
-            .or_else(|| self.final_clock.failure()).or_else(|| cause(&self.final_sample))
+        self.controller.model_post_failure_v2()
+            .or_else(|| self.source.model_post_failure_v2())
+            .or_else(|| self.final_clock.as_ref().and_then(|clock| clock.failure())).or_else(|| cause(&self.final_sample))
     }
 
     fn require_complete_v1(&self) -> Result<(), JournalError> {
         if !matches!(self.primary, Some(Ok(()))) || !matches!(self.posts, Some(Ok(()))) {
             return Err(JournalError::ProtectedBoundary);
         }
-        self.controller_model.as_ref().ok_or(JournalError::ProtectedBoundary)?.require_complete_v1()?;
-        self.source_model.as_ref().ok_or(JournalError::ProtectedBoundary)?.require_complete_v1()
+        self.controller.model_v1().map(|_| ()).map_err(root_readonly_error_v1)?;
+        self.source.model_v1().map(|_| ()).map_err(root_readonly_error_v1)
     }
 
     fn failure(&self) -> Option<&(dyn Error + 'static)> {
         let selected = match self.first {
-            Some(FirstV1::BeforeClock) => self.before_clock.failure().or_else(|| cause(&self.before)),
-            Some(FirstV1::Controller) => self.controller.failure(),
-            Some(FirstV1::Source) => self.source.failure(),
+            Some(FirstV1::BeforeClock) => self.before_clock.as_ref().and_then(|clock| clock.failure()).or_else(|| cause(&self.before)),
+            Some(FirstV1::Controller) => self.controller.native_failure_v1(),
+            Some(FirstV1::Source) => self.source.native_failure_v1(),
             Some(FirstV1::Funding) => cause(&self.primary),
-            Some(FirstV1::ControllerPost) => self.controller.post_failure(),
-            Some(FirstV1::SourcePost) => self.source.post_failure(),
-            Some(FirstV1::AfterClock) => self.after_clock.failure().or_else(|| cause(&self.after)),
-            Some(FirstV1::ControllerModel) => self.controller_model.as_ref().and_then(|model| model.failure()),
-            Some(FirstV1::SourceModel) => self.source_model.as_ref().and_then(|model| model.failure()),
+            Some(FirstV1::ControllerPost) => self.controller.native_post_failure_v2(),
+            Some(FirstV1::SourcePost) => self.source.native_post_failure_v2(),
+            Some(FirstV1::AfterClock) => self.after_clock.as_ref().and_then(|clock| clock.failure()).or_else(|| cause(&self.after)),
+            Some(FirstV1::ControllerModel) => self.controller.model_failure_v1(),
+            Some(FirstV1::SourceModel) => self.source.model_failure_v1(),
             None => None,
         };
-        selected.or_else(|| self.frontier_clock.failure()).or_else(|| cause(&self.primary)).or_else(|| cause(&self.posts))
+        selected.or_else(|| self.frontier_clock.as_ref().and_then(|clock| clock.failure())).or_else(|| cause(&self.primary)).or_else(|| cause(&self.posts))
             .or_else(|| self.final_failure_v1())
     }
 }
@@ -282,10 +324,10 @@ impl RootEnvironmentReadonlyContextV1 {
         self.require_complete_v1()?;
         self.wall_narrowing = Some((|| {
             let native = self.native.as_mut().ok_or(JournalError::ProtectedBoundary)?;
-            native.frontier_clock.narrow_wall_expiry_data_v1(expires);
+            native.frontier_clock.as_mut().ok_or(JournalError::ProtectedBoundary)?.narrow_wall_expiry_data_v1(expires);
             let sample = native.after.as_ref().and_then(|result| result.as_ref().ok())
                 .copied().ok_or(JournalError::ProtectedBoundary)?;
-            native.frontier_clock.require_final_sample_v1(sample)
+            native.frontier_clock.as_ref().ok_or(JournalError::ProtectedBoundary)?.require_final_sample_v1(sample)
         })());
         if matches!(self.wall_narrowing, Some(Ok(()))) { Ok(()) }
         else { Err(JournalError::ProtectedBoundary) }
@@ -293,12 +335,13 @@ impl RootEnvironmentReadonlyContextV1 {
 
     // Canonical selectors receive the same two readonly Journals. No raw map,
     // accepted execution, spec descriptor or policy result can be supplied here.
-    pub(crate) fn models_mut_v1(&mut self) -> Result<(&mut Journal, &mut Journal), JournalError> {
+    pub(crate) fn models_v1(&self)
+        -> Result<(HistoricalObservationV1<'_>, HistoricalObservationV1<'_>), JournalError>
+    {
         self.require_complete_v1()?;
-        let native = self.native.as_mut().ok_or(JournalError::ProtectedBoundary)?;
-        let controller = native.controller_model.as_mut().ok_or(JournalError::ProtectedBoundary)?;
-        let source = native.source_model.as_mut().ok_or(JournalError::ProtectedBoundary)?;
-        Ok((controller.journal_mut_v1()?, source.journal_mut_v1()?))
+        let native = self.native.as_ref().ok_or(JournalError::ProtectedBoundary)?;
+        Ok((HistoricalObservationV1::from_root_model_v1(native.controller.model_v1().map_err(root_readonly_error_v1)?)?,
+            HistoricalObservationV1::from_root_model_v1(native.source.model_v1().map_err(root_readonly_error_v1)?)?))
     }
 
     // Only the same completed readonly model supplies the Source rows to the
@@ -306,16 +349,16 @@ impl RootEnvironmentReadonlyContextV1 {
     // context through finish_models_after_once_v1 and its final complete gate.
     pub(crate) fn compiler_controller_state_v1(&self) -> Result<&std::collections::BTreeMap<(aos_sandbox_model::RecordNamespace, Vec<u8>), Vec<u8>>, JournalError> {
         self.require_complete_v1()?;
-        self.native.as_ref().and_then(|native| native.controller_model.as_ref())
-            .ok_or(JournalError::ProtectedBoundary)?.raw_state_v1()
+        self.native.as_ref().ok_or(JournalError::ProtectedBoundary)?.controller.model_v1()
+            .map_err(root_readonly_error_v1)?.raw_state_v1().map_err(root_readonly_error_v1)
     }
 
     pub(crate) fn compiler_input_bytes_v1(&self) -> Result<u64, JournalError> {
         self.require_complete_v1()?;
         let native = self.native.as_ref().ok_or(JournalError::ProtectedBoundary)?;
         let mut bytes = 0_u64;
-        for model in [&native.controller_model, &native.source_model] {
-            for ((_, key), value) in model.as_ref().ok_or(JournalError::ProtectedBoundary)?.raw_state_v1()? {
+        for target in [&native.controller, &native.source] {
+            for ((_, key), value) in target.model_v1().map_err(root_readonly_error_v1)?.raw_state_v1().map_err(root_readonly_error_v1)? {
                 let one = key.len().checked_add(value.len()).and_then(|value| u64::try_from(value).ok())
                     .ok_or(JournalError::JournalTooLarge)?;
                 bytes = bytes.checked_add(one).ok_or(JournalError::JournalTooLarge)?;
@@ -328,8 +371,8 @@ impl RootEnvironmentReadonlyContextV1 {
         -> Result<&aos_sandbox_ledger_replay::cache_current::State, JournalError>
     {
         self.require_complete_v1()?;
-        self.native.as_ref().and_then(|native| native.source_model.as_ref())
-            .ok_or(JournalError::ProtectedBoundary)?.raw_state_v1()
+        self.native.as_ref().ok_or(JournalError::ProtectedBoundary)?.source.model_v1()
+            .map_err(root_readonly_error_v1)?.raw_state_v1().map_err(root_readonly_error_v1)
     }
 
     pub(crate) fn clock_v1(&self) -> Result<RawPairedClockSample, JournalError> {
@@ -409,7 +452,7 @@ mod tests {
     #[test]
     fn dormant_native_and_unfunded_headers_expose_no_readonly_model() {
         let mut context = RootEnvironmentReadonlyContextV1::new();
-        assert!(context.models_mut_v1().is_err());
+        assert!(context.models_v1().is_err());
         assert!(context.clock_v1().is_err());
         assert!(context.native.is_none());
         context.finish_models_after_once_v1();

@@ -13,7 +13,7 @@ use crate::journal::{
     JournalAuthorityComparisonStampV1, JournalError, ProtectedJournalCurrentnessOriginalsV1,
     ProtectedJournalNamesV1,
 };
-use crate::reconciler::ClosedCreateFailurePlanDataV2;
+use aos_sandbox_protocol::domain_ledger::create_failure::ClosedCreateFailurePlanDataV2;
 
 use super::*;
 type Acquisition = aos_sandbox_protocol::host_execution_no_apply::recovery_acquisition::RootNoApplyRecoveryAcquisitionFieldsV2;
@@ -75,7 +75,7 @@ impl ControllerCutOriginalV2 {
             .and_then(|n| n.checked_add(witness.memory_bytes.checked_mul(2)?))
             .and_then(|n| u64::try_from(n).ok())
             .ok_or(JournalError::JournalTooLarge)?;
-        let models = ClosedCreateFailurePlanDataV2::receiving_demand_data_v2(controller)
+        let models = crate::reconciler::closed_create_failure_receiving_demand_from_observation_v2(crate::journal::historical_observation::HistoricalObservationV1::from_journal_v1(controller))
             .map_err(|_| JournalError::ProtectedBoundary)?;
         let clock = ControllerExecutionClockOriginalV1::fixed_demand_v1()
             .ok_or(JournalError::JournalTooLarge)?;
@@ -179,8 +179,7 @@ impl ControllerCutOriginalV2 {
                 return Err(JournalError::ProtectedBoundary);
             }
         }
-        self.plan = Some(crate::reconciler::plan_closed_create_failure_rows_data_v2(
-            controller,
+        self.plan = Some(crate::reconciler::plan_closed_create_failure_rows_from_observation_v2(crate::journal::historical_observation::HistoricalObservationV1::from_journal_v1(controller),
             terminal.marker(),
             terminal.archive_head(),
             terminal.signed_terminal_outcome(),

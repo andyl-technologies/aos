@@ -74,7 +74,7 @@ impl ProductionStorageExecutionAvailabilityOriginalV2 {
         let framing = aos_sandbox_protocol::execution_availability::MAXIMUM_EXECUTION_AVAILABILITY_BODY_BYTES_V2;
         // Two finite decoder owners and each retained/returned response copy
         // coexist with the resident capsule. Neither phase refunds the first.
-        let boot = aos_sandbox_linux::boot::RootOriginalKernelBootIdAttemptV1::dominant_requested_bytes_v1()
+        let boot = aos_linux_descriptors::boot::RootOriginalKernelBootIdAttemptV1::dominant_requested_bytes_v1()
             .ok_or_else(overflow)?;
         let phase_boot_inputs = boot.checked_mul(4).ok_or_else(overflow)?;
         let bytes = size_of::<Self>().checked_mul(2)

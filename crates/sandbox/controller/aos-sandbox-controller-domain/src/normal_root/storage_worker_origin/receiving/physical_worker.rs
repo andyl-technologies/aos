@@ -103,7 +103,7 @@ pub(super) struct PhysicalWorkerReceivingV1 {
     capture_final_pair: Option<Result<aos_sandbox_model::RawPairedClockSample, capture::CaptureFinalClockErrorV3>>,
     capture_final_comparison: Option<Result<(), aos_sandbox_broker::BrokerAdmissionError>>,
     capture_quiescence_entered: bool,
-    capture_quiescence_alive: Option<Result<bool, aos_sandbox_linux::Error>>,
+    capture_quiescence_alive: Option<Result<bool, aos_linux_descriptors::Error>>,
     capture_quiescence_population: CgroupPopulationObservationV1,
     capture_quiescence_population_result: Option<Result<(), CgroupPopulationObservationRefusalV1>>,
     capture_quiescence_result: Option<Result<(), StorageReceivingClosedV1>>,
@@ -144,11 +144,11 @@ pub(super) struct PhysicalWorkerReceivingV1 {
     after: Option<NativeResult>,
     shape: Option<Result<ResourceVector, aos_sandbox_model::AccountingError>>,
     socket_binding: Option<Result<(), RecordBindingError>>,
-    alive: Option<Result<bool, aos_sandbox_linux::Error>>,
+    alive: Option<Result<bool, aos_linux_descriptors::Error>>,
     membership: Option<ExactCgroupMembershipReadbackV1>,
     membership_result: Option<Result<(), ExactCgroupMembershipRefusalV1>>,
-    population: Option<Result<CgroupPopulationState, aos_sandbox_linux::Error>>,
-    population_owner: Option<Result<(), aos_sandbox_linux::Error>>,
+    population: Option<Result<CgroupPopulationState, aos_linux_descriptors::Error>>,
+    population_owner: Option<Result<(), aos_linux_descriptors::Error>>,
     binding_population: CgroupPopulationObservationV1,
     binding_population_result: Option<Result<(), CgroupPopulationObservationRefusalV1>>,
     final_population: CgroupPopulationObservationV1,
@@ -661,7 +661,7 @@ impl<'flight, 'original> StoragePhysicalWorkerLoanV1<'flight, 'original> {
             &mut original.binding_population,
         ));
         original.population = Some(original.binding_population.state().ok_or_else(|| {
-            aos_sandbox_linux::Error::InvalidInput {
+            aos_linux_descriptors::Error::InvalidInput {
                 field: "physical worker population", message: "native original retained".into(),
             }
         }));
@@ -909,7 +909,7 @@ impl<'flight, 'original> StoragePhysicalWorkerLoanV1<'flight, 'original> {
             &mut original.final_population,
         ));
         original.population = Some(original.final_population.state().ok_or_else(|| {
-            aos_sandbox_linux::Error::InvalidInput {
+            aos_linux_descriptors::Error::InvalidInput {
                 field: "physical worker population", message: "native original retained".into(),
             }
         }));

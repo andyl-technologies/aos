@@ -11,8 +11,6 @@ use super::{JournalError, ReadOnlyJournalNameWitness};
 use super::super::{JournalAuthorityInstance, native_backing::Selection};
 
 const SOURCE_OBSERVATIONS: usize = 6;
-#[cfg(target_os = "linux")]
-const CACHE_OBSERVATIONS: usize = 5;
 
 pub(in crate::journal) struct ReadonlyNameArchiveV1(
     aos_sandbox_journal::protected_storage::ReadonlyNameArchiveV1<JournalError>,
@@ -21,8 +19,7 @@ pub(in crate::journal) struct ReadonlyNameArchiveV1(
 impl ReadonlyNameArchiveV1 {
 
 
-    #[cfg(target_os = "linux")]
-    pub(super) fn cache() -> Self { Self::new(CACHE_OBSERVATIONS) }
+
 
     #[cfg(target_os = "linux")]
     pub(super) fn root_controller() -> Self { Self::new(SOURCE_OBSERVATIONS) }
@@ -69,15 +66,6 @@ impl ReadonlyNameArchiveV1 {
 
 
 
-    #[cfg(target_os = "linux")]
-    pub(super) fn cache_demand() -> Result<ResourceVector, JournalError> {
-        let cache = Self::demand(CACHE_OBSERVATIONS, crate::cache_residency::PROTECTED_CACHE_ROOT)?;
-        let source = Self::demand(CACHE_OBSERVATIONS,
-            crate::cache_residency::CONTROLLER_CACHE_READONLY_ROOT_V1)?;
-        Ok(D::ALL.into_iter().fold(cache, |value, dimension| {
-            value.with(dimension, value.get(dimension).max(source.get(dimension)))
-        }))
-    }
 
     fn demand(observations: usize, path: &str) -> Result<ResourceVector, JournalError> {
         let geometry = aos_sandbox_journal::protected_storage::ReadonlyNameArchiveV1::<JournalError>::
@@ -139,31 +127,5 @@ mod tests {
         assert!(demand.get(D::MemoryBytes) > std::mem::size_of::<ReadonlyNameArchiveV1>() as u64);
     }
 
-    #[test]
-    #[cfg(target_os = "linux")]
-    fn cache_roster_refuses_sixth_observation_without_entering_the_spare_source_slot() {
-        let directory = tempfile::tempdir().unwrap();
-        let file = tempfile::tempfile().unwrap();
-        let identity = aos_sandbox_journal::protected_storage::FileIdentity::of::<JournalError>(&file).unwrap();
-        let witness = ReadOnlyJournalNameWitness {
-            physical: aos_sandbox_journal::protected_storage::ReadOnlyJournalNameWitness::from_original_parts((
-                directory.path().join("absent"), "state.journal".to_owned(),
-                file.metadata().unwrap().uid(), identity, identity, identity,
-            )),
-        };
-        let archive = ReadonlyNameArchiveV1::cache();
 
-        // Actual negative Native observations exercise the closed roster only;
-        // this fixture supplies no genuine J loan or paid positive Cache cut.
-        for expected in 0..CACHE_OBSERVATIONS {
-            assert!(matches!(archive.observe_original_for_test(&witness, &file),
-                Err(JournalError::ReadOnlyNameReceivingFailure(index)) if usize::from(index) == expected));
-        }
-        assert!(matches!(archive.observe_original_for_test(&witness, &file),
-            Err(JournalError::ReadOnlyNameReceivingFailure(u8::MAX))));
-
-        assert_eq!(archive.0.observation_count(), CACHE_OBSERVATIONS);
-        assert!(archive.failure_at(CACHE_OBSERVATIONS as u8).is_none());
-        assert_eq!(ReadonlyNameArchiveV1::cache_demand().unwrap().get(D::OpenFiles), 40);
-    }
 }

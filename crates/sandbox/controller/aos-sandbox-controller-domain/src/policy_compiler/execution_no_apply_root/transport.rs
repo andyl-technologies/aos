@@ -10,26 +10,22 @@ use super::{
     RootExecutionNoApplyHostLeaseOriginalV2, RootExecutionNoApplyHostTrustOriginalV2,
     RootExecutionNoApplyModelsOriginalV2,
 };
-use crate::{
-    controller_resource_reservation::{ResourceReservationErrorV1, RootContinuationDemandV1},
-    journal::JournalError,
-    normal_root::{
-        NormalRootStartupErrorV1, RootControllerChunkSubjectSampleV1, RootPolicyAcceptedFlightV1,
-    },
-    policy_compiler::{
-        RootCurrentPolicyInputDataV1,
-        bounded_stream_io::{
-            DeadlineStreamDirectionV1, FixedDeadlineStreamIoV1, SliceDeadlineStreamIoV1,
-        },
-        continuation_policy::RootExecutionNoApplyPolicyOriginalV2,
-        provisioning_current::{
-            RootContinuationClockGateV1, RootContinuationHorizonDataV1,
-            finality_readonly::RootCreateFinalityReadonlyOriginalV1,
-        },
-        root_policy_prelude::RootExecutionNoApplyPreludeV2,
-        root_subject_chunk::RootSubjectChunkReceivingV1,
-    },
-};
+use crate::controller_resource_reservation::ResourceReservationErrorV1;
+use crate::controller_resource_reservation::RootContinuationDemandV1;
+use crate::journal::JournalError;
+use crate::normal_root::NormalRootStartupErrorV1;
+use crate::normal_root::RootControllerChunkSubjectSampleV1;
+use crate::normal_root::RootPolicyAcceptedFlightV1;
+use crate::policy_compiler::RootCurrentPolicyInputDataV1;
+use aos_sandbox_broker::bounded_stream_io::DeadlineStreamDirectionV1;
+use aos_sandbox_broker::bounded_stream_io::FixedDeadlineStreamIoV1;
+use aos_sandbox_broker::bounded_stream_io::SliceDeadlineStreamIoV1;
+use crate::policy_compiler::continuation_policy::RootExecutionNoApplyPolicyOriginalV2;
+use crate::policy_compiler::provisioning_current::RootContinuationClockGateV1;
+use crate::policy_compiler::provisioning_current::RootContinuationHorizonDataV1;
+use crate::policy_compiler::provisioning_current::finality_readonly::RootCreateFinalityReadonlyOriginalV1;
+use crate::policy_compiler::root_policy_prelude::RootExecutionNoApplyPreludeV2;
+use crate::policy_compiler::root_subject_chunk::RootSubjectChunkReceivingV1;
 use aos_sandbox_model::{
     ObjectDigest, RawPairedClockSample, ResourceDimension as D, ResourceVector,
 };
@@ -110,8 +106,8 @@ struct Native {
     stream_duplicate: Option<Result<OwnedFd, rustix::io::Errno>>,
     stream: Option<
         Result<
-            aos_sandbox_linux::unix_stream::RetainedUnixStream,
-            aos_sandbox_linux::unix_stream::RetainedUnixStreamAdmissionErrorV1,
+            aos_linux_descriptors::unix_stream::RetainedUnixStream,
+            aos_linux_descriptors::unix_stream::RetainedUnixStreamAdmissionErrorV1,
         >,
     >,
     geometry: Result<SubjectStreamReceiveGeometryV1, SeqpacketError>,
@@ -145,11 +141,13 @@ struct Native {
     posts: bool,
 }
 
-/// Quotes this sealed purpose's actual fixed transport before peer admission.
+/// Quotes only this actual upper transport before the native peer admission.
 ///
 /// This is geometry only. The private Root peer admission pays it on the same
 /// genuine R, before constructing any Native or receiving variable fields.
-pub(crate) fn fixed_receiving_demand_v2() -> Result<ResourceVector, ResourceReservationErrorV1> {
+/// Native Policy independently quotes its peer/current/four posts; none of
+/// those lower owners or traffic terms is included by this upper recipe.
+pub(crate) fn transport_receiving_demand_v2() -> Result<ResourceVector, ResourceReservationErrorV1> {
     let bad = || ResourceReservationErrorV1::Conflict;
     let incoming = MAXIMUM_CURRENT_HOST_NO_APPLY_LEASE_BYTES_V2
         .checked_add(296 + 28)
@@ -171,7 +169,7 @@ pub(crate) fn fixed_receiving_demand_v2() -> Result<ResourceVector, ResourceRese
     let geometry = RootControllerChunkSubjectSampleV1::receive_geometry_v1().map_err(|_| bad())?;
     let (raw, files) = geometry.receive_obligations_v1();
     let (stream_bytes, stream_files) =
-        aos_sandbox_linux::unix_stream::RetainedUnixStream::retained_admission_obligations_v1();
+        aos_linux_descriptors::unix_stream::RetainedUnixStream::retained_admission_obligations_v1();
     let clock =
         crate::policy_compiler::RetainedKernelPairedClockAttemptV1::dominant_requested_bytes_v1()
             .ok_or_else(bad)?;
@@ -349,7 +347,7 @@ impl Native {
         match self.stream_duplicate.take() {
             Some(Ok(fd)) => {
                 self.stream = Some(
-                    aos_sandbox_linux::unix_stream::RetainedUnixStream::from_owned_retaining_v1(fd),
+                    aos_linux_descriptors::unix_stream::RetainedUnixStream::from_owned_retaining_v1(fd),
                 )
             }
             reached => {

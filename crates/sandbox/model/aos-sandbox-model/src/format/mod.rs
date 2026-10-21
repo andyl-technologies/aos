@@ -48,7 +48,10 @@ pub use execution::{
 };
 pub use ownership_lease::{decode_ownership_lease, encode_ownership_lease};
 pub use git_upload_capacity::{decode_git_upload_capacity_v1, encode_git_upload_capacity_v1};
-pub use policy::{decode_optimization, decode_policy, encode_optimization, encode_policy};
+pub use policy::{
+    decode_optimization, decode_policy, encode_optimization, encode_policy,
+    policy_decoding_receiving_bytes_v1,
+};
 pub use publisher::{decode_publisher_domain_plan, encode_publisher_domain_plan};
 pub(crate) use publisher_request::encode_publisher_admission_draft_v1;
 pub use publisher_request::{

@@ -9,12 +9,13 @@ use std::os::unix::ffi::OsStrExt as _;
 use std::os::unix::fs::FileExt as _;
 use std::path::Path;
 
-use crate::boot::KernelBootId;
+use aos_linux_descriptors::boot::KernelBootId;
 use crate::cgroup::{CgroupV2Root, RetainedCgroupAnchor};
 use crate::immutable_file::is_kernel_verity_filesystem;
-use crate::pidfd::PidFd;
+use aos_linux_descriptors::pidfd::PidFd;
 use crate::uapi::{self, OpenHow, RESOLVE_BENEATH, RESOLVE_NO_MAGICLINKS, RESOLVE_NO_SYMLINKS};
-use crate::{Error, Result};
+use aos_linux_descriptors::Error;
+use aos_linux_descriptors::Result;
 
 use super::model::{
     PendingProcessObservationV2, PendingStartupProcessV2, RetainedStartupProcessV1,
@@ -373,13 +374,13 @@ fn revalidate_process_recipe(
     executable: Option<&OwnedFd>,
     expected_boot: [u8; 16],
     expected_identity: crate::pidfd::PidFdProcessIdentity,
-    expected_credentials: crate::pidfd::PidFdCredentials,
+    expected_credentials: aos_linux_descriptors::pidfd::PidFdCredentials,
     expected_cgroup: u64,
     expected_executable: Option<StartupExecutableObservationV1>,
     mut image_checks: ProcessImageChecks<'_>,
 ) -> Result<()> {
     let before_boot = KernelBootId::current()?.into_bytes();
-    let identity = pidfd.process_identity()?;
+    let identity = crate::pidfd::process_identity(&(pidfd))?;
     let info = cgroup.verify_exact_membership(pidfd)?;
     let retained_executable = executable.map(|image| image_checks.retained(image)).transpose()?;
     let current_executable = if executable.is_some() {
@@ -540,7 +541,7 @@ fn capture_process_recipe(
 
     let pidfd_owner = ReturnedProcessSlot::park(PidFd::open(pid)?, pidfd_destination);
     let pidfd = pidfd_owner.original()?;
-    let before_identity = pidfd.process_identity()?;
+    let before_identity = crate::pidfd::process_identity(&(pidfd))?;
     let before_info = pidfd.info()?;
     let credentials = before_info
         .credentials()
@@ -568,7 +569,7 @@ fn capture_process_recipe(
     let executable_observation = executable_owner.as_ref()
         .map(|owner| image_checks.retained(owner.original()?)).transpose()?;
     cgroup.verify_exact_membership(&pidfd)?;
-    let after_identity = pidfd.process_identity()?;
+    let after_identity = crate::pidfd::process_identity(&(pidfd))?;
     let after_info = pidfd.info()?;
     let current_executable = if capture_image {
         Some(image_checks.current(pid.get())?)

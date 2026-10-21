@@ -33,7 +33,7 @@ pub struct FsVerityReadOriginalV2 {
     fields: FsVerityFieldsV2,
     file: Option<std::fs::File>,
     bytes: Vec<u8>,
-    read: Option<Result<(), crate::Error>>,
+    read: Option<Result<(), aos_linux_descriptors::Error>>,
     bytes_taken: bool,
     result: Option<Result<(), ImmutableFileError>>,
     reentry: Option<ImmutableFileError>,

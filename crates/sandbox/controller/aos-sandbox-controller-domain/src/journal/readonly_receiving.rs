@@ -18,13 +18,6 @@ pub(super) enum ReadonlyReceivingContextV1<'dispatch, 'borrow, 'original, 'data>
             'borrow, 'original, 'data,
         >,
     ),
-    Cache(
-        &'dispatch mut crate::cache_residency::CacheHeldReadonlyContextV1<
-            'borrow,
-            'original,
-            'data,
-        >,
-    ),
 }
 
 pub(super) struct CapturedReadonlyReceivingContextV1<'dispatch, 'borrow, 'original, 'data> {
@@ -45,7 +38,6 @@ impl<'dispatch, 'borrow, 'original, 'data>
         JournalError,
     > {
         match &mut self {
-            Self::Cache(receiving) => receiving.require_captured_file_end(captured_end)?,
             Self::RootController(receiving) => receiving.require_captured_file_end(captured_end)?,
         }
 
@@ -72,9 +64,6 @@ impl CapturedReadonlyReceivingContextV1<'_, '_, '_, '_> {
             ReadonlyReceivingContextV1::RootController(receiving) => {
                 receiving.before_semantic_replay(state, transaction)
             }
-            ReadonlyReceivingContextV1::Cache(receiving) => {
-                receiving.before_semantic_replay(state, transaction)
-            }
         }
     }
 
@@ -90,13 +79,6 @@ impl CapturedReadonlyReceivingContextV1<'_, '_, '_, '_> {
             ReadonlyReceivingContextV1::RootController(receiving) => receiving.observe_native_commit(
                 transaction, begin_sequence, commit_sequence, begin_offset, end_offset,
             ),
-            ReadonlyReceivingContextV1::Cache(receiving) => receiving.observe_native_commit(
-                transaction,
-                begin_sequence,
-                commit_sequence,
-                begin_offset,
-                end_offset,
-            ),
         }
     }
 
@@ -106,9 +88,6 @@ impl CapturedReadonlyReceivingContextV1<'_, '_, '_, '_> {
         durable_end: u64,
     ) -> Result<(), JournalError> {
         match &mut self.receiver {
-            ReadonlyReceivingContextV1::Cache(receiving) => {
-                receiving.finish_native(durable_next, durable_end, self.captured_end)
-            }
             ReadonlyReceivingContextV1::RootController(receiving) => {
                 receiving.finish_native_replay(durable_next, durable_end)
             }

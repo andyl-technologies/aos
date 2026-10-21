@@ -45,7 +45,7 @@ const EXPORT_DEADLINE_NANOSECONDS: u64 = 130_000_000_000;
 /// Coordinator supplies its independently admitted job and baseline originals;
 /// this owner never constructs a launch permit or a generation0 acknowledgment.
 pub(crate) struct HostCanaryRootExportOriginalV1 {
-    storage_cgroup: Option<std::result::Result<RetainedCgroupAnchor, aos_sandbox_linux::Error>>,
+    storage_cgroup: Option<std::result::Result<RetainedCgroupAnchor, aos_linux_descriptors::Error>>,
     socket: Option<std::result::Result<DescriptorSubjectSocket, RetainedSeqpacketAdmissionErrorV1>>,
     reply: Option<std::result::Result<ReceivedDescriptorRecord, RetainedSeqpacketReceiveErrorV1>>,
     request: Option<StorageCanaryExportRequestV1>,
@@ -54,8 +54,8 @@ pub(crate) struct HostCanaryRootExportOriginalV1 {
     attempted: bool,
     closed: bool,
     full_job: Option<Result<std::result::Result<
-        aos_sandbox_linux::immutable_file::SealedReadOnlyCredential,
-        aos_sandbox_linux::immutable_file::ImmutableFileError,
+        aos_linux_descriptors::credential::SealedReadOnlyCredential,
+        aos_linux_descriptors::ImmutableFileError,
     >>>,
     selected_window: Option<([u8; 16], u64, u64)>,
     post_debt: [Option<CanaryExportCause>; 8],
@@ -65,7 +65,7 @@ pub(crate) struct HostCanaryRootExportOriginalV1 {
 #[derive(Debug, thiserror::Error)]
 enum CanaryExportCause {
     #[error(transparent)]
-    Linux(#[from] aos_sandbox_linux::Error),
+    Linux(#[from] aos_linux_descriptors::Error),
     #[error(transparent)]
     Kernel(#[from] rustix::io::Errno),
     #[error(transparent)]
@@ -77,12 +77,12 @@ enum CanaryExportCause {
     #[error(transparent)]
     Carrier(#[from] SeqpacketError),
     #[error(transparent)]
-    SealObservation(aos_sandbox_linux::immutable_file::ImmutableFileError),
+    SealObservation(aos_linux_descriptors::ImmutableFileError),
     #[error("selected Host original clock or custody changed")]
     Changed,
     #[error("selected Host original paired clock observation failed")]
     PairedClock {
-        boot: Option<aos_sandbox_linux::Error>,
+        boot: Option<aos_linux_descriptors::Error>,
         clock: Option<HostError>,
     },
 }
@@ -207,7 +207,7 @@ impl HostCanaryRootExportOriginalV1 {
     }
 
     fn require_selected_clock_v2(&self) -> CanaryExportResult<()> {
-        let boot = aos_sandbox_linux::boot::KernelBootId::current();
+        let boot = aos_linux_descriptors::boot::KernelBootId::current();
         let now = boottime();
         // Both genuine observations occur before either Result is inspected.
         let (expected, before, deadline) = self.selected_window
@@ -379,13 +379,13 @@ impl Drop for SelectedHostExportObservationV2<'_> {
 fn require_selected_job_clock_v2(
     job: &crate::broker::canary_job::OriginalHostCanaryJobV1,
 ) -> CanaryExportResult<()> {
-    let boot = aos_sandbox_linux::boot::KernelBootId::current();
+    let boot = aos_linux_descriptors::boot::KernelBootId::current();
     let now = boottime();
     compare_selected_clock_v2(boot, now, job.boot_id, job.not_before, job.deadline)
 }
 
 fn compare_selected_clock_v2(
-    boot: std::result::Result<aos_sandbox_linux::boot::KernelBootId, aos_sandbox_linux::Error>,
+    boot: std::result::Result<aos_linux_descriptors::boot::KernelBootId, aos_linux_descriptors::Error>,
     now: Result<u64>,
     expected: [u8; 16],
     before: u64,

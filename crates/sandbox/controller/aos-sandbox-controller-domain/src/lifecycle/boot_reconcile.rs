@@ -17,7 +17,9 @@ use aos_sandbox_api::aos::sandbox::local::v1::{
     StorageLifecycleInventoryRecord, StorageLifecycleTransitionRecord,
 };
 use aos_sandbox_model::{ObjectDigest, OperationId, ResourceId, SandboxId};
-use aos_sandbox_protocol::domain_ledger::lifecycle_model::LifecycleResourceV1;
+use aos_sandbox_protocol::domain_ledger::lifecycle_model::{
+    LifecycleBootDomainEntryDataV1, LifecycleResourceV1,
+};
 use aos_sandbox_protocol::authenticated_session::all_methods::{
     AuthenticatedBrokerMethodOutcomeV1, AuthenticatedBrokerMethodResultV1,
     AuthenticatedBrokerOutcomeDirectionV1,
@@ -423,7 +425,7 @@ pub struct LifecycleAuthenticatedBrokerDomainInventoryV1 {
     broker_sequence: u64,
     generation: u64,
     source: ObjectDigest,
-    entries: Vec<LifecycleBootDomainEntryV1>,
+    entries: Vec<LifecycleBootDomainEntryDataV1>,
     commitment: ObjectDigest,
 }
 
@@ -467,7 +469,7 @@ impl LifecycleAuthenticatedBrokerDomainInventoryV1 {
                 let entries = inventory
                     .mounts()
                     .iter()
-                    .map(|mount| LifecycleBootDomainEntryV1 {
+                    .map(|mount| LifecycleBootDomainEntryDataV1 {
                         resource: LifecycleResourceV1::Attachment(ResourceId::from_bytes(
                             *mount.recipe().attachment_id(),
                         )),
@@ -493,7 +495,7 @@ impl LifecycleAuthenticatedBrokerDomainInventoryV1 {
                 let entries = inventory
                     .networks()
                     .iter()
-                    .map(|network| LifecycleBootDomainEntryV1 {
+                    .map(|network| LifecycleBootDomainEntryDataV1 {
                         resource: LifecycleResourceV1::Sandbox(SandboxId::from_bytes(
                             *network.fence().sandbox_id(),
                         )),
@@ -580,7 +582,7 @@ impl LifecycleAuthenticatedBrokerDomainInventoryV1 {
 
     /// Borrows the complete stable-sorted physical rows, including empty state.
     #[must_use]
-    pub fn entries(&self) -> &[LifecycleBootDomainEntryV1] {
+    pub fn entries(&self) -> &[LifecycleBootDomainEntryDataV1] {
         &self.entries
     }
 
@@ -1291,7 +1293,7 @@ impl LifecycleAuthenticatedAtomicStorageSuccessorV1 {
             &message,
             signature,
         )?;
-        let host_boot = aos_sandbox_linux::boot::KernelBootId::current()
+        let host_boot = aos_linux_descriptors::boot::KernelBootId::current()
             .map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?
             .into_bytes();
         if challenge.operation() != operation.operation().operation_id()
@@ -2098,17 +2100,10 @@ fn exact_array<const N: usize>(bytes: &[u8]) -> Result<[u8; N], LifecyclePhase6E
         .map_err(|_| LifecyclePhase6ErrorV1::InvalidInput)
 }
 
-/// Identifies one row in a complete authenticated domain inventory.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub struct LifecycleBootDomainEntryV1 {
-    resource: LifecycleResourceV1,
-    identity: ObjectDigest,
-}
-
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct LifecyclePhysicalBootRowV1 {
     domain: LifecycleBootDomainV1,
-    entry: LifecycleBootDomainEntryV1,
+    entry: LifecycleBootDomainEntryDataV1,
     authority: Option<OperationId>,
     quarantined: bool,
 }
@@ -2318,30 +2313,6 @@ impl LifecycleAuthenticatedBootDesiredV1 {
     }
 }
 
-impl LifecycleBootDomainEntryV1 {
-    pub(crate) fn from_protected_cache(
-        resource: LifecycleResourceV1,
-        identity: ObjectDigest,
-    ) -> Result<Self, LifecyclePhase6ErrorV1> {
-        if resource.as_bytes() == &[0; 16] || identity.as_bytes() == &[0; 32] {
-            return Err(LifecyclePhase6ErrorV1::InvalidInput);
-        }
-        Ok(Self { resource, identity })
-    }
-
-    /// Returns the logical resource represented by this physical row.
-    #[must_use]
-    pub const fn resource(self) -> LifecycleResourceV1 {
-        self.resource
-    }
-
-    /// Returns the complete protected row commitment used for stable order.
-    #[must_use]
-    pub const fn identity(self) -> ObjectDigest {
-        self.identity
-    }
-}
-
 /// Retains a complete authenticated Host runtime inventory, including empty.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LifecycleAuthenticatedRuntimeInventoryV1 {
@@ -2352,7 +2323,7 @@ pub struct LifecycleAuthenticatedRuntimeInventoryV1 {
     broker_sequence: u64,
     generation: u64,
     source: ObjectDigest,
-    entries: Vec<LifecycleBootDomainEntryV1>,
+    entries: Vec<LifecycleBootDomainEntryDataV1>,
     runtime_facts: Vec<LifecycleAuthenticatedRuntimeFactV1>,
     stopped_namespace: Option<aos_sandbox_protocol::host_stopped_namespace::HostStoppedNamespaceDataV4>,
     recovered_namespace: Option<aos_sandbox_protocol::host_recovered_namespace::HostRecoveredNamespaceDataV7>,
@@ -2620,7 +2591,7 @@ impl LifecycleAuthenticatedRuntimeInventoryV1 {
                     .try_into()
                     .map_err(|_| LifecyclePhase6ErrorV1::InvalidInput)?,
             );
-            entries.push(LifecycleBootDomainEntryV1 {
+            entries.push(LifecycleBootDomainEntryDataV1 {
                 resource: LifecycleResourceV1::Sandbox(SandboxId::from_bytes(sandbox_bytes)),
                 identity,
             });
@@ -2755,7 +2726,7 @@ impl LifecycleAuthenticatedRuntimeInventoryV1 {
 
     /// Borrows all current runtimes in strict physical-identity order.
     #[must_use]
-    pub fn entries(&self) -> &[LifecycleBootDomainEntryV1] {
+    pub fn entries(&self) -> &[LifecycleBootDomainEntryDataV1] {
         &self.entries
     }
 
@@ -2857,7 +2828,7 @@ fn runtime_inventory_digest(
     _broker_sequence: u64,
     generation: u64,
     source: ObjectDigest,
-    entries: &[LifecycleBootDomainEntryV1],
+    entries: &[LifecycleBootDomainEntryDataV1],
 ) -> ObjectDigest {
     let domain = complete_domain_inventory_digest(
         LifecycleBootDomainV1::Runtime,
@@ -2882,7 +2853,7 @@ fn runtime_inventory_digest(
 pub struct LifecycleAuthenticatedTransferInventoryV1 {
     generation: u64,
     source: ObjectDigest,
-    entries: Vec<LifecycleBootDomainEntryV1>,
+    entries: Vec<LifecycleBootDomainEntryDataV1>,
     commitment: ObjectDigest,
 }
 
@@ -2907,7 +2878,7 @@ impl LifecycleAuthenticatedTransferInventoryV1 {
             if record.domain() != crate::local_inventory::MultiNodeJournalDomainV1::SnapshotTransfer {
                 return Err(LifecyclePhase6ErrorV1::InvalidInput);
             }
-            entries.push(LifecycleBootDomainEntryV1 {
+            entries.push(LifecycleBootDomainEntryDataV1 {
                 resource: LifecycleResourceV1::Other(ResourceId::from_bytes(
                     *record.operation().as_bytes(),
                 )),
@@ -2943,7 +2914,7 @@ impl LifecycleAuthenticatedTransferInventoryV1 {
 
     /// Borrows all retained transfers in strict record-identity order.
     #[must_use]
-    pub fn entries(&self) -> &[LifecycleBootDomainEntryV1] {
+    pub fn entries(&self) -> &[LifecycleBootDomainEntryDataV1] {
         &self.entries
     }
 
@@ -2964,7 +2935,7 @@ pub(crate) fn fresh_physical_inventory(
     mounts: &LifecycleAuthenticatedBrokerDomainInventoryV1,
     storage: &LifecycleAuthenticatedStorageInventoryV1,
     network: &LifecycleAuthenticatedBrokerDomainInventoryV1,
-    cache: &crate::cache_residency::CacheLifecycleBootInventoryV1,
+    cache: &aos_sandbox_cache::CacheLifecycleBootInventoryV1,
     transfer: &LifecycleAuthenticatedTransferInventoryV1,
 ) -> Result<LifecycleFreshPhysicalInventoryV1, LifecyclePhase6ErrorV1> {
     let domains = [
@@ -3027,7 +2998,7 @@ pub(crate) fn fresh_physical_inventory(
         );
         rows.push(LifecyclePhysicalBootRowV1 {
             domain: LifecycleBootDomainV1::Storage,
-            entry: LifecycleBootDomainEntryV1 {
+            entry: LifecycleBootDomainEntryDataV1 {
                 resource: storage.resource,
                 identity,
             },
@@ -3146,7 +3117,7 @@ impl LifecycleBootInventoryBootstrapSourceV1 {
         storage: &LifecycleAuthenticatedStorageInventoryBootstrapV1,
         storage_launch: &crate::DurableStorageResourceInventorySnapshotV1,
         network: &LifecycleAuthenticatedBrokerDomainInventoryBootstrapV1,
-        cache: &crate::cache_residency::CacheLifecycleBootInventoryV1,
+        cache: &aos_sandbox_cache::CacheLifecycleBootInventoryV1,
         transfer: &LifecycleAuthenticatedTransferInventoryV1,
     ) -> Result<Self, LifecyclePhase6ErrorV1> {
         let challenge_binding = (
@@ -4036,7 +4007,7 @@ fn complete_domain_inventory_digest(
     domain: LifecycleBootDomainV1,
     generation: u64,
     source: ObjectDigest,
-    entries: &[LifecycleBootDomainEntryV1],
+    entries: &[LifecycleBootDomainEntryDataV1],
 ) -> ObjectDigest {
     let mut hasher = Sha256::new()
         .chain_update(b"aos.sandbox.lifecycle.complete-domain-inventory.v1\0")

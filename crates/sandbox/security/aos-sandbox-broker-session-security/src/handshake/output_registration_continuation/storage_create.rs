@@ -13,7 +13,7 @@ mod outcome;
 mod publication_inputs;
 pub use publication_inputs::CreateStorageCompletedPreparationDataV1;
 use aos_sandbox_protocol::authorization_artifact::SignedBrokerPlan;
-use aos_sandbox_controller_domain::journal::broker_session_receiving::StorageCreateUseSecurityShapeDataV1;
+use aos_sandbox_policy::storage_create_use_data::StorageCreateUseSecurityShapeDataV1;
 
 /// Owns empty Create Prepare destinations without an authorization factory.
 ///

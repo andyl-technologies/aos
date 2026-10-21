@@ -25,6 +25,7 @@ use aos_sandbox_protocol::domain_ledger::lifecycle_model::{
 use sha2::{Digest as _, Sha256};
 
 use crate::Journal;
+use crate::journal::historical_observation::HistoricalObservationV1;
 use aos_sandbox_protocol::public_api::request::DormantSandboxRequestKindV1;
 use aos_sandbox_protocol::public_api::projection::{
     PublicProjectionError, PublicProjectionKindV1, PublicProjectionRecordV1,
@@ -39,7 +40,7 @@ use super::{
     LifecycleResourceStateDigestV1, LifecycleResumeSourceV1, LifecycleRuntimeAdmissionErrorV1,
     LifecycleRuntimeAdmissionFenceV1, LifecycleSemanticCommitFactV1, LifecycleSemanticCommitV1,
     LifecycleSemanticEvidenceV1, LifecycleTargetFenceV1, LifecycleTimeV1, ResourceExpectationV1,
-    ResourceExpectedStateV1, lifecycle_runtime_admission_fence_from_journal_v1,
+    ResourceExpectedStateV1, lifecycle_runtime_admission_fence_from_observation_v2,
 };
 
 /// Retains one method-specific intent and its exact canonical expectations.
@@ -296,6 +297,23 @@ fn semantic_target(intent: &LifecycleIntentV1) -> LifecycleResourceV1 {
 /// and protected current-state join fails closed.
 pub fn lifecycle_public_mutation_admission_v1(
     journal: &mut Journal,
+    operation: OperationId,
+    project: ProjectId,
+    node: NodeId,
+    request: &DormantSandboxRequestKindV1,
+) -> Result<LifecyclePublicMutationAdmissionV1, LifecyclePublicMutationAdmissionErrorV1> {
+    lifecycle_public_mutation_admission_from_observation_v2(
+        HistoricalObservationV1::from_journal_v1(journal),
+        operation,
+        project,
+        node,
+        request,
+    )
+}
+
+// The public Controller endpoint and private Root readers share this one body.
+pub(crate) fn lifecycle_public_mutation_admission_from_observation_v2(
+    journal: HistoricalObservationV1<'_>,
     operation: OperationId,
     project: ProjectId,
     node: NodeId,
@@ -612,13 +630,24 @@ pub fn lifecycle_public_mutation_admission_v1(
     })
 }
 
+/// Prices the changed historical loan arguments at the actual admission caller.
+pub(crate) fn historical_admission_control_bytes_v2() -> Option<usize> {
+    // The deepest branch retains admission -> runtime_fence -> runtime join,
+    // or admission -> generated identity -> operation projection. Projection
+    // and Runtime own their separate actual lower interfaces below those three.
+    std::mem::size_of::<HistoricalObservationV1<'_>>().checked_mul(9)?
+        .checked_add(crate::controller_service::public_projection::
+            projection_observation_control_bytes_v2()?)?
+        .checked_add(crate::runtime_authority::current_observation_control_bytes_v2()?)
+}
+
 fn runtime_fence(
-    journal: &mut Journal,
+    journal: HistoricalObservationV1<'_>,
     project: ProjectId,
     sandbox: SandboxId,
     node: NodeId,
 ) -> Result<LifecycleRuntimeAdmissionFenceV1, LifecyclePublicMutationAdmissionErrorV1> {
-    lifecycle_runtime_admission_fence_from_journal_v1(journal, project, sandbox, node)
+    lifecycle_runtime_admission_fence_from_observation_v2(journal, project, sandbox, node)
         .map_err(Into::into)
 }
 
@@ -736,13 +765,13 @@ fn current_expectation_data_v2(
 }
 
 fn operation_projection(
-    journal: &Journal,
+    journal: HistoricalObservationV1<'_>,
     operation: OperationId,
     project: ProjectId,
     kind: PublicProjectionKindV1,
 ) -> Result<PublicProjectionRecordV1, LifecyclePublicMutationAdmissionErrorV1> {
-    let mut matching = PublicProjectionStoreV1::new(journal)
-        .list_operation(operation)?
+    let mut matching = crate::controller_service::public_projection::
+        list_operation_from_observation_v2(journal, operation)?
         .into_iter()
         .filter(|projection| projection.resource().kind() == kind);
     let projection = matching
@@ -756,19 +785,19 @@ fn operation_projection(
 }
 
 fn current_projection(
-    journal: &Journal,
+    journal: HistoricalObservationV1<'_>,
     project: ProjectId,
     kind: PublicProjectionKindV1,
     identity: [u8; 16],
 ) -> Result<PublicProjectionRecordV1, LifecyclePublicMutationAdmissionErrorV1> {
-    PublicProjectionStoreV1::new(journal)
-        .get(kind, identity)?
+    crate::controller_service::public_projection::
+        get_from_observation_v2(journal, kind, identity)?
         .filter(|projection| projection.project() == project)
         .ok_or(LifecyclePublicMutationAdmissionErrorV1::MissingCurrentProjection)
 }
 
 fn generated_sandbox(
-    journal: &Journal,
+    journal: HistoricalObservationV1<'_>,
     operation: OperationId,
     project: ProjectId,
 ) -> Result<SandboxId, LifecyclePublicMutationAdmissionErrorV1> {
@@ -778,7 +807,7 @@ fn generated_sandbox(
 }
 
 fn generated_execution(
-    journal: &Journal,
+    journal: HistoricalObservationV1<'_>,
     operation: OperationId,
     project: ProjectId,
 ) -> Result<ExecutionId, LifecyclePublicMutationAdmissionErrorV1> {
@@ -792,7 +821,7 @@ fn generated_execution(
 }
 
 fn generated_view(
-    journal: &Journal,
+    journal: HistoricalObservationV1<'_>,
     operation: OperationId,
     project: ProjectId,
 ) -> Result<ViewId, LifecyclePublicMutationAdmissionErrorV1> {
@@ -806,7 +835,7 @@ fn generated_view(
 }
 
 fn generated_attachment(
-    journal: &Journal,
+    journal: HistoricalObservationV1<'_>,
     operation: OperationId,
     project: ProjectId,
 ) -> Result<[u8; 16], LifecyclePublicMutationAdmissionErrorV1> {
@@ -820,7 +849,7 @@ fn generated_attachment(
 }
 
 fn generated_snapshot(
-    journal: &Journal,
+    journal: HistoricalObservationV1<'_>,
     operation: OperationId,
     project: ProjectId,
 ) -> Result<SnapshotId, LifecyclePublicMutationAdmissionErrorV1> {

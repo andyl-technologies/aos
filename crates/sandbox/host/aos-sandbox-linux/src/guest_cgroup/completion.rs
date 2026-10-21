@@ -6,7 +6,8 @@
 
 use std::os::fd::{AsRawFd as _, OwnedFd};
 
-use crate::{Error, Result};
+use aos_linux_descriptors::Error;
+use aos_linux_descriptors::Result;
 
 const DESCRIPTOR: i32 = 10;
 const ACK: &[u8; 8] = b"AOSGTA01";

@@ -11,7 +11,7 @@ use std::num::NonZeroU64;
 use std::os::fd::{AsFd as _, OwnedFd};
 
 use super::{AncestorHostRecordPinV1, KernelAuthorizedRecordSubject, RecordCredentials, SeqpacketError, checked_pid};
-use crate::pidfd::PidFd;
+use aos_linux_descriptors::pidfd::PidFd;
 use crate::uapi::{self, RawAncillary, RawReceiveObservationV1, ReceiveCustodyPolicyV1};
 
 /// Owns a strict receive failure without exposing its captured sensitive data.
@@ -355,7 +355,7 @@ impl CapturedMessageV1 {
                         if self.ancestor.is_some() {
                             return Err(SeqpacketError::Ancillary("duplicate SCM_PIDFD"));
                         }
-                        let observed = PidFd::require_ancestor_host_original(fd.as_fd());
+                        let observed = crate::pidfd::require_ancestor_host_original(fd.as_fd());
                         match observed {
                             Ok(observed) if observed == pin => {}
                             Ok(_) => return Err(SeqpacketError::Ancillary("ancestor Host pin changed")),
@@ -367,7 +367,7 @@ impl CapturedMessageV1 {
                         // The actual staged kernel slot moves only after all
                         // fallible admission checks, directly into this owner.
                         if let Some(RawAncillary::PidFd(fd)) = self.raw.ancillary[index].take() {
-                            self.ancestor = Some(AncestorHostRecordPinV1 { fd, identity: pin });
+                            self.ancestor = Some(AncestorHostRecordPinV1 { fd: fd.into_owned(), identity: pin });
                         }
                         continue;
                     }
@@ -388,7 +388,7 @@ impl CapturedMessageV1 {
                     return Err(SeqpacketError::Ancillary("duplicate SCM_CREDENTIALS"));
                 }
                 Some(RawAncillary::PidFd(_)) if self.partial_pidfd.is_none() => {
-                    match PidFd::adopt_received_slot(&mut self.raw.ancillary[index]) {
+                    match crate::pidfd::adopt_received_slot(&mut self.raw.ancillary[index]) {
                         Ok(pidfd) => self.partial_pidfd = Some(pidfd),
                         Err(source) => {
                             if policy == ReceiveCustodyPolicyV1::Retaining {
@@ -512,7 +512,7 @@ impl ReceiveAttemptV1 {
             cutoff.check_v4().map_err(|source|
                 RetainedSeqpacketReceiveErrorV1::before_original_capture(source.into()))?;
         }
-        let endpoint = uapi::duplicate_at_least(fd, 0)
+        let endpoint = aos_linux_descriptors::native::duplicate_at_least(fd, 0)
             .map_err(|source| RetainedSeqpacketReceiveErrorV1::before_original_capture(source.into()))?;
         let mut attempt = Self {
             endpoint,
@@ -537,7 +537,7 @@ impl ReceiveAttemptV1 {
             shutdown_failure: None,
             network_cutoff,
         };
-        let observed = uapi::socket_cookie(attempt.endpoint.as_fd());
+        let observed = aos_linux_descriptors::native::socket_cookie(attempt.endpoint.as_fd());
         if let Ok(value) = &observed {
             attempt.original_cookie = NonZeroU64::new(*value);
         }
@@ -555,7 +555,7 @@ impl ReceiveAttemptV1 {
     ) -> Result<usize, uapi::RawReceiveFailureV1> {
         if self.messages.len() >= 2 {
             return Err(uapi::RawReceiveFailureV1 {
-                source: crate::Error::invalid("original receive samples", "fixed two-sample ceiling exceeded"),
+                source: aos_linux_descriptors::Error::invalid("original receive samples", "fixed two-sample ceiling exceeded"),
                 nonconsuming_syscall: false,
             });
         }
@@ -574,7 +574,7 @@ impl ReceiveAttemptV1 {
             flags,
             &mut message.raw,
             ReceiveCustodyPolicyV1::Retaining,
-            cutoff.map(|_| &mut gate as &mut dyn FnMut() -> crate::Result<()>),
+            cutoff.map(|_| &mut gate as &mut dyn FnMut() -> aos_linux_descriptors::Result<()>),
         )
     }
 
@@ -586,8 +586,8 @@ impl ReceiveAttemptV1 {
             && self.messages.iter().all(|message| !message.raw.received)
         {
             match &failure.source {
-                crate::Error::Syscall { source, .. } if source.raw_os_error() == Some(libc::EAGAIN) => RetryV1::WouldBlock,
-                crate::Error::Syscall { source, .. } if source.raw_os_error() == Some(libc::EINTR) => RetryV1::Interrupted,
+                aos_linux_descriptors::Error::Syscall { source, .. } if source.raw_os_error() == Some(libc::EAGAIN) => RetryV1::WouldBlock,
+                aos_linux_descriptors::Error::Syscall { source, .. } if source.raw_os_error() == Some(libc::EINTR) => RetryV1::Interrupted,
                 _ => RetryV1::Never,
             }
         } else {
@@ -746,7 +746,7 @@ mod tests {
     }
 
     fn pair() -> (SeqpacketSocket, SeqpacketSocket) {
-        let (left, right) = uapi::seqpacket_pair().unwrap();
+        let (left, right) = aos_linux_descriptors::native::seqpacket_pair().unwrap();
         let mut left = SeqpacketSocket::from_owned(left).unwrap();
         let mut right = SeqpacketSocket::from_owned(right).unwrap();
         left.enable_record_subjects().unwrap();
@@ -777,7 +777,7 @@ mod tests {
         let (_ordinary_peer, mut ordinary) = pair();
         let selected_fd = selected.borrow_fd().unwrap().as_raw_fd();
         let ordinary_fd = ordinary.borrow_fd().unwrap().as_raw_fd();
-        let cookie = uapi::socket_cookie(selected.borrow_fd().unwrap()).unwrap();
+        let cookie = aos_linux_descriptors::native::socket_cookie(selected.borrow_fd().unwrap()).unwrap();
         let old = rustix::process::getrlimit(rustix::process::Resource::Nofile);
         rustix::process::setrlimit(
             rustix::process::Resource::Nofile,
@@ -794,7 +794,7 @@ mod tests {
         let ordinary_error = ordinary_result.unwrap_err();
         for error in [&selected_error, &ordinary_error] {
             assert!(matches!(&error.source,
-                SeqpacketError::Kernel(crate::Error::Syscall { source, .. })
+                SeqpacketError::Kernel(aos_linux_descriptors::Error::Syscall { source, .. })
                     if source.raw_os_error() == Some(libc::EMFILE)));
             assert!(error.attempt.is_none());
             assert!(!error.is_nonconsuming_would_block());
@@ -805,14 +805,14 @@ mod tests {
         assert!(ordinary.fd.is_none());
         let (retained, shutdown) = selected_error.uncaptured_original.as_ref().unwrap();
         assert_eq!(retained.as_raw_fd(), selected_fd);
-        assert_eq!(uapi::socket_cookie(retained.as_fd()).unwrap(), cookie);
+        assert_eq!(aos_linux_descriptors::native::socket_cookie(retained.as_fd()).unwrap(), cookie);
         assert!(shutdown.is_ok());
-        assert!(uapi::raw_fd_is_open(selected_fd));
+        assert!(aos_linux_descriptors::native::raw_fd_is_open(selected_fd));
         assert!(ordinary_error.uncaptured_original.is_none());
-        assert!(!uapi::raw_fd_is_open(ordinary_fd));
+        assert!(!aos_linux_descriptors::native::raw_fd_is_open(ordinary_fd));
 
         drop(selected_error);
-        assert!(!uapi::raw_fd_is_open(selected_fd));
+        assert!(!aos_linux_descriptors::native::raw_fd_is_open(selected_fd));
     }
 
     #[test]
@@ -869,13 +869,13 @@ mod tests {
         let Some(RawAncillary::Rights(fds)) = attempt.messages[0].raw.ancillary.iter().flatten()
             .find(|item| matches!(item, RawAncillary::Rights(_))) else { panic!("ordinary slot disappeared"); };
         let raw = fds[0].as_raw_fd();
-        assert!(uapi::raw_fd_is_open(raw));
+        assert!(aos_linux_descriptors::native::raw_fd_is_open(raw));
         assert!(sender.send(b"permanently ended").is_err());
         let debug = format!("{error:?}");
         assert!(!debug.contains("private body"));
         assert!(!debug.contains("/dev/null"));
         drop(error);
-        assert!(!uapi::raw_fd_is_open(raw));
+        assert!(!aos_linux_descriptors::native::raw_fd_is_open(raw));
     }
 
     #[test]
@@ -903,14 +903,14 @@ mod tests {
             attempt.messages.push(CapturedMessageV1::empty(1));
             attempt.messages[0].raw.received = true;
             let failure = uapi::RawReceiveFailureV1 {
-                source: crate::Error::Syscall { operation: "post-receive inspection fixture", source: std::io::Error::from_raw_os_error(errno) },
+                source: aos_linux_descriptors::Error::Syscall { operation: "post-receive inspection fixture", source: std::io::Error::from_raw_os_error(errno) },
                 nonconsuming_syscall: false,
             };
             let error = attempt.syscall_failure(failure);
 
             assert!(!error.is_nonconsuming_would_block());
             assert!(!error.is_nonconsuming_interrupted());
-            assert!(matches!(error.source, SeqpacketError::Kernel(crate::Error::Syscall { .. })));
+            assert!(matches!(error.source, SeqpacketError::Kernel(aos_linux_descriptors::Error::Syscall { .. })));
         }
     }
 
@@ -929,23 +929,23 @@ mod tests {
         let Some(RawAncillary::Rights(mut fds)) = slot.take() else { panic!("missing rights"); };
         let fd = fds.pop().unwrap();
         let original = fd.as_raw_fd();
-        *slot = Some(RawAncillary::PidFd(fd));
+        *slot = Some(RawAncillary::PidFd(aos_linux_descriptors::pidfd::PidFdAdmissionSlotV1::new(fd)));
         // The real kernel-provided pidfd would otherwise validate first.
         // Remove that exact pin from the profile while retaining it in another
         // guarded private staging slot, then validate this bad candidate.
         let kernel = message.raw.ancillary.iter().position(|item| matches!(item, Some(RawAncillary::PidFd(fd)) if fd.as_raw_fd() != original)).unwrap();
-        let retained = PidFd::adopt_received_slot(&mut message.raw.ancillary[kernel]).unwrap();
+        let retained = crate::pidfd::adopt_received_slot(&mut message.raw.ancillary[kernel]).unwrap();
         let mut held_pin = CapturedMessageV1::empty(0);
         held_pin.partial_pidfd = Some(retained);
         attempt.messages.push(held_pin);
         let source = attempt.messages[0].validate(SubjectProfileV1::Ordinary, ReceiveCustodyPolicyV1::Retaining).unwrap_err();
         let error = attempt.reject(source);
 
-        assert!(matches!(error.source, SeqpacketError::Kernel(crate::Error::WrongDescriptorType { expected: "pidfd" })));
-        assert!(uapi::raw_fd_is_open(original));
+        assert!(matches!(error.source, SeqpacketError::Kernel(aos_linux_descriptors::Error::WrongDescriptorType { expected: "pidfd" })));
+        assert!(aos_linux_descriptors::native::raw_fd_is_open(original));
         assert!(sender.send(b"no retry").is_err());
         drop(error);
-        assert!(!uapi::raw_fd_is_open(original));
+        assert!(!aos_linux_descriptors::native::raw_fd_is_open(original));
     }
 
     #[test]

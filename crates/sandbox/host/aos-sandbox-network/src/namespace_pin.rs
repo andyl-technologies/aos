@@ -25,7 +25,7 @@ pub(crate) use removal_original::NetworkNamespaceRemovalOriginalV2;
 pub enum NetworkNamespacePinMutationError {
     /// Descriptor-safe path validation or namespace typing failed.
     #[error("Network namespace pin authority is invalid: {0}")]
-    Linux(#[from] aos_sandbox_linux::Error),
+    Linux(#[from] aos_linux_descriptors::Error),
     /// A fixed filesystem or mount operation failed.
     #[error("Network namespace pin mutation failed: {0}")]
     Syscall(#[from] rustix::io::Errno),

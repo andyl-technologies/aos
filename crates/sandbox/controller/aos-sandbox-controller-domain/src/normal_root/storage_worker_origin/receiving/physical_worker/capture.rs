@@ -13,12 +13,12 @@ pub(super) enum CaptureFinalClockErrorV3 {
     #[error("original Capture final clock or execution horizon changed")]
     Stale,
     #[error(transparent)]
-    Native(aos_sandbox_linux::Error),
+    Native(aos_linux_descriptors::Error),
 }
 
 impl aos_sandbox_broker::kernel_clock::KernelPairedClockErrorV1 for CaptureFinalClockErrorV3 {
     fn stale() -> Self { Self::Stale }
-    fn kernel(cause: aos_sandbox_linux::Error) -> Self { Self::Native(cause) }
+    fn kernel(cause: aos_linux_descriptors::Error) -> Self { Self::Native(cause) }
 }
 
 pub(super) type CaptureFinalClockV3 = aos_sandbox_broker::kernel_clock::RetainedKernelPairedClockAttemptV1<CaptureFinalClockErrorV3>;

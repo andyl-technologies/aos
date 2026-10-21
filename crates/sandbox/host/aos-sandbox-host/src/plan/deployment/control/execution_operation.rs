@@ -132,7 +132,7 @@ impl HostComponentControlStartupV2 {
     ) -> Result<ResourceVector> {
         use aos_sandbox_model::ResourceDimension as D;
         use aos_sandbox_broker::receiving::OriginalEnrollmentPairAttemptV1;
-        use aos_sandbox_linux::boot::RootOriginalKernelBootIdAttemptV1;
+        use aos_linux_descriptors::boot::RootOriginalKernelBootIdAttemptV1;
 
         let schedule = self.manager_schedule.as_ref().and_then(|result| result.as_ref().ok())
             .ok_or(HostError::Fence("Host observation has no original readonly schedule"))?;

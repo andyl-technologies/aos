@@ -140,7 +140,7 @@ impl ExecutionPublicAdmissionScopeV2 {
             let selector = crate::runtime_authority::current_publication_receiving_demand_v2(controller)
                 .ok_or(ResourceReservationErrorV1::Conflict)?;
             let bytes = crate::policy_compiler::provisioning_current::current_manifest::
-                current_protected_assignment_carrier_receiving_bytes_v2()
+                current_protected_assignment_journal_carrier_receiving_bytes_v2()
                 .and_then(|bytes| bytes.checked_add(std::mem::size_of::<ExecutionPublicPreacceptSourceDataV2<'_>>().checked_mul(2)?))
                 .and_then(|bytes| u64::try_from(bytes).ok()).ok_or(ResourceReservationErrorV1::Conflict)?;
             selector.checked_add(ResourceVector::ZERO.with(D::MemoryBytes, bytes)).map_err(Into::into)
@@ -167,7 +167,8 @@ impl ExecutionPublicAdmissionScopeV2 {
             return Err(bad());
         }
 
-        original.assignment = Some(current_protected_assignment_data_v2(controller, target.0));
+        original.assignment = Some(current_protected_assignment_data_v2(
+            crate::journal::historical_observation::HistoricalObservationV1::from_journal_v1(controller), target.0));
         let Some(assignment) = original.assignment.as_ref().and_then(|value| value.as_ref().ok()) else {
             original.first = Some(SourceFirst::Selection);
             return Err(bad());

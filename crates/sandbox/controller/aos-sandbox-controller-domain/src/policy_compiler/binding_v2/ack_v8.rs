@@ -12,6 +12,8 @@
 //! The row is a historical receipt under the still-held Root decision. It
 //! never permits Root or another owner to release, publish, or Apply.
 
+use aos_sandbox_ledger_replay::controller_policy_hold::ControllerPolicyHoldCodecV1;
+
 use aos_sandbox_policy::journal_keys::{CONTROLLER_HOLD_PIN_KEY, SOURCE_HOLD_PIN_KEY};
 
 use aos_sandbox_policy::controller_readback::{
@@ -33,7 +35,6 @@ use crate::policy_compiler::controller_effect_ack_readback::{
     ControllerEffectAckChallengeV1, ControllerEffectAckReadbackErrorV1,
 };
 use crate::policy_compiler::controller_effect_ack_readback_v8::verify_controller_v8_effect_ack_readback_v1;
-
 
 use crate::policy_compiler::root_challenge_record::RootChallengeRecordCodec;
 
@@ -99,7 +100,6 @@ const CHALLENGE_CODEC: RootChallengeRecordCodec = RootChallengeRecordCodec::new(
     b"aos.sandbox.policy-compiler.root-v8-effect-ack-challenge-transaction.v1\0",
     CHALLENGE_KEY,
 );
-/// Bounds a canonical protected V8 Root ACK record.
 pub use aos_sandbox_ledger_replay::controller_policy_hold::root_v8_receipt::ROOT_V8_EFFECT_ACK_RECORD_BYTES_V1;
 
 /// Reports a rejected V8 Root/Controller ACK session.
@@ -125,11 +125,24 @@ impl From<JournalError> for RootV8EffectAckErrorV1 {
     }
 }
 
-pub use aos_sandbox_ledger_replay::controller_policy_hold::root_v8_receipt::RootV8EffectAckV1;
-use aos_sandbox_ledger_replay::controller_policy_hold::root_v8_receipt::RootV8EffectAckDataErrorV1;
+impl From<aos_sandbox_protocol::policy_data::binding_v2::BindingDataErrorV1>
+    for RootV8EffectAckErrorV1
+{
+    fn from(error: aos_sandbox_protocol::policy_data::binding_v2::BindingDataErrorV1) -> Self {
+        Self::Root(PolicyCompilerJournalErrorV1::from(error))
+    }
+}
 
-impl From<RootV8EffectAckDataErrorV1> for RootV8EffectAckErrorV1 {
-    fn from(_: RootV8EffectAckDataErrorV1) -> Self {
+// The canonical historical codec is DATA only; native held-cut/signing and
+// append authority below remain on their original Root owners.
+pub use aos_sandbox_ledger_replay::controller_policy_hold::root_v8_receipt::RootV8EffectAckV1;
+
+impl From<aos_sandbox_ledger_replay::controller_policy_hold::root_v8_receipt::RootV8EffectAckDataErrorV1>
+    for RootV8EffectAckErrorV1
+{
+    fn from(
+        _: aos_sandbox_ledger_replay::controller_policy_hold::root_v8_receipt::RootV8EffectAckDataErrorV1,
+    ) -> Self {
         Self::Stale
     }
 }
@@ -550,9 +563,12 @@ fn acknowledge_in_authority(
             ACK_KEY.to_vec(),
             vec![0; ROOT_V8_EFFECT_ACK_RECORD_BYTES_V1],
         )],
-    ).map_err(JournalError::from)?;
+    )
+    .map_err(JournalError::from)?;
     let planned = [
-        CHALLENGE_CODEC.transaction(row)?,
+        CHALLENGE_CODEC
+            .transaction(row)
+            .map_err(crate::journal::JournalError::from)?,
         ack_capacity,
         future[0].clone(),
         future[1].clone(),
@@ -561,7 +577,11 @@ fn acknowledge_in_authority(
     ];
     let preflight = authority.preflight_transactions(&planned)?;
     authority.validate_preflight_for_effect(&preflight, &planned)?;
-    authority.commit(&CHALLENGE_CODEC.transaction(row)?)?;
+    authority.commit(
+        &CHALLENGE_CODEC
+            .transaction(row)
+            .map_err(crate::journal::JournalError::from)?,
+    )?;
     if authority.get(CHALLENGE_KEY)? != Some(row.as_slice()) {
         return Err(RootV8EffectAckErrorV1::Stale);
     }
@@ -611,14 +631,17 @@ fn acknowledge_in_authority(
     let id = digest[..16]
         .try_into()
         .map_err(|_| RootV8EffectAckErrorV1::Stale)?;
-    authority.commit(&JournalTransaction::new(
-        id,
-        vec![JournalRecord::put(
-            RecordNamespace::DesiredState,
-            ACK_KEY.to_vec(),
-            bytes.to_vec(),
-        )],
-    ).map_err(JournalError::from)?)?;
+    authority.commit(
+        &JournalTransaction::new(
+            id,
+            vec![JournalRecord::put(
+                RecordNamespace::DesiredState,
+                ACK_KEY.to_vec(),
+                bytes.to_vec(),
+            )],
+        )
+        .map_err(JournalError::from)?,
+    )?;
     if current_ack(authority, binding, epoch)? != Some(record) {
         return Err(RootV8EffectAckErrorV1::Stale);
     }

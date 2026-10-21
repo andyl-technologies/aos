@@ -38,7 +38,7 @@ use std::os::unix::fs::FileExt as _;
 use std::path::{Path, PathBuf};
 
 use super::{FsVerityDigest, is_kernel_verity_filesystem};
-use crate::Error;
+use aos_linux_descriptors::Error;
 use crate::uapi::{
     self, OpenHow, RESOLVE_BENEATH, RESOLVE_NO_MAGICLINKS, RESOLVE_NO_SYMLINKS, RESOLVE_NO_XDEV,
 };
@@ -366,9 +366,9 @@ impl FsVerityPublicationRoot {
     /// read-only, current-user-owned directory of exact mode 0700 on an admitted
     /// kernel fs-verity filesystem.
     pub fn from_owned(directory: OwnedFd) -> Result<Self, PublicationRootError> {
-        uapi::ensure_cloexec(directory.as_fd())?;
+        aos_linux_descriptors::native::ensure_cloexec(directory.as_fd())?;
         let before = inspect_root(directory.as_fd())?;
-        let flags = uapi::get_status_flags(directory.as_fd())?;
+        let flags = aos_linux_descriptors::native::get_status_flags(directory.as_fd())?;
         if flags & libc::O_ACCMODE != libc::O_RDONLY || flags & libc::O_PATH != 0 {
             return Err(PublicationRootError::DescriptorAccess);
         }
@@ -1001,12 +1001,12 @@ fn inspect_source<E: StdError + 'static>(
     source: BorrowedFd<'_>,
     maximum_bytes: u64,
 ) -> Result<(), MaterializationFailure<E>> {
-    uapi::ensure_cloexec(source).map_err(MaterializationFailure::Linux)?;
+    aos_linux_descriptors::native::ensure_cloexec(source).map_err(MaterializationFailure::Linux)?;
     let stat = uapi::fstat(source).map_err(MaterializationFailure::Linux)?;
     if stat.st_mode & libc::S_IFMT != libc::S_IFREG {
         return Err(MaterializationFailure::SourceNotRegular);
     }
-    let flags = uapi::get_status_flags(source).map_err(MaterializationFailure::Linux)?;
+    let flags = aos_linux_descriptors::native::get_status_flags(source).map_err(MaterializationFailure::Linux)?;
     if flags & libc::O_ACCMODE == libc::O_WRONLY || flags & libc::O_PATH != 0 {
         return Err(MaterializationFailure::SourceNotReadable);
     }

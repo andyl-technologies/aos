@@ -8,7 +8,7 @@ use std::os::fd::AsFd as _;
 use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
 use std::path::Path;
 
-use super::positional_hash::PositionalHashOriginalV2;
+use aos_linux_descriptors::positional_hash::{PositionalHashClosedV2, PositionalHashOriginalV2};
 
 /// Stops a failed or repeated read while the actual original remains owned.
 #[derive(Clone, Copy, Debug, thiserror::Error)]
@@ -31,7 +31,7 @@ pub struct FixedProtectedReadOriginalV3 {
     bytes: Vec<u8>,
     read: Option<Result<(), super::ExactReadFailure>>,
     hash: PositionalHashOriginalV2,
-    digest: Option<Result<[u8; 32], super::positional_hash::PositionalHashClosedV2>>,
+    digest: Option<Result<[u8; 32], PositionalHashClosedV2>>,
     eof: Option<rustix::io::Result<usize>>,
     eof_byte: [u8; 1],
     eof_validation: Option<Result<(), UnexpectedTailV3>>,
@@ -448,7 +448,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("image");
         let bytes =
-            vec![37; 2 * super::super::positional_hash::POSITIONAL_HASH_BUFFER_BYTES_V2 + 31];
+            vec![37; 2 * aos_linux_descriptors::positional_hash::POSITIONAL_HASH_BUFFER_BYTES_V2 + 31];
         std::fs::write(&path, &bytes).unwrap();
         let mut original = FixedProtectedReadOriginalV3::new();
 

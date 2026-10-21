@@ -27,16 +27,19 @@ impl ExecutionNoApplyRecoveryTargetDataV1 {
     ///
     /// Native readers and resident namespace counts remain on the caller's
     /// existing receiving owner. This supplier prices only additional models.
-    pub(crate) fn receiving_bytes_v1(controller: &Journal) -> Option<usize> {
+    pub(crate) fn receiving_bytes_v1(controller: HistoricalObservationV1<'_>) -> Option<usize> {
         use aos_sandbox_model::ResourceDimension;
 
-        let rows = crate::reconciler::ClosedCreateFailurePlanDataV2::receiving_demand_data_v2(
-            controller,
-        ).ok()?;
-        let binding = crate::runtime_authority::current_publication_receiving_demand_v2(controller)?;
-        let memory = rows.get(ResourceDimension::MemoryBytes)
+        let rows =
+            crate::reconciler::closed_create_failure_receiving_demand_from_observation_v2(controller)
+                .ok()?;
+        let binding =
+            crate::runtime_authority::current_publication_observed_receiving_demand_v2(controller)?;
+        let memory = rows
+            .get(ResourceDimension::MemoryBytes)
             .checked_add(binding.get(ResourceDimension::MemoryBytes))?;
-        usize::try_from(memory).ok()?
+        usize::try_from(memory)
+            .ok()?
             .checked_add(std::mem::size_of::<Self>().checked_mul(2)?)?
             .checked_add(std::mem::size_of::<Sha256>().checked_mul(2)?)
     }
@@ -52,7 +55,7 @@ impl ExecutionNoApplyRecoveryTargetDataV1 {
     /// Rechecks the entire old target and its actual current owner.
     pub(crate) fn require_current_v1(
         &self,
-        controller: &Journal,
+        controller: HistoricalObservationV1<'_>,
         project: ProjectId,
         node: NodeId,
         request: &OperatorRecoveryRequestV1,
@@ -74,7 +77,7 @@ impl ExecutionNoApplyRecoveryTargetDataV1 {
 /// Host39 and Root78 history are independently required by the native issuer.
 /// An Applying target alone therefore supplies no evidence that NoApply exists.
 pub(crate) fn require_execution_no_apply_recovery_target_v1(
-    controller: &Journal,
+    controller: HistoricalObservationV1<'_>,
     project: ProjectId,
     node: NodeId,
     request: &OperatorRecoveryRequestV1,
@@ -130,8 +133,10 @@ pub(crate) fn require_execution_no_apply_recovery_target_v1(
         return Err(rejected());
     }
 
-    let projections = PublicProjectionStoreV1::new(controller)
-        .list_operation(operation)
+    let projections =
+        crate::controller_service::public_projection::list_operation_from_observation_v2(
+            controller, operation,
+        )
         .map_err(|_| rejected())?;
     let [projection] = projections.as_slice() else {
         return Err(rejected());
@@ -162,7 +167,7 @@ pub(crate) fn require_execution_no_apply_recovery_target_v1(
     if sandbox_bytes == [0; 16] {
         return Err(rejected());
     }
-    let binding = crate::runtime_authority::current_readonly_v2(
+    let binding = crate::runtime_authority::current_observed_v2(
         controller,
         RuntimeAuthorityLimits::default(),
         SandboxId::from_bytes(sandbox_bytes),
@@ -209,7 +214,7 @@ pub(crate) fn require_execution_no_apply_recovery_target_v1(
         {
             return Err(rejected());
         }
-        let plan = crate::reconciler::plan_closed_create_failure_rows_data_v2(
+        let plan = crate::reconciler::plan_closed_create_failure_rows_from_observation_v2(
             controller,
             prepared.identity.marker,
             prepared.identity.terminal_archive,

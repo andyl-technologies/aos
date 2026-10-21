@@ -6,7 +6,7 @@ use crate::hierarchy::genesis_profile::SourceGenesisErrorV1;
 impl aos_sandbox_broker::kernel_clock::KernelPairedClockErrorV1 for SourceGenesisErrorV1 {
     fn stale() -> Self { Self::Stale }
 
-    fn kernel(error: aos_sandbox_linux::Error) -> Self { Self::Kernel(error) }
+    fn kernel(error: aos_linux_descriptors::Error) -> Self { Self::Kernel(error) }
 }
 
 pub(crate) type RetainedKernelPairedClockAttemptV1 =

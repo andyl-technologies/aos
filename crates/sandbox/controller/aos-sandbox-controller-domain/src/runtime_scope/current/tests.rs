@@ -39,7 +39,7 @@ use aos_sandbox_api::aos::sandbox::local::v1::BrokerMethod;
 #[cfg(feature = "kernel-tests")]
 use aos_sandbox_linux::cgroup::{CgroupV2Root, RetainedCgroupAnchor};
 #[cfg(feature = "kernel-tests")]
-use aos_sandbox_linux::pidfd::PidFd;
+use aos_linux_descriptors::pidfd::PidFd;
 #[cfg(feature = "kernel-tests")]
 use aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket;
 #[cfg(feature = "kernel-tests")]

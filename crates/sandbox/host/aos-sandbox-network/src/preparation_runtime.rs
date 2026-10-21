@@ -574,7 +574,7 @@ mod tests {
         ProjectId, ProtocolVersion, RawClockProvenance, RawPairedClockSample, ResourceVector,
         SandboxId, descriptor_for_bytes,
     };
-    use aos_sandbox_linux::boot::KernelBootId;
+    use aos_linux_descriptors::boot::KernelBootId;
     use aos_sandbox_protocol::{PeerCredentials, PeerPolicy};
     use aos_sandbox_protocol::semantics::network::preparation_content::{
         NetworkPreparationContentReferenceV2, NetworkPreparationContentV2,

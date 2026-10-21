@@ -23,11 +23,11 @@ sha2.workspace = true
 zbus = { workspace = true, features = ["p2p"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-aos-sandbox-linux.workspace = true
+aos-linux-descriptors.workspace = true
 rustix = { workspace = true, features = ["fs", "process", "time"] }
 
 [target.'cfg(unix)'.dev-dependencies]
-rustix = { workspace = true, features = ["event"] }
+rustix = { workspace = true, features = ["event", "net"] }
 
 [dev-dependencies]
 # p2p + bus-impl let the unit tests stand up an in-process FakeSystemd over a

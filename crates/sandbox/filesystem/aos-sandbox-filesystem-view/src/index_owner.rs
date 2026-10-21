@@ -12,9 +12,10 @@ use std::os::fd::OwnedFd;
 use std::path::Path;
 
 use aos_sandbox_model::{MediaType, ObjectDescriptor, ObjectDigest};
-use aos_sandbox_linux::immutable_file::{
-    FsVerityDigest, FsVerityMapping, FsVerityPublicationRoot, ImmutableFileError,
-};
+use aos_sandbox_linux::immutable_file::FsVerityDigest;
+use aos_sandbox_linux::immutable_file::FsVerityMapping;
+use aos_sandbox_linux::immutable_file::FsVerityPublicationRoot;
+use aos_linux_descriptors::ImmutableFileError;
 use aos_sandbox_linux::path::BeneathRoot;
 use rustix::fs::{AtFlags, FileType, FlockOperation, Mode, OFlags};
 use sha2::{Digest as _, Sha256};
@@ -854,7 +855,7 @@ pub enum IndexOwnerError {
     Mapping(#[from] ImmutableFileError),
     /// Beneath-root adoption failed.
     #[error("index root validation failed: {0}")]
-    Root(#[from] aos_sandbox_linux::Error),
+    Root(#[from] aos_linux_descriptors::Error),
     /// Protected absolute-path root validation failed.
     #[error("protected index root validation failed: {0}")]
     PublicationRoot(#[from] aos_sandbox_linux::immutable_file::PublicationRootError),

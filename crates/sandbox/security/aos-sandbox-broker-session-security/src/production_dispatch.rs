@@ -8,7 +8,7 @@
 use std::os::fd::OwnedFd;
 
 use aos_sandbox_api::aos::sandbox::local::v1::{ApplyHostExecutionRequestV1, BrokerMethod};
-use aos_sandbox_linux::boot::KernelBootId;
+use aos_linux_descriptors::boot::KernelBootId;
 use aos_sandbox_linux::immutable_file::SealedMemfdMapping;
 use buffa::Message as _;
 
@@ -1048,7 +1048,7 @@ mod execution_spec_content_tests {
     };
     use aos_sandbox_model::runtime_backend::EffectOperationV1;
     use aos_sandbox_model::{ExecutionId, ObjectDigest};
-    use aos_sandbox_linux::immutable_file::SealedReadOnlyCredential;
+    use aos_linux_descriptors::credential::SealedReadOnlyCredential;
     use aos_sandbox_linux::seqpacket::{SeqpacketError, SeqpacketSocket};
     use aos_sandbox_protocol::host_execution::{
         HOST_EXECUTION_CONTROL_CONTENT_V1, HostExecutionSpecContentFieldsV1,

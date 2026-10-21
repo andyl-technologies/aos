@@ -10,7 +10,7 @@ use aos_sandbox_api::aos::sandbox::local::v1::{
     ObserveHostStorageOutputResponseV1,
 };
 use aos_sandbox_controller_domain::runtime_execution::DormantRuntimeExecutionClaimV1;
-use aos_sandbox_linux::boot::KernelBootId;
+use aos_linux_descriptors::boot::KernelBootId;
 use aos_sandbox_protocol::host_storage_output_readback::{
     ValidatedHostStorageOutputReadbackRequestV1, decode_host_storage_output_readback_response_v1,
 };

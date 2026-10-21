@@ -12,6 +12,7 @@
 //! No TLS evidence, broker session, physical floor or Resolve permission is
 //! created here. Future effect boundaries must join their own concrete owners.
 
+use aos_sandbox_protocol::public_api::authorization_error::CliAuthorizationAdapterError;
 use aos_sandbox_model::RawPairedClockSample;
 use buffa::Message as _;
 use aos_sandbox_ownership_protocol::SignedOwnershipLease;
@@ -20,8 +21,7 @@ use aos_sandbox_api::aos::sandbox::local::v1::{
 };
 
 use super::*;
-use crate::cli_model::authorization_adapter::{
-    CliAuthorizationAdapterError, CurrentCapabilityDecisionV1,
+use crate::cli_model::authorization_adapter::{ CurrentCapabilityDecisionV1,
     evaluate_current_protected_capability, evaluate_current_protected_capability_retained,
     RetainedAuthorizationTimeFloorV1,
 };

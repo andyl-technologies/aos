@@ -143,6 +143,7 @@ impl StartSourceOriginOriginalV1 {
 
     pub(super) fn fixed_demand_v1()->Result<ResourceVector,ResourceReservationErrorV1> {
         let bytes=std::mem::size_of::<Self>().checked_mul(2)
+            .and_then(|bytes|bytes.checked_add(crate::journal::historical_observation::HistoricalObservationV1::journal_receiving_control_bytes_v1()?))
             .and_then(|bytes|bytes.checked_add(PairOriginal::dominant_requested_bytes_v1()?.checked_mul(3)?))
             .and_then(|bytes|bytes.checked_add(std::mem::size_of::<crate::lifecycle::LifecycleProtectedJournalOwnerV1<'_>>().checked_mul(2)?))
             .and_then(|bytes|bytes.checked_add(std::mem::size_of::<usize>().checked_mul(2)?))

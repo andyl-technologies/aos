@@ -4,6 +4,9 @@
 //! dispatch owner. Role matches, refusal gates, session loans and native clock
 //! sampling retain their original boundaries; no callback or backend is added.
 
+use aos_sandbox_controller_domain::CacheResidentGitCoverageExtV1;
+
+use aos_sandbox_controller_domain::CacheResidentGitCoverageExtV1 as _;
 use super::*;
 use crate::controller_service::execution;
 
@@ -309,13 +312,13 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
         journal: &mut Journal,
         original_inputs: &mut aos_sandbox_controller_domain::public_api_session::GitCoverageCredentialCustodyV1,
         operation: &mut aos_sandbox_controller_domain::reconciler::GitCoverageReadMetadataOperationV1<'_, '_>,
-    ) -> Result<(), aos_sandbox_controller_domain::cache_residency::CacheResidentUnavailableV1> {
-        use aos_sandbox_controller_domain::cache_residency::CacheResidentUnavailableV1;
+    ) -> Result<(), aos_sandbox_cache::CacheResidentUnavailableV1> {
+        use aos_sandbox_cache::CacheResidentUnavailableV1;
 
         self.cache_mutation.require_completed_or_empty()?;
         let protected = self.cache_inventory.as_mut().ok_or(CacheResidentUnavailableV1)?;
         let physical = self.cache_physical.as_ref().ok_or(CacheResidentUnavailableV1)?;
-        self.cache_resident_usage.run_existing_git_coverage_read_metadata_v1(
+        self.cache_resident_usage.native_original_v1().run_existing_git_coverage_read_metadata_v1(
             protected, physical, &mut self.source_domains, journal,
             original_inputs, operation,
         )
@@ -331,7 +334,7 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
         original_capacity: &aos_sandbox_model::GitUploadCapacityV1,
         original_bootstrap_credentials: &mut aos_sandbox_controller_domain::public_api_session::PublisherPolicyBootstrapCredentialCustodyV1,
         attempt: &mut aos_sandbox_controller_domain::policy_compiler::GitCoverageAccountAttemptV1<'_>,
-    ) -> Result<(), aos_sandbox_controller_domain::cache_residency::CacheResidentUnavailableV1> {
+    ) -> Result<(), aos_sandbox_cache::CacheResidentUnavailableV1> {
         self.capture_existing_git_coverage_account_cut(
             journal, original_inputs, original_bootstrap, original_source,
             original_capacity, original_bootstrap_credentials, attempt,
@@ -348,7 +351,7 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
         original_capacity: &aos_sandbox_model::GitUploadCapacityV1,
         original_bootstrap_credentials: &mut aos_sandbox_controller_domain::public_api_session::PublisherPolicyBootstrapCredentialCustodyV1,
         attempt: &mut aos_sandbox_controller_domain::policy_compiler::GitCoverageAccountAttemptV1<'_>,
-    ) -> Result<(), aos_sandbox_controller_domain::cache_residency::CacheResidentUnavailableV1> {
+    ) -> Result<(), aos_sandbox_cache::CacheResidentUnavailableV1> {
         self.commit_existing_git_coverage_account(
             journal, original_inputs, original_bootstrap, original_source,
             original_capacity, original_bootstrap_credentials, attempt,
@@ -367,7 +370,7 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
         aos_sandbox_model::format::git_upload_enrollment::GitCoverageFenceFieldsV1,
         [u8; 32],
         u64,
-    ), aos_sandbox_controller_domain::cache_residency::CacheResidentUnavailableV1> {
+    ), aos_sandbox_cache::CacheResidentUnavailableV1> {
         self.compare_existing_cache_git_coverage(original_inputs, flight, original_nonce, original_account)
     }
 
@@ -397,17 +400,17 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
     fn existing_cache_project_usage_v1(
         &mut self,
         project: aos_sandbox_model::ProjectId,
-    ) -> Result<aos_sandbox_controller_domain::cache_residency::CacheProjectUsageLoanV1<'_>, aos_sandbox_controller_domain::cache_residency::CacheResidentUnavailableV1> {
+    ) -> Result<aos_sandbox_cache::CacheProjectUsageLoanV1<'_>, aos_sandbox_cache::CacheResidentUnavailableV1> {
         self.observe_existing_cache_usage(project)
     }
 
     fn recheck_existing_cache_project_usage_v1(
         &mut self,
-    ) -> Result<(), aos_sandbox_controller_domain::cache_residency::CacheResidentUnavailableV1> {
+    ) -> Result<(), aos_sandbox_cache::CacheResidentUnavailableV1> {
         self.cache_mutation.require_completed_or_empty()?;
         let owner = self.cache_inventory.as_mut()
-            .ok_or(aos_sandbox_controller_domain::cache_residency::CacheResidentUnavailableV1)?;
-        self.cache_resident_usage.recheck(owner)
+            .ok_or(aos_sandbox_cache::CacheResidentUnavailableV1)?;
+        self.cache_resident_usage.native_original_v1().recheck(owner)
     }
 
     fn reconcile_operator_storage_repair(

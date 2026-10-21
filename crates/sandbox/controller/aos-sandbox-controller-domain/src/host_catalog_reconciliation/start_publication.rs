@@ -13,10 +13,9 @@ use crate::OriginalStartHostRootLoanV1;
 use crate::StartHostCatalogPublicationLoanV2;
 use crate::{PreparedStartResourceRequestOriginalV2, ResourceReservationErrorV1};
 use aos_sandbox_model::{OperationId, ResourceVector};
-use aos_sandbox_linux::immutable_file::{
-    SealedReadOnlyCredential, SealedReadOnlyCredentialCreateClosedV1,
-    SealedReadOnlyCredentialCreateOriginalsV1,
-};
+use aos_linux_descriptors::credential::SealedReadOnlyCredential;
+use aos_linux_descriptors::credential::SealedReadOnlyCredentialCreateClosedV1;
+use aos_linux_descriptors::credential::SealedReadOnlyCredentialCreateOriginalsV1;
 use std::error::Error;
 use std::mem::size_of;
 use std::sync::Arc;

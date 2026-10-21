@@ -63,7 +63,7 @@ impl HostReadonlyManagerScheduleV2 {
             .checked_add(pairs.checked_mul(OriginalEnrollmentPairAttemptV1::receiving_memory_bytes_v2()?)?)?
             .checked_add(2 * std::mem::size_of::<super::HostComponentControlStartupV2>())?
             .checked_add((MAXIMUM_ATTEMPTS + 1).checked_mul(
-                aos_sandbox_linux::boot::RootOriginalKernelBootIdAttemptV1::dominant_requested_bytes_v1()?)?)?
+                aos_linux_descriptors::boot::RootOriginalKernelBootIdAttemptV1::dominant_requested_bytes_v1()?)?)?
             .checked_add(MAXIMUM_ATTEMPTS.checked_mul(65_536 + 4096)?)?
             .checked_add(MAXIMUM_ATTEMPTS.checked_mul(subject_memory)?)?
             .checked_add(negative_memory)?;

@@ -85,7 +85,6 @@ pub(super) enum ProjectGenesisNativeCutV3<'cut> {
     SourcePrepared(&'cut crate::policy_compiler::HeldRootSourceProjectGenesisIntentV3<'cut>),
     #[cfg(target_os = "linux")]
     SourceAnchored(&'cut crate::policy_compiler::RootSourceProjectGenesisFloorProofV3<'cut>),
-    RootServer { original: &'cut aos_sandbox_model::RawPairedClockSample, deadline: std::time::Instant },
 }
 
 // Only actual selected owners supply these loans. No replay, preview, scalar
@@ -95,7 +94,6 @@ pub(crate) enum FirstSuccessorNativeCutV3<'loan, 'owner> {
     ControllerBegin(&'loan crate::policy_compiler::HeldControllerFirstSourceSuccessorV2<'owner>),
     SourcePrepared(crate::policy_compiler::RootSuccessorIntentViewV3<'loan, 'owner>),
     Settled(crate::policy_compiler::RootSuccessorFloorViewV3<'loan, 'owner>),
-    RootServer(crate::policy_compiler::RootSuccessorNativeServerCutV3<'loan>),
 }
 
 #[cfg(target_os = "linux")]
@@ -119,9 +117,6 @@ impl FirstSuccessorNativeCutV3<'_, '_> {
                 root.recheck()?;
                 root.observe_original_clock().map(|_| ())
             }
-            (Self::RootServer(root), Phase::MixedRootPrepared | Phase::MixedRootAnchor) => {
-                root.final_crossing(journal, transaction, phase)
-            }
             _ => Err(SourceGenesisErrorV1::Conflict),
         }
     }
@@ -129,20 +124,11 @@ impl FirstSuccessorNativeCutV3<'_, '_> {
 
 #[cfg(target_os = "linux")]
 impl ProjectGenesisNativeCutV3<'_> {
-    pub(super) fn final_crossing(&self, admission_expiry: Option<i64>) -> Result<(), crate::hierarchy::genesis_profile::SourceGenesisErrorV1> {
+    pub(super) fn final_crossing(&self) -> Result<(), crate::hierarchy::genesis_profile::SourceGenesisErrorV1> {
         match self {
             Self::SourcePrepared(root) => root.native_crossing_clock_v3(),
             Self::SourceAnchored(root) => root.native_crossing_clock_v3(),
-            Self::RootServer { original, deadline } => {
-                let current = crate::policy_compiler::observe_root_first_source_successor_clock_v2(Some(**original))?;
-                if admission_expiry.is_some_and(|expiry| current.wall_seconds() >= expiry) {
-                    return Err(crate::hierarchy::genesis_profile::SourceGenesisErrorV1::AdmissionClosed);
-                }
-                if std::time::Instant::now() >= *deadline {
-                    return Err(crate::hierarchy::genesis_profile::SourceGenesisErrorV1::Stale);
-                }
-                Ok(())
-            }
+
         }
     }
 }
@@ -364,10 +350,7 @@ pub(super) fn require_project_genesis_native_owner_v3(
             require_capacity_owner(journal, GlobalCapacityReservationPurposeV1::SourceFirstSourceSuccessorAck)
         }
         ProjectGenesisNativePhaseV3::RootPrepared(_) | ProjectGenesisNativePhaseV3::RootAnchor(_) => {
-            #[cfg(target_os = "linux")]
-            { crate::policy_compiler::require_root_source_genesis_capacity_owner_v1(journal) }
-            #[cfg(not(target_os = "linux"))]
-            { Err(JournalError::ProtectedBoundary) }
+            Err(JournalError::ProtectedBoundary)
         }
         ProjectGenesisNativePhaseV3::ControllerFloorAck(_) | ProjectGenesisNativePhaseV3::ControllerComplete(_) => {
             crate::hierarchy::controller_genesis::require_controller(journal, journal.protected_owner_uid()?)
@@ -488,15 +471,7 @@ pub(crate) fn require_capacity_owner(
 ) -> Result<(), JournalError> {
     match purpose {
         GlobalCapacityReservationPurposeV1::RootFirstSourceSuccessorAnchor => {
-            #[cfg(target_os = "linux")]
-            {
-                crate::policy_compiler::require_root_first_source_successor_capacity_owner_v2(journal)
-            }
-            #[cfg(not(target_os = "linux"))]
-            {
-                journal.ensure_healthy()?;
-                Err(JournalError::ProtectedBoundary)
-            }
+            Err(JournalError::ProtectedBoundary)
         }
         GlobalCapacityReservationPurposeV1::SourceFirstSourceSuccessorAck => {
             let location = journal.native.protected_view()
@@ -715,120 +690,8 @@ fn required_value(record: &JournalRecord) -> Result<&[u8], JournalError> {
 }
 
 impl Journal {
-    /// Checks only the fixed Root suffix shape before a Source receipt exists.
-    ///
-    /// The real Prepared prefix passes the normal semantic reducer. The zero
-    /// stored floor archive below is exclusively sizing and growth DATA;
-    /// it is never passed to the floor decoder or a native mutation reducer.
-    /// Actual Anchor requires its own exact semantic preflight after Source
-    /// Prepared, under the retained original Root owner.
-    ///
-    /// # Errors
-    /// Rejects a foreign owner, an invalid real Prepared prefix, an altered
-    /// intent, duplicate native IDs, or any transaction, growth, capacity,
-    /// journal-length or sequence bound in the fixed remaining suffix.
-    pub(crate) fn preflight_root_first_successor_shape_v2(
-        &self,
-        prepared: &JournalTransaction,
-        intent: &RootFirstSourceSuccessorIntentV2,
-    ) -> Result<(), JournalError> {
-        self.preflight_root_successor_shape_with_phase(
-            prepared, intent, FirstSourceSuccessorNativePhaseV2::RootPrepared,
-        )
-    }
 
-    /// Compares a selected mixed Root prefix and its exact conservative suffix.
-    ///
-    /// # Errors
-    /// Rejects a foreign actual owner, unjoined archives/active intent, any
-    /// native bound or changed exact sizing identity. Success is preview DATA.
-    pub(crate) fn preflight_root_project_successor_shape_v3(
-        &self,
-        prepared: &JournalTransaction,
-        intent: &RootFirstSourceSuccessorIntentV2,
-    ) -> Result<(), JournalError> {
-        self.preflight_root_successor_shape_with_phase(
-            prepared, intent, FirstSourceSuccessorNativePhaseV2::MixedRootPrepared,
-        )
-    }
 
-    fn preflight_root_successor_shape_with_phase(
-        &self,
-        prepared: &JournalTransaction,
-        intent: &RootFirstSourceSuccessorIntentV2,
-        phase: FirstSourceSuccessorNativePhaseV2,
-    ) -> Result<(), JournalError> {
-        require_capacity_owner(self, GlobalCapacityReservationPurposeV1::RootFirstSourceSuccessorAnchor)?;
-        self.preflight_first_source_successor_v2(
-            std::slice::from_ref(prepared),
-            &[phase],
-        )?;
-        let [intent_record, reservation] = prepared.records() else {
-            return Err(JournalError::ProtectedBoundary);
-        };
-        if intent_record.value() != Some(intent.as_bytes()) {
-            return Err(JournalError::AuthorityPreflightMismatch);
-        }
-        let (_, admission, capacity_id) = aos_sandbox_protocol::domain_ledger::capacity_family::decode_capacity_reservation_request_v1(reservation)?;
-        if &admission != prepared.id() {
-            return Err(JournalError::AuthorityPreflightMismatch);
-        }
-        let suffix = JournalTransaction::new(
-            transaction_id(intent.approval(), FirstSourceSuccessorNativePhaseV2::RootAnchor),
-            vec![
-                JournalRecord::put(
-                    RecordNamespace::DesiredState,
-                    [b"\0aos-root-first-source-successor-v2\0floor\0".as_slice(), intent.project().as_bytes()].concat(),
-                    vec![0; 688 + intent.as_bytes().len()],
-                ),
-                JournalRecord::delete(RecordNamespace::DesiredState, intent_record.key().to_vec()),
-                JournalRecord::delete(RecordNamespace::GlobalCapacityReservation, reservation.key().to_vec()),
-            ],
-        )?;
-        super::validate_transaction(&suffix, self.native.limits())?;
-        if suffix.id() == prepared.id() || self.native.transaction_ids().contains(suffix.id()) {
-            return Err(JournalError::DuplicateTransaction);
-        }
-
-        let after_prepared = super::root_original_inventory::materialize(self.native.state(), prepared);
-        let prefix_bytes = super::validate_materialized_change(
-            self.native.state(), self.native.materialized_bytes(), prepared.records(), self.native.limits(),
-        )?;
-        let terminal_bytes = super::validate_materialized_change(
-            &after_prepared, prefix_bytes, suffix.records(), self.native.limits(),
-        )?;
-        let prefix_append_bytes = super::encoded_transaction_append_bytes(prepared)?;
-        let suffix_append_bytes = super::encoded_transaction_append_bytes(&suffix)?;
-        let journal_bytes = self.native.metadata()?.len()
-            .checked_add(prefix_append_bytes)
-            .and_then(|bytes| bytes.checked_add(suffix_append_bytes))
-            .ok_or(JournalError::JournalTooLarge)?;
-        if journal_bytes > self.native.limits().maximum_journal_bytes {
-            return Err(JournalError::JournalTooLarge);
-        }
-        let transactions = self.native.committed_transactions().checked_add(2)
-            .ok_or(JournalError::LimitExceeded("committed transaction count"))?;
-        if transactions > self.native.limits().maximum_transactions {
-            return Err(JournalError::LimitExceeded("committed transaction count"));
-        }
-        super::validate_reserved_capacity(
-            &after_prepared, terminal_bytes, suffix.records(), Some(capacity_id),
-            journal_bytes, transactions, self.native.limits(), None,
-        )?;
-
-        let prefix_frames = u64::try_from(prepared.records().len())
-            .map_err(|_| JournalError::SequenceExhausted)?
-            .checked_add(2).ok_or(JournalError::SequenceExhausted)?;
-        let terminal_frames = u64::try_from(suffix.records().len())
-            .map_err(|_| JournalError::SequenceExhausted)?
-            .checked_add(2).ok_or(JournalError::SequenceExhausted)?;
-        let next = self.native.next_sequence().checked_add(prefix_frames)
-            .and_then(|sequence| sequence.checked_add(terminal_frames))
-            .ok_or(JournalError::SequenceExhausted)?;
-        let after_terminal = super::root_original_inventory::materialize(&after_prepared, &suffix);
-        require_sequence_headroom(&after_terminal, next)?;
-        require_capacity_owner(self, GlobalCapacityReservationPurposeV1::RootFirstSourceSuccessorAnchor)
-    }
 
     /// Returns complete local Source phase DATA under the healthy writer.
     ///

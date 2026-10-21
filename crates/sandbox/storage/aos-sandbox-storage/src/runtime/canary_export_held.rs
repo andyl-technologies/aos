@@ -22,7 +22,7 @@ use std::os::fd::AsFd as _;
 use std::os::unix::fs::MetadataExt as _;
 
 use aos_sandbox_controller_domain::{Journal, JournalLimits, StorageNativeIssuanceEdgeDataV1};
-use aos_sandbox_linux::boot::KernelBootId;
+use aos_linux_descriptors::boot::KernelBootId;
 use aos_sandbox_linux::seqpacket::descriptor_subject::{
     DescriptorSubjectSocket, ReceivedDescriptorRecord,
 };
@@ -74,13 +74,13 @@ pub(super) enum CanaryPrefixCause {
     #[error(transparent)]
     Socket(aos_sandbox_linux::seqpacket::RecordBindingError),
     #[error(transparent)]
-    Kernel(aos_sandbox_linux::Error),
+    Kernel(aos_linux_descriptors::Error),
     #[error(transparent)]
     Clock(ZfsWorkerError),
     #[error("both original canary clock observations failed")]
     PairedClock {
         #[source]
-        boot: aos_sandbox_linux::Error,
+        boot: aos_linux_descriptors::Error,
         boottime: ZfsWorkerError,
     },
     #[error(transparent)]
@@ -297,7 +297,7 @@ pub(super) enum CanaryPublicInputCauseV2 {
     #[error("canary public credential metadata failed")]
     Io(#[from] std::io::Error),
     #[error("canary public credential mount observation failed")]
-    Kernel(#[from] aos_sandbox_linux::Error),
+    Kernel(#[from] aos_linux_descriptors::Error),
     #[error("canary public credential read failed")]
     Read(#[from] aos_sandbox_linux::protected_file::ExactReadFailure),
     #[error("canary public credential canonical authentication failed")]
@@ -643,7 +643,7 @@ pub(super) struct CanaryExportHeldV1 {
     current: Option<aos_sandbox_protocol::runtime_deployment::canary::CanaryCurrentV2>,
     receiver_boot: Option<[u8; 16]>,
     receiver_started: Option<u64>,
-    host_execution: Option<aos_sandbox_linux::pidfd::PidFdInfo>,
+    host_execution: Option<aos_linux_descriptors::pidfd::PidFdInfo>,
     pending_receive: Option<Result<ReceivedDescriptorRecord,
         aos_sandbox_linux::seqpacket::RetainedSeqpacketReceiveErrorV1>>,
     selected_socket: Option<Result<DescriptorSubjectSocket,
@@ -652,7 +652,7 @@ pub(super) struct CanaryExportHeldV1 {
     published_inventory: Option<Result<Vec<u8>, crate::guest_root_inventory::GuestRootInventoryErrorV1>>,
     native_coordinates: Option<Result<(u64, aos_sandbox_model::ObjectDigest), StorageNativeIssuanceErrorV1>>,
     publisher_root: Option<Result<aos_sandbox_linux::cgroup::CgroupV2Root, ZfsWorkerError>>,
-    publisher_cgroup: Option<Result<aos_sandbox_linux::cgroup::RetainedCgroupAnchor, aos_sandbox_linux::Error>>,
+    publisher_cgroup: Option<Result<aos_sandbox_linux::cgroup::RetainedCgroupAnchor, aos_linux_descriptors::Error>>,
     publisher_socket: Option<Result<DescriptorSubjectSocket,
         aos_sandbox_linux::seqpacket::RetainedSeqpacketAdmissionErrorV1>>,
     publisher_request: Option<aos_sandbox_protocol::runtime_deployment::canary::CanaryPublisherRequestV3>,

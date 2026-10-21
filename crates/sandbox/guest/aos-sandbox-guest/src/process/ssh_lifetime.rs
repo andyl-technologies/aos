@@ -17,7 +17,7 @@ pub(super) struct SshStandingExecutionV1 {
     wall: Option<rustix::time::Timespec>,
     wall_error: Option<GuestProcessEffectErrorV1>,
     requested: bool,
-    containment: Option<Result<bool, aos_sandbox_linux::Error>>,
+    containment: Option<Result<bool, aos_linux_descriptors::Error>>,
 }
 
 impl SshStandingExecutionV1 {

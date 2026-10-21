@@ -62,7 +62,7 @@ use aos_sandbox_protocol::policy_data::canonical_bytes;
 use super::project_source_v2::{HEAD_KEY_V2, INPUT_KEY_V2};
 use aos_sandbox_policy::signed_inputs::{
     DEPLOYMENT_INPUT_MAGICS as INPUT_MAGICS, DEPLOYMENT_MAGIC as MAGIC,
-    DEPLOYMENT_PACKET_BYTES as PACKET_BYTES, DEPLOYMENT_PAYLOAD_BYTES as PAYLOAD_BYTES,
+    DEPLOYMENT_PAYLOAD_BYTES as PAYLOAD_BYTES,
     DEPLOYMENT_SIGNING_DOMAIN as SIGNING_DOMAIN, decode_deployment_layer_data_v1,
     verify_policy_deployment_profile_data_v2,
 };
@@ -94,9 +94,9 @@ pub(super) fn verify_test_held_deployment_profile_v2(
     profile_v2::verify_current_profile(journal, packet, inputs, profile, now)
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 pub(super) fn admit_test_held_deployment_profile_v2(
-    journal: &mut Journal,
+    journal: &mut aos_sandbox_policy::native::RootStartupFixedAdmissionFixtureV1,
     packet: &[u8],
     inputs: &PolicyDeploymentInputsV1<'_>,
     profile: &PolicyDeploymentInputProfileV2,
@@ -115,29 +115,9 @@ pub(super) fn signed_test_deployment_input_fixture_v1(
     tests::signed_deployment_fixture(key)
 }
 
-const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.policy-deployment-head-transaction.v1\0";
-
-// The two policy admissions use these actual private format widths. Owner-pin
-// admissions contribute their own exact keys and unchanged 80-byte credentials.
-pub(super) fn fixed_startup_policy_admission_shapes_v1() -> [aos_sandbox_journal::geometry::RecordShape; 2] {
-    use aos_sandbox_journal::geometry::RecordShape;
-
-    [
-        RecordShape {
-            key_bytes: SIGNER_PINS_KEY.len(),
-            value_bytes: Some(SIGNER_PINS_MAGIC.len() + 2 * 8 + 2 * 32 + 32),
-        },
-        RecordShape { key_bytes: HEAD_KEY.len(), value_bytes: Some(PACKET_BYTES) },
-    ]
-}
-
 const PROJECT_REVOCATION_TRANSACTION_DOMAIN: &[u8] =
     b"aos.sandbox.policy-project-revocation-binding-transaction.v1\0";
-pub(super) const PROJECT_HEAD_KEY: &[u8] = b"\0aos-policy-project-head-v1\0";
-pub(super) const PROJECT_INPUT_KEY: &[u8] = b"\0aos-policy-project-input-v1\0";
-const SIGNER_PINS_MAGIC: &[u8; 8] = b"AOSPKP01";
-const SIGNER_PINS_DOMAIN: &[u8] = b"aos.sandbox.policy-signer-pins.v1\0";
-const SIGNER_PINS_TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.policy-signer-pins-transaction.v1\0";
+pub(super) use aos_sandbox_policy::journal_keys::{PROJECT_HEAD_KEY, PROJECT_INPUT_KEY};
 
 /// Reports a rejected signed deployment input or protected head transition.
 #[derive(Debug, thiserror::Error)]
@@ -154,6 +134,10 @@ pub enum PolicyDeploymentHeadErrorV1 {
     /// Protected journal replay or durability failed.
     #[error(transparent)]
     Journal(#[from] JournalError),
+    /// Retains the exact same-owner native startup refusal and custody marker.
+    #[error(transparent)]
+    #[cfg(target_os = "linux")]
+    NativeStartup(aos_sandbox_policy::native::RootStartupCredentialErrorV1),
     /// Protected publisher policy or revocation state is unavailable.
     #[error(transparent)]
     Publisher(#[from] PublisherPolicyError),
@@ -214,88 +198,31 @@ pub fn admit_fixed_policy_signer_pins_v1(
     project_generation: u64,
     project_key: &VerifyingKey,
 ) -> Result<(), PolicyDeploymentHeadErrorV1> {
-    let (mut journal, _) = Journal::open_protected_at(
-        Path::new(PROTECTED_POLICY_ROOT),
-        POLICY_AUTHORITY_JOURNAL,
-        policy_authority_journal_limits(),
-    )?;
-    admit_policy_signer_pins_in_journal_v1(
-        &mut journal,
-        deployment_generation,
-        deployment_key,
-        project_generation,
-        project_key,
-    )
+    #[cfg(target_os = "linux")]
+    {
+    aos_sandbox_policy::native::RootStartupJournalOriginalV1::admit_fixed_signer_pins_v1(
+        deployment_generation, deployment_key, project_generation, project_key,
+    ).map_err(PolicyDeploymentHeadErrorV1::from)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (deployment_generation, deployment_key, project_generation, project_key);
+        Err(JournalError::UnsupportedProtectedOpen.into())
+    }
 }
 
+#[cfg(all(test, target_os = "linux"))]
 pub(super) fn admit_policy_signer_pins_in_journal_v1(
-    journal: &mut Journal,
+    journal: &mut aos_sandbox_policy::native::RootStartupFixedAdmissionFixtureV1,
     deployment_generation: u64,
     deployment_key: &VerifyingKey,
     project_generation: u64,
     project_key: &VerifyingKey,
 ) -> Result<(), PolicyDeploymentHeadErrorV1> {
-    admit_policy_signer_pins_in_journal_v1_with_root_receiving(
-        journal,
-        deployment_generation,
-        deployment_key,
-        project_generation,
-        project_key,
-        None,
-    )
+    journal.admit_signer_pins_v1(deployment_generation, deployment_key, project_generation, project_key).map_err(PolicyDeploymentHeadErrorV1::from)
 }
 
-pub(super) fn admit_policy_signer_pins_in_journal_v1_with_root_receiving(
-    journal: &mut Journal,
-    deployment_generation: u64,
-    deployment_key: &VerifyingKey,
-    project_generation: u64,
-    project_key: &VerifyingKey,
-    original: Option<&aos_sandbox_broker::receiving::RootJournalFinancialBorrowV1<'_>>,
-) -> Result<(), PolicyDeploymentHeadErrorV1> {
-    let encoded = encode_policy_signer_pins_v1(
-        deployment_generation,
-        deployment_key,
-        project_generation,
-        project_key,
-    )?;
 
-    let mut authority = journal.claim_protected_authority(RecordNamespace::DesiredState)?;
-    super::binding_v2::ensure_root_binding_unheld(&authority)
-        .map_err(|_| PolicyDeploymentHeadErrorV1::StaleHead)?;
-    match authority.get(SIGNER_PINS_KEY)? {
-        Some(current) if current == encoded.as_slice() => return Ok(()),
-        Some(_) => return Err(PolicyDeploymentHeadErrorV1::StaleHead),
-        None => {}
-    }
-    if !authority.is_materialized_empty()? {
-        return Err(PolicyDeploymentHeadErrorV1::StaleHead);
-    }
-
-    let digest = Sha256::new()
-        .chain_update(SIGNER_PINS_TRANSACTION_DOMAIN)
-        .chain_update(&encoded)
-        .finalize();
-    let transaction_id: [u8; 16] = digest[..16]
-        .try_into()
-        .map_err(|_| PolicyDeploymentHeadErrorV1::InvalidHead)?;
-    let transaction = JournalTransaction::new(
-        transaction_id,
-        vec![JournalRecord::put(
-            RecordNamespace::DesiredState,
-            SIGNER_PINS_KEY.to_vec(),
-            encoded.clone(),
-        )],
-    )?;
-    match original {
-        Some(original) => authority.commit_root_credential_receiving_v1(&transaction, original)?,
-        None => authority.commit(&transaction)?,
-    };
-    if authority.get(SIGNER_PINS_KEY)? != Some(encoded.as_slice()) {
-        return Err(PolicyDeploymentHeadErrorV1::StaleHead);
-    }
-    Ok(())
-}
 
 pub(super) fn encode_policy_signer_pins_v1(
     deployment_generation: u64,
@@ -342,85 +269,32 @@ pub fn admit_fixed_policy_deployment_head_v1(
     verifying_key: &VerifyingKey,
     now_unix_seconds: i64,
 ) -> Result<PolicyDeploymentHeadV1, PolicyDeploymentHeadErrorV1> {
-    let verified =
+    #[cfg(target_os = "linux")]
+    {
+    aos_sandbox_policy::native::RootStartupJournalOriginalV1::admit_fixed_deployment_head_v1(
+        packet, inputs, verifying_key, now_unix_seconds,
+    ).map_err(PolicyDeploymentHeadErrorV1::from)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
         verify_policy_deployment_head_v1(packet, inputs, verifying_key, now_unix_seconds)
-            .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)?;
-    let _sources = decode_policy_deployment_sources_v1(inputs, verified)
-        .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)?;
-    let (mut journal, _) = Journal::open_protected_at(
-        Path::new(PROTECTED_POLICY_ROOT),
-        POLICY_AUTHORITY_JOURNAL,
-        policy_authority_journal_limits(),
-    )?;
-    admit_deployment_head_in_journal(&mut journal, packet, verified, verifying_key)
+            .map_err(PolicyDeploymentHeadErrorV1::from)?;
+        let _ = (packet, inputs, verifying_key, now_unix_seconds);
+        Err(JournalError::UnsupportedProtectedOpen.into())
+    }
 }
 
+#[cfg(all(test, target_os = "linux"))]
 pub(super) fn admit_deployment_head_in_journal(
-    journal: &mut Journal,
+    journal: &mut aos_sandbox_policy::native::RootStartupFixedAdmissionFixtureV1,
     packet: &[u8],
     verified: PolicyDeploymentHeadV1,
     verifying_key: &VerifyingKey,
 ) -> Result<PolicyDeploymentHeadV1, PolicyDeploymentHeadErrorV1> {
-    admit_deployment_head_in_journal_with_root_receiving(
-        journal,
-        packet,
-        verified,
-        verifying_key,
-        None,
-    )
+    journal.admit_verified_head_v1(packet, verified, verifying_key).map_err(PolicyDeploymentHeadErrorV1::from)
 }
 
-pub(super) fn admit_deployment_head_in_journal_with_root_receiving(
-    journal: &mut Journal,
-    packet: &[u8],
-    verified: PolicyDeploymentHeadV1,
-    verifying_key: &VerifyingKey,
-    original: Option<&aos_sandbox_broker::receiving::RootJournalFinancialBorrowV1<'_>>,
-) -> Result<PolicyDeploymentHeadV1, PolicyDeploymentHeadErrorV1> {
-    let mut authority = journal.claim_protected_authority(RecordNamespace::DesiredState)?;
-    super::binding_v2::ensure_root_binding_unheld(&authority)
-        .map_err(|_| PolicyDeploymentHeadErrorV1::StaleHead)?;
 
-    let existing = authority.get(HEAD_KEY)?;
-    if existing == Some(packet) {
-        return Ok(verified);
-    }
-    let predecessor_generation = existing
-        .map(|current| {
-            verify_historical_policy_deployment_packet_v1(current, verifying_key)
-                .map_err(crate::policy_compiler::PolicyDeploymentHeadErrorV1::from)?;
-            read_u64(current, 8)
-        })
-        .transpose()?
-        .unwrap_or(0);
-    if predecessor_generation.checked_add(1) != Some(verified.generation()) {
-        return Err(PolicyDeploymentHeadErrorV1::StaleHead);
-    }
-
-    let transaction_digest = Sha256::new()
-        .chain_update(TRANSACTION_DOMAIN)
-        .chain_update(packet)
-        .finalize();
-    let transaction_id: [u8; 16] = transaction_digest[..16]
-        .try_into()
-        .map_err(|_| PolicyDeploymentHeadErrorV1::InvalidHead)?;
-    let transaction = JournalTransaction::new(
-        transaction_id,
-        vec![JournalRecord::put(
-            RecordNamespace::DesiredState,
-            HEAD_KEY.to_vec(),
-            packet.to_vec(),
-        )],
-    )?;
-    match original {
-        Some(original) => authority.commit_root_credential_receiving_v1(&transaction, original)?,
-        None => authority.commit(&transaction)?,
-    };
-    if authority.get(HEAD_KEY)? != Some(packet) {
-        return Err(PolicyDeploymentHeadErrorV1::StaleHead);
-    }
-    Ok(verified)
-}
 
 /// Reads an ancestry head while its owning Source writer remains held.
 ///
@@ -563,6 +437,13 @@ pub(super) mod tests {
         fn verify(&self, _: &ObjectDescriptor, _: &[u8]) -> bool {
             true
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn open_credential_fixture(directory: &std::path::Path, name: &str) -> aos_sandbox_policy::native::RootStartupFixedAdmissionFixtureV1 {
+        let uid = fs::metadata(directory).expect("fixture directory").uid();
+        aos_sandbox_policy::native::RootStartupFixedAdmissionFixtureV1::open_v1(directory, name, JournalLimits::default(), uid)
+            .expect("actual native credential fixture")
     }
 
     fn open_journal(directory: &std::path::Path, name: &str) -> Journal {
@@ -1337,13 +1218,14 @@ pub(super) mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn root_signer_pins_replay_exactly_and_reject_rotation_or_legacy_head() {
         let directory = tempfile::tempdir().expect("private root fixture");
         fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
             .expect("private directory");
         let deployment = SigningKey::from_bytes(&[5; 32]).verifying_key();
         let project = SigningKey::from_bytes(&[6; 32]).verifying_key();
-        let mut journal = open_journal(directory.path(), "signer-pins.journal");
+        let mut journal = open_credential_fixture(directory.path(), "signer-pins.journal");
 
         admit_policy_signer_pins_in_journal_v1(&mut journal, 3, &deployment, 9, &project)
             .expect("initial protected pins");
@@ -1359,11 +1241,13 @@ pub(super) mod tests {
         ));
         drop(journal);
 
-        let mut reopened = open_journal(directory.path(), "signer-pins.journal");
+        let mut reopened = open_credential_fixture(directory.path(), "signer-pins.journal");
         admit_policy_signer_pins_in_journal_v1(&mut reopened, 3, &deployment, 9, &project)
             .expect("durable exact replay");
 
-        let (_directory, _controller, _sources, mut legacy, ..) = fixture();
+        let (_directory, _controller, _sources, legacy, ..) = fixture();
+        drop(legacy);
+        let mut legacy = open_credential_fixture(_directory.path(), "authority.journal");
         assert!(matches!(
             admit_policy_signer_pins_in_journal_v1(&mut legacy, 3, &deployment, 9, &project),
             Err(PolicyDeploymentHeadErrorV1::StaleHead)
@@ -1372,7 +1256,7 @@ pub(super) mod tests {
         let unknown_directory = tempfile::tempdir().expect("legacy root fixture");
         fs::set_permissions(unknown_directory.path(), fs::Permissions::from_mode(0o700))
             .expect("private directory");
-        let mut unknown = open_journal(unknown_directory.path(), "legacy.journal");
+        let mut unknown = open_credential_fixture(unknown_directory.path(), "legacy.journal");
         let transaction = JournalTransaction::new(
             [31; 16],
             vec![JournalRecord::put(
@@ -1382,7 +1266,7 @@ pub(super) mod tests {
             )],
         )
         .expect("legacy transaction");
-        unknown.commit(&transaction).expect("legacy record");
+        unknown.seed_v1(&transaction).expect("legacy record");
         assert!(matches!(
             admit_policy_signer_pins_in_journal_v1(&mut unknown, 3, &deployment, 9, &project),
             Err(PolicyDeploymentHeadErrorV1::StaleHead)

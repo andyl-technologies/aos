@@ -8,9 +8,7 @@ use std::collections::BTreeMap;
 use std::error::Error;
 use aos_sandbox_ledger_replay::cold::{ColdReplayOriginalV1, ColdReplayClosedV1};
 use aos_sandbox_broker::canonical_journal::CanonicalReplayExtentDataV1;
-use aos_sandbox_broker::canonical_journal::{
-    CanonicalOrdinaryReadonlyOpeningV1, CanonicalOrdinaryReadonlyReplayDataV1,
-};
+use aos_sandbox_broker::canonical_journal::CanonicalOrdinaryReadonlyOpeningV1;
 use aos_sandbox_broker::canonical_journal::coordinator::indexed_replay::{CanonicalIndexedReplayV1,
     CanonicalIndexedReplayErrorV1, CanonicalReplayIndexOriginalsV1};
 use aos_sandbox_protocol::domain_ledger::readonly::IdempotencyDecisionV1;
@@ -29,11 +27,9 @@ use crate::journal::{JournalError, ProtectedJournalPreopenReplayExtentV1,
 use aos_sandbox_linux::signer_mount::{RootReadonlyViewV1,
     SignerMountReadbackAttemptV1, SignerMountReadbackClosedV1};
 
-mod completed;
 mod stopped_history;
 pub(crate) use stopped_history::RootCreateStoppedHistoricalOriginalV2;
 use stopped_history::RootStoppedHistoryOriginalV2;
-pub(crate) use completed::RootFixedCompletedReadDataV2;
 
 enum DeletePreparationObservationV3 {
     Controller(aos_sandbox_ledger_replay::delete_pending::DeleteSelectedCommitReplayDataV3),
@@ -797,15 +793,8 @@ fn cause<T, E: Error + 'static>(value: &Option<Result<T, E>>) -> Option<&(dyn Er
     value.as_ref()?.as_ref().err().map(|cause| cause as _)
 }
 
-/// Borrows only the actual completed native map, names and durable coordinates.
-/// This private comparison view carries no Session or effect authority.
-pub(crate) struct RootFixedNativeReadbackV1<'a> {
-    pub(crate) marked_transaction: Option<&'a crate::journal::JournalTransaction>,
-    pub(crate) state: &'a BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
-    pub(crate) names: ProtectedJournalNamesV1,
-    pub(crate) next: u64,
-    pub(crate) end: u64,
-}
+/// Borrows only historical comparison DATA; actual reader custody stays private.
+pub(crate) use aos_sandbox_protocol::domain_ledger::readonly::FixedJournalReadbackDataV1 as RootFixedNativeReadbackV1;
 
 fn replay_cursor(mut cursor: CanonicalIndexedReplayV1<'_, '_>, bytes: u64,
     position: &mut Option<(u64, u64)>, mark: Option<(u64, u64)>,

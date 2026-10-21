@@ -5,14 +5,27 @@
 
 use super::*;
 
+
+
 pub(in crate::reconciler) fn load_operation(
         journal: &Journal,
         operation_id: OperationId,
     ) -> Result<OperationRecord, ReconcilerError> {
-    let bytes = journal
-        .get(RecordNamespace::Operation, operation_id.as_bytes())
-        .ok_or(ReconcilerError::OperationNotFound)?;
-    decode_operation(bytes).map_err(ReconcilerError::from)
+    aos_sandbox_protocol::historical_operation_read_data_v2! {
+        read = journal.get(RecordNamespace::Operation, operation_id.as_bytes()),
+        missing = ReconcilerError::OperationNotFound,
+        project = ReconcilerError::from
+    }
+}
+
+pub(in crate::reconciler) fn load_operation_rows_v2(
+    rows: aos_sandbox_protocol::domain_ledger::readonly::HistoricalLedgerRowsDataV2<'_>, operation_id: OperationId,
+) -> Result<OperationRecord, ReconcilerError> {
+    aos_sandbox_protocol::historical_operation_read_data_v2! {
+        read = rows.get_data_v2(RecordNamespace::Operation, operation_id.as_bytes()),
+        missing = ReconcilerError::OperationNotFound,
+        project = ReconcilerError::from
+    }
 }
 
 pub(in crate::reconciler) fn pending_operation_count(journal: &Journal) -> Result<usize, ReconcilerError> {

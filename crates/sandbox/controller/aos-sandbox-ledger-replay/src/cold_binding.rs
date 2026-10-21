@@ -129,10 +129,12 @@ macro_rules! define_cold_replay_binding_v1 {
         }
 
         fn source_native_family_fixed_footprint_v1() -> Option<(usize, usize)> {
-            let (family, _) = source_tree_successor::SourceReplayFamilyOriginalsV1::boxed_footprint_v1()?;
-            let (transaction, _) =
-                source_tree_successor::SourceReplayTransactionOriginalsV1::boxed_footprint_v1()?;
-            Some((family.checked_add(transaction)?, 0))
+            let (bytes, _) = $crate::geometry::source_family_boxed_footprint_data_v1::<
+                JournalError,
+                DomainLedgerDataError,
+                SourceGenesisReceiptDataErrorV1,
+            >()?;
+            Some((bytes, 0))
         }
 
         fn is_q04_lower_history_record_v1(record: &JournalRecord) -> bool {

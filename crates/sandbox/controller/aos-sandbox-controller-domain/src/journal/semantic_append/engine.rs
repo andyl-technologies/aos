@@ -33,7 +33,7 @@ pub(super) trait AppendContextV1<'transaction> {
     fn require_consumer_transition(&self, transaction: &JournalTransaction, capacity: bool, settling: Option<[u8; 32]>) -> Result<(), JournalError>;
 
     #[cfg(target_os = "linux")]
-    fn require_root_genesis_transition(&self, transaction: &JournalTransaction, transition: RootSourceGenesisTransitionV1, capacity: bool, settling: Option<[u8; 32]>) -> Result<(), JournalError>;
+    fn require_root_genesis_transition(&self, transaction: &JournalTransaction) -> Result<(), JournalError>;
 
     fn require_source_policy_transition(&self, transaction: &JournalTransaction) -> Result<(), JournalError>;
 
@@ -86,10 +86,10 @@ pub(in crate::journal) fn receiving_frame_bytes_v1() -> Option<usize> {
 
     #[cfg(target_os = "linux")]
     let selected = std::mem::size_of::<(
-        Option<Q04JournalTransitionV1<'_, '_, '_, '_, '_, '_, '_, '_, '_, '_, '_, '_>>,
+        Option<Q04JournalTransitionV1<'_, '_, '_, '_, '_, '_, '_, '_, '_, '_>>,
         Option<&crate::controller_resource_reservation::Transition>,
         Option<(&aos_sandbox_broker::StoragePrepareNativeClockLoanV1<'_>, &mut super::super::StoragePrepareNativeClockCaptureV1)>,
-        Option<super::super::create_storage_append::CreateStorageAppendOriginalV1<'_, '_, '_, '_, '_, '_, '_, '_, '_, '_, '_, '_, '_>>,
+        Option<super::super::create_storage_append::CreateStorageAppendOriginalV1<'_, '_, '_, '_, '_, '_, '_, '_, '_, '_>>,
         Option<&aos_sandbox_broker::receiving::RootJournalFinancialBorrowV1<'_>>,
     )>().checked_mul(3)?;
 
@@ -162,8 +162,9 @@ impl<'transaction> AppendContextV1<'transaction> for OriginalAppendContextV1<'_,
     }
 
     #[cfg(target_os = "linux")]
-    fn require_root_genesis_transition(&self, transaction: &JournalTransaction, transition: RootSourceGenesisTransitionV1, capacity: bool, settling: Option<[u8; 32]>) -> Result<(), JournalError> {
-        crate::policy_compiler::require_root_source_genesis_mutation_v1(self.journal, transaction, transition, capacity, settling)
+    fn require_root_genesis_transition(&self, transaction: &JournalTransaction) -> Result<(), JournalError> {
+        aos_sandbox_ledger_replay::replay::root_genesis_capacity::require_no_mutation_v1(transaction)
+            .map_err(JournalError::from)
     }
 
     fn require_source_policy_transition(&self, transaction: &JournalTransaction) -> Result<(), JournalError> {
@@ -260,7 +261,7 @@ pub(super) fn commit<'transaction, C: AppendContextV1<'transaction>>(
     scope: AppendScope,
     mut cache_gate: CacheMutationGateV1<'_>,
     #[cfg(target_os = "linux")] q04_transition: Option<
-        Q04JournalTransitionV1<'_, '_, '_, '_, '_, '_, '_, '_, '_, '_, '_, '_>,
+        Q04JournalTransitionV1<'_, '_, '_, '_, '_, '_, '_, '_, '_, '_>,
     >,
     project_genesis: Option<ProjectNativeTransitionV3<'_, '_>>,
     #[cfg(target_os = "linux")] resource_reservation: Option<
@@ -271,7 +272,7 @@ pub(super) fn commit<'transaction, C: AppendContextV1<'transaction>>(
         &mut super::super::StoragePrepareNativeClockCaptureV1,
     )>,
     #[cfg(target_os = "linux")] mut create_storage: Option<
-        super::super::create_storage_append::CreateStorageAppendOriginalV1<'_, '_, '_, '_, '_, '_, '_, '_, '_, '_, '_, '_, '_>,
+        super::super::create_storage_append::CreateStorageAppendOriginalV1<'_, '_, '_, '_, '_, '_, '_, '_, '_, '_>,
     >,
     #[cfg(target_os = "linux")] borrowed_root: Option<
         &aos_sandbox_broker::receiving::RootJournalFinancialBorrowV1<'_>,
@@ -287,7 +288,6 @@ pub(super) fn commit<'transaction, C: AppendContextV1<'transaction>>(
         project_admission_transition,
         controller_genesis_transition,
         source_genesis_transition,
-        root_genesis_transition,
         root_local_edge,
         successor_issuance_transition,
         first_successor,
@@ -384,12 +384,7 @@ pub(super) fn commit<'transaction, C: AppendContextV1<'transaction>>(
     )?;
 
     #[cfg(target_os = "linux")]
-    context.require_root_genesis_transition(
-        transaction,
-        root_genesis_transition,
-        allow_capacity_records,
-        settling_reservation,
-    )?;
+    context.require_root_genesis_transition(transaction)?;
 
     #[cfg(target_os = "linux")]
     let create_storage_original = create_storage.is_some();
@@ -406,7 +401,6 @@ pub(super) fn commit<'transaction, C: AppendContextV1<'transaction>>(
             || project_admission_transition != SourceProjectAdmissionTransition::None
             || controller_genesis_transition != aos_sandbox_ledger_replay::replay::controller_source_genesis::ControllerSourceGenesisTransition::None
             || source_genesis_transition != source_tree_genesis::SourceGenesisTransitionV1::None
-            || root_genesis_transition != RootSourceGenesisTransitionV1::None
             || root_local_edge.is_some() || successor_issuance_transition.is_some() || first_successor.is_some()
             || !matches!(&cache_gate, CacheMutationGateV1::Ordinary)
         {
@@ -424,12 +418,9 @@ pub(super) fn commit<'transaction, C: AppendContextV1<'transaction>>(
 
     #[cfg(target_os = "linux")]
     if q04_transition.is_some() {
-        if matches!(q04_transition, Some(Q04JournalTransitionV1::RootCapacity(_)))
-            || matches!(q04_transition, Some(Q04JournalTransitionV1::Controller(_, None)))
-            || matches!(q04_transition, Some(Q04JournalTransitionV1::Root(_, _, None)))
+        if matches!(q04_transition, Some(Q04JournalTransitionV1::Controller(_, None)))
             || matches!(q04_transition, Some(Q04JournalTransitionV1::Source(_, _, None, _)))
             || matches!(q04_transition, Some(Q04JournalTransitionV1::Source(_, 2, _, None)))
-            || matches!(q04_transition, Some(Q04JournalTransitionV1::Cache(_, _, None)))
             || allow_capacity_records || allow_policy_hold_transition
             || allow_host_fence_acquisition || allow_host_currentness_fence_acquisition
             || allow_host_settlement_admission_append || settling_reservation.is_some()
@@ -437,7 +428,6 @@ pub(super) fn commit<'transaction, C: AppendContextV1<'transaction>>(
             || controller_genesis_transition
                 != aos_sandbox_ledger_replay::replay::controller_source_genesis::ControllerSourceGenesisTransition::None
             || source_genesis_transition != source_tree_genesis::SourceGenesisTransitionV1::None
-            || root_genesis_transition != RootSourceGenesisTransitionV1::None
             || root_local_edge.is_some() || successor_issuance_transition.is_some()
             || !matches!(&cache_gate, CacheMutationGateV1::Ordinary)
         {
@@ -603,16 +593,6 @@ pub(super) fn commit<'transaction, C: AppendContextV1<'transaction>>(
         cache_policy_guard = Some(context.before_cache_append(&mut cache_gate)?);
 
         #[cfg(target_os = "linux")]
-        if let Some(Q04JournalTransitionV1::Root(history, _, Some(original))) = q04_transition {
-            // This is the actual borrowed Root flight, checked after native
-            // encoding/preflight and immediately before the shared append.
-            // The lower synchronous I/O can still straddle the cutoff; its
-            // outcome must remain resident and pass an upper postcheck.
-            original.recheck_cut(history.identity())
-                .map_err(|first| JournalError::Q04RootOriginal(Box::new(first)))?;
-        }
-
-        #[cfg(target_os = "linux")]
         match q04_transition {
             Some(Q04JournalTransitionV1::Controller(transition, Some(root))) => {
                 if !std::ptr::eq(root.identity(), transition.identity()) {
@@ -629,10 +609,6 @@ pub(super) fn commit<'transaction, C: AppendContextV1<'transaction>>(
                         .map_err(|first| JournalError::Q04RootOriginal(Box::new(first)))?;
                 }
             }
-            Some(Q04JournalTransitionV1::Cache(recipes, index, Some(root))) => {
-                root.require_lower_transition(index, recipes.release_authorization())
-                    .map_err(|first| JournalError::Q04RootOriginal(Box::new(first)))?;
-            }
             _ => {}
         }
 
@@ -644,11 +620,7 @@ pub(super) fn commit<'transaction, C: AppendContextV1<'transaction>>(
             source_tree_successor::require_project_genesis_native_owner_v3(context.journal()?, *phase)?;
             #[cfg(target_os = "linux")]
             {
-                let admission_expiry = if matches!(phase, source_tree_successor::ProjectGenesisNativePhaseV3::RootPrepared(_)) {
-                    Some(crate::policy_compiler::RootSourceGenesisAuthorityV1::require_project_genesis_current_deployment_v3(context.journal()?)
-                        .map_err(|error| JournalError::ProjectGenesisOriginal(Box::new(error)))?)
-                } else { None };
-                original.final_crossing(admission_expiry)
+                original.final_crossing()
                     .map_err(|cause| JournalError::ProjectGenesisOriginal(Box::new(cause)))?;
             }
             #[cfg(not(target_os = "linux"))]
@@ -698,18 +670,6 @@ pub(super) fn commit<'transaction, C: AppendContextV1<'transaction>>(
         #[cfg(target_os = "linux")]
         if let Some(ProjectNativeTransitionV3::GlobalGenesis(original)) = &project_genesis {
             original.final_crossing(context.journal()?, source_genesis_transition, controller_genesis_transition)?;
-        }
-
-        #[cfg(target_os = "linux")]
-        if let Some(ProjectNativeTransitionV3::GlobalRootGenesis(original)) = &project_genesis {
-            if source_genesis_transition != source_tree_genesis::SourceGenesisTransitionV1::None
-                || controller_genesis_transition != aos_sandbox_ledger_replay::replay::controller_source_genesis::ControllerSourceGenesisTransition::None
-                || first_successor.is_some() || resource_reservation.is_some()
-            { return Err(JournalError::ProtectedBoundary); }
-            original.final_crossing(
-                context.journal()?, root_genesis_transition == RootSourceGenesisTransitionV1::Initialize,
-                allow_capacity_records, settling_reservation.is_some(),
-            )?;
         }
 
         #[cfg(target_os = "linux")]

@@ -77,7 +77,8 @@ pub struct ControllerResourceBankOpeningV1 {
     initial_sessions: [Option<super::initial_session::ControllerInitialBrokerSessionReceivingV1>;
         super::initial_session::ControllerInitialBrokerSessionRoleV1::COUNT],
     initial_sessions_taken: [bool; super::initial_session::ControllerInitialBrokerSessionRoleV1::COUNT],
-    cache_import: Option<crate::cache_residency::CacheSelectedBootstrapImportV1>,
+    cache_import: Option<aos_sandbox_cache::CacheSelectedBootstrapImportV1>,
+    cache_semantic_supplement: Option<Result<aos_sandbox_model::ResourceVector, JournalError>>,
     preopen: Option<ControllerResourcePreopenPostV1>,
     preopen_attempted: bool,
     observed: Option<Result<OriginalEnrollment, ResourceReservationErrorV1>>,
@@ -720,7 +721,7 @@ impl ControllerResourceBankOpeningV1 {
         profile: &crate::normal_root::ProductionControllerNormalRootProfileV1,
         uid: u32,
         bundle: &[u8],
-    ) -> Result<crate::journal::RecoveryReport, &(dyn std::error::Error + 'static)> {
+    ) -> Result<aos_sandbox_broker::canonical_journal::RecoveryReport, &(dyn std::error::Error + 'static)> {
         if self.cache_import.is_some() || self.preopen_attempted || self.attempted
             || self.runtime_startup.as_ref().is_none_or(|attempt| attempt.require_success().is_err())
             || self.failure().is_some()
@@ -729,9 +730,20 @@ impl ControllerResourceBankOpeningV1 {
         }
         let mut loan = self.startup.borrow_cache_prebank_import_once_v1(profile.lower_original_v1())
             .ok_or(&CLOSED as &(dyn std::error::Error + 'static))?;
-        self.cache_import = Some(crate::cache_residency::CacheSelectedBootstrapImportV1::new());
-        self.cache_import.as_mut().ok_or(&CLOSED as &(dyn std::error::Error + 'static))?
-            .import_once(&mut loan, uid, bundle)
+        self.cache_semantic_supplement = Some(crate::journal::cache_native_semantic_supplement_v1());
+        let supplement = self.cache_semantic_supplement.as_ref()
+            .and_then(|quote| quote.as_ref().ok()).copied();
+        self.cache_import = Some(aos_sandbox_cache::CacheSelectedBootstrapImportV1::new());
+        let report = match self.cache_import.as_mut()
+            .ok_or(&CLOSED as &(dyn std::error::Error + 'static))?
+            .import_once(&mut loan, uid, bundle, supplement, crate::cache_programmes::initialization::upper_cache_construction_control_bytes_v1()) {
+            Ok(report) => Some(report),
+            Err(_) => None,
+        };
+        match report {
+            Some(report) => Ok(report),
+            None => Err(self.cache_import_failure_v1().unwrap_or(&CLOSED)),
+        }
     }
 
     /// Prepays the installed issue-only retained startup on this SAME C.
@@ -953,6 +965,16 @@ impl ControllerResourceBankOpeningV1 {
         Ok(())
     }
 
+    fn cache_import_failure_v1(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        let import = self.cache_import.as_ref()?;
+        if import.construction_semantic_supplement_failure_is_selected_v1() {
+            if let Some(Err(cause)) = self.cache_semantic_supplement.as_ref() {
+                return Some(cause);
+            }
+        }
+        import.failure()
+    }
+
     /// Borrows the earliest original cause in the fixed opening schedule.
     pub fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
         if let Some(Err(cause)) = &self.source_issue_debit { return Some(cause); }
@@ -964,7 +986,7 @@ impl ControllerResourceBankOpeningV1 {
                 super::runtime_receiving::ControllerRuntimeStartupAdmissionV1::failure,
             ))
             .or_else(|| self.source_credentials.as_ref().and_then(|receiver| receiver.failure()))
-            .or_else(|| self.cache_import.as_ref().and_then(crate::cache_residency::CacheSelectedBootstrapImportV1::failure))
+            .or_else(|| self.cache_import_failure_v1())
             .or_else(|| self.preopen.as_ref().and_then(ControllerResourcePreopenPostV1::failure))
             .or_else(|| self.launch_admission.as_ref().and_then(|result| result.as_ref().err())
                 .map(|cause| cause as &(dyn std::error::Error + 'static)))

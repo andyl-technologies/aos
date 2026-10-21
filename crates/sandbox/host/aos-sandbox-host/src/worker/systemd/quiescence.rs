@@ -34,9 +34,9 @@ impl FreezerWriteClockV2 {
         Self { clock, results: std::array::from_fn(|_| None), used: 0 }
     }
 
-    fn before_write(&mut self) -> aos_sandbox_linux::Result<()> {
+    fn before_write(&mut self) -> aos_linux_descriptors::Result<()> {
         let Some(slot) = self.results.get_mut(self.used) else {
-            return Err(aos_sandbox_linux::Error::InvalidInput {
+            return Err(aos_linux_descriptors::Error::InvalidInput {
                 field: "Launch freezer write clock",
                 message: "prepaid write sample roster is exhausted".to_owned(),
             });
@@ -44,7 +44,7 @@ impl FreezerWriteClockV2 {
         self.used += 1;
         *slot = Some(self.clock.sample_before_write_v2());
         if matches!(slot, Some(Ok(_))) { Ok(()) } else {
-            Err(aos_sandbox_linux::Error::InvalidInput {
+            Err(aos_linux_descriptors::Error::InvalidInput {
                 field: "Launch freezer write clock",
                 message: "original authority refusal is retained".to_owned(),
             })

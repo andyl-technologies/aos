@@ -20,7 +20,7 @@ use aos_sandbox_model::ObjectDigest;
 use ed25519_dalek::VerifyingKey;
 use sha2::{Digest as _, Sha256};
 
-use crate::cache_residency::CacheOwnerReadbackErrorV1;
+use aos_sandbox_cache::CacheOwnerReadbackErrorV1;
 use aos_sandbox_protocol::cache_owner_readback::{
     CacheOwnerReadbackChallengeV1,
     PinnedCacheOwnerReadbackSignerV1,
@@ -90,7 +90,7 @@ impl From<aos_sandbox_protocol::cache_owner_readback::CacheOwnerReadbackDataErro
     for ClosedCacheReadbackSessionErrorV1
 {
     fn from(cause: aos_sandbox_protocol::cache_owner_readback::CacheOwnerReadbackDataErrorV1) -> Self {
-        Self::Readback(crate::cache_residency::CacheOwnerReadbackErrorV1::from(cause))
+        Self::Readback(aos_sandbox_cache::CacheOwnerReadbackErrorV1::from(cause))
     }
 }
 
@@ -816,7 +816,11 @@ fn spend_cache_root_challenge(
     let cut = cut_for_epoch(expected, epoch);
     let readback = CacheOwnerReadbackChallengeV1::new(nonce, cut)?;
     let record = codec.encode(epoch, nonce, cut);
-    authority.commit(&codec.transaction(record)?)?;
+    authority.commit(
+        &codec
+            .transaction(record)
+            .map_err(crate::journal::JournalError::from)?,
+    )?;
     if authority.get(challenge_key)? != Some(record.as_slice()) {
         return Err(ClosedCacheReadbackSessionErrorV1::Stale);
     }
@@ -879,7 +883,7 @@ fn cache_signer_root_cut_v2(expected: CacheRootSourceExpectation<'_>, epoch: u64
     )
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use std::fs;
     use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
@@ -887,7 +891,7 @@ mod tests {
     use aos_sandbox_model::ProjectId;
     use ed25519_dalek::SigningKey;
 
-    use crate::cache_residency::sign_test_cache_owner_readback_v2;
+    use aos_sandbox_cache::sign_test_cache_owner_readback_v2;
     use aos_sandbox_protocol::cache_owner_readback::encode_cache_owner_readback_signer_credential_v1;
     use aos_sandbox_protocol::domain_ledger::cache_policy_hold::CachePolicyHoldV1;
     use crate::journal::{JournalLimits, JournalRecord, JournalTransaction};
@@ -913,14 +917,18 @@ mod tests {
     }
 
     fn admit_source(
-        journal: &mut Journal,
+        directory: &Path,
         cache_pin: &[u8],
         deployment: &VerifyingKey,
         project: &VerifyingKey,
     ) {
-        admit_policy_signer_pins_in_journal_v1(journal, 3, deployment, 4, project)
+        let uid = fs::metadata(directory).expect("fixture UID").uid();
+        let mut journal = aos_sandbox_policy::native::RootStartupFixedAdmissionFixtureV1::open_v1(
+            directory, "authority.journal", JournalLimits::default(), uid,
+        ).expect("actual native Root credential fixture");
+        admit_policy_signer_pins_in_journal_v1(&mut journal, 3, deployment, 4, project)
             .expect("root policy pins");
-        admit_cache_readback_pin_in_journal_v1(journal, Some(cache_pin), 3, deployment, 4, project)
+        admit_cache_readback_pin_in_journal_v1(&mut journal, Some(cache_pin), 3, deployment, 4, project)
             .expect("root Cache pin");
         let records = [
             (HEAD_KEY, DEPLOYMENT_HEAD),
@@ -933,7 +941,7 @@ mod tests {
         })
         .collect();
         journal
-            .commit(&JournalTransaction::new([35; 16], records).expect("source transaction"))
+            .seed_v1(&JournalTransaction::new([35; 16], records).expect("source transaction"))
             .expect("protected source records");
     }
 
@@ -958,8 +966,8 @@ mod tests {
             project_key: &project,
             owner_uid: 811,
         };
+        admit_source(directory.path(), &pin, &deployment, &project);
         let mut root = journal(directory.path());
-        admit_source(&mut root, &pin, &deployment, &project);
         let first = stage_cache_signer_challenge_in_journal_v2(&mut root, expected, || Ok([7; 16]))
             .expect("spent V2 challenge");
         assert_eq!(first.epoch(), 1);
@@ -1099,8 +1107,8 @@ mod tests {
             project_key: &project,
             owner_uid: 811,
         };
+        admit_source(directory.path(), &pin, &deployment, &project);
         let mut root = journal(directory.path());
-        admit_source(&mut root, &pin, &deployment, &project);
 
         let challenge =
             stage_cache_signer_challenge_in_journal_v2(&mut root, expected, || Ok([7; 16]))
@@ -1242,8 +1250,8 @@ mod tests {
             project_key: &project,
             owner_uid: 811,
         };
+        admit_source(directory.path(), &pin, &deployment, &project);
         let mut root = journal(directory.path());
-        admit_source(&mut root, &pin, &deployment, &project);
         let challenge =
             stage_cache_signer_challenge_in_journal_v2(&mut root, expected, || Ok([7; 16]))
                 .expect("spent challenge");

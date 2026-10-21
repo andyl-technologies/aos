@@ -8,7 +8,8 @@ use std::error::Error as StdError;
 use aos_sandbox_linux::cgroup::{
     ExactCgroupMembershipReadbackV1, ExactCgroupMembershipRefusalV1, RetainedCgroupAnchor,
 };
-use aos_sandbox_linux::pidfd::{PidFd, PidFdInfo};
+use aos_linux_descriptors::pidfd::PidFd;
+use aos_linux_descriptors::pidfd::PidFdInfo;
 
 use super::{Error, positive};
 

@@ -11,8 +11,11 @@ use std::os::fd::{AsFd as _, BorrowedFd};
 
 use rustix::fs::{FileType, Mode, OFlags, XattrFlags, fgetxattr, fsetxattr, fstat, fstatfs, open};
 
-use crate::pidfd::{PidFd, SingleThreadedProcess};
-use crate::{Error, Result, uapi};
+use aos_linux_descriptors::pidfd::PidFd;
+use crate::pidfd::SingleThreadedProcess;
+use aos_linux_descriptors::Error;
+use aos_linux_descriptors::Result;
+use crate::uapi;
 
 /// Names the existing trusted Guest owner, independently of its current UID.
 pub const GUEST_OWNER_CONTEXT: &str = "system_u:system_r:aos_sandbox_guest_owner_t:s0";
@@ -138,9 +141,9 @@ pub fn require_subject(expected: &str) -> Result<()> {
 ///
 /// Rejects process exit, changed identity, oversized context, or procfs error.
 pub fn task_has_subject(process: &PidFd, expected: &str) -> Result<bool> {
-    let before = process.process_identity()?;
+    let before = crate::pidfd::process_identity(process)?;
     let context = read_context(&format!("/proc/{}/attr/current", before.pid()))?;
-    if process.process_identity()? != before || !process.is_alive()? {
+    if crate::pidfd::process_identity(process)? != before || !process.is_alive()? {
         return Err(Error::invalid(
             "Guest task subject",
             "retained task changed",

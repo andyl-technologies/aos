@@ -18,6 +18,7 @@
 //! controller-key-generation:u64be | signed-intent[364]
 //! ```
 
+use crate::journal::historical_observation::HistoricalObservationV1;
 use aos_sandbox_api::aos::sandbox::v1::{OperatorRecoveryAction, OperatorRecoveryRequest};
 use aos_sandbox_model::operator_recovery_effect::{
     OPERATOR_RECOVERY_EFFECT_INTENT_BYTES, OperatorRecoveryEffectActionV1,
@@ -197,8 +198,25 @@ pub(crate) fn verify_operator_storage_repair_failure_v1(
     journal: &Journal,
     operation: OperationId,
 ) -> Result<(), OperatorRecoveryIssuanceErrorV1> {
+    verify_operator_storage_repair_failure_from_observation_v2(
+        HistoricalObservationV1::from_journal_v1(journal),
+        operation,
+    )
+}
+
+/// Checks the original signed Repair custody through the same borrowed owner.
+///
+/// # Errors
+///
+/// Preserves the original malformed-history, signature, credential and owner failures.
+pub(crate) fn verify_operator_storage_repair_failure_from_observation_v2(
+    journal: HistoricalObservationV1<'_>,
+    operation: OperationId,
+) -> Result<(), OperatorRecoveryIssuanceErrorV1> {
     let (signer, owner) = protected_query_roles()?;
-    terminal::verify_current_failure_v1(journal, &signer, &owner, operation, None)?;
+    terminal::verify_current_failure_from_observation_v2(
+        journal, &signer, &owner, operation, None,
+    )?;
     Ok(())
 }
 

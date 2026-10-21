@@ -157,7 +157,7 @@ pub enum ZfsWorkerError {
     Io(#[from] std::io::Error),
     /// Linux process or identity enforcement failed.
     #[error("fixed ZFS worker Linux boundary failed: {0}")]
-    Linux(#[from] aos_sandbox_linux::Error),
+    Linux(#[from] aos_linux_descriptors::Error),
     /// A safe rustix operation failed.
     #[error("fixed ZFS worker kernel operation failed: {0}")]
     Kernel(#[from] rustix::io::Errno),
@@ -412,7 +412,7 @@ pub(crate) fn observe_workspace_catalog_zfs_for(
                 "global catalog ZFS observation exceeded its ceiling",
             ));
         }
-        Err(aos_sandbox_linux::Error::Syscall {
+        Err(aos_linux_descriptors::Error::Syscall {
             operation: "spawn fixed process",
             source,
         }) if source.raw_os_error().is_some() => return Err(ZfsWorkerError::Exec(source)),
@@ -1052,7 +1052,7 @@ fn observe_atomic_snapshot_group(
 fn run_worker_fixed_process_v1(
     request: FixedProcessRequest<'_>,
     aggregate: Option<&mut worker_aggregate::WorkerExecutionScopeV1<'_>>,
-) -> Result<FixedProcessOutcome, aos_sandbox_linux::Error> {
+) -> Result<FixedProcessOutcome, aos_linux_descriptors::Error> {
     match aggregate {
         Some(original) => original.run_fixed_process_v1(request),
         None => run_fixed_process(request),
@@ -1161,7 +1161,7 @@ fn execute_transaction(
             Ok(FixedProcessOutcome::OutputLimitExceeded) => {
                 return Err(ZfsWorkerError::Protocol("ZFS output exceeded its ceiling"));
             }
-            Err(aos_sandbox_linux::Error::Syscall {
+            Err(aos_linux_descriptors::Error::Syscall {
                 operation: "spawn fixed process",
                 source,
             }) if source.raw_os_error().is_some() => {
@@ -1241,7 +1241,7 @@ fn execute_observation_in_scope_v1(
                     "ZFS observation output exceeded its ceiling",
                 ));
             }
-            Err(aos_sandbox_linux::Error::Syscall {
+            Err(aos_linux_descriptors::Error::Syscall {
                 operation: "spawn fixed process",
                 source,
             }) if source.raw_os_error().is_some() => return Err(ZfsWorkerError::Exec(source)),
@@ -1672,7 +1672,7 @@ impl RetainedWorkerDescriptorSlot {
 #[derive(Default)]
 struct WorkerCleanupReport {
     initial_proof: Option<Result<bool, ZfsWorkerError>>,
-    cancellation: Option<Result<(), aos_sandbox_linux::Error>>,
+    cancellation: Option<Result<(), aos_linux_descriptors::Error>>,
     failure_recheck: Option<Result<bool, ZfsWorkerError>>,
     bounded_wait: Option<Result<(), ZfsWorkerError>>,
 }
@@ -1754,7 +1754,7 @@ fn capture_worker_cleanup_with_originals(
                 // The complete actual active/open/fs/stat/write owner is kept
                 // separately. This marker only preserves the shared cleanup
                 // control flow; selected callers never use legacy projection.
-                Err(aos_sandbox_linux::Error::InvalidInput { field: "retained worker cancellation", message: "original cause retained".into() })
+                Err(aos_linux_descriptors::Error::InvalidInput { field: "retained worker cancellation", message: "original cause retained".into() })
             }
         }
     });
@@ -2066,8 +2066,8 @@ pub(crate) fn open_cgroup_root() -> Result<CgroupV2Root, ZfsWorkerError> {
 mod lower_custody_tests {
     use super::*;
 
-    fn kill_failure() -> aos_sandbox_linux::Error {
-        aos_sandbox_linux::Error::WrongDescriptorType {
+    fn kill_failure() -> aos_linux_descriptors::Error {
+        aos_linux_descriptors::Error::WrongDescriptorType {
             expected: "cgroup.kill",
         }
     }
@@ -2121,7 +2121,7 @@ mod lower_custody_tests {
         assert!(matches!(
             report.into_legacy_result(),
             Err(ZfsWorkerError::Linux(
-                aos_sandbox_linux::Error::WrongDescriptorType {
+                aos_linux_descriptors::Error::WrongDescriptorType {
                     expected: "cgroup.kill",
                 },
             )),

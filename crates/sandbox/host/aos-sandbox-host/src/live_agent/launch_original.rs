@@ -48,6 +48,12 @@ impl HostAgentHandshakeOriginalV2 {
             ::closed_zero_rights_receive_obligations_v1(MAX_AGENT_HANDSHAKE_RESPONSE_BYTES_V2)?;
         let (guest_native_bytes, guest_files) = aos_sandbox_linux::seqpacket::SeqpacketSocket
             ::guest_initial_handshake_receive_obligations_v2(AGENT_HANDSHAKE_REQUEST_BYTES_V2)?;
+        // The normal7/8 profile enters this native receive immediately after
+        // handshake, before a future paid Accept20 can exist. Launch pays the
+        // actual receiver and inert argument helper before Guest construction.
+        let (operation_receive, operation_files) = aos_sandbox_linux::seqpacket::SeqpacketSocket::
+            agent_authorize_receive_obligations_v2(aos_sandbox_guest_protocol::protocol::MAX_AGENT_FRAME_BYTES)?;
+        let argument_controls = aos_sandbox_guest_protocol::argument_receiving::argument_guest_receiving_bytes_v1()?;
         let guest_startup = aos_sandbox_linux::guest_cgroup::GuestRuntimeTopologyOriginalV1
             ::whole_guest_startup_obligations_v1(guest_files)?;
         // This selected parent was native descriptor-free before exposure;
@@ -56,6 +62,10 @@ impl HostAgentHandshakeOriginalV2 {
         // another duplicate. Three owner planes cover resident, return and
         // construction carriers, including both raw cookie Results per send.
         let bytes = native_bytes
+            .checked_add(operation_receive)?.checked_add(argument_controls)?
+            .checked_add(6 * std::mem::size_of::<Option<(usize, usize)>>())?
+            .checked_add(6 * std::mem::size_of::<Option<usize>>())?
+            .checked_add(8 * std::mem::size_of::<usize>())?
             .checked_add(guest_native_bytes)?
             // The actual Guest control-header assertion includes the complete
             // selected handshake original. This is prospective source payment
@@ -66,7 +76,7 @@ impl HostAgentHandshakeOriginalV2 {
             .checked_add(MAX_AGENT_HANDSHAKE_RESPONSE_BYTES_V2.checked_mul(4)?)?;
         Some(ResourceVector::ZERO
             .with(D::MemoryBytes, u64::try_from(bytes).ok()?)
-            .with(D::OpenFiles, u64::try_from(files.checked_add(guest_startup.1)?).ok()?)
+            .with(D::OpenFiles, u64::try_from(files.checked_add(guest_startup.1)?.checked_add(operation_files)?).ok()?)
             .with(D::NetworkBytes, u64::try_from(AGENT_HANDSHAKE_REQUEST_BYTES_V2
                 .checked_add(MAX_AGENT_HANDSHAKE_RESPONSE_BYTES_V2)?).ok()?)
             .with(D::OutputBytes, u64::try_from(AGENT_HANDSHAKE_REQUEST_BYTES_V2).ok()?))
@@ -148,7 +158,7 @@ pub(crate) struct HostAgentLaunchOriginalV2 {
     pair: aos_sandbox_linux::seqpacket::RecordSubjectSeqpacketPairOriginalV2,
     provisioning_bytes: zeroize::Zeroizing<Vec<u8>>,
     attach_bytes: zeroize::Zeroizing<Vec<u8>>,
-    seal: [aos_sandbox_linux::immutable_file::SealedReadOnlyCredentialCreateOriginalsV1; 2],
+    seal: [aos_linux_descriptors::credential::SealedReadOnlyCredentialCreateOriginalsV1; 2],
     guest: Option<super::HostAgentGuestLaunchDescriptorsV1>,
     pub(crate) pending: Option<super::HostAgentPendingSessionV1>,
     pins: aos_systemd_client::SandboxGuestAgentPinOriginalV2,
@@ -177,7 +187,7 @@ impl HostAgentLaunchOriginalV2 {
             pair: aos_sandbox_linux::seqpacket::RecordSubjectSeqpacketPairOriginalV2::zero_rights_parent_v1(),
             provisioning_bytes: zeroize::Zeroizing::new(Vec::new()),
             attach_bytes: zeroize::Zeroizing::new(Vec::new()),
-            seal: std::array::from_fn(|_| aos_sandbox_linux::immutable_file::SealedReadOnlyCredentialCreateOriginalsV1::new()),
+            seal: std::array::from_fn(|_| aos_linux_descriptors::credential::SealedReadOnlyCredentialCreateOriginalsV1::new()),
             guest: None, pending: None, pins: aos_systemd_client::SandboxGuestAgentPinOriginalV2::new(),
             handshake: HostAgentHandshakeOriginalV2::new(), authenticated: None,
             setup_result: None, setup_entered: false, frontier: SetupFrontierV2::Seed, first: None,
@@ -228,7 +238,7 @@ impl HostAgentLaunchOriginalV2 {
             ("aos-sandbox-agent-provisioning-v1", super::PROVISIONING_BYTES),
             ("aos-sandbox-guest-attach-trust-v1", super::MAX_GUEST_ATTACH_TRUST_BYTES),
         ] {
-            let seal = aos_sandbox_linux::immutable_file::SealedReadOnlyCredentialCreateOriginalsV1
+            let seal = aos_linux_descriptors::credential::SealedReadOnlyCredentialCreateOriginalsV1
                 ::receiving_footprint_v1(name.len(), maximum)?;
             demand = demand.checked_add(ResourceVector::ZERO
                 .with(D::MemoryBytes, u64::try_from(seal.memory_bytes).ok()?)

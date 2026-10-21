@@ -49,7 +49,7 @@ impl OriginalCreateStorageReadyV1<'_, '_> {
             parent: &owner.parent, intake: &mut owner.intake,
             controller: self.original.controller, source: self.original.source,
             profile: self.original.profile, cache: &mut self.cache,
-            state: &mut root.turn, use_receiving: Some(receiving),
+            state: &mut root.turn, use_receiving: Some(RootUseReceivingV1::Original(receiving)),
         };
         loan.run_use_current_once(&mut root.peer, reserved, packet, original_cutoff)
     }
@@ -290,7 +290,7 @@ impl OriginalCreateStorageRootExchangeV1<'_, '_, '_> {
         reserved: &'held OriginalCreateStorageUseReservedV1<'held>,
     ) -> Result<OriginalCreateStorageRootUseAdmittedV1<'held>, ResourceReservationErrorV1> {
         self.require_fixed().map_err(|_| ResourceReservationErrorV1::Conflict)?;
-        self.use_receiving.as_deref().ok_or(ResourceReservationErrorV1::Conflict)?
+        self.use_receiving.as_ref().ok_or(ResourceReservationErrorV1::Conflict)?
             .require_reserved_v1()?;
         borrow_admitted_from_turn_v1(self.state, reserved)
     }

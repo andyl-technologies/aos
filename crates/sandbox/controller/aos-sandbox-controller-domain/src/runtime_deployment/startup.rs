@@ -20,7 +20,8 @@ use std::path::{Path, PathBuf};
 
 use aos_sandbox_linux::guest_confinement::require_subject;
 use aos_sandbox_linux::inherited_fd::duplicate_initial_activation_table;
-use aos_sandbox_linux::pidfd::{PidFd, PidFdProcessIdentity};
+use aos_linux_descriptors::pidfd::PidFd;
+use aos_sandbox_linux::pidfd::PidFdProcessIdentity;
 use aos_sandbox_linux::selinux_policy::VerifiedLiveSelinuxPolicy;
 use aos_sandbox_linux::seqpacket::RecordSubjectListener;
 use serde::Deserialize;
@@ -238,8 +239,7 @@ impl ProductionRuntimeDeploymentStartupCaptureV1 {
                 .ok_or(RuntimeDeploymentStartupErrorV1::Service)?,
         )
         .map_err(|_| RuntimeDeploymentStartupErrorV1::Service)?;
-        let identity = process
-            .process_identity()
+        let identity = aos_sandbox_linux::pidfd::process_identity(&(process))
             .map_err(|_| RuntimeDeploymentStartupErrorV1::Service)?;
         let service = RetainedDeploymentServicePolicyV1::retain_mode(
             profile_file.path(),
@@ -412,9 +412,8 @@ impl ProductionRuntimeDeploymentStartupV1 {
             .map_err(|_| RuntimeDeploymentStartupErrorV1::Service)?
             || info.pid() != std::process::id()
             || info.parent_pid() != 1
-            || self
-                .process
-                .process_identity()
+            || aos_sandbox_linux::pidfd::process_identity(&(self
+                .process))
                 .map_err(|_| RuntimeDeploymentStartupErrorV1::Service)?
                 != self.identity
             || [
@@ -512,7 +511,7 @@ impl ProductionRuntimeDeploymentStartupV1 {
 
     pub(super) fn retain_host_invocation_population(
         &self,
-    ) -> aos_sandbox_linux::Result<aos_sandbox_linux::cgroup::CgroupPopulationMonitor> {
+    ) -> aos_linux_descriptors::Result<aos_sandbox_linux::cgroup::CgroupPopulationMonitor> {
         self.service.retain_host_invocation_population()
     }
 
@@ -699,7 +698,7 @@ pub struct RuntimeDeploymentStorageDelegateCaptureV2<'origin> {
 pub enum RuntimeDeploymentStorageDelegateErrorV2 {
     /// An original kernel/process observation failed.
     #[error(transparent)]
-    Kernel(#[from] aos_sandbox_linux::Error),
+    Kernel(#[from] aos_linux_descriptors::Error),
     /// The original transport or received-origin observation failed.
     #[error(transparent)]
     Carrier(#[from] aos_sandbox_linux::seqpacket::SeqpacketError),
@@ -1150,7 +1149,7 @@ impl<'origin> RuntimeDeploymentStorageDelegateCaptureV2<'origin> {
         self.require_job(disposition)?;
 
         let original = record.subject().pidfd();
-        self.proc = Some(original.prepare_proc_observations_v1());
+        self.proc = Some(aos_sandbox_linux::pidfd::prepare_proc_observations_v1(&(original)));
         self.identity = Some(self.proc.as_mut().ok_or(RuntimeDeploymentStorageDelegateErrorV2::Changed)?
             .capture_stat(original)?);
         let context = self.proc.as_mut().ok_or(RuntimeDeploymentStorageDelegateErrorV2::Changed)?
@@ -1404,7 +1403,7 @@ impl<'origin> RuntimeDeploymentStorageDelegateCaptureV2<'origin> {
 
     pub(super) fn require_original_clock(&self) -> Result<(), RuntimeDeploymentStorageDelegateErrorV2> {
         let job = self.job.as_ref().ok_or(RuntimeDeploymentStorageDelegateErrorV2::Changed)?;
-        let boot = aos_sandbox_linux::boot::KernelBootId::current()?;
+        let boot = aos_linux_descriptors::boot::KernelBootId::current()?;
         let now = rustix::time::clock_gettime(rustix::time::ClockId::Boottime);
         let seconds = u64::try_from(now.tv_sec).map_err(|_| RuntimeDeploymentStorageDelegateErrorV2::Changed)?;
         let nanos = u64::try_from(now.tv_nsec).map_err(|_| RuntimeDeploymentStorageDelegateErrorV2::Changed)?;

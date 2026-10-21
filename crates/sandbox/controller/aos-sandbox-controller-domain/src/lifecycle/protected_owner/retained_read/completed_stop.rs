@@ -559,6 +559,7 @@ fn controller_commitment(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::journal::Journal;
     use std::collections::BTreeMap;
 
     #[test]
@@ -656,7 +657,7 @@ mod tests {
         )
         .unwrap();
         let mut replay = LifecycleHistoricalReadOriginalV1::new();
-        replay.observe_projection_once_v1(&source).unwrap();
+        replay.observe_rows_projection_once_v3(source.historical_read_view_v1().rows_data_v2()).unwrap();
         let controller = BTreeMap::new();
         let index = BTreeMap::new();
         let rows = HistoricalLedgerRowsDataV2::new(&controller, &index);

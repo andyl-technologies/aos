@@ -8,6 +8,7 @@ publish = false
 [target.'cfg(target_os = "linux")'.dependencies]
 aos-sandbox-model.workspace = true
 aos-sandbox-linux.workspace = true
+aos-linux-descriptors.workspace = true
 libc.workspace = true
 rustix = { workspace = true, features = ["mount"] }
 

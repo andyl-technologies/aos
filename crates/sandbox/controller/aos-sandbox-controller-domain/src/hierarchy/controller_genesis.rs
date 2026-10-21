@@ -22,7 +22,8 @@ use crate::journal::controller_source_genesis as records;
 use aos_sandbox_ledger_replay::replay::controller_source_genesis::ControllerSourceGenesisTransition as Transition;
 use crate::journal::{Journal, ProtectedJournalNamesV1};
 use crate::journal::controller_source_successor_issuance::PublicationCustodyV2;
-use crate::policy_compiler::{RootSourceGenesisFloorProofV1, SourceHierarchyFloorRecordV1};
+use crate::policy_compiler::RootSourceGenesisFloorProofV1;
+use aos_sandbox_ledger_replay::replay::root_genesis_records::SourceHierarchyFloorRecordV1;
 use crate::publisher_admin::policy::{PublisherPolicyLimits, PublisherPolicyStore};
 
 const CONTROLLER_ROOT: &str = "/var/lib/aos/sandboxd";

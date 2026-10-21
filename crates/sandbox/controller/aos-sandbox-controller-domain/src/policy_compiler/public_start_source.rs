@@ -15,10 +15,11 @@ use aos_sandbox_protocol::public_api::{
     projection::{PublicProjectionKindV1, PublicProjectionResourceV1},
     request::DormantSandboxRequestKindV1,
 };
-use crate::controller_service::public_projection::PublicProjectionStoreV1;
+use crate::controller_service::public_projection::get_from_observation_v2;
+use crate::journal::historical_observation::HistoricalObservationV1;
 use crate::lifecycle::{
     LifecycleHistoricalReadOriginalV1, LifecycleIntentV1, LifecyclePhaseV1,
-    lifecycle_operation_from_public_mutation_v1, lifecycle_public_mutation_admission_v1,
+    lifecycle_operation_from_public_mutation_v1, lifecycle_public_mutation_admission_from_observation_v2,
     require_same_lifecycle_admission_v1,
 };
 use crate::{Journal, JournalError, OperationPlan};
@@ -95,7 +96,8 @@ pub(crate) fn current_accepted_start_project_source_v2(
     sample: RawPairedClockSample,
 ) -> Result<CurrentAcceptedStartProjectSourceV2, Cause> {
     select_current_start_source_v2(
-        controller, StartSourceSelectionV2::Controller(plan), source, previous, sample,
+        HistoricalObservationV1::from_journal_v1(controller),
+        StartSourceSelectionV2::Controller { plan, journal: controller }, source, previous, sample,
     )
 }
 
@@ -105,7 +107,7 @@ pub(crate) fn current_accepted_start_project_source_v2(
 /// This private pure selector creates neither an OperationPlan nor a receiving
 /// original from replayed records.
 pub(crate) fn current_accepted_start_source_from_root_records_v2(
-    controller: &mut Journal,
+    controller: HistoricalObservationV1<'_>,
     operation: OperationId,
     source: &LifecycleHistoricalReadOriginalV1,
     previous: &CanonicalAssignmentManifestV1,
@@ -118,12 +120,12 @@ pub(crate) fn current_accepted_start_source_from_root_records_v2(
 
 #[derive(Clone, Copy)]
 enum StartSourceSelectionV2<'plan> {
-    Controller(&'plan OperationPlan),
+    Controller { plan: &'plan OperationPlan, journal: &'plan Journal },
     Root(OperationId),
 }
 
 fn select_current_start_source_v2(
-    controller: &mut Journal,
+    controller: HistoricalObservationV1<'_>,
     selected: StartSourceSelectionV2<'_>,
     source: &LifecycleHistoricalReadOriginalV1,
     previous: &CanonicalAssignmentManifestV1,
@@ -131,8 +133,8 @@ fn select_current_start_source_v2(
 ) -> Result<CurrentAcceptedStartProjectSourceV2, Cause> {
     controller.ensure_protected_authority()?;
     let operation_id = match selected {
-        StartSourceSelectionV2::Controller(plan) => {
-            plan.require_accepted_start_data_v1(controller)?;
+        StartSourceSelectionV2::Controller { plan, journal } => {
+            plan.require_accepted_start_data_v1(journal)?;
             plan.operation_id()
         }
         StartSourceSelectionV2::Root(operation) => operation,
@@ -160,7 +162,7 @@ fn select_current_start_source_v2(
     if context.accepted_wall_seconds() != public.accepted_wall_seconds_v1() {
         return Err(CLOSED.into());
     }
-    if let StartSourceSelectionV2::Controller(plan) = selected {
+    if let StartSourceSelectionV2::Controller { plan, .. } = selected {
         let original = plan.original_start_context_v1()?;
         if plan.accepted_start_origin_data_v1() != Some(accepted)
             || context.caller() != original.caller()
@@ -176,13 +178,13 @@ fn select_current_start_source_v2(
     let DormantSandboxRequestKindV1::Start(start) = &request else {
         return Err(CLOSED.into());
     };
-    let decision = controller.historical_read_view_v1()
+    let decision = controller.rows_data_v2()
         .idempotency_decision_data_v2(start.mutation.as_option().ok_or(CLOSED)?.idempotency_key.as_slice()).ok_or(CLOSED)?;
     if decision.operation_id != operation_id {
         return Err(CLOSED.into());
     }
     let request_digest = decision.request_digest;
-    if let StartSourceSelectionV2::Controller(plan) = selected {
+    if let StartSourceSelectionV2::Controller { plan, .. } = selected {
         if plan.request_digest() != request_digest {
             return Err(CLOSED.into());
         }
@@ -204,7 +206,7 @@ fn select_current_start_source_v2(
         return Err(CLOSED.into());
     }
     match selected {
-        StartSourceSelectionV2::Controller(_) => {
+        StartSourceSelectionV2::Controller { .. } => {
             origin.first_native_clock_v1().validate_later_sample(sample)?;
         }
         StartSourceSelectionV2::Root(_) => {
@@ -217,7 +219,7 @@ fn select_current_start_source_v2(
         return Err(CLOSED.into());
     }
 
-    let admission = lifecycle_public_mutation_admission_v1(
+    let admission = lifecycle_public_mutation_admission_from_observation_v2(
         controller, operation_id, context.project(), previous.node(), &request,
     )?;
     let expected = lifecycle_operation_from_public_mutation_v1(
@@ -235,8 +237,7 @@ fn select_current_start_source_v2(
     }
     let successor = fence.expected_generation().get().checked_add(1).ok_or(CLOSED)?;
 
-    let projection = PublicProjectionStoreV1::new(controller)
-        .get(PublicProjectionKindV1::Sandbox, *sandbox.as_bytes())?.ok_or(CLOSED)?;
+    let projection = get_from_observation_v2(controller, PublicProjectionKindV1::Sandbox, *sandbox.as_bytes())?.ok_or(CLOSED)?;
     let PublicProjectionResourceV1::Sandbox(resource) = projection.resource() else {
         return Err(CLOSED.into());
     };
@@ -280,3 +281,31 @@ fn select_current_start_source_v2(
 }
 
 const CLOSED: JournalError = JournalError::ProtectedBoundary;
+
+/// Prices only new genuine-owner selector and typed projection forwarding.
+pub(crate) fn start_source_observation_control_bytes_v2() -> Option<usize> {
+    start_source_selector_control_bytes_v2()?
+        .checked_add(HistoricalObservationV1::journal_receiving_control_bytes_v1()?)
+}
+
+/// Prices Root's selector after its genuine model giver already paid the loan.
+pub(crate) fn start_source_root_observation_control_bytes_v2() -> Option<usize> {
+    start_source_selector_control_bytes_v2()
+}
+
+fn start_source_selector_control_bytes_v2() -> Option<usize> {
+    use std::mem::size_of;
+    use super::public_create_source::CurrentPublisherPolicyDataErrorV2;
+
+    let selection = size_of::<(HistoricalObservationV1<'_>, StartSourceSelectionV2<'_>,
+        &LifecycleHistoricalReadOriginalV1, &CanonicalAssignmentManifestV1, RawPairedClockSample)>()
+        .checked_mul(3)?
+        .checked_add(size_of::<Result<CurrentAcceptedStartProjectSourceV2, Cause>>().checked_mul(3)?)?;
+    let publisher = size_of::<(HistoricalObservationV1<'_>, ProjectId, &str, &[u8], u64, Option<i64>)>()
+        .checked_mul(3)?
+        .checked_add(size_of::<Result<CurrentPublisherPolicyDataV2, CurrentPublisherPolicyDataErrorV2>>().checked_mul(3)?)?;
+    selection.checked_add(publisher)?
+        // The finite Journal/Root quote entry forwards this one shared result.
+        .checked_add(size_of::<Option<usize>>().checked_mul(3)?)?
+        .checked_add(crate::lifecycle::historical_admission_control_bytes_v2()?)
+}

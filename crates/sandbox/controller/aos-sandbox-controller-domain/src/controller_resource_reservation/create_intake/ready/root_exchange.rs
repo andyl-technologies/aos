@@ -10,14 +10,15 @@ use crate::controller_resource_reservation::q04_intake::CreateContinuationCaptur
 use super::*;
 use crate::normal_root::{ProductionControllerNormalRootProfileV1, CreateStorageRootPeerReceivingOriginalsV1};
 use crate::source_domain::ProtectedSourceDomainJournalOwnerV1;
-use crate::cache_residency::OriginalCreateStorageCacheLoanV1;
-use aos_sandbox_linux::unix_stream::RetainedUnixStream;
+use crate::cache_programmes::OriginalCreateStorageCacheLoanV1;
+use aos_linux_descriptors::unix_stream::RetainedUnixStream;
 use super::client_session::CreateStorageEndpointRevalidationShapeDataV1;
 
 mod transport;
 mod subject;
 mod cache_audit;
 pub use cache_audit::create_storage_cache_current_fixed_receiving_demand_v1;
+pub use cache_audit::create_storage_cache_current_dynamic_receiving_demand_v1;
 mod current_turn;
 mod use_tail;
 mod use_signing;
@@ -29,7 +30,7 @@ use use_tail::releases::OriginalCreateStorageCacheReleaseAdmissionV1;
 pub(in crate::controller_resource_reservation::create_intake) use use_tail::{OriginalCreateStorageRootUseAdmittedV1, OriginalCreateStorageRootSignedBoundV1, OriginalCreateStorageRootOutcomeV1, OriginalCreateStorageRootClosedV1};
 pub use use_tail::{CreateStorageRootUseTailShapeDataV1, create_storage_root_use_tail_shape_v1};
 pub(in crate::controller_resource_reservation::create_intake) use current_turn::OriginalCreateStorageRootUseAuthorizationV1;
-pub(crate) use cache_audit::CacheCurrentAuditReceivingLoanV1;
+
 use super::cache_current_proof::OriginalCreateStorageCacheCurrentProofV1;
 use subject::RootExactSubjectReceiveV1;
 use transport::ControllerRootTransportOriginalsV1;
@@ -157,6 +158,57 @@ enum RootReceivePurposeV1 { Hello, Invitation, Authorization, UseInvitation, Use
 #[derive(Clone, Copy)]
 enum RootTurnFailureV1 { Fixed, PropertyAdmission, Native, Connect, Peer, Open, Hello, HelloPeer, HelloClock, Index, Chunk, Invitation, HeldMatch }
 
+// Keeps the same real U borrower through Root's old additional charges.
+// CacheAudit borrows only the U original for this short interval; the parent
+// facade retains its Cache highwater and genuine C/Source associations.
+pub(super) enum RootUseReceivingV1<'turn, 'profile> {
+    Original(&'turn mut super::UseReceivingOriginalsV1),
+    CacheAudit(aos_sandbox_broker::controller_receiving::bank_launch::
+        ControllerCacheRootObservationFundingLoanV1<'turn>),
+    CurrentCacheAudit(Box<aos_sandbox_broker::controller_receiving::bank_launch::
+        ControllerCacheAuditFundingLoanV1<'turn, 'profile>>),
+}
+
+impl<'profile> RootUseReceivingV1<'_, 'profile> {
+    fn require_reserved_v1(&self) -> Result<(), ResourceReservationErrorV1> {
+        match self {
+            Self::Original(original) => original.require_reserved_v1(),
+            Self::CacheAudit(original) => original.require_reserved_v1()
+                .map_err(|_| ResourceReservationErrorV1::Conflict),
+            Self::CurrentCacheAudit(original) => original.require_storage_use_reserved_v1()
+                .map_err(|_| ResourceReservationErrorV1::Conflict),
+        }
+    }
+
+    fn reserve_once(&mut self, demand: ResourceVector) -> Result<(), ResourceReservationErrorV1> {
+        match self {
+            Self::Original(original) => original.reserve_once(demand),
+            Self::CacheAudit(original) => original.reserve_additional_v1(demand)
+                .map_err(|_| ResourceReservationErrorV1::Conflict),
+            Self::CurrentCacheAudit(original) => original.borrow_root_observation_funding_v1()
+                .map_err(|_| ResourceReservationErrorV1::Conflict)?
+                .reserve_additional_v1(demand).map_err(|_| ResourceReservationErrorV1::Conflict),
+        }
+    }
+
+    // Only reached Cache-U Root callers add these actual enum/borrow/return
+    // controls at their old upper fixed admission, never an unrelated J fee.
+    pub(super) fn cache_audit_receiving_bytes_v1() -> Option<usize> {
+        use std::mem::size_of;
+
+        size_of::<Self>().checked_mul(4)?
+            // The actual Current arm maps the genuine fallible short loan into
+            // this upper error before reserving the same original U.
+            .checked_add(size_of::<Result<
+                aos_sandbox_broker::controller_receiving::bank_launch::ControllerCacheRootObservationFundingLoanV1<'_>,
+                ResourceReservationErrorV1,
+            >>().checked_mul(2)?)?
+            .checked_add(size_of::<Result<(), ResourceReservationErrorV1>>().checked_mul(4)?)?
+            .checked_add(size_of::<ResourceVector>().checked_mul(2)?)?
+            .checked_add(size_of::<&mut Self>().checked_mul(3)?)
+    }
+}
+
 /// Borrows the real Controller, Source, Cache and J for one Root transport turn.
 ///
 /// Its private constructor splits the actual joined Ready fields alongside the
@@ -170,7 +222,7 @@ pub struct OriginalCreateStorageRootExchangeV1<'turn, 'original, 'cache> {
     source: &'original ProtectedSourceDomainJournalOwnerV1,
     profile: &'original ProductionControllerNormalRootProfileV1,
     cache: &'turn mut OriginalCreateStorageCacheLoanV1<'cache>,
-    use_receiving: Option<&'turn mut super::UseReceivingOriginalsV1>,
+    use_receiving: Option<RootUseReceivingV1<'turn, 'original>>,
     state: &'turn mut RootTurnStateV1,
 }
 
@@ -308,7 +360,7 @@ impl<'turn, 'original, 'cache> OriginalCreateStorageRootExchangeV1<'turn, 'origi
         sample.before_result = Some(sample.before.observe_operation_once(CacheControlOriginalsV1 {
             parent: self.parent, intake: self.intake, controller: self.controller,
             source: self.source, profile: self.profile,
-        }, self.cache, expected, position));
+        }, &(self.cache).currentness_original_v1(), expected, position));
         // The actual destination exists before the first observation. Even a
         // negative before pass retains its ordinal for the independently owed
         // after pass; the provider checks this result before primary growth.
@@ -349,7 +401,7 @@ impl<'turn, 'original, 'cache> OriginalCreateStorageRootExchangeV1<'turn, 'origi
         sample.after_result = Some(sample.after.observe_operation_once(CacheControlOriginalsV1 {
             parent: self.parent, intake: self.intake, controller: self.controller,
             source: self.source, profile: self.profile,
-        }, self.cache, expected, position));
+        }, &(self.cache).currentness_original_v1(), expected, position));
         sample.post_cutoff = Some((|| {
             let clock = sample.after.completed_clock_data_v1()?;
             // The same Cache/J association already requires clock below the
@@ -699,7 +751,7 @@ impl OriginalCreateStorageReadyV1<'_, '_> {
         owner.root_exchange.before_result = Some(owner.root_exchange.before.observe_operation_once(CacheControlOriginalsV1 {
             parent: &owner.parent, intake: &owner.intake, controller: self.original.controller,
             source: self.original.source, profile: self.original.profile,
-        }, &mut self.cache, expected, expected_position));
+        }, &(&mut self.cache).currentness_original_v1(), expected, expected_position));
         if matches!(owner.root_exchange.before_result, Some(Ok(()))) {
             owner.root_exchange.returned = Some(owner.root_exchange.inputs.produce_once(&owner.parent, &mut owner.intake,
                 &owner.histories, &owner.assignment, &owner.bundle, self.original.controller, self.original.source,
@@ -713,7 +765,7 @@ impl OriginalCreateStorageReadyV1<'_, '_> {
         owner.root_exchange.after_result = Some(owner.root_exchange.after.observe_operation_once(CacheControlOriginalsV1 {
             parent: &owner.parent, intake: &owner.intake, controller: self.original.controller,
             source: self.original.source, profile: self.original.profile,
-        }, &mut self.cache, expected, after_position));
+        }, &(&mut self.cache).currentness_original_v1(), expected, after_position));
         if owner.root_exchange.failure().is_none() && matches!(owner.root_exchange.returned, Some(Ok(())))
             && matches!(owner.root_exchange.after_result, Some(Ok(()))) {
             Ok(())
@@ -978,7 +1030,7 @@ impl<'turn, 'original, 'cache> OriginalCreateStorageRootExchangeV1<'turn, 'origi
             return Err(CreateStorageRootExchangeClosedV1);
         }
         self.state.subject_enabled = Some(self.state.transport.stream_mut().map_err(|_| CreateStorageRootExchangeClosedV1)?
-            .enable_subject_reporting());
+            .enable_subject_reporting().map_err(aos_sandbox_linux::seqpacket::SeqpacketError::from));
         if !matches!(self.state.subject_enabled, Some(Ok(()))) {
             self.state.first.get_or_insert(RootTurnFailureV1::Hello);
             self.state.owed_post = Some(RootPostFrontierV1::HelloComparison);

@@ -78,6 +78,7 @@ pub(super) struct StopCleanupOriginalV1 {
 impl StopCleanupOriginalV1 {
     pub(super) fn fixed_demand(_controller: &Journal) -> Result<ResourceVector> {
         let bytes = std::mem::size_of::<Self>().checked_mul(3)
+            .and_then(|bytes| bytes.checked_add(crate::journal::create_stopped_geometry_control_bytes_v2()?))
             .and_then(|n| n.checked_add(std::mem::size_of::<ControllerHostStopCleanupSourceLoanV1<'_, '_>>().checked_mul(3)?))
             .and_then(|n| u64::try_from(n).ok()).ok_or(CLOSED)?;
         let affinity = aos_sandbox_broker::controller_receiving::bank_launch::ControllerStopCleanupSourceAffinityV1::receiving_demand_v1()?;
@@ -429,7 +430,7 @@ impl<'owner, 'source> ControllerHostStopCleanupSourceLoanV1<'owner, 'source> {
         use sha2::{Digest as _, Sha256};
         self.require_current_v1(controller)?;
         if self.original()?.stopped_generation.is_none() {
-            let bytes = crate::controller_service::public_projection::sandbox_source_receiving_bytes_v1(controller)
+            let bytes = aos_sandbox_protocol::public_api::projection::geometry::sandbox_source_receiving_bytes_v1(controller.historical_read_view_v1().rows_data_v2())
                 .ok_or(CLOSED)?;
             self.reserve_additional_v1(controller, ResourceVector::ZERO.with(D::MemoryBytes, bytes))?;
             let sandbox = *self.original()?.subject.historical_scope_v1().fence_v4().sandbox_id();

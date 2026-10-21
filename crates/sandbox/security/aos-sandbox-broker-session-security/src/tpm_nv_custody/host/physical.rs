@@ -13,7 +13,8 @@ use std::sync::Arc;
 
 use aos_sandbox_controller_domain::{HostPhysicalInvocationErrorV1, HostPhysicalInvocationLeaseV1};
 use aos_sandbox_linux::guest_confinement::task_has_subject;
-use aos_sandbox_linux::pidfd::{PidFd, PidFdProcObservationsV1};
+use aos_linux_descriptors::pidfd::PidFd;
+use aos_sandbox_linux::pidfd::PidFdProcObservationsV1;
 use aos_sandbox_linux::seqpacket::{ReceivedRecord, RetainedSeqpacketReceiveErrorV1, SeqpacketError};
 use zeroize::Zeroizing;
 
@@ -73,9 +74,9 @@ pub(in crate::tpm_nv_custody) enum PhysicalTpmFailureV1 {
     #[error("original Host invocation failed")]
     Invocation(#[from] HostPhysicalInvocationErrorV1),
     #[error("original process observation failed")]
-    Linux(#[source] aos_sandbox_linux::Error),
+    Linux(#[source] aos_linux_descriptors::Error),
     #[error("original pidfd admission failed with retained descriptor custody")]
-    PidfdAdmission(#[source] aos_sandbox_linux::pidfd::PidFdOwnedAdmissionFailureV3),
+    PidfdAdmission(#[source] aos_linux_descriptors::pidfd::PidFdOwnedAdmissionFailureV3),
     #[error("original helper capture failed with retained native custody")]
     BootHelperCapture(#[source] BootHelperCaptureFailureV1),
     #[error("original primary helper observation failed with retained native custody")]
@@ -536,7 +537,7 @@ impl<'owner, 'origin, 'startup> RetainedHostPhysicalBindingV1<'owner, 'origin, '
         if selected.helper.is_some() {
             return Err(PhysicalTpmFailureV1::State);
         }
-        selected.helper = Some(original.prepare_proc_observations_v1());
+        selected.helper = Some(aos_sandbox_linux::pidfd::prepare_proc_observations_v1(&(original)));
         if selected.boot_transport.is_none() {
             let helper = selected.helper.as_mut().ok_or(PhysicalTpmFailureV1::State)?;
             let identity = helper.capture_stat(original).map_err(PhysicalTpmFailureV1::Linux)?;

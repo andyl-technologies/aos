@@ -437,7 +437,7 @@ impl std::error::Error for CaptureDirectoryPinFailureV2 {
 
 struct CaptureDirectoryCurrentnessV2 {
     identity: Option<Result<rustix::fs::Stat, rustix::io::Errno>>,
-    mount_id: Option<Result<MountId, aos_sandbox_linux::Error>>,
+    mount_id: Option<Result<MountId, aos_linux_descriptors::Error>>,
 }
 
 impl CaptureDirectoryCurrentnessV2 {

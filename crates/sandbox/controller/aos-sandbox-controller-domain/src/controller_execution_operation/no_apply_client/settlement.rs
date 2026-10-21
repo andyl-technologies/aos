@@ -78,7 +78,7 @@ impl ControllerSettlementOriginalV2 {
 
     fn fixed_demand(
         controller: &Journal,
-        plan: &crate::reconciler::ClosedCreateFailurePlanDataV2,
+        plan: &aos_sandbox_protocol::domain_ledger::create_failure::ClosedCreateFailurePlanDataV2,
     ) -> Result<ResourceVector, JournalError> {
         let rows = plan
             .records_data_v2()

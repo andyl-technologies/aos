@@ -25,6 +25,11 @@ use sha2::{Digest as _, Sha256};
 /// Compares exact native transaction suffixes without granting receiving IO.
 pub mod native_suffix;
 
+/// Compares materialized pair and NEXT DATA without lending authority.
+pub mod readback;
+
+mod append_geometry;
+
 mod pair;
 pub use pair::{HistoryPairPreparationErrorV1, prepare_history_pair_v1};
 
@@ -481,3 +486,6 @@ fn record_checksum(bytes: &[u8]) -> [u8; 32] {
 
 #[cfg(test)]
 mod tests;
+
+/// Provides passive indexed transfer format and commitment DATA.
+pub mod indexed_transfer;

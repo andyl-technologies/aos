@@ -128,8 +128,8 @@ impl RootCurrentClosedReadV1 {
         self.source.native.finish_post_once();
         self.cache.native.finish_post_once();
         let body = root.completed_body().ok();
-        let origin = root.original_clock_origin_v1().ok();
-        self.after.observe_once(flight, writers, body.as_ref(), origin.map(|p| p.0), origin.map(|p| p.1));
+        let origin = root.original_clock_native_v1().ok();
+        self.after.observe_once(flight, writers, body.as_ref(), origin);
         self.readback = Some(match writers.authority_and_policy() {
             Ok((authority, policy)) => outcome.readback_current_v1(authority, policy).map(|_| ()),
             Err(cause) => Err(cause),

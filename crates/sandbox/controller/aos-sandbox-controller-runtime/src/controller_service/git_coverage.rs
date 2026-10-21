@@ -7,7 +7,7 @@
 //! owners, not reconstructed transports or a detached currentness permit.
 
 use aos_sandbox_api::aos::sandbox::local::v1::BrokerMethod;
-use aos_sandbox_controller_domain::cache_residency::CacheResidentUnavailableV1;
+use aos_sandbox_cache::CacheResidentUnavailableV1;
 use aos_sandbox_controller_domain::lifecycle::LifecyclePhase6ErrorV1;
 use aos_sandbox_controller_domain::policy_compiler::GitCoverageAccountAttemptV1;
 use aos_sandbox_controller_domain::public_api_session::GitCoverageCredentialCustodyV1;

@@ -418,20 +418,13 @@ impl ReadOnlyJournalOpenOriginalsV1 {
         directory_descriptors: u16,
         path_name_bytes: u16,
     ) -> Result<aos_sandbox_model::ResourceVector, JournalError> {
-        let native = ProtectedWriterOpenOriginalsV1::fixed_preparation_demand_v1::<T>(
+        let native = aos_sandbox_broker::canonical_journal::CanonicalOrdinaryOpeningOriginalsV1::<()>::fixed_preparation_demand_v1::<T>(
             directory_descriptors,
             path_name_bytes,
         )?;
         native
             .checked_add(Self::receiving_construction_demand_v1()?)
             .map_err(Into::into)
-    }
-
-    #[cfg(target_os = "linux")]
-    pub(crate) fn cache_named_receiving_demand_v1()
-    -> Result<aos_sandbox_model::ResourceVector, JournalError> {
-        // Cache's actual fixed native suppliers above include construction.
-        super::super::super::readonly_names::ReadonlyNameArchiveV1::cache_demand()
     }
 
     #[cfg(target_os = "linux")]

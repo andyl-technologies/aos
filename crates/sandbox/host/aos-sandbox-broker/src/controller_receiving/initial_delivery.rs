@@ -276,7 +276,7 @@ pub enum ControllerInitialDeliveryFailureRefV1<'capture> {
     /// The same existing names or slot refusal is retained by Core.
     Startup(&'capture ControllerProfileErrorV1),
     /// The original Linux table owner retains this actual kernel cause.
-    Table(&'capture aos_sandbox_linux::Error),
+    Table(&'capture aos_linux_descriptors::Error),
     /// Core retains the actual optional duplication refusal.
     Duplicate(&'capture rustix::io::Errno),
     /// The attempt is permanently closed without another observation.
@@ -596,14 +596,14 @@ enum ControllerCaptureTable {
 }
 
 impl ControllerCaptureTable {
-    fn observe_once(&mut self, count: usize) -> Result<(), &aos_sandbox_linux::Error> {
+    fn observe_once(&mut self, count: usize) -> Result<(), &aos_linux_descriptors::Error> {
         match self {
             Self::Ordinary(table) => table.observe_once(count),
             Self::Resource(table) => table.observe_once(count),
         }
     }
 
-    fn failure(&self) -> Option<&aos_sandbox_linux::Error> {
+    fn failure(&self) -> Option<&aos_linux_descriptors::Error> {
         match self {
             Self::Ordinary(table) => table.failure(),
             Self::Resource(table) => table.failure(),

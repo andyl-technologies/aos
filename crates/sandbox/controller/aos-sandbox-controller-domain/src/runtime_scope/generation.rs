@@ -225,16 +225,18 @@ pub(super) struct History {
     count: usize,
 }
 
-impl History {
-    pub(super) fn load(journal: &Journal) -> Result<Self, RuntimeGenerationError> {
-        journal.ensure_protected_authority()?;
+
+
+macro_rules! generation_history_recipe_v2 {
+    ($input:expr, $validate:path, $binding:path) => {{
+        $input.ensure_protected_authority()?;
         // The enclosing owner keeps its writer while these DATA joins borrow it.
-        crate::runtime_authority::validate_namespace(journal, RuntimeAuthorityLimits::default())?;
+        $validate($input, RuntimeAuthorityLimits::default())?;
         let mut history = Self::default();
         let mut heads = BTreeMap::new();
         let mut bindings = BTreeMap::new();
         let mut bytes = 0usize;
-        for (index, (key, value)) in journal.records(NAMESPACE).enumerate() {
+        for (index, (key, value)) in $input.records(NAMESPACE).enumerate() {
             bytes = bytes
                 .checked_add(key.len())
                 .and_then(|total| total.checked_add(value.len()))
@@ -256,8 +258,8 @@ impl History {
                     if let std::collections::btree_map::Entry::Vacant(entry) =
                         bindings.entry(binding_key)
                     {
-                        let binding = binding_in_validated_namespace(
-                            journal,
+                        let binding = $binding(
+                            $input,
                             SandboxId::from_bytes(facts.identity.0),
                             facts.binding_revision,
                         )?;
@@ -298,6 +300,16 @@ impl History {
             return Err(RuntimeGenerationError::CorruptState);
         }
         Ok(history)
+        }};
+}
+
+impl History {
+    pub(super) fn load(journal: &Journal) -> Result<Self, RuntimeGenerationError> {
+        generation_history_recipe_v2!(journal, crate::runtime_authority::validate_namespace, binding_in_validated_namespace)
+    }
+
+    pub(super) fn load_observed_v2(journal: crate::journal::historical_observation::HistoricalObservationV1<'_>) -> Result<Self, RuntimeGenerationError> {
+        generation_history_recipe_v2!(journal, crate::runtime_authority::validate_namespace_observed_v2, crate::runtime_authority::binding_in_validated_observation_v2)
     }
 
     fn append(&mut self, record: Record) -> Result<(), RuntimeGenerationError> {
@@ -401,4 +413,13 @@ pub(super) fn origin_binding(
             aos_sandbox_model::ObjectDigest::from_bytes(record.facts.binding_digest),
         ),
     )
+}
+
+/// Prices the reached actual-owner/Rows argument and owning return controls.
+/// Dynamic retained histories and their backing retain their existing quote.
+pub(super) fn historical_observation_control_bytes_v2() -> Option<usize> {
+    std::mem::size_of::<(crate::journal::historical_observation::HistoricalObservationV1<'_>, &History)>().checked_mul(3)?
+        .checked_add(std::mem::size_of::<Result<History, RuntimeGenerationError>>().checked_mul(3)?)?
+        .checked_add(std::mem::size_of::<Result<(), RuntimeGenerationError>>().checked_mul(3)?)?
+        .checked_add(std::mem::size_of::<Option<usize>>().checked_mul(3)?)
 }

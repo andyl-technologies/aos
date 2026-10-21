@@ -52,14 +52,14 @@ enum ClockError {
     #[error("fixed-service kernel clock is not current")]
     Stale,
     #[error(transparent)]
-    Kernel(aos_sandbox_linux::Error),
+    Kernel(aos_linux_descriptors::Error),
     #[error(transparent)]
     Continuity(OwnershipLeaseVerificationError),
 }
 
 impl KernelPairedClockErrorV1 for ClockError {
     fn stale() -> Self { Self::Stale }
-    fn kernel(error: aos_sandbox_linux::Error) -> Self { Self::Kernel(error) }
+    fn kernel(error: aos_linux_descriptors::Error) -> Self { Self::Kernel(error) }
 }
 
 pub(super) struct OperationClockV4 {

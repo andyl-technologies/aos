@@ -3,7 +3,7 @@
 use super::*;
 use crate::worker_protocol::NetworkPrepareWorkerDispatchV1;
 use crate::worker_runtime::NetworkWorkerRuntimeError;
-use aos_sandbox_linux::boot::KernelBootId;
+use aos_linux_descriptors::boot::KernelBootId;
 use aos_sandbox_linux::pidfd::NamespaceFd;
 
 pub(in crate::service_original) struct NetworkSourceCustodyReceivingV4<'held> {

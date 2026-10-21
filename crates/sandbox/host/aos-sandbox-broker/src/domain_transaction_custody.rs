@@ -23,6 +23,7 @@ pub mod capacity;
 pub mod capacity_records;
 /// Shares canonical member, predecessor and payload comparison recipes.
 pub mod members;
+pub use members::resident_plan_member_payload_bytes_for_lengths_v1;
 
 /// Owns the exact canonical members before the role's native preflight.
 ///
@@ -142,3 +143,7 @@ pub mod pressure;
 
 /// Shares the same borrowed-row current/readback/recovery DATA engine.
 pub mod transaction_state;
+
+// These compile-time recipes define only actual private role methods. Native
+// owners and effect-facing capability construction remain in those roles.
+mod commit_recipe;

@@ -41,7 +41,7 @@ use aos_sandbox_host::broker::HostAttachReadOnlyRequestV1;
 use aos_sandbox_host::broker::HostExecutionGrantRequestV1;
 use aos_sandbox_host::live_agent::argument_attempt::HostArgumentAttemptErrorV1;
 use aos_sandbox_host::live_agent::{HostAgentLiveErrorV1, HostAgentLiveSessionV1};
-use aos_sandbox_linux::boot::KernelBootId;
+use aos_linux_descriptors::boot::KernelBootId;
 use aos_sandbox_protocol::ValidatedHostExecutionApplyV1;
 use aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodRequestV1;
 use aos_sandbox_protocol::host_execution::{
@@ -749,7 +749,7 @@ fn verify_query_content(
 mod tests {
     use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 
-    use aos_sandbox_linux::boot::KernelBootId;
+    use aos_linux_descriptors::boot::KernelBootId;
     use aos_sandbox_protocol::host_output::{
         HostOutputReservationStatusV1, decode_host_output_reservation_response_v1,
         host_output_locator_from_source_v1,

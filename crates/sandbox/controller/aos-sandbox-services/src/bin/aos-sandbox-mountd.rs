@@ -32,7 +32,7 @@ use aos_sandbox_broker_session_security::{
     connect_authenticated_fixed_source_provider, observe_original_pending_acquires,
     production_deadline_after, recover_reserved_remote_inventories,
 };
-use aos_sandbox_linux::boot::KernelBootId;
+use aos_linux_descriptors::boot::KernelBootId;
 use aos_sandbox_linux::protected_file::{open_nofollow_child, read_exact_positioned};
 use aos_sandbox_linux::startup_fd_table::{
     StartupExecutableObservationV1, observe_provisioned_startup_executable,
@@ -135,7 +135,7 @@ enum MountDaemonErrorV1 {
     #[error("protected startup-policy input is absent, unsafe, or malformed")]
     StartupPolicyInput,
     #[error("startup executable carrier failed preflight: {0}")]
-    ExecutableCarrier(#[from] aos_sandbox_linux::Error),
+    ExecutableCarrier(#[from] aos_linux_descriptors::Error),
     #[error("startup executable carrier does not match the protected policy")]
     ExecutableCarrierMismatch,
     #[error("Mount activation failed: {0}")]

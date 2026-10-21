@@ -84,7 +84,7 @@ pub enum NetworkObservationWorkerError {
     Runtime(#[from] NetworkWorkerRuntimeError),
     /// A transferred descriptor or namespace transition failed.
     #[error(transparent)]
-    Linux(#[from] aos_sandbox_linux::Error),
+    Linux(#[from] aos_linux_descriptors::Error),
     /// The bounded descriptor-capable sequenced-packet transport failed.
     #[error(transparent)]
     Transport(#[from] SeqpacketError),

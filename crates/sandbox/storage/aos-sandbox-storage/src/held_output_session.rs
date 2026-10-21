@@ -8,7 +8,7 @@
 use std::path::Path;
 
 use aos_sandbox_model::ObjectDigest;
-use aos_sandbox_linux::pidfd::PidFdInfo;
+use aos_linux_descriptors::pidfd::PidFdInfo;
 use aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket;
 use aos_sandbox_protocol::storage_existing_output::ExistingOutputResponseV1;
 use aos_sandbox_protocol::storage_held_output_session::{

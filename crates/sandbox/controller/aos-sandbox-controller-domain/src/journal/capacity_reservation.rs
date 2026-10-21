@@ -149,34 +149,7 @@ impl GlobalCapacityReservationV1 {
 }
 
 impl Journal {
-    /// Rejoins only one exact fixed-Root genesis reservation after cold replay.
-    pub(crate) fn root_source_genesis_capacity_identity_v1(
-        &self,
-        request: &GlobalCapacityReservationRequestV1,
-        admission: [u8; 16],
-    ) -> Result<[u8; 32], JournalError> {
-        crate::policy_compiler::require_root_source_genesis_capacity_owner_v1(self)?;
-        if request.purpose != GlobalCapacityReservationPurposeV1::RootSourceGenesisAnchor {
-            return Err(JournalError::ForeignAuthorityNamespace);
-        }
-        let identity = reservation_id(request, admission);
-        let retained = self.recover_global_capacity_reservation_v1(identity)?;
-        if !retained.matches_request(request, admission) {
-            return Err(JournalError::AuthorityPreflightMismatch);
-        }
-        Ok(identity)
-    }
 
-    pub(crate) fn root_source_genesis_capacity_ids_v1(
-        &self,
-    ) -> Result<Vec<[u8; 32]>, JournalError> {
-        self.ensure_healthy()?;
-        legacy_capacity_ids_for_purpose(
-            self.native.state(),
-            GlobalCapacityReservationPurposeV1::RootSourceGenesisAnchor,
-        )
-        .map_err(JournalError::from)
-    }
 
     /// Lists only canonical Controller-history capacity identities for replay.
     pub(crate) fn controller_project_capacity_ids_v1(&self) -> Result<Vec<[u8; 32]>, JournalError> {
@@ -338,7 +311,7 @@ impl Journal {
         }
         validate_request(&request, self)?;
         if request.purpose == GlobalCapacityReservationPurposeV1::RootSourceGenesisAnchor {
-            crate::policy_compiler::require_root_source_genesis_capacity_owner_v1(self)?;
+            return Err(JournalError::ProtectedBoundary);
         }
         let data = shared_capacity::prepare_capacity_record_v1(
             self.historical_read_view_v1(), request, admission_transaction_id,
@@ -366,11 +339,7 @@ impl Journal {
             return Err(JournalError::ProtectedBoundary);
         }
         if prepared.request.purpose == GlobalCapacityReservationPurposeV1::RootSourceGenesisAnchor {
-            crate::policy_compiler::validate_root_source_genesis_capacity_admission_v1(
-                self,
-                transaction,
-                &prepared.request,
-            )?;
+            return Err(JournalError::ProtectedBoundary);
         }
         if *transaction.id() != prepared.admission_transaction_id
             || transaction
@@ -516,12 +485,7 @@ pub(super) fn validate_settlement_shape(
         )?;
     }
     if reservation.request.purpose == GlobalCapacityReservationPurposeV1::RootSourceGenesisAnchor {
-        crate::policy_compiler::validate_root_source_genesis_capacity_settlement_v1(
-            journal,
-            transaction,
-            &reservation.request,
-            reservation.reservation_id,
-        )?;
+        return Err(JournalError::ProtectedBoundary);
     }
     Ok(())
 }
@@ -574,19 +538,9 @@ pub(super) fn validate_first_source_successor_capacity_records_v2(
     journal: &Journal,
     transaction: &JournalTransaction,
 ) -> Result<(), JournalError> {
-    for record in transaction.records() {
-        if record.namespace() != RecordNamespace::GlobalCapacityReservation
-            || record.value().is_none()
-        {
-            continue;
-        }
-        let (request, admission, _) = decode_capacity_reservation_request_v1(record)?;
-        if !request.purpose.is_first_source_successor() || &admission != transaction.id() {
-            return Err(JournalError::ProtectedBoundary);
-        }
-        validate_request(&request, journal)?;
-    }
-    Ok(())
+    aos_sandbox_ledger_replay::replay::source_tree_successor::require_capacity_records_data_v1(
+        journal.native.limits(), transaction,
+    ).map_err(JournalError::from)
 }
 
 impl Journal {

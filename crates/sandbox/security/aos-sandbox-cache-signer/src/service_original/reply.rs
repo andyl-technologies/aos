@@ -12,7 +12,7 @@ use aos_sandbox_broker::cache_signer_connection::{
 };
 use aos_sandbox_broker::fixed_stream_readiness::FixedStreamReadinessOriginalV1;
 use aos_sandbox_model::{ResourceDimension as D, ResourceVector};
-use aos_sandbox_linux::unix_stream::RetainedUnixStream;
+use aos_linux_descriptors::unix_stream::RetainedUnixStream;
 use rustix::time::{ClockId, Timespec, clock_gettime};
 
 use super::{CacheSignerReceivingClosedV1 as Closed, cause};
@@ -32,7 +32,7 @@ enum First {
 
 #[derive(Default)]
 pub(super) struct CacheReplyOriginalV1 {
-    before: Option<Result<(), aos_sandbox_linux::Error>>,
+    before: Option<Result<(), aos_linux_descriptors::Error>>,
     wait: Option<FixedStreamReadinessOriginalV1>,
     write: Option<rustix::io::Result<usize>>,
     progress: Option<Result<(), Closed>>,
@@ -40,7 +40,7 @@ pub(super) struct CacheReplyOriginalV1 {
     write_clock: Option<Timespec>,
     write_deadline: Option<Result<Timespec, CacheSignerConnectionClosedV1>>,
     shutdown: Option<rustix::io::Result<()>>,
-    after: Option<Result<(), aos_sandbox_linux::Error>>,
+    after: Option<Result<(), aos_linux_descriptors::Error>>,
     after_clock: Option<Timespec>,
     after_deadline: Option<Result<Timespec, CacheSignerConnectionClosedV1>>,
     completion: Option<Result<(), Closed>>,

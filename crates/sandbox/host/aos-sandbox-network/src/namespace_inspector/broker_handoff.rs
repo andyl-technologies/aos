@@ -38,7 +38,7 @@ pub enum BrokerInspectorHandoffErrorV1 {
     Deployment(#[from] InspectorDeploymentErrorV2),
     /// The retained worker pidfd or exact cgroup failed revalidation.
     #[error(transparent)]
-    Linux(#[from] aos_sandbox_linux::Error),
+    Linux(#[from] aos_linux_descriptors::Error),
     /// The READY subject was not the same live worker leader.
     #[error("Network inspector worker custody changed after READY")]
     WorkerMismatch,

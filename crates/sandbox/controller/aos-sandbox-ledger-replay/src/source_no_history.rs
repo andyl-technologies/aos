@@ -15,7 +15,9 @@ macro_rules! define_source_no_history_replay_data_v1 {
 
         // The cold recipe always passes None. This uninhabited comparison marker
         // cannot represent a real physical challenge-history view.
-        pub(super) enum SourceOriginalChallengeHistoryViewV5<'a> {
+        // The enclosing finite adapter passes None through the shared driver's
+        // interface. Keep this marker visible there without a value constructor.
+        pub(in super::super) enum SourceOriginalChallengeHistoryViewV5<'a> {
             Uninhabited(std::convert::Infallible, std::marker::PhantomData<&'a ()>),
         }
 

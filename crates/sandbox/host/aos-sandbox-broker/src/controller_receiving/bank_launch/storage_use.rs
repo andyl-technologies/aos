@@ -46,6 +46,36 @@ pub struct ControllerCreateStorageUseFundingLoanV1<'funding, 'profile> {
     profile: &'profile ControllerSelfProfileOriginalV1,
 }
 
+/// Reborrows the same U for the actual upper Root observation interval.
+///
+/// Only an existing native Cache U funding borrower constructs this loan. It
+/// contains no account, allowance, cached highwater, Source getter or phase.
+/// Its methods preserve the original owner's exact reservation/debit paths.
+pub struct ControllerCacheRootObservationFundingLoanV1<'borrow> {
+    owner: &'borrow mut ControllerCreateStorageUseReceivingOriginalV1,
+}
+
+impl ControllerCacheRootObservationFundingLoanV1<'_> {
+    /// Checks the same original Reserved U without another native observation.
+    ///
+    /// # Errors
+    /// Refuses retained U debt or changed claim/original/publication DATA.
+    pub fn require_reserved_v1(&self) -> Result<(), ControllerCreateStorageUseClosedV1> {
+        self.owner.require_reserved_v1()
+    }
+
+    /// Debits the original Root observation's additional work on this same U.
+    ///
+    /// # Errors
+    /// Retains the actual same ledger's arithmetic, capacity or prior refusal.
+    pub fn reserve_additional_v1(
+        &mut self,
+        demand: ResourceVector,
+    ) -> Result<(), ControllerCreateStorageUseClosedV1> {
+        self.owner.reserve_additional_v1(demand)
+    }
+}
+
 impl<P> ControllerCoordinatorWriterV1<P> {
     /// Claims U once after its actual native reserve stage has been disposed.
     ///
@@ -243,6 +273,23 @@ impl ControllerCreateStorageUseReceivingOriginalV1 {
 }
 
 impl ControllerCreateStorageUseFundingLoanV1<'_, '_> {
+    pub(super) fn borrow_root_observation_funding_v1(
+        &mut self,
+    ) -> ControllerCacheRootObservationFundingLoanV1<'_> {
+        ControllerCacheRootObservationFundingLoanV1 { owner: &mut *self.owner }
+    }
+
+    /// Checks the same retained U reservation without creating another borrower.
+    ///
+    /// This is the exact original owner's read-only reservation comparison.
+    /// It performs no debit, replay, profile acquisition or native observation.
+    ///
+    /// # Errors
+    /// Refuses prior U debt or changed reserved claim/original publication.
+    pub fn require_reserved_v1(&self) -> Result<(), ControllerCreateStorageUseClosedV1> {
+        self.owner.require_reserved_v1()
+    }
+
     /// Debits actual additional Cache work on the same irreversible U ledger.
     ///
     /// # Errors

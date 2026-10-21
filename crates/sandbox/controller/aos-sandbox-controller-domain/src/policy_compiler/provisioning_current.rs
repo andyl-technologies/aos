@@ -52,4 +52,6 @@ pub(in crate::policy_compiler) use historical_create_session::{
 pub(in crate::policy_compiler) use start_assignment::require_current_start_signed_inputs_v2;
 
 // The actual Root consumer shares the compiler through this named boundary.
-pub(in crate::policy_compiler) use start_assignment::compile_root_start_assignment_v2;
+pub(in crate::policy_compiler) use start_assignment::{
+    compile_root_start_assignment_v2, root_start_compilation_control_bytes_v2,
+};

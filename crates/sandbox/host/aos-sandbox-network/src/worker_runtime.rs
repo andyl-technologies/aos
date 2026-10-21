@@ -42,7 +42,7 @@ use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
 use aos_sandbox_model::{ObjectDigest, RawClockProvenance, RawPairedClockSample};
-use aos_sandbox_linux::boot::KernelBootId;
+use aos_linux_descriptors::boot::KernelBootId;
 use aos_sandbox_linux::cgroup::{
     CgroupPopulationMonitor, CgroupPopulationState, CgroupV2Root, RetainedCgroupAnchor,
 };
@@ -115,7 +115,7 @@ pub enum NetworkWorkerRuntimeError {
     Transport(#[from] SeqpacketError),
     /// A Linux descriptor, namespace, cgroup, or process check failed.
     #[error(transparent)]
-    Linux(#[from] aos_sandbox_linux::Error),
+    Linux(#[from] aos_linux_descriptors::Error),
     /// A procfs read failed.
     #[error("Network worker local I/O failed: {0}")]
     Io(#[from] std::io::Error),

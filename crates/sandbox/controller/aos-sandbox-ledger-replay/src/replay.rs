@@ -81,3 +81,12 @@ pub mod root_genesis_pins;
 
 /// Owns the complete saved Root successor archive and phase comparisons.
 pub mod root_successor;
+
+/// Checks complete saved NoApply floor history as nonauthorizing DATA.
+pub mod execution_no_apply_history;
+
+/// Checks ordinary Root genesis capacity DATA at its original boundaries.
+pub mod root_genesis_capacity;
+
+/// Compares the complete retained Root/Source floor and lineage DATA.
+pub mod root_saved_floor;

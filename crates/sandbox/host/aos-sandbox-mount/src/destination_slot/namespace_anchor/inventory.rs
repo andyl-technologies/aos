@@ -20,12 +20,12 @@ pub struct MountAttachmentAnchorInventoryOriginalV4 {
 pub(super) struct AnchorReadOriginalV4 {
     resolved: BeneathRootResolveOriginalV2,
     absent_expected: bool,
-    resolution: Option<std::result::Result<(), aos_sandbox_linux::Error>>,
+    resolution: Option<std::result::Result<(), aos_linux_descriptors::Error>>,
     pin: Option<ResolvedPath>,
     metadata: Option<std::result::Result<rustix::fs::Stat, rustix::io::Errno>>,
-    mount: Option<std::result::Result<MountId, aos_sandbox_linux::Error>>,
+    mount: Option<std::result::Result<MountId, aos_linux_descriptors::Error>>,
     comparison: Option<Result<()>>,
-    physical_mount: Option<std::result::Result<MountId, aos_sandbox_linux::Error>>,
+    physical_mount: Option<std::result::Result<MountId, aos_linux_descriptors::Error>>,
 }
 
 impl AnchorReadOriginalV4 {
@@ -55,7 +55,7 @@ impl AnchorReadOriginalV4 {
     ) -> Result<bool> {
         self.resolution = Some(self.resolved.resolve_once(&store.root, path, ResolveOptions::directory()));
         if !matches!(self.resolution, Some(Ok(()))) {
-            if matches!(self.resolved.failure(), Some(aos_sandbox_linux::Error::Syscall { source, .. })
+            if matches!(self.resolved.failure(), Some(aos_linux_descriptors::Error::Syscall { source, .. })
                 if source.raw_os_error() == Some(libc::ENOENT))
             {
                 self.absent_expected = true;
@@ -183,9 +183,9 @@ fn verify_native_pin_v4(
     mode: u32,
     expected: Option<(u64, u64, u64)>,
     metadata: &mut Option<std::result::Result<rustix::fs::Stat, rustix::io::Errno>>,
-    mount_result: &mut Option<std::result::Result<MountId, aos_sandbox_linux::Error>>,
+    mount_result: &mut Option<std::result::Result<MountId, aos_linux_descriptors::Error>>,
     comparison: &mut Option<Result<()>>,
-    physical_mount: &mut Option<std::result::Result<MountId, aos_sandbox_linux::Error>>,
+    physical_mount: &mut Option<std::result::Result<MountId, aos_linux_descriptors::Error>>,
 ) -> Result<(FileIdentity, MountId)> {
     *metadata = Some(rustix::fs::fstat(pin.as_fd()));
     *comparison = Some((|| {

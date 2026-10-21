@@ -5,6 +5,7 @@
 //! prefix that authenticates these original image and delivery descriptors.
 //! Native DATA never reconstructs that producer or refunds a dead invocation.
 
+mod layout;
 mod selected_startup;
 mod service_observation;
 mod root_journal;
@@ -13,6 +14,8 @@ mod current_writers;
 mod policy_listener;
 mod controller_peer;
 mod delete_peer;
+mod native_no_apply;
+mod current_owned;
 mod delete_exchange;
 pub(crate) use delete_exchange::{RootStopCleanupChunkPostsV1, RootExecutionNoApplyChunkPostsV2, RootDeleteChunkPostsV1, RootApplyChunkPostsV1, RootStartAssignmentInputsChunkPostsV2, RootHostLaunchChunkPostsV2, RootMaintenanceStorageChunkPostsV2};
 pub(crate) use delete_peer::{RootContinuationDemandV1, RootContinuationStageV1, RootStopCleanupStageV1, StopCleanupRootPeerPurposeV1, RootMaintenanceStorageStageV2, RootExecutionNoApplyReadPhaseV2, RootContinuationStagesV1, RootPurposePeerAdmissionV1, RootPurposePeerPostV1, RootPeerPurposeV1, DeleteRootPeerPurposeV1, EnvironmentRootPeerPurposeV1, ApplyRootPeerPurposeV1, HostLaunchRootPeerPurposeV1, MaintenanceStorageRootPeerPurposeV2, ExecutionNoApplyRootPeerPurposeV2, FinalityRecoverRootPeerPurposeV1, StartAssignmentInputsRootPeerPurposeV2};
@@ -54,18 +57,16 @@ pub(crate) struct RootReceivingOriginalV1 {
     role_error: Option<ResourceReservationErrorV1>,
     original: Option<Result<aos_sandbox_broker::receiving::OriginalEnrollment, ResourceReservationErrorV1>>,
     shape: Option<Result<(), ResourceReservationErrorV1>>,
-    profile_prefix: Option<Result<ResourceVector, ResourceReservationErrorV1>>,
     receiving_completion: Option<Result<(), crate::normal_root::NormalRootStartupErrorV1>>,
     recipient_binding: Option<Result<(), ResourceReservationErrorV1>>,
-    selected_prefix: Option<Result<ResourceVector, ResourceReservationErrorV1>>,
     selected: Option<crate::normal_root::RootSelectedStartupReceivingV1>,
     selected_completion: Option<Result<(), crate::normal_root::NormalRootStartupErrorV1>>,
     service_currentness: Option<crate::normal_root::RootServiceCurrentnessV1>,
-    journal_receiving: Option<root_journal::RootJournalReceivingV1>,
-    credential_receiving: Option<credential_receiving::RootCredentialReceivingV1>,
+    native_startup_prior: Option<aos_sandbox_policy::native::RootStartupProvisionOriginalV1>,
+    native_completed_listener: Option<aos_sandbox_policy::native::RootCompletedPolicyListenerOriginalV1>,
     current_writers_receiving: Option<current_writers::RootCurrentWritersReceivingV1>,
-    policy_listener_provision: Option<policy_listener::RootPolicyListenerProvisionV1>,
-    controller_peer_provision: Option<controller_peer::RootControllerPeerProvisionV1>,
+    controller_peer_provision: Option<aos_sandbox_policy::native::RootControllerPeerProvisionOriginalV1>,
+    controller_history_resident: Option<Result<ResourceVector, ResourceReservationErrorV1>>,
     current_open_provision: Option<current_open::RootCurrentOpenProvisionV1>,
     current_ready_provision: Option<current_ready::RootCurrentReadyProvisionV1>,
     current_pins_provision: Option<current_pins::RootCurrentPinsProvisionV1>,
@@ -88,7 +89,7 @@ impl RootReceivingOriginalV1 {
     pub(crate) fn new() -> Self {
         Self {
             activation: aos_sandbox_broker::receiving::RootInitialReceivingOriginalV1::new(
-                crate::controller_resource_reservation::q04_intake::native_layout(),
+                Self::role_layout_v1(),
             ),
             native_receiving_refusal: None,
             service_observations: Default::default(),
@@ -96,18 +97,16 @@ impl RootReceivingOriginalV1 {
             role_error: None,
             original: None,
             shape: None,
-            profile_prefix: None,
             receiving_completion: None,
             recipient_binding: None,
-            selected_prefix: None,
             selected: None,
             selected_completion: None,
             service_currentness: None,
-            journal_receiving: None,
-            credential_receiving: None,
+            native_startup_prior: None,
+            native_completed_listener: None,
             current_writers_receiving: None,
-            policy_listener_provision: None,
             controller_peer_provision: None,
+            controller_history_resident: None,
             current_open_provision: None,
             current_ready_provision: None,
             current_pins_provision: None,
@@ -173,184 +172,12 @@ impl RootReceivingOriginalV1 {
     // recipient join. This one-way continuation can use only the profile from
     // that same first table; no vector, File or selected path pays this method.
     pub(crate) fn receive_profile_once(&mut self) -> Result<(), ResourceReservationErrorV1> {
-        if self.profile_prefix.is_some()
-            || self.activation.process_id_v1() != std::process::id()
+        if self.activation.process_id_v1() != std::process::id()
             || !matches!(self.shape, Some(Ok(())))
         {
             return Err(ResourceReservationErrorV1::Conflict);
         }
-        let returned = (|| {
-            let envelope = self.original.as_ref().and_then(|result| result.as_ref().ok())
-                .and_then(|original| original.policy.bootstrap_provisions().root_receiving)
-                .ok_or(ResourceReservationErrorV1::EnrollmentUnavailable)?;
-            let native = aos_sandbox_broker::receiving::RootInitialReceivingOriginalV1::
-                fixed_profile_prefix_demand_v1()
-                .ok_or(ResourceReservationErrorV1::EnrollmentUnavailable)?;
-            // The lower lane pays only its actual native owners. This private
-            // role separately pays its retained classification and constructor
-            // carriers, with no DATA supplied by an external caller.
-            let error_arc = std::mem::size_of::<ResourceReservationErrorV1>()
-                .checked_add(2 * std::mem::size_of::<usize>())
-                .and_then(|bytes| bytes.checked_add(std::mem::align_of::<ResourceReservationErrorV1>() - 1))
-                .ok_or(ResourceReservationErrorV1::EnrollmentUnavailable)?;
-            let adapter_bytes = std::mem::size_of::<Self>().checked_mul(2)
-                // Heap backing and its actual construction carrier coexist
-                // on the one failed debit. Later views clone only Arc pointers.
-                .and_then(|bytes| bytes.checked_add(error_arc.checked_mul(2)?))
-                .and_then(|bytes| bytes.checked_add(std::mem::size_of::<
-                    Option<crate::normal_root::NormalRootStartupErrorV1>,
-                >()))
-                .and_then(|bytes| bytes.checked_add(std::mem::size_of::<(
-                    usize, usize, std::sync::Mutex<()>,
-                )>()))
-                .and_then(|bytes| bytes.checked_add(
-                    std::mem::size_of::<ResourceVector>().checked_mul(5)?,
-                ))
-                // Actual Root67 nested construction carriers: OwnershipTrust
-                // container and fixed/typed/SourceExchange provisions. Their
-                // stored destinations are already in actual Self above.
-                .and_then(|bytes| bytes.checked_add(std::mem::size_of::<
-                    current_ownership_trust::RootCurrentOwnershipTrustProvisionV1,
-                >()))
-                .and_then(|bytes| bytes.checked_add(std::mem::size_of::<
-                    current_provision::RootCurrentProvisionV1,
-                >().checked_mul(3)?))
-                // BundleOwnership's private container/fixed/typed constructor
-                // carriers exist before their own later admission can succeed.
-                .and_then(|bytes| bytes.checked_add(std::mem::size_of::<
-                    current_bundle_ownership::RootCurrentBundleOwnershipProvisionV1,
-                >()))
-                .and_then(|bytes| bytes.checked_add(std::mem::size_of::<
-                    current_provision::RootCurrentProvisionV1,
-                >().checked_mul(2)?))
-                // These two actual RootAttempt headers are constructed at new,
-                // before BundleOwnership admission. State/child Box allocations
-                // remain in their own later fixed/typed suppliers.
-                .and_then(|bytes| bytes.checked_add(std::mem::size_of::<
-                    Option<Result<(), crate::normal_root::NormalRootStartupErrorV1>>,
-                >()))
-                .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Option<Box<
-                    crate::policy_compiler::create_storage_current::bundle_ownership::
-                        RootCurrentBundleOwnershipStateV1,
-                >>>()))
-                // CacheCurrent adds its own provision constructor and two
-                // RootAttempt headers at new, before its later fixed gate.
-                .and_then(|bytes| bytes.checked_add(std::mem::size_of::<
-                    current_provision::RootCurrentProvisionV1,
-                >()))
-                .and_then(|bytes| bytes.checked_add(std::mem::size_of::<
-                    Option<Result<(), crate::normal_root::NormalRootStartupErrorV1>>,
-                >()))
-                .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Option<Box<
-                    crate::policy_compiler::create_storage_current::cache_current::
-                        RootCurrentCacheProofStateV1,
-                >>>()))
-                .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Result<
-                    (), aos_sandbox_broker::receiving::RootObservationErrorV1,
-                >>()))
-                // The readonly stage container and its three provision
-                // constructors precede their own later successful gates.
-                .and_then(|bytes| bytes.checked_add(std::mem::size_of::<
-                    current_controller_readonly::RootCurrentControllerReadonlyProvisionV1,
-                >()))
-                .and_then(|bytes| bytes.checked_add(std::mem::size_of::<
-                    current_provision::RootCurrentProvisionV1,
-                >().checked_mul(3)?))
-                // The two headers are initialized with the actual RootAttempt.
-                // Its State Box/backing remains a later fixed-stage cost.
-                .and_then(|bytes| bytes.checked_add(std::mem::size_of::<
-                    Option<Result<(), crate::normal_root::NormalRootStartupErrorV1>>,
-                >()))
-                .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Option<Box<
-                    crate::policy_compiler::create_storage_current::controller_readonly::
-                        RootCurrentControllerReadonlyStateV1,
-                >>>()))
-                .and_then(|bytes| bytes.checked_add(std::mem::size_of::<
-                    Option<Result<(), crate::normal_root::NormalRootStartupErrorV1>>,
-                >()))
-                // The new Box header is present from initial attempt creation;
-                // its backing and construction are admitted only at UA entry.
-                .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Option<Box<
-                    crate::policy_compiler::create_storage_current::use_authorized::
-                        RootCurrentUseAuthorizedStateV1,
-                >>>()))
-                .and_then(|bytes| bytes.checked_add(std::mem::size_of::<
-                    current_provision::RootCurrentProvisionV1,
-                >()))
-                .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Option<Box<
-                    crate::policy_compiler::create_storage_current::use_reserved::RootCurrentUseReservedStateV1,
-                >>>()))
-                .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Option<Result<
-                    (), crate::normal_root::NormalRootStartupErrorV1,
-                >>>()))
-                .and_then(|bytes| bytes.checked_add(std::mem::size_of::<
-                    current_use_reserved::RootCurrentUseReservedProvisionV1,
-                >()))
-                // Fresh Source query/exchange are distinct inline originals;
-                // their native reservoirs remain paid at their own R stages.
-                .and_then(|bytes| bytes.checked_add(std::mem::size_of::<
-                    crate::policy_compiler::create_storage_current::source_current::RootCurrentSourceQueryStateV1,
-                >()))
-                .and_then(|bytes| bytes.checked_add(std::mem::size_of::<
-                    crate::policy_compiler::create_storage_current::source_current::RootCurrentSourceExchangeStateV1,
-                >()))
-                .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Option<Box<
-                    crate::policy_compiler::create_storage_current::cache_current::RootCurrentCacheProofStateV1,
-                >>>()))
-                .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Option<Result<
-                    (), crate::normal_root::NormalRootStartupErrorV1,
-                >>>()))
-                .and_then(|bytes| bytes.checked_add(std::mem::size_of::<current_provision::RootCurrentProvisionV1>()))
-                .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Option<Box<
-                    crate::policy_compiler::create_storage_current::use_admitted::RootCurrentUseAdmittedStateV1,
-                >>>()))
-                .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Option<Result<
-                    (), crate::normal_root::NormalRootStartupErrorV1,
-                >>>()))
-                .and_then(|bytes| bytes.checked_add(std::mem::size_of::<current_signed_bound::RootSignedProvisionV1>()))
-                .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Option<Box<crate::policy_compiler::create_storage_current::signed_bound::RootCurrentSignedBoundStateV1>>>()))
-                .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Option<Result<(), crate::normal_root::NormalRootStartupErrorV1>>>()))
-                .ok_or(ResourceReservationErrorV1::EnrollmentUnavailable)?;
-            let adapter = ResourceVector::ZERO
-                .with(aos_sandbox_model::ResourceDimension::MemoryBytes,
-                    u64::try_from(adapter_bytes).map_err(|_| ResourceReservationErrorV1::EnrollmentUnavailable)?)
-                // Four financial fields move to the actual lower original;
-                // the historical parent subtotal therefore falls from27 to23.
-                // Keep the existing additional parent/nested controls below.
-                // Arc/Mutex/startup and financial carriers, eight older nested
-                // controls and four older constructors. BundleOwnership adds
-                // six nested fixed/typed destination+Result controls and three
-                // constructors; its two RootAttempt headers are also upfront.
-                // CacheCurrent adds its parent above plus two embedded Results,
-                // one constructor and two RootAttempt headers. The independent
-                // retained RootChunk clock header from 81b3 remains upfront;
-                // its physical bytes are already in listener sizeof(RootAttempt).
-                // The armed header moved to the native original. The actual
-                // checked handoff Result now owns one explicit cell and sizeof
-                // above. ControllerReadonly adds its parent field, three
-                // embedded stage destinations and six permit/before Results,
-                // four constructor carriers and two early RootAttempt headers:
-                // sixteen cells beyond the existing65, for actual upfront81.
-                // Native initial's69 cells remain separately paid; later State
-                // backing/model/native/semantic stages retain their own gates.
-                .with(aos_sandbox_model::ResourceDimension::MetadataEntries,
-                    (27 - 4) + 1 + 3 + 5 + 8 + 4 + 6 + 3 + 2 + 2 + 1 + 2 + 1 + 1 + 9 + 4 + 2);
-            let guards = crate::normal_root::RootReceivingGuardV1::construction_demand_v1()
-                .ok_or(ResourceReservationErrorV1::EnrollmentUnavailable)?;
-            let demand = native.checked_add(adapter)
-                .and_then(|demand| demand.checked_add(guards))
-                .map_err(|_| ResourceReservationErrorV1::EnrollmentUnavailable)?;
-            envelope.checked_sub(demand).map_err(|_| ResourceReservationErrorV1::EnrollmentUnavailable)?;
-            self.activation.require_receiving_demand_v1(demand)
-                .map_err(|_| ResourceReservationErrorV1::EnrollmentUnavailable)?;
-            Ok(demand)
-        })();
-        self.native_refusal_original_v1().park_empty_result_v1(&mut self.profile_prefix, returned);
-        if !matches!(self.profile_prefix, Some(Ok(_))) {
-            return Err(ResourceReservationErrorV1::EnrollmentUnavailable);
-        }
-
-        let receiving = self.activation.receive_profile_once();
+        let receiving = self.activation.receive_role_profile_once_v1();
         self.receiving_completion = self.activation.completion_result_v1()
             .map(|result| result.as_ref().map(|_| ()).map_err(|error| (*error).into()));
         self.recipient_binding = self.activation.recipient_binding_result_v1()
@@ -371,24 +198,21 @@ impl RootReceivingOriginalV1 {
             .or_else(|| self.shape.as_ref().and_then(|result| result.as_ref().err())
                 .map(|cause| cause as &(dyn Error + 'static)))
             .or_else(|| self.activation.financial_failure_v1())
-            .or_else(|| self.profile_prefix.as_ref().and_then(|result| result.as_ref().err())
-                .map(|cause| cause as &(dyn Error + 'static)))
+            .or_else(|| self.activation.role_profile_failure_v1())
             .or_else(|| self.activation.profile_capture_v1().and_then(|profile| profile.failure()))
             .or_else(|| self.activation.kernel_capture_v1().and_then(|kernel| kernel.failure()))
             .or_else(|| self.receiving_completion.as_ref().and_then(|result| result.as_ref().err())
                 .map(|cause| cause as &(dyn Error + 'static)))
             .or_else(|| self.recipient_binding.as_ref().and_then(|result| result.as_ref().err())
                 .map(|cause| cause as &(dyn Error + 'static)))
-            .or_else(|| self.selected_prefix.as_ref().and_then(|result| result.as_ref().err())
-                .map(|cause| cause as &(dyn Error + 'static)))
+            .or_else(|| self.activation.role_selected_failure_v1())
             .or_else(|| self.activation.selected_admission_failure_v1())
             .or_else(|| self.selected.as_ref().and_then(|selected| selected.failure()))
             .or_else(|| self.selected_completion.as_ref().and_then(|result| result.as_ref().err())
                 .map(|cause| cause as &(dyn Error + 'static)))
             .or_else(|| self.service_observations.payment_failure())
-            .or_else(|| self.journal_failure())
-            .or_else(|| self.credential_failure())
-            .or_else(|| self.policy_listener_provision.as_ref().and_then(|stage| stage.failure()))
+            .or_else(|| self.native_startup_prior.as_ref().and_then(
+                aos_sandbox_policy::native::RootStartupProvisionOriginalV1::failure_v1))
             .or_else(|| self.policy_flight_primary_failure_v1())
             .or_else(|| self.controller_peer_failure_v1())
             .or_else(|| self.current_writers_failure_v1())
@@ -420,5 +244,42 @@ impl RootReceivingOriginalV1 {
 impl Drop for RootReceivingOriginalV1 {
     fn drop(&mut self) {
         self.activation.abort_if_root_armed_v1();
+    }
+}
+
+impl RootReceivingOriginalV1 {
+    pub(crate) fn native_startup_prior_parts_mut_v1(
+        &mut self,
+    ) -> Result<(
+        &mut aos_sandbox_policy::native::RootStartupProvisionOriginalV1,
+        &mut aos_sandbox_broker::receiving::RootInitialReceivingOriginalV1,
+    ), crate::normal_root::NormalRootStartupErrorV1> {
+        let prior = self.native_startup_prior.as_mut()
+            .ok_or(crate::normal_root::NormalRootStartupErrorV1::Service)?;
+        Ok((prior, &mut self.activation))
+    }
+
+    pub(crate) fn complete_native_listener_once_v1(
+        &mut self,
+    ) -> Result<(), crate::normal_root::NormalRootStartupErrorV1> {
+        use crate::normal_root::NormalRootStartupErrorV1 as Error;
+        if self.native_completed_listener.is_some() { self.activation.latch_root_refusal_v1(); return Err(Error::Service); }
+        let prior = self.native_startup_prior.take().ok_or(Error::Service)?;
+        match prior.complete_listener_into_original_v1(&self.activation) {
+            Ok(original) => { self.native_completed_listener = Some(original); Ok(()) }
+            Err(original) => {
+                self.native_startup_prior = Some(original);
+                self.activation.latch_root_refusal_v1();
+                Err(Error::Service)
+            }
+        }
+    }
+
+    pub(crate) fn native_completed_listener_v1(
+        &self,
+    ) -> Result<aos_sandbox_policy::native::RootCompletedPolicyListenerOriginalV1,
+        crate::normal_root::NormalRootStartupErrorV1> {
+        self.native_completed_listener.as_ref().cloned()
+            .ok_or(crate::normal_root::NormalRootStartupErrorV1::Service)
     }
 }
