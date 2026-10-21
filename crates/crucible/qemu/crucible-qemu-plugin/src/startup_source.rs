@@ -165,7 +165,11 @@ impl InstallerStartupSource {
 
     pub(crate) fn check(&self) -> Result<(), StartupSourceError> {
         let api = self.live_api()?;
-        self.accept_status((api.check)(self.plugin_id))
+        self.accept_status((api.check)(self.plugin_id))?;
+        if let Some(setup) = self.native_setup.as_ref() {
+            setup.check_current(self.plugin_id)?;
+        }
+        Ok(())
     }
 
     /// Rechecks the same preissued fixed-control purpose before managed births.

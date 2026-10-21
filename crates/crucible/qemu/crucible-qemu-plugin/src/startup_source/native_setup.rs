@@ -11,6 +11,8 @@ use std::os::fd::BorrowedFd;
 
 use super::{InstallerStartupSource, SetupDescriptor, StartupSourceError, resolve_api};
 
+mod publisher;
+
 #[repr(C)]
 struct NativeBorrow {
     schema_version: u32,
@@ -30,6 +32,7 @@ pub(crate) struct NativeSetupBorrow {
     frame: [u8; 61],
     control: BorrowedFd<'static>,
     roles: [Option<BorrowedFd<'static>>; 6],
+    publisher: Option<publisher::PublisherBorrow>,
 }
 
 impl NativeSetupBorrow {
@@ -70,6 +73,39 @@ impl NativeSetupBorrow {
             })
     }
 
+    pub(crate) fn publisher_setup(
+        &self,
+    ) -> Result<
+        Option<crucible_qemu_protocol::publisher_subscription::PublisherSetup>,
+        StartupSourceError,
+    > {
+        self.publisher
+            .as_ref()
+            .map(publisher::PublisherBorrow::setup)
+            .transpose()
+    }
+
+    fn begin_publisher_transfer(&self) -> Result<(), StartupSourceError> {
+        self.publisher
+            .as_ref()
+            .ok_or(StartupSourceError::Ownership {
+                reason: "native publisher service is absent",
+            })?
+            .begin_runtime_transfer()
+    }
+
+    pub(crate) fn has_publisher(&self) -> bool {
+        self.publisher.is_some()
+    }
+
+    pub(super) fn check_current(&self, plugin_id: u64) -> Result<(), StartupSourceError> {
+        if let Some(publisher) = self.publisher.as_ref() {
+            publisher.check_current(plugin_id, self)
+        } else {
+            Ok(())
+        }
+    }
+
     pub(crate) fn has_workspace(&self) -> bool {
         self.roles[5].is_some()
     }
@@ -87,7 +123,7 @@ pub(crate) fn selected() -> Result<bool, StartupSourceError> {
         return Ok(false);
     }
     // SAFETY: getenv returned the process environment's NUL-terminated value.
-    if unsafe { CStr::from_ptr(value) }.to_bytes() != b"5" {
+    if !matches!(unsafe { CStr::from_ptr(value) }.to_bytes(), b"5" | b"6") {
         return Err(StartupSourceError::Ownership {
             reason: "native setup edition differs",
         });
@@ -148,6 +184,9 @@ impl InstallerStartupSource {
             return self.check();
         }
         self.api = Some(resolve_api()?);
+        if publisher::selected() {
+            return publisher::acquire(self);
+        }
         let borrow = resolve_borrow()?;
         let mut output = NativeBorrow {
             schema_version: 0,
@@ -167,6 +206,24 @@ impl InstallerStartupSource {
         self.plan = Some(retained.role(2)?);
         self.native_setup = Some(retained);
         self.check()
+    }
+
+    /// Moves only the already retained Native service into a paid Runtime field.
+    ///
+    /// # Errors
+    /// Preserves missing/repeated custody, the Native move's first refusal and
+    /// the same retained installing/runtime-purpose observations. A failed move
+    /// never permits the old installer view to be borrowed or retried again.
+    pub(crate) fn transfer_publisher_service(
+        &self,
+        transfer: impl FnOnce() -> i32,
+    ) -> Result<(), StartupSourceError> {
+        self.check_runtime_installation()?;
+        self.native_setup()?.begin_publisher_transfer()?;
+        let first = self.accept_status(transfer());
+        let post = self.check_runtime_installation();
+        first?;
+        post
     }
 
     pub(crate) fn retained_native_setup(&self) -> Option<&NativeSetupBorrow> {
@@ -226,6 +283,7 @@ fn validate_output(output: &NativeBorrow) -> Result<NativeSetupBorrow, StartupSo
         frame,
         control,
         roles,
+        publisher: None,
     })
 }
 

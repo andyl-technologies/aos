@@ -21,6 +21,7 @@ mod control_component;
 mod fingerprint;
 mod registration_groups;
 mod registration_owner;
+mod publisher_service;
 mod resource_manifest;
 pub(crate) use checkpoint::reader::{
     CaptureLoan, HeldClaimCleanup, HeldReadContext, HeldReaderIdentity,
@@ -392,6 +393,7 @@ pub(crate) struct OwnedCallbackRuntimeState {
     command_receive: Mutex<command_receive::CommandReceive>,
     callback_child: callback_child::CallbackChild,
     registration_owner: registration_owner::RegistrationOwner,
+    publisher_service: publisher_service::PublisherService,
     registration_groups: registration_groups::RegistrationGroups,
     workspace_mapping: workspace_mapping::WorkspaceMapping,
     #[cfg(not(test))]
@@ -457,6 +459,7 @@ impl OwnedCallbackRuntimeState {
             command_receive: Mutex::new(command_receive::CommandReceive::new()),
             callback_child: callback_child::CallbackChild::new(),
             registration_owner: registration_owner::RegistrationOwner::new(),
+            publisher_service: publisher_service::PublisherService::new(),
             registration_groups: registration_groups::RegistrationGroups::new(),
             workspace_mapping: workspace_mapping::WorkspaceMapping::new(),
             #[cfg(not(test))]
@@ -625,7 +628,22 @@ impl OwnedCallbackRuntimeState {
             .check_runtime_installation()
             .map_err(crate::startup_source::InstallerStartupSource::retained_ram_error);
         registration?;
-        post
+        post?;
+        if let Some(installer) = state.setup.publisher_installer() {
+            let plugin_id = state
+                .plugin_id
+                .ok_or(crate::ram_error::RamError::Invariant(
+                    "publisher Runtime has no installed plugin id",
+                ))?;
+            let owner = state
+                .registration_owner
+                .native_owner()
+                .map_err(crate::startup_source::InstallerStartupSource::retained_ram_error)?;
+            state
+                .publisher_service
+                .transfer(plugin_id, owner, installer)?;
+        }
+        Ok(())
     }
 
     /// Retains the pinned allocation before exposing Original callback userdata.
@@ -1357,7 +1375,6 @@ impl Drop for RequiredOwnedCallbacksRegistered {
             return;
         }
         drop(receiver);
-        let _component_return = state.control_component.identity_return();
         if !state
             .checkpoint_registration_retained
             .load(Ordering::Acquire)
@@ -1393,6 +1410,12 @@ impl Drop for RequiredOwnedCallbacksRegistered {
             // current Source contract retains transferred mapping debt until a
             // genuine worker/material terminal producer supplies its last use.
             if state.workspace_mapping.identity_return().is_err() {
+                return;
+            }
+            // Source group owners must consume their Native terminal receipts
+            // before component drain revokes the registry and returns Setup6.
+            // A refused or uncertain return retains this same entire Runtime.
+            if state.control_component.identity_return().is_err() {
                 return;
             }
             if state.registration_owner.retained()

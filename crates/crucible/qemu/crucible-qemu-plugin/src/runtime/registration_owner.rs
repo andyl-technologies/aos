@@ -11,7 +11,8 @@ use crate::StartupSourceError;
 use std::cell::UnsafeCell;
 
 mod abi;
-use abi::{Api, Owner};
+use abi::Api;
+pub(super) use abi::Owner;
 
 /// Lives inline in the genuine whole Runtime Layout before reserve and birth.
 /// Source alone reads/writes the stable canonical field under its registry mutex;
@@ -97,15 +98,7 @@ impl RegistrationOwner {
     /// # Errors
     /// Refuses missing/negative/incomplete or retired custody and parent work.
     pub(super) fn current(&self) -> Result<(), LiveVcpuTimeCallbackError> {
-        let api = self.api.ok_or_else(|| status_error(-libc::ESTALE))?;
-        if !self.transfer_attempted
-            || !self.creation.is_null()
-            || self.observed.is_null()
-            || self.returned
-        {
-            return Err(status_error(-libc::ESTALE));
-        }
-        native_status((api.current)(self.id, self.observed))
+        self.native_owner().map(|_| ()).map_err(source_error)
     }
 
     /// Returns only the checked nominal owner for Source's worker constructor.
@@ -115,8 +108,32 @@ impl RegistrationOwner {
     pub(super) fn native_projection(
         &self,
     ) -> Result<*mut std::ffi::c_void, LiveVcpuTimeCallbackError> {
-        self.current()?;
-        Ok(self.observed.cast())
+        self.native_owner()
+            .map(|owner| owner.cast())
+            .map_err(source_error)
+    }
+
+    /// Projects the checked true opaque owner without issuing a child loan.
+    ///
+    /// # Errors
+    /// Preserves the actual Native current refusal or absent canonical custody.
+    pub(super) fn native_owner(&self) -> Result<*mut Owner, StartupSourceError> {
+        let stale = || StartupSourceError::NativeStatus {
+            status: -libc::ESTALE,
+        };
+        let api = self.api.ok_or_else(stale)?;
+        if !self.transfer_attempted
+            || !self.creation.is_null()
+            || self.observed.is_null()
+            || self.returned
+        {
+            return Err(stale());
+        }
+        let status = (api.current)(self.id, self.observed);
+        if status != 0 {
+            return Err(StartupSourceError::NativeStatus { status });
+        }
+        Ok(self.observed)
     }
 
     pub(super) fn retained(&self) -> bool {

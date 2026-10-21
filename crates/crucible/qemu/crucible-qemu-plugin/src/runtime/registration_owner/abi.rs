@@ -7,7 +7,7 @@ use std::ffi::c_void;
 
 /// Matches the SDK's true opaque QemuCrucibleCallbackChildOwner tag.
 #[repr(C)]
-pub(super) struct Owner {
+pub(in crate::runtime) struct Owner {
     _private: [u8; 0],
 }
 

@@ -218,6 +218,16 @@ pub struct PluginSetupCompletion {
 
 #[cfg(unix)]
 impl PluginSetupCompletion {
+    pub(crate) fn publisher_installer(
+        &self,
+    ) -> Option<&crate::startup_source::InstallerStartupSource> {
+        self.startup_source.as_ref().filter(|source| {
+            source
+                .retained_native_setup()
+                .is_some_and(crate::startup_source::NativeSetupBorrow::has_publisher)
+        })
+    }
+
     pub(crate) fn retain_startup_source(
         &mut self,
         source: crate::startup_source::InstallerStartupSource,
@@ -723,6 +733,21 @@ impl SetupPreparationInput {
     pub(crate) fn from_native_setup(
         setup: &crate::startup_source::NativeSetupBorrow,
     ) -> Result<Self, crate::StartupSourceError> {
+        if let Some(publisher) = setup.publisher_setup()? {
+            return Ok(Self {
+                region_len: publisher.region_len,
+                process_generation: publisher.process_generation,
+                shmem_fd: setup.role(0)?,
+                wake_fd: setup.role(1)?,
+                workspace_binding: publisher.device_digest_workspace,
+                workspace_fd: if setup.has_workspace() {
+                    Some(setup.role(5)?)
+                } else {
+                    None
+                },
+            });
+        }
+
         let frame = setup.frame();
         let malformed = || crate::StartupSourceError::Ownership {
             reason: "selected setup frame fields differ",
@@ -984,9 +1009,33 @@ fn read_plugin_setup_plan(
     plan_read::check_original(original)?;
     let mut bytes = vec![0_u8; length];
     plan_read::read(fd, &mut bytes, original)?;
-    let (app_random_branch_plan, selectable_catalog_plan) =
-        PluginSetupPlan::decode_preexec_parts(&bytes)
+    let publisher = original
+        .and_then(crate::startup_source::InstallerStartupSource::retained_native_setup)
+        .map(|setup| setup.publisher_setup())
+        .transpose()
+        .map_err(|source| PluginSetupPlanDescriptorError::Original { source })?
+        .flatten();
+    let (app_random_branch_plan, selectable_catalog_plan) = if let Some(setup) = publisher {
+        let (app, selectable, purpose) = PluginSetupPlan::decode_preexec_publisher_parts(&bytes)
             .map_err(|source| PluginSetupPlanDescriptorError::DecodeComposite { source })?;
+        if purpose.process_generation != setup.process_generation
+            || purpose.lender_generation != setup.lender_generation
+            || purpose.device != setup.device
+            || purpose.inode != setup.inode
+            || purpose.producer_event != setup.producer_event
+            || purpose.receiver_event != setup.receiver_event
+        {
+            return Err(PluginSetupPlanDescriptorError::DecodeComposite {
+                source: PluginSetupPlanError::InvalidPreexecSection {
+                    section: "retained publisher setup binding",
+                },
+            });
+        }
+        (app, selectable)
+    } else {
+        PluginSetupPlan::decode_preexec_parts(&bytes)
+            .map_err(|source| PluginSetupPlanDescriptorError::DecodeComposite { source })?
+    };
     Ok(DecodedPluginSetupPlans {
         app_random_branch_plan,
         selectable_catalog_plan: Some(selectable_catalog_plan),
