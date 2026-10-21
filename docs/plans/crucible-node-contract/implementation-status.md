@@ -1819,9 +1819,20 @@ Actual borrow and guard controls are included in raw and initial construction
 scratch. Both independent Initial calculations remain under the unchanged
 limits. Cross-thread and same-process socket substitution controls pass, as do
 all 92 original bootstrap controls, with zero failures and the existing private
-child ignored. Complete library, application and funded-Source VM qualification
-remain pending for this subsequent source. Live Native18 SDK admission and its
-model-absent policy/ACK route remain unfinished.
+child ignored.
+
+For `976b2c992d`, both complete standard and raw-value Transport libraries pass
+1,898 tests each, with zero failures, no filtering and sixteen existing ignores.
+Affected Transport/Engine/Daemon all-feature/all-target checking, scoped
+formatting and all six architecture gates pass. Required application compilation
+passes with 180 test executables across 58 package identities, including 71
+integration targets. The funded-Source VM passes both independent three-Birth
+consumer flights, refusal controls, cleanup and default-feature CLI refusal.
+All 233 owned changed Rust paths and the Transport manifest match that committed
+checkpoint in the application and all three exact VM component source captures.
+Subsequent SDK authority/failure slots are excluded. Full Engine and Daemon
+library runtime qualification remains at `f2150ce5c7`. Live Native18 SDK admission
+and its model-absent policy/ACK route remain unfinished.
 
 ## Retained initial SDK admission primitive
 
