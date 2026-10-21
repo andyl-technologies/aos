@@ -10,8 +10,9 @@ use std::fs::{self, File};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use terrane_linux::host_quota::{HostQuotaClient, NativeProject, NativeQuota, ROOT_LABELS};
+use terrane_sdk::store::{Clock, TokioClock};
 
 const WORKER: &str = "host::claims::provision_tests::host_global_provision_worker_vm";
 
@@ -175,13 +176,19 @@ fn set_metadata(path: &Path, uid: u32, gid: u32, mode: u32) {
 }
 
 fn wait_for(worker: &mut Worker, ready: impl Fn() -> bool) {
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let deadline = TokioClock
+        .monotonic()
+        .checked_add(Duration::from_secs(15))
+        .expect("bounded native checkpoint deadline");
     while !ready() {
         assert!(
             worker.0.try_wait().expect("worker state").is_none(),
             "worker exited before checkpoint"
         );
-        assert!(Instant::now() < deadline, "worker checkpoint timed out");
+        assert!(
+            TokioClock.monotonic() < deadline,
+            "worker checkpoint timed out"
+        );
         std::thread::sleep(Duration::from_millis(10));
     }
 }

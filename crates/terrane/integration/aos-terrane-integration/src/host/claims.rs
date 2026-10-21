@@ -73,6 +73,17 @@ struct ClaimRecord<'a> {
     bindings: Vec<&'a Binding>,
 }
 
+#[derive(Serialize)]
+struct InitialClaimRecord<'a> {
+    version: u32,
+    registry: &'a RegistryIdentity,
+    ledger: &'a LedgerIdentity,
+    epoch: &'a str,
+    creator: &'a super::initial_enrollment::model::Creator,
+    role: &'a super::initial_enrollment::model::RoleOwner,
+    entries: Vec<&'a super::initial_enrollment::model::Entry>,
+}
+
 pub(super) struct Registry {
     directory: File,
     identity: RegistryIdentity,
@@ -273,6 +284,136 @@ impl Registry {
         .map_err(parse_error)
     }
 
+    fn initial_records(
+        &self,
+        ledger: &super::initial_enrollment::InitialLedger,
+        owners: &[ConfiguredOwner],
+    ) -> io::Result<Vec<(String, Vec<u8>)>> {
+        validate_anchor(&self.identity, false)?;
+        if ledger.registry != self.identity {
+            return Err(io::Error::other(
+                "initial project registry incarnation changed",
+            ));
+        }
+        let current = open_host_path(Path::new(REGISTRY_PATH), true)?.metadata()?;
+        if current.dev() != self.identity.device
+            || current.ino() != self.identity.inode
+            || current.uid() != 0
+            || current.mode() & 0o7777 != 0o700
+        {
+            return Err(io::Error::other("initial project registry custody changed"));
+        }
+        let mut records = Vec::new();
+        for owner in owners {
+            let creator = ledger
+                .creators
+                .iter()
+                .find(|creator| {
+                    creator.owner_id == owner.owner_id && creator.domain == owner.domain
+                })
+                .ok_or_else(|| io::Error::other("initial claim omits a configured creator"))?;
+            let entries: Vec<_> = ledger
+                .entries
+                .iter()
+                .filter(|entry| entry.owner_id == owner.owner_id && entry.domain == owner.domain)
+                .collect();
+            if creator.filesystem_uuid != owner.filesystem_uuid
+                || creator.project_id != owner.project_id
+                || creator.hard_limit_bytes != owner.hard_limit_bytes
+                || entries.is_empty()
+            {
+                return Err(io::Error::other(
+                    "initial claim owner does not match its finite partition",
+                ));
+            }
+            let record = InitialClaimRecord {
+                version: 2,
+                registry: &self.identity,
+                ledger: &self.ledger,
+                epoch: &ledger.epoch,
+                creator,
+                role: ledger
+                    .roles
+                    .iter()
+                    .find(|role| role.owner_id == owner.owner_id && role.domain == owner.domain)
+                    .ok_or_else(|| io::Error::other("initial claim has no explicit role policy"))?,
+                entries,
+            };
+            let bytes = toml::to_string(&record).map_err(parse_error)?.into_bytes();
+            if bytes.is_empty() || bytes.len() > MAX_PROJECT_CLAIM_BYTES {
+                return Err(io::Error::other(
+                    "initial project claim exceeds its encoded bound",
+                ));
+            }
+            records.push((
+                project_claim_name(&owner.filesystem_uuid, owner.project_id)?,
+                bytes,
+            ));
+        }
+        Ok(records)
+    }
+
+    /// Permanently binds the complete genuine first-enrollment record set.
+    pub(super) fn ensure_initial(
+        &self,
+        ledger: &super::initial_enrollment::InitialLedger,
+        owners: &[ConfiguredOwner],
+    ) -> io::Result<()> {
+        let records = self.initial_records(ledger, owners)?;
+        open_host_path(Path::new(ANCHOR_PATH), false)?.sync_all()?;
+        open_host_path(
+            Path::new(ANCHOR_PATH)
+                .parent()
+                .ok_or_else(|| io::Error::other("anchor has no parent"))?,
+            true,
+        )?
+        .sync_all()?;
+        for ((name, bytes), owner) in records.iter().zip(owners) {
+            let target = Path::new(REGISTRY_PATH).join(name);
+            match fs::symlink_metadata(&target) {
+                Ok(_) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    self.publish(name, bytes)?
+                }
+                Err(error) => return Err(error),
+            }
+            RetainedProjectClaim::open(
+                Path::new(REGISTRY_PATH),
+                Path::new(ANCHOR_PATH),
+                &self.anchor_bytes()?,
+                owner.filesystem_uuid,
+                owner.project_id,
+                bytes,
+            )?;
+            open_host_path(&target, false)?.sync_all()?;
+            self.directory.sync_all()?;
+        }
+        self.directory.sync_all()
+    }
+
+    /// Retains the actual complete first claim without widening earlier claims.
+    pub(super) fn bind_initial(
+        &self,
+        ledger: &super::initial_enrollment::InitialLedger,
+        owners: &mut [ConfiguredOwner],
+    ) -> io::Result<()> {
+        for ((_, bytes), owner) in self
+            .initial_records(ledger, owners)?
+            .into_iter()
+            .zip(owners)
+        {
+            owner.claim = Some(RetainedProjectClaim::open(
+                Path::new(REGISTRY_PATH),
+                Path::new(ANCHOR_PATH),
+                &self.anchor_bytes()?,
+                owner.filesystem_uuid,
+                owner.project_id,
+                &bytes,
+            )?);
+        }
+        Ok(())
+    }
+
     fn publish(&self, name: &str, bytes: &[u8]) -> io::Result<()> {
         publish_no_replace(Path::new(REGISTRY_PATH), &self.directory, name, bytes)
     }
@@ -390,6 +531,11 @@ fn claim_temporary(
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "Native fixture assertions intentionally panic."
+)]
 mod tests {
     use super::*;
 
@@ -604,5 +750,10 @@ mod tests {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "Native fixture assertions intentionally panic."
+)]
 #[path = "claim_provision_tests.rs"]
 mod provision_tests;

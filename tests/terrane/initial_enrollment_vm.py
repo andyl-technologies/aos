@@ -1,0 +1,195 @@
+"""Supervises genuine fresh enrollment and credential-separated guest witnesses.
+
+The administrative example creates Core receipts and consumes them in the same
+process. This supervisor transports no receipt, descriptor list or asserted
+authority between cases. All fixture data and logs reside on guest disk.
+"""
+
+import hashlib
+import json
+import os
+import pathlib
+import select
+import signal
+import subprocess
+import sys
+import time
+
+IMAGE = pathlib.Path(sys.argv[1])
+SOURCE = pathlib.Path(sys.argv[2])
+ROOT = pathlib.Path(os.environ["TERRANE_INITIAL_FIXTURE_ROOT"])
+EXECUTABLE = IMAGE / "bin/initial_enrollment_fixture"
+MAX_OUTPUT = 256 * 1024
+ADMIN_CASES = ["positive", "unknown", "wrong-profile", "incomplete", "preexisting",
+               "reused-project", "partial-quota"]
+ADMIN_CAPS = "-all,+sys_admin,+dac_read_search,+fowner,+chown,+fsetid"
+QUERY_CAPS = "-all,+sys_admin,+dac_read_search"
+DEADLINE = time.monotonic() + 240
+
+
+def require(condition, message):
+    """Stops on unsupported, missing or ambiguous physical evidence."""
+    if not condition:
+        raise RuntimeError(message)
+
+
+def verify_inputs():
+    """Checks the completed image identity again before guest fixture effects."""
+    identity = json.loads((IMAGE / "share/identity.json").read_text())
+    for filename in ["initial_enrollment_vm.py", "initial_enrollment_image.py"]:
+        key = "tests/terrane/" + filename
+        expected = identity["input_sha256"][key]
+        require(hashlib.sha256((SOURCE / key).read_bytes()).hexdigest() == expected,
+                "supervisor input differs from image: " + filename)
+        require(identity["installed_scripts_sha256"]["share/" + filename] == expected
+                and hashlib.sha256((IMAGE / "share" / filename).read_bytes()).hexdigest() == expected,
+                "installed supervisor input differs from bound source: " + filename)
+    require(pathlib.Path(__file__).resolve() == IMAGE / "share/initial_enrollment_vm.py"
+            and pathlib.Path(__file__).read_bytes() == (SOURCE / "tests/terrane/initial_enrollment_vm.py").read_bytes(),
+            "executed supervisor is not the bound installed script")
+    require(os.environ.get("LD_LIBRARY_PATH") == identity["runtime_library_path"],
+            "guest runtime environment differs from completed image")
+    require(identity["native_cases_executed"] == [], "image already claims unobserved native evidence")
+    require(os.geteuid() == 0 and ROOT.is_absolute() and ROOT.resolve() == ROOT
+            and ROOT.is_dir() and ROOT.stat().st_uid == 0
+            and ROOT.stat().st_mode & 0o7777 == 0o755,
+            "guest fixture requires explicit canonical host-root disk custody")
+    require(os.statvfs(ROOT).f_frsize == 4096, "fixture ext4 block size differs")
+    mount_rows = []
+    for line in pathlib.Path("/proc/self/mountinfo").read_text().splitlines():
+        fields = line.split()
+        if fields[4] == str(ROOT):
+            separator = fields.index("-")
+            mount_rows.append((fields[separator + 1], fields[separator + 3]))
+    require(len(mount_rows) == 1 and mount_rows[0][0] == "ext4"
+            and "prjquota" in mount_rows[0][1].split(","),
+            "fixture is not the actual project-quota ext4 guest mount")
+
+
+def admin_command(selector, query=False):
+    """Drops quota override capability even for explicit root administration."""
+    # CAP_SYS_RESOURCE is deliberately absent: genuine EDQUOT must not be
+    # bypassed by the initial host-root caller during the partial-quota case.
+    caps = QUERY_CAPS if query else ADMIN_CAPS
+    return ["setpriv", "--bounding-set=" + caps, "--clear-groups",
+            "--inh-caps=-all", "--ambient-caps=-all", str(EXECUTABLE), selector]
+
+
+def role_command(selector, uid, groups):
+    """Establishes all role restrictions before Rust or Tokio can start threads."""
+    command = ["setpriv", "--reuid", str(uid), "--regid", str(uid)]
+    command += ["--groups", ",".join(map(str, groups))] if groups else ["--clear-groups"]
+    return [*command, "--bounding-set=-all", "--inh-caps=-all", "--ambient-caps=-all",
+            "--no-new-privs", str(EXECUTABLE), selector]
+
+
+def stop(process):
+    """Stops only this supervisor's own guest process group with bounded waits."""
+    if process.poll() is None:
+        os.killpg(process.pid, signal.SIGTERM)
+        try:
+            process.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.wait(timeout=3)
+
+
+def run_case(selector, command, expected_pass=True):
+    """Requires exit status and the exact terminal witness under output/deadline caps."""
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                               start_new_session=True)
+    output = bytearray()
+    deadline = min(DEADLINE, time.monotonic() + 30)
+    try:
+        while True:
+            remaining = deadline - time.monotonic()
+            require(remaining > 0, "fixture timeout: " + selector)
+            readable, _, _ = select.select([process.stdout], [], [], remaining)
+            require(readable, "fixture output timeout: " + selector)
+            chunk = os.read(process.stdout.fileno(), 4096)
+            if not chunk:
+                break
+            output.extend(chunk)
+            require(len(output) <= MAX_OUTPUT, "fixture output bound exceeded: " + selector)
+        process.wait(timeout=max(0.1, deadline - time.monotonic()))
+    finally:
+        stop(process)
+        text = bytes(output).decode("utf-8", errors="replace")
+        (ROOT / "proof-logs" / (selector + ".log")).write_text(text)
+        print(text, end="", flush=True)
+    witness = "INITIAL_ENROLLMENT_PASS " + selector
+    lines = text.splitlines()
+    if expected_pass:
+        require(process.returncode == 0 and lines and lines[-1] == witness
+                and lines.count(witness) == 1,
+                "missing exact successful physical witness: " + selector)
+    else:
+        require(process.returncode != 0 and not any(line.startswith("INITIAL_ENROLLMENT_PASS ") for line in lines)
+                and "unsupported" in text.lower(),
+                "capabilities-update must remain explicit unsupported, never native credit")
+        print("UNQUALIFIED capabilities-update: explicitly unsupported", flush=True)
+
+
+def broker_ready(process):
+    """Waits for actual broker bind without confusing bind with a successful query."""
+    socket = ROOT / "positive/quota.sock"
+    output = bytearray()
+    deadline = min(DEADLINE, time.monotonic() + 15)
+    while not socket.exists():
+        require(process.poll() is None and time.monotonic() < deadline,
+                "actual quota broker failed before bind")
+        readable, _, _ = select.select([process.stdout], [], [], 0.05)
+        if readable:
+            output.extend(os.read(process.stdout.fileno(), 4096))
+            require(len(output) <= MAX_OUTPUT, "quota broker output exceeded bound")
+    status = (pathlib.Path("/proc") / str(process.pid) / "status").read_text()
+    fields = dict(line.split(":", 1) for line in status.splitlines() if ":" in line)
+    require(fields["Uid"].split() == ["0"] * 4, "query broker left actual root identity")
+    mask = (1 << 2) | (1 << 21)  # CAP_DAC_READ_SEARCH and CAP_SYS_ADMIN only.
+    for name in ["CapInh", "CapAmb"]:
+        require(int(fields[name], 16) == 0, "query broker inherited ambient privilege")
+    for name in ["CapPrm", "CapEff", "CapBnd"]:
+        require(int(fields[name], 16) == mask, "query broker capability set differs: " + name)
+    return output
+
+
+def main():
+    """Runs real same-process enrollment, authenticated queries and credential refusals."""
+    verify_inputs()
+    # Fixture TOML publication intentionally respects the caller's umask. Fix
+    # this administrative input before any child creates portable metadata.
+    os.umask(0o022)
+    logs = ROOT / "proof-logs"
+    logs.mkdir(mode=0o700)
+    for selector in ADMIN_CASES:
+        run_case(selector, admin_command(selector))
+
+    broker = subprocess.Popen(admin_command("serve-positive", query=True),
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                              start_new_session=True)
+    broker_output = bytearray()
+    try:
+        broker_output.extend(broker_ready(broker))
+        # The fixture itself verifies UID/GID's four status fields, exact
+        # supplementary groups, all five empty capability sets and NNP before
+        # runtime construction, then performs actual v3 authenticated queries.
+        run_case("read-public", role_command("read-public", 840, [844, 845]))
+        run_case("read-private", role_command("read-private", 840, [844, 845]))
+        run_case("read-publisher", role_command("read-publisher", 841, [845]))
+        run_case("foreign-private", role_command("foreign-private", 842, []))
+        run_case("verify-positive", admin_command("verify-positive"))
+        run_case("capabilities-update", admin_command("capabilities-update"), expected_pass=False)
+        require(broker.poll() is None, "actual quota broker exited during queries")
+        print("PASS bounded initial enrollment component evidence; NativeReady/BKT15/task acceptance remain unqualified", flush=True)
+    finally:
+        stop(broker)
+        remainder = broker.stdout.read(MAX_OUTPUT + 1)
+        broker_output.extend(remainder)
+        require(len(broker_output) <= MAX_OUTPUT, "quota broker output exceeded bound")
+        text = bytes(broker_output).decode("utf-8", errors="replace")
+        (logs / "quota-broker.log").write_text(text)
+        print(text, end="", flush=True)
+
+
+if __name__ == "__main__":
+    main()

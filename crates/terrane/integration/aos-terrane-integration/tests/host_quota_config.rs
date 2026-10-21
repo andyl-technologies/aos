@@ -1,6 +1,10 @@
 //! Checks the closed administrative configuration vocabulary.
 
 #![cfg(target_os = "linux")]
+#![allow(
+    clippy::expect_used,
+    reason = "Test assertions panic on fixture failures."
+)]
 
 use aos_terrane_integration::host::HostConfig;
 

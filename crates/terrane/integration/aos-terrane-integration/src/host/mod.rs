@@ -148,7 +148,7 @@ fn epoch(value: &str) -> io::Result<[u8; 16]> {
         ));
     }
     let mut result = [0u8; 16];
-    for (destination, pair) in result.iter_mut().zip(value.as_bytes().chunks_exact(2)) {
+    for (destination, pair) in result.iter_mut().zip(value.as_bytes().as_chunks::<2>().0) {
         let digit = |byte: u8| {
             if byte <= b'9' {
                 byte - b'0'
@@ -163,6 +163,11 @@ fn epoch(value: &str) -> io::Result<[u8; 16]> {
 
 fn load(path: &Path) -> io::Result<HostConfig> {
     let config: HostConfig = toml::from_str(&protected_text(path)?).map_err(parse_error)?;
+    validate_config(&config)?;
+    Ok(config)
+}
+
+fn validate_config(config: &HostConfig) -> io::Result<()> {
     epoch(&config.epoch)?;
     let mut identities = BTreeSet::new();
     let mut projects = BTreeSet::new();
@@ -209,9 +214,9 @@ fn load(path: &Path) -> io::Result<HostConfig> {
             .ok_or_else(|| io::Error::other("missing explicit layout root"))?;
         for root in &owner.roots {
             if root.role_directory == "administrative-root" {
-                if owner.domain != "public" || root.path.starts_with(&layout.path) {
+                if root.path.starts_with(&layout.path) || layout.path.starts_with(&root.path) {
                     return Err(io::Error::other(
-                        "administrative scaffold requires a separate explicit public-owner root",
+                        "administrative root must be explicit and disjoint from its domain layout",
                     ));
                 }
             } else if root.role_directory != "layout-root"
@@ -241,10 +246,29 @@ fn load(path: &Path) -> io::Result<HostConfig> {
             ));
         }
     }
+    let administrative: Vec<_> = config
+        .owners
+        .iter()
+        .flat_map(|owner| &owner.roots)
+        .filter(|root| root.role_directory == "administrative-root")
+        .collect();
+    for (index, root) in administrative.iter().enumerate() {
+        if layouts.iter().any(|layout| {
+            root.path.starts_with(&layout.path) || layout.path.starts_with(&root.path)
+        }) || administrative
+            .iter()
+            .skip(index + 1)
+            .any(|other| root.path.starts_with(&other.path) || other.path.starts_with(&root.path))
+        {
+            return Err(io::Error::other(
+                "administrative roots overlap the configured partition",
+            ));
+        }
+    }
     if sum > config.tier_charge_budget_bytes {
         return Err(io::Error::other("partition exceeds tier budget"));
     }
-    Ok(config)
+    Ok(())
 }
 
 fn retain(config: &HostConfig) -> io::Result<Vec<ConfiguredOwner>> {
@@ -522,12 +546,13 @@ fn bind_ledger(
         directories.push(directory);
     }
     for binding in &ledger.bindings {
-        if let Some(parent) = binding.path.parent() {
-            if owner_for_path(config, parent).is_ok() && !paths.contains(parent) {
-                return Err(io::Error::other(
-                    "ledger omits an internal directory ancestor",
-                ));
-            }
+        if let Some(parent) = binding.path.parent()
+            && owner_for_path(config, parent).is_ok()
+            && !paths.contains(parent)
+        {
+            return Err(io::Error::other(
+                "ledger omits an internal directory ancestor",
+            ));
         }
     }
     for owner in &config.owners {
@@ -753,15 +778,36 @@ pub fn provision(config_path: &Path, ledger_path: &Path) -> io::Result<()> {
 /// Returns configuration, native verification or socket setup errors.
 pub fn serve(config_path: &Path, ledger_path: &Path) -> io::Result<()> {
     let config = load(config_path)?;
-    let mut owners = retain(&config)?;
-    let ledger = read_ledger(ledger_path, &config)?;
-    if ledger.phase != ProvisioningPhase::Ready {
-        return Err(io::Error::other("host provisioning remains incomplete"));
+    #[derive(Deserialize)]
+    struct LedgerVersion {
+        version: u32,
     }
-    let registry = claims::Registry::open(&config, ledger_path, false)?;
-    registry.bind(&ledger, &mut owners)?;
-    bind_ledger(&config, &mut owners, &ledger)?;
-    verify_live(&owners)?;
+    let version: LedgerVersion =
+        toml::from_str(&protected_text(ledger_path)?).map_err(parse_error)?;
+    let owners = match version.version {
+        2 => {
+            let mut owners = retain(&config)?;
+            let ledger = read_ledger(ledger_path, &config)?;
+            if ledger.phase != ProvisioningPhase::Ready {
+                return Err(io::Error::other("host provisioning remains incomplete"));
+            }
+            let registry = claims::Registry::open(&config, ledger_path, false)?;
+            registry.bind(&ledger, &mut owners)?;
+            bind_ledger(&config, &mut owners, &ledger)?;
+            verify_live(&owners)?;
+            owners
+        }
+        initial_enrollment::VERSION => {
+            let mut owners = retain(&config)?;
+            initial_enrollment::bind_ready(&config, ledger_path, &mut owners)?;
+            owners
+        }
+        _ => {
+            return Err(io::Error::other(
+                "unsupported host provisioning ledger version",
+            ));
+        }
+    };
     let parent = config
         .socket
         .parent()
