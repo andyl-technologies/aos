@@ -1,7 +1,8 @@
-From 78ca20b4207da90eb2be96e1b1197c72a2135fb7 Mon Sep 17 00:00:00 2001
+From 68dd4a6b902e8db82101823ee84ac9cdf5ae957e Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:00 +0000
-Subject: [PATCH] crucible: bind module payload custody to retained delivery
+Subject: [PATCH] crucible: retain received delivery across the genuine Ready
+ interval
 
 Retain the complete Crucible integration on the sole pinned QEMU base.
 Supply required run and teardown rows with real compiled fixture layouts
@@ -77,6 +78,26 @@ refusals, reentrant transition exclusion, partial/contradictory output retention
 and consumed-before-negative-post cleanup. Installation and standing inputs are
 explicitly modeled; this is no production Rust child, operational payload use,
 action Original, ACK, ActionReturn, Source activation or VM qualification.
+
+Nominate each actual received journal at birth inside Source's authenticated
+Ready factual callback. Claim completion alone may retain its exact canonical
+module payload field/local serial, first-bound child/member and standing lender
+in a paid Source handoff. The actual execution carrier retains the exact Source
+interior before independent post and normal observation return; this physical
+pin survives Ready exit without extending or reusing its entered marker.
+Preserve born-negative custody and block actual payload, delivery and execution
+return until dependencies close. No copied facts or caller tuple creates it.
+
+Provide factual ready_return consumption independently from signed status.
+Authenticate the real delivery, exact execution holder and actual local uses;
+record real consumption before independent post. Missing physical consumption
+becomes uncertain refusal, never output success. Absence/completed return is
+terminal for that delivery and preserves the first return error across retry.
+Exercise literal Source/coordinator dispatch and holder-return bodies with
+explicitly modeled installation, standing and Main-loop entry inputs, keeping
+all earlier controls. This adds no genuine Main borrower, CPU operation use,
+action Original, Source activation, ACK, ActionReturn or launched qualification.
+
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -64604,7 +64625,7 @@ index 890497b0d22ede109c03bcc24fbc3aa24b09e59c..5dd867c2d765690a2644af92a6520b8b
  
  int monitor_puts(Monitor *mon, const char *str);
 diff --git a/include/plugins/qemu-plugin.h b/include/plugins/qemu-plugin.h
-index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..5617ec879d42cdf46ccae943a390a5681741485d 100644
+index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..685150b0663bdca8b1803102293ad949eef1c6d9 100644
 --- a/include/plugins/qemu-plugin.h
 +++ b/include/plugins/qemu-plugin.h
 @@ -198,6 +198,326 @@ typedef void (*qemu_plugin_vcpu_discon_cb_t)(unsigned int vcpu_index,
@@ -67371,7 +67392,7 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..5617ec879d42cdf46ccae943a390a568
  
  /**
   * qemu_plugin_u64_set() - set value of a qemu_plugin_u64 for a given vcpu
-@@ -1353,15 +3225,3874 @@ uint64_t qemu_plugin_u64_get(qemu_plugin_u64 entry, unsigned int vcpu_index);
+@@ -1353,15 +3225,3892 @@ uint64_t qemu_plugin_u64_get(qemu_plugin_u64 entry, unsigned int vcpu_index);
   * @val: new value
   */
  QEMU_PLUGIN_API
@@ -71140,6 +71161,24 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..5617ec879d42cdf46ccae943a390a568
 +int qemu_plugin_crucible_startup_source_received_delivery_payload_claim_v1(
 +    qemu_plugin_id_t id, QemuCrucibleReceivedDeliveryOwner *delivery,
 +    uint64_t delivery_serial);
++
++/* Closes only the actual Ready-to-delivery physical handoff, if one was born.
++ * The genuine Ready callback alone nominates its receive and canonical payload;
++ * no caller tuple can create this owner. Actual delivery identity is required.
++ * The aligned uint32_t output must exclude Source and all live holder fields.
++ * It is factual: zero retains active/uncertain dependencies; one records actual
++ * execution-holder consumption, or terminal no-handoff/completed state, before
++ * independent Native post. A negative post cannot resurrect consumed custody;
++ * repeating return preserves its first return error. No later capture is allowed
++ * after a no-handoff/completed report. Payload/delivery return independently
++ * authenticates actual debt and never treats this copied output as permission.
++ * Local delivery users must close first. No Main/CPU borrower, action Original,
++ * publisher return, ACK or activation is issued by this physical transition.
++ */
++QEMU_PLUGIN_API
++int qemu_plugin_crucible_startup_source_received_delivery_ready_return_v1(
++    qemu_plugin_id_t id, QemuCrucibleReceivedDeliveryOwner *delivery,
++    uint64_t delivery_serial, uint32_t *locally_returned);
 +
 +/* Invokes only the first-bound module release on its exact claimed field/serial
 + * after all native local uses close. Module zero plus genuine field nulling is
@@ -78625,10 +78664,10 @@ index 0000000000000000000000000000000000000000..1a9037d67c83b471a88514c5e4d21dd1
 +#endif
 diff --git a/include/system/crucible-hot-fork-coordinator.h b/include/system/crucible-hot-fork-coordinator.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..7d5d746767a2dff776466b7d775348570448ff7c
+index 0000000000000000000000000000000000000000..0f237f0bc37ae3441394f9fe940d306208da8a45
 --- /dev/null
 +++ b/include/system/crucible-hot-fork-coordinator.h
-@@ -0,0 +1,181 @@
+@@ -0,0 +1,192 @@
 +/*
 + * Crucible main-loop hot-fork coordinator.
 + *
@@ -78661,6 +78700,17 @@ index 0000000000000000000000000000000000000000..7d5d746767a2dff776466b7d77534857
 +    QemuCrucibleFingerprintWakeKeeper;
 +typedef struct QemuCrucibleFingerprintIntentObservation
 +    QemuCrucibleFingerprintIntentObservation;
++
++typedef struct QemuCrucibleReadyDeliveryHandoff QemuCrucibleReadyDeliveryHandoff;
++
++int qemu_crucible_fingerprint_ready_delivery_retain_v1(
++    QemuCrucibleFingerprintMainReadyFrame *frame, void *execution,
++    QemuCrucibleFingerprintIntentObservation *observation,
++    QemuCrucibleReadyDeliveryHandoff *handoff,
++    QemuCrucibleReadyDeliveryHandoff ***holder);
++int qemu_crucible_fingerprint_ready_delivery_identity_return_v1(
++    void *execution, QemuCrucibleReadyDeliveryHandoff **holder,
++    QemuCrucibleReadyDeliveryHandoff *handoff);
 +
 +int qemu_crucible_fingerprint_ready_snapshot_holder_borrow_v1(
 +    QemuCrucibleFingerprintMainReadyFrame *frame, void *execution,
@@ -109114,10 +109164,10 @@ index 0000000000000000000000000000000000000000..acc9e8f5aba1bf26acc960e066a68e78
 +}
 diff --git a/plugins/crucible-command-receive.inc.h b/plugins/crucible-command-receive.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..4331b601a12e713b9754f90d4b75c110fe09c4d2
+index 0000000000000000000000000000000000000000..45953bfd4f19a0e0f6b192a9094c1a2faf668eb6
 --- /dev/null
 +++ b/plugins/crucible-command-receive.inc.h
-@@ -0,0 +1,887 @@
+@@ -0,0 +1,1101 @@
 +/*
 + * Retained physical receive through the first-bound module reader.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -109161,6 +109211,35 @@ index 0000000000000000000000000000000000000000..4331b601a12e713b9754f90d4b75c110
 +        return -ESTALE;
 +    }
 +    return *owner->runtime_holder == owner ? 0 : -ESTALE;
++}
++
++/* The genuine dispatch owns this observation before any module callback.
++ * Nominate the actual receive at its birth, never by later fact equality. */
++static int ready_delivery_receive_bind_locked(QemuCrucibleCommandReceiveOwner *receive)
++{
++    QemuCrucibleFingerprintIntentObservation *observation = &startup_source.intent_observation;
++    QemuCrucibleSourceControlBinding *component = &startup_source.control_callback;
++    int status;
++
++    if (!observation->held || !observation->callback_invoking) {
++        return 0;
++    }
++    if (observation->component != component || component->command_member != receive->member ||
++        receive->member->component != component ||
++        component->userdata != receive->member->child->address || observation->receive) {
++        return -ESTALE;
++    }
++    status = qemu_crucible_fingerprint_ready_snapshot_holder_current_v1(
++        observation->frame, observation->holder);
++    if (status) {
++        return status;
++    }
++    if (*observation->holder != observation) {
++        return -ESTALE;
++    }
++    observation->receive = receive;
++    observation->receive_serial = receive->serial;
++    return 0;
 +}
 +
 +static bool command_receive_progress_valid(const QemuCrucibleCommandReceiveProgress *progress,
@@ -109289,9 +109368,12 @@ index 0000000000000000000000000000000000000000..4331b601a12e713b9754f90d4b75c110
 +    member->receive_users++;
 +    *out = owner;
 +    *serial = owner->serial;
++    first = ready_delivery_receive_bind_locked(owner);
 +    qemu_mutex_unlock(&commands->mutex);
 +
-+    first = standing_boundary();
++    if (!first) {
++        first = standing_boundary();
++    }
 +    qemu_mutex_lock(&commands->mutex);
 +    owner->first_status = first;
 +    if (!first) {
@@ -109753,7 +109835,7 @@ index 0000000000000000000000000000000000000000..4331b601a12e713b9754f90d4b75c110
 +    if (!status && holder != (owner->transferred ? owner->runtime_holder : owner->creation_output)) {
 +        status = -ESTALE;
 +    }
-+    if (!status && (owner->use_users || owner->payload_transition_active ||
++    if (!status && (owner->use_users || owner->ready_users || owner->payload_transition_active ||
 +                    owner->payload_held || owner->payload_uncertain || owner->payload ||
 +                    (owner->payload_serial && !owner->payload_returned))) {
 +        status = -EBUSY;
@@ -109872,6 +109954,183 @@ index 0000000000000000000000000000000000000000..4331b601a12e713b9754f90d4b75c110
 +}
 +#endif
 +
++int qemu_crucible_startup_source_ready_delivery_issuing_v1(
++    QemuCrucibleReadyDeliveryHandoff *handoff,
++    QemuCrucibleFingerprintMainReadyFrame *frame, void *execution,
++    QemuCrucibleFingerprintIntentObservation *observation)
++{
++#ifdef CONFIG_LINUX
++    /* Exact singleton authentication precedes nominated pointer reads. The
++     * caller holds commands.mutex; this reciprocal check takes no Source lock. */
++    if (handoff != &startup_source.ready_delivery ||
++        observation != &startup_source.intent_observation ||
++        !handoff->held || !handoff->transition_active ||
++        !observation->held || !observation->callback_invoking ||
++        observation->frame != frame || observation->execution != execution ||
++        handoff->execution != execution || handoff->process != getpid() ||
++        !qemu_thread_is_self(&handoff->thread) ||
++        observation->receive != handoff->receive ||
++        observation->receive_serial != handoff->receive_serial) {
++        return -ESTALE;
++    }
++    return 0;
++#else
++    return -ENOTSUP;
++#endif
++}
++
++#ifdef CONFIG_LINUX
++static int ready_delivery_capture_locked(QemuCrucibleReceivedDeliveryOwner *delivery)
++{
++    QemuCrucibleFingerprintIntentObservation *observation = &startup_source.intent_observation;
++    QemuCrucibleReadyDeliveryHandoff *handoff = &startup_source.ready_delivery;
++    QemuCrucibleCommandReceiveOwner *receive = delivery->receive;
++    int status;
++
++    if (!observation->held || !observation->callback_invoking ||
++        observation->receive != receive || observation->receive_serial != receive->serial) {
++        return 0;
++    }
++    if (delivery->ready_closed || handoff->held || delivery->ready_users ||
++        receive->creation_active || receive->invocation_active || !receive->invocation_returned ||
++        receive->progress.request_received != 1 || !delivery->payload_held ||
++        !delivery->payload || !delivery->payload_serial ||
++        delivery->member->component != observation->component ||
++        observation->component->userdata != delivery->payload_userdata) {
++        return -EBUSY;
++    }
++    status = qemu_crucible_fingerprint_ready_snapshot_holder_current_v1(
++        observation->frame, observation->holder);
++    if (status) {
++        return status;
++    }
++    if (*observation->holder != observation) {
++        return -ESTALE;
++    }
++    /* This physical owner retains every actual local dependency before the
++     * execution pin's independent post. Negative module status is irrelevant
++     * to the custody of a genuinely born canonical payload pair. */
++    *handoff = (QemuCrucibleReadyDeliveryHandoff) {
++        .canonical_owner = handoff,
++        .execution = observation->execution,
++        .delivery = delivery,
++        .receive = receive,
++        .member = delivery->member,
++        .child = delivery->member->child,
++        .lender = delivery->lender,
++        .payload_holder = &delivery->payload,
++        .payload = delivery->payload,
++        .thread = delivery->thread,
++        .delivery_serial = delivery->serial,
++        .receive_serial = receive->serial,
++        .payload_serial = delivery->payload_serial,
++        .process = delivery->process,
++        .attempted = true,
++        .held = true,
++        .transition_active = true,
++    };
++    delivery->ready_users++;
++    status = qemu_crucible_fingerprint_ready_delivery_retain_v1(
++        observation->frame, observation->execution, observation, handoff,
++        &handoff->execution_holder);
++    handoff->capture_status = status;
++    if ((!status && !handoff->execution_holder) ||
++        (handoff->execution_holder && *handoff->execution_holder != handoff)) {
++        handoff->uncertain = true;
++        if (!status) {
++            status = handoff->capture_status = -EPROTO;
++        }
++    }
++    handoff->transition_active = false;
++    return status;
++}
++#endif
++
++int qemu_plugin_crucible_startup_source_received_delivery_ready_return_v1(
++    qemu_plugin_id_t id, QemuCrucibleReceivedDeliveryOwner *delivery,
++    uint64_t serial, uint32_t *locally_returned)
++{
++#ifdef CONFIG_LINUX
++    QemuCrucibleCommandConsumerRegistry *commands = &startup_source.commands;
++    QemuCrucibleReadyDeliveryHandoff *handoff = &startup_source.ready_delivery;
++    int status = command_registry_identity(id);
++
++    if (status || !locally_returned ||
++        (uintptr_t)locally_returned % _Alignof(uint32_t) ||
++        (uintptr_t)locally_returned > UINTPTR_MAX - sizeof(*locally_returned)) {
++        return status ? status : -EINVAL;
++    }
++    qemu_mutex_lock(&commands->mutex);
++    if (callback_child_output_conflicts_locked(locally_returned, sizeof(*locally_returned))) {
++        status = -EINVAL;
++    } else {
++        status = received_delivery_identity_locked(delivery, serial);
++    }
++    if (status) {
++        qemu_mutex_unlock(&commands->mutex);
++        return status;
++    }
++    *locally_returned = 0;
++    if (delivery->payload_transition_active || delivery->use_users ||
++        (handoff->held && (handoff->delivery != delivery || handoff->delivery_serial != serial))) {
++        status = -EBUSY;
++    } else if (delivery->ready_closed) {
++        *locally_returned = 1;
++        status = handoff->attempted && handoff->delivery == delivery &&
++            handoff->delivery_serial == serial ? handoff->return_first : 0;
++    } else if (!delivery->ready_users) {
++        /* Absence is terminal for this actual delivery, including component
++         * callers that never entered Ready. A later callback cannot reissue. */
++        if (handoff->held) {
++            status = -ESTALE;
++        } else {
++            delivery->ready_closed = true;
++            *locally_returned = 1;
++        }
++    } else if (handoff->canonical_owner != handoff || !handoff->held ||
++               handoff->transition_active || handoff->uncertain ||
++               handoff->process != getpid() || !qemu_thread_is_self(&handoff->thread) ||
++               handoff->receive != delivery->receive ||
++               handoff->receive_serial != delivery->receive_serial ||
++               handoff->member != delivery->member || handoff->child != delivery->member->child ||
++               handoff->lender != delivery->lender ||
++               handoff->payload_holder != &delivery->payload ||
++               handoff->payload != delivery->payload || handoff->payload_serial != delivery->payload_serial ||
++               delivery->ready_users != 1) {
++        status = -EBUSY;
++    } else {
++        handoff->transition_active = true;
++        status = handoff->execution_holder ?
++            qemu_crucible_fingerprint_ready_delivery_identity_return_v1(
++                handoff->execution, handoff->execution_holder, handoff) : 0;
++        if (!status && handoff->execution_holder && *handoff->execution_holder) {
++            /* A scalar zero cannot conceal an unconsumed actual dependency. */
++            status = -EPROTO;
++            handoff->uncertain = true;
++        }
++        if (!status) {
++            handoff->execution_holder = NULL;
++            handoff->held = false;
++            handoff->returned = true;
++            delivery->ready_users--;
++            delivery->ready_closed = true;
++            *locally_returned = 1;
++            /* Record actual consumption before independent physical post. */
++            status = received_delivery_identity_locked(delivery, serial);
++        }
++        handoff->transition_active = false;
++        if (status && !handoff->return_first) {
++            handoff->return_first = status;
++        }
++        status = handoff->return_first;
++    }
++    qemu_mutex_unlock(&commands->mutex);
++    return status;
++#else
++    return -ENOTSUP;
++#endif
++}
++
 +int qemu_plugin_crucible_startup_source_received_delivery_payload_claim_v1(
 +    qemu_plugin_id_t id, QemuCrucibleReceivedDeliveryOwner *owner, uint64_t serial)
 +{
@@ -109879,6 +110138,7 @@ index 0000000000000000000000000000000000000000..4331b601a12e713b9754f90d4b75c110
 +    QemuCrucibleCommandConsumerRegistry *commands = &startup_source.commands;
 +    int status = command_registry_identity(id);
 +    int callback_status;
++    int ready_status;
 +
 +    if (status || bql_locked() || qemu_in_coroutine()) {
 +        return status ? status : -EPERM;
@@ -109923,7 +110183,11 @@ index 0000000000000000000000000000000000000000..4331b601a12e713b9754f90d4b75c110
 +    }
 +    /* Independently authenticate the same actual retained chain after saving
 +     * every callback output, including a claimed pair followed by failure. */
++    ready_status = owner->payload_held ? ready_delivery_capture_locked(owner) : 0;
 +    owner->payload_claim_post = received_delivery_identity_locked(owner, serial);
++    if (!owner->payload_claim_post) {
++        owner->payload_claim_post = ready_status;
++    }
 +    owner->payload_transition_active = false;
 +    status = received_delivery_payload_result(callback_status,
 +        owner->payload_claim_validation, owner->payload_claim_post);
@@ -109950,7 +110214,7 @@ index 0000000000000000000000000000000000000000..4331b601a12e713b9754f90d4b75c110
 +    }
 +    qemu_mutex_lock(&commands->mutex);
 +    status = received_delivery_identity_locked(owner, serial);
-+    if (!status && (owner->use_users || owner->payload_transition_active ||
++    if (!status && (owner->use_users || owner->ready_users || owner->payload_transition_active ||
 +                    owner->payload_uncertain)) {
 +        status = -EBUSY;
 +    }
@@ -180393,10 +180657,10 @@ index 0000000000000000000000000000000000000000..f6273687b5f5f3bc2e4ceb67c140038d
 +#include "crucible-parent-park-metadata.inc.h"
 diff --git a/plugins/crucible-startup-source.h b/plugins/crucible-startup-source.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..2e44d130a151c18417bcf27002b323c8869aedb8
+index 0000000000000000000000000000000000000000..669ad7eca5765dd773aa1de4736fd35c110105a4
 --- /dev/null
 +++ b/plugins/crucible-startup-source.h
-@@ -0,0 +1,2415 @@
+@@ -0,0 +1,2453 @@
 +/*
 + * Fixed process-private control for the original installer startup source
 + *
@@ -181431,6 +181695,8 @@ index 0000000000000000000000000000000000000000..2e44d130a151c18417bcf27002b323c8
 +    uint64_t serial;
 +    uint64_t receive_serial;
 +    uint64_t use_users;
++    uint64_t ready_users;
++    bool ready_closed;
 +    QemuCrucibleModuleRequestPayload *payload;
 +    uint64_t payload_serial;
 +    QemuCrucibleModuleRequestPayloadClaim payload_claim;
@@ -181475,6 +181741,34 @@ index 0000000000000000000000000000000000000000..2e44d130a151c18417bcf27002b323c8
 +
 +
 +
++/* One same-thread physical handoff. The actual Ready callback nominates its
++ * received journal; the execution carrier retains this exact Source interior
++ * before the transient observation closes. No Main/CPU/action use is issued. */
++typedef struct QemuCrucibleReadyDeliveryHandoff {
++    struct QemuCrucibleReadyDeliveryHandoff *canonical_owner;
++    struct QemuCrucibleReadyDeliveryHandoff **execution_holder;
++    QemuCrucibleFingerprintMainExecution *execution;
++    QemuCrucibleReceivedDeliveryOwner *delivery;
++    QemuCrucibleCommandReceiveOwner *receive;
++    QemuCrucibleCommandConsumerMember *member;
++    QemuCrucibleCallbackChildStorage *child;
++    QemuCrucibleStandingPurposeOwner *lender;
++    QemuCrucibleModuleRequestPayload **payload_holder;
++    QemuCrucibleModuleRequestPayload *payload;
++    QemuThread thread;
++    uint64_t delivery_serial;
++    uint64_t receive_serial;
++    uint64_t payload_serial;
++    pid_t process;
++    int capture_status;
++    int return_first;
++    bool attempted;
++    bool held;
++    bool transition_active;
++    bool uncertain;
++    bool returned;
++} QemuCrucibleReadyDeliveryHandoff;
++
 +/* A private factual observation, not a producing operation or immutable
 + * command-frontier owner. Its copied tuple grants no read, Root, clock or ACK.
 + * The real mapped consumer and action-purpose borrower remain distinct loans. */
@@ -181484,11 +181778,18 @@ index 0000000000000000000000000000000000000000..2e44d130a151c18417bcf27002b323c8
 +    QemuCrucibleFingerprintMainReadyFrame *frame;
 +    struct QemuCrucibleFingerprintIntentObservation **holder;
 +    struct qemu_plugin_crucible_fingerprint_intent_facts_v1 facts;
++    QemuCrucibleCommandReceiveOwner *receive;
++    uint64_t receive_serial;
 +    pid_t process;
 +    int callback_status;
 +    bool held;
 +    bool callback_invoking;
 +} QemuCrucibleFingerprintIntentObservation;
++
++int qemu_crucible_startup_source_ready_delivery_issuing_v1(
++    QemuCrucibleReadyDeliveryHandoff *handoff,
++    QemuCrucibleFingerprintMainReadyFrame *frame, void *execution,
++    QemuCrucibleFingerprintIntentObservation *observation);
 +
 +int qemu_crucible_startup_source_main_ready_dispatch_v1(
 +    QemuCrucibleFingerprintMainReadyFrame *frame, void *execution);
@@ -182359,6 +182660,7 @@ index 0000000000000000000000000000000000000000..2e44d130a151c18417bcf27002b323c8
 +    uint64_t command_receive_serial;
 +    QemuCrucibleReceivedDeliveryOwner received_delivery;
 +    QemuCrucibleReceivedDeliveryUse received_delivery_use;
++    QemuCrucibleReadyDeliveryHandoff ready_delivery;
 +    uint64_t received_delivery_serial;
 +    uint64_t received_delivery_use_serial;
 +    QemuCrucibleFingerprintWakeKeeper wake_keeper;
@@ -193703,7 +194005,7 @@ index f8e17dcf1ce91d8aefb8d82cafd3196a4fd9edf6..f24121d2d3c66f1436ba73c976a7bd76
      return true;
 diff --git a/scripts/extract-crucible-preexec-purpose.py b/scripts/extract-crucible-preexec-purpose.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..5861fdffbaa84bf4ff83c652b88be50239878059
+index 0000000000000000000000000000000000000000..5fdf97421cf650c9f0b08831a2bb18c04b5c671b
 --- /dev/null
 +++ b/scripts/extract-crucible-preexec-purpose.py
 @@ -0,0 +1,87 @@
@@ -193729,9 +194031,9 @@ index 0000000000000000000000000000000000000000..5861fdffbaa84bf4ff83c652b88be502
 +    'include/qemu/crucible-device-workspace.h':
 +        '5710b0cc44f68508cecd4186cca2e10c6aa32eceed1b81f2250ca9faf9028a4b',
 +    'include/plugins/qemu-plugin.h':
-+        '65dd359df406ec9e3a33b70728a22b13be8240540c632a96d9d7d2289baec74a',
++        '144ad77812638d7d75038489c05c6dfb0c67b4b39fbf64f4caaffaee401f415a',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'a742fd9efc76f244440151a203cc80d8bffdcb581458070236bc52e2ebddbe65',
++        'dbeb6b32247771f11507b3e763e55d96094b4ad62be6fee95c3fe5cdf3a8d7d8',
 +}
 +
 +PURPOSE_FUNCTIONS = (
@@ -198389,10 +198691,10 @@ index 0000000000000000000000000000000000000000..6c2ddfd2582fc5bab36cbaeca0ed2244
 +}
 diff --git a/system/crucible-hot-fork-coordinator.c b/system/crucible-hot-fork-coordinator.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..f001ac07a5ae23ad5a51e9995fc7d2809c4e670c
+index 0000000000000000000000000000000000000000..d3ce18e24dafb43c506d1f6cacf90a647828e39f
 --- /dev/null
 +++ b/system/crucible-hot-fork-coordinator.c
-@@ -0,0 +1,1715 @@
+@@ -0,0 +1,1770 @@
 +/*
 + * Crucible main-loop hot-fork coordinator.
 + *
@@ -198481,6 +198783,7 @@ index 0000000000000000000000000000000000000000..f001ac07a5ae23ad5a51e9995fc7d280
 +    QemuCrucibleFingerprintWakeKeeper *keeper;
 +    QemuCrucibleFingerprintMainExecution **owner_field;
 +    QemuCrucibleFingerprintIntentObservation *snapshot;
++    QemuCrucibleReadyDeliveryHandoff *ready_delivery;
 +    struct QemuCrucibleResidentRootRequest *request;
 +    struct QemuCrucibleFingerprintOperation *operation;
 +    struct QemuCrucibleFingerprintBackgroundOwner *background;
@@ -198732,6 +199035,60 @@ index 0000000000000000000000000000000000000000..f001ac07a5ae23ad5a51e9995fc7d280
 +    return qemu_crucible_fingerprint_main_execution_identity_current_v1(execution);
 +}
 +
++int qemu_crucible_fingerprint_ready_delivery_retain_v1(
++    QemuCrucibleFingerprintMainReadyFrame *frame, void *candidate,
++    QemuCrucibleFingerprintIntentObservation *observation,
++    QemuCrucibleReadyDeliveryHandoff *handoff,
++    QemuCrucibleReadyDeliveryHandoff ***holder)
++{
++    QemuCrucibleFingerprintMainExecution *execution = &fingerprint_main_execution;
++    int status;
++
++    if (candidate != execution || !holder || *holder) {
++        return -ESTALE;
++    }
++    status = qemu_crucible_fingerprint_ready_snapshot_holder_current_v1(
++        frame, &execution->snapshot);
++    if (status) {
++        return status;
++    }
++    if (!observation || execution->snapshot != observation || execution->ready_delivery) {
++        return -EBUSY;
++    }
++    status = qemu_crucible_startup_source_ready_delivery_issuing_v1(
++        handoff, frame, execution, observation);
++    if (status) {
++        return status;
++    }
++    /* This exact physical pin is born before independent post. It survives
++     * snapshot identity return and the main loop's temporary Ready marker. */
++    execution->ready_delivery = handoff;
++    *holder = &execution->ready_delivery;
++    return qemu_crucible_fingerprint_main_execution_identity_current_v1(execution);
++}
++
++int qemu_crucible_fingerprint_ready_delivery_identity_return_v1(
++    void *candidate, QemuCrucibleReadyDeliveryHandoff **holder,
++    QemuCrucibleReadyDeliveryHandoff *handoff)
++{
++    QemuCrucibleFingerprintMainExecution *execution = &fingerprint_main_execution;
++    int status;
++
++    if (candidate != execution || holder != &execution->ready_delivery) {
++        return -ESTALE;
++    }
++    status = qemu_crucible_fingerprint_main_execution_identity_current_v1(execution);
++    if (status) {
++        return status;
++    }
++    if (!handoff || *holder != handoff) {
++        return -ESTALE;
++    }
++    *holder = NULL;
++    /* No callback or fallible post follows this physical consumption. */
++    return 0;
++}
++
 +int qemu_crucible_fingerprint_main_ready_snapshot_returned_current_v1(
 +    QemuCrucibleFingerprintMainReadyFrame *frame,
 +    QemuCrucibleFingerprintWakeWatcher *watcher, uint64_t registration_serial)
@@ -198816,7 +199173,7 @@ index 0000000000000000000000000000000000000000..f001ac07a5ae23ad5a51e9995fc7d280
 +    if (execution->issuing || execution->keeper != keeper ||
 +        execution->owner_field != owner_field || !owner_field || execution->registered ||
 +        execution->ready.entered || execution->snapshot_cycle_active ||
-+        execution->snapshot || execution->request ||
++        execution->snapshot || execution->ready_delivery || execution->request ||
 +        execution->operation || execution->background ||
 +#ifdef CONFIG_POSIX
 +        execution->cpus.active || execution->writers.active ||
@@ -198847,7 +199204,7 @@ index 0000000000000000000000000000000000000000..f001ac07a5ae23ad5a51e9995fc7d280
 +    }
 +    if (owner_field != execution->owner_field || execution->issuing ||
 +        execution->ready.entered || execution->snapshot_cycle_active ||
-+        execution->snapshot || execution->request ||
++        execution->snapshot || execution->ready_delivery || execution->request ||
 +        execution->operation || execution->background
 +#ifdef CONFIG_POSIX
 +        || execution->cpus.active || execution->writers.active
@@ -237817,7 +238174,7 @@ index 0000000000000000000000000000000000000000..2617c754aa1ea8587f6eaabe5a8bdf68
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-placement.py b/tests/unit/extract-crucible-checkpoint-placement.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..778a7f878f36268a20926560c815ebd972351d3c
+index 0000000000000000000000000000000000000000..7313ffec86835afbe576ad12be68b3b25ac21a8d
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-placement.py
 @@ -0,0 +1,100 @@
@@ -237831,11 +238188,11 @@ index 0000000000000000000000000000000000000000..778a7f878f36268a20926560c815ebd9
 +
 +SOURCE_HASHES = {
 +    'system/crucible-hot-fork-coordinator.c':
-+        'c782e9f0e3410ea7fcaea903772a5bdf799225c0e4cb340f39656d5f6657909c',
++        'a8db45cdd7a6aebebe44990565c08eed6a833a05ea7f77958ffa12bd2017b65b',
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'a742fd9efc76f244440151a203cc80d8bffdcb581458070236bc52e2ebddbe65',
++        'dbeb6b32247771f11507b3e763e55d96094b4ad62be6fee95c3fe5cdf3a8d7d8',
 +}
 +
 +FUNCTIONS = (
@@ -237923,7 +238280,7 @@ index 0000000000000000000000000000000000000000..778a7f878f36268a20926560c815ebd9
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-receiving.py b/tests/unit/extract-crucible-checkpoint-receiving.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..85c8a6ac63dbc226a5249aea065ec7cf6d382c04
+index 0000000000000000000000000000000000000000..780f488e7150893b8750a27238b64d45a4759e78
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-receiving.py
 @@ -0,0 +1,241 @@
@@ -237946,15 +238303,15 @@ index 0000000000000000000000000000000000000000..85c8a6ac63dbc226a5249aea065ec7cf
 +    'plugins/crucible-startup-source.c':
 +        'f607cee9c94e9483e426d6f75520e183783c8a6309745bd4761e5ce09193552d',
 +    'plugins/crucible-startup-source.h':
-+        'd63a029518e666192150eba62340e6d9ea72dbaee65abbae3ff3c05e35ea7345',
++        'e3f0808346d12ae267879579dd6182806ad2a01b9a79052b7b4fe6382abe6030',
 +    'include/plugins/qemu-plugin.h':
-+        '65dd359df406ec9e3a33b70728a22b13be8240540c632a96d9d7d2289baec74a',
++        '144ad77812638d7d75038489c05c6dfb0c67b4b39fbf64f4caaffaee401f415a',
 +    'system/crucible-hot-fork-coordinator.c':
-+        'c782e9f0e3410ea7fcaea903772a5bdf799225c0e4cb340f39656d5f6657909c',
++        'a8db45cdd7a6aebebe44990565c08eed6a833a05ea7f77958ffa12bd2017b65b',
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'a742fd9efc76f244440151a203cc80d8bffdcb581458070236bc52e2ebddbe65',
++        'dbeb6b32247771f11507b3e763e55d96094b4ad62be6fee95c3fe5cdf3a8d7d8',
 +}
 +
 +FUNCTIONS = (
@@ -238170,7 +238527,7 @@ index 0000000000000000000000000000000000000000..85c8a6ac63dbc226a5249aea065ec7cf
 +    main()
 diff --git a/tests/unit/extract-crucible-monitor-fd-loans.py b/tests/unit/extract-crucible-monitor-fd-loans.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..98c1cbb40d40afe3fd743ea5994b8949856fb575
+index 0000000000000000000000000000000000000000..98f1b56d26031c82262e98d389a15fa1fd0aa065
 --- /dev/null
 +++ b/tests/unit/extract-crucible-monitor-fd-loans.py
 @@ -0,0 +1,112 @@
@@ -238194,7 +238551,7 @@ index 0000000000000000000000000000000000000000..98c1cbb40d40afe3fd743ea5994b8949
 +    'monitor/monitor.c':
 +        '6773b71937e9c0058143070560f3ce3bb114a966d6d4224c7a60d8862fb8d05b',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'a742fd9efc76f244440151a203cc80d8bffdcb581458070236bc52e2ebddbe65',
++        'dbeb6b32247771f11507b3e763e55d96094b4ad62be6fee95c3fe5cdf3a8d7d8',
 +}
 +
 +FUNCTIONS = (
@@ -238288,7 +238645,7 @@ index 0000000000000000000000000000000000000000..98c1cbb40d40afe3fd743ea5994b8949
 +    main()
 diff --git a/tests/unit/extract-crucible-preexec-setup.py b/tests/unit/extract-crucible-preexec-setup.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..0ce15cdfdf3056b3bc1bf709ff99708dc1524a01
+index 0000000000000000000000000000000000000000..27b2754dd58a21ea344aaaee9f85159a56c8b83e
 --- /dev/null
 +++ b/tests/unit/extract-crucible-preexec-setup.py
 @@ -0,0 +1,173 @@
@@ -238323,15 +238680,15 @@ index 0000000000000000000000000000000000000000..0ce15cdfdf3056b3bc1bf709ff99708d
 +    'include/qemu/crucible-device-workspace.h':
 +        '5710b0cc44f68508cecd4186cca2e10c6aa32eceed1b81f2250ca9faf9028a4b',
 +    'include/plugins/qemu-plugin.h':
-+        '65dd359df406ec9e3a33b70728a22b13be8240540c632a96d9d7d2289baec74a',
++        '144ad77812638d7d75038489c05c6dfb0c67b4b39fbf64f4caaffaee401f415a',
 +    'plugins/crucible-process-purpose.c':
 +        '514f3d0e678d947fb35ad0ab92f808f1f2d06dbcdddefac01d0624c7a6ee9d23',
 +    'plugins/crucible-device-workspace.c':
 +        '3dd77a2ad8d4688fb57ccc94618763485d36b9460e3461ac5ff4bc6fa25c558d',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'a742fd9efc76f244440151a203cc80d8bffdcb581458070236bc52e2ebddbe65',
++        'dbeb6b32247771f11507b3e763e55d96094b4ad62be6fee95c3fe5cdf3a8d7d8',
 +    'scripts/extract-crucible-preexec-purpose.py':
-+        '6d57b31c2b8107e3ada3d4d7daea4831485c18c6289bf7601111190a606d081a',
++        '8aeab06c2edd2330300df5f3484b71028d54951f2b53c5f4ebfa05bce6cac0f0',
 +    'meson.build':
 +        '7eef2c0d1494dfdeed66f56c77f092382cd63d3fd5ad7c0b7c7ac85ca599e39e',
 +    'tests/unit/test-crucible-preexec-setup.c':
@@ -238467,7 +238824,7 @@ index 0000000000000000000000000000000000000000..0ce15cdfdf3056b3bc1bf709ff99708d
 +        main()
 diff --git a/tests/unit/extract-crucible-startup-source-controls.py b/tests/unit/extract-crucible-startup-source-controls.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..1d0b085a561ed67c20a73ed94dc18ad9f1aef811
+index 0000000000000000000000000000000000000000..335bb1a3fde5107ec94ab2436bea5a7714d75358
 --- /dev/null
 +++ b/tests/unit/extract-crucible-startup-source-controls.py
 @@ -0,0 +1,1082 @@
@@ -238569,17 +238926,17 @@ index 0000000000000000000000000000000000000000..1d0b085a561ed67c20a73ed94dc18ad9
 +    'monitor/qmp-cmds.c':
 +        '0b2c2b17f0a87bdf5d70ebae885e07b1c00d2a6944b58ed105f5ca1e5d2c6649',
 +    'system/crucible-hot-fork-coordinator.c':
-+        'c782e9f0e3410ea7fcaea903772a5bdf799225c0e4cb340f39656d5f6657909c',
++        'a8db45cdd7a6aebebe44990565c08eed6a833a05ea7f77958ffa12bd2017b65b',
 +    'plugins/crucible-startup-source.c':
 +        'f607cee9c94e9483e426d6f75520e183783c8a6309745bd4761e5ce09193552d',
 +    'plugins/crucible-startup-source.h':
-+        'd63a029518e666192150eba62340e6d9ea72dbaee65abbae3ff3c05e35ea7345',
++        'e3f0808346d12ae267879579dd6182806ad2a01b9a79052b7b4fe6382abe6030',
 +    'plugins/crucible-device-workspace.c':
 +        '3dd77a2ad8d4688fb57ccc94618763485d36b9460e3461ac5ff4bc6fa25c558d',
 +    'include/qemu/crucible-device-workspace.h':
 +        '5710b0cc44f68508cecd4186cca2e10c6aa32eceed1b81f2250ca9faf9028a4b',
 +    'include/plugins/qemu-plugin.h':
-+        '65dd359df406ec9e3a33b70728a22b13be8240540c632a96d9d7d2289baec74a',
++        '144ad77812638d7d75038489c05c6dfb0c67b4b39fbf64f4caaffaee401f415a',
 +    'plugins/crucible-command-consumer.inc.h':
 +        '90e66020ed3cd06206739f0921207a2ba0a35ccdf2144b6c829dd77c5f44fd2f',
 +    'plugins/crucible-callback-owner.inc.h':
@@ -238649,7 +239006,7 @@ index 0000000000000000000000000000000000000000..1d0b085a561ed67c20a73ed94dc18ad9
 +    'include/system/crucible-observation-writer.h':
 +        'e5b6a66f2a44f5840c5c36a558ffffa12683e5c1a73540e2c0049c3b1a1d20fb',
 +    'include/system/crucible-hot-fork-coordinator.h':
-+        'c8fcfdf24406c55aab0bf144329171b8cd9c4888dfa9a243089f381928886934',
++        '2cb14693e542b63121cb803dd11a5a6b9ab2387967c591c01e2849298028741f',
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'include/qemu/thread.h':
@@ -238691,7 +239048,7 @@ index 0000000000000000000000000000000000000000..1d0b085a561ed67c20a73ed94dc18ad9
 +    'plugins/crucible-command-membership.inc.h':
 +        '844256b1c4995f8542288bee93b170ec2a7d86daabbf424c26d7e86c5015888a',
 +    'plugins/crucible-command-receive.inc.h':
-+        'bc163ac97d47c3c7ead04fedcaec9c366030fc13cd71a734caea1d6f3cba711a',
++        '33aa3fd0d7635ecfca4e9986f6e9ee50e60525c472d508e8a473faed68a7d8c0',
 +}
 +
 +
@@ -254848,10 +255205,10 @@ index 0000000000000000000000000000000000000000..a51c071fa04a4467522f0233d8f00550
 +    main()
 diff --git a/tests/unit/test-crucible-control-delivery.py b/tests/unit/test-crucible-control-delivery.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..83895f0bcc6b26acee47ff79aecc9491da1ac889
+index 0000000000000000000000000000000000000000..b141f6aebda7b372d754c5ecb3d9ce9373d6c24e
 --- /dev/null
 +++ b/tests/unit/test-crucible-control-delivery.py
-@@ -0,0 +1,1072 @@
+@@ -0,0 +1,1394 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Check the actual delivery witness and registered-callback wrapper bodies.
 +
@@ -255141,6 +255498,243 @@ index 0000000000000000000000000000000000000000..83895f0bcc6b26acee47ff79aecc9491
 +"""
 +
 +
++READY_DISABLED_PROVIDERS = r"""
++/* Existing isolated components never enter Ready. */
++int qemu_crucible_fingerprint_ready_snapshot_holder_current_v1(
++    QemuCrucibleFingerprintMainReadyFrame *frame,
++    QemuCrucibleFingerprintIntentObservation **holder) { return -EPERM; }
++int qemu_crucible_fingerprint_ready_delivery_retain_v1(
++    QemuCrucibleFingerprintMainReadyFrame *frame, void *execution,
++    QemuCrucibleFingerprintIntentObservation *observation,
++    QemuCrucibleReadyDeliveryHandoff *handoff,
++    QemuCrucibleReadyDeliveryHandoff ***holder) { return -EPERM; }
++int qemu_crucible_fingerprint_ready_delivery_identity_return_v1(
++    void *execution, QemuCrucibleReadyDeliveryHandoff **holder,
++    QemuCrucibleReadyDeliveryHandoff *handoff) { return -EPERM; }
++"""
++
++READY_PROVIDERS = r"""
++/* Main-loop entry, installed wake/registration and standing are modeled inputs.
++ * Literal Ready dispatch, actual receive/claim, execution-local holder and both
++ * Source/execution return bodies run below. This does not launch QEMU/Rust or
++ * issue Main/CPU/action authority, publisher membership, ACK or peer return. */
++#include "system/crucible-hot-fork-coordinator.h"
++static QemuCrucibleFingerprintMainReadyFrame *crucible_fingerprint_ready_frame;
++static int execution_failure;
++static bool ready_capture_post_failure;
++static unsigned int snapshot_enters, snapshot_leaves;
++static bool replay_mutex_locked(void) { return false; }
++static int fingerprint_main_creator_current(void)
++{
++    int status = execution_failure;
++
++    if (ready_capture_post_failure && startup_source.ready_delivery.execution_holder) {
++        ready_capture_post_failure = false;
++        return -EIO;
++    }
++    execution_failure = 0;
++    return status;
++}
++int qemu_crucible_startup_source_wake_execution_instance_current_v1(
++    QemuCrucibleFingerprintWakeKeeper *keeper,
++    QemuCrucibleFingerprintMainExecution *execution,
++    QemuCrucibleFingerprintMainExecution **holder)
++{
++    return keeper == &startup_source.wake_keeper && keeper->execution == execution &&
++        keeper->execution_held && keeper->execution_holder == holder && *holder == execution ? 0 : -ESTALE;
++}
++int qemu_crucible_startup_source_control_component_current_v1(
++    QemuCrucibleSourceControlBinding *component,
++    qemu_plugin_vcpu_idle_resume_cb_t callback, void *userdata)
++{
++    return source_control_component_identity(component);
++}
++static int fingerprint_completion_identity(QemuCrucibleFingerprintCompletionBinding *completion)
++{
++    return completion == &startup_source.fingerprint_completion ? 0 : -ESTALE;
++}
++int qemu_plugin_crucible_wake_watcher_snapshot_enter_v1(
++    QemuCrucibleFingerprintWakeWatcher *watcher,
++    QemuCrucibleFingerprintMainReadyFrame *frame, uint64_t serial)
++{
++    snapshot_enters++;
++    return 0;
++}
++int qemu_plugin_crucible_wake_watcher_snapshot_leave_v1(
++    QemuCrucibleFingerprintWakeWatcher *watcher,
++    QemuCrucibleFingerprintMainReadyFrame *frame, uint64_t serial)
++{
++    snapshot_leaves++;
++    return 0;
++}
++int qemu_plugin_crucible_wake_watcher_execution_holder_current_v1(
++    QemuCrucibleFingerprintWakeWatcher *watcher,
++    QemuCrucibleFingerprintMainExecution **holder) { return 0; }
++"""
++
++READY_CHECKS = r"""
++static bool ready_absence, ready_unentered, ready_post_failure;
++static int ready_claim_status;
++static QemuCrucibleFingerprintMainExecution *execution_owner;
++
++static int ready_snapshot(struct qemu_plugin_crucible_fingerprint_intent_facts_v1 *facts,
++                          void *userdata)
++{
++    uint32_t returned = 9;
++
++    receive_request();
++    create_delivery();
++    g_assert_true(startup_source.intent_observation.receive == receive);
++    g_assert_cmpuint(startup_source.intent_observation.receive_serial, ==, receive_serial);
++    if (ready_absence) {
++        g_assert_cmpint(DELIVERY(ready_return)(1, creation, delivery_serial, &returned), ==, 0);
++        g_assert_cmpuint(returned, ==, 1);
++        g_assert_true(creation->ready_closed);
++    }
++    if (ready_unentered) {
++        fingerprint_main_execution.ready.entered = false;
++    }
++    if (ready_post_failure) {
++        ready_capture_post_failure = true;
++    }
++    ready_claim_status = DELIVERY(payload_claim)(1, creation, delivery_serial);
++    if (ready_unentered) {
++        fingerprint_main_execution.ready.entered = true;
++    }
++    return reader_failure ? reader_failure : ready_claim_status;
++}
++
++int main(int argc, char **argv)
++{
++    const char *scenario = argc > 1 ? argv[1] : "ready-healthy";
++    QemuCrucibleFingerprintMainExecution *execution = &fingerprint_main_execution;
++    QemuCrucibleReadyDeliveryHandoff *handoff = &startup_source.ready_delivery;
++    QemuCrucibleReadyDeliveryHandoff *copy;
++    uint32_t returned = 9;
++    int status;
++
++    prepare_payload(false);
++    ready_absence = !strcmp(scenario, "ready-absence");
++    ready_unentered = !strcmp(scenario, "ready-unentered");
++    ready_post_failure = !strcmp(scenario, "ready-capture-post");
++    reader_failure = !strcmp(scenario, "ready-reader-negative") ? -EIO : 0;
++    claim_failure = !strcmp(scenario, "ready-claim-negative") ? -ECANCELED : 0;
++    startup_source.control_callback.snapshot_callback = ready_snapshot;
++    startup_source.control_callback.completion = &startup_source.fingerprint_completion;
++    *execution = (QemuCrucibleFingerprintMainExecution) {
++        .ready = { .process = getpid(), .entered = true, .dispatch = fingerprint_main_ready_dispatch },
++        .keeper = &startup_source.wake_keeper,
++        .owner_field = &execution_owner,
++        .registration_serial = 1,
++        .held = true,
++        .registered = true,
++    };
++    qemu_thread_get_self(&execution->ready.thread);
++    execution_owner = execution;
++    startup_source.wake_keeper.execution = execution;
++    startup_source.wake_keeper.execution_holder = &execution_owner;
++    startup_source.wake_keeper.execution_held = true;
++    crucible_fingerprint_ready_frame = &execution->ready;
++    fingerprint_main_ready_dispatch(&execution->ready, 0, 0);
++    execution->ready.entered = false;
++    g_assert_cmpuint(snapshot_enters, ==, 1);
++    g_assert_cmpuint(snapshot_leaves, ==, 1);
++    g_assert_null(execution->snapshot);
++    g_assert_false(startup_source.intent_observation.held);
++    g_assert_false(execution->snapshot_cycle_active);
++    g_assert_cmpint(ready_claim_status, ==, claim_failure ? claim_failure :
++                    ready_absence ? -EBUSY : ready_unentered ? -EPERM : ready_post_failure ? -EIO : 0);
++    g_assert_true(actual_child.owned);
++    g_assert_true(actual_child.holder == &creation->payload);
++    if (ready_absence || ready_unentered) {
++        g_assert_false(handoff->held);
++        g_assert_null(execution->ready_delivery);
++        g_assert_cmpuint(creation->ready_users, ==, 0);
++        g_assert_cmpint(DELIVERY(ready_return)(1, creation, delivery_serial, &returned), ==, 0);
++        g_assert_cmpuint(returned, ==, 1);
++        g_assert_cmpint(DELIVERY(payload_return)(1, creation, delivery_serial), ==, 0);
++        g_assert_cmpint(DELIVERY(identity_return)(1, &creation, delivery_serial), ==, 0);
++        return 0;
++    }
++    g_assert_true(handoff->held);
++    g_assert_true(execution->ready_delivery == handoff);
++    g_assert_true(handoff->execution_holder == &execution->ready_delivery);
++    g_assert_true(handoff->receive == receive);
++    g_assert_true(handoff->delivery == creation);
++    g_assert_true(handoff->member == paid_runtime.member);
++    g_assert_true(handoff->child == &child);
++    g_assert_true(handoff->lender == startup_source.standing.lender);
++    g_assert_true(handoff->payload_holder == actual_child.holder);
++    g_assert_cmpuint(handoff->payload_serial, ==, actual_child.serial);
++    g_assert_cmpuint(creation->ready_users, ==, 1);
++    g_assert_cmpint(DELIVERY(payload_return)(1, creation, delivery_serial), ==, -EBUSY);
++    g_assert_cmpuint(destruction_calls, ==, 0);
++    g_assert_cmpint(DELIVERY(identity_return)(1, &creation, delivery_serial), ==, -EBUSY);
++    g_assert_cmpint(RECEIVE(identity_return)(1, &receive, receive_serial), ==, -EBUSY);
++    /* The registered Ready frame is now absent: a copied/equal address cannot
++     * replace the real handoff or reacquire an entered interval. */
++    copy = handoff;
++    g_assert_cmpint(qemu_crucible_fingerprint_ready_delivery_identity_return_v1(
++        execution, &copy, handoff), ==, -ESTALE);
++    g_assert_true(copy == handoff);
++    g_assert_cmpint(qemu_crucible_fingerprint_ready_snapshot_holder_current_v1(
++        &execution->ready, &execution->snapshot), ==, -EPERM);
++    execution->registered = false;
++    execution->physical_return_recorded = true;
++    g_assert_cmpint(qemu_crucible_fingerprint_main_execution_returned_current_v1(
++        execution, execution->keeper, &execution_owner), ==, -EBUSY);
++    g_assert_cmpint(DELIVERY(ready_return)(1, creation, delivery_serial + 1, &returned), ==, -ESTALE);
++    g_assert_cmpuint(returned, ==, 9);
++    g_assert_cmpint(DELIVERY(ready_return)(1, creation, delivery_serial,
++                                        (void *)&creation->ready_closed), ==, -EINVAL);
++    g_assert_cmpint(DELIVERY(use_begin)(1, creation, delivery_serial, &use, &use_serial), ==, 0);
++    g_assert_cmpint(DELIVERY(ready_return)(1, creation, delivery_serial, &returned), ==, -EBUSY);
++    g_assert_cmpuint(returned, ==, 0);
++    g_assert_nonnull(execution->ready_delivery);
++    g_assert_cmpint(DELIVERY(use_return)(1, &use, use_serial), ==, 0);
++    if (!strcmp(scenario, "ready-return-refused")) {
++        execution_failure = -EAGAIN;
++        g_assert_cmpint(DELIVERY(ready_return)(1, creation, delivery_serial, &returned), ==, -EAGAIN);
++        g_assert_cmpuint(returned, ==, 0);
++        g_assert_true(handoff->held);
++        g_assert_nonnull(execution->ready_delivery);
++    }
++    if (!strcmp(scenario, "ready-return-post")) {
++        ready_return_post_failure = true;
++    }
++    status = DELIVERY(ready_return)(1, creation, delivery_serial, &returned);
++    if (status == -EPROTO) {
++        /* An independently rebuilt missing-consumption defect must remain
++         * contained before the owning healthy assertion rejects that defect. */
++        g_assert_cmpuint(returned, ==, 0);
++        g_assert_true(handoff->held);
++        g_assert_true(handoff->uncertain);
++        g_assert_nonnull(execution->ready_delivery);
++        g_assert_cmpint(DELIVERY(payload_return)(1, creation, delivery_serial), ==, -EBUSY);
++    }
++    g_assert_cmpint(status, ==, !strcmp(scenario, "ready-return-post") ? -EIO :
++                    !strcmp(scenario, "ready-return-refused") ? -EAGAIN : 0);
++    g_assert_cmpuint(returned, ==, 1);
++    g_assert_null(execution->ready_delivery);
++    g_assert_false(handoff->held);
++    g_assert_true(handoff->returned);
++    g_assert_cmpuint(creation->ready_users, ==, 0);
++    g_assert_true(creation->ready_closed);
++    g_assert_cmpint(qemu_crucible_fingerprint_main_execution_returned_current_v1(
++        execution, execution->keeper, &execution_owner), ==, 0);
++    returned = 0;
++    g_assert_cmpint(DELIVERY(ready_return)(1, creation, delivery_serial, &returned), ==, status);
++    g_assert_cmpuint(returned, ==, 1);
++    g_assert_cmpint(DELIVERY(payload_return)(1, creation, delivery_serial), ==, 0);
++    g_assert_cmpuint(destruction_calls, ==, 1);
++    g_assert_cmpint(DELIVERY(identity_return)(1, &creation, delivery_serial), ==, 0);
++    g_assert_cmpint(RECEIVE(identity_return)(1, &receive, receive_serial), ==, -ENOKEY);
++    g_assert_nonnull(receive);
++    puts("PASS Ready handoff: real local custody outlives modeled Ready entry; no Main/CPU/Original or peer return");
++    return 0;
++}
++"""
++
 +LIFETIME_PRELUDE = r"""
 +/* The member/standing boundary is a modeled input to this isolated lifetime
 + * component. Real Source declarations, receive/delivery bodies, reader calls,
@@ -255176,6 +255770,7 @@ index 0000000000000000000000000000000000000000..83895f0bcc6b26acee47ff79aecc9491
 +} actual_child;
 +static bool payload_fixture;
 +static int identity_failure;
++static bool ready_return_post_failure;
 +
 +
 +static bool startup_owner(void)
@@ -255185,6 +255780,10 @@ index 0000000000000000000000000000000000000000..83895f0bcc6b26acee47ff79aecc9491
 +
 +static int command_member_identity_locked(QemuCrucibleCommandConsumerMember *member)
 +{
++    if (ready_return_post_failure && startup_source.ready_delivery.returned) {
++        ready_return_post_failure = false;
++        return -EIO;
++    }
 +    if (identity_failure) {
 +        int failure = identity_failure;
 +
@@ -255804,7 +256403,7 @@ index 0000000000000000000000000000000000000000..83895f0bcc6b26acee47ff79aecc9491
 +        assert bodies.count(statement) == 1
 +        bodies = bodies.replace(statement, "owner->held ||")
 +    generated = output_dir / "received-delivery-lifetime.c"
-+    generated.write_text(LIFETIME_PRELUDE + helpers + bodies + LIFETIME_CHECKS)
++    generated.write_text(LIFETIME_PRELUDE + READY_DISABLED_PROVIDERS + helpers + bodies + LIFETIME_CHECKS)
 +    binary = output_dir / "received-delivery-lifetime"
 +    command = [os.environ.get("CC", "cc"),
 +               *shlex.split(os.environ.get("CFLAGS", "")),
@@ -255820,11 +256419,11 @@ index 0000000000000000000000000000000000000000..83895f0bcc6b26acee47ff79aecc9491
 +        subprocess.run([str(binary), scenario], cwd=output_dir, check=True)
 +
 +    if negative_control == "delivery-payload-debt":
-+        statement = """owner->use_users || owner->payload_transition_active ||
++        statement = """owner->use_users || owner->ready_users || owner->payload_transition_active ||
 +                    owner->payload_held || owner->payload_uncertain || owner->payload ||
 +                    (owner->payload_serial && !owner->payload_returned)"""
 +        assert bodies.count(statement) == 1
-+        bodies = bodies.replace(statement, "owner->use_users || owner->payload_transition_active")
++        bodies = bodies.replace(statement, "owner->use_users || owner->ready_users || owner->payload_transition_active")
 +    elif negative_control == "delivery-payload-consumption":
 +        statement = "owner->payload_return_post = received_delivery_identity_locked(owner, serial);"
 +        assert bodies.count(statement) == 1
@@ -255842,7 +256441,7 @@ index 0000000000000000000000000000000000000000..83895f0bcc6b26acee47ff79aecc9491
 +        "int qemu_plugin_crucible_startup_source_command_member_transfer_v1(",
 +    ))
 +    generated = output_dir / "received-delivery-payload.c"
-+    generated.write_text(LIFETIME_PRELUDE + PAYLOAD_PROVIDERS + helpers + constructors +
++    generated.write_text(LIFETIME_PRELUDE + READY_DISABLED_PROVIDERS + PAYLOAD_PROVIDERS + helpers + constructors +
 +                         bodies + LIFETIME_CHECKS.replace("int main(", "static int lifetime_main(") +
 +                         PAYLOAD_CHECKS)
 +    binary = output_dir / "received-delivery-payload"
@@ -255858,13 +256457,92 @@ index 0000000000000000000000000000000000000000..83895f0bcc6b26acee47ff79aecc9491
 +        subprocess.run([str(binary), scenario], cwd=output_dir, check=True)
 +
 +
++def ready_component(output_dir, negative_control):
++    """Run literal Ready transfer/return with modeled platform entry inputs."""
++    extract = SUPPORT["EXTRACT"]
++    source = (ROOT / "plugins/crucible-startup-source.c").read_text()
++    coordinator = (ROOT / "system/crucible-hot-fork-coordinator.c").read_text()
++    loop = (ROOT / "util/main-loop.c").read_text()
++    consumer = (ROOT / "plugins/crucible-command-consumer.inc.h").read_text()
++    child = (ROOT / "plugins/crucible-callback-child.inc.h").read_text()
++    membership = (ROOT / "plugins/crucible-command-membership.inc.h").read_text()
++    receive = (ROOT / "plugins/crucible-command-receive.inc.h").read_text()
++    mutations = {
++        "ready-nomination": ("    observation->receive = receive;", "    /* omitted actual nomination */"),
++        "ready-delivery-dependency": ("owner->use_users || owner->ready_users || owner->payload_transition_active ||\n                    owner->payload_uncertain)",
++                                      "owner->use_users || owner->payload_transition_active ||\n                    owner->payload_uncertain)"),
++        "ready-absence-reissue": ("delivery->ready_closed || handoff->held ||", "handoff->held ||"),
++        "ready-post-consumption": ("status = received_delivery_identity_locked(delivery, serial);\n        }\n        handoff->transition_active = false;",
++                                   "status = received_delivery_identity_locked(delivery, serial);\n            if (status) { handoff->held = true; }\n        }\n        handoff->transition_active = false;"),
++    }
++    if negative_control in mutations:
++        before, after = mutations[negative_control]
++        assert receive.count(before) == 1
++        receive = receive.replace(before, after)
++    if negative_control == "ready-execution-consumption":
++        before = "    *holder = NULL;\n    /* No callback or fallible post follows this physical consumption. */"
++        assert coordinator.count(before) == 1
++        coordinator = coordinator.replace(before, "    /* omitted actual dependency consumption */")
++    start = coordinator.index("struct QemuCrucibleFingerprintMainExecution {")
++    end = coordinator.index("static void fingerprint_main_ready_dispatch(", start)
++    carrier = coordinator[start:end]
++    helpers = "\n\n".join(extract["function"](text, signature) for text, signature in (
++        (consumer, "static int command_registry_identity("),
++        (child, "static bool callback_child_output_overlap("),
++        (child, "static bool callback_child_output_conflicts_locked("),
++    ))
++    constructors = "\n\n".join(extract["function"](membership, signature) for signature in (
++        "static int command_member_create(",
++        "int qemu_plugin_crucible_startup_source_command_member_create_v2(",
++        "int qemu_plugin_crucible_startup_source_command_member_create_v3(",
++        "int qemu_plugin_crucible_startup_source_command_member_transfer_v1(",
++    ))
++    execution_bodies = "\n\n".join(extract["function"](text, signature) for text, signature in (
++        (loop, "int main_loop_crucible_fingerprint_ready_current_v1("),
++        (coordinator, "int qemu_crucible_fingerprint_main_execution_identity_current_v1("),
++        (coordinator, "int qemu_crucible_fingerprint_main_ready_current_v1("),
++        (coordinator, "int qemu_crucible_fingerprint_ready_snapshot_holder_borrow_v1("),
++        (coordinator, "int qemu_crucible_fingerprint_ready_snapshot_holder_current_v1("),
++        (coordinator, "int qemu_crucible_fingerprint_main_execution_snapshot_holder_identity_v1("),
++        (coordinator, "int qemu_crucible_fingerprint_ready_delivery_retain_v1("),
++        (coordinator, "int qemu_crucible_fingerprint_ready_delivery_identity_return_v1("),
++        (coordinator, "int qemu_crucible_fingerprint_main_execution_returned_current_v1("),
++    ))
++    source_bodies = "\n\n".join(extract["function"](source, signature) for signature in (
++        "static int source_intent_observation_identity(",
++        "int qemu_crucible_startup_source_main_ready_dispatch_v1(",
++        "int qemu_crucible_startup_source_fingerprint_intent_identity_return_v1(",
++    ))
++    dispatch_source = coordinator[coordinator.rindex("static void fingerprint_main_ready_dispatch("):]
++    dispatch = extract["function"](dispatch_source, "static void fingerprint_main_ready_dispatch(")
++    checks = READY_CHECKS
++    generated = output_dir / "ready-delivery-handoff.c"
++    generated.write_text(LIFETIME_PRELUDE + PAYLOAD_PROVIDERS + READY_PROVIDERS + carrier +
++        helpers + constructors + execution_bodies + source_bodies + receive +
++        LIFETIME_CHECKS.replace("int main(", "static int lifetime_main(") +
++        PAYLOAD_CHECKS.replace("int main(", "static int payload_main(") + dispatch + checks)
++    binary = output_dir / "ready-delivery-handoff"
++    command = [os.environ.get("CC", "cc"), *shlex.split(os.environ.get("CFLAGS", "")),
++        "-Wno-missing-prototypes", "-Wno-unused-function", "-Wno-unused-variable",
++        str(generated), *SUPPORT["native_link_arguments"](), "-o", str(binary),
++        *shlex.split(os.environ.get("LDFLAGS", ""))]
++    (output_dir / "ready-compile-command.json").write_text(json.dumps(command, indent=2) + "\n")
++    subprocess.run(command, check=True)
++    for scenario in ("ready-healthy", "ready-reader-negative", "ready-claim-negative",
++                     "ready-capture-post", "ready-return-post", "ready-return-refused",
++                     "ready-absence", "ready-unentered"):
++        subprocess.run([str(binary), scenario], cwd=output_dir, check=True)
++
++
 +def main():
 +    parser = argparse.ArgumentParser()
 +    parser.add_argument("--output-dir", type=Path, required=True)
 +    parser.add_argument("--negative-control", choices=[
 +        "callback-return", "dedup", "child-cache", "stderr-mirror",
 +        "delivery-use-dependency", "delivery-exact-output", "delivery-reissue",
-+        "delivery-payload-debt", "delivery-payload-consumption", "delivery-payload-first-bound"])
++        "delivery-payload-debt", "delivery-payload-consumption", "delivery-payload-first-bound",
++        "ready-nomination", "ready-execution-consumption", "ready-delivery-dependency",
++        "ready-absence-reissue", "ready-post-consumption"])
 +    arguments = parser.parse_args()
 +    arguments.output_dir.mkdir(parents=True, exist_ok=True)
 +
@@ -255920,6 +256598,7 @@ index 0000000000000000000000000000000000000000..83895f0bcc6b26acee47ff79aecc9491
 +    subprocess.run(command, check=True)
 +    subprocess.run([str(binary)], cwd=arguments.output_dir, check=True)
 +    lifetime_component(arguments.output_dir, arguments.negative_control)
++    ready_component(arguments.output_dir, arguments.negative_control)
 +
 +
 +if __name__ == "__main__":
@@ -262989,10 +263668,10 @@ index 0000000000000000000000000000000000000000..57b2f5de179724dbb072619030cc86ec
 +}
 diff --git a/tests/unit/test-crucible-hot-fork-coordinator.c b/tests/unit/test-crucible-hot-fork-coordinator.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..a2eb613ddd0356e47614042b96e80c6ec6bbb1f9
+index 0000000000000000000000000000000000000000..4404a071aceee8a2b83d9837488d6339db85f46a
 --- /dev/null
 +++ b/tests/unit/test-crucible-hot-fork-coordinator.c
-@@ -0,0 +1,1162 @@
+@@ -0,0 +1,1171 @@
 +/*
 + * Crucible main-loop hot-fork coordinator tests.
 + *
@@ -263012,6 +263691,7 @@ index 0000000000000000000000000000000000000000..a2eb613ddd0356e47614042b96e80c6e
 +#include "qemu/plugin.h"
 +#include "plugins/qemu-plugin.h"
 +#include "plugins/crucible-checkpoint-receiving.h"
++#include "plugins/crucible-startup-source.h"
 +#include "qemu/rcu.h"
 +#include "qemu/thread.h"
 +#include "system/blockdev.h"
@@ -263139,6 +263819,14 @@ index 0000000000000000000000000000000000000000..a2eb613ddd0356e47614042b96e80c6e
 +int qemu_plugin_crucible_wake_watcher_snapshot_enter_v1(
 +    QemuCrucibleFingerprintWakeWatcher *watcher,
 +    QemuCrucibleFingerprintMainReadyFrame *frame, uint64_t registration_serial)
++{
++    g_assert_not_reached();
++}
++
++int qemu_crucible_startup_source_ready_delivery_issuing_v1(
++    QemuCrucibleReadyDeliveryHandoff *handoff,
++    QemuCrucibleFingerprintMainReadyFrame *frame, void *execution,
++    QemuCrucibleFingerprintIntentObservation *observation)
 +{
 +    g_assert_not_reached();
 +}
