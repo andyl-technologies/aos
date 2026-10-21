@@ -1727,6 +1727,10 @@ in rec {
       aos-test-targets = pkgs.aos.passthru.testTargets;
       systemd-native-unit-parser = import ./tests/abilities/systemd-native-unit-parser.nix {inherit pkgs;};
       crucible-controller = pkgs.crucible-controller;
+      # The controller workspace's test suite, Clippy, rustdoc, and doctests.
+      # The native package copies its executables from the release family
+      # and does not wait for this check.
+      crucible-controller-qualification = pkgs.crucible-controller.passthru.qualification;
       crucible-qemu-plugin = pkgs.crucible-qemu-plugin;
       crucible-guest = pkgs.crucible-guest;
     };

@@ -370,6 +370,44 @@ in {
       serves.build = ["crucible-cli[packaged-midpoint-flight]"];
     }
 
+    # Conflict: the controller package ships these examples as `cargo build
+    # --release -p <package> --example <name>` builds them. Each resolves
+    # only its own package's dev-dependencies, so neither may unify with the
+    # other or with the test resolution; crucible-api's dev-dependencies,
+    # for example, enable crucible's test-double backend.
+    {
+      id = "controller-debugger-example";
+      packages = ["crucible"];
+      invocations = [
+        {
+          command = "build";
+          targets = ["--example crucible-debugger-live-fixture"];
+        }
+      ];
+      serves.build = [
+        {
+          request = "crucible";
+          kinds = ["example"];
+        }
+      ];
+    }
+    {
+      id = "controller-scenario-example";
+      packages = ["crucible-api"];
+      invocations = [
+        {
+          command = "build";
+          targets = ["--example crucible-e2e-determinism-scenario"];
+        }
+      ];
+      serves.build = [
+        {
+          request = "crucible-api";
+          kinds = ["example"];
+        }
+      ];
+    }
+
     # Conflict: the production examples take cfg(not(feature =
     # "test-support")) paths in crucible-qemu, which the test resolution
     # enables.
