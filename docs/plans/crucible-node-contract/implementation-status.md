@@ -1301,15 +1301,68 @@ missing schema.
 
 Both complete Transport configurations pass 1,819 tests with zero failures,
 no filtering and sixteen existing ignores. Affected all-feature/all-target
-checking, scoped formatting and all six architecture gates pass. The required
-application compilation and funded-Source VM are running against immutable
-captures that match all 168 owned changed Rust paths byte for byte. They are
-not completed qualifications. The full Engine/Daemon results above remain tied
-to `99dc0fdb5e`.
+checking, scoped formatting and all six architecture gates pass. Commit
+`2e89a44c92` passes the required application compilation at
+`/nix/store/ikazis4v9sf2xhcb873rzwb4jvjxnvjc-aos-test-targets-0.1.0`:
+180 test executables across 58 package identities, including 71 integration
+targets. It also passes the funded-Source VM at
+`/nix/store/8cpl6qdjsiiqnpnb6lgj36111v8gsbqv-aos-vm-test-crucible-funded-source-templates-0`,
+with both independent consumers, three actual retained private
+Birth/declaration/projection/launch results, refusal controls and terminal
+namespace/credit release. Its immutable application and three VM component
+captures match all 168 owned changed Rust paths byte for byte. The full
+Engine/Daemon results above remain tied to `99dc0fdb5e`.
 
 This transition binds physical custody only. The native Hello exchange,
 model-absent immutable policy, bootstrap ACK, full five-phase Recipe/Initial
 producers and complete Native/Source restoration remain required.
+
+## Retained original public Hello framing exchange
+
+The original bootstrap now transfers its actual public channel and journal into
+one retained framing constructor. An empty destination precedes either move.
+The reservation keeps its original shared bank. Successful framing allocates
+nothing; an owning bind refusal retains the actual Box, journal and same stream.
+Missing streams and failed transfers preserve initialized partials and spent
+state. Immutable loans recheck the physical cut and typed original guards after
+the callback, including callback refusal.
+
+The census walks the actual remaining stream, exchange and refusal owners. It
+counts the Box payload, actual moved stream/cut backing and any distinct literal
+bank. Only checked Rc equality with the original reservation or an earlier real
+edge permits a bank discount. Outstanding original bank borrows refuse the
+whole census. Exhaustive reader, journal and refusal field walks keep future
+heap-bearing fields visible to this boundary. Binding errors are restricted to
+the actual no-I/O constructor's static variants; an allocating successor error
+requires its own retained layout.
+
+Both initial calculations retain the same original channel/bank charges and add
+only the new refusal Box bound, actual constructor moves and fixed controls.
+Inline partials belong to the physical raw root. No duplicated reservation,
+socket, renewed cut or old eager native policy is constructed. The public
+channel's Read/Write implementation additionally checks its own completed,
+unchanged original binding before the same bounded stream can perform I/O.
+
+Four focused retained-exchange controls and all thirteen initial-reconstruction
+tests pass. The latter cover 172 inherited-socket flights and a separate quote
+control. Ten new flights check both program families, unchecked/expired prior
+work, construct/terminal refusal, callback refusal and real expiration. The same
+actual descriptor, journal bank and private raw pointers survive each outcome;
+queued public bytes remain unread and no public bytes are emitted. A separate
+physical I/O control checks actual read/write/flush, incomplete binding and
+changed-cut refusal without consuming queued bytes or emitting a reply.
+
+Both complete standard and raw-value Transport libraries pass 1,825 tests,
+zero failures, no filtering and sixteen existing ignores. Affected
+all-feature/all-target checking, scoped formatting and all six architecture
+gates pass. Required application compilation and the funded-Source VM are
+running against immutable captures matching all 172 owned changed Rust paths
+byte for byte. These pending builds are not completed qualification. The full
+Engine/Daemon runs remain qualified at `99dc0fdb5e`.
+
+This creates a physical framing exchange only. Receiving/authenticating Hello,
+the complete model-absent policy, bootstrap ACK, genuine five-phase Recipe and
+Initial producers, native adoption and complete restoration remain required.
 
 ## Original launch custody and shared startup geometry
 

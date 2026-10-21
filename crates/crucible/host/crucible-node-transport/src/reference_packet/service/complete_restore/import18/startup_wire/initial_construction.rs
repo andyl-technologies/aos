@@ -9,6 +9,8 @@ use super::prospective::{PrivateOperands, ProspectiveBodyConstructionData};
 use super::*;
 use crate::reference_packet::service::ack_emitter::native_boot::{
     original_import18_controller_measurement_construction_data,
+    original_import18_hello_exchange_construction_data,
+    original_import18_hello_exchange_counter_scratch_data,
     original_import18_hello_frames_construction_data,
     original_import18_hello_frames_counter_scratch_data,
     original_import18_hello_selection_construction_data,
@@ -187,6 +189,12 @@ fn combine(
     row[0] = add(row[0], public_channel[0])?;
     row[1] = row[1].max(public_channel[1]);
     row[2] = row[2].max(add(raw[2], public_channel[2])?);
+    // Framing moves the existing socket/cut and journal. Only its owning Box
+    // refusal adds backing; those moved owners remain charged above.
+    let hello_exchange = original_import18_hello_exchange_construction_data();
+    row[0] = add(row[0], hello_exchange[0])?;
+    row[1] = row[1].max(hello_exchange[1]);
+    row[2] = row[2].max(add(raw[2], hello_exchange[2])?);
     if add(add(row[0], row[1])?, row[2])? > maximum {
         return Err(exhausted());
     }
@@ -225,6 +233,8 @@ pub fn native_import18_initial_construction_counter_scratch_data() -> usize {
         + original_import18_hello_selection_counter_scratch_data()
         + original_import18_hello_frames_counter_scratch_data()
         + size_of::<[usize; 3]>() // The retained physical Hello constructor row.
+        + original_import18_hello_exchange_counter_scratch_data()
+        + size_of::<[usize; 3]>() // The retained framing constructor row.
         + original_import18_public_channel_counter_scratch_data()
         + size_of::<[usize; 3]>() // The retained physical public-channel row.
         + original_import18_selection_counter_scratch_data()

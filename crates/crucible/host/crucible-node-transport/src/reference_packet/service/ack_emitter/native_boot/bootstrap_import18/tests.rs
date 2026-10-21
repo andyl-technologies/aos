@@ -81,7 +81,9 @@ fn child(case: &str, wire: &[u8]) {
         .stdin(Stdio::from(std::os::fd::OwnedFd::from(inherited)))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let mut public_peer = if case.starts_with("initial_hello_channel_") {
+    let mut public_peer = if case.starts_with("initial_hello_channel_")
+        || case.starts_with("initial_hello_exchange_")
+    {
         let (peer, inherited) = UnixStream::pair().unwrap();
         command.stderr(Stdio::from(std::os::fd::OwnedFd::from(inherited)));
         Some(peer)
@@ -147,7 +149,7 @@ fn inherited_raw_bootstrap_child() {
     let mut owner =
         OriginalImport18RawBootstrap::retain(UnixStream::from(original), selected_bounds).unwrap();
     assert!(owner.inputs.is_empty_data());
-    if case.starts_with("initial_hello_channel_") {
+    if case.starts_with("initial_hello_channel_") || case.starts_with("initial_hello_exchange_") {
         initial_reconstruction::retain_public_before_read(&case, &mut owner);
     }
     let result = owner.receive();

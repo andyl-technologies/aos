@@ -54,6 +54,13 @@ pub(in crate::reference_packet::service) use selection::{
     counter_scratch_data as selection_counter_scratch_data,
 };
 
+#[path = "bootstrap_import18/hello_exchange.rs"]
+mod hello_exchange;
+pub(in crate::reference_packet::service) use hello_exchange::{
+    construction_data as hello_exchange_construction_data,
+    counter_scratch_data as hello_exchange_counter_scratch_data,
+};
+
 #[path = "bootstrap_import18/public_channel.rs"]
 mod public_channel;
 pub(in crate::reference_packet::service) use public_channel::{
@@ -118,6 +125,14 @@ pub(super) struct OriginalImport18RawBootstrap {
     public_channel_row: Option<[usize; 3]>,
     public_channel_started: bool,
     public_channel_complete: bool,
+    hello_exchange: Option<
+        crate::native_hello::RetainedOriginalNativeHelloExchange<
+            crate::client::OriginalNativePublicBirthChannel,
+        >,
+    >,
+    hello_exchange_row: Option<[usize; 3]>,
+    hello_exchange_started: bool,
+    hello_exchange_complete: bool,
     decoding_row: Option<[usize; 3]>,
     decode_started: bool,
     decoded: bool,
@@ -171,6 +186,10 @@ impl OriginalImport18RawBootstrap {
             public_channel_row: None,
             public_channel_started: false,
             public_channel_complete: false,
+            hello_exchange: None,
+            hello_exchange_row: None,
+            hello_exchange_started: false,
+            hello_exchange_complete: false,
             decoding_row: None,
             decode_started: false,
             decoded: false,
@@ -291,12 +310,14 @@ impl OriginalImport18RawBootstrap {
         let hello_backing = self.hello_selection_backing_data()?;
         let hello_frames_backing = self.hello_frames_backing_data()?;
         let public_channel_backing = self.public_channel_backing_data()?;
+        let hello_exchange_backing = self.hello_exchange_backing_data()?;
         retained
             .checked_add(input_backing)
             .and_then(|n| n.checked_add(typed_backing))
             .and_then(|n| n.checked_add(hello_backing))
             .and_then(|n| n.checked_add(hello_frames_backing))
             .and_then(|n| n.checked_add(public_channel_backing))
+            .and_then(|n| n.checked_add(hello_exchange_backing))
             .ok_or_else(exhausted)
     }
 

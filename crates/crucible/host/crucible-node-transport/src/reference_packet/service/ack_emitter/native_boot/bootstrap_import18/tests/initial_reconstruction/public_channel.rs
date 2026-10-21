@@ -92,6 +92,19 @@ impl OriginalImport18PublicChannelAdmission for Admission<'_> {
     }
 }
 
+pub(super) fn construct_for_exchange(owner: &mut OriginalImport18RawBootstrap) {
+    super::hello_frames::construct_for_channel(owner);
+    let admission = Admission {
+        case: "initial_hello_channel_complete",
+        calls: Cell::new(0),
+        before: owner.retained_requested_bytes().unwrap(),
+        row: Cell::new(None),
+    };
+    owner.construct_public_channel_data(&admission).unwrap();
+    assert!(owner.public_channel_complete);
+    assert_eq!(admission.calls.get(), 2);
+}
+
 pub(super) fn assert_child(case: &str, owner: &mut OriginalImport18RawBootstrap) {
     if case != "initial_hello_channel_unchecked_frames" {
         super::hello_frames::construct_for_channel(owner);

@@ -49,6 +49,20 @@ impl<R> FrameReader<R> {
         &self.stream
     }
 
+    /// Borrows the actual retained literal-bank edge for an original census.
+    pub(crate) fn original_bank_data(&self) -> Option<&Rc<RefCell<OriginalFrameReservation>>> {
+        // The original bank is this reader's sole heap edge outside its stream.
+        let Self {
+            stream: _,
+            maximum_bytes: _,
+            maximum_nesting: _,
+            failed: _,
+            originals,
+            last_original_slot: _,
+        } = self;
+        originals.as_ref()
+    }
+
     /// Observes scalar reader state only when the actual bank Rc is unchanged.
     pub(crate) fn original_owned11_facts(
         &self,

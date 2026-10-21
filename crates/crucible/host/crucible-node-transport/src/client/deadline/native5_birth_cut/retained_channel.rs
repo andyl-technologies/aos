@@ -234,6 +234,10 @@ impl OriginalNativePublicBirthChannel {
             + size_of::<Option<usize>>()
     }
 
+    /// Borrows the retained descriptor number for test correspondence only.
+    ///
+    /// # Errors
+    /// Refuses foreign custody or an absent original descriptor.
     #[cfg(test)]
     pub(crate) fn descriptor_data(&self) -> Result<RawFd, ProviderError> {
         self.owner.ensure_current()?;
@@ -244,6 +248,48 @@ impl OriginalNativePublicBirthChannel {
             .as_ref()
             .map(|stream| stream.stream.as_raw_fd())
             .ok_or_else(refused)
+    }
+}
+
+impl Read for OriginalNativePublicBirthChannel {
+    fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        self.ensure_io_current()?;
+        self.bounded
+            .as_mut()
+            .ok_or(io::ErrorKind::NotConnected)?
+            .read(bytes)
+    }
+}
+
+impl Write for OriginalNativePublicBirthChannel {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.ensure_io_current()?;
+        self.bounded
+            .as_mut()
+            .ok_or(io::ErrorKind::NotConnected)?
+            .write(bytes)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.ensure_io_current()?;
+        self.bounded
+            .as_mut()
+            .ok_or(io::ErrorKind::NotConnected)?
+            .flush()
+    }
+}
+
+impl OriginalNativePublicBirthChannel {
+    // Static error kinds keep a refused physical check allocation-free. The
+    // bounded stream independently checks the same immutable cut before I/O.
+    fn ensure_io_current(&self) -> io::Result<()> {
+        self.completed_data(self.original).map_err(|_| {
+            io::Error::from(if self.original.is_expired() {
+                io::ErrorKind::TimedOut
+            } else {
+                io::ErrorKind::PermissionDenied
+            })
+        })
     }
 }
 
@@ -341,6 +387,62 @@ mod tests {
             row[0] + OriginalNative5BirthCut::original_requested_layout_data().unwrap()
         );
         assert!(channel.completed_data(channel.original).is_err());
+    }
+
+    #[test]
+    fn physical_channel_io_preserves_queue_and_refuses_the_changed_original_cut() {
+        let mut channel = physical_fixture();
+        let (stream, mut peer) = UnixStream::pair().unwrap();
+        channel.bounded.as_mut().unwrap().stream = stream;
+        peer.write_all(b"hello").unwrap();
+
+        channel.complete = false;
+        assert_eq!(
+            channel.read(&mut [0]).unwrap_err().kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        channel.complete = true;
+        let mut bytes = [0; 5];
+        channel.read_exact(&mut bytes).unwrap();
+        assert_eq!(&bytes, b"hello");
+        channel.write_all(b"reply").unwrap();
+        channel.flush().unwrap();
+        peer.read_exact(&mut bytes).unwrap();
+        assert_eq!(&bytes, b"reply");
+
+        peer.write_all(b"unread").unwrap();
+        channel
+            .cut
+            .as_ref()
+            .unwrap()
+            .exchange_deadline()
+            .reset(Duration::from_secs(30))
+            .unwrap();
+        assert_eq!(
+            channel.read(&mut bytes).unwrap_err().kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        assert_eq!(
+            channel.write(b"no").unwrap_err().kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        assert_eq!(
+            channel.flush().unwrap_err().kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        let mut queued = [0; 6];
+        let (_, count) = rustix::net::recv(
+            &channel.bounded.as_ref().unwrap().stream,
+            &mut queued[..],
+            rustix::net::RecvFlags::PEEK | rustix::net::RecvFlags::DONTWAIT,
+        )
+        .unwrap();
+        assert_eq!(&queued[..count], b"unread");
+        peer.set_nonblocking(true).unwrap();
+        assert_eq!(
+            peer.read(&mut bytes).unwrap_err().kind(),
+            io::ErrorKind::WouldBlock
+        );
     }
 
     #[test]

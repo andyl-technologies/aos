@@ -165,6 +165,60 @@ impl OriginalNativeHelloReservation {
         Ok(result)
     }
 
+    /// Transfers the same completed journal into an already retained destination.
+    ///
+    /// The original shared bank stays here. The receiver must retain this
+    /// destination through all later framing checks and count proven aliases.
+    ///
+    /// # Errors
+    /// Refuses an occupied destination, incomplete reservation, missing journal
+    /// or foreign creator. No allocation or I/O occurs.
+    pub(super) fn transfer_journal_into_data(
+        &mut self,
+        output: &mut Option<OriginalNativeHelloJournal>,
+    ) -> Result<(), ProviderError> {
+        self.owner.ensure_current()?;
+        if output.is_some() || !self.complete || self.journal.is_none() {
+            return Err(refused());
+        }
+        self.journal
+            .as_ref()
+            .ok_or_else(refused)?
+            .owner
+            .ensure_current()?;
+        *output = self.journal.take();
+        Ok(())
+    }
+
+    /// Checks whether this actual reservation already counts the same bank.
+    ///
+    /// # Errors
+    /// Refuses a foreign creator or journal owner.
+    pub(super) fn counts_bank_data(
+        &self,
+        bank: &Rc<RefCell<OriginalFrameReservation>>,
+    ) -> Result<bool, ProviderError> {
+        self.owner.ensure_current()?;
+        if self
+            .shared_bank
+            .as_ref()
+            .is_some_and(|original| Rc::ptr_eq(original, bank))
+        {
+            return Ok(true);
+        }
+        if let Some(journal) = &self.journal {
+            journal.owner.ensure_current()?;
+            return Ok(Rc::ptr_eq(&journal.bank, bank));
+        }
+        Ok(false)
+    }
+
+    /// Lends a mutable journal exclusively for negative constructor fixtures.
+    #[cfg(test)]
+    pub(super) fn journal_mut_fixture_data(&mut self) -> Option<&mut OriginalNativeHelloJournal> {
+        self.journal.as_mut()
+    }
+
     /// Names actual reservation, shared-bank construction and census controls.
     pub(crate) fn counter_scratch_data() -> usize {
         OriginalFrameReservation::retained_reservation_counter_scratch_data()

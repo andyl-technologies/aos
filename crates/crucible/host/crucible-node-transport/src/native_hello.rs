@@ -26,6 +26,10 @@ use std::{
 mod retained_reservation;
 pub(crate) use retained_reservation::OriginalNativeHelloReservation;
 
+#[path = "native_hello/retained_exchange.rs"]
+mod retained_exchange;
+pub(crate) use retained_exchange::RetainedOriginalNativeHelloExchange;
+
 const MAXIMUM_HELLO_BYTES: usize = 1024 * 1024;
 
 /// Owns one precharged native Hello attempt, including partial failed traffic.
@@ -325,6 +329,12 @@ pub struct OriginalNativeHelloExchange<S: Read + Write> {
 }
 
 impl<S: Read + Write> OriginalNativeHelloExchange<S> {
+    /// Borrows the same owning stream without I/O or descriptor duplication.
+    pub(crate) fn original_stream_data(&self) -> &S {
+        let Self { reader, journal: _ } = self;
+        reader.stream_ref()
+    }
+
     /// Reads the original request once and retains its exact header/body bytes.
     ///
     /// # Errors
